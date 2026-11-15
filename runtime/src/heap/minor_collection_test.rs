@@ -164,13 +164,13 @@ fn an_old_procbin_that_died_is_released_by_a_major_collection_and_a_young_one_by
     let old_witness = SharedBinHandle::from_bytes(&[1; 8], 64);
     let young_witness = SharedBinHandle::from_bytes(&[2; 8], 64);
     let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
-    let old = alloc_procbin(&mut heap, old_witness.clone(), 0);
+    let old = alloc_procbin(&mut heap, old_witness.clone(), 0, old_witness.bit_len());
     let mut roots = [root_of(heap_object_word(old.as_raw(), ValueKind::PROCBIN))];
     assert_eq!(heap.collect(&mut roots).generation, Generation::Minor);
     assert_ne!(heap.mso_old_head, 0, "the survivor is on the old chain");
     assert_eq!(heap.mso_head, 0);
 
-    alloc_procbin(&mut heap, young_witness.clone(), 0);
+    alloc_procbin(&mut heap, young_witness.clone(), 0, young_witness.bit_len());
     assert_eq!(shared_refs(&young_witness), 2);
     let stats = heap.collect(&mut []);
     assert_eq!(stats.generation, Generation::Minor);
@@ -205,10 +205,10 @@ fn dropping_a_heap_releases_its_young_and_its_old_stubs() {
     ];
     {
         let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
-        let old = alloc_procbin(&mut heap, witnesses[0].clone(), 0);
+        let old = alloc_procbin(&mut heap, witnesses[0].clone(), 0, witnesses[0].bit_len());
         let mut roots = [root_of(heap_object_word(old.as_raw(), ValueKind::PROCBIN))];
         heap.collect(&mut roots);
-        alloc_procbin(&mut heap, witnesses[1].clone(), 0);
+        alloc_procbin(&mut heap, witnesses[1].clone(), 0, witnesses[1].bit_len());
         assert_eq!(witnesses.each_ref().map(shared_refs), [2, 2]);
     }
     assert_eq!(witnesses.each_ref().map(shared_refs), [1, 1]);
@@ -268,7 +268,7 @@ fn a_grafted_list_cell_is_not_rewritten_in_place() {
 
 fn alloc_unrooted_stubs(heap: &mut Heap, binaries: usize, resources: usize) {
     for _ in 0..binaries {
-        alloc_procbin(heap, SharedBinHandle::from_bytes(&[7; 8], 64), 0);
+        alloc_procbin(heap, SharedBinHandle::from_bytes(&[7; 8], 64), 0, 64);
     }
     for _ in 0..resources {
         let handle = ResourceHandle::new(1, fz_resource_destructor_noop);
@@ -287,7 +287,7 @@ fn a_collection_follows_one_link_per_binary_stub() {
 
     let survivors: Vec<AnyValueRef> = (0..5)
         .map(|_| {
-            let pb = alloc_procbin(&mut heap, SharedBinHandle::from_bytes(&[7; 8], 64), 0);
+            let pb = alloc_procbin(&mut heap, SharedBinHandle::from_bytes(&[7; 8], 64), 0, 64);
             root_of(heap_object_word(pb.as_raw(), ValueKind::PROCBIN))
         })
         .collect();
@@ -331,7 +331,7 @@ fn the_destructor_search_walks_only_resource_stubs_and_the_sweep_every_stub_once
 #[test]
 fn a_major_collection_follows_the_old_chains_and_a_minor_does_not() {
     let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
-    let pb = alloc_procbin(&mut heap, SharedBinHandle::from_bytes(&[7; 8], 64), 0);
+    let pb = alloc_procbin(&mut heap, SharedBinHandle::from_bytes(&[7; 8], 64), 0, 64);
     let rs = alloc_resource(
         &mut heap,
         ResourceHandle::new(1, fz_resource_destructor_noop),

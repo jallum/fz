@@ -1221,3 +1221,28 @@ fn a_body_frame_a_collection_kept_is_copied_to_the_tip_before_a_write() {
         assert_eq!(process.frame_copies, 1);
     });
 }
+
+/// A byte-aligned field taken from the middle of a shared binary is a view of
+/// the source's bytes: nothing is copied into a new buffer.
+#[test]
+fn reading_a_middle_binary_field_of_a_shared_source_builds_a_view() {
+    with_process(|process| {
+        let bytes: Vec<u8> = (0..200u8).collect();
+        let source = process.heap.alloc_bitstring(&bytes, 200 * 8);
+        let source_ref = source.ref_word().raw_word();
+        let before = process.heap.alloc_stats_snapshot();
+        let spec = fz_bs_field_spec(2, 1, 8, 0, 0, 0);
+        let field = fz_bs_read_binary_ref(process, source_ref, 50 * 8, spec, 100);
+        let after = process.heap.alloc_stats_snapshot();
+        let word = AnyValueRef::from_raw_word(field).unwrap().heap_object_word().unwrap();
+        unsafe {
+            assert_eq!(bitstring_bit_len(word), 100 * 8);
+            assert_eq!(from_raw_parts(bitstring_byte_ptr(word), 100), &bytes[50..150]);
+        }
+        assert_eq!(
+            after.shared_bin.allocs, before.shared_bin.allocs,
+            "no bytes were copied"
+        );
+        assert_eq!(after.procbin.allocs, before.procbin.allocs + 1);
+    });
+}

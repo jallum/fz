@@ -68,8 +68,8 @@ const _: () = {
 pub const PROCBIN_SHARED_OFFSET: usize = 0;
 /// Where a ProcBin stub keeps the byte offset of its view, in bytes from the stub.
 pub const PROCBIN_BYTE_OFFSET_OFFSET: usize = 16;
-/// Where a `SharedBin` keeps its bit length.
-pub const SHARED_BIN_BIT_LEN_OFFSET: usize = std::mem::offset_of!(SharedBin, bit_len);
+/// Where a ProcBin stub keeps the bit length of its view, in bytes from the stub.
+pub const PROCBIN_BIT_LEN_OFFSET: usize = 24;
 /// Where a `SharedBin` keeps the address of its bytes.
 pub const SHARED_BIN_BYTES_PTR_OFFSET: usize = std::mem::offset_of!(SharedBin, bytes_ptr);
 
@@ -229,25 +229,22 @@ impl Drop for SharedBinHandle {
 
 // ===== ProcBin newtype ======================================================
 
-/// Per-heap stub naming a byte-aligned SUFFIX of a `SharedBin`'s bytes.
+/// Per-heap stub naming a byte-aligned window of a `SharedBin`'s bytes.
 /// `PROCBIN_BYTES` total:
 ///   offset 0..8    shared_ptr:  *mut SharedBin
 ///   offset 8..16   mso_next:    u64 tagged MSO link, or 0
 ///   offset 16..24  byte_offset: u64 first byte of this stub's view
-///   offset 24..32  unused -- the heap rounds every object to a 16-byte
-///                  slot, so 24 and 32 cost the same.
+///   offset 24..32  bit_len:     u64 length of this stub's view in bits
 ///
-/// A whole binary is the suffix at offset 0. A tail match allocates another
-/// stub over the SAME SharedBin at a later offset, which is what makes
-/// `<<_c, rest :: binary>>` copy nothing.
+/// A whole binary is the window at offset 0 spanning the buffer. Slicing
+/// allocates another stub over the SAME SharedBin, which is what makes
+/// `<<_c, rest :: binary>>` and `<<_ :: binary-size(n), field :: binary, _ :: binary>>`
+/// copy nothing.
 ///
-/// SUFFIX, not an arbitrary window, is the load-bearing constraint. The
-/// buffer carries one invisible trailing NUL, and a suffix
-/// ends where the buffer ends -- so the parent's NUL is also every
-/// suffix's NUL and `fz_binary_as_cstring` needs no flattening copy. An
-/// arbitrary window would not have that, which is why one cannot be built:
-/// `alloc_procbin` derives the length from the offset rather than taking
-/// it.
+/// The buffer carries one invisible trailing NUL after its last byte. A
+/// window that ends where the buffer ends (`ends_at_buffer_end`) has that NUL
+/// right after it; any other window does not, and a C string over it needs a
+/// copy.
 ///
 /// Cheney forwarding overwrites offset 0 with a forwarding marker.
 /// Offset 8 is preserved in from-space, so MSO sweep reads `mso_next` from the
@@ -304,7 +301,13 @@ impl ProcBin {
     }
 
     pub fn bit_len(&self) -> u64 {
-        unsafe { (*self.shared_raw()).bit_len - self.byte_offset() * 8 }
+        unsafe { read(self.as_raw().add(PROCBIN_BIT_LEN_OFFSET) as *const u64) }
+    }
+
+    fn bit_len_set(&self, bit_len: u64) {
+        unsafe {
+            write(self.as_raw().add(PROCBIN_BIT_LEN_OFFSET) as *mut u64, bit_len);
+        }
     }
 
     pub fn bytes_ptr(&self) -> *const u8 {
@@ -312,7 +315,12 @@ impl ProcBin {
     }
 
     pub fn bytes_len(&self) -> usize {
-        unsafe { (*self.shared_raw()).bytes_len - self.byte_offset() as usize }
+        (self.bit_len() as usize).div_ceil(8)
+    }
+
+    /// True when the buffer's invisible trailing NUL follows this view's last byte.
+    pub fn ends_at_buffer_end(&self) -> bool {
+        self.byte_offset() as usize + self.bytes_len() == unsafe { (*self.shared_raw()).bytes_len }
     }
 }
 
@@ -320,22 +328,22 @@ impl ProcBin {
 
 use crate::heap::{Generation, Heap, HeapAllocKind};
 
-/// Allocate a ProcBin stub on `heap` viewing `handle`'s bytes from
-/// `byte_offset` to the end, taking ownership of the SharedBin reference
+/// Allocate a ProcBin stub on `heap` viewing `bit_len` bits of `handle`'s
+/// bytes from `byte_offset`, taking ownership of the SharedBin reference
 /// encapsulated in `handle`. The new ProcBin is pushed onto `heap.mso_head`,
 /// the young binary chain, as the new chain head.
 ///
-/// Pass `0` for the whole binary. The length is derived, not passed: see
-/// the `ProcBin` layout note for why only suffixes are constructible.
-pub fn alloc_procbin(heap: &mut Heap, handle: SharedBinHandle, byte_offset: u64) -> ProcBin {
+/// A whole binary is `(0, handle.bit_len())`.
+pub fn alloc_procbin(heap: &mut Heap, handle: SharedBinHandle, byte_offset: u64, bit_len: u64) -> ProcBin {
     assert!(
-        byte_offset as usize <= handle.bytes_len(),
-        "ProcBin suffix offset {byte_offset} past the shared buffer"
+        byte_offset as usize + (bit_len as usize).div_ceil(8) <= handle.bytes_len(),
+        "ProcBin view [{byte_offset}, +{bit_len} bits) runs past the shared buffer"
     );
     let p = heap.alloc_kind(HeapAllocKind::ProcBin, PROCBIN_BYTES);
     let pb = unsafe { ProcBin::from_raw(p) };
     pb.shared_raw_set(handle.into_raw());
     pb.byte_offset_set(byte_offset);
+    pb.bit_len_set(bit_len);
     let previous_head = heap.mso_push(heap_object_word(p, ValueKind::PROCBIN));
     pb.mso_next_set(previous_head);
     pb

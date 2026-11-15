@@ -331,7 +331,7 @@ language order.
 **Inline or shared storage** — owner `Heap::alloc_bitstring`, which returns the
 VALUE rather than a pointer the caller re-classifies (fz-5xp.45). Two other
 readings of the threshold remain and are different questions:
-`alloc_bitstring_suffix` asks whether a VIEW is worth a stub, and native codegen
+`alloc_bitstring_slice` asks whether a VIEW is worth a stub, and native codegen
 asks what to EMIT for a constant bitstring, which it must answer at compile time
 with no heap to ask.
 

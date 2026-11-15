@@ -897,7 +897,7 @@ impl Heap {
     /// `bitstring_bit_len` / `bitstring_byte_ptr`.
     ///
     /// This always COPIES `bytes`. To view an existing shared buffer
-    /// without copying it, use `alloc_bitstring_suffix`.
+    /// without copying it, use `alloc_bitstring_slice`.
     ///
     /// Returns the VALUE, kind included. The storage choice is
     /// made here and only here; four callers used to re-derive it from
@@ -908,7 +908,7 @@ impl Heap {
         if bytes.len() > SHARED_BIN_THRESHOLD_BYTES {
             let handle = SharedBinHandle::from_bytes(bytes, bit_len);
             self.alloc_stats.record_shared_bin(bytes.len() as u64);
-            return AnyValue::heap_ptr(alloc_procbin(self, handle, 0).as_raw(), ValueKind::PROCBIN);
+            return AnyValue::heap_ptr(alloc_procbin(self, handle, 0, bit_len).as_raw(), ValueKind::PROCBIN);
         }
         // Reserve at least 1 byte past the payload for the
         // invisible trailing NUL. The pad-zeroing below guarantees it reads
@@ -928,20 +928,20 @@ impl Heap {
         AnyValue::heap_ptr(p, ValueKind::BITSTRING)
     }
 
-    /// Allocate the byte-aligned SUFFIX `[byte_offset ..]` of an existing
-    /// `SharedBin`, returning it as a value.
+    /// Allocate the whole-byte slice `[byte_offset, byte_offset + byte_len)` of
+    /// an existing `SharedBin`, returning it as a value.
     ///
-    /// Above `SHARED_BIN_THRESHOLD_BYTES` the suffix SHARES the
-    /// parent's bytes: a new stub retains the same SharedBin at its own
-    /// offset, and nothing is copied. That is what stops a byte scanner
-    /// being quadratic, because every `<<_c, rest :: binary>>` step is a
-    /// suffix.
+    /// Above `SHARED_BIN_THRESHOLD_BYTES` the slice SHARES the parent's
+    /// bytes: a new stub retains the same SharedBin at its own offset and
+    /// length, and nothing is copied. That is what stops a byte scanner
+    /// being quadratic, and what makes taking a field out of a large binary
+    /// cost a stub rather than the field.
     ///
     /// At or below the threshold the bytes are copied into an inline
     /// bitstring. Copying is cheaper than a stub at that size, and it keeps
-    /// a small tail from pinning a large buffer alive.
+    /// a small slice from pinning a large buffer alive.
     ///
-    /// This is the one place the inline/shared choice is made for a suffix,
+    /// This is the one place the inline/shared choice is made for a slice,
     /// so it returns the value rather than a bare pointer the caller has to
     /// re-classify.
     ///
@@ -949,20 +949,24 @@ impl Heap {
     ///
     /// `shared` must point at a live `SharedBin` the caller holds a
     /// reference edge to for the duration of the call.
-    pub unsafe fn alloc_bitstring_suffix(&mut self, shared: *mut SharedBin, byte_offset: u64) -> AnyValue {
-        let (buf_ptr, buf_bytes, buf_bits) = unsafe { ((*shared).bytes_ptr, (*shared).bytes_len, (*shared).bit_len) };
+    pub unsafe fn alloc_bitstring_slice(
+        &mut self,
+        shared: *mut SharedBin,
+        byte_offset: u64,
+        byte_len: u64,
+    ) -> AnyValue {
+        let (buf_ptr, buf_bytes) = unsafe { ((*shared).bytes_ptr, (*shared).bytes_len) };
         assert!(
-            byte_offset as usize <= buf_bytes,
-            "bitstring suffix offset {byte_offset} past the shared buffer"
+            (byte_offset + byte_len) as usize <= buf_bytes,
+            "bitstring slice [{byte_offset}, +{byte_len}) runs past the shared buffer"
         );
-        let suffix_bytes = buf_bytes - byte_offset as usize;
-        if suffix_bytes > SHARED_BIN_THRESHOLD_BYTES {
+        if byte_len as usize > SHARED_BIN_THRESHOLD_BYTES {
             let handle = unsafe { SharedBinHandle::retain_from_raw(shared) };
-            let p = alloc_procbin(self, handle, byte_offset).as_raw();
+            let p = alloc_procbin(self, handle, byte_offset, byte_len * 8).as_raw();
             return AnyValue::heap_ptr(p, ValueKind::PROCBIN);
         }
-        let suffix = unsafe { from_raw_parts(buf_ptr.add(byte_offset as usize), suffix_bytes) };
-        self.alloc_bitstring(suffix, buf_bits - byte_offset * 8)
+        let slice = unsafe { from_raw_parts(buf_ptr.add(byte_offset as usize), byte_len as usize) };
+        self.alloc_bitstring(slice, byte_len * 8)
     }
 
     /// Denotation, layout header, code pointer, then captures and their kind bytes.

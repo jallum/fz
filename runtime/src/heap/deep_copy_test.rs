@@ -168,7 +168,12 @@ fn a_closure_measures_itself_and_what_it_captures() {
 #[test]
 fn a_procbin_stub_measures_the_stub_and_not_the_shared_bytes() {
     let mut sender = Heap::new(SIZE_TABLE[0], fresh_registry());
-    let stub = alloc_procbin(&mut sender, SharedBinHandle::from_bytes(&[7; 4096], 4096 * 8), 0);
+    let stub = alloc_procbin(
+        &mut sender,
+        SharedBinHandle::from_bytes(&[7; 4096], 4096 * 8),
+        0,
+        4096 * 8,
+    );
     let bytes = measured_equals_copied(&mut sender, &[heap_ref(ValueKind::PROCBIN, stub.as_raw())]);
     assert_eq!(bytes, PROCBIN_BYTES);
 }
@@ -227,7 +232,7 @@ fn a_mixed_message_measures_what_it_copies() {
     let mut sender = Heap::new(SIZE_TABLE[0], reg);
     let list = int_list(&mut sender, EMPTY_LIST, 0..40);
     let list_value = heap_value(ValueKind::LIST, list_addr_from_tagged(list).expect("addr"));
-    let stub = alloc_procbin(&mut sender, SharedBinHandle::from_bytes(&[1; 200], 1600), 0);
+    let stub = alloc_procbin(&mut sender, SharedBinHandle::from_bytes(&[1; 200], 1600), 0, 1600);
     let map_bits = sender.alloc_map_slots(&[(
         AnyValue::atom(sender.node.intern_atom("k")),
         heap_value(ValueKind::PROCBIN, stub.as_raw()),

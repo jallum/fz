@@ -65,7 +65,9 @@ fn marshal_arg(proc: *mut Process, value: AnyValue, ty: ExternTy, fz_abi: bool) 
         }
         ExternTy::Binary | ExternTy::CString if fz_abi => ArgWord::Int(value.extern_arg_ref_word(proc)?),
         ExternTy::Binary => ArgWord::Int((unsafe { fz_binary_as_ptr(value.extern_arg_ref_word(proc)?) }) as u64),
-        ExternTy::CString => ArgWord::Int((unsafe { fz_binary_as_cstring(value.extern_arg_ref_word(proc)?) }) as u64),
+        ExternTy::CString => {
+            ArgWord::Int((unsafe { fz_binary_as_cstring(proc, value.extern_arg_ref_word(proc)?) }) as u64)
+        }
         ExternTy::Any => ArgWord::Int(value.extern_arg_ref_word(proc)?),
         ExternTy::Unit | ExternTy::Never => {
             return Err(format!("{:?} is not a valid extern argument marshal class", ty));

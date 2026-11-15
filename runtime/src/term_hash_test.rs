@@ -214,13 +214,20 @@ impl World {
             0 => self.heap.alloc_bitstring(&bytes, bit_len),
             1 => {
                 let handle = SharedBinHandle::from_bytes(&bytes, bit_len);
-                AnyValue::heap_ptr(alloc_procbin(&mut self.heap, handle, 0).as_raw(), ValueKind::PROCBIN)
+                let handle_bits = handle.bit_len();
+                AnyValue::heap_ptr(
+                    alloc_procbin(&mut self.heap, handle, 0, handle_bits).as_raw(),
+                    ValueKind::PROCBIN,
+                )
             }
             _ => {
                 let mut padded = b"xyz".to_vec();
                 padded.extend_from_slice(&bytes);
                 let handle = SharedBinHandle::from_bytes(&padded, bit_len + 24);
-                AnyValue::heap_ptr(alloc_procbin(&mut self.heap, handle, 3).as_raw(), ValueKind::PROCBIN)
+                AnyValue::heap_ptr(
+                    alloc_procbin(&mut self.heap, handle, 3, bit_len).as_raw(),
+                    ValueKind::PROCBIN,
+                )
             }
         }
     }
