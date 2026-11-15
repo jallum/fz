@@ -4,7 +4,7 @@ target/
 
 # Fixture scratch written by behavioural and compiler-contract harnesses.
 # Diff against the checked-in sibling goldens instead.
-fixtures2/**/*.actual*
+fixtures*/**/*.actual*
 
 # Erlang/Elixir cruft
 erl_crash.dump
