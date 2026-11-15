@@ -1,5 +1,5 @@
 #---
-# purpose: repeating a 10-byte string 2,000,001 times builds the 20 MB result by doubling, so the bytes it copies into shared buffers stay under twice the result
+# purpose: repeating a 10-byte string 2,000,001 times writes the 20 MB result into one shared buffer of exactly its size
 # kind: run
 #---
 #

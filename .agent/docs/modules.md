@@ -163,6 +163,13 @@ going away from zero). Any other option or an out-of-range `n` has no clause.
 It also defines `raise/3`, which raises `reason` again as the kind it is
 given (`:error`, `:throw` or `:exit`) and ignores the stacktrace.
 
+`lib/binary.fz` defines `:binary` with `copy/1`, `copy/2` and
+`referenced_byte_size/1`. `copy/2` is the extern `fz_binary_copy`, which builds
+the result in one buffer; `String.duplicate/2` is `:binary.copy/2`. A non-binary
+subject or a count that is not a non-negative integer raises `ArgumentError`
+with Elixir's per-argument wording. Their specs take `any` so that a call with a
+bad argument compiles and raises, as `Kernel.byte_size/1` does.
+
 ## A call on a module value
 
 `m.f(a)` whose base is not a module name is a call on the module the value

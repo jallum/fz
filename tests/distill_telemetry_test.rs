@@ -240,7 +240,9 @@ fn read_compile_spend(trace: &Path) -> CompileSpend {
 // 18_410 -> 18_335 derivations, and fewer reads: a `JSON` string decodes in one pass with
 // the `utf8` segment, so `Utf8.next`'s result handling, `Utf8.from_codepoint` and the
 // decoder's second pass are no longer compiled for decoding.
-const DERIVATIONS: u64 = 18_335;
+// 18_335 -> 18_334: `String.duplicate/2` is `:binary.copy/2`, so the doubling helper is no
+// longer compiled.
+const DERIVATIONS: u64 = 18_334;
 // 111_876 -> 111_888: an extern that declares `raises:` reads the struct of
 // the exception it names, to raise that struct. The distiller calls twelve
 // such externs, and each contract reads `StructDefined` once.
@@ -251,7 +253,8 @@ const DERIVATIONS: u64 = 18_335;
 // 111_880 -> 112_107: the 227 reads of the demand derived once more.
 // 112_107 -> 112_127: the reads of the encoder's helpers.
 // 112_127 -> 111_800: the reads the one-pass decoder no longer derives.
-const READS_HANDED: u64 = 111_800;
+// 111_800 -> 111_796: the same fall as `DERIVATIONS`.
+const READS_HANDED: u64 = 111_796;
 
 /// Compiling the distiller spends this much of the product stack. The largest
 /// drive is the one `PRODUCT_DRIVE_BUDGET` bounds, so its headroom is the

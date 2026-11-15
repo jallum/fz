@@ -653,15 +653,7 @@ defmodule String do
 
   """
   @spec duplicate(binary, integer) :: binary
-  def duplicate(_s, 0), do: ""
-  def duplicate(s, 1), do: s
-  def duplicate(s, n) when n > 1, do: doubled(duplicate(s, div(n, 2)), s, rem(n, 2))
-
-  # Twice `half`, and `s` once more when the count was odd. Each level builds
-  # its result in one piece, so the bytes copied stay near twice the result.
-  @spec doubled(binary, binary, integer) :: binary
-  defp doubled(half, _s, 0), do: <<half :: binary, half :: binary>>
-  defp doubled(half, s, 1), do: <<half :: binary, half :: binary, s :: binary>>
+  def duplicate(s, n), do: :binary.copy(s, n)
 
   @doc """
   Returns whether `s` contains `pattern`.

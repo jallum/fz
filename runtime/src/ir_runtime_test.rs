@@ -1,7 +1,7 @@
 use super::*;
 use crate::any_value::{
     AnyValue, AnyValueRef, EMPTY_LIST_BITS, SlotLayout, ValueKind, closure_size_for_count, heap_object_word,
-    list_addr_from_tagged, map_count, map_entry, struct_is_shared,
+    list_addr_from_tagged, map_count, map_entry, procbin_addr_from_tagged, struct_is_shared,
 };
 use crate::exec_ctx::Argv;
 use crate::heap::{Schema, SchemaRegistry};
@@ -872,6 +872,67 @@ fn list_length_counts_a_proper_list_and_refuses_every_other_value() {
 fn binary_bytes(word: u64) -> Vec<u8> {
     let p = bitstring_like_word(word).expect("a binary");
     unsafe { std::slice::from_raw_parts(bitstring_byte_ptr(p), (bitstring_bit_len(p) / 8) as usize).to_vec() }
+}
+
+fn alloc_binary(process: &mut Process, bytes: &[u8]) -> u64 {
+    process
+        .heap
+        .alloc_bitstring(bytes, (bytes.len() * 8) as u64)
+        .ref_word()
+        .raw_word()
+}
+
+#[test]
+fn binary_copy_writes_the_repetitions_into_one_inline_binary() {
+    with_process(|process| {
+        let subject = alloc_binary(process, b"ab");
+        let copy = fz_binary_copy(process, subject, 3);
+        assert_eq!(binary_bytes(copy), b"ababab");
+        assert_eq!(process.heap.alloc_stats_snapshot().shared_bin.allocs, 0);
+    });
+}
+
+#[test]
+fn binary_copy_of_a_large_result_is_one_shared_buffer_of_the_exact_size() {
+    with_process(|process| {
+        let subject = alloc_binary(process, &[5u8; 100]);
+        let before = process.heap.alloc_stats_snapshot().shared_bin.bytes;
+        let copy = fz_binary_copy(process, subject, 7);
+        assert_eq!(binary_bytes(copy), vec![5u8; 700]);
+        assert_eq!(process.heap.alloc_stats_snapshot().shared_bin.bytes - before, 700);
+    });
+}
+
+#[test]
+fn binary_copy_by_zero_or_of_nothing_is_the_empty_binary() {
+    with_process(|process| {
+        let subject = alloc_binary(process, b"abc");
+        assert_eq!(binary_bytes(fz_binary_copy(process, subject, 0)), b"");
+        let empty = alloc_binary(process, b"");
+        assert_eq!(binary_bytes(fz_binary_copy(process, empty, 9)), b"");
+    });
+}
+
+#[test]
+fn referenced_size_of_an_inline_binary_is_its_own_size() {
+    with_process(|process| {
+        let subject = alloc_binary(process, b"hello");
+        assert_eq!(fz_binary_referenced_size(subject), 5);
+    });
+}
+
+#[test]
+fn referenced_size_of_a_view_is_the_whole_buffer() {
+    with_process(|process| {
+        let whole = alloc_binary(process, &[1u8; 200]);
+        let procbin =
+            unsafe { ProcBin::from_raw(procbin_addr_from_tagged(whole).expect("a large binary is a ProcBin")) };
+        let view = unsafe { process.heap.alloc_bitstring_slice(procbin.shared_raw(), 50, 150) };
+        let view = view.ref_word().raw_word();
+        assert_eq!(binary_bytes(view).len(), 150);
+        assert_eq!(fz_binary_referenced_size(view), 200);
+        assert_eq!(fz_binary_referenced_size(whole), 200);
+    });
 }
 
 fn list_of_binaries(mut word: u64) -> Vec<Vec<u8>> {

@@ -2467,6 +2467,32 @@ fn alloc_bitstring_large_routes_to_shared_zone() {
     assert_eq!(shared_refs(&witness), 1);
 }
 
+#[test]
+fn alloc_bitstring_with_fills_an_inline_payload_in_place() {
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let value = h.alloc_bitstring_with(32, 256, |dest| dest.fill(7));
+    assert_eq!(value.kind(), ValueKind::BITSTRING);
+    let tagged = heap_object_word(value.heap_addr().expect("bitstring"), ValueKind::BITSTRING);
+    let payload = unsafe { std::slice::from_raw_parts(bitstring_byte_ptr(tagged), 33) };
+    assert_eq!(&payload[..32], &[7u8; 32][..]);
+    assert_eq!(payload[32], 0, "the invisible trailing NUL stays zero");
+    assert_eq!(h.alloc_stats.shared_bin.bytes, 0);
+}
+
+#[test]
+fn alloc_bitstring_with_fills_a_shared_buffer_in_place_and_counts_it_once() {
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let len = SHARED_BIN_THRESHOLD_BYTES + 36;
+    let value = h.alloc_bitstring_with(len, (len * 8) as u64, |dest| dest.fill(9));
+    assert_eq!(value.kind(), ValueKind::PROCBIN);
+    let tagged = heap_object_word(value.heap_addr().expect("procbin"), ValueKind::PROCBIN);
+    let payload = unsafe { std::slice::from_raw_parts(bitstring_byte_ptr(tagged), len + 1) };
+    assert!(payload[..len].iter().all(|&b| b == 9));
+    assert_eq!(payload[len], 0, "the invisible trailing NUL stays zero");
+    assert_eq!(h.alloc_stats.shared_bin.bytes, len as u64);
+    assert_eq!(h.alloc_stats.shared_bin.allocs, 1);
+}
+
 /// Full spawn-and-share scenario at the heap layer.
 #[test]
 fn shared_heap_acceptance_spawn_and_share() {

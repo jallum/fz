@@ -105,6 +105,13 @@ which emits a static `SharedBin` above it. `<<a :: binary, b :: binary>>` built
 through `fz_bs_begin`/`fz_bs_write_field_ref`/`fz_bs_finalize` does not append: it copies
 the whole result into a new buffer each time.
 
+`Heap::alloc_bitstring_with(byte_len, bit_len, fill)` is the allocator under
+`alloc_bitstring`: it picks the storage and hands `fill` the destination bytes,
+so a primitive that computes its payload writes it once, in place, with no
+staging buffer. `fz_binary_copy` (`:binary.copy/2`) is its caller: `n`
+repetitions land in one inline bitstring or one `SharedBin` of exactly
+`n * byte_size` bytes.
+
 Two questions still read the threshold, and they are different questions:
 `alloc_bitstring_slice` asks whether a VIEW is worth a stub, and native
 codegen asks what to EMIT for a constant bitstring — a static `SharedBin`
@@ -144,6 +151,13 @@ worth a stub, copying slices at or below `SHARED_BIN_THRESHOLD_BYTES` so a short
 slice cannot pin a long buffer. A walk that only matches and measures allocates
 no binary at all; one that makes each rest whole copies at most that short tail
 per step, where a copy per step would cost n + (n-1) + … bytes.
+
+`:binary.referenced_byte_size/1` reports the buffer a binary references.
+`fz_binary_referenced_size` answers the whole `SharedBin`'s written `bytes_len`
+(not its spare room) for a ProcBin whatever its offset and length, and the
+binary's own size for an inline bitstring. `:binary.copy/1` makes a binary that
+references only itself, which is how a program detaches a view from the large
+buffer it keeps alive.
 
 The buffer carries one invisible trailing NUL after its last byte. A window that
 ends where the buffer ends (`ProcBin::ends_at_buffer_end`) has that NUL right
