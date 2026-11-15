@@ -1,6 +1,0 @@
-IO.inspect({
-  Enum.count([1, 2, 3]),
-  Enum.member?([1, 2, 3], 2),
-  Enum.reduce([1, 2, 3], 0, fn x, acc -> acc + x end),
-  Enumerable.reduce([1, 2, 3], {:cont, 0}, fn x, acc -> {:cont, acc + x} end)
-})

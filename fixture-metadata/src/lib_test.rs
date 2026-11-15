@@ -2,6 +2,7 @@ use super::{
     EdgeAssertion, FNV1A_OFFSET_BASIS, FixtureCompilerMetadata, FixtureExpect, FixtureKind, FixtureMatrixMetadata,
     FixtureMatrixPath, FixtureMetadata, FixtureRoot, MetricAssertion, PathDeferral, PathTimeout,
     fixture_matrix_paths_from_filename, fnv1a, oracle_stamp, parse_fixture_metadata, with_oracle_stamp,
+    without_oracle_stamp,
 };
 use std::path::Path;
 
@@ -351,4 +352,26 @@ fn with_oracle_stamp_refuses_a_fixture_without_an_oracle_line() {
     let err = with_oracle_stamp("#---\n# purpose: p\n#---\n", "0123456789abcdef").expect_err("no oracle");
     assert!(err.to_string().contains("requires `oracle`"), "{err}");
     assert!(with_oracle_stamp("def main(), do: 1\n", "0123456789abcdef").is_err());
+}
+
+#[test]
+fn without_oracle_stamp_drops_only_the_stamp_line() {
+    let stamped = with_oracle_stamp(STAMPED_SOURCE, "0123456789abcdef").expect("stamp");
+    assert_eq!(without_oracle_stamp(&stamped).expect("strip"), STAMPED_SOURCE);
+    assert_eq!(
+        without_oracle_stamp(STAMPED_SOURCE).expect("nothing to strip"),
+        STAMPED_SOURCE
+    );
+    assert!(without_oracle_stamp("def main(), do: 1\n").is_err());
+}
+
+#[test]
+fn a_self_oracle_stamp_is_a_fixed_point_of_stamping_the_stamp_free_bytes() {
+    let source = "#---\n# purpose: p\n# oracle: self\n#---\nIO.puts(1)\n";
+    let golden = b"1\n";
+    let stamp = oracle_stamp(without_oracle_stamp(source).expect("strip").as_bytes(), golden, &[]);
+    let stamped = with_oracle_stamp(source, &stamp).expect("stamp");
+    let recomputed = oracle_stamp(without_oracle_stamp(&stamped).expect("strip").as_bytes(), golden, &[]);
+    assert_eq!(recomputed, stamp);
+    assert_eq!(with_oracle_stamp(&stamped, &recomputed).expect("restamp"), stamped);
 }

@@ -1,1 +1,0 @@
-** (ErlangError) Erlang error: {:invalid_byte, 255}

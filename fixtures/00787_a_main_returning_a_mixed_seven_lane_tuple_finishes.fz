@@ -1,9 +1,13 @@
 #---
 # purpose: "A root main that ends in a mixed atom, string, list, integer and float tuple of seven lanes still finishes"
-# oracle: 00787_a_main_returning_a_mixed_seven_lane_tuple_finishes.oracle.exs
-# oracle.stamp: b368884c8c500ef7
+# oracle: self
+# oracle.stamp: f28ee5b4f9520708
 #---
-def main() do
-  dbg({:a, "s", [1], 4, 5, 6.0, 7})
-  {:a, "s", [1], 4, 5, 6.0, 7}
+defmodule Main do
+  def main() do
+    IO.inspect({:a, "s", [1], 4, 5, 6.0, 7})
+    {:a, "s", [1], 4, 5, 6.0, 7}
+  end
 end
+
+Main.main()

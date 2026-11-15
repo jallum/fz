@@ -1,7 +1,7 @@
 #---
 # purpose: "negating a value that may be an integer or a float works on every door, like every other operator"
-# oracle: oracle.exs
-# oracle.stamp: ddf01c63c5e1a586
+# oracle: self
+# oracle.stamp: 22c91b1b4ace56c9
 #---
 #
 # # negate_dynamic
@@ -28,18 +28,23 @@
 #   * `-0.0`, which must stay `-0.0`. This is why `-x` is NOT lowered as
 #     `0 - x`: that answers `0.0`, and the sign of zero is observable;
 #   * negative literals beside them, which fold to literals rather than calls.
-defp pick(0), do: 4.5
-defp pick(_), do: 9
+defmodule Main do
+  defp pick(0), do: 4.5
 
-defp negate_any(x), do: -x
+  defp pick(_), do: 9
 
-def main() do
-  dbg(-pick(0))
-  dbg(-pick(1))
-  dbg(negate_any(2.5))
-  dbg(negate_any(7))
-  dbg(negate_any(0.0))
-  dbg(-0.0)
-  dbg(-3)
-  dbg(-3.5)
+  defp negate_any(x), do: -x
+
+  def main() do
+    IO.inspect(-pick(0))
+    IO.inspect(-pick(1))
+    IO.inspect(negate_any(2.5))
+    IO.inspect(negate_any(7))
+    IO.inspect(negate_any(0.0))
+    IO.inspect(-0.0)
+    IO.inspect(-3)
+    IO.inspect(-3.5)
+  end
 end
+
+Main.main()

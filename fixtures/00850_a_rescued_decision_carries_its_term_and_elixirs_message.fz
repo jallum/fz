@@ -1,53 +1,60 @@
 #---
 # purpose: "a rescued decision exception carries the value that missed in term and Elixir's multi-line message"
-# oracle: 00850_a_rescued_decision_carries_its_term_and_elixirs_message.oracle.exs
-# oracle.stamp: 25cfda87a9ef02b0
+# oracle: self
+# oracle.stamp: 9792c0a496fe3f90
 #---
-defp three(), do: 3
-defp pair(), do: {1, 2}
-defp bad(), do: {:bad, 1}
-defp unexpected(), do: :unexpected
+defmodule Main do
+  defp three(), do: 3
 
-def main() do
-  try do
-    case three() do
-      1 -> :one
-    end
-  rescue
-    e in CaseClauseError ->
-      dbg(e.term)
-      dbg(Exception.message(e))
-  end
-  try do
-    {a} = pair()
-    dbg(a)
-  rescue
-    e in MatchError ->
-      dbg(e.term)
-      dbg(Exception.message(e))
-  end
-  try do
-    with {:ok, v} <- bad() do
-      dbg(v)
-    else
-      :nothing -> :none
-    end
-  rescue
-    e in WithClauseError ->
-      dbg(e.term)
-      dbg(Exception.message(e))
-  end
-  try do
+  defp pair(), do: {1, 2}
+
+  defp bad(), do: {:bad, 1}
+
+  defp unexpected(), do: :unexpected
+
+  def main() do
     try do
-      unexpected()
+      case three() do
+        1 -> :one
+      end
     rescue
-      _ -> :inner_rescue
-    else
-      :expected -> :ok
+      e in CaseClauseError ->
+        IO.inspect(e.term)
+        IO.inspect(Exception.message(e))
     end
-  rescue
-    e in TryClauseError ->
-      dbg(e.term)
-      dbg(Exception.message(e))
+    try do
+      {a} = pair()
+      IO.inspect(a)
+    rescue
+      e in MatchError ->
+        IO.inspect(e.term)
+        IO.inspect(Exception.message(e))
+    end
+    try do
+      with {:ok, v} <- bad() do
+        IO.inspect(v)
+      else
+        :nothing -> :none
+      end
+    rescue
+      e in WithClauseError ->
+        IO.inspect(e.term)
+        IO.inspect(Exception.message(e))
+    end
+    try do
+      try do
+        unexpected()
+      rescue
+        _ -> :inner_rescue
+      else
+        :expected -> :ok
+      end
+    rescue
+      e in TryClauseError ->
+        IO.inspect(e.term)
+        IO.inspect(Exception.message(e))
+    end
   end
 end
+
+Main.main()

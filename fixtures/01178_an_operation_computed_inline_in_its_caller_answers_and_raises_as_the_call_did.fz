@@ -1,7 +1,7 @@
 #---
 # purpose: "an operation computed inline in its caller answers and raises as the call did: sums of integers and floats, byte_size and map_size, and a division by zero that a try around the caller rescues"
-# oracle: 01178_an_operation_computed_inline_in_its_caller_answers_and_raises_as_the_call_did.oracle.exs
-# oracle.stamp: f942d9a89ef90cf9
+# oracle: self
+# oracle.stamp: 1c7e2362a8783640
 #---
 #
 # `a + b` with an integer on the left and a float on the right is the extern
@@ -30,11 +30,15 @@ defmodule Inline do
   end
 end
 
-def main() do
-  dbg(Inline.sum_then_double(3, 4))
-  dbg(Inline.integer_plus_float(1, 2.5))
-  dbg(Inline.float_plus_integer(2.5, 1))
-  dbg(Inline.sizes("héllo", %{a: 1, b: 2}))
-  dbg(Inline.attempt(7, 2))
-  dbg(Inline.attempt(7, 0))
+defmodule Main do
+  def main() do
+    IO.inspect(Inline.sum_then_double(3, 4))
+    IO.inspect(Inline.integer_plus_float(1, 2.5))
+    IO.inspect(Inline.float_plus_integer(2.5, 1))
+    IO.inspect(Inline.sizes("héllo", %{a: 1, b: 2}))
+    IO.inspect(Inline.attempt(7, 2))
+    IO.inspect(Inline.attempt(7, 0))
+  end
 end
+
+Main.main()

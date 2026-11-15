@@ -1,7 +1,7 @@
 #---
 # purpose: "a struct update stores into its base when nothing else can hold it, and copies a base a caller, a tuple, a closure, another process or a collection could still reach"
-# oracle: oracle.exs
-# oracle.stamp: 4808d8d88d79dd6d
+# oracle: self
+# oracle.stamp: 5f7c064ece53eed5
 #---
 #
 # `count/2` threads one struct through its own updates, so each update after
@@ -29,39 +29,44 @@ defmodule Counter do
   defstruct [:n, :tag]
 end
 
-def count(c, 0), do: c
-def count(c, k), do: count(%{c | n: c.n + 1}, k - 1)
+defmodule Main do
+  def count(c, 0), do: c
 
-def bump(c), do: %{c | n: c.n + 1}
+  def count(c, k), do: count(%{c | n: c.n + 1}, k - 1)
 
-def bump_first({c}), do: bump(c)
+  def bump(c), do: %{c | n: c.n + 1}
 
-def main() do
-  threaded = count(%Counter{n: 0, tag: :threaded}, 3)
-  dbg(threaded.n)
+  def bump_first({c}), do: bump(c)
 
-  held = count(%Counter{n: 10, tag: :held}, 1)
-  dbg(bump(held).n)
-  dbg(held.n)
+  def main() do
+    threaded = count(%Counter{n: 0, tag: :threaded}, 3)
+    IO.inspect(threaded.n)
 
-  boxed = {count(%Counter{n: 20, tag: :boxed}, 1)}
-  dbg(bump_first(boxed).n)
-  dbg(elem(boxed, 0).n)
+    held = count(%Counter{n: 10, tag: :held}, 1)
+    IO.inspect(bump(held).n)
+    IO.inspect(held.n)
 
-  captured = count(%Counter{n: 30, tag: :captured}, 1)
-  f = fn -> captured end
-  dbg(bump(f.()).n)
-  dbg(f.().n)
+    boxed = {count(%Counter{n: 20, tag: :boxed}, 1)}
+    IO.inspect(bump_first(boxed).n)
+    IO.inspect(elem(boxed, 0).n)
 
-  sent = count(%Counter{n: 40, tag: :sent}, 1)
-  me = self()
-  pid = spawn(fn -> receive do %Counter{} = c -> send(me, bump(c)) end end)
-  send(pid, sent)
-  receive do c -> dbg(c.n) end
-  dbg(sent.n)
+    captured = count(%Counter{n: 30, tag: :captured}, 1)
+    f = fn -> captured end
+    IO.inspect(bump(f.()).n)
+    IO.inspect(f.().n)
 
-  kept = count(%Counter{n: 50, tag: :kept}, 1)
-  garbage = Enum.to_list(1..200000)
-  dbg(length(garbage))
-  dbg(bump(kept).n)
+    sent = count(%Counter{n: 40, tag: :sent}, 1)
+    me = self()
+    pid = spawn(fn -> receive do %Counter{} = c -> send(me, bump(c)) end end)
+    send(pid, sent)
+    receive do c -> IO.inspect(c.n) end
+    IO.inspect(sent.n)
+
+    kept = count(%Counter{n: 50, tag: :kept}, 1)
+    garbage = Enum.to_list(1..200000)
+    IO.inspect(length(garbage))
+    IO.inspect(bump(kept).n)
+  end
 end
+
+Main.main()

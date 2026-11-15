@@ -590,7 +590,9 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // 50 -> 48: an exception record nothing asks about keys by its class, so the
             // functions that carry one are emitted once.
             // 48 -> 45: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
-            45,
+            // 45 -> 44: the fixture calls `IO.inspect` where it called `dbg` (two fewer executables)
+            // inside `Main`, whose root script calls `Main.main/0` (one more).
+            44,
         ),
         (
             563, // mailbox_closure_reduce
@@ -606,7 +608,9 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // 61 -> 59: an exception record nothing asks about keys by its class, so the
             // functions that carry one are emitted once.
             // 59 -> 56: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
-            56,
+            // 56 -> 55: the fixture calls `IO.inspect` where it called `dbg` (two fewer executables)
+            // inside `Main`, whose root script calls `Main.main/0` (one more).
+            55,
         ),
         (
             570, // actor_ring

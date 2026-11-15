@@ -1,13 +1,17 @@
 #---
 # purpose: "a try whose rescue names the exception's alias catches a raise of that exception and the try takes the arm's value"
-# oracle: 00815_a_rescue_by_alias_catches_the_named_exception.oracle.exs
-# oracle.stamp: 0f0c065f9f727e8d
+# oracle: self
+# oracle.stamp: 2680c1cdcefabdd0
 #---
-def main() do
-  result = try do
-    raise "boom"
-  rescue
-    RuntimeError -> :rescued
+defmodule Main do
+  def main() do
+    result = try do
+      raise "boom"
+    rescue
+      RuntimeError -> :rescued
+    end
+    IO.inspect(result)
   end
-  dbg(result)
 end
+
+Main.main()

@@ -1,7 +1,11 @@
 #---
 # purpose: "+ of an integer and a string aborts with ArithmeticError"
 # expect: abort
-# oracle: 00748_a_sum_with_a_non_number_on_the_right_raises_arithmetic_error.oracle.exs
-# oracle.stamp: 9078c3a1f0afbda8
+# oracle: self
+# oracle.stamp: 1d630e8d2ebeb508
 #---
-def main(), do: 1 + JSON.decode!("\"s\"")
+defmodule Main do
+  def main(), do: 1 + JSON.decode!("\"s\"")
+end
+
+Main.main()

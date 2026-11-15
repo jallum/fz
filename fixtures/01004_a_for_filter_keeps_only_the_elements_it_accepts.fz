@@ -1,8 +1,12 @@
 #---
 # purpose: "A filter keeps the elements for which it is truthy and drops the rest"
-# oracle: 01004_a_for_filter_keeps_only_the_elements_it_accepts.oracle.exs
-# oracle.stamp: 0745f21bd7b13c05
+# oracle: self
+# oracle.stamp: 6b9cc1566696cc19
 #---
-def main() do
-  dbg(for x <- [1, 2, 3, 4, 5, 6], rem(x, 2) == 0, do: x)
+defmodule Main do
+  def main() do
+    IO.inspect(for x <- [1, 2, 3, 4, 5, 6], rem(x, 2) == 0, do: x)
+  end
 end
+
+Main.main()

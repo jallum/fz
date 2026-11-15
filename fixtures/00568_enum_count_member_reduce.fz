@@ -1,13 +1,17 @@
 #---
 # purpose: "Enum count, member, reduce, and Enumerable.reduce over lists match Elixir"
-# oracle: oracle.exs
-# oracle.stamp: e7f4358317e417f2
+# oracle: self
+# oracle.stamp: 90f69e3573bc3d54
 #---
-def main() do
-  dbg({
-    Enum.count([1, 2, 3]),
-    Enum.member?([1, 2, 3], 2),
-    Enum.reduce([1, 2, 3], 0, fn (x, acc) -> acc + x end),
-    Enumerable.reduce([1, 2, 3], {:cont, 0}, fn (x, acc) -> {:cont, acc + x} end)
-  })
+defmodule Main do
+  def main() do
+    IO.inspect({
+      Enum.count([1, 2, 3]),
+      Enum.member?([1, 2, 3], 2),
+      Enum.reduce([1, 2, 3], 0, fn (x, acc) -> acc + x end),
+      Enumerable.reduce([1, 2, 3], {:cont, 0}, fn (x, acc) -> {:cont, acc + x} end)
+    })
+  end
 end
+
+Main.main()

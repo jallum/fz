@@ -1,13 +1,17 @@
 #---
 # purpose: "a module name is an ordinary value inside a list, as a map key and value, and captured by a closure"
-# oracle: 00697_a_module_name_travels_in_lists_maps_and_closures.oracle.exs
-# oracle.stamp: 02df3e695e1f029f
+# oracle: self
+# oracle.stamp: 895662c02ba2bd7a
 #---
-def main() do
-  dbg([RuntimeError, Foo.Bar])
-  dbg(%{"m" => Foo, Foo.Bar => 1})
-  f = fn () -> Foo.Bar end
-  dbg(f.())
-  g = fn (m) -> m == Foo.Bar end
-  dbg(g.(Foo.Bar))
+defmodule Main do
+  def main() do
+    IO.inspect([RuntimeError, Foo.Bar])
+    IO.inspect(%{"m" => Foo, Foo.Bar => 1})
+    f = fn () -> Foo.Bar end
+    IO.inspect(f.())
+    g = fn (m) -> m == Foo.Bar end
+    IO.inspect(g.(Foo.Bar))
+  end
 end
+
+Main.main()

@@ -1,10 +1,14 @@
 #---
 # purpose: "a throw no catch takes fails the main process: it prints the throw line and exits 1"
 # expect: abort
-# oracle: 00808_an_uncaught_throw_prints_its_line_and_exits_1.oracle.exs
-# oracle.stamp: 11b48b5075f2d897
+# oracle: self
+# oracle.stamp: 721b34f889da3c75
 #---
-def main() do
-  dbg(:before)
-  throw({:ball, 1})
+defmodule Main do
+  def main() do
+    IO.inspect(:before)
+    throw({:ball, 1})
+  end
 end
+
+Main.main()

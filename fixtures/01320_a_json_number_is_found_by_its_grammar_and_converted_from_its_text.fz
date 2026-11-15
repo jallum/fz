@@ -1,8 +1,8 @@
 #---
 # purpose: a JSON number's extent comes from the grammar alone and its value from its text, so every number decodes or fails as in Elixir
 # kind: run
-# oracle: 01320_a_json_number_is_found_by_its_grammar_and_converted_from_its_text.oracle.exs
-# oracle.stamp: 06cbef5dec8d8845
+# oracle: self
+# oracle.stamp: 0077e36b41c9beab
 #---
 #
 # The grammar is `-? (0 | [1-9][0-9]*) (. [0-9]+)? ([eE] [+-]? [0-9]+)?`.

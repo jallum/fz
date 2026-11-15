@@ -1,7 +1,7 @@
 #---
 # purpose: "A closure call that never returns reads nothing back from the boxed apply seam, so it cannot disagree with a returning wrapper of the same arity; the program prints what Elixir prints"
-# oracle: 01124_a_closure_call_that_never_returns_asks_nothing_of_the_boxed_return.oracle.exs
-# oracle.stamp: 1ec022ca262a9ce0
+# oracle: self
+# oracle.stamp: 45ecf1dc0b108f4e
 #---
 defmodule M do
   def main(args) do
@@ -31,6 +31,10 @@ defmodule M do
 
   defp sum(spans, key), do: spans |> Enum.map(&Map.fetch!(&1, key)) |> Enum.sum()
 end
-def main() do
-  dbg(M.main([1, 2, 3]))
+defmodule Main do
+  def main() do
+    IO.inspect(M.main([1, 2, 3]))
+  end
 end
+
+Main.main()

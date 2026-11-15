@@ -1,7 +1,7 @@
 #---
 # purpose: "a module's own get/2 is called, and bracket access still indexes"
-# oracle: oracle.exs
-# oracle.stamp: 09beb6a73aefc916
+# oracle: self
+# oracle.stamp: 67dfd4c6e6c16e32
 #---
 #
 # # module_get_is_not_index
@@ -35,17 +35,19 @@
 # no `Access` module, so that is now an unresolved call with a diagnostic. It
 # used to "work" only because the sugar swallowed it, which is the bug this
 # fixture exists for. See the Access-module ticket.
-def main() do
-  m = %{a: 1, b: 2}
-  dbg({m[:a], m[:b], m[:missing]})
+defmodule Main do
+  def main() do
+    m = %{a: 1, b: 2}
+    IO.inspect({m[:a], m[:b], m[:missing]})
 
-  dbg({Store.get(m, :a), Store.get(m, :missing)})
-  dbg(Aliased.through_alias(m))
-  capture = &Store.get/2
-  dbg(capture.(m, :captured))
-  dbg({Store.get(m, :a, :fallback), Store.get(m, :missing, :fallback)})
+    IO.inspect({Store.get(m, :a), Store.get(m, :missing)})
+    IO.inspect(Aliased.through_alias(m))
+    capture = &Store.get/2
+    IO.inspect(capture.(m, :captured))
+    IO.inspect({Store.get(m, :a, :fallback), Store.get(m, :missing, :fallback)})
 
-  dbg(Store.describe(m))
+    IO.inspect(Store.describe(m))
+  end
 end
 
 defmodule Aliased do
@@ -78,3 +80,5 @@ defmodule Store do
     {get(map, :a), map[:a]}
   end
 end
+
+Main.main()

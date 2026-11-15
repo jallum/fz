@@ -1,7 +1,7 @@
 #---
 # purpose: "a module name's type is its singleton atom, so an is_atom guard and an @spec taking atom accept it, and a guard can compare against one"
-# oracle: 00699_a_module_name_satisfies_atom_guards_and_specs.oracle.exs
-# oracle.stamp: 06021a5888749316
+# oracle: self
+# oracle.stamp: 40d8971f85e81e7e
 #---
 defmodule Names do
   @spec name(atom) :: binary
@@ -14,10 +14,14 @@ defmodule Names do
   def is_bar(_value), do: false
 end
 
-def main() do
-  dbg(Names.name(Foo.Bar))
-  dbg(Names.kind(RuntimeError))
-  dbg(Names.kind(1))
-  dbg(Names.is_bar(Foo.Bar))
-  dbg(Names.is_bar(Foo))
+defmodule Main do
+  def main() do
+    IO.inspect(Names.name(Foo.Bar))
+    IO.inspect(Names.kind(RuntimeError))
+    IO.inspect(Names.kind(1))
+    IO.inspect(Names.is_bar(Foo.Bar))
+    IO.inspect(Names.is_bar(Foo))
+  end
 end
+
+Main.main()

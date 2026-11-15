@@ -1,7 +1,7 @@
 #---
 # purpose: a root `defmodule Geo.Pt` binds no name in scope, and a call, a capture and a type written `Geo.Pt.…` still reach it, because a dotted name nothing binds means the root module of that name; inside it, `Pt` alone is the root `Pt`
-# oracle: 01194_a_call_a_capture_and_a_type_reach_a_module_defined_under_a_dotted_name.oracle.exs
-# oracle.stamp: 8564ea05e2771d5a
+# oracle: self
+# oracle.stamp: 8b9300f871f3eea8
 #---
 defmodule Geo.Pt do
   @type t :: integer
@@ -16,10 +16,14 @@ defmodule Use do
   def stretch(x), do: Geo.Pt.twice(x)
 end
 
-def main() do
-  IO.inspect(Geo.Pt.name())
-  twice = &Geo.Pt.twice/1
-  IO.inspect(twice.(4))
-  IO.inspect(Use.stretch(5))
-  IO.inspect(Geo.Pt.short())
+defmodule Main do
+  def main() do
+    IO.inspect(Geo.Pt.name())
+    twice = &Geo.Pt.twice/1
+    IO.inspect(twice.(4))
+    IO.inspect(Use.stretch(5))
+    IO.inspect(Geo.Pt.short())
+  end
 end
+
+Main.main()

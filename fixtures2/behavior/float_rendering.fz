@@ -1,7 +1,7 @@
 #---
 # purpose: "a float renders the way Elixir renders it, including where positional and scientific notation trade places"
-# oracle: oracle.exs
-# oracle.stamp: 477521226c17d204
+# oracle: self
+# oracle.stamp: f0bddcb8ff970c8b
 #---
 #
 # # float_rendering
@@ -33,32 +33,36 @@
 # Not covered: infinity and NaN. Erlang has no such floats -- `1.0 / 0.0`
 # raises there and yields `inf` here -- so there is nothing to be in parity
 # with. That divergence belongs to the division-semantics ticket.
-def main() do
-  dbg(1.0)
-  dbg(0.1)
-  dbg(2.5)
-  dbg(-0.0)
-  dbg(100.0)
+defmodule Main do
+  def main() do
+    IO.inspect(1.0)
+    IO.inspect(0.1)
+    IO.inspect(2.5)
+    IO.inspect(-0.0)
+    IO.inspect(100.0)
 
-  # the upper boundary. `inspect` writes a WHOLE float below 1.0e16 out in
-  # full, so these stay positional; `Float.to_string` would give `1.0e14` for
-  # the first, which is what the two functions differ about.
-  dbg(100000000000000.0)
-  dbg(123456789012345.0)
-  dbg(1234567890123456.0)
+    # the upper boundary. `inspect` writes a WHOLE float below 1.0e16 out in
+    # full, so these stay positional; `Float.to_string` would give `1.0e14` for
+    # the first, which is what the two functions differ about.
+    IO.inspect(100000000000000.0)
+    IO.inspect(123456789012345.0)
+    IO.inspect(1234567890123456.0)
 
-  # the lower boundary, including the tie that goes to positional
-  dbg(0.001)
-  dbg(0.0001)
-  dbg(0.00001)
+    # the lower boundary, including the tie that goes to positional
+    IO.inspect(0.001)
+    IO.inspect(0.0001)
+    IO.inspect(0.00001)
 
-  dbg(0.3333333333333333)
+    IO.inspect(0.3333333333333333)
 
-  # only writable since the lexer learned exponents (fz-5xp.39), and these are
-  # the values where the two notations are furthest apart
-  dbg(1.0e-7)
-  dbg(1.7976931348623157e308)
-  dbg(5.0e-324)
-  dbg(1.0e16)
-  dbg(1.0e15)
+    # only writable since the lexer learned exponents (fz-5xp.39), and these are
+    # the values where the two notations are furthest apart
+    IO.inspect(1.0e-7)
+    IO.inspect(1.7976931348623157e308)
+    IO.inspect(5.0e-324)
+    IO.inspect(1.0e16)
+    IO.inspect(1.0e15)
+  end
 end
+
+Main.main()

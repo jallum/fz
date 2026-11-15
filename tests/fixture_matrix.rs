@@ -28,7 +28,8 @@
 //!     diagnostic.code: spec/violation  # for telemetry-backed diagnostic fixtures
 //!     defer: rationale     # optional whole-fixture deferral
 //!     defer.build: rationale  # optional per-path deferral
-//!     oracle: oracle.exs   # Elixir twin: its stdout owns expected.txt
+//!     oracle: self         # the fixture is valid Elixir: its stdout owns expected.txt
+//!                          # (or `oracle: <file>.exs`, a hand-written Elixir twin)
 //!     oracle.stamp: 0123456789abcdef  # written by ORACLE=regen; see below
 //!     args: -- "" "a b"    # program command line: after the source path for
 //!                          # run/interp, to the built binary and to `elixir`;
@@ -48,14 +49,18 @@
 //!
 //! When `oracle:` is set, the `oracle_goldens_match_elixir` static test checks
 //! the pair against the real `elixir` binary: the oracle's stdout must equal
-//! `expected.txt`. A successful fixture's fz paths reproduce that golden, so
-//! `fz == Elixir` holds transitively. An `expect: abort` oracle can instead make
-//! a silent assertion that Elixir rejects the input; the fz paths prove their
-//! rejection through `expected.stderr`. Elixir owns the golden -- per-path
-//! bless never rewrites `expected.txt` for an oracle fixture.
+//! `expected.txt`. `oracle: self` runs `elixir` on the fixture file itself; a
+//! twin is a sibling `.exs` for a fixture that is not valid Elixir. A
+//! successful fixture's fz paths reproduce that golden, so `fz == Elixir` holds
+//! transitively. For an `expect: abort` oracle, Elixir must exit 1 with the
+//! `expected.stderr` golden in its stderr, and its stdout is the golden; the fz
+//! paths prove their rejection through `expected.stderr` and print the same
+//! stdout. Elixir owns the golden -- per-path bless never rewrites
+//! `expected.txt` for an oracle fixture.
 //!
-//! The header's `oracle.stamp` is a hash of the oracle script, the golden and
-//! the args. When it equals the hash of what is on disk, Elixir has already
+//! The header's `oracle.stamp` is a hash of the oracle program (for
+//! `oracle: self`, the fixture without its stamp line), the golden and the
+//! args. When it equals the hash of what is on disk, Elixir has already
 //! confirmed the pair and is not started; otherwise the pair is run and
 //! compared, and a pair Elixir agrees with but whose stamp is stale or missing
 //! fails. `ORACLE=regen` rewrites goldens and stamps from Elixir's output,
@@ -77,7 +82,7 @@
 
 use fz_fixture_metadata::{
     FixtureExpect as Fixture2Expect, FixtureKind as Fixture2Kind, FixtureMatrixPath, FixtureMetadata,
-    fixture_matrix_paths_from_filename, oracle_stamp, parse_fixture_metadata, with_oracle_stamp,
+    fixture_matrix_paths_from_filename, oracle_stamp, parse_fixture_metadata, with_oracle_stamp, without_oracle_stamp,
 };
 use libtest_mimic::{Arguments, Failed, FormatSetting, Trial};
 use std::collections::BTreeSet;
@@ -101,6 +106,12 @@ use child_limit::{ChildLimit, SAMPLE_INTERVAL, Window, group_cpu_time};
 
 const FZ2_BIN: &str = env!("CARGO_BIN_EXE_fz2");
 const FZ_EXEC_READY_FD_ENV: &str = "FZ_EXEC_READY_FD";
+/// The `oracle:` value that names the fixture file itself as the Elixir program.
+const SELF_ORACLE: &str = "self";
+/// Elixir's logger prints a crashed process's report on stdout, racing the
+/// program's own exit. The report is never the program's output, so the oracle
+/// runs Elixir with its logger silenced.
+const ELIXIR_LOGGER_SILENCED: [&str; 2] = ["--erl", "-logger level none"];
 const DEFAULT_FIXTURE_CPU_LIMIT: Duration = Duration::from_secs(20);
 const MIN_EXECUTION_READY_WRITE_FD: RawFd = 10;
 static AOT_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -409,8 +420,28 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             oracle_stamps_in_the_tree_are_current_so_no_elixir_starts,
         ),
         (
-            "abort_stderr_goldens_are_in_oracle_output",
-            abort_stderr_goldens_are_in_oracle_output,
+            "oracle_stamp_of_a_self_oracle_hashes_the_fixture_without_its_stamp_line",
+            oracle_stamp_of_a_self_oracle_hashes_the_fixture_without_its_stamp_line,
+        ),
+        (
+            "oracle_self_runs_the_fixture_file_under_elixir",
+            oracle_self_runs_the_fixture_file_under_elixir,
+        ),
+        (
+            "an_oracle_ignores_the_report_of_a_spawned_process_that_crashed",
+            an_oracle_ignores_the_report_of_a_spawned_process_that_crashed,
+        ),
+        (
+            "oracle_abort_requires_exit_1_the_stderr_golden_and_the_stdout_golden",
+            oracle_abort_requires_exit_1_the_stderr_golden_and_the_stdout_golden,
+        ),
+        (
+            "oracle_regen_of_an_abort_writes_stdout_only",
+            oracle_regen_of_an_abort_writes_stdout_only,
+        ),
+        (
+            "an_fz_abort_of_an_oracle_fixture_must_print_the_stdout_golden",
+            an_fz_abort_of_an_oracle_fixture_must_print_the_stdout_golden,
         ),
     ]
 }
@@ -759,6 +790,9 @@ impl FixtureCase {
     }
 
     fn oracle_path(&self, rel: &str) -> PathBuf {
+        if rel == SELF_ORACLE {
+            return self.source_path();
+        }
         if rel == "oracle.exs" {
             return absolute(&self.sidecar_path(rel));
         }
@@ -2405,6 +2439,12 @@ fn check_failure(
             diagnostics.trim_end()
         ));
     }
+    if kind == "abort"
+        && header.oracle.is_some()
+        && let Some(mismatch) = abort_stdout_mismatch(fixture, path_id, ran)
+    {
+        return mismatch;
+    }
     if kind == "diagnostic"
         && let Some(code) = &header.diagnostic_code
     {
@@ -2451,6 +2491,27 @@ fn check_failure(
         needle,
         diagnostics.trim_end()
     ))
+}
+
+/// An abort of an oracle fixture prints, before it fails, the stdout Elixir
+/// printed before the same failure: `expected.txt`.
+fn abort_stdout_mismatch(fixture: &FixtureCase, path_id: &str, ran: &Ran) -> Option<CheckOutcome> {
+    let actual = normalize(&ran.stdout);
+    let expected = normalize(&fs::read_to_string(fixture.sidecar_path("expected.txt")).unwrap_or_default());
+    if actual == expected {
+        let _ = fs::remove_file(fixture.actual_path("txt"));
+        return None;
+    }
+    let output_path = fixture.actual_path("txt");
+    let _ = fs::write(&output_path, &actual);
+    Some(CheckOutcome::Fail(format!(
+        "{} via {}: aborted with stdout that differs from the Elixir-owned golden; wrote {}\n--- expected stdout\n{}--- actual stdout\n{}",
+        fixture.display_path().display(),
+        path_id,
+        output_path.display(),
+        expected,
+        actual
+    )))
 }
 
 fn check_diagnostic_telemetry(
@@ -2573,12 +2634,13 @@ fn run_path_logged_to(
     )
 }
 
-/// Elixir oracle. For every fixture that declares `oracle: <file>.exs`, the
-/// canonical `expected.txt` golden must equal the stdout of running that
-/// Elixir twin under the real `elixir` binary. A successful fixture's compiler2
-/// paths reproduce that golden, so `fz == Elixir` holds transitively. An
-/// `expect: abort` oracle can instead assert silently that Elixir rejects the
-/// input while each fz path pins rejection through `expected.stderr`.
+/// Elixir oracle. For every fixture that declares an `oracle` (`self`, or a
+/// `<file>.exs` twin), the canonical `expected.txt` golden must equal the
+/// stdout of running that Elixir program under the real `elixir` binary. A
+/// successful fixture's compiler2 paths reproduce that golden, so
+/// `fz == Elixir` holds transitively. An `expect: abort` oracle must also exit
+/// 1 with `expected.stderr` in its stderr; each fz path pins the same stderr
+/// and stdout.
 ///
 /// A pair whose header `oracle.stamp` equals the stamp of the script, golden
 /// and args on disk was confirmed by Elixir already, so Elixir is not run for
@@ -2635,16 +2697,12 @@ struct OracleVerdict {
 }
 
 fn verify_oracle_pair(fixture: &FixtureCase, header: &Header, oracle_path: &Path, mode: OracleMode) -> OracleVerdict {
-    let script = match fs::read(oracle_path) {
+    let script = match oracle_stamp_bytes(header, oracle_path) {
         Ok(script) => script,
         Err(e) => {
             return OracleVerdict {
                 spawned_elixir: false,
-                failure: Some(format!(
-                    "{}: oracle `{}` not readable: {e}",
-                    fixture.display_path().display(),
-                    oracle_path.display()
-                )),
+                failure: Some(format!("{}: {e}", fixture.display_path().display())),
             };
         }
     };
@@ -2672,6 +2730,19 @@ fn verify_oracle_pair(fixture: &FixtureCase, header: &Header, oracle_path: &Path
         spawned_elixir: true,
         failure: outcome.err(),
     }
+}
+
+/// The oracle bytes a stamp hashes: the twin's bytes, or for `oracle: self` the
+/// fixture's own bytes without its stamp line.
+fn oracle_stamp_bytes(header: &Header, oracle_path: &Path) -> Result<Vec<u8>, String> {
+    let bytes = fs::read(oracle_path).map_err(|e| format!("oracle `{}` not readable: {e}", oracle_path.display()))?;
+    if header.oracle.as_deref() != Some(SELF_ORACLE) {
+        return Ok(bytes);
+    }
+    let source = String::from_utf8(bytes).map_err(|e| format!("oracle `{}`: {e}", oracle_path.display()))?;
+    without_oracle_stamp(&source)
+        .map(String::into_bytes)
+        .map_err(|e| format!("oracle `{}`: {e}", oracle_path.display()))
 }
 
 fn stale_stamp_failure(fixture: &FixtureCase, header: &Header) -> String {
@@ -2711,11 +2782,16 @@ impl OracleMode {
     }
 }
 
-/// Elixir's normalized stdout for one oracle fixture.
+/// Elixir's normalized stdout for one oracle fixture. A success fixture's
+/// Elixir exits 0. An `expect: abort` fixture's Elixir fails the way fz does:
+/// exit 1 with the `expected.stderr` golden in its stderr.
 fn run_elixir_oracle(fixture: &FixtureCase, header: &Header, oracle_path: &Path) -> Result<String, String> {
     let label = format!("elixir {}", oracle_path.display());
     let out = fixture_command_output(
-        Command::new("elixir").arg(oracle_path).args(&header.args),
+        Command::new("elixir")
+            .args(ELIXIR_LOGGER_SILENCED)
+            .arg(oracle_path)
+            .args(&header.args),
         &label,
         ExecutionBoundary::Spawn,
         DEFAULT_FIXTURE_CPU_LIMIT,
@@ -2728,16 +2804,35 @@ fn run_elixir_oracle(fixture: &FixtureCase, header: &Header, oracle_path: &Path)
             e
         )
     })?;
-    if !out.status.success() {
+    let stderr = fixture.normalize_actual_diagnostics(&String::from_utf8_lossy(&out.stderr));
+    let failure = match header.expect {
+        Expect::Abort => elixir_abort_failure(fixture, &out.status, &stderr),
+        _ => (!out.status.success()).then(|| format!("exited {}", out.status)),
+    };
+    if let Some(failure) = failure {
         return Err(format!(
-            "{}: `elixir {}` exited {}:\n{}",
+            "{}: `elixir {}` {failure}:\n{}",
             fixture.display_path().display(),
             oracle_path.display(),
-            out.status,
-            String::from_utf8_lossy(&out.stderr).trim_end()
+            stderr.trim_end()
         ));
     }
     Ok(normalize(&String::from_utf8_lossy(&out.stdout)))
+}
+
+/// Why Elixir's run is not the abort `expected.stderr` pins, if it is not.
+fn elixir_abort_failure(fixture: &FixtureCase, status: &ExitStatus, stderr: &str) -> Option<String> {
+    if status.code() != Some(1) {
+        return Some(format!("exited {status}, expected an abort exiting 1"));
+    }
+    let golden = fs::read_to_string(fixture.sidecar_path("expected.stderr")).unwrap_or_default();
+    let needle = fixture.normalize_expected_diagnostics(&golden);
+    let needle = needle.trim();
+    (needle.is_empty() || !stderr.contains(needle)).then(|| {
+        format!(
+            "aborted, but its stderr does not contain the expected.stderr golden\n--- expected substring\n{needle}\n--- elixir stderr"
+        )
+    })
 }
 
 fn compare_oracle_golden(fixture: &FixtureCase, actual: &str) -> Result<(), String> {
@@ -2932,42 +3027,159 @@ fn oracle_stamps_in_the_tree_are_current_so_no_elixir_starts() {
     );
 }
 
-/// An `expect: abort` fixture with an oracle pins fz's failure line in
-/// `expected.stderr`; that line must be a substring of `expected.txt`, the
-/// output Elixir printed, so the pinned text is Elixir's own.
-fn abort_stderr_goldens_are_in_oracle_output() {
-    let mut failures: Vec<String> = Vec::new();
-    for fixture in discover() {
-        let Ok(header) = parse_header(&fixture) else {
-            continue;
-        };
-        if header.expect != Expect::Abort || header.oracle.is_none() {
-            continue;
-        }
-        let stderr_path = fixture.sidecar_path("expected.stderr");
-        let txt_path = fixture.sidecar_path("expected.txt");
-        let stderr = fs::read_to_string(&stderr_path).unwrap_or_default();
-        let needle = stderr.trim();
-        let txt = fs::read_to_string(&txt_path).unwrap_or_default();
-        if needle.is_empty() || !txt.contains(needle) {
-            failures.push(format!(
-                "{}: {} is not a substring of {}\n--- {}\n{}\n--- {}\n{}",
-                fixture.display_path().display(),
-                stderr_path.display(),
-                txt_path.display(),
-                stderr_path.display(),
-                needle,
-                txt_path.display(),
-                txt.trim_end()
-            ));
-        }
+const SELF_ORACLE_HEADER: &str = "#---\n# purpose: self oracle probe\n# oracle: self\n";
+
+/// A fixture that is its own oracle: `header_extra` joins the frontmatter and
+/// `program` is the Elixir body.
+fn self_oracle_fixture(tag: &str, header_extra: &str, program: &str, golden: Option<&str>) -> (PathBuf, FixtureCase) {
+    let nonce = AOT_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let dir = temp_dir().join(format!("fz_oracle_self_{tag}_{}_{nonce}", id()));
+    fs::create_dir_all(&dir).expect("create self oracle dir");
+    let path = dir.join("probe.fz");
+    fs::write(&path, format!("{SELF_ORACLE_HEADER}{header_extra}#---\n{program}")).expect("write fixture");
+    if let Some(golden) = golden {
+        fs::write(dir.join("probe.expected.txt"), golden).expect("write golden");
     }
-    assert!(
-        failures.is_empty(),
-        "abort stderr goldens outside their oracle output ({}):\n\n{}",
-        failures.len(),
-        failures.join("\n\n")
+    (dir, FixtureCase::new(path))
+}
+
+fn self_verdict(fixture: &FixtureCase, mode: OracleMode) -> OracleVerdict {
+    let header = parse_header(fixture).expect("header");
+    let oracle_path = fixture.oracle_path(header.oracle.as_deref().expect("oracle"));
+    verify_oracle_pair(fixture, &header, &oracle_path, mode)
+}
+
+fn regen_self(fixture: &FixtureCase) -> OracleVerdict {
+    self_verdict(fixture, OracleMode::Regen)
+}
+
+fn oracle_stamp_of_a_self_oracle_hashes_the_fixture_without_its_stamp_line() {
+    let (dir, fixture) = self_oracle_fixture("stamp", "", "IO.write(\"x\")\n", Some("x\n"));
+    let regen = regen_self(&fixture);
+    assert_eq!(regen.failure, None);
+    let stamped = fs::read_to_string(&fixture.path).expect("stamped fixture");
+    assert_eq!(stamped.matches("oracle.stamp").count(), 1, "{stamped}");
+    let stamp_free = without_oracle_stamp(&stamped).expect("strip");
+    assert_eq!(
+        parse_header(&fixture).expect("header").oracle_stamp,
+        Some(oracle_stamp(stamp_free.as_bytes(), b"x\n", &[])),
+        "the stamp covers the fixture without its own stamp line"
     );
+    let verdict = self_verdict(&fixture, OracleMode::Verify);
+    assert!(!verdict.spawned_elixir, "a stamped self oracle does not start Elixir");
+    assert_eq!(verdict.failure, None);
+    fs::write(&fixture.path, stamped.replace("IO.write(\"x\")", "IO.write(\"y\")")).expect("edit program");
+    assert!(
+        self_verdict(&fixture, OracleMode::Verify).spawned_elixir,
+        "editing the fixture invalidates its stamp"
+    );
+    let _ = fs::remove_dir_all(dir);
+}
+
+fn oracle_self_runs_the_fixture_file_under_elixir() {
+    let (dir, fixture) = self_oracle_fixture(
+        "runs",
+        "# args: -- \"a b\"\n",
+        "IO.write(Enum.join(System.argv(), \"|\") <> \"\\n\")\n",
+        Some("--|a b\n"),
+    );
+    let verdict = self_verdict(&fixture, OracleMode::Check);
+    assert!(verdict.spawned_elixir);
+    assert_eq!(verdict.failure, None, "Elixir ran the fixture file with its args");
+    let _ = fs::remove_dir_all(dir);
+}
+
+fn an_oracle_ignores_the_report_of_a_spawned_process_that_crashed() {
+    let (dir, fixture) = self_oracle_fixture(
+        "spawn_crash",
+        "",
+        "spawn(fn -> raise \"lost\" end)\nProcess.sleep(200)\nIO.puts(\"main carried on\")\n",
+        Some("main carried on\n"),
+    );
+    let verdict = self_verdict(&fixture, OracleMode::Check);
+    assert!(verdict.spawned_elixir);
+    assert_eq!(
+        verdict.failure, None,
+        "the crash report is the logger's, not the program's output"
+    );
+    let _ = fs::remove_dir_all(dir);
+}
+
+const ABORT_PROBE: &str = "IO.puts(\"before\")\nthrow(:ball)\n";
+
+fn oracle_abort_requires_exit_1_the_stderr_golden_and_the_stdout_golden() {
+    let abort = "# expect: abort\n";
+    let (dir, fixture) = self_oracle_fixture("abort", abort, ABORT_PROBE, Some("before\n"));
+    fs::write(fixture.sidecar_path("expected.stderr"), "** (throw) :ball\n").expect("stderr golden");
+    let ok = self_verdict(&fixture, OracleMode::Check);
+    assert_eq!(ok.failure, None, "exit 1, the banner on stderr and the stdout agree");
+
+    fs::write(fixture.sidecar_path("expected.txt"), "other\n").expect("change stdout golden");
+    let failure = self_verdict(&fixture, OracleMode::Check)
+        .failure
+        .expect("stdout differs");
+    assert!(failure.contains("oracle mismatch"), "{failure}");
+
+    fs::write(fixture.sidecar_path("expected.txt"), "before\n").expect("restore stdout golden");
+    fs::write(fixture.sidecar_path("expected.stderr"), "** (throw) :other\n").expect("change stderr golden");
+    let failure = self_verdict(&fixture, OracleMode::Check)
+        .failure
+        .expect("stderr differs");
+    assert!(
+        failure.contains("does not contain the expected.stderr golden"),
+        "{failure}"
+    );
+
+    fs::write(fixture.sidecar_path("expected.stderr"), "** (throw) :ball\n").expect("restore stderr golden");
+    let source = fs::read_to_string(&fixture.path).expect("read fixture");
+    fs::write(&fixture.path, source.replace("throw(:ball)", "IO.puts(\"after\")")).expect("no abort");
+    let failure = self_verdict(&fixture, OracleMode::Check)
+        .failure
+        .expect("exit 0 is no abort");
+    assert!(failure.contains("expected an abort exiting 1"), "{failure}");
+    let _ = fs::remove_dir_all(dir);
+}
+
+fn oracle_regen_of_an_abort_writes_stdout_only() {
+    let (dir, fixture) = self_oracle_fixture(
+        "abort_regen",
+        "# expect: abort\n",
+        ABORT_PROBE,
+        Some("before\n** (throw) :ball\n"),
+    );
+    fs::write(fixture.sidecar_path("expected.stderr"), "** (throw) :ball\n").expect("stderr golden");
+    assert_eq!(regen_self(&fixture).failure, None);
+    assert_eq!(
+        fs::read(fixture.sidecar_path("expected.txt")).expect("golden"),
+        b"before\n"
+    );
+    assert_eq!(
+        fs::read(fixture.sidecar_path("expected.stderr")).expect("stderr golden"),
+        b"** (throw) :ball\n",
+        "regen leaves the stderr golden alone"
+    );
+    let _ = fs::remove_dir_all(dir);
+}
+
+fn an_fz_abort_of_an_oracle_fixture_must_print_the_stdout_golden() {
+    let (dir, fixture) = self_oracle_fixture("fz_abort", "# expect: abort\n", ABORT_PROBE, Some("before\n"));
+    fs::write(fixture.sidecar_path("expected.stderr"), "** (throw) :ball\n").expect("stderr golden");
+    let header = parse_header(&fixture).expect("header");
+    let ran = |stdout: &str| Ran {
+        status: ExitStatus::from_raw(1 << 8),
+        stdout: stdout.to_string(),
+        diagnostics: "** (throw) :ball\n".to_string(),
+    };
+    let path = FixtureMatrixPath::Run;
+    assert!(matches!(
+        check_failure(&fixture, &header, "abort", path, false, &ran("before\n")),
+        CheckOutcome::Pass
+    ));
+    let CheckOutcome::Fail(message) = check_failure(&fixture, &header, "abort", path, false, &ran("")) else {
+        panic!("an abort whose stdout differs from the golden must fail");
+    };
+    assert!(message.contains("differs from the Elixir-owned golden"), "{message}");
+    let _ = fs::remove_dir_all(dir);
 }
 
 // fz-fkv: the bulk `fixture_matrix()` test was replaced by per-pair

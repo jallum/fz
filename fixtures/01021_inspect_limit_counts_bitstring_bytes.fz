@@ -1,17 +1,21 @@
 #---
 # purpose: "inspect/2 limit: shows that many bytes of a bitstring, trailing bits printing as n::size(k), strings ignoring the limit"
-# oracle: 01021_inspect_limit_counts_bitstring_bytes.oracle.exs
-# oracle.stamp: bafc676801a40c87
+# oracle: self
+# oracle.stamp: 8cbe29bcdc67e0f1
 #---
-def main() do
-  dbg(inspect(<<1, 2, 3>>, limit: 2))
-  dbg(inspect(<<1, 2, 3>>, limit: 3))
-  dbg(inspect(<<1, 2, 3::4>>))
-  dbg(inspect(<<1, 2, 3::4>>, limit: 2))
-  dbg(inspect(<<1, 2, 3::4>>, limit: 0))
-  dbg(inspect(<<>>))
-  dbg(inspect(<<0>>))
-  dbg(inspect(<<255, 254>>, limit: 1))
-  dbg(inspect("abcdef", limit: 1))
-  dbg(inspect(["abcdef", "ghi"], limit: 1))
+defmodule Main do
+  def main() do
+    IO.inspect(inspect(<<1, 2, 3>>, limit: 2))
+    IO.inspect(inspect(<<1, 2, 3>>, limit: 3))
+    IO.inspect(inspect(<<1, 2, 3::4>>))
+    IO.inspect(inspect(<<1, 2, 3::4>>, limit: 2))
+    IO.inspect(inspect(<<1, 2, 3::4>>, limit: 0))
+    IO.inspect(inspect(<<>>))
+    IO.inspect(inspect(<<0>>))
+    IO.inspect(inspect(<<255, 254>>, limit: 1))
+    IO.inspect(inspect("abcdef", limit: 1))
+    IO.inspect(inspect(["abcdef", "ghi"], limit: 1))
+  end
 end
+
+Main.main()

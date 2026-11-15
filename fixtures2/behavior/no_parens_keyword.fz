@@ -1,7 +1,7 @@
 #---
 # purpose: "trailing/leading keyword lists in no-parens calls parse into one list arg; output matches Elixir"
-# oracle: oracle.exs
-# oracle.stamp: b2c02a75c00d8bf6
+# oracle: self
+# oracle.stamp: 5f6ef3780e1edabe
 #---
 #
 # # no_parens_keyword
@@ -10,25 +10,29 @@
 # c: 3` parses as `run(1, [b: 2, c: 3])` — the trailing `key: value` pairs collapse
 # into a single keyword-list argument — and `only_opts x: 9` parses as
 # `only_opts([x: 9])`, a lone leading keyword list. Each body destructures the
-# list to show the runtime shape (a list of `{key, value}` tuples). `oracle.exs`
-# is the Elixir twin; both print the same atoms and integers, so `expected.txt`
-# is owned by the oracle.
-def run(a, opts) do
-  dbg(a)
-  [{k1, v1}, {k2, v2}] = opts
-  dbg(k1)
-  dbg(v1)
-  dbg(k2)
-  dbg(v2)
+# list to show the runtime shape (a list of `{key, value}` tuples). Elixir runs
+# this file (`oracle: self`) and prints the same atoms and integers, so
+# `expected.txt` is owned by the oracle.
+defmodule Main do
+  def run(a, opts) do
+    IO.inspect(a)
+    [{k1, v1}, {k2, v2}] = opts
+    IO.inspect(k1)
+    IO.inspect(v1)
+    IO.inspect(k2)
+    IO.inspect(v2)
+  end
+
+  def only_opts(opts) do
+    [{k, v}] = opts
+    IO.inspect(k)
+    IO.inspect(v)
+  end
+
+  def main() do
+    run 1, b: 2, c: 3
+    only_opts x: 9
+  end
 end
 
-def only_opts(opts) do
-  [{k, v}] = opts
-  dbg(k)
-  dbg(v)
-end
-
-def main() do
-  run 1, b: 2, c: 3
-  only_opts x: 9
-end
+Main.main()

@@ -1,20 +1,24 @@
 #---
 # purpose: "Enumerable protocol dispatch covers List, Range, and Map receivers"
-# oracle: oracle.exs
-# oracle.stamp: b1eb58e481e273e4
+# oracle: self
+# oracle.stamp: 1f34c8e1be5ac98f
 #---
 #
 # Exercises a closed-union `Enumerable.count/1` call whose receiver can be a
 # list, a `Range` struct, or a map. The mixed receiver forces protocol dispatch
 # to emit runtime type arms for all three impl targets.
-def counted(value), do: Enumerable.count(value)
+defmodule Main do
+  def counted(value), do: Enumerable.count(value)
 
-def main() do
-  values = [[9, 8, 7], Range.new(1, 9, 2), %{1 => :one, 2 => :two}]
+  def main() do
+    values = [[9, 8, 7], Range.new(1, 9, 2), %{1 => :one, 2 => :two}]
 
-  result = case values do
-    [list, r, map] -> {counted(list), counted(r), counted(map)}
-    _ -> :bad_shape
+    result = case values do
+      [list, r, map] -> {counted(list), counted(r), counted(map)}
+      _ -> :bad_shape
+    end
+    IO.inspect(result)
   end
-  dbg(result)
 end
+
+Main.main()

@@ -1,7 +1,7 @@
 #---
 # purpose: "a closure chosen by a runtime branch reaches the forwarder as a union of two constructions, and the word it carries decides which body runs"
-# oracle: oracle.exs
-# oracle.stamp: 822b978885215fcd
+# oracle: self
+# oracle.stamp: 6c7fc509d899cfb5
 #---
 #
 # fz-kdt.127, the dynamic half. No key can pin which closure `f` is: the
@@ -24,17 +24,21 @@ defmodule P do
   def mk(c), do: fn (n) -> n + c end
 end
 
-def main() do
-  send(self(), 1)
-  n = receive do v -> v end
-  f = case n > 0 do
-    true -> P.mk(1)
-    _ -> P.mk(0.5)
+defmodule Main do
+  def main() do
+    send(self(), 1)
+    n = receive do v -> v end
+    f = case n > 0 do
+      true -> P.mk(1)
+      _ -> P.mk(0.5)
+    end
+    IO.inspect(P.run(f, 10))
+    g = case n < 0 do
+      true -> P.mk(1)
+      _ -> P.mk(0.5)
+    end
+    IO.inspect(P.run(g, 10))
   end
-  dbg(P.run(f, 10))
-  g = case n < 0 do
-    true -> P.mk(1)
-    _ -> P.mk(0.5)
-  end
-  dbg(P.run(g, 10))
 end
+
+Main.main()

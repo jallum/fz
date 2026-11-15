@@ -1,11 +1,15 @@
 #---
 # purpose: "a module name that no module defines is still the atom of that name, with no diagnostic"
-# oracle: 00700_a_name_no_module_defines_is_still_an_atom.oracle.exs
-# oracle.stamp: 4cd8c4adb1504ce9
+# oracle: self
+# oracle.stamp: a989a7a1e024f5dc
 #---
-def never(), do: Nope.Never
+defmodule Main do
+  def never(), do: Nope.Never
 
-def main() do
-  dbg(never())
-  dbg(Atom.to_string(Nope.Never))
+  def main() do
+    IO.inspect(never())
+    IO.inspect(Atom.to_string(Nope.Never))
+  end
 end
+
+Main.main()

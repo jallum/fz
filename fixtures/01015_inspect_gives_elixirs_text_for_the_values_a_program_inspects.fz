@@ -1,23 +1,27 @@
 #---
 # purpose: "inspect/1 prints integers, floats, strings, nil, booleans, lists, string-keyed maps, tuples and nesting exactly as Elixir does"
-# oracle: 01015_inspect_gives_elixirs_text_for_the_values_a_program_inspects.oracle.exs
-# oracle.stamp: 64d3589bc31871aa
+# oracle: self
+# oracle.stamp: e71fdd0cf4066324
 #---
-def main() do
-  dbg(inspect(1))
-  dbg(inspect(-42))
-  dbg(inspect(1.5))
-  dbg(inspect("text"))
-  dbg(inspect("quote\"d \\ line\n tab\t"))
-  dbg(inspect(nil))
-  dbg(inspect(true))
-  dbg(inspect(false))
-  dbg(inspect([]))
-  dbg(inspect(%{}))
-  dbg(inspect([1, 2, 3]))
-  dbg(inspect(["a", "b"]))
-  dbg(inspect(%{"k" => "v", "n" => 1}))
-  dbg(inspect(%{"outer" => %{"inner" => [1, nil, true]}}))
-  dbg(inspect({1, "two", :three}))
-  dbg(inspect(inspect("nested")))
+defmodule Main do
+  def main() do
+    IO.inspect(inspect(1))
+    IO.inspect(inspect(-42))
+    IO.inspect(inspect(1.5))
+    IO.inspect(inspect("text"))
+    IO.inspect(inspect("quote\"d \\ line\n tab\t"))
+    IO.inspect(inspect(nil))
+    IO.inspect(inspect(true))
+    IO.inspect(inspect(false))
+    IO.inspect(inspect([]))
+    IO.inspect(inspect(%{}))
+    IO.inspect(inspect([1, 2, 3]))
+    IO.inspect(inspect(["a", "b"]))
+    IO.inspect(inspect(%{"k" => "v", "n" => 1}))
+    IO.inspect(inspect(%{"outer" => %{"inner" => [1, nil, true]}}))
+    IO.inspect(inspect({1, "two", :three}))
+    IO.inspect(inspect(inspect("nested")))
+  end
 end
+
+Main.main()

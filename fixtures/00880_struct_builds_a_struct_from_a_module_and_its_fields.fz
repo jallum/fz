@@ -1,7 +1,7 @@
 #---
 # purpose: "struct/1, struct/2 and struct!/2 build a struct from a module or a struct and a keyword list or map, as Elixir does"
-# oracle: 00880_struct_builds_a_struct_from_a_module_and_its_fields.oracle.exs
-# oracle.stamp: 908d2345ce6b69f0
+# oracle: self
+# oracle.stamp: e9033946bfe04d67
 #---
 #
 # A module that declares a struct answers it from `__struct__/0`, each field
@@ -16,37 +16,42 @@ defmodule Named do
   defstruct [:name, kind: :plain]
 end
 
-def message(f) do
-  try do
-    f.()
-  rescue
-    e in KeyError -> Exception.message(e)
+defmodule Main do
+  def message(f) do
+    try do
+      f.()
+    rescue
+      e in KeyError -> Exception.message(e)
+    end
+  end
+
+  def pick(true), do: Pt
+
+  def pick(false), do: Named
+
+  def main() do
+    IO.inspect(Pt.__struct__())
+    IO.inspect(Named.__struct__())
+    IO.inspect(struct(Pt))
+    IO.inspect(struct(Pt, []))
+    IO.inspect(struct(Pt, x: 1))
+    IO.inspect(struct(Pt, x: 1, z: 9))
+    IO.inspect(struct(Pt, %{y: 7}))
+    IO.inspect(struct(%Pt{x: 5}, y: 6))
+    IO.inspect(struct(%Pt{x: 5}, __struct__: Named, y: 6))
+    IO.inspect(struct(Named, name: "a"))
+    IO.inspect(struct(pick(true), x: 3))
+    IO.inspect(struct(pick(false), name: "b", x: 3))
+    IO.inspect(struct!(Pt, x: 1))
+    IO.inspect(struct!(%Pt{x: 5}, y: 6))
+    IO.inspect(struct!(%Pt{x: 5}, __struct__: Named, y: 6))
+    IO.inspect(message(fn -> struct!(Pt, z: 9) end))
+    IO.inspect(message(fn -> struct!(%Pt{}, z: 9) end))
+    IO.inspect(Map.replace(%{a: 1}, :a, 2))
+    IO.inspect(Map.replace(%{a: 1}, :b, 2))
+    IO.inspect(Map.replace!(%{a: 1}, :a, 2))
+    IO.inspect(message(fn -> Map.replace!(%{a: 1}, :b, 2) end))
   end
 end
 
-def pick(true), do: Pt
-def pick(false), do: Named
-
-def main() do
-  dbg(Pt.__struct__())
-  dbg(Named.__struct__())
-  dbg(struct(Pt))
-  dbg(struct(Pt, []))
-  dbg(struct(Pt, x: 1))
-  dbg(struct(Pt, x: 1, z: 9))
-  dbg(struct(Pt, %{y: 7}))
-  dbg(struct(%Pt{x: 5}, y: 6))
-  dbg(struct(%Pt{x: 5}, __struct__: Named, y: 6))
-  dbg(struct(Named, name: "a"))
-  dbg(struct(pick(true), x: 3))
-  dbg(struct(pick(false), name: "b", x: 3))
-  dbg(struct!(Pt, x: 1))
-  dbg(struct!(%Pt{x: 5}, y: 6))
-  dbg(struct!(%Pt{x: 5}, __struct__: Named, y: 6))
-  dbg(message(fn -> struct!(Pt, z: 9) end))
-  dbg(message(fn -> struct!(%Pt{}, z: 9) end))
-  dbg(Map.replace(%{a: 1}, :a, 2))
-  dbg(Map.replace(%{a: 1}, :b, 2))
-  dbg(Map.replace!(%{a: 1}, :a, 2))
-  dbg(message(fn -> Map.replace!(%{a: 1}, :b, 2) end))
-end
+Main.main()

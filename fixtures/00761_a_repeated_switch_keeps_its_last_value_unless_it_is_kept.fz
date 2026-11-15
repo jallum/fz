@@ -1,15 +1,19 @@
 #---
 # purpose: "OptionParser.parse/2 keeps the last value of a repeated switch, moved to the end of the parsed list, unless its type includes :keep, which keeps every occurrence in the order met"
-# oracle: 00761_a_repeated_switch_keeps_its_last_value_unless_it_is_kept.oracle.exs
-# oracle.stamp: 9ca64ae797468d0c
 # args: --top 1 --top 2
+# oracle: self
+# oracle.stamp: b883e7c1e0896f63
 #---
-def main() do
-  dbg(OptionParser.parse(System.argv(), strict: [top: :integer]))
-  dbg(OptionParser.parse(System.argv(), strict: [top: [:integer, :keep]]))
-  dbg(OptionParser.parse(["--a", "1", "--b", "2", "--a", "3"], strict: [a: :integer, b: :integer]))
-  dbg(OptionParser.parse(["--a", "1", "--b", "2", "--a", "3"], strict: [a: [:keep, :integer], b: :integer]))
-  dbg(OptionParser.parse(["--a", "x", "--a", "y"], strict: [a: [:string, :keep]]))
-  dbg(OptionParser.parse(["--a", "x", "--a", "y"], strict: [a: :string]))
-  dbg(OptionParser.parse(["--a", "x", "--a"], strict: [a: [:string, :keep]]))
+defmodule Main do
+  def main() do
+    IO.inspect(OptionParser.parse(System.argv(), strict: [top: :integer]))
+    IO.inspect(OptionParser.parse(System.argv(), strict: [top: [:integer, :keep]]))
+    IO.inspect(OptionParser.parse(["--a", "1", "--b", "2", "--a", "3"], strict: [a: :integer, b: :integer]))
+    IO.inspect(OptionParser.parse(["--a", "1", "--b", "2", "--a", "3"], strict: [a: [:keep, :integer], b: :integer]))
+    IO.inspect(OptionParser.parse(["--a", "x", "--a", "y"], strict: [a: [:string, :keep]]))
+    IO.inspect(OptionParser.parse(["--a", "x", "--a", "y"], strict: [a: :string]))
+    IO.inspect(OptionParser.parse(["--a", "x", "--a"], strict: [a: [:string, :keep]]))
+  end
 end
+
+Main.main()

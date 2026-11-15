@@ -1,19 +1,23 @@
 #---
 # purpose: "Two identical shape questions on one subject compile and answer once"
-# oracle: 00794_the_same_question_asked_twice_of_one_subject_compiles.oracle.exs
-# oracle.stamp: 467cec0c46451e5e
+# oracle: self
+# oracle.stamp: 91a9958f6cce2083
 #---
-def same({_, _} = {_, _} = t), do: t
+defmodule Main do
+  def same({_, _} = {_, _} = t), do: t
 
-def twice(t) do
-  case t do
-    {_, _} = {_, _} -> :pair
-    _ -> :other
+  def twice(t) do
+    case t do
+      {_, _} = {_, _} -> :pair
+      _ -> :other
+    end
+  end
+
+  def main() do
+    IO.inspect(same({1, 2}))
+    IO.inspect(twice({1, 2}))
+    IO.inspect(twice(3))
   end
 end
 
-def main() do
-  dbg(same({1, 2}))
-  dbg(twice({1, 2}))
-  dbg(twice(3))
-end
+Main.main()

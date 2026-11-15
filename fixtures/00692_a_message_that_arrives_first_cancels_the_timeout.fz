@@ -1,15 +1,19 @@
 #---
 # purpose: "a matching message that arrives before the timer cancels it, so :timeout never prints"
-# oracle: 00692_a_message_that_arrives_first_cancels_the_timeout.oracle.exs
-# oracle.stamp: b51c725fd483de89
+# oracle: self
+# oracle.stamp: 034a3905a15ab156
 #---
-def main() do
-  parent = self()
-  spawn(fn () -> send(parent, :hello) end)
-  receive do
-    :hello -> dbg(:hello)
-  after
-    60000 -> dbg(:timeout)
+defmodule Main do
+  def main() do
+    parent = self()
+    spawn(fn () -> send(parent, :hello) end)
+    receive do
+      :hello -> IO.inspect(:hello)
+    after
+      60000 -> IO.inspect(:timeout)
+    end
+    IO.inspect(:end)
   end
-  dbg(:end)
 end
+
+Main.main()

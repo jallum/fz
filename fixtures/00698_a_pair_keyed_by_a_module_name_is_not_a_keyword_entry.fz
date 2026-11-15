@@ -1,10 +1,14 @@
 #---
 # purpose: "a list of pairs keyed by a module name prints as tuples, because an Elixir.-prefixed atom is never a keyword key"
-# oracle: 00698_a_pair_keyed_by_a_module_name_is_not_a_keyword_entry.oracle.exs
-# oracle.stamp: d7d185e8e760fec4
+# oracle: self
+# oracle.stamp: 7cdeff7ea23959db
 #---
-def main() do
-  dbg([{Foo, 1}])
-  dbg([{:a, 1}, {Foo.Bar, 2}])
-  dbg([a: 1])
+defmodule Main do
+  def main() do
+    IO.inspect([{Foo, 1}])
+    IO.inspect([{:a, 1}, {Foo.Bar, 2}])
+    IO.inspect([a: 1])
+  end
 end
+
+Main.main()

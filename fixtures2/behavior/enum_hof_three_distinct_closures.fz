@@ -1,7 +1,7 @@
 #---
 # purpose: "One Enum HOF specialized at three distinct closures keeps its reducer's result type"
-# oracle: oracle.exs
-# oracle.stamp: 8068fc4797ae3b63
+# oracle: self
+# oracle.stamp: 2388d7318ec2a451
 #---
 #
 # Regression target for fz-f98.17. `Enum.drop_while/2` reaches the recursive
@@ -19,10 +19,14 @@
 # `x > 0` is true for every element, so it drops everything; `x < 2` stops
 # partway. Each closure therefore exercises a different stop point through the
 # same shared reducer surface.
-def main() do
-  xs = [1, 2, 3]
+defmodule Main do
+  def main() do
+    xs = [1, 2, 3]
 
-  dbg(Enum.drop_while(xs, fn (x) -> x < 0 end))
-  dbg(Enum.drop_while(xs, fn (x) -> x > 0 end))
-  dbg(Enum.drop_while(xs, fn (x) -> x < 2 end))
+    IO.inspect(Enum.drop_while(xs, fn (x) -> x < 0 end))
+    IO.inspect(Enum.drop_while(xs, fn (x) -> x > 0 end))
+    IO.inspect(Enum.drop_while(xs, fn (x) -> x < 2 end))
+  end
 end
+
+Main.main()

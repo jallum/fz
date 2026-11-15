@@ -1,7 +1,11 @@
 #---
 # purpose: "Unary minus of a string aborts with ArithmeticError"
 # expect: abort
-# oracle: 00747_negating_a_non_number_raises_arithmetic_error.oracle.exs
-# oracle.stamp: 50f38a9b6081bb71
+# oracle: self
+# oracle.stamp: ea38b4a827fc886f
 #---
-def main(), do: -JSON.decode!("\"s\"")
+defmodule Main do
+  def main(), do: -JSON.decode!("\"s\"")
+end
+
+Main.main()

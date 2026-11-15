@@ -1,8 +1,8 @@
 #---
 # purpose: "a utf8 field read from a rest ends where its bytes say, and the walk goes on from there"
 # kind: run
-# oracle: 01186_a_utf8_field_read_past_a_cursor_ends_where_the_text_says.oracle.exs
-# oracle.stamp: 6e93d37d4bc474f3
+# oracle: self
+# oracle.stamp: 2303d94e21b1b3d8
 #---
 #
 # A rest that is only taken apart travels as the binary it is read from and the

@@ -1,12 +1,16 @@
 #---
 # purpose: "a receive clause whose binary prefix does not match leaves the message for the next clause"
-# oracle: 00677_a_receive_bitstring_clause_that_misses_falls_to_the_next.oracle.exs
-# oracle.stamp: 9c76a30bada481ad
+# oracle: self
+# oracle.stamp: 7c962c696d96e578
 #---
-def main() do
-  send(self(), "xyz")
-  receive do
-    <<45, 45, r::binary>> -> dbg({:dashes, r})
-    other -> dbg({:other, other})
+defmodule Main do
+  def main() do
+    send(self(), "xyz")
+    receive do
+      <<45, 45, r::binary>> -> IO.inspect({:dashes, r})
+      other -> IO.inspect({:other, other})
+    end
   end
 end
+
+Main.main()

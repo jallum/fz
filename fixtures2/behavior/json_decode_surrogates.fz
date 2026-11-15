@@ -1,29 +1,33 @@
 #---
 # purpose: "JSON.decode/1 joins valid Unicode surrogate pairs and rejects unpaired surrogates in values and keys"
-# oracle: json_decode_surrogates.oracle.exs
-# oracle.stamp: 77d0fb30297587c8
+# oracle: self
+# oracle.stamp: e0ec1a6d6897929e
 #---
-def main() do
-  # A representative pair plus both scalar-range boundaries made by pairs.
-  dbg(JSON.decode("\"\\uD83D\\uDE00\""))
-  dbg(JSON.decode("\"\\uD800\\uDC00\""))
-  dbg(JSON.decode("\"\\uDBFF\\uDFFF\""))
-  dbg(JSON.decode("{\"\\uD83D\\uDE00\":1}"))
+defmodule Main do
+  def main() do
+    # A representative pair plus both scalar-range boundaries made by pairs.
+    IO.inspect(JSON.decode("\"\\uD83D\\uDE00\""))
+    IO.inspect(JSON.decode("\"\\uD800\\uDC00\""))
+    IO.inspect(JSON.decode("\"\\uDBFF\\uDFFF\""))
+    IO.inspect(JSON.decode("{\"\\uD83D\\uDE00\":1}"))
 
-  # The code points immediately outside the surrogate range stay ordinary
-  # three-byte UTF-8 scalars.
-  dbg(JSON.decode("\"\\uD7FF\""))
-  dbg(JSON.decode("\"\\uE000\""))
+    # The code points immediately outside the surrogate range stay ordinary
+    # three-byte UTF-8 scalars.
+    IO.inspect(JSON.decode("\"\\uD7FF\""))
+    IO.inspect(JSON.decode("\"\\uE000\""))
 
-  dbg(JSON.decode("\"\\uD83D\""))
-  dbg(JSON.decode("\"\\uD83D\\u0041\""))
-  dbg(JSON.decode("\"\\uD83D\\uD83D\""))
-  dbg(JSON.decode("\"\\uD83D\\uZZZZ\""))
-  dbg(JSON.decode("\"\\uD83Dx\""))
-  dbg(JSON.decode("\"\\uDE00\""))
-  dbg(JSON.decode("\"x\\uDE00\""))
+    IO.inspect(JSON.decode("\"\\uD83D\""))
+    IO.inspect(JSON.decode("\"\\uD83D\\u0041\""))
+    IO.inspect(JSON.decode("\"\\uD83D\\uD83D\""))
+    IO.inspect(JSON.decode("\"\\uD83D\\uZZZZ\""))
+    IO.inspect(JSON.decode("\"\\uD83Dx\""))
+    IO.inspect(JSON.decode("\"\\uDE00\""))
+    IO.inspect(JSON.decode("\"x\\uDE00\""))
 
-  dbg(JSON.decode("{\"\\uD83D\":1}"))
-  dbg(JSON.decode("{\"\\uDE00\":1}"))
-  dbg(JSON.decode("{\"\\uD83D\\u0041\":1}"))
+    IO.inspect(JSON.decode("{\"\\uD83D\":1}"))
+    IO.inspect(JSON.decode("{\"\\uDE00\":1}"))
+    IO.inspect(JSON.decode("{\"\\uD83D\\u0041\":1}"))
+  end
 end
+
+Main.main()

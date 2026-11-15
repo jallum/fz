@@ -1,15 +1,19 @@
 #---
 # purpose: "JSON.encode!/1 escapes every C0 control byte in string values and object keys"
-# oracle: oracle.exs
-# oracle.stamp: 8374da9701f59f27
+# oracle: self
+# oracle.stamp: 43a71714883d1b0b
 #---
-def main() do
-  # The suffix proves space, quote, backslash, and an ordinary byte keep their
-  # existing spellings after the complete C0 range.
-  value = <<0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
-            16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
-            32, 34, 92, 65>>
+defmodule Main do
+  def main() do
+    # The suffix proves space, quote, backslash, and an ordinary byte keep their
+    # existing spellings after the complete C0 range.
+    value = <<0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+              16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
+              32, 34, 92, 65>>
 
-  dbg(JSON.encode!(value))
-  dbg(JSON.encode!(%{value => value}))
+    IO.inspect(JSON.encode!(value))
+    IO.inspect(JSON.encode!(%{value => value}))
+  end
 end
+
+Main.main()

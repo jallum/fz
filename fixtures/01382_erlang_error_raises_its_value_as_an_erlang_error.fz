@@ -1,7 +1,7 @@
 #---
 # purpose: ":erlang.error/1 raises its value: rescue sees an ErlangError holding it, catch :error sees the value itself, and an exception struct is raised as that exception"
-# oracle: 01382_erlang_error_raises_its_value_as_an_erlang_error.oracle.exs
-# oracle.stamp: 5c8688e7b31cc7a5
+# oracle: self
+# oracle.stamp: 914e646d4965d4fd
 #---
 defmodule Main do
   def rescued(reason) do

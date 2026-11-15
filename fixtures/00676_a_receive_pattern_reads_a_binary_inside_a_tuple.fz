@@ -1,11 +1,15 @@
 #---
 # purpose: "a receive pattern {:m, <<a, r::binary>>} binds the first byte and the rest of a binary held in a tuple message"
-# oracle: 00676_a_receive_pattern_reads_a_binary_inside_a_tuple.oracle.exs
-# oracle.stamp: 6f9d320b387bcca0
+# oracle: self
+# oracle.stamp: 932635a79b24c5b1
 #---
-def main() do
-  send(self(), {:m, "xyz"})
-  receive do
-    {:m, <<a, r::binary>>} -> dbg({a, r})
+defmodule Main do
+  def main() do
+    send(self(), {:m, "xyz"})
+    receive do
+      {:m, <<a, r::binary>>} -> IO.inspect({a, r})
+    end
   end
 end
+
+Main.main()

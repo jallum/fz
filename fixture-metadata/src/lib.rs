@@ -330,6 +330,24 @@ pub fn oracle_stamp(oracle_source: &[u8], golden: &[u8], args: &[String]) -> Str
     format!("{hash:016x}")
 }
 
+/// Returns `source` without its `oracle.stamp` line: the bytes a fixture that
+/// is its own oracle hashes, since a stamp cannot hash itself. Every other byte
+/// is untouched.
+pub fn without_oracle_stamp(source: &str) -> Result<String, FixtureMetadataError> {
+    let frontmatter_len = fixture_frontmatter_prefix_bytes(source)?
+        .ok_or_else(|| FixtureMetadataError::new(1, "fixture has no frontmatter block"))?
+        as usize;
+    let (frontmatter, body) = source.split_at(frontmatter_len);
+    let mut out = String::with_capacity(source.len());
+    for line in frontmatter.split_inclusive('\n') {
+        if frontmatter_key(line) != Some("oracle.stamp") {
+            out.push_str(line);
+        }
+    }
+    out.push_str(body);
+    Ok(out)
+}
+
 /// Returns `source` with its frontmatter recording `stamp`: any existing
 /// `oracle.stamp` line is dropped and the new one is written directly after the
 /// `oracle` line. Every byte outside the frontmatter is untouched.

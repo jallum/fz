@@ -1,4 +1,0 @@
-** (BadBooleanError) expected a boolean on left-side of "and", got:
-
-    5
-

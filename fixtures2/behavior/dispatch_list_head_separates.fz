@@ -1,7 +1,7 @@
 #---
 # purpose: "A dispatch test reads a cons cell's first element, so lists of different element types are different questions"
-# oracle: oracle.exs
-# oracle.stamp: e69efe4ce1626d86
+# oracle: self
+# oracle.stamp: 99c5616707ede6db
 #---
 #
 # fz-kdt.107 step 3. A list test used to see empty-or-cons and nothing else,
@@ -73,28 +73,34 @@
 # [:false | :true] body (`fz_unbox_atom`, exit 134 on `run` and `build`).
 # `interp` survived on its dynamic tags, which is why this is a
 # three-path-parity fixture and not a stdout one.
-def kind([h | _]) when is_integer(h), do: 1
-def kind([h | _]) when h == :ok or h == :err, do: 2
+defmodule Main do
+  def kind([h | _]) when is_integer(h), do: 1
 
-def dnik([h | _]) when h == :ok or h == :err, do: 2
-def dnik([h | _]) when is_integer(h), do: 1
+  def kind([h | _]) when h == :ok or h == :err, do: 2
 
-def pick(n) do
-  if n > 0 do
-    [n, n]
-  else
-    [:ok, :err]
+  def dnik([h | _]) when h == :ok or h == :err, do: 2
+
+  def dnik([h | _]) when is_integer(h), do: 1
+
+  def pick(n) do
+    if n > 0 do
+      [n, n]
+    else
+      [:ok, :err]
+    end
+  end
+
+  def main() do
+    IO.inspect(kind(pick(1)))
+    IO.inspect(kind(pick(0)))
+    IO.inspect(dnik(pick(1)))
+    IO.inspect(dnik(pick(0)))
+
+    IO.inspect(Enum.all?([true, false]))
+    IO.inspect(Enum.all?([true, 1, :ok]))
+    IO.inspect(Enum.all?([1, 2]))
+    IO.inspect(Enum.all?([1, :ok]))
   end
 end
 
-def main() do
-  dbg(kind(pick(1)))
-  dbg(kind(pick(0)))
-  dbg(dnik(pick(1)))
-  dbg(dnik(pick(0)))
-
-  dbg(Enum.all?([true, false]))
-  dbg(Enum.all?([true, 1, :ok]))
-  dbg(Enum.all?([1, 2]))
-  dbg(Enum.all?([1, :ok]))
-end
+Main.main()

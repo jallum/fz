@@ -1,7 +1,7 @@
 #---
 # purpose: "`==` compares numbers by value; structural identity does not"
-# oracle: oracle.exs
-# oracle.stamp: 843e15d25963ac56
+# oracle: self
+# oracle.stamp: 301aa4adf335a076
 #---
 #
 # # equality_widening_and_identity
@@ -30,92 +30,98 @@
 # loses the distinction above 2^53: `9007199254740993 == 9007199254740992`
 # answered true, and the ordering of the same pair disagreed between doors.
 # Both values below are laundered through the mailbox so no door can fold them.
-def main() do
-  big = launder(9007199254740993)
-  smaller = launder(9007199254740992)
-  dbg({big == smaller, big != smaller, big > smaller, smaller < big})
+defmodule Main do
+  def main() do
+    big = launder(9007199254740993)
+    smaller = launder(9007199254740992)
+    IO.inspect({big == smaller, big != smaller, big > smaller, smaller < big})
 
-  one = launder(1)
-  one_float = launder(1.0)
+    one = launder(1)
+    one_float = launder(1.0)
 
-  # `==` widens.
-  dbg({one == one_float, one != one_float, 1 == 1.0, 1.0 == 1, 2 == 1.0})
+    # `==` widens.
+    IO.inspect({one == one_float, one != one_float, 1 == 1.0, 1.0 == 1, 2 == 1.0})
 
-  # A pinned match does not.
-  dbg(pinned_against(one, one_float))
-  dbg(pinned_against(one_float, one_float))
-  dbg(pinned_self(one))
-  dbg(pinned_origin_lists())
+    # A pinned match does not.
+    IO.inspect(pinned_against(one, one_float))
+    IO.inspect(pinned_against(one_float, one_float))
+    IO.inspect(pinned_self(one))
+    IO.inspect(pinned_origin_lists())
 
-  # Neither does membership or subtraction.
-  dbg({Enum.member?([1, 2, 3], 1.0), Enum.member?([1.0], 1), Enum.member?([1, 2, 3], 2)})
-  dbg({[1, 2, 3] -- [1.0], [1, 2, 3] -- [2]})
+    # Neither does membership or subtraction.
+    IO.inspect({Enum.member?([1, 2, 3], 1.0), Enum.member?([1.0], 1), Enum.member?([1, 2, 3], 2)})
+    IO.inspect({[1, 2, 3] -- [1.0], [1, 2, 3] -- [2]})
 
-  # Widening recurses through containers.
-  dbg({[1] == [1.0], {1} == {1.0}, %{a: 1} == %{a: 1.0}})
-  dbg({[1, [2]] == [1.0, [2.0]], {1, {2}} == {1.0, {2.0}}})
+    # Widening recurses through containers.
+    IO.inspect({[1] == [1.0], {1} == {1.0}, %{a: 1} == %{a: 1.0}})
+    IO.inspect({[1, [2]] == [1.0, [2.0]], {1, {2}} == {1.0, {2.0}}})
 
-  # But not through map keys, and not when the values genuinely differ.
-  dbg({%{1 => :a} == %{1.0 => :a}, 1 == 1.5, [1] == [1.5]})
-  dbg({[1] == [1.0, 2.0], [1, 2] == [1.0], %{a: 1} == %{a: 1, b: 2}})
+    # But not through map keys, and not when the values genuinely differ.
+    IO.inspect({%{1 => :a} == %{1.0 => :a}, 1 == 1.5, [1] == [1.5]})
+    IO.inspect({[1] == [1.0, 2.0], [1, 2] == [1.0], %{a: 1} == %{a: 1, b: 2}})
 
-  # Literal patterns stay strict, which is a matching question, not `==`.
-  dbg({literal(one), literal(one_float), literal(launder(2))})
+    # Literal patterns stay strict, which is a matching question, not `==`.
+    IO.inspect({literal(one), literal(one_float), literal(launder(2))})
 
-  # `===` is the operator that asks identity out loud, and `!==` its negation.
-  dbg({one === one_float, one !== one_float, one === launder(1), 1 === 1, 1.0 === 1.0})
-  dbg({[1] === [1.0], [1] === [1], {1} === {1.0}, %{a: 1} === %{a: 1.0}})
-  dbg({:a === :a, :a === :b, "x" === "x", "x" === "y"})
+    # `===` is the operator that asks identity out loud, and `!==` its negation.
+    IO.inspect({one === one_float, one !== one_float, one === launder(1), 1 === 1, 1.0 === 1.0})
+    IO.inspect({[1] === [1.0], [1] === [1], {1} === {1.0}, %{a: 1} === %{a: 1.0}})
+    IO.inspect({:a === :a, :a === :b, "x" === "x", "x" === "y"})
 
-  # Equal numbers, different values: `==` is IEEE, `===` is identity.
-  negative_zero = 0.0 * (0 - 1.0)
-  dbg({0.0 == negative_zero, 0.0 === negative_zero, 0.0 !== negative_zero})
+    # Equal numbers, different values: `==` is IEEE, `===` is identity.
+    negative_zero = 0.0 * (0 - 1.0)
+    IO.inspect({0.0 == negative_zero, 0.0 === negative_zero, 0.0 !== negative_zero})
 
-  # A range holds integers, so a float is not in one -- and asking must not
-  # abort the process, which it used to on the native doors.
-  dbg({Enum.member?(1..5, 3), Enum.member?(1..5, 3.0)})
+    # A range holds integers, so a float is not in one -- and asking must not
+    # abort the process, which it used to on the native doors.
+    IO.inspect({Enum.member?(1..5, 3), Enum.member?(1..5, 3.0)})
 
-  # `Enum.reverse/2` accepts any enumerable as the tail, so the conversion it
-  # performs is real work and not the identity.
-  dbg(Enum.reverse([1, 2], 3..4))
+    # `Enum.reverse/2` accepts any enumerable as the tail, so the conversion it
+    # performs is real work and not the identity.
+    IO.inspect(Enum.reverse([1, 2], 3..4))
 
-  # A map is a member of itself by key AND value identity, not by `==`.
-  dbg({Enum.member?(%{1 => :a}, {1, :a}), Enum.member?(%{1 => :a}, {1.0, :a})})
-end
+    # A map is a member of itself by key AND value identity, not by `==`.
+    IO.inspect({Enum.member?(%{1 => :a}, {1, :a}), Enum.member?(%{1 => :a}, {1.0, :a})})
+  end
 
-defp pinned_against(subject, pin) do
-  case subject do
-    ^pin -> :same
-    _other -> :different
+  defp pinned_against(subject, pin) do
+    case subject do
+      ^pin -> :same
+      _other -> :different
+    end
+  end
+
+  defp pinned_self(value) do
+    ^value = value
+    value
+  end
+
+  defp pinned_origin_lists() do
+    first = [1, 2]
+    second = [1, 2]
+    ^first = second
+
+    changed = case first do
+      [head | _tail] -> [head | [9]]
+      _other -> []
+    end
+
+    {changed, second}
+  end
+
+  defp literal(1), do: :int_one
+
+  defp literal(1.0), do: :float_one
+
+  defp literal(_other), do: :other
+
+  defp launder(value) do
+    send(self(), value)
+
+    receive do
+      received -> received
+    end
   end
 end
 
-defp pinned_self(value) do
-  ^value = value
-  value
-end
-
-defp pinned_origin_lists() do
-  first = [1, 2]
-  second = [1, 2]
-  ^first = second
-
-  changed = case first do
-    [head | _tail] -> [head | [9]]
-    _other -> []
-  end
-
-  {changed, second}
-end
-
-defp literal(1), do: :int_one
-defp literal(1.0), do: :float_one
-defp literal(_other), do: :other
-
-defp launder(value) do
-  send(self(), value)
-
-  receive do
-    received -> received
-  end
-end
+Main.main()
