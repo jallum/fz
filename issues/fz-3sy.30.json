@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-15T14:44:01Z",
+  "description": "After `1 / 0` is rescued, `IO.inspect(e)` prints `%{__exception__: true, __struct__: ArithmeticError, message: ...}` on interp and `%ArithmeticError{...}` on run and build. Same for MatchError and every other failure the compiler raises itself.\n\nCause (measured at develop 4f8b72ea4): both paths build a compiler-raised exception as a map in the entries layout (`fz_runtime::failure::exception_of`, `alloc_map_slots`), from a name and a field list. It prints as a struct only when the struct's schema is registered: native registers every schema at start (`fz_aot_register_named_schemas`, native_codegen/driver.rs), interp registers one when a struct of it is first built (ir_interp/backend.rs ProgramStep::Struct). Printing `%ArithmeticError{}` once beforehand makes interp agree.\n\nA second copy of the same fact: `src/dispatch_matrix/pattern/last_resort.rs` lists each built-in exception's fields and defaults by hand (`ArgumentError` message \"argument error\", `Protocol.UndefinedError` description \"\"), duplicating `lib/exceptions/*.fz`.\n\nProposal page first: ../fz-3sy.30.html.",
+  "id": "fz-3sy.30",
+  "labels": [],
+  "parent": "fz-3sy",
+  "priority": 2,
+  "status": "open",
+  "title": "A raised exception is the struct its module declares, built one way on interp and native",
+  "type": "bug",
+  "updated_at": "2026-11-15T14:44:01Z"
+}
