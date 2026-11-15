@@ -530,8 +530,20 @@ fn emit_resume<M: cranelift_module::Module>(
     Ok(id)
 }
 
-/// Declare one Cranelift function per real SpecId, named
-/// `fz_fn_{spec_id.0}`. Sentinel slots are skipped — no module
+/// The symbol of the compiled body in slot `sid`: its id, which makes it
+/// unique, then its source name, which lets a profile or a backtrace of the
+/// built program be read. Characters a symbol cannot portably hold become `_`.
+fn spec_fn_symbol(sid: usize, body: &NativeCodegenBody<'_>) -> String {
+    let readable: String = body
+        .display_name
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    format!("fz_fn_{sid}_{readable}")
+}
+
+/// Declare one Cranelift function per real SpecId, named by
+/// `spec_fn_symbol`. Sentinel slots are skipped — no module
 /// declaration is made. Any-key SpecId.0 == FnId.0 so the existing
 /// closure / Spawn / Receive paths (which iconst fn_id.0 as the
 /// schema_id) keep landing on the right entry.
@@ -543,10 +555,10 @@ fn declare_spec_fns<M: cranelift_module::Module>(
 ) -> Result<HashMap<u32, FuncId>, CodegenError> {
     let mut fn_ids: HashMap<u32, FuncId> = HashMap::default();
     for (sid, body_slot) in body_slots.iter().enumerate() {
-        if body_slot.is_none() {
+        let Some(body) = body_slot else {
             continue;
-        }
-        let name = format!("fz_fn_{}", sid);
+        };
+        let name = spec_fn_symbol(sid, body);
         let id = m
             .declare_function(&name, linkage, &fn_sigs[sid])
             .map_err(|e| CodegenError::new(format!("declare {}: {}", name, e)))?;
