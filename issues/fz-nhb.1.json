@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-15T20:33:21Z",
   "created": "2026-11-15T20:14:27Z",
   "description": "## Why\n```\ndefmodule Names do\n  @spec name(atom()) :: String.t()\n  def name(module), do: Atom.to_string(module)\nend\nIO.inspect(Names.name(Foo.Bar))\n```\nstops the compiler with four internal/unresolved-wait errors (a call's return type, a function's contract, entry dispatch, input demand; all at \u003cgenerated\u003e). With binary() in place of String.t() it prints \"Elixir.Foo.Bar\", as Elixir does. Found in fixture 00699's oracle twin.\n\n## What changes\nA remote type String.t() in a @spec resolves, and the program prints \"Elixir.Foo.Bar\" on run, interp and build.\n\n## Signal\nA new fixture with the program above passes on all three paths; no internal/unresolved-wait.",
   "id": "fz-nhb.1",
   "labels": [],
   "parent": "fz-nhb",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "A @spec whose return is String.t() compiles",
   "type": "bug",
-  "updated_at": "2026-11-15T20:14:27Z"
+  "updated_at": "2026-11-15T20:33:21Z"
 }
