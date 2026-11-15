@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-15T02:44:27Z",
+  "description": "Step 2 of the fz-sc8.197 page (version 3). 'extern \"C\" def integer + integer :: integer, as: fz_op_add_ii, raises: ...' is a clause of +/2: its declared parameter types are the clause's type test and its spec, and the selected clause is the extern. Convert the 98 one-line forwarders in lib/. The swapped-argument clauses get their own runtime entries (fz_op_*_fi). The splice's forwarder test is deleted: the question becomes 'the callee is an extern'. Measured in a spike: 46 forwarder executables leave the distiller's program; typed heads already compile identically to guards of type tests. Signal: backend program identical to step 1 except the forwarders are gone.",
+  "id": "fz-sc8.212",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 2,
+  "status": "open",
+  "title": "A clause can be declared as the extern it is (extern heads)",
+  "type": "task",
+  "updated_at": "2026-11-15T02:44:27Z"
+}
