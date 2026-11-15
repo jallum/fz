@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-15T14:42:11Z",
+  "description": "develop push CI fails the coverage step on matrix::01183_a_rest_held_across_a_collection_or_a_message_is_the_binary_it_stands_for::interp: \"fz2 exceeded 20s\" at 9db393fac (run 43721872700) and \"exceeded 20s of CPU (wall 20.7s)\" at 4f8b72ea4 (run 43723309628, after fz-rgk made the limit CPU time). The fixture was last changed by fz-sc8.208.\n\nLocally at opt-level 1, `fz2 interp` uses 3.7 s of CPU on it; the coverage build is about six times slower.\n\nDone when: the coverage step passes on develop for this test.",
+  "id": "fz-sc8.222",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 2,
+  "status": "open",
+  "title": "Fixture 01183 fits the coverage job's 20 s CPU limit on the interpreter",
+  "type": "bug",
+  "updated_at": "2026-11-15T14:42:11Z"
+}
