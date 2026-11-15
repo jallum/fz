@@ -429,7 +429,7 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
             //     `fz_alloc_bitstring_const(ptr, byte_len, bit_len)` —
             //     runtime allocates an inline strict bitstring.
             //   * Above threshold: emit a bytes-payload symbol and a
-            //     40-byte static SharedBin symbol in `.data` (refcount=1
+            //     48-byte static SharedBin symbol in `.data` (refcount=1
             //     anchor, relocs for bytes_ptr + noop destructor) and
             //     call `fz_alloc_procbin_from_static(static_ptr)`.
             let above_threshold = bytes.len() > SHARED_BIN_THRESHOLD_BYTES;

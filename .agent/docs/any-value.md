@@ -90,12 +90,20 @@ fz source that declares `fz_map_count`, `fz_map_entry_key`, `fz_map_entry_value`
 as externs and folds over the map's canonical sorted entries; the tuple/list it
 builds copies those values into fresh containers before publishing them.
 
-`fz_binary_concat` validates byte-aligned binary inputs and copies their bytes
-into the caller process heap through `Heap::alloc_bitstring`, which returns the
-VALUE — `ProcBin` past `SHARED_BIN_THRESHOLD_BYTES` (64), `Bitstring` below it.
-The storage choice for every value the runtime builds is made there; the one
+`fz_binary_concat` validates byte-aligned binary inputs and builds `left <> right`
+through `Heap::alloc_concatenation`, which returns the VALUE. When `left` is a
+`ProcBin` that ends where its buffer's written bytes end and the buffer has spare
+room for `right`, `right` is written into that room and the result is a new
+stub over the same buffer, longer than `left`; `left` is not copied and keeps
+its own length. Otherwise a result at or below `SHARED_BIN_THRESHOLD_BYTES` (64)
+is an inline `Bitstring`, and a larger one gets a new `SharedBin` with room for
+as many bytes again, each side written once. A loop of `acc <> x` therefore
+allocates a buffer per doubling, not one per step. `Heap::alloc_bitstring`
+remains the storage choice for every other value the runtime builds; the one
 other place that splits on the threshold is `Prim::ConstBitstring` lowering,
-which emits a static `SharedBin` above it.
+which emits a static `SharedBin` above it. `<<a :: binary, b :: binary>>` built
+through `fz_bs_begin`/`fz_bs_write_field_ref`/`fz_bs_finalize` does not append: it copies
+the whole result into a new buffer each time.
 
 Two questions still read the threshold, and they are different questions:
 `alloc_bitstring_slice` asks whether a VIEW is worth a stub, and native
@@ -143,6 +151,28 @@ after it, so `fz_binary_as_cstring` hands it to C as it is. Any other window has
 the parent's next byte there, and `fz_binary_as_cstring` copies it into a fresh
 binary on the calling process's heap, which is terminated. That is the one place
 a view pays for its NUL; `fz_binary_as_ptr` promises no NUL and never copies.
+
+### Spare room belongs to one process
+
+A `SharedBin` has a capacity and a written length (`bytes_len`; `bit_len` is
+eight times it for a buffer a concatenation grew). The word at
+`SHARED_BIN_ROOM_OFFSET` holds the capacity, with a frozen flag in its top bit;
+the spare room is the capacity less `bytes_len`, and zero once frozen. Buffers
+that no concatenation allocated (`shared_bin_alloc`, the compiler-baked static
+buffers, whose word is 0) have no room. `bytes_ptr` never moves for a live
+buffer: a longer result than the room holds is a new buffer.
+
+Only the process that owns a buffer appends to it. A view that ends where the
+written bytes end is handed to C as a string with no copy because the byte after
+it is a NUL; another process writing there would replace that NUL under a call
+in progress. So every path that makes a buffer reachable from another process
+freezes it first, on the sender's thread: `deep_copy_any_value`'s `ProcBin` arm
+calls `shared_bin_freeze`, and every cross-process copy goes through it
+(`gift_copy` for a message or a spawned closure's bound values, and the spawn
+paths in `aot_shim.rs`, `ir_interp/backend.rs` and `exec/runtime.rs`). An
+unfrozen buffer has stubs on one heap only, so changing `bytes_len` has no
+concurrent reader. The heap destructor frees `capacity + 1` bytes, frozen or
+not.
 
 Copied bytes are counted. `HeapAllocStats::shared_bin` records off-heap binary
 buffers, separately from `total` because they are not heap bytes and do not move

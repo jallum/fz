@@ -24,7 +24,8 @@ use crate::any_value::{
     struct_field_kind_slot, struct_field_raw_slot, struct_header_word, struct_schema_id, struct_size_for_payload,
 };
 use crate::procbin::{
-    DeadResource, SharedBin, SharedBinHandle, alloc_procbin, mso_drop_all, mso_sweep, mso_unreached_closures,
+    DeadResource, ProcBin, SharedBin, SharedBinHandle, alloc_procbin, mso_drop_all, mso_sweep, mso_unreached_closures,
+    shared_bin_append,
 };
 use crate::process::Node;
 use crate::term::{NumericMode, TermComparator};
@@ -910,22 +911,77 @@ impl Heap {
             self.alloc_stats.record_shared_bin(bytes.len() as u64);
             return AnyValue::heap_ptr(alloc_procbin(self, handle, 0, bit_len).as_raw(), ValueKind::PROCBIN);
         }
-        // Reserve at least 1 byte past the payload for the
-        // invisible trailing NUL. The pad-zeroing below guarantees it reads
-        // as 0; bytes_len / bit_len are unchanged.
+        self.alloc_inline_bitstring(&[bytes], bit_len)
+    }
+
+    /// An inline bitstring whose bytes are `parts` end to end, each written
+    /// once. Reserves at least 1 byte past the payload for the invisible
+    /// trailing NUL; the pad-zeroing guarantees it reads as 0, and
+    /// bytes_len / bit_len are unchanged by it.
+    fn alloc_inline_bitstring(&mut self, parts: &[&[u8]], bit_len: u64) -> AnyValue {
         let total = bitstring_size_for_bit_len(bit_len);
         let p = self.alloc_kind(HeapAllocKind::Bitstring, total);
         unsafe {
             write(p as *mut u64, bitstring_header_word(bit_len));
-            let bytes_p = p.add(8);
-            copy_nonoverlapping(bytes.as_ptr(), bytes_p, bytes.len());
+            let mut at = 8;
+            for part in parts {
+                copy_nonoverlapping(part.as_ptr(), p.add(at), part.len());
+                at += part.len();
+            }
             // Zero the trailing padding so renders / debug aren't garbage.
-            let pad_start = 8 + bytes.len();
-            if pad_start < total {
-                write_bytes(p.add(pad_start), 0, total - pad_start);
+            if at < total {
+                write_bytes(p.add(at), 0, total - at);
             }
         }
         AnyValue::heap_ptr(p, ValueKind::BITSTRING)
+    }
+
+    /// The binary `left <> right`, where `left` is the whole-byte value
+    /// `left_bytes`, viewed through `left_view` when it is a ProcBin.
+    ///
+    /// When `left` ends where its buffer's written bytes end and the buffer has
+    /// room for `right` (only a buffer a concatenation allocated, and not yet
+    /// frozen, has any), `right` is written into that room and the result is a
+    /// longer view of the same buffer: `left` is not copied, and keeps its own
+    /// length. Otherwise a result of at most `SHARED_BIN_THRESHOLD_BYTES` is
+    /// built inline, and a larger one gets a new buffer with as much room as
+    /// it holds bytes, so a run of appends allocates a buffer per doubling.
+    /// Each side is written once.
+    ///
+    /// # Safety
+    /// `left_bytes` and `right` must be live byte slices that stay valid for
+    /// the call, and `left_view`, if present, the ProcBin `left_bytes` views.
+    pub unsafe fn alloc_concatenation(
+        &mut self,
+        left_bytes: &[u8],
+        left_view: Option<ProcBin>,
+        right: &[u8],
+    ) -> AnyValue {
+        if let Some(view) = left_view.filter(ProcBin::ends_at_buffer_end) {
+            let shared = view.shared_raw();
+            if right.len() <= unsafe { &*shared }.spare() {
+                unsafe { shared_bin_append(shared, right) };
+                let handle = unsafe { SharedBinHandle::retain_from_raw(shared) };
+                let bit_len = (left_bytes.len() + right.len()) as u64 * 8;
+                let p = alloc_procbin(self, handle, view.byte_offset(), bit_len).as_raw();
+                return AnyValue::heap_ptr(p, ValueKind::PROCBIN);
+            }
+        }
+        let total = left_bytes.len() + right.len();
+        if total <= SHARED_BIN_THRESHOLD_BYTES {
+            return self.alloc_inline_bitstring(&[left_bytes, right], total as u64 * 8);
+        }
+        let handle = SharedBinHandle::from_bytes_with_room(&[], total * 2);
+        let shared = handle.as_raw();
+        unsafe {
+            shared_bin_append(shared, left_bytes);
+            shared_bin_append(shared, right);
+        }
+        self.alloc_stats.record_shared_bin((total * 2) as u64);
+        AnyValue::heap_ptr(
+            alloc_procbin(self, handle, 0, total as u64 * 8).as_raw(),
+            ValueKind::PROCBIN,
+        )
     }
 
     /// Allocate the whole-byte slice `[byte_offset, byte_offset + byte_len)` of

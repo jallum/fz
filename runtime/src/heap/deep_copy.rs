@@ -26,7 +26,7 @@ use crate::any_value::{
     map_node_child_count, map_node_entry_count, map_slot, share_struct, struct_field_kind_slot, struct_field_raw_slot,
     struct_schema_id,
 };
-use crate::procbin::{ProcBin, SharedBinHandle, alloc_procbin};
+use crate::procbin::{ProcBin, SharedBinHandle, alloc_procbin, shared_bin_freeze};
 use crate::resource::{ResourceHandle, ResourceStub, alloc_resource};
 
 /// What a deep copy needs to know about the heap it reads: how its structs are
@@ -354,6 +354,9 @@ pub fn deep_copy_any_value(
                 return AnyValue::heap_ptr(dp, ValueKind::PROCBIN);
             }
             let src_pb = unsafe { ProcBin::from_raw(sp) };
+            // The copy belongs to another heap, possibly another process: from
+            // here on no one may append into the buffer both of them view.
+            unsafe { shared_bin_freeze(src_pb.shared_raw()) };
             let handle = unsafe { SharedBinHandle::retain_from_raw(src_pb.shared_raw()) };
             // The copy views the same window of the same bytes.
             let new_p = alloc_procbin(dst_heap, handle, src_pb.byte_offset(), src_pb.bit_len()).as_raw();
