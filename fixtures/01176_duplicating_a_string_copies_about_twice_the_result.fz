@@ -1,0 +1,12 @@
+#---
+# purpose: repeating a 10-byte string 2,000,001 times builds the 20 MB result by doubling, so the bytes it copies into shared buffers stay under twice the result
+# kind: run
+#---
+#
+# The program prints the size of the result, then the shared buffers
+# `String.duplicate` allocated and their total bytes.
+a = Process.heap_alloc_stats()
+big = String.duplicate("abcdefghij", 2_000_001)
+z = Process.heap_alloc_stats()
+dbg(byte_size(big))
+dbg({z[:shared_bin_allocs] - a[:shared_bin_allocs], z[:shared_bin_bytes] - a[:shared_bin_bytes]})
