@@ -6,14 +6,15 @@
   "blocks": [
     "fz-nml.2"
   ],
+  "closed_at": "2026-11-15T05:24:13Z",
   "created": "2026-11-15T03:53:49Z",
   "description": "Now: ProcBin's length is derived as 'to the end of the buffer' (runtime/src/procbin.rs:232-253), so fz_bs_read_binary_ref copies every non-suffix byte-aligned field (ir_runtime.rs:1570-1573). \u003c\u003crun::binary-size(500), _::binary\u003e\u003e of a 1,000-byte binary copies 500 bytes; JSON.decode of 1,000 ASCII bytes copies 1,000. Change: the stub's unused word (24..32) holds the byte length; alloc_procbin takes (offset, len); fz_binary_as_cstring copies a view that does not end at its buffer's end. Predicted: those shared bytes 500 -\u003e 0 and 1,000 -\u003e 0. Stacks on fz-sc8.208 (both touch fz_bs_read_binary_ref; a cursor made whole is a suffix view with length = remaining bytes). Update .agent/docs/any-value.md 'A ProcBin names a suffix'. Proposal page: /Users/j5n/Workspace/fz-json-garbage.html (approved 2026-11-14). Worktree ../fz-json, base bd3edae98.",
   "id": "fz-nml.1",
   "labels": [],
   "parent": "fz-nml",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "A binary view carries its own length, so any whole-byte slice is a view",
   "type": "task",
-  "updated_at": "2026-11-15T03:53:54Z"
+  "updated_at": "2026-11-15T05:24:13Z"
 }
