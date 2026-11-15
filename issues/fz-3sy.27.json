@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-15T13:01:59Z",
+  "description": "Six private copies of emit_job_diagnostic (quoted_expander, world, jobs/{types,dispatch,body,contract}) and nine inline 'emit_through(one diagnostic); FatalError' sites (jobs/{native,artifact x2,backend,root,semantic x3}, backend_program/boxed_contract) answer one question: a job reports one diagnostic and fails. One pub(crate) emit_job_diagnostic lives in compiler2::drive beside FatalError and JobEffects; every copy and inline site calls it. contract.rs's ()-returning copy served report-and-continue sites (a diagnosed @spec constrains nothing); those call emit_through directly.",
+  "id": "fz-3sy.27",
+  "labels": [],
+  "parent": "fz-3sy",
+  "priority": 3,
+  "status": "open",
+  "title": "One emit_job_diagnostic: a job that reports and fails says so in one place",
+  "type": "task",
+  "updated_at": "2026-11-15T13:01:59Z"
+}
