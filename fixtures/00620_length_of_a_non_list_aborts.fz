@@ -1,7 +1,11 @@
 #---
 # purpose: "length/1 of a non-list aborts with ArgumentError and Elixir's message"
 # expect: abort
-# oracle: 00620_length_of_a_non_list_aborts.oracle.exs
-# oracle.stamp: 103bc0fd2553fd12
+# oracle: self
+# oracle.stamp: 4786cbfb2a6b14fa
 #---
-def main(), do: length(:x)
+defmodule Main do
+  def main(), do: length(:x)
+end
+
+Main.main()

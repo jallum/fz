@@ -1,0 +1,24 @@
+#---
+# purpose: "a no-parens call argument begins with any token an expression begins with, including `not` and a struct literal, and a for pattern may be `_`"
+# kind: run
+# oracle: 01381_a_no_parens_argument_starts_with_any_expression_token.oracle.exs
+# oracle.stamp: a5483cfb1f647922
+#---
+# A no-parens call argument may begin with any token an expression begins
+# with: `not` and a struct literal here, and `_` as a `for` pattern.
+defmodule Point do
+  defstruct x: 0, y: 0
+end
+
+defmodule Main do
+  def run(n), do: n * 2
+
+  def main do
+    for _ <- 1..3 do IO.inspect(:x) end
+    IO.inspect not true
+    IO.inspect %Point{x: 1}
+    IO.inspect run 4
+  end
+end
+
+Main.main()

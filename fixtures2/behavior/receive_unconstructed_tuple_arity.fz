@@ -1,7 +1,7 @@
 #---
 # purpose: "a receive clause may name a tuple arity the module never constructs"
-# oracle: oracle.exs
-# oracle.stamp: d22114c427874463
+# oracle: self
+# oracle.stamp: 4995f4d339a6cdea
 #---
 #
 # # receive_unconstructed_tuple_arity
@@ -19,13 +19,17 @@
 # `RuntimeTypePredicate`, the native door raised a codegen error on the missing
 # registration instead. The interpreter answered false and printed 1, so this
 # shape failed to compile on `run` and `build` while succeeding on `interp`.
-def main() do
-  send(self(), {:a, 1})
+defmodule Main do
+  def main() do
+    send(self(), {:a, 1})
 
-  x = receive do
-    {:a, n} -> n
-    {:b, p, q, r} -> p + q + r
+    x = receive do
+      {:a, n} -> n
+      {:b, p, q, r} -> p + q + r
+    end
+
+    IO.inspect(x)
   end
-
-  dbg(x)
 end
+
+Main.main()

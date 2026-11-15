@@ -1,21 +1,25 @@
 #---
 # purpose: "OptionParser.parse/2 treats everything after -- as positional, drops the --, and treats a lone -, a '- x' token and a token starting with a digit after one - as positional"
-# oracle: 00760_a_double_dash_ends_the_switches_and_a_lone_dash_is_positional.oracle.exs
-# oracle.stamp: d76be04a9c52ea93
 # args: --top 5 -- --top 7
+# oracle: self
+# oracle.stamp: 6757ec3ebe9da2b1
 #---
-def main() do
-  dbg(OptionParser.parse(System.argv(), strict: [top: :integer]))
-  dbg(OptionParser.parse(["-", "f"], strict: [top: :integer]))
-  dbg(OptionParser.parse(["- x", "f"], strict: [top: :integer]))
-  dbg(OptionParser.parse(["a", "--", "b"], strict: [top: :integer]))
-  dbg(OptionParser.parse(["--"], strict: [top: :integer]))
-  dbg(OptionParser.parse(["--", "--"], strict: [top: :integer]))
-  dbg(OptionParser.parse(["-5", "f"], strict: [top: :integer]))
-  dbg(OptionParser.parse(["-5", "--top", "3"], strict: [top: :integer]))
-  dbg(OptionParser.parse(["--top", "-"], strict: [top: :string]))
-  dbg(OptionParser.parse(["--top", "--", "7"], strict: [top: :integer]))
-  dbg(OptionParser.parse(["--top", "-x"], strict: [top: :string]))
-  dbg(OptionParser.parse(["--top", "-7"], strict: [top: :string]))
-  dbg(OptionParser.parse(["--top", "--7"], strict: [top: :string]))
+defmodule Main do
+  def main() do
+    IO.inspect(OptionParser.parse(System.argv(), strict: [top: :integer]))
+    IO.inspect(OptionParser.parse(["-", "f"], strict: [top: :integer]))
+    IO.inspect(OptionParser.parse(["- x", "f"], strict: [top: :integer]))
+    IO.inspect(OptionParser.parse(["a", "--", "b"], strict: [top: :integer]))
+    IO.inspect(OptionParser.parse(["--"], strict: [top: :integer]))
+    IO.inspect(OptionParser.parse(["--", "--"], strict: [top: :integer]))
+    IO.inspect(OptionParser.parse(["-5", "f"], strict: [top: :integer]))
+    IO.inspect(OptionParser.parse(["-5", "--top", "3"], strict: [top: :integer]))
+    IO.inspect(OptionParser.parse(["--top", "-"], strict: [top: :string]))
+    IO.inspect(OptionParser.parse(["--top", "--", "7"], strict: [top: :integer]))
+    IO.inspect(OptionParser.parse(["--top", "-x"], strict: [top: :string]))
+    IO.inspect(OptionParser.parse(["--top", "-7"], strict: [top: :string]))
+    IO.inspect(OptionParser.parse(["--top", "--7"], strict: [top: :string]))
+  end
 end
+
+Main.main()

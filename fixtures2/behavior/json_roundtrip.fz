@@ -1,7 +1,7 @@
 #---
 # purpose: "the goal program: JSON.decode/1 and JSON.encode!/1 agree with Elixir's own JSON module, and round-trip"
-# oracle: oracle.exs
-# oracle.stamp: bf993343ec481d64
+# oracle: self
+# oracle.stamp: f878da829a71d9af
 #---
 #
 # # json_roundtrip
@@ -58,74 +58,80 @@
 # maps. Encoding other scalar key kinds is pinned separately with singleton
 # maps: multi-key atom ordering is not portable between fz's name order and
 # Elixir's internal atom order.
-def main() do
-  dbg(JSON.decode("true"))
-  dbg(JSON.decode("false"))
-  dbg(JSON.decode("null"))
-  dbg(JSON.decode("0"))
-  dbg(JSON.decode("42"))
-  dbg(JSON.decode("-45"))
-  dbg(JSON.decode("3.5"))
-  dbg(JSON.decode("-0.25"))
-  dbg(JSON.decode("  \"hi\"  "))
-  dbg(JSON.decode("[]"))
-  dbg(JSON.decode("[1, 2.5, true, null]"))
-  dbg(JSON.decode("[[1], [2, [3]]]"))
-  dbg(JSON.decode("{}"))
-  dbg(JSON.decode("{\"a\": 1}"))
-  dbg(JSON.decode("{\"b\": 2, \"a\": [1, null]}"))
-  dbg(JSON.decode("{\"n\": {\"m\": {\"deep\": true}}}"))
+defmodule Main do
+  def main() do
+    IO.inspect(JSON.decode("true"))
+    IO.inspect(JSON.decode("false"))
+    IO.inspect(JSON.decode("null"))
+    IO.inspect(JSON.decode("0"))
+    IO.inspect(JSON.decode("42"))
+    IO.inspect(JSON.decode("-45"))
+    IO.inspect(JSON.decode("3.5"))
+    IO.inspect(JSON.decode("-0.25"))
+    IO.inspect(JSON.decode("  \"hi\"  "))
+    IO.inspect(JSON.decode("[]"))
+    IO.inspect(JSON.decode("[1, 2.5, true, null]"))
+    IO.inspect(JSON.decode("[[1], [2, [3]]]"))
+    IO.inspect(JSON.decode("{}"))
+    IO.inspect(JSON.decode("{\"a\": 1}"))
+    IO.inspect(JSON.decode("{\"b\": 2, \"a\": [1, null]}"))
+    IO.inspect(JSON.decode("{\"n\": {\"m\": {\"deep\": true}}}"))
 
-  # exponents, on integers and fractions, both signs and both spellings
-  dbg(JSON.decode("1e3"))
-  dbg(JSON.decode("1.5e2"))
-  dbg(JSON.decode("2E+3"))
-  dbg(JSON.decode("1.0e-7"))
-  dbg(JSON.decode("-1.5e2"))
+    # exponents, on integers and fractions, both signs and both spellings
+    IO.inspect(JSON.decode("1e3"))
+    IO.inspect(JSON.decode("1.5e2"))
+    IO.inspect(JSON.decode("2E+3"))
+    IO.inspect(JSON.decode("1.0e-7"))
+    IO.inspect(JSON.decode("-1.5e2"))
 
-  # the full escape set, including \u for one, two and three byte UTF-8
-  dbg(JSON.decode("\"a\\nb\""))
-  dbg(JSON.decode("\"q\\\"q\""))
-  dbg(JSON.decode("\"s\\\\s\""))
-  dbg(JSON.decode("\"sl\\/sl\""))
-  dbg(JSON.decode("\"\\u0041\""))
-  dbg(JSON.decode("\"\\u00e9\""))
-  dbg(JSON.decode("\"\\u65e5\""))
+    # the full escape set, including \u for one, two and three byte UTF-8
+    IO.inspect(JSON.decode("\"a\\nb\""))
+    IO.inspect(JSON.decode("\"q\\\"q\""))
+    IO.inspect(JSON.decode("\"s\\\\s\""))
+    IO.inspect(JSON.decode("\"sl\\/sl\""))
+    IO.inspect(JSON.decode("\"\\u0041\""))
+    IO.inspect(JSON.decode("\"\\u00e9\""))
+    IO.inspect(JSON.decode("\"\\u65e5\""))
 
-  dbg(JSON.encode!(true))
-  dbg(JSON.encode!(nil))
-  dbg(JSON.encode!(42))
-  dbg(JSON.encode!(-45))
-  dbg(JSON.encode!(2.5))
-  dbg(JSON.encode!("hi"))
-  dbg(JSON.encode!([]))
-  dbg(JSON.encode!([1, 2.5, nil]))
-  dbg(JSON.encode!(%{}))
-  dbg(JSON.encode!(%{"a" => [1, nil], "b" => 2}))
+    IO.inspect(JSON.encode!(true))
+    IO.inspect(JSON.encode!(nil))
+    IO.inspect(JSON.encode!(42))
+    IO.inspect(JSON.encode!(-45))
+    IO.inspect(JSON.encode!(2.5))
+    IO.inspect(JSON.encode!("hi"))
+    IO.inspect(JSON.encode!([]))
+    IO.inspect(JSON.encode!([1, 2.5, nil]))
+    IO.inspect(JSON.encode!(%{}))
+    IO.inspect(JSON.encode!(%{"a" => [1, nil], "b" => 2}))
 
-  # malformed input is refused, including the trailing commas a permissive
-  # decoder accepts
-  dbg(JSON.decode("[1] junk"))
-  dbg(JSON.decode("[1,]"))
-  dbg(JSON.decode("{\"a\": 1,}"))
-  dbg(JSON.decode("{\"a\" 1}"))
-  dbg(JSON.decode(""))
-  dbg(JSON.decode("tru"))
-  dbg(JSON.decode("[1 2]"))
+    # malformed input is refused, including the trailing commas a permissive
+    # decoder accepts
+    IO.inspect(JSON.decode("[1] junk"))
+    IO.inspect(JSON.decode("[1,]"))
+    IO.inspect(JSON.decode("{\"a\": 1,}"))
+    IO.inspect(JSON.decode("{\"a\" 1}"))
+    IO.inspect(JSON.decode(""))
+    IO.inspect(JSON.decode("tru"))
+    IO.inspect(JSON.decode("[1 2]"))
 
-  # round-trip: decode(encode(x)) == x
-  dbg(roundtrip(true))
-  dbg(roundtrip(nil))
-  dbg(roundtrip(42))
-  dbg(roundtrip(-45))
-  dbg(roundtrip(2.5))
-  dbg(roundtrip("hi"))
-  dbg(roundtrip([]))
-  dbg(roundtrip([1, 2.5, nil]))
-  dbg(roundtrip(%{}))
-  dbg(roundtrip(%{"a" => [1, nil], "b" => 2}))
+    # round-trip: decode(encode(x)) == x
+    IO.inspect(roundtrip(true))
+    IO.inspect(roundtrip(nil))
+    IO.inspect(roundtrip(42))
+    IO.inspect(roundtrip(-45))
+    IO.inspect(roundtrip(2.5))
+    IO.inspect(roundtrip("hi"))
+    IO.inspect(roundtrip([]))
+    IO.inspect(roundtrip([1, 2.5, nil]))
+    IO.inspect(roundtrip(%{}))
+    IO.inspect(roundtrip(%{"a" => [1, nil], "b" => 2}))
+  end
+
+  defp roundtrip(v), do: same(JSON.decode(JSON.encode!(v)), v)
+
+  defp same({:ok, decoded}, original), do: decoded == original
+
+  defp same(_other, _original), do: false
 end
 
-defp roundtrip(v), do: same(JSON.decode(JSON.encode!(v)), v)
-defp same({:ok, decoded}, original), do: decoded == original
-defp same(_other, _original), do: false
+Main.main()

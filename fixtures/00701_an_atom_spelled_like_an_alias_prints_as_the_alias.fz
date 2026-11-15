@@ -1,13 +1,17 @@
 #---
 # purpose: "an atom whose name is Elixir. followed by capitalised segments prints as the alias however it was written"
-# oracle: 00701_an_atom_spelled_like_an_alias_prints_as_the_alias.oracle.exs
-# oracle.stamp: 61ab5f6e1d180450
+# oracle: self
+# oracle.stamp: 4ccf000381088a7e
 #---
-def main() do
-  dbg(:"Elixir.Foo")
-  dbg(:"Elixir.Foo_9.Bar")
-  dbg(:"Elixir.F")
-  dbg(:Elixir)
-  dbg(:Foo)
-  dbg(String.to_atom("Elixir.Made.At.Runtime"))
+defmodule Main do
+  def main() do
+    IO.inspect(:"Elixir.Foo")
+    IO.inspect(:"Elixir.Foo_9.Bar")
+    IO.inspect(:"Elixir.F")
+    IO.inspect(:Elixir)
+    IO.inspect(:Foo)
+    IO.inspect(String.to_atom("Elixir.Made.At.Runtime"))
+  end
 end
+
+Main.main()

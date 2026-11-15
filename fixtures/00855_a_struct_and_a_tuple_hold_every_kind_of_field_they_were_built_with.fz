@@ -1,7 +1,7 @@
 #---
 # purpose: "A struct and a tuple built from computed values hold each field as it was given, whatever its kind, and still do after the heap has been collected many times over"
-# oracle: oracle.exs
-# oracle.stamp: b7755e66c2c55510
+# oracle: self
+# oracle.stamp: fd64935b34706963
 #---
 #
 # Each field is stored where the object was allocated, by the kind the
@@ -16,60 +16,65 @@ defmodule Inner do
   defstruct [:depth]
 end
 
-def opaque(v), do: v
+defmodule Main do
+  def opaque(v), do: v
 
-def sample(n) do
-  %Sample{
-    count: n * 3,
-    ratio: n / 8,
-    unit: if(rem(n, 2) == 0, do: :even, else: :odd),
-    big: n > 2,
-    none: nil,
-    items: [n, n + 1, n + 2],
-    empty: [],
-    label: "n" <> Integer.to_string(n),
-    inner: %Inner{depth: n + 100},
-    pair: {n, :pair},
-    step: fn x -> x + n end,
-    table: %{n => "value"},
-    fixed: {:always, "same", [1, 2]},
-    other: opaque(n * 7)
-  }
+  def sample(n) do
+    %Sample{
+      count: n * 3,
+      ratio: n / 8,
+      unit: if(rem(n, 2) == 0, do: :even, else: :odd),
+      big: n > 2,
+      none: nil,
+      items: [n, n + 1, n + 2],
+      empty: [],
+      label: "n" <> Integer.to_string(n),
+      inner: %Inner{depth: n + 100},
+      pair: {n, :pair},
+      step: fn x -> x + n end,
+      table: %{n => "value"},
+      fixed: {:always, "same", [1, 2]},
+      other: opaque(n * 7)
+    }
+  end
+
+  def tuple(n) do
+    {n * 3, n / 8, n > 2, nil, [n, n + 1], [], "t" <> Integer.to_string(n), %Inner{depth: n}, {n}, opaque([n])}
+  end
+
+  def churn(0, kept), do: kept
+
+  def churn(n, kept) do
+    made = sample(n)
+    churn(n - 1, if(rem(n, 5000) == 0, do: [made | kept], else: kept))
+  end
+
+  def show(s) do
+    IO.inspect(s.count)
+    IO.inspect(s.ratio)
+    IO.inspect(s.unit)
+    IO.inspect(s.big)
+    IO.inspect(s.none)
+    IO.inspect(s.items)
+    IO.inspect(s.empty)
+    IO.inspect(s.label)
+    IO.inspect(s.inner)
+    IO.inspect(s.pair)
+    IO.inspect(s.step.(1000))
+    IO.inspect(s.table)
+    IO.inspect(s.fixed)
+    IO.inspect(s.other)
+  end
+
+  def main() do
+    show(sample(1))
+    show(sample(4))
+    IO.inspect(tuple(1))
+    IO.inspect(tuple(6))
+    kept = churn(20000, [])
+    IO.inspect(length(kept))
+    Enum.each(kept, fn s -> show(s) end)
+  end
 end
 
-def tuple(n) do
-  {n * 3, n / 8, n > 2, nil, [n, n + 1], [], "t" <> Integer.to_string(n), %Inner{depth: n}, {n}, opaque([n])}
-end
-
-def churn(0, kept), do: kept
-def churn(n, kept) do
-  made = sample(n)
-  churn(n - 1, if(rem(n, 5000) == 0, do: [made | kept], else: kept))
-end
-
-def show(s) do
-  dbg(s.count)
-  dbg(s.ratio)
-  dbg(s.unit)
-  dbg(s.big)
-  dbg(s.none)
-  dbg(s.items)
-  dbg(s.empty)
-  dbg(s.label)
-  dbg(s.inner)
-  dbg(s.pair)
-  dbg(s.step.(1000))
-  dbg(s.table)
-  dbg(s.fixed)
-  dbg(s.other)
-end
-
-def main() do
-  show(sample(1))
-  show(sample(4))
-  dbg(tuple(1))
-  dbg(tuple(6))
-  kept = churn(20000, [])
-  dbg(length(kept))
-  Enum.each(kept, fn s -> show(s) end)
-end
+Main.main()

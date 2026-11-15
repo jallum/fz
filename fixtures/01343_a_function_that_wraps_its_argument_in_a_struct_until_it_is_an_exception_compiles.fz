@@ -1,10 +1,10 @@
 #---
 # purpose: "A recursion that wraps its argument in a struct on every call compiles: the repeated struct folds where it grew, and the budget never fires"
 # root: main/0
-# oracle: oracle.exs
-# oracle.stamp: bc706f69a6780b5f
 # assert.metric.return_type.widened: 0
 # assert.metric.type.clash_folded: 1
+# oracle: self
+# oracle.stamp: 63a5ebd80854e2fa
 #---
 defmodule W do
   defexception [:original]
@@ -15,6 +15,10 @@ defmodule Wrapper do
   def wrap(x), do: wrap(%W{original: x})
 end
 
-def main() do
-  IO.inspect(Wrapper.wrap(:a))
+defmodule Main do
+  def main() do
+    IO.inspect(Wrapper.wrap(:a))
+  end
 end
+
+Main.main()

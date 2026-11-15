@@ -1,9 +1,13 @@
 #---
 # purpose: "an empty-string argument arrives as the empty binary, one element rather than none, as in Elixir"
-# oracle: 00658_an_empty_argument_is_an_empty_binary.oracle.exs
-# oracle.stamp: 71e7edf6be7e463c
 # args: ""
+# oracle: self
+# oracle.stamp: 8d1e210d298a79ff
 #---
-def main() do
-  dbg(System.argv())
+defmodule Main do
+  def main() do
+    IO.inspect(System.argv())
+  end
 end
+
+Main.main()

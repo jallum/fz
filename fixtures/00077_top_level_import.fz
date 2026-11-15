@@ -1,9 +1,9 @@
 #---
 # purpose: "A top-level import brings a library module's export into scope for top-level code"
 # kind: run
-# oracle: 00077_top_level_import.oracle.exs
-# oracle.stamp: f7b99363dc3a5076
+# oracle: self
+# oracle.stamp: 8bb2439038d2a033
 #---
 import Enum, only: [sum: 1]
 
-dbg(sum([20, 22]))
+IO.inspect(sum([20, 22]))

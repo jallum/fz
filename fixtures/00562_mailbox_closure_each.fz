@@ -1,7 +1,7 @@
 #---
 # purpose: "a closure delivered by the mailbox drives Enum.each, whose step throws the call's result away"
-# oracle: oracle.exs
-# oracle.stamp: a643aa64b2b9281c
+# oracle: self
+# oracle.stamp: cf03fb04b175cd07
 #---
 #
 # fz-kdt.155. `Enum.each/2` is the one Enum higher-order call that DISCARDS what
@@ -18,16 +18,20 @@
 # Three shapes drive the seam from different directions: a bare mailbox lambda,
 # one carrying a capture of its own, and the empty list as the control that
 # never reaches a step at all. `:done` proves control came back past every one.
-def main() do
-  send(self(), fn (x) -> dbg(x * 2) end)
-  double = receive do f -> f end
-  Enum.each([1, 2, 3], double)
+defmodule Main do
+  def main() do
+    send(self(), fn (x) -> IO.inspect(x * 2) end)
+    double = receive do f -> f end
+    Enum.each([1, 2, 3], double)
 
-  scale = 10
-  send(self(), fn (x) -> dbg(x * scale) end)
-  scaled = receive do f -> f end
-  Enum.each([4, 5], scaled)
+    scale = 10
+    send(self(), fn (x) -> IO.inspect(x * scale) end)
+    scaled = receive do f -> f end
+    Enum.each([4, 5], scaled)
 
-  Enum.each([], double)
-  dbg(:done)
+    Enum.each([], double)
+    IO.inspect(:done)
+  end
 end
+
+Main.main()

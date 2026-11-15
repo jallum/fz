@@ -399,7 +399,7 @@ size can be matched.
 
 Case mapping is the one place the owner is a Rust table rather than fz. It is
 FULL Unicode casing — `char::to_uppercase` and its inverse, all 103 special
-casings, so `"straße"` upcases to `"STRASSE"` — and the oracle twins check it
+casings, so `"straße"` upcases to `"STRASSE"` — and the oracle fixtures check it
 against Elixir's DEFAULT mode, not `:ascii`. The table lives in the runtime
 because as fz clauses its 2,723 pairs would go through the dispatch matrix and
 make compile work proportional to the table rather than to the program; it

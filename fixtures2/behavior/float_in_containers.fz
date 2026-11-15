@@ -1,12 +1,12 @@
 #---
 # purpose: "a whole float keeps its .0 wherever it appears, not only at the top level"
-# oracle: oracle.exs
-# oracle.stamp: 35d99ede6d000f1b
+# oracle: self
+# oracle.stamp: 33343f69791581bb
 #---
 #
 # # float_in_containers
 #
-#     dbg([1.0, 2.0])   ->  [1, 2]
+#     IO.inspect([1.0, 2.0])   ->  [1, 2]
 #
 # A list element was printed with Rust's `to_string` while every other position
 # went through `render_float`, so a whole float silently lost its `.0` inside a
@@ -22,15 +22,19 @@
 # Whole floats and fractional floats, at the top level and nested one and two
 # deep, in lists and tuples, mixed with integers so a shared renderer cannot
 # paper over the difference, plus `-0.0` whose sign is observable.
-def main() do
-  dbg(1.0)
-  dbg([1.0, 2.0])
-  dbg([1.5, 2.25])
-  dbg([1.0, 2])
-  dbg({1.0, 2.0})
-  dbg({1.0, 2})
-  dbg([1.0, [2.0, 3.0]])
-  dbg([{1.0, [2.0]}])
-  dbg([-0.0, 100.0])
-  dbg([0.1, 0.2, 0.30000000000000004])
+defmodule Main do
+  def main() do
+    IO.inspect(1.0)
+    IO.inspect([1.0, 2.0])
+    IO.inspect([1.5, 2.25])
+    IO.inspect([1.0, 2])
+    IO.inspect({1.0, 2.0})
+    IO.inspect({1.0, 2})
+    IO.inspect([1.0, [2.0, 3.0]])
+    IO.inspect([{1.0, [2.0]}])
+    IO.inspect([-0.0, 100.0])
+    IO.inspect([0.1, 0.2, 0.30000000000000004])
+  end
 end
+
+Main.main()

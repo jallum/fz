@@ -1,13 +1,17 @@
 #---
 # purpose: "a receive with an empty mailbox and nothing else able to run times out after 1ms and the program continues"
-# oracle: 00687_a_receive_after_times_out_with_an_empty_mailbox.oracle.exs
-# oracle.stamp: b2a924c4ea93ead4
+# oracle: self
+# oracle.stamp: b8844d8c9d70b34a
 #---
-def main() do
-  receive do
-    :never -> dbg(:got)
-  after
-    1 -> dbg(:timeout)
+defmodule Main do
+  def main() do
+    receive do
+      :never -> IO.inspect(:got)
+    after
+      1 -> IO.inspect(:timeout)
+    end
+    IO.inspect(:end)
   end
-  dbg(:end)
 end
+
+Main.main()

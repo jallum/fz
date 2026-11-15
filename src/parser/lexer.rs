@@ -113,6 +113,43 @@ pub enum Tok {
     Eof,
 }
 
+impl Tok {
+    /// Whether an expression may begin with this token. This is the one answer
+    /// to the question: the front door's prefix parser accepts exactly these
+    /// tokens, and a no-parens call argument may begin with any of them.
+    /// Tokens that are also infix operators (`-`, `+`, `%`) are included; the
+    /// parser reads the spacing around them to tell a prefix from an infix.
+    pub fn starts_expression(&self) -> bool {
+        matches!(
+            self,
+            Tok::Int(_)
+                | Tok::Float(_)
+                | Tok::Binary(_)
+                | Tok::Atom(_)
+                | Tok::True
+                | Tok::False
+                | Tok::Nil
+                | Tok::Underscore
+                | Tok::Ident(_)
+                | Tok::Upper(_)
+                | Tok::LParen
+                | Tok::LBrack
+                | Tok::LBrace
+                | Tok::PercentLBrace
+                | Tok::Percent
+                | Tok::LBitstr
+                | Tok::Minus
+                | Tok::Plus
+                | Tok::Not
+                | Tok::Bang
+                | Tok::Fn
+                | Tok::Amp
+                | Tok::Caret
+                | Tok::Defstruct
+        )
+    }
+}
+
 impl fmt::Display for Tok {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:?}", self)

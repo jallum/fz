@@ -1,7 +1,7 @@
 #---
 # purpose: "a struct is equal to, ordered with and found by any map holding the same module and fields, however either was built; it stands among the maps in the term order; and a map prints as a struct exactly when its keys are that struct's"
-# oracle: 00868_a_struct_is_compared_ordered_and_printed_as_the_map_it_is.oracle.exs
-# oracle.stamp: 66c9562cb85d1c78
+# oracle: self
+# oracle.stamp: 9467312560e3ab90
 #---
 #
 # A struct built with %Pt{} and a map that reaches the same keys and values
@@ -21,63 +21,67 @@ defmodule Yx do
   defstruct [:y, :x]
 end
 
-def same?(a, b), do: a == b
+defmodule Main do
+  def same?(a, b), do: a == b
 
-def pinned(a, b) do
-  case b do
-    ^a -> :same
-    _ -> :different
+  def pinned(a, b) do
+    case b do
+      ^a -> :same
+      _ -> :different
+    end
+  end
+
+  def main() do
+    p = %Pt{x: 1, y: 2}
+    spelled = Map.put(%{x: 1, y: 2}, :__struct__, Pt)
+    grown = Map.put(p, :z, 3)
+    shrunk = Map.delete(grown, :z)
+    fewer = Map.delete(p, :y)
+    plain = %{x: 1, y: 2}
+    q = %Qt{x: 1, y: 2}
+
+    IO.inspect(p == spelled)
+    IO.inspect(spelled == p)
+    IO.inspect(p === spelled)
+    IO.inspect(p == shrunk)
+    IO.inspect(p != spelled)
+    IO.inspect(p == grown)
+    IO.inspect(same?(p, plain))
+    IO.inspect(same?(p, q))
+    IO.inspect({p, [spelled]} == {shrunk, [p]})
+
+    IO.inspect(spelled)
+    IO.inspect(shrunk)
+    IO.inspect({p, [spelled]})
+    IO.inspect(Map.delete(fewer, :x))
+    IO.inspect(Map.put(%{}, :__struct__, Nowhere))
+    IO.inspect(Enum.sort(Map.keys(grown)))
+    IO.inspect(String.starts_with?(inspect(grown), "%{"))
+    IO.inspect(String.starts_with?(inspect(fewer), "%{"))
+
+    IO.inspect(p < grown)
+    IO.inspect(grown < p)
+    IO.inspect(spelled < %Pt{x: 1, y: 3})
+    IO.inspect(%Pt{x: 1, y: 3} < spelled)
+    IO.inspect(p < q)
+    IO.inspect(%Qt{x: 0, y: 0} < spelled)
+    IO.inspect(plain < p)
+    IO.inspect(fewer < plain)
+    IO.inspect({9, 9, 9, 9, 9} < p)
+    IO.inspect(%Yx{y: 0, x: 2} < %Yx{y: 1, x: 1})
+    IO.inspect(Enum.sort([q, spelled, plain, p, grown, fewer]) == [fewer, plain, p, p, q, grown])
+
+    by_point = %{p => :found}
+    IO.inspect(Map.get(by_point, spelled))
+    IO.inspect(Map.get(by_point, shrunk))
+    IO.inspect(Map.get(by_point, grown))
+    IO.inspect(map_size(Map.put(by_point, spelled, :again)))
+    IO.inspect(length(Enum.uniq([p, spelled, shrunk, grown])))
+    IO.inspect(MapSet.size(MapSet.new([p, spelled, shrunk])))
+    IO.inspect(spelled in [q, p])
+    IO.inspect(pinned(p, spelled))
+    IO.inspect(pinned(p, grown))
   end
 end
 
-def main() do
-  p = %Pt{x: 1, y: 2}
-  spelled = Map.put(%{x: 1, y: 2}, :__struct__, Pt)
-  grown = Map.put(p, :z, 3)
-  shrunk = Map.delete(grown, :z)
-  fewer = Map.delete(p, :y)
-  plain = %{x: 1, y: 2}
-  q = %Qt{x: 1, y: 2}
-
-  dbg(p == spelled)
-  dbg(spelled == p)
-  dbg(p === spelled)
-  dbg(p == shrunk)
-  dbg(p != spelled)
-  dbg(p == grown)
-  dbg(same?(p, plain))
-  dbg(same?(p, q))
-  dbg({p, [spelled]} == {shrunk, [p]})
-
-  dbg(spelled)
-  dbg(shrunk)
-  dbg({p, [spelled]})
-  dbg(Map.delete(fewer, :x))
-  dbg(Map.put(%{}, :__struct__, Nowhere))
-  dbg(Enum.sort(Map.keys(grown)))
-  dbg(String.starts_with?(inspect(grown), "%{"))
-  dbg(String.starts_with?(inspect(fewer), "%{"))
-
-  dbg(p < grown)
-  dbg(grown < p)
-  dbg(spelled < %Pt{x: 1, y: 3})
-  dbg(%Pt{x: 1, y: 3} < spelled)
-  dbg(p < q)
-  dbg(%Qt{x: 0, y: 0} < spelled)
-  dbg(plain < p)
-  dbg(fewer < plain)
-  dbg({9, 9, 9, 9, 9} < p)
-  dbg(%Yx{y: 0, x: 2} < %Yx{y: 1, x: 1})
-  dbg(Enum.sort([q, spelled, plain, p, grown, fewer]) == [fewer, plain, p, p, q, grown])
-
-  by_point = %{p => :found}
-  dbg(Map.get(by_point, spelled))
-  dbg(Map.get(by_point, shrunk))
-  dbg(Map.get(by_point, grown))
-  dbg(map_size(Map.put(by_point, spelled, :again)))
-  dbg(length(Enum.uniq([p, spelled, shrunk, grown])))
-  dbg(MapSet.size(MapSet.new([p, spelled, shrunk])))
-  dbg(spelled in [q, p])
-  dbg(pinned(p, spelled))
-  dbg(pinned(p, grown))
-end
+Main.main()

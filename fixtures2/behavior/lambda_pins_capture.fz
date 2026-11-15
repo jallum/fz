@@ -1,7 +1,7 @@
 #---
 # purpose: "a lambda head pins a value it closed over"
-# oracle: oracle.exs
-# oracle.stamp: b1756b71beede202
+# oracle: self
+# oracle.stamp: b6930631cc1ea07e
 #---
 #
 # # lambda_pins_capture
@@ -17,17 +17,21 @@
 #   * a lambda returned from a function, pinning that function's parameter;
 #   * a multi-clause lambda, whose clause selection happens in the body rather
 #     than the head, so its pin resolves by name in the enclosing scope.
-def main() do
-  x = 1
-  same = fn ^x -> :same end
-  dbg(same.(1))
+defmodule Main do
+  def main() do
+    x = 1
+    same = fn ^x -> :same end
+    IO.inspect(same.(1))
 
-  dbg(pick(2).(2))
+    IO.inspect(pick(2).(2))
 
-  choose = fn ^x -> :same
-              _ -> :other end
-  dbg(choose.(1))
-  dbg(choose.(9))
+    choose = fn ^x -> :same
+                _ -> :other end
+    IO.inspect(choose.(1))
+    IO.inspect(choose.(9))
+  end
+
+  defp pick(x), do: fn ^x -> :same end
 end
 
-defp pick(x), do: fn ^x -> :same end
+Main.main()

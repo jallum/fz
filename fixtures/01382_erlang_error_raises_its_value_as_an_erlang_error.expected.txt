@@ -1,0 +1,5 @@
+{:erlang_error, :boom}
+{:erlang_error, {:stop, [1, 2]}}
+{:argument_error, "bad"}
+{:error, :boom}
+{:error, {:stop, 1}}

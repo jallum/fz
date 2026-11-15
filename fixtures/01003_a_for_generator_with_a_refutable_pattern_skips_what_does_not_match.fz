@@ -1,8 +1,12 @@
 #---
 # purpose: "A generator whose pattern does not match an element skips that element"
-# oracle: 01003_a_for_generator_with_a_refutable_pattern_skips_what_does_not_match.oracle.exs
-# oracle.stamp: b90c7d3b0703dd14
+# oracle: self
+# oracle.stamp: a5ddc27202462a3b
 #---
-def main() do
-  dbg(for {:ok, v} <- [{:ok, 1}, {:error, 2}, {:ok, 3}, :other], do: v * 10)
+defmodule Main do
+  def main() do
+    IO.inspect(for {:ok, v} <- [{:ok, 1}, {:error, 2}, {:ok, 3}, :other], do: v * 10)
+  end
 end
+
+Main.main()

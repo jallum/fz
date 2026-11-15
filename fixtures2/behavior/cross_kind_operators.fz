@@ -1,7 +1,7 @@
 #---
 # purpose: "the ordering operators themselves across kinds, in body position and through a guard"
-# oracle: oracle.exs
-# oracle.stamp: adae2af81509318b
+# oracle: self
+# oracle.stamp: 5e5adba7cba13806
 #---
 #
 # # cross_kind_operators
@@ -17,156 +17,169 @@
 # guard. The two halves must agree with each other and with Elixir.
 #
 # One value per printed line, so a disagreement names its own case.
-defp lt?(a, b) when a < b, do: :lt
-defp lt?(_a, _b), do: :not_lt
-defp le?(a, b) when a <= b, do: :le
-defp le?(_a, _b), do: :not_le
-defp gt?(a, b) when a > b, do: :gt
-defp gt?(_a, _b), do: :not_gt
-defp ge?(a, b) when a >= b, do: :ge
-defp ge?(_a, _b), do: :not_ge
-defp eq?(a, b) when a == b, do: :equal
-defp eq?(_a, _b), do: :different
+defmodule Main do
+  defp lt?(a, b) when a < b, do: :lt
 
-def main() do
-  # integer vs atom -- body position
-  dbg(1 < :atom)
-  dbg(1 <= :atom)
-  dbg(1 > :atom)
-  dbg(1 >= :atom)
-  # integer vs atom -- through a guard
-  dbg(lt?(1, :atom))
-  dbg(le?(1, :atom))
-  dbg(gt?(1, :atom))
-  dbg(ge?(1, :atom))
+  defp lt?(_a, _b), do: :not_lt
 
-  # atom vs binary -- body position
-  dbg(:atom < "bin")
-  dbg(:atom <= "bin")
-  dbg(:atom > "bin")
-  dbg(:atom >= "bin")
-  # atom vs binary -- through a guard
-  dbg(lt?(:atom, "bin"))
-  dbg(le?(:atom, "bin"))
-  dbg(gt?(:atom, "bin"))
-  dbg(ge?(:atom, "bin"))
+  defp le?(a, b) when a <= b, do: :le
 
-  # tuple vs binary -- body position
-  dbg({:foo, 2} < "string")
-  dbg({:foo, 2} <= "string")
-  dbg({:foo, 2} > "string")
-  dbg({:foo, 2} >= "string")
-  # tuple vs binary -- through a guard
-  dbg(lt?({:foo, 2}, "string"))
-  dbg(le?({:foo, 2}, "string"))
-  dbg(gt?({:foo, 2}, "string"))
-  dbg(ge?({:foo, 2}, "string"))
+  defp le?(_a, _b), do: :not_le
 
-  # list vs tuple -- body position
-  dbg([1, 2] < {1, 2})
-  dbg([1, 2] <= {1, 2})
-  dbg([1, 2] > {1, 2})
-  dbg([1, 2] >= {1, 2})
-  # list vs tuple -- through a guard
-  dbg(lt?([1, 2], {1, 2}))
-  dbg(le?([1, 2], {1, 2}))
-  dbg(gt?([1, 2], {1, 2}))
-  dbg(ge?([1, 2], {1, 2}))
+  defp gt?(a, b) when a > b, do: :gt
 
-  # map vs list -- body position
-  dbg(%{"a" => 1} < [1])
-  dbg(%{"a" => 1} <= [1])
-  dbg(%{"a" => 1} > [1])
-  dbg(%{"a" => 1} >= [1])
-  # map vs list -- through a guard
-  dbg(lt?(%{"a" => 1}, [1]))
-  dbg(le?(%{"a" => 1}, [1]))
-  dbg(gt?(%{"a" => 1}, [1]))
-  dbg(ge?(%{"a" => 1}, [1]))
+  defp gt?(_a, _b), do: :not_gt
 
-  # float vs atom -- body position
-  dbg(1.5 < :atom)
-  dbg(1.5 <= :atom)
-  dbg(1.5 > :atom)
-  dbg(1.5 >= :atom)
-  # float vs atom -- through a guard
-  dbg(lt?(1.5, :atom))
-  dbg(le?(1.5, :atom))
-  dbg(gt?(1.5, :atom))
-  dbg(ge?(1.5, :atom))
+  defp ge?(a, b) when a >= b, do: :ge
 
-  # int vs float -- body position
-  dbg(1 < 1.5)
-  dbg(1 <= 1.5)
-  dbg(1 > 1.5)
-  dbg(1 >= 1.5)
-  # int vs float -- through a guard
-  dbg(lt?(1, 1.5))
-  dbg(le?(1, 1.5))
-  dbg(gt?(1, 1.5))
-  dbg(ge?(1, 1.5))
+  defp ge?(_a, _b), do: :not_ge
 
-  # float vs int -- body position
-  dbg(2.0 < 3)
-  dbg(2.0 <= 3)
-  dbg(2.0 > 3)
-  dbg(2.0 >= 3)
-  # float vs int -- through a guard
-  dbg(lt?(2.0, 3))
-  dbg(le?(2.0, 3))
-  dbg(gt?(2.0, 3))
-  dbg(ge?(2.0, 3))
+  defp eq?(a, b) when a == b, do: :equal
 
-  # atom vs atom -- body position
-  dbg(:a < :b)
-  dbg(:a <= :b)
-  dbg(:a > :b)
-  dbg(:a >= :b)
-  # atom vs atom -- through a guard
-  dbg(lt?(:a, :b))
-  dbg(le?(:a, :b))
-  dbg(gt?(:a, :b))
-  dbg(ge?(:a, :b))
+  defp eq?(_a, _b), do: :different
 
-  # binary vs binary -- body position
-  dbg("abc" < "abd")
-  dbg("abc" <= "abd")
-  dbg("abc" > "abd")
-  dbg("abc" >= "abd")
-  # binary vs binary -- through a guard
-  dbg(lt?("abc", "abd"))
-  dbg(le?("abc", "abd"))
-  dbg(gt?("abc", "abd"))
-  dbg(ge?("abc", "abd"))
+  def main() do
+    # integer vs atom -- body position
+    IO.inspect(1 < :atom)
+    IO.inspect(1 <= :atom)
+    IO.inspect(1 > :atom)
+    IO.inspect(1 >= :atom)
+    # integer vs atom -- through a guard
+    IO.inspect(lt?(1, :atom))
+    IO.inspect(le?(1, :atom))
+    IO.inspect(gt?(1, :atom))
+    IO.inspect(ge?(1, :atom))
 
-  # tuple vs tuple (arity) -- body position
-  dbg({1, 2} < {1})
-  dbg({1, 2} <= {1})
-  dbg({1, 2} > {1})
-  dbg({1, 2} >= {1})
-  # tuple vs tuple (arity) -- through a guard
-  dbg(lt?({1, 2}, {1}))
-  dbg(le?({1, 2}, {1}))
-  dbg(gt?({1, 2}, {1}))
-  dbg(ge?({1, 2}, {1}))
+    # atom vs binary -- body position
+    IO.inspect(:atom < "bin")
+    IO.inspect(:atom <= "bin")
+    IO.inspect(:atom > "bin")
+    IO.inspect(:atom >= "bin")
+    # atom vs binary -- through a guard
+    IO.inspect(lt?(:atom, "bin"))
+    IO.inspect(le?(:atom, "bin"))
+    IO.inspect(gt?(:atom, "bin"))
+    IO.inspect(ge?(:atom, "bin"))
 
-  # list vs list -- body position
-  dbg([1, 2, 3] < [2])
-  dbg([1, 2, 3] <= [2])
-  dbg([1, 2, 3] > [2])
-  dbg([1, 2, 3] >= [2])
-  # list vs list -- through a guard
-  dbg(lt?([1, 2, 3], [2]))
-  dbg(le?([1, 2, 3], [2]))
-  dbg(gt?([1, 2, 3], [2]))
-  dbg(ge?([1, 2, 3], [2]))
+    # tuple vs binary -- body position
+    IO.inspect({:foo, 2} < "string")
+    IO.inspect({:foo, 2} <= "string")
+    IO.inspect({:foo, 2} > "string")
+    IO.inspect({:foo, 2} >= "string")
+    # tuple vs binary -- through a guard
+    IO.inspect(lt?({:foo, 2}, "string"))
+    IO.inspect(le?({:foo, 2}, "string"))
+    IO.inspect(gt?({:foo, 2}, "string"))
+    IO.inspect(ge?({:foo, 2}, "string"))
 
-  # int/float equality -- body position
-  dbg(1 == 1.0)
-  dbg(1 === 1.0)
-  dbg(1 != 1.0)
-  dbg(1 !== 1.0)
-  # int/float equality -- through a guard
-  dbg(eq?(1, 1.0))
-  dbg(eq?(1, :atom))
+    # list vs tuple -- body position
+    IO.inspect([1, 2] < {1, 2})
+    IO.inspect([1, 2] <= {1, 2})
+    IO.inspect([1, 2] > {1, 2})
+    IO.inspect([1, 2] >= {1, 2})
+    # list vs tuple -- through a guard
+    IO.inspect(lt?([1, 2], {1, 2}))
+    IO.inspect(le?([1, 2], {1, 2}))
+    IO.inspect(gt?([1, 2], {1, 2}))
+    IO.inspect(ge?([1, 2], {1, 2}))
+
+    # map vs list -- body position
+    IO.inspect(%{"a" => 1} < [1])
+    IO.inspect(%{"a" => 1} <= [1])
+    IO.inspect(%{"a" => 1} > [1])
+    IO.inspect(%{"a" => 1} >= [1])
+    # map vs list -- through a guard
+    IO.inspect(lt?(%{"a" => 1}, [1]))
+    IO.inspect(le?(%{"a" => 1}, [1]))
+    IO.inspect(gt?(%{"a" => 1}, [1]))
+    IO.inspect(ge?(%{"a" => 1}, [1]))
+
+    # float vs atom -- body position
+    IO.inspect(1.5 < :atom)
+    IO.inspect(1.5 <= :atom)
+    IO.inspect(1.5 > :atom)
+    IO.inspect(1.5 >= :atom)
+    # float vs atom -- through a guard
+    IO.inspect(lt?(1.5, :atom))
+    IO.inspect(le?(1.5, :atom))
+    IO.inspect(gt?(1.5, :atom))
+    IO.inspect(ge?(1.5, :atom))
+
+    # int vs float -- body position
+    IO.inspect(1 < 1.5)
+    IO.inspect(1 <= 1.5)
+    IO.inspect(1 > 1.5)
+    IO.inspect(1 >= 1.5)
+    # int vs float -- through a guard
+    IO.inspect(lt?(1, 1.5))
+    IO.inspect(le?(1, 1.5))
+    IO.inspect(gt?(1, 1.5))
+    IO.inspect(ge?(1, 1.5))
+
+    # float vs int -- body position
+    IO.inspect(2.0 < 3)
+    IO.inspect(2.0 <= 3)
+    IO.inspect(2.0 > 3)
+    IO.inspect(2.0 >= 3)
+    # float vs int -- through a guard
+    IO.inspect(lt?(2.0, 3))
+    IO.inspect(le?(2.0, 3))
+    IO.inspect(gt?(2.0, 3))
+    IO.inspect(ge?(2.0, 3))
+
+    # atom vs atom -- body position
+    IO.inspect(:a < :b)
+    IO.inspect(:a <= :b)
+    IO.inspect(:a > :b)
+    IO.inspect(:a >= :b)
+    # atom vs atom -- through a guard
+    IO.inspect(lt?(:a, :b))
+    IO.inspect(le?(:a, :b))
+    IO.inspect(gt?(:a, :b))
+    IO.inspect(ge?(:a, :b))
+
+    # binary vs binary -- body position
+    IO.inspect("abc" < "abd")
+    IO.inspect("abc" <= "abd")
+    IO.inspect("abc" > "abd")
+    IO.inspect("abc" >= "abd")
+    # binary vs binary -- through a guard
+    IO.inspect(lt?("abc", "abd"))
+    IO.inspect(le?("abc", "abd"))
+    IO.inspect(gt?("abc", "abd"))
+    IO.inspect(ge?("abc", "abd"))
+
+    # tuple vs tuple (arity) -- body position
+    IO.inspect({1, 2} < {1})
+    IO.inspect({1, 2} <= {1})
+    IO.inspect({1, 2} > {1})
+    IO.inspect({1, 2} >= {1})
+    # tuple vs tuple (arity) -- through a guard
+    IO.inspect(lt?({1, 2}, {1}))
+    IO.inspect(le?({1, 2}, {1}))
+    IO.inspect(gt?({1, 2}, {1}))
+    IO.inspect(ge?({1, 2}, {1}))
+
+    # list vs list -- body position
+    IO.inspect([1, 2, 3] < [2])
+    IO.inspect([1, 2, 3] <= [2])
+    IO.inspect([1, 2, 3] > [2])
+    IO.inspect([1, 2, 3] >= [2])
+    # list vs list -- through a guard
+    IO.inspect(lt?([1, 2, 3], [2]))
+    IO.inspect(le?([1, 2, 3], [2]))
+    IO.inspect(gt?([1, 2, 3], [2]))
+    IO.inspect(ge?([1, 2, 3], [2]))
+
+    # int/float equality -- body position
+    IO.inspect(1 == 1.0)
+    IO.inspect(1 === 1.0)
+    IO.inspect(1 != 1.0)
+    IO.inspect(1 !== 1.0)
+    # int/float equality -- through a guard
+    IO.inspect(eq?(1, 1.0))
+    IO.inspect(eq?(1, :atom))
+  end
 end
+
+Main.main()

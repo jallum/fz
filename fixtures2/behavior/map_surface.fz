@@ -1,7 +1,7 @@
 #---
 # purpose: "the Map surface over a flat sorted array: size, keys, values, to_list, has_key?, delete"
-# oracle: oracle.exs
-# oracle.stamp: ce369b87d5284a6d
+# oracle: self
+# oracle.stamp: 8c0d7906a527861b
 #---
 #
 # # map_surface
@@ -22,23 +22,27 @@
 #
 # The goal program is on the matching side of that line: JSON object keys are
 # strings.
-def main() do
-  m = %{"b" => 2, "a" => 1, "c" => 3}
+defmodule Main do
+  def main() do
+    m = %{"b" => 2, "a" => 1, "c" => 3}
 
-  dbg(map_size(m))
-  dbg(Map.keys(m))
-  dbg(Map.values(m))
-  dbg(Map.to_list(m))
+    IO.inspect(map_size(m))
+    IO.inspect(Map.keys(m))
+    IO.inspect(Map.values(m))
+    IO.inspect(Map.to_list(m))
 
-  dbg(Map.has_key?(m, "a"))
-  dbg(Map.has_key?(m, "zz"))
+    IO.inspect(Map.has_key?(m, "a"))
+    IO.inspect(Map.has_key?(m, "zz"))
 
-  dbg(Map.to_list(Map.delete(m, "b")))
-  dbg(Map.to_list(Map.delete(m, "zz")))
-  dbg(map_size(Map.delete(m, "a")))
+    IO.inspect(Map.to_list(Map.delete(m, "b")))
+    IO.inspect(Map.to_list(Map.delete(m, "zz")))
+    IO.inspect(map_size(Map.delete(m, "a")))
 
-  # a key built at runtime is the same key
-  built = "a"
-  dbg(Map.has_key?(m, built))
-  dbg(Map.to_list(Map.delete(m, built)))
+    # a key built at runtime is the same key
+    built = "a"
+    IO.inspect(Map.has_key?(m, built))
+    IO.inspect(Map.to_list(Map.delete(m, built)))
+  end
 end
+
+Main.main()

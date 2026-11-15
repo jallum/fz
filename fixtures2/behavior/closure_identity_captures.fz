@@ -1,7 +1,7 @@
 #---
 # purpose: "A forwarded closure that carries captures reaches its own body with its own capture record"
-# oracle: oracle.exs
-# oracle.stamp: 27bba3ea5d8c12c2
+# oracle: self
+# oracle.stamp: 65798226044d3abd
 #---
 #
 # fz-kdt.125, the capture half. `run/2` forwards its callable to `apply_twice/2`,
@@ -18,9 +18,13 @@ defmodule Pipeline do
   def run(f, x), do: apply_twice(f, x)
 end
 
-def main() do
-  a = 1
-  b = 100
-  dbg(Pipeline.run(fn (n) -> n + a end, 10))
-  dbg(Pipeline.run(fn (n) -> n + b end, 10))
+defmodule Main do
+  def main() do
+    a = 1
+    b = 100
+    IO.inspect(Pipeline.run(fn (n) -> n + a end, 10))
+    IO.inspect(Pipeline.run(fn (n) -> n + b end, 10))
+  end
 end
+
+Main.main()

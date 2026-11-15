@@ -1,25 +1,29 @@
 #---
 # purpose: "every operator Elixir lets follow a colon with no quotes is one atom, as a list element, a map key, an equality operand and a printed value"
-# oracle: 01144_an_operator_atom_needs_no_quotes.oracle.exs
-# oracle.stamp: cc6498ec425fade7
+# oracle: self
+# oracle.stamp: ea5261ad7c22f40b
 #---
 #
 # Elixir reads `:+` as the atom `+`, the same atom `:"+"` names. A colon is
 # an atom's colon only where no identifier precedes it, so `a: -1` stays a
 # keyword pair and the `::` of `@spec f() :: integer` stays a separate token.
-def main() do
-  IO.inspect(:+)
-  IO.inspect(:+ == :"+")
-  IO.inspect(:+ == :-)
-  IO.inspect([:+, :-, :*, :/, :=, :!, :<, :>, :&, :|, :^, :@, :%, :.])
-  IO.inspect([:++, :--, :->, :**, :==, :=~, :!=, :<-, :<=])
-  IO.inspect([:<>, :<~, :>=, :&&, :|>, :||, :~>, :.., :\\])
-  IO.inspect([:+++, :---, :===, :!==, :<<<, :<<~, :<|>, :<~>, :>>>])
-  IO.inspect([:&&&, :|||, :^^^, :~>>, :~~~, :...])
-  IO.inspect([:%{}, :{}, :<<>>, :..//])
-  IO.inspect(%{:+ => :plus})
-  IO.inspect(%{:+ => :plus, :- => :minus}[:-])
-  IO.inspect({:+, 1})
-  IO.inspect(a: -1)
-  IO.inspect(Enum.map([:+, :-], fn op -> op == :+ end))
+defmodule Main do
+  def main() do
+    IO.inspect(:+)
+    IO.inspect(:+ == :"+")
+    IO.inspect(:+ == :-)
+    IO.inspect([:+, :-, :*, :/, :=, :!, :<, :>, :&, :|, :^, :@, :%, :.])
+    IO.inspect([:++, :--, :->, :**, :==, :=~, :!=, :<-, :<=])
+    IO.inspect([:<>, :<~, :>=, :&&, :|>, :||, :~>, :.., :\\])
+    IO.inspect([:+++, :---, :===, :!==, :<<<, :<<~, :<|>, :<~>, :>>>])
+    IO.inspect([:&&&, :|||, :^^^, :~>>, :~~~, :...])
+    IO.inspect([:%{}, :{}, :<<>>, :..//])
+    IO.inspect(%{:+ => :plus})
+    IO.inspect(%{:+ => :plus, :- => :minus}[:-])
+    IO.inspect({:+, 1})
+    IO.inspect(a: -1)
+    IO.inspect(Enum.map([:+, :-], fn op -> op == :+ end))
+  end
 end
+
+Main.main()

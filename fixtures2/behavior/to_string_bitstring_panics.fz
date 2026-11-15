@@ -1,8 +1,8 @@
 #---
 # purpose: "to_string of a bitstring that is not byte-aligned panics rather than laundering it into a binary"
 # expect: abort
-# oracle: to_string_bitstring_panics.oracle.exs
-# oracle.stamp: 45e4e11048ab093d
+# oracle: self
+# oracle.stamp: 67b0047604a8ea8c
 #---
 #
 # # to_string_bitstring_panics
@@ -14,6 +14,10 @@
 # fz draws that line in its types: `<<1::4>>` is a bitstring and not a binary,
 # so the `s :: binary` clause head does not take it and the impl's second
 # clause raises.
-def main() do
-  dbg(to_string(<<1::4>>))
+defmodule Main do
+  def main() do
+    IO.inspect(to_string(<<1::4>>))
+  end
 end
+
+Main.main()

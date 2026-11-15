@@ -1,7 +1,7 @@
 #---
 # purpose: "a non-tail recursion whose return type is a nesting ladder: {n, {n, ... :start}}"
-# oracle: oracle.exs
-# oracle.stamp: 6bd02e64358168b2
+# oracle: self
+# oracle.stamp: 185295da11f0d6e5
 #---
 #
 # The program itself is ordinary and correct on every door. What it pins is the
@@ -11,9 +11,14 @@
 # instead of reaching a recursive denotation. Past the widening budget the
 # ladder tops out at `any`. `compiler2_tuple_return_ladder_revises_once_per_nesting_level`
 # in the drive tests measures that cost.
-def build(0), do: :start
-def build(n), do: {n, build(n - 1)}
+defmodule Main do
+  def build(0), do: :start
 
-def main() do
-  dbg(build(3))
+  def build(n), do: {n, build(n - 1)}
+
+  def main() do
+    IO.inspect(build(3))
+  end
 end
+
+Main.main()

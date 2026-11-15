@@ -1,33 +1,39 @@
 #---
 # purpose: "a guard that divides by zero with / does not match its clause, in an entry guard and in a receive guard, and a division by a nonzero divisor still decides"
-# oracle: oracle.exs
-# oracle.stamp: b171daac4ee108b3
+# oracle: self
+# oracle.stamp: 399c8fda1464a787
 #---
 #
 # `/` always answers a float. By zero it fails, and in a guard a failure is the
 # clause not matching, so the next clause answers.
-def entry_by_zero(n) when n / 0 == 1, do: :a
-def entry_by_zero(_), do: :b
+defmodule Main do
+  def entry_by_zero(n) when n / 0 == 1, do: :a
 
-def entry_by_two(n) when n / 2 == 2.0, do: :a
-def entry_by_two(_), do: :b
+  def entry_by_zero(_), do: :b
 
-def receive_by_zero(m) do
-  send(self(), m)
-  receive do
-    n when n / 0 == 1 -> :a
-    _ -> :b
+  def entry_by_two(n) when n / 2 == 2.0, do: :a
+
+  def entry_by_two(_), do: :b
+
+  def receive_by_zero(m) do
+    send(self(), m)
+    receive do
+      n when n / 0 == 1 -> :a
+      _ -> :b
+    end
+  end
+
+  def receive_by_two(m) do
+    send(self(), m)
+    receive do
+      n when n / 2 == 2.0 -> :a
+      _ -> :b
+    end
+  end
+
+  def main() do
+    IO.inspect([entry_by_zero(4), entry_by_two(4), receive_by_zero(4), receive_by_two(4)])
   end
 end
 
-def receive_by_two(m) do
-  send(self(), m)
-  receive do
-    n when n / 2 == 2.0 -> :a
-    _ -> :b
-  end
-end
-
-def main() do
-  dbg([entry_by_zero(4), entry_by_two(4), receive_by_zero(4), receive_by_two(4)])
-end
+Main.main()

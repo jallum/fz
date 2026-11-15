@@ -1,9 +1,13 @@
 #---
 # purpose: "String.split(s, "") cuts at grapheme boundaries and keeps an empty binary at each end"
-# oracle: 01038_split_on_empty_cuts_at_cluster_boundaries.oracle.exs
-# oracle.stamp: 62391e5aecee1bf8
+# oracle: self
+# oracle.stamp: 5a018dd9aa8ad7a3
 #---
-def main() do
-  strings = ["abc", "é", "\r\n", "éx", "👨‍👩‍👧x", "🇫🇷🇫", "각x", "क्षx", "x́̂y"]
-  Enum.each(strings, fn s -> dbg(String.split(s, "")) end)
+defmodule Main do
+  def main() do
+    strings = ["abc", "é", "\r\n", "éx", "👨‍👩‍👧x", "🇫🇷🇫", "각x", "क्षx", "x́̂y"]
+    Enum.each(strings, fn s -> IO.inspect(String.split(s, "")) end)
+  end
 end
+
+Main.main()

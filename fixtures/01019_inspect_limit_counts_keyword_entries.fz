@@ -1,12 +1,16 @@
 #---
 # purpose: "inspect/2 limit: shows that many keyword entries, a key costing nothing beyond its entry"
-# oracle: 01019_inspect_limit_counts_keyword_entries.oracle.exs
-# oracle.stamp: 7750371b545942cf
+# oracle: self
+# oracle.stamp: d5338c7f9b0aa3c3
 #---
-def main() do
-  dbg(inspect([a: 1, b: 2, c: 3], limit: 2))
-  dbg(inspect([a: 1, b: 2, c: 3], limit: 3))
-  dbg(inspect(["foo bar": 1, b: [1, 2, 3]], limit: 3))
-  dbg(inspect([{:a, 1}, {"b", 2}], limit: 1))
-  dbg(inspect([a: [x: 1, y: 2], b: 2], limit: 3))
+defmodule Main do
+  def main() do
+    IO.inspect(inspect([a: 1, b: 2, c: 3], limit: 2))
+    IO.inspect(inspect([a: 1, b: 2, c: 3], limit: 3))
+    IO.inspect(inspect(["foo bar": 1, b: [1, 2, 3]], limit: 3))
+    IO.inspect(inspect([{:a, 1}, {"b", 2}], limit: 1))
+    IO.inspect(inspect([a: [x: 1, y: 2], b: 2], limit: 3))
+  end
 end
+
+Main.main()

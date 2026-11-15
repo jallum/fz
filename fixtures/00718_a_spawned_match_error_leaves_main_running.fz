@@ -1,21 +1,25 @@
 #---
 # purpose: "a spawned process whose = matches nothing raises MatchError and ends; main carries on and the program exits 0"
-# oracle: 00718_a_spawned_match_error_leaves_main_running.oracle.exs
-# oracle.stamp: 2e5088ebecae9467
+# oracle: self
+# oracle.stamp: d0a388a64c78cbd5
 #---
-# The oracle silences the logger, so only the program's own output is
+# Elixir's logger writes to stderr, so only the program's own output is
 # compared; the failure line is pinned as this program's diagnostics.
-defp fetch(), do: {:error, :closed}
+defmodule Main do
+  defp fetch(), do: {:error, :closed}
 
-def main() do
-  parent = self()
-  spawn(fn () ->
-    send(parent, :child_started)
-    {:ok, value} = fetch()
-    send(parent, value)
-  end)
-  receive do
-    message -> dbg(message)
+  def main() do
+    parent = self()
+    spawn(fn () ->
+      send(parent, :child_started)
+      {:ok, value} = fetch()
+      send(parent, value)
+    end)
+    receive do
+      message -> IO.inspect(message)
+    end
+    IO.inspect(:main_carried_on)
   end
-  dbg(:main_carried_on)
 end
+
+Main.main()

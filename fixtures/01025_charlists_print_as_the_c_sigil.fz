@@ -1,27 +1,31 @@
 #---
 # purpose: "A non-empty list of integers that are printable ASCII or bell through return or escape prints as ~c"..."; any other integer list stays a list"
-# oracle: 01025_charlists_print_as_the_c_sigil.oracle.exs
-# oracle.stamp: 548725893ff8d34e
+# oracle: self
+# oracle.stamp: a7b300669560399d
 #---
-def main() do
-  dbg([104, 105])
-  dbg([7, 104])
-  dbg([27])
-  dbg([10, 9])
-  dbg([34, 92])
-  dbg([35, 123])
-  dbg([32, 126])
-  dbg([])
-  dbg([0])
-  dbg([6])
-  dbg([14])
-  dbg([31])
-  dbg([127])
-  dbg([128])
-  dbg([233])
-  dbg([126, 127])
-  dbg([104, 105, 0])
-  dbg([[104, 105], 1])
-  dbg([104.0])
-  dbg([{104, 105}])
+defmodule Main do
+  def main() do
+    IO.inspect([104, 105])
+    IO.inspect([7, 104])
+    IO.inspect([27])
+    IO.inspect([10, 9])
+    IO.inspect([34, 92])
+    IO.inspect([35, 123])
+    IO.inspect([32, 126])
+    IO.inspect([])
+    IO.inspect([0])
+    IO.inspect([6])
+    IO.inspect([14])
+    IO.inspect([31])
+    IO.inspect([127])
+    IO.inspect([128])
+    IO.inspect([233])
+    IO.inspect([126, 127])
+    IO.inspect([104, 105, 0])
+    IO.inspect([[104, 105], 1])
+    IO.inspect([104.0])
+    IO.inspect([{104, 105}])
+  end
 end
+
+Main.main()

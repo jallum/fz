@@ -1,7 +1,7 @@
 #---
 # purpose: "a lambda named where it is used drives Enum.each through a grounded call, not the boxed seam"
-# oracle: oracle.exs
-# oracle.stamp: bb3dc7181f0151e3
+# oracle: self
+# oracle.stamp: 0b4a50e891dde277
 #---
 #
 # fz-kdt.155's control. The same `Enum.each/2` shape as
@@ -12,8 +12,12 @@
 # lambda's own return demand, both halves settle on zero delivered lanes, and
 # nothing crosses the boxed seam. Widening the boxed convention must leave this
 # path exactly as it is.
-def main() do
-  double = fn (x) -> dbg(x * 2) end
-  Enum.each([1, 2, 3], double)
-  dbg(:done)
+defmodule Main do
+  def main() do
+    double = fn (x) -> IO.inspect(x * 2) end
+    Enum.each([1, 2, 3], double)
+    IO.inspect(:done)
+  end
 end
+
+Main.main()

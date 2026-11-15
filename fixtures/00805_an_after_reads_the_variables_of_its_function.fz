@@ -1,19 +1,23 @@
 #---
 # purpose: "an after block uses what is in scope at the try, on the completing path and on the raising path"
-# oracle: 00805_an_after_reads_the_variables_of_its_function.oracle.exs
-# oracle.stamp: 348b5dd4f53d53cd
+# oracle: self
+# oracle.stamp: 3901c22caf97cd9e
 #---
-def attempt(label, f) do
-  try do
-    f.()
-  rescue
-    _ -> :rescued
-  after
-    dbg({:after, label})
+defmodule Main do
+  def attempt(label, f) do
+    try do
+      f.()
+    rescue
+      _ -> :rescued
+    after
+      IO.inspect({:after, label})
+    end
+  end
+
+  def main() do
+    IO.inspect(attempt(:one, fn () -> :fine end))
+    IO.inspect(attempt(:two, fn () -> raise "x" end))
   end
 end
 
-def main() do
-  dbg(attempt(:one, fn () -> :fine end))
-  dbg(attempt(:two, fn () -> raise "x" end))
-end
+Main.main()

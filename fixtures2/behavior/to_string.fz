@@ -1,7 +1,7 @@
 #---
 # purpose: "to_string/1 dispatches through String.Chars and agrees with Elixir for atoms, binaries, integers and floats"
-# oracle: oracle.exs
-# oracle.stamp: f6e9615625c5dca9
+# oracle: self
+# oracle.stamp: d3a581a06d519a2c
 #---
 #
 # # to_string
@@ -23,8 +23,8 @@
 #     `Kernel.to_string/1` convenience wrapper;
 #   * FLOAT, which is `Float.to_string/1` and NOT how `dbg` renders a float.
 #     The pair below prints one value BOTH ways so the divergence is exercised
-#     rather than described: `dbg(1000000000000000.0)` is
-#     `1000000000000000.0` and `dbg(to_string(...))` of the same value is
+#     rather than described: `IO.inspect(1000000000000000.0)` is
+#     `1000000000000000.0` and `IO.inspect(to_string(...))` of the same value is
 #     `"1.0e15"`. A fixture whose floats all render identically under both
 #     would not notice the two functions being collapsed into one;
 #   * an EMPTY ATOM. `:""` used to truncate the AOT atom table, so every atom
@@ -42,29 +42,33 @@
 #   * How `dbg` QUOTES an atom: fz prints `:atom_3` and `:foo bar` where Elixir
 #     prints `:""` and `:"foo bar"` (fz-5xp.44). That is the renderer, not
 #     to_string, and this fixture avoids depending on it.
-def main() do
-  dbg(to_string(:hello))
-  dbg(to_string(nil))
-  dbg(to_string(:nil_is_not_nil))
-  dbg(Atom.to_string(nil))
+defmodule Main do
+  def main() do
+    IO.inspect(to_string(:hello))
+    IO.inspect(to_string(nil))
+    IO.inspect(to_string(:nil_is_not_nil))
+    IO.inspect(Atom.to_string(nil))
 
-  dbg(to_string("already a binary"))
-  dbg(to_string(""))
+    IO.inspect(to_string("already a binary"))
+    IO.inspect(to_string(""))
 
-  dbg(to_string(0))
-  dbg(to_string(42))
-  dbg(String.Chars.to_string(42))
-  dbg(to_string(-7))
+    IO.inspect(to_string(0))
+    IO.inspect(to_string(42))
+    IO.inspect(String.Chars.to_string(42))
+    IO.inspect(to_string(-7))
 
-  dbg(to_string(2.5))
-  dbg(to_string(1.0))
-  dbg(to_string(-0.0))
-  dbg(to_string(0.1))
+    IO.inspect(to_string(2.5))
+    IO.inspect(to_string(1.0))
+    IO.inspect(to_string(-0.0))
+    IO.inspect(to_string(0.1))
 
-  # one value, both renderings: `inspect` writes a whole float below 1.0e16 out
-  # in full, `to_string` takes the shorter notation
-  dbg(1000000000000000.0)
-  dbg(to_string(1000000000000000.0))
+    # one value, both renderings: `inspect` writes a whole float below 1.0e16 out
+    # in full, `to_string` takes the shorter notation
+    IO.inspect(1000000000000000.0)
+    IO.inspect(to_string(1000000000000000.0))
 
-  dbg(to_string(:""))
+    IO.inspect(to_string(:""))
+  end
 end
+
+Main.main()

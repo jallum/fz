@@ -1,23 +1,27 @@
 #---
 # purpose: "anonymous fn clause heads accept Elixir's bare parameter-list forms"
-# oracle: oracle.exs
-# oracle.stamp: e363c9815422657f
+# oracle: self
+# oracle.stamp: 12c4169d0fe73f86
 #---
-def main() do
-  needle = 7
-  zero = fn -> :ok end
-  add = fn x, y -> x + y end
-  smaller = fn x, y when x < y -> x end
-  parenthesized = fn (x, y) -> x + y end
-  unpack = fn {x, y}, [z | zs] -> {x, y, z, zs} end
-  pinned = fn ^needle, value -> value end
+defmodule Main do
+  def main() do
+    needle = 7
+    zero = fn -> :ok end
+    add = fn x, y -> x + y end
+    smaller = fn x, y when x < y -> x end
+    parenthesized = fn (x, y) -> x + y end
+    unpack = fn {x, y}, [z | zs] -> {x, y, z, zs} end
+    pinned = fn ^needle, value -> value end
 
-  dbg({
-    zero.(),
-    add.(20, 22),
-    smaller.(3, 5),
-    parenthesized.(20, 22),
-    unpack.({1, 2}, [3, 4, 5]),
-    pinned.(7, :pinned)
-  })
+    IO.inspect({
+      zero.(),
+      add.(20, 22),
+      smaller.(3, 5),
+      parenthesized.(20, 22),
+      unpack.({1, 2}, [3, 4, 5]),
+      pinned.(7, :pinned)
+    })
+  end
 end
+
+Main.main()

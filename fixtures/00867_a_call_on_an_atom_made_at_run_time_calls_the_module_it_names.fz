@@ -1,7 +1,7 @@
 #---
 # purpose: "m.f(a) on a value typed as any atom calls the function of the module the atom names at run time: an atom made from a binary, the __struct__ field of a value known only to be a map, and a module the program never writes as a value"
-# oracle: 00867_a_call_on_an_atom_made_at_run_time_calls_the_module_it_names.oracle.exs
-# oracle.stamp: a32d1790388b003c
+# oracle: self
+# oracle.stamp: d231bbfa1334f5ce
 #---
 #
 # The receiver's type lists no module, so the call chooses among the modules
@@ -25,17 +25,21 @@ defmodule Bank.Frozen do
   def sides(), do: :none
 end
 
-def sides_of(name), do: String.to_atom(name).sides()
+defmodule Main do
+  def sides_of(name), do: String.to_atom(name).sides()
 
-def area_of(shape) when is_map(shape), do: shape.__struct__.area(shape)
+  def area_of(shape) when is_map(shape), do: shape.__struct__.area(shape)
 
-def main() do
-  dbg(sides_of("Elixir.Square"))
-  dbg(sides_of("Elixir.Circle"))
-  dbg(sides_of("Elixir.Bank.Frozen"))
-  dbg(area_of(%Circle{r: 2}))
-  dbg(area_of(%Square{s: 2}))
-  dbg(Enum.map(["Elixir.Circle", "Elixir.Square"], fn name -> String.to_atom(name).sides() end))
-  m = String.to_atom("Elixir.Square")
-  dbg(m.area(%Square{s: 5}))
+  def main() do
+    IO.inspect(sides_of("Elixir.Square"))
+    IO.inspect(sides_of("Elixir.Circle"))
+    IO.inspect(sides_of("Elixir.Bank.Frozen"))
+    IO.inspect(area_of(%Circle{r: 2}))
+    IO.inspect(area_of(%Square{s: 2}))
+    IO.inspect(Enum.map(["Elixir.Circle", "Elixir.Square"], fn name -> String.to_atom(name).sides() end))
+    m = String.to_atom("Elixir.Square")
+    IO.inspect(m.area(%Square{s: 5}))
+  end
 end
+
+Main.main()

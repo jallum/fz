@@ -1,7 +1,7 @@
 #---
 # purpose: "defstruct inside quote is the struct declaration of the module the macro is called in: a field list, a field list the macro computes and unquotes, and the bare keyword form with defaults"
-# oracle: 00877_a_macro_quotes_a_defstruct.oracle.exs
-# oracle.stamp: 06ab633bedc70270
+# oracle: self
+# oracle.stamp: f1461c223ff995e2
 #---
 defmodule Shapes do
   defmacro point() do
@@ -40,11 +40,15 @@ defmodule Sized do
   sized()
 end
 
-def main() do
-  dbg(%Pt{x: 1, y: 2})
-  dbg(%Pt{x: 1})
-  dbg(%Tagged{name: "square"})
-  dbg(%Tagged{tag: :other, sides: 3})
-  dbg(%Sized{})
-  dbg(%Sized{height: 5})
+defmodule Main do
+  def main() do
+    IO.inspect(%Pt{x: 1, y: 2})
+    IO.inspect(%Pt{x: 1})
+    IO.inspect(%Tagged{name: "square"})
+    IO.inspect(%Tagged{tag: :other, sides: 3})
+    IO.inspect(%Sized{})
+    IO.inspect(%Sized{height: 5})
+  end
 end
+
+Main.main()

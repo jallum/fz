@@ -1,21 +1,25 @@
 #---
 # purpose: "Enum.count, Enum.member? and Enum.reduce work over a %Stream{} and over a %File.Stream{}: neither answers count or member? itself, so each reduces"
-# oracle: 00774_enum_count_member_and_reduce_work_over_both_streams.oracle.exs
-# oracle.stamp: 0aeb0b0509e5a641
+# oracle: self
+# oracle.stamp: c4b9d51777fae66b
 #---
-def main() do
-  mapped = Stream.map([1, 2, 3], fn x -> x * 2 end)
-  dbg(Enum.count(mapped))
-  dbg(Enum.member?(mapped, 4))
-  dbg(Enum.member?(mapped, 3))
-  dbg(Enum.reduce(mapped, 0, fn x, acc -> x + acc end))
+defmodule Main do
+  def main() do
+    mapped = Stream.map([1, 2, 3], fn x -> x * 2 end)
+    IO.inspect(Enum.count(mapped))
+    IO.inspect(Enum.member?(mapped, 4))
+    IO.inspect(Enum.member?(mapped, 3))
+    IO.inspect(Enum.reduce(mapped, 0, fn x, acc -> x + acc end))
 
-  path = "00774_enum.tmp"
-  File.write!(path, "a\nbb\nccc\n")
-  file = File.stream!(path)
-  dbg(Enum.count(file))
-  dbg(Enum.member?(file, "bb\n"))
-  dbg(Enum.member?(file, "bb"))
-  dbg(Enum.reduce(file, 0, fn line, acc -> byte_size(line) + acc end))
-  File.rm!(path)
+    path = "00774_enum.tmp"
+    File.write!(path, "a\nbb\nccc\n")
+    file = File.stream!(path)
+    IO.inspect(Enum.count(file))
+    IO.inspect(Enum.member?(file, "bb\n"))
+    IO.inspect(Enum.member?(file, "bb"))
+    IO.inspect(Enum.reduce(file, 0, fn line, acc -> byte_size(line) + acc end))
+    File.rm!(path)
+  end
 end
+
+Main.main()

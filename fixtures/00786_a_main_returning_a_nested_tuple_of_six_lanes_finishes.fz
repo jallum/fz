@@ -1,9 +1,13 @@
 #---
 # purpose: "A root main that ends in a tuple whose nested fields flatten to six unboxed lanes still finishes: the root hands the host one word"
-# oracle: 00786_a_main_returning_a_nested_tuple_of_six_lanes_finishes.oracle.exs
-# oracle.stamp: 2dfdbe8c4544fe1d
+# oracle: self
+# oracle.stamp: 10c239e2358d94b6
 #---
-def main() do
-  dbg({1, 2, {3, 4, 5, 6}})
-  {1, 2, {3, 4, 5, 6}}
+defmodule Main do
+  def main() do
+    IO.inspect({1, 2, {3, 4, 5, 6}})
+    {1, 2, {3, 4, 5, 6}}
+  end
 end
+
+Main.main()

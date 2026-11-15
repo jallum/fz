@@ -1,23 +1,31 @@
 #---
 # purpose: "a guard that calls map_size, tuple_size, length or hd on a value of the wrong kind does not match, and the next clause is tried"
-# oracle: 01149_a_guard_call_that_raises_on_its_argument_is_the_guard_failing.oracle.exs
-# oracle.stamp: 5e9e809ac4962219
+# oracle: self
+# oracle.stamp: 3f14bd71da9b79fb
 #---
-def shape(x) when map_size(x) == 0, do: :empty_map
-def shape(x) when tuple_size(x) == 2, do: :pair
-def shape(x) when length(x) == 1, do: :singleton
-def shape(x) when hd(x) == :first, do: :headed
-def shape(_), do: :other
+defmodule Main do
+  def shape(x) when map_size(x) == 0, do: :empty_map
 
-def main() do
-  dbg(shape(%{}))
-  dbg(shape(%{a: 1}))
-  dbg(shape({1, 2}))
-  dbg(shape({1, 2, 3}))
-  dbg(shape([:only]))
-  dbg(shape([:first, :second]))
-  dbg(shape([]))
-  dbg(shape(:atom))
-  dbg(shape("text"))
-  dbg(shape(7))
+  def shape(x) when tuple_size(x) == 2, do: :pair
+
+  def shape(x) when length(x) == 1, do: :singleton
+
+  def shape(x) when hd(x) == :first, do: :headed
+
+  def shape(_), do: :other
+
+  def main() do
+    IO.inspect(shape(%{}))
+    IO.inspect(shape(%{a: 1}))
+    IO.inspect(shape({1, 2}))
+    IO.inspect(shape({1, 2, 3}))
+    IO.inspect(shape([:only]))
+    IO.inspect(shape([:first, :second]))
+    IO.inspect(shape([]))
+    IO.inspect(shape(:atom))
+    IO.inspect(shape("text"))
+    IO.inspect(shape(7))
+  end
 end
+
+Main.main()

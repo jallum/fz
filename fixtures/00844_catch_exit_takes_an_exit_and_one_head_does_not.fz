@@ -1,21 +1,25 @@
 #---
 # purpose: "catch :exit, reason takes exit/1 and binds its reason; a one-head catch is for throws only, so an exit passes through it to the outer catch"
-# oracle: 00844_catch_exit_takes_an_exit_and_one_head_does_not.oracle.exs
-# oracle.stamp: 874057e1df63e8f3
+# oracle: self
+# oracle.stamp: b1be1f9058c01e2b
 #---
-def main() do
-  dbg(try do
-    exit({:stopped, 3})
-  catch
-    :exit, reason -> reason
-  end)
-  dbg(try do
-    try do
-      exit(:inner)
+defmodule Main do
+  def main() do
+    IO.inspect(try do
+      exit({:stopped, 3})
     catch
-      thrown -> {:wrong, thrown}
-    end
-  catch
-    :exit, reason -> {:outer, reason}
-  end)
+      :exit, reason -> reason
+    end)
+    IO.inspect(try do
+      try do
+        exit(:inner)
+      catch
+        thrown -> {:wrong, thrown}
+      end
+    catch
+      :exit, reason -> {:outer, reason}
+    end)
+  end
 end
+
+Main.main()

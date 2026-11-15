@@ -1,14 +1,18 @@
 #---
 # purpose: "JSON.encode!/1 renders every supported object key as a JSON string"
-# oracle: oracle.exs
-# oracle.stamp: 638be6a95ed12a11
+# oracle: self
+# oracle.stamp: 398e6863128869e8
 #---
-def main() do
-  dbg(JSON.encode!(%{a: 1}))
-  dbg(JSON.encode!(%{nil => 1}))
-  dbg(JSON.encode!(%{true => 1}))
-  dbg(JSON.encode!(%{42 => 1}))
-  dbg(JSON.encode!(%{-45 => 1}))
-  dbg(JSON.encode!(%{2.5 => 1}))
-  dbg(JSON.encode!(%{"a\"b" => 1}))
+defmodule Main do
+  def main() do
+    IO.inspect(JSON.encode!(%{a: 1}))
+    IO.inspect(JSON.encode!(%{nil => 1}))
+    IO.inspect(JSON.encode!(%{true => 1}))
+    IO.inspect(JSON.encode!(%{42 => 1}))
+    IO.inspect(JSON.encode!(%{-45 => 1}))
+    IO.inspect(JSON.encode!(%{2.5 => 1}))
+    IO.inspect(JSON.encode!(%{"a\"b" => 1}))
+  end
 end
+
+Main.main()

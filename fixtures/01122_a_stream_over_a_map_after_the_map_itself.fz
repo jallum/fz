@@ -1,9 +1,13 @@
 #---
 # purpose: "Enumerable over a Map.put result followed by a stream over the same map reaches every Enumerable impl in either order; both lines print what Elixir prints"
-# oracle: 01122_a_stream_over_a_map_after_the_map_itself.oracle.exs
-# oracle.stamp: 5898e347cd7bcc6d
+# oracle: self
+# oracle.stamp: 0e1734f773d8b2db
 #---
-def main() do
-  dbg(Enum.to_list(Map.put(%{}, 1, 1)))
-  dbg(Enum.to_list(Stream.map(Map.put(%{}, 1, 1), &(&1))))
+defmodule Main do
+  def main() do
+    IO.inspect(Enum.to_list(Map.put(%{}, 1, 1)))
+    IO.inspect(Enum.to_list(Stream.map(Map.put(%{}, 1, 1), &(&1))))
+  end
 end
+
+Main.main()

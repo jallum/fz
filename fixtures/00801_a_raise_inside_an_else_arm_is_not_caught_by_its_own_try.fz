@@ -1,21 +1,25 @@
 #---
 # purpose: "an else arm runs outside the try's rescue: its raise reaches the enclosing rescue, and the try's after still runs"
-# oracle: 00801_a_raise_inside_an_else_arm_is_not_caught_by_its_own_try.oracle.exs
-# oracle.stamp: d555a09c4f9efb6d
+# oracle: self
+# oracle.stamp: 8d6d5889baaccc8d
 #---
-def main() do
-  result = try do
-    try do
-      :value
+defmodule Main do
+  def main() do
+    result = try do
+      try do
+        :value
+      rescue
+        _ -> :inner_rescue
+      else
+        :value -> raise ArgumentError, "from else"
+      after
+        IO.inspect(:after)
+      end
     rescue
-      _ -> :inner_rescue
-    else
-      :value -> raise ArgumentError, "from else"
-    after
-      dbg(:after)
+      e in ArgumentError -> e.message
     end
-  rescue
-    e in ArgumentError -> e.message
+    IO.inspect(result)
   end
-  dbg(result)
 end
+
+Main.main()
