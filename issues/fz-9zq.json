@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-15T03:39:55Z",
+  "description": "Goal: a function whose argument, accumulator or return nests deeper on every pass compiles, in time proportional to the program; a recursive type is a named leaf with an equation beside Types (Types stays descend-only); recursive @type is a supported language feature (user decision 2026-11-14).\nPlan: /Users/j5n/Workspace/fz-next.html (Line 2). Evidence: /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/mu2/findings.md, round2.md, round3.md, predictions.md, probes_round2.diff, probes_round3.diff.\nHistory: PR #217 (kdt.98.3/kdt.177) closed unmerged 2026-09-25. Its μ concept was sound (kernel lib 2312/0); its runaway was the SolveReturnComponent solver (818d940a4: AA\u003c-\u003eSolveReturnComponent loop, 0.94s -\u003e 217s), now superseded by engine groups; it never fixed recursive arguments/accumulators.\nPrior art: Van Hentenryck/Cortesi/Le Charlier, Type Analysis of Prolog Using Type Graphs (PLDI'94/JLP'95) - topological-clash widening with cycle introduction, at result update and at call; Patrignani/Martin/Devriese POPL'21 - iso- and equi-recursive types equally expressive; CDuce regular trees; #217 regular.rs.\nSignal: reproducer set (p2/p2d, t1/t2/t5 f({x}) family, return_tuple_accumulator, fz-69z struct wrap, Enum.reduce {x,acc}, fz-gjo bst, t4b {x,x}, recursive_typedef) finishing with pinned AnalyzeActivation counts on interp/JIT/AOT; json/distiller/00420 analyses and outputs unchanged.",
+  "id": "fz-9zq",
+  "labels": [],
+  "priority": 1,
+  "status": "open",
+  "title": "[EPIC] Recursive data compiles, and recursive types are named",
+  "type": "epic",
+  "updated_at": "2026-11-15T03:39:55Z"
+}
