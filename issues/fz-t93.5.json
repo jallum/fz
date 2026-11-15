@@ -6,14 +6,15 @@
   "blocks": [
     "fz-t93.6"
   ],
+  "closed_at": "2026-11-15T01:23:00Z",
   "created": "2026-11-14T04:26:07Z",
   "description": "cut_in_component_returns (jobs/transport.rs ~2182) asks whether the callee is in the owner's cycle group, under the derivation whose waits are Direct edges (closure-call returns skipped) or All edges; the non-rising function id tie-break is unchanged. Deletes ReachKey (Direct, All) and the Reach product entirely. On even/odd the cut must stay on odd-\u003eeven. Predict: dumps identical.\n\nPREMISE REFUTED 2026-11-14 with fz-t93.3 (scratchpad t93_3/findings.md 'H3', h1/report.md): engine cycle groups are scheduling facts that never shrink (an off-cycle member stays after an edit), so 'is the callee in the owner's cycle group' would keep cutting an edge whose cycle an edit removed. The read-graph alternative does not answer this question either: the cut needs separate Direct and All edge subsets over settled facts so every run cuts the same edges. Reach (Direct, All) stays a derived fact. Not built.",
   "id": "fz-t93.5",
   "labels": [],
   "parent": "fz-t93",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "The transport cut asks the engine for the owner's cycle group",
   "type": "task",
-  "updated_at": "2026-11-15T01:22:59Z"
+  "updated_at": "2026-11-15T01:23:00Z"
 }
