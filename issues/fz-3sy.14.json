@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-15T03:04:02Z",
   "created": "2026-11-12T23:56:31Z",
   "description": "Calling a function read back from a map or struct field works on develop; what is missing is the fixture that proves it and keeps it.\n\nProbed on develop 135b67da3 (and already on a18fb1519, 9e3a93c4e, 13d4783d0): each shape prints 1001 on interp, run and build, as Elixir does.\n\n    def sample(n), do: %{step: fn x -\u003e x + n end}\n\n    def main() do\n      s = sample(1)\n      dbg(s.step.(1000))\n    end\n\nThe same holds for a struct field (`defstruct [:step]`, `%Sample{step: fn x -\u003e x + n end}`), called as `s.step.(1000)` or through `f = s.step; f.(1000)`. The transport.rs panic (\"closure callee layout ... carries neither the captures ... nor one public word\") no longer reproduces. No fixture calls a closure read from a field: fixture 00855 still carries its function inside a tuple (`{first, tag, step} = s.pair`).\n\nDone when: an oracle fixture covers the three shapes (map field, struct field called directly, struct field through a local) on interp, run and build; fixture 00855 calls its function from the struct field directly instead of from inside a tuple; no pin moves.",
   "id": "fz-3sy.14",
   "labels": [],
   "parent": "fz-3sy",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "A closure read from a map or struct field is called, and a fixture keeps it so",
   "type": "task",
-  "updated_at": "2026-11-14T23:20:23Z"
+  "updated_at": "2026-11-15T03:04:02Z"
 }
