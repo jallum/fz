@@ -1,0 +1,11 @@
+#---
+# purpose: "a variable whose name starts with an underscore, and the bare underscore, never warn"
+#---
+def named(_x), do: 1
+def bare(_), do: 2
+
+def main() do
+  _unread = 3
+  dbg(named(1))
+  dbg(bare(1))
+end

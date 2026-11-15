@@ -1,0 +1,25 @@
+#---
+# purpose: "a variable read only by a guard, a pin, a fn, a binary size or a second occurrence in the same pattern is used, and does not warn"
+#---
+def guarded(x) when x > 0, do: :positive
+
+def pinned(x, y) do
+  case y do
+    ^x -> :same
+    _ -> :other
+  end
+end
+
+def captured(x), do: fn -> x end
+
+def sized(<<len, data::binary-size(len)>>), do: data
+
+def repeated({x, x}), do: :twice
+
+def main() do
+  dbg(guarded(1))
+  dbg(pinned(1, 1))
+  dbg(captured(1).())
+  dbg(sized(<<2, "ab">>))
+  dbg(repeated({1, 1}))
+end

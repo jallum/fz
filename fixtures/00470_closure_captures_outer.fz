@@ -1,7 +1,7 @@
 #---
 # purpose: a closure captures only the outer variable it actually reads
 #---
-def mk(x, y), do: fn(z) -> x + z end
+def mk(x, _y), do: fn(z) -> x + z end
 def main() do
   f = mk(3, 99)
   result = f.(4)

@@ -6,11 +6,11 @@ defprotocol Sizer do
 end
 
 defimpl Sizer, for: Integer do
-  def size(value), do: 1
+  def size(_value), do: 1
 end
 
 defimpl Sizer, for: List do
-  def size(value), do: 2
+  def size(_value), do: 2
 end
 
 def describe(value), do: Sizer.size(value)

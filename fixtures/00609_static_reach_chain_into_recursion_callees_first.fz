@@ -2,7 +2,7 @@
 # purpose: four callers (p1-p4) share one call chain of depth eight (c1-c8); the chain's callees are defined before its callers; the chain ends by entering a two-function recursion (ping/pong).
 #---
 def ping(n, junk), do: pong(n, junk)
-def pong(0, junk), do: 0
+def pong(0, _junk), do: 0
 def pong(n, junk), do: ping(n - 1, junk)
 def c8(x, junk), do: ping(x, junk)
 def c7(x, junk), do: c8(x, junk)

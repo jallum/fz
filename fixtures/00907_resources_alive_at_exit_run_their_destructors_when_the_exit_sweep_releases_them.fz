@@ -9,9 +9,9 @@
 extern "C" defp fz_resource_test_print_dtor(integer) :: nil
 def dwrap(x), do: fz_resource_test_print_dtor(x)
 def main() do
-  a = make_resource(10, &dwrap/1)
-  b = make_resource(20, &dwrap/1)
-  c = make_resource(30, &dwrap/1)
+  _a = make_resource(10, &dwrap/1)
+  _b = make_resource(20, &dwrap/1)
+  _c = make_resource(30, &dwrap/1)
   s1 = Integer.to_string(1) <> "a"
   s2 = Integer.to_string(2) <> "b"
   s3 = Integer.to_string(3) <> "c"

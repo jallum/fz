@@ -1,7 +1,7 @@
 #---
 # purpose: four callers (p1-p4) share one call chain of depth eight (c1-c8); the chain's callees are defined before its callers; the chain ends returning its argument.
 #---
-def c8(x, junk), do: x
+def c8(x, _junk), do: x
 def c7(x, junk), do: c8(x, junk)
 def c6(x, junk), do: c7(x, junk)
 def c5(x, junk), do: c6(x, junk)

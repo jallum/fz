@@ -8,7 +8,7 @@
 # leave `fns/1` inside a built tuple and each is called as a value.
 def fns(k) do
   {fn x -> x + k end, fn x -> x * k end, fn x -> x - k end, fn x -> x + 1 end, fn x -> x + 2 end,
-   fn x -> x + 3 end, fn x -> x + 4 end, fn x -> x + 5 end, fn x -> x + 6 end, fn x -> k end}
+   fn x -> x + 3 end, fn x -> x + 4 end, fn x -> x + 5 end, fn x -> x + 6 end, fn _x -> k end}
 end
 
 def all({a, b, c, d, e, f, g, h, i, j}, x) do

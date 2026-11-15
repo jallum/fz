@@ -25,6 +25,7 @@ mod native;
 pub(super) use native::produce_native_program;
 mod root;
 pub(crate) mod runtime_demand;
+mod scope;
 mod semantic;
 mod source;
 #[cfg(test)]

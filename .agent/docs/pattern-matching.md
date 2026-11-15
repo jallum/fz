@@ -570,3 +570,26 @@ clause cannot match because a previous clause at line N always matches".
 
 Diagnostics should not reimplement matching with syntax walkers. If a warning
 depends on dispatch reachability, ask the dispatch graph.
+
+A variable a clause binds and never reads warns `lower/unused-variable`, in
+Elixir's words: "variable \"x\" is unused (if the variable is not meant to be
+used, prefix it with an underscore)". A binding of a name already bound where
+it is made (a rebinding match, a `case` clause over an outer name) carries
+Elixir's other advice: "there is a variable with the same name in the context,
+use the pin operator (^) to match on it or prefix this variable with
+underscore if it is not meant to be used". A name that starts with `_`, and a
+name a macro wrote (`VarContext::Macro` or `Generated`), never warns.
+
+The question is one of scope, not of matching, and
+`src/compiler2/jobs/scope.rs` answers it. `ScopeWalk` holds the function's
+scoping rules once: every binding a head makes, with its span and whether it
+shadows, and which binding each reference reaches. A head is one pattern: a
+pin reads the scope before it, a name written twice is bound by its first
+occurrence and compared by the rest, and a binary size reads a field bound
+earlier in the same head. Lowering asks the same walk which names a nested
+block, handler, `receive` or lambda reads from outside it (`free_names` and
+its siblings), which is what each captures. `lower_function` asks it for the
+unused bindings of each clause, judged on its own, and emits them through
+`emit_warning_once`. Only a lowered function warns: a function the program
+never reaches is never lowered, where Elixir warns for every function it
+compiles. Fixtures `01304` through `01308` are the cases.

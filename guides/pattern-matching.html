@@ -228,6 +228,22 @@ everything it closes over &mdash; so a lambda can pin a capture:</p>
 same = <span class="kw">fn</span> ^x -&gt; <span class="atm">:same</span> <span class="kw">end</span>
 same.(<span class="num">1</span>)                    <span class="com"># :same</span></pre>
 
+<h3>A name nothing reads</h3>
+
+<p>A name a pattern binds and nothing reads is almost always a mistake,
+so it warns, in Elixir's words:</p>
+
+<pre><span class="kw">def</span> <span class="fn">size</span>(value), <span class="kw">do:</span> <span class="num">1</span>
+<span class="com"># warning[lower/unused-variable]: variable "value" is unused (if the variable</span>
+<span class="com"># is not meant to be used, prefix it with an underscore)</span></pre>
+
+<p>Write <code>_value</code> or <code>_</code> when the slot is meant to
+be ignored. A name read only by a guard, a pin, a <code>fn</code>, a
+binary size, or a second occurrence in the same pattern counts as read. A
+binding that reuses a name already in scope and is never read gets
+Elixir's other advice, to pin it if a match was meant. Each clause is
+judged on its own.</p>
+
 <h3>Prefixes: <code>&lt;&gt;</code> and <code>++</code> in a pattern</h3>
 
 <p>A pattern may peel a known prefix off a binary or a list. Both forms work

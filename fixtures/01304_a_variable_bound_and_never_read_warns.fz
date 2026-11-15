@@ -1,0 +1,28 @@
+#---
+# purpose: "a variable a function binds and never reads warns at its binding, in Elixir's words: a parameter, a match, a case clause, a fn parameter and a rescue binding"
+#---
+def param(x), do: 1
+
+def bound(a, b) do
+  c = a
+  case b do
+    {d, e} -> d
+  end
+end
+
+def lambda(), do: Enum.map([1, 2], fn y -> 0 end)
+
+def rescued() do
+  try do
+    raise ArgumentError, "no"
+  rescue
+    e in ArgumentError -> :rescued
+  end
+end
+
+def main() do
+  dbg(param(1))
+  dbg(bound(1, {2, 3}))
+  dbg(lambda())
+  dbg(rescued())
+end

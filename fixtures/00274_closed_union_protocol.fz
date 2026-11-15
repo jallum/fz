@@ -10,7 +10,7 @@ defimpl Sizer, for: Integer do
 end
 
 defimpl Sizer, for: List do
-  def size(value), do: 100
+  def size(_value), do: 100
 end
 
 def describe(value), do: Sizer.size(value)

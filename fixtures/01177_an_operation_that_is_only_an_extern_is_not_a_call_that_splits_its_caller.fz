@@ -16,7 +16,7 @@ end
 
 defmodule L do
   def run(0, acc), do: acc
-  def run(n, acc), do: run(n - 1, P.f(n, 0))
+  def run(n, _acc), do: run(n - 1, P.f(n, 0))
 end
 
 def main() do

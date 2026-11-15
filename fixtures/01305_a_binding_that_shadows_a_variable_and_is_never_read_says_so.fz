@@ -1,0 +1,19 @@
+#---
+# purpose: "an unused binding of a name already bound where it is made carries Elixir's shadowing advice: a rebinding match and a case clause; the variable it shadows is judged on its own"
+#---
+def rebound(x) do
+  x = x + 1
+  x = 2
+  x
+end
+
+def clause(x, y) do
+  case y do
+    x -> 1
+  end
+end
+
+def main() do
+  dbg(rebound(1))
+  dbg(clause(1, 2))
+end

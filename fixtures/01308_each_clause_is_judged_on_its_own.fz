@@ -1,0 +1,10 @@
+#---
+# purpose: "each clause of a function is judged on its own: a name one clause reads does not cover the same name another clause leaves unread"
+#---
+def pick(:first, a), do: 1
+def pick(:second, a), do: a
+
+def main() do
+  dbg(pick(:first, 10))
+  dbg(pick(:second, 20))
+end

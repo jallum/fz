@@ -780,7 +780,7 @@ fn try_of(rescue_clauses: &str) -> (Expr, Vec<crate::ast::RescueClause>) {
 
 fn rescue_shape(clause: &crate::ast::RescueClause) -> (Option<String>, Vec<String>) {
     (
-        clause.binding.as_ref().map(|binding| binding.name.clone()),
+        clause.binding.as_ref().map(|binding| binding.node.name.clone()),
         clause
             .exceptions
             .iter()

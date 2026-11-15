@@ -118,7 +118,7 @@ their block. A new epic claims the next free block and adds a row here.
 | `01260-01279` | fz-xxd                            | in use through `01264` |
 | `01280-01289` | fz-968                            | in use through `01280` |
 | `01290-01299` | fz-t93                            | in use through `01292` |
-| `01300-01319` | fz-3sy                            | in use through `01303` |
+| `01300-01319` | fz-3sy                            | in use through `01308` |
 | `01320-01339` | fz-nml                            | in use through `01330` |
 
 A fixture orders its processes with messages and never by a timing margin: an

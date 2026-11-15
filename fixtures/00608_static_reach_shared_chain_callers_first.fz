@@ -13,4 +13,4 @@ def c4(x, junk), do: c5(x, junk)
 def c5(x, junk), do: c6(x, junk)
 def c6(x, junk), do: c7(x, junk)
 def c7(x, junk), do: c8(x, junk)
-def c8(x, junk), do: x
+def c8(x, _junk), do: x

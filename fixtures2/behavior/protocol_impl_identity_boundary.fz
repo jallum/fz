@@ -64,12 +64,12 @@ defprotocol A.B do
 end
 
 defmodule A.B.C do
-  def val(x), do: 3
+  def val(_x), do: 3
 end
 
 defimpl A, for: TargetOne do
-  def val(x), do: 1
-  def key(x), do: &val/1
+  def val(_x), do: 1
+  def key(_x), do: &val/1
   def relay(x) do
     case x do
       value when self_val(value) > 0 -> self_val_after_display_edit(value)
@@ -78,8 +78,8 @@ defimpl A, for: TargetOne do
 end
 
 defimpl A.B, for: TargetTwo do
-  def val(x), do: 2
-  def key(x), do: &val/1
+  def val(_x), do: 2
+  def key(_x), do: &val/1
   def relay(x), do: self_val(x)
 end
 
@@ -91,7 +91,7 @@ defprotocol Solo do
 end
 
 defimpl Solo, for: List do
-  def val(x), do: 4
+  def val(_x), do: 4
   def relay(x), do: self_val(x)
 end
 
