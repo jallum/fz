@@ -9,10 +9,13 @@ use crate::heap::StubSite;
 use crate::heap::{Heap, Schema, deep_copy_slot};
 use crate::module_name::ModuleName;
 use crate::procbin::{BinView, SharedBinHandle, alloc_binref, alloc_buffer_view, alloc_view};
-use crate::resource::{ResourceHandle, alloc_resource, fz_resource_destructor_noop};
+use crate::resource::{ResourceHandle, alloc_resource};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
+
+/// A destructor word the test never dispatches: the resource only carries it.
+const TEST_DESTRUCTOR: u64 = 0xD7;
 
 /// A view of `bit_len` bits that starts `byte_offset` bytes into a buffer that
 /// enters the heap with it, as a buffer does when a message copy brings it.
@@ -280,16 +283,8 @@ fn typed_closure_and_resource_identity_survive_transport_without_comparison_allo
     );
     let mut source = Heap::with_node(1024, Rc::clone(&schemas), Rc::clone(&node));
     let mut destination = Heap::with_node(1024, Rc::clone(&schemas), Rc::clone(&node));
-    let resource = alloc_resource(
-        &mut source,
-        ResourceHandle::new(99, fz_resource_destructor_noop),
-        AnyValue::null(),
-    );
-    let distinct = alloc_resource(
-        &mut source,
-        ResourceHandle::new(99, fz_resource_destructor_noop),
-        AnyValue::null(),
-    );
+    let resource = alloc_resource(&mut source, ResourceHandle::new(99, TEST_DESTRUCTOR));
+    let distinct = alloc_resource(&mut source, ResourceHandle::new(99, TEST_DESTRUCTOR));
     let resource = AnyValue::heap_ptr(resource.as_raw(), ValueKind::RESOURCE);
     let distinct = AnyValue::heap_ptr(distinct.as_raw(), ValueKind::RESOURCE);
     let a = source.alloc_closure_slots(denotation, 0, 1, 0);

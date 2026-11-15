@@ -7,11 +7,14 @@ use crate::any_value::{
     list_addr_from_tagged,
 };
 use crate::heap::{StubCounts, StubSite};
-use crate::procbin::{BinView, SharedBinHandle, alloc_buffer_view, mso_sweep, mso_unreached_closures};
-use crate::resource::{ResourceHandle, alloc_resource, fz_resource_destructor_noop};
+use crate::procbin::{BinView, SharedBinHandle, alloc_buffer_view, mso_sweep};
+use crate::resource::{ResourceHandle, alloc_resource};
 use crate::sync::Ordering;
 use std::cell::RefCell;
 use std::rc::Rc;
+
+/// A destructor word the test never dispatches: the resource only carries it.
+const TEST_DESTRUCTOR: u64 = 0xD7;
 
 fn fresh_registry() -> Rc<RefCell<SchemaRegistry>> {
     Rc::new(RefCell::new(SchemaRegistry::new()))
@@ -289,8 +292,8 @@ fn alloc_unrooted_stubs(heap: &mut Heap, binaries: usize, resources: usize) {
         alloc_buffer_view(heap, SharedBinHandle::from_bytes(&[7; 8]), 64, StubSite::FilledBuffer);
     }
     for _ in 0..resources {
-        let handle = ResourceHandle::new(1, fz_resource_destructor_noop);
-        alloc_resource(heap, handle, AnyValue::nil_atom());
+        let handle = ResourceHandle::new(1, TEST_DESTRUCTOR);
+        alloc_resource(heap, handle);
     }
 }
 
@@ -318,36 +321,31 @@ fn a_collection_follows_one_link_per_binary_stub() {
     assert_eq!(heap.collect(&mut roots).stub_visits, 5, "surviving stubs");
 }
 
-/// The destructor search walks the resource chain alone, and the sweep walks
-/// every stub once, so a collection of R resource stubs and N binary stubs
-/// follows R + (N + R) links.
+/// A collection decides every stub, binary or resource, in one walk, so a
+/// heap of N binary stubs and R resource stubs follows N + R chain links: no
+/// separate search precedes the sweep.
 #[test]
-fn the_destructor_search_walks_only_resource_stubs_and_the_sweep_every_stub_once() {
+fn a_collection_walks_the_binary_and_resource_stubs_once_each() {
     let (binaries, resources) = (4, 3);
     let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
     alloc_unrooted_stubs(&mut heap, binaries, resources);
 
-    let mut search_visits = 0;
-    let unreached = mso_unreached_closures(&heap, Generation::Minor, &mut search_visits);
-    assert_eq!(unreached.len(), resources);
-    assert_eq!(search_visits, resources as u64);
-
     let mut sweep_visits = 0;
-    let dead = mso_sweep(
+    mso_sweep(
         &mut heap,
         Generation::Minor,
-        |stub| stub.closure_value(),
         &mut sweep_visits,
         &mut StubCounts::default(),
     );
-    assert_eq!(dead.len(), resources);
     assert_eq!(sweep_visits, (binaries + resources) as u64);
+    assert_eq!(
+        heap.pending_dtors.len(),
+        resources,
+        "every dead unclaimed resource queued its destructor"
+    );
 
     alloc_unrooted_stubs(&mut heap, binaries, resources);
-    assert_eq!(
-        heap.collect(&mut []).stub_visits,
-        (resources + binaries + resources) as u64
-    );
+    assert_eq!(heap.collect(&mut []).stub_visits, (binaries + resources) as u64);
 }
 
 /// A minor collection follows only the young chains; a major collection also
@@ -361,11 +359,7 @@ fn a_major_collection_follows_the_old_chains_and_a_minor_does_not() {
         64,
         StubSite::FilledBuffer,
     );
-    let rs = alloc_resource(
-        &mut heap,
-        ResourceHandle::new(1, fz_resource_destructor_noop),
-        AnyValue::nil_atom(),
-    );
+    let rs = alloc_resource(&mut heap, ResourceHandle::new(1, TEST_DESTRUCTOR));
     let ballast = list_of(&mut heap, 0, 400, EMPTY_LIST);
     let mut roots = [
         root_of(heap_object_word(pb.as_raw(), ValueKind::BINVIEW)),
@@ -374,10 +368,7 @@ fn a_major_collection_follows_the_old_chains_and_a_minor_does_not() {
     ];
     let first = heap.collect(&mut roots);
     assert_eq!(first.generation, Generation::Minor);
-    assert_eq!(
-        first.stub_visits, 3,
-        "the resource search, then one sweep link per stub"
-    );
+    assert_eq!(first.stub_visits, 2, "one sweep link per stub");
     assert_ne!(heap.mso_old_head, 0, "the binary survivor is on the old binary chain");
     assert_ne!(
         heap.resource_old_head, 0,
@@ -387,7 +378,7 @@ fn a_major_collection_follows_the_old_chains_and_a_minor_does_not() {
 
     let second = heap.collect(&mut roots);
     assert_eq!(second.generation, Generation::Major);
-    assert_eq!(second.stub_visits, 3, "the major collection follows the old chains");
+    assert_eq!(second.stub_visits, 2, "the major collection follows the old chains");
     assert_ne!(heap.mso_old_head, 0);
     assert_ne!(heap.resource_old_head, 0);
 }

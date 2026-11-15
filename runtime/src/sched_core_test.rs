@@ -1,12 +1,12 @@
 use super::*;
 use crate::any_value::{
-    AnyValue, ClosureDenotationId, EMPTY_LIST, closure_addr_from_tagged, closure_capture_set, closure_capture_value,
+    AnyValue, AnyValueRef, ClosureDenotationId, EMPTY_LIST, ValueKind, closure_addr_from_tagged, closure_capture_set,
     list_addr_from_tagged,
 };
 use crate::clock::Clock;
 use crate::heap::{Heap, SchemaRegistry};
 use crate::process::{Collection, CollectionBoundary, Disposition, ProcessState};
-use crate::resource::{ResourceHandle, alloc_resource, fz_resource_destructor_noop};
+use crate::resource::{ResourceHandle, alloc_resource};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -511,20 +511,11 @@ fn closure_ref_capturing(process: &mut Process, value: AnyValue) -> AnyValueRef 
     AnyValueRef::from_heap_object(ValueKind::CLOSURE, closure).expect("closure ref")
 }
 
-fn closure_capturing(process: &mut Process, value: AnyValue) -> AnyValue {
-    AnyValue::HeapRef(closure_ref_capturing(process, value))
-}
-
-/// Make a resource whose destructor closure captures a one-cell list headed by
-/// `tag`, and return the stub's value so a caller can keep it reachable.
-fn make_resource(process: &mut Process, payload: u64, tag: i64) -> AnyValue {
-    let list = int_list(&mut process.heap, tag);
-    let closure = closure_capturing(process, AnyValue::HeapRef(list));
-    let stub = alloc_resource(
-        &mut process.heap,
-        ResourceHandle::new(payload, fz_resource_destructor_noop),
-        closure,
-    );
+/// Make a resource whose destructor is the literal closure whose code word is
+/// `code`, and return the stub's value so a caller can keep it reachable.
+fn make_resource(process: &mut Process, payload: u64, code: u64) -> AnyValue {
+    let destructor = process.heap.node.static_closure(ClosureDenotationId::user(0), 1, code);
+    let stub = alloc_resource(&mut process.heap, ResourceHandle::new(payload, destructor.raw_word()));
     AnyValue::heap_ptr(stub.as_raw(), ValueKind::RESOURCE)
 }
 
@@ -540,20 +531,14 @@ fn allocate_until_due(process: &mut Process) {
     }
 }
 
-/// The list head a dispatched destructor's closure captured, read back from
-/// the closure word the scheduler handed to the driver.
-fn captured_tag(closure: u64) -> i64 {
+/// The code word of the destructor closure the scheduler handed to the
+/// driver: which literal closure was dispatched.
+fn code_of(closure: u64) -> u64 {
     let closure = AnyValueRef::from_raw_word(closure)
         .expect("closure ref")
         .closure_addr()
         .expect("closure");
-    match unsafe { closure_capture_value(closure, 0) } {
-        AnyValue::HeapRef(list) => {
-            unsafe { (*(list.list_addr().expect("list addr") as *const crate::any_value::ListCons)).head_value() }.raw()
-                as i64
-        }
-        other => panic!("the destructor closure captured a list: {other:?}"),
-    }
+    unsafe { crate::any_value::closure_fn_ptr(closure) }
 }
 
 fn payload_of(payload_ref: u64) -> i64 {
@@ -563,8 +548,7 @@ fn payload_of(payload_ref: u64) -> i64 {
 }
 
 /// A resource whose last reference died in the heap a collection just moved
-/// still has its destructor run: the closure and what it captured survive the
-/// collection, and the dispatch happens at the same boundary.
+/// still has its destructor run, at the same boundary as the collection.
 #[test]
 fn a_resource_freed_by_a_collection_has_its_destructor_dispatched_at_the_boundary() {
     let mut scheduler = Recording::new();
@@ -586,9 +570,9 @@ fn a_resource_freed_by_a_collection_has_its_destructor_dispatched_at_the_boundar
     assert_eq!(scheduler.destructors.len(), 1, "one dead resource, one dispatch");
     let (closure, payload) = scheduler.destructors[0];
     assert_eq!(
-        captured_tag(closure),
+        code_of(closure),
         4242,
-        "the closure's captures outlive the from-space"
+        "the dispatched closure is the resource's own destructor"
     );
     assert_eq!(payload_of(payload), 77);
     assert_eq!(process.dtors_dispatched, 1);
@@ -598,6 +582,30 @@ fn a_resource_freed_by_a_collection_has_its_destructor_dispatched_at_the_boundar
         (0, 0),
         "the dead stub left the chains"
     );
+}
+
+/// The queue holds the raw payload, no heap word; the payload becomes a boxed
+/// integer on the process heap only as the destructor is dispatched.
+#[test]
+fn a_queued_raw_payload_is_boxed_as_an_integer_just_before_dispatch() {
+    let mut scheduler = Recording::new();
+    let mut process = new_process();
+    let destructor = process.heap.node.static_closure(ClosureDenotationId::user(0), 1, 11);
+    process.heap.pending_dtors.push_back((destructor.raw_word(), 0xfeed));
+    let bytes_before = process.heap.bytes_used();
+
+    drain_destructors(&mut scheduler, &mut process);
+
+    let [(closure, payload)] = scheduler.destructors[..] else {
+        panic!("one queued destructor is one dispatch: {:?}", scheduler.destructors);
+    };
+    assert_eq!(closure, destructor.raw_word());
+    assert_eq!(payload_of(payload), 0xfeed);
+    assert!(
+        process.heap.bytes_used() > bytes_before,
+        "the box was allocated at dispatch"
+    );
+    assert!(process.heap.pending_dtors.is_empty());
 }
 
 /// A resource the process still holds is not dead: the collection keeps its
@@ -643,10 +651,10 @@ fn a_halted_process_dispatches_the_destructor_of_every_resource_it_held() {
         "exit sweeps the chain without a to-space"
     );
     assert_eq!(process.state, ProcessState::Exited);
-    let dispatched: Vec<(i64, i64)> = scheduler
+    let dispatched: Vec<(u64, i64)> = scheduler
         .destructors
         .iter()
-        .map(|&(closure, payload)| (captured_tag(closure), payload_of(payload)))
+        .map(|&(closure, payload)| (code_of(closure), payload_of(payload)))
         .collect();
     assert_eq!(
         dispatched,

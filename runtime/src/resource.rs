@@ -8,19 +8,19 @@
 //!
 //! Divergence from `SharedBin`/`BinRef`:
 //!   * The dtor is **user-supplied at allocation time**, not one of two
-//!     fixed dtors. Every Resource carries its own
-//!     `unsafe extern "C" fn(payload: u64)` pointer.
-//!   * The dtor receives the **payload only**, not the wrapper. The
-//!     runtime frees the wrapper (Box::from_raw drop) after the dtor
-//!     returns. This keeps externs called from fz ergonomic
-//!     (`extern "C" def fd_close(integer) :: nil` rather than wrapping/unwrapping).
+//!     fixed dtors. Every Resource carries its own destructor: the value-ref
+//!     word of a literal (capture-free) fz closure, which lives outside every
+//!     heap and so is valid whenever the last reference drops.
+//!   * The dtor is fz code, so the sweep never runs it: the last release hands
+//!     back (destructor, payload) and the scheduler runs the closure with the
+//!     payload at its next boundary.
 //!
 //! FFI constraint for v0: payload is a raw 64-bit integer handle. That
 //! covers fd-like resources today and leaves room for an opaque pointer
 //! type later without teaching Resource about fz value kinds.
 //!
 //! Refcount ordering uses the same canonical Arc pattern as binview:
-//! Relaxed on retain, Release on dec, Acquire fence + dtor on 1→0.
+//! Relaxed on retain, Release on dec, Acquire fence on 1→0.
 //!
 //! A resource may also be claimed explicitly. Claiming is a shared one-way
 //! transition: every alias, including aliases transported to another process,
@@ -46,8 +46,8 @@
 //! boundary and so does **not** retain.
 //!
 //! Release happens via the per-heap MSO sweep (post-Cheney for live
-//! processes; `mso_drop_all` at heap drop). On 1→0 we run the user dtor
-//! exactly once with the stored payload and free the wrapper. The dtor
+//! processes; `mso_drop_all` at heap drop). On 1→0 the sweep queues the user
+//! dtor exactly once with the stored payload and frees the wrapper. The dtor
 //! therefore fires:
 //!   * when the owning process exits and its heap is dropped, or
 //!   * earlier if a GC sweep finds the stub unreachable from the roots.
@@ -91,24 +91,23 @@ impl ResourceId {
     }
 }
 
-pub(crate) const RESOURCE_STUB_MAGIC: u64 = 0xF75E_5012_CE57_0B0B;
-
 // ===== Resource layout ======================================================
 
 /// Off-heap refcounted resource. `refcount` controls lifetime; `destructor`
-/// is invoked exactly once with `payload` when the refcount transitions to
-/// zero. The runtime frees the wrapper itself after the dtor returns.
+/// is the value-ref word of a literal closure the scheduler runs exactly once
+/// with `payload` after the refcount transitions to zero. The runtime frees
+/// the wrapper itself at that transition.
 /// 16-ALIGNED for the same reason as `SharedBin`: a ResourceStub holds this
 /// address in word 0, which is also the word where the collector writes its
 /// forwarding marker. A forwarded stub is told from a live one by a set low
 /// nibble, so a live pointer's low nibble must be clear.
 #[repr(C, align(16))]
 pub struct Resource {
-    pub refcount: AtomicUsize,                          // offset 0..8
-    pub destructor: unsafe extern "C" fn(payload: u64), // offset 8..16
-    pub payload: u64,                                   // offset 16..24
-    id: ResourceId,                                     // offset 24..32
-    lifecycle: AtomicUsize,                             // offset 32..40
+    pub refcount: AtomicUsize, // offset 0..8
+    pub destructor: u64,       // offset 8..16: literal closure ref word
+    pub payload: u64,          // offset 16..24
+    id: ResourceId,            // offset 24..32
+    lifecycle: AtomicUsize,    // offset 32..40
 }
 
 /// 40 bytes of fields, rounded up to the resource's 16-byte alignment.
@@ -130,14 +129,6 @@ const RESOURCE_CLAIMED: usize = 1;
 
 // ===== Built-in dtors =======================================================
 
-/// No-op destructor. Useful as a sentinel for tests and for callers who
-/// want a Resource whose payload requires no cleanup.
-///
-/// # Safety
-/// `_payload` is unused; signature matches the `destructor` field type.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn fz_resource_destructor_noop(_payload: u64) {}
-
 /// Test/fixture dtor: prints `dtor:<n>` to stdout where `n`
 /// is the raw integer payload.
 /// Always exported (not `cfg(test)`) so AOT-linked fixtures can name it
@@ -156,11 +147,12 @@ pub unsafe extern "C" fn fz_resource_test_print_dtor(payload: u64) {
 // ===== Allocation + refcount primitives ====================================
 
 /// Allocate a fresh `Resource` with refcount = 1 carrying `payload` and
-/// `dtor`. Returns the raw pointer; caller owns one refcount edge.
-pub fn resource_alloc(payload: u64, dtor: unsafe extern "C" fn(u64)) -> *mut Resource {
+/// `destructor`, a literal closure's value-ref word. Returns the raw pointer;
+/// caller owns one refcount edge.
+pub fn resource_alloc(payload: u64, destructor: u64) -> *mut Resource {
     let r = Box::new(Resource {
         refcount: AtomicUsize::new(1),
-        destructor: dtor,
+        destructor,
         payload,
         id: ResourceId::fresh(),
         lifecycle: AtomicUsize::new(RESOURCE_LIVE),
@@ -194,8 +186,9 @@ pub unsafe extern "C" fn fz_resource_retain(p: *mut Resource) {
     debug_assert!(old < usize::MAX / 2, "Resource refcount overflow");
 }
 
-/// Decrement the refcount and run the destructor + free the wrapper if
-/// this was the last reference. Release ordering on the decrement;
+/// Decrement the refcount and free the wrapper if this was the last
+/// reference. The destructor is not run: it is fz code, queued only through
+/// `fz_resource_release_deferred`. Release ordering on the decrement;
 /// Acquire fence on final drop synchronises with every other releaser.
 ///
 /// # Safety
@@ -207,42 +200,34 @@ pub unsafe extern "C" fn fz_resource_release(p: *mut Resource) {
     let r = unsafe { &*p };
     if r.refcount.fetch_sub(1, Ordering::Release) == 1 {
         fence(Ordering::Acquire);
-        let dtor = r.destructor;
-        let payload = r.payload;
-        let claimed = r.is_claimed();
         // SAFETY: refcount went 1 → 0, so we own the unique reference.
-        // Reconstruct the Box BEFORE invoking the dtor so the wrapper is
-        // reclaimed even if the dtor panics (Box::from_raw drop is in the
-        // scope; we've already snapshotted payload/dtor above).
-        let _wrapper = unsafe { Box::from_raw(p) };
-        if !claimed {
-            unsafe { dtor(payload) };
-        }
+        drop(unsafe { Box::from_raw(p) });
     }
 }
 
 /// Release variant for resources whose destructor is fz code.
 ///
-/// Decrements the refcount, frees the wrapper if this was the final ref,
-/// and returns the payload so the caller can queue it with the stub's closure
-/// on the heap's `pending_dtors`. Does **not** invoke the stored C destructor:
-/// the closure runs as fz code at the next scheduler boundary.
+/// Decrements the refcount, frees the wrapper if this was the final ref, and
+/// returns the destructor closure word with the payload so the caller can
+/// queue them on the heap's `pending_dtors`. The closure runs as fz code at
+/// the next scheduler boundary.
 ///
-/// Returns `Some(payload)` on the final-ref transition (1 → 0), `None`
-/// otherwise (another stub still holds the resource alive).
+/// Returns `Some((destructor, payload))` on the final-ref transition (1 → 0)
+/// of an unclaimed resource, `None` otherwise (another stub still holds the
+/// resource alive, or its owner claimed it).
 ///
 /// # Safety
-/// `p` must point at a live Resource. After `Some(_)` returns the caller
-/// must not dereference `p` again — the wrapper has been freed.
-pub unsafe fn fz_resource_release_deferred(p: *mut Resource) -> Option<u64> {
+/// `p` must point at a live Resource. After the final release the caller must
+/// not dereference `p` again: the wrapper has been freed.
+pub unsafe fn fz_resource_release_deferred(p: *mut Resource) -> Option<(u64, u64)> {
     debug_assert!(!p.is_null());
     let r = unsafe { &*p };
     if r.refcount.fetch_sub(1, Ordering::Release) == 1 {
         fence(Ordering::Acquire);
-        let payload = r.payload;
+        let queued = (r.destructor, r.payload);
         let claimed = r.is_claimed();
-        let _wrapper = unsafe { Box::from_raw(p) };
-        (!claimed).then_some(payload)
+        drop(unsafe { Box::from_raw(p) });
+        (!claimed).then_some(queued)
     } else {
         None
     }
@@ -255,8 +240,8 @@ pub struct ResourceHandle(NonNull<Resource>);
 
 impl ResourceHandle {
     /// Allocate a new heap-backed Resource and wrap the initial refcount.
-    pub fn new(payload: u64, dtor: unsafe extern "C" fn(u64)) -> Self {
-        let p = resource_alloc(payload, dtor);
+    pub fn new(payload: u64, destructor: u64) -> Self {
+        let p = resource_alloc(payload, destructor);
         Self(NonNull::new(p).expect("resource_alloc returned null"))
     }
 
@@ -306,21 +291,15 @@ impl Drop for ResourceHandle {
 
 // ===== ResourceStub (on-heap strict tagged stub) ============================
 
-pub(crate) const RESOURCE_STUB_SIZE: usize = 48;
-const RESOURCE_STUB_MAGIC_OFFSET: usize = 8;
-const RESOURCE_STUB_CLOSURE_RAW_OFFSET: usize = 16;
-const RESOURCE_STUB_CLOSURE_KIND_OFFSET: usize = 24;
-const RESOURCE_STUB_MSO_NEXT_OFFSET: usize = 32;
+pub(crate) const RESOURCE_STUB_SIZE: usize = 16;
+const RESOURCE_STUB_MSO_NEXT_OFFSET: usize = 8;
 
-/// Per-heap stub referencing a `Resource`. The live payload is 40 bytes,
-/// allocated as 48 bytes to preserve the heap's 16-byte object alignment:
+/// Per-heap stub referencing a `Resource`, exactly the heap's 16-byte object
+/// alignment:
 ///   offset  0..8   shared_ptr:  *mut Resource     (off-heap, refcounted)
-///   offset  8..16  resource tag magic             (MSO discriminator)
-///   offset 16..24  closure raw word               (on-heap dtor closure)
-///   offset 24..25  closure kind byte              (object-local metadata)
-///   offset 25..32  padding
-///   offset 32..40  mso_next:    u64 tagged MSO link, or 0
-///   offset 40..48  padding
+///   offset  8..16  mso_next:    u64 tagged MSO link, or 0
+/// The destructor lives on the shared `Resource`, so the stub holds no heap
+/// edge for the collector to trace.
 #[repr(transparent)]
 #[derive(Clone, Copy)]
 pub struct ResourceStub(NonNull<u8>);
@@ -344,24 +323,6 @@ impl ResourceStub {
     fn shared_raw_set(&self, p: *mut Resource) {
         unsafe {
             write(self.as_raw() as *mut *mut Resource, p);
-        }
-    }
-
-    /// The dtor closure value. Filled in by `alloc_resource` and traced by
-    /// Cheney like any other heap edge while the stub is reachable.
-    pub fn closure_value(&self) -> AnyValue {
-        let raw = unsafe { read(self.as_raw().add(RESOURCE_STUB_CLOSURE_RAW_OFFSET) as *const u64) };
-        let kind = unsafe { read(self.as_raw().add(RESOURCE_STUB_CLOSURE_KIND_OFFSET) as *const u8) };
-        AnyValue::decode_parts(raw, kind).expect("resource closure kind")
-    }
-
-    pub(crate) fn closure_value_set(&self, value: AnyValue) {
-        unsafe {
-            write(
-                self.as_raw().add(RESOURCE_STUB_CLOSURE_RAW_OFFSET) as *mut u64,
-                value.raw(),
-            );
-            write(self.as_raw().add(RESOURCE_STUB_CLOSURE_KIND_OFFSET), value.kind().tag());
         }
     }
 
@@ -403,7 +364,8 @@ impl ResourceStub {
         AnyValue::int(self.payload() as i64)
     }
 
-    pub fn destructor(&self) -> unsafe extern "C" fn(u64) {
+    /// The destructor closure's value-ref word.
+    pub fn destructor(&self) -> u64 {
         unsafe { (*self.shared_raw()).destructor }
     }
 
@@ -414,19 +376,13 @@ impl ResourceStub {
 
 // ===== Allocation on a per-process heap =====================================
 
-/// Allocate a strict 48-byte Resource stub on `heap`, taking ownership of the
-/// Resource reference encapsulated in `handle`. `closure` is the dtor
-/// closure value, which the scheduler runs when the stub dies. The
-/// new stub is pushed onto `heap.resource_head`, the young resource chain, as
-/// the new chain head.
-pub fn alloc_resource(heap: &mut Heap, handle: ResourceHandle, closure: AnyValue) -> ResourceStub {
+/// Allocate a strict 16-byte Resource stub on `heap`, taking ownership of the
+/// Resource reference encapsulated in `handle`. The new stub is pushed onto
+/// `heap.resource_head`, the young resource chain, as the new chain head.
+pub fn alloc_resource(heap: &mut Heap, handle: ResourceHandle) -> ResourceStub {
     let p = heap.alloc_kind(HeapAllocKind::Resource, RESOURCE_STUB_SIZE);
     let rs = unsafe { ResourceStub::from_raw(p) };
     rs.shared_raw_set(handle.into_raw());
-    unsafe {
-        write(p.add(RESOURCE_STUB_MAGIC_OFFSET) as *mut u64, RESOURCE_STUB_MAGIC);
-    }
-    rs.closure_value_set(closure);
     let previous_head = heap.resource_push(heap_object_word(p, ValueKind::RESOURCE));
     rs.mso_next_set(previous_head);
     rs

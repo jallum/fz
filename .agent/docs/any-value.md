@@ -850,7 +850,8 @@ yield, unless it has been stored in a traced root.
 
 GC copies each reachable object as a whole unit, then follows only the payload
 slots whose object-local kind byte says `is_heap()`
-(`cheney_trace_list`/`_map`/`_struct`/`_closure`/`_resource`):
+(`cheney_trace_list`/`_map`/`_struct`/`_closure`/`_binview`; a resource stub holds
+no heap edge):
 
 ```text
 copy:   every reachable object moves as a unit
@@ -883,11 +884,14 @@ low nibble, so "low nibble set" is the whole forwarding test: one read, no
 confirming word (`runtime/src/heap/gc/forwarding.rs`). Copying a view into another heap makes that heap its own `BinRef`, which retains
 one edge. Cheney copies a live view and traces its `BinRef`, copied and forwarded
 once; moving a `BinRef` during GC preserves its edge; sweeping an unreachable `BinRef` or resource stub
-or dropping its heap releases it. An immediate last release invokes the
-allocation's destructor and reclaims its storage. Deferred resource release
-reclaims the wrapper and returns its payload for later destructor dispatch,
-without invoking the stored C destructor. Static binaries keep a permanent
-anchor and use a no-op destructor.
+or dropping its heap releases it. An immediate last release of a `SharedBin`
+invokes the allocation's destructor and reclaims its storage. A `Resource`
+holds its destructor as the value-ref word of a literal (capture-free) closure,
+which lives outside every heap; deferred resource release reclaims the wrapper
+and returns `(destructor, payload)` for later destructor dispatch. The 16-byte
+resource stub is `shared_ptr` and `mso_next` alone. A deep copy of a stub
+retains the shared `Resource` and copies no closure. Static binaries keep a
+permanent anchor and use a no-op destructor.
 
 Lifetime tests observe these exact allocations. A retained handle keeps the
 pointer valid while checking which heap-owned edges remain. Separate scoped

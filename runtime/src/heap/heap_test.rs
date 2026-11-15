@@ -1402,7 +1402,9 @@ fn deep_copy_clears_list_alias_metadata() {
 
 #[test]
 fn deep_copy_strict_heap_kinds_dispatch_from_pointer_tags() {
-    use crate::resource::{ResourceHandle, ResourceStub, alloc_resource, fz_resource_destructor_noop};
+    use crate::resource::{ResourceHandle, ResourceStub, alloc_resource};
+
+    const TEST_DESTRUCTOR: u64 = 0xD7;
 
     let reg = fresh_registry();
     let pair_id = reg.borrow_mut().register(Schema::tuple_of_arity(2));
@@ -1434,12 +1436,7 @@ fn deep_copy_strict_heap_kinds_dispatch_from_pointer_tags() {
         StubSite::FilledBuffer,
     );
 
-    let resource_closure = heap_root(closure_bits);
-    let resource = alloc_resource(
-        &mut src,
-        ResourceHandle::new(0xfeed, fz_resource_destructor_noop),
-        resource_closure,
-    );
+    let resource = alloc_resource(&mut src, ResourceHandle::new(0xfeed, TEST_DESTRUCTOR));
 
     let entries = [
         (

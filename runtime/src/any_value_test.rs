@@ -1,6 +1,9 @@
 use super::*;
 use std::mem;
 
+/// A destructor word the test never dispatches: the resource only carries it.
+const TEST_DESTRUCTOR: u64 = 0xD7;
+
 const LOW_NIBBLE: u64 = 0xF;
 
 fn test_heap() -> Heap {
@@ -329,7 +332,7 @@ fn object_size_dispatches_from_pointer_tag_and_object_local_metadata() {
         object_size(heap_object_word(addr, ValueKind::BINVIEW)),
         crate::procbin::BINVIEW_BYTES
     );
-    assert_eq!(object_size(heap_object_word(addr, ValueKind::RESOURCE)), 48);
+    assert_eq!(object_size(heap_object_word(addr, ValueKind::RESOURCE)), 16);
 }
 
 #[test]
@@ -1326,7 +1329,7 @@ fn float_ingress_rejects_nonfinite_payloads_before_publication() {
 }
 
 use crate::heap::{Heap, Schema, SchemaRegistry};
-use crate::resource::{ResourceHandle, alloc_resource, fz_resource_destructor_noop};
+use crate::resource::{ResourceHandle, alloc_resource};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -1452,12 +1455,7 @@ fn heap_object_refs_clear_addresses_before_projection() {
         .alloc_bitstring(&[0u8; 65], 65 * 8)
         .heap_addr()
         .expect("binview addr");
-    let resource_addr = alloc_resource(
-        &mut heap,
-        ResourceHandle::new(77, fz_resource_destructor_noop),
-        AnyValue::nil_atom(),
-    )
-    .as_raw();
+    let resource_addr = alloc_resource(&mut heap, ResourceHandle::new(77, TEST_DESTRUCTOR)).as_raw();
 
     assert_eq!(
         AnyValueRef::from_heap_object(ValueKind::LIST, list_addr)

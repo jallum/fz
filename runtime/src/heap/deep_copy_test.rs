@@ -9,10 +9,13 @@ use crate::any_value::{
 };
 use crate::heap::StubSite;
 use crate::procbin::{BINREF_BYTES, BINVIEW_BYTES, SharedBinHandle, alloc_buffer_view};
-use crate::resource::{RESOURCE_STUB_SIZE, ResourceHandle, alloc_resource, fz_resource_destructor_noop};
+use crate::resource::{RESOURCE_STUB_SIZE, ResourceHandle, alloc_resource};
 use crate::sched::gift_copy;
 use std::cell::RefCell;
 use std::rc::Rc;
+
+/// A destructor word the test never dispatches: the resource only carries it.
+const TEST_DESTRUCTOR: u64 = 0xD7;
 
 const CELL: usize = 16;
 
@@ -180,20 +183,11 @@ fn a_view_measures_its_view_and_its_binref_and_not_the_shared_bytes() {
 }
 
 #[test]
-fn a_resource_measures_its_stub_and_its_closure() {
+fn a_resource_measures_its_stub_alone() {
     let mut sender = Heap::new(SIZE_TABLE[0], fresh_registry());
-    let closure_bits = sender.alloc_closure(ClosureDenotationId::user(0), 0, 0, 0, 0x1234, &[]);
-    let closure = heap_value(
-        ValueKind::CLOSURE,
-        closure_addr_from_tagged(closure_bits).expect("closure"),
-    );
-    let resource = alloc_resource(
-        &mut sender,
-        ResourceHandle::new(0xfeed, fz_resource_destructor_noop),
-        closure,
-    );
+    let resource = alloc_resource(&mut sender, ResourceHandle::new(0xfeed, TEST_DESTRUCTOR));
     let bytes = measured_equals_copied(&mut sender, &[heap_ref(ValueKind::RESOURCE, resource.as_raw())]);
-    assert_eq!(bytes, RESOURCE_STUB_SIZE + closure_size_for_count(0));
+    assert_eq!(bytes, RESOURCE_STUB_SIZE, "a copied stub carries no destructor closure");
 }
 
 #[test]

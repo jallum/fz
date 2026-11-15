@@ -1,5 +1,5 @@
 use super::*;
-use crate::any_value::object_size;
+use crate::any_value::{AnyValue, object_size};
 use crate::heap::{Heap, SHARED_BIN_THRESHOLD_BYTES, SIZE_TABLE, SchemaRegistry};
 use std::cell::RefCell;
 use std::rc::Rc;

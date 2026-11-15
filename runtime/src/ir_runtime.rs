@@ -41,7 +41,7 @@ use crate::procbin::{
     referenced_byte_len,
 };
 use crate::process::{ClosureRef, Handler, Process};
-use crate::resource::{ResourceHandle, ResourceStub, alloc_resource, fz_resource_destructor_noop};
+use crate::resource::{ResourceHandle, ResourceStub, alloc_resource};
 use crate::sched::{ReceiveStep, reach_receive};
 use crate::scheduler_hooks::YIELD_PTR;
 use crate::term::{NumericMode, TermComparator};
@@ -383,23 +383,27 @@ pub extern "C" fn fz_spawn(process: *mut Process, closure_ref_word: u64) -> u64 
     (ctx.spawn.expect("spawn callback installed"))(process, ctx.scheduler, closure_ref_word) as u64
 }
 
-/// Allocate a resource on the current process heap and retain its fz
-/// destructor closure on the stub. Scheduler-bound teardown invokes that
-/// closure later; allocation itself needs no compiler module or callback.
+/// Allocate a resource on the current process heap whose destructor is the
+/// literal closure `dtor_ref`. The resource keeps the closure's ref word and
+/// the scheduler runs it with the payload when the last stub dies. A literal
+/// closure lives outside every heap, so no collection moves or frees it. A
+/// capturing closure is on a heap and is refused: the result is `nil`, an atom
+/// ref that is never a resource ref, which `Kernel.make_resource` raises as an
+/// `ArgumentError`. This is the one place that decides the destructor is
+/// literal.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_make_resource(process: *mut Process, payload_raw: u64, dtor_ref: u64) -> u64 {
     assert!(!process.is_null(), "fz_make_resource: no current process");
     let dtor_ref = any_value_ref_from_word(dtor_ref, "fz_make_resource destructor");
-    let dtor_closure = AnyValue::from_ref(dtor_ref).expect("fz_make_resource: destructor value");
-    let closure_bits = dtor_closure
-        .heap_object_word()
-        .expect("fz_make_resource: destructor is not a closure");
     assert!(
-        closure_addr_from_tagged(closure_bits).is_some(),
+        dtor_ref.closure_addr().is_ok(),
         "fz_make_resource: destructor is not a closure"
     );
-    let handle = ResourceHandle::new(payload_raw, fz_resource_destructor_noop);
-    let stub = alloc_resource(&mut unsafe { &mut *process }.heap, handle, dtor_closure);
+    if !dtor_ref.is_literal() {
+        return nil_atom_ref().raw_word();
+    }
+    let handle = ResourceHandle::new(payload_raw, dtor_ref.raw_word());
+    let stub = alloc_resource(&mut unsafe { &mut *process }.heap, handle);
     AnyValueRef::from_heap_object(ValueKind::RESOURCE, stub.as_raw() as *const u8)
         .expect("fz_make_resource: resource ref")
         .raw_word()
