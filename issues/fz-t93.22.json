@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-t93.20"
+    "fz-t93.20",
+    "fz-t93.7.7"
   ],
   "blocks": [],
   "created": "2026-11-15T13:28:30Z",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "A certified cone stays certified until a read enters it or a publisher in it moves",
   "type": "task",
-  "updated_at": "2026-11-15T17:26:10Z"
+  "updated_at": "2026-11-15T18:32:42Z"
 }
