@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-15T03:40:18Z",
+  "description": "Step R1 of fz-9zq (plan /Users/j5n/Workspace/fz-next.html). Buys: t1/t2/t5 f({x}) family (fz-t93.9), return_tuple_accumulator (un-defer), fz-69z struct wrap compile; p2 12-order spread 79-149 -\u003e 32-40 AA. Deletes ADDRESS_COLLAPSE_DEPTH and (once proven the fold runs first) the staged RETURN_WIDENING_BUDGET -\u003e convergence_class -\u003e any path (budget stays as backstop until then). Gives the evidence row the widening ACTIVATION_INPUT_ROW_BUDGET lacks (it fires 294x on t1 without rescuing it).\nRule (Van Hentenryck clash): compare a slot's previous iterate with old∪new in correspondence (head = constructor kind; tuple arity + first-position atom tag); a clash is a node whose principal-functor set grew; fold to any at the clash when an ancestor covers it. Sites: define_return (semantic.rs ~1268-1330), self-call key (fold_arrow_params types/mod.rs ~1959), evidence rows (normalize_contributions world.rs ~946-973).\nProbe (/private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/mu2/round2.md, probes_round2.diff): 66-67 AA on t1/t2/t5/rta/w69z; ordinary code 0 firings (Keyword.delete, Map.new, Enum.zip, nested literal lists), json 5 (output same); json/dist/00420 AA at base. Gate: 6 lib reds = 5 mechanism pins (restated intents in /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/mu2/round3.md section 4) + 00420 canon 142-\u003e144 which is a PROBE ARTIFACT (scratch unions interned even when not firing): the clash test must intern nothing unless it fires.\nTelemetry: a fold event with clash path, kind (cycle|replace), ancestor depth. Paper first: proposal page with red tests and predictions.",
+  "id": "fz-9zq.1",
+  "labels": [],
+  "parent": "fz-9zq",
+  "priority": 2,
+  "status": "open",
+  "title": "A type that repeats itself folds at the point it grew",
+  "type": "task",
+  "updated_at": "2026-11-15T03:40:18Z"
+}
