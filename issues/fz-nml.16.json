@@ -4,14 +4,15 @@
   "blocks": [
     "fz-nml.17"
   ],
+  "closed_at": "2026-11-15T16:29:19Z",
   "created": "2026-11-15T16:10:46Z",
   "description": "Why: Make Distiller Fast measured (develop 515033ca0, distiller 32,000 lines, log /private/tmp/claude-501/-Users-j5n-Workspace-fz-xxd13-build/d6960461-b7a2-4585-a9e7-9f2477e57ee2/scratchpad/prop/gc.dev4.jsonl): 171 minors make 2,062,817 stub_visits (~20,000/minor flat from minor 65-143 while live grows 10.9-\u003e58.3 MB); 11 majors 85,589. Cost tracks young stubs per quantum, about one stub per 30 surviving bytes. Last ~15 minors report 0 visits (unexplained).\nHypotheses (ranked): (a) in-place \u003c\u003e mints one ProcBin per append (heap/imp.rs alloc_concatenation, spare-room branch); (b) slices above SHARED_BIN_THRESHOLD_BYTES become stubs (alloc_bitstring_slice), including fz-nml.5 decoded-string views; (c) fresh shared buffers (alloc_concatenation overflow, alloc_bitstring_with/shared_bin_alloc_with, :binary.copy). Each predicts a different per-site distribution.\nWhat: alloc_procbin callers name their site (enum StubSite {AppendInPlace, Slice, FreshBuffer, ...} — one per alloc_procbin caller, census the callers first); the heap counts stubs made per site since the last collection, and the sweep counts per site how many survived. fz.runtime.gc metadata gains \"stubs_made\":{site:n} and \"stubs_survived\":{site:n}. Telemetry only: no behaviour change. Docs: .agent/docs/runtime-telemetry.md.\nAcceptance: telemetry_test pins the field shape; a unit/fixture test drives each site once and observes its count; run the distiller probe and report the per-site table, which answers (a)/(b)/(c) and the 0-visit tail (0 made =\u003e no bug; else stub_visits bug). Pins only fall.",
   "id": "fz-nml.16",
   "labels": [],
   "parent": "fz-nml",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Each GC event counts binary stubs by the site that made them, and how many survived",
   "type": "task",
-  "updated_at": "2026-11-15T16:24:29Z"
+  "updated_at": "2026-11-15T16:29:19Z"
 }
