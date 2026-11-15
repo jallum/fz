@@ -9,7 +9,7 @@
   "parent": "fz-t93",
   "priority": 2,
   "status": "open",
-  "title": "Drain arbitration does work proportional to what moved",
+  "title": "A drain certifies each publisher once, and a readiness change nobody waits on skips the heap",
   "type": "task",
-  "updated_at": "2026-11-15T03:39:12Z"
+  "updated_at": "2026-11-15T13:28:29Z"
 }
