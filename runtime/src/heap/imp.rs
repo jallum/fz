@@ -130,6 +130,8 @@ impl Heap {
             alloc_stats: HeapAllocStats::default(),
             mso_head: 0,
             mso_old_head: 0,
+            resource_head: 0,
+            resource_old_head: 0,
             pending_dtors: VecDeque::new(),
         }
     }
@@ -1357,8 +1359,8 @@ impl Heap {
         // captures, so it outlives the from-space. A stub a closure captures
         // is reached by this and survives until a later collection. Only the
         // stubs of the from-space can be found dead: a minor collection looks
-        // at the young chain alone.
-        let unreached = mso_unreached_closures(self, generation);
+        // at the young chains alone. Only the resource chains are walked.
+        let unreached = mso_unreached_closures(self, generation, &mut stats.stub_visits);
         let mut dead_closures: HashMap<usize, AnyValue> = HashMap::with_capacity(unreached.len());
         for (stub, closure) in unreached {
             let forwarded = forward_heap_value(closure, &from_space, self, &schemas, &mut copied_objects, &mut stats);
@@ -1379,11 +1381,16 @@ impl Heap {
         // dead entries drop their off-heap reference. It must run before the
         // from-space is released because it reads from-space stubs (their
         // `mso_next` link, which Cheney never overwrites).
-        let dead = mso_sweep(self, generation, |stub| {
-            *dead_closures
-                .get(&(stub.as_raw() as usize))
-                .expect("a dead unclaimed resource stub had its closure forwarded")
-        });
+        let dead = mso_sweep(
+            self,
+            generation,
+            |stub| {
+                *dead_closures
+                    .get(&(stub.as_raw() as usize))
+                    .expect("a dead unclaimed resource stub had its closure forwarded")
+            },
+            &mut stats.stub_visits,
+        );
 
         self.retire_to_space_as_old();
         let kept_objects = copied_objects.len() as u64;
@@ -1456,7 +1463,7 @@ impl Heap {
     /// live, so every resource whose last reference this heap held queues its
     /// destructor on `pending_dtors`. Allocates no to-space.
     pub fn release_resources_at_exit(&mut self) {
-        let dead = mso_sweep(self, Generation::Major, |stub| stub.closure_value());
+        let dead = mso_sweep(self, Generation::Major, |stub| stub.closure_value(), &mut 0);
         self.queue_dead_resources(dead);
     }
 

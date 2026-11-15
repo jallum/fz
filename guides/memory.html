@@ -444,34 +444,38 @@ bump path and fills the block without overflowing it. <code>Heap::end_gift</code
 asserts the block's fill is exactly the measured bytes, turns the block into a
 <code>GiftSegment</code> and puts
 the saved tip back with its free space intact. The segment carries that one
-block (with its fill), the prefix of the MSO chain that the window produced,
+block (with its fill), the prefixes of the binary and resource MSO chains that the window produced,
 and the number of objects allocated. The heap's allocation statistics stay with
 it, its <code>live_count</code> goes back to what it was. A collection cannot
 run while a window is open.</p>
 
 <p>The receiving heap calls <code>Heap::graft</code>: the segment's block joins
 its <code>blocks</code>, its MSO
-prefix is spliced ahead of the receiver's chain. Every parked block counts
+prefixes are spliced ahead of the receiver's old chain of the same kind. Every parked block counts
 toward <code>bytes_used</code> by fill, never by capacity, so a kilobyte block
 holding one cons cell is sixteen bytes of <code>bytes_used</code>. The same fill
 raises <code>live_baseline</code>: a gift is packed and fully live, so it is
 survivor data and never allocation pressure. A segment that is dropped without being grafted releases its block
 and every stub's off-heap reference.</p>
 
-<h3>The MSO chain</h3>
+<h3>The MSO chains</h3>
 
-<p>Each heap carries an intrusive linked list of every ProcBin and Resource it
-owns. The head pointer lives on the heap (<code>mso_head</code>); the "next"
+<p>Each heap carries intrusive linked lists of every ProcBin and Resource it
+owns: one list for ProcBins and one for Resources, so a walk over a list meets
+one kind of stub. The head pointers live on the heap (<code>mso_head</code> for
+ProcBins, <code>resource_head</code> for Resources); the "next"
 link lives inside each stub: ProcBin uses offset +8, Resource uses offset +32.
 "MSO" is the historical BEAM name — "Mixed Set / Off-heap" — for the list of
 objects whose real bytes live elsewhere.</p>
 
 <div class="aside">
-The MSO chain is a "things to clean up later" list. Every time the heap
-makes a ProcBin or Resource, it adds the stub to the chain. After each GC,
-we walk the chain to figure out which stubs survived and which need to release
-their off-heap payload. The chain is split by age: <code>mso_head</code> holds
-stubs made since the last collection and <code>mso_old_head</code> holds the
+The MSO chains are a "things to clean up later" list. Every time the heap
+makes a ProcBin or Resource, it adds the stub to the chain of its kind. After each GC,
+we walk the chains to figure out which stubs survived and which need to release
+their off-heap payload. Each kind's chain is split by age: <code>mso_head</code>
+and <code>resource_head</code> hold
+stubs made since the last collection; <code>mso_old_head</code> and
+<code>resource_old_head</code> hold the
 ones a collection already kept, plus the ones that arrived in gifts. See
 <a href="#shared-zone">§9</a> for the details.
 </div>
@@ -724,7 +728,7 @@ transient roots and writes the forwarded refs back.</p>
 
 <p>After Cheney's BFS scan completes and before from-space is freed, the GC
 walks the MSO chains of the from-space once: a minor walks only the young
-chain, a major walks both. Each entry is a ProcBin or Resource stub that
+chains, a major walks the old chains too. Each entry is a ProcBin or Resource stub that
 <em>was</em> in from-space. The forwarding marker Cheney writes into word 0 of
 every copied stub is the entire liveness signal — no separate
 bookkeeping. One function, <code>procbin::mso_sweep</code>, decides every stub,
@@ -732,39 +736,39 @@ after a collection and when a process exits (an exit is not collected; it is
 the same walk with nothing live and no to-space):</p>
 
 <pre>
-  cur = heap.mso_head              <span class="note">// a major also walks mso_old_head</span>
-  new_head = null
-  while cur != null:
-      kind = kind_of(cur)             <span class="note">// ProcBin or Resource from the link's high bits</span>
-      marker = read u64 at addr_of(cur)+0
-      if low4(marker) != 0:
-          next = read_mso_next(kind, cur)       <span class="note">// from-space link survives</span>
-          new_addr = strip_low4(marker)         <span class="note">// to-space copy</span>
-          link (new_addr, kind) into new_head   <span class="note">// survived; rejoin the chain</span>
-      else:
-          next = read_mso_next(kind, cur)
-          release_payload(kind, cur)             <span class="note">// dead MSO stub; drop its ref;</span>
-                                                <span class="note">// a Resource's last ref queues (closure, payload)</span>
-      cur = next
-  heap.mso_head = null
-  heap.mso_old_head = new_head     <span class="note">// survivors are old</span>
+  for each kind in (ProcBin, Resource):     <span class="note">// the kind's chain names the kind</span>
+    cur = young head of the kind            <span class="note">// a major also walks the old head</span>
+    new_head = null
+    while cur != null:
+        marker = read u64 at addr_of(cur)+0
+        next = read_mso_next(cur)           <span class="note">// from-space link survives</span>
+        if low4(marker) != 0:
+            new_addr = strip_low4(marker)   <span class="note">// to-space copy</span>
+            link new_addr into new_head     <span class="note">// survived; rejoin the chain</span>
+        else:
+            release_payload(cur)            <span class="note">// dead MSO stub; drop its ref;</span>
+                                            <span class="note">// a Resource's last ref queues (closure, payload)</span>
+        cur = next
+    young head of the kind = null
+    old head of the kind = new_head         <span class="note">// survivors are old</span>
 </pre>
 
 <p>A minor sweep is O(young stubs); a major sweep is O(all stubs on this heap),
-not O(heap size). A gift's MSO prefix is spliced onto <code>mso_old_head</code>
-when it is grafted, so a minor never revisits it. A dead old Resource therefore
+not O(heap size). A gift's MSO prefixes are spliced onto <code>mso_old_head</code> and
+<code>resource_old_head</code> when it is grafted, so a minor never revisits it. A dead old Resource therefore
 queues its destructor at the next major collection, and a young one at the next
 minor.</p>
 
 <p>A dead Resource's destructor is fz code, so it never runs inside the sweep.
 Its closure lives in the from-space that is about to be released, so before the
 sweep the collector forwards the closure of every unreached, unclaimed Resource
-stub, along with whatever the closure captures. The sweep then queues
+stub, along with whatever the closure captures. That search walks only the
+Resource chains, so binary stubs are visited once, by the sweep. The sweep then queues
 <code>(closure, payload)</code> on <code>heap.pending_dtors</code> for the
 resource whose last reference it dropped. A stub that a forwarded closure
 captures is reached by that, so it survives until a later collection. A process
 that halts takes the same sweep without a collection:
-<code>Heap::release_resources_at_exit</code> decides every stub on both chains
+<code>Heap::release_resources_at_exit</code> decides every stub on every chain
 with nothing live and copies nothing. <code>Heap::drop</code> releases
 only what a process still holds when the program tears it down without having
 exited, such as one parked on a receive; no destructor closure runs for those.</p>
@@ -781,7 +785,7 @@ exited, such as one parked on a receive; no destructor closure runs for those.</
        if heap.should_gc and the process did not exit:
          process.collect()          (the JIT emits fz.runtime.gc)
        clear yield reasons
-       exit: mark Exited; release the MSO chain with nothing live
+       exit: mark Exited; release the MSO chains with nothing live
        run each queued resource destructor as fz code, oldest first
   3. Requeue: re-enqueue.  Parked: wait for a send or the timer.  Exited: done.
 
@@ -1007,7 +1011,7 @@ the destructor runs. Last one out turns off the lights.</p>
 <div class="box green">
 <strong>Why this needs no locks.</strong><br>
 The system allocator handles concurrent <code>Box::new</code> from any
-worker. The refcount is atomic. The MSO chain is per-heap and per-heap is
+worker. The refcount is atomic. The MSO chains are per-heap and per-heap is
 per-process, so only one worker accesses it at a time (scheduler
 invariant). fz values are immutable, so there are no write barriers. There
 is no central registry to contend on.

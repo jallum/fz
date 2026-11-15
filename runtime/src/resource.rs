@@ -2,8 +2,9 @@
 //!
 //! Structurally a copy of `procbin.rs`: an off-heap refcounted object
 //! (`Resource`) with an on-heap stub (`ValueKind::RESOURCE`)
-//! threaded into the per-heap intrusive MSO chain. The MSO sweep handles
-//! retain/release across GC exactly the same way it does for ProcBin.
+//! threaded into the per-heap intrusive resource chain, which is separate
+//! from the binary chain. The MSO sweep handles retain/release across GC
+//! exactly the same way it does for ProcBin.
 //!
 //! Divergence from `SharedBin`/`ProcBin`:
 //!   * The dtor is **user-supplied at allocation time**, not one of two
@@ -416,7 +417,8 @@ impl ResourceStub {
 /// Allocate a strict 48-byte Resource stub on `heap`, taking ownership of the
 /// Resource reference encapsulated in `handle`. `closure` is the dtor
 /// closure value, which the scheduler runs when the stub dies. The
-/// new stub is pushed onto `heap.mso_head` as the new chain head.
+/// new stub is pushed onto `heap.resource_head`, the young resource chain, as
+/// the new chain head.
 pub fn alloc_resource(heap: &mut Heap, handle: ResourceHandle, closure: AnyValue) -> ResourceStub {
     let p = heap.alloc_kind(HeapAllocKind::Resource, RESOURCE_STUB_SIZE);
     let rs = unsafe { ResourceStub::from_raw(p) };
@@ -425,7 +427,7 @@ pub fn alloc_resource(heap: &mut Heap, handle: ResourceHandle, closure: AnyValue
         write(p.add(RESOURCE_STUB_MAGIC_OFFSET) as *mut u64, RESOURCE_STUB_MAGIC);
     }
     rs.closure_value_set(closure);
-    let previous_head = heap.mso_push(heap_object_word(p, ValueKind::RESOURCE));
+    let previous_head = heap.resource_push(heap_object_word(p, ValueKind::RESOURCE));
     rs.mso_next_set(previous_head);
     rs
 }

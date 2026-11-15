@@ -6,7 +6,8 @@ use crate::any_value::{
     AnyValue, AnyValueRef, EMPTY_LIST, ListCons, ValueKind, heap_kind_from_tagged, heap_object_word,
     list_addr_from_tagged,
 };
-use crate::procbin::{SharedBinHandle, alloc_procbin};
+use crate::procbin::{SharedBinHandle, alloc_procbin, mso_sweep, mso_unreached_closures};
+use crate::resource::{ResourceHandle, alloc_resource, fz_resource_destructor_noop};
 use crate::sync::Ordering;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -263,4 +264,101 @@ fn a_grafted_list_cell_is_not_rewritten_in_place() {
 
     assert_ne!(rebuilt, root_of(gift), "a fresh cell was allocated");
     assert_ne!(tail_addr(gift), list_addr_from_tagged(young).unwrap() as u64);
+}
+
+fn alloc_unrooted_stubs(heap: &mut Heap, binaries: usize, resources: usize) {
+    for _ in 0..binaries {
+        alloc_procbin(heap, SharedBinHandle::from_bytes(&[7; 8], 64), 0);
+    }
+    for _ in 0..resources {
+        let handle = ResourceHandle::new(1, fz_resource_destructor_noop);
+        alloc_resource(heap, handle, AnyValue::nil_atom());
+    }
+}
+
+/// A collection decides each binary stub in one walk: a heap of binary stubs
+/// and no resources follows one chain link per stub, whether the stubs die or
+/// survive.
+#[test]
+fn a_collection_follows_one_link_per_binary_stub() {
+    let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
+    alloc_unrooted_stubs(&mut heap, 5, 0);
+    assert_eq!(heap.collect(&mut []).stub_visits, 5, "dead stubs");
+
+    let survivors: Vec<AnyValueRef> = (0..5)
+        .map(|_| {
+            let pb = alloc_procbin(&mut heap, SharedBinHandle::from_bytes(&[7; 8], 64), 0);
+            root_of(heap_object_word(pb.as_raw(), ValueKind::PROCBIN))
+        })
+        .collect();
+    let mut roots = survivors;
+    assert_eq!(heap.collect(&mut roots).stub_visits, 5, "surviving stubs");
+}
+
+/// The destructor search walks the resource chain alone, and the sweep walks
+/// every stub once, so a collection of R resource stubs and N binary stubs
+/// follows R + (N + R) links.
+#[test]
+fn the_destructor_search_walks_only_resource_stubs_and_the_sweep_every_stub_once() {
+    let (binaries, resources) = (4, 3);
+    let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
+    alloc_unrooted_stubs(&mut heap, binaries, resources);
+
+    let mut search_visits = 0;
+    let unreached = mso_unreached_closures(&heap, Generation::Minor, &mut search_visits);
+    assert_eq!(unreached.len(), resources);
+    assert_eq!(search_visits, resources as u64);
+
+    let mut sweep_visits = 0;
+    let dead = mso_sweep(
+        &mut heap,
+        Generation::Minor,
+        |stub| stub.closure_value(),
+        &mut sweep_visits,
+    );
+    assert_eq!(dead.len(), resources);
+    assert_eq!(sweep_visits, (binaries + resources) as u64);
+
+    alloc_unrooted_stubs(&mut heap, binaries, resources);
+    assert_eq!(
+        heap.collect(&mut []).stub_visits,
+        (resources + binaries + resources) as u64
+    );
+}
+
+/// A minor collection follows only the young chains; a major collection also
+/// follows the old chains, where each kind of survivor sits.
+#[test]
+fn a_major_collection_follows_the_old_chains_and_a_minor_does_not() {
+    let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let pb = alloc_procbin(&mut heap, SharedBinHandle::from_bytes(&[7; 8], 64), 0);
+    let rs = alloc_resource(
+        &mut heap,
+        ResourceHandle::new(1, fz_resource_destructor_noop),
+        AnyValue::nil_atom(),
+    );
+    let ballast = list_of(&mut heap, 0, 400, EMPTY_LIST);
+    let mut roots = [
+        root_of(heap_object_word(pb.as_raw(), ValueKind::PROCBIN)),
+        root_of(heap_object_word(rs.as_raw(), ValueKind::RESOURCE)),
+        root_of(ballast),
+    ];
+    let first = heap.collect(&mut roots);
+    assert_eq!(first.generation, Generation::Minor);
+    assert_eq!(
+        first.stub_visits, 3,
+        "the resource search, then one sweep link per stub"
+    );
+    assert_ne!(heap.mso_old_head, 0, "the binary survivor is on the old binary chain");
+    assert_ne!(
+        heap.resource_old_head, 0,
+        "the resource survivor is on the old resource chain"
+    );
+    assert_eq!((heap.mso_head, heap.resource_head), (0, 0));
+
+    let second = heap.collect(&mut roots);
+    assert_eq!(second.generation, Generation::Major);
+    assert_eq!(second.stub_visits, 3, "the major collection follows the old chains");
+    assert_ne!(heap.mso_old_head, 0);
+    assert_ne!(heap.resource_old_head, 0);
 }

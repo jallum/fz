@@ -198,14 +198,15 @@ fn noop_dtor_is_safe() {
 }
 
 #[test]
-fn alloc_resource_pushes_into_mso_chain() {
+fn alloc_resource_pushes_into_the_resource_chain() {
     let (handle, drops) = observed_resource();
     let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
     let rs = alloc_resource(&mut heap, handle, AnyValue::nil_atom());
     let tagged = heap_object_word(rs.as_raw() as *const u8, ValueKind::RESOURCE);
     assert_eq!(heap_kind_from_tagged(tagged), Some(ValueKind::RESOURCE));
     assert_eq!(object_size(tagged), RESOURCE_STUB_SIZE);
-    assert_eq!(heap.mso_head, tagged);
+    assert_eq!(heap.resource_head, tagged);
+    assert_eq!(heap.mso_head, 0, "a resource is not on the binary chain");
     assert_eq!(rs.mso_next(), 0);
     assert_eq!(rs.payload(), Arc::as_ptr(&drops) as u64);
     assert_eq!(rs.refcount(), 1);
@@ -229,7 +230,7 @@ fn unrooted_resource_dies_in_gc_and_sweep_queues_its_closure_instead_of_firing_t
     );
     alloc_resource(&mut heap, handle, closure);
     heap.collect_tagged(&mut null_mut());
-    assert_eq!(heap.mso_head, 0, "dead Resource swept from MSO");
+    assert_eq!(heap.resource_head, 0, "dead Resource swept from MSO");
     assert_eq!(heap.pending_dtors.len(), 1, "the dead resource's destructor is queued");
     assert_eq!(drops.load(Ordering::Relaxed), 0, "the C destructor does not run");
     let (_, payload_ref) = heap.pending_dtors[0];
@@ -314,17 +315,18 @@ fn resource_forwarding_marker_through_gc() {
     assert_ne!(to, from);
     assert_eq!(unsafe { ResourceStub::from_raw(to).shared_raw() }, shared);
     assert_eq!(
-        heap.mso_old_head,
+        heap.resource_old_head,
         heap_object_word(to as *const u8, ValueKind::RESOURCE)
     );
-    assert_eq!(heap.mso_head, 0);
+    assert_eq!(heap.resource_head, 0);
+    assert_eq!(heap.mso_old_head, 0);
     assert_eq!(drops.load(Ordering::Relaxed), 0);
     drop(heap);
     assert_eq!(drops.load(Ordering::Relaxed), 1);
 }
 
 #[test]
-fn mixed_mso_chain_with_procbin_and_resource() {
+fn procbins_and_resources_keep_separate_chains() {
     use crate::procbin::{SharedBinHandle, alloc_procbin};
     let (first, first_drops) = observed_resource();
     let (second, second_drops) = observed_resource();
@@ -340,12 +342,12 @@ fn mixed_mso_chain_with_procbin_and_resource() {
         let pb2_bits = heap_object_word(pb2.as_raw(), ValueKind::PROCBIN);
         let pb1_bits = heap_object_word(pb1.as_raw(), ValueKind::PROCBIN);
         let rs1_bits = heap_object_word(rs1.as_raw(), ValueKind::RESOURCE);
-        assert_eq!(heap.mso_head, rs2_bits);
-        assert_eq!(rs2.mso_next(), pb2_bits);
-        assert_eq!(pb2.mso_next(), rs1_bits);
-        assert_eq!(rs1.mso_next(), pb1_bits);
-        assert_eq!(heap_kind_from_tagged(pb2.mso_next()), Some(ValueKind::RESOURCE));
+        assert_eq!(heap.mso_head, pb2_bits);
+        assert_eq!(pb2.mso_next(), pb1_bits);
         assert_eq!(pb1.mso_next(), 0);
+        assert_eq!(heap.resource_head, rs2_bits);
+        assert_eq!(rs2.mso_next(), rs1_bits);
+        assert_eq!(rs1.mso_next(), 0);
     }
     assert_eq!(first_drops.load(Ordering::Relaxed), 1);
     assert_eq!(second_drops.load(Ordering::Relaxed), 1);
@@ -353,7 +355,7 @@ fn mixed_mso_chain_with_procbin_and_resource() {
         assert_eq!(
             unsafe { (*bin.as_raw()).refcount.load(Ordering::Relaxed) },
             1,
-            "the mixed chain releases its exact binary edge"
+            "the binary chain releases its exact edge"
         );
     }
 }
