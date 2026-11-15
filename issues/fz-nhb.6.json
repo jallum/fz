@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-15T21:38:49Z",
+  "description": "## Why\nElixir raises `UndefinedFunctionError` with `message: nil` and builds the text in `UndefinedFunctionError.message/1`, so `e.message` is `nil` and `Exception.message(e)` is the text. fz fills the field: `runtime/src/failure.rs` `raise_undefined_function` formats the three wordings (\"is undefined or private\", \"is undefined\", \"is undefined (module X is not available)\") in Rust and stores them in `message`. A program that reads `e.message` prints the text on fz and an empty line on Elixir. Fixture 00869 met this and reads `Exception.message(e)` instead.\n\nThe wording also lives twice: `lib/exceptions/undefined_function_error.fz` `undefined/4` already builds it when `message` is nil.\n\n## What changes\n`raise_undefined_function` raises with `message: nil`; the text comes from `UndefinedFunctionError.message/1` alone, and the Rust formatting of the atom case is deleted. The uncaught banner already renders through `Exception.message` (fz-3sy.9).\n\n## Signal\nA fixture with `# oracle: self` prints `e.message` of each miss (nil on all three) next to `Exception.message(e)`, and its golden matches Elixir. 00869 still passes. Check whether the banner and rescue paths still print the same text on run, interp and build.",
+  "id": "fz-nhb.6",
+  "labels": [],
+  "parent": "fz-nhb",
+  "priority": 2,
+  "status": "open",
+  "title": "A call that finds no function raises UndefinedFunctionError with message nil, as Elixir does",
+  "type": "bug",
+  "updated_at": "2026-11-15T21:38:49Z"
+}
