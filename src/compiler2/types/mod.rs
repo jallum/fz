@@ -1692,6 +1692,11 @@ impl Types {
         })
     }
 
+    /// Whether `a` at `slot` is its own key whatever demand says of it, so a
+    /// key made only of such inputs is taken without deriving demand. A
+    /// ground record is: it collapses only where demand finds it unread, and
+    /// learning that costs a demand derivation along the forwarding chain,
+    /// which outweighs the activations the collapse saves.
     pub(crate) fn probe_keys_as_itself(&mut self, a: &Ty, slot: usize) -> bool {
         let path = [AddrStep::Param(slot as u16)];
         !self.has_vars(a)
@@ -2245,8 +2250,16 @@ impl Types {
     /// KEY path uses the addressed class (stays resolvable); EVIDENCE path the
     /// path-blind class (its earned ⊤). Either key path also drops the literals
     /// nothing read.
+    ///
+    /// A record nothing asks about keys as the map class on either key path,
+    /// so two structs handed to a body that never reads them share one key.
+    /// A record nested in freight structure keeps its fields: only a position
+    /// demand reached and found unread collapses this way.
     fn convergence_collapse_ignored_leaf(&mut self, ty: &Ty, path: &[AddrStep], collapse: KeyCollapse) -> Ty {
         match collapse {
+            KeyCollapse::Recursive | KeyCollapse::NonRecursive if self.descr(ty).sole_record().is_some() => {
+                self.map_top()
+            }
             KeyCollapse::Recursive | KeyCollapse::NonRecursive => {
                 let class = self.convergence_class_at(ty, path, ClassReach::Freight, collapse);
                 self.widen_literals(&class)
