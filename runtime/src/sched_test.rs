@@ -363,7 +363,7 @@ fn a_dropped_receiver_returns_its_pending_gifts_to_the_pool_and_releases_their_b
     let witness = SharedBinHandle::from_bytes(&[0x55; 16], 128);
     let mut sender = running_task();
     let task = Box::new(fresh_task());
-    let binary = alloc_procbin(&mut sender.heap, witness.clone(), 0);
+    let binary = alloc_procbin(&mut sender.heap, witness.clone(), 0, witness.bit_len());
     let binary_ref =
         AnyValueRef::from_heap_object(ValueKind::PROCBIN, binary.as_raw() as *const u8).expect("procbin ref");
     probe_sender(&mut sender, &task, binary_ref);

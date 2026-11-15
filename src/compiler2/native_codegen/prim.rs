@@ -35,7 +35,7 @@ use fz_runtime::ir_runtime::{
 };
 use fz_runtime::ir_runtime::{fz_box_opaque_for_any, fz_unbox_opaque};
 use fz_runtime::procbin::{
-    PROCBIN_BYTE_OFFSET_OFFSET, PROCBIN_SHARED_OFFSET, SHARED_BIN_BIT_LEN_OFFSET, SHARED_BIN_BYTES_PTR_OFFSET,
+    PROCBIN_BIT_LEN_OFFSET, PROCBIN_BYTE_OFFSET_OFFSET, PROCBIN_SHARED_OFFSET, SHARED_BIN_BYTES_PTR_OFFSET,
 };
 use fz_runtime::process::AtomName;
 use fz_runtime::process_abi::{PROCESS_DELIVERED_OFFSET, PROCESS_FAILED_OFFSET};
@@ -768,8 +768,8 @@ fn load_word<M: cranelift_module::Module>(
         .load(types::I64, MemFlags::trusted(), address, offset as i32)
 }
 
-/// The bit length of a binary, read from its header or from its ProcBin's
-/// `SharedBin` less the bytes its view skips; `NOT_A_BINARY` for any other value.
+/// The bit length of a binary, read from its header or from its ProcBin's own
+/// length; `NOT_A_BINARY` for any other value.
 fn emit_binary_bit_len<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
     source_ref: ir::Value,
@@ -782,13 +782,7 @@ fn emit_binary_bit_len<M: cranelift_module::Module>(
             let header = load_word(body, addr, 0);
             body.b.ins().ushr_imm(header, BITSTRING_BIT_LEN_SHIFT as i64)
         },
-        |body, addr| {
-            let shared = load_word(body, addr, PROCBIN_SHARED_OFFSET);
-            let total_bits = load_word(body, shared, SHARED_BIN_BIT_LEN_OFFSET);
-            let skipped = load_word(body, addr, PROCBIN_BYTE_OFFSET_OFFSET);
-            let skipped_bits = body.b.ins().ishl_imm(skipped, 3);
-            body.b.ins().isub(total_bits, skipped_bits)
-        },
+        |body, addr| load_word(body, addr, PROCBIN_BIT_LEN_OFFSET),
     )
 }
 
@@ -1037,7 +1031,8 @@ fn marshal_extern_arg<M: cranelift_module::Module>(
         ExternTy::Binary | ExternTy::CString if fz_abi => body.tagged_var(var_env, var.0),
         ExternTy::CString => {
             let bits = body.tagged_var(var_env, var.0);
-            runtime_call1!(body, fz_binary_as_cstring, [bits])
+            let process = body.process_arg();
+            runtime_call1!(body, fz_binary_as_cstring, [process, bits])
         }
         ExternTy::Binary => {
             let bits = body.tagged_var(var_env, var.0);

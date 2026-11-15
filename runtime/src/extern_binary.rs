@@ -21,9 +21,11 @@
 //! byte-aligned binary. They predate the process-aware `fz_panic` path and do
 //! not participate in its execution-context fault channel.
 
-use crate::any_value::AnyValueRef;
-use crate::procbin::{bitstring_bit_len, bitstring_byte_ptr};
+use crate::any_value::{AnyValueRef, procbin_addr_from_tagged};
+use crate::procbin::{ProcBin, bitstring_bit_len, bitstring_byte_ptr};
+use crate::process::Process;
 use std::process::abort;
+use std::slice::from_raw_parts;
 
 fn panic_arg(msg: &str) -> ! {
     eprintln!("fz panic: {}", msg);
@@ -56,13 +58,29 @@ pub unsafe extern "C" fn fz_binary_as_ptr(v: u64) -> *const u8 {
 }
 
 /// `c_string` marshal class: pointer to the bytes with a guaranteed
-/// trailing NUL. Underwritten by the +1-NUL invariant.
+/// trailing NUL. A binary's buffer carries one invisible NUL after its last
+/// byte, so a binary whose bytes end where its buffer ends is handed over as
+/// it is. A view that ends earlier has no NUL after it and is copied into a
+/// fresh binary on `process`'s heap, which does. Nothing roots that copy, and
+/// nothing needs to: the collector runs only between quanta, and an extern
+/// call cannot end one, so the copy outlives the call it is handed to.
 ///
 /// # Safety
-/// `v` must be tagged heap bits for a binary-like value.
+/// `process` must be the live current process and `v` tagged heap bits for a
+/// binary-like value.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn fz_binary_as_cstring(v: u64) -> *const u8 {
-    unsafe { coerce_binary_ptr(v) }
+pub unsafe extern "C" fn fz_binary_as_cstring(process: *mut Process, v: u64) -> *const u8 {
+    let bytes = unsafe { coerce_binary_ptr(v) };
+    let Some(addr) = procbin_addr_from_tagged(v) else {
+        return bytes;
+    };
+    let view = unsafe { ProcBin::from_raw(addr) };
+    if view.ends_at_buffer_end() {
+        return bytes;
+    }
+    let bytes = unsafe { from_raw_parts(bytes, view.bytes_len()) };
+    let copy = unsafe { &mut *process }.heap.alloc_bitstring(bytes, view.bit_len());
+    unsafe { bitstring_byte_ptr(copy.heap_object_word().expect("a copied binary is a heap object")) }
 }
 
 #[cfg(test)]

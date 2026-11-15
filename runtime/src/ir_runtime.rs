@@ -1431,7 +1431,8 @@ pub extern "C" fn fz_alloc_bitstring_const(process: *mut Process, ptr: u64, byte
 pub extern "C" fn fz_alloc_procbin_from_static(process: *mut Process, static_sharedbin: u64) -> u64 {
     let sb = static_sharedbin as *mut SharedBin;
     let handle = unsafe { SharedBinHandle::retain_from_raw(sb) };
-    let pb = alloc_procbin(&mut (unsafe { &mut *process }).heap, handle, 0);
+    let bit_len = handle.bit_len();
+    let pb = alloc_procbin(&mut (unsafe { &mut *process }).heap, handle, 0, bit_len);
     heap_ref_word(ValueKind::PROCBIN, pb.as_raw() as *const u8)
 }
 
@@ -1647,19 +1648,16 @@ pub extern "C" fn fz_bs_read_binary_ref(
     }
     let needed_bits = end - pos;
     let heap = unsafe { &mut (*process).heap };
-    // A byte-aligned TAIL of a shared binary is another view of the same bytes,
-    // not a copy. This is the step every byte scanner performs, and copying it
-    // is what made scanning quadratic. Only a suffix qualifies, which is exactly
-    // what `<<_c, rest :: binary>>` asks for; `Heap::alloc_bitstring_suffix`
-    // decides whether the view is worth a stub.
-    let tail_of_shared = pos.is_multiple_of(8)
-        && end == bit_len
-        && needed_bits.is_multiple_of(8)
-        && procbin_addr_from_tagged(bs_bits).is_some();
-    let value = if tail_of_shared {
+    // A byte-aligned field of a shared binary is another view of the same
+    // bytes, not a copy. Byte scanners and field extractors take one per step,
+    // and copying them is what made scanning quadratic;
+    // `Heap::alloc_bitstring_slice` decides whether the view is worth a stub.
+    let slice_of_shared =
+        pos.is_multiple_of(8) && needed_bits.is_multiple_of(8) && procbin_addr_from_tagged(bs_bits).is_some();
+    let value = if slice_of_shared {
         let src = unsafe { ProcBin::from_raw(procbin_addr_from_tagged(bs_bits).expect("procbin source")) };
         let offset = src.byte_offset() + (pos / 8) as u64;
-        unsafe { heap.alloc_bitstring_suffix(src.shared_raw(), offset) }
+        unsafe { heap.alloc_bitstring_slice(src.shared_raw(), offset, (needed_bits / 8) as u64) }
     } else if pos.is_multiple_of(8) && needed_bits.is_multiple_of(8) {
         // Byte-aligned is the overwhelmingly common case and is a slice copy
         // rather than a walk over individual bits.

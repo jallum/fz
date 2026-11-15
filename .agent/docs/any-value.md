@@ -98,20 +98,23 @@ other place that splits on the threshold is `Prim::ConstBitstring` lowering,
 which emits a static `SharedBin` above it.
 
 Two questions still read the threshold, and they are different questions:
-`alloc_bitstring_suffix` asks whether a VIEW is worth a stub, and native
+`alloc_bitstring_slice` asks whether a VIEW is worth a stub, and native
 codegen asks what to EMIT for a constant bitstring — a static `SharedBin`
 symbol or a call to the inline allocator — which it must decide at compile time
 with no heap to ask.
 
-### A ProcBin names a suffix
+### A ProcBin names a window
 
-A `ProcBin` stub is not "the shared binary"; it is a byte-aligned *suffix* of
-one. It carries a `byte_offset`, and its length is the parent buffer's length
-minus that offset. The whole binary is the suffix at offset 0. Several stubs
-over the same `SharedBin` at different offsets are the normal case, each owning
-its own reference edge.
+A `ProcBin` stub is not "the shared binary"; it is a byte-aligned *window* of
+one. It carries a `byte_offset` (stub word 16) and its own `bit_len` (stub word
+24), so the window may start and stop anywhere on a byte boundary of the
+buffer. The whole binary is the window at offset 0 spanning the buffer. Several
+stubs over the same `SharedBin` at different offsets and lengths are the normal
+case, each owning its own reference edge. `PROCBIN_BYTE_OFFSET_OFFSET` and
+`PROCBIN_BIT_LEN_OFFSET` in `procbin.rs` are the one statement of that layout;
+native codegen reads the length straight from the stub.
 
-A match that takes a binary apart does not ask for a suffix at all when the
+A match that takes a binary apart does not ask for a slice at all when the
 rest stays inside the compiler's own code. Its demand is `Matched` (see
 `pipeline.md`), and the rest travels as a cursor: `ShapeDescr::Cursor`, two
 lanes -- the source binary (a traced `ValueRef`) and the bit position the rest
@@ -125,19 +128,21 @@ a bit position, so a cursor passes (source, position) and a whole binary passes
 passing it to a consumer with no cursor to offer -- makes it whole at that
 point with `fz_bs_read_binary_ref`. A rest that spans its whole source is the
 source, so a binary that was only measured, a cursor at position 0, comes
-back as itself and builds nothing. Past position 0, `<<_c, rest :: binary>>` asks for a
-suffix, `Heap::alloc_bitstring_suffix` hands back another view of the same
-bytes instead of copying them, and it decides whether the view is worth a
-stub, copying suffixes at or below `SHARED_BIN_THRESHOLD_BYTES` so a short tail
-cannot pin a long buffer. A walk that only matches and measures allocates no
-binary at all; one that makes each rest whole copies at most that short tail
+back as itself and builds nothing. Past position 0, any byte-aligned binary field of a shared source, whether
+`<<_c, rest :: binary>>` or `<<_ :: binary-size(n), field :: binary, _ :: binary>>`,
+asks `Heap::alloc_bitstring_slice` for a view: another stub over the same bytes
+at its own offset and length instead of a copy. It decides whether the view is
+worth a stub, copying slices at or below `SHARED_BIN_THRESHOLD_BYTES` so a short
+slice cannot pin a long buffer. A walk that only matches and measures allocates
+no binary at all; one that makes each rest whole copies at most that short tail
 per step, where a copy per step would cost n + (n-1) + … bytes.
 
-Suffix — rather than an arbitrary window — is load-bearing. The buffer carries
-one invisible trailing NUL, so a suffix ends where the NUL is and
-`fz_binary_as_cstring` can hand a tail straight to C. An arbitrary window could
-not, which is why one cannot be built: `alloc_procbin` derives the length from
-the offset rather than accepting one.
+The buffer carries one invisible trailing NUL after its last byte. A window that
+ends where the buffer ends (`ProcBin::ends_at_buffer_end`) has that NUL right
+after it, so `fz_binary_as_cstring` hands it to C as it is. Any other window has
+the parent's next byte there, and `fz_binary_as_cstring` copies it into a fresh
+binary on the calling process's heap, which is terminated. That is the one place
+a view pays for its NUL; `fz_binary_as_ptr` promises no NUL and never copies.
 
 Copied bytes are counted. `HeapAllocStats::shared_bin` records off-heap binary
 buffers, separately from `total` because they are not heap bytes and do not move
