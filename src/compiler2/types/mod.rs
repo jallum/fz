@@ -1176,7 +1176,7 @@ impl Types {
                     // two representations of the same callable (e.g. an opaque join of
                     // same-signature functions, addressed vs not) never split across
                     // lanes (fz-hwn.27.12). The contract stays out-of-band in boundaries.
-                    t.intern(Descr::fun_top())
+                    t.fun_top()
                 } else {
                     ty
                 }
@@ -1556,6 +1556,11 @@ impl Types {
         self.core.tuple_top
     }
 
+    /// Every function, of every arity.
+    pub fn fun_top(&mut self) -> Ty {
+        self.intern(Descr::fun_top())
+    }
+
     /// Whether every value of `a` is a tuple, of any arity (including `{}`). A
     /// type that merely contains tuples, such as `any`, is not one.
     pub fn is_tuple_type(&self, a: &Ty) -> bool {
@@ -1793,7 +1798,7 @@ impl Types {
             let payload = self.convergence_class(&resource.payload);
             self.resource(payload)
         } else if descr.is_pure_callable() {
-            self.intern(Descr::fun_top())
+            self.fun_top()
         } else if let Some(record) = descr.sole_record() {
             let mut fields = record.sig.fields.clone();
             let excluded = record.excluded.to_vec();

@@ -1,0 +1,45 @@
+#---
+# purpose: "is_function/1 is true for every closure and capture and false for everything else; is_function/2 is true only for a function of that arity; both work in a guard, and a guard whose arity is not an integer fails rather than raising"
+# oracle: self
+# oracle.stamp: f3ea5fe341429f39
+#---
+#
+# Every value reaches the tests through the mailbox, so nothing is known
+# about it at compile time.
+defmodule P do
+  def k(x), do: x
+  def g(f) when is_function(f, 1), do: :one
+  def g(f) when is_function(f), do: :some_function
+  def g(_), do: :not_a_function
+  def bad(f, arity) when is_function(f, arity), do: :matched
+  def bad(_, _), do: :guard_failed
+end
+
+defmodule Main do
+  def report(v), do: IO.inspect({is_function(v), is_function(v, 0), is_function(v, 1), is_function(v, 2), is_function(v, 256), P.g(v)})
+
+  def main() do
+    me = self()
+    send(me, fn -> 0 end)
+    send(me, fn x -> x end)
+    send(me, fn x, y -> {x, y} end)
+    send(me, &P.k/1)
+    send(me, &Enum.map/2)
+    send(me, :atom)
+    send(me, 3)
+    send(me, [fn x -> x end])
+    receive do v -> report(v) end
+    receive do v -> report(v) end
+    receive do v -> report(v) end
+    receive do v -> report(v) end
+    receive do v -> report(v) end
+    receive do v -> report(v) end
+    receive do v -> report(v) end
+    receive do v -> report(v) end
+    IO.inspect({is_function(fn x -> x end), is_function(fn x -> x end, 1), is_function(:a), is_function(:a, 1)})
+    send(me, :x)
+    receive do arity -> IO.inspect({P.bad(fn x -> x end, arity), P.bad(:a, arity)}) end
+  end
+end
+
+Main.main()

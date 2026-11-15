@@ -489,7 +489,11 @@ evaluate their right side only when the left leaves it open, in all three
 evaluators. The Kernel functions a guard may call this way are `map_size/1`,
 `tuple_size/1`, `elem/2`, `length/1`, `byte_size/1`, `hd/1`, `tl/1`, `abs/1`,
 `round/1`, `trunc/1`, `floor/1`, `ceil/1` and the `is_*` type tests; `is_tuple/1`
-is a typed-head helper over `tuple`, like the other type tests. `abs/1` and the
+is a typed-head helper over `tuple`, like the other type tests, and
+`is_function/1` is one over `fun`. `is_function/2` checks its arity first and
+raises `ArgumentError` for one that is not a non-negative integer, so in a
+guard such an arity makes the guard false; for a function it compares the
+arity the closure header records (`fz_function_arity`). `abs/1` and the
 float-to-integer conversions are typed heads over `Checked` externs
 (`fz_op_abs_i`, `fz_op_round_f` and its siblings), so a result outside the
 64-bit range fails the guard; their last clause raises `ArgumentError`, which is
