@@ -124,6 +124,9 @@ struct LocalCallable {
     standing: Standing,
     /// How many of this function's definitions a later one has replaced.
     replaced: usize,
+    /// The sources of replaced definitions published since this function's
+    /// last answer. The definition that stands is the answer they belong to.
+    superseded: Vec<FunctionPublication>,
 }
 
 /// Where a function stands as the walk reaches each of its forms.
@@ -801,6 +804,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
                     to_come: 0,
                     standing: Standing::NotDefined,
                     replaced: 0,
+                    superseded: Vec::new(),
                 })
             }
         };
@@ -1025,6 +1029,21 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
         function: &FunctionForm,
         context: &FragmentPublicationContext,
     ) -> Result<FunctionPublication, FatalError> {
+        self.define_source_function_superseding(function_module, owner_module, namespace, function, context, Vec::new())
+    }
+
+    /// Publishes `function`'s source as one answer of the walk, together
+    /// with the sources of the definitions it replaced: they were published
+    /// when the walk reached it, from the same ground.
+    fn define_source_function_superseding(
+        &mut self,
+        function_module: ModuleId,
+        owner_module: ModuleId,
+        namespace: Namespace,
+        function: &FunctionForm,
+        context: &FragmentPublicationContext,
+        superseded: Vec<FunctionPublication>,
+    ) -> Result<FunctionPublication, FatalError> {
         let publication = publish_function_source(
             self.world,
             self.telemetry,
@@ -1042,11 +1061,14 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
             key: DerivationKey::Function(publication.function),
             reads: current_uses(self.reads.clone()),
             product_reads: self.product_reads.clone(),
-            outputs: vec![FactKey::FunctionSource(publication.function)],
-            changed: publication
-                .source_changed
-                .then_some(FactKey::FunctionSource(publication.function))
-                .into_iter()
+            outputs: std::iter::once(&publication)
+                .chain(&superseded)
+                .map(|published| FactKey::FunctionSource(published.function))
+                .collect(),
+            changed: std::iter::once(&publication)
+                .chain(&superseded)
+                .filter(|published| published.source_changed)
+                .map(|published| FactKey::FunctionSource(published.function))
                 .collect(),
         });
         Ok(publication)
@@ -1172,8 +1194,15 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
         let Some(namespace) = self.reach_definition(function, context)? else {
             return Ok(None);
         };
-        let publication =
-            self.define_source_function(self.current_module, context.owner_module, namespace, function, context)?;
+        let superseded = std::mem::take(&mut self.local_callable(&function.name, function.arity).superseded);
+        let publication = self.define_source_function_superseding(
+            self.current_module,
+            context.owner_module,
+            namespace,
+            function,
+            context,
+            superseded,
+        )?;
         self.callables
             .retain(|callable| callable.function != publication.function);
         if let Some(callable) = publication.callable {
@@ -1241,19 +1270,24 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
         ordinal: usize,
         context: &FragmentPublicationContext,
     ) -> Result<Namespace, FatalError> {
+        let name = replaced.function.name.clone();
         let function = FunctionForm {
-            name: format!("{} (overridable {ordinal})", replaced.function.name),
+            name: format!("{name} (overridable {ordinal})"),
             is_private: true,
             ..replaced.function
         };
-        let publication = self.define_source_function(
+        let publication = publish_function_source(
+            self.world,
+            self.telemetry,
+            self.source_owner,
             self.current_module,
             replaced.owner_module,
             replaced.namespace,
             &function,
-            context,
-        )?;
+            context.export_public,
+        );
         let symbol = declared_callable_kind(function.is_macro).namespace_symbol(publication.function);
+        self.local_callable(&name, function.arity).superseded.push(publication);
         Ok(self.world.bind_namespace(self.namespace, "super", symbol))
     }
 

@@ -331,7 +331,10 @@ that definition, including in an `fn` and in a macro's expansion. A `super`
 whose arity differs from the function's, or one written in a definition that
 replaces nothing, resolves to nothing and is `lower/unbound`. Each override in
 a chain sees the one before it. The replaced definition's source is noted;
-like any function, nothing lowers it unless `super` calls it.
+like any function, nothing lowers it unless `super` calls it. The walk
+publishes it when it reaches the replacing definition, from the same ground,
+so its source is an output of that definition's derivation rather than a
+derivation of its own (`LocalCallable::superseded`).
 
 `defoverridable` is `ScopeForm::Overridable`, read by `build_form`. It takes
 `name: arity` pairs. Clauses of one function separated by another form are a

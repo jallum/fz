@@ -233,7 +233,11 @@ const DERIVATIONS: u64 = 18_324;
 // 111_876 -> 111_888: an extern that declares `raises:` reads the struct of
 // the exception it names, to raise that struct. The distiller calls twelve
 // such externs, and each contract reads `StructDefined` once.
-const READS_HANDED: u64 = 111_888;
+// 111_888 -> 111_880: a replaced definition's source is part of the answer of
+// the definition that replaces it, so `KeyError` and
+// `Protocol.UndefinedError`, which override `message/1`, file one derivation
+// for it, not two.
+const READS_HANDED: u64 = 111_880;
 
 /// Compiling the distiller spends this much of the product stack. The largest
 /// drive is the one `PRODUCT_DRIVE_BUDGET` bounds, so its headroom is the

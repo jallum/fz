@@ -3221,6 +3221,64 @@ fn a_replaced_definition_is_lowered_only_when_super_calls_it() {
     );
 }
 
+/// The walk publishes a replaced definition when it reaches the one that
+/// replaces it, from the same ground, so the two sources are one answer of
+/// the walk: a module that overrides a function files no more derivations
+/// than one that defines it once.
+#[test]
+fn a_replaced_definition_is_part_of_the_answer_of_the_definition_that_replaces_it() {
+    let tel = ConfiguredTelemetry::new();
+    let derivations = Rc::new(RefCell::new(HashMap::<ModuleId, u64>::default()));
+    let observed = Rc::clone(&derivations);
+    tel.attach_raw_event2::<World, super::JobCompletion, _>(
+        &["fz", "compiler2", "work_graph", "applied"],
+        move |_, _, _, _, completion| {
+            if let Job::DefineModule(module) = completion.job {
+                *observed.borrow_mut().entry(module).or_default() += completion.derivations;
+            }
+        },
+    );
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("override_answers.fz".to_string()),
+        text: concat!(
+            "defmodule Overrides do\n",
+            "  def g(x), do: x + 1\n",
+            "  defoverridable g: 1\n",
+            "  def g(x), do: super(x) * 10\n",
+            "end\n",
+            "\n",
+            "defmodule Defines do\n",
+            "  def g(x), do: x * 10\n",
+            "end\n",
+            "\n",
+            "def main(), do: {Overrides.g(1), Defines.g(1)}\n",
+        )
+        .to_string(),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_resolved(compiler.drive(), "an override and a plain definition compile");
+
+    let world = compiler.world_mut();
+    let overrides = world.reference_module(module_name("Overrides"));
+    let defines = world.reference_module(module_name("Defines"));
+    let replaced = world.reference_function(overrides, "g (overridable 1)", 1);
+    assert!(
+        world.has_fact(&FactKey::FunctionSource(replaced)),
+        "the definition super calls has its source"
+    );
+    let derivations = derivations.borrow();
+    assert_eq!(
+        derivations[&overrides], derivations[&defines],
+        "overriding g/1 files the same derivations as defining it once"
+    );
+}
+
 /// A definition that a later one replaces is never the function's source:
 /// the walk writes the source of the definition that stands, once, and the
 /// module's interface is that definition's. A `defp` that replaces a `def`
