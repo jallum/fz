@@ -102,6 +102,8 @@ pub(crate) struct CodegenCache {
     pub(super) static_struct_refs: HashMap<u32, StaticStructRef>,
     /// Per-function counter for unique static struct data symbols.
     pub(super) static_struct_count: usize,
+    /// Per-function counter for unique static handler template symbols.
+    pub(super) static_handler_count: usize,
     /// FuncRef for each extern, deduplicated per function.
     pub(super) extern_funcs: HashMap<ExternId, ir::FuncRef>,
     /// FuncRef for each runtime helper, keyed by its linker name and

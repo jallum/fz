@@ -1,0 +1,6 @@
+defmodule ErlangError do
+  defexception [:original, :reason]
+
+  def message(%{original: original, reason: nil}), do: "Erlang error: " <> inspect(original)
+  def message(%{original: original, reason: reason}), do: "Erlang error: " <> inspect(original) <> reason
+end

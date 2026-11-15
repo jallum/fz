@@ -1,0 +1,5 @@
+defmodule CondClauseError do
+  defexception []
+
+  def message(_exception), do: "no cond clause evaluated to a truthy value"
+end

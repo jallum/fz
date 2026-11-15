@@ -14,7 +14,7 @@ def missing(map) do
   try do
     put_all([z: 1], map)
   rescue
-    e in KeyError -> e.message
+    e in KeyError -> Exception.message(%{e | term: nil})
   end
 end
 

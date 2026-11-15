@@ -11,8 +11,8 @@
 # `Kernel.compare/2` answers, boxed for `dbg/1`.
 #
 # Other is `0/0`. The total is `35/784` on the interpreter. The native paths add
-# the continuation frames the program builds, 37 frames of 1696 bytes, and
-# report `72/2480`.
+# the continuation frames the program builds, 38 frames of 1728 bytes, and
+# report `73/2512`.
 # Dynamic list heads use the same source-retention guard as statically known heads.
 # Each pair is `allocs/bytes`. The fixed atom-list input to
 # `Enum.sort/1` is deliberate: feeding it `Map.keys/1` would change merge-sort's

@@ -1,0 +1,23 @@
+#---
+# purpose: "one catch clause that binds the kind receives an error as its exception, a throw as the thrown value and an exit as its reason, and a clause naming one kind takes only that kind"
+# oracle: 00892_one_handler_receives_each_kind_of_raise_with_its_own_value.oracle.exs
+# oracle.stamp: 9486310ab2574e3c
+#---
+def fail(:error), do: raise(ArgumentError, "not that")
+def fail(:throw), do: throw({:found, 7})
+def fail(:exit), do: exit(:stopped)
+
+def caught(how) do
+  try do
+    fail(how)
+  catch
+    :error, %ArgumentError{message: message} -> {:argument, message}
+    kind, value -> {kind, value}
+  end
+end
+
+def main() do
+  dbg(caught(:error))
+  dbg(caught(:throw))
+  dbg(caught(:exit))
+end

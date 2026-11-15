@@ -22,6 +22,6 @@ def main() do
   try do
     String.slice(s, 0, -1)
   rescue
-    e -> dbg({e.__struct__, e.message})
+    e -> dbg({e.__struct__, Exception.message(e)})
   end
 end

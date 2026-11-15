@@ -1147,6 +1147,38 @@ fn a_type_names_its_one_struct_only_when_every_value_is_that_struct() {
 }
 
 #[test]
+fn listed_structs_names_each_struct_a_type_can_be() {
+    let mut t = Types::new();
+    let key = |name: &str| MapKey::Atom(name.to_string());
+    let point = ModuleName::from_segments(vec!["Point".into()]);
+    let size = ModuleName::from_segments(vec!["Size".into()]);
+    let int = t.int();
+    let float = t.float();
+    let int_point = t.struct_map(&point, &[(key("x"), int)]);
+    let float_point = t.struct_map(&point, &[(key("x"), float)]);
+    let a_size = t.struct_map(&size, &[(key("w"), int)]);
+
+    let points = t.union(int_point, float_point);
+    assert_eq!(
+        t.listed_structs(&points),
+        Some(vec![point.clone()]),
+        "two field typings of one struct list it once"
+    );
+    let either = t.union(points, a_size);
+    assert_eq!(t.listed_structs(&either), Some(vec![point, size]));
+
+    let or_int = t.union(either, int);
+    assert_eq!(t.listed_structs(&or_int), None, "an integer names no struct");
+    let plain = t.map(&[(key("x"), int)]);
+    let or_plain = t.union(either, plain);
+    assert_eq!(t.listed_structs(&or_plain), None, "a plain map names no struct");
+    let any = t.any();
+    assert_eq!(t.listed_structs(&any), None);
+    let none = t.none();
+    assert_eq!(t.listed_structs(&none), Some(Vec::new()), "no value lists no struct");
+}
+
+#[test]
 fn replacing_the_module_of_a_struct_names_the_new_module() {
     let mut t = Types::new();
     let key = |name: &str| MapKey::Atom(name.to_string());

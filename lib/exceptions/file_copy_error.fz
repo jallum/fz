@@ -1,0 +1,10 @@
+defmodule File.CopyError do
+  defexception [:reason, :source, :destination, on: "", action: ""]
+
+  def message(%{action: action, source: source, destination: destination, on: on, reason: reason}),
+    do: "could not #{action} from " <> inspect(source) <> " to " <> inspect(destination) <> location(on) <> ": " <> File.format_error(reason)
+
+  @spec location(binary) :: binary
+  defp location(""), do: ""
+  defp location(on), do: ". " <> on
+end

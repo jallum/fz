@@ -18,8 +18,8 @@ use crate::dispatch_matrix::OutcomeId;
 use crate::dispatch_matrix::pattern::PatternDispatchPlan;
 use crate::fz_ir::{
     Block as IrBlock, CallsiteId as IrCallsiteId, CallsiteIdent, Cont as IrCont, ExternMarshalSite, ExternTy,
-    ExternalCallEdge, FnId, FnIr as IrFn, Module as IrModule, Prim as IrPrim, RaiseSubject,
-    ReceiveAfter as IrReceiveAfter, ReceiveClause as IrReceiveClause, Stmt as IrStmt, Term as IrTerm, Var,
+    ExternalCallEdge, FnId, FnIr as IrFn, Module as IrModule, Prim as IrPrim, ReceiveAfter as IrReceiveAfter,
+    ReceiveClause as IrReceiveClause, Stmt as IrStmt, Term as IrTerm, Var,
 };
 use crate::ground_value::GroundValue;
 use crate::runtime_type_predicate::CallableShape;
@@ -297,6 +297,18 @@ pub enum CallEdge<T, F = CallReturnFlow> {
     /// Explicit and settled — distinct from a callsite whose summary fact
     /// has not been computed yet (which stays `Ok(None)` at materialization).
     Indirect(F),
+}
+
+impl<T> CallEdge<T, BackendReturnFlow> {
+    /// Whether no target of the edge returns to the caller.
+    pub fn never_returns(&self) -> bool {
+        let no_return = |flow: &BackendReturnFlow| matches!(flow, BackendReturnFlow::NoReturn);
+        match self {
+            Self::Direct(edge) => no_return(&edge.return_flow),
+            Self::Dispatch(edge) => edge.arms.iter().all(|arm| no_return(&arm.return_flow)),
+            Self::Indirect(flow) => no_return(flow),
+        }
+    }
 }
 
 impl<T, F> CallEdge<T, F> {
@@ -862,14 +874,9 @@ pub(crate) fn indirect_callee_only_vars(function: &IrFn) -> HashSet<Var> {
             IrTerm::Return(var) => {
                 other_uses.insert(*var);
             }
-            IrTerm::Raise {
-                exception,
-                message,
-                subject,
-            } => {
+            IrTerm::Raise { exception, fields } => {
                 other_uses.insert(*exception);
-                other_uses.insert(*message);
-                other_uses.extend(subject.map(RaiseSubject::var));
+                other_uses.insert(*fields);
             }
             IrTerm::Reraise { kind, value } => {
                 other_uses.insert(*kind);
@@ -1874,13 +1881,20 @@ fn native_terms_equal(left: &IrTerm, right: &IrTerm) -> bool {
                 handler: left_handler,
                 captures: left_captures,
                 body: left_body,
+                handler_diverges: left_diverges,
             },
             IrTerm::Try {
                 handler: right_handler,
                 captures: right_captures,
                 body: right_body,
+                handler_diverges: right_diverges,
             },
-        ) => left_handler == right_handler && left_captures == right_captures && left_body == right_body,
+        ) => {
+            left_handler == right_handler
+                && left_captures == right_captures
+                && left_body == right_body
+                && left_diverges == right_diverges
+        }
         (
             IrTerm::ReceiveMatched {
                 ident: left_ident,

@@ -337,7 +337,8 @@ the pair is physical only: no fz tuple is built, and no declaration spells it.
 - `parse_extern_raises` (`src/compiler2/frontdoor.rs`) reads the tail. `message:`
   is required, because an exception carries no default message, and it is a
   literal string: an interpolated one is refused. The exception is a module
-  alias, and `raises:` is the only option the tail takes. The parts ride the
+  alias. The tail takes one option, `raises:` or `delivers:` (below)
+  (`parse_extern_option`). The parts ride the
   quoted extern map as `raises` and `message`, and `decode_extern_fn` carries
   them on `FunctionSurface::extern_raises` as `ExternRaises`.
 - `derive_function_contract` resolves the alias with `World::module_alias_atom`,
@@ -368,6 +369,23 @@ float operands) are declared this way, so a failed operation, an overflow or a
 zero divisor, raises `ArithmeticError` with Elixir's message. A user declaration
 names any exception: `raises: MyApp.DivisionByZero` raises that module's atom,
 `Elixir.MyApp.DivisionByZero`, from a declaration of the same symbol.
+
+### A call that delivers its argument
+
+An extern whose call hands its first argument to the nearest handler says so,
+and names the kind the handler receives:
+
+```fz
+extern "fz" defp fz_throw(any) :: never, delivers: :throw
+```
+
+`parse_extern_delivers` accepts `:error`, `:throw` or `:exit`. The kind rides
+the quoted extern map as `delivers`, and `decode_extern_fn` carries it on
+`FunctionSurface::extern_delivers` as a `RaiseKind`. The three raise
+primitives in `lib/kernel.fz` (`fz_panic`, `fz_throw`, `fz_exit`) are declared
+this way. The declaration changes no code: it tells the semantic analysis that
+what the extern is called with is what a handler of that kind can receive (see
+[exceptions](exceptions.md#what-a-handler-can-receive)).
 
 Compiler2 maps each declared `extern_params` name to its `ExternTy` (an unknown
 name defaults to `Any`) and lowers the declared return to `ret` plus the

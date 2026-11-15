@@ -222,6 +222,12 @@ impl Drive {
         self
     }
 
+    /// Roots the program at the entry the CLI runs: `main/0` inside the
+    /// handler that reports a failure nothing caught.
+    pub(crate) fn program_entry(self) -> Self {
+        self.open_root(None, crate::compiler2::source_publish::PROGRAM_ENTRY, 0)
+    }
+
     /// A targeted job demand, built against the `World` after the source and
     /// root are submitted and before the drive that `settle()`/`drive()` runs.
     pub(crate) fn demand(mut self, job: impl FnOnce(&mut World) -> Job + 'static) -> Self {

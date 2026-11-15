@@ -611,7 +611,7 @@ fn compiler2_frontdoor_requires_private_extern_declarations() {
 }
 
 #[test]
-fn compiler2_frontdoor_extern_raises_needs_a_message_and_is_the_only_option() {
+fn compiler2_frontdoor_extern_takes_one_well_formed_option() {
     let tel = ConfiguredTelemetry::new();
     let refusals = [
         (
@@ -620,7 +620,15 @@ fn compiler2_frontdoor_extern_raises_needs_a_message_and_is_the_only_option() {
         ),
         (
             "extern \"C\" defp f(integer) :: integer, throws: ArithmeticError\n",
-            "expected `raises:` after the extern return type, got `throws:`; `raises:` is the only extern option",
+            "expected `raises:` or `delivers:` after the extern return type, got `throws:`; an extern takes one of them",
+        ),
+        (
+            "extern \"fz\" defp f(any) :: never, delivers: :panic\n",
+            "`delivers:` names the kind a handler receives, `:error`, `:throw` or `:exit`, got the atom `:panic`",
+        ),
+        (
+            "extern \"fz\" defp f(any) :: never, delivers: Throw\n",
+            "`delivers:` names the kind a handler receives, `:error`, `:throw` or `:exit`, got",
         ),
     ];
     for (source, message) in refusals {
@@ -650,6 +658,25 @@ fn compiler2_frontdoor_extern_raises_keeps_the_exception_and_message_with_the_de
         .unwrap()
         .expect("the exception is an alias node");
     assert_eq!(exception.tail.list_atom_names().unwrap(), ["MyApp", "Oops"]);
+}
+
+#[test]
+fn compiler2_frontdoor_extern_delivers_keeps_the_kind_with_the_declaration() {
+    let tel = ConfiguredTelemetry::new();
+    for kind in ["error", "throw", "exit"] {
+        let root = parse_quoted_program(
+            "extern_delivers.fz",
+            &format!("extern \"fz\" defp f(any) :: never, delivers: :{kind}\n"),
+            &tel,
+        )
+        .expect("an extern that delivers its argument parses");
+        let form = root.cursor().list_items().unwrap()[0]
+            .ast_node(&root.sources)
+            .unwrap()
+            .unwrap();
+        let details = form.tail.list_items().unwrap()[1].map_entries().unwrap();
+        assert_eq!(map_value(&details, "delivers").atom_name().unwrap().as_str(), kind);
+    }
 }
 
 #[test]

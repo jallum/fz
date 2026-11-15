@@ -1,0 +1,3 @@
+defmodule Enum.EmptyError do
+  defexception message: "empty error"
+end

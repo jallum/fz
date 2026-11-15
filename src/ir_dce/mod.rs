@@ -1,7 +1,7 @@
 //! Function-local liveness classification for native codegen.
 
 use crate::fast_hash::HashSet;
-use crate::fz_ir::{FnIr, RaiseSubject, Term, Var};
+use crate::fz_ir::{FnIr, Term, Var};
 
 /// Returns `(if_only_conds, all_used)` in a single pass.
 ///
@@ -87,14 +87,9 @@ fn collect_term_vars(t: &Term, used: &mut HashSet<Var>) {
         Term::Return(a) => {
             used.insert(*a);
         }
-        Term::Raise {
-            exception,
-            message,
-            subject,
-        } => {
+        Term::Raise { exception, fields } => {
             used.insert(*exception);
-            used.insert(*message);
-            used.extend(subject.map(RaiseSubject::var));
+            used.insert(*fields);
         }
         Term::Reraise { kind, value } => {
             used.insert(*kind);

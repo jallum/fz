@@ -24,7 +24,7 @@ use super::super::body::{
 use super::super::contract::AppliedFunctionContract;
 use super::super::dispatch_reachability::{ReachedEdges, calculate_dispatch_reachability};
 use super::super::drive::{AnswerUse, FactKey, Job, JobEffects, UseCollector, current_uses};
-use super::super::identity::{ActivationKey, FunctionId, ModuleId, function_id_of_closure_target};
+use super::super::identity::{ActivationKey, FunctionId, ModuleId, Raised, function_id_of_closure_target};
 use super::super::module_interface::InterfaceRequester;
 use super::super::protocol::ProtocolCallbackImpl;
 use super::super::semantic::{
@@ -35,6 +35,7 @@ use super::super::types::{ClosureTarget, Ty, Types};
 use super::super::world::{BodyShape, World};
 use super::keying;
 use fz_engine::FatalError;
+use fz_runtime::failure::RaiseKind;
 
 /// A walk's incoming scope, keyed in canonical (sorted) form so two walks
 /// that saw the same values compare equal regardless of insertion order.
@@ -411,6 +412,10 @@ pub(super) fn analyze_activation(
 
     emit_semantic_walk(tel, function, walks.entries_walked);
     let trimmed = TrimmedPlans::of(world.types(), entry_edges, std::mem::take(&mut walks.cases));
+    outputs.extend([FactKey::NameableModules, FactKey::Raisable]);
+    for (kind, raised) in raises_of(world, function, &trimmed, &analysis_calls, &input_rows) {
+        world.note_raisable(kind, raised, &mut changed);
+    }
     let analysis_changed = super::super::drive::ExecutionContext::new(world, tel).define_activation_analysis(
         activation,
         ActivationAnalysis {
@@ -448,6 +453,58 @@ pub(super) fn analyze_activation(
         activation_input_contributions,
         ..JobEffects::default()
     })
+}
+
+/// What this activation can raise. A decision the types leave able to fail,
+/// a call whose receiver reaches beyond every target, and the failure an
+/// extern declares each raise an error of one exception module. An extern
+/// that delivers its argument raises whatever it is called with, under the
+/// kind it declares.
+fn raises_of(
+    world: &mut World,
+    function: FunctionId,
+    trimmed: &TrimmedPlans,
+    calls: &[CallEmission],
+    input_rows: &[Vec<Ty>],
+) -> Vec<(RaiseKind, Raised)> {
+    let failing_plans = trimmed
+        .entry
+        .iter()
+        .chain(trimmed.cases.values())
+        .filter(|plan| plan.can_fail())
+        .filter_map(|plan| plan.last_resort.as_ref());
+    let summaries = calls.iter().filter_map(|call| call.resolution.resolved());
+    let call_misses = summaries.clone().filter_map(|summary| summary.last_resort.as_ref());
+    let calls_nothing = summaries
+        .flat_map(|summary| &summary.targets)
+        .any(|target| matches!(target.callee, SelectedCallee::Undefined(_)));
+    let mut atoms = failing_plans
+        .chain(call_misses)
+        .filter_map(LastResort::exception)
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    if calls_nothing {
+        atoms.extend(["Elixir.UndefinedFunctionError", "Elixir.ArgumentError"].map(str::to_string));
+    }
+    let (source, surface) = world.function_definition(function);
+    let delivers = surface.extern_delivers;
+    if let Some(raises) = &surface.extern_raises {
+        let (owner, namespace, exception) = (source.owner_module, source.namespace, raises.exception.clone());
+        atoms.push(world.module_alias_atom(owner, namespace, &exception));
+    }
+    let mut raises = atoms
+        .into_iter()
+        .map(|atom| {
+            let name = ModuleName::from_atom_name(&atom).expect("an exception's atom names a module");
+            (RaiseKind::Error, Raised::Exception(world.reference_module(name)))
+        })
+        .collect::<Vec<_>>();
+    if let Some(kind) = delivers {
+        for delivered in input_rows.iter().filter_map(|row| row.first()) {
+            raises.extend(world.raised_by(delivered).into_iter().map(|raised| (kind, raised)));
+        }
+    }
+    raises
 }
 
 /// How many distinct (entry, scope) pairs this activation's walk actually
@@ -1161,29 +1218,48 @@ fn analyze_tail(
                 activation,
                 walk,
             )?;
-            // A raise crosses the runtime boundary: the handler's kind,
-            // value and exception name are earned `any`, like a mailbox
-            // message.
+            // The handler runs once for each kind of raise the program can
+            // make, on what that kind hands over. The exception name beside
+            // it is `any`.
             let any = world.types_mut().any();
-            let params = entries[handler.as_u32() as usize]
-                .params
-                .iter()
-                .map(|param| (*param, any))
-                .collect::<Vec<_>>();
-            let handler_ty = analyze_branch(
-                world,
-                tel,
-                entries,
-                *handler,
-                values,
-                &params,
-                walks,
-                value_types,
-                calls,
-                activation,
-                walk,
-            )?;
-            Ok(join_evidence(world, body_ty, handler_ty))
+            walk.uses.read(FactKey::Raisable);
+            let mut joined = body_ty;
+            for kind in RaiseKind::ALL {
+                let Some(raised) = world.raisable_ty(kind) else {
+                    continue;
+                };
+                let kind = world.types_mut().atom_lit(kind.name());
+                let params = entries[handler.as_u32() as usize]
+                    .params
+                    .iter()
+                    .enumerate()
+                    .map(|(index, param)| {
+                        (
+                            *param,
+                            match index {
+                                0 => kind,
+                                1 => raised,
+                                _ => any,
+                            },
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                let handler_ty = analyze_branch(
+                    world,
+                    tel,
+                    entries,
+                    *handler,
+                    values,
+                    &params,
+                    walks,
+                    value_types,
+                    calls,
+                    activation,
+                    walk,
+                )?;
+                joined = join_evidence(world, joined, handler_ty);
+            }
+            Ok(joined)
         }
         // Control no execution reaches contributes no value: the join
         // identity, not a type.
@@ -1891,7 +1967,7 @@ fn protocol_miss(world: &mut World, protocol: ModuleId, receiver_ty: Ty, covered
         return None;
     }
     let name = world.module_name(protocol).expect("a defined protocol has a name");
-    Some(LastResort::protocol_undefined(&name.to_string()))
+    Some(LastResort::protocol_undefined(name.atom_name()))
 }
 
 fn resolve_protocol_call(

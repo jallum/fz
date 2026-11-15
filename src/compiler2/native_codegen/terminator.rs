@@ -5,14 +5,13 @@ use crate::compiler2::artifact::{BodyFrame, FrameRole};
 use crate::compiler2::{NativeBody, NativeEntryAbi};
 use crate::fast_hash::HashMap;
 use crate::fz_ir::{
-    self as fz_ir, BlockId, Cont, DirectCallTarget, EmitSlot, FnId, FnIr, RaiseSubject, ReceiveAfter, ReceiveClause,
-    Term, Var,
+    self as fz_ir, BlockId, Cont, DirectCallTarget, EmitSlot, FnId, FnIr, ReceiveAfter, ReceiveClause, Term, Var,
 };
 use cranelift_codegen::ir::TrapCode;
 use cranelift_codegen::ir::{self, AbiParam, BlockArg, InstBuilder, MemFlags, Signature, condcodes::IntCC, types};
 use cranelift_codegen::isa::CallConv;
 use cranelift_module::FuncId;
-use fz_runtime::failure::{fz_raise, fz_raise_naming_kind, fz_raise_showing, fz_raise_undefined_function, fz_reraise};
+use fz_runtime::failure::{fz_raise, fz_raise_undefined_function, fz_reraise};
 use fz_runtime::ir_runtime::{
     fz_receive_park_matched, fz_try_push, fz_yield_mid_flight_report, fz_yield_slow_path_begin,
 };
@@ -251,15 +250,22 @@ pub(crate) fn emit_terminator<M: cranelift_module::Module>(
             handler,
             captures,
             body: body_block,
-        } => emit_try(body, env, var_env, &edges, cont_param, *handler, captures, body_block),
+            handler_diverges,
+        } => emit_try(
+            body,
+            env,
+            var_env,
+            &edges,
+            cont_param,
+            *handler,
+            captures,
+            body_block,
+            *handler_diverges,
+        ),
         Term::If {
             cond, then_b, else_b, ..
         } => emit_if(body, var_env, block_map, caller_fn_id, blk.id, cond, then_b, else_b),
-        Term::Raise {
-            exception,
-            message,
-            subject,
-        } => emit_raise(body, var_env, *exception, *message, *subject),
+        Term::Raise { exception, fields } => emit_raise(body, var_env, *exception, *fields),
         Term::Reraise { kind, value } => emit_reraise(body, var_env, *kind, *value),
         Term::RaiseUndefined {
             receiver,
@@ -322,6 +328,8 @@ pub(crate) fn emit_terminator<M: cranelift_module::Module>(
 /// captures, push it as the process's innermost handler, and fall into the
 /// body block. The template is the same shape as a receive outcome template,
 /// so `fz_panic` materialises it the same way with the raise's three values.
+/// A handler that captures nothing and never returns has a constant
+/// template, which is a read-only object the program emits once.
 #[allow(clippy::too_many_arguments)]
 fn emit_try<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
@@ -332,19 +340,47 @@ fn emit_try<M: cranelift_module::Module>(
     handler: FnId,
     captures: &[Var],
     body_block: &BlockId,
+    handler_diverges: bool,
 ) -> Result<(), CodegenError> {
     let cont_sid = env
         .body_id_for_fn(handler)
         .unwrap_or_else(|| panic!("native try handler fn {} has no registered codegen body id", handler.0));
-    let cap_bindings: Vec<ClosureCapture> = captures
-        .iter()
-        .map(|cv| closure_capture_for_var(body, var_env, cv.0))
-        .collect();
-    let payload = ContinuationPayload::from_parts(env, cont_sid, cap_bindings);
-    let template = payload.emit_value(body, cont_param);
+    // A constant template has no slots for a frame to keep values in, and a
+    // build that poisons released frames writes into every resumed one.
+    let constant = captures.is_empty()
+        && handler_diverges
+        && env.body_native(cont_sid).frame.is_none()
+        && !closure::POISON_DEAD_FRAMES;
+    let template = if constant {
+        static_handler_template(body, env, cont_sid)?
+    } else {
+        let cap_bindings: Vec<ClosureCapture> = captures
+            .iter()
+            .map(|cv| closure_capture_for_var(body, var_env, cv.0))
+            .collect();
+        let payload = ContinuationPayload::from_parts(env, cont_sid, cap_bindings);
+        payload.emit_value(body, cont_param)
+    };
     let process = body.process_arg();
     runtime_call!(body, fz_try_push, [process, template]);
     edges.emit(body, var_env, body_block, &[])
+}
+
+/// The tagged ref to a read-only template for the handler body `cont_sid`.
+fn static_handler_template<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, M>,
+    env: &CodegenEnv<'_>,
+    cont_sid: u32,
+) -> Result<ir::Value, CodegenError> {
+    let code = *env.fn_ids.get(&cont_sid).expect("cont fn_id missing");
+    let idx = body.cache.static_handler_count;
+    body.cache.static_handler_count += 1;
+    let name = format!(
+        ".fz_static_handler_{}_{}_{}_{}",
+        env.active_body_fn_id.0, env.active_spec_id, cont_sid, idx
+    );
+    let data_id = define_static_handler_template(body.jmod, &name, CONT_ARITY as u32, code)?;
+    Ok(body.static_object_ref(data_id, fz_runtime::any_value::ValueKind::CLOSURE))
 }
 
 /// The jumps between one function's blocks. Each jump hands every argument
@@ -440,25 +476,12 @@ fn emit_raise<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
     exception: Var,
-    message: Var,
-    subject: Option<RaiseSubject>,
+    fields: Var,
 ) -> Result<(), CodegenError> {
     let exception = body.any_ref_for_var(var_env, exception.0);
-    let message = body.any_ref_for_var(var_env, message.0);
+    let fields = body.any_ref_for_var(var_env, fields.0);
     let process = body.process_arg();
-    match subject {
-        Some(RaiseSubject::Shown(subject)) => {
-            let subject = body.any_ref_for_var(var_env, subject.0);
-            runtime_call!(body, fz_raise_showing, [process, exception, message, subject]);
-        }
-        Some(RaiseSubject::ShownWithKind(subject)) => {
-            let subject = body.any_ref_for_var(var_env, subject.0);
-            runtime_call!(body, fz_raise_naming_kind, [process, exception, message, subject]);
-        }
-        None => {
-            runtime_call!(body, fz_raise, [process, exception, message]);
-        }
-    }
+    runtime_call!(body, fz_raise, [process, exception, fields]);
     continue_after_raise(body);
     Ok(())
 }

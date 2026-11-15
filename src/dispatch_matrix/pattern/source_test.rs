@@ -1,9 +1,7 @@
 use super::*;
 use crate::ast::{Expr, Pattern, Spanned};
 use crate::compiler2::{Ty, Types};
-use crate::dispatch_matrix::pattern::{
-    MessageSubject, PatternDispatchError, PatternSubjectRef, pattern_dispatch_from_source,
-};
+use crate::dispatch_matrix::pattern::{PatternDispatchError, PatternSubjectRef, pattern_dispatch_from_source};
 
 fn sp<T>(node: T) -> Spanned<T> {
     Spanned::dummy(node)
@@ -238,10 +236,11 @@ fn a_guard_extern_may_return_a_boolean() {
 fn a_guard_extern_may_carry_floats_and_declare_a_checked_failure() {
     use crate::dispatch_matrix::pattern::LastResort;
     use crate::fz_ir::{ExternReturn, ExternTy};
-    let overflow = || LastResort::Exception {
-        exception: "Elixir.ArithmeticError".into(),
-        message: "bad argument in arithmetic expression".to_string(),
-        subject: MessageSubject::Absent,
+    let overflow = || {
+        LastResort::declared(
+            "Elixir.ArithmeticError".to_string(),
+            "bad argument in arithmetic expression".to_string(),
+        )
     };
     let admitted = [
         guard_extern(

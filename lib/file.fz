@@ -158,7 +158,7 @@ defmodule File do
   def stream_open!(path), do: stream_value!(open(path, [:read]), path)
 
   @spec close!(t) :: :ok
-  def close!(handle), do: result!(close(handle), :close)
+  def close!(handle), do: result!(close(handle), {:close, handle})
 
   @doc """
   Returns the lines of `path` as a lazy `File.Stream`.
@@ -273,23 +273,20 @@ defmodule File do
 
   # The exception and message Elixir's bang functions raise. `:io` is the
   # failure of a C call, which Elixir spells `:eio`.
-  @spec raise_file(tuple | :close, atom) :: never
+  @spec raise_file(tuple, atom) :: never
   defp raise_file({:rename, source, destination}, reason),
-    do: raise(File.RenameError, "could not rename from #{Kernel.inspect(source)} to #{Kernel.inspect(destination)}: #{reason_text(reason)}")
+    do: raise(%File.RenameError{reason: reason, action: "rename", source: source, destination: destination})
 
   defp raise_file({:copy, source, destination}, reason),
-    do: raise(File.CopyError, "could not copy from #{Kernel.inspect(source)} to #{Kernel.inspect(destination)}: #{reason_text(reason)}")
+    do: raise(%File.CopyError{reason: reason, action: "copy", source: source, destination: destination})
 
   defp raise_file({:ln, existing, new}, reason),
-    do: raise(File.LinkError, "could not create hard link from #{Kernel.inspect(new)} to #{Kernel.inspect(existing)}: #{reason_text(reason)}")
+    do: raise(%File.LinkError{reason: reason, action: "create hard link", existing: existing, new: new})
 
   defp raise_file({:ln_s, existing, new}, reason),
-    do: raise(File.LinkError, "could not create symlink from #{Kernel.inspect(new)} to #{Kernel.inspect(existing)}: #{reason_text(reason)}")
+    do: raise(%File.LinkError{reason: reason, action: "create symlink", existing: existing, new: new})
 
-  defp raise_file({operation, path}, reason),
-    do: raise(File.Error, "could not #{action(operation)} #{Kernel.inspect(path)}: #{reason_text(reason)}")
-
-  defp raise_file(:close, reason), do: raise(File.Error, "could not close file: #{reason_text(reason)}")
+  defp raise_file({operation, path}, reason), do: raise(%File.Error{reason: reason, action: action(operation), path: path})
 
   @spec action(atom) :: binary
   defp action(:read), do: "read file"
@@ -299,10 +296,18 @@ defmodule File do
   defp action(:rmdir), do: "remove directory"
   defp action(:chmod), do: "change mode for"
   defp action(:open), do: "open"
+  defp action(:close), do: "close"
   defp action(:stream), do: "stream"
 
-  @spec reason_text(atom) :: binary
-  defp reason_text(:io), do: "I/O error"
-  defp reason_text(:badarg), do: "bad argument"
-  defp reason_text(:closed), do: "file already closed"
+  @doc """
+  Returns the text for `reason`, the atom a failed file operation answers.
+
+      File.format_error(:badarg)
+      #=> "bad argument"
+
+  """
+  @spec format_error(atom) :: binary
+  def format_error(:io), do: "I/O error"
+  def format_error(:badarg), do: "bad argument"
+  def format_error(:closed), do: "file already closed"
 end

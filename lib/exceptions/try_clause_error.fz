@@ -1,0 +1,5 @@
+defmodule TryClauseError do
+  defexception [:term]
+
+  def message(%{term: term}), do: Exception.__format_message_with_term__("no try clause matching:", term)
+end

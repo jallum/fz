@@ -257,7 +257,7 @@ defmodule String do
     end
   end
   def slice(_s, %Range{} = range),
-    do: raise(ArgumentError, "String.slice/2 does not accept ranges with negative steps, got: " <> inspect(range))
+    do: raise(%ArgumentError{message: "String.slice/2 does not accept ranges with negative steps, got: " <> inspect(range)})
 
   @spec from_end(integer, integer) :: integer
   defp from_end(index, len) when index < 0, do: len + index
@@ -412,7 +412,7 @@ defmodule String do
   defp cycle_units(units, [], n, acc), do: cycle_units(units, units, n, acc)
   defp cycle_units(units, [unit | rest], n, acc) when is_binary(unit), do: cycle_units(units, rest, n - 1, acc <> unit)
   defp cycle_units(_units, [unit | _rest], _n, _acc),
-    do: raise(ArgumentError, "expected a string padding element, got: " <> inspect(unit))
+    do: raise(%ArgumentError{message: "expected a string padding element, got: " <> inspect(unit)})
 
   @doc """
   Replaces `prefix` with `replacement` when `s` starts with it.

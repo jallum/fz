@@ -923,23 +923,6 @@ pub enum BranchOrigin {
     ClauseDispatch,
 }
 
-/// The value a raised message goes on to show.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RaiseSubject {
-    /// The lead, then the value.
-    Shown(Var),
-    /// The lead, the name of the value's kind, `Got value:`, then the value.
-    ShownWithKind(Var),
-}
-
-impl RaiseSubject {
-    pub fn var(self) -> Var {
-        match self {
-            Self::Shown(var) | Self::ShownWithKind(var) => var,
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum Term {
     Goto(BlockId, Vec<Var>),
@@ -992,13 +975,12 @@ pub enum Term {
     /// Native/codegen-facing return whose payload is already split into the
     /// transport lanes required by the current function's return seam.
     ReturnLanes(Vec<Var>),
-    /// The process raises the exception named by the atom `exception`. Its
-    /// message is the binary `message`, or, with a `subject`, the binary
-    /// lead of a message that goes on to show the subject. The process ends.
+    /// The process raises the exception named by the atom `exception`.
+    /// `fields` is the list of its fields: each field's atom key, then its
+    /// value. The process ends.
     Raise {
         exception: Var,
-        message: Var,
-        subject: Option<RaiseSubject>,
+        fields: Var,
     },
     /// The process continues the raise a handler was delivered: `kind` is the
     /// atom the handler received for its kind, `value` the raised value. The
@@ -1038,6 +1020,9 @@ pub enum Term {
         handler: FnId,
         captures: Vec<Var>,
         body: BlockId,
+        /// Whether the handler never delivers a value: every path through it
+        /// raises or calls something that does not return.
+        handler_diverges: bool,
     },
     ReceiveMatched {
         ident: CallsiteIdent,
@@ -1682,21 +1667,7 @@ impl fmt::Display for Term {
             }
             Term::Return(v) => write!(f, "return {}", v),
             Term::ReturnLanes(lanes) => write!(f, "return_lanes [{}]", fmt_var_list(lanes)),
-            Term::Raise {
-                exception,
-                message,
-                subject: Some(RaiseSubject::Shown(subject)),
-            } => write!(f, "raise {exception} {message} showing {subject}"),
-            Term::Raise {
-                exception,
-                message,
-                subject: Some(RaiseSubject::ShownWithKind(subject)),
-            } => write!(f, "raise {exception} {message} showing {subject} and its kind"),
-            Term::Raise {
-                exception,
-                message,
-                subject: None,
-            } => write!(f, "raise {exception} {message}"),
+            Term::Raise { exception, fields } => write!(f, "raise {exception} {fields}"),
             Term::Reraise { kind, value } => write!(f, "reraise {kind} {value}"),
             Term::RaiseUndefined {
                 receiver,
@@ -1712,6 +1683,7 @@ impl fmt::Display for Term {
                 handler,
                 captures,
                 body,
+                handler_diverges: _,
             } => write!(
                 f,
                 "try handler=fn{} caps=[{}] body={}",

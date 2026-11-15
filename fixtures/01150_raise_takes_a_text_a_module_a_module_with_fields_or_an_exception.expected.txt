@@ -1,0 +1,20 @@
+RuntimeError
+"plain text"
+ArgumentError
+"argument error"
+ArgumentError
+"with a text"
+KeyError
+"key :a not found in:\n\n    [b: 1]\n"
+KeyError
+"key :c not found in:\n\n    7\n"
+RuntimeError
+"by field"
+ArithmeticError
+"bad argument in arithmetic expression"
+ArgumentError
+"through a variable"
+ArgumentError
+"raise/1 and reraise/2 expect a module name, string or exception as the first argument, got: 42"
+KeyError
+"key :d not found"

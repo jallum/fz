@@ -85,6 +85,94 @@ const RUNTIME_MODULE_SOURCES: &[RuntimeModuleSource] = &[
         source: include_str!("../../lib/exception.fz"),
     },
     RuntimeModuleSource {
+        name: "ArgumentError",
+        source: include_str!("../../lib/exceptions/argument_error.fz"),
+    },
+    RuntimeModuleSource {
+        name: "ArithmeticError",
+        source: include_str!("../../lib/exceptions/arithmetic_error.fz"),
+    },
+    RuntimeModuleSource {
+        name: "BadBooleanError",
+        source: include_str!("../../lib/exceptions/bad_boolean_error.fz"),
+    },
+    RuntimeModuleSource {
+        name: "BadMapError",
+        source: include_str!("../../lib/exceptions/bad_map_error.fz"),
+    },
+    RuntimeModuleSource {
+        name: "CaseClauseError",
+        source: include_str!("../../lib/exceptions/case_clause_error.fz"),
+    },
+    RuntimeModuleSource {
+        name: "CondClauseError",
+        source: include_str!("../../lib/exceptions/cond_clause_error.fz"),
+    },
+    RuntimeModuleSource {
+        name: "Enum.EmptyError",
+        source: include_str!("../../lib/exceptions/enum_empty_error.fz"),
+    },
+    RuntimeModuleSource {
+        name: "Enum.OutOfBoundsError",
+        source: include_str!("../../lib/exceptions/enum_out_of_bounds_error.fz"),
+    },
+    RuntimeModuleSource {
+        name: "ErlangError",
+        source: include_str!("../../lib/exceptions/erlang_error.fz"),
+    },
+    RuntimeModuleSource {
+        name: "File.CopyError",
+        source: include_str!("../../lib/exceptions/file_copy_error.fz"),
+    },
+    RuntimeModuleSource {
+        name: "File.Error",
+        source: include_str!("../../lib/exceptions/file_error.fz"),
+    },
+    RuntimeModuleSource {
+        name: "File.LinkError",
+        source: include_str!("../../lib/exceptions/file_link_error.fz"),
+    },
+    RuntimeModuleSource {
+        name: "File.RenameError",
+        source: include_str!("../../lib/exceptions/file_rename_error.fz"),
+    },
+    RuntimeModuleSource {
+        name: "FunctionClauseError",
+        source: include_str!("../../lib/exceptions/function_clause_error.fz"),
+    },
+    RuntimeModuleSource {
+        name: "JSON.DecodeError",
+        source: include_str!("../../lib/exceptions/json_decode_error.fz"),
+    },
+    RuntimeModuleSource {
+        name: "KeyError",
+        source: include_str!("../../lib/exceptions/key_error.fz"),
+    },
+    RuntimeModuleSource {
+        name: "MatchError",
+        source: include_str!("../../lib/exceptions/match_error.fz"),
+    },
+    RuntimeModuleSource {
+        name: "Protocol.UndefinedError",
+        source: include_str!("../../lib/exceptions/protocol_undefined_error.fz"),
+    },
+    RuntimeModuleSource {
+        name: "RuntimeError",
+        source: include_str!("../../lib/exceptions/runtime_error.fz"),
+    },
+    RuntimeModuleSource {
+        name: "TryClauseError",
+        source: include_str!("../../lib/exceptions/try_clause_error.fz"),
+    },
+    RuntimeModuleSource {
+        name: "UndefinedFunctionError",
+        source: include_str!("../../lib/exceptions/undefined_function_error.fz"),
+    },
+    RuntimeModuleSource {
+        name: "WithClauseError",
+        source: include_str!("../../lib/exceptions/with_clause_error.fz"),
+    },
+    RuntimeModuleSource {
         name: "Float",
         source: include_str!("../../lib/float.fz"),
     },

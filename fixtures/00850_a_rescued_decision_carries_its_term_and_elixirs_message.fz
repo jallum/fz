@@ -16,7 +16,7 @@ def main() do
   rescue
     e in CaseClauseError ->
       dbg(e.term)
-      dbg(e.message)
+      dbg(Exception.message(e))
   end
   try do
     {a} = pair()
@@ -24,7 +24,7 @@ def main() do
   rescue
     e in MatchError ->
       dbg(e.term)
-      dbg(e.message)
+      dbg(Exception.message(e))
   end
   try do
     with {:ok, v} <- bad() do
@@ -35,7 +35,7 @@ def main() do
   rescue
     e in WithClauseError ->
       dbg(e.term)
-      dbg(e.message)
+      dbg(Exception.message(e))
   end
   try do
     try do
@@ -48,6 +48,6 @@ def main() do
   rescue
     e in TryClauseError ->
       dbg(e.term)
-      dbg(e.message)
+      dbg(Exception.message(e))
   end
 end

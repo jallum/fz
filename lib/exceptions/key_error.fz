@@ -1,0 +1,14 @@
+defmodule KeyError do
+  defexception [:key, :term, :message]
+
+  def message(%{message: nil, key: key, term: term}), do: not_found("key " <> inspect(key) <> " not found", key, term)
+  def message(%{message: message}), do: message
+
+  @spec not_found(binary, any, any) :: binary
+  defp not_found(lead, _key, nil), do: lead
+
+  defp not_found(lead, key, term) when is_atom(term) and is_atom(key),
+    do: lead <> " in: #{inspect(term)} (if instead you want to invoke #{inspect(term)}.#{key}(), make sure to add parentheses after the function name)"
+
+  defp not_found(lead, _key, term), do: Exception.__format_message_with_term__(lead <> " in:", term)
+end

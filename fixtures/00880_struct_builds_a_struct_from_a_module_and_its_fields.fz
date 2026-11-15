@@ -20,7 +20,7 @@ def message(f) do
   try do
     f.()
   rescue
-    e in KeyError -> e.message
+    e in KeyError -> Exception.message(e)
   end
 end
 

@@ -21,15 +21,14 @@ use crate::diag::Diagnostic;
 use crate::diag::codes;
 use crate::diag::driver::emit_through;
 use crate::dispatch_matrix::pattern::{
-    GuardExtern, LastResort, MessageSubject, PatternDispatchPlan, PatternGuardBinOp, PatternGuardExpr,
-    PatternGuardUnaryOp, guard_body_subjects,
+    FieldTerm, GuardExtern, LastResort, PatternDispatchPlan, PatternGuardBinOp, PatternGuardExpr, PatternGuardUnaryOp,
+    guard_body_subjects,
 };
 use crate::dispatch_matrix::{ComparisonValue, DispatchNode, GraphNodeId, ListRegion, Region, SubjectId};
 use crate::fz_ir::{
     BinOp as IrBinOp, BitMatchField, BitSizeIr, BlockId, BranchOrigin, CallsiteIdent, Const, Cont, DestMapSeed,
     DirectCallTarget, ExternAbi, ExternArg, ExternDecl, ExternId, ExternMarshalSite, ExternReturn, ExternTy, FnBuilder,
-    FnCategory, FnId, ModuleBuilder, Prim, RaiseSubject, ReceiveAfter, ReceiveClause, SlotStore, Term, UnOp as IrUnOp,
-    Var,
+    FnCategory, FnId, ModuleBuilder, Prim, ReceiveAfter, ReceiveClause, SlotStore, Term, UnOp as IrUnOp, Var,
 };
 use crate::ground_value::GroundValue;
 use crate::runtime_type_predicate::{CallableShape, RuntimeTypePredicate, TuplePositions};
@@ -829,14 +828,14 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 origin: BranchOrigin::ClauseDispatch,
             });
             ctx.current_block = raise_b;
-            let LastResort::Exception { exception, message, .. } = failure else {
+            let LastResort::Exception { exception, fields } = failure else {
                 return Err(incomplete_native_program(
                     self.telemetry,
                     self.root_id,
                     format!("extern `{}` declares a failure that raises nothing", signature.symbol),
                 ));
             };
-            self.emit_raise(ctx, exception, message, None);
+            self.emit_raise(ctx, exception, fields, None);
             ctx.current_block = value_b;
             return Ok(value);
         }
@@ -1875,10 +1874,12 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 )?;
                 let captures = self.entry_capture_args(ctx, executable, entries, *handler, env)?;
                 let body_block = ctx.builder.block(vec![]);
+                let handler_diverges = !self.entry_can_deliver(executable, entries, *handler);
                 ctx.set_term(Term::Try {
                     handler: handler_fn,
                     captures,
                     body: body_block,
+                    handler_diverges,
                 });
                 ctx.current_block = body_block;
                 let body_args = self.entry_capture_args(ctx, executable, entries, *body, env)?;
@@ -3103,12 +3104,8 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 format!("a dispatch with no last resort reached its fail in {:?}", ctx.origin),
             ));
         };
-        let (exception, message, message_subject) = match last_resort {
-            LastResort::Exception {
-                exception,
-                message,
-                subject,
-            } => (exception, message, *subject),
+        let (exception, fields) = match last_resort {
+            LastResort::Exception { exception, fields } => (exception, fields),
             LastResort::Reraise => {
                 let kind = state.dispatch_inputs.first().ok_or(FatalError)?;
                 let kind = self.materialize_native_value(ctx, None, kind)?;
@@ -3118,32 +3115,87 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 return Ok(());
             }
         };
-        let subject = match message_subject {
-            MessageSubject::Absent => None,
-            MessageSubject::Shown | MessageSubject::ShownWithKind => {
+        let subject = match last_resort.consumed_inputs() {
+            0 => None,
+            _ => {
                 let input = state.dispatch_inputs.first().ok_or(FatalError)?;
-                let var = self.materialize_native_value(ctx, None, input)?;
-                Some(match message_subject {
-                    MessageSubject::ShownWithKind => RaiseSubject::ShownWithKind(var),
-                    _ => RaiseSubject::Shown(var),
-                })
+                Some(self.materialize_native_value(ctx, None, input)?)
             }
         };
-        self.emit_raise(ctx, exception, message, subject);
+        self.emit_raise(ctx, exception, fields, subject);
         Ok(())
     }
 
-    /// Ends the block raising `exception` with `message`.
-    fn emit_raise(&mut self, ctx: &mut NativeFnCtx, exception: &str, message: &str, subject: Option<RaiseSubject>) {
+    /// Whether control that enters `entry` can deliver a value to the
+    /// executable's caller. A value of the empty type and a call that never
+    /// returns deliver nothing, and neither does anything that would follow.
+    fn entry_can_deliver(
+        &mut self,
+        executable: &BackendExecutable,
+        entries: &[BackendEntry],
+        entry: ControlEntryId,
+    ) -> bool {
+        let mut seen = HashSet::default();
+        let mut pending = vec![entry];
+        while let Some(entry) = pending.pop() {
+            if !seen.insert(entry) {
+                continue;
+            }
+            let tail = &entries[entry.as_u32() as usize].tail;
+            let delivered = match tail {
+                BackendTail::Value { value, dest } => {
+                    let value_ty = executable.abi.materialized.value_types.get(value).copied();
+                    (!value_ty.is_some_and(|ty| self.world.types().is_empty(&ty))).then_some(dest)
+                }
+                BackendTail::DirectCall { target, dest, .. } => (!target.never_returns()).then_some(dest),
+                BackendTail::ClosureCall { return_flow, dest, .. } => {
+                    (!matches!(return_flow, Some(BackendReturnFlow::NoReturn))).then_some(dest)
+                }
+                BackendTail::If { .. }
+                | BackendTail::Dispatch { .. }
+                | BackendTail::Receive(_)
+                | BackendTail::Try { .. }
+                | BackendTail::Unreachable => {
+                    pending.extend(tail.transfers().into_iter().map(|(next, _)| next));
+                    continue;
+                }
+            };
+            match delivered {
+                Some(ControlDestination::Return) => return true,
+                Some(ControlDestination::Deliver(next)) => pending.push(*next),
+                None => {}
+            }
+        }
+        false
+    }
+
+    /// Ends the block raising `exception` built from `fields`, with `subject`
+    /// as the value of each field that carries the plan's subject.
+    fn emit_raise(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        exception: &str,
+        fields: &[(&'static str, FieldTerm)],
+        subject: Option<Var>,
+    ) {
         let (exception, _) = ctx.emit_let(Prim::Const(Const::Atom(self.atom_id(exception))));
-        let message = message.as_bytes().to_vec();
-        let bit_len = 8 * message.len() as u64;
-        let (message, _) = ctx.emit_let(Prim::ConstBitstring(message, bit_len));
-        ctx.set_term(Term::Raise {
-            exception,
-            message,
-            subject,
-        });
+        let mut terms = Vec::with_capacity(2 * fields.len());
+        for (name, term) in fields {
+            let (key, _) = ctx.emit_let(Prim::Const(Const::Atom(self.atom_id(name))));
+            let value = match term {
+                FieldTerm::Subject => subject.expect("a field that carries the subject has one to carry"),
+                FieldTerm::Atom(atom) => ctx.emit_let(Prim::Const(Const::Atom(self.atom_id(atom)))).0,
+                FieldTerm::Int(value) => ctx.emit_let(Prim::Const(Const::Int(*value))).0,
+                FieldTerm::Text(text) => {
+                    let bytes = text.as_bytes().to_vec();
+                    let bit_len = 8 * bytes.len() as u64;
+                    ctx.emit_let(Prim::ConstBitstring(bytes, bit_len)).0
+                }
+            };
+            terms.extend([key, value]);
+        }
+        let (fields, _) = ctx.emit_let(Prim::MakeList(terms, None, None));
+        ctx.set_term(Term::Raise { exception, fields });
     }
 
     fn lower_dispatch_node(

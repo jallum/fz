@@ -304,7 +304,7 @@ fn frame_size<M: cranelift_module::Module>(body: &mut CodegenFn<'_, '_, M>, coun
 
 /// The `poison_dead_frames` test feature builds a compiler whose released
 /// frames are poisoned instead of given back; production builds pop.
-const POISON_DEAD_FRAMES: bool = cfg!(feature = "poison_dead_frames");
+pub(crate) const POISON_DEAD_FRAMES: bool = cfg!(feature = "poison_dead_frames");
 
 /// The positive control of the poison test: a poisoned build that is asked to
 /// read the outer continuation after the release, which must fail.

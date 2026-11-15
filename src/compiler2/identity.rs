@@ -1,5 +1,6 @@
 use crate::fast_hash::HashMap;
 use crate::modules::identity::{ModuleDenotation, ModuleName};
+use fz_runtime::failure::RaiseKind;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -901,6 +902,58 @@ impl NameableModules {
 
     pub(crate) fn modules(&self) -> impl Iterator<Item = ModuleId> + '_ {
         self.0.iter().copied()
+    }
+}
+
+/// One thing a raise can hand a handler.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Raised {
+    /// A struct of this exception module.
+    Exception(ModuleId),
+    /// A value no exception module accounts for.
+    Anything,
+}
+
+/// What a raise of one kind can hand a handler: structs of these exception
+/// modules, in the order each was first noted, and whether it can also be
+/// any other value. Both only grow.
+#[derive(Debug, Default)]
+pub(crate) struct RaisableOfKind {
+    exceptions: indexmap::IndexSet<ModuleId>,
+    anything_else: bool,
+}
+
+impl RaisableOfKind {
+    /// Whether no raise of this kind is known.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.exceptions.is_empty() && !self.anything_else
+    }
+
+    pub(crate) fn exceptions(&self) -> impl Iterator<Item = ModuleId> + '_ {
+        self.exceptions.iter().copied()
+    }
+
+    pub(crate) fn anything_else(&self) -> bool {
+        self.anything_else
+    }
+}
+
+/// What the program can raise, for each kind of raise.
+#[derive(Debug, Default)]
+pub(crate) struct Raisable([RaisableOfKind; RaiseKind::ALL.len()]);
+
+impl Raisable {
+    /// Returns whether `raised` is new to `kind`.
+    pub(crate) fn note(&mut self, kind: RaiseKind, raised: Raised) -> bool {
+        let of_kind = &mut self.0[kind as usize];
+        match raised {
+            Raised::Exception(module) => of_kind.exceptions.insert(module),
+            Raised::Anything => !std::mem::replace(&mut of_kind.anything_else, true),
+        }
+    }
+
+    pub(crate) fn of(&self, kind: RaiseKind) -> &RaisableOfKind {
+        &self.0[kind as usize]
     }
 }
 

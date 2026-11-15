@@ -1,0 +1,27 @@
+defmodule Protocol.UndefinedError do
+  defexception [:protocol, :value, :message, description: ""]
+
+  def message(%{message: nil, protocol: protocol, value: value, description: description}),
+    do: Exception.__format_message_with_term__("protocol #{inspect(protocol)} not implemented for " <> kind(value) <> described(description) <> "\n\nGot value:", value)
+
+  def message(%{message: message}), do: message
+
+  @spec kind(any) :: binary
+  defp kind(%{__struct__: module}), do: inspect(module) <> " (a struct)"
+  defp kind(value) when is_atom(value), do: "Atom"
+  defp kind(value) when is_binary(value), do: "BitString"
+  defp kind(value) when is_float(value), do: "Float"
+  defp kind(value) when is_integer(value), do: "Integer"
+  defp kind(value) when is_list(value), do: "List"
+  defp kind(value) when is_map(value), do: "Map"
+  defp kind(_value :: tuple), do: "Tuple"
+  defp kind(_value :: pid), do: "PID"
+  defp kind(_value :: ref), do: "Reference"
+  defp kind(_value :: resource), do: "Reference"
+  # Every other kind of value is named above, so a function is what remains.
+  defp kind(_value), do: "Function"
+
+  @spec described(binary) :: binary
+  defp described(""), do: ""
+  defp described(description), do: ", " <> description
+end

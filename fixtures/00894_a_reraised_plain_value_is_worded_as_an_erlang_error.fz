@@ -1,0 +1,11 @@
+#---
+# purpose: "a plain value rescued as an ErlangError and raised again reaches no handler, and the program ends with the ErlangError banner that shows the value"
+# expect: abort
+#---
+def main() do
+  try do
+    panic(:boom)
+  rescue
+    e in ErlangError -> reraise(e, __STACKTRACE__)
+  end
+end

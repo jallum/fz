@@ -1,0 +1,3 @@
+defmodule JSON.DecodeError do
+  defexception [:message, :offset, :data]
+end

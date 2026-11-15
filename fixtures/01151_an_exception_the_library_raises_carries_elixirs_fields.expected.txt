@@ -1,0 +1,32 @@
+KeyError
+:b
+%{a: 1}
+nil
+"key :b not found in:\n\n    %{a: 1}\n"
+KeyError
+:b
+[a: 1]
+"key :b not found in:\n\n    [a: 1]\n"
+BadMapError
+:not_a_map
+"expected a map, got:\n\n    :not_a_map\n"
+ArithmeticError
+"bad argument in arithmetic expression"
+"bad argument in arithmetic expression"
+ArgumentError
+"errors were found at the given arguments:\n\n  * 1st argument: not a nonempty list\n"
+Enum.EmptyError
+"empty error"
+"empty error"
+Enum.OutOfBoundsError
+"out of bounds error at position 5 when traversing enumerable [1, 2]"
+Protocol.UndefinedError
+String.Chars
+<<5::size(3)>>
+"cannot convert a bitstring to a string"
+"protocol String.Chars not implemented for BitString, cannot convert a bitstring to a string\n\nGot value:\n\n    <<5::size(3)>>\n"
+JSON.DecodeError
+"invalid byte 125 at position (byte offset) 4"
+File.Error
+"/no/such/file/anywhere"
+"read file"

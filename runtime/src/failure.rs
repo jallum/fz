@@ -16,20 +16,24 @@
 //! to the scheduler.
 //!
 //! An exception is a map in Elixir's struct shape,
-//! `%{__struct__: Name, __exception__: true, message: "..."}`, and prints as
-//! `** (Name) message`. Any other error value prints the way Elixir prints a
-//! raw Erlang error: `** (ErlangError) Erlang error: <value>`. A throw prints
+//! `%{__struct__: Name, __exception__: true, ..fields}`. Its words belong to
+//! its module, so the line for an uncaught error is rendered by the handler
+//! the compiler places at the bottom of every process, which ends the process
+//! through `fz_fail` with that line. An error that reaches this module with
+//! no handler left was raised by that bottom handler itself, or in a process
+//! that has none, such as a macro the compiler is expanding. No module can be
+//! asked there, so an exception that carries its words in a binary `message`
+//! field prints as `** (Name) message`, and any other value the way Elixir
+//! prints a raw Erlang error: `** (ErlangError) Erlang error: <value>`. A
+//! throw prints
 //! `** (throw) <value>` and an exit `** (exit) <reason>`, except an exit whose
 //! reason is a shutdown, which prints nothing.
 //!
-//! `raise_exception` builds an exception from a name and a message and raises
-//! it as an error; `raise_exception_showing` also carries the term the message
-//! shows, in the exception's `term` field; `raise_exception_naming_kind` also
-//! names the term's kind first. Compiled code reaches them through `fz_raise`,
-//! `fz_raise_showing` and `fz_raise_naming_kind` when a decision raises the
-//! exception Elixir raises for it, and `Kernel.raise/2` calls `fz_raise`.
+//! `raise_exception` builds an exception from a name and its fields and
+//! raises it as an error. Compiled code reaches it through `fz_raise` when a
+//! decision raises the exception Elixir raises for it.
 
-use crate::any_value::debug::{kind_name, render_value};
+use crate::any_value::debug::render_value;
 use crate::any_value::{AnyValue, AnyValueRef, ValueKind, map_addr_from_tagged};
 use crate::exec_ctx::ExecCtx;
 use crate::heap::{list_head_ref, list_tail_ref};
@@ -40,6 +44,9 @@ use crate::process::{Handler, Process, Raised};
 use crate::scheduler_hooks::FaultHook;
 use std::io::Write as _;
 use std::slice;
+
+/// The field whose `true` marks a struct as an exception.
+pub const EXCEPTION_FIELD: &str = "__exception__";
 
 /// The three kinds of raise. They share one route: a handler receives the kind
 /// as the atom named by `name`, beside the raised value.
@@ -62,10 +69,10 @@ impl RaiseKind {
         }
     }
 
-    fn from_name(name: &str) -> Option<Self> {
-        [Self::Error, Self::Throw, Self::Exit]
-            .into_iter()
-            .find(|kind| kind.name() == name)
+    pub const ALL: [Self; 3] = [Self::Error, Self::Throw, Self::Exit];
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| kind.name() == name)
     }
 }
 
@@ -128,7 +135,7 @@ pub fn failure_line(process: *mut Process, kind: RaiseKind, value: AnyValueRef) 
 /// judgement of what counts as an exception; `rescue` dispatches on its answer.
 pub fn exception_name(process: *mut Process, value: AnyValue) -> Option<AnyValue> {
     let is_exception =
-        exception_field(process, value, "__exception__").is_some_and(|flag| atom_named(process, flag, "true"));
+        exception_field(process, value, EXCEPTION_FIELD).is_some_and(|flag| atom_named(process, flag, "true"));
     let name = exception_field(process, value, "__struct__").filter(|name| name.kind() == ValueKind::ATOM)?;
     is_exception.then_some(name)
 }
@@ -204,6 +211,23 @@ pub extern "C" fn fz_throw(process: *mut Process, value_ref: u64) {
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_exit(process: *mut Process, reason_ref: u64) {
     raise(process, RaiseKind::Exit, reason_ref);
+}
+
+/// End the current process as an uncaught error ends it, with `line` as the
+/// line it prints: the primitive behind `Exception.__uncaught__/1`, which
+/// renders the line from the exception's own module.
+#[unsafe(no_mangle)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_fail(process: *mut Process, line_ref: u64) {
+    assert!(!process.is_null(), "fz_fail: no current process");
+    let line = binary_text(value_from_word(line_ref, "fz_fail line")).expect("fz_fail: a binary line");
+    let process = unsafe { &mut *process };
+    assert!(!process.ctx.is_null(), "fz_fail: process has no execution context");
+    let ctx = unsafe { &*process.ctx };
+    process.failed = true;
+    process.exit_status = 1;
+    let sink = ctx.fault.expect("fz_fail: fault sink installed");
+    unsafe { sink(ctx.scheduler, line.as_ptr(), line.len()) };
 }
 
 /// `System.halt/1`: end the program with `status`. The context's scheduler
@@ -344,30 +368,11 @@ fn report_raise(
     };
 }
 
-/// Raise the exception `name` carrying `message` in the current process, as an
+/// Raise the exception `name` with `fields` in the current process, as an
 /// error, through the one route.
-pub fn raise_exception(process: *mut Process, name: AnyValue, message: &str) {
-    let message = text(process, message);
-    let exception = exception(process, name, &[("message", message)]);
+pub fn raise_exception(process: *mut Process, name: AnyValue, fields: &[(&str, AnyValue)]) {
+    let exception = exception(process, name, fields);
     raise(process, RaiseKind::Error, exception);
-}
-
-/// Raise the exception `name` about `term`, the way Elixir's `CaseClauseError`
-/// and its kin do: `message` is `lead`, then the term on a line of its own,
-/// indented, and the exception carries the term itself in `term`.
-pub fn raise_exception_showing(process: *mut Process, name: AnyValue, lead: &str, term: AnyValue) {
-    let message = text(process, &format!("{lead}\n\n    {}\n", render_value(process, term)));
-    let exception = exception(process, name, &[("message", message), ("term", term)]);
-    raise(process, RaiseKind::Error, exception);
-}
-
-/// Raise the exception `name` about `term` the way Elixir's
-/// `Protocol.UndefinedError` words it: `lead` ends the line that names the
-/// term's kind, then a blank line, `Got value:`, a blank line and the term
-/// indented.
-pub fn raise_exception_naming_kind(process: *mut Process, name: AnyValue, lead: &str, term: AnyValue) {
-    let lead = format!("{lead}{}\n\nGot value:", kind_name(process, term));
-    raise_exception_showing(process, name, &lead, term);
 }
 
 /// Raise what Elixir raises when `receiver.function(..)` with `arity`
@@ -385,7 +390,8 @@ pub fn raise_undefined_function(
     let shown = render_value(process, receiver);
     if !matches!(receiver, AnyValue::Atom(_)) {
         let message = not_a_module_message(&shown, &render_value(process, function), arity);
-        return raise_exception(process, atom(process, "Elixir.ArgumentError"), &message);
+        let message = text(process, &message);
+        return raise_exception(process, atom(process, "Elixir.ArgumentError"), &[("message", message)]);
     }
     let called = format!("{shown}.{}/{arity}", atom_text(process, function));
     let message = if module_is_defined {
@@ -396,7 +402,7 @@ pub fn raise_undefined_function(
         format!("function {called} is undefined (module {shown} is not available)")
     };
     let message = text(process, &message);
-    let exception = exception(
+    raise_exception(
         process,
         atom(process, "Elixir.UndefinedFunctionError"),
         &[
@@ -407,7 +413,6 @@ pub fn raise_undefined_function(
             ("message", message),
         ],
     );
-    raise(process, RaiseKind::Error, exception);
 }
 
 fn not_a_module_message(receiver: &str, function: &str, arity: i64) -> String {
@@ -448,10 +453,16 @@ fn text(process: *mut Process, text: &str) -> AnyValue {
 /// `%{__struct__: name, __exception__: true, ..fields}` on the process heap, as
 /// a value word.
 fn exception(process: *mut Process, name: AnyValue, fields: &[(&str, AnyValue)]) -> u64 {
+    let fields = fields.iter().map(|&(key, value)| (atom(process, key), value)).collect();
+    exception_of(process, name, fields)
+}
+
+/// An exception whose field keys are atoms already.
+fn exception_of(process: *mut Process, name: AnyValue, fields: Vec<(AnyValue, AnyValue)>) -> u64 {
     let process = unsafe { &mut *process };
     let atom = |name: &str| AnyValue::atom(process.node.intern_atom(name));
-    let mut entries = vec![(atom("__struct__"), name), (atom("__exception__"), atom("true"))];
-    entries.extend(fields.iter().map(|&(key, value)| (atom(key), value)));
+    let mut entries = vec![(atom("__struct__"), name), (atom(EXCEPTION_FIELD), atom("true"))];
+    entries.extend(fields);
     let bits = process.heap.alloc_map_slots(&entries);
     let addr = map_addr_from_tagged(bits).expect("an exception is a map");
     AnyValueRef::from_heap_object(ValueKind::MAP, addr)
@@ -465,39 +476,27 @@ fn value_from_word(word: u64, context: &str) -> AnyValue {
         .unwrap_or_else(|error| panic!("{context}: a value ref ({error:?})"))
 }
 
-/// Raise the exception named by the atom `name_ref` with the binary
-/// `message_ref` as its message.
+/// Raise the exception named by the atom `name_ref`. `fields_ref` lists its
+/// fields: each field's atom key, then its value.
 #[unsafe(no_mangle)]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn fz_raise(process: *mut Process, name_ref: u64, message_ref: u64) {
+pub extern "C" fn fz_raise(process: *mut Process, name_ref: u64, fields_ref: u64) {
     let name = value_from_word(name_ref, "fz_raise name");
-    let message = binary_text(value_from_word(message_ref, "fz_raise message")).expect("fz_raise: a binary message");
-    raise_exception(process, name, &message);
-}
-
-/// Raise the exception named by the atom `name_ref` with a message about the
-/// term `term_ref`, led by the binary `lead_ref`.
-#[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn fz_raise_showing(process: *mut Process, name_ref: u64, lead_ref: u64, term_ref: u64) {
-    let name = value_from_word(name_ref, "fz_raise_showing name");
-    let lead =
-        binary_text(value_from_word(lead_ref, "fz_raise_showing lead")).expect("fz_raise_showing: a binary lead");
-    let term = value_from_word(term_ref, "fz_raise_showing term");
-    raise_exception_showing(process, name, &lead, term);
-}
-
-/// Raise the exception named by the atom `name_ref` with a message about the
-/// term `term_ref`, led by the binary `lead_ref` and the name of the term's
-/// kind.
-#[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn fz_raise_naming_kind(process: *mut Process, name_ref: u64, lead_ref: u64, term_ref: u64) {
-    let name = value_from_word(name_ref, "fz_raise_naming_kind name");
-    let lead = binary_text(value_from_word(lead_ref, "fz_raise_naming_kind lead"))
-        .expect("fz_raise_naming_kind: a binary lead");
-    let term = value_from_word(term_ref, "fz_raise_naming_kind term");
-    raise_exception_naming_kind(process, name, &lead, term);
+    let mut rest = AnyValueRef::from_raw_word(fields_ref).expect("fz_raise: a list ref");
+    let mut terms = Vec::new();
+    while !rest.is_empty_list() {
+        let head = list_head_ref(rest).and_then(AnyValue::from_ref);
+        terms.push(head.expect("fz_raise: a list of values"));
+        rest = list_tail_ref(rest).expect("fz_raise: a list tail");
+    }
+    let entries = terms
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|&[key, value]| (key, value))
+        .collect();
+    let exception = exception_of(process, name, entries);
+    raise(process, RaiseKind::Error, exception);
 }
 
 /// Raise for a call `receiver.function(..)` that reached no function.

@@ -8,6 +8,7 @@ use crate::parser::lexer::{Lexer, Tok, Token};
 use crate::source::{SourceVersion, Span};
 use crate::telemetry::RawSpanTelemetry;
 use fz_runtime::any_value::AnyValueRef;
+use fz_runtime::failure::RaiseKind;
 
 use super::token_payload;
 use super::{QuotedSourceBuilder, QuotedSourceError, QuotedSourceHeap, QuotedSourceMetadata, QuotedSourceRoot};
@@ -101,6 +102,15 @@ struct ClauseHead {
 enum ClauseLine<'t> {
     Head(ClauseHead),
     Body(ParsedExpr<'t>),
+}
+
+/// What an extern declares after its return type.
+enum ExternOption {
+    Raises {
+        exception: AnyValueRef,
+        message: AnyValueRef,
+    },
+    Delivers(AnyValueRef),
 }
 
 enum StructName {
@@ -559,8 +569,8 @@ impl<'t> FrontDoorParser<'t> {
             return self.err("expected extern return type after `::`");
         }
         let ret = token_payload::encode_tokens(&self.builder, ret)?;
-        let raises = if self.eat(&Tok::Comma) {
-            Some(self.parse_extern_raises()?)
+        let option = if self.eat(&Tok::Comma) {
+            Some(self.parse_extern_option()?)
         } else {
             None
         };
@@ -602,9 +612,13 @@ impl<'t> FrontDoorParser<'t> {
         if !constraints.is_empty() {
             entries.push((self.builder.atom("when"), self.builder.list(&constraints)?));
         }
-        if let Some((exception, message)) = raises {
-            entries.push((self.builder.atom("raises"), exception));
-            entries.push((self.builder.atom("message"), message));
+        match option {
+            Some(ExternOption::Raises { exception, message }) => {
+                entries.push((self.builder.atom("raises"), exception));
+                entries.push((self.builder.atom("message"), message));
+            }
+            Some(ExternOption::Delivers(kind)) => entries.push((self.builder.atom("delivers"), kind)),
+            None => {}
         }
         self.builder
             .call(
@@ -615,19 +629,37 @@ impl<'t> FrontDoorParser<'t> {
             .map_err(FrontDoorError::from)
     }
 
-    /// The tail `raises: Exception, message: "text"` of an extern whose result
-    /// can fail: the exception a body raises, and what it says.
-    fn parse_extern_raises(&mut self) -> Result<(AnyValueRef, AnyValueRef), FrontDoorError> {
+    /// The one option an extern may carry after its return type: `raises:`
+    /// for a result that can fail, or `delivers:` for a call that hands its
+    /// argument to the nearest handler.
+    fn parse_extern_option(&mut self) -> Result<ExternOption, FrontDoorError> {
         self.skip_newlines();
         match self.bump() {
-            Tok::KwKey(key) if key == "raises" => {}
-            other => {
-                return Err(self.error(format!(
-                    "expected `raises:` after the extern return type, got {}; `raises:` is the only extern option",
-                    describe_token(other)
-                )));
-            }
+            Tok::KwKey(key) if key == "raises" => self.parse_extern_raises(),
+            Tok::KwKey(key) if key == "delivers" => self.parse_extern_delivers(),
+            other => Err(self.error(format!(
+                "expected `raises:` or `delivers:` after the extern return type, got {}; an extern takes one of them",
+                describe_token(other)
+            ))),
         }
+    }
+
+    /// The kind a `delivers:` extern raises with: `:error`, `:throw` or `:exit`.
+    fn parse_extern_delivers(&mut self) -> Result<ExternOption, FrontDoorError> {
+        match self.bump() {
+            Tok::Atom(kind) if RaiseKind::from_name(kind).is_some() => {
+                Ok(ExternOption::Delivers(self.builder.atom(kind)))
+            }
+            other => Err(self.error(format!(
+                "`delivers:` names the kind a handler receives, `:error`, `:throw` or `:exit`, got {}",
+                describe_token(other)
+            ))),
+        }
+    }
+
+    /// The tail `raises: Exception, message: "text"` of an extern whose result
+    /// can fail: the exception a body raises, and what it says.
+    fn parse_extern_raises(&mut self) -> Result<ExternOption, FrontDoorError> {
         let exception = self.parse_extern_exception()?;
         self.skip_newlines();
         if !self.eat(&Tok::Comma) {
@@ -647,7 +679,7 @@ impl<'t> FrontDoorParser<'t> {
             }
         }
         let message = self.parse_extern_message()?;
-        Ok((exception, message))
+        Ok(ExternOption::Raises { exception, message })
     }
 
     fn parse_extern_exception(&mut self) -> Result<AnyValueRef, FrontDoorError> {

@@ -65,7 +65,8 @@ const TARGET_FIXTURES: [TargetFixture; 3] = [
         // `Enum.reduce_while/3` and its Enum wrappers are keyed once per reducer lambda.
         // 677 -> 675: a non-recursive key collapses structure nothing asks about to its class, as a
         // recursive key does, so callers that differ only in such freight share one activation.
-        runtime_demand_walks: 675,
+        // 675 -> 826: the same cause as `00567_fz_f98_range_map_converges` below.
+        runtime_demand_walks: 826,
         mainline_runtime_demand_walks: 6252,
         mainline_runtime_demand_door: ObservationDoor::Interp,
     },
@@ -79,7 +80,8 @@ const TARGET_FIXTURES: [TargetFixture; 3] = [
         // 505 -> 527: a returned callable keeps its brand in its function's
         // key, and a protocol callback counts every input but the receiver as returned, so
         // `Enum.reduce_while/3` and its Enum wrappers are keyed once per reducer lambda.
-        runtime_demand_walks: 527,
+        // 527 -> 669: the same cause as `00567_fz_f98_range_map_converges` below.
+        runtime_demand_walks: 669,
         mainline_runtime_demand_walks: 6378,
         mainline_runtime_demand_door: ObservationDoor::Interp,
     },
@@ -96,7 +98,10 @@ const TARGET_FIXTURES: [TargetFixture; 3] = [
         // so fewer activations are walked: 183 -> 179.
         // 175 -> 172: a non-recursive key collapses structure nothing asks about to its class, as a
         // recursive key does, so callers that differ only in such freight share one activation.
-        runtime_demand_walks: 172,
+        // 172 -> 246: the program's entry wraps `main` in the handler that words an uncaught
+        // raise, so the banner and the `message/1` of each exception the fixture can raise are
+        // walked too.
+        runtime_demand_walks: 246,
         mainline_runtime_demand_walks: 2971,
         mainline_runtime_demand_door: ObservationDoor::Run,
     },
@@ -1367,6 +1372,15 @@ def main(), do: Enum.reduce([1, 2, 3, 4, 5], 0, fn (x, acc) -> x + acc end)
             "runtime:Enumerable.fz".to_string(),
             "runtime:Kernel.fz".to_string(),
             "runtime:List.fz".to_string(),
+            "runtime:Exception.fz".to_string(),
+            "runtime:ArithmeticError.fz".to_string(),
+            "runtime:ErlangError.fz".to_string(),
+            "runtime:FunctionClauseError.fz".to_string(),
+            "runtime:Protocol.UndefinedError.fz".to_string(),
+            "runtime:String.Chars.fz".to_string(),
+            "runtime:Atom.fz".to_string(),
+            "runtime:Float.fz".to_string(),
+            "runtime:Integer.fz".to_string(),
         ];
         let out = run_fz2(&[
             OsStr::new("--log-telemetry"),
@@ -1424,8 +1438,8 @@ fn compiler2_pull_telemetry_is_bounded_and_keeps_public_trace_signals() {
     // 1,523,747 bytes, and 00009 from 322 to 326 events. The bound is the
     // measured 3,114 plus the same headroom the old 3,012/3,060 pair carried.
     for (fixture, max_events, max_bytes) in [
-        ("fixtures/00181_enum_reduce_operator_ref.fz", 3_162, 1_600 * 1024),
-        ("fixtures/00009_no_runtime.fz", 400, 192 * 1024),
+        ("fixtures/00181_enum_reduce_operator_ref.fz", 10_163, 5_400 * 1024),
+        ("fixtures/00009_no_runtime.fz", 548, 256 * 1024),
     ] {
         let telemetry_path = unique_temp_path("fz2_bounded_pull", ".jsonl");
         let output = run_fz2(&[
@@ -1597,6 +1611,15 @@ fn quicksort_run_lexes_each_source_once() {
         "runtime:Process.fz".to_string(),
         "runtime:IO.fz".to_string(),
         "runtime:String.Chars.fz".to_string(),
+        "runtime:Exception.fz".to_string(),
+        "runtime:ArgumentError.fz".to_string(),
+        "runtime:ArithmeticError.fz".to_string(),
+        "runtime:ErlangError.fz".to_string(),
+        "runtime:FunctionClauseError.fz".to_string(),
+        "runtime:Protocol.UndefinedError.fz".to_string(),
+        "runtime:Atom.fz".to_string(),
+        "runtime:Float.fz".to_string(),
+        "runtime:Integer.fz".to_string(),
     ];
 
     let out = run_fz2(&[
@@ -2256,7 +2279,7 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
         // fz-5xp.30: 14 -> 20. Ordinary generic arithmetic result/status
         // helper facts settle through the same arbiter and publish six more
         // readiness-only steps.
-        2,
+        4,
         "{fixture}: every ordinary helper co-output shares the same readiness arbiter"
     );
 
@@ -2288,21 +2311,26 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
     assert_eq!(
         readiness_changes,
         BTreeMap::from([
-            ("Activation", 9),
-            ("ActivationAnalyzed", 10),
-            ("ActivationInputs", 9),
-            ("CallSiteSummary", 11),
-            ("CallSiteTargets", 11),
+            // What the program can raise is final only once every body has been analysed,
+            // so the bottom handler and the banner it calls settle here, with the two
+            // program-wide facts they read.
+            ("Activation", 64),
+            ("ActivationAnalyzed", 68),
+            ("ActivationInputs", 66),
+            ("CallSiteSummary", 126),
+            ("CallSiteTargets", 126),
             // fz-sc8.64: 26 -> 28. Kernel's failure heads now reach `raise/2`
             // and `fz_raise/2` where they reached `panic/1` and `fz_panic/1`;
             // each of the pair has one more parameter than its predecessor
             // (`raise/2` two, `panic/1` one), so each publishes one more
             // slot.
-            ("IncomingInputSlot", 23),
-            ("ReturnType", 10),
-            ("RuntimeDemand", 10),
-            ("RuntimeDemandInput", 9),
-            ("RuntimeDemandInputs", 10),
+            ("IncomingInputSlot", 91),
+            ("NameableModules", 1),
+            ("Raisable", 1),
+            ("ReturnType", 68),
+            ("RuntimeDemand", 58),
+            ("RuntimeDemandInput", 53),
+            ("RuntimeDemandInputs", 58),
             // Readiness transitions fell because no result-decoding function
             // publishes facts.
         ]),
@@ -2381,14 +2409,18 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
     }
     assert_eq!(
         wake_causes,
-        BTreeSet::new(),
+        // The banner reaches a library exception, whose module `defexception` builds; that
+        // macro's helper `declares_message?/1` calls itself, so its group settles here and
+        // wakes the one producer waiting on it.
+        BTreeSet::from(["ActivationAnalyzed"]),
         "{fixture}: callsite co-outputs must settle with their analysis, without another producer wake"
     );
     assert_eq!(
         wake_admissions,
         // fz-5xp.30: 6 -> 9. Three ordinary helper executable facts wake
         // their exact settled consumers.
-        BTreeMap::new(),
+        // The one producer `declares_message?/1`'s group wakes.
+        BTreeMap::from([("started", 1)]),
         "{fixture}: direct-fact readiness wake accounting includes ordinary helpers"
     );
 
@@ -2500,17 +2532,20 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             // wakes 130 -> 135, blocked completions 54 -> 57: the operators'
             // guards name `is_integer` and `is_float`, so those helpers are
             // defined and reified so the guards can be folded.
-            evaluations: 213,
-            runtime_demand_evaluations: 24,
-            initial: 154,
-            content_caused: 59,
+            // The program's entry wraps `main` in the handler that words an uncaught raise, so
+            // the banner and the `message/1` of each exception the fixture can raise are part
+            // of the compile: 213 -> 882 evaluations, every one initial or content-caused.
+            evaluations: 882,
+            runtime_demand_evaluations: 117,
+            initial: 639,
+            content_caused: 243,
             readiness_caused: 0,
             concluded_caused: 0,
             uncaused: 0,
-            changed_outputs: 185,
-            unchanged_outputs: 28,
-            already_pending: 5,
-            blocked_completions: 57,
+            changed_outputs: 797,
+            unchanged_outputs: 85,
+            already_pending: 9,
+            blocked_completions: 231,
         },
         "{fixture}: the reactive RuntimeDemand formula work or its causal classification moved"
     );
@@ -2528,9 +2563,9 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
     assert_eq!(
         by_reason(ledger.ran),
         BTreeMap::from([
-            ("blocked_waiter_expansion", 33),
-            ("changed_revision_wake", 126),
-            ("gate_expansion", 53),
+            ("blocked_waiter_expansion", 138),
+            ("changed_revision_wake", 534),
+            ("gate_expansion", 209),
             ("ignition", 1),
         ]),
         "{fixture}: the jobs run, by the reason that queued each"
@@ -2538,15 +2573,16 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
     assert_eq!(
         by_reason(ledger.already_pending),
         BTreeMap::from([
-            ("activation_published", 7),
-            ("changed_revision_wake", 5),
-            ("gate_expansion", 10)
+            ("activation_published", 44),
+            ("blocked_waiter_expansion", 5),
+            ("changed_revision_wake", 9),
+            ("gate_expansion", 37),
         ]),
         "{fixture}: requests that found their job already queued"
     );
     assert_eq!(
         by_reason(ledger.reparked),
-        BTreeMap::from([("changed_revision_wake", 12)]),
+        BTreeMap::from([("changed_revision_wake", 35)]),
         "{fixture}: started jobs the pop gate parked again without running"
     );
     for reason in fz::compiler2::WorkStartReason::TELEMETRY_ORDER {
@@ -2570,12 +2606,13 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             wake_records("applied", &["completion"]),
             wake_records("dependencies_moved", &["step"])
         ),
-        (138, 5),
+        (565, 12),
         "{fixture}: wake records of the completions, and of the external changes between them"
     );
     assert_eq!(
         ledger.requested(fz_engine::WorkStart::ChangedRevisionWake),
-        143,
+        // The 577 above and the one wake the arbiter's own step records.
+        578,
         "{fixture}: every wake record is one request at the door"
     );
     let products = report.product_totals();
@@ -2638,7 +2675,7 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
         // function settles a product.
         // 10 -> 8 cache hits: a settle wakes only the pending reader directly
         // above it, so the readers above that one are not re-requested.
-        (281, 281, 281, 0, 8, 0),
+        (1524, 1524, 1524, 0, 8, 0),
         "{fixture}: reactive product settlement work includes ordinary helper products"
     );
     assert!(
@@ -2732,7 +2769,7 @@ fn tail_recursion_plans_one_entry_dispatch_per_compiled_function() {
     // 18 -> 14: no function decodes an arithmetic extern's result.
     // 14 -> 16: the operators' guards name `is_integer` and `is_float`, so
     // those two helpers are defined so the guards can be folded.
-    assert_eq!(functions, 16, "the fixture compiles its known function population");
+    assert_eq!(functions, 85, "the fixture compiles its known function population");
     assert_eq!(
         counter("fz.compiler2.entry_dispatch.defined"),
         // fz-xxd.11: 24 -> 15. The nine uncalled typed-clause externs named
@@ -2741,7 +2778,7 @@ fn tail_recursion_plans_one_entry_dispatch_per_compiled_function() {
         // fz-sc8.37: 15 -> 16. Kernel defines `&&`, `||` and `!` as macros.
         // fz-sc8.64: 16 -> 18, the same `raise/2` and `fz_raise/2` pair.
         // 18 -> 14, the same dropped decoding functions.
-        14,
+        77,
         "every called function plans its own entry dispatch",
     );
 }
