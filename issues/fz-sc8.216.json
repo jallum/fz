@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-15T02:44:29Z",
+  "description": "Measured on the distiller (base #585): 40 of 1,375 executables in the backend program are reached by no call, closure edge, wrapper member or function-value step from the entry, and each is lowered and compiled. Found by the fz-sc8.197 forwarder experiment (reference walk in the spike patch, scratch x12/spike-x12.patch). First step: confirm the walk is complete and name what produces them.",
+  "id": "fz-sc8.216",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 2,
+  "status": "open",
+  "title": "Executables nothing reaches are compiled anyway",
+  "type": "bug",
+  "updated_at": "2026-11-15T02:44:29Z"
+}
