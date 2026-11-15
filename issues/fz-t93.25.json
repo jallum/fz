@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-15T18:35:12Z",
+  "description": "Measured in fz-t93.23 (scratch t93_23/probe_a.diff, report.md): replace_held in crates/fz-engine/src/deps.rs removes every previous held use from the reverse index and then re-inserts the new ones. Diffing previous against next touches only what changed: -30M +-15M (-0.25%) on the distiller at 82a6fcd7a, md5 identical, and all suites green together with lever (e). A held-use membership check on StandingWaits is a linear scan in the probe and needs a set or sorted form. Re-measure after fz-t93.7 lands; the step tickets change how many reads are handed over.",
+  "id": "fz-t93.25",
+  "labels": [],
+  "parent": "fz-t93",
+  "priority": 2,
+  "status": "open",
+  "title": "replace_reads keeps the reads a job still holds",
+  "type": "task",
+  "updated_at": "2026-11-15T18:35:12Z"
+}
