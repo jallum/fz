@@ -11,7 +11,7 @@
   "parent": "fz-sc8",
   "priority": 1,
   "status": "open",
-  "title": "An entry's parameters are laid out by demand",
+  "title": "An entry reads its parameters through their layouts",
   "type": "task",
-  "updated_at": "2026-11-15T16:26:37Z"
+  "updated_at": "2026-11-15T16:28:53Z"
 }
