@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-15T02:44:30Z",
+  "description": "Measured on the full log under the loop-count spike: skip_ws is entered 34.4M times and iterates 222,411 times, so it is almost always a call that returns at once; digits is entered 3.58M times. Experiment first, with predictions: when a self-recursive function's first clause decision exits without a call, emit that decision in the caller and call only when the loop continues. Not to be confused with the rejected rule B (calling loops natively), which stopped collections.",
+  "id": "fz-sc8.217",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 2,
+  "status": "open",
+  "title": "Experiment: a loop's exit test spliced into its caller",
+  "type": "task",
+  "updated_at": "2026-11-15T02:44:30Z"
+}
