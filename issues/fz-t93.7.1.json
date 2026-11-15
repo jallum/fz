@@ -1,8 +1,6 @@
 {
   "assignee": "",
-  "blocked_by": [
-    "fz-t93.23"
-  ],
+  "blocked_by": [],
   "blocks": [
     "fz-t93.7.2",
     "fz-t93.7.7"
@@ -16,5 +14,5 @@
   "status": "open",
   "title": "Reach is a fact, not a product",
   "type": "task",
-  "updated_at": "2026-11-15T15:52:32Z"
+  "updated_at": "2026-11-15T18:32:40Z"
 }

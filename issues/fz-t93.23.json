@@ -1,9 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [
-    "fz-t93.7.1"
-  ],
+  "blocks": [],
   "created": "2026-11-15T15:52:25Z",
   "description": "The pull-system removal (fz-t93.7) trades pull requests at 19.2k instructions each for engine jobs at 45-55k each, predicted +4.8% of the distiller run at the end state. At e81f9ed52, engine overhead is 223k per average job and complete_job is 165k per job. Light kinds cost 26-47k; fan-out kinds cost more: DeriveRuntimeDemand 189k, AnalyzeActivation 336k, DefineModule 357k. The bar needs the cost per added job down 25-30% (55k -\u003e 40k).\nStart with research: measure complete_job's fan-out per kind on today's base (dependents woken, derivations re-run, finality work); re-probe the round-5 levers (diffing in replace_reads, derivations sharing the job's read set, incremental finality), which were measured before fz-t93.20/.21; and relate the result to fz-t93.22's lazy certificate, which works on the same per-fact finality cost. Back to the user with numbers before building. Bar: distiller instructions within the stated prediction; stdout byte-identical; fixture_matrix green; every pin that rises is listed with its mechanism and reported for approval before it is raised. Measured base e81f9ed52 and the per-step model: scratch t93_7/m/report.md; decision page /Users/j5n/Workspace/fz-t93.7-measured.html.",
   "id": "fz-t93.23",
@@ -13,5 +11,5 @@
   "status": "open",
   "title": "An engine job that fans out costs what its dependents need",
   "type": "task",
-  "updated_at": "2026-11-15T15:52:29Z"
+  "updated_at": "2026-11-15T18:32:40Z"
 }
