@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-t93.7"
+  ],
   "created": "2026-11-15T03:39:12Z",
   "description": "Step of fz-t93 (plan: /Users/j5n/Workspace/fz-next.html, E1). Buys: predicted 4-6% fewer distiller instructions with identical jobs, requests and output; makes fine-grained facts affordable for the pull deletion.\nAnatomy on develop c7edccd4a (/private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/t93_6/round5.md, counter-measured): lifecycle outside job body ~263k/job (3.37G, 22% of run); one recorded read ~9k (replace_reads ~6.2k per job read, JobEffects convert ~0.6k, pop-concluded scan ~0.77k, finality recount ~0.78k per derivation read) vs minimal engine 0.7-0.8k; 198,310 reads handed to replace_reads for 104,201 job reads (contribution derivations clone the job's read set). Telemetry-off spans \u003c1k/job and FactKey hash/clone/eq 108/64/47 are NOT the cost; interning the key measured -0.1%.\nProbe (spike_r5.diff): diff-based replace_held: -1.2..-1.5% (15.238G vs 15.43G, n=3 interleaved), byte-identical, distill pins unchanged.\nCandidates: diff-based held reads; share one read set across contribution derivations; incremental finality counts; pop-concluded scan proportional to change; single-lookup slot entry. readers_of semantic sort (~0.8%) waits for fz-t93.8 (determinism decision).\nPaper first: short proposal page with predictions; then build. Bar: measured instruction delta reported; no pin rises without approval.",
   "id": "fz-t93.19",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "A recorded read costs the World what it costs the engine",
   "type": "task",
-  "updated_at": "2026-11-15T03:39:12Z"
+  "updated_at": "2026-11-15T03:39:29Z"
 }

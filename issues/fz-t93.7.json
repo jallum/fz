@@ -1,6 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [
+    "fz-t93.19",
     "fz-t93.6"
   ],
   "blocks": [
@@ -16,5 +17,5 @@
   "status": "open",
   "title": "The pull system is gone",
   "type": "task",
-  "updated_at": "2026-11-15T03:39:28Z"
+  "updated_at": "2026-11-15T03:39:29Z"
 }
