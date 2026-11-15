@@ -22,4 +22,24 @@ defmodule :erlang do
     do: fz_float_to_fixed_binary(f, n)
 
   extern "fz" defp fz_float_to_fixed_binary(float, integer) :: binary
+
+  @doc """
+  Raises again what a `catch kind, reason` clause caught, with the same
+  kind: `:error`, `:throw` or `:exit`. The stacktrace is accepted for
+  Erlang's sake and ignored: fz carries no stacktraces.
+
+  ## Examples
+
+      try do
+        throw(:ball)
+      catch
+        kind, reason -> :erlang.raise(kind, reason, __STACKTRACE__)
+      end
+      # ** (throw) :ball
+
+  """
+  @spec raise(:error | :throw | :exit, any, any) :: never
+  def raise(:error, reason, _stacktrace), do: panic(reason)
+  def raise(:throw, value, _stacktrace), do: throw(value)
+  def raise(:exit, reason, _stacktrace), do: exit(reason)
 end

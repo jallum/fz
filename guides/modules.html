@@ -168,7 +168,9 @@ module whose atom is <code>:my_mod</code>, called as
 <code>:my_mod.f(1)</code>. The library defines <code>:erlang</code> with
 <code>float_to_binary/2</code>, which writes a float in fixed notation:
 <code>:erlang.float_to_binary(2.675, decimals: 1)</code> is
-<code>"2.7"</code>. Calling a function of a bare atom that names no module,
+<code>"2.7"</code>, and <code>raise/3</code>, which raises again what a
+<code>catch kind, reason</code> clause caught:
+<code>:erlang.raise(kind, reason, __STACKTRACE__)</code>. Calling a function of a bare atom that names no module,
 such as <code>:nosuch.thing(1)</code>, is refused at compile time as a call
 to any undefined module is.</p>
 

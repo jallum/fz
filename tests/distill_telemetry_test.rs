@@ -250,7 +250,10 @@ fn the_distiller_compiles_inside_the_product_drive_budget() {
         // handler that words an uncaught raise, so the compile also covers the exception modules
         // the distiller can raise and the banner that prints them, and each `defexception` in
         // those modules expands in a drive of its own.
-        (48_886, 50_745, 65),
+        // (48_886, 50_745, 65) -> (49_041, 50_908, 66): `Enum.into` runs its reduction under a
+        // handler that tells the collector `:halt` and raises again, so the distiller's `into`
+        // calls compile that handler and `:erlang.raise/3`.
+        (49_041, 50_908, 66),
         "(largest drive requests, total requests, drives) for the distiller's compile moved. \
          A fall is lowered in this pin; a rise is investigated first, because the largest drive \
          may not exceed PRODUCT_DRIVE_BUDGET (50,000)."

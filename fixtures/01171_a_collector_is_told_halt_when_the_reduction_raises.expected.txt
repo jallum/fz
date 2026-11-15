@@ -1,0 +1,12 @@
+{:a, [1, 2]}
+{:halted, []}
+{:rescued, "three"}
+{:halted, []}
+{:rescued_stream, "three"}
+{:halted, []}
+{:caught, :ball}
+{:halted, []}
+{:exited, :stop}
+{:halted, []}
+{:rescued_for, "three"}
+{:e, [10, 30]}
