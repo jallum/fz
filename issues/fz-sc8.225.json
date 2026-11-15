@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-sc8.224"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-sc8.144"
+  ],
   "created": "2026-11-15T15:04:53Z",
   "description": "fz has no Macro module. Elixir's Macro.escape/1 (:elixir_quote.escape): atoms, numbers, binaries, 2-tuples and lists are their own code (elements escaped); other tuples become {:{}, [], elems}; maps (and structs) become {:%{}, [], pairs}; a ref, a PID or a function is refused. In fz a PID is refused too (a compile-time PID means nothing in a built program; user decision on fz-sc8.144), and so is a remote capture until its own ticket lands, with a message naming the gap. Done when: lib Macro.escape matches Elixir's output for each kind (oracle fixture, including a macro that unquotes an escaped map), and refusals are fixtures.",
   "id": "fz-sc8.225",
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "Macro.escape/1 turns a value into the quoted code that rebuilds it",
   "type": "feature",
-  "updated_at": "2026-11-15T15:04:54Z"
+  "updated_at": "2026-11-15T15:04:55Z"
 }

@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-sc8.223"
+    "fz-sc8.223",
+    "fz-sc8.225"
   ],
   "blocks": [],
   "created": "2026-11-13T03:30:08Z",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "A defstruct default is any expression, evaluated in the defining module",
   "type": "feature",
-  "updated_at": "2026-11-15T15:04:54Z"
+  "updated_at": "2026-11-15T15:04:55Z"
 }
