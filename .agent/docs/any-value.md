@@ -152,12 +152,13 @@ lanes -- the source binary (a traced `ValueRef`) and the bit position the rest
 starts at (a raw integer the collector never traces). `<<_c, rest :: binary>>`
 yields (source, position + 8) and builds nothing; reads and clause dispatch on
 the rest start at the position, and `byte_size(rest)` is (bit length of source
-- position) / 8 through the `binary_cursor` extern parameter, also without
-building anything: that wire type is two words, the binary's reference word and
+- position) / 8, rounded up, through the `binary_cursor` extern parameter, also
+without building anything: that wire type is two words, the binary's reference word and
 a bit position, so a cursor passes (source, position) and a whole binary passes
-(binary, 0). A use that needs a real binary -- storing it, sending it,
+(binary, 0). A use that needs the rest as a value -- storing it, sending it,
 passing it to a consumer with no cursor to offer -- makes it whole at that
-point with `fz_bs_read_binary_ref`. A rest that spans its whole source is the
+point with `fz_bs_read_binary_ref`, reading it as a `bits` field because a
+cursor stands for a bitstring that may end between bytes. A rest that spans its whole source is the
 source, so a binary that was only measured, a cursor at position 0, comes
 back as itself and builds nothing. Past position 0, any byte-aligned binary field of a shared source, whether
 `<<_c, rest :: binary>>` or `<<_ :: binary-size(n), field :: binary, _ :: binary>>`,

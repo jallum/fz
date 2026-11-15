@@ -1335,3 +1335,38 @@ fn a_static_literal_counts_as_its_own_stub_site() {
         assert_eq!(stats.stubs_survived, expected);
     });
 }
+
+/// A sizeless last `binary` field is the rest of the source and holds whole
+/// bytes; a sizeless last `bits` field is the rest at any length.
+#[test]
+fn a_binary_rest_must_end_on_a_byte_boundary_and_a_bits_rest_need_not() {
+    let rest = |ty_tag: u32| fz_bs_field_spec(ty_tag, 0, if ty_tag == 2 { 8 } else { 1 }, 0, 0, 1);
+    let (binary, bits) = (rest(2), rest(3));
+    let bytes = [1u8, 2];
+
+    assert_eq!(field_end(binary, 0, 8, &bytes, 16), Some(16), "from a byte boundary");
+    assert_eq!(field_end(binary, 0, 3, &bytes, 16), None, "13 bits left");
+    assert_eq!(field_end(binary, 0, 8, &bytes, 11), None, "3 bits left");
+    assert_eq!(
+        field_end(binary, 0, 3, &bytes, 11),
+        Some(11),
+        "8 bits left, between bytes"
+    );
+    assert_eq!(field_end(bits, 0, 3, &bytes, 16), Some(16));
+    assert_eq!(field_end(bits, 0, 8, &bytes, 11), Some(11));
+}
+
+/// `byte_size` counts the bytes that hold a bitstring, so a partial last byte
+/// counts, and a cursor counts the bytes that hold what is left of its source.
+#[test]
+fn byte_extent_rounds_a_partial_last_byte_up() {
+    with_process(|process| {
+        let bytes = [1u8, 2];
+        let whole = fz_alloc_bitstring_const(process, bytes.as_ptr() as u64, 2, 16);
+        let partial = fz_alloc_bitstring_const(process, bytes.as_ptr() as u64, 2, 11);
+        assert_eq!(fz_bitstring_byte_extent(whole, 0), 2);
+        assert_eq!(fz_bitstring_byte_extent(partial, 0), 2);
+        assert_eq!(fz_bitstring_byte_extent(partial, 3), 1);
+        assert_eq!(fz_bitstring_byte_extent(partial, 11), 0);
+    });
+}

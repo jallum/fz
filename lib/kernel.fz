@@ -19,7 +19,7 @@ defmodule Kernel do
     * the sizes and accessors `byte_size/1`, `map_size/1`, `tuple_size/1`,
       `length/1`, `elem/2`, `hd/1` and `tl/1`, the numeric functions `abs/1`,
       `round/1`, `trunc/1`, `floor/1` and `ceil/1`, and the type tests `is_integer/1`,
-      `is_float/1`, `is_binary/1`, `is_list/1`, `is_map/1`, `is_tuple/1`,
+      `is_float/1`, `is_binary/1`, `is_bitstring/1`, `is_list/1`, `is_map/1`, `is_tuple/1`,
       `is_atom/1`, `is_boolean/1`, `is_pid/1`, `is_reference/1`, `is_nil/1`,
       `is_struct/1` and `is_struct/2`, all of which a guard may call
     * `match?/2`, a macro answering whether a value matches a pattern
@@ -1340,7 +1340,7 @@ defmodule Kernel do
   extern "fz" defp fz_op_gte_bb(binary, binary) :: boolean
 
   @doc """
-  Returns the number of bytes in `bytes`.
+  Returns the number of bytes that hold `bits`: a partial last byte counts.
 
   For the number of codepoints, see `String.length/1`.
 
@@ -1352,9 +1352,12 @@ defmodule Kernel do
       Kernel.byte_size("héllo")
       #=> 6
 
+      Kernel.byte_size(<<1::3>>)
+      #=> 1
+
   """
-  @spec byte_size(any) :: integer
-  def byte_size(bytes) when is_binary(bytes), do: fz_bitstring_byte_extent(bytes)
+  @spec byte_size(bitstring) :: integer
+  def byte_size(bits) when is_bitstring(bits), do: fz_bitstring_byte_extent(bits)
   def byte_size(_), do: raise(%ArgumentError{message: "errors were found at the given arguments:\n\n  * 1st argument: not a bitstring\n"})
 
   extern "C" defp fz_bitstring_byte_extent(binary_cursor) :: integer
@@ -1498,12 +1501,16 @@ defmodule Kernel do
   def is_float(_), do: false
 
   @doc """
-  Returns `true` when `term` is a binary.
+  Returns `true` when `term` is a binary: a bitstring whose bit length is a
+  whole number of bytes.
 
   ## Examples
 
       Kernel.is_binary("hello")
       #=> true
+
+      Kernel.is_binary(<<1::3>>)
+      #=> false
 
       Kernel.is_binary(:hello)
       #=> false
@@ -1512,6 +1519,26 @@ defmodule Kernel do
   @spec is_binary(any) :: boolean
   def is_binary(_ :: binary), do: true
   def is_binary(_), do: false
+
+  @doc """
+  Returns `true` when `term` is a bitstring of any bit length, including a
+  binary.
+
+  ## Examples
+
+      Kernel.is_bitstring(<<1::3>>)
+      #=> true
+
+      Kernel.is_bitstring("hello")
+      #=> true
+
+      Kernel.is_bitstring(:hello)
+      #=> false
+
+  """
+  @spec is_bitstring(any) :: boolean
+  def is_bitstring(_ :: bitstring), do: true
+  def is_bitstring(_), do: false
 
   @doc """
   Returns `true` when `term` is a list, proper or not.

@@ -39,6 +39,7 @@ import Kernel, only: [
   inspect: 2,
   is_atom: 1,
   is_binary: 1,
+  is_bitstring: 1,
   is_boolean: 1,
   is_exception: 1,
   is_float: 1,

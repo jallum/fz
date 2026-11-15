@@ -50,7 +50,8 @@ A type is a union across independent **axes**, one per runtime kind, held in
 disjunctive normal form (DNF). A `Descr` is that union:
 
 ```text
-basic      presence bits: int, float, binary (str is the binary bit)
+basic      presence bits: int, float, binary, bitstring-and-not-binary
+           (`bitstring` is the union of the last two; str is the binary bit)
 atoms      finite-or-cofinite set of atom names   (:ok, :error, nil, true, …)
 opaques    finite-or-cofinite set of opaque-type names   (nominal)
 vars       finite-or-cofinite set of type-variable ids
@@ -72,6 +73,22 @@ brands     which brand a value carries: top = "no constraint" (the unbranded
 
 `nil`, `true`, and `false` live on the `atoms` axis, not on `basic` (`bool_lit` is
 `atom_lit("true")` / `atom_lit("false")`). `str` is exactly the `binary` basic bit.
+
+**A bitstring is a binary only when its bit length is a whole number of bytes.**
+`BasicBits::BINARY` is the bitstrings whose bit length is a multiple of 8 and
+`BasicBits::BITSTRING_NO_BINARY` the ones whose is not, as in Elixir's
+`Module.Types.Descr`; `bitstring` is their union (`Types::bitstring`), and
+`BasicBits::ALL` covers both. `display` and canon print the union as
+`bitstring` and the lone second bit as `bitstring and not binary`. Both words
+are type names: `resolve.rs` registers `binary` and `bitstring`. A value is
+typed by the bits its construction adds (`Types::bitstring_of_len`, fed by
+`LoweredBitFieldSpec::bit_remainder`): known sizes that sum to whole bytes give
+`binary`, any other known total gives `bitstring and not binary`, and a size
+known only at run time, or an unsized `bits` segment holding a value that is not
+a binary, gives `bitstring`. A literal and `<<>>` are `binary`. A match binds
+`rest :: binary` as `binary` and `rest :: bits` as `bitstring`.
+`Types::is_bitstring` asks whether every value of a type is a bitstring, which
+is what chooses a cursor for a matched rest.
 
 **Numbers have no literal sets — numeric constants are values, not types.** The
 lattice deliberately cannot express `int_lit(42)` or `0 | 1`: `int()` and

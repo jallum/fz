@@ -1,0 +1,6 @@
+#---
+# purpose: ":binary.copy/1's spec takes a binary; an argument proven to be an integer is rejected with a spec/violation diagnostic on every path"
+# expect: diagnostic
+# diagnostic.code: spec/violation
+#---
+def main(), do: :binary.copy(1)

@@ -180,6 +180,62 @@ impl RuntimeTestAxis {
     }
 }
 
+/// Which bitstrings the binaries axis admits, by the length they were built
+/// with: a whole number of bytes (a binary) and/or not (`bitstring and not
+/// binary`). A test that admits both reads only the tag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BitstringAlignment {
+    pub(crate) whole_bytes: bool,
+    pub(crate) partial_byte: bool,
+}
+
+impl BitstringAlignment {
+    pub(crate) const NONE: Self = Self {
+        whole_bytes: false,
+        partial_byte: false,
+    };
+    #[cfg(test)]
+    pub(crate) const WHOLE_BYTES: Self = Self {
+        whole_bytes: true,
+        partial_byte: false,
+    };
+    #[cfg(test)]
+    pub(crate) const PARTIAL_BYTE: Self = Self {
+        whole_bytes: false,
+        partial_byte: true,
+    };
+    pub(crate) const ANY: Self = Self {
+        whole_bytes: true,
+        partial_byte: true,
+    };
+
+    pub(crate) fn is_none(self) -> bool {
+        self == Self::NONE
+    }
+
+    /// Whether the test asks the bit length at all.
+    pub(crate) fn asks_length(self) -> bool {
+        self.whole_bytes != self.partial_byte
+    }
+
+    pub(crate) fn contains_all(self, other: Self) -> bool {
+        (self.whole_bytes || !other.whole_bytes) && (self.partial_byte || !other.partial_byte)
+    }
+
+    pub(crate) fn overlaps(self, other: Self) -> bool {
+        (self.whole_bytes && other.whole_bytes) || (self.partial_byte && other.partial_byte)
+    }
+
+    /// Whether a bitstring of `bit_len` bits passes.
+    pub(crate) fn admits(self, bit_len: u64) -> bool {
+        if bit_len.is_multiple_of(8) {
+            self.whole_bytes
+        } else {
+            self.partial_byte
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RuntimeTypePredicate {
     pub(crate) ints: FiniteSet<i64>,
@@ -196,7 +252,7 @@ pub(crate) struct RuntimeTypePredicate {
     pub(crate) named_structs: FiniteSet<ModuleName>,
     pub(crate) allow_other_structs: bool,
     pub(crate) maps: bool,
-    pub(crate) binaries: bool,
+    pub(crate) bitstrings: BitstringAlignment,
     /// The whole callable axis: WHICH construction, not merely "a callable".
     /// A closure value's heap word at `+8` names the construction it was
     /// minted from -- the code AND the capture types that construction closed
@@ -219,7 +275,7 @@ impl RuntimeTypePredicate {
             named_structs: FiniteSet::none(),
             allow_other_structs: false,
             maps: false,
-            binaries: false,
+            bitstrings: BitstringAlignment::NONE,
             callables: CallableShapes::none(),
             resources: false,
             opaques: FiniteSet::none(),
@@ -238,7 +294,7 @@ impl RuntimeTypePredicate {
             named_structs: FiniteSet::any(),
             allow_other_structs: true,
             maps: true,
-            binaries: true,
+            bitstrings: BitstringAlignment::ANY,
             callables: CallableShapes::any(),
             resources: true,
             opaques: FiniteSet::any(),
@@ -411,7 +467,7 @@ impl RuntimeTypePredicate {
             RuntimeTestAxis::NamedStructs => self.named_structs.is_none(),
             RuntimeTestAxis::OtherStructs => !self.allow_other_structs,
             RuntimeTestAxis::Maps => !self.maps,
-            RuntimeTestAxis::Binaries => !self.binaries,
+            RuntimeTestAxis::Binaries => self.bitstrings.is_none(),
             RuntimeTestAxis::Callables => self.callables.is_none(),
             RuntimeTestAxis::Resources => !self.resources,
             RuntimeTestAxis::Opaques => self.opaques.is_none(),
@@ -458,7 +514,7 @@ impl RuntimeTypePredicate {
             RuntimeTestAxis::NamedStructs => other.named_structs.contains_all(&self.named_structs),
             RuntimeTestAxis::OtherStructs => other.allow_other_structs || !self.allow_other_structs,
             RuntimeTestAxis::Maps => other.maps || !self.maps,
-            RuntimeTestAxis::Binaries => other.binaries || !self.binaries,
+            RuntimeTestAxis::Binaries => other.bitstrings.contains_all(self.bitstrings),
             RuntimeTestAxis::Callables => other.callables.contains_all(&self.callables),
             RuntimeTestAxis::Resources => other.resources || !self.resources,
             RuntimeTestAxis::Opaques => other.opaques.contains_all(&self.opaques),
@@ -476,7 +532,7 @@ impl RuntimeTypePredicate {
             RuntimeTestAxis::NamedStructs => self.named_structs.overlaps(&other.named_structs),
             RuntimeTestAxis::OtherStructs => self.allow_other_structs && other.allow_other_structs,
             RuntimeTestAxis::Maps => self.maps && other.maps,
-            RuntimeTestAxis::Binaries => self.binaries && other.binaries,
+            RuntimeTestAxis::Binaries => self.bitstrings.overlaps(other.bitstrings),
             RuntimeTestAxis::Callables => self.callables.overlaps(&other.callables),
             RuntimeTestAxis::Resources => self.resources && other.resources,
             RuntimeTestAxis::Opaques => self.opaques.overlaps(&other.opaques),
@@ -1278,7 +1334,7 @@ fn axis_admits(
         RuntimeTestAxis::Maps => {
             predicate.maps && has_kind(value, ValueKind::MAP) && (reader.map_module)(value) == NamedSchema::None
         }
-        RuntimeTestAxis::Binaries => predicate.binaries && is_binary_value(value),
+        RuntimeTestAxis::Binaries => is_admitted_bitstring(predicate.bitstrings, value),
         RuntimeTestAxis::Resources => predicate.resources && has_kind(value, ValueKind::RESOURCE),
         RuntimeTestAxis::Opaques => match value {
             RuntimeAnyValue::Opaque(kind, _) => {
@@ -1317,9 +1373,20 @@ fn has_kind(value: RuntimeAnyValue, kind: ValueKind) -> bool {
     matches!(value, RuntimeAnyValue::HeapRef(value_ref) if value_ref.tag() == kind)
 }
 
-/// A binary in either of its representations. See `ValueKind::BINARY_REPRS`.
-fn is_binary_value(value: RuntimeAnyValue) -> bool {
-    matches!(value, RuntimeAnyValue::HeapRef(value_ref) if value_ref.tag().is_binary_repr())
+/// A bitstring in either of its representations (see
+/// `ValueKind::BINARY_REPRS`) whose length the test admits.
+fn is_admitted_bitstring(admitted: BitstringAlignment, value: RuntimeAnyValue) -> bool {
+    let RuntimeAnyValue::HeapRef(value_ref) = value else {
+        return false;
+    };
+    if !value_ref.tag().is_binary_repr() {
+        return false;
+    }
+    if !admitted.asks_length() {
+        return !admitted.is_none();
+    }
+    let bit_len = unsafe { fz_runtime::procbin::bitstring_bit_len(value_ref.raw_word()) };
+    admitted.admits(bit_len)
 }
 
 fn struct_schema_of(value: RuntimeAnyValue) -> Option<u32> {

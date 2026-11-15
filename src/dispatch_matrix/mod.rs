@@ -246,6 +246,44 @@ pub(crate) struct BitstringFieldShape {
     pub(crate) endian: BitstringEndian,
     pub(crate) signed: bool,
     pub(crate) unit: Option<u32>,
+    /// An unsized `binary` rest whose activation proves it ends on a byte
+    /// boundary: the subject is a binary and the fields before it are whole
+    /// bytes. Set only by `DispatchGraph::trimmed`.
+    pub(crate) rest_proven_whole: bool,
+}
+
+impl BitstringFieldShape {
+    /// The kind the runtime test and the read are made for: a `binary` rest
+    /// proven whole is read as the `bits` rest, which asks nothing of its end.
+    pub(crate) fn runtime_kind(&self) -> BitstringFieldKind {
+        match self.kind {
+            BitstringFieldKind::Binary if self.rest_proven_whole => BitstringFieldKind::Bits,
+            kind => kind,
+        }
+    }
+
+    /// Whether the field spans whole bytes by what the pattern says alone
+    /// (`crate::ast::bit_remainder`). An unsized `bits` is the rest and says
+    /// nothing.
+    pub(crate) fn spans_whole_bytes(&self) -> bool {
+        use crate::ast::BitSizeKnowledge;
+        let size = match &self.size {
+            None => BitSizeKnowledge::Absent,
+            Some(BitstringFieldSize::Literal(size)) => BitSizeKnowledge::Literal(*size),
+            Some(BitstringFieldSize::Binding(_) | BitstringFieldSize::Pinned(_)) => BitSizeKnowledge::Runtime,
+            Some(BitstringFieldSize::PinnedByteSize(_)) => BitSizeKnowledge::ByteSizeOf,
+        };
+        let ty = match self.kind {
+            BitstringFieldKind::Integer => crate::ast::BitType::Integer,
+            BitstringFieldKind::Float => crate::ast::BitType::Float,
+            BitstringFieldKind::Binary => crate::ast::BitType::Binary,
+            BitstringFieldKind::Bits => crate::ast::BitType::Bits,
+            BitstringFieldKind::Utf8 => crate::ast::BitType::Utf8,
+            BitstringFieldKind::Utf16 => crate::ast::BitType::Utf16,
+            BitstringFieldKind::Utf32 => crate::ast::BitType::Utf32,
+        };
+        crate::ast::bit_remainder(ty, size, self.unit, false) == Some(0)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -627,13 +665,32 @@ impl<TypeHandle> DispatchGraph<TypeHandle> {
         &self,
         inputs: PlanInputs<'_, TypeHandle>,
         live: &impl Fn(GraphNodeId) -> LiveEdges,
+        rest_whole: &impl Fn(GraphNodeId) -> bool,
     ) -> Option<DispatchGraph<TypeHandle>>
     where
         TypeHandle: Clone + Eq,
     {
         let mut narrows = false;
+        let mut subjects = self.subjects.clone();
         visit_reachable(&self.nodes, self.root, |id, node| {
             narrows |= matches!(node, DispatchNode::Test { .. }) && live(id) != LiveEdges::Both;
+            if let DispatchNode::Test {
+                predicate:
+                    RegionPredicate {
+                        region: Region::Bitstring(shape),
+                        ..
+                    },
+                ..
+            } = node
+                && rest_whole(id)
+                && let Some(last) = shape.fields.last()
+                && let SubjectSource::Projection(SubjectProjection {
+                    kind: ProjectionKind::BitstringField(extraction),
+                    ..
+                }) = &mut subjects[last.0 as usize].source
+            {
+                narrows |= !std::mem::replace(&mut extraction.spec.rest_proven_whole, true);
+            }
         });
         if !narrows {
             return None;
@@ -641,7 +698,7 @@ impl<TypeHandle> DispatchGraph<TypeHandle> {
         let mut rebuild = Rebuild {
             old: self,
             live,
-            builder: DispatchGraphBuilder::typed(self.subjects.clone(), inputs),
+            builder: DispatchGraphBuilder::typed(subjects, inputs),
             rebuilt: vec![None; self.nodes.len()],
         };
         let root = rebuild.node(self.root);

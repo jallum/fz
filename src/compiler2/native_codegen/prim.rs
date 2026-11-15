@@ -875,6 +875,11 @@ fn lower_bit_match_prim<M: cranelift_module::Module>(
             let bit_len = body.as_raw_i64(var_env, bit_len.0);
             let fits = match match_field_extent(body, var_env, field) {
                 MatchExtent::Never => body.b.ins().iconst(types::I8, 0),
+                MatchExtent::Rest if field.ty == BitType::Binary => {
+                    let rest = body.b.ins().isub(bit_len, pos);
+                    let partial_bits = body.b.ins().band_imm(rest, 7);
+                    body.b.ins().icmp_imm(IntCC::Equal, partial_bits, 0)
+                }
                 MatchExtent::Rest | MatchExtent::Unsupported => body.b.ins().iconst(types::I8, 1),
                 MatchExtent::Bytes => panic!("BitFieldFits is asked of a utf8 field: its end is BitFieldEnd's"),
                 MatchExtent::Bits(total) => {
@@ -1534,6 +1539,11 @@ impl<'fb, M: cranelift_module::Module> RuntimeTestEmitter<'fb> for PrimTestEmitt
 
     fn kind_flag(&mut self, value: CodegenValue, kind: ValueKind) -> Result<ir::Value, CodegenError> {
         Ok(self.body.value_is_tag(value, kind))
+    }
+
+    fn bitstring_bit_len(&mut self, value: CodegenValue) -> Result<ir::Value, CodegenError> {
+        let source_ref = self.body.value_as_any_ref(value);
+        Ok(emit_binary_bit_len(self.body, source_ref))
     }
 
     fn raw_int(&mut self, value: CodegenValue) -> Result<ir::Value, CodegenError> {

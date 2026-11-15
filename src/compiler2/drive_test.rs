@@ -24279,7 +24279,8 @@ fn compiler2_a_stream_over_any_enumerable_keeps_its_activations_finite() {
         // 140 -> 138: a non-recursive key collapses structure nothing asks about to its class, as a
         // recursive key does, so callers that differ only in such freight share one activation.
         // 138 -> 136: an exception record nothing asks about keys by its class.
-        136,
+        // 136 -> 133: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
+        133,
         "activations of the whole program"
     );
 }

@@ -34,7 +34,7 @@ use crate::finite_set::FiniteSet;
 use crate::fz_ir::FnId;
 
 use super::axis;
-use super::bits::{BASIC_NAMES, BasicBits};
+use super::bits::{self, BasicBits};
 use super::conj::Conj;
 use super::descr::Descr;
 use super::emptiness::{self, NonEmptyLists};
@@ -488,11 +488,7 @@ fn sorted(texts: impl Iterator<Item = String>) -> Vec<String> {
 }
 
 fn basic_names(basic: BasicBits) -> Vec<String> {
-    BASIC_NAMES
-        .iter()
-        .filter(|(bit, _)| basic.contains_all(*bit))
-        .map(|(_, name)| (*name).to_string())
-        .collect()
+    bits::basic_names(basic).into_iter().map(str::to_string).collect()
 }
 
 fn push_set<T, F>(parts: &mut Vec<String>, set: &FiniteSet<T>, top: &str, render: F)

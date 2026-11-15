@@ -6,6 +6,9 @@
 # Native code asks the matched value's own kind whether it is an inline
 # bitstring or a BinView and takes the clause's miss edge for any other kind.
 # Each function below gets one value of every kind, on the same two clauses.
+#
+# `<<1, 2, 3 :: 3>>` is 19 bits. `head` reads one byte and its `r :: binary` is the
+# 11 bits left, which are not whole bytes, so `head` misses, as in Elixir.
 defmodule P do
   def head(<<a, _r :: binary>>), do: a
   def head(_other), do: :miss

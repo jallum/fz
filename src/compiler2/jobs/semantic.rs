@@ -709,8 +709,11 @@ fn apply_step_evidence(
             let struct_ty = world.struct_module_value_ty(*module, &field_names, &field_tys);
             values.insert(*value, struct_ty);
         }
-        LoweredStep::Bitstring { value, .. } => {
-            values.insert(*value, world.types_mut().str_t());
+        LoweredStep::Bitstring { value, fields } => {
+            let Some(ty) = constructed_bitstring_ty(world, values, fields) else {
+                return Ok(());
+            };
+            values.insert(*value, ty);
         }
         LoweredStep::FunctionRef { value, function } => {
             let arity = world.function_arity(*function);
@@ -2968,6 +2971,30 @@ fn literal_map_key(literal: &GroundValue) -> Option<super::super::types::MapKey>
     }
 }
 
+/// The type of a bitstring built from `fields`, by the bits they add: a binary
+/// where they come to whole bytes, a bitstring that is not a binary where they
+/// come to a known partial byte, and any bitstring where a size or an unsized
+/// `bits` segment of unknown alignment leaves it open. `None` while the type
+/// of a value an unsized `bits` segment writes is not yet known.
+fn constructed_bitstring_ty(
+    world: &mut World,
+    values: &SemanticValues,
+    fields: &[crate::compiler2::body::LoweredBitField],
+) -> Option<Ty> {
+    let binary = world.types_mut().str_t();
+    let mut remainder = Some(0);
+    for field in fields {
+        let source_is_binary = match (field.spec.ty, &field.spec.size) {
+            (crate::ast::BitType::Bits, None) => world.types().is_subtype(&value_ty(values, field.value)?, &binary),
+            _ => false,
+        };
+        remainder = remainder
+            .zip(field.spec.bit_remainder(source_is_binary))
+            .map(|(total, bits)| total + bits);
+    }
+    Some(world.types_mut().bitstring_of_len(remainder))
+}
+
 fn bitfield_value_ty(world: &mut World, spec: &super::super::body::LoweredBitFieldSpec) -> Ty {
     match spec.ty {
         crate::ast::BitType::Integer
@@ -2975,7 +3002,8 @@ fn bitfield_value_ty(world: &mut World, spec: &super::super::body::LoweredBitFie
         | crate::ast::BitType::Utf16
         | crate::ast::BitType::Utf32 => world.types_mut().int(),
         crate::ast::BitType::Float => world.types_mut().float(),
-        crate::ast::BitType::Binary | crate::ast::BitType::Bits => world.types_mut().str_t(),
+        crate::ast::BitType::Binary => world.types_mut().str_t(),
+        crate::ast::BitType::Bits => world.types_mut().bitstring(),
     }
 }
 

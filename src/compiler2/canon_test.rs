@@ -545,7 +545,8 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // apart, so fewer activations are emitted: 50 -> 46.
             // 44 -> 42: an exception record nothing asks about keys by its class, so the
             // functions that carry one are emitted once.
-            42,
+            // 42 -> 39: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
+            39,
         ),
         (
             567, // fz_f98_range_map_converges
@@ -561,7 +562,8 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // 77 -> 75: an arithmetic failure raises a library exception whose module words its
             // own message, so the raise no longer carries `inspect` and its extern to build
             // the text: `panic` and its extern stand where `raise/2` and its extern stood.
-            75,
+            // 75 -> 70: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
+            70,
         ),
         (
             569, // enum_map_family
@@ -578,7 +580,8 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // 134 -> 126: a non-recursive key collapses structure nothing asks about to its class,
             // as a recursive key does, so callers that differ only in such freight share one
             // activation.
-            126,
+            // 126 -> 123: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
+            123,
         ),
         // fz-sc8.8: 36 -> 54. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
         // An activation key names only the literals a use can tell apart: 54 -> 52.
@@ -586,7 +589,8 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             562, // mailbox_closure_each
             // 50 -> 48: an exception record nothing asks about keys by its class, so the
             // functions that carry one are emitted once.
-            48,
+            // 48 -> 45: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
+            45,
         ),
         (
             563, // mailbox_closure_reduce
@@ -601,7 +605,8 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // apart, so fewer activations are emitted: 65 -> 63.
             // 61 -> 59: an exception record nothing asks about keys by its class, so the
             // functions that carry one are emitted once.
-            59,
+            // 59 -> 56: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
+            56,
         ),
         (
             570, // actor_ring
@@ -612,7 +617,8 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // 29 -> 113: `spawn/1` runs its callable under the handler that words a raise
             // nothing caught, so a program that spawns emits the banner and the `message/1`
             // of each exception it can raise.
-            113,
+            // 113 -> 112: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
+            112,
         ),
         (
             571, // enum_predicate_search
@@ -626,7 +632,8 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // once per reducer lambda.
             // 199 -> 197: a library exception's module words its own message, so the raise
             // no longer carries `inspect` and its extern to build the text.
-            197,
+            // 197 -> 194: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
+            194,
         ),
         (
             420, // enum_take_drop_split, over both a list and a range
@@ -654,7 +661,8 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // activation.
             // 258 -> 256: an exception record nothing asks about keys by its class, so the
             // functions that carry one are emitted once.
-            256,
+            // 256 -> 255: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
+            255,
         ),
     ] {
         let settled = Drive::fixture(number).dump_stage(DumpStage::Backend);

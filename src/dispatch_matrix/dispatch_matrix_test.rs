@@ -637,7 +637,7 @@ fn two_tests_sharing_a_fail() -> (DispatchGraph<Ty>, [GraphNodeId; 2]) {
 fn trimming_a_graph_nothing_narrows_returns_nothing_new() {
     let (graph, _) = two_tests_sharing_a_fail();
 
-    assert_eq!(graph.trimmed(one_input(), &|_| LiveEdges::Both), None);
+    assert_eq!(graph.trimmed(one_input(), &|_| LiveEdges::Both, &|_| false), None);
 }
 
 #[test]
@@ -645,13 +645,17 @@ fn a_test_that_never_matches_is_its_miss_child_and_the_arm_behind_it_goes() {
     let (graph, [asks_nil, _]) = two_tests_sharing_a_fail();
 
     let trimmed = graph
-        .trimmed(one_input(), &|node| {
-            if node == asks_nil {
-                LiveEdges::Miss
-            } else {
-                LiveEdges::Both
-            }
-        })
+        .trimmed(
+            one_input(),
+            &|node| {
+                if node == asks_nil {
+                    LiveEdges::Miss
+                } else {
+                    LiveEdges::Both
+                }
+            },
+            &|_| false,
+        )
         .expect("one test is narrowed");
 
     assert_eq!(
@@ -703,13 +707,17 @@ fn a_test_whose_two_answers_trim_to_one_node_asks_nothing() {
     let graph = builder.build(root).expect("all node edges are valid");
 
     let trimmed = graph
-        .trimmed(one_input(), &|node| {
-            if node == root {
-                LiveEdges::Both
-            } else {
-                LiveEdges::Match
-            }
-        })
+        .trimmed(
+            one_input(),
+            &|node| {
+                if node == root {
+                    LiveEdges::Both
+                } else {
+                    LiveEdges::Match
+                }
+            },
+            &|_| false,
+        )
         .expect("two tests are narrowed");
 
     assert!(
@@ -723,13 +731,17 @@ fn a_fail_no_surviving_test_reaches_is_not_rebuilt() {
     let (graph, [_, asks_true]) = two_tests_sharing_a_fail();
 
     let trimmed = graph
-        .trimmed(one_input(), &|node| {
-            if node == asks_true {
-                LiveEdges::Match
-            } else {
-                LiveEdges::Both
-            }
-        })
+        .trimmed(
+            one_input(),
+            &|node| {
+                if node == asks_true {
+                    LiveEdges::Match
+                } else {
+                    LiveEdges::Both
+                }
+            },
+            &|_| false,
+        )
         .expect("one test is narrowed");
 
     assert!(
@@ -757,7 +769,7 @@ fn a_trimmed_graph_asks_its_inputs_only_what_its_surviving_questions_ask() {
     assert_eq!(graph.input_demand, [DispatchDemand::TupleFields(BTreeMap::new())]);
 
     let trimmed = graph
-        .trimmed(one_input(), &|_| LiveEdges::Match)
+        .trimmed(one_input(), &|_| LiveEdges::Match, &|_| false)
         .expect("the one test is settled");
 
     assert_eq!(trimmed.input_demand, [DispatchDemand::Ignore]);

@@ -1100,20 +1100,16 @@ pub extern "C" fn fz_binary_to_atom(process: *mut Process, ref_word: u64) -> u64
     box_scalar_for_any(process, id as u64, ValueKind::ATOM)
 }
 
-/// The number of BYTES in the binary that starts `bit_pos` bits into `ref_word`'s
-/// bitstring: the whole binary at position zero, the rest of it from a cursor.
-/// Refuses a partial bitstring, which has no byte size.
+/// The number of BYTES that hold the bitstring starting `bit_pos` bits into
+/// `ref_word`'s bitstring: the whole bitstring at position zero, the rest of it
+/// from a cursor. A partial last byte counts, as in Elixir's `byte_size`.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_bitstring_byte_extent(ref_word: u64, bit_pos: u64) -> i64 {
     let Some(p) = bitstring_like_word(ref_word) else {
-        panic!("byte_size expects a binary");
+        panic!("byte_size expects a bitstring");
     };
     let bit_len = unsafe { bitstring_bit_len(p) };
-    let extent = bit_len - bit_pos;
-    if !extent.is_multiple_of(8) {
-        panic!("byte_size expects a byte-aligned binary");
-    }
-    (extent / 8) as i64
+    (bit_len - bit_pos).div_ceil(8) as i64
 }
 
 /// The size of a `binary` segment whose value is a pinned binary: that binary's
@@ -1139,10 +1135,9 @@ pub extern "C" fn fz_pinned_binary_segment_size(ref_word: u64) -> u32 {
 /// Is this bitstring byte-aligned -- a `binary` rather than a partial
 /// `bitstring`?
 ///
-/// fz's type system does not draw this line: `<<1::4>>` has type `binary` and a
-/// `s :: binary` clause head accepts it. Elixir's does, and
-/// `String.Chars` turns on it -- identity for a binary, raise for anything
-/// else. So the distinction has to be asked at runtime.
+/// `String.Chars` for bitstrings and `JSON.encode!` take a bitstring of any bit
+/// length and turn on this answer -- the value for a binary, a raise for anything
+/// else.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_bitstring_is_binary(ref_word: u64) -> i64 {
     let Some(p) = bitstring_like_word(ref_word) else {
@@ -1527,7 +1522,8 @@ pub fn bs_field_end(field_spec: u64, size_value: u32, pos: u64, source_ref: u64)
 /// `bs_field_end` over the bytes a caller already holds.
 ///
 /// A `binary` or `bits` field without a size is the rest of the binary, and only
-/// the last field may be one. An integer is at most 64 bits wide. A `utf8` field
+/// the last field may be one. A `binary` rest holds whole bytes, so a rest that
+/// ends between bytes is not one. An integer is at most 64 bits wide. A `utf8` field
 /// is one scalar value, 8 to 32 bits wide as the bytes say, and a binary that
 /// does not begin with a valid encoding at `pos` does not hold it.
 fn field_end(field_spec: u64, size_value: u32, pos: u64, bytes: &[u8], bit_len: u64) -> Option<u64> {
@@ -1538,7 +1534,10 @@ fn field_end(field_spec: u64, size_value: u32, pos: u64, bytes: &[u8], bit_len: 
         (BitType::Integer, size) => Some(size.unwrap_or(8) * unit).filter(|total| *total <= 64),
         (BitType::Float, size) => Some(size.unwrap_or(64) * unit).filter(|total| *total == 32 || *total == 64),
         (BitType::Binary | BitType::Bits, Some(size)) => Some(size * unit),
-        (BitType::Binary | BitType::Bits, None) => (is_last != 0).then(|| bit_len - pos),
+        (BitType::Binary, None) => (is_last != 0)
+            .then(|| bit_len - pos)
+            .filter(|rest| rest.is_multiple_of(8)),
+        (BitType::Bits, None) => (is_last != 0).then(|| bit_len - pos),
         (BitType::Utf8, _) => utf8_scalar_at(bytes, pos, bit_len).map(|(_, bits)| bits),
         (ty @ (BitType::Utf16 | BitType::Utf32), _) => unsupported_bit_read(ty),
     }?;

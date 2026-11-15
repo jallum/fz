@@ -168,6 +168,14 @@ impl Descr {
         Self::from_basic(BasicBits::BINARY)
     }
 
+    pub(super) fn bitstring_no_binary() -> Self {
+        Self::from_basic(BasicBits::BITSTRING_NO_BINARY)
+    }
+
+    pub(super) fn bitstring() -> Self {
+        Self::from_basic(BasicBits::BITSTRING)
+    }
+
     fn from_basic(basic: BasicBits) -> Self {
         let mut d = Self::unbranded();
         d.basic = basic;

@@ -33,9 +33,9 @@ defmodule Utf8 do
   @spec valid?(binary) :: boolean
   def valid?(bytes), do: fz_bitstring_valid_utf8(bytes) == 1
 
-  extern "C" defp fz_bitstring_valid_utf8(any) :: integer
+  extern "C" defp fz_bitstring_valid_utf8(bitstring) :: integer
 
-  extern "C" defp fz_brand_bitstring_as_utf8(any) :: any
+  extern "C" defp fz_brand_bitstring_as_utf8(bitstring) :: any
 
   @doc """
   Validates and removes the first UTF-8 codepoint from `bytes`.
@@ -58,7 +58,7 @@ defmodule Utf8 do
   def next(""), do: nil
   def next(bytes), do: next_result(bytes, fz_bitstring_utf8_prefix(bytes))
 
-  extern "C" defp fz_bitstring_utf8_prefix(any) :: integer
+  extern "C" defp fz_bitstring_utf8_prefix(bitstring) :: integer
 
   @spec next_result(binary, integer) :: {:ok, utf8, binary} | {:error, binary} | nil
   defp next_result(bytes, status) do

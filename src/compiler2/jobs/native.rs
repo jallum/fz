@@ -4105,7 +4105,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             let extraction = plan.bitstring_extraction(*field_subject);
             let spec = &extraction.spec;
             let field = BitMatchField {
-                ty: dispatch_bit_type(spec.kind),
+                ty: dispatch_bit_type(spec.runtime_kind()),
                 size: self.lower_dispatch_bit_size(ctx, plan, state, spec)?,
                 endian: dispatch_endian(spec.endian),
                 signed: spec.signed,
@@ -4761,7 +4761,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         }
     }
 
-    /// The binary a cursor stands for: the source when the position is zero,
+    /// The bitstring a cursor stands for: the source when the position is zero,
     /// otherwise the suffix stub the runtime allocates. A cursor made whole in
     /// this block is not made again in it.
     fn make_cursor_whole(&mut self, ctx: &mut NativeFnCtx, source: Var, position: Var) -> Var {
@@ -4771,7 +4771,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             return *whole;
         }
         let rest = BitMatchField {
-            ty: BitType::Binary,
+            ty: BitType::Bits,
             size: None,
             endian: crate::ast::Endian::Big,
             signed: false,

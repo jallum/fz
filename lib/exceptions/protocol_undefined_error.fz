@@ -9,7 +9,7 @@ defmodule Protocol.UndefinedError do
   @spec kind(any) :: binary
   defp kind(%{__struct__: module}), do: inspect(module) <> " (a struct)"
   defp kind(value) when is_atom(value), do: "Atom"
-  defp kind(value) when is_binary(value), do: "BitString"
+  defp kind(value) when is_bitstring(value), do: "BitString"
   defp kind(value) when is_float(value), do: "Float"
   defp kind(value) when is_integer(value), do: "Integer"
   defp kind(value) when is_list(value), do: "List"

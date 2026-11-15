@@ -117,11 +117,7 @@ pub struct BitFieldIr {
 
 /// Default bitstring unit per source type.
 pub(crate) fn default_unit_for(ty: BitType) -> u32 {
-    match ty {
-        BitType::Integer | BitType::Float | BitType::Bits => 1,
-        BitType::Binary => 8,
-        BitType::Utf8 | BitType::Utf16 | BitType::Utf32 => 1,
-    }
+    ty.default_unit()
 }
 
 /// One field of a bitstring pattern, as a match reads it.

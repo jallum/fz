@@ -98,7 +98,11 @@ Compiler2 owns the active contract path:
     is not), so the part of the witness the runtime would let in must lie inside
     the instantiated parameter: `witness ∩ runtime_reading(param) ⊆ param`, where
     `Types::runtime_reading` erases brands at any depth. `binary` into `utf8` is
-    refused; `utf8` into `utf8` fits.
+    refused; `utf8` into `utf8` fits. `bitstring and not binary` into `binary` is
+    refused because its witness lies wholly outside the domain; `bitstring` into
+    `binary` is accepted, and a partial value meets the clause's runtime test,
+    which asks that the bit length be whole bytes, and raises
+    `FunctionClauseError`.
   - Admission, extern: an extern is a raw machine call with no clause tests
     (`FunctionContract::extern_wire` is set), so a column other than `any` must
     fit its instantiated parameter whole: `witness ⊆ param`. The judgement is on

@@ -111,12 +111,14 @@ impl<TypeHandle> PatternDispatchPlan<TypeHandle> {
     }
 
     /// This plan with every test `live` narrows replaced by the one child it
-    /// keeps, or `None` when no test a decision can reach is narrowed. Subject
+    /// keeps, and every bitstring test `rest_whole` names has its `binary` rest
+    /// read as proven whole bytes; `None` when neither changes a thing. Subject
     /// ids, outcome ids, guards and pins are the plan's own, so everything that
     /// names them reads the trimmed plan unchanged.
     pub(crate) fn trimmed(
         &self,
         live: &impl Fn(GraphNodeId) -> LiveEdges,
+        rest_whole: &impl Fn(GraphNodeId) -> bool,
         literal_blind: &dyn Fn(&TypeHandle) -> bool,
     ) -> Option<Self>
     where
@@ -132,6 +134,7 @@ impl<TypeHandle> PatternDispatchPlan<TypeHandle> {
                 literal_blind,
             },
             live,
+            rest_whole,
         )?;
         Some(Self {
             graph,
@@ -1261,6 +1264,7 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
                     endian: bitstring_endian(field.spec.endian),
                     signed: field.spec.signed,
                     unit: field.spec.unit,
+                    rest_proven_whole: false,
                 },
                 is_last: index + 1 == fields.len(),
             };

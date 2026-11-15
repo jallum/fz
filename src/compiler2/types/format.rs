@@ -3,7 +3,7 @@
 use super::CallableValueKind;
 use super::MapKey;
 use super::TyCtx;
-use super::bits::BASIC_NAMES;
+use super::bits::basic_names;
 use super::conj::Conj;
 use super::descr::Descr;
 use super::sigs::{ArrowSig, ListSig, MapSig, ResourceSig, TupleSig};
@@ -17,11 +17,7 @@ pub(crate) fn display(cx: TyCtx<'_>, d: &Descr) -> String {
         return "any".to_string();
     }
     let mut parts = Vec::new();
-    for (bit, name) in BASIC_NAMES {
-        if d.basic.contains_all(*bit) {
-            parts.push((*name).to_string());
-        }
-    }
+    parts.extend(basic_names(d.basic).into_iter().map(str::to_string));
     append_axis(&mut parts, &d.atoms, "atom", |s| format!(":{}", s));
     append_axis(&mut parts, &d.opaques, "opaque", ToString::to_string);
     append_axis(&mut parts, &d.vars, "var", |id| cx.render_var(*id));

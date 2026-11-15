@@ -3616,7 +3616,7 @@ fn builtin_value_family_ty(t: &mut Types, family: BuiltinValueFamily) -> Ty {
         BuiltinValueFamily::Integer => t.int(),
         BuiltinValueFamily::Float => t.float(),
         BuiltinValueFamily::Atom => t.atom(),
-        BuiltinValueFamily::Binary => t.str_t(),
+        BuiltinValueFamily::Binary => t.bitstring(),
         BuiltinValueFamily::Map => t.plain_map(),
     }
 }

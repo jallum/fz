@@ -578,6 +578,64 @@ impl BitType {
     }
 }
 
+/// What the program text says about a segment's size, without the value a
+/// run-time size reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BitSizeKnowledge {
+    /// No `size(..)`: the type's default, or the rest of the binary.
+    Absent,
+    Literal(u32),
+    /// A size read at run time.
+    Runtime,
+    /// As long as a pinned binary: whole bytes.
+    ByteSizeOf,
+}
+
+impl BitType {
+    /// Default bitstring unit per source type.
+    pub fn default_unit(self) -> u32 {
+        match self {
+            BitType::Binary => 8,
+            _ => 1,
+        }
+    }
+}
+
+/// The bits a segment spans beyond the whole bytes it spans, as far as the
+/// program text says; `None` where a run-time size or a bitstring of unknown
+/// alignment leaves it open. A segment of whole bytes is `Some(0)`.
+/// `source_is_binary` says whether the value an unsized `bits` segment holds is
+/// a binary. A `utf` segment is always whole bytes, and an unsized `binary` is
+/// whole bytes. Construction sums these remainders to type the value it builds;
+/// a match asks whether each field before a rest is `Some(0)`.
+pub fn bit_remainder(ty: BitType, size: BitSizeKnowledge, unit: Option<u32>, source_is_binary: bool) -> Option<u64> {
+    let unit = u64::from(unit.unwrap_or(ty.default_unit()));
+    let default_bits = match ty {
+        BitType::Utf8 | BitType::Utf16 | BitType::Utf32 => return Some(0),
+        BitType::Integer => Some(8),
+        BitType::Float => Some(64),
+        BitType::Binary => return bit_remainder_of_binary(size, unit),
+        BitType::Bits => None,
+    };
+    match size {
+        BitSizeKnowledge::Absent => match ty {
+            BitType::Bits => source_is_binary.then_some(0),
+            _ => default_bits.map(|size| size * unit % 8),
+        },
+        BitSizeKnowledge::Literal(size) => Some(u64::from(size) * unit % 8),
+        BitSizeKnowledge::Runtime => unit.is_multiple_of(8).then_some(0),
+        BitSizeKnowledge::ByteSizeOf => Some(0),
+    }
+}
+
+fn bit_remainder_of_binary(size: BitSizeKnowledge, unit: u64) -> Option<u64> {
+    match size {
+        BitSizeKnowledge::Absent | BitSizeKnowledge::ByteSizeOf => Some(0),
+        BitSizeKnowledge::Literal(size) => Some(u64::from(size) * unit % 8),
+        BitSizeKnowledge::Runtime => unit.is_multiple_of(8).then_some(0),
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum BitSize {
     /// `::8`, `::16`, `::size(42)` with a literal
@@ -652,3 +710,6 @@ pub struct TypeAliasDecl {
     /// Span of the whole `@type ... :: ...` declaration.
     pub span: Span,
 }
+
+#[cfg(test)]
+mod ast_test;

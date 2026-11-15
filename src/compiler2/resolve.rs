@@ -91,7 +91,7 @@ struct ConstructorEntry {
 }
 
 /// The single authoritative source for every builtin type-constructor name:
-/// the fourteen nullary scalars (including `map` and `tuple`, the
+/// the fifteen nullary scalars (including `map` and `tuple`, the
 /// fully-unconstrained "any map" and "any tuple" types — the named
 /// counterparts to the structural `%{k => v}` and `{T, U}` syntax) plus the
 /// two parametric constructors, `list` (0 or 1 type argument —
@@ -107,6 +107,7 @@ const CONSTRUCTORS: &[ConstructorEntry] = &[
     ConstructorEntry { name: "float",    arity: Arity::Fixed(0), build: |t, _| t.float() },
     ConstructorEntry { name: "c_pointer", arity: Arity::Fixed(0), build: |t, _| t.c_pointer() },
     ConstructorEntry { name: "binary",   arity: Arity::Fixed(0), build: |t, _| t.str_t() },
+    ConstructorEntry { name: "bitstring", arity: Arity::Fixed(0), build: |t, _| t.bitstring() },
     ConstructorEntry { name: "atom",     arity: Arity::Fixed(0), build: |t, _| t.atom() },
     ConstructorEntry { name: "any",      arity: Arity::Fixed(0), build: |t, _| t.any() },
     ConstructorEntry { name: "never",    arity: Arity::Fixed(0), build: |t, _| t.none() },

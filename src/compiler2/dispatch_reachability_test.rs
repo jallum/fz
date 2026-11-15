@@ -714,3 +714,111 @@ fn nil_predicates_use_the_atom_type_and_map_key() {
     let expected = types.map(&[(crate::ground_value::MapKey::Atom("nil".to_string()), any)]);
     assert!(types.is_equivalent(&required.ty, &expected));
 }
+
+/// The activation's plan after reachability, for a clause `<<fields...>>` over
+/// one input of type `input`, with a catch-all row behind it.
+fn trimmed_bitstring_plan(
+    types: &mut Types,
+    input: Ty,
+    fields: Vec<crate::ast::BitField<Spanned<Pattern>>>,
+) -> Rc<PatternDispatchPlan<Ty>> {
+    let plan = pattern_dispatch_from_source(SourcePatternRows::lexical(
+        1,
+        vec![row(Pattern::Bitstring(fields), 0), row(Pattern::Wildcard, 1)],
+    ))
+    .expect("a bitstring pattern compiles");
+    let reachability = calculate_dispatch_reachability(types, &plan, &[input]);
+    let mut reached = ReachedEdges::of(Rc::new(plan));
+    reached.absorb(&reachability);
+    reached.trimmed(types)
+}
+
+fn bit_field(name: &str, ty: crate::ast::BitType, bits: Option<u32>) -> crate::ast::BitField<Spanned<Pattern>> {
+    use crate::ast::{BitFieldSpec, BitSize};
+    let value = if name == "_" {
+        Pattern::Wildcard
+    } else {
+        Pattern::Var(Var::user(name))
+    };
+    crate::ast::BitField {
+        value: Spanned::dummy(value),
+        spec: BitFieldSpec {
+            ty,
+            size: bits.map(BitSize::Literal),
+            ..BitFieldSpec::default()
+        },
+    }
+}
+
+/// What the plan's one bitstring test asks of its last field's end.
+fn last_field_kind(plan: &PatternDispatchPlan<Ty>) -> BitstringFieldKind {
+    let shape = plan
+        .graph
+        .nodes
+        .iter()
+        .find_map(|node| match node {
+            DispatchNode::Test {
+                predicate:
+                    RegionPredicate {
+                        region: Region::Bitstring(shape),
+                        ..
+                    },
+                ..
+            } => Some(shape),
+            _ => None,
+        })
+        .expect("the plan asks one bitstring question");
+    let last = shape.fields.last().expect("the pattern has fields");
+    plan.bitstring_extraction(*last).spec.runtime_kind()
+}
+
+/// A `binary` rest is whole bytes only if the subject is a binary and the fields
+/// before it are whole bytes; when both are proven the end-of-rest test is not
+/// asked of either backend (they read `runtime_kind`, and `Bits` has no test).
+#[test]
+fn a_binary_rest_after_whole_bytes_of_a_binary_subject_is_not_tested() {
+    use crate::ast::BitType;
+    let mut types = Types::new();
+    let binary = types.str_t();
+    for (prefix, why) in [
+        (vec![bit_field("_", BitType::Integer, Some(8))], "a byte"),
+        (vec![bit_field("_", BitType::Integer, Some(16))], "two bytes"),
+        (vec![bit_field("_", BitType::Utf8, None)], "a utf8 scalar"),
+        (vec![bit_field("_", BitType::Binary, Some(2))], "two binary units"),
+        (vec![], "nothing"),
+    ] {
+        let mut fields = prefix;
+        fields.push(bit_field("rest", BitType::Binary, None));
+        let plan = trimmed_bitstring_plan(&mut types, binary, fields);
+        assert_eq!(
+            last_field_kind(&plan),
+            BitstringFieldKind::Bits,
+            "after {why} of a binary the rest is whole bytes"
+        );
+    }
+}
+
+#[test]
+fn a_binary_rest_is_tested_unless_subject_and_prefix_are_both_whole_bytes() {
+    use crate::ast::BitType;
+    let mut types = Types::new();
+    let binary = types.str_t();
+    let bitstring = types.bitstring();
+    let any = types.any();
+    let whole = || vec![bit_field("_", BitType::Integer, Some(8))];
+    let partial = || vec![bit_field("_", BitType::Integer, Some(3))];
+    for (input, prefix, why) in [
+        (bitstring, whole(), "a bitstring subject may end between bytes"),
+        (any, whole(), "an unknown subject may end between bytes"),
+        (binary, partial(), "three bits leave the rest between bytes"),
+    ] {
+        let mut fields = prefix;
+        fields.push(bit_field("rest", BitType::Binary, None));
+        let plan = trimmed_bitstring_plan(&mut types, input, fields);
+        assert_eq!(
+            last_field_kind(&plan),
+            BitstringFieldKind::Binary,
+            "{why}: the rest keeps its whole-byte test"
+        );
+    }
+}

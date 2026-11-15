@@ -371,7 +371,8 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // struct of `FunctionClauseError`, so the executable waits for that module's
         // declaration: its file is scoped and its module defined. A program `fz2` runs
         // defines it already, for the handler of an uncaught raise.
-        (2692, 15, 42, 262),
+        // (2692, 15, 42, 262) -> (2680, 15, 42, 261): `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
+        (2680, 15, 42, 261),
         "ordinary generic helper work has the exact source/module/executable-fact census"
     );
     // Every applied work step is a run, and every run is charged to exactly
@@ -474,7 +475,8 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // 1076 -> 1078: `FunctionClauseError`'s module is defined (see the source census
         // above), and its definition starts again when its source is indexed and when it
         // is scoped.
-        1078,
+        // 1078 -> 1071: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
+        1071,
         "ordinary generic helper facts have the exact non-demand changed-revision census",
     );
     assert_eq!(
@@ -619,7 +621,8 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // callers that differ only in such freight share one activation.
         // (622, 624, [24, 261, 82, 257, 0]) -> (623, 625, [24, 262, 82, 257, 0]): the library
         // exception a failure raises adds one activation, whose runtime demand is derived.
-        (623, 625, [24, 262, 82, 257, 0]),
+        // (623, 625, [24, 262, 82, 257, 0]) -> (621, 623, [24, 261, 82, 256, 0]): `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
+        (621, 623, [24, 261, 82, 256, 0]),
         "every demand completion and ordinary helper wake retains its precise cause",
     );
     assert_eq!(
@@ -640,7 +643,8 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // 334 -> 333: a non-recursive key collapses structure nothing asks about to its class, as a
         // recursive key does, so callers that differ only in such freight share one activation.
         // 333 -> 334: one key for the library exception a failure raises.
-        334,
+        // 334 -> 333: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
+        333,
         "the demand frontier retains every ordinary generic helper key",
     );
     assert_eq!(
@@ -771,7 +775,8 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // recursive key does, so callers that differ only in such freight share one activation.
         // 741 -> 745: the `defexception` and `raise` macros and the functions of the library
         // exception a failure raises are analysed.
-        745,
+        // 745 -> 740: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
+        740,
         "the fixture's total AnalyzeActivation completions, repeats included",
     );
     let frontier_analyses = analyzed_activations.iter().cloned().collect::<HashSet<_>>();
@@ -798,7 +803,8 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // 262 -> 261: a non-recursive key collapses structure nothing asks about to its class, as a
         // recursive key does, so callers that differ only in such freight share one activation.
         // 261 -> 262: the library exception a failure raises adds one activation.
-        262,
+        // 262 -> 261: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
+        261,
         "the demand frontier's distinct activations, deduplicated across repeats",
     );
 
