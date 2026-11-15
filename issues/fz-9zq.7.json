@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-15T03:40:19Z",
+  "description": "Found in the #217 recheck (/private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/mu2/findings.md): define_generated_function (world.rs ~3751-3775, source: owner_source.source.clone() ~3766) copies the owner's source onto a generated lambda; #217's aaf24d993 fixed this but never landed. Observable effect on develop untested. Paper first: find a program where the copied source changes a diagnostic, key or canon, then fix.",
+  "id": "fz-9zq.7",
+  "labels": [],
+  "parent": "fz-9zq",
+  "priority": 2,
+  "status": "open",
+  "title": "A generated lambda has a source of its own",
+  "type": "task",
+  "updated_at": "2026-11-15T03:40:19Z"
+}
