@@ -436,7 +436,7 @@ every door is a shell sweep, and it is what a dispatch-order change should be
 re-measured with:
 
     for setting in arms:reverse arms:1 arms:6 wrappers:1 wrappers:6 1 6; do
-      for fixture in fixtures2/*.fz fixtures2/behavior/*.fz; do
+      for fixture in fixtures2/*.fz fixtures/*.fz; do
         base=$(fz2 interp "$fixture" 2>/dev/null); base_rc=$?
         stressed=$(FZ_STRESS_PERMUTE_DISPATCH=$setting fz2 interp "$fixture" 2>/dev/null); rc=$?
         [ "$base" = "$stressed" ] && [ "$base_rc" = "$rc" ] || echo "MOVER $setting $fixture"
@@ -857,9 +857,9 @@ because the repair declines a wrapper. It applies there (member selection runs
 the same `routable_alternatives`) and it FIRES there: 0 swaps at the settled
 arrival, and 14 / 10 / 14 under `wrappers:1` / `:6` / `:reverse`, on
 `00197_poly_capture_ref`, `00391_poly_capture_ref`,
-`behavior/callable_union_capture_containment`,
-`behavior/opaque_fn_mixed_return` and
-`behavior/same_lambda_two_capture_types_dynamic`. The 19 are unchanged because
+`fixtures/01425_callable_union_capture_containment`,
+`fixtures/01569_opaque_fn_mixed_return` and
+`fixtures/01608_same_lambda_two_capture_types_dynamic`. The 19 are unchanged because
 the residue those 19 carry is fz-kdt.107's and fz-kdt.131's, which no canonical
 order may touch.
 
@@ -1046,7 +1046,7 @@ the element that broke it, and a corpus census is
       | grep -c 'surface-membership escape'
 
 Sweep the whole corpus by looping that over `fixtures2/*.fz
-fixtures2/behavior/*.fz`, and re-run it under each legal arrival by adding
+fixtures/*.fz`, and re-run it under each legal arrival by adding
 `FZ_STRESS_PERMUTE_DISPATCH=<setting>`: an escape the settled order does not
 reach is still a latent one. The whole 597-fixture sweep costs about 10s, and
 the knob's cost does not separate from that sweep's run-to-run spread —
@@ -1112,10 +1112,10 @@ The census stays a RATCHET with names, and it is now THIRTEEN named
 `(fixture, arrival)` pairs:
 `compiler2_no_value_reaches_a_construction_member_that_never_named_it` drives
 the SETTLED arrival of `00183`, `00230`, `00418`, `00419`, `00420`,
-`behavior/enum_take_drop_split`, `unused_range_binding` and
-`dispatch_list_head_separates` (the last being the row that holds its header's
+`fixtures/00420_enum_take_drop_split`, `fixtures/01638_unused_range_binding` and
+`fixtures/01450_dispatch_list_head_separates` (the last being the row that holds its header's
 "dynamically unreached" sentence to the tree), plus five permuted arrivals
-re-homed off the blind fixtures: `behavior/enum_take_drop_split` under `arms:6`
+re-homed off the blind fixtures: `fixtures/00420_enum_take_drop_split` under `arms:6`
 and each of the three wrapper orders — 23 of its 38 wrappers are multi-member
 WITH a selection plan, so a permuted order really does reseat the members a
 value is routed among — and `00419_enum_take_mixed` under `arms:6`, which is
@@ -1165,7 +1165,7 @@ agenda's own order is a second axis, and it is measured by rebuilding with
 comparing the two builds' canon dumps over the corpus (`fz2-fifo` is the
 unpatched binary, `fz2-lifo` the one built with `pop_back`):
 
-    for fixture in fixtures2/*.fz fixtures2/behavior/*.fz; do
+    for fixture in fixtures2/*.fz fixtures/*.fz; do
       fz2-fifo interp --dump backend=fifo/$(basename $fixture).canon "$fixture" >/dev/null 2>&1
       fz2-lifo interp --dump backend=lifo/$(basename $fixture).canon "$fixture" >/dev/null 2>&1
     done

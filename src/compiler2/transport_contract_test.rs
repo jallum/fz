@@ -536,8 +536,8 @@ fn compiler2_transport_flow_names_non_tail_return_payload_position() {
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new();
     world.submit_code(
-        Some("fixtures2/behavior/multi_relay.fz".to_string()),
-        include_str!("../../fixtures2/behavior/multi_relay.fz").to_string(),
+        Some("fixtures/01556_multi_relay.fz".to_string()),
+        include_str!("../../fixtures/01556_multi_relay.fz").to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (_driver, program) = pull_backend_for_test(&tel, &mut world, root);
@@ -2376,7 +2376,7 @@ end
 
 #[test]
 fn compiler2_transport_plan_does_not_publish_dead_callable_input_boundaries() {
-    let source = include_str!("../../fixtures2/behavior/range_enumerable.fz");
+    let source = include_str!("../../fixtures/01581_range_enumerable.fz");
 
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new();
@@ -2979,7 +2979,7 @@ fn compiler2_runtime_demand_marks_joined_function_refs_first_class_before_reduce
     let mut world = World::new();
     world.submit_code(
         Some("opaque_fn_value_join.fz".to_string()),
-        include_str!("../../fixtures2/behavior/opaque_fn_value_join.fz").to_string(),
+        include_str!("../../fixtures/00281_opaque_reducer_closure.fz").to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
@@ -3803,7 +3803,7 @@ fn compiler2_transport_plan_publishes_joined_callable_value_position_before_nati
     let mut world = World::new();
     world.submit_code(
         Some("opaque_fn_value_join.fz".to_string()),
-        include_str!("../../fixtures2/behavior/opaque_fn_value_join.fz").to_string(),
+        include_str!("../../fixtures/00281_opaque_reducer_closure.fz").to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
@@ -3912,7 +3912,7 @@ fn compiler2_transport_plan_retains_whole_callable_capture_independently_of_memb
     let mut world = World::new();
     world.submit_code(
         Some("opaque_fn_value_join.fz".to_string()),
-        include_str!("../../fixtures2/behavior/opaque_fn_value_join.fz").to_string(),
+        include_str!("../../fixtures/00281_opaque_reducer_closure.fz").to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
@@ -3971,7 +3971,7 @@ fn compiler2_singleton_callable_input_retains_its_source_environment_layout() {
     let mut world = World::new();
     world.submit_code(
         Some("closure_typed_captures.fz".to_string()),
-        include_str!("../../fixtures2/behavior/closure_typed_captures.fz").to_string(),
+        include_str!("../../fixtures/01437_closure_typed_captures.fz").to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
@@ -5429,7 +5429,7 @@ end
 
 #[test]
 fn compiler2_transport_plan_projects_enum_reduce_bridge_callable_flow_by_producer_identity_over_range() {
-    let source = include_str!("../../fixtures2/behavior/fz_f98_range_reduce_scalar.fz");
+    let source = include_str!("../../fixtures/01480_fz_f98_range_reduce_scalar.fz");
 
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new();

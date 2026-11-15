@@ -439,12 +439,12 @@ concluded return moves, and its own return moves once.
 ceiling. The other four `json_*` fixtures share its decode loop, so pinning the
 goal program pins them too.
 
-Two companions fail from opposite ends. `behavior/recursive_typedef.fz` declares
+Two companions fail from opposite ends. `fixtures/01595_recursive_typedef.fz` declares
 the type the ladder is reaching for, `@type t :: :start | {integer, t}`, and
 stalls before any return can climb: `DeriveTypeDef(t)` waits on the
 `TypeDefined(t)` it alone produces, and `World::unresolved_issue` reports that
 self-reference as a `resolve/type-alias` diagnostic at the `@type` declaration.
-`behavior/return_tuple_accumulator.fz` grows the same nesting in an argument
+`fixtures/01603_return_tuple_accumulator.fz` grows the same nesting in an argument
 instead, so each rung would key a new activation with a fresh budget; the
 evidence row of each rung repeats the standing row's tuple, the clash rule folds
 the accumulator column where it grew, and the program compiles and runs.
@@ -546,8 +546,8 @@ The two populations differ by construction --
 162 slot findings over 16 fixtures against 58 whole-key rungs over the same 16 --
 so a number from one is not a number from the other.
 
-Corpus census recipe: the corpus is every `.fz` under `fixtures2/` —
-`ls fixtures2/*.fz fixtures2/behavior/*.fz`, 605 files at fz-kdt.199, of which
+Corpus census recipe: the corpus is every `.fz` under `fixtures2/` and `fixtures/` —
+`ls fixtures2/*.fz fixtures/*.fz`, 605 files at fz-kdt.199, of which
 475 reach a backend dump. Take the list from the tree each time rather than
 from a saved file; the list this recipe was last written against had drifted
 eight fixtures behind it, which is enough to change a mover count. Dump every

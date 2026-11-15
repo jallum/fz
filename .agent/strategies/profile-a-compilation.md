@@ -93,7 +93,7 @@ numbers are the aggravating case that ticket wants.
 
 ## Worked example
 
-`fixtures2/behavior/json_roundtrip.fz` on `run`: 4527 jobs, 54% of them
+`fixtures/01521_json_roundtrip.fz` on `run`: 4527 jobs, 54% of them
 re-runs; three activations analyzed 32, 55 and 77 times, every re-run woken by
 `JSON.value/1`'s `ReturnType` changing, which it does 18 times and never
 converges: it tops out at `any` when the widening budget runs out. The sample

@@ -60,7 +60,7 @@ fn a_nested_source_union_retains_both_environments_of_the_same_function() {
     let mut compiler = Compiler2::new(telemetry);
     compiler.submit_code(CodeSubmission {
         name: Some("closure_capture_requirement_projection.fz".into()),
-        text: include_str!("../../fixtures2/behavior/closure_capture_requirement_projection.fz").into(),
+        text: include_str!("../../fixtures/01429_closure_capture_requirement_projection.fz").into(),
     });
     let root = root(&mut compiler, "main");
     let result = compiler.run_root_interp(root);

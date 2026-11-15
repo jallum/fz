@@ -302,7 +302,7 @@ whose clause is decided before the map pattern is ever asked makes no copy, and 
 key two questions read -- in one plan, or in a plan and the guard helper it calls
 -- is copied once. Native lowering emits the same constant at the head of the
 function it belongs to, which is one copy per call;
-`fixtures2/behavior/map_key_unreached.fz` pins the interpreter's floor at zero
+`fixtures/01542_map_key_unreached.fz` pins the interpreter's floor at zero
 for that reason.
 
 Only a map pattern's heap key is prepared. Every other constant a question

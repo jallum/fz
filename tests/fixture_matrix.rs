@@ -1,6 +1,6 @@
 //! fz-ul4.23.1 — fixture matrix.
 //!
-//! Walks `fixtures2/behavior/*.fz` and runs each source program through the
+//! Walks `fixtures/*.fz` and runs each source program through the
 //! compiler2 behavioural matrix. Behavioural metadata and optional prose live in a
 //! comment-frontmatter block at the top of the source file, and sibling
 //! sidecars carry the few artifacts that really need to stay out of the
@@ -9,15 +9,15 @@
 //! `expected.diagnostics`. Both default to empty when absent. Exit code must be
 //! 0 unless the fixture declares a negative `expect:` contract.
 //!
-//! Single-file fixtures2 layout:
+//! Single-file fixture layout:
 //!
-//!     fixtures2/behavior/<name>.fz
-//!     fixtures2/behavior/<name>.expected.txt
-//!     fixtures2/behavior/<name>.expected.run.txt
-//!     fixtures2/behavior/<name>.expected.diagnostics
-//!     fixtures2/behavior/<name>.expected.run.diagnostics
-//!     fixtures2/behavior/<name>.expected.stderr
-//!     fixtures2/behavior/<name>.oracle.exs
+//!     fixtures/<NNNNN>_<name>.fz
+//!     fixtures/<NNNNN>_<name>.expected.txt
+//!     fixtures/<NNNNN>_<name>.expected.run.txt
+//!     fixtures/<NNNNN>_<name>.expected.diagnostics
+//!     fixtures/<NNNNN>_<name>.expected.run.diagnostics
+//!     fixtures/<NNNNN>_<name>.expected.stderr
+//!     fixtures/<NNNNN>_<name>.oracle.exs
 //!
 //! Frontmatter grammar:
 //!
@@ -236,8 +236,8 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             fixture_output_canonicalizes_closure_denotations,
         ),
         (
-            "behavior_fixtures_route_via_filename_not_paths_frontmatter",
-            behavior_fixtures_route_via_filename_not_paths_frontmatter,
+            "fixtures_route_via_filename_not_paths_frontmatter",
+            fixtures_route_via_filename_not_paths_frontmatter,
         ),
         (
             "scheduler_receive_buffers_are_any_value_refs",
@@ -579,10 +579,7 @@ fn fixture_self_description_violations(described_dirs: &[&Path], number_only_dir
 }
 
 fn fixtures_describe_themselves() {
-    let violations = fixture_self_description_violations(
-        &[Path::new("fixtures")],
-        &[Path::new("fixtures2"), Path::new("fixtures2/behavior")],
-    );
+    let violations = fixture_self_description_violations(&[Path::new("fixtures")], &[Path::new("fixtures2")]);
     assert!(
         violations.is_empty(),
         "fixtures/*.fz must describe themselves (purpose, NNNNN_name stem, unique number):\n{}",
@@ -642,8 +639,8 @@ fn fixture_self_description_check_fails_on_violations() {
     );
 }
 
-fn behavior_fixtures_route_via_filename_not_paths_frontmatter() {
-    for entry in fs::read_dir("fixtures2/behavior").expect("read behaviour fixtures") {
+fn fixtures_route_via_filename_not_paths_frontmatter() {
+    for entry in fs::read_dir("fixtures").expect("read fixtures") {
         let path = entry.expect("fixture dir entry").path();
         if path.extension().is_none_or(|ext| ext != "fz") {
             continue;
@@ -903,18 +900,6 @@ impl FixtureCase {
     }
 }
 
-fn behavior_fixture_path(name: &str) -> PathBuf {
-    PathBuf::from("fixtures2/behavior").join(format!("{name}.fz"))
-}
-
-fn behavior_fixture_case(name: &str) -> FixtureCase {
-    FixtureCase::new(behavior_fixture_path(name))
-}
-
-fn behavior_fixture_sidecar_path(name: &str, suffix: &str) -> PathBuf {
-    behavior_fixture_case(name).sidecar_path(suffix)
-}
-
 fn take_ascii_digits(bytes: &[u8], mut index: usize) -> usize {
     while index < bytes.len() && bytes[index].is_ascii_digit() {
         index += 1;
@@ -1007,21 +992,17 @@ fn header_from_fixture_metadata(path: &Path, source: &str, metadata: &FixtureMet
 }
 
 /// Discover behavioural fixtures under `fixtures/` — the flat, numbered,
-/// purpose-bearing home — plus `fixtures2/behavior`, the legacy corpus it is
-/// draining into `fixtures/`. Both roots are walked non-recursively; sorted
-/// by name so trial order (and BLESS diffs) stay stable across runs.
+/// purpose-bearing home. The directory is walked non-recursively; sorted by
+/// name so trial order (and BLESS diffs) stay stable across runs.
 fn discover() -> Vec<FixtureCase> {
-    let mut out: Vec<FixtureCase> = Vec::new();
-    for dir in [Path::new("fixtures"), Path::new("fixtures2/behavior")] {
-        out.extend(
-            fs::read_dir(dir)
-                .unwrap_or_else(|e| panic!("{} should exist: {}", dir.display(), e))
-                .filter_map(|e| e.ok())
-                .map(|e| e.path())
-                .filter(|path| path.extension().is_some_and(|ext| ext == "fz"))
-                .map(FixtureCase::new),
-        );
-    }
+    let dir = Path::new("fixtures");
+    let mut out: Vec<FixtureCase> = fs::read_dir(dir)
+        .unwrap_or_else(|e| panic!("{} should exist: {}", dir.display(), e))
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "fz"))
+        .map(FixtureCase::new)
+        .collect();
     out.sort_by_key(|fixture| fixture.name());
     out
 }
@@ -1967,7 +1948,7 @@ fn assert_execution_ready_count(command: &mut Command, label: &str, expected: us
 /// trial never flips green to red on better hardware -- it only loses
 /// discrimination. The compile itself stays under the usual setup guard.
 fn execution_guard_covers_the_program_not_the_compile() {
-    let fixture = absolute(Path::new("fixtures2/behavior/json_roundtrip.fz"));
+    let fixture = absolute(Path::new("fixtures/01521_json_roundtrip.fz"));
     for door in ["run", "interp"] {
         let label = format!("fz2 {door}");
         let finished = guarded_fixture_command(
@@ -3300,7 +3281,7 @@ fn fixture_telemetry_concurrent_spec_violations() {
             .map(|index| {
                 let barrier = &barrier;
                 scope.spawn(move || {
-                    let fixture = behavior_fixture_case("spec_violation");
+                    let fixture = FixtureCase::new("fixtures/00142_spec_float_disjoint.fz");
                     let header = parse_header(&fixture).expect("parse spec violation");
                     let leg = [
                         FixtureMatrixPath::Run,
@@ -3648,7 +3629,7 @@ fn collect_source_files(dir: &Path, files: &mut Vec<PathBuf>) {
 }
 
 fn quicksort_pins_return_demand_target() {
-    let readme = fs::read_to_string("fixtures2/behavior/quicksort.fz").expect("read quicksort README");
+    let readme = fs::read_to_string("fixtures/01577_quicksort.fz").expect("read quicksort README");
     for expected in [
         "`list_cons_allocs = 11`",
         "`list_cons_bytes = 176`",
@@ -3668,7 +3649,7 @@ fn quicksort_pins_return_demand_target() {
 
 fn enum_list_allocations_pin_minimum_list_cons() {
     let readme =
-        fs::read_to_string("fixtures2/behavior/enum_list_allocations.fz").expect("read enum_list_allocations README");
+        fs::read_to_string("fixtures/01456_enum_list_allocations.fz").expect("read enum_list_allocations README");
     for needle in [
         "the input list literal allocates five cons cells",
         "`Enum.count/1`, `Enum.member?/2`, and `Enum.reduce/3` allocate no additional",
@@ -3688,10 +3669,15 @@ fn enum_list_allocations_pin_minimum_list_cons() {
         );
     }
 
-    assert_fixture_output_contains("enum_list_allocations", "expected.txt", &["5\ntrue\n15", "{5, 80,"]);
+    assert_fixture_output_contains(
+        "fixtures/01456_enum_list_allocations.fz",
+        "expected.txt",
+        &["5\ntrue\n15", "{5, 80,"],
+    );
     // Destructuring alone carries no retention. These read-only consumers have
     // no retaining construction, physical source capture, or runtime attempt.
-    let stats = list_retention_telemetry_stats_for_fixture(&behavior_fixture_case("enum_list_allocations"));
+    let stats =
+        list_retention_telemetry_stats_for_fixture(&FixtureCase::new("fixtures/01456_enum_list_allocations.fz"));
     assert_eq!(
         stats,
         ListRetentionTelemetryStats {
@@ -3706,9 +3692,13 @@ fn enum_list_allocations_pin_minimum_list_cons() {
 }
 
 fn enum_sort_constant_sorter_erased_under_return_demand_specs() {
-    assert_fixture_output_contains("enum_sort", "expected.txt", &["{22, 352, 0, 0, 0, 0, 0, 0}"]);
+    assert_fixture_output_contains(
+        "fixtures/01460_enum_sort.fz",
+        "expected.txt",
+        &["{22, 352, 0, 0, 0, 0, 0, 0}"],
+    );
 
-    let readme = fs::read_to_string("fixtures2/behavior/enum_sort.fz").expect("read enum_sort README");
+    let readme = fs::read_to_string("fixtures/01460_enum_sort.fz").expect("read enum_sort README");
     for needle in [
         "default sorter is erased",
         "return-demand-specialized runtime-library",
@@ -3720,7 +3710,7 @@ fn enum_sort_constant_sorter_erased_under_return_demand_specs() {
     // The sort walks its input once by count and never copies a half, so the
     // only retaining constructions are in the merge, and every attempt keeps
     // its source cell.
-    let stats = list_retention_telemetry_stats_for_fixture(&behavior_fixture_case("enum_sort"));
+    let stats = list_retention_telemetry_stats_for_fixture(&FixtureCase::new("fixtures/01460_enum_sort.fz"));
     assert_eq!(
         stats,
         ListRetentionTelemetryStats {
@@ -4604,7 +4594,7 @@ fn run_ended_pool_census(fixture: &FixtureCase, path: FixtureMatrixPath, label: 
 }
 
 fn assert_fixture_output_contains(fixture: &str, file: &str, needles: &[&str]) {
-    let path = behavior_fixture_sidecar_path(fixture, file);
+    let path = FixtureCase::new(fixture).sidecar_path(file);
     let expected = fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
     for needle in needles {
         assert!(

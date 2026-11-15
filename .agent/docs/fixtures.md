@@ -5,12 +5,11 @@ and proves it on every execution path that applies. `fixtures/` is its home: a
 flat directory of `NNNNN_name.fz` files, each numbered, each carrying a
 `purpose:` in its frontmatter, each discovered by both the behavioural matrix
 and, by number, the compiler2 test harness. `fixtures2/` is the directory
-`fixtures/` is draining: its `behavior/` subdirectory still holds unnumbered
-behavioural fixtures, and its top level still holds numbered compiler-contract
-fixtures, both moved into `fixtures/` as the tests that use them are touched.
+`fixtures/` is draining: its top level still holds numbered compiler-contract
+fixtures, moved into `fixtures/` as the tests that use them are touched.
 
 `tests/fixture_matrix.rs` is the behavioural harness: it discovers every `.fz`
-under `fixtures/` and `fixtures2/behavior/`, reads the source-frontmatter block
+under `fixtures/`, reads the source-frontmatter block
 at the top, and runs the file through the compiler2 matrix (`run`, `interp`,
 `build`) unless the filename narrows that set. It scores each run against
 sibling sidecars. The same file also holds a set of static trials (the Elixir
@@ -42,11 +41,8 @@ fixtures/<NNNNN>_<name>.oracle.exs
 A `.oracle.exs` exists only for a fixture whose program is not Elixir: one
 that tests fz-only syntax or library (see the oracle section).
 
-`fixtures2/behavior/<name>.fz` and its sidecars follow the same shape, minus
-the number: `fixtures2` predates the numbering requirement.
-
-`discover()` returns every `.fz` under `fixtures/` and `fixtures2/behavior/`,
-sorted by name. The matrix derives every sidecar path from the file stem.
+`discover()` returns every `.fz` under `fixtures/`, sorted by name. The matrix
+derives every sidecar path from the file stem.
 
 ### Frontmatter
 
@@ -128,6 +124,7 @@ their block. A new epic claims the next free block and adds a row here.
 | `01340-01359` | fz-9zq                            | in use through `01343` |
 | `01360-01379` | fz-sc8                            | in use through `01362` |
 | `01380-01399` | fz-nhb                            | in use through `01382` |
+| `01400-01699` | fz-p8p                            | in use through `01656` |
 
 A fixture orders its processes with messages and never by a timing margin: an
 `after` timeout is `0` when mail is already in the mailbox or nothing is
@@ -490,8 +487,8 @@ The shared grammar is intentionally small:
 The source block is the authority. Optional sidecars exist only for dense
 snapshots that would be noisy inline.
 
-A fixtures2 file participates in the behavioural matrix when it lives under
-`fixtures2/behavior/`; frontmatter then contributes policy (`defer:`,
+A fixture participates in the behavioural matrix when it lives under
+`fixtures/`; frontmatter then contributes policy (`defer:`,
 `expect:`, timeouts, etc.) and the filename may narrow the default
 route set. It participates in the compiler-contract
 harness when it declares compiler keys such as `root:` or `assert.metric.*`.

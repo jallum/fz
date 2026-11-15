@@ -201,7 +201,7 @@ fn nested_recursive_decoders_climb_inside_their_group_without_a_ladder_of_activa
 /// of the climb would key an activation for each step it saw.
 #[test]
 fn a_json_roundtrip_analyzes_its_comparison_helper_for_the_eight_types_the_decoder_concludes_with() {
-    let (climb, settled) = climb_of(Drive::behavior_fixture("json_roundtrip"));
+    let (climb, settled) = climb_of(Drive::fixture(1521));
     let same = settled.functions().id("same", 2);
 
     assert_eq!(climb.activations_of(same).len(), 8);

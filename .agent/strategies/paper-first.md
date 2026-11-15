@@ -52,7 +52,7 @@ the fault.
 
 ## Example
 
-`fixtures2/behavior/json_roundtrip.fz` is a small program the compiler spends
+`fixtures/01521_json_roundtrip.fz` is a small program the compiler spends
 thousands of steps on, about half of them repeats. Shrunk to one recursive
 function,
 

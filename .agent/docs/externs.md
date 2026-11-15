@@ -304,7 +304,7 @@ makes each door narrow and widen it:
 A field of a tuple has no register of its own, so writing `c_int` inside one is
 the misplaced-spelling refusal above.
 
-`behavior/c_int_negative_return` pins both signs on all three doors, and
+`fixtures/01424_c_int_negative_return` pins both signs on all three doors, and
 `compiler2_native_lowering_narrows_c_int_arguments_and_sign_extends_c_int_results`
 pins the reduce and the sign extension in the lowered CLIF, which is what the
 declaration means on every host rather than on this one.
@@ -457,7 +457,7 @@ What follows from the invariant:
   while the dispatcher bit-punned them too; fixing one half broke six fixtures
   until the other half was fixed.
 
-`behavior/extern_float_lanes` pins the bank assignments on all three doors,
+`fixtures/01466_extern_float_lanes` pins the bank assignments on all three doors,
 including both mixed orders — one alone cannot distinguish a correct table from
 one with the two mixed shapes transposed.
 

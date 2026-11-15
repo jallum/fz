@@ -527,7 +527,7 @@ fn source_publication_defers_local_macro_expansion_until_function_demand() {
     let mut sessions = super::super::pull::ProductSessions::default();
     let code = world.submit_code(
         Some("macro_inc.fz".to_string()),
-        include_str!("../../fixtures2/behavior/macro_inc.fz").to_string(),
+        include_str!("../../fixtures/01533_macro_inc.fz").to_string(),
     );
 
     assert!(world.demand(Job::ScopeCode(code)), "code scoping should be demandable");

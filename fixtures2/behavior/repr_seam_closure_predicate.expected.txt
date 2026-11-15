@@ -1,7 +1,0 @@
-false
-false
-true
-:no
-2
-2
-2

@@ -763,9 +763,9 @@ execution and the compiler2-only telemetry namespace. Its
 the exact submitted source set one-for-one: user source plus the demanded
 runtime sources, with no duplicate pass and no fragment pseudo-source. The
 quicksort CLI probe carries the original perf question: on 2026-06-10,
-running `target/debug/fz2` with telemetry on `fixtures2/behavior/quicksort.fz`
+running `target/debug/fz2` with telemetry on `fixtures/01577_quicksort.fz`
 emitted four lexer span-starts, exactly
-`fixtures2/behavior/quicksort.fz`, `runtime:runtime.fz`, `runtime:Kernel.fz`, and
+`fixtures/01577_quicksort.fz`, `runtime:runtime.fz`, `runtime:Kernel.fz`, and
 `runtime:Process.fz`. The old source-fragment re-lex is gone by construction.
 `fz.compiler2.native_backend.compile` and its `fz.codegen.compile` child account
 for the post-drive native tail without conflating it with source production.

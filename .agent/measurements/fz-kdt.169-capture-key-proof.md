@@ -186,7 +186,7 @@ its product evaluations fell 1,121 -> 1,090.
 
 The retained inventory ratchet now pins all eight cost-fixture paths.
 `00275_enum_count_member_reduce` moved from the non-matrix corpus root to
-`fixtures2/behavior/enum_count_member_reduce.fz`, alongside one Elixir oracle
+`fixtures/00568_enum_count_member_reduce.fz`, alongside one Elixir oracle
 and one stdout golden. Fz-kdt.185 made the runtime collection domains exact;
 its centralized warning-totality test now reads the promoted fixture, and all
 three doors need no diagnostic sidecar. The compile-only port test and runtime

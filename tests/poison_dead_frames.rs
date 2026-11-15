@@ -26,7 +26,7 @@ const FIXTURES: [&str; 9] = [
     "fixtures/00901_a_matched_reply_is_gifted_by_the_sender_and_grafted_by_the_parent",
     "fixtures/00241_pinned_ref_receive",
     "fixtures/00911_two_processes_pass_a_large_list_back_and_forth_and_each_message_crosses_in_one_gift",
-    "fixtures2/behavior/fib_tailrec",
+    "fixtures/01467_fib_tailrec",
     "fixtures/01253_a_thousand_sequential_calls_sum_their_results",
     "fixtures/01255_a_body_frame_is_not_given_back_while_later_steps_still_read_it",
 ];

@@ -117,7 +117,7 @@ Compiler2 owns the active contract path:
     on its narrowed row. `(int | float, int)` against `+/2` takes `int` from the
     `(int, int)` clause and `float` from the `(float, int)` clause and answers
     `int | float`; no separate coverage pass exists
-    (`fixtures2/behavior/spec_polymorphic_clause_set_coverage.fz`).
+    (`fixtures/01618_spec_polymorphic_clause_set_coverage.fz`).
 - A variadic extern's contract carries a tail domain alongside its fixed
   parameters: the type every argument past the declared prefix must belong
   to (`extern_contract::variadic_tail_domain`). `FunctionContract::apply`
