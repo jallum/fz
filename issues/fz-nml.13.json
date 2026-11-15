@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-15T14:33:33Z",
+  "description": "Why: fz has is_binary/1 but no is_bitstring/1 (Kernel lists it in Elixir; it is a guard). Without it, a library cannot tell a non-byte-aligned bitstring from a non-binary, so :binary.copy(\u003c\u003c1::3\u003e\u003e) says 'not a binary' where Elixir says '1st argument: is a bitstring (expected a binary)' (fz-nml.11, PR #628).\nInvestigate first: how is_binary is resolved as a guard and type test (src/runtime_type_predicate.rs Binaries axis, compiler2 types is_binary), and whether fz's type world distinguishes bitstring from binary. Add is_bitstring/1 by the same authority as is_binary, not as a second mechanism; on all three paths, in guards and in bodies.\nAcceptance: an oracle fixture in a free fixture block shows is_bitstring and is_binary over binaries, bitstrings and non-bitstrings, matching Elixir; lib/binary.fz's complaint uses it, and 01338's oracle gains the \u003c\u003c1::3\u003e\u003e case.",
+  "id": "fz-nml.13",
+  "labels": [],
+  "parent": "fz-nml",
+  "priority": 3,
+  "status": "open",
+  "title": "is_bitstring/1 is a guard, and :binary raises Elixir's 'is a bitstring' wording",
+  "type": "task",
+  "updated_at": "2026-11-15T14:33:33Z"
+}
