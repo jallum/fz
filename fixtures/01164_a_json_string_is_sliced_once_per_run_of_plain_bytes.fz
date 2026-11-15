@@ -3,16 +3,15 @@
 # kind: run
 #---
 #
-# The long string is 1,000 plain ASCII bytes. The decoder counts the run up to
-# the closing quote and slices it once; the program prints the decoded length,
-# then the allocations and the off-heap bytes the decode made. The allocations
-# exclude what one `Process.heap_alloc_stats` call itself allocates, which a
-# second snapshot measures: the stats map lands in the window after its snapshot.
-# The native paths count the continuation frames the decode builds and the
-# interpreter builds none: the native number is 7 above the interpreter's. A
-# string that is a single run needs no append, so the decoded value is the
-# slice itself. The rest of each match is the binary with the position it
-# starts at, so the only binary the decode makes is that slice.
+# The long string is 1,000 plain ASCII bytes. The decoder walks it once, and at
+# the closing quote the run is one slice of the input, which is the decoded
+# value: a string with no escape is a view of the input. The program prints the
+# decoded length, then the allocations and the off-heap bytes the decode made.
+# The allocations exclude what one `Process.heap_alloc_stats` call itself
+# allocates, which a second snapshot measures: the stats map lands in the window
+# after its snapshot. The native paths count the continuation frames the decode
+# builds and the interpreter builds none: the native number is 7 above the
+# interpreter's. No byte is copied, so the off-heap count is 0.
 #
 # The remaining cases pin what the decoder does at each kind of stop: an
 # escape between runs, an escape first and last, an empty string, multi-byte
