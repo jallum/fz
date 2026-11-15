@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-15T14:33:32Z",
+  "description": "Why: since the cursor (fz-sc8.208), mso_sweep's share of the distiller's time has roughly doubled (about 4% to 9-13% on the 192,000-line trace), though it runs fewer collections. GcStats.stub_visits is counted on every collection but is missing from the fz.runtime.gc event, so the list length per sweep cannot be seen in telemetry. The event already carries generation, so summing stub_visits by generation tells \"longer list per minor\" apart from \"fewer, larger majors over a long old chain\". Make Distiller Fast waits on this and will not add its own counter.\nWhat: add \"stub_visits\" to the gc event's metadata (runtime/src/telemetry.rs RuntimeEvent::Gc), and document it in .agent/docs/runtime-telemetry.md. The count is each off-heap stub visited by the sweep; a resource stub is also visited once by the destructor search (heap/stats.rs).\nAcceptance: telemetry_test pins the field in the encoded event. A heap test shows stub_visits on a collection counts the stubs on the chain: it rises with the number of live views of a large binary, and falls once they die.",
+  "id": "fz-nml.12",
+  "labels": [],
+  "parent": "fz-nml",
+  "priority": 2,
+  "status": "open",
+  "title": "fz.runtime.gc events report stub_visits",
+  "type": "task",
+  "updated_at": "2026-11-15T14:33:32Z"
+}
