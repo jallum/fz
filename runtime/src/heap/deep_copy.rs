@@ -27,7 +27,7 @@ use crate::any_value::{
     map_node_child_count, map_node_entry_count, map_slot, share_struct, struct_field_kind_slot, struct_field_raw_slot,
     struct_schema_id,
 };
-use crate::procbin::{ProcBin, SharedBinHandle, alloc_procbin, shared_bin_freeze};
+use crate::procbin::{BINREF_BYTES, BinView, SharedBinHandle, alloc_binref, alloc_view, shared_bin_freeze};
 use crate::resource::{ResourceHandle, ResourceStub, alloc_resource};
 
 /// What a deep copy needs to know about the heap it reads: how its structs are
@@ -186,7 +186,7 @@ impl CopyMeasure<'_> {
             | ValueKind::CLOSURE
             | ValueKind::STRUCT
             | ValueKind::BITSTRING
-            | ValueKind::PROCBIN
+            | ValueKind::BINVIEW
             | ValueKind::RESOURCE => self.object(sp, src),
             _ => {}
         }
@@ -199,6 +199,10 @@ impl CopyMeasure<'_> {
             return;
         }
         self.bytes += strict_object_size(src.kind(), sp, &self.src_heap.schemas.borrow());
+        if src.kind() == ValueKind::BINVIEW {
+            // Each copied view arrives with a BinRef of its own.
+            self.bytes += BINREF_BYTES;
+        }
         self.children(sp, src.kind());
     }
 
@@ -350,26 +354,29 @@ pub fn deep_copy_any_value(
             forwarding.insert(sp, copied.heap_addr().expect("copied bitstring"));
             copied
         }
-        ValueKind::PROCBIN => {
+        ValueKind::BINVIEW => {
             if let Some(&dp) = forwarding.get(&sp) {
-                return AnyValue::heap_ptr(dp, ValueKind::PROCBIN);
+                return AnyValue::heap_ptr(dp, ValueKind::BINVIEW);
             }
-            let src_pb = unsafe { ProcBin::from_raw(sp) };
+            let src_view = unsafe { BinView::from_raw(sp) };
             // The copy belongs to another heap, possibly another process: from
             // here on no one may append into the buffer both of them view.
-            unsafe { shared_bin_freeze(src_pb.shared_raw()) };
-            let handle = unsafe { SharedBinHandle::retain_from_raw(src_pb.shared_raw()) };
-            // The copy views the same window of the same bytes.
-            let new_p = alloc_procbin(
+            unsafe { shared_bin_freeze(src_view.shared_raw()) };
+            // The destination heap holds its own reference to the buffer, one
+            // BinRef for each view copied, and the copy views the same window
+            // of the same bytes.
+            let handle = unsafe { SharedBinHandle::retain_from_raw(src_view.shared_raw()) };
+            let binref = alloc_binref(dst_heap, handle, StubSite::MessageCopy);
+            let new_p = alloc_view(
                 dst_heap,
-                handle,
-                src_pb.byte_offset(),
-                src_pb.bit_len(),
+                binref,
+                src_view.bytes_ptr(),
+                src_view.bit_len(),
                 StubSite::MessageCopy,
             )
             .as_raw();
             forwarding.insert(sp, new_p);
-            AnyValue::heap_ptr(new_p, ValueKind::PROCBIN)
+            AnyValue::heap_ptr(new_p, ValueKind::BINVIEW)
         }
         ValueKind::RESOURCE => {
             if let Some(&dp) = forwarding.get(&sp) {

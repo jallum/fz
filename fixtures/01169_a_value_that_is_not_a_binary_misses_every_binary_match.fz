@@ -4,7 +4,7 @@
 #---
 #
 # Native code asks the matched value's own kind whether it is an inline
-# bitstring or a ProcBin and takes the clause's miss edge for any other kind.
+# bitstring or a BinView and takes the clause's miss edge for any other kind.
 # Each function below gets one value of every kind, on the same two clauses.
 defmodule P do
   def head(<<a, _r :: binary>>), do: a

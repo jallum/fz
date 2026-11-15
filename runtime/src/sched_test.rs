@@ -5,7 +5,7 @@ use crate::exec_ctx::ExecCtx;
 use crate::heap::StubSite;
 use crate::heap::{SchemaRegistry, pool_drain_for_test, pool_outstanding_blocks, pool_total_cached_blocks};
 use crate::park::ParkRecord;
-use crate::procbin::{SharedBinHandle, alloc_procbin};
+use crate::procbin::{SharedBinHandle, alloc_buffer_view};
 use crate::sync::Ordering;
 use std::cell::RefCell;
 use std::ptr::{read, write};
@@ -361,18 +361,17 @@ fn drain_in_queue_grafts_in_arrival_order() {
 #[test]
 fn a_dropped_receiver_returns_its_pending_gifts_to_the_pool_and_releases_their_binaries() {
     pool_drain_for_test();
-    let witness = SharedBinHandle::from_bytes(&[0x55; 16], 128);
+    let witness = SharedBinHandle::from_bytes(&[0x55; 16]);
     let mut sender = running_task();
     let task = Box::new(fresh_task());
-    let binary = alloc_procbin(
+    let binary = alloc_buffer_view(
         &mut sender.heap,
         witness.clone(),
-        0,
-        witness.bit_len(),
+        witness.bytes_len() as u64 * 8,
         StubSite::FilledBuffer,
     );
     let binary_ref =
-        AnyValueRef::from_heap_object(ValueKind::PROCBIN, binary.as_raw() as *const u8).expect("procbin ref");
+        AnyValueRef::from_heap_object(ValueKind::BINVIEW, binary.as_raw() as *const u8).expect("binview ref");
     probe_sender(&mut sender, &task, binary_ref);
     let msg = sender_list(&mut sender, 1);
     probe_sender(&mut sender, &task, msg);
@@ -720,7 +719,7 @@ fn a_sender_appending_to_a_binary_it_sent_leaves_the_receivers_bytes_intact() {
     let sent = sender.heap.alloc_bitstring(&[b'a'; 100], 100 * 8);
     let sent_view = unsafe {
         let word = sent.heap_object_word().unwrap();
-        crate::procbin::ProcBin::from_raw(crate::any_value::heap_word_addr(word))
+        crate::procbin::BinView::from_raw(crate::any_value::heap_word_addr(word))
     };
     let grown = unsafe {
         let ptr = sent_view.bytes_ptr();
@@ -735,7 +734,7 @@ fn a_sender_appending_to_a_binary_it_sent_leaves_the_receivers_bytes_intact() {
     let received = delivered[0];
 
     let appended = unsafe {
-        let view = crate::procbin::ProcBin::from_raw(grown.heap_addr().unwrap());
+        let view = crate::procbin::BinView::from_raw(grown.heap_addr().unwrap());
         sender
             .heap
             .alloc_concatenation(std::slice::from_raw_parts(view.bytes_ptr(), 101), Some(view), b"XYZ")
@@ -753,7 +752,7 @@ fn a_sender_appending_to_a_binary_it_sent_leaves_the_receivers_bytes_intact() {
     assert_eq!(received_bytes, expected.as_slice());
     let appended_addr = appended.heap_addr().unwrap();
     assert_ne!(
-        unsafe { crate::procbin::ProcBin::from_raw(appended_addr) }.bytes_ptr(),
+        unsafe { crate::procbin::BinView::from_raw(appended_addr) }.bytes_ptr(),
         received_bytes.as_ptr(),
         "the sender's append went to a new buffer"
     );

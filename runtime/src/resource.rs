@@ -4,9 +4,9 @@
 //! (`Resource`) with an on-heap stub (`ValueKind::RESOURCE`)
 //! threaded into the per-heap intrusive resource chain, which is separate
 //! from the binary chain. The MSO sweep handles retain/release across GC
-//! exactly the same way it does for ProcBin.
+//! exactly the same way it does for BinRef.
 //!
-//! Divergence from `SharedBin`/`ProcBin`:
+//! Divergence from `SharedBin`/`BinRef`:
 //!   * The dtor is **user-supplied at allocation time**, not one of two
 //!     fixed dtors. Every Resource carries its own
 //!     `unsafe extern "C" fn(payload: u64)` pointer.
@@ -19,7 +19,7 @@
 //! covers fd-like resources today and leaves room for an opaque pointer
 //! type later without teaching Resource about fz value kinds.
 //!
-//! Refcount ordering uses the same canonical Arc pattern as procbin:
+//! Refcount ordering uses the same canonical Arc pattern as binview:
 //! Relaxed on retain, Release on dec, Acquire fence + dtor on 1→0.
 //!
 //! A resource may also be claimed explicitly. Claiming is a shared one-way

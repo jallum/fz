@@ -10,7 +10,7 @@ use smallvec::SmallVec;
 use fz_runtime::any_value::{AnyValue, AnyValueRef, AnyValueRefError, ValueKind, map_count, struct_schema_id};
 use fz_runtime::heap::{Schema, SchemaRegistry, map_entries_refs, map_entry_refs};
 use fz_runtime::procbin::bitstring_bit_len as tagged_bitstring_bit_len;
-use fz_runtime::procbin::bitstring_byte_ptr as procbin_byte_ptr;
+use fz_runtime::procbin::bitstring_byte_ptr as binview_byte_ptr;
 use fz_runtime::process::{AtomName, DEFAULT_REDUCTIONS_PER_QUANTUM, Node, Process};
 
 use crate::modules::identity::{ModuleDenotation, ModuleName};
@@ -712,7 +712,7 @@ impl QuotedSourceCursor {
 
     pub fn raw_bytes(&self) -> Result<Vec<u8>, QuotedSourceError> {
         let heap_word = match self.root.tag() {
-            ValueKind::BITSTRING | ValueKind::PROCBIN => {
+            ValueKind::BITSTRING | ValueKind::BINVIEW => {
                 self.root.heap_object_word().map_err(QuotedSourceError::from)?
             }
             other => {
@@ -722,7 +722,7 @@ impl QuotedSourceCursor {
                 )));
             }
         };
-        let byte_ptr = unsafe { procbin_byte_ptr(heap_word) };
+        let byte_ptr = unsafe { binview_byte_ptr(heap_word) };
         let bit_len = unsafe { tagged_bitstring_bit_len(heap_word) } as usize;
         if !bit_len.is_multiple_of(8) {
             return Err(QuotedSourceError::new(format!(
@@ -961,7 +961,7 @@ fn values_eq(
         ValueKind::LIST => list_eq(pa, a, pb, b, horizon),
         ValueKind::MAP => map_eq(pa, a, pb, b, horizon),
         ValueKind::STRUCT => struct_eq(pa, a, pb, b, horizon),
-        ValueKind::BITSTRING | ValueKind::PROCBIN => bitstring_eq(a, b),
+        ValueKind::BITSTRING | ValueKind::BINVIEW => bitstring_eq(a, b),
         other => Err(QuotedSourceError::new(format!(
             "quoted source value cannot contain runtime kind {other:?}"
         ))),
@@ -1135,7 +1135,7 @@ fn bitstring_eq(a: AnyValueRef, b: AnyValueRef) -> Result<bool, QuotedSourceErro
 
 fn bitstring_payload(value: AnyValueRef) -> Result<(usize, Vec<u8>), QuotedSourceError> {
     let heap_word = value.heap_object_word().map_err(QuotedSourceError::from)?;
-    let byte_ptr = unsafe { procbin_byte_ptr(heap_word) };
+    let byte_ptr = unsafe { binview_byte_ptr(heap_word) };
     let bit_len = unsafe { tagged_bitstring_bit_len(heap_word) } as usize;
     let byte_len = bit_len.div_ceil(8);
     let bytes = unsafe { slice::from_raw_parts(byte_ptr, byte_len) }.to_vec();

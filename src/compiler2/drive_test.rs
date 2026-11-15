@@ -4952,7 +4952,7 @@ def subtract(left, [item | rest]), do: subtract(delete_first(left, item), rest)
     assert_eq!(
         forwarded_long_doc_args[0].root(),
         long_doc_group.root(),
-        "unquote(source) should preserve procbin-backed grouped source fragments by identity too",
+        "unquote(source) should preserve binview-backed grouped source fragments by identity too",
     );
     let forwarded_group = long_doc_group.subroot(forwarded_long_doc_args[0].root());
     crate::compiler2::quoted_function::derive_function_surface(&forwarded_group, &source_map.borrow())
@@ -5032,7 +5032,7 @@ end
         other => panic!("expected grouped function macro call, got {other:?}"),
     };
     crate::compiler2::quoted_function::derive_function_surface(&function.source, &source_map.borrow())
-        .expect("whole-module forwarding should preserve nested procbin-backed @doc payloads too");
+        .expect("whole-module forwarding should preserve nested binview-backed @doc payloads too");
 }
 
 #[test]

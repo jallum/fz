@@ -11,7 +11,7 @@
 # search over the array misses what a linear scan finds.
 #
 # They disagreed about binaries. Lookup compared them structurally; the sort
-# ordered them by ADDRESS, and split inline bitstrings from shared procbins on
+# ordered them by ADDRESS, and split inline bitstrings from shared binviews on
 # the tag although equal content in either representation is the same key. So a
 # duplicate key kept both entries in the array:
 #

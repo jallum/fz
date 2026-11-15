@@ -1,11 +1,11 @@
 use super::*;
 use crate::any_value::{
-    AnyValue, AnyValueRef, EMPTY_LIST_BITS, SlotLayout, ValueKind, closure_size_for_count, heap_object_word,
-    list_addr_from_tagged, map_count, map_entry, procbin_addr_from_tagged, struct_is_shared,
+    AnyValue, AnyValueRef, EMPTY_LIST_BITS, SlotLayout, ValueKind, binview_addr_from_tagged, closure_size_for_count,
+    heap_object_word, list_addr_from_tagged, map_count, map_entry, struct_is_shared,
 };
 use crate::exec_ctx::Argv;
 use crate::heap::{Schema, SchemaRegistry};
-use crate::procbin::{PROCBIN_BYTES, bitstring_bit_len, bitstring_byte_ptr};
+use crate::procbin::{BINVIEW_BYTES, BinView, bitstring_bit_len, bitstring_byte_ptr};
 use crate::process::{DEFAULT_REDUCTIONS_PER_QUANTUM, Process, YIELD_REASON_REDUCTIONS};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -569,13 +569,13 @@ fn alloc_bitstring_const_small_payload_is_inline() {
     });
 }
 
-/// `fz_alloc_procbin_from_static` retains the static
-/// SharedBin's anchor (climbing 1 → 2), allocates a ProcBin that
-/// owns the new edge, and returns it as a tagged ProcBin pointer. When
+/// `fz_alloc_binview_from_static` retains the static
+/// SharedBin's anchor (climbing 1 → 2), allocates a BinView that
+/// owns the new edge, and returns it as a tagged BinView pointer. When
 /// the holding heap drops, the anchor is preserved (refcount stays
 /// at 1) — the static SharedBin lives forever.
 #[test]
-fn alloc_procbin_from_static_preserves_anchor() {
+fn alloc_binview_from_static_preserves_anchor() {
     use crate::procbin::SharedBin;
     use crate::sync::{AtomicUsize, Ordering};
     // Construct a "static" SharedBin by hand. Its destructor is a
@@ -584,7 +584,6 @@ fn alloc_procbin_from_static_preserves_anchor() {
     unsafe extern "C" fn noop(_: *mut SharedBin) {}
     let mut sb = SharedBin {
         refcount: AtomicUsize::new(1),
-        bit_len: 64,
         bytes_ptr: PAYLOAD.as_ptr(),
         bytes_len: PAYLOAD.len(),
         destructor: noop,
@@ -592,13 +591,13 @@ fn alloc_procbin_from_static_preserves_anchor() {
     };
     let sb_ptr = &mut sb as *mut SharedBin;
     with_process(|process| {
-        let ref_word = fz_alloc_procbin_from_static(process, sb_ptr as u64);
-        let procbin_ref = AnyValueRef::from_raw_word(ref_word).expect("procbin ref");
-        let addr = procbin_ref.procbin_addr().expect("procbin addr");
-        let bits = heap_object_word(addr, ValueKind::PROCBIN);
+        let ref_word = fz_alloc_binview_from_static(process, sb_ptr as u64, 64);
+        let binview_ref = AnyValueRef::from_raw_word(ref_word).expect("binview ref");
+        let addr = binview_ref.binview_addr().expect("binview addr");
+        let bits = heap_object_word(addr, ValueKind::BINVIEW);
         unsafe {
-            assert_eq!(procbin_ref.tag(), ValueKind::PROCBIN);
-            assert_eq!(object_size(bits), PROCBIN_BYTES);
+            assert_eq!(binview_ref.tag(), ValueKind::BINVIEW);
+            assert_eq!(object_size(bits), BINVIEW_BYTES);
             assert_eq!(bitstring_bit_len(bits), 64);
             let bp = bitstring_byte_ptr(bits);
             assert_eq!(from_raw_parts(bp, 8), &PAYLOAD[..]);
@@ -606,24 +605,24 @@ fn alloc_procbin_from_static_preserves_anchor() {
             assert_eq!(sb.refcount.load(Ordering::Relaxed), 2);
         }
         // When the with_process drops the temp Process, the heap drop
-        // releases the ProcBin's edge, returning refcount to the
+        // releases the BinView's edge, returning refcount to the
         // anchor value 1.
     });
     assert_eq!(sb.refcount.load(Ordering::Relaxed), 1, "anchor preserved");
 }
 
-/// Large (> threshold) payload routes through ProcBin / SharedBin.
+/// Large (> threshold) payload routes through BinView / SharedBin.
 #[test]
-fn alloc_bitstring_const_large_payload_is_procbin() {
+fn alloc_bitstring_const_large_payload_is_binview() {
     with_process(|process| {
         let payload: Vec<u8> = (0..70u8).collect(); // 70 > SHARED_BIN_THRESHOLD_BYTES (64)
         let ref_word = fz_alloc_bitstring_const(process, payload.as_ptr() as u64, payload.len() as u64, 70 * 8);
-        let procbin_ref = AnyValueRef::from_raw_word(ref_word).expect("procbin ref");
-        let addr = procbin_ref.procbin_addr().expect("procbin addr");
-        let bits = heap_object_word(addr, ValueKind::PROCBIN);
+        let binview_ref = AnyValueRef::from_raw_word(ref_word).expect("binview ref");
+        let addr = binview_ref.binview_addr().expect("binview addr");
+        let bits = heap_object_word(addr, ValueKind::BINVIEW);
         unsafe {
-            assert_eq!(procbin_ref.tag(), ValueKind::PROCBIN);
-            assert_eq!(object_size(bits), PROCBIN_BYTES);
+            assert_eq!(binview_ref.tag(), ValueKind::BINVIEW);
+            assert_eq!(object_size(bits), BINVIEW_BYTES);
             assert_eq!(bitstring_bit_len(bits), 70 * 8);
             let bp = bitstring_byte_ptr(bits);
             assert_eq!(from_raw_parts(bp, payload.len()), payload.as_slice());
@@ -925,9 +924,9 @@ fn referenced_size_of_an_inline_binary_is_its_own_size() {
 fn referenced_size_of_a_view_is_the_whole_buffer() {
     with_process(|process| {
         let whole = alloc_binary(process, &[1u8; 200]);
-        let procbin =
-            unsafe { ProcBin::from_raw(procbin_addr_from_tagged(whole).expect("a large binary is a ProcBin")) };
-        let view = unsafe { process.heap.alloc_bitstring_slice(procbin.shared_raw(), 50, 150) };
+        let binview =
+            unsafe { BinView::from_raw(binview_addr_from_tagged(whole).expect("a large binary is a BinView")) };
+        let view = unsafe { process.heap.alloc_bitstring_slice(binview, 50, 150) };
         let view = view.ref_word().raw_word();
         assert_eq!(binary_bytes(view).len(), 150);
         assert_eq!(fz_binary_referenced_size(view), 200);
@@ -1305,7 +1304,7 @@ fn reading_a_middle_binary_field_of_a_shared_source_builds_a_view() {
             after.shared_bin.allocs, before.shared_bin.allocs,
             "no bytes were copied"
         );
-        assert_eq!(after.procbin.allocs, before.procbin.allocs + 1);
+        assert_eq!(after.binview.allocs, before.binview.allocs + 1);
     });
 }
 
@@ -1320,19 +1319,19 @@ fn a_static_literal_counts_as_its_own_stub_site() {
     unsafe extern "C" fn noop(_: *mut SharedBin) {}
     let mut sb = SharedBin {
         refcount: AtomicUsize::new(1),
-        bit_len: 32,
         bytes_ptr: PAYLOAD.as_ptr(),
         bytes_len: PAYLOAD.len(),
         destructor: noop,
         room: 0,
     };
     with_process(|process| {
-        let word = fz_alloc_procbin_from_static(process, &mut sb as *mut SharedBin as u64);
-        let mut roots = [AnyValueRef::from_raw_word(word).expect("procbin ref")];
+        let word = fz_alloc_binview_from_static(process, &mut sb as *mut SharedBin as u64, 32);
+        let mut roots = [AnyValueRef::from_raw_word(word).expect("binview ref")];
         let stats = process.heap.collect(&mut roots);
         let mut expected = StubCounts::default();
         expected.record(StubSite::StaticLiteral);
         assert_eq!(stats.stubs_made, expected);
+        assert_eq!(stats.binrefs_made, expected);
         assert_eq!(stats.stubs_survived, expected);
     });
 }

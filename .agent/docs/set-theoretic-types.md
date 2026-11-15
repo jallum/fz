@@ -603,7 +603,7 @@ variant — once user opaques mint brands, those two are the axis's only
 producers besides `BuiltinOpaque`.
 
 **Brands carry no runtime witness.** There is no brand `ValueKind` (the runtime
-kinds are Bitstring/ProcBin/Struct/…; see [`any-value`](any-value.md)), and the
+kinds are Bitstring/BinView/Struct/…; see [`any-value`](any-value.md)), and the
 runtime compares structure and bytes, so a `utf8` value is indistinguishable from
 the binary it wraps. `erase_nominal` is the type-level expression of that fact: it
 releases the `brands` slot to top and drops the `opaques` axis, keeping the

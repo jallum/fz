@@ -24,7 +24,11 @@ pub struct HeapAllocStats {
     pub continuation: AllocStat,
     pub map: AllocStat,
     pub bitstring: AllocStat,
-    pub procbin: AllocStat,
+    /// Binary views: the objects binary values above the inline threshold
+    /// point at.
+    pub binview: AllocStat,
+    /// BinRefs: the one object per buffer per heap that holds its reference.
+    pub binref: AllocStat,
     pub scalar_box: AllocStat,
     pub resource: AllocStat,
     pub other: AllocStat,
@@ -32,7 +36,7 @@ pub struct HeapAllocStats {
     /// Deliberately NOT part of `total`: these bytes do not live on the
     /// process heap, do not move under Cheney and are not what `bytes`
     /// measures. They are counted because they are otherwise invisible --
-    /// a ProcBin stub costs the same whether its bytes were freshly copied
+    /// a binary view costs the same whether its bytes were freshly copied
     /// or shared with another view, so the stub counters cannot tell
     /// copying from sharing.
     pub shared_bin: AllocStat,
@@ -46,7 +50,8 @@ pub enum HeapAllocKind {
     Continuation,
     Map,
     Bitstring,
-    ProcBin,
+    BinView,
+    BinRef,
     ScalarBox,
     Resource,
     Other,
@@ -68,7 +73,8 @@ impl HeapAllocStats {
             HeapAllocKind::Continuation => self.continuation.record(bytes),
             HeapAllocKind::Map => self.map.record(bytes),
             HeapAllocKind::Bitstring => self.bitstring.record(bytes),
-            HeapAllocKind::ProcBin => self.procbin.record(bytes),
+            HeapAllocKind::BinView => self.binview.record(bytes),
+            HeapAllocKind::BinRef => self.binref.record(bytes),
             HeapAllocKind::ScalarBox => self.scalar_box.record(bytes),
             HeapAllocKind::Resource => self.resource.record(bytes),
             HeapAllocKind::Other => self.other.record(bytes),
@@ -94,17 +100,19 @@ impl Generation {
     }
 }
 
-/// What made a binary stub: each place that allocates one names itself, so a
-/// collection can say which of them its young stubs came from and which of
-/// them survived.
+/// What made a binary view, and the BinRef it was made with if it entered a new
+/// buffer: each place that allocates one names itself, so a collection can say
+/// which of them its young views and BinRefs came from and which of the BinRefs
+/// survived.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum StubSite {
     /// An append wrote into the spare room of the buffer its left side views,
-    /// and the stub is the longer view of that same buffer.
+    /// and the view is a longer window of that same buffer. It makes no BinRef.
     AppendedInPlace,
     /// A window onto part of a buffer larger than the inline threshold: a
-    /// field or a tail taken out of a binary, copying nothing.
+    /// field or a tail taken out of a binary, copying nothing. It makes no
+    /// BinRef.
     WindowOfBuffer,
     /// An append overflowed its buffer and the result went into a new one with
     /// room to grow.
@@ -112,8 +120,8 @@ pub enum StubSite {
     /// A binary above the inline threshold written into a new buffer sized to
     /// it: a built or copied binary, a `:binary.copy`, a literal.
     FilledBuffer,
-    /// A message copy gave the receiving heap a view of a buffer the sender's
-    /// heap also views.
+    /// A message copy gave the receiving heap its own BinRef and view of a
+    /// buffer the sender's heap also holds.
     MessageCopy,
     /// A program literal baked into the module, viewed in place.
     StaticLiteral,
@@ -152,7 +160,7 @@ impl StubSite {
     }
 }
 
-/// A count of binary stubs for each site.
+/// A count of binary views or BinRefs for each site.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct StubCounts([u64; StubSite::ALL.len()]);
 
@@ -192,15 +200,22 @@ pub struct GcStats {
     /// Bytes the heap holds once the collection finishes: what earlier
     /// collections kept and what this one copied.
     pub live_bytes: u64,
-    /// Chain links the collection followed: each off-heap stub it examined,
-    /// once for the destructor search over resource stubs and once for the
-    /// sweep.
+    /// Chain links the collection followed: each BinRef or resource stub it
+    /// examined in the sweep, and each resource stub once more for the
+    /// destructor search. A binary view is on no chain and is never visited.
     pub stub_visits: u64,
-    /// Binary stubs made since the heap's previous collection, by site.
+    /// Binary views made since the heap's previous collection, by the site that
+    /// made each: one per binary value above the inline threshold, including the
+    /// view made together with a fresh buffer's BinRef.
     pub stubs_made: StubCounts,
-    /// Binary stubs this collection kept, by site: the survivors of the stubs
-    /// it examined, which are the young ones for a minor collection and every
-    /// one for a major collection.
+    /// BinRefs made since the heap's previous collection, by the site that made
+    /// each: one per buffer that entered the heap. Windows and in-place appends
+    /// make none.
+    pub binrefs_made: StubCounts,
+    /// BinRefs this collection kept, by the site that made each: the survivors
+    /// of the BinRefs it examined, which are the young ones for a minor
+    /// collection and every one for a major collection. A BinRef survives when
+    /// any view reached by the collection names it.
     pub stubs_survived: StubCounts,
     /// Capacity of the from-space blocks.
     pub from_space_capacity_bytes: u64,

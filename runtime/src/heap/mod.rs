@@ -77,8 +77,8 @@ pub use self::schema::{FieldDescriptor, FieldKind, NamedSchema, Schema, SchemaId
 pub use self::stats::{AllocStat, GcStats, Generation, HeapAllocKind, HeapAllocStats, StubCounts, StubSite};
 
 /// Bitstrings above this many bytes are routed through the
-/// shared zone (refcounted off-heap `SharedBin` + per-process `ProcBin`
-/// stub) instead of being inlined on the per-process heap. Matches
+/// shared zone (refcounted off-heap `SharedBin`, held by one per-process
+/// `BinRef`, and named by per-process `BinView` objects) instead of being inlined on the per-process heap. Matches
 /// BEAM's refc-binary threshold.
 pub const SHARED_BIN_THRESHOLD_BYTES: usize = 64;
 
@@ -160,24 +160,27 @@ pub struct Heap {
     /// Total allocation requests made by kind since the last explicit
     /// process/user-code reset. Unlike `alloc_count`, GC never rewrites this.
     alloc_stats: HeapAllocStats,
-    /// Intrusive MSO ("Mixed Set / Off-heap") chain of the young binary stubs:
-    /// tagged head bits for a singly-linked list of live strict ProcBin stubs
-    /// allocated since the last collection; each entry's `mso_next` slot
-    /// stores the previous tagged chain entry. Resource stubs keep their own
-    /// chains (`resource_head`, `resource_old_head`), so a walk over one chain
-    /// meets one kind of stub.
+    /// Intrusive MSO ("Mixed Set / Off-heap") chain of the young BinRefs:
+    /// tagged head bits for a singly-linked list of the BinRefs allocated since
+    /// the last collection; each entry's `mso_next` slot stores the previous
+    /// tagged chain entry. Binary views are on no chain. Resource stubs keep
+    /// their own chains (`resource_head`, `resource_old_head`), so a walk over
+    /// one chain meets one kind of object.
     /// The post-Cheney sweep (`procbin::mso_sweep`) moves each survivor onto
     /// `mso_old_head` and releases the rest; `Heap::drop` calls
     /// `procbin::mso_drop_all` before pool reclaim so SharedBin references are
     /// balanced.
     pub mso_head: u64,
-    /// The chain of the old binary stubs: those a collection kept and those
-    /// gifts brought. A minor sweep never walks it, so an old stub is found
-    /// dead by a major collection.
+    /// The chain of the old BinRefs: those a collection kept and those gifts
+    /// brought. A minor sweep never walks it, so an old BinRef is found dead by
+    /// a major collection.
     pub mso_old_head: u64,
-    /// Binary stubs made since the last collection, by site; a collection
+    /// Binary views made since the last collection, by site; a collection
     /// reports them and starts the count again.
     pub stubs_made: StubCounts,
+    /// BinRefs made since the last collection, by site; a collection reports
+    /// them and starts the count again.
+    pub binrefs_made: StubCounts,
     /// The chain of the young resource stubs: those allocated since the last
     /// collection.
     pub resource_head: u64,

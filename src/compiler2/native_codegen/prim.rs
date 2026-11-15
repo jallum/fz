@@ -24,7 +24,7 @@ use fz_runtime::any_value::{
 use fz_runtime::extern_binary::{fz_binary_as_cstring, fz_binary_as_ptr};
 use fz_runtime::heap::SHARED_BIN_THRESHOLD_BYTES;
 use fz_runtime::ir_runtime::{
-    fz_alloc_bitstring_const, fz_alloc_procbin_from_static, fz_bs_begin, fz_bs_field_end, fz_bs_field_spec,
+    fz_alloc_binview_from_static, fz_alloc_bitstring_const, fz_bs_begin, fz_bs_field_end, fz_bs_field_spec,
     fz_bs_finalize, fz_bs_read_binary_ref, fz_bs_read_int_ref, fz_bs_write_field_ref, fz_bs_write_int,
     fz_int_float_cmp, fz_list_cons_any, fz_list_cons_atom, fz_list_cons_float, fz_list_cons_int, fz_map_dest_begin,
     fz_map_dest_begin_update, fz_map_dest_freeze, fz_map_dest_publish, fz_map_dest_put_parts, fz_map_dest_put_ref,
@@ -34,9 +34,7 @@ use fz_runtime::ir_runtime::{
     fz_value_cmp_raw_const, fz_value_cmp_ref, fz_value_eq_raw_const, fz_value_eq_ref, fz_value_eq_widening_ref,
 };
 use fz_runtime::ir_runtime::{fz_box_opaque_for_any, fz_unbox_opaque};
-use fz_runtime::procbin::{
-    PROCBIN_BIT_LEN_OFFSET, PROCBIN_BYTE_OFFSET_OFFSET, PROCBIN_SHARED_OFFSET, SHARED_BIN_BYTES_PTR_OFFSET,
-};
+use fz_runtime::procbin::{BINVIEW_BIT_LEN_OFFSET, BINVIEW_BYTES_PTR_OFFSET};
 use fz_runtime::process::AtomName;
 use fz_runtime::process_abi::{PROCESS_DELIVERED_OFFSET, PROCESS_FAILED_OFFSET};
 use target_lexicon::{Architecture, OperatingSystem, Triple};
@@ -430,7 +428,7 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
             //   * Above threshold: emit a bytes-payload symbol and a
             //     48-byte static SharedBin symbol in `.data` (refcount=1
             //     anchor, relocs for bytes_ptr + noop destructor) and
-            //     call `fz_alloc_procbin_from_static(static_ptr)`.
+            //     call `fz_alloc_binview_from_static(process, static_ptr, bit_len)`.
             let above_threshold = bytes.len() > SHARED_BIN_THRESHOLD_BYTES;
             let syms = {
                 let mut bs_cache = env.bs_const_data.borrow_mut();
@@ -443,7 +441,6 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
                             body.jmod,
                             syms.bytes_id,
                             bytes,
-                            *bit_len,
                             bs_cache.len(),
                         )?);
                         bs_cache.insert(bytes.clone(), syms);
@@ -468,7 +465,7 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
                         .define_data(bytes_id, &desc)
                         .map_err(|e| CodegenError::new(format!("define {}: {}", bytes_name, e)))?;
                     let sharedbin_id = if above_threshold {
-                        Some(define_static_sharedbin(body.jmod, bytes_id, bytes, *bit_len, idx)?)
+                        Some(define_static_sharedbin(body.jmod, bytes_id, bytes, idx)?)
                     } else {
                         None
                     };
@@ -480,8 +477,13 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
             if let Some(sb_id) = syms.sharedbin_id {
                 let gv = body.jmod.declare_data_in_func(sb_id, body.b.func);
                 let sb_ptr = body.b.ins().symbol_value(types::I64, gv);
+                let bit_len_v = body.b.ins().iconst(types::I64, *bit_len as i64);
                 let process = body.process_arg();
-                LowerOut::ValueRef(runtime_call1!(body, fz_alloc_procbin_from_static, [process, sb_ptr]))
+                LowerOut::ValueRef(runtime_call1!(
+                    body,
+                    fz_alloc_binview_from_static,
+                    [process, sb_ptr, bit_len_v]
+                ))
             } else {
                 let gv = body.jmod.declare_data_in_func(syms.bytes_id, body.b.func);
                 let ptr_v = body.b.ins().symbol_value(types::I64, gv);
@@ -694,8 +696,8 @@ fn match_field_extent<M: cranelift_module::Module>(
 const NOT_A_BINARY: i64 = -1;
 
 /// A word computed from a binary's reference by one of its two representations:
-/// an inline bitstring on the heap, or a ProcBin stub over a refcounted
-/// `SharedBin`. `inline` and `procbin` each get the address of the object the
+/// an inline bitstring on the heap, or a binary view over a refcounted
+/// `SharedBin`. `inline` and `binview` each get the address of the object the
 /// reference names and return the word. The reference's own kind bits say which
 /// form it is; a reference of any other kind answers `not_binary` when the
 /// caller asks for that, and is taken to be an inline bitstring when it does not
@@ -705,26 +707,26 @@ fn emit_by_binary_representation<M: cranelift_module::Module>(
     source_ref: ir::Value,
     not_binary: Option<i64>,
     inline: impl FnOnce(&mut CodegenFn<'_, '_, M>, ir::Value) -> ir::Value,
-    procbin: impl FnOnce(&mut CodegenFn<'_, '_, M>, ir::Value) -> ir::Value,
+    binview: impl FnOnce(&mut CodegenFn<'_, '_, M>, ir::Value) -> ir::Value,
 ) -> ir::Value {
     let packing = AnyValueRefPacking::current();
     let addr = body.b.ins().band_imm(source_ref, packing.address_mask() as i64);
     let kind_bits = body.b.ins().band_imm(source_ref, !packing.literal_bit() as i64);
     let kind = body.b.ins().ushr_imm(kind_bits, packing.tag_shift() as i64);
-    let is_procbin = body
+    let is_binview = body
         .b
         .ins()
-        .icmp_imm(IntCC::Equal, kind, ValueKind::PROCBIN.tag() as i64);
-    let procbin_b = body.b.create_block();
+        .icmp_imm(IntCC::Equal, kind, ValueKind::BINVIEW.tag() as i64);
+    let binview_b = body.b.create_block();
     let inline_b = body.b.create_block();
     let join_b = body.b.create_block();
     body.b.append_block_param(join_b, types::I64);
-    body.b.ins().brif(is_procbin, procbin_b, &[], inline_b, &[]);
+    body.b.ins().brif(is_binview, binview_b, &[], inline_b, &[]);
 
-    body.b.switch_to_block(procbin_b);
-    body.b.seal_block(procbin_b);
-    let from_procbin = procbin(body, addr);
-    body.b.ins().jump(join_b, &[BlockArg::Value(from_procbin)]);
+    body.b.switch_to_block(binview_b);
+    body.b.seal_block(binview_b);
+    let from_binview = binview(body, addr);
+    body.b.ins().jump(join_b, &[BlockArg::Value(from_binview)]);
 
     body.b.switch_to_block(inline_b);
     body.b.seal_block(inline_b);
@@ -767,7 +769,7 @@ fn load_word<M: cranelift_module::Module>(
         .load(types::I64, MemFlags::trusted(), address, offset as i32)
 }
 
-/// The bit length of a binary, read from its header or from its ProcBin's own
+/// The bit length of a binary, read from its header or from its binary view's own
 /// length; `NOT_A_BINARY` for any other value.
 fn emit_binary_bit_len<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
@@ -781,7 +783,7 @@ fn emit_binary_bit_len<M: cranelift_module::Module>(
             let header = load_word(body, addr, 0);
             body.b.ins().ushr_imm(header, BITSTRING_BIT_LEN_SHIFT as i64)
         },
-        |body, addr| load_word(body, addr, PROCBIN_BIT_LEN_OFFSET),
+        |body, addr| load_word(body, addr, BINVIEW_BIT_LEN_OFFSET),
     )
 }
 
@@ -792,12 +794,7 @@ fn emit_binary_base<M: cranelift_module::Module>(body: &mut CodegenFn<'_, '_, M>
         source_ref,
         None,
         |body, addr| body.b.ins().iadd_imm(addr, BITSTRING_BYTES_OFFSET as i64),
-        |body, addr| {
-            let shared = load_word(body, addr, PROCBIN_SHARED_OFFSET);
-            let bytes = load_word(body, shared, SHARED_BIN_BYTES_PTR_OFFSET);
-            let skipped = load_word(body, addr, PROCBIN_BYTE_OFFSET_OFFSET);
-            body.b.ins().iadd(bytes, skipped)
-        },
+        |body, addr| load_word(body, addr, BINVIEW_BYTES_PTR_OFFSET),
     )
 }
 

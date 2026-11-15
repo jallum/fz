@@ -3,7 +3,7 @@
 //! `hash(a) == hash(b)`.
 //!
 //! Equal terms hash equal whatever their representation. An inline bitstring,
-//! a ProcBin and a ProcBin view over a longer buffer hash by bit length and
+//! a BinView of a whole buffer and a BinView over a longer buffer hash by bit length and
 //! content, with the bits past the length left out. A tuple hashes by arity
 //! and fields, never by its schema id. A map hashes by its entries as a set,
 //! so a map built in any order, a trie and a named struct spelling the same

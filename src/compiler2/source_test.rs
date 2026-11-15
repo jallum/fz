@@ -44,7 +44,7 @@ fn collect_tokens(cursor: &QuotedSourceCursor, tokens: &mut Vec<String>) {
                 }
             }
         }
-        ValueKind::BITSTRING | ValueKind::PROCBIN => {
+        ValueKind::BITSTRING | ValueKind::BINVIEW => {
             if let Ok(text) = cursor.utf8_binary_text() {
                 tokens.push(text);
             }

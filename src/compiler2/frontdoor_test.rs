@@ -78,7 +78,7 @@ fn quoted_shape(cursor: &super::QuotedSourceCursor, sources: &crate::source::Sou
         ValueKind::INT => cursor.int_value().expect("quoted integer").to_string(),
         ValueKind::FLOAT => cursor.root().load_float().expect("quoted float").to_string(),
         ValueKind::ATOM => format!(":{}", cursor.atom_name().expect("quoted atom")),
-        ValueKind::BITSTRING | ValueKind::PROCBIN => {
+        ValueKind::BITSTRING | ValueKind::BINVIEW => {
             format!("{:?}", cursor.utf8_binary_text().expect("quoted UTF-8 binary"))
         }
         ValueKind::LIST => format!(

@@ -1154,7 +1154,7 @@ fn emit_bitstring_like_guard<M: cranelift_module::Module>(
     let is_strict_proc = body
         .b
         .ins()
-        .icmp_imm(IntCC::Equal, tag, ValueKind::PROCBIN.tag() as i64);
+        .icmp_imm(IntCC::Equal, tag, ValueKind::BINVIEW.tag() as i64);
     let is_strict = body.b.ins().bor(is_strict_bs, is_strict_proc);
     body.b.ins().brif(is_strict, cont, &[], ptr_path, &[]);
     body.b.switch_to_block(ptr_path);

@@ -307,33 +307,36 @@ major collection's from-space is every block (`Heap::next_generation`):
 - `blocks_after`: old blocks the heap holds once the pass finished, every block
   holding data a collection kept or a gift brought; the fresh empty tip is not
   counted.
-- `stub_visits`: off-heap stub chain links the pass followed. Every ProcBin stub
-  on a chain the pass examines is visited once by the sweep: the young chain for
+- `stub_visits`: off-heap chain links the pass followed. Every BinRef on a chain
+  the pass examines is visited once by the sweep (a view is not on a chain): the young chain for
   a minor pass, the young and old chains for a major pass. A resource stub is
   also visited once more by the destructor search. Summed by `generation`, it
   says whether the sweep's cost lies in minors or in majors.
-- `stubs_made` and `stubs_survived`: objects keyed by the site that made the
-  binary stub, every site present (0 when none), always in this order:
+- `stubs_made`, `binrefs_made` and `stubs_survived`: objects keyed by the site
+  that made the binary object, every site present (0 when none), always in this order:
   `appended_in_place` (an append wrote into the spare room of the buffer its
-  left side views, and the stub is the longer view of that buffer),
+  left side views, and the view is the longer view of that buffer),
   `window_of_buffer` (a window onto part of a buffer larger than the inline
   threshold), `grown_buffer` (an append overflowed its buffer and the result
   went into a new one with room to grow), `filled_buffer` (a binary above the
   inline threshold written into a new buffer sized to it: built binaries,
   `:binary.copy`, literals copied from module bytes), `message_copy` (a message
-  copy gave the receiving heap a view of a shared buffer) and `static_literal`
+  copy gave the receiving heap its own BinRef and view of a shared buffer) and `static_literal`
   (a literal baked into the module, viewed in place).
-  `stubs_made` counts the stubs the heap made since its previous collection, in
-  every generation and for a stub that went on to die; the count starts again
-  at each collection. `stubs_survived` counts, by site, the stubs the pass kept
-  among those it examined: young stubs for a minor pass, young and old for a
-  major pass, so a major pass counts a survivor under the site that made it
-  however many collections ago. Stubs a gift brought are made on the sender's
-  heap and join the receiver's old chain unexamined. `StubSite` in
-  `runtime/src/heap/stats.rs` is the one list of sites; `alloc_procbin` takes
-  the site as a required argument and stores it in the low nibble of the stub's
-  `mso_next` word, which heap alignment leaves free, so a stub carries its site
-  to its to-space copy at no cost in size.
+  `stubs_made` counts the views the heap made since its previous collection, in
+  every generation and for a view that went on to die; `binrefs_made` counts the
+  BinRefs it made in the same window, one per fresh buffer or message-copied
+  view and none for a window or an in-place append, so the two differ by the
+  views that shared a BinRef. Both start again at each collection.
+  `stubs_survived` counts, by site, the BinRefs the pass kept among those it
+  examined: young BinRefs for a minor pass, young and old for a major pass, so
+  a major pass counts a survivor under the site that made it however many
+  collections ago. BinRefs a gift brought are made on the sender's heap and
+  join the receiver's old chain unexamined. `StubSite` in
+  `runtime/src/heap/stats.rs` is the one list of sites; `alloc_binref` and
+  `alloc_view` take the site as a required argument, and a BinRef stores it in
+  the low nibble of its `mso_next` word, which heap alignment leaves free, so
+  it carries its site to its to-space copy at no cost in size.
 
 `GcStats` carries more (object counts, root and per-container edge
 counts); `Heap::collect` and `Process::collect` return all of it to their

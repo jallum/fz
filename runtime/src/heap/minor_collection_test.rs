@@ -7,7 +7,7 @@ use crate::any_value::{
     list_addr_from_tagged,
 };
 use crate::heap::{StubCounts, StubSite};
-use crate::procbin::{ProcBin, SharedBinHandle, alloc_procbin, mso_sweep, mso_unreached_closures};
+use crate::procbin::{BinView, SharedBinHandle, alloc_buffer_view, mso_sweep, mso_unreached_closures};
 use crate::resource::{ResourceHandle, alloc_resource, fz_resource_destructor_noop};
 use crate::sync::Ordering;
 use std::cell::RefCell;
@@ -158,30 +158,28 @@ fn old_data_that_died_is_reclaimed_by_the_next_major_collection_and_not_before()
     assert_eq!(heap.old_after_last_major, 500 * 16);
 }
 
-/// A binary stub is found dead by the collection that examines its chain: a
+/// A BinRef is found dead by the collection that examines its chain: a
 /// young one by the minor collection, an old one only by a major collection.
 #[test]
-fn an_old_procbin_that_died_is_released_by_a_major_collection_and_a_young_one_by_a_minor() {
-    let old_witness = SharedBinHandle::from_bytes(&[1; 8], 64);
-    let young_witness = SharedBinHandle::from_bytes(&[2; 8], 64);
+fn an_old_binref_that_died_is_released_by_a_major_collection_and_a_young_one_by_a_minor() {
+    let old_witness = SharedBinHandle::from_bytes(&[1; 8]);
+    let young_witness = SharedBinHandle::from_bytes(&[2; 8]);
     let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
-    let old = alloc_procbin(
+    let old = alloc_buffer_view(
         &mut heap,
         old_witness.clone(),
-        0,
-        old_witness.bit_len(),
+        old_witness.bytes_len() as u64 * 8,
         StubSite::FilledBuffer,
     );
-    let mut roots = [root_of(heap_object_word(old.as_raw(), ValueKind::PROCBIN))];
+    let mut roots = [root_of(heap_object_word(old.as_raw(), ValueKind::BINVIEW))];
     assert_eq!(heap.collect(&mut roots).generation, Generation::Minor);
     assert_ne!(heap.mso_old_head, 0, "the survivor is on the old chain");
     assert_eq!(heap.mso_head, 0);
 
-    alloc_procbin(
+    alloc_buffer_view(
         &mut heap,
         young_witness.clone(),
-        0,
-        young_witness.bit_len(),
+        young_witness.bytes_len() as u64 * 8,
         StubSite::FilledBuffer,
     );
     assert_eq!(shared_refs(&young_witness), 2);
@@ -212,26 +210,21 @@ fn an_old_procbin_that_died_is_released_by_a_major_collection_and_a_young_one_by
 /// Dropping the heap releases the stubs of both chains.
 #[test]
 fn dropping_a_heap_releases_its_young_and_its_old_stubs() {
-    let witnesses = [
-        SharedBinHandle::from_bytes(&[1], 8),
-        SharedBinHandle::from_bytes(&[2], 8),
-    ];
+    let witnesses = [SharedBinHandle::from_bytes(&[1]), SharedBinHandle::from_bytes(&[2])];
     {
         let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
-        let old = alloc_procbin(
+        let old = alloc_buffer_view(
             &mut heap,
             witnesses[0].clone(),
-            0,
-            witnesses[0].bit_len(),
+            witnesses[0].bytes_len() as u64 * 8,
             StubSite::FilledBuffer,
         );
-        let mut roots = [root_of(heap_object_word(old.as_raw(), ValueKind::PROCBIN))];
+        let mut roots = [root_of(heap_object_word(old.as_raw(), ValueKind::BINVIEW))];
         heap.collect(&mut roots);
-        alloc_procbin(
+        alloc_buffer_view(
             &mut heap,
             witnesses[1].clone(),
-            0,
-            witnesses[1].bit_len(),
+            witnesses[1].bytes_len() as u64 * 8,
             StubSite::FilledBuffer,
         );
         assert_eq!(witnesses.each_ref().map(shared_refs), [2, 2]);
@@ -293,13 +286,7 @@ fn a_grafted_list_cell_is_not_rewritten_in_place() {
 
 fn alloc_unrooted_stubs(heap: &mut Heap, binaries: usize, resources: usize) {
     for _ in 0..binaries {
-        alloc_procbin(
-            heap,
-            SharedBinHandle::from_bytes(&[7; 8], 64),
-            0,
-            64,
-            StubSite::FilledBuffer,
-        );
+        alloc_buffer_view(heap, SharedBinHandle::from_bytes(&[7; 8]), 64, StubSite::FilledBuffer);
     }
     for _ in 0..resources {
         let handle = ResourceHandle::new(1, fz_resource_destructor_noop);
@@ -318,14 +305,13 @@ fn a_collection_follows_one_link_per_binary_stub() {
 
     let survivors: Vec<AnyValueRef> = (0..5)
         .map(|_| {
-            let pb = alloc_procbin(
+            let pb = alloc_buffer_view(
                 &mut heap,
-                SharedBinHandle::from_bytes(&[7; 8], 64),
-                0,
+                SharedBinHandle::from_bytes(&[7; 8]),
                 64,
                 StubSite::FilledBuffer,
             );
-            root_of(heap_object_word(pb.as_raw(), ValueKind::PROCBIN))
+            root_of(heap_object_word(pb.as_raw(), ValueKind::BINVIEW))
         })
         .collect();
     let mut roots = survivors;
@@ -369,10 +355,9 @@ fn the_destructor_search_walks_only_resource_stubs_and_the_sweep_every_stub_once
 #[test]
 fn a_major_collection_follows_the_old_chains_and_a_minor_does_not() {
     let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
-    let pb = alloc_procbin(
+    let pb = alloc_buffer_view(
         &mut heap,
-        SharedBinHandle::from_bytes(&[7; 8], 64),
-        0,
+        SharedBinHandle::from_bytes(&[7; 8]),
         64,
         StubSite::FilledBuffer,
     );
@@ -383,7 +368,7 @@ fn a_major_collection_follows_the_old_chains_and_a_minor_does_not() {
     );
     let ballast = list_of(&mut heap, 0, 400, EMPTY_LIST);
     let mut roots = [
-        root_of(heap_object_word(pb.as_raw(), ValueKind::PROCBIN)),
+        root_of(heap_object_word(pb.as_raw(), ValueKind::BINVIEW)),
         root_of(heap_object_word(rs.as_raw(), ValueKind::RESOURCE)),
         root_of(ballast),
     ];
@@ -434,17 +419,18 @@ fn counts(pairs: &[(StubSite, u64)]) -> StubCounts {
     counts
 }
 
-fn bytes_of(value: AnyValue) -> (ProcBin, Vec<u8>) {
-    let stub = unsafe { ProcBin::from_raw(value.heap_addr().expect("a stub")) };
+fn bytes_of(value: AnyValue) -> (BinView, Vec<u8>) {
+    let stub = unsafe { BinView::from_raw(value.heap_addr().expect("a stub")) };
     let bytes = unsafe { std::slice::from_raw_parts(stub.bytes_ptr(), stub.bytes_len()) }.to_vec();
     (stub, bytes)
 }
 
-/// Every place that makes a binary stub is counted under its own site by the
-/// heap that made it, and a minor collection reports which of those stubs it
-/// kept. Each site is driven once through the call that production code uses.
+/// Every place that makes a binary view is counted under its own site by the
+/// heap that made it, and so is every BinRef; a minor collection reports which
+/// BinRefs it kept. Each site is driven once through the call that production
+/// code uses. A window and an in-place append make a view and no BinRef.
 #[test]
-fn a_minor_collection_counts_the_stubs_each_site_made_and_kept() {
+fn a_minor_collection_counts_the_views_and_binrefs_each_site_made_and_the_binrefs_it_kept() {
     let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
     let big = vec![1u8; SHARED_BIN_THRESHOLD_BYTES + 1];
 
@@ -452,7 +438,7 @@ fn a_minor_collection_counts_the_stubs_each_site_made_and_kept() {
     let grown = unsafe { heap.alloc_concatenation(&big, None, &[2]) };
     let (grown_stub, grown_bytes) = bytes_of(grown);
     let appended = unsafe { heap.alloc_concatenation(&grown_bytes, Some(grown_stub), &[3]) };
-    let window = unsafe { heap.alloc_bitstring_slice(grown_stub.shared_raw(), 1, big.len() as u64) };
+    let window = unsafe { heap.alloc_bitstring_slice(grown_stub, 1, big.len() as u64) };
 
     let mut roots = [filled, appended, window].map(AnyValue::ref_word);
     let stats = heap.collect(&mut roots);
@@ -465,34 +451,35 @@ fn a_minor_collection_counts_the_stubs_each_site_made_and_kept() {
             (StubSite::AppendedInPlace, 1),
             (StubSite::WindowOfBuffer, 1),
         ]),
-        "each call made one stub under its own site"
+        "each call made one view under its own site"
+    );
+    assert_eq!(
+        stats.binrefs_made,
+        counts(&[(StubSite::FilledBuffer, 1), (StubSite::GrownBuffer, 1)]),
+        "only the calls that brought a buffer into the heap made a BinRef"
     );
     assert_eq!(
         stats.stubs_survived,
-        counts(&[
-            (StubSite::FilledBuffer, 1),
-            (StubSite::AppendedInPlace, 1),
-            (StubSite::WindowOfBuffer, 1),
-        ]),
-        "the grown buffer's own stub was unrooted and died"
+        counts(&[(StubSite::FilledBuffer, 1), (StubSite::GrownBuffer, 1)]),
+        "the grown buffer's own view died, but the appended view and the window kept its BinRef"
     );
-    assert_eq!(stats.stub_visits, 4);
+    assert_eq!(stats.stub_visits, 2, "one visit per BinRef, however many views name it");
 
     let again = heap.collect(&mut roots);
     assert_eq!(
-        again.stubs_made,
-        StubCounts::default(),
+        (again.stubs_made, again.binrefs_made),
+        (StubCounts::default(), StubCounts::default()),
         "made counts restart at each collection"
     );
     assert_eq!(
         again.stubs_survived,
         StubCounts::default(),
-        "a minor collection does not examine old stubs"
+        "a minor collection does not examine old BinRefs"
     );
 }
 
-/// A major collection examines the old stubs too, so it counts the survivors
-/// among stubs earlier collections kept, under the site that made them.
+/// A major collection examines the old BinRefs too, so it counts the survivors
+/// among BinRefs earlier collections kept, under the site that made them.
 #[test]
 fn a_major_collection_counts_old_survivors_under_their_original_site() {
     let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
@@ -508,7 +495,7 @@ fn a_major_collection_counts_old_survivors_under_their_original_site() {
     assert_eq!(major.stubs_survived, counts(&[(StubSite::FilledBuffer, 1)]));
 }
 
-/// A message copy makes the receiver's stub under its own site.
+/// A message copy makes the receiver's view and BinRef under its own site.
 #[test]
 fn a_message_copy_counts_as_its_own_site_on_the_receiving_heap() {
     let mut sender = Heap::new(SIZE_TABLE[0], fresh_registry());
@@ -519,5 +506,153 @@ fn a_message_copy_counts_as_its_own_site_on_the_receiving_heap() {
 
     let stats = receiver.collect(&mut [copy.ref_word()]);
     assert_eq!(stats.stubs_made, counts(&[(StubSite::MessageCopy, 1)]));
+    assert_eq!(stats.binrefs_made, counts(&[(StubSite::MessageCopy, 1)]));
     assert_eq!(stats.stubs_survived, counts(&[(StubSite::MessageCopy, 1)]));
+}
+
+/// A buffer of `len` bytes in `heap` and a witness holding a reference to it, so
+/// a test can read how many references the buffer has.
+fn witnessed_buffer(heap: &mut Heap, bytes: &[u8]) -> (AnyValue, SharedBinHandle) {
+    let value = heap.alloc_bitstring(bytes, bytes.len() as u64 * 8);
+    let witness = unsafe { SharedBinHandle::retain_from_raw(view_of(value).shared_raw()) };
+    (value, witness)
+}
+
+fn view_of(value: AnyValue) -> BinView {
+    unsafe { BinView::from_raw(value.heap_addr().expect("a view")) }
+}
+
+/// The view a collection left in `root`.
+fn view_in(root: AnyValueRef) -> BinView {
+    view_of(AnyValue::from_ref(root).expect("a heap root"))
+}
+
+fn view_bytes(view: BinView) -> Vec<u8> {
+    unsafe { std::slice::from_raw_parts(view.bytes_ptr(), view.bytes_len()) }.to_vec()
+}
+
+/// Windows of a buffer take no reference of their own: the heap holds one
+/// reference through the buffer's BinRef, and it stays while any view of the
+/// buffer lives, whichever view that is. When the last view dies the sweep that
+/// finds the BinRef unreached releases the reference.
+#[test]
+fn a_binref_outlives_its_buffers_own_view_and_dies_with_its_last_window() {
+    let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let (whole, witness) = witnessed_buffer(&mut heap, &[9u8; 200]);
+    let window = unsafe { heap.alloc_bitstring_slice(view_of(whole), 10, 100) };
+    assert_eq!(window.kind(), ValueKind::BINVIEW);
+    assert_eq!(
+        shared_refs(&witness),
+        2,
+        "a window retains nothing: the witness and the BinRef"
+    );
+    let retained = list_of(&mut heap, 0, 100, EMPTY_LIST);
+
+    let mut roots = [window.ref_word(), root_of(retained)];
+    let first = heap.collect(&mut roots);
+    assert_eq!(first.generation, Generation::Minor);
+    assert_eq!(first.stub_visits, 1, "one BinRef visited for two views");
+    assert_eq!(first.stubs_survived, counts(&[(StubSite::FilledBuffer, 1)]));
+    assert_eq!(
+        shared_refs(&witness),
+        2,
+        "the window kept the BinRef after the whole view died"
+    );
+
+    roots[0] = AnyValueRef::empty_list();
+    let second = heap.collect(&mut roots);
+    assert_eq!(second.generation, Generation::Major);
+    assert_eq!(second.stub_visits, 1);
+    assert_eq!(second.stubs_survived, StubCounts::default());
+    assert_eq!(
+        shared_refs(&witness),
+        1,
+        "no view names the BinRef, so the major released it"
+    );
+    assert_eq!(heap.mso_old_head, 0);
+}
+
+/// A view made after a collection can name a BinRef that collection kept. A
+/// minor collection leaves that BinRef where it is, does not visit it, and the
+/// young view still reads the buffer; a major collection then copies it and
+/// keeps it because the view names it.
+#[test]
+fn a_young_view_of_an_old_binref_survives_a_minor_and_a_major_collection() {
+    let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let bytes: Vec<u8> = (0..200u8).collect();
+    let (whole, witness) = witnessed_buffer(&mut heap, &bytes);
+    let mut roots = [whole.ref_word()];
+    assert_eq!(heap.collect(&mut roots).generation, Generation::Minor);
+    let old_whole = view_in(roots[0]);
+    let old_binref = old_whole.binref().as_raw();
+    assert!(!heap.is_young(old_binref), "the buffer's BinRef is old");
+
+    let window = unsafe { heap.alloc_bitstring_slice(old_whole, 70, 100) };
+    assert!(heap.is_young(view_of(window).as_raw()));
+    assert_eq!(
+        view_of(window).binref().as_raw(),
+        old_binref,
+        "the window names the old BinRef"
+    );
+    roots = [window.ref_word()];
+    let minor = heap.collect(&mut roots);
+    assert_eq!(minor.generation, Generation::Minor);
+    assert_eq!(minor.stub_visits, 0, "a minor collection does not visit an old BinRef");
+    let kept = view_in(roots[0]);
+    assert_eq!(kept.binref().as_raw(), old_binref, "the BinRef stayed where it was");
+    assert_eq!(view_bytes(kept), &bytes[70..170]);
+    assert_eq!(shared_refs(&witness), 2);
+
+    let retained = list_of(&mut heap, 0, 100, EMPTY_LIST);
+    let mut roots = [roots[0], root_of(retained)];
+    assert_eq!(heap.collect(&mut roots).generation, Generation::Minor);
+    let major = heap.collect(&mut roots);
+    assert_eq!(major.generation, Generation::Major);
+    assert_eq!(major.stub_visits, 1);
+    assert_eq!(major.stubs_survived, counts(&[(StubSite::FilledBuffer, 1)]));
+    let moved = view_in(roots[0]);
+    assert_ne!(
+        moved.binref().as_raw(),
+        old_binref,
+        "the major collection moved the BinRef"
+    );
+    assert_eq!(view_bytes(moved), &bytes[70..170]);
+    assert_eq!(
+        shared_refs(&witness),
+        2,
+        "the window kept the one BinRef through the major"
+    );
+    drop(heap);
+    assert_eq!(shared_refs(&witness), 1);
+}
+
+/// A send gives the receiver its own BinRef over the one buffer: the buffer's
+/// reference count rises by one, the two heaps name different BinRefs, and each
+/// heap releases exactly its own reference when it goes.
+#[test]
+fn a_send_gives_the_receiver_its_own_binref_and_both_heaps_release() {
+    let mut sender = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let mut receiver = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let bytes: Vec<u8> = (0..200u8).collect();
+    let (whole, witness) = witnessed_buffer(&mut sender, &bytes);
+    assert_eq!(shared_refs(&witness), 2);
+
+    let copy = deep_copy_slot(whole, &sender.view(), &mut receiver, &mut AddressMap::default());
+    assert_eq!(
+        shared_refs(&witness),
+        3,
+        "the receiver's BinRef holds its own reference"
+    );
+    let (sent, received) = (view_of(whole), view_of(copy));
+    assert_ne!(sent.binref().as_raw(), received.binref().as_raw());
+    assert_eq!(sent.shared_raw(), received.shared_raw());
+    assert_eq!(view_bytes(received), bytes);
+    assert_eq!(receiver.mso_head, received.binref().word());
+    assert_eq!(sender.mso_head, sent.binref().word());
+
+    drop(sender);
+    assert_eq!(shared_refs(&witness), 2, "the sender released its BinRef");
+    assert_eq!(view_bytes(received), bytes);
+    drop(receiver);
+    assert_eq!(shared_refs(&witness), 1);
 }

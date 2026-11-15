@@ -83,7 +83,7 @@ fn tag_constants_all_distinct() {
         TAG_STRUCT,
         TAG_CLOSURE,
         TAG_BITSTRING,
-        TAG_PROCBIN,
+        TAG_BINVIEW,
         TAG_RESOURCE,
         TAG_KIND_PID,
         TAG_KIND_REF,
@@ -107,7 +107,7 @@ fn tag_constants_fit_in_4_bits() {
         TAG_STRUCT,
         TAG_CLOSURE,
         TAG_BITSTRING,
-        TAG_PROCBIN,
+        TAG_BINVIEW,
         TAG_RESOURCE,
         TAG_KIND_PID,
         TAG_KIND_REF,
@@ -128,7 +128,7 @@ fn heap_object_word_carries_kind_above_the_address() {
         ValueKind::STRUCT,
         ValueKind::CLOSURE,
         ValueKind::BITSTRING,
-        ValueKind::PROCBIN,
+        ValueKind::BINVIEW,
         ValueKind::RESOURCE,
     ] {
         let bits = heap_object_word(addr, kind);
@@ -142,7 +142,6 @@ fn heap_object_word_carries_kind_above_the_address() {
 
 #[test]
 fn value_kind_rejects_non_value_tags() {
-    assert_eq!(ValueKind::new(8), None);
     assert_eq!(ValueKind::new(11), None);
     assert_eq!(ValueKind::new(12), None);
 }
@@ -211,7 +210,7 @@ fn any_value_round_trip_without_packed_scalar_tags() {
 
 #[test]
 fn any_value_decode_parts_rejects_unknown_kind_bytes() {
-    assert_eq!(AnyValue::decode_parts(0, 8), None);
+    assert_eq!(AnyValue::decode_parts(0, 11), None);
     assert_eq!(AnyValue::decode_parts(0, 0x10), None);
 }
 
@@ -327,8 +326,8 @@ fn object_size_dispatches_from_pointer_tag_and_object_local_metadata() {
         bitstring_size_for_bit_len(17)
     );
     assert_eq!(
-        object_size(heap_object_word(addr, ValueKind::PROCBIN)),
-        crate::procbin::PROCBIN_BYTES
+        object_size(heap_object_word(addr, ValueKind::BINVIEW)),
+        crate::procbin::BINVIEW_BYTES
     );
     assert_eq!(object_size(heap_object_word(addr, ValueKind::RESOURCE)), 48);
 }
@@ -1369,8 +1368,8 @@ fn any_value_refs_use_value_kind_tags_directly() {
     assert_eq!(packing.tag(value), Ok(ValueKind::ATOM));
     assert_eq!(value.raw_word() >> packing.tag_shift(), ValueKind::ATOM.tag() as u64);
     assert_eq!(
-        AnyValueRef::from_raw_word(8_u64 << packing.tag_shift()),
-        Err(AnyValueRefError::UnknownTag(8))
+        AnyValueRef::from_raw_word(11_u64 << packing.tag_shift()),
+        Err(AnyValueRefError::UnknownTag(11))
     );
 }
 
@@ -1449,10 +1448,10 @@ fn heap_object_refs_clear_addresses_before_projection() {
     let bitstring_addr = heap.alloc_bitstring(&[0xAA], 8).heap_addr().expect("bitstring addr");
     let closure_bits = heap.alloc_closure(crate::any_value::ClosureDenotationId::user(0), 0, 0, 0, 0xfeed, &[]);
     let closure_addr = closure_addr_from_tagged(closure_bits).expect("closure addr");
-    let procbin_addr = heap
+    let binview_addr = heap
         .alloc_bitstring(&[0u8; 65], 65 * 8)
         .heap_addr()
-        .expect("procbin addr");
+        .expect("binview addr");
     let resource_addr = alloc_resource(
         &mut heap,
         ResourceHandle::new(77, fz_resource_destructor_noop),
@@ -1491,10 +1490,10 @@ fn heap_object_refs_clear_addresses_before_projection() {
         Ok(bitstring_addr)
     );
     assert_eq!(
-        AnyValueRef::from_heap_object(ValueKind::PROCBIN, procbin_addr)
-            .expect("procbin ref")
-            .procbin_addr(),
-        Ok(procbin_addr)
+        AnyValueRef::from_heap_object(ValueKind::BINVIEW, binview_addr)
+            .expect("binview ref")
+            .binview_addr(),
+        Ok(binview_addr)
     );
     assert_eq!(
         AnyValueRef::from_heap_object(ValueKind::RESOURCE, resource_addr)

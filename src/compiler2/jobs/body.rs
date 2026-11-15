@@ -1040,7 +1040,7 @@ impl<'a, 'w, 'tel, 'f, 'env, 'steps, 'q, T: crate::telemetry::Telemetry>
                 };
                 Ok(self.lowerer.push_const(self.steps, literal))
             }
-            ValueKind::BITSTRING | ValueKind::PROCBIN => {
+            ValueKind::BITSTRING | ValueKind::BINVIEW => {
                 let bytes = cursor.raw_bytes().map_err(|error| self.surface_error(error))?;
                 Ok(self.lowerer.push_const(self.steps, GroundValue::Binary(bytes)))
             }

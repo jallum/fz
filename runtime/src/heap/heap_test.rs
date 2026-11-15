@@ -2,11 +2,10 @@ use super::imp::MAJOR_GROWTH_FACTOR;
 use super::*;
 use crate::any_value::{
     AnyValue, AnyValueRef, AnyValueRefError, EMPTY_LIST, EMPTY_LIST_BITS, ListCons, STRUCT_PAYLOAD_OFFSET, SlotLayout,
-    ValueKind, bitstring_bytes_ptr, bitstring_size_for_bit_len, closure_addr_from_tagged, closure_capture_set,
-    closure_capture_value, closure_captured_count, closure_fn_ptr, closure_halt_kind, heap_kind_from_tagged,
-    heap_object_word, heap_word_addr, list_addr_from_tagged, map_addr_from_tagged, map_count, map_entry,
-    map_size_for_count, object_size, procbin_addr_from_tagged, struct_addr_from_tagged, struct_schema_id,
-    struct_size_for_payload,
+    ValueKind, binview_addr_from_tagged, bitstring_bytes_ptr, bitstring_size_for_bit_len, closure_addr_from_tagged,
+    closure_capture_set, closure_capture_value, closure_captured_count, closure_fn_ptr, closure_halt_kind,
+    heap_kind_from_tagged, heap_object_word, heap_word_addr, list_addr_from_tagged, map_addr_from_tagged, map_count,
+    map_entry, map_size_for_count, object_size, struct_addr_from_tagged, struct_schema_id, struct_size_for_payload,
 };
 use crate::module_name::ModuleName;
 use crate::resource::ResourceStub;
@@ -337,18 +336,20 @@ fn alloc_stats_record_heap_allocations_by_kind() {
     assert_eq!(stats.list_cons.allocs, 1);
     assert_eq!(stats.map.allocs, 1);
     assert_eq!(stats.bitstring.allocs, 1);
-    assert_eq!(stats.procbin.allocs, 1);
+    assert_eq!(stats.binview.allocs, 1);
+    assert_eq!(stats.binref.allocs, 1, "a buffer entering the heap makes one BinRef");
     assert_eq!(stats.closure.allocs, 1);
     assert_eq!(stats.scalar_box.allocs, 1);
     assert_eq!(stats.other.allocs, 1);
-    assert_eq!(stats.total.allocs, 8);
+    assert_eq!(stats.total.allocs, 9);
     assert_eq!(
         stats.total.bytes,
         stats.struct_.bytes
             + stats.list_cons.bytes
             + stats.map.bytes
             + stats.bitstring.bytes
-            + stats.procbin.bytes
+            + stats.binview.bytes
+            + stats.binref.bytes
             + stats.closure.bytes
             + stats.scalar_box.bytes
             + stats.other.bytes
@@ -1426,10 +1427,9 @@ fn deep_copy_strict_heap_kinds_dispatch_from_pointer_tags() {
 
     let bitstring_p = src.alloc_bitstring(b"abc", 24).heap_addr().expect("bitstring");
 
-    let procbin = alloc_procbin(
+    let binview = alloc_buffer_view(
         &mut src,
-        SharedBinHandle::from_bytes(&[1, 2, 3, 4], 32),
-        0,
+        SharedBinHandle::from_bytes(&[1, 2, 3, 4]),
         32,
         StubSite::FilledBuffer,
     );
@@ -1457,7 +1457,7 @@ fn deep_copy_strict_heap_kinds_dispatch_from_pointer_tags() {
         ),
         (
             AnyValue::atom(keys[4]),
-            AnyValue::heap_ptr(procbin.as_raw(), ValueKind::PROCBIN),
+            AnyValue::heap_ptr(binview.as_raw(), ValueKind::BINVIEW),
         ),
         (
             AnyValue::atom(keys[5]),
@@ -2210,10 +2210,13 @@ fn gc_handles_cycle_via_forwarding() {
     assert_eq!(h.live_count(), 2);
 }
 
-// ===== ProcBin + intrusive MSO + post-Cheney sweep =================
+// ===== BinView + intrusive MSO + post-Cheney sweep =================
 
 use crate::heap::StubSite;
-use crate::procbin::{PROCBIN_BYTES, ProcBin, SharedBinHandle, alloc_procbin, bitstring_bit_len, bitstring_byte_ptr};
+use crate::procbin::{
+    BINREF_BYTES, BINVIEW_BYTES, BinRef, BinView, SharedBinHandle, alloc_buffer_view, bitstring_bit_len,
+    bitstring_byte_ptr,
+};
 
 fn shared_refs(handle: &SharedBinHandle) -> usize {
     unsafe { (*handle.as_raw()).refcount.load(Ordering::Relaxed) }
@@ -2227,7 +2230,7 @@ fn chain_from(head: u64) -> Vec<u64> {
     while cur_bits != 0 {
         let addr = heap_word_addr(cur_bits);
         let next = match heap_kind_from_tagged(cur_bits) {
-            Some(ValueKind::PROCBIN) => unsafe { ProcBin::from_raw(addr).mso_next() },
+            Some(ValueKind::BINREF) => unsafe { BinRef::from_raw(addr).mso_next() },
             Some(ValueKind::RESOURCE) => unsafe { ResourceStub::from_raw(addr).mso_next() },
             kind => panic!("unexpected MSO kind {kind:?}"),
         };
@@ -2237,96 +2240,120 @@ fn chain_from(head: u64) -> Vec<u64> {
     out
 }
 
-/// The young stubs: those allocated since the last collection.
+/// The young BinRefs: those allocated since the last collection.
 fn mso_chain(h: &Heap) -> Vec<u64> {
     chain_from(h.mso_head)
 }
 
-/// The old stubs: those a collection kept and those gifts brought.
+/// The old BinRefs: those a collection kept and those gifts brought.
 fn mso_old_chain(h: &Heap) -> Vec<u64> {
     chain_from(h.mso_old_head)
 }
 
-/// `alloc_procbin` writes a strict `PROCBIN_BYTES` ProcBin and pushes onto the chain.
+/// A fresh buffer allocates a `BINREF_BYTES` BinRef, which goes onto the chain,
+/// and a `BINVIEW_BYTES` view of it, which does not.
 #[test]
-fn alloc_procbin_pushes_into_mso_chain_with_strict_layout() {
-    let witness = SharedBinHandle::from_bytes(&[1, 2, 3, 4], 32);
+fn a_fresh_buffer_puts_its_binref_on_the_chain_and_its_view_on_none() {
+    let witness = SharedBinHandle::from_bytes(&[1, 2, 3, 4]);
     {
         let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
-        let pb = alloc_procbin(&mut h, witness.clone(), 0, witness.bit_len(), StubSite::FilledBuffer);
-        let tagged = heap_object_word(pb.as_raw() as *const u8, ValueKind::PROCBIN);
-        assert_eq!(heap_kind_from_tagged(tagged), Some(ValueKind::PROCBIN));
-        assert_eq!(object_size(tagged), PROCBIN_BYTES);
-        assert_eq!(mso_chain(&h), vec![tagged]);
-        assert_eq!(shared_refs(&witness), 2);
+        let pb = alloc_buffer_view(
+            &mut h,
+            witness.clone(),
+            witness.bytes_len() as u64 * 8,
+            StubSite::FilledBuffer,
+        );
+        let tagged = heap_object_word(pb.as_raw() as *const u8, ValueKind::BINVIEW);
+        assert_eq!(heap_kind_from_tagged(tagged), Some(ValueKind::BINVIEW));
+        assert_eq!(object_size(tagged), BINVIEW_BYTES);
+        assert_eq!(object_size(pb.binref().word()), BINREF_BYTES);
+        assert_eq!(
+            mso_chain(&h),
+            vec![pb.binref().word()],
+            "only the BinRef is on the chain"
+        );
+        assert_eq!(
+            shared_refs(&witness),
+            2,
+            "the buffer has one heap reference, the BinRef's"
+        );
     }
     assert_eq!(shared_refs(&witness), 1, "heap drop removes its exact owned edge");
 }
 
-/// A rooted ProcBin survives Cheney: chain rewritten to to-space copy.
+/// A rooted view survives Cheney, and its BinRef is copied with it and relinked
+/// onto the old chain.
 #[test]
-fn procbin_survives_gc_via_mso_rewrite() {
-    let witness = SharedBinHandle::from_bytes(&[0xaa; 8], 64);
+fn a_rooted_view_carries_its_binref_through_gc() {
+    let witness = SharedBinHandle::from_bytes(&[0xaa; 8]);
     let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
-    let pb = alloc_procbin(&mut h, witness.clone(), 0, witness.bit_len(), StubSite::FilledBuffer);
+    let pb = alloc_buffer_view(
+        &mut h,
+        witness.clone(),
+        witness.bytes_len() as u64 * 8,
+        StubSite::FilledBuffer,
+    );
     let shared_p = pb.shared_raw();
     let from_pb = pb.as_raw();
-    let mut root = heap_object_word(from_pb as *const u8, ValueKind::PROCBIN) as *mut u8;
+    let mut root = heap_object_word(from_pb as *const u8, ValueKind::BINVIEW) as *mut u8;
     assert_eq!(shared_refs(&witness), 2);
     h.collect_tagged(&mut root);
-    let new_pb = procbin_addr_from_tagged(root as u64).unwrap();
-    assert_ne!(new_pb, from_pb, "ProcBin should have moved to to-space");
+    let new_pb = binview_addr_from_tagged(root as u64).unwrap();
+    assert_ne!(new_pb, from_pb, "BinView should have moved to to-space");
     assert_eq!(mso_chain(&h), vec![], "the young chain is empty");
+    let pb_to = unsafe { BinView::from_raw(new_pb) };
     assert_eq!(
         mso_old_chain(&h),
-        vec![heap_object_word(new_pb as *const u8, ValueKind::PROCBIN)],
-        "chain rewritten onto the old chain"
+        vec![pb_to.binref().word()],
+        "the view's BinRef is on the old chain"
     );
     assert_eq!(shared_refs(&witness), 2, "GC preserves the same heap-owned edge");
-    let pb_to = unsafe { ProcBin::from_raw(new_pb) };
     assert_eq!(pb_to.shared_raw(), shared_p);
     drop(h);
     assert_eq!(shared_refs(&witness), 1);
 }
 
-/// Unrooted ProcBin: MSO sweep releases its SharedBin.
+/// An unrooted view dies, so its BinRef is unreached and the sweep releases the
+/// SharedBin.
 #[test]
-fn procbin_dies_in_gc_and_sweep_releases_shared_bin() {
-    let witness = SharedBinHandle::from_bytes(&[0x55; 16], 128);
+fn an_unrooted_view_lets_the_sweep_release_its_shared_bin() {
+    let witness = SharedBinHandle::from_bytes(&[0x55; 16]);
     let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
-    let _ = alloc_procbin(&mut h, witness.clone(), 0, witness.bit_len(), StubSite::FilledBuffer);
+    let _ = alloc_buffer_view(
+        &mut h,
+        witness.clone(),
+        witness.bytes_len() as u64 * 8,
+        StubSite::FilledBuffer,
+    );
     assert_eq!(shared_refs(&witness), 2);
     let mut root: *mut u8 = null_mut();
     h.collect_tagged(&mut root);
-    assert_eq!(h.mso_head, 0, "dead ProcBin swept from MSO");
+    assert_eq!(h.mso_head, 0, "the dead BinRef is swept from the chain");
     assert_eq!(shared_refs(&witness), 1, "sweep removes its exact owned edge");
 }
 
-/// Mixed live/dead ProcBins: sweep must read the next link from
+/// Mixed live/dead BinRefs: sweep must read the next link from
 /// from-space while reading the survivor's shared_ptr from to-space.
 #[test]
-fn procbin_mso_chain_intact_through_gc_partial_survival() {
-    let witnesses = [1, 2, 3].map(|value| SharedBinHandle::from_bytes(&[value], 8));
+fn the_binref_chain_is_intact_through_gc_partial_survival() {
+    let witnesses = [1, 2, 3].map(|value| SharedBinHandle::from_bytes(&[value]));
     let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
-    let _dead_tail = alloc_procbin(
+    let _dead_tail = alloc_buffer_view(
         &mut h,
         witnesses[0].clone(),
-        0,
-        witnesses[0].bit_len(),
+        witnesses[0].bytes_len() as u64 * 8,
         StubSite::FilledBuffer,
     );
-    let live = alloc_procbin(
+    let live = alloc_buffer_view(
         &mut h,
         witnesses[1].clone(),
-        0,
-        witnesses[1].bit_len(),
+        witnesses[1].bytes_len() as u64 * 8,
         StubSite::FilledBuffer,
     );
-    let _dead_head = alloc_procbin(
+    let _dead_head = alloc_buffer_view(
         &mut h,
         witnesses[2].clone(),
-        0,
-        witnesses[2].bit_len(),
+        witnesses[2].bytes_len() as u64 * 8,
         StubSite::FilledBuffer,
     );
     let live_from = live.as_raw();
@@ -2334,16 +2361,16 @@ fn procbin_mso_chain_intact_through_gc_partial_survival() {
     assert_eq!(mso_chain(&h).len(), 3);
     assert_eq!(witnesses.each_ref().map(shared_refs), [2, 2, 2]);
 
-    let mut root = heap_object_word(live_from as *const u8, ValueKind::PROCBIN) as *mut u8;
+    let mut root = heap_object_word(live_from as *const u8, ValueKind::BINVIEW) as *mut u8;
     h.collect_tagged(&mut root);
 
-    let live_to = procbin_addr_from_tagged(root as u64).unwrap();
+    let live_to = binview_addr_from_tagged(root as u64).unwrap();
     assert_ne!(live_to, live_from);
     assert_eq!(
         mso_old_chain(&h),
-        vec![heap_object_word(live_to as *const u8, ValueKind::PROCBIN)]
+        vec![unsafe { BinView::from_raw(live_to) }.binref().word()]
     );
-    assert_eq!(unsafe { ProcBin::from_raw(live_to).shared_raw() }, live_shared);
+    assert_eq!(unsafe { BinView::from_raw(live_to).shared_raw() }, live_shared);
     assert_eq!(
         witnesses.each_ref().map(shared_refs),
         [1, 2, 1],
@@ -2357,13 +2384,18 @@ fn procbin_mso_chain_intact_through_gc_partial_survival() {
 #[test]
 fn heap_drop_releases_all_mso_shared_refs() {
     let witnesses = [
-        SharedBinHandle::from_bytes(&[1, 2], 16),
-        SharedBinHandle::from_bytes(&[3, 4, 5], 24),
+        SharedBinHandle::from_bytes(&[1, 2]),
+        SharedBinHandle::from_bytes(&[3, 4, 5]),
     ];
     {
         let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
         for witness in &witnesses {
-            alloc_procbin(&mut h, witness.clone(), 0, witness.bit_len(), StubSite::FilledBuffer);
+            alloc_buffer_view(
+                &mut h,
+                witness.clone(),
+                witness.bytes_len() as u64 * 8,
+                StubSite::FilledBuffer,
+            );
         }
         assert_eq!(witnesses.each_ref().map(shared_refs), [2, 2]);
         assert_eq!(mso_chain(&h).len(), 2);
@@ -2371,25 +2403,31 @@ fn heap_drop_releases_all_mso_shared_refs() {
     assert_eq!(witnesses.each_ref().map(shared_refs), [1, 1]);
 }
 
-// ===== deep_copy_slot handles ProcBin via retain =====================
+// ===== deep_copy_slot handles BinView via retain =====================
 
-/// Cross-heap deep_copy of a ProcBin shares the SharedBin.
+/// Cross-heap deep_copy of a view gives the destination heap its own BinRef,
+/// which retains the SharedBin.
 #[test]
-fn deep_copy_procbin_shares_via_retain() {
-    let witness = SharedBinHandle::from_bytes(&[7, 8, 9, 10], 32);
+fn deep_copy_of_a_view_makes_a_binref_in_the_destination_that_retains() {
+    let witness = SharedBinHandle::from_bytes(&[7, 8, 9, 10]);
     let mut src = Heap::new(SIZE_TABLE[0], fresh_registry());
     let mut dst = Heap::new(SIZE_TABLE[0], fresh_registry());
-    let src_pb = alloc_procbin(&mut src, witness.clone(), 0, witness.bit_len(), StubSite::FilledBuffer);
+    let src_pb = alloc_buffer_view(
+        &mut src,
+        witness.clone(),
+        witness.bytes_len() as u64 * 8,
+        StubSite::FilledBuffer,
+    );
     let shared_p = src_pb.shared_raw();
     let mut fwd = AddressMap::default();
     let copied = deep_copy_slot(
-        AnyValue::heap_ptr(src_pb.as_raw(), ValueKind::PROCBIN),
+        AnyValue::heap_ptr(src_pb.as_raw(), ValueKind::BINVIEW),
         &src.view(),
         &mut dst,
         &mut fwd,
     );
-    let dst_p = procbin_addr_from_tagged(tagged_bits(copied)).unwrap();
-    let dst_pb = unsafe { ProcBin::from_raw(dst_p) };
+    let dst_p = binview_addr_from_tagged(tagged_bits(copied)).unwrap();
+    let dst_pb = unsafe { BinView::from_raw(dst_p) };
     assert_ne!(dst_p, src_pb.as_raw());
     assert_eq!(dst_pb.shared_raw(), shared_p);
     assert_eq!(mso_chain(&src).len(), 1);
@@ -2402,11 +2440,11 @@ fn deep_copy_procbin_shares_via_retain() {
     assert_eq!(shared_refs(&witness), 1);
 }
 
-/// Shared structure: a tuple containing the same ProcBin twice
-/// deep-copies to one retained heap edge, not one per alias.
+/// Shared structure: a tuple containing the same view twice deep-copies to one
+/// view and one BinRef, not one per alias.
 #[test]
-fn deep_copy_procbin_dedup_via_forwarding_map() {
-    let witness = SharedBinHandle::from_bytes(&[0xab, 0xcd], 16);
+fn deep_copy_of_one_view_twice_makes_one_binref_via_forwarding_map() {
+    let witness = SharedBinHandle::from_bytes(&[0xab, 0xcd]);
     let reg = fresh_registry();
     let pair_id = reg.borrow_mut().register(Schema {
         identity: SchemaIdentity::Internal("Pair".into()),
@@ -2426,8 +2464,13 @@ fn deep_copy_procbin_dedup_via_forwarding_map() {
     });
     let mut src = Heap::new(SIZE_TABLE[0], reg.clone());
     let mut dst = Heap::new(SIZE_TABLE[0], reg);
-    let src_pb = alloc_procbin(&mut src, witness.clone(), 0, witness.bit_len(), StubSite::FilledBuffer);
-    let proc_bits = heap_object_word(src_pb.as_raw() as *const u8, ValueKind::PROCBIN);
+    let src_pb = alloc_buffer_view(
+        &mut src,
+        witness.clone(),
+        witness.bytes_len() as u64 * 8,
+        StubSite::FilledBuffer,
+    );
+    let proc_bits = heap_object_word(src_pb.as_raw() as *const u8, ValueKind::BINVIEW);
     let pair = src.alloc_struct(pair_id);
     let proc_value = heap_root(proc_bits);
     unsafe { src.write_field_slot(pair, 0, proc_value) };
@@ -2474,12 +2517,12 @@ fn alloc_bitstring_small_stays_inline() {
 fn alloc_bitstring_large_routes_to_shared_zone() {
     let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
     let bytes: Vec<u8> = (0..128u8).collect();
-    let p = h.alloc_bitstring(&bytes, 1024).heap_addr().expect("procbin");
-    let witness = unsafe { SharedBinHandle::retain_from_raw(ProcBin::from_raw(p).shared_raw()) };
-    let tagged = heap_object_word(p, ValueKind::PROCBIN);
+    let p = h.alloc_bitstring(&bytes, 1024).heap_addr().expect("binview");
+    let witness = unsafe { SharedBinHandle::retain_from_raw(BinView::from_raw(p).shared_raw()) };
+    let tagged = heap_object_word(p, ValueKind::BINVIEW);
     unsafe {
-        assert_eq!(heap_kind_from_tagged(tagged), Some(ValueKind::PROCBIN));
-        assert_eq!(object_size(tagged), PROCBIN_BYTES);
+        assert_eq!(heap_kind_from_tagged(tagged), Some(ValueKind::BINVIEW));
+        assert_eq!(object_size(tagged), BINVIEW_BYTES);
         assert_eq!(bitstring_bit_len(tagged), 1024);
         let pay = bitstring_byte_ptr(tagged);
         for (i, expected) in bytes.iter().enumerate().take(128) {
@@ -2509,8 +2552,8 @@ fn alloc_bitstring_with_fills_a_shared_buffer_in_place_and_counts_it_once() {
     let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
     let len = SHARED_BIN_THRESHOLD_BYTES + 36;
     let value = h.alloc_bitstring_with(len, (len * 8) as u64, |dest| dest.fill(9));
-    assert_eq!(value.kind(), ValueKind::PROCBIN);
-    let tagged = heap_object_word(value.heap_addr().expect("procbin"), ValueKind::PROCBIN);
+    assert_eq!(value.kind(), ValueKind::BINVIEW);
+    let tagged = heap_object_word(value.heap_addr().expect("binview"), ValueKind::BINVIEW);
     let payload = unsafe { std::slice::from_raw_parts(bitstring_byte_ptr(tagged), len + 1) };
     assert!(payload[..len].iter().all(|&b| b == 9));
     assert_eq!(payload[len], 0, "the invisible trailing NUL stays zero");
@@ -2524,12 +2567,12 @@ fn shared_heap_acceptance_spawn_and_share() {
     const N: usize = 4;
     let payload: Vec<u8> = (0..128u8).collect();
     let mut sender = Heap::new(SIZE_TABLE[0], fresh_registry());
-    let bs_in_sender = sender.alloc_bitstring(&payload, 1024).heap_addr().expect("procbin");
-    let witness = unsafe { SharedBinHandle::retain_from_raw(ProcBin::from_raw(bs_in_sender).shared_raw()) };
+    let bs_in_sender = sender.alloc_bitstring(&payload, 1024).heap_addr().expect("binview");
+    let witness = unsafe { SharedBinHandle::retain_from_raw(BinView::from_raw(bs_in_sender).shared_raw()) };
     assert_eq!(shared_refs(&witness), 2);
 
     let mut receivers: Vec<Heap> = (0..N).map(|_| Heap::new(SIZE_TABLE[0], fresh_registry())).collect();
-    let sender_bits = heap_object_word(bs_in_sender as *const u8, ValueKind::PROCBIN);
+    let sender_bits = heap_object_word(bs_in_sender as *const u8, ValueKind::BINVIEW);
     let mut receiver_roots: Vec<u64> = Vec::with_capacity(N);
     for r in receivers.iter_mut() {
         let mut fwd = AddressMap::default();
@@ -2548,7 +2591,8 @@ fn shared_heap_acceptance_spawn_and_share() {
         *root_ptr = root_u8 as u64;
         let chain = mso_old_chain(r);
         assert_eq!(chain.len(), 1);
-        assert_eq!(chain[0], *root_ptr);
+        let view = unsafe { BinView::from_raw(crate::any_value::heap_addr_from_tagged(*root_ptr).expect("view root")) };
+        assert_eq!(chain[0], view.binref().word(), "the chain holds the view's BinRef");
     }
     assert_eq!(shared_refs(&witness), 2 + N, "moving stubs preserve their shared edges");
 
@@ -2827,11 +2871,11 @@ fn dropping_a_heap_with_an_object_above_the_table_releases_everything() {
 }
 
 #[test]
-fn procbin_round_trips_through_bitstring_dispatchers() {
+fn binview_round_trips_through_bitstring_dispatchers() {
     let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
     let bytes: Vec<u8> = (0..100u8).collect();
-    let p = h.alloc_bitstring(&bytes, 800).heap_addr().expect("procbin");
-    let tagged = heap_object_word(p, ValueKind::PROCBIN);
+    let p = h.alloc_bitstring(&bytes, 800).heap_addr().expect("binview");
+    let tagged = heap_object_word(p, ValueKind::BINVIEW);
     let bl = unsafe { bitstring_bit_len(tagged) };
     let bp = unsafe { bitstring_byte_ptr(tagged) };
     assert_eq!(bl, 800);

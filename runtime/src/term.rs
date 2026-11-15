@@ -111,7 +111,7 @@ impl<'a> TermComparator<'a> {
             ValueKind::STRUCT => Category::Tuple,
             ValueKind::MAP => Category::Map,
             ValueKind::LIST => Category::List,
-            ValueKind::BITSTRING | ValueKind::PROCBIN => Category::Bitstring,
+            ValueKind::BITSTRING | ValueKind::BINVIEW => Category::Bitstring,
             _ => unreachable!("runtime value kind"),
         }
     }
@@ -446,7 +446,7 @@ pub fn compare_int_float(integer: i64, float: f64) -> Ordering {
 }
 
 fn is_bitstring(value: AnyValue) -> bool {
-    matches!(value.kind(), ValueKind::BITSTRING | ValueKind::PROCBIN)
+    matches!(value.kind(), ValueKind::BITSTRING | ValueKind::BINVIEW)
 }
 
 /// The order of two values of one simple kind, which needs neither the
