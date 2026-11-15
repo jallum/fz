@@ -2,13 +2,14 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-15T04:50:44Z",
   "created": "2026-11-14T12:09:53Z",
   "description": "Elixir warns 'variable \"x\" is unused (if the variable is not meant to be used, prefix it with an underscore)' for every binding that is never read: function parameters, pattern bindings in case/fn/receive heads, and match bindings. fz has no such diagnostic: src/diag/codes.rs has no unused-variable code, and grep for 'unused' in src finds no warning (checked at develop f822f0f84).\n\nWhy now: while writing up the specialization policy, a parameter the body never uses (sink(_x) and sink(x) alike) turned out to be something keying could be asked to optimize away. It is a mistake in the program and the author should hear about it; keying should not treat it specially.\n\nAcceptance:\n- def f(x), do: 1 warns once at x with a new code (lint-style, e.g. variable/unused), with Elixir's wording.\n- def f(_x), do: 1 and def f(_), do: 1 do not warn.\n- A variable used only in a guard, a pin (^x), or a nested fn counts as used.\n- Each clause is judged on its own, as Elixir does.\n- Fixtures: one oracle-free warning fixture per case above; the existing suite shows no new warnings (any that appear are real and fixed in lib/ or the fixtures, named in the commit).\n- Docs: the guide's diagnostics list names the code.",
   "id": "fz-rik",
   "labels": [],
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "A variable that is bound and never used warns, unless its name starts with an underscore",
   "type": "feature",
-  "updated_at": "2026-11-14T12:09:53Z"
+  "updated_at": "2026-11-15T04:50:44Z"
 }
