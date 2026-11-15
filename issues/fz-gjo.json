@@ -2,13 +2,14 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-15T03:40:38Z",
   "created": "2026-11-15T01:25:50Z",
   "description": "Compiling a nested-tuple binary search tree never finishes (fz2 build killed at 120 s on develop 135b67da3 and on c5a03e198; N is a runtime count, so the hang is in compilation). Program:\ndef insert(nil, k), do: {k, nil, nil}\ndef insert({v, l, r}, k) when k \u003c v, do: {v, insert(l, k), r}\ndef insert({v, l, r}, k), do: {v, l, insert(r, k)}\nplus a build/size loop over it (repro: /private/tmp/claude-501/-Users-j5n-Workspace-fz/d1d265b3-f8e7-419b-8316-906f89c17e6b/scratchpad/9x7-gc/repro/bst.fz).\nTelemetry (15 s, /private/tmp/claude-501/-Users-j5n-Workspace-fz/d1d265b3-f8e7-419b-8316-906f89c17e6b/scratchpad/9x7-gc/repro/bst-tl.jsonl): AnalyzeActivation is 71 of 216 applied completions; one 13.2 s gap sits inside a single analysis. The canonical string of the tree's inferred type grows ~2.7x per analysis: 22, 82, 242, 682, 1882, 5162, 14122, 38602, 105482 characters. Each analysis unrolls one more {int, :nil | {int, :nil | ...}} level and none widens to a recursive type, so the fixpoint never converges.\nAcceptance: the program builds and runs on all three paths with a pinned, small number of AnalyzeActivation completions.\n\nFOLDED into fz-9zq.3 (2026-11-14, plan /Users/j5n/Workspace/fz-next.html): the BST stall is define_return -\u003e Types::union -\u003e normalize_tuple_axis (correlated tuple DNF union before any fold). Acceptance (builds and runs on all three paths with a pinned small AnalyzeActivation count) moves to fz-9zq.3.",
   "id": "fz-gjo",
   "labels": [],
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "A recursive tuple type widens instead of unrolling one level per analysis",
   "type": "bug",
-  "updated_at": "2026-11-15T03:40:37Z"
+  "updated_at": "2026-11-15T03:40:38Z"
 }
