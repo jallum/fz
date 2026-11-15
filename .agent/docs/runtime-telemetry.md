@@ -312,16 +312,16 @@ callers and the heap's unit tests read it there. Every scheduler's
 `end_quantum` observes it, so a built binary logs it too.
 `tests/fixture_matrix.rs`
 (`a_matched_reply_fixture_collects_on_every_path_though_only_the_jit_yields_mid_run`)
-pins fixture 00901: 19 collections on `run` (18 child yields, one parent
-park) copying 2680080 bytes in all, and 1 on `interp` (the parent's park)
+pins fixture 00901: 8 collections on `run` (7 child yields, one parent
+park) copying 1441872 bytes in all, and 1 on `interp` (the parent's park)
 copying 864, since the interpreter charges no reductions and
 never yields mid-run. Neither parent collects after its graft: the gifts raised
 its baseline to its fill.
 The same file pins fixture 00910 (`interp`: the parent's park at 48 bytes;
 `run`: its park at 288 bytes) and fixture 00911 (`interp`:
 the parent's park at 0 bytes; `run`: the child's park at 288 bytes, then the
-parent collected on 15 of its 39 yields while it builds the list, four of them
-major; its park mid-run finds the heap due and collects, copying 208 bytes). The
+parent collected on 6 of its 39 yields while it builds the list, two of them
+major; its park mid-run finds the heap not due and does not collect). The
 run-ended equality is pinned for both fixtures on `run`, `interp` and `build`.
 `sched_core_test.rs` pins the `Collection` that `end_quantum` observes, that a
 halting process is not collected, and the exit it observes and the destructors it dispatches.

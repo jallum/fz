@@ -12,7 +12,7 @@ use super::ref_io::{
 };
 use super::schema::{Schema, SchemaRegistry};
 use super::stats::{GcStats, Generation};
-use super::{Heap, HeapAllocKind, HeapAllocStats, MapLayout, SHARED_BIN_THRESHOLD_BYTES};
+use super::{Heap, HeapAllocKind, HeapAllocStats, Hole, MapLayout, SHARED_BIN_THRESHOLD_BYTES};
 use crate::any_value::{
     AnyValue, AnyValueRef, AnyValueRefError, CLOSURE_FLAGS_CAPTURED_MASK, ListCons, MAP_FLAT_MAX, MapDestinationKind,
     STRUCT_PAYLOAD_OFFSET, SlotLayout, ValueKind, bitstring_header_word, bitstring_size_for_bit_len,
@@ -121,6 +121,7 @@ impl Heap {
             young_blocks: Vec::new(),
             old_blocks: Vec::new(),
             gift: None,
+            hole: Hole::NONE,
             node,
             schemas,
             struct_maps: Default::default(),
@@ -173,14 +174,20 @@ impl Heap {
         self.bump(size)
     }
 
-    /// Place `size` bytes (already a multiple of 16) in the tip, or beyond it
-    /// when the tip is full. Allocation and the collector's copies both
-    /// place through here, so a copy overflows exactly as an allocation does.
+    /// Place `size` bytes (already a multiple of 16) in the hole when it
+    /// holds them, else in the tip, or beyond it when the tip is full.
+    /// Allocation and the collector's copies both place through here, so a copy
+    /// overflows exactly as an allocation does; a collection has forgotten the
+    /// hole before it copies, so only allocation reuses one.
     pub(super) fn bump(&mut self, size: usize) -> *mut u8 {
         debug_assert!(
             size >= 16 && size.is_multiple_of(16),
             "placements are whole 16-byte slots"
         );
+        if let Some(p) = self.take_from_hole(size) {
+            self.alloc_count += 1;
+            return p;
+        }
         let new_top = unsafe { self.bump_top.add(size) };
         if new_top > self.block_end {
             if self.parks_alone(size) {
@@ -192,6 +199,27 @@ impl Heap {
         self.bump_top = unsafe { self.bump_top.add(size) };
         self.alloc_count += 1;
         p
+    }
+
+    /// The first `size` bytes of the hole, when it holds them, lies among the
+    /// young blocks and no gift window is open. A gift's copy must fill its
+    /// own block exactly, so a window never reuses. A hole in an old block
+    /// stays out of every minor collection's sight and can never become young,
+    /// so it is dropped.
+    fn take_from_hole(&mut self, size: usize) -> Option<*mut u8> {
+        if self.hole.size < size || self.gift.is_some() {
+            return None;
+        }
+        if !super::ref_io::ptr_in_ranges(self.hole.start, self.young_ranges()) {
+            self.hole = Hole::NONE;
+            return None;
+        }
+        let start = self.hole.start;
+        self.hole = Hole {
+            start: unsafe { start.add(size) },
+            size: self.hole.size - size,
+        };
+        Some(start)
     }
 
     /// Whether an object of `size` bytes is huge: larger than the capacity one
@@ -1333,6 +1361,7 @@ impl Heap {
             self.old_blocks.iter().map(Block::fill).sum::<usize>(),
             "the old bytes are the fill of the old blocks"
         );
+        self.hole = Hole::NONE;
         let generation = self.next_generation();
         let from_space = FromSpace::of(self, generation);
         let to_capacity_guess = match generation {

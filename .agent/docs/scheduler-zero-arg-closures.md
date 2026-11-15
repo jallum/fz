@@ -385,8 +385,15 @@ outer continuation into registers, then `release_resumed_frame` gives the frame
 back: when the frame ends at `heap.bump_top` and no `ValueRef` capture is
 scalar-kinded (kinds 9..=0xE name their raw slot inside the frame), `bump_top`
 returns to the frame's start and `alloc_count` falls by one. The statistics keep
-the allocation; a frame under a newer object, or a pinned one, stays until the
-next collection. The mid-flight yield continuation body releases its frame the
+the allocation. A frame under a newer object that no scalar-kinded capture pins
+is recorded as the heap's hole (`Heap::hole`: start and size, the newest such
+frame replacing an older one); a pinned frame stays until the next collection.
+`Heap::bump`, the runtime allocator, places the next object that fits in the
+hole, shrinking it from the front, while the hole lies in a young block and no
+gift window is open; a hole in an old block is dropped, and every collection
+forgets the hole. Inline code that builds a continuation frame at the tip does
+not take the hole. The `poison_dead_frames` build poisons a releasable frame and does not record it, so a poisoned frame is
+never handed out. The mid-flight yield continuation body releases its frame the
 same way before it calls the callee. The back-edge yield stores a raw int, float
 or atom straight into the frame's raw slot, and the body reads that slot raw, so
 only its `ValueRef` and `HeapRef` slots count as ref slots; a frame of raw

@@ -53,6 +53,8 @@ mod heap_test;
 mod minor_collection_test;
 #[cfg(test)]
 mod schema_test;
+#[cfg(test)]
+mod stranded_hole_test;
 
 use self::block_pool::Block;
 use self::gift::GiftWindow;
@@ -86,7 +88,8 @@ pub const SHARED_BIN_THRESHOLD_BYTES: usize = 64;
 /// updates to place a continuation frame at the tip without calling the runtime: the
 /// bump pointer and its block's end, the object count, and the allocation
 /// statistics a placement must keep truthful (the total and the continuation
-/// counters).
+/// counters). The hole's two fields are written when a frame's resume cannot
+/// pop it.
 #[derive(Clone, Copy, Debug)]
 pub struct InlineAllocLayout {
     pub bump_top: usize,
@@ -96,6 +99,8 @@ pub struct InlineAllocLayout {
     pub total_bytes: usize,
     pub continuation_allocs: usize,
     pub continuation_bytes: usize,
+    pub hole_start: usize,
+    pub hole_size: usize,
 }
 
 pub const INLINE_ALLOC_LAYOUT: InlineAllocLayout = InlineAllocLayout {
@@ -106,7 +111,27 @@ pub const INLINE_ALLOC_LAYOUT: InlineAllocLayout = InlineAllocLayout {
     total_bytes: std::mem::offset_of!(Heap, alloc_stats.total.bytes),
     continuation_allocs: std::mem::offset_of!(Heap, alloc_stats.continuation.allocs),
     continuation_bytes: std::mem::offset_of!(Heap, alloc_stats.continuation.bytes),
+    hole_start: std::mem::offset_of!(Heap, hole.start),
+    hole_size: std::mem::offset_of!(Heap, hole.size),
 };
+
+/// Bytes a continuation frame left behind when it resumed under a newer
+/// object and so could not be popped: a dead frame the next runtime allocation
+/// that fits may reuse. The heap remembers one, the newest. Compiled code
+/// writes both fields in place, so a size of zero means no hole.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub(super) struct Hole {
+    pub(super) start: *mut u8,
+    pub(super) size: usize,
+}
+
+impl Hole {
+    pub(super) const NONE: Hole = Hole {
+        start: std::ptr::null_mut(),
+        size: 0,
+    };
+}
 
 pub struct Heap {
     block_start: *mut u8,
@@ -138,6 +163,9 @@ pub struct Heap {
     /// The open gift window, if `begin_gift` has set the tip aside and
     /// `end_gift` has not yet cut the segment.
     gift: Option<GiftWindow>,
+    /// The last frame a resume could not pop, while it lies in the young
+    /// blocks and until a collection releases them.
+    hole: Hole,
     /// The atom-name authority for map key ordering. A process heap shares its
     /// process's node, so every map construction and lookup uses the same atom
     /// order as `Kernel.compare` without callers having to supply ambient

@@ -262,6 +262,10 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             a_matched_reply_fixture_collects_on_every_path_though_only_the_jit_yields_mid_run,
         ),
         (
+            "a_frame_the_pop_misses_gives_its_memory_to_the_next_runtime_allocation_that_fits",
+            a_frame_the_pop_misses_gives_its_memory_to_the_next_runtime_allocation_that_fits,
+        ),
+        (
             "a_receiver_parked_on_a_pinned_list_is_collected_on_every_path_and_still_matches",
             a_receiver_parked_on_a_pinned_list_is_collected_on_every_path_and_still_matches,
         ),
@@ -3555,6 +3559,7 @@ fn send_probe_events_for_fixture(fixture: &FixtureCase, path: FixtureMatrixPath,
 struct GcEvent {
     pid: usize,
     boundary: String,
+    generation: String,
     copied_bytes: usize,
 }
 
@@ -3566,6 +3571,7 @@ fn gc_events_for_fixture(fixture: &FixtureCase, path: FixtureMatrixPath, label: 
         .map(|line| GcEvent {
             pid: required_json_u64_field(line, "pid", "gc event"),
             boundary: json_str_field(line, "boundary").unwrap_or_else(|| panic!("gc event missing boundary")),
+            generation: json_str_field(line, "generation").unwrap_or_else(|| panic!("gc event missing generation")),
             copied_bytes: required_json_u64_field(line, "copied_bytes", "gc event"),
         })
         .collect()
@@ -3682,11 +3688,10 @@ fn a_matched_reply_fixture_collects_on_every_path_though_only_the_jit_yields_mid
     // sends the 50000-element log; a yield collects only when the heap is due,
     // once the child has allocated as many bytes as it held live after its last
     // collection. Each quantum's continuation frames raise the bytes allocated:
-    // a frame that resumes as the newest object is given back, but a frame
-    // under a newer cons cell stays until the collection, so a quantum
-    // allocates about 224 KB of which about 12.9 KB survive. The child is
-    // collected on 18 of its yields, more than the 7 it was when its
-    // continuations lived on the stack. The parent is collected once as it
+    // a frame that resumes as the newest object is given back, and a frame
+    // under a newer cons cell is reused by the next allocation that fits, so a
+    // quantum allocates about 45 KB of which about 12.9 KB survive. The child is collected on 7
+    // of its yields. The parent is collected once as it
     // parks on its receive (912 bytes: the values the parked receive holds,
     // among them the heap-stats maps the fixture binds, each of 34 entries, plus the closures and
     // continuation frames its park record holds). The gifts it grafts
@@ -3696,13 +3701,13 @@ fn a_matched_reply_fixture_collects_on_every_path_though_only_the_jit_yields_mid
     let count = |boundary: &str| events.iter().filter(|e| e.boundary == boundary).count();
     assert_eq!(
         (count("yield"), count("park"), count("exit")),
-        (18, 1, 0),
+        (7, 1, 0),
         "run: the child's collected yields, the parent's park, no exit"
     );
-    assert_eq!(events.len(), 19, "run: one gc event per collection");
+    assert_eq!(events.len(), 8, "run: one gc event per collection");
     assert_eq!(
         events.iter().map(|e| e.copied_bytes).sum::<usize>(),
-        2_680_080,
+        1_441_872,
         "run: the bytes every collection copied"
     );
 
@@ -3810,6 +3815,31 @@ fn a_receiver_left_parked_with_queued_gifts_drops_them_at_teardown() {
     }
 }
 
+/// Enum.map over 200000 elements and Enum.filter over 400000 leave one continuation
+/// frame per element. Each frame resumes under the cons cells built after it
+/// until the list is whole, so the resume cannot pop it. A frame the pop
+/// misses is a hole the next runtime allocation that fits reuses, so the same
+/// program fills its young generation more slowly and is due a minor
+/// collection less often.
+fn a_frame_the_pop_misses_gives_its_memory_to_the_next_runtime_allocation_that_fits() {
+    let collections = |stem: &str| {
+        let fixture = FixtureCase::new(format!("fixtures/{stem}.fz"));
+        let events = gc_events_for_fixture(&fixture, FixtureMatrixPath::Run, "run");
+        let generation = |name: &str| events.iter().filter(|e| e.generation == name).count();
+        (generation("minor"), generation("major"))
+    };
+    assert_eq!(
+        collections("01293_enum_map_over_two_hundred_thousand_elements_does_not_overflow_the_stack"),
+        (8, 4),
+        "map: minor and major collections"
+    );
+    assert_eq!(
+        collections("01294_enum_filter_over_four_hundred_thousand_elements_does_not_overflow_the_stack"),
+        (9, 4),
+        "filter: minor and major collections"
+    );
+}
+
 /// `(pid, boundary, copied_bytes)` of every collection, in emission order.
 fn collections_as_tuples(events: &[GcEvent]) -> Vec<(usize, &str, usize)> {
     events
@@ -3907,17 +3937,15 @@ fn a_large_list_passed_back_and_forth_crosses_as_one_gift_per_message_on_every_p
     // The interpreter never yields, so it collects the parent once, at its
     // park for the announcement, with nothing live. The JIT yields while the
     // parent builds the list, and a yield collects only when the heap is due:
-    // the continuation frames a quantum builds that resume under a newer cons
-    // cell stay on the heap until a collection, so a quantum allocates several
-    // times the bytes of the cells that survive (the parent's yields are 39; it
-    // is collected on 15 of them). Each minor collection copies what was
-    // allocated since the last one; those whose old bytes passed twice what the
-    // last major collection left are major and copy everything live. The child
-    // is collected once, as it parks (288 bytes). The parent's park mid-run,
+    // a continuation frame that resumes under a newer cons cell is reused by
+    // the next allocation that fits, so a quantum allocates about 32 KB. The
+    // parent yields 39 times and is collected on 6 of them, two major. Each minor collection copies what was allocated since
+    // the last one; those whose old bytes passed twice what the last major
+    // collection left are major and copy everything live. The child is
+    // collected once, as it parks (288 bytes). The parent's park mid-run,
     // where it waits for the next ball, collects only if the heap is due there,
-    // and due is a margin of a few hundred bytes of young bytes against a
-    // budget the last collection set. It is due here: 512352 young bytes
-    // against a budget of 384176.
+    // and it is not: the collection at the last yield before it left 32448
+    // young bytes against a budget of 554848.
     let events = gc_events_for_fixture(&fixture, FixtureMatrixPath::Interp, "interp");
     assert_eq!(
         collections_as_tuples(&events),
@@ -3931,20 +3959,10 @@ fn a_large_list_passed_back_and_forth_crosses_as_one_gift_per_message_on_every_p
             (2, "park", 288),
             (1, "yield", 32_192),
             (1, "yield", 64_192),
-            (1, "yield", 32_064),
-            (1, "yield", 32_064),
-            (1, "yield", 32_064),
-            (1, "yield", 192_192),
-            (1, "yield", 32_064),
             (1, "yield", 64_064),
-            (1, "yield", 32_064),
-            (1, "yield", 64_048),
+            (1, "yield", 96_064),
             (1, "yield", 320_128),
-            (1, "yield", 64_048),
-            (1, "park", 208),
-            (1, "yield", 42_784),
-            (1, "yield", 48),
-            (1, "yield", 48),
+            (1, "yield", 234_720),
         ],
         "run: the child's park, then the parent's collected yields and its mid-run park"
     );

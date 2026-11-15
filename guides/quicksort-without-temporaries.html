@@ -60,7 +60,8 @@ these frames in their own row, <code>continuation_allocs</code> and
 <code>continuation_bytes</code>, so the closure rows count only closures the
 program makes. A continuation resumes at most once; when its frame is the
 newest object on the heap at that moment the resume gives the bytes back, and
-otherwise the frame stays until the next collection.</p>
+otherwise the next allocation the runtime makes that fits the frame reuses its
+bytes.</p>
 
 <h3>4. We return a pair through memory instead of through registers</h3>
 
@@ -198,7 +199,7 @@ yield: the frame a yield needs is the same kind of object every call builds.</p>
 <div class="aside">
 The mental model is: every pending call is a small heap frame; a frame that
 resumes as the newest object is given back at once; one that is buried under
-newer objects stays until a collection.
+newer objects is reused by a later allocation.
 </div>
 
 <h2>How fz combines older ideas</h2>

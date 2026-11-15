@@ -15781,8 +15781,9 @@ end
         // own (6, 160), none of them list conses. The program's calls build
         // eighteen continuation frames; fourteen resume as the newest heap
         // object and are given back, four resume under a newer object and stay
-        // on the heap: four more objects, 128 more bytes.
-        (13, 368),
+        // counted: four more objects. One of them is reused by a later
+        // allocation, so the heap's fill is 112 more bytes, not 128.
+        (13, 352),
         "preserving the source list type avoids a redundant 16-byte cons"
     );
     assert!(run.source_and_rebuild_share_return);

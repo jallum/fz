@@ -1100,7 +1100,9 @@ object bytes are 16-byte aligned request sizes. The <code>closure</code> row
 counts closures a program makes; the <code>continuation</code> row counts the
 frames native code builds for calls that return to a caller, and the
 interpreter builds none. The counts are allocations: a continuation frame that
-resumes as the newest heap object is given back and stays counted.</p>
+resumes as the newest heap object is given back and stays counted, and so does
+one that resumes under a newer object, whose memory the next runtime allocation
+that fits may take.</p>
 
 <p><code>:shared_bin_allocs</code> and <code>:shared_bin_bytes</code> count the
 off-heap byte buffers behind large binaries, and are deliberately NOT part of

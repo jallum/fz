@@ -227,6 +227,9 @@ fn emit_tagged_pointer_payload_for_arch(b: &mut FunctionBuilder<'_>, ptr: ir::Va
 /// The dead frame is given back to the heap when it is the newest object,
 /// unless one of its `ValueRef` captures is scalar-kinded: such a ref names
 /// the frame's own capture slot, so the frame stays while that ref lives.
+/// A dead frame that is not the newest object and is not pinned becomes the
+/// heap's hole, which the runtime's next allocation that fits reuses; the
+/// `poison_dead_frames` build poisons it and does not record it.
 /// The heap's object count falls with the frame; the allocation statistics
 /// count allocations and keep it. Every capture and the outer continuation are
 /// read into registers before this runs.
@@ -278,6 +281,9 @@ pub(crate) fn release_resumed_frame<M: cranelift_module::Module>(
         let pop = body.b.ins().band(at_tip, released);
         let new_top = body.b.ins().select(pop, address, top);
         body.b.ins().store(flags, new_top, process, heap);
+        let stranded = body.b.ins().icmp(IntCC::NotEqual, end, top);
+        let stranded = body.b.ins().band(stranded, released);
+        record_stranded_frame(body, stranded, address, size);
         let objects_at = PROCESS_HEAP_OFFSET + INLINE_ALLOC_LAYOUT.alloc_count as i32;
         let objects = body.b.ins().load(types::I64, flags, process, objects_at);
         let given_back = body.b.ins().uextend(types::I64, pop);
@@ -288,6 +294,29 @@ pub(crate) fn release_resumed_frame<M: cranelift_module::Module>(
 
     body.b.switch_to_block(done);
     body.b.seal_block(done);
+}
+
+/// Makes the frame at `address` the heap's hole when `stranded`, and leaves the
+/// hole it holds otherwise. A newer miss replaces an older one.
+fn record_stranded_frame<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, M>,
+    stranded: ir::Value,
+    address: ir::Value,
+    size: ir::Value,
+) {
+    let flags = MemFlags::trusted();
+    let process = body.process_arg();
+    let field = |offset: usize| PROCESS_HEAP_OFFSET + offset as i32;
+    let (start_at, size_at) = (
+        field(INLINE_ALLOC_LAYOUT.hole_start),
+        field(INLINE_ALLOC_LAYOUT.hole_size),
+    );
+    let held_start = body.b.ins().load(types::I64, flags, process, start_at);
+    let held_size = body.b.ins().load(types::I64, flags, process, size_at);
+    let start = body.b.ins().select(stranded, address, held_start);
+    let size = body.b.ins().select(stranded, size, held_size);
+    body.b.ins().store(flags, start, process, start_at);
+    body.b.ins().store(flags, size, process, size_at);
 }
 
 /// `closure_size_for_count` over a runtime count.
