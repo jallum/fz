@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-nml.17"
   ],
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-nml",
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "One off-heap chain: BinRefs and resource stubs share it, as in OTP",
   "type": "task",
-  "updated_at": "2026-11-15T17:05:26Z"
+  "updated_at": "2026-11-15T19:55:26Z"
 }
