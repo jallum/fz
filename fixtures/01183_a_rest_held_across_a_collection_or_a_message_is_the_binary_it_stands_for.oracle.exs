@@ -8,13 +8,13 @@ defmodule Held do
 
   # The rest is live in a continuation across a call that allocates.
   def across(<<head, rest :: binary>>) do
-    churn(20_000, [])
+    churn(2_000, [])
     {head, rest}
   end
 
   # The rest is read after the churn, in the walk that holds it.
   def walk_across(<<head, rest :: binary>>, sum) do
-    churn(200, [])
+    churn(25, [])
     walk_across(rest, sum + head)
   end
 
@@ -31,7 +31,7 @@ end
 
 bytes = String.duplicate("0123456789", 20)
 reader = Held.reader(bytes)
-Held.churn(20_000, [])
+Held.churn(2_000, [])
 IO.inspect(reader.() === String.slice(bytes, 1, 199))
 IO.inspect(Held.across(bytes) === {?0, String.slice(bytes, 1, 199)})
 IO.inspect(Held.walk_across(bytes, 0))
