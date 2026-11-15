@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-15T21:58:31Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-nhb",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Fixtures 01380 and 01381 are their own Elixir oracle",
   "type": "task",
-  "updated_at": "2026-11-15T21:58:31Z"
+  "updated_at": "2026-11-15T21:58:32Z"
 }
