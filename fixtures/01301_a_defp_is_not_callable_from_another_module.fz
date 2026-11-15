@@ -1,0 +1,14 @@
+#---
+# purpose: "A defp called by its qualified name from another module's function is refused, whichever module is defined first"
+# expect: diagnostic
+# diagnostic.code: resolve/unknown-import
+#---
+defmodule Caller do
+  def go(), do: Hidden.g(1)
+end
+
+defmodule Hidden do
+  defp g(x), do: {:private, x}
+end
+
+def main(), do: dbg(Caller.go())

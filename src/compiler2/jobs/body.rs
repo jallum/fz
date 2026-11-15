@@ -1801,10 +1801,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
             // no interface. The name path would have recorded an expectation
             // here, and so does this one: an owner that never exports it is a
             // diagnostic at the interface boundary, not a silent placeholder.
-            NamespaceSymbol::Callable(function) => {
-                self.expect_retained_export(function, span);
-                Ok(function)
-            }
+            NamespaceSymbol::Callable(function) => self.retained_export(function, span),
             NamespaceSymbol::Module(_) | NamespaceSymbol::Type(_) | NamespaceSymbol::Splice(_) => {
                 Err(self.retained_callee_error(function, span, "is not a callable".to_string()))
             }
@@ -1823,21 +1820,17 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         )
     }
 
-    /// Records that the retained callee's module owes this export, the same
-    /// obligation `resolve_module_callee` records for a name.
-    fn expect_retained_export(&mut self, function: FunctionId, span: Span) {
+    /// The retained callee as its module exports it, asked the same way
+    /// `resolve_module_callee` asks for a name.
+    fn retained_export(&mut self, function: FunctionId, span: Span) -> Result<FunctionId, FatalError> {
         let reference = self.world.function_ref(function);
         let module = reference.module;
         let name = reference.name().to_string();
         let arity = reference.arity;
         let requester = self.interface_requester(span);
-        self.world.reference_module_interface_callable(
-            module,
-            name,
-            arity,
-            InterfaceCallableKind::PublicFunction,
-            Some(requester),
-        );
+        self.world
+            .module_public_function(module, &name, arity, requester)
+            .map_err(|diagnostic| emit_job_diagnostic(self.telemetry, *diagnostic))
     }
 
     fn resolve_direct_callee(&mut self, name: &str, arity: usize, span: Span) -> Result<FunctionId, FatalError> {
@@ -1889,7 +1882,9 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
             self.check_variadic_arity(&label, arity, span, minimum)?;
         }
         let requester = self.interface_requester(span);
-        Ok(self.world.module_public_function(module, name, arity, requester))
+        self.world
+            .module_public_function(module, name, arity, requester)
+            .map_err(|diagnostic| emit_job_diagnostic(self.telemetry, *diagnostic))
     }
 
     fn resolve_runtime_function(

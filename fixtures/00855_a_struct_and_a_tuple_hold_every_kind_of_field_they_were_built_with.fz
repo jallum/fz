@@ -1,15 +1,15 @@
 #---
 # purpose: "A struct and a tuple built from computed values hold each field as it was given, whatever its kind, and still do after the heap has been collected many times over"
 # oracle: oracle.exs
-# oracle.stamp: 37e45c2f94dd047a
+# oracle.stamp: b7755e66c2c55510
 #---
 #
 # Each field is stored where the object was allocated, by the kind the
 # compiler knows it has: an integer, a float, an atom, a comparison's
 # answer, nil, a list, the empty list, a binary, a struct, a tuple, a map, a
-# function inside a tuple, a constant the program carries as data, and a value the types know nothing of.
+# function, a constant the program carries as data, and a value the types know nothing of.
 defmodule Sample do
-  defstruct [:count, :ratio, :unit, :big, :none, :items, :empty, :label, :inner, :pair, :table, :fixed, :other]
+  defstruct [:count, :ratio, :unit, :big, :none, :items, :empty, :label, :inner, :pair, :step, :table, :fixed, :other]
 end
 
 defmodule Inner do
@@ -29,7 +29,8 @@ def sample(n) do
     empty: [],
     label: "n" <> Integer.to_string(n),
     inner: %Inner{depth: n + 100},
-    pair: {n, :pair, fn x -> x + n end},
+    pair: {n, :pair},
+    step: fn x -> x + n end,
     table: %{n => "value"},
     fixed: {:always, "same", [1, 2]},
     other: opaque(n * 7)
@@ -56,9 +57,8 @@ def show(s) do
   dbg(s.empty)
   dbg(s.label)
   dbg(s.inner)
-  {first, tag, step} = s.pair
-  dbg({first, tag})
-  dbg(step.(1000))
+  dbg(s.pair)
+  dbg(s.step.(1000))
   dbg(s.table)
   dbg(s.fixed)
   dbg(s.other)

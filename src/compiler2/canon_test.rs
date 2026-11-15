@@ -148,11 +148,10 @@ fn canon_is_faithful_over_the_full_arena_of_both_target_fixtures() {
             }
         }
 
-        // The arena still carries distinct ids for one type, so the sweep
-        // above proves canon collapses a measured defect rather than passing
-        // vacuously. Both counts are CEILINGS: every fold at the persistence
-        // boundary may lower them and none may raise them, and the target is
-        // zero duplicates.
+        // The arena carries distinct ids for one type, so the sweep above
+        // proves canon collapses them rather than passing vacuously. Both
+        // counts are CEILINGS: a change may lower them and none may raise them
+        // without the cause stated beside the pin.
         assert!(
             collapsed <= duplicate_ceiling(number),
             "{name}: {collapsed} mutually-subtype distinct ids, above the {} this fixture is \
@@ -162,9 +161,25 @@ fn canon_is_faithful_over_the_full_arena_of_both_target_fixtures() {
     }
 }
 
-/// How many ids each target fixture still spends on a type it already has.
-/// Lower is better, so a change that improves the boundary lowers the pin in
-/// the same motion.
+/// How many ids each target fixture spends on a type it already has. Lower is
+/// better, so a change that removes one lowers the pin in the same motion.
+///
+/// The ids that remain carry something their denotation does not: what a
+/// reader takes back out of the type. A closure literal denotes one value, and
+/// `func_clause_empty` compares two literals by brand and captures alone, but
+/// the literal's arrow surface is read back. It is the closure's own variables
+/// where the literal is minted, the key's addressed variables (`a2_p0`) once a
+/// key arrow holds it, and a contract's instantiation where a contract met it.
+/// Each view is its own id. Interning every literal at its own variables loses
+/// the contract instantiations that `callable_value_clauses` and contract
+/// application read; letting literal inclusion compare surfaces separates the
+/// minted and the addressed views of one value, which then cannot flow between
+/// a body and its key (fixture 01143 and the distiller fail on every path). A
+/// plain arrow whose result is `any` is `fun`, and is kept for the parameters a
+/// key reads back (see the axis test
+/// `absorbing_the_callable_axis_would_erase_the_inputs_a_key_reads_back`).
+/// Collapsing nearly every pair across the fixture census changed compile work
+/// by 0.09%, so these ids cost identity, not work.
 ///
 /// The number of interned types is deliberately NOT pinned beside it. It is
 /// not a lower-only quantity: fusing two clauses that agree on all but one
@@ -175,13 +190,11 @@ fn duplicate_ceiling(number: u32) -> usize {
     match number {
         // 122 -> 142: a non-recursive key collapses a list nothing asks about to its
         // class, so the Enum `*_while`, `*_every` and `*_positive` wrappers gain key
-        // arrows beside their evidence arrows, and each carries a closure whose two
-        // ids render alike (the pair described for 00567 below).
+        // arrows beside their evidence arrows, and each holds a closure literal whose
+        // surface views are separate ids.
         420 => 142,
-        // A closure carried with differently instantiated surfaces gets two
-        // ids that render alike; the widened key type `%{1: atom}` beside
-        // `%{1: :a}` inherits one such pair (14 -> 15). This raise was
-        // reviewed; collapsing those ids lowers the ceiling.
+        // 14 -> 15: the widened key type `%{1: atom}` beside `%{1: :a}` holds a
+        // closure literal whose surface views are separate ids.
         567 => 15,
         other => panic!("no pinned ceiling for fixture {other:05}"),
     }

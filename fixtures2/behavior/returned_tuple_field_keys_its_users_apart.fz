@@ -26,9 +26,9 @@ defmodule M do
 end
 
 defmodule G do
-  defp walk({:stop, acc}, _n), do: acc
-  defp walk({:go, acc}, 0), do: walk({:stop, acc}, 0)
-  defp walk({:go, acc}, n), do: walk({:go, acc}, n - 1)
+  def walk({:stop, acc}, _n), do: acc
+  def walk({:go, acc}, 0), do: walk({:stop, acc}, 0)
+  def walk({:go, acc}, n), do: walk({:go, acc}, n - 1)
 end
 
 def main() do
