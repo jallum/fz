@@ -39,7 +39,7 @@
   ],
   "priority": 1,
   "status": "open",
-  "title": "Proposal: a rest view of a binary costs the collector nothing when it dies",
+  "title": "A binary that is only taken apart travels as its source and a position",
   "type": "task",
-  "updated_at": "2026-11-15T03:18:41Z"
+  "updated_at": "2026-11-15T03:18:49Z"
 }
