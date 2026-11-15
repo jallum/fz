@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-9zq.1"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-9zq.5"
+  ],
   "created": "2026-11-15T03:40:18Z",
   "description": "Step R3 of fz-9zq. Buys: fz-gjo (nested-tuple BST insert) compiles. Stall (/private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/mu2/round3.md): define_return -\u003e Types::union -\u003e dnf_union -\u003e normalize_tuple_axis: the DNF union of correlated tuple clauses on the return runs before any fold can see it. Hand answer: μX. nil | {int, X, X}. With the r-site fold at depth 2 the probe built bst in 0.5s (134 AA); runtime at n=100,000 unaffected by widening (0.28-0.33s).",
   "id": "fz-9zq.3",
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "A return folds before it is unioned",
   "type": "task",
-  "updated_at": "2026-11-15T03:40:20Z"
+  "updated_at": "2026-11-15T03:40:21Z"
 }
