@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-15T12:58:11Z",
   "created": "2026-11-15T12:57:39Z",
   "description": "The record example in .agent/docs/semantic-fixpoint.md (%Point{x: 1} / %Size{w: 2.0} share one activation) is correct, but only because the unset fields hold nil, a literal atom, so the records are not ground and take the demand path. Probe on develop 353b2ab2f: that example gives sink/1 1 key (map); %Point{x: 1, y: 2} / %Size{w: 3, h: 4} gives 2 keys. The doc should state the ground rule and the contrasting case.",
   "id": "fz-3sy.26",
   "labels": [],
   "parent": "fz-3sy",
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "semantic-fixpoint.md: say why its record example shares one activation",
   "type": "task",
-  "updated_at": "2026-11-15T12:57:39Z"
+  "updated_at": "2026-11-15T12:58:11Z"
 }
