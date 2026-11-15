@@ -13,6 +13,10 @@
     {
       "text": "Refuted after five pre-registered rounds (scratch 9x7-8/notes.md, results{,2,4,5}.txt, page https://claude.ai/artifact/QydSk1Cp2zZs8PiAqix8sp). Rounds 2-3: young binary bytes in the heap trigger (256 B floor) cut deadbinlive RSS 202-\u003e73 MB with every guard in range. Round 4: that variant regresses survive vs today (168-\u003e230 MB); old-binary majors (A) cost the distiller 4.0x RSS / 1.22x instructions; quantum cut (B) costs deadbin 2.14x instructions. Round 5 (OTP-shaped separate binary budgets, 256 KiB minimum, judged vs today, 147 runs/variant): F, O, F+C, O+C all fail rules 2 and 3 on dist-p28000 (RSS 1.74-1.77x), dist-full (RSS 3.98-4.35x, instr 1.20-1.27x), json (RSS 1.15-1.22x, instr 1.09-1.14x) and rule 2 on survive (instr 1.19-1.26x). The quantum cut at a 256 KiB minimum works: quantum 125 MB -\u003e 0.3 MB off-heap at no instruction cost. Mechanism of the distiller regression is unverified; the only clause F, O and round-4 A share is the old-binary major.",
       "timestamp": "2026-11-15T14:23:47Z"
+    },
+    {
+      "text": "Reopened (user approved page https://claude.ai/artifact/PC7vJ3veeQqqQca2ppEnWp): revisit as round 6 on the aged collector of fz-9x7.11; round 6 is pre-registered when fz-9x7.11 lands.",
+      "timestamp": "2026-11-15T15:47:22Z"
     }
   ],
   "priority": 2,
