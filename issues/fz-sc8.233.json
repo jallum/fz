@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-15T16:59:40Z",
+  "description": "With `def one(_ :: ((any) -\u003e any)), do: :one` and the value known only at run time, `fn x, y -\u003e {x, y} end` answers `:one`: a two-argument function is admitted where one argument is promised (probe on develop a2dfed67b: interp, run). The callable axis of a run-time test (`Types::runtime_type_predicate_callables`, `RuntimeTestAxis::Callables`, `matches_runtime_callable`) checks that the value is a closure and, for a literal, which construction; it never checks arity. The closure header carries the user-visible arity (`any_value::closure_arity`), which is what the test lacks. Done when: a run-time callable test admits only closures of the arity its arrows state, on interp, run, build and the receive matcher, shown by an oracle fixture where a 1-arity pattern refuses a 2-arity closure and a union of arities admits both.",
+  "id": "fz-sc8.233",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 2,
+  "status": "open",
+  "title": "A function pattern admits only the arity its arrow states at run time",
+  "type": "bug",
+  "updated_at": "2026-11-15T16:59:40Z"
+}
