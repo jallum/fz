@@ -387,7 +387,12 @@ scalar-kinded (kinds 9..=0xE name their raw slot inside the frame), `bump_top`
 returns to the frame's start and `alloc_count` falls by one. The statistics keep
 the allocation; a frame under a newer object, or a pinned one, stays until the
 next collection. The mid-flight yield continuation body releases its frame the
-same way before it calls the callee.
+same way before it calls the callee. The back-edge yield stores a raw int, float
+or atom straight into the frame's raw slot, and the body reads that slot raw, so
+only its `ValueRef` and `HeapRef` slots count as ref slots; a frame of raw
+captures is the newest object at resume and is given back. Only a capture whose
+type is an integer, a float or an atom is raw (`AbiValueRepr::for_ty`); an `any`
+or `int | float` capture is a `ValueRef`.
 
 The `poison_dead_frames` cargo feature builds a compiler that poisons a
 releasable frame (null code pointer, kind bytes 0xB, raw words
