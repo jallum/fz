@@ -4,7 +4,8 @@
     "fz-nml.1"
   ],
   "blocks": [
-    "fz-nml.6"
+    "fz-nml.6",
+    "fz-sc8.111"
   ],
   "closed_at": "2026-11-15T05:39:39Z",
   "created": "2026-11-15T03:53:50Z",
@@ -16,5 +17,5 @@
   "status": "closed",
   "title": "a \u003c\u003e b appends into a's spare room when a ends where its buffer's bytes end",
   "type": "task",
-  "updated_at": "2026-11-15T05:39:39Z"
+  "updated_at": "2026-11-15T12:50:11Z"
 }
