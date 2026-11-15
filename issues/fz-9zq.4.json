@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-9zq.1"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-9zq.5"
+  ],
   "created": "2026-11-15T03:40:19Z",
   "description": "Step R4 of fz-9zq. Buys: t4b ({x, x} doubling) compiles; lowers cost wherever types share structure. {x,x} doubles tree size per level while the DAG stays linear, so every unmemoized pure walker goes exponential: convergence_class_at (types/mod.rs ~1759), tuple emptiness phi_tuple (emptiness.rs:52), has_vars, mentions_closure_literal, address_child. Memoizing one exposes the next (/private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/mu2/round3.md): per-Ty memoization of every pure walker through ONE shared mechanism. Paper first: count implementations (one question, one implementation).",
   "id": "fz-9zq.4",
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "Pure type walkers cost the size of the DAG, not of the tree",
   "type": "task",
-  "updated_at": "2026-11-15T03:40:20Z"
+  "updated_at": "2026-11-15T03:40:21Z"
 }
