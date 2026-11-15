@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-15T15:57:38Z",
+  "description": "Found 2026-11-15 (bitstring split experiments). On fz-nml.11 31823421d: 'case \u003c\u003c1::72\u003e\u003e do \u003c\u003cx::72\u003e\u003e -\u003e x end' panics in Rust at runtime/src/ir_runtime.rs:716 'integer field too wide: 72' (exit 134 interp/run, 141 build). Elixir returns {:matched, 1}. field_end also refuses total \u003e 64 on match (ir_runtime.rs:1503). Open question before building: fz integers are 64-bit, so the decision is whether a wide segment whose value fits (leading zero bits / sign extension) is accepted, and what a value that does not fit does -- Elixir has bignums, so exact parity may be impossible; the floor is that it is a loud fz error (compile-time when the size is constant, a raise at runtime), never a Rust panic. Needs a short proposal with the options before building.",
+  "id": "fz-q5m",
+  "labels": [],
+  "priority": 3,
+  "status": "open",
+  "title": "An integer segment wider than 64 bits raises or works as in Elixir instead of panicking the runtime",
+  "type": "bug",
+  "updated_at": "2026-11-15T15:57:38Z"
+}
