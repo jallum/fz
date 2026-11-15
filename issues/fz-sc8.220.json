@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-15T03:18:41Z",
+  "description": "A function returning {:ok, value, rest} | {:error, reason} allocates a heap tuple per call even when every consumer takes the tuple apart; a one-shape return ({acc, b}) already travels as fields. Probe (scratch cursor/ret.exs): 1,048,576 steps of item(v(b), acc) allocate 1,048,576 tuples plus about 4 continuations per step. In the JSON decoder this is one 48-byte tuple and one binary stub per decoded value, and it is what keeps the returned rest whole after the cursor (fz-sc8.208). Paper-first: a tag lane plus the union of field lanes, or one return entry per shape. Approved for filing by the user 2026-11-14 with the fz-sc8.208 page.",
+  "id": "fz-sc8.220",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 2,
+  "status": "open",
+  "title": "A return of two tuple shapes travels as fields",
+  "type": "task",
+  "updated_at": "2026-11-15T03:18:41Z"
+}
