@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-t93.19"
+  ],
   "blocks": [],
   "created": "2026-11-15T04:36:34Z",
   "description": "Finding from fz-t93.19 research (scratch t93_6/e1/, counter CW_ACT around replace_/extend_activation_input_contributions in World job completion, world.rs). On develop b0874c4a5 with the fz-t93.19 fold + OrderedSet index applied, this block spends 356M instructions on the distiller (2.5% of the run), the largest client-side completion cost no ticket names. Buys: instructions; the target is cost proportional to contributions that changed. Paper first: re-measure after fz-t93.19 lands, anatomy by sub-step, predictions before probes. Bar: byte-identical output, no pin rises without approval.",

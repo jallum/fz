@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [
+    "fz-t93.21",
     "fz-t93.7"
   ],
   "created": "2026-11-15T03:39:12Z",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "A recorded read costs the World what it costs the engine",
   "type": "task",
-  "updated_at": "2026-11-15T03:39:29Z"
+  "updated_at": "2026-11-15T04:36:34Z"
 }
