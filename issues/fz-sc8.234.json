@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-sc8",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Quoted metadata is a keyword list, as in Elixir",
   "type": "feature",
-  "updated_at": "2026-11-15T18:34:33Z"
+  "updated_at": "2026-11-15T18:39:34Z"
 }
