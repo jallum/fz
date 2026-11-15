@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-sc8.214"
+  ],
   "blocks": [],
   "created": "2026-11-15T02:44:28Z",
   "description": "Routing \u003c \u003c= \u003e \u003e= in guards to Kernel is refused today: 'guard helper cycle detected: \u003c/2 -\u003e \u003c/2', because the last clause is 'compare(left, right) \u003c 0' and a guard helper is reified without argument types. With typed selection the inner integer comparison picks the integer head. Then PatternGuardBinOp::{Lt, LtEq, Gt, GtEq} leave the three evaluators.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "A guard helper is selected by argument types, so ordering operators in guards can go through Kernel",
   "type": "task",
-  "updated_at": "2026-11-15T02:44:28Z"
+  "updated_at": "2026-11-15T02:44:31Z"
 }
