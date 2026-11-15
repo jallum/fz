@@ -241,7 +241,9 @@ fn the_distiller_compiles_inside_the_product_drive_budget() {
         // (47_681, 49_093, 28) -> (47_534, 48_946, 28): a non-recursive key collapses structure
         // nothing asks about to its class, as a recursive key does, so callers that differ only in
         // such freight share one activation.
-        (47_534, 48_946, 28),
+        // (47_534, 48_946, 28) -> (47_447, 48_858, 28): `Enum.uniq` asks a map whether it has
+        // seen a value, so the distiller no longer compiles a list scan for it.
+        (47_447, 48_858, 28),
         "(largest drive requests, total requests, drives) for the distiller's compile moved. \
          A fall is lowered in this pin; a rise is investigated first, because the largest drive \
          may not exceed PRODUCT_DRIVE_BUDGET (50,000)."
