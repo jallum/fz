@@ -120,6 +120,7 @@ their block. A new epic claims the next free block and adds a row here.
 | `01290-01299` | fz-t93                            | in use through `01292` |
 | `01300-01319` | fz-3sy                            | in use through `01302` |
 | `01320-01339` | fz-nml                            | in use through `01330` |
+| `01340-01359` | fz-9zq                            | in use through `01343` |
 
 A fixture orders its processes with messages and never by a timing margin: an
 `after` timeout is `0` when mail is already in the mailbox or nothing is
@@ -437,7 +438,8 @@ The shared grammar is intentionally small:
 - `root:` — compiler2 root to drive, written as `name/arity`.
 - `assert.metric.<name>:` — a numeric invariant. The current built-in names are
   `semantic.activations`, `semantic.executables`, `semantic.callsites`,
-  `call_edges.count`, and `return_type.widened`.
+  `call_edges.count`, `return_type.widened`, and `type.clash_folded` (how many
+  `fz.compiler2.type.clash_folded` events the compile dispatched).
 - `assert.edge:` — one semantic edge claim, written
   `caller | callsite | dispatch | target`. `target` matches the canonical target
   label, while the optional snapshot carries full input/return type detail.

@@ -1267,29 +1267,59 @@ mod tests {
     }
 
     #[test]
-    fn activation_return_widens_past_the_delay_and_terminates() {
+    fn activation_return_of_ever_deeper_lists_folds_at_the_repeat_and_terminates_before_the_budget() {
         let tel = ConfiguredTelemetry::new();
         let mut world = World::new();
         let mut activations = ActivationMap::new();
         let key = test_key(&mut world, &tel);
 
-        // The canonical divergent ascent: ever-deeper list nests.
+        // The canonical divergent ascent: ever-deeper list nests. The third
+        // rung gives a list element a list its ancestor already is, so the
+        // slot folds and the ascent reaches a fixed point within a few rounds.
         let mut ty = world.types_mut().int();
-        let mut widened_at = None;
-        for round in 0..(2 * RETURN_WIDENING_BUDGET + 8) {
+        for round in 0..RETURN_WIDENING_BUDGET {
             ty = world.types_mut().list(ty);
             let outcome = activations.define_return(world.types_mut(), &key, Some(ty), false);
-            if outcome.widened && widened_at.is_none() {
-                widened_at = Some(round);
-            }
+            assert!(!outcome.widened, "the budget never fires: the fold ends the ascent");
             if !outcome.changed {
-                // The ladder ended: a strictly-deepening ascent reached a
-                // fixed point through the widening operator.
-                assert!(widened_at.is_some(), "termination must come from widening");
+                assert!(
+                    !world.types_mut().take_clash_folds().is_empty(),
+                    "the ascent ended because a clash folded, round {round}"
+                );
                 return;
             }
         }
-        panic!("the widening operator must terminate a strictly-deepening ascent");
+        panic!("a nested list must fold within the widening budget");
+    }
+
+    #[test]
+    fn activation_return_of_ordinary_ascents_never_folds() {
+        let tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let mut activations = ActivationMap::new();
+        let key = test_key(&mut world, &tel);
+
+        // `[{:ok, int}]` growing to also hold `{:error, int}`, then a binary
+        // list: each rung adds a head under a different head, never one an
+        // ancestor already has.
+        let (ok, error) = (world.types_mut().atom_lit("ok"), world.types_mut().atom_lit("error"));
+        let (int, bin) = (world.types_mut().int(), world.types_mut().str_t());
+        let ok_int = world.types_mut().tuple(&[ok, int]);
+        let error_int = world.types_mut().tuple(&[error, int]);
+        let both = world.types_mut().union(ok_int, error_int);
+        let rungs = [
+            world.types_mut().list(ok_int),
+            world.types_mut().list(both),
+            world.types_mut().list(bin),
+        ];
+        for rung in rungs {
+            let outcome = activations.define_return(world.types_mut(), &key, Some(rung), false);
+            assert!(outcome.changed && !outcome.widened);
+            assert!(
+                world.types_mut().take_clash_folds().is_empty(),
+                "ordinary growth is not a repeat"
+            );
+        }
     }
 
     /// The ground instance of a closure literal at one signature: the same

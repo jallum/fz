@@ -382,6 +382,12 @@ impl Descr {
             && self.maps.is_empty()
     }
 
+    /// True when some tuple, list, resource or map alternative has children to
+    /// look into.
+    pub(super) fn has_constructors(&self) -> bool {
+        !(self.tuples.is_empty() && self.lists.is_empty() && self.resources.is_empty() && self.maps.is_empty())
+    }
+
     pub(super) fn projection_alternatives(&self) -> Option<Vec<Descr>> {
         if !self.axis_free() {
             return None;

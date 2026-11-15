@@ -8,6 +8,7 @@ mod arrow_match;
 mod axis;
 mod bits;
 mod canon;
+pub(crate) mod clash;
 mod closure_surface_var;
 mod conj;
 mod descr;
@@ -195,6 +196,11 @@ pub struct Types {
     /// produced it instead of leaking into the next reader. Threading a
     /// first-class sink through the join stays fz-0xp's.
     activation_input_collapses: u64,
+    /// Clash folds that fired since the last drain. `Types::clash_fold` knows
+    /// the path and the ancestor but not the site or the function, so
+    /// `World::take_clash_folds` is the drain that adds them and
+    /// `ExecutionContext::complete_job` the reporter.
+    clash_folds: Vec<clash::ClashFold>,
 }
 
 /// The operand-free types every [`Types`] world knows from birth.
@@ -639,6 +645,7 @@ impl Types {
             address_tys: Vec::new(),
             callable_origins: order::CallableOrigins::default(),
             activation_input_collapses: 0,
+            clash_folds: Vec::new(),
         }
     }
 
@@ -1755,13 +1762,10 @@ impl Types {
     /// address (`P_e`, `P`) rather than the `any`/`fun_top` fallback
     /// (fz-f98.14.10.2). Breadth is still one address per position, so the
     /// interner folds same-shape arrows to one key exactly as `list(any)` did and
-    /// fz-y6w termination holds. Depth is capped for LIST families: past
-    /// `ADDRESS_COLLAPSE_DEPTH` nested addressing steps the element tops out at
-    /// `any` (the earned depth ⊤) so a self-nesting list can never grow the
-    /// address path without bound. The cap is checked inside the
-    /// `is_pure_list_family` branch alone; the tuple, resource and map branches
-    /// recurse on the type that arrives, so their depth is bounded by that type
-    /// rather than by this function.
+    /// fz-y6w termination holds. Depth is bounded by the type that arrives, for
+    /// every family: a type that repeats itself has already folded at the slot
+    /// where it grew (`Types::clash_fold`), so this function carries no depth
+    /// cap of its own.
     ///
     /// `reach` says how far demand reached this position. Past freight, the
     /// value is one some body asks about, so its own structure decides which
@@ -1777,13 +1781,8 @@ impl Types {
     /// callable captured into a closure the body builds would be typed by
     /// every caller's arguments at once.
     fn convergence_class_at(&mut self, a: &Ty, path: &[AddrStep], reach: ClassReach, collapse: KeyCollapse) -> Ty {
-        const ADDRESS_COLLAPSE_DEPTH: usize = 8;
         let descr = self.descr(a);
         if descr.is_pure_list_family() {
-            if path.len() >= ADDRESS_COLLAPSE_DEPTH {
-                let any = self.any();
-                return self.list(any);
-            }
             let mut child = path.to_vec();
             child.push(AddrStep::Elem);
             let elem = if reach > ClassReach::Freight {
@@ -2077,16 +2076,14 @@ impl Types {
     ///
     /// `Whole` on this axis means "the activation's published return IS this
     /// value", and the key keeps its ADDRESSED CONVERGENCE CLASS: list families
-    /// normalise to `list(elem)` with the element kept at every depth and
-    /// capped at `ADDRESS_COLLAPSE_DEPTH`, and closure brands still erase to
-    /// their addressed surface -- the same bounded collapse fz-kdt.183 gives a
+    /// normalise to `list(elem)` with the element kept at every depth, and
+    /// closure brands still erase to their addressed surface -- the same bounded collapse fz-kdt.183 gives a
     /// demanded list, one axis over. It is deliberately NOT `Whole`'s verbatim
     /// keep, which has no collapse at all and no fz-y6w termination argument
-    /// (fz-kdt.200). The cap is a LIST-family cap:
-    /// [`Types::convergence_class_at`] checks it only in its
-    /// `is_pure_list_family` branch, so a tuple, map or resource nest at a
-    /// returned position recurses on the type that arrives with no depth bound
-    /// of its own.
+    /// (fz-kdt.200). A list, tuple, map or resource nest at a returned
+    /// position recurses on the type that arrives; [`Types::convergence_class_at`]
+    /// has no depth bound of its own, because a type that repeats itself has
+    /// already folded where it grew (`Types::clash_fold`).
     ///
     /// Where the two axes descend into DIFFERENT kinds at one position -- a
     /// union of a tuple and a list, one axis reading each -- the class keeps
