@@ -3092,6 +3092,74 @@ fn a_macro_that_raises_is_diagnosed_at_its_call() {
     assert_primary_span_contains(diagnostic, &source, "apply(Overdrawn, :exception, args)");
 }
 
+/// A definition an override replaces is written once more, as the private
+/// function `super` calls, named the way Elixir names it. Like any function it
+/// goes no further than its source until something calls it: an override that
+/// never writes `super` leaves it unlowered.
+#[test]
+fn a_replaced_definition_is_lowered_only_when_super_calls_it() {
+    let tel = ConfiguredTelemetry::new();
+    let source_notes = SourceNoteCapture::new();
+    source_notes.install(&tel);
+    let bodies = LoweredBodyCapture::new();
+    bodies.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("super.fz".to_string()),
+        text: concat!(
+            "defmodule Calls do\n",
+            "  def g(x), do: x + 1\n",
+            "  defoverridable g: 1\n",
+            "  def g(x), do: super(x) * 10\n",
+            "end\n",
+            "\n",
+            "defmodule Ignores do\n",
+            "  def g(x), do: x + 1\n",
+            "  defoverridable g: 1\n",
+            "  def g(x), do: x * 10\n",
+            "end\n",
+            "\n",
+            "def main(), do: {Calls.g(1), Ignores.g(1)}\n",
+        )
+        .to_string(),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_resolved(compiler.drive(), "an override that calls super compiles");
+
+    assert_eq!(
+        source_notes.count("g", 1),
+        2,
+        "each module writes the g/1 that stands once"
+    );
+    assert_eq!(
+        source_notes.count("g (overridable 1)", 1),
+        2,
+        "each module writes the definition its override replaced once, as a private function"
+    );
+    let world = compiler.world_mut();
+    let calls = world.reference_module(module_name("Calls"));
+    let ignores = world.reference_module(module_name("Ignores"));
+    let called = world.reference_function(calls, "g (overridable 1)", 1);
+    let ignored = world.reference_function(ignores, "g (overridable 1)", 1);
+    assert!(bodies.take(called).is_some(), "the definition super calls is lowered");
+    assert!(
+        bodies.take(ignored).is_none(),
+        "a replaced definition nothing calls stays at its source"
+    );
+    let interface = compiler.world().module_interface(calls);
+    assert!(
+        interface
+            .public_function_with_name_arity("g (overridable 1)", 1)
+            .is_none(),
+        "the replaced definition is private"
+    );
+}
+
 /// A definition that a later one replaces is never the function's source:
 /// the walk writes the source of the definition that stands, once, and the
 /// module's interface is that definition's. A `defp` that replaces a `def`

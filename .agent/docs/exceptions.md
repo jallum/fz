@@ -430,7 +430,7 @@ module:
 
 Both are marked `defoverridable`, so a `def` of the same name and arity
 further down the module replaces the default, and the replaced default is
-never compiled. `raise Mod, "text"` with a `Mod` that declares `:message`
+compiled only when the replacement calls it as `super`. `raise Mod, "text"` with a `Mod` that declares `:message`
 raises a map of that struct's module, so `rescue e in Mod` takes it and
 `e.message` reads it.
 

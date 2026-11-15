@@ -92,8 +92,16 @@ module can mark a function so that a later definition replaces it:</p>
 for every caller. Without it the first one stands. This is how a macro gives a
 module a default that the module may write for itself.
 <code>defoverridable</code> names functions the module has already defined, as
-<code>name: arity</code> pairs. Elixir's <code>super</code> is not
-supported.</p>
+<code>name: arity</code> pairs. Inside the later definition,
+<code>super</code> calls the one it replaced, with the same number of
+arguments:</p>
+
+<pre><span class="kw">defmodule</span> <span class="ty">NotFound</span> <span class="kw">do</span>
+  <span class="kw">def</span> <span class="fn">message</span>(_e), <span class="kw">do:</span> <span class="str">"not found"</span>
+  <span class="kw">defoverridable</span> message: <span class="num">1</span>
+
+  <span class="kw">def</span> <span class="fn">message</span>(e), <span class="kw">do:</span> <span class="fn">super</span>(e) &lt;&gt; <span class="str">": "</span> &lt;&gt; e.path
+<span class="kw">end</span></pre>
 
 <p><code>defexception</code> is such a macro. It declares the module's
 struct and gives it <code>exception/1</code>, which builds the exception

@@ -1,0 +1,6 @@
+1020
+"mine, default 3"
+4
+[2, 3]
+{:private, {:default, 4}}
+[:mine, 2, :mine, 1, :mine, :done]
