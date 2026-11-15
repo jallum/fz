@@ -15775,11 +15775,10 @@ end
         (run.live_count, run.bytes_used),
         // `dbg` renders the tuple into a binary on the process heap before
         // writing it: three more objects, eighty more bytes over the program's
-        // own (6, 160), none of them list conses. The program's calls build
-        // eighteen continuation frames; fourteen resume as the newest heap
-        // object and are given back, four resume under a newer object and stay
-        // on the heap: four more objects, 128 more bytes.
-        (13, 368),
+        // own (6, 160), none of them list conses. Resuming frames that are the
+        // newest heap object are given back; two resume under a newer object
+        // and stay on the heap: two more objects, 64 more bytes.
+        (11, 304),
         "preserving the source list type avoids a redundant 16-byte cons"
     );
     assert!(run.source_and_rebuild_share_return);
@@ -15843,9 +15842,10 @@ def main(), do: spin({iterations}, 0)
 }
 
 /// A call whose result already has the layout its resume entry takes builds
-/// one heap frame, the entry's own. `depth` makes two such calls per level
-/// (`n - 1` and the recursive call), so a level costs two continuation frames
-/// and the program lowers no `deliver_lanes` forwarding continuation.
+/// one heap frame, the entry's own. `depth` makes two calls per level: `n - 1`
+/// is an extern the caller makes itself and builds no frame, so a level costs
+/// one continuation frame, for the recursive call, and the program lowers no
+/// `deliver_lanes` forwarding continuation.
 #[test]
 fn compiler2_a_call_whose_result_fits_its_resume_entry_builds_one_frame() {
     let continuation_allocs_for = |depth: u32| {
@@ -15869,8 +15869,8 @@ end
 
     assert_eq!(
         deep - shallow,
-        2 * 10,
-        "each extra level builds one frame for `n - 1` and one for the recursive call"
+        10,
+        "each extra level builds one frame, for the recursive call; `n - 1` is the extern inline"
     );
     let clif = lowered_clif_text(
         r#"

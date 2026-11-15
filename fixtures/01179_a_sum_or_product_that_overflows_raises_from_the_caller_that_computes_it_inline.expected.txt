@@ -1,0 +1,3 @@
+7
+{:rescued, "bad argument in arithmetic expression"}
+{:rescued, "bad argument in arithmetic expression"}

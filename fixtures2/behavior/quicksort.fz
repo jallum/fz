@@ -47,7 +47,7 @@
 # - `struct_bytes = 0`
 # - `closure_allocs = 0`
 # - `closure_bytes = 0`
-# - `continuation_allocs = 52` and `continuation_bytes = 2720` on the native
+# - `continuation_allocs = 46` and `continuation_bytes = 2496` on the native
 #   paths, 0 on the interpreter: every pending call builds a heap frame that
 #   is counted when allocated; a frame that resumes as the newest object is
 #   given back, any other stays until the next collection

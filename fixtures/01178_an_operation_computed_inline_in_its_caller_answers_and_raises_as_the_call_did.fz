@@ -1,0 +1,40 @@
+#---
+# purpose: "an operation computed inline in its caller answers and raises as the call did: sums of integers and floats, byte_size and map_size, and a division by zero that a try around the caller rescues"
+# oracle: 01178_an_operation_computed_inline_in_its_caller_answers_and_raises_as_the_call_did.oracle.exs
+# oracle.stamp: f942d9a89ef90cf9
+#---
+#
+# `a + b` with an integer on the left and a float on the right is the extern
+# `fz_op_add_if` behind its Kernel clause; with the float on the left the
+# clause swaps its parameters, so it is a real call. `byte_size` and
+# `map_size` are each one typed clause over an extern.
+defmodule Inline do
+  def sum_then_double(a, b), do: double(a + b)
+  def double(x), do: x * 2 + 1
+
+  def integer_plus_float(a, b), do: wrap(a + b)
+  def float_plus_integer(a, b), do: wrap(a + b)
+  def wrap(x), do: {:sum, x}
+
+  def sizes(bin, map), do: pair(byte_size(bin), map_size(map))
+  def pair(a, b), do: {a, b}
+
+  def quotient(a, b), do: double(div(a, b))
+
+  def attempt(a, b) do
+    try do
+      quotient(a, b)
+    rescue
+      e in ArithmeticError -> {:rescued, e.message}
+    end
+  end
+end
+
+def main() do
+  dbg(Inline.sum_then_double(3, 4))
+  dbg(Inline.integer_plus_float(1, 2.5))
+  dbg(Inline.float_plus_integer(2.5, 1))
+  dbg(Inline.sizes("héllo", %{a: 1, b: 2}))
+  dbg(Inline.attempt(7, 2))
+  dbg(Inline.attempt(7, 0))
+end

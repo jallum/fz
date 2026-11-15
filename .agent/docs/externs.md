@@ -352,7 +352,11 @@ the pair is physical only: no fz tuple is built, and no declaration spells it.
   edge every decision's last resort already ends in, and the other edge returns
   the value. The atom is interned by `collect_executable_atoms`. A caller
   therefore tail-calls the wrapper; no continuation or decoder stands between it
-  and the C symbol.
+  and the C symbol. A caller that is not in tail position and whose callee is
+  only that extern, or one clause that passes its parameters to it, makes the
+  extern call itself (`emit_extern_call`, shared with the wrapper): the failing
+  edge raises from the caller and the caller goes on in the same function (see
+  [`pipeline`](pipeline.md), the delivered call that is spliced).
 - The interpreter reads the same pair and answers `ExternCallValue::CheckedFailure`,
   which `continue_after_extern` hands to `raise_last_resort`, the function a
   decision's failure calls.

@@ -1,0 +1,30 @@
+#---
+# purpose: "a delivered call to Kernel.+, Kernel.-, Kernel.* is the extern inline in the caller, so a loop whose body adds, subtracts and multiplies builds one continuation per iteration for its one real call, and the loop spends two reductions per iteration"
+# kind: run
+#---
+#
+# `run/2` makes four non-tail calls per iteration: `n - 1`, `P.f(n, 0)`, the
+# `+` inside `P.f` and the `*` inside `P.g`. Only `P.f` is more than an extern,
+# so only that call builds a continuation. The program prints the iteration
+# count, the continuations built beyond the ones reduction yields build (one
+# per yield), the iterations it ran, and the reductions it spent per
+# iteration. The interpreter builds no continuations and spends no reductions.
+defmodule P do
+  def f(a, b), do: g(a + b)
+  def g(x), do: x * 2 + 1
+end
+
+defmodule L do
+  def run(0, acc), do: acc
+  def run(n, acc), do: run(n - 1, P.f(n, 0))
+end
+
+def main() do
+  iterations = 100000
+  before = Process.heap_alloc_stats()
+  result = L.run(iterations, 0)
+  after_run = Process.heap_alloc_stats()
+  dbg(result)
+  dbg(after_run[:continuation_allocs] - before[:continuation_allocs] - (after_run[:reduction_yields] - before[:reduction_yields]))
+  dbg(after_run[:reductions_executed] - before[:reductions_executed])
+end

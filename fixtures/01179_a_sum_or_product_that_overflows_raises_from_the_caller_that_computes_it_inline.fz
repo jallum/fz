@@ -1,0 +1,24 @@
+#---
+# purpose: "a sum or product that overflows 64 bits raises ArithmeticError from the caller that computes it inline, and a try around that caller rescues it"
+#---
+#
+# fz integers are 64-bit with no bignums, so overflow raises where Elixir would
+# widen; there is no oracle.
+defmodule Overflow do
+  def total(a, b), do: double(a + b)
+  def double(x), do: x * 2 + 1
+
+  def attempt(a, b) do
+    try do
+      total(a, b)
+    rescue
+      e in ArithmeticError -> {:rescued, e.message}
+    end
+  end
+end
+
+def main() do
+  dbg(Overflow.attempt(1, 2))
+  dbg(Overflow.attempt(9223372036854775807, 1))
+  dbg(Overflow.attempt(4611686018427387903, 1))
+end
