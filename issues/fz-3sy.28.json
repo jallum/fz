@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-15T13:15:13Z",
+  "description": "develop is red on the distiller pin: DERIVATIONS measures 18_326 against 18_324 since fz-3sy.19 (c79f7d42d). KeyError and Protocol.UndefinedError replace the overridable message/1 without calling super, yet DefineModule publishes the replaced default as private `message (overridable 1)/1` (one FunctionSource derivation each; it is never lowered). Elixir keeps the replaced definition only when super calls it (beam_lib :locals: NoSuper has no `message (overridable 1)`, WithSuper has it). The replacing body's syntax cannot decide it: fixture 01303 has a macro (from_super) that writes super, expanded after DefineModule. Fix: `super` binds to the replaced definition's FunctionId, whose source is published when a reference resolves it, not at DefineModule. Done when: DERIVATIONS is back to 18_324 (and reads handed falls accordingly; the pin is lowered), 01303 still matches Elixir on interp/run/build, and a drive test shows an override without super publishes no `(overridable N)` function.",
+  "id": "fz-3sy.28",
+  "labels": [],
+  "parent": "fz-3sy",
+  "priority": 1,
+  "status": "open",
+  "title": "A replaced overridable definition is published only when super resolves to it",
+  "type": "bug",
+  "updated_at": "2026-11-15T13:15:13Z"
+}
