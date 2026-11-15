@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-sc8.228"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-sc8.230"
+  ],
   "created": "2026-11-15T15:46:01Z",
   "description": "A rest matched by a bitstring region is kept in a side table: DispatchState.rests (src/compiler2/jobs/native.rs) and DispatchExecState.rests (src/ir_interp/dispatch_exec.rs). The two disagree: native keeps a rest pending when a later question asks it, the interpreter builds it whole as soon as any question asks it.\n\nChange: a matched rest is Transport { shape: Cursor, lanes: [source, position] } in the state's ordinary values, on both paths. dispatch_bit_source and bitstring_region_hit already read a cursor from values; a question that needs the bytes builds them through materialize_transport_value / materialize_cursor. Asking for the whole value does not overwrite the cursor in the slot. A rest stays a cursor when a later question asks it, on both paths.\n\nRemoved, fully: DispatchState.rests with its insert, its read in dispatch_bit_source and its remove in bind_dispatch_subject; DispatchExecState.rests, set_rest, rest, the undo clear, the lazy growth, the rest block in resolve_subject, and the eager build of an asked rest in read_bitstring; the doc text on both structs.\n\nTo measure, not assume: whether any plan asks one subject whole twice in one dispatch in the interpreter (native remembers per block in whole_cursors); where the interpreter's dispatch gets the Cursor ShapeId for a rest handed to nobody.\n\nPredictions: fixture outputs unchanged on three paths; interp no longer builds a rest that is matched and then asked by a later bit question (probe: \"a\" \u003c\u003e rest then another match); case-walk probe unchanged; pins same.\n\nDone when: grep finds no rests table on either path; gate green.\n\nProposal page: /Users/j5n/Workspace/fz-sc8.cursor-fold.html (approved by the user 2026-11-15: remove special cases; what is no longer needed is fully removed).",
   "id": "fz-sc8.229",
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "Dispatch state holds a matched rest as a cursor value",
   "type": "task",
-  "updated_at": "2026-11-15T15:46:02Z"
+  "updated_at": "2026-11-15T15:46:03Z"
 }
