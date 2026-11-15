@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-15T12:50:03Z",
+  "description": "Probe first. Native codegen calls box_int_for_any (fz_box_int_for_any) at seven sites in fn_ctx.rs (568, 643, 674, 788, 825, 894), at prim.rs:1702 (the int arm of negation, joined with the float arm as a ValueRef) and at receive.rs:290 (ReceiveValue::Int). Some of these are necessary: an any-typed join or a ValueRef argument needs a box. The rest box a value whose consumer could take it raw. Probe: run the JSON roundtrip and the 01164/01333/01336 fixtures with a per-site counter (telemetry event or alloc stats split by call site), so each site gets a box count. Prediction: negation of a value already narrowed to int, and receive of an int that is then used as an int, box needlessly. Acceptance: a census table, site by site, of necessary and needless boxes. Each needless site is removed under a scalar_box pin, and each necessary site is named with its reason.",
+  "id": "fz-nml.9",
+  "labels": [],
+  "parent": "fz-nml",
+  "priority": 3,
+  "status": "open",
+  "title": "A raw integer is boxed only where a value ref is the consumer",
+  "type": "bug",
+  "updated_at": "2026-11-15T12:50:03Z"
+}
