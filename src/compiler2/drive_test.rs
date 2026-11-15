@@ -8,7 +8,6 @@ use super::drive_harness::{
     module_indexed_ids, module_name, named_module_id, presence, try_module_function_id,
 };
 use super::{CodeSubmission, Compiler2, ExecutableNeed, Job, RootSubmission, RunFailure};
-use crate::compiler2::ReachKey;
 use crate::compiler2::artifact::{BackendCallableReturn, BackendEntry, BackendReturnFlow, BackendTail, CallEdge};
 use crate::compiler2::artifact::{NativeBodyOrigin, NativeCallableBoundaryId, NativeEntryAbi, NativeProgram};
 use crate::compiler2::drive::DependencyKey;
@@ -1469,9 +1468,6 @@ fn retained_closure_source_replacement_does_not_request_obsolete_products() {
             | ProductKey::BackendExecutable(executable) => executable.activation.function == generated,
             ProductKey::TransportShape(position) | ProductKey::CallableConstruction(position) =>
                 position.executable().activation.function == generated,
-            ProductKey::Reach(ReachKey::Static(function)) => *function == generated,
-            ProductKey::Reach(ReachKey::Direct(executable) | ReachKey::All(executable)) =>
-                executable.activation.function == generated,
             ProductKey::RootBackendProduct(_) | ProductKey::NativeProgram(_) | ProductKey::StructSchema(_) => false,
         }),
         "the replaced owner's membership must not request its obsolete generated child"
@@ -24381,24 +24377,12 @@ fn compiler2_eight_reduces_sharing_a_seed_compile_two_wrapper_activations_each()
     );
 }
 
-/// A completion queues a product request while the only job left on the
-/// agenda is gated; popping that job parks it and empties the agenda. The
-/// request is served at the drain that follows, so the drive resolves instead
-/// of stopping with an unresolved wait on the stranded reach.
+/// A job left parked on the agenda must not strand the reach that other jobs
+/// wait on: the drive resolves, and the static reach of
+/// `String.grapheme_bytes_step` is answered.
 #[test]
-fn a_request_queued_behind_a_parked_job_is_served_at_the_drain() {
-    let tel = ConfiguredTelemetry::new();
-    let reaches = Rc::new(RefCell::new(Vec::new()));
-    let observed = Rc::clone(&reaches);
-    tel.attach_raw_event2::<ProductKey, super::pull::ProductRequestId, _>(
-        &["fz", "compiler2", "pull", "product", "requested"],
-        move |_, _, _, product, _| {
-            if let ProductKey::Reach(ReachKey::Static(function)) = product {
-                observed.borrow_mut().push(*function);
-            }
-        },
-    );
-    let mut compiler = Compiler2::new(tel);
+fn a_reach_waited_on_behind_a_parked_job_is_answered_before_the_drive_resolves() {
+    let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
     compiler.submit_code(CodeSubmission {
         name: None,
         text: include_str!("../../fixtures/01069_a_request_queued_behind_a_parked_job_is_served_at_the_drain.fz")
@@ -24411,14 +24395,15 @@ fn a_request_queued_behind_a_parked_job_is_served_at_the_drain() {
         need: ExecutableNeed::Value,
     });
     assert_eq!(compiler.run_root_interp(root), Ok(4), "the drive resolves and runs");
-    let served = reaches
-        .borrow()
-        .iter()
-        .map(|function| compiler.world().function_ref(*function).display_name())
+    let answered = compiler
+        .world()
+        .static_reach_entries()
+        .into_iter()
+        .map(|(function, _)| compiler.world().function_ref(function).display_name())
         .collect::<Vec<_>>();
     assert!(
-        served.iter().any(|name| name.contains("grapheme_bytes_step")),
-        "the reach of String.grapheme_bytes_step queued behind the parked job is served: {served:?}"
+        answered.iter().any(|name| name.contains("grapheme_bytes_step")),
+        "the reach of String.grapheme_bytes_step is answered: {answered:?}"
     );
 }
 

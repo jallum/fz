@@ -879,9 +879,10 @@ under `GateExpansion` rather than the calling demand's own reason. Both call
 sites consult the one `missing_gates` answer; neither keeps its own notion of
 readiness.
 
-Ten job kinds declare gates — `SeedRoot`, `DefineFunction`,
+Twelve job kinds declare gates — `SeedRoot`, `DefineFunction`,
 `ExpandFunctionSource`, `ScopeCode`, `DeriveInputDemand`,
-`DeriveRecursive`, `DeriveRuntimeDemand`, `LowerFunction`,
+`DeriveRecursive`, `DeriveStaticReach`, `DeriveExecutableReach`,
+`DeriveRuntimeDemand`, `LowerFunction`,
 `DeriveStaticCallees`, and `AnalyzeActivation` — each in the `jobs/*.rs`
 module that owns the kind's body, named `<job>_gates` beside it. Every other
 kind has no arm in `missing_gates`'s match and starts the moment anything
@@ -980,9 +981,6 @@ ProductKey =
   TransportShape(position)
   CallableConstruction(position)
   StructSchema(module)
-  Reach(ReachKey)
-
-ReachKey = Static(function) | Direct(E) | All(E)
 
 PullWait = Product(ProductKey) | Fact(FactUse<FactKey>)
 ```
@@ -1113,19 +1111,22 @@ back-edge lets the generic group query identify the members; idempotent effect
 union gives every member the join of the group's local and settled external
 inputs without another traversal or fixpoint. `RuntimeDemand(E)` is not a
 product and never enters this graph; its exact World-fact dependencies converge
-through ordinary content-changing wakes. `Reach(key)` follows the same shape:
-its value is, for each successor, the successor itself together with the
-successor's `Reach`, where successors come from `StaticCallees(f)` (`Static`)
-or from the settled `ExecutableFacts(E)` call targets (`Direct` skips call
-sites whose return arrives through a closure call; `All` follows every one).
-Mutually reachable nodes settle as one group holding one set: each member
-contributes its own successors, read from its settled edge fact, and the
-group adds the reaches of whatever it points at beyond itself. A function is
-recursive exactly when its own `Static` reach holds it. Recursive
+through ordinary content-changing wakes. Reach is a fact too, never a product:
+`StaticReach(f)` is the set of functions `f` reaches over `StaticCallees`, and
+`ExecutableReach(E, chain)` the set of executables `E` reaches over the settled
+`ExecutableFacts` call targets (`CallChain::Direct` skips call sites whose
+return arrives through a closure call; `CallChain::All` follows every one).
+Its job (`jobs/reach.rs`) walks the edge facts of everything the node reaches
+and reads each of them, so a change to any edge in the cone reopens the answer.
+No reach fact reads another: nodes that reach each other each walk the same
+cycle and conclude the same set, so no group is needed. A walk that meets an
+edge fact not yet answered waits on it and runs again when it lands. A
+function is recursive exactly when its own `StaticReach` holds it;
+`DeriveRecursive` starts once that fact exists. Recursive
 `CallableConstruction(position)` products settle their position groups from
 external anchors. `TransportShape(position)` has no
 group: it cuts its own recursion at recipe construction by asking settled
-`ExecutableFacts` call targets through `Reach` products (the candidate
+`ExecutableFacts` call targets through `ExecutableReach` facts (the candidate
 return's reach, asked whether it holds the position's own owner), so its
 evaluation is a function of settled facts and of products that can settle
 without it. An
@@ -1376,7 +1377,7 @@ active inbox. Repeated movements of one fact coalesce to the final
 `FactState` before the next pull. This path scans neither roots, facts,
 products, nor dependencies, and equal final state leaves readers settled.
 
-A fact-only key such as `StructSchema(module)` or `Reach(Static(function))` is
+A fact-only key such as `StructSchema(module)` is
 program-scoped (`ProductKey::is_program_scoped`): every root asking for it resolves to the
 same `ProductScope::Program` address (`ProductKey::scope`,
 `ProductAddress::of`), so the program session evaluates it once no matter

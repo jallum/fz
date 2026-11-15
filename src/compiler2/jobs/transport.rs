@@ -14,7 +14,7 @@ use super::super::pull::{
     ProductKey, ProductReadContext, ProductValue, PullOutcome, PullWait, TransportCarrier, TransportLayout,
     TransportShapeFact,
 };
-use super::super::reach::ReachKey;
+use super::super::reach::CallChain;
 use super::super::semantic::{
     CallSiteSummary, CallTargetSummary, CallableDemand, CallableFlowFact, CallableSurface, CallableTarget,
     ExecutableRuntimeDemand, RuntimeDemand, SelectedCallee, ShapeDemand, TUPLE_LANE_BUDGET,
@@ -1972,8 +1972,7 @@ fn produce_named_transport_position(
     if demand.is_ignore() && !matches!(recipe, TransportRecipe::ClosureCallReturn { .. }) {
         return Some(bottom_transport_shape(world));
     }
-    let names_in_component_direct_return = match cut_in_component_returns(world, tel, context, executable, &mut recipe)
-    {
+    let names_in_component_direct_return = match cut_in_component_returns(world, context, executable, &mut recipe) {
         Ok(names_direct) => names_direct,
         Err(wait) => return Some(PullOutcome::Waiting(vec![wait])),
     };
@@ -2149,26 +2148,27 @@ fn layout_carries(world: &mut World, layout: TransportLayout, ty: Ty) -> bool {
     }
 }
 
-/// Whether `owner` is reachable from `from` (or is `from`), under the edges
-/// `arm` names. The reach of `from` is one shared product, so asking costs a
+/// Whether `owner` is reachable from `from` (or is `from`), over the edges
+/// `chain` names. The reach of `from` is one shared fact, so asking costs a
 /// set lookup however many owners ask.
 fn on_cycle(
     world: &World,
-    tel: &impl crate::telemetry::Telemetry,
     context: &mut ProductReadContext<'_>,
     from: ExecutableKey,
     owner: &ExecutableKey,
-    arm: fn(ExecutableKey) -> ReachKey,
+    chain: CallChain,
 ) -> Result<bool, PullWait> {
     if &from == owner {
         return Ok(true);
     }
-    let reach = ProductKey::Reach(arm(from));
-    match context.read_product(tel, &reach, world.types()) {
-        Some(ProductValue::Reach(reached)) => Ok(reached.contains(&arm(owner.clone()))),
-        Some(other) => panic!("reach product produced unexpected value {other:?}"),
-        None => Err(PullWait::Product(reach)),
+    let reach = FactUse::settled(FactKey::ExecutableReach(from.clone(), chain));
+    if !context.read_fact(world, reach.clone()) {
+        return Err(PullWait::Fact(reach));
     }
+    let reached = world
+        .executable_reach(&from, chain)
+        .expect("a settled reach fact is defined");
+    Ok(reached.contains(owner))
 }
 
 /// Cuts the recursion out of a recipe before it is evaluated, so evaluation
@@ -2183,7 +2183,7 @@ fn on_cycle(
 ///
 /// A DIRECT call's edge is tested by exact reach: does the callee executable
 /// reach the owner through settled `ExecutableFacts` call-site targets,
-/// skipping edges whose origin is a `ClosureCallReturn` (`ReachKey::Direct`)? Both ends on one cycle are mutually reachable this way --
+/// skipping edges whose origin is a `ClosureCallReturn` (`CallChain::Direct`)? Both ends on one cycle are mutually reachable this way --
 /// and the edges of one cycle cannot all climb, so at least one names a
 /// callee whose function id does not rise. Cutting exactly those leaves the
 /// surviving in-cycle edges strictly climbing, and an edge off any cycle can
@@ -2202,7 +2202,6 @@ fn on_cycle(
 /// says which returns those are.
 fn cut_in_component_returns(
     world: &World,
-    tel: &impl crate::telemetry::Telemetry,
     context: &mut ProductReadContext<'_>,
     owner_executable: &ExecutableKey,
     recipe: &mut TransportRecipe,
@@ -2215,11 +2214,10 @@ fn cut_in_component_returns(
             let callee = child.executable().activation.function;
             names_cycle = on_cycle(
                 world,
-                tel,
                 context,
                 executable_key_for_transport_position(root, child),
                 owner_executable,
-                ReachKey::Direct,
+                CallChain::Direct,
             )?;
             if names_cycle && callee.as_u32() <= owner.as_u32() {
                 *recipe = TransportRecipe::CutEdge;
@@ -2227,11 +2225,11 @@ fn cut_in_component_returns(
         }
         TransportRecipe::Alternatives(children) | TransportRecipe::Tuple(children) => {
             for child in children {
-                names_cycle |= cut_in_component_returns(world, tel, context, owner_executable, child)?;
+                names_cycle |= cut_in_component_returns(world, context, owner_executable, child)?;
             }
         }
         TransportRecipe::Projection { source: tuple, .. } => {
-            names_cycle = cut_in_component_returns(world, tel, context, owner_executable, tuple)?;
+            names_cycle = cut_in_component_returns(world, context, owner_executable, tuple)?;
         }
         TransportRecipe::ClosureCallReturn { grounded, .. } => {
             // A closure call reaches its callee through a VALUE, so the static
@@ -2253,11 +2251,10 @@ fn cut_in_component_returns(
                 && let TransportRecipe::Alias(child) = &grounded.return_recipe
                 && on_cycle(
                     world,
-                    tel,
                     context,
                     executable_key_for_transport_position(root, child),
                     owner_executable,
-                    ReachKey::All,
+                    CallChain::All,
                 )?
             {
                 grounded.return_recipe = TransportRecipe::CutEdge;

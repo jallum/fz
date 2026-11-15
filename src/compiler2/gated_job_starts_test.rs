@@ -63,6 +63,8 @@ fn job_kind(job: &Job) -> &'static str {
         Job::PlanEntryDispatch(_) => "PlanEntryDispatch",
         Job::DeriveStaticCallees(_) => "DeriveStaticCallees",
         Job::DeriveRecursive(_) => "DeriveRecursive",
+        Job::DeriveStaticReach(_) => "DeriveStaticReach",
+        Job::DeriveExecutableReach(..) => "DeriveExecutableReach",
         Job::DeriveInputDemand(_) => "DeriveInputDemand",
         Job::SeedRoot(_) => "SeedRoot",
         Job::SeedActivation(_) => "SeedActivation",

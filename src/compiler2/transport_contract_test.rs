@@ -197,7 +197,11 @@ const SEAM_FACTS: &[(&str, &str)] = &[];
 // and scoped, its module and `defexception` are defined and expanded, and the
 // arithmetic chain's waiters run again once the struct is there. A program
 // run by `fz2` defines the struct for the banner and its count is unchanged.
-const EXPECTED_00181_NO_DUMP_JOB_STARTS: usize = 245;
+// 245 -> 265: a reach is a fact answered by a job of its own, where it was a
+// product evaluation no job count saw. The harness runs 13 `DeriveStaticReach` and 10
+// `DeriveExecutableReach` jobs, less three `DeriveRecursive` runs: a recursion
+// verdict starts once its reach exists.
+const EXPECTED_00181_NO_DUMP_JOB_STARTS: usize = 265;
 const ENUM_REDUCE_OPERATOR_REF_SOURCE: &str = r#"
 def main() do
   {

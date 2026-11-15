@@ -93,7 +93,7 @@ pub use module_interface::{
 };
 pub use namespace::{BindingId, Namespace, NamespaceStore, NamespaceSymbol};
 pub(crate) use pull::{ProductKey, ProductScope, PullSession};
-pub(crate) use reach::ReachKey;
+pub use reach::CallChain;
 pub use scope::ScopeSnapshot;
 pub(crate) use semantic::CallableConstructionTargetKey;
 pub use semantic::{

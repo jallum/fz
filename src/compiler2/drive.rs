@@ -14,6 +14,7 @@ use crate::telemetry::{RawSpanGuard, RawSpanStop0, RawSpanStop1 as _, RawSpanTel
 use super::code::SourceOwner;
 use super::identity::{ActivationKey, ExecutableKey, FunctionId, ModuleId, RootId, TypeName};
 use super::pull::{ProductKey, ProductScope, ProductSessions};
+use super::reach::CallChain;
 use super::semantic::{CallSiteKey, CallableConstructionTargetKey};
 use super::types::Types;
 use super::work_start::WorkStartReason;
@@ -240,6 +241,8 @@ pub enum Job {
     PlanEntryDispatch(FunctionId),
     DeriveStaticCallees(FunctionId),
     DeriveRecursive(FunctionId),
+    DeriveStaticReach(FunctionId),
+    DeriveExecutableReach(ExecutableKey, CallChain),
     DeriveInputDemand(FunctionId),
     SeedRoot(RootId),
     SeedActivation(ActivationKey),
@@ -268,6 +271,10 @@ impl SemanticOrd<Types> for Job {
                 (Job::PlanEntryDispatch(left), Job::PlanEntryDispatch(right)) => left.cmp(right),
                 (Job::DeriveStaticCallees(left), Job::DeriveStaticCallees(right)) => left.cmp(right),
                 (Job::DeriveRecursive(left), Job::DeriveRecursive(right)) => left.cmp(right),
+                (Job::DeriveStaticReach(left), Job::DeriveStaticReach(right)) => left.cmp(right),
+                (Job::DeriveExecutableReach(left, left_chain), Job::DeriveExecutableReach(right, right_chain)) => left
+                    .semantic_cmp(right, types)
+                    .then_with(|| left_chain.cmp(right_chain)),
                 (Job::SeedRoot(left), Job::SeedRoot(right)) => left.cmp(right),
                 (Job::SeedActivation(left), Job::SeedActivation(right))
                 | (Job::AnalyzeActivation(left), Job::AnalyzeActivation(right)) => left.semantic_cmp(right, types),
@@ -303,6 +310,8 @@ fn job_order_rank(job: &Job) -> u8 {
         Job::SeedRoot(_) => 20,
         Job::DeriveCallableConstructionTarget(_) => 21,
         Job::DeriveRuntimeDemand(_) => 22,
+        Job::DeriveStaticReach(_) => 23,
+        Job::DeriveExecutableReach(..) => 24,
     }
 }
 
@@ -333,6 +342,11 @@ pub enum FactKey {
     EntryDispatch(FunctionId),
     StaticCallees(FunctionId),
     Recursive(FunctionId),
+    /// Every function a function reaches over one or more static call edges.
+    StaticReach(FunctionId),
+    /// Every executable an executable reaches over one or more call edges of
+    /// the chain.
+    ExecutableReach(ExecutableKey, CallChain),
     InputDemand(FunctionId),
     RootEntry(RootId),
     Activation(ActivationKey),
@@ -386,6 +400,8 @@ impl FactKey {
             FactKey::EntryDispatch(_) => "a function's entry dispatch",
             FactKey::StaticCallees(_) => "a function's static callees",
             FactKey::Recursive(_) => "a function's recursion analysis",
+            FactKey::StaticReach(_) => "a function's static reach",
+            FactKey::ExecutableReach(..) => "an executable's reach",
             FactKey::InputDemand(_) => "a function's input demand",
             FactKey::RootEntry(_) => "a root's entry point",
             FactKey::Activation(_) => "a call's activation",
@@ -423,6 +439,7 @@ impl FactKey {
             | (FactKey::EntryDispatch(left), FactKey::EntryDispatch(right))
             | (FactKey::StaticCallees(left), FactKey::StaticCallees(right))
             | (FactKey::InputDemand(left), FactKey::InputDemand(right))
+            | (FactKey::StaticReach(left), FactKey::StaticReach(right))
             | (FactKey::Recursive(left), FactKey::Recursive(right)) => left.cmp(right),
             (FactKey::TypeDefined(left), FactKey::TypeDefined(right)) => left.cmp(right),
             (FactKey::IncomingInputSlot(left), FactKey::IncomingInputSlot(right)) => left.semantic_cmp(right, types),
@@ -436,6 +453,9 @@ impl FactKey {
             (FactKey::CallableConstructionTarget(left), FactKey::CallableConstructionTarget(right)) => {
                 left.semantic_cmp(right, types)
             }
+            (FactKey::ExecutableReach(left, left_chain), FactKey::ExecutableReach(right, right_chain)) => left
+                .semantic_cmp(right, types)
+                .then_with(|| left_chain.cmp(right_chain)),
             (FactKey::Executable(left), FactKey::Executable(right))
             | (FactKey::ExecutableFacts(left), FactKey::ExecutableFacts(right))
             | (FactKey::RuntimeDemandInput(left), FactKey::RuntimeDemandInput(right))
@@ -485,6 +505,8 @@ fn fact_diagnostic_rank(fact: &FactKey) -> u8 {
         FactKey::IncomingInputSlot(_) => 37,
         FactKey::NameableModules => 38,
         FactKey::Raisable => 39,
+        FactKey::StaticReach(_) => 40,
+        FactKey::ExecutableReach(..) => 41,
     }
 }
 
@@ -517,11 +539,6 @@ impl ProductAddress {
     pub(crate) fn of(key: ProductKey, asking: RootId) -> Self {
         let scope = key.scope(asking);
         Self { scope, key }
-    }
-
-    /// The address of a program-scoped key, which needs no asking root.
-    pub(crate) fn program(key: ProductKey) -> Self {
-        Self::in_session(ProductScope::Program, key)
     }
 
     /// The address of an entry a session already holds. The session's scope
@@ -1076,6 +1093,8 @@ impl World {
             }
             FactKey::StaticCallees(function) => Some(Job::DeriveStaticCallees(*function)),
             FactKey::Recursive(function) => Some(Job::DeriveRecursive(*function)),
+            FactKey::StaticReach(function) => Some(Job::DeriveStaticReach(*function)),
+            FactKey::ExecutableReach(executable, chain) => Some(Job::DeriveExecutableReach(executable.clone(), *chain)),
             FactKey::InputDemand(function) => Some(Job::DeriveInputDemand(*function)),
             FactKey::EntryDispatch(function) => Some(Job::PlanEntryDispatch(*function)),
             FactKey::ExpandedFunctionSource(function) => Some(Job::ExpandFunctionSource(*function)),

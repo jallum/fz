@@ -11,6 +11,7 @@ use std::any::Any;
 #[cfg(test)]
 use std::cell::Cell;
 use std::cmp::Reverse;
+use std::collections::BTreeSet;
 use std::rc::{Rc, Weak};
 
 use crate::FunctionSurface;
@@ -38,7 +39,7 @@ use super::identity::{
     NotedTypeDecl, Raisable, Raised, RootEntry, RootId, RootKind, RootMap, TypeDeclMap, TypeName, TypeRefMap,
 };
 use super::incoming_inputs::{IncomingInputSource, IncomingInputSources, InputSlot};
-use super::keying::{BodyKeying, BodyKeyingMap, InputDemand, InputDemandMap, StaticCalleeMap};
+use super::keying::{BodyKeying, BodyKeyingMap, InputDemand, InputDemandMap, StaticCalleeMap, StaticReachMap};
 use super::module_interface::{
     InterfaceCallableKind, InterfaceExpectation, InterfaceRequester, ModuleInterface, ModuleReferenceExpectation,
     ModuleReferenceExpectationMap, ReferencingCall,
@@ -51,6 +52,7 @@ use super::protocol::{
 use super::pull::ProductScope;
 use super::quoted_expander::surface_read_diagnostic;
 use super::quoted_surface::{ReservedSourceDefinition, ScopeForm, ScopeSurface, reserved_source_definition};
+use super::reach::{CallChain, ReachSet};
 use super::runtime::{self, RuntimeModuleCode};
 use super::scope::ScopeSnapshot;
 use super::semantic::{
@@ -185,6 +187,8 @@ pub struct World {
     body_keying: BodyKeyingMap,
     input_demands: InputDemandMap,
     static_callees: StaticCalleeMap,
+    static_reach: StaticReachMap,
+    executable_reach: HashMap<(ExecutableKey, CallChain), std::rc::Rc<ReachSet>>,
     protocol_callbacks: ProtocolCallbackMap,
     protocol_impls: ProtocolImplMap,
     protocol_dispatches: ProtocolDispatchMap,
@@ -371,6 +375,8 @@ impl World {
             body_keying: BodyKeyingMap::new(),
             input_demands: InputDemandMap::new(),
             static_callees: StaticCalleeMap::new(),
+            static_reach: StaticReachMap::new(),
+            executable_reach: HashMap::default(),
             protocol_callbacks: ProtocolCallbackMap::new(),
             protocol_impls: ProtocolImplMap::new(),
             protocol_dispatches: ProtocolDispatchMap::new(),
@@ -1760,6 +1766,56 @@ impl World {
         self.static_callees.define(function, callees)
     }
 
+    pub(crate) fn define_static_reach(
+        &mut self,
+        function: FunctionId,
+        reach: std::rc::Rc<BTreeSet<FunctionId>>,
+    ) -> bool {
+        self.static_reach.define(function, reach)
+    }
+
+    pub(crate) fn static_reach(&self, function: FunctionId) -> Option<&std::rc::Rc<BTreeSet<FunctionId>>> {
+        self.static_reach.get(function)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn static_reach_entries(&self) -> Vec<(FunctionId, std::rc::Rc<BTreeSet<FunctionId>>)> {
+        self.static_reach
+            .iter()
+            .map(|(function, reach)| (function, std::rc::Rc::clone(reach)))
+            .collect()
+    }
+
+    pub(crate) fn define_executable_reach(
+        &mut self,
+        executable: ExecutableKey,
+        chain: CallChain,
+        reach: std::rc::Rc<ReachSet>,
+    ) -> bool {
+        let key = (executable, chain);
+        if self.executable_reach.get(&key) == Some(&reach) {
+            return false;
+        }
+        self.executable_reach.insert(key, reach);
+        true
+    }
+
+    pub(crate) fn executable_reach(
+        &self,
+        executable: &ExecutableKey,
+        chain: CallChain,
+    ) -> Option<&std::rc::Rc<ReachSet>> {
+        self.executable_reach.get(&(executable.clone(), chain))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn executable_reach_entries(&self) -> Vec<((ExecutableKey, CallChain), std::rc::Rc<ReachSet>)> {
+        self.executable_reach
+            .iter()
+            .map(|(key, reach)| (key.clone(), std::rc::Rc::clone(reach)))
+            .collect()
+    }
+
     pub(crate) fn body_keying(&self, function: FunctionId) -> Option<BodyKeying> {
         self.body_keying.get(function).copied()
     }
@@ -3102,6 +3158,8 @@ impl World {
             | FactKey::EntryDispatch(_)
             | FactKey::StaticCallees(_)
             | FactKey::Recursive(_)
+            | FactKey::StaticReach(_)
+            | FactKey::ExecutableReach(..)
             | FactKey::InputDemand(_)
             | FactKey::RootEntry(_)
             | FactKey::Activation(_)

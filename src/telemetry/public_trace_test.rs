@@ -1732,7 +1732,10 @@ fn family_work(report: &CausalReport, kind: &str) -> (u64, FormulaWork) {
 /// (126, 26): `derive_input_demand` waits on `StaticCallees` before it walks
 /// anything, so the edge facts a component walk needs are already demanded
 /// when it starts and eight of its restarts never happen.
-const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64); 7] = [
+///
+/// The last column of each row is the `DeriveStaticReach` evaluations: the walks that answer
+/// each function's recursion from the edge facts, one fact per function whose recursion is asked.
+const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64, u64); 7] = [
     // fz-5xp.18: 101 -> 125 evaluations and 51 -> 63 blocked. Each comparison
     // operator now has a clause per orderable operand pair, and this fixture
     // reaches four of them; the callees of each are derived once.
@@ -1777,7 +1780,9 @@ const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64); 7] = [
     // bodies in the call graph.
     // 68 -> 69 DeriveStaticCallees: the same two bodies, less `raise/2`, which is gone.
     // 00567: 37 -> 35 DeriveRecursive evaluations: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
-    ("fixtures/00567_fz_f98_range_map_converges.fz", 35, 6, 69, 0),
+    // 35/6 -> 29/0: a recursion verdict starts once its reach exists, so it never starts to
+    // find the reach missing.
+    ("fixtures/00567_fz_f98_range_map_converges.fz", 29, 0, 69, 0, 49),
     // fz-5xp.30: 73 -> 75 component evaluations and 158/83 -> 162/85
     // StaticCallees evaluations/blocks. This predicate fixture reaches two
     // ordinary arithmetic result/status helper specializations.
@@ -1806,7 +1811,9 @@ const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64); 7] = [
     // library exception a failure raises are two more bodies in the call graph.
     // 48 -> 49 DeriveStaticCallees: the same two bodies, less `raise/2`, which is gone.
     // 00571: 50 -> 48 DeriveRecursive evaluations: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
-    ("fixtures/00571_enum_predicate_search.fz", 48, 14, 49, 0),
+    // 48/14 -> 34/0: a recursion verdict starts once its reach exists, so it never starts to
+    // find the reach missing.
+    ("fixtures/00571_enum_predicate_search.fz", 34, 0, 49, 0, 66),
     // fz-5xp.6: `Range.count` uses `div/2`, so fewer bodies are extracted.
     // fz-5xp.30: 126 -> 128 component evaluations. The reached arithmetic
     // result/status helpers are ordinary generic calls.
@@ -1851,11 +1858,15 @@ const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64); 7] = [
     // 82/15 -> 84/16 DeriveRecursive: the `raise` and `defexception` macros that build the
     // library exception a failure raises are two more bodies in the call graph.
     // 114 -> 115 DeriveStaticCallees: `declares_message?/1`, which `defexception` calls.
-    ("fixtures/00420_enum_take_drop_split.fz", 84, 16, 115, 0),
+    // 84/16 -> 68/0: a recursion verdict starts once its reach exists, so it never starts to
+    // find the reach missing.
+    ("fixtures/00420_enum_take_drop_split.fz", 68, 0, 115, 0, 124),
     // 00607-00610 pin the shared-reach shape directly. Four callers (p1-p4)
-    // share one call chain of depth eight. The chain's reach is one program
-    // product that every caller waits on, so a run that changes nothing is one
-    // wait per first-level caller, whatever the depth or the source order.
+    // share one call chain of depth eight. Each caller's reach walks the chain's
+    // edge facts itself and reads no other reach, so the work is the same
+    // whichever order the source defines callers and callees in.
+    // A recursion verdict starts once its reach exists, so none concludes nothing:
+    // 18/5 -> 13/0 and 20/5 -> 15/0 DeriveRecursive evaluations.
     (
         "fixtures/00607_static_reach_shared_chain_callees_first.fz",
         // Kernel's arithmetic and compare cone derives once per program:
@@ -1864,10 +1875,13 @@ const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64); 7] = [
         // macros that build the library exception an arithmetic failure raises are two more
         // bodies in the call graph, less `raise/2`, which is gone.
         // 20 -> 18 DeriveRecursive evaluations: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
-        18,
-        5,
+        // 18/5 -> 13/0: a recursion verdict starts once its reach exists, so it never
+        // starts to find the reach missing.
+        13,
+        0,
         20,
         0,
+        29,
     ),
     (
         "fixtures/00608_static_reach_shared_chain_callers_first.fz",
@@ -1877,10 +1891,13 @@ const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64); 7] = [
         // macros that build the library exception an arithmetic failure raises are two more
         // bodies in the call graph, less `raise/2`, which is gone.
         // 20 -> 18 DeriveRecursive evaluations: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
-        18,
-        5,
+        // 18/5 -> 13/0: a recursion verdict starts once its reach exists, so it never
+        // starts to find the reach missing.
+        13,
+        0,
         20,
         0,
+        29,
     ),
     (
         "fixtures/00609_static_reach_chain_into_recursion_callees_first.fz",
@@ -1890,10 +1907,13 @@ const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64); 7] = [
         // macros that build the library exception an arithmetic failure raises are two more
         // bodies in the call graph, less `raise/2`, which is gone.
         // 22 -> 20 DeriveRecursive evaluations: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
-        20,
-        5,
+        // 20/5 -> 15/0: a recursion verdict starts once its reach exists, so it never
+        // starts to find the reach missing.
+        15,
+        0,
         27,
         0,
+        31,
     ),
     (
         "fixtures/00610_static_reach_chain_into_recursion_callers_first.fz",
@@ -1903,10 +1923,13 @@ const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64); 7] = [
         // macros that build the library exception an arithmetic failure raises are two more
         // bodies in the call graph, less `raise/2`, which is gone.
         // 22 -> 20 DeriveRecursive evaluations: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
-        20,
-        5,
+        // 20/5 -> 15/0: a recursion verdict starts once its reach exists, so it never
+        // starts to find the reach missing.
+        15,
+        0,
         27,
         0,
+        31,
     ),
 ];
 
@@ -1931,7 +1954,9 @@ const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64); 7] = [
 /// evaluation names a moved input, and it still must.
 #[test]
 fn deriving_recursion_from_call_graph_facts_extracts_each_body_once() {
-    for (fixture, evaluations, concluded_nothing, callee_evaluations, callee_blocked) in DERIVE_RECURSIVE_RATCHET {
+    for (fixture, evaluations, concluded_nothing, callee_evaluations, callee_blocked, reach_evaluations) in
+        DERIVE_RECURSIVE_RATCHET
+    {
         let trace = compile_fixture(fixture);
         assert!(
             matches!(trace.outcome, DriveOutcome::Resolved),
@@ -1945,6 +1970,12 @@ fn deriving_recursion_from_call_graph_facts_extracts_each_body_once() {
             (evaluations, concluded_nothing),
             "{fixture}: DeriveRecursive work moved off its fz-kdt.56 pin; re-measure \
              and re-pin with the reason. Full row: {recursive:?}"
+        );
+
+        let (_, reach) = family_work(&report, "DeriveStaticReach");
+        assert_eq!(
+            reach.evaluations, reach_evaluations,
+            "{fixture}: DeriveStaticReach work moved off its pin. Full row: {reach:?}"
         );
 
         let (functions, callees) = family_work(&report, "DeriveStaticCallees");
@@ -2485,7 +2516,9 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // by `defexception` and raised through the `raise` macro; their definitions, bodies and
         // facts are the added evaluations.
         // 814 -> 781: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
-        total_evaluations: 781,
+        // 781 -> 825: 49 `DeriveStaticReach` and 1 `DeriveExecutableReach` evaluations, where
+        // reach was a product evaluation, less 6 `DeriveRecursive` evaluations.
+        total_evaluations: 825,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures/00571_enum_predicate_search.fz",
@@ -2610,7 +2643,9 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // `Enum.reduce_while/3` and its Enum wrappers are keyed once per reducer lambda.
         // 612 -> 614: the `defexception` and `raise` macros are analysed.
         // 614 -> 607: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
-        analyze_evaluations: 607,
+        // 607 -> 608: recursion verdicts publish on the schedule of the reach facts, and this
+        // fixture's schedule-dependent convergence repeats one analysis more.
+        analyze_evaluations: 608,
         // fz-kdt.91: with clause lists canonical (source order), one
         // completion that used to publish a spuriously "changed"
         // EntryReachability (same clause set, new arrival order) now
@@ -2715,7 +2750,9 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // 1147 -> 1184: the library exception modules this fixture can raise, built by
         // `defexception` and raised through the `raise` macro.
         // 1184 -> 1168: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
-        total_evaluations: 1168,
+        // 1168 -> 1222: 66 `DeriveStaticReach` and 1 `DeriveExecutableReach` evaluations, 14
+        // fewer `DeriveRecursive` and 1 more `AnalyzeActivation`.
+        total_evaluations: 1222,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures/00420_enum_take_drop_split.fz",
@@ -3045,7 +3082,9 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // 741 -> 745: the `defexception` and `raise` macros and the functions of the library
         // exception a failure raises are analysed.
         // 745 -> 740: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
-        analyze_evaluations: 740,
+        // 740 -> 738: recursion verdicts publish on the schedule of the reach facts, and this
+        // fixture's schedule-dependent convergence repeats two analyses fewer.
+        analyze_evaluations: 738,
         analyze_zero_change: 23,
         // fz-afu.2: 2360 -> 1949. A never-run job whose gate names a fact
         // still missing no longer starts to discover that fact missing --
@@ -3135,7 +3174,9 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // 1697 -> 1736: the library exception modules this fixture can raise, built by
         // `defexception` and raised through the `raise` macro.
         // 1736 -> 1727: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
-        total_evaluations: 1727,
+        // 1727 -> 1834: 124 `DeriveStaticReach` and 1 `DeriveExecutableReach` evaluations, 16
+        // fewer `DeriveRecursive` and 2 fewer `AnalyzeActivation`.
+        total_evaluations: 1834,
     },
 ];
 

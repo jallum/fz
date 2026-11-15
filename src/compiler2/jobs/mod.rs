@@ -22,6 +22,7 @@ pub(super) use dispatch::is_guard_expr;
 mod executable_facts;
 mod keying;
 mod native;
+mod reach;
 pub(super) use native::produce_native_program;
 mod root;
 pub(crate) mod runtime_demand;
@@ -58,7 +59,9 @@ pub(crate) fn run<T: crate::telemetry::RawSpanTelemetry>(
         Job::ReifyGuardDispatch(function_id) => dispatch::reify_guard_dispatch(world, tel, *function_id),
         Job::PlanEntryDispatch(function_id) => dispatch::plan_entry_dispatch(world, tel, *function_id),
         Job::DeriveStaticCallees(function_id) => keying::derive_static_callees(world, *function_id),
-        Job::DeriveRecursive(function_id) => keying::derive_recursive(world, product_sessions.as_deref(), *function_id),
+        Job::DeriveRecursive(function_id) => keying::derive_recursive(world, *function_id),
+        Job::DeriveStaticReach(function_id) => reach::derive_static_reach(world, *function_id),
+        Job::DeriveExecutableReach(executable, chain) => reach::derive_executable_reach(world, executable, *chain),
         Job::DeriveInputDemand(function_id) => keying::derive_input_demand(world, tel, *function_id),
         Job::SeedRoot(root_id) => root::seed_root(world, tel, *root_id),
         Job::SeedActivation(activation) => root::seed_activation(world, tel, activation),
@@ -98,6 +101,10 @@ impl Job {
             Job::ScopeCode(source_owner) => current_uses(source::scope_code_gates(world, *source_owner)),
             Job::DeriveInputDemand(function_id) => current_uses(keying::derive_input_demand_gates(world, *function_id)),
             Job::DeriveRecursive(function_id) => current_uses(keying::derive_recursive_gates(world, *function_id)),
+            Job::DeriveStaticReach(function_id) => current_uses(reach::derive_static_reach_gates(world, *function_id)),
+            Job::DeriveExecutableReach(executable, _) => {
+                settled_uses(reach::derive_executable_reach_gates(world, executable))
+            }
             Job::DeriveRuntimeDemand(executable) => {
                 settled_uses(runtime_demand::derive_runtime_demand_gates(world, executable))
             }
