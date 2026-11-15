@@ -41,9 +41,10 @@ use fz_runtime::process::AtomName;
 
 use super::super::artifact::{
     AbiValueRepr, BackendBody, BackendClause, BackendEntry, BackendEntryCapture, BackendEntryOrigin, BackendExecutable,
-    BackendProgram, BackendReturnFlow, BackendStep, BackendTail, CallEdge, CallTarget, ClosureCallEdge,
-    DispatchCallEdge, EffectSummary, EntryTransfer, NativeBody, NativeBodyOrigin, NativeCallableBoundary,
-    NativeCallableBoundaryId, NativeConstructionMember, NativeEntryAbi, NativeExecutableEntry, NativeProgram,
+    BackendProgram, BackendReturnFlow, BackendStep, BackendTail, BackendValueLayout, CallEdge, CallTarget,
+    ClosureCallEdge, DispatchCallEdge, EffectSummary, EntryTransfer, NativeBody, NativeBodyOrigin,
+    NativeCallableBoundary, NativeCallableBoundaryId, NativeConstructionMember, NativeEntryAbi, NativeExecutableEntry,
+    NativeProgram,
 };
 use super::super::body::{ControlDestination, ControlEntryId, DispatchBindings, LoweredExtern, ValueId};
 use super::super::identity::RootId;
@@ -1111,18 +1112,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             executable.abi.effects,
         );
         let entry_vars = ctx.entry_params(entry_tys.as_slice());
-        let arguments = outcome
-            .into_iter()
-            .flat_map(|edge| edge.arguments.iter())
-            .map(|argument| {
-                let index = entry
-                    .params
-                    .iter()
-                    .position(|parameter| *parameter == argument.parameter)
-                    .expect("outcome argument belongs to its target entry signature");
-                (argument.subject, entry_vars[index])
-            })
-            .collect();
+        let arguments = self.receive_clause_arguments(executable, entry, outcome, &entry_vars)?;
         let input_lanes = self.lower_entry_here(
             &mut ctx,
             executable,
@@ -1135,6 +1125,70 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         self.mark_entry_function_params(&mut ctx, executable, entry, &entry_vars, input_lanes)?;
         self.finish_entry_lowering_fn(ctx, executable, entries, entry_fns)?;
         Ok(arguments)
+    }
+
+    /// The subject each receive outcome argument binds, with the lane that
+    /// carries it. The matcher fills one lane per subject, so each argument's
+    /// parameter must have a one-lane layout.
+    fn receive_clause_arguments(
+        &mut self,
+        executable: &BackendExecutable,
+        entry: &BackendEntry,
+        outcome: Option<&super::super::body::OutcomeEdge>,
+        entry_vars: &[Var],
+    ) -> Result<Vec<(SubjectId, Var)>, FatalError> {
+        let Some(edge) = outcome else {
+            return Ok(Vec::new());
+        };
+        self.check_arguments_follow_parameters(entry, edge)?;
+        let mut lane_index = 0;
+        let mut arguments = Vec::with_capacity(edge.arguments.len());
+        for argument in &edge.arguments {
+            let lanes = entry_param_layout(executable, argument.parameter).reprs.len();
+            if lanes != 1 {
+                return Err(incomplete_native_program(
+                    self.telemetry,
+                    self.root_id,
+                    format!(
+                        "receive outcome parameter {:?} travels in {lanes} lanes; the matcher fills one",
+                        argument.parameter
+                    ),
+                ));
+            }
+            arguments.push((argument.subject, entry_vars[lane_index]));
+            lane_index += lanes;
+        }
+        Ok(arguments)
+    }
+
+    /// An outcome hands its arguments in the order the target entry's
+    /// parameters are laid out, so the lanes it passes line up with the lanes
+    /// the entry reads.
+    fn check_arguments_follow_parameters(
+        &self,
+        entry: &BackendEntry,
+        edge: &super::super::body::OutcomeEdge,
+    ) -> Result<(), FatalError> {
+        let in_order = edge
+            .arguments
+            .iter()
+            .map(|argument| argument.parameter)
+            .eq(entry.params.iter().copied());
+        if in_order {
+            return Ok(());
+        }
+        Err(incomplete_native_program(
+            self.telemetry,
+            self.root_id,
+            format!(
+                "outcome arguments {:?} are not the parameters {:?} of the entry they target, in order",
+                edge.arguments
+                    .iter()
+                    .map(|argument| argument.parameter)
+                    .collect::<Vec<_>>(),
+                entry.params
+            ),
+        ))
     }
 
     /// Lowers an entry where control already is: binds what it is entered
@@ -2496,43 +2550,33 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         executable: &BackendExecutable,
         entry: &BackendEntry,
     ) -> (Vec<Ty>, Vec<AbiValueRepr>, NativeEntryAbi) {
-        let mut param_tys = entry
-            .params
-            .iter()
-            .map(|value| {
-                executable
-                    .abi
-                    .materialized
-                    .value_types
-                    .get(value)
-                    .copied()
-                    .unwrap_or_else(|| self.world.types_mut().any())
-            })
-            .collect::<Vec<_>>();
         match &entry.origin {
             BackendEntryOrigin::Clause => panic!("clause entries are lowered through their owning clause"),
             BackendEntryOrigin::Branch | BackendEntryOrigin::ReceiveOutcome | BackendEntryOrigin::Handler => {
-                let mut param_reprs = self.reprs_of(&param_tys);
-                self.append_entry_capture_lanes(executable, entry, &mut param_tys, &mut param_reprs);
+                let (mut tys, mut reprs) = (Vec::new(), Vec::new());
+                for value in &entry.params {
+                    let layout = entry_param_layout(executable, *value);
+                    tys.extend(layout.tys.iter().copied());
+                    reprs.extend(layout.reprs.iter().copied());
+                }
+                self.append_entry_capture_lanes(executable, entry, &mut tys, &mut reprs);
                 let abi = match &entry.origin {
                     BackendEntryOrigin::Branch => NativeEntryAbi::Direct,
                     _ => NativeEntryAbi::Continuation { extra_params: 0 },
                 };
-                (param_tys, param_reprs, abi)
+                (tys, reprs, abi)
             }
             BackendEntryOrigin::DeliveredResume { value: _, layout } => {
-                let (mut entry_tys, mut param_reprs) = (layout.layout.tys.to_vec(), layout.layout.reprs.to_vec());
-                let extra_params = param_reprs.len();
-                param_reprs.extend(self.reprs_of(&param_tys));
-                entry_tys.extend(param_tys);
-                self.append_entry_capture_lanes(executable, entry, &mut entry_tys, &mut param_reprs);
-                (entry_tys, param_reprs, NativeEntryAbi::Continuation { extra_params })
+                assert!(
+                    entry.params.is_empty(),
+                    "a resume entry is entered with its delivered value alone"
+                );
+                let (mut tys, mut reprs) = (layout.layout.tys.to_vec(), layout.layout.reprs.to_vec());
+                let extra_params = reprs.len();
+                self.append_entry_capture_lanes(executable, entry, &mut tys, &mut reprs);
+                (tys, reprs, NativeEntryAbi::Continuation { extra_params })
             }
         }
-    }
-
-    fn reprs_of(&mut self, tys: &[Ty]) -> Vec<AbiValueRepr> {
-        tys.iter().map(|ty| AbiValueRepr::for_ty(self.world, *ty)).collect()
     }
 
     /// Appends the lanes an entry receives for its captures: the lanes of each
@@ -2572,10 +2616,13 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         match &entry.origin {
             BackendEntryOrigin::Clause => Ok(0),
             BackendEntryOrigin::Branch | BackendEntryOrigin::ReceiveOutcome | BackendEntryOrigin::Handler => {
-                for (value, var) in entry.params.iter().copied().zip(entry_vars.iter().copied()) {
-                    self.bind_runtime_value(ctx, executable, env, value, var);
+                let mut lane_index = 0;
+                for value in entry.params.iter().copied() {
+                    let layout = entry_param_layout(executable, value);
+                    let bound = self.decode_runtime_value_for_layout(layout, entry_vars, &mut lane_index)?;
+                    bind_local_value(ctx, executable, env, value, bound);
                 }
-                Ok(entry.params.len())
+                Ok(lane_index)
             }
             BackendEntryOrigin::DeliveredResume { value, layout } => {
                 if matches!(layout.layout.carrier, super::super::pull::TransportCarrier::Absent)
@@ -2655,10 +2702,15 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             entry.origin,
             BackendEntryOrigin::Branch | BackendEntryOrigin::ReceiveOutcome
         ) {
-            for (value, var) in entry.params.iter().zip(entry_vars) {
+            let mut lane_index = 0;
+            for value in &entry.params {
+                let lanes = entry_param_layout(executable, *value).reprs.len();
                 if entry.physical_params.contains(value) {
-                    ctx.builder.record_physical_entry_param(*var);
+                    for var in &entry_vars[lane_index..lane_index + lanes] {
+                        ctx.builder.record_physical_entry_param(*var);
+                    }
                 }
+                lane_index += lanes;
             }
         }
         self.mark_delivered_entry_semantics(ctx, executable, entry, &entry_vars[..input_lanes])?;
@@ -3390,9 +3442,19 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     .get(outcome.0 as usize)
                     .expect("every native dispatch outcome has an edge");
                 let arm_entry = edge.target;
+                self.check_arguments_follow_parameters(&entries[arm_entry.as_u32() as usize], edge)?;
                 let mut args = Vec::new();
                 for argument in &edge.arguments {
-                    args.push(self.dispatch_subject_var(ctx, plan, state, argument.subject)?);
+                    let subject = self.dispatch_subject_value(ctx, plan, state, argument.subject)?.clone();
+                    let layout = entry_param_layout(executable, argument.parameter);
+                    self.encode_runtime_value_for_layout(
+                        ctx,
+                        executable,
+                        Some(argument.parameter),
+                        &subject,
+                        layout,
+                        &mut args,
+                    )?;
                 }
                 args.extend(self.entry_capture_args(ctx, executable, entries, arm_entry, env)?);
                 self.transfer_to_entry(ctx, executable, entries, entry_fns, arm_entry, args);
@@ -5251,6 +5313,16 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             }
         }
     }
+}
+
+/// The layout an entry's parameter arrives in. Every parameter a decision, a
+/// receive or a raise hands has one, so a missing layout is a defect upstream.
+fn entry_param_layout(executable: &BackendExecutable, value: ValueId) -> &BackendValueLayout {
+    executable
+        .abi
+        .value_layouts
+        .get(&value)
+        .unwrap_or_else(|| panic!("entry parameter {value:?} has no layout"))
 }
 
 fn same_entry_capture_contract(left: &BackendEntryCapture, right: &BackendEntryCapture) -> bool {

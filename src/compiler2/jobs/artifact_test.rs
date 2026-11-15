@@ -374,3 +374,80 @@ fn a_pruned_body_answers_only_for_the_call_sites_it_kept() {
     assert_eq!(args.len(), 1);
     assert_eq!(args[0].value, ValueId::from_u32(2));
 }
+
+/// A case arm, a receive outcome and a rescue handler are each handed their
+/// parameters whole, so each parameter has a layout in the executable's ABI
+/// and the layout is one lane.
+#[test]
+fn every_parameter_an_entry_is_handed_has_a_one_lane_layout() {
+    use crate::compiler2::artifact::{BackendBody, BackendEntryOrigin};
+    use crate::compiler2::{CodeSubmission, Compiler2, RootSubmission};
+
+    const SOURCE: &str = r#"
+def walk(b, acc) do
+  case b do
+    <<c, rest :: binary>> -> walk(rest, acc + c)
+    <<>> -> acc
+  end
+end
+
+def main() do
+  send(self(), {:ok, 1})
+  got = receive do
+    {:ok, v} -> v
+  end
+  safe = try do
+    raise "boom"
+  rescue
+    _ -> 0
+  end
+  walk("abc", got + safe)
+end
+"#;
+    let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
+    compiler.submit_code(CodeSubmission {
+        name: Some("handed_parameters.fz".into()),
+        text: SOURCE.into(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler.run_root_interp(root).expect("the program runs");
+    let program = compiler.retained_backend_program(root);
+
+    let (mut arms, mut outcomes, mut handlers) = (0, 0, 0);
+    for executable in program.executables() {
+        let BackendBody::Clauses { entries, .. } = &executable.body else {
+            continue;
+        };
+        for entry in entries {
+            let seen = match entry.origin {
+                BackendEntryOrigin::Branch => &mut arms,
+                BackendEntryOrigin::ReceiveOutcome => &mut outcomes,
+                BackendEntryOrigin::Handler => &mut handlers,
+                BackendEntryOrigin::Clause | BackendEntryOrigin::DeliveredResume { .. } => continue,
+            };
+            for param in &entry.params {
+                let layout = executable
+                    .abi
+                    .value_layouts
+                    .get(param)
+                    .unwrap_or_else(|| panic!("parameter {param:?} of a {:?} entry has no layout", entry.origin));
+                assert_eq!(
+                    layout.reprs.len(),
+                    1,
+                    "parameter {param:?} of a {:?} entry is handed whole, in one lane",
+                    entry.origin
+                );
+                *seen += 1;
+            }
+        }
+    }
+    assert!(
+        arms > 0 && outcomes > 0 && handlers > 0,
+        "the program has all three: {arms} arm, {outcomes} receive, {handlers} handler parameters"
+    );
+}

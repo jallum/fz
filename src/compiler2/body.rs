@@ -667,6 +667,13 @@ pub(crate) struct DeliveredValueJoin {
 }
 
 impl ControlEntryOrigin {
+    /// Whether whoever enters this entry hands it its parameters: a decision
+    /// hands an arm its subjects, the runtime matcher hands a receive outcome
+    /// its bindings, and a raise hands a handler its kind, value and name.
+    pub fn is_handed_parameters(&self) -> bool {
+        matches!(self, Self::Branch | Self::ReceiveOutcome | Self::Handler)
+    }
+
     pub fn input_value(&self) -> Option<ValueId> {
         match self {
             Self::Clause | Self::Branch | Self::ReceiveOutcome | Self::Handler => None,

@@ -1200,7 +1200,18 @@ semantically absent. Its lexical capture metadata can still be consumed by a
 callable wrapper. `BackendLowerer` reads this proof from
 `AbiReadyExecutable::value_layouts`, the same table consumed by the runtimes.
 That table includes clause parameters' semantic input layouts; lowering does
-not derive a second table from transport positions. Every fresh construction step
+not derive a second table from transport positions. It also holds a layout for
+every parameter a branch, receive outcome or handler entry is handed. A
+parameter the transport plan already lays out (a lambda captures it) keeps that
+layout; any other arrives whole, in one lane
+(`whole_value_layout`), because the decision, the receive matcher and a raise
+all hand parameters as built values. Native `entry_signature` and
+`bind_entry_input`, the dispatch handoff, and the interpreter's `enter_entry`
+read and write these parameters through that layout, the way captures are; an
+outcome's arguments are in the target entry's parameter order, and both
+runtimes stop with an internal error when they are not. A receive outcome and a
+handler are filled by the runtime one lane per parameter, so native stops with
+an internal error when one of their layouts is not a single lane. Every fresh construction step
 (`Tuple`/`List`/`Map`/`Struct`/`Bitstring`/`FunctionRef`/`Lambda`)
 and every projection (`FieldAccess`/`StructSlot`/`TupleField`) goes through
 `step_or_omitted_when_absent` and becomes `BackendStep::Omitted` when its own
