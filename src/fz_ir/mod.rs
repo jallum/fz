@@ -343,16 +343,20 @@ impl ExternTy {
         }
     }
 
-    /// The C-signature classes a parameter list occupies: a `binary_cursor` is
-    /// a reference word followed by a bit position.
+    /// The C-signature classes one parameter occupies: a `binary_cursor` is a
+    /// reference word followed by a bit position, and every other type is
+    /// itself.
+    pub fn wire(self) -> impl Iterator<Item = ExternTy> {
+        let (first, second) = match self {
+            ExternTy::BinaryCursor => (ExternTy::Any, Some(ExternTy::I64)),
+            other => (other, None),
+        };
+        std::iter::once(first).chain(second)
+    }
+
+    /// The C-signature classes a parameter list occupies.
     pub fn wire_classes(params: &[ExternTy]) -> Vec<ExternTy> {
-        params
-            .iter()
-            .flat_map(|ty| match ty {
-                ExternTy::BinaryCursor => vec![ExternTy::Any, ExternTy::I64],
-                other => vec![*other],
-            })
-            .collect()
+        params.iter().flat_map(|ty| ty.wire()).collect()
     }
 }
 

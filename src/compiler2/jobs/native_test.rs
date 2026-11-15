@@ -126,7 +126,7 @@ fn nested_callable_adapter_preserves_the_source_lane_type_and_repr() {
     let params = ctx.entry_params(&[int]);
     let value = NativeBoundValue::Transport {
         shape: source,
-        lanes: params.clone(),
+        lanes: params.iter().copied().collect(),
     };
     let encoded = encode_for_layout(&mut lowerer, &mut ctx, &executable, &value, destination)
         .expect("nested callable captures project through their published source layouts");
@@ -358,7 +358,7 @@ fn tuple_encoding_reprojects_same_arity_partial_transport_by_position() {
     let params = ctx.entry_params(&[int, int, int]);
     let value = NativeBoundValue::Transport {
         shape: source,
-        lanes: params.clone(),
+        lanes: params.iter().copied().collect(),
     };
     let encoded = encode_for_layout(&mut lowerer, &mut ctx, &executable, &value, destination)
         .expect("the destination erases the absent field before encoding the required inner tuple");

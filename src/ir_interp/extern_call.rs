@@ -156,7 +156,7 @@ pub(super) fn call_fixed_extern(
     }
     let mut values = args.iter().copied();
     for ty in signature.params.iter().copied() {
-        for wire in ExternTy::wire_classes(&[ty]) {
+        for wire in ty.wire() {
             let value = values
                 .next()
                 .expect("argument words were counted against the parameters");

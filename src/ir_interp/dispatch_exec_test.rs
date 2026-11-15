@@ -317,7 +317,7 @@ fn a_pin_whose_input_arrives_in_lane_form_is_refused_by_name() {
     let inputs = [
         Some(BackendBoundValue::Transport {
             shape: tuple,
-            lanes: Vec::new(),
+            lanes: smallvec::SmallVec::new(),
         }),
         None,
     ];
@@ -343,7 +343,7 @@ fn a_failed_test_undoes_the_subjects_it_produced() {
     let values = DispatchValues::default();
     let inputs = [Some(BackendBoundValue::Transport {
         shape: pair,
-        lanes: vec![AnyValue::Int(9), AnyValue::Int(8)],
+        lanes: smallvec::smallvec![AnyValue::Int(9), AnyValue::Int(8)],
     })];
     let decided = door
         .decide(&plan, &inputs, &values)
@@ -377,7 +377,7 @@ fn a_taken_branch_keeps_what_its_test_learned() {
     let values = DispatchValues::default();
     let inputs = [Some(BackendBoundValue::Transport {
         shape: pair,
-        lanes: vec![AnyValue::Int(9), AnyValue::Int(8)],
+        lanes: smallvec::smallvec![AnyValue::Int(9), AnyValue::Int(8)],
     })];
     let decided = door
         .decide(&plan, &inputs, &values)
@@ -451,7 +451,7 @@ fn a_prepared_binary_key_no_test_reads_is_never_built() {
     let proc = door.proc();
     let inputs = [Some(BackendBoundValue::Transport {
         shape: single,
-        lanes: vec![AnyValue::Int(1)],
+        lanes: smallvec::smallvec![AnyValue::Int(1)],
     })];
     let before = bitstring_allocs(proc);
     let values = dispatch_values(proc, &door.transport, &plan, DispatchSource::Inputs(&inputs))
