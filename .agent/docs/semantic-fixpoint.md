@@ -619,7 +619,11 @@ structure keeps its fields. A key whose every input is already its own key
 skips demand (`Types::probe_keys_as_itself`), and a ground record counts as
 its own key there: collapsing it only where demand was going to be derived
 anyway saves activations, while deriving demand for a record's sake costs
-more than it saves.
+more than it saves. A record is ground when no field holds a literal atom,
+the one literal family the types have (`Types::widen_literals` leaves it
+unchanged). The two records above are not ground: the fields they leave unset
+hold the atom `nil`. `%Point{x: 1, y: 2}` and `%Size{w: 3, h: 4}` are ground,
+so the same body keys them apart.
 
 So today:
 
