@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-15T15:29:44Z",
   "created": "2026-11-15T15:05:16Z",
   "description": "The cursor (fz-sc8.208) made the interpreter do more work wherever a program dispatches or calls an extern, and most where a binary is walked. Release `fz2 interp`, pre-cursor 92cead0b2 against develop e81f9ed52, both built in one environment: a byte walk over 1.3 MB 17.7G -\u003e 24.4G instructions and 3.1G -\u003e 4.0G cycles; fixture 01254, which reads no binary, 36.7G -\u003e 41.5G instructions and about 7.3G -\u003e 8.0G cycles. Native run and build are unaffected.\n\nFour per-step heap allocations, each confirmed by experiment:\n- `call_fixed_extern` (src/ir_interp/extern_call.rs) builds a Vec per parameter per call through `ExternTy::wire_classes(\u0026[ty])`.\n- `extern_argument_words` (src/ir_interp/backend.rs) builds the word Vec and one more Vec per input per call.\n- `BoundValue::Transport` (src/compiler2/transport.rs) holds its lanes in a Vec, so a cursor, two words, is allocated, cloned and freed on every step.\n- `DispatchExecState` (src/ir_interp/dispatch_exec.rs) allocates a pending-rest slot per subject on every dispatch, whether or not a rest is matched.\n\nWith all four removed (develop e81f9ed52 against the fix, same environment): byte walk 24.4G -\u003e 18.5G instructions and 4.0G -\u003e 3.7G cycles; JSON.decode x2,000 8.29G -\u003e 7.32G instructions (three removed); 01254 41.5G -\u003e 37.1G instructions; 01294 44.0G -\u003e 38.9G instructions (three removed).\n\nNot explained, and not closed by this ticket: on 01254 and 01294 cycles do not fall with the instructions. They stay about 10% above pre-cursor (about 8.0G against 7.3G on 01254) with instructions within 1 to 3% of pre-cursor. Refuted as causes: the size of the bound value (two-word and four-word inline lanes time the same), the pending-rest list, peak memory and page reclaims (equal). The measuring machine was under load, so the gap needs a quiet re-measurement before more is built on it.\n\nThe coverage step's limit is no longer at stake: develop e81f9ed52 passes it since the limit became CPU time (fz-rgk).\n\nDone when: the four per-step allocations are gone, and interp instructions and cycles on the byte-walk probe and on 01254 are measured against develop built in the same environment.",
   "id": "fz-sc8.227",
   "labels": [],
   "parent": "fz-sc8",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "A walked binary passed in the interpreter allocates nothing per step",
   "type": "bug",
-  "updated_at": "2026-11-15T15:23:26Z"
+  "updated_at": "2026-11-15T15:29:44Z"
 }
