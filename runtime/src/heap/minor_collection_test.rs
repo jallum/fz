@@ -6,7 +6,8 @@ use crate::any_value::{
     AnyValue, AnyValueRef, EMPTY_LIST, ListCons, ValueKind, heap_kind_from_tagged, heap_object_word,
     list_addr_from_tagged,
 };
-use crate::procbin::{SharedBinHandle, alloc_procbin, mso_sweep, mso_unreached_closures};
+use crate::heap::{StubCounts, StubSite};
+use crate::procbin::{ProcBin, SharedBinHandle, alloc_procbin, mso_sweep, mso_unreached_closures};
 use crate::resource::{ResourceHandle, alloc_resource, fz_resource_destructor_noop};
 use crate::sync::Ordering;
 use std::cell::RefCell;
@@ -164,13 +165,25 @@ fn an_old_procbin_that_died_is_released_by_a_major_collection_and_a_young_one_by
     let old_witness = SharedBinHandle::from_bytes(&[1; 8], 64);
     let young_witness = SharedBinHandle::from_bytes(&[2; 8], 64);
     let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
-    let old = alloc_procbin(&mut heap, old_witness.clone(), 0, old_witness.bit_len());
+    let old = alloc_procbin(
+        &mut heap,
+        old_witness.clone(),
+        0,
+        old_witness.bit_len(),
+        StubSite::FilledBuffer,
+    );
     let mut roots = [root_of(heap_object_word(old.as_raw(), ValueKind::PROCBIN))];
     assert_eq!(heap.collect(&mut roots).generation, Generation::Minor);
     assert_ne!(heap.mso_old_head, 0, "the survivor is on the old chain");
     assert_eq!(heap.mso_head, 0);
 
-    alloc_procbin(&mut heap, young_witness.clone(), 0, young_witness.bit_len());
+    alloc_procbin(
+        &mut heap,
+        young_witness.clone(),
+        0,
+        young_witness.bit_len(),
+        StubSite::FilledBuffer,
+    );
     assert_eq!(shared_refs(&young_witness), 2);
     let stats = heap.collect(&mut []);
     assert_eq!(stats.generation, Generation::Minor);
@@ -205,10 +218,22 @@ fn dropping_a_heap_releases_its_young_and_its_old_stubs() {
     ];
     {
         let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
-        let old = alloc_procbin(&mut heap, witnesses[0].clone(), 0, witnesses[0].bit_len());
+        let old = alloc_procbin(
+            &mut heap,
+            witnesses[0].clone(),
+            0,
+            witnesses[0].bit_len(),
+            StubSite::FilledBuffer,
+        );
         let mut roots = [root_of(heap_object_word(old.as_raw(), ValueKind::PROCBIN))];
         heap.collect(&mut roots);
-        alloc_procbin(&mut heap, witnesses[1].clone(), 0, witnesses[1].bit_len());
+        alloc_procbin(
+            &mut heap,
+            witnesses[1].clone(),
+            0,
+            witnesses[1].bit_len(),
+            StubSite::FilledBuffer,
+        );
         assert_eq!(witnesses.each_ref().map(shared_refs), [2, 2]);
     }
     assert_eq!(witnesses.each_ref().map(shared_refs), [1, 1]);
@@ -268,7 +293,13 @@ fn a_grafted_list_cell_is_not_rewritten_in_place() {
 
 fn alloc_unrooted_stubs(heap: &mut Heap, binaries: usize, resources: usize) {
     for _ in 0..binaries {
-        alloc_procbin(heap, SharedBinHandle::from_bytes(&[7; 8], 64), 0, 64);
+        alloc_procbin(
+            heap,
+            SharedBinHandle::from_bytes(&[7; 8], 64),
+            0,
+            64,
+            StubSite::FilledBuffer,
+        );
     }
     for _ in 0..resources {
         let handle = ResourceHandle::new(1, fz_resource_destructor_noop);
@@ -287,7 +318,13 @@ fn a_collection_follows_one_link_per_binary_stub() {
 
     let survivors: Vec<AnyValueRef> = (0..5)
         .map(|_| {
-            let pb = alloc_procbin(&mut heap, SharedBinHandle::from_bytes(&[7; 8], 64), 0, 64);
+            let pb = alloc_procbin(
+                &mut heap,
+                SharedBinHandle::from_bytes(&[7; 8], 64),
+                0,
+                64,
+                StubSite::FilledBuffer,
+            );
             root_of(heap_object_word(pb.as_raw(), ValueKind::PROCBIN))
         })
         .collect();
@@ -315,6 +352,7 @@ fn the_destructor_search_walks_only_resource_stubs_and_the_sweep_every_stub_once
         Generation::Minor,
         |stub| stub.closure_value(),
         &mut sweep_visits,
+        &mut StubCounts::default(),
     );
     assert_eq!(dead.len(), resources);
     assert_eq!(sweep_visits, (binaries + resources) as u64);
@@ -331,7 +369,13 @@ fn the_destructor_search_walks_only_resource_stubs_and_the_sweep_every_stub_once
 #[test]
 fn a_major_collection_follows_the_old_chains_and_a_minor_does_not() {
     let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
-    let pb = alloc_procbin(&mut heap, SharedBinHandle::from_bytes(&[7; 8], 64), 0, 64);
+    let pb = alloc_procbin(
+        &mut heap,
+        SharedBinHandle::from_bytes(&[7; 8], 64),
+        0,
+        64,
+        StubSite::FilledBuffer,
+    );
     let rs = alloc_resource(
         &mut heap,
         ResourceHandle::new(1, fz_resource_destructor_noop),
@@ -378,4 +422,102 @@ fn a_huge_object_parked_alone_is_young_though_it_lies_outside_the_tip() {
     let in_tip = |p: *mut u8| heap.block_start <= p && p < heap.bump_top;
     assert!(in_tip(small));
     assert!(!in_tip(huge), "the huge object does not move the tip");
+}
+
+fn counts(pairs: &[(StubSite, u64)]) -> StubCounts {
+    let mut counts = StubCounts::default();
+    for &(site, n) in pairs {
+        for _ in 0..n {
+            counts.record(site);
+        }
+    }
+    counts
+}
+
+fn bytes_of(value: AnyValue) -> (ProcBin, Vec<u8>) {
+    let stub = unsafe { ProcBin::from_raw(value.heap_addr().expect("a stub")) };
+    let bytes = unsafe { std::slice::from_raw_parts(stub.bytes_ptr(), stub.bytes_len()) }.to_vec();
+    (stub, bytes)
+}
+
+/// Every place that makes a binary stub is counted under its own site by the
+/// heap that made it, and a minor collection reports which of those stubs it
+/// kept. Each site is driven once through the call that production code uses.
+#[test]
+fn a_minor_collection_counts_the_stubs_each_site_made_and_kept() {
+    let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let big = vec![1u8; SHARED_BIN_THRESHOLD_BYTES + 1];
+
+    let filled = heap.alloc_bitstring(&big, big.len() as u64 * 8);
+    let grown = unsafe { heap.alloc_concatenation(&big, None, &[2]) };
+    let (grown_stub, grown_bytes) = bytes_of(grown);
+    let appended = unsafe { heap.alloc_concatenation(&grown_bytes, Some(grown_stub), &[3]) };
+    let window = unsafe { heap.alloc_bitstring_slice(grown_stub.shared_raw(), 1, big.len() as u64) };
+
+    let mut roots = [filled, appended, window].map(AnyValue::ref_word);
+    let stats = heap.collect(&mut roots);
+
+    assert_eq!(
+        stats.stubs_made,
+        counts(&[
+            (StubSite::FilledBuffer, 1),
+            (StubSite::GrownBuffer, 1),
+            (StubSite::AppendedInPlace, 1),
+            (StubSite::WindowOfBuffer, 1),
+        ]),
+        "each call made one stub under its own site"
+    );
+    assert_eq!(
+        stats.stubs_survived,
+        counts(&[
+            (StubSite::FilledBuffer, 1),
+            (StubSite::AppendedInPlace, 1),
+            (StubSite::WindowOfBuffer, 1),
+        ]),
+        "the grown buffer's own stub was unrooted and died"
+    );
+    assert_eq!(stats.stub_visits, 4);
+
+    let again = heap.collect(&mut roots);
+    assert_eq!(
+        again.stubs_made,
+        StubCounts::default(),
+        "made counts restart at each collection"
+    );
+    assert_eq!(
+        again.stubs_survived,
+        StubCounts::default(),
+        "a minor collection does not examine old stubs"
+    );
+}
+
+/// A major collection examines the old stubs too, so it counts the survivors
+/// among stubs earlier collections kept, under the site that made them.
+#[test]
+fn a_major_collection_counts_old_survivors_under_their_original_site() {
+    let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let big = vec![1u8; SHARED_BIN_THRESHOLD_BYTES + 1];
+    let filled = heap.alloc_bitstring(&big, big.len() as u64 * 8);
+    let ballast = list_of(&mut heap, 0, 400, EMPTY_LIST);
+    let mut roots = [filled.ref_word(), root_of(ballast)];
+    assert_eq!(heap.collect(&mut roots).generation, Generation::Minor);
+
+    let major = heap.collect(&mut roots);
+    assert_eq!(major.generation, Generation::Major);
+    assert_eq!(major.stubs_made, StubCounts::default());
+    assert_eq!(major.stubs_survived, counts(&[(StubSite::FilledBuffer, 1)]));
+}
+
+/// A message copy makes the receiver's stub under its own site.
+#[test]
+fn a_message_copy_counts_as_its_own_site_on_the_receiving_heap() {
+    let mut sender = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let mut receiver = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let big = vec![1u8; SHARED_BIN_THRESHOLD_BYTES + 1];
+    let filled = sender.alloc_bitstring(&big, big.len() as u64 * 8);
+    let copy = deep_copy_slot(filled, &sender.view(), &mut receiver, &mut AddressMap::default());
+
+    let stats = receiver.collect(&mut [copy.ref_word()]);
+    assert_eq!(stats.stubs_made, counts(&[(StubSite::MessageCopy, 1)]));
+    assert_eq!(stats.stubs_survived, counts(&[(StubSite::MessageCopy, 1)]));
 }

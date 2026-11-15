@@ -33,7 +33,7 @@ use crate::bitstr::{
     encode_utf32, sign_extend,
 };
 use crate::exec_ctx::ExecCtx;
-use crate::heap::{AllocStat, closure_capture_ref, list_head_ref, list_tail_ref};
+use crate::heap::{AllocStat, StubSite, closure_capture_ref, list_head_ref, list_tail_ref};
 use crate::module_name::STRUCT_MODULE_FIELD;
 use crate::park::{MatcherFn, ParkRecord};
 use crate::procbin::{
@@ -1445,7 +1445,13 @@ pub extern "C" fn fz_alloc_procbin_from_static(process: *mut Process, static_sha
     let sb = static_sharedbin as *mut SharedBin;
     let handle = unsafe { SharedBinHandle::retain_from_raw(sb) };
     let bit_len = handle.bit_len();
-    let pb = alloc_procbin(&mut (unsafe { &mut *process }).heap, handle, 0, bit_len);
+    let pb = alloc_procbin(
+        &mut (unsafe { &mut *process }).heap,
+        handle,
+        0,
+        bit_len,
+        StubSite::StaticLiteral,
+    );
     heap_ref_word(ValueKind::PROCBIN, pb.as_raw() as *const u8)
 }
 

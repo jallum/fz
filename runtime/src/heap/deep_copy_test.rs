@@ -7,6 +7,7 @@ use crate::any_value::{
     AnyValue, AnyValueRef, ClosureDenotationId, EMPTY_LIST, ValueKind, closure_addr_from_tagged,
     closure_size_for_count, list_addr_from_tagged, map_addr_from_tagged, map_size_for_count, struct_size_for_payload,
 };
+use crate::heap::StubSite;
 use crate::procbin::{PROCBIN_BYTES, SharedBinHandle, alloc_procbin};
 use crate::resource::{RESOURCE_STUB_SIZE, ResourceHandle, alloc_resource, fz_resource_destructor_noop};
 use crate::sched::gift_copy;
@@ -173,6 +174,7 @@ fn a_procbin_stub_measures_the_stub_and_not_the_shared_bytes() {
         SharedBinHandle::from_bytes(&[7; 4096], 4096 * 8),
         0,
         4096 * 8,
+        StubSite::FilledBuffer,
     );
     let bytes = measured_equals_copied(&mut sender, &[heap_ref(ValueKind::PROCBIN, stub.as_raw())]);
     assert_eq!(bytes, PROCBIN_BYTES);
@@ -232,7 +234,13 @@ fn a_mixed_message_measures_what_it_copies() {
     let mut sender = Heap::new(SIZE_TABLE[0], reg);
     let list = int_list(&mut sender, EMPTY_LIST, 0..40);
     let list_value = heap_value(ValueKind::LIST, list_addr_from_tagged(list).expect("addr"));
-    let stub = alloc_procbin(&mut sender, SharedBinHandle::from_bytes(&[1; 200], 1600), 0, 1600);
+    let stub = alloc_procbin(
+        &mut sender,
+        SharedBinHandle::from_bytes(&[1; 200], 1600),
+        0,
+        1600,
+        StubSite::FilledBuffer,
+    );
     let map_bits = sender.alloc_map_slots(&[(
         AnyValue::atom(sender.node.intern_atom("k")),
         heap_value(ValueKind::PROCBIN, stub.as_raw()),

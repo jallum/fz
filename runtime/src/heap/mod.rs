@@ -74,7 +74,7 @@ pub use self::imp::{closure_capture_ref, list_head_ref, list_tail_ref};
 pub use self::map_view::MapLayout;
 pub use self::ref_io::{map_entries_refs, map_entry_refs, map_slot_refs};
 pub use self::schema::{FieldDescriptor, FieldKind, NamedSchema, Schema, SchemaIdentity, SchemaRegistry, StructKey};
-pub use self::stats::{AllocStat, GcStats, Generation, HeapAllocKind, HeapAllocStats};
+pub use self::stats::{AllocStat, GcStats, Generation, HeapAllocKind, HeapAllocStats, StubCounts, StubSite};
 
 /// Bitstrings above this many bytes are routed through the
 /// shared zone (refcounted off-heap `SharedBin` + per-process `ProcBin`
@@ -175,6 +175,9 @@ pub struct Heap {
     /// gifts brought. A minor sweep never walks it, so an old stub is found
     /// dead by a major collection.
     pub mso_old_head: u64,
+    /// Binary stubs made since the last collection, by site; a collection
+    /// reports them and starts the count again.
+    pub stubs_made: StubCounts,
     /// The chain of the young resource stubs: those allocated since the last
     /// collection.
     pub resource_head: u64,

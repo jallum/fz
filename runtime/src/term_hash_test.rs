@@ -3,6 +3,7 @@ use crate::any_value::{
     AnyValueRef, ClosureDenotationId, ValueKind, closure_addr_from_tagged, closure_capture_set, map_header_is_trie,
 };
 use crate::function_denotation::FunctionDenotation;
+use crate::heap::StubSite;
 use crate::heap::{Heap, Schema};
 use crate::module_name::ModuleName;
 use crate::procbin::{SharedBinHandle, alloc_procbin};
@@ -216,7 +217,7 @@ impl World {
                 let handle = SharedBinHandle::from_bytes(&bytes, bit_len);
                 let handle_bits = handle.bit_len();
                 AnyValue::heap_ptr(
-                    alloc_procbin(&mut self.heap, handle, 0, handle_bits).as_raw(),
+                    alloc_procbin(&mut self.heap, handle, 0, handle_bits, StubSite::FilledBuffer).as_raw(),
                     ValueKind::PROCBIN,
                 )
             }
@@ -225,7 +226,7 @@ impl World {
                 padded.extend_from_slice(&bytes);
                 let handle = SharedBinHandle::from_bytes(&padded, bit_len + 24);
                 AnyValue::heap_ptr(
-                    alloc_procbin(&mut self.heap, handle, 3, bit_len).as_raw(),
+                    alloc_procbin(&mut self.heap, handle, 3, bit_len, StubSite::FilledBuffer).as_raw(),
                     ValueKind::PROCBIN,
                 )
             }

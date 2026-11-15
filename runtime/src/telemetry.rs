@@ -231,6 +231,10 @@ fn write_metadata(out: &mut String, event: &RuntimeEvent<'_>) {
                 stats.stub_visits
             )
             .unwrap();
+            out.push_str(",\"stubs_made\":");
+            stats.stubs_made.write_json(out);
+            out.push_str(",\"stubs_survived\":");
+            stats.stubs_survived.write_json(out);
         }
         RuntimeEvent::RunEnded(ended) => {
             write!(

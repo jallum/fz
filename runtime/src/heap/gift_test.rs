@@ -6,6 +6,7 @@ use crate::any_value::{
     AnyValue, AnyValueRef, EMPTY_LIST, ValueKind, heap_kind_from_tagged, heap_object_word, heap_word_addr,
     list_addr_from_tagged, procbin_addr_from_tagged, struct_addr_from_tagged, struct_size_for_payload,
 };
+use crate::heap::StubSite;
 use crate::procbin::{PROCBIN_BYTES, ProcBin, SharedBinHandle, alloc_procbin};
 use crate::resource::{RESOURCE_STUB_SIZE, ResourceHandle, ResourceStub, alloc_resource, fz_resource_destructor_noop};
 use crate::sync::Ordering;
@@ -169,7 +170,13 @@ fn a_gift_with_a_shared_bin_stub_survives_the_receivers_gc_on_its_mso_chain() {
     let mut receiver = Heap::new(SIZE_TABLE[0], reg);
 
     sender.begin_gift(PROCBIN_BYTES);
-    let pb = alloc_procbin(&mut sender, witness.clone(), 0, witness.bit_len());
+    let pb = alloc_procbin(
+        &mut sender,
+        witness.clone(),
+        0,
+        witness.bit_len(),
+        StubSite::FilledBuffer,
+    );
     let gifted = procbin_word(&pb);
     let segment = sender.end_gift();
     assert_eq!(sender.mso_head, 0, "the stub left the sender's chain");
@@ -218,16 +225,35 @@ fn graft_splices_each_gifts_mso_prefix_ahead_of_the_receivers_old_chain() {
     let reg = fresh_registry();
     let mut sender = Heap::new(SIZE_TABLE[0], reg.clone());
     let mut receiver = Heap::new(SIZE_TABLE[0], reg);
-    let sender_own = procbin_word(&alloc_procbin(&mut sender, witness.clone(), 0, witness.bit_len()));
-    let receiver_own = procbin_word(&alloc_procbin(&mut receiver, witness.clone(), 0, witness.bit_len()));
+    let sender_own = procbin_word(&alloc_procbin(
+        &mut sender,
+        witness.clone(),
+        0,
+        witness.bit_len(),
+        StubSite::FilledBuffer,
+    ));
+    let receiver_own = procbin_word(&alloc_procbin(
+        &mut receiver,
+        witness.clone(),
+        0,
+        witness.bit_len(),
+        StubSite::FilledBuffer,
+    ));
 
     sender.begin_gift(2 * PROCBIN_BYTES);
-    let older = procbin_word(&alloc_procbin(&mut sender, witness.clone(), 1, witness.bit_len() - 8));
+    let older = procbin_word(&alloc_procbin(
+        &mut sender,
+        witness.clone(),
+        1,
+        witness.bit_len() - 8,
+        StubSite::FilledBuffer,
+    ));
     let newer = procbin_word(&alloc_procbin(
         &mut sender,
         witness.clone(),
         2,
         witness.bit_len() - 2 * 8,
+        StubSite::FilledBuffer,
     ));
     let segment = sender.end_gift();
     sender.begin_gift(PROCBIN_BYTES);
@@ -236,6 +262,7 @@ fn graft_splices_each_gifts_mso_prefix_ahead_of_the_receivers_old_chain() {
         witness.clone(),
         3,
         witness.bit_len() - 3 * 8,
+        StubSite::FilledBuffer,
     ));
     let later_segment = sender.end_gift();
 
@@ -442,7 +469,13 @@ fn dropping_an_ungrafted_segment_returns_its_blocks_and_releases_its_stubs() {
     let pooled_before = pool_outstanding_blocks();
 
     sender.begin_gift(PROCBIN_BYTES + 32);
-    let _ = alloc_procbin(&mut sender, witness.clone(), 0, witness.bit_len());
+    let _ = alloc_procbin(
+        &mut sender,
+        witness.clone(),
+        0,
+        witness.bit_len(),
+        StubSite::FilledBuffer,
+    );
     let _ = sender.alloc(32);
     let segment = sender.end_gift();
     assert_eq!(segment.block_count(), 1);
@@ -651,7 +684,13 @@ fn a_gift_keeps_binary_and_resource_stubs_on_their_own_chains() {
 
     sender.begin_gift(PROCBIN_BYTES + RESOURCE_STUB_SIZE);
     let witness_bits = witness.bit_len();
-    let binary = procbin_word(&alloc_procbin(&mut sender, witness, 0, witness_bits));
+    let binary = procbin_word(&alloc_procbin(
+        &mut sender,
+        witness,
+        0,
+        witness_bits,
+        StubSite::FilledBuffer,
+    ));
     let resource = heap_object_word(
         alloc_resource(
             &mut sender,

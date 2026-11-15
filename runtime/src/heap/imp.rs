@@ -11,7 +11,7 @@ use super::ref_io::{
     write_any_value_to_storage,
 };
 use super::schema::{Schema, SchemaRegistry};
-use super::stats::{GcStats, Generation};
+use super::stats::{GcStats, Generation, StubCounts, StubSite};
 use super::{Heap, HeapAllocKind, HeapAllocStats, MapLayout, SHARED_BIN_THRESHOLD_BYTES};
 use crate::any_value::{
     AnyValue, AnyValueRef, AnyValueRefError, CLOSURE_FLAGS_CAPTURED_MASK, ListCons, MAP_FLAT_MAX, MapDestinationKind,
@@ -131,6 +131,7 @@ impl Heap {
             alloc_stats: HeapAllocStats::default(),
             mso_head: 0,
             mso_old_head: 0,
+            stubs_made: StubCounts::default(),
             resource_head: 0,
             resource_old_head: 0,
             pending_dtors: VecDeque::new(),
@@ -913,7 +914,10 @@ impl Heap {
         if byte_len > SHARED_BIN_THRESHOLD_BYTES {
             let handle = SharedBinHandle::from_filled(byte_len, bit_len, fill);
             self.alloc_stats.record_shared_bin(byte_len as u64);
-            return AnyValue::heap_ptr(alloc_procbin(self, handle, 0, bit_len).as_raw(), ValueKind::PROCBIN);
+            return AnyValue::heap_ptr(
+                alloc_procbin(self, handle, 0, bit_len, StubSite::FilledBuffer).as_raw(),
+                ValueKind::PROCBIN,
+            );
         }
         self.alloc_inline_bitstring(byte_len, bit_len, fill)
     }
@@ -964,7 +968,7 @@ impl Heap {
                 unsafe { shared_bin_append(shared, right) };
                 let handle = unsafe { SharedBinHandle::retain_from_raw(shared) };
                 let bit_len = (left_bytes.len() + right.len()) as u64 * 8;
-                let p = alloc_procbin(self, handle, view.byte_offset(), bit_len).as_raw();
+                let p = alloc_procbin(self, handle, view.byte_offset(), bit_len, StubSite::AppendedInPlace).as_raw();
                 return AnyValue::heap_ptr(p, ValueKind::PROCBIN);
             }
         }
@@ -983,7 +987,7 @@ impl Heap {
         }
         self.alloc_stats.record_shared_bin((total * 2) as u64);
         AnyValue::heap_ptr(
-            alloc_procbin(self, handle, 0, total as u64 * 8).as_raw(),
+            alloc_procbin(self, handle, 0, total as u64 * 8, StubSite::GrownBuffer).as_raw(),
             ValueKind::PROCBIN,
         )
     }
@@ -1022,7 +1026,7 @@ impl Heap {
         );
         if byte_len as usize > SHARED_BIN_THRESHOLD_BYTES {
             let handle = unsafe { SharedBinHandle::retain_from_raw(shared) };
-            let p = alloc_procbin(self, handle, byte_offset, byte_len * 8).as_raw();
+            let p = alloc_procbin(self, handle, byte_offset, byte_len * 8, StubSite::WindowOfBuffer).as_raw();
             return AnyValue::heap_ptr(p, ValueKind::PROCBIN);
         }
         let slice = unsafe { from_raw_parts(buf_ptr.add(byte_offset as usize), byte_len as usize) };
@@ -1478,6 +1482,7 @@ impl Heap {
             generation,
             from_space_capacity_bytes: from_blocks.iter().map(|block| block.capacity as u64).sum(),
             blocks_released: from_blocks.len() as u64,
+            stubs_made: std::mem::take(&mut self.stubs_made),
             ..GcStats::default()
         };
         let schemas_handle = self.schemas.clone();
@@ -1540,6 +1545,7 @@ impl Heap {
                     .expect("a dead unclaimed resource stub had its closure forwarded")
             },
             &mut stats.stub_visits,
+            &mut stats.stubs_survived,
         );
 
         self.retire_to_space_as_old();
@@ -1613,7 +1619,13 @@ impl Heap {
     /// live, so every resource whose last reference this heap held queues its
     /// destructor on `pending_dtors`. Allocates no to-space.
     pub fn release_resources_at_exit(&mut self) {
-        let dead = mso_sweep(self, Generation::Major, |stub| stub.closure_value(), &mut 0);
+        let dead = mso_sweep(
+            self,
+            Generation::Major,
+            |stub| stub.closure_value(),
+            &mut 0,
+            &mut StubCounts::default(),
+        );
         self.queue_dead_resources(dead);
     }
 

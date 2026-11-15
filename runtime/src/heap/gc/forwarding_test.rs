@@ -7,6 +7,7 @@ use crate::any_value::{
     struct_schema_id,
 };
 use crate::heap::SHARED_BIN_THRESHOLD_BYTES;
+use crate::heap::StubSite;
 use crate::heap::{Heap, SIZE_TABLE, Schema, SchemaRegistry};
 use crate::procbin::{SharedBinHandle, alloc_procbin};
 use std::cell::RefCell;
@@ -251,7 +252,7 @@ fn a_procbin_stub_over_bytes_that_read_like_a_marker_survives_a_collection() {
     bytes[8] = 1;
     let handle = SharedBinHandle::from_bytes(&bytes, bytes.len() as u64 * 8);
     let handle_bits = handle.bit_len();
-    let stub = alloc_procbin(&mut heap, handle, 0, handle_bits);
+    let stub = alloc_procbin(&mut heap, handle, 0, handle_bits, StubSite::FilledBuffer);
     let (old, shared) = (stub.as_raw(), stub.shared_raw());
     let moved = collect_one(&mut heap, ValueKind::PROCBIN, old).procbin_addr().unwrap();
     assert_ne!(moved, old);
