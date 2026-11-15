@@ -247,3 +247,20 @@ fn goto_with_args_pretty_prints() {
     let s = format!("{}", b.build());
     assert!(s.contains("goto bb1(v0)"));
 }
+
+/// A foreign signature spells a parameter once, however many words carry it:
+/// a walked binary travels as its source and its bit position, and every
+/// other type is the single class it names. The whole-list form is those
+/// per-parameter classes laid end to end.
+#[test]
+fn a_parameter_occupies_the_words_that_carry_it() {
+    assert_eq!(
+        ExternTy::BinaryCursor.wire().collect::<Vec<_>>(),
+        vec![ExternTy::Any, ExternTy::I64]
+    );
+    assert_eq!(ExternTy::F64.wire().collect::<Vec<_>>(), vec![ExternTy::F64]);
+    assert_eq!(
+        ExternTy::wire_classes(&[ExternTy::I64, ExternTy::BinaryCursor, ExternTy::Bool]),
+        vec![ExternTy::I64, ExternTy::Any, ExternTy::I64, ExternTy::Bool]
+    );
+}

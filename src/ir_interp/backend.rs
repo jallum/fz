@@ -1065,13 +1065,14 @@ fn extern_argument_words(
     executable: &BackendExecutable,
     signature: &crate::compiler2::LoweredExtern,
     lanes: &[AnyValue],
-) -> Result<Vec<AnyValue>, String> {
-    let mut remaining = lanes.iter().copied();
-    let mut words = Vec::with_capacity(lanes.len());
+) -> Result<Lanes, String> {
+    let mut remaining = lanes;
+    let mut words = Lanes::new();
     for input in executable.abi.semantic_inputs.iter() {
-        let own = remaining.by_ref().take(input.layout.reprs.len()).collect::<Vec<_>>();
+        let (own, rest) = remaining.split_at(input.layout.reprs.len().min(remaining.len()));
+        remaining = rest;
         let wire = signature.params.get(input.semantic_index);
-        match (wire, own.as_slice()) {
+        match (wire, own) {
             (Some(crate::fz_ir::ExternTy::BinaryCursor), [whole]) => words.extend([*whole, AnyValue::Int(0)]),
             (_, [word]) => words.push(*word),
             (Some(crate::fz_ir::ExternTy::BinaryCursor), [source, position]) => words.extend([*source, *position]),
@@ -2143,7 +2144,7 @@ fn eval_steps<T: Telemetry + ?Sized>(
                     let bound = match cursor_shape {
                         Some(shape) if is_rest => BackendBoundValue::Transport {
                             shape,
-                            lanes: vec![source_value, AnyValue::Int(pos as i64)],
+                            lanes: smallvec::smallvec![source_value, AnyValue::Int(pos as i64)],
                         },
                         _ => BackendBoundValue::Runtime(interp_read_bit_field(
                             proc,
@@ -2615,7 +2616,7 @@ fn publish_backend_capture(proc: *mut Process, value: &BackendBoundValue) -> Res
                 .iter()
                 .copied()
                 .map(|lane| publish_runtime_value(proc, lane))
-                .collect::<Result<Vec<_>, _>>()?,
+                .collect::<Result<_, _>>()?,
         },
     })
 }
@@ -2800,10 +2801,7 @@ fn direct_callable_value(
             lanes.len()
         ));
     }
-    Ok(BackendBoundValue::Transport {
-        shape,
-        lanes: lanes.into_vec(),
-    })
+    Ok(BackendBoundValue::Transport { shape, lanes })
 }
 
 const CONSTRUCTION_WRAPPER_IDENTITY_BASE: u32 = 0x8000_0000;
@@ -3475,7 +3473,7 @@ fn decode_backend_value_from_lanes(
         ),
         ShapeDescr::Tuple(_) | ShapeDescr::Callable(_) | ShapeDescr::Cursor { .. } => BackendBoundValue::Transport {
             shape,
-            lanes: lanes.to_vec(),
+            lanes: lanes.iter().copied().collect(),
         },
     })
 }
@@ -3795,7 +3793,7 @@ fn tuple_step_value(
         }
         return Ok(BackendBoundValue::Transport {
             shape: layout.structural,
-            lanes: lanes.into_vec(),
+            lanes,
         });
     }
     let items = env_values(

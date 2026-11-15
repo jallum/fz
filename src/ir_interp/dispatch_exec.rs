@@ -341,6 +341,8 @@ struct DispatchExecState {
     /// a binary: the source binary and the bit position each starts at. A rest
     /// stays here until a subject read asks for it whole, so a branch that
     /// never reads it builds nothing.
+    /// The list is empty until a rest is first matched, so a dispatch that
+    /// matches none holds no room for one.
     rests: Vec<Option<(AnyValue, u64)>>,
     journal: Vec<SubjectId>,
 }
@@ -349,7 +351,7 @@ impl DispatchExecState {
     fn new(subjects: usize) -> Self {
         Self {
             values: vec![None; subjects],
-            rests: vec![None; subjects],
+            rests: Vec::new(),
             journal: Vec::new(),
         }
     }
@@ -366,7 +368,11 @@ impl DispatchExecState {
     }
 
     fn set_rest(&mut self, subject: SubjectId, source: AnyValue, position: u64) {
-        self.rests[subject.0 as usize] = Some((source, position));
+        let slot = subject.0 as usize;
+        if self.rests.len() <= slot {
+            self.rests.resize(slot + 1, None);
+        }
+        self.rests[slot] = Some((source, position));
         self.journal.push(subject);
     }
 
@@ -383,7 +389,9 @@ impl DispatchExecState {
     fn undo(&mut self, branch: usize) {
         for subject in self.journal.drain(branch..) {
             self.values[subject.0 as usize] = None;
-            self.rests[subject.0 as usize] = None;
+            if let Some(rest) = self.rests.get_mut(subject.0 as usize) {
+                *rest = None;
+            }
         }
     }
 }
