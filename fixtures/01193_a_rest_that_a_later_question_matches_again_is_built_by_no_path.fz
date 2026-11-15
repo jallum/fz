@@ -1,0 +1,40 @@
+#---
+# purpose: a rest that a later question of the same decision matches again is never built, on the interpreter, the JIT or a built program
+# kind: run
+#---
+#
+# `<<"a", <<"b", _ :: binary>> :: binary>>` matches the rest of the first
+# pattern with a second one. The decision asks that second question of the
+# rest, so the rest is read from its position and no binary is built for it.
+# The program prints the answers and the binaries allocated across the calls:
+# process binaries, bitstrings and shared buffers. Both spellings run over
+# a 10,000-byte rest.
+defmodule Nested do
+  def kind(<<"a", <<"b", _ :: binary>> :: binary>>), do: :ab
+  def kind(<<"a", <<"c", _ :: binary>> :: binary>>), do: :ac
+  def kind(_), do: :other
+
+  def tag(x) do
+    case x do
+      <<"a", <<"b", _ :: binary>> :: binary>> -> :ab
+      <<"a", <<"c", _ :: binary>> :: binary>> -> :ac
+      _ -> :other
+    end
+  end
+
+  def binaries(stats), do: stats[:procbin_allocs] + stats[:bitstring_allocs] + stats[:shared_bin_allocs]
+end
+
+line = String.duplicate("x", 10000)
+one = "ab" <> line
+two = "ac" <> line
+
+a = Process.heap_alloc_stats()
+r = {Nested.kind(one), Nested.kind(two), Nested.kind(line)}
+b = Process.heap_alloc_stats()
+dbg({r, Nested.binaries(b) - Nested.binaries(a)})
+
+a = Process.heap_alloc_stats()
+r = {Nested.tag(one), Nested.tag(two), Nested.tag(line)}
+b = Process.heap_alloc_stats()
+dbg({r, Nested.binaries(b) - Nested.binaries(a)})

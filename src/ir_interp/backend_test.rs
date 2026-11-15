@@ -40,7 +40,7 @@ fn entry_dispatch_refuses_an_input_its_plan_reads_but_never_received() {
     let error = select_clause(
         &mut runtime,
         world.types(),
-        &TransportStore::new(),
+        &TransportStore::new(&mut crate::compiler2::Types::new()),
         &program,
         &Module::default(),
         &dispatch,
@@ -130,7 +130,7 @@ fn a_panic_during_macro_expansion_becomes_the_expansion_error() {
 
     let names = program.atom_names.iter().cloned().collect::<Vec<_>>();
     let module = Module::default();
-    let transport = TransportStore::new();
+    let transport = TransportStore::new(&mut crate::compiler2::Types::new());
     let tel = crate::telemetry::ConfiguredTelemetry::new();
     let mut runtime = IrInterpRuntime::fresh_with_atoms(names);
     let process = runtime.process_ptr(1).unwrap();
@@ -223,7 +223,7 @@ fn generic_spawn_dispatch_returns_adapter_error_before_pid_sentinel() {
 
     let names = program.atom_names.iter().cloned().collect::<Vec<_>>();
     let module = Module::default();
-    let transport = TransportStore::new();
+    let transport = TransportStore::new(&mut crate::compiler2::Types::new());
     let tel = crate::telemetry::ConfiguredTelemetry::new();
     let mut runtime = IrInterpRuntime::fresh_with_atoms(names);
     let sender = runtime.process_ptr(1).unwrap();
@@ -320,7 +320,7 @@ fn scheduler_adapter_copies_spawn_inputs_and_dead_send_is_observation_free() {
         runtime
             .send_ref(
                 compiler.world_mut().types_mut(),
-                &TransportStore::new(),
+                &TransportStore::new(&mut crate::compiler2::Types::new()),
                 &crate::telemetry::ConfiguredTelemetry::new(),
                 &program,
                 &module,
@@ -415,10 +415,15 @@ fn parked_receive_copies_only_winning_subjects_into_receiver_heap() {
         panic!("direct outcome entry")
     };
     let receiver = runtime.process_ptr(receiver_pid).unwrap();
-    let copied = env_get(&TransportStore::new(), receiver, &env, source)
-        .unwrap()
-        .as_any_value_ref(receiver)
-        .unwrap();
+    let copied = env_get(
+        &TransportStore::new(&mut crate::compiler2::Types::new()),
+        receiver,
+        &env,
+        source,
+    )
+    .unwrap()
+    .as_any_value_ref(receiver)
+    .unwrap();
     let address = copied.heap_addr(ValueKind::LIST).expect("retained cell");
     assert!(unsafe { &*receiver }.heap.contains_heap_addr(address));
     assert!(!unsafe { &*sender }.heap.contains_heap_addr(address));
@@ -447,7 +452,7 @@ fn parked_receive_copies_only_winning_subjects_into_receiver_heap() {
 
 #[test]
 fn generic_callable_input_retains_structure_without_demanding_a_box() {
-    let mut transport = TransportStore::new();
+    let mut transport = TransportStore::new(&mut crate::compiler2::Types::new());
     let callable = transport
         .interners_mut()
         .intern_callable(crate::compiler2::transport::CallableDescr {
@@ -466,7 +471,7 @@ fn generic_callable_input_retains_structure_without_demanding_a_box() {
 #[test]
 fn zero_lane_inputs_preserve_tuple_structure_without_inventing_absence() {
     let mut world = crate::compiler2::World::new();
-    let mut transport = TransportStore::new();
+    let mut transport = TransportStore::new(&mut crate::compiler2::Types::new());
     let nothing = transport.interners_mut().intern_shape(ShapeDescr::Nothing);
     let function = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "zero_lane", 4);
     let zero_capture = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "zero_capture", 0);
@@ -623,7 +628,7 @@ fn entry_dispatch_does_not_materialize_unneeded_structural_inputs() {
         ),
         need: crate::compiler2::ExecutableNeed::Value,
     };
-    let mut transport = TransportStore::new();
+    let mut transport = TransportStore::new(&mut crate::compiler2::Types::new());
     let nothing = transport.interners_mut().intern_shape(ShapeDescr::Nothing);
     let tuple = tuple_shape(&mut transport, &[nothing]);
     let mut executable = BackendExecutable::for_test(key, ty, nothing);
@@ -721,7 +726,7 @@ fn entry_dispatch_decides_a_lane_form_tuple_from_its_lanes() {
         ),
         need: crate::compiler2::ExecutableNeed::Value,
     };
-    let mut transport = TransportStore::new();
+    let mut transport = TransportStore::new(&mut crate::compiler2::Types::new());
     let int = world.types_mut().int();
     let lane = transport
         .interners_mut()
@@ -881,7 +886,7 @@ fn continuations_and_local_resumes_execute_the_retained_body_without_inventory_l
         "no ordinal or key lookup can find the retained frame"
     );
 
-    let transport = TransportStore::new();
+    let transport = TransportStore::new(&mut crate::compiler2::Types::new());
     let mut runtime = IrInterpRuntime::fresh_with_atoms(Vec::new());
     runtime.current_proc = runtime.process_ptr(1).expect("test process");
     let next = continue_backend_value(
@@ -963,7 +968,7 @@ fn tuple_shape(transport: &mut TransportStore, fields: &[ShapeId]) -> ShapeId {
 
 #[test]
 fn tuple_decode_keeps_an_absent_parent_decomposed_and_a_carried_parent_boxed() {
-    let mut transport = TransportStore::new();
+    let mut transport = TransportStore::new(&mut crate::compiler2::Types::new());
     let mut types = crate::compiler2::Types::new();
     let int = types.int();
     let tuple_ty = types.tuple(&[int]);
@@ -1019,7 +1024,7 @@ fn tuple_decode_keeps_an_absent_parent_decomposed_and_a_carried_parent_boxed() {
 
 #[test]
 fn tuple_encoding_reprojects_same_arity_partial_transport_by_position() {
-    let mut transport = TransportStore::new();
+    let mut transport = TransportStore::new(&mut crate::compiler2::Types::new());
     let nothing = transport.interners_mut().intern_shape(ShapeDescr::Nothing);
     let mut types = crate::compiler2::Types::new();
     let int = types.int();
@@ -1170,7 +1175,7 @@ fn frame_with(id: ValueId, value: BackendBoundValue) -> Frame {
 
 #[test]
 fn direct_callable_lanes_cannot_be_published_as_a_runtime_environment() {
-    let mut transport = TransportStore::new();
+    let mut transport = TransportStore::new(&mut crate::compiler2::Types::new());
     let nothing = transport.interners_mut().intern_shape(ShapeDescr::Nothing);
     let callable = transport
         .interners_mut()
@@ -1320,7 +1325,7 @@ impl DirectClosureEdge {
         Self {
             world,
             runtime,
-            transport: TransportStore::new(),
+            transport: TransportStore::new(&mut crate::compiler2::Types::new()),
             tel: ConfiguredTelemetry::new(),
             program,
             executable,
@@ -1390,7 +1395,7 @@ fn a_value_cannot_be_delivered_to_a_handler_frame() {
     let executable = Rc::new(executable);
     let mut program = BackendProgram::empty(key);
     program.add_executable(Rc::clone(&executable), world.types());
-    let transport = TransportStore::new();
+    let transport = TransportStore::new(&mut crate::compiler2::Types::new());
     let mut runtime = IrInterpRuntime::fresh_with_atoms(Vec::new());
     runtime.current_proc = runtime.process_ptr(1).expect("test process");
     let Err(error) = continue_backend_value(
@@ -1419,7 +1424,7 @@ struct CaptureEntry {
 
 impl CaptureEntry {
     fn new(captures: &[ValueId], physical_captures: &[ValueId]) -> Self {
-        let mut transport = TransportStore::new();
+        let mut transport = TransportStore::new(&mut crate::compiler2::Types::new());
         let int = crate::compiler2::Types::new().int();
         let lane = transport.interners_mut().intern_lane(LaneDescr {
             ty: int,

@@ -118,8 +118,12 @@ that is a whole number of bytes past the cursor is the inline
 `Prim::BitReadByteIntAt`; other offsets read through the runtime. A step position
 is counted from the start of its match; `Prim::BitPositionAdd` and
 `Prim::BitPositionSub` move it to and from the match's place in the cursor's
-binary. A bitstring region keeps a rest it matched as a source and position until
-something reads it whole; an outcome argument is always handed to its arm whole.
+binary. A bitstring region holds a rest it matched, when a later question or the
+winning outcome reads it, as a `ShapeDescr::Cursor` value in the dispatch state
+on both backends, in the store's `binary_cursor` shape. A later bit question
+reads it from its position, and a question that needs the bytes builds the
+binary once, leaving the cursor in place; an outcome argument is always handed
+to its arm whole.
 Tuple-field demand may stop at its highest observed index. Transport applies
 that prefix to the exact tuple type and emits `Nothing` for omitted trailing
 positions, so a partial four-tuple remains a four-field structural layout

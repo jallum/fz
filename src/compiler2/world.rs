@@ -344,6 +344,8 @@ impl World {
     }
 
     pub fn new() -> Self {
+        let mut types = Types::new();
+        let transport = TransportStore::new(&mut types);
         let mut code = CodeMap::new();
         let mut modules = ModuleMap::new();
         let runtime_modules = runtime::bootstrap(&mut modules, &mut code);
@@ -390,8 +392,8 @@ impl World {
             macro_roots: HashMap::default(),
             macro_expansions: HashMap::default(),
             namespaces: NamespaceStore::new(),
-            types: Types::new(),
-            transport: TransportStore::new(),
+            types,
+            transport,
             runtime_prelude,
             extra_preludes: Vec::new(),
             runtime_modules,
@@ -528,6 +530,21 @@ impl World {
 
     pub fn intern_lane(&mut self, descr: LaneDescr) -> LaneId {
         self.transport.interners_mut().intern_lane(descr)
+    }
+
+    /// The one-word lane a value of `ty` travels in.
+    pub fn intern_value_lane(&mut self, ty: Ty) -> LaneId {
+        self.transport.interners_mut().intern_value_lane(&mut self.types, ty)
+    }
+
+    /// A binary of type `ty` taken apart, as its source and bit position.
+    pub fn intern_cursor_shape(&mut self, ty: Ty) -> ShapeId {
+        self.transport.interners_mut().intern_cursor(&mut self.types, ty)
+    }
+
+    /// The cursor shape a matched binary rest travels in.
+    pub fn binary_cursor_shape(&self) -> ShapeId {
+        self.transport.binary_cursor()
     }
 
     pub fn lane(&self, id: LaneId) -> &LaneDescr {

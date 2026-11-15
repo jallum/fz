@@ -22,7 +22,7 @@ use super::super::semantic::{
 use super::super::transport::{
     BoundaryDescr, BoundaryFacts, BoundaryId, CallableConstructionCapture, CallableConstructionFact,
     CallableConstructionMember, CallableConstructionOwner, CallableDescr, CallableDirectEdge, CallableFacts,
-    CallableId, ExecutableSymbol, LaneId, ShapeDescr, ShapeId, TransportClass, TransportPosition,
+    CallableId, ExecutableSymbol, ShapeDescr, ShapeId, TransportPosition,
 };
 use super::super::types::{Ty, Types};
 use super::super::world::World;
@@ -1094,7 +1094,7 @@ fn evaluate_transport_recipe(
                             RecipeLayout::Exact(TransportLayout {
                                 structural: field.structural,
                                 carrier: if layout.carrier.is_value_ref() {
-                                    TransportCarrier::ValueRef(value_lane(world, ty))
+                                    TransportCarrier::ValueRef(world.intern_value_lane(ty))
                                 } else {
                                     field.carrier
                                 },
@@ -1297,7 +1297,7 @@ fn direct_callable_descr(
             // closure's captures exist before the closure does, so none of
             // them can reach back to it.
             let mut layout = derived_transport_layout(world, ty, demand, &[]);
-            layout.carrier = TransportCarrier::ValueRef(value_lane(world, ty));
+            layout.carrier = TransportCarrier::ValueRef(world.intern_value_lane(ty));
             if waits.is_empty() {
                 return DirectCallableDescr::Position(RecipeLayout::Cut(vec![layout]));
             }
@@ -1531,7 +1531,7 @@ fn produce_local_callable_construction(
             Some(ProductValue::TransportShape(TransportShapeFact::Layout(layout))) => {
                 let mut layout = *layout;
                 if capture_demands[index].callable.is_first_class() && !layout.carrier.is_value_ref() {
-                    layout.carrier = TransportCarrier::ValueRef(value_lane(world, capture_tys[index]));
+                    layout.carrier = TransportCarrier::ValueRef(world.intern_value_lane(capture_tys[index]));
                 }
                 capture_layouts.push(layout);
             }
@@ -1638,7 +1638,7 @@ fn produce_local_callable_construction(
         layout: TransportLayout {
             structural: world.intern_shape(ShapeDescr::Callable(callable)),
             carrier: if demand.callable.is_first_class() {
-                TransportCarrier::ValueRef(value_lane(world, callable_ty))
+                TransportCarrier::ValueRef(world.intern_value_lane(callable_ty))
             } else {
                 TransportCarrier::Absent
             },
@@ -2071,7 +2071,7 @@ fn with_value_ref_carrier(world: &mut World, ty: Ty, mut layout: TransportLayout
     if !layout_carries(world, layout, ty) {
         layout = derived_transport_layout(world, ty, &RuntimeDemand::whole(), &[]);
     }
-    layout.carrier = TransportCarrier::ValueRef(value_lane(world, ty));
+    layout.carrier = TransportCarrier::ValueRef(world.intern_value_lane(ty));
     layout
 }
 
@@ -2444,7 +2444,7 @@ fn joined_transport_layout<T: crate::telemetry::Telemetry>(
     RecipeLayout::Exact(TransportLayout {
         structural,
         carrier: if carrier {
-            TransportCarrier::ValueRef(value_lane(world, ty))
+            TransportCarrier::ValueRef(world.intern_value_lane(ty))
         } else {
             TransportCarrier::Absent
         },
@@ -2598,7 +2598,7 @@ fn layout_from_demand<T: crate::telemetry::Telemetry>(
         return callable_layout_from_demand(world, reads, ty, demand);
     }
     if demand.shape == ShapeDemand::Matched && world.types().is_binary(&ty) {
-        return RecipeLayout::Exact(TransportLayout::structural(cursor_shape(world, ty)));
+        return RecipeLayout::Exact(TransportLayout::structural(world.intern_cursor_shape(ty)));
     }
     let (field_tys, field_demands) = match &demand.shape {
         ShapeDemand::Ignore => {
@@ -2656,7 +2656,7 @@ fn callable_layout_from_demand<T: crate::telemetry::Telemetry>(
     });
     RecipeLayout::Exact(TransportLayout {
         structural: world.intern_shape(ShapeDescr::Callable(callable)),
-        carrier: TransportCarrier::ValueRef(value_lane(world, ty)),
+        carrier: TransportCarrier::ValueRef(world.intern_value_lane(ty)),
     })
 }
 
@@ -2686,7 +2686,7 @@ fn publish_boundaries_for_callable(
         .zip(surface_layouts.iter())
         .zip(resolution_symbols.iter())
     {
-        let published_value_lane = value_lane(world, published_value_ty);
+        let published_value_lane = world.intern_value_lane(published_value_ty);
         let boundary = world.intern_boundary(BoundaryDescr {
             callable,
             surface_arg_layouts: arg_layouts.clone(),
@@ -2788,15 +2788,6 @@ fn exact_tuple_field_tys(world: &mut World, ty: Ty) -> Option<Vec<Ty>> {
     Some(tuple_field_tys(world, ty, arity))
 }
 
-/// A binary taken apart travels as its source and the bit position its rest
-/// starts at.
-fn cursor_shape(world: &mut World, ty: Ty) -> ShapeId {
-    let source = value_lane(world, ty);
-    let int = world.types_mut().int();
-    let position = value_lane(world, int);
-    world.intern_shape(ShapeDescr::Cursor { source, position })
-}
-
 /// The layout of a value that arrives whole, in one lane, whatever its readers
 /// ask of it. A decision builds the value it hands an arm and the runtime
 /// builds the ones it hands a receive outcome or a handler, so the entry's
@@ -2806,16 +2797,8 @@ pub(super) fn whole_value_layout(world: &mut World, ty: Ty) -> TransportLayout {
 }
 
 fn value_lane_shape(world: &mut World, ty: Ty) -> ShapeId {
-    let lane = value_lane(world, ty);
+    let lane = world.intern_value_lane(ty);
     world.intern_shape(ShapeDescr::Lane(lane))
-}
-
-fn value_lane(world: &mut World, ty: Ty) -> LaneId {
-    let ty = world.types_mut().value_lane_repr(ty);
-    world.intern_lane(super::super::transport::LaneDescr {
-        ty,
-        class: TransportClass::Value,
-    })
 }
 
 fn tuple_field_tys(world: &mut World, ty: Ty, arity: usize) -> Vec<Ty> {

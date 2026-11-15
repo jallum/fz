@@ -228,8 +228,9 @@ fn transport_descriptors_share_across_root_positions() {
     let int = types.int();
     let mut functions = FunctionMap::new();
     let add = functions.reference(ModuleId::GLOBAL, None, "add", 2);
-    let mut store = TransportStore::new();
+    let mut store = TransportStore::new(&mut types);
     let interners = store.interners_mut();
+    let preinterned = interners.shape_count();
 
     let lane = interners.intern_lane(LaneDescr {
         ty: int,
@@ -269,7 +270,7 @@ fn transport_descriptors_share_across_root_positions() {
     assert_eq!(callable, same_callable);
     assert_eq!(callable_shape, same_callable_shape);
     assert_eq!(interners.callable_count(), 1);
-    assert_eq!(interners.shape_count(), 2);
+    assert_eq!(interners.shape_count(), preinterned + 2);
     assert_eq!(
         interners.callable(callable),
         &CallableDescr {
@@ -516,4 +517,19 @@ fn an_activation_symbol_built_from_a_key_is_exactly_the_keys_function_and_arrow(
         }
     );
     assert_eq!(symbol.need, key.need);
+}
+
+/// The cursor a matched rest travels in is the one every binary field reads
+/// as, so a rest a dispatch holds and a rest a clause body binds share a shape.
+#[test]
+fn a_store_holds_the_cursor_shape_of_a_binary_field() {
+    let mut world = crate::compiler2::World::new();
+    let binary = world.types_mut().str_t();
+    let held = world.binary_cursor_shape();
+    assert_eq!(
+        world.intern_cursor_shape(binary),
+        held,
+        "interning the binary cursor again finds the one the store holds"
+    );
+    assert!(matches!(world.shape(held), ShapeDescr::Cursor { .. }));
 }

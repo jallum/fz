@@ -46,7 +46,9 @@ from its representation rather than a tag, so no lane is boxed to be asked.
 What is left needing a whole value is the set of questions no decomposition
 reaches: a pinned equality, a guard, and the map, list and bitstring regions.
 Those build the value at the question that asks for it and keep it for the rest
-of that branch. `DispatchDemand::Whole` does not decide any of this: that lattice
+of that branch, except that a cursor stays a cursor: a bitstring region over a
+rest it matched reads from the rest's position, and the binary built for another
+question is remembered by source and position. `DispatchDemand::Whole` does not decide any of this: that lattice
 governs type collapsing and activation keying, not the physical layout a
 parameter arrives in. The lattice is defined in `dispatch_matrix::demand`; the keying jobs in
 `compiler2::jobs::keying` join it across bodies into the published input demand.

@@ -7,7 +7,7 @@ use super::backend::{
 };
 use super::extern_call::{ExternCallValue, call_fixed_extern};
 use super::*;
-use crate::compiler2::transport::TransportStore;
+use crate::compiler2::transport::{ShapeId, TransportStore};
 use crate::compiler2::{BackendProgram, DispatchBindings, Ty, Types, ValueId};
 use crate::dispatch_matrix::pattern::{
     PatternDispatchPlan, PatternGuardBinOp, PatternGuardExpr, PatternGuardUnaryOp, PatternPinnedInput,
@@ -298,6 +298,14 @@ pub(super) fn dispatch_values(
     Ok(DispatchValues { pinned, prepared })
 }
 
+/// Whether a shape is a binary held as a source and a bit position.
+fn is_cursor_shape(transport: &TransportStore, shape: ShapeId) -> bool {
+    matches!(
+        transport.interners().shape(shape),
+        crate::compiler2::transport::ShapeDescr::Cursor { .. }
+    )
+}
+
 /// The runtime value a prepared key is looked up by. A binary key is built here
 /// because the plan carries only its bytes.
 fn materialize_prepared_key(proc: *mut Process, module: &Module, key: &GroundValue) -> Result<AnyValue, String> {
@@ -337,23 +345,30 @@ fn materialize_prepared_key(proc: *mut Process, module: &Module, key: &GroundVal
 /// program published as nothing.
 struct DispatchExecState {
     values: Vec<Option<BackendBoundValue>>,
-    /// The rests a bitstring question has matched and nothing has yet made into
-    /// a binary: the source binary and the bit position each starts at. A rest
-    /// stays here until a subject read asks for it whole, so a branch that
-    /// never reads it builds nothing.
-    /// The list is empty until a rest is first matched, so a dispatch that
-    /// matches none holds no room for one.
-    rests: Vec<Option<(AnyValue, u64)>>,
     journal: Vec<SubjectId>,
+    /// The binaries built for cursors, by source word and bit position. A
+    /// binary is a function of both, so no branch's undo invalidates one.
+    cursor_wholes: Vec<(u64, i64, AnyValue)>,
 }
 
 impl DispatchExecState {
     fn new(subjects: usize) -> Self {
         Self {
             values: vec![None; subjects],
-            rests: Vec::new(),
             journal: Vec::new(),
+            cursor_wholes: Vec::new(),
         }
+    }
+
+    fn cursor_whole(&self, source: u64, position: i64) -> Option<AnyValue> {
+        self.cursor_wholes
+            .iter()
+            .find(|(held_source, held_position, _)| *held_source == source && *held_position == position)
+            .map(|(_, _, whole)| *whole)
+    }
+
+    fn remember_cursor_whole(&mut self, source: u64, position: i64, whole: AnyValue) {
+        self.cursor_wholes.push((source, position, whole));
     }
 
     fn get(&self, subject: SubjectId) -> Option<&BackendBoundValue> {
@@ -367,19 +382,6 @@ impl DispatchExecState {
         self.journal.push(subject);
     }
 
-    fn set_rest(&mut self, subject: SubjectId, source: AnyValue, position: u64) {
-        let slot = subject.0 as usize;
-        if self.rests.len() <= slot {
-            self.rests.resize(slot + 1, None);
-        }
-        self.rests[slot] = Some((source, position));
-        self.journal.push(subject);
-    }
-
-    fn rest(&self, subject: SubjectId) -> Option<(AnyValue, u64)> {
-        self.rests.get(subject.0 as usize).copied().flatten()
-    }
-
     /// Where the branch a test is about to open begins.
     fn branch(&self) -> usize {
         self.journal.len()
@@ -389,9 +391,6 @@ impl DispatchExecState {
     fn undo(&mut self, branch: usize) {
         for subject in self.journal.drain(branch..) {
             self.values[subject.0 as usize] = None;
-            if let Some(rest) = self.rests.get_mut(subject.0 as usize) {
-                *rest = None;
-            }
         }
     }
 }
@@ -519,12 +518,38 @@ impl<'a> Dispatch<'a> {
                     "dispatch subject {subject:?} carries no runtime value"
                 )));
             }
+            BackendBoundValue::Transport { shape, lanes } if is_cursor_shape(transport, *shape) => {
+                // A cursor stays a cursor, so a later bit question still reads
+                // from its position.
+                let lanes = lanes.clone();
+                return self.cursor_whole(&lanes);
+            }
             BackendBoundValue::Transport { shape, lanes } => {
                 materialize_transport_value(transport, proc, *shape, lanes).map_err(DispatchStop::broken)?
             }
         };
         self.state.set(subject, BackendBoundValue::Runtime(word));
         Ok(word)
+    }
+
+    /// The binary a cursor stands for. It is built the first time the run asks
+    /// and remembered by the source and position, so a cursor asked whole by
+    /// several questions is built once.
+    fn cursor_whole(&mut self, lanes: &[AnyValue]) -> Result<AnyValue, DispatchStop> {
+        let [source, position] = lanes else {
+            return Err(DispatchStop::broken("a cursor has a source and a position".to_string()));
+        };
+        let proc = self.proc();
+        let source_word = source.as_ref_word(proc).map_err(DispatchStop::broken)?;
+        let Some(position_bits) = position.as_i64() else {
+            return Err(DispatchStop::broken("a cursor position must be an integer".to_string()));
+        };
+        if let Some(whole) = self.state.cursor_whole(source_word, position_bits) {
+            return Ok(whole);
+        }
+        let whole = materialize_cursor(proc, *source, *position).map_err(DispatchStop::broken)?;
+        self.state.remember_cursor_whole(source_word, position_bits, whole);
+        Ok(whole)
     }
 
     /// What a subject holds, in whatever form it already has.
@@ -534,12 +559,6 @@ impl<'a> Dispatch<'a> {
     /// projection reads through a runtime value.
     fn resolve_subject(&mut self, subject: SubjectId) -> Result<(), DispatchStop> {
         if self.state.get(subject).is_some() {
-            return Ok(());
-        }
-        if let Some((source, position)) = self.state.rest(subject) {
-            let whole = materialize_cursor(self.proc(), source, AnyValue::Int(position as i64))
-                .map_err(DispatchStop::broken)?;
-            self.state.set(subject, BackendBoundValue::Runtime(whole));
             return Ok(());
         }
         let plan = self.plan;
@@ -705,12 +724,7 @@ impl<'a> Dispatch<'a> {
         }
         let held = required(self.state.get(subject))?;
         let (source, start) = match held {
-            BackendBoundValue::Transport { shape, lanes }
-                if matches!(
-                    self.operands.transport.interners().shape(*shape),
-                    crate::compiler2::transport::ShapeDescr::Cursor { .. }
-                ) =>
-            {
+            BackendBoundValue::Transport { shape, lanes } if is_cursor_shape(self.operands.transport, *shape) => {
                 let [source, position] = lanes.as_slice() else {
                     return Err(DispatchStop::broken("a cursor has a source and a position".to_string()));
                 };
@@ -947,22 +961,26 @@ impl<'a> Dispatch<'a> {
             let is_rest = extraction.is_last
                 && field.size.is_none()
                 && matches!(field.kind, BitstringFieldKind::Binary | BitstringFieldKind::Bits);
-            if is_rest && !plan.graph.asks(*field_subject) {
-                if self.outcome_reads.contains(field_subject) {
-                    self.state.set_rest(*field_subject, source, pos);
-                }
-            } else if plan.graph.asks(*field_subject) || self.outcome_reads.contains(field_subject) {
-                let Ok(extracted) = interp_read_bit_field(
-                    proc,
-                    source_ref,
-                    pos,
-                    field_spec,
-                    size_value,
-                    field.kind.reads_as_integer(),
-                ) else {
-                    return false;
+            if plan.graph.asks(*field_subject) || self.outcome_reads.contains(field_subject) {
+                let bound = if is_rest {
+                    BackendBoundValue::Transport {
+                        shape: self.operands.transport.binary_cursor(),
+                        lanes: vec![source, AnyValue::Int(pos as i64)],
+                    }
+                } else {
+                    let Ok(extracted) = interp_read_bit_field(
+                        proc,
+                        source_ref,
+                        pos,
+                        field_spec,
+                        size_value,
+                        field.kind.reads_as_integer(),
+                    ) else {
+                        return false;
+                    };
+                    BackendBoundValue::Runtime(extracted)
                 };
-                self.state.set(*field_subject, BackendBoundValue::Runtime(extracted));
+                self.state.set(*field_subject, bound);
             }
             pos = end;
         }
@@ -1038,10 +1056,7 @@ impl TypeTest<'_> {
             }
             BackendBoundValue::Transport { shape, lanes } => (*shape, lanes),
         };
-        if matches!(
-            transport.interners().shape(shape),
-            crate::compiler2::transport::ShapeDescr::Cursor { .. }
-        ) {
+        if is_cursor_shape(transport, shape) {
             // A cursor stands for a binary, and a type predicate asks of a
             // binary only whether binaries are admitted, never its bytes.
             return Ok(predicate.binaries);

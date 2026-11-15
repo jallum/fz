@@ -64,7 +64,7 @@ impl Door {
             runtime,
             world: World::new(),
             program: crate::compiler2::BackendProgram::empty_for_test(),
-            transport: TransportStore::new(),
+            transport: TransportStore::new(&mut crate::compiler2::Types::new()),
             module: Module::default(),
         }
     }
@@ -431,6 +431,122 @@ fn a_bitstring_field_a_failed_shape_extracted_is_not_visible_to_the_next_arm() {
             "a field the failed shape read is gone with it"
         );
     }
+}
+
+/// The rest of a binary, bound to a name.
+fn rest_field(name: &str) -> crate::ast::BitField<Spanned<Pattern>> {
+    crate::ast::BitField {
+        value: Spanned::dummy(Pattern::Var(Var::user(name))),
+        spec: crate::ast::BitFieldSpec {
+            ty: crate::ast::BitType::Binary,
+            ..Default::default()
+        },
+    }
+}
+
+impl Door {
+    /// Decide a plan whose winning outcome reads `subjects`.
+    fn decide_reading<'a>(
+        &'a mut self,
+        plan: &'a PatternDispatchPlan<Ty>,
+        inputs: &'a [Option<BackendBoundValue>],
+        values: &'a DispatchValues<'a>,
+        subjects: Vec<SubjectId>,
+    ) -> Decided<'a> {
+        let operands = values.over(&self.transport, inputs);
+        Dispatch::new(
+            &mut self.runtime,
+            self.world.types(),
+            &self.program,
+            &self.module,
+            plan,
+            operands,
+        )
+        .reading(subjects)
+        .run()
+        .expect("the plan decides")
+        .expect("the clause matches")
+    }
+}
+
+/// A rest the winning outcome reads is held as a cursor, the binary it is
+/// read from and the bit position it starts at, like any other value the
+/// state holds, and nothing is built for it.
+#[test]
+fn a_matched_rest_is_held_as_a_cursor_value() {
+    let plan = one_input_plan(vec![Pattern::Bitstring(vec![byte_field("first"), rest_field("rest")])]);
+    let mut door = Door::new();
+    let values = DispatchValues::default();
+    let source = bitstring_value(door.proc(), b"abcd");
+    let inputs = [Some(BackendBoundValue::Runtime(source))];
+    let rest = *bitstring_field_subjects(&plan)
+        .last()
+        .expect("the shape names the rest");
+    let allocs = bitstring_allocs(door.proc());
+    let cursor = door.transport.binary_cursor();
+    let decided = door.decide_reading(&plan, &inputs, &values, vec![rest]);
+    match decided.run.state.get(rest) {
+        Some(BackendBoundValue::Transport { shape, lanes }) => {
+            assert_eq!(*shape, cursor, "a rest travels in the binary cursor shape");
+            assert_eq!(lanes.len(), 2, "a cursor is a source and a position");
+            assert_eq!(lanes[1].as_i64(), Some(8), "the rest starts after the first byte");
+        }
+        other => panic!("a matched rest is held as a cursor, not {other:?}"),
+    }
+    assert_eq!(bitstring_allocs(door.proc()), allocs, "holding a rest builds no binary");
+}
+
+/// Asking for a rest whole leaves the cursor in its slot, so a later bit
+/// question reads from its position, and a rest asked whole twice is built
+/// once.
+#[test]
+fn a_rest_asked_whole_stays_a_cursor_and_is_built_once() {
+    let plan = one_input_plan(vec![Pattern::Bitstring(vec![byte_field("first"), rest_field("rest")])]);
+    let mut door = Door::new();
+    let values = DispatchValues::default();
+    let inputs = [Some(BackendBoundValue::Runtime(bitstring_value(door.proc(), b"abcd")))];
+    let rest = *bitstring_field_subjects(&plan)
+        .last()
+        .expect("the shape names the rest");
+    let mut decided = door.decide_reading(&plan, &inputs, &values, vec![rest]);
+    let proc = decided.run.proc();
+    let allocs = bitstring_allocs(proc);
+    let first = decided.subject_word(rest).expect("the rest is built whole");
+    let second = decided.subject_word(rest).expect("the rest is asked whole again");
+    assert_eq!(
+        bitstring_allocs(proc) - allocs,
+        1,
+        "two whole reads of one rest build one binary"
+    );
+    assert_eq!(
+        first.as_ref_word(proc).expect("a binary"),
+        second.as_ref_word(proc).expect("a binary"),
+        "both reads are the one binary"
+    );
+    assert!(
+        matches!(decided.run.state.get(rest), Some(BackendBoundValue::Transport { .. })),
+        "the slot still holds the cursor"
+    );
+}
+
+/// A rest a failed branch matched goes with the branch, as every slot does.
+#[test]
+fn a_matched_rest_is_cleared_with_its_branch() {
+    let plan = one_input_plan(vec![
+        Pattern::Bitstring(vec![byte_field("first"), byte_field("second"), rest_field("rest")]),
+        Pattern::Var(Var::user("other")),
+    ]);
+    let mut door = Door::new();
+    let values = DispatchValues::default();
+    let inputs = [Some(BackendBoundValue::Runtime(bitstring_value(door.proc(), b"a")))];
+    let rest = *bitstring_field_subjects(&plan)
+        .last()
+        .expect("the shape names the rest");
+    let decided = door.decide_reading(&plan, &inputs, &values, vec![rest]);
+    assert!(
+        decided.run.state.get(rest).is_none(),
+        "the shape failed, so the rest it matched is gone"
+    );
 }
 
 /// A prepared binary key no test reads is never built.
