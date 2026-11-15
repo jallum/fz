@@ -1,0 +1,62 @@
+#---
+# purpose: a JSON number's extent comes from the grammar alone and its value from its text, so every number decodes or fails as in Elixir
+# kind: run
+# oracle: 01320_a_json_number_is_found_by_its_grammar_and_converted_from_its_text.oracle.exs
+# oracle.stamp: 06cbef5dec8d8845
+#---
+#
+# The grammar is `-? (0 | [1-9][0-9]*) (. [0-9]+)? ([eE] [+-]? [0-9]+)?`.
+# Inputs that break it fail at the byte where it breaks: a second leading
+# zero, a sign or point or exponent with no digit after it. Floats at the
+# edges of the double range are converted exactly, and one beyond it is an
+# unexpected sequence. Two of Elixir's habits are kept: an exponent without
+# a fraction is reported in the form `1.0e400`, and `-0e0` is `0.0`.
+for s <- [
+  "0",
+  "-0",
+  "01",
+  "-01",
+  "-",
+  "1.",
+  "1e",
+  "1e+",
+  "1E-",
+  ".5",
+  "+1",
+  "-1.5e3",
+  "1e5",
+  "1E5",
+  "0e0",
+  "-0e0",
+  "-0.0",
+  "0.1",
+  "0.3",
+  "1.0",
+  "1e23",
+  "1.7976931348623157e308",
+  "2.2250738585072014e-308",
+  "5e-324",
+  "1e-400",
+  "0.12345678901234567890",
+  "1e400",
+  "-1e400",
+  "1E400",
+  "1.5e400",
+  "123456789012345678.5",
+  "9223372036854775807",
+  "-9223372036854775808",
+  "[1,01]",
+  "[1e]",
+  "[1e400]",
+  " 1e400",
+  "{\"a\": 1E+400}",
+  "{\"a\":1.}",
+  "1.5x",
+  "1ex",
+  "-x",
+  "00",
+  "[-0, 1, 2.5]",
+  "[3, -4.25e-2, 17]"
+] do
+  IO.inspect({s, JSON.decode(s)})
+end

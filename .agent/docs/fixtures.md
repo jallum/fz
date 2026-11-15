@@ -109,7 +109,7 @@ their block. A new epic claims the next free block and adds a row here.
 | `01000-01039` | fz-sc8 (stack #274)               | in use through `01039` |
 | `01040-01059` | fz-sc8 (session fz-38: .77, .105) | in use through `01042` |
 | `01060-01079` | fz-sc8 (stack #274)               | in use through `01078` |
-| `01080-01099` | unallocated                       | free                   |
+| `01080-01099` | fz-348 / fz-rs7                   | full                   |
 | `01100-01119` | fz-rs7                            | in use through `01115` |
 | `01120-01199` | fz-sc8                            | in use through `01179` |
 | `01200-01229` | fz-iqp                            | in use through `01229` |
@@ -119,6 +119,7 @@ their block. A new epic claims the next free block and adds a row here.
 | `01280-01289` | fz-968                            | in use through `01280` |
 | `01290-01299` | fz-t93                            | in use through `01292` |
 | `01300-01319` | fz-3sy                            | in use through `01302` |
+| `01320-01339` | fz-nml                            | in use through `01321` |
 
 A fixture orders its processes with messages and never by a timing margin: an
 `after` timeout is `0` when mail is already in the mailbox or nothing is

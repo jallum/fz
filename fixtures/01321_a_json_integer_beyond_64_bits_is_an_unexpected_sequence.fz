@@ -1,0 +1,21 @@
+#---
+# purpose: integers are 64-bit, so a JSON integer past either end is an unexpected sequence at the number's offset, and the 64-bit ends themselves decode
+# kind: run
+#---
+#
+# Elixir decodes these as big integers; fz has none. The scan still reads
+# the whole number, so the error names all of its text. A fraction or an
+# exponent makes the number a float, which fits.
+for s <- [
+  "9223372036854775807",
+  "-9223372036854775808",
+  "9223372036854775808",
+  "-9223372036854775809",
+  "99999999999999999999",
+  "[1, 99999999999999999999]",
+  "{\"n\": -123456789012345678901234567890}",
+  "99999999999999999999.5",
+  "99999999999999999999e2"
+] do
+  IO.inspect({s, JSON.decode(s)})
+end
