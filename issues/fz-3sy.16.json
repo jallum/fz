@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-3sy",
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "A struct update whose base nobody else holds stores in place",
   "type": "feature",
-  "updated_at": "2026-11-13T03:30:09Z"
+  "updated_at": "2026-11-15T05:04:33Z"
 }
