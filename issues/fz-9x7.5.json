@@ -18,11 +18,15 @@
     {
       "text": "DECIDED 2026-11-14 by the pre-registered rule (8 workloads x 8-11 sizes, /private/tmp/claude-501/-Users-j5n-Workspace-fz/d1d265b3-f8e7-419b-8316-906f89c17e6b/scratchpad/9x7-gc/notes.md, round2-tables.txt): 'reuse lands if it lowers instructions and does not raise mean RSS on more than one workload'. Instructions: geometric-mean ratio 0.991 vs shim-only (enum -7.8%, json -1.2%, others within +-0.6%). Mean RSS rises \u003e2% on one workload only (distiller +4.4%); falls on enum -27%, qsort -10%, json -11%. The experimenter also applied a stricter reading (\u003e0.5% on 4 of 8) under which it fails; the rule as written is aggregate, so reuse LANDS: runtime path only (Heap::bump takes the single recorded stranded frame; compiled continuation building does not take it: inline-taking measured 13.0M misses vs 1.9M). Budget changes (80%/60%) do NOT land: RSS better on 1 of 8, monotone on 4 of 8, instructions +2.9%. S2 (collect at next safe point) does NOT land. Patch: /private/tmp/claude-501/-Users-j5n-Workspace-fz/d1d265b3-f8e7-419b-8316-906f89c17e6b/scratchpad/9x7-gc/gc-schedule-spike-r2.patch (reuse part only).",
       "timestamp": "2026-11-15T01:16:17Z"
+    },
+    {
+      "text": "REVERSED 2026-11-15: does not land. The 2026-11-14 decision applied an aggregate reading of the rule; the rule as pre-registered (scratchpad 9x7-gc/notes.md R1) is instructions down \u003e0.5% on \u003e=4 of 8 workloads, and the spike met 2 of 8. Measured on the built commit a685a41ff vs cd82c0aee (scratchpad 9x7-5ab/): instructions lower on 1 of 8 (enum 0.942), higher on 7 (geomean 1.013; spin 1.044, trickle 1.051 with unchanged GC counts, so the cost is the compiled resume path, not the heap); mean RSS enum -25.5%, json -8.7%, qsort -5.8%, dist +4.1%. PR #593 closed unmerged; branch fz-9x7.5/stranded-frame-reuse kept on origin as the record.",
+      "timestamp": "2026-11-15T02:54:25Z"
     }
   ],
   "priority": 3,
   "status": "closed",
   "title": "A frame the pop misses gives its memory to the next runtime allocation that fits",
   "type": "task",
-  "updated_at": "2026-11-15T02:54:18Z"
+  "updated_at": "2026-11-15T02:54:25Z"
 }
