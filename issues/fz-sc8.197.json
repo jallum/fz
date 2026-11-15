@@ -73,11 +73,15 @@
     {
       "text": "EffectSummary deletion moved to fz-sc8.218 with the user's approval (2026-11-14): about 190 test sites use the ExecutableEffects product as their vehicle. Builder finding: on #592 the splice does not change reductions_executed (200,000 before and after for 100,000 iterations); the fixture pins continuation_allocs 400,002 -\u003e 100,001 and reductions as unchanged.",
       "timestamp": "2026-11-15T03:04:24Z"
+    },
+    {
+      "text": "Landed as PR #600 (6783d2084), stacked on #592. Full gate green (6,521 passed), distiller 24.17G -\u003e 22.16G, all pin changes are falls and are listed in the commit.",
+      "timestamp": "2026-11-15T03:12:43Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "Arithmetic on known integers does not go through a continuation",
   "type": "task",
-  "updated_at": "2026-11-15T03:04:24Z"
+  "updated_at": "2026-11-15T03:12:43Z"
 }
