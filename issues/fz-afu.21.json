@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-15T13:20:56Z",
+  "description": "Finding (2026-11-15, from a probe by the Callables session; traced by fz-engine on develop d032c7368).\n\nProbe:\n  def main() do\n    pass(%{a: 1})\n    pass(%{b: 2})\n  end\n  def pass(x), do: sink(x)\n  def sink(_x), do: :ok\n\nfz2 --log-telemetry out.jsonl run probe.fz: pass/1 has 2 keys and 6 AnalyzeActivation completions (3 per key); sink/1 has 2 keys and 2. Per key of pass/1:\n1. Started by PlanEntryDispatch(pass). sink's LoweredBody does not exist yet, so the run creates no Activation(sink) and still publishes CallSiteSummary/CallSiteTargets at revision 1.\n2. Woken by LowerFunction(sink) concluding ('current' use of LoweredBody(sink)): creates Activation(sink), summary and targets move to revision 2. This run is run 1 redone with the input run 1 lacked.\n3. Woken by ReturnType(sink) concluded: expected, a caller sends its input before it reads the callee's return.\nmain and the main wrapper show the same three-run pattern.\n\nDistiller (same base): 21 of 3,967 AnalyzeActivation starts are woken by LoweredBody 'current'; the big wake causes are ReturnType concluded (1,479) and ActivationInputs current (422). So the cost is mostly in small programs, where analysis outruns lowering; the fix is about running once its inputs exist, not about the distiller's instructions.\n\nBuys: one AnalyzeActivation per caller key whose callee is lowered after the caller's first analysis (probe: 3 -\u003e 2 per key of pass/1 and of main). Paper first: name the read that sees the missing LoweredBody, and whether the job should wait on it (as a fact wait) or the lowering should be demanded before analysis; predictions before probes. Bar: byte-identical output, no pin rises without approval; work pins that fall are lowered.\n\nScratch: /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/fwd/ (probe, out.jsonl, dist.jsonl).",
+  "id": "fz-afu.21",
+  "labels": [],
+  "parent": "fz-afu",
+  "priority": 2,
+  "status": "open",
+  "title": "An analysis whose callee has no lowered body yet waits for it instead of running without it",
+  "type": "bug",
+  "updated_at": "2026-11-15T13:20:56Z"
+}
