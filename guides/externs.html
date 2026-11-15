@@ -137,7 +137,11 @@ a function returns the pair <code>{value, failed}</code>, and the declaration
 says what a failure means by adding <code>raises:</code> and
 <code>message:</code> after the result type:</p>
 
-<pre><span class="kw">extern</span> <span class="str">"C"</span> <span class="kw">defp</span> <span class="fn">fz_op_div_ii</span>(<span class="ty">integer</span>, <span class="ty">integer</span>) <span class="kw">::</span> <span class="ty">integer</span>,
+<pre><span class="kw">defmodule</span> <span class="ty">MyApp.DivisionByZero</span> <span class="kw">do</span>
+  <span class="kw">defexception</span> [<span class="atm">:message</span>]
+<span class="kw">end</span>
+
+<span class="kw">extern</span> <span class="str">"C"</span> <span class="kw">defp</span> <span class="fn">fz_op_div_ii</span>(<span class="ty">integer</span>, <span class="ty">integer</span>) <span class="kw">::</span> <span class="ty">integer</span>,
   raises: <span class="ty">MyApp.DivisionByZero</span>,
   message: <span class="str">"cannot divide by zero"</span>
 
@@ -155,7 +159,13 @@ message. Kernel's arithmetic is declared this way, with
 <ul>
   <li><code>message:</code> is required and is a literal string; an
       interpolated one is refused.</li>
-  <li>The exception is a module name such as <code>ArithmeticError</code>.</li>
+  <li>The exception is a module that <code>defexception</code> declares with
+      a <code>message</code> field, such as <code>ArithmeticError</code>. Any
+      other name is a compile error at the <code>raises:</code> line.</li>
+  <li>The raised value is that module's struct: <code>message</code> holds the
+      text and every other field holds its default, so with
+      <code>defexception [:message, code: 7]</code> a handler reads
+      <code>e.code</code> as <code>7</code>.</li>
   <li>The extern must use the <code>"C"</code> ABI, and the result must be
       <code>integer</code> or <code>float</code>.</li>
   <li>The C function returns a struct of the value and a 64-bit

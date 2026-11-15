@@ -506,7 +506,7 @@ exception its arm of last resort raises: `PatternDispatchPlan.last_resort`, a
 rows are built (`SourcePatternRows::raising`). `=` is a decision like the others:
 its pattern is a one-row plan. `LastResort::Exception` names the exception's
 module and lists every field of its struct with what each holds (`FieldTerm`:
-the plan's subject, an atom, an integer or a text). Reaching the plan's fail
+the plan's subject, or a `LiteralTerm`: a value written out in full). Reaching the plan's fail
 builds that struct and raises it through `fz_runtime::failure::raise_exception`,
 so the raise goes to the nearest handler, a `rescue` around the decision
 catches it, and uncaught it prints the line its module words and ends the

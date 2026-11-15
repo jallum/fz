@@ -36,6 +36,7 @@ pub const RESOLVE_MODULE_NOT_LOADED: DiagCode = DiagCode("resolve/module-not-loa
 pub const RESOLVE_TYPE_ALIAS: DiagCode = DiagCode("resolve/type-alias");
 pub const RESOLVE_UNKNOWN_STRUCT_FIELD: DiagCode = DiagCode("resolve/unknown-struct-field");
 pub const RESOLVE_NOT_A_STRUCT: DiagCode = DiagCode("resolve/not-a-struct");
+pub const RESOLVE_NOT_AN_EXCEPTION: DiagCode = DiagCode("resolve/not-an-exception");
 pub const RESOLVE_NOT_A_PROTOCOL: DiagCode = DiagCode("resolve/not-a-protocol");
 pub const RESOLVE_DUPLICATE_STRUCT: DiagCode = DiagCode("resolve/duplicate-struct");
 pub const RESOLVE_DUPLICATE_FUNCTION: DiagCode = DiagCode("resolve/duplicate-function");

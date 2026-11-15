@@ -1,0 +1,40 @@
+#---
+# purpose: "An extern's declared failure raises the struct its exception declares: message holds the declared text and every other field its default, whether a number, an atom, a string, a list, a tuple or a map"
+#---
+defmodule MyApp.DivisionByZero do
+  defexception [
+    :message,
+    :detail,
+    code: 7,
+    hint: :check_the_divisor,
+    note: "no quotient",
+    tags: [:math, :integer],
+    at: {1, 2.5},
+    meta: %{retry: false, limits: [0, 1]}
+  ]
+end
+
+extern "C" defp fz_op_div_ii(integer, integer) :: integer,
+  raises: MyApp.DivisionByZero,
+  message: "cannot divide by zero"
+
+def divide(a, b) do
+  try do
+    fz_op_div_ii(a, b)
+  rescue
+    e in MyApp.DivisionByZero ->
+      {e.message, e.detail, e.code, e.hint, e.note, e.tags, e.at, e.meta}
+  end
+end
+
+def code_of(%MyApp.DivisionByZero{code: code}), do: code
+
+def main() do
+  IO.inspect(divide(7, 2))
+  IO.inspect(divide(7, 0))
+  try do
+    fz_op_div_ii(1, 0)
+  rescue
+    e -> IO.inspect(code_of(e))
+  end
+end

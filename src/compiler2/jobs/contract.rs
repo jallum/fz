@@ -4,9 +4,9 @@
 //! call resolution consumes it to refine observed arguments before waking
 //! activations or callable-boundary demand.
 
-use crate::fast_hash::HashMap;
+use crate::fast_hash::{HashMap, HashSet};
 
-use crate::ast::Attribute;
+use crate::ast::{Attribute, ModuleTarget};
 use crate::diag::Diagnostic;
 use crate::diag::codes;
 use crate::diag::driver::emit_through;
@@ -15,16 +15,21 @@ use crate::extern_contract::{
     ExternContractError, explicit_extern_wire_hint, extern_semantic_contract, extern_symbol_from_name, ty_to_extern_ty,
     variadic_tail_domain,
 };
-use crate::function_surface::FunctionSurface;
+use crate::function_surface::{ExternRaises, FunctionSurface};
 use crate::fz_ir::{ExternAbi, ExternReturn, ExternTy};
+use crate::ground_value::GroundValue;
 
 use super::super::body::LoweredExtern;
 use super::super::code::SourceOwner;
 use super::super::contract::FunctionContract;
 use super::super::drive::{FactKey, JobEffects, current_uses};
 use super::super::identity::{FunctionId, FunctionSource};
+use super::super::structdef::StructDef;
 use super::super::world::World;
+use super::body::record_struct_reference;
+use crate::literal_term::LiteralTerm;
 use fz_engine::FatalError;
+use fz_runtime::failure::EXCEPTION_FIELD;
 
 pub(super) fn derive_function_contract(
     world: &mut World,
@@ -82,6 +87,9 @@ pub(super) fn derive_function_contract(
         } else {
             waits.push(fact);
         }
+    }
+    if let Some(raises) = &surface.extern_raises {
+        waits.extend(reference_declared_exception(world, tel, &source, raises, &mut reads)?);
     }
     if !waits.is_empty() {
         return Ok(JobEffects {
@@ -246,7 +254,7 @@ fn resolve_extern_wire(
         &clause.bounds,
     )
     .map_err(|message| extern_abi_error(tel, surface, format!("`{}`: {message}", surface.name)))?;
-    let ret = match extern_failure(world, source, surface) {
+    let ret = match extern_failure(world, tel, source, surface)? {
         Some(failure) => checked_return(ret, abi, failure)
             .map_err(|message| extern_abi_error(tel, surface, format!("`{}`: {message}", surface.name)))?,
         None => ret,
@@ -261,12 +269,87 @@ fn resolve_extern_wire(
     })
 }
 
-/// What the extern's `raises:` declares, with the exception resolved the way
-/// a body resolves the same alias.
-fn extern_failure(world: &mut World, source: &FunctionSource, surface: &FunctionSurface) -> Option<LastResort> {
-    let raises = surface.extern_raises.as_ref()?;
+/// The field of an exception that holds the text `message:` declares.
+const MESSAGE_FIELD: &str = "message";
+
+/// A declared failure is the struct literal `%Exception{message: text}`, so
+/// the extern refers to the exception's struct as a body that wrote that
+/// literal would: from the name `raises:` wrote, with the one field `message`.
+/// Answers the fact the contract waits for when the struct is not yet defined.
+fn reference_declared_exception(
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
+    source: &FunctionSource,
+    raises: &ExternRaises,
+    reads: &mut Vec<FactKey>,
+) -> Result<HashSet<FactKey>, FatalError> {
+    let mut waits = HashSet::default();
+    record_struct_reference(
+        world,
+        tel,
+        source.namespace,
+        source.owner_module,
+        source.owner,
+        &ModuleTarget::Unresolved(raises.exception.clone()),
+        [MESSAGE_FIELD].into_iter(),
+        raises.span,
+        reads,
+        &mut waits,
+    )?;
+    Ok(waits)
+}
+
+/// What the extern's `raises:` declares: a struct of the exception it names,
+/// resolved the way a body resolves the same alias.
+fn extern_failure(
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
+    source: &FunctionSource,
+    surface: &FunctionSurface,
+) -> Result<Option<LastResort>, FatalError> {
+    let Some(raises) = surface.extern_raises.as_ref() else {
+        return Ok(None);
+    };
+    let module = world.resolve_module_name(source.owner_module, source.namespace, &raises.exception);
     let exception = world.module_alias_atom(source.owner_module, source.namespace, &raises.exception);
-    Some(LastResort::declared(exception, raises.message.clone()))
+    let def = world
+        .struct_def(module)
+        .expect("a contract waits for the struct its declared failure names");
+    let Some(fields) = declared_failure_fields(def, &raises.message) else {
+        emit_job_diagnostic(
+            tel,
+            Diagnostic::error(
+                codes::RESOLVE_NOT_AN_EXCEPTION,
+                format!("module `{}` is not an exception", raises.exception),
+                raises.span,
+            ),
+        );
+        return Err(FatalError);
+    };
+    Ok(Some(LastResort::declared(exception, fields)))
+}
+
+/// The fields of the struct a declared failure raises, in the order the
+/// exception declares them: `message` holds the declaration's text and every
+/// other field its default. The `__exception__` mark is the runtime's to set.
+/// `None` when `defstruct` declared the struct, not `defexception`.
+fn declared_failure_fields(def: &StructDef, message: &str) -> Option<Vec<(String, LiteralTerm)>> {
+    const NIL: LiteralTerm = LiteralTerm::Ground(GroundValue::Nil);
+    let marked = LiteralTerm::Ground(GroundValue::Bool(true));
+    (def.defaults.get(EXCEPTION_FIELD) == Some(&marked)).then(|| {
+        def.fields
+            .iter()
+            .filter(|field| *field != EXCEPTION_FIELD)
+            .map(|field| {
+                let value = if field == MESSAGE_FIELD {
+                    LiteralTerm::Ground(GroundValue::Binary(message.as_bytes().to_vec()))
+                } else {
+                    def.defaults.get(field).cloned().unwrap_or(NIL)
+                };
+                (field.clone(), value)
+            })
+            .collect()
+    })
 }
 
 /// The return of an extern that declares `raises:`. A failure travels as the

@@ -16929,16 +16929,7 @@ fn compiler2_kernel_float_remainder_uses_the_declared_private_c_extern_at_every_
     assert_eq!(signature.symbol, "fz_op_rem_ff");
     assert_eq!(signature.abi, ExternAbi::C);
     assert_eq!(signature.params, vec![ExternTy::F64, ExternTy::F64]);
-    assert_eq!(
-        signature.ret,
-        ExternReturn::Checked(
-            ExternTy::F64,
-            LastResort::declared(
-                "Elixir.ArithmeticError".to_string(),
-                "bad argument in arithmetic expression".to_string()
-            )
-        )
-    );
+    assert_eq!(signature.ret, ExternReturn::Checked(ExternTy::F64, arithmetic_error()));
     assert!(
         !native_compiler
             .world()
@@ -16959,14 +16950,7 @@ fn compiler2_kernel_float_remainder_uses_the_declared_private_c_extern_at_every_
             decl.symbol == "fz_op_rem_ff"
                 && decl.abi == ExternAbi::C
                 && decl.params == [ExternTy::F64, ExternTy::F64]
-                && decl.ret
-                    == ExternReturn::Checked(
-                        ExternTy::F64,
-                        LastResort::declared(
-                            "Elixir.ArithmeticError".to_string(),
-                            "bad argument in arithmetic expression".to_string(),
-                        ),
-                    )
+                && decl.ret == ExternReturn::Checked(ExternTy::F64, arithmetic_error())
         }),
         "native codegen must receive the ordinary typed extern declaration",
     );
@@ -24213,4 +24197,119 @@ fn a_bare_drive_that_makes_its_own_sessions_is_a_frame_too() {
     assert_resolved(outcome, "the drive settles");
     assert_eq!(*deferred.borrow(), vec![2, 2, 2]);
     assert_eq!(*arbitrated.borrow(), vec![1, 1], "only the bare drain arbitrates");
+}
+
+/// Compiles a program whose extern declares `raises: <exception>`, calls it
+/// from `main`, and answers the one error the compile ends with, after
+/// checking that it points at the name the declaration wrote.
+fn declared_failure_error(modules: &str, exception: &str) -> (String, String) {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    capture.install(&tel, &[]);
+    let mut compiler = Compiler2::new(tel);
+    let source = format!(
+        "{modules}\n\
+         extern \"C\" defp fz_op_div_ii(integer, integer) :: integer,\n  \
+         raises: {exception},\n  \
+         message: \"cannot divide by zero\"\n\n\
+         def main(), do: fz_op_div_ii(7, 0)\n"
+    );
+    compiler.submit_code(CodeSubmission {
+        name: Some("declared_failure.fz".to_string()),
+        text: source.clone(),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert!(
+        !matches!(compiler.drive(), DriveOutcome::Resolved),
+        "a declared failure that names `{exception}` does not compile"
+    );
+    let errors = capture.find(&["fz", "diag", "error"]);
+    let [error] = errors.as_slice() else {
+        panic!(
+            "one error, at the declaration: {:?}",
+            errors
+                .iter()
+                .map(|error| metadata_str(error, "message"))
+                .collect::<Vec<_>>()
+        );
+    };
+    let diagnostic = error.diagnostic.as_ref().expect("the error carries its diagnostic");
+    assert_primary_span_contains(diagnostic, &source, exception);
+    (
+        metadata_str(error, "code").to_string(),
+        metadata_str(error, "message").to_string(),
+    )
+}
+
+/// An extern's `raises:` names a module. A name no module answers to is
+/// reported where the extern wrote it.
+#[test]
+fn a_declared_failure_that_names_no_module_is_refused_at_the_name() {
+    assert_eq!(
+        declared_failure_error("", "MyApp.NotThere"),
+        (
+            codes::RESOLVE_UNKNOWN_MODULE.0.to_string(),
+            "module `MyApp.NotThere` is not defined".to_string()
+        )
+    );
+}
+
+/// A declared failure raises a struct of the module it names, so a module
+/// with no `defstruct` cannot be one.
+#[test]
+fn a_declared_failure_that_names_a_module_with_no_struct_is_refused_at_the_name() {
+    assert_eq!(
+        declared_failure_error("defmodule MyApp.Plain do\n  def hello(), do: :hi\nend\n", "MyApp.Plain"),
+        (
+            codes::RESOLVE_NOT_A_STRUCT.0.to_string(),
+            "module `MyApp.Plain` is not a struct".to_string()
+        )
+    );
+}
+
+/// A struct is an exception when `defexception` declared it. One that
+/// `defstruct` declared has a `message` field here and still cannot be raised.
+#[test]
+fn a_declared_failure_that_names_a_struct_that_is_not_an_exception_is_refused_at_the_name() {
+    assert_eq!(
+        declared_failure_error("defmodule MyApp.Point do\n  defstruct [:message]\nend\n", "MyApp.Point"),
+        (
+            codes::RESOLVE_NOT_AN_EXCEPTION.0.to_string(),
+            "module `MyApp.Point` is not an exception".to_string()
+        )
+    );
+}
+
+/// The declaration's `message:` is the exception's `message` field, so an
+/// exception that declares no such field has nowhere to put it.
+#[test]
+fn a_declared_failure_that_names_an_exception_with_no_message_field_is_refused_at_the_name() {
+    assert_eq!(
+        declared_failure_error(
+            "defmodule MyApp.NoMessage do\n  defexception [:path]\nend\n",
+            "MyApp.NoMessage"
+        ),
+        (
+            codes::RESOLVE_UNKNOWN_STRUCT_FIELD.0.to_string(),
+            "struct `MyApp.NoMessage` has no field `message`".to_string()
+        )
+    );
+}
+
+/// The failure Kernel's arithmetic externs declare.
+fn arithmetic_error() -> LastResort {
+    LastResort::declared(
+        "Elixir.ArithmeticError".to_string(),
+        vec![(
+            "message".to_string(),
+            crate::literal_term::LiteralTerm::Ground(crate::ground_value::GroundValue::Binary(
+                b"bad argument in arithmetic expression".to_vec(),
+            )),
+        )],
+    )
 }

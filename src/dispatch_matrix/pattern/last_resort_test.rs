@@ -1,14 +1,19 @@
 use super::{FieldTerm, LastResort};
+use crate::ground_value::GroundValue;
+use crate::literal_term::LiteralTerm;
 
-fn fields(raised: &LastResort) -> Vec<(&'static str, FieldTerm)> {
+fn fields(raised: &LastResort) -> Vec<(&str, FieldTerm)> {
     match raised {
-        LastResort::Exception { fields, .. } => fields.clone(),
+        LastResort::Exception { fields, .. } => fields
+            .iter()
+            .map(|(name, term)| (name.as_ref(), term.clone()))
+            .collect(),
         LastResort::Reraise => panic!("a re-raise builds no exception"),
     }
 }
 
 fn atom(name: &'static str) -> FieldTerm {
-    FieldTerm::Atom(name.into())
+    FieldTerm::atom(name)
 }
 
 #[test]
@@ -20,10 +25,10 @@ fn a_function_head_miss_carries_the_function_it_missed_and_none_of_its_arguments
         vec![
             ("module", atom("Elixir.M")),
             ("function", atom("f")),
-            ("arity", FieldTerm::Int(1)),
-            ("kind", atom("nil")),
-            ("args", atom("nil")),
-            ("clauses", atom("nil")),
+            ("arity", FieldTerm::Literal(LiteralTerm::Ground(GroundValue::Int(1)))),
+            ("kind", FieldTerm::NIL),
+            ("args", FieldTerm::NIL),
+            ("clauses", FieldTerm::NIL),
         ],
         "every field of Elixir's struct is present, so a handler can read any of them"
     );
@@ -33,7 +38,7 @@ fn a_function_head_miss_carries_the_function_it_missed_and_none_of_its_arguments
 #[test]
 fn a_function_outside_any_module_has_no_module_to_carry() {
     let raised = LastResort::function_clause(None, "main".to_string(), 0);
-    assert_eq!(fields(&raised)[0], ("module", atom("nil")));
+    assert_eq!(fields(&raised)[0], ("module", FieldTerm::NIL));
 }
 
 #[test]
@@ -74,15 +79,8 @@ fn a_cond_with_no_truthy_condition_has_nothing_to_carry() {
 fn an_exception_that_is_declared_with_its_words_carries_them_as_its_message() {
     let not = LastResort::argument_error();
     assert_eq!(not.exception(), Some("Elixir.ArgumentError"));
-    assert_eq!(
-        fields(&not),
-        vec![("message", FieldTerm::Text("argument error".to_string()))]
-    );
+    assert_eq!(fields(&not), vec![("message", FieldTerm::text("argument error"))]);
     assert_eq!(not.consumed_inputs(), 0);
-    assert_eq!(
-        LastResort::declared("Elixir.ArgumentError".to_string(), "argument error".to_string()),
-        not
-    );
 }
 
 #[test]
@@ -106,8 +104,8 @@ fn a_protocol_miss_carries_the_protocol_and_the_value_that_missed() {
         vec![
             ("protocol", atom("Elixir.String.Chars")),
             ("value", FieldTerm::Subject),
-            ("message", atom("nil")),
-            ("description", FieldTerm::Text(String::new())),
+            ("message", FieldTerm::NIL),
+            ("description", FieldTerm::text("")),
         ]
     );
     assert_eq!(raised.consumed_inputs(), 1);

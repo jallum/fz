@@ -887,7 +887,7 @@ pub(super) fn collect_local_pattern_requirements(
 /// so the module identity this pre-pass records obligations/waits against is
 /// always the module the later `Lowerer` pass will actually consume.
 #[allow(clippy::too_many_arguments)]
-fn record_struct_reference<'a>(
+pub(super) fn record_struct_reference<'a>(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
     namespace: Namespace,
