@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-15T23:27:25Z",
+  "description": "fz has no bit_size/1: a call reports lower/unbound. Macro.escape (fz-sc8.225) needs it to escape a bitstring that is not a binary (the first rem(bit_size, 8) bits as an integer, then the rest as a binary). The runtime already knows the bit length (fz_bitstring_byte_extent reads it to round up). Add a Kernel function backed by a runtime export that answers the bit length; a non-bitstring raises Elixir's ArgumentError '1st argument: not a bitstring', as byte_size does. Done when: an oracle fixture (oracle: self) shows bit_size of \u003c\u003c\u003e\u003e, \u003c\u003c1::3\u003e\u003e, \u003c\u003c1, 2::4\u003e\u003e, a binary, and the raise, on interp, run and build. Proposal: https://claude.ai/artifact/N14ZzKaX8vUSfrX4Uxx58t (ticket A).",
+  "id": "fz-sc8.237",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 2,
+  "status": "open",
+  "title": "bit_size/1 answers how many bits a bitstring has, as in Elixir",
+  "type": "feature",
+  "updated_at": "2026-11-15T23:27:25Z"
+}
