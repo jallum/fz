@@ -1,5 +1,5 @@
 {
-  "assignee": "Make JSON Fast",
+  "assignee": "",
   "blocked_by": [],
   "blocks": [
     "fz-nml.13",
@@ -15,5 +15,5 @@
   "status": "open",
   "title": "A bitstring is not a binary: two type bits, a whole-byte runtime test, and rest::binary refuses partial bytes, as in Elixir",
   "type": "bug",
-  "updated_at": "2026-11-15T15:57:12Z"
+  "updated_at": "2026-11-15T15:57:22Z"
 }
