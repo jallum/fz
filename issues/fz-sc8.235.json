@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-15T18:53:22Z",
   "created": "2026-11-15T18:52:43Z",
   "description": "develop is red at cef5bf4c3. Fixture 01193 (fz-sc8.229, #640) reads stats[:procbin_allocs]; fz-nml.17 (#642) renamed that key to :binview_allocs and updated every other fixture. The two PRs merged cleanly but not together, so 01193 fails on interp, run and build with nil + integer. Fix: read :binview_allocs. Done when the fixture passes on three paths with its expected output unchanged.",
   "id": "fz-sc8.235",
   "labels": [],
   "parent": "fz-sc8",
   "priority": 0,
-  "status": "open",
+  "status": "closed",
   "title": "Fixture 01193 counts binary views by the key the runtime reports",
   "type": "bug",
-  "updated_at": "2026-11-15T18:52:43Z"
+  "updated_at": "2026-11-15T18:53:22Z"
 }
