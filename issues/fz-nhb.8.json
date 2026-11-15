@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-15T21:58:31Z",
+  "description": "## Why\nfz-nhb.1 and fz-nhb.2 added 01380 and 01381 with `.oracle.exs` twins before fz-nhb.4 made `oracle: self` the form. Both programs are valid Elixir, so the twins restate the fixture.\n\n## What changes\nEach fixture is rewritten into Elixir form by the fz-nhb.4 rule and headed `# oracle: self`; its twin is deleted and its stamp regenerated.\n\n## Signal\n`ORACLE=check` passes for both; the tree holds 35 twins.",
+  "id": "fz-nhb.8",
+  "labels": [],
+  "parent": "fz-nhb",
+  "priority": 2,
+  "status": "open",
+  "title": "Fixtures 01380 and 01381 are their own Elixir oracle",
+  "type": "task",
+  "updated_at": "2026-11-15T21:58:31Z"
+}
