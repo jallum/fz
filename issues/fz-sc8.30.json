@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [
+    "fz-j8z",
     "fz-nml.13",
     "fz-nml.14",
     "fz-nml.15"
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "A bitstring is not a binary: two type bits, a whole-byte runtime test, and rest::binary refuses partial bytes, as in Elixir",
   "type": "bug",
-  "updated_at": "2026-11-15T15:57:22Z"
+  "updated_at": "2026-11-15T15:57:38Z"
 }
