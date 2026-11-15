@@ -63,11 +63,15 @@
     {
       "text": "X1 and X2(a) results (builder, old base #585; I re-read the dumps and telemetry: executable counts 1375/1375/1329 and define_function 10,214/9,126/9,034 confirmed).\nX1: unreferenced executables are not dropped today. With forwarder calls rewritten to the extern and unreachable forwarders dropped: 49 forwarders found, 282 call sites rewritten, 46 dropped (prediction 35-45: one over), 3 remain (compare, reached only as dispatch-edge arms). Run instructions equal narrow (24.96-24.98G vs 24.95G; prediction held). Binary 4,444,072 -\u003e 4,440,952. Compile instructions of fz2 build: off 27.31-27.36G, narrow 24.50G (-10%), xhead 24.55G: the compile saving comes from narrow (fewer continuation functions: define_function 10,214 -\u003e 9,126), not from dropping forwarders. Jobs naming a dropped specialisation: 260 of 12,855 (2.0%), 3.6% with function-keyed jobs, as an upper bound (prediction 2-4% held).\nFound: 40 of 1,375 executables are unreachable in the unchanged program and are compiled anyway.\nX2(a): 30 leaf loops, 10 execute. Full log: 38.6M entries, 11.1M iterations, longest run 12,892 (reverse_list), median run 0. skip_ws is entered 34.4M times and iterates 222,411 times: it is almost always a call that returns at once. digits: 3.58M entries, 9.1M iterations, longest 10. Prediction (max no more than longest line, median under 20) held.\nX2(b) bail variant: not built (stopped after the user's direction to drop the wider rule). Rule B stays rejected on the memory result.\nDirection from the user: replace calls with inlined fragments instead of the prompt rule. Page rewritten as version 3 on that basis.",
       "timestamp": "2026-11-15T02:32:12Z"
+    },
+    {
+      "text": "User approved version 3 of the page ('proceed', 2026-11-14). This ticket is step 1: the splice. At a delivered direct call whose callee is an extern, or one clause with no dispatch and no steps that tail-calls an extern with the same parameters, the caller emits the extern as a step, branches to the existing raise on failure, and continues in the resume entry as a block. EffectSummary is removed. A reductions pin is added. Base: #592 (3f7328f1e). Acceptance: distiller 22.2G instructions or less on 32,000 lines (24.15G before); three paths match Elixir; falling pins lowered and listed; no pin rises without the user's authorization.",
+      "timestamp": "2026-11-15T02:44:26Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "Arithmetic on known integers does not go through a continuation",
   "type": "task",
-  "updated_at": "2026-11-15T02:32:12Z"
+  "updated_at": "2026-11-15T02:44:26Z"
 }
