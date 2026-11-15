@@ -1537,7 +1537,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                         if let Some(next_bits) = pos_bits.zip(field.static_bits()).map(|(at, extent)| at + extent) {
                             known_positions.insert(*next, next_bits);
                         }
-                        let next_var = self.emit_bit_next(ctx, pos, field);
+                        let next_var = self.emit_bit_next(ctx, source, pos, field);
                         self.bind_runtime_value(ctx, executable, env, *next, next_var);
                     }
                 }
@@ -3909,13 +3909,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 unit: spec.unit,
                 is_last: extraction.is_last,
             };
-            let (fits, _) = ctx.emit_let(Prim::BitFieldFits {
-                pos,
-                bit_len,
-                field: field.clone(),
-            });
-            let bool_ty = self.world.types_mut().bool();
-            ctx.value_types.insert(fits, bool_ty);
+            let (fits, utf8_end) = self.emit_bit_fits(ctx, subject_var, pos, bit_len, &field);
             let next_b = ctx.builder.block(vec![]);
             ctx.set_term(Term::If {
                 cond: fits,
@@ -3932,8 +3926,11 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             if reads_to_end {
                 pos = bit_len;
                 pos_bits = None;
+            } else if let Some(end) = utf8_end {
+                pos = end;
+                pos_bits = None;
             } else if index + 1 < field_count || shape.require_done {
-                pos = self.emit_bit_next(ctx, pos, field.clone());
+                pos = self.emit_bit_next(ctx, subject_var, pos, field.clone());
                 pos_bits = pos_bits.zip(field.static_bits()).map(|(at, extent)| at + extent);
             }
             // A later field's `size(len)` reads this one, and the read happens
@@ -3991,11 +3988,46 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             },
         };
         let (value, _) = ctx.emit_let(prim);
-        if field.ty == BitType::Integer {
+        if field.ty.reads_as_integer() {
             let int = self.world.types_mut().int();
             ctx.value_types.insert(value, int);
         }
         value
+    }
+
+    /// Whether `field` fits at `pos`, and for a field whose width the binary's
+    /// bytes decide, where it ends: the one question the runtime answers for
+    /// both, so the position is never asked for twice.
+    fn emit_bit_fits(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        source: Var,
+        pos: Var,
+        bit_len: Var,
+        field: &BitMatchField,
+    ) -> (Var, Option<Var>) {
+        let int = self.world.types_mut().int();
+        let bool_ty = self.world.types_mut().bool();
+        if field.ty != BitType::Utf8 {
+            let (fits, _) = ctx.emit_let(Prim::BitFieldFits {
+                pos,
+                bit_len,
+                field: field.clone(),
+            });
+            ctx.value_types.insert(fits, bool_ty);
+            return (fits, None);
+        }
+        let (end, _) = ctx.emit_let(Prim::BitFieldEnd {
+            source,
+            pos,
+            field: field.clone(),
+        });
+        ctx.value_types.insert(end, int);
+        let (zero, _) = ctx.emit_let(Prim::Const(Const::Int(0)));
+        ctx.value_types.insert(zero, int);
+        let (fits, _) = ctx.emit_let(Prim::BinOp(IrBinOp::Ge, end, zero));
+        ctx.value_types.insert(fits, bool_ty);
+        (fits, Some(end))
     }
 
     /// The address of `source`'s first byte, resolved by the first read that
@@ -4010,8 +4042,12 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
     }
 
     /// The position after a sized `field` that starts at `pos`.
-    fn emit_bit_next(&mut self, ctx: &mut NativeFnCtx, pos: Var, field: BitMatchField) -> Var {
-        let (next, _) = ctx.emit_let(Prim::BitFieldNext { pos, field });
+    fn emit_bit_next(&mut self, ctx: &mut NativeFnCtx, source: Var, pos: Var, field: BitMatchField) -> Var {
+        let prim = match field.ty {
+            BitType::Utf8 => Prim::BitFieldEnd { source, pos, field },
+            _ => Prim::BitFieldNext { pos, field },
+        };
+        let (next, _) = ctx.emit_let(prim);
         let int = self.world.types_mut().int();
         ctx.value_types.insert(next, int);
         next

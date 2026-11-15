@@ -647,13 +647,22 @@ pub enum Prim {
         field: BitMatchField,
     },
     /// The position just after `field`, which starts at bit `pos`: `pos + size *
-    /// unit`. Only a sized field has one; the last field reads to the end.
+    /// unit`. Only a field whose width is known without reading the binary has
+    /// one: the last field reads to the end, and a `utf8` field has a `BitFieldEnd`.
     BitFieldNext {
         pos: Var,
         field: BitMatchField,
     },
+    /// The position just after `field`, which starts at bit `pos` of `source`,
+    /// or -1 when the binary does not hold it. The runtime reads the bytes, for
+    /// a field whose width they decide: a `utf8` field.
+    BitFieldEnd {
+        source: Var,
+        pos: Var,
+        field: BitMatchField,
+    },
     /// The value of `field` at bit `pos` of `source`: an integer for an
-    /// integer field, a binary for a `binary` or `bits` field. The field is
+    /// integer or `utf8` field, a binary for a `binary` or `bits` field. The field is
     /// known to fit (`BitFieldFits` held, or an earlier dispatch proved the
     /// whole pattern), so a read has no miss to report.
     BitReadField {
@@ -820,7 +829,7 @@ impl Prim {
                 used.insert(*pos);
                 used.extend(field.size_var());
             }
-            Prim::BitReadField { source, pos, field } => {
+            Prim::BitFieldEnd { source, pos, field } | Prim::BitReadField { source, pos, field } => {
                 used.insert(*source);
                 used.insert(*pos);
                 used.extend(field.size_var());
@@ -1605,6 +1614,7 @@ impl fmt::Display for Prim {
             } => write!(f, "bit_read_byte_int({}, {}, {})", base, byte_offset, bytes),
             Prim::BitFieldFits { pos, bit_len, .. } => write!(f, "bit_field_fits({}, {})", pos, bit_len),
             Prim::BitFieldNext { pos, .. } => write!(f, "bit_field_next({})", pos),
+            Prim::BitFieldEnd { source, pos, .. } => write!(f, "bit_field_end({}, {})", source, pos),
             Prim::BitReadField { source, pos, .. } => write!(f, "bit_read_field({}, {})", source, pos),
             Prim::PopHandler => write!(f, "pop_handler"),
             Prim::RuntimeTypeTest(v, d) => {

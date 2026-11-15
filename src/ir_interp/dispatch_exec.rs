@@ -880,7 +880,7 @@ impl<'a> Dispatch<'a> {
                 field.signed as u32,
                 extraction.is_last as u32,
             );
-            let Some(end) = bs_field_end(field_spec, size_value, pos, bit_len) else {
+            let Some(end) = bs_field_end(field_spec, size_value, pos, source_ref) else {
                 return false;
             };
             if plan.graph.asks(*field_subject) || self.outcome_reads.contains(field_subject) {
@@ -890,7 +890,7 @@ impl<'a> Dispatch<'a> {
                     pos,
                     field_spec,
                     size_value,
-                    matches!(field.kind, BitstringFieldKind::Integer),
+                    field.kind.reads_as_integer(),
                 ) else {
                     return false;
                 };

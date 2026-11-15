@@ -1492,14 +1492,23 @@ fn decode_bs_field_spec(spec: u64) -> (u32, u32, u32, u32, u32, u32) {
     )
 }
 
-/// Where a field that starts at bit `pos` of a `bit_len`-bit binary ends, or
-/// `None` when the binary does not hold it. A match carries a position, so this
-/// is the whole of "does the next field fit" and "where does the next field
-/// start".
+/// Where a field that starts at bit `pos` of the binary `source_ref` names ends,
+/// or `None` when the binary does not hold it. A match carries a position, so
+/// this is the whole of "does the next field fit" and "where does the next
+/// field start".
+pub fn bs_field_end(field_spec: u64, size_value: u32, pos: u64, source_ref: u64) -> Option<u64> {
+    let bs_bits = heap_object_word_from_ref_word(source_ref, "bs_field_end");
+    let (bytes, bit_len) = bit_source(bs_bits, "bs_field_end");
+    field_end(field_spec, size_value, pos, bytes, bit_len)
+}
+
+/// `bs_field_end` over the bytes a caller already holds.
 ///
 /// A `binary` or `bits` field without a size is the rest of the binary, and only
-/// the last field may be one. An integer is at most 64 bits wide.
-pub fn bs_field_end(field_spec: u64, size_value: u32, pos: u64, bit_len: u64) -> Option<u64> {
+/// the last field may be one. An integer is at most 64 bits wide. A `utf8` field
+/// is one scalar value, 8 to 32 bits wide as the bytes say, and a binary that
+/// does not begin with a valid encoding at `pos` does not hold it.
+fn field_end(field_spec: u64, size_value: u32, pos: u64, bytes: &[u8], bit_len: u64) -> Option<u64> {
     let (ty_tag, size_present, unit, _, _, is_last) = decode_bs_field_spec(field_spec);
     let size = (size_present != 0).then_some(size_value as u64);
     let unit = unit as u64;
@@ -1508,7 +1517,8 @@ pub fn bs_field_end(field_spec: u64, size_value: u32, pos: u64, bit_len: u64) ->
         (BitType::Float, size) => Some(size.unwrap_or(64) * unit).filter(|total| *total == 32 || *total == 64),
         (BitType::Binary | BitType::Bits, Some(size)) => Some(size * unit),
         (BitType::Binary | BitType::Bits, None) => (is_last != 0).then(|| bit_len - pos),
-        (BitType::Utf8 | BitType::Utf16 | BitType::Utf32, _) => unsupported_bit_read(decode_bit_type(ty_tag)),
+        (BitType::Utf8, _) => utf8_scalar_at(bytes, pos, bit_len).map(|(_, bits)| bits),
+        (ty @ (BitType::Utf16 | BitType::Utf32), _) => unsupported_bit_read(ty),
     }?;
     (pos + total <= bit_len).then_some(pos + total)
 }
@@ -1516,12 +1526,48 @@ pub fn bs_field_end(field_spec: u64, size_value: u32, pos: u64, bit_len: u64) ->
 /// `bs_field_end` for generated code that carries no inline arithmetic: the end
 /// position, or -1 when the binary does not hold the field.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_bs_field_end(field_spec: u64, size_value: u32, pos: u64, bit_len: u64) -> i64 {
-    bs_field_end(field_spec, size_value, pos, bit_len).map_or(-1, |end| end as i64)
+pub extern "C" fn fz_bs_field_end(field_spec: u64, size_value: u32, pos: u64, source_ref: u64) -> i64 {
+    bs_field_end(field_spec, size_value, pos, source_ref).map_or(-1, |end| end as i64)
 }
 
 fn unsupported_bit_read(ty: BitType) -> ! {
-    panic!("a bitstring match on {ty:?} is not yet wired in the runtime (lands with UTF support)")
+    panic!("a bitstring match on {ty:?} is not supported by the runtime")
+}
+
+/// The scalar value of the UTF-8 sequence at bit `pos`, and the bits it spans.
+/// `None` when no valid sequence begins there: the bytes are empty, truncated,
+/// or encode a surrogate, an overlong form or a value past U+10FFFF.
+fn utf8_scalar_at(bytes: &[u8], pos: u64, bit_len: u64) -> Option<(u32, u64)> {
+    let mut window = [0u8; 4];
+    let held = utf8_window(bytes, pos, bit_len, &mut window);
+    let width = utf8_prefix(&window[..held]).ok().filter(|width| *width > 0)?;
+    let scalar = core::str::from_utf8(&window[..width]).ok()?.chars().next()?;
+    Some((scalar as u32, width as u64 * 8))
+}
+
+/// Fill `window` with the whole bytes that start at bit `pos`, as many as the
+/// binary holds up to the window's length, and say how many that is. A match
+/// may begin between byte boundaries.
+fn utf8_window(bytes: &[u8], pos: u64, bit_len: u64, window: &mut [u8; 4]) -> usize {
+    if pos.is_multiple_of(8) {
+        let from = (pos / 8) as usize;
+        let to = ((bit_len / 8) as usize).min(from + window.len());
+        let held = to.saturating_sub(from);
+        window[..held].copy_from_slice(&bytes[from..from + held]);
+        return held;
+    }
+    let mut reader = BitReader {
+        bytes,
+        bit_len: bit_len as usize,
+        pos: pos as usize,
+    };
+    let mut held = 0;
+    while held < window.len() {
+        let Some(byte) = reader.read_bits(8) else { break };
+        window[held] = byte as u8;
+        held += 1;
+    }
+    held
 }
 
 /// The bit length of a binary: what a match compares its position against.
@@ -1540,14 +1586,20 @@ fn bit_source<'a>(bs_bits: u64, context: &str) -> (&'a [u8], u64) {
     (bytes, bit_len)
 }
 
-/// Read the integer field at bit `pos`. The caller has proved the field fits
+/// Read the integer field at bit `pos`: an `integer` field's bits, or the scalar
+/// value of a `utf8` field. The caller has proved the field fits
 /// (`bs_field_end` answers `Some`), so there is no miss to report.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_bs_read_int_ref(source_ref: u64, pos: u64, field_spec: u64, size_value: u32) -> i64 {
-    let (_, _, _, endian_tag, signed, _) = decode_bs_field_spec(field_spec);
+    let (ty_tag, _, _, endian_tag, signed, _) = decode_bs_field_spec(field_spec);
     let bs_bits = heap_object_word_from_ref_word(source_ref, "fz_bs_read_int_ref");
     let (bytes, bit_len) = bit_source(bs_bits, "fz_bs_read_int_ref");
-    let end = bs_field_end(field_spec, size_value, pos, bit_len)
+    if decode_bit_type(ty_tag) == BitType::Utf8 {
+        let (scalar, _) = utf8_scalar_at(bytes, pos, bit_len)
+            .unwrap_or_else(|| panic!("fz_bs_read_int_ref: the utf8 field at bit {pos} does not fit"));
+        return i64::from(scalar);
+    }
+    let end = field_end(field_spec, size_value, pos, bytes, bit_len)
         .unwrap_or_else(|| panic!("fz_bs_read_int_ref: the field at bit {pos} does not fit"));
     let total = (end - pos) as u32;
     let mut reader = BitReader {
@@ -1578,11 +1630,12 @@ pub extern "C" fn fz_bs_read_binary_ref(
     match decode_bit_type(ty_tag) {
         BitType::Binary | BitType::Bits => {}
         BitType::Float => panic!("a float field cannot be materialized as a one-word value"),
+        BitType::Utf8 => panic!("a utf8 field is read as an integer"),
         ty => unsupported_bit_read(ty),
     }
     let bs_bits = heap_object_word_from_ref_word(source_ref, "fz_bs_read_binary_ref");
     let (bytes, bit_len) = bit_source(bs_bits, "fz_bs_read_binary_ref");
-    let end = bs_field_end(field_spec, size_value, pos, bit_len)
+    let end = field_end(field_spec, size_value, pos, bytes, bit_len)
         .unwrap_or_else(|| panic!("fz_bs_read_binary_ref: the field at bit {pos} does not fit"));
     let (pos, end, bit_len) = (pos as usize, end as usize, bit_len as usize);
     let needed_bits = end - pos;

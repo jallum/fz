@@ -573,6 +573,14 @@ pub enum BitType {
     Utf32,
 }
 
+impl BitType {
+    /// A match binds this field's value as an integer: an `integer`'s bits, or
+    /// the scalar value a `utf8` field decodes.
+    pub fn reads_as_integer(self) -> bool {
+        matches!(self, BitType::Integer | BitType::Utf8)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum BitSize {
     /// `::8`, `::16`, `::size(42)` with a literal

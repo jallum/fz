@@ -1083,24 +1083,25 @@ fn emit_bitstring_test<M: cranelift_module::Module>(
             extraction.is_last as u32,
         );
         let field_spec = body.b.ins().iconst(types::I64, field_spec as i64);
-        let end = runtime_call1!(body, fz_bs_field_end, [field_spec, size_value, pos, bit_len]);
+        let end = runtime_call1!(body, fz_bs_field_end, [field_spec, size_value, pos, value_ref]);
         let fits = body.b.ins().icmp_imm(IntCC::SignedGreaterThanOrEqual, end, 0);
         let next_b = body.b.create_block();
         body.b.ins().brif(fits, next_b, &[], false_b, &[]);
         body.b.switch_to_block(next_b);
         body.b.seal_block(next_b);
         if ctx.dispatch.graph.asks(*field_subject) || ctx.outcome_reads.contains(field_subject) {
-            let extracted = match field.kind {
-                BitstringFieldKind::Integer => ReceiveValue::Int(runtime_call1!(
+            let extracted = if field.kind.reads_as_integer() {
+                ReceiveValue::Int(runtime_call1!(
                     body,
                     fz_bs_read_int_ref,
                     [value_ref, pos, field_spec, size_value]
-                )),
-                _ => ReceiveValue::AnyRef(runtime_call1!(
+                ))
+            } else {
+                ReceiveValue::AnyRef(runtime_call1!(
                     body,
                     fz_bs_read_binary_ref,
                     [ctx.process, value_ref, pos, field_spec, size_value]
-                )),
+                ))
             };
             state.values.insert(*field_subject, extracted);
         }
