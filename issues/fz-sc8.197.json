@@ -19,11 +19,15 @@
     {
       "text": "Experiments (predictions written before the data).\nE-trace (done): uncaught integer overflow with the narrow spike off and on prints the same text ('** (ArithmeticError) bad argument in arithmetic expression', exit 1); no stack trace is printed either way. A bad-typed operand is a compile error (spec/violation), so it never reaches run time. Hypothesis 'the raise site changes observable output' is refuted for uncaught errors.\nE-count (running): per-site execution counters in the built distiller (32,000 lines), joined to the prompt classification of the same build's backend dump.\n P1: of executed delivered direct calls, 55-75% have a prompt callee (program text says 51%).\n P2: the narrow spike's shape (extern or forwarder) accounts for at least 60% of those executed prompt calls; the wide rule adds at least 25% more executed calls on top of the narrow one. If the wide rule adds under 10%, it buys the fold but little speed.\n P3: the top 15 call sites by count are dominated by Kernel operators on known types and by the JSON decoder's helpers.\nE-wide (after E-count): spike of prompt functions returning in registers; only worth running if P2 holds.",
       "timestamp": "2026-11-15T01:30:13Z"
+    },
+    {
+      "text": "E-count result (distiller, 32,000 lines, 20.66 MB; counters in scratch sitecount/, analysis cls.py). Executed delivered direct calls: 21,868,584 (683 per line).\n P1 held: callee prompt 12,921,685 = 59.1% (predicted 55-75%).\n P2 held: the narrow spike's shape is 9,592,631 = 43.9% of all (74% of the prompt ones); prompt-but-not-narrow is 3,329,054 = 15.2% of all, i.e. the wide rule removes 35% more executed calls than the narrow one. Largest: JSON.string -\u003e run_join 1,476,698; JSON.object_value -\u003e Map.put 1,085,030; then Kernel.negate, Map.entry, Map.has_key?, Kernel.compare, Map.fetch.\n P3 held: top sites are run_join's two byte_size and its '-', digits' * - +, and the decoder's helpers.\n New: 40.9% (8,946,899) have a callee that is not prompt, and nearly all of it is tail-recursive leaf loops in the decoder: skip_ws alone is 5,903,582 calls (27% of all executed delivered calls), then string 1,085,030, value 1,314,816, digits 515,774. skip_ws makes no calls but its own tail call. Under the bounded definition a recursive function is never prompt. Hypothesis to test: a function whose only non-prompt call is a tail call to itself can be called as a step too (its stack is bounded; what it loses is the yield inside the loop).\n Cost per removed call in the narrow spike: (28.80G - 24.95G) / 9,592,631 = about 400 instructions.\nE-wide predictions (before the run): bounded prompt rule: 24.95G -\u003e 23.9G or fewer; adding self-tail-recursive leaf loops: 21.8G or fewer.",
+      "timestamp": "2026-11-15T01:34:58Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "Arithmetic on known integers does not go through a continuation",
   "type": "task",
-  "updated_at": "2026-11-15T01:30:13Z"
+  "updated_at": "2026-11-15T01:34:58Z"
 }
