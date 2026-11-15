@@ -209,6 +209,7 @@ const STATE_FIELDS: &[&str] = &[
     "wakes",
     "movements",
     "blocked",
+    "publishers_checked",
 ];
 
 /// How one evaluation of a formula was caused.

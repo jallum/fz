@@ -416,7 +416,9 @@ fn compiler2_scheduler_keeps_claims_in_the_ledger_not_the_completion_report() {
         movements,
         wakes,
         blocked,
+        publishers_checked,
     } = step;
+    assert_eq!(publishers_checked, 0, "a completion arbitrates nothing");
     assert_eq!(changed.len(), 1);
     assert_eq!(movements.len(), 1);
     assert!(wakes.is_empty());
@@ -2227,6 +2229,38 @@ fn compiler2_scheduler_a_quiesced_cycle_needs_the_drain_arbiter_to_become_final(
             .iter()
             .all(|change| !change.content_changed() && change.readiness_changed()),
         "the arbiter moves readiness only; no cell value changes",
+    );
+}
+
+#[test]
+fn a_publisher_of_many_cone_facts_is_checked_once_by_the_drain() {
+    let facts = ["cone_a", "cone_b", "cone_c", "cone_d", "cone_e"];
+    let mut scheduler = TestScheduler::new();
+    for changed in [facts.to_vec(), Vec::new()] {
+        complete(
+            &mut scheduler,
+            1,
+            facts.iter().map(|fact| current(fact)).collect(),
+            HashSet::default(),
+            facts.to_vec(),
+            changed,
+        );
+        while scheduler.pop().is_some() {}
+    }
+    assert!(
+        facts.iter().all(|fact| !scheduler.facts().is_settled(fact)),
+        "the publisher reads its own outputs, so counting alone leaves every fact unfinal",
+    );
+
+    let step = scheduler.settle_quiescent_ordered(&["cone_a"], &TestOrder);
+
+    assert!(
+        facts.iter().all(|fact| scheduler.facts().is_settled(fact)),
+        "the one clean publisher certifies the whole cone",
+    );
+    assert_eq!(
+        step.publishers_checked, 1,
+        "five cone facts share one publisher; the walk asks it once, not once per fact",
     );
 }
 

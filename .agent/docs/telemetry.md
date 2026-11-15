@@ -374,8 +374,12 @@ under `metadata.depth` (the standalone drive and every product drive count one
 each; zero with no product sessions or no drive running, at most one
 otherwise: only the outermost drive arbitrates). It fires when the drain arbiter
 (`Scheduler::settle_quiescent`) discharges the settled questions standing at an
-empty agenda. `blocked` is always empty and every `changed` entry is
-readiness-only: `old_revision == new_revision`, `old_settled != new_settled`.
+empty agenda. Beside the step body it carries `publishers_checked`: how many
+publishers the arbitration's cone walks checked (each publisher of a walk once),
+zero when the arbiter had nothing to walk (every bare step renders it, so
+`dependencies_moved` carries zero). The causal report lists it among
+`STATE_FIELDS`, so it never enters a formula's identity. `blocked` is always
+empty and every `changed` entry is readiness-only: `old_revision == new_revision`, `old_settled != new_settled`.
 Without this event a fact's `settled` bit would change between
 two `movements` renderings with nothing on the log to explain it, and any
 evaluation woken by such a flip would classify as `Cause::Uncaused`.
