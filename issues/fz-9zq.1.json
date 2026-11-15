@@ -9,14 +9,15 @@
     "fz-t93.10",
     "fz-t93.16"
   ],
+  "closed_at": "2026-11-15T13:43:27Z",
   "created": "2026-11-15T03:40:18Z",
   "description": "Step R1 of fz-9zq (plan /Users/j5n/Workspace/fz-next.html). APPROVED page /Users/j5n/Workspace/fz-9zq.1.html (2026-11-15).\nBuys: t1/t2/t5 (tuple/list/map wrap, ex fz-t93.9), fz-69z struct wrap, return_tuple_accumulator (un-defer) compile (65-67 AA each; hang on develop); p2 12-order spread 79-149 -\u003e 32-40; tuple ladder ends at first repeat.\nRule (Van Hentenryck clash): Types::clash_fold(old,new) in types/clash.rs; detection read-only over \u0026Types (interns nothing unless it fires; unit-tested via interner insert count); apply only on a non-empty plan. Head = constructor kind (+tuple arity, first-position atom; map key set). Clash = principal-functor set grew; fold slot to any when an ancestor covers it; root clash never folds. Sites: e = evidence rows (normalize_contributions, world.rs), r = define_return (semantic.rs). Self-call key site dropped (never fires).\nDeletes: ADDRESS_COLLAPSE_DEPTH (+ its doc mentions: keying.rs, types/mod.rs, .agent/docs/type-specialization.md). STAYS: RETURN_WIDENING_BUDGET + convergence_class (bound for leaf-only ladders R1 cannot cover).\nTests: fixtures 01340-01343 (t1, t2, t5, w69z) in new block 01340-01359 for fz-9zq (fixtures.md row), assert output + return_type.widened: 0 + type.clash_folded: 1; un-defer return_tuple_accumulator; types/clash_test.rs; telemetry fz.compiler2.type.clash_folded (ancestor_depth, path_len; site, kind cycle|replace, path, function_id), accumulate-and-drain like activation_inputs.budget_collapsed. 5 lib pins fall (ladder 20-\u003e6 etc.), rewritten to restated intents per page section 4.\nCost: stripped probe +0.54% distiller (scratch mu2/r1/probe_stripped.diff); pair memo and dropping the subtype exit both refuted. Build first LOCATES the cost with counters, then removes it with a written prediction; a rise that remains goes to the user, never landed alone.",
   "id": "fz-9zq.1",
   "labels": [],
   "parent": "fz-9zq",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "A type that repeats itself folds at the point it grew",
   "type": "task",
-  "updated_at": "2026-11-15T05:05:50Z"
+  "updated_at": "2026-11-15T13:43:27Z"
 }
