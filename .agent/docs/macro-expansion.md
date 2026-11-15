@@ -447,6 +447,14 @@ diagnostic's message, its code is `lower/unsupported`, and its span is the
 macro call's (`run_macro_invocation`). `Kernel.apply/3` refuses a call it
 cannot rewrite this way.
 
+A macro runs while the module that invokes it is being defined, so the
+functions of that module do not exist yet. A macro, or a function its program
+calls, that calls into that module makes the module's definition wait on itself.
+The stall report names the call as an undefined function, "(function not
+available)", with the macro in a note (see fact-engine.md, the terminal
+report). A module body that invokes its own macro is refused where it is
+written, as `macro/own-module-item-call`.
+
 One subtle but important lifetime rule lives here:
 
 - `run_backend_entry_on_process(...)` is borrowing the quoted-source process,

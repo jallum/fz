@@ -67,9 +67,10 @@ impl InterfaceExpectation {
     }
 }
 
-/// A bare module reference recorded before the module resolved -- a
-/// whole-module `import`/`require` naming no particular function, so there
-/// is no `(name, arity)` to hang an [`InterfaceExpectation`] on. Deliberately
+/// A module reference recorded before the module resolved: a whole-module
+/// `import`/`require`, or a remote call whose expansion waits to learn whether
+/// it names a macro. Neither promises the module an export, so neither is an
+/// [`InterfaceExpectation`]. Deliberately
 /// its own store rather than a field on [`ModuleInterface`]: `ModuleInterface`
 /// doubles as "is this module's interface actually known" (checked by
 /// `module_interface_if_present`), so folding an obligation into it would
@@ -81,6 +82,16 @@ impl InterfaceExpectation {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModuleReferenceExpectation {
     pub requester: InterfaceRequester,
+    /// The call that made the reference, when one did.
+    pub call: Option<ReferencingCall>,
+}
+
+/// A call, from the body of `caller`, to `name/arity` of the referenced module.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReferencingCall {
+    pub caller: FunctionId,
+    pub name: String,
+    pub arity: usize,
 }
 
 /// Module -> outstanding bare-reference obligations, read back by

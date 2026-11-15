@@ -8,6 +8,7 @@ use crate::telemetry::TelemetryExt as _;
 use super::drive::{FactKey, JobEffects, ProductAddress, emit_job_diagnostic};
 use super::identity::{FunctionId, ModuleId};
 use super::jobs::is_guard_expr;
+use super::module_interface::{InterfaceRequester, ReferencingCall};
 use super::namespace::NamespaceSymbol;
 use super::pull::{ProductKey, ProductSessions, ProductValue};
 use super::quoted_function::decode_standalone_expr;
@@ -45,6 +46,8 @@ pub(crate) trait QuotedExpansionCtx {
     fn telemetry(&self) -> &Self::Telemetry;
     fn split(&mut self) -> (&mut World, &Self::Telemetry);
     fn current_module(&self) -> ModuleId;
+    /// The function whose body is being expanded, when it is one function's.
+    fn expanding_function(&self) -> Option<FunctionId>;
     fn note_read(&mut self, fact: FactKey);
     fn products(&self) -> Option<&ProductSessions>;
     fn note_product_read(&mut self, product: ProductAddress);
@@ -85,6 +88,30 @@ pub(crate) trait QuotedExpansionCtx {
         scope
     }
     fn lookup_current_module_macro(&mut self, scope: ScopeSnapshot, name: &str, arity: usize) -> Option<FunctionId>;
+    /// A remote call that waits on `module` remembers who made it, so a stall
+    /// on that module can name the call.
+    fn note_call_into(&mut self, module: ModuleId, name: &str, arity: usize, span: Span) {
+        let Some(caller) = self.expanding_function() else {
+            return;
+        };
+        let requester_module = self.current_module();
+        let world = self.world();
+        let requester = InterfaceRequester {
+            owner: world
+                .function_source(caller)
+                .expect("a function being expanded has its source")
+                .owner,
+            module: requester_module,
+            span,
+        };
+        let call = ReferencingCall {
+            caller,
+            name: name.to_string(),
+            arity,
+        };
+        world.note_module_call_expectation(module, requester, call);
+    }
+
     fn wait_for_callable_module_interface(&mut self, function: FunctionId) -> JobEffects {
         let world = self.world();
         let module = world.function_module(function);
@@ -445,9 +472,12 @@ pub(crate) trait QuotedExpansionCtx {
                         &self.call_args(&node.tail)?,
                     )
                     .map(Some),
-                NamespaceSymbol::Callable(function) => Ok(Some(ExpandedValue::Blocked(Box::new(
-                    self.wait_for_callable_module_interface(function),
-                )))),
+                NamespaceSymbol::Callable(function) => {
+                    self.note_call_into(module, &function_name, arity, call_span);
+                    Ok(Some(ExpandedValue::Blocked(Box::new(
+                        self.wait_for_callable_module_interface(function),
+                    ))))
+                }
                 _ => Ok(None),
             };
         }
@@ -456,6 +486,7 @@ pub(crate) trait QuotedExpansionCtx {
             if self.world().is_runtime_module(module) {
                 return Ok(None);
             }
+            self.note_call_into(module, &function_name, arity, call_span);
             // `FactKey::ModuleDefined`'s sole producer arm is `Job::DefineModule`
             // (`World::demand_fact_producer`); the `is_global()` split this bare
             // wait used to make (never pushing for a global module) is defensive,
@@ -472,6 +503,7 @@ pub(crate) trait QuotedExpansionCtx {
             match world.lookup_module_callable(module, &function_name, arity) {
                 Some(NamespaceSymbol::Macro(function)) => Some(function),
                 Some(NamespaceSymbol::Callable(function)) => {
+                    self.note_call_into(module, &function_name, arity, call_span);
                     return Ok(Some(ExpandedValue::Blocked(Box::new(
                         self.wait_for_callable_module_interface(function),
                     ))));

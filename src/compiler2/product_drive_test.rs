@@ -2957,6 +2957,7 @@ mod wait_frame_tests {
         fn no_ready_producer<T: crate::telemetry::Telemetry>(
             _: &mut World,
             _: &T,
+            _: Option<&mut crate::compiler2::pull::ProductSessions>,
             _: ProductScope,
             _: &FactUse<FactKey>,
         ) -> Self {
@@ -3495,6 +3496,7 @@ mod wait_frame_tests {
         let expected = <String as ProductDriveError>::no_ready_producer(
             &mut world,
             &tel,
+            None,
             ProductScope::Root(root),
             &expected_fact,
         );

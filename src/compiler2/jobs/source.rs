@@ -474,6 +474,10 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> QuotedExpansionCtx for Functi
         self.current_module
     }
 
+    fn expanding_function(&self) -> Option<FunctionId> {
+        Some(self.function)
+    }
+
     fn note_read(&mut self, fact: FactKey) {
         self.reads.push(fact);
     }

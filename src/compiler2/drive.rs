@@ -1402,7 +1402,9 @@ impl<T: RawSpanTelemetry> ExecutionContext<'_, T> {
                 ExecutionContext::new(world, tel).flush_reported_warnings();
                 DriveOutcome::Resolved
             } else {
-                let waits = ExecutionContext::new(world, tel).report_unresolved_waits();
+                let waits =
+                    ExecutionContext::with_optional_product_sessions(world, tel, product_sessions.as_deref_mut())
+                        .report_unresolved_waits();
                 ExecutionContext::new(world, tel).flush_reported_warnings();
                 DriveOutcome::Unresolved { waits }
             }

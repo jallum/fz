@@ -811,6 +811,25 @@ cause (a module, struct, function, type) become the diagnostic that names it,
 and every other kind becomes `internal/unresolved-wait`, so a stalled wait is
 never dropped.
 
+Before that, the report looks for a module definition that waits on itself
+(`definition_cycle.rs`). Code that runs while a module is being defined, such as
+a macro its body invokes and everything that macro's compiled program needs,
+can call into that module. `WaitForGraph` joins three records: the stalled
+waits, the job that produces each fact (`World::fact_producer`), and the facts
+each deferred product drive is waiting on
+(`ProductSessions::deferred_waits_of`). A path from `DefineModule(M)` back to
+itself is a definition cycle. The report names it once, in Elixir's words:
+``function `M.f/a` is undefined (function not available)``, at the call into `M`,
+with a note naming the macro being expanded. Every other wait whose producer
+reaches `DefineModule(M)` is stalled only because of the loop, so it is not
+reported. The call's name, arity and span come from the reference recorded
+when a call waits on a module that isn't defined yet
+(`ModuleReferenceExpectation::call`). The expander records it for a remote
+call, and activation analysis records it for a call it resolves to a function
+of that module: a call through a capture, a computed module name, or `apply`.
+With no recorded call, the report says ``module `M` is not available: it is
+still being defined``.
+
 **Errors are not facts.** A job returning `FatalError` aborts the whole drive;
 the diagnostic goes out through telemetry. Closure never masks an error, and
 there is no diagnostics fact family to reconcile.

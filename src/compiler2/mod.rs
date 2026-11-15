@@ -8,6 +8,7 @@ mod cli;
 mod code;
 mod compiler;
 mod contract;
+mod definition_cycle;
 mod dispatch;
 mod dispatch_reachability;
 mod drive;

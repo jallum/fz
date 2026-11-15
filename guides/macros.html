@@ -263,6 +263,16 @@ reach for it just to silence an unbound-variable diagnostic; use it when the
 macro's whole point is to bind or read something in the caller's scope.
 </div>
 
+<div class="box yellow">
+<strong>A macro runs before the module that invokes it exists.</strong>
+The module is still being defined while its body expands the macro, so the
+macro (and anything it calls) cannot call that module's functions yet. fz says
+so the way Elixir does: <code>function `M.seven/0` is undefined (function not
+available)</code>, with a note naming the macro being expanded. Compute the
+value somewhere that doesn't depend on the module, or call the function from
+the code the macro returns, which runs later.
+</div>
+
 <!-- ─────────────────────────────── 9 ─────────────────────────────── -->
 <h2 id="contract">9. The contract</h2>
 

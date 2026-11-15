@@ -24,7 +24,7 @@ use super::super::contract::AppliedFunctionContract;
 use super::super::dispatch_reachability::{ReachedEdges, calculate_dispatch_reachability};
 use super::super::drive::{AnswerUse, FactKey, Job, JobEffects, UseCollector, current_uses, emit_job_diagnostic};
 use super::super::identity::{ActivationKey, FunctionId, ModuleId, Raised, function_id_of_closure_target};
-use super::super::module_interface::InterfaceRequester;
+use super::super::module_interface::{InterfaceRequester, ReferencingCall};
 use super::super::protocol::ProtocolCallbackImpl;
 use super::super::semantic::{
     ActivationAnalysis, CallSiteKey, CallSiteResolution, CallSiteSummary, CallSiteTargets, CallTargetSummary,
@@ -1497,7 +1497,11 @@ fn resolve_module_value_call(
             CallReturn::awaited(uses),
         ));
     };
-    if !every_module_callee_ready(world, &receiver.callees, uses) {
+    let origin = CallOrigin {
+        caller: caller.function,
+        span: callsite.span(),
+    };
+    if !every_module_callee_ready(world, &receiver.callees, origin, uses) {
         return Ok((
             Some(emission(CallSiteResolution::Unresolved, Vec::new())),
             CallReturn::awaited(uses),
@@ -1586,7 +1590,12 @@ fn module_value_receiver(
         callees,
         modules_without,
     } = if listed.is_empty() {
-        let Some(nameable) = nameable_module_callees(world, atoms, function, arity, uses) else {
+        let call = ReferencingCall {
+            caller: caller.function,
+            name: function.to_string(),
+            arity,
+        };
+        let Some(nameable) = nameable_module_callees(world, atoms, &call, call_span, uses) else {
             return Ok(None);
         };
         nameable
@@ -1650,6 +1659,24 @@ struct ModuleCallees {
     modules_without: Vec<String>,
 }
 
+/// The function whose body makes a call, and where.
+#[derive(Clone, Copy)]
+struct CallOrigin {
+    caller: FunctionId,
+    span: Span,
+}
+
+/// A call that waits on `module` remembers who made it, so a stall on that
+/// module can name the call.
+fn note_call_into(world: &mut World, module: ModuleId, call: ReferencingCall, call_span: Span) {
+    let requester = InterfaceRequester {
+        owner: world.function_definition(call.caller).0.owner,
+        module: world.function_module(call.caller),
+        span: call_span,
+    };
+    world.note_module_call_expectation(module, requester, call);
+}
+
 /// The function `function/arity` of each module a value can name whose atom
 /// is in `atoms`, and the modules among them that lack it. The set of nameable modules grows as
 /// source is indexed and bodies are lowered, so it is read whether or not it
@@ -1657,10 +1684,11 @@ struct ModuleCallees {
 fn nameable_module_callees(
     world: &mut World,
     atoms: Ty,
-    function: &str,
-    arity: usize,
+    call: &ReferencingCall,
+    call_span: Span,
     uses: &mut UseCollector,
 ) -> Option<ModuleCallees> {
+    let (function, arity) = (call.name.as_str(), call.arity);
     uses.read(FactKey::NameableModules);
     let modules = world.nameable_modules().collect::<Vec<_>>();
     let mut callees = Vec::new();
@@ -1676,6 +1704,7 @@ fn nameable_module_callees(
         }
         if world.module_defined_revision(module).is_none() {
             if world.module_has_source_state(module) || world.is_runtime_module(module) {
+                note_call_into(world, module, call.clone(), call_span);
                 uses.wait(FactKey::ModuleDefined(module));
                 awaited = true;
             } else {
@@ -1701,13 +1730,18 @@ fn nameable_module_callees(
 /// Every callee is asked before any is resolved, so a call learns all it
 /// waits for in one run. A protocol callback asks for its own prerequisites
 /// when it is resolved.
-fn every_module_callee_ready(world: &mut World, callees: &[(Ty, FunctionId)], uses: &mut UseCollector) -> bool {
+fn every_module_callee_ready(
+    world: &mut World,
+    callees: &[(Ty, FunctionId)],
+    origin: CallOrigin,
+    uses: &mut UseCollector,
+) -> bool {
     let mut all_ready = true;
     for (_, callee) in callees {
         if world.protocol_callback(*callee).is_some() {
             continue;
         }
-        let module_ready = !wait_for_unresolved_function_module(world, *callee, uses);
+        let module_ready = !wait_for_unresolved_function_module(world, *callee, origin, uses);
         let prerequisites_ready = require_direct_call_prerequisites(world, *callee, uses).is_some();
         all_ready &= module_ready && prerequisites_ready;
     }
@@ -1846,7 +1880,11 @@ fn resolve_function_call(
             uses,
         );
     }
-    if wait_for_unresolved_function_module(world, function, uses) {
+    let origin = CallOrigin {
+        caller: caller.function,
+        span: call_span,
+    };
+    if wait_for_unresolved_function_module(world, function, origin, uses) {
         return Ok((CallSiteResolution::Unresolved, Vec::new(), CallReturn::awaited(uses)));
     }
     let Some(shape) = require_direct_call_prerequisites(world, function, uses) else {
@@ -2041,7 +2079,11 @@ fn resolve_protocol_call(
     let matches = merge_protocol_matches_by_function(world, matches);
     let last_resort = protocol_miss(world, protocol, receiver_ty, covered);
 
-    if !every_target_ready(world, &matches, uses) {
+    let origin = CallOrigin {
+        caller: caller.function,
+        span: call_span,
+    };
+    if !every_target_ready(world, &matches, origin, uses) {
         // Mirrors the same-pass ask in `resolve_function_call`: a target not
         // yet ready may still have its keying facts settled for the row this
         // call holds, asked here rather than waited for a second run.
@@ -2120,10 +2162,15 @@ fn resolve_protocol_call(
 /// Gated per function: holding a `ProtocolCallbackImpl` already proves the
 /// impl fragment published its function, so each target's own module is
 /// the readiness this call needs, not `owner_module` as a whole.
-fn every_target_ready(world: &mut World, matches: &[(ProtocolCallbackImpl, Ty)], uses: &mut UseCollector) -> bool {
+fn every_target_ready(
+    world: &mut World,
+    matches: &[(ProtocolCallbackImpl, Ty)],
+    origin: CallOrigin,
+    uses: &mut UseCollector,
+) -> bool {
     let mut all_ready = true;
     for (selected, _) in matches {
-        let module_ready = !wait_for_unresolved_function_module(world, selected.function, uses);
+        let module_ready = !wait_for_unresolved_function_module(world, selected.function, origin, uses);
         let prerequisites_ready = require_callee_prerequisites(world, selected.function, uses);
         all_ready &= module_ready && prerequisites_ready;
     }
@@ -2680,7 +2727,12 @@ fn wait_for_protocol_module(
 /// and needs its DEFINITION, which module scope publication produces; the
 /// exported-callable surface (ModuleInterface) answers a different question
 /// and is consumed where names resolve — body lowering — not here.
-fn wait_for_unresolved_function_module(world: &mut World, function: FunctionId, uses: &mut UseCollector) -> bool {
+fn wait_for_unresolved_function_module(
+    world: &mut World,
+    function: FunctionId,
+    origin: CallOrigin,
+    uses: &mut UseCollector,
+) -> bool {
     if world.function_defined_revision(function).is_some() {
         return false;
     }
@@ -2701,6 +2753,13 @@ fn wait_for_unresolved_function_module(world: &mut World, function: FunctionId, 
     // effect. `demand_function_scope`'s `CodeScoped`/`ScopeCode` branch (for
     // `module.is_global()`) is unreachable from here: the early return above
     // already rules out a global module before this wait registers.
+    let callee = world.function_ref(function);
+    let call = ReferencingCall {
+        caller: origin.caller,
+        name: callee.name().to_string(),
+        arity: callee.arity,
+    };
+    note_call_into(world, module, call, origin.span);
     uses.wait(FactKey::ModuleDefined(module));
     true
 }

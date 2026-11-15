@@ -1,0 +1,21 @@
+#---
+# purpose: "a macro that calls a module nothing defines stalls the module invoking it, but that is no definition cycle: the diagnostic is about the call into the undefined module"
+# expect: diagnostic
+#---
+defmodule Helper do
+  defmacro make() do
+    n = Nope.seven()
+    quote do
+      def f(), do: unquote(n)
+    end
+  end
+end
+
+defmodule M do
+  import Helper
+  make()
+end
+
+def main() do
+  dbg(M.f())
+end

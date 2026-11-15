@@ -24430,3 +24430,74 @@ fn arithmetic_error() -> LastResort {
         "bad argument in arithmetic expression",
     )
 }
+
+/// Every error a stalled compile of `source` ends with, as `(code, message)`.
+fn stalled_compile_errors(source: &str) -> Vec<(String, String)> {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    capture.install(&tel, &[]);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("definition_cycle.fz".to_string()),
+        text: source.to_string(),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert!(
+        !matches!(compiler.drive(), DriveOutcome::Resolved),
+        "a program whose definition waits on itself does not compile"
+    );
+    capture
+        .find(&["fz", "diag", "error"])
+        .iter()
+        .map(|error| {
+            (
+                metadata_str(error, "code").to_string(),
+                metadata_str(error, "message").to_string(),
+            )
+        })
+        .collect()
+}
+
+const CALLS_INTO_M_WHILE_M_IS_DEFINED: &str =
+    "defmodule M do\n  import Helper\n  def seven(), do: 7\n  make()\nend\n\ndef main(), do: M.f()\n";
+
+/// A macro that `M` invokes runs while `M` is being defined, so a call it
+/// makes into `M` waits on the definition that waits on the macro. That loop
+/// is the one fault: `M`, `main/0` and the macro's helpers are stalled only
+/// because of it, and are not reported on their own.
+#[test]
+fn a_definition_that_waits_on_itself_is_one_undefined_function() {
+    let direct = format!(
+        "defmodule Helper do\n  defmacro make() do\n    n = M.seven()\n    quote do\n      def f(), do: unquote(n)\n    end\n  end\nend\n\n{CALLS_INTO_M_WHILE_M_IS_DEFINED}"
+    );
+    let through_a_helper = format!(
+        "defmodule Helper do\n  def g(), do: M.seven()\n\n  defmacro make() do\n    n = g()\n    quote do\n      def f(), do: unquote(n)\n    end\n  end\nend\n\n{CALLS_INTO_M_WHILE_M_IS_DEFINED}"
+    );
+    let through_a_capture = format!(
+        "defmodule Helper do\n  defmacro make() do\n    f = &M.seven/0\n    n = f.()\n    quote do\n      def f(), do: unquote(n)\n    end\n  end\nend\n\n{CALLS_INTO_M_WHILE_M_IS_DEFINED}"
+    );
+    let one_undefined_function = vec![(
+        codes::RESOLVE_UNKNOWN_FUNCTION.0.to_string(),
+        "function `M.seven/0` is undefined (function not available)".to_string(),
+    )];
+    assert_eq!(
+        stalled_compile_errors(&direct),
+        one_undefined_function,
+        "the macro calls M"
+    );
+    assert_eq!(
+        stalled_compile_errors(&through_a_helper),
+        one_undefined_function,
+        "a function the macro calls calls M, so the loop runs through the macro's compiled program"
+    );
+    assert_eq!(
+        stalled_compile_errors(&through_a_capture),
+        one_undefined_function,
+        "the macro calls a capture of M's function, which analysis resolves to M"
+    );
+}

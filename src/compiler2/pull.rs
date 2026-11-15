@@ -1798,6 +1798,15 @@ impl ProductSessions {
         self.deferred_waits.insert(scope, (depth, facts.cloned().collect()));
     }
 
+    /// The facts the drive of `scope` was waiting on when it deferred.
+    pub(crate) fn deferred_waits_of(&self, scope: &ProductScope) -> Vec<FactKey> {
+        self.deferred_waits
+            .get(scope)
+            .into_iter()
+            .flat_map(|(_, facts)| facts.iter().map(|fact| fact.fact().clone()))
+            .collect()
+    }
+
     /// The waits of the deepest deferred drives, in the order they deferred.
     pub(crate) fn innermost_deferred_waits(&self) -> impl Iterator<Item = &FactUse<FactKey>> {
         let deepest = self.deferred_waits.values().map(|(depth, _)| *depth).max();

@@ -1,0 +1,24 @@
+#---
+# purpose: "the call into the module being defined may sit in a function the macro calls: the macro's compiled program waits on that module, which waits on the macro, and the one diagnostic names the call and the macro"
+# expect: diagnostic
+#---
+defmodule Helper do
+  def g(), do: M.seven()
+
+  defmacro make() do
+    n = g()
+    quote do
+      def f(), do: unquote(n)
+    end
+  end
+end
+
+defmodule M do
+  import Helper
+  def seven(), do: 7
+  make()
+end
+
+def main() do
+  dbg(M.f())
+end

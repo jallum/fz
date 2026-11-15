@@ -28,6 +28,7 @@ use super::artifact::BackendProgram;
 use super::body::{LoweredBody, LoweredBodyMap, LoweredExtern};
 use super::code::{CodeMap, CodeState, QuotedCodeSource};
 use super::contract::{FunctionContract, FunctionContractMap};
+use super::definition_cycle::{DefinitionCycle, WaitForGraph};
 use super::dispatch::{EntryDispatchMap, GuardDispatchMap};
 use super::drive::{DependencyKey, emit_job_diagnostic, fact_dependency};
 use super::drive::{ExecutionContext, FactKey, Job, JobEffects, UseCollector, WorkGraph};
@@ -40,13 +41,14 @@ use super::incoming_inputs::{IncomingInputSource, IncomingInputSources, InputSlo
 use super::keying::{BodyKeying, BodyKeyingMap, InputDemand, InputDemandMap, StaticCalleeMap};
 use super::module_interface::{
     InterfaceCallableKind, InterfaceExpectation, InterfaceRequester, ModuleInterface, ModuleReferenceExpectation,
-    ModuleReferenceExpectationMap,
+    ModuleReferenceExpectationMap, ReferencingCall,
 };
 use super::namespace::{CallableQualifier, Namespace, NamespaceStore, NamespaceSymbol};
 use super::protocol::{
     ProtocolCallback, ProtocolCallbackImpl, ProtocolCallbackMap, ProtocolDispatch, ProtocolDispatchArm,
     ProtocolDispatchMap, ProtocolImpl, ProtocolImplKey, ProtocolImplMap, ProtocolImplProviderMap,
 };
+use super::pull::ProductScope;
 use super::quoted_expander::surface_read_diagnostic;
 use super::quoted_surface::{ReservedSourceDefinition, ScopeForm, ScopeSurface, reserved_source_definition};
 use super::runtime::{self, RuntimeModuleCode};
@@ -80,6 +82,7 @@ use fz_runtime::failure::{EXCEPTION_FIELD, RaiseKind};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum UnresolvedIssueKey {
+    DefinitionCycle(ModuleId),
     Module(ModuleId),
     Struct(ModuleId),
     Function(FunctionId),
@@ -1960,7 +1963,22 @@ impl World {
     /// an undefined module look resolved the moment someone referenced it.
     pub(crate) fn note_module_reference_expectation(&mut self, module: ModuleId, requester: InterfaceRequester) {
         self.module_reference_expectations
-            .record(module, ModuleReferenceExpectation { requester });
+            .record(module, ModuleReferenceExpectation { requester, call: None });
+    }
+
+    pub(crate) fn note_module_call_expectation(
+        &mut self,
+        module: ModuleId,
+        requester: InterfaceRequester,
+        call: ReferencingCall,
+    ) {
+        self.module_reference_expectations.record(
+            module,
+            ModuleReferenceExpectation {
+                requester,
+                call: Some(call),
+            },
+        );
     }
 
     pub fn reference_module_interface_callable(
@@ -2915,14 +2933,22 @@ impl World {
         self.struct_value_ty(module, field_names, field_tys)
     }
 
-    fn unresolved_issues(&self, waits: &[UnresolvedWait<Job, FactKey>]) -> Vec<UnresolvedIssue> {
+    fn unresolved_issues(
+        &self,
+        waits: &[UnresolvedWait<Job, FactKey>],
+        cycle: Option<&DefinitionCycle>,
+    ) -> Vec<UnresolvedIssue> {
         let frontier = waits
             .iter()
             .map(|wait| wait.fact.clone().into_fact())
             .collect::<HashSet<_>>();
-        let mut issues = Vec::new();
+        let mut issues = Vec::from_iter(cycle.map(|cycle| self.definition_cycle_issue(cycle)));
         for wait in waits {
-            if let Some(issue) = self.unresolved_issue(&frontier, wait.fact.fact()) {
+            let fact = wait.fact.fact();
+            if cycle.is_some_and(|cycle| self.stalled_by(cycle, fact)) {
+                continue;
+            }
+            if let Some(issue) = self.unresolved_issue(&frontier, fact) {
                 issues.push(issue);
             }
         }
@@ -2966,6 +2992,87 @@ impl World {
             }
             _ => true,
         });
+    }
+
+    /// A wait whose producer is stalled only because a module's definition
+    /// waits on itself is that loop's consequence, not a fault of its own.
+    fn stalled_by(&self, cycle: &DefinitionCycle, fact: &FactKey) -> bool {
+        self.fact_producer(fact)
+            .is_some_and(|producer| cycle.stalled_by_it.contains(&producer))
+    }
+
+    /// Elixir's words for code that runs while a module is being defined and
+    /// calls into it: the function it calls is undefined, because it is not
+    /// available yet.
+    fn definition_cycle_issue(&self, cycle: &DefinitionCycle) -> UnresolvedIssue {
+        let module_name = self
+            .module_denotation(cycle.module)
+            .expect("a module being defined has a name")
+            .to_string();
+        let diagnostic = match self.call_into_the_definition(cycle) {
+            Some((name, arity, span)) => Diagnostic::error(
+                codes::RESOLVE_UNKNOWN_FUNCTION,
+                format!("function `{module_name}.{name}/{arity}` is undefined (function not available)"),
+                span,
+            ),
+            None => Diagnostic::error(
+                codes::RESOLVE_UNKNOWN_MODULE,
+                format!("module `{module_name}` is not available: it is still being defined"),
+                Span::DUMMY,
+            ),
+        };
+        let diagnostic = match self.macro_being_expanded(&cycle.exit) {
+            Some(function) => {
+                let function_ref = self.function_ref(function);
+                let macro_module = self
+                    .module_denotation(function_ref.module)
+                    .expect("a macro's module has a name");
+                diagnostic.with_note(format!(
+                    "expanding macro: `{macro_module}.{}/{}`",
+                    function_ref.name(),
+                    function_ref.arity
+                ))
+            }
+            None => diagnostic,
+        };
+        UnresolvedIssue {
+            key: UnresolvedIssueKey::DefinitionCycle(cycle.module),
+            diagnostic,
+        }
+    }
+
+    /// The call that enters the module's definition, as written: the one
+    /// the waiting job recorded when it began to wait on the module.
+    fn call_into_the_definition(&self, cycle: &DefinitionCycle) -> Option<(String, usize, Span)> {
+        let caller = match &cycle.entry {
+            Job::ExpandFunctionSource(function) => *function,
+            Job::AnalyzeActivation(activation) => activation.function,
+            _ => return None,
+        };
+        self.module_reference_expectations
+            .expectations(cycle.module)
+            .iter()
+            .find_map(|expectation| {
+                let call = expectation.call.as_ref().filter(|call| call.caller == caller)?;
+                Some((call.name.clone(), call.arity, expectation.requester.span))
+            })
+    }
+
+    /// The macro the module's definition is waiting to run. An expansion
+    /// waits on a function's definition only to run that function as a macro,
+    /// and on a macro root's product for its compiled program.
+    fn macro_being_expanded(&self, exit: &DependencyKey) -> Option<FunctionId> {
+        match exit {
+            DependencyKey::Fact(FactKey::FunctionDefined(function)) => Some(*function),
+            DependencyKey::Product(address) => match address.scope {
+                ProductScope::Root(root) => {
+                    let entry = self.roots.get(root);
+                    (entry.kind == RootKind::Macro).then_some(entry.function)
+                }
+                ProductScope::Program => None,
+            },
+            DependencyKey::Fact(_) => None,
+        }
     }
 
     fn unresolved_issue(&self, frontier: &HashSet<FactKey>, fact: &FactKey) -> Option<UnresolvedIssue> {
@@ -3541,8 +3648,12 @@ impl World {
         root_id
     }
 
-    fn take_unresolved_diagnostics(&mut self, waits: &[UnresolvedWait<Job, FactKey>]) -> Vec<Diagnostic> {
-        let issues = self.unresolved_issues(waits);
+    fn take_unresolved_diagnostics(
+        &mut self,
+        waits: &[UnresolvedWait<Job, FactKey>],
+        cycle: Option<&DefinitionCycle>,
+    ) -> Vec<Diagnostic> {
+        let issues = self.unresolved_issues(waits, cycle);
         let next = issues.iter().map(|issue| issue.key.clone()).collect::<HashSet<_>>();
         let diagnostics = issues
             .into_iter()
@@ -4112,8 +4223,12 @@ impl<T: Telemetry> ExecutionContext<'_, T> {
         root_id
     }
 
-    pub(crate) fn emit_unresolved_diagnostics(&mut self, waits: &[UnresolvedWait<Job, FactKey>]) {
-        let diagnostics = self.world.take_unresolved_diagnostics(waits);
+    pub(crate) fn emit_unresolved_diagnostics(
+        &mut self,
+        waits: &[UnresolvedWait<Job, FactKey>],
+        cycle: Option<&DefinitionCycle>,
+    ) {
+        let diagnostics = self.world.take_unresolved_diagnostics(waits, cycle);
         if !diagnostics.is_empty() {
             emit_through(self.telemetry, &diagnostics);
         }
@@ -4137,8 +4252,23 @@ impl<T: Telemetry> ExecutionContext<'_, T> {
                 })
             })
             .collect::<Vec<_>>();
-        self.emit_unresolved_diagnostics(&fact_waits);
+        let cycle = self.definition_cycle(&waits);
+        self.emit_unresolved_diagnostics(&fact_waits, cycle.as_ref());
         waits
+    }
+
+    fn definition_cycle(&self, waits: &[UnresolvedWait<Job, DependencyKey>]) -> Option<DefinitionCycle> {
+        let sessions = self.product_sessions.as_deref();
+        WaitForGraph::new(
+            waits,
+            |fact| self.world.fact_producer(fact),
+            |scope| {
+                sessions
+                    .map(|sessions| sessions.deferred_waits_of(scope))
+                    .unwrap_or_default()
+            },
+        )
+        .definition_cycle()
     }
 
     pub(crate) fn emit_warning_once(&mut self, diagnostic: Diagnostic) {

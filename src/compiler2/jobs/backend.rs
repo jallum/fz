@@ -94,10 +94,12 @@ impl super::super::product_drive::ProductDriveError for FatalError {
     fn no_ready_producer<T: crate::telemetry::Telemetry>(
         world: &mut World,
         tel: &T,
+        sessions: Option<&mut super::super::pull::ProductSessions>,
         _scope: super::super::pull::ProductScope,
         _fact: &FactUse<FactKey>,
     ) -> Self {
-        super::super::drive::ExecutionContext::new(world, tel).report_unresolved_waits();
+        super::super::drive::ExecutionContext::with_optional_product_sessions(world, tel, sessions)
+            .report_unresolved_waits();
         FatalError
     }
 
