@@ -490,7 +490,17 @@ jobs of one climb so that readers outside it hear one answer.
   (`Scheduler::is_concluded_for`). A `Concluded` wait is still woken the
   moment its fact is locally settled, which is how a reader that parked before
   a cycle closed learns the cycle exists; the reader's next run asks
-  `answer_use` again and, if the group is open, parks again.
+  `answer_use` again and, if the group is open, parks again. The wake test
+  (`dependency_satisfies`) is that weaker, group-blind settledness on purpose:
+  waking a parked reader only once `is_concluded_for` holds for it leaves
+  the drain ending in `internal/unresolved-wait`.
+- **A join wakes the members it satisfies.** A join or merge can make a fact
+  concluded for a job that is parked on it with no fact changing, so no change
+  announces it. `Groups` records each job a join or merge moved, and the
+  completion that follows (`Scheduler::wake_moved_waiters`) wakes every moved
+  job whose `Concluded` waits all hold for it (`is_concluded_for`) and whose
+  other waits are satisfied, through the same `wake_if_satisfied` that a
+  changed fact uses. A moved job still missing another answer stays parked.
 - **Quiescence.** A publisher in an open group counts as dirty in
   `quiescent_cone`: the drain arbiter does not certify a fact whose cone holds
   one, because the group is still climbing.

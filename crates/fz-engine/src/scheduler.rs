@@ -566,8 +566,16 @@ where
         }
     }
 
-    /// Present with no publisher still deriving it. An external dependency
-    /// has no publishers here, so for it concluded and settled are one.
+    /// Present with no publisher still deriving it, whatever group the
+    /// reader is in. This is the wake test, deliberately weaker than
+    /// `is_concluded_for`: a reader outside an open group wakes the moment the
+    /// fact settles, runs, asks `is_concluded_for` again and parks if the group
+    /// is still climbing. Waking only once the reader's own answer is `true`
+    /// would leave such a reader parked until the group closes, and a group
+    /// that waits on that reader never closes. A join is the one event that
+    /// can make `is_concluded_for` true with no fact changing, and
+    /// `wake_moved_waiters` answers it. An external dependency has no
+    /// publishers here, so for it concluded and settled are one.
     fn dependency_is_concluded(&self, key: &F, external: &impl ExternalDependencyStates<F>) -> bool {
         external.external_state(key).map_or_else(
             || self.facts.is_locally_settled(key),
@@ -885,6 +893,8 @@ where
 
         let previously_owned = self.deps.derivations_of(job).clone();
         let mut pending_changes = Vec::new();
+        let mut moved_wakes = Vec::new();
+        self.wake_moved_waiters(&mut pending_changes, &mut moved_wakes, external, ctx);
         let mut conclusions = Vec::new();
         let mut listed = OrderedSet::default();
         for mut derivation in effects.derivations {
@@ -988,7 +998,9 @@ where
         pending_changes.extend(changed.iter().cloned());
         let flips = self.quiet_flips(&touched, quiet_before);
         self.propagate_quiet_flips(flips, &mut pending_changes, ctx);
-        let (mut wakes, mut movements) = self.dispatch_changes(pending_changes, external, ctx);
+        let (dispatched, mut movements) = self.dispatch_changes(pending_changes, external, ctx);
+        let mut wakes = moved_wakes;
+        wakes.extend(dispatched);
         let released = self.close_group_if_idle(job, ctx);
         if !released.is_empty() {
             let (more_wakes, more_movements) = self.dispatch_changes(released, external, ctx);
@@ -1545,15 +1557,64 @@ where
         P::Run: SemanticOrd<Ctx>,
     {
         for job in self.deps.waiters(&fact_use, ctx) {
-            let waits = self.deps.waits_for(&job);
-            if !waits.uses().all(|wait| self.dependency_satisfies(wait, external)) {
-                continue;
+            self.wake_if_satisfied(job, &fact_use, pending_changes, wakes, external, ctx);
+        }
+    }
+
+    /// Wakes `job` for `cause` when every wait it stands on is satisfied; a
+    /// job still missing another answer stays parked.
+    fn wake_if_satisfied<Ctx>(
+        &mut self,
+        job: P::Run,
+        cause: &FactUse<F>,
+        pending_changes: &mut impl Extend<FactChange<F>>,
+        wakes: &mut Vec<Wake<P::Run, F>>,
+        external: &impl ExternalDependencyStates<F>,
+        ctx: &Ctx,
+    ) where
+        P: SemanticOrd<Ctx>,
+        P::Run: SemanticOrd<Ctx>,
+    {
+        let waits = self.deps.waits_for(&job);
+        if !waits.uses().all(|wait| self.dependency_satisfies(wait, external)) {
+            return;
+        }
+        // A standing wait belongs to the job's own answer, so satisfying
+        // it reopens that answer and no other.
+        let own = P::of_run(&job);
+        self.dirty_claims(&own, pending_changes, ctx);
+        self.enqueue_step(job, cause, false, wakes);
+    }
+
+    /// A join or merge moves a job into the group that owns a fact it is
+    /// parked on a `Concluded` wait for, and a member asks only that the fact
+    /// be locally settled. No fact changed, so no change will announce it:
+    /// each moved job whose `Concluded` waits all hold for it now, and whose
+    /// other waits are satisfied too, is woken here, naming a wait it stood on.
+    fn wake_moved_waiters<Ctx>(
+        &mut self,
+        pending_changes: &mut impl Extend<FactChange<F>>,
+        wakes: &mut Vec<Wake<P::Run, F>>,
+        external: &impl ExternalDependencyStates<F>,
+        ctx: &Ctx,
+    ) where
+        P: SemanticOrd<Ctx>,
+        P::Run: SemanticOrd<Ctx>,
+        F: SemanticOrd<Ctx>,
+    {
+        for job in self.groups.get_mut().take_moved() {
+            let mut concluded = self
+                .deps
+                .waits_for(&job)
+                .uses()
+                .filter(|wait| matches!(wait, FactUse::Concluded(_)))
+                .cloned()
+                .collect::<Vec<_>>();
+            concluded.sort_by(|left, right| left.semantic_cmp(right, ctx));
+            let held = concluded.iter().all(|wait| self.is_concluded_for(&job, wait.fact()));
+            if let Some(cause) = concluded.first().filter(|_| held) {
+                self.wake_if_satisfied(job, cause, pending_changes, wakes, external, ctx);
             }
-            // A standing wait belongs to the job's own answer, so satisfying
-            // it reopens that answer and no other.
-            let own = P::of_run(&job);
-            self.dirty_claims(&own, pending_changes, ctx);
-            self.enqueue_step(job, &fact_use, false, wakes);
         }
     }
 
