@@ -17,6 +17,7 @@
 use std::hash::Hash;
 
 use crate::fast_hash::{HashMap, HashSet};
+use crate::ordered_set::OrderedSet;
 use crate::waits::StandingWaits;
 
 pub(crate) type GroupId = u64;
@@ -35,6 +36,9 @@ pub(crate) struct Groups<J> {
     /// The groups still deriving. Mostly empty, so asking whether any
     /// publisher is withheld costs nothing between climbs.
     open: HashSet<GroupId>,
+    /// The jobs a join or merge put in a group they were not in, until
+    /// `take_moved` hands them to the step that settles what the move changed.
+    moved: OrderedSet<J>,
     next: GroupId,
 }
 
@@ -44,6 +48,7 @@ impl<J> Default for Groups<J> {
             of: HashMap::default(),
             groups: HashMap::default(),
             open: HashSet::default(),
+            moved: OrderedSet::default(),
             next: 0,
         }
     }
@@ -109,10 +114,18 @@ impl<J: Clone + Eq + Hash> Groups<J> {
         let group = self.groups.get_mut(&target).expect("a joined group is live");
         for job in loose {
             if self.of.insert(job.clone(), target).is_none() {
+                self.moved.insert(job.clone());
                 group.members.push(job);
             }
         }
         self.open.insert(target);
+    }
+
+    /// The jobs joins and merges have moved into another group since the last
+    /// call. A moved job's answer to "is this fact concluded for me?" may have
+    /// changed without any fact changing.
+    pub(crate) fn take_moved(&mut self) -> OrderedSet<J> {
+        std::mem::take(&mut self.moved)
     }
 
     fn merge(&mut self, from: GroupId, into: GroupId) {
@@ -120,6 +133,7 @@ impl<J: Clone + Eq + Hash> Groups<J> {
         let moved = self.groups.remove(&from).expect("a merged group is live").members;
         for job in &moved {
             self.of.insert(job.clone(), into);
+            self.moved.insert(job.clone());
         }
         self.groups
             .get_mut(&into)

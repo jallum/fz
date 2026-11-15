@@ -3110,6 +3110,114 @@ fn open_group_with_a_settled_fact() -> TestScheduler {
     scheduler
 }
 
+/// Job 9 parks on a `Concluded` wait for "x", a fact of the open group {1, 2},
+/// and nothing has told it the group could close. Job 9 also stands on the wait
+/// path from that group to job 7, so when 7 reads 9's answer `partners` joins 9
+/// to the group: inside it, "x" is concluded for 9. No fact changed, so the
+/// completion of 7 must be what wakes 9, or 9 holds the group open for good.
+#[test]
+fn a_read_that_joins_a_parked_job_to_the_group_of_its_concluded_wait_wakes_it() {
+    let mut scheduler = TestScheduler::new();
+    block_on(&mut scheduler, 1, &[("b", Some(2)), ("n", Some(7))]);
+    assert!(scheduler.partners(&1, &2));
+    complete(
+        &mut scheduler,
+        2,
+        HashSet::default(),
+        HashSet::default(),
+        vec!["x"],
+        vec!["x"],
+    );
+    scheduler.complete_ordered(
+        &9,
+        CompletionEffects::single(
+            9,
+            HashSet::default(),
+            [(FactUse::concluded("x"), Some(2))].into_iter().collect(),
+            Vec::new(),
+            Vec::new(),
+        ),
+        &TestOrder,
+    );
+    assert!(
+        !scheduler.is_concluded_for(&9, &"x"),
+        "outside the open group, 9 must wait"
+    );
+
+    assert!(
+        scheduler.partners(&9, &7),
+        "7 reads 9's answer, and 9 waits on the group that waits on 7"
+    );
+    assert!(grouped(&scheduler, 1, 9));
+    assert!(
+        scheduler.is_concluded_for(&9, &"x"),
+        "as a member, 9's wait is satisfied"
+    );
+
+    let step = complete(
+        &mut scheduler,
+        7,
+        HashSet::default(),
+        HashSet::default(),
+        vec!["n"],
+        vec!["n"],
+    );
+
+    assert_eq!(
+        step.wakes
+            .iter()
+            .filter(|wake| wake.job == 9)
+            .map(|wake| (wake.cause.clone(), wake.admission))
+            .collect::<Vec<_>>(),
+        vec![(FactUse::concluded("x"), Admission::Started)],
+        "the join satisfied 9's wait on x, so the completion names that wait and starts 9"
+    );
+    assert_eq!(scheduler.pop(), Some(9));
+}
+
+#[test]
+fn a_join_wakes_no_moved_job_whose_other_wait_is_still_unanswered() {
+    let mut scheduler = TestScheduler::new();
+    block_on(&mut scheduler, 1, &[("b", Some(2)), ("n", Some(7))]);
+    assert!(scheduler.partners(&1, &2));
+    complete(
+        &mut scheduler,
+        2,
+        HashSet::default(),
+        HashSet::default(),
+        vec!["x"],
+        vec!["x"],
+    );
+    scheduler.complete_ordered(
+        &9,
+        CompletionEffects::single(
+            9,
+            HashSet::default(),
+            [(FactUse::concluded("x"), Some(2)), (current("never"), None)]
+                .into_iter()
+                .collect(),
+            Vec::new(),
+            Vec::new(),
+        ),
+        &TestOrder,
+    );
+    assert!(scheduler.partners(&9, &7));
+
+    let step = complete(
+        &mut scheduler,
+        7,
+        HashSet::default(),
+        HashSet::default(),
+        vec!["n"],
+        vec!["n"],
+    );
+
+    assert!(
+        step.wakes.iter().all(|wake| wake.job != 9),
+        "9 still lacks another answer, so it stays parked"
+    );
+}
+
 #[test]
 fn a_fact_of_an_open_group_is_concluded_for_its_members_and_not_for_a_reader_outside() {
     let scheduler = open_group_with_a_settled_fact();
