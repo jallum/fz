@@ -17,6 +17,7 @@ use super::block_pool::round_up_16;
 use super::ref_io::ptr_in_ranges;
 use super::ref_io::strict_object_size;
 use super::schema::{FieldKind, SchemaRegistry};
+use super::stats::StubSite;
 use super::{Heap, HeapAllocKind};
 use crate::any_value::AnyValueRef;
 use crate::any_value::{
@@ -359,7 +360,14 @@ pub fn deep_copy_any_value(
             unsafe { shared_bin_freeze(src_pb.shared_raw()) };
             let handle = unsafe { SharedBinHandle::retain_from_raw(src_pb.shared_raw()) };
             // The copy views the same window of the same bytes.
-            let new_p = alloc_procbin(dst_heap, handle, src_pb.byte_offset(), src_pb.bit_len()).as_raw();
+            let new_p = alloc_procbin(
+                dst_heap,
+                handle,
+                src_pb.byte_offset(),
+                src_pb.bit_len(),
+                StubSite::MessageCopy,
+            )
+            .as_raw();
             forwarding.insert(sp, new_p);
             AnyValue::heap_ptr(new_p, ValueKind::PROCBIN)
         }

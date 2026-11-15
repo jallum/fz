@@ -1,6 +1,7 @@
 use super::*;
 use crate::any_value::ValueKind;
 use crate::heap::SchemaRegistry;
+use crate::heap::StubSite;
 use crate::procbin::{SharedBinHandle, alloc_procbin};
 use crate::process::Process;
 use std::cell::RefCell;
@@ -66,7 +67,7 @@ fn ptr_and_cstring_on_procbin() {
 
 fn view_word(process: &mut Process, bytes: &[u8], offset: u64, len: u64) -> u64 {
     let handle = SharedBinHandle::from_bytes(bytes, bytes.len() as u64 * 8);
-    let view = alloc_procbin(&mut process.heap, handle, offset, len * 8);
+    let view = alloc_procbin(&mut process.heap, handle, offset, len * 8, StubSite::FilledBuffer);
     AnyValueRef::from_heap_object(ValueKind::PROCBIN, view.as_raw())
         .expect("procbin ref")
         .raw_word()

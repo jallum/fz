@@ -1308,3 +1308,31 @@ fn reading_a_middle_binary_field_of_a_shared_source_builds_a_view() {
         assert_eq!(after.procbin.allocs, before.procbin.allocs + 1);
     });
 }
+
+/// A literal baked into the module is viewed in place, and the heap counts
+/// its stub under its own site.
+#[test]
+fn a_static_literal_counts_as_its_own_stub_site() {
+    use crate::heap::{StubCounts, StubSite};
+    use crate::procbin::SharedBin;
+    use crate::sync::AtomicUsize;
+    static PAYLOAD: [u8; 4] = [1, 2, 3, 4];
+    unsafe extern "C" fn noop(_: *mut SharedBin) {}
+    let mut sb = SharedBin {
+        refcount: AtomicUsize::new(1),
+        bit_len: 32,
+        bytes_ptr: PAYLOAD.as_ptr(),
+        bytes_len: PAYLOAD.len(),
+        destructor: noop,
+        room: 0,
+    };
+    with_process(|process| {
+        let word = fz_alloc_procbin_from_static(process, &mut sb as *mut SharedBin as u64);
+        let mut roots = [AnyValueRef::from_raw_word(word).expect("procbin ref")];
+        let stats = process.heap.collect(&mut roots);
+        let mut expected = StubCounts::default();
+        expected.record(StubSite::StaticLiteral);
+        assert_eq!(stats.stubs_made, expected);
+        assert_eq!(stats.stubs_survived, expected);
+    });
+}

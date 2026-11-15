@@ -327,6 +327,7 @@ fn resource_forwarding_marker_through_gc() {
 
 #[test]
 fn procbins_and_resources_keep_separate_chains() {
+    use crate::heap::StubSite;
     use crate::procbin::{SharedBinHandle, alloc_procbin};
     let (first, first_drops) = observed_resource();
     let (second, second_drops) = observed_resource();
@@ -334,9 +335,21 @@ fn procbins_and_resources_keep_separate_chains() {
     let second_bin = SharedBinHandle::from_bytes(&[4, 5], 16);
     {
         let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
-        let pb1 = alloc_procbin(&mut heap, first_bin.clone(), 0, first_bin.bit_len());
+        let pb1 = alloc_procbin(
+            &mut heap,
+            first_bin.clone(),
+            0,
+            first_bin.bit_len(),
+            StubSite::FilledBuffer,
+        );
         let rs1 = alloc_resource(&mut heap, first, AnyValue::nil_atom());
-        let pb2 = alloc_procbin(&mut heap, second_bin.clone(), 0, second_bin.bit_len());
+        let pb2 = alloc_procbin(
+            &mut heap,
+            second_bin.clone(),
+            0,
+            second_bin.bit_len(),
+            StubSite::FilledBuffer,
+        );
         let rs2 = alloc_resource(&mut heap, second, AnyValue::nil_atom());
         let rs2_bits = heap_object_word(rs2.as_raw(), ValueKind::RESOURCE);
         let pb2_bits = heap_object_word(pb2.as_raw(), ValueKind::PROCBIN);

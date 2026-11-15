@@ -94,6 +94,91 @@ impl Generation {
     }
 }
 
+/// What made a binary stub: each place that allocates one names itself, so a
+/// collection can say which of them its young stubs came from and which of
+/// them survived.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum StubSite {
+    /// An append wrote into the spare room of the buffer its left side views,
+    /// and the stub is the longer view of that same buffer.
+    AppendedInPlace,
+    /// A window onto part of a buffer larger than the inline threshold: a
+    /// field or a tail taken out of a binary, copying nothing.
+    WindowOfBuffer,
+    /// An append overflowed its buffer and the result went into a new one with
+    /// room to grow.
+    GrownBuffer,
+    /// A binary above the inline threshold written into a new buffer sized to
+    /// it: a built or copied binary, a `:binary.copy`, a literal.
+    FilledBuffer,
+    /// A message copy gave the receiving heap a view of a buffer the sender's
+    /// heap also views.
+    MessageCopy,
+    /// A program literal baked into the module, viewed in place.
+    StaticLiteral,
+}
+
+impl StubSite {
+    pub const ALL: [StubSite; 6] = [
+        StubSite::AppendedInPlace,
+        StubSite::WindowOfBuffer,
+        StubSite::GrownBuffer,
+        StubSite::FilledBuffer,
+        StubSite::MessageCopy,
+        StubSite::StaticLiteral,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            StubSite::AppendedInPlace => "appended_in_place",
+            StubSite::WindowOfBuffer => "window_of_buffer",
+            StubSite::GrownBuffer => "grown_buffer",
+            StubSite::FilledBuffer => "filled_buffer",
+            StubSite::MessageCopy => "message_copy",
+            StubSite::StaticLiteral => "static_literal",
+        }
+    }
+
+    pub(crate) fn code(self) -> u8 {
+        self as u8
+    }
+
+    /// The site a stub stored as `code`.
+    pub(crate) fn from_code(code: u8) -> StubSite {
+        *Self::ALL
+            .get(code as usize)
+            .unwrap_or_else(|| panic!("stub site code {code} names no site"))
+    }
+}
+
+/// A count of binary stubs for each site.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StubCounts([u64; StubSite::ALL.len()]);
+
+impl StubCounts {
+    pub fn record(&mut self, site: StubSite) {
+        self.0[site as usize] += 1;
+    }
+
+    pub fn get(&self, site: StubSite) -> u64 {
+        self.0[site as usize]
+    }
+
+    /// The counts as a JSON object, every site present, in declaration order.
+    pub fn write_json(&self, out: &mut String) {
+        use std::fmt::Write;
+        out.push('{');
+        for (index, site) in StubSite::ALL.into_iter().enumerate() {
+            if index > 0 {
+                out.push(',');
+            }
+            write!(out, "\"{}\":{}", site.as_str(), self.get(site)).unwrap();
+        }
+        out.push('}');
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct GcStats {
     pub generation: Generation,
@@ -111,6 +196,12 @@ pub struct GcStats {
     /// once for the destructor search over resource stubs and once for the
     /// sweep.
     pub stub_visits: u64,
+    /// Binary stubs made since the heap's previous collection, by site.
+    pub stubs_made: StubCounts,
+    /// Binary stubs this collection kept, by site: the survivors of the stubs
+    /// it examined, which are the young ones for a minor collection and every
+    /// one for a major collection.
+    pub stubs_survived: StubCounts,
     /// Capacity of the from-space blocks.
     pub from_space_capacity_bytes: u64,
     /// Blocks of the from-space the collection released.

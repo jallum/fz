@@ -1426,7 +1426,13 @@ fn deep_copy_strict_heap_kinds_dispatch_from_pointer_tags() {
 
     let bitstring_p = src.alloc_bitstring(b"abc", 24).heap_addr().expect("bitstring");
 
-    let procbin = alloc_procbin(&mut src, SharedBinHandle::from_bytes(&[1, 2, 3, 4], 32), 0, 32);
+    let procbin = alloc_procbin(
+        &mut src,
+        SharedBinHandle::from_bytes(&[1, 2, 3, 4], 32),
+        0,
+        32,
+        StubSite::FilledBuffer,
+    );
 
     let resource_closure = heap_root(closure_bits);
     let resource = alloc_resource(
@@ -2206,6 +2212,7 @@ fn gc_handles_cycle_via_forwarding() {
 
 // ===== ProcBin + intrusive MSO + post-Cheney sweep =================
 
+use crate::heap::StubSite;
 use crate::procbin::{PROCBIN_BYTES, ProcBin, SharedBinHandle, alloc_procbin, bitstring_bit_len, bitstring_byte_ptr};
 
 fn shared_refs(handle: &SharedBinHandle) -> usize {
@@ -2246,7 +2253,7 @@ fn alloc_procbin_pushes_into_mso_chain_with_strict_layout() {
     let witness = SharedBinHandle::from_bytes(&[1, 2, 3, 4], 32);
     {
         let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
-        let pb = alloc_procbin(&mut h, witness.clone(), 0, witness.bit_len());
+        let pb = alloc_procbin(&mut h, witness.clone(), 0, witness.bit_len(), StubSite::FilledBuffer);
         let tagged = heap_object_word(pb.as_raw() as *const u8, ValueKind::PROCBIN);
         assert_eq!(heap_kind_from_tagged(tagged), Some(ValueKind::PROCBIN));
         assert_eq!(object_size(tagged), PROCBIN_BYTES);
@@ -2261,7 +2268,7 @@ fn alloc_procbin_pushes_into_mso_chain_with_strict_layout() {
 fn procbin_survives_gc_via_mso_rewrite() {
     let witness = SharedBinHandle::from_bytes(&[0xaa; 8], 64);
     let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
-    let pb = alloc_procbin(&mut h, witness.clone(), 0, witness.bit_len());
+    let pb = alloc_procbin(&mut h, witness.clone(), 0, witness.bit_len(), StubSite::FilledBuffer);
     let shared_p = pb.shared_raw();
     let from_pb = pb.as_raw();
     let mut root = heap_object_word(from_pb as *const u8, ValueKind::PROCBIN) as *mut u8;
@@ -2287,7 +2294,7 @@ fn procbin_survives_gc_via_mso_rewrite() {
 fn procbin_dies_in_gc_and_sweep_releases_shared_bin() {
     let witness = SharedBinHandle::from_bytes(&[0x55; 16], 128);
     let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
-    let _ = alloc_procbin(&mut h, witness.clone(), 0, witness.bit_len());
+    let _ = alloc_procbin(&mut h, witness.clone(), 0, witness.bit_len(), StubSite::FilledBuffer);
     assert_eq!(shared_refs(&witness), 2);
     let mut root: *mut u8 = null_mut();
     h.collect_tagged(&mut root);
@@ -2301,9 +2308,27 @@ fn procbin_dies_in_gc_and_sweep_releases_shared_bin() {
 fn procbin_mso_chain_intact_through_gc_partial_survival() {
     let witnesses = [1, 2, 3].map(|value| SharedBinHandle::from_bytes(&[value], 8));
     let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
-    let _dead_tail = alloc_procbin(&mut h, witnesses[0].clone(), 0, witnesses[0].bit_len());
-    let live = alloc_procbin(&mut h, witnesses[1].clone(), 0, witnesses[1].bit_len());
-    let _dead_head = alloc_procbin(&mut h, witnesses[2].clone(), 0, witnesses[2].bit_len());
+    let _dead_tail = alloc_procbin(
+        &mut h,
+        witnesses[0].clone(),
+        0,
+        witnesses[0].bit_len(),
+        StubSite::FilledBuffer,
+    );
+    let live = alloc_procbin(
+        &mut h,
+        witnesses[1].clone(),
+        0,
+        witnesses[1].bit_len(),
+        StubSite::FilledBuffer,
+    );
+    let _dead_head = alloc_procbin(
+        &mut h,
+        witnesses[2].clone(),
+        0,
+        witnesses[2].bit_len(),
+        StubSite::FilledBuffer,
+    );
     let live_from = live.as_raw();
     let live_shared = live.shared_raw();
     assert_eq!(mso_chain(&h).len(), 3);
@@ -2338,7 +2363,7 @@ fn heap_drop_releases_all_mso_shared_refs() {
     {
         let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
         for witness in &witnesses {
-            alloc_procbin(&mut h, witness.clone(), 0, witness.bit_len());
+            alloc_procbin(&mut h, witness.clone(), 0, witness.bit_len(), StubSite::FilledBuffer);
         }
         assert_eq!(witnesses.each_ref().map(shared_refs), [2, 2]);
         assert_eq!(mso_chain(&h).len(), 2);
@@ -2354,7 +2379,7 @@ fn deep_copy_procbin_shares_via_retain() {
     let witness = SharedBinHandle::from_bytes(&[7, 8, 9, 10], 32);
     let mut src = Heap::new(SIZE_TABLE[0], fresh_registry());
     let mut dst = Heap::new(SIZE_TABLE[0], fresh_registry());
-    let src_pb = alloc_procbin(&mut src, witness.clone(), 0, witness.bit_len());
+    let src_pb = alloc_procbin(&mut src, witness.clone(), 0, witness.bit_len(), StubSite::FilledBuffer);
     let shared_p = src_pb.shared_raw();
     let mut fwd = AddressMap::default();
     let copied = deep_copy_slot(
@@ -2401,7 +2426,7 @@ fn deep_copy_procbin_dedup_via_forwarding_map() {
     });
     let mut src = Heap::new(SIZE_TABLE[0], reg.clone());
     let mut dst = Heap::new(SIZE_TABLE[0], reg);
-    let src_pb = alloc_procbin(&mut src, witness.clone(), 0, witness.bit_len());
+    let src_pb = alloc_procbin(&mut src, witness.clone(), 0, witness.bit_len(), StubSite::FilledBuffer);
     let proc_bits = heap_object_word(src_pb.as_raw() as *const u8, ValueKind::PROCBIN);
     let pair = src.alloc_struct(pair_id);
     let proc_value = heap_root(proc_bits);

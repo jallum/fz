@@ -1,5 +1,5 @@
 use super::*;
-use crate::heap::{GcStats, SchemaRegistry};
+use crate::heap::{GcStats, SchemaRegistry, StubCounts, StubSite};
 use crate::process::CollectionBoundary;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -69,6 +69,13 @@ fn a_probe_writes_its_outcome_and_what_the_gift_cost() {
 
 #[test]
 fn a_collection_writes_its_boundary_and_the_stats_that_describe_it() {
+    let mut stubs_made = StubCounts::default();
+    let mut stubs_survived = StubCounts::default();
+    for _ in 0..3 {
+        stubs_made.record(StubSite::AppendedInPlace);
+    }
+    stubs_made.record(StubSite::MessageCopy);
+    stubs_survived.record(StubSite::AppendedInPlace);
     let collection = Collection {
         pid: 5,
         boundary: CollectionBoundary::Park,
@@ -79,12 +86,14 @@ fn a_collection_writes_its_boundary_and_the_stats_that_describe_it() {
             blocks_released: 1,
             blocks_after: 2,
             stub_visits: 7,
+            stubs_made,
+            stubs_survived,
             ..GcStats::default()
         },
     };
     assert_eq!(
         line(RuntimeEvent::Gc(&collection)),
-        r#"{"name":["fz","runtime","gc"],"time_ns":12,"kind":"event","span_id":3,"parent_span_id":4,"measurements":{},"metadata":{"pid":5,"boundary":"park","generation":"minor","copied_bytes":288,"live_bytes":288,"from_space_capacity_bytes":4096,"blocks_released":1,"blocks_after":2,"stub_visits":7}}"#
+        r#"{"name":["fz","runtime","gc"],"time_ns":12,"kind":"event","span_id":3,"parent_span_id":4,"measurements":{},"metadata":{"pid":5,"boundary":"park","generation":"minor","copied_bytes":288,"live_bytes":288,"from_space_capacity_bytes":4096,"blocks_released":1,"blocks_after":2,"stub_visits":7,"stubs_made":{"appended_in_place":3,"window_of_buffer":0,"grown_buffer":0,"filled_buffer":0,"message_copy":1,"static_literal":0},"stubs_survived":{"appended_in_place":1,"window_of_buffer":0,"grown_buffer":0,"filled_buffer":0,"message_copy":0,"static_literal":0}}}"#
     );
 }
 

@@ -86,6 +86,10 @@ const _: () = {
     assert!(align_of::<SharedBin>() == 16);
 };
 
+/// The bits of a stub's link word that hold its site.
+const SITE_MASK: u64 = 0xF;
+const _: () = assert!(StubSite::ALL.len() <= SITE_MASK as usize + 1);
+
 /// Where a ProcBin stub keeps its `SharedBin` pointer, in bytes from the stub.
 pub const PROCBIN_SHARED_OFFSET: usize = 0;
 /// Where a ProcBin stub keeps the byte offset of its view, in bytes from the stub.
@@ -339,7 +343,8 @@ impl Drop for SharedBinHandle {
 /// Per-heap stub naming a byte-aligned window of a `SharedBin`'s bytes.
 /// `PROCBIN_BYTES` total:
 ///   offset 0..8    shared_ptr:  *mut SharedBin
-///   offset 8..16   mso_next:    u64 tagged MSO link, or 0
+///   offset 8..16   mso_next:    u64 tagged MSO link, or 0, with the site
+///                               that made the stub in its low nibble
 ///   offset 16..24  byte_offset: u64 first byte of this stub's view
 ///   offset 24..32  bit_len:     u64 length of this stub's view in bits
 ///
@@ -386,13 +391,33 @@ impl ProcBin {
         }
     }
 
-    pub fn mso_next(&self) -> u64 {
+    fn link_word(&self) -> u64 {
         unsafe { read((self.as_raw() as *const u8).add(8) as *const u64) }
     }
 
+    /// The tagged link to the next stub on the chain, or 0. Heap objects are
+    /// 16-byte aligned, so a link's low nibble is free: it holds the stub's
+    /// site, which a copy of the stub carries along.
+    pub fn mso_next(&self) -> u64 {
+        self.link_word() & !SITE_MASK
+    }
+
     pub(crate) fn mso_next_set(&self, next: u64) {
+        debug_assert_eq!(next & SITE_MASK, 0, "a chain link is a 16-byte aligned heap word");
+        let site = self.link_word() & SITE_MASK;
         unsafe {
-            write(self.as_raw().add(8) as *mut u64, next);
+            write(self.as_raw().add(8) as *mut u64, next | site);
+        }
+    }
+
+    /// What made this stub.
+    pub fn site(&self) -> StubSite {
+        StubSite::from_code((self.link_word() & SITE_MASK) as u8)
+    }
+
+    fn site_set(&self, site: StubSite) {
+        unsafe {
+            write(self.as_raw().add(8) as *mut u64, u64::from(site.code()));
         }
     }
 
@@ -433,21 +458,30 @@ impl ProcBin {
 
 // ===== Allocation on a per-process heap =====================================
 
-use crate::heap::{Generation, Heap, HeapAllocKind};
+use crate::heap::{Generation, Heap, HeapAllocKind, StubCounts, StubSite};
 
 /// Allocate a ProcBin stub on `heap` viewing `bit_len` bits of `handle`'s
 /// bytes from `byte_offset`, taking ownership of the SharedBin reference
 /// encapsulated in `handle`. The new ProcBin is pushed onto `heap.mso_head`,
 /// the young binary chain, as the new chain head.
 ///
-/// A whole binary is `(0, handle.bit_len())`.
-pub fn alloc_procbin(heap: &mut Heap, handle: SharedBinHandle, byte_offset: u64, bit_len: u64) -> ProcBin {
+/// A whole binary is `(0, handle.bit_len())`. `site` names what is making the
+/// stub; the heap counts it and the stub remembers it.
+pub fn alloc_procbin(
+    heap: &mut Heap,
+    handle: SharedBinHandle,
+    byte_offset: u64,
+    bit_len: u64,
+    site: StubSite,
+) -> ProcBin {
     assert!(
         byte_offset as usize + (bit_len as usize).div_ceil(8) <= handle.bytes_len(),
         "ProcBin view [{byte_offset}, +{bit_len} bits) runs past the shared buffer"
     );
     let p = heap.alloc_kind(HeapAllocKind::ProcBin, PROCBIN_BYTES);
     let pb = unsafe { ProcBin::from_raw(p) };
+    pb.site_set(site);
+    heap.stubs_made.record(site);
     pb.shared_raw_set(handle.into_raw());
     pb.byte_offset_set(byte_offset);
     pb.bit_len_set(bit_len);
@@ -599,20 +633,32 @@ pub fn mso_sweep(
     generation: Generation,
     mut closure_of: impl FnMut(&ResourceStub) -> AnyValue,
     visits: &mut u64,
+    survived: &mut StubCounts,
 ) -> Vec<DeadResource> {
     let mut dead = Vec::new();
-    heap.mso_old_head = sweep_chains::<ProcBin>(heap.mso_head, heap.mso_old_head, generation, visits, |pb| unsafe {
-        shared_bin_release(pb.shared_raw())
-    });
-    heap.resource_old_head =
-        sweep_chains::<ResourceStub>(heap.resource_head, heap.resource_old_head, generation, visits, |rs| {
+    heap.mso_old_head = sweep_chains::<ProcBin>(
+        heap.mso_head,
+        heap.mso_old_head,
+        generation,
+        visits,
+        |pb| unsafe { shared_bin_release(pb.shared_raw()) },
+        |pb| survived.record(pb.site()),
+    );
+    heap.resource_old_head = sweep_chains::<ResourceStub>(
+        heap.resource_head,
+        heap.resource_old_head,
+        generation,
+        visits,
+        |rs| {
             if let Some(payload) = unsafe { fz_resource_release_deferred(rs.shared_raw()) } {
                 dead.push(DeadResource {
                     closure: closure_of(&rs).ref_word().raw_word(),
                     payload,
                 });
             }
-        });
+        },
+        |_| {},
+    );
     heap.mso_head = 0;
     heap.resource_head = 0;
     dead
@@ -627,6 +673,7 @@ fn sweep_chains<S: MsoStub>(
     generation: Generation,
     visits: &mut u64,
     mut on_dead: impl FnMut(S),
+    mut on_survivor: impl FnMut(S),
 ) -> u64 {
     let mut new_old_head = match generation {
         Generation::Minor => old,
@@ -641,6 +688,7 @@ fn sweep_chains<S: MsoStub>(
             let next = stub.link();
             match forwarded_target(cur, S::KIND) {
                 Some(to_p) => {
+                    on_survivor(stub);
                     unsafe { S::at(to_p) }.set_link(new_old_head);
                     new_old_head = heap_object_word(to_p, S::KIND);
                 }
