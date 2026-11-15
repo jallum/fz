@@ -4,7 +4,8 @@
     "fz-t93.7.1",
     "fz-t93.7.2",
     "fz-t93.7.3",
-    "fz-t93.7.4"
+    "fz-t93.7.4",
+    "fz-t93.7.5"
   ],
   "blocks": [],
   "created": "2026-11-15T15:52:28Z",
@@ -16,5 +17,5 @@
   "status": "open",
   "title": "The last pull products become facts and the pull system is deleted",
   "type": "task",
-  "updated_at": "2026-11-15T15:52:33Z"
+  "updated_at": "2026-11-15T15:52:34Z"
 }
