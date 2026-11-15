@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-15T21:40:32Z",
   "created": "2026-11-15T21:38:49Z",
   "description": "## Why\n`.agent/docs/fixtures.md` says the `actual.*` files a failing matrix run writes are gitignored. `.gitignore` ignores only `fixtures2/**/*.actual*`, so `fixtures/\u003cstem\u003e.actual.txt` and `.actual.diagnostics` show as untracked, and `git add -A` after a red run commits them (it happened while building fz-nhb.4).\n\n## What changes\n`.gitignore` ignores `fixtures/*.actual.*` (one pattern covering every fixture root). Check that nothing tracked matches first.\n\n## Signal\nAfter a failing matrix run, `git status --short fixtures` lists no `actual` files; `git ls-files | grep \"\\.actual\\.\"` is empty.",
   "id": "fz-nhb.7",
   "labels": [],
   "parent": "fz-nhb",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "fixtures/*.actual.* files are ignored by git, as the docs say",
   "type": "bug",
-  "updated_at": "2026-11-15T21:38:49Z"
+  "updated_at": "2026-11-15T21:40:32Z"
 }
