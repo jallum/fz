@@ -42,11 +42,15 @@
     {
       "text": "Result (PR #613, head c526ef067, against develop 3fc210db8). Predicted: rests built per line fall from 634 to 76 distiller-wide. Measured in the JSON-decode probe (2,000 lines): off-heap binaries built per line 350.6 -\u003e 39.4; continuation allocations per line ~254, unchanged. Distiller on 32,000 lines: instructions 22.88G -\u003e 17.67G (-22.8%), peak memory 277 MB -\u003e 227 MB, stdout identical. NOT met: cycles and user time did not fall (3.91G -\u003e 4.00G cycles, 0.96 -\u003e 0.98 s user, machine load ~26, inside the spread). Per-byte walk probe: 67.4G -\u003e 20.2G instructions, 2.25 s -\u003e 0.86 s user. Deviation from the page: Matched absorbs TupleFields (page said the join is Whole). Limit: a rest bound by a case arm is not a cursor. Found in review: a cursor at position 0 made whole allocated a new view in native code; fixed by 'a rest that spans its whole source is the source', pinned by fixture 01187.",
       "timestamp": "2026-11-15T05:08:51Z"
+    },
+    {
+      "text": "Join-rule experiment (uncommitted, reverted): with Whole above Matched and Matched join TupleFields = Whole (the page's rule), the distiller on 32,000 lines retires 22.95G instructions and peaks at 280 MB, against 17.67G and 232 MB with Matched on top and 22.88G / 280 MB on develop. The page's rule gives back the whole gain. Cost of Matched on top after #602: three work pins in tests/fz2_cli.rs rise (00181 evaluations 882 -\u003e 884; 00567 body walks 246 -\u003e 247; target aggregate 1741 -\u003e 1746) because Exception.__inspect_indented__/1 matches inspect/1's return while banner/2 and format_mfa/3 want it whole, so Kernel.inspect/1 and Kernel.fz_inspect/1 re-derive demand once each. Pins not raised: awaiting the user's authorization.",
+      "timestamp": "2026-11-15T05:36:14Z"
     }
   ],
   "priority": 1,
   "status": "closed",
   "title": "A binary that is only taken apart travels as its source and a position",
   "type": "task",
-  "updated_at": "2026-11-15T05:08:52Z"
+  "updated_at": "2026-11-15T05:36:14Z"
 }
