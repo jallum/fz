@@ -2392,26 +2392,11 @@ impl<'t> FrontDoorParser<'t> {
             return false;
         }
         match self.peek() {
-            Tok::Int(_)
-            | Tok::Float(_)
-            | Tok::Binary(_)
-            | Tok::Atom(_)
-            | Tok::True
-            | Tok::False
-            | Tok::Nil
-            | Tok::Ident(_)
-            | Tok::Upper(_)
-            | Tok::LParen
-            | Tok::LBrack
-            | Tok::LBrace
-            | Tok::PercentLBrace
-            | Tok::LBitstr
-            | Tok::Fn
-            | Tok::KwKey(_)
-            | Tok::Bang
-            | Tok::Amp => true,
             Tok::Minus | Tok::Plus => !self.space_before_at(1),
-            _ => false,
+            // `x % y` is the modulus; `x %Point{}` starts a struct argument.
+            Tok::Percent => !self.space_before_at(1) && matches!(self.peek_at(1), Tok::Upper(_)),
+            Tok::KwKey(_) => true,
+            tok => tok.starts_expression(),
         }
     }
 
