@@ -1371,6 +1371,21 @@ fn byte_extent_rounds_a_partial_last_byte_up() {
     });
 }
 
+/// `bit_size` counts the bits of a bitstring, a partial last byte only by the
+/// bits it holds, and a cursor counts the bits left of its source.
+#[test]
+fn bit_extent_counts_every_bit_and_a_cursor_what_is_left() {
+    with_process(|process| {
+        let bytes = [1u8, 2];
+        let whole = fz_alloc_bitstring_const(process, bytes.as_ptr() as u64, 2, 16);
+        let partial = fz_alloc_bitstring_const(process, bytes.as_ptr() as u64, 2, 11);
+        assert_eq!(fz_bitstring_bit_extent(whole, 0), 16);
+        assert_eq!(fz_bitstring_bit_extent(partial, 0), 11);
+        assert_eq!(fz_bitstring_bit_extent(partial, 3), 8);
+        assert_eq!(fz_bitstring_bit_extent(partial, 11), 0);
+    });
+}
+
 #[test]
 fn a_function_reports_the_number_of_arguments_it_takes_not_counting_its_captures() {
     with_process(|process| {

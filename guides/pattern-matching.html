@@ -163,7 +163,7 @@ helpers, and the Kernel guard functions (<code>is_integer</code>,
 <code>is_atom</code>, <code>is_float</code>, <code>is_boolean</code>,
 <code>is_nil</code>, <code>is_tuple</code>, <code>is_function</code>
 (with or without an arity), <code>map_size</code>,
-<code>tuple_size</code>, <code>byte_size</code>, <code>length</code>,
+<code>tuple_size</code>, <code>bit_size</code>, <code>byte_size</code>, <code>length</code>,
 <code>elem</code>, <code>hd</code>, <code>tl</code>, <code>abs</code>,
 <code>round</code>, <code>trunc</code>, <code>floor</code>, <code>ceil</code>). No allocations, and no other function calls. A guard
 function that is given a value outside its domain makes the guard false,
@@ -284,7 +284,8 @@ binary and the fields before the rest are whole bytes, the compiler leaves that
 test out, because the rest cannot end between bytes. A <code>rest :: bits</code>
 takes whatever remains and binds a bitstring. <code>byte_size</code> counts the
 bytes that hold a bitstring, so <code>byte_size(&lt;&lt;1::3&gt;&gt;)</code>
-is <code>1</code>.</p>
+is <code>1</code>, and <code>bit_size</code> counts its bits, so
+<code>bit_size(&lt;&lt;1::3&gt;&gt;)</code> is <code>3</code>.</p>
 
 <!-- ─────────────────────────────── 4 ─────────────────────────────── -->
 <h2 id="share">4. We destructure once</h2>

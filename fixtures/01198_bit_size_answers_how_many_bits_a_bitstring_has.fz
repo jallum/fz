@@ -1,0 +1,35 @@
+#---
+# purpose: "bit_size/1 answers how many bits a bitstring has, a partial last byte counting only its bits, as in Elixir; in a guard it fails the clause for a value that is not a bitstring, and outside one it raises ArgumentError"
+# oracle: self
+# oracle.stamp: 64f38862567c0830
+#---
+defmodule Main do
+  def kind(b) when bit_size(b) > 8, do: :long
+  def kind(b) when bit_size(b) >= 0, do: :short
+  def kind(_), do: :not_a_bitstring
+
+  def main() do
+    IO.inspect(bit_size(<<>>))
+    IO.inspect(bit_size(<<1::3>>))
+    IO.inspect(bit_size(<<1, 2::4>>))
+    IO.inspect(bit_size("héllo"))
+    <<_::size(3), rest::bitstring>> = <<1, 2::4>>
+    IO.inspect(bit_size(rest))
+    IO.inspect(kind(<<1, 2>>))
+    IO.inspect(kind(<<1::5>>))
+    IO.inspect(kind(:a))
+
+    send(self(), :a)
+
+    receive do
+      v ->
+        try do
+          bit_size(v)
+        rescue
+          e in ArgumentError -> IO.inspect(Exception.message(e))
+        end
+    end
+  end
+end
+
+Main.main()

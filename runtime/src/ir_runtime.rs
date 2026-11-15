@@ -1112,6 +1112,18 @@ pub extern "C" fn fz_bitstring_byte_extent(ref_word: u64, bit_pos: u64) -> i64 {
     (bit_len - bit_pos).div_ceil(8) as i64
 }
 
+/// The number of BITS in the bitstring starting `bit_pos` bits into
+/// `ref_word`'s bitstring: the whole bitstring at position zero, the rest of it
+/// from a cursor, as in Elixir's `bit_size`.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_bitstring_bit_extent(ref_word: u64, bit_pos: u64) -> i64 {
+    let Some(p) = bitstring_like_word(ref_word) else {
+        panic!("bit_size expects a bitstring");
+    };
+    let bit_len = unsafe { bitstring_bit_len(p) };
+    (bit_len - bit_pos) as i64
+}
+
 /// The size of a `binary` segment whose value is a pinned binary: that binary's
 /// byte count, which is what `<<^p::binary, rest::binary>>` reads.
 ///

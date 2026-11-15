@@ -32,6 +32,7 @@ import Kernel, only: [
   floor: 1,
   hd: 1,
   make_ref: 0,
+  bit_size: 1,
   byte_size: 1,
   ceil: 1,
   elem: 2,
