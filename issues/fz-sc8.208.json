@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-nml.1"
+  ],
   "created": "2026-11-14T23:37:01Z",
   "description": "Proposal page first, no build. The distiller creates and kills 18.2 million off-heap binary stubs on 32,000 lines (about 560 per input line); each is a 32-byte ProcBin holding its own SharedBin reference, pushed on the MSO chain by alloc_procbin, and the sweep must visit every dead one (mso_unreached_closures and mso_sweep each walk the young chain: two walks per collection). On the full log fz_bs_read_binary_ref is 17% of samples, alloc_bitstring_suffix 4%, alloc_procbin 3%, the two chain walks 4%.\nPage compares, with spikes and predictions: (a) a view of an on-heap binary points at that binary instead of holding a SharedBin reference (BEAM sub-binary), so a dead view is never swept; (b) a self-recursive match passes its position instead of building a rest (BEAM match-context reuse; see the fz-sc8.183 page, Not in this ticket); (c) resource stubs on their own chain so the destructor search does not walk binary stubs (proposed on the fz-sc8.184 page, not built). Includes a removal ledger.",
   "id": "fz-sc8.208",
@@ -41,5 +43,5 @@
   "status": "open",
   "title": "A binary that is only taken apart travels as its source and a position",
   "type": "task",
-  "updated_at": "2026-11-15T03:18:49Z"
+  "updated_at": "2026-11-15T03:53:54Z"
 }

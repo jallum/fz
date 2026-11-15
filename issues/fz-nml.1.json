@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-sc8.208"
+  ],
   "blocks": [
     "fz-nml.2"
   ],
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "A binary view carries its own length, so any whole-byte slice is a view",
   "type": "task",
-  "updated_at": "2026-11-15T03:53:52Z"
+  "updated_at": "2026-11-15T03:53:54Z"
 }
