@@ -143,7 +143,7 @@ installs one fresh block of `pick_block_capacity(measured_bytes)`: an exact
 block of the measured bytes below the table, a table entry within it, and an
 exact block above it. The copy allocates through
 `alloc_kind` into that block and cannot overflow it. `Heap::end_gift` asserts
-the block's fill is exactly the measured bytes, turns the block and the MSO
+the block's fill is exactly the measured bytes, turns the block and the off-heap
 objects produced since the window opened (one chain of BinRefs and resource stubs)
 into a `GiftSegment` of exactly one block, restores the saved tip, and puts
 `live_count` back. Allocation statistics stay with the heap that did the
@@ -162,7 +162,7 @@ does, once it reaches the baseline. Its list cells are shared from birth
 block is rewritten in place to point at a younger value. A minor collection
 leaves the gift where it is and only a major collection copies the live data
 out of it; the gift's off-heap prefix, BinRefs and resource stubs on one chain, splices onto
-the old chain (`mso_old_head`).
+the old chain (`off_heap_old_head`).
 
 A collection is minor or major (`Heap::next_generation`). A minor collection's
 from-space is the young blocks, so old blocks stay where they are and a

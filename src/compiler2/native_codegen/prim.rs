@@ -21,6 +21,7 @@ use fz_runtime::any_value::{
     AnyValue, AnyValueRefPacking, BITSTRING_BIT_LEN_SHIFT, BITSTRING_BYTES_OFFSET, FALSE_ATOM_ID, SlotLayout,
     TRUE_ATOM_ID, ValueKind, shared_struct_header_word,
 };
+use fz_runtime::bits::{BINVIEW_BIT_LEN_OFFSET, BINVIEW_BYTES_PTR_OFFSET};
 use fz_runtime::extern_binary::{fz_binary_as_cstring, fz_binary_as_ptr};
 use fz_runtime::heap::SHARED_BIN_THRESHOLD_BYTES;
 use fz_runtime::ir_runtime::{
@@ -34,7 +35,6 @@ use fz_runtime::ir_runtime::{
     fz_value_cmp_raw_const, fz_value_cmp_ref, fz_value_eq_raw_const, fz_value_eq_ref, fz_value_eq_widening_ref,
 };
 use fz_runtime::ir_runtime::{fz_box_opaque_for_any, fz_unbox_opaque};
-use fz_runtime::procbin::{BINVIEW_BIT_LEN_OFFSET, BINVIEW_BYTES_PTR_OFFSET};
 use fz_runtime::process::AtomName;
 use fz_runtime::process_abi::{PROCESS_DELIVERED_OFFSET, PROCESS_FAILED_OFFSET};
 use target_lexicon::{Architecture, OperatingSystem, Triple};

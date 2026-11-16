@@ -22,7 +22,7 @@
 //! not participate in its execution-context fault channel.
 
 use crate::any_value::{AnyValueRef, binview_addr_from_tagged};
-use crate::procbin::{BinView, bitstring_bit_len, bitstring_byte_ptr};
+use crate::bits::{BinView, bitstring_bit_len, bitstring_byte_ptr};
 use crate::process::Process;
 use std::process::abort;
 use std::slice::from_raw_parts;

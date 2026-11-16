@@ -27,7 +27,7 @@ use crate::any_value::{
     map_node_child_count, map_node_entry_count, map_slot, share_struct, struct_field_kind_slot, struct_field_raw_slot,
     struct_schema_id,
 };
-use crate::procbin::{BINREF_BYTES, BinView, SharedBinHandle, alloc_binref, alloc_view, shared_bin_freeze};
+use crate::bits::{BINREF_BYTES, BinView, SharedBinHandle, alloc_binref, alloc_view, shared_bin_freeze};
 use crate::resource::{ResourceHandle, ResourceStub, alloc_resource};
 
 /// What a deep copy needs to know about the heap it reads: how its structs are

@@ -9,6 +9,7 @@
 
 pub mod any_value;
 pub mod aot_shim;
+pub mod bits;
 pub mod bitstr;
 pub mod clock;
 pub mod delivery;
@@ -19,10 +20,10 @@ pub mod function_denotation;
 pub mod heap;
 pub mod ir_runtime;
 pub mod module_name;
+pub mod off_heap;
 pub mod output;
 pub mod park;
 pub mod pinned_abi;
-pub mod procbin;
 pub mod process;
 pub mod process_abi;
 pub mod resource;

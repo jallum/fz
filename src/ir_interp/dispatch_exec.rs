@@ -23,11 +23,11 @@ use crate::runtime_type_predicate::{
     RuntimeTypePredicate, RuntimeValueReader, TuplePositions, matches_runtime_type_predicate, surface_membership,
 };
 use fz_runtime::any_value::{AnyValue as RuntimeAnyValue, TRUE_ATOM_ID, ValueKind, struct_schema_id};
+use fz_runtime::bits::{bitstring_bit_len, bitstring_byte_ptr, is_bitstring_like};
 use fz_runtime::ir_runtime::{
     bs_field_end, fz_bs_begin, fz_bs_bit_len_ref, fz_bs_field_spec, fz_bs_finalize, fz_bs_write_int, fz_list_head_ref,
     fz_list_tail_ref, fz_matcher_map_get_ref, fz_pinned_binary_segment_size, fz_struct_get_field_ref,
 };
-use fz_runtime::procbin::{bitstring_bit_len, bitstring_byte_ptr, is_bitstring_like};
 use fz_runtime::process::Process;
 
 /// The operands a plan needs beyond its inputs: one runtime word per pin it

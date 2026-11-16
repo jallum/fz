@@ -25,8 +25,8 @@
 #   dtor:10
 #
 # The dtor lines arrive after `before` because the heap drops (and runs
-# its MSO sweep) at process exit, not at let-binding scope end. Order
-# within the dtor block reflects the MSO chain's LIFO push order — the
+# its off-heap sweep) at process exit, not at let-binding scope end. Order
+# within the dtor block reflects the off-heap chain's LIFO push order — the
 # last `make_resource` is at the head of the chain and sweeps first.
 extern "C" defp fz_resource_test_print_dtor(integer) :: nil
 

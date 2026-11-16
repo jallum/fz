@@ -3,12 +3,12 @@ use crate::any_value::{
     AnyValueRef, ClosureDenotationId, EMPTY_LIST_BITS, closure_addr_from_tagged, closure_capture_set,
     map_addr_from_tagged,
 };
+use crate::bits::{BinView, SharedBinHandle, alloc_binref, alloc_buffer_view, alloc_view};
 use crate::function_denotation::FunctionDenotation;
 use crate::heap::AddressMap;
 use crate::heap::StubSite;
 use crate::heap::{Heap, Schema, deep_copy_slot};
 use crate::module_name::ModuleName;
-use crate::procbin::{BinView, SharedBinHandle, alloc_binref, alloc_buffer_view, alloc_view};
 use crate::resource::{ResourceHandle, alloc_resource};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;

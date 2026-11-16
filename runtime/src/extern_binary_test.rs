@@ -1,9 +1,9 @@
 use super::*;
 use crate::any_value::ValueKind;
+use crate::bits::{BinView, SharedBinHandle, alloc_binref, alloc_view};
 use crate::heap::Heap;
 use crate::heap::SchemaRegistry;
 use crate::heap::StubSite;
-use crate::procbin::{BinView, SharedBinHandle, alloc_binref, alloc_view};
 use crate::process::Process;
 use std::cell::RefCell;
 use std::env::{current_exe, var};

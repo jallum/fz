@@ -6,10 +6,10 @@ use crate::any_value::{
     map_destination_header_word, map_header_word, map_trie_header_word, struct_addr_from_tagged, struct_header_word,
     struct_schema_id,
 };
+use crate::bits::{SharedBinHandle, alloc_buffer_view};
 use crate::heap::SHARED_BIN_THRESHOLD_BYTES;
 use crate::heap::StubSite;
 use crate::heap::{Heap, SIZE_TABLE, Schema, SchemaRegistry};
-use crate::procbin::{SharedBinHandle, alloc_buffer_view};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -256,7 +256,7 @@ fn a_binview_over_bytes_that_read_like_a_marker_survives_a_collection() {
     let (old, shared) = (stub.as_raw(), stub.shared_raw());
     let moved = collect_one(&mut heap, ValueKind::BINVIEW, old).binview_addr().unwrap();
     assert_ne!(moved, old);
-    let moved = unsafe { crate::procbin::BinView::from_raw(moved) };
+    let moved = unsafe { crate::bits::BinView::from_raw(moved) };
     assert_eq!(moved.shared_raw(), shared);
     assert_eq!(moved.bit_len(), bytes.len() as u64 * 8);
 }

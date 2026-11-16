@@ -6,8 +6,9 @@ use crate::any_value::{
     AnyValue, AnyValueRef, EMPTY_LIST, ListCons, ValueKind, heap_kind_from_tagged, heap_object_word,
     list_addr_from_tagged,
 };
+use crate::bits::{BinView, SharedBinHandle, alloc_buffer_view};
 use crate::heap::{StubCounts, StubSite};
-use crate::procbin::{BinView, SharedBinHandle, alloc_buffer_view, mso_sweep};
+use crate::off_heap;
 use crate::resource::{ResourceHandle, alloc_resource};
 use crate::sync::Ordering;
 use std::cell::RefCell;
@@ -176,8 +177,8 @@ fn an_old_binref_that_died_is_released_by_a_major_collection_and_a_young_one_by_
     );
     let mut roots = [root_of(heap_object_word(old.as_raw(), ValueKind::BINVIEW))];
     assert_eq!(heap.collect(&mut roots).generation, Generation::Minor);
-    assert_ne!(heap.mso_old_head, 0, "the survivor is on the old chain");
-    assert_eq!(heap.mso_head, 0);
+    assert_ne!(heap.off_heap_old_head, 0, "the survivor is on the old chain");
+    assert_eq!(heap.off_heap_head, 0);
 
     alloc_buffer_view(
         &mut heap,
@@ -207,7 +208,7 @@ fn an_old_binref_that_died_is_released_by_a_major_collection_and_a_young_one_by_
     let (_, stats) = collect_list(&mut heap, retained);
     assert_eq!(stats.generation, Generation::Major);
     assert_eq!(shared_refs(&old_witness), 1, "the major sweep released the old stub");
-    assert_eq!((heap.mso_head, heap.mso_old_head), (0, 0));
+    assert_eq!((heap.off_heap_head, heap.off_heap_old_head), (0, 0));
 }
 
 /// Dropping the heap releases the stubs of both chains.
@@ -331,7 +332,7 @@ fn a_collection_walks_the_binary_and_resource_stubs_once_each() {
     alloc_unrooted_stubs(&mut heap, binaries, resources);
 
     let mut sweep_visits = 0;
-    mso_sweep(
+    off_heap::sweep(
         &mut heap,
         Generation::Minor,
         &mut sweep_visits,
@@ -386,17 +387,17 @@ fn one_sweep_decides_interleaved_binrefs_and_resources() {
         [(TEST_DESTRUCTOR, 3), (TEST_DESTRUCTOR, 1)],
         "the dead resources queued, newest first; the live one did not"
     );
-    let old = heap.mso_old_head;
+    let old = heap.off_heap_old_head;
     assert_eq!(heap_kind_from_tagged(old), Some(ValueKind::BINREF));
-    let binref = unsafe { crate::procbin::BinRef::from_raw(crate::any_value::heap_word_addr(old)) };
-    assert_eq!(heap_kind_from_tagged(binref.mso_next()), Some(ValueKind::RESOURCE));
+    let binref = unsafe { crate::bits::BinRef::from_raw(crate::any_value::heap_word_addr(old)) };
+    assert_eq!(heap_kind_from_tagged(binref.off_heap_next()), Some(ValueKind::RESOURCE));
     assert_eq!(
-        unsafe { crate::resource::ResourceStub::from_raw(crate::any_value::heap_word_addr(binref.mso_next())) }
-            .mso_next(),
+        unsafe { crate::resource::ResourceStub::from_raw(crate::any_value::heap_word_addr(binref.off_heap_next())) }
+            .off_heap_next(),
         0,
         "the survivors are the whole old chain"
     );
-    assert_eq!(heap.mso_head, 0);
+    assert_eq!(heap.off_heap_head, 0);
 }
 
 /// A minor collection follows only the young chain; a major collection also
@@ -420,13 +421,13 @@ fn a_major_collection_follows_the_old_chain_and_a_minor_does_not() {
     let first = heap.collect(&mut roots);
     assert_eq!(first.generation, Generation::Minor);
     assert_eq!(first.stub_visits, 2, "one sweep link per stub");
-    assert_ne!(heap.mso_old_head, 0, "both survivors are on the one old chain");
-    assert_eq!(heap.mso_head, 0);
+    assert_ne!(heap.off_heap_old_head, 0, "both survivors are on the one old chain");
+    assert_eq!(heap.off_heap_head, 0);
 
     let second = heap.collect(&mut roots);
     assert_eq!(second.generation, Generation::Major);
     assert_eq!(second.stub_visits, 2, "the major collection follows the old chain");
-    assert_ne!(heap.mso_old_head, 0);
+    assert_ne!(heap.off_heap_old_head, 0);
 }
 
 /// A minor collection looks inside every young object, so a write into one is
@@ -606,7 +607,7 @@ fn a_binref_outlives_its_buffers_own_view_and_dies_with_its_last_window() {
         1,
         "no view names the BinRef, so the major released it"
     );
-    assert_eq!(heap.mso_old_head, 0);
+    assert_eq!(heap.off_heap_old_head, 0);
 }
 
 /// A view made after a collection can name a BinRef that collection kept. A
@@ -684,8 +685,8 @@ fn a_send_gives_the_receiver_its_own_binref_and_both_heaps_release() {
     assert_ne!(sent.binref().as_raw(), received.binref().as_raw());
     assert_eq!(sent.shared_raw(), received.shared_raw());
     assert_eq!(view_bytes(received), bytes);
-    assert_eq!(receiver.mso_head, received.binref().word());
-    assert_eq!(sender.mso_head, sent.binref().word());
+    assert_eq!(receiver.off_heap_head, received.binref().word());
+    assert_eq!(sender.off_heap_head, sent.binref().word());
 
     drop(sender);
     assert_eq!(shared_refs(&witness), 2, "the sender released its BinRef");

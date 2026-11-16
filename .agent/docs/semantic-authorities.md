@@ -190,7 +190,7 @@ bounds check is emitted arithmetic (`BitFieldFits`, `BitFieldNext`), and
 `fz_bs_read_binary_ref` a binary view. Native code reads a whole-byte field
 without the runtime. `BitstringBitLen` and `BitstringBase` branch inline on the
 two binary representations (inline bitstring, a view through a `BinRef` over a `SharedBin`;
-layout constants in `runtime/src/procbin.rs` and `any_value.rs`) through
+layout constants in `runtime/src/bits.rs` and `any_value.rs`) through
 `emit_by_binary_representation`, which reads the reference's own kind bits. That
 is also the region's "is this a binary" test: `BitstringBitLen` answers
 `NOT_A_BINARY` (-1) for any other kind and `IsNotBinary` turns that into a raw

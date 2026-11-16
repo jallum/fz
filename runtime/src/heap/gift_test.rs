@@ -6,10 +6,10 @@ use crate::any_value::{
     AnyValue, AnyValueRef, EMPTY_LIST, ValueKind, binview_addr_from_tagged, heap_kind_from_tagged, heap_object_word,
     heap_word_addr, list_addr_from_tagged, struct_addr_from_tagged, struct_size_for_payload,
 };
-use crate::heap::StubSite;
-use crate::procbin::{
+use crate::bits::{
     BINREF_BYTES, BINVIEW_BYTES, BinRef, BinView, SharedBinHandle, alloc_binref, alloc_buffer_view, alloc_view,
 };
+use crate::heap::StubSite;
 use crate::resource::{RESOURCE_STUB_SIZE, ResourceHandle, ResourceStub, alloc_resource};
 use crate::sync::Ordering;
 use std::cell::RefCell;
@@ -65,16 +65,16 @@ fn binref_word(pb: &BinView) -> u64 {
     pb.binref().word()
 }
 
-/// The mso chain from `head` as tagged words, head first.
+/// The off-heap chain from `head` as tagged words, head first.
 fn chain_from(head: u64) -> Vec<u64> {
     let mut out = Vec::new();
     let mut cur_bits = head;
     while cur_bits != 0 {
         let addr = heap_word_addr(cur_bits);
         let next = match heap_kind_from_tagged(cur_bits) {
-            Some(ValueKind::BINREF) => unsafe { BinRef::from_raw(addr).mso_next() },
-            Some(ValueKind::RESOURCE) => unsafe { ResourceStub::from_raw(addr).mso_next() },
-            kind => panic!("unexpected MSO kind {kind:?}"),
+            Some(ValueKind::BINREF) => unsafe { BinRef::from_raw(addr).off_heap_next() },
+            Some(ValueKind::RESOURCE) => unsafe { ResourceStub::from_raw(addr).off_heap_next() },
+            kind => panic!("unexpected off-heap kind {kind:?}"),
         };
         out.push(cur_bits);
         cur_bits = next;
@@ -82,14 +82,14 @@ fn chain_from(head: u64) -> Vec<u64> {
     out
 }
 
-/// The heap's young mso chain: the stubs allocated since its last collection.
-fn mso_chain(h: &Heap) -> Vec<u64> {
-    chain_from(h.mso_head)
+/// The heap's young off-heap chain: the stubs allocated since its last collection.
+fn off_heap_chain(h: &Heap) -> Vec<u64> {
+    chain_from(h.off_heap_head)
 }
 
-/// The heap's old mso chain: the stubs a collection kept and gifts brought.
-fn mso_old_chain(h: &Heap) -> Vec<u64> {
-    chain_from(h.mso_old_head)
+/// The heap's old off-heap chain: the stubs a collection kept and gifts brought.
+fn off_heap_old_chain(h: &Heap) -> Vec<u64> {
+    chain_from(h.off_heap_old_head)
 }
 
 /// The last table entry: anything larger is outside the pool.
@@ -185,7 +185,7 @@ fn end_gift_restores_the_senders_tip_and_leaves_its_earlier_allocations_untouche
 }
 
 #[test]
-fn a_gift_with_a_shared_bin_stub_survives_the_receivers_gc_on_its_mso_chain() {
+fn a_gift_with_a_shared_bin_stub_survives_the_receivers_gc_on_its_off_heap_chain() {
     pool_drain_for_test();
     let witness = SharedBinHandle::from_bytes(&[0xaa; 8]);
     let reg = fresh_registry();
@@ -201,13 +201,13 @@ fn a_gift_with_a_shared_bin_stub_survives_the_receivers_gc_on_its_mso_chain() {
     );
     let gifted = binref_word(&pb);
     let segment = sender.end_gift();
-    assert_eq!(sender.mso_head, 0, "the stub left the sender's chain");
-    assert_eq!(segment.mso_head(), gifted);
+    assert_eq!(sender.off_heap_head, 0, "the stub left the sender's chain");
+    assert_eq!(segment.off_heap_head(), gifted);
     assert_eq!(shared_refs(&witness), 2, "the segment holds the heap-owned reference");
 
     receiver.graft(segment);
-    assert_eq!(mso_old_chain(&receiver), vec![gifted]);
-    assert_eq!(mso_chain(&receiver), Vec::<u64>::new());
+    assert_eq!(off_heap_old_chain(&receiver), vec![gifted]);
+    assert_eq!(off_heap_chain(&receiver), Vec::<u64>::new());
     let mut root = heap_object_word(pb.as_raw() as *const u8, ValueKind::BINVIEW) as *mut u8;
     assert_eq!(pool_total_cached_blocks(), 0);
     let stats = receiver.collect_tagged(&mut root);
@@ -220,7 +220,7 @@ fn a_gift_with_a_shared_bin_stub_survives_the_receivers_gc_on_its_mso_chain() {
         "a gift is old: a minor collection leaves its stub in place"
     );
     assert_eq!(
-        mso_old_chain(&receiver),
+        off_heap_old_chain(&receiver),
         vec![gifted],
         "the chain still names the stub in the adopted block"
     );
@@ -242,7 +242,7 @@ fn a_gift_with_a_shared_bin_stub_survives_the_receivers_gc_on_its_mso_chain() {
 }
 
 #[test]
-fn graft_splices_each_gifts_mso_prefix_ahead_of_the_receivers_old_chain() {
+fn graft_splices_each_gifts_off_heap_prefix_ahead_of_the_receivers_old_chain() {
     let witness = SharedBinHandle::from_bytes(&[1, 2, 3, 4]);
     let reg = fresh_registry();
     let mut sender = Heap::new(SIZE_TABLE[0], reg.clone());
@@ -287,19 +287,19 @@ fn graft_splices_each_gifts_mso_prefix_ahead_of_the_receivers_old_chain() {
     let later_segment = sender.end_gift();
 
     assert_eq!(
-        mso_chain(&sender),
+        off_heap_chain(&sender),
         vec![sender_own],
         "the sender keeps only its own stub"
     );
     receiver.graft(segment);
     receiver.graft(later_segment);
     assert_eq!(
-        mso_old_chain(&receiver),
+        off_heap_old_chain(&receiver),
         vec![latest, newer, older],
         "each gift's stubs join the old chain ahead of the last gift's, newest to oldest"
     );
     assert_eq!(
-        mso_chain(&receiver),
+        off_heap_chain(&receiver),
         vec![receiver_own],
         "the receiver's own stub is young and stays on the young chain"
     );
@@ -466,7 +466,7 @@ fn an_empty_segment_grafts_as_a_no_op_and_never_touches_the_pool() {
 
     let segment = GiftSegment::empty();
     assert_eq!((segment.block_count(), segment.fill_bytes()), (0, 0));
-    assert_eq!(segment.mso_head(), 0);
+    assert_eq!(segment.off_heap_head(), 0);
     receiver.graft(segment);
 
     assert_eq!(receiver.bytes_used(), bytes_before, "nothing was adopted");
@@ -476,7 +476,7 @@ fn an_empty_segment_grafts_as_a_no_op_and_never_touches_the_pool() {
         cached_before,
         "no block was taken or returned"
     );
-    assert_eq!(mso_chain(&receiver), Vec::<u64>::new());
+    assert_eq!(off_heap_chain(&receiver), Vec::<u64>::new());
     drop(receiver);
     pool_drain_for_test();
 }
@@ -714,11 +714,11 @@ fn a_gift_carries_binary_and_resource_stubs_on_one_chain() {
         ValueKind::RESOURCE,
     );
     let segment = sender.end_gift();
-    assert_eq!(sender.mso_head, 0);
-    assert_eq!(segment.mso_head(), resource);
-    assert_eq!(chain_from(segment.mso_head()), vec![resource, binary]);
+    assert_eq!(sender.off_heap_head, 0);
+    assert_eq!(segment.off_heap_head(), resource);
+    assert_eq!(chain_from(segment.off_heap_head()), vec![resource, binary]);
 
     receiver.graft(segment);
-    assert_eq!(chain_from(receiver.mso_old_head), vec![resource, binary]);
-    assert_eq!(receiver.mso_head, 0);
+    assert_eq!(chain_from(receiver.off_heap_old_head), vec![resource, binary]);
+    assert_eq!(receiver.off_heap_head, 0);
 }
