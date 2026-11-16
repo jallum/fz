@@ -4,14 +4,15 @@
     "fz-sc8.30"
   ],
   "blocks": [],
+  "closed_at": "2026-11-16T03:17:22Z",
   "created": "2026-11-15T14:33:33Z",
   "description": "Proposal /Users/j5n/Workspace/fz-bitstring-split.html S4. Rebuild on fz-sc8.30 (the bitstring/binary split) and #628. Held work in ../fz-nml13 (branch fz-nml.13 on old fz-nml.11 07984e81e; rebase onto 31823421d or develop once #628 lands): :binary.copy and referenced_byte_size guard with is_binary / is_bitstring directly (no fz_bitstring_is_binary); subject_complaint gets Elixir's 'is a bitstring (expected a binary)' wording; 01338 gains the \u003c\u003c1::3\u003e\u003e cases and matches Elixir. Kernel is_bitstring and fixture 01360 move to fz-sc8.30. The held distiller pin rise (18335,111802) is not authorized; re-measure after the split.",
   "id": "fz-nml.13",
   "labels": [],
   "parent": "fz-nml",
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "is_bitstring/1 is a guard, and :binary raises Elixir's 'is a bitstring' wording",
   "type": "task",
-  "updated_at": "2026-11-16T03:07:17Z"
+  "updated_at": "2026-11-16T03:17:22Z"
 }
