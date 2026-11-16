@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-sc8.30"
   ],
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-nml",
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "Binaries order by the fast path: the ordering operators' binary clauses return",
   "type": "task",
-  "updated_at": "2026-11-15T15:57:12Z"
+  "updated_at": "2026-11-16T03:07:16Z"
 }
