@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-16T03:02:31Z",
+  "description": "fz has no is_number/1: a call reports lower/unbound. Kernel gains it beside is_integer/is_float (an integer clause, a float clause, a false clause), in the prelude import list and the moduledoc; Macro.escape's first clause tests it.",
+  "id": "fz-sc8.241",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 2,
+  "status": "open",
+  "title": "is_number/1 answers whether a value is an integer or a float, in bodies and guards, as in Elixir",
+  "type": "task",
+  "updated_at": "2026-11-16T03:02:31Z"
+}
