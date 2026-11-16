@@ -52,14 +52,15 @@ defmodule :binary do
       #=> 3
 
   """
-  @spec referenced_byte_size(binary) :: integer
-  def referenced_byte_size(binary) when is_binary(binary), do: fz_binary_referenced_size(binary)
+  @spec referenced_byte_size(bitstring) :: integer
+  def referenced_byte_size(bitstring) when is_bitstring(bitstring), do: fz_binary_referenced_size(bitstring)
 
-  def referenced_byte_size(binary),
-    do: raise(%ArgumentError{message: "errors were found at the given arguments:\n\n" <> subject_complaint(binary)})
+  def referenced_byte_size(subject),
+    do: raise(%ArgumentError{message: "errors were found at the given arguments:\n\n" <> subject_complaint(subject)})
 
   @spec subject_complaint(any) :: binary
   defp subject_complaint(subject) when is_binary(subject), do: ""
+  defp subject_complaint(subject) when is_bitstring(subject), do: "  * 1st argument: is a bitstring (expected a binary)\n"
   defp subject_complaint(_), do: "  * 1st argument: not a binary\n"
 
   @spec count_complaint(any) :: binary
