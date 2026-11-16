@@ -1,7 +1,7 @@
 #---
 # purpose: "A @spec that names String.t() in a parameter and in a return position compiles, since String declares the type"
-# oracle: 01380_a_spec_naming_string_t_compiles.oracle.exs
-# oracle.stamp: d33e1e427e715dda
+# oracle: self
+# oracle.stamp: 8c14958d14e3cd37
 #---
 defmodule Main do
   @spec name(atom()) :: String.t()
