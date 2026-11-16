@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-16T03:07:10Z",
+  "description": "Approved 2026-11-15. runtime/src/procbin.rs holds two concerns OTP keeps apart: the bitstring types (SharedBin ~ OTP Binary, BinRef ~ erl_bits.h:139 BinRef, BinView ~ erl_bits.h:82 ErlSubBits) and the off-heap list (OffHeap enum, link plumbing, mso_sweep, mso_drop_all, mso_release_chain ~ OTP ErlOffHeap, erl_message.h:92). 'ProcBin' is OTP's pre-27 name for what is now BinRef. Change: runtime/src/bits.rs holds SharedBin/BinRef/BinView and the bitstring helpers; runtime/src/off_heap.rs holds OffHeap, the chain, the sweep and drop-all; mso_* names become off_heap_* (heap fields mso_head/mso_old_head -\u003e off_heap_head/off_heap_old_head, mso_push, mso_set_next, mso_next on stubs, etc.). Tests move to bits_test.rs / off_heap_test.rs. Mechanical: no behavior change, no pin moves (any move stops the work). Docs: .agent/docs and guides that name procbin or mso. Stacked on fz-nml.18 (#665). Coordinated with Type System (fz-9x7.11 will rebase across the rename).",
+  "id": "fz-nml.21",
+  "labels": [],
+  "parent": "fz-nml",
+  "priority": 2,
+  "status": "open",
+  "title": "procbin.rs splits into bits.rs and off_heap.rs, named as in OTP",
+  "type": "task",
+  "updated_at": "2026-11-16T03:07:10Z"
+}
