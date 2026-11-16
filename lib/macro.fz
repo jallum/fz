@@ -34,7 +34,7 @@ defmodule Macro do
 
   """
   @spec escape(any) :: any
-  def escape(value) when is_atom(value) or is_integer(value) or is_float(value) or is_binary(value), do: value
+  def escape(value) when is_atom(value) or is_number(value) or is_binary(value), do: value
   def escape(value) when is_bitstring(value), do: escape_bits(value, rem(bit_size(value), 8))
   def escape({first, second}), do: {escape(first), escape(second)}
   def escape(value) when is_tuple(value), do: {:{}, [], escape_each(Tuple.to_list(value))}

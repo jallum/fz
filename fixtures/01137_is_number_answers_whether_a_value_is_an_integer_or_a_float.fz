@@ -1,0 +1,18 @@
+#---
+# purpose: "is_number/1 answers true for an integer or a float and false for anything else, in a body and in a guard, as in Elixir"
+# oracle: self
+# oracle.stamp: 16af0d144d6fa60e
+#---
+defmodule Main do
+  def kind(x) when is_number(x) and x > 1, do: {:big, x + 1}
+  def kind(x) when is_number(x), do: {:small, x}
+  def kind(x), do: {:other, x}
+
+  def main() do
+    IO.inspect(Enum.map([1, 2.5, -3, 0.0, :a, "1", [1], {1}, nil], fn v -> is_number(v) end))
+    IO.inspect(Enum.map([5, 1.0, 2.5, :x, "7"], &kind/1))
+    IO.inspect(Kernel.is_number(3))
+  end
+end
+
+Main.main()

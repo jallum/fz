@@ -251,7 +251,8 @@ fn read_compile_spend(trace: &Path) -> CompileSpend {
 // source, one derivation each, whether or not the distiller calls them.
 // 18_342 -> 18_344: `Kernel` defines `bit_size/1` and `fz_bitstring_bit_extent/1`, one
 // derivation each, as above.
-const DERIVATIONS: u64 = 18_344;
+// 18_344 -> 18_345: `Kernel` defines `is_number/1`, one derivation, as above.
+const DERIVATIONS: u64 = 18_345;
 // 111_876 -> 111_888: an extern that declares `raises:` reads the struct of
 // the exception it names, to raise that struct. The distiller calls twelve
 // such externs, and each contract reads `StructDefined` once.
@@ -268,7 +269,8 @@ const DERIVATIONS: u64 = 18_344;
 // 111_792 -> 111_794: the reads of the same `:erlang.error/1` definition.
 // 111_794 -> 111_812: the six reads each of the three new `Kernel` functions.
 // 111_812 -> 111_824: the six reads each of the two new `Kernel` functions.
-const READS_HANDED: u64 = 111_824;
+// 111_824 -> 111_830: the six reads of the new `Kernel.is_number/1`.
+const READS_HANDED: u64 = 111_830;
 
 /// Compiling the distiller spends this much of the product stack. The largest
 /// drive is the one `PRODUCT_DRIVE_BUDGET` bounds, so its headroom is the
