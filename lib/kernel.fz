@@ -19,7 +19,7 @@ defmodule Kernel do
     * the sizes and accessors `bit_size/1`, `byte_size/1`, `map_size/1`,
       `tuple_size/1`, `length/1`, `elem/2`, `hd/1` and `tl/1`, the numeric functions `abs/1`,
       `round/1`, `trunc/1`, `floor/1` and `ceil/1`, and the type tests `is_integer/1`,
-      `is_float/1`, `is_binary/1`, `is_bitstring/1`, `is_list/1`, `is_map/1`, `is_tuple/1`,
+      `is_float/1`, `is_number/1`, `is_binary/1`, `is_bitstring/1`, `is_list/1`, `is_map/1`, `is_tuple/1`,
       `is_atom/1`, `is_boolean/1`, `is_pid/1`, `is_reference/1`, `is_function/1`, `is_function/2`, `is_nil/1`,
       `is_struct/1` and `is_struct/2`, all of which a guard may call
     * `match?/2`, a macro answering whether a value matches a pattern
@@ -1518,6 +1518,22 @@ defmodule Kernel do
   @spec is_float(any) :: boolean
   def is_float(_ :: float), do: true
   def is_float(_), do: false
+
+  @doc """
+  Returns `true` when `term` is an integer or a float.
+
+  ## Examples
+
+      Kernel.is_number(1.0)
+      #=> true
+
+      Kernel.is_number("1")
+      #=> false
+
+  """
+  @spec is_number(any) :: boolean
+  def is_number(_ :: integer | float), do: true
+  def is_number(_), do: false
 
   @doc """
   Returns `true` when `term` is a binary: a bitstring whose bit length is a
