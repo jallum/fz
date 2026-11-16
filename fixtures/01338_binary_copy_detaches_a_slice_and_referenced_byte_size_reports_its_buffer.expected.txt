@@ -26,4 +26,7 @@ true
 "errors were found at the given arguments:\n\n  * 2nd argument: not an integer\n"
 "errors were found at the given arguments:\n\n  * 1st argument: not a binary\n  * 2nd argument: out of range\n"
 "errors were found at the given arguments:\n\n  * 1st argument: not a binary\n"
+"errors were found at the given arguments:\n\n  * 1st argument: is a bitstring (expected a binary)\n"
+"errors were found at the given arguments:\n\n  * 1st argument: is a bitstring (expected a binary)\n  * 2nd argument: out of range\n"
+true
 "errors were found at the given arguments:\n\n  * 2nd argument: out of range\n"

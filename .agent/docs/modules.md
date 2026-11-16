@@ -186,10 +186,14 @@ given (`:error`, `:throw` or `:exit`) and ignores the stacktrace. `error/1` rais
 
 `lib/binary.fz` defines `:binary` with `copy/1`, `copy/2` and
 `referenced_byte_size/1`. `copy/2` is the extern `fz_binary_copy`, which builds
-the result in one buffer; `String.duplicate/2` is `:binary.copy/2`. A non-binary
-subject or a count that is not a non-negative integer raises `ArgumentError`
-with Elixir's per-argument wording. Their specs take `any` so that a call with a
-bad argument compiles and raises, as `Kernel.byte_size/1` does.
+the result in one buffer; `String.duplicate/2` is `:binary.copy/2`. `copy`
+takes a binary and `referenced_byte_size` takes any bitstring, as in OTP. A
+subject that is not a bitstring, or a count that is not a non-negative integer,
+raises `ArgumentError` with Elixir's per-argument wording; a bitstring whose bit
+length is not a multiple of 8, given to `copy`, is reported as
+`is a bitstring (expected a binary)` (`01338`). The specs name `binary` and
+`bitstring`, so a call whose argument is proven to be something else is refused
+at compile time; a value that may be a binary compiles and raises when it runs.
 
 ## A call on a module value
 
