@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-16T03:07:10Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-nml",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "procbin.rs splits into bits.rs and off_heap.rs, named as in OTP",
   "type": "task",
-  "updated_at": "2026-11-16T03:07:10Z"
+  "updated_at": "2026-11-16T03:07:17Z"
 }
