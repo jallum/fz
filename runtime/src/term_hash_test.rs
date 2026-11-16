@@ -2,11 +2,11 @@ use super::*;
 use crate::any_value::{
     AnyValueRef, ClosureDenotationId, ValueKind, closure_addr_from_tagged, closure_capture_set, map_header_is_trie,
 };
+use crate::bits::{BinView, SharedBinHandle, alloc_binref, alloc_buffer_view, alloc_view};
 use crate::function_denotation::FunctionDenotation;
 use crate::heap::StubSite;
 use crate::heap::{Heap, Schema};
 use crate::module_name::ModuleName;
-use crate::procbin::{BinView, SharedBinHandle, alloc_binref, alloc_buffer_view, alloc_view};
 use crate::term::NumericMode;
 use std::cmp::Ordering;
 use std::rc::Rc;

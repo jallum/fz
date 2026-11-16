@@ -1,9 +1,9 @@
 //! Refcounted off-heap opaque resource with user-supplied dtor.
 //!
-//! Structurally a copy of `procbin.rs`: an off-heap refcounted object
+//! Structurally a copy of `bits.rs`: an off-heap refcounted object
 //! (`Resource`) with an on-heap stub (`ValueKind::RESOURCE`)
 //! threaded into the per-heap intrusive off-heap chain, the one that holds
-//! BinRefs too. The MSO sweep handles retain/release across GC
+//! BinRefs too. The off-heap sweep handles retain/release across GC
 //! exactly the same way it does for BinRef.
 //!
 //! Divergence from `SharedBin`/`BinRef`:
@@ -33,7 +33,7 @@
 //! word. Let-binding a resource handle (`r2 = r1`) copies the tag bits;
 //! both names refer to the *same* on-heap stub, which holds exactly one
 //! edge to the off-heap `Resource`. No per-binding retain is needed —
-//! the MSO chain pins the stub for as long as its owning heap is alive.
+//! the off-heap chain pins the stub for as long as its owning heap is alive.
 //!
 //! Ownership boundaries — points where the runtime *does* need to
 //! retain — are exactly those where `Heap::deep_copy_slot` runs:
@@ -45,8 +45,8 @@
 //! refcount edge. Aliasing inside a single process does **not** cross a
 //! boundary and so does **not** retain.
 //!
-//! Release happens via the per-heap MSO sweep (post-Cheney for live
-//! processes; `mso_drop_all` at heap drop). On 1→0 the sweep queues the user
+//! Release happens via the per-heap off-heap sweep (post-Cheney for live
+//! processes; `off_heap::drop_all` at heap drop). On 1→0 the sweep queues the user
 //! dtor exactly once with the stored payload and frees the wrapper. The dtor
 //! therefore fires:
 //!   * when the owning process exits and its heap is dropped, or
@@ -292,12 +292,12 @@ impl Drop for ResourceHandle {
 // ===== ResourceStub (on-heap strict tagged stub) ============================
 
 pub(crate) const RESOURCE_STUB_SIZE: usize = 16;
-const RESOURCE_STUB_MSO_NEXT_OFFSET: usize = 8;
+const RESOURCE_STUB_OFF_HEAP_NEXT_OFFSET: usize = 8;
 
 /// Per-heap stub referencing a `Resource`, exactly the heap's 16-byte object
 /// alignment:
 ///   offset  0..8   shared_ptr:  *mut Resource     (off-heap, refcounted)
-///   offset  8..16  mso_next:    u64 tagged MSO link, or 0
+///   offset  8..16  off_heap_next:    u64 tagged off-heap link, or 0
 /// The destructor lives on the shared `Resource`, so the stub holds no heap
 /// edge for the collector to trace.
 #[repr(transparent)]
@@ -326,13 +326,13 @@ impl ResourceStub {
         }
     }
 
-    pub fn mso_next(&self) -> u64 {
-        unsafe { read(self.as_raw().add(RESOURCE_STUB_MSO_NEXT_OFFSET) as *const u64) }
+    pub fn off_heap_next(&self) -> u64 {
+        unsafe { read(self.as_raw().add(RESOURCE_STUB_OFF_HEAP_NEXT_OFFSET) as *const u64) }
     }
 
-    pub(crate) fn mso_next_set(&self, next: u64) {
+    pub(crate) fn off_heap_next_set(&self, next: u64) {
         unsafe {
-            write(self.as_raw().add(RESOURCE_STUB_MSO_NEXT_OFFSET) as *mut u64, next);
+            write(self.as_raw().add(RESOURCE_STUB_OFF_HEAP_NEXT_OFFSET) as *mut u64, next);
         }
     }
 
@@ -378,13 +378,13 @@ impl ResourceStub {
 
 /// Allocate a strict 16-byte Resource stub on `heap`, taking ownership of the
 /// Resource reference encapsulated in `handle`. The new stub is pushed onto
-/// `heap.mso_head`, the young off-heap chain, as the new chain head.
+/// `heap.off_heap_head`, the young off-heap chain, as the new chain head.
 pub fn alloc_resource(heap: &mut Heap, handle: ResourceHandle) -> ResourceStub {
     let p = heap.alloc_kind(HeapAllocKind::Resource, RESOURCE_STUB_SIZE);
     let rs = unsafe { ResourceStub::from_raw(p) };
     rs.shared_raw_set(handle.into_raw());
-    let previous_head = heap.mso_push(heap_object_word(p, ValueKind::RESOURCE));
-    rs.mso_next_set(previous_head);
+    let previous_head = heap.off_heap_push(heap_object_word(p, ValueKind::RESOURCE));
+    rs.off_heap_next_set(previous_head);
     rs
 }
 

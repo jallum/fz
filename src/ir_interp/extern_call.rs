@@ -710,7 +710,7 @@ pub(crate) mod tests_support {
     /// Counter-bumping dtor. Used by the fz-side test as the
     /// `&_resource_test_dtor/1` wrapped extern: bumps a global counter
     /// and records the payload it received. Verifies that the BIF stored
-    /// the right C-ABI fn ptr and that MSO sweep invoked it on the right
+    /// the right C-ABI fn ptr and that off-heap sweep invoked it on the right
     /// payload.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn _resource_test_dtor(payload: u64) {

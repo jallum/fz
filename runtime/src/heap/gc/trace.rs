@@ -10,7 +10,7 @@ use crate::any_value::{
     map_keys_ptr, map_node_child_count, map_node_children_ptr, map_node_entry_count, map_tag_ptr, map_value_kind,
     map_values_ptr, share_struct, struct_field_kind_slot, struct_field_raw_slot, struct_schema_id,
 };
-use crate::procbin::BinView;
+use crate::bits::BinView;
 use std::ptr::{read, write};
 
 pub fn cheney_trace_list(

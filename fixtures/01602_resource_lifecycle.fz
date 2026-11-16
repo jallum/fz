@@ -17,12 +17,12 @@
 # - Three resources are allocated with payloads 10, 20, 30.
 # - Resource `c` is aliased into a second binding. Aliasing must not
 #   double-fire the dtor — both bindings point at the same off-heap
-#   allocation; the MSO chain holds it once, the dtor fires once.
+#   allocation; the off-heap chain holds it once, the dtor fires once.
 # - `R.unwrap/1` calls `h.value` from inside the declaring module `R`
 #   (the opaque-visibility gate accepts in-module access). This proves
 #   the `.value` accessor's read path on all three legs.
 # - After `:before` is printed, `main/0` returns; the process heap
-#   drops, the MSO sweep walks the chain in LIFO push order, and the
+#   drops, the off-heap sweep walks the chain in LIFO push order, and the
 #   three dtors fire in reverse-allocation order.
 #
 # Expected output:
@@ -58,7 +58,7 @@ def main() do
   c = make_resource(30, &dwrap/1)
   # Alias `c` into a second binding. Both bindings point at the same
   # off-heap resource; the dtor must fire exactly once when both go
-  # out of scope, not twice. The MSO chain dedups by resource pointer.
+  # out of scope, not twice. The off-heap chain dedups by resource pointer.
   _alias = c
   # `.value` is gated to the declaring module (`R`); call it via the
   # in-module accessor. Proves the read path resolves through the

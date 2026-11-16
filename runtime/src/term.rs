@@ -8,9 +8,9 @@ use crate::any_value::{
     closure_denotation, map_count, map_entries, map_entry, map_header_is_collision, map_header_is_trie, map_key,
     map_node_child, map_node_child_count, map_node_entry_count, map_slot, struct_schema_id,
 };
+use crate::bits::{bitstring_bit_len, bitstring_byte_ptr};
 use crate::heap::{Schema, SchemaIdentity, SchemaRegistry, StructKey};
 use crate::module_name::STRUCT_MODULE_FIELD;
-use crate::procbin::{bitstring_bit_len, bitstring_byte_ptr};
 use crate::process::Node;
 use crate::resource::ResourceStub;
 use std::cmp::Ordering;

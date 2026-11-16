@@ -28,6 +28,10 @@ use crate::any_value::{
     closure_addr_from_tagged, closure_captured_count, closure_denotation, closure_fn_ptr, closure_halt_kind,
     map_addr_from_tagged, object_size, struct_is_shared, struct_schema_id,
 };
+use crate::bits::{
+    BinView, SharedBin, SharedBinHandle, alloc_buffer_view, bitstring_bit_len, bitstring_byte_ptr, is_bitstring_like,
+    referenced_byte_len,
+};
 use crate::bitstr::{
     BitReader, BitType, BitWriter, Endian, apply_endian_for_read, apply_endian_for_write, encode_utf8, encode_utf16,
     encode_utf32, sign_extend,
@@ -36,10 +40,6 @@ use crate::exec_ctx::ExecCtx;
 use crate::heap::{AllocStat, StubSite, closure_capture_ref, list_head_ref, list_tail_ref};
 use crate::module_name::STRUCT_MODULE_FIELD;
 use crate::park::{MatcherFn, ParkRecord};
-use crate::procbin::{
-    BinView, SharedBin, SharedBinHandle, alloc_buffer_view, bitstring_bit_len, bitstring_byte_ptr, is_bitstring_like,
-    referenced_byte_len,
-};
 use crate::process::{ClosureRef, Handler, Process};
 use crate::resource::{ResourceHandle, ResourceStub, alloc_resource};
 use crate::sched::{ReceiveStep, reach_receive};

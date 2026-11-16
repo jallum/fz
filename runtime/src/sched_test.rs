@@ -1,11 +1,11 @@
 use super::*;
 use crate::any_value::AnyValueRef;
 use crate::any_value::ValueKind;
+use crate::bits::{SharedBinHandle, alloc_buffer_view};
 use crate::exec_ctx::ExecCtx;
 use crate::heap::StubSite;
 use crate::heap::{SchemaRegistry, pool_drain_for_test, pool_outstanding_blocks, pool_total_cached_blocks};
 use crate::park::ParkRecord;
-use crate::procbin::{SharedBinHandle, alloc_buffer_view};
 use crate::sync::Ordering;
 use std::cell::RefCell;
 use std::ptr::{read, write};
@@ -719,7 +719,7 @@ fn a_sender_appending_to_a_binary_it_sent_leaves_the_receivers_bytes_intact() {
     let sent = sender.heap.alloc_bitstring(&[b'a'; 100], 100 * 8);
     let sent_view = unsafe {
         let word = sent.heap_object_word().unwrap();
-        crate::procbin::BinView::from_raw(crate::any_value::heap_word_addr(word))
+        crate::bits::BinView::from_raw(crate::any_value::heap_word_addr(word))
     };
     let grown = unsafe {
         let ptr = sent_view.bytes_ptr();
@@ -734,7 +734,7 @@ fn a_sender_appending_to_a_binary_it_sent_leaves_the_receivers_bytes_intact() {
     let received = delivered[0];
 
     let appended = unsafe {
-        let view = crate::procbin::BinView::from_raw(grown.heap_addr().unwrap());
+        let view = crate::bits::BinView::from_raw(grown.heap_addr().unwrap());
         sender
             .heap
             .alloc_concatenation(std::slice::from_raw_parts(view.bytes_ptr(), 101), Some(view), b"XYZ")
@@ -743,8 +743,8 @@ fn a_sender_appending_to_a_binary_it_sent_leaves_the_receivers_bytes_intact() {
     let received_bytes = unsafe {
         let word = received.heap_object_word().unwrap();
         std::slice::from_raw_parts(
-            crate::procbin::bitstring_byte_ptr(word),
-            crate::procbin::bitstring_bit_len(word) as usize / 8,
+            crate::bits::bitstring_byte_ptr(word),
+            crate::bits::bitstring_bit_len(word) as usize / 8,
         )
     };
     let mut expected = vec![b'a'; 100];
@@ -752,7 +752,7 @@ fn a_sender_appending_to_a_binary_it_sent_leaves_the_receivers_bytes_intact() {
     assert_eq!(received_bytes, expected.as_slice());
     let appended_addr = appended.heap_addr().unwrap();
     assert_ne!(
-        unsafe { crate::procbin::BinView::from_raw(appended_addr) }.bytes_ptr(),
+        unsafe { crate::bits::BinView::from_raw(appended_addr) }.bytes_ptr(),
         received_bytes.as_ptr(),
         "the sender's append went to a new buffer"
     );

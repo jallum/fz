@@ -125,7 +125,7 @@ with no heap to ask.
 A binary above the inline threshold is two kinds of heap object, as in OTP's
 `BinView` and sub-binary split. A `BinRef` (`ValueKind::BINREF`, 16 bytes) is the
 heap's one reference to a `SharedBin`: word 0 holds the `SharedBin` address and
-word 8 the link of the sweep chain (`mso_head`, `mso_old_head`), with the
+word 8 the link of the sweep chain (`off_heap_head`, `off_heap_old_head`), with the
 `StubSite` that made it in the link's low nibble. It is the only binary object
 on those chains and holds the one atomic retain. A `BinView`
 (`ValueKind::BINVIEW`, 24 bytes of fields in a 32-byte slot) is the value:
@@ -144,7 +144,7 @@ or an in-place append makes only a view; a fresh buffer makes a `BinRef` and a
 view; a message copy makes the receiver its own `BinRef` and view per copied
 view, retaining the buffer once. A `SharedBin` does not store a bit length: the
 view's `bit_len` is the only authority. `BINREF_*` and `BINVIEW_*_OFFSET` in
-`procbin.rs` are the one statement of that layout; native codegen reads the
+`bits.rs` are the one statement of that layout; native codegen reads the
 base with one load of `bytes_ptr` and the length at offset 16.
 
 A match that takes a binary apart does not ask for a slice at all when the
@@ -889,7 +889,7 @@ invokes the allocation's destructor and reclaims its storage. A `Resource`
 holds its destructor as the value-ref word of a literal (capture-free) closure,
 which lives outside every heap; deferred resource release reclaims the wrapper
 and returns `(destructor, payload)` for later destructor dispatch. The 16-byte
-resource stub is `shared_ptr` and `mso_next` alone. A deep copy of a stub
+resource stub is `shared_ptr` and `off_heap_next` alone. A deep copy of a stub
 retains the shared `Resource` and copies no closure. Static binaries keep a
 permanent anchor and use a no-op destructor.
 

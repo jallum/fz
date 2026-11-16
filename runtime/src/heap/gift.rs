@@ -21,7 +21,7 @@
 
 use super::Heap;
 use super::block_pool::{Block, pick_block_capacity, pool_alloc};
-use crate::procbin::{mso_release_chain, mso_set_next};
+use crate::off_heap;
 
 /// What `begin_gift` records so `end_gift` can cut the segment: the tip to
 /// restore, the gift block's start (the tip while the copy has not
@@ -37,7 +37,7 @@ pub(super) struct GiftWindow {
 }
 
 /// The chain of an open gift window: its head when the window opened, and the
-/// first object pushed onto it since, or 0 if none was. That object's `mso_next`
+/// first object pushed onto it since, or 0 if none was. That object's `off_heap_next`
 /// is the seam where the gift's prefix meets whatever chain it is spliced
 /// onto.
 #[derive(Clone, Copy)]
@@ -66,7 +66,7 @@ impl WindowChain {
         let cut = if self.oldest == 0 {
             SegmentChain::EMPTY
         } else {
-            mso_set_next(self.oldest, 0);
+            off_heap::set_next(self.oldest, 0);
             SegmentChain {
                 head: *head,
                 oldest: self.oldest,
@@ -93,7 +93,7 @@ impl SegmentChain {
         if self.head == 0 {
             return onto;
         }
-        mso_set_next(self.oldest, onto);
+        off_heap::set_next(self.oldest, onto);
         self.head
     }
 }
@@ -135,14 +135,14 @@ impl GiftSegment {
 
     /// The head of the segment's own off-heap chain, or 0 when the copy made
     /// no BinRef or resource stub.
-    pub fn mso_head(&self) -> u64 {
+    pub fn off_heap_head(&self) -> u64 {
         self.offheap.head
     }
 }
 
 impl Drop for GiftSegment {
     fn drop(&mut self) {
-        mso_release_chain(self.offheap.head);
+        off_heap::release_chain(self.offheap.head);
         if let Some(block) = self.block.take() {
             block.release();
         }
@@ -164,7 +164,7 @@ impl Heap {
             block_start: start,
             measured_bytes,
             alloc_count: self.alloc_count,
-            offheap: WindowChain::open(self.mso_head),
+            offheap: WindowChain::open(self.off_heap_head),
         });
         self.install_block(Block {
             start,
@@ -191,7 +191,7 @@ impl Heap {
             window.measured_bytes,
             "gift copy allocated a different number of bytes than it was measured at: the measure and the copy disagree"
         );
-        let offheap = window.offheap.cut(&mut self.mso_head);
+        let offheap = window.offheap.cut(&mut self.off_heap_head);
         let objects = self.alloc_count - window.alloc_count;
         self.alloc_count = window.alloc_count;
         self.install_block(window.saved_tip);
@@ -211,7 +211,7 @@ impl Heap {
             self.live_baseline += block.fill();
             self.old_blocks.push(block);
         }
-        self.mso_old_head = segment.offheap.splice_onto(self.mso_old_head);
+        self.off_heap_old_head = segment.offheap.splice_onto(self.off_heap_old_head);
         segment.offheap = SegmentChain::EMPTY;
         self.old_objects += segment.objects;
     }
@@ -223,11 +223,11 @@ impl Heap {
     }
 
     /// Make `bits` the head of the off-heap chain and return the previous head,
-    /// which the caller writes into the new object's `mso_next` link. An open
+    /// which the caller writes into the new object's `off_heap_next` link. An open
     /// gift window remembers the first object pushed through it.
-    pub(crate) fn mso_push(&mut self, bits: u64) -> u64 {
-        let previous = self.mso_head;
-        self.mso_head = bits;
+    pub(crate) fn off_heap_push(&mut self, bits: u64) -> u64 {
+        let previous = self.off_heap_head;
+        self.off_heap_head = bits;
         if let Some(window) = &mut self.gift {
             window.offheap.note_push(bits);
         }

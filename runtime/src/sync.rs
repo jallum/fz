@@ -7,7 +7,7 @@
 //!
 //! Production code that participates in concurrency (today: just
 //! `SharedBin::refcount` and the retain/release primitives in
-//! `procbin.rs`) imports `AtomicUsize`, `Ordering`, and `fence` from
+//! `bits.rs`) imports `AtomicUsize`, `Ordering`, and `fence` from
 //! here, not from `std::sync::atomic`. This single seam is what lets
 //! the loom test exercise the ordering claims the source comments make.
 

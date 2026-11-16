@@ -12,7 +12,7 @@ use fz_runtime::aot_shim::{
     fz_aot_register_closure_denotations, fz_aot_register_named_schemas, fz_aot_register_tuple_schemas, fz_aot_run_main,
     fz_aot_set_drain_dtor_entry, fz_aot_set_resume_addr, fz_aot_setup,
 };
-use fz_runtime::procbin::{SHARED_BIN_BYTES, shared_bin_destructor_noop};
+use fz_runtime::bits::{SHARED_BIN_BYTES, shared_bin_destructor_noop};
 
 /// The C `main` body under construction: the module that declares a symbol
 /// and the builder that emits the call, together, so the startup calls reach

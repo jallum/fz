@@ -3,9 +3,9 @@ use crate::any_value::{
     AnyValue, AnyValueRef, EMPTY_LIST_BITS, SlotLayout, ValueKind, binview_addr_from_tagged, closure_size_for_count,
     heap_object_word, list_addr_from_tagged, map_count, map_entry, struct_is_shared,
 };
+use crate::bits::{BINVIEW_BYTES, BinView, bitstring_bit_len, bitstring_byte_ptr};
 use crate::exec_ctx::Argv;
 use crate::heap::{Schema, SchemaRegistry};
-use crate::procbin::{BINVIEW_BYTES, BinView, bitstring_bit_len, bitstring_byte_ptr};
 use crate::process::{DEFAULT_REDUCTIONS_PER_QUANTUM, Process, YIELD_REASON_REDUCTIONS};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -576,7 +576,7 @@ fn alloc_bitstring_const_small_payload_is_inline() {
 /// at 1) — the static SharedBin lives forever.
 #[test]
 fn alloc_binview_from_static_preserves_anchor() {
-    use crate::procbin::SharedBin;
+    use crate::bits::SharedBin;
     use crate::sync::{AtomicUsize, Ordering};
     // Construct a "static" SharedBin by hand. Its destructor is a
     // noop pointer so the test owns its lifetime explicitly.
@@ -1312,8 +1312,8 @@ fn reading_a_middle_binary_field_of_a_shared_source_builds_a_view() {
 /// its stub under its own site.
 #[test]
 fn a_static_literal_counts_as_its_own_stub_site() {
+    use crate::bits::SharedBin;
     use crate::heap::{StubCounts, StubSite};
-    use crate::procbin::SharedBin;
     use crate::sync::AtomicUsize;
     static PAYLOAD: [u8; 4] = [1, 2, 3, 4];
     unsafe extern "C" fn noop(_: *mut SharedBin) {}

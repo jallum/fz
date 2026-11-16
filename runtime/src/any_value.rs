@@ -25,7 +25,7 @@ pub const TAG_CLOSURE: u64 = 0x4;
 pub const TAG_BITSTRING: u64 = 0x5;
 /// Heap binary view: a window onto a shared buffer, through its heap's BinRef.
 pub const TAG_BINVIEW: u64 = 0x6;
-/// Heap resource stub; resource pointer plus MSO next link.
+/// Heap resource stub; resource pointer plus off-heap next link.
 pub const TAG_RESOURCE: u64 = 0x7;
 /// Heap BinRef: the one object per shared buffer per heap that holds the
 /// buffer's reference and sits on the sweep chain. No language value is a
@@ -567,7 +567,7 @@ impl AnyValue {
     }
 }
 
-// Bitstring storage dispatchers live in `crate::procbin`.
+// Bitstring storage dispatchers live in `crate::bits`.
 // `any_value.rs` does not own bitstring layout; render uses the binview
 // helpers like every other read site.
 
@@ -923,11 +923,11 @@ unsafe fn size_of_bitstring(_addr: *const u8) -> usize {
 }
 
 unsafe fn size_of_binview(_addr: *const u8) -> usize {
-    crate::procbin::BINVIEW_BYTES
+    crate::bits::BINVIEW_BYTES
 }
 
 unsafe fn size_of_binref(_addr: *const u8) -> usize {
-    crate::procbin::BINREF_BYTES
+    crate::bits::BINREF_BYTES
 }
 
 unsafe fn size_of_resource(_addr: *const u8) -> usize {
@@ -1544,9 +1544,9 @@ pub mod debug {
         closure_denotation, list_addr_from_tagged, map_addr_from_tagged, map_entries, struct_addr_from_tagged,
         struct_schema_id,
     };
+    use crate::bits::{bitstring_bit_len, bitstring_byte_ptr};
     use crate::heap::{FieldKind, SchemaIdentity};
     use crate::module_name::{alias_spelling, is_alias_namespace_atom};
-    use crate::procbin::{bitstring_bit_len, bitstring_byte_ptr};
     use crate::process::Process;
     use std::slice;
     use std::str;

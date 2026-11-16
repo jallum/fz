@@ -202,7 +202,7 @@ source, tests, documentation, gates and proof without an actionable finding.
   `/tmp/fz-tfn49-runtime-serial.log`. These do not replace the parallel gate.
 
 The failing unchanged test
-`heap::heap_test::alloc_procbin_pushes_into_mso_chain_with_strict_layout`
+`heap::heap_test::alloc_binref_pushes_into_off_heap_chain_with_strict_layout`
 observes global `live_count` as 1 after its own heap drops, versus baseline 0.
 Independent diagnosis identified unannotated tests that allocate unrelated
 SharedBins concurrently, outside the lifetime test's `serial_test` lock. The

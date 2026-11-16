@@ -18,10 +18,10 @@
 //!     reads them directly.
 //!   * `alloc_binref`, `alloc_view`, `alloc_buffer_view` — the safe
 //!     constructors. A `BinRef` takes ownership of a `SharedBinHandle`'s
-//!     reference and is pushed onto the heap's intrusive MSO chain through the
-//!     `mso_next` link inside its payload.
-//!   * MSO sweep + drop — post-Cheney sweep walks the one off-heap chain
-//!     (`Heap::mso_head`, `Heap::mso_old_head`), which holds BinRefs and
+//!     reference and is pushed onto the heap's intrusive off-heap chain through the
+//!     `off_heap_next` link inside its payload.
+//!   * off-heap sweep + drop — post-Cheney sweep walks the one off-heap chain
+//!     (`Heap::off_heap_head`, `Heap::off_heap_old_head`), which holds BinRefs and
 //!     resource stubs alike, rewriting survivors to their to-space copy and
 //!     releasing dead entries' shared_ptrs. `Heap::drop` releases every chain.
 //!
@@ -33,8 +33,6 @@ use crate::any_value::{
     ValueKind, bitstring_bit_len as any_bitstring_bit_len, bitstring_bytes_ptr, heap_kind_from_tagged,
     heap_object_word, heap_word_addr,
 };
-use crate::heap::forwarded_target;
-use crate::resource::{ResourceStub, fz_resource_release, fz_resource_release_deferred};
 use crate::sync::{AtomicUsize, Ordering, fence};
 use std::mem::{align_of, forget, size_of};
 use std::ptr::{NonNull, copy_nonoverlapping, read, slice_from_raw_parts_mut, write};
@@ -355,7 +353,7 @@ pub const BINVIEW_BYTES: usize = 32;
 /// reference to the buffer and is the only binary object on the sweep chain.
 /// `BINREF_BYTES` total:
 ///   offset 0..8    shared_ptr: *mut SharedBin
-///   offset 8..16   mso_next:   u64 tagged MSO link, or 0, with the site that
+///   offset 8..16   off_heap_next:   u64 tagged off-heap link, or 0, with the site that
 ///                              made the BinRef in its low nibble
 ///
 /// No language value is a BinRef; binary views point at it, and the collector
@@ -363,7 +361,7 @@ pub const BINVIEW_BYTES: usize = 32;
 /// that finds it dead releases its reference.
 ///
 /// Cheney forwarding overwrites offset 0 with a forwarding marker. Offset 8 is
-/// preserved in from-space, so MSO sweep reads `mso_next` from the old BinRef
+/// preserved in from-space, so off-heap sweep reads `off_heap_next` from the old BinRef
 /// and `shared_ptr` from the to-space copy if the BinRef survived.
 #[repr(transparent)]
 #[derive(Clone, Copy)]
@@ -397,11 +395,11 @@ impl BinRef {
     /// The tagged link to the next BinRef on the chain, or 0. Heap objects are
     /// 16-byte aligned, so a link's low nibble is free: it holds the BinRef's
     /// site, which a copy of the BinRef carries along.
-    pub fn mso_next(&self) -> u64 {
+    pub fn off_heap_next(&self) -> u64 {
         self.link_word() & !SITE_MASK
     }
 
-    pub(crate) fn mso_next_set(&self, next: u64) {
+    pub(crate) fn off_heap_next_set(&self, next: u64) {
         debug_assert_eq!(next & SITE_MASK, 0, "a chain link is a 16-byte aligned heap word");
         let site = self.link_word() & SITE_MASK;
         unsafe {
@@ -516,10 +514,10 @@ impl BinView {
 
 // ===== Allocation on a per-process heap =====================================
 
-use crate::heap::{Generation, Heap, HeapAllocKind, StubCounts, StubSite};
+use crate::heap::{Heap, HeapAllocKind, StubSite};
 
 /// Allocate a BinRef on `heap`, taking ownership of the SharedBin reference
-/// encapsulated in `handle`. The new BinRef is pushed onto `heap.mso_head`, the
+/// encapsulated in `handle`. The new BinRef is pushed onto `heap.off_heap_head`, the
 /// young off-heap chain, as the new chain head. `site` names what is making the
 /// BinRef; the heap counts it and the BinRef remembers it.
 pub fn alloc_binref(heap: &mut Heap, handle: SharedBinHandle, site: StubSite) -> BinRef {
@@ -527,8 +525,8 @@ pub fn alloc_binref(heap: &mut Heap, handle: SharedBinHandle, site: StubSite) ->
     let binref = unsafe { BinRef::from_raw(p) };
     binref.init(handle.into_raw(), site);
     heap.binrefs_made.record(site);
-    let previous_head = heap.mso_push(binref.word());
-    binref.mso_next_set(previous_head);
+    let previous_head = heap.off_heap_push(binref.word());
+    binref.off_heap_next_set(previous_head);
     binref
 }
 
@@ -557,159 +555,6 @@ pub fn alloc_buffer_view(heap: &mut Heap, handle: SharedBinHandle, bit_len: u64,
     let bytes_ptr = handle.bytes_ptr();
     let binref = alloc_binref(heap, handle, site);
     alloc_view(heap, binref, bytes_ptr, bit_len, site)
-}
-
-/// An object on a heap's one off-heap chain: a BinRef or a resource stub. Both
-/// are 16 bytes with the shared pointer first and the link second, and each
-/// link names its object by the kind tag of its heap object word, as OTP tells
-/// a ProcBin from a magic binary on its one off-heap list.
-#[derive(Clone, Copy)]
-pub(crate) enum OffHeap {
-    BinRef(BinRef),
-    Resource(ResourceStub),
-}
-
-impl OffHeap {
-    /// The object a chain link names. A link is a heap object word: the
-    /// object's kind rides above its address.
-    fn named_by(link: u64) -> Self {
-        let addr = heap_word_addr(link);
-        match heap_kind_from_tagged(link) {
-            Some(ValueKind::BINREF) => Self::BinRef(unsafe { BinRef::from_raw(addr) }),
-            Some(ValueKind::RESOURCE) => Self::Resource(unsafe { ResourceStub::from_raw(addr) }),
-            _ => panic!("MSO chain link {link:#x} names neither a BinRef nor a resource stub"),
-        }
-    }
-
-    fn kind(&self) -> ValueKind {
-        match self {
-            Self::BinRef(_) => ValueKind::BINREF,
-            Self::Resource(_) => ValueKind::RESOURCE,
-        }
-    }
-
-    fn addr(&self) -> *mut u8 {
-        match self {
-            Self::BinRef(binref) => binref.as_raw(),
-            Self::Resource(stub) => stub.as_raw(),
-        }
-    }
-
-    /// The same kind of object at `addr`: where a survivor's to-space copy is.
-    ///
-    /// # Safety
-    /// `addr` must point at a live object of this kind.
-    unsafe fn same_kind_at(&self, addr: *mut u8) -> Self {
-        match self {
-            Self::BinRef(_) => Self::BinRef(unsafe { BinRef::from_raw(addr) }),
-            Self::Resource(_) => Self::Resource(unsafe { ResourceStub::from_raw(addr) }),
-        }
-    }
-
-    fn link(&self) -> u64 {
-        match self {
-            Self::BinRef(binref) => binref.mso_next(),
-            Self::Resource(stub) => stub.mso_next(),
-        }
-    }
-
-    fn set_link(&self, next: u64) {
-        match self {
-            Self::BinRef(binref) => binref.mso_next_set(next),
-            Self::Resource(stub) => stub.mso_next_set(next),
-        }
-    }
-
-    /// Drop the off-heap reference this object holds.
-    fn release(&self) {
-        match self {
-            Self::BinRef(binref) => unsafe { shared_bin_release(binref.shared_raw()) },
-            Self::Resource(stub) => unsafe { fz_resource_release(stub.shared_raw()) },
-        }
-    }
-}
-
-/// Point the link of the object that `link` names at `next`.
-pub(crate) fn mso_set_next(link: u64, next: u64) {
-    OffHeap::named_by(link).set_link(next);
-}
-
-// ===== MSO sweep + drop =====================================================
-
-/// Decide every object on the chain a collection of `generation` examines: the
-/// young chain, and for a major collection the old chain too. This is the one
-/// place a dead object is handled, after a collection's trace and when a
-/// process exits (a process exit is a major sweep with nothing live). Each
-/// object is visited once, `visits` counting the chain links followed.
-///
-/// An object carrying a forwarding marker survived: it is relinked to its
-/// to-space copy, on the old chain, which a minor sweep leaves otherwise
-/// untouched and a major sweep rebuilds. Any other object is dead and drops its
-/// off-heap reference. A dead BinRef releases its SharedBin synchronously. A
-/// dead Resource whose last reference this was pushes its destructor (a literal
-/// closure word) and raw payload onto `pending_dtors`, unless it was claimed;
-/// the destructor is fz code and runs at the scheduler boundary, never inside
-/// the sweep.
-///
-/// A survivor's from-space word 0 holds a forwarding marker, so its off-heap
-/// pointer is read from the to-space copy. Must run before the from-space is
-/// released, since dead objects live there.
-pub fn mso_sweep(heap: &mut Heap, generation: Generation, visits: &mut u64, survived: &mut StubCounts) {
-    let mut new_old_head = match generation {
-        Generation::Minor => heap.mso_old_head,
-        Generation::Major => 0,
-    };
-    let old_head = (generation == Generation::Major).then_some(heap.mso_old_head);
-    for head in std::iter::once(heap.mso_head).chain(old_head) {
-        let mut cur_bits = head;
-        while cur_bits != 0 {
-            *visits += 1;
-            let object = OffHeap::named_by(cur_bits);
-            let next = object.link();
-            match forwarded_target(object.addr(), object.kind()) {
-                Some(to_p) => {
-                    let copy = unsafe { object.same_kind_at(to_p) };
-                    if let OffHeap::BinRef(binref) = object {
-                        survived.record(binref.site());
-                    }
-                    copy.set_link(new_old_head);
-                    new_old_head = heap_object_word(to_p, object.kind());
-                }
-                None => match object {
-                    OffHeap::BinRef(binref) => unsafe { shared_bin_release(binref.shared_raw()) },
-                    OffHeap::Resource(stub) => {
-                        if let Some(dtor) = unsafe { fz_resource_release_deferred(stub.shared_raw()) } {
-                            heap.pending_dtors.push_back(dtor);
-                        }
-                    }
-                },
-            }
-            cur_bits = next;
-        }
-    }
-    heap.mso_old_head = new_old_head;
-    heap.mso_head = 0;
-}
-
-/// Drop every object on the young and old chains, releasing each off-heap
-/// reference. Called from `Heap::drop` before pool reclaim.
-pub fn mso_drop_all(heap: &mut Heap) {
-    mso_release_chain(heap.mso_head);
-    mso_release_chain(heap.mso_old_head);
-    heap.mso_head = 0;
-    heap.mso_old_head = 0;
-}
-
-/// Release every object on the chain that starts at `head_bits`: each BinRef
-/// drops its SharedBin reference and each Resource stub drops its Resource
-/// reference. The chain's memory is left to its owner.
-pub(crate) fn mso_release_chain(head_bits: u64) {
-    let mut cur_bits = head_bits;
-    while cur_bits != 0 {
-        let object = OffHeap::named_by(cur_bits);
-        cur_bits = object.link();
-        object.release();
-    }
 }
 
 // ===== Bitstring dispatch helpers (moved from any_value.rs) ==================
@@ -794,8 +639,6 @@ pub unsafe fn bitstring_like_eq(ap: u64, bp: u64) -> bool {
     true
 }
 
-// ===== Tests ================================================================
-
 #[cfg(test)]
-#[path = "procbin_test.rs"]
-mod procbin_test;
+#[path = "bits_test.rs"]
+pub(crate) mod bits_test;

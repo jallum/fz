@@ -29,8 +29,8 @@ use crate::any_value::{
     AnyValue, ListCons, ValueKind, closure_capture_value, closure_captured_count, closure_denotation,
     map_for_each_entry, struct_schema_id,
 };
+use crate::bits::{bitstring_bit_len, bitstring_byte_ptr};
 use crate::heap::{SchemaIdentity, SchemaRegistry};
-use crate::procbin::{bitstring_bit_len, bitstring_byte_ptr};
 use crate::process::Node;
 use crate::resource::ResourceStub;
 use crate::term::{Category, MapTerm, TermComparator, address, field_value};

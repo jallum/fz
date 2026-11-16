@@ -8,9 +8,9 @@ use std::sync::OnceLock;
 use smallvec::SmallVec;
 
 use fz_runtime::any_value::{AnyValue, AnyValueRef, AnyValueRefError, ValueKind, map_count, struct_schema_id};
+use fz_runtime::bits::bitstring_bit_len as tagged_bitstring_bit_len;
+use fz_runtime::bits::bitstring_byte_ptr as binview_byte_ptr;
 use fz_runtime::heap::{Schema, SchemaRegistry, map_entries_refs, map_entry_refs};
-use fz_runtime::procbin::bitstring_bit_len as tagged_bitstring_bit_len;
-use fz_runtime::procbin::bitstring_byte_ptr as binview_byte_ptr;
 use fz_runtime::process::{AtomName, DEFAULT_REDUCTIONS_PER_QUANTUM, Node, Process};
 
 use crate::modules::identity::{ModuleDenotation, ModuleName};

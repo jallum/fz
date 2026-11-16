@@ -15,7 +15,7 @@ untracked files. .49 must be restored and reverified after this prerequisite.
 The independent .46 parking boundary remains untouched.
 
 The .49 default-parallel runtime gate failed with 209 passed and one failed:
-`heap::heap_test::alloc_procbin_pushes_into_mso_chain_with_strict_layout`
+`heap::heap_test::alloc_binref_pushes_into_off_heap_chain_with_strict_layout`
 read global `live_count` as 1 after dropping its heap, versus baseline 0.
 The original log is `/tmp/fz-tfn49-runtime.log`. Isolated and serial tests passed
 diagnostically; they do not replace the failed parallel gate.

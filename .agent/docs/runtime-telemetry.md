@@ -103,7 +103,7 @@ freed the resource at a yield or park or the exit swept it (see
 `list_retention_hits`. There is no separate destructor event; a destructor
 dispatched mid-life is visible on the exit record of the process that ran it,
 and the `fz.runtime.gc` event of the collection that freed it precedes it. A
-minor collection examines only the young MSO chain, so a resource stub that
+minor collection examines only the young off-heap chain, so a resource stub that
 became old is found dead by the next major collection, whose event has
 `generation` `"major"`; a resource that dies young is found by the next
 collection of either kind.
@@ -334,7 +334,7 @@ major collection's from-space is every block (`Heap::next_generation`):
   join the receiver's old chain unexamined. `StubSite` in
   `runtime/src/heap/stats.rs` is the one list of sites; `alloc_binref` and
   `alloc_view` take the site as a required argument, and a BinRef stores it in
-  the low nibble of its `mso_next` word, which heap alignment leaves free, so
+  the low nibble of its `off_heap_next` word, which heap alignment leaves free, so
   it carries its site to its to-space copy at no cost in size.
 
 `GcStats` carries more (object counts, root and per-container edge

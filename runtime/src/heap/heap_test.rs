@@ -720,7 +720,7 @@ fn schema_registry_register_and_get() {
 /// Every strict inline Bitstring allocation reserves
 /// at least one zero byte past its payload at offset
 /// `bytes_ptr + ceil(bit_len/8)`. Mirrors the SharedBin invariant covered
-/// by procbin.rs::shared_bin_alloc_has_trailing_nul.
+/// by bits.rs::shared_bin_alloc_has_trailing_nul.
 #[test]
 fn alloc_bitstring_inline_has_trailing_nul() {
     let mut h = Heap::new(1024, fresh_registry());
@@ -2207,19 +2207,19 @@ fn gc_handles_cycle_via_forwarding() {
     assert_eq!(h.live_count(), 2);
 }
 
-// ===== BinView + intrusive MSO + post-Cheney sweep =================
+// ===== BinView + intrusive off-heap chain + post-Cheney sweep =================
 
-use crate::heap::StubSite;
-use crate::procbin::{
+use crate::bits::{
     BINREF_BYTES, BINVIEW_BYTES, BinRef, BinView, SharedBinHandle, alloc_buffer_view, bitstring_bit_len,
     bitstring_byte_ptr,
 };
+use crate::heap::StubSite;
 
 fn shared_refs(handle: &SharedBinHandle) -> usize {
     unsafe { (*handle.as_raw()).refcount.load(Ordering::Relaxed) }
 }
 
-/// Walk an MSO chain from `head` and return the contained tagged pointers
+/// Walk an off-heap chain from `head` and return the contained tagged pointers
 /// in chain order (head → tail).
 fn chain_from(head: u64) -> Vec<u64> {
     let mut out = Vec::new();
@@ -2227,9 +2227,9 @@ fn chain_from(head: u64) -> Vec<u64> {
     while cur_bits != 0 {
         let addr = heap_word_addr(cur_bits);
         let next = match heap_kind_from_tagged(cur_bits) {
-            Some(ValueKind::BINREF) => unsafe { BinRef::from_raw(addr).mso_next() },
-            Some(ValueKind::RESOURCE) => unsafe { ResourceStub::from_raw(addr).mso_next() },
-            kind => panic!("unexpected MSO kind {kind:?}"),
+            Some(ValueKind::BINREF) => unsafe { BinRef::from_raw(addr).off_heap_next() },
+            Some(ValueKind::RESOURCE) => unsafe { ResourceStub::from_raw(addr).off_heap_next() },
+            kind => panic!("unexpected off-heap kind {kind:?}"),
         };
         out.push(cur_bits);
         cur_bits = next;
@@ -2238,13 +2238,13 @@ fn chain_from(head: u64) -> Vec<u64> {
 }
 
 /// The young BinRefs: those allocated since the last collection.
-fn mso_chain(h: &Heap) -> Vec<u64> {
-    chain_from(h.mso_head)
+fn off_heap_chain(h: &Heap) -> Vec<u64> {
+    chain_from(h.off_heap_head)
 }
 
 /// The old BinRefs: those a collection kept and those gifts brought.
-fn mso_old_chain(h: &Heap) -> Vec<u64> {
-    chain_from(h.mso_old_head)
+fn off_heap_old_chain(h: &Heap) -> Vec<u64> {
+    chain_from(h.off_heap_old_head)
 }
 
 /// A fresh buffer allocates a `BINREF_BYTES` BinRef, which goes onto the chain,
@@ -2265,7 +2265,7 @@ fn a_fresh_buffer_puts_its_binref_on_the_chain_and_its_view_on_none() {
         assert_eq!(object_size(tagged), BINVIEW_BYTES);
         assert_eq!(object_size(pb.binref().word()), BINREF_BYTES);
         assert_eq!(
-            mso_chain(&h),
+            off_heap_chain(&h),
             vec![pb.binref().word()],
             "only the BinRef is on the chain"
         );
@@ -2297,10 +2297,10 @@ fn a_rooted_view_carries_its_binref_through_gc() {
     h.collect_tagged(&mut root);
     let new_pb = binview_addr_from_tagged(root as u64).unwrap();
     assert_ne!(new_pb, from_pb, "BinView should have moved to to-space");
-    assert_eq!(mso_chain(&h), vec![], "the young chain is empty");
+    assert_eq!(off_heap_chain(&h), vec![], "the young chain is empty");
     let pb_to = unsafe { BinView::from_raw(new_pb) };
     assert_eq!(
-        mso_old_chain(&h),
+        off_heap_old_chain(&h),
         vec![pb_to.binref().word()],
         "the view's BinRef is on the old chain"
     );
@@ -2325,7 +2325,7 @@ fn an_unrooted_view_lets_the_sweep_release_its_shared_bin() {
     assert_eq!(shared_refs(&witness), 2);
     let mut root: *mut u8 = null_mut();
     h.collect_tagged(&mut root);
-    assert_eq!(h.mso_head, 0, "the dead BinRef is swept from the chain");
+    assert_eq!(h.off_heap_head, 0, "the dead BinRef is swept from the chain");
     assert_eq!(shared_refs(&witness), 1, "sweep removes its exact owned edge");
 }
 
@@ -2355,7 +2355,7 @@ fn the_binref_chain_is_intact_through_gc_partial_survival() {
     );
     let live_from = live.as_raw();
     let live_shared = live.shared_raw();
-    assert_eq!(mso_chain(&h).len(), 3);
+    assert_eq!(off_heap_chain(&h).len(), 3);
     assert_eq!(witnesses.each_ref().map(shared_refs), [2, 2, 2]);
 
     let mut root = heap_object_word(live_from as *const u8, ValueKind::BINVIEW) as *mut u8;
@@ -2364,7 +2364,7 @@ fn the_binref_chain_is_intact_through_gc_partial_survival() {
     let live_to = binview_addr_from_tagged(root as u64).unwrap();
     assert_ne!(live_to, live_from);
     assert_eq!(
-        mso_old_chain(&h),
+        off_heap_old_chain(&h),
         vec![unsafe { BinView::from_raw(live_to) }.binref().word()]
     );
     assert_eq!(unsafe { BinView::from_raw(live_to).shared_raw() }, live_shared);
@@ -2379,7 +2379,7 @@ fn the_binref_chain_is_intact_through_gc_partial_survival() {
 
 /// Heap::drop releases every chain entry's shared_ptr.
 #[test]
-fn heap_drop_releases_all_mso_shared_refs() {
+fn heap_drop_releases_all_off_heap_shared_refs() {
     let witnesses = [
         SharedBinHandle::from_bytes(&[1, 2]),
         SharedBinHandle::from_bytes(&[3, 4, 5]),
@@ -2395,7 +2395,7 @@ fn heap_drop_releases_all_mso_shared_refs() {
             );
         }
         assert_eq!(witnesses.each_ref().map(shared_refs), [2, 2]);
-        assert_eq!(mso_chain(&h).len(), 2);
+        assert_eq!(off_heap_chain(&h).len(), 2);
     }
     assert_eq!(witnesses.each_ref().map(shared_refs), [1, 1]);
 }
@@ -2427,12 +2427,12 @@ fn deep_copy_of_a_view_makes_a_binref_in_the_destination_that_retains() {
     let dst_pb = unsafe { BinView::from_raw(dst_p) };
     assert_ne!(dst_p, src_pb.as_raw());
     assert_eq!(dst_pb.shared_raw(), shared_p);
-    assert_eq!(mso_chain(&src).len(), 1);
-    assert_eq!(mso_chain(&dst).len(), 1);
+    assert_eq!(off_heap_chain(&src).len(), 1);
+    assert_eq!(off_heap_chain(&dst).len(), 1);
     assert_eq!(shared_refs(&witness), 3, "one witness plus two heap-owned edges");
     drop(dst);
     assert_eq!(shared_refs(&witness), 2);
-    assert_eq!(mso_chain(&src).len(), 1);
+    assert_eq!(off_heap_chain(&src).len(), 1);
     drop(src);
     assert_eq!(shared_refs(&witness), 1);
 }
@@ -2479,7 +2479,7 @@ fn deep_copy_of_one_view_twice_makes_one_binref_via_forwarding_map() {
         &mut dst,
         &mut fwd,
     );
-    assert_eq!(mso_chain(&dst).len(), 1, "dedup");
+    assert_eq!(off_heap_chain(&dst).len(), 1, "dedup");
     assert_eq!(
         shared_refs(&witness),
         3,
@@ -2507,7 +2507,7 @@ fn alloc_bitstring_small_stays_inline() {
             assert_eq!(*pay.add(i), *expected);
         }
     }
-    assert_eq!(h.mso_head, 0);
+    assert_eq!(h.off_heap_head, 0);
 }
 
 #[test]
@@ -2526,7 +2526,7 @@ fn alloc_bitstring_large_routes_to_shared_zone() {
             assert_eq!(*pay.add(i), *expected);
         }
     }
-    assert_eq!(mso_chain(&h).len(), 1);
+    assert_eq!(off_heap_chain(&h).len(), 1);
     assert_eq!(shared_refs(&witness), 2);
     drop(h);
     assert_eq!(shared_refs(&witness), 1);
@@ -2586,7 +2586,7 @@ fn shared_heap_acceptance_spawn_and_share() {
         let mut root_u8 = *root_ptr as *mut u8;
         r.collect_tagged(&mut root_u8);
         *root_ptr = root_u8 as u64;
-        let chain = mso_old_chain(r);
+        let chain = off_heap_old_chain(r);
         assert_eq!(chain.len(), 1);
         let view = unsafe { BinView::from_raw(crate::any_value::heap_addr_from_tagged(*root_ptr).expect("view root")) };
         assert_eq!(chain[0], view.binref().word(), "the chain holds the view's BinRef");

@@ -330,7 +330,7 @@ fn object_size_dispatches_from_pointer_tag_and_object_local_metadata() {
     );
     assert_eq!(
         object_size(heap_object_word(addr, ValueKind::BINVIEW)),
-        crate::procbin::BINVIEW_BYTES
+        crate::bits::BINVIEW_BYTES
     );
     assert_eq!(object_size(heap_object_word(addr, ValueKind::RESOURCE)), 16);
 }

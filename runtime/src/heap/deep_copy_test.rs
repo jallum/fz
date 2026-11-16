@@ -7,8 +7,8 @@ use crate::any_value::{
     AnyValue, AnyValueRef, ClosureDenotationId, EMPTY_LIST, ValueKind, closure_addr_from_tagged,
     closure_size_for_count, list_addr_from_tagged, map_addr_from_tagged, map_size_for_count, struct_size_for_payload,
 };
+use crate::bits::{BINREF_BYTES, BINVIEW_BYTES, SharedBinHandle, alloc_buffer_view};
 use crate::heap::StubSite;
-use crate::procbin::{BINREF_BYTES, BINVIEW_BYTES, SharedBinHandle, alloc_buffer_view};
 use crate::resource::{RESOURCE_STUB_SIZE, ResourceHandle, alloc_resource};
 use crate::sched::gift_copy;
 use std::cell::RefCell;

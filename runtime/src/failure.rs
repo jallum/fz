@@ -36,12 +36,12 @@
 
 use crate::any_value::debug::render_value;
 use crate::any_value::{AnyValue, AnyValueRef, ValueKind};
+use crate::bits::{bitstring_bit_len, bitstring_byte_ptr};
 use crate::exec_ctx::ExecCtx;
 use crate::heap::{list_head_ref, list_tail_ref};
 use crate::ir_runtime::{bitstring_like_word, fz_tuple_elem, fz_tuple_size};
 use crate::module_name::ModuleName;
 use crate::park::materialize_outcome_closure;
-use crate::procbin::{bitstring_bit_len, bitstring_byte_ptr};
 use crate::process::{Handler, Process, Raised};
 use crate::scheduler_hooks::FaultHook;
 use std::io::Write as _;

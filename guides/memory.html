@@ -18,7 +18,7 @@
   <li><a href="#pressure">3. Reductions, collection timing, and boundary GC</a></li>
   <li><a href="#gc-parktime">4. Collection — Cheney with explicit roots, minor and major</a></li>
   <li><a href="#gc-midflight">5. Mid-flight GC — collecting a running loop</a></li>
-  <li><a href="#roots">6. GC roots and the MSO sweep</a></li>
+  <li><a href="#roots">6. GC roots and the off-heap sweep</a></li>
   <li><a href="#scheduler">7. Scheduler dispatch</a></li>
   <li><a href="#messages">8. Message passing — copy, self-send, share</a></li>
   <li><a href="#shared-zone">9. The shared zone — refcounted off-heap binaries</a></li>
@@ -93,7 +93,7 @@ because the container layout already says where the stamp lives.
     <tr><td class="tag">0x5</td><td>Bitstring</td><td>heap</td><td>small inline; 8-byte prefix (bit_len above four clear bits)</td></tr>
     <tr><td class="tag">0x6</td><td>BinView</td><td>heap</td><td>binary view: 24 bytes of fields in a 32-byte slot (BinRef + bytes_ptr + bit_len)</td></tr>
     <tr><td class="tag">0x7</td><td>Resource</td><td>heap</td><td>off-heap handles with destructors</td></tr>
-    <tr><td class="tag">0x8</td><td>BinRef</td><td>heap</td><td>16 bytes (shared_ptr + mso_next); the heap's one reference to a SharedBin</td></tr>
+    <tr><td class="tag">0x8</td><td>BinRef</td><td>heap</td><td>16 bytes (shared_ptr + off_heap_next); the heap's one reference to a SharedBin</td></tr>
     <tr><td class="tag">0xD</td><td>Int</td><td>immediate</td><td>container-local scalar tag; payload is raw <code>i64</code></td></tr>
     <tr><td class="tag">0xE</td><td>Float</td><td>immediate</td><td>container-local scalar tag; payload is raw <code>f64::to_bits()</code></td></tr>
     <tr><td class="tag">0xF</td><td>Atom</td><td>immediate</td><td>container-local scalar tag; payload is raw atom id (32-bit, zero-extended)</td></tr>
@@ -373,10 +373,10 @@ of that tail. In <code>fixtures/quicksort</code>, the native paths pin
   heap's BinRef (traced by the collector); offset 8 <code>bytes_ptr</code>;
   offset 16 <code>bit_len</code>; 24 bytes of fields in a 32-byte slot.</li>
   <li><strong>BinRef:</strong> offset 0 <code>shared_ptr</code>; offset 8
-  <code>mso_next</code> with the creating site in its low nibble; 16 bytes
+  <code>off_heap_next</code> with the creating site in its low nibble; 16 bytes
   total.</li>
   <li><strong>Resource:</strong> offset 0 <code>resource_ptr</code>; offset 8
-  <code>mso_next</code>; 16 bytes total. The destructor lives on the shared
+  <code>off_heap_next</code>; 16 bytes total. The destructor lives on the shared
   off-heap Resource.</li>
 </ul>
 
@@ -423,8 +423,8 @@ has its own prefix and size function.</p>
     <tr><td>closure, n captures</td><td class="size">align16(16 + n×8 + align8(n))</td><td>raw captures + one kind byte per capture</td></tr>
     <tr><td>bitstring (small, inline)</td><td class="size">align16(8 + ⌈bits/8⌉ + 1)</td><td>bit_len header + bytes + trailing zero</td></tr>
     <tr><td>BinView (binary view)</td><td class="size">32 bytes</td><td>8 BinRef pointer + 8 bytes_ptr + 8 bit_len (+ 8 slot padding)</td></tr>
-    <tr><td>BinRef</td><td class="size">16 bytes</td><td>8 shared_ptr + 8 mso_next</td></tr>
-    <tr><td>Resource</td><td class="size">16 bytes</td><td>8 resource ptr + 8 mso_next</td></tr>
+    <tr><td>BinRef</td><td class="size">16 bytes</td><td>8 shared_ptr + 8 off_heap_next</td></tr>
+    <tr><td>Resource</td><td class="size">16 bytes</td><td>8 resource ptr + 8 off_heap_next</td></tr>
   </tbody>
 </table>
 
@@ -469,13 +469,13 @@ bump path and fills the block without overflowing it. <code>Heap::end_gift</code
 asserts the block's fill is exactly the measured bytes, turns the block into a
 <code>GiftSegment</code> and puts
 the saved tip back with its free space intact. The segment carries that one
-block (with its fill), the prefix of the MSO chain that the window produced (BinRefs and Resources together),
+block (with its fill), the prefix of the off-heap chain that the window produced (BinRefs and Resources together),
 and the number of objects allocated. The heap's allocation statistics stay with
 it, its <code>live_count</code> goes back to what it was. A collection cannot
 run while a window is open.</p>
 
 <p>The receiving heap calls <code>Heap::graft</code>: the segment's block joins
-its <code>blocks</code>, its MSO
+its <code>blocks</code>, its off-heap
 prefixes are spliced ahead of the receiver's old chain of the same kind. Every parked block counts
 toward <code>bytes_used</code> by fill, never by capacity, so a kilobyte block
 holding one cons cell is sixteen bytes of <code>bytes_used</code>. The same fill
@@ -483,12 +483,12 @@ raises <code>live_baseline</code>: a gift is packed and fully live, so it is
 survivor data and never allocation pressure. A segment that is dropped without being grafted releases its block
 and every stub's off-heap reference.</p>
 
-<h3>The MSO chains</h3>
+<h3>The off-heap chains</h3>
 
 <p>Each heap carries one intrusive linked list of every BinRef and Resource it
-owns, as OTP keeps one off-heap list for ProcBins and magic binaries alike; the
+owns, as OTP keeps one off-heap list for BinRefs and magic binaries alike; the
 kind tag of each link says which of the two it names. The head pointers live on
-the heap (<code>mso_head</code> for the young list, <code>mso_old_head</code>
+the heap (<code>off_heap_head</code> for the young list, <code>off_heap_old_head</code>
 for the old); the "next" link lives at offset +8 inside each stub, BinRef and
 Resource alike.
 A binary view is on no chain: many views of one buffer share the one BinRef.
@@ -496,11 +496,11 @@ A binary view is on no chain: many views of one buffer share the one BinRef.
 objects whose real bytes live elsewhere.</p>
 
 <div class="aside">
-The MSO chains are a "things to clean up later" list. Every time the heap
+The off-heap chains are a "things to clean up later" list. Every time the heap
 makes a BinRef or Resource, it adds the stub to the chain. After each GC,
 we walk the chain to figure out which stubs survived and which need to release
-their off-heap payload. The chain is split by age: <code>mso_head</code>
-holds stubs made since the last collection; <code>mso_old_head</code> holds the
+their off-heap payload. The chain is split by age: <code>off_heap_head</code>
+holds stubs made since the last collection; <code>off_heap_old_head</code> holds the
 ones a collection already kept, plus the ones that arrived in gifts. See
 <a href="#shared-zone">§9</a> for the details.
 </div>
@@ -730,7 +730,7 @@ and the write goes to the copy. Each process counts these copies in its
 <code>frame_copies</code> telemetry.</p>
 
 <!-- ─────────────────────────────── 6. ROOTS ─────────────────────────────── -->
-<h2 id="roots">6. GC roots and the MSO sweep</h2>
+<h2 id="roots">6. GC roots and the off-heap sweep</h2>
 
 <p>The GC traces only explicit roots. Everything else is dead.</p>
 
@@ -767,16 +767,16 @@ while it moves.</p>
 own structures. It passes their heap refs to <code>Process::collect</code> as
 transient roots and writes the forwarded refs back.</p>
 
-<h3>MSO sweep — keeping shared-zone refcounts honest</h3>
+<h3>off-heap sweep — keeping shared-zone refcounts honest</h3>
 
 <p>After Cheney's BFS scan completes and before from-space is freed, the GC
-walks the MSO chain of the from-space once: a minor walks only the young
+walks the off-heap chain of the from-space once: a minor walks only the young
 chain, a major walks the old chain too. Each entry is a BinRef or Resource stub that
 <em>was</em> in from-space. The forwarding marker Cheney writes into word 0 of
 every copied stub is the entire liveness signal. A live view reaches its BinRef
 through word 0, so a BinRef is copied once however many views name it, and a
 BinRef no live view names is unreached — no separate
-bookkeeping. One function, <code>procbin::mso_sweep</code>, decides every stub,
+bookkeeping. One function, <code>off_heap::sweep</code>, decides every stub,
 after a collection and when a process exits (an exit is not collected; it is
 the same walk with nothing live and no to-space):</p>
 
@@ -786,12 +786,12 @@ the same walk with nothing live and no to-space):</p>
   while cur != null:
       kind = kind_tag(cur)                  <span class="note">// BinRef or Resource</span>
       marker = read u64 at addr_of(cur)+0
-      next = read_mso_next(cur)             <span class="note">// from-space link survives</span>
+      next = read_off_heap_next(cur)             <span class="note">// from-space link survives</span>
       if low4(marker) != 0:
           new_addr = strip_low4(marker)     <span class="note">// to-space copy</span>
           link new_addr into new_head       <span class="note">// survived; rejoin the chain</span>
       else:
-          release_payload(cur)              <span class="note">// dead MSO stub; drop its ref;</span>
+          release_payload(cur)              <span class="note">// dead off-heap stub; drop its ref;</span>
                                             <span class="note">// a Resource's last ref queues (destructor, payload)</span>
       cur = next
   young head = null
@@ -800,7 +800,7 @@ the same walk with nothing live and no to-space):</p>
 
 <p>A minor sweep is O(young BinRefs and resource stubs), so a young view of an old
 BinRef costs it nothing; a major sweep is O(all stubs on this heap),
-not O(heap size). A gift's MSO prefix is spliced onto <code>mso_old_head</code>
+not O(heap size). A gift's off-heap prefix is spliced onto <code>off_heap_old_head</code>
 when it is grafted, so a minor never revisits it. A dead old Resource therefore
 queues its destructor at the next major collection, and a young one at the next
 minor.</p>
@@ -830,7 +830,7 @@ exited, such as one parked on a receive; no destructor closure runs for those.</
        if heap.should_gc and the process did not exit:
          process.collect()          (the JIT emits fz.runtime.gc)
        clear yield reasons
-       exit: mark Exited; release the MSO chains with nothing live
+       exit: mark Exited; release the off-heap chains with nothing live
        run each queued resource destructor as fz code, oldest first
   3. Requeue: re-enqueue.  Parked: wait for a send or the timer.  Exited: done.
 
@@ -966,7 +966,7 @@ buffer and every value names it through a view:</p>
   BinRef (16 bytes, one per buffer per heap):
 
   ┌───────────────────┬───────────────────┐
-  │  shared_ptr (8)   │  mso_next (8)     │
+  │  shared_ptr (8)   │  off_heap_next (8)     │
   │  → SharedBin      │  → next BinRef    │
   └───────────────────┴───────────────────┘
 
@@ -980,15 +980,15 @@ buffer and every value names it through a view:</p>
 </pre>
 
 <p>The BinRef holds the heap's one retain of the SharedBin and is the only
-binary object on the <code>mso_head</code> chain. BinView refs use the
+binary object on the <code>off_heap_head</code> chain. BinView refs use the
 heap-object <code>TAG_BINVIEW</code> kind and BinRefs <code>TAG_BINREF</code>.
 The <code>binref</code> word is the one pointer in a view the collector follows;
 <code>bytes_ptr</code> points outside any heap arena and is never traced.</p>
 
-<p>The <code>mso_next</code> link at +8 of a BinRef makes BinRefs their own
+<p>The <code>off_heap_next</code> link at +8 of a BinRef makes BinRefs their own
 intrusive linked list. When a BinRef survives, Cheney writes only a forwarding
 marker (to-space address with a set low nibble) at +0; +8 is left intact so the
-MSO sweep can continue through the from-space chain. A live view's traced
+off-heap sweep can continue through the from-space chain. A live view's traced
 <code>binref</code> word is rewritten to the BinRef's to-space copy, which is
 made once however many views name it. A minor collection leaves an old BinRef
 where it is, so a young view of an old BinRef reads the buffer unchanged.</p>
@@ -1062,8 +1062,8 @@ first (<code>BinView::ends_at_buffer_end</code> tells the two apart).
   in the sender's gift window; the receiver adopts it when it grafts the segment.
   Bytes don't move.</li>
   <li><strong>Die</strong>: either a BinRef fails to survive a GC (no live view
-  names it; refcount −− in the <a href="#roots">MSO sweep</a>), or the entire
-  heap is dropped (every BinRef still on <code>mso_head</code> is released by
+  names it; refcount −− in the <a href="#roots">off-heap sweep</a>), or the entire
+  heap is dropped (every BinRef still on <code>off_heap_head</code> is released by
   <code>Heap::drop</code> before the blocks return to the pool).</li>
 </ul>
 
@@ -1074,7 +1074,7 @@ the destructor runs. Last one out turns off the lights.</p>
 <div class="box green">
 <strong>Why this needs no locks.</strong><br>
 The system allocator handles concurrent <code>Box::new</code> from any
-worker. The refcount is atomic. The MSO chains are per-heap and per-heap is
+worker. The refcount is atomic. The off-heap chains are per-heap and per-heap is
 per-process, so only one worker accesses it at a time (scheduler
 invariant). fz values are immutable, so there are no write barriers. There
 is no central registry to contend on.

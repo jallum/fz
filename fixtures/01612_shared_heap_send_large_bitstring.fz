@@ -23,13 +23,13 @@
 #     `.data` and continues to route through `Heap::alloc_bitstring`,
 #     which yields a runtime-allocated BinView for above-threshold
 #     payloads. Output is identical because the dispatch helpers
-#     (`procbin::bitstring_bit_len` / `procbin::bitstring_byte_ptr`)
+#     (`bits::bitstring_bit_len` / `bits::bitstring_byte_ptr`)
 #     abstract over the two storage modes.
 #
 # The refcount invariant — at most one heap-allocated SharedBin across
 # the whole run; the static SharedBin's anchor stays ≥ 1 — is verified
-# in `runtime/src/procbin.rs` and `runtime/src/heap.rs` unit tests via
-# `procbin::live_count()`.
+# in `runtime/src/bits.rs` and `runtime/src/heap.rs` unit tests via
+# `Heap::live_count()`.
 def child(parent, bs) do
   send(parent, bs)
 end

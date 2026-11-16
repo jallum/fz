@@ -23,9 +23,8 @@ use crate::any_value::{
     map_size_for_count, map_tag_bytes_len, map_tag_ptr, map_value_kind, map_values_ptr, share_struct,
     struct_field_kind_slot, struct_field_raw_slot, struct_header_word, struct_schema_id, struct_size_for_payload,
 };
-use crate::procbin::{
-    BinView, SharedBinHandle, alloc_buffer_view, alloc_view, mso_drop_all, mso_sweep, shared_bin_append,
-};
+use crate::bits::{BinView, SharedBinHandle, alloc_buffer_view, alloc_view, shared_bin_append};
+use crate::off_heap;
 use crate::process::Node;
 use crate::term::{NumericMode, TermComparator};
 use std::cell::RefCell;
@@ -128,8 +127,8 @@ impl Heap {
             alloc_count: 0,
             old_objects: 0,
             alloc_stats: HeapAllocStats::default(),
-            mso_head: 0,
-            mso_old_head: 0,
+            off_heap_head: 0,
+            off_heap_old_head: 0,
             stubs_made: StubCounts::default(),
             binrefs_made: StubCounts::default(),
             pending_dtors: VecDeque::new(),
@@ -1509,12 +1508,12 @@ impl Heap {
 
         drop(schemas);
 
-        // The MSO sweep walks the intrusive chain of the from-space: survivors
+        // The off-heap sweep walks the intrusive chain of the from-space: survivors
         // are rewritten to their to-space copies and move to the old chain, and
         // dead entries drop their off-heap reference. It must run before the
         // from-space is released because it reads from-space stubs (their
-        // `mso_next` link, which Cheney never overwrites).
-        mso_sweep(self, generation, &mut stats.stub_visits, &mut stats.stubs_survived);
+        // `off_heap_next` link, which Cheney never overwrites).
+        off_heap::sweep(self, generation, &mut stats.stub_visits, &mut stats.stubs_survived);
 
         self.retire_to_space_as_old();
         let kept_objects = copied_objects.len() as u64;
@@ -1582,11 +1581,11 @@ impl Heap {
         self.alloc_count = 0;
     }
 
-    /// Release every object on the MSO chain as a process exit does: nothing is
+    /// Release every object on the off-heap chain as a process exit does: nothing is
     /// live, so every resource whose last reference this heap held queues its
     /// destructor on `pending_dtors`. Allocates no to-space.
     pub fn release_resources_at_exit(&mut self) {
-        mso_sweep(self, Generation::Major, &mut 0, &mut StubCounts::default());
+        off_heap::sweep(self, Generation::Major, &mut 0, &mut StubCounts::default());
     }
 }
 
@@ -1633,10 +1632,10 @@ fn nonempty_list_addr(list: AnyValueRef) -> Result<*mut u8, AnyValueRefError> {
 
 impl Drop for Heap {
     fn drop(&mut self) {
-        // release every SharedBin held via the intrusive MSO
+        // release every SharedBin held via the intrusive off-heap
         // chain. Order matters: must run before pool_free below, since
-        // mso_drop_all walks BinRef payloads in the heap's blocks.
-        mso_drop_all(self);
+        // off_heap_drop_all walks BinRef payloads in the heap's blocks.
+        off_heap::drop_all(self);
         // Release blocks: pooled capacities go back to the pool (§6.6) so the
         // next spawn pulls from it with no per-spawn malloc; exact blocks go
         // to the system allocator. A tip set aside by an unfinished gift
