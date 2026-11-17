@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-17T22:28:18Z",
   "created": "2026-11-15T12:50:04Z",
   "description": "Probe first. After fz-nml.5, decoding 333 x 世 on run/build still allocates one ProcBin view of the rest per scalar (313 of 679 allocations). The ASCII byte walk was brought down to no allocation per step by fz-sc8.208 (cursor), but a ::utf8 head match still materialises rest as a ProcBin. Probe: count allocations by kind (ProcBin vs others) when walking 333 x 世 with \u003c\u003c_c::utf8, r::binary\u003e\u003e and with \u003c\u003c_c, r::binary\u003e\u003e, on interp, run and build. Prediction: the utf8 walk allocates about one ProcBin per step and the byte walk none. Acceptance: the utf8 walk matches the byte walk (no per-step view), pinned by an allocation fixture in the fz-nml block. The fix extends the cursor representation that fz-sc8.208 gives byte walks to ::utf8 head segments; it does not add a second walk mechanism.",
   "id": "fz-nml.10",
   "labels": [],
   "parent": "fz-nml",
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "Matching \u003c\u003c_c::utf8, rest::binary\u003e\u003e builds no view per step",
   "type": "bug",
-  "updated_at": "2026-11-15T12:50:04Z"
+  "updated_at": "2026-11-17T22:28:18Z"
 }
