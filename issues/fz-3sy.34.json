@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-15T16:14:33Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-3sy",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "A contract that cannot be resolved stops the compile and says where",
   "type": "bug",
-  "updated_at": "2026-11-15T16:14:33Z"
+  "updated_at": "2026-11-17T21:12:35Z"
 }
