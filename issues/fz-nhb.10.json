@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-17T22:54:49Z",
+  "description": "## Why\n00613 keeps an `.oracle.exs` twin only because its `@spec c(Sz.t(a)) :: integer` names a type variable once, which Elixir refuses (\"type variable a is used only once\"). The fixture tests a spec'd protocol call over a value typed only at run time; the variable plays no part.\n\n## What changes\nThe spec reads `@spec c(Sz.t()) :: integer`, as the twin wrote it; the fixture moves into Elixir form (functions in `Main`, `IO.inspect` for `dbg`), is headed `# oracle: self`, its twin deleted and its stamp regenerated. No golden moves. No Rust test reads the fixture.\n\n## Signal\nElixir, run, interp and build print the existing golden; `ORACLE=check` passes for 00613.",
+  "id": "fz-nhb.10",
+  "labels": [],
+  "parent": "fz-nhb",
+  "priority": 2,
+  "status": "open",
+  "title": "Fixture 00613 is its own Elixir oracle",
+  "type": "task",
+  "updated_at": "2026-11-17T22:54:49Z"
+}
