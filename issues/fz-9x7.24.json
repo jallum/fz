@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-17T22:45:55Z",
+  "description": "Approved by the user 2026-11-17 (GC session, BEAM comparison on bench, fz develop vs BEAM 28.3). Profile first.\nEvidence: survive costs 1503 ns per KB copied vs BEAM's 126. Workloads that copy a lot cost 333-436 ns/KB on fz vs 83-300 on BEAM.\nHypothesis, unverified: each collection frees about 205 MB of off-heap binaries, with two free() calls per binary.",
+  "id": "fz-9x7.24",
+  "labels": [],
+  "parent": "fz-9x7",
+  "priority": 2,
+  "status": "open",
+  "title": "Find what makes survive's collections cost 1.5 µs per KB copied",
+  "type": "task",
+  "updated_at": "2026-11-17T22:45:55Z"
+}
