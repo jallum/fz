@@ -269,6 +269,36 @@ fn a_nominal_body_without_an_inner_type_is_an_error() {
 }
 
 #[test]
+fn elixirs_function_type_is_the_same_arrow_as_fzs() {
+    // Elixir writes the arrow inside the parentheses; fz's own spelling puts
+    // it after them. Both are one function type.
+    assert_eq!(parse("(a, b -> {a, b})"), parse("(a, b) -> {a, b}"));
+    assert_eq!(parse("(integer -> integer)"), parse("(integer) -> integer"));
+}
+
+#[test]
+fn elixirs_zero_arity_function_type_has_no_parameters() {
+    assert_eq!(parse("(-> any)"), parse("() -> any"));
+}
+
+#[test]
+fn an_elixir_function_type_nests_inside_a_list_and_as_a_result() {
+    // `compose([(any -> any)], (any, c -> d)) :: (any, c -> d)` in one piece.
+    let reducer = parse("(any, c -> d)");
+    assert_eq!(parse("[(any -> any)]"), TypeExpr::List(Box::new(parse("(any -> any)"))),);
+    assert_eq!(
+        parse("(any, c -> d) | nil"),
+        TypeExpr::Union(vec![reducer, TypeExpr::Nil]),
+    );
+}
+
+#[test]
+fn an_elixir_function_type_must_close_its_parenthesis() {
+    let error = parse_type_expr(&lex("(a -> b")).expect_err("an unclosed function type is refused");
+    assert!(error.msg.contains("`)` closing the function type"), "{}", error.msg);
+}
+
+#[test]
 fn a_multi_element_paren_without_an_arrow_is_an_error() {
     // `(a, b)` is ambiguous with a tuple; the grammar demands `{a, b}` or an
     // arrow. This is a grammar rule, not a naming decision.

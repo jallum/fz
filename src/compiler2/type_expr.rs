@@ -41,7 +41,8 @@ pub enum TypeExpr {
     EmptyList,
     /// `{T, U, …}`.
     Tuple(Vec<TypeExpr>),
-    /// `(A, B) -> R`.
+    /// A function type: Elixir's `(A, B -> R)` and `(-> R)`, or fz's
+    /// `(A, B) -> R` and `() -> R`.
     Arrow {
         params: Vec<TypeExpr>,
         result: Box<TypeExpr>,
@@ -313,12 +314,21 @@ impl<'a> TypeExprParser<'a> {
     fn parse_paren_or_arrow(&mut self) -> Result<TypeExpr, TypeExprError> {
         self.expect(&Tok::LParen, "`(`")?;
         let mut elems = Vec::new();
-        if !matches!(self.peek(), Tok::RParen) {
+        if !matches!(self.peek(), Tok::RParen | Tok::Arrow) {
             elems.push(self.parse_union()?);
             while matches!(self.peek(), Tok::Comma) {
                 self.bump();
                 elems.push(self.parse_union()?);
             }
+        }
+        if matches!(self.peek(), Tok::Arrow) {
+            self.bump();
+            let result = self.parse_union()?;
+            self.expect(&Tok::RParen, "`)` closing the function type")?;
+            return Ok(TypeExpr::Arrow {
+                params: elems,
+                result: Box::new(result),
+            });
         }
         self.expect(&Tok::RParen, "`)`")?;
         if matches!(self.peek(), Tok::Arrow) {

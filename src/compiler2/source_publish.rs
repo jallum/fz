@@ -2431,7 +2431,7 @@ fn collect_spec_references(
         .param_body_tokens
         .iter()
         .chain(std::iter::once(&spec.result_body_tokens))
-        .chain(spec.constraints.iter().map(|(_, bound)| bound))
+        .chain(spec.bounds().map(|(_, bound)| bound))
     {
         collect_body_references(world, tel, scope, body, owner, module, refs)?;
     }
