@@ -84,6 +84,8 @@ fn a_collection_writes_its_boundary_and_the_stats_that_describe_it() {
         stats: GcStats {
             copied_bytes: 288,
             live_bytes: 288,
+            young_bytes: 3072,
+            young_budget: 2048,
             from_space_capacity_bytes: 4096,
             blocks_released: 1,
             blocks_after: 2,
@@ -96,7 +98,7 @@ fn a_collection_writes_its_boundary_and_the_stats_that_describe_it() {
     };
     assert_eq!(
         line(RuntimeEvent::Gc(&collection)),
-        r#"{"name":["fz","runtime","gc"],"time_ns":12,"kind":"event","span_id":3,"parent_span_id":4,"measurements":{},"metadata":{"pid":5,"boundary":"park","generation":"minor","copied_bytes":288,"live_bytes":288,"from_space_capacity_bytes":4096,"blocks_released":1,"blocks_after":2,"stub_visits":7,"stubs_made":{"appended_in_place":3,"window_of_buffer":0,"grown_buffer":0,"filled_buffer":0,"message_copy":1,"static_literal":0},"binrefs_made":{"appended_in_place":0,"window_of_buffer":0,"grown_buffer":0,"filled_buffer":0,"message_copy":1,"static_literal":0},"stubs_survived":{"appended_in_place":1,"window_of_buffer":0,"grown_buffer":0,"filled_buffer":0,"message_copy":0,"static_literal":0}}}"#
+        r#"{"name":["fz","runtime","gc"],"time_ns":12,"kind":"event","span_id":3,"parent_span_id":4,"measurements":{},"metadata":{"pid":5,"boundary":"park","generation":"minor","copied_bytes":288,"live_bytes":288,"young_bytes":3072,"young_budget":2048,"from_space_capacity_bytes":4096,"blocks_released":1,"blocks_after":2,"stub_visits":7,"stubs_made":{"appended_in_place":3,"window_of_buffer":0,"grown_buffer":0,"filled_buffer":0,"message_copy":1,"static_literal":0},"binrefs_made":{"appended_in_place":0,"window_of_buffer":0,"grown_buffer":0,"filled_buffer":0,"message_copy":1,"static_literal":0},"stubs_survived":{"appended_in_place":1,"window_of_buffer":0,"grown_buffer":0,"filled_buffer":0,"message_copy":0,"static_literal":0}}}"#
     );
 }
 
@@ -120,12 +122,13 @@ fn an_exit_nests_the_process_as_an_opaque_value() {
     process.halt_value = -4;
     process.failed = true;
     process.dtors_dispatched = 3;
+    process.parks = 5;
     let live = process.heap.live_count();
     let used = process.heap.bytes_used();
     assert_eq!(
         line(RuntimeEvent::ProcessExited(&process)),
         format!(
-            r#"{{"name":["fz","runtime","process_exited"],"time_ns":12,"kind":"event","span_id":3,"parent_span_id":4,"measurements":{{}},"metadata":{{"pid":1,"process":{{"opaque_type":"fz_runtime::process::Process","live_count":{live},"bytes_used":{used},"list_retention_attempts":0,"list_retention_hits":0,"struct_retention_attempts":0,"struct_retention_hits":0,"raises_delivered":0,"reduction_yields":0,"dtors_dispatched":3,"frame_copies":0,"halt_value":-4,"failed":true}}}}}}"#
+            r#"{{"name":["fz","runtime","process_exited"],"time_ns":12,"kind":"event","span_id":3,"parent_span_id":4,"measurements":{{}},"metadata":{{"pid":1,"process":{{"opaque_type":"fz_runtime::process::Process","live_count":{live},"bytes_used":{used},"list_retention_attempts":0,"list_retention_hits":0,"struct_retention_attempts":0,"struct_retention_hits":0,"raises_delivered":0,"reduction_yields":0,"parks":5,"dtors_dispatched":3,"frame_copies":0,"halt_value":-4,"failed":true}}}}}}"#
         )
     );
 }

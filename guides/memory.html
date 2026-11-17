@@ -655,7 +655,10 @@ blocks go back to the pool, or to the system allocator when exact.</p>
 objects copied; after a minor it is the old bytes kept plus the bytes copied.
 That feeds the next GC's trigger. <code>copied_bytes</code> is what this pass
 moved and <code>live_bytes</code> is the new baseline, so after a minor it still
-counts old data that has died until the next major.</p>
+counts old data that has died until the next major. <code>young_bytes</code> is
+what the process allocated since the previous pass and <code>young_budget</code>
+the amount at which the pass became due. The trigger is only asked at the end of
+a quantum, so a busy process can allocate far past its budget first.</p>
 
 <p>Each copied from-space object gets an in-band forwarding marker written into
 its marker word: <code>to_space_address | 1</code>. Any other

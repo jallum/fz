@@ -201,8 +201,7 @@ pub struct GcStats {
     /// collections kept and what this one copied.
     pub live_bytes: u64,
     /// Chain links the collection followed: each BinRef or resource stub it
-    /// examined in the sweep, and each resource stub once more for the
-    /// destructor search. A binary view is on no chain and is never visited.
+    /// examined in the sweep. A binary view is on no chain and is never visited.
     pub stub_visits: u64,
     /// Binary views made since the heap's previous collection, by the site that
     /// made each: one per binary value above the inline threshold, including the
@@ -217,6 +216,11 @@ pub struct GcStats {
     /// collection and every one for a major collection. A BinRef survives when
     /// any view reached by the collection names it.
     pub stubs_survived: StubCounts,
+    /// Bytes the heap allocated since its previous collection, by fill: what
+    /// `should_gc` compared with `young_budget` when this collection was due.
+    pub young_bytes: u64,
+    /// The young bytes at which this collection was due.
+    pub young_budget: u64,
     /// Capacity of the from-space blocks.
     pub from_space_capacity_bytes: u64,
     /// Blocks of the from-space the collection released.

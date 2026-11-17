@@ -80,7 +80,11 @@ with a non-zero exit status (see [exceptions](exceptions.md)); an exit with a
 shutdown reason of status 0 ends a process without failing it. A failed
 process's `halt_value` is not a return value. `raises_delivered` counts the
 raises a handler took in this process, and `reduction_yields` the times its
-reduction budget ran out and it yielded to the scheduler. `frame_copies` counts the
+reduction budget ran out and it yielded to the scheduler. `write_line` also
+renders `parks` after `reduction_yields`: the quanta that ended with the
+process parked on a receive (`sched_core::end_quantum` counts them), so
+`reduction_yields + parks` is the boundaries at which a collection could run.
+`frame_copies` counts the
 shared body frames a store copied to the heap tip because a collection had kept
 them (see [scheduler-zero-arg-closures](scheduler-zero-arg-closures.md)). `ProcessExitCapture`
 builds it during dispatch by reading the live process. `write_line` reads the
@@ -300,6 +304,12 @@ major collection's from-space is every block (`Heap::next_generation`):
   collections kept and gifts brought (old bytes a minor pass left) plus what this
   pass copied, so after a major pass it equals `copied_bytes`; dead old data a
   minor pass cannot see is included until a major pass reclaims it;
+- `young_bytes`: bytes the heap allocated since its previous collection, by
+  fill (`Heap::young_bytes`): what `Heap::should_gc` compared with the budget
+  when the collection became due. A process runs its whole quantum before the
+  boundary asks, so it can be many times `young_budget`;
+- `young_budget`: the young bytes at which the collection was due: the old
+  bytes, at most the largest pooled block and at least half the smallest tip;
 - `from_space_capacity_bytes`: capacity of every block the pass collected: the
   young blocks (the tip and every young parked block) for a minor pass, every
   block for a major pass;
