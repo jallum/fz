@@ -336,6 +336,19 @@ fn object_size_dispatches_from_pointer_tag_and_object_local_metadata() {
 }
 
 #[test]
+fn a_fixed_size_kind_is_sized_without_reading_its_object() {
+    // The address is never dereferenced: a constant-size kind answers from the
+    // kind the caller already holds.
+    let nowhere = 0x10 as *const u8;
+    let no_schema = |_| panic!("only a struct reads a schema");
+    let size = |kind| unsafe { object_size_of_kind(kind, nowhere, no_schema) };
+    assert_eq!(size(ValueKind::LIST), 16);
+    assert_eq!(size(ValueKind::BINVIEW), crate::bits::BINVIEW_BYTES);
+    assert_eq!(size(ValueKind::BINREF), crate::bits::BINREF_BYTES);
+    assert_eq!(size(ValueKind::RESOURCE), crate::resource::RESOURCE_STUB_SIZE);
+}
+
+#[test]
 fn pointers_leave_the_low_nibble_clear() {
     let mut heap = test_heap();
     let schema_id = heap.register_schema(Schema::tuple_of_arity(0));
