@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-17T23:49:02Z",
+  "description": "## Why\nElixir has none of these, so the five fixtures that call them keep twins: 01582 (Kernel.range/3), 01629 (Kernel.compare/2), 01623 (String.index_of/2), 01625 (String.to_byte_list/1), 01619 (List.reverse/2). Callers outside those fixtures: lib/ uses compare once, index_of three times, to_byte_list twice, List.reverse/2 twice.\n\n## Decide with the owner\n- Retire (Elixir): each becomes a private lib helper (or goes away where lib does not need it), and fixtures spell the Elixir equivalent: `a..b//s` or Range.new/3; `\u003c`/`==` term ordering; :binary.match/2; :binary.bin_to_list/1; Enum.reverse/2. Then each fixture is wrapped in defmodule Main with `# oracle: self` and its twin deleted.\n- Keep them as fz extensions: the five keep twins and are listed by the fixtures.md ticket.\n\n## Known per-fixture facts\n- 01623 also calls Kernel.assert/2, which is fz-only too (39 fixtures use assert). The conversion prints its checked values instead. Retiring assert is a separate decision.\n- 01623's subject is the zero-width match; Erlang's :binary.match raises badarg on an empty pattern, so the converted fixture states whatever Elixir does there.\n- 01619 also needs `when a: var` on `@spec rev([a], [a]) :: [a]` (Elixir: type a/0 undefined), which fz-nhb.11 makes readable.\n\n## Signal\nRetire: none of the five names is public in lib/; five fewer twins; full gate green.",
+  "id": "fz-nhb.17",
+  "labels": [],
+  "parent": "fz-nhb",
+  "priority": 3,
+  "status": "open",
+  "title": "fz's stdlib exposes Elixir's names only: Kernel.range/3, Kernel.compare/2, String.index_of/2, String.to_byte_list/1 and List.reverse/2 leave the public surface",
+  "type": "task",
+  "updated_at": "2026-11-17T23:49:02Z"
+}
