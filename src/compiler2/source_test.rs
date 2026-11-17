@@ -844,6 +844,29 @@ fn metadata_that_is_not_a_keyword_list_is_refused_not_read_as_empty() {
 }
 
 #[test]
+fn a_metadata_lookup_reads_entries_up_to_the_one_it_asks_for() {
+    let heap = Rc::new(QuotedSourceHeap::new());
+    let builder = heap.builder();
+    let pair = |key: &str, value: i64| builder.tuple(&[builder.atom(key), builder.int(value)]).unwrap();
+    let stray = builder.atom("stray");
+    let meta = builder.list(&[pair("a", 1), stray, pair("b", 2)]).unwrap();
+    let meta = builder.root(meta).unwrap();
+    assert_eq!(
+        meta.cursor().meta_value("a").unwrap().unwrap().int_value(),
+        Ok(1),
+        "the first `a` entry answers; nothing after it is read"
+    );
+    assert!(
+        meta.cursor().meta_value("b").is_err(),
+        "reaching `b` means reading the entry that is not a pair"
+    );
+    assert!(
+        meta.cursor().meta_entries().is_err(),
+        "asking for every entry reads every entry"
+    );
+}
+
+#[test]
 fn two_nodes_that_differ_only_in_span_are_equal_and_in_another_entry_are_not() {
     let heap = Rc::new(QuotedSourceHeap::new());
     let builder = heap.builder();

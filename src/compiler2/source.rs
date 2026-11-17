@@ -873,26 +873,35 @@ impl QuotedSourceCursor {
     /// Every `{key, value}` entry of a metadata keyword list, in list order.
     /// Metadata of any other shape is refused.
     pub(crate) fn meta_entries(&self) -> Result<Vec<(Self, Self)>, QuotedSourceError> {
+        self.meta_iter()?.collect()
+    }
+
+    /// The `{key, value}` entries of a metadata keyword list in list order,
+    /// each read and checked when the iterator reaches it.
+    fn meta_iter(
+        &self,
+    ) -> Result<impl Iterator<Item = Result<(Self, Self), QuotedSourceError>> + '_, QuotedSourceError> {
+        let malformed = || QuotedSourceError::new("quoted metadata must be a keyword list");
         if self.root.tag() != ValueKind::LIST {
-            return Err(QuotedSourceError::new("quoted metadata must be a keyword list"));
+            return Err(malformed());
         }
-        self.list_iter()
-            .map(|entry| {
-                let entry = entry?;
-                if entry.root.tag() != ValueKind::STRUCT {
-                    return Err(QuotedSourceError::new("quoted metadata must be a keyword list"));
-                }
-                match entry.tuple_items()?.as_slice() {
-                    [key, value] if key.root.tag() == ValueKind::ATOM => Ok((key.clone(), value.clone())),
-                    _ => Err(QuotedSourceError::new("quoted metadata must be a keyword list")),
-                }
-            })
-            .collect()
+        Ok(self.list_iter().map(move |entry| {
+            let entry = entry?;
+            if entry.root.tag() != ValueKind::STRUCT || entry.tuple_arity()? != 2 {
+                return Err(malformed());
+            }
+            let key = entry.tuple_item(0)?;
+            if key.root.tag() != ValueKind::ATOM {
+                return Err(malformed());
+            }
+            Ok((key, entry.tuple_item(1)?))
+        }))
     }
 
     /// `Keyword.get` on metadata: the value of the first `key_name` entry.
     pub(crate) fn meta_value(&self, key_name: &str) -> Result<Option<Self>, QuotedSourceError> {
-        for (key, value) in self.meta_entries()? {
+        for entry in self.meta_iter()? {
+            let (key, value) = entry?;
             if key.atom_name()? == key_name {
                 return Ok(Some(value));
             }
