@@ -15,11 +15,15 @@
     {
       "text": "Add an arm (GC session request, from fz-9x7.24): survive with the binary-destructor leak arm as the floor. It separates \"two frees per binary\" from \"system malloc per-free cost\" (fz-9x7.24 measured ~304 instructions / ~300 cycles per binary destruction, 14% of survive cycles, 200k destructions, two frees each: 1025-byte buffer + 48-byte SharedBin box). If mimalloc closes most of the gap, a one-allocation SharedBin layout is still a simplification but a smaller win.",
       "timestamp": "2026-11-17T23:10:16Z"
+    },
+    {
+      "text": "Bench round (arms exp/9x7-22-mimalloc 0a6e6e612 on develop a6ae5759d, 25 interleaved runs, dist-full 9, outputs identical). Decision rule: B3M within 1.02x V0 in distiller cycles and 1.25x page reclaims =\u003e S not built. dist-full B3M: cycles 1.035, page reclaims 2.217 =\u003e FAILS, so S (fz-9x7.12) is built. Prediction ('partly: reclaims fall but stay well above V0') held: B3 alone reclaims 5.80x, B3M 2.22x. Side finding, capped arm VM vs V0 (cycles / instructions): survive 0.761/0.818, deadbinlive 0.794/0.844, msg 0.863/0.845, enum 1.031/1.014, distiller 1.000/1.002, others within ~1.7%. Max RSS: spin +29.5%, msg +13.7%, distiller +19.5%. survive/deadbinlive were measured before fz-9x7.25 (one-block binaries), which halves their malloc calls; msg allocates no binaries, so 14% of msg's cycles go to system malloc on some other per-message path.",
+      "timestamp": "2026-11-17T23:36:58Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "Measure mimalloc as the global allocator for compiled programs against the system allocator (experiment)",
   "type": "task",
-  "updated_at": "2026-11-17T23:10:16Z"
+  "updated_at": "2026-11-17T23:36:58Z"
 }
