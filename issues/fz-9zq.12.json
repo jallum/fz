@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-9zq.2"
+  ],
   "blocks": [],
   "created": "2026-11-17T23:51:46Z",
   "description": "After fz-9zq.2 a cycle's supplied slots never reach a key. Types::activation_key_arrow's recursive collapse and convergence_collapse_evidence_inputs existed to settle an ascent the key carried. Experiment: delete both, run the full gate and the distiller, compare plans. Prediction to be written before running. If nothing moves, the collapse and BodyKeying.recursive's keying role are removed.",
