@@ -7,9 +7,15 @@
   "id": "fz-9x7.7",
   "labels": [],
   "parent": "fz-9x7",
+  "comments": [
+    {
+      "text": "Reopened. Approved by the user 2026-11-17 (GC session, BEAM comparison on bench, fz develop vs BEAM 28.3). Collections per run fz vs BEAM: ring 75,009 vs 3; msg 106,062 vs 5,223; trickle 4,814 vs 2,218. GC time: ring 11.1 ms vs 0.0; msg 16.9 ms vs 0.9. BEAM collects only when the young heap is full (minimum 233 words, ~1.9 KB) and never because a process parked; fz collects at a park once 512 B of young data has accumulated. Plan: re-test across ring, msg, fanin, reqrep and trickle with the rule fixed before running; memory judged in in-use bytes (fz-9x7.16).",
+      "timestamp": "2026-11-17T22:45:54Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "A process with a nearly empty young generation does not collect at every park or yield",
   "type": "task",
-  "updated_at": "2026-11-17T22:45:53Z"
+  "updated_at": "2026-11-17T22:45:54Z"
 }
