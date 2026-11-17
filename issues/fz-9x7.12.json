@@ -4,7 +4,9 @@
     "fz-9x7.21",
     "fz-9x7.22"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-9x7.15"
+  ],
   "created": "2026-11-15T15:47:22Z",
   "description": "A heap block larger than SIZE_TABLE's last entry (~7 MiB, runtime/src/heap/block_pool.rs) is allocated at its exact size and freed to the system allocator after the collection that empties it. On macOS that memory stays resident: in the fz-9x7.8 round-5 F variant on the full distiller trace, vmmap at peak showed MALLOC_LARGE (empty) 4.0 GB virtual / 2.5 GB resident, and peak RSS was 4.8 GB against a heap of at most 1.18 GB (from-space plus copied). Each major at a different heap size leaves its own freed large blocks behind. Repro and data: session scratchpad 9x7-8/prof/vmmap-F.txt, tel5/dist-full-*.jsonl. Experiment first: measure RSS after repeated majors at growing heap sizes, with and without the exact-size path.",
   "id": "fz-9x7.12",
