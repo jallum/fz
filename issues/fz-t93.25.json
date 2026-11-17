@@ -11,11 +11,15 @@
     {
       "text": "Allocation census (Optimize, b49c80bb7, OptionParser probe, counting allocator 1-in-16 x16) under complete_ordered_with_external (scheduler.rs fn at :868): dependency reads 8,320 allocations / 5.7 MB: :908 deps.replace_reads(publisher.clone(), ...) 5,856 (4.2 MB; deps.rs:339 -\u003e ordered_set.rs:55); :911 deps.union_reads 2,464 (1.5 MB; deps.rs:89 -\u003e ordered_set.rs:55). Beside them :892 deps.replace_waits(job.clone(), effects.waits) 1,408 (4.2 MB; deps.rs:339). No replace_held frame seen. Chains: /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/b49c80bb7.pkl",
       "timestamp": "2026-11-17T21:28:23Z"
+    },
+    {
+      "text": "Distiller profile (fz-engine hunt, develop 7c94f8df2, release): replace_reads 3.1% inclusive (reader-set insert 1.7%). Evidence: /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/hunt//agg.txt",
+      "timestamp": "2026-11-17T22:52:04Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "replace_reads keeps the reads a job still holds",
   "type": "task",
-  "updated_at": "2026-11-17T21:28:23Z"
+  "updated_at": "2026-11-17T22:52:04Z"
 }
