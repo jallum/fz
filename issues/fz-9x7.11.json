@@ -16,11 +16,15 @@
     {
       "text": "Stays open: re-test as the collector is cleaned up; ageing is not discarded on one bad round. Record so far: A1 (own source) failed rounds 2-3; part of round 3's enum cost was forward_heap_value being out of line, which fz-nml.22 (#675) now inlines. A2 / A1G / A2G were NEVER measured: they were selected by build-time env, which fz2's build.rs does not rebuild the AOT runtime archive for, so each linked A1's archive (round 3 A1h/A2h held ratios identical to 3 decimals on all 17 workloads). Next round: per-arm runtime archives (FZ_AOT_RUNTIME_STATICLIB), rebased onto develop including #675 and whatever wins fz-9x7.14/.15.",
       "timestamp": "2026-11-17T21:16:47Z"
+    },
+    {
+      "text": "Round 4 (bench, develop 2c4641f52 incl #675, per-arm runtime archives so A2/A1G/A2G are measured for the first time; 25 runs/arm, 9 dist-full; outputs identical): all four arms FAIL round 3's rule. Rule 1 (survive held falls \u003e=25%) fails everywhere: survive held 1.286 (A1/A1G), 1.324 (A2/A2G). Cycles: A1 enum 1.096 (round 3: 1.225, so #675 removed about half the gap), dist-p28000 1.069, dist-full 1.059, survive 1.049; A2 is costlier on every allocation-heavy workload (enum 1.191, dist 1.14, qsort 1.074) and its held rises on fanin/qsort/dist (dist-full 1.695); G variants add fanin 1.28 / ring 1.16 / msg 1.07 and cut held on ring/msg (0.31/0.38). Stays open per the user.",
+      "timestamp": "2026-11-17T21:38:13Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "A value becomes old only after it survives two collections",
   "type": "task",
-  "updated_at": "2026-11-17T21:16:47Z"
+  "updated_at": "2026-11-17T21:38:13Z"
 }
