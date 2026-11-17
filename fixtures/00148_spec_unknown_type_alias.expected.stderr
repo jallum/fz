@@ -1,0 +1,7 @@
+error[resolve/type-alias]: unknown type name `M.unknown_thing`
+  --> fixtures/00148_spec_unknown_type_alias.fz:3:13
+   |
+3 |   @spec one(M.unknown_thing) :: integer
+   |             ^^^^^^^^^^^^^^^
+   |
+

@@ -5,6 +5,7 @@
 
 use super::type_expr::{NominalKind, TypeDefBody, TypeExpr, parse_type_def_body, parse_type_expr};
 use crate::parser::lexer::{Lexer, Token};
+use crate::source::Span;
 use crate::telemetry::ConfiguredTelemetry;
 
 fn lex(src: &str) -> Vec<Token> {
@@ -15,15 +16,95 @@ fn lex(src: &str) -> Vec<Token> {
         .expect("type-expr fragment lexes")
 }
 
+/// The parse's structure, with every span blanked: the structural tests
+/// below compare trees, and a span is pinned by its own test.
 fn parse(src: &str) -> TypeExpr {
-    parse_type_expr(&lex(src)).expect("type-expr parses")
+    unspanned(parse_type_expr(&lex(src)).expect("type-expr parses"))
+}
+
+fn parse_body(src: &str) -> Result<TypeDefBody, super::type_expr::TypeExprError> {
+    parse_type_def_body(&lex(src)).map(|body| TypeDefBody {
+        kind: body.kind,
+        inner: unspanned(body.inner),
+    })
+}
+
+fn unspanned(expr: TypeExpr) -> TypeExpr {
+    let each = |exprs: Vec<TypeExpr>| exprs.into_iter().map(unspanned).collect();
+    match expr {
+        TypeExpr::Name { path, args, .. } => TypeExpr::Name {
+            path,
+            args: each(args),
+            span: Span::DUMMY,
+        },
+        TypeExpr::List(inner) => TypeExpr::List(Box::new(unspanned(*inner))),
+        TypeExpr::Tuple(elems) => TypeExpr::Tuple(each(elems)),
+        TypeExpr::Union(elems) => TypeExpr::Union(each(elems)),
+        TypeExpr::Arrow { params, result } => TypeExpr::Arrow {
+            params: each(params),
+            result: Box::new(unspanned(*result)),
+        },
+        TypeExpr::StructRecord { module, fields, .. } => TypeExpr::StructRecord {
+            module,
+            span: Span::DUMMY,
+            fields: fields.into_iter().map(|(field, ty)| (field, unspanned(ty))).collect(),
+        },
+        TypeExpr::Map(pairs) => TypeExpr::Map(
+            pairs
+                .into_iter()
+                .map(|(key, value)| (unspanned(key), unspanned(value)))
+                .collect(),
+        ),
+        leaf => leaf,
+    }
 }
 
 fn name(path: &[&str], args: Vec<TypeExpr>) -> TypeExpr {
     TypeExpr::Name {
         path: path.iter().map(|segment| segment.to_string()).collect(),
         args,
+        span: Span::DUMMY,
     }
+}
+
+/// The text a span covers in `src`.
+fn written(src: &str, span: Span) -> &str {
+    &src[span.start as usize..span.end as usize]
+}
+
+/// A name is reported under itself, so its span is the whole dotted path and
+/// nothing around it: not its type arguments, not the type it sits in.
+#[test]
+fn a_name_spans_its_whole_path_and_nothing_more() {
+    let src = "[{:ok, Geo.Pt.t(integer)}]";
+    let TypeExpr::List(tuple) = parse_type_expr(&lex(src)).expect("type-expr parses") else {
+        panic!("a list type");
+    };
+    let TypeExpr::Tuple(elems) = *tuple else {
+        panic!("a tuple type");
+    };
+    let TypeExpr::Name { span, args, .. } = &elems[1] else {
+        panic!("a name");
+    };
+    assert_eq!(written(src, *span), "Geo.Pt.t");
+    let TypeExpr::Name { span, .. } = &args[0] else {
+        panic!("a name argument");
+    };
+    assert_eq!(written(src, *span), "integer");
+}
+
+/// A struct record is reported under the whole record, as a struct literal
+/// and a struct pattern are.
+#[test]
+fn a_struct_record_spans_the_whole_record() {
+    let src = "[%Geo.Pt{x: integer}]";
+    let TypeExpr::List(record) = parse_type_expr(&lex(src)).expect("type-expr parses") else {
+        panic!("a list type");
+    };
+    let TypeExpr::StructRecord { span, .. } = *record else {
+        panic!("a struct record");
+    };
+    assert_eq!(written(src, span), "%Geo.Pt{x: integer}");
 }
 
 #[test]
@@ -98,6 +179,7 @@ fn a_struct_record_keeps_module_and_field_types() {
         parse("%Range{first: integer, last: integer}"),
         TypeExpr::StructRecord {
             module: vec!["Range".to_string()],
+            span: Span::DUMMY,
             fields: vec![
                 ("first".to_string(), name(&["integer"], vec![])),
                 ("last".to_string(), name(&["integer"], vec![])),
@@ -149,7 +231,7 @@ fn a_refines_body_strips_the_nominal_prefix() {
     // `@type B :: refines integer` — the brand worked example. The inner is a
     // plain unresolved Name; the resolver mints the brand over it.
     assert_eq!(
-        parse_type_def_body(&lex("refines integer")),
+        parse_body("refines integer"),
         Ok(TypeDefBody {
             kind: NominalKind::Refines,
             inner: name(&["integer"], vec![]),
@@ -162,7 +244,7 @@ fn an_opaque_body_over_resource_does_not_special_case_resource() {
     // `@type t :: opaque resource(integer)` — `resource` is just another Name
     // to the parser; resolution knows it is the resource constructor.
     assert_eq!(
-        parse_type_def_body(&lex("opaque resource(integer)")),
+        parse_body("opaque resource(integer)"),
         Ok(TypeDefBody {
             kind: NominalKind::Opaque,
             inner: name(&["resource"], vec![name(&["integer"], vec![])]),
@@ -173,7 +255,7 @@ fn an_opaque_body_over_resource_does_not_special_case_resource() {
 #[test]
 fn a_plain_body_has_no_nominal_prefix() {
     assert_eq!(
-        parse_type_def_body(&lex("t")),
+        parse_body("t"),
         Ok(TypeDefBody {
             kind: NominalKind::Plain,
             inner: name(&["t"], vec![]),

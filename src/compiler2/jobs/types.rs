@@ -56,14 +56,7 @@ pub(super) fn derive_type_def(
     }
 
     let def = world.resolve_type_def(name, &decl).map_err(|error| {
-        emit_job_diagnostic(
-            tel,
-            Diagnostic::error(
-                codes::RESOLVE_TYPE_ALIAS,
-                format!("compiler2 could not resolve type `{}`: {}", name.name, error.msg),
-                error.span,
-            ),
-        )
+        emit_job_diagnostic(tel, Diagnostic::error(codes::RESOLVE_TYPE_ALIAS, error.msg, error.span))
     })?;
 
     let mut reads: Vec<_> = refs

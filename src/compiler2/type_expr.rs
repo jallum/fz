@@ -28,7 +28,13 @@ pub enum TypeExpr {
     /// A name in type position: `integer`, `t`, `SomeModule.t`, `t(float)`.
     /// `path` holds the dotted segments; `args` the optional `(...)`
     /// application. Builtins, aliases, and free variables all arrive here.
-    Name { path: Vec<String>, args: Vec<TypeExpr> },
+    /// `span` covers the name as written, the whole dotted path, so a name
+    /// resolution refuses is reported under it.
+    Name {
+        path: Vec<String>,
+        args: Vec<TypeExpr>,
+        span: Span,
+    },
     /// `[T]`.
     List(Box<TypeExpr>),
     /// `[]` — the empty-list type.
@@ -42,9 +48,11 @@ pub enum TypeExpr {
     },
     /// `A | B | …`.
     Union(Vec<TypeExpr>),
-    /// `%Mod{field: T, …}`.
+    /// `%Mod{field: T, …}`. `span` covers the whole record, from `%` to
+    /// `}`, as a struct literal's does.
     StructRecord {
         module: Vec<String>,
+        span: Span,
         fields: Vec<(String, TypeExpr)>,
     },
     /// `%{k => v, …}` — the structural map type, parity with `[T]` for
@@ -151,6 +159,13 @@ impl<'a> TypeExprParser<'a> {
         self.pos += 1;
     }
 
+    /// The span from `start` through the last token consumed.
+    fn span_from(&self, start: Span) -> Span {
+        self.tokens
+            .get(self.pos.saturating_sub(1))
+            .map_or(start, |last| start.merge(last.span))
+    }
+
     fn at_end(&self) -> bool {
         matches!(self.peek(), Tok::Eof)
     }
@@ -224,8 +239,9 @@ impl<'a> TypeExprParser<'a> {
                 Ok(TypeExpr::Bool)
             }
             Tok::Ident(name) | Tok::Upper(name) => {
+                let start = self.peek_span();
                 self.bump();
-                self.parse_name(name.clone())
+                self.parse_name(name.clone(), start)
             }
             other => Err(self.err(format!("expected a type expression, got {}", other))),
         }
@@ -234,7 +250,7 @@ impl<'a> TypeExprParser<'a> {
     /// Parses a (possibly dotted) name with an optional type-argument
     /// application: `t`, `t(float)`, `SomeModule.t`, `SomeModule.t(float)`. No
     /// classification or arity check — that is resolution's job.
-    fn parse_name(&mut self, first: String) -> Result<TypeExpr, TypeExprError> {
+    fn parse_name(&mut self, first: String, start: Span) -> Result<TypeExpr, TypeExprError> {
         let mut path = vec![first];
         while matches!(self.peek(), Tok::Dot) {
             self.bump();
@@ -246,12 +262,13 @@ impl<'a> TypeExprParser<'a> {
                 other => return Err(self.err(format!("expected a name segment after `.`, got {}", other))),
             }
         }
+        let span = self.span_from(start);
         let args = if matches!(self.peek(), Tok::LParen) {
             self.parse_args()?
         } else {
             Vec::new()
         };
-        Ok(TypeExpr::Name { path, args })
+        Ok(TypeExpr::Name { path, args, span })
     }
 
     fn parse_args(&mut self) -> Result<Vec<TypeExpr>, TypeExprError> {
@@ -321,6 +338,7 @@ impl<'a> TypeExprParser<'a> {
     }
 
     fn parse_struct_record(&mut self) -> Result<TypeExpr, TypeExprError> {
+        let start = self.peek_span();
         self.expect(&Tok::Percent, "`%`")?;
         let module = self.parse_module_path()?;
         self.expect(&Tok::LBrace, "`{` after struct-record module")?;
@@ -337,7 +355,11 @@ impl<'a> TypeExprParser<'a> {
             }
         }
         self.expect(&Tok::RBrace, "`}` after struct-record fields")?;
-        Ok(TypeExpr::StructRecord { module, fields })
+        Ok(TypeExpr::StructRecord {
+            module,
+            span: self.span_from(start),
+            fields,
+        })
     }
 
     /// `%{k => v, …}`, mirroring the value-level map literal's two key

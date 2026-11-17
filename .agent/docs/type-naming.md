@@ -57,6 +57,32 @@ disagrees with its definition, or that no module ever defines, is an
 unresolved-frontier diagnostic surfaced when the drive goes quiet — the same
 machinery as an unknown import.
 
+## A name nothing declares
+
+Every `TypeExpr::Name` carries the span of the name as written, the whole dotted
+path, and a `%Mod{...}` record carries the span of the whole record, as a struct
+literal does. A name resolution
+cannot classify (a bare name nothing binds, a builtin given the wrong number of
+type arguments) is refused under that span by the job resolving it. Both
+`DeriveFunctionContract` and `DeriveTypeDef` fail on it, so the compile stops: a
+contract is never published with one of its specs left out.
+
+A dotted name is a `TypeDefined` wait, so one nothing declares is found at the
+unresolved frontier. The reference walk (`collect_type_references` in
+`source_publish.rs`) notes where each referenced name is written
+(`World::note_type_reference`), and `unresolved_type_issue` reports the first
+such place. When the module the name looks in was never defined, the fault is
+that module, reported as `resolve/unknown-module` at the same name, and it is
+the only report. Fixtures `00090` (a bare name), `00148` (a dotted name in a
+module that is defined) and `01317` (a dotted name in one that is not) pin the
+three reports; `a_type_name_nothing_declares_stops_the_compile_under_the_name`
+and its extern/annotation sibling in `compiler2/drive_test.rs` cover each type
+position.
+
+A declaration nothing reaches is never resolved, so a bad name in it is not
+reported: a contract is derived for a function something calls, a `@type` for a
+name something references.
+
 ## Naming settles below executable demand
 
 Type denotation is a **surface-tier** fact. It depends only on indexing and

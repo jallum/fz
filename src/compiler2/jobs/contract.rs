@@ -98,26 +98,15 @@ pub(super) fn derive_function_contract(
         });
     }
 
-    // A spec that fails to resolve is the user's error, not the engine's:
-    // report it and let the diagnosed spec constrain nothing. Resolved
-    // sibling specs still contribute, and the contract fact still publishes
-    // so consumers never block on a diagnosed declaration.
+    // A spec names only types the compiler can read: one it cannot is
+    // refused under the name, and the compile stops, since a contract with a
+    // spec left out would check less than the source says.
     let mut contract = Vec::with_capacity(specs.len());
     for spec in &specs {
-        match world.resolve_spec_decl(source.namespace, spec) {
-            Ok(resolved) => contract.push(resolved),
-            Err(error) => emit_through(
-                tel,
-                &[Diagnostic::error(
-                    codes::RESOLVE_TYPE_ALIAS,
-                    format!(
-                        "compiler2 could not resolve function contract for `{}`: {}",
-                        surface.name, error.msg
-                    ),
-                    error.span,
-                )],
-            ),
-        }
+        let resolved = world.resolve_spec_decl(source.namespace, spec).map_err(|error| {
+            emit_job_diagnostic(tel, Diagnostic::error(codes::RESOLVE_TYPE_ALIAS, error.msg, error.span))
+        })?;
+        contract.push(resolved);
     }
     let contract = if surface.variadic {
         let tail = variadic_tail_domain(world.types_mut());

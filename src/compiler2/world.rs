@@ -2043,6 +2043,12 @@ impl World {
     /// itself -- `module_interface_if_present` doubles as "is this module's
     /// interface actually known," so stashing an obligation there would make
     /// an undefined module look resolved the moment someone referenced it.
+    /// Records where a type name is written, so a name nothing declares is
+    /// reported under it (`unresolved_type_issue`).
+    pub(crate) fn note_type_reference(&mut self, name: &TypeName, span: Span) {
+        self.type_refs.note_written_at(name, span);
+    }
+
     pub(crate) fn note_module_reference_expectation(&mut self, module: ModuleId, requester: InterfaceRequester) {
         self.module_reference_expectations
             .record(module, ModuleReferenceExpectation { requester, call: None });
@@ -3350,20 +3356,25 @@ impl World {
     ///
     /// A `TypeDefined` wait on a name that no `@type` ever declared is a
     /// reference to a type that does not exist: nothing can publish the fact,
-    /// so the terminal frontier is where the reference is refused, worded the
-    /// way an unknown local type name is.
+    /// so the terminal frontier is where the reference is refused, under the
+    /// name, worded the way an unknown local type name is. When the module the
+    /// name looks in was never defined, that is the fault, and it is the one
+    /// reported, at the same name.
     ///
     /// A `TypeDefined` wait that is neither -- some other type further down
     /// its reference chain never resolving -- is not diagnosed here; `None`
     /// lets it fall through the way an unrecognized fact kind already does.
     fn unresolved_type_issue(&self, name: &TypeName) -> Option<UnresolvedIssue> {
         let Some(decl) = self.type_decl(name) else {
+            if self.module_defined_revision(name.module).is_none() && !self.is_runtime_module(name.module) {
+                return Some(self.unresolved_module_issue(name.module));
+            }
             return Some(UnresolvedIssue {
                 key: UnresolvedIssueKey::Type(name.clone()),
                 diagnostic: Diagnostic::error(
                     codes::RESOLVE_TYPE_ALIAS,
                     format!("unknown type name `{}`", self.dotted_type_name(name)),
-                    Span::DUMMY,
+                    self.type_refs.first_written_at(name).unwrap_or(Span::DUMMY),
                 ),
             });
         };

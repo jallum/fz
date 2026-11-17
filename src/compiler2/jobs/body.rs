@@ -885,7 +885,7 @@ pub(super) fn collect_local_pattern_requirements(
 
 /// Records one `%Mod{...}` reference from a struct literal or struct pattern
 /// in a function body: the module-obligation and field-obligation halves
-/// mirror `source_publish.rs`'s `collect_struct_obligations` (same
+/// mirror `source_publish.rs`'s `collect_type_references` (same
 /// expectation store, so a non-struct module or bad field is diagnosed at
 /// the requester regardless of whether the reference came from a type
 /// position or a body position), and the `StructDefined` wait half mirrors

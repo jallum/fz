@@ -1,8 +1,10 @@
 #---
-# purpose: an @spec naming an unknown type alias surfaces a diagnostic but does not block compilation
+# purpose: an @spec naming a type its module does not declare stops the compile, reported under the whole dotted name
+# expect: diagnostic
 #---
 defmodule M do
-  @spec one(unknown_thing) :: integer
+  @type t :: integer
+  @spec one(M.unknown_thing) :: integer
   def one(_), do: 1
 end
 def main(), do: dbg(M.one(0))

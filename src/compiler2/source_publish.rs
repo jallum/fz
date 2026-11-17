@@ -494,91 +494,23 @@ pub(crate) fn record_function_type_refs(
             .expect("function type refs should only be recorded after function source is noted");
         (source.namespace, source.owner, source.owner_module)
     };
-    let mut refs = Vec::new();
-    // The struct half of the same walk, recorded in one pass with the
-    // `TypeDefined` refs: every `%Mod{...}` a `@spec`, extern contract, or
-    // param annotation names records an `A.field` obligation (at that
-    // position's span, from this function's module) and collects `Mod` as the
-    // `StructDefined` wait the contract/entry-dispatch jobs resolve against.
-    // `@spec` and guard param annotations are all this function's type
-    // positions, so this single walk covers both uniformly — the function
-    // mirror of `note_pending_types`' `@type` walk (fz-rh2.17.5.6.10).
-    let mut struct_refs = Vec::new();
+    let mut refs = TypeReferences::default();
     for attr in &surface.attrs {
         if let Attribute::Spec(spec) = attr {
-            collect_spec_refs(world, tel, namespace, spec, &mut refs)?;
-            collect_spec_struct_obligations(world, tel, namespace, spec, owner, module, &mut struct_refs)?;
+            collect_spec_references(world, tel, namespace, spec, owner, module, &mut refs)?;
         }
     }
     if let Some(extern_spec) = surface.extern_contract_decl() {
-        collect_spec_refs(world, tel, namespace, &extern_spec, &mut refs)?;
-        collect_spec_struct_obligations(world, tel, namespace, &extern_spec, owner, module, &mut struct_refs)?;
+        collect_spec_references(world, tel, namespace, &extern_spec, owner, module, &mut refs)?;
     }
     for clause in &surface.clauses {
         for annotation in clause.param_annotations.iter().flatten() {
-            collect_body_refs(world, tel, namespace, annotation, &mut refs)?;
-            collect_body_struct_obligations(world, tel, namespace, annotation, owner, module, &mut struct_refs)?;
+            collect_body_references(world, tel, namespace, annotation, owner, module, &mut refs)?;
         }
     }
-    super::drive::ExecutionContext::new(world, tel).record_function_type_refs(&function, refs);
-    world.record_function_type_struct_refs(function, struct_refs);
+    super::drive::ExecutionContext::new(world, tel).record_function_type_refs(&function, refs.types);
+    world.record_function_type_struct_refs(function, refs.structs);
     Ok(())
-}
-
-/// The struct-obligation sibling of `collect_spec_refs`: walks every
-/// type-position of a spec (params, result, constraint bounds), recording the
-/// `%Mod{...}` obligations and struct-module refs each carries.
-fn collect_spec_struct_obligations(
-    world: &mut World,
-    tel: &impl crate::telemetry::Telemetry,
-    scope: Namespace,
-    spec: &SpecDecl,
-    owner: SourceOwner,
-    module: ModuleId,
-    struct_refs: &mut Vec<ModuleId>,
-) -> Result<(), FatalError> {
-    for body in spec
-        .param_body_tokens
-        .iter()
-        .chain(std::iter::once(&spec.result_body_tokens))
-        .chain(spec.constraints.iter().map(|(_, bound)| bound))
-    {
-        collect_body_struct_obligations(world, tel, scope, body, owner, module, struct_refs)?;
-    }
-    Ok(())
-}
-
-/// The struct-obligation sibling of `collect_body_refs`: parses one
-/// type-expression body and records its `%Mod{...}` obligations at the body's
-/// own span, from the referencing function's `owner`/`module`.
-fn collect_body_struct_obligations(
-    world: &mut World,
-    tel: &impl crate::telemetry::Telemetry,
-    scope: Namespace,
-    body: &TypeExprBody,
-    owner: SourceOwner,
-    module: ModuleId,
-    struct_refs: &mut Vec<ModuleId>,
-) -> Result<(), FatalError> {
-    if body.0.is_empty() {
-        return Ok(());
-    }
-    let expr = parse_type_expr(&body.0).map_err(|error| {
-        emit_job_diagnostic(
-            tel,
-            Diagnostic::error(
-                codes::RESOLVE_TYPE_ALIAS,
-                format!("compiler2 could not parse a type expression: {}", error.msg),
-                error.span,
-            ),
-        )
-    })?;
-    let requester = InterfaceRequester {
-        owner,
-        module,
-        span: type_expr_body_span(body),
-    };
-    collect_struct_obligations(world, tel, scope, &expr, &requester, struct_refs)
 }
 
 fn type_expr_body_span(body: &TypeExprBody) -> Span {
@@ -930,26 +862,18 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
             span,
         } in pending
         {
-            let mut refs = Vec::new();
-            collect_type_refs(self.world, self.namespace, &body.inner, &mut refs);
-            super::drive::ExecutionContext::new(self.world, self.telemetry).record_type_def_refs(&name, refs);
-
-            // The struct-record half of the same walk: every `%Mod{field:
-            // ...}` this `@type` body names records an `A.field` obligation
-            // at this declaration's span, and collects `Mod`'s module id as
-            // the `StructDefined` wait `DeriveTypeDef` resolves against
-            // (fz-rh2.17.5.6.10).
             let requester = self.interface_requester(span);
-            let mut struct_refs = Vec::new();
-            collect_struct_obligations(
+            let mut refs = TypeReferences::default();
+            collect_type_references(
                 self.world,
                 self.telemetry,
                 self.namespace,
                 &body.inner,
                 &requester,
-                &mut struct_refs,
+                &mut refs,
             )?;
-            self.world.record_type_def_struct_refs(name.clone(), struct_refs);
+            super::drive::ExecutionContext::new(self.world, self.telemetry).record_type_def_refs(&name, refs.types);
+            self.world.record_type_def_struct_refs(name.clone(), refs.structs);
 
             super::drive::ExecutionContext::new(self.world, self.telemetry).note_type_decl(
                 &name,
@@ -2403,60 +2327,82 @@ fn emit_compiler_service_define(
     );
 }
 
-/// Walks a parsed type expression a second time, recording each `%Mod{...}`
-/// struct-record's obligations: `Mod`'s module id (the `StructDefined`
-/// wait-set collected into `struct_refs`), one module-level expectation for
-/// the struct reference, and one `StructFieldExpectation` per field, from
-/// `requester` (the enclosing `@type`/`@spec` declaration).
-/// A dedicated walk rather than folding into `collect_type_refs` above: that
-/// walk answers "which `TypeDefined` facts does this body need," this one
-/// answers "which struct obligations does this body create" — a different
-/// question over the same tree, same shape as `resolve_ty`'s own separate
-/// walk in `resolve.rs`.
-fn collect_struct_obligations(
+/// What a declaration's type expressions refer to: the named types its
+/// consumer waits on (`TypeDefined`), and the modules its `%Mod{...}` records
+/// name (`StructDefined`).
+#[derive(Default)]
+struct TypeReferences {
+    types: Vec<TypeName>,
+    structs: Vec<ModuleId>,
+}
+
+/// Walks a parsed type expression, collecting what it refers to and noting
+/// where each reference is written, so a name that never resolves is
+/// reported under it. Builtins, free type variables and unresolvable bare
+/// names are not references: resolution decides them, under their own
+/// spans. A `%Mod{...}` record also obliges `Mod` to be a struct with the
+/// fields it names, from `requester` (the enclosing declaration).
+fn collect_type_references(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
     scope: Namespace,
     expr: &TypeExpr,
     requester: &InterfaceRequester,
-    struct_refs: &mut Vec<ModuleId>,
+    refs: &mut TypeReferences,
 ) -> Result<(), FatalError> {
     match expr {
-        TypeExpr::Name { args, .. } => {
+        TypeExpr::Name { path, args, span } => {
+            if let Some(type_name) = world.reference_type(scope, path, args.len()) {
+                let written = InterfaceRequester {
+                    span: *span,
+                    ..requester.clone()
+                };
+                if path.len() > 1 {
+                    world.note_module_reference_expectation(type_name.module, written.clone());
+                }
+                world.note_type_reference(&type_name, written.span);
+                refs.types.push(type_name);
+            }
             for arg in args {
-                collect_struct_obligations(world, tel, scope, arg, requester, struct_refs)?;
+                collect_type_references(world, tel, scope, arg, requester, refs)?;
             }
         }
-        TypeExpr::List(inner) => collect_struct_obligations(world, tel, scope, inner, requester, struct_refs)?,
+        TypeExpr::List(inner) => collect_type_references(world, tel, scope, inner, requester, refs)?,
         TypeExpr::Tuple(elems) | TypeExpr::Union(elems) => {
             for elem in elems {
-                collect_struct_obligations(world, tel, scope, elem, requester, struct_refs)?;
+                collect_type_references(world, tel, scope, elem, requester, refs)?;
             }
         }
         TypeExpr::Arrow { params, result } => {
             for param in params {
-                collect_struct_obligations(world, tel, scope, param, requester, struct_refs)?;
+                collect_type_references(world, tel, scope, param, requester, refs)?;
             }
-            collect_struct_obligations(world, tel, scope, result, requester, struct_refs)?;
+            collect_type_references(world, tel, scope, result, requester, refs)?;
         }
-        TypeExpr::StructRecord { module, fields } => {
+        TypeExpr::StructRecord { module, span, fields } => {
             let module_name = ModuleName::from_segments(module.clone());
             let module_id = world.resolve_module_name(scope, &module_name);
-            struct_refs.push(module_id);
-            world.note_struct_reference_expectation(module_id, requester.clone());
+            refs.structs.push(module_id);
+            world.note_struct_reference_expectation(
+                module_id,
+                InterfaceRequester {
+                    span: *span,
+                    ..requester.clone()
+                },
+            );
             for (field, value) in fields {
                 super::drive::ExecutionContext::new(world, tel).note_struct_field_expectation(
                     module_id,
                     field.clone(),
                     requester.clone(),
                 )?;
-                collect_struct_obligations(world, tel, scope, value, requester, struct_refs)?;
+                collect_type_references(world, tel, scope, value, requester, refs)?;
             }
         }
         TypeExpr::Map(pairs) => {
             for (key, value) in pairs {
-                collect_struct_obligations(world, tel, scope, key, requester, struct_refs)?;
-                collect_struct_obligations(world, tel, scope, value, requester, struct_refs)?;
+                collect_type_references(world, tel, scope, key, requester, refs)?;
+                collect_type_references(world, tel, scope, value, requester, refs)?;
             }
         }
         TypeExpr::EmptyList
@@ -2470,60 +2416,16 @@ fn collect_struct_obligations(
     Ok(())
 }
 
-/// Walks a parsed type expression, recording each name that resolves to a type
-/// identity against `scope`. Builtins, free type variables, and unresolvable
-/// bare names are not references; resolution decides them, not this walk.
-fn collect_type_refs(world: &mut World, scope: Namespace, expr: &TypeExpr, out: &mut Vec<TypeName>) {
-    match expr {
-        TypeExpr::Name { path, args } => {
-            if let Some(type_name) = world.reference_type(scope, path, args.len()) {
-                out.push(type_name);
-            }
-            for arg in args {
-                collect_type_refs(world, scope, arg, out);
-            }
-        }
-        TypeExpr::List(inner) => collect_type_refs(world, scope, inner, out),
-        TypeExpr::Tuple(elems) | TypeExpr::Union(elems) => {
-            for elem in elems {
-                collect_type_refs(world, scope, elem, out);
-            }
-        }
-        TypeExpr::Arrow { params, result } => {
-            for param in params {
-                collect_type_refs(world, scope, param, out);
-            }
-            collect_type_refs(world, scope, result, out);
-        }
-        TypeExpr::StructRecord { fields, .. } => {
-            for (_, ty) in fields {
-                collect_type_refs(world, scope, ty, out);
-            }
-        }
-        TypeExpr::Map(pairs) => {
-            for (key, value) in pairs {
-                collect_type_refs(world, scope, key, out);
-                collect_type_refs(world, scope, value, out);
-            }
-        }
-        TypeExpr::EmptyList
-        | TypeExpr::AtomLit(_)
-        | TypeExpr::IntLit(_)
-        | TypeExpr::FloatLit(_)
-        | TypeExpr::Wildcard
-        | TypeExpr::Nil
-        | TypeExpr::Bool => {}
-    }
-}
-
 /// Walks every type-position of a spec: each parameter, the result, and each
 /// constraint bound.
-pub(crate) fn collect_spec_refs(
+fn collect_spec_references(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
     scope: Namespace,
     spec: &SpecDecl,
-    out: &mut Vec<TypeName>,
+    owner: SourceOwner,
+    module: ModuleId,
+    refs: &mut TypeReferences,
 ) -> Result<(), FatalError> {
     for body in spec
         .param_body_tokens
@@ -2531,17 +2433,21 @@ pub(crate) fn collect_spec_refs(
         .chain(std::iter::once(&spec.result_body_tokens))
         .chain(spec.constraints.iter().map(|(_, bound)| bound))
     {
-        collect_body_refs(world, tel, scope, body, out)?;
+        collect_body_references(world, tel, scope, body, owner, module, refs)?;
     }
     Ok(())
 }
 
-fn collect_body_refs(
+/// Parses one type-expression body of a function's declaration and walks it,
+/// from the function's `owner`/`module`, at the body's own span.
+fn collect_body_references(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
     scope: Namespace,
     body: &TypeExprBody,
-    out: &mut Vec<TypeName>,
+    owner: SourceOwner,
+    module: ModuleId,
+    refs: &mut TypeReferences,
 ) -> Result<(), FatalError> {
     if body.0.is_empty() {
         return Ok(());
@@ -2556,8 +2462,12 @@ fn collect_body_refs(
             ),
         )
     })?;
-    collect_type_refs(world, scope, &expr, out);
-    Ok(())
+    let requester = InterfaceRequester {
+        owner,
+        module,
+        span: type_expr_body_span(body),
+    };
+    collect_type_references(world, tel, scope, &expr, &requester, refs)
 }
 
 fn note_protocol_domain_type(
