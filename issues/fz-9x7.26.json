@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-17T23:45:13Z",
+  "description": "Found by the GC session in review of fz-9x7.21 (#693, merged as 6c26088c2); its fix was in an amend that arrived after the merge.\n\nSince fz-9x7.21 a recycled heap block is not zeroed, so alloc_inline_bitstring (runtime/src/heap/imp.rs:938, `fill(from_raw_parts_mut(p.add(8), byte_len))`) hands fill callbacks a `\u0026mut [u8]` over bytes nothing has written. from_raw_parts_mut requires initialized values: undefined behaviour in Rust's terms, even though every caller only writes.\n\nFix (written and gated by GC: 6934 passed, clippy, doc, 0xA5 poison fill): fill callbacks take `\u0026mut [MaybeUninit\u003cu8\u003e]` and write with write_copy_of_slice, across alloc_bitstring_with, alloc_inline_bitstring, SharedBinHandle::from_filled, shared_bin_alloc_with and fz_binary_copy; two tests adjusted.\n\nBlocks fz-9x7.25, whose SharedBin bytes become unwritten too.",
+  "id": "fz-9x7.26",
+  "labels": [],
+  "parent": "fz-9x7",
+  "priority": 1,
+  "status": "open",
+  "title": "A heap fill callback is handed unwritten bytes as MaybeUninit",
+  "type": "bug",
+  "updated_at": "2026-11-17T23:45:13Z"
+}
