@@ -165,6 +165,16 @@ impl AnyValue {
         }
     }
 
+    /// The IEEE 754 bits of the number as an f64, an integer being converted
+    /// first: the raw word a float bitstring field is written from.
+    pub(crate) fn as_float_word(self) -> Option<i64> {
+        match self {
+            AnyValue::Float(value) => Some(value.to_bits() as i64),
+            AnyValue::Int(value) => Some((value as f64).to_bits() as i64),
+            _ => None,
+        }
+    }
+
     pub(super) fn is_empty_list(self) -> bool {
         matches!(self, AnyValue::EmptyList)
     }

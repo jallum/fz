@@ -571,10 +571,14 @@ impl BitType {
         matches!(self, BitType::Integer | BitType::Utf8)
     }
 
-    /// A construction writes this field from the integer it holds, as the raw
-    /// word it is: an `integer`'s bits, or the scalar value a utf field encodes.
-    pub fn writes_integer_word(self) -> bool {
-        matches!(self, BitType::Integer | BitType::Utf8 | BitType::Utf16 | BitType::Utf32)
+    /// A construction writes this field from the scalar it holds, as the raw
+    /// word it is: an `integer`'s bits, a `float`'s IEEE 754 bits, or the
+    /// scalar value a utf field encodes.
+    pub fn writes_scalar_word(self) -> bool {
+        matches!(
+            self,
+            BitType::Integer | BitType::Float | BitType::Utf8 | BitType::Utf16 | BitType::Utf32
+        )
     }
 }
 

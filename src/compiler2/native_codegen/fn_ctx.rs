@@ -22,8 +22,8 @@ use fz_runtime::ir_runtime::{
     fz_closure_halt_kind_ref, fz_closure_set_capture_atom, fz_closure_set_capture_f64, fz_closure_set_capture_i64,
     fz_closure_set_capture_ref, fz_halt_implicit_atom, fz_halt_implicit_f64, fz_halt_implicit_i64,
     fz_halt_implicit_ref, fz_list_head_float_ref, fz_list_head_int_ref, fz_list_head_ref, fz_list_reuse_or_cons_parts,
-    fz_list_reuse_or_cons_ref, fz_list_tail_ref, fz_mark_published_ref_aliased, fz_struct_copy, fz_struct_store_ref,
-    fz_truthy_ref, fz_type_of, fz_unbox_atom, fz_unbox_float, fz_unbox_int,
+    fz_list_reuse_or_cons_ref, fz_list_tail_ref, fz_mark_published_ref_aliased, fz_number_ref_float_bits,
+    fz_struct_copy, fz_struct_store_ref, fz_truthy_ref, fz_type_of, fz_unbox_atom, fz_unbox_float, fz_unbox_int,
 };
 use fz_runtime::process_abi::{PROCESS_STRUCT_RETENTION_ATTEMPTS_OFFSET, PROCESS_STRUCT_RETENTION_HITS_OFFSET};
 
@@ -795,6 +795,17 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
             CodegenValue::AnyRef(value_ref) => self.unbox_float(value_ref),
             _ => panic!("cannot read raw f64 from non-float value"),
         }
+    }
+
+    /// The IEEE 754 bits of the number `v` holds as an f64, an integer being
+    /// converted first, whether the compiler knows its kind or only a ref names it: the raw word a float bitstring field is written from.
+    pub(crate) fn as_float_word(&mut self, var_env: &HashMap<u32, CodegenValue>, v: u32) -> ir::Value {
+        let binding = *var_env.get(&v).expect("unbound var");
+        if let CodegenValue::AnyRef(value_ref) = binding {
+            return runtime_call1!(self, fz_number_ref_float_bits, [value_ref]);
+        }
+        let float = self.coerce_binding_to(binding, ArgRepr::RawF64);
+        self.b.ins().bitcast(types::I64, MemFlags::new(), float)
     }
 
     // -- closure capture access by usize index (cache-free) --
