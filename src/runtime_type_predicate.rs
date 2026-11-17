@@ -145,11 +145,15 @@ impl RuntimeTestAxis {
             // value's first element (fz-kdt.107 step 3).
             Self::Lists => AxisPrecision::PerPosition,
             Self::Tuples => AxisPrecision::PerPosition,
+            // A binary test admits exactly the values of one representation:
+            // a bitstring test reads the byte-alignment of the length, so
+            // passing it IS being a whole-byte string (or not), and brands such
+            // as utf8 are runtime-erased (fz-bsx) -- a body admitted here
+            // cannot misread what arrives, by the same argument as `Ints`.
+            Self::Binaries => AxisPrecision::Separating,
             // A schema id names the struct, never its fields; a map test is a
-            // kind check; a binary and a resource test likewise.
-            Self::NamedStructs | Self::OtherStructs | Self::Maps | Self::Binaries | Self::Resources => {
-                AxisPrecision::Erasing
-            }
+            // kind check; a resource test likewise.
+            Self::NamedStructs | Self::OtherStructs | Self::Maps | Self::Resources => AxisPrecision::Erasing,
         }
     }
 

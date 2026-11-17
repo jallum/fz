@@ -256,7 +256,8 @@ fn read_compile_spend(trace: &Path) -> CompileSpend {
 // (292 functions whose recursion is asked) and 1_202 `DeriveExecutableReach` runs (one per
 // executable whose return a transport position names), less 104 runs elsewhere that no longer
 // restart for a reach they were waiting on.
-const DERIVATIONS: u64 = 19_800;
+// 19_800 -> 19_850: the ordering operators' `binary` clause adds its `fz_op_*_bb` activation and splits the catch-all's `compare/2` activations, the same way the int and float clauses already do.
+const DERIVATIONS: u64 = 19_850;
 // 111_876 -> 111_888: an extern that declares `raises:` reads the struct of
 // the exception it names, to raise that struct. The distiller calls twelve
 // such externs, and each contract reads `StructDefined` once.
@@ -276,7 +277,9 @@ const DERIVATIONS: u64 = 19_800;
 // 111_824 -> 111_830: the six reads of the new `Kernel.is_number/1`.
 // 111_830 -> 156_110: a reach job reads the edge fact of every node it reaches, so each of its
 // 1_558 runs hands the World one read per node of its cone.
-const READS_HANDED: u64 = 156_110;
+// 156_110 -> 156_740: the same activations, each read once per derivation, and each reach
+// job whose cone now holds the binary clause's activations reads them too.
+const READS_HANDED: u64 = 156_740;
 
 /// Compiling the distiller spends this much of the product stack. The largest
 /// drive is the one `PRODUCT_DRIVE_BUDGET` bounds, so its headroom is the
@@ -334,7 +337,8 @@ fn the_distiller_compiles_inside_the_product_drive_budget() {
         // waiting on the fact, where it waited on the product 165 times: its reach is answered
         // by a job outside the drive, so the shape is requested again once that job lands
         // (30_289 -> 31_325 transport shape requests).
-        (46_243, 46_797, 26),
+        // (46_243, 46_797, 26) -> (46_285, 46_839, 26): the ordering operators' `binary` clause adds its `fz_op_*_bb` activation and splits the catch-all's `compare/2` activations, the same way the int and float clauses already do.
+        (46_285, 46_839, 26),
         "(largest drive requests, total requests, drives) for the distiller's compile moved. \
          A fall is lowered in this pin; a rise is investigated first, because the largest drive \
          may not exceed PRODUCT_DRIVE_BUDGET (50,000)."

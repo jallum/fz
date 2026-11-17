@@ -1190,6 +1190,15 @@ mod tests {
         }
     }
 
+    /// A binary test reads the bit length's byte alignment and nothing a
+    /// brand could change (utf8 shares the representation), so passing it is
+    /// being a whole-byte string: the axis separates the way `Ints` does.
+    #[test]
+    fn the_binaries_axis_separates_because_a_binary_has_one_representation() {
+        assert_eq!(RuntimeTestAxis::Binaries.precision(), AxisPrecision::Separating);
+        assert_eq!(RuntimeTestAxis::Ints.precision(), AxisPrecision::Separating);
+    }
+
     fn tuple(shapes: Vec<Vec<RuntimeTypePredicate>>) -> RuntimeTypePredicate {
         let mut predicate = RuntimeTypePredicate::none();
         predicate.tuples = TupleShapes::exact(shapes);

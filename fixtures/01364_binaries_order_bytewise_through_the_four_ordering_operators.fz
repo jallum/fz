@@ -1,0 +1,32 @@
+#---
+# purpose: "binaries order bytewise through <, <=, > and >=, whether the operands are literals or arrive unproven, and a partial-byte bitstring still orders"
+# oracle: self
+# oracle.stamp: a2963b6abdf1dcd3
+#---
+#
+# # binaries_order_bytewise
+#
+# Elixir compares two binaries byte by byte, so `"Z" < "a"`, a prefix sorts
+# before its extension, and a multi-byte codepoint sorts by its first byte.
+# Each pair is asked through all four operators, once with literal operands
+# and once through a helper whose operands arrive as `any`. A bitstring that
+# is not a whole number of bytes is not a binary; it still has an answer.
+defmodule Main do
+  defp order(a, b), do: {a < b, a <= b, a > b, a >= b}
+
+  def main() do
+    IO.inspect({"a" < "b", "a" <= "b", "a" > "b", "a" >= "b"})
+    IO.inspect(order("a", "b"))
+    IO.inspect(order("b", "a"))
+    IO.inspect(order("a", "a"))
+    IO.inspect(order("Z", "a"))
+    IO.inspect(order("ab", "abc"))
+    IO.inspect(order("", "a"))
+    IO.inspect(order("z", "é"))
+    IO.inspect(order(<<255>>, <<1>>))
+    IO.inspect(order(<<1::1>>, "a"))
+    IO.inspect(order("a", <<1::1>>))
+  end
+end
+
+Main.main()

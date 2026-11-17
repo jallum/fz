@@ -378,7 +378,8 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // `DeriveExecutableReach` runs: one per executable whose return a transport position
         // names. Eighteen fewer runs elsewhere: a recursion verdict starts once its reach
         // exists.
-        (2988, 15, 42, 261),
+        // (2988, 15, 42, 261) -> (2992, 15, 42, 261): the ordering operators' `binary` clause adds its `fz_op_*_bb` activation and splits the catch-all's `compare/2` activations, the same way the int and float clauses already do.
+        (2992, 15, 42, 261),
         "ordinary generic helper work has the exact source/module/executable-fact census"
     );
     // Every applied work step is a run, and every run is charged to exactly
@@ -486,7 +487,8 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // beyond one per function resume when a callee's edges land, and 16 first runs start
         // when their own function's edges land. Every `DeriveRecursive` run (68) starts when its
         // function's reach lands, where it used to start on its edges and then wait on a product.
-        1163,
+        // 1163 -> 1164: the ordering operators' `binary` clause adds its `fz_op_*_bb` activation and splits the catch-all's `compare/2` activations, the same way the int and float clauses already do.
+        1164,
         "ordinary generic helper facts have the exact non-demand changed-revision census",
     );
     assert_eq!(
@@ -563,7 +565,8 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // start as prerequisites of a waiter.
         // 453 -> 638: a transport position that names an executable's return waits on that
         // executable's reach, and the wait starts its `DeriveExecutableReach`.
-        638,
+        // 638 -> 641: the ordering operators' `binary` clause adds its `fz_op_*_bb` activation and splits the catch-all's `compare/2` activations, the same way the int and float clauses already do.
+        641,
         "the blocked-waiter census includes only the prerequisites each completion's own waits expand",
     );
     assert_eq!(
