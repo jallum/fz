@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-17T23:05:25Z",
   "created": "2026-11-17T22:48:50Z",
   "description": "Site 4 of fz-nml.9. A receive of a bitstring int field \u003c\u003cx::32\u003e\u003e whose body never reads x still stores it as a ref in the out-slot (receive.rs:363 store_receive_value_ref): 0/1000/1000. Fix: prune unread body params at ReceiveClause construction. Done when the probe makes 0 boxes on all three paths, pinned by a fixture.\n\nApproved by the user 2026-11-17 (relayed by the JSON session). Census and probes: fz-nml.9 description (JSON session, develop 4a05ae2be; per 1000 steps interp/run/build).",
   "id": "fz-nml.9.4",
   "labels": [],
   "parent": "fz-nml.9",
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "A receive binding the body never reads is not stored",
   "type": "bug",
-  "updated_at": "2026-11-17T22:48:50Z"
+  "updated_at": "2026-11-17T23:05:25Z"
 }
