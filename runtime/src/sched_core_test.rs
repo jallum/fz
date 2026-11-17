@@ -193,6 +193,23 @@ fn runnable_processes_come_out_in_queue_order_and_then_idle() {
 }
 
 #[test]
+fn a_core_with_no_timer_pending_never_asks_the_time() {
+    let mut s = Recording::new();
+    s.make_runnable(1);
+    s.make_runnable(2);
+
+    assert_eq!(next_runnable(&mut s), Some(1));
+    assert_eq!(next_runnable(&mut s), Some(2));
+    assert_eq!(next_runnable(&mut s), None);
+
+    assert_eq!(
+        s.core.clock_mut_for_test().reads(),
+        0,
+        "with no timer armed there is no deadline to compare the time against"
+    );
+}
+
+#[test]
 fn a_pending_timer_keeps_the_core_from_idling_until_it_fires() {
     let mut s = Recording::new();
     s.states.insert(7, ProcessState::Blocked);

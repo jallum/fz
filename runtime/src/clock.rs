@@ -5,6 +5,8 @@
 //! (tests only) keeps its own time and waiting advances it, so a test that
 //! drives the scheduling core past a deadline neither sleeps nor races.
 
+#[cfg(test)]
+use std::cell::Cell;
 use std::time::{Duration, Instant};
 
 /// Time as a scheduler sees it. `epoch` is the instant the clock began;
@@ -17,7 +19,10 @@ pub struct Clock {
 enum Source {
     System,
     #[cfg(test)]
-    Manual(Duration),
+    Manual {
+        elapsed: Duration,
+        reads: Cell<u64>,
+    },
 }
 
 impl Default for Clock {
@@ -40,15 +45,30 @@ impl Clock {
     pub fn manual() -> Self {
         Self {
             epoch: Instant::now(),
-            source: Source::Manual(Duration::ZERO),
+            source: Source::Manual {
+                elapsed: Duration::ZERO,
+                reads: Cell::new(0),
+            },
         }
     }
 
     pub fn now(&self) -> Instant {
-        match self.source {
+        match &self.source {
             Source::System => Instant::now(),
             #[cfg(test)]
-            Source::Manual(elapsed) => self.epoch + elapsed,
+            Source::Manual { elapsed, reads } => {
+                reads.set(reads.get() + 1);
+                self.epoch + *elapsed
+            }
+        }
+    }
+
+    /// How many times a manual clock has been asked the time.
+    #[cfg(test)]
+    pub fn reads(&self) -> u64 {
+        match &self.source {
+            Source::System => panic!("only a manual clock counts its reads"),
+            Source::Manual { reads, .. } => reads.get(),
         }
     }
 
@@ -62,7 +82,7 @@ impl Clock {
         match &mut self.source {
             Source::System => std::thread::sleep(wait),
             #[cfg(test)]
-            Source::Manual(elapsed) => *elapsed += wait,
+            Source::Manual { elapsed, .. } => *elapsed += wait,
         }
     }
 }

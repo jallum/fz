@@ -224,15 +224,7 @@ pub fn next_runnable<S: Scheduler + ?Sized>(scheduler: &mut S) -> Option<PidId> 
         if scheduler.core().halted.is_some() {
             return None;
         }
-        let now = scheduler.core().clock.now();
-        let expired = scheduler.core().timers.drain_expired(now);
-        for entry in expired {
-            scheduler.observe(RuntimeEvent::TimerFired(TimerFired {
-                timer: entry.id,
-                pid: entry.pid,
-            }));
-            scheduler.wake_expired(entry.pid, entry.id);
-        }
+        wake_expired_timers(scheduler);
         if let Some(pid) = scheduler.core().run_queue.pop_front() {
             return Some(pid);
         }
@@ -240,6 +232,23 @@ pub fn next_runnable<S: Scheduler + ?Sized>(scheduler: &mut S) -> Option<PidId> 
         let wait = deadline.saturating_duration_since(scheduler.core().clock.now());
         scheduler.observe(RuntimeEvent::SchedulerSlept(wait));
         scheduler.core().clock.wait(wait);
+    }
+}
+
+/// Wake every process whose timer has expired. The time is asked only when a
+/// timer is pending: with none there is no deadline to compare it against.
+fn wake_expired_timers<S: Scheduler + ?Sized>(scheduler: &mut S) {
+    if scheduler.core().timers.next_deadline().is_none() {
+        return;
+    }
+    let now = scheduler.core().clock.now();
+    let expired = scheduler.core().timers.drain_expired(now);
+    for entry in expired {
+        scheduler.observe(RuntimeEvent::TimerFired(TimerFired {
+            timer: entry.id,
+            pid: entry.pid,
+        }));
+        scheduler.wake_expired(entry.pid, entry.id);
     }
 }
 
