@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-9x7.17"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-9x7.19"
+  ],
   "created": "2026-11-17T22:03:10Z",
   "description": "G2 (reframed) on the hot-path page https://claude.ai/artifact/LDhZf3yJxaRiiQGwGxToTu. Files: runtime/src/any_value.rs, ref_io.rs, heap/gc.\n\nPlan: https://claude.ai/artifact/Pqqu5yTcQdBbkGsZyZiykb (GC memory plan v3, approved by the user 2026-11-17).",
   "id": "fz-9x7.18",
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "An object's size comes from the kind the collector already holds; fixed-size kinds are constants",
   "type": "task",
-  "updated_at": "2026-11-17T22:03:14Z"
+  "updated_at": "2026-11-17T22:03:15Z"
 }
