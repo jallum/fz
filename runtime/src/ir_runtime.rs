@@ -235,6 +235,18 @@ pub extern "C" fn fz_ref_load_float(ref_word: u64) -> f64 {
     ref_load_float_impl(ref_word)
 }
 
+/// The IEEE 754 bits of the number a ref names as an f64: a float's own bits,
+/// or an integer's converted value. Nothing is allocated.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_number_ref_float_bits(ref_word: u64) -> i64 {
+    let value = any_value_from_ref_word(ref_word, "fz_number_ref_float_bits");
+    match value.kind() {
+        ValueKind::FLOAT => value.raw() as i64,
+        ValueKind::INT => (value.raw() as i64 as f64).to_bits() as i64,
+        _ => panic!("float bit field expects Int or Float"),
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_unbox_float(ref_word: u64) -> f64 {
     ref_load_float_impl(ref_word)
@@ -694,13 +706,15 @@ fn builder<'p>(process: *mut Process, caller: &str) -> &'p mut BitWriter {
         .unwrap_or_else(|| panic!("{caller} called without fz_bs_begin"))
 }
 
-/// Write one integer-valued field into the active builder, the integer handed
-/// over as the raw word it is, so a segment built from an unboxed integer
-/// allocates nothing. `ty_tag` is Integer=0, Utf8=4, Utf16=5 or Utf32=6, in the
-/// order of `BitType`; `size_present` distinguishes None (0) vs Some (1);
-/// `size_value` is in size-units (multiplied by `unit` internally).
+/// Write one scalar field into the active builder, the scalar handed over as
+/// the raw word it is, so a segment built from an unboxed integer or float
+/// allocates nothing. `ty_tag` is Integer=0, Float=1, Utf8=4, Utf16=5 or
+/// Utf32=6, in the order of `BitType`; a Float field's `raw` is the IEEE 754
+/// bits of an f64, narrowed to f32 when the field is 32 bits wide.
+/// `size_present` distinguishes None (0) vs Some (1); `size_value` is in
+/// size-units (multiplied by `unit` internally).
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_bs_write_int(
+pub extern "C" fn fz_bs_write_word(
     process: *mut Process,
     raw: i64,
     ty_tag: u32,
@@ -712,7 +726,7 @@ pub extern "C" fn fz_bs_write_int(
     let ty = decode_bit_type(ty_tag);
     let size = if size_present != 0 { Some(size_value) } else { None };
     let endian = decode_endian(endian_tag);
-    let w = builder(process, "fz_bs_write_int");
+    let w = builder(process, "fz_bs_write_word");
     match ty {
         BitType::Integer => {
             // Two's-complement truncation gives the same bit pattern for
@@ -732,14 +746,27 @@ pub extern "C" fn fz_bs_write_int(
             };
             w.write_bytes(&bytes.expect("invalid codepoint"));
         }
-        BitType::Float | BitType::Binary | BitType::Bits => {
-            panic!("fz_bs_write_int writes an integer, utf8, utf16 or utf32 field")
+        BitType::Float => {
+            let total = size.unwrap_or(64) * unit;
+            if total != 32 && total != 64 {
+                panic!("float bit field size must be 32 or 64, got {}", total);
+            }
+            let f = f64::from_bits(raw as u64);
+            let bits: u64 = if total == 32 {
+                (f as f32).to_bits() as u64
+            } else {
+                f.to_bits()
+            };
+            w.write_bits(apply_endian_for_write(bits, total, endian), total as usize);
+        }
+        BitType::Binary | BitType::Bits => {
+            panic!("fz_bs_write_word writes an integer, float, utf8, utf16 or utf32 field")
         }
     }
 }
 
-/// Write one binary, bits or float field into the active builder from the
-/// value it names. Field-type tags match `fz_bs_write_int`: Float=1, Binary=2,
+/// Write one binary or bits field into the active builder from the heap
+/// bitstring it names. Field-type tags match `fz_bs_write_word`: Binary=2,
 /// Bits=3.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_bs_write_field_ref(
@@ -749,12 +776,10 @@ pub extern "C" fn fz_bs_write_field_ref(
     size_present: u32,
     size_value: u32,
     unit: u32,
-    endian_tag: u32,
 ) {
     let value = any_value_from_ref_word(value_ref, "fz_bs_write_field_ref");
     let ty = decode_bit_type(ty_tag);
     let size = if size_present != 0 { Some(size_value) } else { None };
-    let endian = decode_endian(endian_tag);
     let w = builder(process, "fz_bs_write_field_ref");
     match ty {
         BitType::Binary | BitType::Bits => {
@@ -792,26 +817,8 @@ pub extern "C" fn fz_bs_write_field_ref(
                 }
             }
         }
-        BitType::Integer | BitType::Utf8 | BitType::Utf16 | BitType::Utf32 => {
-            panic!("fz_bs_write_field_ref writes a binary, bits or float field")
-        }
-        BitType::Float => {
-            let total = size.unwrap_or(64) * unit;
-            if total != 32 && total != 64 {
-                panic!("float bit field size must be 32 or 64, got {}", total);
-            }
-            let f = match value.kind() {
-                ValueKind::FLOAT => f64::from_bits(value.raw()),
-                ValueKind::INT => value.raw() as i64 as f64,
-                _ => panic!("float bit field expects Int or Float"),
-            };
-            let raw: u64 = if total == 32 {
-                (f as f32).to_bits() as u64
-            } else {
-                f.to_bits()
-            };
-            let raw = apply_endian_for_write(raw, total, endian);
-            w.write_bits(raw, total as usize);
+        BitType::Integer | BitType::Float | BitType::Utf8 | BitType::Utf16 | BitType::Utf32 => {
+            panic!("fz_bs_write_field_ref writes a binary or bits field")
         }
     }
 }
@@ -1394,7 +1401,7 @@ pub extern "C" fn fz_binary_copy(process: *mut Process, subject_ref: u64, count:
         .alloc_bitstring_with(total, (total * 8) as u64, |dest| {
             if len > 0 {
                 for repetition in dest.chunks_exact_mut(len) {
-                    repetition.copy_from_slice(subject);
+                    repetition.write_copy_of_slice(subject);
                 }
             }
         });

@@ -59,6 +59,20 @@ pub(crate) fn source_heads(root: &QuotedSourceRoot, sources: &SourceMap) -> Resu
     Ok(heads)
 }
 
+/// Whether a surface form's source declares a contract: a grouped function
+/// with a `@spec`, or an extern. A bare call node is never a grouped
+/// definition, so it declares none.
+pub(crate) fn source_declares_contract(
+    root: &QuotedSourceRoot,
+    sources: &SourceMap,
+) -> Result<bool, QuotedSourceError> {
+    if root.cursor().ast_node(sources)?.is_some() {
+        return Ok(false);
+    }
+    let heads = source_heads(root, sources)?;
+    Ok(heads.declares_spec || heads.is_extern)
+}
+
 pub(crate) fn derive_function_surface(
     root: &QuotedSourceRoot,
     sources: &SourceMap,

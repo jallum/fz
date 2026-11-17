@@ -13,7 +13,14 @@ The retained API is intentionally small:
 Compiler2 owns the active contract path:
 
 - `compiler2/type_expr.rs` parses type syntax without consulting the old
-  `ModuleTypeEnv`.
+  `ModuleTypeEnv`. A function type is written Elixir's way, `(A, B -> R)` or
+  `(-> R)`, or fz's way, `(A, B) -> R` or `() -> R`; both parse to one
+  `TypeExpr::Arrow`.
+- In a `when` clause, `a: var` declares `a` a type variable with no bound, as
+  in Elixir, for `@spec` and `extern` alike. `SpecDecl::bounds()` (`ast`)
+  leaves it out, and `World::resolve_spec` checks that `a` is a variable the
+  spec uses and then adds no constraint, since a variable without one is
+  already unbounded.
 - `compiler2/resolve.rs` resolves names against the namespace captured where a
   declaration appeared and returns hard compiler2 `Ty` values plus parallel
   `ResolvedTypeShape` values.

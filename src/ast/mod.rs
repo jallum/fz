@@ -1,5 +1,5 @@
 use crate::modules::identity::{ModuleDenotation, ModuleName};
-use crate::parser::lexer::Token;
+use crate::parser::lexer::{Tok, Token};
 use crate::source::Span;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -571,10 +571,14 @@ impl BitType {
         matches!(self, BitType::Integer | BitType::Utf8)
     }
 
-    /// A construction writes this field from the integer it holds, as the raw
-    /// word it is: an `integer`'s bits, or the scalar value a utf field encodes.
-    pub fn writes_integer_word(self) -> bool {
-        matches!(self, BitType::Integer | BitType::Utf8 | BitType::Utf16 | BitType::Utf32)
+    /// A construction writes this field from the scalar it holds, as the raw
+    /// word it is: an `integer`'s bits, a `float`'s IEEE 754 bits, or the
+    /// scalar value a utf field encodes.
+    pub fn writes_scalar_word(self) -> bool {
+        matches!(
+            self,
+            BitType::Integer | BitType::Float | BitType::Utf8 | BitType::Utf16 | BitType::Utf32
+        )
     }
 }
 
@@ -695,6 +699,22 @@ pub struct SpecDecl {
     pub result_body_tokens: TypeExprBody,
     /// Optional constrained type variables from `when t: Bound`.
     pub constraints: Vec<(String, TypeExprBody)>,
+}
+
+impl SpecDecl {
+    /// The `when` entries that bound their variable. Elixir's `t: var`
+    /// declares `t` a type variable with no bound, which is what a variable
+    /// without an entry already is, so it bounds nothing.
+    pub fn bounds(&self) -> impl Iterator<Item = &(String, TypeExprBody)> {
+        self.constraints.iter().filter(|(_, bound)| !bound.declares_no_bound())
+    }
+}
+
+impl TypeExprBody {
+    /// Elixir's `var`, the bound of a type variable that has none.
+    pub fn declares_no_bound(&self) -> bool {
+        matches!(self.0.as_slice(), [token] if matches!(token.tok, Tok::Ident(ref name) if name == "var"))
+    }
 }
 
 #[derive(Debug, Clone)]

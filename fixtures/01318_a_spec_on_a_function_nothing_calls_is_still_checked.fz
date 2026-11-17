@@ -1,0 +1,7 @@
+#---
+# purpose: an @spec on a function nothing calls is checked, so a type name nothing declares stops the compile under the name
+# expect: diagnostic
+#---
+@spec unused(integer) :: nope
+def unused(x), do: x
+def main(), do: dbg(1)

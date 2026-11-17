@@ -187,7 +187,10 @@ fn collect_forwards_every_root_a_parked_process_holds() {
         park.try_match(null_mut(), probe).is_some(),
         "the moved pinned value still matches"
     );
-    assert_eq!(stats.root_heap_edges, 6);
+    assert_eq!(
+        stats.copied_objects, 9,
+        "each of the six roots moved with what it captures: three closures with a capture, three lists"
+    );
 }
 
 #[test]
@@ -230,7 +233,10 @@ fn collect_forwards_every_compiled_handler_on_the_stack() {
     assert_ne!(moved.as_ref(), handler, "the handler template moved");
     assert_eq!(list_head(captured_list(moved.as_ref())), 11);
     assert_eq!(process.handlers[1], Handler::Interpreter);
-    assert_eq!(stats.root_heap_edges, 1, "the handler template is the only root");
+    assert_eq!(
+        stats.copied_objects, 2,
+        "the handler template and its capture are everything the collection moves"
+    );
 }
 
 /// A receive with no `after` has a null after body and a running process has
@@ -243,7 +249,10 @@ fn collect_roots_only_what_the_process_holds() {
     process.set_runnable_closure(runnable);
 
     let running = process.collect(&mut []);
-    assert_eq!(running.root_heap_edges, 1, "the runnable closure is the only root");
+    assert_eq!(
+        running.copied_objects, 2,
+        "the runnable closure and its capture are everything the collection moves"
+    );
     assert_eq!(
         list_head(captured_list(process.runnable_closure().expect("runnable"))),
         7
@@ -255,8 +264,8 @@ fn collect_roots_only_what_the_process_holds() {
     park_on(&mut process, pinned, vec![body], None);
     let parked = process.collect(&mut []);
     assert_eq!(
-        parked.root_heap_edges, 3,
-        "runnable, clause body, pinned value; no after body"
+        parked.copied_objects, 3,
+        "clause body, its capture and the pinned value move; the runnable closure is already kept and there is no after body"
     );
     assert!(process.delivery.lock().park().unwrap().after_cont.is_none());
 }
@@ -400,7 +409,10 @@ fn collect_forwards_a_delivered_handler() {
     let moved = process.delivered.expect("the handler stays delivered").as_ref();
     assert_ne!(moved, handler);
     assert_eq!(list_head(captured_list(moved)), 21);
-    assert_eq!(stats.root_heap_edges, 1, "the delivered handler is the only root");
+    assert_eq!(
+        stats.copied_objects, 2,
+        "the delivered handler and its capture are everything the collection moves"
+    );
 }
 
 /// A thin callable is one object: asking the node for the same code under the

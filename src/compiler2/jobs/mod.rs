@@ -17,6 +17,7 @@ mod body_test;
 mod callable_target;
 mod capture_owners;
 mod contract;
+mod declarations;
 mod dispatch;
 pub(super) use dispatch::is_guard_expr;
 mod executable_facts;
@@ -47,6 +48,7 @@ pub(crate) fn run<T: crate::telemetry::RawSpanTelemetry>(
     match job {
         Job::IndexCode(source_owner) => source::index_code(world, tel, *source_owner),
         Job::ScopeCode(source_owner) => source::scope_code(world, tel, product_sessions.as_deref(), *source_owner),
+        Job::CheckDeclarations(source_owner) => declarations::check_declarations(world, *source_owner),
         Job::DefineModule(module_id) => source::define_module(world, tel, product_sessions.as_deref(), *module_id),
         Job::DefineModuleInterface(module_id) => source::define_module_interface(world, tel, *module_id),
         Job::ExpandFunctionSource(function_id) => {
@@ -99,6 +101,9 @@ impl Job {
                 current_uses(source::expand_function_source_gates(world, *function_id))
             }
             Job::ScopeCode(source_owner) => current_uses(source::scope_code_gates(world, *source_owner)),
+            Job::CheckDeclarations(source_owner) => {
+                current_uses(declarations::check_declarations_gates(world, *source_owner))
+            }
             Job::DeriveInputDemand(function_id) => current_uses(keying::derive_input_demand_gates(world, *function_id)),
             Job::DeriveRecursive(function_id) => current_uses(keying::derive_recursive_gates(world, *function_id)),
             Job::DeriveStaticReach(function_id) => current_uses(reach::derive_static_reach_gates(world, *function_id)),
@@ -119,8 +124,8 @@ impl Job {
                 current_uses(keying::derive_static_callees_gates(world, *function_id))
             }
             Job::AnalyzeActivation(activation) => current_uses(semantic::analyze_activation_gates(world, activation)),
+            Job::DefineModule(module_id) => current_uses(source::define_module_gates(world, *module_id)),
             Job::IndexCode(_)
-            | Job::DefineModule(_)
             | Job::DefineModuleInterface(_)
             | Job::DeriveTypeDef(_)
             | Job::ReifyGuardDispatch(_)

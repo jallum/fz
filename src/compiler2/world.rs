@@ -36,7 +36,8 @@ use super::drive::{ExecutionContext, FactKey, Job, JobEffects, UseCollector, Wor
 use super::identity::{
     ActivationKey, DeclaredCallableKind, ExecutableKey, ExecutableNeed, ExpandedFunctionSourceMap, FunctionId,
     FunctionMap, FunctionRef, FunctionSource, ModuleId, ModuleMap, ModuleSourceKind, ModuleState, NameableModules,
-    NotedTypeDecl, Raisable, Raised, RootEntry, RootId, RootKind, RootMap, TypeDeclMap, TypeName, TypeRefMap,
+    NotedTypeDecl, Raisable, Raised, RootEntry, RootId, RootKind, RootMap, SourceDeclarationMap, SourceDeclarations,
+    TypeDeclMap, TypeName, TypeRefMap,
 };
 use super::incoming_inputs::{IncomingInputSource, IncomingInputSources, InputSlot};
 use super::keying::{BodyKeying, BodyKeyingMap, InputDemand, InputDemandMap, StaticCalleeMap, StaticReachMap};
@@ -175,6 +176,9 @@ pub struct World {
     functions: FunctionMap,
     expanded_function_sources: ExpandedFunctionSourceMap,
     type_decls: TypeDeclMap,
+    source_declarations: SourceDeclarationMap,
+    /// Every submitted source, in submission order.
+    submissions: Vec<SourceOwner>,
     type_refs: TypeRefMap,
     type_defs: TypeDefMap,
     struct_defs: StructDefMap,
@@ -363,6 +367,8 @@ impl World {
             functions: FunctionMap::new(),
             expanded_function_sources: ExpandedFunctionSourceMap::new(),
             type_decls: TypeDeclMap::new(),
+            source_declarations: SourceDeclarationMap::default(),
+            submissions: Vec::new(),
             type_refs: TypeRefMap::new(),
             type_defs: TypeDefMap::new(),
             struct_defs: StructDefMap::new(),
@@ -1260,6 +1266,7 @@ impl World {
         source: QuotedSourceRoot,
         surface: super::quoted_surface::ScopeSurface,
     ) -> bool {
+        self.source_declarations.note_module(owner, id);
         self.modules.index_body(id, owner, parent, source, surface)
     }
 
@@ -1271,6 +1278,7 @@ impl World {
         source: QuotedSourceRoot,
         surface: super::quoted_surface::ScopeSurface,
     ) -> bool {
+        self.source_declarations.note_module(owner, id);
         self.modules.index_protocol(id, owner, parent, source, surface)
     }
 
@@ -1282,6 +1290,7 @@ impl World {
         source: QuotedSourceRoot,
         impl_source: super::identity::ProtocolImplSource,
     ) -> bool {
+        self.source_declarations.note_module(owner, id);
         self.modules.index_protocol_impl(id, owner, parent, source, impl_source)
     }
 
@@ -2002,6 +2011,42 @@ impl World {
         self.modules.get(module).interface()
     }
 
+    /// Whether `module`'s own body writes a declaration to check. Read from
+    /// the indexed surface, so a module that writes none is never defined just
+    /// to find that out.
+    pub(crate) fn module_writes_declarations(&self, module: ModuleId) -> bool {
+        match self.modules.get(module).source().map(|source| &source.kind) {
+            Some(ModuleSourceKind::Body(surface)) => self.surface_writes_declarations(surface),
+            _ => false,
+        }
+    }
+
+    /// Whether `owner`'s own top level writes a declaration to check.
+    pub(crate) fn code_writes_declarations(&self, owner: SourceOwner) -> bool {
+        self.code_surface(owner)
+            .is_some_and(|surface| self.surface_writes_declarations(surface))
+    }
+
+    /// A `@type`, or a function with a `@spec` or an extern signature.
+    fn surface_writes_declarations(&self, surface: &super::quoted_surface::ScopeSurface) -> bool {
+        let declares_type = surface
+            .attrs
+            .iter()
+            .any(|attr| matches!(attr, crate::ast::Attribute::TypeAlias(_)));
+        declares_type
+            || surface.forms.iter().any(|form| {
+                let root = match form {
+                    super::quoted_surface::ScopeForm::Function(function) => &function.source,
+                    super::quoted_surface::ScopeForm::MacroCall(call) => &call.source,
+                    _ => return false,
+                };
+                let sources = self.source_map();
+                let sources = sources.borrow();
+                super::quoted_function::source_declares_contract(root, &sources)
+                    .expect("an indexed surface form names its heads")
+            })
+    }
+
     pub(crate) fn module_has_source_state(&self, module: ModuleId) -> bool {
         self.modules.get(module).source().is_some()
     }
@@ -2709,6 +2754,18 @@ impl World {
         }
     }
 
+    /// The scope an indexed module is defined in: its file's top level, or
+    /// the module that encloses it. `None` once the module has a scope of its
+    /// own, and before anything has indexed it.
+    pub(crate) fn module_enclosing_scope_fact(&self, module: ModuleId) -> Option<FactKey> {
+        let (source_owner, parent_module) = self.module_indexed_parent(module)?;
+        Some(if parent_module.is_global() {
+            FactKey::CodeScoped(source_owner)
+        } else {
+            FactKey::ModuleDefined(parent_module)
+        })
+    }
+
     pub(crate) fn module_named_parent(&mut self, module: ModuleId) -> Option<ModuleId> {
         let segments = self.module_name(module)?.segments();
         if segments.len() == 1 {
@@ -3154,6 +3211,7 @@ impl World {
             }
             FactKey::CodeIndexed(_)
             | FactKey::CodeScoped(_)
+            | FactKey::DeclarationsChecked(_)
             | FactKey::ProtocolDispatch(_)
             | FactKey::ProtocolImplProviders(_)
             | FactKey::NameableModules
@@ -3726,6 +3784,7 @@ impl World {
             self.work_graph
                 .enqueue(Job::ScopeCode(source_owner), WorkStartReason::Ignition);
         }
+        self.submissions.push(source_owner);
         source_owner
     }
 
@@ -4091,7 +4150,28 @@ impl World {
     }
 
     pub(crate) fn note_function_source(&mut self, function: FunctionId, source: FunctionSource) -> bool {
+        self.source_declarations.note_function(source.owner, function);
         self.functions.note(function, source)
+    }
+
+    pub(crate) fn note_declared_type(&mut self, owner: SourceOwner, name: &TypeName) {
+        self.source_declarations.note_type(owner, name);
+    }
+
+    /// The facts a program built from this world stands on besides its own
+    /// code: every submitted source's declarations checked. A declaration
+    /// that cannot be checked is a fault in the source even when nothing the
+    /// program runs depends on it.
+    pub(crate) fn submissions_checked(&self) -> Vec<FactKey> {
+        self.submissions
+            .iter()
+            .map(|owner| FactKey::DeclarationsChecked(*owner))
+            .collect()
+    }
+
+    /// What `owner`'s source declares so far; see [`SourceDeclarationMap`].
+    pub(crate) fn source_declarations(&self, owner: SourceOwner) -> Option<&SourceDeclarations> {
+        self.source_declarations.get(owner)
     }
 
     pub(crate) fn note_expanded_function_source(&mut self, function: FunctionId, source: FunctionSource) -> bool {
@@ -4686,11 +4766,8 @@ impl<T: Telemetry> ExecutionContext<'_, T> {
     /// that wait into the ordinary "module is not defined" diagnostic
     /// instead of stalling forever.
     pub(crate) fn wait_for_module_indexed(&mut self, module: ModuleId) -> JobEffects {
-        if let Some((source_owner, parent_module)) = self.world.module_indexed_parent(module) {
-            if parent_module.is_global() {
-                return JobEffects::wait_on_current(FactKey::CodeScoped(source_owner));
-            }
-            return JobEffects::wait_on_current(FactKey::ModuleDefined(parent_module));
+        if let Some(enclosing_scope) = self.world.module_enclosing_scope_fact(module) {
+            return JobEffects::wait_on_current(enclosing_scope);
         }
         if let Some(source_owner) = self.ensure_runtime_module(module) {
             return JobEffects::wait_on_current(FactKey::CodeIndexed(source_owner));

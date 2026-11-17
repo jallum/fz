@@ -107,6 +107,12 @@ which emits a static `SharedBin` above it. `<<a :: binary, b :: binary>>` built
 through `fz_bs_begin`/`fz_bs_write_field_ref`/`fz_bs_finalize` does not append: it copies
 the whole result into a new buffer each time.
 
+A construction writes each field between `fz_bs_begin` and `fz_bs_finalize` through one of two
+runtime functions. `fz_bs_write_word` writes every scalar field (integer, float, utf8, utf16,
+utf32) from the raw word the field already is: an integer's bits, or an f64's bits for a float.
+Nothing is boxed to write it. `fz_bs_write_field_ref` writes the fields that name a heap bitstring
+(binary, bits) from the value's ref.
+
 `Heap::alloc_bitstring_with(byte_len, bit_len, fill)` is the allocator under
 `alloc_bitstring`: it picks the storage and hands `fill` the destination bytes,
 so a primitive that computes its payload writes it once, in place, with no

@@ -2340,7 +2340,7 @@ fn write_executable_reach_identity(
 fn write_job_identity(out: &mut String, job: &crate::compiler2::Job) {
     use crate::compiler2::Job;
     match job {
-        Job::IndexCode(code) | Job::ScopeCode(code) => write_source_owner(out, *code),
+        Job::IndexCode(code) | Job::ScopeCode(code) | Job::CheckDeclarations(code) => write_source_owner(out, *code),
         Job::DefineModule(module) | Job::DefineModuleInterface(module) => write_module_id(out, *module),
         Job::ExpandFunctionSource(function)
         | Job::DefineFunction(function)
@@ -2367,7 +2367,9 @@ fn write_job_identity(out: &mut String, job: &crate::compiler2::Job) {
 fn write_fact_identity(out: &mut String, fact: &crate::compiler2::FactKey) {
     use crate::compiler2::FactKey;
     match fact {
-        FactKey::CodeIndexed(code) | FactKey::CodeScoped(code) => write_source_owner(out, *code),
+        FactKey::CodeIndexed(code) | FactKey::CodeScoped(code) | FactKey::DeclarationsChecked(code) => {
+            write_source_owner(out, *code)
+        }
         FactKey::ModuleIndexed(module)
         | FactKey::ModuleDefined(module)
         | FactKey::ModuleInterface(module)
@@ -2608,6 +2610,7 @@ fn fact_kind(fact: &crate::compiler2::FactKey) -> &'static str {
     match fact {
         FactKey::CodeIndexed(_) => "CodeIndexed",
         FactKey::CodeScoped(_) => "CodeScoped",
+        FactKey::DeclarationsChecked(_) => "DeclarationsChecked",
         FactKey::ModuleIndexed(_) => "ModuleIndexed",
         FactKey::ModuleDefined(_) => "ModuleDefined",
         FactKey::ModuleInterface(_) => "ModuleInterface",
@@ -2652,6 +2655,7 @@ fn job_kind(job: &crate::compiler2::Job) -> &'static str {
     match job {
         Job::IndexCode(_) => "IndexCode",
         Job::ScopeCode(_) => "ScopeCode",
+        Job::CheckDeclarations(_) => "CheckDeclarations",
         Job::DefineModule(_) => "DefineModule",
         Job::DefineModuleInterface(_) => "DefineModuleInterface",
         Job::ExpandFunctionSource(_) => "ExpandFunctionSource",
