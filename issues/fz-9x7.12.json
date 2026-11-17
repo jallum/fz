@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-9x7.21"
+    "fz-9x7.21",
+    "fz-9x7.22"
   ],
   "blocks": [],
   "created": "2026-11-15T15:47:22Z",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "A heap block above the pool's largest size stays resident after it is freed",
   "type": "bug",
-  "updated_at": "2026-11-17T22:03:17Z"
+  "updated_at": "2026-11-17T22:03:18Z"
 }
