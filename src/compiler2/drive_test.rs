@@ -24278,7 +24278,10 @@ fn compiler2_a_stream_over_any_enumerable_keeps_its_activations_finite() {
         // 136 -> 133: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
         // 133 -> 132: the fixture calls `IO.inspect` where it called `dbg` (two fewer activations)
         // inside `Main`, whose root script calls `Main.main/0` (one more).
-        132,
+        // 132 -> 136: the ordering operators' `binary` clause adds its `fz_op_*_bb`
+        // activation and splits the catch-all's `compare/2` activations, the same way
+        // the int and float clauses already do.
+        136,
         "activations of the whole program"
     );
 }

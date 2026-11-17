@@ -1190,20 +1190,6 @@ defmodule Kernel do
   # by the total term order, widens numerics for `==` and stays strict for
   # `===`.
 
-  # NOTE/TODO: the `binary` clauses of the four ordering operators are
-  # commented out below rather than deleted.
-  #
-  # A `binary` clause compiles to a runtime test that proves only
-  # "bitstring". Seated ahead of an `any`/`any` clause, that test would send
-  # an unresolved operand to the byte compare without proving the surface the
-  # clause names, so the blind-escape census cannot justify the seat. Binaries
-  # reach the comparator's bitstring branch through the final clause instead.
-  #
-  # Each clause returns, as the fast path, once the binary axis of the runtime
-  # test is precise: see `RuntimeTestAxis::precision` in
-  # `src/runtime_type_predicate.rs`, where `Binaries` is `Erasing`. The
-  # `fz_op_lt_bb`, `fz_op_lte_bb`, `fz_op_gt_bb` and `fz_op_gte_bb`
-  # declarations stay, so restoring a clause is the uncomment.
   @doc """
   Returns whether `left` is less than `right`.
 
@@ -1230,13 +1216,13 @@ defmodule Kernel do
   @spec float < float :: boolean
   @spec integer < float :: boolean
   @spec float < integer :: boolean
-  # @spec binary < binary :: boolean
+  @spec binary < binary :: boolean
   @spec any < any :: boolean
   def left < right when is_integer(left) and is_integer(right), do: fz_op_lt_ii(left, right)
   def left < right when is_float(left) and is_float(right), do: fz_op_lt_ff(left, right)
   def left < right when is_integer(left) and is_float(right), do: fz_op_lt_if(left, right)
   def left < right when is_float(left) and is_integer(right), do: fz_op_lt_fi(left, right)
-  # def (left :: binary) < (right :: binary), do: fz_op_lt_bb(left, right)
+  def (left :: binary) < (right :: binary), do: fz_op_lt_bb(left, right)
   def left < right, do: compare(left, right) < 0
 
   extern "C" defp fz_op_lt_ii(integer, integer) :: boolean
@@ -1263,13 +1249,13 @@ defmodule Kernel do
   @spec float <= float :: boolean
   @spec integer <= float :: boolean
   @spec float <= integer :: boolean
-  # @spec binary <= binary :: boolean
+  @spec binary <= binary :: boolean
   @spec any <= any :: boolean
   def left <= right when is_integer(left) and is_integer(right), do: fz_op_lte_ii(left, right)
   def left <= right when is_float(left) and is_float(right), do: fz_op_lte_ff(left, right)
   def left <= right when is_integer(left) and is_float(right), do: fz_op_lte_if(left, right)
   def left <= right when is_float(left) and is_integer(right), do: fz_op_lte_fi(left, right)
-  # def (left :: binary) <= (right :: binary), do: fz_op_lte_bb(left, right)
+  def (left :: binary) <= (right :: binary), do: fz_op_lte_bb(left, right)
   def left <= right, do: compare(left, right) <= 0
 
   extern "C" defp fz_op_lte_ii(integer, integer) :: boolean
@@ -1299,13 +1285,13 @@ defmodule Kernel do
   @spec float > float :: boolean
   @spec integer > float :: boolean
   @spec float > integer :: boolean
-  # @spec binary > binary :: boolean
+  @spec binary > binary :: boolean
   @spec any > any :: boolean
   def left > right when is_integer(left) and is_integer(right), do: fz_op_gt_ii(left, right)
   def left > right when is_float(left) and is_float(right), do: fz_op_gt_ff(left, right)
   def left > right when is_integer(left) and is_float(right), do: fz_op_gt_if(left, right)
   def left > right when is_float(left) and is_integer(right), do: fz_op_gt_fi(left, right)
-  # def (left :: binary) > (right :: binary), do: fz_op_gt_bb(left, right)
+  def (left :: binary) > (right :: binary), do: fz_op_gt_bb(left, right)
   def left > right, do: compare(left, right) > 0
 
   extern "C" defp fz_op_gt_ii(integer, integer) :: boolean
@@ -1332,13 +1318,13 @@ defmodule Kernel do
   @spec float >= float :: boolean
   @spec integer >= float :: boolean
   @spec float >= integer :: boolean
-  # @spec binary >= binary :: boolean
+  @spec binary >= binary :: boolean
   @spec any >= any :: boolean
   def left >= right when is_integer(left) and is_integer(right), do: fz_op_gte_ii(left, right)
   def left >= right when is_float(left) and is_float(right), do: fz_op_gte_ff(left, right)
   def left >= right when is_integer(left) and is_float(right), do: fz_op_gte_if(left, right)
   def left >= right when is_float(left) and is_integer(right), do: fz_op_gte_fi(left, right)
-  # def (left :: binary) >= (right :: binary), do: fz_op_gte_bb(left, right)
+  def (left :: binary) >= (right :: binary), do: fz_op_gte_bb(left, right)
   def left >= right, do: compare(left, right) >= 0
 
   extern "C" defp fz_op_gte_ii(integer, integer) :: boolean

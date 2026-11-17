@@ -185,3 +185,30 @@ fn only_the_unproven_extern_call_compiles_a_tag_test() {
         "one call function sits behind a dispatch: {add:?}"
     );
 }
+
+/// Fixture 01364 orders binaries through `<`, `<=`, `>` and `>=`. The
+/// backend program is the one product the interpreter, the JIT and the AOT
+/// build all lower from, so a byte-compare extern that has an executable
+/// there is the one every path calls: the `binary` clause was selected, not
+/// the `any`/`any` catch-all through `compare/2`.
+#[test]
+fn ordering_two_binaries_selects_the_binary_clause_of_every_ordering_operator() {
+    let settled = Drive::fixture(1364).dump_stage(super::dump::DumpStage::Backend);
+    let program = settled.backend_program();
+    let reached = |name: &str| {
+        let function = settled
+            .functions()
+            .all()
+            .into_iter()
+            .find(|record| record.function_ref.is_named(name))
+            .unwrap_or_else(|| panic!("Kernel declares {name}"))
+            .function_id;
+        program
+            .executables()
+            .iter()
+            .any(|executable| executable.key.activation.function == function)
+    };
+    for extern_name in ["fz_op_lt_bb", "fz_op_lte_bb", "fz_op_gt_bb", "fz_op_gte_bb"] {
+        assert!(reached(extern_name), "{extern_name} is called by a binary ordering");
+    }
+}

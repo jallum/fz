@@ -1782,7 +1782,8 @@ const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64, u64); 7] = [
     // 00567: 37 -> 35 DeriveRecursive evaluations: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
     // 35/6 -> 29/0: a recursion verdict starts once its reach exists, so it never starts to
     // find the reach missing.
-    ("fixtures/00567_fz_f98_range_map_converges.fz", 29, 0, 69, 0, 49),
+    // 69 -> 72 DeriveStaticCallees: the ordering operators' `binary` clause adds its `fz_op_*_bb` activation and splits the catch-all's `compare/2` activations, the same way the int and float clauses already do.
+    ("fixtures/00567_fz_f98_range_map_converges.fz", 29, 0, 72, 0, 49),
     // fz-5xp.30: 73 -> 75 component evaluations and 158/83 -> 162/85
     // StaticCallees evaluations/blocks. This predicate fixture reaches two
     // ordinary arithmetic result/status helper specializations.
@@ -1860,7 +1861,8 @@ const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64, u64); 7] = [
     // 114 -> 115 DeriveStaticCallees: `declares_message?/1`, which `defexception` calls.
     // 84/16 -> 68/0: a recursion verdict starts once its reach exists, so it never starts to
     // find the reach missing.
-    ("fixtures/00420_enum_take_drop_split.fz", 68, 0, 115, 0, 124),
+    // 115 -> 117 DeriveStaticCallees: the ordering operators' `binary` clause adds its `fz_op_*_bb` activation and splits the catch-all's `compare/2` activations, the same way the int and float clauses already do.
+    ("fixtures/00420_enum_take_drop_split.fz", 68, 0, 117, 0, 124),
     // 00607-00610 pin the shared-reach shape directly. Four callers (p1-p4)
     // share one call chain of depth eight. Each caller's reach walks the chain's
     // edge facts itself and reads no other reach, so the work is the same
@@ -2518,7 +2520,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // 814 -> 781: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
         // 781 -> 825: 49 `DeriveStaticReach` and 1 `DeriveExecutableReach` evaluations, where
         // reach was a product evaluation, less 6 `DeriveRecursive` evaluations.
-        total_evaluations: 825,
+        // 825 -> 831: the ordering operators' `binary` clause adds its `fz_op_*_bb` activation and splits the catch-all's `compare/2` activations, the same way the int and float clauses already do.
+        total_evaluations: 831,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures/00571_enum_predicate_search.fz",
@@ -3176,7 +3179,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // 1736 -> 1727: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
         // 1727 -> 1834: 124 `DeriveStaticReach` and 1 `DeriveExecutableReach` evaluations, 16
         // fewer `DeriveRecursive` and 2 fewer `AnalyzeActivation`.
-        total_evaluations: 1834,
+        // 1834 -> 1838: the ordering operators' `binary` clause adds its `fz_op_*_bb` activation and splits the catch-all's `compare/2` activations, the same way the int and float clauses already do.
+        total_evaluations: 1838,
     },
 ];
 
