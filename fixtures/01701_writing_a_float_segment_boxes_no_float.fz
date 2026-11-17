@@ -1,0 +1,60 @@
+#---
+# purpose: writing a float segment into a bitstring boxes no float: the segment is written from the float's own bits, for 32-bit, 64-bit and little-endian fields alike
+# kind: run
+#---
+#
+# The program builds a list of 1,000 floats, then walks it once per field type,
+# writing each float into a bitstring. A list keeps its floats unboxed, so a
+# float read from its head is a raw word and the write is the only thing that
+# could ask for a heap box. It prints the bytes written for 4.75, which are the
+# bytes Elixir writes for each field, then the scalar boxes allocated per float
+# written. A list of integers and floats reaches the field as a value that is
+# either, and an integer in a float field is written as the float it equals.
+defmodule P do
+  def floats(0, acc), do: acc
+  def floats(n, acc), do: floats(n - 1, [n * 1.5 + 0.25 | acc])
+
+  def bytes64([h | _]), do: <<h :: float-64>>
+  def bytes32([h | _]), do: <<h :: float-32>>
+  def bytes_little([h | _]), do: <<h :: float-64-little>>
+
+  def mixed([], acc), do: acc
+  def mixed([h | t], acc), do: mixed(t, [<<h :: float-64>> | acc])
+
+  def walk64([], acc), do: acc
+  def walk64([h | t], acc), do: walk64(t, acc + byte_size(<<h :: float-64>>))
+
+  def walk32([], acc), do: acc
+  def walk32([h | t], acc), do: walk32(t, acc + byte_size(<<h :: float-32>>))
+
+  def walk_little([], acc), do: acc
+  def walk_little([h | t], acc), do: walk_little(t, acc + byte_size(<<h :: float-64-little>>))
+end
+
+xs = P.floats(1000, [])
+dbg(P.bytes64([4.75]))
+dbg(P.bytes32([4.75]))
+dbg(P.bytes_little([4.75]))
+
+a = Process.heap_alloc_stats()
+P.walk64(xs, 0)
+b = Process.heap_alloc_stats()
+dbg(div(b[:scalar_box_allocs] - a[:scalar_box_allocs], 1000))
+
+a = Process.heap_alloc_stats()
+P.walk32(xs, 0)
+b = Process.heap_alloc_stats()
+dbg(div(b[:scalar_box_allocs] - a[:scalar_box_allocs], 1000))
+
+a = Process.heap_alloc_stats()
+P.walk_little(xs, 0)
+b = Process.heap_alloc_stats()
+dbg(div(b[:scalar_box_allocs] - a[:scalar_box_allocs], 1000))
+
+dbg(P.mixed([1, 2.5, 3], []))
+
+zs = [1, 2.5, 3, 4.5]
+a = Process.heap_alloc_stats()
+P.mixed(zs, [])
+b = Process.heap_alloc_stats()
+dbg(b[:scalar_box_allocs] - a[:scalar_box_allocs])
