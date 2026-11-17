@@ -15,11 +15,15 @@
     {
       "text": "Allocation census (Optimize, b49c80bb7, OptionParser probe, 1-in-16 x16) under complete_ordered_with_external (scheduler.rs fn at :868): key clones and Vec/OrderedSet growth in the completion body 27,680 allocations: :890 blocked Vec 736; :894 derivations_of(job).clone() 1,024; :922 listed.insert(publisher.clone()) 3,664; :923 conclusions.push 3,584; :938 touched.extend(outputs.cloned()) 5,808 (3.7 MB); :944 quiet_snapshot 3,280; :960 changed.extend 2,640; :969-:971 1,520; :992 replace_derivations 784; :998 pending_changes.extend(changed.cloned()) 3,328; :999 quiet_flips 1,248. Across the whole completion (83,952), ordered_set.rs:55 is the innermost frame for 24,992. Chains: /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/census/b49c80bb7.pkl",
       "timestamp": "2026-11-17T21:28:23Z"
+    },
+    {
+      "text": "Distiller profile (fz-engine hunt, develop 7c94f8df2, release): job-completion bookkeeping 23.5% of compile; dispatch_changes 5.7% (semantic sort of moved keys 1.9% → fz-t93.8, movement list 1.3%); hashing structured keys (FactKey, ExecutableKey, Job, ProductKey, DependencyKey) ~17% self; malloc/free/memmove ~25% self. Evidence: /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/hunt//agg.txt",
+      "timestamp": "2026-11-17T22:52:04Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "The fact table, product memo and dependency index are indexed by small ids",
   "type": "task",
-  "updated_at": "2026-11-17T21:28:23Z"
+  "updated_at": "2026-11-17T22:52:04Z"
 }
