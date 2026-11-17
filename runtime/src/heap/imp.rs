@@ -175,6 +175,7 @@ impl Heap {
     /// Place `size` bytes (already a multiple of 16) in the tip, or beyond it
     /// when the tip is full. Allocation and the collector's copies both
     /// place through here, so a copy overflows exactly as an allocation does.
+    #[inline]
     pub(super) fn bump(&mut self, size: usize) -> *mut u8 {
         debug_assert!(
             size >= 16 && size.is_multiple_of(16),
