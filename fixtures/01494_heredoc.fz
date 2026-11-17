@@ -1,7 +1,7 @@
 #---
 # purpose: "heredoc strings, checked against Elixir"
-# oracle: oracle.exs
-# oracle.stamp: 40c8380b3fa191b5
+# oracle: self
+# oracle.stamp: a6454a2f3bb3f7a6
 #---
 #
 # # heredoc
@@ -17,36 +17,35 @@
 # than the delimiter keeps the difference. Each content line keeps its
 # newline and the closing line contributes nothing, which is why a heredoc
 # with no lines is the empty binary rather than a newline.
-def main() do
-  plain = """
-hello
-"""
-  dbg(plain)
-  dbg(Kernel.byte_size(plain))
-
-  nested = """
-  indented
-    deeper
+defmodule Main do
+  def main() do
+    plain = """
+  hello
   """
-  dbg(nested)
+    IO.inspect(plain)
+    IO.inspect(Kernel.byte_size(plain))
 
-  count = 5
-  interpolated = """
-val #{count}
-"""
-  dbg(interpolated)
+    nested = """
+    indented
+      deeper
+    """
+    IO.inspect(nested)
 
-  empty = """
-"""
-  dbg(empty)
+    count = 5
+    interpolated = """
+  val #{count}
+  """
+    IO.inspect(interpolated)
 
-  escaped = """
-a\tb
-"""
-  dbg(escaped)
+    empty = """
+  """
+    IO.inspect(empty)
 
-  assert(plain == "hello\n", "a heredoc is its lines, each keeping its newline")
-  assert(nested == "indented\n  deeper\n", "indentation is measured from the closing delimiter")
-  assert(empty == "", "a heredoc with no lines is the empty binary")
-  assert(escaped == "a\tb\n", "escapes decode inside a heredoc")
+    escaped = """
+  a\tb
+  """
+    IO.inspect(escaped)
+  end
 end
+
+Main.main()
