@@ -12,9 +12,15 @@
   "id": "fz-9x7.11",
   "labels": [],
   "parent": "fz-9x7",
+  "comments": [
+    {
+      "text": "Stays open: re-test as the collector is cleaned up; ageing is not discarded on one bad round. Record so far: A1 (own source) failed rounds 2-3; part of round 3's enum cost was forward_heap_value being out of line, which fz-nml.22 (#675) now inlines. A2 / A1G / A2G were NEVER measured: they were selected by build-time env, which fz2's build.rs does not rebuild the AOT runtime archive for, so each linked A1's archive (round 3 A1h/A2h held ratios identical to 3 decimals on all 17 workloads). Next round: per-arm runtime archives (FZ_AOT_RUNTIME_STATICLIB), rebased onto develop including #675 and whatever wins fz-9x7.14/.15.",
+      "timestamp": "2026-11-17T21:16:47Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "A value becomes old only after it survives two collections",
   "type": "task",
-  "updated_at": "2026-11-17T20:30:29Z"
+  "updated_at": "2026-11-17T21:16:47Z"
 }
