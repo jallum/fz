@@ -7,9 +7,15 @@
   "id": "fz-afu.21",
   "labels": [],
   "parent": "fz-afu",
+  "comments": [
+    {
+      "text": "Distiller-side size (fz-engine hunt, develop 7c94f8df2, release, distill main_returns_one): AnalyzeActivation 3,901 runs for 1,493 activations; 1,785 end blocked, 57% of its span time is in runs that ended blocked. Of the blocked runs ~470 wait on per-function static facts (FunctionContract/Recursive/InputDemand/LoweredBody/ModuleDefined), and 512 reruns woken by such a fact block again on the next one. ReturnType alone 1,312 (fz-afu.4's floor). Evidence: /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/hunt/",
+      "timestamp": "2026-11-17T22:52:03Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "An analysis whose callee has no lowered body yet waits for it instead of running without it",
   "type": "bug",
-  "updated_at": "2026-11-15T13:20:56Z"
+  "updated_at": "2026-11-17T22:52:03Z"
 }
