@@ -1,7 +1,8 @@
 //! Block size table + per-thread block pool.
 
-use std::alloc::{Layout, alloc_zeroed, dealloc};
+use std::alloc::{Layout, alloc, dealloc};
 use std::cell::RefCell;
+#[cfg(debug_assertions)]
 use std::ptr::write_bytes;
 
 /// Preset block capacities (bytes). Fibonacci-shape at the low end (§6.3) then
@@ -150,7 +151,7 @@ impl BlockPool {
         }
     }
 
-    /// A zeroed block of `capacity` bytes: recycled from the free list when
+    /// A block of `capacity` bytes whose contents are unspecified: recycled from the free list when
     /// the capacity is a table entry, otherwise fresh from the system
     /// allocator and not counted as outstanding. Either way its bytes are in use.
     fn alloc(&mut self, capacity: usize) -> *mut u8 {
@@ -162,12 +163,7 @@ impl BlockPool {
         self.outstanding += 1;
         if let Some(p) = self.free_lists[idx].pop() {
             self.idle_bytes -= capacity;
-            // Recycled blocks: zero before returning. Cheney + Heap::new
-            // expect zero pages.
-            unsafe {
-                write_bytes(p, 0, capacity);
-            }
-            return p;
+            return poisoned(p, capacity);
         }
         alloc_exact(capacity)
     }
@@ -198,8 +194,26 @@ impl BlockPool {
 }
 
 fn alloc_exact(capacity: usize) -> *mut u8 {
-    let p = unsafe { alloc_zeroed(block_layout(capacity)) };
+    let p = unsafe { alloc(block_layout(capacity)) };
     assert!(!p.is_null(), "block pool: malloc failed");
+    poisoned(p, capacity)
+}
+
+/// The byte a handed-out block is filled with in debug builds, so a read of
+/// memory the heap has not written sees an implausible value, not a lucky zero.
+#[cfg(debug_assertions)]
+pub(super) const UNWRITTEN_BYTE: u8 = 0xA5;
+
+/// `p`, a block the heap has not yet written: filled with `UNWRITTEN_BYTE` in
+/// debug builds, untouched in release builds.
+#[cfg(debug_assertions)]
+fn poisoned(p: *mut u8, capacity: usize) -> *mut u8 {
+    unsafe { write_bytes(p, UNWRITTEN_BYTE, capacity) };
+    p
+}
+
+#[cfg(not(debug_assertions))]
+fn poisoned(p: *mut u8, _capacity: usize) -> *mut u8 {
     p
 }
 
