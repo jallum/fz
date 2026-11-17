@@ -4,6 +4,7 @@
     "fz-9x7.18"
   ],
   "blocks": [
+    "fz-9x7.11",
     "fz-9x7.20"
   ],
   "created": "2026-11-17T22:03:11Z",
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "The collector's per-field counters, read only by their own tests, are deleted",
   "type": "task",
-  "updated_at": "2026-11-17T22:03:15Z"
+  "updated_at": "2026-11-17T22:03:17Z"
 }
