@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-17T22:48:48Z",
+  "description": "Site 1 of fz-nml.9. Kernel.elem's guard `index \u003c tuple_size(tuple)` boxes the raw tuple size before fz_value_cmp_raw_const: 0/1000/1000. Fix at guard compare lowering. Done when the elem probe makes 0 scalar boxes on all three paths, pinned by a fixture.\n\nApproved by the user 2026-11-17 (relayed by the JSON session). Census and probes: fz-nml.9 description (JSON session, develop 4a05ae2be; per 1000 steps interp/run/build).",
+  "id": "fz-nml.9.1",
+  "labels": [],
+  "parent": "fz-nml.9",
+  "priority": 3,
+  "status": "open",
+  "title": "A guard comparing two raw integers boxes neither",
+  "type": "bug",
+  "updated_at": "2026-11-17T22:48:48Z"
+}
