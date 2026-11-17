@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-17T21:12:42Z",
+  "description": "A contract or @type is resolved only when something waits on it (jobs/contract.rs, jobs/types.rs), so a bad declaration that nothing reaches is never looked at.\n\nEvidence (develop 32a14dda4). interp and run each exit 0 with no report. Elixir 1.19.4 refuses the first three with `(Kernel.TypespecError) type nope/0 undefined`.\n1. `@spec f(nope) :: integer` + `def f(x), do: x` + `def main(), do: IO.inspect(1)`\n2. `@type u :: nope` + `def main(), do: IO.inspect(1)`\n3. `defmodule M do @type t :: integer; @type u :: M.nope end` + `def main(), do: IO.inspect(1)`\n4. `extern \"C\" defp libc::abs([c_int]) :: c_int` + `def main(), do: IO.inspect(1)`. When the extern is called, the wire-spelling refusal reports at 1:28 and stops.\n\nWanted: each is refused at the bad name, as Elixir refuses it, whether or not anything reaches the declaration.\n\nRelated: fz-sc8.216 (executables nothing reaches are compiled anyway). That ticket is about lowering and compiling unreached code. This one is only about resolving and checking unreached declarations, so the two do not conflict, but the fix must not make unreached executables get lowered.\n\nFails before, passes after: four fixtures, one per case above, each expecting its diagnostic at the bad name.\nAcceptance: full gate green; no pin rises unexplained.",
+  "id": "fz-3sy.35",
+  "labels": [],
+  "parent": "fz-3sy",
+  "priority": 2,
+  "status": "open",
+  "title": "A @spec, @type or extern signature nothing reaches is still checked",
+  "type": "bug",
+  "updated_at": "2026-11-17T21:12:42Z"
+}
