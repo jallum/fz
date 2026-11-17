@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-nhb.15"
+  ],
   "blocks": [],
   "created": "2026-11-17T23:49:02Z",
   "description": "## Why\nfz lets a guard call any local def (38 fixtures do; lib/ does not). Elixir refuses: \"cannot find or invoke local first/1 inside a guard\". That is the only blocker for 00623, 01114 and 01115 becoming their own oracle.\n\n## Decide with the owner\n- Refuse (Elixir): a local call in a guard is a spanned diagnostic suggesting defguard. The 38 fixtures move their helpers to defguardp, or keep a fz-only subject and keep a twin. 00623, 01114 and 01115 convert to Elixir form with `# oracle: self` and their twins are deleted.\n- Keep it as an fz extension: no compiler change; 00623, 01114 and 01115 keep their twins and are listed by the fixtures.md ticket.\n\n## Signal\nRefuse: a diagnostic fixture for a local call in a def head, case, receive and fn guard; no local-call guard left in the repo; three fewer twins; full gate green.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "A guard calls only guard-safe functions and defguard guards, as in Elixir",
   "type": "task",
-  "updated_at": "2026-11-17T23:49:02Z"
+  "updated_at": "2026-11-17T23:49:32Z"
 }
