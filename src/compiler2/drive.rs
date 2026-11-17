@@ -230,6 +230,7 @@ impl<'a, T: crate::telemetry::Telemetry> ExecutionContext<'a, T> {
 pub enum Job {
     IndexCode(SourceOwner),
     ScopeCode(SourceOwner),
+    CheckDeclarations(SourceOwner),
     DefineModule(ModuleId),
     DefineModuleInterface(ModuleId),
     ExpandFunctionSource(FunctionId),
@@ -259,6 +260,7 @@ impl SemanticOrd<Types> for Job {
             .then_with(|| match (self, other) {
                 (Job::IndexCode(left), Job::IndexCode(right)) => left.cmp(right),
                 (Job::ScopeCode(left), Job::ScopeCode(right)) => left.cmp(right),
+                (Job::CheckDeclarations(left), Job::CheckDeclarations(right)) => left.cmp(right),
                 (Job::DefineModule(left), Job::DefineModule(right)) => left.cmp(right),
                 (Job::DefineModuleInterface(left), Job::DefineModuleInterface(right)) => left.cmp(right),
                 (Job::ExpandFunctionSource(left), Job::ExpandFunctionSource(right)) => left.cmp(right),
@@ -312,6 +314,7 @@ fn job_order_rank(job: &Job) -> u8 {
         Job::DeriveRuntimeDemand(_) => 22,
         Job::DeriveStaticReach(_) => 23,
         Job::DeriveExecutableReach(..) => 24,
+        Job::CheckDeclarations(_) => 25,
     }
 }
 
@@ -319,6 +322,9 @@ fn job_order_rank(job: &Job) -> u8 {
 pub enum FactKey {
     CodeIndexed(SourceOwner),
     CodeScoped(SourceOwner),
+    /// Every declaration a submitted source writes has been checked, whether
+    /// or not anything reaches it.
+    DeclarationsChecked(SourceOwner),
     ModuleIndexed(ModuleId),
     ModuleDefined(ModuleId),
     ModuleInterface(ModuleId),
@@ -382,6 +388,7 @@ impl FactKey {
         match self {
             FactKey::CodeIndexed(_) => "a source unit's index",
             FactKey::CodeScoped(_) => "a source unit's scope",
+            FactKey::DeclarationsChecked(_) => "a source unit's declarations",
             FactKey::ModuleIndexed(_) => "a module's index",
             FactKey::ModuleDefined(_) => "a module definition",
             FactKey::ModuleInterface(_) => "a module's interface",
@@ -423,7 +430,8 @@ impl FactKey {
     fn cmp_same_variant(&self, other: &Self, types: &Types) -> std::cmp::Ordering {
         match (self, other) {
             (FactKey::CodeIndexed(left), FactKey::CodeIndexed(right))
-            | (FactKey::CodeScoped(left), FactKey::CodeScoped(right)) => left.cmp(right),
+            | (FactKey::CodeScoped(left), FactKey::CodeScoped(right))
+            | (FactKey::DeclarationsChecked(left), FactKey::DeclarationsChecked(right)) => left.cmp(right),
             (FactKey::ModuleIndexed(left), FactKey::ModuleIndexed(right))
             | (FactKey::ModuleDefined(left), FactKey::ModuleDefined(right))
             | (FactKey::ModuleInterface(left), FactKey::ModuleInterface(right))
@@ -476,6 +484,7 @@ fn fact_diagnostic_rank(fact: &FactKey) -> u8 {
         FactKey::CallSiteSummary(_) => 5,
         FactKey::CallSiteTargets(_) => 6,
         FactKey::CallableConstructionTarget(_) => 36,
+        FactKey::DeclarationsChecked(_) => 4,
         FactKey::CodeIndexed(_) => 7,
         FactKey::CodeScoped(_) => 8,
         FactKey::EntryDispatch(_) => 9,
@@ -1081,6 +1090,7 @@ impl World {
             FactKey::GuardDispatch(function) => Some(Job::ReifyGuardDispatch(*function)),
             FactKey::LoweredBody(function) => Some(Job::LowerFunction(*function)),
             FactKey::CodeScoped(code) => Some(Job::ScopeCode(*code)),
+            FactKey::DeclarationsChecked(code) => Some(Job::CheckDeclarations(*code)),
             FactKey::ModuleInterface(module) => {
                 let module = *module;
                 Some(

@@ -1182,6 +1182,29 @@ did the compiler decide to lower." Use GC stats for live-set facts and compiler
 stats for lowering facts.
 </div>
 
+<h3>Bytes in use, idle and at peak</h3>
+
+<p>Peak resident memory is a poor measure of what a program uses: the system
+allocator takes memory eagerly and returns it slowly. The runtime counts its
+own bytes instead, on the thread that runs the program:</p>
+
+<ul>
+  <li><strong>in-use bytes</strong>: the capacity of every block the pool has
+  handed out and not had returned (heaps, gift segments, pooled blocks and
+  exact-size blocks alike) plus the bytes of every off-heap binary buffer not
+  yet freed, trailing NUL included;</li>
+  <li><strong>idle bytes</strong>: the capacity of the blocks resting in the
+  pool's free lists;</li>
+  <li><strong>peak in-use bytes</strong>: the most in-use bytes any allocation
+  has reached, checked at every allocation rather than only at collections.</li>
+</ul>
+
+<p>Every <code>fz.runtime.gc</code> event carries <code>in_use_bytes</code> and
+<code>idle_bytes</code> as they stand when that collection finished, and
+<code>fz.runtime.run_ended</code> carries <code>in_use_bytes</code>,
+<code>idle_bytes</code> and <code>peak_in_use_bytes</code>. A binary's bytes
+stay in use until the collection that sweeps its last BinRef frees the buffer.</p>
+
 <!-- ─────────────────────────────── 12. FUTURE ─────────────────────────────── -->
 <h2 id="future">12. Generational collection</h2>
 

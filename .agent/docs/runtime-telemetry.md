@@ -194,7 +194,10 @@ signature:    (&RunEnded)
 ```
 
 `RunEnded` is `{ pool_outstanding_before_run, pool_outstanding_after_run,
-pool_cached_blocks }`, all block counts of the thread's block pool. Outstanding
+pool_cached_blocks, footprint }`. The first three are block counts of the
+thread's block pool; `footprint` is the byte accounting described under
+`fz.runtime.gc`, read once every process has been torn down, and `write_line`
+renders it as `in_use_bytes`, `idle_bytes` and `peak_in_use_bytes`. Outstanding
 is the count `pool_alloc` has handed out minus the count `pool_free` has taken
 back (`heap::pool_outstanding_blocks`), sampled when the run began and again
 once every process has been torn down; `pool_cached_blocks` is the blocks
@@ -290,7 +293,7 @@ raw event:    fz.runtime.gc
 signature:    (&Collection)
 ```
 
-`Collection` is `{ pid, boundary: CollectionBoundary, stats: GcStats }`; a halting
+`Collection` is `{ pid, boundary: CollectionBoundary, stats: GcStats, footprint }`; a halting
 process is not collected, so the boundary of a collection is `Yield` or `Park`.
 `write_line` renders `pid`, the `boundary` as `"yield"` or `"park"` and the
 `generation` as `"minor"` or `"major"`, then these `GcStats` fields as numbers.
@@ -321,6 +324,21 @@ major collection's from-space is every block (`Heap::next_generation`):
   stub on a chain the pass examines is visited once by the sweep (a view is not on a chain): the young chain for
   a minor pass, the young and old chains for a major pass. Summed by `generation`, it
   says whether the sweep's cost lies in minors or in majors.
+- `in_use_bytes` and `idle_bytes`: the thread's memory when the pass finished
+  (`Collection.footprint`, from `heap::pool_footprint`), across every process.
+  In-use bytes are the capacity of every block the pool has handed out and not
+  had returned (pooled and exact blocks, heaps and gift segments) plus the bytes
+  of every off-heap binary buffer not yet freed (`bits::shared_bin_alloc_with`
+  adds capacity + 1, `shared_bin_destructor_heap` subtracts it); idle bytes are
+  the capacity of the blocks resting in the pool's free lists. The pool owns
+  the counters (`Footprint` in `runtime/src/heap/block_pool.rs`), so the
+  runtime reads one authority. `Footprint.peak_in_use_bytes`, rendered on
+  `run_ended`, is the highest in-use value any allocation reached, updated at
+  every grow. The binary buffer count is per thread, matching the pool: a
+  buffer freed on a thread other than the one that allocated it is
+  subtracted from the freeing thread's count, which stays signed so the
+  free cannot underflow; the reporting thread is the one that runs the
+  program and frees its own buffers.
 - `stubs_made`, `binrefs_made` and `stubs_survived`: objects keyed by the site
   that made the binary object, every site present (0 when none), always in this order:
   `appended_in_place` (an append wrote into the spare room of the buffer its

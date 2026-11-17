@@ -179,11 +179,18 @@ fn ground_derivations(
         .collect()
 }
 
+/// The scope an indexed module is defined in. A module nothing has indexed
+/// yet names no scope, so it has no gate: its first run asks for its source.
+pub(super) fn define_module_gates(world: &World, module_id: ModuleId) -> Option<FactKey> {
+    world.module_enclosing_scope_fact(module_id)
+}
+
 /// Builds one module surface when something demands that module.
 ///
-/// A module can only be defined after its parent scope exists. If the parent is
-/// not ready, this job waits on the parent fact and schedules the parent job.
-/// When ready, it scopes the module body and publishes `ModuleDefined` and
+/// A module can only be defined inside its enclosing scope, which is this
+/// job's start gate (`define_module_gates`) once the module is indexed. A
+/// module with no source yet waits on whatever fact would bring one. When
+/// ready, it scopes the module body and publishes `ModuleDefined` and
 /// `ModuleInterface`.
 pub(super) fn define_module(
     world: &mut World,

@@ -1,0 +1,7 @@
+error[resolve/type-alias]: unknown type name `nope`
+  --> fixtures/01319_a_type_nothing_uses_is_still_checked.fz:1:17
+   |
+1 | @type unused :: nope
+   |                 ^^^^
+   |
+

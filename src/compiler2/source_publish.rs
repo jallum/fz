@@ -874,6 +874,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
             )?;
             super::drive::ExecutionContext::new(self.world, self.telemetry).record_type_def_refs(&name, refs.types);
             self.world.record_type_def_struct_refs(name.clone(), refs.structs);
+            self.world.note_declared_type(self.source_owner, &name);
 
             super::drive::ExecutionContext::new(self.world, self.telemetry).note_type_decl(
                 &name,
@@ -2431,7 +2432,7 @@ fn collect_spec_references(
         .param_body_tokens
         .iter()
         .chain(std::iter::once(&spec.result_body_tokens))
-        .chain(spec.constraints.iter().map(|(_, bound)| bound))
+        .chain(spec.bounds().map(|(_, bound)| bound))
     {
         collect_body_references(world, tel, scope, body, owner, module, refs)?;
     }

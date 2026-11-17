@@ -15106,6 +15106,86 @@ fn a_type_name_nothing_declares_in_an_extern_or_an_annotation_is_refused_under_t
     );
 }
 
+fn declaring_unreached(declarations: &str) -> String {
+    format!("{declarations}\ndef f(x), do: x\ndef main(), do: dbg(1)\n")
+}
+
+/// A declaration is checked because the user wrote it, not because something
+/// reaches it: a typo in a function nothing calls, a type nothing uses, or an
+/// extern nothing calls stops the compile exactly as it would if `main`
+/// called it.
+#[test]
+fn a_declaration_nothing_reaches_is_still_checked() {
+    let unknown = |name: &str| format!("unknown type name `{name}`");
+    for (declarations, message, underlined) in [
+        ("@spec f(integer) :: nope", unknown("nope"), "nope"),
+        ("@type u :: nope", unknown("nope"), "nope"),
+        ("defmodule M do\n  @type u :: M.nope\nend", unknown("M.nope"), "M.nope"),
+        ("extern \"C\" defp libc::abs(nope) :: c_int", unknown("nope"), "nope"),
+    ] {
+        assert_eq!(
+            diagnostics_of_a_failed_compile(&declaring_unreached(declarations)),
+            vec![(codes::RESOLVE_TYPE_ALIAS.0, message, underlined.to_string())],
+            "{declarations}"
+        );
+    }
+}
+
+/// Checking a declaration nothing reaches reads its contract and nothing
+/// more: the function's body is never lowered, and no library declaration is
+/// checked on the user's behalf.
+#[test]
+fn checking_an_unreached_declaration_warms_its_contract_and_nothing_else() {
+    let (plain_contracts, _, _) = contracts_and_lowerings_of(&declaring_unreached(""));
+    let (contracts, lowered, f) = contracts_and_lowerings_of(&declaring_unreached("@spec f(integer) :: integer"));
+    let f = f.expect("checking the spec defines f/1");
+    assert!(contracts.contains(&f), "the unreached spec is checked");
+    assert!(!lowered.contains(&f), "the unreached body stays cold");
+    assert_eq!(
+        contracts.len(),
+        plain_contracts.len() + 1,
+        "the one declaration adds one contract; no library contract comes with it"
+    );
+}
+
+/// Runs `text`'s `main` on interp and answers which functions had a contract
+/// derived, which were lowered, and the id of `f/1` once something defines it.
+fn contracts_and_lowerings_of(text: &str) -> (Vec<FunctionId>, Vec<FunctionId>, Option<FunctionId>) {
+    let tel = ConfiguredTelemetry::new();
+    let outputs = OutputCapture::new();
+    outputs.install(&tel);
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("app.fz".to_string()),
+        text: text.to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert!(compiler.run_root_interp(root).is_ok(), "a sound program runs");
+    let stopped = |wanted: fn(&Job) -> Option<FunctionId>| {
+        outputs
+            .stops_matching(|job| wanted(job).is_some())
+            .into_iter()
+            .filter_map(|stop| wanted(&stop.job))
+            .collect::<Vec<_>>()
+    };
+    let contracts = stopped(|job| match job {
+        Job::DeriveFunctionContract(function) => Some(*function),
+        _ => None,
+    });
+    let lowered = stopped(|job| match job {
+        Job::LowerFunction(function) => Some(*function),
+        _ => None,
+    });
+    (contracts, lowered, functions.try_id("f", 1))
+}
+
 #[test]
 fn compiler2_submit_module_root_without_code_reports_one_unknown_module_diag() {
     let tel = ConfiguredTelemetry::new();

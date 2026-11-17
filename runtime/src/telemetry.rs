@@ -6,7 +6,7 @@
 //! that keeps a telemetry bus raises the matching typed raw event, and any sink
 //! that writes the line calls the same function.
 
-use crate::heap::{pool_outstanding_blocks, pool_total_cached_blocks};
+use crate::heap::{Footprint, pool_footprint, pool_outstanding_blocks, pool_total_cached_blocks};
 use crate::process::{Collection, PidId, Process};
 use crate::sched::{ProbeOutcome, SendProbe};
 use crate::timer::TimerId;
@@ -109,6 +109,9 @@ pub struct RunEnded {
     pub pool_outstanding_after_run: usize,
     /// Blocks resting in the pool's free lists.
     pub pool_cached_blocks: usize,
+    /// The thread's bytes once every process has been torn down: in use, idle,
+    /// and the most that were ever in use.
+    pub footprint: Footprint,
 }
 
 impl RunEnded {
@@ -118,6 +121,7 @@ impl RunEnded {
             pool_outstanding_before_run,
             pool_outstanding_after_run: pool_outstanding_blocks(),
             pool_cached_blocks: pool_total_cached_blocks(),
+            footprint: pool_footprint(),
         }
     }
 }
@@ -219,7 +223,7 @@ fn write_metadata(out: &mut String, event: &RuntimeEvent<'_>) {
             let stats = &collection.stats;
             write!(
                 out,
-                "\"pid\":{},\"boundary\":\"{}\",\"generation\":\"{}\",\"copied_bytes\":{},\"live_bytes\":{},\"young_bytes\":{},\"young_budget\":{},\"from_space_capacity_bytes\":{},\"blocks_released\":{},\"blocks_after\":{},\"stub_visits\":{}",
+                "\"pid\":{},\"boundary\":\"{}\",\"generation\":\"{}\",\"copied_bytes\":{},\"live_bytes\":{},\"young_bytes\":{},\"young_budget\":{},\"from_space_capacity_bytes\":{},\"blocks_released\":{},\"blocks_after\":{},\"stub_visits\":{},\"in_use_bytes\":{},\"idle_bytes\":{}",
                 collection.pid,
                 collection.boundary.as_str(),
                 stats.generation.as_str(),
@@ -230,7 +234,9 @@ fn write_metadata(out: &mut String, event: &RuntimeEvent<'_>) {
                 stats.from_space_capacity_bytes,
                 stats.blocks_released,
                 stats.blocks_after,
-                stats.stub_visits
+                stats.stub_visits,
+                collection.footprint.in_use_bytes,
+                collection.footprint.idle_bytes
             )
             .unwrap();
             out.push_str(",\"stubs_made\":");
@@ -243,8 +249,13 @@ fn write_metadata(out: &mut String, event: &RuntimeEvent<'_>) {
         RuntimeEvent::RunEnded(ended) => {
             write!(
                 out,
-                "\"pool_outstanding_before_run\":{},\"pool_outstanding_after_run\":{},\"pool_cached_blocks\":{}",
-                ended.pool_outstanding_before_run, ended.pool_outstanding_after_run, ended.pool_cached_blocks
+                "\"pool_outstanding_before_run\":{},\"pool_outstanding_after_run\":{},\"pool_cached_blocks\":{},\"in_use_bytes\":{},\"idle_bytes\":{},\"peak_in_use_bytes\":{}",
+                ended.pool_outstanding_before_run,
+                ended.pool_outstanding_after_run,
+                ended.pool_cached_blocks,
+                ended.footprint.in_use_bytes,
+                ended.footprint.idle_bytes,
+                ended.footprint.peak_in_use_bytes
             )
             .unwrap();
         }

@@ -190,6 +190,9 @@ impl World {
                     span: body.0.first().map(|token| token.span).unwrap_or(Span::DUMMY),
                 });
             };
+            if body.declares_no_bound() {
+                continue;
+            }
             let expr = parse_type_expr(&body.0)?;
             let bound = self.resolve_ty(namespace, &expr, &mut vars)?;
             constraints.insert(id, bound);

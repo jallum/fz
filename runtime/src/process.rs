@@ -23,7 +23,7 @@ use crate::any_value::AnyValueRef;
 use crate::bitstr::BitWriter;
 use crate::delivery::DeliveryLock;
 use crate::exec_ctx::ExecCtx;
-use crate::heap::{GcStats, Heap, SIZE_TABLE, SchemaRegistry};
+use crate::heap::{Footprint, GcStats, Heap, SIZE_TABLE, SchemaRegistry};
 use crate::park::ParkRecord;
 
 pub const DEFAULT_REDUCTIONS_PER_QUANTUM: i32 = 4000;
@@ -68,6 +68,9 @@ pub struct Collection {
     pub pid: PidId,
     pub boundary: CollectionBoundary,
     pub stats: GcStats,
+    /// The thread's memory once the collection finished: every block handed
+    /// out and every live off-heap binary buffer, and the blocks resting idle.
+    pub footprint: Footprint,
 }
 
 /// Per-task runtime state. One Process per fz-level task; the scheduler hands

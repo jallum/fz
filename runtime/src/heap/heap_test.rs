@@ -12,6 +12,7 @@ use crate::resource::ResourceStub;
 use crate::sync::Ordering;
 use std::cell::RefCell;
 use std::f64::consts::PI;
+use std::mem::MaybeUninit;
 use std::ptr::{null_mut, read, write};
 use std::rc::Rc;
 
@@ -1077,8 +1078,8 @@ fn any_value_ref_root_gc_forwards_heap_ref() {
     assert_ne!(new_list, old_list);
     let head = unsafe { (*(new_list as *const ListCons)).head_value() };
     assert_eq!(head, AnyValue::int(1));
-    assert_eq!(stats.root_heap_edges, 1);
-    assert_eq!(stats.root_scalar_slots, 0);
+    assert_eq!(stats.copied_objects, 1);
+    assert_eq!(stats.copied_bytes, 16);
 }
 
 #[test]
@@ -1096,8 +1097,6 @@ fn any_value_ref_root_gc_copies_scalar_box_without_tracing_payload() {
 
     assert_ne!(roots[0].storage_addr(), scalar);
     assert_eq!(roots[0].load_int().unwrap(), decoy_addr as i64);
-    assert_eq!(stats.root_scalar_slots, 1);
-    assert_eq!(stats.root_heap_edges, 0);
     assert_eq!(stats.copied_objects, 1);
     assert_eq!(stats.copied_bytes, 16);
 }
@@ -1115,7 +1114,6 @@ fn any_value_ref_root_gc_preserves_tagged_literal_scalar_ref() {
 
     assert_eq!(roots[0], original);
     assert_eq!(roots[0].load_int().unwrap(), 42);
-    assert_eq!(stats.root_scalar_slots, 1);
     assert_eq!(stats.copied_objects, 0);
 }
 
@@ -1132,8 +1130,6 @@ fn gc_stats_prove_scalar_list_head_is_copied_but_not_traced() {
     assert_eq!(stats.copied_objects, 1);
     assert_eq!(stats.copied_bytes, 16);
     assert_eq!(stats.live_objects, 1);
-    assert_eq!(stats.list_head_scalar_slots, 1);
-    assert_eq!(stats.list_head_heap_edges, 0);
     let moved = list_addr_from_tagged(ref_bits(roots[0])).expect("moved live list");
     let moved_head = unsafe { (*(moved as *const ListCons)).head_value() };
     assert_eq!(moved_head.kind(), ValueKind::INT);
@@ -1141,7 +1137,7 @@ fn gc_stats_prove_scalar_list_head_is_copied_but_not_traced() {
 }
 
 #[test]
-fn gc_stats_count_struct_slots_by_layout_kind() {
+fn a_struct_collection_moves_heap_fields_and_leaves_scalar_fields() {
     let reg = fresh_registry();
     let schema_id = reg.borrow_mut().register(Schema::tuple_of_arity(2));
     let mut h = Heap::new(1024, reg);
@@ -1157,9 +1153,6 @@ fn gc_stats_count_struct_slots_by_layout_kind() {
     let stats = h.collect_tagged(&mut root);
 
     assert_eq!(stats.copied_objects, 2);
-    assert_eq!(stats.struct_scalar_slots, 1);
-    assert_eq!(stats.struct_heap_edges, 1);
-    assert_eq!(stats.list_head_scalar_slots, 1);
     assert_eq!(h.live_count(), 2);
     let moved = struct_addr_from_tagged(root as u64).expect("moved struct");
     assert_eq!(h.read_field_slot(moved, 0).raw(), decoy_addr as u64);
@@ -1167,7 +1160,7 @@ fn gc_stats_count_struct_slots_by_layout_kind() {
 }
 
 #[test]
-fn gc_stats_count_map_and_closure_slots_by_layout_kind() {
+fn a_map_and_closure_collection_moves_heap_slots_and_leaves_scalar_slots() {
     let mut h = Heap::new(1024, fresh_registry());
     let map_child_bits = alloc_int_list_cons(&mut h, 3, EMPTY_LIST);
     let map_child_addr = list_addr_from_tagged(map_child_bits).unwrap();
@@ -1190,12 +1183,6 @@ fn gc_stats_count_map_and_closure_slots_by_layout_kind() {
     let stats = h.collect(&mut roots);
 
     assert_eq!(stats.copied_objects, 4);
-    assert_eq!(stats.root_heap_edges, 2);
-    assert_eq!(stats.map_scalar_slots, 1);
-    assert_eq!(stats.map_heap_edges, 1);
-    assert_eq!(stats.closure_scalar_slots, 1);
-    assert_eq!(stats.closure_heap_edges, 1);
-    assert_eq!(stats.list_head_scalar_slots, 2);
     let moved_map = map_addr_from_tagged(ref_bits(roots[0])).unwrap();
     let moved_closure = closure_addr_from_tagged(ref_bits(roots[1])).unwrap();
     let (_, moved_map_value) = unsafe { map_entry(moved_map, 0) };
@@ -1231,7 +1218,10 @@ fn collect_forwards_a_closure_root_and_a_mailbox_root_together() {
     let new_capture = unsafe { closure_capture_value(new_closure, 0) };
     assert_ne!(new_capture.raw() as *mut u8, old_capture);
     assert_ne!(roots[1].list_addr().unwrap(), old_mailbox);
-    assert_eq!(stats.root_heap_edges, 2);
+    assert_eq!(
+        stats.copied_objects, 3,
+        "the closure, what it captures, and the mailbox message"
+    );
 }
 
 /// Cheney drops unreachable objects: a cell allocated alongside the
@@ -2329,6 +2319,32 @@ fn an_unrooted_view_lets_the_sweep_release_its_shared_bin() {
     assert_eq!(shared_refs(&witness), 1, "sweep removes its exact owned edge");
 }
 
+/// A buffer's bytes are in use while a handle or a BinRef holds it, and leave
+/// the count when the sweep drops the last reference.
+#[test]
+fn a_binarys_bytes_are_in_use_until_its_stub_dies_at_a_collection() {
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let before = pool_footprint().in_use_bytes;
+    let witness = SharedBinHandle::from_bytes(&[0x55; 4096]);
+    let buffer_bytes = 4096 + 1;
+    assert_eq!(pool_footprint().in_use_bytes, before + buffer_bytes);
+    let _ = alloc_buffer_view(
+        &mut h,
+        witness.clone(),
+        witness.bytes_len() as u64 * 8,
+        StubSite::FilledBuffer,
+    );
+    drop(witness);
+    assert_eq!(
+        pool_footprint().in_use_bytes,
+        before + buffer_bytes,
+        "the BinRef still holds the buffer"
+    );
+    let mut root: *mut u8 = null_mut();
+    h.collect_tagged(&mut root);
+    assert_eq!(pool_footprint().in_use_bytes, before, "the sweep freed the buffer");
+}
+
 /// Mixed live/dead BinRefs: sweep must read the next link from
 /// from-space while reading the survivor's shared_ptr from to-space.
 #[test]
@@ -2535,7 +2551,7 @@ fn alloc_bitstring_large_routes_to_shared_zone() {
 #[test]
 fn alloc_bitstring_with_fills_an_inline_payload_in_place() {
     let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
-    let value = h.alloc_bitstring_with(32, 256, |dest| dest.fill(7));
+    let value = h.alloc_bitstring_with(32, 256, |dest| dest.fill(MaybeUninit::new(7)));
     assert_eq!(value.kind(), ValueKind::BITSTRING);
     let tagged = heap_object_word(value.heap_addr().expect("bitstring"), ValueKind::BITSTRING);
     let payload = unsafe { std::slice::from_raw_parts(bitstring_byte_ptr(tagged), 33) };
@@ -2548,7 +2564,7 @@ fn alloc_bitstring_with_fills_an_inline_payload_in_place() {
 fn alloc_bitstring_with_fills_a_shared_buffer_in_place_and_counts_it_once() {
     let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
     let len = SHARED_BIN_THRESHOLD_BYTES + 36;
-    let value = h.alloc_bitstring_with(len, (len * 8) as u64, |dest| dest.fill(9));
+    let value = h.alloc_bitstring_with(len, (len * 8) as u64, |dest| dest.fill(MaybeUninit::new(9)));
     assert_eq!(value.kind(), ValueKind::BINVIEW);
     let tagged = heap_object_word(value.heap_addr().expect("binview"), ValueKind::BINVIEW);
     let payload = unsafe { std::slice::from_raw_parts(bitstring_byte_ptr(tagged), len + 1) };
@@ -3229,8 +3245,6 @@ fn an_atom_ref_is_a_root_the_collector_leaves_as_it_is() {
 
     assert_eq!(roots[0], original);
     assert_eq!(roots[0].load_atom(), Ok(77));
-    assert_eq!(stats.root_scalar_slots, 1);
-    assert_eq!(stats.root_heap_edges, 0);
     assert_eq!(stats.copied_objects, 0);
     assert_eq!(stats.copied_bytes, 0);
 }

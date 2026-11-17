@@ -379,7 +379,12 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // names. Eighteen fewer runs elsewhere: a recursion verdict starts once its reach
         // exists.
         // (2988, 15, 42, 261) -> (2992, 15, 42, 261): the ordering operators' `binary` clause adds its `fz_op_*_bb` activation and splits the catch-all's `compare/2` activations, the same way the int and float clauses already do.
-        (2992, 15, 42, 261),
+        // (2992, 15, 42, 261) -> (2981, 15, 31, 261): a module is started once its enclosing scope exists, so each module's definition runs once fewer.
+        // (2981, 15, 31, 261) -> (2982, 15, 31, 261): the product waits until
+        // the fixture's own declarations are checked, which is one
+        // `CheckDeclarations` run. The fixture declares nothing, so it defines
+        // no module and derives no contract for it.
+        (2982, 15, 31, 261),
         "ordinary generic helper work has the exact source/module/executable-fact census"
     );
     // Every applied work step is a run, and every run is charged to exactly
@@ -488,7 +493,8 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // when their own function's edges land. Every `DeriveRecursive` run (68) starts when its
         // function's reach lands, where it used to start on its edges and then wait on a product.
         // 1163 -> 1164: the ordering operators' `binary` clause adds its `fz_op_*_bb` activation and splits the catch-all's `compare/2` activations, the same way the int and float clauses already do.
-        1164,
+        // 1164 -> 1153: a module is started once its enclosing scope exists, so each module's definition runs once fewer.
+        1153,
         "ordinary generic helper facts have the exact non-demand changed-revision census",
     );
     assert_eq!(
@@ -566,7 +572,10 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // 453 -> 638: a transport position that names an executable's return waits on that
         // executable's reach, and the wait starts its `DeriveExecutableReach`.
         // 638 -> 641: the ordering operators' `binary` clause adds its `fz_op_*_bb` activation and splits the catch-all's `compare/2` activations, the same way the int and float clauses already do.
-        641,
+        // 641 -> 630: a module is started once its enclosing scope exists, so each module's definition runs once fewer.
+        // 630 -> 631: the product waits on the fixture's own declarations being
+        // checked, and that wait starts its one `CheckDeclarations`.
+        631,
         "the blocked-waiter census includes only the prerequisites each completion's own waits expand",
     );
     assert_eq!(
@@ -853,5 +862,62 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
             .iter()
             .any(|activation| activation.function != root_entry.function),
         "caller-discovered callees must use the same frontier as the root entry",
+    );
+}
+
+/// An indexed module names the scope that encloses it, so the scheduler can
+/// hold its definition until that scope exists. A run started earlier finds
+/// no scope to define the module in and stops.
+#[test]
+fn a_module_is_not_started_before_its_enclosing_scope_exists() {
+    let source = "\
+defmodule Outer do
+  defmodule Inner do
+    def one(), do: 1
+  end
+  def two(), do: Inner.one() + 1
+end
+def main(), do: Outer.two()
+";
+    let telemetry = ConfiguredTelemetry::new();
+    let early_starts = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+    let observed = std::rc::Rc::clone(&early_starts);
+    telemetry.attach_raw_event2::<super::World, super::JobCompletion, _>(
+        &["fz", "compiler2", "work_graph", "applied"],
+        move |_, _, _, _, completion| {
+            let Job::DefineModule(module) = &completion.job else {
+                return;
+            };
+            for wait in &completion.blocked {
+                match wait.fact() {
+                    super::DependencyKey::Fact(FactKey::CodeScoped(_)) => {}
+                    super::DependencyKey::Fact(FactKey::ModuleDefined(parent)) if parent != module => {}
+                    _ => continue,
+                }
+                observed
+                    .borrow_mut()
+                    .push(format!("{:?} stopped for {wait:?}", completion.job));
+            }
+        },
+    );
+    let mut compiler = Compiler2::new(telemetry);
+    compiler.submit_code(CodeSubmission {
+        name: Some("nested_modules.fz".to_string()),
+        text: source.to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler
+        .drive_root_backend_work_starts(root)
+        .expect("the program should drive to its backend product");
+    let early_starts = early_starts.borrow();
+    assert!(
+        early_starts.is_empty(),
+        "a module was started before the scope that encloses it existed:\n{}",
+        early_starts.join("\n")
     );
 }

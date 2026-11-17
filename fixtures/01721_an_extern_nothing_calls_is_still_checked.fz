@@ -1,0 +1,6 @@
+#---
+# purpose: an extern nothing calls is checked, so a type name nothing declares in its signature stops the compile under the name
+# expect: diagnostic
+#---
+extern "C" defp libc::abs(nope) :: c_int
+def main(), do: dbg(1)
