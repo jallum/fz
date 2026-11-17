@@ -14,7 +14,7 @@
   "parent": "fz-9x7",
   "priority": 2,
   "status": "open",
-  "title": "A heap block above the pool's largest size stays resident after it is freed",
+  "title": "A heap block above the pool's largest size comes from a mapped segment; a freed one is cached or unmapped",
   "type": "bug",
-  "updated_at": "2026-11-17T22:03:18Z"
+  "updated_at": "2026-11-17T22:03:19Z"
 }
