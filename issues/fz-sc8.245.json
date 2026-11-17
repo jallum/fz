@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-17T23:45:14Z",
+  "description": "Approved by the user 2026-11-17 (relayed by the Optimize session: \"proceed\").\n\nlib/enum.fz:156 builds a range's list as reverse(reverse(e)), so every cell is built twice. A one-pass range clause takes GC's g_enum list memory from 35.84 MB to 25.6 MB (BEAM ~18 MB); 48 call sites gain.\n\nOverlap: fz-engine's R2 library-rewrite option touches lib/range.fz; if R2 gives a one-pass builder this clause is deleted. fz-nhb.12 (lib/*.fz spec rewrite, Fixture Rework) touches lib/*.fz too: the second to land rebases.",
+  "id": "fz-sc8.245",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 2,
+  "status": "open",
+  "title": "Enum.to_list builds a range's list once",
+  "type": "task",
+  "updated_at": "2026-11-17T23:45:14Z"
+}
