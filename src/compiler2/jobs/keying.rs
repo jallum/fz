@@ -10,14 +10,12 @@ use super::super::body::{
     CallInputMode, ControlDestination, DirectCallee, LoweredBody, LoweredStep, LoweredTail, SubjectPath, ValueId,
     delivered_value_joins,
 };
-use super::super::drive::{AnswerUse, FactKey, Job, JobEffects, ProductAddress, UseCollector, current_uses};
+use super::super::drive::{AnswerUse, FactKey, Job, JobEffects, UseCollector, current_uses};
 use super::super::identity::{FunctionId, ModuleId};
 use super::super::keying::{BodyKeying, InputDemand};
-use super::super::pull::{ProductKey, ProductSessions, ProductValue};
-use super::super::reach::ReachKey;
 use super::super::world::{BodyShape, World};
 use crate::telemetry::TelemetryExt as _;
-use fz_engine::{FactReadiness, FatalError};
+use fz_engine::{FactReadiness, FactUse, FatalError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StaticEdge {
@@ -195,16 +193,14 @@ fn publish_static_callees(
 /// generated closure is handled the same way as direct or mutual recursion.
 ///
 /// The graph is not walked here: `function` is recursive exactly when it is
-/// in its own static reach, a program-scoped product shared by every
-/// function that asks (`ReachKey::Static`). Identity consumption is a
+/// in its own `FactKey::StaticReach`. Identity consumption is a
 /// body-local property with no call-graph content, but it has always ridden
 /// `FactKey::Recursive`'s one value and still does.
 ///
 /// The facts `derive_recursive` cannot conclude without, for `function`
-/// itself: its own static edges, and its own lowered body. Both are named
+/// itself: its own static reach, and its own lowered body. Both are named
 /// from `function` alone, so the scheduler checks them before ever starting
-/// a never-run `DeriveRecursive` (`Job::missing_gates`). The reach of its
-/// callees is a wait the job discovers on the product.
+/// a never-run `DeriveRecursive` (`Job::missing_gates`).
 pub(super) fn derive_recursive_gates(world: &World, function: FunctionId) -> Vec<FactKey> {
     if world.function_is_provider_boundary(function) {
         return Vec::new();
@@ -214,8 +210,8 @@ pub(super) fn derive_recursive_gates(world: &World, function: FunctionId) -> Vec
         return vec![gate];
     }
     let mut gates = Vec::new();
-    if !world.has_fact(&FactKey::StaticCallees(function)) {
-        gates.push(FactKey::StaticCallees(function));
+    if !world.has_fact(&FactKey::StaticReach(function)) {
+        gates.push(FactKey::StaticReach(function));
     }
     // Only `Clauses` ever gets a `LowerFunction` job: a protocol callback
     // stays undefined forever, and an extern's wire ABI lives on its
@@ -226,11 +222,7 @@ pub(super) fn derive_recursive_gates(world: &World, function: FunctionId) -> Vec
     gates
 }
 
-pub(super) fn derive_recursive(
-    world: &mut World,
-    products: Option<&ProductSessions>,
-    function: FunctionId,
-) -> Result<JobEffects, FatalError> {
+pub(super) fn derive_recursive(world: &mut World, function: FunctionId) -> Result<JobEffects, FatalError> {
     if world.function_is_provider_boundary(function) {
         // No body in this program: no edges, so nothing it does can reach
         // back to it.
@@ -260,21 +252,20 @@ pub(super) fn derive_recursive(
         reads.push(lowered);
     }
 
-    let address = ProductAddress::program(ProductKey::Reach(ReachKey::Static(function)));
-    let Some(ProductValue::Reach(reach)) = products.and_then(|sessions| sessions.product(&address)) else {
+    let reach = FactKey::StaticReach(function);
+    let Some(static_reach) = world.static_reach(function).filter(|_| world.has_fact(&reach)) else {
         return Ok(JobEffects {
             reads: current_uses(reads),
-            product_waits: vec![address],
+            waits: vec![FactUse::current(reach)],
             ..JobEffects::default()
         });
     };
     let keying = BodyKeying {
-        recursive: reach.contains(&ReachKey::Static(function)),
+        recursive: static_reach.contains(&function),
         consumes_callable_identity: body_consumes_callable_identity(world, function),
     };
-    let mut effects = publish_recursive(world, function, keying, reads);
-    effects.product_reads.push(address);
-    Ok(effects)
+    reads.push(reach);
+    Ok(publish_recursive(world, function, keying, reads))
 }
 
 fn publish_recursive(world: &mut World, function: FunctionId, keying: BodyKeying, reads: Vec<FactKey>) -> JobEffects {

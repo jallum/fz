@@ -2554,18 +2554,23 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             // 884 -> 864: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at
             // run time, so its result stays `binary` and callers need no second `bitstring`
             // activation.
-            evaluations: 864,
+            // A reach is a fact answered by a job of its own: 35 `DeriveStaticReach` and 58
+            // `DeriveExecutableReach` evaluations, less 7 `DeriveRecursive` evaluations that no
+            // longer start to find their reach missing: 864 -> 948, 77 of them initial and 7
+            // content-caused.
+            evaluations: 948,
             runtime_demand_evaluations: 115,
-            initial: 623,
-            content_caused: 241,
+            initial: 700,
+            content_caused: 248,
             readiness_caused: 0,
             concluded_caused: 0,
             uncaused: 0,
-            changed_outputs: 778,
+            changed_outputs: 855,
             // unchanged_outputs 85 -> 86: `String.Chars`' binary impl is selected for any bitstring, so its shared activation is typed `bitstring` with two clauses, and a caller that holds a `binary` gets its own `String.Chars.Binary.to_string(binary)` activation with the raise clause trimmed.
-            unchanged_outputs: 86,
+            // 86 -> 93 and blocked_completions 227 -> 234: the seven content-caused reach evaluations.
+            unchanged_outputs: 93,
             already_pending: 9,
-            blocked_completions: 227,
+            blocked_completions: 234,
         },
         "{fixture}: the reactive RuntimeDemand formula work or its causal classification moved"
     );
@@ -2584,9 +2589,13 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
         by_reason(ledger.ran),
         BTreeMap::from([
             // 138 -> 140: `String.Chars`' binary impl is selected for any bitstring, so its shared activation is typed `bitstring` with two clauses, and a caller that holds a `binary` gets its own `String.Chars.Binary.to_string(binary)` activation with the raise clause trimmed.
-            ("blocked_waiter_expansion", 140),
-            ("changed_revision_wake", 521),
-            ("gate_expansion", 202),
+            // 140/521/202 -> 187/547/213 (+84): a reach is a fact answered by a job of its own.
+            // The 35 `DeriveStaticReach` and 56 `DeriveExecutableReach` completions are 91 runs
+            // that did not exist, less the 7 `DeriveRecursive` runs that no longer restart when a
+            // reach product settles (28 -> 21).
+            ("blocked_waiter_expansion", 187),
+            ("changed_revision_wake", 547),
+            ("gate_expansion", 213),
             ("ignition", 1),
         ]),
         "{fixture}: the jobs run, by the reason that queued each"
@@ -2598,13 +2607,16 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             ("activation_published", 45),
             ("blocked_waiter_expansion", 4),
             ("changed_revision_wake", 9),
-            ("gate_expansion", 36),
+            // 36 -> 37: a reach is a fact answered by a job of its own, and one request for it
+            // finds the job already queued.
+            ("gate_expansion", 37),
         ]),
         "{fixture}: requests that found their job already queued"
     );
     assert_eq!(
         by_reason(ledger.reparked),
-        BTreeMap::from([("changed_revision_wake", 36)]),
+        // 36 -> 34: a reach is a fact answered by a job of its own.
+        BTreeMap::from([("changed_revision_wake", 34)]),
         "{fixture}: started jobs the pop gate parked again without running"
     );
     for reason in fz::compiler2::WorkStartReason::TELEMETRY_ORDER {
@@ -2628,13 +2640,23 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             wake_records("applied", &["completion"]),
             wake_records("dependencies_moved", &["step"])
         ),
-        (553, 12),
+        // (553, 12) -> (584, 5): a reach is a fact answered by a job of its own. In completions
+        // (+31): settled `StaticReach` facts wake `DeriveRecursive` 21 times (+21); `StaticCallees`
+        // wakes `DeriveStaticReach` 21 times, 14 as a `Concluded` waiter when one of three
+        // recursive groups closes and 7 as a settled fact, and those 7 replace the 7 wakes of
+        // `DeriveRecursive` (+14 +7 -7); `InputDemand` -> `AnalyzeActivation` rises 2 -> 7 while
+        // `Recursive` -> `AnalyzeActivation` falls 15 -> 10 and `StaticCallees` ->
+        // `DeriveInputDemand` falls 35 -> 30 (+5 -5 -5); `ModuleDefined` -> `DeriveStaticCallees`
+        // rises 3 -> 4 (+1). Between completions (-7): the settled reach products that woke
+        // `DeriveRecursive` are gone. `wake_moved_waiters` wakes no job in this fixture.
+        (584, 5),
         "{fixture}: wake records of the completions, and of the external changes between them"
     );
     assert_eq!(
         ledger.requested(fz_engine::WorkStart::ChangedRevisionWake),
-        // The 565 above and the one wake the arbiter's own step records.
-        566,
+        // 566 -> 590: the 584 + 5 wake records above and the one wake the arbiter's own step
+        // records.
+        590,
         "{fixture}: every wake record is one request at the door"
     );
     let products = report.product_totals();
@@ -2703,7 +2725,9 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
         // 1494 -> 1500 settled products, all changed: quoted metadata is a keyword list, so the
         // `panic` calls `Kernel.raise/1` and `Kernel.defexception/1` quote build a tuple inside a
         // list where they built a map, and each of those values is asked for its transport once.
-        (1500, 1500, 1500, 0, 8, 0),
+        // 1500 -> 1398 settled products and 8 -> 5 blocked cache hits: a reach is a fact, so the
+        // 102 reach products that settled, and the 3 cache hits that read one, are gone.
+        (1398, 1398, 1398, 0, 5, 0),
         "{fixture}: reactive product settlement work includes ordinary helper products"
     );
     assert!(

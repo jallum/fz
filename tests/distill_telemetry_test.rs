@@ -252,7 +252,11 @@ fn read_compile_spend(trace: &Path) -> CompileSpend {
 // 18_342 -> 18_344: `Kernel` defines `bit_size/1` and `fz_bitstring_bit_extent/1`, one
 // derivation each, as above.
 // 18_344 -> 18_345: `Kernel` defines `is_number/1`, one derivation, as above.
-const DERIVATIONS: u64 = 18_345;
+// 18_345 -> 19_800: a reach is a fact answered by a job of its own: 356 `DeriveStaticReach` runs
+// (292 functions whose recursion is asked) and 1_202 `DeriveExecutableReach` runs (one per
+// executable whose return a transport position names), less 104 runs elsewhere that no longer
+// restart for a reach they were waiting on.
+const DERIVATIONS: u64 = 19_800;
 // 111_876 -> 111_888: an extern that declares `raises:` reads the struct of
 // the exception it names, to raise that struct. The distiller calls twelve
 // such externs, and each contract reads `StructDefined` once.
@@ -270,7 +274,9 @@ const DERIVATIONS: u64 = 18_345;
 // 111_794 -> 111_812: the six reads each of the three new `Kernel` functions.
 // 111_812 -> 111_824: the six reads each of the two new `Kernel` functions.
 // 111_824 -> 111_830: the six reads of the new `Kernel.is_number/1`.
-const READS_HANDED: u64 = 111_830;
+// 111_830 -> 156_110: a reach job reads the edge fact of every node it reaches, so each of its
+// 1_558 runs hands the World one read per node of its cone.
+const READS_HANDED: u64 = 156_110;
 
 /// Compiling the distiller spends this much of the product stack. The largest
 /// drive is the one `PRODUCT_DRIVE_BUDGET` bounds, so its headroom is the
@@ -321,7 +327,14 @@ fn the_distiller_compiles_inside_the_product_drive_budget() {
         // (48_666, 50_524, 66) -> (48_666, 50_530, 66): quoted metadata is a keyword list, so the
         // `panic` calls `Kernel.raise/1` and `Kernel.defexception/1` quote build a tuple inside a
         // list where they built a map, and each of those values is asked for its transport once.
-        (48_666, 50_530, 66),
+        // (48_666, 50_530, 66) -> (46_243, 46_797, 26): a reach is a fact, so no product request
+        // asks for one and no drive starts to serve one. The 4_813 reach requests are gone, and
+        // the 35 drives that only served reach and the 5 root drives that only waited on one with
+        // them (66 -> 26). A transport shape waiting on a reach is evaluated 1_202 times as
+        // waiting on the fact, where it waited on the product 165 times: its reach is answered
+        // by a job outside the drive, so the shape is requested again once that job lands
+        // (30_289 -> 31_325 transport shape requests).
+        (46_243, 46_797, 26),
         "(largest drive requests, total requests, drives) for the distiller's compile moved. \
          A fall is lowered in this pin; a rise is investigated first, because the largest drive \
          may not exceed PRODUCT_DRIVE_BUDGET (50,000)."

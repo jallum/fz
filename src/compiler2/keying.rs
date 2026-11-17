@@ -80,6 +80,9 @@ pub(crate) type InputDemandMap = FunctionFactMap<InputDemand>;
 /// publishes for each function, ascending by function id.
 pub(crate) type StaticCalleeMap = FunctionFactMap<Vec<FunctionId>>;
 
+/// Each function's static reach, behind `FactKey::StaticReach`.
+pub(crate) type StaticReachMap = FunctionFactMap<std::rc::Rc<std::collections::BTreeSet<FunctionId>>>;
+
 impl<T> FunctionFactMap<T>
 where
     T: Clone + PartialEq,
@@ -98,6 +101,14 @@ where
 
     pub(crate) fn get(&self, function: FunctionId) -> Option<&T> {
         self.slots.get(function.as_u32() as usize)?.as_ref()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (FunctionId, &T)> {
+        self.slots
+            .iter()
+            .enumerate()
+            .filter_map(|(index, slot)| Some((FunctionId::from_coordinate(index as u32), slot.as_ref()?)))
     }
 
     fn ensure(&mut self, function: FunctionId) {

@@ -372,7 +372,13 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // declaration: its file is scoped and its module defined. A program `fz2` runs
         // defines it already, for the handler of an uncaught raise.
         // (2692, 15, 42, 262) -> (2680, 15, 42, 261): `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
-        (2680, 15, 42, 261),
+        // 2680 -> 2988: a reach is a fact answered by a job of its own, where it was a
+        // product evaluation no job count saw. 124 `DeriveStaticReach` runs: one per function
+        // whose recursion is asked, and one more per callee layer its walk waited for. 203
+        // `DeriveExecutableReach` runs: one per executable whose return a transport position
+        // names. Eighteen fewer runs elsewhere: a recursion verdict starts once its reach
+        // exists.
+        (2988, 15, 42, 261),
         "ordinary generic helper work has the exact source/module/executable-fact census"
     );
     // Every applied work step is a run, and every run is charged to exactly
@@ -476,7 +482,11 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // above), and its definition starts again when its source is indexed and when it
         // is scoped.
         // 1078 -> 1071: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
-        1071,
+        // 1071 -> 1163: `DeriveStaticReach` starts 72 times on a changed revision: the 56 runs
+        // beyond one per function resume when a callee's edges land, and 16 first runs start
+        // when their own function's edges land. Every `DeriveRecursive` run (68) starts when its
+        // function's reach lands, where it used to start on its edges and then wait on a product.
+        1163,
         "ordinary generic helper facts have the exact non-demand changed-revision census",
     );
     assert_eq!(
@@ -551,7 +561,9 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // 438 -> 450: the same exception modules and macros wait on their prerequisites.
         // 450 -> 453: the other three of the five steps that define `FunctionClauseError`
         // start as prerequisites of a waiter.
-        453,
+        // 453 -> 638: a transport position that names an executable's return waits on that
+        // executable's reach, and the wait starts its `DeriveExecutableReach`.
+        638,
         "the blocked-waiter census includes only the prerequisites each completion's own waits expand",
     );
     assert_eq!(
@@ -776,7 +788,9 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // 741 -> 745: the `defexception` and `raise` macros and the functions of the library
         // exception a failure raises are analysed.
         // 745 -> 740: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
-        740,
+        // 740 -> 738: recursion verdicts now publish on the schedule of the reach facts, and
+        // this fixture's schedule-dependent convergence repeats two analyses fewer.
+        738,
         "the fixture's total AnalyzeActivation completions, repeats included",
     );
     let frontier_analyses = analyzed_activations.iter().cloned().collect::<HashSet<_>>();

@@ -41,18 +41,24 @@ dispatch  ReifyGuardDispatch, PlanEntryDispatch
             never the owning ModuleDefined aggregate, whose value it never reads
 macro     source expansion reads RootBackendProduct(hidden macro root)
             exact product waits drive the retained RootBackendProduct
-keying    DeriveStaticCallees, DeriveRecursive, DeriveInputDemand
+keying    DeriveStaticCallees, DeriveStaticReach, DeriveRecursive, DeriveInputDemand
             one body -> StaticCallees, the call graph's out-edges for that function
             stable per-function facts used to canonicalize activation keys:
-            DeriveRecursive waits on the program-scoped Reach product of f over
-            StaticCallees and publishes Recursive(f): true exactly when f is in
-            its own reach
+            DeriveStaticReach(f) walks the StaticCallees fact of every function f
+            reaches, reads each one, and publishes StaticReach(f); DeriveRecursive
+            starts once StaticReach(f) exists and publishes Recursive(f): true
+            exactly when f is in its own reach
 semantic  SeedRoot, SeedActivation, AnalyzeActivation
             root entry facts, activation evidence, return types, callsite targets,
             callsite summaries, and executable demand
           DeriveExecutableFacts(E)
             one World-owned immutable projection of settled analysis, body,
             entry dispatch, callsite summaries, origins, and demand type inputs
+          DeriveExecutableReach(E, chain)
+            ExecutableReach(E, chain): every executable reachable from E over
+            the settled call-site targets of its ExecutableFacts, walked by the
+            job and read fact by fact; `Direct` skips call sites whose return
+            arrives through a closure call, `All` follows every one
           DeriveRuntimeDemand(E)
             one reactive executable demand fact plus exact caller-owned target
             contributions; peer propagation reads only exact target
@@ -63,11 +69,6 @@ product   RootBackendProduct(root)
             one immutable interpreter-ready backend executable
           StructSchema(module)
             one reachable module's name and fields from StructDefined(module)
-          Reach(node, edges)
-            every node reachable from `node` by one or more edges, built from
-            its successors' reaches; functions over StaticCallees are
-            program-scoped, executables over ExecutableFacts call targets
-            live in their own root
           AbiExecutable(E)
             ABI lanes, return delivery, entry captures, resumes, and callable entries
             for one executable
@@ -598,14 +599,14 @@ direct returns refine from the selected target position, while public returns
 project every nonempty result to `ValueRef`. Recursion is cut out of the recipe
 before it is evaluated, from settled facts alone: an edge naming the return of
 a direct callee that reaches the position's owner (the callee's
-`Reach(Direct)` product, which skips call sites whose return arrives through
-a closure call) and whose function id does not rise is replaced by a cut, so
+`ExecutableReach(callee, Direct)` fact, which skips call sites whose return
+arrives through a closure call) and whose function id does not rise is replaced by a cut, so
 what remains strictly climbs and is acyclic. A GROUNDED CLOSURE-CALL edge
 reaches its callee through a value, so a closure built outside a recursion
 and threaded back through it leaves caller and lambda statically unrelated
 while their products still cycle. That edge is cut exactly when its target
-reaches the owner in the `Reach(All)` product, which follows every settled
-`ExecutableFacts` call target; when it does not, the edge adds no
+reaches the owner in the `ExecutableReach(callee, All)` fact, which follows every
+settled `ExecutableFacts` call target; when it does not, the edge adds no
 reachability the graph did not already have, and keeping it is what preserves
 one authority for an
 exact-carrier closure call. A cut contributes no evidence about the position's form, and a

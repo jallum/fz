@@ -1,33 +1,37 @@
 use crate::fast_hash::HashSet;
 use std::cell::RefCell;
+use std::collections::BTreeSet;
 use std::rc::Rc;
 
+use super::super::drive::{FactKey, Job};
 use super::super::drive_harness::Drive;
-use super::super::pull::{ProductKey, ProductRequestId, ProductScope, PullOutcome};
-use super::super::{CodeSubmission, Compiler2, ExecutableNeed, FunctionId, RootSubmission, World};
-use super::ReachKey;
+use super::super::world::JobCompletion;
+use super::super::{CodeSubmission, Compiler2, ExecutableKey, ExecutableNeed, FunctionId, RootSubmission, World};
+use super::{CallChain, ReachSet, executable_successors};
 use crate::telemetry::ConfiguredTelemetry;
 
 /// The nodes reachable from `from` by at least one edge, found by walking
-/// `successors` directly. This is the question a reach product answers
-/// without walking, so it is the oracle the products are checked against.
-fn walked_reach(world: &World, from: &ReachKey) -> HashSet<ReachKey> {
+/// `executable_successors` directly. This is the question a reach fact
+/// answers by walking the edge facts, so the plain walk is the oracle the
+/// facts are checked against.
+fn walked_reach(world: &World, from: &ExecutableKey, chain: CallChain) -> ReachSet {
     let mut reached = HashSet::default();
-    let mut frontier = from.successors(world);
+    let mut frontier = executable_successors(world, from, chain);
     while let Some(node) = frontier.pop() {
         if reached.insert(node.clone()) {
-            frontier.extend(node.successors(world));
+            frontier.extend(executable_successors(world, &node, chain));
         }
     }
     reached
 }
 
-fn static_reach(compiler: &Compiler2<ConfiguredTelemetry>, function: FunctionId) -> Rc<super::ReachSet> {
-    compiler
-        .retained_reach_products(ProductScope::Program)
-        .into_iter()
-        .find_map(|(key, set)| (key == ReachKey::Static(function)).then_some(set))
-        .unwrap_or_else(|| panic!("{function:?} should have a settled static reach"))
+fn static_reach(compiler: &Compiler2<ConfiguredTelemetry>, function: FunctionId) -> Rc<BTreeSet<FunctionId>> {
+    Rc::clone(
+        compiler
+            .world()
+            .static_reach(function)
+            .unwrap_or_else(|| panic!("{function:?} should have a settled static reach")),
+    )
 }
 
 fn is_recursive(compiler: &Compiler2<ConfiguredTelemetry>, function: FunctionId) -> bool {
@@ -53,7 +57,7 @@ fn a_callee_that_grows_an_edge_reopens_the_reach_above_it_and_closes_a_cycle() {
     );
     let before = static_reach(settled.compiler(), a);
     assert!(
-        before.contains(&ReachKey::Static(b)) && !before.contains(&ReachKey::Static(a)),
+        before.contains(&b) && !before.contains(&a),
         "a reaches b and nothing that leads back to a: {before:?}"
     );
 
@@ -70,7 +74,7 @@ fn a_callee_that_grows_an_edge_reopens_the_reach_above_it_and_closes_a_cycle() {
     );
     let after = static_reach(settled.compiler(), a);
     assert!(
-        after.contains(&ReachKey::Static(a)) && after.contains(&ReachKey::Static(b)),
+        after.contains(&a) && after.contains(&b),
         "the reach above the changed callee was recomputed: {after:?}"
     );
     assert_eq!(
@@ -102,89 +106,155 @@ fn a_closure_threaded_through_a_recursion_is_a_cycle_only_when_closure_calls_are
         .drive_root_backend_work_starts(root)
         .expect("the fixture should settle its backend product");
 
-    let reaches = compiler.retained_reach_products(ProductScope::Root(root));
-    for (key, set) in &reaches {
+    let reaches = compiler
+        .world()
+        .executable_reach_entries()
+        .into_iter()
+        .filter(|((executable, _), _)| executable.activation.root == root)
+        .collect::<Vec<_>>();
+    for ((executable, chain), set) in &reaches {
         assert_eq!(
             **set,
-            walked_reach(compiler.world(), key),
-            "{key:?} must hold exactly the nodes its successors lead to"
+            walked_reach(compiler.world(), executable, *chain),
+            "{chain:?} reach of {executable:?} must hold exactly the nodes its successors lead to"
         );
     }
-    let on_a_cycle = |arm: fn(&ReachKey) -> bool| {
+    let on_a_cycle = |wanted: CallChain| {
         reaches
             .iter()
-            .filter(|(key, _)| arm(key))
-            .filter(|(key, set)| set.contains(key))
+            .filter(|((_, chain), _)| *chain == wanted)
+            .filter(|((executable, _), set)| set.contains(executable))
             .count()
     };
     assert_eq!(
-        on_a_cycle(|key| matches!(key, ReachKey::Direct(_))),
+        on_a_cycle(CallChain::Direct),
         0,
         "no chain of direct calls leads back to where it started"
     );
     assert!(
-        on_a_cycle(|key| matches!(key, ReachKey::All(_))) > 0,
+        on_a_cycle(CallChain::All) > 0,
         "the closure call carries the recursion back to its start"
     );
 }
 
-/// Each function's static reach settles once and is read by one evaluation
-/// per edge it waits on, so the work a compile spends on static reach grows
-/// with the call graph's edges and not with edges times the functions that
-/// can reach them.
+/// A reach fact is one job that walks the edge facts of everything it
+/// reaches and reads each of them, so a change to any edge in the cone
+/// reopens it. No reach fact reads another: the cone is walked, never
+/// assembled from other cones.
 #[test]
-fn static_reach_work_on_enum_take_drop_split_is_proportional_to_edges() {
-    let drive = Drive::fixture(420);
-    let evaluations = Rc::new(RefCell::new(Vec::<ReachKey>::new()));
-    let observed = Rc::clone(&evaluations);
-    drive
-        .telemetry()
-        .attach_raw_event3::<ProductKey, ProductRequestId, PullOutcome, _>(
-            &["fz", "compiler2", "pull", "product", "evaluated"],
-            move |_, _, _, key, _, _| {
-                if let ProductKey::Reach(reach @ ReachKey::Static(_)) = key {
-                    observed.borrow_mut().push(reach.clone());
-                }
-            },
+fn a_reach_job_reads_the_edge_of_every_node_it_reaches_and_no_other_reach() {
+    let settled = Drive::fixture(420).settle();
+    let world = settled.world();
+    let entries = world.static_reach_entries();
+    assert!(!entries.is_empty());
+    for (function, reach) in &entries {
+        let reads = world
+            .job_reads(&Job::DeriveStaticReach(*function))
+            .into_iter()
+            .map(|usage| usage.fact().clone())
+            .collect::<HashSet<_>>();
+        for node in reach.iter().chain([function]) {
+            assert!(
+                reads.contains(&FactKey::StaticCallees(*node)),
+                "the reach of {function:?} must read the edges of {node:?}"
+            );
+        }
+        assert!(
+            reads
+                .iter()
+                .all(|fact| !matches!(fact, FactKey::StaticReach(_) | FactKey::ExecutableReach(..))),
+            "the reach of {function:?} reads another reach: {reads:?}"
         );
-    let settled = drive.settle();
+    }
+}
 
-    let reaches = settled.compiler().retained_reach_products(ProductScope::Program);
-    let functions = reaches.len();
-    let edges: usize = reaches
+/// The executable arms read the same way: the settled `ExecutableFacts` of
+/// every executable the chain reaches, and no other reach.
+#[test]
+fn an_executable_reach_job_reads_the_facts_of_every_executable_it_reaches_and_no_other_reach() {
+    let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/01434_closure_threaded_recursion.fz".to_string()),
+        text: include_str!("../../fixtures/01434_closure_threaded_recursion.fz").to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler
+        .drive_root_backend_work_starts(root)
+        .expect("the fixture should settle its backend product");
+    let world = compiler.world();
+    let entries = world.executable_reach_entries();
+    assert!(!entries.is_empty());
+    for ((executable, chain), reach) in &entries {
+        let reads = world
+            .job_reads(&Job::DeriveExecutableReach(executable.clone(), *chain))
+            .into_iter()
+            .map(|usage| usage.fact().clone())
+            .collect::<HashSet<_>>();
+        for node in reach.iter().chain([executable]) {
+            assert!(
+                reads.contains(&FactKey::ExecutableFacts(node.clone())),
+                "the {chain:?} reach of {executable:?} must read the facts of {node:?}"
+            );
+        }
+        assert!(
+            reads
+                .iter()
+                .all(|fact| !matches!(fact, FactKey::StaticReach(_) | FactKey::ExecutableReach(..))),
+            "the {chain:?} reach of {executable:?} reads another reach"
+        );
+    }
+}
+
+/// A static reach exists for each function whose recursion is asked, and no
+/// reach is assembled for the functions only reached through those. Each
+/// answer came with the recursion verdict it served.
+#[test]
+fn static_reach_on_enum_take_drop_split_covers_the_call_graph() {
+    let settled = Drive::fixture(420).settle();
+    let entries = settled.world().static_reach_entries();
+    for (function, _) in &entries {
+        assert!(
+            settled.world().body_keying(*function).is_some(),
+            "{function:?} has a static reach no recursion verdict asked for"
+        );
+    }
+    let functions = entries.len();
+    let edges: usize = entries
         .iter()
-        .map(|(key, _)| key.successors(settled.world()).len())
+        .map(|(function, _)| settled.world().static_callees(*function).len())
         .sum();
-    let evaluations = evaluations.borrow().len();
-    // fz-sc8.9: (105, 148, 206) -> (106, 149, 208). `Enumerable`'s list `count` reads Kernel's `length`, which keeps Elixir's
-    // proper-list check: `proper_length` aborts with `:badarg` on an improper
-    // list, so the check and its abort path become executables of their own.
-    // fz-sc8.64: (106, 149, 208) -> (106, 145, 208). The negative-step clauses
-    // of `Enum.map_every/2`, `take_every/2` and `drop_every/2` and the three
-    // `reduce_first` catch-alls are gone, so four fewer call edges are
-    // reached; the function and evaluation counts are unchanged.
-    // fz-sc8.62: (106, 145, 208) -> (106, 147, 207). `Kernel.+/2` and
-    // `Kernel.-/2` end in a default clause that calls `arithmetic_error/0`,
-    // so each gains that successor, and one fewer wait on a callee the
-    // operators now reach directly. The function count is unchanged.
-    // fz-sc8.8: (106, 147, 207) -> (115, 157, 229). `dbg` is `IO.inspect`,
-    // whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`,
-    // `Binary.to_string`, `raise`, `==`) joins the static call graph.
-    // Evaluations 229 -> 202: literal-argument calls are no longer self-keyed.
-    // (115, 157, 202) -> (114, 154, 200): the operators reach their extern
-    // wrappers directly, with no result decoder between them.
-    // (114, 154, 200) -> (115, 155, 325): the `defexception` macro's `declares_message?/1`
-    // joins the graph with one edge. The library exception modules each expand in a drive of
-    // their own, 63 drives where there were 20, and a reach still waiting on a callee is
-    // evaluated again in each.
-    assert_eq!((functions, edges, evaluations), (115, 155, 325));
-    // A reach evaluates once to discover its callees and once more for each callee it waits on,
-    // which bounds the work by functions + edges. The evaluations repeated across drives exceed
-    // that bound by exactly this much; the excess is zero when no reach is evaluated again in a
-    // later drive.
-    assert_eq!(
-        evaluations.saturating_sub(functions + edges),
-        55,
-        "evaluations beyond one per function and one per edge"
+    assert_eq!((functions, edges), (68, 112));
+}
+
+/// A reach job runs once to meet its cone and once more per callee whose
+/// edges it had to wait for, so its runs are bounded by the size of the cone
+/// it ends up holding.
+#[test]
+fn a_static_reach_job_runs_at_most_once_per_function_of_its_cone() {
+    let drive = Drive::fixture(420);
+    let runs = Rc::new(RefCell::new(Vec::<FunctionId>::new()));
+    let observed = Rc::clone(&runs);
+    drive.telemetry().attach_raw_event2::<World, JobCompletion, _>(
+        &["fz", "compiler2", "work_graph", "applied"],
+        move |_, _, _, _world, completion| {
+            if let Job::DeriveStaticReach(function) = &completion.job {
+                observed.borrow_mut().push(*function);
+            }
+        },
     );
+    let settled = drive.settle();
+    let runs = runs.borrow();
+    for (function, reach) in settled.world().static_reach_entries() {
+        let own = runs.iter().filter(|run| **run == function).count();
+        assert!(
+            own <= 1 + reach.len(),
+            "{function:?} ran {own} times for a cone of {}",
+            reach.len()
+        );
+    }
 }

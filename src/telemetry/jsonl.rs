@@ -2322,6 +2322,19 @@ fn write_transport_position_field(out: &mut String, position: &crate::compiler2:
     out.push('}');
 }
 
+fn write_executable_reach_identity(
+    out: &mut String,
+    key: &crate::compiler2::ExecutableKey,
+    chain: crate::compiler2::CallChain,
+) {
+    use crate::compiler2::CallChain;
+    out.push_str(match chain {
+        CallChain::Direct => ",\"chain\":\"direct\"",
+        CallChain::All => ",\"chain\":\"all\"",
+    });
+    write_executable_key(out, key);
+}
+
 /// The identity payload for a `Job`, shared by the `Job` arm and the
 /// `JobCompletion` arm (a completion carries the job it completed).
 fn write_job_identity(out: &mut String, job: &crate::compiler2::Job) {
@@ -2337,11 +2350,13 @@ fn write_job_identity(out: &mut String, job: &crate::compiler2::Job) {
         | Job::PlanEntryDispatch(function)
         | Job::DeriveStaticCallees(function)
         | Job::DeriveRecursive(function)
+        | Job::DeriveStaticReach(function)
         | Job::DeriveInputDemand(function) => write_function_id(out, *function),
         Job::DeriveTypeDef(type_name) => write_type_name(out, type_name),
         Job::SeedRoot(root) => write_root_id(out, *root),
         Job::SeedActivation(key) | Job::AnalyzeActivation(key) => write_activation_key(out, key),
         Job::DeriveExecutableFacts(key) | Job::DeriveRuntimeDemand(key) => write_executable_key(out, key),
+        Job::DeriveExecutableReach(key, chain) => write_executable_reach_identity(out, key, *chain),
         Job::DeriveCallableConstructionTarget(key) => write_callable_construction_target_key(out, key),
     }
 }
@@ -2368,6 +2383,7 @@ fn write_fact_identity(out: &mut String, fact: &crate::compiler2::FactKey) {
         | FactKey::EntryDispatch(function)
         | FactKey::StaticCallees(function)
         | FactKey::Recursive(function)
+        | FactKey::StaticReach(function)
         | FactKey::InputDemand(function) => write_function_id(out, *function),
         FactKey::TypeDefined(type_name) => write_type_name(out, type_name),
         FactKey::NameableModules | FactKey::Raisable => {}
@@ -2383,6 +2399,7 @@ fn write_fact_identity(out: &mut String, fact: &crate::compiler2::FactKey) {
         | FactKey::RuntimeDemandInput(key)
         | FactKey::RuntimeDemand(key)
         | FactKey::RuntimeDemandInputs(key) => write_executable_key(out, key),
+        FactKey::ExecutableReach(key, chain) => write_executable_reach_identity(out, key, *chain),
         FactKey::IncomingInputSlot(slot) => {
             write_executable_key(out, &slot.executable);
             write_semantic_index(out, slot.semantic_index);
@@ -2582,25 +2599,6 @@ fn write_product_key_identity(out: &mut String, key: &crate::compiler2::ProductK
             out.push_str(",\"module_id\":");
             push_u64(out, module.as_u32() as u64);
         }
-        ProductKey::Reach(reach) => write_reach_key_identity(out, reach),
-    }
-}
-
-fn write_reach_key_identity(out: &mut String, key: &crate::compiler2::ReachKey) {
-    use crate::compiler2::ReachKey;
-    match key {
-        ReachKey::Static(function) => {
-            out.push_str(",\"arm\":\"static\"");
-            write_function_id(out, *function);
-        }
-        ReachKey::Direct(executable) => {
-            out.push_str(",\"arm\":\"direct\"");
-            write_executable_key(out, executable);
-        }
-        ReachKey::All(executable) => {
-            out.push_str(",\"arm\":\"all\"");
-            write_executable_key(out, executable);
-        }
     }
 }
 
@@ -2628,6 +2626,8 @@ fn fact_kind(fact: &crate::compiler2::FactKey) -> &'static str {
         FactKey::EntryDispatch(_) => "EntryDispatch",
         FactKey::StaticCallees(_) => "StaticCallees",
         FactKey::Recursive(_) => "Recursive",
+        FactKey::StaticReach(_) => "StaticReach",
+        FactKey::ExecutableReach(..) => "ExecutableReach",
         FactKey::InputDemand(_) => "InputDemand",
         FactKey::RootEntry(_) => "RootEntry",
         FactKey::Activation(_) => "Activation",
@@ -2663,6 +2663,8 @@ fn job_kind(job: &crate::compiler2::Job) -> &'static str {
         Job::PlanEntryDispatch(_) => "PlanEntryDispatch",
         Job::DeriveStaticCallees(_) => "DeriveStaticCallees",
         Job::DeriveRecursive(_) => "DeriveRecursive",
+        Job::DeriveStaticReach(_) => "DeriveStaticReach",
+        Job::DeriveExecutableReach(..) => "DeriveExecutableReach",
         Job::DeriveInputDemand(_) => "DeriveInputDemand",
         Job::SeedRoot(_) => "SeedRoot",
         Job::SeedActivation(_) => "SeedActivation",
