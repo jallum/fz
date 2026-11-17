@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-17T21:12:42Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-3sy",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "A @spec, @type or extern signature nothing reaches is still checked",
   "type": "bug",
-  "updated_at": "2026-11-17T21:12:42Z"
+  "updated_at": "2026-11-17T22:00:09Z"
 }
