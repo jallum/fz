@@ -1,9 +1,7 @@
 {
   "assignee": "Jason Allum",
   "blocked_by": [],
-  "blocks": [
-    "fz-9x7.8"
-  ],
+  "blocks": [],
   "created": "2026-11-17T23:49:51Z",
   "description": "Approved by the user 2026-11-17 on condition the cost is negligible (relayed by GC: \"A: only if the cost is negligible\").\n\nWhy: fz-9x7.8 round 6's time-weighted in-use is sampled only at gc events, so it is biased (on survive V0 it holds 17 MB across a gap where in-use reached its 101 MB peak). The pool keeps an exact integral instead: in-use changes only at block-pool and binary allocate/free events; at each, integral += in_use x (pool bytes allocated since the last event). One multiply-add and two counters per event, nothing per object, no clock reads; the figure is deterministic.\n\nNegligible gate (pre-registered): median instructions within +0.06% of base on every workload (bottom of the noise band). Any workload above it fails and the ticket is dropped.\n\nThen: the round-6 arms of fz-9x7.8 are rebuilt over it and clauses 1 and 4 re-judged with this mean in place of the gc-sampled figure; nothing else changes.",
   "id": "fz-9x7.29",
@@ -19,5 +17,5 @@
   "status": "in_progress",
   "title": "run_ended reports the mean of in-use bytes, weighted by bytes allocated",
   "type": "task",
-  "updated_at": "2026-11-17T23:56:57Z"
+  "updated_at": "2026-11-17T23:57:09Z"
 }

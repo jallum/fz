@@ -1,8 +1,7 @@
 {
   "assignee": "Jason Allum",
   "blocked_by": [
-    "fz-9x7.16",
-    "fz-9x7.29"
+    "fz-9x7.16"
   ],
   "blocks": [
     "fz-9x7.11"
@@ -30,5 +29,5 @@
   "status": "in_progress",
   "title": "Off-heap binary bytes count toward the collection trigger",
   "type": "bug",
-  "updated_at": "2026-11-17T23:49:52Z"
+  "updated_at": "2026-11-17T23:57:09Z"
 }
