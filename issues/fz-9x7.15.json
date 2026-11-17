@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-9x7.13"
+    "fz-9x7.13",
+    "fz-9x7.16"
   ],
   "blocks": [
     "fz-9x7.11"
@@ -21,5 +22,5 @@
   "status": "open",
   "title": "The young generation's size follows the live data, not the largest pooled block",
   "type": "task",
-  "updated_at": "2026-11-17T21:45:08Z"
+  "updated_at": "2026-11-17T22:03:14Z"
 }
