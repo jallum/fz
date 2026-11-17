@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-17T22:48:51Z",
+  "description": "Found by the fz-nml.8 builder: `i * 1.5` (int times float) on native always takes the generic arithmetic path, which boxes its result. fz-sc8.213 covers only the two-integer _ii externs; this is the mixed case. Coordinate with whoever builds fz-sc8.213 (same extern lowering in native_codegen/prim.rs).\n\nApproved by the user 2026-11-17 (relayed by the JSON session). Census and probes: fz-nml.9 description (JSON session, develop 4a05ae2be; per 1000 steps interp/run/build).",
+  "id": "fz-nml.24",
+  "labels": [],
+  "parent": "fz-nml",
+  "priority": 3,
+  "status": "open",
+  "title": "Mixed integer and float arithmetic boxes no result on native",
+  "type": "bug",
+  "updated_at": "2026-11-17T22:48:51Z"
+}
