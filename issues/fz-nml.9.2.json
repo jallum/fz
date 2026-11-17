@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-17T22:48:49Z",
+  "description": "Site 2 of fz-nml.9. `acc + elem(...)`: elem returns any, so Kernel.+[int|float, any] returns the union through the return_lanes trampoline, which boxes: 0/1000/1000. Fix site is the union lane return or elem's result type. Needs a proposal page first, checked against fz-sc8.213 (arithmetic externs as instructions) and the immediate-word page.\n\nApproved by the user 2026-11-17 (relayed by the JSON session). Census and probes: fz-nml.9 description (JSON session, develop 4a05ae2be; per 1000 steps interp/run/build).",
+  "id": "fz-nml.9.2",
+  "labels": [],
+  "parent": "fz-nml.9",
+  "priority": 3,
+  "status": "open",
+  "title": "A union result returns without a box",
+  "type": "bug",
+  "updated_at": "2026-11-17T22:48:49Z"
+}
