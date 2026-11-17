@@ -2521,7 +2521,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // 781 -> 825: 49 `DeriveStaticReach` and 1 `DeriveExecutableReach` evaluations, where
         // reach was a product evaluation, less 6 `DeriveRecursive` evaluations.
         // 825 -> 831: the ordering operators' `binary` clause adds its `fz_op_*_bb` activation and splits the catch-all's `compare/2` activations, the same way the int and float clauses already do.
-        total_evaluations: 831,
+        // 831 -> 819: a module is started once its enclosing scope exists, so each module's definition runs once fewer.
+        total_evaluations: 819,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures/00571_enum_predicate_search.fz",
@@ -2755,7 +2756,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // 1184 -> 1168: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
         // 1168 -> 1222: 66 `DeriveStaticReach` and 1 `DeriveExecutableReach` evaluations, 14
         // fewer `DeriveRecursive` and 1 more `AnalyzeActivation`.
-        total_evaluations: 1222,
+        // 1222 -> 1213: a module is started once its enclosing scope exists, so each module's definition runs once fewer.
+        total_evaluations: 1213,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures/00420_enum_take_drop_split.fz",
@@ -3180,7 +3182,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // 1727 -> 1834: 124 `DeriveStaticReach` and 1 `DeriveExecutableReach` evaluations, 16
         // fewer `DeriveRecursive` and 2 fewer `AnalyzeActivation`.
         // 1834 -> 1838: the ordering operators' `binary` clause adds its `fz_op_*_bb` activation and splits the catch-all's `compare/2` activations, the same way the int and float clauses already do.
-        total_evaluations: 1838,
+        // 1838 -> 1828: a module is started once its enclosing scope exists, so each module's definition runs once fewer.
+        total_evaluations: 1828,
     },
 ];
 

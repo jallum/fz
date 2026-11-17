@@ -201,7 +201,8 @@ const SEAM_FACTS: &[(&str, &str)] = &[];
 // product evaluation no job count saw. The harness runs 13 `DeriveStaticReach` and 10
 // `DeriveExecutableReach` jobs, less three `DeriveRecursive` runs: a recursion
 // verdict starts once its reach exists.
-const EXPECTED_00181_NO_DUMP_JOB_STARTS: usize = 265;
+// 265 -> 260: a module is started once its enclosing scope exists, so each module's definition runs once fewer.
+const EXPECTED_00181_NO_DUMP_JOB_STARTS: usize = 260;
 const ENUM_REDUCE_OPERATOR_REF_SOURCE: &str = r#"
 def main() do
   {

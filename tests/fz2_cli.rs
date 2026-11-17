@@ -2558,19 +2558,22 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             // `DeriveExecutableReach` evaluations, less 7 `DeriveRecursive` evaluations that no
             // longer start to find their reach missing: 864 -> 948, 77 of them initial and 7
             // content-caused.
-            evaluations: 948,
+            // 948 -> 935, content_caused 248 -> 235, unchanged_outputs 93 -> 80 and
+            // blocked_completions 234 -> 221: a module is started once its enclosing scope
+            // exists, so thirteen module definitions no longer start, find no scope and stop.
+            evaluations: 935,
             runtime_demand_evaluations: 115,
             initial: 700,
-            content_caused: 248,
+            content_caused: 235,
             readiness_caused: 0,
             concluded_caused: 0,
             uncaused: 0,
             changed_outputs: 855,
             // unchanged_outputs 85 -> 86: `String.Chars`' binary impl is selected for any bitstring, so its shared activation is typed `bitstring` with two clauses, and a caller that holds a `binary` gets its own `String.Chars.Binary.to_string(binary)` activation with the raise clause trimmed.
             // 86 -> 93 and blocked_completions 227 -> 234: the seven content-caused reach evaluations.
-            unchanged_outputs: 93,
+            unchanged_outputs: 80,
             already_pending: 9,
-            blocked_completions: 234,
+            blocked_completions: 221,
         },
         "{fixture}: the reactive RuntimeDemand formula work or its causal classification moved"
     );
@@ -2593,9 +2596,13 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             // The 35 `DeriveStaticReach` and 56 `DeriveExecutableReach` completions are 91 runs
             // that did not exist, less the 7 `DeriveRecursive` runs that no longer restart when a
             // reach product settles (28 -> 21).
-            ("blocked_waiter_expansion", 187),
-            ("changed_revision_wake", 547),
-            ("gate_expansion", 213),
+            // 187/547/213 -> 174/534/226 (-13): a module is started once its enclosing scope
+            // exists. Thirteen module definitions no longer start early and stop, which were
+            // thirteen runs queued by a waiter and thirteen re-queued by a wake; each now starts
+            // once, when its gate clears.
+            ("blocked_waiter_expansion", 174),
+            ("changed_revision_wake", 534),
+            ("gate_expansion", 226),
             ("ignition", 1),
         ]),
         "{fixture}: the jobs run, by the reason that queued each"
@@ -2616,7 +2623,10 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
     assert_eq!(
         by_reason(ledger.reparked),
         // 36 -> 34: a reach is a fact answered by a job of its own.
-        BTreeMap::from([("changed_revision_wake", 34)]),
+        // 34 -> 47: a runtime module's first definition run registers its source and waits for
+        // the index. The index wakes it, and the pop gate parks it on its enclosing scope where
+        // it used to run and stop: thirteen runs became thirteen parks.
+        BTreeMap::from([("changed_revision_wake", 47)]),
         "{fixture}: started jobs the pop gate parked again without running"
     );
     for reason in fz::compiler2::WorkStartReason::TELEMETRY_ORDER {

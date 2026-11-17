@@ -2709,6 +2709,18 @@ impl World {
         }
     }
 
+    /// The scope an indexed module is defined in: its file's top level, or
+    /// the module that encloses it. `None` once the module has a scope of its
+    /// own, and before anything has indexed it.
+    pub(crate) fn module_enclosing_scope_fact(&self, module: ModuleId) -> Option<FactKey> {
+        let (source_owner, parent_module) = self.module_indexed_parent(module)?;
+        Some(if parent_module.is_global() {
+            FactKey::CodeScoped(source_owner)
+        } else {
+            FactKey::ModuleDefined(parent_module)
+        })
+    }
+
     pub(crate) fn module_named_parent(&mut self, module: ModuleId) -> Option<ModuleId> {
         let segments = self.module_name(module)?.segments();
         if segments.len() == 1 {
@@ -4686,11 +4698,8 @@ impl<T: Telemetry> ExecutionContext<'_, T> {
     /// that wait into the ordinary "module is not defined" diagnostic
     /// instead of stalling forever.
     pub(crate) fn wait_for_module_indexed(&mut self, module: ModuleId) -> JobEffects {
-        if let Some((source_owner, parent_module)) = self.world.module_indexed_parent(module) {
-            if parent_module.is_global() {
-                return JobEffects::wait_on_current(FactKey::CodeScoped(source_owner));
-            }
-            return JobEffects::wait_on_current(FactKey::ModuleDefined(parent_module));
+        if let Some(enclosing_scope) = self.world.module_enclosing_scope_fact(module) {
+            return JobEffects::wait_on_current(enclosing_scope);
         }
         if let Some(source_owner) = self.ensure_runtime_module(module) {
             return JobEffects::wait_on_current(FactKey::CodeIndexed(source_owner));
