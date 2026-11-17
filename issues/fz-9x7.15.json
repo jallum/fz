@@ -12,9 +12,15 @@
   "id": "fz-9x7.15",
   "labels": [],
   "parent": "fz-9x7",
+  "comments": [
+    {
+      "text": "Round 1 (bench, same round as fz-9x7.14): B1 (32 MiB) / B2 (128 MiB) / B3 (uncapped) all FAIL. Rule 1: neither distiller workload is faster; they are slower: dist-p28000 1.046/1.073/1.074, dist-full 1.032/1.023/1.108, RSS dist-p28000 220 -\u003e 687/972/972 MB, dist-full 1290 -\u003e 1943/3141/6197 MB, fanin RSS 1.92x. Predictions missed: dist-p28000 minors 152 -\u003e 82 but major copying rose (73.7 -\u003e 82.6 MB) and page reclaims rose 3-4x (dist-full B3 5.8x), consistent with fz-9x7.12 (blocks above the pool table go back to the system each collection). Real win: enum cycles 0.845 (instructions 0.830; minor+major copying 114 -\u003e 64 MB) at RSS 1.083; fanin cycles 0.948. Stays open.",
+      "timestamp": "2026-11-17T21:25:17Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "The young generation's size follows the live data, not the largest pooled block",
   "type": "task",
-  "updated_at": "2026-11-17T20:30:30Z"
+  "updated_at": "2026-11-17T21:25:17Z"
 }
