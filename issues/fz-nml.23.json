@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-17T22:48:50Z",
+  "description": "Found while tracing fz-nml.9: on native, Kernel.elem's guard rebuilds the tuple (alloc_struct) twice per call. An allocation, not a scalar box. Done when elem allocates no struct on run and build, pinned by a fixture.\n\nApproved by the user 2026-11-17 (relayed by the JSON session). Census and probes: fz-nml.9 description (JSON session, develop 4a05ae2be; per 1000 steps interp/run/build).",
+  "id": "fz-nml.23",
+  "labels": [],
+  "parent": "fz-nml",
+  "priority": 3,
+  "status": "open",
+  "title": "Kernel.elem's guard does not rebuild its tuple on native",
+  "type": "bug",
+  "updated_at": "2026-11-17T22:48:50Z"
+}
