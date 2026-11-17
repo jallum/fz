@@ -2,14 +2,16 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-17T20:19:34Z",
+  "close_reason": "Landed in f6f549f77 (#648), as an error per the approved proposal",
   "created": "2026-11-15T14:44:02Z",
   "description": "`rescue e in MyApp.NotThere -\u003e ...` compiles and runs silently when no module of that name exists; the clause can never match. Elixir warns: \"struct MyApp.NotThere is undefined (module MyApp.NotThere is not available or is yet to be defined)\" at the clause.\n\nCause: `rescue_arms` (src/compiler2/jobs/body.rs) turns the alias into an atom with `module_alias_atom` and matches the exception name against it. Nothing refers to the module.\n\nOpen decision: warning (Elixir) or error (what `raises:` does since fz-3sy.25). Proposal page first.",
   "id": "fz-3sy.31",
   "labels": [],
   "parent": "fz-3sy",
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "A rescue clause that names an undefined module warns, as Elixir does",
   "type": "bug",
-  "updated_at": "2026-11-15T19:17:17Z"
+  "updated_at": "2026-11-17T20:19:34Z"
 }
