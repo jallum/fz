@@ -6,6 +6,7 @@
     "fz-9x7.15",
     "fz-9x7.21",
     "fz-9x7.22",
+    "fz-9x7.23",
     "fz-9x7.7",
     "fz-9x7.8"
   ],
@@ -18,5 +19,5 @@
   "status": "in_progress",
   "title": "The runtime reports the bytes its processes use and the bytes its pool keeps idle, at each collection and at exit",
   "type": "task",
-  "updated_at": "2026-11-17T22:45:54Z"
+  "updated_at": "2026-11-17T22:45:55Z"
 }

@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-9x7.16"
+  ],
   "blocks": [],
   "created": "2026-11-17T22:45:54Z",
   "description": "Approved by the user 2026-11-17 (GC session, BEAM comparison on bench, fz develop vs BEAM 28.3). Investigation first.\nEvidence: enum copies 119.8 MB in 47 collections while allocating 36 MB; BEAM copies 4.3 MB in 3. GC time 39.9 ms vs 0.44 ms.\nCompare against BEAM's grow-to-fit young heap (erl_gc.c heap_sizes, the shrink rule at 1536). Feeds the fz-9x7.15 and fz-9x7.11 re-tests. Memory judged in in-use bytes (fz-9x7.16).",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "enum's young generation is sized so its live list is not copied over and over",
   "type": "task",
-  "updated_at": "2026-11-17T22:45:54Z"
+  "updated_at": "2026-11-17T22:45:55Z"
 }
