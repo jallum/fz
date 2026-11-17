@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-17T20:30:26Z",
+  "description": "The gc event reports from_space_capacity_bytes (block capacity), not the bytes the process allocated, and nothing reports the budget the trigger compared them with; process_exited reports reduction_yields but not parks, so collections per quantum are unmeasurable for processes that park. Proposal page (approved 2026-11-17): https://claude.ai/artifact/GuEvNK64ZNHh8gDEQkMF3m (Proposal B, step 1).\n\nDone when:\n- fz.runtime.gc carries young_bytes (Heap::young_bytes at the collection, by fill) and young_budget (the budget should_gc compared it with).\n- process_exited's process carries parks: the quanta that ended parked.\n- Tests observe the new fields through telemetry (a heap test for the gc fields, a process test for parks), in sibling _test.rs files.\n- The stale comment at runtime/src/process.rs:570 claiming a 'shrink hysteresis (§6.5)' that no code implements is replaced by the present fact.\n- .agent/docs and guides that list gc/process_exited telemetry fields are updated in the same commit.\n- Full gate green. Commit in Why / What changed / Verification form, no attribution.",
+  "id": "fz-9x7.13",
+  "labels": [],
+  "parent": "fz-9x7",
+  "priority": 2,
+  "status": "open",
+  "title": "A collection reports the young bytes it was due at and its budget, and an exit reports its parks",
+  "type": "task",
+  "updated_at": "2026-11-17T20:30:26Z"
+}
