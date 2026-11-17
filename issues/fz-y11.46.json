@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-17T22:06:12Z",
   "created": "2026-11-17T21:58:16Z",
   "description": "Why: since fz-sc8.234 quoted metadata is a keyword list. QuotedSourceCursor::meta_value (src/compiler2/source.rs) answers one key by calling meta_entries, which copies every entry into a Vec and a tuple_items Vec per entry, then searches it. Census at b49c80bb7 on the OptionParser probe: about 164k of 1,024k allocations at source.rs:798/:895.\n\nWhat: meta_value walks the keyword list and returns at the first matching key; meta_entries is built from the same iterator. Entries are checked as they are reached, so a malformed entry after the match is not reported by a lookup (user-approved: stop at the match).\n\nSignal: spike measured 1,024,243 -\u003e 861,458 allocations; program output and canonical backend dump identical. Full gate green, no pin moves.",
   "id": "fz-y11.46",
   "labels": [],
   "parent": "fz-y11",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "A metadata lookup stops at the entry it asks for",
   "type": "task",
-  "updated_at": "2026-11-17T21:58:16Z"
+  "updated_at": "2026-11-17T22:06:12Z"
 }
