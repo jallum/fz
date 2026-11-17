@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-9x7.16"
   ],
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-9x7",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "A recycled heap block is not zeroed, because nothing reads memory the heap has not written",
   "type": "task",
-  "updated_at": "2026-11-17T22:03:17Z"
+  "updated_at": "2026-11-17T23:08:03Z"
 }
