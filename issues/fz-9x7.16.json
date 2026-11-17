@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [
+    "fz-9x7.11",
     "fz-9x7.21",
     "fz-9x7.22",
     "fz-9x7.8"
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "The runtime reports the bytes its processes use and the bytes its pool keeps idle, at each collection and at exit",
   "type": "task",
-  "updated_at": "2026-11-17T22:03:13Z"
+  "updated_at": "2026-11-17T22:03:14Z"
 }
