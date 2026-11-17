@@ -1461,8 +1461,6 @@ fn emit_guard_dispatch<M: cranelift_module::Module>(
     inputs: Vec<ReceiveValue>,
     fail: ir::Block,
 ) -> Result<ReceiveValue, CodegenError> {
-    let done = body.b.create_block();
-    body.b.append_block_param(done, types::I64);
     let ctx = DispatchCtx {
         process: parent.process,
         fz_module: parent.fz_module,
@@ -1487,18 +1485,75 @@ fn emit_guard_dispatch<M: cranelift_module::Module>(
         binary_data_gvs: parent.binary_data_gvs,
     };
     let mut state = DispatchEmitState::default();
+    let mut arrivals = Vec::new();
     emit_guard_dispatch_node(
         body,
         &ctx,
         &dispatch.bodies,
         dispatch.plan.graph.root,
-        done,
+        &mut arrivals,
         fail,
         &mut state,
     )?;
+    join_guard_arrivals(body, &ctx, arrivals)
+}
+
+/// A guard body's value on its way to the join of its dispatch: the block that
+/// jumps to the join, and the value it carries.
+struct GuardArrival {
+    stub: ir::Block,
+    value: ReceiveValue,
+}
+
+/// Joins the values the bodies of a guard dispatch produced, in the lane they
+/// share. Bodies that all answer a raw integer, float or atom hand it over raw,
+/// so a consumer that wants the raw word never sees a box. Any other mix is
+/// joined as refs. A dispatch no body answers joins nothing and its result is
+/// never read.
+fn join_guard_arrivals<M: cranelift_module::Module>(
+    body: &mut DispatchBody<'_, '_, M>,
+    ctx: &DispatchCtx<'_>,
+    arrivals: Vec<GuardArrival>,
+) -> Result<ReceiveValue, CodegenError> {
+    let shared = shared_raw_lane(&arrivals);
+    let done = body.b.create_block();
+    let lane_type = match shared {
+        Some(ReceiveValue::Float(_)) => types::F64,
+        _ => types::I64,
+    };
+    body.b.append_block_param(done, lane_type);
+    for GuardArrival { stub, value } in arrivals {
+        body.b.switch_to_block(stub);
+        body.b.seal_block(stub);
+        let word = match value {
+            ReceiveValue::Int(raw) | ReceiveValue::Float(raw) | ReceiveValue::Atom(raw) if shared.is_some() => raw,
+            other => emit_receive_value_ref(body, ctx, other)?,
+        };
+        body.b.ins().jump(done, &[ir::BlockArg::Value(word)]);
+    }
+    let dead = body.b.create_block();
+    body.b.switch_to_block(dead);
+    body.b.seal_block(dead);
     body.b.switch_to_block(done);
     body.b.seal_block(done);
-    Ok(ReceiveValue::AnyRef(body.b.block_params(done)[0]))
+    let joined = body.b.block_params(done)[0];
+    Ok(match shared {
+        Some(ReceiveValue::Int(_)) => ReceiveValue::Int(joined),
+        Some(ReceiveValue::Float(_)) => ReceiveValue::Float(joined),
+        Some(ReceiveValue::Atom(_)) => ReceiveValue::Atom(joined),
+        _ => ReceiveValue::AnyRef(joined),
+    })
+}
+
+/// A value of the raw lane every arrival carries, when they all carry the same
+/// one. Its payload is a stand-in: only the lane is read.
+fn shared_raw_lane(arrivals: &[GuardArrival]) -> Option<ReceiveValue> {
+    let first = arrivals.first()?.value;
+    let raw = !matches!(first, ReceiveValue::AnyRef(_));
+    let same = arrivals
+        .iter()
+        .all(|a| std::mem::discriminant(&a.value) == std::mem::discriminant(&first));
+    (raw && same).then_some(first)
 }
 
 fn emit_guard_dispatch_node<M: cranelift_module::Module>(
@@ -1506,7 +1561,7 @@ fn emit_guard_dispatch_node<M: cranelift_module::Module>(
     ctx: &DispatchCtx<'_>,
     bodies: &[ReceiveGuardExpr],
     node_id: GraphNodeId,
-    done: ir::Block,
+    arrivals: &mut Vec<GuardArrival>,
     fail: ir::Block,
     state: &mut DispatchEmitState,
 ) -> Result<(), CodegenError> {
@@ -1528,9 +1583,15 @@ fn emit_guard_dispatch_node<M: cranelift_module::Module>(
             let guard_body = bodies
                 .get(outcome.body_id as usize)
                 .ok_or_else(|| CodegenError::new(format!("guard dispatch body {} out of bounds", outcome.body_id)))?;
+            if matches!(guard_body, PatternGuardExpr::Fails) {
+                // A body that fails the guard answers nothing to the join.
+                leave_guard(body, fail);
+                return Ok(());
+            }
             let value = emit_dispatch_guard_expr(body, ctx, guard_body, fail, state)?;
-            let value_ref = emit_receive_value_ref(body, ctx, value)?;
-            body.b.ins().jump(done, &[ir::BlockArg::Value(value_ref)]);
+            let stub = body.b.create_block();
+            body.b.ins().jump(stub, &[]);
+            arrivals.push(GuardArrival { stub, value });
             let dead = body.b.create_block();
             body.b.switch_to_block(dead);
             body.b.seal_block(dead);
@@ -1542,16 +1603,16 @@ fn emit_guard_dispatch_node<M: cranelift_module::Module>(
             on_miss,
         } => match emit_test_edges(body, ctx, predicate, on_match, state)? {
             TestEdges::Settled(Successor::Miss) => {
-                emit_guard_dispatch_node(body, ctx, bodies, on_miss.target, done, fail, state)
+                emit_guard_dispatch_node(body, ctx, bodies, on_miss.target, arrivals, fail, state)
             }
             TestEdges::Settled(Successor::Match(mut matched)) => {
-                emit_guard_dispatch_node(body, ctx, bodies, on_match.target, done, fail, &mut matched)
+                emit_guard_dispatch_node(body, ctx, bodies, on_match.target, arrivals, fail, &mut matched)
             }
             TestEdges::Branched { mut matched, miss_b } => {
-                emit_guard_dispatch_node(body, ctx, bodies, on_match.target, done, fail, &mut matched)?;
+                emit_guard_dispatch_node(body, ctx, bodies, on_match.target, arrivals, fail, &mut matched)?;
                 body.b.switch_to_block(miss_b);
                 body.b.seal_block(miss_b);
-                emit_guard_dispatch_node(body, ctx, bodies, on_miss.target, done, fail, state)
+                emit_guard_dispatch_node(body, ctx, bodies, on_miss.target, arrivals, fail, state)
             }
         },
     }
