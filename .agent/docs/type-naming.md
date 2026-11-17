@@ -79,9 +79,29 @@ three reports; `a_type_name_nothing_declares_stops_the_compile_under_the_name`
 and its extern/annotation sibling in `compiler2/drive_test.rs` cover each type
 position.
 
-A declaration nothing reaches is never resolved, so a bad name in it is not
-reported: a contract is derived for a function something calls, a `@type` for a
-name something references.
+A declaration is checked because its source wrote it, whether or not anything
+reaches it. Each submission records what it declares (`SourceDeclarationMap`:
+the modules it writes, the functions it defines, the `@type`s it declares).
+`CheckDeclarations(owner)` (`jobs/declarations.rs`) is gated on the source's
+index. It reads the indexed surface (`World::code_writes_declarations`,
+`World::module_writes_declarations`) and waits on the source's own scope only
+if its top level writes a `@type`, `@spec` or extern, and on a module being
+defined only if that module's body writes one, so a module that declares
+nothing stays cold. Then it waits on `FunctionContract` for each function that
+declares a spec or is an extern, and on `TypeDefined` for each `@type`. It
+publishes `DeclarationsChecked(owner)`, which a runtime root's backend product
+reads before it builds the program. Nothing else demands it: a source
+submitted while a root's product is retained is checked when that product is
+next evaluated. So the jobs above carry the same reports
+for a declaration nothing reaches, and the compile stops on every path. The
+check never asks for a lowered body, so an unreached function stays cold past
+its contract. Library sources are compiler-owned and are not submitted, so
+their declarations stay cold too; `every_library_declaration_is_checked`
+(`jobs/declarations_test.rs`) checks every library source in the test gate. Fixtures `01318` (an uncalled spec), `01319`
+(an unused `@type`), `01720` (a dotted name in a module nothing uses) and
+`01721` (an uncalled extern) pin it, and
+`checking_an_unreached_declaration_warms_its_contract_and_nothing_else` pins
+what stays cold.
 
 ## Naming settles below executable demand
 

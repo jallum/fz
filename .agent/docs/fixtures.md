@@ -119,13 +119,14 @@ their block. A new epic claims the next free block and adds a row here.
 | `01260-01279` | fz-xxd                            | in use through `01264` |
 | `01280-01289` | fz-968                            | in use through `01280` |
 | `01290-01299` | fz-t93                            | in use through `01292` |
-| `01300-01319` | fz-3sy                            | in use through `01317` |
+| `01300-01319` | fz-3sy                            | in use through `01319` |
 | `01320-01339` | fz-nml                            | in use through `01339` |
 | `01340-01359` | fz-9zq                            | in use through `01343` |
 | `01360-01379` | fz-sc8                            | in use through `01364` |
 | `01380-01399` | fz-nhb                            | in use through `01383` |
 | `01400-01699` | fz-p8p                            | in use through `01656` |
 | `01700-01719` | fz-nml                            | in use through `01700` |
+| `01720-01739` | fz-3sy                            | in use through `01721` |
 
 A fixture orders its processes with messages and never by a timing margin: an
 `after` timeout is `0` when mail is already in the mailbox or nothing is

@@ -1,0 +1,7 @@
+error[resolve/type-alias]: unknown type name `nope`
+  --> fixtures/01318_a_spec_on_a_function_nothing_calls_is_still_checked.fz:1:26
+   |
+1 | @spec unused(integer) :: nope
+   |                          ^^^^
+   |
+

@@ -2561,14 +2561,17 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             // 948 -> 935, content_caused 248 -> 235, unchanged_outputs 93 -> 80 and
             // blocked_completions 234 -> 221: a module is started once its enclosing scope
             // exists, so thirteen module definitions no longer start, find no scope and stop.
-            evaluations: 935,
+            // 935 -> 936, initial 700 -> 701, changed outputs +1: the product
+            // waits on the fixture's own declarations being checked, one
+            // `CheckDeclarations` evaluation.
+            evaluations: 936,
             runtime_demand_evaluations: 115,
-            initial: 700,
+            initial: 701,
             content_caused: 235,
             readiness_caused: 0,
             concluded_caused: 0,
             uncaused: 0,
-            changed_outputs: 855,
+            changed_outputs: 856,
             // unchanged_outputs 85 -> 86: `String.Chars`' binary impl is selected for any bitstring, so its shared activation is typed `bitstring` with two clauses, and a caller that holds a `binary` gets its own `String.Chars.Binary.to_string(binary)` activation with the raise clause trimmed.
             // 86 -> 93 and blocked_completions 227 -> 234: the seven content-caused reach evaluations.
             unchanged_outputs: 80,
@@ -2600,7 +2603,9 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             // exists. Thirteen module definitions no longer start early and stop, which were
             // thirteen runs queued by a waiter and thirteen re-queued by a wake; each now starts
             // once, when its gate clears.
-            ("blocked_waiter_expansion", 174),
+            // 174 -> 175: the product's wait on the fixture's own declarations
+            // starts its one `CheckDeclarations`.
+            ("blocked_waiter_expansion", 175),
             ("changed_revision_wake", 534),
             ("gate_expansion", 226),
             ("ignition", 1),

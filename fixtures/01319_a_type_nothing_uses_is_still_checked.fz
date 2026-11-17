@@ -1,0 +1,6 @@
+#---
+# purpose: a @type nothing uses is checked, so a type name nothing declares in its body stops the compile under the name
+# expect: diagnostic
+#---
+@type unused :: nope
+def main(), do: dbg(1)

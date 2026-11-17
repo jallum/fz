@@ -380,7 +380,11 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // exists.
         // (2988, 15, 42, 261) -> (2992, 15, 42, 261): the ordering operators' `binary` clause adds its `fz_op_*_bb` activation and splits the catch-all's `compare/2` activations, the same way the int and float clauses already do.
         // (2992, 15, 42, 261) -> (2981, 15, 31, 261): a module is started once its enclosing scope exists, so each module's definition runs once fewer.
-        (2981, 15, 31, 261),
+        // (2981, 15, 31, 261) -> (2982, 15, 31, 261): the product waits until
+        // the fixture's own declarations are checked, which is one
+        // `CheckDeclarations` run. The fixture declares nothing, so it defines
+        // no module and derives no contract for it.
+        (2982, 15, 31, 261),
         "ordinary generic helper work has the exact source/module/executable-fact census"
     );
     // Every applied work step is a run, and every run is charged to exactly
@@ -569,7 +573,9 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // executable's reach, and the wait starts its `DeriveExecutableReach`.
         // 638 -> 641: the ordering operators' `binary` clause adds its `fz_op_*_bb` activation and splits the catch-all's `compare/2` activations, the same way the int and float clauses already do.
         // 641 -> 630: a module is started once its enclosing scope exists, so each module's definition runs once fewer.
-        630,
+        // 630 -> 631: the product waits on the fixture's own declarations being
+        // checked, and that wait starts its one `CheckDeclarations`.
+        631,
         "the blocked-waiter census includes only the prerequisites each completion's own waits expand",
     );
     assert_eq!(

@@ -259,7 +259,9 @@ fn read_compile_spend(trace: &Path) -> CompileSpend {
 // 19_800 -> 19_850: the ordering operators' `binary` clause adds its `fz_op_*_bb` activation and splits the catch-all's `compare/2` activations, the same way the int and float clauses already do.
 // 19_850 -> 19_810: a module is started once its enclosing scope exists, so each module's
 // definition runs once fewer.
-const DERIVATIONS: u64 = 19_810;
+// 19_810 -> 19_811: the product waits on the distiller's own declarations
+// being checked. It declares nothing, so the check is one `CheckDeclarations`.
+const DERIVATIONS: u64 = 19_811;
 // 111_876 -> 111_888: an extern that declares `raises:` reads the struct of
 // the exception it names, to raise that struct. The distiller calls twelve
 // such externs, and each contract reads `StructDefined` once.
@@ -281,7 +283,8 @@ const DERIVATIONS: u64 = 19_810;
 // 1_558 runs hands the World one read per node of its cone.
 // 156_110 -> 156_740: the same activations, each read once per derivation, and each reach
 // job whose cone now holds the binary clause's activations reads them too.
-const READS_HANDED: u64 = 156_740;
+// 156_740 -> 156_741: that check reads the source's index.
+const READS_HANDED: u64 = 156_741;
 
 /// Compiling the distiller spends this much of the product stack. The largest
 /// drive is the one `PRODUCT_DRIVE_BUDGET` bounds, so its headroom is the
