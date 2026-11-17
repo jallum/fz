@@ -7,9 +7,15 @@
   "id": "fz-9x7.24",
   "labels": [],
   "parent": "fz-9x7",
+  "comments": [
+    {
+      "text": "Profiled on develop 4a05ae2be + experiment probe (branch exp/gc-clock in ../fz-gcclock: Instant timers around Heap::collect phases and shared_bin_destructor_heap; never merge). survive, 3 runs: GC 28-36 ms; Cheney scan 6.7-9.4 ms, off-heap sweep 19.6-27.9 ms, block release \u003c0.01 ms. 200,001 binary destructors take 18.3-20.8 ms (about 95-105 ns each, timer overhead included) = nearly the whole sweep. Each binary is \u003c\u003cn::64, pad::binary\u003e\u003e of 1024 bytes, freed as two allocations (buffer + 48-byte SharedBin box, bits.rs shared_bin_destructor_heap). Telemetry: the 31 collections visit 0 stubs until the last three (major 75,995, minors 55,994 and 57,995), so the cost lands in three collections. So survive's 1.5 us/KB copied is not copying: about two-thirds of its GC time is freeing binaries. Not yet verified: what BEAM pays for the same 200k frees (its whole GC is 2.9 ms); next probe is BEAM's sweep cost and a one-allocation binary (header and bytes together, as BEAM's Binary). Other phases for reference: enum scan 52 of 55 ms; msg 106,062 collections, scan 3.6 + sweep 2.0 + release 10-12 of 40-49 ms, the rest is per-collection fixed cost (~250 ns each), which is fz-9x7.7's subject.",
+      "timestamp": "2026-11-17T22:50:42Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Find what makes survive's collections cost 1.5 µs per KB copied",
   "type": "task",
-  "updated_at": "2026-11-17T22:45:55Z"
+  "updated_at": "2026-11-17T22:50:42Z"
 }
