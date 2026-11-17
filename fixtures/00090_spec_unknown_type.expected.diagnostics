@@ -1,3 +1,0 @@
-error[resolve/type-alias]: compiler2 could not resolve function contract for `add1`: unknown type name `unknown_thing`
-  --> <generated>
-

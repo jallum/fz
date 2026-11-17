@@ -260,7 +260,7 @@ impl World {
         vars: &mut HashMap<String, TypeVarId>,
     ) -> Result<Ty, TypeExprError> {
         match expr {
-            TypeExpr::Name { path, args } => self.resolve_name(namespace, path, args, vars),
+            TypeExpr::Name { path, args, span } => self.resolve_name(namespace, path, args, *span, vars),
             TypeExpr::List(inner) => {
                 let elem = self.resolve_ty(namespace, inner, vars)?;
                 Ok(self.types_mut().list(elem))
@@ -287,7 +287,7 @@ impl World {
                 }
                 Ok(acc)
             }
-            TypeExpr::StructRecord { module, fields } => {
+            TypeExpr::StructRecord { module, fields, .. } => {
                 let module_name = ModuleName::from_segments(module.clone());
                 let module_id = self.resolve_module_name(namespace, &module_name);
                 // The durable `defstruct` store. Every consumer that reaches
@@ -350,32 +350,38 @@ impl World {
         namespace: Namespace,
         path: &[String],
         args: &[TypeExpr],
+        span: Span,
         vars: &mut HashMap<String, TypeVarId>,
     ) -> Result<Ty, TypeExprError> {
+        let name_error = |msg: &str| TypeExprError {
+            msg: format!("{} `{}`", msg, path.join(".")),
+            span,
+        };
         let arg_tys = self.resolve_each(namespace, args, vars)?;
         match self.classify_name(namespace, path, args.len(), vars) {
             NameClass::Builtin(entry) => {
                 if !entry.arity.accepts(args.len()) {
-                    return Err(self.name_error(
-                        path,
-                        &format!("expected {} type argument(s), got {}", entry.arity, args.len()),
-                    ));
+                    return Err(name_error(&format!(
+                        "expected {} type argument(s), got {}",
+                        entry.arity,
+                        args.len()
+                    )));
                 }
                 Ok((entry.build)(self.types_mut(), &arg_tys))
             }
             NameClass::Named(type_name) => {
                 let Some(ty) = self.instantiate_type_def(&type_name, &arg_tys) else {
-                    return Err(self.name_error(path, "type is referenced before it is resolved"));
+                    return Err(name_error("type is referenced before it is resolved"));
                 };
                 Ok(ty)
             }
             NameClass::Var(id) => {
                 if !args.is_empty() {
-                    return Err(self.name_error(path, "a type variable takes no type arguments"));
+                    return Err(name_error("a type variable takes no type arguments"));
                 }
                 Ok(self.types_mut().type_var(id))
             }
-            NameClass::Unknown => Err(self.name_error(path, "unknown type name")),
+            NameClass::Unknown => Err(name_error("unknown type name")),
         }
     }
 
@@ -415,13 +421,6 @@ impl World {
             ),
             Span::DUMMY,
         ));
-    }
-
-    fn name_error(&self, path: &[String], msg: &str) -> TypeExprError {
-        TypeExprError {
-            msg: format!("{} `{}`", msg, path.join(".")),
-            span: Span::DUMMY,
-        }
     }
 
     /// A `%{k => v}` key must be a literal atom or int — the exact-map

@@ -1,5 +1,6 @@
 #---
-# purpose: an @spec referencing an unknown type name resolves with a diagnostic naming the unknown type, rather than a fatal error.
+# purpose: an @spec naming a type nothing declares stops the compile, reported under the name
+# expect: diagnostic
 #---
 defmodule M do
   @spec add1(unknown_thing) :: integer

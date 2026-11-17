@@ -15018,6 +15018,94 @@ fn a_rescue_clause_that_names_a_struct_compiles_whether_or_not_it_is_an_exceptio
     }
 }
 
+fn declaring(declarations: &str) -> String {
+    format!(
+        "defmodule Geo.Pt do\n  @type t :: integer\nend\n{declarations}\n\
+         def f(x), do: x\ndef main(), do: dbg(f(1))\n"
+    )
+}
+
+/// A type name nothing declares is refused under the name, wherever in a
+/// declaration it is written, and the program does not run: a contract the
+/// compiler cannot read would otherwise check nothing.
+#[test]
+fn a_type_name_nothing_declares_stops_the_compile_under_the_name() {
+    let unknown = |name: &str| format!("unknown type name `{name}`");
+    for (declarations, code, message, underlined) in [
+        (
+            "@spec f(nope) :: integer".to_string(),
+            codes::RESOLVE_TYPE_ALIAS,
+            unknown("nope"),
+            "nope",
+        ),
+        (
+            "@spec f(integer) :: nope".to_string(),
+            codes::RESOLVE_TYPE_ALIAS,
+            unknown("nope"),
+            "nope",
+        ),
+        (
+            "@spec f([{:ok, nope}]) :: integer".to_string(),
+            codes::RESOLVE_TYPE_ALIAS,
+            unknown("nope"),
+            "nope",
+        ),
+        (
+            "@spec f(Geo.Pt.nope) :: integer".to_string(),
+            codes::RESOLVE_TYPE_ALIAS,
+            unknown("Geo.Pt.nope"),
+            "Geo.Pt.nope",
+        ),
+        (
+            "@type u :: wat\n@spec f(u) :: integer".to_string(),
+            codes::RESOLVE_TYPE_ALIAS,
+            unknown("wat"),
+            "wat",
+        ),
+        (
+            "@spec f(Nope.t) :: integer".to_string(),
+            codes::RESOLVE_UNKNOWN_MODULE,
+            "module `Nope` is not defined".to_string(),
+            "Nope.t",
+        ),
+        (
+            "@spec f([%Nope{}] | nil) :: integer".to_string(),
+            codes::RESOLVE_UNKNOWN_MODULE,
+            "module `Nope` is not defined".to_string(),
+            "%Nope{}",
+        ),
+    ] {
+        assert_eq!(
+            diagnostics_of_a_failed_compile(&declaring(&declarations)),
+            vec![(code.0, message, underlined.to_string())],
+            "{declarations}"
+        );
+    }
+}
+
+/// An extern's signature and a parameter annotation are type positions too.
+#[test]
+fn a_type_name_nothing_declares_in_an_extern_or_an_annotation_is_refused_under_the_name() {
+    assert_eq!(
+        diagnostics_of_a_failed_compile(
+            "extern \"C\" defp libc::abs(nope) :: c_int\ndef main(), do: dbg(libc::abs(1))\n"
+        ),
+        vec![(
+            codes::RESOLVE_TYPE_ALIAS.0,
+            "unknown type name `nope`".to_string(),
+            "nope".to_string()
+        )]
+    );
+    assert_eq!(
+        diagnostics_of_a_failed_compile("def f(x :: nope), do: x\ndef main(), do: dbg(f(1))\n"),
+        vec![(
+            codes::RESOLVE_TYPE_ALIAS.0,
+            "compiler2 could not resolve parameter annotation 1 for `f/1`: unknown type name `nope`".to_string(),
+            "nope".to_string()
+        )]
+    );
+}
+
 #[test]
 fn compiler2_submit_module_root_without_code_reports_one_unknown_module_diag() {
     let tel = ConfiguredTelemetry::new();

@@ -1,0 +1,9 @@
+#---
+# purpose: an @spec naming a type in a module nothing defines reports that the module is not defined, once, under the type's name
+# expect: diagnostic
+#---
+defmodule M do
+  @spec one(NotThere.t) :: integer
+  def one(_), do: 1
+end
+def main(), do: dbg(M.one(0))

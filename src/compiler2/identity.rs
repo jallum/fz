@@ -794,6 +794,10 @@ pub struct TypeRefMap {
     /// for every function type position, so `@spec` and guard annotations
     /// share a single obligation/wait record just as they share `by_function`.
     by_function_structs: HashMap<FunctionId, Vec<ModuleId>>,
+    /// Where each referenced type name is written, in the order the walk met
+    /// them. Kept apart from the wait-sets so a reference that moves does not
+    /// change what its consumer waits on.
+    written_at: HashMap<TypeName, Vec<Span>>,
 }
 
 impl TypeRefMap {
@@ -838,6 +842,17 @@ impl TypeRefMap {
         let changed = self.by_function_structs.get(&function) != Some(&refs);
         self.by_function_structs.insert(function, refs);
         changed
+    }
+
+    pub fn note_written_at(&mut self, name: &TypeName, span: Span) {
+        let sites = self.written_at.entry(name.clone()).or_default();
+        if !sites.contains(&span) {
+            sites.push(span);
+        }
+    }
+
+    pub fn first_written_at(&self, name: &TypeName) -> Option<Span> {
+        self.written_at.get(name).and_then(|sites| sites.first().copied())
     }
 
     // Consumed by the contract and entry-dispatch struct wait-loops.

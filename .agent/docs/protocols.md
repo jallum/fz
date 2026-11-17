@@ -211,7 +211,7 @@ inside `resolve_protocol_call`.
 Function contracts classify protocol-domain obligations from this resolved
 marker, after aliases and bounds have become hard `Ty` values. The durable key is
 the marker's protocol `ModuleName`, wrapped as `ProtocolDomainObligation`.
-`collect_spec_refs` remains a source-publication dependency/wait tool; contract
+`collect_spec_references` remains a source-publication dependency/wait tool; contract
 enforcement must not rewalk source refs or enumerate protocol implementations.
 
 The marker is the obligation, not a set of values: refining a call reads each

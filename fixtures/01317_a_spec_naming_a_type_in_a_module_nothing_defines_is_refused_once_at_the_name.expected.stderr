@@ -1,0 +1,7 @@
+error[resolve/unknown-module]: module `NotThere` is not defined
+  --> fixtures/01317_a_spec_naming_a_type_in_a_module_nothing_defines_is_refused_once_at_the_name.fz:2:13
+   |
+2 |   @spec one(NotThere.t) :: integer
+   |             ^^^^^^^^^^
+   |
+
