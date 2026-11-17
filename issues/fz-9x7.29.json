@@ -9,9 +9,15 @@
   "id": "fz-9x7.29",
   "labels": [],
   "parent": "fz-9x7",
+  "comments": [
+    {
+      "text": "Built and measured, not committed: the pre-registered negligible gate FAILS. Release A/B vs d5cbd823c, 7 interleaved runs, instructions: msg +0.195%, fanin +0.533%, deadbinlive +0.226%, enum +0.096% exceed +0.06%; survive +0.020, json -0.114, maps -0.058, qsort -0.004, spin -0.005, ring -0.653, distiller -0.026. Outputs identical. Note ring -0.65% and fanin's ~1% run spread show local noise above the bar; the rule is applied as written, no rerun. Design worked: four mutation points (BlockPool::alloc/free, binary_buffer_allocated/freed); u128 area. Exact mean vs gc-sampled on survive: 42,162,340 vs 17,184,507 (gc-sampled is 2.45x low), confirming the bias. Patch kept at scratchpad/29/mean-in-use.patch for experiment arms only. Proposal: drop as a product feature; fz-9x7.8 re-judging uses the same integral compiled into its experiment arms (never merged), so no production cost.",
+      "timestamp": "2026-11-17T23:56:57Z"
+    }
+  ],
   "priority": 2,
   "status": "in_progress",
   "title": "run_ended reports the mean of in-use bytes, weighted by bytes allocated",
   "type": "task",
-  "updated_at": "2026-11-17T23:50:02Z"
+  "updated_at": "2026-11-17T23:56:57Z"
 }
