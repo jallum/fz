@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-17T23:49:03Z",
+  "description": "## Why\n01167 unquotes a runtime-built 40-key map: `quote do: unquote(m)`. Elixir raises ArgumentError \"tried to unquote invalid AST\" (a map is not a quoted literal; Macro.escape/1 makes one). fz accepts the raw map, so 01167 keeps a twin.\n\n## Decide with the owner\n- Refuse (Elixir): unquoting a value that is not valid quoted AST raises ArgumentError with Elixir's message. 01167 spells `unquote(Macro.escape(m))` (lib/macro.fz has escape/1), converts to `# oracle: self`, and its twin is deleted. Not yet measured: how many other fixtures and lib macros unquote a raw value. The refusal's first full run counts them; each one is rewritten in this ticket.\n- Keep it as an fz extension: 01167 keeps its twin and is listed by the fixtures.md ticket.\n\n## Signal\nRefuse: an oracle fixture shows the ArgumentError for a raw map, tuple of three and pid; one fewer twin; full gate green.",
+  "id": "fz-nhb.18",
+  "labels": [],
+  "parent": "fz-nhb",
+  "priority": 3,
+  "status": "open",
+  "title": "A macro that unquotes a value that is not quoted AST is refused, as in Elixir",
+  "type": "task",
+  "updated_at": "2026-11-17T23:49:03Z"
+}
