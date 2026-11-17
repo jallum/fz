@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-9x7.8"
+  ],
   "created": "2026-11-17T22:03:10Z",
   "description": "In-use bytes = heap blocks owned by live processes + live off-heap binary buffers; the pool's free lists are reported separately. Telemetry, not a probe: every memory rule in the plan is judged in these bytes instead of peak RSS (malloc takes memory eagerly and returns it slowly). Files: runtime/src/heap/block_pool.rs, bits.rs, telemetry.rs, process.rs.\n\nPlan: https://claude.ai/artifact/Pqqu5yTcQdBbkGsZyZiykb (GC memory plan v3, approved by the user 2026-11-17).",
   "id": "fz-9x7.16",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "The runtime reports the bytes its processes use and the bytes its pool keeps idle, at each collection and at exit",
   "type": "task",
-  "updated_at": "2026-11-17T22:03:10Z"
+  "updated_at": "2026-11-17T22:03:12Z"
 }
