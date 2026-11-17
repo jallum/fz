@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-17T23:51:16Z",
   "created": "2026-11-17T23:45:15Z",
   "description": "Approved by the user 2026-11-17 (relayed by the Optimize session: \"proceed\").\n\nruntime/src/sched_core.rs:227-228, at the top of next_runnable's loop, reads the clock and drains expired timers on every scheduling decision, even when the timer wheel is empty (always on msg, fanin, ring: no after, no sleep). Ask the wheel first (it answers next_deadline()) and read the clock only when there is a deadline to compare against. No cached time.\n\nSignal: GC's release profile of msg (develop a6ae5759d, sample 1 ms): clock_gettime under next_runnable 116 of 4,154 self samples (~3%) -\u003e 0. A runtime test with a counting Clock source asserts zero reads across a timer-free run. Behaviour with timers pending is unchanged.",
   "id": "fz-9x7.27",
   "labels": [],
   "parent": "fz-9x7",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "The scheduler reads the clock only when a timer is pending",
   "type": "task",
-  "updated_at": "2026-11-17T23:45:15Z"
+  "updated_at": "2026-11-17T23:51:16Z"
 }
