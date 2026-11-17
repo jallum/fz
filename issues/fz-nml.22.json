@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-17T20:23:32Z",
+  "description": "Approved 2026-11-17. Found by Type System: after fz-nml.20 deleted the destructor pre-pass (forward_heap_value's caller in Heap::collect), LLVM inlined forward_heap_value (runtime/src/heap/gc/forward.rs:89) into the trace functions; enum bench 3.368G -\u003e 2.952G instructions with identical collector work. The inlining is incidental: a new caller or a larger body undoes it (Type System's aged branch keeps it out of line; #[inline] wins back 380M). Change: #[inline] on forward_heap_value plus a short comment that the Cheney trace's speed depends on it. Same-build A/B on the enum bench and distiller h32000; prediction: flat on this stack (already inlined). Also: survey the collection and off-heap hot path (heap/gc/*, heap/imp.rs collect, off_heap.rs sweep, bits.rs release, resource.rs release_deferred) for other functions whose inlining is incidental or missing; report each with an A/B measurement; land only #[inline] markers each proven by a measurement, others are proposed as separate tickets.",
+  "id": "fz-nml.22",
+  "labels": [],
+  "parent": "fz-nml",
+  "priority": 2,
+  "status": "open",
+  "title": "The Cheney trace's forwarding step is inlined by declaration",
+  "type": "task",
+  "updated_at": "2026-11-17T20:23:32Z"
+}
