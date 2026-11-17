@@ -1394,7 +1394,7 @@ pub extern "C" fn fz_binary_copy(process: *mut Process, subject_ref: u64, count:
         .alloc_bitstring_with(total, (total * 8) as u64, |dest| {
             if len > 0 {
                 for repetition in dest.chunks_exact_mut(len) {
-                    repetition.copy_from_slice(subject);
+                    repetition.write_copy_of_slice(subject);
                 }
             }
         });

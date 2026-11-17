@@ -29,7 +29,7 @@ use crate::process::Node;
 use crate::term::{NumericMode, TermComparator};
 use std::cell::RefCell;
 use std::collections::VecDeque;
-use std::mem::size_of;
+use std::mem::{MaybeUninit, size_of};
 use std::ptr::{copy, copy_nonoverlapping, read, write, write_bytes};
 use std::rc::Rc;
 use std::slice::{from_raw_parts, from_raw_parts_mut};
@@ -899,11 +899,15 @@ impl Heap {
     /// This always COPIES `bytes`. To view an existing shared buffer
     /// without copying it, use `alloc_bitstring_slice`.
     pub fn alloc_bitstring(&mut self, bytes: &[u8], bit_len: u64) -> AnyValue {
-        self.alloc_bitstring_with(bytes.len(), bit_len, |dest| dest.copy_from_slice(bytes))
+        self.alloc_bitstring_with(bytes.len(), bit_len, |dest| {
+            dest.write_copy_of_slice(bytes);
+        })
     }
 
     /// Allocate a bitstring of `byte_len` bytes and let `fill` write them in
     /// place, so a caller that computes its payload never builds it twice.
+    /// The bytes `fill` receives are unwritten heap memory, so it writes every
+    /// one of them.
     ///
     /// Payloads larger than `SHARED_BIN_THRESHOLD_BYTES` route
     /// through the shared zone: a SharedBin is allocated off-heap and the
@@ -914,7 +918,12 @@ impl Heap {
     /// Returns the VALUE, kind included. The storage choice is
     /// made here and only here: a caller that re-derived it from the length
     /// could disagree with what was actually allocated.
-    pub fn alloc_bitstring_with(&mut self, byte_len: usize, bit_len: u64, fill: impl FnOnce(&mut [u8])) -> AnyValue {
+    pub fn alloc_bitstring_with(
+        &mut self,
+        byte_len: usize,
+        bit_len: u64,
+        fill: impl FnOnce(&mut [MaybeUninit<u8>]),
+    ) -> AnyValue {
         if byte_len > SHARED_BIN_THRESHOLD_BYTES {
             let handle = SharedBinHandle::from_filled(byte_len, fill);
             self.alloc_stats.record_shared_bin(byte_len as u64);
@@ -930,12 +939,17 @@ impl Heap {
     /// Reserves at least 1 byte past the payload for the invisible
     /// trailing NUL; the pad-zeroing guarantees it reads as 0, and
     /// bytes_len / bit_len are unchanged by it.
-    fn alloc_inline_bitstring(&mut self, byte_len: usize, bit_len: u64, fill: impl FnOnce(&mut [u8])) -> AnyValue {
+    fn alloc_inline_bitstring(
+        &mut self,
+        byte_len: usize,
+        bit_len: u64,
+        fill: impl FnOnce(&mut [MaybeUninit<u8>]),
+    ) -> AnyValue {
         let total = bitstring_size_for_bit_len(bit_len);
         let p = self.alloc_kind(HeapAllocKind::Bitstring, total);
         unsafe {
             write(p as *mut u64, bitstring_header_word(bit_len));
-            fill(from_raw_parts_mut(p.add(8), byte_len));
+            fill(from_raw_parts_mut(p.add(8) as *mut MaybeUninit<u8>, byte_len));
             // Zero the trailing padding so renders / debug aren't garbage.
             let pad_start = 8 + byte_len;
             if pad_start < total {
@@ -984,8 +998,8 @@ impl Heap {
         let total = left_bytes.len() + right.len();
         if total <= SHARED_BIN_THRESHOLD_BYTES {
             return self.alloc_inline_bitstring(total, total as u64 * 8, |dest| {
-                dest[..left_bytes.len()].copy_from_slice(left_bytes);
-                dest[left_bytes.len()..].copy_from_slice(right);
+                dest[..left_bytes.len()].write_copy_of_slice(left_bytes);
+                dest[left_bytes.len()..].write_copy_of_slice(right);
             });
         }
         let handle = SharedBinHandle::from_bytes_with_room(&[], total * 2);
