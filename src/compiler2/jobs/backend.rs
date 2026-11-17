@@ -341,6 +341,11 @@ pub(crate) fn produce_backend_executable_product(
             });
         }
     }
+    waits.extend(undecided_struct_modules(
+        world,
+        context,
+        &backend.abi.materialized.struct_modules,
+    ));
     if !waits.is_empty() {
         return PullOutcome::Waiting(waits);
     }
@@ -366,6 +371,30 @@ pub(crate) fn produce_backend_executable_product(
     }
     let backend = Rc::new(backend);
     PullOutcome::Produced(ProductValue::BackendExecutable(backend))
+}
+
+/// The definitions still to wait for before the schemas of `named` can be
+/// decided. A module the types name under `__struct__` is a struct exactly
+/// when its definition declares one, so each module that can be defined (it
+/// has source, or is a runtime module) is waited on until it is. A name
+/// nothing defines is not a struct, and nothing waits on it.
+fn undecided_struct_modules(
+    world: &mut World,
+    context: &mut ProductReadContext<'_>,
+    named: &[ModuleName],
+) -> Vec<PullWait> {
+    let mut waits = Vec::new();
+    for name in named {
+        let module = world.reference_module(name.clone());
+        if !world.module_has_source_state(module) && !world.is_runtime_module(module) {
+            continue;
+        }
+        let defined = FactUse::settled(FactKey::ModuleDefined(module));
+        if !context.read_fact(world, defined.clone()) {
+            waits.push(PullWait::Fact(defined));
+        }
+    }
+    waits
 }
 
 fn symbolic_call_edge_callees(target: &CallEdge<ExecutableKey>) -> Vec<&ExecutableKey> {

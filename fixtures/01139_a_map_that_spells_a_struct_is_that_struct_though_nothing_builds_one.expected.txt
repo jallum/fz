@@ -1,0 +1,7 @@
+%S{a: 1, b: [2]}
+%S{a: 3, b: []}
+%S{a: 0, b: [5]}
+%{__struct__: S}
+%{__struct__: Plain}
+%{__struct__: Nowhere}
+%{__struct__: :lower}

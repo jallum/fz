@@ -1455,9 +1455,16 @@ tracking. Consumers read that typed identity directly.
 The artifact also drops `value_types`
 for values removed by control pruning before it walks those surfaces, so dead
 types cannot overpackage a schema.
-`RootBackendProduct` unions those sets across its exact reachable executable
-closure, reads each `StructDefined(module)` through `ProductReadContext`, and
-only then materializes the typed `ModuleName`-to-fields map. The map remains the
+Producing a `BackendExecutable` waits on `ModuleDefined` for each module in that set that can be defined, meaning one that has source or is
+a runtime module (`undecided_struct_modules`). `StructDefined` is published
+together with `ModuleDefined`, so after that wait whether the module declares
+a struct is decided. A name nothing defines is not a struct and is never
+waited on. Waiting on `StructDefined` itself would never end for a module
+without a struct. `RootBackendProduct` unions those sets across its exact
+reachable executable closure, reads each `StructDefined(module)` through
+`ProductReadContext`, and only then materializes the typed
+`ModuleName`-to-fields map. A map that spells a struct therefore carries that
+struct's schema whether or not any code builds one. The map remains the
 single interpreter/native/AOT schema input, but its membership and invalidation
 are root-local and fact-tracked. Native (`native_codegen/driver.rs`) and the
 interpreter (`IrInterpRuntime::register_struct_schemas`) each register every

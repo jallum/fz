@@ -1,0 +1,35 @@
+#---
+# purpose: "A map with __struct__ and exactly a struct's fields prints as that struct though the program never builds one, as in Elixir; a map missing a field, naming a module with no struct, or naming no module stays a map"
+# oracle: self
+# oracle.stamp: a46456eed0df8f74
+#---
+defmodule S do
+  defstruct a: 0, b: []
+end
+
+defmodule Plain do
+  def f(), do: 1
+end
+
+defmodule Table do
+  defmacro origin() do
+    value = Map.put(%{a: 0, b: [5]}, :__struct__, S)
+    quote do: unquote(Macro.escape(value))
+  end
+end
+
+defmodule Main do
+  require Table
+
+  def main() do
+    IO.inspect(%{__struct__: S, a: 1, b: [2]})
+    IO.inspect(Map.put(%{a: 3, b: []}, :__struct__, S))
+    IO.inspect(Table.origin())
+    IO.inspect(%{__struct__: S})
+    IO.inspect(%{__struct__: Plain})
+    IO.inspect(%{__struct__: Nowhere})
+    IO.inspect(%{__struct__: :lower})
+  end
+end
+
+Main.main()
