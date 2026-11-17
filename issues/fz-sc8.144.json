@@ -3,7 +3,8 @@
   "blocked_by": [
     "fz-sc8.223",
     "fz-sc8.225",
-    "fz-sc8.238"
+    "fz-sc8.238",
+    "fz-sc8.243"
   ],
   "blocks": [
     "fz-sc8.226"
@@ -17,5 +18,5 @@
   "status": "open",
   "title": "A defstruct default is any expression, evaluated in the defining module",
   "type": "feature",
-  "updated_at": "2026-11-15T23:27:31Z"
+  "updated_at": "2026-11-17T21:51:48Z"
 }
