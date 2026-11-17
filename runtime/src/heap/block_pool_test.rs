@@ -99,3 +99,27 @@ fn a_buffer_freed_on_another_thread_leaves_the_allocating_threads_bytes_in_use()
     );
     binary_buffer_freed(100);
 }
+
+#[cfg(debug_assertions)]
+#[test]
+fn a_block_handed_out_reads_as_unwritten_in_debug_builds() {
+    start();
+    let p = pool_alloc(SIZE_TABLE[2]);
+    unsafe { p.write_bytes(0, SIZE_TABLE[2]) };
+    pool_free(p, SIZE_TABLE[2]);
+    let recycled = pool_alloc(SIZE_TABLE[2]);
+    let bytes = unsafe { std::slice::from_raw_parts(recycled, SIZE_TABLE[2]) };
+    assert!(
+        bytes.iter().all(|&b| b == UNWRITTEN_BYTE),
+        "recycled block keeps old contents"
+    );
+    pool_free(recycled, SIZE_TABLE[2]);
+    let exact = pool_alloc(SIZE_TABLE[0] - 16);
+    let bytes = unsafe { std::slice::from_raw_parts(exact, SIZE_TABLE[0] - 16) };
+    assert!(
+        bytes.iter().all(|&b| b == UNWRITTEN_BYTE),
+        "fresh block is not poisoned"
+    );
+    pool_free(exact, SIZE_TABLE[0] - 16);
+    pool_drain_for_test();
+}
