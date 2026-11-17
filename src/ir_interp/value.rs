@@ -6,7 +6,6 @@ use fz_runtime::any_value::debug::render_value;
 use fz_runtime::any_value::{
     AnyValue as RuntimeAnyValue, AnyValueRef, FALSE_ATOM_ID, NIL_ATOM_ID, TRUE_ATOM_ID, ValueKind,
 };
-use fz_runtime::heap::Schema;
 use fz_runtime::ir_runtime::{
     fz_box_float_for_any, fz_box_int_for_any, fz_bs_read_binary_ref, fz_bs_read_int_ref, fz_struct_get_named_field_ref,
 };
@@ -215,7 +214,6 @@ pub(super) fn interp_tuple_schema_id(runtime: &mut IrInterpRuntime, arity: usize
 
 pub(super) fn interp_runtime_type_predicate_schema_ids(
     runtime: &mut IrInterpRuntime,
-    module: &Module,
     predicate: &RuntimeTypePredicate,
 ) -> (HashMap<usize, u32>, HashMap<fz_runtime::module_name::ModuleName, u32>) {
     // Every arity the test can ask about, NESTED ONES INCLUDED: a nested tuple
@@ -226,19 +224,14 @@ pub(super) fn interp_runtime_type_predicate_schema_ids(
         .into_iter()
         .map(|arity| (arity, interp_tuple_schema_id(runtime, arity)))
         .collect();
-    // Registering the module's named structs means cloning every name and
-    // field list into the heap's registry, so it is only worth doing for a test
-    // that actually reads the table. `RuntimeValueReader` consults it from two
-    // places and both are guarded by the same question this asks.
-    let mut named_schema_ids = HashMap::default();
-    if predicate.reads_named_schemas() {
-        for (name, fields) in &module.struct_schemas {
-            let schema_id = unsafe { &mut *runtime.cur_proc() }
-                .heap
-                .register_schema(Schema::named_struct(name.clone(), fields.clone()));
-            named_schema_ids.insert(name.clone(), schema_id);
-        }
-    }
+    // Copying the table of named structs is only worth doing for a test that
+    // actually reads it. `RuntimeValueReader` consults it from two places and
+    // both are guarded by the same question this asks.
+    let named_schema_ids = if predicate.reads_named_schemas() {
+        runtime.named_schema_ids().clone()
+    } else {
+        HashMap::default()
+    };
     (tuple_schema_ids, named_schema_ids)
 }
 

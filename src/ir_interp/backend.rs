@@ -103,13 +103,14 @@ pub(crate) fn run_backend_main<T: Telemetry + ?Sized>(
     let pool_outstanding_before_run = fz_runtime::heap::pool_outstanding_blocks();
     let atom_names = program.atom_names.iter().cloned().collect::<Vec<_>>();
     let mut runtime = IrInterpRuntime::fresh_with_atoms(atom_names.clone());
-    let module = Module {
-        atom_names,
-        struct_schemas: program
+    runtime.register_struct_schemas(
+        program
             .struct_schemas
             .entries()
-            .map(|(name, fields)| (name.as_ref().clone(), fields.as_ref().clone()))
-            .collect(),
+            .map(|(name, fields)| (name.as_ref(), fields.as_ref())),
+    );
+    let module = Module {
+        atom_names,
         ..Module::default()
     };
     let outcome = (|| -> Result<i64, RunFailure> {
@@ -158,13 +159,14 @@ pub(crate) fn run_backend_entry_on_process<T: Telemetry + ?Sized>(
         .expect("macro runtime should own pid 1")
         .node
         .atom_names();
-    let module = Module {
-        atom_names,
-        struct_schemas: program
+    runtime.register_struct_schemas(
+        program
             .struct_schemas
             .entries()
-            .map(|(name, fields)| (name.as_ref().clone(), fields.as_ref().clone()))
-            .collect(),
+            .map(|(name, fields)| (name.as_ref(), fields.as_ref())),
+    );
+    let module = Module {
+        atom_names,
         ..Module::default()
     };
     let result = (|| {
@@ -1848,14 +1850,7 @@ fn eval_steps<T: Telemetry + ?Sized>(
                 module_name,
                 fields,
             } => {
-                let schema = module
-                    .struct_schemas
-                    .get(module_name)
-                    .cloned()
-                    .ok_or_else(|| format!("backend struct `{module_name}` is missing its schema"))?;
-                let schema_id = unsafe { &mut *runtime.cur_proc() }
-                    .heap
-                    .register_schema(Schema::named_struct(module_name.clone(), schema));
+                let schema_id = runtime.named_schema_id(module_name)?;
                 let ptr = unsafe { &mut *runtime.cur_proc() }.heap.alloc_struct(schema_id);
                 for (index, (_, item)) in fields.iter().enumerate() {
                     let item = env_get(transport, runtime.cur_proc(), env, *item)?;
@@ -2388,7 +2383,7 @@ fn raise_undefined_function(
     })?;
     for exception in ["Elixir.UndefinedFunctionError", "Elixir.ArgumentError"] {
         let module = ModuleName::from_atom_name(exception).expect("an exception's atom names a module");
-        register_exception(runtime, program, &module)?;
+        exception_fields(program, &module)?;
     }
     let proc = runtime.cur_proc();
     let receiver = env_get(transport, proc, env, selector)?.value(proc)?;
@@ -2517,7 +2512,7 @@ fn raise_last_resort(
         LastResort::Exception { exception, .. } => {
             let module = ModuleName::from_atom_name(exception)
                 .ok_or_else(|| format!("internal error: `{exception}` names no exception module"))?;
-            let declared = register_exception(runtime, program, &module)?;
+            let declared = exception_fields(program, &module)?;
             let defaults = program
                 .struct_defaults(&module)
                 .ok_or_else(|| format!("internal error: exception `{module}` has no defaults"))?;
@@ -2544,20 +2539,12 @@ fn raise_last_resort(
     }
 }
 
-/// Registers the struct of the exception `module` with the current process's
-/// heap, so the runtime can build one, and answers the fields it declares.
-fn register_exception<'a>(
-    runtime: &mut IrInterpRuntime,
-    program: &'a BackendProgram,
-    module: &ModuleName,
-) -> Result<&'a Vec<String>, String> {
-    let declared = program
+/// The fields the exception `module` declares. The program carries the
+/// struct of every exception it raises, registered at load.
+fn exception_fields<'a>(program: &'a BackendProgram, module: &ModuleName) -> Result<&'a Vec<String>, String> {
+    program
         .schema(module)
-        .ok_or_else(|| format!("internal error: exception `{module}` is raised and the program lacks its struct"))?;
-    unsafe { &mut *runtime.cur_proc() }
-        .heap
-        .register_schema(Schema::named_struct(module.clone(), declared.iter().cloned()));
-    Ok(declared)
+        .ok_or_else(|| format!("internal error: exception `{module}` is raised and the program lacks its struct"))
 }
 
 /// What follows `fz_panic` in the interpreter. A raise that found a handler

@@ -1122,9 +1122,7 @@ impl TypeTest<'_> {
         let Ok(runtime_value) = value.value(proc) else {
             return false;
         };
-        let module = self.module;
-        let (tuple_schema_ids, named_schema_ids) =
-            interp_runtime_type_predicate_schema_ids(self.runtime, module, predicate);
+        let (tuple_schema_ids, named_schema_ids) = interp_runtime_type_predicate_schema_ids(self.runtime, predicate);
         // The representation's owner answers what only it can: which callable a
         // code word denotes, and what a tuple's field holds.
         let (types, transport, program) = (self.types, self.transport, self.program);
@@ -1149,7 +1147,7 @@ impl TypeTest<'_> {
         };
         let map_module = |value: RuntimeAnyValue| unsafe { &*proc }.heap.named_schema(value.ref_word());
         let reader = RuntimeValueReader {
-            module,
+            module: self.module,
             tuple_schema_ids: &tuple_schema_ids,
             named_schema_ids: &named_schema_ids,
             callables: &callables,
