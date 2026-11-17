@@ -1,18 +1,22 @@
 #---
 # purpose: "public <> joins byte-aligned binaries across inline and BinView storage"
-# oracle: oracle.exs
-# oracle.stamp: 6b4f9100b6b202d0
+# oracle: self
+# oracle.stamp: dc42f70276a72d56
 #---
 #
 # Exercises the public `<>` wrapper over the runtime binary-concat export. The small
 # case stays inline; the long case crosses the shared-binary threshold and
 # therefore returns through the BinView path.
-def main() do
-  small = "foo" <> "bar"
-  long_left = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-  long = long_left <> "bbbb"
+defmodule Main do
+  def main() do
+    small = "foo" <> "bar"
+    long_left = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    long = long_left <> "bbbb"
 
-  dbg(small)
-  dbg(long)
-  dbg(Utf8.valid?(long))
+    IO.inspect(small)
+    IO.inspect(long)
+    IO.inspect(String.valid?(long))
+  end
 end
+
+Main.main()
