@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-17T22:24:24Z",
   "created": "2026-11-17T22:10:24Z",
   "description": "Finding (2026-11-17, Optimize session; proposal page ../fz-unneeded-work.html, finding 3; user said 'proceed; work these, push PRs').\n\nWhy: DefineModule has no start gate (Job::missing_gates). A module whose code is indexed but whose enclosing scope does not exist yet is started anyway; define_module finds no scope, falls to wait_for_module_indexed and blocks on CodeScoped(owner) or ModuleDefined(parent). On the OptionParser probe DefineModule runs 74 times for 26 modules, 48 ending blocked; 'def main(), do: 1' defines its one module in 5 runs (CodeIndexed, CodeScoped, FunctionDefined, a macro product, done).\n\nWhat: an indexed module names its enclosing scope (World::module_indexed_parent), so that wait is a gate, as ScopeCode's prelude ladder already is (scope_code_gates). The scheduler parks DefineModule on it without a run.\n\nNot in this ticket: run 1 of a runtime module (ensure_runtime_module registers the source and emits code.submitted from inside the job), and the waits found while expanding the module body.\n\nSignal: no DefineModule completion blocked on CodeScoped or a parent's ModuleDefined; one run fewer per module; output byte-identical; only falling pins move.",
   "id": "fz-afu.22",
   "labels": [],
   "parent": "fz-afu",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "A module is defined once its enclosing scope exists",
   "type": "task",
-  "updated_at": "2026-11-17T22:10:24Z"
+  "updated_at": "2026-11-17T22:24:24Z"
 }
