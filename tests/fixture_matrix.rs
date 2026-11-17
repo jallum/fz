@@ -4100,9 +4100,11 @@ fn a_receive_guard_reading_self_is_decided_by_the_receiver_whoever_runs_the_prob
             vec!["miss", "hit"],
             "{label}: the sender's own pid misses; the receiver's pid hits"
         );
-        assert!(
-            events.iter().all(|e| e.gift_blocks == 1),
-            "{label}: each gift occupies one block"
+        let blocks: Vec<_> = events.iter().map(|e| e.gift_blocks).collect();
+        assert_eq!(
+            blocks,
+            vec![1, 0],
+            "{label}: the miss gifts the message in one block; the hit binds only the atom `label`, since the guard reads `who` from the message and the body never does"
         );
     }
 }
