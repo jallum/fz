@@ -200,6 +200,14 @@ that no concatenation allocated (`shared_bin_alloc`, the compiler-baked static
 buffers, whose word is 0) have no room. `bytes_ptr` never moves for a live
 buffer: a longer result than the room holds is a new buffer.
 
+A heap-backed `SharedBin` is one allocation: the 48-byte header, then the
+bytes, then the room, then the trailing NUL, with `bytes_ptr` pointing just past
+the header. The block is allocated unwritten (`UNWRITTEN_BYTE`-filled in debug
+builds) and the NUL is written at creation and after every in-place append, so
+nothing beyond the NUL is read. `bytes_ptr` stays a field because a compiler-baked
+static `SharedBin` keeps its bytes elsewhere in `.data`, and because a view's
+offset is derived from it.
+
 Only the process that owns a buffer appends to it. A view that ends where the
 written bytes end is handed to C as a string with no copy because the byte after
 it is a NUL; another process writing there would replace that NUL under a call

@@ -328,8 +328,9 @@ major collection's from-space is every block (`Heap::next_generation`):
   (`Collection.footprint`, from `heap::pool_footprint`), across every process.
   In-use bytes are the capacity of every block the pool has handed out and not
   had returned (pooled and exact blocks, heaps and gift segments) plus the bytes
-  of every off-heap binary buffer not yet freed (`bits::shared_bin_alloc_with`
-  adds capacity + 1, `shared_bin_destructor_heap` subtracts it); idle bytes are
+  of every off-heap binary block not yet freed (`bits::shared_bin_alloc_with`
+  adds the whole block, header + capacity + 1; `shared_bin_destructor_heap`
+  subtracts it); idle bytes are
   the capacity of the blocks resting in the pool's free lists. The pool owns
   the counters (`Footprint` in `runtime/src/heap/block_pool.rs`), so the
   runtime reads one authority. `Footprint.peak_in_use_bytes`, rendered on

@@ -2200,8 +2200,8 @@ fn gc_handles_cycle_via_forwarding() {
 // ===== BinView + intrusive off-heap chain + post-Cheney sweep =================
 
 use crate::bits::{
-    BINREF_BYTES, BINVIEW_BYTES, BinRef, BinView, SharedBinHandle, alloc_buffer_view, bitstring_bit_len,
-    bitstring_byte_ptr,
+    BINREF_BYTES, BINVIEW_BYTES, BinRef, BinView, SHARED_BIN_BYTES, SharedBinHandle, alloc_buffer_view,
+    bitstring_bit_len, bitstring_byte_ptr,
 };
 use crate::heap::StubSite;
 
@@ -2319,14 +2319,14 @@ fn an_unrooted_view_lets_the_sweep_release_its_shared_bin() {
     assert_eq!(shared_refs(&witness), 1, "sweep removes its exact owned edge");
 }
 
-/// A buffer's bytes are in use while a handle or a BinRef holds it, and leave
+/// A binary's block (header, bytes, NUL) is in use while a handle or a BinRef holds it, and leaves
 /// the count when the sweep drops the last reference.
 #[test]
 fn a_binarys_bytes_are_in_use_until_its_stub_dies_at_a_collection() {
     let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
     let before = pool_footprint().in_use_bytes;
     let witness = SharedBinHandle::from_bytes(&[0x55; 4096]);
-    let buffer_bytes = 4096 + 1;
+    let buffer_bytes = SHARED_BIN_BYTES + 4096 + 1;
     assert_eq!(pool_footprint().in_use_bytes, before + buffer_bytes);
     let _ = alloc_buffer_view(
         &mut h,
