@@ -2,14 +2,16 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-17T21:50:52Z",
+  "close_reason": "Landed in 74abd118d (#677)",
   "created": "2026-11-15T16:14:33Z",
   "description": "With a root `defmodule Geo.Pt do @type t :: integer end`, `@spec f(Geo.Pt.t) :: integer` prints `error[resolve/type-alias]: compiler2 could not resolve function contract for `f`: unknown type name `Geo.Pt.t`` with no location (`--\u003e \u003cgenerated\u003e`), and the program then runs and prints its output on interp and run. Two faults: an error diagnostic that does not stop the compile, and a report with no span.\n\nThe unknown-name half of this probe goes away with fz-sc8.25 (dotted types resolve their module the way other names do). To reproduce after that, name a type that does not exist: `@spec f(Geo.Pt.nope) :: integer`.\n\nWanted: the compile stops, and the report points at the type name in the @spec.",
   "id": "fz-3sy.34",
   "labels": [],
   "parent": "fz-3sy",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "A contract that cannot be resolved stops the compile and says where",
   "type": "bug",
-  "updated_at": "2026-11-17T21:12:35Z"
+  "updated_at": "2026-11-17T21:50:52Z"
 }
