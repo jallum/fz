@@ -2,14 +2,16 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-17T20:19:33Z",
+  "close_reason": "Landed in a60cd82b7 (#645)",
   "created": "2026-11-15T14:44:02Z",
   "description": "`raise MyApp.NotThere, \"x\"` is refused with the error pointing at `runtime:Kernel.fz:200:21`, the `quote` inside the `raise` macro, a line the reader did not write. A user macro does the same: with `defmacro bad(x), do: quote(do: String.nope(unquote(x)))`, a call `Mac.bad(\"x\")` reports `resolve/unknown-import` at the `quote` line of the macro, not at the call.\n\nElixir gives quoted code the caller's line unless the quote says `location: :keep`.\n\nProposal page first: where quoted nodes get their spans during expansion, and what a diagnostic should show (the call site, with the macro's line as a note).",
   "id": "fz-3sy.32",
   "labels": [],
   "parent": "fz-3sy",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "An error in code a macro quoted is reported where the macro was called",
   "type": "bug",
-  "updated_at": "2026-11-15T16:14:25Z"
+  "updated_at": "2026-11-17T20:19:33Z"
 }
