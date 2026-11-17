@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-sc8.239"
+  ],
   "blocks": [
     "fz-sc8.144"
   ],
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "A map literal that spells a struct builds that struct",
   "type": "bug",
-  "updated_at": "2026-11-15T23:27:31Z"
+  "updated_at": "2026-11-17T20:59:46Z"
 }
