@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-17T23:51:45Z",
+  "description": "Found during R2 (fz-9zq.2). insert/2 over {v, l, r} | nil compiles alone. def build(n, x, t), do: build(n - 1, x + 7, insert(t, x)) with build(3, 1, nil) does not finish, on develop 32a14dda4 and under both R2 steps. A sample shows the time in tuple dnf_intersect / dnf_diff / phi_inhabited_tuple, not in call keying. Not established: whether it is an unbounded ascent or one very wide tree union. Scratch 9zq_2/fresh/bst3.fz, bst.sample. Runs after R2.",
+  "id": "fz-9zq.11",
+  "labels": [],
+  "parent": "fz-9zq",
+  "priority": 3,
+  "status": "open",
+  "title": "build/3 feeding insert/2 a growing tree does not finish compiling",
+  "type": "bug",
+  "updated_at": "2026-11-17T23:51:45Z"
+}
