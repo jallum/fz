@@ -11,9 +11,15 @@
   "id": "fz-9x7.22",
   "labels": [],
   "parent": "fz-9x7",
+  "comments": [
+    {
+      "text": "Add an arm (GC session request, from fz-9x7.24): survive with the binary-destructor leak arm as the floor. It separates \"two frees per binary\" from \"system malloc per-free cost\" (fz-9x7.24 measured ~304 instructions / ~300 cycles per binary destruction, 14% of survive cycles, 200k destructions, two frees each: 1025-byte buffer + 48-byte SharedBin box). If mimalloc closes most of the gap, a one-allocation SharedBin layout is still a simplification but a smaller win.",
+      "timestamp": "2026-11-17T23:10:16Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Measure mimalloc as the global allocator for compiled programs against the system allocator (experiment)",
   "type": "task",
-  "updated_at": "2026-11-17T22:03:18Z"
+  "updated_at": "2026-11-17T23:10:16Z"
 }
