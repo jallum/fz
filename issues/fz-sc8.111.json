@@ -9,9 +9,15 @@
   "id": "fz-sc8.111",
   "labels": [],
   "parent": "fz-sc8",
+  "comments": [
+    {
+      "text": "Constraint from the GC session (read on develop, runtime/src/heap/imp.rs:963-1001 alloc_concatenation): a SharedBin buffer is never reallocated or swapped; nothing assigns bytes_ptr after creation. In-place append happens only when right.len() \u003c= spare() of the fixed capacity; otherwise a NEW SharedBin with room total*2 is allocated (the GrownBuffer site). The page should keep this: grow means a new block, never a realloc. GC has a pending proposal (with the user) to lay a SharedBin out as one block, header then bytes then room, which relies on it.",
+      "timestamp": "2026-11-17T23:11:07Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Walking or building a binary costs time linear in its length",
   "type": "bug",
-  "updated_at": "2026-11-15T12:50:11Z"
+  "updated_at": "2026-11-17T23:11:07Z"
 }
