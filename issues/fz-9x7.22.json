@@ -19,11 +19,15 @@
     {
       "text": "Bench round (arms exp/9x7-22-mimalloc 0a6e6e612 on develop a6ae5759d, 25 interleaved runs, dist-full 9, outputs identical). Decision rule: B3M within 1.02x V0 in distiller cycles and 1.25x page reclaims =\u003e S not built. dist-full B3M: cycles 1.035, page reclaims 2.217 =\u003e FAILS, so S (fz-9x7.12) is built. Prediction ('partly: reclaims fall but stay well above V0') held: B3 alone reclaims 5.80x, B3M 2.22x. Side finding, capped arm VM vs V0 (cycles / instructions): survive 0.761/0.818, deadbinlive 0.794/0.844, msg 0.863/0.845, enum 1.031/1.014, distiller 1.000/1.002, others within ~1.7%. Max RSS: spin +29.5%, msg +13.7%, distiller +19.5%. survive/deadbinlive were measured before fz-9x7.25 (one-block binaries), which halves their malloc calls; msg allocates no binaries, so 14% of msg's cycles go to system malloc on some other per-message path.",
       "timestamp": "2026-11-17T23:36:58Z"
+    },
+    {
+      "text": "Follow-up (GC, 2026-11-17): mimalloc cuts cycles 14-24% on survive/deadbinlive/msg at today's cap, where fz makes many small mallocs (two per binary before fz-9x7.25; a Box\u003cParkRecord\u003e per park). B3M ~ VM wherever B3 does nothing, so the malloc effect and the young-cap effect are independent; on enum B3 is the whole win (cycles 0.85) and mimalloc adds nothing. Re-run VM against V0 after fz-9x7.25 and the per-park allocation fix (GC proposal B / Optimize receive-closure A) land: if little of the 14-24% remains, fz needed fewer malloc calls, not a different malloc. fz-9x7.12 (S) priority is unchanged: it owns young-gen large-block page faults, which mimalloc does not fix (2.2x reclaims).",
+      "timestamp": "2026-11-17T23:38:05Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "Measure mimalloc as the global allocator for compiled programs against the system allocator (experiment)",
   "type": "task",
-  "updated_at": "2026-11-17T23:36:58Z"
+  "updated_at": "2026-11-17T23:38:05Z"
 }
