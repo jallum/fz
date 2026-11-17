@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-17T23:49:01Z",
+  "description": "## Why\nfz has no defguard (none in lib/ or src/). Elixir's only way to name a guard expression is defguard/defguardp; the twins of 01114 and 01115 already spell their helper as `defguardp first(l) when hd(l)`.\n\n## What changes\n`defguard name(args) when expr` and `defguardp` define a guard that expands in guard position (and is callable outside guards), as in Elixir. Its body must be guard-safe; a body that is not is a spanned diagnostic. Three-path parity (run, interp, build).\n\n## Signal\nOracle fixtures (Elixir form, `# oracle: self`) for a public and a private defguard used in a def head, a case clause, a receive clause and outside a guard; a diagnostic fixture for a non-guard-safe body; full gate green.",
+  "id": "fz-nhb.15",
+  "labels": [],
+  "parent": "fz-nhb",
+  "priority": 3,
+  "status": "open",
+  "title": "defguard and defguardp define guards, as in Elixir",
+  "type": "task",
+  "updated_at": "2026-11-17T23:49:01Z"
+}
