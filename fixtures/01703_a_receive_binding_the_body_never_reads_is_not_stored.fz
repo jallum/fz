@@ -1,0 +1,78 @@
+#---
+# purpose: a receive field binding stays an unboxed integer unless the clause body reads it; the dispatch still reads it for a guard
+# kind: run
+#---
+#
+# Each probe pre-sends 1000 four-byte messages, then receives them all inside
+# the measured window. A binding the body ignores, or only a guard reads, is
+# never stored in the receive's out-slots, so it makes no scalar box. A binding
+# the body reads is stored as a boxed ref word the body picks up, so that probe
+# makes one box per message on native; the interpreter holds an integer
+# unboxed, so it makes none. The guard probe counts the messages with
+# `x >= 500` and prints 500, proving the guard still reads the field.
+#
+# Each probe prints its result, then scalar boxes per message.
+defmodule P do
+  def fill(i, n) do
+    if i == n do
+      0
+    else
+      send(self(), <<i :: 32>>)
+      fill(i + 1, n)
+    end
+  end
+
+  def ignored(i, n, acc) do
+    if i == n do
+      acc
+    else
+      receive do
+        <<_x :: 32>> -> nil
+      end
+      ignored(i + 1, n, acc + 1)
+    end
+  end
+
+  def guarded(i, n, acc) do
+    if i == n do
+      acc
+    else
+      hit = receive do
+        <<x :: 32>> when x >= 500 -> 1
+        <<_x :: 32>> -> 0
+      end
+      guarded(i + 1, n, acc + hit)
+    end
+  end
+
+  def used(i, n, acc) do
+    if i == n do
+      acc
+    else
+      x = receive do
+        <<x :: 32>> -> x
+      end
+      used(i + 1, n, acc + x)
+    end
+  end
+
+  def boxes(), do: Process.heap_alloc_stats()[:scalar_box_allocs]
+end
+
+P.fill(0, 1000)
+a = P.boxes()
+r = P.ignored(0, 1000, 0)
+b = P.boxes()
+dbg({:ignored, r, div(b - a, 1000)})
+
+P.fill(0, 1000)
+a = P.boxes()
+r = P.guarded(0, 1000, 0)
+b = P.boxes()
+dbg({:guarded, r, div(b - a, 1000)})
+
+P.fill(0, 1000)
+a = P.boxes()
+r = P.used(0, 1000, 0)
+b = P.boxes()
+dbg({:used, r, div(b - a, 1000)})

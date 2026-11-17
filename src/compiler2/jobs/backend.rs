@@ -31,7 +31,7 @@ use super::super::body::{
     LoweredMapKey, LoweredStep, LoweredTail, ValueId,
 };
 use super::super::drive::{FactKey, Job, emit_job_diagnostic};
-use super::super::identity::{ActivationKey, ExecutableKey, ModuleId, RootId};
+use super::super::identity::{ActivationKey, ExecutableKey, ModuleId, RootId, RootKind};
 use super::super::pull::{ProductKey, ProductReadContext, ProductValue, PullOutcome, PullWait};
 use super::super::transport::{
     BoundaryFacts, BoundaryId, CallableFacts, CallableId, ExecutableSymbol, PhysicalLaneSource, TransportPosition,
@@ -135,8 +135,15 @@ pub(crate) fn produce_root_backend_product(
         .activation_key_prerequisites(root, root_entry.function, &root_entry.input)
         .into_iter()
         .flatten();
+    let declarations = match root_entry.kind {
+        RootKind::Runtime => world.submissions_checked(),
+        // A macro root compiles while the source that calls it is still
+        // being scoped, so it cannot wait on that source's declarations.
+        RootKind::Macro => Vec::new(),
+    };
     let keying_waits = std::iter::once(FactKey::RootEntry(root))
         .chain(keying_facts)
+        .chain(declarations)
         .filter(|fact| !context.read_fact(world, FactUse::settled(fact.clone())))
         .map(|fact| PullWait::Fact(FactUse::settled(fact)))
         .collect::<Vec<_>>();

@@ -21,7 +21,7 @@
 
 use crate::any_value::AnyValue;
 use crate::clock::Clock;
-use crate::heap::GcStats;
+use crate::heap::{GcStats, pool_footprint};
 use crate::process::{Collection, CollectionBoundary, Disposition, PidId, Process, ProcessState};
 use crate::scheduler_hooks::{HaltHook, TimerCancelHook, TimerScheduleHook};
 use crate::telemetry::{RuntimeEvent, TimerArmed, TimerCancelled, TimerFired};
@@ -182,6 +182,7 @@ pub fn end_quantum<S: Scheduler + ?Sized>(scheduler: &mut S, process: &mut Proce
             pid: process.pid,
             boundary,
             stats: scheduler.collect_heap(process),
+            footprint: pool_footprint(),
         };
         scheduler.observe(RuntimeEvent::Gc(&collection));
     }

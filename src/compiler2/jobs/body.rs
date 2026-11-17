@@ -3206,6 +3206,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         }
         let mut body = LoweredBody::clauses(lowered, entries, std::mem::take(&mut self.generated_ids))
             .with_value_count(self.next_value as usize);
+        drop_unread_receive_arguments(&mut body);
         self.construct_entry_captures(&mut body);
         body
     }
@@ -4696,6 +4697,59 @@ pub(super) fn retained_value_ids(body: &LoweredBody) -> ValueSet {
         retained.extend(tables.entry_uses_from(entry_id, 0));
     }
     retained
+}
+
+/// A receive hands each winning clause its bound subjects through the park
+/// record, one boxed ref word apiece. A binding nothing in the clause reads
+/// (`_x`, or a name only the guard reads, which the dispatch plan reads from
+/// the message itself) is dropped from the clause's edge and entry, so it is
+/// neither extracted nor stored.
+fn drop_unread_receive_arguments(body: &mut LoweredBody) {
+    use super::super::body::ValueRole;
+    let LoweredBody::Clauses { entries, tables, .. } = body;
+    let mut unread = Vec::new();
+    for (owner, entry) in entries.iter().enumerate() {
+        if !matches!(entry.tail, LoweredTail::Receive(_)) {
+            continue;
+        }
+        for (index, edge) in entry.tail.outcome_edges().iter().enumerate() {
+            let read = values_read_from(entries, tables, edge.target);
+            unread.extend(
+                edge.arguments
+                    .iter()
+                    .filter(|argument| argument.role == ValueRole::Semantic && !read.contains(&argument.parameter))
+                    .map(|argument| (owner, index, argument.parameter)),
+            );
+        }
+    }
+    for (owner, index, parameter) in unread {
+        let edge = &mut entries[owner].tail.outcome_edges_mut()[index];
+        let target = edge.target.as_u32() as usize;
+        edge.arguments = std::mem::take(&mut edge.arguments)
+            .into_iter()
+            .filter(|argument| argument.parameter != parameter)
+            .collect();
+        entries[target].params.retain(|param| *param != parameter);
+    }
+}
+
+/// The values read by `entry` or by any entry it can reach.
+fn values_read_from(
+    entries: &[LoweredEntry],
+    tables: &super::super::body::BodyTables,
+    entry: ControlEntryId,
+) -> HashSet<ValueId> {
+    let mut read = HashSet::default();
+    let mut visited = HashSet::default();
+    let mut pending = vec![entry];
+    while let Some(entry) = pending.pop() {
+        if !visited.insert(entry) {
+            continue;
+        }
+        read.extend(tables.entry_uses_from(entry, 0));
+        pending.extend(child_entries(&entries[entry.as_u32() as usize].tail));
+    }
+    read
 }
 
 pub(super) fn child_entries(tail: &LoweredTail) -> impl Iterator<Item = ControlEntryId> + '_ {

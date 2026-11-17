@@ -36,6 +36,11 @@
 //! an activation with no type variables asks no fact at all. That drops 28
 //! to 22, and the 26 (kind, subject) pairs to 20.
 //!
+//! The submission's `CheckDeclarations` asks for its declarations to be
+//! checked whether or not anything reaches them. `def main(), do: 1`
+//! declares nothing, so the check gates on the source's scope and concludes
+//! in its one run: 23 starts over 21 pairs.
+//!
 //! Every other kind, and every other subject of a gated kind -- including
 //! every `SeedRoot` -- runs exactly once.
 
@@ -52,6 +57,7 @@ fn job_kind(job: &Job) -> &'static str {
     match job {
         Job::IndexCode(_) => "IndexCode",
         Job::ScopeCode(_) => "ScopeCode",
+        Job::CheckDeclarations(_) => "CheckDeclarations",
         Job::DefineModule(_) => "DefineModule",
         Job::DefineModuleInterface(_) => "DefineModuleInterface",
         Job::ExpandFunctionSource(_) => "ExpandFunctionSource",
@@ -75,7 +81,7 @@ fn job_kind(job: &Job) -> &'static str {
     }
 }
 
-/// The 9 job kinds fz-afu.2 gives a static gate (`.agent/docs/fact-engine.md`,
+/// The 10 job kinds given a static gate (`.agent/docs/fact-engine.md`,
 /// "A job's gates"). A blocked-only run of any other kind means a job started
 /// before its declared inputs existed.
 const GATED_KINDS: &[&str] = &[
@@ -83,6 +89,7 @@ const GATED_KINDS: &[&str] = &[
     "DefineFunction",
     "ExpandFunctionSource",
     "ScopeCode",
+    "CheckDeclarations",
     "DeriveInputDemand",
     "DeriveRecursive",
     "DeriveRuntimeDemand",
@@ -144,8 +151,8 @@ fn def_main_do_1_starts_each_job_once_per_subject() {
     };
     assert_eq!(
         runs.len(),
-        22,
-        "expected 22 job starts, saw {}:\n{:#?}",
+        23,
+        "expected 23 job starts, saw {}:\n{:#?}",
         runs.len(),
         subjects_and_kinds(),
     );
@@ -156,8 +163,8 @@ fn def_main_do_1_starts_each_job_once_per_subject() {
     }
     assert_eq!(
         per_subject.len(),
-        20,
-        "expected 20 distinct (kind, subject) pairs, saw {}",
+        21,
+        "expected 21 distinct (kind, subject) pairs, saw {}",
         per_subject.len(),
     );
 

@@ -1,8 +1,8 @@
-//! Bit-level primitives for fz bitstrings. JIT/interp/AOT-shared.
-//!
-//! The Value-aware surface (encode_field, encode_integer, match_bitstring,
-//! etc.) that the AST evaluator uses lives in the fz binary's own
-//! src/bitstr.rs and imports primitives from here.
+//! The bit codec for fz bitstrings, shared by the interpreter, JIT and AOT
+//! paths: `BitWriter` and `BitReader` move bits and bytes, `Endian` and the
+//! `apply_endian_*` and `sign_extend` helpers fix a field's byte order and
+//! sign, and the UTF-8, UTF-16 and UTF-32 functions encode and decode code
+//! points.
 
 /// Field-type tag, matches fz's bitstring expression syntax.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

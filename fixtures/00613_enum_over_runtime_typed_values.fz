@@ -1,11 +1,11 @@
 #---
 # purpose: "Enum and a user protocol's spec'd function accept a value typed only at runtime (a decoded JSON list), the same as a concrete list"
-# oracle: oracle.exs
-# oracle.stamp: 075626d083047f7b
+# oracle: self
+# oracle.stamp: 197d208d4bdc20c0
 #---
 #
 # `JSON.decode!` answers a value the compiler knows nothing about. Every
-# function below declares its parameter as `Protocol.t(a)`; a call whose
+# function below declares its parameter as `Sz.t()`; a call whose
 # argument is only known at runtime must dispatch on the protocol at runtime,
 # exactly as the concrete-list call does.
 defprotocol Sz do
@@ -21,15 +21,19 @@ defimpl Sz, for: Map do
 end
 
 defmodule Measure do
-  @spec c(Sz.t(a)) :: integer
+  @spec c(Sz.t()) :: integer
   def c(x), do: Sz.sz(x)
 end
 
-def main() do
-  decoded = JSON.decode!("[\"fz\",\"x\"]")
+defmodule Main do
+  def main() do
+    decoded = JSON.decode!("[\"fz\",\"x\"]")
 
-  dbg(Enum.count(decoded))
-  dbg(Enum.map(decoded, fn (word) -> word <> "!" end))
-  dbg(Measure.c(decoded))
-  dbg(Measure.c([1, 2, 3]))
+    IO.inspect(Enum.count(decoded))
+    IO.inspect(Enum.map(decoded, fn (word) -> word <> "!" end))
+    IO.inspect(Measure.c(decoded))
+    IO.inspect(Measure.c([1, 2, 3]))
+  end
 end
+
+Main.main()

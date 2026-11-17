@@ -26,7 +26,7 @@ use fz_runtime::extern_binary::{fz_binary_as_cstring, fz_binary_as_ptr};
 use fz_runtime::heap::SHARED_BIN_THRESHOLD_BYTES;
 use fz_runtime::ir_runtime::{
     fz_alloc_binview_from_static, fz_alloc_bitstring_const, fz_bs_begin, fz_bs_field_end, fz_bs_field_spec,
-    fz_bs_finalize, fz_bs_read_binary_ref, fz_bs_read_int_ref, fz_bs_write_field_ref, fz_bs_write_int,
+    fz_bs_finalize, fz_bs_read_binary_ref, fz_bs_read_int_ref, fz_bs_write_field_ref, fz_bs_write_word,
     fz_int_float_cmp, fz_list_cons_any, fz_list_cons_atom, fz_list_cons_float, fz_list_cons_int, fz_map_dest_begin,
     fz_map_dest_begin_update, fz_map_dest_freeze, fz_map_dest_publish, fz_map_dest_put_parts, fz_map_dest_put_ref,
     fz_map_get_atom_key_ref, fz_map_get_float_key_ref, fz_map_get_int_key_ref, fz_map_get_ref, fz_map_named_schema_ref,
@@ -401,11 +401,15 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
                         unreachable!("only a pattern sizes a segment by a pinned binary, never a construction")
                     }
                 };
-                if f.ty.writes_integer_word() {
-                    let raw = body.as_raw_i64(var_env, f.value.0);
+                if f.ty.writes_scalar_word() {
+                    let raw = if f.ty == BitType::Float {
+                        body.as_float_word(var_env, f.value.0)
+                    } else {
+                        body.as_raw_i64(var_env, f.value.0)
+                    };
                     runtime_call!(
                         body,
-                        fz_bs_write_int,
+                        fz_bs_write_word,
                         [process, raw, ty_tag, size_present, size_value, unit, endian]
                     );
                 } else {
@@ -413,7 +417,7 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
                     runtime_call!(
                         body,
                         fz_bs_write_field_ref,
-                        [process, value_ref, ty_tag, size_present, size_value, unit, endian]
+                        [process, value_ref, ty_tag, size_present, size_value, unit]
                     );
                 }
             }

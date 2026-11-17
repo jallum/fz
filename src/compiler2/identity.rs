@@ -748,6 +748,49 @@ impl ExpandedFunctionSourceMap {
     }
 }
 
+/// What each submitted source declares: the modules it writes, the functions
+/// it defines, and the `@type`s it declares, in the order they were noted. A
+/// declaration is checked because its source wrote it, whether or not
+/// anything reaches it, and this is where that check finds them.
+#[derive(Debug, Default)]
+pub struct SourceDeclarationMap {
+    by_owner: HashMap<SourceOwner, SourceDeclarations>,
+}
+
+#[derive(Debug, Default)]
+pub struct SourceDeclarations {
+    pub modules: Vec<ModuleId>,
+    pub functions: Vec<FunctionId>,
+    pub types: Vec<TypeName>,
+}
+
+impl SourceDeclarationMap {
+    pub fn note_module(&mut self, owner: SourceOwner, module: ModuleId) {
+        note_once(&mut self.by_owner.entry(owner).or_default().modules, module);
+    }
+
+    pub fn note_function(&mut self, owner: SourceOwner, function: FunctionId) {
+        note_once(&mut self.by_owner.entry(owner).or_default().functions, function);
+    }
+
+    pub fn note_type(&mut self, owner: SourceOwner, name: &TypeName) {
+        let types = &mut self.by_owner.entry(owner).or_default().types;
+        if !types.contains(name) {
+            types.push(name.clone());
+        }
+    }
+
+    pub fn get(&self, owner: SourceOwner) -> Option<&SourceDeclarations> {
+        self.by_owner.get(&owner)
+    }
+}
+
+fn note_once<T: PartialEq>(noted: &mut Vec<T>, item: T) {
+    if !noted.contains(&item) {
+        noted.push(item);
+    }
+}
+
 /// The noted `@type` declarations, keyed by [`TypeName`]. Populated while
 /// scoping (fz-rh2.12.1) and read by `DeriveTypeDef` (fz-rh2.12.2). A type is
 /// an identity that may be referenced before — or without ever — being

@@ -1,5 +1,5 @@
 use super::*;
-use crate::heap::{GcStats, SchemaRegistry, StubCounts, StubSite};
+use crate::heap::{Footprint, GcStats, SchemaRegistry, StubCounts, StubSite};
 use crate::process::CollectionBoundary;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -68,7 +68,7 @@ fn a_probe_writes_its_outcome_and_what_the_gift_cost() {
 }
 
 #[test]
-fn a_collection_writes_its_boundary_and_the_stats_that_describe_it() {
+fn a_collection_writes_its_boundary_its_stats_and_the_bytes_in_use_and_idle_when_it_ended() {
     let mut stubs_made = StubCounts::default();
     let mut stubs_survived = StubCounts::default();
     let mut binrefs_made = StubCounts::default();
@@ -95,23 +95,33 @@ fn a_collection_writes_its_boundary_and_the_stats_that_describe_it() {
             stubs_survived,
             ..GcStats::default()
         },
+        footprint: Footprint {
+            in_use_bytes: 9216,
+            idle_bytes: 4096,
+            peak_in_use_bytes: 20480,
+        },
     };
     assert_eq!(
         line(RuntimeEvent::Gc(&collection)),
-        r#"{"name":["fz","runtime","gc"],"time_ns":12,"kind":"event","span_id":3,"parent_span_id":4,"measurements":{},"metadata":{"pid":5,"boundary":"park","generation":"minor","copied_bytes":288,"live_bytes":288,"young_bytes":3072,"young_budget":2048,"from_space_capacity_bytes":4096,"blocks_released":1,"blocks_after":2,"stub_visits":7,"stubs_made":{"appended_in_place":3,"window_of_buffer":0,"grown_buffer":0,"filled_buffer":0,"message_copy":1,"static_literal":0},"binrefs_made":{"appended_in_place":0,"window_of_buffer":0,"grown_buffer":0,"filled_buffer":0,"message_copy":1,"static_literal":0},"stubs_survived":{"appended_in_place":1,"window_of_buffer":0,"grown_buffer":0,"filled_buffer":0,"message_copy":0,"static_literal":0}}}"#
+        r#"{"name":["fz","runtime","gc"],"time_ns":12,"kind":"event","span_id":3,"parent_span_id":4,"measurements":{},"metadata":{"pid":5,"boundary":"park","generation":"minor","copied_bytes":288,"live_bytes":288,"young_bytes":3072,"young_budget":2048,"from_space_capacity_bytes":4096,"blocks_released":1,"blocks_after":2,"stub_visits":7,"in_use_bytes":9216,"idle_bytes":4096,"stubs_made":{"appended_in_place":3,"window_of_buffer":0,"grown_buffer":0,"filled_buffer":0,"message_copy":1,"static_literal":0},"binrefs_made":{"appended_in_place":0,"window_of_buffer":0,"grown_buffer":0,"filled_buffer":0,"message_copy":1,"static_literal":0},"stubs_survived":{"appended_in_place":1,"window_of_buffer":0,"grown_buffer":0,"filled_buffer":0,"message_copy":0,"static_literal":0}}}"#
     );
 }
 
 #[test]
-fn a_run_end_writes_the_pool_census() {
+fn a_run_end_writes_the_pool_census_and_the_bytes_in_use_idle_and_at_peak() {
     let ended = RunEnded {
         pool_outstanding_before_run: 30,
         pool_outstanding_after_run: 30,
         pool_cached_blocks: 1,
+        footprint: Footprint {
+            in_use_bytes: 9216,
+            idle_bytes: 4096,
+            peak_in_use_bytes: 20480,
+        },
     };
     assert_eq!(
         line(RuntimeEvent::RunEnded(ended)),
-        r#"{"name":["fz","runtime","run_ended"],"time_ns":12,"kind":"event","span_id":3,"parent_span_id":4,"measurements":{},"metadata":{"pool_outstanding_before_run":30,"pool_outstanding_after_run":30,"pool_cached_blocks":1}}"#
+        r#"{"name":["fz","runtime","run_ended"],"time_ns":12,"kind":"event","span_id":3,"parent_span_id":4,"measurements":{},"metadata":{"pool_outstanding_before_run":30,"pool_outstanding_after_run":30,"pool_cached_blocks":1,"in_use_bytes":9216,"idle_bytes":4096,"peak_in_use_bytes":20480}}"#
     );
 }
 
@@ -149,4 +159,20 @@ fn a_sample_counts_blocks_still_held_and_matches_once_they_are_returned() {
         returned.pool_outstanding_after_run, before,
         "tearing the process down returns every block it took"
     );
+}
+
+#[test]
+fn a_sample_reads_the_threads_footprint_with_a_live_process_holding_bytes() {
+    let before = crate::heap::pool_footprint();
+    let process = crate::process::Process::new(Rc::new(RefCell::new(SchemaRegistry::new())));
+    let held = RunEnded::sample(0).footprint;
+    assert!(
+        held.in_use_bytes > before.in_use_bytes,
+        "a live process holds its tip block"
+    );
+    assert!(held.peak_in_use_bytes >= held.in_use_bytes);
+    drop(process);
+    let returned = RunEnded::sample(0).footprint;
+    assert_eq!(returned.in_use_bytes, before.in_use_bytes, "teardown returns its bytes");
+    assert!(returned.peak_in_use_bytes >= held.peak_in_use_bytes);
 }

@@ -883,9 +883,25 @@ pub fn object_size(heap_word: u64) -> usize {
     object_size_with_struct_payload(heap_word, |_| panic!("Struct size requires the owning SchemaRegistry"))
 }
 
-pub fn object_size_with_struct_payload(heap_word: u64, mut struct_payload_size: impl FnMut(u32) -> usize) -> usize {
+pub fn object_size_with_struct_payload(heap_word: u64, struct_payload_size: impl FnMut(u32) -> usize) -> usize {
     let kind = heap_kind_from_tagged(heap_word).expect("object_size requires a heap object word");
     let addr = heap_word_addr(heap_word) as *const u8;
+    unsafe { object_size_of_kind(kind, addr, struct_payload_size) }
+}
+
+/// The size of the heap object of `kind` at `addr`. Fixed-size kinds answer
+/// with a constant; only a map, struct, closure or bitstring reads its header.
+///
+/// # Safety
+///
+/// `addr` must point to an initialized object of `kind`, and `kind` must be a
+/// heap kind.
+#[inline]
+pub unsafe fn object_size_of_kind(
+    kind: ValueKind,
+    addr: *const u8,
+    mut struct_payload_size: impl FnMut(u32) -> usize,
+) -> usize {
     unsafe {
         match kind {
             ValueKind::LIST => size_of_list(addr),
@@ -896,7 +912,7 @@ pub fn object_size_with_struct_payload(heap_word: u64, mut struct_payload_size: 
             ValueKind::BINVIEW => size_of_binview(addr),
             ValueKind::BINREF => size_of_binref(addr),
             ValueKind::RESOURCE => size_of_resource(addr),
-            _ => unreachable!("heap_kind_from_tagged yields heap kinds"),
+            _ => unreachable!("object_size_of_kind requires a heap kind"),
         }
     }
 }
