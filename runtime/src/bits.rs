@@ -35,7 +35,7 @@ use crate::any_value::{
 };
 use crate::heap::{binary_buffer_allocated, binary_buffer_freed};
 use crate::sync::{AtomicUsize, Ordering, fence};
-use std::mem::{align_of, forget, size_of};
+use std::mem::{MaybeUninit, align_of, forget, size_of};
 use std::ptr::{NonNull, copy_nonoverlapping, read, slice_from_raw_parts_mut, write};
 
 // ===== SharedBin layout =====================================================
@@ -169,13 +169,17 @@ pub unsafe extern "C" fn shared_bin_destructor_noop(_p: *mut SharedBin) {}
 /// destructor installed. Bytes are leaked separately as a `Box<[u8]>` so
 /// the destructor can reconstruct both boxes independently.
 pub fn shared_bin_alloc(bytes: &[u8]) -> *mut SharedBin {
-    shared_bin_alloc_with(bytes.len(), 0, |dest| dest.copy_from_slice(bytes))
+    shared_bin_alloc_with(bytes.len(), 0, |dest| {
+        dest.write_copy_of_slice(bytes);
+    })
 }
 
 /// Allocate a heap-backed SharedBin holding `bytes` and `spare` more bytes of
 /// room for its owner to append into.
 pub fn shared_bin_alloc_with_room(bytes: &[u8], spare: usize) -> *mut SharedBin {
-    shared_bin_alloc_with(bytes.len(), spare, |dest| dest.copy_from_slice(bytes))
+    shared_bin_alloc_with(bytes.len(), spare, |dest| {
+        dest.write_copy_of_slice(bytes);
+    })
 }
 
 /// Allocate a heap-backed SharedBin of `bytes_len` bytes and `spare` more
@@ -184,10 +188,15 @@ pub fn shared_bin_alloc_with_room(bytes: &[u8], spare: usize) -> *mut SharedBin 
 /// copied in. Everything past the written bytes is zero, so the trailing NUL is
 /// in place. The trailing NUL is invisible to the language (bytes_len
 /// unchanged) and underwrites the c_string extern marshal contract.
-pub fn shared_bin_alloc_with(bytes_len: usize, spare: usize, fill: impl FnOnce(&mut [u8])) -> *mut SharedBin {
+pub fn shared_bin_alloc_with(
+    bytes_len: usize,
+    spare: usize,
+    fill: impl FnOnce(&mut [MaybeUninit<u8>]),
+) -> *mut SharedBin {
     let capacity = bytes_len + spare;
-    let mut buf: Box<[u8]> = vec![0u8; capacity + 1].into_boxed_slice();
+    let mut buf = Box::<[u8]>::new_zeroed_slice(capacity + 1);
     fill(&mut buf[..bytes_len]);
+    let buf = unsafe { buf.assume_init() };
     let bytes_ptr: *const u8 = Box::leak(buf).as_ptr();
     binary_buffer_allocated(capacity + 1);
     let bin = Box::new(SharedBin {
@@ -285,7 +294,7 @@ impl SharedBinHandle {
 
     /// Allocate a new heap-backed SharedBin of `bytes_len` bytes that `fill`
     /// writes in place, and wrap the initial refcount.
-    pub fn from_filled(bytes_len: usize, fill: impl FnOnce(&mut [u8])) -> Self {
+    pub fn from_filled(bytes_len: usize, fill: impl FnOnce(&mut [MaybeUninit<u8>])) -> Self {
         let p = shared_bin_alloc_with(bytes_len, 0, fill);
         Self(NonNull::new(p).expect("shared_bin_alloc_with returned null"))
     }

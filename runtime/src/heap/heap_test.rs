@@ -12,6 +12,7 @@ use crate::resource::ResourceStub;
 use crate::sync::Ordering;
 use std::cell::RefCell;
 use std::f64::consts::PI;
+use std::mem::MaybeUninit;
 use std::ptr::{null_mut, read, write};
 use std::rc::Rc;
 
@@ -2550,7 +2551,7 @@ fn alloc_bitstring_large_routes_to_shared_zone() {
 #[test]
 fn alloc_bitstring_with_fills_an_inline_payload_in_place() {
     let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
-    let value = h.alloc_bitstring_with(32, 256, |dest| dest.fill(7));
+    let value = h.alloc_bitstring_with(32, 256, |dest| dest.fill(MaybeUninit::new(7)));
     assert_eq!(value.kind(), ValueKind::BITSTRING);
     let tagged = heap_object_word(value.heap_addr().expect("bitstring"), ValueKind::BITSTRING);
     let payload = unsafe { std::slice::from_raw_parts(bitstring_byte_ptr(tagged), 33) };
@@ -2563,7 +2564,7 @@ fn alloc_bitstring_with_fills_an_inline_payload_in_place() {
 fn alloc_bitstring_with_fills_a_shared_buffer_in_place_and_counts_it_once() {
     let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
     let len = SHARED_BIN_THRESHOLD_BYTES + 36;
-    let value = h.alloc_bitstring_with(len, (len * 8) as u64, |dest| dest.fill(9));
+    let value = h.alloc_bitstring_with(len, (len * 8) as u64, |dest| dest.fill(MaybeUninit::new(9)));
     assert_eq!(value.kind(), ValueKind::BINVIEW);
     let tagged = heap_object_word(value.heap_addr().expect("binview"), ValueKind::BINVIEW);
     let payload = unsafe { std::slice::from_raw_parts(bitstring_byte_ptr(tagged), len + 1) };
