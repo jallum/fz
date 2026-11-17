@@ -1,0 +1,92 @@
+#---
+# purpose: a guard that compares an integer with `tuple_size/1` boxes neither, in a user guard and in `Kernel.elem/2`'s own; a guard whose nested call mixes an integer with an atom still answers correctly
+# kind: run
+#---
+#
+# Each loop takes 1,000 steps, and the program prints the heap scalars boxed per
+# step: a user guard `k < tuple_size(t)`, then `elem(t, 1)` whose guard is
+# `index < tuple_size(tuple)`, then a guard `k < reach(x)` whose nested call
+# answers an integer for a tuple and an atom for `:unbounded`. The integer a
+# nested call answers is compared as it came, and the mixed call has to hand
+# the comparison one form for both answers, so it boxes the integer.
+#
+# Before the loops it prints which branch each guard takes for operands on both
+# sides of the bound, in function clauses and in a `receive`, whose matcher
+# joins a nested call's answers on its own.
+defmodule P do
+  def below(k, t) when k < tuple_size(t), do: :below
+  def below(_k, _t), do: :not_below
+
+  defp reach(t) when is_tuple(t), do: tuple_size(t)
+  defp reach(:unbounded), do: :unbounded
+
+  def within(k, x) when k < reach(x), do: :within
+  def within(_k, _x), do: :beyond
+
+  def below_loop(t, i, n) do
+    if i == n do
+      :done
+    else
+      _ = below(1, t)
+      below_loop(t, i + 1, n)
+    end
+  end
+
+  def elem_loop(t, i, n) do
+    if i == n do
+      :done
+    else
+      _ = elem(t, 1)
+      elem_loop(t, i + 1, n)
+    end
+  end
+
+  def within_loop(t, i, n) do
+    if i == n do
+      :done
+    else
+      _ = within(1, t)
+      within_loop(t, i + 1, n)
+    end
+  end
+
+  def heard(k, t) do
+    send(self(), {k, t})
+
+    receive do
+      {k, t} when k < tuple_size(t) -> :heard_below
+      {_k, _t} -> :heard_not_below
+    end
+  end
+
+  def heard_reach(k, x) do
+    send(self(), {k, x})
+
+    receive do
+      {k, x} when k < reach(x) -> :heard_within
+      {_k, _x} -> :heard_beyond
+    end
+  end
+
+  def boxed(a, b), do: div(b[:scalar_box_allocs] - a[:scalar_box_allocs], 1000)
+end
+
+t = {3, 5}
+dbg({P.below(1, t), P.below(2, t), P.below(3, t), P.below(4, t)})
+dbg({P.within(1, t), P.within(2, t), P.within(3, t), P.within(9, :unbounded)})
+dbg({P.heard(1, t), P.heard(2, t), P.heard_reach(1, t), P.heard_reach(2, t), P.heard_reach(9, :unbounded)})
+
+a = Process.heap_alloc_stats()
+_ = P.below_loop(t, 0, 1000)
+b = Process.heap_alloc_stats()
+dbg({:user_guard, P.boxed(a, b)})
+
+a = Process.heap_alloc_stats()
+_ = P.elem_loop(t, 0, 1000)
+b = Process.heap_alloc_stats()
+dbg({:elem, P.boxed(a, b)})
+
+a = Process.heap_alloc_stats()
+_ = P.within_loop(t, 0, 1000)
+b = Process.heap_alloc_stats()
+dbg({:mixed_lanes, P.boxed(a, b)})

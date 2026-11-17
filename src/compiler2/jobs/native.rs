@@ -3903,6 +3903,11 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         Ok(var)
     }
 
+    fn leave_guard_dispatch(ctx: &mut NativeFnCtx, fail: &mut Option<BlockId>) {
+        let fail_b = *fail.get_or_insert_with(|| ctx.builder.block(vec![]));
+        ctx.set_term(Term::Goto(fail_b, vec![]));
+    }
+
     /// Leaves the guard through its failure block. What follows in the
     /// expression is unreachable, and goes on in a block nothing enters.
     fn fail_guard(ctx: &mut NativeFnCtx, fail: &mut Option<BlockId>) -> Var {
@@ -3968,17 +3973,32 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             },
         )
         .reading(guard_body_subjects(&dispatch.bodies));
+        let mut answers = Vec::new();
         self.lower_guard_dispatch_node(
             ctx,
             &dispatch.plan,
             &dispatch.bodies,
             dispatch.plan.graph.root,
             done_b,
+            &mut answers,
             fail,
             &mut dispatch_state,
         )?;
+        if let Some(ty) = self.join_type(ctx, &answers) {
+            ctx.value_types.insert(done_value, ty);
+        }
         ctx.current_block = done_b;
         Ok(done_value)
+    }
+
+    /// The type the join of a guard dispatch's bodies holds: the union of what
+    /// each body answered. The join takes the lane that type has, so bodies that
+    /// all answer an integer meet in a raw integer and the guard that reads it
+    /// never sees a box. One body of unknown type leaves the join untyped.
+    fn join_type(&mut self, ctx: &NativeFnCtx, answers: &[Var]) -> Option<Ty> {
+        let mut tys = answers.iter().map(|answer| ctx.value_types.get(answer).copied());
+        let first = tys.next()??;
+        tys.try_fold(first, |joined, ty| Some(self.world.types_mut().union(joined, ty?)))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -3989,6 +4009,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         bodies: &[PatternGuardExpr<Ty>],
         node_id: GraphNodeId,
         done_b: BlockId,
+        answers: &mut Vec<Var>,
         fail: &mut Option<BlockId>,
         state: &mut DispatchState,
     ) -> Result<(), FatalError> {
@@ -4001,8 +4022,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         };
         match node {
             DispatchNode::Fail => {
-                let fail_b = *fail.get_or_insert_with(|| ctx.builder.block(vec![]));
-                ctx.set_term(Term::Goto(fail_b, vec![]));
+                Self::leave_guard_dispatch(ctx, fail);
                 Ok(())
             }
             DispatchNode::Outcome { outcome, .. } => {
@@ -4020,7 +4040,13 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                         format!("guard dispatch body {} is out of bounds", outcome.body_id),
                     )
                 })?;
+                if matches!(body, PatternGuardExpr::Fails) {
+                    // A body that fails the guard answers nothing to the join.
+                    Self::leave_guard_dispatch(ctx, fail);
+                    return Ok(());
+                }
                 let value = self.lower_guard_expr(ctx, plan, state, body, fail)?;
+                answers.push(value);
                 ctx.set_term(Term::Goto(done_b, vec![value]));
                 Ok(())
             }
@@ -4037,7 +4063,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 BranchOrigin::ClauseDispatch,
                 state,
                 &mut |lowerer, ctx, target, state| {
-                    lowerer.lower_guard_dispatch_node(ctx, plan, bodies, target, done_b, fail, state)
+                    lowerer.lower_guard_dispatch_node(ctx, plan, bodies, target, done_b, answers, fail, state)
                 },
             ),
         }
