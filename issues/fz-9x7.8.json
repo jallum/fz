@@ -1,7 +1,6 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-9x7.14",
     "fz-9x7.15"
   ],
   "blocks": [],
@@ -24,5 +23,5 @@
   "status": "open",
   "title": "Off-heap binary bytes count toward the collection trigger",
   "type": "bug",
-  "updated_at": "2026-11-17T21:44:56Z"
+  "updated_at": "2026-11-17T21:44:57Z"
 }
