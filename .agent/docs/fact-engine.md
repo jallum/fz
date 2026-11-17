@@ -1459,7 +1459,11 @@ types cannot overpackage a schema.
 closure, reads each `StructDefined(module)` through `ProductReadContext`, and
 only then materializes the typed `ModuleName`-to-fields map. The map remains the
 single interpreter/native/AOT schema input, but its membership and invalidation
-are root-local and fact-tracked. No product snapshots `StructDefMap`, and a
+are root-local and fact-tracked. Native (`native_codegen/driver.rs`) and the
+interpreter (`IrInterpRuntime::register_struct_schemas`) each register every
+entry once, at load, so a map that spells a struct is named by it before any
+code builds one. Building a struct or raising an exception looks its id up;
+nothing registers a named schema at run time. No product snapshots `StructDefMap`, and a
 struct reached only by another root cannot make retained and fresh calculations
 disagree. `ModuleMap::reference_named` interns one `ModuleId` per parsed
 `ModuleName`. The type tag and runtime schema compare that same typed source

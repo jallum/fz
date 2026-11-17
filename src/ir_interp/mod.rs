@@ -152,6 +152,8 @@ pub(crate) struct IrInterpRuntime {
     next_pid: u32,
     schemas: Rc<RefCell<SchemaRegistry>>,
     tuple_schema_ids: HashMap<usize, u32>,
+    /// The schema id of each struct the program declares, registered at load.
+    named_schema_ids: HashMap<fz_runtime::module_name::ModuleName, u32>,
     /// The run queue and timer wheel.
     core: SchedulingCore,
     backend_resume: HashMap<u32, BackendResumeEntry>,
@@ -173,6 +175,7 @@ impl IrInterpRuntime {
             next_pid: 2,
             schemas: Rc::new(RefCell::new(SchemaRegistry::new())),
             tuple_schema_ids: HashMap::default(),
+            named_schema_ids: HashMap::default(),
             core: SchedulingCore::new(),
             backend_resume: HashMap::default(),
             backend_parked: HashMap::default(),
@@ -237,6 +240,30 @@ impl IrInterpRuntime {
 
     fn schemas(&self) -> Rc<RefCell<SchemaRegistry>> {
         self.schemas.clone()
+    }
+
+    /// Registers each of `schemas`, the program's structs, so a map that
+    /// spells one is named by it before any code builds one.
+    fn register_struct_schemas<'a>(
+        &mut self,
+        schemas: impl Iterator<Item = (&'a fz_runtime::module_name::ModuleName, &'a Vec<String>)>,
+    ) {
+        let mut registry = self.schemas.borrow_mut();
+        for (name, fields) in schemas {
+            let id = registry.register(Schema::named_struct(name.clone(), fields.iter().cloned()));
+            self.named_schema_ids.insert(name.clone(), id);
+        }
+    }
+
+    fn named_schema_id(&self, module: &fz_runtime::module_name::ModuleName) -> Result<u32, String> {
+        self.named_schema_ids
+            .get(module)
+            .copied()
+            .ok_or_else(|| format!("internal error: the program lacks the struct `{module}`"))
+    }
+
+    fn named_schema_ids(&self) -> &HashMap<fz_runtime::module_name::ModuleName, u32> {
+        &self.named_schema_ids
     }
 
     fn tuple_schema_id(&mut self, arity: usize) -> u32 {

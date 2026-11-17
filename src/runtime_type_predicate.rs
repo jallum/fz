@@ -1251,12 +1251,9 @@ pub(crate) struct RuntimeValueReader<'a> {
 }
 
 impl RuntimeValueReader<'_> {
-    /// Whether `schema` is the id of a named struct the module declares.
+    /// Whether `schema` is the id of a named struct the program declares.
     fn is_named_schema(&self, schema: u32) -> bool {
-        self.module
-            .struct_schemas
-            .keys()
-            .any(|name| self.named_schema_ids.get(name) == Some(&schema))
+        self.named_schema_ids.values().any(|id| *id == schema)
     }
 
     /// Whether `schema` is an UNNAMED struct whose arity `arities` admits.

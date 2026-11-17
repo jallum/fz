@@ -1,0 +1,19 @@
+#---
+# purpose: "A map that spells a struct prints as that struct before the program first builds one, on every path, as in Elixir"
+# oracle: self
+# oracle.stamp: e71ccb208e828b77
+#---
+defmodule S do
+  defstruct a: 0, b: []
+end
+
+defmodule Main do
+  def main() do
+    early = Map.put(%{a: 3, b: [4]}, :__struct__, S)
+    IO.inspect(early)
+    IO.inspect(%S{a: 1})
+    IO.inspect(early == %S{a: 3, b: [4]})
+  end
+end
+
+Main.main()
