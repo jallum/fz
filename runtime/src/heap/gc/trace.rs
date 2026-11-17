@@ -13,6 +13,7 @@ use crate::any_value::{
 use crate::bits::BinView;
 use std::ptr::{read, write};
 
+#[inline]
 pub fn cheney_trace_list(
     obj: *mut ListCons,
     from_space: &FromSpace,
@@ -45,6 +46,7 @@ pub fn cheney_trace_list(
     }
 }
 
+#[inline]
 pub fn cheney_trace_struct(
     obj: *mut u8,
     from_space: &FromSpace,
@@ -86,6 +88,7 @@ pub fn cheney_trace_struct(
 /// same heap finds it already forwarded, so each live BinRef is copied once.
 /// A BinRef an earlier collection kept is not in from-space and stays where it
 /// is.
+#[inline]
 pub fn cheney_trace_binview(
     obj: *mut u8,
     from_space: &FromSpace,
@@ -100,6 +103,7 @@ pub fn cheney_trace_binview(
     view.binref_word_set(forwarded.heap_object_word().expect("a forwarded BinRef"));
 }
 
+#[inline]
 pub fn cheney_trace_map(
     obj: *mut u8,
     from_space: &FromSpace,
@@ -142,6 +146,7 @@ pub fn cheney_trace_map(
     }
 }
 
+#[inline]
 pub fn cheney_trace_closure(
     obj: *mut u8,
     from_space: &FromSpace,

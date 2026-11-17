@@ -86,6 +86,8 @@ pub fn copy_object_to_space(p: *mut u8, size: usize, heap: &mut Heap) -> *mut u8
     dst
 }
 
+/// The Cheney trace's speed depends on this being inlined into each trace function.
+#[inline]
 pub fn forward_heap_value(
     value: AnyValue,
     from_space: &FromSpace,
