@@ -219,12 +219,14 @@ fn write_metadata(out: &mut String, event: &RuntimeEvent<'_>) {
             let stats = &collection.stats;
             write!(
                 out,
-                "\"pid\":{},\"boundary\":\"{}\",\"generation\":\"{}\",\"copied_bytes\":{},\"live_bytes\":{},\"from_space_capacity_bytes\":{},\"blocks_released\":{},\"blocks_after\":{},\"stub_visits\":{}",
+                "\"pid\":{},\"boundary\":\"{}\",\"generation\":\"{}\",\"copied_bytes\":{},\"live_bytes\":{},\"young_bytes\":{},\"young_budget\":{},\"from_space_capacity_bytes\":{},\"blocks_released\":{},\"blocks_after\":{},\"stub_visits\":{}",
                 collection.pid,
                 collection.boundary.as_str(),
                 stats.generation.as_str(),
                 stats.copied_bytes,
                 stats.live_bytes,
+                stats.young_bytes,
+                stats.young_budget,
                 stats.from_space_capacity_bytes,
                 stats.blocks_released,
                 stats.blocks_after,
@@ -254,7 +256,7 @@ fn write_metadata(out: &mut String, event: &RuntimeEvent<'_>) {
 fn write_process_exited(out: &mut String, process: &Process) {
     write!(
         out,
-        "\"pid\":{},\"process\":{{\"opaque_type\":\"{}\",\"live_count\":{},\"bytes_used\":{},\"list_retention_attempts\":{},\"list_retention_hits\":{},\"struct_retention_attempts\":{},\"struct_retention_hits\":{},\"raises_delivered\":{},\"reduction_yields\":{},\"dtors_dispatched\":{},\"frame_copies\":{},\"halt_value\":{},\"failed\":{}}}",
+        "\"pid\":{},\"process\":{{\"opaque_type\":\"{}\",\"live_count\":{},\"bytes_used\":{},\"list_retention_attempts\":{},\"list_retention_hits\":{},\"struct_retention_attempts\":{},\"struct_retention_hits\":{},\"raises_delivered\":{},\"reduction_yields\":{},\"parks\":{},\"dtors_dispatched\":{},\"frame_copies\":{},\"halt_value\":{},\"failed\":{}}}",
         process.pid,
         std::any::type_name::<Process>(),
         process.heap.live_count(),
@@ -265,6 +267,7 @@ fn write_process_exited(out: &mut String, process: &Process) {
         process.struct_retention_hits,
         process.raises_delivered,
         process.reduction_yields,
+        process.parks,
         process.dtors_dispatched,
         process.frame_copies,
         process.halt_value,

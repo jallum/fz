@@ -161,6 +161,8 @@ pub struct Process {
     pub reductions_executed: u64,
     /// Cumulative yields caused by ordinary reduction-budget exhaustion.
     pub reduction_yields: u64,
+    /// Cumulative quanta that ended with the process parked on a receive.
+    pub parks: u64,
     /// Cumulative construction-owned list-retention attempts.
     pub list_retention_attempts: u64,
     /// Attempts that returned the source cell, unchanged or after guarded rewrite.
@@ -596,10 +598,9 @@ impl Process {
         reductions_per_quantum: i32,
     ) -> Self {
         Self {
-            // §6.3: initial size on spawn = SIZE_TABLE[0] (1 KiB). Cheney
-            // promotes to a larger block capacity on first GC if the working
-            // set demands it; shrink hysteresis (§6.5) brings
-            // it back down for short-lived spikes.
+            // A new process's tip is the smallest pooled block (1 KiB). Each
+            // collection installs a tip sized to the young budget, which
+            // follows the bytes the heap holds, up or down (`Heap::should_gc`).
             delivery: DeliveryLock::default(),
             heap: Heap::with_node(SIZE_TABLE[0], schemas, Rc::clone(&node)),
             ctx: null_mut(),
@@ -624,6 +625,7 @@ impl Process {
             reductions_per_quantum,
             reductions_executed: 0,
             reduction_yields: 0,
+            parks: 0,
             list_retention_attempts: 0,
             list_retention_hits: 0,
             struct_retention_attempts: 0,

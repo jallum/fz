@@ -143,7 +143,13 @@ impl Heap {
     /// more. A pure function of the heap's state, so a collection that
     /// reclaims the bytes answers the question by itself.
     pub fn should_gc(&self) -> bool {
-        self.young_bytes() >= self.young_budget().max(SIZE_TABLE[0] / 2)
+        self.young_bytes() >= self.collection_budget()
+    }
+
+    /// The young bytes at which a collection is due: the young budget, and at
+    /// least half the smallest tip.
+    fn collection_budget(&self) -> usize {
+        self.young_budget().max(SIZE_TABLE[0] / 2)
     }
 
     /// The young bytes the heap allocates before a collection is due: as many
@@ -1461,6 +1467,7 @@ impl Heap {
             "the old bytes are the fill of the old blocks"
         );
         let generation = self.next_generation();
+        let (young_bytes, young_budget) = (self.young_bytes() as u64, self.collection_budget() as u64);
         let from_space = FromSpace::of(self, generation);
         let to_capacity_guess = match generation {
             Generation::Major => self.live_baseline,
@@ -1477,6 +1484,8 @@ impl Heap {
         let mut copied_objects: Vec<CopiedObject> = Vec::new();
         let mut stats = GcStats {
             generation,
+            young_bytes,
+            young_budget,
             from_space_capacity_bytes: from_blocks.iter().map(|block| block.capacity as u64).sum(),
             blocks_released: from_blocks.len() as u64,
             stubs_made: std::mem::take(&mut self.stubs_made),

@@ -169,6 +169,9 @@ pub trait Scheduler {
 /// `process.dtors_dispatched` counts them, and an exit is observed last.
 pub fn end_quantum<S: Scheduler + ?Sized>(scheduler: &mut S, process: &mut Process) -> Disposition {
     let disposition = process.quantum_end();
+    if disposition == Disposition::Parked {
+        process.parks = process.parks.saturating_add(1);
+    }
     let boundary = match disposition {
         Disposition::Requeue => Some(CollectionBoundary::Yield),
         Disposition::Parked => Some(CollectionBoundary::Park),

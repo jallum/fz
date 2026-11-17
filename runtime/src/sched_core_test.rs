@@ -584,6 +584,44 @@ fn a_resource_freed_by_a_collection_has_its_destructor_dispatched_at_the_boundar
     );
 }
 
+/// A collection reports the bytes the process allocated since the last one and
+/// the budget they reached: on a heap with nothing old, half the smallest tip.
+#[test]
+fn a_collection_reports_the_young_bytes_it_was_due_at_and_its_budget() {
+    let mut scheduler = Recording::new();
+    let mut process = new_process();
+    make_yielding(&mut process);
+    allocate_until_due(&mut process);
+    let allocated = process.heap.young_bytes() as u64;
+
+    end_quantum(&mut scheduler, &mut process);
+
+    let [collection] = &scheduler.collections[..] else {
+        panic!("a heap past its budget is collected once: {:?}", scheduler.collections);
+    };
+    assert_eq!(collection.stats.young_bytes, allocated, "the bytes the trigger counted");
+    assert_eq!(
+        collection.stats.young_budget, 512,
+        "half the smallest tip, with nothing old"
+    );
+    assert!(collection.stats.young_bytes >= collection.stats.young_budget);
+}
+
+/// Every quantum that ends parked on a receive is counted, and a yield is not.
+#[test]
+fn a_quantum_that_ends_parked_counts_one_park() {
+    let mut scheduler = Recording::new();
+    let mut process = new_process();
+    make_yielding(&mut process);
+    end_quantum(&mut scheduler, &mut process);
+    assert_eq!(process.parks, 0, "a yield is not a park");
+
+    process.state = ProcessState::Blocked;
+    end_quantum(&mut scheduler, &mut process);
+    end_quantum(&mut scheduler, &mut process);
+    assert_eq!(process.parks, 2);
+}
+
 /// The queue holds the raw payload, no heap word; the payload becomes a boxed
 /// integer on the process heap only as the destructor is dispatched.
 #[test]
