@@ -119,8 +119,8 @@ impl Job {
                 current_uses(keying::derive_static_callees_gates(world, *function_id))
             }
             Job::AnalyzeActivation(activation) => current_uses(semantic::analyze_activation_gates(world, activation)),
+            Job::DefineModule(module_id) => current_uses(source::define_module_gates(world, *module_id)),
             Job::IndexCode(_)
-            | Job::DefineModule(_)
             | Job::DefineModuleInterface(_)
             | Job::DeriveTypeDef(_)
             | Job::ReifyGuardDispatch(_)

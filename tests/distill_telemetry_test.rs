@@ -257,7 +257,9 @@ fn read_compile_spend(trace: &Path) -> CompileSpend {
 // executable whose return a transport position names), less 104 runs elsewhere that no longer
 // restart for a reach they were waiting on.
 // 19_800 -> 19_850: the ordering operators' `binary` clause adds its `fz_op_*_bb` activation and splits the catch-all's `compare/2` activations, the same way the int and float clauses already do.
-const DERIVATIONS: u64 = 19_850;
+// 19_850 -> 19_810: a module is started once its enclosing scope exists, so each module's
+// definition runs once fewer.
+const DERIVATIONS: u64 = 19_810;
 // 111_876 -> 111_888: an extern that declares `raises:` reads the struct of
 // the exception it names, to raise that struct. The distiller calls twelve
 // such externs, and each contract reads `StructDefined` once.

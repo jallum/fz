@@ -879,14 +879,21 @@ under `GateExpansion` rather than the calling demand's own reason. Both call
 sites consult the one `missing_gates` answer; neither keeps its own notion of
 readiness.
 
-Twelve job kinds declare gates — `SeedRoot`, `DefineFunction`,
-`ExpandFunctionSource`, `ScopeCode`, `DeriveInputDemand`,
+Fifteen job kinds declare gates — `SeedRoot`, `DefineFunction`,
+`ExpandFunctionSource`, `ScopeCode`, `DefineModule`, `DeriveInputDemand`,
 `DeriveRecursive`, `DeriveStaticReach`, `DeriveExecutableReach`,
-`DeriveRuntimeDemand`, `LowerFunction`,
-`DeriveStaticCallees`, and `AnalyzeActivation` — each in the `jobs/*.rs`
-module that owns the kind's body, named `<job>_gates` beside it. Every other
+`DeriveRuntimeDemand`, `LowerFunction`, `DeriveFunctionContract`,
+`DeriveStaticCallees`, `AnalyzeActivation`, and `DeriveExecutableFacts` —
+each in the `jobs/*.rs` module that owns the kind's body, named
+`<job>_gates` beside it (`DeriveFunctionContract`'s one gate, its function's
+definition, is written in the match itself). Every other
 kind has no arm in `missing_gates`'s match and starts the moment anything
 demands its output, exactly as before gates existed.
+
+`DefineModule`'s gate is the scope an indexed module is defined in: its
+file's `CodeScoped` for a top-level module, its parent's `ModuleDefined` for a
+nested one. A module nothing has indexed yet has no gate; its first run asks
+for its source (registering a runtime module's file) and waits for the index.
 
 `AnalyzeActivation`'s gate is its function's `FunctionDefined`, its
 `EntryDispatch`, and -- for a non-extern, the only kind that gets one -- its
