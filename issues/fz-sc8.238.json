@@ -6,14 +6,16 @@
   "blocks": [
     "fz-sc8.144"
   ],
+  "closed_at": "2026-11-17T21:40:09Z",
+  "close_reason": "PR #679 (771a5b188), stacked on #678.",
   "created": "2026-11-15T23:27:25Z",
   "description": "Found investigating fz-sc8.225. IO.inspect(%{__struct__: S, a: 1, b: [2]}) prints %{__struct__: S, a: 1, b: [2]} on every path; Elixir prints %S{a: 1, b: [2]}. The runtime already prints a map whose keys are exactly S's fields as %S{} when S's schema is registered (MapView::named_schema); the program lacks the schema. Each executable lists the modules its types name under __struct__ (Types::struct_modules), and jobs/backend.rs includes a schema only when StructDefined(S) happens to be settled already, a read with no wait. Fix (proposal https://claude.ai/artifact/XpsXXTqWBG6Skjq5Hi2JH6, approach A): for each such module that can be defined (has source, or is a runtime module), the backend waits on ModuleDefined(S); StructDefined is DefineModule's co-output, so after it the answer is final and the schema is included when S declares a struct. Not StructDefined directly: for a module with no struct that wait ends in 'module is not a struct'. A name no source defines is not a struct and nothing waits. Probed with .239: full suite green, distiller pins unchanged. Done when: an oracle fixture with no %S{} anywhere prints %S{...} for a literal, a Map.put of __struct__, and an unquoted Macro.escape of a struct, and a map for a missing field, a module with no struct and an unknown name, on interp, run and build.",
   "id": "fz-sc8.238",
   "labels": [],
   "parent": "fz-sc8",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "A map literal that spells a struct builds that struct",
   "type": "bug",
-  "updated_at": "2026-11-17T20:59:46Z"
+  "updated_at": "2026-11-17T21:40:09Z"
 }
