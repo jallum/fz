@@ -229,14 +229,4 @@ pub struct GcStats {
     /// that holds data a collection kept or a gift brought. The fresh tip is
     /// empty and is not counted.
     pub blocks_after: u64,
-    pub root_heap_edges: u64,
-    pub root_scalar_slots: u64,
-    pub list_head_heap_edges: u64,
-    pub list_head_scalar_slots: u64,
-    pub struct_heap_edges: u64,
-    pub struct_scalar_slots: u64,
-    pub map_heap_edges: u64,
-    pub map_scalar_slots: u64,
-    pub closure_heap_edges: u64,
-    pub closure_scalar_slots: u64,
 }

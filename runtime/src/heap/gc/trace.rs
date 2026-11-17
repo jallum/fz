@@ -25,11 +25,8 @@ pub fn cheney_trace_list(
     let cons = unsafe { &mut *obj };
     cons.keep_across_collection();
     if cons.head_kind().is_heap() {
-        stats.list_head_heap_edges += 1;
         let head = forward_heap_value(cons.head_value(), from_space, heap, schemas, copied_objects, stats);
         cons.head = head.raw();
-    } else {
-        stats.list_head_scalar_slots += 1;
     }
 
     let tail_addr = cons.tail_addr();
@@ -68,11 +65,9 @@ pub fn cheney_trace_struct(
         // alone; an empty list is a LIST-kind field whose payload is zero.
         let raw = unsafe { read(raw_slot) };
         if !kind.is_heap() || raw == 0 {
-            stats.struct_scalar_slots += 1;
             continue;
         }
         let value = AnyValue::heap_ptr(raw as *mut u8, kind);
-        stats.struct_heap_edges += 1;
         let forwarded = forward_heap_value(value, from_space, heap, schemas, copied_objects, stats);
         unsafe {
             write(raw_slot, forwarded.raw());
@@ -118,26 +113,19 @@ pub fn cheney_trace_map(
         let tag = unsafe { read(tags.add(i)) };
         let key_kind = map_key_kind(tag);
         if key_kind.is_heap() {
-            stats.map_heap_edges += 1;
             let key = AnyValue::heap_ptr(unsafe { read(keys.add(i)) } as *mut u8, key_kind);
             let forwarded = forward_heap_value(key, from_space, heap, schemas, copied_objects, stats);
             unsafe { write(keys.add(i), forwarded.raw()) };
-        } else {
-            stats.map_scalar_slots += 1;
         }
         let value_kind = map_value_kind(tag);
         if value_kind.is_heap() {
-            stats.map_heap_edges += 1;
             let value = AnyValue::heap_ptr(unsafe { read(values.add(i)) } as *mut u8, value_kind);
             let forwarded = forward_heap_value(value, from_space, heap, schemas, copied_objects, stats);
             unsafe { write(values.add(i), forwarded.raw()) };
-        } else {
-            stats.map_scalar_slots += 1;
         }
     }
     let children = unsafe { map_node_children_ptr(obj as *const u8) };
     for i in 0..unsafe { map_node_child_count(obj as *const u8) } {
-        stats.map_heap_edges += 1;
         let child = AnyValue::heap_ptr(unsafe { read(children.add(i)) } as *mut u8, ValueKind::MAP);
         let forwarded = forward_heap_value(child, from_space, heap, schemas, copied_objects, stats);
         unsafe { write(children.add(i), forwarded.raw()) };
@@ -157,11 +145,8 @@ pub fn cheney_trace_closure(
     for idx in 0..captured_count {
         let value = unsafe { closure_capture_value(obj as *const u8, idx) };
         if value.kind().is_heap() {
-            stats.closure_heap_edges += 1;
             let forwarded = forward_heap_value(value, from_space, heap, schemas, copied_objects, stats);
             unsafe { closure_capture_set(obj as *const u8, idx, forwarded) };
-        } else {
-            stats.closure_scalar_slots += 1;
         }
     }
 }

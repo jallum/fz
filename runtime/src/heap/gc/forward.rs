@@ -18,15 +18,11 @@ pub fn forward_any_value_ref_root(
     stats: &mut GcStats,
 ) {
     if value.is_empty_list() {
-        stats.root_scalar_slots += 1;
         return;
     }
     match value.tag() {
-        ValueKind::NULL | ValueKind::ATOM => {
-            stats.root_scalar_slots += 1;
-        }
+        ValueKind::NULL | ValueKind::ATOM => {}
         tag if tag.is_scalar() => {
-            stats.root_scalar_slots += 1;
             let p = value.storage_addr();
             if !from_space.moves(heap, p, value.is_literal()) {
                 return;
@@ -35,7 +31,6 @@ pub fn forward_any_value_ref_root(
             *value = AnyValueRef::from_scalar_slot(tag, dst as *const u64).expect("forwarded scalar root ref");
         }
         tag if tag.is_heap() => {
-            stats.root_heap_edges += 1;
             let p = value.storage_addr();
             if !from_space.moves(heap, p, value.is_literal()) {
                 return;
