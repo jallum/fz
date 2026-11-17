@@ -2318,6 +2318,32 @@ fn an_unrooted_view_lets_the_sweep_release_its_shared_bin() {
     assert_eq!(shared_refs(&witness), 1, "sweep removes its exact owned edge");
 }
 
+/// A buffer's bytes are in use while a handle or a BinRef holds it, and leave
+/// the count when the sweep drops the last reference.
+#[test]
+fn a_binarys_bytes_are_in_use_until_its_stub_dies_at_a_collection() {
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let before = pool_footprint().in_use_bytes;
+    let witness = SharedBinHandle::from_bytes(&[0x55; 4096]);
+    let buffer_bytes = 4096 + 1;
+    assert_eq!(pool_footprint().in_use_bytes, before + buffer_bytes);
+    let _ = alloc_buffer_view(
+        &mut h,
+        witness.clone(),
+        witness.bytes_len() as u64 * 8,
+        StubSite::FilledBuffer,
+    );
+    drop(witness);
+    assert_eq!(
+        pool_footprint().in_use_bytes,
+        before + buffer_bytes,
+        "the BinRef still holds the buffer"
+    );
+    let mut root: *mut u8 = null_mut();
+    h.collect_tagged(&mut root);
+    assert_eq!(pool_footprint().in_use_bytes, before, "the sweep freed the buffer");
+}
+
 /// Mixed live/dead BinRefs: sweep must read the next link from
 /// from-space while reading the survivor's shared_ptr from to-space.
 #[test]
