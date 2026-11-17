@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-17T22:56:07Z",
   "created": "2026-11-17T21:01:06Z",
   "description": "## Why\n35 fixtures keep an `.oracle.exs` twin. In 3 of them the only thing Elixir rejects is an fz-only spelling of something the fixture does not test, the feature behind that spelling is covered by other fixtures, and no test reads the fixture by path.\n\n## What changes\nEach is rewritten in Elixir form by the fz-nhb.4 rule (functions in `Main`, `IO.inspect` for `dbg`), headed `# oracle: self`, its twin deleted and its stamp regenerated. Goldens do not move.\n- 00793: `List.reverse/2` -\u003e `Enum.reverse/2` (01619 still covers `List.reverse/2`)\n- 01409: `Utf8.valid?/1` -\u003e `String.valid?/1` (00503, 00504 cover `Utf8.valid?`)\n- 01494: `assert/2` lines whose values the golden already prints are dropped\n\n## Split out: pinned compile-work subjects\n00420, 00569, 00571 and 01481 convert the same way (`%` -\u003e `rem`, a bare function name -\u003e `\u0026f/1`) with unchanged goldens and pass on all three paths, but tests in src/compiler2 and src/telemetry pin the compile work on them, and the rewrite moves those pins (first moves measured: canon 00569 inventory 123 -\u003e 118, reach 00420 (68,112) -\u003e (67,111), work_start_reason 4 -\u003e 5, public_trace 00571 walks 528 -\u003e 519, DeriveRecursive 34 -\u003e 33, analysis claims 6 -\u003e 7). Make Distiller Fast measures on 00571, so these convert in their own step after its fz-sc8.230 lands (proposal routed through the coordinator).\n\n## Considered and kept (each needs an fz decision first, not a fixture edit)\n- 01623: its asserts are the only test of fz-only `String.index_of/2`\n- 01582: the only test of fz-only `Kernel.range/3`\n- 01625: the only test of fz-only `String.to_byte_list/1`\n- 01629: asks for the order through fz-only `Kernel.compare/2` on purpose\n- 01634: asserts on fz-only `Process.heap_alloc_stats/0`\n- 01129: builds a nested `%Stream{}` by hand; fz `Stream.map/2` merges, so no Elixir spelling reaches the nested reduce\n- 01167: unquotes a raw map, which Elixir refuses as invalid AST; `Macro.escape/1` would remove the path under test\n\n## Signal\n`ORACLE=check` passes; each of the 3 passes run, interp and build; the full gate is green; the tree holds 32 twins.",
   "id": "fz-nhb.9",
   "labels": [],
   "parent": "fz-nhb",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Three fixtures that spell an incidental feature the fz way are their own Elixir oracle",
   "type": "task",
-  "updated_at": "2026-11-17T21:07:16Z"
+  "updated_at": "2026-11-17T22:56:07Z"
 }
