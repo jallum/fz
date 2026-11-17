@@ -10,9 +10,15 @@
   "id": "fz-9x7.14",
   "labels": [],
   "parent": "fz-9x7",
+  "comments": [
+    {
+      "text": "Round 1 (bench, base b237ec0a0+#674, per-arm runtime archives, 25 runs/arm, 9 dist-full, outputs identical): A1 and A2 FAIL the pre-registered rule. Rule 1 met only on reqrep (cycles 0.963, held 152 MB -\u003e 0.3 MB, RSS 85 -\u003e 3.8 MB; majors 20,001 -\u003e 1,267). Rule 2 fails on fanin (A1 1.180, A2 1.308), ring (1.082/1.073), msg (1.040/1.061). Rule 3 fails on fanin (held 1.62/1.54). Predictions missed: msg majors 29,292 -\u003e 8,655 (predicted \u003c1,000) while minors rose 76,770 -\u003e 124,120; msg/ring held rose instead of falling. Telemetry: a gift no longer raises live_baseline, so the young budget stays at the floor and collections run more often. deadbinlive 0.97, giftbin 1.02. Stays open.",
+      "timestamp": "2026-11-17T21:25:16Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "A received message joins the young generation",
   "type": "task",
-  "updated_at": "2026-11-17T20:30:29Z"
+  "updated_at": "2026-11-17T21:25:16Z"
 }
