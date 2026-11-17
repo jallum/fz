@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-17T20:30:26Z",
+  "description": "Heap::graft adds a gift's block to the old blocks and raises live_baseline, so a message dead by the next collection lives until a major, and the raised old bytes push next_generation into a major. Baseline telemetry (1d61f3742, scratch 9x7-11/tel4, an4.py): reqrep 20,001 majors of 20,002 collections, 158 of 164 MB grafted dead when a major finds it; msg 29,292 majors of 106,062; ring 10,704 of 75,009. OTP keeps messages in young heap fragments. fz-gl6.7's reason (a gift is packed and live; its bytes are not allocation) is kept by arm A1. Proposal page (approved 2026-11-17): https://claude.ai/artifact/GuEvNK64ZNHh8gDEQkMF3m (Proposal A).\n\nExperiment first, pre-registered on the page: arms A1 (grafted block young, bytes not counted by should_gc) and A2 (counted, as OTP), vs today, bench host, 25 runs (9 dist-full), interleaved, outputs identical.\nPredictions: reqrep majors 20,001 -\u003e \u003c100, msg 29,292 -\u003e \u003c1,000; reqrep/msg/ring held -10%+, cycles -2..-10%; fanin/giftbin cycles \u003c= +2%; controls/distiller/enum instructions within 0.5%.\nPass rule: (1) on \u003e= 2 of msg/ring/reqrep cycles CI upper \u003c 1.00 or held -10%; (2) no workload cycles CI lower \u003e 1.02; (3) no workload median held \u003e max(baseline max, baseline median + max(5%, 256 KiB)).\n\nDone when (if an arm passes): graft puts the block on the young side and its off-heap chain on off_heap_head; graft no longer touches live_baseline/old_blocks/old_objects; the gc event carries received_bytes; heap tests pin a dead gift reclaimed by a minor and a live one copied once; the memory guide's accepted consequence from fz-gl6.7 is rewritten; fixture pins that move are lowered or traced; docs updated; full gate green. If no arm passes: the result is recorded here and closure is proposed to the user.",
+  "id": "fz-9x7.14",
+  "labels": [],
+  "parent": "fz-9x7",
+  "priority": 2,
+  "status": "open",
+  "title": "A received message joins the young generation",
+  "type": "task",
+  "updated_at": "2026-11-17T20:30:26Z"
+}
