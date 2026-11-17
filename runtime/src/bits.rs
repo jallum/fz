@@ -33,6 +33,7 @@ use crate::any_value::{
     ValueKind, bitstring_bit_len as any_bitstring_bit_len, bitstring_bytes_ptr, heap_kind_from_tagged,
     heap_object_word, heap_word_addr,
 };
+use crate::heap::{binary_buffer_allocated, binary_buffer_freed};
 use crate::sync::{AtomicUsize, Ordering, fence};
 use std::mem::{align_of, forget, size_of};
 use std::ptr::{NonNull, copy_nonoverlapping, read, slice_from_raw_parts_mut, write};
@@ -147,6 +148,7 @@ pub unsafe extern "C" fn shared_bin_destructor_heap(p: *mut SharedBin) {
     // The buffer was allocated with its capacity and one more byte for the
     // invisible trailing NUL. Free the full allocation.
     let bytes = unsafe { Box::from_raw(slice_from_raw_parts_mut(bin.bytes_ptr as *mut u8, bin.capacity() + 1)) };
+    binary_buffer_freed(bytes.len());
     drop(bytes);
     drop(bin);
 }
@@ -187,6 +189,7 @@ pub fn shared_bin_alloc_with(bytes_len: usize, spare: usize, fill: impl FnOnce(&
     let mut buf: Box<[u8]> = vec![0u8; capacity + 1].into_boxed_slice();
     fill(&mut buf[..bytes_len]);
     let bytes_ptr: *const u8 = Box::leak(buf).as_ptr();
+    binary_buffer_allocated(capacity + 1);
     let bin = Box::new(SharedBin {
         refcount: AtomicUsize::new(1),
         bytes_ptr,

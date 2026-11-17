@@ -63,8 +63,9 @@ use std::rc::Rc;
 
 #[cfg(test)]
 pub use self::block_pool::pool_drain_for_test;
+pub use self::block_pool::{Footprint, pool_footprint, pool_outstanding_blocks, pool_total_cached_blocks};
 pub use self::block_pool::{SIZE_TABLE, next_block_capacity, pick_block_capacity};
-pub use self::block_pool::{pool_outstanding_blocks, pool_total_cached_blocks};
+pub(crate) use self::block_pool::{binary_buffer_allocated, binary_buffer_freed};
 pub use self::deep_copy::{
     AddressMap, AddressSet, HeapView, deep_copy_any_value, deep_copy_any_value_ref, deep_copy_slot, measure_deep_copy,
 };

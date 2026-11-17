@@ -111,6 +111,29 @@ struct BlockPool {
     free_lists: [Vec<*mut u8>; SIZE_TABLE.len()],
     /// Blocks handed out by `alloc` and not yet returned through `free`.
     outstanding: usize,
+    /// Capacity of the blocks handed out and not returned.
+    block_bytes: usize,
+    /// Capacity of the blocks resting in the free lists.
+    idle_bytes: usize,
+    /// The largest in-use total any grow has reached.
+    peak_in_use_bytes: usize,
+    /// Bytes of off-heap binary buffers allocated on this thread less those
+    /// freed on it. A buffer freed on another thread leaves this thread's net
+    /// below zero, so the net is signed; the in-use total carries only its
+    /// positive part.
+    binary_bytes: isize,
+}
+
+/// The bytes this thread's runtime holds, by who holds them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Footprint {
+    /// Capacity of every block handed out and not returned, pooled and exact
+    /// alike, plus the bytes of every off-heap binary buffer not yet freed.
+    pub in_use_bytes: usize,
+    /// Capacity of the blocks resting in the pool's free lists.
+    pub idle_bytes: usize,
+    /// The largest `in_use_bytes` any grow has reached.
+    pub peak_in_use_bytes: usize,
 }
 
 impl BlockPool {
@@ -120,18 +143,25 @@ impl BlockPool {
         Self {
             free_lists: [const { Vec::new() }; SIZE_TABLE.len()],
             outstanding: 0,
+            block_bytes: 0,
+            idle_bytes: 0,
+            peak_in_use_bytes: 0,
+            binary_bytes: 0,
         }
     }
 
     /// A zeroed block of `capacity` bytes: recycled from the free list when
     /// the capacity is a table entry, otherwise fresh from the system
-    /// allocator and not counted as outstanding.
+    /// allocator and not counted as outstanding. Either way its bytes are in use.
     fn alloc(&mut self, capacity: usize) -> *mut u8 {
+        self.block_bytes += capacity;
+        self.record_peak();
         let Some(idx) = pooled_class(capacity) else {
             return alloc_exact(capacity);
         };
         self.outstanding += 1;
         if let Some(p) = self.free_lists[idx].pop() {
+            self.idle_bytes -= capacity;
             // Recycled blocks: zero before returning. Cheney + Heap::new
             // expect zero pages.
             unsafe {
@@ -142,12 +172,23 @@ impl BlockPool {
         alloc_exact(capacity)
     }
 
+    fn in_use_bytes(&self) -> usize {
+        self.block_bytes + self.binary_bytes.max(0) as usize
+    }
+
+    fn record_peak(&mut self) {
+        let in_use = self.in_use_bytes();
+        self.peak_in_use_bytes = self.peak_in_use_bytes.max(in_use);
+    }
+
     fn free(&mut self, p: *mut u8, capacity: usize) {
+        self.block_bytes -= capacity;
         let Some(idx) = pooled_class(capacity) else {
             unsafe { dealloc(p, block_layout(capacity)) };
             return;
         };
         self.outstanding -= 1;
+        self.idle_bytes += capacity;
         // Free lists grow unbounded in v1. A real-world deployment would
         // cap each list (e.g., 4 entries) and `dealloc` the overflow.
         // For now we accept the worst-case memory footprint to keep the
@@ -211,6 +252,7 @@ pub fn pool_drain_for_test() {
                 }
             }
         }
+        pool.idle_bytes = 0;
     });
 }
 
@@ -226,3 +268,35 @@ pub fn pool_outstanding_blocks() -> usize {
 pub fn pool_total_cached_blocks() -> usize {
     BLOCK_POOL.with(|pool| pool.borrow().free_lists.iter().map(|l| l.len()).sum())
 }
+
+/// The bytes this thread's runtime holds right now, and the most it has held.
+pub fn pool_footprint() -> Footprint {
+    BLOCK_POOL.with(|pool| {
+        let pool = pool.borrow();
+        Footprint {
+            in_use_bytes: pool.in_use_bytes(),
+            idle_bytes: pool.idle_bytes,
+            peak_in_use_bytes: pool.peak_in_use_bytes,
+        }
+    })
+}
+
+/// An off-heap binary buffer of `bytes` bytes came into existence: its bytes
+/// are in use until `binary_buffer_freed`.
+pub(crate) fn binary_buffer_allocated(bytes: usize) {
+    BLOCK_POOL.with(|pool| {
+        let mut pool = pool.borrow_mut();
+        pool.binary_bytes += bytes as isize;
+        pool.record_peak();
+    });
+}
+
+/// An off-heap binary buffer of `bytes` bytes was freed, on any thread. A
+/// thread whose pool is already torn down has nothing left to count.
+pub(crate) fn binary_buffer_freed(bytes: usize) {
+    let _ = BLOCK_POOL.try_with(|pool| pool.borrow_mut().binary_bytes -= bytes as isize);
+}
+
+#[cfg(test)]
+#[path = "block_pool_test.rs"]
+mod block_pool_test;
