@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-17T23:49:00Z",
+  "description": "## Why\nEach twin differs from its fixture only by IO.inspect(..., width: :infinity) (01062 x2, 01064 x2, 01077 x16, 01281 x1): fz prints a long collection on one line where Elixir's default IO.inspect wraps at 80 columns.\n\n## What changes\nOnce fz-sc8.162 wraps at 80 columns, each fixture is wrapped in defmodule Main (dbg -\u003e IO.inspect), its header reads `# oracle: self`, its twin is deleted and its golden is regenerated with ORACLE=regen. A golden whose bytes change is a finding to report, not to bless.\n\n## Signal\nFour fewer .oracle.exs files; fixture_matrix run/interp/build and ORACLE=check pass for the four stems.",
+  "id": "fz-nhb.13",
+  "labels": [],
+  "parent": "fz-nhb",
+  "priority": 3,
+  "status": "open",
+  "title": "Fixtures 01062, 01064, 01077 and 01281 are their own Elixir oracle",
+  "type": "task",
+  "updated_at": "2026-11-17T23:49:00Z"
+}
