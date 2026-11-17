@@ -12,6 +12,12 @@
   "id": "fz-9x7.12",
   "labels": [],
   "parent": "fz-9x7",
+  "comments": [
+    {
+      "text": "Rescoped per the approved GC memory plan v3 (https://claude.ai/artifact/Pqqu5yTcQdBbkGsZyZiykb): blocks above the pool come from mmap segments with BEAM's 10-entry segment cache, munmap past it. fz has no global allocator and no mmap/madvise/munmap today; blocks above 7,391,280 B are exact calloc/free. Blocked by fz-9x7.21 (no zeroing) and fz-9x7.22 (mimalloc experiment, which decides whether fz code is needed).",
+      "timestamp": "2026-11-17T22:03:19Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "A heap block above the pool's largest size comes from a mapped segment; a freed one is cached or unmapped",
