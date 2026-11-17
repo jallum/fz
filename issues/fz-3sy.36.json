@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-17T22:17:34Z",
+  "description": "Found by the Bugs and Cleanup session while proposing fz-3sy.35; filed as decision B on ../fz-3sy.35.html (approved by the user 2026-11-17).\n\nElixir refuses an undefined variable or %Nope{} in a function nothing calls, and warns about Nope.go(1). fz says nothing about any of them. Repro:\n  def f(), do: undefined_var\n  def main(), do: IO.inspect(1)\nexits 0 under fz; Elixir fails to compile.\n\nfz-3sy.35 checks unreached declarations (@spec/@type/extern) only; this is about unreached bodies. Fixing it means expanding and scoping unreached bodies, which costs more than checking declarations, and meets fz-sc8.216 (executables nothing reaches are compiled anyway): the check must not lower or compile the body, only expand and scope it. Library bodies stay cold, as in fz-3sy.35 decision A.\n\nDone when: the three cases (undefined variable, unknown struct, call to an undefined remote function) report as Elixir does on interp, run and build, pinned by fixtures; a drive test asserts the unreached function is expanded and scoped but never lowered.",
+  "id": "fz-3sy.36",
+  "labels": [],
+  "parent": "fz-3sy",
+  "priority": 2,
+  "status": "open",
+  "title": "A function nothing calls still has its body checked, as in Elixir",
+  "type": "bug",
+  "updated_at": "2026-11-17T22:17:34Z"
+}
