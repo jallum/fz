@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [
+    "fz-9x7.11",
     "fz-9x7.18"
   ],
   "created": "2026-11-17T22:03:10Z",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "The struct trace forwards only heap fields: the kind byte is read before any decode",
   "type": "task",
-  "updated_at": "2026-11-17T22:03:14Z"
+  "updated_at": "2026-11-17T22:03:16Z"
 }
