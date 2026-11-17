@@ -15,11 +15,15 @@
     {
       "text": "Fresh evidence (Optimize, release AOT disassembly of spin/2 on b237ec0a0 + #674): `def spin(0, acc), do: acc; def spin(n, acc), do: spin(n - 1, acc + n)` runs ~93 instructions per iteration. The clause body (~77) calls _fz_op_sub_ii and _fz_op_add_ii (each `adds/subs; cset w1,vs; ret`, runtime/src/ir_runtime.rs:949 integer_arithmetic_export!), each followed by 11 instructions decoding the overflow flag into a branch; the two calls are why the clause saves/restores 9 callee-saved registers. Binary: GC scratch 9x7-14/b-V0/spin.bin.",
       "timestamp": "2026-11-17T21:47:22Z"
+    },
+    {
+      "text": "Coordination note: fz-nml.8 (JSON session, building) renames runtime fz_bs_write_int (runtime/src/ir_runtime.rs) into a scalar-word writer that also takes floats, and edits native_codegen/prim.rs bitstring construction. Whoever builds this ticket rebases on it.",
+      "timestamp": "2026-11-17T22:24:29Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "Integer arithmetic and comparison externs are emitted as instructions",
   "type": "task",
-  "updated_at": "2026-11-17T21:47:22Z"
+  "updated_at": "2026-11-17T22:24:29Z"
 }
