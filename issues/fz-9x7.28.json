@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-17T23:49:51Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-9x7",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Copying a message allocates nothing from malloc: no address maps, small blocks from the pool",
   "type": "task",
-  "updated_at": "2026-11-17T23:49:51Z"
+  "updated_at": "2026-11-17T23:50:02Z"
 }
