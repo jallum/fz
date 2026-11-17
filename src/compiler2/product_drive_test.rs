@@ -321,8 +321,11 @@ fn native_root_product_is_lowered_once_and_reused_by_exact_identity() {
             // wake rather than an `activation_published` one.
             (WorkStartReason::Ignition.into(), 1),
             (WorkStart::ChangedRevisionWake, 11),
+            // The product waits until the source's own declarations are
+            // checked; `main/0` declares nothing, so that check is one
+            // `CheckDeclarations` run, woken once the source is indexed.
             (WorkStartReason::GateExpansion.into(), 9),
-            (WorkStartReason::BlockedWaiterExpansion.into(), 1),
+            (WorkStartReason::BlockedWaiterExpansion.into(), 2),
         ]),
         "cold native production must preserve its exact sanctioned work-start census without an artifact bridge job",
     );
@@ -426,6 +429,11 @@ fn native_root_product_is_lowered_once_and_reused_by_exact_identity() {
             // (R1), so this re-run never wakes its `StaticCallees`,
             // `Recursive` or `InputDemand` either.
             (WorkStart::ChangedRevisionWake, 10),
+            // The re-evaluated product waits until every submitted source's
+            // declarations are checked: the edited source's, and the
+            // unreachable source's, which nothing asked for while the retained
+            // product stood.
+            (WorkStartReason::BlockedWaiterExpansion.into(), 2),
         ]),
         "a reached edit starts source ingestion and only exact changed-revision readers",
     );

@@ -879,9 +879,10 @@ under `GateExpansion` rather than the calling demand's own reason. Both call
 sites consult the one `missing_gates` answer; neither keeps its own notion of
 readiness.
 
-Fifteen job kinds declare gates — `SeedRoot`, `DefineFunction`,
-`ExpandFunctionSource`, `ScopeCode`, `DefineModule`, `DeriveInputDemand`,
-`DeriveRecursive`, `DeriveStaticReach`, `DeriveExecutableReach`,
+Sixteen job kinds declare gates — `SeedRoot`, `DefineFunction`,
+`ExpandFunctionSource`, `ScopeCode`, `DefineModule`, `CheckDeclarations`,
+`DeriveInputDemand`, `DeriveRecursive`, `DeriveStaticReach`,
+`DeriveExecutableReach`,
 `DeriveRuntimeDemand`, `LowerFunction`, `DeriveFunctionContract`,
 `DeriveStaticCallees`, `AnalyzeActivation`, and `DeriveExecutableFacts` —
 each in the `jobs/*.rs` module that owns the kind's body, named
@@ -1339,6 +1340,13 @@ membership state. An equal member can restore readiness without reevaluating
 the root or its native and source consumers.
 
 ### The root artifact
+
+A runtime root's producer first reads, at settled readiness, its `RootEntry`,
+its entry's keying facts, and `DeclarationsChecked` for every submitted
+source (`World::submissions_checked`). So no program is produced from a
+submission with a declaration that cannot be checked, whether or not the
+program reaches it. A macro root reads no `DeclarationsChecked`: it is
+compiled while the submission that uses it is still scoping.
 
 The root producer consumes changed member keys and owns one shared
 `BackendProgram`. Its persistent ordered inventories retain executable,

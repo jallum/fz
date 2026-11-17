@@ -690,12 +690,16 @@ impl FunctionCapture {
     }
 
     pub(crate) fn id(&self, name: &str, arity: u64) -> FunctionId {
+        self.try_id(name, arity)
+            .unwrap_or_else(|| panic!("function fact for {name}/{arity}"))
+    }
+
+    pub(crate) fn try_id(&self, name: &str, arity: u64) -> Option<FunctionId> {
         self.defs
             .borrow()
             .values()
             .find(|record| record.function_ref.is_named(name) && record.arity == arity)
             .map(|record| record.function_id)
-            .unwrap_or_else(|| panic!("function fact for {name}/{arity}"))
     }
 
     /// The one `name/arity` owned by the module with this last segment, for

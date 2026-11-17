@@ -1,0 +1,8 @@
+#---
+# purpose: a @type in a module nothing uses is checked, so a dotted name the module does not declare stops the compile under the name
+# expect: diagnostic
+#---
+defmodule M do
+  @type unused :: M.nope
+end
+def main(), do: dbg(1)

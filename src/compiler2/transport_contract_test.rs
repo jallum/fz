@@ -202,7 +202,10 @@ const SEAM_FACTS: &[(&str, &str)] = &[];
 // `DeriveExecutableReach` jobs, less three `DeriveRecursive` runs: a recursion
 // verdict starts once its reach exists.
 // 265 -> 260: a module is started once its enclosing scope exists, so each module's definition runs once fewer.
-const EXPECTED_00181_NO_DUMP_JOB_STARTS: usize = 260;
+// 260 -> 261: the product waits until the fixture's own declarations are
+// checked, which is one `CheckDeclarations` run; the fixture declares nothing
+// for it to warm.
+const EXPECTED_00181_NO_DUMP_JOB_STARTS: usize = 261;
 const ENUM_REDUCE_OPERATOR_REF_SOURCE: &str = r#"
 def main() do
   {

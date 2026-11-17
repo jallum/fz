@@ -1,0 +1,7 @@
+error[resolve/type-alias]: unknown type name `nope`
+  --> fixtures/01721_an_extern_nothing_calls_is_still_checked.fz:1:27
+   |
+1 | extern "C" defp libc::abs(nope) :: c_int
+   |                           ^^^^
+   |
+
