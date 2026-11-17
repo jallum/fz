@@ -926,12 +926,12 @@ through the system allocator, each carrying an atomic refcount, its bytes,
 and its own destructor function pointer. When the refcount hits zero, the
 destructor runs and the memory goes back to the system allocator.</p>
 
-<p>No central registry. No mutex. Each SharedBin is its own allocation:</p>
+<p>No central registry. No mutex. Each heap-backed SharedBin is one allocation: this header, then its bytes, then room, then a trailing NUL:</p>
 
 <pre>
   struct SharedBin {           <span class="note">// 40 bytes of fields, 48 with alignment padding</span>
     refcount:   AtomicUsize,                    <span class="note">// 0..8</span>
-    bytes_ptr:  *const u8,                      <span class="note">// 8..16  → separate Box&lt;[u8]&gt;</span>
+    bytes_ptr:  *const u8,                      <span class="note">// 8..16  → the bytes just after this header (heap-backed)</span>
     bytes_len:  usize,                          <span class="note">// 16..24</span>
     destructor: fn(*mut SharedBin),             <span class="note">// 24..32</span>
     room:       usize,                          <span class="note">// 32..40 capacity and frozen flag</span>
@@ -947,12 +947,14 @@ perfectly live BinRef would read as <em>already forwarded</em>: the sweep
 would take the SharedBin itself for a relocated stub and write into it.
 Aligning to 16 means no real address can ever be mistaken for a marker.</p>
 
-<p>The bytes live in a separate <code>Box&lt;[u8]&gt;</code> rather than
-inline, so the destructor can free the bytes and the SharedBin struct
-independently. The destructor field is set at allocation time:</p>
+<p>The bytes follow the header in the same block, so the destructor frees one
+allocation. The block is never reallocated; a result that outgrows its room is a
+new block. A compiler-baked static SharedBin keeps its bytes elsewhere in
+<code>.data</code>, which is why <code>bytes_ptr</code> remains a field. The
+destructor field is set at allocation time:</p>
 <ul>
   <li><code>shared_bin_destructor_heap</code> — for runtime-allocated bins;
-  reconstructs both boxes and drops them.</li>
+  frees the one block holding header and bytes.</li>
   <li><code>shared_bin_destructor_noop</code> — for compiler-baked static bins
   whose bytes live in <code>.rodata</code>; the
   destructor is reachable in principle but pinned by a static refcount of 1
@@ -1191,8 +1193,8 @@ own bytes instead, on the thread that runs the program:</p>
 <ul>
   <li><strong>in-use bytes</strong>: the capacity of every block the pool has
   handed out and not had returned (heaps, gift segments, pooled blocks and
-  exact-size blocks alike) plus the bytes of every off-heap binary buffer not
-  yet freed, trailing NUL included;</li>
+  exact-size blocks alike) plus the bytes of every off-heap binary block not
+  yet freed: header, bytes and trailing NUL;</li>
   <li><strong>idle bytes</strong>: the capacity of the blocks resting in the
   pool's free lists;</li>
   <li><strong>peak in-use bytes</strong>: the most in-use bytes any allocation

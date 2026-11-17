@@ -173,6 +173,45 @@ fn shared_bin_alloc_has_trailing_nul() {
     }
 }
 
+/// A heap-backed binary is one allocation: its bytes begin where its header
+/// ends.
+#[test]
+fn a_heap_binary_keeps_its_bytes_right_after_its_header() {
+    let p = shared_bin_alloc_with_room(b"hello", 100);
+    unsafe {
+        assert_eq!((*p).bytes_ptr as usize, p as usize + SHARED_BIN_BYTES);
+        shared_bin_release(p);
+    }
+}
+
+/// An append moves the trailing NUL to the new end, because the room beyond the
+/// written bytes is not zeroed: the byte after each end reads 0 and the byte
+/// after that is not assumed to.
+#[test]
+fn an_append_writes_the_trailing_nul_at_the_new_end() {
+    let p = shared_bin_alloc_with_room(b"ab", 8);
+    unsafe {
+        shared_bin_append(p, b"cde");
+        let bytes = from_raw_parts((*p).bytes_ptr, (*p).bytes_len + 1);
+        assert_eq!(bytes, b"abcde\0");
+        shared_bin_append(p, b"f");
+        assert_eq!(*(*p).bytes_ptr.add(6), 0);
+        shared_bin_release(p);
+    }
+}
+
+/// In debug builds the room a binary has not written holds `UNWRITTEN_BYTE`, so
+/// a reader of room beyond the NUL fails loudly.
+#[cfg(debug_assertions)]
+#[test]
+fn a_binarys_unwritten_room_is_poisoned_in_debug_builds() {
+    let p = shared_bin_alloc_with_room(b"ab", 8);
+    unsafe {
+        assert_eq!(*(*p).bytes_ptr.add(3), crate::heap::UNWRITTEN_BYTE);
+        shared_bin_release(p);
+    }
+}
+
 /// Heap-allocated bin's destructor field equals `shared_bin_destructor_heap`.
 #[test]
 fn alloc_installs_heap_destructor() {

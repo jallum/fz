@@ -202,18 +202,18 @@ fn alloc_exact(capacity: usize) -> *mut u8 {
 /// The byte a handed-out block is filled with in debug builds, so a read of
 /// memory the heap has not written sees an implausible value, not a lucky zero.
 #[cfg(debug_assertions)]
-pub(super) const UNWRITTEN_BYTE: u8 = 0xA5;
+pub(crate) const UNWRITTEN_BYTE: u8 = 0xA5;
 
 /// `p`, a block the heap has not yet written: filled with `UNWRITTEN_BYTE` in
 /// debug builds, untouched in release builds.
 #[cfg(debug_assertions)]
-fn poisoned(p: *mut u8, capacity: usize) -> *mut u8 {
+pub(crate) fn poisoned(p: *mut u8, capacity: usize) -> *mut u8 {
     unsafe { write_bytes(p, UNWRITTEN_BYTE, capacity) };
     p
 }
 
 #[cfg(not(debug_assertions))]
-fn poisoned(p: *mut u8, _capacity: usize) -> *mut u8 {
+pub(crate) fn poisoned(p: *mut u8, _capacity: usize) -> *mut u8 {
     p
 }
 
@@ -295,8 +295,8 @@ pub fn pool_footprint() -> Footprint {
     })
 }
 
-/// An off-heap binary buffer of `bytes` bytes came into existence: its bytes
-/// are in use until `binary_buffer_freed`.
+/// An off-heap binary block of `bytes` bytes (header, bytes and trailing NUL)
+/// came into existence: its bytes are in use until `binary_buffer_freed`.
 pub(crate) fn binary_buffer_allocated(bytes: usize) {
     BLOCK_POOL.with(|pool| {
         let mut pool = pool.borrow_mut();
@@ -305,7 +305,7 @@ pub(crate) fn binary_buffer_allocated(bytes: usize) {
     });
 }
 
-/// An off-heap binary buffer of `bytes` bytes was freed, on any thread. A
+/// An off-heap binary block of `bytes` bytes was freed, on any thread. A
 /// thread whose pool is already torn down has nothing left to count.
 pub(crate) fn binary_buffer_freed(bytes: usize) {
     let _ = BLOCK_POOL.try_with(|pool| pool.borrow_mut().binary_bytes -= bytes as isize);

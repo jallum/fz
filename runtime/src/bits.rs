@@ -33,10 +33,12 @@ use crate::any_value::{
     ValueKind, bitstring_bit_len as any_bitstring_bit_len, bitstring_bytes_ptr, heap_kind_from_tagged,
     heap_object_word, heap_word_addr,
 };
-use crate::heap::{binary_buffer_allocated, binary_buffer_freed};
+use crate::heap::{binary_buffer_allocated, binary_buffer_freed, poisoned};
 use crate::sync::{AtomicUsize, Ordering, fence};
+use std::alloc::{Layout, alloc, dealloc};
 use std::mem::{MaybeUninit, align_of, forget, size_of};
-use std::ptr::{NonNull, copy_nonoverlapping, read, slice_from_raw_parts_mut, write};
+use std::ptr::{NonNull, copy_nonoverlapping, read, write};
+use std::slice::from_raw_parts_mut;
 
 // ===== SharedBin layout =====================================================
 
@@ -62,6 +64,11 @@ use std::ptr::{NonNull, copy_nonoverlapping, read, slice_from_raw_parts_mut, wri
 /// `bytes_ptr` never moves. The buffer holds whole bytes and says nothing of
 /// how many bits of the last one a value uses: a view's own `bit_len` is the
 /// one authority on a value's length.
+///
+/// A heap-backed buffer is ONE allocation: this header, then its bytes, then
+/// room, then the trailing NUL, with `bytes_ptr` pointing just past the header.
+/// The block is never reallocated, which is what keeps the header's address and
+/// `bytes_ptr` fixed: a result that outgrows the room is a new block.
 ///
 /// `room` holds the buffer's capacity (the bytes it can hold ahead of the
 /// trailing NUL) in its low bits and `ROOM_FROZEN` above them. The spare room
@@ -129,28 +136,34 @@ impl SharedBin {
     }
 }
 
-// Safety: refcount is atomic; the byte buffer is either an owned Box<[u8]>
-// (heap destructor reclaims) or a static `.rodata` payload (noop dtor).
+// Safety: refcount is atomic; the bytes either follow the header in the one
+// block the heap destructor frees, or are a static `.data` payload (noop dtor).
 unsafe impl Send for SharedBin {}
 unsafe impl Sync for SharedBin {}
 
 // ===== Destructors ==========================================================
 
-/// Final-release destructor for heap-allocated SharedBins. Reconstructs
-/// both the bytes box and the SharedBin box and drops them in turn.
+/// Final-release destructor for heap-allocated SharedBins: frees the one block
+/// that holds the header and the bytes.
 ///
 /// # Safety
 /// `p` must point at a SharedBin allocated via `shared_bin_alloc` and the
 /// caller must be the last live reference (refcount transition 1 → 0).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn shared_bin_destructor_heap(p: *mut SharedBin) {
-    let bin = unsafe { Box::from_raw(p) };
-    // The buffer was allocated with its capacity and one more byte for the
-    // invisible trailing NUL. Free the full allocation.
-    let bytes = unsafe { Box::from_raw(slice_from_raw_parts_mut(bin.bytes_ptr as *mut u8, bin.capacity() + 1)) };
-    binary_buffer_freed(bytes.len());
-    drop(bytes);
-    drop(bin);
+    let size = block_size(unsafe { &*p }.capacity());
+    binary_buffer_freed(size);
+    unsafe { dealloc(p as *mut u8, block_layout(size)) };
+}
+
+/// Bytes of the one block a heap-backed SharedBin of `capacity` occupies: the
+/// header, the capacity, and the invisible trailing NUL.
+const fn block_size(capacity: usize) -> usize {
+    SHARED_BIN_BYTES + capacity + 1
+}
+
+fn block_layout(size: usize) -> Layout {
+    Layout::from_size_align(size, align_of::<SharedBin>()).expect("a binary block's size fits a layout")
 }
 
 /// No-op destructor for compiler-baked static SharedBins. The
@@ -166,8 +179,7 @@ pub unsafe extern "C" fn shared_bin_destructor_noop(_p: *mut SharedBin) {}
 // ===== Allocation + refcount primitives =====================================
 
 /// Allocate a fresh heap-backed SharedBin with refcount = 1 and the heap
-/// destructor installed. Bytes are leaked separately as a `Box<[u8]>` so
-/// the destructor can reconstruct both boxes independently.
+/// destructor installed: one block holding the header and the bytes.
 pub fn shared_bin_alloc(bytes: &[u8]) -> *mut SharedBin {
     shared_bin_alloc_with(bytes.len(), 0, |dest| {
         dest.write_copy_of_slice(bytes);
@@ -183,10 +195,11 @@ pub fn shared_bin_alloc_with_room(bytes: &[u8], spare: usize) -> *mut SharedBin 
 }
 
 /// Allocate a heap-backed SharedBin of `bytes_len` bytes and `spare` more
-/// bytes of room, and let `fill` write the payload straight into its buffer:
-/// the buffer is the one allocation the binary owns, and nothing is staged and
-/// copied in. Everything past the written bytes is zero, so the trailing NUL is
-/// in place. The trailing NUL is invisible to the language (bytes_len
+/// bytes of room, and let `fill` write the payload straight into its block:
+/// the block is the one allocation the binary owns, and nothing is staged and
+/// copied in. Only the trailing NUL after the written bytes is written here;
+/// the room beyond it is unwritten (filled with `UNWRITTEN_BYTE` in debug
+/// builds). The trailing NUL is invisible to the language (bytes_len
 /// unchanged) and underwrites the c_string extern marshal contract.
 pub fn shared_bin_alloc_with(
     bytes_len: usize,
@@ -194,19 +207,30 @@ pub fn shared_bin_alloc_with(
     fill: impl FnOnce(&mut [MaybeUninit<u8>]),
 ) -> *mut SharedBin {
     let capacity = bytes_len + spare;
-    let mut buf = Box::<[u8]>::new_zeroed_slice(capacity + 1);
-    fill(&mut buf[..bytes_len]);
-    let buf = unsafe { buf.assume_init() };
-    let bytes_ptr: *const u8 = Box::leak(buf).as_ptr();
-    binary_buffer_allocated(capacity + 1);
-    let bin = Box::new(SharedBin {
-        refcount: AtomicUsize::new(1),
-        bytes_ptr,
-        bytes_len,
-        destructor: shared_bin_destructor_heap,
-        room: capacity,
-    });
-    Box::into_raw(bin)
+    let size = block_size(capacity);
+    let block = unsafe { alloc(block_layout(size)) };
+    assert!(!block.is_null(), "binary block: malloc failed");
+    let block = poisoned(block, size);
+    let bytes = unsafe { block.add(SHARED_BIN_BYTES) };
+    unsafe {
+        fill(from_raw_parts_mut(bytes as *mut MaybeUninit<u8>, bytes_len));
+        write(bytes.add(bytes_len), 0);
+    }
+    binary_buffer_allocated(size);
+    let bin = block as *mut SharedBin;
+    unsafe {
+        write(
+            bin,
+            SharedBin {
+                refcount: AtomicUsize::new(1),
+                bytes_ptr: bytes,
+                bytes_len,
+                destructor: shared_bin_destructor_heap,
+                room: capacity,
+            },
+        );
+    }
+    bin
 }
 
 /// Forbid any further append into `p`'s buffer. Called on the owner's thread
@@ -240,8 +264,7 @@ pub unsafe fn shared_bin_append(p: *mut SharedBin, bytes: &[u8]) {
         );
     }
     bin.bytes_len += bytes.len();
-    // The byte after the new end is still zero: the buffer is zeroed beyond
-    // its written bytes and only appends write there.
+    unsafe { write((bin.bytes_ptr as *mut u8).add(bin.bytes_len), 0) };
 }
 
 /// Increment the refcount on an already-owned SharedBin.
