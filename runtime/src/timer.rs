@@ -69,8 +69,8 @@ impl TimerWheel {
     }
 
     /// Drain every entry whose deadline is at or before `now` in
-    /// ascending deadline order. The scheduler calls this on each tick
-    /// and routes each entry to the matching parked process.
+    /// ascending deadline order. The scheduler calls this while a timer is
+    /// pending and routes each entry to the matching parked process.
     pub fn drain_expired(&mut self, now: Instant) -> Vec<TimerEntry> {
         let cut = self
             .entries
