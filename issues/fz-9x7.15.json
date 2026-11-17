@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-17T20:30:27Z",
+  "description": "young_budget is min(old live, SIZE_TABLE's last entry ~7 MiB). Baseline telemetry (1d61f3742, scratch 9x7-11/tel4): dist-full median old at a minor 230 MB, cap binds at 94% of 855 minors, minors promote 481 MB, 14 majors copy 648 MB; dist-p28000 cap binds 65%, enum 37%; no other workload reaches the cap. OTP's young heap is at least its last usage, unbounded. Proposal page (approved 2026-11-17): https://claude.ai/artifact/GuEvNK64ZNHh8gDEQkMF3m (Proposal B, step 2). Interacts with fz-9x7.12 (exact-size blocks above the table stay resident on macOS): the larger young tip is such a block, and that cost is part of what each arm measures.\n\nExperiment first, pre-registered: arms B0 today (7 MiB), B1 32 MiB cap, B2 128 MiB cap, B3 uncapped (young = old live), bench host, 25 runs (9 dist-full).\nPredictions: dist-full B3 minors 855 -\u003e \u003c60, minor copied bytes -30%+, instructions -3%+, peak RSS up by up to ~230 MB; dist-p28000/enum smaller versions; workloads where the cap never binds within 0.5% instructions on every arm.\nPass rule: (1) an arm passes if dist-full or dist-p28000 cycles CI upper \u003c 0.98 with peak RSS up \u003c= 10% on every workload; (2) no workload cycles CI lower \u003e 1.02; report the distiller's cycles-vs-RSS curve over B0-B3 regardless.\n\nDone when (if an arm passes): young_budget's cap is the passing arm's (or gone), its doc comment states the measured reason; tests pin the budget; docs updated; full gate green. If none passes: result recorded, closure proposed to the user.",
+  "id": "fz-9x7.15",
+  "labels": [],
+  "parent": "fz-9x7",
+  "priority": 2,
+  "status": "open",
+  "title": "The young generation's size follows the live data, not the largest pooled block",
+  "type": "task",
+  "updated_at": "2026-11-17T20:30:27Z"
+}
