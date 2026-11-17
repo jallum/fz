@@ -2,14 +2,16 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-17T20:19:34Z",
+  "close_reason": "Landed with fz-sc8.25 in af9bd3798 (#647)",
   "created": "2026-11-15T14:44:03Z",
   "description": "`MyApp.NotThere.go(1)` with no such module stops the compile with `error[lower/unbound]: compiler2 lowering found unresolved direct runtime callee `MyApp.NotThere.go/1``. `%MyApp.NotThere{}` in the same place reports `resolve/unknown-module: module `MyApp.NotThere` is not defined`, and `String.nope(1)` reports `resolve/unknown-import`. The remote call on an undefined module should report as the struct use does.\n\nWhere: `resolve_callee(.., \"direct runtime callee\")` in src/compiler2/jobs/body.rs (lines ~1579 and ~1841) fails in lowering before the unresolved-module report is made.\n\nElixir warns here (\"MyApp.NotThere.go/1 is undefined (module MyApp.NotThere is not available or is yet to be defined)\") and raises UndefinedFunctionError at run time; fz already refuses unknown remote functions at compile time.",
   "id": "fz-3sy.33",
   "labels": [],
   "parent": "fz-3sy",
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "A call on an undefined module is reported as resolve/unknown-module",
   "type": "bug",
-  "updated_at": "2026-11-15T14:44:03Z"
+  "updated_at": "2026-11-17T20:19:34Z"
 }
