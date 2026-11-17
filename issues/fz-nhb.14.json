@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-17T23:49:00Z",
+  "description": "## Why\nThese four annotate parameters with `::` (00615 x4, 00632 x2, 01260 x4, 01360 x6), which Elixir refuses in a pattern. fz-ep5.5 makes `::` in a pattern an error and rewrites every such use in the repo.\n\n## What changes\nAfter fz-ep5.5 lands, each fixture (as ep5.5 left it) is wrapped in defmodule Main, its header reads `# oracle: self`, its twin is deleted and the golden regenerated. If a fixture's subject was the annotation itself, report that instead of converting.\n\n## Signal\nFour fewer .oracle.exs files; fixture_matrix and ORACLE=check pass for the four stems.",
+  "id": "fz-nhb.14",
+  "labels": [],
+  "parent": "fz-nhb",
+  "priority": 3,
+  "status": "open",
+  "title": "Fixtures 00615, 00632, 01260 and 01360 are their own Elixir oracle",
+  "type": "task",
+  "updated_at": "2026-11-17T23:49:00Z"
+}
