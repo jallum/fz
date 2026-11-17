@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-17T22:54:50Z",
+  "description": "## Why\nfz refuses two forms Elixir writes in every typespec:\n- the function type `(A, B -\u003e R)` / `(-\u003e R)`: `compiler2 could not parse a type expression: expected `)`, got Arrow` (fz reads only its own `(A, B) -\u003e R`);\n- the bound `when a: var`: `unknown type name `var``.\nSo a spec copied from Elixir does not compile, and fixture 01135 keeps a twin only for its `(any, c) -\u003e d` specs.\n\n## What changes\n- `compiler2/type_expr.rs` `parse_paren_or_arrow` reads `-\u003e` before the closing `)`: `(A, B -\u003e R)` and `(-\u003e R)` are the same `TypeExpr::Arrow` as `(A, B) -\u003e R` and `() -\u003e R`.\n- `compiler2/quoted_function.rs` (@spec `when` parse): `name: var` declares a variable with no bound, which is what an unconstrained variable already is, so it adds no constraint.\n- 01135 writes its specs the Elixir way (`(any, c -\u003e d)`, `when c: var, d: var`) and is its own oracle; its twin is deleted.\n- `.agent/docs/specs.md` states the accepted function-type spellings and `var`.\n\n## Signal\ntype_expr and quoted-function unit tests for both arrow spellings, `(-\u003e R)` and `when a: var`; 01135 passes run, interp and build and `ORACLE=check`; full gate green.",
+  "id": "fz-nhb.11",
+  "labels": [],
+  "parent": "fz-nhb",
+  "priority": 2,
+  "status": "open",
+  "title": "@spec reads Elixir's function type and a var bound",
+  "type": "feature",
+  "updated_at": "2026-11-17T22:54:50Z"
+}
