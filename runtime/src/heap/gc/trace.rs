@@ -61,24 +61,22 @@ pub fn cheney_trace_struct(
     let schema_id = unsafe { struct_schema_id(obj as *const u8) };
     let schema = schemas.get(schema_id);
     for (field, kind_offset) in schema.any_value_fields_with_kind_offsets() {
-        let value = unsafe {
-            let raw = read(struct_field_raw_slot(obj as *const u8, field.offset));
-            let kind = read(struct_field_kind_slot(obj as *const u8, kind_offset));
-            AnyValue::decode_parts(raw, kind).expect("struct field kind")
-        };
-        if value.kind().is_heap() {
-            stats.struct_heap_edges += 1;
-            let forwarded = forward_heap_value(value, from_space, heap, schemas, copied_objects, stats);
-            let raw = forwarded.raw();
-            unsafe {
-                write(struct_field_raw_slot(obj as *const u8, field.offset), raw);
-                write(
-                    struct_field_kind_slot(obj as *const u8, kind_offset),
-                    forwarded.kind().tag(),
-                );
-            }
-        } else {
+        let kind_slot = unsafe { struct_field_kind_slot(obj as *const u8, kind_offset) };
+        let raw_slot = unsafe { struct_field_raw_slot(obj as *const u8, field.offset) };
+        let kind = ValueKind::new(unsafe { read(kind_slot) }).expect("struct field kind");
+        // A field that is not a heap reference is skipped from its kind byte
+        // alone; an empty list is a LIST-kind field whose payload is zero.
+        let raw = unsafe { read(raw_slot) };
+        if !kind.is_heap() || raw == 0 {
             stats.struct_scalar_slots += 1;
+            continue;
+        }
+        let value = AnyValue::heap_ptr(raw as *mut u8, kind);
+        stats.struct_heap_edges += 1;
+        let forwarded = forward_heap_value(value, from_space, heap, schemas, copied_objects, stats);
+        unsafe {
+            write(raw_slot, forwarded.raw());
+            write(kind_slot, forwarded.kind().tag());
         }
     }
 }
