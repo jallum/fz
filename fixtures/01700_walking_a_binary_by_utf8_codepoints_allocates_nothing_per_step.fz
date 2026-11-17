@@ -1,0 +1,25 @@
+#---
+# purpose: a `<<_c :: utf8, r :: binary>>` match step allocates nothing, as a byte step does: the rest is the binary being read and the position it starts at, never a new view
+# kind: run
+#---
+#
+# The walk takes 3,000 steps over 3,000 copies of a three-byte character, so
+# each step consumes one whole codepoint. The program prints the step count,
+# then the allocations and the binary views made per step.
+#
+# The allocation count is the total over the walk, which includes the stats map
+# and, on the native paths, one continuation frame; divided by 3,000 steps it
+# is 0 only when no step allocates.
+defmodule P do
+  def go(b), do: walk(b, 0)
+  defp walk(<<_c :: utf8, r :: binary>>, n), do: walk(r, n + 1)
+  defp walk(_b, n), do: n
+end
+
+line = String.duplicate("世", 3000)
+a = Process.heap_alloc_stats()
+n = P.go(line)
+b = Process.heap_alloc_stats()
+dbg(n)
+dbg(div(b[:allocs] - a[:allocs], 3000))
+dbg(b[:binview_allocs] - a[:binview_allocs])
