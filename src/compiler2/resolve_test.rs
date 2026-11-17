@@ -6,8 +6,8 @@
 use super::type_expr::TypeExprError;
 use super::types::MapKey;
 use super::{Namespace, Ty, Types, World};
-use crate::ast::TypeExprBody;
-use crate::parser::lexer::Lexer;
+use crate::ast::{SpecDecl, TypeExprBody};
+use crate::parser::lexer::{Lexer, Tok};
 use crate::telemetry::ConfiguredTelemetry;
 
 fn resolve(tel: &ConfiguredTelemetry, world: &mut World, src: &str) -> Result<Ty, TypeExprError> {
@@ -378,4 +378,58 @@ fn applied_tuple_reports_the_uniform_arity_error() {
     let error = resolve(&tel, &mut world, "tuple(integer, atom)").expect_err("nullary `tuple` applied should fail");
 
     assert_eq!(error.msg, "expected 0 type argument(s), got 2 `tuple`");
+}
+
+/// A spec body as the front door hands it over: its tokens, without the
+/// lexer's end-of-input marker.
+fn body(tel: &ConfiguredTelemetry, src: &str) -> TypeExprBody {
+    let mut sources = crate::source::SourceMap::default();
+    let version = sources.add_code(Some("<test>"), src);
+    let mut tokens = Lexer::with_source_version_and_name(src, version, "<test>")
+        .tokenize(tel)
+        .expect("fragment lexes");
+    tokens.retain(|token| !matches!(token.tok, Tok::Eof));
+    TypeExprBody(tokens)
+}
+
+fn spec_when(tel: &ConfiguredTelemetry, params: &[&str], result: &str, constraints: &[(&str, &str)]) -> SpecDecl {
+    SpecDecl {
+        name: "f".to_string(),
+        param_body_tokens: params.iter().map(|param| body(tel, param)).collect(),
+        result_body_tokens: body(tel, result),
+        constraints: constraints
+            .iter()
+            .map(|(var, bound)| (var.to_string(), body(tel, bound)))
+            .collect(),
+    }
+}
+
+/// Elixir's `when a: var` says `a` is a type variable with no bound; only the
+/// real bound beside it constrains anything.
+#[test]
+fn a_var_bound_leaves_its_variable_unconstrained() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    let spec = spec_when(&tel, &["a", "b"], "a | b", &[("a", "var"), ("b", "integer")]);
+
+    let resolved = world.resolve_spec(Namespace::default(), &spec).expect("spec resolves");
+
+    let integer = world.types_mut().int();
+    let bounds: Vec<Ty> = resolved.constraints.values().copied().collect();
+    assert_eq!(bounds, [integer], "only `b: integer` bounds its variable");
+}
+
+/// `var` names no type, but its variable still has to be one the spec uses:
+/// a misspelled name is reported as it is for any other bound.
+#[test]
+fn a_var_bound_on_an_unknown_variable_is_refused() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    let spec = spec_when(&tel, &["a"], "a", &[("zzz", "var")]);
+
+    let error = world
+        .resolve_spec(Namespace::default(), &spec)
+        .expect_err("an unused variable's bound is refused");
+
+    assert_eq!(error.msg, "constraint references unknown type variable `zzz`");
 }
