@@ -11,11 +11,15 @@
     {
       "text": "No longer blocked by fz-sc8.212 (parked). The splice (emit_extern_call) knows which extern it emits; the instruction table keys on that. Measured on top of the splice: distiller no change, p1b -1.2%, p2b -3.0%.",
       "timestamp": "2026-11-15T03:32:26Z"
+    },
+    {
+      "text": "Fresh evidence (Optimize, release AOT disassembly of spin/2 on b237ec0a0 + #674): `def spin(0, acc), do: acc; def spin(n, acc), do: spin(n - 1, acc + n)` runs ~93 instructions per iteration. The clause body (~77) calls _fz_op_sub_ii and _fz_op_add_ii (each `adds/subs; cset w1,vs; ret`, runtime/src/ir_runtime.rs:949 integer_arithmetic_export!), each followed by 11 instructions decoding the overflow flag into a branch; the two calls are why the clause saves/restores 9 callee-saved registers. Binary: GC scratch 9x7-14/b-V0/spin.bin.",
+      "timestamp": "2026-11-17T21:47:22Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "Integer arithmetic and comparison externs are emitted as instructions",
   "type": "task",
-  "updated_at": "2026-11-15T03:32:26Z"
+  "updated_at": "2026-11-17T21:47:22Z"
 }
