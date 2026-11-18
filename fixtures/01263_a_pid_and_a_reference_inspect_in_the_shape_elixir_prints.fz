@@ -1,7 +1,7 @@
 #---
 # purpose: "inspect of a pid is #PID<0.N.M> and of a reference is #Reference<0.A.B.C>, alone and inside a tuple, list and map; send/2 to a non-pid raises ArgumentError"
 # oracle: self
-# oracle.stamp: 283aa1611147a063
+# oracle.stamp: d12591ed11159b9e
 #---
 #
 # The numbers differ between runs and between implementations, so only the
@@ -15,11 +15,9 @@ defmodule Main do
   end
 
   def raises(not_a_pid) do
-    try do
-      send(not_a_pid, :m)
-    rescue
-      e in ArgumentError -> IO.inspect(e.__struct__)
-    end
+    send(not_a_pid, :m)
+  rescue
+    e in ArgumentError -> IO.inspect(e.__struct__)
   end
 
   def main() do

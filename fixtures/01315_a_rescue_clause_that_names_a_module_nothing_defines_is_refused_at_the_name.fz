@@ -3,9 +3,7 @@
 # expect: diagnostic
 #---
 def main() do
-  try do
-    raise ArgumentError, "x"
-  rescue
-    e in [ArgumentError, MyApp.NotThere] -> dbg(e)
-  end
+  raise ArgumentError, "x"
+rescue
+  e in [ArgumentError, MyApp.NotThere] -> dbg(e)
 end

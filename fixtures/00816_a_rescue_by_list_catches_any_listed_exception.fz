@@ -1,15 +1,13 @@
 #---
 # purpose: "a rescue head listing several aliases catches a raise of any one of them"
 # oracle: self
-# oracle.stamp: 0d30fe164748e96e
+# oracle.stamp: e5a377aac956fa85
 #---
 defmodule Main do
   def attempt(f) do
-    try do
-      f.()
-    rescue
-      [ArgumentError, RuntimeError] -> :listed
-    end
+    f.()
+  rescue
+    [ArgumentError, RuntimeError] -> :listed
   end
 
   def main() do

@@ -1,23 +1,19 @@
 #---
 # purpose: "Enum.join over integers and a tuple, and over a binary and a tuple, tests each element against the one implementation that overlaps its type, so the tuple raises Protocol.UndefinedError naming Tuple instead of entering code compiled for integers or binaries"
 # oracle: self
-# oracle.stamp: ec205a818fe866f9
+# oracle.stamp: aaedc91b7d8ff64d
 #---
 defmodule Main do
   def join_ints_and_a_tuple() do
-    try do
-      Enum.join([1, {2, 3}], " ")
-    rescue
-      e -> Exception.message(e)
-    end
+    Enum.join([1, {2, 3}], " ")
+  rescue
+    e -> Exception.message(e)
   end
 
   def join_binaries_and_a_tuple() do
-    try do
-      Enum.join(["x", {1, 2}], " ")
-    rescue
-      e -> Exception.message(e)
-    end
+    Enum.join(["x", {1, 2}], " ")
+  rescue
+    e -> Exception.message(e)
   end
 
   def main() do

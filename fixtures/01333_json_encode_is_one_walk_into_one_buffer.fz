@@ -1,17 +1,15 @@
 #---
 # purpose: "JSON.encode! escapes at the start, middle and end of a string, beside multi-byte characters, in nested lists and maps, and reports invalid or truncated UTF-8 as Elixir does"
 # oracle: self
-# oracle.stamp: 3b5a4188806e62a6
+# oracle.stamp: c044166c62c1dc37
 #---
 defmodule Encode do
   def show(value), do: IO.inspect(JSON.encode!(value))
 
   def failure(bytes) do
-    try do
-      JSON.encode!(bytes)
-    rescue
-      e in ErlangError -> IO.inspect(e.original)
-    end
+    JSON.encode!(bytes)
+  rescue
+    e in ErlangError -> IO.inspect(e.original)
   end
 end
 

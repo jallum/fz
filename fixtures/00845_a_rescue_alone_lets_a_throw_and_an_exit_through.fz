@@ -1,19 +1,17 @@
 #---
 # purpose: "a rescue-only try does not take a throw or an exit, even with a bare variable head; both reach the outer catch"
 # oracle: self
-# oracle.stamp: bf572ef3509a32af
+# oracle.stamp: bc091b5dafca55da
 #---
 defmodule Main do
   def attempt(f) do
     try do
-      try do
-        f.()
-      rescue
-        e -> {:rescued, e}
-      end
-    catch
-      kind, value -> {kind, value}
+      f.()
+    rescue
+      e -> {:rescued, e}
     end
+  catch
+    kind, value -> {kind, value}
   end
 
   def main() do

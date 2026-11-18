@@ -1,17 +1,15 @@
 #---
 # purpose: "an after block uses what is in scope at the try, on the completing path and on the raising path"
 # oracle: self
-# oracle.stamp: 3901c22caf97cd9e
+# oracle.stamp: 86350e17a4e5f991
 #---
 defmodule Main do
   def attempt(label, f) do
-    try do
-      f.()
-    rescue
-      _ -> :rescued
-    after
-      IO.inspect({:after, label})
-    end
+    f.()
+  rescue
+    _ -> :rescued
+  after
+    IO.inspect({:after, label})
   end
 
   def main() do

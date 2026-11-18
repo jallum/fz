@@ -1,21 +1,19 @@
 #---
 # purpose: "a catch with no matching clause re-raises with the kind it was given: a throw stays a throw, an exit stays an exit, an error stays an error, through two enclosing tries"
 # oracle: self
-# oracle.stamp: c04500aae81f1af6
+# oracle.stamp: 2389b220fd9e756d
 #---
 defmodule Main do
   def attempt(f) do
     try do
-      try do
-        f.()
-      catch
-        :error, :never -> :never
-      end
-    rescue
-      ArgumentError -> :rescued_by_middle
+      f.()
     catch
-      kind, value -> {kind, value}
+      :error, :never -> :never
     end
+  rescue
+    ArgumentError -> :rescued_by_middle
+  catch
+    kind, value -> {kind, value}
   end
 
   def main() do

@@ -1,7 +1,7 @@
 error[resolve/unknown-module]: module `MyApp.NotThere` is not defined
-  --> fixtures/01315_a_rescue_clause_that_names_a_module_nothing_defines_is_refused_at_the_name.fz:5:26
+  --> fixtures/01315_a_rescue_clause_that_names_a_module_nothing_defines_is_refused_at_the_name.fz:4:24
    |
-5 |     e in [ArgumentError, MyApp.NotThere] -> dbg(e)
-   |                          ^^^^^^^^^^^^^^
+4 |   e in [ArgumentError, MyApp.NotThere] -> dbg(e)
+   |                        ^^^^^^^^^^^^^^
    |
 

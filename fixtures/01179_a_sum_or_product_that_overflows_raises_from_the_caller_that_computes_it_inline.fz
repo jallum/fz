@@ -9,11 +9,9 @@ defmodule Overflow do
   def double(x), do: x * 2 + 1
 
   def attempt(a, b) do
-    try do
-      total(a, b)
-    rescue
-      e in ArithmeticError -> {:rescued, e.message}
-    end
+    total(a, b)
+  rescue
+    e in ArithmeticError -> {:rescued, e.message}
   end
 end
 

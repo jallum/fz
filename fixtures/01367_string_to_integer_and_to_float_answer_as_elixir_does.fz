@@ -1,23 +1,19 @@
 #---
 # purpose: "String.to_integer/1 and String.to_float/1 give Elixir's answers: the whole 64-bit range, a leading sign, exponents, correct rounding, and ArgumentError on text Elixir refuses"
 # oracle: self
-# oracle.stamp: 6602bbf4087c9742
+# oracle.stamp: 018e467962d85b18
 #---
 defmodule Main do
   def to_integer(s) do
-    try do
-      String.to_integer(s)
-    rescue
-      e in ArgumentError -> refused(e)
-    end
+    String.to_integer(s)
+  rescue
+    e in ArgumentError -> refused(e)
   end
 
   def to_float(s) do
-    try do
-      String.to_float(s)
-    rescue
-      e in ArgumentError -> refused(e)
-    end
+    String.to_float(s)
+  rescue
+    e in ArgumentError -> refused(e)
   end
 
   def refused(e) do

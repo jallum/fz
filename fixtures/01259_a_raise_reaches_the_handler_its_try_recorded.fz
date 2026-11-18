@@ -1,7 +1,7 @@
 #---
 # purpose: "a raise reaches the innermost try's handler with the values that try captured: from a nested non-tail try inside a branch join, after a collection moved the captures, and through handlers nested deep enough to grow the handler stack"
 # oracle: self
-# oracle.stamp: 71afbb6f3ef4f8b9
+# oracle.stamp: 3b608042db32f5c1
 #---
 #
 # Each try records its handler where the process keeps its handlers. Three
@@ -54,19 +54,15 @@ defmodule Main do
   def nested(0, _), do: :erlang.error([0])
 
   def nested(depth, trail) do
-    try do
-      nested(depth - 1, [depth | trail])
-    rescue
-      e in ErlangError -> :erlang.error([depth | e.original])
-    end
+    nested(depth - 1, [depth | trail])
+  rescue
+    e in ErlangError -> :erlang.error([depth | e.original])
   end
 
   def deep(depth) do
-    try do
-      nested(depth, [])
-    rescue
-      e in ErlangError -> {length(e.original), Enum.take(e.original, 3), hd(Enum.reverse(e.original))}
-    end
+    nested(depth, [])
+  rescue
+    e in ErlangError -> {length(e.original), Enum.take(e.original, 3), hd(Enum.reverse(e.original))}
   end
 
   def main() do

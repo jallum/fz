@@ -1,7 +1,7 @@
 #---
 # purpose: "abs, round, trunc, floor and ceil answer an integer or a float in a body as Elixir does: round halves away from zero, floor and ceil go toward the signs, negative zero rounds to zero, and an operand that is not a number raises ArgumentError"
 # oracle: self
-# oracle.stamp: 28fa251885298bc6
+# oracle.stamp: c842168a50f60f5f
 #---
 #
 # abs keeps the type of its operand. round, trunc, floor and ceil answer an
@@ -11,11 +11,9 @@
 
 defmodule Main do
   def refused(f) do
-    try do
-      f.()
-    rescue
-      e in ArgumentError -> e.message
-    end
+    f.()
+  rescue
+    e in ArgumentError -> e.message
   end
 
   def main() do

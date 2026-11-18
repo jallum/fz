@@ -1,19 +1,17 @@
 #---
 # purpose: "a rescue naming ArgumentError catches raise ArgumentError and does not catch a RuntimeError, which the outer try takes"
 # oracle: self
-# oracle.stamp: 832fac1b6e4122af
+# oracle.stamp: d3f31da047408cb4
 #---
 defmodule Main do
   def attempt(f) do
     try do
-      try do
-        f.()
-      rescue
-        ArgumentError -> :argument
-      end
+      f.()
     rescue
-      RuntimeError -> :runtime_from_outer
+      ArgumentError -> :argument
     end
+  rescue
+    RuntimeError -> :runtime_from_outer
   end
 
   def main() do

@@ -19,12 +19,10 @@ extern "C" defp fz_op_div_ii(integer, integer) :: integer,
   message: "cannot divide by zero"
 
 def divide(a, b) do
-  try do
-    fz_op_div_ii(a, b)
-  rescue
-    e in MyApp.DivisionByZero ->
-      {e.message, e.detail, e.code, e.hint, e.note, e.tags, e.at, e.meta}
-  end
+  fz_op_div_ii(a, b)
+rescue
+  e in MyApp.DivisionByZero ->
+    {e.message, e.detail, e.code, e.hint, e.note, e.tags, e.at, e.meta}
 end
 
 def code_of(%MyApp.DivisionByZero{code: code}), do: code

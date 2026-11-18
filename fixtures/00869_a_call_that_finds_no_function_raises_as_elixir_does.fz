@@ -1,7 +1,7 @@
 #---
 # purpose: "m.f(a) on a value whose type lists no module raises at run time when the value reaches no function: UndefinedFunctionError for an atom naming no module, for nil and for a module that lacks the function, each worded as Elixir words it and carrying the module, function and arity; ArgumentError for a value that is no atom"
 # oracle: self
-# oracle.stamp: 65fc4cc9dec98b63
+# oracle.stamp: a5ffc4cfc29eca32
 #---
 #
 # A miss is one more target of the call: the receiver's type less the atoms
@@ -19,27 +19,21 @@ end
 
 defmodule Main do
   def try_area(m) do
-    try do
-      m.area(%Square{s: 3})
-    rescue
-      e -> {e.__struct__, Exception.message(e)}
-    end
+    m.area(%Square{s: 3})
+  rescue
+    e -> {e.__struct__, Exception.message(e)}
   end
 
   def try_name(m) do
-    try do
-      m.name()
-    rescue
-      e -> {e.__struct__, Exception.message(e)}
-    end
+    m.name()
+  rescue
+    e -> {e.__struct__, Exception.message(e)}
   end
 
   def missed(m) do
-    try do
-      m.area(1)
-    rescue
-      e in UndefinedFunctionError -> {e.module, e.function, e.arity, e.reason}
-    end
+    m.area(1)
+  rescue
+    e in UndefinedFunctionError -> {e.module, e.function, e.arity, e.reason}
   end
 
   def show({name, message}) do

@@ -1,7 +1,7 @@
 #---
 # purpose: "a map update takes `key => value` entries with any key expression, mixed with keyword entries, and a newline on either side of the bar"
 # oracle: self
-# oracle.stamp: 57e30ad3d5b06097
+# oracle.stamp: 61a1b2c69b17d016
 #---
 defmodule Pt do
   defstruct [:x, :y]
@@ -13,11 +13,9 @@ defmodule Main do
   def put_all([{key, value} | rest], map), do: put_all(rest, %{map | key => value})
 
   def missing(map) do
-    try do
-      put_all([z: 1], map)
-    rescue
-      e in KeyError -> Exception.message(%{e | term: nil})
-    end
+    put_all([z: 1], map)
+  rescue
+    e in KeyError -> Exception.message(%{e | term: nil})
   end
 
   def main() do

@@ -7,9 +7,7 @@ defmodule Plain do
 end
 
 def main() do
-  try do
-    raise ArgumentError, "x"
-  rescue
-    e in Plain -> dbg(e)
-  end
+  raise ArgumentError, "x"
+rescue
+  e in Plain -> dbg(e)
 end

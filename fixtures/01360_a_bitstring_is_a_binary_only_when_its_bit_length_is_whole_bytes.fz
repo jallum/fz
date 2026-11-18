@@ -38,11 +38,9 @@ defmodule Probe do
   def walk_four(_), do: :no_match
 
   def upcase(x) do
-    try do
-      String.upcase(x)
-    rescue
-      _ in FunctionClauseError -> :function_clause_error
-    end
+    String.upcase(x)
+  rescue
+    _ in FunctionClauseError -> :function_clause_error
   end
 end
 

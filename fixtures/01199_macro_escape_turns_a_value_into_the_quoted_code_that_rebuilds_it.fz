@@ -1,7 +1,7 @@
 #---
 # purpose: "Macro.escape/1 turns a value into the quoted code that rebuilds it, as in Elixir: atoms, numbers, binaries, 2-tuples and lists are their own code with each element escaped, a longer or shorter tuple is {:{}, [], elements}, a map or struct is {:%{}, [], pairs} in Map.to_list order, a bitstring that is not a binary is its leading bits and its binary rest; a macro unquotes an escaped value to rebuild it; a reference or a function, alone or nested, raises ArgumentError"
 # oracle: self
-# oracle.stamp: ced1c21871662f88
+# oracle.stamp: da7560bb104544eb
 #---
 defmodule Pt do
   defstruct x: 0, y: [1]
@@ -18,11 +18,9 @@ defmodule Main do
   require Table
 
   def refusal(value) do
-    try do
-      Macro.escape(value)
-    rescue
-      e in ArgumentError -> {:refused, String.starts_with?(Exception.message(e), "cannot escape #")}
-    end
+    Macro.escape(value)
+  rescue
+    e in ArgumentError -> {:refused, String.starts_with?(Exception.message(e), "cannot escape #")}
   end
 
   def main() do

@@ -1,7 +1,7 @@
 #---
 # purpose: "Macro.escape/1 writes a function a module defines by name as the capture that names it, &Mod.fun/arity, as in Elixir, alone or nested in a list, tuple or map; a macro unquotes the escaped capture, or builds the same quoted capture by hand, and the code it returns calls the function; a defstruct default that is such a capture, written or computed, is kept; an anonymous function is still refused"
 # oracle: self
-# oracle.stamp: c313816925a2a897
+# oracle.stamp: 12e3d8cc535d72b4
 #---
 defmodule Text do
   def shout(word), do: String.upcase(word) <> "!"
@@ -27,11 +27,9 @@ defmodule Main do
   require Text
 
   def refusal(value) do
-    try do
-      Macro.escape(value)
-    rescue
-      e in ArgumentError -> {:refused, String.ends_with?(Exception.message(e), "remote functions in the format &Mod.fun/arity")}
-    end
+    Macro.escape(value)
+  rescue
+    e in ArgumentError -> {:refused, String.ends_with?(Exception.message(e), "remote functions in the format &Mod.fun/arity")}
   end
 
   def main() do

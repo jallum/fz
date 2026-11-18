@@ -13,11 +13,9 @@ defmodule G do
   def plain(n), do: n * 3
 
   def returning(n) do
-    try do
-      n * 3
-    rescue
-      _ -> 0
-    end
+    n * 3
+  rescue
+    _ -> 0
   end
 
   def reraising(n) do
@@ -31,11 +29,9 @@ defmodule G do
   end
 
   def returning_raised(text) do
-    try do
-      String.to_integer(text)
-    rescue
-      _ -> 0
-    end
+    String.to_integer(text)
+  rescue
+    _ -> 0
   end
 
   def reraising_raised(n, text) do

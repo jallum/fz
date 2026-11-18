@@ -7,11 +7,9 @@
 # matching: `:a` means the guard held and `:b` means it did not.
 
 def refused(f) do
-  try do
-    f.()
-  rescue
-    e in ArithmeticError -> e.message
-  end
+  f.()
+rescue
+  e in ArithmeticError -> e.message
 end
 
 def entry_trunc(n) when trunc(n) > 0, do: :a

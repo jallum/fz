@@ -1,7 +1,7 @@
 #---
 # purpose: "A user protocol with one implementation, called with a receiver that may be any of several kinds, raises Protocol.UndefinedError for each kind it does not take; the message names the kind, a struct by its module, and shows the value"
 # oracle: self
-# oracle.stamp: 76903540a90d066b
+# oracle.stamp: fb65075603cd0678
 #---
 defprotocol Sizer do
   def size(value)
@@ -17,11 +17,9 @@ end
 
 defmodule Main do
   def describe(value) do
-    try do
-      Sizer.size(value)
-    rescue
-      e -> Exception.message(e)
-    end
+    Sizer.size(value)
+  rescue
+    e -> Exception.message(e)
   end
 
   def first_line(value) do

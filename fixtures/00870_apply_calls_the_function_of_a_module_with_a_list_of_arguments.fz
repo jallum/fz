@@ -1,7 +1,7 @@
 #---
 # purpose: "apply(m, :f, [a, b]) is the call m.f(a, b): on a module written out, on a module held in a variable, on an atom made at run time, with no arguments, and with arguments evaluated left to right after the module; a miss raises as the call does"
 # oracle: self
-# oracle.stamp: 0822afaa9f8fbcb6
+# oracle.stamp: e68f81046e0b63ef
 #---
 #
 # The function is an atom and the arguments are a list, both written out, so
@@ -25,11 +25,9 @@ defmodule Main do
   def name_of(m), do: apply(m, :name, [])
 
   def missed(m) do
-    try do
-      apply(m, :short_by, [1, 2])
-    rescue
-      e in UndefinedFunctionError -> {e.module, e.function, e.arity}
-    end
+    apply(m, :short_by, [1, 2])
+  rescue
+    e in UndefinedFunctionError -> {e.module, e.function, e.arity}
   end
 
   def main() do

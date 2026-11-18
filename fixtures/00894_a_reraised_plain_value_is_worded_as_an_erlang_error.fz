@@ -3,9 +3,7 @@
 # expect: abort
 #---
 def main() do
-  try do
-    panic(:boom)
-  rescue
-    e in ErlangError -> reraise(e, __STACKTRACE__)
-  end
+  panic(:boom)
+rescue
+  e in ErlangError -> reraise(e, __STACKTRACE__)
 end

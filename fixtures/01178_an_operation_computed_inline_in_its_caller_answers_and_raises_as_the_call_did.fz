@@ -1,7 +1,7 @@
 #---
 # purpose: "an operation computed inline in its caller answers and raises as the call did: sums of integers and floats, byte_size and map_size, and a division by zero that a try around the caller rescues"
 # oracle: self
-# oracle.stamp: 1c7e2362a8783640
+# oracle.stamp: b441235844981a0f
 #---
 #
 # `a + b` with an integer on the left and a float on the right is the extern
@@ -22,11 +22,9 @@ defmodule Inline do
   def quotient(a, b), do: double(div(a, b))
 
   def attempt(a, b) do
-    try do
-      quotient(a, b)
-    rescue
-      e in ArithmeticError -> {:rescued, e.message}
-    end
+    quotient(a, b)
+  rescue
+    e in ArithmeticError -> {:rescued, e.message}
   end
 end
 

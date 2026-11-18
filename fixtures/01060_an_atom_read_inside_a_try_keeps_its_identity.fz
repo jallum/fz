@@ -1,7 +1,7 @@
 #---
 # purpose: "an atom handed into a try body that dispatches on it keeps its own activation key, and one only compared there shares a key"
 # oracle: self
-# oracle.stamp: edd55f313ad89501
+# oracle.stamp: 8e102cafb1842e45
 #---
 defmodule Main do
   defp kind(:int), do: 1
@@ -11,19 +11,15 @@ defmodule Main do
   defp kind(_other), do: raise(ArgumentError, "unknown kind")
 
   defp guarded(tag) do
-    try do
-      kind(tag)
-    rescue
-      e in ArgumentError -> {:rescued, e.message}
-    end
+    kind(tag)
+  rescue
+    e in ArgumentError -> {:rescued, e.message}
   end
 
   defp same(a, b) do
-    try do
-      a === b
-    rescue
-      _ -> :never
-    end
+    a === b
+  rescue
+    _ -> :never
   end
 
   def main() do
