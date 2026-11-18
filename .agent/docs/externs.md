@@ -781,7 +781,7 @@ admits parameters of class `I64`, `Opaque`, `F64` or `Any` and returns of `I64`,
 is `SourcePatternError::GuardExternClass`, a compile error on every path. The
 receive matcher's shim (`emit_guard_extern`) therefore marshals four classes
 of operand: an integer (`receive_value_int`), a float (`receive_value_float`),
-a pid or reference (`fz_unbox_opaque` on the way in, `fz_box_opaque_for_any`
+a pid or reference (a pid is read from and packed into its ref inline; a reference goes through `fz_unbox_opaque` on the way in and `fz_box_opaque_for_any`
 on the way out) and a reference word (`emit_receive_value_ref`); a `Bool` return is a nonzero
 word read as the atom `true` or `false`. `===` and `!==` in a guard are the
 Kernel functions a body calls, so they reach `fz_op_identical*` and

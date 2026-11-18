@@ -1,0 +1,4 @@
+true
+{:send_self, 0}
+{:self_eq_self, true, 0}
+{:pid_in_tuple, true, 0}

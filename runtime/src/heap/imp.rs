@@ -388,6 +388,7 @@ impl Heap {
                 }
                 AnyValueRef::from_scalar_slot(ValueKind::INT, slot as *const u64).expect("int ref")
             }
+            AnyValue::Opaque(ValueKind::PID, word) => AnyValueRef::pid(word).expect("a pid fits its ref"),
             AnyValue::Opaque(kind, word) => {
                 let slot = self.alloc_kind(HeapAllocKind::ScalarBox, size_of::<u64>()) as *mut u64;
                 unsafe {
@@ -1308,17 +1309,12 @@ impl Heap {
         let kind = unsafe { read(struct_field_kind_slot(addr as *const u8, kind_offset)) };
         let field =
             any_value_ref_from_storage(raw_slot as *const u64, ValueKind::new(kind).expect("struct field kind"))?;
-        // An integer or float field's ref points into the struct's own payload,
+        // An integer, float or reference field's ref points into the struct's own payload,
         // so it is read-only data exactly when the struct is. A heap field's ref
-        // is its stored address and an atom field's ref is its id; each already
+        // is its stored address and an atom or pid field's ref is its value; each already
         // says what it names.
         Ok(
-            if obj.is_literal()
-                && matches!(
-                    field.tag(),
-                    ValueKind::INT | ValueKind::FLOAT | ValueKind::PID | ValueKind::REF
-                )
-            {
+            if obj.is_literal() && matches!(field.tag(), ValueKind::INT | ValueKind::FLOAT | ValueKind::REF) {
                 field.literal()
             } else {
                 field

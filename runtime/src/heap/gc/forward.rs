@@ -21,8 +21,9 @@ pub fn forward_any_value_ref_root(
         return;
     }
     match value.tag() {
-        ValueKind::NULL | ValueKind::ATOM => {}
-        tag if tag.is_scalar() => {
+        ValueKind::NULL => {}
+        tag if tag.is_immediate() => {}
+        tag if tag.is_boxed_scalar() => {
             let p = value.storage_addr();
             if !from_space.moves(heap, p, value.is_literal()) {
                 return;

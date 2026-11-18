@@ -1016,8 +1016,7 @@ fn marshal_extern_arg<M: cranelift_module::Module>(
         ExternTy::I64 => body.as_raw_i64(var_env, var.0),
         ExternTy::Opaque(kind) => {
             let value_ref = body.tagged_var(var_env, var.0);
-            let kind = body.b.ins().iconst(types::I64, kind.tag() as i64);
-            runtime_call1!(body, fz_unbox_opaque, [value_ref, kind])
+            unbox_opaque_word(body, value_ref, kind)
         }
         // A C `int` parameter is the low half of the fz integer.
         ExternTy::I32 => {
@@ -1054,14 +1053,42 @@ fn marshal_extern_arg<M: cranelift_module::Module>(
 }
 
 /// A pid or reference word an extern returned, held as a value of its kind.
-fn box_opaque_word<M: cranelift_module::Module>(
+fn box_extern_opaque_word<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
     raw: ir::Value,
     kind: ValueKind,
 ) -> ir::Value {
     let process = body.process_arg();
+    box_opaque_word(body, process, raw, kind)
+}
+
+/// The ref word of a pid or reference word. A pid is packed into the ref; a
+/// reference is boxed on the heap by the runtime.
+fn box_opaque_word<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, M>,
+    process: ir::Value,
+    raw: ir::Value,
+    kind: ValueKind,
+) -> ir::Value {
+    if kind == ValueKind::PID {
+        return immediate_ref_word(body.b, raw, kind);
+    }
     let kind = body.b.ins().iconst(types::I64, kind.tag() as i64);
     runtime_call1!(body, fz_box_opaque_for_any, [process, raw, kind])
+}
+
+/// The pid or reference word a ref word holds. A pid is read from the ref; a
+/// reference is read through its heap box by the runtime.
+fn unbox_opaque_word<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, M>,
+    value_ref: ir::Value,
+    kind: ValueKind,
+) -> ir::Value {
+    if kind == ValueKind::PID {
+        return immediate_payload(body.b, value_ref);
+    }
+    let kind = body.b.ins().iconst(types::I64, kind.tag() as i64);
+    runtime_call1!(body, fz_unbox_opaque, [value_ref, kind])
 }
 
 fn emit_variadic_extern_call<M: cranelift_module::Module>(
@@ -1138,7 +1165,7 @@ fn emit_variadic_extern_call<M: cranelift_module::Module>(
     };
     match ret {
         ExternTy::I64 => Ok(LowerOut::RawI64(raw)),
-        ExternTy::Opaque(kind) => Ok(LowerOut::ValueRef(box_opaque_word(body, raw, kind))),
+        ExternTy::Opaque(kind) => Ok(LowerOut::ValueRef(box_extern_opaque_word(body, raw, kind))),
         ExternTy::I32 => Ok(LowerOut::RawI64(body.b.ins().sextend(types::I64, raw))),
         ExternTy::Bool => Ok(LowerOut::Strict(decode_foreign_boolean_word(body, raw))),
         ExternTy::Any | ExternTy::Binary | ExternTy::CString => Ok(LowerOut::ValueRef(raw)),
@@ -2239,7 +2266,7 @@ fn lower_extern_generic<M: cranelift_module::Module>(
         // to an f64 that failed Cranelift verification.
         return Ok(match ret {
             ExternTy::I64 => LowerOut::RawI64(raw),
-            ExternTy::Opaque(kind) => LowerOut::ValueRef(box_opaque_word(body, raw, kind)),
+            ExternTy::Opaque(kind) => LowerOut::ValueRef(box_extern_opaque_word(body, raw, kind)),
             // A C `int` result fills only the low half of the return
             // register, so the fz integer is its sign extension. Reading the
             // whole register instead is what turned `open`'s -1 into

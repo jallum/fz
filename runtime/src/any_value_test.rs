@@ -1599,6 +1599,31 @@ fn an_atom_ref_is_never_built_over_a_slot() {
     let slot = 7u64;
     assert_eq!(
         AnyValueRef::from_scalar_slot(ValueKind::ATOM, &slot),
-        Err(AnyValueRefError::AtomHasNoSlot)
+        Err(AnyValueRefError::ImmediateHasNoSlot(ValueKind::ATOM))
     );
+}
+
+#[test]
+fn a_pid_ref_holds_its_word_in_the_address_field_and_is_never_built_over_a_slot() {
+    for word in [0u64, 1, 1234, u64::from(u32::MAX)] {
+        let pid = AnyValue::Opaque(ValueKind::PID, word).ref_word();
+        assert_eq!(pid.tag(), ValueKind::PID);
+        assert_eq!(pid.load_opaque_word(ValueKind::PID), Ok(word));
+        assert!(!pid.is_literal());
+        assert!(!pid.is_heap_root());
+        assert_eq!(AnyValue::from_ref(pid), Ok(AnyValue::Opaque(ValueKind::PID, word)));
+        assert_eq!(AnyValueRef::from_raw_word(pid.raw_word()), Ok(pid));
+    }
+    let slot = 7u64;
+    assert_eq!(
+        AnyValueRef::from_scalar_slot(ValueKind::PID, &slot),
+        Err(AnyValueRefError::ImmediateHasNoSlot(ValueKind::PID))
+    );
+}
+
+#[test]
+fn a_reference_ref_is_still_built_over_a_slot() {
+    let slot = 9u64;
+    let reference = AnyValueRef::from_scalar_slot(ValueKind::REF, &slot).expect("a reference slot ref");
+    assert_eq!(reference.load_opaque_word(ValueKind::REF), Ok(9));
 }

@@ -1,11 +1,12 @@
 use super::imp::MAJOR_GROWTH_FACTOR;
 use super::*;
 use crate::any_value::{
-    AnyValue, AnyValueRef, AnyValueRefError, EMPTY_LIST, EMPTY_LIST_BITS, ListCons, STRUCT_PAYLOAD_OFFSET, SlotLayout,
-    ValueKind, binview_addr_from_tagged, bitstring_bytes_ptr, bitstring_size_for_bit_len, closure_addr_from_tagged,
-    closure_capture_set, closure_capture_value, closure_captured_count, closure_fn_ptr, closure_halt_kind,
-    heap_kind_from_tagged, heap_object_word, heap_word_addr, list_addr_from_tagged, map_addr_from_tagged, map_count,
-    map_entry, map_size_for_count, object_size, struct_addr_from_tagged, struct_schema_id, struct_size_for_payload,
+    AnyValue, AnyValueRef, AnyValueRefError, AnyValueRefPacking, EMPTY_LIST, EMPTY_LIST_BITS, ListCons,
+    STRUCT_PAYLOAD_OFFSET, SlotLayout, ValueKind, binview_addr_from_tagged, bitstring_bytes_ptr,
+    bitstring_size_for_bit_len, closure_addr_from_tagged, closure_capture_set, closure_capture_value,
+    closure_captured_count, closure_fn_ptr, closure_halt_kind, heap_kind_from_tagged, heap_object_word, heap_word_addr,
+    list_addr_from_tagged, map_addr_from_tagged, map_count, map_entry, map_size_for_count, object_size,
+    struct_addr_from_tagged, struct_schema_id, struct_size_for_payload,
 };
 use crate::module_name::ModuleName;
 use crate::resource::ResourceStub;
@@ -3332,6 +3333,125 @@ fn an_atom_read_from_a_literal_struct_names_no_literal() {
 
     assert!(!field.is_literal());
     assert_eq!(field, AnyValueRef::atom(5));
+}
+
+#[test]
+fn boxing_a_pid_allocates_nothing_and_the_ref_round_trips_its_word() {
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let before = h.alloc_stats_snapshot();
+
+    let pid = h.box_any_value_ref(AnyValue::Opaque(ValueKind::PID, 0x1_0007));
+
+    let after = h.alloc_stats_snapshot();
+    assert_eq!(after.scalar_box.allocs, before.scalar_box.allocs);
+    assert_eq!(after.total.allocs, before.total.allocs);
+    assert_eq!(pid.tag(), ValueKind::PID);
+    assert_eq!(pid.load_opaque_word(ValueKind::PID), Ok(0x1_0007));
+    assert_eq!(
+        pid.raw_word() & AnyValueRefPacking::current().address_mask(),
+        0x1_0007,
+        "the pid sits in the address field and names no object"
+    );
+    assert_eq!(AnyValue::from_ref(pid), Ok(AnyValue::Opaque(ValueKind::PID, 0x1_0007)));
+}
+
+#[test]
+fn boxing_a_reference_still_allocates_one_scalar_box() {
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let before = h.alloc_stats_snapshot();
+
+    let reference = h.box_any_value_ref(AnyValue::Opaque(ValueKind::REF, (3 << 32) | 9));
+
+    assert_eq!(h.alloc_stats_snapshot().scalar_box.allocs, before.scalar_box.allocs + 1);
+    assert_eq!(reference.load_opaque_word(ValueKind::REF), Ok((3 << 32) | 9));
+}
+
+#[test]
+fn a_pid_ref_is_a_root_the_collector_leaves_as_it_is() {
+    let mut h = Heap::new(1024, fresh_registry());
+    let original = h.box_any_value_ref(AnyValue::Opaque(ValueKind::PID, 77));
+    let mut roots = [original];
+
+    let stats = h.collect(&mut roots);
+
+    assert_eq!(roots[0], original);
+    assert_eq!(roots[0].load_opaque_word(ValueKind::PID), Ok(77));
+    assert_eq!(stats.copied_objects, 0);
+    assert_eq!(stats.copied_bytes, 0);
+}
+
+#[test]
+fn a_pid_read_from_a_list_head_map_value_struct_field_or_capture_is_the_pid_stored() {
+    let reg = fresh_registry();
+    let schema = reg.borrow_mut().register(Schema::tuple_of_arity(1));
+    let mut h = Heap::new(SIZE_TABLE[0], reg);
+    let pid_value = AnyValue::Opaque(ValueKind::PID, 21);
+    let pid = h.box_any_value_ref(pid_value);
+
+    let list_bits = h.alloc_list_cons_slot(pid_value, EMPTY_LIST_BITS);
+    let list = AnyValueRef::from_heap_object(ValueKind::LIST, list_addr_from_tagged(list_bits).expect("list addr"))
+        .expect("list ref");
+    assert_eq!(list_head_ref(list), Ok(pid));
+
+    let key = h.node.intern_atom("pid");
+    let map_bits = h.alloc_map_slots(&[(AnyValue::atom(key), pid_value)]);
+    let map = AnyValueRef::from_heap_object(ValueKind::MAP, map_addr_from_tagged(map_bits).expect("map addr"))
+        .expect("map ref");
+    assert_eq!(
+        h.read_map_value_ref(map, AnyValueRef::atom(key)).expect("map read"),
+        Some(pid)
+    );
+
+    let struct_addr = h.alloc_struct(schema);
+    let struct_ref = AnyValueRef::from_heap_object(ValueKind::STRUCT, struct_addr).expect("struct ref");
+    unsafe {
+        h.store_struct_field_ref(
+            struct_addr,
+            SlotLayout::slot_offset(0),
+            SlotLayout::of(1).kind_offset(0),
+            pid,
+        )
+    }
+    .expect("write pid field");
+    assert_eq!(h.read_struct_field_ref(struct_ref, 0), Ok(pid));
+    assert_eq!(
+        h.read_struct_field_ref(struct_ref.literal(), 0)
+            .map(AnyValueRef::is_literal),
+        Ok(false),
+        "a pid read from a literal struct names no literal"
+    );
+
+    let closure_bits = h.alloc_closure_slots(crate::any_value::ClosureDenotationId::user(0), 0, 1, 0);
+    let closure = AnyValueRef::from_heap_object(
+        ValueKind::CLOSURE,
+        closure_addr_from_tagged(closure_bits).expect("closure addr"),
+    )
+    .expect("closure ref");
+    unsafe { h.write_closure_capture_ref(closure, 0, pid) }.expect("write pid capture");
+    assert_eq!(h.read_closure_capture_ref(closure, 0), Ok(pid));
+}
+
+#[test]
+fn a_pid_in_a_struct_field_survives_a_collection() {
+    let reg = fresh_registry();
+    let schema = reg.borrow_mut().register(Schema::tuple_of_arity(1));
+    let mut h = Heap::new(1024, reg);
+    let pid = h.box_any_value_ref(AnyValue::Opaque(ValueKind::PID, 21));
+    let struct_addr = h.alloc_struct(schema);
+    unsafe {
+        h.store_struct_field_ref(
+            struct_addr,
+            SlotLayout::slot_offset(0),
+            SlotLayout::of(1).kind_offset(0),
+            pid,
+        )
+    }
+    .expect("write pid field");
+    let mut roots = [AnyValueRef::from_heap_object(ValueKind::STRUCT, struct_addr).expect("struct ref")];
+
+    h.collect(&mut roots);
+
+    assert_eq!(h.read_struct_field_ref(roots[0], 0), Ok(pid));
 }
 
 #[test]

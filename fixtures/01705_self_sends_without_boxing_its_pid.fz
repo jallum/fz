@@ -1,0 +1,67 @@
+#---
+# purpose: a pid is carried in its ref word, so `self()`, `send`, `==` and a pid held in a tuple box nothing
+# kind: run
+#---
+#
+# Each loop takes 1,000 steps, and the program prints the heap scalars boxed per
+# step. A pid is an immediate: its ref word holds the pid in the address field,
+# as an atom's holds its id, so handing `self()` to `send`, comparing two pids
+# and storing a pid in a tuple allocate nothing. An integer, a float and a
+# reference are boxed.
+#
+# Before the loops it prints that a pid sent in a tuple reads back equal to
+# `self()`.
+defmodule P do
+  def send_loop(i, n) do
+    if i == n do
+      :done
+    else
+      send(self(), :ping)
+      receive do
+        :ping -> :ok
+      end
+      send_loop(i + 1, n)
+    end
+  end
+
+  def eq_loop(i, n, acc) do
+    if i == n do
+      acc
+    else
+      eq_loop(i + 1, n, self() == self())
+    end
+  end
+
+  def tuple_loop(i, n, acc) do
+    if i == n do
+      acc
+    else
+      pid = self()
+      send(self(), {:me, pid})
+      same =
+        receive do
+          {:me, got} -> got == self()
+        end
+      tuple_loop(i + 1, n, same)
+    end
+  end
+
+  def boxed(a, b), do: div(b[:scalar_box_allocs] - a[:scalar_box_allocs], 1000)
+end
+
+dbg(P.tuple_loop(0, 1, false))
+
+a = Process.heap_alloc_stats()
+_ = P.send_loop(0, 1000)
+b = Process.heap_alloc_stats()
+dbg({:send_self, P.boxed(a, b)})
+
+a = Process.heap_alloc_stats()
+r = P.eq_loop(0, 1000, false)
+b = Process.heap_alloc_stats()
+dbg({:self_eq_self, r, P.boxed(a, b)})
+
+a = Process.heap_alloc_stats()
+r = P.tuple_loop(0, 1000, false)
+b = Process.heap_alloc_stats()
+dbg({:pid_in_tuple, r, P.boxed(a, b)})
