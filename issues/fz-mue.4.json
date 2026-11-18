@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-18T20:44:00Z",
+  "description": "An invalid code point in a utf8 segment panics the runtime (ir_runtime.rs:694, 'invalid codepoint') on interp/run/build; try cannot catch it. The BEAM raises badarg (ArgumentError), which json.erl relies on. Reproducer: /Users/j5n/Workspace/fz-otp-json/punch/38_bs_utf8_construct_badarg.fz\n\nPart of fz-mue (fz runs OTP's json.erl unchanged). Port and harness: /Users/j5n/Workspace/fz-otp-json/.",
+  "id": "fz-mue.4",
+  "labels": [],
+  "parent": "fz-mue",
+  "priority": 1,
+  "status": "open",
+  "title": "Constructing \u003c\u003ccp::utf8\u003e\u003e with an invalid code point raises ArgumentError",
+  "type": "bug",
+  "updated_at": "2026-11-18T20:44:00Z"
+}
