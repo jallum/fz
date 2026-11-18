@@ -682,11 +682,12 @@ pub(crate) struct DeliveredValueJoin {
 }
 
 impl ControlEntryOrigin {
-    /// Whether whoever enters this entry hands it its parameters: a decision
-    /// hands an arm its subjects, the runtime matcher hands a receive outcome
-    /// its bindings, and a raise hands a handler its kind, value and name.
+    /// Whether whoever enters this entry hands it its parameters as whole
+    /// values: the runtime matcher hands a receive outcome its bindings, and a
+    /// raise hands a handler its kind, value and name. A decision's arm is
+    /// laid out by its own demand.
     pub fn is_handed_parameters(&self) -> bool {
-        matches!(self, Self::Branch | Self::ReceiveOutcome | Self::Handler)
+        matches!(self, Self::ReceiveOutcome | Self::Handler)
     }
 
     pub fn input_value(&self) -> Option<ValueId> {
@@ -883,6 +884,15 @@ impl LoweredTail {
         match self {
             Self::Dispatch { dispatch, .. } => &dispatch.outcomes,
             Self::Receive(receive) => &receive.outcomes,
+            _ => &[],
+        }
+    }
+
+    /// The edges of a `case` decision, whose arms are handed their subjects
+    /// laid out by the arm's own demand.
+    pub(crate) fn dispatch_outcome_edges(&self) -> &[OutcomeEdge] {
+        match self {
+            Self::Dispatch { dispatch, .. } => &dispatch.outcomes,
             _ => &[],
         }
     }

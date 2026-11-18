@@ -357,7 +357,9 @@ fn the_distiller_compiles_inside_the_product_drive_budget() {
         // (30_289 -> 31_325 transport shape requests).
         // (46_243, 46_797, 26) -> (46_285, 46_839, 26): the ordering operators' `binary` clause adds its `fz_op_*_bb` activation and splits the catch-all's `compare/2` activations, the same way the int and float clauses already do.
         // (46_285, 46_839, 26) -> (46_237, 46_791, 26): `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
-        (46_237, 46_791, 26),
+        // (46_237, 46_791, 26) -> (46_402, 46_956, 26): a case arm's parameter is laid out by its
+        // own demand, so each outcome parameter is a `Value` position the compile requests.
+        (46_402, 46_956, 26),
         "(largest drive requests, total requests, drives) for the distiller's compile moved. \
          A fall is lowered in this pin; a rise is investigated first, because the largest drive \
          may not exceed PRODUCT_DRIVE_BUDGET (50,000)."
