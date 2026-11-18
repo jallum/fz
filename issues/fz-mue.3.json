@@ -7,9 +7,15 @@
   "id": "fz-mue.3",
   "labels": [],
   "parent": "fz-mue",
+  "comments": [
+    {
+      "text": "PR #749 (stacked on #746). Commit 3747e2cb0: bare-name call resolves as the function; scope walk no longer counts it as a variable use. Fixtures 01781 (self oracle), 01782 (unused warning).",
+      "timestamp": "2026-11-18T21:40:23Z"
+    }
+  ],
   "priority": 1,
   "status": "in_progress",
   "title": "A call f(x) calls the function f even when a variable f is in scope",
   "type": "bug",
-  "updated_at": "2026-11-18T21:40:22Z"
+  "updated_at": "2026-11-18T21:40:23Z"
 }
