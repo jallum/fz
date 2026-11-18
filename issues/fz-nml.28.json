@@ -12,9 +12,15 @@
   "id": "fz-nml.28",
   "labels": [],
   "parent": "fz-nml",
+  "comments": [
+    {
+      "text": "Measured on #740 (8d32c0271) vs develop (JSON, 2026-11-18): literal appends make 0 literal bitstrings on all three paths; acc \u003c\u003e \"true\" 625 -\u003e 459 instr per append; docs encode bitstrings 170,847 -\u003e 24,445. The work is done by fz-sc8.236. Remaining: the proof fixture (literal vs non-literal control, equal alloc deltas), landed as this ticket's commit after #740 merges; then close.",
+      "timestamp": "2026-11-18T05:45:13Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Appending a literal copies its bytes; no bitstring is made for it",
   "type": "bug",
-  "updated_at": "2026-11-18T03:29:16Z"
+  "updated_at": "2026-11-18T05:45:13Z"
 }
