@@ -10,6 +10,7 @@ use super::drive_harness::{
 use super::{CodeSubmission, Compiler2, ExecutableNeed, Job, RootSubmission, RunFailure};
 use crate::compiler2::artifact::{BackendCallableReturn, BackendEntry, BackendReturnFlow, BackendTail, CallEdge};
 use crate::compiler2::artifact::{NativeBodyOrigin, NativeCallableBoundaryId, NativeEntryAbi, NativeProgram};
+use crate::compiler2::body::OutcomeEdge;
 use crate::compiler2::drive::DependencyKey;
 use crate::compiler2::pull::{ProductKey, TransportCarrier};
 use crate::compiler2::{
@@ -12230,8 +12231,10 @@ struct ArtifactPlan<'a> {
     site: PlanSite,
     plan: &'a PatternDispatchPlan<Ty>,
     /// The body ids this site offers, in the site's own list order: the call
-    /// arms for a call edge, the reachable clause ids for an entry, the member
-    /// index for a selection (welded to the plan's rows by fz-kdt.108).
+    /// arms for a call edge, the reachable clause ids for an entry, the arms
+    /// whose target analysis did not prove unreachable for a `case` or a
+    /// `receive`, the member index for a selection (welded to the plan's rows
+    /// by fz-kdt.108).
     ///
     /// That list order is the order the runtime reaches them in.
     /// `compiler2_dispatch_lists_its_bodies_in_the_graphs_first_match_order`
@@ -12291,7 +12294,7 @@ fn artifact_plans<'a>(world: &crate::compiler2::World, program: &'a BackendProgr
                         entry: entry_index,
                     },
                     plan: &dispatch.plan,
-                    bodies: dispatch.plan.outcomes.iter().map(|outcome| outcome.body_id).collect(),
+                    bodies: reachable_arms(&dispatch.plan, &dispatch.outcomes, entries),
                 }),
                 BackendTail::Receive(receive) => plans.push(ArtifactPlan {
                     site: PlanSite::Receive {
@@ -12299,12 +12302,7 @@ fn artifact_plans<'a>(world: &crate::compiler2::World, program: &'a BackendProgr
                         entry: entry_index,
                     },
                     plan: &receive.dispatch,
-                    bodies: receive
-                        .dispatch
-                        .outcomes
-                        .iter()
-                        .map(|outcome| outcome.body_id)
-                        .collect(),
+                    bodies: reachable_arms(&receive.dispatch, &receive.outcomes, entries),
                 }),
                 _ => {}
             }
@@ -12324,6 +12322,24 @@ fn artifact_plans<'a>(world: &crate::compiler2::World, program: &'a BackendProgr
         });
     }
     plans
+}
+
+/// The bodies a `case` or `receive` arm list offers. A plan narrowed by what
+/// its subject is known to be keeps every outcome id, so an arm the subject's
+/// type rules out (`nil ->` on a boolean) keeps its edge; analysis gives that
+/// edge's target an `unreachable` tail, and the site does not offer it.
+fn reachable_arms(plan: &PatternDispatchPlan<Ty>, arms: &[OutcomeEdge], entries: &[BackendEntry]) -> Vec<u32> {
+    assert_eq!(
+        plan.outcomes.len(),
+        arms.len(),
+        "a dispatch carries one arm per plan outcome"
+    );
+    plan.outcomes
+        .iter()
+        .zip(arms)
+        .filter(|(_, arm)| !matches!(entries[arm.target.as_u32() as usize].tail, BackendTail::Unreachable))
+        .map(|(outcome, _)| outcome.body_id)
+        .collect()
 }
 
 /// The order a plan's decision graph actually reaches its bodies in: a walk
@@ -12403,9 +12419,10 @@ fn outcome_match_questions(
 /// They agree BY CONSTRUCTION: `compile_dispatch_matrix` compiles the arms
 /// first-match in list order and emits one arm per row, so the graph's
 /// first-match walk is the list restricted to the bodies the site offers. An
-/// entry site offers only its reachable clause ids, which is a restriction of
-/// the same order, so the comparand is the graph order filtered to the bodies
-/// the site lists.
+/// entry site offers only its reachable clause ids, and a `case` or `receive`
+/// site only the arms whose target analysis did not prove unreachable; each is
+/// a restriction of the same order. The comparand is the graph order filtered
+/// to the bodies the site lists.
 ///
 /// A fact by construction holds only while the construction does, which is why
 /// it is a gate: if a producer ever emits a graph that reaches its rows out of
@@ -12415,7 +12432,7 @@ fn outcome_match_questions(
 fn compiler2_dispatch_lists_its_bodies_in_the_graphs_first_match_order() {
     let mut compared = 0;
     let mut disagreements = Vec::new();
-    for fixture in ARM_ORDER_CENSUS {
+    for fixture in ARM_ORDER_CENSUS.iter().chain(&[ARMS_A_SUBJECT_TYPE_RULES_OUT]) {
         let (compiler, program) = driven_backend_program(fixture);
         for entry in artifact_plans(compiler.world(), &program) {
             compared += 1;
@@ -12814,8 +12831,11 @@ const SOURCE_ORDER_BLIND_ESCAPES: &[&str] = &[];
 /// `Enum.to_list/1` builds a range's list itself, so the census programs that
 /// only list a range no longer reach the reduce-and-reverse path: `entry`
 /// 133 -> 130 plans, 122 -> 119 unreadable.
+/// The census list named `00281_opaque_reducer_closure` twice, so its plans
+/// were counted twice: `case` 16 -> 15 plans, 16 -> 15 unreadable; `entry`
+/// 130 -> 128 plans, 119 -> 118 unreadable.
 const SOURCE_ORDER_PLANS_ON_THE_CENSUS: &[(&str, usize, usize)] =
-    &[("case", 16, 16), ("entry", 130, 119), ("receive", 2, 0)];
+    &[("case", 15, 15), ("entry", 128, 118), ("receive", 2, 0)];
 
 /// The subjects at which seating `early` before `late` lets a value reach a
 /// body that never named it: the two arms put one and the same question there,
@@ -13048,7 +13068,7 @@ fn indistinguishable_arms(plan: &PatternDispatchPlan<Ty>, types: &Types) -> Vec<
 /// its wrapper member selections still exercise the weld gate and the
 /// blind-escape walk under every seed -- the ratchet that would catch a
 /// regression of that cure.
-const ARM_ORDER_CENSUS: [&str; 21] = [
+const ARM_ORDER_CENSUS: [&str; 20] = [
     "fixtures/01452_dispatch_seat_element_blind.fz",
     "fixtures/01450_dispatch_list_head_separates.fz",
     "fixtures/00231_joined_fn_refs_enum_reduce.fz",
@@ -13059,7 +13079,6 @@ const ARM_ORDER_CENSUS: [&str; 21] = [
     "fixtures/00571_enum_predicate_search.fz",
     "fixtures/01458_enum_reduce_halt_arm_order.fz",
     "fixtures/00567_fz_f98_range_map_converges.fz",
-    "fixtures/00281_opaque_reducer_closure.fz",
     "fixtures/01581_range_enumerable.fz",
     "fixtures/01599_repr_seam_enum_count_after_reduce2.fz",
     "fixtures/01432_closure_identity_tag_split.fz",
@@ -13071,6 +13090,11 @@ const ARM_ORDER_CENSUS: [&str; 21] = [
     "fixtures/01541_map_enumerable.fz",
     "fixtures/00420_enum_take_drop_split.fz",
 ];
+
+/// `||` and `&&` over a comparison: each expands to a `case` whose `nil ->` arm
+/// a boolean subject never takes, so its site carries arms that no value
+/// reaches.
+const ARMS_A_SUBJECT_TYPE_RULES_OUT: &str = "fixtures/00637_value_boolean_operators_agree_with_elixir.fz";
 
 /// The fixtures whose CONSTRUCTION-WRAPPER member order is free: compiling each
 /// under a permuted wrapper order moves its `BackendProgram` canon, and
