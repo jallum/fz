@@ -674,7 +674,6 @@ pub struct CallableFlowEdge {
     pub resolution: ExecutableKey,
     pub capture_semantic_inputs: Box<[usize]>,
     pub surface_semantic_inputs: Box<[usize]>,
-    pub boundary_input_demands: Box<[Option<RuntimeDemand>]>,
 }
 
 /// One authoritative activation-input row projected into the callable frame:
@@ -708,19 +707,6 @@ pub(crate) struct RuntimeDemandTypeProjection {
     /// The field types of a tuple type of one arity, in order; empty for
     /// every other type.
     pub(crate) field_tys: Vec<Ty>,
-}
-
-impl RuntimeDemandTypeProjection {
-    pub(crate) fn informative_boundary_demand(&self, types: &Types, ty: Ty) -> Option<RuntimeDemand> {
-        if types.is_empty(&ty) {
-            return None;
-        }
-        if !matches!(self.boundary.shape, ShapeDemand::Whole) || !self.boundary.callable.is_empty() {
-            return Some(self.boundary.clone());
-        }
-        (types.is_integer(&ty) || types.is_floating(&ty) || types.is_nil(&ty) || types.is_atom_type(&ty))
-            .then(|| self.boundary.clone())
-    }
 }
 
 impl RuntimeDemandTypeInputs {
@@ -807,7 +793,6 @@ pub struct ExecutableRuntimeDemand {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct TargetDemandContribution {
     pub(crate) return_demand: Option<RuntimeDemand>,
-    pub(crate) input_demands: HashMap<usize, RuntimeDemand>,
 }
 
 impl JoinContribution for TargetDemandContribution {
@@ -824,17 +809,6 @@ impl JoinContribution for TargetDemandContribution {
                 Some(current) => changed |= current.widen_by(other_return),
                 None => {
                     self.return_demand = Some(other_return.clone());
-                    changed = true;
-                }
-            }
-        }
-        for (index, demand) in &other.input_demands {
-            match self.input_demands.entry(*index) {
-                std::collections::hash_map::Entry::Occupied(mut current) => {
-                    changed |= current.get_mut().widen_by(demand);
-                }
-                std::collections::hash_map::Entry::Vacant(slot) => {
-                    slot.insert(demand.clone());
                     changed = true;
                 }
             }

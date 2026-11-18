@@ -108,7 +108,6 @@ pub(super) fn seed_root(
             entry_executable,
             TargetDemandContribution {
                 return_demand: Some(RuntimeDemand::for_executable_need(root.need)),
-                ..TargetDemandContribution::default()
             },
         )],
         ..JobEffects::default()

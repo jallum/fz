@@ -1608,7 +1608,8 @@ fn target_fixture_reports_exercise_all_five_request_scenarios() {
                 // 00567 cold 177 -> 168: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
                 // 00567 cold 168 -> 136: `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
                 // 00420 cold 678 -> 640: `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
-                [[136, 0, 0, 1, 4], [528, 0, 0, 1, 4], [640, 0, 0, 1, 4]][fixture_index][scenario],
+                // 00571 cold 528 -> 474 and 00420 cold 640 -> 625: a first-class callable's boundary demand is not contributed back to its target's inputs, so the target's demand is not derived again for it.
+                [[136, 0, 0, 1, 4], [474, 0, 0, 1, 4], [625, 0, 0, 1, 4]][fixture_index][scenario],
                 "{fixture} {name}: count actual body walks, not scheduler completions; all scenarios: {:?}",
                 reports
                     .iter()

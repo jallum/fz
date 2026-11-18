@@ -757,23 +757,12 @@ impl ProgramCanon<'_> {
     }
 
     fn callable_flow_edge(&mut self, edge: &CallableFlowEdge) -> String {
-        let boundary = edge
-            .boundary_input_demands
-            .iter()
-            .map(|demand| {
-                demand
-                    .as_ref()
-                    .map(|demand| self.demand(demand))
-                    .unwrap_or_else(|| "none".to_string())
-            })
-            .collect::<Vec<_>>();
         format!(
-            "{}->{} captures={:?} surface={:?} boundary=[{}]",
+            "{}->{} captures={:?} surface={:?}",
             self.callable_surface(&edge.surface),
             self.executable_key(&edge.resolution),
             edge.capture_semantic_inputs,
             edge.surface_semantic_inputs,
-            boundary.join(", ")
         )
     }
 

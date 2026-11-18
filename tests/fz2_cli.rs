@@ -72,7 +72,8 @@ const TARGET_FIXTURES: [TargetFixture; 3] = [
         // 828 -> 826: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run
         // time, so its result stays `binary` and callers need no second `bitstring` activation.
         // 826 -> 787: `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
-        runtime_demand_walks: 787,
+        // 787 -> 772: a first-class callable's boundary demand is not contributed back to its target's inputs, so the target's demand is not derived again for it.
+        runtime_demand_walks: 772,
         mainline_runtime_demand_walks: 6252,
         mainline_runtime_demand_door: ObservationDoor::Interp,
     },
@@ -88,7 +89,8 @@ const TARGET_FIXTURES: [TargetFixture; 3] = [
         // `Enum.reduce_while/3` and its Enum wrappers are keyed once per reducer lambda.
         // 527 -> 669: the same cause as `00567_fz_f98_range_map_converges` below.
         // 669 -> 671: the same cause.
-        runtime_demand_walks: 671,
+        // 671 -> 617: the same cause as `00420_enum_take_drop_split` above.
+        runtime_demand_walks: 617,
         mainline_runtime_demand_walks: 6378,
         mainline_runtime_demand_door: ObservationDoor::Interp,
     },

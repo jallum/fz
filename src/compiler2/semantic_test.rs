@@ -242,7 +242,6 @@ mod tests {
 
         let returning = TargetDemandContribution {
             return_demand: Some(RuntimeDemand::whole()),
-            ..TargetDemandContribution::default()
         };
         let first = contributions.conclude_exact(
             world.types_mut(),
@@ -260,40 +259,37 @@ mod tests {
         );
         assert!(equal.changed_keys.is_empty(), "an equal exact answer must not move");
 
+        let unasked = TargetDemandContribution {
+            return_demand: Some(RuntimeDemand::ignore()),
+        };
+        let replacement = contributions.conclude_exact(
+            world.types_mut(),
+            left.clone(),
+            equal.output_keys,
+            HashMap::from_iter([(target.clone(), unasked.clone())]),
+        );
+        assert_eq!(replacement.changed_keys, HashSet::from_iter([target.clone()]));
+        assert_eq!(
+            contributions.get(&target),
+            Some(&unasked),
+            "a publisher's new answer replaces its old one"
+        );
+
         let second = contributions.conclude_exact(
             world.types_mut(),
             right.clone(),
             HashSet::default(),
             HashMap::from_iter([(target.clone(), returning.clone())]),
         );
-        assert!(
-            second.changed_keys.is_empty(),
-            "an equal second publisher must not move the join"
-        );
-
-        let narrowed = TargetDemandContribution {
-            input_demands: HashMap::from_iter([(0, RuntimeDemand::whole())]),
-            ..TargetDemandContribution::default()
-        };
-        let replacement = contributions.conclude_exact(
-            world.types_mut(),
-            left.clone(),
-            equal.output_keys,
-            HashMap::from_iter([(target.clone(), narrowed.clone())]),
-        );
-        assert_eq!(replacement.changed_keys, HashSet::from_iter([target.clone()]));
-        assert_eq!(
-            contributions.get(&target).unwrap().return_demand,
-            returning.return_demand
-        );
-        assert_eq!(
-            contributions.get(&target).unwrap().input_demands,
-            narrowed.input_demands
-        );
+        assert_eq!(second.changed_keys, HashSet::from_iter([target.clone()]));
+        assert_eq!(contributions.get(&target), Some(&returning));
 
         let left_retraction =
             contributions.conclude_exact(world.types_mut(), left, replacement.output_keys, HashMap::default());
-        assert_eq!(left_retraction.changed_keys, HashSet::from_iter([target.clone()]));
+        assert!(
+            left_retraction.changed_keys.is_empty(),
+            "retracting the publisher the other already covers must not move the join"
+        );
         assert_eq!(contributions.get(&target), Some(&returning));
 
         let right_retraction =
@@ -327,7 +323,6 @@ mod tests {
         );
         let target_contribution = TargetDemandContribution {
             return_demand: Some(RuntimeDemand::whole()),
-            ..TargetDemandContribution::default()
         };
         let first = world.complete_job(
             writer.clone(),

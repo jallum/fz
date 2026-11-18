@@ -265,7 +265,8 @@ fn read_compile_spend(trace: &Path) -> CompileSpend {
 // no longer starts from the raises of the macros' programs. The entry publishes its own program's
 // first raise and is analysed once more on it.
 // 19_812 -> 19_806: `Enum.to_list/1` has a clause that builds a range's list itself.
-const DERIVATIONS: u64 = 19_806;
+// 19_806 -> 19_661: a first-class callable's boundary demand is not contributed back to its target's inputs, so the target's demand is not derived again for it.
+const DERIVATIONS: u64 = 19_661;
 // 111_876 -> 111_888: an extern that declares `raises:` reads the struct of
 // the exception it names, to raise that struct. The distiller calls twelve
 // such externs, and each contract reads `StructDefined` once.
@@ -291,7 +292,8 @@ const DERIVATIONS: u64 = 19_806;
 // 156_741 -> 156_747: the six reads of the entry's one more analysis, as in `DERIVATIONS`.
 // 156_747 -> 156_894: `Enum.to_list/1`'s range clause is reachable where the distiller lists an
 // `any` enumerable, so the reach jobs whose cones hold it read its activations too.
-const READS_HANDED: u64 = 156_894;
+// 156_894 -> 155_916: the reads of those 145 derivations.
+const READS_HANDED: u64 = 155_916;
 
 /// Compiling the distiller spends this much of the product stack. The largest
 /// drive is the one `PRODUCT_DRIVE_BUDGET` bounds, so its headroom is the
