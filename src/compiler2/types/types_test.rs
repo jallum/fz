@@ -5554,6 +5554,31 @@ fn a_kept_key_leaf_holding_a_closure_stays_the_ground_type() {
     );
 }
 
+/// The struct modules of many roots are found in one walk: a type that
+/// several roots reach is visited once, so asking about the same root fifty
+/// times allocates what asking once does.
+#[test]
+fn struct_modules_of_many_roots_walk_each_type_once() {
+    let mut t = Types::new();
+    let int = t.int();
+    let foo = t.struct_map(&module_name("Pkg.Foo"), &[(MapKey::Atom("value".to_string()), int)]);
+    let bar = t.struct_map(&module_name("Pkg.Bar"), &[(MapKey::Atom("value".to_string()), foo)]);
+    let root = t.tuple(&[bar, int]);
+
+    let (once, allocations_once) = allocations_during(|| t.struct_modules([root]));
+    let (many, allocations_many) = allocations_during(|| t.struct_modules([root; 50]));
+
+    assert_eq!(
+        once,
+        [module_name("Pkg.Bar"), module_name("Pkg.Foo")].into_iter().collect()
+    );
+    assert_eq!(many, once, "a repeated root names no new module");
+    assert_eq!(
+        allocations_many, allocations_once,
+        "a root whose types are already seen is not walked again"
+    );
+}
+
 #[test]
 fn interning_a_new_descriptor_stores_it_once() {
     let mut t = Types::new();

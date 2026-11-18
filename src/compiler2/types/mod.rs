@@ -1012,8 +1012,14 @@ impl Types {
     /// Every type reachable from `root` through any child position, each
     /// visited once: the cost is the number of distinct handles, however large
     /// the tree they unfold to.
-    fn reachable(&self, root: Ty, mut visit: impl FnMut(Ty)) -> HashSet<Ty> {
-        let mut pending = vec![root];
+    fn reachable(&self, root: Ty, visit: impl FnMut(Ty)) -> HashSet<Ty> {
+        self.reachable_from([root], visit)
+    }
+
+    /// Every type reachable from any of `roots`, each visited once however
+    /// many roots reach it.
+    fn reachable_from(&self, roots: impl IntoIterator<Item = Ty>, mut visit: impl FnMut(Ty)) -> HashSet<Ty> {
+        let mut pending: Vec<Ty> = roots.into_iter().collect();
         let mut seen = HashSet::default();
         while let Some(ty) = pending.pop() {
             if !seen.insert(ty) {
@@ -2605,12 +2611,10 @@ impl Types {
     /// Whether one declares a struct is the world's to say.
     pub(crate) fn struct_modules(&self, roots: impl IntoIterator<Item = Ty>) -> BTreeSet<ModuleName> {
         let mut modules = BTreeSet::new();
-        for root in roots {
-            self.reachable(root, |ty| {
-                let records = self.descr(&ty).maps.iter().flat_map(|conj| conj.sigs());
-                modules.extend(records.filter_map(|sig| sig_struct(self.ctx(), sig)));
-            });
-        }
+        self.reachable_from(roots, |ty| {
+            let records = self.descr(&ty).maps.iter().flat_map(|conj| conj.sigs());
+            modules.extend(records.filter_map(|sig| sig_struct(self.ctx(), sig)));
+        });
         modules
     }
 
