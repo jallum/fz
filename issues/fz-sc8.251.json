@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-18T05:17:21Z",
+  "description": "User ruling 2026-11-18 (relayed by Make Distiller Fast, verbatim: \"delegate the map building, slicing, struct field work to the Optimize agent\"). Builder: Optimize. Source: MDF distiller profile at develop 2eff1dec2 (bench, sample 1 ms for 2 s from 0.4 s in, 1,498 samples of a 2.84 s run, inclusive shares, one run; raw: bench distill-hunt/prof.j.base.txt).\n\nfz_struct_get_field_ref = 3.4% (51), from JSON object_key / object_value / array_item: a struct field read through a call that re-validates the word. With a known slot it is a load at the field's offset. A recipe row (fz_struct_get_field_ref(word, slot)) in the recipe table (fz-sc8.213, #727), same shape as fz_struct_schema_id_ref.\n\nNot in scope: the wider recipe-row follow-up (float arithmetic, integer division, remaining word readers), which awaits the user.",
+  "id": "fz-sc8.251",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 2,
+  "status": "open",
+  "title": "A struct field read at a known slot is one load",
+  "type": "task",
+  "updated_at": "2026-11-18T05:17:21Z"
+}
