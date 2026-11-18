@@ -7,9 +7,15 @@
   "id": "fz-nml.9",
   "labels": [],
   "parent": "fz-nml",
+  "comments": [
+    {
+      "text": "More evidence (fz-9e2 machine-code study, machine.md M12): send(self(), n) with an integer costs 1790 instructions against 1501 for a binary, because the integer is heap-boxed (box_int_for_any x4, 2 scalar_box allocations per send).",
+      "timestamp": "2026-11-18T21:45:37Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "Native code boxes no integer or pid whose consumer takes it raw",
   "type": "bug",
-  "updated_at": "2026-11-17T22:31:20Z"
+  "updated_at": "2026-11-18T21:45:37Z"
 }
