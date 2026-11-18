@@ -495,3 +495,33 @@ fn a_collection_leaves_a_static_closure_in_place_and_a_deep_copy_shares_it() {
     let copied = crate::heap::deep_copy_any_value_ref(word, &view, &mut receiver.heap);
     assert_eq!(copied.raw_word(), word.raw_word(), "a send shares it");
 }
+
+/// Intent: atoms order by name, byte for byte, whether the first eight bytes
+/// settle it or the names agree that far.
+#[test]
+fn atoms_order_by_name_within_and_beyond_their_first_eight_bytes() {
+    let node = Node::empty();
+    let names = [
+        "",
+        "a",
+        "ab",
+        "b",
+        "eight888",
+        "eight888a",
+        "eight888b",
+        "eight889",
+        "é",
+        "zebra",
+    ];
+    let ids: Vec<u32> = names.iter().rev().map(|name| node.intern_atom(name)).collect();
+    let ids: Vec<u32> = ids.into_iter().rev().collect();
+    for (i, left) in names.iter().enumerate() {
+        for (j, right) in names.iter().enumerate() {
+            assert_eq!(
+                node.cmp_atom_names(ids[i], ids[j]),
+                left.cmp(right),
+                "{left} vs {right}"
+            );
+        }
+    }
+}

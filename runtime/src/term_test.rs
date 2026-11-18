@@ -726,3 +726,63 @@ fn terms_of_different_kinds_are_not_equal() {
         }
     }
 }
+
+fn key_order_of(cmp: &TermComparator, a: AnyValue, b: AnyValue) -> Ordering {
+    cmp.key_order(a.raw(), a.kind(), b.raw(), b.kind())
+}
+
+/// Intent: a map orders its keys from the words and kinds it stores, and that
+/// order is the strict term order, for every pair of kinds.
+#[test]
+fn key_order_on_stored_words_is_the_strict_term_order() {
+    let mut pool = Pool::mixed();
+    for name in [
+        "",
+        "a",
+        "ab",
+        "id",
+        "owner",
+        "eight888",
+        "eight888a",
+        "eight888b",
+        "zebra",
+    ] {
+        let atom = pool.atom(name);
+        pool.values.push(atom);
+    }
+    let registry = pool.schemas.borrow();
+    let cmp = TermComparator::new(&pool.node, &registry);
+    for a in &pool.values {
+        for b in &pool.values {
+            assert_eq!(
+                key_order_of(&cmp, *a, *b),
+                cmp.compare(*a, *b, NumericMode::Strict),
+                "{a:?} vs {b:?}"
+            );
+        }
+    }
+}
+
+/// Intent: a key met again as the very word a map stores is equal without
+/// its name, its bytes or its fields being read.
+#[test]
+fn key_order_settles_an_identical_stored_word_without_reading_it() {
+    let schemas = SchemaRegistry::new();
+    let node = Node::empty();
+    let cmp = TermComparator::new(&node, &schemas);
+    let unnamed = AnyValue::atom(100);
+    assert_eq!(key_order_of(&cmp, unnamed, unnamed), Ordering::Equal);
+    assert_eq!(
+        cmp.key_order(0xdead_0000, ValueKind::BITSTRING, 0xdead_0000, ValueKind::BITSTRING),
+        Ordering::Equal
+    );
+}
+
+#[test]
+#[should_panic(expected = "nonfinite float is not a language value")]
+fn a_nonfinite_float_has_no_place_among_map_keys() {
+    let schemas = SchemaRegistry::new();
+    let node = Node::empty();
+    let nan = AnyValue::Float(f64::NAN.to_bits());
+    key_order_of(&TermComparator::new(&node, &schemas), nan, nan);
+}

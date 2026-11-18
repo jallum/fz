@@ -26,7 +26,7 @@ use crate::any_value::{
 };
 use crate::heap::{map_entry_refs, map_slot_refs};
 use crate::module_name::{ModuleName, STRUCT_MODULE_FIELD};
-use crate::term::{NumericMode, TermComparator};
+use crate::term::TermComparator;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MapLayout {
@@ -283,7 +283,7 @@ impl Heap {
             let comparator = TermComparator::new(&self.node, &schemas);
             self.map_view_entries(layout)
                 .into_iter()
-                .filter(|(entry_key, _)| !comparator.equal(*entry_key, key, NumericMode::Strict))
+                .filter(|(entry_key, _)| comparator.key_order_of(*entry_key, key).is_ne())
                 .collect()
         };
         entries_ref(self.alloc_ordered_map_entries(entries.into_iter()))

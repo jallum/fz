@@ -275,10 +275,24 @@ pub struct Raised {
 /// Each atom also keeps the hash of its name, computed once when the atom is
 /// interned. A term hash reads it, so it depends on the name and never on the
 /// id, which follows the order atoms happened to be interned in.
+///
+/// Each atom keeps the first eight bytes of its name too, as a word. Atoms
+/// order by name, and for most pairs that word settles the order without
+/// either name being read.
 pub struct AtomTable {
     by_id: Vec<AtomName>,
     name_hashes: Vec<u64>,
+    name_prefixes: Vec<u64>,
     by_name: HashMap<AtomName, u32>,
+}
+
+/// The first eight bytes of a name as one big-endian word, a shorter name
+/// padded with zeros. Two prefixes that differ order as their names do.
+fn name_prefix(name: &str) -> u64 {
+    let mut prefix = [0u8; 8];
+    let taken = name.len().min(8);
+    prefix[..taken].copy_from_slice(&name.as_bytes()[..taken]);
+    u64::from_be_bytes(prefix)
 }
 
 /// An atom's text, shared by every owner of the name: a module's atom list,
@@ -343,9 +357,11 @@ impl AtomTable {
             .map(|(id, name)| (name.clone(), id as u32))
             .collect();
         let name_hashes = names.iter().map(|name| name_hash(name)).collect();
+        let name_prefixes = names.iter().map(|name| name_prefix(name)).collect();
         Self {
             by_id: names,
             name_hashes,
+            name_prefixes,
             by_name,
         }
     }
@@ -371,6 +387,7 @@ impl AtomTable {
     fn append(&mut self, name: AtomName) -> u32 {
         let id = self.by_id.len() as u32;
         self.name_hashes.push(name_hash(&name));
+        self.name_prefixes.push(name_prefix(&name));
         self.by_id.push(name.clone());
         self.by_name.insert(name, id);
         id
@@ -599,13 +616,20 @@ impl Node {
         self.atoms.borrow().by_id.clone()
     }
 
-    /// Compare atom ids by their node-global names without cloning either
-    /// name. Published values always name registered atoms.
+    /// Order two atoms by their names. The stored name prefixes settle most
+    /// pairs; the names are read only when the prefixes agree. Published
+    /// values always name registered atoms.
     pub fn cmp_atom_names(&self, left_id: u32, right_id: u32) -> Ordering {
         let atoms = self.atoms.borrow();
-        let left = atoms.name(left_id).expect("published atom must be registered");
-        let right = atoms.name(right_id).expect("published atom must be registered");
-        left.cmp(right)
+        let prefix = |id: u32| {
+            *atoms
+                .name_prefixes
+                .get(id as usize)
+                .expect("published atom must be registered")
+        };
+        prefix(left_id)
+            .cmp(&prefix(right_id))
+            .then_with(|| atoms.by_id[left_id as usize].cmp(&atoms.by_id[right_id as usize]))
     }
 }
 

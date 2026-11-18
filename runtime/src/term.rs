@@ -8,14 +8,13 @@ use crate::any_value::{
     closure_denotation, map_count, map_entries, map_entry, map_header_is_collision, map_header_is_trie, map_key,
     map_node_child, map_node_child_count, map_node_entry_count, map_slot, struct_schema_id,
 };
-use crate::bits::{bitstring_bit_len, bitstring_byte_ptr};
+use crate::bits::Bin;
 use crate::heap::{Schema, SchemaIdentity, SchemaRegistry, StructKey};
 use crate::module_name::STRUCT_MODULE_FIELD;
 use crate::process::Node;
 use crate::resource::ResourceStub;
 use std::cmp::Ordering;
 use std::ptr::read;
-use std::slice::from_raw_parts;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum NumericMode {
@@ -30,6 +29,23 @@ pub(crate) fn address(value: AnyValue) -> *mut u8 {
     value.heap_addr().unwrap_or(value.raw() as *mut u8)
 }
 
+fn assert_language_value(value: AnyValue) {
+    assert_ne!(value.kind(), ValueKind::NULL, "absent carrier is not a language value");
+    if value.kind() == ValueKind::MAP {
+        assert_eq!(
+            unsafe { read(value.heap_addr().expect("map address") as *const u64) } & MAP_DESTINATION_FLAG,
+            0,
+            "unpublished map is not a language value"
+        );
+    }
+    if let AnyValue::Float(bits) = value {
+        assert!(
+            f64::from_bits(bits).is_finite(),
+            "nonfinite float is not a language value"
+        );
+    }
+}
+
 pub struct TermComparator<'a> {
     node: &'a Node,
     schemas: &'a SchemaRegistry,
@@ -40,25 +56,61 @@ impl<'a> TermComparator<'a> {
         Self { node, schemas }
     }
 
+    /// The order of two language values. Each is checked to be one here,
+    /// once; the values inside them are published with them.
     pub fn compare(&self, a: AnyValue, b: AnyValue, mode: NumericMode) -> Ordering {
         #[cfg(test)]
         tests::COMPARISON_CALLS.with(|count| count.set(count.get() + 1));
-        for value in [a, b] {
-            assert_ne!(value.kind(), ValueKind::NULL, "absent carrier is not a language value");
-            if value.kind() == ValueKind::MAP {
-                assert_eq!(
-                    unsafe { read(value.heap_addr().expect("map address") as *const u64) } & MAP_DESTINATION_FLAG,
-                    0,
-                    "unpublished map is not a language value"
-                );
+        assert_language_value(a);
+        assert_language_value(b);
+        self.order(a, b, mode)
+    }
+
+    /// The strict term order of two map keys, each given as the word and
+    /// kind a map stores. An identical word is the same key, integers order
+    /// as integers, atoms by name and binaries by their bits, all without a
+    /// value being rebuilt; any other pair is ordered as the terms they are.
+    #[inline]
+    pub fn key_order(&self, a: u64, a_kind: ValueKind, b: u64, b_kind: ValueKind) -> Ordering {
+        #[cfg(test)]
+        tests::COMPARISON_CALLS.with(|count| count.set(count.get() + 1));
+        self.stored_key_order(a, a_kind, b, b_kind)
+    }
+
+    #[inline]
+    fn stored_key_order(&self, a: u64, a_kind: ValueKind, b: u64, b_kind: ValueKind) -> Ordering {
+        if a_kind == b_kind {
+            // A float and a map are told apart from what is not a language
+            // value before they are called equal.
+            if a == b && !matches!(a_kind, ValueKind::FLOAT | ValueKind::MAP | ValueKind::NULL) {
+                return Ordering::Equal;
             }
-            if let AnyValue::Float(bits) = value {
-                assert!(
-                    f64::from_bits(bits).is_finite(),
-                    "nonfinite float is not a language value"
-                );
+            match a_kind {
+                ValueKind::INT => return (a as i64).cmp(&(b as i64)),
+                ValueKind::ATOM => return self.node.cmp_atom_names(a as u32, b as u32),
+                _ => {}
             }
         }
+        if a_kind.is_binary_repr() && b_kind.is_binary_repr() {
+            return unsafe { Bin::of_stored(a, a_kind).cmp(&Bin::of_stored(b, b_kind)) };
+        }
+        let a = AnyValue::decode_parts(a, a_kind.tag()).expect("stored map key");
+        let b = AnyValue::decode_parts(b, b_kind.tag()).expect("stored map key");
+        assert_language_value(a);
+        assert_language_value(b);
+        self.order(a, b, NumericMode::Strict)
+    }
+
+    /// `key_order` of two keys held as values.
+    pub(crate) fn key_order_of(&self, a: AnyValue, b: AnyValue) -> Ordering {
+        self.key_order(a.raw(), a.kind(), b.raw(), b.kind())
+    }
+
+    fn keys_order(&self, a: AnyValue, b: AnyValue) -> Ordering {
+        self.stored_key_order(a.raw(), a.kind(), b.raw(), b.kind())
+    }
+
+    fn order(&self, a: AnyValue, b: AnyValue, mode: NumericMode) -> Ordering {
         if let Some(order) = same_simple_kind_cmp(a, b) {
             return order;
         }
@@ -74,7 +126,7 @@ impl<'a> TermComparator<'a> {
             Category::Tuple => self.tuple_cmp(address(a), address(b), mode),
             Category::Closure => self.closure_cmp(address(a), address(b)),
             _ if a == b => Ordering::Equal,
-            Category::Bitstring => bitstring_cmp(word_of_bitstring(a), word_of_bitstring(b)),
+            Category::Bitstring => bin_of(a).cmp(&bin_of(b)),
             Category::Map => self.map_cmp(self.map_term(a), self.map_term(b), mode),
             Category::List => self.list_cmp(address(a), address(b), mode),
             Category::Resource => {
@@ -144,7 +196,7 @@ impl<'a> TermComparator<'a> {
             return size;
         }
         for index in 0..*arity {
-            let order = self.compare(field_value(schema, a, index), field_value(schema, b, index), mode);
+            let order = self.order(field_value(schema, a, index), field_value(schema, b, index), mode);
             if order != Ordering::Equal {
                 return order;
             }
@@ -182,13 +234,13 @@ impl<'a> TermComparator<'a> {
         }
         let (a, b) = (self.in_key_order(a), self.in_key_order(b));
         for i in 0..self.map_count(a.map) {
-            let order = self.compare(self.ordered_key(&a, i), self.ordered_key(&b, i), NumericMode::Strict);
+            let order = self.keys_order(self.ordered_key(&a, i), self.ordered_key(&b, i));
             if order != Ordering::Equal {
                 return order;
             }
         }
         for i in 0..self.map_count(a.map) {
-            let order = self.compare(self.ordered_value(&a, i), self.ordered_value(&b, i), mode);
+            let order = self.order(self.ordered_value(&a, i), self.ordered_value(&b, i), mode);
             if order != Ordering::Equal {
                 return order;
             }
@@ -224,7 +276,7 @@ impl<'a> TermComparator<'a> {
     }
 
     fn entries_equal(&self, a: (AnyValue, AnyValue), b: (AnyValue, AnyValue), mode: NumericMode) -> bool {
-        self.compare(a.0, b.0, NumericMode::Strict).is_eq() && self.compare(a.1, b.1, mode).is_eq()
+        self.keys_order(a.0, b.0).is_eq() && self.order(a.1, b.1, mode).is_eq()
     }
 
     /// The map's entries as they are read in key order.
@@ -232,7 +284,7 @@ impl<'a> TermComparator<'a> {
         match map {
             MapTerm::Entries(addr) if unsafe { map_header_is_trie(addr) } => {
                 let mut entries = unsafe { map_entries(addr) };
-                entries.sort_by(|a, b| self.compare(a.0, b.0, NumericMode::Strict));
+                entries.sort_by(|a, b| self.keys_order(a.0, b.0));
                 KeyOrder {
                     map,
                     sorted: Some(entries),
@@ -268,7 +320,7 @@ impl<'a> TermComparator<'a> {
             let StructKey::Field(index) = *key else {
                 continue;
             };
-            let order = self.compare(field_value(schema, a, index), field_value(schema, b, index), mode);
+            let order = self.order(field_value(schema, a, index), field_value(schema, b, index), mode);
             if order != Ordering::Equal {
                 return order;
             }
@@ -319,7 +371,7 @@ impl<'a> TermComparator<'a> {
         while !a.is_null() && !b.is_null() {
             let ac = unsafe { &*a.cast::<ListCons>() };
             let bc = unsafe { &*b.cast::<ListCons>() };
-            let order = self.compare(ac.head_value(), bc.head_value(), mode);
+            let order = self.order(ac.head_value(), bc.head_value(), mode);
             if order != Ordering::Equal {
                 return order;
             }
@@ -342,7 +394,7 @@ impl<'a> TermComparator<'a> {
             return shape;
         }
         for i in 0..count {
-            let order = self.compare(
+            let order = self.order(
                 unsafe { closure_capture_value(a, i) },
                 unsafe { closure_capture_value(b, i) },
                 NumericMode::Strict,
@@ -457,7 +509,7 @@ fn same_simple_kind_cmp(a: AnyValue, b: AnyValue) -> Option<Ordering> {
         (AnyValue::Int(x), AnyValue::Int(y)) => Some(x.cmp(&y)),
         (AnyValue::Atom(x), AnyValue::Atom(y)) if x == y => Some(Ordering::Equal),
         (AnyValue::HeapRef(_), AnyValue::HeapRef(_)) if is_bitstring(a) && is_bitstring(b) => {
-            Some(bitstring_cmp(word_of_bitstring(a), word_of_bitstring(b)))
+            Some(bin_of(a).cmp(&bin_of(b)))
         }
         _ => None,
     }
@@ -473,56 +525,14 @@ fn same_simple_kind_equal(a: AnyValue, b: AnyValue) -> Option<bool> {
         (AnyValue::Float(x), AnyValue::Float(y)) if x == y => Some(true),
         (AnyValue::Opaque(x_kind, x), AnyValue::Opaque(y_kind, y)) => Some(x_kind == y_kind && x == y),
         (AnyValue::HeapRef(_), AnyValue::HeapRef(_)) if is_bitstring(a) && is_bitstring(b) => {
-            Some(bitstring_equal(word_of_bitstring(a), word_of_bitstring(b)))
+            Some(bin_of(a) == bin_of(b))
         }
         _ => None,
     }
 }
 
-fn word_of_bitstring(value: AnyValue) -> u64 {
-    value.heap_object_word().expect("bitstring")
-}
-
-/// Equal bit length, equal whole bytes, and equal leading bits of a partial
-/// last byte: the padding past the last bit is not part of the value.
-fn bitstring_equal(a: u64, b: u64) -> bool {
-    let bits = unsafe { bitstring_bit_len(a) } as usize;
-    if bits != unsafe { bitstring_bit_len(b) } as usize {
-        return false;
-    }
-    let whole = bits / 8;
-    let (a_bytes, b_bytes) = unsafe {
-        (
-            from_raw_parts(bitstring_byte_ptr(a), bits.div_ceil(8)),
-            from_raw_parts(bitstring_byte_ptr(b), bits.div_ceil(8)),
-        )
-    };
-    a_bytes[..whole] == b_bytes[..whole]
-        && (bits.is_multiple_of(8) || {
-            let kept = u8::MAX << (8 - bits % 8);
-            a_bytes[whole] & kept == b_bytes[whole] & kept
-        })
-}
-
-fn bitstring_cmp(a: u64, b: u64) -> Ordering {
-    let a_bits = unsafe { bitstring_bit_len(a) } as usize;
-    let b_bits = unsafe { bitstring_bit_len(b) } as usize;
-    let a_bytes = unsafe { from_raw_parts(bitstring_byte_ptr(a), a_bits.div_ceil(8)) };
-    let b_bytes = unsafe { from_raw_parts(bitstring_byte_ptr(b), b_bits.div_ceil(8)) };
-    let common_bits = a_bits.min(b_bits);
-    let common_bytes = common_bits / 8;
-    let bytes = a_bytes[..common_bytes].cmp(&b_bytes[..common_bytes]);
-    if bytes != Ordering::Equal {
-        return bytes;
-    }
-    if !common_bits.is_multiple_of(8) {
-        let mask = u8::MAX << (8 - common_bits % 8);
-        let partial = (a_bytes[common_bytes] & mask).cmp(&(b_bytes[common_bytes] & mask));
-        if partial != Ordering::Equal {
-            return partial;
-        }
-    }
-    a_bits.cmp(&b_bits)
+fn bin_of(value: AnyValue) -> Bin {
+    unsafe { Bin::of_stored(value.raw(), value.kind()) }
 }
 
 #[cfg(test)]
