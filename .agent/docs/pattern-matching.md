@@ -71,6 +71,17 @@ A key that is neither is `SourcePatternError::UnsupportedMapKey`.
 `fixtures/01767_a_map_pattern_looks_a_key_up_by_the_value_of_a_pinned_variable.fz`
 checks the pinned form against Elixir on all three paths.
 
+Compiled code decides a map-key question whose key is an atom or an integer
+where the question stands. `FlatMapScan` (`native_codegen/clif.rs`) reads the
+subject's header, and for a flat map compares the key's word against each
+stored key word, then the stored key's kind, and forms the value's ref word
+from its slot. A struct, a trie and every other kind of key call
+`fz_matcher_map_get_ref`. Function bodies (`Prim::MatcherMapGet`) and the
+receive matcher (`emit_dispatch_map_get_value`) both go through it. The
+sequence is `fz_flat_get` in `bench/maps/floor/flat.s`;
+`fixtures/01768_a_map_pattern_finds_a_one_word_key_in_a_small_map_a_large_map_and_a_struct.fz`
+holds the three layouts and the value kinds to one answer.
+
 For `%Box{value: x}`, the source producer asks `Region::Type` with Box's
 atomic tagged-record `Ty`. Its success edge publishes a `StructField("value")`
 projection; both a binding and a literal subpattern read that field subject.

@@ -72,7 +72,7 @@ use super::repr::ExternLane;
 use super::runtime_call::{
     RuntimeCaller, RuntimeFn, declare_runtime_fn, runtime_call, runtime_call1, runtime_condition,
 };
-use super::{CodegenError, SLOT_BYTES, address_field, emit_fn_body, immediate_ref_word};
+use super::{CodegenError, FlatMapScan, SLOT_BYTES, address_field, emit_fn_body, immediate_ref_word};
 
 type ReceiveDispatchPlan = PatternDispatchPlan<RuntimeTypePredicate>;
 type ReceiveRegion = Region<RuntimeTypePredicate>;
@@ -1194,8 +1194,18 @@ fn emit_dispatch_map_get_value<M: cranelift_module::Module>(
         ComparisonValue::Const(key) => emit_dispatch_const_key(body, ctx, key)?,
     };
     let map_ref = emit_receive_value_ref(body, ctx, map)?;
+    let scan = match key {
+        ReceiveValue::Int(word) => Some((word, ValueKind::INT)),
+        ReceiveValue::Atom(word) => Some((word, ValueKind::ATOM)),
+        ReceiveValue::AnyRef(_) | ReceiveValue::Float(_) => None,
+    }
+    .map(|(word, kind)| FlatMapScan::emit(body.b, map_ref, word, kind));
     let key_ref = emit_receive_value_ref(body, ctx, key)?;
-    let out_ref = runtime_call1!(body, fz_matcher_map_get_ref, [ctx.process, map_ref, key_ref]);
+    let answer = runtime_call1!(body, fz_matcher_map_get_ref, [ctx.process, map_ref, key_ref]);
+    let out_ref = match scan {
+        Some(scan) => scan.finish(body.b, answer),
+        None => answer,
+    };
     Ok(receive_value_from_ref_word(body.b, out_ref))
 }
 

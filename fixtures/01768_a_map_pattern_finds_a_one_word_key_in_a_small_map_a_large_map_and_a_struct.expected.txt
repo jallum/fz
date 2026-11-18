@@ -1,0 +1,25 @@
+{:ok, "fz"}
+{:ok, 7.5}
+{:ok, [1, 2]}
+{:ok, {:a, 1}}
+{:ok, nil}
+{:ok, true}
+:error
+:error
+:error
+{:ok, 1089}
+:error
+:error
+{:ok, 2}
+{:ok, Point}
+:error
+:error
+"fz"
+:unnamed
+:big
+7.5
+49
+:no_seven
+{:seven, :message}
+{:named, :message}
+:nothing

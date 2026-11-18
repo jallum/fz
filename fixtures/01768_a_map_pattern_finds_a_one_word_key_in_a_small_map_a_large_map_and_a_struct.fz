@@ -1,0 +1,71 @@
+#---
+# purpose: a map pattern keyed by an atom or an integer gives one answer whether the map is small, large or a struct, and whatever kind of value it finds
+# kind: run
+#---
+#
+# A small map is searched where the pattern stands; a map past 32 keys and a
+# struct ask the runtime. `at` takes its key from a variable, `name` and
+# `seven` write theirs out. The integer 7 and an atom are different keys even
+# where their words could coincide, and a key present with `nil` is a hit.
+defmodule Point do
+  defstruct x: 1, y: 2
+end
+
+defmodule Main do
+  def at(map, key) do
+    case map do
+      %{^key => value} -> {:ok, value}
+      _ -> :error
+    end
+  end
+
+  def name(%{name: value}), do: value
+  def name(_), do: :unnamed
+
+  def seven(%{7 => value}), do: value
+  def seven(_), do: :no_seven
+
+  def large(), do: Enum.reduce(1..40, %{}, fn i, map -> Map.put(map, i, i * i) end)
+
+  def point(key), do: at(%Point{}, key)
+
+  def await() do
+    receive do
+      %{name: value} -> {:named, value}
+      %{7 => value} -> {:seven, value}
+    after
+      0 -> :nothing
+    end
+  end
+end
+
+small = %{:name => "fz", 7 => 7.5, :list => [1, 2], :pair => {:a, 1}, :none => nil, :flag => true}
+
+IO.inspect(Main.at(small, :name))
+IO.inspect(Main.at(small, 7))
+IO.inspect(Main.at(small, :list))
+IO.inspect(Main.at(small, :pair))
+IO.inspect(Main.at(small, :none))
+IO.inspect(Main.at(small, :flag))
+IO.inspect(Main.at(small, :absent))
+IO.inspect(Main.at(small, 8))
+IO.inspect(Main.at(%{}, :name))
+IO.inspect(Main.at(Main.large(), 33))
+IO.inspect(Main.at(Main.large(), 41))
+IO.inspect(Main.at(Main.large(), :name))
+IO.inspect(Main.point(:y))
+IO.inspect(Main.point(:__struct__))
+IO.inspect(Main.point(:z))
+IO.inspect(Main.at("small", :name))
+IO.inspect(Main.name(small))
+IO.inspect(Main.name(%{7 => 1}))
+IO.inspect(Main.name(Map.put(Main.large(), :name, :big)))
+IO.inspect(Main.seven(small))
+IO.inspect(Main.seven(Main.large()))
+IO.inspect(Main.seven(%{seven: 7}))
+send(self(), %{other: 1})
+send(self(), %{7 => :message})
+send(self(), %{name: :message})
+IO.inspect(Main.await())
+IO.inspect(Main.await())
+IO.inspect(Main.await())

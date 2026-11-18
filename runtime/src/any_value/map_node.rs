@@ -38,6 +38,15 @@ use std::ptr;
 pub const MAP_FLAT_MAX: usize = 32;
 
 const MAP_TRIE_FLAG: u64 = 1 << 62;
+
+/// The header bits a published flat map has clear: it is neither a destination
+/// still being filled nor a trie node.
+pub const MAP_NOT_FLAT_MASK: u64 = MAP_DESTINATION_FLAG | MAP_TRIE_FLAG;
+/// A flat map's entry count is its header shifted right by this.
+pub const MAP_FLAT_COUNT_SHIFT: i64 = MAP_HEADER_FIELD_SHIFT as i64;
+/// Where a flat map's kind bytes begin, one byte per entry padded to a word;
+/// its key words follow them and its value words follow those.
+pub const MAP_KIND_BYTES_OFFSET: i64 = 8;
 const MAP_COLLISION_FLAG: u64 = 1 << 61;
 const MAP_DATA_MAP_SHIFT: u32 = MAP_HEADER_FIELD_SHIFT;
 const MAP_CHILD_MAP_SHIFT: u32 = MAP_DATA_MAP_SHIFT + 16;

@@ -8,6 +8,8 @@
 
 typedef struct { uint8_t *top, *end; } Bump;
 typedef struct { int64_t slot; uint64_t found; } Found;
+typedef struct { uint64_t word; int64_t kind; } Got;
+Got fz_flat_get(const uint8_t *map, uint64_t key, uint64_t kind);
 int64_t fz_flat_scan(const uint8_t *map, uint64_t key, uint64_t kind);
 int64_t fz_flat_place(const uint8_t *map, uint64_t kind, uint64_t order, const uint64_t *prefixes);
 Found fz_flat_find(const uint8_t *map, uint64_t kind, uint64_t order, const uint64_t *prefixes, uint64_t key);
@@ -94,8 +96,13 @@ static void check(const uint8_t *m, const E *e, int n) {
         if (e[i].kind == BITSTRING) {
             Found f = fz_flat_find_bin(m, (const uint64_t *)e[i].key);
             if (!f.found || f.slot != i) fail("find_bin");
-        } else if (fz_flat_scan(m, e[i].key, e[i].kind) != i) fail("scan");
+        } else {
+            if (fz_flat_scan(m, e[i].key, e[i].kind) != i) fail("scan");
+            Got got = fz_flat_get(m, e[i].key, e[i].kind);
+            if (got.kind != INT || got.word != e[i].value) fail("get");
+        }
     }
+    if (fz_flat_get(m, 0xFFFFFF, ATOM).kind != -1) fail("get of an absent key");
     for (size_t i = n; i < pad8(n); i++) if (kinds(m)[i]) fail("padding");
 }
 static int test(void) {
@@ -167,7 +174,12 @@ int main(int argc, char **argv) {
         for (long i = 0; i < n; i++) {
             b.top = arenas[(i & 1) + 0]; b.end = b.top + sizeof arenas[0];
             if (i == 0) b.top = (uint8_t *)m + 4096;
-            if (!strncmp(probe, "get", 3)) {
+            if (!strncmp(probe, "case", 4) && !binary_keys) {
+                for (int j = 0; j < 6; j++) {
+                    Got got = fz_flat_get(m, key[PICKS[j]], ATOM);
+                    if (got.kind != -1) answer += got.word;
+                }
+            } else if (!strncmp(probe, "get", 3) || !strncmp(probe, "case", 4)) {
                 for (int j = 0; j < 6; j++) {
                     int64_t slot = binary_keys ? fz_flat_find_bin(m, (const uint64_t *)key[PICKS[j]]).slot : ordered ? fz_flat_find(m, ATOM, prefixes[key[PICKS[j]]], prefixes, key[PICKS[j]]).slot : fz_flat_scan(m, key[PICKS[j]], ATOM);
                     answer += vals(m)[slot];
@@ -179,7 +191,7 @@ int main(int argc, char **argv) {
                 for (int j = 0; j < 3; j++) m = PUT(&b, m, PICKS[j], (uint64_t)i);
             } else { fprintf(stderr, "unknown probe %s\n", probe); return 2; }
         }
-        if (strncmp(probe, "get", 3)) answer = count(m);
+        if (strncmp(probe, "get", 3) && strncmp(probe, "case", 4)) answer = count(m);
     }
     printf("%llu\n", (unsigned long long)answer);
     return 0;
