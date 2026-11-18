@@ -15,11 +15,15 @@
     {
       "text": "2026-11-17, Optimize session. A start gate on every direct callee (FunctionDefined/ModuleDefined, FunctionContract, LoweredBody; protocol callbacks skipped) reaches the floor on this ticket's probe: 9 AnalyzeActivation completions, none blocked on LoweredBody or FunctionContract. It is not landable: the gate demands callees in clauses the call's types never reach. `1 + 2` then defines and lowers fz_op_add_if behind Kernel +'s untaken guarded clauses, which compiler2_one_plus_two_never_starts_a_job_for_the_untaken_coercion_externs forbids. Narrowing the gate to reachable clauses needs dispatch reachability per input row plus a control-entry walk inside the gate: a second implementation of what the analysis walk answers. User ruling 2026-11-17: leave these reruns until analysis can resume where it stopped; no gate. The refuted diff is kept at /Users/j5n/Workspace/fz-afu-21-gate-refuted.diff (worktree ../fz-afu-21, branch fz-afu.21/analysis-waits-for-callee-facts, uncommitted).",
       "timestamp": "2026-11-18T00:29:30Z"
+    },
+    {
+      "text": "Parked (user ruling via Optimize, 2026-11-17): no gate; leave the reruns until analysis can resume. Refuted gate diff: /Users/j5n/Workspace/fz-afu-21-gate-refuted.diff. No ticket on the board yet owns resumable analysis; when one is filed, this ticket is blocked by it.",
+      "timestamp": "2026-11-18T00:31:52Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "An analysis whose callee has no lowered body yet waits for it instead of running without it",
   "type": "bug",
-  "updated_at": "2026-11-18T00:29:30Z"
+  "updated_at": "2026-11-18T00:31:52Z"
 }
