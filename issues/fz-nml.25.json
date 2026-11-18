@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-9x7.31"
+  ],
   "blocks": [],
   "created": "2026-11-18T00:15:58Z",
   "description": "Approved by the user 2026-11-17 (relayed by JSON: \"yes. cheap try.\").\n\nlib/json.fz: the grammar scan computes nothing; the value comes from String.to_integer(token) once; a rescue of ArithmeticError around the number produces today's {:error, {:sequence, start, token}}, so error output is unchanged. integer_step and the `integer | :overflow` union are deleted.\n\nSignal: MDF's sizing of the boxed accumulator, up to 2.6% of distiller cycles (bench); experiment with a plain integer accumulator: -4.2% instructions, young allocation -9%, live bytes equal. Rule: output identical, cycles measured, live bytes not raised. Its memory clause is judged on fz-9x7.30 (the experiment's ~500 MB in_use gap was that ticket's major to-space defect).",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "A JSON integer is converted from its text, as a float already is",
   "type": "task",
-  "updated_at": "2026-11-18T00:15:58Z"
+  "updated_at": "2026-11-18T00:15:59Z"
 }

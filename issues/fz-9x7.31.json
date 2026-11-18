@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-nml.25"
+  ],
   "created": "2026-11-18T00:15:58Z",
   "description": "Approved by the user 2026-11-17 (relayed by JSON: \"yes. cheap try.\"; earlier: \"that just points to our try mechanism being a little stupid, forcing us into further stupidity\"). Proposal page first.\n\nMeasured (JSON session, AOT build): a loop of 18 digits per number over 1M numbers, with and without `try do ... rescue _ -\u003e 0 end`: instructions 2.758-2.760G -\u003e 3.120-3.122G over three runs each, ~362 instructions per try that never raises. Per 1000 iterations native run continuation_allocs 1010 -\u003e 3011: a try adds 2 heap continuations of 96 B each. The interpreter allocates nothing for either loop. Probes: /private/tmp/claude-501/-Users-j5n-Workspace-fz/ebbfffd8-2561-4da7-bcda-f9a316d00a1e/scratchpad/ovf/ (plain.fz, try.fz for instructions; tk.fz for allocation kinds). BEAM: entering a try pushes a catch tag on the stack, a couple of instructions.\n\nWhy: a try this expensive pushes library code away from idiomatic error handling (lib/json.fz carries `integer | :overflow` per digit, re-checking overflow that * and + already raise; up to 2.6% of distiller cycles).\n\nThe page answers where the two continuations come from in native try lowering and what an unraised try should cost. The exceptions epic fz-3ul is closed; Bugs and Cleanup last built that code (fz-3sy.34/.35).",
   "id": "fz-9x7.31",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "An unraised try allocates nothing and costs almost nothing",
   "type": "task",
-  "updated_at": "2026-11-18T00:15:58Z"
+  "updated_at": "2026-11-18T00:15:59Z"
 }
