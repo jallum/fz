@@ -1,0 +1,89 @@
+#---
+# purpose: "entering a try whose body completes builds no continuation: its handler is recorded where the process keeps its handlers, not built on the heap, whether the handler returns a value or re-raises with a captured value"
+# kind: run
+#---
+#
+# Each loop calls one helper per iteration. `plain/1` has no try; the two
+# others wrap the same work in one, with a handler that returns a value and
+# one that captures `x` and raises. The program prints how many more
+# continuations the tried loops build than the plain loop: none, on every
+# path. It then raises inside each helper so that each handler runs, and
+# prints what it delivers.
+defmodule G do
+  def plain(n), do: n * 3
+
+  def returning(n) do
+    try do
+      n * 3
+    rescue
+      _ -> 0
+    end
+  end
+
+  def reraising(n) do
+    x = n + 1
+
+    try do
+      x * 3
+    rescue
+      _ -> raise ArgumentError, "bad #{x}"
+    end
+  end
+
+  def returning_raised(text) do
+    try do
+      String.to_integer(text)
+    rescue
+      _ -> 0
+    end
+  end
+
+  def reraising_raised(n, text) do
+    x = n + 1
+
+    try do
+      String.to_integer(text) + x
+    rescue
+      _ -> raise ArgumentError, "bad #{x}"
+    end
+  end
+end
+
+defmodule L do
+  def plain(0, s), do: s
+  def plain(n, s), do: plain(n - 1, s + G.plain(n))
+
+  def returning(0, s), do: s
+  def returning(n, s), do: returning(n - 1, s + G.returning(n))
+
+  def reraising(0, s), do: s
+  def reraising(n, s), do: reraising(n - 1, s + G.reraising(n))
+end
+
+# A scheduler yield suspends the loop into a continuation of its own, so the
+# count leaves out one continuation per yield the loop takes.
+def continuations(f) do
+  before = Process.heap_alloc_stats()
+  result = f.()
+  after_run = Process.heap_alloc_stats()
+  built = after_run[:continuation_allocs] - before[:continuation_allocs]
+  yields = after_run[:scheduler_yields] - before[:scheduler_yields]
+  {result, built - yields}
+end
+
+def main() do
+  {plain, plain_built} = continuations(fn -> L.plain(1000, 0) end)
+  {returning, returning_built} = continuations(fn -> L.returning(1000, 0) end)
+  {reraising, reraising_built} = continuations(fn -> L.reraising(1000, 0) end)
+  dbg({plain, returning, reraising - 3000})
+  dbg({returning_built - plain_built, reraising_built - plain_built})
+  dbg(G.returning_raised("x"))
+
+  dbg(
+    try do
+      G.reraising_raised(41, "x")
+    rescue
+      e in ArgumentError -> e.message
+    end
+  )
+end

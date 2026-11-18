@@ -31,7 +31,7 @@ use fz_runtime::ir_runtime::{
     fz_map_dest_begin_update, fz_map_dest_freeze, fz_map_dest_publish, fz_map_dest_put_parts, fz_map_dest_put_ref,
     fz_map_get_atom_key_ref, fz_map_get_float_key_ref, fz_map_get_int_key_ref, fz_map_get_ref, fz_map_named_schema_ref,
     fz_matcher_map_get_ref, fz_pinned_binary_segment_size, fz_ref_load_atom, fz_ref_load_float, fz_ref_load_int,
-    fz_struct_get_field_ref, fz_struct_get_named_field_ref, fz_struct_module, fz_struct_schema_id_ref, fz_try_pop,
+    fz_struct_get_field_ref, fz_struct_get_named_field_ref, fz_struct_module, fz_struct_schema_id_ref,
     fz_value_cmp_raw_const, fz_value_cmp_ref, fz_value_eq_raw_const, fz_value_eq_ref, fz_value_eq_widening_ref,
 };
 use fz_runtime::ir_runtime::{fz_box_opaque_for_any, fz_unbox_opaque};
@@ -1343,8 +1343,7 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
             Ok(LowerOut::Strict(strict_bool(body.b, cmp)))
         }
         Prim::PopHandler => {
-            let process = body.process_arg();
-            runtime_call!(body, fz_try_pop, [process]);
+            closure::pop_handler_record(body);
             Ok(LowerOut::DeadUnit)
         }
         Prim::StructSlot {

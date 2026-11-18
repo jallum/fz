@@ -8,7 +8,8 @@ use fz_runtime::any_value::{
     closure_header_word, closure_size_for_count,
 };
 use fz_runtime::heap::INLINE_ALLOC_LAYOUT;
-use fz_runtime::process_abi::PROCESS_HEAP_OFFSET;
+use fz_runtime::ir_runtime::fz_handler_reserve;
+use fz_runtime::process_abi::{PROCESS_HANDLER_END_OFFSET, PROCESS_HANDLER_TOP_OFFSET, PROCESS_HEAP_OFFSET};
 
 /// Build a cont closure and answer its ref word: placed at the heap tip by
 /// inline code, with its header, code address, and every capture stored in
@@ -32,6 +33,104 @@ pub(crate) fn build_cont_closure<M: cranelift_module::Module>(
         .b
         .ins()
         .band_imm_u(closure_ref, AnyValueRefPacking::current().address_mask() as i64);
+    fill_cont_captures(body, address, outer_cont, cap_bindings, empty_slots);
+    closure_ref
+}
+
+/// Push a `try`'s handler record onto the process's handler stack: the image
+/// of the continuation `build_cont_closure` would build for the handler, in
+/// place on the stack, followed by the trailer naming the record's size. The
+/// stack's own room takes it inline; only a full stack calls the runtime, which
+/// grows it. Nothing is built on the heap: a raise materializes the handler
+/// from the record.
+pub(crate) fn push_handler_record<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, M>,
+    outer_cont: ir::Value,
+    cont_fid: FuncId,
+    cap_bindings: &[ClosureCapture],
+    empty_slots: usize,
+) {
+    let count = cap_bindings.len() + empty_slots + 1;
+    let image_bytes = closure_size_for_count(count) as i64;
+    let record_bytes = image_bytes + 8;
+    let address = reserve_handler_record(body, record_bytes);
+    let flags = MemFlagsData::trusted();
+    let header = closure_header_word(ClosureDenotationId::INTERNAL, count as u16, 0, CONT_ARITY as u16);
+    let header = body.b.ins().iconst(types::I64, header as i64);
+    body.b.ins().store(flags, header, address, 0);
+    let code_addr = fn_addr(body.jmod, cont_fid, body.b);
+    body.b.ins().store(flags, code_addr, address, CLOSURE_CODE_OFFSET);
+    fill_cont_captures(body, address, outer_cont, cap_bindings, empty_slots);
+    let trailer = body.b.ins().iconst(types::I64, record_bytes);
+    body.b.ins().store(flags, trailer, address, image_bytes as i32);
+}
+
+/// Pop the innermost handler record: the trailer under the stack's top names
+/// how far the top falls.
+pub(crate) fn pop_handler_record<M: cranelift_module::Module>(body: &mut CodegenFn<'_, '_, M>) {
+    let flags = MemFlagsData::trusted();
+    let process = body.process_arg();
+    let top = body
+        .b
+        .ins()
+        .load(types::I64, flags, process, PROCESS_HANDLER_TOP_OFFSET);
+    let record_bytes = body.b.ins().load(types::I64, flags, top, -8);
+    let below = body.b.ins().isub(top, record_bytes);
+    body.b.ins().store(flags, below, process, PROCESS_HANDLER_TOP_OFFSET);
+}
+
+/// Reserve `record_bytes` on top of the handler stack and answer where they
+/// start: inline while the stack has room, through `fz_handler_reserve` when
+/// it is full.
+fn reserve_handler_record<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, M>,
+    record_bytes: i64,
+) -> ir::Value {
+    let flags = MemFlagsData::trusted();
+    let process = body.process_arg();
+    let top = body
+        .b
+        .ins()
+        .load(types::I64, flags, process, PROCESS_HANDLER_TOP_OFFSET);
+    let end = body
+        .b
+        .ins()
+        .load(types::I64, flags, process, PROCESS_HANDLER_END_OFFSET);
+    let new_top = body.b.ins().iadd_imm_u(top, record_bytes);
+    let fits = body.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, new_top, end);
+    let inline = body.b.create_block();
+    let runtime = body.b.create_block();
+    let reserved = body.b.create_block();
+    body.b.append_block_param(reserved, types::I64);
+    body.b.ins().brif(fits, inline, &[], runtime, &[]);
+
+    body.b.switch_to_block(runtime);
+    body.b.seal_block(runtime);
+    let bytes = body.b.ins().iconst(types::I64, record_bytes);
+    let from_runtime = runtime_call1!(body, fz_handler_reserve, [process, bytes]);
+    body.b.ins().jump(reserved, &[from_runtime.into()]);
+
+    body.b.switch_to_block(inline);
+    body.b.seal_block(inline);
+    body.b.ins().store(flags, new_top, process, PROCESS_HANDLER_TOP_OFFSET);
+    body.b.ins().jump(reserved, &[top.into()]);
+
+    body.b.switch_to_block(reserved);
+    body.b.seal_block(reserved);
+    body.b.block_params(reserved)[0]
+}
+
+/// Store a continuation's captures at `address`: the outer continuation as
+/// capture 0, the user captures after it, and `nil` in the empty slots a body
+/// frame fills later.
+fn fill_cont_captures<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, M>,
+    address: ir::Value,
+    outer_cont: ir::Value,
+    cap_bindings: &[ClosureCapture],
+    empty_slots: usize,
+) {
+    let count = cap_bindings.len() + empty_slots + 1;
     let stores = CaptureStores::new(address, count);
     stores.store_ref_word(body, 0, outer_cont);
     store_user_captures(cap_bindings, |idx, capture| match capture {
@@ -47,7 +146,6 @@ pub(crate) fn build_cont_closure<M: cranelift_module::Module>(
     for idx in count - empty_slots..count {
         stores.store_raw(body, idx, nil, ValueKind::ATOM);
     }
-    closure_ref
 }
 
 /// Place an unfilled continuation closure of `count` captures: the header and

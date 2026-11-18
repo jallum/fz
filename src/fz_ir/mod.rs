@@ -1069,9 +1069,6 @@ pub enum Term {
         handler: FnId,
         captures: Vec<Var>,
         body: BlockId,
-        /// Whether the handler never delivers a value: every path through it
-        /// raises or calls something that does not return.
-        handler_diverges: bool,
     },
     ReceiveMatched {
         ident: CallsiteIdent,
@@ -1737,7 +1734,6 @@ impl fmt::Display for Term {
                 handler,
                 captures,
                 body,
-                handler_diverges: _,
             } => write!(
                 f,
                 "try handler=fn{} caps=[{}] body={}",

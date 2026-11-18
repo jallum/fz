@@ -1,0 +1,81 @@
+#---
+# purpose: "a raise reaches the innermost try's handler with the values that try captured: from a nested non-tail try inside a branch join, after a collection moved the captures, and through handlers nested deep enough to grow the handler stack"
+# oracle: self
+# oracle.stamp: 71afbb6f3ef4f8b9
+#---
+#
+# Each try records its handler where the process keeps its handlers. Three
+# shapes make the record do work beyond being pushed and popped:
+#
+# - `joined/2`: tries nested inside an `if` whose value is used after it, so
+#   the raise unwinds into a branch join. The inner handler re-raises with what
+#   it captured and the outer handler turns that into a value.
+# - `after_collection/1`: the body allocates enough to collect before it
+#   raises, so the handler's captured list has moved by the time the handler
+#   reads it.
+# - `nested/2`: one try per recursion level, each handler adding its level to
+#   the raise and re-raising, deeper than the handler stack's first capacity.
+defmodule Main do
+  def joined(text, bias) do
+    base = bias * 10
+
+    result =
+      if bias > 0 do
+        tagged =
+          try do
+            try do
+              String.to_integer(text) + base
+            rescue
+              ArgumentError -> raise RuntimeError, "inner #{text} #{base}"
+            end
+          rescue
+            e in RuntimeError -> {:outer, e.message, bias}
+          end
+
+        {tagged, :positive}
+      else
+        {base, :other}
+      end
+
+    {result, base + 1}
+  end
+
+  def after_collection(n) do
+    label = [n, n + 1, n + 2]
+
+    try do
+      garbage = Enum.map(1..n, fn i -> [i, i * 2] end)
+      :erlang.error({:after, length(garbage)})
+    rescue
+      _ -> {:rescued, label}
+    end
+  end
+
+  def nested(0, _), do: :erlang.error([0])
+
+  def nested(depth, trail) do
+    try do
+      nested(depth - 1, [depth | trail])
+    rescue
+      e in ErlangError -> :erlang.error([depth | e.original])
+    end
+  end
+
+  def deep(depth) do
+    try do
+      nested(depth, [])
+    rescue
+      e in ErlangError -> {length(e.original), Enum.take(e.original, 3), hd(Enum.reverse(e.original))}
+    end
+  end
+
+  def main() do
+    IO.inspect(joined("7", 2))
+    IO.inspect(joined("x", 2))
+    IO.inspect(joined("x", 0))
+    IO.inspect(after_collection(200_000))
+    IO.inspect(deep(300))
+  end
+end
+
+Main.main()

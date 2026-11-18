@@ -3,6 +3,7 @@
 //! Keep this module narrow: compiled code may only import offsets that are
 //! intentionally part of the runtime/codegen ABI.
 
+use crate::handler_stack::{HANDLER_STACK_END_OFFSET, HANDLER_STACK_TOP_OFFSET};
 use crate::process::Process;
 use std::mem::offset_of;
 
@@ -20,6 +21,11 @@ pub const PROCESS_STRUCT_RETENTION_HITS_OFFSET: i32 = offset_of!(Process, struct
 /// `Process::heap`; add a `heap::INLINE_ALLOC_LAYOUT` field offset to reach a
 /// heap field that inline allocation updates.
 pub const PROCESS_HEAP_OFFSET: i32 = offset_of!(Process, heap) as i32;
+
+/// The handler stack's `top` and `end`, which a compiled `try` reads and
+/// writes to push and pop its handler record without a runtime call.
+pub const PROCESS_HANDLER_TOP_OFFSET: i32 = (offset_of!(Process, handlers) + HANDLER_STACK_TOP_OFFSET) as i32;
+pub const PROCESS_HANDLER_END_OFFSET: i32 = (offset_of!(Process, handlers) + HANDLER_STACK_END_OFFSET) as i32;
 
 #[cfg(test)]
 #[path = "process_abi_test.rs"]

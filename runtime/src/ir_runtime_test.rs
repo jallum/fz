@@ -1102,29 +1102,21 @@ fn a_struct_answers_its_module_and_a_map_answers_its_struct_entry() {
     assert_eq!(of_map.load_atom(), Ok(module as u64));
 }
 
+/// Compiled code calls `fz_handler_reserve` only when the handler stack is
+/// full; the bytes it answers become the innermost record once compiled code
+/// writes the record's trailer.
 #[test]
-fn try_push_stores_the_closure_reference_word_codegen_emits_and_try_pop_removes_it() {
+fn handler_reserve_answers_the_bytes_that_become_the_innermost_record() {
     with_process(|process| {
-        let template = process
-            .heap
-            .alloc_closure_slots(crate::any_value::ClosureDenotationId::INTERNAL, 0, 1, 0);
-        let template_addr = crate::any_value::closure_addr_from_tagged(template).expect("a closure");
-        let template_ref = AnyValueRef::from_heap_object(ValueKind::CLOSURE, template_addr).expect("a closure ref");
-        let handler = Handler::Closure(ClosureRef::new(template_ref));
-
-        fz_try_push(process, template_ref.raw_word());
-        fz_try_pop(process);
-        fz_try_push(process, template_ref.raw_word());
+        let record = fz_handler_reserve(process, 32) as *mut u8;
+        unsafe { (record.add(24) as *mut u64).write(32) };
 
         assert_eq!(
-            process.handlers,
-            [handler],
-            "the handler holds the closure reference as codegen emitted it"
+            process.handlers.innermost(),
+            Some(crate::handler_stack::Innermost::Compiled(record))
         );
-
-        fz_try_pop(process);
-
-        assert!(process.handlers.is_empty());
+        process.pop_handler();
+        assert_eq!(process.handlers.innermost(), None);
     });
 }
 

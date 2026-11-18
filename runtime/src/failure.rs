@@ -38,11 +38,12 @@ use crate::any_value::debug::render_value;
 use crate::any_value::{AnyValue, AnyValueRef, ValueKind};
 use crate::bits::{bitstring_bit_len, bitstring_byte_ptr};
 use crate::exec_ctx::ExecCtx;
+use crate::handler_stack::Innermost;
 use crate::heap::{list_head_ref, list_tail_ref};
 use crate::ir_runtime::{bitstring_like_word, fz_tuple_elem, fz_tuple_size};
 use crate::module_name::ModuleName;
 use crate::park::materialize_outcome_closure;
-use crate::process::{Handler, Process, Raised};
+use crate::process::{Process, Raised};
 use crate::scheduler_hooks::FaultHook;
 use std::io::Write as _;
 use std::slice;
@@ -302,8 +303,8 @@ fn raise(process: *mut Process, kind: RaiseKind, value_ref: u64) {
         0 => 0,
         base => base.saturating_sub(&stack_marker as *const u8 as usize),
     };
-    report_raise(ctx, process, kind, name, process.handlers.len(), stack_bytes);
-    let Some(handler) = process.handlers.pop() else {
+    report_raise(ctx, process, kind, name, process.handlers.depth(), stack_bytes);
+    let Some(handler) = process.handlers.innermost() else {
         let line = failure_line(process_ptr, kind, value_ref);
         process.failed = true;
         process.exit_status = exit_status(process_ptr, kind, value_ref);
@@ -318,15 +319,16 @@ fn raise(process: *mut Process, kind: RaiseKind, value_ref: u64) {
         .box_any_value_ref(AnyValue::atom(process.node.intern_atom(kind.name())));
     let name = process.heap.box_any_value_ref(name.unwrap_or(AnyValue::nil_atom()));
     match handler {
-        Handler::Closure(template) => {
-            let template = template.as_ref().closure_addr().expect("a handler is a closure ref");
-            // SAFETY: a handler on the stack is a live closure the collector keeps current.
-            let handler = unsafe { materialize_outcome_closure(&mut process.heap, template, &[kind, value_ref, name]) };
+        Innermost::Compiled(image) => {
+            // SAFETY: a compiled record is a closure image the collector keeps current.
+            let handler = unsafe { materialize_outcome_closure(&mut process.heap, image, &[kind, value_ref, name]) };
+            process.pop_handler();
             process.deliver_handler(
                 AnyValueRef::from_heap_object(ValueKind::CLOSURE, handler).expect("handler closure ref"),
             );
         }
-        Handler::Interpreter => {
+        Innermost::Interpreter => {
+            process.pop_handler();
             process.raised = Some(Raised {
                 kind,
                 value: value_ref,

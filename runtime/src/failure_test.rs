@@ -4,6 +4,8 @@ use crate::any_value::{
     map_addr_from_tagged,
 };
 use crate::exec_ctx::ExecCtx;
+use crate::handler_stack::Innermost;
+use crate::handler_stack::handler_stack_test::push_template;
 use crate::heap::{Schema, SchemaRegistry};
 use crate::process::ClosureRef;
 use std::cell::RefCell;
@@ -162,12 +164,20 @@ fn a_panic_hands_its_line_to_the_fault_sink_marks_the_process_failed_and_returns
 }
 
 /// A handler template: `[outer_cont]` with the outer continuation standing in
-/// as `nil`, the shape codegen builds before `fz_try_push`.
+/// as `nil`, the image codegen writes into a handler record.
 fn handler_template(process: &mut Process) -> ClosureRef {
     let closure = closure_addr_from_tagged(process.heap.alloc_closure_slots(ClosureDenotationId::INTERNAL, 0, 1, 0))
         .expect("a closure");
     unsafe { closure_capture_set(closure, 0, AnyValue::nil_atom()) };
     ClosureRef::new(AnyValueRef::from_heap_object(ValueKind::CLOSURE, closure).expect("a closure ref"))
+}
+
+/// Push the record compiled code writes for a handler whose image is `template`.
+fn push_compiled(process: &mut Process, template: ClosureRef) -> *mut u8 {
+    push_template(
+        &mut process.handlers,
+        template.as_ref().closure_addr().expect("a closure ref"),
+    )
 }
 
 fn capture(closure: *mut u8, index: usize) -> AnyValue {
@@ -220,14 +230,14 @@ fn with_observed_process<R>(f: impl FnOnce(&mut Process, &mut Observed) -> R) ->
 fn a_panic_under_a_compiled_handler_delivers_the_handler_with_kind_value_and_name() {
     with_observed_process(|process, observed| {
         let template = handler_template(process);
-        process.push_handler(Handler::Closure(template));
+        push_compiled(process, template);
         let value = exception(process, "Elixir.RuntimeError", "boom");
 
         fz_panic(process, value.ref_word().raw_word());
 
         assert!(!process.failed, "a caught raise is not a failure");
         assert!(
-            process.handlers.is_empty(),
+            process.handlers.depth() == 0,
             "the handler is consumed by the raise it catches"
         );
         assert_eq!(process.raises_delivered, 1);
@@ -262,14 +272,14 @@ fn a_panic_under_a_compiled_handler_delivers_the_handler_with_kind_value_and_nam
 #[test]
 fn a_panic_under_an_interpreter_handler_leaves_the_raise_for_the_interpreter_to_read() {
     with_observed_process(|process, observed| {
-        process.push_handler(Handler::Interpreter);
+        process.push_interpreter_handler();
         let value = atom(process, "boom");
         let value_ref = process.heap.box_any_value_ref(value);
 
         fz_panic(process, value_ref.raw_word());
 
         assert!(!process.failed);
-        assert!(process.handlers.is_empty());
+        assert!(process.handlers.depth() == 0);
         assert!(
             process.runnable_closure().is_none(),
             "the interpreter owns its own frames"
@@ -291,13 +301,14 @@ fn a_panic_under_an_interpreter_handler_leaves_the_raise_for_the_interpreter_to_
 fn a_panic_reaches_the_innermost_handler_and_leaves_the_outer_one_in_place() {
     with_observed_process(|process, observed| {
         let outer = handler_template(process);
-        process.push_handler(Handler::Closure(outer));
-        process.push_handler(Handler::Interpreter);
+        let outer = push_compiled(process, outer);
+        process.push_interpreter_handler();
         let value = exception(process, "Elixir.KeyError", "key :a not found");
 
         fz_panic(process, value.ref_word().raw_word());
 
-        assert_eq!(process.handlers, [Handler::Closure(outer)]);
+        assert_eq!(process.handlers.depth(), 1);
+        assert_eq!(process.handlers.innermost(), Some(Innermost::Compiled(outer)));
         assert!(
             process.raised.is_some(),
             "the interpreter marker, innermost, took the raise"
@@ -336,7 +347,7 @@ fn a_panic_reports_nothing_when_the_context_does_not_observe_raises() {
             ..ExecCtx::empty()
         };
         process.ctx = &mut ctx;
-        process.push_handler(Handler::Interpreter);
+        process.push_interpreter_handler();
         let value = atom(process, "boom");
         let value_ref = process.heap.box_any_value_ref(value);
 
@@ -361,7 +372,7 @@ fn pair(process: &mut Process, first: AnyValue, second: AnyValue) -> AnyValue {
 /// what the handler was delivered as its kind and value.
 fn delivered_by(process: &mut Process, value: AnyValue, raise: impl FnOnce(*mut Process, u64)) -> (AnyValue, AnyValue) {
     let template = handler_template(process);
-    process.push_handler(Handler::Closure(template));
+    push_compiled(process, template);
     let value_ref = process.heap.box_any_value_ref(value);
 
     raise(process, value_ref.raw_word());
@@ -581,7 +592,7 @@ fn a_raise_with_no_handler_and_no_message_prints_the_exception_as_a_value() {
 
 /// The fields of the exception a raise delivered to an interpreter handler.
 fn delivered_exception(process: &mut Process, raise: impl FnOnce(&mut Process)) -> AnyValue {
-    process.push_handler(Handler::Interpreter);
+    process.push_interpreter_handler();
     raise(process);
     let raised = process.raised.expect("the raise waits in the process");
     AnyValue::from_ref(raised.value).expect("exception")
@@ -643,7 +654,7 @@ fn undefined_function_raise(
     module_is_defined: bool,
 ) -> (AnyValue, String) {
     declare_undefined_call_exceptions(process);
-    process.push_handler(Handler::Interpreter);
+    process.push_interpreter_handler();
     let function = atom(process, function);
     raise_undefined_function(process, receiver, function, arity, module_is_defined);
     let raised = process.raised.take().expect("the raise waits in the process");
@@ -714,7 +725,7 @@ fn a_call_on_a_value_that_is_no_atom_raises_elixirs_argument_error() {
 #[test]
 fn the_extern_raise_finds_the_receiver_among_the_modules_that_lack_the_function() {
     with_observed_process(|process, _| {
-        process.push_handler(Handler::Interpreter);
+        process.push_interpreter_handler();
         let square = atom(process, "Elixir.Square");
         let circle = atom(process, "Elixir.Circle");
         let nope = atom(process, "nope");
@@ -755,14 +766,18 @@ fn a_halt_reports_its_status_and_ends_the_process_past_every_handler_without_a_l
         };
         process.ctx = &mut ctx;
         let handler = handler_template(process);
-        process.push_handler(Handler::Closure(handler));
+        push_compiled(process, handler);
 
         fz_system_halt(process, 3);
 
         assert_eq!(halts, [3], "the scheduler is told the program's status once");
         assert!(process.failed, "the process ends as an uncaught raise ends it");
         assert_eq!(process.exit_status, 3);
-        assert_eq!(process.handlers.len(), 1, "no handler is searched, so none is consumed");
+        assert_eq!(
+            process.handlers.depth(),
+            1,
+            "no handler is searched, so none is consumed"
+        );
         assert!(process.raised.is_none() && !process.has_delivered_handler());
     });
 }

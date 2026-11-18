@@ -1882,20 +1882,13 @@ fn native_terms_equal(left: &IrTerm, right: &IrTerm) -> bool {
                 handler: left_handler,
                 captures: left_captures,
                 body: left_body,
-                handler_diverges: left_diverges,
             },
             IrTerm::Try {
                 handler: right_handler,
                 captures: right_captures,
                 body: right_body,
-                handler_diverges: right_diverges,
             },
-        ) => {
-            left_handler == right_handler
-                && left_captures == right_captures
-                && left_body == right_body
-                && left_diverges == right_diverges
-        }
+        ) => left_handler == right_handler && left_captures == right_captures && left_body == right_body,
         (
             IrTerm::ReceiveMatched {
                 ident: left_ident,

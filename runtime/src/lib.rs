@@ -17,6 +17,7 @@ pub mod exec_ctx;
 pub mod extern_binary;
 pub mod failure;
 pub mod function_denotation;
+pub mod handler_stack;
 pub mod heap;
 pub mod ir_runtime;
 pub mod module_name;
