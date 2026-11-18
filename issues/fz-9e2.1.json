@@ -3,6 +3,7 @@
   "blocked_by": [],
   "blocks": [
     "fz-9e2.10",
+    "fz-9e2.11",
     "fz-9e2.5",
     "fz-9e2.6",
     "fz-9e2.7",
@@ -18,5 +19,5 @@
   "status": "open",
   "title": "Binary operations have hand-written optimal target listings and a probe harness in the repo",
   "type": "task",
-  "updated_at": "2026-11-18T21:21:38Z"
+  "updated_at": "2026-11-18T21:21:39Z"
 }

@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-9e2.1"
+  ],
   "blocks": [],
   "created": "2026-11-18T21:21:31Z",
   "description": "binary_part is the slice primitive, and String builds left to right.\n\nToday (compiler.md C11, C12, C13), verified on develop 37c5473cd, run, input 70k -\u003e 140k pieces:\n- String.join 2.1 -\u003e 14.8 s\n- String.replace 3.4 -\u003e 14.7 s\n- String.reverse 1.4 -\u003e 5.3 s\n\nCauses:\n- join is right-associative: head \u003c\u003e sep \u003c\u003e join(tail).\n- reverse does cp \u003c\u003e acc.\n- trim_trailing is reverse(trim_leading(reverse(s))).\n- last is first(reverse).\n- The \"slice by byte_size difference\" idiom is hand-written 5+ times (json, String, Integer.parse).\n- length makes about 7 allocations per grapheme through next_grapheme's head and rest.\n- take_bytes, drop_bytes and split_codepoint each match twice.\n\nFix:\n- Kernel.binary_part/3 is the one slice primitive (runtime Heap::slice from the decoder child) and replaces the idioms. The :erlang.binary_part/:binary.part exports stay in fz-mue.5/.6 (Elixir Parity); coordinate so there is one implementation.\n- String functions build left to right with an accumulator, or scan from the end with a cursor.\n- One next_codepoint_size/next_grapheme_size scan serves length, split and index_of.\n\nFolds fz-j8z: its blocker fz-sc8.30 is closed, and bit_size moved to fz-sc8.237.\n\nAsm first: target for binary_part on a small aligned slice (shares the slice target).\n\nAcceptance:\n- Each String function scales 2x for 2x input (fixture or bench timing).\n- No hand-written slice idiom remains in lib.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "binary_part is the slice primitive, and String builds left to right",
   "type": "task",
-  "updated_at": "2026-11-18T21:21:31Z"
+  "updated_at": "2026-11-18T21:21:39Z"
 }
