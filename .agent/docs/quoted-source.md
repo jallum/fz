@@ -177,9 +177,9 @@ authority. See [`canonical-form`](canonical-form.md#canonbackendprogram).
 - Compiler2 function surfaces are then composed back into first-class grouped
   quoted roots on that same heap:
   a logical function surface is a quoted list carrying attached `@doc` /
-  `@spec` items plus every grouped `def` / `defp` / `defmacro` clause, or a
-  single `extern` item surface. Definition extraction recognizes only `def`,
-  `defp`, and `defmacro` function heads.
+  `@spec` items plus every grouped `def` / `defp` / `defmacro` / `defmacrop`
+  clause, or a single `extern` item surface. Definition extraction recognizes
+  only `def`, `defp`, `defmacro` and `defmacrop` function heads.
 - Grouping is by `{name, arity}` and flushes at the same non-function
   boundaries the legacy item surface exposes.
 - A bare head such as `def answer do ... end` is represented by the ordinary

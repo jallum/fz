@@ -4,7 +4,7 @@ use std::collections::hash_map::Entry;
 use fz_runtime::any_value::AnyValueRef;
 use fz_runtime::process::AtomName;
 
-use crate::ast::{Attribute, TypeAliasDecl, TypeExprBody};
+use crate::ast::{Attribute, DefinitionForm, TypeAliasDecl, TypeExprBody};
 use crate::modules::identity::ModuleName;
 use crate::parser::lexer::{SourceWord, Tok};
 use crate::source::{SourceMap, Span};
@@ -21,8 +21,13 @@ pub struct ScopeSurface {
     pub forms: Vec<ScopeForm>,
 }
 
+/// Whether `head` names a macro definition (`defmacro` or `defmacrop`).
+pub(crate) fn is_macro_definition_head(head: &str) -> bool {
+    DefinitionForm::of(head).is_some_and(DefinitionForm::is_macro)
+}
+
 pub(crate) fn is_function_definition_head(head: &str) -> bool {
-    matches!(head, "def" | "defp" | "defmacro")
+    DefinitionForm::of(head).is_some()
 }
 
 pub(crate) fn is_scope_definition_head(head: &str) -> bool {
@@ -687,8 +692,8 @@ fn parse_function_form(
         source,
         name: name.to_string(),
         arity,
-        is_macro: head == "defmacro",
-        is_private: head == "defp",
+        is_macro: is_macro_definition_head(&head),
+        is_private: DefinitionForm::of(&head).is_some_and(DefinitionForm::is_private),
         variadic: false,
         span,
     })
@@ -728,7 +733,7 @@ fn clause_group_key(
     let key = match context {
         FunctionFormContext::Definition => match node.tail.list_pair()? {
             Some((function_head, body)) if is_function_body_keyword(&body) => {
-                parse_function_head_key(&function_head, head == "defmacro", sources)
+                parse_function_head_key(&function_head, is_macro_definition_head(&head), sources)
                     .map_err(|error| QuotedSourceError::new(format!("invalid `{head}` function head: {error}")))
             }
             _ => Err(QuotedSourceError::new(format!(
@@ -992,7 +997,7 @@ fn parse_function_group_key(
             "quoted function clause is missing its head expression",
         ));
     };
-    parse_function_head_key(&head, definition_head == "defmacro", sources)
+    parse_function_head_key(&head, is_macro_definition_head(&definition_head), sources)
 }
 
 /// Whether `source` is a `def`, `defp` or `defmacro`: a form
@@ -1014,7 +1019,7 @@ pub(crate) fn reserved_source_definition(
             Some(ReservedSourceDefinition::Function {
                 name: name.to_string(),
                 arity,
-                is_macro: head == "defmacro",
+                is_macro: is_macro_definition_head(head),
             })
         }
         "defmodule" => {

@@ -70,10 +70,10 @@ There is one important sub-case inside the eager bucket — and one origin
 exception:
 
 - `runtime.fz` defines the compiler-owned definition macros `def`, `defp`,
-  `defmacro`, `defmodule`, `defprotocol`, and `defimpl`.
-- `def` and `defp` are ordinary identifier calls at the lexer and front door;
-  neither has a token kind or a definition-specific item parser. Their runtime
-  macros forward the untouched grouped clause root and `__CALLER__` to
+  `defmacro`, `defmacrop`, `defmodule`, `defprotocol`, and `defimpl`.
+- `def`, `defp` and `defmacrop` are ordinary identifier calls at the lexer and
+  front door; none has a token kind or a definition-specific item parser. Their
+  runtime macros forward the untouched grouped clause root and `__CALLER__` to
   `Fz.Compiler.define`.
 - In ordinary (user) source there is exactly one read: a def-head parses to a
   `MacroCall` (`build_form` in `quoted_surface.rs`), and its structure emerges
@@ -86,6 +86,13 @@ exception:
   are defined *in* the bootstrap and so cannot be bounced through. Post-expansion
   content (a `Fz.Compiler.define` payload, item-macro output, protocol/impl
   bodies) is canonical the same way.
+- `DefinitionForm` (`src/ast`) is the one reading of a definition keyword,
+  and `TryForm::Definition` carries it for a definition read as an implicit
+  `try`: `defmacro` and `defmacrop` define macros, `defp` and
+  `defmacrop` define functions private to their module. A private macro
+  expands wherever its own module calls it and is left out of the module's
+  exported interface, so a call from another module is refused as a call to a
+  `defp` is (`01783`, `01784`).
 
 ## What Source Publication Owns
 
