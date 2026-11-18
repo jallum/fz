@@ -1,24 +1,15 @@
 #---
-# purpose: "A map pattern's binary key reaches the process heap only where a clause reads it"
+# purpose: "A map pattern's short binary key is read-only data, so deciding a head against it copies nothing onto the process heap"
 #---
 #
-# A map pattern keyed by a binary -- `%{"key" => value}` -- is decided against a
-# copy of those bytes on the process heap. `describe/1` is called only with
-# tuples, so its first clause answers every call and the map clause is never
-# reached. The values come out of the mailbox, so each call is decided at run
-# time against the whole head.
+# A map pattern keyed by a binary -- `%{"key" => value}` -- is decided against
+# those bytes. `describe/1` is called only with tuples, so its first clause
+# answers every call and the map clause is never reached. The values come out
+# of the mailbox, so each call is decided at run time against the whole head.
 #
-# A map pattern's key is the one binary constant a plan prepares; a binary a
-# guard compares against is built where it is asked, on every evaluation.
-#
-# `bitstring_allocs` counts the copies the three calls made, and each path owns
-# its own count:
-#
-# - `interp` decides the head through the dispatch plan and builds a prepared
-#   key the first time a question reads it, so the key no call reaches is never
-#   copied: `0`.
-# - `run` and `build` lower the key as a constant at the head of the function,
-#   which is one copy per call: `3`.
+# The key is a short binary literal, which is read-only data the program ships,
+# so no path copies it onto the process heap. `bitstring_allocs` counts the
+# copies the three calls made: `0`.
 def describe({a, b}), do: a + b
 def describe(%{"key" => value}), do: value
 def describe(_), do: 0

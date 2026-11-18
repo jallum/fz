@@ -1201,11 +1201,15 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     bind_local_value(ctx, executable, env, *value, NativeBoundValue::Absent);
                 }
                 BackendStep::Const { value, literal } => {
-                    if let GroundValue::Int(bits) = literal {
+                    if let LiteralTerm::Ground(GroundValue::Int(bits)) = literal {
                         known_positions.extend(u64::try_from(*bits).ok().map(|bits| (*value, bits)));
                     }
-                    let var = lower_backend_literal(ctx, &self.atom_ids, self.world.types_mut(), literal)?;
-                    self.bind_runtime_value(ctx, executable, env, *value, var);
+                    let layout = executable.abi.value_layouts.get(value).map(|layout| TransportLayout {
+                        structural: layout.structural,
+                        carrier: layout.carrier,
+                    });
+                    let bound = self.literal_bound(ctx, executable, literal, layout)?;
+                    bind_local_value(ctx, executable, env, *value, bound);
                 }
                 BackendStep::Tuple { value, items } => {
                     for item in items {
@@ -1503,7 +1507,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 }
                 BackendStep::RequireMapValue { value, source, key } => {
                     let source = self.env_runtime_var(ctx, executable, env, *source);
-                    let key = lower_backend_literal(ctx, &self.atom_ids, self.world.types_mut(), key)?;
+                    let key = self.ground_var(ctx, key);
                     let (var, _) = ctx.emit_let(Prim::MatcherMapGet(source, key));
                     self.bind_runtime_value(ctx, executable, env, *value, var);
                 }
@@ -3187,39 +3191,89 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         Ok(())
     }
 
+    /// `term` as `layout` carries it. A tuple whose layout spreads its fields
+    /// over lanes is encoded field by field, as a tuple step is, so no tuple
+    /// is built only to be taken apart; every other term is built whole.
+    fn literal_bound(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        executable: &BackendExecutable,
+        term: &LiteralTerm,
+        layout: Option<TransportLayout>,
+    ) -> Result<NativeBoundValue, FatalError> {
+        let spread = layout.filter(|layout| {
+            self.world.tuple_arity(layout.structural).is_some()
+                && !matches!(layout.carrier, super::super::pull::TransportCarrier::ValueRef(_))
+        });
+        let (LiteralTerm::Tuple(items), Some(layout)) = (term, spread) else {
+            return Ok(NativeBoundValue::Runtime(self.literal_var(ctx, term)));
+        };
+        let shape = layout.structural;
+        if self.world.tuple_arity(shape) != Some(items.len()) {
+            return Err(FatalError);
+        }
+        let mut lanes = Vec::new();
+        for (index, item) in items.iter().enumerate() {
+            let field_layout = self.field_layout(shape, index);
+            if self.world.layout_width(field_layout) == 0 {
+                continue;
+            }
+            let item = self.literal_bound(ctx, executable, item, Some(field_layout))?;
+            self.encode_transport_layout(ctx, executable, None, &item, field_layout, &mut lanes)?;
+        }
+        Ok(NativeBoundValue::Transport { shape, lanes })
+    }
+
     /// Builds `term` and answers the value it is.
-    fn literal_var(&self, ctx: &mut NativeFnCtx, term: &LiteralTerm) -> Var {
-        let mut all =
-            |items: &[LiteralTerm]| -> Vec<Var> { items.iter().map(|item| self.literal_var(ctx, item)).collect() };
+    fn literal_var(&mut self, ctx: &mut NativeFnCtx, term: &LiteralTerm) -> Var {
         let prim = match term {
-            LiteralTerm::Ground(value) => self.ground_prim(value),
-            LiteralTerm::Function { .. } => unreachable!("`LastResort::struct_fields` refuses a function"),
-            LiteralTerm::List(items) => Prim::MakeList(all(items), None, None),
-            LiteralTerm::Tuple(items) => Prim::MakeTuple(all(items)),
+            LiteralTerm::Ground(value) => return self.ground_var(ctx, value),
+            LiteralTerm::Function { .. } => unreachable!("neither a constant nor a raised field holds a function"),
+            LiteralTerm::List(items) => {
+                let items = items.iter().map(|item| self.literal_var(ctx, item)).collect();
+                Prim::MakeList(items, None, None)
+            }
+            LiteralTerm::Tuple(items) => {
+                let items = items.iter().map(|item| self.literal_var(ctx, item)).collect();
+                Prim::MakeTuple(items)
+            }
             LiteralTerm::Map(entries) => {
-                let (mut map, _) = ctx.emit_let(Prim::DestMapBegin(DestMapSeed::Capacity(entries.len())));
-                for (key, value) in entries {
+                let in_key_order = LiteralTerm::entries_in_key_order(entries);
+                let written = in_key_order.clone().unwrap_or_else(|| entries.iter().collect());
+                let (mut map, _) = ctx.emit_let(Prim::DestMapBegin(DestMapSeed::Capacity(written.len())));
+                for (key, value) in written {
                     let (key, value) = (self.literal_var(ctx, key), self.literal_var(ctx, value));
                     map = ctx.emit_map_put(map, key, value);
                 }
-                Prim::DestMapFreeze(map)
+                match in_key_order {
+                    Some(_) => Prim::DestMapPublish(map),
+                    None => Prim::DestMapFreeze(map),
+                }
             }
         };
         ctx.emit_let(prim).0
     }
 
-    /// The constant that is `value`. `nil`, `true` and `false` are atoms.
-    fn ground_prim(&self, value: &GroundValue) -> Prim {
-        match value {
-            GroundValue::Int(value) => Prim::Const(Const::Int(*value)),
-            GroundValue::Float(bits) => Prim::Const(Const::Float(f64::from_bits(*bits))),
-            GroundValue::Atom(name) => Prim::Const(Const::Atom(self.atom_id(name))),
-            GroundValue::Nil => Prim::Const(Const::Atom(self.atom_id("nil"))),
-            GroundValue::Bool(value) => Prim::Const(Const::Atom(self.atom_id(if *value { "true" } else { "false" }))),
+    /// The constant that is `value`. Its known type travels with it: a later
+    /// comparison against a raw atom or int then takes the fast path that
+    /// needs no boxed scalar.
+    fn ground_var(&mut self, ctx: &mut NativeFnCtx, value: &GroundValue) -> Var {
+        let (prim, ty) = match value {
+            GroundValue::Int(value) => (Const::Int(*value), self.world.types_mut().int()),
+            GroundValue::Float(bits) => (Const::Float(f64::from_bits(*bits)), self.world.types_mut().float()),
+            GroundValue::Atom(name) => (Const::Atom(self.atom_id(name)), self.world.types_mut().atom()),
+            GroundValue::Bool(true) => (Const::True, self.world.types_mut().bool()),
+            GroundValue::Bool(false) => (Const::False, self.world.types_mut().bool()),
+            GroundValue::Nil => (Const::Nil, self.world.types_mut().nil()),
             GroundValue::Binary(bytes) | GroundValue::Utf8Binary(bytes) => {
-                Prim::ConstBitstring(bytes.clone(), 8 * bytes.len() as u64)
+                return ctx
+                    .emit_let(Prim::ConstBitstring(bytes.clone(), 8 * bytes.len() as u64))
+                    .0;
             }
-        }
+        };
+        let var = ctx.emit_let(Prim::Const(prim)).0;
+        ctx.value_types.insert(var, ty);
+        var
     }
 
     fn lower_dispatch_node(
@@ -5992,58 +6046,11 @@ fn collect_extern_marshals_for_call_target(
     Ok(())
 }
 
-/// Lower a compile-time literal to a fresh `Var` holding its `Prim::Const`.
-///
-/// This `Var` never flows through type inference (it has no `ValueId`), so
-/// without registering its `Ty` here, every downstream codegen fast path
-/// gated on `value_types` (equality, ordering, arithmetic dispatch) sees it
-/// as untyped `any()` and falls back to the generic boxed slow path — e.g.
-/// comparing a pattern-match tag against a literal atom like `:cont` boxed
-/// the tag into a heap scalar on every check instead of taking the raw-atom
-/// `icmp` fast path. Registering the literal's known type here is what lets
-/// those fast paths recognize it.
-fn lower_backend_literal(
-    ctx: &mut NativeFnCtx,
-    atom_ids: &HashMap<AtomName, u32>,
-    types: &mut Types,
-    literal: &GroundValue,
-) -> Result<Var, FatalError> {
-    use crate::ground_value::BodyLiteral;
-    let (var, ty) = match literal
-        .as_body_literal()
-        .expect("lower_backend_literal only ever sees a lowered-body literal")
-    {
-        BodyLiteral::Int(value) => (ctx.emit_let(Prim::Const(Const::Int(value))).0, types.int()),
-        BodyLiteral::Float(bits) => (
-            ctx.emit_let(Prim::Const(Const::Float(f64::from_bits(bits)))).0,
-            types.float(),
-        ),
-        BodyLiteral::Atom(name) => (
-            ctx.emit_let(Prim::Const(Const::Atom(*atom_ids.get(name).ok_or(FatalError)?)))
-                .0,
-            types.atom(),
-        ),
-        BodyLiteral::Bool(value) => (
-            ctx.emit_let(Prim::Const(if value { Const::True } else { Const::False }))
-                .0,
-            types.bool(),
-        ),
-        BodyLiteral::Nil => (ctx.emit_let(Prim::Const(Const::Nil)).0, types.nil()),
-        BodyLiteral::Binary(bytes) => {
-            return Ok(ctx
-                .emit_let(Prim::ConstBitstring(bytes.to_vec(), (bytes.len() * 8) as u64))
-                .0);
-        }
-    };
-    ctx.value_types.insert(var, ty);
-    Ok(var)
-}
-
 /// Lower a dispatch-matrix clause-selector constant (the compile-time value
 /// a multi-clause function's argument is tested against, e.g. the `:cont`
 /// in a `{:cont, acc}` clause head) to a fresh `Var`.
 ///
-/// See `lower_backend_literal`'s doc comment: this `Var` has no `ValueId`
+/// As in `ground_var`: this `Var` has no `ValueId`
 /// and so never appears in type inference's `value_types`. Registering its
 /// `Ty` here is what lets `lower_eq_binop`'s same-kind fast paths recognize
 /// it instead of falling back to the generic boxed `fz_value_eq_ref` path —

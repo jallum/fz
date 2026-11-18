@@ -22,6 +22,7 @@ use crate::fz_ir::{
     ReceiveClause as IrReceiveClause, Stmt as IrStmt, Term as IrTerm, Var,
 };
 use crate::ground_value::GroundValue;
+use crate::literal_term::LiteralTerm;
 use crate::runtime_type_predicate::CallableShape;
 use crate::source::Span;
 use fz_runtime::process::AtomName;
@@ -1478,7 +1479,7 @@ pub enum BackendStep {
     },
     Const {
         value: ValueId,
-        literal: GroundValue,
+        literal: LiteralTerm,
     },
     Tuple {
         value: ValueId,

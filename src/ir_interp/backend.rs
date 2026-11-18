@@ -8,8 +8,8 @@ use super::dispatch_exec::{Dispatch, DispatchInputs, DispatchSource, dispatch_va
 use super::extern_call::{ExternCallValue, call_lowered_extern};
 use super::prim::{interp_list_cons, interp_list_head, interp_list_tail, interp_map_get};
 use super::value::{
-    AnyValue, HeapRef, interp_bool_value, interp_empty_list_value, interp_named_field, interp_nil_value,
-    interp_read_bit_field, interp_value_from_ref_word, with_value_ref,
+    AnyValue, HeapRef, binary_literal_value, interp_bool_value, interp_empty_list_value, interp_named_field,
+    interp_nil_value, interp_read_bit_field, interp_value_from_ref_word, with_value_ref,
 };
 use super::*;
 use crate::compiler2::pull::TransportCarrier;
@@ -1792,7 +1792,12 @@ fn eval_steps<T: Telemetry + ?Sized>(
                 assert!(frame.handler, "the frame a try body pops is its handler frame");
             }
             ProgramStep::Const { value, literal } => {
-                env.insert(*value, BackendBoundValue::Runtime(literal_value(runtime, literal)?));
+                let layout = executable.abi.value_layouts.get(value).map(|layout| TransportLayout {
+                    structural: layout.structural,
+                    carrier: layout.carrier,
+                });
+                let bound = literal_term_bound(transport, program, runtime, literal, layout)?;
+                env.insert(*value, bound);
             }
             ProgramStep::Tuple { value, items } => {
                 let bound = tuple_step_value(transport, program, runtime.cur_proc(), executable, env, *value, items)?;
@@ -3783,13 +3788,53 @@ fn publish_runtime_value(proc: *mut Process, value: AnyValue) -> Result<AnyValue
     )
 }
 
+/// `term` as `layout` carries it. A tuple whose layout spreads its fields over
+/// lanes is encoded field by field, as a tuple step is, so no tuple is built
+/// only to be taken apart; every other term is built whole.
+fn literal_term_bound(
+    transport: &TransportStore,
+    program: &BackendProgram,
+    runtime: &mut IrInterpRuntime,
+    term: &LiteralTerm,
+    layout: Option<TransportLayout>,
+) -> Result<BackendBoundValue, String> {
+    let spread = layout.filter(|layout| {
+        !layout.carrier.is_value_ref() && transport.interners().tuple_arity(layout.structural).is_some()
+    });
+    let (LiteralTerm::Tuple(items), Some(layout)) = (term, spread) else {
+        return Ok(BackendBoundValue::Runtime(literal_term_value(runtime, term)?));
+    };
+    let fields = transport
+        .interners()
+        .field_layouts(layout.structural)
+        .expect("a tuple shape has fields");
+    if fields.len() != items.len() {
+        return Err(format!(
+            "a constant tuple of {} item(s) has a layout shape of {} field(s)",
+            items.len(),
+            fields.len()
+        ));
+    }
+    let mut lanes = Lanes::new();
+    for (item, field_layout) in items.iter().zip(fields.iter().copied()) {
+        if transport.interners().layout_width(field_layout) != 0 {
+            let bound = literal_term_bound(transport, program, runtime, item, Some(field_layout))?;
+            encode_transport_layout(transport, program, runtime.cur_proc(), &bound, field_layout, &mut lanes)?;
+        }
+    }
+    Ok(BackendBoundValue::Transport {
+        shape: layout.structural,
+        lanes: lanes.into_vec(),
+    })
+}
+
 /// Builds `term` on the current process's heap.
 fn literal_term_value(runtime: &mut IrInterpRuntime, term: &LiteralTerm) -> Result<AnyValue, String> {
     const CONTEXT: &str = "literal term";
     let proc = runtime.cur_proc();
     match term {
         LiteralTerm::Ground(value) => literal_value(runtime, value),
-        LiteralTerm::Function { .. } => unreachable!("`LastResort::struct_fields` refuses a function"),
+        LiteralTerm::Function { .. } => unreachable!("neither a constant nor a raised field holds a function"),
         LiteralTerm::List(items) => items.iter().rev().try_fold(interp_empty_list_value(), |tail, item| {
             interp_list_cons(proc, literal_term_value(runtime, item)?, tail, CONTEXT)
         }),
@@ -3801,12 +3846,18 @@ fn literal_term_value(runtime: &mut IrInterpRuntime, term: &LiteralTerm) -> Resu
             make_tuple_on_proc(proc, items)
         }
         LiteralTerm::Map(entries) => {
-            let mut dest = fz_map_dest_begin(proc, entries.len() as u32);
-            for (key, value) in entries {
+            let in_key_order = LiteralTerm::entries_in_key_order(entries);
+            let written = in_key_order.clone().unwrap_or_else(|| entries.iter().collect());
+            let mut dest = fz_map_dest_begin(proc, written.len() as u32);
+            for (key, value) in written {
                 let (key, value) = (literal_term_value(runtime, key)?, literal_term_value(runtime, value)?);
                 dest = interp_map_dest_put(proc, dest, key, value, CONTEXT)?;
             }
-            interp_value_from_ref_word(fz_map_dest_freeze(proc, dest), CONTEXT)
+            let map = match in_key_order {
+                Some(_) => fz_map_dest_publish(proc, dest),
+                None => fz_map_dest_freeze(proc, dest),
+            };
+            interp_value_from_ref_word(map, CONTEXT)
         }
     }
 }
@@ -3823,15 +3874,7 @@ fn literal_value(
         {
             BodyLiteral::Int(value) => AnyValue::Int(value),
             BodyLiteral::Float(bits) => AnyValue::Float(f64::from_bits(bits)),
-            BodyLiteral::Binary(value) => {
-                let ref_word = fz_runtime::ir_runtime::fz_alloc_bitstring_const(
-                    runtime.cur_proc(),
-                    value.as_ptr() as u64,
-                    value.len() as u64,
-                    (value.len() * 8) as u64,
-                );
-                interp_value_from_ref_word(ref_word, "backend binary literal")?
-            }
+            BodyLiteral::Binary(value) => binary_literal_value(runtime.cur_proc(), value)?,
             BodyLiteral::Atom(name) => AnyValue::Atom(runtime.node.intern_atom(name)),
             BodyLiteral::Bool(value) => interp_bool_value(value),
             BodyLiteral::Nil => interp_nil_value(),

@@ -255,7 +255,7 @@ fn entry_dispatch_decides_a_lane_form_tuple_from_its_lanes() {
         physical_params: Vec::new(),
         steps: vec![BackendStep::Const {
             value: result,
-            literal: crate::ground_value::GroundValue::Int(42),
+            literal: crate::ground_value::GroundValue::Int(42).into(),
         }],
         tail: BackendTail::Value {
             value: result,

@@ -548,8 +548,8 @@ fn compiler2_tuple_ownership_transfers_disjoint_fields_and_shares_old_owners() {
 /// Ownership construction reads the body a fixed number of times, whatever it
 /// finds there.
 ///
-/// A body of fifty nested tuple literals gives the tuple pass three hundred
-/// items to decide, and each decision asks where a value is defined and
+/// A body of fifty nested tuples that each hold a variable gives the tuple
+/// pass two hundred items to decide, and each decision asks where a value is defined and
 /// whether a later step still wants it. Answered by searching the body, those
 /// questions cost a walk apiece and the pass grows with the cube of the
 /// constructions; answered from the body's tables they cost a lookup, and the
@@ -558,9 +558,9 @@ fn compiler2_tuple_ownership_transfers_disjoint_fields_and_shares_old_owners() {
 /// never a multiple of the constructions.
 #[test]
 fn compiler2_tuple_ownership_reads_the_body_a_fixed_number_of_times() {
-    let mut text = String::from("def main() do\n");
+    let mut text = String::from("def main() do\n  n = 1\n");
     for index in 1..=50 {
-        text.push_str(&format!("  x{index} = {{{{1, 2}}, {{3, 4}}}}\n"));
+        text.push_str(&format!("  x{index} = {{{{n, 2}}, {{3, 4}}}}\n"));
     }
     let bindings = (1..=50).map(|index| format!("x{index}")).collect::<Vec<_>>();
     text.push_str(&format!("  [{}]\nend\n", bindings.join(", ")));
@@ -582,14 +582,14 @@ fn compiler2_tuple_ownership_reads_the_body_a_fixed_number_of_times() {
     assert_resolved(compiler.drive(), "function identities");
     let main = function_id(&functions, "main", 0);
     compiler.demand(Job::LowerFunction(main));
-    assert_resolved(compiler.drive(), "fifty nested tuple literals lower");
+    assert_resolved(compiler.drive(), "fifty nested tuples lower");
 
     let LoweredBody::Clauses { entries, .. } = lowered_body(&bodies, main);
 
     let steps = entries.iter().map(|entry| entry.steps.len()).sum::<usize>();
     assert_eq!(
-        steps, 351,
-        "fifty nested tuple literals lower to four constants and three tuples each, plus the list that uses them"
+        steps, 202,
+        "fifty nested tuples lower to two constants and two tuples each, plus `n` and the list that uses them"
     );
 
     let scanned = capture
@@ -615,10 +615,14 @@ fn compiler2_tuple_ownership_reads_the_body_a_fixed_number_of_times() {
 ///
 /// Each line builds a tuple around a list of strings and a keyword list of
 /// keyword lists, so every line adds tuples, cells and the later uses they
-/// must be set against.
+/// must be set against. Every literal holds the result of a call, so none
+/// of them is a constant and no two lines share a value.
 fn pairs_compared_by_literal_lines(lines: usize) -> u64 {
-    let line = "  dbg({[\"-abc\", \"f\"], [strict: [alpha: :boolean, beta: :boolean, gamma: :boolean], aliases: [a: :alpha, b: :beta, c: :gamma]]})\n";
-    pairs_compared_lowering_main(format!("def main() do\n{}end\n", line.repeat(lines)))
+    let line = "  dbg({[\"-abc\", kind()], [strict: [alpha: kind(), beta: kind(), gamma: kind()], aliases: [a: kind(), b: :beta, c: :gamma]]})\n";
+    pairs_compared_lowering_main(format!(
+        "def kind(), do: :boolean\ndef main() do\n{}end\n",
+        line.repeat(lines)
+    ))
 }
 
 /// The ownership pairs a chain of `depth` nested pairs compares: each pair
@@ -16509,11 +16513,11 @@ end
     assert_eq!(
         (run.live_count, run.bytes_used),
         // `dbg` renders the tuple into a binary on the process heap before
-        // writing it: three more objects, eighty more bytes over the program's
-        // own (6, 160), none of them list conses. Resuming frames that are the
-        // newest heap object are given back; two resume under a newer object
-        // and stay on the heap: two more objects, 64 more bytes.
-        (11, 304),
+        // writing it: two more objects, sixty-four more bytes over the
+        // program's own (6, 160), none of them list conses. Resuming frames
+        // that are the newest heap object are given back; two resume under a
+        // newer object and stay on the heap: two more objects, 64 more bytes.
+        (10, 288),
         "preserving the source list type avoids a redundant 16-byte cons"
     );
     assert!(run.source_and_rebuild_share_return);
@@ -16573,6 +16577,112 @@ def main(), do: spin({iterations}, 0)
         (yields_often.live_count, yields_often.bytes_used),
         (never_yields.live_count, never_yields.bytes_used),
         "every yield frame was given back when its loop resumed"
+    );
+}
+
+/// The kinds of step `name/arity` of module `B` in `source` lowers to, in
+/// order, across its entries.
+fn step_kinds_of(source: &str, name: &str, arity: usize) -> Vec<&'static str> {
+    let tel = ConfiguredTelemetry::new();
+    let bodies = LoweredBodyCapture::new();
+    bodies.install(&tel);
+    let mut world = crate::compiler2::World::new();
+    let source_owner = world.submit_code(Some("step_kinds.fz".to_string()), source.to_string());
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "the module is indexed",
+    );
+    assert!(world.demand(Job::ScopeCode(source_owner)));
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "the module is scoped",
+    );
+    let module = world.reference_module(module_name("B"));
+    let function = world.reference_function(module, name, arity);
+    assert!(world.demand(Job::LowerFunction(function)));
+    assert_resolved(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        "the function lowers",
+    );
+    let LoweredBody::Clauses { entries, .. } = lowered_body(&bodies, function);
+    entries
+        .iter()
+        .flat_map(|entry| entry.steps.iter())
+        .map(|step| match step {
+            LoweredStep::Const { .. } => "const",
+            LoweredStep::Tuple { .. } => "tuple",
+            LoweredStep::List { .. } => "list",
+            LoweredStep::Map { .. } => "map",
+            _ => "other",
+        })
+        .collect()
+}
+
+/// A list, tuple or map written entirely out of constants is one constant: its
+/// value is known where the source is read, so its parts are not steps. A
+/// literal that holds a variable is still built from its parts.
+#[test]
+fn compiler2_a_literal_made_of_constants_lowers_as_one_constant() {
+    let kinds = step_kinds_of(
+        r#"
+defmodule B do
+  def table(x), do: {[a: 1, b: {2, "two"}], %{k: [nil, true]}, [], [x]}
+end
+"#,
+        "table",
+        1,
+    );
+    assert_eq!(
+        kinds,
+        ["const", "const", "const", "list", "tuple"],
+        "three constant items, then `[x]` and the tuple that holds a variable"
+    );
+}
+
+/// Everything in a quote except what it unquotes is constant. A quote with no
+/// `unquote` is one constant, and one with an `unquote` builds only the nodes
+/// above it.
+#[test]
+fn compiler2_a_quote_builds_only_the_nodes_above_an_unquote() {
+    let source = r#"
+defmodule B do
+  defmacro fixed(), do: quote(do: wrap(1, [2, 3]))
+  defmacro around(x), do: quote(do: wrap(unquote(x), [2, 3]))
+end
+"#;
+    assert_eq!(step_kinds_of(source, "fixed", 0), ["const"]);
+    assert_eq!(
+        step_kinds_of(source, "around", 1),
+        ["const", "list", "const", "const", "tuple"],
+        "`[2, 3]`, the head and the metadata are constants; the argument list and the node hold the unquoted value"
+    );
+}
+
+/// A short string literal is read-only data the program ships, so naming it
+/// allocates nothing however often the code that names it runs.
+#[test]
+fn compiler2_a_short_string_literal_allocates_nothing() {
+    let bitstring_allocs_for = |turns: u32| {
+        exit_after_running(&format!(
+            r#"
+def greet(0, last), do: byte_size(last)
+def greet(n, _), do: greet(n - 1, "hello")
+
+def main() do
+  first = Map.get(Process.heap_alloc_stats(), :bitstring_allocs, 0)
+  size = greet({turns}, "")
+  last = Map.get(Process.heap_alloc_stats(), :bitstring_allocs, 0)
+  if size == 5, do: last - first, else: -1
+end
+"#
+        ))
+        .halt_value
+    };
+
+    assert_eq!(
+        (bitstring_allocs_for(10), bitstring_allocs_for(1_000)),
+        (0, 0),
+        "the literal is one object in the program's data, whether it is named 10 times or 1,000"
     );
 }
 

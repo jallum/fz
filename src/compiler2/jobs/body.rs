@@ -24,6 +24,7 @@ use fz_runtime::any_value::ValueKind;
 
 use crate::function_surface::FunctionSurface;
 use crate::ground_value::GroundValue;
+use crate::literal_term::LiteralTerm;
 use crate::modules::identity::{ModuleDenotation, ModuleName};
 use crate::source::{SourceMap, Span};
 
@@ -179,7 +180,7 @@ const STACKTRACE_OUTSIDE_A_HANDLER_CLAUSE: &str =
 enum ExprStep {
     Const {
         value: ValueId,
-        literal: GroundValue,
+        literal: LiteralTerm,
     },
     Tuple {
         value: ValueId,
@@ -986,9 +987,6 @@ struct QuoteLowerer<'a, 'w, 'tel, 'f, 'env, 'steps, 'q, T: crate::telemetry::Tel
     /// how many have been taken so far.
     splices: &'q [Spanned<Expr>],
     next_splice: usize,
-    /// The metadata key atoms this quote has pushed. The quote's steps are one
-    /// straight-line sequence, so a key pushed once serves every later node.
-    meta_keys: HashMap<&'static str, ValueId>,
 }
 
 impl<'a, 'w, 'tel, 'f, 'env, 'steps, 'q, T: crate::telemetry::Telemetry>
@@ -1006,7 +1004,6 @@ impl<'a, 'w, 'tel, 'f, 'env, 'steps, 'q, T: crate::telemetry::Telemetry>
             steps,
             splices,
             next_splice: 0,
-            meta_keys: HashMap::default(),
         }
     }
 
@@ -1015,11 +1012,23 @@ impl<'a, 'w, 'tel, 'f, 'env, 'steps, 'q, T: crate::telemetry::Telemetry>
     /// `{head, meta, args}` node either splices an `unquote`, binds a call to
     /// its callable, or builds a variable reference. One case per shape, not
     /// one per language construct, so anything Elixir can quote, fz can too.
+    ///
+    /// Everything but an `unquote` is known here, so a subtree that holds none
+    /// is one constant and only the nodes above an `unquote` are built.
     fn lower(&mut self, cursor: &QuotedSourceCursor, sources: &SourceMap) -> Result<ValueId, FatalError> {
+        let quoted = self.quoted(cursor, sources)?;
+        Ok(self.value(quoted))
+    }
+
+    fn quoted(&mut self, cursor: &QuotedSourceCursor, sources: &SourceMap) -> Result<Quoted, FatalError> {
         match self.ast_node(cursor, sources)? {
             Some(node) => self.lower_ast_node(&node, sources),
             None => self.lower_literal(cursor, sources),
         }
+    }
+
+    fn each_quoted(&mut self, cursors: &[QuotedSourceCursor], sources: &SourceMap) -> Result<Vec<Quoted>, FatalError> {
+        cursors.iter().map(|cursor| self.quoted(cursor, sources)).collect()
     }
 
     fn ast_node(&self, cursor: &QuotedSourceCursor, sources: &SourceMap) -> Result<Option<QuotedAstNode>, FatalError> {
@@ -1030,59 +1039,50 @@ impl<'a, 'w, 'tel, 'f, 'env, 'steps, 'q, T: crate::telemetry::Telemetry>
         emit_surface_read_error(self.lowerer.telemetry, "compiler2 quote lowering", &error)
     }
 
-    fn lower_literal(&mut self, cursor: &QuotedSourceCursor, sources: &SourceMap) -> Result<ValueId, FatalError> {
-        match cursor.root().tag() {
-            ValueKind::INT => {
-                let value = cursor.int_value().map_err(|error| self.surface_error(error))?;
-                Ok(self.lowerer.push_const(self.steps, GroundValue::Int(value)))
-            }
-            ValueKind::FLOAT => {
-                let value = cursor
+    fn lower_literal(&mut self, cursor: &QuotedSourceCursor, sources: &SourceMap) -> Result<Quoted, FatalError> {
+        let ground = match cursor.root().tag() {
+            ValueKind::INT => GroundValue::Int(cursor.int_value().map_err(|error| self.surface_error(error))?),
+            ValueKind::FLOAT => GroundValue::from_f64(
+                cursor
                     .root()
                     .load_float()
-                    .map_err(|error| self.surface_error(error.into()))?;
-                Ok(self.lowerer.push_const(self.steps, GroundValue::from_f64(value)))
-            }
+                    .map_err(|error| self.surface_error(error.into()))?,
+            ),
             ValueKind::ATOM => {
                 let atom = cursor.atom_name().map_err(|error| self.surface_error(error))?;
-                let literal = match atom.as_str() {
+                match atom.as_str() {
                     "true" => GroundValue::Bool(true),
                     "false" => GroundValue::Bool(false),
                     "nil" => GroundValue::Nil,
                     _ => GroundValue::Atom(atom.to_string()),
-                };
-                Ok(self.lowerer.push_const(self.steps, literal))
+                }
             }
             ValueKind::BITSTRING | ValueKind::BINVIEW => {
-                let bytes = cursor.raw_bytes().map_err(|error| self.surface_error(error))?;
-                Ok(self.lowerer.push_const(self.steps, GroundValue::Binary(bytes)))
+                GroundValue::Binary(cursor.raw_bytes().map_err(|error| self.surface_error(error))?)
             }
             ValueKind::LIST => {
                 let items = cursor.list_items().map_err(|error| self.surface_error(error))?;
-                let values = items
-                    .iter()
-                    .map(|item| self.lower(item, sources))
-                    .collect::<Result<Vec<_>, _>>()?;
-                Ok(self.push_list(values, None))
+                let items = self.each_quoted(&items, sources)?;
+                return Ok(self.list(items));
             }
             ValueKind::STRUCT => {
                 let items = cursor.tuple_items().map_err(|error| self.surface_error(error))?;
-                let values = items
-                    .iter()
-                    .map(|item| self.lower(item, sources))
-                    .collect::<Result<Vec<_>, _>>()?;
-                Ok(self.push_tuple(values))
+                let items = self.each_quoted(&items, sources)?;
+                return Ok(self.tuple(items));
             }
-            other => Err(self.surface_error(QuotedSourceError::new(format!(
-                "unsupported quoted source runtime kind {other:?}"
-            )))),
-        }
+            other => {
+                return Err(self.surface_error(QuotedSourceError::new(format!(
+                    "unsupported quoted source runtime kind {other:?}"
+                ))));
+            }
+        };
+        Ok(Quoted::Constant(ground.into()))
     }
 
-    fn lower_ast_node(&mut self, node: &QuotedAstNode, sources: &SourceMap) -> Result<ValueId, FatalError> {
+    fn lower_ast_node(&mut self, node: &QuotedAstNode, sources: &SourceMap) -> Result<Quoted, FatalError> {
         if node.tail.root().tag() != ValueKind::LIST {
             let name = node.head.atom_name().map_err(|error| self.surface_error(error))?;
-            return self.lower_variable(&name);
+            return Ok(self.lower_variable(&name));
         }
 
         let args = node.tail.list_items().map_err(|error| self.surface_error(error))?;
@@ -1090,23 +1090,17 @@ impl<'a, 'w, 'tel, 'f, 'env, 'steps, 'q, T: crate::telemetry::Telemetry>
         if node.head.root().tag() == ValueKind::ATOM {
             let name = node.head.atom_name().map_err(|error| self.surface_error(error))?;
             if name == "unquote" && args.len() == 1 {
-                return self.lower_unquote();
+                return self.lower_unquote().map(Quoted::Built);
             }
-            let values = args
-                .iter()
-                .map(|arg| self.lower(arg, sources))
-                .collect::<Result<Vec<_>, _>>()?;
+            let values = self.each_quoted(&args, sources)?;
             let bound = self.resolve_quoted_callable(&name, values.len());
             return Ok(self.lower_call_node(&name, bound, values));
         }
 
-        let head = self.lower(&node.head, sources)?;
-        let values = args
-            .iter()
-            .map(|arg| self.lower(arg, sources))
-            .collect::<Result<Vec<_>, _>>()?;
-        let tail = self.push_list(values, None);
-        Ok(self.push_ast_node(head, tail))
+        let head = self.quoted(&node.head, sources)?;
+        let values = self.each_quoted(&args, sources)?;
+        let tail = self.list(values);
+        Ok(self.ast_node_of(head, tail))
     }
 
     /// `unquote(e)` splices `e`'s runtime value in place: `e` was already
@@ -1143,99 +1137,122 @@ impl<'a, 'w, 'tel, 'f, 'env, 'steps, 'q, T: crate::telemetry::Telemetry>
         }
     }
 
-    fn lower_variable(&mut self, name: &str) -> Result<ValueId, FatalError> {
-        let head = self.lowerer.push_const(self.steps, GroundValue::Atom(name.to_string()));
+    fn lower_variable(&mut self, name: &str) -> Quoted {
+        let head = Quoted::Constant(GroundValue::Atom(name.to_string()).into());
         // Every variable this quote's own body writes is, by construction,
         // written inside this macro's quote. Its tail carries the macro's
         // `FunctionId` as an unstamped marker; the walk in `stamp_hygiene`
         // (quoted_expander.rs) rewrites it to `Var{context: Macro(fid, ordinal)}`
         // once this expansion's ordinal is known, right after the macro runs.
         let owner = i64::from(self.lowerer.owner.as_u32());
-        let tail = self.lowerer.push_const(self.steps, GroundValue::Int(owner));
-        Ok(self.push_ast_node(head, tail))
+        let tail = Quoted::Constant(GroundValue::Int(owner).into());
+        self.ast_node_of(head, tail)
     }
 
     fn lower_module(&mut self, module: &ModuleDenotation) -> ValueId {
-        let head = self
-            .lowerer
-            .push_const(self.steps, GroundValue::Atom("__aliases__".into()));
-        let tail = self.module_path(module.display_segments());
         let (tag, paths) = module.quoted_parts();
-        let tag = self.lowerer.push_const(self.steps, GroundValue::Atom(tag.into()));
-        let mut fields = vec![tag];
-        for path in paths {
-            fields.push(self.module_path(path.segments().iter()));
-        }
-        let identity = self.push_tuple(fields);
-        let meta = self.push_meta(Some(identity), None);
-        self.push_tuple(vec![head, meta, tail])
-    }
-
-    fn module_path<'s>(&mut self, segments: impl Iterator<Item = &'s String>) -> ValueId {
-        let items = segments
-            .map(|segment| self.lowerer.push_const(self.steps, GroundValue::Atom(segment.clone())))
-            .collect();
-        self.push_list(items, None)
+        let mut identity = vec![LiteralTerm::from(GroundValue::Atom(tag.into()))];
+        identity.extend(paths.map(|path| module_path(path.segments().iter())));
+        let node = LiteralTerm::Tuple(vec![
+            GroundValue::Atom("__aliases__".into()).into(),
+            meta(Some(LiteralTerm::Tuple(identity)), None),
+            module_path(module.display_segments()),
+        ]);
+        self.lowerer.push_literal(self.steps, node)
     }
 
     /// A call node whose head is display spelling and whose metadata retains
     /// the callable, when the call was classified here.
-    fn lower_call_node(&mut self, spelling: &str, bound: Option<FunctionId>, args: Vec<ValueId>) -> ValueId {
-        let head = self
-            .lowerer
-            .push_const(self.steps, GroundValue::Atom(spelling.to_string()));
-        let tail = self.push_list(args, None);
-        let meta = self.push_meta(None, bound);
-        self.push_tuple(vec![head, meta, tail])
+    fn lower_call_node(&mut self, spelling: &str, bound: Option<FunctionId>, args: Vec<Quoted>) -> Quoted {
+        let head = Quoted::Constant(GroundValue::Atom(spelling.to_string()).into());
+        let tail = self.list(args);
+        self.tuple(vec![head, Quoted::Constant(meta(None, bound)), tail])
     }
 
-    fn push_ast_node(&mut self, head: ValueId, tail: ValueId) -> ValueId {
-        let meta = self.push_meta(None, None);
-        self.push_tuple(vec![head, meta, tail])
+    fn ast_node_of(&mut self, head: Quoted, tail: Quoted) -> Quoted {
+        self.tuple(vec![head, Quoted::Constant(meta(None, None)), tail])
     }
 
-    /// The node's metadata keyword list, in the order
-    /// `QuotedSourceBuilder::meta` writes it. A quoted node carries no span: it
-    /// takes the span of the macro call that expands it.
-    fn push_meta(&mut self, module: Option<ValueId>, bound: Option<FunctionId>) -> ValueId {
-        let mut entries = Vec::new();
-        if let Some(identity) = module {
-            entries.push(self.push_meta_entry(super::super::source::META_MODULE_KEY, identity));
+    /// The step value that holds `quoted`.
+    fn value(&mut self, quoted: Quoted) -> ValueId {
+        match quoted {
+            Quoted::Constant(term) => self.lowerer.push_literal(self.steps, term),
+            Quoted::Built(value) => value,
         }
-        if let Some(function) = bound {
-            let coordinate = self
-                .lowerer
-                .push_const(self.steps, GroundValue::Int(i64::from(function.as_u32())));
-            entries.push(self.push_meta_entry(super::super::source::META_BOUND_CALLABLE_KEY, coordinate));
+    }
+
+    fn tuple(&mut self, items: Vec<Quoted>) -> Quoted {
+        match all_constant(items) {
+            Ok(terms) => Quoted::Constant(LiteralTerm::Tuple(terms)),
+            Err(items) => {
+                let items = items.into_iter().map(|item| self.value(item)).collect();
+                let value = self.lowerer.fresh_value();
+                self.steps.push(ExprStep::Tuple { value, items });
+                Quoted::Built(value)
+            }
         }
-        self.push_list(entries, None)
     }
 
-    fn push_meta_entry(&mut self, key: &'static str, value: ValueId) -> ValueId {
-        let key = self.meta_key(key);
-        self.push_tuple(vec![key, value])
-    }
-
-    fn meta_key(&mut self, key: &'static str) -> ValueId {
-        if let Some(value) = self.meta_keys.get(key) {
-            return *value;
+    fn list(&mut self, items: Vec<Quoted>) -> Quoted {
+        match all_constant(items) {
+            Ok(terms) => Quoted::Constant(LiteralTerm::List(terms)),
+            Err(items) => {
+                let items = items.into_iter().map(|item| self.value(item)).collect();
+                let value = self.lowerer.fresh_value();
+                self.steps.push(ExprStep::List {
+                    value,
+                    items,
+                    tail: None,
+                });
+                Quoted::Built(value)
+            }
         }
-        let value = self.lowerer.push_const(self.steps, GroundValue::Atom(key.to_string()));
-        self.meta_keys.insert(key, value);
-        value
     }
+}
 
-    fn push_tuple(&mut self, items: Vec<ValueId>) -> ValueId {
-        let value = self.lowerer.fresh_value();
-        self.steps.push(ExprStep::Tuple { value, items });
-        value
-    }
+/// A quoted subtree: a constant when nothing in it is unquoted, and otherwise
+/// the step value that builds it.
+enum Quoted {
+    Constant(LiteralTerm),
+    Built(ValueId),
+}
 
-    fn push_list(&mut self, items: Vec<ValueId>, tail: Option<ValueId>) -> ValueId {
-        let value = self.lowerer.fresh_value();
-        self.steps.push(ExprStep::List { value, items, tail });
-        value
+/// The terms of `items` when every one is a constant, and `items` back when
+/// one of them is built.
+fn all_constant(items: Vec<Quoted>) -> Result<Vec<LiteralTerm>, Vec<Quoted>> {
+    if items.iter().any(|item| matches!(item, Quoted::Built(_))) {
+        return Err(items);
     }
+    Ok(items
+        .into_iter()
+        .map(|item| match item {
+            Quoted::Constant(term) => term,
+            Quoted::Built(_) => unreachable!("every item is a constant"),
+        })
+        .collect())
+}
+
+fn module_path<'s>(segments: impl Iterator<Item = &'s String>) -> LiteralTerm {
+    LiteralTerm::List(
+        segments
+            .map(|segment| GroundValue::Atom(segment.clone()).into())
+            .collect(),
+    )
+}
+
+/// A node's metadata keyword list, in the order `QuotedSourceBuilder::meta`
+/// writes it. A quoted node carries no span: it takes the span of the macro
+/// call that expands it.
+fn meta(module: Option<LiteralTerm>, bound: Option<FunctionId>) -> LiteralTerm {
+    let entry = |key: &str, value| LiteralTerm::Tuple(vec![GroundValue::Atom(key.to_string()).into(), value]);
+    let module = module.map(|identity| entry(super::super::source::META_MODULE_KEY, identity));
+    let bound = bound.map(|function| {
+        entry(
+            super::super::source::META_BOUND_CALLABLE_KEY,
+            GroundValue::Int(i64::from(function.as_u32())).into(),
+        )
+    });
+    LiteralTerm::List(module.into_iter().chain(bound).collect())
 }
 
 impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
@@ -1476,6 +1493,11 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                 steps.push(ExprStep::FunctionRef { value, function });
                 Ok(value)
             }
+            Expr::List(..) | Expr::Tuple(_) | Expr::Map(_)
+                if let Some(constant) = LiteralTerm::constant(&expr.node) =>
+            {
+                Ok(self.push_literal(steps, constant))
+            }
             Expr::List(items, tail) => {
                 let mut lowered = Vec::with_capacity(items.len());
                 for item in items {
@@ -1690,7 +1712,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                         span: nil_span,
                         steps: vec![ExprStep::Const {
                             value: result,
-                            literal: GroundValue::Nil,
+                            literal: GroundValue::Nil.into(),
                         }],
                         result,
                     }
@@ -3058,37 +3080,18 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         steps: &mut Vec<ExprStep>,
     ) -> Result<ValueId, FatalError> {
         use crate::ground_value::DispatchShape;
-        let value = self.fresh_value();
-        match key
+        let literal = match key
             .as_dispatch_shape()
             .expect("materialize_dispatch_const only ever sees a dispatch-matrix const")
         {
-            DispatchShape::Int(n) => steps.push(ExprStep::Const {
-                value,
-                literal: GroundValue::Int(n),
-            }),
-            DispatchShape::Float(bits) => steps.push(ExprStep::Const {
-                value,
-                literal: GroundValue::Float(bits),
-            }),
-            DispatchShape::Utf8Binary(bytes) => steps.push(ExprStep::Const {
-                value,
-                literal: GroundValue::Binary(bytes.to_vec()),
-            }),
-            DispatchShape::Atom(name) => steps.push(ExprStep::Const {
-                value,
-                literal: GroundValue::Atom(name.to_string()),
-            }),
-            DispatchShape::Bool(flag) => steps.push(ExprStep::Const {
-                value,
-                literal: GroundValue::Bool(flag),
-            }),
-            DispatchShape::Nil => steps.push(ExprStep::Const {
-                value,
-                literal: GroundValue::Nil,
-            }),
-        }
-        Ok(value)
+            DispatchShape::Int(n) => GroundValue::Int(n),
+            DispatchShape::Float(bits) => GroundValue::Float(bits),
+            DispatchShape::Utf8Binary(bytes) => GroundValue::Binary(bytes.to_vec()),
+            DispatchShape::Atom(name) => GroundValue::Atom(name.to_string()),
+            DispatchShape::Bool(flag) => GroundValue::Bool(flag),
+            DispatchShape::Nil => GroundValue::Nil,
+        };
+        Ok(self.push_const(steps, literal))
     }
 
     fn receive_capture_values(
@@ -3830,6 +3833,10 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
     }
 
     fn push_const(&mut self, steps: &mut Vec<ExprStep>, literal: GroundValue) -> ValueId {
+        self.push_literal(steps, literal.into())
+    }
+
+    fn push_literal(&mut self, steps: &mut Vec<ExprStep>, literal: LiteralTerm) -> ValueId {
         let value = self.fresh_value();
         steps.push(ExprStep::Const { value, literal });
         value

@@ -366,7 +366,7 @@ compiler2 CLIF dumps aligned with the runtime packing model.
 
 A *literal* is an object the program carries in read-only data rather than on a
 heap: a static struct (`.fz_static_struct_*`), a static closure, a halt
-continuation. Every reference to a literal has one bit set
+continuation, a short binary literal. Every reference to a literal has one bit set
 above the kind field of its address word: `1 << (tag_shift + 5)`, bit 61 on
 arm64 and bit 62 on x86_64, owned by `AnyValueRefPacking`
 (`literal_bit`, `is_literal`, `raw_address`, `payload_mask`). The bit sits in the
@@ -374,6 +374,15 @@ arm64 and bit 62 on x86_64, owned by `AnyValueRefPacking`
 closure capture payload, a map key or value payload, a list head payload and a
 list link's tail. `ValueKind`, kind bytes and the map key/value kind byte are
 unchanged, and `AnyValueRef::tag()` ignores the bit.
+
+A binary literal of `SHARED_BIN_THRESHOLD_BYTES` (64) or fewer is one read-only
+object with a heap bitstring's layout (`bitstring_object_image`: header word,
+bytes, a NUL, zero padding to 16). Native code emits one per distinct bytes and
+bit length per module (`BitstringLiterals`, `.fz_bs_literal_*`); the interpreter
+keeps one per node (`Node::static_bitstring`, through `binary_literal_value`).
+Naming such a literal allocates nothing, a collection leaves it in place and a
+message copy shares it. A longer literal is a static `SharedBin`, and naming it
+allocates the view over it.
 
 The bit is set only where a literal is named: `static_object_ref`, the entry
 thunk, the child-literal payload words of a static struct (a relocation whose
@@ -596,6 +605,16 @@ binary search, which reads each probed key from the contiguous key array
 preserve order while copying the new sequence, and
 an absent deletion returns the original map with no allocation. GC and
 cross-heap transport preserve structural order without a sort.
+
+A list, tuple or map literal whose every part is a constant is one `Const`
+step carrying a `LiteralTerm` (`LiteralTerm::constant`,
+`src/literal_term.rs`): its parts are not steps, and its type is computed from
+the term by the rules the tuple, list and map steps use. Native code builds it
+with `literal_var` and the interpreter with `literal_term_value`; a constant
+tuple whose layout spreads its fields over lanes is encoded field by field
+(`literal_bound`). A constant list or map is still built on the heap each time
+it is evaluated, and a constant map with atom keys is written in key order
+(`LiteralTerm::entries_in_key_order`) and published without a sort.
 
 A map literal whose keys are all literal atoms is sorted by the compiler, not
 the runtime. Atoms order by name, so `entries_in_key_order`

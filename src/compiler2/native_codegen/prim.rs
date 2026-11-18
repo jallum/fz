@@ -1,5 +1,6 @@
 //! Primitive lowering helpers for codegen.
 
+use super::bitstring_literal::BitstringLiteral;
 use super::recipe::{Emitted, emit_inline};
 use super::repr::ExternLane;
 use super::runtime_test::{KindEvidence, RuntimeTestEmitter, emit_runtime_type_test};
@@ -17,24 +18,22 @@ use cranelift_codegen::ir::{
     types,
 };
 use cranelift_frontend::FunctionBuilder;
-use cranelift_module::{DataDescription, DataId, FuncId, Linkage};
+use cranelift_module::{DataId, FuncId, Linkage};
 use fz_runtime::any_value::{
     AnyValue, BITSTRING_BIT_LEN_SHIFT, BITSTRING_BYTES_OFFSET, FALSE_ATOM_ID, SlotLayout, TRUE_ATOM_ID, ValueKind,
     shared_struct_header_word,
 };
 use fz_runtime::bits::{BINVIEW_BIT_LEN_OFFSET, BINVIEW_BYTES_PTR_OFFSET};
 use fz_runtime::extern_binary::{fz_binary_as_cstring, fz_binary_as_ptr};
-use fz_runtime::heap::SHARED_BIN_THRESHOLD_BYTES;
 use fz_runtime::ir_runtime::{
-    fz_alloc_binview_from_static, fz_alloc_bitstring_const, fz_bs_begin, fz_bs_field_end, fz_bs_field_spec,
-    fz_bs_finalize, fz_bs_read_binary_ref, fz_bs_read_int_ref, fz_bs_write_field_ref, fz_bs_write_word,
-    fz_function_arity, fz_int_float_cmp, fz_list_cons_any, fz_list_cons_atom, fz_list_cons_float, fz_list_cons_int,
-    fz_map_dest_begin, fz_map_dest_begin_update, fz_map_dest_freeze, fz_map_dest_publish, fz_map_dest_put_parts,
-    fz_map_dest_put_ref, fz_map_get_atom_key_ref, fz_map_get_float_key_ref, fz_map_get_int_key_ref, fz_map_get_ref,
-    fz_map_named_schema_ref, fz_matcher_map_get_ref, fz_pinned_binary_segment_size, fz_ref_load_atom,
-    fz_ref_load_float, fz_ref_load_int, fz_struct_get_field_ref, fz_struct_get_named_field_ref, fz_struct_module,
-    fz_struct_schema_id_ref, fz_value_cmp_raw_const, fz_value_cmp_ref, fz_value_eq_raw_const, fz_value_eq_ref,
-    fz_value_eq_widening_ref,
+    fz_alloc_binview_from_static, fz_bs_begin, fz_bs_field_end, fz_bs_field_spec, fz_bs_finalize,
+    fz_bs_read_binary_ref, fz_bs_read_int_ref, fz_bs_write_field_ref, fz_bs_write_word, fz_function_arity,
+    fz_int_float_cmp, fz_list_cons_any, fz_list_cons_atom, fz_list_cons_float, fz_list_cons_int, fz_map_dest_begin,
+    fz_map_dest_begin_update, fz_map_dest_freeze, fz_map_dest_publish, fz_map_dest_put_parts, fz_map_dest_put_ref,
+    fz_map_get_atom_key_ref, fz_map_get_float_key_ref, fz_map_get_int_key_ref, fz_map_get_ref, fz_map_named_schema_ref,
+    fz_matcher_map_get_ref, fz_pinned_binary_segment_size, fz_ref_load_atom, fz_ref_load_float, fz_ref_load_int,
+    fz_struct_get_field_ref, fz_struct_get_named_field_ref, fz_struct_module, fz_struct_schema_id_ref,
+    fz_value_cmp_raw_const, fz_value_cmp_ref, fz_value_eq_raw_const, fz_value_eq_ref, fz_value_eq_widening_ref,
 };
 use fz_runtime::ir_runtime::{fz_box_opaque_for_any, fz_unbox_opaque};
 use fz_runtime::process::AtomName;
@@ -427,80 +426,25 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
             LowerOut::ValueRef(runtime_call1!(body, fz_bs_finalize, [process]))
         }
         Prim::ConstBitstring(bytes, bit_len) => {
-            // Split paths by payload size:
-            //   * Below threshold: intern bytes and call
-            //     `fz_alloc_bitstring_const(ptr, byte_len, bit_len)` —
-            //     runtime allocates an inline strict bitstring.
-            //   * Above threshold: emit a bytes-payload symbol and a
-            //     48-byte static SharedBin symbol in `.data` (refcount=1
-            //     anchor, relocs for bytes_ptr + noop destructor) and
-            //     call `fz_alloc_binview_from_static(process, static_ptr, bit_len)`.
-            let above_threshold = bytes.len() > SHARED_BIN_THRESHOLD_BYTES;
-            let syms = {
-                let mut bs_cache = env.bs_const_data.borrow_mut();
-                if let Some(syms) = bs_cache.get(bytes) {
-                    // Cached. If the existing entry lacks the SharedBin
-                    // symbol but this call site needs it, populate now.
-                    let mut syms = *syms;
-                    if above_threshold && syms.sharedbin_id.is_none() {
-                        syms.sharedbin_id = Some(define_static_sharedbin(
-                            body.jmod,
-                            syms.bytes_id,
-                            bytes,
-                            bs_cache.len(),
-                        )?);
-                        bs_cache.insert(bytes.clone(), syms);
-                    }
-                    syms
-                } else {
-                    let idx = bs_cache.len();
-                    let bytes_name = format!(".fz_bs_const_{}", idx);
-                    let bytes_id = body
-                        .jmod
-                        .declare_data(&bytes_name, Linkage::Local, false, false)
-                        .map_err(|e| CodegenError::new(format!("declare {}: {}", bytes_name, e)))?;
-                    let mut desc = DataDescription::new();
-                    // Append invisible trailing NUL; not counted in the
-                    // static SharedBin's bytes_len field. Underwrites the
-                    // c_string extern marshal contract for literal binaries.
-                    let mut payload: Vec<u8> = bytes.clone();
-                    payload.push(0);
-                    desc.define(payload.into_boxed_slice());
-                    desc.set_align(1);
-                    body.jmod
-                        .define_data(bytes_id, &desc)
-                        .map_err(|e| CodegenError::new(format!("define {}: {}", bytes_name, e)))?;
-                    let sharedbin_id = if above_threshold {
-                        Some(define_static_sharedbin(body.jmod, bytes_id, bytes, idx)?)
-                    } else {
-                        None
-                    };
-                    let syms = BsConstSyms { bytes_id, sharedbin_id };
-                    bs_cache.insert(bytes.clone(), syms);
-                    syms
+            let literal = env
+                .bitstring_literals
+                .borrow_mut()
+                .literal(body.jmod, bytes, *bit_len)?;
+            match literal {
+                BitstringLiteral::Object(object) => {
+                    LowerOut::ValueRef(body.static_object_ref(object, ValueKind::BITSTRING))
                 }
-            };
-            if let Some(sb_id) = syms.sharedbin_id {
-                let gv = body.jmod.declare_data_in_func(sb_id, body.b.func);
-                let sb_ptr = body.b.ins().symbol_value(types::I64, gv);
-                let bit_len_v = body.b.ins().iconst(types::I64, *bit_len as i64);
-                let process = body.process_arg();
-                LowerOut::ValueRef(runtime_call1!(
-                    body,
-                    fz_alloc_binview_from_static,
-                    [process, sb_ptr, bit_len_v]
-                ))
-            } else {
-                let gv = body.jmod.declare_data_in_func(syms.bytes_id, body.b.func);
-                let ptr_v = body.b.ins().symbol_value(types::I64, gv);
-                let byte_len_v = body.b.ins().iconst(types::I64, bytes.len() as i64);
-                let bit_len_v = body.b.ins().iconst(types::I64, *bit_len as i64);
-                let process = body.process_arg();
-                LowerOut::ValueRef(runtime_call1!(
-                    body,
-                    fz_alloc_bitstring_const,
-                    [process, ptr_v, byte_len_v, bit_len_v]
-                ))
+                BitstringLiteral::Shared(shared) => {
+                    let gv = body.jmod.declare_data_in_func(shared, body.b.func);
+                    let shared = body.b.ins().symbol_value(types::I64, gv);
+                    let bit_len = body.b.ins().iconst(types::I64, *bit_len as i64);
+                    let process = body.process_arg();
+                    LowerOut::ValueRef(runtime_call1!(
+                        body,
+                        fz_alloc_binview_from_static,
+                        [process, shared, bit_len]
+                    ))
+                }
             }
         }
         Prim::DestMapBegin(seed) => {

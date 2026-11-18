@@ -11,6 +11,7 @@ pub(crate) use crate::compiler2::Ty;
 use crate::telemetry::RawSpanTelemetry;
 pub(crate) use crate::types::{ClosureTypes, LiteralTypes, RenderTypes, Types};
 
+mod bitstring_literal;
 mod clif;
 pub(crate) mod closure;
 mod delivery;
@@ -36,6 +37,7 @@ pub(crate) mod variadic;
 
 // Glob re-exports keep cross-module references resolvable through
 // `use super::*;` in each submodule.
+pub(crate) use bitstring_literal::BitstringLiterals;
 pub(crate) use clif::*;
 pub(crate) use closure::*;
 pub(crate) use delivery::*;
@@ -56,7 +58,7 @@ pub(crate) use value::*;
 pub(crate) use variadic::*;
 
 pub(crate) use crate::ir_codegen::{
-    AotBackend, Backend, BsConstSyms, CodegenError, CompiledMetadata, JitBackend, define_static_sharedbin,
+    AotBackend, Backend, CodegenError, CompiledMetadata, JitBackend, define_static_sharedbin,
 };
 
 pub(crate) fn compile_with_backend_native_program<

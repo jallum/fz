@@ -369,7 +369,10 @@ fn the_distiller_compiles_inside_the_product_drive_budget() {
         // (46_237, 46_791, 26) -> (46_402, 46_956, 26): a case arm's parameter is laid out by its
         // own demand, so each outcome parameter is a `Value` position the compile requests.
         // (46_402, 46_956, 26) -> (46_477, 47_031, 26): +75: each simple escape is its own clause of `escaped`; the added clauses cost transport_shape positions; authorized by the user
-        (46_477, 47_031, 26),
+        // (46_477, 47_031, 26) -> (46_341, 46_629, 26): a literal made of constants is one
+        // constant and a quote builds only the nodes above an `unquote`, so the values that were
+        // their parts are no longer positions the compile requests.
+        (46_341, 46_629, 26),
         "(largest drive requests, total requests, drives) for the distiller's compile moved. \
          A fall is lowered in this pin; a rise is investigated first, because the largest drive \
          may not exceed PRODUCT_DRIVE_BUDGET (50,000)."

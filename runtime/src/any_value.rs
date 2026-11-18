@@ -1321,6 +1321,21 @@ pub fn bitstring_size_for_bit_len(bit_len: u64) -> usize {
     (8 + bytes_len + 1 + 15) & !15
 }
 
+/// The bytes of an inline bitstring object holding `bytes` as `bit_len` bits:
+/// the header word, the payload, the NUL after it, and zeros up to the
+/// object's size. A heap bitstring and a read-only literal are both this image.
+pub fn bitstring_object_image(bytes: &[u8], bit_len: u64) -> Vec<u8> {
+    assert_eq!(
+        bytes.len(),
+        (bit_len as usize).div_ceil(8),
+        "a bitstring holds exactly the bytes its bit length covers"
+    );
+    let mut image = bitstring_header_word(bit_len).to_le_bytes().to_vec();
+    image.extend_from_slice(bytes);
+    image.resize(bitstring_size_for_bit_len(bit_len), 0);
+    image
+}
+
 #[inline]
 pub fn bitstring_addr_from_tagged(bits: u64) -> Option<*mut u8> {
     addr_of_kind(bits, ValueKind::BITSTRING)

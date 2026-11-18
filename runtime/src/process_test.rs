@@ -455,6 +455,29 @@ fn a_static_closure_reads_as_a_literal_closure_with_no_captures() {
     }
 }
 
+/// A static bitstring reads exactly as a heap bitstring does, and is one
+/// 16-aligned literal object per distinct value: the same bytes at another bit
+/// length are another value.
+#[test]
+fn a_node_keeps_one_static_bitstring_per_value_and_it_reads_as_a_literal_bitstring() {
+    let node = Node::empty();
+
+    let word = node.static_bitstring(b"hello", 40);
+
+    assert!(word.is_literal());
+    assert_eq!(word.tag(), ValueKind::BITSTRING);
+    assert_eq!(word.storage_addr() as usize % 16, 0);
+    let addr = word.storage_addr();
+    unsafe {
+        assert_eq!(crate::any_value::bitstring_bit_len(addr), 40);
+        let bytes = std::slice::from_raw_parts(crate::any_value::bitstring_bytes_ptr(addr), 6);
+        assert_eq!(bytes, b"hello\0", "the bytes, then the NUL a C string reader stops at");
+    }
+    assert_eq!(word.raw_word(), node.static_bitstring(b"hello", 40).raw_word());
+    assert_ne!(word.raw_word(), node.static_bitstring(b"hello", 39).raw_word());
+    assert_ne!(word.raw_word(), node.static_bitstring(b"world", 40).raw_word());
+}
+
 /// A collection leaves a literal closure where it is, and a deep copy shares
 /// it instead of copying: every holder sees the one object.
 #[test]

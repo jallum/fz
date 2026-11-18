@@ -150,7 +150,7 @@ fn try_shape(fixture: u32, name: &str, arity: u64) -> TryShape {
             match step {
                 LoweredStep::PopHandler => shape.pops += 1,
                 LoweredStep::Const {
-                    literal: crate::ground_value::GroundValue::Atom(atom),
+                    literal: crate::literal_term::LiteralTerm::Ground(crate::ground_value::GroundValue::Atom(atom)),
                     ..
                 } => *shape.atom_consts.entry(atom.clone()).or_default() += 1,
                 _ => {}

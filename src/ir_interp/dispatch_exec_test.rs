@@ -190,6 +190,12 @@ fn bitstring_allocs(proc: *mut Process) -> u64 {
     unsafe { &*proc }.heap.alloc_stats_snapshot().bitstring.allocs
 }
 
+/// How many refs to off-heap binaries the process has built: one per binary
+/// too long to live inline.
+fn binref_allocs(proc: *mut Process) -> u64 {
+    unsafe { &*proc }.heap.alloc_stats_snapshot().binref.allocs
+}
+
 /// An input the plan reads that never arrived is a disagreement between the
 /// plan and its caller, not a subject that simply failed its test.
 #[test]
@@ -590,15 +596,17 @@ fn a_prepared_binary_key_no_test_reads_is_never_built() {
 
 /// A prepared binary key two tests read is built once.
 ///
-/// Both inputs are asked for the same key. The first question that reads it
-/// builds the one copy the run has, and the second reads that copy.
+/// Both inputs are asked for the same key, one too long to be read-only data.
+/// The first question that reads it builds the one copy the run has, and the
+/// second reads that copy.
 #[test]
 fn a_prepared_binary_key_two_tests_read_is_built_once() {
+    let key = "k".repeat(fz_runtime::heap::SHARED_BIN_THRESHOLD_BYTES + 1);
     let plan = plan_over_inputs(
         2,
         vec![vec![
-            binary_key_pattern("key", "left"),
-            binary_key_pattern("key", "right"),
+            binary_key_pattern(&key, "left"),
+            binary_key_pattern(&key, "right"),
         ]],
     );
     assert_eq!(
@@ -608,12 +616,12 @@ fn a_prepared_binary_key_two_tests_read_is_built_once() {
     );
     let mut door = Door::new();
     let proc = door.proc();
-    let map = map_with_binary_key(proc, "key", 42);
+    let map = map_with_binary_key(proc, &key, 42);
     let inputs = [
         Some(BackendBoundValue::Runtime(map)),
         Some(BackendBoundValue::Runtime(map)),
     ];
-    let before = bitstring_allocs(proc);
+    let before = binref_allocs(proc);
     let values = dispatch_values(proc, &door.transport, &plan, DispatchSource::Inputs(&inputs))
         .expect("the plan's operands are built");
     let decided = door
@@ -622,7 +630,7 @@ fn a_prepared_binary_key_two_tests_read_is_built_once() {
         .expect("both maps hold the key");
     assert_eq!(plan.body_id(decided.outcome()), 0, "the only arm matches");
     assert_eq!(
-        bitstring_allocs(proc) - before,
+        binref_allocs(proc) - before,
         1,
         "two questions over one constant are one copy"
     );

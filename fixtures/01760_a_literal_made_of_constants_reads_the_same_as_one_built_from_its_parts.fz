@@ -1,0 +1,40 @@
+#---
+# purpose: "a list, tuple or map written out of constants holds the value its source writes, and matches, updates and compares like one built from variables"
+# oracle: self
+# oracle.stamp: 9d3e12de40af88e5
+#---
+#
+# A literal whose every part is a constant is one constant in the compiled
+# program. Each line below reads such a literal back, or sets it beside the
+# same value built from variables, which is built part by part.
+defmodule Main do
+  def options(), do: [strict: [verbose: :boolean, depth: :integer], aliases: [v: :verbose]]
+  def point(), do: {1, {2.5, "three"}, [nil, true, false]}
+  def table(), do: %{b: 2, a: 1, b: 3}
+  def mixed(), do: %{"k" => [1], 2 => {:two}, {3, 4} => %{}}
+  def built(a, b), do: {[strict: [verbose: a, depth: :integer], aliases: [v: :verbose]], %{b: 3, a: b}}
+
+  def first({a, _, _}), do: a
+  def second({_, {_, text}, _}), do: text
+
+  defmacro wrapped(value), do: quote(do: {:wrapped, [1, 2], unquote(value), %{k: :v}})
+
+  def main() do
+    IO.inspect(options())
+    IO.inspect(point())
+    IO.inspect({first(point()), second(point())})
+    IO.inspect({table(), table().b, map_size(table())})
+    IO.inspect({mixed()["k"], mixed()[2], mixed()[{3, 4}]})
+    IO.inspect(built(:boolean, 1) == {options(), table()})
+    IO.inspect({[], {}, %{}, [[]], {[], %{}}})
+    IO.inspect([0 | [1, 2, 3]] ++ [4, 5])
+    IO.inspect(%{table() | a: 10})
+    IO.inspect(wrapped(point() |> elem(0)))
+
+    case {:ok, [1, 2]} do
+      {:ok, [head | rest]} -> IO.inspect({head, rest})
+    end
+  end
+end
+
+Main.main()

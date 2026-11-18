@@ -22,10 +22,8 @@ pub(crate) struct CodegenEnv<'a> {
     pub(super) mid_flight_cont_tail_fn_ids: &'a HashMap<(u32, Vec<MidFlightArgShape>), FuncId>,
     pub(super) tuple_schema_ids: &'a HashMap<usize, u32>,
     pub(super) named_schema_ids: &'a HashMap<fz_runtime::module_name::ModuleName, u32>,
-    /// Per-payload symbol cache. Below-threshold payloads carry only
-    /// `bytes_id`; above-threshold payloads additionally carry a static
-    /// `SharedBin` symbol in `.data`.
-    pub(super) bs_const_data: &'a RefCell<HashMap<Vec<u8>, BsConstSyms>>,
+    /// The bitstring literals this module has emitted.
+    pub(super) bitstring_literals: &'a RefCell<BitstringLiterals>,
     pub(super) param_reprs: &'a [Vec<ArgRepr>],
     pub(super) return_diverges: &'a [bool],
     pub(super) cont_fns: &'a HashSet<FnId>,

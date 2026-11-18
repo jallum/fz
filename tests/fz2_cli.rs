@@ -1453,8 +1453,11 @@ fn compiler2_pull_telemetry_is_bounded_and_keeps_public_trace_signals() {
     // return revisions, 44 analyses, 42 callsite edges) and from 1,475,036 to
     // 1,523,747 bytes, and 00009 from 322 to 326 events. The bound is the
     // measured 3,114 plus the same headroom the old 3,012/3,060 pair carried.
+    // A quote builds only the nodes above an `unquote`, which took 00181 from
+    // 9,772 to 9,004 events and from 5,347,429 to 4,985,458 bytes; its bounds
+    // fell with it and keep the same four percent of headroom.
     for (fixture, max_events, max_bytes) in [
-        ("fixtures/00181_enum_reduce_operator_ref.fz", 10_163, 5_400 * 1024),
+        ("fixtures/00181_enum_reduce_operator_ref.fz", 9_364, 5_040 * 1024),
         ("fixtures/00009_no_runtime.fz", 548, 256 * 1024),
     ] {
         let telemetry_path = unique_temp_path("fz2_bounded_pull", ".jsonl");
@@ -2761,7 +2764,10 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
         // 102 reach products that settled, and the 3 cache hits that read one, are gone.
         // 1398 -> 1400 settled products, all changed: a case arm's parameter is laid out by its own
         // demand, so each outcome parameter is a `Value` position that settles.
-        (1400, 1400, 1400, 0, 5, 0),
+        // 1400 -> 1156 settled products, all changed: a quote builds only the nodes above an
+        // `unquote`, so the head, metadata and argument-list values of every constant node are no
+        // longer asked for a transport.
+        (1156, 1156, 1156, 0, 5, 0),
         "{fixture}: reactive product settlement work includes ordinary helper products"
     );
     assert!(

@@ -190,18 +190,6 @@ pub(crate) fn emit_aot_c_main<M: ClModule>(
     Ok(())
 }
 
-/// Symbol set for one unique ConstBitstring byte payload.
-#[derive(Clone, Copy)]
-pub(crate) struct BsConstSyms {
-    /// Byte payload symbol (Local data, read-only). Always present.
-    pub(crate) bytes_id: DataId,
-    /// Static `SharedBin` symbol (Local data, writable so the refcount
-    /// anchor lives in .data). `Some` for above-threshold payloads,
-    /// `None` for below-threshold (which keep the inline / runtime
-    /// allocation path via `fz_alloc_bitstring_const`).
-    pub(crate) sharedbin_id: Option<DataId>,
-}
-
 /// Emit a static `SharedBin` symbol in `.data`, `SHARED_BIN_BYTES` wide:
 ///
 ///   offset  0..8   refcount = 1 (LE u64, anchor — never decremented to 0)

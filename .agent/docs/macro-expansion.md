@@ -330,7 +330,13 @@ hands off the cursor and its splices in `Expr::Quote(cursor, splices)`
 instead of owning the quoted-AST construction logic inline.
 
 `QuoteLowerer::lower` walks that cursor directly, as one recursive case per
-quoted-source shape rather than one case per language construct:
+quoted-source shape rather than one case per language construct. Everything in
+a quote but what it unquotes is known where the quote is read, so each case
+answers either a constant (a `LiteralTerm`) or a step value. A list or tuple
+whose items are all constants is itself a constant; a step is pushed only for a
+node with an `unquote` beneath it, and the constants beside that `unquote` are
+one `Const` step each. A quote with no `unquote` is a single `Const` step, and
+a node's metadata is always part of a constant.
 
 - a literal (int, float, atom, bitstring) lowers to the matching constant
 - a list recurses over its items
@@ -461,7 +467,7 @@ compiled program.
 
 ### Where expanded code is reported
 
-A `quote` writes no span on the nodes it builds (`QuoteLowerer::push_meta`,
+A `quote` writes no span on the nodes it builds (`meta`,
 `src/compiler2/jobs/body.rs`). When the macro returns, `stamp_span_fallback`
 (`src/compiler2/quoted_expander.rs`) gives the span of the macro call to every
 node of the result that has none, so a fault in quoted code is reported under

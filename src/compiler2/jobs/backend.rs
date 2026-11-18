@@ -923,10 +923,20 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
 
     fn lower_step(&mut self, step: &LoweredStep) -> Result<BackendStep, FatalError> {
         Ok(match step {
-            LoweredStep::Const { value, literal } => BackendStep::Const {
+            LoweredStep::Const {
+                value,
+                literal: literal @ LiteralTerm::Ground(_),
+            } => BackendStep::Const {
                 value: *value,
                 literal: literal.clone(),
             },
+            LoweredStep::Const { value, literal } => self.step_or_omitted_when_absent(
+                *value,
+                BackendStep::Const {
+                    value: *value,
+                    literal: literal.clone(),
+                },
+            ),
             LoweredStep::Tuple { value, items } => self.step_or_omitted_when_absent(
                 *value,
                 BackendStep::Tuple {
@@ -1098,7 +1108,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
         if field == STRUCT_MODULE_FIELD {
             return BackendStep::Const {
                 value,
-                literal: GroundValue::Atom(self.module_name(module).atom_name()),
+                literal: GroundValue::Atom(self.module_name(module).atom_name()).into(),
             };
         }
         match self
@@ -1343,7 +1353,7 @@ fn collect_step_atoms(_world: &mut World, steps: &[BackendStep], names: &mut Exe
     for step in steps {
         match step {
             BackendStep::Const { literal, .. } => {
-                collect_literal_atoms(literal, names);
+                literal.each_ground(&mut |ground| collect_literal_atoms(ground, names));
             }
             BackendStep::FieldAccess { field, .. } | BackendStep::StructSlot { field, .. } => {
                 push_atom(names, field);

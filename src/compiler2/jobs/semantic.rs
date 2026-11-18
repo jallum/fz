@@ -12,6 +12,7 @@ use crate::ast::{BinOp, UnOp};
 use crate::diag::{Diagnostic, codes};
 use crate::dispatch_matrix::pattern::LastResort;
 use crate::ground_value::GroundValue;
+use crate::literal_term::LiteralTerm;
 use crate::modules::identity::ModuleName;
 use crate::source::Span;
 
@@ -646,7 +647,7 @@ fn apply_step_evidence(
 ) -> Result<(), FatalError> {
     match step {
         LoweredStep::Const { value, literal } => {
-            let literal_ty = literal_ty(world, literal);
+            let literal_ty = literal_term_ty(world, literal);
             values.insert(*value, literal_ty);
         }
         LoweredStep::Tuple { value, items } => {
@@ -2884,6 +2885,48 @@ fn callee_extern_params(world: &World, function: FunctionId) -> Option<Vec<crate
 
 fn value_ty(values: &SemanticValues, value: ValueId) -> Option<Ty> {
     values.get(&value).copied()
+}
+
+/// The type of a constant, by the rules a tuple, list or map step types the
+/// value it builds from its parts' types.
+fn literal_term_ty(world: &mut World, term: &LiteralTerm) -> Ty {
+    match term {
+        LiteralTerm::Ground(value) => literal_ty(world, value),
+        LiteralTerm::Function { .. } => unreachable!("a constant holds no function"),
+        LiteralTerm::Tuple(items) => {
+            let items = items
+                .iter()
+                .map(|item| literal_term_ty(world, item))
+                .collect::<Vec<_>>();
+            world.types_mut().tuple(&items)
+        }
+        LiteralTerm::List(items) => {
+            let mut items = items.iter();
+            let Some(first) = items.next() else {
+                return world.types_mut().empty_list();
+            };
+            let mut elem_ty = literal_term_ty(world, first);
+            for item in items {
+                let item_ty = literal_term_ty(world, item);
+                elem_ty = world.types_mut().union(elem_ty, item_ty);
+            }
+            world.types_mut().non_empty_list(elem_ty)
+        }
+        LiteralTerm::Map(entries) => {
+            let mut fields = BTreeMap::new();
+            for (key, value) in entries {
+                let key = match key {
+                    LiteralTerm::Ground(key) => literal_map_key(key),
+                    _ => None,
+                };
+                let Some(key) = key else {
+                    return world.types_mut().map_top();
+                };
+                fields.insert(key, literal_term_ty(world, value));
+            }
+            world.types_mut().map_literal(&fields.into_iter().collect::<Vec<_>>())
+        }
+    }
 }
 
 fn literal_ty(world: &mut World, literal: &GroundValue) -> Ty {

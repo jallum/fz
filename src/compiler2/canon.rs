@@ -977,7 +977,7 @@ impl ProgramCanon<'_> {
         match step {
             BackendStep::Omitted { value } => format!("omitted {}", self.names.value(*value)),
             BackendStep::Const { value, literal } => {
-                format!("{} = const {}", self.names.value(*value), ground(literal))
+                format!("{} = const {}", self.names.value(*value), self::literal(literal))
             }
             BackendStep::Tuple { value, items } => {
                 let items = items

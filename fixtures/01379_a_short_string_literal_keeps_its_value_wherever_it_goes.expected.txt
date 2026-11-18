@@ -1,0 +1,7 @@
+{"hello", 5, true, :the_literal}
+{"hello, world", "hello", "hello"}
+{"hello", "hello!", 5}
+{["hello1", "hello2", "hello3"], "hello"}
+1
+{"", <<1, 2, 3>>, "hello again"}
+85
