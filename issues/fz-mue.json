@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [
     "fz-j8z",
+    "fz-nhb.15",
     "fz-sc8.22"
   ],
   "blocks": [],
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "fz runs OTP's json.erl unchanged",
   "type": "epic",
-  "updated_at": "2026-11-18T20:44:06Z"
+  "updated_at": "2026-11-18T20:44:07Z"
 }

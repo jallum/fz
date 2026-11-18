@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [
+    "fz-mue",
     "fz-nhb.16"
   ],
   "created": "2026-11-17T23:49:01Z",
@@ -19,5 +20,5 @@
   "status": "open",
   "title": "defguard and defguardp define guards, as in Elixir",
   "type": "task",
-  "updated_at": "2026-11-18T04:23:55Z"
+  "updated_at": "2026-11-18T20:44:07Z"
 }
