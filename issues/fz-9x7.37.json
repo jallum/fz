@@ -15,11 +15,15 @@
     {
       "text": "Assigned to Binary Handling by the user, 2026-11-18.",
       "timestamp": "2026-11-18T23:25:55Z"
+    },
+    {
+      "text": "PAUSED on the user's word (2026-11-18, via Binary Handling). Waiting on GC's answer to the user's question, verbatim: \"should we change the distribution of responsibility for allocation between the generated code and the runtime? it might make sense to inline the portions that are fast and commonly succeed, and leave the less common, bulkier portion (allocating a new heap block, etc.) to the runtime.\" It gates this ticket because an allocation made in the runtime has no source site, so the pin halves (.37.2, .37.4) cannot be expressed. Inline fast paths would give every allocation a site. Nothing is built for .37.1-.37.4. JSON's current-site-word proposal is on hold with it.",
+      "timestamp": "2026-11-18T23:47:21Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "Allocation statistics leave the inline allocation path",
   "type": "task",
-  "updated_at": "2026-11-18T23:25:55Z"
+  "updated_at": "2026-11-18T23:47:21Z"
 }
