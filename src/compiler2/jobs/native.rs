@@ -3299,6 +3299,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             |items: &[LiteralTerm]| -> Vec<Var> { items.iter().map(|item| self.literal_var(ctx, item)).collect() };
         let prim = match term {
             LiteralTerm::Ground(value) => self.ground_prim(value),
+            LiteralTerm::Function { .. } => unreachable!("`LastResort::struct_fields` refuses a function"),
             LiteralTerm::List(items) => Prim::MakeList(all(items), None, None),
             LiteralTerm::Tuple(items) => Prim::MakeTuple(all(items)),
             LiteralTerm::Map(entries) => {

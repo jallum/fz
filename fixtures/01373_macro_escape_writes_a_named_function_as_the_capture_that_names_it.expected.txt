@@ -1,0 +1,13 @@
+{:&, [], [{:/, [], [{{:., [], [String, :length]}, [no_parens: true], []}, 1]}]}
+{:&, [], [{:/, [], [{{:., [], [Text, :shout]}, [no_parens: true], []}, 1]}]}
+true
+true
+true
+4
+"HEY!"
+3
+"ABC!"
+5
+["A!", "A!"]
+{:refused, true}
+{:refused, true}

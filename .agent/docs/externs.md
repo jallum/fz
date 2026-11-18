@@ -662,6 +662,11 @@ prefix rules and the rounding live in the one Rust function behind it
 (`float_prefix` in `runtime/src/ir_runtime.rs`), so all three paths share
 them.
 
+`Macro.escape/1` asks what a function is called through the same shape: a
+private `extern "fz" defp fz_function_name(fun) :: any` answers
+`[module, name, arity]` for a function a module defines by name and `[]` for
+an anonymous function or one outside every module.
+
 `File.Stream` reads each line through the same shape: a private
 `extern "fz" defp fz_file_read_line(c_pointer) :: any` answers `[]` at end of
 file and `[line]` otherwise, and the stream's `line_step/4` clauses match the

@@ -1,1 +1,1 @@
-** (ArgumentError) cannot escape #PID<0.1.0>. The supported values are: lists, tuples, maps, atoms, numbers and bitstrings
+** (ArgumentError) cannot escape #PID<0.1.0>. The supported values are: lists, tuples, maps, atoms, numbers, bitstrings and remote functions in the format &Mod.fun/arity
