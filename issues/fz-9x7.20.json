@@ -6,14 +6,16 @@
   "blocks": [
     "fz-9x7.11"
   ],
+  "closed_at": "2026-11-18T03:52:45Z",
+  "close_reason": "Landed on develop as ee6f52fc5.",
   "created": "2026-11-17T22:03:11Z",
   "description": "G5 on the hot-path page https://claude.ai/artifact/LDhZf3yJxaRiiQGwGxToTu.\n\nPlan: https://claude.ai/artifact/Pqqu5yTcQdBbkGsZyZiykb (GC memory plan v3, approved by the user 2026-11-17).",
   "id": "fz-9x7.20",
   "labels": [],
   "parent": "fz-9x7",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "bitstr.rs's header names the codec and drops the reference to the deleted src/bitstr.rs",
   "type": "task",
-  "updated_at": "2026-11-17T22:03:17Z"
+  "updated_at": "2026-11-18T03:52:45Z"
 }
