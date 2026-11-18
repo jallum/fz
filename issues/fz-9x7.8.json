@@ -31,11 +31,15 @@
     {
       "text": "Production FC built clean: c0e637308 on fz-9x7.8/binary-trigger (on d5cbd823c; will restack after .28). Quantum cut at the allocation call site via Process::alloc_bitstring/_with/alloc_concatenation (heap exposes binary_budget.is_due(); offset_of! shim gone); message copies count toward the receiver's budget but cut no quantum. A/B vs d5cbd823c, 5 runs: outputs identical on 16 workloads; instructions quantum 0.92, deadbinlive 0.91, ring 1.010, survive 1.005, dist 1.002, others 0.99-1.00. peak_in_use: deadbinlive 0.244, quantum 0.020, deadbin 0.58, giftbin 0.53 (base peaks ~5 MB; runtime floor ~1.6 MB), survive 1.025, json 0.997. gc counts match the round-6 FC spike exactly (survive 41, quantum 5000, deadbin 390, deadbinlive 418, giftbin 780, json 46). No pin changed. Full gate green (6952 passed).",
       "timestamp": "2026-11-18T00:27:05Z"
+    },
+    {
+      "text": "FC cost attribution (user-approved experiments; data in scratchpad/8probe/). (1) survive: pre-registered hypothesis 'majors free more dead binaries under FC' REFUTED (major-freed binary bytes base 79.4 MB vs FC 30.3 MB). Actual mechanism: FC's extra minors promote binary-owning list cells; dead old-owned binaries are freed only by a major; the major trigger counts only old HEAP bytes (~5-6 MB, never grows enough), so after FC's last major at 16.7 ms (run ~60 ms) 7 more minors run and no major: binary_in_use climbs to 48 MB vs ~10 MB live (base peak 15 MB; base's one late major freed 79 MB). Binary part = ~73% of the time-weighted post-gc in_use gap; rest heap blocks. (2) ring on bench, 9 interleaved runs: FC 0.9885x instructions (spread 0.87%/0.23%), msg 0.9821x, spin 0.9999x; local +1.0% did not reproduce; gc counts and event streams identical -\u003e codegen/layout, no extra work. Proposal: the major trigger also counts old-held binary bytes (major due when held binary bytes outgrow MAJOR_GROWTH_FACTOR x those left by the last major, as BEAM's old vheap does), folded into .8 before decision 43.",
+      "timestamp": "2026-11-18T02:24:22Z"
     }
   ],
   "priority": 2,
   "status": "in_progress",
   "title": "Off-heap binary bytes count toward the collection trigger",
   "type": "bug",
-  "updated_at": "2026-11-18T00:27:05Z"
+  "updated_at": "2026-11-18T02:24:22Z"
 }
