@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-9x7.11.2"
+  ],
   "created": "2026-11-18T23:59:15Z",
   "description": "User approved 2026-11-18, verbatim via GC: \"agreed; proceed\". Step C0 of fz-9x7.11 page v4 (https://claude.ai/artifact/BB1FpQ1Cf7Jd5spZeLEWtg). One commit, judged on bench. Builder: GC. Probes for cells, structs, maps and a near-empty heap; copied_objects on the gc event; a baseline table.",
   "id": "fz-9x7.11.1",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "The collector has gc probes and a baseline table",
   "type": "task",
-  "updated_at": "2026-11-18T23:59:15Z"
+  "updated_at": "2026-11-18T23:59:21Z"
 }
