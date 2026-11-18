@@ -7,7 +7,9 @@ use super::super::namespace::{Namespace, NamespaceSymbol};
 use super::super::quoted_expander::{
     ExpandedRoot, ExpandedValue, QuotedExpansionCtx, emit_internal_surface_error, emit_surface_read_error,
 };
-use super::super::quoted_surface::{is_function_definition_head, read_compiler_fragment_surface, read_scope_surface};
+use super::super::quoted_surface::{
+    is_function_body_section, is_function_definition_head, read_compiler_fragment_surface, read_scope_surface,
+};
 use super::super::scope::ScopeSnapshot;
 use super::super::source::{QuotedAstNode, QuotedSourceCursor, QuotedSourceRoot};
 use super::super::source_publish::{self, ScopePublication};
@@ -710,13 +712,13 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> FunctionSourceExpander<'world
                     "function clause expected keyword tuples".to_string(),
                 ));
             }
-            if tuple[0].atom_name().map_err(|error| {
+            let section = tuple[0].atom_name().map_err(|error| {
                 emit_internal_surface_error(
                     self.telemetry,
                     format!("function clause keyword name read failed: {error}"),
                 )
-            })? != "do"
-            {
+            })?;
+            if !is_function_body_section(section.as_str()) {
                 expanded_kw.push(kw.root());
                 continue;
             }

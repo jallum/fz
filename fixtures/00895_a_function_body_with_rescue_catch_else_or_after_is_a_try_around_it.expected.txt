@@ -1,0 +1,13 @@
+{:ok, 42}
+{:big, 420}
+{:error, ArgumentError}
+checked 7
+{:not_text, 7}
+{:doubled, 10}
+{:caught, -3}
+after fine
+:ok
+after boom
+{:rescued, :boom}
+4
+{:refused, "odd"}

@@ -298,9 +298,8 @@ impl<'t> FrontDoorParser<'t> {
         let start = self.cur_span();
         self.expect(&Tok::Defmacro, "`defmacro`")?;
         let head = self.with_trailing_do_suppressed(|parser| parser.parse_defmacro_head(module_path))?;
-        let body = self.parse_function_body(module_path, &[])?;
+        let kw = self.parse_defmacro_body(module_path)?;
         let meta = self.meta(start.merge(self.prev_span()))?;
-        let kw = self.builder.list(&[self.builder.keyword("do", body)?])?;
         self.builder
             .call("defmacro", &meta, &[head, kw])
             .map_err(FrontDoorError::from)
@@ -753,19 +752,23 @@ impl<'t> FrontDoorParser<'t> {
         })
     }
 
-    fn parse_function_body(&mut self, module_path: &[String], scope: &[String]) -> Result<AnyValueRef, FrontDoorError> {
+    /// A `defmacro`'s body keyword list: `, do: expr`, or a `do ... end` block
+    /// with any `rescue`, `catch`, `else` or `after` sections it carries, read
+    /// as a `def`'s trailing block is.
+    fn parse_defmacro_body(&mut self, module_path: &[String]) -> Result<AnyValueRef, FrontDoorError> {
         if self.eat(&Tok::Comma) {
             match self.bump() {
                 Tok::KwKey(key) if key == "do" => {}
                 other => return Err(self.error(format!("expected `do:` after `,`, got {:?}", other))),
             }
-            return Ok(self.parse_expr(module_path, scope)?.root);
+            let body = self.parse_expr(module_path, &[])?.root;
+            return self
+                .builder
+                .list(&[self.builder.keyword("do", body)?])
+                .map_err(FrontDoorError::from);
         }
         self.expect(&Tok::Do, "`do`")?;
-        self.skip_newlines();
-        let body = self.parse_block_until(&[Tok::End], module_path, scope)?;
-        self.expect(&Tok::End, "`end`")?;
-        Ok(body)
+        self.parse_do_block(module_path, &[])
     }
 
     fn parse_expr(&mut self, module_path: &[String], scope: &[String]) -> Result<ParsedExpr<'t>, FrontDoorError> {
@@ -1531,29 +1534,6 @@ impl<'t> FrontDoorParser<'t> {
             );
         }
         Ok(args)
-    }
-
-    fn parse_block_until(
-        &mut self,
-        terminators: &[Tok],
-        module_path: &[String],
-        scope: &[String],
-    ) -> Result<AnyValueRef, FrontDoorError> {
-        self.skip_newlines();
-        let first = if terminators.iter().any(|terminator| self.peek_is(terminator)) {
-            None
-        } else {
-            Some(self.parse_expr(module_path, scope)?)
-        };
-        let end = self.parse_block_lines(
-            first,
-            terminators,
-            "unexpected second expression without a newline",
-            None,
-            module_path,
-            scope,
-        )?;
-        Ok(end.body)
     }
 
     /// Newline-separated expressions up to a terminator, as one expression

@@ -180,9 +180,33 @@ whichever path entered it.
   the process and exits it. A value reaching a handler
   frame is a contract violation: the try body pops its frame first.
 
+## A function body as a `try`
+
+A `def`, `defp` or `defmacro` clause whose body carries `rescue`,
+`catch`, `else` or `after` beside its `do` is a `try` around that body, as
+Elixir reads it (`elixir_def.erl`, `def_to_clauses`). Each clause wraps only its
+own body; its arguments and guard stay outside the protection.
+
+- The front door reads every definition's `do ... end` block, sections
+  included, with `frontdoor.rs::parse_do_block`; `defmacro` reaches it through
+  `parse_defmacro_body`.
+- `quoted_surface.rs::is_function_body_keyword` admits a body of `do` plus those
+  sections. Any other key is refused (`parse/invalid-function-definition`).
+- `jobs/source.rs::expand_function_clause` expands every section
+  (`is_function_body_section`), not only `do`.
+- `quoted_function.rs::decode_function_body` decodes a body of `do` alone as that
+  expression, and any other body through `decode_try`. So an implicit `try` is
+  judged as a written one is.
+
+`Expr::Try` carries a `TryForm` naming what wrote it. Where Elixir names the
+definition instead of `try`, fz does too: a `catch` or `else` section that is not
+`->` clauses (`expected -> clauses for :catch in "defp"`), and the `else`-only
+warning. Like Elixir, a repeated section and the clause-head refusals still
+name `try`.
+
 ## What `try` lowers to
 
-`Expr::Try { body, rescue, catch, else_clauses, after }` (`src/ast/mod.rs`)
+`Expr::Try { body, rescue, catch, else_clauses, after, form }` (`src/ast/mod.rs`)
 lowers in `jobs/body.rs::lower_try`. `rescue` and `catch` together are one
 `ExprStep::Try` (`lower_handled`); `after` and `else` are built from that step
 and from the dispatch step, below. A `try` with `rescue` or `catch` has:

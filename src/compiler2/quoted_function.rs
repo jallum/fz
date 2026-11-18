@@ -1,7 +1,7 @@
 use crate::ast::{
     AfterClause, Attribute, BinOp, BitField, BitFieldSpec, BitSize, BitType, CallableName, CatchClause, Endian, Expr,
-    FnClause, LambdaClause, MatchClause, Pattern, RescueClause, Spanned, SpecDecl, TypeExprBody, UnOp, Var, VarContext,
-    WithBinding,
+    FnClause, LambdaClause, MatchClause, Pattern, RescueClause, Spanned, SpecDecl, TryForm, TypeExprBody, UnOp, Var,
+    VarContext, WithBinding,
 };
 use crate::function_surface::FunctionSurface;
 use crate::modules::identity::{ModuleDenotation, ModuleName};
@@ -274,7 +274,9 @@ fn decode_function_clause(
     };
     let (name, params, param_annotations, name_span, guard) =
         decode_function_head(occurrences, &function_head, sources)?;
-    let body = decode_do_body(occurrences, &do_body, Some(span), sources)?;
+    let form = TryForm::definition(node.head.atom_name()?.as_str())
+        .ok_or_else(|| QuotedSourceError::new("quoted function clause expects a definition form"))?;
+    let body = decode_function_body(occurrences, &do_body, span, form, sources)?;
     Ok((
         name,
         FnClause {
@@ -327,19 +329,26 @@ fn decode_function_head(
     Ok((name.to_string(), params, annotations, span, None))
 }
 
-fn decode_do_body(
+/// A function clause's body. A body of `do` alone is that expression; a body
+/// that also carries `rescue`, `catch`, `else` or `after` is, as in Elixir, a
+/// `try` around it, judged as any `try` is and named after its definition.
+fn decode_function_body(
     occurrences: &mut LambdaOccurrences,
     cursor: &QuotedSourceCursor,
-    fallback_span: Option<Span>,
+    span: Span,
+    form: TryForm,
     sources: &SourceMap,
 ) -> Result<Spanned<Expr>, QuotedSourceError> {
-    let entries = decode_keyword_entries(cursor)?;
-    let Some((_, body)) = entries.into_iter().find(|(key, _)| key == "do") else {
-        return Err(QuotedSourceError::new(
+    let mut entries = decode_keyword_entries(cursor)?;
+    if entries.len() > 1 {
+        return decode_try(occurrences, cursor, span, form, sources);
+    }
+    match entries.pop() {
+        Some((key, body)) if key == "do" => decode_expr(occurrences, &body, Some(span), sources),
+        _ => Err(QuotedSourceError::new(
             "quoted function clause is missing its `do` body",
-        ));
-    };
-    decode_expr(occurrences, &body, fallback_span, sources)
+        )),
+    }
 }
 
 /// An expression decoded on its own, outside any function's lambda
@@ -538,7 +547,9 @@ fn decode_named_expr(
         ("receive", 1) if quoted_do_entry(&args[0]).is_some_and(|body| quoted_clause_list_shaped(&body, sources)) => {
             decode_receive(occurrences, args, span, sources)
         }
-        ("try", 1) if quoted_do_entry(&args[0]).is_some() => decode_try(occurrences, args, span, sources),
+        ("try", 1) if quoted_do_entry(&args[0]).is_some() => {
+            decode_try(occurrences, &args[0], span, TryForm::Try, sources)
+        }
         ("fn", _) => decode_lambda(occurrences, args, span, sources),
         ("quote", 1) if quoted_do_entry(&args[0]).is_some() => decode_quote(occurrences, args, span, sources),
         ("unquote", 1) => {
@@ -883,11 +894,12 @@ fn decode_receive(
 /// `catch` holds `->` clauses of one head (a throw) or two (kind and value).
 fn decode_try(
     occurrences: &mut LambdaOccurrences,
-    args: &[QuotedSourceCursor],
+    sections: &QuotedSourceCursor,
     span: Span,
+    form: TryForm,
     sources: &SourceMap,
 ) -> Result<Spanned<Expr>, QuotedSourceError> {
-    let entries = decode_keyword_entries(&args[0])?;
+    let entries = decode_keyword_entries(sections)?;
     if entries.len() == 1 {
         return Err(invalid_try(span, "missing :catch/:rescue/:after option in \"try\""));
     }
@@ -902,16 +914,16 @@ fn decode_try(
                 .replace(decode_expr(occurrences, value, Some(span), sources)?)
                 .is_some(),
             "rescue" => rescue
-                .replace(decode_rescue_clauses(occurrences, value, span, sources)?)
+                .replace(decode_rescue_clauses(occurrences, value, span, form, sources)?)
                 .is_some(),
             "else" => else_clauses
-                .replace(decode_try_else_clauses(occurrences, value, span, sources)?)
+                .replace(decode_try_else_clauses(occurrences, value, span, form, sources)?)
                 .is_some(),
             "after" => after
                 .replace(Box::new(decode_expr(occurrences, value, Some(span), sources)?))
                 .is_some(),
             "catch" => catch
-                .replace(decode_catch_clauses(occurrences, value, span, sources)?)
+                .replace(decode_catch_clauses(occurrences, value, span, form, sources)?)
                 .is_some(),
             other => {
                 return Err(QuotedSourceError::new(format!(
@@ -934,6 +946,7 @@ fn decode_try(
             catch: catch.unwrap_or_default(),
             else_clauses: else_clauses.unwrap_or_default(),
             after,
+            form,
         },
         span,
     ))
@@ -943,13 +956,23 @@ fn invalid_try(span: Span, message: impl Into<String>) -> QuotedSourceError {
     QuotedSourceError::user(crate::diag::codes::PARSE_INVALID_TRY, Some(span), message)
 }
 
+/// A `catch` or `else` section that is not `->` clauses, named after the form
+/// that wrote the `try`, as Elixir names it.
+fn invalid_try_section(span: Span, section: &str, form: TryForm) -> QuotedSourceError {
+    invalid_try(
+        span,
+        format!("expected -> clauses for :{section} in \"{}\"", form.keyword()),
+    )
+}
+
 fn decode_try_else_clauses(
     occurrences: &mut LambdaOccurrences,
     cursor: &QuotedSourceCursor,
     try_span: Span,
+    form: TryForm,
     sources: &SourceMap,
 ) -> Result<Vec<MatchClause>, QuotedSourceError> {
-    let invalid_block = || invalid_try(try_span, "expected -> clauses for :else in \"try\"");
+    let invalid_block = || invalid_try_section(try_span, "else", form);
     if !cursor.is_list_like() {
         return Err(invalid_block());
     }
@@ -973,12 +996,16 @@ fn decode_rescue_clauses(
     occurrences: &mut LambdaOccurrences,
     cursor: &QuotedSourceCursor,
     try_span: Span,
+    form: TryForm,
     sources: &SourceMap,
 ) -> Result<Vec<RescueClause>, QuotedSourceError> {
     let invalid_block = || {
         invalid_try(
             try_span,
-            "invalid \"rescue\" block in \"try\", it expects \"pattern -> expr\" clauses",
+            format!(
+                "invalid \"rescue\" block in \"{}\", it expects \"pattern -> expr\" clauses",
+                form.keyword()
+            ),
         )
     };
     if !cursor.is_list_like() {
@@ -1021,9 +1048,10 @@ fn decode_catch_clauses(
     occurrences: &mut LambdaOccurrences,
     cursor: &QuotedSourceCursor,
     try_span: Span,
+    form: TryForm,
     sources: &SourceMap,
 ) -> Result<Vec<CatchClause>, QuotedSourceError> {
-    let invalid_block = || invalid_try(try_span, "expected -> clauses for :catch in \"try\"");
+    let invalid_block = || invalid_try_section(try_span, "catch", form);
     if !cursor.is_list_like() {
         return Err(invalid_block());
     }

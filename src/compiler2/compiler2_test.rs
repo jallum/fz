@@ -1425,12 +1425,12 @@ fn compiler_rejects_cold_malformed_defs_before_publication() {
         (
             "bodyless_def.fz",
             "def broken\ndef main(), do: 42\n",
-            "must have exactly one `do` body",
+            "must have one `do` body, with only `rescue`, `catch`, `else` or `after` beside it",
         ),
         (
             "extra_def_body_keyword.fz",
             "def broken(), do: 1, nope: 2\ndef main(), do: 42\n",
-            "must have exactly one `do` body",
+            "must have one `do` body, with only `rescue`, `catch`, `else` or `after` beside it",
         ),
         (
             "literal_def_head.fz",
