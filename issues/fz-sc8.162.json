@@ -9,9 +9,15 @@
   "id": "fz-sc8.162",
   "labels": [],
   "parent": "fz-sc8",
+  "comments": [
+    {
+      "text": "Seen again 2026-11-17 by Callables (fz-sc8.226, #721): inspect prints [by: {:\u0026, ...}] on one line where Elixir breaks it at 80 columns; fixture 01373 avoids long terms because of it.",
+      "timestamp": "2026-11-18T03:11:54Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "IO.inspect breaks a long collection across lines at 80 columns",
   "type": "bug",
-  "updated_at": "2026-11-17T23:49:31Z"
+  "updated_at": "2026-11-18T03:11:54Z"
 }
