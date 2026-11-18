@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-9e2.12"
+  ],
   "created": "2026-11-18T21:21:28Z",
   "description": "A message copy never writes into a static literal's buffer.\n\ndeep_copy.rs:299 calls shared_bin_freeze (bits.rs:244) on every copied view. That includes the baked static SharedBin of a literal over 64 B, which is declared writable with room 0 (src/ir_codegen/aot_main.rs:217). Whichever scheduler thread sends does a non-atomic `room |= FROZEN` on shared program data. In practice the write is benign and idempotent; in the Rust memory model it is a data race.\n\nThe same arm makes one BinRef plus one atomic retain per copied view. That contradicts the documented rule of one BinRef per buffer per heap (runtime.md R15).\n\nFix:\n- Static buffers read as frozen by construction: bake FROZEN into room at link time, or place them in rodata with the refcount handled as static.\n- Freeze only a buffer that has room.\n- Dedup BinRefs per gift if a measurement shows a message holding several views of one buffer.\n\nAcceptance:\n- A fixture sends a \u003e64 B literal from several processes.\n- The static buffer is read-only (rodata), or the code provably never stores to it.\n- The BinRef count per gift is pinned.\n\nAlso here (from fz-9e2.2): SHARED_BIN_ROOM_OFFSET (runtime/src/bits.rs) is held only by a layout test while aot_main.rs hard-codes offsets 32..40. Baking the room word uses the constant, or the constant and its test go.",
   "id": "fz-9e2.4",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "A message copy never writes into a static literal's buffer",
   "type": "task",
-  "updated_at": "2026-11-18T21:24:37Z"
+  "updated_at": "2026-11-18T23:49:20Z"
 }
