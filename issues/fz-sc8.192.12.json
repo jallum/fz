@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-18T23:10:03Z",
+  "description": "Page v3 ruling (user 2026-11-18, verbatim via Optimize): \"a, b approved. continue to stack.\" Page: https://claude.ai/artifact/MmnrdprbWQMF24ejqsUaQL (decision A).\n\n%{^key =\u003e value} in a case pattern (and in function heads and receive, wherever a map pattern is allowed) matches on interp, run and build, as in Elixir. Today compiler2 rejects it: 'compiler2 case patterns require literal map keys' (src/dispatch_matrix/pattern.rs map_key). Region::MapKeyPresent carries a GroundValue through the matrix, reachability, canon, the interpreter and receive.\n\nThis is an Elixir-parity gap in its own right. It is how Elixir writes Map.get/3, replace/3 and update/4, and the compiled match learns of a miss the way the matcher does (a null word tested inline). It replaces a get-with-default or {:ok, v}-building runtime entry, which would have been a second mechanism.\n\nDesign page first, to the user before any build. Builder: Optimize, stacked on #761.",
+  "id": "fz-sc8.192.12",
+  "labels": [],
+  "parent": "fz-sc8.192",
+  "priority": 1,
+  "status": "open",
+  "title": "A map pattern's key may be a pinned variable",
+  "type": "task",
+  "updated_at": "2026-11-18T23:10:03Z"
+}
