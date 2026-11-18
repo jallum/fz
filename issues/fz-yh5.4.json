@@ -7,9 +7,15 @@
   "id": "fz-yh5.4",
   "labels": [],
   "parent": "fz-yh5",
+  "comments": [
+    {
+      "text": "Binary Handling's study (fz-9e2 comparison page https://claude.ai/artifact/TcAEDvtpU2HKcCV66ppTe6): in the decoder-shaped binary match loop, 100 of 164 instructions per iteration are the non-tail call's cost. That loop is a ready probe for this ticket; the programs are in /Users/j5n/Workspace/fz-binaries/examples.",
+      "timestamp": "2026-11-18T21:55:35Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "A non-tail call to a callee that cannot suspend builds no continuation",
   "type": "task",
-  "updated_at": "2026-11-18T21:45:30Z"
+  "updated_at": "2026-11-18T21:55:35Z"
 }
