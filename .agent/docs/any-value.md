@@ -602,8 +602,11 @@ and compacts that same allocation, then clears construction state. A published
 map cannot be reopened for mutation. `put`, `delete`, and lookup share one
 binary search, which reads each probed key from the contiguous key array
 (`map_key_in_arrays`) and decodes only the key, never the value; put/delete
-preserve order while copying the new sequence, and
-an absent deletion returns the original map with no allocation. GC and
+preserve order while copying the new sequence. A put into a flat map that
+stays flat copies the entries it keeps as their stored words and kind bytes
+(`alloc_flat_map_with`), decoding none of them: each was shared when it was
+first stored, so only the new entry is published. An absent deletion returns
+the original map with no allocation. GC and
 cross-heap transport preserve structural order without a sort.
 
 A list, tuple or map literal whose every part is a constant is one `Const`

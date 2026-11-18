@@ -5,7 +5,7 @@
 use super::*;
 use crate::any_value::{
     AnyValueRef, EMPTY_LIST, ValueKind, heap_word_addr, map_addr_from_tagged, map_count, map_entry, map_header_is_trie,
-    map_node_child_count, map_object_size, map_slot_raw_kinds,
+    map_node_child_count, map_object_size, map_slot_raw_kinds, map_tag_bytes_len,
 };
 use crate::heap::{Generation, MapLayout, SchemaRegistry, measure_deep_copy};
 use crate::sched::gift_copy;
@@ -615,6 +615,40 @@ fn keys_that_share_a_whole_hash_are_put_and_deleted_through_collision_nodes_and_
         assert_eq!(shape(root_addr(map)), shape(root_addr(bulk)), "step {step}");
     }
     assert!(saw_collision_shrink);
+}
+
+/// The header, kind bytes, keys and values of the flat map `map`.
+fn flat_map_bytes(map: AnyValueRef) -> Vec<u8> {
+    let addr = root_addr(map);
+    let count = unsafe { map_count(addr) };
+    unsafe { std::slice::from_raw_parts(addr, 8 + map_tag_bytes_len(count) + 16 * count) }.to_vec()
+}
+
+/// A put copies the entries it keeps as the words they are stored as, so the
+/// map it makes must be, byte for byte, the one a bulk build of the same
+/// entries makes: wherever the key lands, whatever kinds sit around it, and
+/// whether it is new or replaces an entry.
+#[test]
+fn a_put_into_a_flat_map_makes_the_map_a_bulk_build_of_its_entries_makes() {
+    let mut heap = heap();
+    let atom = AnyValue::atom(heap.node.intern_atom("held"));
+    let list = AnyValue::decode_tagged_heap_bits(heap.alloc_list_cons_slot(AnyValue::int(7), EMPTY_LIST))
+        .expect("a list value");
+    let kinds = [AnyValue::int(-1), atom, list, AnyValue::EmptyList, AnyValue::float(2.5)];
+    for size in [1i64, 7, 8, 9, 16, 17, MAP_FLAT_MAX as i64 - 1] {
+        let held: Vec<(AnyValue, AnyValue)> = (0..size)
+            .map(|i| (AnyValue::int(i * 2), kinds[i as usize % kinds.len()]))
+            .collect();
+        let flat = map_ref(heap.alloc_map_slots(&held));
+        for key in [-1, 0, size - 1, size, size * 2 - 2, size * 2 - 1] {
+            let put = heap.map_view_put(layout_of(&heap, flat), AnyValue::int(key), list);
+            let mut entries = held.clone();
+            entries.retain(|entry| int_of(entry.0) != key);
+            entries.push((AnyValue::int(key), list));
+            let bulk = map_ref(heap.alloc_map_slots(&entries));
+            assert_eq!(flat_map_bytes(put), flat_map_bytes(bulk), "{size} entries, key {key}");
+        }
+    }
 }
 
 #[test]
