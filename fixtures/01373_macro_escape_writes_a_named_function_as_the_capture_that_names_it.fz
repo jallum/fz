@@ -1,0 +1,57 @@
+#---
+# purpose: "Macro.escape/1 writes a function a module defines by name as the capture that names it, &Mod.fun/arity, as in Elixir, alone or nested in a list, tuple or map; a macro unquotes the escaped capture, or builds the same quoted capture by hand, and the code it returns calls the function; a defstruct default that is such a capture, written or computed, is kept; an anonymous function is still refused"
+# oracle: self
+# oracle.stamp: c313816925a2a897
+#---
+defmodule Text do
+  def shout(word), do: String.upcase(word) <> "!"
+
+  defmacro measure() do
+    quote do: unquote(Macro.escape(&String.length/1))
+  end
+
+  defmacro by_hand() do
+    {:&, [], [{:/, [], [{{:., [], [Text, :shout]}, [no_parens: true], []}, 1]}]}
+  end
+
+  defmacro table() do
+    quote do: unquote(Macro.escape(%{size: &String.length/1, loud: {&Text.shout/1, 1, 2}}))
+  end
+end
+
+defmodule Counter do
+  defstruct by: &String.length/1, all: Enum.map([1, 2], fn _ -> &Text.shout/1 end)
+end
+
+defmodule Main do
+  require Text
+
+  def refusal(value) do
+    try do
+      Macro.escape(value)
+    rescue
+      e in ArgumentError -> {:refused, String.ends_with?(Exception.message(e), "remote functions in the format &Mod.fun/arity")}
+    end
+  end
+
+  def main() do
+    IO.inspect(Macro.escape(&String.length/1))
+    IO.inspect(Macro.escape(&Text.shout/1))
+    shout = Macro.escape(&Text.shout/1)
+    IO.inspect(Macro.escape([by: &Text.shout/1]) == [by: shout])
+    IO.inspect(Macro.escape({1, &Text.shout/1, 3}) == {:{}, [], [1, shout, 3]})
+    IO.inspect(Macro.escape(%{by: &Text.shout/1}) == {:%{}, [], [by: shout]})
+    IO.inspect(Text.measure().("four"))
+    IO.inspect(Text.by_hand().("hey"))
+    table = Text.table()
+    IO.inspect(table.size.("abc"))
+    IO.inspect(elem(table.loud, 0).("abc"))
+    counter = %Counter{}
+    IO.inspect(counter.by.("seven"))
+    IO.inspect(Enum.map(counter.all, fn shout -> shout.("a") end))
+    IO.inspect(refusal(fn word -> word end))
+    IO.inspect(refusal([1, {2, fn -> 1 end}]))
+  end
+end
+
+Main.main()

@@ -207,8 +207,10 @@ out starts from that value. It can call a module that is already defined,
 through an alias or an import if the module has one, but not a function of
 the module that holds the <code>defstruct</code>, which is not available
 until that module is defined. The value has to be one that code can write:
-a number, atom, bitstring, list, tuple, map or struct of those. A reference
-or a function raises <code>ArgumentError</code> naming the field.</p>
+a number, atom, bitstring, a function captured by name such as
+<code>&amp;String.length/1</code>, or a list, tuple, map or struct of those.
+A reference or an anonymous function raises <code>ArgumentError</code> naming
+the field.</p>
 
 <pre><span class="kw">defmodule</span> <span class="ty">Tally</span> <span class="kw">do</span>
   <span class="kw">defstruct</span> count: <span class="ty">Enum</span>.<span class="fn">count</span>([<span class="num">1</span>, <span class="num">2</span>]), seen: <span class="ty">MapSet</span>.<span class="fn">new</span>([<span class="num">1</span>])
@@ -491,7 +493,8 @@ of Elixir's <code>MapSet</code> (<code>union</code>, <code>intersection</code>,
 
 <p><code>Macro</code> (<code>lib/macro.fz</code>) has <code>escape/1</code>,
 which turns a value into the quoted code that rebuilds it (see the macros
-guide). A PID, a reference or a function raises <code>ArgumentError</code>.
+guide). A named function is escaped as <code>&amp;Mod.fun/arity</code>; a PID,
+a reference or an anonymous function raises <code>ArgumentError</code>.
 <code>escape/2</code> and the rest of Elixir's <code>Macro</code> are not
 built.</p>
 

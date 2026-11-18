@@ -1398,3 +1398,65 @@ fn a_function_reports_the_number_of_arguments_it_takes_not_counting_its_captures
         assert_eq!(fz_function_arity(process_ptr, two_with_a_capture), 2);
     });
 }
+
+#[test]
+fn a_named_function_reports_its_module_name_and_arity_and_a_lambda_reports_nothing() {
+    use crate::function_denotation::{FunctionDenotation, FunctionOrigin, LambdaOccurrence};
+    use crate::module_name::ModuleName;
+    use std::sync::Arc;
+
+    with_process(|process| {
+        let named_id = crate::any_value::ClosureDenotationId::user(0);
+        let lambda_id = crate::any_value::ClosureDenotationId::user(1);
+        let top_level_id = crate::any_value::ClosureDenotationId::user(2);
+        let named = Arc::new(FunctionDenotation::named(
+            Some(ModuleName::from_segments(vec!["Shop".into(), "Cart".into()])),
+            "total".into(),
+            2,
+        ));
+        let lambda = Arc::new(FunctionDenotation {
+            origin: FunctionOrigin::Generated {
+                owner: Arc::clone(&named),
+                occurrence: LambdaOccurrence::from_u32(0),
+            },
+            arity: 1,
+        });
+        let top_level = Arc::new(FunctionDenotation::named(None, "main".into(), 0));
+        process.node.register_closure_denotation(named_id, named);
+        process.node.register_closure_denotation(lambda_id, lambda);
+        process.node.register_closure_denotation(top_level_id, top_level);
+        let process_ptr = process as *mut Process;
+        let closure = |process: &mut Process, id, arity| process.heap.alloc_closure(id, arity, 0, 0, 0x1234, &[]);
+
+        let named = closure(process, named_id, 2);
+        let answer = AnyValueRef::from_raw_word(fz_function_name(process_ptr, named)).unwrap();
+        let module = process.heap.read_list_head_ref(answer).unwrap();
+        let rest = process.heap.read_list_tail_ref(answer).unwrap();
+        let name = process.heap.read_list_head_ref(rest).unwrap();
+        let rest = process.heap.read_list_tail_ref(rest).unwrap();
+        let arity = process.heap.read_list_head_ref(rest).unwrap();
+        let atom = |process: &Process, value: AnyValueRef| {
+            process
+                .node
+                .atom_name(value.load_atom().unwrap() as u32)
+                .unwrap()
+                .to_string()
+        };
+        assert_eq!(atom(process, module), "Elixir.Shop.Cart");
+        assert_eq!(atom(process, name), "total");
+        assert_eq!(arity.load_int(), Ok(2));
+        assert_eq!(
+            process.heap.read_list_tail_ref(rest).unwrap(),
+            AnyValueRef::empty_list()
+        );
+
+        for (id, arity) in [(lambda_id, 1), (top_level_id, 0)] {
+            let unnamed = closure(process, id, arity);
+            assert_eq!(
+                fz_function_name(process_ptr, unnamed),
+                AnyValueRef::empty_list().raw_word(),
+                "only a named function in a module can be written `&Mod.fun/arity`",
+            );
+        }
+    });
+}

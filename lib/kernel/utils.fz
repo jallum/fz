@@ -10,7 +10,7 @@ defmodule Kernel.Utils do
 
   A field written as a bare name has the default `nil`. A default is escaped
   with `Macro.escape/1`, so a default that cannot be escaped, such as a
-  reference or a function, raises `ArgumentError` naming the field. A field
+  reference or an anonymous function, raises `ArgumentError` naming the field. A field
   list that is not a list, a field name that is not an atom, and a field named
   `:__struct__` each raise `ArgumentError` too.
 

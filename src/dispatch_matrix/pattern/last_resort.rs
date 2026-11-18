@@ -158,7 +158,9 @@ impl LastResort {
     /// exception declares in order and the default of each: what this
     /// failure sets, or the default. A failure that sets a field the
     /// exception does not declare has no struct to raise, and the error
-    /// names the field.
+    /// names the field. So does a field that holds a function: a backend
+    /// builds the struct from written values, and a function is compiled
+    /// code.
     pub(crate) fn struct_fields<'a>(
         &'a self,
         declared: &'a [String],
@@ -173,7 +175,7 @@ impl LastResort {
         {
             return Err(format!("exception `{exception}` declares no field `{stray}`"));
         }
-        Ok(declared
+        declared
             .iter()
             .zip(defaults)
             .map(|(field, default)| {
@@ -183,9 +185,14 @@ impl LastResort {
                     Some((_, FieldTerm::Literal(value))) => RaisedField::Literal(value),
                     None => RaisedField::Literal(default),
                 };
-                (field.as_str(), held)
+                match held {
+                    RaisedField::Literal(term) if term.holds_a_function() => Err(format!(
+                        "exception `{exception}` holds a function in its field `{field}`, which a backend cannot build"
+                    )),
+                    held => Ok((field.as_str(), held)),
+                }
             })
-            .collect())
+            .collect()
     }
 
     /// How many of the plan's leading inputs the last resort reads: the

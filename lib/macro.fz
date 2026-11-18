@@ -18,8 +18,11 @@ defmodule Macro do
   escaped as the map it is. A bitstring that is not a binary is its leading
   `rem(bit_size(value), 8)` bits as an integer, then the rest as a binary.
 
-  A PID, a reference and a function name nothing in the compiled program, so
-  each raises `ArgumentError`, wherever it is inside `value`.
+  A function a module defines by name is the capture that names it,
+  `&Mod.fun/arity`.
+
+  A PID, a reference and an anonymous function name nothing in the compiled
+  program, so each raises `ArgumentError`, wherever it is inside `value`.
 
   ## Examples
 
@@ -32,6 +35,9 @@ defmodule Macro do
       Macro.escape([ok: {1, 2}])
       #=> [ok: {1, 2}]
 
+      Macro.escape(&String.length/1)
+      #=> {:&, [], [{:/, [], [{{:., [], [String, :length]}, [no_parens: true], []}, 1]}]}
+
   """
   @spec escape(any) :: any
   def escape(value) when is_atom(value) or is_number(value) or is_binary(value), do: value
@@ -41,9 +47,22 @@ defmodule Macro do
   def escape(value) when is_list(value), do: escape_each(value)
   def escape(value) when is_map(value), do: {:%{}, [], escape_each(Map.to_list(value))}
 
-  def escape(value) do
-    raise(ArgumentError, "cannot escape #{inspect(value)}. The supported values are: lists, tuples, maps, atoms, numbers and bitstrings")
+  def escape(value) when is_function(value), do: escape_function(value, fz_function_name(value))
+  def escape(value), do: refuse(value)
+
+  @spec escape_function(fun, list) :: tuple
+  defp escape_function(_function, [module, name, arity]) do
+    {:&, [], [{:/, [], [{{:., [], [module, name]}, [no_parens: true], []}, arity]}]}
   end
+
+  defp escape_function(function, _unnamed), do: refuse(function)
+
+  @spec refuse(any) :: never
+  defp refuse(value) do
+    raise(ArgumentError, "cannot escape #{inspect(value)}. The supported values are: lists, tuples, maps, atoms, numbers, bitstrings and remote functions in the format &Mod.fun/arity")
+  end
+
+  extern "fz" defp fz_function_name(fun) :: any
 
   @spec escape_each([any]) :: [any]
   defp escape_each(values), do: Enum.map(values, fn value -> escape(value) end)

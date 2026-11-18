@@ -447,8 +447,17 @@ A value the macro computes enters the returned code through `Macro.escape/1`
 quoted code that rebuilds the value, in Elixir's shapes: a tuple that is not a
 pair is `{:{}, [], elements}`, a map is `{:%{}, [], pairs}` in `Map.to_list`
 order, and a bitstring that is not a binary is a `<<>>` of its leading
-`rem(bit_size, 8)` bits and its binary rest. A PID, a reference or a function,
-at any depth, raises `ArgumentError`: it names nothing in the compiled program.
+`rem(bit_size, 8)` bits and its binary rest. A function a module defines by
+name is the capture that names it,
+`{:&, [], [{:/, [], [{{:., [], [Mod, :fun]}, [no_parens: true], []}, arity]}]}`,
+with `Mod` the module's atom. `escape/1` asks the runtime for the three parts
+(`fz_function_name`, which reads the source denotation the `Node` keeps for
+every closure) and the quoted reader takes that shape as a capture
+(`decode_fn_ref_target` in `src/compiler2/quoted_function.rs`). A function
+captured by its local name is the same value as one captured through its
+module, so it escapes the same way. A PID, a reference or an anonymous
+function, at any depth, raises `ArgumentError`: it names nothing in the
+compiled program.
 
 ### Where expanded code is reported
 

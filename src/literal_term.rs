@@ -1,19 +1,27 @@
 //! A value written out in full.
 
-use crate::ast::{Expr, Spanned};
+use crate::ast::{CallableName, Expr, ModuleTarget, Spanned};
 use crate::ground_value::GroundValue;
 use crate::source::Span;
+use fz_runtime::module_name::ModuleDenotation;
 
-/// A value written out in full: a scalar, or a list, tuple or map of such
-/// values. It names nothing, so it means the same wherever it is read. A
-/// field default is one, which is why a struct literal in any module can
-/// start from it.
+/// A value written out in full: a scalar, a function named by its module, or
+/// a list, tuple or map of such values. It reads no alias, import or
+/// variable, so it means the same wherever it is read. A field default is
+/// one, which is why a struct literal in any module can start from it.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum LiteralTerm {
     Ground(GroundValue),
     List(Vec<LiteralTerm>),
     Tuple(Vec<LiteralTerm>),
     Map(Vec<(LiteralTerm, LiteralTerm)>),
+    /// `&Mod.fun/arity`, with `Mod` the module itself and not a spelling an
+    /// alias could redirect.
+    Function {
+        module: ModuleDenotation,
+        name: String,
+        arity: usize,
+    },
 }
 
 impl LiteralTerm {
@@ -40,6 +48,18 @@ impl LiteralTerm {
                     .map(|(key, value)| Some((Self::of(&key.node)?, Self::of(&value.node)?)))
                     .collect::<Option<_>>()?,
             ),
+            Expr::FnRef {
+                name:
+                    CallableName {
+                        module: Some(ModuleTarget::Exact(module)),
+                        name,
+                    },
+                arity,
+            } => Self::Function {
+                module: module.clone(),
+                name: name.clone(),
+                arity: *arity,
+            },
             _ => return None,
         })
     }
@@ -62,14 +82,34 @@ impl LiteralTerm {
                     .map(|(key, value)| (key.expr(span), value.expr(span)))
                     .collect(),
             ),
+            Self::Function { module, name, arity } => Expr::FnRef {
+                name: CallableName {
+                    module: Some(ModuleTarget::Exact(module.clone())),
+                    name: name.clone(),
+                },
+                arity: *arity,
+            },
         };
         Spanned::new(node, span)
+    }
+
+    /// Whether a function is anywhere in this term.
+    pub fn holds_a_function(&self) -> bool {
+        match self {
+            Self::Ground(_) => false,
+            Self::Function { .. } => true,
+            Self::List(items) | Self::Tuple(items) => items.iter().any(Self::holds_a_function),
+            Self::Map(entries) => entries
+                .iter()
+                .any(|(key, value)| key.holds_a_function() || value.holds_a_function()),
+        }
     }
 
     /// Every scalar this term is built from, in the order it writes them.
     pub fn each_ground<'a>(&'a self, visit: &mut impl FnMut(&'a GroundValue)) {
         match self {
             Self::Ground(value) => visit(value),
+            Self::Function { .. } => {}
             Self::List(items) | Self::Tuple(items) => items.iter().for_each(|item| item.each_ground(visit)),
             Self::Map(entries) => entries.iter().for_each(|(key, value)| {
                 key.each_ground(visit);

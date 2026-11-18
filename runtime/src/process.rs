@@ -491,6 +491,23 @@ impl Node {
             .hash
     }
 
+    /// The module atom and the name of the function a closure was made from,
+    /// when it is a named function in a module: what `&Mod.fun/arity` spells.
+    /// A lambda and a function outside every module have no such spelling.
+    pub fn closure_module_and_name(&self, id: ClosureDenotationId) -> Option<(String, String)> {
+        id.user_index();
+        let origins = self.closure_denotations.borrow();
+        let denotation = &origins
+            .get(&id)
+            .expect("published closure must have a source denotation")
+            .origin;
+        if denotation.is_generated() {
+            return None;
+        }
+        let (module, name) = denotation.elixir_module_and_name();
+        Some((module?, name))
+    }
+
     #[cfg(test)]
     pub(crate) fn closure_denotation(&self, id: ClosureDenotationId) -> Arc<FunctionDenotation> {
         Arc::clone(
