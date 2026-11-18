@@ -3,7 +3,7 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-18T04:08:43Z",
-  "description": "Approved by the user 2026-11-17 (relayed by JSON) from the JSON machine-code study (fz vs BEAM JIT, lldb single-step traces). Study files: /private/tmp/claude-501/-Users-j5n-Workspace-fz/ebbfffd8-2561-4da7-bcda-f9a316d00a1e/scratchpad/jsonasm/ (listings/, listings/beam/, CLIF dumps).\n\nEvidence: 15 of ~25 instructions in an inline allocation are five read-modify-writes to process offsets 0x160, 0x170, 0x178, 0x1b0, 0x1b8, on every continuation and every box. Source: place_cont_closure and the alloc path in src/compiler2/native_codegen/closure.rs.\n\nFix: count on the slow (refill) path, or derive the counts from the bump-pointer distance per block. heap_alloc_stats stays exact (pins read it).\n\nRelated: fz-9x7.16 (runtime reports in-use and idle bytes, GC session). Agree the counting design with GC before building.",
+  "description": "Approved by the user 2026-11-17 (relayed by JSON) from the JSON machine-code study (fz vs BEAM JIT, lldb single-step traces). Study files: /private/tmp/claude-501/-Users-j5n-Workspace-fz/ebbfffd8-2561-4da7-bcda-f9a316d00a1e/scratchpad/jsonasm/.\n\nEvidence: 15 of ~25 instructions in an inline allocation are five read-modify-writes to process stat offsets (0x160, 0x170, 0x178, 0x1b0, 0x1b8; runtime/src/heap/mod.rs:108-111: total.allocs, total.bytes, continuation.allocs, continuation.bytes, ...), on every continuation and every box. Source: place_cont_closure and the alloc path in src/compiler2/native_codegen/closure.rs.\n\nConstraints (GC, from origin/develop): the reader is fz_process_heap_alloc_stats (runtime/src/ir_runtime.rs:108); 56 fixtures pin *_allocs counts (e.g. 01592 list_cons_allocs == 0), so counts stay exact. Deriving from bump distance per block, or counting on the refill path, gives bytes but not per-object or per-kind counts, so neither keeps the counts exact. fz-9x7.16's in_use/idle figures come from the block pool (pool_footprint / Footprint), not HeapAllocStats, and are unaffected.\n\nOptions that keep counts exact: (a) the compiler sums each straight-line region's allocations by kind and size and emits one add per counter per region instead of per object; (b) the stats become test-only (needs a user ruling on what production observes).\n\nMeasurement first: how many inline allocations share a region on msg and enum. Then a page (GC offers review).",
   "id": "fz-9x7.37",
   "labels": [],
   "parent": "fz-9x7",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "Allocation statistics leave the inline allocation path",
   "type": "task",
-  "updated_at": "2026-11-18T04:08:43Z"
+  "updated_at": "2026-11-18T04:09:24Z"
 }
