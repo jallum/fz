@@ -223,3 +223,33 @@ fn else_alone_is_a_case_with_no_handler() {
     let shape = try_shape(838, "main", 0);
     assert_eq!((shape.tries, shape.handlers, shape.pops), (0, 0, 0));
 }
+
+/// An outcome edge carries what its target reads: of the four arms of
+/// fixture 01704's `case`, only the one whose body reads its binding hands
+/// the arm an argument. A name nothing reads, and one only a guard reads,
+/// travel nowhere, since the dispatch reads the guard's subject itself.
+#[test]
+fn a_case_arm_is_handed_only_the_bindings_its_body_reads() {
+    use super::super::body::{LoweredBody, LoweredTail};
+    let settled = Drive::fixture(1704).settle();
+    let body = settled
+        .world()
+        .lowered_body(module_function_id(settled.functions(), "Main", "pick", 1));
+    let LoweredBody::Clauses { entries, .. } = &*body;
+    let handed: Vec<usize> = entries
+        .iter()
+        .filter(|entry| matches!(entry.tail, LoweredTail::Dispatch { .. }))
+        .flat_map(|entry| entry.tail.outcome_edges())
+        .map(|edge| edge.arguments.len())
+        .collect();
+    assert_eq!(handed, vec![0, 0, 1, 0]);
+    for entry in entries {
+        for edge in entry.tail.outcome_edges() {
+            assert_eq!(
+                entries[edge.target.as_u32() as usize].params.len(),
+                edge.arguments.len(),
+                "the arm's parameters are exactly the arguments its edge hands"
+            );
+        }
+    }
+}
