@@ -888,22 +888,52 @@ impl Heap {
     /// key is new and the map held `MAP_FLAT_MAX` entries.
     pub(super) fn map_put_entry(&mut self, addr: *mut u8, key: AnyValue, value: AnyValue) -> u64 {
         let count = unsafe { map_count(addr) };
-        let position = self.map_key_position(addr, key);
-        let (index, inserted) = match position {
-            Ok(index) => (index, 0),
-            Err(index) => (index, 1),
-        };
-        let entries = (0..count + inserted).map(|i| {
-            if i == index {
-                (key, value)
-            } else {
-                unsafe { map_entry(addr, if i < index { i } else { i - inserted }) }
+        match self.map_key_position(addr, key) {
+            Err(index) if count == MAP_FLAT_MAX => {
+                let mut entries: Vec<_> = (0..count).map(|i| unsafe { map_entry(addr, i) }).collect();
+                entries.insert(index, (key, value));
+                self.alloc_trie(&entries)
             }
-        });
-        if count + inserted > MAP_FLAT_MAX {
-            return self.alloc_trie(&entries.collect::<Vec<_>>());
+            position => self.alloc_flat_map_with(addr, count, position, key, value),
         }
-        self.alloc_ordered_map_entries(entries)
+    }
+
+    /// A flat map of the `count` entries at `source` with `key` bound to
+    /// `value` at `position`: in place of the entry there, or before it. The
+    /// entries kept are copied as the words and kind bytes they are stored
+    /// as. Each was shared when it was first stored, so only the new entry is
+    /// published.
+    fn alloc_flat_map_with(
+        &mut self,
+        source: *const u8,
+        count: usize,
+        position: Result<usize, usize>,
+        key: AnyValue,
+        value: AnyValue,
+    ) -> u64 {
+        assert_ne!(key.kind(), ValueKind::NULL, "unpublished map key");
+        let (index, kept_from) = match position {
+            Ok(index) => (index, index + 1),
+            Err(index) => (index, index),
+        };
+        let around = Around {
+            before: index,
+            after: count - kept_from,
+            kept_from,
+        };
+        let new_count = index + 1 + around.after;
+        self.publish_contained_parts(key.raw(), key.kind());
+        self.publish_contained_parts(value.raw(), value.kind());
+        let p = self.alloc_kind(HeapAllocKind::Map, map_size_for_count(new_count));
+        unsafe {
+            write(p as *mut u64, map_header_word(new_count));
+            let tags = map_tag_ptr(p);
+            write_bytes(tags, 0, map_tag_bytes_len(new_count));
+            around.copy(map_tag_ptr(source), tags, map_pack_tag(key.kind(), value.kind()));
+            around.copy(map_keys_ptr(source, count), map_keys_ptr(p, new_count), key.raw());
+            around.copy(map_values_ptr(source, count), map_values_ptr(p, new_count), value.raw());
+        }
+        heap_object_word(p, ValueKind::MAP)
     }
 
     /// Where `key` is, or would be, in the flat map at `addr`.
@@ -1781,6 +1811,30 @@ impl StoredEntries {
             let tag = self.tags.add(to);
             write(tag, map_pack_tag(map_key_kind(read(tag)), map_value_kind(from.tag)));
             write(self.values.add(to), from.value);
+        }
+    }
+}
+
+/// The entries a put keeps: `before` of them ahead of the new entry, and
+/// `after` of them from slot `kept_from` of the source behind it.
+struct Around {
+    before: usize,
+    kept_from: usize,
+    after: usize,
+}
+
+impl Around {
+    /// Copy one of a flat map's arrays around `new`.
+    ///
+    /// # Safety
+    ///
+    /// `from` must hold `kept_from + after` items and `to` have room for
+    /// `before + 1 + after`, and the two must not overlap.
+    unsafe fn copy<T: Copy>(&self, from: *const T, to: *mut T, new: T) {
+        unsafe {
+            copy_nonoverlapping(from, to, self.before);
+            write(to.add(self.before), new);
+            copy_nonoverlapping(from.add(self.kept_from), to.add(self.before + 1), self.after);
         }
     }
 }
