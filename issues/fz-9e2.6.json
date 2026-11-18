@@ -9,9 +9,15 @@
   "id": "fz-9e2.6",
   "labels": [],
   "parent": "fz-9e2",
+  "comments": [
+    {
+      "text": "Optimize (2026-11-18) agrees this ticket replaces their fz-nml.29 page ticket 2b, which they will not build. The seam, as the nml.29 page (v3) states it: there is one mark position (word 0). A share of a value known to be a binary is the same inline sequence in either layout. nml.29 adds binaries to the types that can carry a mark. The landing order is pending the user's ruling on nml.29's three questions; Optimize will tell Binary Handling when it changes.",
+      "timestamp": "2026-11-18T21:23:59Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "A share is emitted only for a type that can carry a mark, and it is inline",
   "type": "task",
-  "updated_at": "2026-11-18T21:21:37Z"
+  "updated_at": "2026-11-18T21:23:59Z"
 }
