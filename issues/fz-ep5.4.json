@@ -11,9 +11,15 @@
   "id": "fz-ep5.4",
   "labels": [],
   "parent": "fz-ep5",
+  "comments": [
+    {
+      "text": "Design input from fz-sc8.233 (2026-11-17): the run-time type test's callable axis now carries the arities it admits (CallableShapes), read from the closure header on interp and native. If is_function(f, n) is recognised as a type predicate here, it should produce that arity-bearing test.",
+      "timestamp": "2026-11-18T03:14:05Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "A type predicate is recognised from its guards and clause specs, and Kernel's is_* rest on a primitive test",
   "type": "task",
-  "updated_at": "2026-11-14T11:48:28Z"
+  "updated_at": "2026-11-18T03:14:05Z"
 }
