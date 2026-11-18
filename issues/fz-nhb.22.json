@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-nhb.23"
+  ],
   "created": "2026-11-18T04:23:56Z",
   "description": "Found 2026-11-17 by Fixture Rework while probing the assert retirement (branch probe/unassert in ../fz-nhb20, local). Blocks the assert/refute retirement, which the user approved.\n\ndrive_test compiler2_dispatch_lists_its_bodies_in_the_graphs_first_match_order fails on 01527 once its asserts become c || raise(m): || expands to case left do nil -\u003e r; false -\u003e r; v -\u003e v end; on a known-boolean scrutinee the nil arm is dead, and \"the site lists [0, 1, 2] and the graph reaches [1, 2]\". The rewrite exposes it; the census simply never walked a || before.\n\nDiagnosis not done: decide whether the site should omit a statically dead arm or the census should accept it, by finding which of the two is the authority.",
   "id": "fz-nhb.22",
