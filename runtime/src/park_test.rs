@@ -195,3 +195,10 @@ fn a_site_without_an_after_body_says_so() {
     let site = leaked_site(pinned_eq_matcher, None, 0, &[clause(0x10, 1, 0)]);
     assert!(!record(site, frame_of(&mut process.heap, &[])).has_after());
 }
+
+/// A park record is the site, the frame and the after-timer's two fields, so
+/// the delivery state holds it in place and parking allocates nothing for it.
+#[test]
+fn a_park_record_is_six_words() {
+    assert_eq!(size_of::<ParkRecord>(), 6 * size_of::<usize>());
+}
