@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-9e2.1"
+    "fz-9e2.1",
+    "fz-9e2.7"
   ],
   "blocks": [],
   "created": "2026-11-18T21:21:30Z",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "A cursor is a shape only where it is taken apart; alignment is a lane fact",
   "type": "task",
-  "updated_at": "2026-11-18T21:21:38Z"
+  "updated_at": "2026-11-18T21:21:41Z"
 }
