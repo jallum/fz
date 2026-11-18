@@ -8,6 +8,12 @@
   "id": "fz-nml.24",
   "labels": [],
   "parent": "fz-nml",
+  "comments": [
+    {
+      "text": "Cause found by the builder (PR #718): mixed integer/float arithmetic already returned a raw f64; the boxes came from native_block_param_reprs forcing RawF64 to ValueRef and declaring every non-entry block parameter i64, so float-float loops boxed too. Fix: block parameters take AbiValueRepr::for_ty and their Cranelift type from it; block_param_abi_value_repr deleted. Fixture 01706: 1-2 boxes/step on run/build -\u003e 0 on all three paths; no pin moved. Retitled to match.",
+      "timestamp": "2026-11-18T03:06:24Z"
+    }
+  ],
   "priority": 3,
   "status": "closed",
   "title": "A float carried across a join stays a raw float on native",
