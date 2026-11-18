@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-9x7.11.4"
+  ],
   "blocks": [],
   "created": "2026-11-18T23:59:18Z",
   "description": "User approved 2026-11-18, verbatim via GC: \"agreed; proceed\". Step C3b of fz-9x7.11 page v4 (https://claude.ai/artifact/BB1FpQ1Cf7Jd5spZeLEWtg). One commit, judged on bench. Builder: GC. The alias and shared bits are set during the copy, leaves never go on the worklist, and a view is finished at once.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "A survivor is finished as it is copied",
   "type": "task",
-  "updated_at": "2026-11-18T23:59:18Z"
+  "updated_at": "2026-11-18T23:59:24Z"
 }

@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-9x7.11.2"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-9x7.11.5"
+  ],
   "created": "2026-11-18T23:59:17Z",
   "description": "User approved 2026-11-18, verbatim via GC: \"agreed; proceed\". Step C3 of fz-9x7.11 page v4 (https://claude.ai/artifact/BB1FpQ1Cf7Jd5spZeLEWtg). One commit, judged on bench. Builder: GC. No memcpy or strict_object_size on small objects.",
   "id": "fz-9x7.11.4",
