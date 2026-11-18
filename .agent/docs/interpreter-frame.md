@@ -31,6 +31,14 @@ the call returned. Entries reached by a branch, a `Deliver` destination, a
 receive match or a receive `after` continue in the current frame. A return
 pops the continuation and enters its entry with the returned value.
 
+A function clause is entered the same way. `step_backend_executable` runs the
+executable's entry dispatch (`select_clause`), which reads the subject of every
+clause argument, and `enter_entry` hands the winning clause's entry
+the values the deciding run already holds (`Decided::subject_handed`). The
+frame holds the executable's inputs as the clause's parameters before the entry
+runs, and the entry's parameters are the arguments; no clause evaluates a
+projection of its own.
+
 ## Calls and retention
 
 A non-tail call parks the caller's frame in a `BackendContinuation` behind the

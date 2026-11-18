@@ -1015,7 +1015,7 @@ fn compiler2_impossible_map_clause_has_no_runtime_requirement() {
 
 #[test]
 fn compiler2_receive_outcomes_own_typed_semantic_and_physical_arguments() {
-    use super::body::{SubjectOriginRoot, ValueRole};
+    use super::body::{SubjectOriginRoot, SubjectOwner, ValueRole};
     use super::executable_facts::{TransportOrigin, collect_value_origins};
     use crate::dispatch_matrix::{BitstringFieldKind, ProjectionKind, SubjectSource};
     let tel = ConfiguredTelemetry::new();
@@ -1094,14 +1094,17 @@ fn compiler2_receive_outcomes_own_typed_semantic_and_physical_arguments() {
                     assert_eq!(
                         origins[&argument.parameter],
                         TransportOrigin::OutcomeSubject {
-                            owner: super::ControlEntryId::from_u32(owner as u32),
+                            owner: SubjectOwner::Entry(super::ControlEntryId::from_u32(owner as u32)),
                             subject: argument.subject,
                         }
                     );
                     assert_eq!(
                         facts
                             .body()
-                            .dispatch_subject_origin(super::ControlEntryId::from_u32(owner as u32), argument.subject)
+                            .dispatch_subject_origin(
+                                SubjectOwner::Entry(super::ControlEntryId::from_u32(owner as u32)),
+                                argument.subject,
+                            )
                             .0,
                         SubjectOriginRoot::MailboxMessage(super::ControlEntryId::from_u32(owner as u32))
                     );
@@ -3675,20 +3678,27 @@ fn compiler2_struct_literal_and_pattern_lowering_wait_out_of_order_then_use_sche
     );
 
     let body = lowered_body(&bodies, convert);
+    let plan = body
+        .decision_plan(crate::compiler2::body::SubjectOwner::Clause(0))
+        .clone();
     let LoweredBody::Clauses { clauses, entries, .. } = body;
 
-    let field_access_order = clauses[0]
-        .projections
+    let mut delivered_fields = clauses[0]
+        .arguments
         .iter()
-        .filter_map(|step| match step {
-            LoweredStep::FieldAccess { field, .. } => Some(field.clone()),
+        .filter_map(|argument| match &plan.graph.subject(argument.subject)?.source {
+            crate::dispatch_matrix::SubjectSource::Projection(projection) => match &projection.kind {
+                crate::dispatch_matrix::ProjectionKind::StructField(field) => Some(field.clone()),
+                _ => None,
+            },
             _ => None,
         })
         .collect::<Vec<_>>();
+    delivered_fields.sort();
     assert_eq!(
-        field_access_order,
+        delivered_fields,
         vec!["x".to_string(), "y".to_string()],
-        "the struct pattern should destructure fields in Point's schema order (x, y), not the pattern's own reversed write order (y, x)"
+        "the struct pattern's clause is handed each bound field of Point, read by the entry plan"
     );
 
     let struct_fields = entries
@@ -12269,7 +12279,13 @@ fn artifact_plans<'a>(world: &crate::compiler2::World, program: &'a BackendProgr
     let canonical = crate::compiler2::canon::canonical_wrapper_numbers(world, program);
     let mut plans = Vec::new();
     for (index, executable) in program.executables().iter().enumerate() {
-        if let Some(entry) = &executable.abi.materialized.entry_dispatch {
+        if let Some(entry) = executable
+            .abi
+            .materialized
+            .entry_dispatch
+            .as_ref()
+            .filter(|entry| entry.asks_anything())
+        {
             plans.push(ArtifactPlan {
                 site: PlanSite::Entry { executable: index },
                 plan: entry.plan(),
@@ -15821,7 +15837,7 @@ fn compiler2_recursive_keying_sees_recursion_through_generated_lambdas() {
 }
 
 #[test]
-fn compiler2_lowered_body_keeps_clause_projections_separate_from_entry_matching() {
+fn compiler2_lowered_clause_receives_the_values_its_head_binds_from_the_entry_plan() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     capture.install(&tel, &[]);
@@ -15868,17 +15884,24 @@ fn compiler2_lowered_body_keeps_clause_projections_separate_from_entry_matching(
 
     assert_eq!(clauses.len(), 2, "wanted/1 should preserve both source clauses");
     assert!(
-        !clauses[0].projections.is_empty(),
-        "destructuring heads should retain projection steps after dispatch picks the clause",
+        clauses.iter().all(|clause| clause.projections.is_empty()),
+        "a clause matches nothing and projects nothing: the entry plan did both before it was entered",
+    );
+    assert_eq!(
+        clauses[0].arguments.len(),
+        1,
+        "the destructuring head binds `n`, so its clause is handed exactly that one value",
     );
     assert!(
-        clauses[0].projections.iter().all(|step| {
-            matches!(
-                step,
-                LoweredStep::TupleField { .. } | LoweredStep::FieldAccess { .. } | LoweredStep::SplitList { .. }
-            )
-        }),
-        "entry-clause lowering should keep only projection steps and not repeat matcher asserts",
+        clauses[0]
+            .arguments
+            .iter()
+            .all(|argument| argument.role == crate::compiler2::body::ValueRole::Semantic),
+        "a bound name is a semantic argument",
+    );
+    assert!(
+        clauses[1].arguments.is_empty(),
+        "the catch-all clause binds nothing, so it is handed nothing",
     );
 }
 
@@ -16286,7 +16309,14 @@ end
         .expect("the `=` match lowers to a decision with one arm entry");
     assert_eq!(
         source_operand, clauses[0].params[0],
-        "the delivered entry should capture the decision's input, the exact source cons",
+        "the delivered entry should capture the decision's input, the clause's own `xs`, which its head binds as it stands",
+    );
+    assert!(
+        clauses[0]
+            .arguments
+            .iter()
+            .all(|argument| argument.parameter != source_operand),
+        "a name bound to an input is that input, so the entry plan hands it nothing",
     );
     assert!(
         arm.params.contains(&head_value) && arm.physical_captures.contains(&source_operand),

@@ -15,7 +15,7 @@ use crate::dispatch_matrix::demand::DispatchDemand;
 use super::artifact::ExecutableDispatch;
 use super::body::{
     CallSiteId, ControlDestination, ControlEntryId, DeliveredValueJoin, DeliveredValueSource, LoweredBody,
-    LoweredClause, LoweredEntry, LoweredExtern, LoweredStep, LoweredTail, ValueId, delivered_value_joins,
+    LoweredClause, LoweredEntry, LoweredExtern, LoweredStep, LoweredTail, SubjectOwner, ValueId, delivered_value_joins,
 };
 use super::callsite_dispatch::{CallDestinations, call_destinations};
 use super::identity::{ExecutableKey, ExecutableNeed, FunctionId};
@@ -87,7 +87,7 @@ pub(crate) enum TransportOrigin {
         kind: crate::dispatch_matrix::ProjectionKind,
     },
     OutcomeSubject {
-        owner: ControlEntryId,
+        owner: SubjectOwner,
         subject: crate::dispatch_matrix::SubjectId,
     },
     CallableValue(LocalCallableProducer),
@@ -695,14 +695,11 @@ fn read_tuple_demand(field_demands: Vec<RuntimeDemand>) -> RuntimeDemand {
     }
 }
 
-/// The dispatch an executable runs to pick its clause: the entry plan its
-/// activation's types leave. A plan that wins its one outcome without asking
-/// anything selects nothing, and an extern has no clauses to select among.
+/// The dispatch an executable runs to pick its clause and hand it the values
+/// its head binds: the entry plan its activation's types leave. A plan that
+/// wins its one outcome without asking anything still hands those values.
 fn executable_dispatch(analysis: &ActivationAnalysis) -> Option<ExecutableDispatch> {
     let plan = analysis.trimmed.entry.as_ref()?;
-    if plan.is_direct_outcome() {
-        return None;
-    }
     Some(ExecutableDispatch::new(
         plan.clone(),
         analysis.entry_reachability.clauses().to_vec(),
@@ -1028,7 +1025,7 @@ fn local_callable_origin_from<'a>(
 pub(crate) fn collect_value_origins(body: &LoweredBody) -> ValueMap<TransportOrigin> {
     let mut origins = ValueMap::with_capacity(body.value_count());
     let LoweredBody::Clauses { clauses, entries, .. } = body;
-    for clause in clauses {
+    for (index, clause) in clauses.iter().enumerate() {
         for step in &clause.projections {
             for (value, origin) in step_transport_origins(step) {
                 origins.insert(value, origin);
@@ -1036,6 +1033,15 @@ pub(crate) fn collect_value_origins(body: &LoweredBody) -> ValueMap<TransportOri
         }
         for (semantic_index, value) in clause.params.iter().copied().enumerate() {
             origins.insert(value, TransportOrigin::ExecutableInput(semantic_index));
+        }
+        for argument in &clause.arguments {
+            origins.insert(
+                argument.parameter,
+                TransportOrigin::OutcomeSubject {
+                    owner: SubjectOwner::Clause(index as u32),
+                    subject: argument.subject,
+                },
+            );
         }
     }
     for (owner, entry) in entries.iter().enumerate() {
@@ -1049,7 +1055,7 @@ pub(crate) fn collect_value_origins(body: &LoweredBody) -> ValueMap<TransportOri
                 origins.insert(
                     argument.parameter,
                     TransportOrigin::OutcomeSubject {
-                        owner: ControlEntryId::from_u32(owner as u32),
+                        owner: SubjectOwner::Entry(ControlEntryId::from_u32(owner as u32)),
                         subject: argument.subject,
                     },
                 );

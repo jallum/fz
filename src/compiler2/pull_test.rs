@@ -2331,6 +2331,7 @@ fn fake_effect_materialized(
                 span: crate::source::Span::DUMMY,
                 params: Vec::new(),
                 projections,
+                arguments: Box::default(),
                 entry: ControlEntryId::from_u32(0),
             }],
             vec![LoweredEntry {

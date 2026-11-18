@@ -591,6 +591,7 @@ fn required_local_backend_transport_positions(
             .iter()
             .flat_map(|entry| entry.tail.dispatch_outcome_edges())
             .flat_map(|edge| edge.arguments.iter())
+            .chain(clauses.iter().flat_map(|clause| clause.arguments.iter()))
             .filter(|argument| argument.role == ValueRole::Semantic)
             .map(|argument| TransportPosition::Value {
                 executable: symbol.clone(),
@@ -1312,6 +1313,7 @@ fn prune_lowered_body(
         clauses,
         entries,
         generated,
+        entry_plan,
         ..
     } = body;
     let reachable_entries = reachable_entries.iter().copied().collect::<HashSet<_>>();
@@ -1335,7 +1337,9 @@ fn prune_lowered_body(
         .collect::<Vec<_>>();
     reindex_entries(&mut clauses, &mut kept, &needed);
     PrunedLoweredBody {
-        body: LoweredBody::clauses(clauses, kept, generated.clone()).with_value_count(value_count),
+        body: LoweredBody::clauses(clauses, kept, generated.clone())
+            .with_entry_plan_of(entry_plan)
+            .with_value_count(value_count),
         original_entry_ids: kept_ids,
     }
 }

@@ -762,6 +762,7 @@ fn lower_backend_body(
                             .iter()
                             .map(|step| lowerer.lower_step(step))
                             .collect::<Result<Vec<_>, _>>()?,
+                        arguments: clause.arguments.clone(),
                         entry: clause.entry,
                     })
                 })

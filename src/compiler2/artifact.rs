@@ -1155,17 +1155,28 @@ pub struct BackendExecutable {
 }
 
 impl BackendExecutable {
-    /// The callee this executable does nothing but call: one clause with no
-    /// entry dispatch, no projections and no steps, whose tail is a direct
-    /// call that passes the clause's parameters in order and returns the
-    /// callee's result as it comes.
+    /// Whether the executable's entry dispatch asks anything of its inputs
+    /// before it runs a clause.
+    pub(crate) fn asks_anything_of_inputs(&self) -> bool {
+        self.abi
+            .materialized
+            .entry_dispatch
+            .as_ref()
+            .is_some_and(ExecutableDispatch::asks_anything)
+    }
+
+    /// The callee this executable does nothing but call: one clause whose
+    /// entry dispatch asks nothing and hands each input over as it is, with no
+    /// steps, whose tail is a direct call that passes the clause's parameters
+    /// in order and returns the callee's result as it comes.
     pub fn forwards_to(&self) -> Option<&ExecutableKey> {
         let BackendBody::Clauses { clauses, entries, .. } = &self.body else {
             return None;
         };
         let [clause] = clauses.as_slice() else { return None };
         let entry = &entries[clause.entry.as_u32() as usize];
-        if self.abi.materialized.entry_dispatch.is_some() || !clause.projections.is_empty() || !entry.steps.is_empty() {
+        let dispatch = self.abi.materialized.entry_dispatch.as_ref()?;
+        if dispatch.asks_anything() || !entry.steps.is_empty() {
             return None;
         }
         let BackendTail::DirectCall {
@@ -1297,6 +1308,12 @@ impl ExecutableDispatch {
         &self.plan
     }
 
+    /// Whether running this dispatch asks anything of the inputs: a plan that
+    /// wins its one outcome at the root tests nothing and only hands over.
+    pub(crate) fn asks_anything(&self) -> bool {
+        !self.plan.is_direct_outcome()
+    }
+
     /// Source body ids for the retained target slots, in source-plan order.
     /// This is presentation metadata derived from the one retained route table.
     pub(crate) fn clause_ids(&self) -> impl Iterator<Item = u32> + '_ {
@@ -1318,6 +1335,9 @@ pub struct BackendClause {
     pub span: Span,
     pub params: Vec<ValueId>,
     pub projections: Vec<BackendStep>,
+    /// The subject each parameter of `entry` is handed when the executable's
+    /// entry dispatch selects this clause, as an arm's outcome edge hands them.
+    pub(crate) arguments: Box<[super::body::OutcomeArgument]>,
     pub entry: ControlEntryId,
 }
 

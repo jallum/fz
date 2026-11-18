@@ -439,7 +439,7 @@ fn entry_source_patterns(
         .collect::<Vec<_>>();
     let macro_caller_patterns = surface
         .is_macro
-        .then(|| Spanned::new(Pattern::Wildcard, surface.span))
+        .then(|| Spanned::new(Pattern::Var(Var::user("__CALLER__")), surface.span))
         .into_iter()
         .collect::<Vec<_>>();
     let macro_offset = macro_caller_patterns.len();

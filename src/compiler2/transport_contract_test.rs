@@ -2652,7 +2652,10 @@ def main(), do: Enum.with_index(["a", "b"], fn (x, _index) -> x <> "!" end)
             .is_some_and(|plan| plan.is_direct_outcome())
     );
     assert!(
-        materialized.entry_dispatch.is_none(),
+        materialized
+            .entry_dispatch
+            .as_ref()
+            .is_none_or(|dispatch| !dispatch.asks_anything()),
         "a settled single-clause activation with no reachable failure should not re-test its lane-free mapper input",
     );
 }
@@ -3672,7 +3675,7 @@ fn assert_direct_clause_param_forwards_have_abi_reprs(world: &World, program: &s
         };
         let clause_params = clauses
             .iter()
-            .flat_map(|clause| clause.params.iter().copied())
+            .flat_map(|clause| clause.arguments.iter().map(|argument| argument.parameter))
             .collect::<HashSet<_>>();
         for entry in entries {
             let super::artifact::BackendTail::DirectCall { target, args, .. } = &entry.tail else {

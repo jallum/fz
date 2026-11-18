@@ -474,6 +474,11 @@ fn callsite_entries(entries: &[LoweredEntry]) -> Vec<Option<ControlEntryId>> {
     table
 }
 
+/// The plan of a function's entry, shared with the `EntryDispatch` fact it is
+/// read from.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EntryPlan(Rc<PatternDispatchPlan<Ty>>);
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum LoweredBody {
     Clauses {
@@ -483,6 +488,9 @@ pub enum LoweredBody {
         tables: BodyTables,
         /// One past the largest value id the function's lowering allocated.
         value_count: usize,
+        /// The function's entry plan: the decision that hands each clause the
+        /// values its pattern binds. A body with no clause has none.
+        entry_plan: Option<EntryPlan>,
     },
 }
 
@@ -509,7 +517,20 @@ impl LoweredBody {
             generated,
             tables,
             value_count: 0,
+            entry_plan: None,
         }
+    }
+
+    /// The body of a function whose clauses the plan selects among and feeds.
+    pub(crate) fn with_entry_plan(self, plan: Rc<PatternDispatchPlan<Ty>>) -> Self {
+        self.with_entry_plan_of(&Some(EntryPlan(plan)))
+    }
+
+    /// The body of the same function with a different set of its clauses.
+    pub(crate) fn with_entry_plan_of(mut self, plan: &Option<EntryPlan>) -> Self {
+        let Self::Clauses { entry_plan, .. } = &mut self;
+        entry_plan.clone_from(plan);
+        self
     }
 
     /// The tail of the entry that makes the call at `callsite`.
@@ -630,6 +651,9 @@ pub struct LoweredClause {
     pub span: Span,
     pub params: Vec<ValueId>,
     pub projections: Vec<LoweredStep>,
+    /// The subject each parameter of `entry` is handed when the function's
+    /// entry plan selects this clause, as an arm's outcome edge hands them.
+    pub(crate) arguments: Box<[OutcomeArgument]>,
     pub entry: ControlEntryId,
 }
 
@@ -919,26 +943,110 @@ impl LoweredTail {
 /// first. Patterns nest a few levels at most, so the path lives on the stack.
 pub(crate) type SubjectPath<'a> = smallvec::SmallVec<[&'a crate::dispatch_matrix::ProjectionKind; 4]>;
 
+/// The decision that hands a subject to the parameter of an entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum SubjectOwner {
+    /// A `case`, a handler or a receive: the tail of this entry.
+    Entry(ControlEntryId),
+    /// The function's entry plan, handing the clause at this index the values
+    /// its pattern binds.
+    Clause(u32),
+}
+
 impl LoweredBody {
+    /// The plan a decision asks its questions with, and the arguments it hands.
+    pub(crate) fn decision_plan(&self, owner: SubjectOwner) -> &PatternDispatchPlan<Ty> {
+        let Self::Clauses {
+            entries, entry_plan, ..
+        } = self;
+        match owner {
+            SubjectOwner::Entry(entry) => entries[entry.as_u32() as usize].tail.dispatch_plan(),
+            SubjectOwner::Clause(_) => {
+                &entry_plan
+                    .as_ref()
+                    .expect("a clause is fed by its function's entry plan")
+                    .0
+            }
+        }
+    }
+
+    /// The entry a decision hands `parameter` to, and the parameter of that
+    /// entry that already carries `subject`, when one does.
+    pub(crate) fn decision_edge_of(
+        &self,
+        owner: SubjectOwner,
+        parameter: ValueId,
+        subject: crate::dispatch_matrix::SubjectId,
+    ) -> (ControlEntryId, Option<ValueId>) {
+        let Self::Clauses { clauses, entries, .. } = self;
+        let (target, arguments) = match owner {
+            SubjectOwner::Entry(entry) => {
+                let edge = entries[entry.as_u32() as usize]
+                    .tail
+                    .outcome_edges()
+                    .iter()
+                    .find(|edge| edge.arguments.iter().any(|argument| argument.parameter == parameter))
+                    .expect("a parameter has the edge that hands it");
+                (edge.target, &edge.arguments)
+            }
+            SubjectOwner::Clause(clause) => {
+                let clause = &clauses[clause as usize];
+                (clause.entry, &clause.arguments)
+            }
+        };
+        let existing = arguments
+            .iter()
+            .find(|argument| argument.subject == subject)
+            .map(|argument| argument.parameter);
+        (target, existing)
+    }
+
+    /// The edge a decision hands the entry `target`: the arguments it carries.
+    pub(crate) fn decision_arguments_mut(
+        &mut self,
+        owner: SubjectOwner,
+        target: ControlEntryId,
+    ) -> &mut Box<[OutcomeArgument]> {
+        let Self::Clauses { clauses, entries, .. } = self;
+        match owner {
+            SubjectOwner::Entry(entry) => {
+                &mut entries[entry.as_u32() as usize]
+                    .tail
+                    .outcome_edges_mut()
+                    .iter_mut()
+                    .find(|edge| edge.target == target)
+                    .expect("a decision hands the entries it targets")
+                    .arguments
+            }
+            SubjectOwner::Clause(clause) => &mut clauses[clause as usize].arguments,
+        }
+    }
+
     pub(crate) fn dispatch_subject_origin(
         &self,
-        owner: ControlEntryId,
+        owner: SubjectOwner,
         mut subject: crate::dispatch_matrix::SubjectId,
     ) -> (SubjectOriginRoot, SubjectPath<'_>) {
-        let Self::Clauses { entries, .. } = self;
-        let tail = &entries[owner.as_u32() as usize].tail;
+        let Self::Clauses { clauses, entries, .. } = self;
+        let plan = self.decision_plan(owner);
         let mut path = SubjectPath::new();
         loop {
-            match tail.dispatch_plan().subject(subject) {
+            match plan.subject(subject) {
                 crate::dispatch_matrix::SubjectSource::Input { ordinal } => {
                     path.reverse();
-                    let root = match tail {
-                        LoweredTail::Dispatch { inputs, .. } => SubjectOriginRoot::Value(inputs[*ordinal as usize]),
-                        LoweredTail::Receive(_) => {
-                            assert_eq!(*ordinal, 0, "receive has one mailbox message input");
-                            SubjectOriginRoot::MailboxMessage(owner)
+                    let ordinal = *ordinal as usize;
+                    let root = match owner {
+                        SubjectOwner::Clause(clause) => {
+                            SubjectOriginRoot::Value(clauses[clause as usize].params[ordinal])
                         }
-                        _ => unreachable!(),
+                        SubjectOwner::Entry(entry) => match &entries[entry.as_u32() as usize].tail {
+                            LoweredTail::Dispatch { inputs, .. } => SubjectOriginRoot::Value(inputs[ordinal]),
+                            LoweredTail::Receive(_) => {
+                                assert_eq!(ordinal, 0, "receive has one mailbox message input");
+                                SubjectOriginRoot::MailboxMessage(entry)
+                            }
+                            _ => unreachable!(),
+                        },
                     };
                     return (root, path);
                 }

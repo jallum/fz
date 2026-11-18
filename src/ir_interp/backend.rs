@@ -923,36 +923,37 @@ fn step_backend_executable<T: Telemetry + ?Sized>(
         ),
         BackendBody::Clauses { clauses, entries, .. } => {
             let semantic_inputs = bind_executable_inputs(transport, types, runtime, &executable, &args)?;
-            let clause_index = match &executable.abi.materialized.entry_dispatch {
-                None => 0,
-                Some(dispatch) => {
-                    match select_clause(runtime, types, transport, program, module, dispatch, &semantic_inputs)? {
-                        Some(index) => index,
-                        None => {
-                            return raise_unmatched_entry(
-                                runtime,
-                                transport,
-                                program,
-                                &executable,
-                                dispatch,
-                                &semantic_inputs,
-                                continuations,
-                            );
-                        }
-                    }
-                }
+            let Some(dispatch) = &executable.abi.materialized.entry_dispatch else {
+                return Err(format!(
+                    "backend executable {:?} has {} clauses but no settled entry dispatch",
+                    executable.key,
+                    clauses.len()
+                ));
+            };
+            let Some(selected) = select_clause(
+                runtime,
+                types,
+                transport,
+                program,
+                module,
+                dispatch,
+                &semantic_inputs,
+                &executable,
+            )?
+            else {
+                return raise_unmatched_entry(
+                    runtime,
+                    transport,
+                    program,
+                    &executable,
+                    dispatch,
+                    &semantic_inputs,
+                    continuations,
+                );
             };
             let clause = clauses
-                .get(clause_index)
-                .ok_or_else(|| format!("backend clause {} is out of bounds", clause_index))?;
-            if clause.params.len() != semantic_inputs.len() {
-                return Err(format!(
-                    "backend executable {:?} expected {} semantic input(s), got {}",
-                    executable.key,
-                    clause.params.len(),
-                    semantic_inputs.len()
-                ));
-            }
+                .get(selected.clause)
+                .ok_or_else(|| format!("backend clause {} is out of bounds", selected.clause))?;
             runtime.counts.frames += 1;
             let mut env = Frame::sized(executable.value_count);
             for (param, value) in clause.params.iter().copied().zip(semantic_inputs) {
@@ -960,28 +961,16 @@ fn step_backend_executable<T: Telemetry + ?Sized>(
                     env.insert(param, value);
                 }
             }
-            let mut continuations = continuations;
-            eval_steps(
+            enter_entry(
                 runtime,
-                types,
-                tel,
                 transport,
                 program,
-                module,
                 &executable,
-                &clause.projections,
                 &mut env,
-                &mut continuations,
-            )
-            .map_err(|error| {
-                format!(
-                    "backend executable {:?} function {} clause {} failed before entry {}: {error}",
-                    executable.key,
-                    executable.key.activation.function.as_u32(),
-                    clause_index,
-                    clause.entry.as_u32()
-                )
-            })?;
+                clause.entry,
+                None,
+                &selected.handed,
+            )?;
             step_eval_entry(
                 runtime,
                 types,
@@ -1017,7 +1006,18 @@ fn step_extern_executable(
 ) -> Result<BackendEvalTransition, String> {
     if let Some(dispatch) = &executable.abi.materialized.entry_dispatch {
         let semantic_inputs = bind_executable_inputs(transport, types, runtime, executable, args)?;
-        if select_clause(runtime, types, transport, program, module, dispatch, &semantic_inputs)?.is_none() {
+        if select_clause(
+            runtime,
+            types,
+            transport,
+            program,
+            module,
+            dispatch,
+            &semantic_inputs,
+            executable,
+        )?
+        .is_none()
+        {
             return raise_unmatched_entry(
                 runtime,
                 transport,
@@ -1110,6 +1110,16 @@ fn raise_unmatched_entry(
     )
 }
 
+/// The clause an entry dispatch selected, and the value of each subject the
+/// clause binds, which the deciding run already holds.
+#[derive(Debug)]
+struct SelectedClause {
+    clause: usize,
+    handed: Vec<(ValueId, BackendBoundValue)>,
+}
+
+/// Which clause of `clauses` the entry dispatch chooses for `args`. An extern
+/// has no clauses, so selecting its one outcome hands nothing.
 fn select_clause(
     runtime: &mut IrInterpRuntime,
     types: &crate::compiler2::Types,
@@ -1118,21 +1128,44 @@ fn select_clause(
     module: &Module,
     dispatch: &ExecutableDispatch,
     args: &[Option<BackendBoundValue>],
-) -> Result<Option<usize>, String> {
+    executable: &BackendExecutable,
+) -> Result<Option<SelectedClause>, String> {
+    let clauses = match &executable.body {
+        BackendBody::Clauses { clauses, .. } => clauses.as_slice(),
+        BackendBody::Extern { .. } => &[],
+    };
     let plan = dispatch.plan();
     refuse_omitted_required_inputs(plan, args)?;
     let values = dispatch_values(runtime.cur_proc(), transport, plan, DispatchSource::Inputs(args))?;
     // Dispatch reads an input in whatever form it arrived in: a tuple delivered
     // as lanes is questioned lane-wise, never rebuilt.
     let operands = values.over(transport, args);
-    let decided = Dispatch::new(runtime, types, program, module, plan, operands).run()?;
-    decided
-        .map(|decided| {
-            dispatch
-                .clause_index(decided.outcome())
-                .ok_or_else(|| format!("internal error: entry outcome {:?} names no clause", decided.outcome()))
+    let handed = clauses
+        .iter()
+        .flat_map(|clause| clause.arguments.iter().map(|argument| argument.subject));
+    let Some(mut decided) = Dispatch::new(runtime, types, program, module, plan, operands)
+        .reading(handed)
+        .run()?
+    else {
+        return Ok(None);
+    };
+    let clause = dispatch
+        .clause_index(decided.outcome())
+        .ok_or_else(|| format!("internal error: entry outcome {:?} names no clause", decided.outcome()))?;
+    let handed = clauses
+        .get(clause)
+        .map(|clause| &clause.arguments[..])
+        .unwrap_or_default()
+        .iter()
+        .map(|argument| {
+            let layout = entry_param_layout(executable, argument.parameter)?;
+            let value = decided
+                .subject_handed(argument.subject, layout)
+                .map_err(|_| format!("winning outcome lacks subject {:?}", argument.subject))?;
+            Ok((argument.parameter, value))
         })
-        .transpose()
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok(Some(SelectedClause { clause, handed }))
 }
 
 /// An input the plan reads has to have arrived. The demand lattice says which
