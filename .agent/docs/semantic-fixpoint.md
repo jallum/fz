@@ -15,8 +15,10 @@ fact stands between local semantic settlement and the requesting product.
 
 ## What an activation is today
 
-An **activation** is `ActivationKey { root, function, arrow: Ty }`: one
-function specialized for one root at one canonical input shape. The canonical
+An **activation** is `ActivationKey { root, function, arrow: Ty, entry }`: one
+function specialized for one root at one canonical input shape, and, when it
+runs inside a call cycle it did not enter itself, the activation that entered
+that cycle (`entry: Option<(FunctionId, Ty)>`). The canonical
 inputs are the parameter side of an interned arrow type (`arrow_params`); the
 result side is the addressed result var `r0` — "return not yet known", an
 unknown to resolve, never a `none()` fallback. Read the inputs with
@@ -232,12 +234,17 @@ for the contract alone; the boundary test is contract-independent and runs
 before the ask.
 
 A call's key is its arguments' types run through the callee's demand
-([`type-specialization`](type-specialization.md)), with one exception: a
-self call keys each slot the callee's recursion supplies WHOLE from the caller
-activation's own key column (`call_key_types`), so the states a recursion passes
-through do not mint activations. The arguments' real types are untouched -- they
-are what the `ActivationContribution` carries, and so what the callee's input
-evidence joins.
+([`type-specialization`](type-specialization.md)), with one exception: a call
+inside the callee's call cycle, with an argument that carries a constructor,
+keys each slot the cycle supplies from the cycle's entry (`call_key`). A call
+back to the entering activation's function keeps that activation's own column;
+a call to another member keys the slot as `any` and carries the entering
+activation as `ActivationKey::entry`. The states a recursion passes through do
+not mint activations, and two entries into one cycle keep their chains apart
+with no table shared between jobs. The arguments' real types are untouched --
+they are what the `ActivationContribution` carries, and so what the callee's
+input evidence joins. `World::require_call_key_facts` asks the callee's
+`Recursive` fact beside the keying facts for exactly those calls.
 
 Every callsite the walk REACHES publishes its edge, resolved or not
 (`CallSiteResolution`, semantic.rs). Three answers, three representations:

@@ -232,6 +232,7 @@ pub(super) fn derive_recursive(world: &mut World, function: FunctionId) -> Resul
             BodyKeying {
                 recursive: false,
                 consumes_callable_identity: false,
+                cycle_supplied: 0,
             },
             Vec::new(),
         ));
@@ -260,9 +261,36 @@ pub(super) fn derive_recursive(world: &mut World, function: FunctionId) -> Resul
             ..JobEffects::default()
         });
     };
+    let recursive = static_reach.contains(&function);
+    let members = if recursive {
+        cycle_members(world, function, static_reach)
+    } else {
+        Vec::new()
+    };
+    let unlowered: Vec<FactUse<FactKey>> = members
+        .iter()
+        .map(|member| FactKey::LoweredBody(*member))
+        .filter(|body| !world.has_fact(body))
+        .map(FactUse::current)
+        .collect();
+    if !unlowered.is_empty() {
+        reads.push(reach);
+        return Ok(JobEffects {
+            reads: current_uses(reads),
+            waits: unlowered,
+            ..JobEffects::default()
+        });
+    }
+    reads.extend(
+        members
+            .iter()
+            .filter(|member| **member != function)
+            .map(|member| FactKey::LoweredBody(*member)),
+    );
     let keying = BodyKeying {
-        recursive: static_reach.contains(&function),
+        recursive,
         consumes_callable_identity: body_consumes_callable_identity(world, function),
+        cycle_supplied: cycle_supplied_mask(world, function, &members),
     };
     reads.push(reach);
     Ok(publish_recursive(world, function, keying, reads))
@@ -1060,118 +1088,159 @@ fn return_flow_mask(body: &LoweredBody, origins: &InputPositions, input_count: u
     mask
 }
 
-/// The input slots `function`'s recursion supplies WHOLE: each is rebuilt by a
-/// self call rather than carried, so what a self call hands it is a state of
-/// the ascent and not a caller's choice.
-///
-/// Only a call made from inside `function`'s own body asks, and a body that is
-/// being analysed is lowered, so the body is always there to read.
-pub(super) fn supplied_whole_slots(
-    world: &World,
-    function: FunctionId,
-    input_count: usize,
-) -> impl Iterator<Item = usize> {
-    let body = world.lowered_body(function);
-    let LoweredBody::Clauses { entries, .. } = &*body;
-    let origins = input_positions(&body, input_count);
-    recursion_supplied_positions(function, entries, &origins, input_count)
-        .into_iter()
-        .filter(|(_, path)| path.is_empty())
-        .map(|(slot, _)| slot)
-}
+type CyclePosition = (FunctionId, usize, Vec<DemandPathStep>);
 
-/// The positions the RECURSION itself supplies, as a LEAST FIXPOINT: a
-/// position is supplied when a self-call hands it a value the caller held
-/// nowhere, or held only at positions that are themselves supplied.
-///
-/// The fixpoint is what makes the rule sound. An eager rule -- "the
-/// caller did not hold this value at this same position, so the position is
-/// rebuilt" -- misreads a PERMUTATION. `go(n - 1, b, a)` hands each slot a
-/// value the caller held at the OTHER slot, which supplies neither, and the
-/// eager rule marks both (and poisons both, since each is held elsewhere). A
-/// self call would then keep its caller's column at both slots although each
-/// holds what the caller had at the other. Under the fixpoint the permutation's
-/// obligations never discharge, the set settles empty, and the self call keys
-/// each slot from its argument.
-///
-/// A supplied position is keyed by the CALLER, never by the recursion. An
-/// accumulator visits `[]` and then `list(tau)` within ONE caller, and those
-/// different denotations intern apart, so letting each self call key the slot
-/// from the type it hands over mints one activation per state and k
-/// accumulators mint their product. Instead a self call keeps its own
-/// activation's column at a supplied whole slot (`supplied_whole_slots`): the
-/// outside caller's seed is what tells callers apart, the self call stays in
-/// the activation it was made from, and the type it hands over still joins that
-/// activation's input evidence. `walk/2` keys one activation per outside seed.
-///
-/// A position the recursion does NOT supply is constant along the ascent, so
-/// two keys there ARE two callers -- `loop(n, junk)`'s junk, the two slots
-/// `go/3` permutes, and the payload of `walk({:go, acc}, n - 1)`, which the
-/// reconstructed tuple hands on unchanged.
-///
-/// Only SELF calls are read, so the rule is INCOMPLETE by construction and
-/// holds with a named exception: a position the
-/// recursion supplies ACROSS a cycle, or through a generated lambda, is not
-/// seen here and is keyed anyway. That is a cost, never an unsoundness -- the
-/// key names more than the return depends on. Measured corpus-wide (604
-/// fixtures, 475 backend dumps, added executables attributed to the function
-/// they key): 36 land on a function that gains a distinct published return and
-/// 91 do not, the 91 dominated by `List.reduce_cont/3` (21),
-/// `List.reduce_while_cont/3` (18), `Range.reduce_while_cont/6` (9) and
-/// `List.reduce_while_step/3` (6) minting `empty_list()`/`list(tau)`
-/// ascent rungs across the cont<->step cycle. Closing it wants the call
-/// graph's strong components, which `DeriveInputDemand` does not read today,
-/// and the reverse call edge, because the rebuild belongs to the CALLEE's
-/// position.
-fn recursion_supplied_positions(
-    function: FunctionId,
-    entries: &[super::super::body::LoweredEntry],
-    origins: &InputPositions,
-    input_count: usize,
-) -> HashSet<(usize, Vec<DemandPathStep>)> {
-    let mut rebuilt = HashSet::default();
-    let mut obligations: Vec<RebuildObligation> = Vec::new();
-    let mut constructions: ValueMap<Vec<ValueId>> = ValueMap::new();
-    for step in entries.iter().flat_map(|entry| entry.steps.iter()) {
-        if let LoweredStep::Tuple { value, items } = step {
-            constructions.insert(*value, items.iter().map(|item| item.value).collect());
-        }
-    }
-    for entry in entries {
-        let LoweredTail::DirectCall { callee, args, .. } = &entry.tail else {
-            continue;
-        };
-        if callee.function() != Some(function) {
-            continue;
-        }
-        for (arg_index, arg) in args.iter().enumerate() {
-            let Some(slot) = CallInputMode::Direct.semantic_index(input_count, args.len(), arg_index) else {
-                continue;
-            };
-            collect_rebuild_obligations(
-                arg.value,
-                slot,
-                &mut Vec::new(),
-                origins,
-                &constructions,
-                &mut obligations,
-            );
-        }
-    }
-    // Least fixpoint: a position is SUPPLIED only when the value handed to it
-    // is not one the caller already held at a position the recursion itself
-    // leaves constant. A permutation (`go(n - 1, b, a)`) hands each slot a
-    // value the caller held elsewhere and supplies nothing, so it settles at
-    // the empty set; a rebuild (`go(n - 1, [h | a], a)`) supplies the built
-    // slot in the first round and drags the slot fed from it in the second.
-    loop {
-        let mut changed = false;
-        for (position, held) in &obligations {
-            if rebuilt.contains(position) {
+/// The functions of `function`'s call cycle that have a body: those of its
+/// reach that reach it back, walked over the static call edges its reach
+/// fact already read.
+fn cycle_members(world: &World, function: FunctionId, reach: &BTreeSet<FunctionId>) -> Vec<FunctionId> {
+    let reaches_back = |from: FunctionId| {
+        let mut seen: HashSet<FunctionId> = HashSet::default();
+        let mut pending = vec![from];
+        while let Some(next) = pending.pop() {
+            if !seen.insert(next) || !reach.contains(&next) {
                 continue;
             }
-            if held.is_empty() || held.iter().all(|source| rebuilt.contains(source)) {
-                rebuilt.insert(position.clone());
+            for &edge in world.static_callees(next) {
+                if edge == function {
+                    return true;
+                }
+                pending.push(edge);
+            }
+        }
+        false
+    };
+    reach
+        .iter()
+        .copied()
+        .filter(|member| reaches_back(*member) && matches!(world.function_body_shape(*member), BodyShape::Clauses))
+        .collect()
+}
+
+/// The whole input slots of `callee` that its call cycle supplies, one bit
+/// per slot.
+fn cycle_supplied_mask(world: &World, callee: FunctionId, members: &[FunctionId]) -> u64 {
+    supplied_positions(&cycle_handoffs(world, members))
+        .into_iter()
+        .filter(|(function, slot, path)| *function == callee && path.is_empty() && *slot < u64::BITS as usize)
+        .fold(0, |mask, (_, slot, _)| mask | (1 << slot))
+}
+
+/// One "this call hands `position` a value" record of a call between members
+/// of a cycle.
+struct Handoff {
+    position: CyclePosition,
+    /// The caller's input positions the value is held at; empty when it is
+    /// built here.
+    held: Vec<CyclePosition>,
+    /// The value is not a tuple built at the call: whatever it carries is
+    /// supplied at every depth.
+    opaque: bool,
+}
+
+/// Every handoff of a direct call among `members`.
+fn cycle_handoffs(world: &World, members: &[FunctionId]) -> Vec<Handoff> {
+    let mut handoffs = Vec::new();
+    for &member in members {
+        let body = world.lowered_body(member);
+        let LoweredBody::Clauses { clauses, entries, .. } = &*body;
+        let input_count = clauses.iter().map(|clause| clause.params.len()).max().unwrap_or(0);
+        let mut constructions: ValueMap<Vec<ValueId>> = ValueMap::new();
+        for step in entries.iter().flat_map(|entry| entry.steps.iter()) {
+            if let LoweredStep::Tuple { value, items } = step {
+                constructions.insert(*value, items.iter().map(|item| item.value).collect());
+            }
+        }
+        let origins = input_positions(&body, input_count);
+        for entry in entries {
+            let LoweredTail::DirectCall { callee, args, .. } = &entry.tail else {
+                continue;
+            };
+            let Some(to) = callee.function().filter(|target| members.contains(target)) else {
+                continue;
+            };
+            let call = CycleCall {
+                from: member,
+                to,
+                origins: &origins,
+                constructions: &constructions,
+            };
+            for (slot, arg) in args.iter().enumerate() {
+                call.hand_over(arg.value, slot, &mut Vec::new(), &mut handoffs);
+            }
+        }
+    }
+    handoffs
+}
+
+/// A direct call from one member of a cycle to another, read against the
+/// caller's body.
+struct CycleCall<'a> {
+    from: FunctionId,
+    to: FunctionId,
+    origins: &'a InputPositions,
+    constructions: &'a ValueMap<Vec<ValueId>>,
+}
+
+impl CycleCall<'_> {
+    /// Records what handing `value` to `slot` at `path` supplies. A tuple built
+    /// at the call is rebuilt at its own position, and each field is handed
+    /// over in turn: a field it hands on unchanged is still carried.
+    fn hand_over(&self, value: ValueId, slot: usize, path: &mut Vec<DemandPathStep>, out: &mut Vec<Handoff>) {
+        let held = self.origins.get(&value).map(Vec::as_slice).unwrap_or_default();
+        let carried = self.from == self.to
+            && held
+                .iter()
+                .any(|(held_slot, held_path)| *held_slot == slot && held_path == path);
+        if carried {
+            return;
+        }
+        let built = self.constructions.get(&value);
+        out.push(Handoff {
+            position: (self.to, slot, path.clone()),
+            held: held
+                .iter()
+                .map(|(slot, path)| (self.from, *slot, path.clone()))
+                .collect(),
+            opaque: built.is_none(),
+        });
+        for (index, item) in built.into_iter().flatten().copied().enumerate() {
+            path.push(DemandPathStep::TupleField(index as u32));
+            self.hand_over(item, slot, path, out);
+            path.pop();
+        }
+    }
+}
+
+/// The positions the cycle supplies, as a LEAST FIXPOINT: a position is
+/// supplied when a call hands it a value held nowhere, or held only at
+/// positions that are themselves supplied. An opaque value supplies its
+/// position deep, so a position below it is supplied too.
+///
+/// The fixpoint is what makes the rule sound, and an eager form is not.
+/// "The caller did not hold this value at this same position" misreads a
+/// PERMUTATION: `go(n - 1, b, a)` hands each slot a value held at the other,
+/// and the eager test would mark both supplied although each holds what the
+/// caller had at the other. Under the fixpoint the permutation's handoffs never
+/// discharge and the set settles empty.
+fn supplied_positions(handoffs: &[Handoff]) -> HashSet<CyclePosition> {
+    let mut rebuilt: HashSet<CyclePosition> = HashSet::default();
+    let mut deep: HashSet<CyclePosition> = HashSet::default();
+    loop {
+        let mut changed = false;
+        for handoff in handoffs {
+            if rebuilt.contains(&handoff.position) {
+                continue;
+            }
+            let supplied = |source: &CyclePosition| {
+                rebuilt.contains(source)
+                    || (0..=source.2.len()).any(|cut| deep.contains(&(source.0, source.1, source.2[..cut].to_vec())))
+            };
+            if handoff.held.iter().all(supplied) {
+                rebuilt.insert(handoff.position.clone());
+                if handoff.opaque {
+                    deep.insert(handoff.position.clone());
+                }
                 changed = true;
             }
         }
@@ -1180,37 +1249,6 @@ fn recursion_supplied_positions(
         }
     }
     rebuilt
-}
-
-/// One "this self-call hands POSITION a value the caller held at HELD" record.
-/// An empty `held` is a value built here, which supplies the position outright.
-type RebuildObligation = ((usize, Vec<DemandPathStep>), Vec<(usize, Vec<DemandPathStep>)>);
-
-fn collect_rebuild_obligations(
-    value: ValueId,
-    slot: usize,
-    path: &mut Vec<DemandPathStep>,
-    origins: &InputPositions,
-    constructions: &ValueMap<Vec<ValueId>>,
-    obligations: &mut Vec<RebuildObligation>,
-) {
-    let held = origins.get(&value).map(Vec::as_slice).unwrap_or_default();
-    if held
-        .iter()
-        .any(|(held_slot, held_path)| *held_slot == slot && held_path == path)
-    {
-        // The caller already held this exact position, so the recursion carries
-        // it rather than supplying it.
-        return;
-    }
-    obligations.push(((slot, path.clone()), held.to_vec()));
-    // A reconstructed tuple is rebuilt at its own position and no deeper: a
-    // field it hands on unchanged is still carried.
-    for (index, item) in constructions.get(&value).into_iter().flatten().copied().enumerate() {
-        path.push(DemandPathStep::TupleField(index as u32));
-        collect_rebuild_obligations(item, slot, path, origins, constructions, obligations);
-        path.pop();
-    }
 }
 
 type InputPositions = ValueMap<Vec<(usize, Vec<DemandPathStep>)>>;

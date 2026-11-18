@@ -386,7 +386,10 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // no module and derives no contract for it.
         // (2982, 15, 31, 261) -> (2770, 15, 31, 245): `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
         // (2770, 15, 31, 245) -> (2755, 15, 31, 245): a first-class callable's boundary demand is not contributed back to its target's inputs, so the target's demand is not derived again for it.
-        (2755, 15, 31, 245),
+        // (2755, 15, 31, 245) -> (2487, 15, 31, 194): a call round a recursion cycle keeps the
+        // entering activation's key at the slots the cycle supplies, so the reduce families mint
+        // one activation per entry and every job that runs per activation runs fewer times.
+        (2487, 15, 31, 194),
         "ordinary generic helper work has the exact source/module/executable-fact census"
     );
     // Every applied work step is a run, and every run is charged to exactly
@@ -497,7 +500,9 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // 1163 -> 1164: the ordering operators' `binary` clause adds its `fz_op_*_bb` activation and splits the catch-all's `compare/2` activations, the same way the int and float clauses already do.
         // 1164 -> 1153: a module is started once its enclosing scope exists, so each module's definition runs once fewer.
         // 1153 -> 1055: `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
-        1055,
+        // 1055 -> 1054: a call round a recursion cycle keeps the entering activation's key at the
+        // slots the cycle supplies, so the reduce families have fewer activations to publish.
+        1054,
         "ordinary generic helper facts have the exact non-demand changed-revision census",
     );
     assert_eq!(
@@ -579,7 +584,9 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // 630 -> 631: the product waits on the fixture's own declarations being
         // checked, and that wait starts its one `CheckDeclarations`.
         // 631 -> 588: `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
-        588,
+        // 588 -> 515: a call round a recursion cycle keeps the entering activation's key at the
+        // slots the cycle supplies, so fewer reduce activations block on prerequisites.
+        515,
         "the blocked-waiter census includes only the prerequisites each completion's own waits expand",
     );
     assert_eq!(
@@ -653,7 +660,10 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // (621, 623, [24, 261, 82, 256, 0]) -> (582, 589, [24, 245, 80, 240, 0]): `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
         // (582, 589, [24, 245, 80, 240, 0]) -> (567, 574, [24, 245, 65, 240, 0]): the same fifteen
         // `DeriveRuntimeDemand` runs, each woken by a changed input demand.
-        (567, 574, [24, 245, 65, 240, 0]),
+        // (567, 574, [24, 245, 65, 240, 0]) -> (429, 431, [24, 194, 11, 202, 0]): a call round a
+        // recursion cycle keeps the entering activation's key at the slots the cycle supplies, so
+        // the reduce families have fewer activations to derive demand for.
+        (429, 431, [24, 194, 11, 202, 0]),
         "every demand completion and ordinary helper wake retains its precise cause",
     );
     assert_eq!(
@@ -676,7 +686,9 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // 333 -> 334: one key for the library exception a failure raises.
         // 334 -> 333: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
         // 333 -> 317: `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
-        317,
+        // 317 -> 232: a call round a recursion cycle keeps the entering activation's key at the
+        // slots the cycle supplies, so the reduce families key fewer demanded activations.
+        232,
         "the demand frontier retains every ordinary generic helper key",
     );
     assert_eq!(
@@ -811,7 +823,9 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // 740 -> 738: recursion verdicts now publish on the schedule of the reach facts, and
         // this fixture's schedule-dependent convergence repeats two analyses fewer.
         // 738 -> 691: `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
-        691,
+        // 691 -> 665: a call round a recursion cycle keeps the entering activation's key at the
+        // slots the cycle supplies, so the reduce families have fewer activations to analyze.
+        665,
         "the fixture's total AnalyzeActivation completions, repeats included",
     );
     let frontier_analyses = analyzed_activations.iter().cloned().collect::<HashSet<_>>();
@@ -840,7 +854,9 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // 261 -> 262: the library exception a failure raises adds one activation.
         // 262 -> 261: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
         // 261 -> 245: `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
-        245,
+        // 245 -> 227: a call round a recursion cycle keeps the entering activation's key at the
+        // slots the cycle supplies, so the reduce families have fewer distinct activations.
+        227,
         "the demand frontier's distinct activations, deduplicated across repeats",
     );
 

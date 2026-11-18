@@ -1,0 +1,19 @@
+#---
+# purpose: "A recursion that hands each accumulator to the other slot compiles: a permutation supplies neither slot, so each outside seed keeps its own activation"
+# root: main/0
+# oracle: self
+# oracle.stamp: d9599c40a1479b37
+#---
+defmodule Swap do
+  def go(0, a, b), do: {a, b}
+  def go(n, a, b), do: go(n - 1, b, a)
+end
+
+defmodule Main do
+  def main() do
+    IO.inspect(Swap.go(3, :x, 1))
+    IO.inspect(Swap.go(2, [1], {2}))
+  end
+end
+
+Main.main()

@@ -1093,9 +1093,10 @@ function and capture types are the construction's, from
 grounds templates. A construction's direct surfaces likewise include the
 surfaces of its direct edges. A closure is therefore compiled only for the
 argument types its call sites name: two `Enum.reduce` calls that share a seed
-type give the wrapper closure four activations and no `SeedActivation` job, not
-one per pairing of a closure with another site's accumulator
-(`compiler2_two_reduces_sharing_a_seed_compile_the_four_calls_their_sites_name`).
+type give the wrapper closure two activations, one per site, and no
+`SeedActivation` job, not one per pairing of a closure with another site's
+accumulator
+(`compiler2_two_reduces_sharing_a_seed_compile_the_two_calls_their_sites_enter`).
 
 Executable-scoped producers ask for `ExecutableFacts(E)`, `RuntimeDemand(E)`,
 and every position-owned semantic fact nameable from the key in the same

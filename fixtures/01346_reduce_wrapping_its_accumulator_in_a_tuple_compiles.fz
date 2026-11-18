@@ -1,0 +1,13 @@
+#---
+# purpose: "Enum.reduce with a reducer that wraps its accumulator in a tuple compiles: the cycle between the reduce functions supplies the accumulator, so every rung shares one activation"
+# root: main/0
+# oracle: self
+# oracle.stamp: ac918fd8f0b906b7
+#---
+defmodule Main do
+  def main() do
+    IO.inspect(Enum.reduce([1, 2], :start, fn x, acc -> {x, acc} end))
+  end
+end
+
+Main.main()

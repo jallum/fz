@@ -265,7 +265,10 @@ to a reader in another process. This is what lets a reader of the public log
 distinguish, for example, the many separate `AnalyzeActivation` evaluations
 one real compile can produce, each a different `(root, function, arrow)`
 triple where the projection used to render only `"kind":"AnalyzeActivation"`
-for all of them alike. `DeriveExecutableFacts(E)` and
+for all of them alike. An activation that runs inside a call cycle it did not
+enter also carries `cycle_entry`, a nested `{function_id, arrow}` naming the
+activation that entered the cycle; activations that differ only there are
+different activations in the log, as they are in the engine. `DeriveExecutableFacts(E)` and
 `FactKey::ExecutableFacts(E)` likewise render the complete executable identity;
 the value is owned by `World` and its lifecycle is visible through the normal
 `work_graph.applied` projection. There is deliberately no

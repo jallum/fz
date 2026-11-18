@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use super::*;
+use crate::compiler2::drive_harness::{Drive, Settled};
 use crate::fz_ir::FnId;
 
 fn function(number: u32) -> FunctionId {
@@ -136,4 +137,61 @@ fn a_projection_forwarded_off_a_cycle_keeps_its_depth() {
         (callee, node(DispatchDemand::Whole, vec![])),
     ]);
     assert_eq!(solve(&graph, caller), fields(1, DispatchDemand::Whole));
+}
+
+fn cycle_supplied(settled: &Settled, name: &str, arity: u64) -> u64 {
+    let function = settled.function(name, arity);
+    settled
+        .world()
+        .body_keying(function)
+        .unwrap_or_else(|| panic!("body keying for {name}/{arity}"))
+        .cycle_supplied
+}
+
+#[test]
+fn a_self_recursion_that_wraps_its_accumulator_is_a_cycle_of_one_that_supplies_it() {
+    let settled = Drive::fixture(1344).settle();
+
+    assert_eq!(
+        cycle_supplied(&settled, "mix", 2) & 0b10,
+        0b10,
+        "mix wraps its accumulator in a new tuple on every call, so the recursion supplies slot 1"
+    );
+}
+
+#[test]
+fn two_functions_that_call_each_other_supply_the_accumulator_at_both() {
+    let settled = Drive::fixture(1350).settle();
+
+    for (name, arity) in [("cont", 3), ("step", 3)] {
+        let supplied = cycle_supplied(&settled, name, arity);
+        assert_eq!(
+            supplied & 0b10,
+            0b10,
+            "{name} is handed the accumulator by the cycle: the closure's result comes round, whether or not a direct self call exists"
+        );
+        assert_eq!(
+            supplied & 0b100,
+            0,
+            "{name}'s reducer is handed on unchanged by every call of the cycle, so the cycle does not supply it"
+        );
+    }
+}
+
+#[test]
+fn a_recursion_that_swaps_its_accumulators_supplies_neither() {
+    let settled = Drive::fixture(1352).settle();
+
+    assert_eq!(
+        cycle_supplied(&settled, "go", 3) & 0b110,
+        0,
+        "go hands each accumulator the value the other held, which builds nothing"
+    );
+}
+
+#[test]
+fn a_function_outside_any_cycle_supplies_nothing() {
+    let settled = Drive::fixture(1348).settle();
+
+    assert_eq!(cycle_supplied(&settled, "push", 2), 0);
 }

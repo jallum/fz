@@ -265,37 +265,69 @@ growing is the clash fold ([the clash rule](#the-clash-rule)), which cuts the
 type that repeats itself before it reaches the key. Folding the two axes would
 have to raise a returned position to `Whole`, which has no collapse at all.
 
-Positions the RECURSION supplies are found as a LEAST FIXPOINT: a position is
-supplied when a self-call hands it a value the caller held nowhere, or held only
-at positions that are themselves supplied. A supplied position ascends within
-ONE caller (`[]`, then `list(int)`), and those denotations intern apart, so
-keying each self call from the type it hands over would mint one activation per
-ascent state and k accumulators their product (three accumulators each handed to
-a call would key `go/4` 8 times, six accumulators 64). One rule prevents that,
-and it is the whole of the rule: a slot the recursion supplies is keyed by the
-outside caller's seed, and a self call keeps its caller's own key column there
-(`call_key_types`, `jobs/semantic.rs`, reading `supplied_whole_slots`,
-`jobs/keying.rs`). The type the self call hands over is not dropped: the
-argument joins the activation's input evidence as the ascent state. Every other
-slot keys from its argument. The returned axis treats a supplied position like
-any other, so a directly returned accumulator's column is the caller's seed too.
+Positions the call CYCLE supplies are found as a LEAST FIXPOINT, once per
+function, and published as `BodyKeying::cycle_supplied`, one bit per whole input
+slot, on its `Recursive` fact. The cycle of a function is its `static_reach`
+members that reach it back (`cycle_members`, `jobs/keying.rs`); a self-recursive
+function is the cycle of one. `derive_recursive` waits for the `LoweredBody` of
+every member and reads each direct call among them. A position (function, slot,
+path) is supplied when a call hands it a value held nowhere, or held only at
+positions that are themselves supplied. A value that is not a tuple built at the
+call supplies its position at every depth; a tuple built at the call supplies
+its own position and hands each field over in turn, so a field it passes on
+unchanged is still carried.
+
+A supplied position ascends within ONE entry into the cycle (`[]`, then
+`list(int)`), and those denotations intern apart, so keying each call from the
+type it hands over would mint one activation per ascent state and k
+accumulators their product (three accumulators each handed to a call would key
+`go/4` 8 times, six accumulators 64). One rule prevents that, and it is the
+whole of the rule (`call_key`, `jobs/semantic.rs`):
+
+- A call none of whose arguments carries a constructor (`Types::any_carries_constructors`)
+  is keyed from its arguments and asks nothing more: only a value built from
+  constructors can be a rung of an ascent.
+- Otherwise the call keys the slots the callee's cycle supplies from the cycle's
+  ENTRY, when the caller runs inside the callee's cycle (the callee reaches the
+  caller back). The entry is the activation that entered the cycle, carried on
+  every other member's key as `ActivationKey::entry`. A call back to the entry's
+  function keeps the entry's own column at each supplied slot; a call to
+  another member keys each supplied slot as `any` and carries the entry. The
+  type the call hands over is not dropped: the argument joins the activation's
+  input evidence as the ascent state, and the clash fold ends the ascent.
+- Every other slot keys from its argument.
+
+The entry is part of the identity of a non-entry member (`SemanticOrd` of
+`ActivationKey` and `ExecutableSymbol`, `ActivationSymbol`, the transport
+resolution filter, and the public trace's activation identity). It keeps two
+entries into one cycle apart without any table shared between jobs, so the
+result does not depend on job order: `Enum.reduce` with three seeds of three
+shapes keys `List.reduce_step/3` three times, one per entry. A cycle entered
+once compiles one activation per member: the entry's calls back into itself
+share its key, and each other member carries the entry.
+
+`World::require_call_key_facts` asks `Recursive(callee)` beside the keying facts
+for exactly the calls whose arguments carry a constructor, so a callee whose
+recursion verdict nothing asked before is asked by such a call (a `Range`
+argument asks for `Enumerable.Range.count/1`'s verdict). Roots and calls with
+no constructor argument ask nothing new.
+
 `go/4` settles two activations, the outside caller's `non_empty_list(int)`
-literal and the self call's `list(int)`, and so does the six-accumulator form:
-they differ at the list the recursion walks, not at an accumulator;
-two outside callers that seed an accumulator with different element types reach
-two activations whose returns stay apart, whether the accumulator is returned
+literal and the cycle's `list(int)`, and so does the six-accumulator form: they
+differ at the list the recursion walks, not at an accumulator. Two outside
+callers that seed an accumulator with different element types reach two
+activations whose returns stay apart, whether the accumulator is returned
 through a call (`01076`) or directly (`01078`).
 
 The fixpoint is what makes that rule sound, and the eager form is not.
 "The caller did not hold this value at this same position" misreads a
 PERMUTATION: `go(n - 1, b, a)` hands each slot the value held at the other, and
-the eager test marks both supplied, so a self call would keep its caller's
-column at slots that hold what the caller had at the other. Under the fixpoint
-the permutation's obligations never discharge and the set settles empty. A
-position the recursion only carries is constant along the ascent, and two keys
-there are two callers: `loop(n, junk)`'s junk, the slots `go/3` permutes, and
-the payload of `walk({:go, acc}, n - 1)`, which the rebuilt tuple hands on
-unchanged (fz-kdt.199).
+the eager test marks both supplied, so a call would keep its entry's column at
+slots that hold what the caller had at the other. Under the fixpoint the
+permutation's handoffs never discharge and the set settles empty (`01352`). A
+position the cycle only carries is constant along the ascent, and two keys there
+are two callers: `loop(n, junk)`'s junk, the slots `go/3` permutes, and the
+payload of `walk({:go, acc}, n - 1)`, which the rebuilt tuple hands on unchanged.
 
 A forward is an edge from an input POSITION -- a slot and a path into it -- to
 a callee input, through zero or more construction steps. A parameter passed on
@@ -541,15 +573,9 @@ accumulator adds no activations of its own.
 `compiler2_no_ascent_rung_sits_on_a_freight_slot_of_a_recursive_key` holds that
 over five fixtures, on the same comparand the corpus sweep reads (the canonical
 type body) but a BROADER relation: it asks the rung question of each slot
-independently, so it reads 23 rung/slot findings where the sweep's whole-key
-relation reads none on those five — up from the 8 fz-kdt.183 recorded, and the
-fifteen added are on positions the returned axis now names: the reduce
-families' accumulators key their seed apart from their ascent, a supplied
-position the self-call rule cannot see across the cont↔step cycle
-(fz-kdt.213). Zero of the 23 sit on freight, which is what the gate asserts.
-The two populations differ by construction --
-162 slot findings over 16 fixtures against 58 whole-key rungs over the same 16 --
-so a number from one is not a number from the other.
+independently, and reads 2 rung/slot findings on those five fixtures, none of
+them on freight, which is what the gate asserts. The sweep reads whole keys, so
+a number from one is not a number from the other.
 
 Corpus census recipe: the corpus is every `.fz` under `fixtures2/` and `fixtures/` —
 `ls fixtures2/*.fz fixtures/*.fz`, 605 files at fz-kdt.199, of which

@@ -1,0 +1,21 @@
+#---
+# purpose: "Two functions that call each other, one wrapping the argument in a pair and the other in a one-tuple, compile: the argument is supplied by the cycle"
+# root: main/0
+# oracle: self
+# oracle.stamp: 83b03c81483868c7
+#---
+defmodule Alternate do
+  def a(x, 0), do: x
+  def a(x, n), do: b({x, x}, n - 1)
+
+  def b(x, 0), do: x
+  def b(x, n), do: a({x}, n - 1)
+end
+
+defmodule Main do
+  def main() do
+    IO.inspect(Alternate.a(1, 4))
+  end
+end
+
+Main.main()

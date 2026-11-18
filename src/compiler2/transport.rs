@@ -11,7 +11,7 @@ use std::ops::Range;
 use std::rc::Rc;
 
 use super::body::{CallSiteId, ControlEntryId, ValueId};
-use super::identity::{ExecutableKey, ExecutableNeed, FunctionId};
+use super::identity::{ExecutableKey, ExecutableNeed, FunctionId, cmp_activation_entry};
 use super::types::{Ty, Types};
 use crate::dispatch_matrix::pattern::PatternDispatchPlan;
 use fz_engine::SemanticOrd;
@@ -212,6 +212,7 @@ pub struct LaneDescr {
 pub struct ActivationSymbol {
     pub function: FunctionId,
     pub arrow: Ty,
+    pub entry: Option<(FunctionId, Ty)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -226,6 +227,7 @@ impl ExecutableSymbol {
             activation: ActivationSymbol {
                 function: key.activation.function,
                 arrow: key.activation.arrow,
+                entry: key.activation.entry,
             },
             need: key.need,
         }
@@ -238,6 +240,7 @@ impl SemanticOrd<Types> for ExecutableSymbol {
             .function
             .cmp(&other.activation.function)
             .then_with(|| types.cmp_activation_ty(self.activation.arrow, other.activation.arrow))
+            .then_with(|| cmp_activation_entry(types, self.activation.entry, other.activation.entry))
             .then_with(|| self.need.cmp(&other.need))
     }
 }

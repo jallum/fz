@@ -14,7 +14,7 @@ use crate::dispatch_matrix::pattern::{LastResort, PatternDispatchPlan};
 
 use super::body::{CallSiteId, ControlEntryId, ValueId};
 use super::dispatch_reachability::ReachedEdges;
-use super::identity::{ActivationKey, ExecutableKey, ExecutableNeed, FunctionId};
+use super::identity::{ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, cmp_activation_entry};
 use super::types::{Ty, Types};
 use fz_engine::SemanticOrd;
 
@@ -235,7 +235,11 @@ fn target_covers(types: &mut Types, wider: &CallTargetSummary, narrower: &CallTa
     let (Some(wide_key), Some(narrow_key)) = (&wider.activation, &narrower.activation) else {
         return false;
     };
-    if wide_key == narrow_key || wide_key.function != narrow_key.function || wide_key.root != narrow_key.root {
+    if wide_key == narrow_key
+        || wide_key.function != narrow_key.function
+        || wide_key.root != narrow_key.root
+        || wide_key.entry != narrow_key.entry
+    {
         return false;
     }
     let (Some(wide), Some(narrow)) = (&wider.activation_inputs, &narrower.activation_inputs) else {
@@ -1002,6 +1006,7 @@ impl SemanticOrd<Types> for ActivationKey {
             .cmp(&other.root)
             .then_with(|| self.function.cmp(&other.function))
             .then_with(|| types.cmp_activation_ty(self.arrow, other.arrow))
+            .then_with(|| cmp_activation_entry(types, self.entry, other.entry))
     }
 }
 

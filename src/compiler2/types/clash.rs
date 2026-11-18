@@ -284,6 +284,11 @@ impl Walk<'_> {
 }
 
 impl Types {
+    /// Whether any of `tys` has a tuple, list, resource or map alternative.
+    pub(crate) fn any_carries_constructors(&self, tys: &[Ty]) -> bool {
+        tys.iter().any(|ty| self.descr(ty).has_constructors())
+    }
+
     /// Take the folds noted since the last drain. Ask
     /// [`World::take_clash_folds`](crate::compiler2::world::World::take_clash_folds):
     /// the drain is the `World`'s to offer, and this is where they are kept.

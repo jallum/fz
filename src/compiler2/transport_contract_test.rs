@@ -4895,14 +4895,17 @@ fn positioned_callable_owners_have_observable_obligations() {
                 BTreeMap::from([
                     (("construction", true), 38),
                     // 201 -> 156: `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
-                    (("metadata", false), 156),
+                    // 156 -> 67: a call round a recursion cycle keeps the entering activation's key at the
+                    // slots the cycle supplies, so the reduce families have fewer activations and so
+                    // fewer callable owners.
+                    (("metadata", false), 67),
                     // 180 -> 212 callable owners: a returned callable keeps its brand in its
                     // function's key, and a protocol callback counts every input but the
                     // receiver as returned, so `Enum.reduce_while/3` and its Enum wrappers are
                     // keyed once per reducer lambda.
-                    (("metadata", true), 212)
+                    (("metadata", true), 173)
                 ]),
-                "all 419 owners preserve their obligations; an entry that reuses its parent entry's capture layouts retains no callable owner of its own for them"
+                "all 313 owners preserve their obligations; an entry that reuses its parent entry's capture layouts retains no callable owner of its own for them"
             );
         }
     }
@@ -6595,10 +6598,12 @@ fn callable_owner_positions_break_sibling_ties_on_canonical_inputs() {
     );
 }
 
-/// fz-kdt.152. `Enum.reduce/3` hands its reducer down to `List.reduce_cont/3`,
-/// which specializes on the accumulator: the first step is reached at the
-/// literal accumulator's type and every later step at the reducer's widened
-/// return. So ONE callable input reaches TWO activations of one lambda.
+/// `Enum.reduce/3` hands its reducer down to `List.reduce_cont/3`, which
+/// specializes on the accumulator. Two reduces over one reducer with seeds of
+/// different types (an integer and a float) reach two activations of
+/// `List.reduce_cont/3`, so ONE callable input reaches TWO activations of one
+/// lambda. (One reduce reaches one: the recursion's steps share the entering
+/// activation's key.)
 ///
 /// A transport layout is pure physics, and both activations describe the same
 /// captures, so the input carries those captures — which activation a callsite
@@ -6616,7 +6621,7 @@ fn compiler2_transport_plan_carries_captures_when_one_layout_covers_several_acti
 def main() do
   send(self(), fn (x, acc) -> acc + x end)
   reducer = receive do f -> f end
-  Enum.reduce([1, 2, 3], 0, reducer)
+  {Enum.reduce([1, 2, 3], 0, reducer), Enum.reduce([1, 2, 3], 0.5, reducer)}
 end
 "#;
 

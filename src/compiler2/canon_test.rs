@@ -45,6 +45,24 @@ fn equivalent(types: &Types, left: Ty, right: Ty) -> bool {
     types.is_subtype(&left, &right) && types.is_subtype(&right, &left)
 }
 
+/// Two activations entered the same cycle when neither has an entry, or both
+/// name the same function entered at equivalent inputs.
+fn equivalent_entries(types: &Types, left: Option<(FunctionId, Ty)>, right: Option<(FunctionId, Ty)>) -> bool {
+    match (left, right) {
+        (None, None) => true,
+        (Some((left_function, left_arrow)), Some((right_function, right_arrow))) => {
+            let (left_inputs, right_inputs) = (types.arrow_params(&left_arrow), types.arrow_params(&right_arrow));
+            left_function == right_function
+                && left_inputs.len() == right_inputs.len()
+                && left_inputs
+                    .iter()
+                    .zip(right_inputs)
+                    .all(|(left, right)| equivalent(types, *left, *right))
+        }
+        _ => false,
+    }
+}
+
 fn equivalent_executable_keys(
     types: &Types,
     program: &super::super::BackendProgram,
@@ -60,6 +78,7 @@ fn equivalent_executable_keys(
             if left_key.activation.root != right_key.activation.root
                 || left_key.activation.function != right_key.activation.function
                 || left_key.need != right_key.need
+                || !equivalent_entries(types, left_key.activation.entry, right_key.activation.entry)
             {
                 continue;
             }
@@ -564,7 +583,10 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // the text: `panic` and its extern stand where `raise/2` and its extern stood.
             // 75 -> 70: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
             // 70 -> 59: `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
-            59,
+            // 59 -> 55: a call round a recursion cycle keeps the entering activation's key at the
+            // slots the cycle supplies, so the `reduce_cont`/`reduce_step` pairs no longer mint
+            // one activation per rung of the accumulator's ascent.
+            55,
         ),
         (
             569, // enum_map_family
@@ -612,7 +634,9 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // 59 -> 56: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
             // 56 -> 55: the fixture calls `IO.inspect` where it called `dbg` (two fewer executables)
             // inside `Main`, whose root script calls `Main.main/0` (one more).
-            55,
+            // 55 -> 53: a call round a recursion cycle keeps the entering activation's key at the
+            // slots the cycle supplies, so the reduce families mint one activation per entry.
+            53,
         ),
         (
             570, // actor_ring
@@ -642,7 +666,9 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // 199 -> 197: a library exception's module words its own message, so the raise
             // no longer carries `inspect` and its extern to build the text.
             // 197 -> 194: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
-            194,
+            // 194 -> 190: a call round a recursion cycle keeps the entering activation's key at the
+            // slots the cycle supplies, so the reduce families mint one activation per entry.
+            190,
         ),
         (
             420, // enum_take_drop_split, over both a list and a range
@@ -672,7 +698,10 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // functions that carry one are emitted once.
             // 256 -> 255: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
             // 255 -> 239: `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
-            239,
+            // 239 -> 188: a call round a recursion cycle keeps the entering activation's key at the
+            // slots the cycle supplies, so the take/drop/split reduce families mint one activation
+            // per entry instead of one per rung of the accumulator's ascent.
+            188,
         ),
     ] {
         let settled = Drive::fixture(number).dump_stage(DumpStage::Backend);
