@@ -25,11 +25,15 @@
     {
       "text": "Round 4 (bench, develop 2c4641f52 incl #675, per-arm runtime archives so A2/A1G/A2G are measured for the first time; 25 runs/arm, 9 dist-full; outputs identical): all four arms FAIL round 3's rule. Rule 1 (survive held falls \u003e=25%) fails everywhere: survive held 1.286 (A1/A1G), 1.324 (A2/A2G). Cycles: A1 enum 1.096 (round 3: 1.225, so #675 removed about half the gap), dist-p28000 1.069, dist-full 1.059, survive 1.049; A2 is costlier on every allocation-heavy workload (enum 1.191, dist 1.14, qsort 1.074) and its held rises on fanin/qsort/dist (dist-full 1.695); G variants add fanin 1.28 / ring 1.16 / msg 1.07 and cut held on ring/msg (0.31/0.38). Stays open per the user.",
       "timestamp": "2026-11-17T21:38:13Z"
+    },
+    {
+      "text": "2026-11-17 collection counts vs BEAM (OTP 28, per-process gc trace of the workload's own processes, scratchpad/beam/gctrace.exs; BEAM's harness floor is ~25 minor / 10 major, seen on spin). fz develop minor/major vs BEAM: msg 68,833/25,324 vs 8,079/11; ring 55,281/7,888 vs 18/10; reqrep 1/20,001 vs 14,850/14; maps 212/107 vs 600/23; survive 6/4 (.8: 19/4) vs 122/29. Mechanisms: (1) every minor promotes everything it copies, so the old bytes double past a 512 B reference within a few minors on small processes and majors fire constantly (msg 27% majors, reqrep 100%); (2) young budget = live bytes floored at 512 B (BEAM min heap 233 words = 1,864 B), checked at every park, so msg/ring collect every ~1 KB (fz-9x7.7). Earlier rounds judged survive held and instructions only; collection counts against BEAM are a direct signal for this ticket's next round. The .8 old-binary major fold (survive mean 0.80x but instructions 1.144x) addresses the same survive mechanism this ticket describes.",
+      "timestamp": "2026-11-18T03:06:22Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "A value becomes old only after it survives two collections",
   "type": "task",
-  "updated_at": "2026-11-17T22:45:56Z"
+  "updated_at": "2026-11-18T03:06:22Z"
 }
