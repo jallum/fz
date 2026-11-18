@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-nhb.12",
@@ -11,8 +11,8 @@
   "labels": [],
   "parent": "fz-nhb",
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "A spec declares every type variable in when, as Elixir requires, and term is any",
   "type": "task",
-  "updated_at": "2026-11-18T02:47:54Z"
+  "updated_at": "2026-11-18T02:48:13Z"
 }
