@@ -9,6 +9,12 @@
   "id": "fz-mue.2",
   "labels": [],
   "parent": "fz-mue",
+  "comments": [
+    {
+      "text": "Blocked by fz-9zq.2 (Elixir Parity, 2026-11-18). On develop, punch/02 mints 6,248 keys for Main.cont/4 and 4,686 for Main.value/3, one per nesting level of list(int | list(...)): this is fz-y5x / fz-9zq.2, call_key_types keying a call between different functions by its arguments. On fz-9zq.2's build e4e99c859, value and cont each settle to one key, but the 50k budget is still exhausted. A second defect: cont's input evidence climbs one list level per re-analysis, only one clash fold fires, and Enum.reverse/1 mints 1,993 keys. The evidence fold doesn't cut a list nested in a list when the ascent comes through a cycle-keyed activation. Root cause not yet found.",
+      "timestamp": "2026-11-18T21:20:44Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "A continuation-passing decoder with a list stack specializes within the budget",
