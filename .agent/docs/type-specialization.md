@@ -496,9 +496,14 @@ Cortesi and Le Charlier (PLDI'94): compare the previous iterate with the new one
 slot by slot, and fold to `any` the slot that gained a constructor one of its own
 ancestors already has.
 
-- A node's HEAD is its constructor kind. A tuple's head carries its arity and
-  the atom in first position; a map's carries its key set (a struct's module key
-  is not a slot).
+- A node's HEAD is its constructor kind. A tuple's head is its arity plus at
+  most one atom tag: a clause whose first slot is a finite set of atoms yields one
+  head per atom, any other first slot yields the untagged head of that arity. A
+  map's head is its key set (a struct's module key is not a slot).
+- A head COVERS another when it is the same head, or when it is the untagged head
+  of a tagged head's arity. So `{:l, x}` and `{:r, x}` both lie under an ancestor
+  holding `{y, z}`, and a recursion that changes its tag, or nests its accumulator
+  in the first slot, finds its covering frame and folds.
 - A node CLASHES when its set of heads grew. It folds only when an ancestor's
   heads already cover it. A new head under a head that does not cover it is
   ordinary growth, as is the first rung out of a bare leaf: a clash at the root

@@ -131,3 +131,47 @@ fn folding_is_idempotent() {
     );
     assert!(t.clash_fold(folded, folded).is_none());
 }
+
+#[test]
+fn a_tagged_head_is_covered_by_the_untagged_head_of_its_arity() {
+    let mut t = Types::new();
+    let int = t.int();
+    let tag = t.atom_lit("l");
+    let any = t.any();
+    let untagged = t.tuple(&[any, int]);
+    let tagged = t.tuple(&[tag, int]);
+    let (wide, narrow) = (Pf::of(&t, &[untagged]), Pf::of(&t, &[tagged]));
+    assert!(
+        wide.covers(&t, &narrow),
+        "an untagged head stands for every tuple of its arity"
+    );
+    assert!(
+        !narrow.covers(&t, &wide),
+        "a tagged head does not stand for the untagged one"
+    );
+}
+
+#[test]
+fn two_tags_under_an_untagged_ancestor_fold() {
+    // The outer pair's first slot holds `:a | {:l, :a}` and then also
+    // `{:r, :a}`: a second tag of the arity the untagged outer head names.
+    let mut t = Types::new();
+    let int = t.int();
+    let any = t.any();
+    let (a, l, r) = (t.atom_lit("a"), t.atom_lit("l"), t.atom_lit("r"));
+    let left = t.tuple(&[l, a]);
+    let right = t.tuple(&[r, a]);
+    let before = t.union(a, left);
+    let after = t.union(before, right);
+    let pair = |t: &mut Types, first: Ty| {
+        let outer = t.tuple(&[first, int]);
+        t.union(a, outer)
+    };
+    let (old, new) = (pair(&mut t, before), pair(&mut t, after));
+    let folded = t
+        .clash_fold(old, new)
+        .expect("the outer untagged head covers the second tag");
+    let hollow = t.tuple(&[any, int]);
+    assert_eq!(folded, t.union(a, hollow), "the grown slot is named by its ancestor");
+    assert_eq!(t.take_clash_folds().len(), 1, "one slot grew, so one fold is noted");
+}

@@ -1,0 +1,20 @@
+#---
+# purpose: "A recursion whose accumulator is wrapped under a different atom tag on each call compiles: the repeated tuple folds under its untagged ancestor"
+# root: main/0
+# oracle: self
+# oracle.stamp: 8764d5cf23789a52
+#---
+defmodule Alternate do
+  def mix(0, acc), do: acc
+  def mix(n, acc) when rem(n, 2) == 0, do: mix(n - 1, {:l, acc})
+  def mix(n, acc), do: mix(n - 1, {:r, acc})
+end
+
+defmodule Main do
+  def main() do
+    IO.inspect(Alternate.mix(3, :a))
+    IO.inspect(Alternate.mix(2, :b))
+  end
+end
+
+Main.main()
