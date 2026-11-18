@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-nml.27"
+    "fz-nml.27",
+    "fz-sc8.236"
   ],
   "blocks": [],
   "created": "2026-11-18T03:29:07Z",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "Appending a literal copies its bytes; no bitstring is made for it",
   "type": "bug",
-  "updated_at": "2026-11-18T03:29:07Z"
+  "updated_at": "2026-11-18T03:29:08Z"
 }
