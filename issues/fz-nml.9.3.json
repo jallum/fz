@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-18T01:56:20Z",
   "created": "2026-11-17T22:48:49Z",
   "description": "Site 3 of fz-nml.9. prim.rs:2238 boxes the PID extern result and fz_send unboxes it at once: send(self(), :ping) 0/1000/1000; with the pid hoisted 0/1/1. This is the box fz-sc8.167 once listed.\n\nScope redirected by the user 2026-11-17 (relayed by JSON, verbatim: \"yes, redirect it. pids like atoms.\"): a pid ref word packs the pid in its payload bits, as an atom ref packs its id. Boxing a pid is a pack and never allocates; load_opaque_word(PID) reads the payload; no ScalarBox ever holds a pid. REF (make_ref, a 64-bit counter) is out of scope and stays boxed.\n\nFiles: runtime any_value.rs, heap/imp.rs, ref_io.rs, gc, deep_copy.rs, term*.rs, ir_runtime.rs; compiler native_codegen (prim, receive, fn_ctx, repr), jobs/native.rs, ir_interp value + extern_call, telemetry/value.rs, runtime_type_predicate.rs, dispatch_matrix/pattern.rs; docs; fixture 01705.\n\nAcceptance: send(self(), :ping) allocates no pid box on any path (interp, JIT, AOT agree); pins lowered where they fall; nothing rises.\n\nEarlier scope (withdrawn): native self() feeds fz_send a raw pid word via CodegenValue::Known. Census and probes: fz-nml.9 description (JSON session, develop 4a05ae2be; per 1000 steps interp/run/build).",
   "id": "fz-nml.9.3",
   "labels": [],
   "parent": "fz-nml.9",
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "A pid is packed into its ref word, as an atom is",
   "type": "bug",
-  "updated_at": "2026-11-18T01:45:35Z"
+  "updated_at": "2026-11-18T01:56:20Z"
 }
