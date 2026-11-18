@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-18T05:17:05Z",
   "created": "2026-11-18T04:23:55Z",
   "description": "Approved by the user 2026-11-17 (relayed by Fixture Rework, verbatim: \"like elixir.\").\n\nsrc/compiler2/types/format.rs:106 format_arrow_clause prints ({args}) -\u003e {ret}; it becomes ({args} -\u003e {ret}), and (-\u003e R) with no parameters.\n\nMoves (develop + #723): 1 .expected.stderr golden, 3 fixtures2 .call_edges goldens, ~15 Rust test strings holding rendered arrows.\n\nScope: the arrow shape only. Elixir also prints builtin types with parentheses (integer()); that is out of scope unless the user rules otherwise (question put to the user).",
   "id": "fz-nhb.21",
   "labels": [],
   "parent": "fz-nhb",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Diagnostics render a function type in Elixir's spelling",
   "type": "task",
-  "updated_at": "2026-11-18T04:24:15Z"
+  "updated_at": "2026-11-18T05:17:05Z"
 }
