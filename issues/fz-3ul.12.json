@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-3ul.13"
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-3ul",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "A function body may carry rescue, catch, else and after, as an implicit try",
   "type": "task",
-  "updated_at": "2026-11-18T03:16:29Z"
+  "updated_at": "2026-11-18T23:24:42Z"
 }
