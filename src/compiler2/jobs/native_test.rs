@@ -652,3 +652,37 @@ fn a_delivered_call_to_a_callee_that_is_more_than_an_extern_keeps_its_continuati
         "run's one call that is not an extern is its only call with a continuation"
     );
 }
+/// How many times the functions of `function` test a value for being `true`
+/// or `false`, which is how a guard checks that an operand is a boolean.
+fn boolean_tests(program: &crate::compiler2::artifact::NativeProgram, function: &str) -> usize {
+    fns_of_executable(program, function)
+        .iter()
+        .flat_map(|function| &function.blocks)
+        .flat_map(|block| &block.stmts)
+        .filter(|stmt| {
+            matches!(
+                stmt,
+                crate::fz_ir::Stmt::Let(_, Prim::BinOp(crate::fz_ir::BinOp::Identical, _, _))
+            )
+        })
+        .count()
+}
+
+/// A comparison, a type test and an `and`, `or` or `not` all answer with a
+/// boolean, so a guard built only from them checks none of its operands.
+/// `flagged/2` takes an operand that may be `:maybe`, and checks that one.
+#[test]
+fn a_guard_tests_an_operand_for_being_a_boolean_only_when_its_type_leaves_it_open() {
+    let settled = Drive::fixture(1374).dump_stage(crate::compiler2::dump::DumpStage::Native);
+    let program = settled.native_program();
+    assert_eq!(
+        boolean_tests(&program, "class"),
+        0,
+        "every operand in class/1 is already a boolean"
+    );
+    assert_eq!(
+        boolean_tests(&program, "flagged"),
+        2,
+        "flagged/2 compares its open operand with true and with false, once"
+    );
+}

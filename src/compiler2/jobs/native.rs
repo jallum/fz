@@ -3680,7 +3680,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 expr,
             } => {
                 let input = self.lower_guard_boolean(ctx, plan, state, expr, fail)?;
-                ctx.emit_let(Prim::UnOp(IrUnOp::Not, input)).0
+                self.emit_guard_boolean(ctx, Prim::UnOp(IrUnOp::Not, input))
             }
             PatternGuardExpr::Binary {
                 op: op @ (PatternGuardBinOp::And | PatternGuardBinOp::Or),
@@ -3690,8 +3690,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             PatternGuardExpr::Binary { op, lhs, rhs } => {
                 let lhs = self.lower_guard_expr(ctx, plan, state, lhs, fail)?;
                 let rhs = self.lower_guard_expr(ctx, plan, state, rhs, fail)?;
-                let (var, _) = ctx.emit_let(Prim::BinOp(lower_guard_binop(*op), lhs, rhs));
-                var
+                self.emit_guard_boolean(ctx, Prim::BinOp(lower_guard_binop(*op), lhs, rhs))
             }
             PatternGuardExpr::Dispatch {
                 inputs,
@@ -3704,6 +3703,20 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             }
             PatternGuardExpr::Pinned(pinned) => self.dispatch_pinned_var(state, *pinned)?,
         })
+    }
+
+    /// A guard step whose answer is a boolean whatever its operands are: a
+    /// comparison or a `not`. Recording that lets an enclosing `and`, `or` or
+    /// `not` take the answer without testing it.
+    fn emit_guard_boolean(&mut self, ctx: &mut NativeFnCtx, prim: Prim) -> Var {
+        let (answer, _) = ctx.emit_let(prim);
+        self.record_guard_boolean(ctx, answer);
+        answer
+    }
+
+    fn record_guard_boolean(&mut self, ctx: &mut NativeFnCtx, answer: Var) {
+        let boolean = self.world.types_mut().bool();
+        ctx.value_types.insert(answer, boolean);
     }
 
     /// An operand of `and`, `or` or `not`. In a guard an error fails the
@@ -3788,6 +3801,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         let rhs = self.lower_guard_boolean(ctx, plan, state, rhs, fail)?;
         ctx.set_term(Term::Goto(done_b, vec![rhs]));
         ctx.current_block = done_b;
+        self.record_guard_boolean(ctx, answer);
         Ok(answer)
     }
 

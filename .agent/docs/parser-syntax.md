@@ -168,7 +168,11 @@ for any exhaustive `case`. `||`, `&&` and `!` are
 the deciding value. `and`, `or` and `not` stay legal in guards, where a
 non-boolean operand fails the guard as any guard error does; the three guard
 evaluators (`ir_interp/dispatch_exec.rs`, `jobs/native.rs`,
-`native_codegen/receive.rs`) apply the same strictness.
+`native_codegen/receive.rs`) apply the same strictness. The entry dispatch in
+`jobs/native.rs` emits the test only for an operand whose type leaves it open: a
+comparison, a `not`, an `and`/`or` and an extern that returns a boolean are
+recorded as booleans when they are lowered, so an operand built from them is
+branched on directly.
 
 ## Macros in guards
 

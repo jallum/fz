@@ -1,0 +1,22 @@
+#---
+# purpose: "the operands of and, or and not in a guard are tested for being booleans only when their type leaves it open: a comparison, a type test and another and/or/not are booleans already, and a non-boolean operand still fails the guard"
+# kind: run
+#---
+#
+# Every operand in `Main.class/1` is a comparison, a type test, or built from
+# them, so its guards decide with compares and branches alone. `Main.flagged/2`
+# takes its left operand from a list that also holds `:maybe`, which is not a
+# boolean: that guard fails for it and the next clause answers.
+defmodule Main do
+  def class(c) when c >= 48 and c <= 57, do: :digit
+  def class(c) when c == 43 or c == 45, do: :sign
+  def class(c) when not (c > 32), do: :blank
+  def class(c) when is_integer(c) and not (c < 128 or c == 255), do: :high
+  def class(_c), do: :other
+
+  def flagged(flag, n) when flag and n > 0, do: :yes
+  def flagged(_flag, _n), do: :no
+end
+
+dbg(Enum.map([53, 45, 9, 200, 255, 97], fn c -> Main.class(c) end))
+dbg(Enum.map([true, false, :maybe], fn flag -> Main.flagged(flag, 1) end))
