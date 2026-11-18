@@ -1,0 +1,5 @@
+{:small_true, 6000, 0, 0}
+{:small_colon, 4000, 0, 0}
+{:large_true, 5004000, 0, 0}
+{:large_colon, 5002000, 0, 0}
+{:grown_true, 4000, 0, 0}

@@ -1,0 +1,52 @@
+#---
+# purpose: appending a literal binary allocates exactly what appending a computed binary of the same length allocates, on the interpreter, the JIT and a built program
+# kind: run
+#---
+#
+# A binary literal is a read-only object made once, so `acc <> "true"` reads
+# the literal's bytes where they are and builds nothing for the operand. Each
+# row appends 1,000 times with a literal and 1,000 times with a computed binary
+# of the same bytes, and prints how many more bitstrings and binary views the
+# literal loop allocated than the computed one: zero for each. The rows cover a
+# small accumulator ("ab", whose results stay inline), a large one (5,000
+# bytes, whose results are views) and one grown from "" by its own appends.
+defmodule Append do
+  def fixed_true(0, _acc, n), do: n
+  def fixed_true(k, acc, n), do: fixed_true(k - 1, acc, n + byte_size(acc <> "true"))
+
+  def fixed_colon(0, _acc, n), do: n
+  def fixed_colon(k, acc, n), do: fixed_colon(k - 1, acc, n + byte_size(acc <> "\":"))
+
+  def fixed(0, _acc, _operand, n), do: n
+  def fixed(k, acc, operand, n), do: fixed(k - 1, acc, operand, n + byte_size(acc <> operand))
+
+  def grow_true(0, acc), do: byte_size(acc)
+  def grow_true(k, acc), do: grow_true(k - 1, acc <> "true")
+
+  def grow(0, _operand, acc), do: byte_size(acc)
+  def grow(k, operand, acc), do: grow(k - 1, operand, acc <> operand)
+
+  def allocated(run) do
+    a = Process.heap_alloc_stats()
+    result = run.()
+    z = Process.heap_alloc_stats()
+    {result, z[:bitstring_allocs] - a[:bitstring_allocs], z[:binview_allocs] - a[:binview_allocs]}
+  end
+
+  def extra(label, literal, computed) do
+    {same, bitstrings, views} = allocated(literal)
+    {^same, computed_bitstrings, computed_views} = allocated(computed)
+    dbg({label, same, bitstrings - computed_bitstrings, views - computed_views})
+  end
+end
+
+small = "ab"
+large = :binary.copy("x", 5000)
+true_bytes = :binary.copy("t", 1) <> "rue"
+colon_bytes = :binary.copy("\"", 1) <> ":"
+
+Append.extra(:small_true, fn -> Append.fixed_true(1000, small, 0) end, fn -> Append.fixed(1000, small, true_bytes, 0) end)
+Append.extra(:small_colon, fn -> Append.fixed_colon(1000, small, 0) end, fn -> Append.fixed(1000, small, colon_bytes, 0) end)
+Append.extra(:large_true, fn -> Append.fixed_true(1000, large, 0) end, fn -> Append.fixed(1000, large, true_bytes, 0) end)
+Append.extra(:large_colon, fn -> Append.fixed_colon(1000, large, 0) end, fn -> Append.fixed(1000, large, colon_bytes, 0) end)
+Append.extra(:grown_true, fn -> Append.grow_true(1000, "") end, fn -> Append.grow(1000, true_bytes, "") end)
