@@ -1616,7 +1616,10 @@ fn target_fixture_reports_exercise_all_five_request_scenarios() {
                 // 00567 cold 136 -> 124 and 00571 cold 474 -> 444 and 00420 cold 625 -> 487: a call round a recursion cycle keeps the entering
                 // activation's key at the slots the cycle supplies, so the reduce families have
                 // fewer activations and so fewer bodies to walk.
-                [[124, 0, 0, 1, 4], [444, 0, 0, 1, 4], [487, 0, 0, 1, 4]][fixture_index][scenario],
+                // 00420 cold 487 -> 476: a field reading of a value that is not one exact tuple is
+                // read whole, so its runtime demand settles at once rather than widening field by
+                // field.
+                [[124, 0, 0, 1, 4], [444, 0, 0, 1, 4], [476, 0, 0, 1, 4]][fixture_index][scenario],
                 "{fixture} {name}: count actual body walks, not scheduler completions; all scenarios: {:?}",
                 reports
                     .iter()

@@ -756,7 +756,7 @@ A callable travels direct only where every reader knows it is a callable. A
 position whose type also admits something else (a closure or an integer, say)
 has a reader that must tell the two apart, and only a boxed callable carries
 the tag it reads. So a callable demand at such a position is escaped, field by
-field through a tuple (`escape_mixed_callables`). "Admits something else" is
+field through a tuple (`read_against_type`). "Admits something else" is
 `Types::admits_non_callable`: the type has a part known not to be a callable.
 A type variable is not known to be anything, so a variable does not make a
 position mixed, and a value with no recorded type is left alone. The rule reads the type of
@@ -885,6 +885,17 @@ fields keeps those fields however wide it is, and a callable demand keeps its
 decomposition. The budget is one constant for every target, so a layout does
 not depend on the machine the compiler runs on; an executable asks for a
 tuple input as `ExecutableNeed::TupleFields` only inside the budget.
+
+A tuple travels field by field only when its type's values are all tuples of
+one arity (`Types::exact_tuple_arity`). Any other value, such as a union of a
+2-tuple and a 3-tuple, or a tuple that may be `nil`, travels as one reference
+to the built value, and a built tuple has every field. Reading a demand against
+its value's type (`read_against_type`) therefore turns a field reading of such
+a value into `Whole`, so the producers of the tuples that flow into it, whether
+returned by a call or met at a join, build every field. The runtime-demand type
+projection's `field_tys` and transport's `decomposed_field_tys` both answer
+from `exact_tuple_arity`, so demand and layout agree on which values travel
+field by field.
 
 A value read out of a list cell, a map or a struct is one word there already.
 When its reader's demand is `Whole`, its layout is that one value lane, whatever

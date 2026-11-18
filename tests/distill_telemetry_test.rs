@@ -283,7 +283,10 @@ fn read_compile_spend(trace: &Path) -> CompileSpend {
 // slots the cycle supplies, so the reduce families have fewer activations to derive.
 // 17_076 -> 17_088: +12: a body that writes a module's name asks whether that module
 // declares a struct, and one more struct schema enters the program; authorized by the user.
-const DERIVATIONS: u64 = 17_088;
+// 17_088 -> 16_958: a field reading of a value that is not one exact tuple is read whole, so
+// its runtime demand settles at once rather than widening field by field: 130 fewer
+// `DeriveRuntimeDemand` derivations, and every other job kind unchanged.
+const DERIVATIONS: u64 = 16_958;
 // 111_876 -> 111_888: an extern that declares `raises:` reads the struct of
 // the exception it names, to raise that struct. The distiller calls twelve
 // such externs, and each contract reads `StructDefined` once.
@@ -318,7 +321,8 @@ const DERIVATIONS: u64 = 17_088;
 // 155_014 -> 154_544: the reads of those 43 derivations.
 // 154_544 -> 128_751: the same, each activation read once per derivation.
 // 128_751 -> 128_782: +31: the reads of the same rise as `DERIVATIONS`; authorized by the user.
-const READS_HANDED: u64 = 128_782;
+// 128_782 -> 128_429: the reads of those 130 derivations.
+const READS_HANDED: u64 = 128_429;
 
 /// Compiling the distiller spends this much of the product stack. The largest
 /// drive is the one `PRODUCT_DRIVE_BUDGET` bounds, so its headroom is the

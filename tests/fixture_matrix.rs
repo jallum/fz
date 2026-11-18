@@ -4407,12 +4407,17 @@ fn a_large_list_passed_back_and_forth_crosses_as_one_gift_per_message_on_every_p
         vec![
             // Each entry's call of its body returns to a 32-byte continuation, live in the child's
             // park and in the parent's collections that copy its oldest values.
-            (2, "park", 320),
+            // 320 -> 336: a value read whole has every field built, so each reduce step's constant
+            // `:cont` takes a lane in the step's frame.
+            (2, "park", 336),
             (1, "yield", 64_144),
             (1, "yield", 192_144),
             // 96_144 -> 96_160: a call round a recursion cycle keeps the entering activation's key
             // at the slots the cycle supplies, and this collection copies 16 bytes more.
-            (1, "yield", 96_160),
+            // 96_160 -> 128_160: a value read whole has every field built, so each reduce step's
+            // constant `:cont` takes a lane in the step's frame; one more 48-byte yield follows.
+            (1, "yield", 128_160),
+            (1, "yield", 48),
             (1, "yield", 48),
             (1, "yield", 48),
             (1, "yield", 48),

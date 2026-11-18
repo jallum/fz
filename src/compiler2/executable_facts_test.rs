@@ -34,7 +34,7 @@ fn a_callable_that_shares_its_position_with_an_integer_is_boxed() {
 
     let called = || RuntimeDemand::callable(CallableDemand::opaque());
     let mut demand = RuntimeDemand::tuple_fields(vec![called(), called()]);
-    escape_mixed_callables(&builder.projections, &mut demand, pair);
+    read_against_type(&builder.projections, &mut demand, pair);
 
     let ShapeDemand::TupleFields(fields) = &demand.shape else {
         panic!("the pair is still read field by field: {demand:?}");
@@ -47,6 +47,40 @@ fn a_callable_that_shares_its_position_with_an_integer_is_boxed() {
         !fields[1].callable.escape,
         "the field that is always a callable stays direct: {demand:?}"
     );
+}
+
+/// A value that is not one exact tuple travels as one built value, which has
+/// every field, so a reader that asks for some of its fields asks for all of
+/// it: a union of tuples of two arities, and a tuple that may be `nil`.
+#[test]
+fn a_field_reading_of_a_value_that_is_not_one_exact_tuple_reads_it_whole() {
+    let mut world = World::new();
+    let int = world.types_mut().int();
+    let nil = world.types_mut().atom_lit("nil");
+    let pair = world.types_mut().tuple(&[int, int]);
+    let triple = world.types_mut().tuple(&[int, int, int]);
+    let pair_or_triple = world.types_mut().union(pair, triple);
+    let maybe_pair = world.types_mut().union(pair, nil);
+    let any = world.types_mut().any();
+    let mut builder = RuntimeDemandTypeBuilder::new(any);
+    let first_and_third = || {
+        RuntimeDemand::tuple_fields(vec![
+            RuntimeDemand::whole(),
+            RuntimeDemand::ignore(),
+            RuntimeDemand::whole(),
+        ])
+    };
+    for ty in [pair_or_triple, maybe_pair] {
+        prepare_type_projection(&mut world, &mut builder, ty);
+        let mut demand = first_and_third();
+        read_against_type(&builder.projections, &mut demand, ty);
+        assert_eq!(demand, RuntimeDemand::whole(), "{}", world.types().display(&ty));
+    }
+
+    prepare_type_projection(&mut world, &mut builder, triple);
+    let mut demand = first_and_third();
+    read_against_type(&builder.projections, &mut demand, triple);
+    assert_eq!(demand, first_and_third(), "an exact tuple keeps its field reading");
 }
 
 /// A tuple with a wide field keeps its per-field demand.

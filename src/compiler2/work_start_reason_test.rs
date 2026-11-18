@@ -389,7 +389,10 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // (2755, 15, 31, 245) -> (2487, 15, 31, 194): a call round a recursion cycle keeps the
         // entering activation's key at the slots the cycle supplies, so the reduce families mint
         // one activation per entry and every job that runs per activation runs fewer times.
-        (2487, 15, 31, 194),
+        // (2487, 15, 31, 194) -> (2476, 15, 31, 194): a field reading of a value that is not one
+        // exact tuple is read whole, so its runtime demand settles at once: 11 fewer
+        // `DeriveRuntimeDemand` walks.
+        (2476, 15, 31, 194),
         "ordinary generic helper work has the exact source/module/executable-fact census"
     );
     // Every applied work step is a run, and every run is charged to exactly
@@ -663,7 +666,10 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // (567, 574, [24, 245, 65, 240, 0]) -> (429, 431, [24, 194, 11, 202, 0]): a call round a
         // recursion cycle keeps the entering activation's key at the slots the cycle supplies, so
         // the reduce families have fewer activations to derive demand for.
-        (429, 431, [24, 194, 11, 202, 0]),
+        // (429, 431, [24, 194, 11, 202, 0]) -> (418, 420, [24, 194, 0, 202, 0]): a field reading of
+        // a value that is not one exact tuple is read whole, so no runtime demand is woken again by
+        // one exact input widening field by field.
+        (418, 420, [24, 194, 0, 202, 0]),
         "every demand completion and ordinary helper wake retains its precise cause",
     );
     assert_eq!(

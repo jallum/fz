@@ -76,7 +76,9 @@ const TARGET_FIXTURES: [TargetFixture; 3] = [
         // 772 -> 775: a case arm's parameter is laid out by its own demand, so each outcome parameter is a position the demand walk reads.
         // 775 -> 636: a call round a recursion cycle keeps the entering activation's key at the
         // slots the cycle supplies, so the reduce families have fewer activations to walk.
-        runtime_demand_walks: 636,
+        // 636 -> 625: a field reading of a value that is not one exact tuple is read whole, so
+        // its runtime demand settles at once rather than widening field by field.
+        runtime_demand_walks: 625,
         mainline_runtime_demand_walks: 6252,
         mainline_runtime_demand_door: ObservationDoor::Interp,
     },
