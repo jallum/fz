@@ -1,7 +1,7 @@
 #---
 # purpose: "unary plus answers its number operand in a body, a function-head guard and a receive guard, raises ArithmeticError on an operand that is not a number in a body, and leaves the clause unmatched in a guard"
 # oracle: self
-# oracle.stamp: 355c55f30689024d
+# oracle.stamp: 152bac7c8add77b8
 #---
 #
 # `+n` is the identity on an integer or a float. On anything else it fails: a
@@ -25,11 +25,9 @@ defmodule Main do
   end
 
   def raised(n) do
-    try do
-      +n
-    rescue
-      e in ArithmeticError -> e.message
-    end
+    +n
+  rescue
+    e in ArithmeticError -> e.message
   end
 
   def main() do

@@ -1,20 +1,18 @@
 #---
 # purpose: "do, rescue, else and after together: the body's value goes to else, a raise goes to rescue, and after runs last on both"
 # oracle: self
-# oracle.stamp: dd802d462fc20989
+# oracle.stamp: 2d6c5da2c2f7bc44
 #---
 defmodule Main do
   def attempt(f) do
-    try do
-      f.()
-    rescue
-      _ -> :rescued
-    else
-      {:ok, n} -> n
-      other -> {:else, other}
-    after
-      IO.inspect(:after)
-    end
+    f.()
+  rescue
+    _ -> :rescued
+  else
+    {:ok, n} -> n
+    other -> {:else, other}
+  after
+    IO.inspect(:after)
   end
 
   def main() do

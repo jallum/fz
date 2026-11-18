@@ -1,7 +1,7 @@
 #---
 # purpose: "defexception declares the struct with exception/1 and message/1, a module replaces either, Exception.message/1 calls the module's message/1, and is_exception/1 tells an exception from another struct, as Elixir does"
 # oracle: self
-# oracle.stamp: 99be913c8461b9d0
+# oracle.stamp: 2f83361c59817248
 #---
 defmodule Plain do
   defexception [:message]
@@ -33,20 +33,16 @@ defmodule Main do
   def kind(_), do: :other
 
   def rescued(f) do
-    try do
-      f.()
-    rescue
-      e in Plain -> {:plain, e.message}
-      e in Defaulted -> {:defaulted, Exception.message(e), e.code}
-    end
+    f.()
+  rescue
+    e in Plain -> {:plain, e.message}
+    e in Defaulted -> {:defaulted, Exception.message(e), e.code}
   end
 
   def raised_is_exception(f) do
-    try do
-      f.()
-    rescue
-      e -> is_exception(e)
-    end
+    f.()
+  rescue
+    e -> is_exception(e)
   end
 
   def main() do

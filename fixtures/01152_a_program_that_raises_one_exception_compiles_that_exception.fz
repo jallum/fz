@@ -1,15 +1,13 @@
 #---
 # purpose: "a raise of KeyError with fields is rescued by name and its fields are read; the program names no other exception"
 # oracle: self
-# oracle.stamp: 128ecffc78ddbaf0
+# oracle.stamp: 05d77ef690cc1c4f
 #---
 defmodule Main do
   def missing(key) do
-    try do
-      raise KeyError, key: key, term: [:held]
-    rescue
-      e in KeyError -> [e.key, e.term, e.message, Exception.message(e)]
-    end
+    raise KeyError, key: key, term: [:held]
+  rescue
+    e in KeyError -> [e.key, e.term, e.message, Exception.message(e)]
   end
 
   def all(), do: missing(:wanted)

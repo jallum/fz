@@ -1,7 +1,7 @@
 #---
 # purpose: "hd and tl answer the head and the tail of a non-empty list in a body, raising ArgumentError on an empty list or a non-list, and in a function-head guard and a receive guard the same failure leaves the clause unmatched"
 # oracle: self
-# oracle.stamp: c2ffd46c97b3f2b4
+# oracle.stamp: 91e6cdb4e4a3f573
 #---
 #
 # In a guard a failure is the clause not
@@ -10,11 +10,9 @@
 
 defmodule Main do
   def refused(f) do
-    try do
-      f.()
-    rescue
-      e in ArgumentError -> e.message
-    end
+    f.()
+  rescue
+    e in ArgumentError -> e.message
   end
 
   def entry_hd(l) when hd(l) == 1, do: :a

@@ -27,9 +27,9 @@ warning[lower/unused-variable]: variable "y" is unused (if the variable is not m
    |
 
 warning[lower/unused-variable]: variable "e" is unused (if the variable is not meant to be used, prefix it with an underscore)
-  --> fixtures/01304_a_variable_bound_and_never_read_warns.fz:16:5
+  --> fixtures/01304_a_variable_bound_and_never_read_warns.fz:15:3
    |
-16 |     e in ArgumentError -> :rescued
-   |     ^
+15 |   e in ArgumentError -> :rescued
+   |   ^
    |
 

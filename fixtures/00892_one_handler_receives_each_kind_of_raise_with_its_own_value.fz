@@ -1,7 +1,7 @@
 #---
 # purpose: "one catch clause that binds the kind receives an error as its exception, a throw as the thrown value and an exit as its reason, and a clause naming one kind takes only that kind"
 # oracle: self
-# oracle.stamp: e0793d938a71cfd3
+# oracle.stamp: c09598c8fa6d3aec
 #---
 defmodule Main do
   def fail(:error), do: raise(ArgumentError, "not that")
@@ -11,12 +11,10 @@ defmodule Main do
   def fail(:exit), do: exit(:stopped)
 
   def caught(how) do
-    try do
-      fail(how)
-    catch
-      :error, %ArgumentError{message: message} -> {:argument, message}
-      kind, value -> {kind, value}
-    end
+    fail(how)
+  catch
+    :error, %ArgumentError{message: message} -> {:argument, message}
+    kind, value -> {kind, value}
   end
 
   def main() do

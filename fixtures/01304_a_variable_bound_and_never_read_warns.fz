@@ -13,11 +13,9 @@ end
 def lambda(), do: Enum.map([1, 2], fn y -> 0 end)
 
 def rescued() do
-  try do
-    raise ArgumentError, "no"
-  rescue
-    e in ArgumentError -> :rescued
-  end
+  raise ArgumentError, "no"
+rescue
+  e in ArgumentError -> :rescued
 end
 
 def main() do

@@ -1,32 +1,26 @@
 #---
 # purpose: "A macro's own program raises and rescues while it runs, in the macro or in a function it calls, expanding to an expression or a definition, as in Elixir"
 # oracle: self
-# oracle.stamp: bc420e684a027e7a
+# oracle.stamp: af4d7956a44a6ba7
 #---
 
 defmodule Helper do
   def escaped(value) do
-    try do
-      Macro.escape(value)
-    rescue
-      error in [ArgumentError] -> "refused: " <> Exception.message(error)
-    end
+    Macro.escape(value)
+  rescue
+    error in [ArgumentError] -> "refused: " <> Exception.message(error)
   end
 
   defmacro seven() do
-    try do
-      7
-    rescue
-      error -> raise(error)
-    end
+    7
+  rescue
+    error -> raise(error)
   end
 
   defmacro recovered() do
-    try do
-      raise ArgumentError, "inside the macro"
-    rescue
-      error in [ArgumentError] -> Exception.message(error)
-    end
+    raise ArgumentError, "inside the macro"
+  rescue
+    error in [ArgumentError] -> Exception.message(error)
   end
 
   defmacro table(), do: escaped({1, 2, 3})

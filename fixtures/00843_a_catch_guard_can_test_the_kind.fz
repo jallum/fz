@@ -1,17 +1,15 @@
 #---
 # purpose: "a catch clause's guard sees the kind and the value; a clause whose guard fails falls to the next clause"
 # oracle: self
-# oracle.stamp: e60e22f751c7aee1
+# oracle.stamp: 603f60e72b5ebe84
 #---
 defmodule Main do
   def attempt(f) do
-    try do
-      f.()
-    catch
-      kind, value when kind == :throw and value > 100 -> {:big_throw, value}
-      kind, value when kind == :throw -> {:throw, value}
-      kind, value -> {:other, kind, value}
-    end
+    f.()
+  catch
+    kind, value when kind == :throw and value > 100 -> {:big_throw, value}
+    kind, value when kind == :throw -> {:throw, value}
+    kind, value -> {:other, kind, value}
   end
 
   def main() do

@@ -36,11 +36,9 @@ defmodule Kernel.Utils do
 
   @spec escape_default(atom, any) :: any
   defp escape_default(key, value) do
-    try do
-      Macro.escape(value)
-    rescue
-      error in [ArgumentError] ->
-        raise(ArgumentError, "invalid default value for struct field #{key}, " <> Exception.message(error))
-    end
+    Macro.escape(value)
+  rescue
+    error in [ArgumentError] ->
+      raise(ArgumentError, "invalid default value for struct field #{key}, " <> Exception.message(error))
   end
 end

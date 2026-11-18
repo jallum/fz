@@ -347,18 +347,14 @@ defmodule JSON do
   # a fraction or an exponent is a float, and anything else is reported whole.
   @spec number(binary) :: any
   defp number(start = <<"-", r :: binary>>) do
-    try do
-      integer_lead(start, r, -1)
-    rescue
-      ArithmeticError -> wide_digits(start, r)
-    end
+    integer_lead(start, r, -1)
+  rescue
+    ArithmeticError -> wide_digits(start, r)
   end
   defp number(start) do
-    try do
-      integer_lead(start, start, 1)
-    rescue
-      ArithmeticError -> wide_digits(start, start)
-    end
+    integer_lead(start, start, 1)
+  rescue
+    ArithmeticError -> wide_digits(start, start)
   end
 
   # What the scan remembers of the integer part when it is not an integer is

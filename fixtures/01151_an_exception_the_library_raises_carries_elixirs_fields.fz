@@ -1,15 +1,13 @@
 #---
 # purpose: "an exception raised by Map, Keyword, Enum, Kernel, String.Chars, JSON and File carries the fields Elixir gives it, and Exception.message computes its text from them"
 # oracle: self
-# oracle.stamp: 1805234ad2fb2e9c
+# oracle.stamp: a3451b5f379b75bd
 #---
 defmodule Main do
   def caught(f) do
-    try do
-      f.()
-    rescue
-      e -> e
-    end
+    f.()
+  rescue
+    e -> e
   end
 
   def key_error() do

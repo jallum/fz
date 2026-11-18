@@ -1,17 +1,15 @@
 #---
 # purpose: "a try with rescue and after: the rescue handles the raise, the after runs exactly once, on both the raising and the completing path"
 # oracle: self
-# oracle.stamp: dde564f2530eea88
+# oracle.stamp: 611cacef98c92cf9
 #---
 defmodule Main do
   def attempt(f) do
-    try do
-      f.()
-    rescue
-      e in ArgumentError -> {:rescued, e.message}
-    after
-      IO.inspect(:after)
-    end
+    f.()
+  rescue
+    e in ArgumentError -> {:rescued, e.message}
+  after
+    IO.inspect(:after)
   end
 
   def main() do

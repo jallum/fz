@@ -1,15 +1,13 @@
 #---
 # purpose: "raise of a text is a RuntimeError; of a module, that module's exception/1 over its fields or its text; of an exception struct, that struct; of anything else, an ArgumentError"
 # oracle: self
-# oracle.stamp: 11c7b70bd2d9375b
+# oracle.stamp: 18f76e53e5e842ba
 #---
 defmodule Main do
   def show(f) do
-    try do
-      f.()
-    rescue
-      e -> [e.__struct__, Exception.message(e)]
-    end
+    f.()
+  rescue
+    e -> [e.__struct__, Exception.message(e)]
   end
 
   def all() do

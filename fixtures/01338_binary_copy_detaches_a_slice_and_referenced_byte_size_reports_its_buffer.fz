@@ -1,15 +1,13 @@
 #---
 # purpose: "binary:copy/1,2 builds a new binary that references exactly its own bytes, referenced_byte_size/1 reports the buffer a binary references, and a bad argument raises the ArgumentError Elixir raises"
 # oracle: self
-# oracle.stamp: 44530cf2f9ca75ed
+# oracle.stamp: a6b5672cbde540a8
 #---
 defmodule Probe do
   def attempt(fun) do
-    try do
-      {:ok, fun.()}
-    rescue
-      e in ArgumentError -> e.message
-    end
+    {:ok, fun.()}
+  rescue
+    e in ArgumentError -> e.message
   end
 end
 
