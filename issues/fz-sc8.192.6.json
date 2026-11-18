@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-sc8.192.5"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-sc8.192.7"
+  ],
   "created": "2026-11-18T21:26:48Z",
   "description": "User approved 2026-11-18, verbatim via Optimize: \"approved; proceed.\" Page: https://claude.ai/artifact/MmnrdprbWQMF24ejqsUaQL (/Users/j5n/Workspace/fz-map-raw-words.html); measurements https://claude.ai/artifact/KASxGisqvtZNq498dbRi8D. User direction: meet or exceed BEAM in all cases; hand-written optimal arm64 first, then make the compiler emit it. Builder: Optimize. Pass rules are judged on bench and pre-registered on the page.\n\nStep 2. One key-order function on word-and-kind pairs:\n- Atoms are ordered by id, integers by signed compare, and binaries via Bin. The seam is agreed with Binary Handling: Bin { ptr, bit_len } with eq and cmp in runtime/src/bits.rs, owned by fz-9e2.5, and whoever builds first lands both methods.\n- The general comparator is entered only for compound keys.\n- The compiler's by-name sort of literal atom-key maps follows the new order, and so do the agent docs (any-value.md, charlists.md, exceptions.md).",
   "id": "fz-sc8.192.6",
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "A map key is ordered by its kind, then by its stored word or its bytes",
   "type": "task",
-  "updated_at": "2026-11-18T21:26:49Z"
+  "updated_at": "2026-11-18T21:26:50Z"
 }
