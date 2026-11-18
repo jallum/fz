@@ -4,7 +4,9 @@
     "fz-nml.27",
     "fz-sc8.236"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-nml.29"
+  ],
   "created": "2026-11-18T03:29:07Z",
   "description": "Approved by the user 2026-11-17 (relayed verbatim by JSON: \"B,C,D proceed.\"). Probe evidence: JSON session scratchpad jsonenc/.\n\nDefect: acc \u003c\u003e \"ab\" allocates a 16 B bitstring for the literal on every append (a literal \u003c= 64 bytes goes through fz_alloc_bitstring_const). About 20 per object in the docs encode: ~122k bitstrings, 1.95 MB per encode.\n\nRelation: fz-sc8.236 (user-combined 2026-11-17) emits a short string literal as a read-only static object instead of fz_alloc_bitstring_const, which removes this allocation for every literal use, appends included. Re-measure on .236 first; what remains here is only copying the literal's bytes straight into the append without materialising an operand. One mechanism, not two.\n\nDone when: a fixture shows 0 literal bitstrings per append on all three paths.",
   "id": "fz-nml.28",
@@ -14,5 +16,5 @@
   "status": "open",
   "title": "Appending a literal copies its bytes; no bitstring is made for it",
   "type": "bug",
-  "updated_at": "2026-11-18T03:29:08Z"
+  "updated_at": "2026-11-18T03:29:16Z"
 }

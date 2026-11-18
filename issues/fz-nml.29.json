@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-nml.28"
+  ],
   "blocks": [],
   "created": "2026-11-18T03:29:15Z",
   "description": "Approved by the user 2026-11-17 (relayed verbatim by JSON: \"B,C,D proceed.\"). Probe evidence: JSON session scratchpad jsonenc/.\n\nBEAM private_append: the compiler proves the accumulator unshared and erts_bs_private_append_checked bumps the existing sub-binary end. fz allocates a new 32 B BinView per append: 171k views, 5.5 MB per docs encode.\n\nNeeds a design page first: an unshared / last-use proof; soundness is the risk. Order: after fz-nml.27 and fz-nml.28 (all touch binary lowering).",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "An append to an unshared accumulator extends it in place",
   "type": "task",
-  "updated_at": "2026-11-18T03:29:15Z"
+  "updated_at": "2026-11-18T03:29:16Z"
 }
