@@ -4,7 +4,8 @@
     "fz-9x7.30",
     "fz-9x7.31",
     "fz-9x7.35",
-    "fz-sc8.246"
+    "fz-sc8.246",
+    "fz-sc8.247"
   ],
   "blocks": [],
   "created": "2026-11-18T00:15:58Z",
@@ -16,5 +17,5 @@
   "status": "open",
   "title": "A JSON integer is converted from its text, as a float already is",
   "type": "task",
-  "updated_at": "2026-11-18T02:47:14Z"
+  "updated_at": "2026-11-18T03:23:52Z"
 }
