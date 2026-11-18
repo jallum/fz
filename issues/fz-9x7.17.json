@@ -5,14 +5,16 @@
     "fz-9x7.11",
     "fz-9x7.18"
   ],
+  "closed_at": "2026-11-18T03:52:44Z",
+  "close_reason": "Landed on develop as 96321c8ab.",
   "created": "2026-11-17T22:03:10Z",
   "description": "G1 on the hot-path page https://claude.ai/artifact/LDhZf3yJxaRiiQGwGxToTu. Files: runtime/src/heap/gc/{trace,forward}.rs.\n\nPlan: https://claude.ai/artifact/Pqqu5yTcQdBbkGsZyZiykb (GC memory plan v3, approved by the user 2026-11-17).",
   "id": "fz-9x7.17",
   "labels": [],
   "parent": "fz-9x7",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "The struct trace forwards only heap fields: the kind byte is read before any decode",
   "type": "task",
-  "updated_at": "2026-11-17T22:03:41Z"
+  "updated_at": "2026-11-18T03:52:44Z"
 }
