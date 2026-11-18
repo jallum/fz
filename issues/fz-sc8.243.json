@@ -4,14 +4,15 @@
   "blocks": [
     "fz-sc8.144"
   ],
+  "closed_at": "2026-11-18T00:22:05Z",
   "created": "2026-11-17T21:51:47Z",
   "description": "Found by the Callables session while building fz-sc8.144 (develop 32a14dda4, interp and run).\n\nProbe:\n  defmodule H do\n    defmacro m() do\n      try do 7 rescue error -\u003e raise(error) end\n    end\n  end\n  defmodule Main do\n    import H\n    def main(), do: IO.inspect(m())\n  end\n  Main.main()\n\nElixir prints 7. fz reports six internal/unresolved-wait errors at \u003cgenerated\u003e (a call's return type, function definition, expanded source, lowered body, module definition, executable's facts). Same whether the rescue sits in the macro body or in a def the macro calls, and at item or expression position.\n\nTelemetry: the macro's root_backend_product drive is deferred twice; materialized_executable waits on ExecutableFacts, ReturnType and RuntimeDemand for the macro function and no job completes them.\n\nUntested today: fixtures 00889, 01148, 01199, 01312 have defmacro and try, but the try is always in an ordinary function. Lead, unverified: .agent/docs/exceptions.md (~409) says macro expansion runs without the entry that wraps ordinary code; if try/rescue lowering or its executable facts assume that entry, a macro root may never get those facts.\n\nBlocks fz-sc8.144: Elixir's defstruct escapes each default inside try/rescue ArgumentError and re-raises \"invalid default value for struct field ..., cannot escape ...\".\n\nDone when: the probe prints 7 on interp, run and build, pinned by a fixture; the cause is fixed where macro roots and try/rescue meet, not special-cased.",
   "id": "fz-sc8.243",
   "labels": [],
   "parent": "fz-sc8",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "A macro whose compiled program uses try/rescue compiles, as in Elixir",
   "type": "bug",
-  "updated_at": "2026-11-17T21:51:48Z"
+  "updated_at": "2026-11-18T00:22:05Z"
 }
