@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-sc8.192.12"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-sc8.192.13"
+  ],
   "created": "2026-11-18T23:27:52Z",
   "description": "User ruling 2026-11-18, verbatim via Optimize, on page https://claude.ai/artifact/EDTPiu2As7pfX8DaBTXHUa: \"1. whichever gets us there faster. 2. proceed.\" (decision 2).\n\nSteps 2 and 3 of the fz-sc8.192.12 implementation plan:\n- fz_flat_get is checked into bench/maps/floor, with a harness test.\n- A case probe row with a BEAM twin: pinned lookups, at 12 and 40 keys, with atom and binary keys.\n- One emitter for a map key test, used by native_codegen/prim.rs and receive.rs. It scans inline for atom/integer keys on a flat map, with fz_matcher_map_get_ref as the slow path.\n\nGuard, judged on bench and pre-registered: the atom figures of the new row fall by at least 200 instructions per lookup, and no existing row rises. Builder: Optimize.",
   "id": "fz-sc8.192.14",
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "A map pattern's key test is the hand-written scan",
   "type": "task",
-  "updated_at": "2026-11-18T23:27:52Z"
+  "updated_at": "2026-11-18T23:27:53Z"
 }
