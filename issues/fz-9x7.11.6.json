@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-18T23:59:19Z",
+  "description": "User approved 2026-11-18, verbatim via GC: \"agreed; proceed\". Step C4 of fz-9x7.11 page v4 (https://claude.ai/artifact/BB1FpQ1Cf7Jd5spZeLEWtg). One commit, judged on bench. Builder: GC.",
+  "id": "fz-9x7.11.6",
+  "labels": [],
+  "parent": "fz-9x7.11",
+  "priority": 2,
+  "status": "open",
+  "title": "Cells are scanned by address in their own to-space region",
+  "type": "task",
+  "updated_at": "2026-11-18T23:59:19Z"
+}
