@@ -1,7 +1,6 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-nhb.12",
     "fz-nhb.16",
     "fz-nhb.17",
     "fz-nhb.18",
@@ -17,5 +16,5 @@
   "status": "open",
   "title": ".agent/docs/fixtures.md lists each fixture that keeps an Elixir twin and why",
   "type": "task",
-  "updated_at": "2026-11-18T02:47:53Z"
+  "updated_at": "2026-11-18T02:47:54Z"
 }

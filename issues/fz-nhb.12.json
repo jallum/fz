@@ -3,9 +3,7 @@
   "blocked_by": [
     "fz-nhb.11"
   ],
-  "blocks": [
-    "fz-nhb.19"
-  ],
+  "blocks": [],
   "created": "2026-11-17T22:54:50Z",
   "description": "## Why\nfz-nhb.11 makes the parser read Elixir's `(A, B -\u003e R)` beside fz's own `(A, B) -\u003e R`. Two spellings of one type is a concept added; this ticket removes the extra one.\n\n## What changes\n- Every `(..) -\u003e ..` function type outside parentheses in lib/*.fz (116 spec/type lines on 248d23229), fixtures and guides is rewritten as `(.. -\u003e ..)`.\n- `parse_paren_or_arrow` refuses a `-\u003e` after the closing `)` with a spanned diagnostic naming the Elixir spelling.\n\n## Signal\nNo `) -\u003e` function type remains in lib, fixtures or guides; the refusal has a diagnostic fixture; full gate green.\n\n## Collision\nlib/*.fz is edited by other sessions (Optimize, fz-engine R2); sequence through the coordinator.",
   "id": "fz-nhb.12",
@@ -15,5 +13,5 @@
   "status": "open",
   "title": "One function-type spelling: lib specs use Elixir's (A, B -\u003e R) and fz's (A, B) -\u003e R is retired",
   "type": "task",
-  "updated_at": "2026-11-18T02:47:53Z"
+  "updated_at": "2026-11-18T02:47:54Z"
 }
