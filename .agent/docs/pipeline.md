@@ -123,8 +123,10 @@ binary. A bitstring region holds a rest it matched, when a later question or the
 winning outcome reads it, as a `ShapeDescr::Cursor` value in the dispatch state
 on both backends, in the store's `binary_cursor` shape. A later bit question
 reads it from its position, and a question that needs the bytes builds the
-binary once, leaving the cursor in place; an outcome argument is always handed
-to its arm whole.
+binary once, leaving the cursor in place. An outcome argument is handed to its
+arm in the layout of the arm's parameter: a cursor parameter takes the cursor's
+two lanes and nothing is built, a parameter read whole takes one lane built
+once; an argument the arm never reads is not handed at all.
 Tuple-field demand may stop at its highest observed index. Transport applies
 that prefix to the exact tuple type and emits `Nothing` for omitted trailing
 positions, so a partial four-tuple remains a four-field structural layout

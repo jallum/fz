@@ -22,7 +22,7 @@ use super::super::artifact::{
 };
 use super::super::body::{
     CallArg, CallSiteId, CaptureOwner, ControlDestination, ControlEntryId, ControlEntryOrigin, DirectCallee,
-    LoweredBody, LoweredEntry, LoweredStep, LoweredTail, ValueId,
+    LoweredBody, LoweredEntry, LoweredStep, LoweredTail, ValueId, ValueRole,
 };
 use super::super::callsite_dispatch::{CallDestinations, call_destinations};
 use super::super::drive::{FactKey, emit_job_diagnostic};
@@ -586,6 +586,17 @@ fn required_local_backend_transport_positions(
         };
         positions.push(position);
     }
+    positions.extend(
+        entries
+            .iter()
+            .flat_map(|entry| entry.tail.dispatch_outcome_edges())
+            .flat_map(|edge| edge.arguments.iter())
+            .filter(|argument| argument.role == ValueRole::Semantic)
+            .map(|argument| TransportPosition::Value {
+                executable: symbol.clone(),
+                value: argument.parameter,
+            }),
+    );
     for entry in entries {
         let (callsite, args, value) = match &entry.tail {
             LoweredTail::DirectCall {
@@ -1714,11 +1725,14 @@ fn build_executable_abi_plan(
         })
         .collect();
     let LoweredBody::Clauses { clauses, entries, .. } = &executable.body;
-    for param in entries
-        .iter()
-        .filter(|entry| entry.origin.is_handed_parameters())
-        .flat_map(|entry| entry.params.iter().copied())
-    {
+    for param in entries.iter().flat_map(|entry| {
+        let handed_whole = entry.origin.is_handed_parameters();
+        entry
+            .params
+            .iter()
+            .copied()
+            .filter(move |param| handed_whole || entry.physical_params.contains(param))
+    }) {
         let ty = executable
             .value_types
             .get(&param)

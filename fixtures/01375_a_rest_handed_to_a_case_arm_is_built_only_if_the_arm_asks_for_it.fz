@@ -1,0 +1,54 @@
+#---
+# purpose: a rest a case arm only walks, or never reads, is never built, and one it returns is built once, on the interpreter, the JIT and a built program
+# kind: run
+#---
+#
+# Each decision matches `<<c, rest :: binary>>` and hands the arm its rest.
+# `sum` walks the rest through a case arm, so the rest arrives as a source and
+# a position and no binary is built for 10,240 steps. `head` never reads its
+# rest. `split` returns its rest, which the caller compares as a whole binary,
+# so it is built once.
+# The program prints each result and the binaries allocated across the calls:
+# process binaries, bitstrings and shared buffers.
+defmodule Arm do
+  def sum(b, acc) do
+    case b do
+      <<c, rest :: binary>> -> sum(rest, acc + c)
+      <<>> -> acc
+    end
+  end
+
+  def head(b) do
+    case b do
+      <<c, _rest :: binary>> -> c
+      <<>> -> 0
+    end
+  end
+
+  def split(b) do
+    case b do
+      <<c, rest :: binary>> -> {c, rest}
+      <<>> -> {0, b}
+    end
+  end
+
+  def binaries(stats), do: stats[:binview_allocs] + stats[:bitstring_allocs] + stats[:shared_bin_allocs]
+end
+
+line = String.duplicate("x", 10240)
+tail = String.duplicate("x", 10239)
+
+a = Process.heap_alloc_stats()
+r = Arm.sum(line, 0)
+b = Process.heap_alloc_stats()
+IO.inspect({r, Arm.binaries(b) - Arm.binaries(a)})
+
+a = Process.heap_alloc_stats()
+r = {Arm.head(line), Arm.head(line), Arm.head(line)}
+b = Process.heap_alloc_stats()
+IO.inspect({r, Arm.binaries(b) - Arm.binaries(a)})
+
+a = Process.heap_alloc_stats()
+{c, rest} = Arm.split(line)
+b = Process.heap_alloc_stats()
+IO.inspect({c, rest == tail, Arm.binaries(b) - Arm.binaries(a)})

@@ -1257,10 +1257,14 @@ callable wrapper. `BackendLowerer` reads this proof from
 That table includes clause parameters' semantic input layouts; lowering does
 not derive a second table from transport positions. It also holds a layout for
 every parameter a branch, receive outcome or handler entry is handed. A
-parameter the transport plan already lays out (a lambda captures it) keeps that
-layout; any other arrives whole, in one lane
-(`whole_value_layout`), because the decision, the receive matcher and a raise
-all hand parameters as built values. Native `entry_signature` and
+`case` arm's parameter is laid out by its own demand, through a `Value`
+position the transport plan answers from the subject the parameter aliases
+(`TransportOrigin::OutcomeSubject`), so a rest the arm only walks is a cursor, a
+rest it returns is one lane. A receive
+outcome's or handler's parameter that the plan already lays out (a lambda
+captures it) keeps that layout; any other arrives whole, in one lane
+(`whole_value_layout`), because the receive matcher and a raise hand parameters
+as built values. Native `entry_signature` and
 `bind_entry_input`, the dispatch handoff, and the interpreter's `enter_entry`
 read and write these parameters through that layout, the way captures are; an
 outcome's arguments are in the target entry's parameter order, and both

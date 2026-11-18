@@ -375,22 +375,14 @@ fn a_pruned_body_answers_only_for_the_call_sites_it_kept() {
     assert_eq!(args[0].value, ValueId::from_u32(2));
 }
 
-/// A case arm, a receive outcome and a rescue handler are each handed their
-/// parameters whole, so each parameter has a layout in the executable's ABI
-/// and the layout is one lane.
+/// A receive outcome and a rescue handler are filled by the runtime, so each
+/// parameter has a layout in the executable's ABI and the layout is one lane.
 #[test]
-fn every_parameter_an_entry_is_handed_has_a_one_lane_layout() {
+fn every_parameter_a_receive_or_a_raise_hands_has_a_one_lane_layout() {
     use crate::compiler2::artifact::{BackendBody, BackendEntryOrigin};
     use crate::compiler2::{CodeSubmission, Compiler2, RootSubmission};
 
     const SOURCE: &str = r#"
-def walk(b, acc) do
-  case b do
-    <<c, rest :: binary>> -> walk(rest, acc + c)
-    <<>> -> acc
-  end
-end
-
 def main() do
   send(self(), {:ok, 1})
   got = receive do
@@ -401,7 +393,7 @@ def main() do
   rescue
     _ -> 0
   end
-  walk("abc", got + safe)
+  got + safe
 end
 "#;
     let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
@@ -418,17 +410,18 @@ end
     compiler.run_root_interp(root).expect("the program runs");
     let program = compiler.retained_backend_program(root);
 
-    let (mut arms, mut outcomes, mut handlers) = (0, 0, 0);
+    let (mut outcomes, mut handlers) = (0, 0);
     for executable in program.executables() {
         let BackendBody::Clauses { entries, .. } = &executable.body else {
             continue;
         };
         for entry in entries {
             let seen = match entry.origin {
-                BackendEntryOrigin::Branch => &mut arms,
                 BackendEntryOrigin::ReceiveOutcome => &mut outcomes,
                 BackendEntryOrigin::Handler => &mut handlers,
-                BackendEntryOrigin::Clause | BackendEntryOrigin::DeliveredResume { .. } => continue,
+                BackendEntryOrigin::Clause
+                | BackendEntryOrigin::Branch
+                | BackendEntryOrigin::DeliveredResume { .. } => continue,
             };
             for param in &entry.params {
                 let layout = executable
@@ -447,7 +440,69 @@ end
         }
     }
     assert!(
-        arms > 0 && outcomes > 0 && handlers > 0,
-        "the program has all three: {arms} arm, {outcomes} receive, {handlers} handler parameters"
+        outcomes > 0 && handlers > 0,
+        "the program has both: {outcomes} receive, {handlers} handler parameters"
     );
+}
+
+/// The lanes of every parameter a case arm is handed, in the order the arms
+/// are met, for a program whose only `case` is the one under test.
+fn case_arm_parameter_lanes(arm_body: &str) -> Vec<usize> {
+    use crate::compiler2::artifact::{BackendBody, BackendEntryOrigin};
+    use crate::compiler2::{CodeSubmission, Compiler2, RootSubmission};
+
+    let source = format!(
+        "def pick(b) do\n  case b do\n    <<c, rest :: binary>> -> {arm_body}\n    <<>> -> 0\n  end\nend\n\
+         def main(), do: pick(\"abc\")\n"
+    );
+    let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
+    compiler.submit_code(CodeSubmission {
+        name: Some("case_arm_parameters.fz".into()),
+        text: source,
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler.run_root_interp(root).expect("the program runs");
+    let program = compiler.retained_backend_program(root);
+    let mut lanes = Vec::new();
+    for executable in program.executables() {
+        let BackendBody::Clauses { entries, .. } = &executable.body else {
+            continue;
+        };
+        for entry in entries
+            .iter()
+            .filter(|entry| entry.origin == BackendEntryOrigin::Branch)
+        {
+            lanes.extend(
+                entry
+                    .params
+                    .iter()
+                    .map(|param| executable.abi.value_layouts[param].reprs.len()),
+            );
+        }
+    }
+    lanes
+}
+
+/// A rest an arm only walks arrives as a cursor of two lanes, so nothing is
+/// built for it.
+#[test]
+fn a_case_arm_parameter_the_arm_only_walks_is_a_cursor() {
+    assert_eq!(case_arm_parameter_lanes("pick(rest) + c"), [1, 2]);
+}
+
+/// A rest an arm returns is asked for whole, so it arrives in one lane.
+#[test]
+fn a_case_arm_parameter_the_arm_returns_is_one_lane() {
+    assert_eq!(case_arm_parameter_lanes("{c, rest}"), [1, 1]);
+}
+
+/// A rest an arm never reads is not a parameter of the arm at all.
+#[test]
+fn a_case_arm_is_not_handed_a_rest_nothing_reads() {
+    assert_eq!(case_arm_parameter_lanes("c"), [1]);
 }
