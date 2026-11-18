@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-18T03:16:29Z",
+  "description": "Approved by the user 2026-11-17 (relayed verbatim by Bugs and Cleanup: \"do so; we'll want to recheck the current fixtures to ensure that we use this feature where possible.\").\n\nScan (Bugs and Cleanup): 65 def/defp whose only body statement is a try: 64 functions across 50 fixture files plus lib/kernel/utils.fz:38. Files: 00800-00894 (most), 01060, 01100, 01102, 01104, 01105, 01132, 01133, 01150-01152, 01178, 01179, 01196, 01199, 01258, 01259, 01263, 01304, 01310, 01315, 01316, 01333, 01338, 01360, 01366, 01367, 01382. Re-scan at build time.\n\nExclusions: fixtures whose subject is try's own refusals keep the explicit try: 00813, 00814, 00829, 00830 (try with only do), 00887, and any whose diagnostic span names try. 01366 (a macro running try at compile time) judged case by case.\n\nConverted oracle: self fixtures need ORACLE=regen for new stamps; CI pins Elixir 1.19.5 (local may be 1.19.4, cf. fz-sc8.219), so regenerate with CI's version. Owners of fixtures in other epics' blocks are told the edited stems (fz-nhb rule). lib/kernel/utils.fz also edited by #721 (fz-sc8.226).\n\nAcceptance: no remaining whole-body try outside the exclusions; full gate and ORACLE=check green.",
+  "id": "fz-3ul.13",
+  "labels": [],
+  "parent": "fz-3ul",
+  "priority": 3,
+  "status": "open",
+  "title": "Fixtures use implicit try wherever a function's whole body is a try",
+  "type": "task",
+  "updated_at": "2026-11-18T03:16:29Z"
+}
