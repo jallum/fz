@@ -449,75 +449,67 @@ defmodule JSON do
   defp string_scalar(_s, b, _acc), do: Utf8.next(b)
 
   @spec run_join(binary, binary, binary) :: binary
+  defp run_join(s, b, <<>>) do
+    n = byte_size(s) - byte_size(b)
+    <<run :: binary-size(n), _ :: binary>> = s
+    run
+  end
   defp run_join(s, b, acc) do
     n = byte_size(s) - byte_size(b)
     <<run :: binary-size(n), _ :: binary>> = s
-    join_run(acc, run)
+    acc <> run
   end
 
-  @spec join_run(binary, binary) :: binary
-  defp join_run(<<>>, run), do: run
-  defp join_run(acc, run), do: acc <> run
-
+  # The simple escapes are clauses of `escaped` itself, and a `\uXXXX` is one
+  # clause whose guard checks its four bytes are hex digits. When they are not,
+  # the next clause reports the sequence.
   @spec escaped(binary, binary, binary) :: any
-  defp escaped(<<"u", a, b, c, d, r :: binary>>, acc, at), do: unicode(r, acc, hex4(a, b, c, d), at)
-  defp escaped(b = <<c, r :: binary>>, acc, _at) do
-    case simple_escape(c) do
-      nil -> {:error, b}
-      byte -> string(r, r, acc <> <<byte>>)
-    end
-  end
+  defp escaped(<<34, r :: binary>>, acc, _at), do: string(r, r, acc <> <<34>>)
+  defp escaped(<<92, r :: binary>>, acc, _at), do: string(r, r, acc <> <<92>>)
+  defp escaped(<<?/, r :: binary>>, acc, _at), do: string(r, r, acc <> <<47>>)
+  defp escaped(<<?n, r :: binary>>, acc, _at), do: string(r, r, acc <> <<10>>)
+  defp escaped(<<?t, r :: binary>>, acc, _at), do: string(r, r, acc <> <<9>>)
+  defp escaped(<<?r, r :: binary>>, acc, _at), do: string(r, r, acc <> <<13>>)
+  defp escaped(<<?b, r :: binary>>, acc, _at), do: string(r, r, acc <> <<8>>)
+  defp escaped(<<?f, r :: binary>>, acc, _at), do: string(r, r, acc <> <<12>>)
+  defp escaped(<<"u", a, b, c, d, r :: binary>>, acc, at) when is_hex(a) and is_hex(b) and is_hex(c) and is_hex(d),
+    do: unicode(r, acc, hex4(a, b, c, d), at)
+  defp escaped(<<"u", _a, _b, _c, _d, _r :: binary>>, _acc, at), do: {:error, {:sequence, at, String.take_bytes(at, 6)}}
   defp escaped(b, _acc, _at), do: {:error, b}
-
-  @spec simple_escape(integer) :: integer | nil
-  defp simple_escape(34), do: 34
-  defp simple_escape(92), do: 92
-  defp simple_escape(?/), do: 47
-  defp simple_escape(?n), do: 10
-  defp simple_escape(?t), do: 9
-  defp simple_escape(?r), do: 13
-  defp simple_escape(?b), do: 8
-  defp simple_escape(?f), do: 12
-  defp simple_escape(_c), do: nil
 
   # A bad `\uXXXX` is an unexpected_sequence, reported at the backslash's
   # offset with the six- or twelve-byte sequence, so it is the one failure that
   # carries where it started rather than where it stopped. An unknown simple
   # escape is an ordinary invalid_byte and needs none of this.
-  @spec unicode(binary, binary, integer | :error, binary) :: any
-  defp unicode(_r, _acc, :error, at), do: {:error, {:sequence, at, String.take_bytes(at, 6)}}
+  @spec unicode(binary, binary, integer, binary) :: any
   defp unicode(r, acc, cp, at) when cp >= 0xd800 and cp <= 0xdbff, do: unicode_high(r, acc, cp, at)
   defp unicode(_r, _acc, cp, at) when cp >= 0xdc00 and cp <= 0xdfff, do: {:error, {:sequence, at, String.take_bytes(at, 6)}}
   defp unicode(r, acc, cp, _at), do: string(r, r, acc <> <<cp :: utf8>>)
 
   @spec unicode_high(binary, binary, integer, binary) :: any
-  defp unicode_high(<<"\\u", a, b, c, d, r :: binary>>, acc, high, at) do
-    unicode_low(r, acc, high, hex4(a, b, c, d), at)
-  end
+  defp unicode_high(<<"\\u", a, b, c, d, r :: binary>>, acc, high, at) when is_hex(a) and is_hex(b) and is_hex(c) and is_hex(d),
+    do: unicode_low(r, acc, high, hex4(a, b, c, d), at)
+  defp unicode_high(<<"\\u", _a, _b, _c, _d, _r :: binary>>, _acc, _high, at), do: {:error, {:sequence, at, String.take_bytes(at, 12)}}
   defp unicode_high(_r, _acc, _high, _at), do: {:error, ""}
 
-  @spec unicode_low(binary, binary, integer, integer | :error, binary) :: any
-  defp unicode_low(_r, _acc, _high, :error, at), do: {:error, {:sequence, at, String.take_bytes(at, 12)}}
+  @spec unicode_low(binary, binary, integer, integer, binary) :: any
   defp unicode_low(r, acc, high, low, _at) when low >= 0xdc00 and low <= 0xdfff do
     codepoint = 0x10000 + (high - 0xd800) * 0x400 + (low - 0xdc00)
     string(r, r, acc <> <<codepoint :: utf8>>)
   end
   defp unicode_low(_r, _acc, _high, _low, at), do: {:error, {:sequence, at, String.take_bytes(at, 12)}}
 
-  @spec hex4(integer, integer, integer, integer) :: integer | :error
-  defp hex4(a, b, c, d), do: hex4_join(hex(a), hex(b), hex(c), hex(d))
-  @spec hex4_join(integer | :error, integer | :error, integer | :error, integer | :error) :: integer | :error
-  defp hex4_join(:error, _b, _c, _d), do: :error
-  defp hex4_join(_a, :error, _c, _d), do: :error
-  defp hex4_join(_a, _b, :error, _d), do: :error
-  defp hex4_join(_a, _b, _c, :error), do: :error
-  defp hex4_join(a, b, c, d), do: ((a * 16 + b) * 16 + c) * 16 + d
+  @spec is_hex(integer) :: boolean
+  defp is_hex(c), do: (c >= 48 and c <= 57) or (c >= 65 and c <= 70) or (c >= 97 and c <= 102)
 
-  @spec hex(integer) :: integer | :error
-  defp hex(c) when c >= 48 and c <= 57, do: c - 48
-  defp hex(c) when c >= 97 and c <= 102, do: c - 87
-  defp hex(c) when c >= 65 and c <= 70, do: c - 55
-  defp hex(_c), do: :error
+  @spec hex4(integer, integer, integer, integer) :: integer
+  defp hex4(a, b, c, d), do: hex(a) * 4096 + hex(b) * 256 + hex(c) * 16 + hex(d)
+
+  # The value of a byte already known to be a hex digit.
+  @spec hex(integer) :: integer
+  defp hex(c) when c <= 57, do: c - 48
+  defp hex(c) when c >= 97, do: c - 87
+  defp hex(c), do: c - 55
 
   # `]` closes an empty array only at the start. After a comma a value is
   # required, so `[1,]` is an error.
