@@ -936,12 +936,16 @@ e<n> (executable <e>)`, `receive at entry e<n> (executable <e>)` and `wrapper
 w<canonical> (published w<identity>) selection` — a wrapper's two numbers,
 because the dump prints one and the interpreter prints the other
 (**fz-kdt.193**). Each site lists its bodies in its own order — the call arms,
-the reachable clause ids, the arm entries, the receive clauses, the member
-index — and `compiler2_dispatch_lists_its_bodies_in_the_graphs_first_match_order`
-holds that list to the order the graph actually reaches them in, over every
-plan the census fixtures carry (244 plans, 0 disagreements), because the list
-is what every seat argument here is read off and the graph is what execution
-follows.
+the reachable clause ids, the `case` arms and `receive` clauses whose target
+analysis did not prove unreachable, the member index — and
+`compiler2_dispatch_lists_its_bodies_in_the_graphs_first_match_order` holds
+that list to the order the graph actually reaches them in, over every plan the
+census fixtures carry plus 00637's `||` and `&&` (242 plans, 0 disagreements),
+because the list is what every seat argument here is read off and the graph is
+what execution follows. A plan narrowed by what its subject is known to be
+keeps every outcome id, so a `case` keeps an arm for `nil ->` on a boolean
+subject; that arm's target entry has an `unreachable` tail, and the site does
+not offer it.
 
 TWO OF THE FIVE ARE THE COMPILER'S ORDER and three are the PROGRAMMER's. A
 call edge's arms and a wrapper's members are seated by the compiler, and those
