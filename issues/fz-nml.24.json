@@ -10,7 +10,7 @@
   "parent": "fz-nml",
   "priority": 3,
   "status": "closed",
-  "title": "Mixed integer and float arithmetic boxes no result on native",
+  "title": "A float carried across a join stays a raw float on native",
   "type": "bug",
-  "updated_at": "2026-11-18T03:06:14Z"
+  "updated_at": "2026-11-18T03:06:24Z"
 }
