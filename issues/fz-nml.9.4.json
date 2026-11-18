@@ -1,8 +1,6 @@
 {
   "assignee": "",
-  "blocked_by": [
-    "fz-afu.23"
-  ],
+  "blocked_by": [],
   "blocks": [],
   "closed_at": "2026-11-17T23:05:25Z",
   "created": "2026-11-17T22:48:50Z",
@@ -14,5 +12,5 @@
   "status": "closed",
   "title": "A receive binding the body never reads is not stored",
   "type": "bug",
-  "updated_at": "2026-11-18T00:17:41Z"
+  "updated_at": "2026-11-18T00:18:06Z"
 }
