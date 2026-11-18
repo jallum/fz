@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-18T21:21:27Z",
+  "description": "Target listings first. This is the signal every performance child of fz-9e2 is judged by, so it lands before them.\n\nWhat:\n1. The binary-op probes move into the repo, under the existing bench/tools layout (check it before choosing), and so does the slope harness. Today they are in /Users/j5n/Workspace/fz-binaries/listings/probes: m.sh, tr.sh, trace.py and the p00-p10x .tpl files. The harness takes a slope from instructions retired at N and 3N iterations, and with lldb it single-steps one steady-state iteration grouped by symbol.\n2. For each operation, a HAND-WRITTEN optimal arm64 target listing, annotated per instruction with the fact that licenses it, plus its count. The operations:\n   - byte_size: inline, view, literal\n   - == on binaries, equal and different; == against a literal\n   - whole rest at position 0\n   - \u003c\u003e with literal, variable and growing operands\n   - constructor: append, multi-segment, \u003c\u003cc\u003e\u003e constant\n   - small aligned slice\n   - one-byte match, tail and non-tail\n   - a binary through a call\n   - send\n3. Where a target needs a fact the compiler does not have, the listing names the fact.\n\nReference minima: BEAM JIT counts are in machine.md and listings/beam. The fz tail match (29 per byte, p01a) is already the model.\n\nAcceptance:\n- A single command prints, per operation: current slope, target count, and emitted-vs-target diff size.\n- The targets are reviewed against the listings in /Users/j5n/Workspace/fz-binaries/listings.\n- Later children cite their target by name.",
+  "id": "fz-9e2.1",
+  "labels": [],
+  "parent": "fz-9e2",
+  "priority": 1,
+  "status": "open",
+  "title": "Binary operations have hand-written optimal target listings and a probe harness in the repo",
+  "type": "task",
+  "updated_at": "2026-11-18T21:21:27Z"
+}
