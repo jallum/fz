@@ -76,15 +76,9 @@ impl Drop for RuntimeDemandFormulaCapture {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) struct RuntimeDemandOwnInput {
-    pub(crate) return_demand: RuntimeDemand,
-    pub(crate) input_demands: Vec<RuntimeDemand>,
-}
-
-#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct RuntimeDemandFormulaSnapshot {
     member: ExecutableKey,
-    pub(crate) own: RuntimeDemandOwnInput,
+    pub(crate) own_return_demand: RuntimeDemand,
     pub(crate) target_inputs: HashMap<ExecutableKey, Vec<RuntimeDemand>>,
     construction_targets: HashMap<(ValueId, CallableSurface), ExecutableKey>,
 }
@@ -231,10 +225,15 @@ pub(super) fn derive_runtime_demand_fact<T: Telemetry>(
             peers.insert(peer.clone(), demands);
         }
     }
-    let own = own_input_demands(world, executable);
+    let own_return_demand = own_return_demand(world, executable);
     let mut calls_itself = ordered_peers.contains(executable);
-    let mut input =
-        RuntimeDemandFormulaInput::new(executable, &facts, world.runtime_demand_type_projections(), own, peers);
+    let mut input = RuntimeDemandFormulaInput::new(
+        executable,
+        &facts,
+        world.runtime_demand_type_projections(),
+        own_return_demand,
+        peers,
+    );
     let mut loaded_target_demands = ordered_peers.into_iter().collect::<HashSet<_>>();
     let mut callable_target_reads = HashSet::default();
     let mut runtime_demand_evaluations = 0;
@@ -317,16 +316,7 @@ pub(super) fn derive_runtime_demand_fact<T: Telemetry>(
     let first_sends = target_return_demand_contributions(provisional_returns, retained_returns.iter().cloned());
     let lower_bound_sends =
         target_return_demand_contributions(return_contributions.clone(), retained_returns.iter().cloned());
-    let mut contributions = target_return_demand_contributions(return_contributions, retained_returns);
-    for (target, index, demand) in callable_boundary_input_demand_contributions_product(&derived.demand) {
-        contributions
-            .entry(target)
-            .or_default()
-            .input_demands
-            .entry(index)
-            .and_modify(|current| current.join_assign(&demand))
-            .or_insert(demand);
-    }
+    let contributions = target_return_demand_contributions(return_contributions, retained_returns);
     derived.demand.ground_callable_surfaces(world.types());
     #[cfg(test)]
     assert_eq!(
@@ -429,23 +419,13 @@ pub(super) fn derive_runtime_demand_fact<T: Telemetry>(
     })
 }
 
-/// What the executable's callers have asked of it so far; `ignore` where
-/// nothing has been asked.
-fn own_input_demands(world: &World, executable: &ExecutableKey) -> RuntimeDemandOwnInput {
-    let asked = world.runtime_demand_input(executable);
-    RuntimeDemandOwnInput {
-        return_demand: asked
-            .and_then(|asked| asked.return_demand.clone())
-            .unwrap_or_else(RuntimeDemand::ignore),
-        input_demands: (0..executable.activation.input_len(world.types()))
-            .map(|index| {
-                asked
-                    .and_then(|asked| asked.input_demands.get(&index))
-                    .cloned()
-                    .unwrap_or_else(RuntimeDemand::ignore)
-            })
-            .collect(),
-    }
+/// What the executable's callers have asked of its return so far; `ignore`
+/// where nothing has been asked.
+fn own_return_demand(world: &World, executable: &ExecutableKey) -> RuntimeDemand {
+    world
+        .runtime_demand_input(executable)
+        .and_then(|asked| asked.return_demand.clone())
+        .unwrap_or_else(RuntimeDemand::ignore)
 }
 
 /// The callees this run has no answer from yet.
@@ -789,11 +769,11 @@ impl<'a> RuntimeDemandFormulaInput<'a> {
         member: &'a ExecutableKey,
         facts: &'a ExecutableFacts,
         type_projections: &'a HashMap<Ty, Rc<super::super::semantic::RuntimeDemandTypeProjection>>,
-        own: RuntimeDemandOwnInput,
+        own_return_demand: RuntimeDemand,
         target_inputs: HashMap<ExecutableKey, Vec<RuntimeDemand>>,
     ) -> Self {
         Self {
-            current: RuntimeDemandFormulaSnapshot::new(member.clone(), own, target_inputs),
+            current: RuntimeDemandFormulaSnapshot::new(member.clone(), own_return_demand, target_inputs),
             member,
             facts: facts.runtime_demand_facts(type_projections),
         }
@@ -803,12 +783,12 @@ impl<'a> RuntimeDemandFormulaInput<'a> {
 impl RuntimeDemandFormulaSnapshot {
     pub(super) fn new(
         member: ExecutableKey,
-        own: RuntimeDemandOwnInput,
+        own_return_demand: RuntimeDemand,
         target_inputs: HashMap<ExecutableKey, Vec<RuntimeDemand>>,
     ) -> Self {
         Self {
             member,
-            own,
+            own_return_demand,
             target_inputs,
             construction_targets: HashMap::default(),
         }
@@ -842,19 +822,6 @@ fn construction_flow_edge(
         resolution,
         capture_semantic_inputs: (0..capture_len).collect(),
         surface_semantic_inputs: (capture_len..input_len).collect(),
-        boundary_input_demands: surface
-            .inputs
-            .iter()
-            .map(|&ty| {
-                if ty == facts.demand_types.any {
-                    return None;
-                }
-                world
-                    .runtime_demand_type_projection(ty)
-                    .unwrap_or_else(|| panic!("callable surface omitted runtime-demand projection for {ty:?}"))
-                    .informative_boundary_demand(world.types(), ty)
-            })
-            .collect(),
     })
 }
 
@@ -1120,7 +1087,6 @@ fn callable_flow_edges_for_targets(
             },
             capture_semantic_inputs: (0..captures_len).collect(),
             surface_semantic_inputs: (captures_len..captures_len + target.surface.inputs.len()).collect(),
-            boundary_input_demands: Box::new([]),
         })
         .collect::<Vec<_>>();
     // `targets` is a `BTreeSet<CallableTarget>` ordered by interned-`Ty` id, so
@@ -1133,30 +1099,6 @@ fn callable_flow_edges_for_targets(
     edges
 }
 
-fn callable_boundary_input_demand_contributions_product(
-    demand: &ExecutableRuntimeDemand,
-) -> Vec<(ExecutableKey, usize, RuntimeDemand)> {
-    let mut required = Vec::new();
-    for flow in demand.callable_flows.values() {
-        if flow.first_class_surfaces.is_empty() {
-            continue;
-        }
-        for edge in &flow.first_class_edges {
-            for (offset, arg_demand) in edge.boundary_input_demands.iter().enumerate() {
-                let Some(arg_demand) = arg_demand else {
-                    continue;
-                };
-                required.push((
-                    edge.resolution.clone(),
-                    edge.capture_semantic_inputs.len() + offset,
-                    arg_demand.clone(),
-                ));
-            }
-        }
-    }
-    required
-}
-
 fn local_call_targets(summary: &CallSiteSummary, need: ExecutableNeed) -> impl Iterator<Item = ExecutableKey> + '_ {
     summary
         .targets
@@ -1164,19 +1106,10 @@ fn local_call_targets(summary: &CallSiteSummary, need: ExecutableNeed) -> impl I
         .filter_map(move |target| target.runtime_executable(need))
 }
 
-/// Joins what callers contribute into each input's demand, then reads every
-/// input against the activation's own input type. A clause narrows its
-/// parameter, so the input position is the one place an input's whole type
-/// is seen.
-fn settle_input_demands(
-    facts: &RuntimeDemandFacts<'_>,
-    input_demands: &mut [RuntimeDemand],
-    contributed: &[RuntimeDemand],
-    input_tys: &[Ty],
-) {
-    for (slot, contribution) in input_demands.iter_mut().zip(contributed) {
-        slot.join_assign(contribution);
-    }
+/// Reads every input's demand against the activation's own input type. A
+/// clause narrows its parameter, so the input position is the one place an
+/// input's whole type is seen.
+fn settle_input_demands(facts: &RuntimeDemandFacts<'_>, input_demands: &mut [RuntimeDemand], input_tys: &[Ty]) {
     for (slot, &ty) in input_demands.iter_mut().zip(input_tys) {
         facts.escape_mixed_callables(slot, ty);
     }
@@ -1203,10 +1136,9 @@ fn derive_executable_runtime_demand(
     let facts = &input.facts;
     let demands = &input.current;
     let mut callable_flows = CallableFlowBuilder::new();
-    let contributed_input_demands = demands.own.input_demands.as_slice();
     let mut out = ExecutableRuntimeDemand {
         callable_activation_inputs: facts.callable_activation_inputs.to_vec(),
-        return_demand: demands.own.return_demand.clone(),
+        return_demand: demands.own_return_demand.clone(),
         input_demands: vec![RuntimeDemand::ignore(); executable.activation.input_len(types)],
         value_demands: ValueMap::with_capacity(facts.body.value_count()),
         ..ExecutableRuntimeDemand::default()
@@ -1227,12 +1159,7 @@ fn derive_executable_runtime_demand(
                     .unwrap_or_else(|| facts.boundary_demand(*ty))
             })
             .collect();
-        settle_input_demands(
-            facts,
-            &mut out.input_demands,
-            contributed_input_demands,
-            executable.activation.inputs(types),
-        );
+        settle_input_demands(facts, &mut out.input_demands, executable.activation.inputs(types));
         emit_runtime_demand_walk(tel, executable.activation.function, 0);
         return DerivedExecutableDemand {
             demand: out,
@@ -1262,7 +1189,7 @@ fn derive_executable_runtime_demand(
             executable,
             entries.as_slice(),
             clause.entry,
-            &demands.own.return_demand,
+            &demands.own_return_demand,
             facts,
             demands,
             &mut out,
@@ -1301,12 +1228,7 @@ fn derive_executable_runtime_demand(
         out.input_demands[semantic_index].join_assign(&demand);
     }
 
-    settle_input_demands(
-        facts,
-        &mut out.input_demands,
-        contributed_input_demands,
-        activation_inputs,
-    );
+    settle_input_demands(facts, &mut out.input_demands, activation_inputs);
     emit_runtime_demand_walk(tel, executable.activation.function, walks.entries_walked);
 
     DerivedExecutableDemand {

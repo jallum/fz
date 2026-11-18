@@ -6,7 +6,7 @@ use super::super::runtime_demand::{CallableFlowBuilder, propagate_steps_reverse}
 use crate::compiler2::body::{LoweredBody, LoweredStep, ValueId};
 use crate::compiler2::executable_facts::ExecutableFacts;
 use crate::compiler2::identity::{ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, RootId};
-use crate::compiler2::jobs::runtime_demand::{RuntimeDemandFormulaSnapshot, RuntimeDemandOwnInput};
+use crate::compiler2::jobs::runtime_demand::RuntimeDemandFormulaSnapshot;
 use crate::compiler2::semantic::{
     ActivationAnalysis, EntryReachability, ExecutableRuntimeDemand, RuntimeDemand, RuntimeDemandTypeInputs, ShapeDemand,
 };
@@ -73,14 +73,7 @@ fn formula_snapshot_takes_peer_input_vectors_without_copying_them() {
     let input_buffer = inputs.as_ptr();
     let peer_inputs = HashMap::from_iter([(peer.clone(), inputs)]);
 
-    let snapshot = RuntimeDemandFormulaSnapshot::new(
-        member,
-        RuntimeDemandOwnInput {
-            return_demand: RuntimeDemand::ignore(),
-            input_demands: Vec::new(),
-        },
-        peer_inputs,
-    );
+    let snapshot = RuntimeDemandFormulaSnapshot::new(member, RuntimeDemand::ignore(), peer_inputs);
 
     assert_eq!(
         snapshot
@@ -132,14 +125,7 @@ fn propagate_tuple_step_demand(
     };
     let projections = HashMap::default();
     let facts = facts.runtime_demand_facts(&projections);
-    let snapshot = RuntimeDemandFormulaSnapshot::new(
-        member,
-        RuntimeDemandOwnInput {
-            return_demand: RuntimeDemand::ignore(),
-            input_demands: Vec::new(),
-        },
-        HashMap::default(),
-    );
+    let snapshot = RuntimeDemandFormulaSnapshot::new(member, RuntimeDemand::ignore(), HashMap::default());
 
     let mut live = ValueMap::from([(value, demand)]);
     let mut out = ExecutableRuntimeDemand::default();
@@ -284,14 +270,7 @@ fn a_call_between_destinations_asks_for_exactly_the_arguments_its_choice_reads()
         callable_activation_inputs: Vec::new(),
     };
     let facts = facts.runtime_demand_facts(&projections);
-    let snapshot = RuntimeDemandFormulaSnapshot::new(
-        executable.clone(),
-        RuntimeDemandOwnInput {
-            return_demand: RuntimeDemand::ignore(),
-            input_demands: Vec::new(),
-        },
-        HashMap::default(),
-    );
+    let snapshot = RuntimeDemandFormulaSnapshot::new(executable.clone(), RuntimeDemand::ignore(), HashMap::default());
 
     let demands = super::arg_demands_for_summary(
         &types,
@@ -363,10 +342,7 @@ mod tests {
         let capture = ValueId::from_u32(1);
         let mut inputs = RuntimeDemandFormulaSnapshot {
             member: int_target.clone(),
-            own: RuntimeDemandOwnInput {
-                return_demand: RuntimeDemand::ignore(),
-                input_demands: Vec::new(),
-            },
+            own_return_demand: RuntimeDemand::ignore(),
             target_inputs: HashMap::default(),
             construction_targets: HashMap::from_iter([
                 ((value, int_surface.clone()), int_target.clone()),

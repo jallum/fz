@@ -385,7 +385,8 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // `CheckDeclarations` run. The fixture declares nothing, so it defines
         // no module and derives no contract for it.
         // (2982, 15, 31, 261) -> (2770, 15, 31, 245): `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
-        (2770, 15, 31, 245),
+        // (2770, 15, 31, 245) -> (2755, 15, 31, 245): a first-class callable's boundary demand is not contributed back to its target's inputs, so the target's demand is not derived again for it.
+        (2755, 15, 31, 245),
         "ordinary generic helper work has the exact source/module/executable-fact census"
     );
     // Every applied work step is a run, and every run is charged to exactly
@@ -650,7 +651,9 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // exception a failure raises adds one activation, whose runtime demand is derived.
         // (623, 625, [24, 262, 82, 257, 0]) -> (621, 623, [24, 261, 82, 256, 0]): `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
         // (621, 623, [24, 261, 82, 256, 0]) -> (582, 589, [24, 245, 80, 240, 0]): `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
-        (582, 589, [24, 245, 80, 240, 0]),
+        // (582, 589, [24, 245, 80, 240, 0]) -> (567, 574, [24, 245, 65, 240, 0]): the same fifteen
+        // `DeriveRuntimeDemand` runs, each woken by a changed input demand.
+        (567, 574, [24, 245, 65, 240, 0]),
         "every demand completion and ordinary helper wake retains its precise cause",
     );
     assert_eq!(

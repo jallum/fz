@@ -2291,7 +2291,6 @@ fn callable_flow_dispatches_on_the_surface_argument_that_distinguishes_members()
         },
         capture_semantic_inputs: Box::default(),
         surface_semantic_inputs: Box::from([0, 1]),
-        boundary_input_demands: Box::new([]),
     };
 
     let edges = [edge(atom), edge(tuple)];
@@ -2330,7 +2329,6 @@ fn wrapper_edge(world: &mut World, surface: Vec<Ty>) -> CallableFlowEdge {
         },
         capture_semantic_inputs: Box::default(),
         surface_semantic_inputs: (0..surface.len()).collect(),
-        boundary_input_demands: Box::new([]),
     }
 }
 
@@ -2553,7 +2551,6 @@ fn callable_flow_dispatch_discriminates_callable_correlations() {
             },
             capture_semantic_inputs: Box::default(),
             surface_semantic_inputs: Box::from([0]),
-            boundary_input_demands: Box::new([]),
         },
         CallableFlowEdge {
             surface: super::super::semantic::CallableSurface {
@@ -2570,7 +2567,6 @@ fn callable_flow_dispatch_discriminates_callable_correlations() {
             },
             capture_semantic_inputs: Box::default(),
             surface_semantic_inputs: Box::from([0]),
-            boundary_input_demands: Box::new([]),
         },
     ];
     let plan = construction_member_selection(world.types_mut(), &edges)

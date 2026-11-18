@@ -444,6 +444,8 @@ return contract through that same ordinary map. Observed return demand remains
 an independent publisher and joins with the construction owner's contract;
 neither publication widens or replaces the other, and either retracts with its
 owner.
+The return contract is all an edge or a caller contributes to a target: a
+target's input demands come from the target itself.
 
 `RuntimeDemand(E)` is the single stored semantic demand value.
 `RuntimeDemandInputs(E)` addresses its input vector with an independent
