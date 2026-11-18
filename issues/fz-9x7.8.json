@@ -51,11 +51,15 @@
     {
       "text": "User ruling 2026-11-17 (relayed by GC): the old-binary major fold is DROPPED from this ticket (it cost survive +14.4% instructions and json +21% peak); survive's mechanism belongs to fz-9x7.11. .8 lands as a2e5c45f9 with survive's cost stated in its PR; its giftbin peak (1.015x base) is traced before the PR.",
       "timestamp": "2026-11-18T03:07:28Z"
+    },
+    {
+      "text": "Fresh measurement 2026-11-17 on develop 458eb43eb (chg = rebased 3b79c9e29; data scratchpad/8fresh/). Outputs identical everywhere. Instructions chg/base: quantum 0.796, deadbinlive 0.849, all others 0.9995-1.0055. Peak in-use: quantum 131.4-\u003e0.35 MB, deadbinlive 81.4-\u003e12.4, deadbin 2.28-\u003e0.31, survive 1.002x, giftbin 1.015x, rest identical. Mean in-use: survive 1.044x (was 1.135x on the old base), giftbin 1.033x. The trigger fires only on quantum, deadbin, deadbinlive, giftbin, survive (17/23) and json (1/42); it is inert elsewhere. giftbin's rise is live mailbox binaries, not garbage: the cut quantum moves the parked consumer's single early collection from ~2000 sends to ~256, so it frees ~1750 fewer already-received buffers; the consumer then never collects while draining 100,000 messages (whether gifted binaries count toward the receiver's budget is unchecked). survive: confirmed, smaller: after the last major at 17 ms, 11 minors and no major; binary in-use ~54 MB vs ~10 MB live; the budget follows held binary bytes, which include dead old-owned binaries, so it ratchets 0.26 -\u003e 40 MB. Assigned to fz-9x7.11 per the user's ruling.",
+      "timestamp": "2026-11-18T04:04:17Z"
     }
   ],
   "priority": 2,
   "status": "in_progress",
   "title": "Off-heap binary bytes count toward the collection trigger",
   "type": "bug",
-  "updated_at": "2026-11-18T03:07:28Z"
+  "updated_at": "2026-11-18T04:04:17Z"
 }
