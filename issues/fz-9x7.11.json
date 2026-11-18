@@ -1,7 +1,6 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-9x7.15",
     "fz-9x7.16",
     "fz-9x7.17",
     "fz-9x7.18",
@@ -52,5 +51,5 @@
   "status": "open",
   "title": "The collector runs the hand-written sequence, then its policy round",
   "type": "task",
-  "updated_at": "2026-11-18T23:59:29Z"
+  "updated_at": "2026-11-18T23:59:30Z"
 }
