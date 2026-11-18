@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-18T14:05:10Z",
   "created": "2026-11-18T14:02:45Z",
   "description": "develop 72f423d56 is red: fixture 01761_file_read_takes_the_whole_file_in_one_binary fails on interp, run and build. Expected {300001, true, 3, 300001}, actual {300001, true, 2, 300001}.\n\nCause: a semantic merge of #738 (fz-sc8.196, added 01761) and #740 (fz-sc8.236, constant literals). Neither PR is wrong alone. Reported by JSON; not yet probed.\n\nInference to verify: #740 stops allocating a literal on the File.read path, so binaries allocated across File.read fall from 3 to 2. The shared-buffer bytes are unchanged at 300001.\n\nFix: a falling count is lowered. Before lowering, prove which allocation went away and what the remaining second binary is. 01761's purpose line says 'one binary of the file's size', so the expected output and purpose must agree.\n\nBlocks every PR based on develop.",
   "id": "fz-sc8.253",
   "labels": [],
   "parent": "fz-sc8",
   "priority": 0,
-  "status": "open",
+  "status": "closed",
   "title": "A file read after the constant-literal change allocates the binaries 01761 now counts",
   "type": "bug",
-  "updated_at": "2026-11-18T14:02:45Z"
+  "updated_at": "2026-11-18T14:05:10Z"
 }
