@@ -115,11 +115,6 @@ pub struct BitFieldIr {
     pub unit: Option<u32>,
 }
 
-/// Default bitstring unit per source type.
-pub(crate) fn default_unit_for(ty: BitType) -> u32 {
-    ty.default_unit()
-}
-
 /// One field of a bitstring pattern, as a match reads it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BitMatchField {
@@ -139,7 +134,7 @@ impl BitMatchField {
     /// `None` for a size read at run time, for the rest of a binary and for a
     /// utf field.
     pub fn static_bits(&self) -> Option<u64> {
-        let unit = u64::from(self.unit.unwrap_or(default_unit_for(self.ty)));
+        let unit = u64::from(self.unit.unwrap_or(self.ty.default_unit()));
         let size = |default: u64| match &self.size {
             None => Some(default),
             Some(BitSizeIr::Literal(n)) => Some(u64::from(*n)),
