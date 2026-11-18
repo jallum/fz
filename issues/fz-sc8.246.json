@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-18T00:05:50Z",
+  "description": "Two parsers answer \"what integer does this text name\" in lib, and two answer \"what float\". The String versions are wrong where the Integer and Float versions are right.\n\nMeasured on `run`, near develop a6ae5759d:\n- String.to_integer(\"-9223372036854775808\") raises ArithmeticError. Elixir, and Integer.parse(\"-9223372036854775808\"), give {-9223372036854775808, \"\"}.\n- String.to_float(\"99999999999999999999.5\") raises ArithmeticError. Float.parse gives {1.0e20, \"\"}.\n\nCause:\n- String.to_integer (lib/string.fz:1076) builds the positive magnitude with acc * 10 + d and negates it at the end, so i64's minimum overflows on the way. Integer.parse (lib/integer.fz:62-71) accumulates below zero for exactly this reason; its comment says so.\n- String.to_float (lib/string.fz:1129-1138, float_magnitude) builds whole and fraction parts as integers through the same digits_value. A whole part past 64 bits overflows, and whole + fraction / 10^n is not correctly rounded. Float.parse is the correctly rounding authority (lib/json.fz relies on it for that).\n\nFix: one implementation per question. String.to_integer(s) is Integer.parse(s) when the whole text is consumed and raises ArgumentError otherwise, as in Elixir. String.to_float is the same with Float.parse. digits_value, digits_fold, float_of, float_magnitude and pow10 in lib/string.fz are deleted once nothing else calls them; check their other callers first.\n\nAcceptance: a fixture on all three paths covering i64 min and max, \"-0\", \"+5\", an empty string, \"12x\" (raises ArgumentError), a 20-digit whole part to String.to_float, and a value whose naive whole + fraction / 10^n rounds differently from Float.parse (find one; if none exists in range, say so). Red first.\n\nRelated: the JSON rewrite that converts integers from their text, as floats already are (pending the user's decision), would call String.to_integer, so this lands first.\nProbe files: /private/tmp/claude-501/-Users-j5n-Workspace-fz/ebbfffd8-2561-4da7-bcda-f9a316d00a1e/scratchpad/ovf/ (q.fz, s.fz).",
+  "id": "fz-sc8.246",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 2,
+  "status": "open",
+  "title": "String.to_integer and String.to_float convert through Integer.parse and Float.parse",
+  "type": "bug",
+  "updated_at": "2026-11-18T00:05:50Z"
+}
