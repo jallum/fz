@@ -35,11 +35,15 @@
     {
       "text": "FC cost attribution (user-approved experiments; data in scratchpad/8probe/). (1) survive: pre-registered hypothesis 'majors free more dead binaries under FC' REFUTED (major-freed binary bytes base 79.4 MB vs FC 30.3 MB). Actual mechanism: FC's extra minors promote binary-owning list cells; dead old-owned binaries are freed only by a major; the major trigger counts only old HEAP bytes (~5-6 MB, never grows enough), so after FC's last major at 16.7 ms (run ~60 ms) 7 more minors run and no major: binary_in_use climbs to 48 MB vs ~10 MB live (base peak 15 MB; base's one late major freed 79 MB). Binary part = ~73% of the time-weighted post-gc in_use gap; rest heap blocks. (2) ring on bench, 9 interleaved runs: FC 0.9885x instructions (spread 0.87%/0.23%), msg 0.9821x, spin 0.9999x; local +1.0% did not reproduce; gc counts and event streams identical -\u003e codegen/layout, no extra work. Proposal: the major trigger also counts old-held binary bytes (major due when held binary bytes outgrow MAJOR_GROWTH_FACTOR x those left by the last major, as BEAM's old vheap does), folded into .8 before decision 43.",
       "timestamp": "2026-11-18T02:24:22Z"
+    },
+    {
+      "text": "User said \"proceed\" 2026-11-17 (relayed by GC) on folding in the old-binary major trigger: a major also becomes due when the binary bytes the old generation holds outgrow MAJOR_GROWTH_FACTOR x what the last major left (BEAM old-vheap). Cause it fixes: FC's extra minors promote binary-owning cells; old-generation dead binaries are freed only by a major; the major trigger counted only old heap bytes (~5-6 MB), so survive's binary in-use climbed to 48 MB vs ~10 MB live (+13.5% mean in-use). Prediction: survive mean in-use \u003c= base, peak \u003c= 1.005x; other workloads unchanged.",
+      "timestamp": "2026-11-18T02:42:07Z"
     }
   ],
   "priority": 2,
   "status": "in_progress",
   "title": "Off-heap binary bytes count toward the collection trigger",
   "type": "bug",
-  "updated_at": "2026-11-18T02:24:22Z"
+  "updated_at": "2026-11-18T02:42:07Z"
 }
