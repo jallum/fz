@@ -38,8 +38,9 @@ defmodule Float do
   The result is the float nearest the text, and a value too large for a float
   is `:error`.
 
-  Integers are floats here (`"3"` gives `{3.0, ""}`), and `String.to_float/1`
-  is a different, stricter function.
+  Integers are floats here (`"3"` gives `{3.0, ""}`). `String.to_float/1`
+  reads through this function and is stricter: the whole text must be read,
+  and it must have a decimal point.
 
   ## Examples
 

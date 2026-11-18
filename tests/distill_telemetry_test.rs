@@ -266,7 +266,10 @@ fn read_compile_spend(trace: &Path) -> CompileSpend {
 // first raise and is analysed once more on it.
 // 19_812 -> 19_806: `Enum.to_list/1` has a clause that builds a range's list itself.
 // 19_806 -> 19_661: a first-class callable's boundary demand is not contributed back to its target's inputs, so the target's demand is not derived again for it.
-const DERIVATIONS: u64 = 19_661;
+// 19_661 -> 19_658: `String.to_integer` and `String.to_float` read through
+// `Integer.parse` and `Float.parse`, so String defines three fewer private
+// functions and its `DefineModule` notes three fewer.
+const DERIVATIONS: u64 = 19_658;
 // 111_876 -> 111_888: an extern that declares `raises:` reads the struct of
 // the exception it names, to raise that struct. The distiller calls twelve
 // such externs, and each contract reads `StructDefined` once.
@@ -293,7 +296,8 @@ const DERIVATIONS: u64 = 19_661;
 // 156_747 -> 156_894: `Enum.to_list/1`'s range clause is reachable where the distiller lists an
 // `any` enumerable, so the reach jobs whose cones hold it read its activations too.
 // 156_894 -> 155_916: the reads of those 145 derivations.
-const READS_HANDED: u64 = 155_916;
+// 155_916 -> 155_904: String's three fewer private functions, four reads each.
+const READS_HANDED: u64 = 155_904;
 
 /// Compiling the distiller spends this much of the product stack. The largest
 /// drive is the one `PRODUCT_DRIVE_BUDGET` bounds, so its headroom is the
