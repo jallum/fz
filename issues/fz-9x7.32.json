@@ -4,14 +4,15 @@
   "blocks": [
     "fz-9x7.33"
   ],
+  "closed_at": "2026-11-18T00:46:40Z",
   "created": "2026-11-18T00:31:41Z",
   "description": "Approved by the user 2026-11-17 (relayed by Optimize: \"proceed\" on the receive page, https://claude.ai/artifact/UxRskxPS2PDs3j1x5TF6Aq v2; local /Users/j5n/Workspace/fz-receive-proposal.html). Folds GC's \"find what msg allocates from malloc per message\".\n\nCodegen emits one read-only ReceiveSite record per receive: matcher, clause count, max bound count, per-clause code pointer / bound count / closure header fields, after body. build_park_record (terminator.rs) builds ONE frame closure [outer_cont, captures..., pinned...] in place of N template closures. fz_receive_park_matched takes (process, site, frame, after_ms), down from 10 args. ParkRecord loses clause_bodies, clause_bound_counts, pinned, matcher_fn, bound_arity, after_cont.\n\nSignal: templates per receive N -\u003e 1 frame (measured: 1,000 x 48 B per clause per 1,000 receives); three Vec mallocs per receive gone; park-size pins in tests/fixture_matrix.rs fall. Matcher ABI unchanged (independent of fz-nml.9.5). Interpreter untouched (its own BackendParkRecord).\n\nNot filed: step 3 (no frame when a queued message matches) waits for fz-nml.9.5 and only pays on queued receives (fanin: 800,007 queued vs 1 parked; msg and ring: all parked).",
   "id": "fz-9x7.32",
   "labels": [],
   "parent": "fz-9x7",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "A receive site's clause table is a constant; one arrival builds one frame",
   "type": "task",
-  "updated_at": "2026-11-18T00:31:42Z"
+  "updated_at": "2026-11-18T00:46:40Z"
 }
