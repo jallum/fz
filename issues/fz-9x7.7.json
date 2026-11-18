@@ -17,11 +17,15 @@
     {
       "text": "Round 3 (2026-11-17, develop 458eb43eb; data scratchpad/7r3/, analysis.txt). Rule FAILS for every arm on clause 1: only msg and ring pass (collections -50%, instructions -2%); reqrep (best -11% collections, -0.9% instr), fanin (unchanged) and trickle (-73% collections at YM16 but -1.35% instr) do not. Y2 passes clauses 2-4 (msg 0.960, ring 0.849 instructions; memory within bounds). Higher floors fail memory: ring 16 processes x floor (Y16 peak 2.8x, YM16 15.5x); raising the major floor lets promoted data pile up in old (trickle YM16 peak 751 KB vs 29.7 KB). F, the fixed cost of a near-empty collection, is now ~1,850 (ring) to ~3,150 (trickle) instructions, 10-20x below round 2's 35-40k; a 64 MiB floor saves only ~1% of trickle. Majors remain the gap to BEAM: msg Y16 0/1942 vs BEAM 8079/11; reqrep's server stays a major at nearly every park. Measurement caveat: instructions retired varied 0.6-1.9% between identical runs on this machine (load average ~55; spin 0.7%), above the 0.35% guard; close guards need the bench machine. Stays open.",
       "timestamp": "2026-11-18T04:14:38Z"
+    },
+    {
+      "text": "Base caveat: the 2026-11-17 measurements ran on develop 458eb43eb, after #720 (fz-9x7.31), where release cheney_scan calls forward_heap_value out of line at its 8 trace sites (distiller +1.91% instructions per the Make Distiller Fast session's bisect; fix under test by the Bugs and Cleanup session). Collection-heavy ratios (and round 3's per-collection cost F) should be re-read once the inlining is restored.",
+      "timestamp": "2026-11-18T04:14:58Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "A process with a nearly empty young generation does not collect at every park or yield",
   "type": "task",
-  "updated_at": "2026-11-18T04:14:38Z"
+  "updated_at": "2026-11-18T04:14:58Z"
 }
