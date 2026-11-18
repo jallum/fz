@@ -4,14 +4,15 @@
     "fz-9x7.26"
   ],
   "blocks": [],
+  "closed_at": "2026-11-18T00:30:22Z",
   "created": "2026-11-17T23:15:37Z",
   "description": "Approved by the user 2026-11-17 (\"approved; two allocations is dopey\"), proposed by the GC session from fz-9x7.24.\n\nMeasured (fz-9x7.24, leak A/B, 7 interleaved runs, counters only): destroying one binary in survive costs ~304 instructions / ~300 cycles; 200k destructions are 14% of the program's cycles. Each makes two system-malloc frees: the 1025-byte buffer and the 48-byte SharedBin box.\n\nChange: lay a SharedBin out as one block, header then bytes then room (as BEAM's Binary). Halves allocations and frees per binary and removes the bytes_ptr pointer chase.\n\nRule (fixed before measuring): gate green; survive instructions fall \u003e= 5% (prediction 7%); nothing rises beyond noise; in-use bytes (fz-9x7.16) do not rise beyond 48 B x live binaries.\n\nRoom path (read on develop, runtime/src/heap/imp.rs:963-1001 alloc_concatenation): a SharedBin buffer is never reallocated or swapped; nothing assigns bytes_ptr after creation. In-place append only when right.len() \u003c= spare() of the fixed capacity; otherwise a NEW SharedBin with room total*2 (the GrownBuffer site). So the header address never changes. Grow means a new block, never a realloc; fz-sc8.111's page keeps that.\n\nWatch: grown-buffer stubs keep their identity; static compiler-baked SharedBins stay separate with their no-op destructor. fz-9x7.8's trigger reads capacity() from the header (same quantity, read site moves with it); overlap with .8 only at imp.rs binary allocation sites, second to land rebases.\nFiles: runtime/src/bits.rs, runtime/src/heap/imp.rs, off_heap.rs.",
   "id": "fz-9x7.25",
   "labels": [],
   "parent": "fz-9x7",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "A shared binary is one allocation: its header followed by its bytes",
   "type": "task",
-  "updated_at": "2026-11-17T23:45:15Z"
+  "updated_at": "2026-11-18T00:30:22Z"
 }
