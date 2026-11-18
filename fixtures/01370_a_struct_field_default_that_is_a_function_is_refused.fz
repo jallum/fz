@@ -1,0 +1,14 @@
+#---
+# purpose: "a defstruct field default that evaluates to an anonymous function cannot be written as code, so it is refused in Elixir's words, naming the field"
+# expect: diagnostic
+# diagnostic.code: lower/unsupported
+#---
+defmodule Bad do
+  defstruct a: fn -> 1 end
+end
+
+defmodule Main do
+  def main(), do: IO.inspect(%Bad{})
+end
+
+Main.main()

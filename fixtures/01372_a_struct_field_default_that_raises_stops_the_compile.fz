@@ -1,0 +1,14 @@
+#---
+# purpose: "a defstruct field default that raises while the module is defined stops the compile with the raise, at the defstruct"
+# expect: diagnostic
+# diagnostic.code: lower/unsupported
+#---
+defmodule Bad do
+  defstruct a: raise("boom")
+end
+
+defmodule Main do
+  def main(), do: IO.inspect(%Bad{})
+end
+
+Main.main()

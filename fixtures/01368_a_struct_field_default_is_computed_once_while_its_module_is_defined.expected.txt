@@ -1,0 +1,7 @@
+evaluated
+main
+{:x, 2, 7}
+2
+true
+[3, 1]
+%Tagged{tag: :shape, name: :circle}

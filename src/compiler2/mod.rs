@@ -9,6 +9,9 @@ mod code;
 mod compiler;
 mod contract;
 mod definition_cycle;
+mod definition_time;
+#[cfg(test)]
+mod definition_time_test;
 mod dispatch;
 mod dispatch_reachability;
 mod drive;

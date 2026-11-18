@@ -126,7 +126,9 @@ pub struct ProtocolImplForm {
 #[derive(Debug, Clone)]
 pub struct StructForm {
     pub source: QuotedSourceRoot,
-    pub(crate) def: StructDef,
+    /// The field list as written: a list, or an expression that computes one.
+    pub fields: QuotedSourceRoot,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]
@@ -858,39 +860,64 @@ fn parse_struct_form(source: QuotedSourceRoot, sources: &SourceMap) -> Result<St
     let Some(declared) = node.tail.list_iter().next().transpose()? else {
         return Err(QuotedSourceError::new("defstruct expects a field list"));
     };
-    let mut fields = Vec::new();
-    let mut defaults = HashMap::default();
-    for field in declared.list_iter() {
-        let field = field.map_err(|_| {
-            QuotedSourceError::user(
-                crate::diag::codes::PARSE_STRUCT_FIELDS,
-                Some(span),
-                "defstruct takes a list of fields, each an atom or a `name: default` entry; \
-                 a list a macro computes is spliced in whole, as `defstruct unquote(fields)`",
-            )
-        })?;
-        if let Ok(name) = field.atom_name() {
-            fields.push(name.to_string());
-            continue;
-        }
-        let (name, default) = parse_struct_field_default(&field, span, sources)?;
-        defaults.insert(name.clone(), default);
-        fields.push(name);
-    }
     Ok(StructForm {
+        fields: source.subroot(declared.root()),
         source,
-        def: StructDef { fields, defaults, span },
+        span,
     })
 }
 
-/// A `name: default` entry of a `defstruct`. The default is a literal term:
-/// it is written once and read by every literal that omits the field, in
-/// whatever module that literal stands.
+/// What a `defstruct` field list says before anything runs.
+pub(crate) enum StructFields {
+    /// A list of names and literal defaults: the definition itself.
+    Written(StructDef),
+    /// The list, or a default in it, computes: it is evaluated while the
+    /// module is defined, and its value read again.
+    Computed,
+}
+
+/// Reads a `defstruct` field list. A list of atoms and `name: literal`
+/// entries is the definition; anything that computes is left to evaluation.
+pub(crate) fn read_struct_fields(
+    fields: &QuotedSourceRoot,
+    span: Span,
+    sources: &SourceMap,
+) -> Result<StructFields, QuotedSourceError> {
+    let declared = fields.cursor();
+    if declared.root().tag() != fz_runtime::any_value::ValueKind::LIST {
+        return Ok(StructFields::Computed);
+    }
+    let mut names = Vec::new();
+    let mut defaults = HashMap::default();
+    for field in declared.list_iter() {
+        let Ok(field) = field else {
+            return Ok(StructFields::Computed);
+        };
+        if let Ok(name) = field.atom_name() {
+            names.push(name.to_string());
+            continue;
+        }
+        let Some((name, default)) = parse_struct_field_default(&field, span, sources)? else {
+            return Ok(StructFields::Computed);
+        };
+        defaults.insert(name.clone(), default);
+        names.push(name);
+    }
+    Ok(StructFields::Written(StructDef {
+        fields: names,
+        defaults,
+        span,
+    }))
+}
+
+/// A `name: default` entry of a `defstruct`, or `None` when the default
+/// computes. A literal default is written once and read by every literal
+/// that omits the field, in whatever module that literal stands.
 fn parse_struct_field_default(
     field: &QuotedSourceCursor,
     span: Span,
     sources: &SourceMap,
-) -> Result<(String, LiteralTerm), QuotedSourceError> {
+) -> Result<Option<(String, LiteralTerm)>, QuotedSourceError> {
     if field.tuple_arity()? != 2 {
         return Err(QuotedSourceError::new(
             "a defstruct field is an atom or a `name: default` entry",
@@ -898,21 +925,7 @@ fn parse_struct_field_default(
     }
     let name = field.tuple_item(0)?.atom_name()?.to_string();
     let default = decode_standalone_expr(&field.tuple_item(1)?, Some(span), sources)?;
-    let term = LiteralTerm::of(&default.node).ok_or_else(|| {
-        QuotedSourceError::user(
-            crate::diag::codes::PARSE_STRUCT_DEFAULT,
-            Some(if default.span == Span::DUMMY {
-                span
-            } else {
-                default.span
-            }),
-            format!(
-                "the default of struct field `{name}` must be a literal: \
-                 a number, atom, string, or a list, tuple or map of literals"
-            ),
-        )
-    })?;
-    Ok((name, term))
+    Ok(LiteralTerm::of(&default.node).map(|term| (name, term)))
 }
 
 fn parse_overridable_form(source: QuotedSourceRoot, sources: &SourceMap) -> Result<OverridableForm, QuotedSourceError> {

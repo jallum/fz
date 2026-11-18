@@ -30,6 +30,7 @@ use super::body::{LoweredBody, LoweredBodyMap, LoweredExtern};
 use super::code::{CodeMap, CodeState, QuotedCodeSource};
 use super::contract::{FunctionContract, FunctionContractMap};
 use super::definition_cycle::{DefinitionCycle, WaitForGraph};
+use super::definition_time;
 use super::dispatch::{EntryDispatchMap, GuardDispatchMap};
 use super::drive::{DependencyKey, emit_job_diagnostic, fact_dependency};
 use super::drive::{ExecutionContext, FactKey, Job, JobEffects, UseCollector, WorkGraph};
@@ -63,6 +64,7 @@ use super::semantic::{
     RuntimeDemandTypeProjection, TargetDemandContribution,
 };
 use super::source::{QuotedSourceBuilder, QuotedSourceError, QuotedSourceMetadata, QuotedSourceRoot};
+use super::source_publish::first_clause_span;
 use super::structdef::{
     StructDef, StructDefMap, StructExpectationMap, StructFieldExpectation, StructReferenceExpectation,
 };
@@ -3142,7 +3144,10 @@ impl World {
                 Span::DUMMY,
             ),
         };
-        let diagnostic = match self.macro_being_expanded(&cycle.exit) {
+        let named_macro = self
+            .macro_being_expanded(&cycle.exit)
+            .filter(|function| !definition_time::is_evaluator_name(self.function_ref(*function).name()));
+        let diagnostic = match named_macro {
             Some(function) => {
                 let function_ref = self.function_ref(function);
                 let macro_module = self
@@ -3162,8 +3167,10 @@ impl World {
         }
     }
 
-    /// The call that enters the module's definition, as written: the one
-    /// the waiting job recorded when it began to wait on the module.
+    /// The call that enters the module's definition: the one the waiting job
+    /// recorded, as written, when it began to wait on the module, or else the
+    /// function its body calls that the module has yet to define, at the
+    /// caller's own definition.
     fn call_into_the_definition(&self, cycle: &DefinitionCycle) -> Option<(String, usize, Span)> {
         let caller = match &cycle.entry {
             Job::ExpandFunctionSource(function) => *function,
@@ -3177,6 +3184,17 @@ impl World {
                 let call = expectation.call.as_ref().filter(|call| call.caller == caller)?;
                 Some((call.name.clone(), call.arity, expectation.requester.span))
             })
+            .or_else(|| self.undefined_callee_in(cycle.module, caller))
+    }
+
+    fn undefined_callee_in(&self, module: ModuleId, caller: FunctionId) -> Option<(String, usize, Span)> {
+        let (callee, _) = super::jobs::callees_awaiting_their_module(self, caller)
+            .into_iter()
+            .find(|(_, awaited)| *awaited == module)?;
+        let callee = self.function_ref(callee);
+        let source_map = self.source_map();
+        let span = first_clause_span(&self.function_source(caller)?.source, &source_map.borrow())?;
+        Some((callee.name().to_string(), callee.arity, span))
     }
 
     /// The macro the module's definition is waiting to run. An expansion

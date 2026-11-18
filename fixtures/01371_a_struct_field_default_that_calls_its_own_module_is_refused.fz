@@ -1,0 +1,15 @@
+#---
+# purpose: "a defstruct field default runs while its module is being defined, so a function of that module is not available to it yet: the one diagnostic names the function at the defstruct"
+# expect: diagnostic
+# diagnostic.code: resolve/unknown-function
+#---
+defmodule Bad do
+  def local(), do: 1
+  defstruct a: local()
+end
+
+defmodule Main do
+  def main(), do: IO.inspect(%Bad{})
+end
+
+Main.main()
