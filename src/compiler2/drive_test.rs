@@ -8722,6 +8722,58 @@ fn a_byte_walk_tests_its_binary_inline_and_branches_on_a_raw_condition() {
     }
 }
 
+/// Whether the lowered CLIF declares the runtime symbol `name` as an import.
+fn declares_import(clif: &str, name: &str) -> bool {
+    clif.lines().any(|line| line.ends_with(&format!(" = {name}")))
+}
+
+/// An integer `+`, `-`, `*` and a comparison on typed integers are instructions
+/// in the function body: the inline recipe table answers them, so the generated
+/// code declares none of the runtime functions they stand for.
+#[test]
+fn typed_integer_arithmetic_and_comparison_declare_no_runtime_import() {
+    let clif = lowered_clif_text(concat!(
+        "defmodule P do\n",
+        "  def go(b), do: walk(b, 0)\n",
+        "  defp walk(<<c, r :: binary>>, n), do: walk(r, if(n < c, do: (n + c) * (n - c), else: -n))\n",
+        "  defp walk(_b, n), do: n\n",
+        "end\n",
+        "def main(), do: P.go(\"abc\")\n",
+    ));
+    for runtime_call in [
+        "fz_op_add_ii",
+        "fz_op_sub_ii",
+        "fz_op_mul_ii",
+        "fz_op_neg_i",
+        "fz_op_lt_ii",
+    ] {
+        assert!(
+            !declares_import(&clif, runtime_call),
+            "an integer operation is inline, not a call to {runtime_call}:\n{clif}"
+        );
+    }
+    for instruction in ["sadd_overflow", "ssub_overflow", "smul_overflow"] {
+        assert!(clif.contains(instruction), "{instruction} computes the result:\n{clif}");
+    }
+}
+
+/// An extern with no row in the recipe table is still a call.
+#[test]
+fn an_extern_without_a_recipe_is_still_called() {
+    let clif = lowered_clif_text(concat!(
+        "defmodule P do\n",
+        "  def go(b), do: walk(b, 100)\n",
+        "  defp walk(<<c, r :: binary>>, n), do: walk(r, div(n, c))\n",
+        "  defp walk(_b, n), do: n\n",
+        "end\n",
+        "def main(), do: P.go(\"abc\")\n",
+    ));
+    assert!(
+        declares_import(&clif, "fz_op_div_ii"),
+        "integer division has no recipe and is a call:\n{clif}"
+    );
+}
+
 /// A field that does not start on a byte is still read by the runtime, which
 /// the byte load cannot do.
 #[test]
@@ -17564,7 +17616,7 @@ fn compiler2_arithmetic_edges_raise_through_declared_externs_at_interp_and_force
 }
 
 #[test]
-fn compiler2_typed_kernel_arithmetic_helpers_call_real_checked_exports_in_the_native_path() {
+fn compiler2_typed_kernel_arithmetic_helpers_call_real_checked_exports_or_compute_them_in_place_in_the_native_path() {
     use object::{BinaryFormat, Object, ObjectSymbol};
 
     let source = r#"
@@ -17624,16 +17676,29 @@ end
         .filter(|symbol| symbol.is_undefined())
         .filter_map(|symbol| symbol.name().ok())
         .collect::<BTreeSet<_>>();
-    let checked_imports = checked_exports
+    let imported_name = |symbol: &str| match object.format() {
+        BinaryFormat::MachO => format!("_{symbol}"),
+        _ => symbol.to_string(),
+    };
+    let (inline, called): (Vec<&str>, Vec<&str>) = checked_exports
         .iter()
-        .map(|symbol| match object.format() {
-            BinaryFormat::MachO => format!("_{symbol}"),
-            _ => (*symbol).to_string(),
-        })
-        .collect::<BTreeSet<_>>();
+        .copied()
+        .partition(|symbol| crate::compiler2::native_codegen::recipe::recipe_for(symbol).is_some());
     assert!(
-        checked_imports.iter().all(|symbol| imports.contains(symbol.as_str())),
-        "the shared native checked-extern lowering must import every real C arithmetic export; pair={checked_imports:?} imports={imports:?}",
+        called
+            .iter()
+            .all(|symbol| imports.contains(imported_name(symbol).as_str())),
+        "the shared native checked-extern lowering must import every real C arithmetic export without a recipe; called={called:?} imports={imports:?}",
+    );
+    assert!(
+        inline
+            .iter()
+            .all(|symbol| !imports.contains(imported_name(symbol).as_str())),
+        "a checked export with a recipe is computed in place and not imported; inline={inline:?} imports={imports:?}",
+    );
+    assert!(
+        !inline.is_empty() && !called.is_empty(),
+        "the program exercises both a recipe and a call: inline={inline:?} called={called:?}",
     );
 }
 

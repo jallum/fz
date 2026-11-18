@@ -69,8 +69,10 @@ use fz_runtime::process::AtomName;
 
 use super::prim::c_pair_return_types;
 use super::repr::ExternLane;
-use super::runtime_call::{RuntimeCaller, RuntimeFn, declare_runtime_fn, runtime_call, runtime_call1};
-use super::{CodegenError, SLOT_BYTES, emit_fn_body, immediate_payload, immediate_ref_word};
+use super::runtime_call::{
+    RuntimeCaller, RuntimeFn, declare_runtime_fn, runtime_call, runtime_call1, runtime_condition,
+};
+use super::{CodegenError, SLOT_BYTES, address_field, emit_fn_body, immediate_ref_word};
 
 type ReceiveDispatchPlan = PatternDispatchPlan<RuntimeTypePredicate>;
 type ReceiveRegion = Region<RuntimeTypePredicate>;
@@ -191,12 +193,8 @@ impl<M: cranelift_module::Module> RuntimeCaller for DispatchBody<'_, '_, M> {
         callee
     }
 
-    fn emit_call(&mut self, callee: ir::FuncRef, args: &[ir::Value]) -> ir::Inst {
-        self.b.ins().call(callee, args)
-    }
-
-    fn sole_result(&self, call: ir::Inst) -> ir::Value {
-        self.b.inst_results(call)[0]
+    fn with_builder<R>(&mut self, emit: impl FnOnce(&mut FunctionBuilder<'_>) -> R) -> R {
+        emit(self.b)
     }
 }
 
@@ -1505,7 +1503,7 @@ fn emit_guard_extern<M: cranelift_module::Module>(
             ExternTy::Opaque(kind) => {
                 let value_ref = emit_receive_value_ref(body, ctx, value)?;
                 if *kind == ValueKind::PID {
-                    (types::I64, immediate_payload(body.b, value_ref))
+                    (types::I64, address_field(body.b, value_ref))
                 } else {
                     let kind = body.b.ins().iconst(types::I64, kind.tag() as i64);
                     (types::I64, runtime_call1!(body, fz_unbox_opaque, [value_ref, kind]))
@@ -1884,11 +1882,7 @@ fn emit_truthy_cmp<M: cranelift_module::Module>(
     v: ReceiveValue,
 ) -> Result<ir::Value, CodegenError> {
     match v {
-        ReceiveValue::AnyRef(value_ref) => {
-            let truthy = runtime_call1!(body, fz_truthy_ref, [value_ref]);
-            let zero = body.b.ins().iconst(types::I8, 0);
-            Ok(body.b.ins().icmp(IntCC::NotEqual, truthy, zero))
-        }
+        ReceiveValue::AnyRef(value_ref) => Ok(runtime_condition!(body, fz_truthy_ref, [value_ref])),
         ReceiveValue::Atom(raw) => {
             let is_false = body.b.ins().icmp_imm_s(IntCC::Equal, raw, FALSE_ATOM_ID as i64);
             let is_nil = body.b.ins().icmp_imm_s(IntCC::Equal, raw, NIL_ATOM_ID as i64);

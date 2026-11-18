@@ -16,7 +16,7 @@ use super::*;
 use crate::fz_ir::FrameLane;
 use cranelift_codegen::ir::{self, InstBuilder, MemFlagsData, condcodes::IntCC, types};
 use cranelift_module::Module;
-use fz_runtime::any_value::{AnyValueRefPacking, CLOSURE_CAPTURES_OFFSET, CLOSURE_CODE_OFFSET, NIL_ATOM_ID, ValueKind};
+use fz_runtime::any_value::{CLOSURE_CAPTURES_OFFSET, CLOSURE_CODE_OFFSET, NIL_ATOM_ID, ValueKind};
 use fz_runtime::heap::INLINE_ALLOC_LAYOUT;
 use fz_runtime::ir_runtime::fz_frame_for_write;
 use fz_runtime::process_abi::PROCESS_HEAP_OFFSET;
@@ -34,7 +34,7 @@ impl<M: Module> CodegenFn<'_, '_, M> {
     /// Points the frame at `code`, the continuation that next runs in it. The
     /// code address is no heap reference, so the write is safe in an old frame.
     pub(super) fn frame_resume_at(&mut self, frame: ir::Value, code: ir::Value) {
-        let address = self.frame_address(frame);
+        let address = address_field(self.b, frame);
         self.b
             .ins()
             .store(MemFlagsData::trusted(), code, address, CLOSURE_CODE_OFFSET);
@@ -55,7 +55,7 @@ impl<M: Module> CodegenFn<'_, '_, M> {
         capture: ClosureCapture,
     ) -> ir::Value {
         let frame = self.frame_in_tip_or_copy(frame);
-        let address = self.frame_address(frame);
+        let address = address_field(self.b, frame);
         let stores = CaptureStores::new(address, width as usize);
         let idx = slot as usize;
         match capture {
@@ -76,7 +76,7 @@ impl<M: Module> CodegenFn<'_, '_, M> {
     /// to a scalar names its own slot and is read through it.
     pub(super) fn frame_clear(&mut self, frame: ir::Value, width: u32, slot: u32) -> ir::Value {
         let frame = self.frame_in_tip_or_copy(frame);
-        let address = self.frame_address(frame);
+        let address = address_field(self.b, frame);
         let stores = CaptureStores::new(address, width as usize);
         let kind_offset = CLOSURE_CAPTURES_OFFSET + (width as usize * 8 + slot as usize) as i32;
         let kind = self
@@ -97,12 +97,6 @@ impl<M: Module> CodegenFn<'_, '_, M> {
         frame
     }
 
-    fn frame_address(&mut self, frame: ir::Value) -> ir::Value {
-        self.b
-            .ins()
-            .band_imm_u(frame, AnyValueRefPacking::current().address_mask() as i64)
-    }
-
     /// `frame` when its object lies in the tip block, `[block_start,
     /// bump_top)`; else the runtime answers the frame to write, which is the
     /// frame itself when it is young and a copy at the tip when it is old.
@@ -113,7 +107,7 @@ impl<M: Module> CodegenFn<'_, '_, M> {
         let process = self.process_arg();
         let start = self.b.ins().load(types::I64, flags, process, field(layout.block_start));
         let top = self.b.ins().load(types::I64, flags, process, field(layout.bump_top));
-        let address = self.frame_address(frame);
+        let address = address_field(self.b, frame);
         let offset = self.b.ins().isub(address, start);
         let filled = self.b.ins().isub(top, start);
         let young = self.b.ins().icmp(IntCC::UnsignedLessThan, offset, filled);

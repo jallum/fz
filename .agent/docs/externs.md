@@ -220,11 +220,49 @@ Calling a new helper is one `runtime_call!` and an import of its name. The AOT
 in `native_codegen/runtime_call.rs`.
 
 A body that can call helpers is a `RuntimeCaller`: it holds the module that
-declares the symbol, the builder that emits the call, and the memo. `CodegenFn`
+declares the symbol, the builder that emits the call (`with_builder`), and the
+memo. `CodegenFn`
 is one, for an fz function; `DispatchBody` (`native_codegen/receive.rs`) is the
 other, for the receive-dispatch function, which is emitted straight onto a
 `FunctionBuilder` and takes its `Process*` as a parameter rather than reading
 the pinned register. Both reach a helper by the same `runtime_call!`.
+
+### Inline recipes
+
+`native_codegen/recipe.rs` holds one table, `RECIPES`. A row names a runtime
+function by its Rust item and emits Cranelift instructions that compute what
+that function computes. Both ways compiled code reaches a runtime function ask
+the table first, keyed by the function's symbol: `call_runtime1` /
+`call_runtime_condition` (`runtime_call1!`, `runtime_condition!`, for the
+helpers codegen calls itself, on `CodegenFn` and `DispatchBody` alike) and the
+lowering of an `extern "C" defp` declaration (`lower_extern_generic`,
+`lower_extern_pair`, keyed by `decl.symbol`). A row emits its instructions and
+declares no import; a symbol with no row, or a row that declines the instance,
+emits the call.
+
+A row answers in one of three shapes (`Emitted`) and no others:
+
+- `Value`: one word or float, in the lane the function returns.
+- `Condition`: an `I8` the next branch uses directly. It is a
+  `CodegenValue::Condition` when every use of the variable is a branch
+  (`if_only_conds`), the atom boolean otherwise (`condition_value`).
+- `Checked`: a value and the `I8` condition that says it failed, in place of
+  the C scalar pair. The failed field is bound the same way a `Condition` is,
+  and the same holds for a checked extern that has no row: the pair's boolean
+  field reaches the branch as a condition (`decode_foreign_boolean_word`).
+
+A recipe does not validate its argument: the Rust function panics on a
+malformed word, the instructions read whatever the word says.
+
+The rows are the typed `fz_op_*_ii` arithmetic and comparison externs, the
+`fz_op_*_ff` comparisons, `fz_op_neg_f`, `fz_op_abs_f`, and the helpers
+`fz_type_of`, `fz_truthy_ref`, `fz_unbox_int`, `fz_unbox_atom`,
+`fz_struct_schema_id_ref` and `fz_value_eq_raw_const` (an atom or integer
+constant kind only; another kind keeps the call). The Rust function stays the
+definition and the interpreter keeps calling it. To add an intrinsic, add one
+`recipe!` row and one entry in `proofs()` in `recipe_test.rs`: the parity test
+compiles every row and compares its answer with the runtime function over
+inputs for its signature, and fails for a row with no entry.
 
 The bodies codegen emits itself — the four halt-cont bodies, `fz_entry_thunk`,
 `fz_main_trampoline`, `fz_drain_dtor_entry` — are not Rust functions, so their

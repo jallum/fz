@@ -9,9 +9,14 @@
 //!
 //! A helper is declared on first use in the body that calls it, memoized per
 //! body, the way a source-visible extern declares itself.
+//!
+//! A helper that has a row in the inline recipe table (`recipe.rs`) is not
+//! called: the row's instructions are emitted and no symbol is declared.
 
+use super::recipe::{Emitted, emit_inline};
 use super::*;
-use cranelift_codegen::ir::{self, AbiParam, InstBuilder, Signature};
+use cranelift_codegen::ir::{self, AbiParam, InstBuilder, Signature, condcodes::IntCC};
+use cranelift_frontend::FunctionBuilder;
 use cranelift_module::{FuncId, Linkage, Module};
 
 /// The register lane a C scalar travels in. Integers and floats ride
@@ -104,21 +109,57 @@ pub(crate) trait RuntimeCaller {
     /// memoized by its linker name.
     fn runtime_func_ref<F: RuntimeFn + Copy>(&mut self, name: &'static str, item: F) -> ir::FuncRef;
 
-    fn emit_call(&mut self, callee: ir::FuncRef, args: &[ir::Value]) -> ir::Inst;
+    /// Run `emit` against the body's builder.
+    fn with_builder<R>(&mut self, emit: impl FnOnce(&mut FunctionBuilder<'_>) -> R) -> R;
 
-    fn sole_result(&self, call: ir::Inst) -> ir::Value;
+    fn emit_call(&mut self, callee: ir::FuncRef, args: &[ir::Value]) -> ir::Inst {
+        self.with_builder(|b| b.ins().call(callee, args))
+    }
+
+    fn sole_result(&mut self, call: ir::Inst) -> ir::Value {
+        self.with_builder(|b| b.inst_results(call)[0])
+    }
 
     /// Emit a call to a runtime helper. The returned `Inst` carries the
-    /// results, if the helper has any.
+    /// results, if the helper has any. The inline recipe table is not asked:
+    /// a recipe stands for a helper's answer, and this call is for one whose
+    /// results are not read as a value.
     fn call_runtime<F: RuntimeFn + Copy>(&mut self, name: &'static str, item: F, args: &[ir::Value]) -> ir::Inst {
         let callee = self.runtime_func_ref(name, item);
         self.emit_call(callee, args)
     }
 
-    /// Emit a call to a runtime helper and read its single result.
+    /// A runtime helper's single result: the instructions of its inline
+    /// recipe when the table has one for this call, else the call's result.
     fn call_runtime1<F: RuntimeFn + Copy>(&mut self, name: &'static str, item: F, args: &[ir::Value]) -> ir::Value {
-        let call = self.call_runtime(name, item, args);
-        self.sole_result(call)
+        match self.with_builder(|b| emit_inline(b, name, args)) {
+            Some(Emitted::Value(value)) => value,
+            Some(other) => panic!("`{name}` answers {other:?}, not a value; ask for it by its shape"),
+            None => {
+                let call = self.call_runtime(name, item, args);
+                self.sole_result(call)
+            }
+        }
+    }
+
+    /// A runtime helper's truth as an `I8` condition: the instructions of its
+    /// inline recipe when the table has one for this call, else the call's
+    /// result compared with zero.
+    fn call_runtime_condition<F: RuntimeFn + Copy>(
+        &mut self,
+        name: &'static str,
+        item: F,
+        args: &[ir::Value],
+    ) -> ir::Value {
+        match self.with_builder(|b| emit_inline(b, name, args)) {
+            Some(Emitted::Condition(condition)) => condition,
+            Some(other) => panic!("`{name}` answers {other:?}, not a condition; ask for it by its shape"),
+            None => {
+                let call = self.call_runtime(name, item, args);
+                let word = self.sole_result(call);
+                self.with_builder(|b| b.ins().icmp_imm_s(IntCC::NotEqual, word, 0))
+            }
+        }
     }
 }
 
@@ -133,12 +174,8 @@ impl<M: Module> RuntimeCaller for CodegenFn<'_, '_, M> {
         callee
     }
 
-    fn emit_call(&mut self, callee: ir::FuncRef, args: &[ir::Value]) -> ir::Inst {
-        self.b.ins().call(callee, args)
-    }
-
-    fn sole_result(&self, call: ir::Inst) -> ir::Value {
-        self.b.inst_results(call)[0]
+    fn with_builder<R>(&mut self, emit: impl FnOnce(&mut FunctionBuilder<'_>) -> R) -> R {
+        emit(self.b)
     }
 }
 
@@ -154,6 +191,15 @@ macro_rules! runtime_call {
     (@lane $arg:expr) => {
         _
     };
+}
+
+/// `runtime_call!` for a helper whose answer is a truth: an `I8` condition.
+macro_rules! runtime_condition {
+    ($body:expr, $item:ident, [$($arg:expr),* $(,)?]) => {{
+        let args: &[cranelift_codegen::ir::Value] = &[$($arg),*];
+        let item: unsafe extern "C" fn($(runtime_call!(@lane $arg)),*) -> _ = $item;
+        $body.call_runtime_condition(stringify!($item), item, args)
+    }};
 }
 
 /// `runtime_call!` for a helper with one result, yielding that result.
@@ -189,4 +235,4 @@ macro_rules! runtime_fn_id {
 
 #[cfg(test)]
 pub(crate) use runtime_func_ref;
-pub(crate) use {runtime_call, runtime_call1, runtime_fn_id};
+pub(crate) use {runtime_call, runtime_call1, runtime_condition, runtime_fn_id};

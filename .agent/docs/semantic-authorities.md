@@ -362,7 +362,16 @@ reads the linker symbol off the identifier and the Cranelift signature off the
 item's type (`native_codegen/runtime_call.rs`), so a compiled call cannot
 describe a helper differently from the function it reaches. The helper is
 declared on first use in each body; there is no table of helpers to keep in
-step with the runtime.
+step with the runtime. A helper with a row in the inline recipe table
+(`native_codegen/recipe.rs`) is not called at all: see
+[externs](externs.md), "Inline recipes".
+
+**How a ref word is read in generated code** — owners `kind_field`,
+`address_field` and `payload_field` (`native_codegen/clif.rs`): the kind of a
+word with the literal bit dropped, its address field, and its address field
+with the literal bit. Every hand-written read of those fields in
+`native_codegen` goes through them, so the packing of a ref word
+(`AnyValueRefPacking`) is read in one place per field.
 
 **UTF-8 validity and prefix errors** — owner `utf8_prefix`
 (`runtime/src/ir_runtime.rs`). It recognizes one codepoint as either a valid

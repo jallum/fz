@@ -891,7 +891,7 @@ durable root slot, GC copies its boxed payload (`copy_scalar_box_to_space`, a
 small `ScalarBox` heap object) and rewrites the root to the copy — copied, not
 followed. An atom or pid ref has no payload to copy: GC and deep copy leave it as it is,
 like `null`, and a measuring pass charges it nothing. Generated code packs and
-reads a pid ref inline (`immediate_ref_word`, `immediate_payload`); only a
+reads a pid ref inline (`immediate_ref_word`, `address_field`); only a
 reference goes through `fz_box_opaque_for_any` and `fz_unbox_opaque`.
 
 Off-heap binaries and resources have their own atomic reference counts. A
