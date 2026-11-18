@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-17T20:59:47Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-sc8",
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "A map whose struct module is known only at run time prints as that struct",
   "type": "task",
-  "updated_at": "2026-11-17T20:59:47Z"
+  "updated_at": "2026-11-18T06:04:33Z"
 }
