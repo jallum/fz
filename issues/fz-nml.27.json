@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-nml.28"
+  ],
   "created": "2026-11-18T03:29:07Z",
   "description": "Approved by the user 2026-11-17 (relayed verbatim by JSON: \"B,C,D proceed.\"). Probe evidence: JSON session scratchpad jsonenc/.\n\nDefect: a clause matching \"\" against a walked binary (defp walk(start, \"\", acc)) forces the rest binary to be built every step: a rest \u003c= 64 bytes is copied into a new inline bitstring, a longer one gets a new view; native also allocates a 16 B constant for \"\" on every test. \u003c\u003c\u003e\u003e is the same match and costs neither.\n\nEvidence: replacing \"\" with \u003c\u003c\u003e\u003e at lib/json.fz:239 alone took the strings encode from 551k bitstrings / 15.3 MB to 60k / 1.2 MB, docs from 366k to 171k bitstrings, about -27% cycles. \"\" patterns are common in lib (json.fz, string.fz, utf8.fz, option_parser.fz).\n\nDone when: \"\" and \u003c\u003c\u003e\u003e lower identically on all three paths; a fixture counts allocations for both forms; no lib source edit is needed.",
   "id": "fz-nml.27",
