@@ -2,6 +2,7 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-18T05:24:36Z",
   "created": "2026-11-14T12:34:42Z",
   "description": "lib/file.fz:192-198 reads with fgetc and contents \u003c\u003e \u003c\u003cbyte\u003e\u003e per byte, which copies the accumulator each time (fz-sc8.111): quadratic. Measured (debug): 400 KB 2.9 s and 1.06 GB peak; 1.6 MB 35.6 s and 3.5 GB; 10 MB did not finish in 80 s. Read the whole file with one runtime call, as line reads do (fz-sc8.191). Signal: a fixture pinning off-heap bytes allocated reading a file near its size.",
   "id": "fz-sc8.196",
@@ -18,8 +19,8 @@
     }
   ],
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "File.read reads a file in one call",
   "type": "bug",
-  "updated_at": "2026-11-18T05:09:15Z"
+  "updated_at": "2026-11-18T05:24:36Z"
 }
