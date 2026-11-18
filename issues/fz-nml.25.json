@@ -8,14 +8,16 @@
     "fz-sc8.247"
   ],
   "blocks": [],
+  "closed_at": "2026-11-18T19:07:45Z",
+  "close_reason": "PR #742 merged: digits added as plain integers, overflow raises ArithmeticError; numbers decode 21.6 -\u003e 14.2 Mcycles",
   "created": "2026-11-18T00:15:58Z",
   "description": "Approved by the user 2026-11-17 (\"yes. cheap try.\"); shape chosen 2026-11-18 (\"use the new, faster exception machinery and cut out the atom\").\n\nlib/json.fz: integer_digits accumulates acc*10 + sign*d as a plain integer; 64-bit overflow raises ArithmeticError, rescued once per number, and the cold path (wide_digits) re-scans the digits to report {:sequence, start, token} or continue into a fraction/exponent. integer_step and the integer | :overflow union are deleted; the float path carries :zero_exponent | :exponent_only instead of the accumulator.\n\nConverting from text (String.to_integer) was tried first and refuted: it raises ArgumentError, and the token slice plus Integer.parse tuple raised 01507 (20/42 -\u003e 22/50) and the distiller drive count (26 -\u003e 27).\n\nSignal: scalar boxes per decoded integer 0 on all paths (fixture 01710); bench numbers decode 21.6 -\u003e 14.2 Mcycles, docs 27.5 -\u003e 25.3; all distiller pins fall.",
   "id": "fz-nml.25",
   "labels": [],
   "parent": "fz-nml",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "A JSON integer adds its digits as plain integers, and overflow raises",
   "type": "task",
-  "updated_at": "2026-11-18T06:13:17Z"
+  "updated_at": "2026-11-18T19:07:45Z"
 }
