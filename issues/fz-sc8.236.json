@@ -11,9 +11,15 @@
   "id": "fz-sc8.236",
   "labels": [],
   "parent": "fz-sc8",
+  "comments": [
+    {
+      "text": "User ruling 2026-11-17 (relayed by Callables, verbatim \"composite constants approved\"): build the composite half as designed (the constant step carries a LiteralTerm holding no function; GroundValue stays scalar). Strings half built; fixture 01379.",
+      "timestamp": "2026-11-18T04:52:31Z"
+    }
+  ],
   "priority": 2,
   "status": "in_progress",
   "title": "A literal list, tuple or map whose parts are all constant lowers as one constant",
   "type": "feature",
-  "updated_at": "2026-11-18T04:24:31Z"
+  "updated_at": "2026-11-18T04:52:31Z"
 }
