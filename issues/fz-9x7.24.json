@@ -15,11 +15,15 @@
     {
       "text": "Leak A/B (probe branch exp/gc-clock 8a2452976-based, build-time FZ_PROBE_LEAK makes shared_bin_destructor_heap return without freeing; own staticlib per arm, md5s differ), survive, 7 interleaved runs each, local M-series: instructions median 1,694.2M (free) vs 1,633.4M (leak) = 60.8M fewer = ~304 instructions per destroyed binary (200,001 destroyed); cycles median 428.8M vs 368.7M = 60.1M = ~300 cycles per binary, 14% of the whole program's cycles. Each destruction is two system-malloc frees (1025-byte buffer, 48-byte SharedBin box) plus the Box reconstruction. Timer-based sweep figures were too noisy on this run to use; the counters are the evidence. Candidate fixes, to be proposed: (1) one allocation per SharedBin (header followed by its bytes), halving frees and dropping a pointer chase; (2) fz-9x7.22's allocator round answers how much is system malloc's per-free cost - survive should be one of its workloads, with this leak arm as the floor.",
       "timestamp": "2026-11-17T23:09:57Z"
+    },
+    {
+      "text": "Stays open until re-measured on develop after #699 (fz-9x7.25, 0d8fc2ec3): survive µs per KB copied, folded into the post-merge VM vs V0 re-run (fz-9x7.22 comment). Close only on that figure.",
+      "timestamp": "2026-11-18T00:30:45Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "Find what makes survive's collections cost 1.5 µs per KB copied",
   "type": "task",
-  "updated_at": "2026-11-18T00:30:32Z"
+  "updated_at": "2026-11-18T00:30:45Z"
 }
