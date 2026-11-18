@@ -7,9 +7,15 @@
   "id": "fz-9x7.37",
   "labels": [],
   "parent": "fz-9x7",
+  "comments": [
+    {
+      "text": "Bugs and Cleanup's listing: the five allocation-statistics read-modify-writes cost 15 instructions per allocation, plus one on each frame given back. Binary Handling measured the same thing independently: \u003c\u003cbyte\u003e\u003e inline is 78 instructions with the counters and 63 without, more than the allocation itself (about 8).",
+      "timestamp": "2026-11-18T23:24:24Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Allocation statistics leave the inline allocation path",
   "type": "task",
-  "updated_at": "2026-11-18T04:09:24Z"
+  "updated_at": "2026-11-18T23:24:24Z"
 }
