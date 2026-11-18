@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-nhb.4"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-mue"
+  ],
   "created": "2026-11-15T20:34:41Z",
   "description": "## Why\n`IO.inspect(~s(hi))` fails with parse/expected-token: unsupported expression prefix in compiler2 front door: Sigil(\"s\"), with or without parentheses. The lexer emits Tok::Sigil (src/parser/lexer.rs), but Parser::parse_prefix (src/compiler2/frontdoor.rs) has no arm for it, so no sigil is an expression. Elixir code uses ~s, ~w, ~c and ~r widely. Found while narrowing fz-nhb.2.\n\n## What changes\nA sigil is an expression with Elixir's delimiters, interpolation rules and modifiers, for the sigils fz's library can answer. Which sigils are in scope is decided when this ticket is planned.\n\n## Signal\nOracle fixtures for each supported sigil match Elixir on run, interp and build.",
   "id": "fz-nhb.5",
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "Sigils are expressions, as in Elixir",
   "type": "feature",
-  "updated_at": "2026-11-15T20:34:41Z"
+  "updated_at": "2026-11-18T20:44:08Z"
 }
