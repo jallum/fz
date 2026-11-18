@@ -26,6 +26,10 @@
     {
       "text": "User ruling 2026-11-18: round 3 closes as failed by rule; the ticket stays open and its floor is re-tested after fz-9x7.11 (which gets a fresh look).",
       "timestamp": "2026-11-18T05:55:03Z"
+    },
+    {
+      "text": "User ruling 2026-11-18 (relayed by GC): round 3 closes as failed by rule; ticket stays open; its floor is re-tested after fz-9x7.11 (now blocks this). Pre-registered guards are judged on the bench machine from now on (local instruction counts vary 0.6-1.9% between identical runs at load ~55).",
+      "timestamp": "2026-11-18T05:55:04Z"
     }
   ],
   "priority": 2,
