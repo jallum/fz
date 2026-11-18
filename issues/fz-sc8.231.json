@@ -9,9 +9,15 @@
   "id": "fz-sc8.231",
   "labels": [],
   "parent": "fz-sc8",
+  "comments": [
+    {
+      "text": "Establish-first findings (MDF builder, 2026-11-17, base re-run on interp and run): (1) Receive: a cursor into a received message is sound on all three paths (source is the receiver's copy; position relative to its logical start) but needs a position root that OutcomeRoots (src/dispatch_matrix/pattern/roots.rs) lacks and the cursor-fold page does not describe; side cost: the read prefix travels with the rest when a sender-side probe gifts only the roots. (2) Handler: its three parameters (kind, value, name) are refs the raise writes into fixed slots (runtime/src/failure.rs:324, park.rs:227); a handler parameter is never a rest; the rest is matched by the handler's own dispatch, whose arms are Branch entries covered by fz-sc8.230 (#725). Demand layout for handler parameters needs a lane count in the raise and handler record (runtime ABI change, not on the page), so the removal list (is_handed_parameters, whole_value_layout, the fill loop, the one-lane check) cannot be met in full. (3) outcome_reads exists three times (Dispatch::reading, DispatchState::outcome_reads, DispatchCtx::outcome_reads); one goes only if the receive matcher stops being a separate bitstring emitter. (4) Prize: a walk over a 10,240-byte received binary builds ONE binary today on all three paths; catch walk builds 0. Remaining cost is one binary per receive that binds a rest; nothing in the distiller hot path. Recommendation: do not build as written; close with findings, or rescope to receive only with a position-root page at low priority. Awaiting user ruling.",
+      "timestamp": "2026-11-18T04:45:02Z"
+    }
+  ],
   "priority": 1,
   "status": "in_progress",
   "title": "A rest matched out of a received message or a rescued exception arrives the way its arm reads it",
   "type": "task",
-  "updated_at": "2026-11-18T04:38:34Z"
+  "updated_at": "2026-11-18T04:45:02Z"
 }
