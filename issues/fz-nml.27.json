@@ -6,13 +6,13 @@
     "fz-sc8.183.9"
   ],
   "created": "2026-11-18T03:29:07Z",
-  "description": "Approved by the user 2026-11-17 (relayed verbatim by JSON: \"B,C,D proceed.\"). Probe evidence: JSON session scratchpad jsonenc/.\n\nDefect: a clause matching \"\" against a walked binary (defp walk(start, \"\", acc)) forces the rest binary to be built every step: a rest \u003c= 64 bytes is copied into a new inline bitstring, a longer one gets a new view; native also allocates a 16 B constant for \"\" on every test. \u003c\u003c\u003e\u003e is the same match and costs neither.\n\nEvidence: replacing \"\" with \u003c\u003c\u003e\u003e at lib/json.fz:239 alone took the strings encode from 551k bitstrings / 15.3 MB to 60k / 1.2 MB, docs from 366k to 171k bitstrings, about -27% cycles. \"\" patterns are common in lib (json.fz, string.fz, utf8.fz, option_parser.fz).\n\nDone when: \"\" and \u003c\u003c\u003e\u003e lower identically on all three paths; a fixture counts allocations for both forms; no lib source edit is needed.",
+  "description": "Approved by the user 2026-11-17 (relayed verbatim by JSON: \"B,C,D proceed.\"). Probe evidence: JSON session scratchpad jsonenc/.\n\nDefect: a clause matching \"\" against a walked binary (defp walk(start, \"\", acc)) forces the rest binary to be built every step: a rest \u003c= 64 bytes is copied into a new inline bitstring, a longer one gets a new view; native also allocates a 16 B constant for \"\" on every test. \u003c\u003c\u003e\u003e is the same match and costs neither.\n\nEvidence: replacing \"\" with \u003c\u003c\u003e\u003e at lib/json.fz:239 alone took the strings encode from 551k bitstrings / 15.3 MB to 60k / 1.2 MB, docs from 366k to 171k bitstrings, about -27% cycles. \"\" patterns are common in lib (json.fz, string.fz, utf8.fz, option_parser.fz).\n\nDone when: \"\" and \u003c\u003c\u003e\u003e lower identically on all three paths; a fixture counts allocations for both forms; no lib source edit is needed.\n\nScope widened 2026-11-17 by the builder (JSON), the root fix covering the approved case: in src/dispatch_matrix/pattern.rs, Pattern::Binary(bytes) asks the same questions as a bitstring of one literal segment (an exact size test plus integer-field compares at the cursor, no whole-value equality). Covers every binary literal in pattern position, \"\" included. Measured: the \"abc\" walk 263 bitstrings / 138 views on run -\u003e 0 / 0; \"\" 266 / 135 -\u003e 0 / 0 on all three paths. Pins 01164 and 01507 fall by one allocation each. Fixture 01707 renamed a_string_pattern_builds_no_rest.",
   "id": "fz-nml.27",
   "labels": [],
   "parent": "fz-nml",
   "priority": 2,
   "status": "open",
-  "title": "A \"\" pattern is a zero-length test, as \u003c\u003c\u003e\u003e is",
+  "title": "A string literal in a pattern is tested at the cursor, so it builds no rest",
   "type": "bug",
-  "updated_at": "2026-11-18T04:08:45Z"
+  "updated_at": "2026-11-18T04:09:49Z"
 }
