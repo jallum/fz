@@ -7,9 +7,15 @@
   "id": "fz-yh5.1",
   "labels": [],
   "parent": "fz-yh5",
+  "comments": [
+    {
+      "text": "Binary Handling's spikes (2026-11-18): rem/2 on integers is a runtime call returning a checked pair, about 20 instructions in probe 06b's loop, and it has no RECIPES row. It belongs with this ticket's integer arithmetic.",
+      "timestamp": "2026-11-18T23:20:38Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Integer arithmetic on known integers is an instruction, not a flag dance or a call",
   "type": "task",
-  "updated_at": "2026-11-18T21:45:29Z"
+  "updated_at": "2026-11-18T23:20:38Z"
 }
