@@ -72,7 +72,7 @@ pub(crate) fn emit_fn_body<M: Module>(
     {
         let mut b = FunctionBuilder::new(&mut ctx.func, fbctx);
         body(module, &mut b);
-        b.finalize();
+        b.finalize(module.target_config());
     }
     module.define_function(func_id, &mut ctx).map_err(Box::new)?;
     module.clear_context(&mut ctx);
@@ -108,7 +108,7 @@ pub(crate) fn cached_iconst(b: &mut FunctionBuilder<'_>, cache: &mut CodegenCach
 /// first.
 pub(crate) fn atom_ref_word(b: &mut FunctionBuilder<'_>, raw: ir::Value) -> ir::Value {
     let tag_word = (u64::from(ValueKind::ATOM.tag()) << AnyValueRefPacking::current().tag_shift()) as i64;
-    b.ins().bor_imm(raw, tag_word)
+    b.ins().bor_imm_u(raw, tag_word)
 }
 
 /// Convert an i8 Cranelift bool to the reserved true/false atom bit patterns.

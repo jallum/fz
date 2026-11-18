@@ -318,8 +318,8 @@ impl Backend for AotBackend {
             let mut p = omod.finish();
             let mut ver = MachOBuildVersion::default();
             ver.platform = PLATFORM_MACOS;
-            ver.minos = 11 << 16; // 11.0.0 — first macOS on Apple Silicon
-            ver.sdk = 11 << 16;
+            ver.minos = object::macho::Version::new(11, 0, 0); // first macOS on Apple Silicon
+            ver.sdk = object::macho::Version::new(11, 0, 0);
             p.object.set_macho_build_version(ver);
             p
         };

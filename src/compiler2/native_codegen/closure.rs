@@ -1,5 +1,5 @@
 use super::*;
-use cranelift_codegen::ir::{self, InstBuilder, MemFlags, condcodes::IntCC, types};
+use cranelift_codegen::ir::{self, InstBuilder, MemFlagsData, condcodes::IntCC, types};
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::FuncId;
 use fz_runtime::any_value::{
@@ -31,14 +31,14 @@ pub(crate) fn build_cont_closure<M: cranelift_module::Module>(
     let address = body
         .b
         .ins()
-        .band_imm(closure_ref, AnyValueRefPacking::current().address_mask() as i64);
+        .band_imm_u(closure_ref, AnyValueRefPacking::current().address_mask() as i64);
     let stores = CaptureStores::new(address, count);
     stores.store_ref_word(body, 0, outer_cont);
     store_user_captures(cap_bindings, |idx, capture| match capture {
         ClosureCapture::RefWord(word) => stores.store_ref_word(body, idx, word),
         ClosureCapture::RawInt(raw) => stores.store_raw(body, idx, raw, ValueKind::INT),
         ClosureCapture::RawF64(raw) => {
-            let bits = body.b.ins().bitcast(types::I64, MemFlags::new(), raw);
+            let bits = body.b.ins().bitcast(types::I64, MemFlagsData::new(), raw);
             stores.store_raw(body, idx, bits, ValueKind::FLOAT);
         }
         ClosureCapture::RawAtom(raw) => stores.store_raw(body, idx, raw, ValueKind::ATOM),
@@ -63,11 +63,11 @@ fn place_cont_closure<M: cranelift_module::Module>(
     let layout = INLINE_ALLOC_LAYOUT;
     let heap = PROCESS_HEAP_OFFSET;
     let field = |offset: usize| heap + offset as i32;
-    let flags = MemFlags::trusted();
+    let flags = MemFlagsData::trusted();
     let process = body.process_arg();
     let top = body.b.ins().load(types::I64, flags, process, field(layout.bump_top));
     let end = body.b.ins().load(types::I64, flags, process, field(layout.block_end));
-    let new_top = body.b.ins().iadd_imm(top, size);
+    let new_top = body.b.ins().iadd_imm_s(top, size);
     let fits = body.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, new_top, end);
     let inline = body.b.create_block();
     let runtime = body.b.create_block();
@@ -94,7 +94,7 @@ fn place_cont_closure<M: cranelift_module::Module>(
         (layout.continuation_bytes, size),
     ] {
         let old = body.b.ins().load(types::I64, flags, process, field(counter));
-        let new = body.b.ins().iadd_imm(old, add);
+        let new = body.b.ins().iadd_imm_s(old, add);
         body.b.ins().store(flags, new, process, field(counter));
     }
     let header = closure_header_word(ClosureDenotationId::INTERNAL, count as u16, 0, CONT_ARITY as u16);
@@ -135,7 +135,7 @@ impl CaptureStores {
         raw: ir::Value,
         kind: ValueKind,
     ) {
-        let flags = MemFlags::trusted();
+        let flags = MemFlagsData::trusted();
         body.b.ins().store(flags, raw, self.address, self.slot_offset(idx));
         let kind = body.b.ins().iconst(types::I8, i64::from(kind.tag()));
         body.b.ins().store(flags, kind, self.address, self.kind_offset(idx));
@@ -154,18 +154,18 @@ impl CaptureStores {
         word: ir::Value,
     ) {
         let packing = AnyValueRefPacking::current();
-        let flags = MemFlags::trusted();
-        let shifted = body.b.ins().ushr_imm(word, i64::from(packing.tag_shift()));
-        let tag = body.b.ins().band_imm(shifted, 0xF);
-        let named_address = body.b.ins().band_imm(word, packing.address_mask() as i64);
-        let payload = body.b.ins().band_imm(word, packing.payload_mask() as i64);
+        let flags = MemFlagsData::trusted();
+        let shifted = body.b.ins().ushr_imm_u(word, i64::from(packing.tag_shift()));
+        let tag = body.b.ins().band_imm_u(shifted, 0xF);
+        let named_address = body.b.ins().band_imm_u(word, packing.address_mask() as i64);
+        let payload = body.b.ins().band_imm_u(word, packing.payload_mask() as i64);
         let names_slot = body.kind_names_its_slot(tag);
         let source = body.b.ins().select(names_slot, named_address, self.address);
-        let loaded = body.b.ins().load(types::I64, MemFlags::new(), source, 0);
+        let loaded = body.b.ins().load(types::I64, MemFlagsData::new(), source, 0);
         let is_atom = body
             .b
             .ins()
-            .icmp_imm(IntCC::Equal, tag, i64::from(ValueKind::ATOM.tag()));
+            .icmp_imm_s(IntCC::Equal, tag, i64::from(ValueKind::ATOM.tag()));
         let unboxed = body.b.ins().select(is_atom, named_address, payload);
         let raw = body.b.ins().select(names_slot, loaded, unboxed);
         body.b.ins().store(flags, raw, self.address, self.slot_offset(idx));
@@ -202,7 +202,7 @@ fn emit_tagged_pointer_ref_word_for_arch(
 ) -> ir::Value {
     let ptr_payload = emit_tagged_pointer_payload_for_arch(b, ptr, arch);
     let tag_word = (tag << AnyValueRefPacking::for_arch(arch).tag_shift()) as i64;
-    b.ins().bor_imm(ptr_payload, tag_word)
+    b.ins().bor_imm_u(ptr_payload, tag_word)
 }
 
 fn emit_tagged_pointer_payload_for_arch(b: &mut FunctionBuilder<'_>, ptr: ir::Value, arch: TaggedRefArch) -> ir::Value {
@@ -210,8 +210,8 @@ fn emit_tagged_pointer_payload_for_arch(b: &mut FunctionBuilder<'_>, ptr: ir::Va
         TaggedRefArch::Arm64Tbi => ptr,
         TaggedRefArch::X86_64Canonical57 => {
             let clear_shift = i64::from(64 - AnyValueRefPacking::for_arch(arch).tag_shift());
-            let shifted = b.ins().ishl_imm(ptr, clear_shift);
-            b.ins().ushr_imm(shifted, clear_shift)
+            let shifted = b.ins().ishl_imm_u(ptr, clear_shift);
+            b.ins().ushr_imm_u(shifted, clear_shift)
         }
     }
 }
@@ -238,24 +238,24 @@ pub(crate) fn release_resumed_frame<M: cranelift_module::Module>(
     slot_count: usize,
 ) {
     let packing = AnyValueRefPacking::current();
-    let flags = MemFlags::trusted();
-    let tag = body.b.ins().ushr_imm(frame, i64::from(packing.tag_shift()));
-    let tag = body.b.ins().band_imm(tag, 0xF);
+    let flags = MemFlagsData::trusted();
+    let tag = body.b.ins().ushr_imm_u(frame, i64::from(packing.tag_shift()));
+    let tag = body.b.ins().band_imm_u(tag, 0xF);
     let is_closure = body
         .b
         .ins()
-        .icmp_imm(IntCC::Equal, tag, i64::from(ValueKind::CLOSURE.tag()));
+        .icmp_imm_s(IntCC::Equal, tag, i64::from(ValueKind::CLOSURE.tag()));
     let examine = body.b.create_block();
     let done = body.b.create_block();
     body.b.ins().brif(is_closure, examine, &[], done, &[]);
 
     body.b.switch_to_block(examine);
     body.b.seal_block(examine);
-    let address = body.b.ins().band_imm(frame, packing.address_mask() as i64);
+    let address = body.b.ins().band_imm_u(frame, packing.address_mask() as i64);
     let layout = body.b.ins().uload32(flags, address, 0);
-    let count = body.b.ins().ushr_imm(layout, CLOSURE_LAYOUT_FLAGS_SHIFT as i64);
-    let count = body.b.ins().band_imm(count, i64::from(CLOSURE_FLAGS_CAPTURED_MASK));
-    let kinds_offset = body.b.ins().ishl_imm(count, 3);
+    let count = body.b.ins().ushr_imm_u(layout, CLOSURE_LAYOUT_FLAGS_SHIFT as i64);
+    let count = body.b.ins().band_imm_u(count, i64::from(CLOSURE_FLAGS_CAPTURED_MASK));
+    let kinds_offset = body.b.ins().ishl_imm_u(count, 3);
     let kinds = body.b.ins().iadd(address, kinds_offset);
     let mut pinned = body.b.ins().iconst(types::I8, 0);
     for &slot in ref_slots {
@@ -272,7 +272,7 @@ pub(crate) fn release_resumed_frame<M: cranelift_module::Module>(
     let process = body.process_arg();
     let top = body.b.ins().load(types::I64, flags, process, heap);
     let at_tip = body.b.ins().icmp(IntCC::Equal, end, top);
-    let released = body.b.ins().icmp_imm(IntCC::Equal, pinned, 0);
+    let released = body.b.ins().icmp_imm_s(IntCC::Equal, pinned, 0);
     if POISON_DEAD_FRAMES {
         poison_dead_frame(body, address, kinds, released, slot_count);
     } else {
@@ -293,13 +293,13 @@ pub(crate) fn release_resumed_frame<M: cranelift_module::Module>(
 
 /// `closure_size_for_count` over a runtime count.
 fn frame_size<M: cranelift_module::Module>(body: &mut CodegenFn<'_, '_, M>, count: ir::Value) -> ir::Value {
-    let raw_words = body.b.ins().iadd_imm(count, 1);
-    let raw_bytes = body.b.ins().ishl_imm(raw_words, 3);
-    let kind_bytes = body.b.ins().iadd_imm(count, 7);
-    let kind_bytes = body.b.ins().band_imm(kind_bytes, !7);
+    let raw_words = body.b.ins().iadd_imm_s(count, 1);
+    let raw_bytes = body.b.ins().ishl_imm_u(raw_words, 3);
+    let kind_bytes = body.b.ins().iadd_imm_s(count, 7);
+    let kind_bytes = body.b.ins().band_imm_u(kind_bytes, !7);
     let size = body.b.ins().iadd(raw_bytes, kind_bytes);
-    let size = body.b.ins().iadd_imm(size, 8 + 15);
-    body.b.ins().band_imm(size, !15)
+    let size = body.b.ins().iadd_imm_s(size, 8 + 15);
+    body.b.ins().band_imm_u(size, !15)
 }
 
 /// The `poison_dead_frames` test feature builds a compiler whose released
@@ -322,7 +322,7 @@ fn poison_dead_frame<M: cranelift_module::Module>(
     released: ir::Value,
     slot_count: usize,
 ) {
-    let flags = MemFlags::trusted();
+    let flags = MemFlagsData::trusted();
     let poison = body.b.create_block();
     let done = body.b.create_block();
     body.b.ins().brif(released, poison, &[], done, &[]);

@@ -4,7 +4,7 @@ use super::*;
 use crate::fast_hash::HashMap;
 use crate::fz_ir::{BlockId, Var};
 use crate::types::Types;
-use cranelift_codegen::ir::{self, InstBuilder, MemFlags, types};
+use cranelift_codegen::ir::{self, InstBuilder, MemFlagsData, types};
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::Module;
 use fz_runtime::any_value::{AnyValue, AnyValueRef, FALSE_ATOM_ID, TRUE_ATOM_ID, ValueKind};
@@ -82,7 +82,7 @@ pub(crate) fn closure_capture_for_var<M: Module>(
         CodegenValue::RawAtom(value) => ClosureCapture::RawAtom(value),
         CodegenValue::Known { payload, kind } if kind == ValueKind::INT => ClosureCapture::RawInt(payload),
         CodegenValue::Known { payload, kind } if kind == ValueKind::FLOAT => {
-            let raw = body.b.ins().bitcast(types::F64, MemFlags::new(), payload);
+            let raw = body.b.ins().bitcast(types::F64, MemFlagsData::new(), payload);
             ClosureCapture::RawF64(raw)
         }
         CodegenValue::Known { payload, kind } if kind == ValueKind::ATOM => ClosureCapture::RawAtom(payload),

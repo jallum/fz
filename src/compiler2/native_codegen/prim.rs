@@ -11,7 +11,7 @@ use crate::fz_ir::{
 };
 use crate::runtime_type_predicate::{CallableShapes, RuntimeTypePredicate};
 use cranelift_codegen::ir::{
-    self, BlockArg, InstBuilder, MemFlags, TrapCode,
+    self, BlockArg, InstBuilder, MemFlagsData, TrapCode,
     condcodes::{FloatCC, IntCC},
     types,
 };
@@ -600,7 +600,7 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
         Prim::IsMapMiss(v) => {
             let value_ref = body.tagged_var(var_env, v.0);
             let tag = body.ref_tag(value_ref);
-            let is_miss = body.b.ins().icmp_imm(IntCC::Equal, tag, ValueKind::NULL.tag() as i64);
+            let is_miss = body.b.ins().icmp_imm_s(IntCC::Equal, tag, ValueKind::NULL.tag() as i64);
             LowerOut::Strict(strict_bool(body.b, is_miss))
         }
         _ => unreachable!("lower_collection_prim: not a collection prim"),
@@ -677,7 +677,7 @@ fn match_field_extent<M: cranelift_module::Module>(
     let unit = field.unit.unwrap_or(default_unit_for(field.ty)) as i64;
     let sized = |body: &mut CodegenFn<'_, '_, M>, default_size: i64| {
         let bits = match emit_match_field_size(body, var_env, &field.size) {
-            Some(size) => body.b.ins().imul_imm(size, unit),
+            Some(size) => body.b.ins().imul_imm_s(size, unit),
             None => body.b.ins().iconst(types::I64, default_size * unit),
         };
         MatchExtent::Bits(bits)
@@ -714,13 +714,13 @@ fn emit_by_binary_representation<M: cranelift_module::Module>(
     binview: impl FnOnce(&mut CodegenFn<'_, '_, M>, ir::Value) -> ir::Value,
 ) -> ir::Value {
     let packing = AnyValueRefPacking::current();
-    let addr = body.b.ins().band_imm(source_ref, packing.address_mask() as i64);
-    let kind_bits = body.b.ins().band_imm(source_ref, !packing.literal_bit() as i64);
-    let kind = body.b.ins().ushr_imm(kind_bits, packing.tag_shift() as i64);
+    let addr = body.b.ins().band_imm_u(source_ref, packing.address_mask() as i64);
+    let kind_bits = body.b.ins().band_imm_u(source_ref, !packing.literal_bit() as i64);
+    let kind = body.b.ins().ushr_imm_u(kind_bits, packing.tag_shift() as i64);
     let is_binview = body
         .b
         .ins()
-        .icmp_imm(IntCC::Equal, kind, ValueKind::BINVIEW.tag() as i64);
+        .icmp_imm_s(IntCC::Equal, kind, ValueKind::BINVIEW.tag() as i64);
     let binview_b = body.b.create_block();
     let inline_b = body.b.create_block();
     let join_b = body.b.create_block();
@@ -743,7 +743,7 @@ fn emit_by_binary_representation<M: cranelift_module::Module>(
             let is_inline = body
                 .b
                 .ins()
-                .icmp_imm(IntCC::Equal, kind, ValueKind::BITSTRING.tag() as i64);
+                .icmp_imm_s(IntCC::Equal, kind, ValueKind::BITSTRING.tag() as i64);
             let read_b = body.b.create_block();
             let miss_b = body.b.create_block();
             body.b.ins().brif(is_inline, read_b, &[], miss_b, &[]);
@@ -770,7 +770,7 @@ fn load_word<M: cranelift_module::Module>(
 ) -> ir::Value {
     body.b
         .ins()
-        .load(types::I64, MemFlags::trusted(), address, offset as i32)
+        .load(types::I64, MemFlagsData::trusted(), address, offset as i32)
 }
 
 /// The bit length of a binary, read from its header or from its binary view's own
@@ -785,7 +785,7 @@ fn emit_binary_bit_len<M: cranelift_module::Module>(
         Some(NOT_A_BINARY),
         |body, addr| {
             let header = load_word(body, addr, 0);
-            body.b.ins().ushr_imm(header, BITSTRING_BIT_LEN_SHIFT as i64)
+            body.b.ins().ushr_imm_u(header, BITSTRING_BIT_LEN_SHIFT as i64)
         },
         |body, addr| load_word(body, addr, BINVIEW_BIT_LEN_OFFSET),
     )
@@ -797,7 +797,7 @@ fn emit_binary_base<M: cranelift_module::Module>(body: &mut CodegenFn<'_, '_, M>
         body,
         source_ref,
         None,
-        |body, addr| body.b.ins().iadd_imm(addr, BITSTRING_BYTES_OFFSET as i64),
+        |body, addr| body.b.ins().iadd_imm_s(addr, BITSTRING_BYTES_OFFSET as i64),
         |body, addr| load_word(body, addr, BINVIEW_BYTES_PTR_OFFSET),
     )
 }
@@ -824,10 +824,10 @@ fn emit_big_endian_load<M: cranelift_module::Module>(
             2 => types::I16,
             _ => types::I8,
         };
-        let loaded = body.b.ins().load(ty, MemFlags::new(), base, at);
+        let loaded = body.b.ins().load(ty, MemFlagsData::new(), base, at);
         let ordered = if chunk > 1 { body.b.ins().bswap(loaded) } else { loaded };
         let widened = body.b.ins().uextend(types::I64, ordered);
-        let shifted = body.b.ins().ishl_imm(value, i64::from(chunk) * 8);
+        let shifted = body.b.ins().ishl_imm_u(value, i64::from(chunk) * 8);
         value = body.b.ins().bor(shifted, widened);
         at += i32::from(chunk);
         remaining -= chunk;
@@ -855,7 +855,7 @@ fn lower_bit_match_prim<M: cranelift_module::Module>(
         }
         Prim::IsNotBinary(bit_len) => {
             let bit_len = body.as_raw_i64(var_env, bit_len.0);
-            let missed = body.b.ins().icmp_imm(IntCC::Equal, bit_len, NOT_A_BINARY);
+            let missed = body.b.ins().icmp_imm_s(IntCC::Equal, bit_len, NOT_A_BINARY);
             if body.cache.if_only_conds.contains(&dest_var.0) {
                 return Ok(LowerOut::Condition(missed));
             }
@@ -881,8 +881,8 @@ fn lower_bit_match_prim<M: cranelift_module::Module>(
                 MatchExtent::Never => body.b.ins().iconst(types::I8, 0),
                 MatchExtent::Rest if field.ty == BitType::Binary => {
                     let rest = body.b.ins().isub(bit_len, pos);
-                    let partial_bits = body.b.ins().band_imm(rest, 7);
-                    body.b.ins().icmp_imm(IntCC::Equal, partial_bits, 0)
+                    let partial_bits = body.b.ins().band_imm_u(rest, 7);
+                    body.b.ins().icmp_imm_s(IntCC::Equal, partial_bits, 0)
                 }
                 MatchExtent::Rest | MatchExtent::Unsupported => body.b.ins().iconst(types::I8, 1),
                 MatchExtent::Bytes => panic!("BitFieldFits is asked of a utf8 field: its end is BitFieldEnd's"),
@@ -890,10 +890,10 @@ fn lower_bit_match_prim<M: cranelift_module::Module>(
                     let end = body.b.ins().iadd(pos, total);
                     let within = body.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, end, bit_len);
                     let width_ok = match field.ty {
-                        BitType::Integer => Some(body.b.ins().icmp_imm(IntCC::UnsignedLessThanOrEqual, total, 64)),
+                        BitType::Integer => Some(body.b.ins().icmp_imm_s(IntCC::UnsignedLessThanOrEqual, total, 64)),
                         BitType::Float => {
-                            let is_32 = body.b.ins().icmp_imm(IntCC::Equal, total, 32);
-                            let is_64 = body.b.ins().icmp_imm(IntCC::Equal, total, 64);
+                            let is_32 = body.b.ins().icmp_imm_s(IntCC::Equal, total, 32);
+                            let is_64 = body.b.ins().icmp_imm_s(IntCC::Equal, total, 64);
                             Some(body.b.ins().bor(is_32, is_64))
                         }
                         _ => None,
@@ -968,10 +968,10 @@ fn emit_int_read_at_bit<M: cranelift_module::Module>(
     pos: ir::Value,
     bytes: u8,
 ) -> ir::Value {
-    let byte_pos = body.b.ins().ushr_imm(pos, 3);
+    let byte_pos = body.b.ins().ushr_imm_u(pos, 3);
     let address = body.b.ins().iadd(base, byte_pos);
-    let bit_in_byte = body.b.ins().band_imm(pos, 7);
-    let on_boundary = body.b.ins().icmp_imm(IntCC::Equal, bit_in_byte, 0);
+    let bit_in_byte = body.b.ins().band_imm_u(pos, 7);
+    let on_boundary = body.b.ins().icmp_imm_s(IntCC::Equal, bit_in_byte, 0);
     let aligned_b = body.b.create_block();
     let straddling_b = body.b.create_block();
     let join_b = body.b.create_block();
@@ -990,7 +990,7 @@ fn emit_int_read_at_bit<M: cranelift_module::Module>(
     let drop_bits = body.b.ins().isub(eight, bit_in_byte);
     let shifted = body.b.ins().ushr(covering, drop_bits);
     let mask = (1_u64 << (u32::from(bytes) * 8)) - 1;
-    let straddling = body.b.ins().band_imm(shifted, mask as i64);
+    let straddling = body.b.ins().band_imm_u(shifted, mask as i64);
     body.b.ins().jump(join_b, &[BlockArg::Value(straddling)]);
 
     body.b.switch_to_block(join_b);
@@ -1030,7 +1030,7 @@ fn marshal_extern_arg<M: cranelift_module::Module>(
                 *var_env.get(&var.0).expect("bound extern boolean argument"),
                 ArgRepr::RawAtom,
             );
-            let is_true = body.b.ins().icmp_imm(IntCC::Equal, atom, TRUE_ATOM_ID as i64);
+            let is_true = body.b.ins().icmp_imm_s(IntCC::Equal, atom, TRUE_ATOM_ID as i64);
             body.b.ins().uextend(types::I64, is_true)
         }
         ExternTy::Binary | ExternTy::CString if fz_abi => body.tagged_var(var_env, var.0),
@@ -1280,7 +1280,7 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
             let cmp = if let Some(CodegenValue::AnyRef(value)) = var_env.get(&c.0).copied() {
                 let tag = body.ref_tag(value);
                 let empty_list_v = body.empty_list_ref();
-                let is_list = body.b.ins().icmp_imm(IntCC::Equal, tag, ValueKind::LIST.tag() as i64);
+                let is_list = body.b.ins().icmp_imm_s(IntCC::Equal, tag, ValueKind::LIST.tag() as i64);
                 let is_empty_word = body.b.ins().icmp(IntCC::Equal, value, empty_list_v);
                 body.b.ins().band(is_list, is_empty_word)
             } else {
@@ -1297,17 +1297,17 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
             let cmp = if let Some(CodegenValue::AnyRef(value)) = var_env.get(&c.0).copied() {
                 let tag = body.ref_tag(value);
                 let empty_list_v = body.empty_list_ref();
-                let is_list = body.b.ins().icmp_imm(IntCC::Equal, tag, ValueKind::LIST.tag() as i64);
+                let is_list = body.b.ins().icmp_imm_s(IntCC::Equal, tag, ValueKind::LIST.tag() as i64);
                 let is_empty_word = body.b.ins().icmp(IntCC::Equal, value, empty_list_v);
-                let not_empty = body.b.ins().icmp_imm(IntCC::Equal, is_empty_word, 0);
+                let not_empty = body.b.ins().icmp_imm_s(IntCC::Equal, is_empty_word, 0);
                 body.b.ins().band(is_list, not_empty)
             } else {
                 let cv = body.tagged_var(var_env, c.0);
                 let tag = body.ref_tag(cv);
                 let empty_list_v = body.empty_list_ref();
-                let is_list = body.b.ins().icmp_imm(IntCC::Equal, tag, ValueKind::LIST.tag() as i64);
+                let is_list = body.b.ins().icmp_imm_s(IntCC::Equal, tag, ValueKind::LIST.tag() as i64);
                 let is_empty_word = body.b.ins().icmp(IntCC::Equal, cv, empty_list_v);
-                let not_empty = body.b.ins().icmp_imm(IntCC::Equal, is_empty_word, 0);
+                let not_empty = body.b.ins().icmp_imm_s(IntCC::Equal, is_empty_word, 0);
                 body.b.ins().band(is_list, not_empty)
             };
             if body.cache.if_only_conds.contains(&dest_var.0) {
@@ -1556,7 +1556,7 @@ impl<'fb, M: cranelift_module::Module> RuntimeTestEmitter<'fb> for PrimTestEmitt
 
     fn raw_float_bits(&mut self, value: CodegenValue) -> Result<ir::Value, CodegenError> {
         let raw = self.body.value_raw_float(value);
-        Ok(self.body.b.ins().bitcast(types::I64, MemFlags::new(), raw))
+        Ok(self.body.b.ins().bitcast(types::I64, MemFlagsData::new(), raw))
     }
 
     fn raw_atom(&mut self, value: CodegenValue) -> Result<ir::Value, CodegenError> {
@@ -1630,7 +1630,7 @@ fn emit_is_empty_list_flag<M: cranelift_module::Module>(
     if let CodegenValue::AnyRef(value_ref) = value {
         let tag = body.ref_tag(value_ref);
         let empty_list_v = body.empty_list_ref();
-        let is_list = body.b.ins().icmp_imm(IntCC::Equal, tag, ValueKind::LIST.tag() as i64);
+        let is_list = body.b.ins().icmp_imm_s(IntCC::Equal, tag, ValueKind::LIST.tag() as i64);
         let is_empty_word = body.b.ins().icmp(IntCC::Equal, value_ref, empty_list_v);
         body.b.ins().band(is_list, is_empty_word)
     } else {
@@ -1647,17 +1647,17 @@ fn emit_is_list_cons_flag<M: cranelift_module::Module>(
     if let CodegenValue::AnyRef(value_ref) = value {
         let tag = body.ref_tag(value_ref);
         let empty_list_v = body.empty_list_ref();
-        let is_list = body.b.ins().icmp_imm(IntCC::Equal, tag, ValueKind::LIST.tag() as i64);
+        let is_list = body.b.ins().icmp_imm_s(IntCC::Equal, tag, ValueKind::LIST.tag() as i64);
         let is_empty_word = body.b.ins().icmp(IntCC::Equal, value_ref, empty_list_v);
-        let not_empty = body.b.ins().icmp_imm(IntCC::Equal, is_empty_word, 0);
+        let not_empty = body.b.ins().icmp_imm_s(IntCC::Equal, is_empty_word, 0);
         body.b.ins().band(is_list, not_empty)
     } else {
         let cv = body.value_as_any_ref(value);
         let tag = body.ref_tag(cv);
         let empty_list_v = body.empty_list_ref();
-        let is_list = body.b.ins().icmp_imm(IntCC::Equal, tag, ValueKind::LIST.tag() as i64);
+        let is_list = body.b.ins().icmp_imm_s(IntCC::Equal, tag, ValueKind::LIST.tag() as i64);
         let is_empty_word = body.b.ins().icmp(IntCC::Equal, cv, empty_list_v);
-        let not_empty = body.b.ins().icmp_imm(IntCC::Equal, is_empty_word, 0);
+        let not_empty = body.b.ins().icmp_imm_s(IntCC::Equal, is_empty_word, 0);
         body.b.ins().band(is_list, not_empty)
     }
 }
@@ -1849,7 +1849,7 @@ where
     let mixed_numeric = widen_numerics && ((a_is_int && b_is_float) || (a_is_float && b_is_int));
     if mixed_numeric {
         let ordering = emit_mixed_numeric_cmp(body, var_env, a, bv, a_is_int);
-        let cmp = body.b.ins().icmp_imm(int_cc, ordering, 0);
+        let cmp = body.b.ins().icmp_imm_s(int_cc, ordering, 0);
         if body.cache.if_only_conds.contains(&dest_var.0) {
             return Ok(LowerOut::Condition(cmp));
         }
@@ -1885,8 +1885,8 @@ where
         let cmp = if widen_numerics {
             body.b.ins().fcmp(f_cc, af, bf)
         } else {
-            let ai = body.b.ins().bitcast(types::I64, MemFlags::new(), af);
-            let bi = body.b.ins().bitcast(types::I64, MemFlags::new(), bf);
+            let ai = body.b.ins().bitcast(types::I64, MemFlagsData::new(), af);
+            let bi = body.b.ins().bitcast(types::I64, MemFlagsData::new(), bf);
             body.b.ins().icmp(int_cc, ai, bi)
         };
         if body.cache.if_only_conds.contains(&dest_var.0) {
@@ -1935,11 +1935,11 @@ where
         let dyn_ref = body.tagged_var(var_env, dyn_var.0);
         let kind_tag = body.b.ins().iconst(types::I32, i64::from(kind.tag()));
         let eq = runtime_call1!(body, fz_value_eq_raw_const, [dyn_ref, kind_tag, raw]);
-        let eq_bool = body.b.ins().icmp_imm(IntCC::NotEqual, eq, 0);
+        let eq_bool = body.b.ins().icmp_imm_s(IntCC::NotEqual, eq, 0);
         let cmp = if is_eq {
             eq_bool
         } else {
-            body.b.ins().bxor_imm(eq_bool, 1)
+            body.b.ins().bxor_imm_u(eq_bool, 1)
         };
         if body.cache.if_only_conds.contains(&dest_var.0) {
             return Ok(LowerOut::Condition(cmp));
@@ -1958,11 +1958,11 @@ where
         } else {
             runtime_call1!(body, fz_value_eq_ref, [process, a_ref, b_ref])
         };
-        let eq_bool = body.b.ins().icmp_imm(IntCC::NotEqual, eq, 0);
+        let eq_bool = body.b.ins().icmp_imm_s(IntCC::NotEqual, eq, 0);
         let cmp = if is_eq {
             eq_bool
         } else {
-            body.b.ins().bxor_imm(eq_bool, 1)
+            body.b.ins().bxor_imm_u(eq_bool, 1)
         };
         if body.cache.if_only_conds.contains(&dest_var.0) {
             return Ok(LowerOut::Condition(cmp));
@@ -2007,7 +2007,7 @@ where
         || (ty_is_float(t, value_types, a) && ty_is_int(t, value_types, bv))
     {
         let ordering = emit_mixed_numeric_cmp(body, var_env, a, bv, a_is_int);
-        let cmp = body.b.ins().icmp_imm(icc, ordering, 0);
+        let cmp = body.b.ins().icmp_imm_s(icc, ordering, 0);
         if body.cache.if_only_conds.contains(&dest_var.0) {
             return Ok(LowerOut::Condition(cmp));
         }
@@ -2274,11 +2274,11 @@ pub(super) fn continue_after_raise<M: cranelift_module::Module>(body: &mut Codeg
     let failed = body
         .b
         .ins()
-        .uload8(types::I64, MemFlags::trusted(), process, PROCESS_FAILED_OFFSET);
+        .uload8(types::I64, MemFlagsData::trusted(), process, PROCESS_FAILED_OFFSET);
     let delivered = body
         .b
         .ins()
-        .load(types::I64, MemFlags::trusted(), process, PROCESS_DELIVERED_OFFSET);
+        .load(types::I64, MemFlagsData::trusted(), process, PROCESS_DELIVERED_OFFSET);
     let unwinds = body.b.ins().bor(failed, delivered);
     body.b.ins().trapz(unwinds, TrapCode::user(1).unwrap());
     let done = body.b.ins().iconst(types::I64, 0);
@@ -2411,7 +2411,7 @@ fn decode_pair_result<M: cranelift_module::Module>(
     Ok(match semantic {
         ExternTy::I64 => CodegenValue::RawInt(value),
         ExternTy::F64 if physical == types::F64 => CodegenValue::RawF64(value),
-        ExternTy::F64 => CodegenValue::RawF64(body.b.ins().bitcast(types::F64, MemFlags::new(), value)),
+        ExternTy::F64 => CodegenValue::RawF64(body.b.ins().bitcast(types::F64, MemFlagsData::new(), value)),
         ExternTy::Bool => decode_foreign_boolean_word(body, value),
         other => {
             return Err(CodegenError::new(format!("{other:?} is not a scalar C pair field")));
@@ -2423,7 +2423,7 @@ fn decode_foreign_boolean_word<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
     word: ir::Value,
 ) -> CodegenValue {
-    let condition = body.b.ins().icmp_imm(IntCC::NotEqual, word, 0);
+    let condition = body.b.ins().icmp_imm_s(IntCC::NotEqual, word, 0);
     strict_bool(body.b, condition)
 }
 

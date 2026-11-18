@@ -40,7 +40,7 @@ use super::runtime_test::{KindEvidence, RuntimeTestEmitter, TypeTestAnswer, emit
 use crate::fast_hash::HashMap;
 use crate::runtime_type_predicate::{CallableShapes, RuntimeTypePredicate};
 use cranelift_codegen::ir::{
-    self, AbiParam, InstBuilder, MemFlags, Signature,
+    self, AbiParam, InstBuilder, MemFlagsData, Signature,
     condcodes::{FloatCC, IntCC},
     types,
 };
@@ -349,7 +349,7 @@ fn value_ref_offset(idx: usize) -> i32 {
 fn load_receive_value_ref(b: &mut FunctionBuilder<'_>, base: ir::Value, idx: usize) -> ReceiveValue {
     let value_ref = b
         .ins()
-        .load(types::I64, MemFlags::trusted(), base, value_ref_offset(idx));
+        .load(types::I64, MemFlagsData::trusted(), base, value_ref_offset(idx));
     receive_value_from_ref_word(b, value_ref)
 }
 
@@ -363,7 +363,7 @@ fn store_receive_value_ref<M: cranelift_module::Module>(
     let value_ref = emit_receive_value_ref(body, ctx, value)?;
     body.b
         .ins()
-        .store(MemFlags::trusted(), value_ref, base, value_ref_offset(idx));
+        .store(MemFlagsData::trusted(), value_ref, base, value_ref_offset(idx));
     Ok(())
 }
 
@@ -731,7 +731,7 @@ impl<'f, M: cranelift_module::Module> RuntimeTestEmitter<'f> for ReceiveTestEmit
 
     fn raw_float_bits(&mut self, value: ReceiveValue) -> Result<ir::Value, CodegenError> {
         let raw = receive_value_float(self.body, value)?;
-        Ok(self.body.b.ins().bitcast(types::I64, MemFlags::new(), raw))
+        Ok(self.body.b.ins().bitcast(types::I64, MemFlagsData::new(), raw))
     }
 
     fn raw_atom(&mut self, value: ReceiveValue) -> Result<ir::Value, CodegenError> {
@@ -793,7 +793,7 @@ fn emit_receive_value_kind_flag<M: cranelift_module::Module>(
 ) -> Result<ir::Value, CodegenError> {
     let tag = receive_value_tag(body, value)?;
     let tag64 = body.b.ins().uextend(types::I64, tag);
-    Ok(body.b.ins().icmp_imm(IntCC::Equal, tag64, kind.tag() as i64))
+    Ok(body.b.ins().icmp_imm_s(IntCC::Equal, tag64, kind.tag() as i64))
 }
 
 fn emit_receive_is_empty_list_flag<M: cranelift_module::Module>(
@@ -808,7 +808,10 @@ fn emit_receive_is_empty_list_flag<M: cranelift_module::Module>(
                 .b
                 .ins()
                 .iconst(types::I64, AnyValueRef::empty_list().raw_word() as i64);
-            let is_list = body.b.ins().icmp_imm(IntCC::Equal, tag64, ValueKind::LIST.tag() as i64);
+            let is_list = body
+                .b
+                .ins()
+                .icmp_imm_s(IntCC::Equal, tag64, ValueKind::LIST.tag() as i64);
             let is_empty = body.b.ins().icmp(IntCC::Equal, value_ref, empty);
             body.b.ins().band(is_list, is_empty)
         }
@@ -828,9 +831,12 @@ fn emit_receive_is_list_cons_flag<M: cranelift_module::Module>(
                 .b
                 .ins()
                 .iconst(types::I64, AnyValueRef::empty_list().raw_word() as i64);
-            let is_list = body.b.ins().icmp_imm(IntCC::Equal, tag64, ValueKind::LIST.tag() as i64);
+            let is_list = body
+                .b
+                .ins()
+                .icmp_imm_s(IntCC::Equal, tag64, ValueKind::LIST.tag() as i64);
             let is_empty = body.b.ins().icmp(IntCC::Equal, value_ref, empty);
-            let not_empty = body.b.ins().icmp_imm(IntCC::Equal, is_empty, 0);
+            let not_empty = body.b.ins().icmp_imm_s(IntCC::Equal, is_empty, 0);
             body.b.ins().band(is_list, not_empty)
         }
         ReceiveValue::Int(_) | ReceiveValue::Float(_) | ReceiveValue::Atom(_) => body.b.ins().iconst(types::I8, 0),
@@ -880,7 +886,7 @@ fn emit_dispatch_side_tag_const_test<M: cranelift_module::Module>(
                 body.b.ins().jump(next_b, &[]);
                 return Ok(true);
             };
-            let ok = body.b.ins().icmp_imm(IntCC::Equal, raw, want);
+            let ok = body.b.ins().icmp_imm_s(IntCC::Equal, raw, want);
             body.b.ins().brif(ok, match_b, &[], next_b, &[]);
         }
         ReceiveValue::Float(raw) => {
@@ -888,7 +894,7 @@ fn emit_dispatch_side_tag_const_test<M: cranelift_module::Module>(
                 body.b.ins().jump(next_b, &[]);
                 return Ok(true);
             };
-            let raw_bits = body.b.ins().bitcast(types::I64, MemFlags::new(), raw);
+            let raw_bits = body.b.ins().bitcast(types::I64, MemFlagsData::new(), raw);
             let want_bits = body.b.ins().iconst(types::I64, want as i64);
             let ok = body.b.ins().icmp(IntCC::Equal, raw_bits, want_bits);
             body.b.ins().brif(ok, match_b, &[], next_b, &[]);
@@ -898,7 +904,7 @@ fn emit_dispatch_side_tag_const_test<M: cranelift_module::Module>(
                 body.b.ins().jump(next_b, &[]);
                 return Ok(true);
             };
-            let ok = body.b.ins().icmp_imm(IntCC::Equal, raw, want as i64);
+            let ok = body.b.ins().icmp_imm_s(IntCC::Equal, raw, want as i64);
             body.b.ins().brif(ok, match_b, &[], next_b, &[]);
         }
         ReceiveValue::AnyRef(value_ref) => {
@@ -918,7 +924,7 @@ fn emit_any_ref_const_test<M: cranelift_module::Module>(
     let want_tag = want.kind();
     let tag = receive_value_tag(body, ReceiveValue::AnyRef(value_ref))?;
     let tag64 = body.b.ins().uextend(types::I64, tag);
-    let type_ok = body.b.ins().icmp_imm(IntCC::Equal, tag64, want_tag.tag() as i64);
+    let type_ok = body.b.ins().icmp_imm_s(IntCC::Equal, tag64, want_tag.tag() as i64);
     let value_block = body.b.create_block();
     body.b.ins().brif(type_ok, value_block, &[], next_b, &[]);
     body.b.switch_to_block(value_block);
@@ -926,19 +932,19 @@ fn emit_any_ref_const_test<M: cranelift_module::Module>(
     match want {
         DispatchConstValue::Int(want) => {
             let raw = receive_value_int(body, ReceiveValue::AnyRef(value_ref))?;
-            let ok = body.b.ins().icmp_imm(IntCC::Equal, raw, want);
+            let ok = body.b.ins().icmp_imm_s(IntCC::Equal, raw, want);
             body.b.ins().brif(ok, match_b, &[], next_b, &[]);
         }
         DispatchConstValue::Float(want) => {
             let raw = receive_value_float(body, ReceiveValue::AnyRef(value_ref))?;
-            let raw_bits = body.b.ins().bitcast(types::I64, MemFlags::new(), raw);
+            let raw_bits = body.b.ins().bitcast(types::I64, MemFlagsData::new(), raw);
             let want_bits = body.b.ins().iconst(types::I64, want as i64);
             let ok = body.b.ins().icmp(IntCC::Equal, raw_bits, want_bits);
             body.b.ins().brif(ok, match_b, &[], next_b, &[]);
         }
         DispatchConstValue::Atom(want) => {
             let raw = receive_value_atom(body, ReceiveValue::AnyRef(value_ref))?;
-            let ok = body.b.ins().icmp_imm(IntCC::Equal, raw, want as i64);
+            let ok = body.b.ins().icmp_imm_s(IntCC::Equal, raw, want as i64);
             body.b.ins().brif(ok, match_b, &[], next_b, &[]);
         }
     }
@@ -992,7 +998,7 @@ fn dispatch_const_receive_value(b: &mut FunctionBuilder<'_>, value: DispatchCons
         DispatchConstValue::Int(raw) => ReceiveValue::Int(b.ins().iconst(types::I64, raw)),
         DispatchConstValue::Float(raw) => {
             let bits = b.ins().iconst(types::I64, raw as i64);
-            ReceiveValue::Float(b.ins().bitcast(types::F64, MemFlags::new(), bits))
+            ReceiveValue::Float(b.ins().bitcast(types::F64, MemFlagsData::new(), bits))
         }
         DispatchConstValue::Atom(raw) => ReceiveValue::Atom(b.ins().iconst(types::I64, raw as i64)),
     }
@@ -1089,7 +1095,7 @@ fn emit_bitstring_test<M: cranelift_module::Module>(
         );
         let field_spec = body.b.ins().iconst(types::I64, field_spec as i64);
         let end = runtime_call1!(body, fz_bs_field_end, [field_spec, size_value, pos, value_ref]);
-        let fits = body.b.ins().icmp_imm(IntCC::SignedGreaterThanOrEqual, end, 0);
+        let fits = body.b.ins().icmp_imm_s(IntCC::SignedGreaterThanOrEqual, end, 0);
         let next_b = body.b.create_block();
         body.b.ins().brif(fits, next_b, &[], false_b, &[]);
         body.b.switch_to_block(next_b);
@@ -1155,11 +1161,11 @@ fn emit_bitstring_like_guard<M: cranelift_module::Module>(
     let is_strict_bs = body
         .b
         .ins()
-        .icmp_imm(IntCC::Equal, tag, ValueKind::BITSTRING.tag() as i64);
+        .icmp_imm_s(IntCC::Equal, tag, ValueKind::BITSTRING.tag() as i64);
     let is_strict_proc = body
         .b
         .ins()
-        .icmp_imm(IntCC::Equal, tag, ValueKind::BINVIEW.tag() as i64);
+        .icmp_imm_s(IntCC::Equal, tag, ValueKind::BINVIEW.tag() as i64);
     let is_strict = body.b.ins().bor(is_strict_bs, is_strict_proc);
     body.b.ins().brif(is_strict, cont, &[], ptr_path, &[]);
     body.b.switch_to_block(ptr_path);
@@ -1278,7 +1284,7 @@ fn emit_dispatch_guard_expr<M: cranelift_module::Module>(
                 }
                 PatternGuardBinOp::Neq => {
                     let eq = emit_typed_eq_cmp(body, ctx, Equality::Loose, l, r)?;
-                    let neq = body.b.ins().bxor_imm(eq, 1);
+                    let neq = body.b.ins().bxor_imm_u(eq, 1);
                     emit_bool_value(body.b, neq)
                 }
                 PatternGuardBinOp::Lt => emit_ordering_cmp_value(body, ctx, IntCC::SignedLessThan, l, r)?,
@@ -1421,7 +1427,7 @@ fn emit_guard_extern<M: cranelift_module::Module>(
         ExternTy::F64 => Ok(ReceiveValue::Float(raw)),
         ExternTy::Any => Ok(ReceiveValue::AnyRef(raw)),
         ExternTy::Bool => {
-            let truthy = body.b.ins().icmp_imm(IntCC::NotEqual, raw, 0);
+            let truthy = body.b.ins().icmp_imm_s(IntCC::NotEqual, raw, 0);
             Ok(emit_bool_value(body.b, truthy))
         }
         other => Err(CodegenError::new(format!(
@@ -1441,13 +1447,13 @@ fn emit_checked_return<M: cranelift_module::Module>(
     lane: ExternTy,
     fail: ir::Block,
 ) -> ir::Value {
-    let failed = body.b.ins().icmp_imm(IntCC::NotEqual, failed, 0);
+    let failed = body.b.ins().icmp_imm_s(IntCC::NotEqual, failed, 0);
     let ok = body.b.create_block();
     body.b.ins().brif(failed, fail, &[], ok, &[]);
     body.b.switch_to_block(ok);
     body.b.seal_block(ok);
     if lane == ExternTy::F64 && physical == types::I64 {
-        body.b.ins().bitcast(types::F64, MemFlags::new(), value)
+        body.b.ins().bitcast(types::F64, MemFlagsData::new(), value)
     } else {
         value
     }
@@ -1684,7 +1690,7 @@ fn emit_ordering_cmp_value<M: cranelift_module::Module>(
             let lhs = emit_receive_value_ref(body, ctx, lhs)?;
             let rhs = emit_receive_value_ref(body, ctx, rhs)?;
             let ordering = runtime_call1!(body, fz_value_cmp_ref, [ctx.process, lhs, rhs]);
-            body.b.ins().icmp_imm(cc, ordering, 0)
+            body.b.ins().icmp_imm_s(cc, ordering, 0)
         }
     };
     Ok(emit_bool_value(body.b, cmp))
@@ -1737,10 +1743,10 @@ fn emit_truthy_cmp<M: cranelift_module::Module>(
             Ok(body.b.ins().icmp(IntCC::NotEqual, truthy, zero))
         }
         ReceiveValue::Atom(raw) => {
-            let is_false = body.b.ins().icmp_imm(IntCC::Equal, raw, FALSE_ATOM_ID as i64);
-            let is_nil = body.b.ins().icmp_imm(IntCC::Equal, raw, NIL_ATOM_ID as i64);
+            let is_false = body.b.ins().icmp_imm_s(IntCC::Equal, raw, FALSE_ATOM_ID as i64);
+            let is_nil = body.b.ins().icmp_imm_s(IntCC::Equal, raw, NIL_ATOM_ID as i64);
             let false_or_nil = body.b.ins().bor(is_false, is_nil);
-            Ok(body.b.ins().bxor_imm(false_or_nil, 1))
+            Ok(body.b.ins().bxor_imm_u(false_or_nil, 1))
         }
         ReceiveValue::Int(_) | ReceiveValue::Float(_) => Ok(body.b.ins().iconst(types::I8, 1)),
     }
@@ -1771,8 +1777,8 @@ fn emit_typed_eq_cmp<M: cranelift_module::Module>(
             return Ok(match equality {
                 Equality::Loose => body.b.ins().fcmp(FloatCC::Equal, a, bv),
                 Equality::Strict => {
-                    let a = body.b.ins().bitcast(types::I64, MemFlags::new(), a);
-                    let bv = body.b.ins().bitcast(types::I64, MemFlags::new(), bv);
+                    let a = body.b.ins().bitcast(types::I64, MemFlagsData::new(), a);
+                    let bv = body.b.ins().bitcast(types::I64, MemFlagsData::new(), bv);
                     body.b.ins().icmp(IntCC::Equal, a, bv)
                 }
             });
@@ -1785,7 +1791,7 @@ fn emit_typed_eq_cmp<M: cranelift_module::Module>(
         Equality::Loose => runtime_call1!(body, fz_value_eq_widening_ref, [ctx.process, lhs_ref, rhs_ref]),
         Equality::Strict => runtime_call1!(body, fz_value_eq_ref, [ctx.process, lhs_ref, rhs_ref]),
     };
-    Ok(body.b.ins().icmp_imm(IntCC::NotEqual, eq, 0))
+    Ok(body.b.ins().icmp_imm_s(IntCC::NotEqual, eq, 0))
 }
 
 fn emit_typed_eq_branch<M: cranelift_module::Module>(
@@ -1812,7 +1818,7 @@ fn emit_not_dispatch_map_miss<M: cranelift_module::Module>(
             Ok(body
                 .b
                 .ins()
-                .icmp_imm(IntCC::NotEqual, tag64, ValueKind::NULL.tag() as i64))
+                .icmp_imm_s(IntCC::NotEqual, tag64, ValueKind::NULL.tag() as i64))
         }
         ReceiveValue::Int(_) | ReceiveValue::Float(_) | ReceiveValue::Atom(_) => Ok(body.b.ins().iconst(types::I8, 1)),
     }

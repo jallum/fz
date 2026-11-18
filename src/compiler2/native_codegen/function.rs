@@ -184,6 +184,6 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         }
     }
     drop(body);
-    b.finalize();
+    b.finalize(jmod.target_config());
     Ok(())
 }

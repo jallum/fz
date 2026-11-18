@@ -14,7 +14,7 @@
 use super::closure::CaptureStores;
 use super::*;
 use crate::fz_ir::FrameLane;
-use cranelift_codegen::ir::{self, InstBuilder, MemFlags, condcodes::IntCC, types};
+use cranelift_codegen::ir::{self, InstBuilder, MemFlagsData, condcodes::IntCC, types};
 use cranelift_module::Module;
 use fz_runtime::any_value::{AnyValueRefPacking, CLOSURE_CAPTURES_OFFSET, CLOSURE_CODE_OFFSET, NIL_ATOM_ID, ValueKind};
 use fz_runtime::heap::INLINE_ALLOC_LAYOUT;
@@ -37,7 +37,7 @@ impl<M: Module> CodegenFn<'_, '_, M> {
         let address = self.frame_address(frame);
         self.b
             .ins()
-            .store(MemFlags::trusted(), code, address, CLOSURE_CODE_OFFSET);
+            .store(MemFlagsData::trusted(), code, address, CLOSURE_CODE_OFFSET);
     }
 
     /// The value in `slot` of the frame.
@@ -63,7 +63,7 @@ impl<M: Module> CodegenFn<'_, '_, M> {
             ClosureCapture::RawInt(raw) => stores.store_raw(self, idx, raw, ValueKind::INT),
             ClosureCapture::RawAtom(raw) => stores.store_raw(self, idx, raw, ValueKind::ATOM),
             ClosureCapture::RawF64(float) => {
-                let bits = self.b.ins().bitcast(types::I64, MemFlags::new(), float);
+                let bits = self.b.ins().bitcast(types::I64, MemFlagsData::new(), float);
                 stores.store_raw(self, idx, bits, ValueKind::FLOAT);
             }
         }
@@ -82,7 +82,7 @@ impl<M: Module> CodegenFn<'_, '_, M> {
         let kind = self
             .b
             .ins()
-            .uload8(types::I64, MemFlags::trusted(), address, kind_offset);
+            .uload8(types::I64, MemFlagsData::trusted(), address, kind_offset);
         let named = self.kind_names_its_slot(kind);
         let clear = self.b.create_block();
         let done = self.b.create_block();
@@ -100,14 +100,14 @@ impl<M: Module> CodegenFn<'_, '_, M> {
     fn frame_address(&mut self, frame: ir::Value) -> ir::Value {
         self.b
             .ins()
-            .band_imm(frame, AnyValueRefPacking::current().address_mask() as i64)
+            .band_imm_u(frame, AnyValueRefPacking::current().address_mask() as i64)
     }
 
     /// `frame` when its object lies in the tip block, `[block_start,
     /// bump_top)`; else the runtime answers the frame to write, which is the
     /// frame itself when it is young and a copy at the tip when it is old.
     fn frame_in_tip_or_copy(&mut self, frame: ir::Value) -> ir::Value {
-        let flags = MemFlags::trusted();
+        let flags = MemFlagsData::trusted();
         let layout = INLINE_ALLOC_LAYOUT;
         let field = |offset: usize| PROCESS_HEAP_OFFSET + offset as i32;
         let process = self.process_arg();

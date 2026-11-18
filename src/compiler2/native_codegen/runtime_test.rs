@@ -274,9 +274,9 @@ fn emit_axis<'f, E: RuntimeTestEmitter<'f>>(
             let whole_bytes = admitted.whole_bytes;
             guarded(e, is_bitstring, move |e| {
                 let bit_len = e.bitstring_bit_len(value)?;
-                let partial_bits = e.builder().ins().band_imm(bit_len, 7);
+                let partial_bits = e.builder().ins().band_imm_u(bit_len, 7);
                 let cc = if whole_bytes { IntCC::Equal } else { IntCC::NotEqual };
-                Ok(e.builder().ins().icmp_imm(cc, partial_bits, 0))
+                Ok(e.builder().ins().icmp_imm_s(cc, partial_bits, 0))
             })
         }
         RuntimeTestAxis::Resources => e.kind_flag(value, ValueKind::RESOURCE),
@@ -455,7 +455,7 @@ fn emit_callable_axis<'f, E: RuntimeTestEmitter<'f>>(
             let eq = b.ins().icmp(IntCC::Equal, code, address);
             hit = b.ins().bor(hit, eq);
         }
-        Ok(if cofinite { b.ins().bxor_imm(hit, 1) } else { hit })
+        Ok(if cofinite { b.ins().bxor_imm_u(hit, 1) } else { hit })
     })
 }
 
@@ -506,11 +506,13 @@ fn emit_entries_map_axes<'f, E: RuntimeTestEmitter<'f>>(
     kind_guarded(e, value, ValueKind::MAP, move |e, value| {
         let named = e.map_named_schema(value)?;
         let b = e.builder();
-        let names_none = b.ins().icmp_imm(IntCC::Equal, named, i64::from(NamedSchema::NONE_WORD));
+        let names_none = b
+            .ins()
+            .icmp_imm_s(IntCC::Equal, named, i64::from(NamedSchema::NONE_WORD));
         let is_listed = emit_any_schema_id_match(b, named, listed);
         let module_admitted = if names_cofinite {
-            let unlisted = b.ins().bxor_imm(is_listed, 1);
-            let names_some = b.ins().bxor_imm(names_none, 1);
+            let unlisted = b.ins().bxor_imm_u(is_listed, 1);
+            let names_some = b.ins().bxor_imm_u(names_none, 1);
             b.ins().band(names_some, unlisted)
         } else {
             is_listed
@@ -631,13 +633,13 @@ fn emit_arity_set_membership<'f, E: RuntimeTestEmitter<'f>>(
     let named: Vec<u32> = e.named_schema_ids().values().copied().collect();
     let known_named = emit_any_schema_id_match(e.builder(), schema, named);
     if arities.is_any() {
-        return e.builder().ins().icmp_imm(IntCC::Equal, known_named, 0);
+        return e.builder().ins().icmp_imm_s(IntCC::Equal, known_named, 0);
     }
     let excluded = emit_any_schema_id_match(e.builder(), schema, of_arities);
     let b = e.builder();
-    let is_named = b.ins().icmp_imm(IntCC::NotEqual, known_named, 0);
-    let excluded_ok = b.ins().icmp_imm(IntCC::Equal, excluded, 0);
-    let not_named = b.ins().bxor_imm(is_named, 1);
+    let is_named = b.ins().icmp_imm_s(IntCC::NotEqual, known_named, 0);
+    let excluded_ok = b.ins().icmp_imm_s(IntCC::Equal, excluded, 0);
+    let not_named = b.ins().bxor_imm_u(is_named, 1);
     b.ins().band(not_named, excluded_ok)
 }
 
@@ -664,7 +666,7 @@ fn emit_named_struct_axis<'f, E: RuntimeTestEmitter<'f>>(
     }
     let any_named = emit_any_schema_id_match(e.builder(), schema, all_named);
     let b = e.builder();
-    let not_excluded = b.ins().icmp_imm(IntCC::Equal, matched, 0);
+    let not_excluded = b.ins().icmp_imm_s(IntCC::Equal, matched, 0);
     b.ins().band(any_named, not_excluded)
 }
 
@@ -696,11 +698,11 @@ pub(super) fn emit_i64_membership(b: &mut FunctionBuilder<'_>, raw: ir::Value, v
     }
     let mut eq_any = b.ins().iconst(types::I8, 0);
     for want in &values.values {
-        let next = b.ins().icmp_imm(IntCC::Equal, raw, *want);
+        let next = b.ins().icmp_imm_s(IntCC::Equal, raw, *want);
         eq_any = b.ins().bor(eq_any, next);
     }
     if values.cofinite {
-        b.ins().icmp_imm(IntCC::Equal, eq_any, 0)
+        b.ins().icmp_imm_s(IntCC::Equal, eq_any, 0)
     } else {
         eq_any
     }
@@ -720,7 +722,7 @@ pub(super) fn emit_u64_membership(b: &mut FunctionBuilder<'_>, raw: ir::Value, v
         eq_any = b.ins().bor(eq_any, next);
     }
     if values.cofinite {
-        b.ins().icmp_imm(IntCC::Equal, eq_any, 0)
+        b.ins().icmp_imm_s(IntCC::Equal, eq_any, 0)
     } else {
         eq_any
     }
