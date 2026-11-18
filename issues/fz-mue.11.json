@@ -11,11 +11,15 @@
     {
       "text": "PR #752? no -- see PR for fz-mue.11/defmacrop (stacked on #749). Commit 7eae6cde5.",
       "timestamp": "2026-11-18T22:04:51Z"
+    },
+    {
+      "text": "Correction to the previous comment: the PR is #757 (stacked on #749). Commit 7eae6cde5; fixtures 01783, 01784; distiller DERIVATIONS +1 (accepted by the user).",
+      "timestamp": "2026-11-18T22:04:55Z"
     }
   ],
   "priority": 2,
   "status": "in_progress",
   "title": "defmacrop defines a private macro, as in Elixir",
   "type": "feature",
-  "updated_at": "2026-11-18T22:04:51Z"
+  "updated_at": "2026-11-18T22:04:55Z"
 }
