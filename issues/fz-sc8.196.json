@@ -11,11 +11,15 @@
     {
       "text": "Fresh figure (MDF, bench, develop 1438c8bfa): File.read of a 141 MB file costs 189.5G instructions and 6.4 s (~1,347 instructions per byte). Not on the distiller's path.",
       "timestamp": "2026-11-18T00:34:47Z"
+    },
+    {
+      "text": "Measured 2026-11-17 (MDF, develop 2eff1dec2): File.read reads byte by byte through fgetc, 1,300 instructions per byte, 183G instructions for a 140 MB file. Not on the distiller's path.",
+      "timestamp": "2026-11-18T04:58:28Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "File.read reads a file in one call",
   "type": "bug",
-  "updated_at": "2026-11-18T00:34:47Z"
+  "updated_at": "2026-11-18T04:58:28Z"
 }
