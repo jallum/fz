@@ -3,7 +3,7 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-15T02:44:27Z",
-  "description": "Step 3 of the fz-sc8.197 page. A table in the extern lowering (native_codegen/prim.rs): fz_op_{add,sub,mul}_ii as overflow-checked add/sub/mul, fz_op_{lt,lte,gt,gte,eq,neq}_ii as compares. Measured in a spike on #592: distiller no measurable change, byte walk -1.2%, index walk -3.0%; overflow output identical. The interpreter and the JIT must agree (three-path parity).\n\nOverflow is tested as a branch on the inline operation's overflow result, not by decoding a failure flag. Today each call is followed by 13 instructions that decode the failure flag into a branch; replacing only the call leaves them (MDF, bench, 1438c8bfa + loop spike: inline add alone saves 6 instructions per byte, walk 68.2 -\u003e 62.2, distiller -0.2% instructions, no measurable cycles). Both the call and the flag decode go.\n\nWhere the 13 instructions come from (MDF spike, measured): decode_pair_result (native_codegen/prim.rs) turns the extern's failure byte into a boolean atom with strict_bool, and emit_if then asks value_truthy of that atom. Returning CodegenValue::Condition for the pair's Bool field removes 10 instructions per operation, independent of inlining the call: byte walk 108.6 -\u003e 98.6 per byte (62.2 -\u003e 52.2 with the loop spike); distiller instructions -0.30%, cycles within noise; overflow output identical. Every checked extern that returns a pair benefits, not only arithmetic.",
+  "description": "Approved by the user 2026-11-17 (relayed by Make Distiller Fast; ruling \"4. here\": built by MDF; \"1. yes\": recipes carry no validation of their argument). Page: /Users/j5n/Workspace/fz-sc8.213.html (https://claude.ai/artifact/43TCc8n3pvfcRFma5hsxDo). Supersedes the original step-3 scope (a table of fz_op_*_ii externs only).\n\nScope: one recipe table in native_codegen/recipe.rs keyed by runtime symbol, consulted by both runtime_call1! and the lib-extern lowering. A row names a runtime function and its inline instructions; three result shapes: Value, Condition (a branch condition, not a boolean atom), Checked (overflow/failure tested as a branch, replacing decode_pair_result + strict_bool + value_truthy). Recipes do no argument validation. The Rust function stays the definition (interpreter); one parity test walks the table.\n\nFirst rows: fz_type_of, fz_truthy_ref, fz_unbox_int, fz_unbox_atom, fz_struct_schema_id_ref, fz_value_eq_raw_const, integer add/sub/mul/neg, integer and float comparisons. Superseded hand-written kind/address extraction is removed.\n\nEvidence (MDF census, bench, develop 394fa1313, 5 alternated runs, output identical): five hottest compiler-emitted calls (fz_type_of 73.8M calls, fz_value_eq_raw_const 73.6M, fz_truthy_ref 17.5M, fz_struct_schema_id_ref 17.0M, fz_unbox_int 14.0M) inline: -8.57% instr / -6.50% cycles; plus integer arithmetic with overflow as a branch: -9.12% / -6.67%. The typed lib comparisons (fz_op_lt_ii etc.) are only 1.5M calls.\n\nAcceptance: interp, JIT and AOT agree; parity test green; pins that fall are lowered, none rises; full gate.",
   "id": "fz-sc8.213",
   "labels": [],
   "parent": "fz-sc8",
@@ -27,7 +27,7 @@
   ],
   "priority": 2,
   "status": "open",
-  "title": "Integer arithmetic and comparison externs are emitted as instructions",
+  "title": "Runtime calls the compiler emits are inlined from one recipe table",
   "type": "task",
-  "updated_at": "2026-11-18T01:45:48Z"
+  "updated_at": "2026-11-18T03:13:04Z"
 }
