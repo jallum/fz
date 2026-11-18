@@ -13,11 +13,15 @@
     {
       "text": "Reproducer and mechanism (JSON, 2026-11-17, develop):\n\ndefmodule M do\n  def hex?(c) when c in 48..57 or c in 65..70, do: true\n  def hex?(_c), do: false\nend\ndbg({M.hex?(50), M.hex?(66), M.hex?(1)})\n\ninterp, run and build all print: error[lower/unsupported]: compiler2 entry guards for hex?/1 are not dispatch-pure and cannot be planned. The same in in a body works.\n\nMechanism: source_sugar.rs (38, 149-155) rewrites x in r to Enum.member?(r, x) and a..b to Range.new(a, b, 1) regardless of guard context; walk_guard_calls (jobs/dispatch.rs ~599) refuses the remote call as NotAGuardExpr (raised dispatch.rs:140/862). pattern-matching.md's guard-callee list omits in.\n\nSuggested fix: in guard context with literal bounds, rewrite to comparisons. Note: Elixir expands x in a..b in a guard to is_integer(x) and x \u003e= a and x \u003c= b, so the is_integer test belongs in the rewrite.\n\nPriority evidence: lib/json.fz's hex-digit test wanted it and used comparisons instead. Not blocking.",
       "timestamp": "2026-11-18T04:40:01Z"
+    },
+    {
+      "text": "OTP json.erl parity (fz-mue) needs this; reproducer from the faithful port: /Users/j5n/Workspace/fz-otp-json/punch/37_when_in_guard.fz",
+      "timestamp": "2026-11-18T20:44:10Z"
     }
   ],
   "priority": 3,
   "status": "open",
   "title": "in with a literal list or range is allowed in a guard, as in Elixir",
   "type": "feature",
-  "updated_at": "2026-11-18T20:44:07Z"
+  "updated_at": "2026-11-18T20:44:10Z"
 }
