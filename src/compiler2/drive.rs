@@ -338,9 +338,11 @@ pub enum FactKey {
     /// and every module a lowered body names as a value. A call on an atom
     /// that lists no module chooses among these.
     NameableModules,
-    /// What the program can raise, for each kind of raise. A `try` handler
-    /// is analysed against it.
-    Raisable,
+    /// What a root's program can raise, for each kind of raise: the raises
+    /// of every activation of that root. A `try` handler is analysed against
+    /// the raises of its own root, since a raise reaches only the handlers of
+    /// the program that makes it.
+    Raisable(RootId),
     FunctionDefined(FunctionId),
     FunctionContract(FunctionId),
     LoweredBody(FunctionId),
@@ -399,7 +401,7 @@ impl FactKey {
             FactKey::ProtocolDispatch(_) => "a protocol's dispatch",
             FactKey::ProtocolImplProviders(_) => "a protocol's implementation providers",
             FactKey::NameableModules => "the modules a value can name",
-            FactKey::Raisable => "what the program can raise",
+            FactKey::Raisable(_) => "what a program can raise",
             FactKey::FunctionDefined(_) => "a function definition",
             FactKey::FunctionContract(_) => "a function's contract",
             FactKey::LoweredBody(_) => "a function's lowered body",
@@ -513,7 +515,7 @@ fn fact_diagnostic_rank(fact: &FactKey) -> u8 {
         FactKey::RuntimeDemandInputs(_) => 34,
         FactKey::IncomingInputSlot(_) => 37,
         FactKey::NameableModules => 38,
-        FactKey::Raisable => 39,
+        FactKey::Raisable(_) => 39,
         FactKey::StaticReach(_) => 40,
         FactKey::ExecutableReach(..) => 41,
     }

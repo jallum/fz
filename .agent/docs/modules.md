@@ -219,7 +219,7 @@ any module a value can name. `World::nameable_modules` is that set: every
 module whose source the compile has indexed (`source_publish::
 publish_module_indexed`), every module a lowered body writes as a value, in
 an alias or a struct (`Lowerer::name_module_as_value`), and the module of every
-exception the program can raise (`World::note_raisable`, see
+exception any program of the compile can raise (`World::note_raisable`, see
 [exceptions](exceptions.md#what-a-handler-can-receive)). The set is the
 fact `FactKey::NameableModules`, which the call reads whether or not it holds
 anything yet. `nameable_module_callees` waits for each of those modules to be

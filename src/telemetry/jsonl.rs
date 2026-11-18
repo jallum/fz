@@ -2388,8 +2388,8 @@ fn write_fact_identity(out: &mut String, fact: &crate::compiler2::FactKey) {
         | FactKey::StaticReach(function)
         | FactKey::InputDemand(function) => write_function_id(out, *function),
         FactKey::TypeDefined(type_name) => write_type_name(out, type_name),
-        FactKey::NameableModules | FactKey::Raisable => {}
-        FactKey::RootEntry(root) => write_root_id(out, *root),
+        FactKey::NameableModules => {}
+        FactKey::RootEntry(root) | FactKey::Raisable(root) => write_root_id(out, *root),
         FactKey::Activation(key)
         | FactKey::ActivationInputs(key)
         | FactKey::ActivationAnalyzed(key)
@@ -2621,7 +2621,7 @@ fn fact_kind(fact: &crate::compiler2::FactKey) -> &'static str {
         FactKey::ProtocolDispatch(_) => "ProtocolDispatch",
         FactKey::ProtocolImplProviders(_) => "ProtocolImplProviders",
         FactKey::NameableModules => "NameableModules",
-        FactKey::Raisable => "Raisable",
+        FactKey::Raisable(_) => "Raisable",
         FactKey::FunctionDefined(_) => "FunctionDefined",
         FactKey::FunctionContract(_) => "FunctionContract",
         FactKey::LoweredBody(_) => "LoweredBody",

@@ -2321,9 +2321,9 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
     assert_eq!(
         readiness_changes,
         BTreeMap::from([
-            // What the program can raise is final only once every body has been analysed,
-            // so the bottom handler and the banner it calls settle here, with the two
-            // program-wide facts they read.
+            // What a program can raise is final only once every body of that program has been
+            // analysed, so the bottom handler and the banner it calls settle here, with the
+            // facts they read: the modules a value can name, and what each program raises.
             // 64 -> 62 (and every fact below that follows an activation): `String.Chars`'
             // binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result
             // stays `binary` and callers need no second `bitstring` activation.
@@ -2339,7 +2339,9 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             // slot.
             ("IncomingInputSlot", 87),
             ("NameableModules", 1),
-            ("Raisable", 1),
+            // 1 -> 2: each program settles what it can raise. The fixture's program does, and
+            // so does the program of a macro that raises.
+            ("Raisable", 2),
             ("ReturnType", 66),
             ("RuntimeDemand", 56),
             ("RuntimeDemandInput", 51),
@@ -2564,19 +2566,23 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             // 935 -> 936, initial 700 -> 701, changed outputs +1: the product
             // waits on the fixture's own declarations being checked, one
             // `CheckDeclarations` evaluation.
-            evaluations: 936,
+            // 936 -> 937, content_caused 235 -> 236, unchanged_outputs 80 -> 81 and
+            // blocked_completions 221 -> 222: what a program can raise is a fact of that
+            // program, so the entry publishes its own program's first raise and is analysed
+            // once more on it, to the same answer.
+            evaluations: 937,
             runtime_demand_evaluations: 115,
             initial: 701,
-            content_caused: 235,
+            content_caused: 236,
             readiness_caused: 0,
             concluded_caused: 0,
             uncaused: 0,
             changed_outputs: 856,
             // unchanged_outputs 85 -> 86: `String.Chars`' binary impl is selected for any bitstring, so its shared activation is typed `bitstring` with two clauses, and a caller that holds a `binary` gets its own `String.Chars.Binary.to_string(binary)` activation with the raise clause trimmed.
             // 86 -> 93 and blocked_completions 227 -> 234: the seven content-caused reach evaluations.
-            unchanged_outputs: 80,
+            unchanged_outputs: 81,
             already_pending: 9,
-            blocked_completions: 221,
+            blocked_completions: 222,
         },
         "{fixture}: the reactive RuntimeDemand formula work or its causal classification moved"
     );
@@ -2606,7 +2612,9 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             // 174 -> 175: the product's wait on the fixture's own declarations
             // starts its one `CheckDeclarations`.
             ("blocked_waiter_expansion", 175),
-            ("changed_revision_wake", 534),
+            // 534 -> 535: the entry's one more analysis, queued by its own program's first
+            // raise.
+            ("changed_revision_wake", 535),
             ("gate_expansion", 226),
             ("ignition", 1),
         ]),
@@ -2621,7 +2629,9 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             ("changed_revision_wake", 9),
             // 36 -> 37: a reach is a fact answered by a job of its own, and one request for it
             // finds the job already queued.
-            ("gate_expansion", 37),
+            // 37 -> 38: the entry's one more analysis asks again for the job it waits on, which
+            // is already queued.
+            ("gate_expansion", 38),
         ]),
         "{fixture}: requests that found their job already queued"
     );
@@ -2664,14 +2674,15 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
         // `DeriveInputDemand` falls 35 -> 30 (+5 -5 -5); `ModuleDefined` -> `DeriveStaticCallees`
         // rises 3 -> 4 (+1). Between completions (-7): the settled reach products that woke
         // `DeriveRecursive` are gone. `wake_moved_waiters` wakes no job in this fixture.
-        (584, 5),
+        // (584, 5) -> (585, 5): the entry's first raise wakes the entry, its handler's reader.
+        (585, 5),
         "{fixture}: wake records of the completions, and of the external changes between them"
     );
     assert_eq!(
         ledger.requested(fz_engine::WorkStart::ChangedRevisionWake),
-        // 566 -> 590: the 584 + 5 wake records above and the one wake the arbiter's own step
+        // 566 -> 591: the 585 + 5 wake records above and the one wake the arbiter's own step
         // records.
-        590,
+        591,
         "{fixture}: every wake record is one request at the door"
     );
     let products = report.product_totals();

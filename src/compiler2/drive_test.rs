@@ -23426,11 +23426,12 @@ fn defined_exceptions(settled: &Settled) -> Vec<String> {
     exceptions
 }
 
-/// What a raise of each kind hands a handler in a settled drive, in the order
-/// error, throw, exit.
+/// What a raise of each kind hands a handler in a settled drive's program,
+/// in the order error, throw, exit.
 fn raisable_tys(settled: &mut Settled) -> [Option<Ty>; 3] {
+    let root = settled.root();
     let world = settled.compiler_mut().world_mut();
-    RaiseKind::ALL.map(|kind| world.raisable_ty(kind))
+    RaiseKind::ALL.map(|kind| world.raisable_ty(root, kind))
 }
 
 /// The module of every function a settled drive analysed a call to.

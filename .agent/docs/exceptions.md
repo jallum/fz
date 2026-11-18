@@ -201,17 +201,21 @@ carry this to the backend; `Term::Try { handler, captures, body }` and
 ## What a handler can receive
 
 A handler's three params cross the raise route, so their types are not read
-off the `try` body. The compiler keeps one fact about the whole program
-instead: `FactKey::Raisable`, held as `Raisable` (`src/compiler2/identity.rs`),
-which records for each `RaiseKind` the exception modules a raise of that kind
-can hand over and whether it can also hand over any other value. It only
-grows. `World::raisable_ty(kind)` reads it as a type: `None` while the program
-raises nothing of that kind, the union of one struct per exception module with
+off the `try` body. The compiler keeps one fact about each program instead:
+`FactKey::Raisable(root)`, held as a `Raisable` (`src/compiler2/identity.rs`)
+per root, which records for each `RaiseKind` the exception modules a raise of
+that kind can hand over and whether it can also hand over any other value. A
+program is a root: the one the CLI runs, or a macro's compiled program, which
+runs while other modules are being defined. A raise reaches only the handlers
+of the program that makes it, so a macro's handlers never wait on the program
+that expands the macro. The fact only grows. `World::raisable_ty(root, kind)`
+reads it as a type: `None` while the program raises nothing of that kind, the union of one struct per exception module with
 only `__exception__: true` known, or `any` once some raise of that kind hands
 over a value that is not surely an exception.
 
 Each activation's analysis publishes what it can raise (`raises_of`,
-`src/compiler2/jobs/semantic.rs`), through `World::note_raisable`:
+`src/compiler2/jobs/semantic.rs`) into its own root's fact, through
+`World::note_raisable`:
 
 | the activation | raises |
 |---|---|
@@ -230,13 +234,13 @@ continues a raise that an entry above already recorded.
 (`FactKey::NameableModules`, see [modules](modules.md)), because an exception
 is asked for its message through its module.
 
-`LoweredTail::Try` is analysed against the fact. The handler entry is analysed
-once for each kind the fact holds, with its params typed `(the kind's atom,
-World::raisable_ty(kind), any)`, and the results join the body's. A kind the
+`LoweredTail::Try` is analysed against its root's fact. The handler entry is
+analysed once for each kind the fact holds, with its params typed `(the kind's
+atom, World::raisable_ty(root, kind), any)`, and the results join the body's. A kind the
 program never raises is not analysed, so a `try` in a program that raises
 nothing is its body alone, and a clause for `:error` costs nothing in a program
-that only throws. The analysis reads `FactKey::Raisable`, so a raise published
-later re-runs it.
+that only throws. The analysis reads `FactKey::Raisable(root)`, so a raise
+published later in the same program re-runs it.
 
 `Drive::program_entry` (`src/compiler2/drive_harness.rs`) roots a test at the
 entry the CLI runs. `a_program_that_raises_nothing_compiles_no_handler`,
