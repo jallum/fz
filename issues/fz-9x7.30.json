@@ -15,11 +15,15 @@
     {
       "text": "Round 1 not committed (uncommitted in ../fz-tospace; gate green 6945; scratch .../scratchpad/30/). (1) The rule as I wrote it is mis-specified: in_use is thread-wide and includes off-heap binaries (20.7 MB on the distiller) and the minors' tail slack, so the bound fails on base and change alike from event 3. (2) The major half as designed RAISES peak in-use on most workloads: maps 2.76-\u003e5.32 MB, qsort 24.8-\u003e31.1, fanin 63.5-\u003e73.3, survive 105.1-\u003e111.7, ring 157-\u003e174 KB; distiller falls 922.9-\u003e765.9. Mechanism: an upper-bound guess (old bytes incl. dead + young fill) reserves the to-space while the from-space is live, and the slack (dead old + dead young) stays as old space. Minor half works (post-major minor in_use e.g. 715.7-\u003e379.2 MB). Instructions within 1.007 everywhere. Also observed: minor overflow still climbs a whole step (399 KB copied into 3.56 MB). Round-2 proposal: keep the minor half; replace the major half with 'a copy that outgrows its to-space gets an overflow block sized for the overflow (growth restarts from the smallest class), not 1.2x the full block' - one rule for majors and minors, slack bounded by the overflow; re-state the rule on old-block capacity minus copied bytes per collection, plus peak_in_use not rising. Awaiting user ruling.",
       "timestamp": "2026-11-18T00:39:07Z"
+    },
+    {
+      "text": "Round 2 (uncommitted in ../fz-tospace on 64b8f18cc; data scratchpad/30/r2/). Seam: a collection's copy bumps through Heap::bump_to_space with its own overflow_step starting at SIZE_TABLE[0]; mutator bump/climb_tip untouched. Minor half kept; major guess back to live_baseline. Clause 1 FAILS literally: 2 of ~95,000 events (distiller minors 36 and 212) exceed the bound by \u003c1 KB, because the rule I wrote omitted the smallest-class floor (a 96 B overflow gets a 1,024 B block) and the guess block's unfilled tail; zero violations elsewhere. Clauses 2-5 PASS: peak in-use falls or holds everywhere (enum 0.738, distiller 0.809 = 922.9-\u003e746.7 MB, json 0.894, qsort 0.929, none rises); instructions \u003c=1.0006; outputs identical; gate green (7005), no pin changes. Observed, outside the rule: a minor whose guess (last minor's copy) far exceeds its copy still leaves over-guess slack (worst: distiller event 788, 3.16 MB). Awaiting the user's ruling on restating clause 1.",
+      "timestamp": "2026-11-18T02:35:35Z"
     }
   ],
   "priority": 2,
   "status": "in_progress",
   "title": "A collection's to-space is sized by what it can copy",
   "type": "bug",
-  "updated_at": "2026-11-18T00:39:07Z"
+  "updated_at": "2026-11-18T02:35:35Z"
 }
