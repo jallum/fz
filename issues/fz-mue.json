@@ -5,7 +5,8 @@
     "fz-j8z",
     "fz-nhb.15",
     "fz-sc8.22",
-    "fz-sc8.38"
+    "fz-sc8.38",
+    "fz-sc8.96"
   ],
   "blocks": [],
   "created": "2026-11-18T20:43:59Z",
@@ -16,5 +17,5 @@
   "status": "open",
   "title": "fz runs OTP's json.erl unchanged",
   "type": "epic",
-  "updated_at": "2026-11-18T20:44:07Z"
+  "updated_at": "2026-11-18T20:44:08Z"
 }
