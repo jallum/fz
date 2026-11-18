@@ -7,9 +7,15 @@
   "id": "fz-9x7.39",
   "labels": [],
   "parent": "fz-9x7",
+  "comments": [
+    {
+      "text": "Seam agreed 2026-11-17 (B\u0026C with Callables): .39 builds a capture-kind hook in CaptureStores plus the capture-0 CLOSURE arm, slot image identical to the generic store; continuation step B (Callables) adds the type-derived arm and the resume side.",
+      "timestamp": "2026-11-18T04:53:24Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "A continuation's capture slots are filled by stores specialized to each capture's kind",
   "type": "task",
-  "updated_at": "2026-11-18T04:51:59Z"
+  "updated_at": "2026-11-18T04:53:24Z"
 }
