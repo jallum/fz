@@ -716,6 +716,16 @@ comes back ending in `\n`, which is what Elixir's `File.stream!/1` yields, and
 any other `\r` stays. `read_line_bytes` in `runtime/src/ir_runtime.rs` holds the
 splitting and `ir_runtime_test.rs` pins it.
 
+`File.read/1` takes the whole file through one more such helper: a private
+`extern "fz" defp fz_file_read_rest(c_pointer) :: binary` answers every byte
+from the `FILE *`'s position to the end. `read_rest_bytes` in
+`runtime/src/ir_runtime.rs` reads 64 KiB blocks with C `fread` into one growing
+buffer, so the stream need not be seekable or have a known size, and the binary
+is allocated once (off the process heap, in a shared buffer, above the inline
+threshold). A read error ends the bytes early; `File.read/1` then asks `ferror`
+and answers `{:error, :io}`. Fixture 01761 pins the allocation, and
+`ir_runtime_test.rs` pins the block boundaries.
+
 ## Variadic calls
 
 A C variadic function has two argument lists at the machine level: the fixed

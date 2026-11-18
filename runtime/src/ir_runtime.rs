@@ -1227,6 +1227,7 @@ pub extern "C" fn fz_float_parse(process: *mut Process, binary_ref: u64) -> u64 
 unsafe extern "C" {
     fn getline(line: *mut *mut std::ffi::c_char, capacity: *mut usize, stream: *mut std::ffi::c_void) -> isize;
     fn free(ptr: *mut std::ffi::c_void);
+    fn fread(buffer: *mut std::ffi::c_void, size: usize, count: usize, stream: *mut std::ffi::c_void) -> usize;
 }
 
 /// `File.Stream`'s line reader: `[]` at end of file, else `[line]`, where `line`
@@ -1265,6 +1266,40 @@ fn read_line_bytes(stream: *mut std::ffi::c_void) -> Vec<u8> {
         line.push(b'\n');
     }
     line
+}
+
+/// How many bytes `read_rest_bytes` asks the C library for at a time.
+const READ_BLOCK_BYTES: usize = 64 * 1024;
+
+/// `File.read/1`'s reader: every byte of `stream` from its current position to
+/// the end of the file, as one binary allocated on the heap once. A read error
+/// ends the bytes early; the caller asks `ferror` whether that happened.
+///
+/// `stream` is the C `FILE *` that `File.read/1` opened.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_file_read_rest(process: *mut Process, stream: u64) -> u64 {
+    let bytes = read_rest_bytes(stream as *mut std::ffi::c_void);
+    let heap = &mut unsafe { &mut *process }.heap;
+    heap.alloc_bitstring(&bytes, (bytes.len() * 8) as u64)
+        .ref_word()
+        .raw_word()
+}
+
+/// The bytes of `stream` from its position to the end, read a block at a time
+/// into one growing buffer, so the stream need not be seekable or have a
+/// known size. A block that comes back short is the end of the file or an
+/// error.
+fn read_rest_bytes(stream: *mut std::ffi::c_void) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    loop {
+        bytes.reserve(READ_BLOCK_BYTES);
+        let room = bytes.spare_capacity_mut().as_mut_ptr().cast();
+        let read = unsafe { fread(room, 1, READ_BLOCK_BYTES, stream) };
+        unsafe { bytes.set_len(bytes.len() + read) };
+        if read < READ_BLOCK_BYTES {
+            return bytes;
+        }
+    }
 }
 
 /// The float at the start of `bytes` and how many bytes spell it, or `None`.

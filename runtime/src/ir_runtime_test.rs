@@ -1031,6 +1031,7 @@ fn float_prefix_reads_elixirs_prefix_and_reports_its_length() {
 unsafe extern "C" {
     fn fopen(path: *const std::ffi::c_char, mode: *const std::ffi::c_char) -> *mut std::ffi::c_void;
     fn fclose(stream: *mut std::ffi::c_void) -> std::ffi::c_int;
+    fn fgetc(stream: *mut std::ffi::c_void) -> std::ffi::c_int;
 }
 
 fn lines_of(contents: &[u8]) -> Vec<Vec<u8>> {
@@ -1068,6 +1069,66 @@ fn read_line_folds_crlf_to_lf_and_keeps_blank_and_unterminated_lines() {
         let expected: Vec<Vec<u8>> = expected.iter().map(|line| line.to_vec()).collect();
         assert_eq!(lines_of(contents), expected, "{contents:?}");
     }
+}
+
+fn rest_of(contents: &[u8], skipped: usize) -> Vec<u8> {
+    let path = std::env::temp_dir().join(format!("fz_read_rest_{}_{}.tmp", std::process::id(), contents.len()));
+    std::fs::write(&path, contents).expect("write temp file");
+    let c_path = std::ffi::CString::new(path.to_str().expect("utf8 path")).expect("no NUL");
+    let stream = unsafe { fopen(c_path.as_ptr(), c"rb".as_ptr()) };
+    assert!(!stream.is_null(), "fopen {path:?}");
+    for _ in 0..skipped {
+        assert_ne!(unsafe { fgetc(stream) }, -1, "skipped bytes exist");
+    }
+    let rest = read_rest_bytes(stream);
+    unsafe { fclose(stream) };
+    std::fs::remove_file(&path).expect("remove temp file");
+    rest
+}
+
+fn pattern(len: usize) -> Vec<u8> {
+    (0..len).map(|i| (i % 251) as u8).collect()
+}
+
+#[test]
+fn read_rest_returns_every_byte_at_and_around_a_block_boundary() {
+    for len in [
+        0,
+        1,
+        READ_BLOCK_BYTES - 1,
+        READ_BLOCK_BYTES,
+        READ_BLOCK_BYTES + 1,
+        2 * READ_BLOCK_BYTES,
+        4 * READ_BLOCK_BYTES + 1_000,
+    ] {
+        let contents = pattern(len);
+        assert_eq!(rest_of(&contents, 0), contents, "{len} bytes");
+    }
+}
+
+#[test]
+fn read_rest_keeps_crlf_nul_and_high_bytes_and_starts_at_the_stream_position() {
+    let contents = b"a\r\nb\0\xff\x80\r";
+    assert_eq!(rest_of(contents, 0), contents);
+    assert_eq!(rest_of(contents, 3), &contents[3..]);
+    assert_eq!(rest_of(contents, contents.len()), b"");
+}
+
+#[test]
+fn read_rest_entry_allocates_the_bytes_as_one_binary() {
+    let contents = pattern(READ_BLOCK_BYTES + 1);
+    let path = std::env::temp_dir().join(format!("fz_read_rest_entry_{}.tmp", std::process::id()));
+    std::fs::write(&path, &contents).expect("write temp file");
+    let c_path = std::ffi::CString::new(path.to_str().expect("utf8 path")).expect("no NUL");
+    let stream = unsafe { fopen(c_path.as_ptr(), c"rb".as_ptr()) };
+    assert!(!stream.is_null(), "fopen {path:?}");
+    with_process(|process| {
+        let binary = fz_file_read_rest(process, stream as u64);
+        let (ptr, len) = byte_aligned_binary_slice(binary, "test");
+        assert_eq!(unsafe { from_raw_parts(ptr, len) }, contents.as_slice());
+    });
+    unsafe { fclose(stream) };
+    std::fs::remove_file(&path).expect("remove temp file");
 }
 
 #[test]
