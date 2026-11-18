@@ -30,7 +30,7 @@ use crate::any_value::{
     map_trie_header_word,
 };
 use crate::heap::HeapAllocKind;
-use crate::term::{NumericMode, TermComparator};
+use crate::term::TermComparator;
 use crate::term_hash::TermHasher;
 use std::cmp::Ordering;
 use std::ptr::write;
@@ -201,9 +201,7 @@ impl Heap {
         let hash = self.key_hash(key);
         let schemas = self.schemas.borrow();
         let comparator = TermComparator::new(&self.node, &schemas);
-        find(root, hash, |candidate| {
-            comparator.compare(candidate, key, NumericMode::Strict).is_eq()
-        })
+        find(root, hash, |candidate| comparator.key_order_of(candidate, key).is_eq())
     }
 
     /// A trie of `entries`, which have no key repeated, and answers its root.
@@ -266,7 +264,7 @@ impl Heap {
     fn with_key_ops<R>(&mut self, then: impl FnOnce(&mut Heap, &KeyOps) -> R) -> R {
         let (node, schemas) = (self.node.clone(), self.schemas.clone());
         let hash = |key| TermHasher::new(&node, &schemas.borrow()).hash(key);
-        let order = |a, b| TermComparator::new(&node, &schemas.borrow()).compare(a, b, NumericMode::Strict);
+        let order = |a, b| TermComparator::new(&node, &schemas.borrow()).key_order_of(a, b);
         then(
             self,
             &KeyOps {
@@ -441,7 +439,7 @@ impl Heap {
     pub(super) fn sort_entries_by_key(&self, entries: &mut [Entry]) {
         let schemas = self.schemas.borrow();
         let comparator = TermComparator::new(&self.node, &schemas);
-        entries.sort_by(|a, b| comparator.compare(a.0, b.0, NumericMode::Strict));
+        entries.sort_by(|a, b| comparator.key_order_of(a.0, b.0));
     }
 }
 

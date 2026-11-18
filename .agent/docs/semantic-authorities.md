@@ -101,7 +101,9 @@ and unboxed scalar adapters, owns every published finite term's order:
 A pid and a reference each have a `ValueKind` of their own, so each stands in
 its category and two of one kind order by their words; a resource stands with
 the references, below the functions. For the atom category it delegates to
-`Node::cmp_atom_names`, the single owner of atom name order. Atom ids are handed out in first-seen order, so ordering by
+`Node::cmp_atom_names`, the single owner of atom name order. The atom table
+keeps the first eight bytes of each name as a big-endian word; two atoms order
+by those words, and by their names when the words agree. Atom ids are handed out in first-seen order, so ordering by
 id would depend on which atom the program mentioned first. Ordinary comparison
 reaches the node through its process; each process heap shares that same node so
 map ordering asks the same question without ambient process state (fz-5xp.90).
@@ -287,6 +289,12 @@ empty slot. `PatternBodyId` identifies source payload only; it is not a second
 retained body-to-target lookup authority.
 
 **Map key identity and order** — `TermComparator` in `Strict` mode owns both.
+A map asks through `TermComparator::key_order`, which takes each key as the
+word and kind a map stores. An identical word and kind is the same key; two
+integers, two atoms and two binaries are ordered from their words; any other
+pair is decoded and ordered as terms. A binary's equality and order are
+`Bin`'s (`runtime/src/bits.rs`): a `Bin` is where the bits start and how many
+there are, whichever storage holds them.
 Tuple/list/map keys compare structurally; binary storage kinds share bit
 identity; tuples compare by arity and then elements, and a named struct
 compares as the map it is, its module the atom under `__struct__`, equal to

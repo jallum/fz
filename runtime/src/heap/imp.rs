@@ -26,7 +26,7 @@ use crate::any_value::{
 use crate::bits::{BinView, SharedBinHandle, alloc_buffer_view, alloc_view, shared_bin_append};
 use crate::off_heap;
 use crate::process::Node;
-use crate::term::{NumericMode, TermComparator};
+use crate::term::TermComparator;
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::mem::{MaybeUninit, size_of};
@@ -528,10 +528,10 @@ impl Heap {
     fn normalize_map_entries(&self, entries: &mut [(AnyValue, AnyValue)]) -> usize {
         let schemas = self.schemas.borrow();
         let comparator = TermComparator::new(&self.node, &schemas);
-        entries.sort_by(|a, b| comparator.compare(a.0, b.0, NumericMode::Strict));
+        entries.sort_by(|a, b| comparator.key_order_of(a.0, b.0));
         let mut kept = 0;
         for index in 1..entries.len() {
-            if comparator.equal(entries[index].0, entries[kept].0, NumericMode::Strict) {
+            if comparator.key_order_of(entries[index].0, entries[kept].0).is_eq() {
                 entries[kept].1 = entries[index].1;
             } else {
                 kept += 1;
@@ -747,7 +747,7 @@ impl Heap {
             let moving = unsafe { entries.read(i) };
             let moving_key = key(i);
             let mut j = i;
-            while j > 0 && comparator.compare(key(j - 1), moving_key, NumericMode::Strict).is_gt() {
+            while j > 0 && comparator.key_order_of(key(j - 1), moving_key).is_gt() {
                 unsafe { entries.write(j, entries.read(j - 1)) };
                 j -= 1;
             }
@@ -755,7 +755,7 @@ impl Heap {
         }
         let mut kept = 0;
         for i in 1..filled {
-            if comparator.equal(key(i), key(kept), NumericMode::Strict) {
+            if comparator.key_order_of(key(i), key(kept)).is_eq() {
                 unsafe { entries.take_value(i, kept) };
             } else {
                 kept += 1;
@@ -803,7 +803,7 @@ impl Heap {
         let comparator = TermComparator::new(&self.node, &schemas);
         (1..filled).all(|i| {
             let (earlier, later) = unsafe { (map_key(dest, i - 1), map_key(dest, i)) };
-            comparator.compare(earlier, later, NumericMode::Strict).is_lt()
+            comparator.key_order_of(earlier, later).is_lt()
         })
     }
 
@@ -888,11 +888,12 @@ impl Heap {
         let comparator = TermComparator::new(&self.node, &schemas);
         let count = unsafe { map_count(addr) };
         let (keys, kinds) = unsafe { (map_keys_ptr(addr, count), map_tag_ptr(addr)) };
+        let (word, kind) = (key.raw(), key.kind());
         let (mut low, mut high) = (0, count);
         while low < high {
             let middle = low + (high - low) / 2;
-            let entry_key = unsafe { map_key_in_arrays(keys, kinds, middle) };
-            match comparator.compare(entry_key, key, NumericMode::Strict) {
+            let (entry_word, entry_kind) = unsafe { (read(keys.add(middle)), map_key_kind(read(kinds.add(middle)))) };
+            match comparator.key_order(entry_word, entry_kind, word, kind) {
                 std::cmp::Ordering::Less => low = middle + 1,
                 std::cmp::Ordering::Greater => high = middle,
                 std::cmp::Ordering::Equal => return Ok(middle),

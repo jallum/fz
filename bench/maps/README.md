@@ -50,23 +50,23 @@ big-endian word. Two atoms that share a prefix leave the fast path.
 
 ## Recorded figures
 
-Bench host (Apple M5 Pro), OTP 28 with the JIT, fz at the commit that added this directory.
+Bench host (Apple M5 Pro), OTP 28 with the JIT, fz at the commit that last changed this table.
 
 | Probe | fz | BEAM | floor | ordered |
 |---|---:|---:|---:|---:|
-| build_a_6 | 6,198 | 2,681 | 1,133 | 988 |
-| build_b_6 | 7,291 | 6,420 | 1,176 | |
-| build_a_12 | 14,658 | 6,791 | 2,914 | 2,424 |
-| build_b_12 | 17,292 | 19,917 | 3,050 | |
-| build_a_24 | 33,899 | 18,072 | 8,139 | 6,331 |
-| build_b_24 | 40,050 | 88,218 | 8,057 | |
-| build_a_40 | 92,652 | 48,401 | | |
-| build_b_40 | 118,353 | 193,483 | | |
-| get_a_12 | 13,023 | 1,555 | 497 | 540 |
-| get_b_12 | 20,484 | 6,694 | 900 | |
-| get_a_40 | 10,227 | 1,635 | | |
-| get_b_40 | 18,549 | 4,017 | | |
-| replace_a_12 | 7,340 | 2,903 | 1,506 | 1,590 |
-| replace_b_12 | 9,567 | 7,926 | 1,847 | |
-| delete_a_12 | 17,490 | 3,796 | 1,657 | 1,460 |
-| delete_b_12 | 24,099 | 13,720 | 2,035 | |
+| build_a_6 | 4,319 | 2,681 | 1,133 | 988 |
+| build_b_6 | 5,355 | 6,420 | 1,176 | |
+| build_a_12 | 9,305 | 6,791 | 2,914 | 2,424 |
+| build_b_12 | 11,601 | 19,917 | 3,050 | |
+| build_a_24 | 19,979 | 18,072 | 8,139 | 6,331 |
+| build_b_24 | 25,032 | 88,218 | 8,057 | |
+| build_a_40 | 71,328 | 48,401 | | |
+| build_b_40 | 95,482 | 193,483 | | |
+| get_a_12 | 7,682 | 1,555 | 497 | 540 |
+| get_b_12 | 12,868 | 6,694 | 900 | |
+| get_a_40 | 9,902 | 1,635 | | |
+| get_b_40 | 17,005 | 4,017 | | |
+| replace_a_12 | 4,670 | 2,903 | 1,506 | 1,590 |
+| replace_b_12 | 5,757 | 7,926 | 1,847 | |
+| delete_a_12 | 15,770 | 3,796 | 1,657 | 1,460 |
+| delete_b_12 | 22,961 | 13,720 | 2,035 | |

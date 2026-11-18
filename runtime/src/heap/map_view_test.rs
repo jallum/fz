@@ -305,7 +305,7 @@ impl Fixture {
     fn order(&self, a: AnyValueRef, b: AnyValueRef) -> std::cmp::Ordering {
         let schemas = self.heap.schemas.borrow();
         let value = |object: AnyValueRef| AnyValue::heap_ptr(object.storage_addr(), object.tag());
-        TermComparator::new(&self.node, &schemas).compare(value(a), value(b), NumericMode::Strict)
+        TermComparator::new(&self.node, &schemas).key_order_of(value(a), value(b))
     }
 
     fn entries_map(&mut self, entries: &[(AnyValue, AnyValue)]) -> AnyValueRef {

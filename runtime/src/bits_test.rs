@@ -693,3 +693,60 @@ fn a_concatenated_buffer_is_freed_whole_whether_or_not_it_was_frozen() {
     unsafe { shared_bin_freeze(second.shared_raw()) };
     drop(heap); // releases both stubs; the allocator tests flag a wrong size under miri/asan
 }
+
+fn bin_of(value: AnyValue) -> Bin {
+    unsafe { Bin::of_stored(value.raw(), value.kind()) }
+}
+
+/// Intent: a binary is its bits, wherever they are stored: an inline
+/// bitstring and a view of a shared buffer that hold the same bits are equal.
+#[test]
+fn a_bin_reads_the_same_bits_from_an_inline_bitstring_and_a_view() {
+    let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let inline = heap.alloc_bitstring(b"owner", 40);
+    let view = alloc_buffer_view(
+        &mut heap,
+        SharedBinHandle::from_bytes(b"owner"),
+        40,
+        StubSite::FilledBuffer,
+    );
+    let view = AnyValue::heap_ptr(view.as_raw(), ValueKind::BINVIEW);
+    assert!(bin_of(inline) == bin_of(view));
+    assert_eq!(bin_of(inline).cmp(&bin_of(view)), std::cmp::Ordering::Equal);
+}
+
+/// Intent: bits past the last one are padding, not value.
+#[test]
+fn a_bin_ignores_the_padding_of_a_partial_last_byte() {
+    let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let padded = bin_of(heap.alloc_bitstring(&[0xff, 0b1011_1111], 11));
+    let clean = bin_of(heap.alloc_bitstring(&[0xff, 0b1010_0000], 11));
+    let lower = bin_of(heap.alloc_bitstring(&[0xff, 0b1000_0000], 11));
+    assert!(padded == clean);
+    assert_eq!(padded.cmp(&clean), std::cmp::Ordering::Equal);
+    assert!(lower != clean);
+    assert_eq!(lower.cmp(&clean), std::cmp::Ordering::Less);
+}
+
+/// Intent: binaries order by their bytes, and a prefix sorts before every
+/// binary it begins.
+#[test]
+fn a_bin_orders_by_bytes_and_a_prefix_comes_first() {
+    let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let mut bin = |bytes: &[u8]| bin_of(heap.alloc_bitstring(bytes, bytes.len() as u64 * 8));
+    let (ab, abc, b) = (bin(b"ab"), bin(b"abc"), bin(b"b"));
+    assert_eq!(ab.cmp(&abc), std::cmp::Ordering::Less);
+    assert_eq!(abc.cmp(&b), std::cmp::Ordering::Less);
+    assert_eq!(b.cmp(&ab), std::cmp::Ordering::Greater);
+    assert!(ab != abc);
+}
+
+/// Intent: two binaries of different lengths are unequal on their lengths
+/// alone; the shorter one's bytes are never read past.
+#[test]
+fn bins_of_different_lengths_are_unequal_before_any_byte_is_read() {
+    let bytes = [7u8];
+    let one = Bin::new(bytes.as_ptr(), 8);
+    let unreadable = Bin::new(std::ptr::null(), 16);
+    assert!(one != unreadable);
+}

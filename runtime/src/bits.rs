@@ -38,7 +38,7 @@ use crate::sync::{AtomicUsize, Ordering, fence};
 use std::alloc::{Layout, alloc, dealloc};
 use std::mem::{MaybeUninit, align_of, forget, size_of};
 use std::ptr::{NonNull, copy_nonoverlapping, read, write};
-use std::slice::from_raw_parts_mut;
+use std::slice::{from_raw_parts, from_raw_parts_mut};
 
 // ===== SharedBin layout =====================================================
 
@@ -627,6 +627,91 @@ pub unsafe fn bitstring_byte_ptr(word: u64) -> *const u8 {
         return unsafe { BinView::from_raw(addr) }.bytes_ptr();
     }
     unsafe { bitstring_bytes_ptr(addr) }
+}
+
+/// A binary as its bits: where they start and how many there are. Every
+/// storage of a binary reads as one of these, so equality and order are
+/// written once, here.
+#[derive(Clone, Copy)]
+pub struct Bin {
+    ptr: *const u8,
+    bit_len: u64,
+}
+
+impl Bin {
+    pub fn new(ptr: *const u8, bit_len: u64) -> Self {
+        Self { ptr, bit_len }
+    }
+
+    /// The binary a container stores as `word` with kind `kind`.
+    ///
+    /// # Safety
+    /// `word` must name a live Bitstring or BinView, and `kind` must say
+    /// which.
+    #[inline]
+    pub unsafe fn of_stored(word: u64, kind: ValueKind) -> Self {
+        let addr = heap_word_addr(word);
+        if kind == ValueKind::BINVIEW {
+            let view = unsafe { BinView::from_raw(addr) };
+            return Self::new(view.bytes_ptr(), view.bit_len());
+        }
+        unsafe { Self::new(bitstring_bytes_ptr(addr), any_bitstring_bit_len(addr)) }
+    }
+
+    fn is(self, other: Bin) -> bool {
+        self.ptr == other.ptr && self.bit_len == other.bit_len
+    }
+
+    /// The whole bytes among the first `bits` bits.
+    fn whole_bytes(self, bits: u64) -> &'static [u8] {
+        unsafe { from_raw_parts(self.ptr, (bits / 8) as usize) }
+    }
+
+    /// The bits of the byte that `bits` bits end partway through, with the
+    /// padding after them cleared; zero when they end on a byte boundary.
+    fn partial_byte(self, bits: u64) -> u8 {
+        if bits.is_multiple_of(8) {
+            return 0;
+        }
+        unsafe { *self.ptr.add((bits / 8) as usize) & (u8::MAX << (8 - bits % 8)) }
+    }
+}
+
+/// Equal bit length, then equal bits. Lengths that differ settle it before a
+/// byte is read.
+impl PartialEq for Bin {
+    #[inline]
+    fn eq(&self, other: &Bin) -> bool {
+        if self.bit_len != other.bit_len {
+            return false;
+        }
+        self.is(*other)
+            || (self.whole_bytes(self.bit_len) == other.whole_bytes(self.bit_len)
+                && self.partial_byte(self.bit_len) == other.partial_byte(self.bit_len))
+    }
+}
+
+impl Eq for Bin {}
+
+/// Term order: by the bits both hold, and a prefix before what it begins.
+impl Ord for Bin {
+    #[inline]
+    fn cmp(&self, other: &Bin) -> std::cmp::Ordering {
+        if self.is(*other) {
+            return std::cmp::Ordering::Equal;
+        }
+        let common = self.bit_len.min(other.bit_len);
+        self.whole_bytes(common)
+            .cmp(other.whole_bytes(common))
+            .then_with(|| self.partial_byte(common).cmp(&other.partial_byte(common)))
+            .then_with(|| self.bit_len.cmp(&other.bit_len))
+    }
+}
+
+impl PartialOrd for Bin {
+    fn partial_cmp(&self, other: &Bin) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 /// Bytes of the buffer a bitstring-like heap value references: the whole
