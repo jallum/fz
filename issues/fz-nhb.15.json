@@ -9,9 +9,15 @@
   "id": "fz-nhb.15",
   "labels": [],
   "parent": "fz-nhb",
+  "comments": [
+    {
+      "text": "User ruling 2026-11-17 (fz-nhb.16 declined): once defguardp exists, 01114 and 01115 convert to Elixir form by spelling their helper defguardp (their twins already do), and their twins are deleted. 00623 keeps its twin (its helper is one of the 10 that cannot be a defguardp).",
+      "timestamp": "2026-11-18T04:23:55Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "defguard and defguardp define guards, as in Elixir",
   "type": "task",
-  "updated_at": "2026-11-17T23:49:32Z"
+  "updated_at": "2026-11-18T04:23:55Z"
 }
