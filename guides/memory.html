@@ -547,6 +547,7 @@ the object gets a parked block of its own and the tip stays.</p>
   }
 
   should_gc = young_bytes >= max(live_baseline, SIZE_TABLE[0] / 2)
+              || young_binary_bytes >= max(held_binary_bytes, 256 KiB)
 </pre>
 
 <p>Compiled yield telemetry still samples the margin before and after the
@@ -665,6 +666,17 @@ counts old data that has died until the next major. <code>young_bytes</code> is
 what the process allocated since the previous pass and <code>young_budget</code>
 the amount at which the pass became due. The trigger is only asked at the end of
 a quantum, so a busy process can allocate far past its budget first.</p>
+
+<p>A shared binary's bytes live off-heap and the heap holds only a small BinRef, so
+the heap's own byte count cannot see them. A second budget counts them:
+<code>young_binary_bytes</code> is the capacity of the shared buffers the process made since
+the previous pass (a filled buffer, or the new buffer of a concatenation; an in-place append
+adds nothing), and <code>binary_budget</code> is the binary bytes the heap still held after
+that pass, never less than 256&nbsp;KiB. The survivors are measured in the off-heap sweep: a
+major pass counts every BinRef it kept, a minor pass adds the young ones it kept to what was
+held. Either budget makes a pass due. When an allocation brings the young binary bytes to the
+budget the process's quantum ends at once, so the pass runs at that boundary instead of after
+a full quantum of further binaries.</p>
 
 <p>Each copied from-space object gets an in-band forwarding marker written into
 its marker word: <code>to_space_address | 1</code>. Any other

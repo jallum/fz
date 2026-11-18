@@ -840,3 +840,111 @@ fn a_claimed_resource_freed_by_a_collection_dispatches_no_destructor() {
     assert!(scheduler.destructors.is_empty());
     assert_eq!(process.heap.off_heap_head, 0);
 }
+
+const BINARY_BYTES: usize = 100_000;
+
+/// Make a shared binary of `BINARY_BYTES` through the process, as compiled code
+/// does, and drop it.
+fn make_dead_binary(process: &mut Process) -> AnyValue {
+    process.alloc_bitstring_with(BINARY_BYTES, (BINARY_BYTES * 8) as u64, |dest| {
+        dest.fill(std::mem::MaybeUninit::new(7));
+    })
+}
+
+/// A process that makes binaries and drops them owes a collection by the bytes
+/// they hold off-heap, though its heap stays a few hundred bytes.
+#[test]
+fn a_process_making_dead_binaries_is_collected_once_their_bytes_reach_the_binary_budget() {
+    let mut process = new_process();
+    make_yielding(&mut process);
+
+    make_dead_binary(&mut process);
+    make_dead_binary(&mut process);
+    assert!(!process.needs_boundary_gc(), "200,000 binary bytes are under 256 KiB");
+
+    make_dead_binary(&mut process);
+    assert!(
+        process.needs_boundary_gc(),
+        "300,000 binary bytes are over 256 KiB, with the heap itself far under its budget"
+    );
+
+    let mut scheduler = Recording::new();
+    end_quantum(&mut scheduler, &mut process);
+
+    let [collection] = &scheduler.collections[..] else {
+        panic!("one collection: {:?}", scheduler.collections);
+    };
+    assert_eq!(collection.stats.young_binary_bytes, 3 * BINARY_BYTES as u64);
+    assert_eq!(collection.stats.binary_budget, 256 * 1024);
+    assert!(
+        collection.stats.young_bytes < collection.stats.young_budget,
+        "the heap rule did not make this collection due"
+    );
+    assert_eq!(process.heap.binary_budget.young_binary_bytes(), 0);
+    assert!(!process.needs_boundary_gc(), "the dead binaries are gone");
+}
+
+/// The budget after a collection is the binary bytes the heap holds: a process
+/// that keeps a large binary is not collected for each one it makes after.
+#[test]
+fn the_binary_budget_follows_the_binary_bytes_the_heap_holds() {
+    let mut process = new_process();
+    make_yielding(&mut process);
+    let kept = process.alloc_bitstring_with(2 * 1024 * 1024, 2 * 1024 * 1024 * 8, |dest| {
+        dest.fill(std::mem::MaybeUninit::new(1));
+    });
+    let mut roots = [kept.ref_word()];
+
+    process.heap.collect(&mut roots);
+
+    assert_eq!(process.heap.binary_budget.held_binary_bytes(), 2 * 1024 * 1024);
+    assert_eq!(process.heap.binary_budget.budget(), 2 * 1024 * 1024);
+}
+
+/// The allocation that brings the binary bytes to the budget spends the rest of
+/// the quantum, so the collection runs at the boundary and not after a quantum
+/// of further binaries.
+#[test]
+fn the_quantum_ends_at_the_allocation_that_reaches_the_binary_budget() {
+    let mut process = new_process();
+    make_yielding(&mut process);
+    process.reset_reduction_budget();
+    let budget = process.reductions_remaining;
+
+    make_dead_binary(&mut process);
+    make_dead_binary(&mut process);
+    assert_eq!(
+        process.reductions_remaining, budget,
+        "under the budget the quantum is whole"
+    );
+
+    make_dead_binary(&mut process);
+    assert_eq!(
+        process.reductions_remaining, 0,
+        "the crossing allocation ended the quantum"
+    );
+}
+
+/// A message copy lands on the receiver's heap and counts toward its budget,
+/// but it is not an allocation by the process that is running, so no quantum is
+/// cut.
+#[test]
+fn a_binary_made_on_a_heap_without_going_through_its_process_cuts_no_quantum() {
+    let mut process = new_process();
+    process.reset_reduction_budget();
+    let budget = process.reductions_remaining;
+
+    for _ in 0..3 {
+        process
+            .heap
+            .alloc_bitstring_with(BINARY_BYTES, (BINARY_BYTES * 8) as u64, |dest| {
+                dest.fill(std::mem::MaybeUninit::new(7));
+            });
+    }
+
+    assert_eq!(process.reductions_remaining, budget);
+    assert!(
+        process.needs_boundary_gc(),
+        "the binary bytes still make a collection due"
+    );
+}

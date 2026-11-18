@@ -110,10 +110,13 @@ pub(crate) fn set_next(link: u64, next: u64) {
 /// the destructor is fz code and runs at the scheduler boundary, never inside
 /// the sweep.
 ///
+/// Returns the capacity of the SharedBins the surviving BinRefs hold.
+///
 /// A survivor's from-space word 0 holds a forwarding marker, so its off-heap
 /// pointer is read from the to-space copy. Must run before the from-space is
 /// released, since dead objects live there.
-pub fn sweep(heap: &mut Heap, generation: Generation, visits: &mut u64, survived: &mut StubCounts) {
+pub fn sweep(heap: &mut Heap, generation: Generation, visits: &mut u64, survived: &mut StubCounts) -> usize {
+    let mut survivor_binary_bytes = 0;
     let mut new_old_head = match generation {
         Generation::Minor => heap.off_heap_old_head,
         Generation::Major => 0,
@@ -130,6 +133,9 @@ pub fn sweep(heap: &mut Heap, generation: Generation, visits: &mut u64, survived
                     let copy = unsafe { object.same_kind_at(to_p) };
                     if let OffHeap::BinRef(binref) = object {
                         survived.record(binref.site());
+                    }
+                    if let OffHeap::BinRef(kept) = copy {
+                        survivor_binary_bytes += unsafe { (*kept.shared_raw()).capacity() };
                     }
                     copy.set_link(new_old_head);
                     new_old_head = heap_object_word(to_p, object.kind());
@@ -148,6 +154,7 @@ pub fn sweep(heap: &mut Heap, generation: Generation, visits: &mut u64, survived
     }
     heap.off_heap_old_head = new_old_head;
     heap.off_heap_head = 0;
+    survivor_binary_bytes
 }
 
 /// Drop every object on the young and old chains, releasing each off-heap

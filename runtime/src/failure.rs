@@ -451,7 +451,7 @@ fn atom_text(process: *mut Process, value: AnyValue) -> String {
 
 fn text(process: *mut Process, text: &str) -> AnyValue {
     let process = unsafe { &mut *process };
-    process.heap.alloc_bitstring(text.as_bytes(), 8 * text.len() as u64)
+    process.alloc_bitstring(text.as_bytes(), 8 * text.len() as u64)
 }
 
 /// A struct of the exception module `name` on the process heap, as a value

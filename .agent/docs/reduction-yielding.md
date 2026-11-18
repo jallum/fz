@@ -56,7 +56,15 @@ quanta through a self tail call beside a second process.
   its own and the tip is left as it was. The tip and `young_blocks` are the
   young blocks; blocks a collection filled with survivors and blocks grafted
   from another heap's gift segment (`Heap::graft`) are old (`old_blocks`) and
-  count by fill like any other block.
+  count by fill like any other block. `should_gc` is also due when the shared
+  binary bytes made since the last collection (`binary_budget.young_binary_bytes()`)
+  reach the bytes of binary buffers the heap still holds, at least 256 KiB
+  (`BinaryBudget` in `runtime/src/heap/binary_budget.rs`). A process allocating a
+  shared binary through `Process::alloc_bitstring`, `alloc_bitstring_with` or
+  `alloc_concatenation` that reaches that budget sets `reductions_remaining` to
+  zero, so its quantum ends at the allocation and the boundary collects; an
+  allocation made directly on a `Heap`, such as a message copy onto a receiver,
+  cuts no quantum.
 - **The schedulers** (JIT `src/exec/runtime.rs` with `CompiledModule::run_quantum`
   in `src/ir_codegen/compiled.rs`, AOT `runtime/src/aot_shim.rs`, interpreter
   `src/ir_interp`) own dispatch: install a fresh budget and run the process.
@@ -107,7 +115,8 @@ allocation        bump_top += size
                     allocate a larger block
                     move old current block to young_blocks
 
-boundary          if heap.should_gc():   (young_bytes >= max(live_baseline, SIZE_TABLE[0] / 2))
+boundary          if heap.should_gc():   (young_bytes >= max(live_baseline, SIZE_TABLE[0] / 2)
+                                          or young_binary_bytes >= binary_budget)
                     Process::collect
                   clear yield_reasons
 ```
