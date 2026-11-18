@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-9e2.1"
+    "fz-9e2.1",
+    "fz-9e2.3"
   ],
   "blocks": [],
   "created": "2026-11-18T21:21:31Z",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "A construction is sized and written once; \u003c\u003e and interpolation lower to it",
   "type": "task",
-  "updated_at": "2026-11-18T21:21:38Z"
+  "updated_at": "2026-11-18T21:21:40Z"
 }
