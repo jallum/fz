@@ -1,0 +1,80 @@
+#---
+# purpose: a float carried from one step of a loop to the next stays a raw float, so float and mixed arithmetic loops box nothing
+# kind: run
+#---
+#
+# Each loop takes 1,000 steps, and the program prints the heap scalars boxed per
+# step beside the loop's final value. Each step's float result is carried to the
+# next step as a block parameter, which holds a raw float as it holds a raw
+# integer. When one operand is an integer and the other a float, the integer is
+# converted to a float and the result is a raw float, as for two floats. `/`
+# yields a float for two integers too.
+#
+# The last row multiplies an integer above 2^53 by 1.0. The integer is rounded
+# to the nearest float when converted, and all three paths round the same way.
+defmodule M do
+  def times(i, n, acc) do
+    if i == n, do: acc, else: times(i + 1, n, i * 1.5)
+  end
+
+  def plus(i, n, acc) do
+    if i == n, do: acc, else: plus(i + 1, n, 1.5 + i)
+  end
+
+  def minus(i, n, acc) do
+    if i == n, do: acc, else: minus(i + 1, n, i - 0.5)
+  end
+
+  def over(i, n, acc) do
+    if i == n, do: acc, else: over(i + 1, n, i / 2)
+  end
+
+  def accumulate(i, n, acc) do
+    if i == n, do: acc, else: accumulate(i + 1, n, acc + i)
+  end
+
+  def scale(i, n, acc) do
+    if i == n, do: acc, else: scale(i + 1, n, acc * 1.5 - acc * 0.5 + 1.0)
+  end
+
+  def big(i, n, acc) do
+    if i == n, do: acc, else: big(i + 1, n, (9007199254740993 + i) * 1.0)
+  end
+
+  def boxed(a, b), do: div(b[:scalar_box_allocs] - a[:scalar_box_allocs], 1000)
+end
+
+a = Process.heap_alloc_stats()
+r = M.times(0, 1000, 0.0)
+b = Process.heap_alloc_stats()
+dbg({:int_times_float, r, M.boxed(a, b)})
+
+a = Process.heap_alloc_stats()
+r = M.plus(0, 1000, 0.0)
+b = Process.heap_alloc_stats()
+dbg({:float_plus_int, r, M.boxed(a, b)})
+
+a = Process.heap_alloc_stats()
+r = M.minus(0, 1000, 0.0)
+b = Process.heap_alloc_stats()
+dbg({:int_minus_float, r, M.boxed(a, b)})
+
+a = Process.heap_alloc_stats()
+r = M.over(0, 1000, 0.0)
+b = Process.heap_alloc_stats()
+dbg({:int_over_int, r, M.boxed(a, b)})
+
+a = Process.heap_alloc_stats()
+r = M.accumulate(0, 1000, 0.0)
+b = Process.heap_alloc_stats()
+dbg({:float_accumulator, r, M.boxed(a, b)})
+
+a = Process.heap_alloc_stats()
+r = M.scale(0, 1000, 0.0)
+b = Process.heap_alloc_stats()
+dbg({:float_times_float, r, M.boxed(a, b)})
+
+a = Process.heap_alloc_stats()
+r = M.big(0, 1000, 0.0)
+b = Process.heap_alloc_stats()
+dbg({:big_integer_times_float, r, M.boxed(a, b)})

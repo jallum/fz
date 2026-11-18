@@ -5585,7 +5585,7 @@ fn native_block_param_reprs(
                 .get(param)
                 .copied()
                 .unwrap_or_else(|| world.types_mut().any());
-            reprs.insert(*param, block_param_abi_value_repr(world, ty));
+            reprs.insert(*param, AbiValueRepr::for_ty(world, ty));
         }
     }
     reprs
@@ -6166,13 +6166,6 @@ fn lower_bit_size_ir(
             Some(BitSizeIr::ByteSizeOf(env.runtime_var(*value).ok_or(FatalError)?))
         }
     })
-}
-
-fn block_param_abi_value_repr(world: &mut World, ty: Ty) -> AbiValueRepr {
-    match AbiValueRepr::for_ty(world, ty) {
-        repr @ (AbiValueRepr::RawInt | AbiValueRepr::RawAtom) => repr,
-        AbiValueRepr::RawF64 | AbiValueRepr::ValueRef => AbiValueRepr::ValueRef,
-    }
 }
 
 fn mark_ignored_lanes_for_demand(
