@@ -2,6 +2,7 @@ use super::*;
 use crate::heap::{NamedSchema, Schema, SchemaRegistry};
 use crate::module_name::ModuleName;
 use crate::process::Node;
+use crate::term::TermComparator;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -455,4 +456,84 @@ fn an_entries_map_spells_a_struct_when_its_keys_are_exactly_the_structs() {
 
     let plain = f.plain(&[("x", 1), ("y", 2)]);
     assert_eq!(f.heap.entries_spelling_a_struct(plain), None);
+}
+
+/// The bytes a flat map occupies, its header included.
+fn stored_bytes(map: AnyValueRef) -> Vec<u8> {
+    let addr = map.map_addr().expect("a map") as *const u8;
+    let size = crate::any_value::map_size_for_count(unsafe { map_count(addr) });
+    unsafe { std::slice::from_raw_parts(addr, size) }.to_vec()
+}
+
+/// Intent: a flat map has one stored form. A map reached by adding a key,
+/// by replacing a value or by removing a key is byte for byte the map a
+/// bulk build of the same entries makes, at every size that changes how
+/// many kind bytes pad the header and at every slot.
+#[test]
+fn a_put_a_replace_and_a_delete_store_what_a_bulk_build_stores() {
+    let mut f = fixture();
+    let name = |i: usize| format!("k{i:02}");
+    for count in [1usize, 2, 7, 8, 9, 16, 17, 31] {
+        let names: Vec<String> = (0..count + 1).map(name).collect();
+        let all: Vec<(&str, i64)> = names.iter().map(|n| (n.as_str(), 1)).collect();
+        for slot in 0..=count {
+            let without: Vec<_> = all.iter().copied().enumerate().filter(|(i, _)| *i != slot).collect();
+            let without: Vec<(&str, i64)> = without.into_iter().map(|(_, entry)| entry).collect();
+            let (key, built, smaller) = (f.atom(all[slot].0), f.plain(&all), f.plain(&without));
+
+            let layout = f.heap.expect_map_layout(smaller, "test");
+            let put = f.heap.map_view_put(layout, key, AnyValue::int(1));
+            assert_eq!(
+                stored_bytes(put),
+                stored_bytes(built),
+                "put of slot {slot} into {count}"
+            );
+
+            let deleted = f.heap.map_view_delete(built, key);
+            assert_eq!(
+                stored_bytes(deleted),
+                stored_bytes(smaller),
+                "delete of slot {slot} from {}",
+                count + 1
+            );
+
+            let mut replaced_entries = all.clone();
+            replaced_entries[slot].1 = 2;
+            let expected = f.plain(&replaced_entries);
+            let layout = f.heap.expect_map_layout(built, "test");
+            let replaced = f.heap.map_view_put(layout, key, AnyValue::int(2));
+            assert_eq!(
+                stored_bytes(replaced),
+                stored_bytes(expected),
+                "replace of slot {slot} in {}",
+                count + 1
+            );
+        }
+    }
+}
+
+/// Intent: removing a key a flat map lacks answers the map itself, and
+/// allocates nothing.
+#[test]
+fn deleting_an_absent_key_from_a_flat_map_allocates_nothing() {
+    let mut f = fixture();
+    let map = f.plain(&[("a", 1), ("b", 2)]);
+    let absent = f.atom("c");
+    let before = f.heap.alloc_stats_snapshot().total.allocs;
+    assert_eq!(f.heap.map_view_delete(map, absent), map);
+    assert_eq!(f.heap.alloc_stats_snapshot().total.allocs, before);
+}
+
+/// Intent: removing a present key from a flat map makes exactly one object,
+/// the new map.
+#[test]
+fn deleting_a_present_key_from_a_flat_map_allocates_only_the_new_map() {
+    let mut f = fixture();
+    let map = f.plain(&[("a", 1), ("b", 2), ("c", 3)]);
+    let key = f.atom("b");
+    let before = f.heap.alloc_stats_snapshot().total.allocs;
+    let smaller = f.heap.map_view_delete(map, key);
+    assert_eq!(f.heap.alloc_stats_snapshot().total.allocs, before + 1);
+    let expected = f.plain(&[("a", 1), ("c", 3)]);
+    assert_eq!(stored_bytes(smaller), stored_bytes(expected));
 }
