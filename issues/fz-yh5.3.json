@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-18T21:45:30Z",
+  "description": "A call into the runtime is a direct bl.\n\nToday (machine.md M14), every extern call is `adrp x2, page; add x2, x2, #off; mov x0, x21; mov x1, ...; blr x2`. The absolute address is materialized at every call site, which is 2-3 instructions more than `bl` plus the argument moves. Arguments that are compile-time constants, such as the six per bitstring field call, are set up with 5-7 `mov #imm` at each site.\n\nFix:\n- Emit direct calls (Cranelift colocated or near call relocations) to statically linked runtime symbols on the AOT path.\n- Find out why the module declares them as far or indirect, and whether JIT/run needs the indirect form. If it does, keep the indirect form only there.\n\nAsm first: target listing for one extern call site (the share call in p02b, byte_extent in p02c).\n\nAcceptance: the listings show bl at extern call sites on build; run is unaffected or also improved; slopes fall by the counted instructions (bench).",
+  "id": "fz-yh5.3",
+  "labels": [],
+  "parent": "fz-yh5",
+  "priority": 2,
+  "status": "open",
+  "title": "A call into the runtime is a direct bl",
+  "type": "task",
+  "updated_at": "2026-11-18T21:45:30Z"
+}
