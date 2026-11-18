@@ -1,0 +1,18 @@
+#---
+# purpose: "A recursion that nests its accumulator in the first slot of a tuple compiles: the first slot is not a tag, so the tuple's head is its arity alone"
+# root: main/0
+# oracle: self
+# oracle.stamp: bdd706e838aae694
+#---
+defmodule Flip do
+  def flip(0, acc), do: acc
+  def flip(n, acc), do: flip(n - 1, {acc, n})
+end
+
+defmodule Main do
+  def main() do
+    IO.inspect(Flip.flip(2, :other))
+  end
+end
+
+Main.main()

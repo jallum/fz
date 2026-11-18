@@ -54,11 +54,12 @@ impl ClashFold {
     }
 }
 
-/// The principal functor of one constructor clause: kind, plus tuple arity and
-/// the atom tag in first position, plus a map's key set.
+/// The principal functor of one constructor clause: its kind, plus a tuple's
+/// arity and at most one atom tag (the atom its first slot holds), plus a map's
+/// key set. An untagged tuple head stands for every tuple of its arity.
 #[derive(Clone, PartialEq)]
 enum Head {
-    Tuple(Vec<Option<Ty>>),
+    Tuple(usize, Option<String>),
     List,
     Resource,
     Map(Vec<MapKey>),
@@ -86,14 +87,9 @@ impl Pf {
             leaf = leaf.union(cx, &l);
             for conj in &d.tuples {
                 for sig in &conj.pos {
-                    let head = Head::Tuple(
-                        sig.elems
-                            .iter()
-                            .enumerate()
-                            .map(|(i, e)| if i == 0 { atom_only(types, e) } else { None })
-                            .collect(),
-                    );
-                    add(&mut heads, head, sig.elems.iter().map(|e| Some(*e)).collect());
+                    for head in tuple_heads(types, &sig.elems) {
+                        add(&mut heads, head, sig.elems.iter().map(|e| Some(*e)).collect());
+                    }
                 }
             }
             for conj in &d.lists {
@@ -127,9 +123,14 @@ impl Pf {
         self.heads.iter().find(|(h, _)| h == head).map(|(_, s)| s)
     }
 
-    /// `other`'s principal functors are all among ours.
+    /// `other`'s principal functors are all among ours. A tagged tuple head is
+    /// among ours when we hold it or the untagged head of its arity.
     fn covers(&self, types: &Types, other: &Pf) -> bool {
-        other.leaf.is_subtype(types.ctx(), &self.leaf) && other.heads.iter().all(|(h, _)| self.slots(h).is_some())
+        let holds = |h: &Head| {
+            self.slots(h).is_some()
+                || matches!(h, Head::Tuple(arity, _) if self.slots(&Head::Tuple(*arity, None)).is_some())
+        };
+        other.leaf.is_subtype(types.ctx(), &self.leaf) && other.heads.iter().all(|(h, _)| holds(h))
     }
 }
 
@@ -145,6 +146,20 @@ fn add(heads: &mut Vec<(Head, Vec<Vec<Ty>>)>, head: Head, kids: Vec<Option<Ty>>)
         }
     } else {
         heads.push((head, kids.into_iter().map(|k| k.into_iter().collect()).collect()));
+    }
+}
+
+/// A tuple clause's heads: one per atom its first slot can be, or the single
+/// untagged head when the first slot is not a finite set of atoms.
+fn tuple_heads(types: &Types, elems: &[Ty]) -> Vec<Head> {
+    let arity = elems.len();
+    let tags = elems
+        .first()
+        .and_then(|first| atom_only(types, first))
+        .and_then(|first| types.descr(&first).atom_literals());
+    match tags {
+        Some(tags) => tags.into_iter().map(|tag| Head::Tuple(arity, Some(tag))).collect(),
+        None => vec![Head::Tuple(arity, None)],
     }
 }
 
@@ -311,9 +326,14 @@ impl Types {
     fn apply_plan(&mut self, ty: Ty, plan: &Plan) -> Ty {
         let any = self.any();
         let mut d = self.descr(&ty).clone();
-        let cut_at = |head: &Head, i: usize| plan.cuts.iter().find(|(k, _)| k.0 == *head && k.1 == i).map(|(_, c)| c);
-        let apply = |types: &mut Types, head: &Head, i: usize, child: Ty| -> Ty {
-            match cut_at(head, i) {
+        let cut_at = |heads: &[Head], i: usize| {
+            plan.cuts
+                .iter()
+                .find(|(k, _)| heads.contains(&k.0) && k.1 == i)
+                .map(|(_, c)| c)
+        };
+        let apply = |types: &mut Types, heads: &[Head], i: usize, child: Ty| -> Ty {
+            match cut_at(heads, i) {
                 Some(Cut::Fold(..)) => any,
                 Some(Cut::Below(sub)) => types.apply_plan(child, sub),
                 None => child,
@@ -321,34 +341,28 @@ impl Types {
         };
         for conj in &mut d.tuples {
             for sig in &mut conj.pos {
-                let head = Head::Tuple(
-                    sig.elems
-                        .iter()
-                        .enumerate()
-                        .map(|(i, e)| if i == 0 { atom_only(self, e) } else { None })
-                        .collect(),
-                );
+                let heads = tuple_heads(self, &sig.elems);
                 let elems = sig.elems.clone();
                 sig.elems = elems
                     .iter()
                     .enumerate()
-                    .map(|(i, e)| apply(self, &head, i, *e))
+                    .map(|(i, e)| apply(self, &heads, i, *e))
                     .collect();
             }
         }
         for conj in &mut d.lists {
             for sig in &mut conj.pos {
-                sig.elem = sig.elem.map(|e| apply(self, &Head::List, 0, e));
+                sig.elem = sig.elem.map(|e| apply(self, &[Head::List], 0, e));
             }
         }
         for conj in &mut d.resources {
             for sig in &mut conj.pos {
-                sig.payload = apply(self, &Head::Resource, 0, sig.payload);
+                sig.payload = apply(self, &[Head::Resource], 0, sig.payload);
             }
         }
         for conj in &mut d.maps {
             for sig in &mut conj.pos {
-                let head = Head::Map(sig.fields.keys().cloned().collect());
+                let head = [Head::Map(sig.fields.keys().cloned().collect())];
                 let fields = sig.fields.clone();
                 for (i, (k, v)) in fields.iter().enumerate() {
                     if !is_struct_module_key(k) {
