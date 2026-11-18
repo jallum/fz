@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-nhb.19"
+  ],
   "created": "2026-11-18T02:47:52Z",
   "description": "## Why\nElixir refuses a spec type variable that `when` does not declare (\"type a/0 undefined\") and a `var` used only once (\"type variable a is used only once ... equivalent to term()\"); fz accepts both, so lib specs and 01080 are not valid Elixir. Owner decision 2026-11-17: declare every variable, `v: var` when used two or more times, `v: term()` when used once.\n\n## What changes\n- `term` is a builtin type resolving to the same Ty as `any`, as in Erlang/Elixir (erl_internal is_type(term, 0); dialyzer erl_types from_form term -\u003e t_any()).\n- Every spec in lib/*.fz, fixtures and guides declares its type variables. On origin/develop 14470768a: 195 lib specs (257 `var`, 22 `term()`), 15 fixture specs (13 `var`, 6 `term()`).\n- World::resolve_spec refuses, with a span and Elixir's wording, an undeclared type variable and a `var` used once.\n- Fixture 01080: both specs declare `a`, the fixture is in Elixir form with `# oracle: self`, its twin is deleted.\n- .agent/docs/specs.md states the rule.\n\n## Measured\nThe lib rewrite with `any` in place of `term()` passes the whole workspace suite (6976 passed, 0 failed, no pin moved): a once-used variable bounded by term() is the unbounded variable fz already had.\n\n## Signal\nNo undeclared or once-used `var` type variable in lib, fixtures or guides; a diagnostic fixture for each refusal; 01080 is its own oracle; full gate green.",
   "id": "fz-nhb.20",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "A spec declares every type variable in when, as Elixir requires, and term is any",
   "type": "task",
-  "updated_at": "2026-11-18T02:47:52Z"
+  "updated_at": "2026-11-18T02:47:53Z"
 }
