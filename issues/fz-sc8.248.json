@@ -9,9 +9,15 @@
   "id": "fz-sc8.248",
   "labels": [],
   "parent": "fz-sc8",
+  "comments": [
+    {
+      "text": "Measured before the page (MDF, develop 2eff1dec2, bench). (1) Walk probe whose body uses the matched byte (walk(\u003c\u003cc, r::binary\u003e\u003e, acc) when c \u003c 128, do: walk(r, acc + c)), 140 MB: clause form 45.3 instr/byte, case form 37.4 (predicted 44-46 and ~10 fewer; held). (2) Distiller with the JSON decoder's 37 single-discriminant multi-clause functions hand-rewritten in case form (scratch; 81 JSON fixtures green on three paths; identical output): 84.63G -\u003e 84.12G instr (-0.60%), 12.98G -\u003e 12.85G cycles (-0.97%); predicted -2% to -5%, a miss. Cause: the decoder's per-byte loops bind a byte only for the guard and use only the rest in the body; an unused projection is already omitted and a rest is a cursor, so nothing is read twice there. The fold pays only where a body uses a value its guard or pattern already read. (3) Structure: def head and case share PatternDispatchPlan and subjects and diverge after it; the def form ignores the plan's bindings and rebuilds pattern variables as BackendClause.projections via bind_pattern, with its own code in native lowering, the interpreter (select_clause drops the Decided), artifact, runtime demand, semantic and keying: ~20 sites walk clause.projections. Not established: how a clause whose trimmed plan is a direct outcome (no dispatch) is fed. Value is concept removal, not distiller speed. Patch: MDF scratchpad b248/json-case-form.patch. Priority with the user (MDF suggests P3).",
+      "timestamp": "2026-11-18T04:58:27Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "A clause receives the values its dispatch already read",
   "type": "task",
-  "updated_at": "2026-11-18T03:23:51Z"
+  "updated_at": "2026-11-18T04:58:27Z"
 }
