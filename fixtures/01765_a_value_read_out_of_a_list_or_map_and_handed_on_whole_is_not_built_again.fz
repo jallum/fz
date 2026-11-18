@@ -1,0 +1,55 @@
+#---
+# purpose: a tuple a case arm reads out of a list or a map and only stores is the tuple that was there, on the interpreter, the JIT and a built program
+# kind: run
+#---
+#
+# Each function matches a tuple out of a heap value in a case arm and puts it
+# somewhere else without reading its fields. `rev` moves list heads onto
+# another list. `pick` takes a
+# map's value and wraps it in a list. `swap` reads the tuple's fields, so it
+# does build a new tuple for each element.
+# The program prints each result and the tuples allocated across the call: none
+# where the tuple is only moved, one per element where it is rebuilt.
+defmodule Main do
+  def rev(l, acc) do
+    case l do
+      [] -> acc
+      [h | t] -> rev(t, [h | acc])
+    end
+  end
+
+  def pick(m) do
+    case m do
+      %{at: pair} -> [pair]
+      _ -> []
+    end
+  end
+
+  def swap(l, acc) do
+    case l do
+      [] -> acc
+      [{a, b} | t] -> swap(t, [{b, a} | acc])
+    end
+  end
+
+  def structs(), do: Process.heap_alloc_stats()[:struct_allocs]
+
+  def main() do
+    l = [{1, 2}, {3, 4}, {5, 6}]
+    m = %{at: {7, 8}}
+
+    s0 = structs()
+    r = rev(l, [])
+    s1 = structs()
+    p = pick(m)
+    s2 = structs()
+    w = swap(l, [])
+    s3 = structs()
+
+    IO.inspect({r, s1 - s0})
+    IO.inspect({p, s2 - s1})
+    IO.inspect({w, s3 - s2})
+  end
+end
+
+Main.main()
