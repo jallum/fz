@@ -23,11 +23,15 @@
     {
       "text": "Round 6 (bench, arms built from exp/9x7-8-r6 535b3c9d2 on 8a2452976, 25 interleaved runs, dist-full 9; outputs identical on every workload). Pre-registered verdict: ALL ARMS FAIL. F: clause 1 fails (deadbinlive time-weighted in-use 0.780 of V0, rule needs \u003c=0.75), clauses 2 and 3 pass. O: clause 1 fails; clause 2 fails on survive (i1.115), enum (i1.118), qsort (i1.034). FC/OC: clause 1 and 4 fail (quantum tw 1.264); OC also clause 2. F highlights: deadbinlive peak in-use 0.227 of V0 (119.9 -\u003e 27.2 MB), cycles 0.736, instructions 0.937; giftbin under FC peak 0.131 and tw 0.193; survive peak 1.045 (inside clause 3's 5%). MEASUREMENT DEFECT found after the run: the time-weighted in-use figure is computed from gc events only, holding the last sample until the next collection. On survive V0 in-use reaches its 101.5 MB peak between collections at 12.9 ms and 36.6 ms while the estimator holds 17.4 MB for that span, so tw under-reports exactly the arms that collect less: survive's F tw 2.33x and deadbinlive's 0.78 are not trustworthy. Clauses 1 and 4 rest on that estimator; clause 3 (peak, exact) is sound. Unexplained: O costs +11.8% instructions on enum, which allocates no binaries and has the same gc count as F. Ticket stays open; the measurement fix is proposed to the user.",
       "timestamp": "2026-11-17T23:36:57Z"
+    },
+    {
+      "text": "Round 6 RE-JUDGED with the exact allocation-weighted mean in-use (integral from refuted fz-9x7.29 compiled into the experiment arms only; arms rebuilt from exp/9x7-8-r6 + one probe commit; deterministic, measured locally). Clauses 1 and 4 now: deadbinlive mean F 0.302, O 0.302, FC 0.314, OC 0.314 of V0 (rule \u003c=0.75: all pass); quantum mean FC 0.003, OC 0.003 (clause 4 \u003c=0.75: pass). Clauses 2 and 3 stand from the bench round (F, FC pass; O, OC fail clause 2). VERDICT: F PASSES, FC PASSES, O and OC FAIL. Choice rule 'F over O; C only if it passes' selects FC. Prediction 'FC/OC fail on survive' was wrong. Not covered by any clause and reported: survive's mean in-use rises 13.5% under F and FC (40.6 MB -\u003e 46.0 MB) while its peak stays within clause 3 (1.025-1.045). Other FC means: deadbin 0.136, giftbin 0.133, json 0.969, everything else 1.000. Next: production FC built clean (no spike code), stacked on the fz-9x7.25/.28 stack.",
+      "timestamp": "2026-11-18T00:01:42Z"
     }
   ],
   "priority": 2,
   "status": "in_progress",
   "title": "Off-heap binary bytes count toward the collection trigger",
   "type": "bug",
-  "updated_at": "2026-11-17T23:57:09Z"
+  "updated_at": "2026-11-18T00:01:42Z"
 }
