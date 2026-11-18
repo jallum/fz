@@ -1154,12 +1154,16 @@ fn compiler2_inline_bitstring_outcomes_reuse_typed_dispatch_reads() {
                     .outcome(crate::dispatch_matrix::OutcomeId(outcome_index as u32))
                     .target
                     .as_u32() as usize];
-                assert_eq!(arm.params.len(), outcome.bindings.len());
-                arm_arities.push(arm.params.len());
-                for argument in &dispatch
+                let edge_arguments = &dispatch
                     .outcome(crate::dispatch_matrix::OutcomeId(outcome_index as u32))
-                    .arguments
-                {
+                    .arguments;
+                assert_eq!(
+                    arm.params.len(),
+                    edge_arguments.len(),
+                    "an arm takes exactly the bindings its edge hands it"
+                );
+                arm_arities.push(arm.params.len());
+                for argument in edge_arguments {
                     let binding = outcome
                         .bindings
                         .iter()
@@ -1178,7 +1182,7 @@ fn compiler2_inline_bitstring_outcomes_reuse_typed_dispatch_reads() {
             }
         }
     }
-    assert_eq!(arm_arities, [3, 0], "each winning row has its own parameter contract");
+    assert_eq!(arm_arities, [1, 0], "an arm takes only the bindings its body reads");
     settle_native_product(&mut compiler, root);
     assert_resolved(compiler.drive(), "inline bitstring bindings should lower natively");
     let program = native.last(root).program;
@@ -1196,8 +1200,8 @@ fn compiler2_inline_bitstring_outcomes_reuse_typed_dispatch_reads() {
         })
         .count();
     assert_eq!(
-        reads, 3,
-        "the three dispatch reads are the only field reads in the native artifact"
+        reads, 1,
+        "the only field read in the native artifact is the one the arm's body reads"
     );
     let compiled = jit_compile_native_program(&mut compiler, &program);
     assert_eq!(compiled.run(compiler.telemetry(), program.entry), 2);

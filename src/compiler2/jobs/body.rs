@@ -3206,7 +3206,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         }
         let mut body = LoweredBody::clauses(lowered, entries, std::mem::take(&mut self.generated_ids))
             .with_value_count(self.next_value as usize);
-        drop_unread_receive_arguments(&mut body);
+        drop_unread_outcome_arguments(&mut body);
         self.construct_entry_captures(&mut body);
         body
     }
@@ -4699,19 +4699,19 @@ pub(super) fn retained_value_ids(body: &LoweredBody) -> ValueSet {
     retained
 }
 
-/// A receive hands each winning clause its bound subjects through the park
-/// record, one boxed ref word apiece. A binding nothing in the clause reads
-/// (`_x`, or a name only the guard reads, which the dispatch plan reads from
-/// the message itself) is dropped from the clause's edge and entry, so it is
-/// neither extracted nor stored.
-fn drop_unread_receive_arguments(body: &mut LoweredBody) {
+/// An outcome edge carries only what its target reads. A binding nothing in
+/// the arm reads (`_x`, or a name only a guard reads, which the dispatch plan
+/// reads from its subject itself) is dropped from the edge and from the
+/// target's parameters, so it is neither extracted nor handed over. A receive
+/// would otherwise box it into the park record's out-slot.
+///
+/// Only edges are pruned: a function clause's parameters are its calling
+/// convention and belong to no edge.
+fn drop_unread_outcome_arguments(body: &mut LoweredBody) {
     use super::super::body::ValueRole;
     let LoweredBody::Clauses { entries, tables, .. } = body;
     let mut unread = Vec::new();
     for (owner, entry) in entries.iter().enumerate() {
-        if !matches!(entry.tail, LoweredTail::Receive(_)) {
-            continue;
-        }
         for (index, edge) in entry.tail.outcome_edges().iter().enumerate() {
             let read = values_read_from(entries, tables, edge.target);
             unread.extend(

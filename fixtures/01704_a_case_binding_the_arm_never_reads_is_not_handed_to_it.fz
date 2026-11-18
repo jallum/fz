@@ -1,0 +1,28 @@
+#---
+# purpose: a case arm is handed only the bindings its body reads; a name nothing reads, or only a guard reads, is not handed over
+# kind: run
+#---
+#
+# `pick` has four arms. The first binds a name nothing reads. The second binds
+# a name only its guard reads, and the dispatch reads that from the subject
+# itself. The third reads its binding. The last binds nothing. Only the third
+# arm's edge carries an argument.
+defmodule Main do
+  def pick(t) do
+    case t do
+      {:a, _unused} -> 1
+      {:b, y} when y > 0 -> 2
+      {:c, z} -> z
+      {_, _} -> 4
+    end
+  end
+
+  def main() do
+    dbg(pick({:a, 1}))
+    dbg(pick({:b, 5}))
+    dbg(pick({:b, -5}))
+    dbg(pick({:c, 30}))
+  end
+end
+
+Main.main()
