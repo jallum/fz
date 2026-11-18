@@ -33,6 +33,10 @@ fn list_ref(bits: u64) -> AnyValueRef {
     AnyValueRef::from_heap_object(ValueKind::LIST, list_addr_from_tagged(bits).expect("list addr")).expect("list ref")
 }
 
+fn struct_bytes_of(heap: &Heap, schema_id: u32) -> usize {
+    struct_size_for_payload(heap.schemas.borrow().get(schema_id).allocation_payload_size())
+}
+
 fn struct_bytes(reg: &Rc<RefCell<SchemaRegistry>>, schema_id: u32) -> usize {
     struct_size_for_payload(reg.borrow().get(schema_id).allocation_payload_size())
 }
@@ -75,7 +79,7 @@ fn a_list_far_larger_than_the_table_ceiling_measures_exactly() {
 }
 
 #[test]
-fn a_tail_shared_by_two_values_is_measured_once() {
+fn a_tail_shared_by_two_values_is_measured_once_per_holder() {
     let mut sender = Heap::new(SIZE_TABLE[0], fresh_registry());
     let shared_tail = int_list(&mut sender, EMPTY_LIST, 10..20);
     let first = sender.alloc_list_cons_slot(AnyValue::int(1), shared_tail);
@@ -83,21 +87,50 @@ fn a_tail_shared_by_two_values_is_measured_once() {
     let bytes = measured_equals_copied(&mut sender, &[list_ref(first), list_ref(second)]);
     assert_eq!(
         bytes,
-        (10 + 2) * CELL,
-        "ten shared cells and the two heads in front of them"
+        (10 + 10 + 2) * CELL,
+        "each holder carries its own ten cells and its head"
     );
 }
 
 #[test]
-fn a_value_repeated_in_the_set_is_measured_once() {
+fn a_value_repeated_in_the_set_is_measured_each_time() {
     let mut sender = Heap::new(SIZE_TABLE[0], fresh_registry());
     let bits = int_list(&mut sender, EMPTY_LIST, 0..7);
     let bytes = measured_equals_copied(&mut sender, &[list_ref(bits), list_ref(bits)]);
-    assert_eq!(bytes, 7 * CELL);
+    assert_eq!(bytes, 2 * 7 * CELL);
+}
+
+/// A send copies a term without preserving sharing: a list a message holds
+/// twice arrives as two lists, and the measure counts both.
+#[test]
+fn a_list_a_message_holds_twice_arrives_as_two_copies() {
+    let reg = fresh_registry();
+    let pair = reg.borrow_mut().register(Schema::tuple_of_arity(2));
+    let mut sender = Heap::new(SIZE_TABLE[0], reg);
+    let list = int_list(&mut sender, EMPTY_LIST, 0..5);
+    let list_value = heap_value(ValueKind::LIST, list_addr_from_tagged(list).expect("addr"));
+    let pair_p = sender.alloc_struct(pair);
+    unsafe {
+        sender.write_field_slot(pair_p, 0, list_value);
+        sender.write_field_slot(pair_p, 8, list_value);
+    }
+    let message = heap_ref(ValueKind::STRUCT, pair_p);
+    let measured = measured_equals_copied(&mut sender, &[message]);
+    assert_eq!(measured, struct_bytes_of(&sender, pair) + 2 * 5 * CELL);
+    let (_segment, copied) = gift_copy(&mut sender, &[message]);
+    let copied_pair = copied[0].storage_addr();
+    let left = sender.read_field_slot(copied_pair, 0);
+    let right = sender.read_field_slot(copied_pair, 8);
+    assert_ne!(
+        left.heap_addr(),
+        right.heap_addr(),
+        "each field holds a copy of its own"
+    );
+    assert_ne!(left.heap_addr(), list_value.heap_addr(), "neither is the sender's list");
 }
 
 #[test]
-fn a_struct_whose_fields_share_one_list_measures_the_list_once() {
+fn a_struct_whose_fields_share_one_list_measures_the_list_per_field() {
     let reg = fresh_registry();
     let pair = reg.borrow_mut().register(Schema::tuple_of_arity(2));
     let pair_bytes = struct_bytes(&reg, pair);
@@ -112,8 +145,8 @@ fn a_struct_whose_fields_share_one_list_measures_the_list_once() {
     let bytes = measured_equals_copied(&mut sender, &[heap_ref(ValueKind::STRUCT, pair_p)]);
     assert_eq!(
         bytes,
-        pair_bytes + 5 * CELL,
-        "the struct and one copy of the shared list"
+        pair_bytes + 2 * 5 * CELL,
+        "the struct and one copy of the list for each field"
     );
 }
 
@@ -134,7 +167,7 @@ fn a_struct_nested_in_a_struct_is_measured_through_the_schema() {
         sender.write_field_slot(outer, 8, heap_value(ValueKind::STRUCT, inner));
     }
     let bytes = measured_equals_copied(&mut sender, &[heap_ref(ValueKind::STRUCT, outer)]);
-    assert_eq!(bytes, 2 * pair_bytes);
+    assert_eq!(bytes, 3 * pair_bytes);
 }
 
 #[test]
@@ -217,7 +250,7 @@ fn values_the_copy_returns_as_they_are_measure_nothing() {
     assert_eq!(measure_deep_copy(&values, &sender.view()), 0);
     let (segment, copied) = gift_copy(&mut sender, &values);
     assert_eq!(segment.block_count(), 0, "a copy that allocates nothing takes no block");
-    assert_eq!(copied, values, "the values cross as they are");
+    assert_eq!(copied.as_slice(), values.as_slice(), "the values cross as they are");
 }
 
 #[test]
@@ -258,7 +291,7 @@ fn an_atom_ref_measures_nothing_and_crosses_as_it_is() {
     let (segment, copied) = gift_copy(&mut sender, &atoms);
 
     assert_eq!(segment.block_count(), 0, "an atom ref needs no block");
-    assert_eq!(copied, atoms, "the atoms cross as they are");
+    assert_eq!(copied.as_slice(), atoms.as_slice(), "the atoms cross as they are");
 }
 
 #[test]
@@ -267,12 +300,7 @@ fn deep_copying_an_atom_ref_to_another_heap_allocates_nothing() {
     let mut destination = Heap::new(SIZE_TABLE[0], fresh_registry());
     let before = destination.alloc_stats_snapshot();
 
-    let copy = deep_copy_any_value_ref(
-        AnyValueRef::atom(7),
-        &source.view(),
-        &mut destination,
-        &mut AddressMap::default(),
-    );
+    let copy = deep_copy_any_value_ref(AnyValueRef::atom(7), &source.view(), &mut destination);
 
     assert_eq!(copy, AnyValueRef::atom(7));
     assert_eq!(destination.alloc_stats_snapshot().total.allocs, before.total.allocs);
@@ -288,7 +316,7 @@ fn a_pid_ref_measures_nothing_and_crosses_as_it_is() {
     let (segment, copied) = gift_copy(&mut sender, &pids);
 
     assert_eq!(segment.block_count(), 0, "a pid ref needs no block");
-    assert_eq!(copied, pids, "the pids cross as they are");
+    assert_eq!(copied.as_slice(), pids.as_slice(), "the pids cross as they are");
 }
 
 #[test]
@@ -298,7 +326,7 @@ fn deep_copying_a_pid_ref_to_another_heap_allocates_nothing() {
     let pid = source.box_any_value_ref(AnyValue::Opaque(ValueKind::PID, 7));
     let before = destination.alloc_stats_snapshot();
 
-    let copy = deep_copy_any_value_ref(pid, &source.view(), &mut destination, &mut AddressMap::default());
+    let copy = deep_copy_any_value_ref(pid, &source.view(), &mut destination);
 
     assert_eq!(copy, pid);
     assert_eq!(destination.alloc_stats_snapshot().total.allocs, before.total.allocs);

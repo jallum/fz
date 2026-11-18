@@ -18,8 +18,8 @@
 use crate::any_value::{self, AnyValue, AnyValueRef, ValueKind};
 use crate::delivery::Delivery;
 use crate::exec_ctx::{timer_cancel, timer_schedule};
-use crate::heap::{AddressMap, GiftSegment, Heap, deep_copy_any_value_ref, measure_deep_copy};
-use crate::park::ParkRecord;
+use crate::heap::{GiftSegment, Heap, HeapView, deep_copy_any_value_ref, measure_deep_copy};
+use crate::park::{ParkRecord, Roots};
 use crate::process::{PidId, Process, ProcessState};
 use crate::timer::TimerId;
 use std::collections::VecDeque;
@@ -86,12 +86,9 @@ pub enum GiftPayload {
     /// A message the receiver was not waiting for. It joins the mailbox.
     Message(AnyValueRef),
     /// A message the sender matched against the receiver's parked receive:
-    /// the winning clause and the values its pattern bound. The message
-    /// itself is consumed by the match and never reaches the mailbox.
-    Match {
-        clause_idx: usize,
-        bound_vals: Vec<AnyValueRef>,
-    },
+    /// the winning clause and the roots its arguments are read from. The
+    /// message itself is consumed by the match and never reaches the mailbox.
+    Match { clause_idx: usize, roots: Roots },
 }
 
 /// Outcome of `probe_sender`.
@@ -117,26 +114,47 @@ pub struct SendProbe {
     /// Bytes and blocks of the gift segment the send produced.
     pub gift_bytes: usize,
     pub gift_blocks: usize,
+    /// The roots a hit carries; zero for a miss, whose message is one value.
+    pub gift_roots: usize,
 }
 
 /// Measure `values`, then copy them into a gift window on `heap` sized to the
-/// measurement. One forwarding map spans all of them, so structure shared
-/// between two values stays shared in the copy. A copy that allocates nothing
+/// measurement. A copy keeps no record of what it has copied, as a send in BEAM
+/// does not: structure shared between two values, or within one, arrives as a
+/// separate copy at each place it is reached. A copy that allocates nothing
 /// (no values, or only values that cross as they are) opens no window and
 /// costs no block.
-pub fn gift_copy(heap: &mut Heap, values: &[AnyValueRef]) -> (GiftSegment, Vec<AnyValueRef>) {
+pub fn gift_copy(heap: &mut Heap, values: &[AnyValueRef]) -> (GiftSegment, Roots) {
+    let Some(source) = open_gift(heap, values) else {
+        return (GiftSegment::empty(), values.iter().copied().collect());
+    };
+    let copied = values
+        .iter()
+        .map(|value| deep_copy_any_value_ref(*value, &source, heap))
+        .collect();
+    (heap.end_gift(), copied)
+}
+
+/// `gift_copy` of one value, which needs no vector to hold its copy.
+pub fn gift_copy_one(heap: &mut Heap, value: AnyValueRef) -> (GiftSegment, AnyValueRef) {
+    let Some(source) = open_gift(heap, &[value]) else {
+        return (GiftSegment::empty(), value);
+    };
+    let copied = deep_copy_any_value_ref(value, &source, heap);
+    (heap.end_gift(), copied)
+}
+
+/// Measure `values` and open a gift window sized to them, returning the view
+/// of the source the copy reads. `None` when the copy allocates nothing, and
+/// no window opens.
+fn open_gift(heap: &mut Heap, values: &[AnyValueRef]) -> Option<HeapView> {
     let source = heap.view();
     let measured = measure_deep_copy(values, &source);
     if measured == 0 {
-        return (GiftSegment::empty(), values.to_vec());
+        return None;
     }
-    let mut forwarding = AddressMap::default();
     heap.begin_gift(measured);
-    let copied = values
-        .iter()
-        .map(|value| deep_copy_any_value_ref(*value, &source, heap, &mut forwarding))
-        .collect();
-    (heap.end_gift(), copied)
+    Some(source)
 }
 
 /// Sender-side selective-receive probe. Called on `send` arrival with `msg`
@@ -151,8 +169,9 @@ pub fn gift_copy(heap: &mut Heap, values: &[AnyValueRef]) -> (GiftSegment, Vec<A
 /// matcher boxes lands on its heap. Either way the sender copies what the
 /// receiver will keep into a gift on its own heap and queues it on the
 /// receiver:
-/// - Hit: the bound values, with the after-timer cancelled so it cannot fire
-///   for a receive that is already decided. The caller wakes the receiver.
+/// - Hit: the roots the winning clause reads its arguments from, with the
+///   after-timer cancelled so it cannot fire for a receive that is already
+///   decided. The caller wakes the receiver.
 /// - Miss: the whole message, for the mailbox. The caller does not wake.
 ///
 /// A receiver whose receive is already matched by an earlier sender is not
@@ -160,59 +179,64 @@ pub fn gift_copy(heap: &mut Heap, values: &[AnyValueRef]) -> (GiftSegment, Vec<A
 pub fn probe_sender(sender: &mut Process, receiver: &Process, msg: AnyValueRef) -> SendProbe {
     let mut delivery = receiver.delivery.lock();
     let sender_ptr: *mut Process = sender;
-    let mut reductions = 0;
-    let matched = delivery.undecided_park().and_then(|park| {
-        let before = sender.reductions_remaining;
-        let hit = park.try_match(sender_ptr, msg);
-        reductions = i64::from(before) - i64::from(sender.reductions_remaining);
-        hit
-    });
-    match matched {
-        Some((clause_idx, bound_vals)) => {
-            let timer = delivery
-                .park_mut()
-                .expect("a matched receive is still parked")
-                .after_timer_id
-                .take();
-            if let Some(id) = timer {
-                timer_cancel(receiver, id);
-            }
-            gift_match(sender, &mut delivery, receiver.pid, clause_idx, &bound_vals, reductions)
-        }
-        None => SendProbe {
+    let mut roots = Roots::new();
+    let before = sender.reductions_remaining;
+    let hit = delivery
+        .undecided_park()
+        .and_then(|park| park.try_match(sender_ptr, msg, &mut roots))
+        .map(|(clause_idx, roots)| (clause_idx, roots.len()));
+    let reductions = i64::from(before) - i64::from(sender.reductions_remaining);
+    let Some((clause_idx, root_count)) = hit else {
+        return SendProbe {
             reductions,
             ..gift_message(sender, &mut delivery, receiver.pid, msg)
-        },
+        };
+    };
+    let timer = delivery
+        .park_mut()
+        .expect("a matched receive is still parked")
+        .after_timer_id
+        .take();
+    if let Some(id) = timer {
+        timer_cancel(receiver, id);
     }
+    gift_match(
+        sender,
+        &mut delivery,
+        receiver.pid,
+        clause_idx,
+        &roots[..root_count],
+        reductions,
+    )
 }
 
 /// A miss: gift `msg` whole for the receiver's mailbox. The caller holds the
 /// receiver's delivery lock and does not wake the receiver.
 pub fn gift_message(sender: &mut Process, delivery: &mut Delivery, receiver: PidId, msg: AnyValueRef) -> SendProbe {
-    let (segment, copied) = gift_copy(&mut sender.heap, &[msg]);
+    let (segment, copied) = gift_copy_one(&mut sender.heap, msg);
     queue_gift(
         delivery,
         receiver,
         segment,
-        GiftPayload::Message(copied[0]),
+        GiftPayload::Message(copied),
         ProbeOutcome::Miss,
         0,
     )
 }
 
-/// A hit: gift the values clause `clause_idx` bound, charging `reductions`
-/// to the probe. The caller holds the receiver's delivery lock, has cancelled
+/// A hit: gift the roots clause `clause_idx` reads its arguments from,
+/// charging `reductions` to the probe. The caller holds the receiver's delivery lock, has cancelled
 /// the receive's after-timer and goes on to wake the receiver.
 pub fn gift_match(
     sender: &mut Process,
     delivery: &mut Delivery,
     receiver: PidId,
     clause_idx: usize,
-    bound: &[AnyValueRef],
+    roots: &[AnyValueRef],
     reductions: i64,
 ) -> SendProbe {
-    let (segment, bound_vals) = gift_copy(&mut sender.heap, bound);
-    let payload = GiftPayload::Match { clause_idx, bound_vals };
+    let (segment, roots) = gift_copy(&mut sender.heap, roots);
+    let payload = GiftPayload::Match { clause_idx, roots };
     queue_gift(delivery, receiver, segment, payload, ProbeOutcome::Hit, reductions)
 }
 
@@ -230,6 +254,10 @@ fn queue_gift(
         reductions,
         gift_bytes: segment.fill_bytes(),
         gift_blocks: segment.block_count(),
+        gift_roots: match &payload {
+            GiftPayload::Message(_) => 0,
+            GiftPayload::Match { roots, .. } => roots.len(),
+        },
     };
     delivery.push_gift(Gift { segment, payload });
     probe
@@ -245,15 +273,15 @@ pub fn drain_in_queue(
     delivery: &mut Delivery,
     heap: &mut Heap,
     mailbox: &mut VecDeque<AnyValueRef>,
-) -> Option<(usize, Vec<AnyValueRef>)> {
+) -> Option<(usize, Roots)> {
     let mut matched = None;
     while let Some(Gift { segment, payload }) = delivery.pop_gift() {
         heap.graft(segment);
         match payload {
             GiftPayload::Message(msg) => mailbox.push_back(msg),
-            GiftPayload::Match { clause_idx, bound_vals } => {
+            GiftPayload::Match { clause_idx, roots } => {
                 assert!(matched.is_none(), "a receiver takes one match per parked receive");
-                matched = Some((clause_idx, bound_vals));
+                matched = Some((clause_idx, roots));
             }
         }
     }
@@ -262,17 +290,18 @@ pub fn drain_in_queue(
 
 /// Drain the in-queue and, when a sender matched the parked receive, finish
 /// the receive: the park record is taken and the winning clause's outcome
-/// closure, built over the gifted bound values, becomes the task's runnable.
+/// closure, built over the arguments its projector reads out of the gifted
+/// roots, becomes the task's runnable.
 /// The delivery lock is held from the first entry taken to the park taken.
 /// The compiled paths (JIT and AOT) call this as the first act of a dispatch.
 pub fn deliver_in_queue(task: &mut Process) {
     let mut delivery = task.delivery.lock();
-    let Some((clause_idx, bound_vals)) = drain_in_queue(&mut delivery, &mut task.heap, &mut task.mailbox) else {
+    let Some((clause_idx, roots)) = drain_in_queue(&mut delivery, &mut task.heap, &mut task.mailbox) else {
         return;
     };
     let park = delivery.take_park().expect("a matched receive is still parked");
     drop(delivery);
-    let cont = park.outcome_closure(&mut task.heap, clause_idx, &bound_vals);
+    let cont = park.outcome_closure(task, clause_idx, &roots);
     task.set_runnable_closure(cont);
 }
 
@@ -315,14 +344,15 @@ pub enum ReceiveStep {
 pub fn reach_receive(task: &mut Process, mut park: ParkRecord) -> ReceiveStep {
     let task_ptr: *mut Process = task;
     let mut delivery = task.delivery.lock();
+    let mut roots = Roots::new();
     let hit = (0..task.mailbox.len()).find_map(|i| {
-        park.try_match(task_ptr, task.mailbox[i])
-            .map(|(clause_idx, bound_vals)| (i, clause_idx, bound_vals))
+        park.try_match(task_ptr, task.mailbox[i], &mut roots)
+            .map(|(clause_idx, roots)| (i, clause_idx, roots.len()))
     });
-    if let Some((i, clause_idx, bound_vals)) = hit {
+    if let Some((i, clause_idx, root_count)) = hit {
         drop(delivery);
         task.mailbox.remove(i);
-        return ReceiveStep::Continue(park.outcome_closure(&mut task.heap, clause_idx, &bound_vals));
+        return ReceiveStep::Continue(park.outcome_closure(task, clause_idx, &roots[..root_count]));
     }
     match park.after_deadline_ms {
         Some(0) => ReceiveStep::Continue(park.after_closure(&mut task.heap)),

@@ -27,7 +27,7 @@
 use crate::any_value::AnyValueRef;
 use crate::exec_ctx::{Argv, ExecCtx};
 use crate::function_denotation::decode_closure_denotations;
-use crate::heap::{AddressMap, Schema, SchemaRegistry, deep_copy_any_value_ref, pool_outstanding_blocks};
+use crate::heap::{Schema, SchemaRegistry, deep_copy_any_value_ref, pool_outstanding_blocks};
 use crate::output::{OutputSink as _, STDOUT_OUTPUT};
 use crate::pinned_abi::{call1, call2};
 use crate::process::{AtomName, DEFAULT_REDUCTIONS_PER_QUANTUM, Disposition, Node, Process, ProcessState};
@@ -470,9 +470,8 @@ extern "C" fn aot_spawn_hook(sender: *mut Process, scheduler: *mut (), closure_b
     let mut child = Box::new(Process::with_node(node, schemas, pid, DEFAULT_REDUCTIONS_PER_QUANTUM));
 
     // Deep-copy the closure into the child's heap.
-    let mut forwarding = AddressMap::default();
     let closure_ref = AnyValueRef::from_raw_word(closure_bits).expect("aot_spawn_hook: closure ref");
-    let copied = deep_copy_any_value_ref(closure_ref, &parent.heap.view(), &mut child.heap, &mut forwarding);
+    let copied = deep_copy_any_value_ref(closure_ref, &parent.heap.view(), &mut child.heap);
     copied
         .closure_addr()
         .expect("aot_spawn_hook: copied closure must be a closure");

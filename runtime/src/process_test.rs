@@ -108,13 +108,8 @@ fn captured_list(closure: AnyValueRef) -> AnyValueRef {
 }
 
 /// Matches a message whose list head equals the pinned list's head.
-extern "C" fn pinned_head_matcher(
-    _process: *mut Process,
-    msg: u64,
-    pinned: *const AnyValueRef,
-    _out: *mut AnyValueRef,
-) -> u32 {
-    let pinned = unsafe { *pinned };
+extern "C" fn pinned_head_matcher(_process: *mut Process, msg: u64, frame: u64, _out: *mut AnyValueRef) -> u32 {
+    let pinned = AnyValueRef::from_raw_word(crate::ir_runtime::fz_receive_pinned_ref(frame, 1)).expect("pinned ref");
     let msg = AnyValueRef::from_raw_word(msg).expect("msg ref");
     u32::from(list_head(msg) == list_head(pinned))
 }
@@ -123,7 +118,9 @@ extern "C" fn pinned_head_matcher(
 fn park_on(process: &mut Process, capture: AnyValueRef, pinned: AnyValueRef) {
     let clause = ReceiveClause {
         code: 0x10,
-        bound_count: 0,
+        projector: None,
+        root_count: 0,
+        argument_count: 0,
         empty_slots: 0,
     };
     let frame = frame_of(&mut process.heap, &[capture, pinned]);
@@ -194,7 +191,8 @@ fn collect_forwards_every_root_a_parked_process_holds() {
     assert_eq!(list_head(transient[0]), 6);
     let probe = int_list(&mut process.heap, 1);
     assert!(
-        park.try_match(null_mut(), probe).is_some(),
+        park.try_match(null_mut(), probe, &mut crate::park::Roots::new())
+            .is_some(),
         "the moved pinned value still matches"
     );
     assert_eq!(
@@ -470,7 +468,6 @@ fn a_collection_leaves_a_static_closure_in_place_and_a_deep_copy_shares_it() {
 
     let mut receiver = Process::with_node(node, Rc::new(RefCell::new(SchemaRegistry::new())), 2, 1000);
     let view = process.heap.view();
-    let mut forwarding = Default::default();
-    let copied = crate::heap::deep_copy_any_value_ref(word, &view, &mut receiver.heap, &mut forwarding);
+    let copied = crate::heap::deep_copy_any_value_ref(word, &view, &mut receiver.heap);
     assert_eq!(copied.raw_word(), word.raw_word(), "a send shares it");
 }

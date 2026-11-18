@@ -5,7 +5,6 @@ use crate::any_value::{
 };
 use crate::bits::{BinView, SharedBinHandle, alloc_binref, alloc_buffer_view, alloc_view};
 use crate::function_denotation::FunctionDenotation;
-use crate::heap::AddressMap;
 use crate::heap::StubSite;
 use crate::heap::{Heap, Schema, deep_copy_slot};
 use crate::module_name::ModuleName;
@@ -301,12 +300,7 @@ fn typed_closure_and_resource_identity_survive_transport_without_comparison_allo
         (heap_value(changed), AnyValue::int(3)),
     ]);
     assert_eq!(unsafe { map_count(map_addr_from_tagged(map).unwrap()) }, 2);
-    let copied = deep_copy_slot(
-        heap_value(map),
-        &source.view(),
-        &mut destination,
-        &mut AddressMap::default(),
-    );
+    let copied = deep_copy_slot(heap_value(map), &source.view(), &mut destination);
     let mut roots = [copied.ref_word()];
     destination.collect(&mut roots);
     let moved = AnyValue::decode_tagged_heap_bits(roots[0].heap_object_word().unwrap()).unwrap();

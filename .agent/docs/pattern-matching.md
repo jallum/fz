@@ -366,10 +366,20 @@ Receive origins terminate at `MailboxMessage(owner)`, not a fabricated caller
 value. Semantic parameters project their types from mailbox `any` through the
 winning plan's evidence. Native receive preserves subject-to-parameter identity
 in its function ABI; pinned values and prepared keys are indexed by the plan,
-never by source spelling. A sender-side winning probe runs the matcher on the
-sender and copies only those exact projected arguments, including physical
-sources, with one forwarding map into a gift on the sender's own heap; the
-receiver grafts the gift at its next dispatch. Misses and timeouts expose no
+never by source spelling. `PatternDispatchPlan::outcome_roots` names, for a
+clause's arguments, the *roots*: the outermost argument subjects on each
+chain of tuple-field, struct-field, list-head and list-tail projections (a
+bitstring field or a map value ends a chain and is its own root). Roots are
+disjoint, and each argument is a root plus the path of projections below it.
+The native matcher writes the roots to its `out` buffer, and a clause whose
+roots are not its arguments in order gets a projector beside the matcher that
+reads the arguments back out of the roots by those paths; the interpreter reads
+the same table. A sender-side winning probe runs the matcher on the sender and
+copies each root once, with no record of what it has copied, into a gift on the
+sender's own heap; the receiver grafts the gift at its next dispatch and
+projects its arguments from the roots it finds there. A pattern like
+`[_, head | tail]` gifts the second cell alone, and `head` and `tail` are read
+out of the receiver's copy of it. Misses and timeouts expose no
 outcome arguments.
 
 A one-cons `List` construction may carry `ListRetention { source, permission }`.

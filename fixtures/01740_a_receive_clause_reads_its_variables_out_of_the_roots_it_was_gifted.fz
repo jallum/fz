@@ -1,0 +1,35 @@
+#---
+# purpose: "a receive clause that binds a tuple field, a list cell with its head and tail, and the fields of a binary reads every variable out of the roots the send gifted, whether the message was waiting in the mailbox or the receiver was parked"
+# kind: run
+#---
+#
+# One clause takes a message apart: `n` is a tuple field, `items` is a list cell
+# whose head and tail are bound too, and the binary is split into `len`,
+# `payload` and `more`. Of those variables only the cell overlaps another, and
+# the head and tail are read out of the cell the receiver holds. The program
+# receives the message twice: once found in the mailbox, once sent to a parked
+# receiver, which is a gift. Both print the same shape.
+def take() do
+  receive do
+    {:frame, n, [_, head | rest] = items, <<len, payload::binary-size(len), more::binary>>} ->
+      {n, head, rest, items, len, payload, more}
+  after
+    60000 -> :timeout
+  end
+end
+
+def sender(parent) do
+  receive do
+    :go -> send(parent, {:frame, 7, [10, 20, 30, 40], <<3, 65, 66, 67, 68, 69>>})
+  end
+end
+
+def main() do
+  send(self(), {:frame, 1, [1, 2, 3], <<1, 88, 89>>})
+  dbg(take())
+
+  parent = self()
+  child = spawn(fn () -> sender(parent) end)
+  send(child, :go)
+  dbg(take())
+end

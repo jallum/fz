@@ -223,7 +223,7 @@ it is a NUL; another process writing there would replace that NUL under a call
 in progress. So every path that makes a buffer reachable from another process
 freezes it first, on the sender's thread: `deep_copy_any_value`'s view arm
 calls `shared_bin_freeze`, and every cross-process copy goes through it
-(`gift_copy` for a message or a spawned closure's bound values, and the spawn
+(`gift_copy` for a message or a spawned closure's captured values, and the spawn
 paths in `aot_shim.rs`, `ir_interp/backend.rs` and `exec/runtime.rs`). An
 unfrozen buffer has stubs on one heap only, so changing `bytes_len` has no
 concurrent reader. The heap destructor frees `capacity + 1` bytes, frozen or
@@ -656,7 +656,7 @@ order built it. Keys with equal 64-bit hashes share a collision node and are
 told apart by equality. `total` counts the entries at and beneath a node, so
 the root answers `map_size` in constant time and bounds a map at 2^25 entries.
 The collector traces a node's own entries and its children from the header, and
-deep copy and gift copy each node once through the forwarding map.
+deep copy and gift copy each node once per path that reaches it.
 
 `Heap::map_layout` answers `MapLayout::Trie` for a root. A map of more than 32
 entries is always a trie and a map of 32 or fewer is always a flat array:
@@ -817,8 +817,10 @@ Cross-process send copies into storage the receiver will own: the sender
 copies into a gift window on its own heap (`sched::gift_copy`), and the receiver
 grafts the segment at its next dispatch. Every list cell and struct the copy
 writes is shared from birth, because the grafted segment is old and an old cell is never
-rewritten in place; repeated forwarding hits and copied container fields protect
-receiver-side sharing the same way. The sender's own cells are not marked merely
+rewritten in place; copied container fields protect
+receiver-side sharing the same way. A copy keeps no record of what it has copied,
+as a send in BEAM does not, so a subterm reached twice arrives as two copies
+and nothing in a gift is aliased within it. The sender's own cells are not marked merely
 because a copy was sent. Self-send copies nothing and the runtime publishes nothing: the
 sender's own reference is pushed onto its mailbox (`sched::self_send`). The
 mailbox is then a second holder, and the compiler's call-site ownership rule is
@@ -952,8 +954,8 @@ its next dispatch (see [scheduler](scheduler-zero-arg-closures.md)):
 ```text
 self-send:                push the sender's own ref onto its mailbox; nothing is copied
 cross-process, parked:    run the receiver's matcher on the sender's ref;
-                          on a hit, gift the bound values (nothing when the clause
-                          binds none) and wake the receiver; on a miss, gift the
+                          on a hit, gift the clause's roots (nothing when the clause
+                          reads none) and wake the receiver; on a miss, gift the
                           whole message, which joins the receiver's mailbox when
                           it drains its in-queue
 cross-process, not waiting: gift the whole message; it joins the receiver's

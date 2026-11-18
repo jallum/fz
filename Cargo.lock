@@ -513,6 +513,7 @@ dependencies = [
  "libc",
  "loom",
  "ryu",
+ "smallvec",
  "unicode-segmentation",
 ]
 

@@ -462,3 +462,96 @@ fn a_call_to_a_helper_whose_callee_always_fails_is_a_failing_node_whose_argument
     let built = guard_of(&call_with_unbuildable_argument, failing_helper());
     assert!(matches!(built, Ok(PatternGuardExpr::Fails)), "{built:?}");
 }
+
+/// The subject that projects `kind` from `source`.
+fn projected(plan: &Plan, source: SubjectId, kind: ProjectionKind) -> SubjectId {
+    plan.graph
+        .subjects
+        .iter()
+        .find(|subject| match &subject.source {
+            SubjectSource::Projection(projection) => projection.source == source && projection.kind == kind,
+            SubjectSource::Input { .. } => false,
+        })
+        .map(|subject| subject.id)
+        .expect("the plan projects this subject")
+}
+
+fn list_pattern(items: Vec<Pattern>, tail: Option<Pattern>) -> Pattern {
+    Pattern::List(items.into_iter().map(sp).collect(), tail.map(|tail| Box::new(sp(tail))))
+}
+
+/// `[_, head | tail]` binds a cell and the head and tail inside it. The cell is
+/// the one root; the head and the tail are read out of it, so a receiver that
+/// copies the cell holds the head and tail of its own copy.
+#[test]
+fn a_cell_and_the_head_and_tail_inside_it_share_the_cell_as_their_root() {
+    let helpers = Helpers::new();
+    let head = Pattern::Var(Var::user("head"));
+    let tail = Pattern::Var(Var::user("tail"));
+    let plan = helpers.plan(
+        vec![list_pattern(vec![Pattern::Wildcard, head], Some(tail))],
+        Vec::new(),
+        Expr::Bool(true),
+    );
+    let input = SubjectId(0);
+    let cell = projected(&plan, input, ProjectionKind::ListTail);
+    let head = projected(&plan, cell, ProjectionKind::ListHead);
+    let tail = projected(&plan, cell, ProjectionKind::ListTail);
+
+    let roots = plan.outcome_roots([head, tail, cell]);
+
+    assert_eq!(roots.roots, vec![cell]);
+    assert_eq!(roots.arguments[0].path.as_slice(), &[head]);
+    assert_eq!(roots.arguments[1].path.as_slice(), &[tail]);
+    assert!(roots.arguments[2].path.is_empty(), "the cell is its own root");
+    assert!(roots.arguments.iter().all(|argument| argument.root == 0));
+    assert!(!roots.is_identity());
+}
+
+/// Without the cell among the arguments, the head and the tail are disjoint
+/// positions of the message, and each is a root of its own.
+#[test]
+fn a_head_and_a_tail_without_their_cell_are_two_roots() {
+    let helpers = Helpers::new();
+    let plan = helpers.plan(
+        vec![list_pattern(
+            vec![Pattern::Var(Var::user("head"))],
+            Some(Pattern::Var(Var::user("tail"))),
+        )],
+        Vec::new(),
+        Expr::Bool(true),
+    );
+    let input = SubjectId(0);
+    let head = projected(&plan, input, ProjectionKind::ListHead);
+    let tail = projected(&plan, input, ProjectionKind::ListTail);
+
+    let roots = plan.outcome_roots([tail, head]);
+
+    assert_eq!(roots.roots, vec![tail, head], "roots follow the order of the arguments");
+    assert!(roots.is_identity(), "nothing is left to project");
+}
+
+/// A root is the outermost *argument*, not the outermost subject: an argument
+/// deep in a message is its own root when nothing above it is an argument, so
+/// the gift carries it and not the message around it.
+#[test]
+fn an_argument_below_unread_structure_is_a_root_of_its_own() {
+    let helpers = Helpers::new();
+    let nested = Pattern::Tuple(vec![
+        sp(Pattern::Wildcard),
+        sp(list_pattern(
+            vec![Pattern::Var(Var::user("head"))],
+            Some(Pattern::Var(Var::user("tail"))),
+        )),
+    ]);
+    let plan = helpers.plan(vec![nested], Vec::new(), Expr::Bool(true));
+    let input = SubjectId(0);
+    let list = projected(&plan, input, ProjectionKind::TupleField(1));
+    let head = projected(&plan, list, ProjectionKind::ListHead);
+    let tail = projected(&plan, list, ProjectionKind::ListTail);
+
+    let roots = plan.outcome_roots([head, tail]);
+
+    assert_eq!(roots.roots, vec![head, tail]);
+    assert!(roots.is_identity());
+}

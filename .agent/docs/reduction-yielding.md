@@ -124,11 +124,13 @@ scheduler yield to remain total.
 
 `SIZE_TABLE` lists the capacities the block pool recycles, from 1 KiB to about
 7 MiB (32 entries). A tip starts at the first entry and climbs the table. A
-block outside the table's range is exact: `pick_block_capacity` returns the
-request rounded up to 16 bytes, whether the request is below the first entry
-or above the last. An exact block is allocated at that size and is returned to
-the system allocator, not the pool, when it is released;
-`pool_outstanding_blocks` counts pooled blocks only. An object above the table
+request below the first entry gets a block of the request rounded up to 16
+bytes, and the pool keeps a free list for each such multiple of 16, so a small
+block is recycled like a table block and its in-use and idle bytes are its exact
+size. A request above the last entry is exact: `pick_block_capacity` returns the
+request rounded up to 16 bytes, and the block is allocated at that size and
+returned to the system allocator, not the pool, when it is released;
+`pool_outstanding_blocks` counts pooled blocks, small ones included. An object above the table
 is parked in an exact block, is part of `bytes_used` and is copied by Cheney like any other, into an
 exact block of its own.
 
@@ -136,10 +138,11 @@ exact block of its own.
 
 A gift is measured, then copied. `measure_deep_copy` returns the bytes the
 copy will allocate: it walks the same kinds under the same ownership test and
-the same sharing as `deep_copy_any_value_ref`, so an object reached twice is
-counted once, and each object is the size `strict_object_size` states for its
-source. `Heap::begin_gift(measured_bytes)` sets the current tip aside and
-installs one fresh block of `pick_block_capacity(measured_bytes)`: an exact
+the same absence of sharing as `deep_copy_any_value_ref`, which keeps no record
+of what it has copied, as a send in BEAM does not: an object reached twice is
+copied twice and counted twice. Each object is the size `strict_object_size`
+states for its source. `Heap::begin_gift(measured_bytes)` sets the current tip aside and
+installs one fresh block of `pick_block_capacity(measured_bytes)`: a pooled
 block of the measured bytes below the table, a table entry within it, and an
 exact block above it. The copy allocates through
 `alloc_kind` into that block and cannot overflow it. `Heap::end_gift` asserts
@@ -150,7 +153,7 @@ into a `GiftSegment` of exactly one block, restores the saved tip, and puts
 copying. `Heap::graft` on another heap adopts the segment; dropping an
 un-grafted segment releases its block and its objects' off-heap references. A
 collection asserts that no window is open. Cross-process send is the window's user: `sched::gift_copy` measures a
-message, or a match's bound values, and copies it inside one, and the segment travels to the
+message, or a match's roots, and copies it inside one, and the segment travels to the
 receiver on its `in_queue` (see [scheduler](scheduler-zero-arg-closures.md)).
 
 A grafted block is old: its fill is part of `bytes_used` and of

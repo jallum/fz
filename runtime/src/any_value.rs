@@ -232,7 +232,7 @@ impl AnyValueRefPacking {
     }
 
     /// `word` as the raw address it names, with the literal bit and kind dropped.
-    /// Dereferencing, identity comparison and forwarding-map keys use this.
+    /// Dereferencing and identity comparison use this.
     pub const fn raw_address(self, word: u64) -> usize {
         (word & self.address_mask) as usize
     }

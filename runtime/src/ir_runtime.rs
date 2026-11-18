@@ -25,8 +25,8 @@
 use crate::any_value::debug::{Limit, render_value, render_with_limit};
 use crate::any_value::{
     AnyValue, AnyValueRef, FALSE_ATOM_ID, NIL_ATOM_ID, SlotLayout, ValueKind, binview_addr_from_tagged,
-    closure_addr_from_tagged, closure_arity, closure_captured_count, closure_denotation, closure_fn_ptr,
-    closure_halt_kind, map_addr_from_tagged, object_size, struct_is_shared, struct_schema_id,
+    closure_addr_from_tagged, closure_arity, closure_capture_ref_word, closure_captured_count, closure_denotation,
+    closure_fn_ptr, closure_halt_kind, map_addr_from_tagged, object_size, struct_is_shared, struct_schema_id,
 };
 use crate::bits::{
     BinView, SharedBin, SharedBinHandle, alloc_buffer_view, bitstring_bit_len, bitstring_byte_ptr, is_bitstring_like,
@@ -513,6 +513,21 @@ pub extern "C" fn fz_receive_park_matched(
     match reach_receive(p, park) {
         ReceiveStep::Continue(closure) => closure.raw_word() as *mut u8,
         ReceiveStep::Parked => YIELD_PTR as *mut u8,
+    }
+}
+
+/// A pinned value of a receive's frame, as a value ref word. A receive matcher
+/// calls it for each value its patterns pin. The frame is
+/// `[outer_cont, captures..., pinned...]`, so `from_end` counts the pinned values
+/// from the last capture: `1` is the last pinned value.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_receive_pinned_ref(frame_bits: u64, from_end: u64) -> u64 {
+    let frame = closure_ref_from_word(frame_bits, "fz_receive_pinned_ref frame");
+    let addr = frame.closure_addr().expect("a receive frame is a closure ref");
+    // SAFETY: the frame is a live closure its arrival holds, and `from_end` names one of its pinned captures.
+    unsafe {
+        let captured = closure_captured_count(addr);
+        closure_capture_ref_word(addr, captured - from_end as usize)
     }
 }
 

@@ -95,8 +95,18 @@ pub(crate) struct ReceiveSiteLayout {
     /// The `after` body's code and empty slot count.
     pub(crate) after: Option<(FuncId, u32)>,
     pub(crate) pinned_count: u32,
-    /// Each clause's code, bound count and empty slot count, in source order.
-    pub(crate) clauses: Vec<(FuncId, u32, u32)>,
+    /// Each clause, in source order.
+    pub(crate) clauses: Vec<ReceiveClauseLayout>,
+}
+
+/// What a receive clause fixes at compile time, as codegen holds it.
+pub(crate) struct ReceiveClauseLayout {
+    pub(crate) code: FuncId,
+    /// Reads the clause's arguments out of its roots; absent when they are the roots.
+    pub(crate) projector: Option<FuncId>,
+    pub(crate) root_count: u32,
+    pub(crate) argument_count: u32,
+    pub(crate) empty_slots: u32,
 }
 
 /// Define a receive's `ReceiveSite` record with its clauses behind it.
@@ -112,17 +122,27 @@ pub(crate) fn define_receive_site<M: Module>(
     let mut put = |offset: usize, value: u32| bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
     put(offset_of!(ReceiveSite, clause_count), site.clauses.len() as u32);
     put(offset_of!(ReceiveSite, pinned_count), site.pinned_count);
-    let bound_arity = site.clauses.iter().map(|&(_, bound, _)| bound).max().unwrap_or(0);
-    put(offset_of!(ReceiveSite, bound_arity), bound_arity);
+    let root_arity = site.clauses.iter().map(|clause| clause.root_count).max().unwrap_or(0);
+    put(offset_of!(ReceiveSite, root_arity), root_arity);
     if let Some((code, empty_slots)) = site.after {
         addresses.push((offset_of!(ReceiveSite, after_code), StaticAddress::Function(code)));
         put(offset_of!(ReceiveSite, after_empty_slots), empty_slots);
     }
-    for (i, &(code, bound_count, empty_slots)) in site.clauses.iter().enumerate() {
+    for (i, layout) in site.clauses.iter().enumerate() {
         let at = header + i * clause;
-        addresses.push((at + offset_of!(ReceiveClause, code), StaticAddress::Function(code)));
-        put(at + offset_of!(ReceiveClause, bound_count), bound_count);
-        put(at + offset_of!(ReceiveClause, empty_slots), empty_slots);
+        addresses.push((
+            at + offset_of!(ReceiveClause, code),
+            StaticAddress::Function(layout.code),
+        ));
+        if let Some(projector) = layout.projector {
+            addresses.push((
+                at + offset_of!(ReceiveClause, projector),
+                StaticAddress::Function(projector),
+            ));
+        }
+        put(at + offset_of!(ReceiveClause, root_count), layout.root_count);
+        put(at + offset_of!(ReceiveClause, argument_count), layout.argument_count);
+        put(at + offset_of!(ReceiveClause, empty_slots), layout.empty_slots);
     }
     define_read_only_object(jmod, name, bytes, &addresses)
 }

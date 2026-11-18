@@ -206,8 +206,8 @@ fn write_metadata(out: &mut String, event: &RuntimeEvent<'_>) {
             };
             write!(
                 out,
-                "\"outcome\":\"{outcome}\",\"receiver\":{},\"reductions\":{},\"gift_bytes\":{},\"gift_blocks\":{}",
-                probe.receiver, probe.reductions, probe.gift_bytes, probe.gift_blocks
+                "\"outcome\":\"{outcome}\",\"receiver\":{},\"reductions\":{},\"gift_bytes\":{},\"gift_blocks\":{},\"gift_roots\":{}",
+                probe.receiver, probe.reductions, probe.gift_bytes, probe.gift_blocks, probe.gift_roots
             )
             .unwrap();
         }

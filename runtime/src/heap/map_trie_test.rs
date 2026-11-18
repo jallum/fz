@@ -313,7 +313,7 @@ fn deep_copy_and_a_gift_copy_each_node_once_and_measure_what_they_write() {
 }
 
 #[test]
-fn a_shared_subtrie_is_copied_once() {
+fn a_shared_subtrie_is_copied_per_parent_slot() {
     let mut heap = heap();
     let inner = map_ref(heap.alloc_map_slots(&shuffled_entries(100)));
     let header = map_trie_header_word(0, 0b11, 200);
@@ -321,7 +321,7 @@ fn a_shared_subtrie_is_copied_once() {
     let outer = heap.alloc_map_node(header, &[], &[shared, shared]);
     let outer = map_ref(heap_object_word(outer, ValueKind::MAP));
     let measured = measure_deep_copy(&[outer], &heap.view());
-    assert_eq!(measured, map_node_size(0, 2) + trie_bytes(root_addr(inner)));
+    assert_eq!(measured, map_node_size(0, 2) + 2 * trie_bytes(root_addr(inner)));
 }
 
 #[test]

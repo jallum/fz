@@ -1,4 +1,7 @@
-use super::receive::{declare_receive_dispatch, emit_receive_dispatch_body};
+use super::receive::{
+    ReceiveFns, clause_roots, declare_receive_dispatch, declare_receive_projector, emit_receive_dispatch_body,
+    emit_receive_projector_body,
+};
 use super::*;
 use crate::diag::Diagnostics;
 use crate::fast_hash::{HashMap, HashSet};
@@ -567,11 +570,11 @@ fn declare_spec_fns<M: cranelift_module::Module>(
     Ok(fn_ids)
 }
 
-/// Pre-pass over Term::ReceiveMatched sites: one receive-dispatch FuncId per
+/// Pre-pass over Term::ReceiveMatched sites: the receive functions of each
 /// site, keyed by `(fn_id.0, block_id.0)`. Declared up front so the
 /// park-site terminator arm can take a `func_addr` of an as-yet-unemitted
-/// symbol; the body is emitted in a post-fn-loop pass.
-type ReceiveDispatchFnIds = HashMap<(u32, u32), FuncId>;
+/// symbol; the bodies are emitted in a post-fn-loop pass.
+type ReceiveDispatchFnIds = HashMap<(u32, u32), ReceiveFns>;
 type ReceiveMatchedSites = Vec<(FnId, BlockId)>;
 type MidFlightContFnIds = HashMap<(u32, Vec<MidFlightArgShape>), FuncId>;
 
@@ -579,16 +582,27 @@ fn declare_receive_dispatch_fns<M: cranelift_module::Module>(
     m: &mut M,
     module: &Module,
 ) -> Result<(ReceiveDispatchFnIds, ReceiveMatchedSites), CodegenError> {
-    let mut dispatch_fn_ids: HashMap<(u32, u32), FuncId> = HashMap::default();
+    let mut dispatch_fn_ids: ReceiveDispatchFnIds = HashMap::default();
     let mut receive_matched_sites: Vec<(FnId, BlockId)> = Vec::new();
     for f in &module.fns {
         for blk in &f.blocks {
-            let Term::ReceiveMatched { .. } = &blk.terminator else {
+            let Term::ReceiveMatched { clauses, dispatch, .. } = &blk.terminator else {
                 continue;
             };
             let name = format!("fz_receive_dispatch_fn_{}_b{}", f.id.0, blk.id.0);
-            let m_id = declare_receive_dispatch(m, &name)?;
-            dispatch_fn_ids.insert((f.id.0, blk.id.0), m_id);
+            let matcher = declare_receive_dispatch(m, &name)?;
+            let projectors = clauses
+                .iter()
+                .enumerate()
+                .map(|(index, clause)| {
+                    if clause_roots(module, dispatch, clause).is_identity() {
+                        return Ok(None);
+                    }
+                    let name = format!("fz_receive_project_fn_{}_b{}_c{}", f.id.0, blk.id.0, index);
+                    declare_receive_projector(m, &name).map(Some)
+                })
+                .collect::<Result<Vec<_>, CodegenError>>()?;
+            dispatch_fn_ids.insert((f.id.0, blk.id.0), ReceiveFns { matcher, projectors });
             receive_matched_sites.push((f.id, blk.id));
         }
     }
@@ -608,7 +622,7 @@ fn emit_receive_dispatch_bodies<M: cranelift_module::Module>(
     module: &Module,
     tuple_schema_ids: &HashMap<usize, u32>,
     named_schema_ids: &HashMap<fz_runtime::module_name::ModuleName, u32>,
-    dispatch_fn_ids: &HashMap<(u32, u32), FuncId>,
+    dispatch_fn_ids: &ReceiveDispatchFnIds,
     receive_matched_sites: &[(FnId, BlockId)],
     tel: &impl RawSpanTelemetry,
 ) -> Result<(), CodegenError> {
@@ -624,13 +638,27 @@ fn emit_receive_dispatch_bodies<M: cranelift_module::Module>(
         else {
             unreachable!("receive_matched_sites holds only Term::ReceiveMatched terms");
         };
-        let m_id = dispatch_fn_ids[&(fn_id.0, blk_id.0)];
+        let fns = &dispatch_fn_ids[&(fn_id.0, blk_id.0)];
         {
             let _span = tel.raw_span2_0(&["fz", "codegen", "lower_function"], module, fn_id);
+            for (clause, projector) in clauses.iter().zip(&fns.projectors) {
+                if let Some(projector) = projector {
+                    emit_receive_projector_body(
+                        m,
+                        fbctx,
+                        *projector,
+                        module,
+                        tuple_schema_ids,
+                        named_schema_ids,
+                        clause,
+                        dispatch,
+                    )?;
+                }
+            }
             emit_receive_dispatch_body(
                 m,
                 fbctx,
-                m_id,
+                fns.matcher,
                 module,
                 tuple_schema_ids,
                 named_schema_ids,

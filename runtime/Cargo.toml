@@ -12,6 +12,7 @@ crate-type = ["staticlib", "rlib"]
 [dependencies]
 libc = "0.2"
 ryu = "1.0.23"
+smallvec = { version = "1.15.1", default-features = false, features = ["union"] }
 unicode-segmentation = "1.13.3"
 
 # fz-q8d.3 — loom model-checker for SharedBin retain/release ordering.

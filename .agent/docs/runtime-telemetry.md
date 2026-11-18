@@ -201,7 +201,7 @@ renders it as `in_use_bytes`, `idle_bytes` and `peak_in_use_bytes`. Outstanding
 is the count `pool_alloc` has handed out minus the count `pool_free` has taken
 back (`heap::pool_outstanding_blocks`), sampled when the run began and again
 once every process has been torn down; `pool_cached_blocks` is the blocks
-resting in the pool's free lists. Exact blocks (a gift below or above the
+resting in the pool's free lists. Exact blocks (a gift above the
 table) belong to the system allocator and appear in neither count. The compiler's own heaps live on the same
 thread for the whole run, so the absolute outstanding count is never zero. The
 run's guarantee is `pool_outstanding_after_run == pool_outstanding_before_run`:
@@ -248,7 +248,7 @@ pins the three as the difference between two list sizes.
 A send to another process runs `sched::probe_sender` on the sender: the
 receiver's parked matcher, if any, is tested against the message with the
 sender as the allocating process, and whatever the receiver will keep (the
-bound values on a hit, the whole message on a miss) is copied into a gift on the
+roots of the winning clause on a hit, the whole message on a miss) is copied into a gift on the
 sender's heap and queued on the receiver's `in_queue`. The JIT
 `send_via`, the interpreter's `send_ref` and the AOT send hook each observe
 `RuntimeEvent::SendProbe` with the `SendProbe` the probe returned; the first two
@@ -260,12 +260,14 @@ signature:    (&SendProbe)
 ```
 
 `SendProbe` is `{ outcome: Hit | Miss, receiver: PidId, reductions: i64,
-gift_bytes: usize, gift_blocks: usize }`. `reductions` is the change in the
+gift_bytes: usize, gift_blocks: usize, gift_roots: usize }`. `reductions` is the change in the
 sender's remaining budget across the matcher call; `gift_bytes` and
 `gift_blocks` are the segment's fill and block count. `gift_bytes` equals the
 bytes `measure_deep_copy` returned before the copy, and `gift_blocks` is `1`
-for every gift that allocates; both are `0` when a hit binds nothing and no
-window opens. `write_line` renders the
+for every gift that allocates; both are `0` when a hit gifts nothing and no
+window opens. `gift_roots` is the number of roots a hit carries (see
+[pattern matching](pattern-matching.md#outcome-values-and-retained-lists)) and
+`0` for a miss. `write_line` renders the
 outcome as `"hit"` or `"miss"` and the rest as numbers. A self-send is a mailbox
 push and emits nothing, as does a send to an exited or unknown receiver. `tests/fixture_matrix.rs`
 (`a_send_probes_on_the_sender_and_gifts_its_result_through_the_receivers_in_queue`)

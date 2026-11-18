@@ -280,6 +280,10 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             a_send_probes_on_the_sender_and_gifts_its_result_through_the_receivers_in_queue,
         ),
         (
+            "a_hit_gifts_the_roots_a_clause_reads_and_not_one_copy_per_variable",
+            a_hit_gifts_the_roots_a_clause_reads_and_not_one_copy_per_variable,
+        ),
+        (
             "a_matched_reply_fixture_collects_on_every_path_though_only_the_jit_yields_mid_run",
             a_matched_reply_fixture_collects_on_every_path_though_only_the_jit_yields_mid_run,
         ),
@@ -3884,6 +3888,32 @@ fn send_probe_events_for_fixture(fixture: &FixtureCase, path: FixtureMatrixPath,
             gift_blocks: required_json_u64_field(line, "gift_blocks", "send probe"),
         })
         .collect()
+}
+
+/// The `gift_roots` of every hit send probe the fixture emits on `path`.
+fn hit_gift_roots_for_fixture(fixture: &FixtureCase, path: FixtureMatrixPath, label: &str) -> Vec<usize> {
+    telemetry_log_for_fixture(fixture, path, label)
+        .lines()
+        .filter(|line| line.contains("\"name\":[\"fz\",\"runtime\",\"send\",\"probe\"]"))
+        .filter(|line| json_str_field(line, "outcome").as_deref() == Some("hit"))
+        .map(|line| required_json_u64_field(line, "gift_roots", "send probe"))
+        .collect()
+}
+
+/// The clause of 01740 binds seven variables: a tuple field, a list cell with
+/// its head and tail, and the length, payload and rest of a binary. The cell's
+/// head and tail are read out of the cell, so the gift carries five roots: the
+/// number, the cell, and the three binary parts.
+fn a_hit_gifts_the_roots_a_clause_reads_and_not_one_copy_per_variable() {
+    let fixture =
+        FixtureCase::new("fixtures/01740_a_receive_clause_reads_its_variables_out_of_the_roots_it_was_gifted.fz");
+    for (path, label) in RUNTIME_TELEMETRY_PATHS {
+        assert_eq!(
+            hit_gift_roots_for_fixture(&fixture, path, label),
+            vec![5],
+            "{label}: the one gifted hit carries five roots for seven variables"
+        );
+    }
 }
 
 /// One `fz.runtime.gc` event as the jsonl log renders it.

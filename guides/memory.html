@@ -446,8 +446,10 @@ and the tip keeps filling. All parked blocks are reclaimed at the next
 GC.</p>
 
 <p>The table has neither a floor nor a ceiling on what a block may be. A
-request below the first entry or above the last gets a block of exactly its size
-(rounded up to 16 bytes); that block comes from the system allocator, not the
+request below the first entry gets a block of exactly its size (rounded up to
+16 bytes), and the pool keeps a free list for each such multiple of 16, so small
+blocks are recycled like any other. A request above the last entry also gets a
+block of exactly its size; that block comes from the system allocator, not the
 pool, and goes back to it when it is released. An object larger than the last
 entry is copied like any other when the collection that reaches it releases the
 block.</p>
@@ -456,15 +458,16 @@ block.</p>
 
 <p>A heap can lend its allocation path to a copy whose result belongs to another
 heap. Cross-process send is its user: the sender copies a message, or a match's
-bound values, inside one, and the segment waits on the receiver's
+roots, inside one, and the segment waits on the receiver's
 <code>in_queue</code> until the receiver's next dispatch grafts it.</p>
 
 <p>The sender measures first. <code>measure_deep_copy</code> walks the value
-set the way the copy will and returns the bytes it will allocate, counting
-shared structure once. <code>Heap::begin_gift</code> takes that figure, sets the
+set the way the copy will and returns the bytes it will allocate. A send
+copies without preserving sharing, as BEAM's does: a subterm the message
+reaches twice is copied twice and counted twice. <code>Heap::begin_gift</code> takes that figure, sets the
 current tip aside and installs one block of the smallest capacity that holds it
-(an exact block when it is below or above the table, so a 16-byte message
-occupies a 16-byte block). The copy runs through the ordinary
+(a pooled block of exactly that size when it is below the table, so a 16-byte
+message occupies a 16-byte block, and an exact block from the system allocator above it). The copy runs through the ordinary
 bump path and fills the block without overflowing it. <code>Heap::end_gift</code>
 asserts the block's fill is exactly the measured bytes, turns the block into a
 <code>GiftSegment</code> and puts
@@ -902,7 +905,6 @@ the bytes. Instead:</p>
   shared_bin_retain(src.binref.shared_ptr)  <span class="note">// atomic ++ on refcount</span>
   dst_binref = alloc_binref(dst_heap, shared_ptr)
   dst_view = alloc_view(dst_heap, dst_binref, src.bytes_ptr, src.bit_len)
-  forwarding[src] = dst_view
 </pre>
 
 <p>The gift gets a fresh 16-byte BinRef and a 32-byte BinView viewing the same
@@ -1136,8 +1138,9 @@ wants to retain a value after returning, the extern must copy it.</p>
 deep-copies the message graph into a gift before queueing it on the receiver,
 so the sender's list cells need not be marked aliased just because they were
 sent. A singly copied list can remain
-unshared; repeated references and copied container fields protect sharing in
-the receiver. Self-send copies nothing: the sender's own reference enters the
+unshared; copied container fields protect sharing in the receiver. A copy keeps
+no record of what it has copied, so a subterm the message holds twice arrives as
+two separate copies. Self-send copies nothing: the sender's own reference enters the
 mailbox, and the compiler's call-site Share publication is what marks a list
 the sender still names. Inside a single heap the alias bit is one-way, so a
 rewrite miss falls back to allocation rather than rewiring a value another
