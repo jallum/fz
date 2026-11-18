@@ -11,11 +11,15 @@
     {
       "text": "Cannot be built as a recipe row as written (Optimize, 2026-11-18): the answer depends on the field kind byte, whose place fz_struct_get_field_ref(process, word, field_offset) finds via the schema registry (Schema::value_field_kind_offset); a recipe sees only its arguments. After that the read is ~8 branch-free instructions. Missing: the tuple field count at the read (SlotLayout { fields }.kind_offset(index); Prim::TupleField(Var, u32) carries only the index; the three emitters have the count at hand). Proposed (awaiting the user): Prim::TupleField carries the field count; the runtime function takes (word, index, count) and places the kind byte by SlotLayout with no registry lookup; then a real recipe row with a parity proof. Touches interp, JIT, AOT and the IR printer. JSON-object probe (80-byte object, 50,074 instr/decode at a3edb6f32 + #739): fz_struct_get_field_ref 5.2% inclusive.",
       "timestamp": "2026-11-18T05:27:56Z"
+    },
+    {
+      "text": "Concordant evidence 2026-11-18 (Make Distiller Fast, bench profile at 37c5473cd, read off disassembly). Heap::read_struct_field_ref is 3.4% self. On every field read it bumps a borrow counter, bounds-checks a table, then scans the struct's field descriptors linearly (0x28-byte stride) comparing ids to find the field. Callers: JSON decoder object_key/object_value. Same design question as decision 76 (Prim::TupleField carries the field count).",
+      "timestamp": "2026-11-18T19:16:19Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "A struct field read at a known slot is one load",
   "type": "task",
-  "updated_at": "2026-11-18T05:27:56Z"
+  "updated_at": "2026-11-18T19:16:19Z"
 }
