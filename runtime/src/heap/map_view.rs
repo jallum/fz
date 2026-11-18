@@ -18,6 +18,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use super::Heap;
+use super::imp::position_of_word;
 use super::schema::SchemaIdentity;
 use super::schema::{NamedSchema, StructKey};
 use crate::any_value::{
@@ -44,7 +45,7 @@ pub enum MapLayout {
 /// field, its slot offset.
 struct StructMap {
     keys: Vec<StructKey>,
-    atoms: Vec<AnyValue>,
+    atoms: Vec<u64>,
     offsets: Vec<u32>,
     module: AnyValue,
 }
@@ -103,7 +104,7 @@ impl Heap {
 
     fn entries_named_schema(&self, addr: *mut u8) -> NamedSchema {
         let key = AnyValue::atom(self.node.intern_atom(STRUCT_MODULE_FIELD));
-        let Some((node, slot)) = self.locate_key(addr, key) else {
+        let Some((node, slot)) = self.find(addr, key) else {
             return NamedSchema::None;
         };
         let (_, module) = unsafe { map_slot(node, slot) };
@@ -147,7 +148,7 @@ impl Heap {
         };
         let mut fields = vec![None; schema.fields.len()];
         for (key, atom) in keys.keys.iter().zip(&keys.atoms) {
-            let (node, slot) = self.locate_key(addr, *atom)?;
+            let (node, slot) = self.find(addr, AnyValue::atom(*atom as u32))?;
             if let StructKey::Field(field) = key {
                 let name = schema.fields[*field].name.clone()?;
                 fields[*field] = Some((name, unsafe { map_slot(node, slot) }.1));
@@ -182,7 +183,7 @@ impl Heap {
             MapLayout::Struct { object, schema_id } => {
                 let map = self.struct_map(schema_id);
                 (
-                    map.atoms[index],
+                    map.key_atom(index),
                     self.struct_key_value(struct_addr(object), &map, index),
                 )
             }
@@ -199,7 +200,7 @@ impl Heap {
             }
             MapLayout::Struct { object, schema_id } => {
                 let map = self.struct_map(schema_id);
-                let key = self.box_any_value_ref(map.atoms[index]);
+                let key = self.box_any_value_ref(map.key_atom(index));
                 (key, self.struct_key_value_ref(object, &map, index))
             }
         }
@@ -215,27 +216,25 @@ impl Heap {
         }
     }
 
-    /// The node and entry slot that hold `key` in the map at `addr`, an
-    /// entries layout or a trie.
-    pub(super) fn locate_key(&self, addr: *mut u8, key: AnyValue) -> Option<(*const u8, usize)> {
+    /// The node and entry slot that hold `key` in the map at `addr`, a flat
+    /// map or a trie.
+    #[inline]
+    pub(super) fn find(&self, addr: *const u8, key: AnyValue) -> Option<(*const u8, usize)> {
         if unsafe { map_header_is_trie(addr) } {
-            self.trie_find(addr, key)
-        } else {
-            self.map_key_position(addr, key)
-                .ok()
-                .map(|index| (addr as *const u8, index))
+            return self.trie_find(addr, key);
         }
+        self.flat_find(addr, key).map(|slot| (addr, slot))
     }
 
     /// The value under `key`, or `None` when the map lacks it.
     pub fn map_view_get(&mut self, layout: MapLayout, key: AnyValue) -> Option<AnyValueRef> {
         match layout {
             MapLayout::Entries(addr) | MapLayout::Trie(addr) => self
-                .locate_key(addr, key)
+                .find(addr, key)
                 .map(|(node, slot)| unsafe { map_slot_refs(node, slot).1 }),
             MapLayout::Struct { object, schema_id } => {
                 let map = self.struct_map(schema_id);
-                let index = map.position(key)?;
+                let index = map.find(key)?;
                 Some(self.struct_key_value_ref(object, &map, index))
             }
         }
@@ -243,8 +242,8 @@ impl Heap {
 
     pub fn map_view_has_key(&self, layout: MapLayout, key: AnyValue) -> bool {
         match layout {
-            MapLayout::Entries(addr) | MapLayout::Trie(addr) => self.locate_key(addr, key).is_some(),
-            MapLayout::Struct { schema_id, .. } => self.struct_map(schema_id).position(key).is_some(),
+            MapLayout::Entries(addr) | MapLayout::Trie(addr) => self.find(addr, key).is_some(),
+            MapLayout::Struct { schema_id, .. } => self.struct_map(schema_id).find(key).is_some(),
         }
     }
 
@@ -257,7 +256,7 @@ impl Heap {
             MapLayout::Trie(addr) => entries_ref(self.trie_put(addr, key, value)),
             MapLayout::Struct { object, schema_id } => {
                 let map = self.struct_map(schema_id);
-                match map.position(key).map(|index| map.keys[index]) {
+                match map.find(key).map(|index| map.keys[index]) {
                     Some(StructKey::Field(field)) => self.struct_with_field(struct_addr(object), &map, field, value),
                     _ => {
                         let mut entries = self.map_view_entries(layout);
@@ -312,7 +311,7 @@ impl Heap {
         value: AnyValue,
     ) -> u64 {
         let map = self.struct_map(schema_id);
-        let Some(index) = map.position(key) else {
+        let Some(index) = map.find(key) else {
             return 0;
         };
         let addr = struct_addr(object);
@@ -356,7 +355,7 @@ impl Heap {
             .map_keys(schema_id)
             .expect("a map-layout struct has map keys")
             .to_vec();
-        let atom = |name: &str| AnyValue::atom(self.node.intern_atom(name));
+        let atom = |name: &str| self.node.intern_atom(name) as u64;
         let atoms = keys
             .iter()
             .map(|key| match key {
@@ -370,7 +369,7 @@ impl Heap {
             })
             .collect();
         let module = match &schema.identity {
-            super::SchemaIdentity::Named(name) => atom(&name.atom_name()),
+            super::SchemaIdentity::Named(name) => AnyValue::atom(atom(&name.atom_name()) as u32),
             other => panic!("schema {} has no module", other.display_name()),
         };
         StructMap {
@@ -410,9 +409,17 @@ impl StructMap {
         SlotLayout::of(self.offsets.len())
     }
 
-    /// Where `key` sits among the struct's keys; only an atom names one.
-    fn position(&self, key: AnyValue) -> Option<usize> {
-        self.atoms.iter().position(|atom| *atom == key)
+    fn key_atom(&self, index: usize) -> AnyValue {
+        AnyValue::atom(self.atoms[index] as u32)
+    }
+
+    /// Where `key` sits among the struct's keys; only an atom names one, and
+    /// it is found by its word, as a map finds it.
+    fn find(&self, key: AnyValue) -> Option<usize> {
+        if key.kind() != ValueKind::ATOM {
+            return None;
+        }
+        unsafe { position_of_word(self.atoms.as_ptr(), self.atoms.len(), key.raw()) }
     }
 }
 

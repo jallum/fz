@@ -786,3 +786,59 @@ fn a_nonfinite_float_has_no_place_among_map_keys() {
     let nan = AnyValue::Float(f64::NAN.to_bits());
     key_order_of(&TermComparator::new(&node, &schemas), nan, nan);
 }
+
+fn key_orderings_during<R>(work: impl FnOnce() -> R) -> (R, usize) {
+    COMPARISON_CALLS.with(|count| count.set(0));
+    let result = work();
+    (result, COMPARISON_CALLS.with(Cell::get))
+}
+
+fn map_of(heap: &mut Heap, entries: &[(AnyValue, AnyValue)]) -> AnyValueRef {
+    let map = heap_value(heap.alloc_map_slots(entries));
+    AnyValueRef::from_heap_object(ValueKind::MAP, map.raw() as *const u8).unwrap()
+}
+
+/// Intent: an atom or an integer is found in a map by the word the map
+/// stores for it. No two keys are ordered, whether the key is there or not,
+/// in a flat map or a trie.
+#[test]
+fn a_one_word_key_is_looked_up_without_ordering_any_keys() {
+    let mut pool = Pool::new();
+    for count in [12, 40] {
+        let entries: Vec<_> = (0..count)
+            .map(|i| (pool.atom(&format!("key{i}")), AnyValue::int(i)))
+            .chain((0..count).map(|i| (AnyValue::int(i), AnyValue::int(-i))))
+            .collect();
+        let entries = &entries[..count as usize + 3];
+        let map = map_of(&mut pool.heap, entries);
+        let layout = pool.heap.map_layout(map).unwrap();
+        let (present, absent, number) = (pool.atom("key7"), pool.atom("nowhere"), AnyValue::int(2));
+        let heap = &mut pool.heap;
+        let (found, orderings) = key_orderings_during(|| {
+            (
+                heap.map_view_get(layout, present).map(|value| value.load_int()),
+                heap.map_view_get(layout, number).map(|value| value.load_int()),
+                heap.map_view_has_key(layout, absent),
+                heap.map_view_has_key(layout, AnyValue::int(99)),
+            )
+        });
+        assert_eq!(found, (Some(Ok(7)), Some(Ok(-2)), false, false), "{count} keys");
+        assert_eq!(orderings, 0, "{count} keys");
+    }
+}
+
+/// Intent: a word alone does not name a key. An integer and an atom whose
+/// id is that integer are different keys of one map.
+#[test]
+fn an_integer_and_an_atom_with_the_same_word_are_different_keys() {
+    let mut pool = Pool::new();
+    let atom = pool.atom("solo");
+    let twin = AnyValue::int(atom.raw() as i64);
+    let map = map_of(&mut pool.heap, &[(twin, AnyValue::int(1)), (atom, AnyValue::int(2))]);
+    let layout = pool.heap.map_layout(map).unwrap();
+    assert_eq!(pool.heap.map_view_get(layout, twin).unwrap().load_int(), Ok(1));
+    assert_eq!(pool.heap.map_view_get(layout, atom).unwrap().load_int(), Ok(2));
+    let only_atom = map_of(&mut pool.heap, &[(atom, AnyValue::int(2))]);
+    let layout = pool.heap.map_layout(only_atom).unwrap();
+    assert!(!pool.heap.map_view_has_key(layout, twin));
+}

@@ -164,22 +164,26 @@ fn rank(bitmap: u16, bit: u16) -> usize {
     (bitmap & (bit - 1)).count_ones() as usize
 }
 
-/// The node and entry slot holding the key `is_key` recognises, in the trie
+/// The node and entry slot whose key `holds_key` recognises, in the trie
 /// rooted at `root`, given the key's hash.
-pub(super) fn find(root: *const u8, hash: u64, is_key: impl Fn(AnyValue) -> bool) -> Option<(*const u8, usize)> {
+pub(super) fn find(
+    root: *const u8,
+    hash: u64,
+    holds_key: impl Fn(*const u8, usize) -> bool,
+) -> Option<(*const u8, usize)> {
     let mut node = root;
     for level in 0..=LEVELS {
         if unsafe { map_header_is_collision(node) } {
             let entries = unsafe { map_node_entry_count(node) };
             return (0..entries)
-                .find(|&slot| is_key(unsafe { map_slot(node, slot) }.0))
+                .find(|&slot| holds_key(node, slot))
                 .map(|slot| (node, slot));
         }
         let (data, children) = unsafe { map_trie_bitmaps(node) };
         let bit = 1u16 << slot_at(hash, level);
         if data & bit != 0 {
             let slot = rank(data, bit);
-            return is_key(unsafe { map_slot(node, slot) }.0).then_some((node, slot));
+            return holds_key(node, slot).then_some((node, slot));
         }
         if children & bit == 0 {
             return None;
@@ -198,10 +202,7 @@ impl Heap {
 
     /// The node and entry slot that hold `key` in the trie rooted at `root`.
     pub(super) fn trie_find(&self, root: *const u8, key: AnyValue) -> Option<(*const u8, usize)> {
-        let hash = self.key_hash(key);
-        let schemas = self.schemas.borrow();
-        let comparator = TermComparator::new(&self.node, &schemas);
-        find(root, hash, |candidate| comparator.key_order_of(candidate, key).is_eq())
+        find(root, self.key_hash(key), |node, slot| self.slot_holds(node, slot, key))
     }
 
     /// A trie of `entries`, which have no key repeated, and answers its root.

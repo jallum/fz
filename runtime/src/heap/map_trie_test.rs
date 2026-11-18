@@ -206,15 +206,26 @@ fn keys_with_equal_hashes_meet_in_a_collision_node_and_are_told_apart_by_equalit
     let hash_of: &dyn Fn(AnyValue) -> u64 = &|key| hashed.iter().find(|(_, e)| e.0.raw() == key.raw()).unwrap().0;
     assert_eq!(check_node(hash_of, root_addr(root), 0, 0), 200);
     for &(hash, (key, value)) in &hashed {
-        let (node, slot) = find(root_addr(root), hash, |k| k.raw() == key.raw()).expect("a colliding key is found");
+        let (node, slot) = find(root_addr(root), hash, |node, slot| {
+            unsafe { map_slot(node, slot) }.0.raw() == key.raw()
+        })
+        .expect("a colliding key is found");
         assert_eq!(unsafe { map_slot(node, slot) }.1.raw(), value.raw());
     }
     let absent = AnyValue::int(1000);
-    assert!(find(root_addr(root), hashed[0].0, |k| k.raw() == absent.raw()).is_none());
+    assert!(
+        find(root_addr(root), hashed[0].0, |node, slot| unsafe {
+            map_slot(node, slot)
+        }
+        .0
+        .raw()
+            == absent.raw())
+        .is_none()
+    );
     assert!(
         hashed
             .iter()
-            .any(|&(hash, _)| unsafe { map_header_is_collision(find(root_addr(root), hash, |_| true).unwrap().0) }),
+            .any(|&(hash, _)| unsafe { map_header_is_collision(find(root_addr(root), hash, |_, _| true).unwrap().0) }),
         "some keys share every bit of their hash"
     );
 }
