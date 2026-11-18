@@ -198,7 +198,7 @@ pub struct World {
     protocol_dispatches: ProtocolDispatchMap,
     protocol_impl_providers: ProtocolImplProviderMap,
     nameable_modules: NameableModules,
-    raisable: Raisable,
+    raisable: HashMap<RootId, Raisable>,
     activations: ActivationMap,
     activation_inputs: ActivationInputMap<Job>,
     callsites: CallSiteMap,
@@ -388,7 +388,7 @@ impl World {
             protocol_dispatches: ProtocolDispatchMap::new(),
             protocol_impl_providers: ProtocolImplProviderMap::new(),
             nameable_modules: NameableModules::default(),
-            raisable: Raisable::default(),
+            raisable: HashMap::default(),
             activations: ActivationMap::new(),
             activation_inputs: ActivationInputMap::new(),
             callsites: CallSiteMap::new(),
@@ -1545,26 +1545,27 @@ impl World {
         self.nameable_modules.modules()
     }
 
-    /// Records that a raise of `kind` can hand a handler `raised`, and that
-    /// a value can name an exception's module: a raised exception is asked
-    /// for its message through it. The facts this is news to join `changed`.
-    pub(crate) fn note_raisable(&mut self, kind: RaiseKind, raised: Raised, changed: &mut Vec<FactKey>) {
+    /// Records that a raise of `kind` in `root`'s program can hand a handler
+    /// `raised`, and that a value can name an exception's module: a raised
+    /// exception is asked for its message through it. The facts this is news
+    /// to join `changed`.
+    pub(crate) fn note_raisable(&mut self, root: RootId, kind: RaiseKind, raised: Raised, changed: &mut Vec<FactKey>) {
         if let Raised::Exception(module) = raised
             && self.note_nameable_module(module)
         {
             changed.push(FactKey::NameableModules);
         }
-        if self.raisable.note(kind, raised) {
-            changed.push(FactKey::Raisable);
+        if self.raisable.entry(root).or_default().note(kind, raised) {
+            changed.push(FactKey::Raisable(root));
         }
     }
 
-    /// The type of what a raise of `kind` hands a handler: a struct of each
-    /// exception module the program can raise, its fields left open, and
-    /// `any` once some raise hands over another value. `None` while the
-    /// program raises nothing of that kind.
-    pub(crate) fn raisable_ty(&mut self, kind: RaiseKind) -> Option<Ty> {
-        let of_kind = self.raisable.of(kind);
+    /// The type of what a raise of `kind` hands a handler in `root`'s
+    /// program: a struct of each exception module that program can raise, its
+    /// fields left open, and `any` once some raise hands over another value.
+    /// `None` while the program raises nothing of that kind.
+    pub(crate) fn raisable_ty(&mut self, root: RootId, kind: RaiseKind) -> Option<Ty> {
+        let of_kind = self.raisable.get(&root)?.of(kind);
         if of_kind.is_empty() {
             return None;
         }
@@ -3215,7 +3216,7 @@ impl World {
             | FactKey::ProtocolDispatch(_)
             | FactKey::ProtocolImplProviders(_)
             | FactKey::NameableModules
-            | FactKey::Raisable
+            | FactKey::Raisable(_)
             | FactKey::FunctionContract(_)
             | FactKey::LoweredBody(_)
             | FactKey::GuardDispatch(_)

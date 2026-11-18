@@ -411,9 +411,9 @@ pub(super) fn analyze_activation(
 
     emit_semantic_walk(tel, function, walks.entries_walked);
     let trimmed = TrimmedPlans::of(world.types(), entry_edges, std::mem::take(&mut walks.cases));
-    outputs.extend([FactKey::NameableModules, FactKey::Raisable]);
+    outputs.extend([FactKey::NameableModules, FactKey::Raisable(activation.root)]);
     for (kind, raised) in raises_of(world, function, &trimmed, &analysis_calls, &input_rows) {
-        world.note_raisable(kind, raised, &mut changed);
+        world.note_raisable(activation.root, kind, raised, &mut changed);
     }
     let analysis_changed = super::super::drive::ExecutionContext::new(world, tel).define_activation_analysis(
         activation,
@@ -1221,14 +1221,14 @@ fn analyze_tail(
                 activation,
                 walk,
             )?;
-            // The handler runs once for each kind of raise the program can
+            // The handler runs once for each kind of raise its program can
             // make, on what that kind hands over. The exception name beside
             // it is `any`.
             let any = world.types_mut().any();
-            walk.uses.read(FactKey::Raisable);
+            walk.uses.read(FactKey::Raisable(activation.root));
             let mut joined = body_ty;
             for kind in RaiseKind::ALL {
-                let Some(raised) = world.raisable_ty(kind) else {
+                let Some(raised) = world.raisable_ty(activation.root, kind) else {
                     continue;
                 };
                 let kind = world.types_mut().atom_lit(kind.name());

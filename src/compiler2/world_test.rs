@@ -4,8 +4,8 @@ use super::identity::Raised;
 use super::keying::{BodyKeying, InputDemand};
 use super::types::ClosureTarget;
 use super::{
-    FactKey, FunctionSource, Job, ModuleId, ModuleInterface, Namespace, NamespaceSymbol, TypeName, Types, World,
-    parse_quoted_program,
+    FactKey, FunctionSource, Job, ModuleId, ModuleInterface, Namespace, NamespaceSymbol, RootId, TypeName, Types,
+    World, parse_quoted_program,
 };
 use crate::ast::Attribute;
 use crate::compiler2::drive::{DependencyKey, JobEffects};
@@ -2518,23 +2518,43 @@ fn exception_of(world: &mut World, module: ModuleId, fields: &[(&str, super::typ
 #[test]
 fn a_raise_is_news_once_and_makes_its_exception_nameable() {
     let mut world = World::new();
+    let root = RootId::for_test(0);
     let key_error = named_module(&mut world, "KeyError");
 
     let mut changed = Vec::new();
-    world.note_raisable(RaiseKind::Error, Raised::Exception(key_error), &mut changed);
-    assert_eq!(changed, [FactKey::NameableModules, FactKey::Raisable]);
+    world.note_raisable(root, RaiseKind::Error, Raised::Exception(key_error), &mut changed);
+    assert_eq!(changed, [FactKey::NameableModules, FactKey::Raisable(root)]);
     assert!(world.nameable_modules().any(|module| module == key_error));
 
     let mut changed = Vec::new();
-    world.note_raisable(RaiseKind::Error, Raised::Exception(key_error), &mut changed);
+    world.note_raisable(root, RaiseKind::Error, Raised::Exception(key_error), &mut changed);
     assert_eq!(changed, [], "the same raise again is not news");
 
     let mut changed = Vec::new();
-    world.note_raisable(RaiseKind::Throw, Raised::Anything, &mut changed);
-    assert_eq!(changed, [FactKey::Raisable], "a thrown value names no module");
+    world.note_raisable(root, RaiseKind::Throw, Raised::Anything, &mut changed);
+    assert_eq!(changed, [FactKey::Raisable(root)], "a thrown value names no module");
     let mut changed = Vec::new();
-    world.note_raisable(RaiseKind::Throw, Raised::Anything, &mut changed);
+    world.note_raisable(root, RaiseKind::Throw, Raised::Anything, &mut changed);
     assert_eq!(changed, []);
+}
+
+/// A raise reaches only the handlers of the program that makes it. A
+/// macro's compiled program is a program of its own, so what the program it
+/// expands can raise is no news to the macro's handlers, and the macro's
+/// handlers need not wait for that program to be analysed.
+#[test]
+fn a_raise_is_news_only_to_its_own_program() {
+    let mut world = World::new();
+    let program = RootId::for_test(0);
+    let macro_program = RootId::for_test(1);
+    let key_error = named_module(&mut world, "KeyError");
+
+    let mut changed = Vec::new();
+    world.note_raisable(program, RaiseKind::Error, Raised::Exception(key_error), &mut changed);
+    assert!(changed.contains(&FactKey::Raisable(program)));
+    assert!(!changed.contains(&FactKey::Raisable(macro_program)));
+    assert_eq!(world.raisable_ty(macro_program, RaiseKind::Error), None);
+    assert!(world.raisable_ty(program, RaiseKind::Error).is_some());
 }
 
 /// Each kind of raise is its own answer: a handler clause for a kind the
@@ -2544,25 +2564,34 @@ fn a_raise_is_news_once_and_makes_its_exception_nameable() {
 #[test]
 fn a_kind_hands_a_handler_its_exceptions_until_something_else_is_raised() {
     let mut world = World::new();
+    let root = RootId::for_test(0);
     let key_error = named_module(&mut world, "KeyError");
     let argument_error = named_module(&mut world, "ArgumentError");
     let mut changed = Vec::new();
     for kind in RaiseKind::ALL {
-        assert_eq!(world.raisable_ty(kind), None, "nothing is raised yet");
+        assert_eq!(world.raisable_ty(root, kind), None, "nothing is raised yet");
     }
 
-    world.note_raisable(RaiseKind::Error, Raised::Exception(key_error), &mut changed);
-    world.note_raisable(RaiseKind::Error, Raised::Exception(argument_error), &mut changed);
+    world.note_raisable(root, RaiseKind::Error, Raised::Exception(key_error), &mut changed);
+    world.note_raisable(root, RaiseKind::Error, Raised::Exception(argument_error), &mut changed);
     let a_key_error = exception_of(&mut world, key_error, &[]);
     let an_argument_error = exception_of(&mut world, argument_error, &[]);
     let either = world.types_mut().union(a_key_error, an_argument_error);
-    assert_eq!(world.raisable_ty(RaiseKind::Error), Some(either));
-    assert_eq!(world.raisable_ty(RaiseKind::Throw), None, "an error is not a throw");
-    assert_eq!(world.raisable_ty(RaiseKind::Exit), None, "an error is not an exit");
+    assert_eq!(world.raisable_ty(root, RaiseKind::Error), Some(either));
+    assert_eq!(
+        world.raisable_ty(root, RaiseKind::Throw),
+        None,
+        "an error is not a throw"
+    );
+    assert_eq!(
+        world.raisable_ty(root, RaiseKind::Exit),
+        None,
+        "an error is not an exit"
+    );
 
-    world.note_raisable(RaiseKind::Error, Raised::Anything, &mut changed);
+    world.note_raisable(root, RaiseKind::Error, Raised::Anything, &mut changed);
     let any = world.types_mut().any();
-    assert_eq!(world.raisable_ty(RaiseKind::Error), Some(any));
+    assert_eq!(world.raisable_ty(root, RaiseKind::Error), Some(any));
 }
 
 /// A raised value is recorded by the exception modules it surely belongs to,

@@ -215,11 +215,12 @@ fact — `LoweredBody`, `CallSiteSummary`, `CallSiteTargets`, and the rest — i
 **replacing**: a publisher's latest conclusion simply overwrites the fact's
 current content.
 
-`NameableModules` and `Raisable` are facts about the whole program rather than
-about one key. Any activation's analysis adds to them (`World::note_nameable_module`,
-`World::note_raisable`), and the analysis lists the fact as changed when it
-added something, so every reader runs again. `World` holds each as a set that
-only grows; nothing removes an entry. `Raisable` is described in
+`NameableModules` is a fact about the whole compile, and `Raisable(root)` a fact
+about one root's program, rather than about one function. Any activation's
+analysis adds to them (`World::note_nameable_module`, `World::note_raisable`
+into the activation's own root), and the analysis lists the fact as changed when
+it added something, so every reader runs again. `World` holds each as a set
+that only grows; nothing removes an entry. `Raisable` is described in
 [exceptions](exceptions.md).
 
 ### Absence is bottom

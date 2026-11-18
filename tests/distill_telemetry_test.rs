@@ -261,7 +261,10 @@ fn read_compile_spend(trace: &Path) -> CompileSpend {
 // definition runs once fewer.
 // 19_810 -> 19_811: the product waits on the distiller's own declarations
 // being checked. It declares nothing, so the check is one `CheckDeclarations`.
-const DERIVATIONS: u64 = 19_811;
+// 19_811 -> 19_812: what a program can raise is a fact of that program, so the entry's handler
+// no longer starts from the raises of the macros' programs. The entry publishes its own program's
+// first raise and is analysed once more on it.
+const DERIVATIONS: u64 = 19_812;
 // 111_876 -> 111_888: an extern that declares `raises:` reads the struct of
 // the exception it names, to raise that struct. The distiller calls twelve
 // such externs, and each contract reads `StructDefined` once.
@@ -284,7 +287,8 @@ const DERIVATIONS: u64 = 19_811;
 // 156_110 -> 156_740: the same activations, each read once per derivation, and each reach
 // job whose cone now holds the binary clause's activations reads them too.
 // 156_740 -> 156_741: that check reads the source's index.
-const READS_HANDED: u64 = 156_741;
+// 156_741 -> 156_747: the six reads of the entry's one more analysis, as in `DERIVATIONS`.
+const READS_HANDED: u64 = 156_747;
 
 /// Compiling the distiller spends this much of the product stack. The largest
 /// drive is the one `PRODUCT_DRIVE_BUDGET` bounds, so its headroom is the
