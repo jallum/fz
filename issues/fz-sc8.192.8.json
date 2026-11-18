@@ -1,8 +1,6 @@
 {
   "assignee": "",
-  "blocked_by": [
-    "fz-sc8.192.7"
-  ],
+  "blocked_by": [],
   "blocks": [
     "fz-sc8.192.9"
   ],
@@ -15,5 +13,5 @@
   "status": "open",
   "title": "A value crosses into the runtime as a word and a kind",
   "type": "task",
-  "updated_at": "2026-11-18T21:39:33Z"
+  "updated_at": "2026-11-18T21:39:35Z"
 }
