@@ -7,9 +7,15 @@
   "id": "fz-sc8.219",
   "labels": [],
   "parent": "fz-sc8",
+  "comments": [
+    {
+      "text": "Seen again 2026-11-17 by Bugs and Cleanup (building fz-9x7.31): local Elixir 1.19.4 / OTP 28 regenerates 01174's last golden line as {[], [b: 1, a: 1], [b: 1]} where the stamped golden (CI pins Elixir 1.19.5 / OTP 28.5.0.1, .github/workflows/ci.yml:37-38) has {[], [a: 1, b: 1], [a: 1]}. The default run never sees it because the stamp matches the file. Local and CI Elixir versions differ (1.19.4 vs 1.19.5).",
+      "timestamp": "2026-11-18T03:07:28Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "Fixture 01174's oracle depends on Elixir's order for an atom-keyed map",
   "type": "bug",
-  "updated_at": "2026-11-15T03:14:32Z"
+  "updated_at": "2026-11-18T03:07:28Z"
 }
