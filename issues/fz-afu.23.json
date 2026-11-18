@@ -1,9 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [
-    "fz-nml.26"
-  ],
+  "blocks": [],
   "closed_at": "2026-11-18T01:00:21Z",
   "close_reason": "Superseded by fz-afu.24 (E1): the user ruled \"abandon .23, use the e1 solution\" (2026-11-17, relayed by JSON). The rise .23 targeted is the boundary contribution loop E1 deletes.",
   "created": "2026-11-18T00:17:40Z",
@@ -25,5 +23,5 @@
   "status": "closed",
   "title": "A closure-called entry's input demand starts at its floor",
   "type": "bug",
-  "updated_at": "2026-11-18T01:00:21Z"
+  "updated_at": "2026-11-18T01:00:22Z"
 }
