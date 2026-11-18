@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-afu.24"
+  ],
   "blocks": [],
   "created": "2026-11-18T00:18:07Z",
   "description": "Approved by the user 2026-11-17 (relayed by JSON: \"option-c\": merge #691 receive-only now, widen later under its own ticket once demand analysis is fixed).\n\nGeneralizes #691's drop_unread_receive_arguments (src/compiler2/jobs/body.rs) to every outcome edge: case, cond, with, rescue and `=` match. Function-clause params are the calling convention and never edge arguments, so they are untouched by construction.\n\nBuilt patch: /Users/j5n/Workspace/fz-unread-outcome-arguments-widened.patch (rename to drop_unread_outcome_arguments; unit test a_case_arm_is_handed_only_the_bindings_its_body_reads in body_test.rs; fixture 01704).\n\nKnown pin effects: drive_test.rs:1157 arm_arities [3, 0] -\u003e [1, 0] (a fall, lowered). The distiller pin must not rise once fz-afu.23 has landed (without it: +76 derivations / +2671 reads from the Ignore-then-Whole revision).",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "An outcome edge hands its target only the values the target reads",
   "type": "task",
-  "updated_at": "2026-11-18T01:00:22Z"
+  "updated_at": "2026-11-18T01:00:23Z"
 }

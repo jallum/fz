@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-nml.26"
+  ],
   "created": "2026-11-18T01:00:20Z",
   "description": "Approved by the user 2026-11-17 (relayed verbatim by JSON: \"abandon .23, use the e1 solution.\"). Supersedes fz-afu.23. This is E1 of Make Distiller Fast's proposal.\n\nChange: delete the loop over callable_boundary_input_demand_contributions_product (src/compiler2/jobs/runtime_demand.rs ~321), the function itself (~1136), and the CallableFlowEdge.boundary_input_demands field (built ~845, empty ~1123) if nothing else reads it.\n\nEvidence (MDF, develop 2c4641f52): distill derivations 19,850 -\u003e 19,709, reads 156,740 -\u003e 155,772; aggregate work 1,739 -\u003e 1,670; fixture 00571 body walks 528 -\u003e 474; census 2,992 -\u003e 2,977. Full gate green apart from pins; every pin falls. JSON and MDF agree fz-afu.23's rise is this loop.\n\nDone when: pins are lowered and nothing rises (re-measure on the current develop base). Builder: MDF (holds patch and measurements) if it has room, else JSON.",
   "id": "fz-afu.24",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "A first-class callable's boundary input demand is not contributed back to its target",
   "type": "task",
-  "updated_at": "2026-11-18T01:00:20Z"
+  "updated_at": "2026-11-18T01:00:23Z"
 }
