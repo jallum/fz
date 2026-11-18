@@ -4,6 +4,7 @@
   "blocks": [
     "fz-9x7.15",
     "fz-9x7.23",
+    "fz-9x7.36",
     "fz-nml.25"
   ],
   "created": "2026-11-18T00:12:26Z",
@@ -25,5 +26,5 @@
   "status": "in_progress",
   "title": "A collection's to-space is sized by what it can copy",
   "type": "bug",
-  "updated_at": "2026-11-18T02:35:35Z"
+  "updated_at": "2026-11-18T03:40:40Z"
 }

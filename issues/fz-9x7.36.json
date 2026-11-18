@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-9x7.30"
+  ],
   "blocks": [],
   "created": "2026-11-18T03:40:38Z",
   "description": "Approved by the user 2026-11-17 (relayed by GC: \"yes\"). Successor to fz-9x7.30 (#719).\n\nA minor sizes its to-space from the previous minor's copy (last_minor_copied_bytes, after #719). When the previous minor copied far more than this one can, the difference sits idle. Worst case: distiller event 788 in #719's measurement, a 3,564,448 B guess for 399,216 B copied, 3.16 MB unused. Data: GC session scratchpad 30/r2/pk.distiller.new.jsonl; the gc event carries to_space_guess_bytes and to_space_capacity_bytes. Related: fz-9x7.15 and .23 size the young generation itself, not this guess.\n\nExperiment first, with a paper-first page (pre-registered predictions and rule) before any builder. Memory judged in in-use bytes.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "A minor's to-space guess does not exceed what it can copy",
   "type": "task",
-  "updated_at": "2026-11-18T03:40:38Z"
+  "updated_at": "2026-11-18T03:40:40Z"
 }
