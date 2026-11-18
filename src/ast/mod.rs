@@ -505,6 +505,30 @@ pub struct BitField<V> {
     pub spec: BitFieldSpec,
 }
 
+/// The most bytes one integer field of a literal holds. Seven bytes is the
+/// widest big-endian unsigned value that is always a small integer.
+const LITERAL_FIELD_BYTES: usize = 7;
+
+/// The integer fields a literal binary spells: one big-endian unsigned field
+/// per run of up to `LITERAL_FIELD_BYTES` bytes, none for the empty literal.
+/// A bitstring pattern over these fields tests `<<"ab">>` exactly as it tests
+/// `<<0x6162 :: 16>>`.
+pub fn binary_literal_fields(bytes: &[u8], span: crate::source::Span) -> Vec<BitField<Spanned<Pattern>>> {
+    bytes
+        .chunks(LITERAL_FIELD_BYTES)
+        .map(|run| BitField {
+            value: Spanned::new(
+                Pattern::Int(run.iter().fold(0, |value, &byte| (value << 8) | i64::from(byte))),
+                span,
+            ),
+            spec: BitFieldSpec {
+                size: Some(BitSize::Literal(8 * run.len() as u32)),
+                ..BitFieldSpec::default()
+            },
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone)]
 pub struct BitFieldSpec {
     pub ty: BitType,

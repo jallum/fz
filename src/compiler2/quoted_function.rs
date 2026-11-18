@@ -1638,13 +1638,9 @@ pub(super) fn bitstring_pattern(fields: Vec<BitField<Spanned<Pattern>>>, span: S
     Spanned::new(Pattern::Bitstring(fields), span)
 }
 
-/// The most bytes one integer field of a literal holds. Seven bytes is the
-/// widest big-endian unsigned value that is always a small integer.
-const LITERAL_FIELD_BYTES: usize = 7;
-
 /// The integer fields of a `binary` field whose value is a literal exactly as
-/// long as the field's size, one big-endian unsigned field per run of up to
-/// `LITERAL_FIELD_BYTES` bytes; any other field is returned as it is.
+/// long as the field's size, as `binary_literal_fields`; any other field is
+/// returned as it is.
 fn literal_as_integer_fields(field: BitField<Spanned<Pattern>>) -> Vec<BitField<Spanned<Pattern>>> {
     let Pattern::Binary(bytes) = &field.value.node else {
         return vec![field];
@@ -1656,21 +1652,7 @@ fn literal_as_integer_fields(field: BitField<Spanned<Pattern>>) -> Vec<BitField<
     if !whole_literal {
         return vec![field];
     }
-    let span = field.value.span;
-    bytes
-        .chunks(LITERAL_FIELD_BYTES)
-        .map(|run| BitField {
-            value: Spanned::new(Pattern::Int(big_endian_unsigned(run)), span),
-            spec: BitFieldSpec {
-                size: Some(BitSize::Literal(8 * run.len() as u32)),
-                ..BitFieldSpec::default()
-            },
-        })
-        .collect()
-}
-
-fn big_endian_unsigned(bytes: &[u8]) -> i64 {
-    bytes.iter().fold(0, |value, &byte| (value << 8) | i64::from(byte))
+    crate::ast::binary_literal_fields(bytes, field.value.span)
 }
 
 pub(super) fn decode_bitstring_pattern(

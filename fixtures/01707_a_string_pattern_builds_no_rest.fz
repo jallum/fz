@@ -1,0 +1,68 @@
+#---
+# purpose: a binary literal in pattern position is tested at the cursor, as the bitstring of its bytes is, so a walk ending on `""` or `"abc"` builds no rest binary per step
+# kind: run
+#---
+#
+# A binary literal pattern is a size test and a byte comparison at the position
+# the walk has reached, never a comparison of a built value. Each pair of
+# functions walks a binary one byte per step and ends on the literal, spelled
+# as a string in one and as a bitstring in the other: `""` against `<<>>` over
+# 200 bytes, and `"abc"` against `<<"abc">>` over 203 bytes. The literal sits in
+# the first argument in one pair and in a middle argument in the other. The
+# program prints the walk result, then the bitstrings and binary views the walk
+# allocated. A rest that is only matched stays a cursor, so both spellings
+# allocate nothing, on every path.
+defmodule W do
+  def lit_last(s, n), do: lit_last_walk(s, n)
+  defp lit_last_walk("", n), do: n
+  defp lit_last_walk(<<_c, r :: binary>>, n), do: lit_last_walk(r, n + 1)
+
+  def bin_last(s, n), do: bin_last_walk(s, n)
+  defp bin_last_walk(<<>>, n), do: n
+  defp bin_last_walk(<<_c, r :: binary>>, n), do: bin_last_walk(r, n + 1)
+
+  def lit_middle(start, s, acc), do: lit_middle_walk(start, s, acc)
+  defp lit_middle_walk(start, "", acc), do: start + acc
+  defp lit_middle_walk(start, <<c, r :: binary>>, acc) when c == 34, do: lit_middle_walk(start, r, acc + 100)
+  defp lit_middle_walk(start, <<_c, r :: binary>>, acc), do: lit_middle_walk(start, r, acc + 1)
+
+  def bin_middle(start, s, acc), do: bin_middle_walk(start, s, acc)
+  defp bin_middle_walk(start, <<>>, acc), do: start + acc
+  defp bin_middle_walk(start, <<c, r :: binary>>, acc) when c == 34, do: bin_middle_walk(start, r, acc + 100)
+  defp bin_middle_walk(start, <<_c, r :: binary>>, acc), do: bin_middle_walk(start, r, acc + 1)
+
+  def abc_first(s, n), do: abc_first_walk(s, n)
+  defp abc_first_walk("abc", n), do: n
+  defp abc_first_walk(<<_c, r :: binary>>, n), do: abc_first_walk(r, n + 1)
+
+  def bits_first(s, n), do: bits_first_walk(s, n)
+  defp bits_first_walk(<<"abc">>, n), do: n
+  defp bits_first_walk(<<_c, r :: binary>>, n), do: bits_first_walk(r, n + 1)
+
+  def abc_middle(start, s, acc), do: abc_middle_walk(start, s, acc)
+  defp abc_middle_walk(start, "abc", acc), do: start + acc
+  defp abc_middle_walk(start, <<_c, r :: binary>>, acc), do: abc_middle_walk(start, r, acc + 1)
+
+  def bits_middle(start, s, acc), do: bits_middle_walk(start, s, acc)
+  defp bits_middle_walk(start, <<"abc">>, acc), do: start + acc
+  defp bits_middle_walk(start, <<_c, r :: binary>>, acc), do: bits_middle_walk(start, r, acc + 1)
+
+  def cost(label, f) do
+    a = Process.heap_alloc_stats()
+    out = f.()
+    b = Process.heap_alloc_stats()
+    dbg({label, out, b[:bitstring_allocs] - a[:bitstring_allocs], b[:binview_allocs] - a[:binview_allocs]})
+  end
+end
+
+s = String.duplicate("a", 200)
+W.cost(:first_arg_literal, fn -> W.lit_last(s, 0) end)
+W.cost(:first_arg_bitstring, fn -> W.bin_last(s, 0) end)
+W.cost(:middle_arg_literal, fn -> W.lit_middle(7, s, 0) end)
+W.cost(:middle_arg_bitstring, fn -> W.bin_middle(7, s, 0) end)
+
+t = s <> "abc"
+W.cost(:abc_first_literal, fn -> W.abc_first(t, 0) end)
+W.cost(:abc_first_bitstring, fn -> W.bits_first(t, 0) end)
+W.cost(:abc_middle_literal, fn -> W.abc_middle(7, t, 0) end)
+W.cost(:abc_middle_bitstring, fn -> W.bits_middle(7, t, 0) end)

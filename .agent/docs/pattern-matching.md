@@ -631,3 +631,13 @@ subject) leaves the test in place.
 A last `bits` segment takes whatever remains, and the value it binds is typed
 `bitstring`. A cursor stands for the bitstring that remains from its position,
 and `is_binary(rest)` answers whether those bits are whole bytes.
+
+A binary literal in pattern position is a bitstring pattern with one literal
+segment of its bytes and nothing after it. `""` is the zero-length binary
+pattern: the pattern with no segments, which `<<>>` is. `"abc"` is the pattern
+`<<"abc">>` is. `append_pattern` in `src/dispatch_matrix/pattern.rs` asks a
+literal the questions of that bitstring (an exact size and the bytes at the
+cursor, through `ast::binary_literal_fields`), so a subject that is a rest
+stays a cursor and no constant is compared. A map-pattern key stays a literal
+compared by value. Fixture `01707` walks a binary with each pair of spellings
+and prints equal allocation counts.
