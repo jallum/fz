@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-18T04:09:36Z",
   "created": "2026-11-18T04:03:06Z",
   "description": "Child of fz-y11 under its method (built test-first by Optimize, 2026-11-17; filed by the coordinator as a proven simplification within the approved epic; user informed).\n\nTypes::struct_modules (src/compiler2/types/mod.rs:2580) runs a fresh reachable() walk per root, each with its own pending Vec and seen set, and re-visits every type the roots share; jobs/artifact.rs:193 passes arrow + return + every value type + every call edge. Census at develop 458eb43eb (876,023 calls, 220 MB on the y11 probe): 9,920 calls at types/mod.rs:2583. Ranked sites: Optimize session scratchpad census/458eb43eb_top.txt.\n\nFix: one reachable_from(roots) with one seen set; reachable(root) becomes the one-root case. Test: 50 copies of a root allocate what one does (901 vs 19 before, equal after). No behaviour change; diff types/mod.rs + types_test.rs only.\n\nSignal: per fz-y11 (gate green; no golden, census or pin moves; output and canonical dump identical; allocation count before/after in the commit).",
   "id": "fz-y11.47",
   "labels": [],
   "parent": "fz-y11",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "The struct modules of an executable's types are found in one walk over all its roots",
   "type": "task",
-  "updated_at": "2026-11-18T04:03:06Z"
+  "updated_at": "2026-11-18T04:09:36Z"
 }
