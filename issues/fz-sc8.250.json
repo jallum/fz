@@ -4,14 +4,15 @@
   "blocks": [
     "fz-nhb.23"
   ],
+  "closed_at": "2026-11-18T05:08:53Z",
   "created": "2026-11-18T04:59:39Z",
   "description": "Regression on develop, found 2026-11-17 by Elixir Parity; bisected (git bisect run, good c1358b1f3, bad 2eff1dec2) to b056f1160 fz-sc8.230 (#725, \"A rest handed to a case arm arrives the way the arm reads it\"). Blocks fz-nhb.23 (assert retirement): with assert retired, fixtures 00289 and 01417 fail on interp with this message; every other path and fixture passes.\n\nRepro (develop 2eff1dec2):\ndef main() do\n  (true and true) || raise(\"and\")\n  :ok\nend\n\nfz2 interp: \"fz2 interp: winning outcome lacks subject SubjectId(0)\", nonzero exit. fz2 run is fine. pid = self(); is_pid(pid) || raise(\"pid\") fails the same way. A literal true || raise(\"x\") passes. (|| expands to case left do nil -\u003e r; false -\u003e r; v -\u003e v end; the v arm hands its scrutinee on.)\n\nDone when: the repro and 00289 / 01417 under fz-nhb.23's rewrite run on interp, run and build; a fixture pins the repro on three paths.",
   "id": "fz-sc8.250",
   "labels": [],
   "parent": "fz-sc8",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "A case on a boolean expression whose arm hands its scrutinee on runs on interp",
   "type": "bug",
-  "updated_at": "2026-11-18T04:59:39Z"
+  "updated_at": "2026-11-18T05:08:53Z"
 }
