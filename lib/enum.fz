@@ -29,7 +29,7 @@ defmodule Enum do
       #=> 6
 
   """
-  @spec reduce(Enumerable.t(a), (a, a) -> a) :: a
+  @spec reduce(Enumerable.t(a), (a, a) -> a) :: a when a: var
   def reduce(enumerable, reducer) do
     reduce_first_finish(
       Enumerable.reduce(enumerable, {:cont, :first}, fn (entry, state) ->
@@ -50,7 +50,7 @@ defmodule Enum do
       #=> 6
 
   """
-  @spec reduce(Enumerable.t(a), b, (a, b) -> b) :: b
+  @spec reduce(Enumerable.t(a), b, (a, b) -> b) :: b when a: var, b: var
   def reduce(enumerable, acc, reducer) do
     reduce_finish(
       Enumerable.reduce(enumerable, {:cont, acc}, fn (entry, inner_acc) ->
@@ -75,7 +75,7 @@ defmodule Enum do
       #=> 3
 
   """
-  @spec reduce_while(Enumerable.t(a), b, (a, b) -> {:cont, b} | {:halt, c}) :: b | c
+  @spec reduce_while(Enumerable.t(a), b, (a, b) -> {:cont, b} | {:halt, c}) :: b | c when a: var, b: var, c: var
   def reduce_while(enumerable, acc, reducer) do
     Enumerable.reduce_while(enumerable, acc, reducer)
   end
@@ -90,7 +90,7 @@ defmodule Enum do
       #=> :ok
 
   """
-  @spec each(Enumerable.t(a), (a) -> any) :: :ok
+  @spec each(Enumerable.t(a), (a) -> any) :: :ok when a: var
   def each(enumerable, fun) do
     reduce(enumerable, nil, fn (entry, acc) -> each_step(entry, acc, fun) end)
 
@@ -106,7 +106,7 @@ defmodule Enum do
       #=> 3
 
   """
-  @spec count(Enumerable.t(a)) :: integer
+  @spec count(Enumerable.t(a)) :: integer when a: term()
   def count(enumerable), do: count_result(Enumerable.count(enumerable), enumerable)
 
   @doc """
@@ -119,7 +119,7 @@ defmodule Enum do
       #=> 2
 
   """
-  @spec count(Enumerable.t(a), (a) -> any) :: integer
+  @spec count(Enumerable.t(a), (a) -> any) :: integer when a: var
   def count(enumerable, fun) do
     reduce(enumerable, 0, fn (entry, acc) ->
       if fun.(entry), do: acc + 1, else: acc
@@ -136,7 +136,7 @@ defmodule Enum do
       #=> true
 
   """
-  @spec member?(Enumerable.t(a), a) :: boolean
+  @spec member?(Enumerable.t(a), a) :: boolean when a: var
   def member?(enumerable, value), do: member_result(Enumerable.member?(enumerable, value), enumerable, value)
 
   @doc """
@@ -152,7 +152,7 @@ defmodule Enum do
       #=> [1, 2, 3]
 
   """
-  @spec to_list(Enumerable.t(a)) :: [a]
+  @spec to_list(Enumerable.t(a)) :: [a] when a: var
   def to_list(list) when is_list(list), do: list
   def to_list(%Range{first: first, last: last, step: step}) do
     count = Range.count(first, last, step)
@@ -169,7 +169,7 @@ defmodule Enum do
       #=> [3, 2, 1]
 
   """
-  @spec reverse(Enumerable.t(a)) :: [a]
+  @spec reverse(Enumerable.t(a)) :: [a] when a: var
   def reverse(enumerable), do: reduce(enumerable, [], fn (entry, acc) -> [entry | acc] end)
 
   @doc """
@@ -182,7 +182,7 @@ defmodule Enum do
       #=> [2, 1, 3, 4]
 
   """
-  @spec reverse(Enumerable.t(a), [a]) :: [a]
+  @spec reverse(Enumerable.t(a), [a]) :: [a] when a: var
   def reverse(enumerable, tail), do: reduce(enumerable, to_list(tail), fn (entry, acc) -> [entry | acc] end)
 
   @doc """
@@ -200,7 +200,7 @@ defmodule Enum do
       #=> [2, 4]
 
   """
-  @spec map(Enumerable.t(a), (a) -> b) :: [b]
+  @spec map(Enumerable.t(a), (a) -> b) :: [b] when a: var, b: var
   def map(enumerable, fun), do: map_list(to_list(enumerable), fun)
 
   @doc """
@@ -213,7 +213,7 @@ defmodule Enum do
       #=> [2, 4]
 
   """
-  @spec filter(Enumerable.t(a), (a) -> any) :: [a]
+  @spec filter(Enumerable.t(a), (a) -> any) :: [a] when a: var
   def filter(enumerable, fun), do: filter_list(to_list(enumerable), fun)
 
   @doc """
@@ -226,7 +226,7 @@ defmodule Enum do
       #=> [1, 3]
 
   """
-  @spec reject(Enumerable.t(a), (a) -> any) :: [a]
+  @spec reject(Enumerable.t(a), (a) -> any) :: [a] when a: var
   def reject(enumerable, fun), do: filter(enumerable, fn (entry) -> not fun.(entry) end)
 
   @doc """
@@ -241,7 +241,7 @@ defmodule Enum do
       #=> [1, 1, 2, 2, 3, 3]
 
   """
-  @spec flat_map(Enumerable.t(a), (a) -> Enumerable.t(b)) :: [b]
+  @spec flat_map(Enumerable.t(a), (a) -> Enumerable.t(b)) :: [b] when a: var, b: var
   def flat_map(enumerable, fun), do: flat_map_list(to_list(enumerable), fun)
 
   @doc """
@@ -257,7 +257,7 @@ defmodule Enum do
       #=> {[2, 4, 6], 6}
 
   """
-  @spec map_reduce(Enumerable.t(a), b, (a, b) -> {c, b}) :: {[c], b}
+  @spec map_reduce(Enumerable.t(a), b, (a, b) -> {c, b}) :: {[c], b} when a: var, b: var, c: var
   def map_reduce(enumerable, acc, fun), do: map_reduce_list(to_list(enumerable), acc, fun)
 
   @doc """
@@ -273,7 +273,7 @@ defmodule Enum do
       #=> [1, 3, 6, 10]
 
   """
-  @spec scan(Enumerable.t(a), (a, a) -> a) :: [a]
+  @spec scan(Enumerable.t(a), (a, a) -> a) :: [a] when a: var
   def scan(enumerable, fun), do: scan_first(to_list(enumerable), fun)
 
   @doc """
@@ -286,7 +286,7 @@ defmodule Enum do
       #=> [1, 3, 6, 10]
 
   """
-  @spec scan(Enumerable.t(a), b, (a, b) -> b) :: [b]
+  @spec scan(Enumerable.t(a), b, (a, b) -> b) :: [b] when a: var, b: var
   def scan(enumerable, acc, fun), do: scan_list(to_list(enumerable), acc, fun)
 
   @doc """
@@ -299,7 +299,7 @@ defmodule Enum do
       #=> [1, 0, 2, 0, 3]
 
   """
-  @spec intersperse(Enumerable.t(a), a) :: [a]
+  @spec intersperse(Enumerable.t(a), a) :: [a] when a: var
   def intersperse(enumerable, separator), do: intersperse_list(to_list(enumerable), separator)
 
   @doc """
@@ -311,7 +311,7 @@ defmodule Enum do
       #=> [a: 0, b: 1, c: 2]
 
   """
-  @spec with_index(Enumerable.t(a)) :: [{a, integer}]
+  @spec with_index(Enumerable.t(a)) :: [{a, integer}] when a: var
   def with_index(enumerable), do: with_index(enumerable, 0)
 
   @doc """
@@ -328,8 +328,8 @@ defmodule Enum do
       #=> [a: 0, b: 2, c: 4]
 
   """
-  @spec with_index(Enumerable.t(a), integer) :: [{a, integer}]
-  @spec with_index(Enumerable.t(a), (a, integer) -> b) :: [b]
+  @spec with_index(Enumerable.t(a), integer) :: [{a, integer}] when a: var
+  @spec with_index(Enumerable.t(a), (a, integer) -> b) :: [b] when a: var, b: var
   def with_index(enumerable, offset) when is_integer(offset), do: with_index_list(to_list(enumerable), offset)
   def with_index(enumerable, fun), do: with_index_list(to_list(enumerable), 0, fun)
 
@@ -346,7 +346,7 @@ defmodule Enum do
       #=> [100, 2, 300, 4, 500, 6]
 
   """
-  @spec map_every(Enumerable.t(a), integer, (a) -> a) :: [a]
+  @spec map_every(Enumerable.t(a), integer, (a) -> a) :: [a] when a: var
   def map_every(enumerable, 0, _fun), do: to_list(enumerable)
   def map_every(enumerable, nth, fun) when nth > 0, do: map_every_list(to_list(enumerable), nth, 0, fun)
 
@@ -359,7 +359,7 @@ defmodule Enum do
       #=> "123"
 
   """
-  @spec map_join(Enumerable.t(a), (a) -> binary) :: binary
+  @spec map_join(Enumerable.t(a), (a) -> binary) :: binary when a: var
   def map_join(enumerable, mapper), do: map_join(enumerable, "", mapper)
 
   @doc """
@@ -372,7 +372,7 @@ defmodule Enum do
       #=> "1-2-3"
 
   """
-  @spec map_join(Enumerable.t(a), binary, (a) -> binary) :: binary
+  @spec map_join(Enumerable.t(a), binary, (a) -> binary) :: binary when a: var
   def map_join(enumerable, joiner, mapper), do: map_join_list(to_list(enumerable), joiner, mapper)
 
   @doc """
@@ -385,7 +385,7 @@ defmodule Enum do
       #=> [10, 0, 20, 0, 30]
 
   """
-  @spec map_intersperse(Enumerable.t(a), b, (a) -> b) :: [b]
+  @spec map_intersperse(Enumerable.t(a), b, (a) -> b) :: [b] when a: var, b: var
   def map_intersperse(enumerable, separator, mapper), do: map_intersperse_list(to_list(enumerable), separator, mapper)
 
   @doc """
@@ -400,7 +400,7 @@ defmodule Enum do
       #=> true
 
   """
-  @spec all?(Enumerable.t(a)) :: boolean
+  @spec all?(Enumerable.t(a)) :: boolean when a: term()
   def all?(enumerable), do: reduce_while(enumerable, true, fn (entry, _acc) -> all_value_step(entry) end)
 
   @doc """
@@ -415,7 +415,7 @@ defmodule Enum do
       #=> true
 
   """
-  @spec all?(Enumerable.t(a), (a) -> any) :: boolean
+  @spec all?(Enumerable.t(a), (a) -> any) :: boolean when a: var
   def all?(enumerable, fun), do: reduce_while(enumerable, true, fn (entry, _acc) -> all_value_step(fun.(entry)) end)
 
   @doc """
@@ -430,7 +430,7 @@ defmodule Enum do
       #=> true
 
   """
-  @spec any?(Enumerable.t(a)) :: boolean
+  @spec any?(Enumerable.t(a)) :: boolean when a: term()
   def any?(enumerable), do: reduce_while(enumerable, false, fn (entry, _acc) -> any_value_step(entry) end)
 
   @doc """
@@ -445,7 +445,7 @@ defmodule Enum do
       #=> true
 
   """
-  @spec any?(Enumerable.t(a), (a) -> any) :: boolean
+  @spec any?(Enumerable.t(a), (a) -> any) :: boolean when a: var
   def any?(enumerable, fun), do: reduce_while(enumerable, false, fn (entry, _acc) -> any_value_step(fun.(entry)) end)
 
   @doc """
@@ -457,7 +457,7 @@ defmodule Enum do
       #=> true
 
   """
-  @spec empty?(Enumerable.t(a)) :: boolean
+  @spec empty?(Enumerable.t(a)) :: boolean when a: term()
   def empty?(enumerable), do: reduce_while(enumerable, true, fn (_entry, _acc) -> {:halt, false} end)
 
   @doc """
@@ -470,7 +470,7 @@ defmodule Enum do
       #=> 2
 
   """
-  @spec find(Enumerable.t(a), (a) -> any) :: a | nil
+  @spec find(Enumerable.t(a), (a) -> any) :: a | nil when a: var
   def find(enumerable, fun), do: find(enumerable, nil, fun)
 
   @doc """
@@ -483,7 +483,7 @@ defmodule Enum do
       #=> :none
 
   """
-  @spec find(Enumerable.t(a), b, (a) -> any) :: a | b
+  @spec find(Enumerable.t(a), b, (a) -> any) :: a | b when a: var, b: var
   def find(enumerable, default, fun) do
     reduce_while(enumerable, default, fn (entry, _acc) ->
       if fun.(entry), do: {:halt, entry}, else: {:cont, default}
@@ -500,7 +500,7 @@ defmodule Enum do
       #=> 2
 
   """
-  @spec find_index(Enumerable.t(a), (a) -> any) :: integer | nil
+  @spec find_index(Enumerable.t(a), (a) -> any) :: integer | nil when a: var
   def find_index(enumerable, fun) do
     find_index_finish(
       reduce_while(enumerable, {:not_found, 0}, fn (entry, state) ->
@@ -522,7 +522,7 @@ defmodule Enum do
       #=> 30
 
   """
-  @spec find_value(Enumerable.t(a), (a) -> b) :: b | nil
+  @spec find_value(Enumerable.t(a), (a) -> b) :: b | nil when a: var, b: var
   def find_value(enumerable, fun), do: find_value(enumerable, nil, fun)
 
   @doc """
@@ -535,7 +535,7 @@ defmodule Enum do
       #=> :none
 
   """
-  @spec find_value(Enumerable.t(a), b, (a) -> c) :: b | c
+  @spec find_value(Enumerable.t(a), b, (a) -> c) :: b | c when a: var, b: var, c: var
   def find_value(enumerable, default, fun) do
     reduce_while(enumerable, default, fn (entry, _acc) ->
       find_value_step(fun.(entry), default)
@@ -556,7 +556,7 @@ defmodule Enum do
       #=> [4, 5]
 
   """
-  @spec take(Enumerable.t(a), integer) :: [a]
+  @spec take(Enumerable.t(a), integer) :: [a] when a: var
   def take(_enumerable, 0), do: []
   def take(enumerable, amount) when amount > 0, do: take_positive(enumerable, amount)
   def take(enumerable, amount), do: drop_positive(enumerable, normalized_prefix_count(enumerable, amount))
@@ -571,7 +571,7 @@ defmodule Enum do
       #=> [1, 2]
 
   """
-  @spec take_while(Enumerable.t(a), (a) -> any) :: [a]
+  @spec take_while(Enumerable.t(a), (a) -> any) :: [a] when a: var
   def take_while(enumerable, fun) do
     reverse_list(
       reduce_while(enumerable, [], fn (entry, acc) ->
@@ -592,7 +592,7 @@ defmodule Enum do
       #=> [1, 3, 5]
 
   """
-  @spec take_every(Enumerable.t(a), integer) :: [a]
+  @spec take_every(Enumerable.t(a), integer) :: [a] when a: var
   def take_every(_enumerable, 0), do: []
   def take_every(enumerable, 1), do: to_list(enumerable)
   def take_every(enumerable, nth) when nth > 1 do
@@ -618,7 +618,7 @@ defmodule Enum do
       #=> [1, 2, 3]
 
   """
-  @spec drop(Enumerable.t(a), integer) :: [a]
+  @spec drop(Enumerable.t(a), integer) :: [a] when a: var
   def drop(enumerable, 0), do: to_list(enumerable)
   def drop(enumerable, amount) when amount > 0, do: drop_positive(enumerable, amount)
   def drop(enumerable, amount), do: take_positive(enumerable, normalized_prefix_count(enumerable, amount))
@@ -633,7 +633,7 @@ defmodule Enum do
       #=> [3, 4, 1]
 
   """
-  @spec drop_while(Enumerable.t(a), (a) -> any) :: [a]
+  @spec drop_while(Enumerable.t(a), (a) -> any) :: [a] when a: var
   def drop_while(enumerable, fun) do
     drop_while_finish(
       reduce_while(enumerable, {[], true}, fn (entry, {acc, dropping}) ->
@@ -660,7 +660,7 @@ defmodule Enum do
       #=> [2, 4, 6]
 
   """
-  @spec drop_every(Enumerable.t(a), integer) :: [a]
+  @spec drop_every(Enumerable.t(a), integer) :: [a] when a: var
   def drop_every(_enumerable, 1), do: []
   def drop_every(enumerable, 0), do: to_list(enumerable)
   def drop_every(enumerable, nth) when nth > 1 do
@@ -687,7 +687,7 @@ defmodule Enum do
       #=> {[1, 2, 3], [4, 5]}
 
   """
-  @spec split(Enumerable.t(a), integer) :: {[a], [a]}
+  @spec split(Enumerable.t(a), integer) :: {[a], [a]} when a: var
   def split(enumerable, count) when count >= 0, do: split_positive(enumerable, count)
   def split(enumerable, count), do: split_positive(enumerable, normalized_prefix_count(enumerable, count))
 
@@ -702,7 +702,7 @@ defmodule Enum do
       #=> {[1, 2], [3, 4, 1]}
 
   """
-  @spec split_while(Enumerable.t(a), (a) -> any) :: {[a], [a]}
+  @spec split_while(Enumerable.t(a), (a) -> any) :: {[a], [a]} when a: var
   def split_while(enumerable, fun) do
     split_pair_finish(
       reduce_while(enumerable, {[], []}, fn (entry, {left, right}) ->
@@ -727,7 +727,7 @@ defmodule Enum do
       #=> {[2, 4], [1, 3]}
 
   """
-  @spec split_with(Enumerable.t(a), (a) -> any) :: {[a], [a]}
+  @spec split_with(Enumerable.t(a), (a) -> any) :: {[a], [a]} when a: var
   def split_with(enumerable, fun) do
     split_pair_finish(
       reduce_while(enumerable, {[], []}, fn (entry, {left, right}) ->
@@ -762,7 +762,7 @@ defmodule Enum do
       #=> [1, 2, 3]
 
   """
-  @spec sort(Enumerable.t(a)) :: [a]
+  @spec sort(Enumerable.t(a)) :: [a] when a: var
   def sort(enumerable), do: sort(enumerable, fn (left, right) -> default_order(left, right) end)
 
   @doc """
@@ -778,36 +778,36 @@ defmodule Enum do
       #=> [3, 2, 1]
 
   """
-  @spec sort(Enumerable.t(a), (a, a) -> boolean) :: [a]
+  @spec sort(Enumerable.t(a), (a, a) -> boolean) :: [a] when a: var
   def sort(enumerable, sorter), do: sort_list(to_list(enumerable), sorter)
 
-  @spec reduce_finish({:done, a} | {:halted, a} | {:suspended, a, () -> any}) :: a
+  @spec reduce_finish({:done, a} | {:halted, a} | {:suspended, a, () -> any}) :: a when a: var
   defp reduce_finish({:done, acc}), do: acc
   defp reduce_finish({:halted, acc}), do: acc
   defp reduce_finish({:suspended, acc, _continuation}), do: acc
 
-  @spec reduce_first_step(a, :first | {:acc, a}, (a, a) -> a) :: {:cont, {:acc, a}}
+  @spec reduce_first_step(a, :first | {:acc, a}, (a, a) -> a) :: {:cont, {:acc, a}} when a: var
   defp reduce_first_step(entry, :first, _reducer), do: {:cont, {:acc, entry}}
   defp reduce_first_step(entry, {:acc, acc}, reducer), do: {:cont, {:acc, reducer.(entry, acc)}}
 
-  @spec reduce_first_finish({:done, :first | {:acc, a}} | {:halted, :first | {:acc, a}} | {:suspended, :first | {:acc, a}, () -> any}) :: a
+  @spec reduce_first_finish({:done, :first | {:acc, a}} | {:halted, :first | {:acc, a}} | {:suspended, :first | {:acc, a}, () -> any}) :: a when a: var
   defp reduce_first_finish({:done, state}), do: reduce_first_acc(state)
   defp reduce_first_finish({:halted, state}), do: reduce_first_acc(state)
   defp reduce_first_finish({:suspended, state, _continuation}), do: reduce_first_acc(state)
-  @spec reduce_first_acc(:first | {:acc, a}) :: a
+  @spec reduce_first_acc(:first | {:acc, a}) :: a when a: var
   defp reduce_first_acc(:first), do: empty_error()
   defp reduce_first_acc({:acc, acc}), do: acc
 
-  @spec each_step(a, b, (a) -> any) :: b
+  @spec each_step(a, b, (a) -> any) :: b when a: var, b: var
   defp each_step(entry, acc, fun) do
     fun.(entry)
     acc
   end
 
-  @spec count_result({:ok, integer} | {:error, any}, Enumerable.t(a)) :: integer
+  @spec count_result({:ok, integer} | {:error, any}, Enumerable.t(a)) :: integer when a: term()
   defp count_result({:ok, count}, _enumerable), do: count
   defp count_result({:error, _module}, enumerable), do: count(enumerable, fn (_entry) -> true end)
-  @spec member_result({:ok, boolean} | {:error, any}, Enumerable.t(a), a) :: boolean
+  @spec member_result({:ok, boolean} | {:error, any}, Enumerable.t(a), a) :: boolean when a: var
   defp member_result({:ok, found}, _enumerable, _value), do: found
   defp member_result({:error, _module}, enumerable, value) do
     reduce_while(enumerable, false, fn (entry, _found) ->
@@ -819,11 +819,11 @@ defmodule Enum do
     end)
   end
 
-  @spec map_list([a], (a) -> b) :: [b]
+  @spec map_list([a], (a) -> b) :: [b] when a: var, b: var
   defp map_list([], _fun), do: []
   defp map_list([head | tail], fun), do: [fun.(head) | map_list(tail, fun)]
 
-  @spec filter_list([a], (a) -> any) :: [a]
+  @spec filter_list([a], (a) -> any) :: [a] when a: var
   defp filter_list([], _fun), do: []
   defp filter_list([head | tail], fun) do
     if fun.(head) do
@@ -833,13 +833,13 @@ defmodule Enum do
     end
   end
 
-  @spec flat_map_list([a], (a) -> Enumerable.t(b)) :: [b]
+  @spec flat_map_list([a], (a) -> Enumerable.t(b)) :: [b] when a: var, b: var
   defp flat_map_list([], _fun), do: []
   defp flat_map_list([head | tail], fun) do
     List.concat(to_list(fun.(head)), flat_map_list(tail, fun))
   end
 
-  @spec map_reduce_list([a], b, (a, b) -> {c, b}) :: {[c], b}
+  @spec map_reduce_list([a], b, (a, b) -> {c, b}) :: {[c], b} when a: var, b: var, c: var
   defp map_reduce_list([], acc, _fun), do: {[], acc}
   defp map_reduce_list([head | tail], acc, fun) do
     {mapped, next_acc} = fun.(head, acc)
@@ -847,57 +847,57 @@ defmodule Enum do
     {[mapped | mapped_tail], final_acc}
   end
 
-  @spec scan_first([a], (a, a) -> a) :: [a]
+  @spec scan_first([a], (a, a) -> a) :: [a] when a: var
   defp scan_first([], _fun), do: []
   defp scan_first([head | tail], fun), do: [head | scan_list(tail, head, fun)]
 
-  @spec scan_list([a], b, (a, b) -> b) :: [b]
+  @spec scan_list([a], b, (a, b) -> b) :: [b] when a: var, b: var
   defp scan_list([], _acc, _fun), do: []
   defp scan_list([head | tail], acc, fun) do
     next = fun.(head, acc)
     [next | scan_list(tail, next, fun)]
   end
 
-  @spec intersperse_list([a], a) :: [a]
+  @spec intersperse_list([a], a) :: [a] when a: var
   defp intersperse_list([], _separator), do: []
   defp intersperse_list([head | tail], separator), do: [head | intersperse_tail(tail, separator)]
 
-  @spec intersperse_tail([a], a) :: [a]
+  @spec intersperse_tail([a], a) :: [a] when a: var
   defp intersperse_tail([], _separator), do: []
   defp intersperse_tail([head | tail], separator), do: [separator, head | intersperse_tail(tail, separator)]
-  @spec with_index_list([a], integer) :: [{a, integer}]
+  @spec with_index_list([a], integer) :: [{a, integer}] when a: var
   defp with_index_list([], _index), do: []
   defp with_index_list([head | tail], index), do: [{head, index} | with_index_list(tail, index + 1)]
-  @spec with_index_list([a], integer, (a, integer) -> b) :: [b]
+  @spec with_index_list([a], integer, (a, integer) -> b) :: [b] when a: var, b: var
   defp with_index_list([], _index, _fun), do: []
   defp with_index_list([head | tail], index, fun), do: [fun.(head, index) | with_index_list(tail, index + 1, fun)]
 
-  @spec map_every_list([a], integer, integer, (a) -> a) :: [a]
+  @spec map_every_list([a], integer, integer, (a) -> a) :: [a] when a: var
   defp map_every_list([], _nth, _index, _fun), do: []
   defp map_every_list([head | tail], nth, index, fun) do
     next = if (index % nth) == 0, do: fun.(head), else: head
     [next | map_every_list(tail, nth, index + 1, fun)]
   end
 
-  @spec map_join_list([a], binary, (a) -> binary) :: binary
+  @spec map_join_list([a], binary, (a) -> binary) :: binary when a: var
   defp map_join_list([], _joiner, _mapper), do: ""
   defp map_join_list([head | tail], joiner, mapper) do
     map_join_tail(tail, joiner, mapper, mapper.(head))
   end
 
-  @spec map_join_tail([a], binary, (a) -> binary, binary) :: binary
+  @spec map_join_tail([a], binary, (a) -> binary, binary) :: binary when a: var
   defp map_join_tail([], _joiner, _mapper, acc), do: acc
   defp map_join_tail([head | tail], joiner, mapper, acc) do
     map_join_tail(tail, joiner, mapper, acc <> joiner <> mapper.(head))
   end
 
-  @spec map_intersperse_list([a], b, (a) -> b) :: [b]
+  @spec map_intersperse_list([a], b, (a) -> b) :: [b] when a: var, b: var
   defp map_intersperse_list([], _separator, _mapper), do: []
   defp map_intersperse_list([head | tail], separator, mapper) do
     [mapper.(head) | map_intersperse_tail(tail, separator, mapper)]
   end
 
-  @spec map_intersperse_tail([a], b, (a) -> b) :: [b]
+  @spec map_intersperse_tail([a], b, (a) -> b) :: [b] when a: var, b: var
   defp map_intersperse_tail([], _separator, _mapper), do: []
   defp map_intersperse_tail([head | tail], separator, mapper) do
     [separator, mapper.(head) | map_intersperse_tail(tail, separator, mapper)]
@@ -922,18 +922,18 @@ defmodule Enum do
   defp find_index_finish({:found, index}), do: index
   defp find_index_finish({:not_found, _index}), do: nil
 
-  @spec find_value_step(a, b) :: {:halt, a} | {:cont, b}
+  @spec find_value_step(a, b) :: {:halt, a} | {:cont, b} when a: var, b: var
   defp find_value_step(value, default) do
     if value, do: {:halt, value}, else: {:cont, default}
   end
 
-  @spec normalized_prefix_count(Enumerable.t(a), integer) :: integer
+  @spec normalized_prefix_count(Enumerable.t(a), integer) :: integer when a: term()
   defp normalized_prefix_count(enumerable, amount), do: non_negative(count(enumerable) + amount)
   @spec non_negative(integer) :: integer
   defp non_negative(count) when count > 0, do: count
   defp non_negative(_count), do: 0
 
-  @spec take_positive(Enumerable.t(a), integer) :: [a]
+  @spec take_positive(Enumerable.t(a), integer) :: [a] when a: var
   defp take_positive(enumerable, amount) do
     take_positive_finish(
       reduce_while(enumerable, {[], amount}, fn (entry, {acc, remaining}) ->
@@ -942,13 +942,13 @@ defmodule Enum do
     )
   end
 
-  @spec take_positive_finish({[a], integer}) :: [a]
+  @spec take_positive_finish({[a], integer}) :: [a] when a: var
   defp take_positive_finish({acc, _amount}), do: reverse_list(acc)
 
-  @spec take_every_finish({[a], integer}) :: [a]
+  @spec take_every_finish({[a], integer}) :: [a] when a: var
   defp take_every_finish({acc, _countdown}), do: reverse_list(acc)
 
-  @spec drop_positive(Enumerable.t(a), integer) :: [a]
+  @spec drop_positive(Enumerable.t(a), integer) :: [a] when a: var
   defp drop_positive(enumerable, amount) do
     drop_positive_finish(
       reduce_while(enumerable, {[], amount}, fn (entry, {acc, remaining}) ->
@@ -957,16 +957,16 @@ defmodule Enum do
     )
   end
 
-  @spec drop_positive_finish({[a], integer}) :: [a]
+  @spec drop_positive_finish({[a], integer}) :: [a] when a: var
   defp drop_positive_finish({acc, _amount}), do: reverse_list(acc)
 
-  @spec drop_while_finish({[a], boolean}) :: [a]
+  @spec drop_while_finish({[a], boolean}) :: [a] when a: var
   defp drop_while_finish({acc, _dropping}), do: reverse_list(acc)
 
-  @spec drop_every_finish({[a], integer}) :: [a]
+  @spec drop_every_finish({[a], integer}) :: [a] when a: var
   defp drop_every_finish({acc, _countdown}), do: reverse_list(acc)
 
-  @spec split_positive(Enumerable.t(a), integer) :: {[a], [a]}
+  @spec split_positive(Enumerable.t(a), integer) :: {[a], [a]} when a: var
   defp split_positive(enumerable, count) do
     split_counted_finish(
       reduce_while(enumerable, {[], [], count}, fn (entry, {left, right, remaining}) ->
@@ -975,19 +975,19 @@ defmodule Enum do
     )
   end
 
-  @spec split_counted_finish({[a], [a], integer}) :: {[a], [a]}
+  @spec split_counted_finish({[a], [a], integer}) :: {[a], [a]} when a: var
   defp split_counted_finish({left, right, _count}), do: {reverse_list(left), reverse_list(right)}
-  @spec split_pair_finish({[a], [a]}) :: {[a], [a]}
+  @spec split_pair_finish({[a], [a]}) :: {[a], [a]} when a: var
   defp split_pair_finish({left, right}), do: {reverse_list(left), reverse_list(right)}
 
-  @spec sort_list([a], (a, a) -> boolean) :: [a]
+  @spec sort_list([a], (a, a) -> boolean) :: [a] when a: var
   defp sort_list([], _sorter), do: []
   defp sort_list(list, sorter) do
     {sorted, _rest} = sort_prefix(list, length(list), sorter)
     sorted
   end
 
-  @spec sort_prefix([a], integer, (a, a) -> boolean) :: {[a], [a]}
+  @spec sort_prefix([a], integer, (a, a) -> boolean) :: {[a], [a]} when a: var
   defp sort_prefix([head | rest], 1, _sorter), do: {[head], rest}
   defp sort_prefix(list, count, sorter) do
     left_count = div(count, 2)
@@ -1002,13 +1002,13 @@ defmodule Enum do
     range_list_ending_at(current - step, step, remaining - 1, [current | acc])
   end
 
-  @spec reverse_list([a]) :: [a]
+  @spec reverse_list([a]) :: [a] when a: var
   defp reverse_list(list), do: reverse_list(list, [])
-  @spec reverse_list([a], [b]) :: [a | b]
+  @spec reverse_list([a], [b]) :: [a | b] when a: var, b: var
   defp reverse_list([], acc), do: acc
   defp reverse_list([head | tail], acc), do: reverse_list(tail, [head | acc])
 
-  @spec merge_sort_lists([a], [a], (a, a) -> boolean) :: [a]
+  @spec merge_sort_lists([a], [a], (a, a) -> boolean) :: [a] when a: var
   defp merge_sort_lists([], right, _sorter), do: right
   defp merge_sort_lists(left, [], _sorter), do: left
   defp merge_sort_lists([left_head | left_tail], [right_head | right_tail], sorter) do
@@ -1035,7 +1035,7 @@ defmodule Enum do
       #=> 3
 
   """
-  @spec max(Enumerable.t(a)) :: a
+  @spec max(Enumerable.t(a)) :: a when a: var
   def max(enumerable), do: max(enumerable, &empty_error/0)
 
   @doc """
@@ -1051,7 +1051,7 @@ defmodule Enum do
       #=> 0
 
   """
-  @spec max(Enumerable.t(a), () -> b) :: a | b
+  @spec max(Enumerable.t(a), () -> b) :: a | b when a: var, b: var
   def max(enumerable, empty_fallback), do: extreme(to_list(enumerable), 1, empty_fallback)
 
   @doc """
@@ -1065,7 +1065,7 @@ defmodule Enum do
       #=> 1
 
   """
-  @spec min(Enumerable.t(a)) :: a
+  @spec min(Enumerable.t(a)) :: a when a: var
   def min(enumerable), do: min(enumerable, &empty_error/0)
 
   @doc """
@@ -1081,7 +1081,7 @@ defmodule Enum do
       #=> 0
 
   """
-  @spec min(Enumerable.t(a), () -> b) :: a | b
+  @spec min(Enumerable.t(a), () -> b) :: a | b when a: var, b: var
   def min(enumerable, empty_fallback), do: extreme(to_list(enumerable), -1, empty_fallback)
 
   @doc """
@@ -1095,17 +1095,17 @@ defmodule Enum do
       #=> {1, 3}
 
   """
-  @spec min_max(Enumerable.t(a)) :: {a, a}
+  @spec min_max(Enumerable.t(a)) :: {a, a} when a: var
   def min_max(enumerable), do: {min(enumerable), max(enumerable)}
 
   @spec empty_error() :: never
   defp empty_error(), do: raise(%Enum.EmptyError{message: "empty error"})
 
-  @spec extreme([a], integer, () -> b) :: a | b
+  @spec extreme([a], integer, () -> b) :: a | b when a: var, b: var
   defp extreme([], _want, empty_fallback), do: empty_fallback.()
   defp extreme([head | tail], want, _empty_fallback), do: extreme_fold(tail, head, want)
 
-  @spec extreme_fold([a], a, integer) :: a
+  @spec extreme_fold([a], a, integer) :: a when a: var
   defp extreme_fold([], best, _want), do: best
   defp extreme_fold([head | tail], best, want) do
     if Kernel.compare(head, best) == want do
@@ -1127,7 +1127,7 @@ defmodule Enum do
       #=> "abc"
 
   """
-  @spec max_by(Enumerable.t(a), (a) -> any) :: a
+  @spec max_by(Enumerable.t(a), (a) -> any) :: a when a: var
   def max_by(enumerable, fun), do: extreme_by(to_list(enumerable), fun, 1, &empty_error/0)
 
   @doc """
@@ -1142,7 +1142,7 @@ defmodule Enum do
       #=> "a"
 
   """
-  @spec min_by(Enumerable.t(a), (a) -> any) :: a
+  @spec min_by(Enumerable.t(a), (a) -> any) :: a when a: var
   def min_by(enumerable, fun), do: extreme_by(to_list(enumerable), fun, -1, &empty_error/0)
 
   @doc """
@@ -1157,14 +1157,14 @@ defmodule Enum do
       #=> {"a", "abc"}
 
   """
-  @spec min_max_by(Enumerable.t(a), (a) -> any) :: {a, a}
+  @spec min_max_by(Enumerable.t(a), (a) -> any) :: {a, a} when a: var
   def min_max_by(enumerable, fun), do: {min_by(enumerable, fun), max_by(enumerable, fun)}
 
-  @spec extreme_by([a], (a) -> any, integer, () -> b) :: a | b
+  @spec extreme_by([a], (a) -> any, integer, () -> b) :: a | b when a: var, b: var
   defp extreme_by([], _fun, _want, empty_fallback), do: empty_fallback.()
   defp extreme_by([head | tail], fun, want, _empty_fallback), do: extreme_by_fold(tail, head, fun.(head), fun, want)
 
-  @spec extreme_by_fold([a], a, any, (a) -> any, integer) :: a
+  @spec extreme_by_fold([a], a, any, (a) -> any, integer) :: a when a: var
   defp extreme_by_fold([], best, _best_key, _fun, _want), do: best
   defp extreme_by_fold([head | tail], best, best_key, fun, want) do
     key = fun.(head)
@@ -1185,7 +1185,7 @@ defmodule Enum do
       #=> ["kiwi", "apple", "banana"]
 
   """
-  @spec sort_by(Enumerable.t(a), (a) -> any) :: [a]
+  @spec sort_by(Enumerable.t(a), (a) -> any) :: [a] when a: var
   def sort_by(enumerable, fun) do
     sort(to_list(enumerable), fn (left, right) -> Kernel.compare(fun.(left), fun.(right)) <= 0 end)
   end
@@ -1199,7 +1199,7 @@ defmodule Enum do
       #=> "123"
 
   """
-  @spec join(Enumerable.t(a)) :: binary
+  @spec join(Enumerable.t(a)) :: binary when a: term()
   def join(enumerable), do: join(enumerable, "")
 
   @doc """
@@ -1212,10 +1212,10 @@ defmodule Enum do
       #=> "1, 2, 3"
 
   """
-  @spec join(Enumerable.t(a), binary) :: binary
+  @spec join(Enumerable.t(a), binary) :: binary when a: term()
   def join(enumerable, separator), do: join_list(to_list(enumerable), separator)
 
-  @spec join_list([a], binary) :: binary
+  @spec join_list([a], binary) :: binary when a: term()
   defp join_list([], _separator), do: ""
   defp join_list([only], _separator), do: Kernel.to_string(only)
   defp join_list([head | tail], separator) do
@@ -1231,7 +1231,7 @@ defmodule Enum do
       #=> 6
 
   """
-  @spec sum(Enumerable.t(a)) :: any
+  @spec sum(Enumerable.t(a)) :: any when a: term()
   def sum(enumerable), do: reduce(to_list(enumerable), 0, fn (entry, acc) -> acc + entry end)
 
   @doc """
@@ -1243,7 +1243,7 @@ defmodule Enum do
       #=> 14
 
   """
-  @spec sum_by(Enumerable.t(a), (a) -> any) :: any
+  @spec sum_by(Enumerable.t(a), (a) -> any) :: any when a: var
   def sum_by(enumerable, fun), do: reduce(to_list(enumerable), 0, fn (entry, acc) -> acc + fun.(entry) end)
 
   @doc """
@@ -1255,7 +1255,7 @@ defmodule Enum do
       #=> 24
 
   """
-  @spec product(Enumerable.t(a)) :: any
+  @spec product(Enumerable.t(a)) :: any when a: term()
   def product(enumerable), do: reduce(to_list(enumerable), 1, fn (entry, acc) -> acc * entry end)
 
   @doc """
@@ -1267,7 +1267,7 @@ defmodule Enum do
       #=> 24
 
   """
-  @spec product_by(Enumerable.t(a), (a) -> any) :: any
+  @spec product_by(Enumerable.t(a), (a) -> any) :: any when a: var
   def product_by(enumerable, fun), do: reduce(to_list(enumerable), 1, fn (entry, acc) -> acc * fun.(entry) end)
 
   @doc """
@@ -1283,10 +1283,10 @@ defmodule Enum do
       #=> :error
 
   """
-  @spec fetch(Enumerable.t(a), integer) :: {:ok, a} | :error
+  @spec fetch(Enumerable.t(a), integer) :: {:ok, a} | :error when a: var
   def fetch(enumerable, index), do: fetch_list(to_list(enumerable), index)
 
-  @spec fetch_list([a], integer) :: {:ok, a} | :error
+  @spec fetch_list([a], integer) :: {:ok, a} | :error when a: var
   defp fetch_list([], _index), do: :error
   defp fetch_list([head | _tail], 0), do: {:ok, head}
   defp fetch_list([_head | tail], index), do: fetch_list(tail, index - 1)
@@ -1302,10 +1302,10 @@ defmodule Enum do
       #=> 2
 
   """
-  @spec fetch!(Enumerable.t(a), integer) :: a
+  @spec fetch!(Enumerable.t(a), integer) :: a when a: var
   def fetch!(enumerable, index), do: fetch_result(fetch(enumerable, index), enumerable, index)
 
-  @spec fetch_result({:ok, a} | :error, Enumerable.t(a), integer) :: a
+  @spec fetch_result({:ok, a} | :error, Enumerable.t(a), integer) :: a when a: var
   defp fetch_result({:ok, value}, _enumerable, _index), do: value
   defp fetch_result(:error, enumerable, index) do
     raise(%Enum.OutOfBoundsError{index: index, enumerable: enumerable})
@@ -1321,7 +1321,7 @@ defmodule Enum do
       #=> 2
 
   """
-  @spec at(Enumerable.t(a), integer) :: a | nil
+  @spec at(Enumerable.t(a), integer) :: a | nil when a: var
   def at(enumerable, index), do: at(enumerable, index, nil)
 
   @doc """
@@ -1334,10 +1334,10 @@ defmodule Enum do
       #=> :default
 
   """
-  @spec at(Enumerable.t(a), integer, any) :: any
+  @spec at(Enumerable.t(a), integer, any) :: any when a: term()
   def at(enumerable, index, default), do: at_result(fetch(enumerable, index), default)
 
-  @spec at_result({:ok, a} | :error, any) :: any
+  @spec at_result({:ok, a} | :error, any) :: any when a: term()
   defp at_result({:ok, value}, _default), do: value
   defp at_result(:error, default), do: default
 
@@ -1350,10 +1350,10 @@ defmodule Enum do
       #=> [1, 2, 3, 4, 5]
 
   """
-  @spec concat(Enumerable.t(Enumerable.t(a))) :: [a]
+  @spec concat(Enumerable.t(Enumerable.t(a))) :: [a] when a: var
   def concat(enumerables), do: concat_list(to_list(enumerables))
 
-  @spec concat_list([[a]]) :: [a]
+  @spec concat_list([[a]]) :: [a] when a: var
   defp concat_list([]), do: []
   defp concat_list([head | tail]), do: List.concat(to_list(head), concat_list(tail))
 
@@ -1366,7 +1366,7 @@ defmodule Enum do
       #=> [1, 2, 3, 4]
 
   """
-  @spec concat(Enumerable.t(a), Enumerable.t(b)) :: [a | b]
+  @spec concat(Enumerable.t(a), Enumerable.t(b)) :: [a | b] when a: var, b: var
   def concat(left, right), do: List.concat(to_list(left), to_list(right))
 
   @doc """
@@ -1380,14 +1380,14 @@ defmodule Enum do
       #=> [1, 2, 1, 3]
 
   """
-  @spec dedup(Enumerable.t(a)) :: [a]
+  @spec dedup(Enumerable.t(a)) :: [a] when a: var
   def dedup(enumerable), do: dedup_list(to_list(enumerable))
 
-  @spec dedup_list([a]) :: [a]
+  @spec dedup_list([a]) :: [a] when a: var
   defp dedup_list([]), do: []
   defp dedup_list([head | tail]), do: [head | dedup_after(tail, head)]
 
-  @spec dedup_after([a], a) :: [a]
+  @spec dedup_after([a], a) :: [a] when a: var
   defp dedup_after([], _last), do: []
   defp dedup_after([head | tail], last) do
     if head === last, do: dedup_after(tail, last), else: [head | dedup_after(tail, head)]
@@ -1404,14 +1404,14 @@ defmodule Enum do
       #=> [1, 2, 5]
 
   """
-  @spec dedup_by(Enumerable.t(a), (a) -> any) :: [a]
+  @spec dedup_by(Enumerable.t(a), (a) -> any) :: [a] when a: var
   def dedup_by(enumerable, fun), do: dedup_by_list(to_list(enumerable), fun)
 
-  @spec dedup_by_list([a], (a) -> any) :: [a]
+  @spec dedup_by_list([a], (a) -> any) :: [a] when a: var
   defp dedup_by_list([], _fun), do: []
   defp dedup_by_list([head | tail], fun), do: [head | dedup_by_after(tail, fun.(head), fun)]
 
-  @spec dedup_by_after([a], any, (a) -> any) :: [a]
+  @spec dedup_by_after([a], any, (a) -> any) :: [a] when a: var
   defp dedup_by_after([], _last, _fun), do: []
   defp dedup_by_after([head | tail], last, fun) do
     key = fun.(head)
@@ -1431,10 +1431,10 @@ defmodule Enum do
       #=> 3
 
   """
-  @spec count_until(Enumerable.t(a), integer) :: integer
+  @spec count_until(Enumerable.t(a), integer) :: integer when a: term()
   def count_until(enumerable, limit), do: count_until_list(to_list(enumerable), limit, 0)
 
-  @spec count_until_list([a], integer, integer) :: integer
+  @spec count_until_list([a], integer, integer) :: integer when a: term()
   defp count_until_list([], _limit, seen), do: seen
   defp count_until_list(_list, limit, seen) when seen >= limit, do: seen
   defp count_until_list([_head | tail], limit, seen), do: count_until_list(tail, limit, seen + 1)
@@ -1451,10 +1451,10 @@ defmodule Enum do
       #=> [{1, :a}, {2, :b}, {3, :c}]
 
   """
-  @spec zip(Enumerable.t(a), Enumerable.t(b)) :: [{a, b}]
+  @spec zip(Enumerable.t(a), Enumerable.t(b)) :: [{a, b}] when a: var, b: var
   def zip(left, right), do: zip_lists(to_list(left), to_list(right))
 
-  @spec zip_lists([a], [b]) :: [{a, b}]
+  @spec zip_lists([a], [b]) :: [{a, b}] when a: var, b: var
   defp zip_lists(left, right) do
     case zip_advance([left, right]) do
       :done -> []
@@ -1477,7 +1477,7 @@ defmodule Enum do
       #=> [10, 40]
 
   """
-  @spec zip_with(Enumerable.t(Enumerable.t(a)), ([a]) -> b) :: [b]
+  @spec zip_with(Enumerable.t(Enumerable.t(a)), ([a]) -> b) :: [b] when a: var, b: var
   def zip_with(enumerables, fun), do: zip_with_lists(Enum.map(enumerables, &to_list/1), fun)
 
   @doc """
@@ -1492,12 +1492,12 @@ defmodule Enum do
       #=> [5, 7, 9]
 
   """
-  @spec zip_with(Enumerable.t(a), Enumerable.t(b), (a, b) -> c) :: [c]
+  @spec zip_with(Enumerable.t(a), Enumerable.t(b), (a, b) -> c) :: [c] when a: var, b: var, c: var
   def zip_with(left, right, fun) do
     zip_with_lists([to_list(left), to_list(right)], fn ([left_element, right_element]) -> fun.(left_element, right_element) end)
   end
 
-  @spec zip_with_lists([[a]], ([a]) -> b) :: [b]
+  @spec zip_with_lists([[a]], ([a]) -> b) :: [b] when a: var, b: var
   defp zip_with_lists(lists, fun) do
     case zip_advance(lists) do
       :done -> []
@@ -1505,11 +1505,11 @@ defmodule Enum do
     end
   end
 
-  @spec zip_advance([[a]]) :: :done | {[a], [[a]]}
+  @spec zip_advance([[a]]) :: :done | {[a], [[a]]} when a: var
   defp zip_advance([]), do: :done
   defp zip_advance(lists), do: zip_advance(lists, [], [])
 
-  @spec zip_advance([[a]], [a], [[a]]) :: :done | {[a], [[a]]}
+  @spec zip_advance([[a]], [a], [[a]]) :: :done | {[a], [[a]]} when a: var
   defp zip_advance([], heads, tails), do: {reverse(heads), reverse(tails)}
   defp zip_advance([[] | _rest], _heads, _tails), do: :done
   defp zip_advance([[head | tail] | rest], heads, tails), do: zip_advance(rest, [head | heads], [tail | tails])
@@ -1524,14 +1524,14 @@ defmodule Enum do
       #=> {[1, 2], [:a, :b]}
 
   """
-  @spec unzip(Enumerable.t({a, b})) :: {[a], [b]}
+  @spec unzip(Enumerable.t({a, b})) :: {[a], [b]} when a: var, b: var
   def unzip(enumerable), do: unzip_list(to_list(enumerable))
 
-  @spec unzip_list([{a, b}]) :: {[a], [b]}
+  @spec unzip_list([{a, b}]) :: {[a], [b]} when a: var, b: var
   defp unzip_list([]), do: {[], []}
   defp unzip_list([{left, right} | tail]), do: unzip_cons(left, right, unzip_list(tail))
 
-  @spec unzip_cons(a, b, {[a], [b]}) :: {[a], [b]}
+  @spec unzip_cons(a, b, {[a], [b]}) :: {[a], [b]} when a: var, b: var
   defp unzip_cons(left, right, {lefts, rights}), do: {[left | lefts], [right | rights]}
 
   @doc """
@@ -1547,10 +1547,10 @@ defmodule Enum do
       #=> [[1, 2], [3, 4], [5]]
 
   """
-  @spec chunk_every(Enumerable.t(a), integer) :: [[a]]
+  @spec chunk_every(Enumerable.t(a), integer) :: [[a]] when a: var
   def chunk_every(enumerable, n), do: chunk_every_list(to_list(enumerable), n)
 
-  @spec chunk_every_list([a], integer) :: [[a]]
+  @spec chunk_every_list([a], integer) :: [[a]] when a: var
   defp chunk_every_list([], _n), do: []
   defp chunk_every_list(list, n), do: [take(list, n) | chunk_every_list(drop(list, n), n)]
 
@@ -1565,14 +1565,14 @@ defmodule Enum do
       #=> [[1, 1], [2, 2], [3], [1]]
 
   """
-  @spec chunk_by(Enumerable.t(a), (a) -> any) :: [[a]]
+  @spec chunk_by(Enumerable.t(a), (a) -> any) :: [[a]] when a: var
   def chunk_by(enumerable, fun), do: chunk_by_list(to_list(enumerable), fun)
 
-  @spec chunk_by_list([a], (a) -> any) :: [[a]]
+  @spec chunk_by_list([a], (a) -> any) :: [[a]] when a: var
   defp chunk_by_list([], _fun), do: []
   defp chunk_by_list([head | tail], fun), do: chunk_by_run(tail, fun, fun.(head), [head])
 
-  @spec chunk_by_run([a], (a) -> any, any, [a]) :: [[a]]
+  @spec chunk_by_run([a], (a) -> any, any, [a]) :: [[a]] when a: var
   defp chunk_by_run([], _fun, _key, acc), do: [reverse_list(acc)]
   defp chunk_by_run([head | tail], fun, key, acc) do
     if fun.(head) === key do
@@ -1592,7 +1592,7 @@ defmodule Enum do
       #=> %{:a => 3, :b => 2, :c => 1}
 
   """
-  @spec frequencies(Enumerable.t(a)) :: any
+  @spec frequencies(Enumerable.t(a)) :: any when a: term()
   def frequencies(enumerable), do: frequencies_by(enumerable, fn (entry) -> entry end)
 
   @doc """
@@ -1605,7 +1605,7 @@ defmodule Enum do
       #=> %{"a" => 2, "b" => 1}
 
   """
-  @spec frequencies_by(Enumerable.t(a), (a) -> any) :: any
+  @spec frequencies_by(Enumerable.t(a), (a) -> any) :: any when a: var
   def frequencies_by(enumerable, fun) do
     reduce(to_list(enumerable), %{}, fn (entry, acc) -> bump(acc, fun.(entry)) end)
   end
@@ -1624,7 +1624,7 @@ defmodule Enum do
       #=> [1, 2, 3]
 
   """
-  @spec uniq(Enumerable.t(a)) :: [a]
+  @spec uniq(Enumerable.t(a)) :: [a] when a: var
   def uniq(enumerable), do: uniq_by(enumerable, fn (entry) -> entry end)
 
   @doc """
@@ -1638,10 +1638,10 @@ defmodule Enum do
       #=> [{1, :a}, {3, :b}]
 
   """
-  @spec uniq_by(Enumerable.t(a), (a) -> any) :: [a]
+  @spec uniq_by(Enumerable.t(a), (a) -> any) :: [a] when a: var
   def uniq_by(enumerable, fun), do: uniq_walk(to_list(enumerable), fun, %{})
 
-  @spec uniq_walk([a], (a) -> any, any) :: [a]
+  @spec uniq_walk([a], (a) -> any, any) :: [a] when a: var
   defp uniq_walk([], _fun, _seen), do: []
   defp uniq_walk([head | tail], fun, seen) do
     key = fun.(head)
@@ -1662,7 +1662,7 @@ defmodule Enum do
       #=> %{0 => [2, 4], 1 => [1, 3, 5]}
 
   """
-  @spec group_by(Enumerable.t(a), (a) -> any) :: any
+  @spec group_by(Enumerable.t(a), (a) -> any) :: any when a: var
   def group_by(enumerable, fun), do: group_by(enumerable, fun, fn (entry) -> entry end)
 
   @doc """
@@ -1678,7 +1678,7 @@ defmodule Enum do
       #=> [1, 2, 3, 4]
 
   """
-  @spec into(Enumerable.t(a), Collectable.t) :: any
+  @spec into(Enumerable.t(a), Collectable.t) :: any when a: term()
   def into(enumerable, collectable) do
     {initial, collector} = Collectable.into(collectable)
     try do
@@ -1702,7 +1702,7 @@ defmodule Enum do
       #=> %{1 => 10, 2 => 20}
 
   """
-  @spec into(Enumerable.t(a), Collectable.t, (a) -> any) :: any
+  @spec into(Enumerable.t(a), Collectable.t, (a) -> any) :: any when a: var
   def into(enumerable, collectable, transform) do
     {initial, collector} = Collectable.into(collectable)
     try do
@@ -1727,13 +1727,13 @@ defmodule Enum do
       #=> %{0 => [20, 40], 1 => [10, 30, 50]}
 
   """
-  @spec group_by(Enumerable.t(a), (a) -> any, (a) -> any) :: any
+  @spec group_by(Enumerable.t(a), (a) -> any, (a) -> any) :: any when a: var
   def group_by(enumerable, key_fun, value_fun) do
     grouped = reduce(to_list(enumerable), %{}, fn (entry, acc) -> group_step(acc, key_fun, value_fun, entry) end)
     reduce(Map.keys(grouped), grouped, fn (key, acc) -> group_reverse(acc, key) end)
   end
 
-  @spec group_step(any, (a) -> any, (a) -> any, a) :: any
+  @spec group_step(any, (a) -> any, (a) -> any, a) :: any when a: var
   defp group_step(acc, key_fun, value_fun, entry) do
     group_put(acc, key_fun.(entry), value_fun.(entry))
   end

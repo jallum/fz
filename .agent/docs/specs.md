@@ -16,11 +16,14 @@ Compiler2 owns the active contract path:
   `ModuleTypeEnv`. A function type is written Elixir's way, `(A, B -> R)` or
   `(-> R)`, or fz's way, `(A, B) -> R` or `() -> R`; both parse to one
   `TypeExpr::Arrow`.
-- In a `when` clause, `a: var` declares `a` a type variable with no bound, as
-  in Elixir, for `@spec` and `extern` alike. `SpecDecl::bounds()` (`ast`)
-  leaves it out, and `World::resolve_spec` checks that `a` is a variable the
-  spec uses and then adds no constraint, since a variable without one is
-  already unbounded.
+- A type variable is a one-letter name, and `when` declares every one, as in
+  Elixir, for `@spec` and `extern` alike: `a: var` when it links two
+  positions, a bound such as `a: term()` otherwise. `World::resolve_spec`
+  refuses, under the variable's first use, one that `when` does not declare
+  and a `var` written only once. `var` adds no constraint
+  (`SpecDecl::bounds()` in `ast` leaves it out), since a declared variable
+  without a bound is already unbounded.
+- `term` is a builtin type name for `any`, as in Erlang and Elixir.
 - `compiler2/resolve.rs` resolves names against the namespace captured where a
   declaration appeared and returns hard compiler2 `Ty` values plus parallel
   `ResolvedTypeShape` values.

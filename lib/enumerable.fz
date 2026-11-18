@@ -17,7 +17,7 @@ defprotocol Enumerable do
   implementation has to get it right: it is what every other `Enum` operation
   -- `map`, `filter`, `count`'s fallback, and so on -- ultimately reduces to.
   """
-  @spec reduce(t(a), b, (a, b | c) -> {:cont, b | c} | {:halt, b | c} | {:suspend, b | c}) :: {:done, b | c} | {:halted, b | c} | {:suspended, b | c, () -> any}
+  @spec reduce(t(a), b, (a, b | c) -> {:cont, b | c} | {:halt, b | c} | {:suspend, b | c}) :: {:done, b | c} | {:halted, b | c} | {:suspended, b | c, () -> any} when a: var, b: var, c: var
   def reduce(enumerable, acc, reducer)
 
   @doc """
@@ -25,7 +25,7 @@ defprotocol Enumerable do
 
   `Enum.reduce_while/3` calls this directly.
   """
-  @spec reduce_while(t(a), b, (a, b) -> {:cont, b} | {:halt, c}) :: b | c
+  @spec reduce_while(t(a), b, (a, b) -> {:cont, b} | {:halt, c}) :: b | c when a: var, b: var, c: var
   def reduce_while(enumerable, acc, reducer)
 
   @doc """
@@ -35,7 +35,7 @@ defprotocol Enumerable do
   `Enum.count/1` falls back to counting by reduction when this returns
   `{:error, _}`.
   """
-  @spec count(t(a)) :: {:ok, integer} | {:error, any}
+  @spec count(t(a)) :: {:ok, integer} | {:error, any} when a: term()
   def count(enumerable)
 
   @doc """
@@ -45,14 +45,14 @@ defprotocol Enumerable do
   `Enum.member?/2` falls back to a reducing search when this returns
   `{:error, _}`.
   """
-  @spec member?(t(a), a) :: {:ok, boolean} | {:error, any}
+  @spec member?(t(a), a) :: {:ok, boolean} | {:error, any} when a: var
   def member?(enumerable, value)
 
   @doc """
   Returns the enumerable's size together with a slicing function, or reports
   that it cannot be sliced without a full traversal.
   """
-  @spec slice(t(a)) :: {:ok, integer, any} | {:error, any}
+  @spec slice(t(a)) :: {:ok, integer, any} | {:error, any} when a: term()
   def slice(enumerable)
 end
 

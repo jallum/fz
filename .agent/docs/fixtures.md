@@ -123,7 +123,7 @@ their block. A new epic claims the next free block and adds a row here.
 | `01320-01339` | fz-nml                            | in use through `01339` |
 | `01340-01359` | fz-9zq                            | in use through `01345` |
 | `01360-01379` | fz-sc8                            | in use through `01372` |
-| `01380-01399` | fz-nhb                            | in use through `01383` |
+| `01380-01399` | fz-nhb                            | in use through `01385` |
 | `01400-01699` | fz-p8p                            | in use through `01656` |
 | `01700-01719` | fz-nml                            | in use through `01705` |
 | `01720-01739` | fz-3sy                            | in use through `01721` |
@@ -326,8 +326,7 @@ location), and raises a plain value with `:erlang.error/1`.
 
 **A twin** (`oracle: <file>.exs`) is kept only for a fixture whose source is
 not valid Elixir or whose output Elixir does not share: typed parameters,
-`extern`, the `%` operator, a free type variable or a function type in a
-`@spec`, a guard that calls a `defp`, a top-level call to a later `def`,
+`extern`, the `%` operator, a function type in a `@spec`, a guard that calls a `defp`, a top-level call to a later `def`,
 fz-only library functions (`assert/2`, `range/3`, `compare/2`, `Utf8`, ...),
 `__MODULE__` outside a module, an `Enumerable` that implements fz's
 `reduce_while`, a macro that unquotes a map, or `dbg`'s own rendering. The twin is the Elixir program whose output the fixture

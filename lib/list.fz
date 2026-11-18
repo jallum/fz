@@ -21,7 +21,7 @@ defmodule List do
       #=> [1, 2, 3]
 
   """
-  @spec concat([a], [a]) :: [a]
+  @spec concat([a], [a]) :: [a] when a: var
   def concat([], right), do: right
   def concat([head | tail], right), do: [head | concat(tail, right)]
 
@@ -37,11 +37,11 @@ defmodule List do
       #=> [1, 3, 2]
 
   """
-  @spec subtract([a], [a]) :: [a]
+  @spec subtract([a], [a]) :: [a] when a: var
   def subtract(left, []), do: left
   def subtract(left, [item | rest]), do: subtract(delete_first(left, item), rest)
 
-  @spec delete_first([a], any) :: [a]
+  @spec delete_first([a], any) :: [a] when a: var
   defp delete_first([], _value), do: []
   defp delete_first([head | tail], value) do
     if head === value, do: tail, else: [head | delete_first(tail, value)]
@@ -54,7 +54,7 @@ defmodule List do
   reached through `Enum.reduce/2`, `Enum.reduce/3`, and every other
   `Enum` function that folds over a list, by way of `Enum.to_list/1`.
   """
-  @spec reduce([a], {:cont, b} | {:halt, b} | {:suspend, b}, (a, b | c) -> {:cont, b | c} | {:halt, b | c} | {:suspend, b | c}) :: {:done, b | c} | {:halted, b | c} | {:suspended, b | c, () -> any}
+  @spec reduce([a], {:cont, b} | {:halt, b} | {:suspend, b}, (a, b | c) -> {:cont, b | c} | {:halt, b | c} | {:suspend, b | c}) :: {:done, b | c} | {:halted, b | c} | {:suspended, b | c, () -> any} when a: var, b: var, c: var
   def reduce(list, {:cont, acc}, reducer), do: reduce_cont(list, acc, reducer)
   def reduce(_list, {:halt, acc}, _reducer), do: {:halted, acc}
   def reduce(list, {:suspend, acc}, reducer) do
@@ -68,7 +68,7 @@ defmodule List do
   reached through `Enum.reduce_while/3` and the `Enum` functions built
   on it, such as `Enum.take_while/2`, `Enum.all?/1`, and `Enum.find/2`.
   """
-  @spec reduce_while([a], b, (a, b) -> {:cont, b} | {:halt, c}) :: b | c
+  @spec reduce_while([a], b, (a, b) -> {:cont, b} | {:halt, c}) :: b | c when a: var, b: var, c: var
   def reduce_while(list, acc, reducer), do: reduce_while_cont(list, acc, reducer)
 
   @doc """
@@ -83,7 +83,7 @@ defmodule List do
       #=> true
 
   """
-  @spec member?([a], any) :: boolean
+  @spec member?([a], any) :: boolean when a: term()
   def member?([], _value), do: false
   def member?([head | tail], value) do
     if head === value, do: true, else: member?(tail, value)
@@ -101,30 +101,30 @@ defmodule List do
       #=> [3, 2, 1, :a, :b]
 
   """
-  @spec reverse([a], [a]) :: [a]
+  @spec reverse([a], [a]) :: [a] when a: var
   def reverse([], tail), do: tail
   def reverse([head | tail], acc), do: reverse(tail, [head | acc])
 
-  @spec reduce_cont([a], b | c, (a, b | c) -> {:cont, b | c} | {:halt, b | c} | {:suspend, b | c}) :: {:done, b | c} | {:halted, b | c} | {:suspended, b | c, () -> any}
+  @spec reduce_cont([a], b | c, (a, b | c) -> {:cont, b | c} | {:halt, b | c} | {:suspend, b | c}) :: {:done, b | c} | {:halted, b | c} | {:suspended, b | c, () -> any} when a: var, b: var, c: var
   defp reduce_cont([], acc, _reducer), do: {:done, acc}
   defp reduce_cont([head | tail], acc, reducer) do
     reduce_step(tail, reducer.(head, acc), reducer)
   end
 
-  @spec reduce_step([a], {:cont, b | c} | {:halt, b | c} | {:suspend, b | c}, (a, b | c) -> {:cont, b | c} | {:halt, b | c} | {:suspend, b | c}) :: {:done, b | c} | {:halted, b | c} | {:suspended, b | c, () -> any}
+  @spec reduce_step([a], {:cont, b | c} | {:halt, b | c} | {:suspend, b | c}, (a, b | c) -> {:cont, b | c} | {:halt, b | c} | {:suspend, b | c}) :: {:done, b | c} | {:halted, b | c} | {:suspended, b | c, () -> any} when a: var, b: var, c: var
   defp reduce_step(list, {:cont, acc}, reducer), do: reduce_cont(list, acc, reducer)
   defp reduce_step(_list, {:halt, acc}, _reducer), do: {:halted, acc}
   defp reduce_step(list, {:suspend, acc}, reducer) do
     {:suspended, acc, (fn () -> reduce_cont(list, acc, reducer) end)}
   end
 
-  @spec reduce_while_cont([a], b, (a, b) -> {:cont, b} | {:halt, c}) :: b | c
+  @spec reduce_while_cont([a], b, (a, b) -> {:cont, b} | {:halt, c}) :: b | c when a: var, b: var, c: var
   defp reduce_while_cont([], acc, _reducer), do: acc
   defp reduce_while_cont([head | tail], acc, reducer) do
     reduce_while_step(tail, reducer.(head, acc), reducer)
   end
 
-  @spec reduce_while_step([a], {:cont, b} | {:halt, c}, (a, b) -> {:cont, b} | {:halt, c}) :: b | c
+  @spec reduce_while_step([a], {:cont, b} | {:halt, c}, (a, b) -> {:cont, b} | {:halt, c}) :: b | c when a: var, b: var, c: var
   defp reduce_while_step(list, {:cont, acc}, reducer), do: reduce_while_cont(list, acc, reducer)
   defp reduce_while_step(_list, {:halt, acc}, _reducer), do: acc
 end

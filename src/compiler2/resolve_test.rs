@@ -34,6 +34,7 @@ fn nullary_scalars_resolve_to_the_same_ty_as_the_direct_types_call() {
         ("binary", |t| t.str_t()),
         ("atom", |t| t.atom()),
         ("any", |t| t.any()),
+        ("term", |t| t.any()),
         ("never", |t| t.none()),
         ("utf8", |t| {
             let inner = t.str_t();

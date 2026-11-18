@@ -1,5 +1,5 @@
 defprotocol Proof do
-  @spec pick(t(a), a) :: a
+  @spec pick(t(a), a) :: a when a: var
   def pick(value, fallback)
 end
 

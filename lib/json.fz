@@ -564,7 +564,7 @@ defmodule JSON do
   defp object_next(<<"}", r :: binary>>, acc), do: {:ok, acc, r}
   defp object_next(b, _acc), do: {:error, b}
 
-  @spec reverse([a], [b]) :: [a | b]
+  @spec reverse([a], [b]) :: [a | b] when a: var, b: var
   defp reverse([], acc), do: acc
   defp reverse([h | t], acc), do: reverse(t, [h | acc])
 end

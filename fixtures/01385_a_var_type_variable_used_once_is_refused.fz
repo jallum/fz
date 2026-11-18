@@ -1,0 +1,10 @@
+#---
+# purpose: a @spec type variable declared `var` but written only once stops the compile, as Elixir refuses it; `term()` is the spelling for one use
+# expect: diagnostic
+#---
+defmodule M do
+  @spec count([a]) :: integer when a: var
+  def count(list), do: length(list)
+end
+
+def main(), do: dbg(M.count([1]))
