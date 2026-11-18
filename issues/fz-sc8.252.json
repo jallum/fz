@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-sc8.248"
+  ],
   "created": "2026-11-18T06:27:11Z",
   "description": "Regression from #725 (fz-sc8.230, b056f1160), found 2026-11-18 by Make Distiller Fast while building fz-sc8.248; blocks fz-sc8.248.\n\nSymptom: a case arm handed a tuple out of a list that only stores it re-boxes it. Probe: rev(l, acc) as case l do [] -\u003e acc; [h | t] -\u003e rev(t, [h | acc]) end over three {int, int} tuples allocates 3 structs on interp and run; the clause spelling allocates 0. Two-point bisect: b056f1160~1 allocates 0, b056f1160 allocates 3. No fixture pinned the case spelling.\n\nCause: #725 lays arm parameters out by their own demand; a Whole demand on an exact tuple lays out as its fields' lanes, so dispatch unpacks the boxed element into lanes at the arm boundary and the arm builds a new box to store it. The clause spelling escapes because its SplitList step holds the boxed word locally.\n\nFix candidate (spiked, 4 lines, src/compiler2/jobs/transport.rs, the Projection arm of evaluate_transport_recipe): a projection other than a lane-tuple field (list head/tail, map value, struct field) whose demand is Whole gets the value-lane layout. Spike: both spellings allocate 0 on interp and run; suite green, no pin or expected-output change (7,093).\n\nDone when: a fixture (01765) pins the case spelling at 0 allocations on three paths; bench distiller with/without measured. Not covered (pre-existing, separate): the same unpack-then-rebox across a call when a callee stores a tuple parameter whole.",
   "id": "fz-sc8.252",

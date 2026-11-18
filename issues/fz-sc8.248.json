@@ -1,7 +1,8 @@
 {
   "assignee": "Jason Allum",
   "blocked_by": [
-    "fz-sc8.247"
+    "fz-sc8.247",
+    "fz-sc8.252"
   ],
   "blocks": [],
   "created": "2026-11-18T03:23:50Z",
@@ -19,5 +20,5 @@
   "status": "in_progress",
   "title": "A clause receives the values its dispatch already read",
   "type": "task",
-  "updated_at": "2026-11-18T05:26:40Z"
+  "updated_at": "2026-11-18T06:27:11Z"
 }
