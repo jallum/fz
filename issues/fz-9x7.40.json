@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-9x7.8"
+  ],
   "blocks": [],
   "created": "2026-11-18T05:55:05Z",
   "description": "Approved by the user 2026-11-18 (relayed by GC). Ordered after fz-9x7.8.\n\nEvidence: giftbin's consumer drains 100,000 messages without collecting. The binary budget grows only where a binary is made (runtime/src/heap/imp.rs:964 and :1047); graft (runtime/src/heap/gift.rs:209) records nothing for the binaries a received message brings. BEAM counts received binaries toward the receiver's binary heap.\n\nDone when: a receiver of off-heap binaries collects by its binary budget (giftbin consumer collects; pinned), on three paths; guards judged on the bench machine.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "A received binary counts toward the receiver's binary budget",
   "type": "bug",
-  "updated_at": "2026-11-18T05:55:05Z"
+  "updated_at": "2026-11-18T05:55:06Z"
 }
