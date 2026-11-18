@@ -571,3 +571,10 @@ is the one module that allows them. The runtime crate has its own
 `clippy.toml` and stays on std. The `fz-engine` crate keeps its own private
 `fast_hash` module (foldhash, same per-table seed) and its own `clippy.toml`;
 the compiler does not import its hasher from the engine.
+
+## Runtime probes against BEAM
+
+`bench/maps/` holds map workloads measured three ways: compiled by fz, on BEAM, and on
+hand-written arm64 sequences over the flat map layout. `bench/maps/probes.py build` writes and
+builds them; `measure` prints instructions per iteration for each. `bench/maps/README.md` says
+what each probe does and records the figures.
