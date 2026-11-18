@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-sc8.247"
+  ],
   "blocks": [],
   "created": "2026-11-18T03:23:50Z",
   "description": "Approved by the user 2026-11-17 as decision (c) of the byte-walk page (relayed verbatim by Make Distiller Fast: \"a, b, c approved.\"; (c) was the recommendation to make this a separate follow-up with its own page).\n\nFold a def clause's projections onto the outcome edge, so a clause receives its values the way a case arm does: deletes the second read of the byte and leaves one dispatch lowering. 10 of the remaining 61 instructions per byte on the walk. Changes what the interpreter reads.\n\nNeeds its own proposal page with predictions before a builder.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "A clause receives the values its dispatch already read",
   "type": "task",
-  "updated_at": "2026-11-18T03:23:50Z"
+  "updated_at": "2026-11-18T03:23:51Z"
 }
