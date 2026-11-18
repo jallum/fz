@@ -7,9 +7,15 @@
   "id": "fz-sc8.249",
   "labels": [],
   "parent": "fz-sc8",
+  "comments": [
+    {
+      "text": "Callables (2026-11-17, continuation-cost study): prologue saves are 34 of 173 instructions in JSON's non-tail-call listing; a resume that uses two of five saved pairs spends 12 instructions on them.",
+      "timestamp": "2026-11-18T04:15:03Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "Measure why native leaves save x19-x28",
   "type": "task",
-  "updated_at": "2026-11-18T04:08:44Z"
+  "updated_at": "2026-11-18T04:15:03Z"
 }
