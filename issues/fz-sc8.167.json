@@ -7,9 +7,15 @@
   "id": "fz-sc8.167",
   "labels": [],
   "parent": "fz-sc8",
+  "comments": [
+    {
+      "text": "fz-nml.9.3 (redirected 2026-11-17) packs a pid into its ref word as an atom is, so no pid box remains once it lands; this ticket drops the pid box from its scope then.",
+      "timestamp": "2026-11-18T01:45:35Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "Comparing two atoms with \u003c boxes no integers in native code",
   "type": "bug",
-  "updated_at": "2026-11-17T22:31:40Z"
+  "updated_at": "2026-11-18T01:45:35Z"
 }
