@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-18T21:21:28Z",
+  "description": "Delete binary code with no callers. Each item was verified by grep over src, runtime/src and lib, tests included:\n- bits::bitstring_like_eq (bits.rs:650), which duplicates term.rs:488\n- bitstr::decode_utf8, decode_utf16 and decode_utf32 (bitstr.rs:195, 247, 287)\n- ValueKind::BINARY_REPRS (any_value.rs:136); is_binary_repr is what code uses\n- SHARED_BIN_ROOM_OFFSET (bits.rs:121): only a comment in aot_main.rs uses it, and that comment hard-codes 32..40\n- bitstring_like_word, an identity wrapper over is_bitstring_like().then_some\n- fz_brand_bitstring_as_utf8, an identity call\n- ast::BitFieldSpec::resolved_unit (ast/mod.rs:556) and default_size (:570)\n- the fz_ir::default_unit_for wrapper (fz_ir/mod.rs:119)\n- the unreachable BitSizeIr::ByteSizeOf construction arm (prim.rs:402); confirm it is unreachable before deleting\n- the stale \"thread-local BitWriter\" comment (native_codegen/support.rs:98-125); it is process.bs_builder\n\nSource: runtime.md R17, compiler.md C14.\n\nAcceptance: deleted. The gate is green, and no pin moves upward.",
+  "id": "fz-9e2.2",
+  "labels": [],
+  "parent": "fz-9e2",
+  "priority": 2,
+  "status": "open",
+  "title": "Binary code with no callers is deleted",
+  "type": "task",
+  "updated_at": "2026-11-18T21:21:28Z"
+}
