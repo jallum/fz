@@ -1,7 +1,9 @@
 {
   "assignee": "Jason Allum",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-9x7.34"
+  ],
   "created": "2026-11-17T23:49:51Z",
   "description": "Approved by the user 2026-11-17 (relayed by GC: \"C, optimize approved\"), including the semantic change: a send copies a term without preserving sharing, as BEAM's send does (a subterm shared twice is copied twice). Supersedes the held Type System proposal \"A send copies its message without building two address hash tables\" (gift_copy), never filed.\n\nMeasured (GC):\n- Counting allocator (develop 4a05ae2be + #688): msg ~12 mallocs/message (4,824,416 / 400k), fanin ~8; the message copy owns ~5: measure_deep_copy builds a fresh AddressSet per message (rehashes twice), deep_copy a fresh AddressMap forwarding map (rehashes twice), and begin_gift's block (\u003c1 KiB) goes to an exact-size malloc via pick_block_capacity.\n- Release profile of msg (a6ae5759d V0, sample 1 ms, 4,154 self samples): hashbrown self 10.9%; measure_deep_copy ~19% and deep_copy_any_value_ref ~19% inclusive (upper bounds); malloc/free self 29.2% + xzone free mach_absolute_time 12% = ~41%.\n\nChange: delete both address maps (the measure pass becomes a plain size walk; the copy forwards nothing); the block pool serves blocks under 1 KiB in 16-byte classes so in-use bytes stay exact and idle bytes are reported as today.\n\nRule (pre-registered): probe \u003c= 7 mallocs/message on msg and \u003c= 4 on fanin; msg instructions fall \u003e= 10% (prediction 15-20%); no workload rises beyond noise; peak_in_use_bytes unchanged except on programs that send shared subterms, which are listed; a test pins the BEAM behaviour (a shared subterm arrives as two copies); gate green.\n\nOrder: stacked on #699 (fz-9x7.25), before fz-9x7.12 (S), which rebases over the small-block classes. Leaves Heap::graft (fz-9x7.14) untouched. Files: runtime/src/heap/deep_copy.rs, gift.rs, block_pool.rs. The memory guide documents the sharing change.",
   "id": "fz-9x7.28",
@@ -17,5 +19,5 @@
   "status": "in_progress",
   "title": "Copying a message allocates nothing from malloc: no address maps, small blocks from the pool",
   "type": "task",
-  "updated_at": "2026-11-18T00:38:46Z"
+  "updated_at": "2026-11-18T00:55:04Z"
 }
