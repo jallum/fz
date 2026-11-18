@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-9x7.11.2"
+  ],
   "blocks": [],
   "created": "2026-11-18T23:59:20Z",
   "description": "User approved 2026-11-18, verbatim via GC: \"agreed; proceed\". Step C7 of fz-9x7.11 page v4 (https://claude.ai/artifact/BB1FpQ1Cf7Jd5spZeLEWtg). One commit, judged on bench. Builder: GC.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Schemas are a flat descriptor array for the collector",
   "type": "task",
-  "updated_at": "2026-11-18T23:59:20Z"
+  "updated_at": "2026-11-18T23:59:27Z"
 }
