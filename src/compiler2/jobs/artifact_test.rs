@@ -352,6 +352,7 @@ fn a_pruned_body_answers_only_for_the_call_sites_it_kept() {
             span: crate::source::Span::DUMMY,
             params: Vec::new(),
             projections: Vec::new(),
+            arguments: Box::default(),
             entry: root,
         }],
         vec![

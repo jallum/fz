@@ -58,7 +58,7 @@ use super::artifact::{
 };
 use super::body::{
     CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, DispatchBindings, LoweredBitField,
-    LoweredBitFieldSpec, LoweredBitSize, LoweredExtern, OutcomeEdge, ReceiveAfter, ValueId,
+    LoweredBitFieldSpec, LoweredBitSize, LoweredExtern, OutcomeArgument, OutcomeEdge, ReceiveAfter, ValueId,
 };
 use super::contract::ContractArrow;
 use super::identity::{ActivationKey, ExecutableKey, FunctionId};
@@ -921,6 +921,8 @@ impl ProgramCanon<'_> {
             let text = self.step(step);
             out.put(&text);
         }
+        let arguments = self.outcome_arguments(&clause.arguments);
+        out.put(&format!("arguments [{arguments}]"));
         out.put(&format!("entry e{}", clause.entry.as_u32()));
         out.exit();
     }
@@ -1324,8 +1326,12 @@ impl ProgramCanon<'_> {
     }
 
     fn outcome_edge(&mut self, index: usize, edge: &OutcomeEdge) -> String {
-        let arguments = edge
-            .arguments
+        let arguments = self.outcome_arguments(&edge.arguments);
+        format!("o{index} -> e{} [{arguments}]", edge.target.as_u32())
+    }
+
+    fn outcome_arguments(&mut self, arguments: &[OutcomeArgument]) -> String {
+        arguments
             .iter()
             .map(|argument| {
                 format!(
@@ -1336,8 +1342,7 @@ impl ProgramCanon<'_> {
                 )
             })
             .collect::<Vec<_>>()
-            .join(", ");
-        format!("o{index} -> e{} [{arguments}]", edge.target.as_u32())
+            .join(", ")
     }
 
     fn receive(&mut self, out: &mut Out, receive: &BackendReceive) {

@@ -80,6 +80,10 @@ fn emit_list_retention(tel: &impl crate::telemetry::Telemetry, root: &RootId, pr
     tel.raw_event2(&["fz", "compiler2", "native_program", "list_retention"], root, program);
 }
 
+/// What an entry dispatch does with the clause an outcome selects.
+type EnterClause<'e, 'a, 'tel, T> = dyn FnMut(&mut NativeLowerer<'a, 'tel, T>, &mut NativeFnCtx, usize, &mut DispatchState) -> Result<(), FatalError>
+    + 'e;
+
 struct NativeLowerer<'a, 'tel, T: crate::telemetry::Telemetry> {
     world: &'a mut World,
     telemetry: &'tel T,
@@ -715,7 +719,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         );
         let entry_tys = executable_input_tys(executable);
         let entry_vars = ctx.entry_params(entry_tys.as_slice());
-        if executable.abi.materialized.entry_dispatch.is_some() {
+        if executable.asks_anything_of_inputs() {
             self.lower_extern_after_dispatch(&mut ctx, index, executable, signature, &entry_vars)?;
         } else {
             let result = self.emit_extern_call(&mut ctx, index, signature, &entry_vars)?;
@@ -737,13 +741,15 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
     ) -> Result<(), FatalError> {
         let entry_tys = executable_input_tys(executable);
         let mut call_block = None;
-        self.lower_executable_entry_dispatch(ctx, executable, entry_vars, &mut |ctx, _clause| {
-            call_block
+        self.lower_executable_entry_dispatch(ctx, executable, entry_vars, [], &mut |_, ctx, _clause, state| {
+            let block = call_block
                 .get_or_insert_with(|| {
                     let lanes = ctx.typed_params(entry_tys.iter());
                     (ctx.builder.block(lanes.clone()), lanes)
                 })
-                .0
+                .0;
+            ctx.set_term(Term::Goto(block, state.forwarded_args.clone()));
+            Ok(())
         })?;
         if let Some((block, lanes)) = call_block {
             ctx.current_block = block;
@@ -873,36 +879,40 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         );
         let entry_tys = executable_input_tys(executable);
         let entry_vars = ctx.entry_params(entry_tys.as_slice());
-        if executable.abi.materialized.entry_dispatch.is_some() {
-            self.lower_executable_entry_dispatch(&mut ctx, executable, &entry_vars, &mut |ctx, clause| {
-                ctx.entry_block(clauses[clause].entry, &entry_tys)
-            })?;
-        } else {
-            let [clause] = clauses else {
-                return Err(incomplete_native_program(
-                    self.telemetry,
-                    self.root_id,
-                    format!(
-                        "backend executable {} has {} clauses but no settled entry dispatch",
-                        index,
-                        clauses.len()
-                    ),
-                ));
-            };
-            self.lower_clause_body_here(&mut ctx, executable, entries, entry_fns, clause, &entry_vars)?;
+        if executable.abi.materialized.entry_dispatch.is_none() {
+            return Err(incomplete_native_program(
+                self.telemetry,
+                self.root_id,
+                format!(
+                    "backend executable {} has {} clauses but no settled entry dispatch",
+                    index,
+                    clauses.len()
+                ),
+            ));
         }
+        let handed = clauses
+            .iter()
+            .flat_map(|clause| clause.arguments.iter().map(|argument| argument.subject));
+        self.lower_executable_entry_dispatch(
+            &mut ctx,
+            executable,
+            &entry_vars,
+            handed,
+            &mut |lowerer, ctx, clause, state| lowerer.enter_clause(ctx, executable, entries, &clauses[clause], state),
+        )?;
         self.finish_entry_lowering_fn(ctx, executable, entries, entry_fns)
     }
 
-    /// Emits the executable's entry dispatch into `ctx`: each outcome goes to
-    /// the block `clause_block` names for its clause, carrying the
-    /// executable's inputs, and a miss raises the plan's arm of last resort.
+    /// Emits the executable's entry dispatch into `ctx`: each outcome is
+    /// handed to `enter_clause` with the clause it selects, and a miss raises
+    /// the plan's arm of last resort.
     fn lower_executable_entry_dispatch(
         &mut self,
         ctx: &mut NativeFnCtx,
         executable: &BackendExecutable,
         entry_vars: &[Var],
-        clause_block: &mut dyn FnMut(&mut NativeFnCtx, usize) -> BlockId,
+        handed: impl IntoIterator<Item = SubjectId>,
+        enter_clause: &mut EnterClause<'_, 'a, 'tel, T>,
     ) -> Result<(), FatalError> {
         let semantic_inputs = self.bind_executable_inputs(executable, entry_vars)?;
         let dispatch = executable
@@ -917,8 +927,9 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             .map(
                 |(semantic_index, value)| match (dispatch.plan().required_input(semantic_index), value) {
                     // Dispatch reads an input in whatever form it arrived in: a
-                    // tuple delivered as lanes is questioned lane-wise.
-                    (true, Some(value)) => Ok(value),
+                    // tuple delivered as lanes is questioned lane-wise. An
+                    // input nothing reads was never delivered.
+                    (_, Some(value)) => Ok(value),
                     (true, None) => Err(incomplete_native_program(
                         self.telemetry,
                         self.root_id,
@@ -928,17 +939,48 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                             executable.key.activation.function.as_u32(),
                         ),
                     )),
-                    (false, _) => Ok(NativeBoundValue::Absent),
+                    (false, None) => Ok(NativeBoundValue::Absent),
                 },
             )
             .collect::<Result<Vec<_>, _>>()?;
         let bindings = self.lower_argument_bindings(ctx, dispatch.plan(), &inputs)?;
-        let mut state = DispatchState::new(inputs, entry_vars.to_vec(), bindings);
-        self.lower_dispatch_node(ctx, dispatch, dispatch.plan().graph.root, clause_block, &mut state)
+        let mut state = DispatchState::new(inputs, entry_vars.to_vec(), bindings).reading(handed);
+        self.lower_dispatch_node(ctx, dispatch, dispatch.plan().graph.root, enter_clause, &mut state)
+    }
+
+    /// Enters the block of the clause an outcome selected. The block receives
+    /// the executable's input lanes, and after them the value of each subject
+    /// its arguments name in the layout its parameter arrives in, exactly as a
+    /// `case` arm is handed its subjects.
+    fn enter_clause(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        executable: &BackendExecutable,
+        entries: &[BackendEntry],
+        clause: &BackendClause,
+        state: &mut DispatchState,
+    ) -> Result<(), FatalError> {
+        let entry = &entries[clause.entry.as_u32() as usize];
+        self.check_clause_arguments_follow_parameters(entry, clause)?;
+        let plan = executable
+            .abi
+            .materialized
+            .entry_dispatch
+            .as_ref()
+            .expect("a clause is entered by the entry dispatch")
+            .plan();
+        let mut args = state.forwarded_args.clone();
+        args.extend(self.encode_outcome_arguments(ctx, executable, plan, state, &clause.arguments)?);
+        let mut tys = executable_input_tys(executable);
+        tys.extend(self.entry_signature(executable, entry).0);
+        let block = ctx.entry_block(clause.entry, &tys);
+        ctx.set_term(Term::Goto(block, args));
+        Ok(())
     }
 
     /// Lowers a clause body where control already is: its parameters are the
-    /// executable's inputs, and its projections read them again.
+    /// executable's inputs, and the arguments its entry dispatch handed
+    /// follow them.
     fn lower_clause_body_here(
         &mut self,
         ctx: &mut NativeFnCtx,
@@ -948,15 +990,15 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         clause: &BackendClause,
         entry_vars: &[Var],
     ) -> Result<(), FatalError> {
+        let (input_vars, argument_vars) = entry_vars.split_at(executable_input_tys(executable).len());
         let mut env = ValueEnv::default();
-        let semantic_inputs = self.bind_executable_inputs(executable, entry_vars)?;
+        let semantic_inputs = self.bind_executable_inputs(executable, input_vars)?;
         for (value, bound) in clause.params.iter().copied().zip(semantic_inputs) {
             if let Some(bound) = bound {
                 bind_local_value(ctx, executable, &mut env, value, bound);
             }
         }
-        self.lower_entry_steps(ctx, executable, &mut env, &clause.projections)?;
-        self.lower_entry_here(ctx, executable, entries, entry_fns, clause.entry, &[], env)?;
+        self.lower_entry_here(ctx, executable, entries, entry_fns, clause.entry, argument_vars, env)?;
         Ok(())
     }
 
@@ -1112,8 +1154,57 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         entry: &BackendEntry,
         edge: &super::super::body::OutcomeEdge,
     ) -> Result<(), FatalError> {
-        let in_order = edge
-            .arguments
+        self.check_outcome_arguments_follow_parameters(entry, &edge.arguments)
+    }
+
+    /// The lanes an outcome hands its target entry: each argument's subject
+    /// in the layout its parameter declares. A parameter of no lanes is handed
+    /// nothing, so its subject is never read.
+    fn encode_outcome_arguments(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        executable: &BackendExecutable,
+        plan: &PatternDispatchPlan<Ty>,
+        state: &mut DispatchState,
+        arguments: &[super::super::body::OutcomeArgument],
+    ) -> Result<Vec<Var>, FatalError> {
+        let mut args = Vec::new();
+        for argument in arguments {
+            let layout = entry_param_layout(executable, argument.parameter);
+            if self.world.layout_width(TransportLayout {
+                structural: layout.structural,
+                carrier: layout.carrier,
+            }) == 0
+            {
+                continue;
+            }
+            let subject = self.dispatch_subject_value(ctx, plan, state, argument.subject)?.clone();
+            self.encode_runtime_value_for_layout(
+                ctx,
+                executable,
+                Some(argument.parameter),
+                &subject,
+                layout,
+                &mut args,
+            )?;
+        }
+        Ok(args)
+    }
+
+    fn check_clause_arguments_follow_parameters(
+        &self,
+        entry: &BackendEntry,
+        clause: &BackendClause,
+    ) -> Result<(), FatalError> {
+        self.check_outcome_arguments_follow_parameters(entry, &clause.arguments)
+    }
+
+    fn check_outcome_arguments_follow_parameters(
+        &self,
+        entry: &BackendEntry,
+        arguments: &[super::super::body::OutcomeArgument],
+    ) -> Result<(), FatalError> {
+        let in_order = arguments
             .iter()
             .map(|argument| argument.parameter)
             .eq(entry.params.iter().copied());
@@ -1125,10 +1216,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             self.root_id,
             format!(
                 "outcome arguments {:?} are not the parameters {:?} of the entry they target, in order",
-                edge.arguments
-                    .iter()
-                    .map(|argument| argument.parameter)
-                    .collect::<Vec<_>>(),
+                arguments.iter().map(|argument| argument.parameter).collect::<Vec<_>>(),
                 entry.params
             ),
         ))
@@ -2059,8 +2147,8 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             .executable_index(callee.forwards_to().unwrap_or(&callee.key), types)?;
         let target = &self.program.executables()[behind];
         let is_extern_without_dispatch = matches!(target.body, BackendBody::Extern { .. })
-            && callee.abi.materialized.entry_dispatch.is_none()
-            && target.abi.materialized.entry_dispatch.is_none();
+            && !callee.asks_anything_of_inputs()
+            && !target.asks_anything_of_inputs();
         is_extern_without_dispatch.then_some(SplicedExtern {
             extern_index: behind,
             resume: *resume,
@@ -2465,8 +2553,10 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         entry: &BackendEntry,
     ) -> (Vec<Ty>, Vec<AbiValueRepr>, NativeEntryAbi) {
         match &entry.origin {
-            BackendEntryOrigin::Clause => panic!("clause entries are lowered through their owning clause"),
-            BackendEntryOrigin::Branch | BackendEntryOrigin::ReceiveOutcome | BackendEntryOrigin::Handler => {
+            BackendEntryOrigin::Clause
+            | BackendEntryOrigin::Branch
+            | BackendEntryOrigin::ReceiveOutcome
+            | BackendEntryOrigin::Handler => {
                 let (mut tys, mut reprs) = (Vec::new(), Vec::new());
                 for value in &entry.params {
                     let layout = entry_param_layout(executable, *value);
@@ -2475,7 +2565,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 }
                 self.append_entry_capture_lanes(executable, entry, &mut tys, &mut reprs);
                 let abi = match &entry.origin {
-                    BackendEntryOrigin::Branch => NativeEntryAbi::Direct,
+                    BackendEntryOrigin::Clause | BackendEntryOrigin::Branch => NativeEntryAbi::Direct,
                     _ => NativeEntryAbi::Continuation { extra_params: 0 },
                 };
                 (tys, reprs, abi)
@@ -2528,8 +2618,10 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         env: &mut ValueEnv,
     ) -> Result<usize, FatalError> {
         match &entry.origin {
-            BackendEntryOrigin::Clause => Ok(0),
-            BackendEntryOrigin::Branch | BackendEntryOrigin::ReceiveOutcome | BackendEntryOrigin::Handler => {
+            BackendEntryOrigin::Clause
+            | BackendEntryOrigin::Branch
+            | BackendEntryOrigin::ReceiveOutcome
+            | BackendEntryOrigin::Handler => {
                 let mut lane_index = 0;
                 for value in entry.params.iter().copied() {
                     let layout = entry_param_layout(executable, value);
@@ -3281,7 +3373,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         ctx: &mut NativeFnCtx,
         dispatch: &crate::compiler2::ExecutableDispatch,
         node_id: GraphNodeId,
-        clause_block: &mut dyn FnMut(&mut NativeFnCtx, usize) -> BlockId,
+        enter_clause: &mut EnterClause<'_, 'a, 'tel, T>,
         state: &mut DispatchState,
     ) -> Result<(), FatalError> {
         let Some(node) = dispatch.plan().graph.node(node_id) else {
@@ -3298,9 +3390,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     ctx.set_term(Term::Unreachable);
                     return Ok(());
                 };
-                let block = clause_block(ctx, clause_index);
-                ctx.set_term(Term::Goto(block, state.forwarded_args.clone()));
-                Ok(())
+                enter_clause(self, ctx, clause_index, state)
             }
             DispatchNode::Test {
                 predicate,
@@ -3315,7 +3405,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 BranchOrigin::ClauseDispatch,
                 state,
                 &mut |lowerer, ctx, target, state| {
-                    lowerer.lower_dispatch_node(ctx, dispatch, target, &mut *clause_block, state)
+                    lowerer.lower_dispatch_node(ctx, dispatch, target, &mut *enter_clause, state)
                 },
             ),
         }
@@ -3357,19 +3447,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     .expect("every native dispatch outcome has an edge");
                 let arm_entry = edge.target;
                 self.check_arguments_follow_parameters(&entries[arm_entry.as_u32() as usize], edge)?;
-                let mut args = Vec::new();
-                for argument in &edge.arguments {
-                    let subject = self.dispatch_subject_value(ctx, plan, state, argument.subject)?.clone();
-                    let layout = entry_param_layout(executable, argument.parameter);
-                    self.encode_runtime_value_for_layout(
-                        ctx,
-                        executable,
-                        Some(argument.parameter),
-                        &subject,
-                        layout,
-                        &mut args,
-                    )?;
-                }
+                let mut args = self.encode_outcome_arguments(ctx, executable, plan, state, &edge.arguments)?;
                 args.extend(self.entry_capture_args(ctx, executable, entries, arm_entry, env)?);
                 self.transfer_to_entry(ctx, executable, entries, entry_fns, arm_entry, args);
                 Ok(())
@@ -3787,7 +3865,8 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         }));
         ctx.set_term(Term::Goto(done_b, vec![decided]));
         ctx.current_block = rhs_b;
-        let rhs = self.lower_guard_boolean(ctx, plan, state, rhs, fail)?;
+        // What the right side builds exists only on the path that reaches it.
+        let rhs = self.lower_guard_boolean(ctx, plan, &mut state.clone(), rhs, fail)?;
         ctx.set_term(Term::Goto(done_b, vec![rhs]));
         ctx.current_block = done_b;
         self.record_guard_boolean(ctx, answer);

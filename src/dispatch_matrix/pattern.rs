@@ -58,6 +58,23 @@ impl<TypeHandle> PatternDispatchPlan<TypeHandle> {
         self.outcomes.get(id.0 as usize)
     }
 
+    /// The ordinal of the input `subject` is, when it is one rather than a
+    /// projection of one.
+    pub(crate) fn subject_input(&self, subject: SubjectId) -> Option<usize> {
+        match self.subject(subject) {
+            super::SubjectSource::Input { ordinal } => Some(*ordinal as usize),
+            super::SubjectSource::Projection(_) => None,
+        }
+    }
+
+    /// The outcome that selects source body `body`: a row has one outcome.
+    pub(crate) fn outcome_of_body(&self, body: PatternBodyId) -> &PatternDispatchOutcome {
+        self.outcomes
+            .iter()
+            .find(|outcome| outcome.body_id == body)
+            .expect("every source body has the outcome its row made")
+    }
+
     /// The body a winning outcome names. Every outcome the graph can reach is
     /// one this plan carries, so a decision always has a body.
     pub(crate) fn body_id(&self, outcome: OutcomeId) -> PatternBodyId {

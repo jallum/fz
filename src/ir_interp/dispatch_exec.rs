@@ -541,6 +541,18 @@ impl<'a> Dispatch<'a> {
         Ok(whole)
     }
 
+    /// Whether the input a subject is read out of was delivered to this run.
+    /// An input the executable published no layout for is not.
+    fn rides_an_arrived_input(&self, subject: SubjectId) -> Result<bool, DispatchStop> {
+        let mut subject = subject;
+        loop {
+            match &required(self.plan.graph.subjects.get(subject.0 as usize))?.source {
+                SubjectSource::Input { ordinal } => return Ok(self.operands.inputs.get(*ordinal as usize).is_some()),
+                SubjectSource::Projection(projection) => subject = projection.source,
+            }
+        }
+    }
+
     /// What a subject holds, in whatever form it already has.
     ///
     /// A tuple field of a lane-form subject is a view over lanes the caller
@@ -1181,16 +1193,20 @@ impl Decided<'_> {
     /// layout asks for. A held value travels as it is held, so a cursor handed
     /// to a cursor parameter keeps its two lanes and builds nothing; a cursor
     /// handed to a layout of lanes that are not its own is built here, once per
-    /// source and position. A parameter laid out in no lanes is one the arm
-    /// never reads: it is handed nothing, and its subject, which may not have
-    /// arrived, is not looked for.
+    /// source and position. A parameter laid out in no lanes is handed its
+    /// subject's value as it is held, which carries no lanes, and nothing when
+    /// the input the subject is read out of was not delivered to this run.
     pub(super) fn subject_handed(
         &mut self,
         subject: SubjectId,
         layout: TransportLayout,
     ) -> Result<BackendBoundValue, DispatchStop> {
         if self.run.operands.transport.interners().layout_width(layout) == 0 {
-            return Ok(BackendBoundValue::Absent);
+            if !self.run.rides_an_arrived_input(subject)? {
+                return Ok(BackendBoundValue::Absent);
+            }
+            self.run.resolve_subject(subject)?;
+            return Ok(required(self.run.state.get(subject))?.clone());
         }
         self.run.resolve_subject(subject)?;
         let held = required(self.run.state.get(subject))?.clone();

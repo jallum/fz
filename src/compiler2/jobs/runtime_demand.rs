@@ -6,7 +6,7 @@ use std::rc::Rc;
 
 use super::super::body::{
     CallArg, CallInputMode, CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, DeliveredValueSource,
-    LoweredBody, LoweredEntry, LoweredStep, LoweredTail, ValueId,
+    LoweredBody, LoweredEntry, LoweredStep, LoweredTail, SubjectOwner, ValueId,
 };
 use super::super::callsite_dispatch::dispatch_stress;
 use super::super::drive::{AnswerUse, FactKey, Job, JobEffects, UseCollector, settled_uses};
@@ -1209,6 +1209,12 @@ fn derive_executable_runtime_demand(
             &mut out,
             &mut callable_flows,
         );
+        let entry_plan = facts.body.decision_plan(SubjectOwner::Clause(clause_id));
+        for argument in &clause.arguments {
+            let read = live.remove(&argument.parameter).unwrap_or_else(RuntimeDemand::ignore);
+            let (ordinal, demand) = input_demand_through_subject(entry_plan, argument.subject, read);
+            note_live_demand(facts, &mut out, &mut live, clause.params[ordinal as usize], demand);
+        }
         for (index, param) in clause.params.iter().enumerate() {
             if let Some(demand) = live.remove(param) {
                 out.input_demands[index].join_assign(&demand);

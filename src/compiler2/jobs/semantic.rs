@@ -326,14 +326,15 @@ pub(super) fn analyze_activation(
             for (value, ty) in clause.params.iter().copied().zip(clause_inputs.iter().cloned()) {
                 values.insert(value, ty);
             }
-            apply_steps(
-                world,
-                &clause.projections,
-                &mut values,
-                &mut analysis_calls,
-                activation,
-                &mut walk,
-            )?;
+            for argument in &clause.arguments {
+                let ty = super::super::dispatch_reachability::project_subject(
+                    world.types_mut(),
+                    &entry_dispatch,
+                    clause_inputs,
+                    argument.subject,
+                );
+                values.insert(argument.parameter, ty);
+            }
             merge_value_types(world, &mut value_types, &values);
             let clause_return = analyze_entry(
                 world,

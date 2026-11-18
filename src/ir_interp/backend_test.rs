@@ -35,16 +35,31 @@ fn entry_dispatch_refuses_an_input_its_plan_reads_but_never_received() {
     let dispatch = crate::compiler2::ExecutableDispatch::new(Rc::new(plan), vec![0, 1]);
     let mut runtime = IrInterpRuntime::fresh_with_atoms(Vec::new());
     runtime.current_proc = runtime.process_ptr(1).unwrap();
-    let world = crate::compiler2::World::new();
+    let mut world = crate::compiler2::World::new();
     let program = empty_backend_program();
+    let mut transport = TransportStore::new(&mut crate::compiler2::Types::new());
+    let nothing = transport.interners_mut().intern_shape(ShapeDescr::Nothing);
+    let function = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "head", 1);
+    let ty = world.types_mut().any();
+    let key = ExecutableKey {
+        activation: crate::compiler2::ActivationKey::from_inputs(
+            crate::compiler2::RootId::for_test(0),
+            function,
+            &[ty],
+            world.types_mut(),
+        ),
+        need: crate::compiler2::ExecutableNeed::Value,
+    };
+    let executable = BackendExecutable::for_test(key, ty, nothing);
     let error = select_clause(
         &mut runtime,
         world.types(),
-        &TransportStore::new(&mut crate::compiler2::Types::new()),
+        &transport,
         &program,
         &Module::default(),
         &dispatch,
         &[None],
+        &executable,
     )
     .expect_err("the plan reads the only input, which never arrived");
     assert_eq!(error, "backend clause dispatch required omitted semantic input 0");
@@ -665,6 +680,7 @@ fn entry_dispatch_does_not_materialize_unneeded_structural_inputs() {
             span: crate::source::Span::DUMMY,
             params: vec![value],
             projections: Vec::new(),
+            arguments: Box::default(),
             entry: crate::compiler2::ControlEntryId::from_u32(0),
         }],
         entries: vec![BackendEntry {
@@ -793,6 +809,7 @@ fn entry_dispatch_decides_a_lane_form_tuple_from_its_lanes() {
             span: crate::source::Span::DUMMY,
             params: vec![value],
             projections: Vec::new(),
+            arguments: Box::default(),
             entry: crate::compiler2::ControlEntryId::from_u32(0),
         }],
         entries: vec![BackendEntry {

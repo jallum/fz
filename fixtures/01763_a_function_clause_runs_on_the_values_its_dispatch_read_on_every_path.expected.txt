@@ -1,0 +1,11 @@
+2
+:nothing
+7
+:other
+:unread
+{1, [2, 3]}
+:empty
+{1, 2}
+{:positive, :zero, :negative}
+15
+10

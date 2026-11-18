@@ -78,7 +78,7 @@ const TARGET_FIXTURES: [TargetFixture; 3] = [
         // slots the cycle supplies, so the reduce families have fewer activations to walk.
         // 636 -> 625: a field reading of a value that is not one exact tuple is read whole, so
         // its runtime demand settles at once rather than widening field by field.
-        runtime_demand_walks: 625,
+        runtime_demand_walks: 627,
         mainline_runtime_demand_walks: 6252,
         mainline_runtime_demand_door: ObservationDoor::Interp,
     },
@@ -97,7 +97,7 @@ const TARGET_FIXTURES: [TargetFixture; 3] = [
         // 671 -> 617: the same cause as `00420_enum_take_drop_split` above.
         // 617 -> 620: as for the first fixture.
         // 620 -> 590: the same cause.
-        runtime_demand_walks: 590,
+        runtime_demand_walks: 592,
         mainline_runtime_demand_walks: 6378,
         mainline_runtime_demand_door: ObservationDoor::Interp,
     },
@@ -124,7 +124,7 @@ const TARGET_FIXTURES: [TargetFixture; 3] = [
         // 242 -> 212: `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
         // 212 -> 200: a call round a recursion cycle keeps the entering activation's key at the
         // slots the cycle supplies, so the reduce families have fewer activations to walk.
-        runtime_demand_walks: 200,
+        runtime_demand_walks: 202,
         mainline_runtime_demand_walks: 2971,
         mainline_runtime_demand_door: ObservationDoor::Run,
     },
@@ -2597,14 +2597,14 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             // the cone that words an uncaught raise are asked for the first time (ten
             // `DeriveRecursive` and ten `DeriveStaticReach`), and two activations are no longer
             // analysed.
-            evaluations: 955,
-            runtime_demand_evaluations: 115,
-            initial: 721,
+            evaluations: 957,
+            runtime_demand_evaluations: 117,
+            initial: 723,
             content_caused: 234,
             readiness_caused: 0,
             concluded_caused: 0,
             uncaused: 0,
-            changed_outputs: 874,
+            changed_outputs: 876,
             // unchanged_outputs 85 -> 86: `String.Chars`' binary impl is selected for any bitstring, so its shared activation is typed `bitstring` with two clauses, and a caller that holds a `binary` gets its own `String.Chars.Binary.to_string(binary)` activation with the raise clause trimmed.
             // 86 -> 93 and blocked_completions 227 -> 234: the seven content-caused reach evaluations.
             unchanged_outputs: 81,
@@ -2638,13 +2638,13 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             // once, when its gate clears.
             // 174 -> 175: the product's wait on the fixture's own declarations
             // starts its one `CheckDeclarations`.
-            ("blocked_waiter_expansion", 175),
+            ("blocked_waiter_expansion", 180),
             // 534 -> 535: the entry's one more analysis, queued by its own program's first
             // raise.
             // 535/226 -> 543/236 (+18): the recursion verdicts and reaches of the ten callees
             // a constructor-carrying call asks for, less the two activations no longer analysed.
-            ("changed_revision_wake", 543),
-            ("gate_expansion", 236),
+            ("changed_revision_wake", 545),
+            ("gate_expansion", 231),
             ("ignition", 1),
         ]),
         "{fixture}: the jobs run, by the reason that queued each"
@@ -2653,15 +2653,15 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
         by_reason(ledger.already_pending),
         BTreeMap::from([
             // 44 -> 45: `String.Chars`' binary impl is selected for any bitstring, so its shared activation is typed `bitstring` with two clauses, and a caller that holds a `binary` gets its own `String.Chars.Binary.to_string(binary)` activation with the raise clause trimmed.
-            ("activation_published", 45),
-            ("blocked_waiter_expansion", 4),
+            ("activation_published", 54),
+            ("blocked_waiter_expansion", 6),
             ("changed_revision_wake", 9),
             // 36 -> 37: a reach is a fact answered by a job of its own, and one request for it
             // finds the job already queued.
             // 37 -> 38: the entry's one more analysis asks again for the job it waits on, which
             // is already queued.
             // 38 -> 43: five calls ask a recursion verdict whose job is already queued.
-            ("gate_expansion", 43),
+            ("gate_expansion", 67),
         ]),
         "{fixture}: requests that found their job already queued"
     );
@@ -2671,7 +2671,7 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
         // 34 -> 47: a runtime module's first definition run registers its source and waits for
         // the index. The index wakes it, and the pop gate parks it on its enclosing scope where
         // it used to run and stop: thirteen runs became thirteen parks.
-        BTreeMap::from([("changed_revision_wake", 47)]),
+        BTreeMap::from([("changed_revision_wake", 60)]),
         "{fixture}: started jobs the pop gate parked again without running"
     );
     for reason in fz::compiler2::WorkStartReason::TELEMETRY_ORDER {
@@ -2707,7 +2707,7 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
         // (584, 5) -> (585, 5): the entry's first raise wakes the entry, its handler's reader.
         // (585, 5) -> (593, 5): the eight more changed-revision wakes of the recursion verdicts
         // and reaches a constructor-carrying call asks for.
-        (593, 5),
+        (608, 5),
         "{fixture}: wake records of the completions, and of the external changes between them"
     );
     assert_eq!(
@@ -2715,7 +2715,7 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
         // 566 -> 591: the 585 + 5 wake records above and the one wake the arbiter's own step
         // records.
         // 591 -> 599 with the eight more wake records.
-        599,
+        614,
         "{fixture}: every wake record is one request at the door"
     );
     let products = report.product_totals();
@@ -2804,7 +2804,7 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
         // 1400 -> 1156 settled products, all changed: a quote builds only the nodes above an
         // `unquote`, so the head, metadata and argument-list values of every constant node are no
         // longer asked for a transport.
-        (1156, 1156, 1156, 0, 5, 0),
+        (1119, 1119, 1119, 0, 5, 0),
         "{fixture}: reactive product settlement work includes ordinary helper products"
     );
     assert!(
@@ -2913,7 +2913,7 @@ fn tail_recursion_plans_one_entry_dispatch_per_compiled_function() {
         // 77 -> 76: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run
         // time, so its result stays `binary` and callers need no second `bitstring` activation.
         // 76 -> 53: the same `RuntimeError` wording in place of the bare message's.
-        53,
+        54,
         "every called function plans its own entry dispatch",
     );
 }

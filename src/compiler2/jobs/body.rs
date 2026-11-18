@@ -31,8 +31,8 @@ use crate::source::{SourceMap, Span};
 use super::super::body::{
     BodyTables, CallArg, CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, ControlEntryOrigin,
     DirectCallee, DispatchBindings, LoweredBitField, LoweredBitFieldSpec, LoweredBitSize, LoweredBody, LoweredClause,
-    LoweredEntry, LoweredMapKey, LoweredStep, LoweredTail, ReceiveAfter, SubjectOriginRoot, SubjectPath, ValueId,
-    step_used_values,
+    LoweredEntry, LoweredMapKey, LoweredStep, LoweredTail, OutcomeArgument, ReceiveAfter, SubjectOriginRoot,
+    SubjectOwner, SubjectPath, ValueId, step_used_values,
 };
 use super::super::code::SourceOwner;
 use super::super::drive::{FactKey, JobEffects, current_uses, emit_job_diagnostic};
@@ -45,7 +45,7 @@ use super::super::world::World;
 use super::dispatch::{
     collect_guard_calls_in_expr, hoist_zero_argument_guard_calls, resolve_guard_callee, resolve_guard_callee_checked,
 };
-use fz_engine::FatalError;
+use fz_engine::{FactUse, FatalError};
 
 mod storage_roots;
 use storage_roots::{LaterUses, StorageRootIndex, entries_reached_from};
@@ -57,7 +57,7 @@ type Changed = FactKey;
 struct ExprClause {
     span: Span,
     params: Vec<ValueId>,
-    projections: Vec<ExprStep>,
+    arguments: Box<[super::super::body::OutcomeArgument]>,
     body: ExprBlock,
 }
 
@@ -299,10 +299,15 @@ enum ExprStep {
 }
 
 /// The facts `lower_function` cannot conclude without: the function's own
-/// definition.
+/// definition, and the entry plan that hands each clause the values its
+/// pattern binds.
 pub(super) fn lower_function_gates(world: &World, function: FunctionId) -> Vec<FactKey> {
     if world.function_defined_revision(function).is_none() {
         return vec![FactKey::FunctionDefined(function)];
+    }
+    let entry_plan = FactKey::EntryDispatch(function);
+    if !world.has_fact(&entry_plan) {
+        return vec![entry_plan];
     }
     Vec::new()
 }
@@ -380,8 +385,9 @@ pub(super) fn lower_function(
     for diagnostic in super::scope::unused_variable_diagnostics(&surface.clauses) {
         super::super::drive::ExecutionContext::new(world, tel).emit_warning_once(diagnostic);
     }
+    let entry_plan = world.entry_dispatch(function);
     let mut lowerer = Lowerer::new(world, tel, function, &source, &surface);
-    let (body, mut outputs, mut changed) = lowerer.lower()?;
+    let (body, mut outputs, mut changed) = lowerer.lower(entry_plan)?;
     emit_ownership_work(
         tel,
         function,
@@ -394,8 +400,13 @@ pub(super) fn lower_function(
     if body_changed {
         changed.push(FactKey::LoweredBody(function));
     }
+    // The plan is read as a concluded answer: a redefinition outdates it before
+    // its own job has re-run, and a body lowered against the outdated plan
+    // would bind names the new head does not have.
+    let mut reads = current_uses(reads);
+    reads.push(FactUse::concluded(FactKey::EntryDispatch(function)));
     Ok(JobEffects {
-        reads: current_uses(reads),
+        reads,
         outputs,
         changed,
         ..JobEffects::default()
@@ -1283,12 +1294,15 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         }
     }
 
-    fn lower(&mut self) -> Result<(LoweredBody, Vec<Output>, Vec<Changed>), FatalError> {
+    fn lower(
+        &mut self,
+        entry_plan: Rc<crate::dispatch_matrix::pattern::PatternDispatchPlan<super::super::types::Ty>>,
+    ) -> Result<(LoweredBody, Vec<Output>, Vec<Changed>), FatalError> {
         let mut clause_defs = Vec::new();
-        for clause in &self.surface.clauses {
-            clause_defs.push(self.lower_clause(clause)?);
+        for (index, clause) in self.surface.clauses.iter().enumerate() {
+            clause_defs.push(self.lower_clause(clause, &entry_plan, index as u32)?);
         }
-        let body = self.plan_clauses(clause_defs);
+        let body = self.plan_clauses(clause_defs, entry_plan);
 
         Ok((
             body,
@@ -1297,32 +1311,30 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         ))
     }
 
-    fn lower_clause(&mut self, clause: &FnClause) -> Result<ExprClause, FatalError> {
+    /// A clause takes the function's inputs, and a name its head binds to one
+    /// of them is that input. The winning outcome of the entry plan hands it
+    /// the value of every other name its head binds. The macro's caller and a
+    /// lambda's captures arrive as leading inputs.
+    fn lower_clause(
+        &mut self,
+        clause: &FnClause,
+        entry_plan: &crate::dispatch_matrix::pattern::PatternDispatchPlan<super::super::types::Ty>,
+        body_id: u32,
+    ) -> Result<ExprClause, FatalError> {
+        let input_count = usize::from(self.surface.is_macro) + self.source.capture_params.len() + clause.params.len();
+        let params: Vec<ValueId> = (0..input_count).map(|_| self.fresh_value()).collect();
         let mut env = HashMap::default();
-        let mut projections = Vec::new();
-        let mut params = Vec::new();
-        if self.surface.is_macro {
-            let value = self.fresh_value();
-            params.push(value);
-            env.insert(Var::user("__CALLER__"), value);
-        }
-        for capture in &self.source.capture_params {
-            let value = self.fresh_value();
-            params.push(value);
-            env.insert(capture.clone(), value);
-        }
-        for param in &clause.params {
-            let value = self.fresh_value();
-            params.push(value);
-            self.bind_pattern(&param.node, value, &mut env, &mut projections)?;
-        }
-
+        let arguments = self.bind_outcome_arguments(
+            entry_plan.outcome_of_body(body_id),
+            |subject| entry_plan.subject_input(subject).map(|ordinal| params[ordinal]),
+            &mut env,
+        );
         let body = self.lower_expr_as_block(&clause.body, env)?;
 
         Ok(ExprClause {
             span: clause.span,
             params,
-            projections,
+            arguments,
             body,
         })
     }
@@ -2438,7 +2450,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                 let matched = self.lower_expr(expr, &mut env, &mut steps)?;
                 let plan = self.compile_single_pattern_dispatch("with", pattern, span, None)?;
                 let mut success_env = env.clone();
-                let arguments = self.bind_outcome_arguments(&plan.outcomes[0], &mut success_env);
+                let arguments = self.bind_outcome_arguments(&plan.outcomes[0], |_| None, &mut success_env);
                 let success_block = self.lower_with_block(span, rest, body, else_clauses, success_env)?;
                 let miss_block = Some(self.lower_with_fail_block(span, matched, else_clauses, &env)?);
                 let bindings = self.lower_dispatch_bindings(&plan, &env, &mut steps)?;
@@ -2846,7 +2858,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         raised: ValueId,
         mut env: HashMap<Var, ValueId>,
     ) -> Result<ExprOutcome, FatalError> {
-        let arguments = self.bind_outcome_arguments(outcome, &mut env);
+        let arguments = self.bind_outcome_arguments(outcome, |_| None, &mut env);
         let mut steps = Vec::new();
         let body = match arm {
             HandlerClause::Rescue { clause, wraps } => {
@@ -2940,29 +2952,35 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         clause: &MatchClause,
         mut env: HashMap<Var, ValueId>,
     ) -> Result<ExprOutcome, FatalError> {
-        let arguments = self.bind_outcome_arguments(outcome, &mut env);
+        let arguments = self.bind_outcome_arguments(outcome, |_| None, &mut env);
         let block = self.lower_expr_as_block(&clause.body, env)?;
         Ok(ExprOutcome { arguments, block })
     }
 
+    /// Binds each name an outcome's pattern binds. A name whose subject
+    /// `input_of` finds is bound to that value as it stands; every other name
+    /// is a fresh parameter, and the edge hands it the subject's value.
     fn bind_outcome_arguments(
         &mut self,
         outcome: &crate::dispatch_matrix::pattern::PatternDispatchOutcome,
+        input_of: impl Fn(crate::dispatch_matrix::SubjectId) -> Option<ValueId>,
         env: &mut HashMap<Var, ValueId>,
     ) -> Box<[super::super::body::OutcomeArgument]> {
-        outcome
-            .bindings
-            .iter()
-            .map(|binding| {
-                let parameter = self.fresh_value();
-                env.insert(binding.name.clone(), parameter);
-                super::super::body::OutcomeArgument {
-                    subject: binding.source,
-                    parameter,
-                    role: super::super::body::ValueRole::Semantic,
-                }
-            })
-            .collect()
+        let mut arguments = Vec::new();
+        for binding in &outcome.bindings {
+            if let Some(input) = input_of(binding.source) {
+                env.insert(binding.name.clone(), input);
+                continue;
+            }
+            let parameter = self.fresh_value();
+            env.insert(binding.name.clone(), parameter);
+            arguments.push(super::super::body::OutcomeArgument {
+                subject: binding.source,
+                parameter,
+                role: super::super::body::ValueRole::Semantic,
+            });
+        }
+        arguments.into_boxed_slice()
     }
 
     fn compile_match_dispatch(
@@ -3188,31 +3206,33 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         Ok(value)
     }
 
-    fn plan_clauses(&mut self, clauses: Vec<ExprClause>) -> LoweredBody {
+    fn plan_clauses(
+        &mut self,
+        clauses: Vec<ExprClause>,
+        entry_plan: Rc<crate::dispatch_matrix::pattern::PatternDispatchPlan<super::super::types::Ty>>,
+    ) -> LoweredBody {
         let mut lowered = Vec::with_capacity(clauses.len());
         let mut entries = Vec::new();
         for clause in clauses {
-            let projections = clause
-                .projections
-                .into_iter()
-                .map(lower_projection_step)
-                .collect::<Vec<_>>();
+            let params = clause.arguments.iter().map(|argument| argument.parameter).collect();
             let entry = self.plan_block(
                 clause.body.into_pending(),
                 ControlEntryOrigin::Clause,
                 ControlDestination::Return,
-                Vec::new(),
+                params,
                 Vec::new(),
                 &mut entries,
             );
             lowered.push(LoweredClause {
                 span: clause.span,
                 params: clause.params,
-                projections,
+                projections: Vec::new(),
+                arguments: clause.arguments,
                 entry,
             });
         }
         let mut body = LoweredBody::clauses(lowered, entries, std::mem::take(&mut self.generated_ids))
+            .with_entry_plan(entry_plan)
             .with_value_count(self.next_value as usize);
         drop_unread_outcome_arguments(&mut body);
         self.construct_entry_captures(&mut body);
@@ -3253,44 +3273,25 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                     input
                 }
                 TransportOrigin::OutcomeSubject { owner, subject } => {
-                    let LoweredBody::Clauses {
-                        entries, value_count, ..
-                    } = body;
-                    let (target, existing) = {
-                        let edge = entries[owner.as_u32() as usize]
-                            .tail
-                            .outcome_edges()
-                            .iter()
-                            .find(|edge| edge.arguments.iter().any(|argument| argument.parameter == *head))
-                            .expect("head has a winning edge");
-                        (
-                            edge.target,
-                            edge.arguments
-                                .iter()
-                                .find(|argument| argument.subject == *subject)
-                                .map(|argument| argument.parameter),
-                        )
-                    };
+                    let (target, existing) = body.decision_edge_of(*owner, *head, *subject);
                     if let Some(existing) = existing {
                         existing
                     } else {
                         let parameter = self.fresh_value();
+                        let LoweredBody::Clauses {
+                            entries, value_count, ..
+                        } = body;
                         *value_count = self.next_value as usize;
                         entries[target.as_u32() as usize].params.push(parameter);
                         entries[target.as_u32() as usize].physical_params.push(parameter);
-                        let edge = entries[owner.as_u32() as usize]
-                            .tail
-                            .outcome_edges_mut()
-                            .iter_mut()
-                            .find(|edge| edge.target == target)
-                            .expect("physical subject has its target");
-                        let mut arguments = std::mem::take(&mut edge.arguments).into_vec();
-                        arguments.push(super::super::body::OutcomeArgument {
+                        let arguments = body.decision_arguments_mut(*owner, target);
+                        let mut handed = std::mem::take(arguments).into_vec();
+                        handed.push(super::super::body::OutcomeArgument {
                             subject: *subject,
                             parameter,
                             role: super::super::body::ValueRole::Physical,
                         });
-                        edge.arguments = arguments.into_boxed_slice();
+                        *arguments = handed.into_boxed_slice();
                         parameter
                     }
                 }
@@ -3655,10 +3656,14 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
             result: value,
         };
         let (arguments, block, decided) = match arm {
-            MatchArm::Value => (self.bind_outcome_arguments(&plan.outcomes[0], env), matched_value, None),
+            MatchArm::Value => (
+                self.bind_outcome_arguments(&plan.outcomes[0], |_| None, env),
+                matched_value,
+                None,
+            ),
             MatchArm::Rest(span, rest) => {
                 let mut arm_env = env.clone();
-                let arguments = self.bind_outcome_arguments(&plan.outcomes[0], &mut arm_env);
+                let arguments = self.bind_outcome_arguments(&plan.outcomes[0], |_| None, &mut arm_env);
                 let block = if rest.is_empty() {
                     matched_value
                 } else {
@@ -3938,21 +3943,22 @@ enum MatchArm<'a> {
     Rest(Span, &'a [Spanned<Expr>]),
 }
 
-/// The value a decision was handed for `subject`, when `subject` is one of
-/// its inputs: that value is the subject.
+/// The value a `case` decision was handed for `subject`, when `subject` is one
+/// of its inputs: that value is the subject, and every arm still has it in
+/// scope. A function's inputs are not in scope in its clauses, which see only
+/// what the entry plan hands them.
 fn decision_input_value(
     body: &LoweredBody,
-    owner: ControlEntryId,
+    owner: SubjectOwner,
     subject: crate::dispatch_matrix::SubjectId,
 ) -> Option<ValueId> {
-    let LoweredBody::Clauses { entries, .. } = body;
-    let LoweredTail::Dispatch { inputs, dispatch, .. } = &entries[owner.as_u32() as usize].tail else {
+    if matches!(owner, SubjectOwner::Clause(_)) {
         return None;
-    };
-    let crate::dispatch_matrix::SubjectSource::Input { ordinal } = &dispatch.plan.graph.subject(subject)?.source else {
-        return None;
-    };
-    inputs.get(*ordinal as usize).copied()
+    }
+    match body.dispatch_subject_origin(owner, subject) {
+        (SubjectOriginRoot::Value(input), path) if path.is_empty() => Some(input),
+        _ => None,
+    }
 }
 
 /// The values a clause binds before its entry runs: the clause parameters and
@@ -4026,10 +4032,7 @@ fn list_source_origin(
             kind: ProjectionKind::ListHead,
         } => Some(TransportOrigin::LocalValue(*source)),
         TransportOrigin::OutcomeSubject { owner, subject } => {
-            let LoweredBody::Clauses { entries, .. } = body;
-            let SubjectSource::Projection(projection) =
-                entries[owner.as_u32() as usize].tail.dispatch_plan().subject(*subject)
-            else {
+            let SubjectSource::Projection(projection) = body.decision_plan(*owner).subject(*subject) else {
                 return None;
             };
             matches!(projection.kind, ProjectionKind::ListHead).then_some(TransportOrigin::OutcomeSubject {
@@ -4717,23 +4720,39 @@ pub(super) fn retained_value_ids(body: &LoweredBody) -> ValueSet {
 /// target's parameters, so it is neither extracted nor handed over. A receive
 /// would otherwise box it into the park record's out-slot.
 ///
-/// Only edges are pruned: a function clause's parameters are its calling
-/// convention and belong to no edge.
+/// A function clause is an arm of the function's entry plan, and its
+/// arguments are pruned the same way. Its parameters, the function's inputs,
+/// are its calling convention and belong to no edge.
 fn drop_unread_outcome_arguments(body: &mut LoweredBody) {
     use super::super::body::ValueRole;
-    let LoweredBody::Clauses { entries, tables, .. } = body;
+    let LoweredBody::Clauses {
+        clauses,
+        entries,
+        tables,
+        ..
+    } = body;
+    let unread_in = |entries: &[LoweredEntry], target: ControlEntryId, arguments: &[OutcomeArgument]| {
+        let read = values_read_from(entries, tables, target);
+        arguments
+            .iter()
+            .filter(|argument| argument.role == ValueRole::Semantic && !read.contains(&argument.parameter))
+            .map(|argument| argument.parameter)
+            .collect::<HashSet<_>>()
+    };
     let mut unread = Vec::new();
     for (owner, entry) in entries.iter().enumerate() {
         for (index, edge) in entry.tail.outcome_edges().iter().enumerate() {
-            let read = values_read_from(entries, tables, edge.target);
             unread.extend(
-                edge.arguments
-                    .iter()
-                    .filter(|argument| argument.role == ValueRole::Semantic && !read.contains(&argument.parameter))
-                    .map(|argument| (owner, index, argument.parameter)),
+                unread_in(entries, edge.target, &edge.arguments)
+                    .into_iter()
+                    .map(|parameter| (owner, index, parameter)),
             );
         }
     }
+    let unread_by_clause = clauses
+        .iter()
+        .map(|clause| unread_in(entries, clause.entry, &clause.arguments))
+        .collect::<Vec<_>>();
     for (owner, index, parameter) in unread {
         let edge = &mut entries[owner].tail.outcome_edges_mut()[index];
         let target = edge.target.as_u32() as usize;
@@ -4742,6 +4761,15 @@ fn drop_unread_outcome_arguments(body: &mut LoweredBody) {
             .filter(|argument| argument.parameter != parameter)
             .collect();
         entries[target].params.retain(|param| *param != parameter);
+    }
+    for (clause, unread) in clauses.iter_mut().zip(unread_by_clause) {
+        clause.arguments = std::mem::take(&mut clause.arguments)
+            .into_iter()
+            .filter(|argument| !unread.contains(&argument.parameter))
+            .collect();
+        entries[clause.entry.as_u32() as usize]
+            .params
+            .retain(|param| !unread.contains(param));
     }
 }
 

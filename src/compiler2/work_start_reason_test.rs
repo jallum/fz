@@ -392,7 +392,7 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // (2487, 15, 31, 194) -> (2476, 15, 31, 194): a field reading of a value that is not one
         // exact tuple is read whole, so its runtime demand settles at once: 11 fewer
         // `DeriveRuntimeDemand` walks.
-        (2476, 15, 31, 194),
+        (2478, 15, 31, 194),
         "ordinary generic helper work has the exact source/module/executable-fact census"
     );
     // Every applied work step is a run, and every run is charged to exactly
@@ -505,7 +505,7 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // 1153 -> 1055: `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
         // 1055 -> 1054: a call round a recursion cycle keeps the entering activation's key at the
         // slots the cycle supplies, so the reduce families have fewer activations to publish.
-        1054,
+        1060,
         "ordinary generic helper facts have the exact non-demand changed-revision census",
     );
     assert_eq!(
@@ -589,7 +589,7 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // 631 -> 588: `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
         // 588 -> 515: a call round a recursion cycle keeps the entering activation's key at the
         // slots the cycle supplies, so fewer reduce activations block on prerequisites.
-        515,
+        522,
         "the blocked-waiter census includes only the prerequisites each completion's own waits expand",
     );
     assert_eq!(
@@ -831,7 +831,7 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // 738 -> 691: `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
         // 691 -> 665: a call round a recursion cycle keeps the entering activation's key at the
         // slots the cycle supplies, so the reduce families have fewer activations to analyze.
-        665,
+        664,
         "the fixture's total AnalyzeActivation completions, repeats included",
     );
     let frontier_analyses = analyzed_activations.iter().cloned().collect::<HashSet<_>>();

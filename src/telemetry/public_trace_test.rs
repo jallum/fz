@@ -1799,7 +1799,7 @@ const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64, u64); 7] = [
     // 00567: 29 -> 26 DeriveRecursive evaluations: `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
     // 72 -> 78 DeriveStaticCallees: `Enum.to_list/1`'s range clause calls `Range.count/3` and
     // `Enum.range_list_ending_at/4`, whose arithmetic is six more bodies in the call graph.
-    ("fixtures/00567_fz_f98_range_map_converges.fz", 26, 0, 78, 0, 44),
+    ("fixtures/00567_fz_f98_range_map_converges.fz", 26, 0, 78, 0, 43),
     // fz-5xp.30: 73 -> 75 component evaluations and 158/83 -> 162/85
     // StaticCallees evaluations/blocks. This predicate fixture reaches two
     // ordinary arithmetic result/status helper specializations.
@@ -2551,7 +2551,7 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // 831 -> 819: a module is started once its enclosing scope exists, so each module's definition runs once fewer.
         // 819 -> 811: `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
         // 811 -> 809: a call round a recursion cycle keeps the entering activation's key at the slots the cycle supplies, so the reduce families have fewer activations.
-        total_evaluations: 809,
+        total_evaluations: 808,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures/00571_enum_predicate_search.fz",
@@ -2791,7 +2791,7 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // fewer `DeriveRecursive` and 1 more `AnalyzeActivation`.
         // 1222 -> 1213: a module is started once its enclosing scope exists, so each module's definition runs once fewer.
         // 1213 -> 1200: a call round a recursion cycle keeps the entering activation's key at the slots the cycle supplies, so the reduce families have fewer activations.
-        total_evaluations: 1200,
+        total_evaluations: 1201,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures/00420_enum_take_drop_split.fz",
@@ -3129,7 +3129,7 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // fixture's schedule-dependent convergence repeats two analyses fewer.
         // 738 -> 691: `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
         // 691 -> 665: a call round a recursion cycle keeps the entering activation's key at the slots the cycle supplies, so the reduce families have fewer activations.
-        analyze_evaluations: 665,
+        analyze_evaluations: 664,
         analyze_zero_change: 23,
         // fz-afu.2: 2360 -> 1949. A never-run job whose gate names a fact
         // still missing no longer starts to discover that fact missing --
@@ -3225,7 +3225,7 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // 1838 -> 1828: a module is started once its enclosing scope exists, so each module's definition runs once fewer.
         // 1828 -> 1687: `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
         // 1687 -> 1663: a call round a recursion cycle keeps the entering activation's key at the slots the cycle supplies, so the reduce families have fewer activations.
-        total_evaluations: 1663,
+        total_evaluations: 1665,
     },
 ];
 
