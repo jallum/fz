@@ -1,8 +1,6 @@
 {
   "assignee": "",
-  "blocked_by": [
-    "fz-sc8.192.5"
-  ],
+  "blocked_by": [],
   "blocks": [
     "fz-sc8.192.7"
   ],
@@ -15,5 +13,5 @@
   "status": "open",
   "title": "Two map keys are ordered from their stored words, in term order",
   "type": "task",
-  "updated_at": "2026-11-18T21:39:32Z"
+  "updated_at": "2026-11-18T21:39:33Z"
 }
