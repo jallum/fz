@@ -2,7 +2,8 @@
   "assignee": "",
   "blocked_by": [
     "fz-9e2.1",
-    "fz-9e2.2"
+    "fz-9e2.2",
+    "fz-9e2.3"
   ],
   "blocks": [],
   "created": "2026-11-18T21:21:29Z",
@@ -14,5 +15,5 @@
   "status": "open",
   "title": "A binary is Bin { ptr, bit_len }: one decoder, one equality, one slice, one failure",
   "type": "task",
-  "updated_at": "2026-11-18T21:21:39Z"
+  "updated_at": "2026-11-18T21:21:40Z"
 }
