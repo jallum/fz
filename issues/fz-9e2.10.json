@@ -15,11 +15,15 @@
     {
       "text": "Optimize (2026-11-18): the fz-nml.29 page (v3) covers only the \u003c\u003e operator. The constructor form \u003c\u003cacc::binary, x\u003e\u003e is left to this ticket, which builds on the same append.",
       "timestamp": "2026-11-18T21:23:59Z"
+    },
+    {
+      "text": "User agreed all four decisions on the fz-9e2 page (\"1-4 agreed\", in Binary Handling's session, 2026-11-18). Page: https://claude.ai/artifact/Wb77AvyLphyW8L6XmsMLL7. Ruling 2: \u003c\u003e lowers to the one build (step 8b). It composes with fz-nml.29, it does not replace it; nml.29's own ruling is still with the user via Optimize.",
+      "timestamp": "2026-11-18T23:49:21Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "A construction is sized and written once; \u003c\u003e and interpolation lower to it",
   "type": "task",
-  "updated_at": "2026-11-18T21:24:38Z"
+  "updated_at": "2026-11-18T23:49:21Z"
 }
