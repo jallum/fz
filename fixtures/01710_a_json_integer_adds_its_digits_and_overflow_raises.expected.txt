@@ -1,0 +1,15 @@
+{:width, 1, 1000, 7000, 0}
+{:width, 5, 1000, 345000, 0}
+{:width, 10, 1000, 890000, 0}
+{:width, 19, 1000, 789000, 0}
+{:max, {:ok, 9223372036854775807}}
+{:min, {:ok, -9223372036854775808}}
+{:max_plus_one, {:error, {:unexpected_sequence, 0, "9223372036854775808"}}}
+{:min_minus_one, {:error, {:unexpected_sequence, 0, "-9223372036854775809"}}}
+{:wide_then_fraction, {:ok, 9.223372036854776e18}}
+{:wide_then_exponent, {:ok, 9.223372036854776e20}}
+{:negative_zero, {:ok, 0}}
+{:zero, {:ok, 0}}
+{:leading_zero, {:error, {:invalid_byte, 1, 49}}}
+{:zero_exponent, {:ok, 0.0}}
+{:negative_zero_exponent, {:ok, 0.0}}
