@@ -727,12 +727,12 @@ fn clause_group_key(
     let clause_span = node.span.unwrap_or(Span::DUMMY);
     let key = match context {
         FunctionFormContext::Definition => match node.tail.list_pair()? {
-            Some((function_head, body)) if is_single_do_keyword(&body) => {
+            Some((function_head, body)) if is_function_body_keyword(&body) => {
                 parse_function_head_key(&function_head, head == "defmacro", sources)
                     .map_err(|error| QuotedSourceError::new(format!("invalid `{head}` function head: {error}")))
             }
             _ => Err(QuotedSourceError::new(format!(
-                "`{head}` function clause must have exactly one `do` body"
+                "`{head}` function clause must have one `do` body, with only `rescue`, `catch`, `else` or `after` beside it"
             ))),
         },
         FunctionFormContext::ProtocolCallback => {
@@ -749,18 +749,36 @@ fn clause_group_key(
     Ok(Some(key))
 }
 
-fn is_single_do_keyword(cursor: &QuotedSourceCursor) -> bool {
-    let mut entries = cursor.list_iter();
-    let (Some(Ok(entry)), None) = (entries.next(), entries.next()) else {
-        return false;
-    };
-    let Ok(mut fields) = entry.tuple_iter() else {
-        return false;
-    };
+/// Whether a definition's body is a keyword list of `do` and, beside it, only
+/// the sections that make it an implicit `try`. Repeated sections pass here
+/// and are refused where the `try` is decoded, in Elixir's words.
+fn is_function_body_keyword(cursor: &QuotedSourceCursor) -> bool {
+    let mut has_do = false;
+    for entry in cursor.list_iter() {
+        let Some(key) = keyword_entry_key(entry) else {
+            return false;
+        };
+        if !is_function_body_section(key.as_str()) {
+            return false;
+        }
+        has_do |= key == "do";
+    }
+    has_do
+}
+
+/// The sections a definition's body may carry: its `do`, and the sections of
+/// the implicit `try` around it. Each is code of the function's body.
+pub(crate) fn is_function_body_section(key: &str) -> bool {
+    matches!(key, "do" | "rescue" | "catch" | "else" | "after")
+}
+
+fn keyword_entry_key(entry: Result<QuotedSourceCursor, QuotedSourceError>) -> Option<AtomName> {
+    let entry = entry.ok()?;
+    let mut fields = entry.tuple_iter().ok()?;
     let (Some(Ok(key)), Some(Ok(_)), None) = (fields.next(), fields.next(), fields.next()) else {
-        return false;
+        return None;
     };
-    key.atom_name().as_deref() == Ok("do")
+    key.atom_name().ok()
 }
 
 pub(crate) fn validate_protocol_callback_clause(

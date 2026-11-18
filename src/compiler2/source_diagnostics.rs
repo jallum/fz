@@ -1,3 +1,4 @@
+use crate::ast::TryForm;
 use crate::diag::{Diagnostic, codes};
 use crate::source::Span;
 
@@ -14,11 +15,15 @@ pub(crate) fn redundant_clause_diagnostic(clause_span: Span, always_matches_line
 }
 
 /// A `try` with an `else` and none of `rescue`, `catch` or `after`. Elixir
-/// warns in these words and compiles it as the `case` it is.
-pub(crate) fn try_else_only_diagnostic(span: Span) -> Diagnostic {
+/// warns in these words, naming the form that wrote the `try`, and compiles
+/// it as the `case` it is.
+pub(crate) fn try_else_only_diagnostic(span: Span, form: TryForm) -> Diagnostic {
     Diagnostic::warning(
         codes::LOWER_TRY_ELSE_ONLY,
-        "\"else\" shouldn't be used as the only clause in \"try\", use \"case\" instead".to_string(),
+        format!(
+            "\"else\" shouldn't be used as the only clause in \"{}\", use \"case\" instead",
+            form.keyword()
+        ),
         span,
     )
 }

@@ -12,7 +12,7 @@ use std::rc::Rc;
 
 use crate::ast::{
     AfterClause, BinOp, BitField, BitSize, CallableName, Callee, CatchClause, Expr, FnClause, LambdaClause,
-    MatchClause, Pattern, RescueClause, Spanned, UnOp, Var, VarContext, WithBinding,
+    MatchClause, Pattern, RescueClause, Spanned, TryForm, UnOp, Var, VarContext, WithBinding,
 };
 use crate::diag::Diagnostic;
 use crate::diag::codes;
@@ -169,6 +169,7 @@ struct TrySections<'a> {
     catch: &'a [CatchClause],
     else_clauses: &'a [MatchClause],
     after: Option<&'a Spanned<Expr>>,
+    form: TryForm,
 }
 
 const ERROR_KIND: &str = "error";
@@ -555,6 +556,7 @@ fn collect_local_dispatch_requirements(
             catch,
             else_clauses,
             after,
+            form: _,
         } => {
             collect_local_dispatch_requirements(world, tel, namespace, owner_module, owner, body, reads, waits)?;
             for clause in catch {
@@ -1746,6 +1748,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                 catch,
                 else_clauses,
                 after,
+                form,
             } => self.lower_try(
                 expr.span,
                 TrySections {
@@ -1754,6 +1757,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                     catch,
                     else_clauses,
                     after: after.as_deref(),
+                    form: *form,
                 },
                 env,
                 steps,
@@ -2592,10 +2596,11 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
             catch,
             else_clauses,
             after,
+            form,
         } = sections;
         let Some(after) = after else {
             if rescue.is_empty() && catch.is_empty() {
-                self.warn_try_else_only(span);
+                self.warn_try_else_only(span, form);
             }
             return self.lower_handled(span, body, (rescue, catch), else_clauses, env, steps);
         };
@@ -2646,8 +2651,8 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
 
     /// Elixir's own warning for a `try` that has an `else` and nothing else
     /// to protect or run: a `case` says the same thing.
-    fn warn_try_else_only(&mut self, span: Span) {
-        let diagnostic = super::super::source_diagnostics::try_else_only_diagnostic(span);
+    fn warn_try_else_only(&mut self, span: Span, form: TryForm) {
+        let diagnostic = super::super::source_diagnostics::try_else_only_diagnostic(span, form);
         super::super::drive::ExecutionContext::new(self.world, self.telemetry).emit_warning_once(diagnostic);
     }
 

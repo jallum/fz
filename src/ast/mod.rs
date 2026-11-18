@@ -309,6 +309,7 @@ pub enum Expr {
         catch: Vec<CatchClause>,
         else_clauses: Vec<MatchClause>,
         after: Option<Box<Spanned<Expr>>>,
+        form: TryForm,
     },
 
     // bindings
@@ -726,6 +727,39 @@ pub struct TypeAliasDecl {
     pub body_tokens: TypeExprBody,
     /// Span of the whole `@type ... :: ...` declaration.
     pub span: Span,
+}
+
+/// What wrote a `try`: the keyword itself, or a function definition whose body
+/// carries `rescue`, `catch`, `else` or `after` beside its `do`, which Elixir
+/// reads as a `try` around the body. Diagnostics name the form as it was
+/// written.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TryForm {
+    Try,
+    Def,
+    Defp,
+    Defmacro,
+}
+
+impl TryForm {
+    /// The definition form named `keyword`, if it is one.
+    pub fn definition(keyword: &str) -> Option<Self> {
+        match keyword {
+            "def" => Some(Self::Def),
+            "defp" => Some(Self::Defp),
+            "defmacro" => Some(Self::Defmacro),
+            _ => None,
+        }
+    }
+
+    pub fn keyword(self) -> &'static str {
+        match self {
+            Self::Try => "try",
+            Self::Def => "def",
+            Self::Defp => "defp",
+            Self::Defmacro => "defmacro",
+        }
+    }
 }
 
 #[cfg(test)]

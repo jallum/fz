@@ -105,7 +105,7 @@ their block. A new epic claims the next free block and adds a row here.
 | Block         | Owner                             | State                  |
 | ------------- | --------------------------------- | ---------------------- |
 | `00600-00799` | fz-sc8                            | full                   |
-| `00800-00899` | fz-3ul                            | in use through `00894` |
+| `00800-00899` | fz-3ul                            | in use through `00897` |
 | `00900-00999` | fz-a9y                            | reserved               |
 | `01000-01039` | fz-sc8 (stack #274)               | in use through `01039` |
 | `01040-01059` | fz-sc8 (session fz-38: .77, .105) | in use through `01042` |
@@ -542,6 +542,13 @@ rescue arms (`00836`, `00801`, `00802`); all four sections together (`00806`);
 (`lower/unbound`) for a binding that does not outlive the `try`. The raise
 sequence through an `after` (`00833`) is also read through telemetry in
 `exec/runtime_test.rs`.
+
+Fixtures `00895` through `00897` are function bodies that carry `try` sections:
+`00895` is a guarded multi-clause `def`, a `defp` and a `defmacro` using
+`rescue`, `catch`, `else` and `after` (oracle `self`); `00896` is `expect: diagnostic`
+(`parse/invalid-try`) for a `catch` section that is not clauses, refused naming
+`defp`; `00897` is an `else`-only body, whose `.expected.diagnostics` holds
+Elixir's warning naming `def`.
 
 Fixtures `00841` through `00847` and `00807` through `00814` are the `throw`, `exit` and `catch` set, with
 the same oracle discipline. `catch` matching: one head (`00841`), `catch :throw,

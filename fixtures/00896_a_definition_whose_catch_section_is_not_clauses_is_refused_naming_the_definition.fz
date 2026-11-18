@@ -1,0 +1,12 @@
+#---
+# purpose: "a defp body whose catch section is not made of -> clauses is refused as Elixir refuses it, naming defp rather than try"
+# expect: diagnostic
+# diagnostic.code: parse/invalid-try
+#---
+defp risky(x) do
+  x
+catch
+  :x
+end
+
+def main(), do: risky(1)

@@ -1,0 +1,7 @@
+warning[lower/try-else-only]: "else" shouldn't be used as the only clause in "def", use "case" instead
+  --> fixtures/00897_a_definition_whose_only_extra_section_is_else_is_a_case_and_warns_naming_the_definition.fz:2:3
+   |
+2 |   def unwrap(pair) do
+   |   ^^^^^^^^^^^^^^^^^^^
+   |
+

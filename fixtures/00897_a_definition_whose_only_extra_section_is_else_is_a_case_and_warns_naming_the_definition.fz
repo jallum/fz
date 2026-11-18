@@ -1,0 +1,20 @@
+#---
+# purpose: "a def body whose only section beside do is else runs as the case it is, and carries Elixir's warning naming def rather than try"
+# oracle: self
+# oracle.stamp: 55dd665744144398
+#---
+defmodule Main do
+  def unwrap(pair) do
+    pair
+  else
+    {:ok, n} -> n
+    other -> {:unexpected, other}
+  end
+
+  def main() do
+    IO.inspect(unwrap({:ok, 1}))
+    IO.inspect(unwrap(:nope))
+  end
+end
+
+Main.main()

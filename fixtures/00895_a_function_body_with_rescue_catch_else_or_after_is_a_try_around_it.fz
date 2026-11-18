@@ -1,0 +1,76 @@
+#---
+# purpose: "a function body with rescue, catch, else or after beside its do is a try around that body: each clause of a guarded multi-clause def wraps only its own body, and defp and defmacro take the same sections"
+# oracle: self
+# oracle.stamp: 164dce3acbefcf91
+#---
+#
+# Elixir reads `def f(x) do body rescue ... end` as `def f(x) do try do body
+# rescue ... end end`:
+#
+# - `parse/1`: two clauses, the first guarded. Each clause's body is its own
+#   try, and the guard stays outside it, so a non-binary goes to the second
+#   clause, whose `after` runs once.
+# - `classify/1`: `catch` and `else` on a `defp`. A thrown value is caught; a
+#   returned value goes through `else`.
+# - `logged/2`: `rescue` and `after` together. `after` runs on both ways out,
+#   and its value is discarded.
+# - `Checked.halved/1`: a `defmacro` whose body rescues while the program
+#   compiles: an odd literal raises inside the macro and expands to the rescue.
+defmodule Checked do
+  defmacro halved(n) do
+    if rem(n, 2) == 1, do: raise(ArgumentError, "odd"), else: div(n, 2)
+  rescue
+    e in ArgumentError -> {:refused, e.message}
+  end
+end
+
+defmodule Main do
+  import Checked
+
+  def parse(text) when is_binary(text) do
+    String.to_integer(text)
+  rescue
+    e in ArgumentError -> {:error, e.__struct__}
+  else
+    n when n > 100 -> {:big, n}
+    n -> {:ok, n}
+  end
+
+  def parse(other) do
+    {:not_text, other}
+  after
+    IO.puts("checked #{inspect(other)}")
+  end
+
+  defp classify(n) do
+    if n < 0, do: throw({:negative, n}), else: n * 2
+  catch
+    {:negative, m} -> {:caught, m}
+    :exit, reason -> {:exited, reason}
+  else
+    doubled -> {:doubled, doubled}
+  end
+
+  def logged(label, f) do
+    f.()
+  rescue
+    RuntimeError -> {:rescued, label}
+  after
+    IO.puts("after #{label}")
+  end
+
+  def main() do
+    IO.inspect(parse("42"))
+    IO.inspect(parse("420"))
+    IO.inspect(parse("x"))
+    IO.inspect(parse(7))
+    IO.inspect(classify(5))
+    IO.inspect(classify(-3))
+    IO.inspect(logged(:fine, fn -> :ok end))
+    IO.inspect(logged(:boom, fn -> raise "boom" end))
+    IO.inspect(halved(8))
+    IO.inspect(halved(7))
+  end
+end
+
+Main.main()

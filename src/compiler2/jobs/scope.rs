@@ -322,6 +322,7 @@ impl ScopeWalk {
                 catch,
                 else_clauses,
                 after,
+                form: _,
             } => {
                 self.branch(|walk| walk.expr(&body.node));
                 self.rescue_clauses(rescue);
