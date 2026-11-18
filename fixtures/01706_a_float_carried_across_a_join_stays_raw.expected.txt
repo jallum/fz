@@ -1,0 +1,7 @@
+{:int_times_float, 1498.5, 0}
+{:float_plus_int, 1000.5, 0}
+{:int_minus_float, 998.5, 0}
+{:int_over_int, 499.5, 0}
+{:float_accumulator, 499500.0, 0}
+{:float_times_float, 1000.0, 0}
+{:big_integer_times_float, 9007199254741992.0, 0}

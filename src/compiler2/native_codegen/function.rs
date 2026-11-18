@@ -64,8 +64,8 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
             continue;
         }
         let cl_blk = *block_map.get(&blk.id.0).unwrap();
-        for _ in &blk.params {
-            b.append_block_param(cl_blk, types::I64);
+        for p in &blk.params {
+            append_block_param_for_repr(&mut b, cl_blk, block_param_repr(native_body, p));
         }
     }
 
