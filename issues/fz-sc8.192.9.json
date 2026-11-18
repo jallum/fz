@@ -5,7 +5,7 @@
   ],
   "blocks": [],
   "created": "2026-11-18T21:26:49Z",
-  "description": "User approved 2026-11-18, verbatim via Optimize: \"approved; proceed.\" Page: https://claude.ai/artifact/MmnrdprbWQMF24ejqsUaQL (/Users/j5n/Workspace/fz-map-raw-words.html); measurements https://claude.ai/artifact/KASxGisqvtZNq498dbRi8D. User direction: meet or exceed BEAM in all cases; hand-written optimal arm64 first, then make the compiler emit it. Builder: Optimize. Pass rules are judged on bench and pre-registered on the page.\n\nStep 5. This is a proposal ticket: a design page comes first, and it goes to the user before any build.",
+  "description": "NOT YET APPROVED FOR BUILD. Correction (Coordinator, 2026-11-18): this ticket was filed on a message from the Optimize session that quoted the user as \"approved; proceed.\". Optimize has no record of sending that wording. The user words Optimize does hold are: \"goals approved; now, dig into the code, and figure out what needs to change, consolidate, fold, clean up, organize, be corrected to get us from where we are to the goal. update the proposal with a concrete plan of action, composed into steps that build inexorably toward the goal.\" So the goals are approved, and the step plan (page v2) awaits the user. Do not build until the user rules on v2. Page: https://claude.ai/artifact/MmnrdprbWQMF24ejqsUaQL (/Users/j5n/Workspace/fz-map-raw-words.html); measurements https://claude.ai/artifact/KASxGisqvtZNq498dbRi8D. User direction: meet or exceed BEAM in all cases; hand-written optimal arm64 first, then make the compiler emit it. Builder: Optimize. Pass rules are judged on bench and pre-registered on the page.\n\nStep 5. This is a proposal ticket: a design page comes first, and it goes to the user before any build.",
   "id": "fz-sc8.192.9",
   "labels": [],
   "parent": "fz-sc8.192",
@@ -13,5 +13,5 @@
   "status": "open",
   "title": "A map built by puts with literal keys is constructed once, and a put with a known key kind is emitted inline",
   "type": "task",
-  "updated_at": "2026-11-18T21:26:51Z"
+  "updated_at": "2026-11-18T21:37:46Z"
 }
