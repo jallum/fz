@@ -9,9 +9,15 @@
   "id": "fz-nml.29",
   "labels": [],
   "parent": "fz-nml",
+  "comments": [
+    {
+      "text": "Owner change 2026-11-18: the user said \"delegate private append to Optimize\" (relayed by JSON). Optimize owns this ticket and its page https://claude.ai/artifact/A5B7Pv2mfjBRg1EVDrNftn. User design directions given to Optimize, then \"proceed\": one indicator bit for small and large binaries; small binaries born with room; the list link high bit as the position.",
+      "timestamp": "2026-11-18T05:42:59Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "An append to an unshared accumulator extends it in place",
   "type": "task",
-  "updated_at": "2026-11-18T03:29:16Z"
+  "updated_at": "2026-11-18T05:42:59Z"
 }
