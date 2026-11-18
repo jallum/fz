@@ -7,6 +7,12 @@
   "id": "fz-mue.11",
   "labels": [],
   "parent": "fz-mue",
+  "comments": [
+    {
+      "text": "PR #752? no -- see PR for fz-mue.11/defmacrop (stacked on #749). Commit 7eae6cde5.",
+      "timestamp": "2026-11-18T22:04:51Z"
+    }
+  ],
   "priority": 2,
   "status": "in_progress",
   "title": "defmacrop defines a private macro, as in Elixir",
