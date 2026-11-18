@@ -7,9 +7,15 @@
   "id": "fz-9x7.28",
   "labels": [],
   "parent": "fz-9x7",
+  "comments": [
+    {
+      "text": "Round 1 FAILS the pre-registered rule; not committed (work uncommitted in ../fz-9x7-28, fmt+clippy green). Clauses: (1) gate RED, 5 tests, one cause: 01592_receive_outcome_identity (run/interp/build) + backend_test parked_receive_copies_only_winning_subjects_into_receiver_heap (3 cells vs 2) + drive_test receive_outcomes. A gift_match binds the source cell and its head/tail; the forwarding map made the copied tail the copied source's own tail, which the receiver's retention relies on. (2) fanin 4.34 mallocs/msg vs \u003c=4 (~0.3 = first-time gift blocks: 8 senders outrun the receiver's frees). msg 12.06 -\u003e 7.06 (passes). (3) dist instructions +0.52%, stable over 10+ runs, no copies, same malloc count; isolated to the deep_copy/sched.rs side, mechanism unknown. Wins: msg instr 0.704, fanin 0.772, reqrep 0.693, ring 0.955; peak in-use and gc counts identical on 11 workloads; outputs identical. Design options for the sharing dependency: (a) forwarding map only for gift_match bound values; (b) receive binds only the physical source and projects head/tail on the receiver after the copy; (c) re-bless 01592 (needs user authorization). Awaiting the user's ruling. A failed round is not a refutation.",
+      "timestamp": "2026-11-18T00:38:46Z"
+    }
+  ],
   "priority": 2,
   "status": "in_progress",
   "title": "Copying a message allocates nothing from malloc: no address maps, small blocks from the pool",
   "type": "task",
-  "updated_at": "2026-11-17T23:50:02Z"
+  "updated_at": "2026-11-18T00:38:46Z"
 }
