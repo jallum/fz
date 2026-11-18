@@ -2,14 +2,16 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-18T04:39:32Z",
+  "close_reason": "PR",
   "created": "2026-11-18T03:59:36Z",
   "description": "Approved by the user 2026-11-17 (relayed verbatim by JSON: \"proceed.\"), E2 of https://claude.ai/artifact/BWdUAnALF2ekJXzZ8Vq63e.\n\nScope (lib/json.fz): the simple escapes become clauses of `escaped`; run_join gets an \u003c\u003c\u003e\u003e clause; \\uXXXX is one clause guarded by is_hex on all four bytes; hex returns a plain integer. Deleted: simple_escape, join_run, hex4, hex4_join, and the `integer | :error` returns.\n\nEvidence (bench, on #726): strings decode 28.83 -\u003e 24.74 Mcycles (-14.2%); strings allocations 472k -\u003e 312k, bytes 16.8 -\u003e 11.6 MB; scalar boxes 80,000 -\u003e 0; docs unchanged; all 54 JSON fixtures pass on three paths with identical outputs and error positions.\n\nDone when: fixtures identical; a fixture pins scalar boxes per \\uXXXX at 0 on all three paths; strings cycles re-measured.\n\nHeld (not filed): W (whitespace) waits on the leaf-call rule (fz-sc8.197).",
   "id": "fz-nml.30",
   "labels": [],
   "parent": "fz-nml",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "A JSON escape is one clause, and a \\uXXXX is decoded where it is matched",
   "type": "task",
-  "updated_at": "2026-11-18T03:59:36Z"
+  "updated_at": "2026-11-18T04:39:32Z"
 }
