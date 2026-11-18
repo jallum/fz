@@ -7,9 +7,15 @@
   "id": "fz-sc8.196",
   "labels": [],
   "parent": "fz-sc8",
+  "comments": [
+    {
+      "text": "Fresh figure (MDF, bench, develop 1438c8bfa): File.read of a 141 MB file costs 189.5G instructions and 6.4 s (~1,347 instructions per byte). Not on the distiller's path.",
+      "timestamp": "2026-11-18T00:34:47Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "File.read reads a file in one call",
   "type": "bug",
-  "updated_at": "2026-11-14T12:34:42Z"
+  "updated_at": "2026-11-18T00:34:47Z"
 }
