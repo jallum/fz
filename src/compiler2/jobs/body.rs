@@ -4949,6 +4949,9 @@ fn module_value_callee(target: &Spanned<Expr>) -> Option<(&Spanned<Expr>, &str)>
 }
 
 fn direct_callee(expr: &Spanned<Expr>, arity: usize, env: &HashMap<Var, ValueId>) -> Option<Callee> {
+    if matches!(expr.node, Expr::Var(_)) {
+        return Callee::for_call(&expr.node, arity);
+    }
     let mut current = &expr.node;
     loop {
         match current {
