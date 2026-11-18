@@ -1100,7 +1100,8 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
             Pattern::Int(value) => self.const_question(subject, GroundValue::Int(*value), questions)?,
             Pattern::Float(value) => self.const_question(subject, GroundValue::Float(value.to_bits()), questions)?,
             Pattern::Binary(bytes) => {
-                self.const_question(subject, GroundValue::Utf8Binary(bytes.clone()), questions)?
+                let fields = crate::ast::binary_literal_fields(bytes, span);
+                self.append_bitstring_pattern(&fields, subject, questions, bindings, resolver)?
             }
             Pattern::Atom(name) => self.const_question(subject, GroundValue::Atom(name.clone()), questions)?,
             Pattern::Bool(value) => self.const_question(subject, GroundValue::Bool(*value), questions)?,
@@ -1170,23 +1171,35 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
                 }
             }
             Pattern::Bitstring(fields) => {
-                let question = self.bitstring_question(subject, fields)?;
-                let Region::Bitstring(shape) = &question.predicate.region else {
-                    unreachable!();
-                };
-                let field_subjects = shape.fields.clone();
-                questions.push(question);
-                for (field_subject, field) in field_subjects.into_iter().zip(fields) {
-                    self.append_pattern(
-                        &field.value.node,
-                        field.value.span,
-                        &PatternSubjectRef::Subject(field_subject),
-                        questions,
-                        bindings,
-                        resolver,
-                    )?;
-                }
+                self.append_bitstring_pattern(fields, subject, questions, bindings, resolver)?
             }
+        }
+        Ok(())
+    }
+
+    fn append_bitstring_pattern(
+        &mut self,
+        fields: &[crate::ast::BitField<Spanned<Pattern>>],
+        subject: &PatternSubjectRef,
+        questions: &mut Vec<RegionQuestion<TypeHandle>>,
+        bindings: &mut Vec<PatternDispatchBinding>,
+        resolver: &mut impl PatternResolver<TypeHandle>,
+    ) -> Result<(), SourcePatternError> {
+        let question = self.bitstring_question(subject, fields)?;
+        let Region::Bitstring(shape) = &question.predicate.region else {
+            unreachable!();
+        };
+        let field_subjects = shape.fields.clone();
+        questions.push(question);
+        for (field_subject, field) in field_subjects.into_iter().zip(fields) {
+            self.append_pattern(
+                &field.value.node,
+                field.value.span,
+                &PatternSubjectRef::Subject(field_subject),
+                questions,
+                bindings,
+                resolver,
+            )?;
         }
         Ok(())
     }

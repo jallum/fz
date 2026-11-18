@@ -555,3 +555,46 @@ fn an_argument_below_unread_structure_is_a_root_of_its_own() {
     assert_eq!(roots.roots, vec![head, tail]);
     assert!(roots.is_identity());
 }
+
+fn plan_of_pattern(pattern: Pattern) -> Plan {
+    Helpers::new().plan_of_row(PatternRow {
+        patterns: vec![sp(pattern)],
+        preconditions: Vec::new(),
+        guard: None,
+        body_id: 0,
+    })
+}
+
+fn literal_bytes_as_bitstring(bytes: &[u8]) -> Pattern {
+    Pattern::Bitstring(crate::ast::binary_literal_fields(bytes, crate::source::Span::DUMMY))
+}
+
+#[test]
+fn an_empty_string_pattern_asks_the_questions_the_empty_bitstring_pattern_asks() {
+    assert_eq!(
+        plan_of_pattern(Pattern::Binary(Vec::new())).graph,
+        plan_of_pattern(Pattern::Bitstring(Vec::new())).graph,
+    );
+}
+
+#[test]
+fn a_string_pattern_asks_the_questions_its_one_segment_bitstring_asks() {
+    assert_eq!(
+        plan_of_pattern(Pattern::Binary(b"abc".to_vec())).graph,
+        plan_of_pattern(literal_bytes_as_bitstring(b"abc")).graph,
+    );
+}
+
+#[test]
+fn a_string_pattern_never_compares_the_whole_value() {
+    let plan = plan_of_pattern(Pattern::Binary(b"abc".to_vec()));
+    assert!(
+        tests(&plan).iter().all(|predicate| !matches!(
+            &predicate.region,
+            Region::Equal(ComparisonValue::Const(
+                GroundValue::Utf8Binary(_) | GroundValue::Binary(_)
+            ))
+        )),
+        "a string pattern is a size test and byte comparisons, never a whole-value comparison"
+    );
+}

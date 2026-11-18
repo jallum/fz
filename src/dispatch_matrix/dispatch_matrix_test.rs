@@ -1018,9 +1018,12 @@ fn pattern_dispatch_matrix_preserves_literal_outcomes_and_default() {
         region,
         Region::Equal(ComparisonValue::Const(GroundValue::Nil))
     )));
+    // A string literal is the one-segment bitstring of its bytes: a size test,
+    // then the bytes `0x6869` as one integer field.
+    assert!(has_region(&plan, |region| matches!(region, Region::Bitstring(_))));
     assert!(has_region(&plan, |region| matches!(
         region,
-        Region::Equal(ComparisonValue::Const(GroundValue::Utf8Binary(bytes))) if bytes == b"hi"
+        Region::Equal(ComparisonValue::Const(GroundValue::Int(0x6869)))
     )));
 
     let (fallback_node, fallback) = outcome_for_body(&plan, 5);

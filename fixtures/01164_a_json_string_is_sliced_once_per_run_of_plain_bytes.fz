@@ -10,7 +10,7 @@
 # The allocations exclude what one `Process.heap_alloc_stats` call itself
 # allocates, which a second snapshot measures: the stats map lands in the window
 # after its snapshot. The native paths count the continuation frames the decode
-# builds and the interpreter builds none: the native number is 7 above the
+# builds and the interpreter builds none: the native number is 6 above the
 # interpreter's. No byte is copied, so the off-heap count is 0.
 #
 # The remaining cases pin what the decoder does at each kind of stop: an
