@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-15T23:47:21Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-sc8",
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "A guard that calls a function narrows its argument to that function's domain for the clause body",
   "type": "bug",
-  "updated_at": "2026-11-15T23:47:21Z"
+  "updated_at": "2026-11-18T05:40:22Z"
 }
