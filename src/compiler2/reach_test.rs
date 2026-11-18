@@ -228,7 +228,8 @@ fn static_reach_on_enum_take_drop_split_covers_the_call_graph() {
         .iter()
         .map(|(function, _)| settled.world().static_callees(*function).len())
         .sum();
-    assert_eq!((functions, edges), (68, 112));
+    // (68, 112) -> (56, 99): `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
+    assert_eq!((functions, edges), (56, 99));
 }
 
 /// A reach job runs once to meet its cone and once more per callee whose

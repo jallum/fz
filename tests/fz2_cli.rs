@@ -71,7 +71,8 @@ const TARGET_FIXTURES: [TargetFixture; 3] = [
         // for the uncaught-raise handler's indenting.
         // 828 -> 826: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run
         // time, so its result stays `binary` and callers need no second `bitstring` activation.
-        runtime_demand_walks: 826,
+        // 826 -> 787: `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
+        runtime_demand_walks: 787,
         mainline_runtime_demand_walks: 6252,
         mainline_runtime_demand_door: ObservationDoor::Interp,
     },
@@ -111,7 +112,8 @@ const TARGET_FIXTURES: [TargetFixture; 3] = [
         // 247 -> 242: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at
         // run time, so its result stays `binary` and callers need no second `bitstring`
         // activation.
-        runtime_demand_walks: 242,
+        // 242 -> 212: `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
+        runtime_demand_walks: 212,
         mainline_runtime_demand_walks: 2971,
         mainline_runtime_demand_door: ObservationDoor::Run,
     },

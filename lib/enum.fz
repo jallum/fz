@@ -142,8 +142,9 @@ defmodule Enum do
   @doc """
   Returns a list built from `enumerable`.
 
-  A list is already one, so it is returned unchanged; any other
-  enumerable is walked once to build the list.
+  A list is already one, so it is returned unchanged. A range knows its
+  last element, so its list is built from that end, one cell per element.
+  Any other enumerable is walked once and the result reversed.
 
   ## Examples
 
@@ -153,6 +154,10 @@ defmodule Enum do
   """
   @spec to_list(Enumerable.t(a)) :: [a]
   def to_list(list) when is_list(list), do: list
+  def to_list(%Range{first: first, last: last, step: step}) do
+    count = Range.count(first, last, step)
+    range_list_ending_at(first + ((count - 1) * step), step, count, [])
+  end
   def to_list(enumerable), do: reverse(reverse(enumerable))
 
   @doc """
@@ -989,6 +994,12 @@ defmodule Enum do
     {left, after_left} = sort_prefix(list, left_count, sorter)
     {right, rest} = sort_prefix(after_left, count - left_count, sorter)
     {merge_sort_lists(left, right, sorter), rest}
+  end
+
+  @spec range_list_ending_at(integer, integer, integer, [integer]) :: [integer]
+  defp range_list_ending_at(_current, _step, 0, acc), do: acc
+  defp range_list_ending_at(current, step, remaining, acc) do
+    range_list_ending_at(current - step, step, remaining - 1, [current | acc])
   end
 
   @spec reverse_list([a]) :: [a]

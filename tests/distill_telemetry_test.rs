@@ -264,7 +264,8 @@ fn read_compile_spend(trace: &Path) -> CompileSpend {
 // 19_811 -> 19_812: what a program can raise is a fact of that program, so the entry's handler
 // no longer starts from the raises of the macros' programs. The entry publishes its own program's
 // first raise and is analysed once more on it.
-const DERIVATIONS: u64 = 19_812;
+// 19_812 -> 19_806: `Enum.to_list/1` has a clause that builds a range's list itself.
+const DERIVATIONS: u64 = 19_806;
 // 111_876 -> 111_888: an extern that declares `raises:` reads the struct of
 // the exception it names, to raise that struct. The distiller calls twelve
 // such externs, and each contract reads `StructDefined` once.
@@ -288,7 +289,9 @@ const DERIVATIONS: u64 = 19_812;
 // job whose cone now holds the binary clause's activations reads them too.
 // 156_740 -> 156_741: that check reads the source's index.
 // 156_741 -> 156_747: the six reads of the entry's one more analysis, as in `DERIVATIONS`.
-const READS_HANDED: u64 = 156_747;
+// 156_747 -> 156_894: `Enum.to_list/1`'s range clause is reachable where the distiller lists an
+// `any` enumerable, so the reach jobs whose cones hold it read its activations too.
+const READS_HANDED: u64 = 156_894;
 
 /// Compiling the distiller spends this much of the product stack. The largest
 /// drive is the one `PRODUCT_DRIVE_BUDGET` bounds, so its headroom is the
@@ -347,7 +350,8 @@ fn the_distiller_compiles_inside_the_product_drive_budget() {
         // by a job outside the drive, so the shape is requested again once that job lands
         // (30_289 -> 31_325 transport shape requests).
         // (46_243, 46_797, 26) -> (46_285, 46_839, 26): the ordering operators' `binary` clause adds its `fz_op_*_bb` activation and splits the catch-all's `compare/2` activations, the same way the int and float clauses already do.
-        (46_285, 46_839, 26),
+        // (46_285, 46_839, 26) -> (46_237, 46_791, 26): `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
+        (46_237, 46_791, 26),
         "(largest drive requests, total requests, drives) for the distiller's compile moved. \
          A fall is lowered in this pin; a rise is investigated first, because the largest drive \
          may not exceed PRODUCT_DRIVE_BUDGET (50,000)."

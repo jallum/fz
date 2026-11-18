@@ -1595,13 +1595,13 @@ fn interp_counts_for_list_of(n: u32) -> InterpRan {
 /// difference between two list sizes is exact however much fixed work a run
 /// carries.
 #[test]
-fn building_and_counting_a_list_runs_eighteen_entries_per_element() {
+fn building_and_counting_a_list_runs_five_entries_per_element() {
     let small = interp_counts_for_list_of(100);
     let large = interp_counts_for_list_of(200);
 
-    assert_eq!(large.entries - small.entries, 18 * 100, "control entries per element");
-    assert_eq!(large.frames - small.frames, 11 * 100, "frames started per element");
-    assert_eq!(large.calls - small.calls, 11 * 100, "executables called per element");
+    assert_eq!(large.entries - small.entries, 5 * 100, "control entries per element");
+    assert_eq!(large.frames - small.frames, 3 * 100, "frames started per element");
+    assert_eq!(large.calls - small.calls, 3 * 100, "executables called per element");
 }
 
 /// A macro run borrows the process's atom table as it stands: the number of
