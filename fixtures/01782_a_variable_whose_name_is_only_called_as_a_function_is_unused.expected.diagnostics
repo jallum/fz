@@ -1,0 +1,7 @@
+warning[lower/unused-variable]: variable "value" is unused (if the variable is not meant to be used, prefix it with an underscore)
+  --> fixtures/01782_a_variable_whose_name_is_only_called_as_a_function_is_unused.fz:4:3
+   |
+4 |   value = 3
+   |   ^^^^^
+   |
+

@@ -1,0 +1,9 @@
+#---
+# purpose: "a variable whose only appearance after its binding is as the name in a call f(x) is unused: the call names the function"
+#---
+def value(v), do: v * 2
+
+def main() do
+  value = 3
+  dbg(value(1))
+end

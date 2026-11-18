@@ -195,6 +195,15 @@ length is not a multiple of 8, given to `copy`, is reported as
 `bitstring`, so a call whose argument is proven to be something else is refused
 at compile time; a value that may be a binary compiles and raises when it runs.
 
+## A call by name
+
+`f(a)` always names the function `f/1`, as in Elixir, even where a variable
+`f` is bound; the closure a variable holds is called with `f.(a)`. Body
+lowering (`direct_callee`, `jobs/body.rs`) resolves a bare name as a function
+without looking at the scope, and the scope walk (`jobs/scope.rs`) does not
+count that name as a use of the variable, so `value = 3; value(1)` warns that
+`value` is unused (`01781`).
+
 ## A call on a module value
 
 `m.f(a)` whose base is not a module name is a call on the module the value

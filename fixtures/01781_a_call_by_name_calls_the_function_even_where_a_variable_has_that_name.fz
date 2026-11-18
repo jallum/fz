@@ -1,0 +1,25 @@
+#---
+# purpose: "f(x) calls the function f even where a variable f is bound, and f.(x) calls the closure the variable holds"
+# oracle: self
+# oracle.stamp: ea04749b1d5b745b
+#---
+#
+# A name followed by arguments names a function. A variable of the same name
+# does not change which function that is; its closure is called with a dot.
+defmodule Main do
+  def value(v), do: v * 2
+
+  def push(value, acc), do: [value(value) | acc]
+
+  def both(x) do
+    value = fn v -> v + 100 end
+    {value(x), value.(x)}
+  end
+
+  def main() do
+    IO.inspect(push(3, []))
+    IO.inspect(both(1))
+  end
+end
+
+Main.main()
