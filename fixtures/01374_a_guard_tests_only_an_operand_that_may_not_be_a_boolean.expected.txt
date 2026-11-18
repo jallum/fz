@@ -1,0 +1,2 @@
+[:digit, :sign, :blank, :high, :other, :other]
+[:yes, :no, :no]
