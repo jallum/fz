@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-14T12:34:42Z",
@@ -18,8 +18,8 @@
     }
   ],
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "File.read reads a file in one call",
   "type": "bug",
-  "updated_at": "2026-11-18T04:58:28Z"
+  "updated_at": "2026-11-18T05:09:15Z"
 }
