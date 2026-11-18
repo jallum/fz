@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-9x7.11.7"
+    "fz-9x7.11.7",
+    "fz-9x7.8"
   ],
   "blocks": [],
   "created": "2026-11-18T23:59:21Z",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "A value becomes old only after it survives two collections (the policy round)",
   "type": "task",
-  "updated_at": "2026-11-18T23:59:28Z"
+  "updated_at": "2026-11-18T23:59:29Z"
 }
