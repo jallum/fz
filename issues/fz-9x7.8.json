@@ -55,11 +55,15 @@
     {
       "text": "Fresh measurement 2026-11-17 on develop 458eb43eb (chg = rebased 3b79c9e29; data scratchpad/8fresh/). Outputs identical everywhere. Instructions chg/base: quantum 0.796, deadbinlive 0.849, all others 0.9995-1.0055. Peak in-use: quantum 131.4-\u003e0.35 MB, deadbinlive 81.4-\u003e12.4, deadbin 2.28-\u003e0.31, survive 1.002x, giftbin 1.015x, rest identical. Mean in-use: survive 1.044x (was 1.135x on the old base), giftbin 1.033x. The trigger fires only on quantum, deadbin, deadbinlive, giftbin, survive (17/23) and json (1/42); it is inert elsewhere. giftbin's rise is live mailbox binaries, not garbage: the cut quantum moves the parked consumer's single early collection from ~2000 sends to ~256, so it frees ~1750 fewer already-received buffers; the consumer then never collects while draining 100,000 messages (whether gifted binaries count toward the receiver's budget is unchecked). survive: confirmed, smaller: after the last major at 17 ms, 11 minors and no major; binary in-use ~54 MB vs ~10 MB live; the budget follows held binary bytes, which include dead old-owned binaries, so it ratchets 0.26 -\u003e 40 MB. Assigned to fz-9x7.11 per the user's ruling.",
       "timestamp": "2026-11-18T04:04:17Z"
+    },
+    {
+      "text": "Base caveat: the 2026-11-17 measurements ran on develop 458eb43eb, after #720 (fz-9x7.31), where release cheney_scan calls forward_heap_value out of line at its 8 trace sites (distiller +1.91% instructions per the Make Distiller Fast session's bisect; fix under test by the Bugs and Cleanup session). Collection-heavy ratios (and round 3's per-collection cost F) should be re-read once the inlining is restored.",
+      "timestamp": "2026-11-18T04:14:58Z"
     }
   ],
   "priority": 2,
   "status": "in_progress",
   "title": "Off-heap binary bytes count toward the collection trigger",
   "type": "bug",
-  "updated_at": "2026-11-18T04:04:17Z"
+  "updated_at": "2026-11-18T04:14:58Z"
 }
