@@ -11,9 +11,15 @@
   "id": "fz-sc8.192.7",
   "labels": [],
   "parent": "fz-sc8.192",
+  "comments": [
+    {
+      "text": "Optimize's finding from .5's probes (#750): a single ordered search (kind rank, then the atom-name prefix) is within about 10% of scan-by-equality on lookups and cheaper on builds. So .7 may be one ordered search instead of scan + place. Optimize decides inside .7 with fz numbers.",
+      "timestamp": "2026-11-18T21:50:04Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Every map operation finds its key with one find",
   "type": "task",
-  "updated_at": "2026-11-18T21:39:35Z"
+  "updated_at": "2026-11-18T21:50:04Z"
 }
