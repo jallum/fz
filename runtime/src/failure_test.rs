@@ -163,8 +163,9 @@ fn a_panic_hands_its_line_to_the_fault_sink_marks_the_process_failed_and_returns
     });
 }
 
-/// A handler template: `[outer_cont]` with the outer continuation standing in
-/// as `nil`, the image codegen writes into a handler record.
+/// A handler template: the one-capture closure image compiled code copies into
+/// a handler record. Compiled code puts the outer continuation, a closure, in
+/// capture 0; these tests never resume it, so `nil` stands in for it.
 fn handler_template(process: &mut Process) -> ClosureRef {
     let closure = closure_addr_from_tagged(process.heap.alloc_closure_slots(ClosureDenotationId::INTERNAL, 0, 1, 0))
         .expect("a closure");

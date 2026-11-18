@@ -11,7 +11,7 @@
 //! a copy at the tip when it is old, and the write goes to the answer. A write
 //! answers the frame to use from then on.
 
-use super::closure::CaptureStores;
+use super::closure::{CaptureStores, StoredRefKind};
 use super::*;
 use crate::fz_ir::FrameLane;
 use cranelift_codegen::ir::{self, InstBuilder, MemFlagsData, condcodes::IntCC, types};
@@ -59,7 +59,7 @@ impl<M: Module> CodegenFn<'_, '_, M> {
         let stores = CaptureStores::new(address, width as usize);
         let idx = slot as usize;
         match capture {
-            ClosureCapture::RefWord(word) => stores.store_ref_word(self, idx, word),
+            ClosureCapture::RefWord(word) => stores.store_ref_word(self, idx, word, StoredRefKind::Open),
             ClosureCapture::RawInt(raw) => stores.store_raw(self, idx, raw, ValueKind::INT),
             ClosureCapture::RawAtom(raw) => stores.store_raw(self, idx, raw, ValueKind::ATOM),
             ClosureCapture::RawF64(float) => {

@@ -25098,3 +25098,34 @@ fn a_definition_that_waits_on_itself_is_one_undefined_function() {
         "the macro calls a capture of M's function, which analysis resolves to M"
     );
 }
+
+/// A continuation's outer continuation is always a closure, so storing it and
+/// reading it back never ask its kind: the slot takes the closure's payload
+/// under a constant kind byte, and the resume rebuilds the closure ref from
+/// the slot alone. In this program the outer continuation is the only boxed
+/// capture, so no kind is read off a word and no slot test is emitted.
+#[test]
+fn a_continuations_outer_continuation_is_stored_and_read_as_a_closure() {
+    let clif = lowered_clif_text(concat!(
+        "defmodule P do\n",
+        "  def sum(0), do: 0\n",
+        "  def sum(n), do: n + sum(n - 1)\n",
+        "end\n",
+        "def main(), do: P.sum(3)\n",
+    ));
+    assert!(
+        clif.contains("fz_alloc_continuation"),
+        "the non-tail call builds a continuation:\n{clif}"
+    );
+    assert!(
+        !clif.contains("ireduce.i8"),
+        "no kind byte is taken from a stored word:\n{clif}"
+    );
+    let ref_tag = fz_runtime::any_value::ValueKind::REF.tag();
+    assert!(
+        !clif
+            .lines()
+            .any(|line| line.contains("icmp uge") && line.ends_with(&format!(" = {ref_tag}"))),
+        "no stored or read capture asks whether its kind names a slot:\n{clif}"
+    );
+}

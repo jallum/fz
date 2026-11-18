@@ -834,8 +834,18 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
         }
     }
 
+    /// The outer continuation a continuation holds as capture 0. It is always
+    /// a closure, and every writer of a heap capture stores the word's payload,
+    /// so its ref word is the slot under the closure tag, with no kind byte,
+    /// capture count or mask to apply.
     pub(crate) fn outer_cont_ref(&mut self, closure_ref: ir::Value) -> ir::Value {
-        self.closure_capture_ref_at(closure_ref, 0)
+        let address = address_field(self.b, closure_ref);
+        let payload = self
+            .b
+            .ins()
+            .load(types::I64, MemFlagsData::trusted(), address, CLOSURE_CAPTURES_OFFSET);
+        let tag_word = (u64::from(ValueKind::CLOSURE.tag()) << AnyValueRefPacking::current().tag_shift()) as i64;
+        self.b.ins().bor_imm_u(payload, tag_word)
     }
 
     pub(crate) fn store_closure_capture_ref_word(&mut self, closure_ref: ir::Value, idx: usize, value: ir::Value) {
