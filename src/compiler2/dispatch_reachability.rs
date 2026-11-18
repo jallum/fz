@@ -367,7 +367,7 @@ fn predicate_target(types: &mut Types, region: &Region<Ty>) -> Option<PredicateT
         }
         Region::MapKind => types.map_top(),
         Region::MapKeyPresent { key } => {
-            let map_key = match key {
+            let map_key = match key.as_const()? {
                 GroundValue::Atom(name) => crate::ground_value::MapKey::Atom(name.clone()),
                 GroundValue::Nil => crate::ground_value::MapKey::Atom("nil".to_string()),
                 GroundValue::Int(_)
@@ -429,7 +429,8 @@ pub(crate) fn project_subject(
             types.list(element)
         }
         ProjectionKind::MapValue { key } => key
-            .as_map_key()
+            .as_const()
+            .and_then(GroundValue::as_map_key)
             .and_then(|key| types.field_lookup(&source, &key))
             .unwrap_or_else(|| types.any()),
         ProjectionKind::BitstringField(extraction) => match extraction.spec.kind {

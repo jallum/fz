@@ -238,7 +238,7 @@ pub(crate) enum PatternSubjectRef {
     ListTail(Box<PatternSubjectRef>),
     MapValue {
         map: Box<PatternSubjectRef>,
-        key: GroundValue,
+        key: ComparisonValue,
     },
     Subject(SubjectId),
 }
@@ -1229,7 +1229,6 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
                 questions.push(RegionQuestion::new(RegionPredicate::new(subject_id, Region::MapKind)));
                 for (key_pat, val_pat) in entries {
                     let key = self.map_key(&key_pat.node)?;
-                    self.prepare_heap_key(&key);
                     let value_subject = PatternSubjectRef::MapValue {
                         map: Box::new(subject.clone()),
                         key: key.clone(),
@@ -1502,16 +1501,27 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
         Ok(id)
     }
 
-    fn map_key(&mut self, pattern: &Pattern) -> Result<GroundValue, SourcePatternError> {
-        match pattern {
-            Pattern::Int(value) => Ok(GroundValue::Int(*value)),
-            Pattern::Float(value) => Ok(GroundValue::Float(value.to_bits())),
-            Pattern::Binary(bytes) => Ok(GroundValue::Utf8Binary(bytes.clone())),
-            Pattern::Atom(name) => Ok(GroundValue::Atom(name.clone())),
-            Pattern::Bool(value) => Ok(GroundValue::Bool(*value)),
-            Pattern::Nil => Ok(GroundValue::Nil),
-            _ => Err(SourcePatternError::UnsupportedMapKey),
-        }
+    /// The key a map pattern looks up: a literal, or the value a pinned
+    /// variable holds.
+    fn map_key(&mut self, pattern: &Pattern) -> Result<ComparisonValue, SourcePatternError> {
+        let literal = match pattern {
+            Pattern::Pinned(name) => {
+                return self
+                    .pinned_by_name
+                    .get(name)
+                    .map(|pinned| ComparisonValue::Pinned(*pinned))
+                    .ok_or_else(|| SourcePatternError::UnknownPinned(name.to_string()));
+            }
+            Pattern::Int(value) => GroundValue::Int(*value),
+            Pattern::Float(value) => GroundValue::Float(value.to_bits()),
+            Pattern::Binary(bytes) => GroundValue::Utf8Binary(bytes.clone()),
+            Pattern::Atom(name) => GroundValue::Atom(name.clone()),
+            Pattern::Bool(value) => GroundValue::Bool(*value),
+            Pattern::Nil => GroundValue::Nil,
+            _ => return Err(SourcePatternError::UnsupportedMapKey),
+        };
+        self.prepare_heap_key(&literal);
+        Ok(ComparisonValue::Const(literal))
     }
 
     fn prepare_heap_key(&mut self, key: &GroundValue) {

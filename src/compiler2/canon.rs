@@ -1616,7 +1616,7 @@ impl ProgramCanon<'_> {
             Region::TupleArity(arity) => format!("tuple_arity({arity})"),
             Region::List(list) => format!("list({list:?})"),
             Region::MapKind => "map_kind".to_string(),
-            Region::MapKeyPresent { key } => format!("map_key({})", ground(key)),
+            Region::MapKeyPresent { key } => format!("map_key({})", comparison(key)),
             Region::Bitstring(shape) => format!("bitstring({})", bitstring_shape(shape)),
             Region::Guard(guard) => format!("guard(g{})", guard.0),
         }
@@ -1721,7 +1721,7 @@ fn projection_kind(kind: &ProjectionKind) -> String {
         ProjectionKind::StructField(field) => format!("struct_field({field:?})"),
         ProjectionKind::ListHead => "head".to_string(),
         ProjectionKind::ListTail => "tail".to_string(),
-        ProjectionKind::MapValue { key } => format!("map_value({})", ground(key)),
+        ProjectionKind::MapValue { key } => format!("map_value({})", comparison(key)),
         ProjectionKind::BitstringField(extraction) => format!(
             "bit_field(prev={:?}, {}, last={})",
             extraction.previous.map(|id| id.0),

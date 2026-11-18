@@ -1187,19 +1187,32 @@ fn emit_dispatch_map_get_value<M: cranelift_module::Module>(
     body: &mut DispatchBody<'_, '_, M>,
     ctx: &DispatchCtx<'_>,
     map: ReceiveValue,
+    key: &ComparisonValue,
+) -> Result<ReceiveValue, CodegenError> {
+    let key = match key {
+        ComparisonValue::Pinned(pinned) => load_pinned_dispatch_value(ctx, *pinned)?,
+        ComparisonValue::Const(key) => emit_dispatch_const_key(body, ctx, key)?,
+    };
+    let map_ref = emit_receive_value_ref(body, ctx, map)?;
+    let key_ref = emit_receive_value_ref(body, ctx, key)?;
+    let out_ref = runtime_call1!(body, fz_matcher_map_get_ref, [ctx.process, map_ref, key_ref]);
+    Ok(receive_value_from_ref_word(body.b, out_ref))
+}
+
+/// A literal map key as a value the matcher can look up: the plan's prepared
+/// operand when the key lives on the heap, and the constant word otherwise.
+fn emit_dispatch_const_key<M: cranelift_module::Module>(
+    body: &mut DispatchBody<'_, '_, M>,
+    ctx: &DispatchCtx<'_>,
     key: &GroundValue,
 ) -> Result<ReceiveValue, CodegenError> {
     if let Some(id) = ctx.dispatch.prepared_key_id(key) {
-        let key = ctx.bindings.prepared.get(id.0 as usize).copied().ok_or_else(|| {
+        return ctx.bindings.prepared.get(id.0 as usize).copied().ok_or_else(|| {
             CodegenError::new(format!(
                 "dispatch prepared operand {:?} is missing from its owning plan",
                 id
             ))
-        })?;
-        let map_ref = emit_receive_value_ref(body, ctx, map)?;
-        let key_ref = emit_receive_value_ref(body, ctx, key)?;
-        let out_ref = runtime_call1!(body, fz_matcher_map_get_ref, [ctx.process, map_ref, key_ref]);
-        return Ok(receive_value_from_ref_word(body.b, out_ref));
+        });
     }
     let Some(key_value) = dispatch_const_value(ctx.fz_module, key)? else {
         return Err(CodegenError::new(format!(
@@ -1207,11 +1220,7 @@ fn emit_dispatch_map_get_value<M: cranelift_module::Module>(
             key
         )));
     };
-    let map_ref = emit_receive_value_ref(body, ctx, map)?;
-    let key_value = dispatch_const_receive_value(body.b, key_value);
-    let key_ref = emit_receive_value_ref(body, ctx, key_value)?;
-    let out_ref = runtime_call1!(body, fz_matcher_map_get_ref, [ctx.process, map_ref, key_ref]);
-    Ok(receive_value_from_ref_word(body.b, out_ref))
+    Ok(dispatch_const_receive_value(body.b, key_value))
 }
 
 fn emit_bitstring_test<M: cranelift_module::Module>(
@@ -2006,11 +2015,17 @@ fn collect_binary_literals_in_dispatch(dispatch: &ReceiveDispatchPlan, out: &mut
 
 fn collect_binary_literals_in_region(region: &ReceiveRegion, out: &mut Vec<Vec<u8>>) {
     match region {
-        Region::Equal(ComparisonValue::Const(value)) | Region::MapKeyPresent { key: value } => {
+        Region::Equal(ComparisonValue::Const(value))
+        | Region::MapKeyPresent {
+            key: ComparisonValue::Const(value),
+        } => {
             collect_binary_literals_in_const(value, out);
         }
         Region::Type(_)
         | Region::Equal(ComparisonValue::Pinned(_))
+        | Region::MapKeyPresent {
+            key: ComparisonValue::Pinned(_),
+        }
         | Region::TupleArity(_)
         | Region::List(_)
         | Region::MapKind

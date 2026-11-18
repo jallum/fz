@@ -1,6 +1,6 @@
 use super::{DemandPathStep, DispatchDemand, demand_at_path, demand_within_path, demand_within_step};
 use crate::dispatch_matrix::{
-    BitstringEndian, BitstringExtraction, BitstringFieldKind, BitstringFieldShape, ProjectionKind,
+    BitstringEndian, BitstringExtraction, BitstringFieldKind, BitstringFieldShape, ComparisonValue, ProjectionKind,
 };
 use crate::ground_value::GroundValue;
 use std::collections::BTreeMap;
@@ -79,7 +79,7 @@ fn a_projection_kind_names_its_demand_step() {
         (ProjectionKind::ListTail, DemandPathStep::ListTail),
         (
             ProjectionKind::MapValue {
-                key: GroundValue::Atom("k".to_string()),
+                key: ComparisonValue::Const(GroundValue::Atom("k".to_string())),
             },
             DemandPathStep::MapValue,
         ),

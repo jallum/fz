@@ -4556,8 +4556,12 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         ctx: &mut NativeFnCtx,
         plan: &PatternDispatchPlan<Ty>,
         state: &DispatchState,
-        key: &crate::ground_value::GroundValue,
+        key: &ComparisonValue,
     ) -> Result<Var, FatalError> {
+        let key = match key {
+            ComparisonValue::Pinned(pinned) => return self.dispatch_pinned_var(state, *pinned),
+            ComparisonValue::Const(key) => key,
+        };
         if let Some(id) = plan.prepared_key_id(key) {
             return state.bindings.prepared.get(id.0 as usize).copied().ok_or_else(|| {
                 incomplete_native_program(

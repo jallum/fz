@@ -708,8 +708,13 @@ fn nil_predicates_use_the_atom_type_and_map_key() {
         .expect("nil equality is type-representable");
     assert!(types.is_nil(&nil.ty));
 
-    let required = predicate_target(&mut types, &Region::MapKeyPresent { key: GroundValue::Nil })
-        .expect("nil is the atom key :nil");
+    let required = predicate_target(
+        &mut types,
+        &Region::MapKeyPresent {
+            key: ComparisonValue::Const(GroundValue::Nil),
+        },
+    )
+    .expect("nil is the atom key :nil");
     let any = types.any();
     let expected = types.map(&[(crate::ground_value::MapKey::Atom("nil".to_string()), any)]);
     assert!(types.is_equivalent(&required.ty, &expected));

@@ -4822,7 +4822,7 @@ fn emit_local_dispatch_error(
             tel,
             Diagnostic::error(
                 codes::LOWER_UNSUPPORTED,
-                format!("compiler2 {label} patterns require literal map keys"),
+                format!("compiler2 {label} patterns require a map key to be a literal or a pinned variable"),
                 span,
             ),
         ),

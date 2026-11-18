@@ -872,12 +872,16 @@ impl<'a> Dispatch<'a> {
 
     /// The map value one constant key denotes, or `None` where the subject is no
     /// map or holds no such key.
-    fn map_lookup(&self, map: AnyValue, key: &GroundValue) -> Result<Option<AnyValue>, DispatchStop> {
+    fn map_lookup(&self, map: AnyValue, key: &ComparisonValue) -> Result<Option<AnyValue>, DispatchStop> {
         let proc = self.proc();
         if !map.value(proc).ok().is_some_and(|value| is_map_value(proc, value)) {
             return Ok(None);
         }
-        let Some(key) = self.const_key_value(key)? else {
+        let key = match key {
+            ComparisonValue::Pinned(pinned) => self.pin_value(*pinned),
+            ComparisonValue::Const(key) => self.const_key_value(key)?,
+        };
+        let Some(key) = key else {
             return Ok(None);
         };
         let found = with_value_ref(proc, map, "DispatchMapGet map", |map_ref| {

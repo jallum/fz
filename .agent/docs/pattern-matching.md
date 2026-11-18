@@ -62,7 +62,14 @@ runtime test on a heap value. A `Region::Type` over such a subject is decided th
 same way, one question per position, through the predicate's own
 `tuple_positions` decomposition. For maps,
 `MapKeyPresent(map, key)` projects a map value only on the present edge, so a
-present `nil` value and an absent key remain distinguishable.
+present `nil` value and an absent key remain distinguishable. The key is a
+`ComparisonValue`, the type an equality question compares against: a literal
+(`%{name: v}`) or a pin (`%{^key => v}`), which looks the map up by the value
+the pinned variable holds. A pinned key is read as a plan input like any other
+pin, narrows nothing about the map's type, and projects a value typed `any`.
+A key that is neither is `SourcePatternError::UnsupportedMapKey`.
+`fixtures/01767_a_map_pattern_looks_a_key_up_by_the_value_of_a_pinned_variable.fz`
+checks the pinned form against Elixir on all three paths.
 
 For `%Box{value: x}`, the source producer asks `Region::Type` with Box's
 atomic tagged-record `Ty`. Its success edge publishes a `StructField("value")`
@@ -318,7 +325,8 @@ naming one as a key, or comparing against one in a guard, allocates nothing;
 `fixtures/01542_map_key_unreached.fz` pins that at zero. A longer binary is
 built on the process heap where it is asked.
 
-Only a map pattern's heap key is prepared. Every other constant a question
+Only a map pattern's literal heap key is prepared; a pinned key is already a
+value. Every other constant a question
 compares against is built where it is asked, through `dispatch_const_to_value`.
 
 Inputs are borrowed as decoded -- `None` for a semantic input the ABI published
