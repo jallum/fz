@@ -9,7 +9,7 @@ use crate::finite_set::FiniteSet;
 use crate::fz_ir::Module;
 use crate::modules::identity::ModuleName;
 use crate::types::ClosureTarget;
-use fz_runtime::any_value::{AnyValue as RuntimeAnyValue, ValueKind, closure_fn_ptr, struct_schema_id};
+use fz_runtime::any_value::{AnyValue as RuntimeAnyValue, ValueKind, closure_arity, closure_fn_ptr, struct_schema_id};
 use fz_runtime::heap::NamedSchema;
 use std::collections::BTreeSet;
 use std::fmt;
@@ -1069,6 +1069,12 @@ pub(crate) struct CallableShapes {
     targets: FiniteSet<ClosureTarget>,
     shapes: Vec<CallableShape>,
     exact: bool,
+    /// How many arguments an admitted callable takes. A function type states
+    /// it in its arrows and a closure carries it in its header, so it is the
+    /// one thing a test can ask of a callable it cannot name. A named
+    /// construction has the arity of its function, so an exact axis leaves
+    /// this open.
+    arities: FiniteSet<usize>,
 }
 
 impl CallableShapes {
@@ -1080,10 +1086,17 @@ impl CallableShapes {
 
     /// Every callable, of every construction.
     pub(crate) fn any() -> Self {
+        Self::of_arities(FiniteSet::any())
+    }
+
+    /// Every callable that takes one of `arities` arguments, of every
+    /// construction.
+    pub(crate) fn of_arities(arities: FiniteSet<usize>) -> Self {
         Self {
             targets: FiniteSet::any(),
             shapes: Vec::new(),
             exact: false,
+            arities,
         }
     }
 
@@ -1093,7 +1106,13 @@ impl CallableShapes {
             targets: FiniteSet::finite(shapes.iter().map(|shape| shape.target)),
             shapes,
             exact: true,
+            arities: FiniteSet::any(),
         }
+    }
+
+    /// The argument counts the test admits.
+    pub(crate) fn arities(&self) -> &FiniteSet<usize> {
+        &self.arities
     }
 
     /// Which functions the test admits values minted from. Always answerable,
@@ -1103,11 +1122,11 @@ impl CallableShapes {
     }
 
     pub(crate) fn is_none(&self) -> bool {
-        self.targets.is_none()
+        self.targets.is_none() || self.arities.is_none()
     }
 
     pub(crate) fn is_any(&self) -> bool {
-        self.targets.is_any()
+        self.targets.is_any() && self.arities.is_any()
     }
 
     #[cfg(test)]
@@ -1139,7 +1158,7 @@ impl CallableShapes {
     /// layout of its targets, so it contains anything of them; and nothing
     /// exact contains it.
     fn contains_all(&self, other: &Self) -> bool {
-        if !self.targets.contains_all(&other.targets) {
+        if !self.targets.contains_all(&other.targets) || !self.arities.contains_all(&other.arities) {
             return false;
         }
         if !self.exact {
@@ -1156,7 +1175,7 @@ impl CallableShapes {
 
     /// Whether one construction could pass both tests.
     fn overlaps(&self, other: &Self) -> bool {
-        if !self.targets.overlaps(&other.targets) {
+        if !self.targets.overlaps(&other.targets) || !self.arities.overlaps(&other.arities) {
             return false;
         }
         if !self.exact || !other.exact {
@@ -1172,7 +1191,7 @@ impl CallableShapes {
     /// captures whose own questions separate are a real separation, and a seat
     /// may skip the surface check for them.
     fn erasing_overlap(&self, other: &Self) -> bool {
-        if !self.targets.overlaps(&other.targets) {
+        if !self.targets.overlaps(&other.targets) || !self.arities.overlaps(&other.arities) {
             return false;
         }
         if !self.exact || !other.exact {
@@ -1398,7 +1417,8 @@ fn struct_schema_of(value: RuntimeAnyValue) -> Option<u32> {
     Some(unsafe { struct_schema_id(ptr.cast_const()) })
 }
 
-/// Read a closure value's CONSTRUCTION and ask the predicate about it.
+/// Read a closure value's arity and CONSTRUCTION and ask the predicate about
+/// them.
 ///
 /// A cofinite callable set names every callable but the ones it lists, so a
 /// code word the backend cannot place is in it: the value is a callable, and
@@ -1417,6 +1437,13 @@ fn matches_runtime_callable(
     let Some(addr) = value.heap_addr() else {
         return false;
     };
+    let arity = usize::from(unsafe { closure_arity(addr.cast_const()) });
+    if !predicate.callables.arities().contains(&arity) {
+        return false;
+    }
+    if predicate.callables.targets().is_any() {
+        return true;
+    }
     match callables(unsafe { closure_fn_ptr(addr.cast_const()) }) {
         Some(shape) => predicate.callables.admits(&shape),
         None => predicate.callables.targets().cofinite,

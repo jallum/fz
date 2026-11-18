@@ -215,11 +215,18 @@ Both containments are judged on the OBSERVABLE surfaces — the settled
 `surface_inputs` run through `Types::runtime_type_test_envelope`, the same
 projection the plan's rows are built from — not on the settled semantic types. The envelope
 erases what no runtime test can read back off a value: a callable argument
-keeps its literal `fn_id` AND the capture types beside it, and loses the arrow
-it was typed at, because a closure object's heap word at `+8` is the address of
-the construction wrapper that minted it — and a wrapper is one function at one
-capture layout, so the capture TYPES are a fact about the value while the arrow
-is not.
+keeps its literal `fn_id` AND the capture types beside it, and loses the
+parameter and result types of the arrow it was typed at, because a closure
+object's heap word at `+8` is the address of the construction wrapper that
+minted it — and a wrapper is one function at one capture layout, so the capture
+TYPES are a fact about the value while those types are not. The NUMBER of
+parameters is a fact about the value too: the closure's header holds it. So a
+function type that names no construction keeps its arity through the envelope,
+as the arrow `(none, …) -> any` of that arity, and
+`Types::runtime_type_predicate_callables` projects it to
+`CallableShapes::of_arities`. The interpreter's matcher and the native
+`emit_callable_axis` both read the header's arity before any construction
+test, and the receive matcher reads it the same way.
 
 A callable position is therefore a real question, and it is what separates
 `Range.reduce_step/6`'s `({:cont, int} | {:halt, int}, #66closure[])` from its

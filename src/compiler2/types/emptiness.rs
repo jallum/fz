@@ -308,6 +308,13 @@ pub(crate) fn func_clause_empty(cx: TyCtx<'_>, c: &Conj<ArrowSig>) -> bool {
     let p = &c.pos;
     let n = &c.neg;
 
+    // A function takes one number of arguments, so arrows of different
+    // arities share no function.
+    let arity = p.first().map(|sig| sig.args.len());
+    if p.iter().any(|sig| Some(sig.args.len()) != arity) {
+        return true;
+    }
+
     let pos_lits: Vec<&ClosureLit> = p.iter().filter_map(|s| s.lit.as_ref()).collect();
     // A closure holds exactly one value per capture slot, so a literal whose
     // capture TYPE is empty denotes nothing -- however it got that way. An
@@ -368,7 +375,15 @@ pub(crate) fn func_clause_empty(cx: TyCtx<'_>, c: &Conj<ArrowSig>) -> bool {
         }
     }
 
-    let mut plain_negs = n.iter().filter(|negj| negj.lit.is_none()).peekable();
+    // An arrow takes away functions of its own arity only, so a clause that
+    // states no arity keeps the functions of every other one.
+    let Some(arity) = arity else {
+        return false;
+    };
+    let mut plain_negs = n
+        .iter()
+        .filter(|negj| negj.lit.is_none() && negj.args.len() == arity)
+        .peekable();
     if plain_negs.peek().is_none() {
         return false;
     }

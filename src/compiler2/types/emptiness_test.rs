@@ -318,3 +318,74 @@ fn a_product_minus_products_is_decided_as_when_every_step_builds_its_descriptors
         "the products must exercise both answers: {empty} empty, {inhabited} inhabited"
     );
 }
+
+/// A function takes one number of arguments, so no function is in two arrows
+/// of different arities, and an arrow of another arity takes nothing away.
+#[test]
+fn functions_of_different_arities_are_disjoint() {
+    let mut t = Types::new();
+    let any = t.any();
+    let unary = t.arrow(&[any], any);
+    let binary = t.arrow(&[any, any], any);
+
+    let both = t.intersect(unary, binary);
+    assert!(t.is_empty(&both), "no function takes one argument and two");
+
+    let binary_less_unary = t.difference(binary, unary);
+    assert!(
+        !t.is_empty(&binary_less_unary) && t.is_subtype(&binary, &binary_less_unary),
+        "taking the one-argument functions away leaves every two-argument one"
+    );
+    assert!(!t.is_subtype(&binary, &unary) && !t.is_subtype(&unary, &binary));
+
+    let literal = t.closure_lit(crate::types::ClosureTarget(7), Vec::new(), 2);
+    let literal_as_unary = t.intersect(literal, unary);
+    assert!(
+        t.is_empty(&literal_as_unary),
+        "a two-argument closure is not a one-argument function"
+    );
+    let literal_as_binary = t.intersect(literal, binary);
+    assert!(!t.is_empty(&literal_as_binary));
+}
+
+/// A run-time test of a function type can read one thing off a closure it
+/// cannot name: how many arguments it takes. The envelope keeps that and the
+/// projected test asks it.
+#[test]
+fn a_function_types_run_time_test_keeps_the_arity_its_arrows_state() {
+    let mut t = Types::new();
+    let (any, int) = (t.any(), t.int());
+    let unary = t.arrow(&[int], int);
+    let binary = t.arrow(&[any, any], any);
+    let either = t.union(unary, binary);
+    let fun = t.fun_top();
+
+    let asked = |t: &mut Types, ty| {
+        let envelope = t.runtime_type_test_envelope(ty);
+        t.runtime_type_predicate(&envelope).callables
+    };
+    assert_eq!(
+        asked(&mut t, unary),
+        crate::runtime_type_predicate::CallableShapes::of_arities(crate::finite_set::FiniteSet::lit(1))
+    );
+    assert_eq!(
+        asked(&mut t, either),
+        crate::runtime_type_predicate::CallableShapes::of_arities(crate::finite_set::FiniteSet::finite([1, 2]))
+    );
+    assert!(asked(&mut t, fun).is_any(), "`fun` states no arity");
+}
+
+/// An arrow no call can reach says only how many arguments its functions
+/// take, so every such arrow of one arity is one type.
+#[test]
+fn an_arrow_no_call_can_reach_is_written_as_every_function_of_its_arity() {
+    let mut t = Types::new();
+    let (any, int, none) = (t.any(), t.int(), t.none());
+    let unreachable = t.arrow(&[int, none], int);
+    let every_binary_function = t.arrow(&[none, none], any);
+    assert_eq!(unreachable, every_binary_function);
+
+    let fun = t.fun_top();
+    assert_ne!(every_binary_function, fun, "it is not every function");
+    assert!(t.is_subtype(&every_binary_function, &fun) && !t.is_subtype(&fun, &every_binary_function));
+}

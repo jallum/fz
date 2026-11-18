@@ -4047,10 +4047,37 @@ mod clause_absorption {
 mod clause_factor_order {
     use super::*;
 
-    /// Two arrows of different arity cannot merge into one signature, so their
-    /// meet keeps both as factors of one clause — an overload, and inhabited.
+    /// Taking two arrows away from the functions leaves one clause holding
+    /// both as negative factors, in whichever order they were taken.
     #[test]
-    fn two_factor_orders_of_one_intersection_intern_once() {
+    fn two_factor_orders_of_one_difference_intern_once() {
+        let mut t = Types::new();
+        let int = t.int();
+        let fun = t.fun_top();
+        let unary = t.arrow(&[int], int);
+        let binary = t.arrow(&[int, int], int);
+
+        let less_unary = t.difference(fun, unary);
+        let forward = t.difference(less_unary, binary);
+        let less_binary = t.difference(fun, binary);
+        let backward = t.difference(less_binary, unary);
+
+        let clauses = &t.descr(&forward).funcs;
+        assert_eq!(clauses.len(), 1, "one clause");
+        assert_eq!(clauses[0].neg.len(), 2, "holding both arrows as factors");
+        assert_eq!(
+            forward,
+            backward,
+            "one denotation, one interned id: got {} vs {}",
+            t.display(&forward),
+            t.display(&backward)
+        );
+    }
+
+    /// Two arrows of different arity share no function, so their meet is the
+    /// one empty type whichever operand arrives first.
+    #[test]
+    fn arrows_of_two_arities_meet_in_nothing_in_either_order() {
         let mut t = Types::new();
         let int = t.int();
         let unary = t.arrow(&[int], int);
@@ -4059,16 +4086,8 @@ mod clause_factor_order {
         let forward = t.intersect(unary, binary);
         let backward = t.intersect(binary, unary);
 
-        let clauses = &t.descr(&forward).funcs;
-        assert_eq!(clauses.len(), 1, "one clause");
-        assert_eq!(clauses[0].pos.len(), 2, "holding both arrows as factors");
-        assert_eq!(
-            forward,
-            backward,
-            "one denotation, one interned id: got {} vs {}",
-            t.display(&forward),
-            t.display(&backward)
-        );
+        assert!(t.is_empty(&forward), "got {}", t.display(&forward));
+        assert_eq!(forward, backward, "one denotation, one interned id");
     }
 }
 

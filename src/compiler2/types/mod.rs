@@ -832,17 +832,43 @@ impl Types {
         ty
     }
 
-    /// The callable axis with every vacuous arrow removed from its clauses.
+    /// The callable axis with every vacuous arrow in its one written form.
     ///
     /// An arrow with an uninhabited parameter constrains no call, so as a
-    /// positive member it is every function. It is dropped from the clause's
-    /// positives; a clause left with none is `fun`'s own clause. Closure
-    /// literals are specific functions and stay.
-    fn normalize_func_clauses(&self, d: &mut Descr) {
+    /// positive member it is every function of its arity and says nothing
+    /// else. Beside another positive of the same arity it adds nothing and is
+    /// dropped; alone it is written with every parameter `none` and the
+    /// result `any`. Closure literals are specific functions and stay.
+    fn normalize_func_clauses(&mut self, d: &mut Descr) {
+        let (any, none) = (self.any(), self.none());
         for clause in &mut d.funcs {
-            clause
+            let vacuous: Vec<bool> = clause
                 .pos
-                .retain(|sig| sig.lit.is_some() || !sig.args.iter().any(|a| self.is_empty(a)));
+                .iter()
+                .map(|sig| sig.lit.is_none() && sig.args.iter().any(|a| self.is_empty(a)))
+                .collect();
+            if !vacuous.contains(&true) {
+                continue;
+            }
+            let mut stated: BTreeSet<usize> = clause
+                .pos
+                .iter()
+                .zip(&vacuous)
+                .filter(|(_, vacuous)| !**vacuous)
+                .map(|(sig, _)| sig.args.len())
+                .collect();
+            let mut vacuous = vacuous.into_iter();
+            clause.pos.retain_mut(|sig| {
+                if !vacuous.next().expect("one flag per positive") {
+                    return true;
+                }
+                if !stated.insert(sig.args.len()) {
+                    return false;
+                }
+                sig.args.fill(none);
+                sig.ret = any;
+                true
+            });
         }
     }
 
@@ -2889,7 +2915,7 @@ impl Types {
         let mut shapes = Vec::with_capacity(descr.funcs.len());
         for clause in &descr.funcs {
             let Some(lit) = callable_identity_literal(clause) else {
-                return CallableShapes::any();
+                return CallableShapes::of_arities(callable_arities(&descr.funcs));
             };
             shapes.push(CallableShape {
                 target: ClosureTarget::from(
@@ -4315,6 +4341,19 @@ fn callable_identity_targets(funcs: &[Conj<ArrowSig>]) -> Option<BTreeSet<FnId>>
     Some(targets)
 }
 
+/// How many arguments a function of one of `clauses` takes. A clause's
+/// arrows all take the same number, or no function is in it; a clause with no
+/// arrow of its own, such as `fun` less some arrow, is open to every arity.
+fn callable_arities(clauses: &[Conj<ArrowSig>]) -> FiniteSet<usize> {
+    clauses
+        .iter()
+        .map(|clause| match clause.pos.first() {
+            Some(arrow) => FiniteSet::lit(arrow.args.len()),
+            None => FiniteSet::any(),
+        })
+        .fold(FiniteSet::none(), |arities, clause| arities.union(&clause))
+}
+
 /// The one runtime-observable literal of an interned callable clause.
 ///
 /// An anonymous literal is valid only in a non-runtime activation key, so it
@@ -4513,14 +4552,29 @@ fn bound_variables_reading(
 }
 
 fn callable_identity_clauses(types: &mut Types, funcs: &[Conj<ArrowSig>]) -> Vec<Conj<ArrowSig>> {
+    let (ret, none) = (types.any(), types.none());
+    // Every function of `arity` arguments: the arrow that asks nothing of its
+    // arguments and promises nothing of its result.
+    let every_function_of = |arity: usize| ArrowSig {
+        args: vec![none; arity],
+        ret,
+        lit: None,
+    };
     if callable_identity_targets(funcs).is_none() {
-        return Descr::fun_top().funcs;
+        let arities = callable_arities(funcs);
+        return match arities.finite_elems() {
+            Some(arities) => arities.map(|arity| Conj::pos_of(every_function_of(arity))).collect(),
+            None => Descr::fun_top().funcs,
+        };
     }
-    let ret = types.any();
     let mut clauses = Vec::with_capacity(funcs.len());
     for clause in funcs {
         let mut pos = Vec::with_capacity(clause.pos.len());
-        for lit in clause.pos.iter().filter_map(|sig| sig.lit.as_ref()) {
+        for (sig, lit) in clause
+            .pos
+            .iter()
+            .filter_map(|sig| sig.lit.as_ref().map(|lit| (sig, lit)))
+        {
             let captures = lit
                 .captures
                 .iter()
@@ -4535,13 +4589,12 @@ fn callable_identity_clauses(types: &mut Types, funcs: &[Conj<ArrowSig>]) -> Vec
                 })
                 .collect();
             pos.push(ArrowSig {
-                args: Vec::new(),
-                ret,
                 lit: Some(ClosureLit {
                     kind: CallableValueKind::Closure,
                     fn_id: lit.fn_id,
                     captures,
                 }),
+                ..every_function_of(sig.args.len())
             });
         }
         clauses.push(Conj { pos, neg: Vec::new() });

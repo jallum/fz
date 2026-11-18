@@ -1,0 +1,38 @@
+#---
+# purpose: "a pattern that states a function type admits, at run time, only a function of the arity its arrow states: a one-argument pattern refuses a two-argument and a zero-argument function, a union of two arrows admits either arity, and a receive picks the message whose function has the stated arity"
+# oracle: 01378_a_function_pattern_admits_only_the_arity_its_arrow_states.oracle.exs
+# oracle.stamp: 9395a289f4520b87
+#---
+defmodule Main do
+  def one(_ :: (any -> any)), do: :one
+  def one(_), do: :other
+
+  def either(_ :: (any -> any) | (any, any -> any)), do: :one_or_two
+  def either(_), do: :other
+
+  def pick(0), do: fn x -> x end
+  def pick(1), do: fn x, y -> {x, y} end
+  def pick(2), do: fn -> 0 end
+  def pick(_), do: :not_a_function
+
+  def binary?(_ :: (any, any -> any)), do: true
+  def binary?(_), do: false
+
+  def next_of_two() do
+    receive do
+      f when binary?(f) -> f.(1, 2)
+    end
+  end
+
+  def main() do
+    n = length(System.argv())
+    picks = [n, n + 1, n + 2, n + 3]
+    IO.inspect(Enum.map(picks, fn i -> one(pick(i)) end))
+    IO.inspect(Enum.map(picks, fn i -> either(pick(i)) end))
+    send(self(), fn x -> x end)
+    send(self(), fn x, y -> {x, y} end)
+    IO.inspect(next_of_two())
+  end
+end
+
+Main.main()

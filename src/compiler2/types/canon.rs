@@ -279,6 +279,12 @@ impl<'a> TyCanon<'a> {
         {
             return self.closure_lit(cx, lit);
         }
+        if let ([sig], []) = (c.pos.as_slice(), c.neg.as_slice())
+            && holds_every_function_of_its_arity(cx, sig)
+        {
+            let params = vec!["none"; sig.args.len()];
+            return format!("({}) -> any", params.join(", "));
+        }
         self.conj_text(cx, c, Self::arrow_sig, "fun")
     }
 
@@ -397,6 +403,13 @@ impl<'a> TyCanon<'a> {
     ) -> Vec<String> {
         clauses.iter().map(|c| clause(self, cx, c)).collect()
     }
+}
+
+/// An arrow that promises nothing of its result, or that no call can reach
+/// because a parameter is uninhabited, constrains no function: it is every
+/// function of its arity, however its parameters are written.
+fn holds_every_function_of_its_arity(cx: TyCtx<'_>, sig: &ArrowSig) -> bool {
+    sig.lit.is_none() && (cx.descr(&sig.ret).is_full(cx) || sig.args.iter().any(|arg| cx.descr(arg).is_empty(cx)))
 }
 
 // ----------------------------------------------------------------------

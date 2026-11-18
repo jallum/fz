@@ -194,10 +194,12 @@ impl MergeSig for TupleSig {
 
 impl MergeSig for ArrowSig {
     fn intersect_pos(types: &mut Types, a: &Self, b: &Self) -> PosMeet<Self> {
-        // An unmergeable arrow pair stays Distinct, never Empty: a conjunction
-        // of arrows is an overload, which is inhabited in general.
+        // A function takes one number of arguments, so arrows of different
+        // arities share no function -- the rule `emptiness::func_clause_empty`
+        // decides by. Arrows of one arity that do not merge stay Distinct: a
+        // conjunction of them is an overload, which is inhabited in general.
         if a.args.len() != b.args.len() {
-            return PosMeet::Distinct;
+            return PosMeet::Empty;
         }
         match (&a.lit, &b.lit) {
             (Some(la), Some(lb)) => {

@@ -175,9 +175,9 @@ fn canon_is_faithful_over_the_full_arena_of_both_target_fixtures() {
 /// application read; letting literal inclusion compare surfaces separates the
 /// minted and the addressed views of one value, which then cannot flow between
 /// a body and its key (fixture 01143 and the distiller fail on every path). A
-/// plain arrow whose result is `any` is `fun`, and is kept for the parameters a
+/// plain arrow whose result is `any` is every function of its arity, and is kept for the parameters a
 /// key reads back (see the axis test
-/// `absorbing_the_callable_axis_would_erase_the_inputs_a_key_reads_back`).
+/// `writing_an_arrow_as_the_set_it_denotes_would_erase_the_inputs_a_key_reads_back`).
 /// Collapsing nearly every pair across the fixture census changed compile work
 /// by 0.09%, so these ids cost identity, not work.
 ///
