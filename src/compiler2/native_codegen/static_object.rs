@@ -1,6 +1,5 @@
 //! Read-only data objects a program emits once and every process shares: static
-//! struct literals, static closures, halt continuations and the templates of
-//! `try` handlers that capture nothing and never return.
+//! struct literals, static closures and halt continuations.
 //!
 //! An object is plain bytes laid out like its heap twin, a header word first,
 //! plus the addresses the linker or JIT fills in. It is 16-byte aligned so its
