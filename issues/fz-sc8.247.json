@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-9x7.31"
+  ],
   "blocks": [
     "fz-nml.25",
     "fz-sc8.248"
@@ -14,5 +16,5 @@
   "status": "open",
   "title": "A place in the code is a function only if something outside its function arrives there",
   "type": "task",
-  "updated_at": "2026-11-18T03:23:52Z"
+  "updated_at": "2026-11-18T03:23:58Z"
 }
