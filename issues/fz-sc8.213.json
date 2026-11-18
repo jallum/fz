@@ -3,7 +3,7 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-15T02:44:27Z",
-  "description": "Step 3 of the fz-sc8.197 page. A table in the extern lowering (native_codegen/prim.rs): fz_op_{add,sub,mul}_ii as overflow-checked add/sub/mul, fz_op_{lt,lte,gt,gte,eq,neq}_ii as compares. Measured in a spike on #592: distiller no measurable change, byte walk -1.2%, index walk -3.0%; overflow output identical. The interpreter and the JIT must agree (three-path parity).",
+  "description": "Step 3 of the fz-sc8.197 page. A table in the extern lowering (native_codegen/prim.rs): fz_op_{add,sub,mul}_ii as overflow-checked add/sub/mul, fz_op_{lt,lte,gt,gte,eq,neq}_ii as compares. Measured in a spike on #592: distiller no measurable change, byte walk -1.2%, index walk -3.0%; overflow output identical. The interpreter and the JIT must agree (three-path parity).\n\nOverflow is tested as a branch on the inline operation's overflow result, not by decoding a failure flag. Today each call is followed by 13 instructions that decode the failure flag into a branch; replacing only the call leaves them (MDF, bench, 1438c8bfa + loop spike: inline add alone saves 6 instructions per byte, walk 68.2 -\u003e 62.2, distiller -0.2% instructions, no measurable cycles). Both the call and the flag decode go.",
   "id": "fz-sc8.213",
   "labels": [],
   "parent": "fz-sc8",
@@ -29,5 +29,5 @@
   "status": "open",
   "title": "Integer arithmetic and comparison externs are emitted as instructions",
   "type": "task",
-  "updated_at": "2026-11-18T00:34:46Z"
+  "updated_at": "2026-11-18T01:20:59Z"
 }
