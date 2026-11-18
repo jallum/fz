@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-sc8.192.12"
+  ],
   "blocks": [],
   "created": "2026-11-18T23:10:03Z",
   "description": "Page v3 ruling (user 2026-11-18, verbatim via Optimize): \"a, b approved. continue to stack.\" Page: https://claude.ai/artifact/MmnrdprbWQMF24ejqsUaQL\n\nLibrary half of step 3 (split from fz-sc8.192.7). Map.get/3, fetch, replace, update and take in lib/map.fz are written as Elixir writes them: case map do %{^key =\u003e value} -\u003e ...; %{} -\u003e ... end. Each searches once, and get/3 builds no {:ok, v} tuple. Today one Map.get/3 is 1,372 instructions: two searches (about 270 each), an {:ok, value} tuple (about 140) and glue. Lookups stay about 4x BEAM until this lands. It also absorbs step 4's get (a returned (word, kind) would be boxed again, so the saving comes from the pattern). Builder: Optimize.",
