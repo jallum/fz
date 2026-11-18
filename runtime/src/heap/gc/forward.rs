@@ -82,8 +82,10 @@ pub fn copy_object_to_space(p: *mut u8, size: usize, heap: &mut Heap) -> *mut u8
     dst
 }
 
-/// The Cheney trace's speed depends on this being inlined into each trace function.
-#[inline]
+/// The Cheney trace's speed depends on this being inlined into each trace
+/// function, so the inlining is required rather than left to the optimizer's
+/// judgment, which changes with how the crate is split into codegen units.
+#[inline(always)]
 pub fn forward_heap_value(
     value: AnyValue,
     from_space: &FromSpace,
