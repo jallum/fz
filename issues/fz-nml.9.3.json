@@ -3,7 +3,7 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-17T22:48:49Z",
-  "description": "Site 3 of fz-nml.9. prim.rs:2238 boxes the PID extern result and fz_send unboxes it at once: send(self(), :ping) 0/1000/1000; with the pid hoisted 0/1/1. This is the box fz-sc8.167 once listed. A representation question: folds into the immediate-word proposal page (JSON authoring, Optimize reviewing).\n\nApproved by the user 2026-11-17 (relayed by the JSON session). Census and probes: fz-nml.9 description (JSON session, develop 4a05ae2be; per 1000 steps interp/run/build).",
+  "description": "Site 3 of fz-nml.9. prim.rs:2238 boxes the PID extern result and fz_send unboxes it at once: send(self(), :ping) 0/1000/1000; with the pid hoisted 0/1/1. This is the box fz-sc8.167 once listed.\n\nScope (2026-11-17): the immediate-word page is withdrawn (user: \"i think we can skip the immediate integers, and work to use raw integers wherever possible\"). This ticket is its own raw-lane fix: native self() feeds fz_send a raw pid word, with no box, and does not wait on a representation page.\n\nApproved by the user 2026-11-17 (relayed by the JSON session). Census and probes: fz-nml.9 description (JSON session, develop 4a05ae2be; per 1000 steps interp/run/build).",
   "id": "fz-nml.9.3",
   "labels": [],
   "parent": "fz-nml.9",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "self() boxes no pid",
   "type": "bug",
-  "updated_at": "2026-11-17T22:48:49Z"
+  "updated_at": "2026-11-18T00:16:00Z"
 }
