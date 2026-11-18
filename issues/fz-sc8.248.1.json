@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-18T05:27:44Z",
+  "description": "Step 2 of fz-sc8.248, approved by the user 2026-11-18 (relayed by Make Distiller Fast, verbatim \".248 approved.\" after the page /Users/j5n/Workspace/fz-sc8.248.html). One ticket per commit: step 1 (fz-sc8.248 itself) feeds a clause from its outcome so projections become empty; this step deletes what then has no user.\n\nRemoves: BackendClause.projections and its 19 walkers; the step kinds TupleField, SplitList, RequireMapValue and BitstringRead (84 match sites); bind_pattern.\n\nDone when: none of those names remain; three paths agree; no pin rises. Builder: Make Distiller Fast.",
+  "id": "fz-sc8.248.1",
+  "labels": [],
+  "parent": "fz-sc8.248",
+  "priority": 2,
+  "status": "open",
+  "title": "Clause projections and the steps only they used are removed",
+  "type": "task",
+  "updated_at": "2026-11-18T05:27:44Z"
+}
