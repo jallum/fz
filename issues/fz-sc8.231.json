@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-sc8.230"
   ],
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-sc8",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "A rest matched out of a received message or a rescued exception arrives the way its arm reads it",
   "type": "task",
-  "updated_at": "2026-11-15T16:26:39Z"
+  "updated_at": "2026-11-18T04:38:34Z"
 }
