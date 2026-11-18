@@ -27,7 +27,6 @@ use crate::any_value::{
 };
 use crate::heap::{map_entry_refs, map_slot_refs};
 use crate::module_name::{ModuleName, STRUCT_MODULE_FIELD};
-use crate::term::TermComparator;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MapLayout {
@@ -259,9 +258,8 @@ impl Heap {
                 match map.find(key).map(|index| map.keys[index]) {
                     Some(StructKey::Field(field)) => self.struct_with_field(struct_addr(object), &map, field, value),
                     _ => {
-                        let mut entries = self.map_view_entries(layout);
-                        entries.push((key, value));
-                        entries_ref(self.alloc_map_slots(&entries))
+                        let entries = self.struct_as_entries(layout);
+                        self.map_put_slot(entries, key, value)
                     }
                 }
             }
@@ -270,22 +268,28 @@ impl Heap {
 
     /// The map without `key`; the same map when it lacks `key`.
     pub fn map_view_delete(&mut self, map: AnyValueRef, key: AnyValue) -> AnyValueRef {
-        let layout = self.expect_map_layout(map, "map delete");
-        if let MapLayout::Trie(root) = layout {
-            return self.trie_delete(root, key).map_or(map, entries_ref);
+        match self.expect_map_layout(map, "map delete") {
+            MapLayout::Trie(root) => self.trie_delete(root, key).map_or(map, entries_ref),
+            MapLayout::Entries(addr) => match self.flat_find(addr, key) {
+                Some(slot) => entries_ref(self.flat_map_without_slot(addr, slot)),
+                None => map,
+            },
+            layout @ MapLayout::Struct { schema_id, .. } => {
+                if self.struct_map(schema_id).find(key).is_none() {
+                    return map;
+                }
+                let entries = self.struct_as_entries(layout);
+                self.map_view_delete(entries, key)
+            }
         }
-        if !self.map_view_has_key(layout, key) {
-            return map;
-        }
-        let entries: Vec<_> = {
-            let schemas = self.schemas.borrow();
-            let comparator = TermComparator::new(&self.node, &schemas);
-            self.map_view_entries(layout)
-                .into_iter()
-                .filter(|(entry_key, _)| comparator.key_order_of(*entry_key, key).is_ne())
-                .collect()
-        };
-        entries_ref(self.alloc_ordered_map_entries(entries.into_iter()))
+    }
+
+    /// The entries of a struct that is leaving its schema, as the map of
+    /// them that is not a struct: `__struct__` is a key like the rest.
+    #[inline(never)]
+    fn struct_as_entries(&mut self, layout: MapLayout) -> AnyValueRef {
+        let entries = self.map_view_entries(layout);
+        entries_ref(self.alloc_bulk_map_entries(&entries))
     }
 
     /// The struct `object` copied into an unpublished destination of its own

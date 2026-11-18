@@ -50,16 +50,6 @@ pub(super) const MAP_STACK_ENTRIES: usize = 20;
 // directly, with no `current_process()` and no process argument — which is also
 // why the receive matcher can project list/closure shapes without a process.
 
-/// Copy `count` published entries from the map at `from` into the
-/// unpublished allocation at `to`, which has room for exactly that many.
-unsafe fn copy_map_slots(from: *mut u8, to: *mut u8, count: usize) {
-    unsafe {
-        std::ptr::copy_nonoverlapping(map_tag_ptr(from), map_tag_ptr(to), map_tag_bytes_len(count));
-        std::ptr::copy_nonoverlapping(map_keys_ptr(from, count), map_keys_ptr(to, count), count);
-        std::ptr::copy_nonoverlapping(map_values_ptr(from, count), map_values_ptr(to, count), count);
-    }
-}
-
 fn entries_map_ref(addr: *mut u8) -> AnyValueRef {
     AnyValueRef::from_heap_object(ValueKind::MAP, addr).expect("published map")
 }
@@ -549,18 +539,9 @@ impl Heap {
         let count = entries.len();
         debug_assert!(count <= MAP_FLAT_MAX, "a flat map holds at most {MAP_FLAT_MAX} entries");
         let p = self.alloc_kind(HeapAllocKind::Map, map_size_for_count(count));
-        self.write_ordered_map_entries(p, count, entries);
-        heap_object_word(p, ValueKind::MAP)
-    }
-
-    fn write_ordered_map_entries(
-        &mut self,
-        p: *mut u8,
-        count: usize,
-        entries: impl Iterator<Item = (AnyValue, AnyValue)>,
-    ) {
         unsafe { write(p as *mut u64, map_header_word(count)) };
         self.write_map_entries(p, count, entries);
+        heap_object_word(p, ValueKind::MAP)
     }
 
     /// Write `count` entries, as the kind bytes, keys and values of the node at
@@ -617,15 +598,14 @@ impl Heap {
     /// key order: a flat map is copied as it is, a struct is read in key order.
     pub(super) fn alloc_entries_update(&mut self, base: MapLayout) -> u64 {
         let count = self.map_view_count(base);
-        let p = self.alloc_kind(HeapAllocKind::Map, map_size_for_count(count));
-        match base {
-            MapLayout::Entries(base) => unsafe { copy_map_slots(base, p, count) },
+        let p = match base {
+            MapLayout::Entries(base) => self.write_flat_map(base, Edit::NONE),
             MapLayout::Struct { .. } => {
                 let entries = self.map_view_entries(base);
-                self.write_ordered_map_entries(p, count, entries.into_iter());
+                map_addr_from_tagged(self.alloc_ordered_map_entries(entries.into_iter())).expect("new map")
             }
             MapLayout::Trie(_) => unreachable!("a trie is its own update destination"),
-        }
+        };
         let header = map_destination_header_word(count, count, MapDestinationKind::Update);
         unsafe { write(p as *mut u64, header) };
         heap_object_word(p, ValueKind::MAP)
@@ -741,7 +721,7 @@ impl Heap {
     fn normalize_destination_entries(&self, dest: *mut u8, capacity: usize, filled: usize) -> usize {
         let schemas = self.schemas.borrow();
         let comparator = TermComparator::new(&self.node, &schemas);
-        let entries = unsafe { StoredEntries::of_destination(dest, capacity) };
+        let entries = unsafe { StoredEntries::of(dest, capacity) };
         let key = |i| unsafe { entries.key(i) };
         for i in 1..filled {
             let moving = unsafe { entries.read(i) };
@@ -840,46 +820,73 @@ impl Heap {
                 entries.insert(index, (key, value));
                 self.alloc_trie(&entries)
             }
-            position => self.alloc_flat_map_with(addr, count, position, key, value),
+            Err(slot) => self.flat_map_bits(addr, Edit::insert(slot, key, value)),
+            Ok(slot) => self.flat_map_bits(addr, Edit::replace(slot, key, value)),
         }
     }
 
-    /// A flat map of the `count` entries at `source` with `key` bound to
-    /// `value` at `position`: in place of the entry there, or before it. The
-    /// entries kept are copied as the words and kind bytes they are stored
-    /// as. Each was shared when it was first stored, so only the new entry is
-    /// published.
-    fn alloc_flat_map_with(
-        &mut self,
-        source: *const u8,
-        count: usize,
-        position: Result<usize, usize>,
-        key: AnyValue,
-        value: AnyValue,
-    ) -> u64 {
+    /// The flat map at `addr` without the entry at `slot`.
+    pub(super) fn flat_map_without_slot(&mut self, addr: *const u8, slot: usize) -> u64 {
+        self.flat_map_bits(addr, Edit::skip(slot))
+    }
+
+    #[inline(always)]
+    fn flat_map_bits(&mut self, source: *const u8, edit: Edit) -> u64 {
+        heap_object_word(self.write_flat_map(source, edit), ValueKind::MAP)
+    }
+
+    /// A flat map of the entries of the flat map at `source`, changed by
+    /// `edit`. An edit that keeps the count copies the map whole; one that
+    /// changes it copies each array around the slot. The entries kept were
+    /// shared when they were first stored, so only a new entry is published.
+    #[inline(always)]
+    fn write_flat_map(&mut self, source: *const u8, edit: Edit) -> *mut u8 {
+        let count = unsafe { map_count(source) };
+        let puts = usize::from(edit.puts.is_some());
+        let new_count = count - edit.drops + puts;
+        debug_assert!(
+            new_count <= MAP_FLAT_MAX,
+            "a flat map holds at most {MAP_FLAT_MAX} entries"
+        );
+        let put = edit.puts.map(|(key, value)| self.publish_entry(key, value));
+        let size = map_size_for_count(new_count);
+        let p = self.alloc_kind(HeapAllocKind::Map, size);
+        unsafe {
+            let to = StoredEntries::of(p, new_count);
+            if new_count == count {
+                copy_nonoverlapping(source, p, size);
+            } else {
+                let from = StoredEntries::of(source as *mut u8, count);
+                let kept = Kept {
+                    before: edit.at,
+                    from: edit.at + edit.drops,
+                    to: edit.at + puts,
+                    after: count - edit.at - edit.drops,
+                };
+                write(p as *mut u64, map_header_word(new_count));
+                to.clear_kind_padding(new_count);
+                kept.copy(from.tags, to.tags);
+                kept.copy(from.keys, to.keys);
+                kept.copy(from.values, to.values);
+            }
+            if let Some(entry) = put {
+                to.write(edit.at, entry);
+            }
+        }
+        p
+    }
+
+    /// Publish what a new entry holds, and answer the entry as it is stored.
+    #[inline(always)]
+    fn publish_entry(&mut self, key: AnyValue, value: AnyValue) -> StoredEntry {
         assert_ne!(key.kind(), ValueKind::NULL, "unpublished map key");
-        let (index, kept_from) = match position {
-            Ok(index) => (index, index + 1),
-            Err(index) => (index, index),
-        };
-        let around = Around {
-            before: index,
-            after: count - kept_from,
-            kept_from,
-        };
-        let new_count = index + 1 + around.after;
         self.publish_contained_parts(key.raw(), key.kind());
         self.publish_contained_parts(value.raw(), value.kind());
-        let p = self.alloc_kind(HeapAllocKind::Map, map_size_for_count(new_count));
-        unsafe {
-            write(p as *mut u64, map_header_word(new_count));
-            let tags = map_tag_ptr(p);
-            write_bytes(tags, 0, map_tag_bytes_len(new_count));
-            around.copy(map_tag_ptr(source), tags, map_pack_tag(key.kind(), value.kind()));
-            around.copy(map_keys_ptr(source, count), map_keys_ptr(p, new_count), key.raw());
-            around.copy(map_values_ptr(source, count), map_values_ptr(p, new_count), value.raw());
+        StoredEntry {
+            tag: map_pack_tag(key.kind(), value.kind()),
+            key: key.raw(),
+            value: value.raw(),
         }
-        heap_object_word(p, ValueKind::MAP)
     }
 
     /// Where `key` is in the flat map at `addr`, or where a new entry for it
@@ -1775,14 +1782,27 @@ struct StoredEntries {
 impl StoredEntries {
     /// # Safety
     ///
-    /// `dest` must be a map destination laid out for `capacity` entries.
-    unsafe fn of_destination(dest: *mut u8, capacity: usize) -> Self {
+    /// `node` must be a map or a map destination laid out for `capacity`
+    /// entries.
+    unsafe fn of(node: *mut u8, capacity: usize) -> Self {
         unsafe {
             Self {
-                tags: map_tag_ptr(dest),
-                keys: map_keys_ptr(dest, capacity),
-                values: map_values_ptr(dest, capacity),
+                tags: map_tag_ptr(node),
+                keys: map_keys_ptr(node, capacity),
+                values: map_values_ptr(node, capacity),
             }
+        }
+    }
+
+    /// Zero the kind bytes past the last of `count` entries. They share the
+    /// last word of kind bytes, which is cleared whole before any is written.
+    ///
+    /// # Safety
+    ///
+    /// The arrays must be laid out for `count` entries, none written yet.
+    unsafe fn clear_kind_padding(&self, count: usize) {
+        if count > 0 {
+            unsafe { write(self.keys.sub(1), 0) };
         }
     }
 
@@ -1832,26 +1852,70 @@ impl StoredEntries {
     }
 }
 
-/// The entries a put keeps: `before` of them ahead of the new entry, and
-/// `after` of them from slot `kept_from` of the source behind it.
-struct Around {
+/// The entries an edit keeps: `before` of them from the front of the source,
+/// and `after` of them from slot `from` of the source to slot `to`.
+struct Kept {
     before: usize,
-    kept_from: usize,
+    from: usize,
+    to: usize,
     after: usize,
 }
 
-impl Around {
-    /// Copy one of a flat map's arrays around `new`.
+impl Kept {
+    /// Copy the kept items of one of a flat map's arrays.
     ///
     /// # Safety
     ///
-    /// `from` must hold `kept_from + after` items and `to` have room for
-    /// `before + 1 + after`, and the two must not overlap.
-    unsafe fn copy<T: Copy>(&self, from: *const T, to: *mut T, new: T) {
+    /// `source` must hold `from + after` items and `dest` have room for
+    /// `to + after`, and the two must not overlap.
+    unsafe fn copy<T: Copy>(&self, source: *const T, dest: *mut T) {
         unsafe {
-            copy_nonoverlapping(from, to, self.before);
-            write(to.add(self.before), new);
-            copy_nonoverlapping(from.add(self.kept_from), to.add(self.before + 1), self.after);
+            copy_nonoverlapping(source, dest, self.before);
+            copy_nonoverlapping(source.add(self.from), dest.add(self.to), self.after);
+        }
+    }
+}
+
+/// What a flat map's writer changes as it copies: at slot `at` of the
+/// source it leaves out `drops` entries (none or one) and writes `puts`.
+struct Edit {
+    at: usize,
+    drops: usize,
+    puts: Option<(AnyValue, AnyValue)>,
+}
+
+impl Edit {
+    /// Every entry is copied.
+    const NONE: Self = Self {
+        at: 0,
+        drops: 0,
+        puts: None,
+    };
+
+    /// A new entry goes in ahead of the entry at `at`.
+    fn insert(at: usize, key: AnyValue, value: AnyValue) -> Self {
+        Self {
+            at,
+            drops: 0,
+            puts: Some((key, value)),
+        }
+    }
+
+    /// The entry at `at` gives way to a new one.
+    fn replace(at: usize, key: AnyValue, value: AnyValue) -> Self {
+        Self {
+            at,
+            drops: 1,
+            puts: Some((key, value)),
+        }
+    }
+
+    /// The entry at `at` is left out.
+    fn skip(at: usize) -> Self {
+        Self {
+            at,
+            drops: 1,
+            puts: None,
         }
     }
 }

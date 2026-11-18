@@ -589,13 +589,16 @@ Public slot/ref builders normalize once: stable sort, then last-value-wins
 deduplication. An unpublished destination header records capacity and filled
 count, so each input entry writes its next slot directly. Freeze normalizes
 and compacts that same allocation, then clears construction state. A published
-map cannot be reopened for mutation. `put`, `delete`, and lookup share one
-binary search, which reads each probed key from the contiguous key array
-(`map_key_in_arrays`) and decodes only the key, never the value; put/delete
-preserve order while copying the new sequence. A put into a flat map that
-stays flat copies the entries it keeps as their stored words and kind bytes
-(`alloc_flat_map_with`), decoding none of them: each was shared when it was
-first stored, so only the new entry is published. An absent deletion returns
+map cannot be reopened for mutation. A put finds its slot with the one
+ordered search (`Heap::find_or_place`); a delete and a lookup find theirs with
+`Heap::find`. One writer (`Heap::write_flat_map`) makes every flat map that
+comes from another: it takes the source and an `Edit`, which inserts an entry
+at a slot, replaces the entry there, leaves it out, or changes nothing. The
+entries kept are copied as their stored words and kind bytes, none decoded:
+each was shared when it was first stored, so only a new entry is published.
+An edit that keeps the count copies the map whole and stores the one entry.
+A struct that leaves its schema is first written as the entries map it
+spells, and the put or delete is then that map's. An absent deletion returns
 the original map with no allocation. GC and
 cross-heap transport preserve structural order without a sort.
 

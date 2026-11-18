@@ -294,22 +294,16 @@ impl Heap {
 
     pub(super) fn trie_delete_with(&mut self, root: *const u8, key: AnyValue, ops: &KeyOps) -> Option<u64> {
         if unsafe { map_count(root) } == MAP_FLAT_MAX + 1 {
-            return self.flat_map_without(root, key, ops);
+            let mut entries = unsafe { map_entries(root) };
+            let at = entries.iter().position(|entry| (ops.order)(entry.0, key).is_eq())?;
+            entries.remove(at);
+            return Some(self.alloc_map_slots(&entries));
         }
         match self.delete_in_node(ops, root, 0, (ops.hash)(key), key) {
             Deleted::Absent => None,
             Deleted::Node(node) => Some(heap_object_word(node, ValueKind::MAP)),
             Deleted::Entry(_) => unreachable!("a trie of more than {MAP_FLAT_MAX} entries keeps more than one"),
         }
-    }
-
-    /// The flat array of the entries of the trie at `root` but for `key`.
-    fn flat_map_without(&mut self, root: *const u8, key: AnyValue, ops: &KeyOps) -> Option<u64> {
-        let mut entries = unsafe { map_entries(root) };
-        let at = entries.iter().position(|entry| (ops.order)(entry.0, key).is_eq())?;
-        entries.remove(at);
-        entries.sort_by(|a, b| (ops.order)(a.0, b.0));
-        Some(self.alloc_ordered_map_entries(entries.into_iter()))
     }
 
     /// The node at `node`, which sits at `level`, with `entry` bound, and
