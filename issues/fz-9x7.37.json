@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Binary Handling",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-18T04:08:43Z",
@@ -17,5 +17,5 @@
   "status": "open",
   "title": "Allocation statistics leave the inline allocation path",
   "type": "task",
-  "updated_at": "2026-11-18T23:24:24Z"
+  "updated_at": "2026-11-18T23:25:55Z"
 }
