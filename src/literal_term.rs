@@ -24,7 +24,33 @@ pub enum LiteralTerm {
     },
 }
 
+impl From<GroundValue> for LiteralTerm {
+    fn from(value: GroundValue) -> Self {
+        Self::Ground(value)
+    }
+}
+
 impl LiteralTerm {
+    /// `expr` as a constant: a literal term that holds no function, whose
+    /// value is therefore known where the source is read.
+    pub fn constant(expr: &Expr) -> Option<Self> {
+        Self::of(expr).filter(|term| !term.holds_a_function())
+    }
+
+    /// A map literal's entries in the runtime's key order with no key
+    /// repeated, when every key is an atom. Atoms order by name, and of two
+    /// entries with one key the later one written is the one the map holds.
+    pub fn entries_in_key_order(entries: &[(LiteralTerm, LiteralTerm)]) -> Option<Vec<&(LiteralTerm, LiteralTerm)>> {
+        let mut by_name = std::collections::BTreeMap::new();
+        for entry in entries {
+            let Self::Ground(GroundValue::Atom(name)) = &entry.0 else {
+                return None;
+            };
+            by_name.insert(name.as_str(), entry);
+        }
+        Some(by_name.into_values().collect())
+    }
+
     /// `expr` as a literal term, or `None` when it computes or names anything.
     pub fn of(expr: &Expr) -> Option<Self> {
         let all = |items: &[Spanned<Expr>]| {

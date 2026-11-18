@@ -676,7 +676,7 @@ fn entry_dispatch_does_not_materialize_unneeded_structural_inputs() {
             physical_params: Vec::new(),
             steps: vec![ProgramStep::Const {
                 value: result_value,
-                literal: crate::ground_value::GroundValue::Int(42),
+                literal: crate::ground_value::GroundValue::Int(42).into(),
             }],
             tail: BackendTail::Value {
                 value: result_value,
@@ -804,7 +804,7 @@ fn entry_dispatch_decides_a_lane_form_tuple_from_its_lanes() {
             physical_params: Vec::new(),
             steps: vec![ProgramStep::Const {
                 value: result_value,
-                literal: crate::ground_value::GroundValue::Int(42),
+                literal: crate::ground_value::GroundValue::Int(42).into(),
             }],
             tail: BackendTail::Value {
                 value: result_value,
@@ -865,7 +865,7 @@ fn continuations_and_local_resumes_execute_the_retained_body_without_inventory_l
                 physical_params: Vec::new(),
                 steps: vec![ProgramStep::Const {
                     value,
-                    literal: crate::ground_value::GroundValue::Int(42),
+                    literal: crate::ground_value::GroundValue::Int(42).into(),
                 }],
                 tail: BackendTail::Value { value, dest },
             })

@@ -13,6 +13,7 @@ use crate::ast::{BinOp, BitSizeKnowledge, BitType, Endian, TypeExprBody, UnOp};
 use crate::dispatch_matrix::pattern::PatternDispatchPlan;
 use crate::fz_ir::{ExternAbi, ExternReturn, ExternTy};
 use crate::ground_value::GroundValue;
+use crate::literal_term::LiteralTerm;
 use crate::source::Span;
 
 use super::identity::{FunctionId, ModuleId};
@@ -1072,9 +1073,10 @@ pub struct LoweredMapKey {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum LoweredStep {
+    /// A value known where the source is read. The term holds no function.
     Const {
         value: ValueId,
-        literal: GroundValue,
+        literal: LiteralTerm,
     },
     Tuple {
         value: ValueId,

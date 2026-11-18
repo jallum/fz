@@ -74,7 +74,7 @@ is a composite such as `ProductKey` or `TransportPosition`, stays a hash table.
 (`world.types_mut()`), writing the result into `values`:
 
 ```text
-Const          literal_ty(literal)               (int/float/atom/bool/binary/nil)
+Const          literal_term_ty(literal)          (a scalar, or a tuple/list/map of constants)
 Tuple / List   tuple(elems) / list_ty(...)        from the element value types
 FunctionRef    fn_ref_lit(target, arity)
 Lambda         closure_ty(function, captures)     captures typed from `values`

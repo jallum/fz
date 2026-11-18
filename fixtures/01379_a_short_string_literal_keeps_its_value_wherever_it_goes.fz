@@ -1,0 +1,48 @@
+#---
+# purpose: "a short string literal reads the same after it is returned, sent to another process, appended to, kept across collections and used as a map key"
+# oracle: self
+# oracle.stamp: 6357ac3b5134aa8e
+#---
+#
+# A string literal of 64 bytes or fewer is one read-only object the program
+# ships. Every use here hands that object somewhere a heap string could be
+# written or moved: a message copy, an append, a long-lived accumulator and a
+# map. The literal is read again after each one.
+defmodule Main do
+  def greeting(), do: "hello"
+
+  def echo(parent) do
+    receive do
+      text -> send(parent, {text, text <> "!", byte_size(text)})
+    end
+  end
+
+  def churn(0, kept), do: kept
+  def churn(n, kept), do: churn(n - 1, [greeting() <> Integer.to_string(n) | Enum.take(kept, 2)])
+
+  def describe("hello"), do: :the_literal
+  def describe(_), do: :something_else
+
+  def main() do
+    text = greeting()
+    IO.inspect({text, byte_size(text), text == "hello", describe(text)})
+
+    longer = text <> ", world"
+    IO.inspect({longer, text, greeting()})
+
+    parent = self()
+    child = spawn(fn -> echo(parent) end)
+    send(child, text)
+
+    receive do
+      reply -> IO.inspect(reply)
+    end
+
+    IO.inspect({churn(20_000, []), greeting()})
+    IO.inspect(Map.get(%{"hello" => 1, "" => 2}, text))
+    IO.inspect({"", <<1, 2, 3>>, "#{text} again"})
+    IO.inspect(byte_size(String.duplicate("ab", 40) <> text))
+  end
+end
+
+Main.main()

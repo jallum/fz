@@ -8,7 +8,7 @@
 //! register, the interpreter threads it as a parameter — so there is no
 //! ambient current-process and two schedulers can be live at once.
 
-use crate::any_value::{ClosureDenotationId, ValueKind, closure_header_word};
+use crate::any_value::{ClosureDenotationId, ValueKind, bitstring_object_image, closure_header_word};
 use crate::function_denotation::FunctionDenotation;
 use crate::term_hash::name_hash;
 use std::cell::RefCell;
@@ -408,7 +408,17 @@ pub struct Node {
     atoms: RefCell<AtomTable>,
     closure_denotations: RefCell<HashMap<ClosureDenotationId, ClosureOrigin>>,
     static_closures: RefCell<HashMap<StaticClosureKey, Box<StaticClosure>>>,
+    static_bitstrings: RefCell<HashMap<StaticBitstringKey, Box<[StaticObjectChunk]>>>,
 }
+
+/// A bitstring literal's bytes and bit length; one object exists per key.
+type StaticBitstringKey = (Box<[u8]>, u64);
+
+/// Sixteen bytes of a read-only object the node owns, 16-aligned like a heap
+/// object.
+#[repr(C, align(16))]
+#[derive(Clone, Copy)]
+struct StaticObjectChunk([u8; 16]);
 
 /// What a zero-capture closure's header and code word say; one object exists
 /// per key.
@@ -433,6 +443,7 @@ impl Node {
             atoms: RefCell::new(AtomTable::new(atoms)),
             closure_denotations: RefCell::new(HashMap::new()),
             static_closures: RefCell::new(HashMap::new()),
+            static_bitstrings: RefCell::new(HashMap::new()),
         }
     }
 
@@ -535,6 +546,25 @@ impl Node {
         });
         let addr = &mut object.0 as *mut [u64; 2] as *mut u8;
         AnyValueRef::from_heap_object(ValueKind::CLOSURE, addr)
+            .expect("a boxed object has an address")
+            .literal()
+    }
+
+    /// The one read-only bitstring holding `bytes` as `bit_len` bits. Like a
+    /// static closure it lives as long as the node, outside every process
+    /// heap, and its ref carries the literal bit. Asking again returns the
+    /// same ref.
+    pub fn static_bitstring(&self, bytes: &[u8], bit_len: u64) -> AnyValueRef {
+        let mut table = self.static_bitstrings.borrow_mut();
+        let object = table.entry((bytes.into(), bit_len)).or_insert_with(|| {
+            bitstring_object_image(bytes, bit_len)
+                .as_chunks::<16>()
+                .0
+                .iter()
+                .map(|chunk| StaticObjectChunk(*chunk))
+                .collect()
+        });
+        AnyValueRef::from_heap_object(ValueKind::BITSTRING, object.as_mut_ptr().cast())
             .expect("a boxed object has an address")
             .literal()
     }

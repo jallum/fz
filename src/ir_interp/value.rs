@@ -255,6 +255,20 @@ pub(super) fn interp_list_ptr(value: RuntimeAnyValue) -> Option<*mut u8> {
     None
 }
 
+/// The value of a binary literal. A literal short enough to live inline is the
+/// node's one read-only object for those bytes, so naming it allocates
+/// nothing; a longer one is built on the process heap.
+pub(super) fn binary_literal_value(proc: *mut Process, bytes: &[u8]) -> Result<AnyValue, String> {
+    let bit_len = (bytes.len() * 8) as u64;
+    if bytes.len() <= fz_runtime::heap::SHARED_BIN_THRESHOLD_BYTES {
+        let literal = unsafe { &*proc }.node.static_bitstring(bytes, bit_len);
+        return interp_value_from_ref(literal, "binary literal");
+    }
+    let ref_word =
+        fz_runtime::ir_runtime::fz_alloc_bitstring_const(proc, bytes.as_ptr() as u64, bytes.len() as u64, bit_len);
+    interp_value_from_ref_word(ref_word, "binary literal")
+}
+
 pub(super) fn interp_value_from_ref_word(ref_word: u64, context: &str) -> Result<AnyValue, String> {
     let value = AnyValueRef::from_raw_word(ref_word)
         .map_err(|err| format!("{context}: invalid any value ref {ref_word:#x}: {err:?}"))?;

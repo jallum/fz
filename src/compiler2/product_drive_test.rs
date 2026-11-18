@@ -337,8 +337,8 @@ fn native_root_product_is_lowered_once_and_reused_by_exact_identity() {
     assert_eq!(lowerings.get(), 1);
     assert_eq!(
         evaluations.borrow().len(),
-        50,
-        "main and its definition macro consume backend products directly, removing their four content-projection evaluations",
+        39,
+        "main and its definition macro consume backend products directly, and the macro's quote is constants, so only six values are asked for a transport shape",
     );
     let materialized_roots = evaluations
         .borrow()
@@ -3664,7 +3664,8 @@ fn a_map_literal_of_literal_atom_keys_is_written_in_key_order() {
         text: concat!(
             "def keyed(k), do: %{k => 1, a: 2}\n",
             "def main() do\n",
-            "  m = %{c: 3, a: 1, b: 2, a: 10}\n",
+            "  one = 1\n",
+            "  m = %{c: 3, a: one, b: 2, a: 10}\n",
             "  m.a + m.b + m.c + keyed(:z).z\n",
             "end\n",
         )

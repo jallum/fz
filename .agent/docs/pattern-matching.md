@@ -297,18 +297,13 @@ caller's, named by position, because the source constructor lifted every child
 key into the caller's operands, so the helper reads through the caller's cells.
 
 A prepared key is built the first time a question reads it and kept for the rest
-of the run. A binary key is a copy of its bytes onto the process heap, so a call
-whose clause is decided before the map pattern is ever asked makes no copy, and a
-key two questions read -- in one plan, or in a plan and the guard helper it calls
--- is copied once. Native lowering emits the same constant at the head of the
-function it belongs to, which is one copy per call;
-`fixtures/01542_map_key_unreached.fz` pins the interpreter's floor at zero
-for that reason.
+of the run. A binary of 64 bytes or fewer is read-only data on every path, so
+naming one as a key, or comparing against one in a guard, allocates nothing;
+`fixtures/01542_map_key_unreached.fz` pins that at zero. A longer binary is
+built on the process heap where it is asked.
 
 Only a map pattern's heap key is prepared. Every other constant a question
-compares against is built where it is asked, through `dispatch_const_to_value`,
-so a guard that compares a binary -- `when v == "key"` -- copies those bytes on
-every evaluation of that guard.
+compares against is built where it is asked, through `dispatch_const_to_value`.
 
 Inputs are borrowed as decoded -- `None` for a semantic input the ABI published
 no layout for. An input the plan's demand says it reads is refused before the

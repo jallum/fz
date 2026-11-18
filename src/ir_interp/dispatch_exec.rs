@@ -25,8 +25,8 @@ use crate::runtime_type_predicate::{
 use fz_runtime::any_value::{AnyValue as RuntimeAnyValue, TRUE_ATOM_ID, ValueKind, struct_schema_id};
 use fz_runtime::bits::{bitstring_bit_len, bitstring_byte_ptr, is_bitstring_like};
 use fz_runtime::ir_runtime::{
-    bs_field_end, fz_bs_begin, fz_bs_bit_len_ref, fz_bs_field_spec, fz_bs_finalize, fz_bs_write_word, fz_list_head_ref,
-    fz_list_tail_ref, fz_matcher_map_get_ref, fz_pinned_binary_segment_size, fz_struct_get_field_ref,
+    bs_field_end, fz_bs_bit_len_ref, fz_bs_field_spec, fz_list_head_ref, fz_list_tail_ref, fz_matcher_map_get_ref,
+    fz_pinned_binary_segment_size, fz_struct_get_field_ref,
 };
 use fz_runtime::process::Process;
 
@@ -306,19 +306,8 @@ fn is_cursor_shape(transport: &TransportStore, shape: ShapeId) -> bool {
     )
 }
 
-/// The runtime value a prepared key is looked up by. A binary key is built here
-/// because the plan carries only its bytes.
+/// The runtime value a prepared key is looked up by.
 fn materialize_prepared_key(proc: *mut Process, module: &Module, key: &GroundValue) -> Result<AnyValue, String> {
-    use crate::ground_value::DispatchShape;
-    if let Some(DispatchShape::Utf8Binary(bytes)) = key.as_dispatch_shape() {
-        let ref_word = fz_runtime::ir_runtime::fz_alloc_bitstring_const(
-            proc,
-            bytes.as_ptr() as u64,
-            bytes.len() as u64,
-            (bytes.len() * 8) as u64,
-        );
-        return interp_value_from_ref_word(ref_word, "prepared dispatch key");
-    }
     dispatch_const_to_value(proc, module, key)
         .ok_or_else(|| format!("cannot materialize prepared dispatch key {key:?}"))
 }
@@ -1294,24 +1283,8 @@ pub(super) fn dispatch_const_to_value(proc: *mut Process, module: &Module, c: &G
             .map(|id| AnyValue::Atom(id as u32)),
         DispatchShape::Bool(value) => Some(interp_bool_value(value)),
         DispatchShape::Nil => Some(interp_nil_value()),
-        DispatchShape::Utf8Binary(bytes) => utf8_binary_const_value(proc, bytes),
+        DispatchShape::Utf8Binary(bytes) => binary_literal_value(proc, bytes).ok(),
     }
-}
-
-fn utf8_binary_const_value(proc: *mut Process, bytes: &[u8]) -> Option<AnyValue> {
-    fz_bs_begin(proc);
-    for byte in bytes {
-        fz_bs_write_word(
-            proc,
-            i64::from(*byte),
-            dispatch_bit_type_tag(BitstringFieldKind::Integer),
-            1,
-            8,
-            1,
-            dispatch_endian_tag(BitstringEndian::Big),
-        );
-    }
-    interp_value_from_ref_word(fz_bs_finalize(proc), "dispatch utf8 guard literal").ok()
 }
 
 fn dispatch_const_eq(proc: *mut Process, module: &Module, val: AnyValue, value: &GroundValue) -> bool {

@@ -109,7 +109,7 @@ def main() do
   before = Process.heap_alloc_stats().bitstring_allocs
   receive_only_wanted() == 42 || raise("expected receive_only_wanted() == 42")
   count_after = Process.heap_alloc_stats().bitstring_allocs
-  count_after - before == 1 || raise("expected count_after - before == 1")
+  count_after - before == 0 || raise("expected count_after - before == 0")
   send(self(), <<8, 42>>)
   receive_sized() == 42 || raise("expected receive_sized() == 42")
   send(self(), %{"alt" => 42})

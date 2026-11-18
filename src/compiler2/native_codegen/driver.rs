@@ -967,7 +967,7 @@ pub(crate) fn compile_with_backend_surface<
         define_zero_capture_closures(backend.module_mut(), surface, &callable_boundary_fn_ids)?;
     let mid_flight_cont_tail_fn_ids = declare_mid_flight_conts(backend.module_mut(), surface)?;
 
-    let bs_const_data: RefCell<HashMap<Vec<u8>, BsConstSyms>> = RefCell::new(HashMap::default());
+    let bitstring_literals = RefCell::new(BitstringLiterals::default());
     let (receive_dispatch_fn_ids, receive_matched_sites) = declare_receive_dispatch_fns(backend.module_mut(), module)?;
     let verifier_isa = host_isa();
     drop(declare_span);
@@ -997,7 +997,7 @@ pub(crate) fn compile_with_backend_surface<
             mid_flight_cont_tail_fn_ids: &mid_flight_cont_tail_fn_ids,
             tuple_schema_ids: &tuple_schema_ids,
             named_schema_ids: &named_schema_ids,
-            bs_const_data: &bs_const_data,
+            bitstring_literals: &bitstring_literals,
             param_reprs: &surface.param_reprs,
             return_diverges: &surface.return_diverges,
             cont_fns: &surface.cont_fns,
