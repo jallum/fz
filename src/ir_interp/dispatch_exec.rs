@@ -1188,12 +1188,17 @@ impl Decided<'_> {
     /// layout asks for. A held value travels as it is held, so a cursor handed
     /// to a cursor parameter keeps its two lanes and builds nothing; a cursor
     /// handed to a layout of lanes that are not its own is built here, once per
-    /// source and position.
+    /// source and position. A parameter laid out in no lanes is one the arm
+    /// never reads: it is handed nothing, and its subject, which may not have
+    /// arrived, is not looked for.
     pub(super) fn subject_handed(
         &mut self,
         subject: SubjectId,
         layout: TransportLayout,
     ) -> Result<BackendBoundValue, DispatchStop> {
+        if self.run.operands.transport.interners().layout_width(layout) == 0 {
+            return Ok(BackendBoundValue::Absent);
+        }
         self.run.resolve_subject(subject)?;
         let held = required(self.run.state.get(subject))?.clone();
         match &held {

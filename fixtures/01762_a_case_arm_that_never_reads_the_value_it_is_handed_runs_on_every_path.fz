@@ -1,0 +1,28 @@
+#---
+# purpose: a decision whose winning arm is handed a value it never reads runs on the interpreter, the JIT and a built program
+# kind: run
+#---
+#
+# `left || right` is a decision on `left` whose last arm is handed `left` and
+# answers it. When the answer is dropped, the arm reads nothing, so its
+# parameter is laid out in no lanes and the value is not handed at all.
+# `checked` drops three such answers: a call's result, a boolean expression and
+# a comparison. `kept` uses the answer, so the value is handed. `fallback`
+# takes the other arm.
+defmodule Main do
+  def checked() do
+    pid = self()
+    is_pid(pid) || raise("pid")
+    (true and true) || raise("and")
+    (1 < 2) || raise("comparison")
+    :checked
+  end
+
+  def kept(), do: (1 < 2) || raise("kept")
+
+  def fallback(), do: nil || :fallback
+end
+
+IO.inspect(Main.checked())
+IO.inspect(Main.kept())
+IO.inspect(Main.fallback())
