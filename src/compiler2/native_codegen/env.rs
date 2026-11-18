@@ -29,11 +29,11 @@ pub(crate) struct CodegenEnv<'a> {
     pub(super) param_reprs: &'a [Vec<ArgRepr>],
     pub(super) return_diverges: &'a [bool],
     pub(super) cont_fns: &'a HashSet<FnId>,
-    /// Receive-dispatch FuncId per ReceiveMatched site, keyed by `(parent_fn_id.0,
+    /// Receive functions per ReceiveMatched site, keyed by `(parent_fn_id.0,
     /// block_id.0)`. Populated by the planned codegen declaration pass
     /// and consumed by the Term::ReceiveMatched arm in
     /// `compile_block_terminator` (`fn_addr` -> call site arg).
-    pub(super) receive_dispatch_fn_ids: &'a HashMap<(u32, u32), FuncId>,
+    pub(super) receive_dispatch_fn_ids: &'a HashMap<(u32, u32), super::receive::ReceiveFns>,
 }
 
 impl CodegenEnv<'_> {

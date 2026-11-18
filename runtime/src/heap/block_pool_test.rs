@@ -39,25 +39,54 @@ fn taking_a_recycled_block_moves_its_bytes_from_idle_back_to_in_use() {
 }
 
 #[test]
-fn an_exact_block_counts_while_held_and_leaves_no_idle_bytes_when_freed() {
+fn a_block_above_the_table_counts_while_held_and_leaves_no_idle_bytes_when_freed() {
     let before = start();
     let above_table = round_up_16(SIZE_TABLE[SIZE_TABLE.len() - 1] + 1);
-    let below_table = 64;
     let big = pool_alloc(above_table);
-    let small = pool_alloc(below_table);
     assert_eq!(
         pool_footprint().in_use_bytes,
-        before.in_use_bytes + above_table + below_table,
-        "blocks off the table are in use like any other"
+        before.in_use_bytes + above_table,
+        "a block off the table is in use like any other"
     );
     pool_free(big, above_table);
-    pool_free(small, below_table);
     let after = pool_footprint();
     assert_eq!(after.in_use_bytes, before.in_use_bytes);
+    assert_eq!(after.idle_bytes, before.idle_bytes, "the system allocator took it back");
+}
+
+#[test]
+fn a_small_block_is_pooled_at_its_exact_size() {
+    let before = start();
+    let p = pool_alloc(64);
+    assert_eq!(pool_footprint().in_use_bytes, before.in_use_bytes + 64);
+    pool_free(p, 64);
+    let idle = pool_footprint();
+    assert_eq!(idle.in_use_bytes, before.in_use_bytes);
     assert_eq!(
-        after.idle_bytes, before.idle_bytes,
-        "the system allocator took them back"
+        idle.idle_bytes,
+        before.idle_bytes + 64,
+        "the freed block rests in the pool"
     );
+    let again = pool_alloc(64);
+    assert_eq!(again, p, "the same size reuses the freed block");
+    assert_eq!(pool_footprint().idle_bytes, before.idle_bytes);
+    let other = pool_alloc(80);
+    assert_ne!(other, p, "a different size is a different class");
+    pool_free(again, 64);
+    pool_free(other, 80);
+    pool_drain_for_test();
+}
+
+#[test]
+fn every_pooled_capacity_has_its_own_class_and_names_its_capacity_back() {
+    let capacities: Vec<usize> = (16..SIZE_TABLE[0]).step_by(16).chain(SIZE_TABLE).collect();
+    for (expected, capacity) in capacities.iter().enumerate() {
+        let class = pooled_class(*capacity).expect("pooled");
+        assert_eq!(class, expected);
+        assert_eq!(class_capacity(class), *capacity);
+    }
+    assert_eq!(capacities.len(), CLASSES);
+    assert_eq!(pooled_class(SIZE_TABLE[0] + 16), None, "between table entries");
 }
 
 #[test]

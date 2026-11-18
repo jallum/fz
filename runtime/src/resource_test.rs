@@ -181,7 +181,7 @@ fn a_deep_copied_resource_shares_its_resource_and_destructor() {
     let sent = alloc_resource(&mut sender, resource());
     let view = sender.view();
     let src = AnyValueRef::from_heap_object(ValueKind::RESOURCE, sent.as_raw() as *const u8).expect("ref");
-    let copied = crate::heap::deep_copy_any_value_ref(src, &view, &mut receiver, &mut Default::default());
+    let copied = crate::heap::deep_copy_any_value_ref(src, &view, &mut receiver);
     let copy = unsafe { ResourceStub::from_raw(copied.resource_addr().expect("resource")) };
     assert_eq!(copy.shared_raw(), sent.shared_raw());
     assert_eq!(copy.destructor(), DESTRUCTOR);

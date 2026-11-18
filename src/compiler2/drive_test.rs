@@ -1032,6 +1032,7 @@ fn compiler2_receive_outcomes_own_typed_semantic_and_physical_arguments() {
     let backend = compiler.retained_backend_program(root);
     let mut physical = 0;
     let mut bit_fields = 0;
+    let mut clauses_sharing_a_root = 0;
     for executable in backend.executables() {
         let facts = compiler
             .world()
@@ -1047,6 +1048,38 @@ fn compiler2_receive_outcomes_own_typed_semantic_and_physical_arguments() {
             for edge in &receive.outcomes {
                 let target = &entries[edge.target.as_u32() as usize];
                 assert_eq!(target.params.len(), edge.arguments.len());
+                let table = receive
+                    .dispatch
+                    .outcome_roots(edge.arguments.iter().map(|argument| argument.subject));
+                assert_eq!(table.arguments.len(), edge.arguments.len());
+                clauses_sharing_a_root += usize::from(table.roots.len() < edge.arguments.len());
+                for (argument, read) in edge.arguments.iter().zip(&table.arguments) {
+                    // The argument is read from its root by following its path down.
+                    let mut at = table.roots[read.root];
+                    for step in &read.path {
+                        let SubjectSource::Projection(projection) = receive.dispatch.subject(*step) else {
+                            panic!("a path step is a projection");
+                        };
+                        assert_eq!(projection.source, at, "each step projects the one before it");
+                        assert!(
+                            !matches!(
+                                projection.kind,
+                                ProjectionKind::BitstringField(_) | ProjectionKind::MapValue { .. }
+                            ),
+                            "a bitstring field or map value ends a path"
+                        );
+                        at = *step;
+                    }
+                    assert_eq!(at, argument.subject);
+                }
+                for (index, root) in table.roots.iter().enumerate() {
+                    // No root is read through another: roots are disjoint positions.
+                    for other in &table.arguments {
+                        if other.root != index {
+                            assert!(!other.path.contains(root), "a root is not below another root");
+                        }
+                    }
+                }
                 for argument in &edge.arguments {
                     assert!(target.params.contains(&argument.parameter));
                     assert_eq!(
@@ -1086,6 +1119,10 @@ fn compiler2_receive_outcomes_own_typed_semantic_and_physical_arguments() {
     assert!(
         physical >= 2,
         "both direct and tuple-projected list sources are explicit physical arguments"
+    );
+    assert!(
+        clauses_sharing_a_root >= 2,
+        "the cell, head and tail clauses read several arguments out of one root"
     );
     assert!(bit_fields >= 3, "dependent-size fields keep their extraction types");
     settle_native_product(&mut compiler, root);

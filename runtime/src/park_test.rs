@@ -30,7 +30,7 @@ pub(crate) fn leaked_site(
             after_code,
             clause_count: clauses.len() as u32,
             pinned_count,
-            bound_arity: clauses.iter().map(|c| c.bound_count).max().unwrap_or(0),
+            root_arity: clauses.iter().map(|c| c.root_count).max().unwrap_or(0),
             after_empty_slots,
         });
         copy_nonoverlapping(clauses.as_ptr(), site.add(1) as *mut ReceiveClause, clauses.len());
@@ -60,10 +60,13 @@ pub(crate) fn code_of(closure: AnyValueRef) -> usize {
     unsafe { read(addr.add(8) as *const u64) as usize }
 }
 
-fn clause(code: usize, bound_count: u32, empty_slots: u32) -> ReceiveClause {
+/// A clause whose arguments are its roots, one for one.
+fn clause(code: usize, root_count: u32, empty_slots: u32) -> ReceiveClause {
     ReceiveClause {
         code,
-        bound_count,
+        projector: None,
+        root_count,
+        argument_count: root_count,
         empty_slots,
     }
 }
@@ -86,15 +89,10 @@ fn record(site: &'static ReceiveSite, frame: AnyValueRef) -> ParkRecord {
     }
 }
 
-/// Matches a message equal to the first pinned value and binds it.
-extern "C" fn pinned_eq_matcher(
-    _process: *mut Process,
-    msg: u64,
-    pinned: *const AnyValueRef,
-    out: *mut AnyValueRef,
-) -> u32 {
+/// Matches a message equal to the last pinned value of the frame and binds it.
+extern "C" fn pinned_eq_matcher(_process: *mut Process, msg: u64, frame: u64, out: *mut AnyValueRef) -> u32 {
     let msg = AnyValueRef::from_raw_word(msg).expect("msg ref");
-    let want = unsafe { *pinned };
+    let want = AnyValueRef::from_raw_word(crate::ir_runtime::fz_receive_pinned_ref(frame, 1)).expect("pinned ref");
     if msg.load_int().expect("int msg") != want.load_int().expect("int pinned") {
         return 0;
     }
@@ -103,12 +101,7 @@ extern "C" fn pinned_eq_matcher(
 }
 
 /// Always picks the second clause, after writing one value into the buffer.
-extern "C" fn second_clause(
-    _process: *mut Process,
-    msg: u64,
-    _pinned: *const AnyValueRef,
-    out: *mut AnyValueRef,
-) -> u32 {
+extern "C" fn second_clause(_process: *mut Process, msg: u64, _frame: u64, out: *mut AnyValueRef) -> u32 {
     unsafe { *out = AnyValueRef::from_raw_word(msg).expect("msg ref") };
     2
 }
@@ -122,29 +115,33 @@ fn the_matcher_reads_the_pinned_values_behind_the_frames_captures() {
     let frame = frame_of(&mut process.heap, &[int_ref(7), int_ref(42)]);
     let park = record(site, frame);
 
-    let (clause_idx, bound) = park.try_match(null_mut(), int_ref(42)).expect("42 is the pinned value");
+    let mut roots = Roots::new();
+    let (clause_idx, bound) = park
+        .try_match(null_mut(), int_ref(42), &mut roots)
+        .expect("42 is the pinned value");
     assert_eq!(clause_idx, 0);
     assert_eq!(bound.len(), 1);
     assert_eq!(bound[0].load_int(), Ok(42));
     assert!(
-        park.try_match(null_mut(), int_ref(7)).is_none(),
+        park.try_match(null_mut(), int_ref(7), &mut roots).is_none(),
         "7 is a capture, not the pinned value"
     );
 }
 
 #[test]
-fn a_hit_hands_back_only_the_winning_clauses_bound_values() {
+fn a_hit_hands_back_only_the_winning_clauses_roots() {
     let mut process = fresh_process();
     let site = leaked_site(second_clause, None, 0, &[clause(0x10, 1, 0), clause(0x20, 0, 0)]);
     let park = record(site, frame_of(&mut process.heap, &[]));
 
-    let (clause_idx, bound) = park.try_match(null_mut(), int_ref(99)).expect("match");
+    let mut roots = Roots::new();
+    let (clause_idx, bound) = park.try_match(null_mut(), int_ref(99), &mut roots).expect("match");
     assert_eq!(clause_idx, 1);
-    assert!(bound.is_empty(), "the second clause binds nothing");
+    assert!(bound.is_empty(), "the second clause has no roots");
 }
 
 /// The outcome closure is the frame re-cut for the winning clause: that
-/// clause's code, the bound values right behind the outer continuation, the
+/// clause's code, the arguments right behind the outer continuation, the
 /// captures behind them, the clause's empty slots last. Pinned values are for
 /// the matcher only and do not travel.
 #[test]
@@ -154,7 +151,7 @@ fn an_outcome_closure_is_the_winning_clauses_code_over_bound_values_then_capture
     let frame = frame_of(&mut process.heap, &[int_ref(7), int_ref(42)]);
     let park = record(site, frame);
 
-    let outcome = park.outcome_closure(&mut process.heap, 1, &[int_ref(99)]);
+    let outcome = park.outcome_closure(&mut process, 1, &[int_ref(99)]);
 
     assert_eq!(code_of(outcome), 0xbeef);
     let addr = outcome.closure_addr().expect("outcome addr");
@@ -166,6 +163,39 @@ fn an_outcome_closure_is_the_winning_clauses_code_over_bound_values_then_capture
         assert_eq!(closure_capture_value(addr, 2), AnyValue::Int(7), "capture");
         assert_eq!(closure_capture_value(addr, 3), AnyValue::nil_atom(), "empty slot");
         assert_eq!(closure_capture_value(addr, 4), AnyValue::nil_atom(), "empty slot");
+    }
+}
+
+/// Writes the second root, then the first, as the clause's two arguments.
+extern "C" fn swap_projector(_process: *mut Process, roots: *const AnyValueRef, out: *mut AnyValueRef) {
+    unsafe {
+        *out = *roots.add(1);
+        *out.add(1) = *roots;
+    }
+}
+
+/// A clause with a projector hands the receiver's heap and the roots to it,
+/// and the outcome closure holds what it wrote, not the roots.
+#[test]
+fn an_outcome_closure_holds_the_arguments_the_projector_reads_out_of_the_roots() {
+    let mut process = fresh_process();
+    let projecting = ReceiveClause {
+        code: 0xcafe,
+        projector: Some(swap_projector),
+        root_count: 2,
+        argument_count: 2,
+        empty_slots: 0,
+    };
+    let site = leaked_site(pinned_eq_matcher, None, 0, &[projecting]);
+    let park = record(site, frame_of(&mut process.heap, &[]));
+
+    let outcome = park.outcome_closure(&mut process, 0, &[int_ref(1), int_ref(2)]);
+
+    let addr = outcome.closure_addr().expect("outcome addr");
+    // SAFETY: `outcome` is a live closure.
+    unsafe {
+        assert_eq!(closure_capture_value(addr, 1), AnyValue::Int(2), "first argument");
+        assert_eq!(closure_capture_value(addr, 2), AnyValue::Int(1), "second argument");
     }
 }
 

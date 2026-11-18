@@ -410,7 +410,9 @@ fn parked_receive_copies_only_winning_subjects_into_receiver_heap() {
             message.as_any_value_ref(sender).unwrap(),
         )
         .unwrap();
-    runtime.deliver_in_queue(transport, &program, receiver_pid).unwrap();
+    runtime
+        .deliver_in_queue(transport, &program, &module, receiver_pid)
+        .unwrap();
     let BackendResumeEntry::Entry { env, .. } = runtime.take_backend_resume(receiver_pid).expect("winning wake") else {
         panic!("direct outcome entry")
     };
@@ -1692,7 +1694,6 @@ fn a_function_reference_materializes_to_one_literal_closure() {
         1000,
     );
     let view = sender.heap.view();
-    let mut forwarding = Default::default();
-    let copied = fz_runtime::heap::deep_copy_any_value_ref(first, &view, &mut receiver.heap, &mut forwarding);
+    let copied = fz_runtime::heap::deep_copy_any_value_ref(first, &view, &mut receiver.heap);
     assert_eq!(copied.raw_word(), first.raw_word(), "a send shares it");
 }

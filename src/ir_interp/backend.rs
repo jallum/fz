@@ -4,7 +4,7 @@ use crate::literal_term::LiteralTerm;
 use std::rc::Rc;
 
 use super::binop::{eval_binop, eval_unop, unpack_callable, unpack_closure};
-use super::dispatch_exec::{Dispatch, DispatchInputs, DispatchSource, dispatch_values};
+use super::dispatch_exec::{Dispatch, DispatchInputs, DispatchSource, dispatch_values, project_from_root};
 use super::extern_call::{ExternCallValue, call_lowered_extern};
 use super::prim::{interp_list_cons, interp_list_head, interp_list_tail, interp_map_get};
 use super::value::{
@@ -31,7 +31,7 @@ use fz_runtime::any_value::{
 };
 use fz_runtime::delivery::Delivery;
 use fz_runtime::exec_ctx::{Argv, ExecCtx, NO_ARGV, timer_cancel, timer_schedule};
-use fz_runtime::heap::{AddressMap, deep_copy_any_value_ref};
+use fz_runtime::heap::deep_copy_any_value_ref;
 use fz_runtime::heap::{GcStats, Schema};
 use fz_runtime::ir_runtime::{
     fz_bs_begin, fz_bs_finalize, fz_bs_write_field_ref, fz_bs_write_word, fz_list_reuse_or_cons_parts,
@@ -273,13 +273,12 @@ impl IrInterpRuntime {
             pid,
             DEFAULT_REDUCTIONS_PER_QUANTUM,
         ));
-        let mut forwarding = AddressMap::default();
         let sender_view = unsafe { &*sender }.heap.view();
         let args = args
             .into_iter()
             .map(|value| match value {
                 AnyValue::Ref(value) => {
-                    let copied = deep_copy_any_value_ref(value.raw(), &sender_view, &mut child.heap, &mut forwarding);
+                    let copied = deep_copy_any_value_ref(value.raw(), &sender_view, &mut child.heap);
                     AnyValue::from_any_value_ref(copied)
                 }
                 value => Ok(value),
@@ -377,8 +376,8 @@ impl IrInterpRuntime {
     }
 
     /// Match `msg` against the receive `park` records, on the sender, with
-    /// the receiver's delivery lock held by the caller. A hit gifts the bound
-    /// values and cancels the after-timer; a miss, or a receive another sender
+    /// the receiver's delivery lock held by the caller. A hit gifts the winning
+    /// clause's roots and cancels the after-timer; a miss, or a receive another sender
     /// already matched, gifts the message.
     #[allow(clippy::too_many_arguments)]
     fn probe_parked_receive(
@@ -398,7 +397,7 @@ impl IrInterpRuntime {
         let receive = parked_receive(park)?;
         let msg = AnyValue::from_any_value_ref(msg_ref)?;
         let reductions_before = sender.reductions_remaining;
-        let matched = try_match_backend_receive(
+        let matched = match_backend_receive(
             self,
             types,
             transport,
@@ -411,15 +410,15 @@ impl IrInterpRuntime {
             &park.env,
         )?;
         let reductions = i64::from(reductions_before) - i64::from(sender.reductions_remaining);
-        let Some((clause_idx, _, params)) = matched else {
+        let Some((clause_idx, roots)) = matched else {
             return Ok(SendProbe {
                 reductions,
                 ..gift_message(sender, delivery, receiver.pid, msg_ref)
             });
         };
-        let bound = params
+        let roots = roots
             .into_iter()
-            .map(|(_, value)| value.as_any_value_ref(sender))
+            .map(|root| root.as_any_value_ref(sender))
             .collect::<Result<Vec<_>, String>>()?;
         if let Some(timer) = park.after_timer.take() {
             timer_cancel(receiver, timer);
@@ -429,7 +428,7 @@ impl IrInterpRuntime {
             delivery,
             receiver.pid,
             clause_idx,
-            &bound,
+            &roots,
             reductions,
         ))
     }
@@ -441,6 +440,7 @@ impl IrInterpRuntime {
         &mut self,
         transport: &TransportStore,
         program: &BackendProgram,
+        module: &Module,
         pid: u32,
     ) -> Result<(), String> {
         let receiver = self
@@ -448,7 +448,7 @@ impl IrInterpRuntime {
             .expect("backend pid in run queue with no process entry");
         let task = unsafe { &mut *receiver };
         let mut delivery = task.delivery.lock();
-        let Some((clause_idx, bound_vals)) = drain_in_queue(&mut delivery, &mut task.heap, &mut task.mailbox) else {
+        let Some((clause_idx, roots)) = drain_in_queue(&mut delivery, &mut task.heap, &mut task.mailbox) else {
             return Ok(());
         };
         let park = self
@@ -462,12 +462,11 @@ impl IrInterpRuntime {
             .get(clause_idx)
             .expect("receive winning outcome has one target edge");
         let target = edge.target;
-        let params = edge
-            .arguments
-            .iter()
-            .zip(bound_vals)
-            .map(|(argument, value)| Ok((argument.parameter, AnyValue::from_any_value_ref(value)?)))
+        let roots = roots
+            .into_iter()
+            .map(AnyValue::from_any_value_ref)
             .collect::<Result<Vec<_>, String>>()?;
+        let params = project_receive_arguments(receiver, module, &receive.dispatch, edge, &roots)?;
         self.current_proc = receiver;
         let BackendParkRecord {
             executable,
@@ -714,7 +713,7 @@ fn drive_backend_until_idle<T: Telemetry + ?Sized>(
     while let Some(pid) = next_backend_runnable(adapter)? {
         // Gifts queued by senders become this heap's before any code runs; a
         // matched receive becomes the resume entry here.
-        runtime.deliver_in_queue(transport, program, pid)?;
+        runtime.deliver_in_queue(transport, program, module, pid)?;
         let resume = runtime
             .take_backend_resume(pid)
             .expect("backend pid in run queue with no backend resume");
@@ -1609,10 +1608,12 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                     let proc = unsafe { &mut *runtime.cur_proc() };
                     AnyValue::from_any_value_ref(proc.mailbox[mb_idx])?
                 };
-                if let Some((_, target, params)) = try_match_backend_receive(
+                if let Some((clause_idx, roots)) = match_backend_receive(
                     runtime, types, transport, program, module, outcomes, dispatch, msg, bindings, &env,
                 )? {
-                    hit = Some((mb_idx, target, params));
+                    let edge = &outcomes[clause_idx];
+                    let params = project_receive_arguments(runtime.cur_proc(), module, dispatch, edge, &roots)?;
+                    hit = Some((mb_idx, edge.target, params));
                     break;
                 }
             }
@@ -1691,11 +1692,11 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
     }
 }
 
-/// A receive hit: the winning outcome's index among the receive's outcomes,
-/// its target entry, and the values its pattern bound.
-type OutcomeValues = (usize, crate::compiler2::ControlEntryId, Vec<(ValueId, AnyValue)>);
+/// A receive hit: the winning outcome's index and its roots, the outermost
+/// subjects the outcome's arguments read, in the order of its `OutcomeRoots`.
+type OutcomeMatch = (usize, Vec<AnyValue>);
 
-fn try_match_backend_receive(
+fn match_backend_receive(
     runtime: &mut IrInterpRuntime,
     types: &mut crate::compiler2::Types,
     transport: &TransportStore,
@@ -1706,7 +1707,7 @@ fn try_match_backend_receive(
     msg: AnyValue,
     bindings: &crate::compiler2::DispatchBindings,
     env: &Frame,
-) -> Result<Option<OutcomeValues>, String> {
+) -> Result<Option<OutcomeMatch>, String> {
     let pinned = dispatch_values(
         runtime.cur_proc(),
         transport,
@@ -1724,14 +1725,43 @@ fn try_match_backend_receive(
     let edge = outcomes
         .get(outcome)
         .expect("receive winning outcome has one target edge");
-    let mut params = Vec::with_capacity(edge.arguments.len());
-    for argument in &edge.arguments {
-        let value = decided
-            .subject_word(argument.subject)
-            .map_err(|_| format!("receive outcome lacks subject {:?}", argument.subject))?;
-        params.push((argument.parameter, value));
+    let roots = receive_outcome_roots(dispatch, edge);
+    let mut words = Vec::with_capacity(roots.roots.len());
+    for root in &roots.roots {
+        words.push(
+            decided
+                .subject_word(*root)
+                .map_err(|_| format!("receive outcome lacks subject {root:?}"))?,
+        );
     }
-    Ok(Some((outcome, edge.target, params)))
+    Ok(Some((outcome, words)))
+}
+
+fn receive_outcome_roots(
+    dispatch: &crate::dispatch_matrix::pattern::PatternDispatchPlan<crate::compiler2::Ty>,
+    edge: &crate::compiler2::OutcomeEdge,
+) -> crate::dispatch_matrix::pattern::OutcomeRoots {
+    dispatch.outcome_roots(edge.arguments.iter().map(|argument| argument.subject))
+}
+
+/// The values a winning outcome binds into its target, read out of its roots
+/// in `proc`'s heap.
+fn project_receive_arguments(
+    proc: *mut Process,
+    module: &Module,
+    dispatch: &crate::dispatch_matrix::pattern::PatternDispatchPlan<crate::compiler2::Ty>,
+    edge: &crate::compiler2::OutcomeEdge,
+    roots: &[AnyValue],
+) -> Result<Vec<(ValueId, AnyValue)>, String> {
+    let table = receive_outcome_roots(dispatch, edge);
+    edge.arguments
+        .iter()
+        .zip(&table.arguments)
+        .map(|(argument, root)| {
+            let value = project_from_root(proc, module, dispatch, roots[root.root], &root.path)?;
+            Ok((argument.parameter, value))
+        })
+        .collect()
 }
 
 fn eval_steps<T: Telemetry + ?Sized>(

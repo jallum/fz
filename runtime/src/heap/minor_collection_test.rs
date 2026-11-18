@@ -540,7 +540,7 @@ fn a_message_copy_counts_as_its_own_site_on_the_receiving_heap() {
     let mut receiver = Heap::new(SIZE_TABLE[0], fresh_registry());
     let big = vec![1u8; SHARED_BIN_THRESHOLD_BYTES + 1];
     let filled = sender.alloc_bitstring(&big, big.len() as u64 * 8);
-    let copy = deep_copy_slot(filled, &sender.view(), &mut receiver, &mut AddressMap::default());
+    let copy = deep_copy_slot(filled, &sender.view(), &mut receiver);
 
     let stats = receiver.collect(&mut [copy.ref_word()]);
     assert_eq!(stats.stubs_made, counts(&[(StubSite::MessageCopy, 1)]));
@@ -675,7 +675,7 @@ fn a_send_gives_the_receiver_its_own_binref_and_both_heaps_release() {
     let (whole, witness) = witnessed_buffer(&mut sender, &bytes);
     assert_eq!(shared_refs(&witness), 2);
 
-    let copy = deep_copy_slot(whole, &sender.view(), &mut receiver, &mut AddressMap::default());
+    let copy = deep_copy_slot(whole, &sender.view(), &mut receiver);
     assert_eq!(
         shared_refs(&witness),
         3,

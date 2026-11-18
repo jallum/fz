@@ -122,7 +122,7 @@ fn gift_one_cons(sender: &mut Heap, value: i64) -> (GiftSegment, u64) {
 }
 
 #[test]
-fn a_gift_below_the_table_occupies_an_exact_block_of_its_measured_size() {
+fn a_gift_below_the_table_occupies_a_pooled_block_of_its_measured_size() {
     let mut sender = Heap::new(SIZE_TABLE[0], fresh_registry());
     let pooled_before = pool_outstanding_blocks();
     for (measured, block) in [(16, 16), (64, 64), (1008, 1008)] {
@@ -133,9 +133,11 @@ fn a_gift_below_the_table_occupies_an_exact_block_of_its_measured_size() {
         assert_eq!(segment.fill_bytes(), measured);
         assert_eq!(
             pool_outstanding_blocks(),
-            pooled_before,
-            "an exact block is not a pooled block"
+            pooled_before + 1,
+            "the gift block is a pooled block of the measured size"
         );
+        drop(segment);
+        assert_eq!(pool_outstanding_blocks(), pooled_before);
     }
     assert_eq!(sender.block_size, SIZE_TABLE[0], "the tip is untouched by the gifts");
 }
@@ -422,8 +424,8 @@ fn thousands_of_small_unread_gifts_do_not_grow_the_receivers_tip_after_gc() {
     assert!(receiver.young_blocks.is_empty());
     assert_eq!(
         pool_total_cached_blocks(),
-        1,
-        "the old tip went back to the pool; each exact gift block went to the system allocator"
+        1 + gifts as usize,
+        "the old tip and every gift block went back to the pool"
     );
     drop(receiver);
     drop(sender);
@@ -500,24 +502,16 @@ fn dropping_an_ungrafted_segment_returns_its_blocks_and_releases_its_stubs() {
     assert_eq!(segment.block_count(), 1);
     assert_eq!(
         pool_outstanding_blocks(),
-        pooled_before,
-        "the gift block is exact, below the table, and not pooled"
+        pooled_before + 1,
+        "the gift block is below the table and pooled at its exact size"
     );
     assert_eq!(shared_refs(&witness), 2);
     assert_eq!(pool_total_cached_blocks(), 0);
 
     drop(segment);
 
-    assert_eq!(
-        pool_total_cached_blocks(),
-        0,
-        "an exact gift block goes back to the system allocator, not the pool"
-    );
-    assert_eq!(
-        pool_outstanding_blocks(),
-        pooled_before,
-        "the exact blocks never counted"
-    );
+    assert_eq!(pool_total_cached_blocks(), 1, "the gift block goes back to the pool");
+    assert_eq!(pool_outstanding_blocks(), pooled_before);
     assert_eq!(shared_refs(&witness), 1, "the orphaned stub released its reference");
     drop(sender);
     pool_drain_for_test();

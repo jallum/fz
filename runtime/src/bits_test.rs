@@ -510,7 +510,6 @@ fn a_deep_copy_of_a_middle_slice_keeps_its_length() {
         AnyValue::heap_ptr(middle.as_raw(), ValueKind::BINVIEW),
         &source.view(),
         &mut destination,
-        &mut crate::heap::AddressMap::default(),
     );
     let copy = unsafe { BinView::from_raw(copied.heap_addr().unwrap()) };
     assert_eq!((copy.byte_offset(), copy.bytes_len()), (70, 100));
@@ -606,12 +605,7 @@ fn a_buffer_that_crossed_to_another_heap_is_never_appended_to() {
     let mut source = Heap::new(SIZE_TABLE[0], fresh_registry());
     let mut destination = Heap::new(SIZE_TABLE[0], fresh_registry());
     let first = first_view(&mut source);
-    let copied = crate::heap::deep_copy_slot(
-        as_value(first),
-        &source.view(),
-        &mut destination,
-        &mut crate::heap::AddressMap::default(),
-    );
+    let copied = crate::heap::deep_copy_slot(as_value(first), &source.view(), &mut destination);
     assert_eq!(unsafe { (*first.shared_raw()).spare() }, 0);
     let second = concat(&mut source, as_value(first), b"cd");
     assert_ne!(

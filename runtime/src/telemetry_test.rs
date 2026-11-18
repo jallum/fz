@@ -60,10 +60,11 @@ fn a_probe_writes_its_outcome_and_what_the_gift_cost() {
         reductions: -7,
         gift_bytes: 80,
         gift_blocks: 1,
+        gift_roots: 2,
     };
     assert_eq!(
         line(RuntimeEvent::SendProbe(&probe)),
-        r#"{"name":["fz","runtime","send","probe"],"time_ns":12,"kind":"event","span_id":3,"parent_span_id":4,"measurements":{},"metadata":{"outcome":"miss","receiver":2,"reductions":-7,"gift_bytes":80,"gift_blocks":1}}"#
+        r#"{"name":["fz","runtime","send","probe"],"time_ns":12,"kind":"event","span_id":3,"parent_span_id":4,"measurements":{},"metadata":{"outcome":"miss","receiver":2,"reductions":-7,"gift_bytes":80,"gift_blocks":1,"gift_roots":2}}"#
     );
 }
 

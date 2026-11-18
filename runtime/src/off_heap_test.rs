@@ -78,7 +78,6 @@ fn copied_shared_bin_is_freed_only_when_the_last_heap_releases_it() {
         AnyValue::heap_ptr(pb.as_raw(), ValueKind::BINVIEW),
         &source.view(),
         &mut destination,
-        &mut crate::heap::AddressMap::default(),
     );
     drop(source);
     assert_eq!(

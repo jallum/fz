@@ -1,12 +1,16 @@
 //! Terminator emission for fz IR blocks.
 
+use super::receive::{ReceiveFns, clause_roots};
+use super::static_object::ReceiveClauseLayout;
 use super::*;
 use crate::compiler2::artifact::{BodyFrame, FrameRole};
 use crate::compiler2::{NativeBody, NativeEntryAbi};
+use crate::dispatch_matrix::pattern::PatternDispatchPlan;
 use crate::fast_hash::HashMap;
 use crate::fz_ir::{
     self as fz_ir, BlockId, Cont, DirectCallTarget, EmitSlot, FnId, FnIr, ReceiveAfter, ReceiveClause, Term, Var,
 };
+use crate::runtime_type_predicate::RuntimeTypePredicate;
 use cranelift_codegen::ir::TrapCode;
 use cranelift_codegen::ir::{self, AbiParam, BlockArg, InstBuilder, MemFlagsData, Signature, condcodes::IntCC, types};
 use cranelift_codegen::isa::CallConv;
@@ -313,7 +317,7 @@ pub(crate) fn emit_terminator<M: cranelift_module::Module>(
             after,
             pinned,
             captures,
-            dispatch: _,
+            dispatch,
             ident: _,
         } => emit_receive_matched(
             body,
@@ -323,6 +327,7 @@ pub(crate) fn emit_terminator<M: cranelift_module::Module>(
             caller_fn_id,
             cont_param,
             clauses,
+            dispatch,
             after.as_ref(),
             pinned,
             captures,
@@ -908,26 +913,18 @@ fn emit_receive_matched<M: cranelift_module::Module>(
     caller_fn_id: FnId,
     cont_param: ir::Value,
     clauses: &[ReceiveClause],
+    dispatch: &PatternDispatchPlan<RuntimeTypePredicate>,
     after: Option<&ReceiveAfter>,
     pinned: &[Var],
     captures: &[Var],
 ) -> Result<(), CodegenError> {
-    let dispatch_fid = *env
+    let fns = env
         .receive_dispatch_fn_ids
         .get(&(caller_fn_id.0, blk.id.0))
         .expect("receive dispatch fn pre-declared by planned codegen pass");
     let site_name = format!("__fz_receive_site_{}_{}", caller_fn_id.0, blk.id.0);
     let park_result = build_park_record(
-        body,
-        env,
-        var_env,
-        cont_param,
-        &site_name,
-        clauses,
-        after,
-        pinned,
-        captures,
-        dispatch_fid,
+        body, env, var_env, cont_param, &site_name, clauses, dispatch, after, pinned, captures, fns,
     )?;
     let yield_sentinel = body.b.ins().iconst(types::I64, YIELD_PTR as i64);
     let parked = body.b.ins().icmp(IntCC::Equal, park_result, yield_sentinel);
@@ -966,10 +963,11 @@ fn build_park_record<M: cranelift_module::Module>(
     cont_param: ir::Value,
     site_name: &str,
     clauses: &[ReceiveClause],
+    dispatch: &PatternDispatchPlan<RuntimeTypePredicate>,
     after: Option<&ReceiveAfter>,
     pinned: &[Var],
     captures: &[Var],
-    matcher: FuncId,
+    fns: &ReceiveFns,
 ) -> Result<ir::Value, CodegenError> {
     assert!(
         !clauses.is_empty(),
@@ -987,18 +985,26 @@ fn build_park_record<M: cranelift_module::Module>(
         (code, continuation_empty_slots(env, cont_sid, captures.len()) as u32)
     };
     let site = ReceiveSiteLayout {
-        matcher,
+        matcher: fns.matcher,
         after: after.map(|a| resume_body(a.body)),
         pinned_count: pinned.len() as u32,
         clauses: clauses
             .iter()
-            .map(|c| {
+            .zip(&fns.projectors)
+            .map(|(c, projector)| {
                 let (code, empty_slots) = resume_body(c.body);
-                (code, c.arguments.len() as u32, empty_slots)
+                let roots = clause_roots(env.module, dispatch, c);
+                ReceiveClauseLayout {
+                    code,
+                    projector: *projector,
+                    root_count: roots.roots.len() as u32,
+                    argument_count: c.arguments.len() as u32,
+                    empty_slots,
+                }
             })
             .collect(),
     };
-    let first_clause_code = site.clauses[0].0;
+    let first_clause_code = site.clauses[0].code;
     let site_data = define_receive_site(body.jmod, site_name, &site)?;
     let site_addr = data_addr(body.jmod, site_data, body.b);
 

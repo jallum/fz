@@ -6,13 +6,13 @@ use crate::exec_ctx::ExecCtx;
 use crate::heap::StubSite;
 use crate::heap::{SchemaRegistry, pool_drain_for_test, pool_outstanding_blocks, pool_total_cached_blocks};
 use crate::park::park_test::{code_of, frame_of, leaked_site};
-use crate::park::{MatcherFn, ParkRecord, ReceiveClause};
+use crate::park::{MatcherFn, ParkRecord, ReceiveClause, Roots};
 use crate::sync::Ordering;
 use std::cell::RefCell;
 use std::ptr::read;
 use std::rc::Rc;
 
-extern "C" fn match_42(_process: *mut Process, msg: u64, _pinned: *const AnyValueRef, out: *mut AnyValueRef) -> u32 {
+extern "C" fn match_42(_process: *mut Process, msg: u64, _frame: u64, out: *mut AnyValueRef) -> u32 {
     let msg_ref = AnyValueRef::from_raw_word(msg).expect("msg ref");
     if msg_ref.tag() == ValueKind::INT && msg_ref.load_int().expect("int msg") == 42 {
         unsafe {
@@ -41,12 +41,14 @@ fn fresh_task() -> Process {
 const CLAUSE_CODE: usize = 0xdead_beef;
 const AFTER_CODE: usize = 0xcafe_babe;
 
-/// A parked receive of one clause that binds `bound_count` values, with an
+/// A parked receive of one clause whose matcher writes `root_count` roots, with an
 /// after body, over a frame that captures nothing.
-fn record_of(task: &mut Process, matcher: MatcherFn, bound_count: u32, timer: Option<TimerId>) -> ParkRecord {
+fn record_of(task: &mut Process, matcher: MatcherFn, root_count: u32, timer: Option<TimerId>) -> ParkRecord {
     let clause = ReceiveClause {
         code: CLAUSE_CODE,
-        bound_count,
+        projector: None,
+        root_count,
+        argument_count: root_count,
         empty_slots: 0,
     };
     ParkRecord {
@@ -86,14 +88,10 @@ fn sender_list(sender: &mut Process, n: i64) -> AnyValueRef {
         .expect("sender list ref")
 }
 
-/// Matches any one-element list and binds the whole list twice, so both
-/// bound values alias one cell.
-extern "C" fn bind_list_twice(
-    _process: *mut Process,
-    msg: u64,
-    _pinned: *const AnyValueRef,
-    out: *mut AnyValueRef,
-) -> u32 {
+/// Matches any list and writes its whole cell twice as two roots, so both
+/// roots alias one cell: a clause that crosses a non-structural boundary
+/// can overlap itself this way.
+extern "C" fn bind_list_twice(_process: *mut Process, msg: u64, _frame: u64, out: *mut AnyValueRef) -> u32 {
     let msg_ref = AnyValueRef::from_raw_word(msg).expect("msg ref");
     if msg_ref.tag() != ValueKind::LIST || msg_ref.is_empty_list() {
         return 0;
@@ -105,13 +103,21 @@ extern "C" fn bind_list_twice(
     1
 }
 
+/// Matches a list of two lists and writes the first element of each as a root:
+/// two disjoint positions of the message, with the outer cells left behind.
+extern "C" fn bind_both_elements(_process: *mut Process, msg: u64, _frame: u64, out: *mut AnyValueRef) -> u32 {
+    use crate::ir_runtime::{fz_list_head_ref, fz_list_tail_ref};
+    let word = |w: u64| AnyValueRef::from_raw_word(w).expect("ref word");
+    let rest = fz_list_tail_ref(msg);
+    unsafe {
+        *out = word(fz_list_head_ref(msg));
+        *out.add(1) = word(fz_list_head_ref(rest));
+    }
+    1
+}
+
 /// Matches the integer 7 and binds nothing.
-extern "C" fn match_7_binding_nothing(
-    _process: *mut Process,
-    msg: u64,
-    _pinned: *const AnyValueRef,
-    _out: *mut AnyValueRef,
-) -> u32 {
+extern "C" fn match_7_binding_nothing(_process: *mut Process, msg: u64, _frame: u64, _out: *mut AnyValueRef) -> u32 {
     let msg_ref = AnyValueRef::from_raw_word(msg).expect("msg ref");
     u32::from(msg_ref.tag() == ValueKind::INT && msg_ref.load_int().expect("int msg") == 7)
 }
@@ -122,23 +128,29 @@ fn park_binding_nothing(task: &mut Process) {
     task.state = ProcessState::Blocked;
 }
 
+fn park_binding_both_elements(task: &mut Process) {
+    let record = record_of(task, bind_both_elements, 2, None);
+    task.delivery.lock().install_park(record);
+    task.state = ProcessState::Blocked;
+}
+
 fn park_binding_twice(task: &mut Process) {
     let record = record_of(task, bind_list_twice, 2, None);
     task.delivery.lock().install_park(record);
     task.state = ProcessState::Blocked;
 }
 
-fn pending_match(task: &Process) -> Option<(usize, Vec<AnyValueRef>)> {
+fn pending_match(task: &Process) -> Option<(usize, Roots)> {
     task.delivery
         .lock()
         .queued_gifts()
         .find_map(|gift| match &gift.payload {
-            GiftPayload::Match { clause_idx, bound_vals } => Some((*clause_idx, bound_vals.clone())),
+            GiftPayload::Match { clause_idx, roots } => Some((*clause_idx, roots.clone())),
             GiftPayload::Message(_) => None,
         })
 }
 
-fn drain(task: &mut Process) -> Option<(usize, Vec<AnyValueRef>)> {
+fn drain(task: &mut Process) -> Option<(usize, Roots)> {
     let mut delivery = task.delivery.lock();
     drain_in_queue(&mut delivery, &mut task.heap, &mut task.mailbox)
 }
@@ -232,21 +244,50 @@ fn probe_sender_not_parked_queues_the_message_and_returns_miss() {
     assert!(!task.delivery.lock().has_pending_match());
 }
 
+/// A clause's roots are disjoint positions of the message, so a hit copies
+/// each once and leaves everything between and around them behind.
 #[test]
-fn bound_values_that_share_structure_keep_sharing_through_one_forwarding_map() {
+fn a_hit_copies_each_of_a_clauses_disjoint_roots_once() {
+    let mut sender = running_task();
+    let mut task = fresh_task();
+    park_binding_both_elements(&mut task);
+    let first = sender_list(&mut sender, 1);
+    let second = sender_list(&mut sender, 2);
+    let tail = sender
+        .heap
+        .alloc_list_cons_any(AnyValue::from_ref(second).expect("second"), AnyValueRef::empty_list())
+        .expect("outer tail");
+    let msg = sender
+        .heap
+        .alloc_list_cons_any(AnyValue::from_ref(first).expect("first"), tail)
+        .expect("outer list");
+    let probe = probe_sender(&mut sender, &task, msg);
+    assert_eq!(probe.outcome, ProbeOutcome::Hit);
+    assert_eq!(probe.gift_roots, 2);
+    assert_eq!(probe.gift_bytes, 32, "the two root cells cross; the outer cells stay");
+    let (_, roots) = pending_match(&task).expect("match queued");
+    assert_eq!(roots.len(), 2);
+    assert_ne!(roots[0].raw_word(), roots[1].raw_word());
+}
+
+/// A send copies a term the way BEAM does: with no record of what it has
+/// copied. Roots that overlap, which a clause can only produce across a
+/// non-structural boundary, each arrive as a copy of their own.
+#[test]
+fn roots_that_overlap_arrive_as_separate_copies() {
     let mut sender = running_task();
     let mut task = fresh_task();
     park_binding_twice(&mut task);
     let msg = sender_list(&mut sender, 5);
     let probe = probe_sender(&mut sender, &task, msg);
     assert_eq!(probe.outcome, ProbeOutcome::Hit);
-    assert_eq!(probe.gift_bytes, 16, "two bindings of one cell copy it once");
-    let (_, bound) = pending_match(&task).expect("match queued");
-    assert_eq!(bound.len(), 2);
-    assert_eq!(
-        bound[0].raw_word(),
-        bound[1].raw_word(),
-        "both bindings point at the one copy"
+    assert_eq!(probe.gift_bytes, 32, "two roots on one cell copy it twice");
+    let (_, roots) = pending_match(&task).expect("match queued");
+    assert_eq!(roots.len(), 2);
+    assert_ne!(
+        roots[0].raw_word(),
+        roots[1].raw_word(),
+        "each root points at a copy of its own"
     );
 }
 
@@ -299,13 +340,10 @@ fn a_second_match_for_one_parked_receive_is_refused() {
     let mut task = fresh_task();
     park_on_42(&mut task, None);
     probe_sender(&mut sender, &task, int_ref(42));
-    let (segment, bound_vals) = gift_copy(&mut sender.heap, &[int_ref(42)]);
+    let (segment, roots) = gift_copy(&mut sender.heap, &[int_ref(42)]);
     task.delivery.lock().push_gift(Gift {
         segment,
-        payload: GiftPayload::Match {
-            clause_idx: 0,
-            bound_vals,
-        },
+        payload: GiftPayload::Match { clause_idx: 0, roots },
     });
 }
 
@@ -360,8 +398,8 @@ fn a_dropped_receiver_returns_its_pending_gifts_to_the_pool_and_releases_their_b
     drop(task);
     assert_eq!(
         pool_total_cached_blocks(),
-        cached_before + 1,
-        "the receiver's own block is back in the pool; both exact gift blocks went to the system allocator"
+        cached_before + 3,
+        "the receiver's own block and both gift blocks are back in the pool"
     );
     assert_eq!(shared_refs(&witness), 2, "the dropped gift released its reference");
     drop(sender);
@@ -497,16 +535,11 @@ thread_local! {
 
 /// `match_42`, noting whether the watched process's delivery lock was held
 /// while the matcher ran.
-extern "C" fn match_42_noting_the_lock(
-    process: *mut Process,
-    msg: u64,
-    pinned: *const AnyValueRef,
-    out: *mut AnyValueRef,
-) -> u32 {
+extern "C" fn match_42_noting_the_lock(process: *mut Process, msg: u64, frame: u64, out: *mut AnyValueRef) -> u32 {
     let watched = WATCHED.with(std::cell::Cell::get);
     let held = unsafe { &*watched }.delivery.try_lock().is_none();
     LOCK_HELD_AT_MATCH.with(|notes| notes.borrow_mut().push(held));
-    match_42(process, msg, pinned, out)
+    match_42(process, msg, frame, out)
 }
 
 fn watch_matches_on(task: &mut Process) -> ParkRecord {

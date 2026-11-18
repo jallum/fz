@@ -186,12 +186,7 @@ fn timer_drain_wakes_after_cont() {
 
     // Stand up a single task with a wait that has an
     // after_timer_id. matcher_fn is unused on the drain path.
-    extern "C" fn never_match(
-        _process: *mut Process,
-        _msg: u64,
-        _pinned: *const AnyValueRef,
-        _out: *mut AnyValueRef,
-    ) -> u32 {
+    extern "C" fn never_match(_process: *mut Process, _msg: u64, _frame: u64, _out: *mut AnyValueRef) -> u32 {
         0
     }
     let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));

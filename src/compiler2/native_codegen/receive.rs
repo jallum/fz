@@ -7,27 +7,37 @@
 //! extern "C" fn(
 //!     process: *mut Process,
 //!     msg_ref: u64,
-//!     pinned: *const AnyValueRef,
+//!     frame: u64,
 //!     out: *mut AnyValueRef,
 //! ) -> u32
 //! ```
 //!
 //! - `process`: the receiving process the dispatch runs under.
 //! - `msg_ref`: one-word tagged candidate message.
-//! - `pinned`: pointer to `AnyValueRef` entries, in the order
-//!   they appear in `Term::ReceiveMatched::pinned`.
-//! - `out`: caller-supplied `[AnyValueRef; bound_arity]`
-//!   scratch buffer; the dispatch writes the winning edge's semantic and
-//!   physical arguments at the receiving parameter slots.
+//! - `frame`: the arrival's frame closure. The dispatch reads the values in
+//!   `Term::ReceiveMatched::pinned` out of the frame's last captures, in order.
+//! - `out`: caller-supplied `[AnyValueRef; root_arity]`
+//!   scratch buffer; the dispatch writes the winning clause's roots, the
+//!   outermost subjects its arguments read (see `OutcomeRoots`).
 //! - returns `0` on miss; `k > 0` is the 1-based clause index (caller
 //!   indexes the site's `clauses[k-1]`).
+//!
+//! Each clause whose arguments are not its roots also has a projector, emitted
+//! beside the dispatch fn, that the receiver calls with the roots to read the
+//! arguments out of them:
+//!
+//! ```text
+//! extern "C" fn(process: *mut Process, roots: *const AnyValueRef, out: *mut AnyValueRef)
+//! ```
+//!
+//! It writes each argument at the receiving parameter slot in `out`.
 //!
 //! Production codegen consumes the cached AST-free `PatternDispatchPlan`
 //! attached to `Term::ReceiveMatched`; it does not rebuild source clauses.
 
 use crate::dispatch_matrix::pattern::{
-    GuardExtern, PatternDispatchPlan, PatternGuardBinOp, PatternGuardDispatch, PatternGuardExpr, PatternGuardUnaryOp,
-    guard_body_subjects,
+    GuardExtern, OutcomeRoots, PatternDispatchPlan, PatternGuardBinOp, PatternGuardDispatch, PatternGuardExpr,
+    PatternGuardUnaryOp, guard_body_subjects,
 };
 use crate::dispatch_matrix::{
     BitstringEndian, BitstringFieldKind, BitstringFieldSize, BitstringShape, ComparisonValue, DispatchNode,
@@ -51,9 +61,9 @@ use fz_runtime::ir_runtime::{
     fz_box_float_for_any, fz_box_int_for_any, fz_box_opaque_for_any, fz_bs_bit_len_ref, fz_bs_field_end,
     fz_bs_field_spec, fz_bs_read_binary_ref, fz_bs_read_int_ref, fz_list_head_ref, fz_list_is_cons, fz_list_tail_ref,
     fz_map_is_map, fz_map_named_schema_ref, fz_matcher_eq_bytes, fz_matcher_map_get_ref, fz_pinned_binary_segment_size,
-    fz_struct_get_field_ref, fz_struct_get_named_field_ref, fz_struct_schema_id_ref, fz_truthy_ref, fz_type_of,
-    fz_unbox_atom, fz_unbox_float, fz_unbox_int, fz_unbox_opaque, fz_value_cmp_ref, fz_value_eq_ref,
-    fz_value_eq_widening_ref,
+    fz_receive_pinned_ref, fz_struct_get_field_ref, fz_struct_get_named_field_ref, fz_struct_schema_id_ref,
+    fz_truthy_ref, fz_type_of, fz_unbox_atom, fz_unbox_float, fz_unbox_int, fz_unbox_opaque, fz_value_cmp_ref,
+    fz_value_eq_ref, fz_value_eq_widening_ref,
 };
 use fz_runtime::process::AtomName;
 
@@ -75,10 +85,64 @@ pub(crate) fn receive_dispatch_signature<M: cranelift_module::Module>(module: &m
     let mut sig = module.make_signature();
     sig.params.push(AbiParam::new(types::I64)); // process (*mut Process)
     sig.params.push(AbiParam::new(types::I64)); // msg_ref
-    sig.params.push(AbiParam::new(types::I64)); // pinned_ptr
+    sig.params.push(AbiParam::new(types::I64)); // frame (closure ref word)
     sig.params.push(AbiParam::new(types::I64)); // out_ptr
     sig.returns.push(AbiParam::new(types::I32));
     sig
+}
+
+/// Cranelift signature for a clause's projector; see `fz_runtime::park::ProjectorFn`.
+fn receive_projector_signature<M: cranelift_module::Module>(module: &mut M) -> Signature {
+    let mut sig = module.make_signature();
+    sig.params.push(AbiParam::new(types::I64)); // process (*mut Process)
+    sig.params.push(AbiParam::new(types::I64)); // roots_ptr
+    sig.params.push(AbiParam::new(types::I64)); // out_ptr
+    sig
+}
+
+/// The functions a receive site needs: its matcher and, for each clause whose
+/// arguments are not its roots, a projector. Declared before the fns that park
+/// at the site, so a park site can take the address of a function not yet emitted.
+pub(crate) struct ReceiveFns {
+    pub(crate) matcher: FuncId,
+    /// One per clause, in source order.
+    pub(crate) projectors: Vec<Option<FuncId>>,
+}
+
+/// The subjects a clause's arguments read, in the order its body takes them as
+/// parameters: slot `i` of the argument buffer holds the body's parameter `i`.
+pub(crate) fn clause_argument_subjects(fz_module: &Module, clause: &ReceiveClause) -> Vec<SubjectId> {
+    let target = fz_module.fn_by_id(clause.body);
+    let parameters = &target.blocks[target.entry.0 as usize].params;
+    let mut slots: Vec<Option<SubjectId>> = vec![None; clause.arguments.len()];
+    for (subject, parameter) in &clause.arguments {
+        let slot = parameters
+            .iter()
+            .position(|candidate| candidate == parameter)
+            .expect("receive argument names an actual target parameter");
+        assert!(slot < slots.len(), "receive arguments precede captures");
+        slots[slot] = Some(*subject);
+    }
+    slots
+        .into_iter()
+        .map(|subject| subject.expect("every receive argument slot is filled"))
+        .collect()
+}
+
+/// The roots of a clause: what its matcher writes and its projector reads.
+pub(crate) fn clause_roots(fz_module: &Module, dispatch: &ReceiveDispatchPlan, clause: &ReceiveClause) -> OutcomeRoots {
+    dispatch.outcome_roots(clause_argument_subjects(fz_module, clause))
+}
+
+/// Declare a clause's projector in `module`.
+pub(crate) fn declare_receive_projector<M: cranelift_module::Module>(
+    module: &mut M,
+    name: &str,
+) -> Result<FuncId, CodegenError> {
+    let sig = receive_projector_signature(module);
+    module
+        .declare_function(name, Linkage::Local, &sig)
+        .map_err(|e| CodegenError::new(format!("declare {}: {}", name, e)))
 }
 
 /// Declare a receive dispatch fn in `module`.
@@ -192,7 +256,7 @@ pub(crate) fn emit_receive_dispatch_body<M: cranelift_module::Module>(
         b.seal_block(entry);
         let process = b.block_params(entry)[0];
         let msg_ref = b.block_params(entry)[1];
-        let pinned_ptr = b.block_params(entry)[2];
+        let frame = b.block_params(entry)[2];
         let out_ptr = b.block_params(entry)[3];
         let msg = receive_value_from_ref_word(b, msg_ref);
 
@@ -208,20 +272,23 @@ pub(crate) fn emit_receive_dispatch_body<M: cranelift_module::Module>(
             fz_module,
             tuple_schema_ids,
             named_schema_ids,
-            outcomes: clauses,
             outcome_reads: clauses
                 .iter()
                 .flat_map(|clause| clause.arguments.iter().map(|(subject, _)| *subject))
                 .collect(),
             bindings: crate::compiler2::DispatchBindings {
                 pinned: (0..dispatch.pinned.len())
-                    .map(|index| load_receive_value_ref(body.b, pinned_ptr, index))
+                    .map(|index| load_pinned_from_frame(&mut body, frame, expected, index))
                     .collect(),
                 prepared: (0..dispatch.prepared_keys.len())
-                    .map(|index| load_receive_value_ref(body.b, pinned_ptr, dispatch.pinned.len() + index))
+                    .map(|index| load_pinned_from_frame(&mut body, frame, expected, dispatch.pinned.len() + index))
                     .collect(),
             },
             out_ptr,
+            roots: clauses
+                .iter()
+                .map(|clause| clause_roots(fz_module, dispatch, clause).roots)
+                .collect(),
             dispatch,
             inputs: vec![msg],
             binary_data_gvs: &binary_data_gvs,
@@ -247,6 +314,84 @@ pub(crate) fn emit_receive_dispatch_body<M: cranelift_module::Module>(
     defined
 }
 
+/// The `index`th pinned value of `total`, read out of the arrival's frame.
+fn load_pinned_from_frame<M: cranelift_module::Module>(
+    body: &mut DispatchBody<'_, '_, M>,
+    frame: ir::Value,
+    total: usize,
+    index: usize,
+) -> ReceiveValue {
+    let from_end = body.b.ins().iconst(types::I64, (total - index) as i64);
+    let value_ref = runtime_call1!(body, fz_receive_pinned_ref, [frame, from_end]);
+    receive_value_from_ref_word(body.b, value_ref)
+}
+
+/// Emit a clause's projector: it reads each of the clause's arguments out of
+/// the roots the dispatch fn wrote, following the same structural projections
+/// the dispatch fn would have.
+pub(crate) fn emit_receive_projector_body<M: cranelift_module::Module>(
+    module: &mut M,
+    fbctx: &mut FunctionBuilderContext,
+    projector_id: FuncId,
+    fz_module: &Module,
+    tuple_schema_ids: &HashMap<usize, u32>,
+    named_schema_ids: &HashMap<fz_runtime::module_name::ModuleName, u32>,
+    clause: &ReceiveClause,
+    dispatch: &ReceiveDispatchPlan,
+) -> Result<(), CodegenError> {
+    let roots = clause_roots(fz_module, dispatch, clause);
+    let arguments = clause_argument_subjects(fz_module, clause);
+    let mut compile_err: Option<CodegenError> = None;
+    let sig = receive_projector_signature(module);
+    let defined = emit_fn_body(module, fbctx, sig, projector_id, |m, b| {
+        let entry = b.create_block();
+        b.append_block_params_for_function_params(entry);
+        b.switch_to_block(entry);
+        b.seal_block(entry);
+        let process = b.block_params(entry)[0];
+        let roots_ptr = b.block_params(entry)[1];
+        let out_ptr = b.block_params(entry)[2];
+        let binary_data_gvs = HashMap::default();
+        let mut body = DispatchBody::new(b, m);
+        let ctx = DispatchCtx {
+            process,
+            fz_module,
+            tuple_schema_ids,
+            named_schema_ids,
+            outcome_reads: Vec::new(),
+            bindings: crate::compiler2::DispatchBindings {
+                pinned: Vec::new(),
+                prepared: Vec::new(),
+            },
+            roots: Vec::new(),
+            out_ptr,
+            dispatch,
+            inputs: Vec::new(),
+            binary_data_gvs: &binary_data_gvs,
+        };
+        let mut state = DispatchEmitState::default();
+        for (index, root) in roots.roots.iter().enumerate() {
+            let value = load_receive_value_ref(body.b, roots_ptr, index);
+            state.values.insert(*root, value);
+        }
+        for (slot, subject) in arguments.iter().enumerate() {
+            let stored = resolve_dispatch_subject(&mut body, &ctx, *subject, &mut state)
+                .and_then(|value| store_receive_value_ref(&mut body, &ctx, out_ptr, slot, value));
+            if let Err(e) = stored {
+                compile_err = Some(e);
+                body.b.ins().return_(&[]);
+                return;
+            }
+        }
+        body.b.ins().return_(&[]);
+    })
+    .map_err(|e| CodegenError::new(format!("define receive projector fn: {}", e)));
+    if let Some(e) = compile_err {
+        return Err(e);
+    }
+    defined
+}
+
 #[derive(Clone, Copy)]
 enum ReceiveValue {
     AnyRef(ir::Value),
@@ -264,11 +409,13 @@ struct DispatchCtx<'a> {
     fz_module: &'a Module,
     tuple_schema_ids: &'a HashMap<usize, u32>,
     named_schema_ids: &'a HashMap<fz_runtime::module_name::ModuleName, u32>,
-    outcomes: &'a [ReceiveClause],
     /// The subjects the winning outcome reads, beyond what the decision asks.
     /// A bitstring field outside both is checked for fit and never built.
     outcome_reads: Vec<SubjectId>,
     bindings: crate::compiler2::DispatchBindings<ReceiveValue>,
+    /// What the dispatch writes to `out_ptr` on a win, or the projector reads
+    /// from it: each clause's roots, in the order they sit in the buffer.
+    roots: Vec<Vec<SubjectId>>,
     out_ptr: ir::Value,
     dispatch: &'a ReceiveDispatchPlan,
     inputs: Vec<ReceiveValue>,
@@ -402,19 +549,12 @@ fn emit_dispatch_node<M: cranelift_module::Module>(
         }
         DispatchNode::Outcome { outcome, .. } => {
             let clause_index = outcome.0 as usize;
-            let edge = ctx
-                .outcomes
+            let roots = ctx
+                .roots
                 .get(clause_index)
                 .ok_or_else(|| CodegenError::new(format!("dispatch outcome {:?} has no target edge", outcome)))?;
-            let target = ctx.fz_module.fn_by_id(edge.body);
-            let parameters = &target.blocks[target.entry.0 as usize].params;
-            for (subject, parameter) in &edge.arguments {
-                let value = resolve_dispatch_subject(body, ctx, *subject, state)?;
-                let slot = parameters
-                    .iter()
-                    .position(|candidate| candidate == parameter)
-                    .expect("receive argument names an actual target parameter");
-                assert!(slot < edge.arguments.len(), "receive arguments precede captures");
+            for (slot, root) in roots.iter().enumerate() {
+                let value = resolve_dispatch_subject(body, ctx, *root, state)?;
                 store_receive_value_ref(body, ctx, ctx.out_ptr, slot, value)?;
             }
             let k = body.b.ins().iconst(types::I32, (clause_index + 1) as i64);
@@ -1479,7 +1619,6 @@ fn emit_guard_dispatch<M: cranelift_module::Module>(
         fz_module: parent.fz_module,
         tuple_schema_ids: parent.tuple_schema_ids,
         named_schema_ids: parent.named_schema_ids,
-        outcomes: parent.outcomes,
         outcome_reads: guard_body_subjects(&dispatch.bodies),
         bindings: crate::compiler2::DispatchBindings {
             pinned: Vec::new(),
@@ -1492,6 +1631,7 @@ fn emit_guard_dispatch<M: cranelift_module::Module>(
                 })
                 .collect::<Result<Vec<_>, _>>()?,
         },
+        roots: Vec::new(),
         out_ptr: parent.out_ptr,
         dispatch: &dispatch.plan,
         inputs,

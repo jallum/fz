@@ -75,8 +75,8 @@ in `Process.delivery` once a miss must wait. It holds the receive's `site`, the
 arrival's `frame`, and (if there is an `after`) the timeout state.
 
 The site (`ReceiveSite`) is what the compiler knows about the receive: the
-matcher, the `after` body's code, the pinned-value count, and each clause's
-code and bound-value count. Codegen emits it once per receive as read-only
+matcher, the `after` body's code, the pinned-value count, the widest clause's
+root count, and each clause's code, projector, root count and argument count. Codegen emits it once per receive as read-only
 data. The frame is one closure built each time the receive is reached,
 `[outer_cont, captures..., pinned...]`, and is never called. A receive of any
 number of clauses builds one frame.
@@ -103,17 +103,24 @@ a sender tests only its own message.
 
 When a message matches, `materialize_outcome_closure` turns the winning clause
 template into a runnable zero-arg closure. The template env is
-`[outer_cont, cap0, …]`; the outcome env splices the matcher's bound values in
-after the outer continuation: `[outer_cont, bound0, …, cap0, …]`. A scan hit
+`[outer_cont, cap0, …]`; the outcome env splices the clause's arguments in
+after the outer continuation: `[outer_cont, arg0, …, cap0, …]`. The matcher
+writes the clause's *roots*, the outermost argument subjects reached through
+tuple fields, struct fields, list heads and list tails (a bitstring field or a
+map value ends a path and is its own root), so roots never lie inside one
+another. A clause whose roots are its arguments in order resumes over the roots
+directly. Any other clause has a projector beside its matcher, which reads each
+argument out of the roots by the same projections the plan names;
+`ParkRecord::outcome_closure` runs it before building the closure. A scan hit
 returns that closure to the receive that is running. A sender-side hit is
 delivered in two halves: the sender runs the matcher (`ParkRecord::try_match`
 with the sender as the allocating process, which the matcher uses for allocation
 only: a guard's `self()` is a pinned value the receiver took at park time, see
 [pattern-matching](pattern-matching.md#receive-guards-run-on-the-sender)), cancels the after-timer and calls
-`sched::gift_match`, which copies the bound values with one forwarding map into
+`sched::gift_match`, which copies each root once into
 a gift on the sender's heap (`sched::gift_copy`: measure, then copy into one
-block of the measured size) and queues a `Gift { segment,
-payload: GiftPayload::Match { clause_idx, bound_vals } }` on the receiver's
+block of the measured size; no record of what was copied is kept) and queues a `Gift { segment,
+payload: GiftPayload::Match { clause_idx, roots } }` on the receiver's
 `in_queue`; a miss calls `sched::gift_message`, which gifts the whole message
 as a `GiftPayload::Message`. These two functions are the only implementation of
 "gift and queue": `sched::probe_sender` (JIT and AOT) and the interpreter's
@@ -123,7 +130,7 @@ values, or of values that cross as they are (the empty list, a pointer the
 sender does not own), measures zero and returns `GiftSegment::empty()` without
 opening a window, and grafting it is a no-op. The receiver's dispatch grafts each segment, takes the park record
 and materializes the outcome closure (`sched::deliver_in_queue`). The queued
-entry is the partial closure: a clause index and gifted bound values, no new
+entry is the partial closure: a clause index and the gifted roots, no new
 heap object type.
 
 This is outcome-closure delivery, not mailbox delivery. A sender-side hit does
@@ -137,7 +144,7 @@ receiver's heap, and a receiver whose receive is already matched is not probed
 again; its later arrivals are misses.
 
 For compiler2-native codegen, that resumed clause body is just another
-continuation boundary. The parked outcome closure publishes the bound-value
+continuation boundary. The parked outcome closure publishes the argument
 projection; if the resumed native body then tailcalls a callee whose published
 return lane differs from the body's own published return lane, codegen must
 insert a compiler-generated boundary adapter closure and pass that adapter as
@@ -152,7 +159,7 @@ relying on an alternate `outer_cont` mode.
 
 ```text
 message arrives for a waiting receive and matches clause k:
-  outcome = wait.outcome_closure(k, bound_vals)   # clause k's code over [outer_cont, bound..., captures...]
+  outcome = wait.outcome_closure(k, roots)   # clause k's code over [outer_cont, args projected from roots..., captures...]
   wait = None ; runnable = outcome
   core.make_runnable(pid, &mut state)   # Blocked -> Ready, queued once
 ```
@@ -210,7 +217,7 @@ receiver's lock for the pending-match decision and the in-queue.
 
 `delivery` is declared before `heap` in `Process`, so a process dropped with
 gifts still queued drops them first: each `GiftSegment` returns its block to
-the pool (a table-sized block) or the allocator (an exact block) and releases its stubs. A receiver left parked
+the pool (a block below or within the table) or the allocator (an exact block above it) and releases its stubs. A receiver left parked
 when the run ends is torn down this way, and `fz.runtime.run_ended` reports that
 the pool got every block back ([runtime telemetry](runtime-telemetry.md)). With
 one worker the lock is never contended.
@@ -541,7 +548,7 @@ handler slot (a raise's handler, resumed inside the quantum that raised it, see
   across all four paths.
 - `cargo test --test fixture_matrix a_send_probes_on_the_sender_and_gifts_its_result_through_the_receivers_in_queue`
   — fixtures 00901 and 00902 on the `run` and `interp` paths: a miss gifts the
-  whole message in one block (800032 bytes for the 50000-element log), a hit gifts exactly the bound cells (48 bytes for `[1, 2, 3]`),
+  whole message in one block (800032 bytes for the 50000-element log), a hit gifts the clause's one root (48 bytes for `[1, 2, 3]`),
   the receiver is woken once, and its own heap allocates no list cells for the
   delivery.
 - `runtime/src/sched_core_test.rs` (`end_quantum` tests) — a resource freed by a

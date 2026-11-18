@@ -1185,6 +1185,44 @@ impl Decided<'_> {
     }
 }
 
+/// One argument of a receive outcome, read out of its root: `path` names the
+/// subjects from just below the root down to the argument, each a structural
+/// projection of the one before it. This repeats, on the receiver's copy of the
+/// root, the reads the sender's run made, as the compiled projector does.
+pub(super) fn project_from_root(
+    proc: *mut Process,
+    module: &Module,
+    plan: &PatternDispatchPlan<Ty>,
+    root: AnyValue,
+    path: &[SubjectId],
+) -> Result<AnyValue, String> {
+    let mut value = root;
+    for subject in path {
+        let SubjectSource::Projection(projection) = plan.subject(*subject) else {
+            return Err(format!("receive path subject {subject:?} is an input"));
+        };
+        value = match &projection.kind {
+            ProjectionKind::TupleField(index) => {
+                let slot = value.value(proc)?;
+                if slot.kind() != ValueKind::STRUCT {
+                    return Err("receive path: tuple field of a value that is not a tuple".to_string());
+                }
+                with_value_ref(proc, value, "receive tuple field", |struct_ref| {
+                    fz_struct_get_field_ref(proc, struct_ref, index * 8)
+                })
+                .and_then(|ref_word| interp_value_from_ref_word(ref_word, "receive tuple field"))?
+            }
+            ProjectionKind::StructField(field) => interp_named_field(proc, module, value, field)?,
+            ProjectionKind::ListHead => interp_list_head(proc, value)?,
+            ProjectionKind::ListTail => interp_list_tail(proc, value)?,
+            ProjectionKind::MapValue { .. } | ProjectionKind::BitstringField(_) => {
+                return Err("receive path crosses a boundary that ends a root".to_string());
+            }
+        };
+    }
+    Ok(value)
+}
+
 /// The i-th field of a lane-form tuple, as a view over lanes already in hand.
 ///
 /// `None` where the subject is not a lane-form tuple, which is the signal to
