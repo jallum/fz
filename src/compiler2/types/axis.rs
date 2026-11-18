@@ -90,13 +90,13 @@
 //! keeps a specialization's canonical inputs and result as one arrow's params
 //! and result and reads them back with `Types::arrow_params`, and a resolved
 //! `@spec` is decomposed by `arrow_params`/`arrow_result` the same way. The
-//! kernel meanwhile calls `(any, int) -> any` EVERY callable — an arrow whose
-//! result is every value constrains nothing a callable could fail, which
-//! `emptiness::func_clause_empty` decides outright — so the top rule would
-//! replace any such arrow with the contentless clause. `arrow_params` then
-//! answers `[]`, and `arrow_result` answers `None` where `resolve` and
-//! `contract` both `expect` a result slot: the collapse ends in a panic, not
-//! in a quietly empty answer. An activation key escapes only because its
+//! kernel meanwhile calls `(any, int) -> any` EVERY function of two arguments
+//! — an arrow whose result is every value constrains nothing a function of
+//! its arity could fail, which `emptiness::func_clause_empty` decides outright
+//! — so a rule that wrote a clause as the set it denotes would replace any
+//! such arrow with its arity's top, `(none, none) -> any`. `arrow_params` then
+//! answers a row of `none` where the inputs were, and a declared signature is
+//! gone. An activation key escapes only because its
 //! result slot is the unknown `r0` and not `any`; a declared callable
 //! parameter does not, and the target fixtures hold those by the dozen.
 //! `axis_test` pins the collapse against the params the same arrow still
@@ -541,10 +541,9 @@ pub(super) const FUNCS: AxisView<super::sigs::ArrowSig> = AxisView {
     install: |d, clauses| d.funcs = clauses,
     clause_covers: |wider, narrower, _| factors_are_superset(wider, narrower),
     coverage: |_, _, _, _| Coverage::Unproven,
-    // An arrow can BE the whole axis — `(X) -> any` constrains nothing a
-    // callable could fail — but no reading of the sigs says so: a clause
-    // naming a closure literal is one construction, not every callable, and
-    // the two look alike from here. Only the calculator can tell them apart.
+    // A positive arrow fixes an arity, so only a clause carrying a negative
+    // can reach the whole axis (`f ∨ ¬f`), and no reading of the sigs says
+    // when: that question goes to the calculator.
     plain_top: |_, _| Coverage::Unproven,
 };
 

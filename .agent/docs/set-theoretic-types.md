@@ -123,8 +123,9 @@ the structural kernel (`Descr::intersect`) and the semantic path
 (`Types::intersect`, which collapses same-shape positives through `MergeSig`)
 — and it drops duplicate clauses (`A ∨ A = A`), clauses holding a literal
 both positively and negatively (`P ∧ ¬P = ∅`), and clauses a `MergeSig` merge
-proves empty (`PosMeet::Empty`: tuple arity mismatch, an empty tuple
-coordinate or resource payload, a non-empty list sig with no element left).
+proves empty (`PosMeet::Empty`: tuple arity mismatch, arrow arity mismatch,
+an empty tuple coordinate or resource payload, a non-empty list sig with no
+element left).
 `dnf_union` drops duplicate clauses and `dnf_neg` skips duplicate factors.
 
 The persistence boundary (`Types::intern`) canonicalizes every descriptor
@@ -310,9 +311,17 @@ signature admits `[]` and one negated signature's element swallows the
 fragment, while `emptiness::resource_clause_empty` calls it empty exactly when
 a SINGLE negated payload swallows `any` — which is why two resource clauses
 that partition the payloads between them are still not every resource. Both go
-to the calculator for the rest, as the CALLABLE axis always does: a clause
-naming a closure literal is one construction, not every callable, and nothing
-in the signature tells them apart.
+to the calculator for the rest, as the CALLABLE axis always does: a positive
+arrow fixes an arity, so only a clause carrying a negative can reach every
+callable, and nothing in the signatures says when.
+
+A function takes one number of arguments, so arrows of different arities
+share no function: their meet is empty (`emptiness::func_clause_empty`,
+`PosMeet::Empty`), an arrow subtracted from a clause takes away functions of
+its own arity only, and a closure literal is inside an arrow only when it
+takes that arrow's number of arguments. Within one arity an arrow whose
+result is `any` constrains nothing, so `(int) -> any` is every function of
+one argument.
 
 What those two rules ask of a child — "is this every value" — is a question
 about the DENOTATION, and `Descr::is_full` is its one implementation:
@@ -422,8 +431,12 @@ Union-time hygiene is not enough, because clauses are also made
 equal AFTER a union — `erase_closure_identity` strips closure brands in place,
 turning a legitimate two-brand union into `A ∨ A`, and `funcs = [A, A]` would
 otherwise intern as a different `Ty` than `funcs = [A]`. Likewise a positive arrow with an
-uninhabited parameter constrains no call and is every function, so
-`normalize_func_clauses` drops it from its clause: `(none) -> X` interns as `fun`. That difference is
+uninhabited parameter constrains no call and is every function of its arity,
+so `normalize_func_clauses` gives it one written form: beside another positive
+of the same arity it is dropped, and alone it is written with every parameter
+`none` and the result `any`, so `(int, none) -> X` interns as
+`(none, none) -> any`. The canonical rendering writes every arrow that holds
+all the functions of its arity that same way. That difference is
 what the activation key is built from, so idempotence at the boundary is what
 makes the key a join homomorphism (fz-kdt.80). A debug-build assert in
 `TypeInterner::intern` (`debug_assert_dnf_axes_hygienic`) checks the

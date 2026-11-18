@@ -111,6 +111,9 @@ pub(super) trait RuntimeTestEmitter<'f> {
     /// The code word a closure value carries. Only asked under a CLOSURE
     /// guard.
     fn closure_code(&mut self, value: Self::Value) -> Result<ir::Value, CodegenError>;
+    /// How many arguments a closure value takes, as an `I64`. Only asked
+    /// under a CLOSURE guard.
+    fn closure_arity(&mut self, value: Self::Value) -> Result<ir::Value, CodegenError>;
     /// The code addresses of every construction the test ENUMERATES -- the
     /// listed side; the emitter applies the cofinite complement itself. An
     /// error where this door cannot name a callable at all.
@@ -428,7 +431,8 @@ fn emit_list_axis<'f, E: RuntimeTestEmitter<'f>>(
     Ok(e.builder().ins().bor(is_empty, admitted))
 }
 
-/// "Is this value one of THESE constructions?"
+/// "Is this value one of THESE constructions, taking one of THESE numbers of
+/// arguments?"
 ///
 /// A closure object's word at `+8` is the address of the callable boundary that
 /// minted it, and a thin `MakeFnRef` static closure carries the same address, so one
@@ -445,9 +449,17 @@ fn emit_callable_axis<'f, E: RuntimeTestEmitter<'f>>(
     if callables.is_any() {
         return e.kind_flag(value, ValueKind::CLOSURE);
     }
-    let addresses = e.callable_addresses(callables)?;
+    let addresses = if callables.targets().is_any() {
+        None
+    } else {
+        Some(e.callable_addresses(callables)?)
+    };
     let cofinite = callables.targets().cofinite;
     kind_guarded(e, value, ValueKind::CLOSURE, move |e, value| {
+        let of_arity = emit_closure_arity_flag(e, value, callables.arities())?;
+        let Some(addresses) = addresses else {
+            return Ok(of_arity);
+        };
         let code = e.closure_code(value)?;
         let b = e.builder();
         let mut hit = b.ins().iconst(types::I8, 0);
@@ -455,7 +467,33 @@ fn emit_callable_axis<'f, E: RuntimeTestEmitter<'f>>(
             let eq = b.ins().icmp(IntCC::Equal, code, address);
             hit = b.ins().bor(hit, eq);
         }
-        Ok(if cofinite { b.ins().bxor_imm_u(hit, 1) } else { hit })
+        let named = if cofinite { b.ins().bxor_imm_u(hit, 1) } else { hit };
+        Ok(b.ins().band(of_arity, named))
+    })
+}
+
+/// "Does this closure take one of THESE numbers of arguments?" The closure's
+/// header holds the number, so the test reads it once and compares it with
+/// each arity the set lists.
+fn emit_closure_arity_flag<'f, E: RuntimeTestEmitter<'f>>(
+    e: &mut E,
+    value: E::Value,
+    arities: &FiniteSet<usize>,
+) -> Result<ir::Value, CodegenError> {
+    if arities.is_any() {
+        return Ok(e.builder().ins().iconst(types::I8, 1));
+    }
+    let arity = e.closure_arity(value)?;
+    let b = e.builder();
+    let mut hit = b.ins().iconst(types::I8, 0);
+    for listed in &arities.values {
+        let eq = b.ins().icmp_imm_s(IntCC::Equal, arity, *listed as i64);
+        hit = b.ins().bor(hit, eq);
+    }
+    Ok(if arities.cofinite {
+        b.ins().bxor_imm_u(hit, 1)
+    } else {
+        hit
     })
 }
 

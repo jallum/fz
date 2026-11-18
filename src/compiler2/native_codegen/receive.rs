@@ -59,11 +59,11 @@ use cranelift_module::{DataDescription, DataId, FuncId, Linkage};
 use fz_runtime::any_value::{AnyValueRef, FALSE_ATOM_ID, NIL_ATOM_ID, TRUE_ATOM_ID, ValueKind};
 use fz_runtime::ir_runtime::{
     fz_box_float_for_any, fz_box_int_for_any, fz_box_opaque_for_any, fz_bs_bit_len_ref, fz_bs_field_end,
-    fz_bs_field_spec, fz_bs_read_binary_ref, fz_bs_read_int_ref, fz_list_head_ref, fz_list_is_cons, fz_list_tail_ref,
-    fz_map_is_map, fz_map_named_schema_ref, fz_matcher_eq_bytes, fz_matcher_map_get_ref, fz_pinned_binary_segment_size,
-    fz_receive_pinned_ref, fz_struct_get_field_ref, fz_struct_get_named_field_ref, fz_struct_schema_id_ref,
-    fz_truthy_ref, fz_type_of, fz_unbox_atom, fz_unbox_float, fz_unbox_int, fz_unbox_opaque, fz_value_cmp_ref,
-    fz_value_eq_ref, fz_value_eq_widening_ref,
+    fz_bs_field_spec, fz_bs_read_binary_ref, fz_bs_read_int_ref, fz_function_arity, fz_list_head_ref, fz_list_is_cons,
+    fz_list_tail_ref, fz_map_is_map, fz_map_named_schema_ref, fz_matcher_eq_bytes, fz_matcher_map_get_ref,
+    fz_pinned_binary_segment_size, fz_receive_pinned_ref, fz_struct_get_field_ref, fz_struct_get_named_field_ref,
+    fz_struct_schema_id_ref, fz_truthy_ref, fz_type_of, fz_unbox_atom, fz_unbox_float, fz_unbox_int, fz_unbox_opaque,
+    fz_value_cmp_ref, fz_value_eq_ref, fz_value_eq_widening_ref,
 };
 use fz_runtime::process::AtomName;
 
@@ -912,11 +912,21 @@ impl<'f, M: cranelift_module::Module> RuntimeTestEmitter<'f> for ReceiveTestEmit
         Err(CodegenError::new(RECEIVE_NAMES_NO_CALLABLE))
     }
 
+    fn closure_arity(&mut self, value: ReceiveValue) -> Result<ir::Value, CodegenError> {
+        let closure_ref = emit_receive_value_ref(self.body, self.ctx, value)?;
+        Ok(runtime_call1!(
+            self.body,
+            fz_function_arity,
+            [self.ctx.process, closure_ref]
+        ))
+    }
+
     fn callable_addresses(&mut self, _callables: &CallableShapes) -> Result<Vec<ir::Value>, CodegenError> {
         // A receive plan's questions come from message PATTERNS and from
         // parameter annotations, and neither language can name one callable:
-        // the finest a source can say is "a function". So the callable axis
-        // arrives here as all-or-nothing, and a finite set would mean some
+        // the finest a source can say is "a function of this many arguments".
+        // So the callable axis arrives here naming no construction, and a
+        // finite set would mean some
         // other producer started routing on callable identity without teaching
         // this door to read one (fz-kdt.125).
         Err(CodegenError::new(RECEIVE_NAMES_NO_CALLABLE))

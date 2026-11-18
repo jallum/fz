@@ -1041,6 +1041,33 @@ mod tests {
         );
     }
 
+    /// A function type states how many arguments its functions take, and a
+    /// test of it admits a closure of that arity only. Two tests of different
+    /// arities are a real separation: the closure's header answers both.
+    #[test]
+    fn a_test_of_an_arity_admits_only_callables_of_that_arity() {
+        let unary = CallableShapes::of_arities(FiniteSet::lit(1));
+        let binary = CallableShapes::of_arities(FiniteSet::lit(2));
+        let either = CallableShapes::of_arities(FiniteSet::finite([1, 2]));
+        let every = CallableShapes::any();
+
+        assert!(!unary.is_any() && !unary.is_none(), "it admits some callables, not all");
+        assert!(unary.arities().contains(&1) && !unary.arities().contains(&2));
+        assert!(CallableShapes::of_arities(FiniteSet::none()).is_none());
+
+        assert!(!unary.overlaps(&binary), "no closure takes one argument and two");
+        assert!(!unary.erasing_overlap(&binary), "and the header tells them apart");
+        assert!(either.contains_all(&unary) && either.contains_all(&binary));
+        assert!(!unary.contains_all(&either));
+        assert!(every.contains_all(&unary) && !unary.contains_all(&every));
+
+        let named = CallableShapes::exact(vec![construction(66, vec![])]);
+        assert!(
+            unary.overlaps(&named) && !unary.contains_all(&named),
+            "a named construction does not say its arity here, so the two may meet and neither is known to hold the other",
+        );
+    }
+
     /// The callable axis is PER POSITION: it separates exactly as far as its
     /// capture questions do, and erases exactly where they erase.
     ///
