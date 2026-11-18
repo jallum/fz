@@ -11,8 +11,10 @@ AnyValueRef = one word that says "here is a value"
 ```
 
 The word carries a 4-bit tag (what kind) and an address (where the payload is).
-An int, float, pid or reference ref points at a scalar payload word; an atom ref holds the atom
-id in its address field and points at nothing, as `[]` and `null` do; heap refs
+An int, float or reference ref points at a boxed scalar payload word; an atom
+ref holds the atom id and a pid ref holds the pid in its address field, and
+neither points at anything, as `[]` and `null` do. Atom and pid are the
+immediate kinds; int, float and reference are the boxed scalar kinds. Heap refs
 point at a heap object. A heap reference is not a separate idea — it is the
 heap-object subset of `AnyValueRef`. The interpreter, REPL, JIT, and AOT paths all pass values through
 this one shape, so spawn, receive, matching, and heap reads behave the same on
@@ -38,11 +40,16 @@ owns packing, projection, and the platform difference behind the word.
 - **`AnyValueRef`**: the public word. Owns packing/unpacking and projection.
   `tag()` returns a `ValueKind`; `load_int`/`load_float` read the payload word a
   ref points at; `AnyValueRef::atom(id)` is the one constructor of an atom ref
-  and `load_atom` reads the id back out of the address field (an atom is never
-  built over a slot: `from_scalar_slot` rejects `ValueKind::ATOM`); `list_addr`/`map_addr`/`struct_addr`/… project heap refs to a
+  and `load_atom` reads the id back out of the address field; `AnyValueRef::pid(word)`
+  is the one constructor of a pid ref (a pid is a `u32`; a wider word is
+  `PidOutOfRange`) and `load_opaque_word(PID)` reads it back from the address
+  field. An immediate is never built over a slot: `from_scalar_slot` rejects
+  `ValueKind::ATOM` and `ValueKind::PID` with `ImmediateHasNoSlot`; `list_addr`/`map_addr`/`struct_addr`/… project heap refs to a
   cleared address (each checks the tag and errors on mismatch).
 - **`ValueKind`**: the tag, one byte. `is_heap()` (List..Resource) and
-  `is_scalar()` (Int/Float/Atom/Pid/Reference) classify it; `is_opaque_word()` is
+  `is_scalar()` (Int/Float/Atom/Pid/Reference) classify it; `is_immediate()`
+  (Atom/Pid) and `is_boxed_scalar()` (Int/Float/Reference) split the scalars by
+  whether the ref word carries the value or points at a box; `is_opaque_word()` is
   the pid and reference kinds, whose one word is meaningless as an integer: a
   pid is not `1`, and `self() == 1` is false. `debug::render_opaque_word`
   prints them as Elixir does: `#PID<0.N.S>` (the pid's low 15 bits and the
@@ -51,9 +58,11 @@ owns packing, projection, and the platform difference behind the word.
 - **`AnyValue`**: the by-value enum a host caller decodes a ref into —
   `Null`, `EmptyList`, `Int(i64)`, `Opaque(ValueKind, u64)` (a pid or a
   reference and its word), `Float(u64)`, `Atom(u32)`, `HeapRef(AnyValueRef)`.
-  An int, float, pid or reference `AnyValue` has no address; `ref_word()` panics on one because
-  it needs object-local storage before it can become a ref. An atom needs none:
-  `ref_word()` answers `AnyValueRef::atom(id)`. The interpreter's
+  An int, float or reference `AnyValue` has no address; `ref_word()` panics on one because
+  it needs object-local storage before it can become a ref. An atom and a pid need none:
+  `ref_word()` answers `AnyValueRef::atom(id)` or `AnyValueRef::pid(word)`.
+  `Heap::box_any_value_ref` allocates a scalar box for an int, float or
+  reference and nothing for an atom or pid. The interpreter's
   temporary `FnRef` view materializes, before a public boundary, the node's one
   static closure for its function (`Node::static_closure`, keyed by denotation,
   arity and `FnId`) and returns its literal ref word; the object's raw storage
@@ -873,13 +882,15 @@ follow: only heap-shaped payload words become child roots
 ```
 
 Heap-object refs (`Map, List, Struct, Closure, Bitstring, BinView, BinRef, Resource`)
-are followed as edges. An int or float ref points at a payload word, not a child
+are followed as edges. An int, float or reference ref points at a payload word, not a child
 object; a scalar payload can *look* like an address, but the kind byte is the
-authority, so scalars are never chased. When an int or float ref sits in a
+authority, so scalars are never chased. When an int, float or reference ref sits in a
 durable root slot, GC copies its boxed payload (`copy_scalar_box_to_space`, a
 small `ScalarBox` heap object) and rewrites the root to the copy — copied, not
-followed. An atom ref has no payload to copy: GC and deep copy leave it as it is,
-like `null`, and a measuring pass charges it nothing.
+followed. An atom or pid ref has no payload to copy: GC and deep copy leave it as it is,
+like `null`, and a measuring pass charges it nothing. Generated code packs and
+reads a pid ref inline (`immediate_ref_word`, `immediate_payload`); only a
+reference goes through `fz_box_opaque_for_any` and `fz_unbox_opaque`.
 
 Off-heap binaries and resources have their own atomic reference counts. A
 16-byte `BinRef` owns one edge to a `SharedBin`, and a binary view names its

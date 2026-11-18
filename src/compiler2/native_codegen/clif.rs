@@ -103,12 +103,19 @@ pub(crate) fn cached_iconst(b: &mut FunctionBuilder<'_>, cache: &mut CodegenCach
     b.ins().iconst(types::I64, val)
 }
 
-/// The ref word of the atom whose id is `raw`: the id sits in the address
-/// field under the atom tag. It names no object, so no arch clears an address
-/// first.
-pub(crate) fn atom_ref_word(b: &mut FunctionBuilder<'_>, raw: ir::Value) -> ir::Value {
-    let tag_word = (u64::from(ValueKind::ATOM.tag()) << AnyValueRefPacking::current().tag_shift()) as i64;
+/// The ref word of the atom or pid whose payload is `raw`: the payload sits in
+/// the address field under the kind's tag. It names no object, so no arch
+/// clears an address first.
+pub(crate) fn immediate_ref_word(b: &mut FunctionBuilder<'_>, raw: ir::Value, kind: ValueKind) -> ir::Value {
+    debug_assert!(kind.is_immediate());
+    let tag_word = (u64::from(kind.tag()) << AnyValueRefPacking::current().tag_shift()) as i64;
     b.ins().bor_imm_u(raw, tag_word)
+}
+
+/// The payload of an atom or pid ref word: its address field.
+pub(crate) fn immediate_payload(b: &mut FunctionBuilder<'_>, ref_word: ir::Value) -> ir::Value {
+    b.ins()
+        .band_imm_u(ref_word, AnyValueRefPacking::current().address_mask() as i64)
 }
 
 /// Convert an i8 Cranelift bool to the reserved true/false atom bit patterns.

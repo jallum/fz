@@ -334,7 +334,7 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
     /// An atom ref is its id under the atom tag: one `or`, no call and no
     /// address to clear, on every arch.
     pub(crate) fn box_atom_for_any(&mut self, raw: ir::Value) -> ir::Value {
-        atom_ref_word(self.b, raw)
+        immediate_ref_word(self.b, raw, ValueKind::ATOM)
     }
 
     pub(crate) fn unbox_int(&mut self, value_ref: ir::Value) -> ir::Value {
@@ -507,15 +507,15 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
 
     /// Whether a ref of this kind points at the slot that holds its raw word.
     pub(crate) fn kind_names_its_slot(&mut self, kind: ir::Value) -> ir::Value {
-        let at_least_pid =
+        let at_least_ref =
             self.b
                 .ins()
-                .icmp_imm_s(IntCC::UnsignedGreaterThanOrEqual, kind, i64::from(ValueKind::PID.tag()));
+                .icmp_imm_s(IntCC::UnsignedGreaterThanOrEqual, kind, i64::from(ValueKind::REF.tag()));
         let at_most_float =
             self.b
                 .ins()
                 .icmp_imm_s(IntCC::UnsignedLessThanOrEqual, kind, i64::from(ValueKind::FLOAT.tag()));
-        self.b.ins().band(at_least_pid, at_most_float)
+        self.b.ins().band(at_least_ref, at_most_float)
     }
 
     pub(crate) fn closure_code_ref(&mut self, closure_ref: ir::Value) -> ir::Value {
@@ -656,6 +656,9 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
         }
         if kind == ValueKind::ATOM {
             return self.box_atom_for_any(raw);
+        }
+        if kind == ValueKind::PID {
+            return immediate_ref_word(self.b, raw, ValueKind::PID);
         }
         let b = &mut *self.b;
         if kind == ValueKind::NULL {

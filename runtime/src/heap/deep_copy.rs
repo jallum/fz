@@ -157,8 +157,9 @@ impl CopyMeasure<'_> {
             return;
         }
         match value.tag() {
-            ValueKind::NULL | ValueKind::ATOM => {}
-            tag if tag.is_scalar() => self.bytes += round_up_16(size_of::<u64>()),
+            ValueKind::NULL => {}
+            tag if tag.is_immediate() => {}
+            tag if tag.is_boxed_scalar() => self.bytes += round_up_16(size_of::<u64>()),
             tag if tag.is_heap() => {
                 self.value(AnyValue::from_ref(value).expect("heap ref value"));
             }
@@ -262,8 +263,9 @@ pub fn deep_copy_any_value_ref(
         return value;
     }
     match value.tag() {
-        ValueKind::NULL | ValueKind::ATOM => value,
-        tag if tag.is_scalar() => {
+        ValueKind::NULL => value,
+        tag if tag.is_immediate() => value,
+        tag if tag.is_boxed_scalar() => {
             let src = value.storage_addr();
             let dst = dst_heap.alloc_kind(HeapAllocKind::ScalarBox, 8);
             unsafe {

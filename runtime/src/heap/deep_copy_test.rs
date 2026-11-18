@@ -277,3 +277,29 @@ fn deep_copying_an_atom_ref_to_another_heap_allocates_nothing() {
     assert_eq!(copy, AnyValueRef::atom(7));
     assert_eq!(destination.alloc_stats_snapshot().total.allocs, before.total.allocs);
 }
+
+#[test]
+fn a_pid_ref_measures_nothing_and_crosses_as_it_is() {
+    let mut sender = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let pids =
+        [0, 41, u64::from(u32::MAX)].map(|word| sender.box_any_value_ref(AnyValue::Opaque(ValueKind::PID, word)));
+    assert_eq!(measure_deep_copy(&pids, &sender.view()), 0);
+
+    let (segment, copied) = gift_copy(&mut sender, &pids);
+
+    assert_eq!(segment.block_count(), 0, "a pid ref needs no block");
+    assert_eq!(copied, pids, "the pids cross as they are");
+}
+
+#[test]
+fn deep_copying_a_pid_ref_to_another_heap_allocates_nothing() {
+    let mut source = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let mut destination = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let pid = source.box_any_value_ref(AnyValue::Opaque(ValueKind::PID, 7));
+    let before = destination.alloc_stats_snapshot();
+
+    let copy = deep_copy_any_value_ref(pid, &source.view(), &mut destination, &mut AddressMap::default());
+
+    assert_eq!(copy, pid);
+    assert_eq!(destination.alloc_stats_snapshot().total.allocs, before.total.allocs);
+}

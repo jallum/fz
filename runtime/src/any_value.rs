@@ -111,7 +111,19 @@ impl ValueKind {
         matches!(self, Self::INT | Self::FLOAT | Self::ATOM | Self::PID | Self::REF)
     }
 
-    /// A pid or a reference: one opaque word held in a slot, as an integer is.
+    /// A kind whose ref word carries the value itself in its address field:
+    /// an atom's id or a pid. No object holds it.
+    pub const fn is_immediate(self) -> bool {
+        matches!(self, Self::ATOM | Self::PID)
+    }
+
+    /// A scalar whose ref word points at a heap box holding its payload word:
+    /// an integer, a float or a reference.
+    pub const fn is_boxed_scalar(self) -> bool {
+        matches!(self, Self::INT | Self::FLOAT | Self::REF)
+    }
+
+    /// A pid or a reference: one opaque word a value carries as a payload.
     pub const fn is_opaque_word(self) -> bool {
         matches!(self, Self::PID | Self::REF)
     }
@@ -138,8 +150,10 @@ pub enum AnyValueRefError {
     ExpectedScalarTag(ValueKind),
     ExpectedHeapObjectTag(ValueKind),
     NullAddress(ValueKind),
-    /// An atom ref carries its id; no slot holds it.
-    AtomHasNoSlot,
+    /// An atom or pid ref carries its value; no slot holds it.
+    ImmediateHasNoSlot(ValueKind),
+    /// A pid is a 32-bit id; this word is wider.
+    PidOutOfRange(u64),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -275,12 +289,19 @@ impl AnyValueRef {
         AnyValueRefPacking::current().pack(ValueKind::ATOM, atom_id as usize)
     }
 
-    /// A ref to the integer or float payload word at `slot`.
+    /// A pid is its own ref: the id sits in the address field and names no
+    /// object.
+    pub fn pid(word: u64) -> Result<Self, AnyValueRefError> {
+        let id = u32::try_from(word).map_err(|_| AnyValueRefError::PidOutOfRange(word))?;
+        Ok(AnyValueRefPacking::current().pack(ValueKind::PID, id as usize))
+    }
+
+    /// A ref to the integer, float or reference payload word at `slot`.
     pub fn from_scalar_slot(tag: ValueKind, slot: *const u64) -> Result<Self, AnyValueRefError> {
-        if tag == ValueKind::ATOM {
-            return Err(AnyValueRefError::AtomHasNoSlot);
+        if tag.is_immediate() {
+            return Err(AnyValueRefError::ImmediateHasNoSlot(tag));
         }
-        if !tag.is_scalar() {
+        if !tag.is_boxed_scalar() {
             return Err(AnyValueRefError::ExpectedScalarTag(tag));
         }
         if slot.is_null() {
@@ -364,6 +385,9 @@ impl AnyValueRef {
 
     pub fn load_opaque_word(self, kind: ValueKind) -> Result<u64, AnyValueRefError> {
         self.expect_tag(kind)?;
+        if kind == ValueKind::PID {
+            return Ok(self.cleared_addr() as u64);
+        }
         Ok(unsafe { ptr::read(self.cleared_addr() as *const u64) })
     }
 
@@ -560,8 +584,9 @@ impl AnyValue {
             Self::EmptyList => AnyValueRef::empty_list(),
             Self::HeapRef(value) => value,
             Self::Atom(atom_id) => AnyValueRef::atom(atom_id),
+            Self::Opaque(ValueKind::PID, word) => AnyValueRef::pid(word).expect("a pid fits its ref"),
             Self::Int(_) | Self::Float(_) | Self::Opaque(..) => {
-                panic!("int or float AnyValue needs object-local storage before it can become a ref")
+                panic!("int, float or reference AnyValue needs object-local storage before it can become a ref")
             }
         }
     }
@@ -806,7 +831,8 @@ pub unsafe fn closure_capture_ref_word(addr: *const u8, idx: usize) -> u64 {
         ValueKind::NULL => AnyValueRef::null().raw_word(),
         ValueKind::LIST if raw == 0 => AnyValueRef::empty_list().raw_word(),
         ValueKind::ATOM => AnyValueRef::atom(raw as u32).raw_word(),
-        ValueKind::INT | ValueKind::FLOAT | ValueKind::PID | ValueKind::REF => {
+        ValueKind::PID => AnyValueRef::pid(raw).expect("closure pid capture ref").raw_word(),
+        ValueKind::INT | ValueKind::FLOAT | ValueKind::REF => {
             AnyValueRef::from_scalar_slot(kind, raw_slot as *const u64)
                 .expect("closure scalar capture ref")
                 .raw_word()

@@ -60,7 +60,7 @@ use fz_runtime::process::AtomName;
 use super::prim::c_pair_return_types;
 use super::repr::ExternLane;
 use super::runtime_call::{RuntimeCaller, RuntimeFn, declare_runtime_fn, runtime_call, runtime_call1};
-use super::{CodegenError, SLOT_BYTES, atom_ref_word, emit_fn_body};
+use super::{CodegenError, SLOT_BYTES, emit_fn_body, immediate_payload, immediate_ref_word};
 
 type ReceiveDispatchPlan = PatternDispatchPlan<RuntimeTypePredicate>;
 type ReceiveRegion = Region<RuntimeTypePredicate>;
@@ -289,7 +289,7 @@ fn emit_receive_value_ref<M: cranelift_module::Module>(
         ReceiveValue::AnyRef(value_ref) => Ok(value_ref),
         ReceiveValue::Int(raw) => Ok(runtime_call1!(body, fz_box_int_for_any, [ctx.process, raw])),
         ReceiveValue::Float(raw) => Ok(runtime_call1!(body, fz_box_float_for_any, [ctx.process, raw])),
-        ReceiveValue::Atom(raw) => Ok(atom_ref_word(body.b, raw)),
+        ReceiveValue::Atom(raw) => Ok(immediate_ref_word(body.b, raw, ValueKind::ATOM)),
     }
 }
 
@@ -1364,8 +1364,12 @@ fn emit_guard_extern<M: cranelift_module::Module>(
             ExternTy::I64 => (types::I64, receive_value_int(body, value)?),
             ExternTy::Opaque(kind) => {
                 let value_ref = emit_receive_value_ref(body, ctx, value)?;
-                let kind = body.b.ins().iconst(types::I64, kind.tag() as i64);
-                (types::I64, runtime_call1!(body, fz_unbox_opaque, [value_ref, kind]))
+                if *kind == ValueKind::PID {
+                    (types::I64, immediate_payload(body.b, value_ref))
+                } else {
+                    let kind = body.b.ins().iconst(types::I64, kind.tag() as i64);
+                    (types::I64, runtime_call1!(body, fz_unbox_opaque, [value_ref, kind]))
+                }
             }
             ExternTy::F64 => (types::F64, receive_value_float(body, value)?),
             ExternTy::Any => (types::I64, emit_receive_value_ref(body, ctx, value)?),
@@ -1417,6 +1421,9 @@ fn emit_guard_extern<M: cranelift_module::Module>(
     match lane {
         ExternTy::I64 => Ok(ReceiveValue::Int(raw)),
         ExternTy::Opaque(kind) => {
+            if kind == ValueKind::PID {
+                return Ok(ReceiveValue::AnyRef(immediate_ref_word(body.b, raw, kind)));
+            }
             let kind = body.b.ins().iconst(types::I64, kind.tag() as i64);
             Ok(ReceiveValue::AnyRef(runtime_call1!(
                 body,
