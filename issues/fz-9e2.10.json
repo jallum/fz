@@ -11,9 +11,15 @@
   "id": "fz-9e2.10",
   "labels": [],
   "parent": "fz-9e2",
+  "comments": [
+    {
+      "text": "Optimize (2026-11-18): the fz-nml.29 page (v3) covers only the \u003c\u003e operator. The constructor form \u003c\u003cacc::binary, x\u003e\u003e is left to this ticket, which builds on the same append.",
+      "timestamp": "2026-11-18T21:23:59Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "A construction is sized and written once; \u003c\u003e and interpolation lower to it",
   "type": "task",
-  "updated_at": "2026-11-18T21:21:42Z"
+  "updated_at": "2026-11-18T21:23:59Z"
 }
