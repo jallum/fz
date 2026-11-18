@@ -9,14 +9,15 @@
   "blocks": [
     "fz-sc8.226"
   ],
+  "closed_at": "2026-11-18T00:47:13Z",
   "created": "2026-11-13T03:30:08Z",
   "description": "defstruct takes a default per field, but only a literal term. A default that computes or names something is refused with parse/struct-default (fixture 00860):\n\n    defmodule Tally do\n      defstruct [:name, count: Enum.count([1]), seen: MapSet.new()]\n    end\n\nElixir has no struct-specific rule: a module body runs at definition (defstruct expands to quote bind_quoted), Kernel.Utils.defstruct escapes each value (:elixir_quote.escape; refs and closures refused), and %T{} uses the escaped value. That is the oracle.\n\nDesign (page fz-sc8.144.html v2, accepted): definition-time evaluation is a synthesized zero-arity macro whose body is Macro.escape(\u003cexpr\u003e), expanded through the existing macro pipeline (World::macro_root, RootBackendProduct, run_macro_invocation) in the walk's namespace at that point; the walk waits on it as it does a macro call. The quoted code returned takes the expression's place, and StructForm parsing runs on it unchanged. A written literal is not run: the LiteralTerm::of test becomes the skip check, so every struct in lib/ today evaluates nothing (prediction: no pin moves). A call into the module being defined is refused in Elixir's words (fz-sc8.223). A PID is refused by Macro.escape (user decision); a remote capture is refused naming the gap until fz-sc8.226.\n\nGoes away: LiteralTerm as a carrier (StructDef.defaults holds quoted source), the parse/struct-default refusal in parse_struct_field_default, fixture 00860.\n\nDone when: oracle fixtures (call default, alias default, MapSet.new([1]), a default that prints once before main) match Elixir on interp/run/build; refusal fixtures for make_ref(), fn, local() and raise; a telemetry test shows a computed-default struct evaluates once however many literals read it and a literal-only struct evaluates nothing; distiller pins and census unchanged.",
   "id": "fz-sc8.144",
   "labels": [],
   "parent": "fz-sc8",
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "A defstruct default is any expression, evaluated in the defining module",
   "type": "feature",
-  "updated_at": "2026-11-18T00:22:17Z"
+  "updated_at": "2026-11-18T00:47:13Z"
 }
