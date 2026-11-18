@@ -647,7 +647,7 @@ impl Heap {
             Some(MapLayout::Struct { object, schema_id }) => self.struct_update_put(object, schema_id, key, value),
             Some(MapLayout::Entries(dest)) if unsafe { self.entries_destination_put(dest, key, value) } => dest_bits,
             Some(MapLayout::Entries(_)) => 0,
-            Some(MapLayout::Trie(root)) => match self.trie_find(root, key) {
+            Some(MapLayout::Trie(root)) => match self.find(root, key) {
                 Some(_) => self.trie_put(root, key, value),
                 None => 0,
             },
@@ -665,7 +665,7 @@ impl Heap {
                 assert!(filled < count, "map destination has no free entry slot");
                 filled
             }
-            MapDestinationKind::Update => match self.map_key_position(dest, key) {
+            MapDestinationKind::Update => match self.find_or_place(dest, key) {
                 Ok(index) => index,
                 Err(_) => return false,
             },
@@ -834,7 +834,7 @@ impl Heap {
     /// key is new and the map held `MAP_FLAT_MAX` entries.
     pub(super) fn map_put_entry(&mut self, addr: *mut u8, key: AnyValue, value: AnyValue) -> u64 {
         let count = unsafe { map_count(addr) };
-        match self.map_key_position(addr, key) {
+        match self.find_or_place(addr, key) {
             Err(index) if count == MAP_FLAT_MAX => {
                 let mut entries: Vec<_> = (0..count).map(|i| unsafe { map_entry(addr, i) }).collect();
                 entries.insert(index, (key, value));
@@ -882,11 +882,12 @@ impl Heap {
         heap_object_word(p, ValueKind::MAP)
     }
 
-    /// Where `key` is, or would be, in the flat map at `addr`.
-    pub(super) fn map_key_position(&self, addr: *mut u8, key: AnyValue) -> Result<usize, usize> {
+    /// Where `key` is in the flat map at `addr`, or where a new entry for it
+    /// goes: one ordered search, which a put needs either way.
+    pub(super) fn find_or_place(&self, addr: *const u8, key: AnyValue) -> Result<usize, usize> {
+        let count = unsafe { map_count(addr) };
         let schemas = self.schemas.borrow();
         let comparator = TermComparator::new(&self.node, &schemas);
-        let count = unsafe { map_count(addr) };
         let (keys, kinds) = unsafe { (map_keys_ptr(addr, count), map_tag_ptr(addr)) };
         let (word, kind) = (key.raw(), key.kind());
         let (mut low, mut high) = (0, count);
@@ -900,6 +901,35 @@ impl Heap {
             }
         }
         Err(low)
+    }
+
+    /// The slot of the flat map at `addr` that holds `key`. A key that is its
+    /// stored word is found by that word, with no key ordered; any other is
+    /// found by the ordered search.
+    #[inline]
+    pub(super) fn flat_find(&self, addr: *const u8, key: AnyValue) -> Option<usize> {
+        match word_key(key) {
+            Some((word, kind)) => unsafe { slot_of_word_key(addr, map_count(addr), word, kind) },
+            None => self.find_or_place(addr, key).ok(),
+        }
+    }
+
+    /// Whether entry `slot` of the node at `node` holds `key`.
+    pub(super) fn slot_holds(&self, node: *const u8, slot: usize, key: AnyValue) -> bool {
+        let count = unsafe { crate::any_value::map_node_entry_count(node) };
+        let (stored, stored_kind) = unsafe {
+            (
+                read(map_keys_ptr(node, count).add(slot)),
+                map_key_kind(read(map_tag_ptr(node).add(slot))),
+            )
+        };
+        if let Some((word, kind)) = word_key(key) {
+            return stored == word && stored_kind == kind;
+        }
+        let schemas = self.schemas.borrow();
+        TermComparator::new(&self.node, &schemas)
+            .key_order(stored, stored_kind, key.raw(), key.kind())
+            .is_eq()
     }
 
     /// Strict inline Bitstring layout: bit_len: u64 + bytes (padded to 16).
@@ -1692,6 +1722,46 @@ struct StoredEntry {
     tag: u8,
     key: u64,
     value: u64,
+}
+
+/// The word and kind of a key that is the same key exactly when its stored
+/// word is the same: an integer, an atom, a pid, a reference. A float is
+/// left out, since its word must first be checked to be a number.
+#[inline]
+fn word_key(key: AnyValue) -> Option<(u64, ValueKind)> {
+    match key {
+        AnyValue::Int(value) => Some((value as u64, ValueKind::INT)),
+        AnyValue::Atom(id) => Some((id as u64, ValueKind::ATOM)),
+        AnyValue::Opaque(kind, word) => Some((word, kind)),
+        _ => None,
+    }
+}
+
+/// The first of the `count` words at `words` that is `word`.
+///
+/// # Safety
+/// `words` must point at `count` readable words.
+#[inline]
+pub(super) unsafe fn position_of_word(words: *const u64, count: usize, word: u64) -> Option<usize> {
+    (0..count).find(|&i| unsafe { read(words.add(i)) } == word)
+}
+
+/// The slot among the `count` entries of the node at `addr` whose stored key
+/// is `word` with kind `kind`.
+///
+/// # Safety
+/// `addr` must be a map node laid out for `count` entries, all written.
+#[inline]
+unsafe fn slot_of_word_key(addr: *const u8, count: usize, word: u64, kind: ValueKind) -> Option<usize> {
+    let (keys, kinds) = unsafe { (map_keys_ptr(addr, count), map_tag_ptr(addr)) };
+    let mut from = 0;
+    loop {
+        let slot = from + unsafe { position_of_word(keys.add(from), count - from, word) }?;
+        if map_key_kind(unsafe { read(kinds.add(slot)) }) == kind {
+            return Some(slot);
+        }
+        from = slot + 1;
+    }
 }
 
 /// The kind tags, keys and values of a flat map's entries, read and written

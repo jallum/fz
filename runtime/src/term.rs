@@ -70,14 +70,14 @@ impl<'a> TermComparator<'a> {
     /// kind a map stores. An identical word is the same key, integers order
     /// as integers, atoms by name and binaries by their bits, all without a
     /// value being rebuilt; any other pair is ordered as the terms they are.
-    #[inline]
+    #[inline(always)]
     pub fn key_order(&self, a: u64, a_kind: ValueKind, b: u64, b_kind: ValueKind) -> Ordering {
         #[cfg(test)]
         tests::COMPARISON_CALLS.with(|count| count.set(count.get() + 1));
         self.stored_key_order(a, a_kind, b, b_kind)
     }
 
-    #[inline]
+    #[inline(always)]
     fn stored_key_order(&self, a: u64, a_kind: ValueKind, b: u64, b_kind: ValueKind) -> Ordering {
         if a_kind == b_kind {
             // A float and a map are told apart from what is not a language

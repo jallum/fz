@@ -295,6 +295,12 @@ integers, two atoms and two binaries are ordered from their words; any other
 pair is decoded and ordered as terms. A binary's equality and order are
 `Bin`'s (`runtime/src/bits.rs`): a `Bin` is where the bits start and how many
 there are, whichever storage holds them.
+A lookup finds its key through `Heap::find`, in a flat map, a trie and a
+struct read as a map alike. An integer, an atom, a pid or a reference is the
+same key exactly when its stored word and kind are the same, so it is found
+by scanning stored words and no keys are ordered. Any other key, and every
+put (which needs the slot a new key takes), goes through the one ordered
+search, `Heap::find_or_place`.
 Tuple/list/map keys compare structurally; binary storage kinds share bit
 identity; tuples compare by arity and then elements, and a named struct
 compares as the map it is, its module the atom under `__struct__`, equal to
