@@ -11,11 +11,15 @@
     {
       "text": "Callables (2026-11-17, continuation-cost study): prologue saves are 34 of 173 instructions in JSON's non-tail-call listing; a resume that uses two of five saved pairs spends 12 instructions on them.",
       "timestamp": "2026-11-18T04:15:03Z"
+    },
+    {
+      "text": "Re-measured on merged fz-sc8.247 (MDF, 2eff1dec2): in the walk probe the five callee-saved pairs are saved once per call and the loop runs inside the function, so the per-turn save is gone for self-recursive loops. It remains for a leaf called once per item from another function; scope narrowed to that (title updated).",
+      "timestamp": "2026-11-18T04:58:29Z"
     }
   ],
   "priority": 3,
   "status": "open",
   "title": "Measure why a native leaf called once per item saves x19-x28",
   "type": "task",
-  "updated_at": "2026-11-18T04:58:28Z"
+  "updated_at": "2026-11-18T04:58:29Z"
 }
