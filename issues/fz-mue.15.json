@@ -3,13 +3,13 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-18T20:44:04Z",
-  "description": "'unsupported compiler2 attribute head Ident(\"typep\")' / 'Ident(\"opaque\")'. Reproducer: /Users/j5n/Workspace/fz-otp-json/punch/24_opaque_typep.fz\n\nPart of fz-mue (fz runs OTP's json.erl unchanged). Port and harness: /Users/j5n/Workspace/fz-otp-json/.",
+  "description": "A type attribute reads to the end of its expression, not to the end of its line. Today line_token_range stops a @spec/@type at the line end, so an @spec whose '::' return continues on the next line does not parse (moved here from fz-sc8.96; library code keeps every @spec on one line because of it). @typep and @opaque are 'unsupported compiler2 attribute head' (reproducer /Users/j5n/Workspace/fz-otp-json/punch/24_opaque_typep.fz). Multi-line specs: punch/30. The OTP json port has 31 @spec, 13 @type, 3 @typep and 1 @opaque, several of them multi-line.\n\nDone when: all of these parse and declare types on all three paths, and the punch/24 and punch/30 reproducers compile. Built after fz-sc8.96 by Elixir Parity.\n\nPart of fz-mue (fz runs OTP's json.erl unchanged). Port and harness: /Users/j5n/Workspace/fz-otp-json/.",
   "id": "fz-mue.15",
   "labels": [],
   "parent": "fz-mue",
   "priority": 2,
   "status": "open",
-  "title": "@typep and @opaque declare types",
+  "title": "A type attribute (@type, @typep, @opaque, @spec) reads to the end of its expression",
   "type": "feature",
-  "updated_at": "2026-11-18T20:44:04Z"
+  "updated_at": "2026-11-18T22:06:45Z"
 }
