@@ -15,11 +15,15 @@
     {
       "text": "Optimize's pinned-key probe (case_a_12, 4,331 instructions per iteration after fz-sc8.192.14): ten resume functions of 144-175 instructions each, plus one for the loop; return_lanes shims 342. Trace: /private/tmp/claude-501/-Users-j5n-Workspace-fz/464fcf92-8f92-4767-a8fb-4e4eea4b6d45/scratchpad/pin12/iter.txt (scratch, may be cleared).",
       "timestamp": "2026-11-18T23:41:39Z"
+    },
+    {
+      "text": "Trace location update: Optimize's pinned-key probe traces now live durably in /Users/j5n/Workspace/fz-map-traces/ (iter.txt = a whole iteration of case_a_12; trace.txt = one lookup before the scan; the probe sources; and the lldb tracer script). The scratch path in the earlier comment is superseded.",
+      "timestamp": "2026-11-18T23:41:55Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "A non-tail call to a callee that cannot suspend builds no continuation",
   "type": "task",
-  "updated_at": "2026-11-18T23:41:39Z"
+  "updated_at": "2026-11-18T23:41:55Z"
 }
