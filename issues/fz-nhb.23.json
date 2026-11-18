@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-nhb.22"
+    "fz-nhb.22",
+    "fz-sc8.250"
   ],
   "blocks": [],
   "created": "2026-11-18T04:23:56Z",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "Kernel.assert and refute are retired; fixtures raise instead",
   "type": "task",
-  "updated_at": "2026-11-18T04:23:56Z"
+  "updated_at": "2026-11-18T04:59:39Z"
 }
