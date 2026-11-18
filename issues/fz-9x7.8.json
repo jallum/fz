@@ -43,11 +43,15 @@
     {
       "text": "Old-binary major fold (uncommitted in ../fz-9x7-8 on a2e5c45f9; patch scratchpad/8fold/fold.patch). Trigger: major also when held_binary_bytes \u003e 2 * max(held_after_last_major, 256 KiB). Rule: clause 1 PASS (survive mean 34.30 MB vs base 43.13, 0.80x; peak 102.1 -\u003e 82.3 MB); clause 3 PASS (deadbinlive/quantum unchanged); clause 5 PASS (outputs identical). Clause 2 FAIL: json peak 1.208x base (7 extra gcs, majors copy old heap while from-space held); giftbin 1.015x base, identical in old .8 commit, so pre-existing in .8, mechanism uninvestigated. Clause 4 FAIL: survive instructions 1.144x vs old (each extra major traces the whole old heap, 30-58k BinRef visits), json 1.0145x. Gate not run. Awaiting user ruling.",
       "timestamp": "2026-11-18T02:47:43Z"
+    },
+    {
+      "text": "User ruling 2026-11-17: the old-binary major fold is dropped from .8; survive's binary memory belongs to fz-9x7.11 (three block ages). Fold diff kept at scratchpad/8fold/fold.patch for reference. .8 lands as a2e5c45f9, with survive's mean in-use cost stated in its PR; giftbin peak 1.015x base (present in a2e5c45f9) to be traced before the PR.",
+      "timestamp": "2026-11-18T03:07:08Z"
     }
   ],
   "priority": 2,
   "status": "in_progress",
   "title": "Off-heap binary bytes count toward the collection trigger",
   "type": "bug",
-  "updated_at": "2026-11-18T02:47:43Z"
+  "updated_at": "2026-11-18T03:07:08Z"
 }
