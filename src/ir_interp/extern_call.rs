@@ -4,7 +4,7 @@ use crate::compiler2::native_codegen::{ExternLane, emit_fn_body, emit_variadic_c
 use crate::dispatch_matrix::pattern::GuardExtern;
 use crate::fast_hash::HashMap;
 use crate::fz_ir::{ExternAbi, ExternReturn, ExternTy};
-use cranelift_codegen::ir::{self, AbiParam, InstBuilder, MemFlags, types};
+use cranelift_codegen::ir::{self, AbiParam, InstBuilder, MemFlagsData, types};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::JITModule;
 use cranelift_module::{Linkage, Module};
@@ -372,7 +372,7 @@ impl VariadicTrampolines {
 
 /// One argument word out of the array, in the register lane it travels in.
 fn load_word(b: &mut FunctionBuilder<'_>, words: ir::Value, index: usize, lane: ir::Type) -> ir::Value {
-    b.ins().load(lane, MemFlags::trusted(), words, (index * 8) as i32)
+    b.ins().load(lane, MemFlagsData::trusted(), words, (index * 8) as i32)
 }
 
 /// The declared RETURN picks the lane the answer comes back in. A float is

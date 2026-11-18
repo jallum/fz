@@ -35,16 +35,16 @@ fn a_function_with_megabytes_of_code_reads_its_modules_data() {
     let steps = FAR_PLACED_CODE_BYTES / 6;
     for step in 0..steps {
         acc = b.ins().imul(acc, input);
-        acc = b.ins().iadd_imm(acc, step as i64);
+        acc = b.ins().iadd_imm_s(acc, step as i64);
     }
     let global = module.declare_data_in_func(data, b.func);
     let address = b.ins().symbol_value(types::I64, global);
     let answer = b
         .ins()
-        .load(types::I64, cranelift_codegen::ir::MemFlags::trusted(), address, 0);
+        .load(types::I64, cranelift_codegen::ir::MemFlagsData::trusted(), address, 0);
     let result = b.ins().iadd(answer, acc);
     b.ins().return_(&[result]);
-    b.finalize();
+    b.finalize(module.target_config());
     module.define_function(function, &mut ctx).unwrap();
     let code_bytes = ctx.compiled_code().unwrap().code_info().total_size as usize;
     assert!(

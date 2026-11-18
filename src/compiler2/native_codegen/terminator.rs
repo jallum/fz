@@ -8,7 +8,7 @@ use crate::fz_ir::{
     self as fz_ir, BlockId, Cont, DirectCallTarget, EmitSlot, FnId, FnIr, ReceiveAfter, ReceiveClause, Term, Var,
 };
 use cranelift_codegen::ir::TrapCode;
-use cranelift_codegen::ir::{self, AbiParam, BlockArg, InstBuilder, MemFlags, Signature, condcodes::IntCC, types};
+use cranelift_codegen::ir::{self, AbiParam, BlockArg, InstBuilder, MemFlagsData, Signature, condcodes::IntCC, types};
 use cranelift_codegen::isa::CallConv;
 use cranelift_module::FuncId;
 use fz_runtime::failure::{fz_panic, fz_raise_undefined_function, fz_reraise};
@@ -733,14 +733,17 @@ fn emit_back_edge_yield_check<M: cranelift_module::Module>(
     let reductions_ptr = body
         .b
         .ins()
-        .iadd_imm(process, PROCESS_REDUCTIONS_REMAINING_OFFSET as i64);
-    let remaining = body.b.ins().load(types::I32, MemFlags::trusted(), reductions_ptr, 0);
+        .iadd_imm_s(process, PROCESS_REDUCTIONS_REMAINING_OFFSET as i64);
+    let remaining = body
+        .b
+        .ins()
+        .load(types::I32, MemFlagsData::trusted(), reductions_ptr, 0);
     let one = body.b.ins().iconst(types::I32, 1);
     let new_remaining = body.b.ins().isub(remaining, one);
     body.b
         .ins()
-        .store(MemFlags::trusted(), new_remaining, reductions_ptr, 0);
-    let exhausted = body.b.ins().icmp_imm(IntCC::SignedLessThanOrEqual, new_remaining, 0);
+        .store(MemFlagsData::trusted(), new_remaining, reductions_ptr, 0);
+    let exhausted = body.b.ins().icmp_imm_s(IntCC::SignedLessThanOrEqual, new_remaining, 0);
     let yield_blk = body.b.create_block();
     let proceed_blk = body.b.create_block();
     let no_args: Vec<BlockArg> = Vec::new();
@@ -988,7 +991,7 @@ fn build_park_record<M: cranelift_module::Module>(
             let value_ref = body.tagged_var(var_env, v.0);
             body.b
                 .ins()
-                .stack_store(value_ref, slot, (i * SLOT_BYTES as usize) as i32);
+                .stack_store(types::I64, value_ref, slot, (i * SLOT_BYTES as usize) as i32);
         }
         body.b.ins().stack_addr(types::I64, slot, 0)
     };
@@ -1033,10 +1036,14 @@ fn build_park_record<M: cranelift_module::Module>(
         let cont_sid = resolve_body_sid(c.body);
         let payload = ContinuationPayload::from_parts(env, cont_sid, cap_bindings.clone());
         let cl_ptr = payload.emit_value(body, cont_param);
-        body.b.ins().stack_store(cl_ptr, bodies_slot, (i * 8) as i32);
+        body.b
+            .ins()
+            .stack_store(types::I64, cl_ptr, bodies_slot, (i * 8) as i32);
         if let Some(slot) = bound_counts_slot {
             let bound_count_v = body.b.ins().iconst(types::I64, c.arguments.len() as i64);
-            body.b.ins().stack_store(bound_count_v, slot, (i * 8) as i32);
+            body.b
+                .ins()
+                .stack_store(types::I64, bound_count_v, slot, (i * 8) as i32);
         }
     }
     let bodies_ptr = body.b.ins().stack_addr(types::I64, bodies_slot, 0);

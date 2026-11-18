@@ -9,7 +9,7 @@
 use super::*;
 use crate::fast_hash::HashMap;
 use crate::fz_ir::Var;
-use cranelift_codegen::ir::{self, BlockArg, InstBuilder, MemFlags, condcodes::IntCC, types};
+use cranelift_codegen::ir::{self, BlockArg, InstBuilder, MemFlagsData, condcodes::IntCC, types};
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::{DataId, FuncId, Module};
 use fz_runtime::any_value::{
@@ -108,7 +108,7 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
     /// its kind and literal bit.
     fn object_address(&mut self, object_ref: ir::Value) -> ir::Value {
         let address_mask = AnyValueRefPacking::current().address_mask() as i64;
-        self.b.ins().band_imm(object_ref, address_mask)
+        self.b.ins().band_imm_u(object_ref, address_mask)
     }
 
     /// Whether `value_ref` names an object in the struct layout of schema
@@ -117,16 +117,16 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
     /// condition.
     pub(crate) fn has_struct_layout(&mut self, value_ref: ir::Value, schema_id: u32) -> ir::Value {
         let packing = AnyValueRefPacking::current();
-        let kind_bits = self.b.ins().band_imm(value_ref, !packing.literal_bit() as i64);
-        let kind = self.b.ins().ushr_imm(kind_bits, packing.tag_shift() as i64);
+        let kind_bits = self.b.ins().band_imm_u(value_ref, !packing.literal_bit() as i64);
+        let kind = self.b.ins().ushr_imm_u(kind_bits, packing.tag_shift() as i64);
         let is_struct = self
             .b
             .ins()
-            .icmp_imm(IntCC::Equal, kind, ValueKind::STRUCT.tag() as i64);
+            .icmp_imm_s(IntCC::Equal, kind, ValueKind::STRUCT.tag() as i64);
         let object = self.object_address(value_ref);
-        let header = self.b.ins().load(types::I64, MemFlags::new(), object, 0);
-        let schema = self.b.ins().ushr_imm(header, STRUCT_HEADER_SCHEMA_SHIFT);
-        let is_schema = self.b.ins().icmp_imm(IntCC::Equal, schema, i64::from(schema_id));
+        let header = self.b.ins().load(types::I64, MemFlagsData::new(), object, 0);
+        let schema = self.b.ins().ushr_imm_u(header, STRUCT_HEADER_SCHEMA_SHIFT);
+        let is_schema = self.b.ins().icmp_imm_s(IntCC::Equal, schema, i64::from(schema_id));
         self.b.ins().band(is_struct, is_schema)
     }
 
@@ -144,8 +144,8 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
         let done_blk = self.b.create_block();
         let target = self.b.append_block_param(done_blk, types::I64);
         let object = self.object_address(base_ref);
-        let header = self.b.ins().load(types::I64, MemFlags::trusted(), object, 0);
-        let shared = self.b.ins().band_imm(header, STRUCT_HEADER_SHARED_MASK as i64);
+        let header = self.b.ins().load(types::I64, MemFlagsData::trusted(), object, 0);
+        let shared = self.b.ins().band_imm_u(header, STRUCT_HEADER_SHARED_MASK as i64);
         self.b.ins().brif(shared, copy_blk, &[], reuse_blk, &[]);
 
         self.b.switch_to_block(reuse_blk);
@@ -166,9 +166,9 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
 
     fn bump_process_counter(&mut self, offset: i32) {
         let process = self.process_arg();
-        let count = self.b.ins().load(types::I64, MemFlags::trusted(), process, offset);
-        let bumped = self.b.ins().iadd_imm(count, 1);
-        self.b.ins().store(MemFlags::trusted(), bumped, process, offset);
+        let count = self.b.ins().load(types::I64, MemFlagsData::trusted(), process, offset);
+        let bumped = self.b.ins().iadd_imm_s(count, 1);
+        self.b.ins().store(MemFlagsData::trusted(), bumped, process, offset);
     }
 
     /// Mark the object `reference` names shared when its `kind` is a struct
@@ -181,20 +181,20 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
         let is_struct = self
             .b
             .ins()
-            .icmp_imm(IntCC::Equal, kind, ValueKind::STRUCT.tag() as i64);
+            .icmp_imm_s(IntCC::Equal, kind, ValueKind::STRUCT.tag() as i64);
         self.b.ins().brif(is_struct, check_blk, &[], done_blk, &[]);
 
         self.b.switch_to_block(check_blk);
         self.b.seal_block(check_blk);
         let object = self.object_address(reference);
-        let header = self.b.ins().load(types::I64, MemFlags::trusted(), object, 0);
-        let shared = self.b.ins().band_imm(header, STRUCT_HEADER_SHARED_MASK as i64);
+        let header = self.b.ins().load(types::I64, MemFlagsData::trusted(), object, 0);
+        let shared = self.b.ins().band_imm_u(header, STRUCT_HEADER_SHARED_MASK as i64);
         self.b.ins().brif(shared, done_blk, &[], mark_blk, &[]);
 
         self.b.switch_to_block(mark_blk);
         self.b.seal_block(mark_blk);
-        let marked = self.b.ins().bor_imm(header, STRUCT_HEADER_SHARED_MASK as i64);
-        self.b.ins().store(MemFlags::trusted(), marked, object, 0);
+        let marked = self.b.ins().bor_imm_u(header, STRUCT_HEADER_SHARED_MASK as i64);
+        self.b.ins().store(MemFlagsData::trusted(), marked, object, 0);
         self.b.ins().jump(done_blk, &[]);
 
         self.b.switch_to_block(done_blk);
@@ -208,7 +208,7 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
     pub(crate) fn load_slot(&mut self, object_ref: ir::Value, slot: u32, ty: ir::Type) -> ir::Value {
         let object = self.object_address(object_ref);
         let offset = SlotLayout::slot_offset(slot as usize) as i32;
-        self.b.ins().load(ty, MemFlags::new(), object, offset)
+        self.b.ins().load(ty, MemFlagsData::new(), object, offset)
     }
 
     /// Allocate a struct or tuple of `fields` values. Only its header is
@@ -268,10 +268,10 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
             Some((raw, kind)) => {
                 self.b
                     .ins()
-                    .store(MemFlags::trusted(), raw, object.address, slot_offset);
+                    .store(MemFlagsData::trusted(), raw, object.address, slot_offset);
                 self.b
                     .ins()
-                    .store(MemFlags::trusted(), kind, object.address, kind_offset);
+                    .store(MemFlagsData::trusted(), kind, object.address, kind_offset);
             }
             None => {
                 let slot_offset = self.b.ins().iconst(types::I32, slot_offset as i64);
@@ -310,9 +310,9 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
     /// the reference without its kind, and the kind the reference carries.
     fn addressed_form(&mut self, reference: ir::Value) -> (ir::Value, ir::Value) {
         let packing = AnyValueRefPacking::current();
-        let raw = self.b.ins().band_imm(reference, packing.payload_mask() as i64);
-        let tagged = self.b.ins().band_imm(reference, !packing.literal_bit() as i64);
-        let kind = self.b.ins().ushr_imm(tagged, packing.tag_shift() as i64);
+        let raw = self.b.ins().band_imm_u(reference, packing.payload_mask() as i64);
+        let tagged = self.b.ins().band_imm_u(reference, !packing.literal_bit() as i64);
+        let kind = self.b.ins().ushr_imm_u(tagged, packing.tag_shift() as i64);
         (raw, self.b.ins().ireduce(types::I8, kind))
     }
 
@@ -372,7 +372,7 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
         let ref_word = self.heap_ref_word_from_addr(addr, kind);
         self.b
             .ins()
-            .bor_imm(ref_word, AnyValueRefPacking::current().literal_bit() as i64)
+            .bor_imm_u(ref_word, AnyValueRefPacking::current().literal_bit() as i64)
     }
 
     /// The program's halt continuation for a return in `repr`'s lane.
@@ -454,25 +454,25 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
     fn closure_address(&mut self, closure_ref: ir::Value) -> ir::Value {
         self.b
             .ins()
-            .band_imm(closure_ref, AnyValueRefPacking::current().address_mask() as i64)
+            .band_imm_u(closure_ref, AnyValueRefPacking::current().address_mask() as i64)
     }
 
     /// The address of capture `index`'s raw slot.
     fn closure_capture_slot(&mut self, closure_ref: ir::Value, index: ir::Value) -> ir::Value {
         let address = self.closure_address(closure_ref);
-        let offset = self.b.ins().ishl_imm(index, 3);
+        let offset = self.b.ins().ishl_imm_u(index, 3);
         let slot = self.b.ins().iadd(address, offset);
-        self.b.ins().iadd_imm(slot, CLOSURE_CAPTURES_OFFSET as i64)
+        self.b.ins().iadd_imm_s(slot, CLOSURE_CAPTURES_OFFSET as i64)
     }
 
     pub(crate) fn closure_capture_i64(&mut self, closure_ref: ir::Value, index: ir::Value) -> ir::Value {
         let slot = self.closure_capture_slot(closure_ref, index);
-        self.b.ins().load(types::I64, MemFlags::trusted(), slot, 0)
+        self.b.ins().load(types::I64, MemFlagsData::trusted(), slot, 0)
     }
 
     pub(crate) fn closure_capture_f64(&mut self, closure_ref: ir::Value, index: ir::Value) -> ir::Value {
         let slot = self.closure_capture_slot(closure_ref, index);
-        self.b.ins().load(types::F64, MemFlags::trusted(), slot, 0)
+        self.b.ins().load(types::F64, MemFlagsData::trusted(), slot, 0)
     }
 
     pub(crate) fn closure_capture_atom(&mut self, closure_ref: ir::Value, index: ir::Value) -> ir::Value {
@@ -484,24 +484,24 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
     /// other kind carries its raw word as the payload.
     pub(crate) fn closure_capture_ref(&mut self, closure_ref: ir::Value, index: ir::Value) -> ir::Value {
         let packing = AnyValueRefPacking::current();
-        let flags = MemFlags::trusted();
+        let flags = MemFlagsData::trusted();
         let address = self.closure_address(closure_ref);
         let layout = self.b.ins().uload32(flags, address, 0);
-        let flags_field = self.b.ins().ushr_imm(layout, CLOSURE_LAYOUT_FLAGS_SHIFT as i64);
+        let flags_field = self.b.ins().ushr_imm_u(layout, CLOSURE_LAYOUT_FLAGS_SHIFT as i64);
         let count = self
             .b
             .ins()
-            .band_imm(flags_field, i64::from(CLOSURE_FLAGS_CAPTURED_MASK));
+            .band_imm_u(flags_field, i64::from(CLOSURE_FLAGS_CAPTURED_MASK));
         let raw_slot = self.closure_capture_slot(closure_ref, index);
         let raw = self.b.ins().load(types::I64, flags, raw_slot, 0);
-        let kinds_offset = self.b.ins().ishl_imm(count, 3);
+        let kinds_offset = self.b.ins().ishl_imm_u(count, 3);
         let kinds = self.b.ins().iadd(address, kinds_offset);
         let kind_at = self.b.ins().iadd(kinds, index);
         let kind = self.b.ins().uload8(types::I64, flags, kind_at, CLOSURE_CAPTURES_OFFSET);
         let names_slot = self.kind_names_its_slot(kind);
         let payload = self.b.ins().select(names_slot, raw_slot, raw);
-        let payload = self.b.ins().band_imm(payload, packing.payload_mask() as i64);
-        let kind_bits = self.b.ins().ishl_imm(kind, i64::from(packing.tag_shift()));
+        let payload = self.b.ins().band_imm_u(payload, packing.payload_mask() as i64);
+        let kind_bits = self.b.ins().ishl_imm_u(kind, i64::from(packing.tag_shift()));
         self.b.ins().bor(kind_bits, payload)
     }
 
@@ -510,11 +510,11 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
         let at_least_pid =
             self.b
                 .ins()
-                .icmp_imm(IntCC::UnsignedGreaterThanOrEqual, kind, i64::from(ValueKind::PID.tag()));
+                .icmp_imm_s(IntCC::UnsignedGreaterThanOrEqual, kind, i64::from(ValueKind::PID.tag()));
         let at_most_float =
             self.b
                 .ins()
-                .icmp_imm(IntCC::UnsignedLessThanOrEqual, kind, i64::from(ValueKind::FLOAT.tag()));
+                .icmp_imm_s(IntCC::UnsignedLessThanOrEqual, kind, i64::from(ValueKind::FLOAT.tag()));
         self.b.ins().band(at_least_pid, at_most_float)
     }
 
@@ -522,7 +522,7 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
         let address = self.closure_address(closure_ref);
         self.b
             .ins()
-            .load(types::I64, MemFlags::trusted(), address, CLOSURE_CODE_OFFSET)
+            .load(types::I64, MemFlagsData::trusted(), address, CLOSURE_CODE_OFFSET)
     }
 
     pub(crate) fn closure_halt_kind_ref(&mut self, closure_ref: ir::Value) -> ir::Value {
@@ -560,10 +560,10 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
             CodegenValue::Condition(flag) => flag,
             CodegenValue::RawInt(_) | CodegenValue::RawF64(_) => b.ins().iconst(types::I8, 1),
             CodegenValue::RawAtom(payload) => {
-                let is_false = b.ins().icmp_imm(IntCC::Equal, payload, FALSE_ATOM_ID as i64);
-                let is_nil = b.ins().icmp_imm(IntCC::Equal, payload, NIL_ATOM_ID as i64);
+                let is_false = b.ins().icmp_imm_s(IntCC::Equal, payload, FALSE_ATOM_ID as i64);
+                let is_nil = b.ins().icmp_imm_s(IntCC::Equal, payload, NIL_ATOM_ID as i64);
                 let falsey = b.ins().bor(is_false, is_nil);
-                b.ins().bxor_imm(falsey, 1)
+                b.ins().bxor_imm_u(falsey, 1)
             }
             CodegenValue::Known {
                 kind: ValueKind::NULL, ..
@@ -572,10 +572,10 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
                 payload,
                 kind: ValueKind::ATOM,
             } => {
-                let is_false = b.ins().icmp_imm(IntCC::Equal, payload, FALSE_ATOM_ID as i64);
-                let is_nil = b.ins().icmp_imm(IntCC::Equal, payload, NIL_ATOM_ID as i64);
+                let is_false = b.ins().icmp_imm_s(IntCC::Equal, payload, FALSE_ATOM_ID as i64);
+                let is_nil = b.ins().icmp_imm_s(IntCC::Equal, payload, NIL_ATOM_ID as i64);
                 let falsey = b.ins().bor(is_false, is_nil);
-                b.ins().bxor_imm(falsey, 1)
+                b.ins().bxor_imm_u(falsey, 1)
             }
             CodegenValue::Known { .. } => b.ins().iconst(types::I8, 1),
             CodegenValue::AnyRef(_) => unreachable!("handled above"),
@@ -600,7 +600,7 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
     pub(crate) fn value_is_tag(&mut self, value: CodegenValue, tag: ValueKind) -> ir::Value {
         let actual = self.value_type_tag(value);
         let b = &mut *self.b;
-        b.ins().icmp_imm(IntCC::Equal, actual, tag.tag() as i64)
+        b.ins().icmp_imm_s(IntCC::Equal, actual, tag.tag() as i64)
     }
 
     pub(crate) fn value_raw_int(&mut self, value: CodegenValue) -> ir::Value {
@@ -628,7 +628,7 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
             CodegenValue::AnyRef(value_ref) => self.unbox_int(value_ref),
             CodegenValue::RawAtom(value) | CodegenValue::Condition(value) => value,
             CodegenValue::Known { payload, .. } => payload,
-            CodegenValue::RawF64(value) => self.b.ins().bitcast(types::I64, MemFlags::new(), value),
+            CodegenValue::RawF64(value) => self.b.ins().bitcast(types::I64, MemFlagsData::new(), value),
         }
     }
 
@@ -638,7 +638,7 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
             CodegenValue::Known {
                 payload,
                 kind: ValueKind::FLOAT,
-            } => self.b.ins().bitcast(types::F64, MemFlags::new(), payload),
+            } => self.b.ins().bitcast(types::F64, MemFlagsData::new(), payload),
             CodegenValue::AnyRef(value_ref) => self.unbox_float(value_ref),
             _ => panic!("CodegenValue is not a float"),
         }
@@ -651,7 +651,7 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
             return self.box_int_for_any(raw);
         }
         if kind == ValueKind::FLOAT {
-            let raw = self.b.ins().bitcast(types::F64, MemFlags::new(), raw);
+            let raw = self.b.ins().bitcast(types::F64, MemFlagsData::new(), raw);
             return self.box_float_for_any(raw);
         }
         if kind == ValueKind::ATOM {
@@ -685,7 +685,7 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
                     kind: ValueKind::FLOAT,
                 },
                 ArgRepr::RawF64,
-            ) => self.b.ins().bitcast(types::F64, MemFlags::new(), payload),
+            ) => self.b.ins().bitcast(types::F64, MemFlagsData::new(), payload),
             (
                 CodegenValue::Known {
                     payload,
@@ -700,7 +700,7 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
                 },
                 ArgRepr::RawInt,
             ) => {
-                let float = self.b.ins().bitcast(types::F64, MemFlags::new(), payload);
+                let float = self.b.ins().bitcast(types::F64, MemFlagsData::new(), payload);
                 self.b.ins().fcvt_to_sint(types::I64, float)
             }
             (
@@ -791,7 +791,7 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
     pub(crate) fn as_raw_f64(&mut self, var_env: &HashMap<u32, CodegenValue>, v: u32) -> ir::Value {
         match *var_env.get(&v).expect("unbound var") {
             CodegenValue::RawF64(value) => value,
-            CodegenValue::Known { payload, .. } => self.b.ins().bitcast(types::F64, MemFlags::new(), payload),
+            CodegenValue::Known { payload, .. } => self.b.ins().bitcast(types::F64, MemFlagsData::new(), payload),
             CodegenValue::AnyRef(value_ref) => self.unbox_float(value_ref),
             _ => panic!("cannot read raw f64 from non-float value"),
         }
@@ -805,7 +805,7 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
             return runtime_call1!(self, fz_number_ref_float_bits, [value_ref]);
         }
         let float = self.coerce_binding_to(binding, ArgRepr::RawF64);
-        self.b.ins().bitcast(types::I64, MemFlags::new(), float)
+        self.b.ins().bitcast(types::I64, MemFlagsData::new(), float)
     }
 
     // -- closure capture access by usize index (cache-free) --
@@ -896,12 +896,12 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
             TaggedRefArch::Arm64Tbi => ptr,
             TaggedRefArch::X86_64Canonical57 => {
                 let clear_shift = i64::from(64 - AnyValueRefPacking::current().tag_shift());
-                let shifted = self.b.ins().ishl_imm(ptr, clear_shift);
-                self.b.ins().ushr_imm(shifted, clear_shift)
+                let shifted = self.b.ins().ishl_imm_u(ptr, clear_shift);
+                self.b.ins().ushr_imm_u(shifted, clear_shift)
             }
         };
         let tag_word = ((kind.tag() as u64) << AnyValueRefPacking::current().tag_shift()) as i64;
-        self.b.ins().bor_imm(ptr_payload, tag_word)
+        self.b.ins().bor_imm_u(ptr_payload, tag_word)
     }
 
     /// Materialize the var's binding as an ABI `AnyValueRef`, reusing a

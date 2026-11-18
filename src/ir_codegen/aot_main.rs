@@ -184,7 +184,7 @@ pub(crate) fn emit_aot_c_main<M: ClModule>(
         main.b.ins().return_(&[result]);
 
         b.seal_all_blocks();
-        b.finalize();
+        b.finalize(jmod.target_config());
     }
     let flags = settings::Flags::new(settings::builder());
     verify_function(&ctx.func, &flags).map_err(|e| CodegenError::new(format!("verify C main: {}", e)))?;

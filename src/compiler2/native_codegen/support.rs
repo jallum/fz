@@ -5,7 +5,7 @@ use crate::ast::{BitType, Endian};
 use crate::fast_hash::HashMap;
 use crate::fz_ir::Var;
 use crate::types::Types;
-use cranelift_codegen::ir::{self, InstBuilder, MemFlags, types};
+use cranelift_codegen::ir::{self, InstBuilder, MemFlagsData, types};
 use cranelift_module::Module;
 use fz_runtime::any_value::{FALSE_BITS as FALSE_BITS_RAW, TRUE_BITS as TRUE_BITS_RAW, ValueKind};
 
@@ -70,7 +70,7 @@ pub(crate) fn value_raw_kind_parts<M: Module>(
             kind: ValueKind::ATOM,
         } => Some((raw, ValueKind::ATOM)),
         CodegenValue::RawF64(raw) => {
-            let bits = body.b.ins().bitcast(types::I64, MemFlags::new(), raw);
+            let bits = body.b.ins().bitcast(types::I64, MemFlagsData::new(), raw);
             Some((bits, ValueKind::FLOAT))
         }
         CodegenValue::Known {
