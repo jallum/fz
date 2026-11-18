@@ -19,11 +19,15 @@
     {
       "text": "Coordination note: fz-nml.8 (JSON session, building) renames runtime fz_bs_write_int (runtime/src/ir_runtime.rs) into a scalar-word writer that also takes floats, and edits native_codegen/prim.rs bitstring construction. Whoever builds this ticket rebases on it.",
       "timestamp": "2026-11-17T22:24:29Z"
+    },
+    {
+      "text": "Fresh evidence (MDF runtime hunt, develop 1438c8bfa, bench): integer +, -, * compile to an out-of-line call per operation (lib/kernel.fz:969 -\u003e extern fz_op_add_ii, runtime/src/ir_runtime.rs:956) plus 13 instructions testing the failure flag: 38 instructions per byte on the byte-walk probe, no cycles today (the 20.3 cycles/byte are serial register-pair pushes/pops across dispatch and __clause_0; see ../fz-sc8.byte-walk-loop.html). MDF proposed this as \"Integer add, subtract and multiply are emitted inline\": it is this ticket.",
+      "timestamp": "2026-11-18T00:34:46Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "Integer arithmetic and comparison externs are emitted as instructions",
   "type": "task",
-  "updated_at": "2026-11-17T22:24:29Z"
+  "updated_at": "2026-11-18T00:34:46Z"
 }
