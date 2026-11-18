@@ -1,0 +1,6 @@
+error[resolve/type-alias]: compiler2 could not parse a type expression: a function type writes its arrow inside the parentheses: `(A, B -> R)`, or `(-> R)` with no parameters
+  --> fixtures/01386_a_function_type_with_its_arrow_after_the_parentheses_is_refused.fz:2:32
+   |
+2 |   @spec apply_to_one((integer) -> integer) :: integer
+   |                                ^^
+   |

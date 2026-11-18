@@ -623,7 +623,7 @@ mod pinned_verdicts {
     }
 
     // R7. An arrow RESULT whose parameter is a TUPLE carrying the variable:
-    // `f(a, ({a, int}) -> nil) :: ({a, int}) -> nil` at `(int, ({any, int}) ->
+    // `f(a, ({a, int} -> nil)) :: ({a, int} -> nil)` at `(int, ({any, int}) ->
     // nil)`. The published result must use the LOWER bound.
     #[test]
     fn r7_tuple_inside_a_contravariant_result() {
@@ -1038,7 +1038,7 @@ mod pinned_verdicts {
     }
 
     // A4. A variable in a CONTRAVARIANT spot of the RESULT:
-    // `f(a, (a) -> nil) :: (a) -> nil` at `(int, (any) -> nil)`.
+    // `f(a, (a -> nil)) :: (a -> nil)` at `(int, (any) -> nil)`.
     #[test]
     fn a4_contravariant_result_position() {
         let mut t = Types::new();

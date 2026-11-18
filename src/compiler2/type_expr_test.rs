@@ -136,9 +136,9 @@ fn a_qualified_name_keeps_its_path_and_argument() {
 
 #[test]
 fn an_arrow_over_a_tuple_parses_structurally() {
-    // The higher-order reducer surface `(a, b) -> {a, b}`.
+    // The higher-order reducer surface `(a, b -> {a, b})`.
     assert_eq!(
-        parse("(a, b) -> {a, b}"),
+        parse("(a, b -> {a, b})"),
         TypeExpr::Arrow {
             params: vec![name(&["a"], vec![]), name(&["b"], vec![])],
             result: Box::new(TypeExpr::Tuple(vec![name(&["a"], vec![]), name(&["b"], vec![])])),
@@ -269,16 +269,24 @@ fn a_nominal_body_without_an_inner_type_is_an_error() {
 }
 
 #[test]
-fn elixirs_function_type_is_the_same_arrow_as_fzs() {
-    // Elixir writes the arrow inside the parentheses; fz's own spelling puts
-    // it after them. Both are one function type.
-    assert_eq!(parse("(a, b -> {a, b})"), parse("(a, b) -> {a, b}"));
-    assert_eq!(parse("(integer -> integer)"), parse("(integer) -> integer"));
+fn a_zero_arity_function_type_has_no_parameters() {
+    assert_eq!(
+        parse("(-> any)"),
+        TypeExpr::Arrow {
+            params: vec![],
+            result: Box::new(name(&["any"], vec![]))
+        },
+    );
 }
 
 #[test]
-fn elixirs_zero_arity_function_type_has_no_parameters() {
-    assert_eq!(parse("(-> any)"), parse("() -> any"));
+fn an_arrow_after_the_parentheses_is_refused_with_the_elixir_spelling() {
+    // Elixir has one function-type spelling, with the arrow inside the
+    // parentheses; the arrow after them is not Elixir and is refused.
+    for written in ["(a, b) -> {a, b}", "(integer) -> integer", "() -> any"] {
+        let error = parse_type_expr(&lex(written)).expect_err(written);
+        assert!(error.msg.contains("`(A, B -> R)`"), "{written}: {}", error.msg);
+    }
 }
 
 #[test]

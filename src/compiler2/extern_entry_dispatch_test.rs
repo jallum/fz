@@ -22,12 +22,12 @@ extern "C" defp spell_pid(pid) :: integer
 extern "C" defp spell_c_pointer(c_pointer) :: integer
 extern "C" defp spell_resource(resource(c_pointer)) :: integer
 extern "C" defp spell_resource_of(resource(t)) :: integer when t: integer | c_pointer
-extern "C" defp spell_callable((c_pointer) -> nil) :: integer
+extern "C" defp spell_callable((c_pointer -> nil)) :: integer
 extern "C" defp spell_any(any) :: integer
 extern "C" defp spell_free(t) :: integer when t: any
 extern "C" defp spell_var(t, t) :: integer when t: var
 extern "C" defp spell_bounded(t) :: integer when t: integer | c_pointer
-extern "C" defp spell_bounded_with_callable(t, (t) -> nil) :: integer when t: integer | c_pointer
+extern "C" defp spell_bounded_with_callable(t, (t -> nil)) :: integer when t: integer | c_pointer
 def main(), do: 0
 "#;
 

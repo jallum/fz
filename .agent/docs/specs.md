@@ -14,8 +14,8 @@ Compiler2 owns the active contract path:
 
 - `compiler2/type_expr.rs` parses type syntax without consulting the old
   `ModuleTypeEnv`. A function type is written Elixir's way, `(A, B -> R)` or
-  `(-> R)`, or fz's way, `(A, B) -> R` or `() -> R`; both parse to one
-  `TypeExpr::Arrow`.
+  `(-> R)`, and parses to `TypeExpr::Arrow`. An arrow after the closing
+  parenthesis, `(A, B) -> R`, is refused with the Elixir spelling.
 - A type variable is a one-letter name, and `when` declares every one, as in
   Elixir, for `@spec` and `extern` alike: `a: var` when it links two
   positions, a bound such as `a: term()` otherwise. `World::resolve_spec`
@@ -51,7 +51,7 @@ Compiler2 owns the active contract path:
   with a column whose observed type still carries type variables: evidence in
   flight, such as an unannotated lambda's `fp[va0] a0`. That is how a contract
   tells a callable argument what it will be called with: `make_resource(42,
-  fn x -> ... end)` keys the lambda on the integer its `(t) -> nil` parameter
+  fn x -> ... end)` keys the lambda on the integer its `(t -> nil)` parameter
   instantiates to. Obligations, enforceability and diagnostics keep reading the
   declared arrow.
 - A GROUND column is what the caller has and is never rewritten, whether it is
@@ -89,7 +89,7 @@ Compiler2 owns the active contract path:
     call that overlaps it. A clause variable is read as the union over every
     instantiation of it (`Types::clause_domain_envelope`): its closed bound (or
     `any` when it has none) where it occurs covariantly, `none` under an
-    arrow's parameter, so `(t) -> nil` reads as `(none) -> nil`, the
+    arrow's parameter, so `(t -> nil)` reads as `(none -> nil)`, the
     arrow every instantiation's callable fits. `{binary, int} | {int, int}` into
     `pick({integer, a})` narrows
     to `{int, int}` and binds `a := int`. A column disjoint from the domain

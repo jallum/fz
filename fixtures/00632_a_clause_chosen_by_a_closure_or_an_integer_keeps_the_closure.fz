@@ -8,7 +8,7 @@
 # time, so `kind` receives either and its own clause choice must look at the
 # value to tell them apart.
 def kind(n :: integer), do: {:int, n}
-def kind(f :: ((integer) -> integer)), do: {:fn, f.(10)}
+def kind(f :: (integer -> integer)), do: {:fn, f.(10)}
 
 def pick(flag, a, b) do
   case flag do

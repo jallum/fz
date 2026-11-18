@@ -1,0 +1,10 @@
+#---
+# purpose: a @spec function type written `(A) -> R`, with the arrow after the parentheses, stops the compile; Elixir's spelling is `(A -> R)`
+# expect: diagnostic
+#---
+defmodule M do
+  @spec apply_to_one((integer) -> integer) :: integer
+  def apply_to_one(f), do: f.(1)
+end
+
+def main(), do: dbg(M.apply_to_one(fn x -> x + 1 end))

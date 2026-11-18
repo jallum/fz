@@ -599,7 +599,7 @@ defmodule Kernel do
       #=> 3
 
   """
-  @spec spawn(() -> any) :: pid
+  @spec spawn((-> any)) :: pid
   def spawn(fun) do
     fz_spawn(fn ->
       try do
@@ -610,7 +610,7 @@ defmodule Kernel do
     end)
   end
 
-  extern "fz" defp fz_spawn(() -> any) :: pid
+  extern "fz" defp fz_spawn((-> any)) :: pid
 
   @doc """
   Returns the pid of the calling process.
@@ -665,7 +665,7 @@ defmodule Kernel do
   reference such as `&close/1`, never a closure over local values, and
   `make_resource` raises `ArgumentError` when given one that captures.
   """
-  @spec make_resource(t, (t) -> nil) :: resource(t) when t: integer | c_pointer
+  @spec make_resource(t, (t -> nil)) :: resource(t) when t: integer | c_pointer
   def make_resource(value, dtor) do
     case fz_make_resource(value, dtor) do
       nil -> raise(%ArgumentError{message: "a resource destructor captures nothing"})
@@ -674,7 +674,7 @@ defmodule Kernel do
   end
 
   # `fz_make_resource` answers `nil` for a destructor that captures.
-  extern "fz" defp fz_make_resource(t, (t) -> nil) :: resource(t) | nil when t: integer | c_pointer
+  extern "fz" defp fz_make_resource(t, (t -> nil)) :: resource(t) | nil when t: integer | c_pointer
 
   @doc """
   Claims `resource` for deterministic cleanup.

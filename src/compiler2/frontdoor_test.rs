@@ -1949,7 +1949,7 @@ fn compiler2_frontdoor_parses_complex_extern_signatures() {
     let tel = ConfiguredTelemetry::new();
     let root = parse_quoted_program(
         "extern_surface.fz",
-        "extern \"C\" defp fz_spawn(() -> any) :: pid\nextern \"C\" defp fz_make_resource(t, (t) -> nil) :: resource(t) when t: integer | c_pointer\n",
+        "extern \"C\" defp fz_spawn((-> any)) :: pid\nextern \"C\" defp fz_make_resource(t, (t -> nil)) :: resource(t) when t: integer | c_pointer\n",
         &tel,
     )
     .expect("quoted parse");
@@ -1965,7 +1965,7 @@ fn compiler2_frontdoor_parses_complex_extern_signatures() {
     let first_params = map_value(&first_options, "params").list_items().expect("first params");
     assert_eq!(
         token_kinds(&first_params[0], &root.sources),
-        vec![Tok::LParen, Tok::RParen, Tok::Arrow, Tok::Ident("any".to_string())],
+        vec![Tok::LParen, Tok::Arrow, Tok::Ident("any".to_string()), Tok::RParen],
         "extern parameter signatures should be quoted as token payloads"
     );
 

@@ -365,7 +365,7 @@ defmodule Keyword do
       #=> [a: 1, z: 0]
 
   """
-  @spec update(keyword(), atom, any, (any) -> any) :: keyword()
+  @spec update(keyword(), atom, any, (any -> any)) :: keyword()
   def update([], key, default, _fun), do: [{key, default}]
   def update([{entry_key, value} | tail], key, default, fun) do
     if entry_key === key do
@@ -387,10 +387,10 @@ defmodule Keyword do
       #=> [a: 2, b: 2]
 
   """
-  @spec update!(keyword(), atom, (any) -> any) :: keyword()
+  @spec update!(keyword(), atom, (any -> any)) :: keyword()
   def update!(keywords, key, fun), do: update_existing(keywords, key, fun, keywords)
 
-  @spec update_existing(keyword(), atom, (any) -> any, keyword()) :: keyword()
+  @spec update_existing(keyword(), atom, (any -> any), keyword()) :: keyword()
   defp update_existing([], key, _fun, original), do: Map.key_error(original, key)
   defp update_existing([{entry_key, value} | tail], key, fun, original) do
     if entry_key === key do
