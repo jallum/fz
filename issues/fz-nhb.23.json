@@ -10,9 +10,15 @@
   "id": "fz-nhb.23",
   "labels": [],
   "parent": "fz-nhb",
+  "comments": [
+    {
+      "text": "User accepted 2026-11-18 (relayed by Elixir Parity): blind-escape census SOURCE_ORDER_PLANS_ON_THE_CENSUS case rises 15 -\u003e 20 plans (01527's five checks become || cases).",
+      "timestamp": "2026-11-18T05:07:38Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Kernel.assert and refute are retired; fixtures raise instead",
   "type": "task",
-  "updated_at": "2026-11-18T04:59:39Z"
+  "updated_at": "2026-11-18T05:07:38Z"
 }
