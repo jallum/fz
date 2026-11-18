@@ -190,7 +190,7 @@ fn decode_attribute(cursor: &QuotedSourceCursor, sources: &SourceMap) -> Result<
         )));
     };
     match head.as_str() {
-        "@doc" => Ok(Attribute::Doc(value.utf8_binary_text()?)),
+        "@doc" => Ok(Attribute::Doc(super::quoted_surface::doc_text(&value)?)),
         "@spec" => decode_spec_attribute(&value, sources),
         other => Err(QuotedSourceError::new(format!(
             "unsupported quoted function attribute `{other}`"

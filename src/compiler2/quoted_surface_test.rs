@@ -643,7 +643,8 @@ fn compiler2_quoted_surface_carries_a_heredoc_moduledoc_whole() {
 
     match &surface.attrs[0] {
         crate::ast::Attribute::ModuleDoc(doc) => assert_eq!(
-            doc, "Text handling.\n\nEverything here is bytes.\n",
+            doc.as_deref(),
+            Some("Text handling.\n\nEverything here is bytes.\n"),
             "a module doc should keep the blank line between its paragraphs"
         ),
         other => panic!("expected @moduledoc attr, got {other:?}"),

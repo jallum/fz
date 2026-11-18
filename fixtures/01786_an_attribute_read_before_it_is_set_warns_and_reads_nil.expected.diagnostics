@@ -1,0 +1,7 @@
+warning[lower/undefined-attribute]: undefined module attribute @size, please remove access to @size or explicitly set it before access
+  --> fixtures/01786_an_attribute_read_before_it_is_set_warns_and_reads_nil.fz:2:20
+   |
+2 |   def early(), do: @size
+   |                    ^^^^^
+   |
+

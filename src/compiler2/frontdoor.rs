@@ -227,7 +227,7 @@ impl<'t> FrontDoorParser<'t> {
 
     fn parse_item(&mut self, module_path: &[String]) -> Result<AnyValueRef, FrontDoorError> {
         match self.peek() {
-            Tok::At => self.parse_attribute_item(),
+            Tok::At => self.parse_attribute_item(module_path),
             Tok::Alias => self.parse_alias(),
             Tok::Import => self.parse_import_like("import", Tok::Import),
             Tok::Require => self.parse_import_like("require", Tok::Require),
@@ -245,15 +245,22 @@ impl<'t> FrontDoorParser<'t> {
         }
     }
 
-    fn parse_attribute_item(&mut self) -> Result<AnyValueRef, FrontDoorError> {
+    /// `@name value`. A documentation attribute holds a string or `false`; a
+    /// type or spec attribute holds its tokens, read by the type reader; any
+    /// other attribute holds an expression, its value.
+    fn parse_attribute_item(&mut self, module_path: &[String]) -> Result<AnyValueRef, FrontDoorError> {
         let start = self.cur_span();
         self.expect(&Tok::At, "`@`")?;
         let (name, value) = match self.bump() {
             Tok::Ident(name) if name == "doc" || name == "moduledoc" => {
                 let value = match self.bump() {
                     Tok::Binary(bytes) => self.builder.bitstring(bytes, (bytes.len() * 8) as u64)?,
+                    Tok::False => self.builder.bool(false),
                     other => {
-                        return Err(self.error(format!("expected string literal after `@{}`, got {:?}", name, other)));
+                        return Err(self.error(format!(
+                            "expected a string or `false` after `@{}`, got {:?}",
+                            name, other
+                        )));
                     }
                 };
                 // The lexer desugars `#{...}` into `fragment <> Kernel.to_string(x) <> ...`
@@ -285,7 +292,11 @@ impl<'t> FrontDoorParser<'t> {
                     token_payload::encode_tokens(&self.builder, &self.toks[line])?,
                 )
             }
-            other => return Err(self.error(format!("unsupported compiler2 attribute head {:?}", other))),
+            Tok::Ident(name) => {
+                let name = name.clone();
+                (name, self.parse_expr(module_path, &[])?.root)
+            }
+            other => return Err(self.error(format!("expected an attribute name after `@`, got {:?}", other))),
         };
         let span = start.merge(self.prev_span());
         let meta = self.meta(span)?;
@@ -307,7 +318,7 @@ impl<'t> FrontDoorParser<'t> {
 
     fn parse_protocol_body_item(&mut self, module_path: &[String]) -> Result<AnyValueRef, FrontDoorError> {
         match self.peek() {
-            Tok::At => self.parse_attribute_item(),
+            Tok::At => self.parse_attribute_item(module_path),
             Tok::Ident(name) if name == "def" => self.parse_item_macro_call(module_path),
             other => self.err(format!(
                 "compiler2 quoted front door expected protocol callback or attribute, got {:?}",
@@ -923,6 +934,16 @@ impl<'t> FrontDoorParser<'t> {
             Tok::False => Ok(ParsedExpr::plain(self.builder.bool(false), start)),
             Tok::Nil => Ok(ParsedExpr::plain(self.builder.nil(), start)),
             Tok::Atom(name) => Ok(ParsedExpr::plain(self.builder.atom(name), start)),
+            Tok::At => {
+                let name = match self.bump() {
+                    Tok::Ident(name) => name.clone(),
+                    other => return self.err(format!("expected an attribute name after `@`, got {:?}", other)),
+                };
+                let span = start.merge(self.prev_span());
+                let meta = self.meta(span)?;
+                let attribute = self.builder.user_variable(&name, &meta)?;
+                Ok(ParsedExpr::plain(self.builder.call("@", &meta, &[attribute])?, span))
+            }
             Tok::Underscore => {
                 let meta = self.meta(start)?;
                 Ok(ParsedExpr::plain(self.builder.user_variable("_", &meta)?, start))

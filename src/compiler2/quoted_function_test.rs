@@ -416,7 +416,8 @@ fn compiler2_quoted_function_surface_carries_a_heredoc_doc_whole() {
         panic!("expected @doc attr, got {:?}", surface.attrs[0]);
     };
     assert_eq!(
-        doc, "Adds one.\n\n## Examples\n\n    bump(1) == 2\n",
+        doc.as_deref(),
+        Some("Adds one.\n\n## Examples\n\n    bump(1) == 2\n"),
         "the doc should arrive with its blank lines and its example's indentation intact"
     );
 }

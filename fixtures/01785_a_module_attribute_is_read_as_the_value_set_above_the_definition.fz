@@ -1,0 +1,56 @@
+#---
+# purpose: "@name value sets a module attribute, and @name in a later definition reads the value set nearest above it, whether written out or computed when the module is defined"
+# oracle: self
+# oracle.stamp: 0f97e490e2c2dfd5
+#---
+#
+# An attribute's value is written out, or an expression that runs once while
+# the module is defined and may read the attributes set above it. A definition
+# reads the value in force where it stands: setting the attribute again
+# changes what the definitions after it read, and leaves those above alone. A
+# read can stand in a body, a pattern or a guard, and a macro's quoted read is
+# answered by the module the macro expands in. A nested module has attributes
+# of its own. `@compile` and `@moduledoc false` / `@doc false` are attributes
+# like any other.
+defmodule Reader do
+  defmacro limit(), do: quote(do: @limit)
+end
+
+defmodule Main do
+  @moduledoc false
+  @compile {:inline, [twice: 1]}
+  require Reader
+
+  @base 10
+  @double @base * 2
+  @shape %{name: "box", sides: [1, @base, {:double, @double}]}
+  @limit 3
+
+  @doc false
+  def twice(x), do: x * 2
+
+  def double(), do: @double
+  def shape(), do: @shape
+  def small?(n) when n < @limit, do: true
+  def small?(_), do: false
+  def tag(@base), do: :base
+  def tag(_), do: :other
+  def limit(), do: Reader.limit()
+
+  def before(), do: @base
+  @base :changed
+  def later(), do: @base
+
+  defmodule Inner do
+    @base :inner
+    def base(), do: @base
+  end
+
+  def main() do
+    IO.inspect({double(), shape()})
+    IO.inspect({small?(2), small?(5), tag(10), tag(1), limit()})
+    IO.inspect({before(), later(), Inner.base(), twice(4)})
+  end
+end
+
+Main.main()

@@ -1,5 +1,5 @@
 use super::identity::{FunctionId, ModuleId, TypeName};
-use super::source::QuotedSourceRoot;
+use super::source::{Horizon, QuotedSourceRoot};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct BindingId(u32);
@@ -54,6 +54,10 @@ struct Binding {
 pub struct NamespaceStore {
     bindings: Vec<Binding>,
     by_binding: crate::fast_hash::HashMap<Binding, Namespace>,
+    /// The splice bindings made on each head under each name. A splice is
+    /// bound by what its value says, not where its value was built, so a value
+    /// built again binds the namespace it bound before.
+    splices: crate::fast_hash::HashMap<(Namespace, String), Vec<Namespace>>,
     prelude_head: Namespace,
 }
 
@@ -63,13 +67,27 @@ impl NamespaceStore {
     }
 
     pub fn bind(&mut self, head: Namespace, name: impl Into<String>, symbol: NamespaceSymbol) -> Namespace {
-        self.push(
-            head,
-            Entry::Named {
-                name: name.into(),
-                symbol,
-            },
-        )
+        let name = name.into();
+        let NamespaceSymbol::Splice(value) = &symbol else {
+            return self.push(head, Entry::Named { name, symbol });
+        };
+        if let Some(bound) = self.equal_splice(head, &name, value) {
+            return bound;
+        }
+        let key = (head, name.clone());
+        let bound = self.push(head, Entry::Named { name, symbol });
+        self.splices.entry(key).or_default().push(bound);
+        bound
+    }
+
+    fn equal_splice(&self, head: Namespace, name: &str, value: &QuotedSourceRoot) -> Option<Namespace> {
+        let candidates = self.splices.get(&(head, name.to_string()))?;
+        candidates.iter().copied().find(|&candidate| {
+            matches!(
+                &self.bindings[candidate.0 as usize - 1].entry,
+                Entry::Named { symbol: NamespaceSymbol::Splice(bound), .. } if bound.semantically_eq(value, Horizon::Full)
+            )
+        })
     }
 
     /// Records that `macro_function` may be called by its qualified name from

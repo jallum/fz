@@ -117,6 +117,26 @@ itself:</p>
 
 <span class="ty">Exception</span>.<span class="fn">message</span>(<span class="ty">NotFound</span>.<span class="fn">exception</span>(path: <span class="str">"/a"</span>))   <span class="com"># "no file /a"</span></pre>
 
+<p>A module attribute names a value for the definitions below it.
+<code>@name value</code> sets it, and <code>@name</code> in a later
+definition reads it: in a body, a pattern or a guard. The value may compute;
+it runs once, while the module is defined, and may read the attributes set
+above it. Setting it again changes what the definitions after it read:</p>
+
+<pre><span class="kw">defmodule</span> <span class="ty">Buffer</span> <span class="kw">do</span>
+  @chunk <span class="num">64</span> * <span class="num">1024</span>
+  @limit @chunk * <span class="num">4</span>
+
+  <span class="kw">def</span> <span class="fn">chunk</span>(), <span class="kw">do:</span> @chunk
+  <span class="kw">def</span> <span class="fn">fits?</span>(n) <span class="kw">when</span> n &lt;= @limit, <span class="kw">do:</span> <span class="atm">true</span>
+  <span class="kw">def</span> <span class="fn">fits?</span>(_), <span class="kw">do:</span> <span class="atm">false</span>
+<span class="kw">end</span></pre>
+
+<p>Reading an attribute the module has not set gives <code>nil</code> and a
+warning. <code>@doc false</code> and <code>@moduledoc false</code> leave a
+function or module undocumented, and <code>@compile</code> is an attribute
+like any other.</p>
+
 <p>A file can also be a script. Expressions written at the top level run in
 order as the program's <code>main/0</code>, after every definition in the file
 is available, so a statement can call a function or module defined further
