@@ -116,10 +116,7 @@ taken apart by a match, or measured through a `binary_cursor` extern parameter
 bit-position lane. A value that is not a proven binary, and any consumer with no
 cursor to offer, reads `Matched` as `Whole`. A bit read at a runtime position
 that is a whole number of bytes past the cursor is the inline
-`Prim::BitReadByteIntAt`; other offsets read through the runtime. A step position
-is counted from the start of its match; `Prim::BitPositionAdd` and
-`Prim::BitPositionSub` move it to and from the match's place in the cursor's
-binary. A bitstring region holds a rest it matched, when a later question or the
+`Prim::BitReadByteIntAt`; other offsets read through the runtime. A bitstring region holds a rest it matched, when a later question or the
 winning outcome reads it, as a `ShapeDescr::Cursor` value in the dispatch state
 on both backends, in the store's `binary_cursor` shape. A later bit question
 reads it from its position, and a question that needs the bytes builds the

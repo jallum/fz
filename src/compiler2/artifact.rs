@@ -21,15 +21,14 @@ use crate::fz_ir::{
     ExternalCallEdge, FnId, FnIr as IrFn, Module as IrModule, Prim as IrPrim, ReceiveAfter as IrReceiveAfter,
     ReceiveClause as IrReceiveClause, Stmt as IrStmt, Term as IrTerm, Var,
 };
-use crate::ground_value::GroundValue;
 use crate::literal_term::LiteralTerm;
 use crate::runtime_type_predicate::CallableShape;
 use crate::source::Span;
 use fz_runtime::process::AtomName;
 
 use super::body::{
-    CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, DispatchBindings, LoweredBitField,
-    LoweredBitFieldSpec, LoweredBody, LoweredExtern, OutcomeEdge, ReceiveAfter, ValueId,
+    CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, DispatchBindings, LoweredBitField, LoweredBody,
+    LoweredExtern, OutcomeEdge, ReceiveAfter, ValueId,
 };
 use super::identity::{ExecutableKey, FunctionId};
 use super::semantic::{ExecutableRuntimeDemand, UndefinedFunction};
@@ -1334,7 +1333,6 @@ impl ExecutableDispatch {
 pub struct BackendClause {
     pub span: Span,
     pub params: Vec<ValueId>,
-    pub projections: Vec<BackendStep>,
     /// The subject each parameter of `entry` is handed when the executable's
     /// entry dispatch selects this clause, as an arm's outcome edge hands them.
     pub(crate) arguments: Box<[super::body::OutcomeArgument]>,
@@ -1597,34 +1595,6 @@ pub enum BackendStep {
         module: fz_runtime::module_name::ModuleName,
         slot: u32,
         field: String,
-    },
-    RequireMapValue {
-        value: ValueId,
-        source: ValueId,
-        key: GroundValue,
-    },
-    TupleField {
-        value: ValueId,
-        source: ValueId,
-        index: usize,
-    },
-    SplitList {
-        source: ValueId,
-        head: ValueId,
-        tail: ValueId,
-    },
-    /// The field of `source` that starts at bit `pos`. A clause body runs only
-    /// after its dispatch proved the whole pattern, so the field is there to
-    /// read. `next` is the position after the field, bound for a later field to
-    /// start from; the last field has none. `value` is `None` for a field the
-    /// body never uses: the position still advances, and the field is never
-    /// built.
-    BitstringRead {
-        value: Option<ValueId>,
-        next: Option<ValueId>,
-        source: ValueId,
-        pos: ValueId,
-        spec: LoweredBitFieldSpec,
     },
     PopHandler,
 }

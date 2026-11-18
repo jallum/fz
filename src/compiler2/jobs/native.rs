@@ -961,7 +961,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         state: &mut DispatchState,
     ) -> Result<(), FatalError> {
         let entry = &entries[clause.entry.as_u32() as usize];
-        self.check_clause_arguments_follow_parameters(entry, clause)?;
+        self.check_outcome_arguments_follow_parameters(entry, &clause.arguments)?;
         let plan = executable
             .abi
             .materialized
@@ -1125,7 +1125,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         let Some(edge) = outcome else {
             return Ok(Vec::new());
         };
-        self.check_arguments_follow_parameters(entry, edge)?;
+        self.check_outcome_arguments_follow_parameters(entry, &edge.arguments)?;
         let mut lane_index = 0;
         let mut arguments = Vec::with_capacity(edge.arguments.len());
         for argument in &edge.arguments {
@@ -1149,14 +1149,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
     /// An outcome hands its arguments in the order the target entry's
     /// parameters are laid out, so the lanes it passes line up with the lanes
     /// the entry reads.
-    fn check_arguments_follow_parameters(
-        &self,
-        entry: &BackendEntry,
-        edge: &super::super::body::OutcomeEdge,
-    ) -> Result<(), FatalError> {
-        self.check_outcome_arguments_follow_parameters(entry, &edge.arguments)
-    }
-
     /// The lanes an outcome hands its target entry: each argument's subject
     /// in the layout its parameter declares. A parameter of no lanes is handed
     /// nothing, so its subject is never read.
@@ -1189,14 +1181,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             )?;
         }
         Ok(args)
-    }
-
-    fn check_clause_arguments_follow_parameters(
-        &self,
-        entry: &BackendEntry,
-        clause: &BackendClause,
-    ) -> Result<(), FatalError> {
-        self.check_outcome_arguments_follow_parameters(entry, &clause.arguments)
     }
 
     fn check_outcome_arguments_follow_parameters(
@@ -1279,19 +1263,12 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         env: &mut ValueEnv,
         steps: &[BackendStep],
     ) -> Result<(), FatalError> {
-        // Entry steps never end a quantum: none calls a function or loops back,
-        // so an address a read resolves stays good for the later reads here.
-        let mut bases = BitstringBases::default();
-        let mut known_positions: HashMap<ValueId, u64> = HashMap::default();
         for step in steps {
             match step {
                 BackendStep::Omitted { value } => {
                     bind_local_value(ctx, executable, env, *value, NativeBoundValue::Absent);
                 }
                 BackendStep::Const { value, literal } => {
-                    if let LiteralTerm::Ground(GroundValue::Int(bits)) = literal {
-                        known_positions.extend(u64::try_from(*bits).ok().map(|bits| (*value, bits)));
-                    }
                     let layout = executable.abi.value_layouts.get(value).map(|layout| TransportLayout {
                         structural: layout.structural,
                         carrier: layout.carrier,
@@ -1592,76 +1569,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                         field: field.clone(),
                     });
                     self.bind_runtime_value(ctx, executable, env, *value, var);
-                }
-                BackendStep::RequireMapValue { value, source, key } => {
-                    let source = self.env_runtime_var(ctx, executable, env, *source);
-                    let key = self.ground_var(ctx, key);
-                    let (var, _) = ctx.emit_let(Prim::MatcherMapGet(source, key));
-                    self.bind_runtime_value(ctx, executable, env, *value, var);
-                }
-                BackendStep::TupleField { value, source, index } => {
-                    let realized = env_local_value(env, *source)?;
-                    if let Some(field) = self.transport_tuple_field(realized, *index)? {
-                        bind_local_value(ctx, executable, env, *value, field);
-                    } else {
-                        let tuple = self.materialize_native_value(ctx, None, realized)?;
-                        let (var, _) = ctx.emit_let(Prim::TupleField(tuple, *index as u32));
-                        bind_local_value(ctx, executable, env, *value, NativeBoundValue::Runtime(var));
-                    }
-                }
-                BackendStep::SplitList { source, head, tail } => {
-                    let source = self.env_runtime_var(ctx, executable, env, *source);
-                    let (head_var, _) = ctx.emit_let(Prim::ListHead(source));
-                    self.bind_runtime_value(ctx, executable, env, *head, head_var);
-                    let (tail_var, _) = ctx.emit_let(Prim::ListTail(source));
-                    self.bind_runtime_value(ctx, executable, env, *tail, tail_var);
-                }
-                BackendStep::BitstringRead {
-                    value,
-                    next,
-                    source,
-                    pos,
-                    spec,
-                } => {
-                    let (source, base) = self.bit_source(ctx, executable, env, *source)?;
-                    let relative_bits = known_positions.get(pos).copied();
-                    let relative = self.env_runtime_var(ctx, executable, env, *pos);
-                    let (pos, start) = match base {
-                        Some(base) => (
-                            self.emit_cursor_position(ctx, base, relative),
-                            FieldStart::PastCursor(relative_bits),
-                        ),
-                        None => (relative, FieldStart::from_first_bit(relative_bits)),
-                    };
-                    let field = BitMatchField {
-                        ty: spec.ty,
-                        size: lower_bit_size_ir(self.world, &spec.size, env)?,
-                        endian: spec.endian,
-                        signed: spec.signed,
-                        unit: spec.unit,
-                        is_last: next.is_none(),
-                    };
-                    if let Some(value) = value {
-                        if self.is_rest_read(&field) && value_layout_is_cursor(self.world, executable, *value) {
-                            let shape = value_shape(executable, *value);
-                            let bound = NativeBoundValue::Transport {
-                                shape,
-                                lanes: vec![source, pos],
-                            };
-                            bind_local_value(ctx, executable, env, *value, bound);
-                        } else {
-                            let value_var = self.emit_bit_read(ctx, &mut bases, source, pos, start, &field);
-                            self.bind_runtime_value(ctx, executable, env, *value, value_var);
-                        }
-                    }
-                    if let Some(next) = next {
-                        if let Some(next_bits) = relative_bits.zip(field.static_bits()).map(|(at, extent)| at + extent)
-                        {
-                            known_positions.insert(*next, next_bits);
-                        }
-                        let next_var = self.emit_step_next(ctx, source, base, pos, relative, field);
-                        self.bind_runtime_value(ctx, executable, env, *next, next_var);
-                    }
                 }
                 BackendStep::PopHandler => {
                     ctx.emit_let(Prim::PopHandler);
@@ -3446,7 +3353,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     .get(outcome.0 as usize)
                     .expect("every native dispatch outcome has an edge");
                 let arm_entry = edge.target;
-                self.check_arguments_follow_parameters(&entries[arm_entry.as_u32() as usize], edge)?;
+                self.check_outcome_arguments_follow_parameters(&entries[arm_entry.as_u32() as usize], &edge.arguments)?;
                 let mut args = self.encode_outcome_arguments(ctx, executable, plan, state, &edge.arguments)?;
                 args.extend(self.entry_capture_args(ctx, executable, entries, arm_entry, env)?);
                 self.transfer_to_entry(ctx, executable, entries, entry_fns, arm_entry, args);
@@ -4239,65 +4146,10 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         Ok(RegionOutcome::Matched { missed: fail_b })
     }
 
-    /// Where the field after `field` starts, counted from the start of the
-    /// match as every step position is. `pos` is the field's absolute position
-    /// and `relative` the same position counted from the start of the match;
-    /// they differ by `base` when the match reads a cursor.
-    fn emit_step_next(
-        &mut self,
-        ctx: &mut NativeFnCtx,
-        source: Var,
-        base: Option<Var>,
-        pos: Var,
-        relative: Var,
-        field: BitMatchField,
-    ) -> Var {
-        match (field.ty, base) {
-            (BitType::Utf8, Some(base)) => {
-                let end = self.emit_bit_next(ctx, source, pos, field);
-                self.emit_position_prim(ctx, Prim::BitPositionSub(end, base))
-            }
-            (BitType::Utf8, None) => self.emit_bit_next(ctx, source, pos, field),
-            _ => self.emit_bit_next(ctx, source, relative, field),
-        }
-    }
-
     /// Whether `field` is the rest of a binary: a `binary` or `bits` field with
     /// no size, which reads to the end.
     fn is_rest_read(&self, field: &BitMatchField) -> bool {
         field.is_last && field.size.is_none() && matches!(field.ty, BitType::Binary | BitType::Bits)
-    }
-
-    /// The binary a match reads and the position it starts at, which is
-    /// `Some` when the value is a cursor and `None` when it is a whole binary
-    /// and the match starts at its first bit.
-    fn bit_source(
-        &mut self,
-        ctx: &mut NativeFnCtx,
-        executable: &BackendExecutable,
-        env: &ValueEnv,
-        source: ValueId,
-    ) -> Result<(Var, Option<Var>), FatalError> {
-        if let Some(NativeBoundValue::Transport { shape, lanes }) = env.value(source)
-            && matches!(self.world.shape(*shape), ShapeDescr::Cursor { .. })
-            && let [source, position] = lanes.as_slice()
-        {
-            return Ok((*source, Some(*position)));
-        }
-        Ok((self.env_runtime_var(ctx, executable, env, source), None))
-    }
-
-    /// The absolute bit position of `relative`, a position counted from the
-    /// start of a match that began at `base`.
-    fn emit_cursor_position(&mut self, ctx: &mut NativeFnCtx, base: Var, relative: Var) -> Var {
-        self.emit_position_prim(ctx, Prim::BitPositionAdd(base, relative))
-    }
-
-    fn emit_position_prim(&mut self, ctx: &mut NativeFnCtx, prim: Prim) -> Var {
-        let (position, _) = ctx.emit_let(prim);
-        let int = self.world.types_mut().int();
-        ctx.value_types.insert(position, int);
-        position
     }
 
     /// The binary a bitstring region reads and the position it starts at: the
@@ -5949,10 +5801,6 @@ enum FieldStart {
 }
 
 impl FieldStart {
-    fn from_first_bit(bits: Option<u64>) -> Self {
-        bits.map_or(Self::Unknown, Self::Fixed)
-    }
-
     /// The start of the field after one that spans `extent` bits, when the
     /// text says how many.
     fn advanced_by(self, extent: Option<u64>) -> Self {
@@ -5963,14 +5811,6 @@ impl FieldStart {
             (Self::Fixed(_) | Self::Unknown, _) => Self::Unknown,
         }
     }
-}
-
-fn value_layout_is_cursor(world: &World, executable: &BackendExecutable, value: ValueId) -> bool {
-    executable
-        .abi
-        .value_layouts
-        .get(&value)
-        .is_some_and(|layout| matches!(world.shape(layout.structural), ShapeDescr::Cursor { .. }))
 }
 
 fn value_shape(executable: &BackendExecutable, value: ValueId) -> ShapeId {
@@ -6027,26 +5867,13 @@ fn collect_extern_marshals(
 ) -> Result<HashMap<usize, Vec<ExternTy>>, FatalError> {
     let mut out = HashMap::default();
     for executable in program.executables() {
-        if let BackendBody::Clauses { clauses, entries, .. } = &executable.body {
-            for clause in clauses {
-                collect_extern_marshals_in_steps(world, root_id, program, &clause.projections, &mut out)?;
-            }
+        if let BackendBody::Clauses { entries, .. } = &executable.body {
             for entry in entries {
                 collect_extern_marshals_in_tail(world, tel, root_id, program, &entry.tail, &mut out)?;
             }
         }
     }
     Ok(out)
-}
-
-fn collect_extern_marshals_in_steps(
-    _world: &World,
-    _root_id: RootId,
-    _program: &BackendProgram,
-    _steps: &[BackendStep],
-    _out: &mut HashMap<usize, Vec<ExternTy>>,
-) -> Result<(), FatalError> {
-    Ok(())
 }
 
 fn collect_extern_marshals_in_tail(

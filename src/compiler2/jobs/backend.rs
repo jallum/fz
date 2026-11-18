@@ -27,8 +27,8 @@ use super::super::artifact::{
     BackendStep, BackendTail, CallEdge, CallReturnFlow, CallTarget, DirectCallEdge, DispatchCallArm,
 };
 use super::super::body::{
-    CallArg, CallSiteId, ControlEntryId, ControlEntryOrigin, LoweredBitFieldSpec, LoweredBody, LoweredEntry,
-    LoweredMapKey, LoweredStep, LoweredTail, ValueId,
+    CallArg, CallSiteId, ControlEntryId, ControlEntryOrigin, LoweredBody, LoweredEntry, LoweredMapKey, LoweredStep,
+    LoweredTail, ValueId,
 };
 use super::super::drive::{FactKey, Job, emit_job_diagnostic};
 use super::super::identity::{ActivationKey, ExecutableKey, ModuleId, RootId, RootKind};
@@ -757,11 +757,6 @@ fn lower_backend_body(
                     Ok(BackendClause {
                         span: clause.span,
                         params: clause.params.clone(),
-                        projections: clause
-                            .projections
-                            .iter()
-                            .map(|step| lowerer.lower_step(step))
-                            .collect::<Result<Vec<_>, _>>()?,
                         arguments: clause.arguments.clone(),
                         entry: clause.entry,
                     })
@@ -1065,58 +1060,8 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
             LoweredStep::FieldAccess { value, base, field } => {
                 self.step_or_omitted_when_absent(*value, self.field_read(*value, *base, field))
             }
-            LoweredStep::RequireMapValue { value, source, key } => BackendStep::RequireMapValue {
-                value: *value,
-                source: *source,
-                key: key.clone(),
-            },
-            LoweredStep::TupleField { value, source, index } => self.step_or_omitted_when_absent(
-                *value,
-                BackendStep::TupleField {
-                    value: *value,
-                    source: *source,
-                    index: *index,
-                },
-            ),
-            LoweredStep::SplitList { source, head, tail } => BackendStep::SplitList {
-                source: *source,
-                head: *head,
-                tail: *tail,
-            },
-            LoweredStep::BitstringRead {
-                value,
-                next,
-                source,
-                pos,
-                spec,
-            } => self.bitstring_read(*value, *next, *source, *pos, spec),
             LoweredStep::PopHandler => BackendStep::PopHandler,
         })
-    }
-
-    /// A field the body never uses is not read; its position is still
-    /// advanced for the fields after it, and a field that is neither read nor
-    /// advanced past has no step at all.
-    fn bitstring_read(
-        &self,
-        value: ValueId,
-        next: Option<ValueId>,
-        source: ValueId,
-        pos: ValueId,
-        spec: &LoweredBitFieldSpec,
-    ) -> BackendStep {
-        let read = (!self.value_is_proven_semantically_absent(value)).then_some(value);
-        let advanced = next.is_some_and(|next| !self.value_is_proven_semantically_absent(next));
-        if read.is_none() && !advanced {
-            return BackendStep::Omitted { value };
-        }
-        BackendStep::BitstringRead {
-            value: read,
-            next,
-            source,
-            pos,
-            spec: spec.clone(),
-        }
     }
 
     fn value_is_proven_semantically_absent(&self, value: ValueId) -> bool {
@@ -1231,8 +1176,8 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
     }
 
     /// Every fresh-construction step (Tuple/List/Map/MapUpdate/Struct/
-    /// Bitstring/FunctionRef/Lambda) and every projection (FieldAccess/StructSlot/
-    /// TupleField) must respect the absence proof: when transport proves the
+    /// Bitstring/FunctionRef/Lambda) and every projection (FieldAccess/StructSlot)
+    /// must respect the absence proof: when transport proves the
     /// value runtime-absent, its operands were never demanded and may be
     /// unbound at runtime, so the step lowers as `Omitted` instead of
     /// executing a read of never-materialized values
@@ -1348,10 +1293,7 @@ fn collect_executable_atoms(world: &mut World, executable: &BackendExecutable, n
                 names.raise(failure);
             }
         }
-        BackendBody::Clauses { clauses, entries, .. } => {
-            for clause in clauses {
-                collect_step_atoms(world, &clause.projections, names);
-            }
+        BackendBody::Clauses { entries, .. } => {
             for entry in entries {
                 collect_entry_atoms(world, entry, names);
             }
@@ -1391,9 +1333,6 @@ fn collect_step_atoms(_world: &mut World, steps: &[BackendStep], names: &mut Exe
             BackendStep::FieldAccess { field, .. } | BackendStep::StructSlot { field, .. } => {
                 push_atom(names, field);
             }
-            BackendStep::RequireMapValue { key, .. } => {
-                collect_literal_atoms(key, names);
-            }
             BackendStep::Omitted { .. }
             | BackendStep::Tuple { .. }
             | BackendStep::List { .. }
@@ -1407,9 +1346,6 @@ fn collect_step_atoms(_world: &mut World, steps: &[BackendStep], names: &mut Exe
             | BackendStep::BinaryOp { .. }
             | BackendStep::UnaryOp { .. }
             | BackendStep::MapIndex { .. }
-            | BackendStep::TupleField { .. }
-            | BackendStep::SplitList { .. }
-            | BackendStep::BitstringRead { .. }
             | BackendStep::PopHandler => {}
         }
     }

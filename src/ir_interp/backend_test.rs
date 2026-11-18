@@ -679,7 +679,6 @@ fn entry_dispatch_does_not_materialize_unneeded_structural_inputs() {
         clauses: vec![crate::compiler2::BackendClause {
             span: crate::source::Span::DUMMY,
             params: vec![value],
-            projections: Vec::new(),
             arguments: Box::default(),
             entry: crate::compiler2::ControlEntryId::from_u32(0),
         }],
@@ -808,7 +807,6 @@ fn entry_dispatch_decides_a_lane_form_tuple_from_its_lanes() {
         clauses: vec![crate::compiler2::BackendClause {
             span: crate::source::Span::DUMMY,
             params: vec![value],
-            projections: Vec::new(),
             arguments: Box::default(),
             entry: crate::compiler2::ControlEntryId::from_u32(0),
         }],

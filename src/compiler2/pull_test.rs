@@ -2296,7 +2296,7 @@ fn fake_effect_materialized(
         allocates,
         ..EffectSummary::default()
     };
-    let projections = if allocates {
+    let steps = if allocates {
         vec![LoweredStep::Tuple {
             value: ValueId::from_u32(0),
             items: Vec::new(),
@@ -2330,7 +2330,6 @@ fn fake_effect_materialized(
             vec![LoweredClause {
                 span: crate::source::Span::DUMMY,
                 params: Vec::new(),
-                projections,
                 arguments: Box::default(),
                 entry: ControlEntryId::from_u32(0),
             }],
@@ -2342,7 +2341,7 @@ fn fake_effect_materialized(
                 capture_owners: Vec::new(),
                 physical_captures: Vec::new(),
                 physical_params: Vec::new(),
-                steps: Vec::new(),
+                steps,
                 tail: LoweredTail::Unreachable,
             }],
             Vec::new(),

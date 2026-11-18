@@ -94,15 +94,12 @@ Operators are typed inline by `binop_ty`/`unop_ty` — there is no
 `Kernel.<op>/2` spec lookup and no declared-spec backstop in inference. An
 extern body types its return as `any()`.
 
-Control flow and pattern steps refine the environment instead of producing a new
-value:
+Control flow refines the environment instead of producing a new value:
 
 ```text
 If              clone `values` into each branch, type both, union the results
 Dispatch        each reachable outcome types its arm with the inputs the
                 plan's questions narrowed (calculate_dispatch_reachability)
-TupleField      values[value]  := tuple_field_type(source, index)
-SplitList       values[head] := elem(source); values[tail] := list(elem(source))
 ```
 
 `=` is a decision like `case`, so `{:ok, handle} = result` narrows `result` to

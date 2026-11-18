@@ -3856,12 +3856,7 @@ fn a_field_of_a_known_struct_is_read_by_slot_and_any_other_field_by_name() {
         .executables()
         .into_iter()
         .filter_map(|executable| match &executable.body {
-            BackendBody::Clauses { clauses, entries, .. } => Some(
-                clauses
-                    .iter()
-                    .flat_map(|clause| &clause.projections)
-                    .chain(entries.iter().flat_map(|entry| &entry.steps)),
-            ),
+            BackendBody::Clauses { entries, .. } => Some(entries.iter().flat_map(|entry| &entry.steps)),
             _ => None,
         })
         .flatten()

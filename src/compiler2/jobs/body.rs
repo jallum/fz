@@ -270,32 +270,6 @@ enum ExprStep {
     Receive(Box<ExprReceive>),
     Try(Box<ExprTry>),
     PopHandler,
-    RequireMapValue {
-        value: ValueId,
-        source: ValueId,
-        key: GroundValue,
-    },
-    TupleField {
-        value: ValueId,
-        source: ValueId,
-        index: usize,
-    },
-    SplitList {
-        source: ValueId,
-        head: ValueId,
-        tail: ValueId,
-    },
-    /// The field of `source` that starts at bit `pos`. A clause body runs only
-    /// after its dispatch proved the whole pattern, so the field is there to
-    /// read. `next` is the position after the field, bound for a later field to
-    /// start from; the last field has none.
-    BitstringRead {
-        value: ValueId,
-        next: Option<ValueId>,
-        source: ValueId,
-        pos: ValueId,
-        spec: LoweredBitFieldSpec,
-    },
 }
 
 /// The facts `lower_function` cannot conclude without: the function's own
@@ -3226,7 +3200,6 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
             lowered.push(LoweredClause {
                 span: clause.span,
                 params: clause.params,
-                projections: Vec::new(),
                 arguments: clause.arguments,
                 entry,
             });
@@ -3614,7 +3587,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                     );
                     return (lowered, LoweredTail::Try { body, handler });
                 }
-                step => lowered.push(lower_projection_step(step)),
+                step => lowered.push(lower_straight_step(step)),
             }
         }
         (
@@ -3646,7 +3619,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         let plan =
             self.compile_single_pattern_dispatch("match", pattern, pattern.span, Some(LastResort::match_error()))?;
         if plan.is_direct_outcome() {
-            self.bind_pattern(&pattern.node, value, env, steps)?;
+            bind_unasked_pattern(&pattern.node, value, env);
             return Ok(None);
         }
         let bindings = self.lower_dispatch_bindings(&plan, env, steps)?;
@@ -3685,163 +3658,6 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         Ok(decided)
     }
 
-    fn bind_pattern(
-        &mut self,
-        pattern: &Pattern,
-        source: ValueId,
-        env: &mut HashMap<Var, ValueId>,
-        steps: &mut Vec<ExprStep>,
-    ) -> Result<(), FatalError> {
-        match pattern {
-            Pattern::Wildcard
-            | Pattern::Int(_)
-            | Pattern::Float(_)
-            | Pattern::Binary(_)
-            | Pattern::Atom(_)
-            | Pattern::Bool(_)
-            | Pattern::Nil
-            | Pattern::Pinned(_) => Ok(()),
-            Pattern::Var(name) => {
-                env.insert(name.clone(), source);
-                Ok(())
-            }
-            Pattern::Tuple(items) => {
-                for (index, item) in items.iter().enumerate() {
-                    let value = self.fresh_value();
-                    steps.push(ExprStep::TupleField { value, source, index });
-                    self.bind_pattern(&item.node, value, env, steps)?;
-                }
-                Ok(())
-            }
-            Pattern::List(items, tail) => {
-                let mut current = source;
-                for item in items {
-                    let head = self.fresh_value();
-                    let tail_value = self.fresh_value();
-                    steps.push(ExprStep::SplitList {
-                        source: current,
-                        head,
-                        tail: tail_value,
-                    });
-                    self.bind_pattern(&item.node, head, env, steps)?;
-                    current = tail_value;
-                }
-                if let Some(tail) = tail {
-                    self.bind_pattern(&tail.node, current, env, steps)?;
-                }
-                Ok(())
-            }
-            Pattern::Both(left, right) => {
-                self.bind_pattern(&left.node, source, env, steps)?;
-                self.bind_pattern(&right.node, source, env, steps)
-            }
-            Pattern::Map(entries) => self.lower_map_pattern(entries, source, env, steps),
-            Pattern::Struct { module, fields } => self.lower_struct_pattern(module, fields, source, env, steps),
-            Pattern::Bitstring(fields) => self.lower_bitstring_pattern(fields, source, env, steps),
-        }
-    }
-
-    fn lower_map_pattern(
-        &mut self,
-        entries: &[(Spanned<Pattern>, Spanned<Pattern>)],
-        source: ValueId,
-        env: &mut HashMap<Var, ValueId>,
-        steps: &mut Vec<ExprStep>,
-    ) -> Result<(), FatalError> {
-        for (key_pattern, value_pattern) in entries {
-            let Some(key) = literal_from_pattern(&key_pattern.node) else {
-                return Err(emit_job_diagnostic(
-                    self.telemetry,
-                    Diagnostic::error(
-                        codes::LOWER_UNSUPPORTED,
-                        format!(
-                            "compiler2 map patterns require literal keys, found `{}`",
-                            pattern_name(&key_pattern.node)
-                        ),
-                        key_pattern.span,
-                    ),
-                ));
-            };
-            let value = self.fresh_value();
-            steps.push(ExprStep::RequireMapValue { value, source, key });
-            self.bind_pattern(&value_pattern.node, value, env, steps)?;
-        }
-        Ok(())
-    }
-
-    fn lower_struct_pattern(
-        &mut self,
-        module: &crate::ast::ModuleTarget,
-        fields: &[(String, Spanned<Pattern>)],
-        source: ValueId,
-        env: &mut HashMap<Var, ValueId>,
-        steps: &mut Vec<ExprStep>,
-    ) -> Result<(), FatalError> {
-        let module_id = self.world.resolve_module_target(self.namespace, module);
-        // Same invariant as `lower_struct_expr`: `collect_local_pattern_requirements`'s
-        // `Pattern::Struct` arm already recorded this pattern's field
-        // obligations and waited on `StructDefined(module_id)` before this
-        // `Lowerer` was built, so the ordered schema is present by
-        // construction, and an unknown field is diagnosed durably through
-        // that obligation store rather than a local check here.
-        let mut by_name = fields
-            .iter()
-            .map(|(name, pattern)| (name.as_str(), pattern))
-            .collect::<HashMap<_, _>>();
-        let mut matched = |name: &String| by_name.remove(name.as_str()).map(|pattern| (name.clone(), pattern));
-        let ordered = match self.world.struct_def_fields(module_id) {
-            Some(order) => order.iter().filter_map(&mut matched).collect::<Vec<_>>(),
-            None => fields.iter().map(|(name, _)| name).filter_map(&mut matched).collect(),
-        };
-        for (field, pattern) in ordered {
-            let value = self.fresh_value();
-            steps.push(ExprStep::FieldAccess {
-                value,
-                base: source,
-                field,
-            });
-            self.bind_pattern(&pattern.node, value, env, steps)?;
-        }
-        Ok(())
-    }
-
-    fn lower_bitstring_pattern(
-        &mut self,
-        fields: &[BitField<Spanned<Pattern>>],
-        source: ValueId,
-        env: &mut HashMap<Var, ValueId>,
-        steps: &mut Vec<ExprStep>,
-    ) -> Result<(), FatalError> {
-        if fields.is_empty() {
-            return Ok(());
-        }
-        let mut pos = self.push_const(steps, GroundValue::Int(0));
-        for (index, field) in fields.iter().enumerate() {
-            let value = self.fresh_value();
-            let next = (index + 1 < fields.len()).then(|| self.fresh_value());
-            steps.push(ExprStep::BitstringRead {
-                value,
-                next,
-                source,
-                pos,
-                spec: self.lower_bitfield_spec(
-                    &field.spec.size,
-                    field.spec.ty,
-                    field.spec.endian,
-                    field.spec.signed,
-                    field.spec.unit,
-                    field.value.span,
-                    env,
-                )?,
-            });
-            self.bind_pattern(&field.value.node, value, env, steps)?;
-            if let Some(next) = next {
-                pos = next;
-            }
-        }
-        Ok(())
-    }
-
     fn push_const(&mut self, steps: &mut Vec<ExprStep>, literal: GroundValue) -> ValueId {
         self.push_literal(steps, literal.into())
     }
@@ -3865,7 +3681,32 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
     }
 }
 
-fn lower_projection_step(step: ExprStep) -> LoweredStep {
+/// Binds the names of a pattern that asks nothing: its dispatch is a
+/// direct outcome, so every name is the matched value itself.
+fn bind_unasked_pattern(pattern: &Pattern, source: ValueId, env: &mut HashMap<Var, ValueId>) {
+    match pattern {
+        Pattern::Wildcard
+        | Pattern::Int(_)
+        | Pattern::Float(_)
+        | Pattern::Binary(_)
+        | Pattern::Atom(_)
+        | Pattern::Bool(_)
+        | Pattern::Nil
+        | Pattern::Pinned(_) => {}
+        Pattern::Var(name) => {
+            env.insert(name.clone(), source);
+        }
+        Pattern::Both(left, right) => {
+            bind_unasked_pattern(&left.node, source, env);
+            bind_unasked_pattern(&right.node, source, env);
+        }
+        Pattern::Tuple(_) | Pattern::List(..) | Pattern::Map(_) | Pattern::Struct { .. } | Pattern::Bitstring(_) => {
+            unreachable!("a pattern that destructures asks a question; its dispatch is never a direct outcome")
+        }
+    }
+}
+
+fn lower_straight_step(step: ExprStep) -> LoweredStep {
     match step {
         ExprStep::Const { value, literal } => LoweredStep::Const { value, literal },
         ExprStep::Tuple { value, items } => LoweredStep::Tuple {
@@ -3907,22 +3748,6 @@ fn lower_projection_step(step: ExprStep) -> LoweredStep {
         ExprStep::UnaryOp { value, op, input } => LoweredStep::UnaryOp { value, op, input },
         ExprStep::MapIndex { value, base, key } => LoweredStep::MapIndex { value, base, key },
         ExprStep::FieldAccess { value, base, field } => LoweredStep::FieldAccess { value, base, field },
-        ExprStep::RequireMapValue { value, source, key } => LoweredStep::RequireMapValue { value, source, key },
-        ExprStep::TupleField { value, source, index } => LoweredStep::TupleField { value, source, index },
-        ExprStep::SplitList { source, head, tail } => LoweredStep::SplitList { source, head, tail },
-        ExprStep::BitstringRead {
-            value,
-            next,
-            source,
-            pos,
-            spec,
-        } => LoweredStep::BitstringRead {
-            value,
-            next,
-            source,
-            pos,
-            spec,
-        },
         ExprStep::PopHandler => LoweredStep::PopHandler,
         ExprStep::DirectCall { .. }
         | ExprStep::ClosureCall { .. }
@@ -3930,7 +3755,7 @@ fn lower_projection_step(step: ExprStep) -> LoweredStep {
         | ExprStep::Dispatch { .. }
         | ExprStep::Receive(_)
         | ExprStep::Try(_) => {
-            panic!("control steps should be lowered into tails before projection conversion")
+            panic!("control steps should be lowered into tails before straight-line conversion")
         }
     }
 }
@@ -3961,17 +3786,14 @@ fn decision_input_value(
     }
 }
 
-/// The values a clause binds before its entry runs: the clause parameters and
-/// everything its projections define.
+/// The values a clause binds before its entry runs: the clause parameters.
 fn clause_bounds(body: &LoweredBody) -> HashMap<ControlEntryId, ValueSet> {
-    let LoweredBody::Clauses { clauses, tables, .. } = body;
+    let LoweredBody::Clauses { clauses, .. } = body;
     clauses
         .iter()
-        .enumerate()
-        .map(|(index, clause)| {
+        .map(|clause| {
             let mut bound = ValueSet::for_values(body.value_count());
             bound.extend(clause.params.iter().copied());
-            bound.extend(tables.clause_defines(index));
             (clause.entry, bound)
         })
         .collect()
@@ -4694,10 +4516,8 @@ pub(super) fn retained_value_ids(body: &LoweredBody) -> ValueSet {
         ..
     } = body;
     let mut retained = ValueSet::for_values(body.value_count());
-    for (index, clause) in clauses.iter().enumerate() {
+    for clause in clauses {
         retained.extend(clause.params.iter().copied());
-        retained.extend(tables.clause_defines(index));
-        retained.extend(tables.clause_uses(index));
     }
     for (index, entry) in entries.iter().enumerate() {
         let entry_id = ControlEntryId::from_u32(index as u32);
@@ -5023,46 +4843,6 @@ fn direct_operator_name(op: crate::ast::BinOp) -> Option<&'static str> {
         | crate::ast::BinOp::RangeStep
         | crate::ast::BinOp::In
         | crate::ast::BinOp::NotIn => None,
-    }
-}
-
-fn literal_from_pattern(pattern: &Pattern) -> Option<GroundValue> {
-    Some(match pattern {
-        Pattern::Int(value) => GroundValue::Int(*value),
-        Pattern::Float(value) => GroundValue::from_f64(*value),
-        Pattern::Binary(value) => GroundValue::Binary(value.clone()),
-        Pattern::Atom(value) => GroundValue::Atom(value.clone()),
-        Pattern::Bool(value) => GroundValue::Bool(*value),
-        Pattern::Nil => GroundValue::Nil,
-        Pattern::Wildcard
-        | Pattern::Var(_)
-        | Pattern::Tuple(_)
-        | Pattern::List(_, _)
-        | Pattern::Map(_)
-        | Pattern::Struct { .. }
-        | Pattern::Pinned(_)
-        | Pattern::Both(_, _)
-        | Pattern::Bitstring(_) => return None,
-    })
-}
-
-fn pattern_name(pattern: &Pattern) -> &'static str {
-    match pattern {
-        Pattern::Wildcard => "Wildcard",
-        Pattern::Var(_) => "Var",
-        Pattern::Int(_) => "Int",
-        Pattern::Float(_) => "Float",
-        Pattern::Binary(_) => "Binary",
-        Pattern::Atom(_) => "Atom",
-        Pattern::Bool(_) => "Bool",
-        Pattern::Nil => "Nil",
-        Pattern::Tuple(_) => "Tuple",
-        Pattern::List(_, _) => "List",
-        Pattern::Map(_) => "Map",
-        Pattern::Struct { .. } => "Struct",
-        Pattern::Pinned(_) => "Pinned",
-        Pattern::Both(_, _) => "Both",
-        Pattern::Bitstring(_) => "Bitstring",
     }
 }
 
