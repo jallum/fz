@@ -335,14 +335,11 @@ fn body_consumes_callable_identity(world: &World, function: FunctionId) -> bool 
         // call through: neither captures nor dispatches callable identity.
         return false;
     }
-    let LoweredBody::Clauses { clauses, entries, .. } = &*world.lowered_body(function);
+    let LoweredBody::Clauses { entries, .. } = &*world.lowered_body(function);
     let step_constructs = |step: &LoweredStep| matches!(step, LoweredStep::Lambda { .. });
     entries
         .iter()
         .any(|entry| matches!(entry.tail, LoweredTail::ClosureCall { .. }) || entry.steps.iter().any(step_constructs))
-        || clauses
-            .iter()
-            .any(|clause| clause.projections.iter().any(step_constructs))
 }
 
 /// One node of the input-demand graph: a body's OWN dispatch demand, and the
@@ -839,15 +836,11 @@ fn collect_demands(
 }
 
 fn value_uses(world: &World, body: &LoweredBody) -> ValueMap<Vec<ValueUse>> {
-    let LoweredBody::Clauses { clauses, entries, .. } = body;
+    let LoweredBody::Clauses { entries, .. } = body;
     let joins = delivered_value_joins(body);
     let mut uses = ValueMap::<Vec<ValueUse>>::with_capacity(body.value_count());
     let mut add = |value: ValueId, usage: ValueUse| uses.entry(value).or_default().push(usage);
-    for step in clauses
-        .iter()
-        .flat_map(|clause| clause.projections.iter())
-        .chain(entries.iter().flat_map(|entry| entry.steps.iter()))
-    {
+    for step in entries.iter().flat_map(|entry| entry.steps.iter()) {
         step_value_uses(step, &mut add);
     }
     for entry in entries {
@@ -865,12 +858,7 @@ fn step_value_uses(step: &LoweredStep, add: &mut impl FnMut(ValueId, ValueUse)) 
         // A projection's result is a position of its source
         // (`input_positions`), so what asks of the result asks of the source
         // there, and the source is asked nothing more.
-        LoweredStep::Const { .. }
-        | LoweredStep::FunctionRef { .. }
-        | LoweredStep::TupleField { .. }
-        | LoweredStep::SplitList { .. }
-        | LoweredStep::FieldAccess { .. }
-        | LoweredStep::RequireMapValue { .. } => {}
+        LoweredStep::Const { .. } | LoweredStep::FunctionRef { .. } | LoweredStep::FieldAccess { .. } => {}
         // Leaving a `try` reads no value.
         LoweredStep::PopHandler => {}
         LoweredStep::Tuple { value, items } => {
@@ -935,13 +923,6 @@ fn step_value_uses(step: &LoweredStep, add: &mut impl FnMut(ValueId, ValueUse)) 
         LoweredStep::MapIndex { base, key, .. } => {
             add(*base, whole());
             add(key.value, if key.literal.is_some() { class() } else { whole() });
-        }
-        LoweredStep::BitstringRead { source, pos, spec, .. } => {
-            add(*source, whole());
-            add(*pos, class());
-            if let Some(size) = spec.size.as_ref().and_then(LoweredBitSize::read_value) {
-                add(size, whole());
-            }
         }
     }
 }
@@ -1075,8 +1056,8 @@ fn tail_value_uses(
 /// uncured.
 fn return_flow_mask(body: &LoweredBody, origins: &InputPositions, input_count: usize) -> Vec<DispatchDemand> {
     let mut mask = vec![DispatchDemand::Ignore; input_count];
-    let LoweredBody::Clauses { clauses, entries, .. } = body;
-    for (slot, path) in returned_values(body, clauses, entries)
+    let LoweredBody::Clauses { entries, .. } = body;
+    for (slot, path) in returned_values(body, entries)
         .iter()
         .filter_map(|value| origins.get(&value))
         .flatten()
@@ -1343,11 +1324,7 @@ fn input_origin_positions(
 /// resume entry is followed one hop per join. Construction steps are opened --
 /// `{:done, acc}` returns `acc` -- because an activation's published return
 /// carries the field's type whether or not the tuple around it is new.
-fn returned_values(
-    body: &LoweredBody,
-    clauses: &[super::super::body::LoweredClause],
-    entries: &[super::super::body::LoweredEntry],
-) -> ValueSet {
+fn returned_values(body: &LoweredBody, entries: &[super::super::body::LoweredEntry]) -> ValueSet {
     let mut returned = ValueSet::for_values(body.value_count());
     let mut frontier = Vec::new();
     for entry in entries {
@@ -1361,11 +1338,7 @@ fn returned_values(
         }
     }
     let mut built: ValueMap<Vec<ValueId>> = ValueMap::with_capacity(body.value_count());
-    for step in clauses
-        .iter()
-        .flat_map(|clause| clause.projections.iter())
-        .chain(entries.iter().flat_map(|entry| entry.steps.iter()))
-    {
+    for step in entries.iter().flat_map(|entry| entry.steps.iter()) {
         match step {
             LoweredStep::Tuple { value, items } => {
                 built.insert(*value, items.iter().map(|item| item.value).collect());
@@ -1512,10 +1485,7 @@ fn emit_input_demand_derived(tel: &impl crate::telemetry::Telemetry, function: &
 
 fn static_edges(body: &LoweredBody) -> Vec<StaticEdge> {
     let mut edges = Vec::new();
-    let LoweredBody::Clauses { clauses, entries, .. } = body;
-    for clause in clauses {
-        collect_step_edges(&clause.projections, &mut edges);
-    }
+    let LoweredBody::Clauses { entries, .. } = body;
     for entry in entries {
         collect_step_edges(&entry.steps, &mut edges);
         collect_tail_edges(&entry.tail, &mut edges);
@@ -1547,10 +1517,6 @@ fn collect_step_edges(steps: &[LoweredStep], edges: &mut Vec<StaticEdge>) {
             | LoweredStep::UnaryOp { .. }
             | LoweredStep::MapIndex { .. }
             | LoweredStep::FieldAccess { .. }
-            | LoweredStep::RequireMapValue { .. }
-            | LoweredStep::TupleField { .. }
-            | LoweredStep::SplitList { .. }
-            | LoweredStep::BitstringRead { .. }
             | LoweredStep::PopHandler => {}
         }
     }

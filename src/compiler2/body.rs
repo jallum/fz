@@ -174,12 +174,8 @@ pub(crate) fn step_defined_values(step: &LoweredStep) -> impl Iterator<Item = Va
         | LoweredStep::BinaryOp { value, .. }
         | LoweredStep::UnaryOp { value, .. }
         | LoweredStep::MapIndex { value, .. }
-        | LoweredStep::FieldAccess { value, .. }
-        | LoweredStep::RequireMapValue { value, .. }
-        | LoweredStep::TupleField { value, .. } => [Some(*value), None, None],
+        | LoweredStep::FieldAccess { value, .. } => [Some(*value), None, None],
         LoweredStep::MapUpdate { value, ok, .. } => [Some(*value), Some(*ok), None],
-        LoweredStep::SplitList { head, tail, .. } => [Some(*head), Some(*tail), None],
-        LoweredStep::BitstringRead { value, next, .. } => [Some(*value), *next, None],
         LoweredStep::PopHandler => [None; 3],
     };
     values.into_iter().flatten()
@@ -230,16 +226,6 @@ pub(crate) fn step_used_values(step: &LoweredStep, out: &mut Vec<ValueId>) {
         LoweredStep::FieldAccess { base, .. } => {
             out.push(*base);
         }
-        LoweredStep::RequireMapValue { source, .. }
-        | LoweredStep::TupleField { source, .. }
-        | LoweredStep::SplitList { source, .. } => {
-            out.push(*source);
-        }
-        LoweredStep::BitstringRead { source, pos, spec, .. } => {
-            out.push(*source);
-            out.push(*pos);
-            out.extend(spec.size.as_ref().and_then(LoweredBitSize::read_value));
-        }
     }
 }
 
@@ -281,12 +267,12 @@ pub(crate) fn tail_used_values(tail: &LoweredTail, out: &mut Vec<ValueId>) {
     }
 }
 
-/// Where one step sits in a lowered body: in a clause's projections, or in a
-/// control entry's steps.
+/// Where one step sits in a lowered body: the control entry holding it and its
+/// position in that entry's steps.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum StepSite {
-    Projection { clause: u32, index: u32 },
-    Entry { entry: ControlEntryId, index: u32 },
+pub(crate) struct StepSite {
+    entry: ControlEntryId,
+    index: u32,
 }
 
 /// What one run of steps defines, uses and retains.
@@ -338,7 +324,7 @@ fn positions_from(positions: &[(u32, ValueId)], first_step: u32) -> impl Iterato
     positions[start..].iter().map(|(_, value)| *value)
 }
 
-/// A clause body's definition and use tables, recorded as its steps join the
+/// A body's definition and use tables, recorded as its steps join the
 /// body.
 ///
 /// Ownership construction asks the same two questions over and over -- where
@@ -360,7 +346,6 @@ fn positions_from(positions: &[(u32, ValueId)], first_step: u32) -> impl Iterato
 #[derive(Debug, Clone)]
 pub struct BodyTables {
     definitions: ValueMap<StepSite>,
-    projections: Vec<StepUses>,
     entries: Vec<StepUses>,
     callsite_entries: Vec<Option<ControlEntryId>>,
 }
@@ -372,27 +357,15 @@ impl PartialEq for BodyTables {
 }
 
 impl BodyTables {
-    fn of(clauses: &[LoweredClause], entries: &[LoweredEntry]) -> Self {
-        let projections = clauses
-            .iter()
-            .map(|clause| StepUses::of(&clause.projections, None))
-            .collect::<Vec<_>>();
+    fn of(entries: &[LoweredEntry]) -> Self {
         let entry_uses = entries
             .iter()
             .map(|entry| StepUses::of(&entry.steps, Some(&entry.tail)))
             .collect::<Vec<_>>();
         let mut definitions = ValueMap::new();
-        for (clause, table) in projections.iter().enumerate() {
-            for (index, value) in &table.defined {
-                definitions.entry(*value).or_insert(StepSite::Projection {
-                    clause: clause as u32,
-                    index: *index,
-                });
-            }
-        }
         for (entry, table) in entry_uses.iter().enumerate() {
             for (index, value) in &table.defined {
-                definitions.entry(*value).or_insert(StepSite::Entry {
+                definitions.entry(*value).or_insert(StepSite {
                     entry: ControlEntryId::from_u32(entry as u32),
                     index: *index,
                 });
@@ -400,7 +373,6 @@ impl BodyTables {
         }
         Self {
             definitions,
-            projections,
             entries: entry_uses,
             callsite_entries: callsite_entries(entries),
         }
@@ -415,10 +387,8 @@ impl BodyTables {
 
     /// The entry and step that define `value`, when an entry step does.
     pub(crate) fn entry_definition_site(&self, value: ValueId) -> Option<(ControlEntryId, u32)> {
-        match self.definitions.get(&value)? {
-            StepSite::Entry { entry, index } => Some((*entry, *index)),
-            StepSite::Projection { .. } => None,
-        }
+        let site = self.definitions.get(&value)?;
+        Some((site.entry, site.index))
     }
 
     /// Every `(step, value)` operand position of this entry, tail included.
@@ -441,14 +411,6 @@ impl BodyTables {
             .defined
             .iter()
             .map(|(_, value)| *value)
-    }
-
-    pub(crate) fn clause_defines(&self, clause: usize) -> impl Iterator<Item = ValueId> + '_ {
-        self.projections[clause].defined.iter().map(|(_, value)| *value)
-    }
-
-    pub(crate) fn clause_uses(&self, clause: usize) -> impl Iterator<Item = ValueId> + '_ {
-        self.projections[clause].used_from(0)
     }
 }
 
@@ -510,7 +472,7 @@ impl LoweredBody {
     /// The one way to build a clause body: the tables are recorded here, from
     /// the steps themselves, so they cannot disagree with what they index.
     pub(crate) fn clauses(clauses: Vec<LoweredClause>, entries: Vec<LoweredEntry>, generated: Vec<FunctionId>) -> Self {
-        let tables = BodyTables::of(&clauses, &entries);
+        let tables = BodyTables::of(&entries);
         Self::Clauses {
             clauses,
             entries,
@@ -592,16 +554,9 @@ impl LoweredBody {
     /// The step that defines `value`, or `None` when the value arrives as a
     /// clause parameter, an entry parameter or a dispatch outcome argument.
     pub(crate) fn value_definition(&self, value: ValueId) -> Option<&LoweredStep> {
-        let Self::Clauses {
-            clauses,
-            entries,
-            tables,
-            ..
-        } = self;
-        match tables.definitions.get(&value)? {
-            StepSite::Projection { clause, index } => Some(&clauses[*clause as usize].projections[*index as usize]),
-            StepSite::Entry { entry, index } => Some(&entries[entry.as_u32() as usize].steps[*index as usize]),
-        }
+        let Self::Clauses { entries, tables, .. } = self;
+        let site = tables.definitions.get(&value)?;
+        Some(&entries[site.entry.as_u32() as usize].steps[site.index as usize])
     }
 
     /// Record that a list step rebuilds `source`, taking a share of its
@@ -650,7 +605,6 @@ impl LoweredBody {
 pub struct LoweredClause {
     pub span: Span,
     pub params: Vec<ValueId>,
-    pub projections: Vec<LoweredStep>,
     /// The subject each parameter of `entry` is handed when the function's
     /// entry plan selects this clause, as an arm's outcome edge hands them.
     pub(crate) arguments: Box<[OutcomeArgument]>,
@@ -1172,7 +1126,7 @@ impl CallInputMode {
 /// A lowered map key position: the runtime value, plus the compile-time
 /// constant when the source wrote a literal. Map keys are VALUES — the
 /// carried literal is what lets analysis type the field precisely without
-/// singleton numeric types in the lattice (mirroring `RequireMapValue`).
+/// singleton numeric types in the lattice.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LoweredMapKey {
     pub value: ValueId,
@@ -1248,32 +1202,6 @@ pub enum LoweredStep {
         value: ValueId,
         base: ValueId,
         field: String,
-    },
-    RequireMapValue {
-        value: ValueId,
-        source: ValueId,
-        key: GroundValue,
-    },
-    TupleField {
-        value: ValueId,
-        source: ValueId,
-        index: usize,
-    },
-    SplitList {
-        source: ValueId,
-        head: ValueId,
-        tail: ValueId,
-    },
-    /// The field of `source` that starts at bit `pos`. A clause body runs only
-    /// after its dispatch proved the whole pattern, so the field is there to
-    /// read. `next` is the position after the field, bound for a later field to
-    /// start from; the last field has none.
-    BitstringRead {
-        value: ValueId,
-        next: Option<ValueId>,
-        source: ValueId,
-        pos: ValueId,
-        spec: LoweredBitFieldSpec,
     },
     /// The `try` body completed: its handler leaves the process's handler
     /// stack before the body's value travels on.

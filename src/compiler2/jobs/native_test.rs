@@ -243,7 +243,6 @@ fn entry_dispatch_decides_a_lane_form_tuple_from_its_lanes() {
     let clauses = vec![BackendClause {
         span: Span::DUMMY,
         params: vec![param],
-        projections: Vec::new(),
         arguments: Box::default(),
         entry: ControlEntryId::from_u32(0),
     }];

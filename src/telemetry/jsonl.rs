@@ -2093,13 +2093,12 @@ pub(crate) fn list_retention_counts(program: &crate::compiler2::BackendProgram) 
     let mut construction_count = 0;
     let mut physical_capture_count = 0;
     for executable in program.executables() {
-        let crate::compiler2::BackendBody::Clauses { clauses, entries, .. } = &executable.body else {
+        let crate::compiler2::BackendBody::Clauses { entries, .. } = &executable.body else {
             continue;
         };
-        construction_count += clauses
+        construction_count += entries
             .iter()
-            .flat_map(|clause| &clause.projections)
-            .chain(entries.iter().flat_map(|entry| &entry.steps))
+            .flat_map(|entry| &entry.steps)
             .filter(|step| matches!(step, crate::compiler2::BackendStep::List { retention: Some(_), .. }))
             .count() as u64;
         physical_capture_count += entries

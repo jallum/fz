@@ -5,7 +5,6 @@
 //! fact gathers its settled inputs; product producers only read this value.
 
 use crate::compiler2::ValueMap;
-use crate::dispatch_matrix::ComparisonValue;
 use crate::fast_hash::{HashMap, HashSet};
 use std::collections::BTreeSet;
 use std::rc::Rc;
@@ -889,24 +888,12 @@ fn collect_entry_callsite_needs(
             | LoweredStep::BinaryOp { value, .. }
             | LoweredStep::UnaryOp { value, .. }
             | LoweredStep::MapIndex { value, .. }
-            | LoweredStep::FieldAccess { value, .. }
-            | LoweredStep::RequireMapValue { value, .. }
-            | LoweredStep::TupleField { value, .. } => {
+            | LoweredStep::FieldAccess { value, .. } => {
                 tuple_demands.remove(value);
             }
             LoweredStep::MapUpdate { value, ok, .. } => {
                 tuple_demands.remove(value);
                 tuple_demands.remove(ok);
-            }
-            LoweredStep::SplitList { head, tail, .. } => {
-                tuple_demands.remove(head);
-                tuple_demands.remove(tail);
-            }
-            LoweredStep::BitstringRead { value, next, .. } => {
-                tuple_demands.remove(value);
-                if let Some(next) = next {
-                    tuple_demands.remove(next);
-                }
             }
             LoweredStep::PopHandler => {}
         }
@@ -1026,11 +1013,6 @@ pub(crate) fn collect_value_origins(body: &LoweredBody) -> ValueMap<TransportOri
     let mut origins = ValueMap::with_capacity(body.value_count());
     let LoweredBody::Clauses { clauses, entries, .. } = body;
     for (index, clause) in clauses.iter().enumerate() {
-        for step in &clause.projections {
-            for (value, origin) in step_transport_origins(step) {
-                origins.insert(value, origin);
-            }
-        }
         for (semantic_index, value) in clause.params.iter().copied().enumerate() {
             origins.insert(value, TransportOrigin::ExecutableInput(semantic_index));
         }
@@ -1045,10 +1027,8 @@ pub(crate) fn collect_value_origins(body: &LoweredBody) -> ValueMap<TransportOri
         }
     }
     for (owner, entry) in entries.iter().enumerate() {
-        for step in &entry.steps {
-            for (value, origin) in step_transport_origins(step) {
-                origins.insert(value, origin);
-            }
+        for (value, origin) in entry.steps.iter().filter_map(step_transport_origin) {
+            origins.insert(value, origin);
         }
         for edge in entry.tail.outcome_edges() {
             for argument in &edge.arguments {
@@ -1094,33 +1074,20 @@ pub(crate) fn collect_value_origins(body: &LoweredBody) -> ValueMap<TransportOri
     origins
 }
 
-fn step_transport_origins(step: &LoweredStep) -> Vec<(ValueId, TransportOrigin)> {
+fn step_transport_origin(step: &LoweredStep) -> Option<(ValueId, TransportOrigin)> {
     use crate::dispatch_matrix::ProjectionKind;
-    let projection = |value, source, kind| (value, TransportOrigin::Projection { source, kind });
     let origin = match step {
         LoweredStep::Tuple { value, items } => (
             *value,
             TransportOrigin::TupleValue(items.iter().map(|item| item.value).collect()),
         ),
-        LoweredStep::TupleField { value, source, index } => {
-            projection(*value, *source, ProjectionKind::TupleField(*index as u32))
-        }
-        LoweredStep::FieldAccess { value, base, field } => {
-            projection(*value, *base, ProjectionKind::StructField(field.clone()))
-        }
-        LoweredStep::RequireMapValue { value, source, key } => projection(
+        LoweredStep::FieldAccess { value, base, field } => (
             *value,
-            *source,
-            ProjectionKind::MapValue {
-                key: ComparisonValue::Const(key.clone()),
+            TransportOrigin::Projection {
+                source: *base,
+                kind: ProjectionKind::StructField(field.clone()),
             },
         ),
-        LoweredStep::SplitList { source, head, tail } => {
-            return vec![
-                projection(*head, *source, ProjectionKind::ListHead),
-                projection(*tail, *source, ProjectionKind::ListTail),
-            ];
-        }
         LoweredStep::FunctionRef { value, function } => (
             *value,
             TransportOrigin::CallableValue(LocalCallableProducer {
@@ -1139,9 +1106,9 @@ fn step_transport_origins(step: &LoweredStep) -> Vec<(ValueId, TransportOrigin)>
                 captures: captures.clone().into_boxed_slice(),
             }),
         ),
-        _ => return Vec::new(),
+        _ => return None,
     };
-    vec![origin]
+    Some(origin)
 }
 
 fn collect_return_origins(body: &LoweredBody, analysis: &ActivationAnalysis) -> Box<[TransportOrigin]> {

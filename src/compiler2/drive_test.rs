@@ -962,19 +962,7 @@ fn compiler2_inline_forwarding_preserves_input_return_demand() {
 
 #[test]
 fn compiler2_impossible_map_clause_has_no_runtime_requirement() {
-    let tel = ConfiguredTelemetry::new();
-    let analyses = Rc::new(RefCell::new(HashMap::default()));
-    let sink = Rc::clone(&analyses);
-    tel.attach_raw_event2::<World, ActivationKey, _>(
-        &["fz", "compiler2", "activation_analysis", "defined"],
-        move |_, _, _, world, activation| {
-            sink.borrow_mut().insert(
-                activation.function,
-                world.activation_analysis(activation).unwrap().clone(),
-            );
-        },
-    );
-    let mut compiler = Compiler2::new(tel);
+    let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
     compiler.submit_code(CodeSubmission {
         name: Some("impossible_map_clause.fz".into()),
         text: concat!(
@@ -995,22 +983,6 @@ fn compiler2_impossible_map_clause_has_no_runtime_requirement() {
         need: ExecutableNeed::Value,
     });
     assert_eq!(compiler.run_root_interp(root), Ok(42));
-    let program = compiler.retained_backend_program(root);
-    let analysis = analyses.borrow();
-    let analysis = &analysis[&compiler.root_function(root)];
-    for executable in program.executables() {
-        let BackendBody::Clauses { clauses, entries, .. } = &executable.body else {
-            continue;
-        };
-        assert!(
-            !clauses
-                .iter()
-                .flat_map(|clause| &clause.projections)
-                .chain(entries.iter().flat_map(|entry| &entry.steps))
-                .any(|step| matches!(step, BackendStep::RequireMapValue { .. })),
-            "the impossible wildcard clause has no bound value to materialize; analysis: {analysis:?}"
-        );
-    }
 }
 
 #[test]
@@ -1179,17 +1151,9 @@ fn compiler2_inline_bitstring_outcomes_reuse_typed_dispatch_reads() {
     let backend = compiler.retained_backend_program(root);
     let mut arm_arities = Vec::new();
     for executable in backend.executables() {
-        let BackendBody::Clauses { clauses, entries, .. } = &executable.body else {
+        let BackendBody::Clauses { entries, .. } = &executable.body else {
             continue;
         };
-        assert!(
-            !clauses
-                .iter()
-                .flat_map(|clause| &clause.projections)
-                .chain(entries.iter().flat_map(|entry| &entry.steps))
-                .any(|step| matches!(step, BackendStep::BitstringRead { .. })),
-            "inline bodies must not extract bitstring fields a second time"
-        );
         for entry in entries {
             let BackendTail::Dispatch { dispatch, .. } = &entry.tail else {
                 continue;
@@ -5766,12 +5730,11 @@ fn compiler2_import_only_exact_fn_refs_lower_as_function_ids_without_provider_bo
     );
 
     let body = lowered_body(&bodies, main_id);
-    let LoweredBody::Clauses { clauses, entries, .. } = body;
+    let LoweredBody::Clauses { entries, .. } = body;
 
-    let has_function_ref = clauses
+    let has_function_ref = entries
         .iter()
-        .flat_map(|clause| clause.projections.iter())
-        .chain(entries.iter().flat_map(|entry| entry.steps.iter()))
+        .flat_map(|entry| entry.steps.iter())
         .any(|step| matches!(step, LoweredStep::FunctionRef { .. }));
     assert!(
         has_function_ref,
@@ -15883,10 +15846,6 @@ fn compiler2_lowered_clause_receives_the_values_its_head_binds_from_the_entry_pl
     let LoweredBody::Clauses { clauses, .. } = body;
 
     assert_eq!(clauses.len(), 2, "wanted/1 should preserve both source clauses");
-    assert!(
-        clauses.iter().all(|clause| clause.projections.is_empty()),
-        "a clause matches nothing and projects nothing: the entry plan did both before it was entered",
-    );
     assert_eq!(
         clauses[0].arguments.len(),
         1,
@@ -16017,11 +15976,6 @@ fn compiler2_lowered_body_decides_a_local_match_inside_the_body() {
     let body = lowered_body(&bodies, main_id);
     let LoweredBody::Clauses { clauses, entries, .. } = body;
 
-    assert_eq!(
-        clauses[0].projections.len(),
-        0,
-        "main/0 has no head params to project after entry dispatch",
-    );
     assert!(
         matches!(
             &entries[clauses[0].entry.as_u32() as usize].tail,

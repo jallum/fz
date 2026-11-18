@@ -917,10 +917,6 @@ impl ProgramCanon<'_> {
         out.enter(&format!("clause {index} {}", self.span(clause.span)));
         let params: Vec<String> = clause.params.iter().map(|v| self.names.value(*v)).collect();
         out.put(&format!("params [{}]", params.join(", ")));
-        for step in &clause.projections {
-            let text = self.step(step);
-            out.put(&text);
-        }
         let arguments = self.outcome_arguments(&clause.arguments);
         out.put(&format!("arguments [{arguments}]"));
         out.put(&format!("entry e{}", clause.entry.as_u32()));
@@ -1110,41 +1106,6 @@ impl ProgramCanon<'_> {
                 let name = self.names.value(*value);
                 let base = self.names.value(*base);
                 format!("{name} = slot {base}.{slot}")
-            }
-            BackendStep::RequireMapValue { value, source, key } => {
-                let name = self.names.value(*value);
-                let source = self.names.value(*source);
-                format!("{name} = require_map_value {source}[{}]", ground(key))
-            }
-            BackendStep::TupleField { value, source, index } => {
-                let name = self.names.value(*value);
-                let source = self.names.value(*source);
-                format!("{name} = tuple_field {source}.{index}")
-            }
-            BackendStep::SplitList { source, head, tail } => {
-                let source = self.names.value(*source);
-                let head = self.names.value(*head);
-                let tail = self.names.value(*tail);
-                format!("split_list {source} -> head={head} tail={tail}")
-            }
-            BackendStep::BitstringRead {
-                value,
-                next,
-                source,
-                pos,
-                spec,
-            } => {
-                let defined = value
-                    .iter()
-                    .chain(next)
-                    .copied()
-                    .map(|defined| self.names.value(defined))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let source = self.names.value(*source);
-                let pos = self.names.value(*pos);
-                let spec = self.bit_spec(spec);
-                format!("{defined} = bitstring_read {source} at {pos} {spec}")
             }
             BackendStep::PopHandler => "pop_handler".to_string(),
         }
