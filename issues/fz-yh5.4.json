@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-18T21:45:30Z",
+  "description": "A non-tail call to a callee that cannot suspend builds no continuation.\n\nGap: no ticket owns the general rule. fz-sc8.197 (closed) covers only callees that are an extern or a one-clause forwarder to one. fz-9x7.35 (closed) covers branch joins.\n\nToday, every non-tail call splits its caller: plan_steps/plan_continuation in jobs/body.rs consult no property of the callee. Evidence:\n- The decode-paths page measured 146k continuations per JSON docs decode.\n- JSON proposal P1 saw 2 continuation allocations per digit from a non-tail helper.\n- Probe p09: `byte_size(id(b))` costs +183 instructions against `byte_size(b)` because `id` was not inlined.\n- The JSON whitespace change W is held on this rule.\nCallables' continuation page prices a continuation at 112 + 37r instructions today, and 20 + 2r after its step C. A call that needs no frame is cheaper than either.\n\nThe question to settle first, from facts in the compiler:\n- What makes a callee unable to suspend? Candidates: it reaches no receive, no yielding back edge and no non-tail call that can suspend (transitively), or the yield happens only at a point where the caller's frame can be rebuilt.\n- Is \"cannot suspend\" a fact the planner can know as a demand-driven fact on the callee, without a pass or a sort?\n- What does the reduction budget require of a call that never yields?\n\nFix (after the question is answered): such a call is a plain call with return, whose live values stay in registers or on the machine stack.\n\nAsm first: target listing for p09's call and for JSON's non-tail digit helper.\n\nAcceptance:\n- p09 +183 falls to the plain-call cost (bench).\n- Continuations per JSON docs decode fall.\n- Three paths agree.\n- No pin rises without authorization.",
+  "id": "fz-yh5.4",
+  "labels": [],
+  "parent": "fz-yh5",
+  "priority": 1,
+  "status": "open",
+  "title": "A non-tail call to a callee that cannot suspend builds no continuation",
+  "type": "task",
+  "updated_at": "2026-11-18T21:45:30Z"
+}
