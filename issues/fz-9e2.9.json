@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-9e2.1"
+  ],
   "blocks": [],
   "created": "2026-11-18T21:21:30Z",
   "description": "One match-region step list for every consumer.\n\nToday (compiler.md C3, C4, C5, C15; runtime.md R8, R16):\n- Binary matching has 5 walkers: native dispatch, interp dispatch, receive, native body re-read, interp body re-read.\n- Construction has 2 copies.\n- Tag, default-unit and endian tables are copied about 5 times.\n- BitstringFieldKind/BitstringEndian duplicate ast::BitType/ast::Endian.\n- Literal-to-integer-field expansion exists twice: pattern.rs:1198 via ast binary_literal_fields, and quoted_function.rs:1625 literal_as_integer_fields. ConstBitstring is emitted in two places (native.rs:3270, :6087).\n- Receive lowers binary patterns with one extern per field, while function clauses are inline.\n- bit_len and base are re-derived per clause and again in the body, and sibling literal clauses share no prefix test.\n\nFix:\n- One field description (ast::BitType/Endian).\n- One step list per pattern, built once, consumed by native dispatch, the native body, receive and the interpreter.\n- Receive uses the inline lowering.\n- Sibling clauses share a prefix test.\n- One expansion; one ConstBitstring emitter.\n\nFolds the remaining fz-sc8.183 work: .4 and .9 are the same seam, \"a match reads its subject once with one bounds implementation\". Re-baseline the sc8.183 epic into this.\n\nAsm first: targets for a 3-clause literal dispatch (shared prefix) and a receive on a literal.\n\nAcceptance:\n- Walker count from 5 to 1 producer.\n- The receive listing has no per-field extern.\n- Three-path fixtures unchanged; no pin rises.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "One match-region step list serves every consumer",
   "type": "task",
-  "updated_at": "2026-11-18T21:21:30Z"
+  "updated_at": "2026-11-18T21:21:38Z"
 }
