@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-9e2.1"
+  ],
   "blocks": [],
   "created": "2026-11-18T21:21:31Z",
   "description": "A construction is sized and written once. \u003c\u003e, string interpolation and constant segments lower to the same construction.\n\nToday (machine.md M5, M6, M8; compiler.md C1, C16; runtime.md R6, R7):\n- Prim::MakeBitstring (prim.rs:379-427) always runs the dynamic builder: fz_bs_begin, one call per field with 6 constant arguments, then fz_bs_finalize.\n- The builder is a Vec in process.bs_builder: malloc, realloc, copy out, free.\n- BitWriter::write_bits writes integer fields bit by bit, so ::8 takes 8 loop turns.\n- Costs:\n  - \u003c\u003cacc::binary, x::binary\u003e\u003e 1667 instructions vs 376 for acc \u003c\u003e x\n  - \u003c\u003ca::8, b::16, c::binary\u003e\u003e 1759 vs BEAM 231\n  - growing \u003c\u003cacc::binary, x\u003e\u003e is quadratic: 173,841 per step; 30k appends allocate 450 MB vs 67 KB for \u003c\u003e\n  - \u003c\u003cc\u003e\u003e of a constant byte is 528 instructions more than \"A\"\n- Interpolation (lexer.rs:968) is a left-associated \u003c\u003e chain: N pieces make N-1 intermediate bitstrings.\n- Exception.__inspect_indented__ appends byte by byte with \u003c\u003cdone::binary, byte\u003e\u003e.\n\nFix:\n- Compute total bits from literal widths and inline binary lengths, bump-allocate once (inline when \u003c= 64 B), store integer fields as byte stores and binary fields with one memcpy.\n- The builder remains only for unaligned or variable-width fields, writes whole bytes when it can, and keeps its buffer in the process.\n- A leading acc::binary field is an append through the same append \u003c\u003e uses (the BEAM does this with bs_create_bin's append flag).\n- \u003c\u003e and interpolation lower to this construction.\n- Constant fields fold to a literal.\n\nWhat goes away: bit-by-bit writes for byte widths, malloc/realloc/free per construction, the double copy in bs_finalize, fz_binary_concat as a separate path, and per-field constant argument setup. Supersedes fz-sc8.111.\n\nOrdering: after fz-nml.29 (Optimize's private append), so the shared append is the private one. Coordinate with Optimize on whether nml.29 covers the constructor form.\n\nAsm first: targets for p03a, p05a, p05b, p06, p04a (\u003c\u003crem(n,256)\u003e\u003e) and a 3-piece interpolation.\n\nAcceptance:\n- Constructor slopes at or below \u003c\u003e (bench).\n- Growing constructor linear.\n- Interpolation allocates once per string (fixture).",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "A construction is sized and written once; \u003c\u003e and interpolation lower to it",
   "type": "task",
-  "updated_at": "2026-11-18T21:21:31Z"
+  "updated_at": "2026-11-18T21:21:38Z"
 }
