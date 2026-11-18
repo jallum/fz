@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-18T21:21:30Z",
+  "description": "A cursor is a parameter's shape only if something takes it apart. Byte alignment is a cursor fact. A whole-subject guard reads lanes, not a rebuilt rest.\n\nToday:\n- An accumulator loop `loop(n, acc \u003c\u003e \"ab\")` carries acc as a cursor (binary + bit position; transport.rs:169-174, world.rs:560) just because a later byte_size takes a binary_cursor. Every \u003c\u003e then rebuilds the binary from (source, 0): +169 instructions per iteration, 279 vs 448 (M7b/c).\n- The non-tail byte loop re-tests pos \u0026 7 every byte and carries an unaligned ldrh/rev16 arm, although the cursor starts at 0 and advances by 8. It also repeats the kind dispatch twice per byte (M10, C9).\n- A `byte_size(s) == 0` first clause makes the rest whole via make_cursor_whole (dispatch_subject_var, receive.rs:1497). JSON proposal P3 measured 65 bitstrings and 135 views per 200-byte walk.\n- make_cursor_whole makes an FFI call even at a known position 0 (C7).\n\nFix:\n- Cursor shape is demanded only by uses that take the value apart.\n- A value produced by \u003c\u003e or a constructor is at position 0 by construction.\n- Alignment is a lane fact, set after byte-multiple fields.\n- Kind dispatch of a loop-invariant lane is hoisted in the non-tail case, as the tail case already does.\n- Guards on byte_size read the lanes.\n\nFolds the receive half of fz-sc8.231. Its handler half needs a runtime ABI change and stays there; split it. Also folds JSON P3.\n\nAsm first: targets for p01b (non-tail match), p03c and a guard-first walk.\n\nAcceptance: slopes as predicted (on bench), and JSON P3's allocation counts fall.",
+  "id": "fz-9e2.8",
+  "labels": [],
+  "parent": "fz-9e2",
+  "priority": 2,
+  "status": "open",
+  "title": "A cursor is a shape only where it is taken apart; alignment is a lane fact",
+  "type": "task",
+  "updated_at": "2026-11-18T21:21:30Z"
+}
