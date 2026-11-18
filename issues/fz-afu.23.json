@@ -7,9 +7,15 @@
   "id": "fz-afu.23",
   "labels": [],
   "parent": "fz-afu",
+  "comments": [
+    {
+      "text": "Scope update (user chose \"option-c\", relayed by JSON): #691 merged receive-only (ea7f40b00); this ticket is a proposal first, and the widening is its own ticket blocked by this one. Trace (fz-nml.9.4 builder): all +76 derivations / +2671 reads are DeriveRuntimeDemand, 6 extra runs on Distill.main/1, Distill.timeline/2 and Enum.reduce/3#lambda@0/2 (four arrows); the waker is RuntimeDemandInputs concluding for fn 239 and fn 274; RuntimeDemand revision 1 -\u003e 2 (base 1 -\u003e 1), final demand identical. Sites: settle_input_demands (runtime_demand.rs:1171), inline_dispatch_input_demands (~2214), closure-callsite floor (~2600). Done when the widened prune lands with the distiller pin unchanged. The widened patch is now /Users/j5n/Workspace/fz-unread-outcome-arguments-widened.patch.",
+      "timestamp": "2026-11-18T00:18:07Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "A closure-called entry's input demand starts at its floor",
   "type": "bug",
-  "updated_at": "2026-11-18T00:18:06Z"
+  "updated_at": "2026-11-18T00:18:07Z"
 }
