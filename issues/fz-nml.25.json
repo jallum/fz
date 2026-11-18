@@ -3,6 +3,7 @@
   "blocked_by": [
     "fz-9x7.30",
     "fz-9x7.31",
+    "fz-9x7.35",
     "fz-sc8.246"
   ],
   "blocks": [],
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "A JSON integer is converted from its text, as a float already is",
   "type": "task",
-  "updated_at": "2026-11-18T00:16:00Z"
+  "updated_at": "2026-11-18T02:47:14Z"
 }

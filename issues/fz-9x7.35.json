@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-9x7.31"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-nml.25"
+  ],
   "created": "2026-11-18T02:47:13Z",
   "description": "Approved by the user 2026-11-17 (relayed by Bugs and Cleanup, verbatim: \".31 approved.\"; decision B of the fz-9x7.31 page /Users/j5n/Workspace/fz-9x7.31.html, ordered C: fz-9x7.31 (A) first, then this).\n\nBug: on the native paths a branch whose join is reached after the branch builds a continuation even when the branch ends in a tail position. `(if n \u003e 5, do: n * 3, else: n) + 1` allocates one 32 B continuation per execution on run and none on interp. A join is reached by a jump (a tail transfer to the join block); only a non-tail call builds a continuation.\n\nProbes: /Users/j5n/Workspace/fz-9x7.31-probes/shapes/ (t_ifjoin.fz, t_try_noarg.fz).\n\nWhy it matters: JSON's loop (fz-nml.25) reaches one continuation per iteration only with both fz-9x7.31 and this.\n\nRelated design: Make Distiller Fast's byte-walk page (../fz-sc8.byte-walk-loop.html, with the user) proposes clause bodies as blocks of their function and a self tail call as a jump under the same rule (\"an entry reached only by its function's own direct transfers is a block\"); the builder reads that page first so the two land as one design, not two mechanisms.\n\nAcceptance: the probe allocates no continuation on run/build; interp, JIT and AOT agree; pins that fall are lowered, none rises.",
   "id": "fz-9x7.35",
