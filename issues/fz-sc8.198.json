@@ -7,9 +7,15 @@
   "id": "fz-sc8.198",
   "labels": [],
   "parent": "fz-sc8",
+  "comments": [
+    {
+      "text": "PR #726 (branch fz-sc8.198/guard-booleans). Measured, release build, instructions per byte, develop 394fa1313 -\u003e change: guarded byte walk 604 -\u003e 196; with a non-tail leaf call 787 -\u003e 379; three clauses repeating the guard 1,411 -\u003e 243. No runtime call remains in a guard built from comparisons. Interp unaffected (native lowering only).",
+      "timestamp": "2026-11-18T03:41:07Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "A guard comparison's result is known to be a boolean",
   "type": "task",
-  "updated_at": "2026-11-14T13:12:22Z"
+  "updated_at": "2026-11-18T03:41:07Z"
 }
