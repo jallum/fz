@@ -7,6 +7,7 @@
     "fz-nml.25",
     "fz-sc8.248"
   ],
+  "closed_at": "2026-11-18T04:24:04Z",
   "created": "2026-11-18T03:23:50Z",
   "description": "Approved by the user 2026-11-17 (relayed verbatim by Make Distiller Fast: \"a, b, c approved.\"). Page: /Users/j5n/Workspace/fz-sc8.byte-walk-loop.html (v7, walkthrough section).\n\n(a) The rule: a place in the code is a function only if something outside its function can arrive there (a call from elsewhere, a call's return, the runtime); everything reached only by its own function's direct transfers is a block. Clause bodies become blocks of their function; a self tail call is a branch to the head block; a branch join with two direct predecessors is a block (absorbs fz-9x7.35, which becomes this ticket's acceptance probe: `(if n \u003e 5, do: n * 3, else: n) + 1` builds no continuation on run/build). A try body that the try only tail-calls falls under the same rule.\n\nScope: EntryFns' \"exactly one direct transfer\" becomes \"every arriving transfer is a direct transfer from its own function\"; lower_clause_body_fn and every __clause_N symbol go; a self tail call is a jump charging one reduction.\n\n(b) One reduction per step: the dispatch -\u003e clause-body transfer no longer exists and charges nothing. Four pins move; one fixture's copied-bytes pin rises 1.6% (authorized by the ruling; cause not isolated for that fixture).\n\nMeasured on the spike (bench, develop 394fa1313): walk 96.6 -\u003e 61.4 instr/byte, 20.8 -\u003e ~8 cycles/byte; distiller -7.85% instructions, -14.87% cycles, peak RSS 1407 -\u003e 1157 MB (peak in-use 889 -\u003e 795 MB: the dispatch-\u003eclause transfer stops being a yield point), binary 3,748,120 -\u003e 3,495,608 bytes. Spike: /Users/j5n/Workspace/fz-distill-hunt/spike.394fa1313.patch (FZ_SPIKE_CLAUSE_BLOCKS and FZ_SPIKE_SELF_JUMP hunks only; throwaway). A temporary assertion that an executable's entries never form a cycle held across 6,976 tests.\n\nAcceptance: interp, JIT, AOT agree; the .35 probe builds no continuation; pins move only as (b) authorizes, falls lowered; full gate.",
   "id": "fz-sc8.247",
@@ -19,8 +20,8 @@
     }
   ],
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "A place in the code is a function only if something outside its function arrives there",
   "type": "task",
-  "updated_at": "2026-11-18T04:13:41Z"
+  "updated_at": "2026-11-18T04:24:04Z"
 }
