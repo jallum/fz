@@ -4,7 +4,8 @@
     "fz-9x7.12",
     "fz-9x7.13",
     "fz-9x7.16",
-    "fz-9x7.23"
+    "fz-9x7.23",
+    "fz-9x7.30"
   ],
   "blocks": [
     "fz-9x7.11"
@@ -24,5 +25,5 @@
   "status": "open",
   "title": "The young generation's size follows the live data, not the largest pooled block",
   "type": "task",
-  "updated_at": "2026-11-17T22:45:55Z"
+  "updated_at": "2026-11-18T00:12:27Z"
 }
