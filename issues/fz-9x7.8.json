@@ -39,11 +39,15 @@
     {
       "text": "User said \"proceed\" 2026-11-17 (relayed by GC) on folding in the old-binary major trigger: a major also becomes due when the binary bytes the old generation holds outgrow MAJOR_GROWTH_FACTOR x what the last major left (BEAM old-vheap). Cause it fixes: FC's extra minors promote binary-owning cells; old-generation dead binaries are freed only by a major; the major trigger counted only old heap bytes (~5-6 MB), so survive's binary in-use climbed to 48 MB vs ~10 MB live (+13.5% mean in-use). Prediction: survive mean in-use \u003c= base, peak \u003c= 1.005x; other workloads unchanged.",
       "timestamp": "2026-11-18T02:42:07Z"
+    },
+    {
+      "text": "Old-binary major fold (uncommitted in ../fz-9x7-8 on a2e5c45f9; patch scratchpad/8fold/fold.patch). Trigger: major also when held_binary_bytes \u003e 2 * max(held_after_last_major, 256 KiB). Rule: clause 1 PASS (survive mean 34.30 MB vs base 43.13, 0.80x; peak 102.1 -\u003e 82.3 MB); clause 3 PASS (deadbinlive/quantum unchanged); clause 5 PASS (outputs identical). Clause 2 FAIL: json peak 1.208x base (7 extra gcs, majors copy old heap while from-space held); giftbin 1.015x base, identical in old .8 commit, so pre-existing in .8, mechanism uninvestigated. Clause 4 FAIL: survive instructions 1.144x vs old (each extra major traces the whole old heap, 30-58k BinRef visits), json 1.0145x. Gate not run. Awaiting user ruling.",
+      "timestamp": "2026-11-18T02:47:43Z"
     }
   ],
   "priority": 2,
   "status": "in_progress",
   "title": "Off-heap binary bytes count toward the collection trigger",
   "type": "bug",
-  "updated_at": "2026-11-18T02:42:07Z"
+  "updated_at": "2026-11-18T02:47:43Z"
 }
