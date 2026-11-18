@@ -3417,3 +3417,90 @@ fn inline_alloc_layout_names_the_fields_a_placement_updates() {
         at((&heap.alloc_stats.continuation.bytes as *const u64).addr())
     );
 }
+
+/// Prepend `cells` fresh cells to `tail`, collect with the list as the only
+/// root, and return the new head with the collection's stats.
+fn grow_list_and_collect(h: &mut Heap, tail: u64, cells: usize) -> (u64, GcStats) {
+    let mut head = tail;
+    for i in 0..cells {
+        head = alloc_int_list_cons(h, i as i64, head);
+    }
+    let mut roots = [heap_ref(head)];
+    let stats = h.collect(&mut roots);
+    (roots[0].raw_word(), stats)
+}
+
+/// A minor collection's to-space is sized by what minor collections copy. A
+/// major's copy is the whole live set, and the minor after it keeps only a few
+/// young cells: its to-space is the smallest class, not the major's.
+#[test]
+fn a_minor_after_a_major_gets_a_to_space_of_its_own_copys_class() {
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let mut list = EMPTY_LIST;
+    let major_copy = loop {
+        let (next, stats) = grow_list_and_collect(&mut h, list, 40);
+        list = next;
+        if stats.generation == Generation::Major {
+            break stats.copied_bytes as usize;
+        }
+    };
+    assert!(
+        pick_block_capacity(major_copy) > SIZE_TABLE[0],
+        "the major's copy is larger than the smallest class"
+    );
+
+    let (_, stats) = grow_list_and_collect(&mut h, list, 1);
+
+    assert_eq!(stats.generation, Generation::Minor);
+    let to_space = h.old_blocks.last().expect("the minor's survivors are in a block");
+    assert_eq!(to_space.capacity, SIZE_TABLE[0]);
+}
+
+/// A copy that outgrows its to-space block takes an overflow block sized for
+/// the overflow, not one a growth step above the whole block: the room the
+/// copy leaves unused in old blocks stays within one smallest class.
+fn assert_overflow_leaves_at_most_a_smallest_class_unused(stats: &GcStats, h: &Heap, guess: usize) {
+    assert!(
+        stats.copied_bytes as usize > guess,
+        "the copy outgrew its to-space guess of {guess}"
+    );
+    assert_eq!(stats.to_space_guess_bytes as usize, guess);
+    let unused = stats.to_space_capacity_bytes - stats.copied_bytes;
+    assert!(
+        unused <= SIZE_TABLE[0] as u64,
+        "{unused} bytes of the to-space are unused, more than the smallest class"
+    );
+    assert_eq!(
+        stats.to_space_capacity_bytes as usize,
+        guess + SIZE_TABLE[0],
+        "one overflow block of the smallest class follows the guess block"
+    );
+    assert!(h.old_blocks.iter().any(|block| block.capacity == SIZE_TABLE[0]));
+}
+
+#[test]
+fn a_major_that_outgrows_its_guess_overflows_into_a_smallest_class_block() {
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let mut list = EMPTY_LIST;
+    loop {
+        let guess = pick_block_capacity(h.live_baseline.max(SIZE_TABLE[0]));
+        let (next, stats) = grow_list_and_collect(&mut h, list, 8);
+        list = next;
+        if stats.generation == Generation::Major && stats.copied_bytes as usize > guess {
+            assert_overflow_leaves_at_most_a_smallest_class_unused(&stats, &h, guess);
+            assert_eq!(stats.blocks_after, 2);
+            return;
+        }
+    }
+}
+
+#[test]
+fn a_minor_that_outgrows_its_guess_overflows_into_a_smallest_class_block() {
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
+    // A heap with nothing old collects minor; its guess is the smallest class.
+    let (_, stats) = grow_list_and_collect(&mut h, EMPTY_LIST, SIZE_TABLE[0] / 16 + 8);
+
+    assert_eq!(stats.generation, Generation::Minor);
+    assert_overflow_leaves_at_most_a_smallest_class_unused(&stats, &h, SIZE_TABLE[0]);
+    assert_eq!(stats.blocks_after, 2);
+}

@@ -116,7 +116,8 @@ impl Heap {
             block_size,
             live_baseline: 0,
             old_after_last_major: 0,
-            last_copied_bytes: 0,
+            last_minor_copied_bytes: 0,
+            overflow_step: SIZE_TABLE[0],
             young_blocks: Vec::new(),
             old_blocks: Vec::new(),
             gift: None,
@@ -179,8 +180,8 @@ impl Heap {
     }
 
     /// Place `size` bytes (already a multiple of 16) in the tip, or beyond it
-    /// when the tip is full. Allocation and the collector's copies both
-    /// place through here, so a copy overflows exactly as an allocation does.
+    /// when the tip is full. The collector's copies place through
+    /// `bump_to_space` instead.
     #[inline]
     pub(super) fn bump(&mut self, size: usize) -> *mut u8 {
         debug_assert!(
@@ -231,7 +232,38 @@ impl Heap {
 
     /// Park the tip and install a fresh tip one capacity step above it.
     fn climb_tip(&mut self) {
-        let capacity = next_block_capacity(self.block_size);
+        self.park_tip_and_install(next_block_capacity(self.block_size));
+    }
+
+    /// Place `size` bytes (already a multiple of 16) for the collector's copy.
+    /// A copy that outgrows its to-space block takes an overflow block sized
+    /// for the overflow: the first is the smallest class, each later one the
+    /// class above the last (`overflow_step`), and an object above the step
+    /// parks alone. The to-space block's own size, which is a guess and may be
+    /// huge, never sets the next block's size. Allocation outside a collection
+    /// never comes here: it climbs from the tip it holds (`bump`).
+    #[inline]
+    pub(super) fn bump_to_space(&mut self, size: usize) -> *mut u8 {
+        debug_assert!(
+            size >= 16 && size.is_multiple_of(16),
+            "placements are whole 16-byte slots"
+        );
+        let new_top = unsafe { self.bump_top.add(size) };
+        if new_top > self.block_end {
+            if size > self.overflow_step {
+                return self.alloc_parked(size);
+            }
+            self.park_tip_and_install(self.overflow_step);
+            self.overflow_step = next_block_capacity(self.overflow_step);
+        }
+        let p = self.bump_top;
+        self.bump_top = unsafe { self.bump_top.add(size) };
+        self.alloc_count += 1;
+        p
+    }
+
+    /// Park the tip and install an empty tip of `capacity`.
+    fn park_tip_and_install(&mut self, capacity: usize) {
         self.young_blocks.push(self.current_block());
         let start = pool_alloc(capacity);
         self.install_block(Block {
@@ -1444,12 +1476,14 @@ impl Heap {
     /// from-space is released. A minor collection's from-space is the young
     /// blocks; a major collection's is every block (`next_generation`).
     ///
-    /// The fresh tip's capacity is a guess: the bytes a major collection holds
-    /// as old, the bytes the last collection copied for a minor one, at least
-    /// the smallest tip. Every copy is placed by the ordinary bump
-    /// path, so a copy that outgrows the guess parks the tip and climbs the
-    /// table, and a huge object parks alone; a wrong guess costs a block,
-    /// never correctness. The scan reads a worklist of copied objects, not an
+    /// The to-space block's capacity is a guess, at least the smallest tip: the
+    /// old bytes for a major collection, the bytes the last minor collection
+    /// copied for a minor one (a major's much larger copy says nothing about
+    /// what the young generation keeps). A copy that outgrows the guess takes
+    /// overflow blocks sized for the overflow (`bump_to_space`), so the room a
+    /// wrong guess leaves unused is bounded by the overflow, not by the guess;
+    /// a huge object parks alone. A wrong guess costs a block, never
+    /// correctness. The scan reads a worklist of copied objects, not an
     /// address, so to-space needs no contiguity.
     ///
     /// Every slot of `roots` holds its forwarded value on return. A slot
@@ -1481,10 +1515,11 @@ impl Heap {
         let from_space = FromSpace::of(self, generation);
         let to_capacity_guess = match generation {
             Generation::Major => self.live_baseline,
-            Generation::Minor => self.last_copied_bytes,
+            Generation::Minor => self.last_minor_copied_bytes,
         };
         let from_blocks = self.take_from_space(generation);
         let to_capacity = pick_block_capacity(to_capacity_guess.max(SIZE_TABLE[0]));
+        self.overflow_step = SIZE_TABLE[0];
         let to_start = pool_alloc(to_capacity);
         self.install_block(Block {
             start: to_start,
@@ -1498,6 +1533,7 @@ impl Heap {
             young_budget,
             from_space_capacity_bytes: from_blocks.iter().map(|block| block.capacity as u64).sum(),
             blocks_released: from_blocks.len() as u64,
+            to_space_guess_bytes: to_capacity as u64,
             stubs_made: std::mem::take(&mut self.stubs_made),
             binrefs_made: std::mem::take(&mut self.binrefs_made),
             ..GcStats::default()
@@ -1535,7 +1571,7 @@ impl Heap {
         // `off_heap_next` link, which Cheney never overwrites).
         off_heap::sweep(self, generation, &mut stats.stub_visits, &mut stats.stubs_survived);
 
-        self.retire_to_space_as_old();
+        stats.to_space_capacity_bytes = self.retire_to_space_as_old() as u64;
         let kept_objects = copied_objects.len() as u64;
         match generation {
             Generation::Major => {
@@ -1546,9 +1582,9 @@ impl Heap {
             Generation::Minor => {
                 self.live_baseline += stats.copied_bytes as usize;
                 self.old_objects += kept_objects;
+                self.last_minor_copied_bytes = stats.copied_bytes as usize;
             }
         }
-        self.last_copied_bytes = stats.copied_bytes as usize;
         self.install_fresh_tip();
         self.gc_run_count += 1;
         stats.live_objects = self.old_objects;
@@ -1577,15 +1613,18 @@ impl Heap {
     }
 
     /// Make the blocks a collection copied into old: its tip, unless it holds
-    /// nothing, and the blocks the copy parked.
-    fn retire_to_space_as_old(&mut self) {
+    /// nothing, and the blocks the copy parked. Returns their capacity.
+    fn retire_to_space_as_old(&mut self) -> usize {
         let tip = self.current_block();
+        let mut capacity = self.young_blocks.iter().map(|block| block.capacity).sum::<usize>();
         if tip.fill() == 0 {
             tip.release();
         } else {
+            capacity += tip.capacity;
             self.old_blocks.push(tip);
         }
         self.old_blocks.append(&mut self.young_blocks);
+        capacity
     }
 
     /// Install the empty tip allocation continues in after a collection,

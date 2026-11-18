@@ -122,14 +122,18 @@ pub struct Heap {
     /// copied, raised by a minor collection by the bytes it copied and by a
     /// graft by the gift's fill, left alone by allocation. Zero until the
     /// first collection or graft. `should_gc` counts the young bytes against
-    /// it, and a collection's fresh tip is sized to it.
+    /// it, and a major collection's to-space guess is sized to it.
     pub live_baseline: usize,
     /// The old bytes the last major collection left: what the next one is
     /// measured against. Zero until the first major collection.
     old_after_last_major: usize,
-    /// The bytes the last collection copied: the guess for how many a minor
-    /// collection will. Zero until the first collection.
-    last_copied_bytes: usize,
+    /// The bytes the last minor collection copied: the guess for how many the
+    /// next one will. Zero until the first minor collection.
+    last_minor_copied_bytes: usize,
+    /// The capacity of the next overflow block a collection's copy installs
+    /// when the to-space block fills. Reset to the smallest class when a
+    /// collection starts and raised a class per overflow block.
+    overflow_step: usize,
     /// Blocks allocation has stopped bumping into since the last collection:
     /// tips abandoned by `climb_tip` and single-object blocks from
     /// `alloc_parked`. With the tip they are the young blocks. Each records its

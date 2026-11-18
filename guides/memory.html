@@ -637,19 +637,22 @@ for which the census would have to show a need.</p>
 
 <h3>To-space is a chain</h3>
 
-<p>A copy is placed by the same bump path as an allocation. The collector
-installs a fresh tip and every copied object goes through
-<code>Heap::bump</code>: when the tip is full it is parked on <code>young_blocks</code>
-and a tip one capacity step up is installed, and an object larger than that step
+<p>The collector installs a fresh tip and every copied object goes through
+<code>Heap::bump_to_space</code>: when the tip is full it is parked on
+<code>young_blocks</code> and an overflow block is installed, the smallest class
+first and one class up for each later overflow; an object larger than that step
 is parked alone in a block of its own with the tip untouched. The scan pops a
 worklist of copied objects rather than walking an address, so to-space needs no
 contiguity: it is the new tip plus the parked blocks.</p>
 
-<p>The tip's capacity has one job, how far the bump pointer runs before a block
-is parked, and one rule, climb the table on overflow. The fresh tip's capacity
-is only a starting point: a major starts from <code>live_baseline</code>, a minor from the
-bytes the previous pass copied, both no smaller than the smallest tip. A guess
-that is too small costs the extra blocks the copy parks. The blocks the pass
+<p>The to-space block's capacity is only a guess at how many bytes the pass
+copies: a major starts from <code>live_baseline</code>; a minor starts from the
+bytes the previous <em>minor</em> pass copied, since a major's copy says nothing
+about what the young generation keeps. Both are no smaller than the smallest tip.
+A guess that is too small costs overflow blocks sized for the overflow, not for the
+whole guess, so the room the pass leaves unused in old blocks is bounded by the
+overflow (<code>to_space_capacity_bytes</code> less <code>copied_bytes</code> in
+the gc event). The blocks the pass
 filled become old; an empty to-space tip is released. The heap then installs a
 fresh young tip sized for <code>live_baseline</code> before the from-space
 blocks go back to the pool, or to the system allocator when exact.</p>

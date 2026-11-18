@@ -72,10 +72,10 @@ pub fn cheney_forward_object(
     dst
 }
 
-/// Copy `size` bytes at `p` to wherever the heap's ordinary bump path places
-/// them, so to-space is the tip plus the blocks it parks.
+/// Copy `size` bytes at `p` to where the heap's to-space bump places them, so
+/// to-space is the tip plus the overflow blocks it parks.
 pub fn copy_object_to_space(p: *mut u8, size: usize, heap: &mut Heap) -> *mut u8 {
-    let dst = heap.bump(size);
+    let dst = heap.bump_to_space(size);
     unsafe {
         copy_nonoverlapping(p, dst, size);
     }
