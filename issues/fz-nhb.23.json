@@ -5,6 +5,7 @@
     "fz-sc8.250"
   ],
   "blocks": [],
+  "closed_at": "2026-11-18T20:45:41Z",
   "created": "2026-11-18T04:23:56Z",
   "description": "Approved by the user 2026-11-17 (relayed by Fixture Rework, verbatim: \"yes, kill it.\").\n\nCensus: 221 fixtures, 444 calls (382 with a message); lib/utf8.fz:100 from_bytes!; lib/runtime.fz:26-27 auto-imports; kernel.fz definitions and doc line 16; Rust test sources holding fz programs: cli_test.rs:104, compiler2_test.rs:1554/1618, drive_test.rs:707/16520, frontdoor_test.rs:893, fixture_matrix.rs:1902 (# kind: test readiness probe); docs: .agent/docs/fixtures.md (in-language assertion signal section 390-435, 330, 574-579), exceptions.md 58/517.\n\nRewrite (Elixir form, keeps the message): assert(c, m) -\u003e c || raise(m); refute(c, m) -\u003e c \u0026\u0026 raise(m); parenthesize c when it holds and/or/\u0026\u0026/||/=/when. No unless (absent in fz, deprecated in Elixir 1.18). Subject fixtures (their subject is assert): 00298, 00526, 00527, 01406, 01598 - delete or re-aim at raise.\n\nProbe (probe/unassert, ../fz-nhb20): matrix passes on three paths. Pins fall: canon_test 00570 inventory 112 -\u003e 72; fz2_cli tail_recursion function population 85 -\u003e 61. Census rises: drive_test blind-escape census case plans 16 -\u003e 21 (new || cases in 01527; population, not work). Halt checks 01437 and PROVIDER_ITEM_MACRO expect main to return nil: end main with nil.",
   "id": "fz-nhb.23",
@@ -17,8 +18,8 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Kernel.assert and refute are retired; fixtures raise instead",
   "type": "task",
-  "updated_at": "2026-11-18T05:07:38Z"
+  "updated_at": "2026-11-18T20:45:41Z"
 }
