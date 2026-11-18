@@ -122,7 +122,7 @@ pub const SHARED_BIN_ROOM_OFFSET: usize = std::mem::offset_of!(SharedBin, room);
 
 impl SharedBin {
     /// Bytes the buffer can hold ahead of its trailing NUL.
-    fn capacity(&self) -> usize {
+    pub(crate) fn capacity(&self) -> usize {
         self.room & !ROOM_FROZEN
     }
 

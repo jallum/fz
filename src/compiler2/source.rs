@@ -295,7 +295,7 @@ impl QuotedSourceBuilder {
 
     pub fn bitstring(&self, bytes: &[u8], bit_len: u64) -> Result<AnyValueRef, QuotedSourceError> {
         let mut proc = self.heap.process_mut();
-        Ok(proc.heap.alloc_bitstring(bytes, bit_len).ref_word())
+        Ok(proc.alloc_bitstring(bytes, bit_len).ref_word())
     }
 
     pub fn utf8_binary(&self, text: &str) -> Result<AnyValueRef, QuotedSourceError> {

@@ -79,7 +79,7 @@ pub unsafe extern "C" fn fz_binary_as_cstring(process: *mut Process, v: u64) -> 
         return bytes;
     }
     let bytes = unsafe { from_raw_parts(bytes, view.bytes_len()) };
-    let copy = unsafe { &mut *process }.heap.alloc_bitstring(bytes, view.bit_len());
+    let copy = unsafe { &mut *process }.alloc_bitstring(bytes, view.bit_len());
     unsafe { bitstring_byte_ptr(copy.heap_object_word().expect("a copied binary is a heap object")) }
 }
 

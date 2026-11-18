@@ -19,7 +19,7 @@ use std::ptr::null_mut;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use crate::any_value::AnyValueRef;
+use crate::any_value::{AnyValue, AnyValueRef};
 use crate::bitstr::BitWriter;
 use crate::delivery::DeliveryLock;
 use crate::exec_ctx::ExecCtx;
@@ -848,6 +848,55 @@ impl Process {
 
     pub fn needs_boundary_gc(&self) -> bool {
         self.heap.should_gc()
+    }
+
+    /// A copy of `bytes` as a binary of `bit_len` bits on this process's heap;
+    /// see [`Heap::alloc_bitstring`].
+    pub fn alloc_bitstring(&mut self, bytes: &[u8], bit_len: u64) -> AnyValue {
+        let value = self.heap.alloc_bitstring(bytes, bit_len);
+        self.end_quantum_when_binaries_due();
+        value
+    }
+
+    /// A binary of `byte_len` bytes written in place by `fill`; see
+    /// [`Heap::alloc_bitstring_with`].
+    pub fn alloc_bitstring_with(
+        &mut self,
+        byte_len: usize,
+        bit_len: u64,
+        fill: impl FnOnce(&mut [std::mem::MaybeUninit<u8>]),
+    ) -> AnyValue {
+        let value = self.heap.alloc_bitstring_with(byte_len, bit_len, fill);
+        self.end_quantum_when_binaries_due();
+        value
+    }
+
+    /// The binary `left <> right`; see [`Heap::alloc_concatenation`].
+    ///
+    /// # Safety
+    /// As [`Heap::alloc_concatenation`].
+    pub unsafe fn alloc_concatenation(
+        &mut self,
+        left_bytes: &[u8],
+        left_view: Option<crate::bits::BinView>,
+        right: &[u8],
+    ) -> AnyValue {
+        let value = unsafe { self.heap.alloc_concatenation(left_bytes, left_view, right) };
+        self.end_quantum_when_binaries_due();
+        value
+    }
+
+    /// A running process reaches the end of its quantum at its next reduction
+    /// check, where the boundary collects. A process that makes large binaries
+    /// would otherwise keep them alive, dead or not, for the whole quantum, so
+    /// the allocation that brings its binary bytes to the budget spends the
+    /// rest of the quantum. Only the heap's owner can end its quantum: a
+    /// message copy allocates on the receiver's heap through `Heap` and leaves
+    /// the receiver's quantum alone.
+    fn end_quantum_when_binaries_due(&mut self) {
+        if self.heap.binary_budget.is_due() {
+            self.reductions_remaining = 0;
+        }
     }
 
     pub fn begin_yield_continuation_allocation(&mut self, margin_before: usize) {

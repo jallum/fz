@@ -32,6 +32,7 @@
 //! marker word of its kind (`gc::forwarding`) overwritten with the to-space
 //! address plus a set low nibble; nothing else uses the low bits.
 
+mod binary_budget;
 mod block_pool;
 mod deep_copy;
 mod gc;
@@ -44,6 +45,8 @@ mod schema;
 mod stats;
 
 #[cfg(test)]
+mod binary_budget_test;
+#[cfg(test)]
 mod deep_copy_test;
 #[cfg(test)]
 mod gift_test;
@@ -54,6 +57,7 @@ mod minor_collection_test;
 #[cfg(test)]
 mod schema_test;
 
+pub use self::binary_budget::{BinaryBudget, MIN_BINARY_BUDGET};
 use self::block_pool::Block;
 use self::gift::GiftWindow;
 use crate::process::Node;
@@ -179,6 +183,9 @@ pub struct Heap {
     /// gifts brought. A minor sweep never walks it, so an old BinRef or resource
     /// stub is found dead by a major collection.
     pub off_heap_old_head: u64,
+    /// The shared-binary bytes made since the last collection and the budget
+    /// they make a collection due at.
+    pub binary_budget: BinaryBudget,
     /// Binary views made since the last collection, by site; a collection
     /// reports them and starts the count again.
     pub stubs_made: StubCounts,

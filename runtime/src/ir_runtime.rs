@@ -778,7 +778,7 @@ pub extern "C" fn fz_bs_finalize(process: *mut Process) -> u64 {
         .expect("fz_bs_finalize without fz_bs_begin");
     let bit_len = w.bit_len as u64;
     let bytes = w.bytes;
-    let value = (unsafe { &mut *process }).heap.alloc_bitstring(&bytes, bit_len);
+    let value = (unsafe { &mut *process }).alloc_bitstring(&bytes, bit_len);
     value.ref_word().raw_word()
 }
 
@@ -1117,9 +1117,7 @@ fn byte_aligned_binary_slice(word: u64, context: &str) -> (*const u8, usize) {
 /// bitstring and a shared binview is made once rather than per primitive.
 fn alloc_text(process: *mut Process, text: &str) -> u64 {
     let bytes = text.as_bytes();
-    let value = (unsafe { &mut *process })
-        .heap
-        .alloc_bitstring(bytes, (bytes.len() * 8) as u64);
+    let value = (unsafe { &mut *process }).alloc_bitstring(bytes, (bytes.len() * 8) as u64);
     value.ref_word().raw_word()
 }
 
@@ -1214,12 +1212,15 @@ pub extern "C" fn fz_float_parse(process: *mut Process, binary_ref: u64) -> u64 
         return AnyValueRef::empty_list().raw_word();
     };
     let rest = &bytes[consumed..];
-    let heap = &mut unsafe { &mut *process }.heap;
-    let rest_ref = heap.alloc_bitstring(rest, (rest.len() * 8) as u64).ref_word();
-    let tail = heap
+    let process = unsafe { &mut *process };
+    let rest_ref = process.alloc_bitstring(rest, (rest.len() * 8) as u64).ref_word();
+    let tail = process
+        .heap
         .alloc_list_cons_ref(rest_ref, AnyValueRef::empty_list())
         .expect("fz_float_parse tail");
-    heap.alloc_list_cons_float(float, tail)
+    process
+        .heap
+        .alloc_list_cons_float(float, tail)
         .expect("fz_float_parse list")
         .raw_word()
 }
@@ -1243,9 +1244,11 @@ pub extern "C" fn fz_file_read_line(process: *mut Process, stream: u64) -> u64 {
     if line.is_empty() {
         return AnyValueRef::empty_list().raw_word();
     }
-    let heap = &mut unsafe { &mut *process }.heap;
-    let line_ref = heap.alloc_bitstring(&line, (line.len() * 8) as u64).ref_word();
-    heap.alloc_list_cons_ref(line_ref, AnyValueRef::empty_list())
+    let process = unsafe { &mut *process };
+    let line_ref = process.alloc_bitstring(&line, (line.len() * 8) as u64).ref_word();
+    process
+        .heap
+        .alloc_list_cons_ref(line_ref, AnyValueRef::empty_list())
         .expect("fz_file_read_line list")
         .raw_word()
 }
@@ -1366,7 +1369,7 @@ pub extern "C" fn fz_binary_concat(process: *mut Process, left_ref: u64, right_r
     let left = unsafe { from_raw_parts(left_ptr, left_len) };
     let right = unsafe { from_raw_parts(right_ptr, right_len) };
     let left_view = binview_addr_from_tagged(left_ref).map(|addr| unsafe { BinView::from_raw(addr) });
-    let value = unsafe { (&mut *process).heap.alloc_concatenation(left, left_view, right) };
+    let value = unsafe { (&mut *process).alloc_concatenation(left, left_view, right) };
     value.ref_word().raw_word()
 }
 
@@ -1378,15 +1381,13 @@ pub extern "C" fn fz_binary_copy(process: *mut Process, subject_ref: u64, count:
     let subject = unsafe { from_raw_parts(ptr, len) };
     let count = usize::try_from(count).expect("count is checked by :binary.copy/2");
     let total = len.checked_mul(count).expect("a copy's size fits in memory");
-    let value = (unsafe { &mut *process })
-        .heap
-        .alloc_bitstring_with(total, (total * 8) as u64, |dest| {
-            if len > 0 {
-                for repetition in dest.chunks_exact_mut(len) {
-                    repetition.write_copy_of_slice(subject);
-                }
+    let value = (unsafe { &mut *process }).alloc_bitstring_with(total, (total * 8) as u64, |dest| {
+        if len > 0 {
+            for repetition in dest.chunks_exact_mut(len) {
+                repetition.write_copy_of_slice(subject);
             }
-        });
+        }
+    });
     value.ref_word().raw_word()
 }
 
@@ -1411,7 +1412,7 @@ pub extern "C" fn fz_alloc_bitstring_const(process: *mut Process, ptr: u64, byte
     // symbol). It outlives the call; we materialise a slice over it just long
     // enough for Heap::alloc_bitstring to copy / wrap.
     let bytes = unsafe { from_raw_parts(ptr as *const u8, byte_len as usize) };
-    let value = (unsafe { &mut *process }).heap.alloc_bitstring(bytes, bit_len);
+    let value = (unsafe { &mut *process }).alloc_bitstring(bytes, bit_len);
     value.ref_word().raw_word()
 }
 
@@ -1653,7 +1654,7 @@ pub extern "C" fn fz_bs_read_binary_ref(
         return source_ref;
     }
     let needed_bits = end - pos;
-    let heap = unsafe { &mut (*process).heap };
+    let process = unsafe { &mut *process };
     // A byte-aligned field of a shared binary is another view of the same
     // bytes, not a copy. Byte scanners and field extractors take one per step,
     // and copying them is what made scanning quadratic;
@@ -1662,18 +1663,22 @@ pub extern "C" fn fz_bs_read_binary_ref(
         pos.is_multiple_of(8) && needed_bits.is_multiple_of(8) && binview_addr_from_tagged(bs_bits).is_some();
     let value = if slice_of_shared {
         let src = unsafe { BinView::from_raw(binview_addr_from_tagged(bs_bits).expect("binview source")) };
-        unsafe { heap.alloc_bitstring_slice(src, (pos / 8) as u64, (needed_bits / 8) as u64) }
+        unsafe {
+            process
+                .heap
+                .alloc_bitstring_slice(src, (pos / 8) as u64, (needed_bits / 8) as u64)
+        }
     } else if pos.is_multiple_of(8) && needed_bits.is_multiple_of(8) {
         // Byte-aligned is the overwhelmingly common case and is a slice copy
         // rather than a walk over individual bits.
-        heap.alloc_bitstring(&bytes[pos / 8..pos / 8 + needed_bits / 8], needed_bits as u64)
+        process.alloc_bitstring(&bytes[pos / 8..pos / 8 + needed_bits / 8], needed_bits as u64)
     } else {
         let mut reader = BitReader { bytes, bit_len, pos };
         let mut writer = BitWriter::new();
         for _ in 0..needed_bits {
             writer.append_bit(reader.read_bit().expect("a field that fits is readable"));
         }
-        heap.alloc_bitstring(&writer.bytes, needed_bits as u64)
+        process.alloc_bitstring(&writer.bytes, needed_bits as u64)
     };
     value.ref_word().raw_word()
 }
@@ -2062,11 +2067,12 @@ pub extern "C" fn fz_map_is_map(process: *mut Process, map_ref_word: u64) -> u8 
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_system_argv(process: *mut Process) -> u64 {
     let ctx = unsafe { process_ctx(process) };
-    let heap = &mut unsafe { &mut *process }.heap;
+    let process = unsafe { &mut *process };
     let mut list = AnyValueRef::empty_list();
     for arg in ctx.argv().iter().rev() {
-        let binary = heap.alloc_bitstring(arg, (arg.len() * 8) as u64);
-        list = heap
+        let binary = process.alloc_bitstring(arg, (arg.len() * 8) as u64);
+        list = process
+            .heap
             .alloc_list_cons_ref(binary.ref_word(), list)
             .expect("fz_system_argv");
     }

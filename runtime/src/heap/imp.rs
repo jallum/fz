@@ -12,7 +12,7 @@ use super::ref_io::{
 };
 use super::schema::{Schema, SchemaRegistry};
 use super::stats::{GcStats, Generation, StubCounts, StubSite};
-use super::{Heap, HeapAllocKind, HeapAllocStats, MapLayout, SHARED_BIN_THRESHOLD_BYTES};
+use super::{BinaryBudget, Heap, HeapAllocKind, HeapAllocStats, MapLayout, SHARED_BIN_THRESHOLD_BYTES};
 use crate::any_value::{
     AnyValue, AnyValueRef, AnyValueRefError, CLOSURE_FLAGS_CAPTURED_MASK, ListCons, MAP_FLAT_MAX, MapDestinationKind,
     STRUCT_PAYLOAD_OFFSET, SlotLayout, ValueKind, bitstring_header_word, bitstring_size_for_bit_len,
@@ -120,6 +120,7 @@ impl Heap {
             alloc_stats: HeapAllocStats::default(),
             off_heap_head: 0,
             off_heap_old_head: 0,
+            binary_budget: BinaryBudget::new(),
             stubs_made: StubCounts::default(),
             binrefs_made: StubCounts::default(),
             pending_dtors: VecDeque::new(),
@@ -134,7 +135,7 @@ impl Heap {
     /// more. A pure function of the heap's state, so a collection that
     /// reclaims the bytes answers the question by itself.
     pub fn should_gc(&self) -> bool {
-        self.young_bytes() >= self.collection_budget()
+        self.young_bytes() >= self.collection_budget() || self.binary_budget.is_due()
     }
 
     /// The young bytes at which a collection is due: the young budget, and at
@@ -974,6 +975,7 @@ impl Heap {
         if byte_len > SHARED_BIN_THRESHOLD_BYTES {
             let handle = SharedBinHandle::from_filled(byte_len, fill);
             self.alloc_stats.record_shared_bin(byte_len as u64);
+            self.binary_budget.record_made(byte_len);
             return AnyValue::heap_ptr(
                 alloc_buffer_view(self, handle, bit_len, StubSite::FilledBuffer).as_raw(),
                 ValueKind::BINVIEW,
@@ -1056,6 +1058,7 @@ impl Heap {
             shared_bin_append(shared, right);
         }
         self.alloc_stats.record_shared_bin((total * 2) as u64);
+        self.binary_budget.record_made(total * 2);
         AnyValue::heap_ptr(
             alloc_buffer_view(self, handle, total as u64 * 8, StubSite::GrownBuffer).as_raw(),
             ValueKind::BINVIEW,
@@ -1526,6 +1529,10 @@ impl Heap {
         );
         let generation = self.next_generation();
         let (young_bytes, young_budget) = (self.young_bytes() as u64, self.collection_budget() as u64);
+        let (young_binary_bytes, binary_budget) = (
+            self.binary_budget.young_binary_bytes() as u64,
+            self.binary_budget.budget() as u64,
+        );
         let from_space = FromSpace::of(self, generation);
         let to_capacity_guess = match generation {
             Generation::Major => self.live_baseline,
@@ -1545,6 +1552,8 @@ impl Heap {
             generation,
             young_bytes,
             young_budget,
+            young_binary_bytes,
+            binary_budget,
             from_space_capacity_bytes: from_blocks.iter().map(|block| block.capacity as u64).sum(),
             blocks_released: from_blocks.len() as u64,
             to_space_guess_bytes: to_capacity as u64,
@@ -1583,7 +1592,9 @@ impl Heap {
         // dead entries drop their off-heap reference. It must run before the
         // from-space is released because it reads from-space stubs (their
         // `off_heap_next` link, which Cheney never overwrites).
-        off_heap::sweep(self, generation, &mut stats.stub_visits, &mut stats.stubs_survived);
+        let survivor_binary_bytes =
+            off_heap::sweep(self, generation, &mut stats.stub_visits, &mut stats.stubs_survived);
+        self.binary_budget.after_collection(generation, survivor_binary_bytes);
 
         stats.to_space_capacity_bytes = self.retire_to_space_as_old() as u64;
         let kept_objects = copied_objects.len() as u64;

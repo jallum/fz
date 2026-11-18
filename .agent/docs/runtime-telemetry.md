@@ -315,6 +315,15 @@ major collection's from-space is every block (`Heap::next_generation`):
   boundary asks, so it can be many times `young_budget`;
 - `young_budget`: the young bytes at which the collection was due: the old
   bytes, at most the largest pooled block and at least half the smallest tip;
+- `young_binary_bytes`: capacity of the shared binary buffers the heap made since
+  its previous collection (`BinaryBudget::young_binary_bytes`): the filled-buffer
+  and concatenation-buffer sites, never an in-place append. `Heap::should_gc`
+  compares it with `binary_budget`;
+- `binary_budget`: the young binary bytes at which the collection was due: the
+  binary bytes the heap held after its previous collection, at least
+  `MIN_BINARY_BUDGET` (256 KiB). A collection is due by the binary rule when
+  `young_binary_bytes >= binary_budget`, by the heap rule when
+  `young_bytes >= young_budget`, or by both;
 - `from_space_capacity_bytes`: capacity of every block the pass collected: the
   young blocks (the tip and every young parked block) for a minor pass, every
   block for a major pass;

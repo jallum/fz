@@ -221,6 +221,11 @@ pub struct GcStats {
     pub young_bytes: u64,
     /// The young bytes at which this collection was due.
     pub young_budget: u64,
+    /// Capacity of the shared binary buffers the heap made since its previous
+    /// collection: what `should_gc` compared with `binary_budget`.
+    pub young_binary_bytes: u64,
+    /// The young binary bytes at which this collection was due.
+    pub binary_budget: u64,
     /// Capacity of the from-space blocks.
     pub from_space_capacity_bytes: u64,
     /// Blocks of the from-space the collection released.
