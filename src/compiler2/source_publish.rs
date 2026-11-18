@@ -17,6 +17,7 @@ use crate::source::{SourceMap, Span};
 use crate::telemetry::TelemetryExt as _;
 
 use super::code::SourceOwner;
+use super::definition_time::{self, Evaluated};
 use super::drive::{DerivationKey, FactKey, JobDerivation, JobEffects, current_uses, emit_job_diagnostic};
 use super::identity::{
     DeclaredCallableKind, FunctionId, FunctionSource, ModuleId, NotedTypeDecl, ProtocolImplSource, TypeName,
@@ -25,14 +26,15 @@ use super::module_interface::{InterfaceCallableKind, InterfaceRequester, ModuleI
 use super::namespace::{Namespace, NamespaceSymbol};
 use super::protocol::ProtocolCallbackImpl;
 use super::quoted_expander::{
-    ExpandedScopeFragment, QuotedExpansionCtx, emit_internal_surface_error, emit_surface_read_error,
+    ExpandedScopeFragment, ExpandedValue, QuotedExpansionCtx, emit_internal_surface_error, emit_surface_read_error,
     expand_item_macro_fragment, item_macro_expanded_to_a_non_definition, item_macro_not_defmacro,
     read_compiler_fragment_root,
 };
 use super::quoted_surface::{
     CompilerService, CompilerServiceForm, FunctionForm, MacroCallForm, OverridableForm, ProtocolImplForm,
-    ReservedSourceDefinition, ScopeForm, ScopeSurface, StatementForm, defines_a_function, read_module_body_surface,
-    read_protocol_body_surface, read_protocol_impl_body_surface, reserved_source_definition,
+    ReservedSourceDefinition, ScopeForm, ScopeSurface, StatementForm, StructFields, StructForm, defines_a_function,
+    read_module_body_surface, read_protocol_body_surface, read_protocol_impl_body_surface, read_struct_fields,
+    reserved_source_definition,
 };
 use super::scope::ScopeSnapshot;
 use super::source::{QuotedSourceError, QuotedSourceHeap, QuotedSourceMetadata, QuotedSourceRoot};
@@ -183,6 +185,8 @@ struct ScopeSession<'world, 'tel, T: crate::telemetry::Telemetry> {
     callables: Vec<ModuleInterfaceCallable>,
     revision_floor: u64,
     struct_form_seen: bool,
+    /// How many definition-time expressions this walk has evaluated.
+    definition_time_evaluations: usize,
     /// The expressions a submitted file's top level holds, in walk order. They
     /// become the file's `main/0` once every definition is published.
     statements: Vec<StatementForm>,
@@ -542,6 +546,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
             callables: Vec::new(),
             revision_floor: 0,
             struct_form_seen: false,
+            definition_time_evaluations: 0,
             statements: Vec::new(),
             next_hygiene_counter: 0,
             guard_depth: 0,
@@ -1105,13 +1110,82 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
             ScopeForm::ProtocolImpl(protocol_impl) => self.register_protocol_impl(protocol_impl),
             ScopeForm::MacroCall(macro_call) => self.apply_item_macro_call(macro_call),
             ScopeForm::Statement(statement) => self.apply_statement(statement),
-            ScopeForm::Struct(def) => {
-                self.publish_struct_def(&def.def)?;
-                let function = build_struct_function(def.def.span).map_err(|error| {
+            ScopeForm::Struct(form) => {
+                let def = match self.struct_def(form)? {
+                    Evaluated::Value(def) => def,
+                    Evaluated::Blocked(effects) => return Ok(Some(*effects)),
+                };
+                self.publish_struct_def(&def)?;
+                let function = build_struct_function(def.span).map_err(|error| {
                     emit_internal_surface_error(self.telemetry, format!("struct function synthesis failed: {error}"))
                 })?;
                 self.apply_function(&function, context)
             }
+        }
+    }
+
+    /// The definition a `defstruct` makes. A field list that computes is
+    /// evaluated now, and its value read as a written list.
+    fn struct_def(&mut self, form: &StructForm) -> Result<Evaluated<StructDef>, FatalError> {
+        let source_map = self.world.source_map();
+        let read = |fields: &QuotedSourceRoot| {
+            read_struct_fields(fields, form.span, &source_map.borrow())
+                .map_err(|error| emit_surface_read_error(self.telemetry, "defstruct read failed", &error))
+        };
+        if let StructFields::Written(def) = read(&form.fields)? {
+            return Ok(Evaluated::Value(def));
+        }
+        let fields = match self.evaluate_at_definition(&form.fields, DEFSTRUCT_FIELDS, form.span)? {
+            Evaluated::Value(fields) => fields,
+            Evaluated::Blocked(effects) => return Ok(Evaluated::Blocked(effects)),
+        };
+        match read(&fields)? {
+            StructFields::Written(def) => Ok(Evaluated::Value(def)),
+            StructFields::Computed => Err(emit_internal_surface_error(
+                self.telemetry,
+                "an evaluated defstruct field list is a list of names and escaped defaults".to_string(),
+            )),
+        }
+    }
+
+    /// Runs `expr` in the module as the walk has defined it so far, and gives
+    /// back the quoted code `escape` makes of its value.
+    fn evaluate_at_definition(
+        &mut self,
+        expr: &QuotedSourceRoot,
+        escape: (&str, &str),
+        span: Span,
+    ) -> Result<Evaluated<QuotedSourceRoot>, FatalError> {
+        let name = definition_time::evaluator_name(self.definition_time_evaluations);
+        self.definition_time_evaluations += 1;
+        let evaluator = definition_time::evaluator(expr, escape, &name, span).map_err(|error| {
+            emit_internal_surface_error(
+                self.telemetry,
+                format!("definition-time evaluator synthesis failed: {error}"),
+            )
+        })?;
+        let function = FunctionForm {
+            source: evaluator.definition,
+            name,
+            arity: 0,
+            is_macro: true,
+            is_private: true,
+            variadic: false,
+            span,
+        };
+        let context = FragmentPublicationContext::module_surface(self.current_module);
+        let publication = self.define_source_function(
+            self.current_module,
+            self.current_module,
+            self.namespace,
+            &function,
+            &context,
+        )?;
+        let scope = ScopeSnapshot::module(self.current_module, self.namespace);
+        let owner = expr.clone();
+        match self.expand_macro_invocation(&owner, evaluator.invocation, publication.function, scope, 0, &[])? {
+            ExpandedValue::Complete(value) => Ok(Evaluated::Value(owner.subroot(value))),
+            ExpandedValue::Blocked(effects) => Ok(Evaluated::Blocked(effects)),
         }
     }
 
@@ -2036,7 +2110,7 @@ fn is_expression_form(form: &ScopeForm) -> bool {
     matches!(form, ScopeForm::MacroCall(_) | ScopeForm::Statement(_))
 }
 
-fn first_clause_span(source: &QuotedSourceRoot, sources: &SourceMap) -> Option<Span> {
+pub(super) fn first_clause_span(source: &QuotedSourceRoot, sources: &SourceMap) -> Option<Span> {
     let clause = source.cursor().list_items().ok()?.into_iter().next()?;
     clause.ast_node(sources).ok()??.span
 }
@@ -2067,6 +2141,10 @@ fn build_script_main(statements: &[StatementForm], span: Span) -> Result<Functio
         span,
     })
 }
+
+/// The library function that escapes an evaluated `defstruct` field list,
+/// as Elixir's `Kernel.Utils.defstruct` does.
+const DEFSTRUCT_FIELDS: (&str, &str) = ("Kernel.Utils", "defstruct_fields");
 
 /// The function a program's first process starts in.
 pub(crate) const PROGRAM_ENTRY: &str = "__entry__";

@@ -201,6 +201,21 @@ also take a struct to start from.</p>
 <span class="fn">struct</span>(<span class="ty">Point</span>, x: <span class="num">5</span>, z: <span class="num">1</span>)    <span class="com"># %Point{x: 5, y: 0}</span>
 <span class="fn">struct!</span>(<span class="ty">Point</span>, z: <span class="num">1</span>)         <span class="com"># ** (KeyError) key :z not found</span></pre>
 
+<p>A default may be any expression, as in Elixir. It is evaluated once,
+while the module is being defined, and every literal that leaves the field
+out starts from that value. It can call a module that is already defined,
+through an alias or an import if the module has one, but not a function of
+the module that holds the <code>defstruct</code>, which is not available
+until that module is defined. The value has to be one that code can write:
+a number, atom, bitstring, list, tuple, map or struct of those. A reference
+or a function raises <code>ArgumentError</code> naming the field.</p>
+
+<pre><span class="kw">defmodule</span> <span class="ty">Tally</span> <span class="kw">do</span>
+  <span class="kw">defstruct</span> count: <span class="ty">Enum</span>.<span class="fn">count</span>([<span class="num">1</span>, <span class="num">2</span>]), seen: <span class="ty">MapSet</span>.<span class="fn">new</span>([<span class="num">1</span>])
+<span class="kw">end</span>
+
+%<span class="ty">Tally</span>{}.count                 <span class="com"># 2</span></pre>
+
 <p>A value that is not an atom at run time raises
 <code>ArgumentError</code>. A value whose type holds no atom at all can
 never be a module, and that call is refused at compile time with

@@ -697,15 +697,30 @@ boolean or nil, or a list, tuple or map of literal terms. It names nothing, so
 it reads the same in every module. `StructDef::defaults` holds them by field
 name. A struct literal lowers each field it omits from that field's default,
 and from nil when the field has none; the default is lowered where the literal
-stands, as the expression that writes it. A default that computes or names
-anything is the diagnostic `parse/struct-default` at the default.
+stands, as the expression that writes it.
+
+A field list that is not written that way computes: a default that calls or
+names something, or a list built by an expression. `ScopePublisher::struct_def`
+evaluates it once, while the module is being defined
+(`src/compiler2/definition_time.rs`). The whole field list becomes the body of
+a private macro of the module that hands it to `Kernel.Utils.defstruct_fields/1`
+(`lib/kernel/utils.fz`), which pairs each field with `Macro.escape/1` of its
+default, as Elixir's `Kernel.Utils.defstruct` does. Running that macro gives
+back a written field list, which is read as any other. A default therefore
+sees the module's aliases and imports and every module already defined, runs
+its side effects once, during the compile, and is the same value in every
+literal. A default that cannot be escaped, such as a reference or a function,
+raises `ArgumentError` naming the field, and a default that raises stops the
+compile with that raise. A function of the module being defined is not
+available to a default: the diagnostic is `resolve/unknown-function` at the
+`defstruct`. A field list written as literals evaluates nothing.
 
 In an expression, which is where a `quote` body stands, `defstruct` is a call
 by name with the field list as its argument, so a macro declares the struct of
 the module it is called in. A list the macro computes is spliced in whole, as
-`defstruct unquote(fields)`. The declaration reads its argument as written and
-evaluates nothing, so an argument that is not a list of fields once the macro
-has run is the diagnostic `parse/struct-fields`.
+`defstruct unquote(fields)`, and a list an expression builds, as
+`defstruct [tag: :shape] ++ unquote(fields)`, is evaluated as a computed field
+list is.
 
 A `MapSig` is an open record: the keys it lists, each with a type, and any
 other keys besides. A struct type is the record whose `__struct__` field is the

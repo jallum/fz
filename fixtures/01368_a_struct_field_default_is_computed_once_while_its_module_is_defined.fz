@@ -1,0 +1,45 @@
+#---
+# purpose: "a defstruct field default may call a function, name a module through an alias or build a struct, and the field list itself may be built by an expression: it is evaluated once, while the module is defined, and every literal of the struct starts from that value"
+# oracle: self
+# oracle.stamp: 2910aad71640245a
+#---
+defmodule Helper do
+  def n(), do: 7
+
+  def loud() do
+    IO.puts("evaluated")
+    3
+  end
+end
+
+defmodule Tally do
+  alias Helper, as: H
+  defstruct [:name, count: Enum.count([1, 2]), seen: MapSet.new([1]), n: H.n(), loud: Helper.loud()]
+end
+
+defmodule Shapes do
+  defmacro tagged(fields) do
+    quote do
+      defstruct [tag: :shape] ++ unquote(fields)
+    end
+  end
+end
+
+defmodule Tagged do
+  import Shapes
+  tagged([:name])
+end
+
+defmodule Main do
+  def main() do
+    IO.puts("main")
+    tally = %Tally{name: :x}
+    IO.inspect({tally.name, tally.count, tally.n})
+    IO.inspect(%Tally{name: :y, n: 0}.count)
+    IO.inspect(MapSet.member?(%Tally{}.seen, 1))
+    IO.inspect([%Tally{}.loud, %Tally{loud: 1}.loud])
+    IO.inspect(%Tagged{name: :circle})
+  end
+end
+
+Main.main()

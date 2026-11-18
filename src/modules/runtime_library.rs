@@ -197,6 +197,10 @@ const RUNTIME_MODULE_SOURCES: &[RuntimeModuleSource] = &[
         source: include_str!("../../lib/json.fz"),
     },
     RuntimeModuleSource {
+        name: "Kernel.Utils",
+        source: include_str!("../../lib/kernel/utils.fz"),
+    },
+    RuntimeModuleSource {
         name: "Macro",
         source: include_str!("../../lib/macro.fz"),
     },

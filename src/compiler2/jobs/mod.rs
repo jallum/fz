@@ -25,6 +25,7 @@ mod keying;
 mod native;
 mod reach;
 pub(super) use native::produce_native_program;
+pub(super) use semantic::callees_awaiting_their_module;
 mod root;
 pub(crate) mod runtime_demand;
 mod scope;

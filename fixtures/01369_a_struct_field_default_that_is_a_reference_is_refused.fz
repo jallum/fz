@@ -1,0 +1,14 @@
+#---
+# purpose: "a defstruct field default is evaluated while the module is defined and written into the struct, so a value that cannot be written as code, such as a reference, is refused in Elixir's words, naming the field"
+# expect: diagnostic
+# diagnostic.code: lower/unsupported
+#---
+defmodule Bad do
+  defstruct a: make_ref()
+end
+
+defmodule Main do
+  def main(), do: IO.inspect(%Bad{})
+end
+
+Main.main()

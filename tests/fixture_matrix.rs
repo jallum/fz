@@ -2155,9 +2155,17 @@ fn run_fz2_build_path_owned(fixture: &FixtureCase, header: &Header, out_path: &P
     };
     let run_stderr = String::from_utf8_lossy(&run.stderr).to_string();
     let diagnostics = format!("{}{}", build_stderr, run_stderr);
+    // Code that runs while a module is defined prints during the build, and
+    // the rest prints from the binary: together they are what the program
+    // says.
+    let stdout = format!(
+        "{}{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&run.stdout)
+    );
     RunOutcome::Ran(Ran {
         status: run.status,
-        stdout: String::from_utf8_lossy(&run.stdout).to_string(),
+        stdout,
         diagnostics,
     })
 }

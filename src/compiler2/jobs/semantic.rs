@@ -172,20 +172,36 @@ pub(super) fn analyze_activation_gates(world: &World, activation: &ActivationKey
     // discover: this reads the direct callees straight from the lowered
     // body this analysis is already about to walk, rather than deriving
     // `StaticCallees` just to learn which modules to wait on.
-    if matches!(shape, BodyShape::Clauses) && world.has_fact(&FactKey::LoweredBody(function)) {
-        for callee in keying::direct_callees(world, function) {
-            let module = world.function_module(callee);
-            if world.function_defined_revision(callee).is_none()
-                && !module.is_global()
-                && world.module_defined_revision(module).is_none()
-                && (world.module_has_source_state(module) || world.is_runtime_module(module))
-                && !gates.contains(&FactKey::ModuleDefined(module))
-            {
-                gates.push(FactKey::ModuleDefined(module));
-            }
+    for (_, module) in callees_awaiting_their_module(world, function) {
+        if !gates.contains(&FactKey::ModuleDefined(module)) {
+            gates.push(FactKey::ModuleDefined(module));
         }
     }
     gates
+}
+
+/// The functions `function`'s body calls directly that are not defined yet,
+/// each with the module whose definition will define it. An analysis of
+/// `function` waits on those modules.
+pub(in crate::compiler2) fn callees_awaiting_their_module(
+    world: &World,
+    function: FunctionId,
+) -> Vec<(FunctionId, ModuleId)> {
+    if !matches!(world.function_body_shape(function), BodyShape::Clauses)
+        || !world.has_fact(&FactKey::LoweredBody(function))
+    {
+        return Vec::new();
+    }
+    keying::direct_callees(world, function)
+        .into_iter()
+        .filter(|callee| world.function_defined_revision(*callee).is_none())
+        .map(|callee| (callee, world.function_module(callee)))
+        .filter(|(_, module)| {
+            !module.is_global()
+                && world.module_defined_revision(*module).is_none()
+                && (world.module_has_source_state(*module) || world.is_runtime_module(*module))
+        })
+        .collect()
 }
 
 /// Analyzes one rooted function activation against its lowered body.

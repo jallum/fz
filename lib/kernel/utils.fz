@@ -1,0 +1,46 @@
+defmodule Kernel.Utils do
+  @moduledoc """
+  What `defstruct` runs while the module that holds it is being defined, as
+  Elixir's `Kernel.Utils` does.
+  """
+
+  @doc """
+  Returns the quoted field list of a `defstruct`: each field paired with the
+  code that rebuilds its default.
+
+  A field written as a bare name has the default `nil`. A default is escaped
+  with `Macro.escape/1`, so a default that cannot be escaped, such as a
+  reference or a function, raises `ArgumentError` naming the field. A field
+  list that is not a list, a field name that is not an atom, and a field named
+  `:__struct__` each raise `ArgumentError` too.
+
+  ## Examples
+
+      Kernel.Utils.defstruct_fields([:name, count: 0, seen: {1, 2, 3}])
+      #=> [name: nil, count: 0, seen: {:{}, [], [1, 2, 3]}]
+
+  """
+  @spec defstruct_fields(any) :: [tuple]
+  def defstruct_fields(fields) when is_list(fields), do: Enum.map(fields, fn field -> defstruct_field(field) end)
+
+  def defstruct_fields(other) do
+    raise(ArgumentError, "struct fields definition must be list, got: #{inspect(other)}")
+  end
+
+  @spec defstruct_field(any) :: tuple
+  defp defstruct_field({:__struct__, _}), do: raise(ArgumentError, "cannot set :__struct__ in struct definition")
+  defp defstruct_field({key, value}) when is_atom(key), do: {key, escape_default(key, value)}
+  defp defstruct_field(:__struct__), do: raise(ArgumentError, "cannot set :__struct__ in struct definition")
+  defp defstruct_field(key) when is_atom(key), do: {key, nil}
+  defp defstruct_field(other), do: raise(ArgumentError, "struct field names must be atoms, got: #{inspect(other)}")
+
+  @spec escape_default(atom, any) :: any
+  defp escape_default(key, value) do
+    try do
+      Macro.escape(value)
+    rescue
+      error in [ArgumentError] ->
+        raise(ArgumentError, "invalid default value for struct field #{key}, " <> Exception.message(error))
+    end
+  end
+end
