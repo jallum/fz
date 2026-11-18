@@ -12,9 +12,15 @@
   "id": "fz-nhb.19",
   "labels": [],
   "parent": "fz-nhb",
+  "comments": [
+    {
+      "text": "Kept twin: 00623, reason \"local call in a guard (fz extension, .16 declined)\".",
+      "timestamp": "2026-11-18T04:23:55Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": ".agent/docs/fixtures.md lists each fixture that keeps an Elixir twin and why",
   "type": "task",
-  "updated_at": "2026-11-18T02:47:54Z"
+  "updated_at": "2026-11-18T04:23:55Z"
 }
