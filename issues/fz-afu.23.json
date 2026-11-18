@@ -4,6 +4,8 @@
   "blocks": [
     "fz-nml.26"
   ],
+  "closed_at": "2026-11-18T01:00:21Z",
+  "close_reason": "Superseded by fz-afu.24 (E1): the user ruled \"abandon .23, use the e1 solution\" (2026-11-17, relayed by JSON). The rise .23 targeted is the boundary contribution loop E1 deletes.",
   "created": "2026-11-18T00:17:40Z",
   "description": "Approved by the user 2026-11-17 (relayed by JSON: chose \"option-a\" for #691 = fix demand analysis first so a closure-called entry publishes its floor at once, then land the widened prune with no pin change).\n\nBug: DeriveRuntimeDemand publishes a lambda's input demand from its body alone at the first derivation, while its callers' contribution is still unknown and treated as Ignore. A closure callsite always floors every lane to Whole (src/compiler2/jobs/runtime_demand.rs, the closure-callsite floor, ~2600). So the published demand is revised upward at the second derivation (settle_input_demands, runtime_demand.rs:1171), and the revision wakes the callers. \"Not yet known\" is published as Ignore: unknown is not none.\n\nEvidence (JSON's fz-nml.9.4 builder): the widened unread-binding prune (case, cond, with, rescue arms) on `for {_id, %{name: \"fz.compiler2.job\"} = s} \u003c- spans, do: s` in tools/distill-telemetry.exs (fns 239, 274): the lambda first publishes TupleFields[Ignore, Whole], then revises to TupleFields[Whole, Whole], the same final answer as before. Cost: 6 extra DeriveRuntimeDemand runs (main, timeline, Enum.reduce's lambda), distiller pin +76 derivations / +2671 reads; key set unchanged.\n\nFix direction: a closure-called entry's first publish includes the floor its call shape guarantees.\n\nAcceptance: on develop alone no pin rises, falls are lowered; with the widened prune on top (patch: /private/tmp/claude-501/-Users-j5n-Workspace-fz/ebbfffd8-2561-4da7-bcda-f9a316d00a1e/scratchpad/nml9-4/widened.patch) the distiller's (derivations, reads) are no higher than develop's.\n\nBlocks: fz-nml.9.4's widening on #691.\nOverlap: MDF's fz-sc8.230 WIP (../fz-sc8-fold, 2468a8db1, uncommitted to a PR) edits runtime_demand.rs inline_dispatch_input_demands (~2206-2250): an arm no longer takes parameters as whole values. Different function, same file and the same demand question for case arms.",
   "id": "fz-afu.23",
@@ -20,8 +22,8 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "A closure-called entry's input demand starts at its floor",
   "type": "bug",
-  "updated_at": "2026-11-18T00:19:28Z"
+  "updated_at": "2026-11-18T01:00:21Z"
 }
