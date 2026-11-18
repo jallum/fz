@@ -317,6 +317,11 @@ major collection's from-space is every block (`Heap::next_generation`):
   young blocks (the tip and every young parked block) for a minor pass, every
   block for a major pass;
 - `blocks_released`: from-space blocks the pass released;
+- `to_space_guess_bytes`: capacity of the to-space block the pass started with,
+  its guess at how many bytes it would copy;
+- `to_space_capacity_bytes`: capacity of every block the copy filled, the guess
+  block and its overflow blocks. Less `copied_bytes`, the room the pass left
+  unused in old blocks;
 - `blocks_after`: old blocks the heap holds once the pass finished, every block
   holding data a collection kept or a gift brought; the fresh empty tip is not
   counted.

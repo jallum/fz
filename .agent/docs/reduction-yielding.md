@@ -170,11 +170,13 @@ pointer into one is left as it is. A major collection's from-space is every
 block, and it runs once `live_baseline` exceeds `MAJOR_GROWTH_FACTOR` (2) times
 the larger of the old bytes the last major collection left and half the smallest
 tip; a heap with nothing old is always minor. Either way the survivors are
-copied through the ordinary bump path into a fresh tip whose capacity is a guess
-(the old bytes for a major collection, the bytes the last collection copied for
-a minor one, at least the smallest tip): a copy that fills the tip parks it and
-the next capacity up is installed, and an object above the next step parks
-alone. A wrong guess costs a block. The blocks the copy filled become old, the
+copied by `Heap::bump_to_space` into a to-space block whose capacity is a guess
+(the old bytes for a major collection; the bytes the last minor collection
+copied for a minor one; at least the smallest tip): a copy that fills the block
+parks it and installs an overflow block, the smallest class first and one class
+up for each later one regardless of the guess block's size, and an object above
+the next step parks alone. A wrong guess leaves at most about the overflow
+unused (`to_space_capacity_bytes` less `copied_bytes`). The blocks the copy filled become old, the
 from-space is released, and allocation continues in a fresh tip sized to the
 old bytes. After a minor collection `live_baseline` is the old bytes it had plus
 the bytes copied; after a major collection it is the bytes copied.
