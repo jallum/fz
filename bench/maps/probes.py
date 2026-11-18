@@ -20,6 +20,7 @@ FLAT_MAX = 32
 # (operation, keys in the map, fz iterations, BEAM iterations); the second run of each doubles them.
 SHAPES = [("build", 6, 200_000, 2_000_000), ("build", 12, 200_000, 1_000_000), ("build", 24, 100_000, 500_000),
           ("build", 40, 50_000, 250_000), ("get", 12, 500_000, 2_000_000), ("get", 40, 500_000, 2_000_000),
+          ("case", 12, 500_000, 2_000_000), ("case", 40, 500_000, 2_000_000),
           ("replace", 12, 500_000, 2_000_000), ("delete", 12, 500_000, 2_000_000)]
 PROBES = [(op, kind, k, fz_n, beam_n) for (op, k, fz_n, beam_n) in SHAPES for kind in "ab"]
 
@@ -29,7 +30,7 @@ def name(op, kind, k):
 
 
 def expected(op, k, n):
-    return sum(PICKS) * n if op == "get" else k
+    return sum(PICKS) * n if op in ("get", "case") else k
 
 
 def fz_key(kind, key):
@@ -51,6 +52,11 @@ def fz_source(op, kind, k, n):
     if op == "get":
         gets = " + ".join(f"Map.get(m, {key(i)}, 0)" for i in PICKS)
         return (f"defmodule P do\n  def step(m), do: {gets}\n  def loop(0, _m, acc), do: acc\n"
+                f"  def loop(n, m, acc), do: loop(n - 1, m, acc + step(m))\nend\ndbg(P.loop({n}, {literal}, 0))\n")
+    if op == "case":
+        gets = " + ".join(f"at(m, {key(i)})" for i in PICKS)
+        return (f"defmodule P do\n  def at(m, k) do\n    case m do\n      %{{^k => v}} -> v\n      _ -> 0\n    end\n  end\n"
+                f"  def step(m), do: {gets}\n  def loop(0, _m, acc), do: acc\n"
                 f"  def loop(n, m, acc), do: loop(n - 1, m, acc + step(m))\nend\ndbg(P.loop({n}, {literal}, 0))\n")
     if op == "replace":
         body = "".join(f"    m = Map.put(m, {key(i)}, n)\n" for i in PICKS)
@@ -78,6 +84,11 @@ def erl_source(module, op, kind, k):
         return (f"{head}step(Mod, M) -> {gets}.\nloop(_, 0, _M, Acc) -> Acc;\n"
                 f"loop(Mod, N, M, Acc) -> loop(Mod, N - 1, M, Acc + step(Mod, M)).\n"
                 f'main(N) -> io:format("~p~n", [loop({mod}, N, {literal}, 0)]).\n')
+    if op == "case":
+        gets = " + ".join(f"at(M, {key(i)})" for i in PICKS)
+        return (f"{head}at(M, K) ->\n    case M of\n        #{{K := V}} -> V;\n        _ -> 0\n    end.\n"
+                f"step(M) -> {gets}.\nloop(0, _M, Acc) -> Acc;\nloop(N, M, Acc) -> loop(N - 1, M, Acc + step(M)).\n"
+                f'main(N) -> io:format("~p~n", [loop(N, {literal}, 0)]).\n')
     if op == "replace":
         calls = [f"Mod:put({key(i)}, N, M{j})" for j, i in enumerate(PICKS)]
     else:

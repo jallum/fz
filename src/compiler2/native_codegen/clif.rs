@@ -2,14 +2,16 @@
 
 use super::*;
 use crate::source::Span;
-use cranelift_codegen::ir::{self, InstBuilder, Signature, SourceLoc, types};
+use cranelift_codegen::ir::{self, BlockArg, InstBuilder, MemFlagsData, Signature, SourceLoc, condcodes::IntCC, types};
 use cranelift_codegen::isa::TargetIsa;
 use cranelift_codegen::settings::{self, Configurable, Flags};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{ArenaMemoryProvider, JITBuilder};
 use cranelift_module::{FuncId, Module, ModuleError};
 use cranelift_native::builder;
-use fz_runtime::any_value::{AnyValueRefPacking, ValueKind};
+use fz_runtime::any_value::{
+    AnyValueRefPacking, MAP_FLAT_COUNT_SHIFT, MAP_KIND_BYTES_OFFSET, MAP_NOT_FLAT_MASK, ValueKind,
+};
 use std::sync::Arc;
 
 pub(crate) fn host_isa() -> Arc<dyn TargetIsa> {
@@ -133,6 +135,138 @@ pub(crate) fn address_field(b: &mut FunctionBuilder<'_>, ref_word: ir::Value) ->
 pub(crate) fn payload_field(b: &mut FunctionBuilder<'_>, ref_word: ir::Value) -> ir::Value {
     b.ins()
         .band_imm_u(ref_word, AnyValueRefPacking::current().payload_mask() as i64)
+}
+
+/// A map key test whose key is one word of a kind known when compiling. The
+/// flat map is searched where the test stands; `slow` is entered for a map in
+/// any other layout and is the caller's to fill with the runtime's lookup.
+pub(crate) struct FlatMapScan {
+    slow: ir::Block,
+    done: ir::Block,
+    found: ir::Value,
+}
+
+impl FlatMapScan {
+    /// Search the flat map `map_ref` names for the key `key_word` of
+    /// `key_kind`. The builder is left in the slow block.
+    pub(crate) fn emit(
+        b: &mut FunctionBuilder<'_>,
+        map_ref: ir::Value,
+        key_word: ir::Value,
+        key_kind: ValueKind,
+    ) -> Self {
+        let flags = MemFlagsData::trusted();
+        let [
+            header_blk,
+            scan_blk,
+            head_blk,
+            body_blk,
+            kind_blk,
+            next_blk,
+            hit_blk,
+            miss_blk,
+        ] = std::array::from_fn(|_| b.create_block());
+        let slow = b.create_block();
+        let done = b.create_block();
+        let found = b.append_block_param(done, types::I64);
+        let index = b.append_block_param(head_blk, types::I64);
+
+        let kind = kind_field(b, map_ref);
+        let is_map = b.ins().icmp_imm_s(IntCC::Equal, kind, ValueKind::MAP.tag() as i64);
+        b.ins().brif(is_map, header_blk, &[], slow, &[]);
+
+        b.switch_to_block(header_blk);
+        b.seal_block(header_blk);
+        let map = address_field(b, map_ref);
+        let header = b.ins().load(types::I64, flags, map, 0);
+        let not_flat = b.ins().band_imm_u(header, MAP_NOT_FLAT_MASK as i64);
+        b.ins().brif(not_flat, slow, &[], scan_blk, &[]);
+
+        b.switch_to_block(scan_blk);
+        b.seal_block(scan_blk);
+        let count = b.ins().ushr_imm_u(header, MAP_FLAT_COUNT_SHIFT);
+        let kinds = b.ins().iadd_imm_s(map, MAP_KIND_BYTES_OFFSET);
+        let rounded = b.ins().iadd_imm_s(count, 7);
+        let kind_bytes = b.ins().band_imm_s(rounded, -8);
+        let keys = b.ins().iadd(kinds, kind_bytes);
+        let zero = b.ins().iconst(types::I64, 0);
+        b.ins().jump(head_blk, &[BlockArg::Value(zero)]);
+
+        b.switch_to_block(head_blk);
+        let in_map = b.ins().icmp(IntCC::UnsignedLessThan, index, count);
+        b.ins().brif(in_map, body_blk, &[], miss_blk, &[]);
+
+        b.switch_to_block(body_blk);
+        b.seal_block(body_blk);
+        let offset = b.ins().ishl_imm_u(index, 3);
+        let key_slot = b.ins().iadd(keys, offset);
+        let stored = b.ins().load(types::I64, flags, key_slot, 0);
+        let same_word = b.ins().icmp(IntCC::Equal, stored, key_word);
+        b.ins().brif(same_word, kind_blk, &[], next_blk, &[]);
+
+        b.switch_to_block(kind_blk);
+        b.seal_block(kind_blk);
+        let kind_slot = b.ins().iadd(kinds, index);
+        let kind_byte = b.ins().uload8(types::I64, flags, kind_slot, 0);
+        let stored_kind = b.ins().ushr_imm_u(kind_byte, 4);
+        let same_kind = b.ins().icmp_imm_s(IntCC::Equal, stored_kind, key_kind.tag() as i64);
+        b.ins().brif(same_kind, hit_blk, &[], next_blk, &[]);
+
+        b.switch_to_block(next_blk);
+        b.seal_block(next_blk);
+        let following = b.ins().iadd_imm_s(index, 1);
+        b.ins().jump(head_blk, &[BlockArg::Value(following)]);
+        b.seal_block(head_blk);
+
+        b.switch_to_block(hit_blk);
+        b.seal_block(hit_blk);
+        let key_bytes = b.ins().ishl_imm_u(count, 3);
+        let values = b.ins().iadd(keys, key_bytes);
+        let found_at = b.ins().iadd(values, offset);
+        let value_word = b.ins().load(types::I64, flags, found_at, 0);
+        let value_kind = b.ins().band_imm_u(kind_byte, 0xF);
+        let value_ref = stored_ref_word(b, found_at, value_word, value_kind);
+        b.ins().jump(done, &[BlockArg::Value(value_ref)]);
+
+        b.switch_to_block(miss_blk);
+        b.seal_block(miss_blk);
+        let packing = AnyValueRefPacking::current();
+        let null = b.ins().iconst(
+            types::I64,
+            (u64::from(ValueKind::NULL.tag()) << packing.tag_shift()) as i64,
+        );
+        b.ins().jump(done, &[BlockArg::Value(null)]);
+
+        b.switch_to_block(slow);
+        b.seal_block(slow);
+        Self { slow, done, found }
+    }
+
+    /// Close the slow block with the runtime's answer and continue after the
+    /// test with the value's ref word, or the null ref for an absent key.
+    pub(crate) fn finish(self, b: &mut FunctionBuilder<'_>, slow_answer: ir::Value) -> ir::Value {
+        debug_assert_eq!(b.current_block(), Some(self.slow));
+        b.ins().jump(self.done, &[BlockArg::Value(slow_answer)]);
+        b.switch_to_block(self.done);
+        b.seal_block(self.done);
+        self.found
+    }
+}
+
+/// The ref word of the value stored at `slot` as `word` with kind `kind`: an
+/// integer, a float or a reference is named by its slot, everything else by
+/// its word. This is `any_value_ref_from_storage` for a kind read at run time.
+fn stored_ref_word(b: &mut FunctionBuilder<'_>, slot: ir::Value, word: ir::Value, kind: ir::Value) -> ir::Value {
+    let packing = AnyValueRefPacking::current();
+    let named_by_slot = [ValueKind::INT, ValueKind::FLOAT, ValueKind::REF]
+        .map(|boxed| b.ins().icmp_imm_s(IntCC::Equal, kind, boxed.tag() as i64))
+        .into_iter()
+        .reduce(|either, is_kind| b.ins().bor(either, is_kind))
+        .expect("three kinds");
+    let payload = b.ins().select(named_by_slot, slot, word);
+    let payload = b.ins().band_imm_u(payload, packing.payload_mask() as i64);
+    let tag = b.ins().ishl_imm_u(kind, packing.tag_shift() as i64);
+    b.ins().bor(payload, tag)
 }
 
 /// Convert an i8 Cranelift bool to the reserved true/false atom bit patterns.

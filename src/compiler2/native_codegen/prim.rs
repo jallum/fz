@@ -18,7 +18,7 @@ use cranelift_codegen::ir::{
     types,
 };
 use cranelift_frontend::FunctionBuilder;
-use cranelift_module::{DataId, FuncId, Linkage};
+use cranelift_module::{DataId, FuncId, Linkage, Module};
 use fz_runtime::any_value::{
     AnyValue, BITSTRING_BIT_LEN_SHIFT, BITSTRING_BYTES_OFFSET, FALSE_ATOM_ID, SlotLayout, TRUE_ATOM_ID, ValueKind,
     shared_struct_header_word,
@@ -535,13 +535,15 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
         }
         Prim::MatcherMapGet(m, k) => {
             let map_ref = body.tagged_var(var_env, m.0);
+            let scan = one_word_key(body, binding_for_var(var_env, k.0))
+                .map(|(word, kind)| FlatMapScan::emit(body.b, map_ref, word, kind));
             let key_ref = body.tagged_var(var_env, k.0);
             let process = body.process_arg();
-            LowerOut::ValueRefWord(runtime_call1!(
-                body,
-                fz_matcher_map_get_ref,
-                [process, map_ref, key_ref]
-            ))
+            let answer = runtime_call1!(body, fz_matcher_map_get_ref, [process, map_ref, key_ref]);
+            LowerOut::ValueRefWord(match scan {
+                Some(scan) => scan.finish(body.b, answer),
+                None => answer,
+            })
         }
         Prim::IsMapMiss(v) => {
             let value_ref = body.tagged_var(var_env, v.0);
@@ -552,6 +554,12 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
         _ => unreachable!("lower_collection_prim: not a collection prim"),
     };
     Ok(v)
+}
+
+/// The word and kind of a map key that is an integer or an atom wherever this
+/// code runs. Such a key is found in a flat map by comparing words.
+fn one_word_key<M: Module>(body: &mut CodegenFn<'_, '_, M>, key: CodegenValue) -> Option<(ir::Value, ValueKind)> {
+    value_raw_kind_parts(body, key).filter(|(_, kind)| matches!(*kind, ValueKind::INT | ValueKind::ATOM))
 }
 
 /// How far a match field reaches from where it starts.

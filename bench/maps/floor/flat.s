@@ -34,6 +34,37 @@ _fz_flat_scan:
         mov     x0, x11
         ret
 
+// fz_flat_get(map x0, key word x1, key kind x2) -> x0 = value word, x1 = value kind; x1 = -1 when absent.
+// This is the sequence a map pattern with a one-word key compiles to: the scan above with the value
+// read where the key was found.
+        .globl _fz_flat_get
+        .p2align 2
+_fz_flat_get:
+        ldr     x8, [x0]
+        lsr     x8, x8, #4              // count
+        add     x9, x0, #8              // kind bytes
+        add     x10, x8, #7
+        and     x10, x10, #-8
+        add     x10, x9, x10            // keys
+        mov     x11, #0
+        cbz     x8, 9f
+1:      ldr     x12, [x10, x11, lsl #3]
+        cmp     x12, x1
+        b.eq    3f
+2:      add     x11, x11, #1
+        cmp     x11, x8
+        b.lo    1b
+9:      mov     x1, #-1
+        ret
+3:      ldrb    w13, [x9, x11]          // same word: is it the same kind?
+        lsr     w14, w13, #4
+        cmp     w14, w2
+        b.ne    2b
+        add     x10, x10, x8, lsl #3    // values
+        ldr     x0, [x10, x11, lsl #3]
+        and     x1, x13, #0xf
+        ret
+
 // fz_flat_place(map x0, key kind x1, key order word x2, atom prefixes x3) -> x0 = slot for an absent key,
 // or -1 when the order word does not decide (two atoms sharing a prefix, an integer beside a float).
 // The order word of an atom is the first eight bytes of its name, big-endian; of an integer, its word

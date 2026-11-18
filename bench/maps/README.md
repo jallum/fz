@@ -22,13 +22,15 @@ Instructions retired per iteration, taken as a slope between a run of N iteratio
 |---|---|
 | `build_K` | an empty map, then K puts of new keys |
 | `get_K` | six `Map.get/3` calls for present keys of a K-key map |
+| `case_K` | six calls of a function that matches `%{^key => value}` on a K-key map and adds what it finds |
 | `replace_12` | six puts of present keys into a 12-key map |
 | `delete_12` | three deletes, then three puts of the same keys |
 
 `_a_` probes use atom keys and `_b_` probes use binary keys. A 40-key map is past the flat
 limit of 32 entries, so those probes run on the trie and have no floor.
 
-The Erlang twins call `Mod:put`, `Mod:get` and `Mod:remove` with `Mod` read from the environment
+The `case` twin matches `#{K := V}` in a function of its own. The other Erlang twins call
+`Mod:put`, `Mod:get` and `Mod:remove` with `Mod` read from the environment
 at run time. With the module visible, the Erlang compiler folds a chain of puts with literal keys
 into one instruction, which is a different workload.
 
@@ -40,6 +42,9 @@ Its loop is C, with no collector and no call from compiled code, so it bounds a 
 below; it does not predict it.
 
 - `fz_flat_scan` finds a one-word key by word equality.
+- `fz_flat_get` is that scan with the value read where the key was found. It is the sequence the
+  compiler emits for a map pattern whose key is an atom or an integer (`FlatMapScan` in
+  `src/compiler2/native_codegen/clif.rs`), and the floor of the `case` probes.
 - `fz_flat_place` finds the slot for an absent one-word key by term order.
 - `fz_flat_find` does both in one ordered search (the `ordered` column, puts and gets only).
 - `fz_flat_find_bin` finds a binary key, or its slot, by bytes then length.
@@ -54,19 +59,23 @@ Bench host (Apple M5 Pro), OTP 28 with the JIT, fz at the commit that last chang
 
 | Probe | fz | BEAM | floor | ordered |
 |---|---:|---:|---:|---:|
-| build_a_6 | 4,306 | 2,681 | 1,133 | 988 |
-| build_b_6 | 5,238 | 6,420 | 1,176 | |
-| build_a_12 | 9,284 | 6,791 | 2,914 | 2,424 |
-| build_b_12 | 11,281 | 19,917 | 3,050 | |
-| build_a_24 | 19,924 | 18,072 | 8,139 | 6,331 |
-| build_b_24 | 24,198 | 88,218 | 8,057 | |
-| build_a_40 | 71,259 | 48,401 | | |
-| build_b_40 | 94,334 | 193,483 | | |
-| get_a_12 | 6,152 | 1,555 | 497 | 540 |
-| get_b_12 | 12,814 | 6,694 | 900 | |
-| get_a_40 | 8,216 | 1,635 | | |
-| get_b_40 | 15,138 | 4,017 | | |
-| replace_a_12 | 3,714 | 2,903 | 1,506 | 1,590 |
-| replace_b_12 | 4,759 | 7,926 | 1,847 | |
-| delete_a_12 | 4,309 | 3,796 | 1,657 | 1,460 |
-| delete_b_12 | 5,671 | 13,720 | 2,035 | |
+| build_a_6 | 4,306 | 2,593 | 1,133 | 988 |
+| build_b_6 | 5,238 | 6,432 | 1,176 | |
+| build_a_12 | 9,284 | 7,032 | 2,914 | 2,424 |
+| build_b_12 | 11,282 | 19,918 | 3,050 | |
+| build_a_24 | 19,924 | 18,191 | 8,139 | 6,331 |
+| build_b_24 | 24,202 | 88,233 | 8,057 | |
+| build_a_40 | 71,200 | 46,880 | | |
+| build_b_40 | 94,276 | 193,202 | | |
+| get_a_12 | 6,152 | 1,555 | 523 | 564 |
+| get_b_12 | 12,814 | 6,684 | 925 | |
+| get_a_40 | 8,216 | 1,626 | | |
+| get_b_40 | 15,139 | 4,037 | | |
+| case_a_12 | 4,334 | 469 | 454 | 455 |
+| case_b_12 | 6,944 | 5,568 | 949 | |
+| case_a_40 | 6,810 | 574 | | |
+| case_b_40 | 8,113 | 2,882 | | |
+| replace_a_12 | 3,713 | 2,922 | 1,532 | 1,616 |
+| replace_b_12 | 4,759 | 7,892 | 1,874 | |
+| delete_a_12 | 4,309 | 3,846 | 1,682 | 1,485 |
+| delete_b_12 | 5,671 | 13,786 | 2,063 | |
