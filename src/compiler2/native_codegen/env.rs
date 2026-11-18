@@ -89,6 +89,9 @@ pub(crate) struct CodegenCache {
     /// A continuation's own descriptor, which is the body frame it runs in
     /// when it runs in one.
     pub(super) own_continuation: Option<ir::Value>,
+    /// The block a tail call to the function itself jumps to, when the
+    /// function has one.
+    pub(super) loop_head: Option<ir::Block>,
     /// Cranelift values for small integer/atom constants, keyed by
     /// (block, value) so entries from sibling blocks are never reused.
     pub(super) const_cache: HashMap<(ir::Block, i64), ir::Value>,

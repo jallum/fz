@@ -17,17 +17,25 @@ The unit charged today is the loop back edge. An unbounded pure loop is a
 tail-recursive SCC; the compiler marks those edges (`is_back_edge`), so they are
 the natural place to spend budget. Each back edge spends exactly one reduction.
 A back edge is a tail call between native functions of one SCC
-(`annotate_back_edges` in `src/compiler2/jobs/native.rs`). Control that stays
-inside a function moves by `Goto` and spends nothing; an entry is a block only
-when one direct transfer reaches it, so blocks never form a loop of their own
-and every loop still crosses a tail call. A call that is only an extern is
+(`annotate_back_edges` in `src/compiler2/jobs/native.rs`), and a tail call to
+the function itself is the one such edge that stays inside a function: it
+charges its reduction and makes the yield check like any other, then jumps to
+the function's head block instead of calling. A yield there captures the new
+arguments and resumes by calling the function with them. Control that stays
+inside a function otherwise moves by `Goto` and spends nothing: a function's
+dispatch hands control to a clause body by `Goto`, so a step through a
+multi-clause function spends one reduction, at its tail call. An entry is a
+block only when every transfer that reaches it is a direct transfer from its own
+function (see [`pipeline`](pipeline.md)), so blocks never form a loop of their
+own and every loop closes at a tail call. A call that is only an extern is
 spliced into its caller (see [`pipeline`](pipeline.md)): it is neither a tail
 call nor a continuation, so it spends no reduction and builds no continuation
 closure. The closures a loop builds are those of its calls to functions that
 are more than an extern and one per yield. Fixture 01177 pins both through
 `Process.heap_alloc_stats()`: `continuation_allocs` minus `reduction_yields` is
 the number of such calls, and `reductions_executed` is the reductions the
-loop's back edges spent, two per iteration.
+loop's back edges spent, one per iteration. Fixture 01376 loops past many
+quanta through a self tail call beside a second process.
 
 ## Who owns what
 

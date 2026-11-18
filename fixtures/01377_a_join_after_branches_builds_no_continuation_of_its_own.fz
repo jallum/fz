@@ -1,0 +1,52 @@
+#---
+# purpose: "the join two branch arms deliver to is a block of the function that branches, so a function that adds one to an `if` or a `case` builds no more continuations than one that adds one to a plain expression"
+# kind: run
+#---
+#
+# Each loop calls its helper once per iteration, and that call is the only
+# call that is more than an extern, so it builds one continuation per
+# iteration for its return. The `if` and `case` helpers join two or three arms
+# before adding one; if the join were a function of its own it would build a
+# second continuation per iteration. The program counts each loop's
+# continuations beyond the ones reduction yields build (one per yield) and
+# prints how many more the `if` loop and the `case` loop built than the plain
+# loop. The interpreter builds no continuations, so it prints the same zeros.
+defmodule J do
+  def plain(n), do: n * 3 + 1
+
+  def with_if(n), do: (if n > 5, do: n * 3, else: n) + 1
+
+  def with_case(n) do
+    (case rem(n, 3) do
+       0 -> n
+       1 -> n * 3
+       _ -> 0
+     end) + 1
+  end
+end
+
+defmodule L do
+  def plain(0, acc), do: acc
+  def plain(n, acc), do: plain(n - 1, acc + J.plain(n))
+
+  def with_if(0, acc), do: acc
+  def with_if(n, acc), do: with_if(n - 1, acc + J.with_if(n))
+
+  def with_case(0, acc), do: acc
+  def with_case(n, acc), do: with_case(n - 1, acc + J.with_case(n))
+end
+
+defmodule M do
+  def continuations(run) do
+    before = Process.heap_alloc_stats()
+    run.(1000)
+    after_run = Process.heap_alloc_stats()
+    after_run[:continuation_allocs] - before[:continuation_allocs] - (after_run[:reduction_yields] - before[:reduction_yields])
+  end
+end
+
+def main() do
+  plain = M.continuations(fn n -> L.plain(n, 0) end)
+  dbg(M.continuations(fn n -> L.with_if(n, 0) end) - plain)
+  dbg(M.continuations(fn n -> L.with_case(n, 0) end) - plain)
+end

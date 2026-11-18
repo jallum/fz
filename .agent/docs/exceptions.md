@@ -210,7 +210,9 @@ and body bindings do not reach the join. A raise inside a rescue arm runs after
 the try's own handler was popped, so the same try never catches it. The
 `BackendTail::Try { body, handler }` tail and `ControlEntryOrigin::Handler`
 carry this to the backend; `Term::Try { handler, captures, body }` and
-`Prim::PopHandler` carry it to native code.
+`Prim::PopHandler` carry it to native code. The function that pushes the record
+continues into the body as a block; the handler is the one function a `try`
+adds, since only the runtime reaches it (see the pipeline doc's entry homes).
 
 ## What a handler can receive
 

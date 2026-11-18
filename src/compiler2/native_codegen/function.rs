@@ -69,8 +69,23 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         }
     }
 
-    b.switch_to_block(entry_cl);
-    b.seal_block(entry_cl);
+    // A tail call to this very function is a jump back to its head. Cranelift
+    // never branches to the function's first block, so the first block only
+    // forwards the parameters to the head, which is the block that harness
+    // and body begin in.
+    let loops = !is_cont_fn && closes_a_loop_at_its_head(f);
+    if loops {
+        let first = b.create_block();
+        b.append_block_params_for_function_params(first);
+        b.switch_to_block(first);
+        b.seal_block(first);
+        let params: Vec<ir::BlockArg> = b.block_params(first).iter().map(|v| ir::BlockArg::Value(*v)).collect();
+        b.ins().jump(entry_cl, &params);
+        b.switch_to_block(entry_cl);
+    } else {
+        b.switch_to_block(entry_cl);
+        b.seal_block(entry_cl);
+    }
 
     // One machine for the whole function. Its cache starts empty: the entry
     // harness never reads the cache -- it produces the inputs the cache is then
@@ -85,6 +100,7 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
     } = build_entry_harness(&mut body, env, f, this_spec_id, is_cont_fn, entry_cl);
 
     body.cache.own_continuation = self_ref;
+    body.cache.loop_head = loops.then_some(entry_cl);
     {
         let (if_only, all_used) = classify_var_uses(f);
         body.cache.if_only_conds = if_only.into_iter().map(|v| v.0).collect();
@@ -176,6 +192,19 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         }
     }
     drop(body);
+    if loops {
+        b.seal_block(entry_cl);
+    }
     b.finalize(jmod.target_config());
     Ok(())
+}
+
+/// Whether some block of `f` tail-calls `f` itself.
+fn closes_a_loop_at_its_head(f: &FnIr) -> bool {
+    f.blocks.iter().any(|blk| {
+        matches!(
+            &blk.terminator,
+            crate::fz_ir::Term::TailCall { callee: crate::fz_ir::DirectCallTarget::Local(callee), .. } if *callee == f.id
+        )
+    })
 }

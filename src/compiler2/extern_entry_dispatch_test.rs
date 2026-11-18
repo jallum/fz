@@ -182,13 +182,12 @@ fn only_the_unproven_extern_call_compiles_a_tag_test() {
         .collect::<Vec<_>>();
     assert_eq!(
         add.len(),
-        3,
-        "the proven row is the call alone; the received row is a dispatch and the call: {names:?}"
+        2,
+        "the proven row is the call alone; the received row is its dispatch and the call in one function: {names:?}"
     );
-    assert_eq!(
-        add.iter().filter(|name| name.ends_with("__call")).count(),
-        1,
-        "one call function sits behind a dispatch: {add:?}"
+    assert!(
+        add.iter().all(|name| !name.ends_with("__call")),
+        "the call behind a dispatch is a block of the dispatch's function: {add:?}"
     );
 }
 

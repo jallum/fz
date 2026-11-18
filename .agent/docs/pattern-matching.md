@@ -318,8 +318,9 @@ readings of "did this input arrive" cannot disagree quietly.
 ## Lowering Sites
 
 - Multi-clause functions build one subject per parameter and route each
-  outcome to its clause's body, which native code lowers as a function of its
-  own (`<name>__clause_N`). Exhaustion raises `FunctionClauseError`.
+  outcome to its clause's body, which native code lowers as a block of the
+  function that decides (see [pipeline](pipeline.md)). Exhaustion raises
+  `FunctionClauseError`.
 - `case` builds one subject for the scrutinee and routes each outcome to an arm
   entry. An arm has one way in, so native code lowers it as a block of the
   function that decides (see [pipeline](pipeline.md)). Exhaustion raises

@@ -311,7 +311,7 @@ fn entry_dispatch_decides_a_lane_form_tuple_from_its_lanes() {
     let mut lowerer = NativeLowerer::new(&mut world, &telemetry, root, &program).expect("test native lowerer");
     let mut entry_fns = EntryFns::default();
     lowerer
-        .lower_clause_dispatch_executable(0, &executable, &clauses, &entries, &mut entry_fns)
+        .lower_executable_head(0, &executable, &clauses, &entries, &mut entry_fns)
         .expect("a lane-form tuple parameter is decided without being boxed");
     let module = lowerer.module.build();
     let entry = module
@@ -485,12 +485,12 @@ fn tuple_encoding_reprojects_same_arity_partial_transport_by_position() {
     );
 }
 
-/// A branch arm and a join reached by exactly one direct transfer are blocks of
-/// the function that reaches them: native emits no function for either, and
-/// control reaches them by `Goto`. A join two arms deliver to keeps its own
-/// function.
+/// An entry that only its own function's direct transfers reach is a block of
+/// that function: native emits no function for a branch arm or for a join, and
+/// control reaches each by `Goto`. A join two arms deliver to is one block with
+/// two incoming transfers.
 #[test]
-fn single_predecessor_entries_are_blocks_of_the_function_that_reaches_them() {
+fn entries_reached_only_by_their_functions_direct_transfers_are_blocks() {
     use crate::compiler2::drive_harness::NativeProgramCapture;
     use crate::compiler2::{CodeSubmission, Compiler2, RootSubmission};
     use crate::telemetry::ConfiguredTelemetry;
@@ -537,7 +537,7 @@ def main(), do: pick(3)
         .collect::<Vec<_>>();
     assert!(
         names.iter().all(|name| !name.contains("__branch_")),
-        "an arm has exactly one predecessor, so it is never a function of its own: {names:?}"
+        "an arm is reached only from its own function, so it is never a function of its own: {names:?}"
     );
     let pick = names
         .iter()
@@ -546,26 +546,31 @@ def main(), do: pick(3)
         .map(|rest| rest.split_once("__").map_or("", |(_, suffix)| suffix))
         .collect::<BTreeSet<_>>();
     // `x > 0` is an extern the entry calls itself, so the entry that resumes
-    // after it (e1) is a block of the entry's function. e3 is the join both
-    // `if` arms deliver to, so it keeps its function. The `case` arm (e4) and
-    // the join only that arm delivers to (e5) live inside e3.
+    // after it is a block of the entry's function. e3 is the join both `if`
+    // arms deliver to; the `case` arm and the join only that arm delivers to
+    // follow it. All of `pick` is one function.
     assert_eq!(
         pick,
-        BTreeSet::from(["", "resume_3"]),
-        "pick lowers to its entry and the two-armed join: {names:?}"
+        BTreeSet::from([""]),
+        "pick lowers to one function holding its join and its arms: {names:?}"
     );
-    let join = program
+    let pick_fn = program
         .module
         .fns
         .iter()
-        .find(|function| function.name.starts_with("pick__") && function.name.ends_with("__resume_3"))
-        .expect("two-armed join keeps its function");
-    let goto_target = |block: &crate::fz_ir::Block| match &block.terminator {
-        Term::Goto(target, _) => Some(join.block(*target)),
-        _ => None,
+        .find(|function| function.name.starts_with("pick__"))
+        .expect("pick lowers to a function");
+    let predecessors = |target: crate::fz_ir::BlockId| {
+        pick_fn
+            .blocks
+            .iter()
+            .filter(|block| matches!(&block.terminator, Term::Goto(to, _) if *to == target))
+            .count()
     };
-    let arm = goto_target(join.block(join.entry)).expect("the case decision enters its arm by Goto");
-    goto_target(arm).expect("the arm delivers its tuple to the join only it reaches by Goto");
+    assert!(
+        pick_fn.blocks.iter().any(|block| predecessors(block.id) == 2),
+        "the join both `if` arms deliver to is one block with two incoming Gotos"
+    );
 }
 
 fn native_fn_names(program: &crate::compiler2::artifact::NativeProgram) -> Vec<&str> {
@@ -685,4 +690,123 @@ fn a_guard_tests_an_operand_for_being_a_boolean_only_when_its_type_leaves_it_ope
         2,
         "flagged/2 compares its open operand with true and with false, once"
     );
+}
+
+/// The native program lowered for `source`'s `main`.
+fn native_program_of(source: &str) -> Rc<crate::compiler2::NativeProgram> {
+    use crate::compiler2::drive_harness::NativeProgramCapture;
+    use crate::compiler2::{CodeSubmission, Compiler2, RootSubmission};
+    use crate::telemetry::ConfiguredTelemetry;
+
+    let tel = ConfiguredTelemetry::new();
+    let native = NativeProgramCapture::new();
+    native.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("native_functions.fz".into()),
+        text: source.into(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler
+        .drive_root_to_dump_stage(root, crate::compiler2::dump::DumpStage::Native)
+        .expect("native product should settle");
+    native.last(root).program
+}
+
+fn native_function_names(source: &str) -> Vec<String> {
+    let program = native_program_of(source);
+    program
+        .module
+        .fns
+        .iter()
+        .map(|function| function.name.clone())
+        .collect()
+}
+
+/// A clause body is reached only from its function's dispatch, so a function
+/// of several clauses is one machine function, and a walk that calls itself
+/// from its first clause is that one function and nothing else.
+#[test]
+fn a_function_of_several_clauses_is_one_function_and_its_self_tail_call_makes_no_other() {
+    let names = native_function_names(
+        "\
+def walk(<<c, rest :: binary>>, acc) when c < 128, do: walk(rest, acc + c)
+def walk(_bytes, acc), do: acc
+
+def main(), do: dbg(walk(\"hello\", 0))
+",
+    );
+    let walk = names
+        .iter()
+        .filter(|name| name.starts_with("walk__"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        walk.len(),
+        1,
+        "both clauses of walk are blocks of its one function: {names:?}"
+    );
+    assert!(
+        names.iter().all(|name| !name.contains("__clause_")),
+        "no clause is a function of its own: {names:?}"
+    );
+}
+
+/// A tail call to the function being compiled is the one loop inside a
+/// function, so the function holds a tail call to itself.
+#[test]
+fn a_self_tail_call_stays_in_its_function() {
+    let program = native_program_of(
+        "\
+def count(0, acc), do: acc
+def count(n, acc), do: count(n - 1, acc + n)
+
+def main(), do: dbg(count(10, 0))
+",
+    );
+    let count = program
+        .module
+        .fns
+        .iter()
+        .find(|function| function.name.starts_with("count__"))
+        .expect("count lowers to a function");
+    assert!(
+        count.blocks.iter().any(|block| matches!(
+            &block.terminator,
+            Term::TailCall { callee, is_back_edge: true, .. } if callee.local_fn_id() == Some(count.id)
+        )),
+        "count's second clause tail-calls count itself, marked as the back edge that charges a reduction"
+    );
+}
+
+/// The function that pushes a try's handler record enters the body itself, so
+/// the body is a block of it. Only a raise, which the runtime delivers, reaches
+/// the handler, so the handler is the one function a try adds.
+#[test]
+fn a_try_body_is_a_block_and_its_handler_is_the_only_function_the_try_adds() {
+    let names = native_function_names(
+        "\
+def guarded(n) do
+  try do
+    n * 3
+  rescue
+    _ -> 0
+  end
+end
+
+def main(), do: dbg(guarded(2))
+",
+    );
+    let of_guarded = |marker: &str| {
+        names
+            .iter()
+            .filter(|name| name.starts_with("guarded__") && name.contains(marker))
+            .count()
+    };
+    assert_eq!(of_guarded("__handler"), 1, "the handler is a function: {names:?}");
+    assert_eq!(of_guarded("__branch"), 0, "the body is a block of guarded: {names:?}");
 }

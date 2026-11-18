@@ -573,20 +573,17 @@ pub(crate) struct NativeGraphSharingWork {
     pub body_comparisons: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct NativeGraphRole {
-    clause: Option<u32>,
-    continuations: Vec<usize>,
-}
+/// The path of control-edge positions from an executable's own function to a
+/// body it owns.
+type NativeGraphRole = Vec<usize>;
 
 struct NativeOwnedGraph {
     bodies: BTreeMap<NativeGraphRole, FnId>,
     complete: bool,
 }
 
-/// One-pass ownership index for structural graph comparison. Clause indices
-/// identify entry roots; completed IR control-edge paths identify continuation
-/// roles. Lowering order and allocated function ids are not authorities.
+/// One-pass ownership index for structural graph comparison. Completed IR
+/// control-edge paths identify each owned body's role. Lowering order and allocated function ids are not authorities.
 struct NativeGraphIndex<'a> {
     program: &'a NativeProgram,
     bodies: HashMap<FnId, &'a NativeBody>,
@@ -596,7 +593,6 @@ struct NativeGraphIndex<'a> {
 impl<'a> NativeGraphIndex<'a> {
     fn new(program: &'a NativeProgram) -> Self {
         let mut bodies = HashMap::default();
-        let mut clauses = HashMap::<ExecutableKey, BTreeMap<u32, FnId>>::default();
         let mut continuations = HashMap::<FnId, Vec<FnId>>::default();
         for body in &program.bodies {
             assert!(
@@ -605,16 +601,6 @@ impl<'a> NativeGraphIndex<'a> {
                 body.fn_id,
             );
             match &body.origin {
-                NativeBodyOrigin::Clause { owner, index } => {
-                    assert!(
-                        clauses
-                            .entry(owner.clone())
-                            .or_default()
-                            .insert(*index, body.fn_id)
-                            .is_none(),
-                        "native executable {owner:?} must not own duplicate clause index {index}",
-                    );
-                }
                 NativeBodyOrigin::Continuation { owner } => continuations.entry(*owner).or_default().push(body.fn_id),
                 NativeBodyOrigin::Executable(_) | NativeBodyOrigin::CallableWrapper { .. } => {}
             }
@@ -628,7 +614,7 @@ impl<'a> NativeGraphIndex<'a> {
         let graphs = program
             .executable_entries
             .iter()
-            .map(|entry| NativeOwnedGraph::new(entry, &clauses, &continuations, &control_edges))
+            .map(|entry| NativeOwnedGraph::new(entry, &continuations, &control_edges))
             .collect();
         Self {
             program,
@@ -700,26 +686,10 @@ impl<'a> NativeGraphIndex<'a> {
 impl NativeOwnedGraph {
     fn new(
         entry: &NativeExecutableEntry,
-        clauses: &HashMap<ExecutableKey, BTreeMap<u32, FnId>>,
         continuations: &HashMap<FnId, Vec<FnId>>,
         control_edges: &HashMap<FnId, Vec<FnId>>,
     ) -> Self {
-        let mut roots = vec![(
-            NativeGraphRole {
-                clause: None,
-                continuations: Vec::new(),
-            },
-            entry.fn_id,
-        )];
-        roots.extend(clauses.get(&entry.key).into_iter().flatten().map(|(&index, &fn_id)| {
-            (
-                NativeGraphRole {
-                    clause: Some(index),
-                    continuations: Vec::new(),
-                },
-                fn_id,
-            )
-        }));
+        let roots = vec![(NativeGraphRole::new(), entry.fn_id)];
 
         let mut owned = HashSet::default();
         let mut ownership_frontier = roots.iter().map(|(_, fn_id)| *fn_id).collect::<Vec<_>>();
@@ -749,7 +719,7 @@ impl NativeOwnedGraph {
                     continue;
                 }
                 let mut child_role = role.clone();
-                child_role.continuations.push(index);
+                child_role.push(index);
                 assert!(
                     bodies.insert(child_role.clone(), *child).is_none(),
                     "native graph must not publish duplicate structural role {child_role:?}",
@@ -1020,7 +990,6 @@ pub(crate) enum NativeEntryAbi {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum NativeBodyOrigin {
     Executable(ExecutableKey),
-    Clause { owner: ExecutableKey, index: u32 },
     Continuation { owner: FnId },
     CallableWrapper { identity: u32 },
 }
@@ -1494,7 +1463,9 @@ impl BackendTail {
                 .map(|entry| (entry, EntryTransfer::Runtime))
                 .chain(delivered(&receive.dest, EntryTransfer::Runtime))
                 .collect(),
-            Self::Try { body, handler } => vec![(*body, EntryTransfer::Runtime), (*handler, EntryTransfer::Runtime)],
+            // The body is entered by the function that pushes the handler record;
+            // only a raise, delivered by the runtime, reaches the handler.
+            Self::Try { body, handler } => vec![(*body, EntryTransfer::Direct), (*handler, EntryTransfer::Runtime)],
             Self::Unreachable => Vec::new(),
         }
     }

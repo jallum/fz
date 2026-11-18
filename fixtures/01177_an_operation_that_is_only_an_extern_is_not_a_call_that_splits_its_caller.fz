@@ -1,5 +1,5 @@
 #---
-# purpose: "a delivered call to Kernel.+, Kernel.-, Kernel.* is the extern inline in the caller, so a loop whose body adds, subtracts and multiplies builds one continuation per iteration for its one real call, and the loop spends two reductions per iteration"
+# purpose: "a delivered call to Kernel.+, Kernel.-, Kernel.* is the extern inline in the caller, so a loop whose body adds, subtracts and multiplies builds one continuation per iteration for its one real call, and the loop spends one reduction per iteration"
 # kind: run
 #---
 #

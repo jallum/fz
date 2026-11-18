@@ -1386,7 +1386,7 @@ fn a_decision_that_fails_builds_the_struct_it_raises_with_no_list_of_its_fields(
 /// `<function>__e<index>`.
 ///
 /// `None` for every other lowered function: a branch, receive or resume entry
-/// appends its own suffix to that name, and a clause body is `__clause_<index>`.
+/// appends its own suffix to that name, and a clause body is a block of its function.
 fn executable_entry_of(name: &str) -> Option<&str> {
     let (owner, index) = name.rsplit_once("__e")?;
     (!index.is_empty() && index.bytes().all(|byte| byte.is_ascii_digit())).then_some(owner)
@@ -8917,7 +8917,7 @@ fn compiler2_native_program_jit_keeps_tail_recursion_bounded() {
 #[test]
 fn compiler2_cont_threaded_recursion_closes_with_a_back_edge() {
     // fz-rh2.25: count's recursion cycle is threaded through Call
-    // continuations (count__clause_1 -Call-> kernel wrapper, whose cont
+    // continuations (count -Call-> kernel wrapper, whose cont
     // chain ends in a resume fn that TailCalls count's entry). A back-edge
     // graph built from TailCall edges alone cannot see that cycle, so the
     // closing tail call carried is_back_edge=false and the loop never spent
@@ -10544,7 +10544,7 @@ fn compiler2_native_program_calls_published_callable_values_through_runtime_iden
         .module
         .fns
         .iter()
-        .filter(|function| function.name.starts_with("reduce_while_cont__clause_"))
+        .filter(|function| function.name.starts_with("reduce_while_cont__e"))
         .flat_map(|function| function.blocks.iter())
         .filter(|block| matches!(&block.terminator, IrTerm::CallClosure { .. }))
         .count();
@@ -20284,9 +20284,7 @@ fn native_executable_functions(program: &NativeProgram) -> HashSet<FunctionId> {
         .iter()
         .filter_map(|body| match &body.origin {
             NativeBodyOrigin::Executable(key) => Some(key.activation.function),
-            NativeBodyOrigin::Clause { .. }
-            | NativeBodyOrigin::Continuation { .. }
-            | NativeBodyOrigin::CallableWrapper { .. } => None,
+            NativeBodyOrigin::Continuation { .. } | NativeBodyOrigin::CallableWrapper { .. } => None,
         })
         .collect()
 }
@@ -20298,7 +20296,6 @@ fn native_executable_fn(program: &NativeProgram, function: FunctionId) -> crate:
         .find_map(|body| match &body.origin {
             NativeBodyOrigin::Executable(key) if key.activation.function == function => Some(body.fn_id),
             NativeBodyOrigin::Executable(_)
-            | NativeBodyOrigin::Clause { .. }
             | NativeBodyOrigin::Continuation { .. }
             | NativeBodyOrigin::CallableWrapper { .. } => None,
         })

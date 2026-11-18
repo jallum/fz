@@ -1159,9 +1159,6 @@ pub enum FnCategory {
     User,
     /// `runtime.fz` builtins lowered alongside user code.
     Prelude,
-    /// Per-clause continuation minted by `mint_cont_fn` — the
-    /// `fn_clause_N` family.
-    MultiClauseCont,
     /// CPS continuation: `k_N`.
     CpsCont,
     /// Control-flow continuation: `if_then` / `if_else` /
