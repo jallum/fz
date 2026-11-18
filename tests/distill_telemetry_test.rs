@@ -269,7 +269,10 @@ fn read_compile_spend(trace: &Path) -> CompileSpend {
 // 19_661 -> 19_658: `String.to_integer` and `String.to_float` read through
 // `Integer.parse` and `Float.parse`, so String defines three fewer private
 // functions and its `DefineModule` notes three fewer.
-const DERIVATIONS: u64 = 19_658;
+// 19_658 -> 19_593: `JSON` decodes a `\uXXXX` by guarding on its hex digits and matches each
+// simple escape in a clause of `escaped`, so `simple_escape`, `join_run`, `hex4_join` and the
+// `:error` results they carried are no longer derived.
+const DERIVATIONS: u64 = 19_593;
 // 111_876 -> 111_888: an extern that declares `raises:` reads the struct of
 // the exception it names, to raise that struct. The distiller calls twelve
 // such externs, and each contract reads `StructDefined` once.
@@ -297,7 +300,8 @@ const DERIVATIONS: u64 = 19_658;
 // `any` enumerable, so the reach jobs whose cones hold it read its activations too.
 // 156_894 -> 155_916: the reads of those 145 derivations.
 // 155_916 -> 155_904: String's three fewer private functions, four reads each.
-const READS_HANDED: u64 = 155_904;
+// 155_904 -> 155_345: the reads of those 65 derivations.
+const READS_HANDED: u64 = 155_345;
 
 /// Compiling the distiller spends this much of the product stack. The largest
 /// drive is the one `PRODUCT_DRIVE_BUDGET` bounds, so its headroom is the
@@ -359,7 +363,8 @@ fn the_distiller_compiles_inside_the_product_drive_budget() {
         // (46_285, 46_839, 26) -> (46_237, 46_791, 26): `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
         // (46_237, 46_791, 26) -> (46_402, 46_956, 26): a case arm's parameter is laid out by its
         // own demand, so each outcome parameter is a `Value` position the compile requests.
-        (46_402, 46_956, 26),
+        // (46_402, 46_956, 26) -> (46_477, 47_031, 26): +75: each simple escape is its own clause of `escaped`; the added clauses cost transport_shape positions; authorized by the user
+        (46_477, 47_031, 26),
         "(largest drive requests, total requests, drives) for the distiller's compile moved. \
          A fall is lowered in this pin; a rise is investigated first, because the largest drive \
          may not exceed PRODUCT_DRIVE_BUDGET (50,000)."

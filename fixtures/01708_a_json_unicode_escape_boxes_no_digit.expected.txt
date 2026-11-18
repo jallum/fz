@@ -1,0 +1,5 @@
+{:decoded, 1000, 9000, "aéb😀c", 0}
+{:non_hex_digit, {:error, {:unexpected_sequence, 2, "\\u00g9"}}}
+{:short_sequence, {:error, {:unexpected_sequence, 2, "\\u12\"]"}}}
+{:unknown_escape, {:error, {:invalid_byte, 3, 113}}}
+{:lone_low_surrogate, {:error, {:unexpected_sequence, 2, "\\ude00"}}}

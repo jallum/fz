@@ -1,0 +1,39 @@
+#---
+# purpose: decoding a JSON `\uXXXX` escape, and a surrogate pair, boxes no scalar per escape
+# kind: run
+#---
+#
+# The document is a list of 1,000 strings, each holding one `\u00e9` and one
+# surrogate pair `\ud83d\ude00`. The program prints the heap scalars boxed per
+# decoded string, taken from the process's allocation counters around the
+# decode, and a checksum of the decoded result. A `\uXXXX` is matched by one
+# clause that checks its four bytes are hex digits and computes the code point
+# from them, so no digit value is carried as a boxed integer or a tagged result.
+#
+# The last row decodes four bad escapes, and prints the exact error each one
+# reports: a non-hex digit, a sequence cut short, an unknown simple escape and a
+# lone low surrogate.
+defmodule M do
+  def doc(0, acc), do: "[" <> acc <> "]"
+  def doc(n, acc) do
+    sep = if acc == "", do: "", else: ","
+    doc(n - 1, acc <> sep <> "\"a\\u00e9b\\ud83d\\ude00c\"")
+  end
+
+  def checksum([], acc), do: acc
+  def checksum([s | rest], acc), do: checksum(rest, acc + byte_size(s))
+
+  def boxed(a, b), do: div(b[:scalar_box_allocs] - a[:scalar_box_allocs], 1000)
+end
+
+input = M.doc(1000, "")
+
+a = Process.heap_alloc_stats()
+{:ok, strings} = JSON.decode(input)
+b = Process.heap_alloc_stats()
+dbg({:decoded, length(strings), M.checksum(strings, 0), hd(strings), M.boxed(a, b)})
+
+dbg({:non_hex_digit, JSON.decode("[\"\\u00g9\"]")})
+dbg({:short_sequence, JSON.decode("[\"\\u12\"]")})
+dbg({:unknown_escape, JSON.decode("[\"\\q\"]")})
+dbg({:lone_low_surrogate, JSON.decode("[\"\\ude00\"]")})
