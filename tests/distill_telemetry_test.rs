@@ -286,7 +286,9 @@ fn read_compile_spend(trace: &Path) -> CompileSpend {
 // 17_088 -> 16_958: a field reading of a value that is not one exact tuple is read whole, so
 // its runtime demand settles at once rather than widening field by field: 130 fewer
 // `DeriveRuntimeDemand` derivations, and every other job kind unchanged.
-const DERIVATIONS: u64 = 16_958;
+// 16_958 -> 16_959: the runtime library defines `defmacrop`, one more definition its
+// `ScopeCode` notes.
+const DERIVATIONS: u64 = 16_959;
 // 111_876 -> 111_888: an extern that declares `raises:` reads the struct of
 // the exception it names, to raise that struct. The distiller calls twelve
 // such externs, and each contract reads `StructDefined` once.

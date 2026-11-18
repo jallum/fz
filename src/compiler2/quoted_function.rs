@@ -108,7 +108,7 @@ pub(crate) fn derive_function_surface(
         return decode_extern_fn(&first, attrs, sources);
     }
 
-    let is_macro = form_head == "defmacro";
+    let is_macro = super::quoted_surface::is_macro_definition_head(&form_head);
     let mut clauses = Vec::new();
     let mut group_name: Option<String> = None;
     let mut name_span = Span::DUMMY;

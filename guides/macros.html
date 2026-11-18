@@ -117,6 +117,10 @@ string, or a small tuple &mdash; instead of a <code>quote</code> block. Both
 work; <code>quote do: 42</code> and a bare <code>42</code> mean the same
 thing.</p>
 
+<p><code>defmacrop</code> defines a private macro, as <code>defp</code>
+defines a private function: it expands wherever its own module calls it, in
+an expression or in a pattern, and another module cannot call it.</p>
+
 <p>A macro call can take a trailing <code>do ... end</code> block the same
 way <code>if</code> or <code>case</code> can, with an <code>else</code>
 section if it needs one. The block arrives as one extra argument, a

@@ -1,0 +1,25 @@
+#---
+# purpose: "defmacrop defines a macro that expands where its own module calls it, in a pattern and in an expression"
+# oracle: self
+# oracle.stamp: 9162f9764df6712a
+#---
+#
+# json.erl names its byte classes with macros. Elixir writes them as private
+# macros, which expand anywhere in the module that defines them.
+defmodule Main do
+  defmacrop quote_byte(), do: 34
+  defmacrop twice(x), do: quote(do: unquote(x) * 2)
+
+  def classify(b) do
+    case b do
+      quote_byte() -> :quote
+      _ -> :other
+    end
+  end
+
+  def main() do
+    IO.inspect({classify(34), classify(65), twice(21)})
+  end
+end
+
+Main.main()

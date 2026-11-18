@@ -736,29 +736,59 @@ pub struct TypeAliasDecl {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TryForm {
     Try,
-    Def,
-    Defp,
-    Defmacro,
+    Definition(DefinitionForm),
 }
 
 impl TryForm {
     /// The definition form named `keyword`, if it is one.
     pub fn definition(keyword: &str) -> Option<Self> {
-        match keyword {
-            "def" => Some(Self::Def),
-            "defp" => Some(Self::Defp),
-            "defmacro" => Some(Self::Defmacro),
-            _ => None,
-        }
+        DefinitionForm::of(keyword).map(Self::Definition)
     }
 
     pub fn keyword(self) -> &'static str {
         match self {
             Self::Try => "try",
+            Self::Definition(form) => form.keyword(),
+        }
+    }
+}
+
+/// A keyword that defines a function: whether the function is a macro, and
+/// whether it is private to its module.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DefinitionForm {
+    Def,
+    Defp,
+    Defmacro,
+    Defmacrop,
+}
+
+impl DefinitionForm {
+    pub fn of(keyword: &str) -> Option<Self> {
+        Some(match keyword {
+            "def" => Self::Def,
+            "defp" => Self::Defp,
+            "defmacro" => Self::Defmacro,
+            "defmacrop" => Self::Defmacrop,
+            _ => return None,
+        })
+    }
+
+    pub fn keyword(self) -> &'static str {
+        match self {
             Self::Def => "def",
             Self::Defp => "defp",
             Self::Defmacro => "defmacro",
+            Self::Defmacrop => "defmacrop",
         }
+    }
+
+    pub fn is_macro(self) -> bool {
+        matches!(self, Self::Defmacro | Self::Defmacrop)
+    }
+
+    pub fn is_private(self) -> bool {
+        matches!(self, Self::Defp | Self::Defmacrop)
     }
 }
 

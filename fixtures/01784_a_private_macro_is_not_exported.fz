@@ -1,0 +1,16 @@
+#---
+# purpose: "a macro defined with defmacrop is private to its module: a call from another module is refused, as a call to a defp is"
+# expect: diagnostic
+# diagnostic.code: resolve/unknown-import
+#---
+defmodule M do
+  defmacrop twice(x), do: quote(do: unquote(x) * 2)
+  def go(n), do: twice(n)
+end
+
+defmodule N do
+  require M
+  def go(), do: M.twice(3)
+end
+
+def main(), do: IO.inspect({M.go(1), N.go()})
