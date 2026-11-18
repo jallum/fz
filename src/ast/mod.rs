@@ -550,33 +550,6 @@ impl Default for BitFieldSpec {
     }
 }
 
-impl BitFieldSpec {
-    /// Resolve the unit (bits per element) for this spec, applying type-default
-    /// when no explicit unit was provided.
-    pub fn resolved_unit(&self) -> u32 {
-        if let Some(u) = self.unit {
-            return u;
-        }
-        match self.ty {
-            BitType::Integer => 1,
-            BitType::Float => 1,
-            BitType::Binary => 8,
-            BitType::Bits => 1,
-            BitType::Utf8 | BitType::Utf16 | BitType::Utf32 => 1,
-        }
-    }
-    /// Default size in elements when `size` is `None` (Elixir defaults). Returns
-    /// `None` for binary/bits "rest" semantics.
-    pub fn default_size(&self) -> Option<u32> {
-        match self.ty {
-            BitType::Integer => Some(8),
-            BitType::Float => Some(64),
-            BitType::Binary | BitType::Bits => None,                 // "rest"
-            BitType::Utf8 | BitType::Utf16 | BitType::Utf32 => None, // size is implicit per codepoint
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BitType {
     Integer,

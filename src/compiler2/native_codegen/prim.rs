@@ -9,7 +9,7 @@ use crate::ast::BitType;
 use crate::fast_hash::HashMap;
 use crate::fz_ir::{
     BinOp, BitMatchField, BitSizeIr, BlockId, Const, DestMapSeed, ExternArg, ExternDecl, ExternId, ExternMarshalSite,
-    ExternTy, FnId, FrameLane, Prim, UnOp, Var, default_unit_for,
+    ExternTy, FnId, FrameLane, Prim, UnOp, Var,
 };
 use crate::runtime_type_predicate::{CallableShapes, RuntimeTypePredicate};
 use cranelift_codegen::ir::{
@@ -385,7 +385,7 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
                 let unit = body
                     .b
                     .ins()
-                    .iconst(types::I32, f.unit.unwrap_or(default_unit_for(f.ty)) as i64);
+                    .iconst(types::I32, f.unit.unwrap_or(f.ty.default_unit()) as i64);
                 let endian = body.b.ins().iconst(types::I32, encode_endian(f.endian) as i64);
                 let (size_present, size_value) = match &f.size {
                     None => (body.b.ins().iconst(types::I32, 0), body.b.ins().iconst(types::I32, 0)),
@@ -604,7 +604,7 @@ fn emit_runtime_field_operands<M: cranelift_module::Module>(
     let field_spec = fz_bs_field_spec(
         encode_bit_type(field.ty),
         field.size.is_some() as u32,
-        field.unit.unwrap_or(default_unit_for(field.ty)),
+        field.unit.unwrap_or(field.ty.default_unit()),
         encode_endian(field.endian),
         field.signed as u32,
         field.is_last as u32,
@@ -620,7 +620,7 @@ fn match_field_extent<M: cranelift_module::Module>(
     if let Some(bits) = field.static_bits() {
         return MatchExtent::Bits(body.b.ins().iconst(types::I64, bits as i64));
     }
-    let unit = field.unit.unwrap_or(default_unit_for(field.ty)) as i64;
+    let unit = field.unit.unwrap_or(field.ty.default_unit()) as i64;
     let sized = |body: &mut CodegenFn<'_, '_, M>, default_size: i64| {
         let bits = match emit_match_field_size(body, var_env, &field.size) {
             Some(size) => body.b.ins().imul_imm_s(size, unit),

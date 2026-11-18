@@ -192,34 +192,6 @@ pub fn encode_utf8(cp: u32) -> Option<Vec<u8>> {
     })
 }
 
-pub fn decode_utf8(reader: &mut BitReader) -> Option<u32> {
-    if !reader.pos.is_multiple_of(8) {
-        return None;
-    }
-    let b0 = reader.read_bits(8)? as u32;
-    if b0 < 0x80 {
-        return Some(b0);
-    }
-    let (extras, mask) = if b0 & 0xe0 == 0xc0 {
-        (1, 0x1f)
-    } else if b0 & 0xf0 == 0xe0 {
-        (2, 0x0f)
-    } else if b0 & 0xf8 == 0xf0 {
-        (3, 0x07)
-    } else {
-        return None;
-    };
-    let mut cp = b0 & mask;
-    for _ in 0..extras {
-        let b = reader.read_bits(8)? as u32;
-        if b & 0xc0 != 0x80 {
-            return None;
-        }
-        cp = (cp << 6) | (b & 0x3f);
-    }
-    Some(cp)
-}
-
 pub fn encode_utf16(cp: u32, endian: Endian) -> Option<Vec<u8>> {
     if cp > 0x10ffff || (0xd800..=0xdfff).contains(&cp) {
         return None;
@@ -244,24 +216,6 @@ pub fn encode_utf16(cp: u32, endian: Endian) -> Option<Vec<u8>> {
     Some(out)
 }
 
-pub fn decode_utf16(reader: &mut BitReader, endian: Endian) -> Option<u32> {
-    let little = matches!(endian, Endian::Little) || (matches!(endian, Endian::Native) && host_is_little_endian());
-    let read_u16 = |r: &mut BitReader<'_>| -> Option<u16> {
-        let lo = r.read_bits(8)? as u16;
-        let hi = r.read_bits(8)? as u16;
-        Some(if little { (hi << 8) | lo } else { (lo << 8) | hi })
-    };
-    let u1 = read_u16(reader)?;
-    if !(0xd800..=0xdbff).contains(&u1) {
-        return Some(u1 as u32);
-    }
-    let u2 = read_u16(reader)?;
-    if !(0xdc00..=0xdfff).contains(&u2) {
-        return None;
-    }
-    Some(0x10000 + (((u1 as u32 & 0x3ff) << 10) | (u2 as u32 & 0x3ff)))
-}
-
 pub fn encode_utf32(cp: u32, endian: Endian) -> Option<Vec<u8>> {
     if cp > 0x10ffff || (0xd800..=0xdfff).contains(&cp) {
         return None;
@@ -281,18 +235,5 @@ pub fn encode_utf32(cp: u32, endian: Endian) -> Option<Vec<u8>> {
             ((cp >> 8) & 0xff) as u8,
             (cp & 0xff) as u8,
         ]
-    })
-}
-
-pub fn decode_utf32(reader: &mut BitReader, endian: Endian) -> Option<u32> {
-    let little = matches!(endian, Endian::Little) || (matches!(endian, Endian::Native) && host_is_little_endian());
-    let b0 = reader.read_bits(8)? as u32;
-    let b1 = reader.read_bits(8)? as u32;
-    let b2 = reader.read_bits(8)? as u32;
-    let b3 = reader.read_bits(8)? as u32;
-    Some(if little {
-        (b3 << 24) | (b2 << 16) | (b1 << 8) | b0
-    } else {
-        (b0 << 24) | (b1 << 16) | (b2 << 8) | b3
     })
 }
