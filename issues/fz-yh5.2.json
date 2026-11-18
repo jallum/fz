@@ -7,9 +7,15 @@
   "id": "fz-yh5.2",
   "labels": [],
   "parent": "fz-yh5",
+  "comments": [
+    {
+      "text": "MDF's proposal 85 ('a self tail call keeps the reduction count in a register') is folded in here as input. MDF ceded the back-edge sequence to Callables on 2026-11-18 and will not touch terminator.rs. MDF offers to bench before/after binaries on the distiller. MDF's profile evidence: the self tail call's reduction counter lives in memory (ldr/sub/str through the process pointer).",
+      "timestamp": "2026-11-18T21:53:34Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "The back-edge reduction check is the minimum sequence",
   "type": "task",
-  "updated_at": "2026-11-18T21:45:29Z"
+  "updated_at": "2026-11-18T21:53:34Z"
 }
