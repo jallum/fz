@@ -4,14 +4,16 @@
   "blocks": [
     "fz-9zq.2"
   ],
+  "closed_at": "2026-11-18T00:20:05Z",
+  "close_reason": "Merged as PR #702",
   "created": "2026-11-17T23:51:44Z",
   "description": "Step 1 of the R2 page (/Users/j5n/Workspace/fz-9zq.2.html). types/clash.rs: Head::Tuple holds the first slot's atom type, so {acc, x} (tag :other then none) and an alternating {:l, acc} / {:r, acc} never find a covering frame and never fold. A self recursion that changes its tag hangs on develop (mix/2 below).\n\nChange: Head::Tuple(usize, Option\u003cString\u003e); a clause whose first slot is a finite set of atoms yields one head per atom, any other first slot the untagged head; Pf::covers accepts a tagged head when it holds the untagged head of that arity; apply_plan matches a cut against any of a clause's heads.\n\nMeasured at 32a14dda4 (scratch 9zq_2/fresh/LG2.diff, clash.rs part; gate_G.log): full gate green, no pin moved, distiller 16.02B instructions against 16.04B.\n\nProbe: def mix(0, acc), do: acc; def mix(n, acc) when rem(n, 2) == 0, do: mix(n - 1, {:l, acc}); def mix(n, acc), do: mix(n - 1, {:r, acc}); mix(3, :a) prints {:r, {:l, {:r, :a}}}.\n\nAlso: un-defer the return_tuple_accumulator fixture if it runs on all three paths.",
   "id": "fz-9zq.10",
   "labels": [],
   "parent": "fz-9zq",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "A tuple's clash head is its arity and one tag, and an untagged head covers a tagged one",
   "type": "task",
-  "updated_at": "2026-11-17T23:51:45Z"
+  "updated_at": "2026-11-18T00:20:05Z"
 }
