@@ -15,9 +15,15 @@
   "id": "fz-9e2.1",
   "labels": [],
   "parent": "fz-9e2",
+  "comments": [
+    {
+      "text": "User agreed all four decisions on the fz-9e2 page (\"1-4 agreed\", in Binary Handling's session, 2026-11-18). Page: https://claude.ai/artifact/Wb77AvyLphyW8L6XmsMLL7. Ruling 4: the shared Elixir-form programs (/Users/j5n/Workspace/fz-binaries/examples, measured by the slope method) replace the earlier probes.",
+      "timestamp": "2026-11-18T23:49:22Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Binary operations have hand-written optimal target listings and a probe harness in the repo",
   "type": "task",
-  "updated_at": "2026-11-18T21:21:39Z"
+  "updated_at": "2026-11-18T23:49:22Z"
 }
