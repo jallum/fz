@@ -22,5 +22,5 @@ defp pair_adder(n), do: {fn x -> x + n end, n}
 defp call_pair({f, _k}), do: f.(7)
 
 def main() do
-  assert(call_pair(pair_adder(5)) == 12, "the projected lambda carries its capture through the unread sibling")
+  call_pair(pair_adder(5)) == 12 || raise("the projected lambda carries its capture through the unread sibling")
 end

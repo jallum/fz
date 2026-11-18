@@ -12,7 +12,7 @@ defmodule Greeter do
 end
 
 def main() do
-  assert(Greeter.hi(:alice) == :alice, "module with @moduledoc/@doc still executes")
-  assert(Greeter.echo(42) == 42, "second documented function executes")
-  assert(Greeter.__info__(:functions) == [{:hi, 1}, {:echo, 1}], "@doc/@moduledoc do not disturb the exports")
+  Greeter.hi(:alice) == :alice || raise("module with @moduledoc/@doc still executes")
+  Greeter.echo(42) == 42 || raise("second documented function executes")
+  Greeter.__info__(:functions) == [{:hi, 1}, {:echo, 1}] || raise("@doc/@moduledoc do not disturb the exports")
 end

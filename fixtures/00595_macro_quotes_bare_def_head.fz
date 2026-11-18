@@ -10,5 +10,5 @@ defmacro make_hello() do
 end
 make_hello()
 def main() do
-  assert(hello() == 42, "a macro-generated bare-name def defines hello/0")
+  hello() == 42 || raise("a macro-generated bare-name def defines hello/0")
 end

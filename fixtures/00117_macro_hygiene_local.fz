@@ -7,5 +7,5 @@ end
 def main() do
   t = 1
   set_local()
-  assert(t == 1, "the macro's own t is a fresh gensym; the caller's t survives untouched")
+  t == 1 || raise("the macro's own t is a fresh gensym; the caller's t survives untouched")
 end

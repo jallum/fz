@@ -5,19 +5,19 @@ def greater?(left, right) when left > right, do: true
 def greater?(_, _), do: false
 
 def check(integer, float) when is_integer(integer) and is_float(float) do
-  assert(integer != float, "a rounded float is not the adjacent integer")
-  assert(integer > float, "mixed expression order retains the integer's low bit")
-  assert(float < integer, "reverse mixed expression order agrees")
-  assert(greater?(integer, float), "a mixed guard shares exact expression order")
-  assert(not greater?(float, integer), "reverse mixed guard order agrees")
+  integer != float || raise("a rounded float is not the adjacent integer")
+  integer > float || raise("mixed expression order retains the integer's low bit")
+  float < integer || raise("reverse mixed expression order agrees")
+  greater?(integer, float) || raise("a mixed guard shares exact expression order")
+  not greater?(float, integer) || raise("reverse mixed guard order agrees")
 end
 
 def main() do
   check(9007199254740993, 9007199254740992.0)
   check(-9007199254740993, -9007199254740994.0)
   check(0, -0.5)
-  assert(0.0 == -0.0, "widening comparison equates signed zeros")
-  assert(0.0 !== -0.0, "strict identity distinguishes signed zeros")
-  assert(map_size(%{0.0 => 1, -0.0 => 2}) == 2, "signed zeros remain distinct strict map keys")
+  0.0 == -0.0 || raise("widening comparison equates signed zeros")
+  0.0 !== -0.0 || raise("strict identity distinguishes signed zeros")
+  map_size(%{0.0 => 1, -0.0 => 2}) == 2 || raise("signed zeros remain distinct strict map keys")
   0
 end

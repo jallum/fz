@@ -5,8 +5,8 @@
 defp digit(n), do: 48 + n
 
 def main() do
-  assert(<<digit(1)>> == "1", "a call result works as the first field")
-  assert(<<digit(1), digit(2)>> == "12", "adjacent call results keep their fields")
-  assert(<<"x", digit(1)>> == "x1", "one binary literal does not shift a following call result")
-  assert(<<"x", "y", digit(1)>> == "xy1", "several binary literals still occupy one field each")
+  <<digit(1)>> == "1" || raise("a call result works as the first field")
+  <<digit(1), digit(2)>> == "12" || raise("adjacent call results keep their fields")
+  <<"x", digit(1)>> == "x1" || raise("one binary literal does not shift a following call result")
+  <<"x", "y", digit(1)>> == "xy1" || raise("several binary literals still occupy one field each")
 end

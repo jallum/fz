@@ -5,6 +5,6 @@ def classify(0), do: :zero
 def classify(_), do: :other
 
 def main() do
-  assert(classify(0) == :zero, "literal clause 0 matches :zero")
-  assert(classify(7) == :other, "wildcard clause matches :other")
+  classify(0) == :zero || raise("literal clause 0 matches :zero")
+  classify(7) == :other || raise("wildcard clause matches :other")
 end

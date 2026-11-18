@@ -6,7 +6,7 @@ def greet("bye"), do: :goodbye
 def greet(_), do: :unknown
 
 def main() do
-  assert(greet("hi") == :hello, "utf8 literal clause matches")
-  assert(greet("bye") == :goodbye, "second utf8 literal clause matches")
-  assert(greet("other") == :unknown, "wildcard clause for non-matching strings")
+  greet("hi") == :hello || raise("utf8 literal clause matches")
+  greet("bye") == :goodbye || raise("second utf8 literal clause matches")
+  greet("other") == :unknown || raise("wildcard clause for non-matching strings")
 end

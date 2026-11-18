@@ -1,4 +1,4 @@
 #---
 # purpose: tuple equality holds when arity and all fields match
 #---
-def main(), do: assert({1, :ok} == {1, :ok}, "tuple equality holds when arity and fields match")
+def main(), do: {1, :ok} == {1, :ok} || raise("tuple equality holds when arity and fields match")

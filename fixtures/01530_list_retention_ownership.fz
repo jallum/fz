@@ -56,12 +56,12 @@ def chained_retention_alias(xs) do
 end
 
 def main() do
-  assert(duplicate([1, 2]) == {[1, 9], [1, 2], [1, 2]})
-  assert(joined(true, [1, 2]) == {[1, 2], [1, 9]})
+  duplicate([1, 2]) == {[1, 9], [1, 2], [1, 2]} || raise("expected duplicate([1, 2]) == {[1, 9], [1, 2], [1, 2]}")
+  joined(true, [1, 2]) == {[1, 2], [1, 9]} || raise("expected joined(true, [1, 2]) == {[1, 2], [1, 9]}")
   xs = [1, 2]
-  assert(aliased_inputs(xs, xs) == {[1, 9], [1, 2]})
-  assert(prepend([1, 2]) == [1, 1, 2])
-  assert(retained_call_alias([1, 2]) == {[1, 9], [1, 2]})
-  assert(constructed_tail_alias() == {[2, 3], [2, 9]})
-  assert(chained_retention_alias([1, 2]) == {[1, 2], [1, 9]})
+  aliased_inputs(xs, xs) == {[1, 9], [1, 2]} || raise("expected aliased_inputs(xs, xs) == {[1, 9], [1, 2]}")
+  prepend([1, 2]) == [1, 1, 2] || raise("expected prepend([1, 2]) == [1, 1, 2]")
+  retained_call_alias([1, 2]) == {[1, 9], [1, 2]} || raise("expected retained_call_alias([1, 2]) == {[1, 9], [1, 2]}")
+  constructed_tail_alias() == {[2, 3], [2, 9]} || raise("expected constructed_tail_alias() == {[2, 3], [2, 9]}")
+  chained_retention_alias([1, 2]) == {[1, 2], [1, 9]} || raise("expected chained_retention_alias([1, 2]) == {[1, 2], [1, 9]}")
 end

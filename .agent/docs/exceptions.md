@@ -55,7 +55,7 @@ struct:
 the source: a binary is a `RuntimeError`, an exception is itself, an atom is
 `module.exception([])`, and anything else is the `ArgumentError` Elixir raises
 for it. Both macros are imported into every namespace by `lib/runtime.fz`,
-beside `panic/1`. Outside `assert` and `refute`, the library calls `panic/1`
+beside `panic/1`. The library calls `panic/1`
 with a value that is no exception only where Elixir itself raises a raw Erlang
 error (`JSON.encode!/1` of an invalid UTF-8 binary).
 
@@ -529,9 +529,6 @@ one test. The raise runs even when the updated map is unused
 the BEAM meets first in its own internal order; fz names the first missing key
 in the order the update writes them, so the two agree whenever one key is
 missing.
-
-`assert/1,2` and `refute/1,2` are not Elixir's `Kernel`; they panic with their
-message as the raw reason.
 
 ## Decisions that run out of clauses
 

@@ -9,6 +9,6 @@ end
 
 def main() do
   result = check()
-  assert(result == 10, "evaluating x + 5 without binding it leaves x unchanged")
+  result == 10 || raise("evaluating x + 5 without binding it leaves x unchanged")
   result
 end

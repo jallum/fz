@@ -34,6 +34,6 @@ defmodule App do
 end
 
 def main() do
-  assert(App.pick(3) == 1, "the quoted helper guards the first clause")
-  assert(App.pick(30) == 0, "and falls through when it misses")
+  App.pick(3) == 1 || raise("the quoted helper guards the first clause")
+  App.pick(30) == 0 || raise("and falls through when it misses")
 end

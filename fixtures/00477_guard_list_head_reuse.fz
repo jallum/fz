@@ -9,6 +9,6 @@ def classify(xs) do
   end
 end
 def main() do
-  assert(classify([3, 4]) == 6, "a positive guarded head dispatches to the doubling clause")
-  assert(classify([-1]) == 0, "a non-positive guarded head falls through to the default clause")
+  classify([3, 4]) == 6 || raise("a positive guarded head dispatches to the doubling clause")
+  classify([-1]) == 0 || raise("a non-positive guarded head falls through to the default clause")
 end

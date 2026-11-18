@@ -19,8 +19,8 @@ def band(v) when between?(1, 10, v), do: :low
 def band(_v), do: :high
 
 def main() do
-  assert(kind(2, 5) == :rising, "a 3-input helper decides a 2-input clause")
-  assert(kind(5, 2) == :other, "the wider helper can also miss")
-  assert(band(4) == :low, "a 3-input helper decides a 1-input clause")
-  assert(band(40) == :high, "the 1-input clause still falls through")
+  kind(2, 5) == :rising || raise("a 3-input helper decides a 2-input clause")
+  kind(5, 2) == :other || raise("the wider helper can also miss")
+  band(4) == :low || raise("a 3-input helper decides a 1-input clause")
+  band(40) == :high || raise("the 1-input clause still falls through")
 end

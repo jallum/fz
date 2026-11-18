@@ -890,7 +890,7 @@ fn compiler2_frontdoor_paren_call_keyword_args_plus_trailing_do_appends_second_k
 #[test]
 fn compiler2_frontdoor_rejects_keyword_arguments_after_a_closed_parenthesized_call() {
     let tel = ConfiguredTelemetry::new();
-    let source = "test(:passes), do: assert(true)\n";
+    let source = "test(:passes), do: true || raise(\"expected true\")\n";
     let (error, version) = parse_quoted_error("comma_after_call.fz", source, &tel);
 
     let comma = source.find(',').expect("comma in source") as u32;

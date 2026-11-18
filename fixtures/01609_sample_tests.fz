@@ -3,21 +3,21 @@
 # kind: test
 #---
 test(:test_addition) do
-  assert(1 + 1 == 2)
-  assert(40 + 2 == 42)
+  1 + 1 == 2 || raise("expected 1 + 1 == 2")
+  40 + 2 == 42 || raise("expected 40 + 2 == 42")
 end
 
 test(:test_atoms_compare) do
-  assert(:ok == :ok)
-  refute(:ok == :error)
+  :ok == :ok || raise("expected :ok == :ok")
+  :ok == :error && raise("expected not :ok == :error")
 end
 
 test(:test_truthiness) do
-  assert(true)
+  true || raise("expected true")
 end
 
 def helper(x), do: x * 2
 
 test(:test_calls_helper) do
-  assert(helper(21) == 42)
+  helper(21) == 42 || raise("expected helper(21) == 42")
 end

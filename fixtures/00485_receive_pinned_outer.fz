@@ -9,6 +9,6 @@ end
 def main() do
   send(self(), {:x, 42})
   result = rx_pinned(:x)
-  assert(result == 42, "the pinned ^want resolves from rx_pinned's own parameter")
+  result == 42 || raise("the pinned ^want resolves from rx_pinned's own parameter")
   result
 end

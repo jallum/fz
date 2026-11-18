@@ -4,4 +4,4 @@
 def parse(<<len, payload::binary-size(len), rest::binary>>) do
   {len, payload, rest}
 end
-def main(), do: assert(parse(<<3, 0x01, 0x02, 0x03, 0xff>>) == {3, <<1, 2, 3>>, <<255>>}, "size-bound field extracts the correct variable-length segment")
+def main(), do: parse(<<3, 0x01, 0x02, 0x03, 0xff>>) == {3, <<1, 2, 3>>, <<255>>} || raise("size-bound field extracts the correct variable-length segment")

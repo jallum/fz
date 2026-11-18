@@ -50,21 +50,17 @@ def accepted(value) do
 end
 
 def main() do
-  assert(unpack({:nested, [%{box: %InlineBox{unused: 9, value: 7}}, 8]}) == {7, [8]},
-    "nested plan subjects bind the field and tail, shadowing the enclosing capture")
-  assert(unpack({:pair, 4, 5}) == {4, 5}, "outcome bindings preserve source order")
-  assert(unpack(%{key: nil}) == :present_nil, "a literal arm wins before a binding arm")
-  assert(unpack(%{key: 42}) == {:present, 42}, "a required present map value is bound")
-  assert(unpack(%{}) == 100, "an absent key reaches the enclosing capture")
-  assert(framed(<<2, 65, 66, 67>>) == {2, "AB", "C"},
-    "dependent field sizes reuse the dispatch extraction")
-  assert(framed(:no) == :bad_frame, "a nonbinary reaches the arm with no bindings")
-  assert(recipes(<<65, 1>>) == "A", "incompatible extraction recipes at the same ordinal cannot share a value")
-  assert(aliased({:same, 7, 7}) == {{:same, 7, 7}, 7}, "aliases and repeated bindings retain their values")
-  assert(accepted({:ok, %{key: [<<2, 65, 66>>, 9]}}) == {2, "AB", [9]},
-    "successive with outcomes supply bindings to the remaining match and body")
-  assert(accepted({:error, %{reason: :bad}}) == {:rejected, :bad},
-    "with else binds a nested map field from its winning outcome")
-  assert(accepted(%{key: nil}) == :present_nil, "with else preserves a present nil")
-  assert(accepted(%{}) == {:other, %{}}, "with else preserves an absent-key fallback")
+  unpack({:nested, [%{box: %InlineBox{unused: 9, value: 7}}, 8]}) == {7, [8]} || raise("nested plan subjects bind the field and tail, shadowing the enclosing capture")
+  unpack({:pair, 4, 5}) == {4, 5} || raise("outcome bindings preserve source order")
+  unpack(%{key: nil}) == :present_nil || raise("a literal arm wins before a binding arm")
+  unpack(%{key: 42}) == {:present, 42} || raise("a required present map value is bound")
+  unpack(%{}) == 100 || raise("an absent key reaches the enclosing capture")
+  framed(<<2, 65, 66, 67>>) == {2, "AB", "C"} || raise("dependent field sizes reuse the dispatch extraction")
+  framed(:no) == :bad_frame || raise("a nonbinary reaches the arm with no bindings")
+  recipes(<<65, 1>>) == "A" || raise("incompatible extraction recipes at the same ordinal cannot share a value")
+  aliased({:same, 7, 7}) == {{:same, 7, 7}, 7} || raise("aliases and repeated bindings retain their values")
+  accepted({:ok, %{key: [<<2, 65, 66>>, 9]}}) == {2, "AB", [9]} || raise("successive with outcomes supply bindings to the remaining match and body")
+  accepted({:error, %{reason: :bad}}) == {:rejected, :bad} || raise("with else binds a nested map field from its winning outcome")
+  accepted(%{key: nil}) == :present_nil || raise("with else preserves a present nil")
+  accepted(%{}) == {:other, %{}} || raise("with else preserves an absent-key fallback")
 end

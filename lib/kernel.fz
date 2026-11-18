@@ -12,10 +12,9 @@ defmodule Kernel do
       `!==` and the total term order `compare/2`
     * process primitives: `self/0`, `send/2`, `spawn/1`,
       `make_ref/0` and `make_resource/2`
-    * `panic/1`, `raise/1`, `raise/2`, `reraise/2`, `throw/1`, `exit/1`,
-      `inspect/1`, `assert/1`, `assert/2`, `refute/1` and `refute/2`, for
-      failing the current process
-    * `dbg/1`, `to_string/1`, `div/2`, `rem/2` and `range/3`
+    * `panic/1`, `raise/1`, `raise/2`, `reraise/2`, `throw/1` and `exit/1`,
+      for failing the current process
+    * `dbg/1`, `inspect/1`, `to_string/1`, `div/2`, `rem/2` and `range/3`
     * the sizes and accessors `bit_size/1`, `byte_size/1`, `map_size/1`,
       `tuple_size/1`, `length/1`, `elem/2`, `hd/1` and `tl/1`, the numeric functions `abs/1`,
       `round/1`, `trunc/1`, `floor/1` and `ceil/1`, and the type tests `is_integer/1`,
@@ -539,51 +538,6 @@ defmodule Kernel do
   """
   @spec dbg(t) :: t when t: any
   def dbg(x), do: IO.inspect(x)
-
-  @doc """
-  Aborts the current process if `x` is `nil` or `false`.
-
-  Returns `nil` when `x` is truthy.
-
-  ## Examples
-
-      Kernel.assert(1 == 1)
-      #=> nil
-
-  """
-  @spec assert(any) :: nil
-  def assert(x), do: if x, do: nil, else: panic("assertion failed")
-
-  @doc """
-  Aborts the current process with `msg` as the reason if `x` is `nil` or
-  `false`.
-
-  Like `assert/1`, but with a custom message.
-  """
-  @spec assert(any, any) :: nil
-  def assert(x, msg), do: if x, do: nil, else: panic(msg)
-
-  @doc """
-  Aborts the current process if `x` is truthy.
-
-  Returns `nil` when `x` is `nil` or `false`.
-
-  ## Examples
-
-      Kernel.refute(1 == 2)
-      #=> nil
-
-  """
-  @spec refute(any) :: nil
-  def refute(x), do: if x, do: panic("refutation failed"), else: nil
-
-  @doc """
-  Aborts the current process with `msg` as the reason if `x` is truthy.
-
-  Like `refute/1`, but with a custom message.
-  """
-  @spec refute(any, any) :: nil
-  def refute(x, msg), do: if x, do: panic(msg), else: nil
 
   @doc """
   Starts a process that applies the zero-argument function `fun`, and

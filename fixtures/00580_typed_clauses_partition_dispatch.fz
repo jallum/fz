@@ -4,6 +4,6 @@
 def f(x) when is_integer(x), do: :int
 def f(x) when is_atom(x), do: :atom
 def main() do
-  assert(f(1) == :int, "an integer argument routes to the integer clause")
-  assert(f(:a) == :atom, "an atom argument routes to the atom clause")
+  f(1) == :int || raise("an integer argument routes to the integer clause")
+  f(:a) == :atom || raise("an atom argument routes to the atom clause")
 end

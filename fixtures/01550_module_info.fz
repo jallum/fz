@@ -11,8 +11,8 @@ defmodule Shapes do
 end
 
 def main() do
-  assert(Shapes.__info__(:functions) == [{:area, 1}, {:perimeter, 1}], "exported fns with arities")
-  assert(Shapes.__info__(:macros) == [{:twice, 1}], "macros listed separately")
-  assert(Shapes.__info__(:module) == :Shapes, "module name as an atom")
-  assert(Shapes.__info__(:nonsense) == nil, "unknown kind yields nil")
+  Shapes.__info__(:functions) == [{:area, 1}, {:perimeter, 1}] || raise("exported fns with arities")
+  Shapes.__info__(:macros) == [{:twice, 1}] || raise("macros listed separately")
+  Shapes.__info__(:module) == :Shapes || raise("module name as an atom")
+  Shapes.__info__(:nonsense) == nil || raise("unknown kind yields nil")
 end

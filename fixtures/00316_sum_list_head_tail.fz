@@ -3,4 +3,4 @@
 #---
 def sum([]), do: 0
 def sum([h | t]), do: h + sum(t)
-def main(), do: assert(sum([1, 2, 3, 4, 5]) == 15, "a recursive head/tail pattern match sums a list")
+def main(), do: sum([1, 2, 3, 4, 5]) == 15 || raise("a recursive head/tail pattern match sums a list")

@@ -7,7 +7,7 @@ def main() do
 n when n > 0 -> :pos
 _ -> :other
   end
-  assert(f.(0) == :zero, "clause 0 matches the literal")
-  assert(f.(2) == :pos, "clause n when n > 0 matches")
-  assert(f.(-1) == :other, "the wildcard clause matches everything else")
+  f.(0) == :zero || raise("clause 0 matches the literal")
+  f.(2) == :pos || raise("clause n when n > 0 matches")
+  f.(-1) == :other || raise("the wildcard clause matches everything else")
 end

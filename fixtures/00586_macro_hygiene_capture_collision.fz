@@ -4,5 +4,5 @@
 def main() do
   __fz_capture_arg_1 = 999
   f = &(&1 + __fz_capture_arg_1)
-  assert(f.(1) == 1000, "the desugared capture parameter is a fresh gensym, so the outer __fz_capture_arg_1 is still 999")
+  f.(1) == 1000 || raise("the desugared capture parameter is a fresh gensym, so the outer __fz_capture_arg_1 is still 999")
 end

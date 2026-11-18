@@ -23,5 +23,5 @@ def main() do
   got = receive do
     x -> x
   end
-  assert(got == 5, "5-hop actor ring increments 0 once per hop")
+  got == 5 || raise("5-hop actor ring increments 0 once per hop")
 end

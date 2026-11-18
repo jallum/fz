@@ -6,5 +6,5 @@ defmacro twice(x) do
   f.(x)
 end
 def main() do
-  assert(twice(3) == 6, "a lambda in a macro captures x used inside its quote's unquote")
+  twice(3) == 6 || raise("a lambda in a macro captures x used inside its quote's unquote")
 end

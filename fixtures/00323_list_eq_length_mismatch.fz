@@ -1,4 +1,4 @@
 #---
 # purpose: list equality is false when the lists have different lengths
 #---
-def main(), do: refute([1, 2] == [1, 2, 3], "list equality is false on length mismatch")
+def main(), do: [1, 2] == [1, 2, 3] && raise("list equality is false on length mismatch")

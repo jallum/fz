@@ -5,5 +5,5 @@ def f([head | _tail]), do: head
 def f(_other), do: 99
 
 def main() do
-  assert(f([7]) + f([]) + f(%{a: 1}) + f(42) == 304, "cons pattern falls through to the fallback clause for non-cons arguments")
+  f([7]) + f([]) + f(%{a: 1}) + f(42) == 304 || raise("cons pattern falls through to the fallback clause for non-cons arguments")
 end

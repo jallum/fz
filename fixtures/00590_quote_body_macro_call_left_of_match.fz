@@ -13,5 +13,5 @@ defmacro bind_five() do
 end
 
 def main() do
-  assert(bind_five() == 5, "ident(u) expands to the bare variable u once bind_five()'s own expansion runs, so u = 5 binds u")
+  bind_five() == 5 || raise("ident(u) expands to the bare variable u once bind_five()'s own expansion runs, so u = 5 binds u")
 end

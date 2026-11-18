@@ -5,6 +5,6 @@ def check(x) when is_integer(x) do :is_int end
 def check(_x) do :other end
 
 def main() do
-  assert(check(42) == :is_int, "integer arg dispatches to the TypeTest clause")
-  assert(check(:foo) == :other, "atom arg falls through to the fallback clause")
+  check(42) == :is_int || raise("integer arg dispatches to the TypeTest clause")
+  check(:foo) == :other || raise("atom arg falls through to the fallback clause")
 end

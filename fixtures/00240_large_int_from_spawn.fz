@@ -7,7 +7,7 @@ end
 def main() do
   me = self()
   spawn(fn () -> child(me) end)
-  assert(receive do
+  receive do
     x -> x
-  end == 4611686018427387904, "the value delivered from the spawned process is unchanged")
+  end == 4611686018427387904 || raise("the value delivered from the spawned process is unchanged")
 end

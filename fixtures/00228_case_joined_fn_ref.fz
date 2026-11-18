@@ -9,5 +9,5 @@ def main() do
     true -> add_a
     _ -> add_b
   end
-  assert(reducer.(1, 0) == 1, "the case-joined reference is still callable")
+  reducer.(1, 0) == 1 || raise("the case-joined reference is still callable")
 end

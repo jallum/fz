@@ -9,5 +9,5 @@ def main() do
   after
     60000 -> :miss
   end
-  assert(result == :ok, "the child's message arrives before the 60000ms timeout can fire")
+  result == :ok || raise("the child's message arrives before the 60000ms timeout can fire")
 end

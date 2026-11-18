@@ -15,5 +15,5 @@ def collapsed() do
 end
 
 def main() do
-  assert(finish(collapsed()) == 1, "reduce_while halts at the element that flips the accumulator's shape")
+  finish(collapsed()) == 1 || raise("reduce_while halts at the element that flips the accumulator's shape")
 end

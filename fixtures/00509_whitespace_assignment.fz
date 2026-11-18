@@ -5,6 +5,6 @@ def main() do
   x =
     41
   result = x + 1
-  assert(result == 42, "a whitespace-split assignment binds correctly")
+  result == 42 || raise("a whitespace-split assignment binds correctly")
   result
 end

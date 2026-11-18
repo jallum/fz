@@ -97,7 +97,7 @@ defmodule Utf8 do
   """
   @spec from_bytes!(binary) :: utf8
   def from_bytes!(bytes) do
-    assert(valid?(bytes))
+    valid?(bytes) || raise(ArgumentError, "not valid UTF-8")
     fz_brand_bitstring_as_utf8(bytes)
   end
 

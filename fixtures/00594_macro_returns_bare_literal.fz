@@ -26,10 +26,10 @@ defmacro bare_tuple() do
 end
 
 def main() do
-  assert(quoted_one() == 1, "quote do: 1 returns the literal 1")
-  assert(bare_two() == 2, "a macro body that is a bare 2 returns 2")
-  assert(bare_atom() == :ok, "a macro body that is a bare atom returns that atom")
-  assert(bare_nil() == nil, "a macro body that is bare nil returns nil")
-  assert(bare_string() == "s", "a macro body that is a bare string returns that string")
-  assert(bare_tuple() == {1, 2}, "a macro body that is a bare 2-tuple returns that tuple")
+  quoted_one() == 1 || raise("quote do: 1 returns the literal 1")
+  bare_two() == 2 || raise("a macro body that is a bare 2 returns 2")
+  bare_atom() == :ok || raise("a macro body that is a bare atom returns that atom")
+  bare_nil() == nil || raise("a macro body that is bare nil returns nil")
+  bare_string() == "s" || raise("a macro body that is a bare string returns that string")
+  bare_tuple() == {1, 2} || raise("a macro body that is a bare 2-tuple returns that tuple")
 end

@@ -1,4 +1,4 @@
 #---
 # purpose: an atom literal interns as its name, retrievable through Atom.to_string
 #---
-def main(), do: assert(Atom.to_string(:ok) == "ok", "atom literal interns as its name")
+def main(), do: Atom.to_string(:ok) == "ok" || raise("atom literal interns as its name")

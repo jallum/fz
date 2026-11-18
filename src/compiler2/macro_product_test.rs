@@ -25,7 +25,7 @@ fn body_macro_caller_uses_the_definition_function_and_source_namespace() {
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("macro_cache_caller_scope.fz".into()),
-        text: "defmacro caller_function() do\n quote do: unquote(__CALLER__.function) == {:main, 0}\nend\ndefmacro caller_namespace() do\n quote do: unquote(__CALLER__.namespace) + 0\nend\ndef main() do\n assert(caller_function(), \"caller function\")\n caller_namespace()\nend\n".into(),
+        text: "defmacro caller_function() do\n quote do: unquote(__CALLER__.function) == {:main, 0}\nend\ndefmacro caller_namespace() do\n quote do: unquote(__CALLER__.namespace) + 0\nend\ndef main() do\n caller_function() || raise(\"caller function\")\n caller_namespace()\nend\n".into(),
     });
     let root = compiler.submit_root(RootSubmission {
         module_name: None,

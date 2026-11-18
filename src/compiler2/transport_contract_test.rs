@@ -1249,8 +1249,8 @@ def main() do
   y = apply1(f, n)
 
   first = double(5)
-  assert(first == 10, "first")
-  assert(first == 10, "second")
+  first == 10 || raise("first")
+  first == 10 || raise("second")
 
   {y, escape()}
 end

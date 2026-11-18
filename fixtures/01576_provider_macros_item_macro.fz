@@ -29,5 +29,6 @@ defmodule Provider do
 end
 
 def main() do
-  assert(Provider.answer() == 42, "an imported item macro generates answer/0 over its caller's helper")
+  Provider.answer() == 42 || raise("an imported item macro generates answer/0 over its caller's helper")
+  nil
 end

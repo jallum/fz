@@ -5,5 +5,5 @@ def id(x), do: x
 def apply(f, x), do: f.(x)
 def main() do
   f = &id/1
-  assert(apply(f, 41) == 41, "&id/1 applied through apply calls id")
+  apply(f, 41) == 41 || raise("&id/1 applied through apply calls id")
 end

@@ -3,4 +3,4 @@
 #---
 def fact(0), do: 1
 def fact(n), do: n * fact(n - 1)
-def main(), do: assert(fact(5) == 120, "recursion with a pattern-matched base case computes factorial")
+def main(), do: fact(5) == 120 || raise("recursion with a pattern-matched base case computes factorial")

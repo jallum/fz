@@ -10,5 +10,5 @@
 def main() do
   a = make_ref()
   b = make_ref()
-  refute(a == b)
+  a == b && raise("expected not a == b")
 end

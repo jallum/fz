@@ -3,4 +3,4 @@
 #---
 def count(0, acc), do: acc
 def count(n, acc), do: count(n - 1, acc + 1)
-def main(), do: assert(count(100000, 0) == 100000, "a tail-recursive loop over 100k iterations stays bounded")
+def main(), do: count(100000, 0) == 100000 || raise("a tail-recursive loop over 100k iterations stays bounded")

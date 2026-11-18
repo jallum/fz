@@ -9,6 +9,6 @@ t + t
 end
 def main() do
   t = 100
-  assert(double_via_temp(21) == 42, "both occurrences of the macro's t resolve to one gensym: 21 + 21 == 42")
-  assert(t == 100, "the macro's t leaves the caller's t alone")
+  double_via_temp(21) == 42 || raise("both occurrences of the macro's t resolve to one gensym: 21 + 21 == 42")
+  t == 100 || raise("the macro's t leaves the caller's t alone")
 end

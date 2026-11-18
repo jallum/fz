@@ -6,5 +6,5 @@ defmacro use_helper(x) do
   quote do: helper(unquote(x))
 end
 def main() do
-  assert(use_helper(7) == 21, "use_helper(7) splices helper(7)")
+  use_helper(7) == 21 || raise("use_helper(7) splices helper(7)")
 end

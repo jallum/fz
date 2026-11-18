@@ -5,6 +5,6 @@ def add1(n), do: n + 1
 
 def main() do
   result = add1(41)
-  assert(result == 42, "add1(41) evaluates to 42")
+  result == 42 || raise("add1(41) evaluates to 42")
   result
 end

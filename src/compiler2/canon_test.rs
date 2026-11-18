@@ -624,7 +624,10 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // nothing caught, so a program that spawns emits the banner and the `message/1`
             // of each exception it can raise.
             // 113 -> 112: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
-            112,
+            // 112 -> 72: the ring checks its count with `|| raise("...")`, which raises a
+            // `RuntimeError` that its own module words; `assert` panicked with the bare message,
+            // whose wording reached `String`, `ArgumentError` and `UndefinedFunctionError`.
+            72,
         ),
         (
             571, // enum_predicate_search

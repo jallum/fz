@@ -31,7 +31,7 @@ end
 def receive_parked() do
   receive do
     [_, head | tail] -> if true do
-      assert(churn(2000, []) == 2000)
+      churn(2000, []) == 2000 || raise("expected churn(2000, []) == 2000")
       before = Process.heap_alloc_stats().list_cons_allocs
       value = [head | tail]
       count_after = Process.heap_alloc_stats().list_cons_allocs
@@ -50,14 +50,14 @@ def main() do
   dbg({value, count_after - before})
 
   send(self(), {7, [2.5, :ok]})
-  assert(receive_fields(99) == {7, [2.5, :ok]})
+  receive_fields(99) == {7, [2.5, :ok]} || raise("expected receive_fields(99) == {7, [2.5, :ok]}")
   send(self(), <<2, 65, 66, 67>>)
-  assert(receive_fields(99) == {2, <<65, 66>>, <<67>>})
+  receive_fields(99) == {2, <<65, 66>>, <<67>>} || raise("expected receive_fields(99) == {2, <<65, 66>>, <<67>>}")
   send(self(), :empty)
-  assert(receive_fields(99) == 99)
+  receive_fields(99) == 99 || raise("expected receive_fields(99) == 99")
 
   parent = self()
   child = spawn(fn () -> sender(parent) end)
   send(child, :go)
-  assert(receive_parked() == {[4, 5], 0})
+  receive_parked() == {[4, 5], 0} || raise("expected receive_parked() == {[4, 5], 0}")
 end

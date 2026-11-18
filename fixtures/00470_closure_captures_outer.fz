@@ -5,6 +5,6 @@ def mk(x, _y), do: fn(z) -> x + z end
 def main() do
   f = mk(3, 99)
   result = f.(4)
-  assert(result == 7, "mk's returned closure captures x (3) and ignores y; x+z = 3+4 = 7 regardless of y")
+  result == 7 || raise("mk's returned closure captures x (3) and ignores y; x+z = 3+4 = 7 regardless of y")
   result
 end

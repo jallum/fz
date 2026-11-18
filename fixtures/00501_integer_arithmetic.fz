@@ -3,6 +3,6 @@
 #---
 def main() do
   result = 1 + 2
-  assert(result == 3, "1 + 2 evaluates to 3")
+  result == 3 || raise("1 + 2 evaluates to 3")
   result
 end
