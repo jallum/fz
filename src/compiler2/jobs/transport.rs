@@ -1085,6 +1085,13 @@ fn evaluate_transport_recipe(
         }
         TransportRecipe::Projection { source, kind } => {
             let crate::dispatch_matrix::ProjectionKind::TupleField(index) = kind else {
+                // A list cell, a map or a struct holds each value as one word.
+                // A reader that wants the value whole takes that word; laying
+                // it out as its fields would take it apart only for the reader
+                // to build it again.
+                if read_whole_from_its_cell(demand) {
+                    return RecipeLayout::Exact(TransportLayout::structural(value_lane_shape(world, ty)));
+                }
                 return RecipeLayout::Exact(derived_transport_layout(world, ty, demand, &[]));
             };
             match evaluate_transport_recipe(world, tel, context, source, ty, demand, position) {
@@ -2731,6 +2738,12 @@ fn decomposed_field_tys(world: &mut World, ty: Ty, demand: &RuntimeDemand) -> Op
         return None;
     }
     Some(fields)
+}
+
+/// Whether `demand` asks for a value as it stands, without reading into it or
+/// calling it.
+fn read_whole_from_its_cell(demand: &RuntimeDemand) -> bool {
+    matches!(demand.shape, ShapeDemand::Whole) && !demand.is_callable()
 }
 
 /// Whether a value of type `ty` is an exact tuple that `demand` asks to travel

@@ -886,6 +886,11 @@ decomposition. The budget is one constant for every target, so a layout does
 not depend on the machine the compiler runs on; an executable asks for a
 tuple input as `ExecutableNeed::TupleFields` only inside the budget.
 
+A value read out of a list cell, a map or a struct is one word there already.
+When its reader's demand is `Whole`, its layout is that one value lane, whatever
+its type, so a tuple a `case` arm takes from a list and stores is the tuple
+that was in the list. A reader that asks for fields gets the fields' lanes.
+
 A tuple value can cross several positions whose exact layouts retain different
 fields. The producer layout remains the authority for the lanes already in
 hand; the consumer layout says which positions it needs. When both layouts are

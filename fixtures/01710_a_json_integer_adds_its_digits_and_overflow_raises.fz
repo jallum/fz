@@ -1,0 +1,54 @@
+#---
+# purpose: decoding a JSON integer boxes no scalar per digit, and an integer out of range is still reported whole
+# kind: run
+#---
+#
+# Each document is a list of 1,000 integers of one width, 1, 5, 10 and 19
+# digits. The program prints the heap scalars boxed per decoded integer, taken
+# from the process's allocation counters around the decode, and a checksum (the
+# sum of each value modulo 1,000) of the decoded result. The digits are added
+# up as plain integers; an integer past 64 bits raises `ArithmeticError`, and
+# only then is the text scanned again to report it.
+#
+# The remaining rows pin what the conversion must keep. The edges of the 64-bit
+# range decode; one past either edge is the error that names the whole
+# token. An integer part too wide for 64 bits that is followed by a fraction or
+# an exponent is a float, not an error. `-0` and `0` decode, and `01` stops at
+# the `1`.
+defmodule M do
+  def doc(0, _digits, acc), do: "[" <> acc <> "]"
+  def doc(n, digits, acc) do
+    sep = if acc == "", do: "", else: ","
+    doc(n - 1, digits, acc <> sep <> digits)
+  end
+
+  def checksum([], acc), do: acc
+  def checksum([n | rest], acc), do: checksum(rest, acc + rem(n, 1000))
+
+  def boxed(a, b), do: div(b[:scalar_box_allocs] - a[:scalar_box_allocs], 1000)
+
+  def row(width, digits) do
+    input = doc(1000, digits, "")
+    a = Process.heap_alloc_stats()
+    {:ok, ints} = JSON.decode(input)
+    b = Process.heap_alloc_stats()
+    dbg({:width, width, length(ints), checksum(ints, 0), boxed(a, b)})
+  end
+end
+
+M.row(1, "7")
+M.row(5, "12345")
+M.row(10, "1234567890")
+M.row(19, "1234567890123456789")
+
+dbg({:max, JSON.decode("9223372036854775807")})
+dbg({:min, JSON.decode("-9223372036854775808")})
+dbg({:max_plus_one, JSON.decode("9223372036854775808")})
+dbg({:min_minus_one, JSON.decode("-9223372036854775809")})
+dbg({:wide_then_fraction, JSON.decode("9223372036854775808.5")})
+dbg({:wide_then_exponent, JSON.decode("9223372036854775808e2")})
+dbg({:negative_zero, JSON.decode("-0")})
+dbg({:zero, JSON.decode("0")})
+dbg({:leading_zero, JSON.decode("01")})
+dbg({:zero_exponent, JSON.decode("0e5")})
+dbg({:negative_zero_exponent, JSON.decode("-0e0")})

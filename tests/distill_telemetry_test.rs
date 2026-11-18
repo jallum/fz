@@ -275,7 +275,9 @@ fn read_compile_spend(trace: &Path) -> CompileSpend {
 // 19_593 -> 19_589: Kernel no longer defines `assert/1,2` and `refute/1,2`.
 // 19_589 -> 19_587: `File.read/1` reads through one `fz_file_read_rest` extern, so `File`
 // defines `read_bytes`, `read_byte` and the `fgetc` extern no more and derives them no more.
-const DERIVATIONS: u64 = 19_587;
+// 19_587 -> 19_564: `JSON` adds an integer's digits as they are scanned and reports a wide one
+// after a re-scan, so `integer_step`'s seven clauses and the `:overflow` they carried are gone.
+const DERIVATIONS: u64 = 19_564;
 // 111_876 -> 111_888: an extern that declares `raises:` reads the struct of
 // the exception it names, to raise that struct. The distiller calls twelve
 // such externs, and each contract reads `StructDefined` once.
@@ -306,7 +308,8 @@ const DERIVATIONS: u64 = 19_587;
 // 155_904 -> 155_345: the reads of those 65 derivations.
 // 155_345 -> 155_321: Kernel's four fewer functions, six reads each.
 // 155_321 -> 155_313: the reads of File's 2 fewer derivations.
-const READS_HANDED: u64 = 155_313;
+// 155_313 -> 155_014: the reads of those 23 derivations.
+const READS_HANDED: u64 = 155_014;
 
 /// Compiling the distiller spends this much of the product stack. The largest
 /// drive is the one `PRODUCT_DRIVE_BUDGET` bounds, so its headroom is the
@@ -372,7 +375,10 @@ fn the_distiller_compiles_inside_the_product_drive_budget() {
         // (46_477, 47_031, 26) -> (46_341, 46_629, 26): a literal made of constants is one
         // constant and a quote builds only the nodes above an `unquote`, so the values that were
         // their parts are no longer positions the compile requests.
-        (46_341, 46_629, 26),
+        // (46_341, 46_629, 26) -> (46_264, 46_552, 26): `JSON` adds an integer's digits as they are scanned
+        // and a wide integer raises `ArithmeticError`, so the compile no longer carries the
+        // `:overflow` clauses of `integer_step`.
+        (46_264, 46_552, 26),
         "(largest drive requests, total requests, drives) for the distiller's compile moved. \
          A fall is lowered in this pin; a rise is investigated first, because the largest drive \
          may not exceed PRODUCT_DRIVE_BUDGET (50,000)."
