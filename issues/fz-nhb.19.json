@@ -8,7 +8,7 @@
   ],
   "blocks": [],
   "created": "2026-11-17T23:49:04Z",
-  "description": "## Why\nAfter the rest of fz-nhb, a fixture keeps its .oracle.exs twin only because it tests an fz extension or measures the compiler. Listing them in one place, each with its reason, makes that a fact anyone can check, and shows which twins a later language change would free.\n\n## What changes\n.agent/docs/fixtures.md gets a table: stem, the fz-only feature or measurement it covers, and the decision or ticket that keeps it.\n- fz extensions (keep): 00633, 00879, 01027, 01111, 01113, 01129, 01419, 01634.\n- Whatever the guard, stdlib-name, unquote and fz-nhb.12 (single-use type variable, 01080) decisions keep.\n- The pinned four, 00420, 00569, 00571 and 01481. Their tests pin compile-work counts (canon 00569 123-\u003e118, reach 00420 (68,112)-\u003e(67,111), work_start_reason 4-\u003e5, public_trace 00571 walks 528-\u003e519). Decide with the owner: keep them in fz form (recommended: their subject is compiler work, not Elixir output), or convert them after fz-sc8.230 and #673 land, which also needs a bare function name as a value (01481's make_reducer(gt2)) refused as in Elixir.\n\n## Signal\nThe table's stems equal `ls fixtures/*.oracle.exs fixtures2/**/*.oracle.exs` exactly.",
+  "description": "## Why\nAfter the rest of fz-nhb, a fixture keeps its .oracle.exs twin only because it tests an fz extension or measures the compiler. Listing them in one place, each with its reason, makes that a fact anyone can check, and shows which twins a later language change would free.\n\n## What changes\n.agent/docs/fixtures.md gets a table: stem, the fz-only feature or measurement it covers, and the decision or ticket that keeps it.\n- fz extensions (keep): 00633, 00879, 01027, 01111, 01113, 01129, 01419, 01634.\n- Whatever the guard, stdlib-name, unquote and fz-nhb.12 (single-use type variable, 01080) decisions keep.\n- The pinned four, 00420, 00569, 00571 and 01481, stay in fz form (owner decision, 2026-11-17). Rust tests pin their compile-work counts, which an Elixir rewrite would move (canon 00569 123-\u003e118, reach 00420 (68,112)-\u003e(67,111), work_start_reason 4-\u003e5, public_trace 00571 walks 528-\u003e519). Their subject is compiler work, not Elixir output.\n\n## Signal\nThe table's stems equal `ls fixtures/*.oracle.exs fixtures2/**/*.oracle.exs` exactly.",
   "id": "fz-nhb.19",
   "labels": [],
   "parent": "fz-nhb",
@@ -16,5 +16,5 @@
   "status": "open",
   "title": ".agent/docs/fixtures.md lists each fixture that keeps an Elixir twin and why",
   "type": "task",
-  "updated_at": "2026-11-17T23:49:35Z"
+  "updated_at": "2026-11-18T00:56:37Z"
 }
