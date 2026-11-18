@@ -12,9 +12,15 @@
   "id": "fz-sc8.247",
   "labels": [],
   "parent": "fz-sc8",
+  "comments": [
+    {
+      "text": "User ruling 2026-11-17 (relayed by MDF, verbatim: \"accepted.\"): three further pin rises authorized, caused by yield-point spacing (a clause loop yields every 4,000 steps, not 2,000; halving the quantum restores them): 01254 frame copies 1 -\u003e 2; 01256 largest of the last two collections 32,528 -\u003e 48,528 bytes; large-list yield sequence 8 collections / 342,016 bytes -\u003e 6 collections / 352,576 bytes (+3.1%).",
+      "timestamp": "2026-11-18T04:13:41Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "A place in the code is a function only if something outside its function arrives there",
   "type": "task",
-  "updated_at": "2026-11-18T03:23:58Z"
+  "updated_at": "2026-11-18T04:13:41Z"
 }
