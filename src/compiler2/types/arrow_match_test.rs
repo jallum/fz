@@ -450,11 +450,11 @@ mod pinned_verdicts {
         let or = t.union(f1, f2);
         assert_eq!(
             t.display(&and),
-            "(int | binary) -> none",
+            "(int | binary -> none)",
             "an intersection of arrows collapses to one clause"
         );
         assert_eq!(t.callable_clauses(&and).map(|c| c.len()), Some(1));
-        assert_eq!(t.display(&or), "(binary) -> binary | (int) -> int");
+        assert_eq!(t.display(&or), "(binary -> binary) | (int -> int)");
         assert_eq!(t.callable_clauses(&or).map(|c| c.len()), Some(2));
         assert!(!t.is_empty(&and));
     }
@@ -484,7 +484,7 @@ mod pinned_verdicts {
         let v = t.match_arrow(&[list_a, mapper], &list_b, &no_bounds(), &[list_int, overloaded]);
         assert_eq!(
             render(&t, &v),
-            "Known params=[[int], (int) -> none] result=[]",
+            "Known params=[[int], (int -> none)] result=[]",
             "R1 overloaded"
         );
     }
@@ -534,7 +534,7 @@ mod pinned_verdicts {
         let v = t.match_arrow(&[list_a, pat_fn], &list_a, &no_bounds(), &[list_int, wit_fn]);
         assert_eq!(
             render(&t, &v),
-            "Known params=[[int], (%{:k: int}) -> :nil] result=[int]",
+            "Known params=[[int], (%{:k: int} -> :nil)] result=[int]",
             "R3 map-under-param"
         );
     }
@@ -558,7 +558,7 @@ mod pinned_verdicts {
         let v = t.match_arrow(&[list_a, pat_fn], &list_a, &no_bounds(), &[list_int, wit_fn]);
         assert_eq!(
             render(&t, &v),
-            "Known params=[[int], (resource(int)) -> :nil] result=[int]",
+            "Known params=[[int], (resource(int) -> :nil)] result=[int]",
             "R4 resource-under-param"
         );
         // And covariantly, for contrast: `resource(any)` at `resource(a)`. A
@@ -593,7 +593,7 @@ mod pinned_verdicts {
         let v = t.match_arrow(&[list_a, mapper], &list_b, &no_bounds(), &[list_mixed, half]);
         assert_eq!(
             render(&t, &v),
-            "Underconstrained params=[[int | binary], (int | binary) -> a1] result=[a1]",
+            "Underconstrained params=[[int | binary], (int | binary -> a1)] result=[a1]",
             "R5 half-ground closure"
         );
     }
@@ -617,7 +617,7 @@ mod pinned_verdicts {
         let v = t.match_arrow(&[p3], &list_a, &no_bounds(), &[w3]);
         assert_eq!(
             render(&t, &v),
-            "Underconstrained params=[(((a0) -> :nil) -> :nil) -> :nil] result=[a0]",
+            "Underconstrained params=[(((a0 -> :nil) -> :nil) -> :nil)] result=[a0]",
             "R6 three-deep"
         );
     }
@@ -639,7 +639,7 @@ mod pinned_verdicts {
         let v = t.match_arrow(&[a, pat_fn], &pat_fn, &no_bounds(), &[int, wit_fn]);
         assert_eq!(
             render(&t, &v),
-            "Known params=[int, ({int, int}) -> :nil] result=({int, int}) -> :nil",
+            "Known params=[int, ({int, int} -> :nil)] result=({int, int} -> :nil)",
             "R7 tuple-in-contravariant-result"
         );
     }
@@ -683,7 +683,7 @@ mod pinned_verdicts {
         let v2 = t.match_arrow(&[list_a, pat_fn], &list_a, &no_bounds(), &[list_int, any_fn]);
         assert_eq!(
             render(&t, &v2),
-            "Known params=[[int], (int) -> :nil] result=[int]",
+            "Known params=[[int], (int -> :nil)] result=[int]",
             "R9 (any)->nil argument"
         );
         // `any` as the covariant witness of the element itself. A list over
@@ -693,7 +693,7 @@ mod pinned_verdicts {
         let v3 = t.match_arrow(&[list_a, pat_fn], &list_a, &no_bounds(), &[list_any, any_fn]);
         assert_eq!(
             render(&t, &v3),
-            "Known params=[[any], (any) -> :nil] result=[any]",
+            "Known params=[[any], (any -> :nil)] result=[any]",
             "R9 [any] + (any)->nil"
         );
     }
@@ -756,7 +756,7 @@ mod pinned_verdicts {
         let v = t.match_arrow(&[list_a, pat_fn], &list_a, &no_bounds(), &[list_int, var_fn]);
         assert_eq!(
             render(&t, &v),
-            "Known params=[[int], (int) -> :nil] result=[int]",
+            "Known params=[[int], (int -> :nil)] result=[int]",
             "R12 var upper bound"
         );
     }
@@ -801,13 +801,13 @@ mod pinned_verdicts {
         let v1 = t.match_arrow(&[pat_fn], &list_a, &no_bounds(), &[any_fn]);
         assert_eq!(
             render(&t, &v1),
-            "Underconstrained params=[(a0) -> :nil] result=[a0]",
+            "Underconstrained params=[(a0 -> :nil)] result=[a0]",
             "R14 only-upper (any)"
         );
         let v2 = t.match_arrow(&[pat_fn], &list_a, &no_bounds(), &[int_fn]);
         assert_eq!(
             render(&t, &v2),
-            "Underconstrained params=[(a0) -> :nil] result=[a0]",
+            "Underconstrained params=[(a0 -> :nil)] result=[a0]",
             "R14 only-upper (int)"
         );
     }
@@ -851,7 +851,7 @@ mod pinned_verdicts {
         let v = t.match_arrow(&[a, pat_fn], &res, &no_bounds(), &[int, wit_fn]);
         assert_eq!(
             render(&t, &v),
-            "Known params=[int, (int) -> :nil] result={int, (int) -> :nil}",
+            "Known params=[int, (int -> :nil)] result={int, (int -> :nil)}",
             "R16 both polarities"
         );
     }
@@ -981,7 +981,7 @@ mod pinned_verdicts {
         let v = t.match_arrow(&[pat], &list_a, &no_bounds(), &[wit]);
         assert_eq!(
             render(&t, &v),
-            "Known params=[((binary) -> int) -> :nil] result=[binary]",
+            "Known params=[((binary -> int) -> :nil)] result=[binary]",
             "A1"
         );
     }
@@ -999,7 +999,7 @@ mod pinned_verdicts {
         let v = t.match_arrow(&[pat], &list_a, &no_bounds(), &[wit]);
         assert_eq!(
             render(&t, &v),
-            "Underconstrained params=[(a0) -> :nil] result=[a0]",
+            "Underconstrained params=[(a0 -> :nil)] result=[a0]",
             "A2"
         );
     }
@@ -1028,7 +1028,7 @@ mod pinned_verdicts {
         let v = t.match_arrow(&[list_a, b, reducer], &b, &no_bounds(), &[list_int, empty, ground]);
         assert_eq!(
             render(&t, &v),
-            "Known params=[[int], [int], (int, [int]) -> [int]] result=[int]",
+            "Known params=[[int], [int], (int, [int] -> [int])] result=[int]",
             "A3"
         );
         let ArrowMatch::Known { result, .. } = &v else {
@@ -1052,7 +1052,7 @@ mod pinned_verdicts {
         let v = t.match_arrow(&[a, arrow_pat], &result_pat, &no_bounds(), &[int, wit]);
         assert_eq!(
             render(&t, &v),
-            "Known params=[int, (int) -> :nil] result=(int) -> :nil",
+            "Known params=[int, (int -> :nil)] result=(int -> :nil)",
             "A4"
         );
     }
@@ -1074,7 +1074,7 @@ mod pinned_verdicts {
         let verdict = t.match_arrow(&[a, arrow_pat], &a, &bounds, &[int, wit]);
         assert_eq!(
             render(&t, &verdict),
-            "Known params=[int, (int) -> :nil] result=int",
+            "Known params=[int, (int -> :nil)] result=int",
             "A5"
         );
     }
@@ -1098,7 +1098,7 @@ mod pinned_verdicts {
         let v1 = t.match_arrow(&[list_a, fn_pat], &list_b, &no_bounds(), &[list_int, unanalyzed]);
         assert_eq!(
             render(&t, &v1),
-            "Underconstrained params=[[int], (int) -> {a1, a2}] result=[a1]",
+            "Underconstrained params=[[int], (int -> {a1, a2})] result=[a1]",
             "A6 unanalyzed"
         );
         let ground_ret = t.tuple(&[str_t, nil]);
@@ -1106,7 +1106,7 @@ mod pinned_verdicts {
         let v2 = t.match_arrow(&[list_a, fn_pat], &list_b, &no_bounds(), &[list_int, ground]);
         assert_eq!(
             render(&t, &v2),
-            "Known params=[[int], (int) -> {binary, :nil}] result=[binary]",
+            "Known params=[[int], (int -> {binary, :nil})] result=[binary]",
             "A6 ground"
         );
     }
@@ -1549,7 +1549,7 @@ mod pinned_verdicts {
         let bool_t = t.bool();
         let ground_pred = t.arrow(&[any], bool_t);
         let v = t.match_arrow(&[list_a, pred_pat], &list_a, &no_bounds(), &[list_int, ground_pred]);
-        assert_eq!(render(&t, &v), "Known params=[[int], (int) -> any] result=[int]", "A13");
+        assert_eq!(render(&t, &v), "Known params=[[int], (int -> any)] result=[int]", "A13");
     }
 
     // A14. `none` at a bare variable.
@@ -1682,7 +1682,7 @@ mod pinned_verdicts {
         let pat = t.arrow(&[a], b);
         assert!(t.has_vars(&arg), "the argument is NOT ground");
         let v = t.match_arrow(&[pat], &b, &no_bounds(), &[arg]);
-        assert_eq!(render(&t, &v), "Underconstrained params=[(a0) -> int] result=int", "X2");
+        assert_eq!(render(&t, &v), "Underconstrained params=[(a0 -> int)] result=int", "X2");
     }
 
     // X2B. The same shape one level up: the argument's free member has a
@@ -1705,7 +1705,7 @@ mod pinned_verdicts {
         let v = t.match_arrow(&[pat], &b, &no_bounds(), &[arg]);
         assert_eq!(
             render(&t, &v),
-            "Underconstrained params=[(a0) -> int] result=int",
+            "Underconstrained params=[(a0 -> int)] result=int",
             "X2B"
         );
     }
@@ -1768,7 +1768,7 @@ mod pinned_verdicts {
         let v = t.match_arrow(&[pat], &a, &no_bounds(), &[arg]);
         assert_eq!(
             render(&t, &v),
-            "Known params=[{:done | :halted, []} | {:suspended, [], () -> any}] result=[]",
+            "Known params=[{:done | :halted, []} | {:suspended, [], (-> any)}] result=[]",
             "X4"
         );
     }
