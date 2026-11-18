@@ -1,6 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [
+    "fz-sc8.192.13",
     "fz-sc8.192.8"
   ],
   "blocks": [],
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "A map built by puts with literal keys is constructed once, and a put with a known key kind is emitted inline",
   "type": "task",
-  "updated_at": "2026-11-18T21:39:33Z"
+  "updated_at": "2026-11-18T23:10:04Z"
 }
