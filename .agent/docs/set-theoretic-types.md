@@ -709,8 +709,11 @@ default, as Elixir's `Kernel.Utils.defstruct` does. Running that macro gives
 back a written field list, which is read as any other. A default therefore
 sees the module's aliases and imports and every module already defined, runs
 its side effects once, during the compile, and is the same value in every
-literal. A default that cannot be escaped, such as a reference or a function,
-raises `ArgumentError` naming the field, and a default that raises stops the
+literal. A default that is a function a module defines by name comes back as
+the capture `&Mod.fun/arity` with the module itself in place of its spelling,
+which `LiteralTerm::Function` holds, so a capture is evaluated even when it is
+written out. A default that cannot be escaped, such as a reference or an
+anonymous function, raises `ArgumentError` naming the field, and a default that raises stops the
 compile with that raise. A function of the module being defined is not
 available to a default: the diagnostic is `resolve/unknown-function` at the
 `defstruct`. A field list written as literals evaluates nothing.

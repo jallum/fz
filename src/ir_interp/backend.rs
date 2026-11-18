@@ -3789,6 +3789,7 @@ fn literal_term_value(runtime: &mut IrInterpRuntime, term: &LiteralTerm) -> Resu
     let proc = runtime.cur_proc();
     match term {
         LiteralTerm::Ground(value) => literal_value(runtime, value),
+        LiteralTerm::Function { .. } => unreachable!("`LastResort::struct_fields` refuses a function"),
         LiteralTerm::List(items) => items.iter().rev().try_fold(interp_empty_list_value(), |tail, item| {
             interp_list_cons(proc, literal_term_value(runtime, item)?, tail, CONTEXT)
         }),

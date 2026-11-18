@@ -1782,6 +1782,7 @@ fn literal(term: &crate::literal_term::LiteralTerm) -> String {
                 .collect();
             format!("%{{{}}}", entries.join(", "))
         }
+        LiteralTerm::Function { module, name, arity } => format!("&{module}.{name}/{arity}"),
     }
 }
 

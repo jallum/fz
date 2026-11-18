@@ -1396,11 +1396,42 @@ fn decode_fn_ref_expr(
             "quoted function reference expects target and arity",
         ));
     }
-    let target = decode_expr(&mut LambdaOccurrences::default(), &parts[0], Some(span), sources)?;
+    let target = decode_fn_ref_target(&parts[0], span, sources)?;
     let name = CallableName::from_expr(&target.node)
         .ok_or_else(|| QuotedSourceError::new("unsupported quoted function-ref target"))?;
     let arity = parts[1].int_value()? as usize;
     Ok(Spanned::new(Expr::FnRef { name, arity }, span))
+}
+
+/// The function a capture names. `Mod.fun` is a call written without
+/// parentheses, `{{:., _, [Mod, :fun]}, _, []}`, which is how `Macro.escape/1`
+/// writes it, or the bare dot the parser writes; `Mod` is an alias or the
+/// module's atom. Anything else is read as the expression it is.
+fn decode_fn_ref_target(
+    cursor: &QuotedSourceCursor,
+    span: Span,
+    sources: &SourceMap,
+) -> Result<Spanned<Expr>, QuotedSourceError> {
+    let Some(node) = cursor.ast_node(sources)? else {
+        return decode_expr(&mut LambdaOccurrences::default(), cursor, Some(span), sources);
+    };
+    let dot = match node.head.ast_node(sources)? {
+        Some(head) if node.tail.list_len()? == 0 => head,
+        _ => node,
+    };
+    if dot.head.root().tag() != fz_runtime::any_value::ValueKind::ATOM || dot.head.atom_name()? != "." {
+        return decode_expr(&mut LambdaOccurrences::default(), cursor, Some(span), sources);
+    }
+    let parts = dot.tail.list_items()?;
+    let [module, function] = parts.as_slice() else {
+        return decode_expr(&mut LambdaOccurrences::default(), cursor, Some(span), sources);
+    };
+    let module = match module_atom(module) {
+        Some(name) => Spanned::new(Expr::Module(ModuleDenotation::Named(name)), span),
+        None => decode_expr(&mut LambdaOccurrences::default(), module, Some(span), sources)?,
+    };
+    let function = Spanned::new(Expr::Atom(function.atom_name()?.to_string()), span);
+    Ok(Spanned::new(Expr::Index(Box::new(module), Box::new(function)), span))
 }
 
 fn decode_match_clause(
