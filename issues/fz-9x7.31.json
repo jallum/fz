@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [
+    "fz-9x7.35",
     "fz-nml.25"
   ],
   "created": "2026-11-18T00:15:58Z",
@@ -19,5 +20,5 @@
   "status": "open",
   "title": "An unraised try allocates nothing and costs almost nothing",
   "type": "task",
-  "updated_at": "2026-11-18T00:16:38Z"
+  "updated_at": "2026-11-18T02:47:14Z"
 }
