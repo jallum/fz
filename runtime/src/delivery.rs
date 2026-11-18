@@ -21,26 +21,26 @@ pub struct Delivery {
     /// The process is blocked in selective `receive`. The record stays until
     /// the scheduler delivers the match a sender queued, or the after-timer
     /// fires; whoever takes it decides the receive.
-    park: Option<Box<ParkRecord>>,
+    park: Option<ParkRecord>,
     /// Gifts in arrival order. At most one is a match for the parked receive.
     in_queue: VecDeque<Gift>,
 }
 
 impl Delivery {
     pub fn park(&self) -> Option<&ParkRecord> {
-        self.park.as_deref()
+        self.park.as_ref()
     }
 
     pub fn park_mut(&mut self) -> Option<&mut ParkRecord> {
-        self.park.as_deref_mut()
+        self.park.as_mut()
     }
 
     pub fn install_park(&mut self, park: ParkRecord) {
         assert!(self.park.is_none(), "a process parks in one receive at a time");
-        self.park = Some(Box::new(park));
+        self.park = Some(park);
     }
 
-    pub fn take_park(&mut self) -> Option<Box<ParkRecord>> {
+    pub fn take_park(&mut self) -> Option<ParkRecord> {
         self.park.take()
     }
 
