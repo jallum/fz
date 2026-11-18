@@ -2,14 +2,16 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-18T03:52:44Z",
+  "close_reason": "Landed on develop as 09da0be8e (#616).",
   "created": "2026-11-15T05:32:03Z",
   "description": "develop's push CI fails in the coverage step (cargo llvm-cov, push only) on every run since b0874c4a5: matrix::01256_a_list_the_body_no_longer_uses_is_not_kept_by_its_frame::interp exceeds the 20 s fixture limit. The fixture builds a 400,000-element list and twenty 30,000-element lists; the interpreter takes 4.9 s of CPU on it at opt-level 1 and more than 20 s under coverage instrumentation. Shrink to 40,000 and 3,000 (as 01293/01294 were shrunk) and re-pin the copied-bytes fact, checking it still separates a kept list from one that is not kept.",
   "id": "fz-9x7.9",
   "labels": [],
   "parent": "fz-9x7",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Fixture 01256 fits the coverage job's 20 s limit on the interpreter",
   "type": "bug",
-  "updated_at": "2026-11-15T05:32:03Z"
+  "updated_at": "2026-11-18T03:52:44Z"
 }
