@@ -461,18 +461,37 @@ entry resume_k:
   tail = ...
 ```
 
-The backend products preserve this shape mechanically. Native lowering
-decides, once per executable, where each entry lives (`EntryFns::for_entries`
-in `src/compiler2/jobs/native.rs`, counting `BackendTail::transfers`):
+The backend products preserve this shape mechanically. A place in the code is
+a machine function only if something outside its function can arrive there: a
+call from elsewhere, a call's return, or the runtime. Everything else is a
+Cranelift block of the function that reaches it. Native lowering decides, once
+per executable, where each entry lives (`EntryFns::for_executable` in
+`src/compiler2/jobs/native.rs`, reading `BackendTail::transfers`):
 
-- An entry whose only way in is a single direct transfer -- an `if` arm, a
-  decision's outcome or miss, the join one value delivers to, or the entry a
-  spliced call resumes (below) -- is a block of the function that makes that
-  transfer. The transfer is a `Goto` carrying
-  the same arguments a call would; the block's parameters follow the entry's
-  signature, and the entry's steps and tail are lowered into it before that
-  function is finished. A dispatch graph that reaches one outcome from several
-  leaves reaches the same block.
+- An entry every transfer to which is a direct transfer from one and the same
+  function -- an `if` arm, a decision's outcome or miss, a clause body reached
+  from the executable's dispatch, a join that several arms deliver to, or the
+  entry a spliced call resumes (below) -- is a block of that function. The
+  transfer is a `Goto` carrying the same arguments a call would; the block's
+  parameters follow the entry's signature, and the entry's steps and tail are
+  lowered into it before that function is finished. An entry with several
+  direct predecessors is one block with several incoming `Goto`s, so a join in
+  tail position builds no continuation. A dispatch graph that reaches one
+  outcome from several leaves reaches the same block. The function an entry
+  belongs to is the function of its predecessors (`EntryHomes`): the executable
+  function for its dispatch and clause bodies, otherwise the function of the
+  entry that holds the transfer. Direct transfers never form a cycle; the one
+  loop inside a function is a tail call to the function itself, which jumps to
+  its head block.
+- A clause body is such an entry: the executable's function evaluates its
+  dispatch, each outcome is a `Goto` carrying the function's inputs to the
+  clause's block, and the block binds the clause's parameters and runs its
+  projections. A function with several clauses is one machine function.
+- A `try` body is such an entry: the function that pushes the handler record
+  (`Term::Try`) continues into the body's block, so the body builds no function.
+  The handler is a function of its own, because only a raise, which the runtime
+  delivers, reaches it (`EntryTransfer::Runtime`). A join the body and the
+  handler both deliver to is reached from two functions, so it stays a function.
 - A delivered direct call whose callee is nothing but an extern is spliced: the
   callee is the extern itself, or one clause with no entry dispatch, no
   projections and no steps whose tail is a direct call that passes the clause's
@@ -482,7 +501,7 @@ in `src/compiler2/jobs/native.rs`, counting `BackendTail::transfers`):
   extern's own function runs, so a declared failure raises from the caller),
   binds its one result to the resume entry's input and transfers to the resume
   entry. The call builds no continuation and names no callee, and the resume
-  entry is reached by a direct transfer, so `EntryFns::for_entries` counts the
+  entry is reached by a direct transfer, so `EntryFns::for_executable` counts the
   spliced call's transfer as `EntryTransfer::Direct`. `n + 1` over integers is
   such a call: `Kernel.+` is one clause that passes both parameters to
   `fz_op_add_ii`. A clause that reorders its parameters (`Kernel.+` for a float
@@ -491,8 +510,8 @@ in `src/compiler2/jobs/native.rs`, counting `BackendTail::transfers`):
   (`ControlDestination::Return`) is not delivered and stays a tail call. The
   splice is a native lowering choice; the backend program and the interpreter,
   which runs it as it stands, are unchanged.
-- Every other entry is a function of its own: a join several transfers reach,
-  the entry a call's return resumes, and the entries the runtime enters from a
+- Every other entry is a function of its own: a join whose arms are in
+  different functions, the entry a call's return resumes, and the entries the runtime enters from a
   `receive` (its outcomes, its timeout, and the entry its value continues in).
   Only these functions carry the entry-function parameter markings (physical
   parameters and captures, unread delivered lanes).
@@ -1049,7 +1068,7 @@ The next products narrow the contract:
   bodies extract their own atoms once; retained root snapshots share collection
   paths and immutable payloads.
 - `NativeProgram(root)` reads that root product and carries direct
-  executable bodies, clause helpers, continuations, construction wrappers,
+  executable bodies, continuations, construction wrappers,
   native body return contracts, and extern-marshal facts instead of rebuilt
   `ModulePlan`, `PlannedProgram`, or `AbiFacts`.
 

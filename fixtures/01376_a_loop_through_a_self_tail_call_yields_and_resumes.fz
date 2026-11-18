@@ -1,0 +1,30 @@
+#---
+# purpose: "a loop that tail-calls its own function yields at its quantum and resumes with its current values, so a second process runs while the loop is still going"
+# kind: run
+#---
+#
+# `Loop.sum/2` is a two-clause function that calls itself in tail position two
+# million times, far past one scheduling quantum. The loop's process is spawned
+# first and the short process second, so a loop that never yielded would finish
+# before the short process ran and `:short` would arrive second. Yielding lets
+# the short process send first; the loop then resumes from the values it held
+# at each yield and still reaches the exact sum. The interpreter spends no
+# reductions and never yields, so the loop finishes first there.
+defmodule Loop do
+  def sum(0, acc), do: acc
+  def sum(n, acc), do: sum(n - 1, acc + n)
+end
+
+def main() do
+  parent = self()
+  spawn(fn () -> send(parent, {:sum, Loop.sum(2000000, 0)}) end)
+  spawn(fn () -> send(parent, :short) end)
+  first = receive do
+    msg -> msg
+  end
+  second = receive do
+    msg -> msg
+  end
+  dbg(first)
+  dbg(second)
+end

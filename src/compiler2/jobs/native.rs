@@ -254,39 +254,10 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 match &executable.body {
                     BackendBody::Extern { signature } => self.lower_extern_executable(index, executable, signature),
                     BackendBody::Clauses { clauses, entries, .. } => {
-                        let mut entry_fns =
-                            EntryFns::for_entries(entries, |tail| self.spliced_extern_of_tail(tail).is_some());
-                        if executable.abi.materialized.entry_dispatch.is_some() {
-                            self.lower_clause_dispatch_executable(index, executable, clauses, entries, &mut entry_fns)?;
-                        } else {
-                            let [clause] = clauses.as_slice() else {
-                                return Err(incomplete_native_program(
-                                    self.telemetry,
-                                    self.root_id,
-                                    format!(
-                                        "backend executable {} has {} clauses but no settled entry dispatch",
-                                        index,
-                                        clauses.len()
-                                    ),
-                                ));
-                            };
-                            self.lower_clause_body_fn(
-                                self.executable_fns[index],
-                                executable,
-                                &format!(
-                                    "{}__e{}",
-                                    self.world
-                                        .function_ref(executable.key.activation.function)
-                                        .display_name(),
-                                    index
-                                ),
-                                FnCategory::User,
-                                NativeBodyOrigin::Executable(executable.key.clone()),
-                                entries,
-                                &mut entry_fns,
-                                clause,
-                            )?;
-                        }
+                        let mut entry_fns = EntryFns::for_executable(entries, clauses, |tail| {
+                            self.spliced_extern_of_tail(tail).is_some()
+                        });
+                        self.lower_executable_head(index, executable, clauses, entries, &mut entry_fns)?;
                         while let Some((entry, fn_id)) = entry_fns.pending.pop_front() {
                             self.lower_entry_fn(index, executable, entries, &mut entry_fns, entry, fn_id, None)?;
                         }
@@ -723,7 +694,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         executable: &BackendExecutable,
         signature: &LoweredExtern,
     ) -> Result<(), FatalError> {
-        let fn_id = self.executable_fns[index];
         let name = format!(
             "{}__e{}",
             self.world
@@ -731,20 +701,9 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 .display_name(),
             index
         );
-        if executable.abi.materialized.entry_dispatch.is_none() {
-            return self.lower_extern_call_fn(
-                index,
-                fn_id,
-                &name,
-                NativeBodyOrigin::Executable(executable.key.clone()),
-                executable,
-                signature,
-            );
-        }
-        let call_fn = self.module.fresh_fn_id();
         let return_reprs = executable.abi.return_layout.layout.reprs.to_vec();
         let mut ctx = NativeFnCtx::new(
-            fn_id,
+            self.executable_fns[index],
             &name,
             FnCategory::Prelude,
             NativeBodyOrigin::Executable(executable.key.clone()),
@@ -754,46 +713,43 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             return_reprs,
             executable.abi.effects,
         );
-        self.lower_executable_entry_dispatch(&mut ctx, executable, &[call_fn])?;
+        let entry_tys = executable_input_tys(executable);
+        let entry_vars = ctx.entry_params(entry_tys.as_slice());
+        if executable.abi.materialized.entry_dispatch.is_some() {
+            self.lower_extern_after_dispatch(&mut ctx, index, executable, signature, &entry_vars)?;
+        } else {
+            let result = self.emit_extern_call(&mut ctx, index, signature, &entry_vars)?;
+            ctx.set_term(Term::Return(result));
+        }
         self.finish_native_fn(ctx);
-        let origin = NativeBodyOrigin::Clause {
-            owner: executable.key.clone(),
-            index: 0,
-        };
-        self.lower_extern_call_fn(index, call_fn, &format!("{name}__call"), origin, executable, signature)
+        Ok(())
     }
 
-    fn lower_extern_call_fn(
+    /// The extern's dispatch, whose every outcome enters one block that calls
+    /// the extern on the inputs and returns its result.
+    fn lower_extern_after_dispatch(
         &mut self,
+        ctx: &mut NativeFnCtx,
         index: usize,
-        fn_id: FnId,
-        name: &str,
-        origin: NativeBodyOrigin,
         executable: &BackendExecutable,
         signature: &LoweredExtern,
+        entry_vars: &[Var],
     ) -> Result<(), FatalError> {
-        let return_reprs = executable.abi.return_layout.layout.reprs.to_vec();
-        let mut ctx = NativeFnCtx::new(
-            fn_id,
-            name,
-            FnCategory::Prelude,
-            origin,
-            NativeEntryAbi::Direct,
-            executable.abi.param_reprs.clone(),
-            executable.abi.materialized.return_ty,
-            return_reprs,
-            executable.abi.effects,
-        );
-        let lane_tys = executable
-            .abi
-            .semantic_inputs
-            .iter()
-            .flat_map(|input| input.layout.tys.iter().copied())
-            .collect::<Vec<_>>();
-        let params = ctx.entry_params(lane_tys.iter());
-        let result = self.emit_extern_call(&mut ctx, index, signature, &params)?;
-        ctx.set_term(Term::Return(result));
-        self.finish_native_fn(ctx);
+        let entry_tys = executable_input_tys(executable);
+        let mut call_block = None;
+        self.lower_executable_entry_dispatch(ctx, executable, entry_vars, &mut |ctx, _clause| {
+            call_block
+                .get_or_insert_with(|| {
+                    let lanes = ctx.typed_params(entry_tys.iter());
+                    (ctx.builder.block(lanes.clone()), lanes)
+                })
+                .0
+        })?;
+        if let Some((block, lanes)) = call_block {
+            ctx.current_block = block;
+            let result = self.emit_extern_call(ctx, index, signature, &lanes)?;
+            ctx.set_term(Term::Return(result));
+        }
         Ok(())
     }
 
@@ -886,7 +842,9 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         Ok(arguments)
     }
 
-    fn lower_clause_dispatch_executable(
+    /// Lowers the executable's own function: its dispatch, when it has one,
+    /// and each clause body the dispatch enters, as blocks of that function.
+    fn lower_executable_head(
         &mut self,
         index: usize,
         executable: &BackendExecutable,
@@ -894,8 +852,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         entries: &[BackendEntry],
         entry_fns: &mut EntryFns,
     ) -> Result<(), FatalError> {
-        let helper_ids = clauses.iter().map(|_| self.module.fresh_fn_id()).collect::<Vec<_>>();
-        let fn_id = self.executable_fns[index];
         let name = format!(
             "{}__e{}",
             self.world
@@ -905,7 +861,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         );
         let return_reprs = executable.abi.return_layout.layout.reprs.to_vec();
         let mut ctx = NativeFnCtx::new(
-            fn_id,
+            self.executable_fns[index],
             &name,
             FnCategory::User,
             NativeBodyOrigin::Executable(executable.key.clone()),
@@ -915,45 +871,40 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             return_reprs,
             executable.abi.effects,
         );
-        self.lower_executable_entry_dispatch(&mut ctx, executable, &helper_ids)?;
-        self.finish_native_fn(ctx);
-
-        for (clause_index, (clause, helper_id)) in clauses.iter().zip(helper_ids.iter().copied()).enumerate() {
-            self.lower_clause_body_fn(
-                helper_id,
-                executable,
-                &format!(
-                    "{}__clause_{}",
-                    self.world
-                        .function_ref(executable.key.activation.function)
-                        .display_name(),
-                    clause_index
-                ),
-                FnCategory::MultiClauseCont,
-                NativeBodyOrigin::Clause {
-                    owner: executable.key.clone(),
-                    index: clause_index as u32,
-                },
-                entries,
-                entry_fns,
-                clause,
-            )?;
+        let entry_tys = executable_input_tys(executable);
+        let entry_vars = ctx.entry_params(entry_tys.as_slice());
+        if executable.abi.materialized.entry_dispatch.is_some() {
+            self.lower_executable_entry_dispatch(&mut ctx, executable, &entry_vars, &mut |ctx, clause| {
+                ctx.entry_block(clauses[clause].entry, &entry_tys)
+            })?;
+        } else {
+            let [clause] = clauses else {
+                return Err(incomplete_native_program(
+                    self.telemetry,
+                    self.root_id,
+                    format!(
+                        "backend executable {} has {} clauses but no settled entry dispatch",
+                        index,
+                        clauses.len()
+                    ),
+                ));
+            };
+            self.lower_clause_body_here(&mut ctx, executable, entries, entry_fns, clause, &entry_vars)?;
         }
-        Ok(())
+        self.finish_entry_lowering_fn(ctx, executable, entries, entry_fns)
     }
 
-    /// Emits the executable's entry dispatch into `ctx`: each outcome tail-calls
-    /// the helper `helper_ids` names for its clause, and a miss raises the plan's
-    /// arm of last resort.
+    /// Emits the executable's entry dispatch into `ctx`: each outcome goes to
+    /// the block `clause_block` names for its clause, carrying the
+    /// executable's inputs, and a miss raises the plan's arm of last resort.
     fn lower_executable_entry_dispatch(
         &mut self,
         ctx: &mut NativeFnCtx,
         executable: &BackendExecutable,
-        helper_ids: &[FnId],
+        entry_vars: &[Var],
+        clause_block: &mut dyn FnMut(&mut NativeFnCtx, usize) -> BlockId,
     ) -> Result<(), FatalError> {
-        let entry_tys = executable_input_tys(executable);
-        let entry_vars = ctx.entry_params(entry_tys.as_slice());
-        let semantic_inputs = self.bind_executable_inputs(executable, &entry_vars)?;
+        let semantic_inputs = self.bind_executable_inputs(executable, entry_vars)?;
         let dispatch = executable
             .abi
             .materialized
@@ -982,50 +933,35 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             )
             .collect::<Result<Vec<_>, _>>()?;
         let bindings = self.lower_argument_bindings(ctx, dispatch.plan(), &inputs)?;
-        let mut state = DispatchState::new(inputs, entry_vars, bindings);
-        self.lower_dispatch_node(ctx, dispatch, dispatch.plan().graph.root, helper_ids, &mut state)?;
-        Ok(())
+        let mut state = DispatchState::new(inputs, entry_vars.to_vec(), bindings);
+        self.lower_dispatch_node(ctx, dispatch, dispatch.plan().graph.root, clause_block, &mut state)
     }
 
-    fn lower_clause_body_fn(
+    /// Lowers a clause body where control already is: its parameters are the
+    /// executable's inputs, and its projections read them again.
+    fn lower_clause_body_here(
         &mut self,
-        fn_id: FnId,
+        ctx: &mut NativeFnCtx,
         executable: &BackendExecutable,
-        name: &str,
-        category: FnCategory,
-        origin: NativeBodyOrigin,
         entries: &[BackendEntry],
         entry_fns: &mut EntryFns,
         clause: &BackendClause,
+        entry_vars: &[Var],
     ) -> Result<(), FatalError> {
-        let return_reprs = executable.abi.return_layout.layout.reprs.to_vec();
-        let mut ctx = NativeFnCtx::new(
-            fn_id,
-            name,
-            category,
-            origin,
-            NativeEntryAbi::Direct,
-            executable.abi.param_reprs.clone(),
-            executable.abi.materialized.return_ty,
-            return_reprs,
-            executable.abi.effects,
-        );
         let mut env = ValueEnv::default();
-        let entry_tys = executable_input_tys(executable);
-        let entry_vars = ctx.entry_params(entry_tys.as_slice());
-        let semantic_inputs = self.bind_executable_inputs(executable, &entry_vars)?;
+        let semantic_inputs = self.bind_executable_inputs(executable, entry_vars)?;
         for (value, bound) in clause.params.iter().copied().zip(semantic_inputs) {
             if let Some(bound) = bound {
-                bind_local_value(&mut ctx, executable, &mut env, value, bound);
+                bind_local_value(ctx, executable, &mut env, value, bound);
             }
         }
-        self.lower_entry_steps(&mut ctx, executable, &mut env, &clause.projections)?;
-        self.lower_entry_here(&mut ctx, executable, entries, entry_fns, clause.entry, &[], env)?;
-        self.finish_entry_lowering_fn(ctx, executable, entries, entry_fns)
+        self.lower_entry_steps(ctx, executable, &mut env, &clause.projections)?;
+        self.lower_entry_here(ctx, executable, entries, entry_fns, clause.entry, &[], env)?;
+        Ok(())
     }
 
-    /// Finishes a function that lowers entries: every entry it reached as a
-    /// block is lowered into it first.
+    /// Finishes a function that lowers entries: every entry and clause body it
+    /// reached as a block is lowered into it first.
     fn finish_entry_lowering_fn(
         &mut self,
         mut ctx: NativeFnCtx,
@@ -1035,15 +971,22 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
     ) -> Result<(), FatalError> {
         while let Some((entry_id, block, entry_vars)) = ctx.pending_entry_blocks.pop_front() {
             ctx.current_block = block;
-            self.lower_entry_here(
-                &mut ctx,
-                executable,
-                entries,
-                entry_fns,
-                entry_id,
-                &entry_vars,
-                ValueEnv::default(),
-            )?;
+            match clause_entered_at(executable, entry_id) {
+                Some(clause) => {
+                    self.lower_clause_body_here(&mut ctx, executable, entries, entry_fns, clause, &entry_vars)?
+                }
+                None => {
+                    self.lower_entry_here(
+                        &mut ctx,
+                        executable,
+                        entries,
+                        entry_fns,
+                        entry_id,
+                        &entry_vars,
+                        ValueEnv::default(),
+                    )?;
+                }
+            }
         }
         self.finish_native_fn(ctx);
         Ok(())
@@ -1214,8 +1157,9 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         Ok(input_lanes)
     }
 
-    /// Hands control to an entry: a block of this function when the transfer
-    /// is the entry's only way in, otherwise a tail call to its own function.
+    /// Hands control to an entry: a block of this function when only this
+    /// function's direct transfers reach it, otherwise a tail call to its own
+    /// function.
     fn transfer_to_entry(
         &mut self,
         ctx: &mut NativeFnCtx,
@@ -1968,12 +1912,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 });
                 ctx.current_block = body_block;
                 let body_args = self.entry_capture_args(ctx, executable, entries, *body, env)?;
-                ctx.set_term(Term::TailCall {
-                    ident: CallsiteIdent::from_source(Span::DUMMY),
-                    callee: DirectCallTarget::Local(entry_fns.reference(&mut self.module, *body)),
-                    args: body_args,
-                    is_back_edge: false,
-                });
+                self.transfer_to_entry(ctx, executable, entries, entry_fns, *body, body_args);
                 Ok(())
             }
             BackendTail::Receive(receive) => {
@@ -3288,7 +3227,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         ctx: &mut NativeFnCtx,
         dispatch: &crate::compiler2::ExecutableDispatch,
         node_id: GraphNodeId,
-        helper_ids: &[FnId],
+        clause_block: &mut dyn FnMut(&mut NativeFnCtx, usize) -> BlockId,
         state: &mut DispatchState,
     ) -> Result<(), FatalError> {
         let Some(node) = dispatch.plan().graph.node(node_id) else {
@@ -3305,13 +3244,8 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     ctx.set_term(Term::Unreachable);
                     return Ok(());
                 };
-                let args = state.forwarded_args.clone();
-                ctx.set_term(Term::TailCall {
-                    ident: CallsiteIdent::from_source(Span::DUMMY),
-                    callee: DirectCallTarget::Local(helper_ids[clause_index]),
-                    args,
-                    is_back_edge: false,
-                });
+                let block = clause_block(ctx, clause_index);
+                ctx.set_term(Term::Goto(block, state.forwarded_args.clone()));
                 Ok(())
             }
             DispatchNode::Test {
@@ -3327,7 +3261,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 BranchOrigin::ClauseDispatch,
                 state,
                 &mut |lowerer, ctx, target, state| {
-                    lowerer.lower_dispatch_node(ctx, dispatch, target, helper_ids, state)
+                    lowerer.lower_dispatch_node(ctx, dispatch, target, &mut *clause_block, state)
                 },
             ),
         }
@@ -5272,6 +5206,14 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
     }
 }
 
+/// The clause whose body is the entry, when the entry is a clause body.
+fn clause_entered_at(executable: &BackendExecutable, entry: ControlEntryId) -> Option<&BackendClause> {
+    let BackendBody::Clauses { clauses, .. } = &executable.body else {
+        return None;
+    };
+    clauses.iter().find(|clause| clause.entry == entry)
+}
+
 /// The layout an entry's parameter arrives in. Every parameter a decision, a
 /// receive or a raise hands has one, so a missing layout is a defect upstream.
 fn entry_param_layout(executable: &BackendExecutable, value: ValueId) -> &BackendValueLayout {
@@ -5292,9 +5234,11 @@ struct SplicedExtern {
     resume: ControlEntryId,
 }
 
-/// How one executable's entries become native code. An entry whose only way
-/// in is a single direct transfer is a block of the function that makes that
-/// transfer; every other entry is a function of its own, emitted once.
+/// How one executable's entries become native code. Something outside a
+/// function can arrive in it by a call from elsewhere, by a call's return, or
+/// from the runtime. An entry that only its own function's direct transfers
+/// reach is a block of that function; every other entry is a function of its
+/// own, emitted once.
 #[derive(Default)]
 struct EntryFns {
     ids: HashMap<ControlEntryId, FnId>,
@@ -5302,25 +5246,85 @@ struct EntryFns {
     blocks: HashSet<ControlEntryId>,
 }
 
-impl EntryFns {
-    /// `is_spliced` says which tails are calls that continue in this function
-    /// instead of returning to it: their resume entry is reached by a direct
-    /// transfer like any other.
-    fn for_entries(entries: &[BackendEntry], is_spliced: impl Fn(&BackendTail) -> bool) -> Self {
-        let mut incoming: HashMap<ControlEntryId, Vec<EntryTransfer>> = HashMap::default();
-        for entry in entries {
+/// The machine function an entry belongs to.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Home {
+    /// The executable's own function: its dispatch and its clause bodies.
+    Executable,
+    /// The function the named entry begins.
+    Entry(ControlEntryId),
+}
+
+/// Each entry's incoming transfers, and the homes decided so far.
+struct EntryHomes {
+    incoming: HashMap<ControlEntryId, Vec<(ControlEntryId, EntryTransfer)>>,
+    homes: HashMap<ControlEntryId, Home>,
+    deciding: HashSet<ControlEntryId>,
+}
+
+impl EntryHomes {
+    fn new(entries: &[BackendEntry], clauses: &[BackendClause], is_spliced: impl Fn(&BackendTail) -> bool) -> Self {
+        let mut incoming: HashMap<ControlEntryId, Vec<(ControlEntryId, EntryTransfer)>> = HashMap::default();
+        for (source, entry) in entries.iter().enumerate() {
+            let source = ControlEntryId::from_u32(source as u32);
             let spliced = is_spliced(&entry.tail);
             for (target, transfer) in entry.tail.transfers() {
                 let transfer = match transfer {
                     EntryTransfer::CallReturn if spliced => EntryTransfer::Direct,
                     other => other,
                 };
-                incoming.entry(target).or_default().push(transfer);
+                incoming.entry(target).or_default().push((source, transfer));
             }
         }
-        let blocks = incoming
-            .into_iter()
-            .filter_map(|(entry, transfers)| matches!(transfers.as_slice(), [EntryTransfer::Direct]).then_some(entry))
+        let homes = clauses.iter().map(|clause| (clause.entry, Home::Executable)).collect();
+        Self {
+            incoming,
+            homes,
+            deciding: HashSet::default(),
+        }
+    }
+
+    /// A function of its own unless every transfer that arrives is a direct
+    /// transfer from one and the same function, which then holds it as a block.
+    fn home(&mut self, entry: ControlEntryId) -> Home {
+        if let Some(home) = self.homes.get(&entry) {
+            return *home;
+        }
+        assert!(
+            self.deciding.insert(entry),
+            "entry {entry:?} is reached from itself by direct transfers alone; only a self tail call may close a loop"
+        );
+        let arrivals = self.incoming.get(&entry).cloned().unwrap_or_default();
+        let origins: Vec<Option<Home>> = arrivals
+            .iter()
+            .map(|(source, transfer)| match transfer {
+                EntryTransfer::Direct => Some(self.home(*source)),
+                EntryTransfer::CallReturn | EntryTransfer::Runtime => None,
+            })
+            .collect();
+        let home = match origins.split_first() {
+            Some((Some(first), rest)) if rest.iter().all(|other| *other == Some(*first)) => *first,
+            _ => Home::Entry(entry),
+        };
+        self.deciding.remove(&entry);
+        self.homes.insert(entry, home);
+        home
+    }
+}
+
+impl EntryFns {
+    /// `is_spliced` says which tails are calls that continue in this function
+    /// instead of returning to it: their resume entry is reached by a direct
+    /// transfer like any other.
+    fn for_executable(
+        entries: &[BackendEntry],
+        clauses: &[BackendClause],
+        is_spliced: impl Fn(&BackendTail) -> bool,
+    ) -> Self {
+        let mut homes = EntryHomes::new(entries, clauses, is_spliced);
+        let blocks = (0..entries.len() as u32)
+            .map(ControlEntryId::from_u32)
+            .filter(|entry| homes.home(*entry) != Home::Entry(*entry))
             .collect();
         Self {
             blocks,

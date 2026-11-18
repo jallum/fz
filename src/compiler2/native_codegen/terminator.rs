@@ -685,6 +685,13 @@ fn emit_tail_call_term<M: cranelift_module::Module>(
     if is_back_edge {
         emit_back_edge_yield_check(body, env, callee_sid, &mid_flight_arg_shapes, &native_args);
     }
+    if callee_sid == this_spec_id
+        && let Some(head) = body.cache.loop_head
+    {
+        let head_args: Vec<BlockArg> = native_args.iter().map(|v| BlockArg::Value(*v)).collect();
+        body.b.ins().jump(head, &head_args);
+        return Ok(());
+    }
     body.b.ins().return_call(callee_fref, &native_args);
     Ok(())
 }
