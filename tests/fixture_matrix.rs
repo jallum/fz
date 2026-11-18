@@ -4347,7 +4347,9 @@ fn a_large_list_passed_back_and_forth_crosses_as_one_gift_per_message_on_every_p
             (2, "park", 320),
             (1, "yield", 64_144),
             (1, "yield", 192_144),
-            (1, "yield", 96_144),
+            // 96_144 -> 96_160: a call round a recursion cycle keeps the entering activation's key
+            // at the slots the cycle supplies, and this collection copies 16 bytes more.
+            (1, "yield", 96_160),
             (1, "yield", 48),
             (1, "yield", 48),
             (1, "yield", 48),

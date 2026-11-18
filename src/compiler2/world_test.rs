@@ -695,7 +695,8 @@ fn compiler2_activation_inputs_are_distinct_from_the_canonical_activation_key() 
         function,
         BodyKeying {
             recursive: true,
-            consumes_callable_identity: true
+            consumes_callable_identity: true,
+            cycle_supplied: 0
         }
     ));
     assert!(world.define_input_demand(function, unforwarded_demand(vec![DispatchDemand::Ignore])));
@@ -741,7 +742,8 @@ fn compiler2_an_evidence_row_folds_a_self_nested_closure_the_way_its_key_does() 
         function,
         BodyKeying {
             recursive: false,
-            consumes_callable_identity: true
+            consumes_callable_identity: true,
+            cycle_supplied: 0
         }
     ));
     assert!(world.define_input_demand(function, unforwarded_demand(vec![DispatchDemand::Whole])));
@@ -786,7 +788,8 @@ fn compiler2_recursive_activation_key_ignores_accumulator_list_shape() {
         function,
         BodyKeying {
             recursive: true,
-            consumes_callable_identity: true
+            consumes_callable_identity: true,
+            cycle_supplied: 0
         }
     ));
     assert!(world.define_input_demand(
@@ -828,7 +831,8 @@ fn compiler2_recursive_activation_key_ignores_tuple_accumulator_list_shape() {
         function,
         BodyKeying {
             recursive: true,
-            consumes_callable_identity: true
+            consumes_callable_identity: true,
+            cycle_supplied: 0
         }
     ));
     assert!(world.define_input_demand(
@@ -880,7 +884,8 @@ fn compiler2_activation_input_join_is_quiet_for_absorbed_list_evidence() {
         function,
         BodyKeying {
             recursive: false,
-            consumes_callable_identity: true
+            consumes_callable_identity: true,
+            cycle_supplied: 0
         }
     ));
     assert!(world.define_input_demand(function, unforwarded_demand(vec![DispatchDemand::Whole])));
@@ -969,7 +974,8 @@ fn compiler2_activation_analysis_preserves_prior_input_frontier() {
         caller,
         BodyKeying {
             recursive: true,
-            consumes_callable_identity: true
+            consumes_callable_identity: true,
+            cycle_supplied: 0
         }
     ));
     assert!(world.define_input_demand(caller, unforwarded_demand(vec![DispatchDemand::Whole])));
@@ -977,7 +983,8 @@ fn compiler2_activation_analysis_preserves_prior_input_frontier() {
         callee,
         BodyKeying {
             recursive: true,
-            consumes_callable_identity: true
+            consumes_callable_identity: true,
+            cycle_supplied: 0
         }
     ));
     assert!(world.define_input_demand(callee, unforwarded_demand(vec![DispatchDemand::Whole])));
@@ -1033,7 +1040,8 @@ fn compiler2_recursive_list_shape_key_accepts_joined_list_family_evidence() {
         function,
         BodyKeying {
             recursive: true,
-            consumes_callable_identity: true
+            consumes_callable_identity: true,
+            cycle_supplied: 0
         }
     ));
     assert!(world.define_input_demand(
@@ -1070,7 +1078,8 @@ fn a_repeated_activation_input_contribution_refolds_nothing() {
         function,
         BodyKeying {
             recursive: false,
-            consumes_callable_identity: true
+            consumes_callable_identity: true,
+            cycle_supplied: 0
         }
     ));
     assert!(world.define_input_demand(function, unforwarded_demand(vec![DispatchDemand::Whole])));
@@ -1124,7 +1133,8 @@ fn compiler2_activation_inputs_retract_one_publishers_stale_contribution() {
         function,
         BodyKeying {
             recursive: false,
-            consumes_callable_identity: true
+            consumes_callable_identity: true,
+            cycle_supplied: 0
         }
     ));
     assert!(world.define_input_demand(function, unforwarded_demand(vec![DispatchDemand::Whole])));
@@ -1208,7 +1218,8 @@ fn compiler2_correlated_activation_input_rows_stay_alternatives() {
         function,
         BodyKeying {
             recursive: false,
-            consumes_callable_identity: true
+            consumes_callable_identity: true,
+            cycle_supplied: 0
         }
     ));
     assert!(world.define_input_demand(
@@ -1287,7 +1298,8 @@ fn compiler2_withdrawing_a_publisher_retracts_only_its_rows() {
         function,
         BodyKeying {
             recursive: false,
-            consumes_callable_identity: true
+            consumes_callable_identity: true,
+            cycle_supplied: 0
         }
     ));
     assert!(world.define_input_demand(function, unforwarded_demand(vec![DispatchDemand::Whole])));
@@ -1344,7 +1356,8 @@ fn compiler2_activation_input_rows_widen_past_the_budget() {
         function,
         BodyKeying {
             recursive: false,
-            consumes_callable_identity: true
+            consumes_callable_identity: true,
+            cycle_supplied: 0
         }
     ));
     assert!(world.define_input_demand(function, unforwarded_demand(vec![DispatchDemand::Whole])));
@@ -1388,7 +1401,8 @@ fn compiler2_waiting_job_keeps_activation_input_contributions() {
         function,
         BodyKeying {
             recursive: false,
-            consumes_callable_identity: true
+            consumes_callable_identity: true,
+            cycle_supplied: 0
         }
     ));
     assert!(world.define_input_demand(function, unforwarded_demand(vec![DispatchDemand::Whole])));

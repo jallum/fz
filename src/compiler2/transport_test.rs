@@ -242,6 +242,7 @@ fn transport_descriptors_share_across_root_positions() {
         activation: ActivationSymbol {
             function: add,
             arrow: add_arrow,
+            entry: None,
         },
         need: ExecutableNeed::Value,
     };
@@ -479,21 +480,43 @@ fn bytes_written_by(value: &impl std::hash::Hash) -> Vec<u8> {
 }
 
 #[test]
-fn an_activation_symbol_is_identified_by_its_function_and_arrow_alone() {
+fn an_activation_symbol_is_identified_by_its_function_arrow_and_entry_alone() {
     let mut types = Types::new();
     let int = types.int();
     let arrow = types.arrow(&[int, int], int);
+    let entry_arrow = types.arrow(&[int], int);
     let mut functions = FunctionMap::new();
     let add = functions.reference(ModuleId::GLOBAL, None, "add", 2);
+    let enter = functions.reference(ModuleId::GLOBAL, None, "enter", 1);
 
-    let symbol = ActivationSymbol { function: add, arrow };
+    let entered = ActivationSymbol {
+        function: add,
+        arrow,
+        entry: Some((enter, entry_arrow)),
+    };
+    let own = ActivationSymbol {
+        function: add,
+        arrow,
+        entry: None,
+    };
 
     assert_eq!(
-        bytes_written_by(&symbol),
-        bytes_written_by(&(add, arrow)),
-        "hashing an activation symbol writes its function and arrow and nothing derived from them"
+        bytes_written_by(&entered),
+        bytes_written_by(&(add, arrow, Some((enter, entry_arrow)))),
+        "hashing an activation symbol writes its function, arrow and entry and nothing derived from them"
     );
-    assert_eq!(symbol, ActivationSymbol { function: add, arrow });
+    assert_ne!(
+        entered, own,
+        "the same function at the same arrow is two activations when two different activations entered its cycle"
+    );
+    assert_eq!(
+        own,
+        ActivationSymbol {
+            function: add,
+            arrow,
+            entry: None
+        }
+    );
 }
 
 #[test]
@@ -514,9 +537,30 @@ fn an_activation_symbol_built_from_a_key_is_exactly_the_keys_function_and_arrow(
         ActivationSymbol {
             function: key.activation.function,
             arrow: key.activation.arrow,
+            entry: None,
         }
     );
     assert_eq!(symbol.need, key.need);
+}
+
+#[test]
+fn an_activation_symbol_built_from_a_key_keeps_the_entry_of_the_cycle_the_key_runs_in() {
+    let mut types = Types::new();
+    let int = types.int();
+    let mut functions = FunctionMap::new();
+    let function = functions.reference(ModuleId::GLOBAL, None, "add", 2);
+    let enter = functions.reference(ModuleId::GLOBAL, None, "enter", 1);
+    let entry_arrow = types.arrow(&[int], int);
+    let mut activation = ActivationKey::from_inputs(RootId::for_test(0), function, &[int, int], &mut types);
+    activation.entry = Some((enter, entry_arrow));
+    let key = ExecutableKey {
+        activation,
+        need: ExecutableNeed::Value,
+    };
+
+    let symbol = ExecutableSymbol::new(&key);
+
+    assert_eq!(symbol.activation.entry, Some((enter, entry_arrow)));
 }
 
 /// The cursor a matched rest travels in is the one every binary field reads

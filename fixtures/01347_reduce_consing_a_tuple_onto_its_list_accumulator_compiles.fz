@@ -1,0 +1,13 @@
+#---
+# purpose: "Enum.reduce with a reducer that conses a tuple onto its list accumulator compiles: the accumulator is a list whose elements are tuples of lists"
+# root: main/0
+# oracle: self
+# oracle.stamp: 89ac7daf3e5890be
+#---
+defmodule Main do
+  def main() do
+    IO.inspect(Enum.reduce([1, 2, 3], [], fn x, acc -> [{x, acc} | acc] end))
+  end
+end
+
+Main.main()

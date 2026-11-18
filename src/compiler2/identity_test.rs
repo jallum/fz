@@ -771,3 +771,38 @@ mod reconcile_test {
         );
     }
 }
+
+#[test]
+fn activations_order_by_their_entry_after_their_function_and_arrow() {
+    use super::super::identity::ActivationKey;
+    use super::super::types::Types;
+    use fz_engine::SemanticOrd;
+    use std::cmp::Ordering;
+
+    let mut types = Types::new();
+    let int = types.int();
+    let arrow = types.arrow(&[int], int);
+    let mut functions = FunctionMap::new();
+    let go = functions.reference(ModuleId::GLOBAL, None, "go", 1);
+    let first = functions.reference(ModuleId::GLOBAL, None, "first", 1);
+    let second = functions.reference(ModuleId::GLOBAL, None, "second", 1);
+    let key = |entry| ActivationKey {
+        root: super::super::RootId::for_test(0),
+        function: go,
+        arrow,
+        entry,
+    };
+
+    let own = key(None);
+    let from_first = key(Some((first, arrow)));
+    let from_second = key(Some((second, arrow)));
+
+    assert_eq!(own.semantic_cmp(&own, &types), Ordering::Equal);
+    assert_eq!(own.semantic_cmp(&from_first, &types), Ordering::Less);
+    assert_eq!(from_first.semantic_cmp(&own, &types), Ordering::Greater);
+    assert_eq!(
+        from_first.semantic_cmp(&from_second, &types),
+        first.cmp(&second),
+        "two entries order as their functions do"
+    );
+}

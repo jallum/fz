@@ -2,7 +2,7 @@ use super::*;
 use crate::compiler2::drive::ExecutionContext;
 use crate::compiler2::dump::DumpStage;
 use crate::compiler2::types::TypeVarId;
-use crate::compiler2::{CodeSubmission, Compiler2, ExecutableNeed, RootSubmission};
+use crate::compiler2::{CodeSubmission, Compiler2, ExecutableKey, ExecutableNeed, RootSubmission};
 use crate::dispatch_matrix::pattern::PatternDispatchPlan;
 use crate::fast_hash::HashSet;
 use crate::telemetry::ConfiguredTelemetry;
@@ -906,5 +906,63 @@ fn a_receiver_reaches_beyond_the_implementations_only_where_they_leave_values_ov
     assert!(
         reaches_beyond(&mut types, any, int_or_float),
         "anything else is left over"
+    );
+}
+
+fn executables_of(
+    settled: &mut crate::compiler2::drive_harness::Settled,
+    name: &str,
+    arity: u64,
+) -> Vec<ExecutableKey> {
+    let function = settled.function(name, arity);
+    let root = settled.root();
+    settled
+        .compiler_mut()
+        .product_executable_inventory(root)
+        .expect("the program settles")
+        .into_iter()
+        .filter(|executable| executable.activation.function == function)
+        .collect()
+}
+
+#[test]
+fn a_cycle_is_compiled_as_one_activation_per_member_and_the_non_entry_member_names_its_entry() {
+    let mut settled = crate::compiler2::drive_harness::Drive::fixture(1350).settle();
+    let entry = settled.function("cont", 3);
+
+    let cont = executables_of(&mut settled, "cont", 3);
+    let step = executables_of(&mut settled, "step", 3);
+
+    assert_eq!(
+        cont.len(),
+        1,
+        "the entry's calls back into it stay on its own key: {cont:?}"
+    );
+    assert_eq!(
+        cont[0].activation.entry, None,
+        "an entry activation is not entered by another"
+    );
+    assert_eq!(step.len(), 1, "the member the entry calls is one activation: {step:?}");
+    assert_eq!(
+        step[0].activation.entry.map(|(function, _)| function),
+        Some(entry),
+        "the member the entry calls carries the activation that entered the cycle"
+    );
+    assert_eq!(
+        step[0].activation.entry.map(|(_, arrow)| arrow),
+        Some(cont[0].activation.arrow)
+    );
+}
+
+#[test]
+fn two_entries_into_one_cycle_keep_their_activations_apart() {
+    let mut settled = crate::compiler2::drive_harness::Drive::fixture(1348).settle();
+
+    let steps = executables_of(&mut settled, "reduce_step", 3);
+    let entries: HashSet<_> = steps.iter().map(|step| step.activation.entry).collect();
+
+    assert!(
+        steps.len() > 1 && entries.len() == steps.len(),
+        "three seeds of three shapes enter the reduce cycle three times, and each chain is keyed by its own entry: {steps:?}"
     );
 }

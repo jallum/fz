@@ -74,7 +74,9 @@ const TARGET_FIXTURES: [TargetFixture; 3] = [
         // 826 -> 787: `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
         // 787 -> 772: a first-class callable's boundary demand is not contributed back to its target's inputs, so the target's demand is not derived again for it.
         // 772 -> 775: a case arm's parameter is laid out by its own demand, so each outcome parameter is a position the demand walk reads.
-        runtime_demand_walks: 775,
+        // 775 -> 636: a call round a recursion cycle keeps the entering activation's key at the
+        // slots the cycle supplies, so the reduce families have fewer activations to walk.
+        runtime_demand_walks: 636,
         mainline_runtime_demand_walks: 6252,
         mainline_runtime_demand_door: ObservationDoor::Interp,
     },
@@ -92,7 +94,8 @@ const TARGET_FIXTURES: [TargetFixture; 3] = [
         // 669 -> 671: the same cause.
         // 671 -> 617: the same cause as `00420_enum_take_drop_split` above.
         // 617 -> 620: as for the first fixture.
-        runtime_demand_walks: 620,
+        // 620 -> 590: the same cause.
+        runtime_demand_walks: 590,
         mainline_runtime_demand_walks: 6378,
         mainline_runtime_demand_door: ObservationDoor::Interp,
     },
@@ -117,7 +120,9 @@ const TARGET_FIXTURES: [TargetFixture; 3] = [
         // run time, so its result stays `binary` and callers need no second `bitstring`
         // activation.
         // 242 -> 212: `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
-        runtime_demand_walks: 212,
+        // 212 -> 200: a call round a recursion cycle keeps the entering activation's key at the
+        // slots the cycle supplies, so the reduce families have fewer activations to walk.
+        runtime_demand_walks: 200,
         mainline_runtime_demand_walks: 2971,
         mainline_runtime_demand_door: ObservationDoor::Run,
     },
@@ -2579,19 +2584,25 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             // blocked_completions 221 -> 222: what a program can raise is a fact of that
             // program, so the entry publishes its own program's first raise and is analysed
             // once more on it, to the same answer.
-            evaluations: 937,
+            // 937 -> 955, initial 701 -> 721, content_caused 236 -> 234, changed outputs
+            // 856 -> 874, blocked_completions 222 -> 220: a call that hands over a struct, tuple,
+            // list or map asks its callee's recursion verdict before it is keyed. Ten callees in
+            // the cone that words an uncaught raise are asked for the first time (ten
+            // `DeriveRecursive` and ten `DeriveStaticReach`), and two activations are no longer
+            // analysed.
+            evaluations: 955,
             runtime_demand_evaluations: 115,
-            initial: 701,
-            content_caused: 236,
+            initial: 721,
+            content_caused: 234,
             readiness_caused: 0,
             concluded_caused: 0,
             uncaused: 0,
-            changed_outputs: 856,
+            changed_outputs: 874,
             // unchanged_outputs 85 -> 86: `String.Chars`' binary impl is selected for any bitstring, so its shared activation is typed `bitstring` with two clauses, and a caller that holds a `binary` gets its own `String.Chars.Binary.to_string(binary)` activation with the raise clause trimmed.
             // 86 -> 93 and blocked_completions 227 -> 234: the seven content-caused reach evaluations.
             unchanged_outputs: 81,
             already_pending: 9,
-            blocked_completions: 222,
+            blocked_completions: 220,
         },
         "{fixture}: the reactive RuntimeDemand formula work or its causal classification moved"
     );
@@ -2623,8 +2634,10 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             ("blocked_waiter_expansion", 175),
             // 534 -> 535: the entry's one more analysis, queued by its own program's first
             // raise.
-            ("changed_revision_wake", 535),
-            ("gate_expansion", 226),
+            // 535/226 -> 543/236 (+18): the recursion verdicts and reaches of the ten callees
+            // a constructor-carrying call asks for, less the two activations no longer analysed.
+            ("changed_revision_wake", 543),
+            ("gate_expansion", 236),
             ("ignition", 1),
         ]),
         "{fixture}: the jobs run, by the reason that queued each"
@@ -2640,7 +2653,8 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             // finds the job already queued.
             // 37 -> 38: the entry's one more analysis asks again for the job it waits on, which
             // is already queued.
-            ("gate_expansion", 38),
+            // 38 -> 43: five calls ask a recursion verdict whose job is already queued.
+            ("gate_expansion", 43),
         ]),
         "{fixture}: requests that found their job already queued"
     );
@@ -2684,14 +2698,17 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
         // rises 3 -> 4 (+1). Between completions (-7): the settled reach products that woke
         // `DeriveRecursive` are gone. `wake_moved_waiters` wakes no job in this fixture.
         // (584, 5) -> (585, 5): the entry's first raise wakes the entry, its handler's reader.
-        (585, 5),
+        // (585, 5) -> (593, 5): the eight more changed-revision wakes of the recursion verdicts
+        // and reaches a constructor-carrying call asks for.
+        (593, 5),
         "{fixture}: wake records of the completions, and of the external changes between them"
     );
     assert_eq!(
         ledger.requested(fz_engine::WorkStart::ChangedRevisionWake),
         // 566 -> 591: the 585 + 5 wake records above and the one wake the arbiter's own step
         // records.
-        591,
+        // 591 -> 599 with the eight more wake records.
+        599,
         "{fixture}: every wake record is one request at the door"
     );
     let products = report.product_totals();
@@ -2719,8 +2736,21 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
                 effect_identity("List.reduce_cont/3", "fp[F] (list(int), int, a2) -> r0"),
                 1,
             ),
+            // `reduce_step` is a member of the cycle `reduce_cont` enters: its accumulator slot
+            // is keyed `any` and its identity names the entering activation.
             (
-                effect_identity("List.reduce_step/3", "fp[F] (list(int), {:cont, int}, a2) -> r0",),
+                serde_json::json!({
+                    "arrow": "fp[F] (list(int), any, a2) -> r0",
+                    "cycle_entry": {
+                        "arrow": "fp[F] (list(int), int, a2) -> r0",
+                        "function_id": "List.reduce_cont/3",
+                    },
+                    "function_id": "List.reduce_step/3",
+                    "kind": "executable_effects",
+                    "need": "value",
+                    "root_id": 0,
+                })
+                .to_string(),
                 1,
             ),
         ]),

@@ -1349,7 +1349,11 @@ const SCENARIOS: [&str; 5] = [
 // The range/map row 79 -> 77 and the predicate row 201 -> 199: a library exception's module words its own message, so the raise
 // carries no `inspect` to build the text.
 // The take/drop/split row 260 -> 258: an exception record nothing asks about keys by its class.
-const POPULATION_BASELINES: [(u64, u64); 3] = [(61, 0), (196, 32), (241, 38)];
+// A call round a recursion cycle keeps the entering activation's key at the slots the cycle
+// supplies, so the reduce families have fewer activations: the range/map row falls 61 -> 57, the
+// predicate row 196 -> 192 and the take/drop/split row 241 -> 190. The construction-wrapper column
+// is unchanged.
+const POPULATION_BASELINES: [(u64, u64); 3] = [(57, 0), (192, 32), (190, 38)];
 
 fn target_edit_sequence(fixture: &str) -> (String, [&'static str; 3]) {
     let fixture = std::fs::read_to_string(fixture).unwrap_or_else(|error| panic!("read fixture {fixture}: {error}"));
@@ -1609,7 +1613,10 @@ fn target_fixture_reports_exercise_all_five_request_scenarios() {
                 // 00567 cold 168 -> 136: `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
                 // 00420 cold 678 -> 640: `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
                 // 00571 cold 528 -> 474 and 00420 cold 640 -> 625: a first-class callable's boundary demand is not contributed back to its target's inputs, so the target's demand is not derived again for it.
-                [[136, 0, 0, 1, 4], [474, 0, 0, 1, 4], [625, 0, 0, 1, 4]][fixture_index][scenario],
+                // 00567 cold 136 -> 124 and 00571 cold 474 -> 444 and 00420 cold 625 -> 487: a call round a recursion cycle keeps the entering
+                // activation's key at the slots the cycle supplies, so the reduce families have
+                // fewer activations and so fewer bodies to walk.
+                [[124, 0, 0, 1, 4], [444, 0, 0, 1, 4], [487, 0, 0, 1, 4]][fixture_index][scenario],
                 "{fixture} {name}: count actual body walks, not scheduler completions; all scenarios: {:?}",
                 reports
                     .iter()
@@ -1869,7 +1876,10 @@ const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64, u64); 7] = [
     // find the reach missing.
     // 115 -> 117 DeriveStaticCallees: the ordering operators' `binary` clause adds its `fz_op_*_bb` activation and splits the catch-all's `compare/2` activations, the same way the int and float clauses already do.
     // 00420: 68 -> 56 DeriveRecursive evaluations: `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
-    ("fixtures/00420_enum_take_drop_split.fz", 56, 0, 112, 0, 103),
+    // 56 -> 57 DeriveRecursive, 112 -> 113 DeriveStaticCallees, 103 -> 104 DeriveStaticReach: a call that
+    // hands over a struct, tuple, list or map asks its callee's recursion verdict before it is keyed, and
+    // `Enumerable.Range.count/1` is handed a `Range` here; nothing asked its verdict before.
+    ("fixtures/00420_enum_take_drop_split.fz", 57, 0, 113, 0, 104),
     // 00607-00610 pin the shared-reach shape directly. Four callers (p1-p4)
     // share one call chain of depth eight. Each caller's reach walks the chain's
     // edge facts itself and reads no other reach, so the work is the same
@@ -2314,7 +2324,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // `IO.puts/1` is keyed once more for the text an exception's module hands it.
         // 81 -> 76: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
         // 76 -> 65: `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
-        activations: lifecycle(65, 65, 0),
+        // 65 -> 63 distinct: a call round a recursion cycle keeps the entering activation's key at the slots the cycle supplies, so the reduce families have fewer activations.
+        activations: lifecycle(63, 63, 0),
         // fz-kdt.183: 73 -> 74 distinct, 75 -> 76 first appearances,
         // retractions flat -- the recovered activation brings its call edge.
         //
@@ -2335,7 +2346,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // 94 -> 92: the raise no longer calls `inspect` to build its text.
         // 92 -> 87: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
         // 87 -> 75: `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
-        callsites: lifecycle(75, 75, 0),
+        // 75 -> 69 distinct: the same cycle rule, so the callsites that named those activations fall with them.
+        callsites: lifecycle(69, 69, 0),
         // fz-kdt.183: 17 -> 30 shift wakes and 19 -> 127 rebased completions.
         // The RISING row of this landing, and the cause is that `InputDemand`
         // is now a fact that MOVES: the forwarded demand of a function whose
@@ -2437,7 +2449,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // analysed, and `panic/1` with its extern stands where `raise/2` and its extern stood.
         // 210 -> 197: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
         // 197 -> 176: `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
-        analyze_evaluations: 176,
+        // 176 -> 174: a call round a recursion cycle keeps the entering activation's key at the slots the cycle supplies, so the reduce families have fewer activations.
+        analyze_evaluations: 174,
         analyze_zero_change: 3,
         // Macro readiness is a retained content dependency.
         // fz-kdt.182 removes the same 23 absorbed-identity evaluations from
@@ -2534,7 +2547,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // 825 -> 831: the ordering operators' `binary` clause adds its `fz_op_*_bb` activation and splits the catch-all's `compare/2` activations, the same way the int and float clauses already do.
         // 831 -> 819: a module is started once its enclosing scope exists, so each module's definition runs once fewer.
         // 819 -> 811: `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
-        total_evaluations: 811,
+        // 811 -> 809: a call round a recursion cycle keeps the entering activation's key at the slots the cycle supplies, so the reduce families have fewer activations.
+        total_evaluations: 809,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures/00571_enum_predicate_search.fz",
@@ -2562,7 +2576,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // and its Enum wrappers are keyed once per reducer lambda; no retractions.
         // 202 -> 203: `IO.puts/1` is keyed once more for the text an exception's module hands it.
         // 203 -> 200: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
-        activations: lifecycle(200, 200, 0),
+        // 200 -> 196 distinct: a call round a recursion cycle keeps the entering activation's key at the slots the cycle supplies, so the reduce families have fewer activations.
+        activations: lifecycle(196, 196, 0),
         // fz-kdt.106: 215 -> 212 distinct (248 -> 245 first appearances,
         // retractions unchanged): the one vanished activation was named from
         // three callsites.
@@ -2584,7 +2599,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // per reducer lambda).
         // 258 -> 256: the raise no longer calls `inspect` to build its text.
         // 256 -> 252: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
-        callsites: lifecycle(252, 252, 0),
+        // 252 -> 249 distinct: the same cycle rule.
+        callsites: lifecycle(249, 249, 0),
         // fz-kdt.183: 1 -> 5 shift wakes, 2 -> 22 rebased completions.
         // `InputDemand` is a fact that MOVES -- a function whose forwarding
         // cone is still filling in publishes a demand that climbs the lattice,
@@ -2661,7 +2677,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // 614 -> 607: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
         // 607 -> 608: recursion verdicts publish on the schedule of the reach facts, and this
         // fixture's schedule-dependent convergence repeats one analysis more.
-        analyze_evaluations: 608,
+        // 608 -> 595: a call round a recursion cycle keeps the entering activation's key at the slots the cycle supplies, so the reduce families have fewer activations.
+        analyze_evaluations: 595,
         // fz-kdt.91: with clause lists canonical (source order), one
         // completion that used to publish a spuriously "changed"
         // EntryReachability (same clause set, new arrival order) now
@@ -2681,7 +2698,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // `List.reduce_while_step/3` runs waiting for
         // `List.reduce_while_cont/3`'s concluded return once cont concludes
         // and stops being its partner.
-        analyze_zero_change: 28,
+        // 28 -> 25: a shorter ascent, against a smaller denominator.
+        analyze_zero_change: 25,
         // 1364 -> 1363: the same single evaluation, seen from the whole-run
         // denominator. fz-kdt.106: 1363 -> 1350, the same thirteen.
         // fz-kdt.127: 1350 -> 1349, the same single evaluation.
@@ -2769,7 +2787,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // 1168 -> 1222: 66 `DeriveStaticReach` and 1 `DeriveExecutableReach` evaluations, 14
         // fewer `DeriveRecursive` and 1 more `AnalyzeActivation`.
         // 1222 -> 1213: a module is started once its enclosing scope exists, so each module's definition runs once fewer.
-        total_evaluations: 1213,
+        // 1213 -> 1200: a call round a recursion cycle keeps the entering activation's key at the slots the cycle supplies, so the reduce families have fewer activations.
+        total_evaluations: 1200,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures/00420_enum_take_drop_split.fz",
@@ -2862,7 +2881,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // 261 -> 262: the library exception the fixture's failures raise adds one activation.
         // 262 -> 261: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
         // 261 -> 245: `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
-        activations: lifecycle(245, 245, 0),
+        // 245 -> 227 distinct: a call round a recursion cycle keeps the entering activation's key at the slots the cycle supplies, so the reduce families have fewer activations.
+        activations: lifecycle(227, 227, 0),
         // fz-kdt.105: 379 -> 378 distinct (391 -> 390 first appearances). The
         // narrowed `drop_while` accumulator leaves one fewer distinct callsite
         // summary -- the wide arm the four lambda specializations were keyed on
@@ -2924,7 +2944,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // record nothing asks about keys by its class.
         // 443 -> 440: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
         // 440 -> 422: `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
-        callsites: lifecycle(422, 422, 0),
+        // 422 -> 388 distinct: the same cycle rule.
+        callsites: lifecycle(388, 388, 0),
         // fz-kdt.183: 6 -> 25 shift wakes, 10 -> 77 rebased completions --
         // the moving `InputDemand` fact, same cause as on
         // `enum_predicate_search` above. fz-kdt.192 leaves this row FLAT:
@@ -3104,7 +3125,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // 740 -> 738: recursion verdicts publish on the schedule of the reach facts, and this
         // fixture's schedule-dependent convergence repeats two analyses fewer.
         // 738 -> 691: `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
-        analyze_evaluations: 691,
+        // 691 -> 665: a call round a recursion cycle keeps the entering activation's key at the slots the cycle supplies, so the reduce families have fewer activations.
+        analyze_evaluations: 665,
         analyze_zero_change: 23,
         // fz-afu.2: 2360 -> 1949. A never-run job whose gate names a fact
         // still missing no longer starts to discover that fact missing --
@@ -3199,7 +3221,8 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         // 1834 -> 1838: the ordering operators' `binary` clause adds its `fz_op_*_bb` activation and splits the catch-all's `compare/2` activations, the same way the int and float clauses already do.
         // 1838 -> 1828: a module is started once its enclosing scope exists, so each module's definition runs once fewer.
         // 1828 -> 1687: `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
-        total_evaluations: 1687,
+        // 1687 -> 1663: a call round a recursion cycle keeps the entering activation's key at the slots the cycle supplies, so the reduce families have fewer activations.
+        total_evaluations: 1663,
     },
 ];
 

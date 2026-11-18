@@ -1,0 +1,15 @@
+#---
+# purpose: "Reducers that put the accumulator in different tuple slots compile side by side: each reduce keeps the slot its own reducer fills"
+# root: main/0
+# oracle: self
+# oracle.stamp: 997c3ab483e41044
+#---
+defmodule Main do
+  def main() do
+    IO.inspect(Enum.reduce([1, 2], :start, fn x, acc -> {x, acc} end))
+    IO.inspect(Enum.reduce([3, 4], :other, fn x, acc -> {acc, x} end))
+    IO.inspect(Enum.reduce([5, 6], {}, fn x, acc -> {x, acc} end))
+  end
+end
+
+Main.main()

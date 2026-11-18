@@ -173,10 +173,13 @@ fn a_caller_outside_a_ring_of_three_reads_its_return_type_once_at_the_final_revi
 /// analyses `inspect` and `Binary.to_string` to build the failure's text.
 ///
 /// 154 -> 142: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
-const NESTED_DECODERS_ANALYSES: u64 = 142;
-/// The distinct activations of `array_value`: one for each shape of accumulator
-/// the decoders pass it, however many steps the climb takes.
-const NESTED_DECODERS_ARRAY_VALUE_ACTIVATIONS: usize = 2;
+///
+/// 142 -> 118: a call round a recursion cycle keeps the entering activation's key at the slots
+/// the cycle supplies, so the decoders' accumulators no longer key an activation per rung.
+const NESTED_DECODERS_ANALYSES: u64 = 118;
+/// The distinct activations of `array_value`: the cycle supplies the decoders'
+/// accumulator, so there is one however many steps the climb takes.
+const NESTED_DECODERS_ARRAY_VALUE_ACTIVATIONS: usize = 1;
 
 #[test]
 fn nested_recursive_decoders_climb_inside_their_group_without_a_ladder_of_activations() {
@@ -191,7 +194,7 @@ fn nested_recursive_decoders_climb_inside_their_group_without_a_ladder_of_activa
     assert_eq!(
         climb.activations_of(array_value).len(),
         NESTED_DECODERS_ARRAY_VALUE_ACTIVATIONS,
-        "array_value gets an activation per accumulator shape, not one per unfinished step"
+        "array_value gets the one activation its entry names, not one per unfinished step"
     );
 }
 

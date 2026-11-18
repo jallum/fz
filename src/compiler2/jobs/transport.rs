@@ -733,6 +733,7 @@ fn exact_demand_resolution_symbols<'a>(
             .filter(|resolution| {
                 resolution.activation.function == target.activation.function
                     && resolution.activation.arrow == target.activation.arrow
+                    && resolution.activation.entry == target.activation.entry
             })
         {
             if !resolutions.contains(&resolution) {
@@ -2498,6 +2499,7 @@ fn executable_key_for_transport_position(root: RootId, position: &TransportPosit
             root,
             function: symbol.activation.function,
             arrow: symbol.activation.arrow,
+            entry: symbol.activation.entry,
         },
         need: symbol.need,
     }

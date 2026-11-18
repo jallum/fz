@@ -14,7 +14,7 @@ use super::namespace::{Namespace, NamespaceSymbol};
 use super::quoted_surface::ScopeSurface;
 use super::source::{Horizon, QuotedSourceRoot};
 use super::type_expr::TypeDefBody;
-use super::types::Ty;
+use super::types::{Ty, Types};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ModuleId(u32);
@@ -99,6 +99,24 @@ pub struct ActivationKey {
     /// resolved, NOT `none()` (⊥). `none`, like `any`, must be EARNED, never a
     /// fallback for an unknown (fz-f98.14.10.1). Read the inputs via `inputs`.
     pub arrow: Ty,
+    /// The activation that entered the call cycle this one runs inside, when
+    /// it is not that activation itself.
+    pub entry: Option<(FunctionId, Ty)>,
+}
+
+/// Orders the activations that entered a call cycle: none first, then by
+/// function and arrow.
+pub(crate) fn cmp_activation_entry(
+    types: &Types,
+    a: Option<(FunctionId, Ty)>,
+    b: Option<(FunctionId, Ty)>,
+) -> std::cmp::Ordering {
+    match (a, b) {
+        (None, None) => std::cmp::Ordering::Equal,
+        (None, Some(_)) => std::cmp::Ordering::Less,
+        (Some(_), None) => std::cmp::Ordering::Greater,
+        (Some((f, x)), Some((g, y))) => f.cmp(&g).then_with(|| types.cmp_activation_ty(x, y)),
+    }
 }
 
 impl ActivationKey {
@@ -126,7 +144,12 @@ impl ActivationKey {
         // must be earned, never a fallback for an unknown (fz-f98.14.10.1).
         let result = types.result_alpha();
         let arrow = types.arrow_owned(addressed, result);
-        Self { root, function, arrow }
+        Self {
+            root,
+            function,
+            arrow,
+            entry: None,
+        }
     }
 
     /// The canonical input vector — the params side of `arrow`. This is the

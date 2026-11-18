@@ -1071,3 +1071,38 @@ fn process_exited_says_whether_the_process_failed() {
         );
     }
 }
+
+#[test]
+fn an_activation_that_entered_a_cycle_names_the_entry_in_its_identity() {
+    use crate::compiler2::{ActivationKey, FunctionId, RootId, Types};
+    let mut types = Types::new();
+    let int = types.int();
+    let arrow = types.arrow(&[int], int);
+    let own = ActivationKey {
+        root: RootId::for_test(0),
+        function: FunctionId::from_coordinate(1),
+        arrow,
+        entry: None,
+    };
+    let entered = ActivationKey {
+        entry: Some((FunctionId::from_coordinate(2), arrow)),
+        ..own
+    };
+
+    let (mut plain, mut nested) = (String::new(), String::new());
+    write_activation_key(&mut plain, &own);
+    write_activation_key(&mut nested, &entered);
+
+    assert!(
+        !plain.contains("cycle_entry"),
+        "an activation nobody entered names no entry: {plain}"
+    );
+    assert_eq!(
+        nested,
+        format!(
+            "{plain},\"cycle_entry\":{{\"function_id\":2,\"arrow\":{}}}",
+            arrow.as_u32()
+        ),
+        "the entry is a nested identity beside the activation's own"
+    );
+}

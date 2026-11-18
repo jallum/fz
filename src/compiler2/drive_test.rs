@@ -12841,8 +12841,11 @@ const SOURCE_ORDER_BLIND_ESCAPES: &[&str] = &[];
 /// `01527_list_literal_trailing_call` checks its five results with `||`, a
 /// `case` on `nil`, `false` and a catch-all: `case` 15 -> 20 plans, 15 -> 20
 /// unreadable.
+/// A call round a recursion cycle keeps the entering activation's key at the
+/// slots the cycle supplies, so the reduce families have fewer activations and
+/// so fewer plans: `entry` 128 -> 115 plans, 118 -> 107 unreadable.
 const SOURCE_ORDER_PLANS_ON_THE_CENSUS: &[(&str, usize, usize)] =
-    &[("case", 20, 20), ("entry", 128, 118), ("receive", 2, 0)];
+    &[("case", 20, 20), ("entry", 115, 107), ("receive", 2, 0)];
 
 /// The subjects at which seating `early` before `late` lets a value reach a
 /// body that never named it: the two arms put one and the same question there,
@@ -13337,130 +13340,86 @@ fn compiler2_no_value_reaches_a_construction_member_that_never_named_it() {
 /// before it reads the escapes, and pins it, so a row cannot go blind in
 /// silence.
 ///
-/// The list-tail reading (fz-kdt.144) replaced the tuple-era population, which
-/// fz-kdt.132 emptied and fz-kdt.138 then made empty by construction. The first
-/// seven rows are that tuple-era population, kept at 0 because a table that
-/// only lists what escapes cannot say that anything stopped escaping.
+/// The count is matched `Region::Type` questions, and those only arise inside a
+/// member selection, so what fixes it is how many selections a program runs. A
+/// boxed closure call selects ONCE: the interpreter reads the call decision it
+/// recorded rather than selecting a member to find the target executable and
+/// selecting again to encode the inputs. A DIRECT closure call selects NO member
+/// at all, because the target is named and its captures come from the callee
+/// value.
 ///
-/// **`00277_enum_tier0_fixture` and `enum_predicate_search` are GONE from this
-/// table, and the observation counter is what found them.** Both held
-/// fz-kdt.179's and fz-kdt.183's cures; both now observe ZERO at every arrival
-/// this table drove them at. Read off `interp --dump backend=`, the cause is
-/// the same for both and it is fz-kdt.199: `00277` publishes five construction
-/// wrappers and `enum_predicate_search` publishes 32, and EVERY one
-/// of them is single-member with no selection plan, so
-/// `select_construction_member` takes its `None if members.len() == 1` branch
-/// and no dispatch runs. The cures are real and their fixtures no longer build
-/// the shape that shows them.
+/// Every row reads 0 escapes, each on a fixture that publishes multi-member
+/// construction wrappers with a selection plan, so a permuted wrapper or arm
+/// order really does reseat the members a value is routed among.
+/// `01429_closure_capture_requirement_projection` holds all five arrivals; the
+/// others hold the settled one. A fixture whose wrappers are all single-member
+/// observes ZERO, because `select_construction_member` takes its
+/// `None if members.len() == 1` branch and no dispatch runs: the reduce
+/// fixtures `00183`, `00419`, `00420` and `00277` are of that kind, since a
+/// call inside a recursion cycle keys the supplied slots from the cycle's entry.
+/// `01450_dispatch_list_head_separates` reads its two observations from a
+/// dispatch plan rather than a wrapper, and its header says why the mixed list
+/// never reaches the `[:false | :true]` arm; this row holds that sentence to
+/// the tree.
 ///
-/// WHERE THE SEVEN BLIND ROWS WENT. `00277`'s three wrapper orders and its
-/// `arms:6` moved to `behavior/enum_take_drop_split`, which still builds what
-/// they were written to watch: 23 of its 38 wrappers are multi-member WITH a
-/// selection plan, so a permuted wrapper or arm order really does reseat the
-/// members a value is routed among, and it observes 375 at each of those four
-/// arrivals. `enum_predicate_search`'s `arms:6` moved to `00419_enum_take_mixed`
-/// -- fz-kdt.183's cure was about two list arms whose ELEMENTS differ, and that
-/// is `enum_take_mixed`'s subject; all four of its wrappers are two-member with
-/// a selection plan, and it observes 36 under `arms:6`. The two SETTLED rows
-/// were DELETED rather than re-homed, because the settled arrival is already
-/// held by the six settled rows above them and a re-homing would have been a
-/// duplicate row, not a kept property.
-///
-/// WHAT THE OLD `00277` ROWS RECORDED, kept here because the table no longer
-/// can. Its construction wrapper's member-selection plan for
-/// `Enum.reverse(1..7//2, [:tail])`'s reducer used to seat `list(int)` ahead of
-/// `list(int | :tail)`, so the accumulator `[1, :tail]` and its growth passed
-/// `list(int)`'s head test and ran the body compiled for `[integer]` -- 12
-/// escapes at the settled arrival, 12 under `arms:6` and `arms:reverse`, 0
-/// under every wrapper order. stdout was right on every door because the
-/// accumulator lane is `ValueRef` in both bodies (boxed element access, the
-/// fz-kdt.131 correlation nobody proved), so the escape was latent. Member
-/// selection now runs through `routable_alternatives` (fz-kdt.179): the
-/// covering member stands in for `list(int)`, the drop takes it, and every
-/// arrival read 0 -- until fz-kdt.199 left the fixture with nothing to select
-/// among at all.
-///
-/// WHAT THE OLD `enum_predicate_search` ROWS RECORDED. The `arms:6` row was
-/// fz-kdt.131's facet-3 pair -- two list arms whose heads overlap and neither
-/// of whose surfaces contains the other -- measured on the production path for
-/// the first time, and fz-kdt.183 cured it 1 -> 0. The pair existed because one
-/// `List.reduce_while_step/3` key stood for two callers whose list elements
-/// differ; with the element in the key the two arms are two keys and neither is
-/// blind to the other's values. fz-kdt.131 has no reproducer in this tree and
-/// must decide one -- the facet-3 shape is still constructible, this fixture
-/// just no longer builds it.
-///
-/// A RATCHET, not a blessing. Every row reads 0 escapes now, each holding a
-/// fixture and arrival that once escaped or could regress; a count this table
-/// does not carry -- in either direction, and in either column -- is either a
-/// new latent miscompile, a cure, or a fixture that stopped exercising the
-/// property, and all three want the table edited deliberately rather than a
-/// number re-blessed.
-///
-/// fz-kdt.120: `enum_take_drop_split` reads 375 -> 373 OBSERVATIONS at all six
-/// of its arrivals, escapes flat at 0. The denominator moved because the plan
-/// shape did. With the fz-f98.16 empty-list veto gone,
-/// `List.reduce_while_step/3` keys on the accumulator the fold really carries,
-/// `{:cont | :halt, []} | {:cont, [int]}`, where the veto had erased the seed
-/// rung; the body's two rungs must then be told apart, so the artifact grows an
-/// entry clause dispatch asking `tuple_arity(2)` and `equal(:cont)`/
-/// `equal(:halt)`. Measured on the `--dump backend=` canon: +2 dispatch plans,
-/// `tuple_arity` questions 21 -> 28, `equal` +2, `Region::Type` questions FLAT
-/// at 62, executables flat at 237, and interp and run stdout byte-identical.
-/// Two evaluations that used to reach a matched `Region::Type` question are
-/// settled by that clause dispatch instead, which is the denominator changing
-/// under the row and not the escape count moving. fz-tfn.26 then coalesces
-/// fifteen content-caused analyses on this combined stack; eleven of those runs had
-/// reached a matched `Region::Type` question, so each affected row's
-/// observation denominator falls 373 -> 362 while escapes stay at zero.
-/// Exact input alternatives retain separate callable surfaces, so runtime
-/// member selection observes more type questions while every escape stays zero.
-///
-/// WHAT SETS EACH DENOMINATOR. The count is matched `Region::Type` questions,
-/// and those only arise inside a member selection, so what fixes it is how
-/// many selections a program runs. Two facts decide that. A boxed closure
-/// call selects ONCE: the interpreter reads the call decision it recorded
-/// rather than selecting a member to find the target executable and selecting
-/// again to encode the inputs. A DIRECT closure call selects NO member at all,
-/// because the target is named and its captures come from the callee value.
-///
-/// So a fixture whose closure calls are all boxed counts every one of them
-/// (`00418_enum_count_range` has 2 closure calls, `00183_enum_take_list_range`
-/// 4), while a fixture with both counts only its boxed share:
-/// `enum_take_drop_split` has 65 closure calls, 53 of them direct, and the
-/// twelve that remain are what its count is measured over.
-///
-/// fz-kdt.48.10: ten rows fall, 64 -> 54 and 265 -> 225, escapes flat at 0.
-/// `dispatch_columns` now asks a SEPARATING input before one the arms only
-/// overlap at, so a value bound for the second arm of `List.reduce_while_step/3`'s
-/// `delivered_resume` selection is turned away by the first arm's closure
-/// question instead of first answering its accumulator question. That is one
-/// matched question fewer per such selection -- the denominator falling because
-/// the plan asks less, not because anything stopped being looked at. Every
-/// value reaches the same member it reached before: the column order permutes a
-/// row's conjuncts and leaves each arm admitting exactly the set it admitted.
-const SURFACE_MEMBERSHIP_CENSUS: [(&str, &str, usize, usize); 12] = [
-    ("fixtures/00183_enum_take_list_range.fz", "", 54, 0),
-    ("fixtures/00230_enum_take_chained.fz", "", 54, 0),
-    ("fixtures/00418_enum_count_range.fz", "", 9, 0),
-    ("fixtures/00419_enum_take_mixed.fz", "", 54, 0),
-    ("fixtures/00420_enum_take_drop_split.fz", "", 225, 0),
-    ("fixtures/01638_unused_range_binding.fz", "", 9, 0),
-    // fz-kdt.187: the four permuted arrivals `00277_enum_tier0_fixture` used to
-    // hold, re-homed onto the fixture that still selects among members.
-    ("fixtures/00420_enum_take_drop_split.fz", "arms:6", 225, 0),
-    ("fixtures/00420_enum_take_drop_split.fz", "wrappers:1", 225, 0),
-    ("fixtures/00420_enum_take_drop_split.fz", "wrappers:6", 225, 0),
-    ("fixtures/00420_enum_take_drop_split.fz", "wrappers:reverse", 225, 0),
-    // fz-kdt.187: `enum_predicate_search`'s `arms:6` row, re-homed onto the
-    // fixture whose list arms still differ at the element.
-    ("fixtures/00419_enum_take_mixed.fz", "arms:6", 54, 0),
-    // The fixture written for fz-kdt.131's facet-3 pair reads 0: its header
-    // says why (the fold hands the TAIL to the recursive dispatch, so the
-    // mixed list never reaches the `[:false | :true]` arm), and this row is
-    // what holds that sentence to the tree.
-    // fz-sc8.44: 4 -> 2 observations. The trimmed plans no longer ask the
-    // type questions the activation's input types already answer.
+/// A RATCHET, not a blessing. A count this table does not carry -- in either
+/// direction, and in either column -- is either a new latent miscompile, a
+/// cure, or a fixture that stopped exercising the property, and all three want
+/// the table edited deliberately rather than a number re-blessed.
+const SURFACE_MEMBERSHIP_CENSUS: [(&str, &str, usize, usize); 14] = [
+    ("fixtures/01429_closure_capture_requirement_projection.fz", "", 34, 0),
+    (
+        "fixtures/01429_closure_capture_requirement_projection.fz",
+        "arms:6",
+        34,
+        0,
+    ),
+    (
+        "fixtures/01429_closure_capture_requirement_projection.fz",
+        "wrappers:1",
+        34,
+        0,
+    ),
+    (
+        "fixtures/01429_closure_capture_requirement_projection.fz",
+        "wrappers:6",
+        34,
+        0,
+    ),
+    (
+        "fixtures/01429_closure_capture_requirement_projection.fz",
+        "wrappers:reverse",
+        34,
+        0,
+    ),
+    ("fixtures/00613_enum_over_runtime_typed_values.fz", "", 5, 0),
+    ("fixtures/01032_mapset_collects_and_answers_in.fz", "", 18, 0),
+    (
+        "fixtures/01125_a_never_returning_closure_call_over_decoded_records_asks_nothing_of_the_boxed_return.fz",
+        "",
+        12,
+        0,
+    ),
+    (
+        "fixtures/01130_a_reducer_wrapped_in_a_new_closure_on_each_lap_compiles_and_reduces.fz",
+        "",
+        6,
+        0,
+    ),
+    (
+        "fixtures/01135_two_reduces_over_one_value_through_a_user_enumerable_each_keep_their_own_accumulator_type.fz",
+        "",
+        6,
+        0,
+    ),
+    (
+        "fixtures/01348_two_reduces_sharing_one_reducer_function_compile.fz",
+        "",
+        8,
+        0,
+    ),
+    ("fixtures/01425_callable_union_capture_containment.fz", "", 6, 0),
+    ("fixtures/00626_map_fetch_and_update_agree_with_elixir.fz", "", 10, 0),
     ("fixtures/01450_dispatch_list_head_separates.fz", "", 2, 0),
 ];
 
@@ -13473,25 +13432,20 @@ const SURFACE_MEMBERSHIP_CENSUS: [(&str, &str, usize, usize); 12] = [
 /// permuted wrapper order -- and an identical one under no setting, which is
 /// the inertness claim on the same comparand.
 ///
-/// `enum_take_drop_split` is the subject because its wrappers carry members
-/// keyed on accumulator tuples that differ only at a list position -- pairs
-/// the tuple test COULD not separate before fz-kdt.138 (whichever the mint
-/// order put first took every value) and now separates by shape and head.
-/// Which member the mint order lists first is what this perturbation moves.
-/// On this fixture that choice is no longer a hazard -- fz-kdt.132 minted the
-/// covering rung every one of its members needed, and the tripwire reads 0 here
-/// at every setting -- but it is still a choice nothing but the interner makes,
-/// which is what this gate holds to one answer. Where a wrapper's members are
-/// NOT all covering, the mint order used to decide a routing (00277 read 12
-/// surface-membership escapes at the settled order before fz-kdt.179); member
-/// selection runs the drop and the covering seat now, so that no longer depends
-/// on the interner, and `compiler2_no_value_reaches_a_construction_member_that_never_named_it`
-/// holds it at 0 under every setting.
+/// `01429_closure_capture_requirement_projection` is the subject because it
+/// publishes three wrappers of two members each, so there is an order to move.
+/// Which member the mint order lists first is what this perturbation moves: a
+/// choice nothing but the interner makes, which is what this gate holds to one
+/// answer. Where a wrapper's members are NOT all covering, the mint order used
+/// to decide a routing; member selection runs the drop and the covering seat
+/// now, so that no longer depends on the interner, and
+/// `compiler2_no_value_reaches_a_construction_member_that_never_named_it` holds
+/// it at 0 under every setting.
 #[test]
 fn compiler2_a_permuted_wrapper_order_reseats_the_construction_members() {
     use crate::compiler2::callsite_dispatch::dispatch_stress::{DispatchStressed, setting};
 
-    let fixture = "fixtures/00420_enum_take_drop_split.fz";
+    let fixture = "fixtures/01429_closure_capture_requirement_projection.fz";
     let settled = backend_canon(fixture);
     assert_eq!(
         backend_canon(fixture),
@@ -13518,8 +13472,8 @@ fn compiler2_a_permuted_wrapper_order_reseats_the_construction_members() {
 /// selection goes wrong (`select_construction_member`'s three error messages).
 /// Its CANONICAL number is where `ProgramCanon::wrapper_order` sorts it, and it
 /// is what `--dump backend=` prints. They agree only by accident: on
-/// `00419_enum_take_mixed` the map is `0->2, 1->3, 2->0, 3->1` and no wrapper
-/// is a fixed point at all, so a label that printed the identity sent a reader
+/// `01429_closure_capture_requirement_projection` no selecting wrapper is a
+/// fixed point of the map, so a label that printed the identity sent a reader
 /// following a failure message into the dump to the WRONG BLOCK, every time.
 ///
 /// The cure is one authority, not a second opinion:
@@ -13532,17 +13486,18 @@ fn compiler2_a_permuted_wrapper_order_reseats_the_construction_members() {
 ///
 /// AND THE PERTURBATION LANDS, which is what stops this being a tautology: the
 /// last assertion is that no selection site on this fixture has its two numbers
-/// agree, so the old label named the wrong block at every one of the four and
+/// agree, so the old label named the wrong block at every one of the three and
 /// this gate is exactly as red at base as the defect it holds.
 ///
-/// `enum_map_family` was the ticket's subject and cannot be: fz-kdt.199 left
-/// all twelve of its wrappers single-member with no selection plan, so it
-/// carries no `PlanSite::Selection` at all now. `00419_enum_take_mixed` does --
-/// four wrappers, four two-member selections -- and its map has no fixed point
-/// either.
+/// `enum_map_family` cannot be the subject: all twelve of its wrappers are
+/// single-member with no selection plan, so it carries no `PlanSite::Selection`
+/// at all. `00419_enum_take_mixed` is no longer one either: its reduce cycles
+/// key their members from the entry, so its four wrappers are single-member.
+/// `01429_closure_capture_requirement_projection` carries three two-member
+/// wrappers with a selection each, and its map has no fixed point either.
 #[test]
 fn compiler2_a_selection_sites_label_names_the_wrapper_the_dump_prints() {
-    let fixture = "fixtures/00419_enum_take_mixed.fz";
+    let fixture = "fixtures/01429_closure_capture_requirement_projection.fz";
     let (compiler, program) = driven_backend_program(fixture);
     let world = compiler.world();
 
@@ -13592,8 +13547,8 @@ fn compiler2_a_selection_sites_label_names_the_wrapper_the_dump_prints() {
         both_numbers_differ += usize::from(canonical != wrapper as usize);
     }
     assert_eq!(
-        checked, 4,
-        "{fixture} is the subject because it still publishes four wrapper member selections; a fixture \
+        checked, 3,
+        "{fixture} is the subject because it publishes three wrapper member selections; a fixture \
          with none proves nothing here",
     );
     assert_eq!(
@@ -14222,13 +14177,13 @@ end
 /// authority: it drops and seats the finished edges, and transport builds both
 /// the member list and selection rows from that one result.
 ///
-/// `enum_take_drop_split` is the subject. `enum_map_family` was, and it stopped
-/// carrying a multi-surface member list at all under fz-kdt.199: its wrapper's
-/// members were one element family crossed with the empty and the grown
-/// accumulator, and keying the returned accumulator gives each cross its own
-/// activation, so every wrapper there is now single-member. The gate is aimed
-/// at a fixture that still exercises the order rather than re-blessed to
-/// nothing. The end-to-end formula-order and wrapper-stress gates prove the
+/// `01429_closure_capture_requirement_projection` is the subject: it publishes
+/// wrappers of two surfaces each. `enum_map_family` and `enum_take_drop_split`
+/// carry none: their members were one element family crossed with the empty and
+/// the grown accumulator, and keying the returned accumulator, then the cycle's
+/// entry, gives each cross its own activation, so every wrapper there is
+/// single-member. The gate is aimed at a fixture that still exercises the order
+/// rather than re-blessed to nothing. The end-to-end formula-order and wrapper-stress gates prove the
 /// dynamic result; this source assertion prevents the deleted mutating builder
 /// from returning as a second construction path.
 #[test]
@@ -14257,7 +14212,7 @@ fn compiler2_construction_target_precedes_seated_wrapper_selection() {
         "transport must derive the member list and selection plan from the seated edges"
     );
 
-    let fixture = "fixtures/00420_enum_take_drop_split.fz";
+    let fixture = "fixtures/01429_closure_capture_requirement_projection.fz";
     let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
     compiler.submit_code(CodeSubmission {
         name: Some(fixture.to_string()),
@@ -22137,15 +22092,12 @@ fn compiler2_multi_target_closure_arg_floor_keeps_unique_member_on_producer_cons
     );
 }
 
-/// fz-kdt.183 re-aimed this gate from `enum_predicate_search` at
-/// `enum_take_drop_split`. The old subject stopped building multi-member
-/// callable constructions at all -- its wrappers each carried three reducer
-/// specializations keyed on a list element the key did not name, and with the
-/// element in the key each wrapper has ONE member -- so the gate's own
-/// coverage assertion (`saw_multi_member_construction`) went vacuous. The new
-/// subject still builds sixteen multi-member wrappers with physical captures,
-/// measured over the 469 backend dumps of the corpus, and it is the widest
-/// such fixture that is not one of the two slowest.
+/// The subject is `01130_a_reducer_wrapped_in_a_new_closure_on_each_lap`, which
+/// builds ten multi-member wrappers (of sixteen) with physical captures.
+/// `enum_predicate_search` and `enum_take_drop_split` carry none: their wrappers
+/// each hold one member, because the key names the list element and the cycle's
+/// entry, so the gate's own coverage assertion
+/// (`saw_multi_member_construction`) would go vacuous on them.
 #[test]
 fn compiler2_backend_construction_members_use_target_owned_capture_surfaces() {
     let tel = ConfiguredTelemetry::new();
@@ -22154,8 +22106,11 @@ fn compiler2_backend_construction_members_use_target_owned_capture_surfaces() {
 
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
-        name: Some("fixtures/behavior/enum_take_drop_split.fz".to_string()),
-        text: include_str!("../../fixtures/00420_enum_take_drop_split.fz").to_string(),
+        name: Some("fixtures/01130_a_reducer_wrapped_in_a_new_closure_on_each_lap_compiles_and_reduces.fz".to_string()),
+        text: include_str!(
+            "../../fixtures/01130_a_reducer_wrapped_in_a_new_closure_on_each_lap_compiles_and_reduces.fz"
+        )
+        .to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -22166,7 +22121,7 @@ fn compiler2_backend_construction_members_use_target_owned_capture_surfaces() {
     demand_backend_product(&mut compiler, root_id);
     assert_resolved(
         compiler.drive(),
-        "enum_take_drop_split should settle the backend product cleanly",
+        "the reducer-per-lap fixture should settle the backend product cleanly",
     );
 
     let program = backend.last(root_id).program;
@@ -22213,11 +22168,11 @@ fn compiler2_backend_construction_members_use_target_owned_capture_surfaces() {
     }
     assert!(
         saw_multi_member_construction,
-        "enum_take_drop_split should exercise multi-member callable constructions",
+        "the reducer-per-lap fixture should exercise multi-member callable constructions",
     );
     assert!(
         saw_physical_capture,
-        "enum_take_drop_split should exercise callable members with physical captures",
+        "the reducer-per-lap fixture should exercise callable members with physical captures",
     );
 }
 
@@ -24669,15 +24624,17 @@ fn compiler2_a_stream_over_any_enumerable_keeps_its_activations_finite() {
 
     let counted = |label: &str| activations.get(label).map_or(0, BTreeSet::len);
     let measured = [
-        ("Stream.compose/2#lambda@0/2", 7),
+        ("Stream.compose/2#lambda@0/2", 5),
         ("Stream.compose/2", 2),
         ("Enumerable.Stream.reduce/3", 2),
         ("Enumerable.List.reduce/3", 4),
         ("Enumerable.Map.reduce/3", 2),
         ("Enumerable.Range.reduce/3", 1),
-        ("List.reduce_cont/3", 4),
-        ("Map.reduce_cont/5", 3),
-        ("Range.reduce_cont/6", 2),
+        // `List.reduce_cont/3` 4 -> 2, `Map.reduce_cont/5` 3 -> 1, `Range.reduce_cont/6` 2 -> 1: a call round a
+        // recursion cycle keeps the entering activation's key at the slots the cycle supplies.
+        ("List.reduce_cont/3", 2),
+        ("Map.reduce_cont/5", 1),
+        ("Range.reduce_cont/6", 1),
     ];
     for (label, expected) in measured {
         assert_eq!(counted(label), expected, "activations of {label}");
@@ -24697,7 +24654,10 @@ fn compiler2_a_stream_over_any_enumerable_keeps_its_activations_finite() {
         // program's enumerable is `any`, so the clause is reachable with `any` fields: its
         // arithmetic (`Range.count/3`, `-`, `*`, `div` and their int and float externs) is
         // 14 activations, less the 3 of the range's reduce-and-reverse path.
-        147,
+        // 147 -> 133: a call round a recursion cycle keeps the entering activation's key at the
+        // slots the cycle supplies, so each reduce cycle's accumulator is keyed once per entry
+        // and the reducer lambdas it carries are compiled for fewer states.
+        133,
         "activations of the whole program"
     );
 }
@@ -24759,26 +24719,26 @@ fn reduces_over_one_list_each_seeded_with_an_empty_list(accumulated: &[&str]) ->
     )
 }
 
-/// A closure is compiled only for the argument types its call sites name. Each
-/// `Enum.reduce` site has a reducer called at its own accumulator types: the
-/// seed and the list it builds. Two sites that share a seed type are four
-/// calls, so the wrapper closure has four activations and no activation is
-/// minted for a pairing no call site made.
+/// Each `Enum.reduce` site has a reducer, and the reduce cycle supplies its
+/// accumulator: the seed and the list it builds are the states of one ascent,
+/// so the site's wrapper closure is compiled at the key its entry names. Two
+/// sites that share a seed type are two entries, so the wrapper closure has two
+/// activations and none is minted for a pairing no call site made.
 #[test]
-fn compiler2_two_reduces_sharing_a_seed_compile_the_four_calls_their_sites_name() {
+fn compiler2_two_reduces_sharing_a_seed_compile_the_two_calls_their_sites_enter() {
     let source = reduces_over_one_list_each_seeded_with_an_empty_list(&["e", "{e, 6}"]);
     assert_eq!(
         seed_activations_and_reduce_wrapper_activations(&source),
-        (0, 4),
+        (0, 2),
         "seed activations, and activations of the reduce wrapper closure"
     );
 }
 
-/// The wrapper closure of n sites that share a seed type keeps two activations
+/// The wrapper closure of n sites that share a seed type keeps one activation
 /// per site, not one for every pairing of a site's closure with another site's
 /// accumulator.
 #[test]
-fn compiler2_eight_reduces_sharing_a_seed_compile_two_wrapper_activations_each() {
+fn compiler2_eight_reduces_sharing_a_seed_compile_one_wrapper_activation_each() {
     let source = reduces_over_one_list_each_seeded_with_an_empty_list(&[
         "e",
         "{e, 6}",
@@ -24791,7 +24751,7 @@ fn compiler2_eight_reduces_sharing_a_seed_compile_two_wrapper_activations_each()
     ]);
     assert_eq!(
         seed_activations_and_reduce_wrapper_activations(&source),
-        (0, 16),
+        (0, 8),
         "seed activations, and activations of the reduce wrapper closure"
     );
 }

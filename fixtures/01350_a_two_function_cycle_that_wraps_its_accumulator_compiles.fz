@@ -1,0 +1,20 @@
+#---
+# purpose: "Two functions that call each other and wrap the accumulator on every round trip compile: the cycle supplies the accumulator at both of its members"
+# root: main/0
+# oracle: self
+# oracle.stamp: 5eb58f8c5a38c142
+#---
+defmodule Cycle do
+  def cont([], acc, _f), do: acc
+  def cont([h | t], acc, f), do: step(t, f.(h, acc), f)
+
+  def step(l, {:cont, acc}, f), do: cont(l, acc, f)
+end
+
+defmodule Main do
+  def main() do
+    IO.inspect(Cycle.cont([1, 2], :start, fn x, acc -> {:cont, {x, acc}} end))
+  end
+end
+
+Main.main()

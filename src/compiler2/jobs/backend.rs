@@ -439,6 +439,7 @@ pub(crate) fn executable_key_for_symbol(root: RootId, symbol: &ExecutableSymbol)
             root,
             function: symbol.activation.function,
             arrow: symbol.activation.arrow,
+            entry: symbol.activation.entry,
         },
         need: symbol.need,
     }

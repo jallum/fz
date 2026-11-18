@@ -62,6 +62,7 @@ fn resolve_return_flow_rejects_divergence_contradictions() {
             activation: ActivationSymbol {
                 function: FunctionId::from_coordinate(1),
                 arrow,
+                entry: None,
             },
             need: ExecutableNeed::Value,
         },
@@ -137,6 +138,7 @@ fn the_seam_tripwire_refuses_a_lane_mismatch_and_passes_agreement() {
                 root: RootId::for_test(0),
                 function: FunctionId::from_coordinate(0),
                 arrow: int,
+                entry: None,
             },
             need: ExecutableNeed::Value,
         };

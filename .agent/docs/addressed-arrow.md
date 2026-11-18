@@ -13,8 +13,9 @@ The pieces, and what each owns:
 - `types/addressed.rs` — the address vocabulary (`AddrStep`), the var-id
   partition (`ADDRESS_TAG`), and the addressing builders (`address_arrow`,
   `address_inputs`, `own_surface`). This is the construction machinery.
-- `identity.rs` — `ActivationKey { root, function, arrow: Ty }`. Dispatch
-  identity is the arrow's param side.
+- `identity.rs` — `ActivationKey { root, function, arrow: Ty, entry }`. Dispatch
+  identity is the arrow's param side; `entry` names the activation that entered
+  the call cycle the key runs inside, when it is not that activation itself.
 - `semantic.rs` — `CallableSurface { inputs }`, addressed at birth.
 - `resolve.rs` — `resolve_spec` resolves an `@spec` and addresses it at the
   binder, emitting params/result/bounds all in the address frame.

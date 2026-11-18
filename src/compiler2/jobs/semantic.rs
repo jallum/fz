@@ -1926,7 +1926,7 @@ fn resolve_function_call(
         // refinement below is the correctness gate; this one only shortens
         // the wait when the refined row turns out to need nothing more.
         if !world.function_is_provider_boundary(function) {
-            let _ = world.require_activation_key_facts(caller.root, function, &input_types, uses);
+            let _ = world.require_call_key_facts(caller.root, function, &input_types, uses);
         }
         return Ok((CallSiteResolution::Unresolved, Vec::new(), CallReturn::awaited(uses)));
     };
@@ -1955,7 +1955,7 @@ fn resolve_function_call(
             CallReturn::Known(return_ty),
         ));
     }
-    if !world.require_activation_key_facts(caller.root, function, &input_types, uses) {
+    if !world.require_call_key_facts(caller.root, function, &input_types, uses) {
         return Ok((CallSiteResolution::Unresolved, Vec::new(), CallReturn::awaited(uses)));
     }
     let (activation, observed_return) = prepare_function_call(world, uses, caller, function, &input_types);
@@ -2119,7 +2119,7 @@ fn resolve_protocol_call(
         // call holds, asked here rather than waited for a second run.
         for (selected, overlap) in &matches {
             let held = refine_protocol_target_inputs(world, &input_types, receiver_ty, *overlap);
-            let _ = world.require_activation_key_facts(caller.root, selected.function, &held, uses);
+            let _ = world.require_call_key_facts(caller.root, selected.function, &held, uses);
         }
         return Ok((CallSiteResolution::Unresolved, Vec::new(), CallReturn::awaited(uses)));
     }
@@ -2133,7 +2133,7 @@ fn resolve_protocol_call(
         let caller_owner = world.function_definition(caller.function).0.owner;
         let (refined_inputs, _) =
             refine_function_call_surface(world, tel, selected.function, refined_inputs, caller_owner, call_span)?;
-        keyed &= world.require_activation_key_facts(caller.root, selected.function, &refined_inputs, uses);
+        keyed &= world.require_call_key_facts(caller.root, selected.function, &refined_inputs, uses);
     }
     if !keyed {
         return Ok((CallSiteResolution::Unresolved, Vec::new(), CallReturn::awaited(uses)));
@@ -2150,7 +2150,7 @@ fn resolve_protocol_call(
         let (refined_inputs, applied_contract) =
             refine_function_call_surface(world, tel, selected.function, refined_inputs, caller_owner, call_span)?;
         let contract_return_ty = applied_contract_return(applied_contract);
-        if !world.require_activation_key_facts(caller.root, selected.function, &refined_inputs, uses) {
+        if !world.require_call_key_facts(caller.root, selected.function, &refined_inputs, uses) {
             return Ok((CallSiteResolution::Unresolved, Vec::new(), CallReturn::awaited(uses)));
         }
         let (activation, observed_return) =
@@ -2702,11 +2702,7 @@ fn prepare_function_call(
     function: FunctionId,
     arg_types: &[Ty],
 ) -> (ActivationKey, CallReturn) {
-    let activation = world.activation_key(
-        caller.root,
-        function,
-        &call_key_types(world, caller, function, arg_types),
-    );
+    let activation = call_key(world, caller, function, arg_types);
     let fact = FactKey::ReturnType(activation.clone());
     let call_return = match uses.answer(world, fact) {
         AnswerUse::Partner(_) | AnswerUse::Concluded(_) => {
@@ -2717,23 +2713,61 @@ fn prepare_function_call(
     (activation, call_return)
 }
 
-/// The types a call is KEYED from, which are its arguments except at a slot
-/// the callee's own recursion supplies: a self call keeps its caller's column
-/// there, so the states the recursion passes through share the activation that
-/// reached them. The arguments themselves still flow into the callee's input
-/// evidence unchanged.
-fn call_key_types(world: &World, caller: &ActivationKey, function: FunctionId, arg_types: &[Ty]) -> Vec<Ty> {
+/// The activation a call is keyed as: its arguments' key, except at the slots
+/// the callee's call cycle supplies.
+///
+/// A call back to the activation that entered the cycle keeps that
+/// activation's own columns at those slots, so the states the cycle passes
+/// through join the entry's evidence instead of minting activations. A call to
+/// another member of the cycle keys those slots as `any` and carries the entry,
+/// so two entries into one function keep apart chains of their own. The
+/// arguments themselves still flow into the callee's input evidence unchanged.
+fn call_key(world: &mut World, caller: &ActivationKey, function: FunctionId, arg_types: &[Ty]) -> ActivationKey {
+    let supplied = cycle_supplied_slots(world, caller, function, arg_types);
     let mut key_types = arg_types.to_vec();
-    if caller.function != function {
-        return key_types;
+    if supplied.is_empty() {
+        return world.activation_key(caller.root, function, &key_types);
     }
-    let own = caller.inputs(world.types());
-    for slot in keying::supplied_whole_slots(world, function, own.len()) {
-        if let (Some(key_type), Some(own_type)) = (key_types.get_mut(slot), own.get(slot)) {
-            *key_type = *own_type;
+    let entry = caller.entry.unwrap_or((caller.function, caller.arrow));
+    if function == entry.0 {
+        let own = world.types().arrow_params(&entry.1).to_vec();
+        for slot in supplied {
+            if let (Some(key_type), Some(own_type)) = (key_types.get_mut(slot), own.get(slot)) {
+                *key_type = *own_type;
+            }
+        }
+        return world.activation_key(caller.root, function, &key_types);
+    }
+    let any = world.types_mut().any();
+    for slot in supplied {
+        if let Some(key_type) = key_types.get_mut(slot) {
+            *key_type = any;
         }
     }
-    key_types
+    let mut key = world.activation_key(caller.root, function, &key_types);
+    key.entry = Some(entry);
+    key
+}
+
+/// The slots of a call from `caller` to `function` that the callee's call
+/// cycle supplies; none when the call leaves the cycle, or when no argument
+/// carries a constructor, since only such an argument can be a rung of an
+/// ascent.
+fn cycle_supplied_slots(world: &World, caller: &ActivationKey, function: FunctionId, arg_types: &[Ty]) -> Vec<usize> {
+    if !world.types().any_carries_constructors(arg_types) {
+        return Vec::new();
+    }
+    let in_cycle = world
+        .static_reach(function)
+        .is_some_and(|reach| reach.contains(&caller.function));
+    let mask = if in_cycle {
+        world.body_keying(function).map_or(0, |keying| keying.cycle_supplied)
+    } else {
+        0
+    };
+    (0..arg_types.len().min(u64::BITS as usize))
+        .filter(|slot| mask & (1 << slot) != 0)
+        .collect()
 }
 
 /// VERDICT (fz-rh2.17.5.9): body readiness. A runtime module's defimpls

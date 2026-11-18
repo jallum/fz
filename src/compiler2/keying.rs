@@ -27,6 +27,9 @@ pub(crate) struct BodyKeying {
     /// lambda: closure brands are meaning to this body, so its keys stay
     /// precise. A body with neither treats brands as freight (fz-6gb).
     pub(crate) consumes_callable_identity: bool,
+    /// The whole input slots the function's call cycle supplies, one bit per
+    /// slot: each is rebuilt somewhere round the cycle rather than carried.
+    pub(crate) cycle_supplied: u64,
 }
 
 /// What one function's inputs are DEMANDED for, as `Job::DeriveInputDemand`

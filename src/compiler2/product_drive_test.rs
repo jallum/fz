@@ -3025,6 +3025,7 @@ mod wait_frame_tests {
                 activation: ActivationSymbol {
                     function: crate::compiler2::FunctionId::from_coordinate(id),
                     arrow,
+                    entry: None,
                 },
                 need: crate::compiler2::identity::ExecutableNeed::Value,
             },
@@ -3456,6 +3457,7 @@ mod wait_frame_tests {
                 activation: ActivationSymbol {
                     function: crate::compiler2::FunctionId::from_coordinate(91),
                     arrow,
+                    entry: None,
                 },
                 need: crate::compiler2::identity::ExecutableNeed::Value,
             },

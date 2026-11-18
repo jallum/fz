@@ -2110,6 +2110,23 @@ fn write_activation_key(out: &mut String, key: &crate::compiler2::ActivationKey)
     write_root_id(out, key.root);
     write_function_id(out, key.function);
     write_arrow(out, key.arrow);
+    write_entry(out, key.entry);
+}
+
+/// The activation that entered the cycle an activation runs inside, as a
+/// nested identity: two activations that differ only in their entry are two
+/// activations in the stream, as they are in the engine.
+fn write_entry(out: &mut String, entry: Option<(crate::compiler2::FunctionId, crate::compiler2::Ty)>) {
+    let Some((function, arrow)) = entry else {
+        return;
+    };
+    note_named_function(function);
+    note_named_type(arrow);
+    out.push_str(",\"cycle_entry\":{\"function_id\":");
+    push_u64(out, function.as_u32() as u64);
+    out.push_str(",\"arrow\":");
+    push_u64(out, arrow.as_u32() as u64);
+    out.push('}');
 }
 
 fn write_id_field(out: &mut String, key: &'static str, id: u32) {
@@ -2252,6 +2269,7 @@ fn transport_position_kind(position: &crate::compiler2::transport::TransportPosi
 fn write_activation_symbol(out: &mut String, symbol: &crate::compiler2::transport::ActivationSymbol) {
     write_function_id(out, symbol.function);
     write_arrow(out, symbol.arrow);
+    write_entry(out, symbol.entry);
 }
 
 fn write_executable_symbol(out: &mut String, symbol: &crate::compiler2::transport::ExecutableSymbol) {

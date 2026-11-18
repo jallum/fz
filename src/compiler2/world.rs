@@ -2485,6 +2485,29 @@ impl World {
             .then_some([FactKey::Recursive(function), FactKey::InputDemand(function)])
     }
 
+    /// The keying facts of a CALL to `function` with `inputs`: those of the
+    /// key itself, and the callee's cycle when an argument carries a
+    /// constructor, since only such an argument can be a rung of an ascent.
+    pub(crate) fn require_call_key_facts(
+        &mut self,
+        root: RootId,
+        function: FunctionId,
+        inputs: &[Ty],
+        uses: &mut UseCollector,
+    ) -> bool {
+        let mut ready = self.require_activation_key_facts(root, function, inputs, uses);
+        if self.types.any_carries_constructors(inputs) {
+            let cycle = FactKey::Recursive(function);
+            if self.has_fact(&cycle) {
+                uses.read(cycle);
+            } else {
+                ready = false;
+                uses.wait(cycle);
+            }
+        }
+        ready
+    }
+
     /// Reads or waits on every fact the key of `function` at `inputs` reads,
     /// in ONE ask so a caller spends one block on a callee's keying
     /// prerequisites, never a ladder (fz-kdt.86; waits are AND-satisfied).
