@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-18T21:45:28Z",
+  "description": "Goal: in a hot loop, every instruction fz emits is one the operation needs. These costs appear in EVERY listing of the binary machine-code study (fz-9e2 materials, /Users/j5n/Workspace/fz-binaries/machine.md, M9 and M12-M14), not only binary ones. The empty loop `loop(n - 1, acc + 1)` is 22 instructions per iteration, and about 12 of those are avoidable.\n\nMethod (the same as fz-9e2, user 2026-11-18):\n1. Hand-write the optimal arm64 target listing first, annotating each instruction with the fact that licenses it.\n2. Then make Cranelift lowering emit that listing.\n3. Judge on bench (ssh bench, BENCH_BUSY lock); local slopes are iteration aids only.\n\nProbes and harness: /Users/j5n/Workspace/fz-binaries/listings/probes (m.sh slope, tr.sh + trace.py lldb single-step); listings per probe in /Users/j5n/Workspace/fz-binaries/listings. fz-9e2.1 moves the harness into the repo; share it, do not build a second one.\n\nConcordant and already owned (not children here):\n- fz-9x7.39 and Callables' continuation page step B: a capture slot's store and restore are specialized by kind. M9 measured 9-20 instructions per lane, three times per binary lane across a non-tail call.\n- fz-sc8.249: callee-saved register traffic in leaves.\n- fz-nml.9: an integer sent in a message is heap-boxed (M12: send of an int is 289 instructions more than send of a binary).\n\nAcceptance: each child's emitted listing matches its target, and the empty-loop probe p00 falls from 22 instructions per iteration to the target count.",
+  "id": "fz-yh5",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "In a hot loop every instruction is one the operation needs",
+  "type": "epic",
+  "updated_at": "2026-11-18T21:45:28Z"
+}
