@@ -41,7 +41,7 @@ use fz_runtime::ir_runtime::{
 };
 use fz_runtime::module_name::{ModuleName, STRUCT_MODULE_FIELD};
 use fz_runtime::output::{OUTPUT_HOOK, OutputContext, OutputSink};
-use fz_runtime::process::{DEFAULT_REDUCTIONS_PER_QUANTUM, Disposition, Handler, Process, ProcessState};
+use fz_runtime::process::{DEFAULT_REDUCTIONS_PER_QUANTUM, Disposition, Process, ProcessState};
 use fz_runtime::sched::{ProbeOutcome, SendProbe, drain_in_queue, gift_match, gift_message, self_send};
 use fz_runtime::sched_core::{
     MAIN_PID, Scheduler, SchedulingCore, end_quantum, halt_hook, next_runnable, timer_cancel_hook, timer_schedule_hook,
@@ -1675,7 +1675,7 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                 env: handler_frame_from_captures(transport, entries, *handler, &env)?,
                 handler: true,
             });
-            unsafe { &mut *runtime.cur_proc() }.push_handler(Handler::Interpreter);
+            unsafe { &mut *runtime.cur_proc() }.push_interpreter_handler();
             enter_entry(runtime, transport, program, executable, &mut env, *body, None, &[])?;
             Ok(BackendEvalTransition::Next(BackendEvalState::Entry {
                 executable: executable.clone(),

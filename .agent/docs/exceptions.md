@@ -95,32 +95,46 @@ call takes a kind.
 
 ## The handler stack
 
-`Process.handlers: Vec<Handler>` (`runtime/src/process.rs`) is the stack of
-handlers a raise can reach, innermost last. A `try` pushes one frame on entry
-and pops it when its body completes; a raise pops the top frame and delivers
-to it. The stack is a GC root beside `runnable` and the mailbox: a boundary
-collection forwards every compiled handler on it (`Process::collect`),
-and the `delivered` slot below.
+`Process.handlers: HandlerStack` (`runtime/src/handler_stack.rs`) is the
+stack of handlers a raise can reach, innermost on top. A `try` pushes one
+record on entry and pops it when its body completes; a raise delivers to the
+innermost record and pops it. Records live in a word stack the process owns,
+so entering a `try` builds nothing on the heap. Each record ends in a trailer
+word holding its size in bytes, trailer included, so the innermost record is
+found from the stack's `top` alone.
+
+The stack is a GC root beside `runnable` and the mailbox: a boundary
+collection forwards every heap value a compiled record captures and writes it
+back into the record in place (`Process::collect` through
+`HandlerStack::captures` and `set_captures`), and the `delivered` slot below.
 
 Every handler receives the same three values: the kind atom (`:error`,
 `:throw` or `:exit`), the raised value, and the exception's name atom (`nil`
 when the value is not an exception map, which a throw or an exit's value never
 is by kind, whatever it holds).
 
-- `Handler::Closure(template)` is compiled code's frame. `fz_try_push(process,
-  template)` takes the template as the closure reference word codegen holds a
-  heap closure in, and the frame keeps that reference, literal bit included. It pushes it at the start of the try body (`emit_try` in
-  `native_codegen/terminator.rs`); `fz_try_pop` pops it where the body's
-  continuation begins. Delivery materializes the template with the three values
-  as its bound values (`materialize_outcome_closure`, the receive-outcome
-  machinery) and stores the result in `Process::delivered`. That slot is not
+- A compiled record is the image of the handler's continuation, laid out as a
+  heap closure is (`[outer_cont, captures...]` and their kind bytes), followed
+  by the trailer. `emit_try` (`native_codegen/terminator.rs`) writes it in
+  place on the stack through `push_handler_record` (`native_codegen/closure.rs`):
+  it reads the stack's `top` and `end` through `PROCESS_HANDLER_TOP_OFFSET` and
+  `PROCESS_HANDLER_END_OFFSET` (`runtime/src/process_abi.rs`), bumps `top`
+  inline while the record fits, and calls `fz_handler_reserve` to grow the
+  stack only when it is full. `Prim::PopHandler`, where the body's continuation
+  begins, pops inline with `pop_handler_record`: `top` falls by the trailer's
+  size. Delivery materializes the image with the three values as its bound
+  values (`materialize_outcome_closure`, the receive-outcome machinery), pops
+  the record, and stores the result in `Process::delivered`. That slot is not
   `runnable`: `runnable` means queued for the scheduler, `delivered` means a
   handler the current quantum is about to run.
-- `Handler::Interpreter` is the interpreter's frame. The interpreter keeps a
+- An interpreter record is the trailer alone. The interpreter keeps a
   `BackendContinuation` with `handler: true` on its continuation stack and
-  pushes this marker beside it; delivery leaves the three values in
-  `Process::raised` for the interpreter to take when the panicking extern
-  returns.
+  pushes this record beside it (`Process::push_interpreter_handler`); delivery
+  leaves the three values in `Process::raised` for the interpreter to take when
+  the panicking extern returns.
+
+Both kinds share the one stack, so a raise reaches the innermost `try`
+whichever path entered it.
 
 `Process::raises_delivered` counts the raises a handler took.
 
@@ -712,12 +726,15 @@ union replacing the last.
   `src/compiler2/jobs/semantic.rs` — `raises_of` and the `LoweredTail::Try`
   analysis.
 - `src/dispatch_matrix/pattern/last_resort.rs` — `LastResort`.
-- `runtime/src/process.rs` — `Handler`, `Raised`, `handlers`, `raised`,
-  `delivered`, `raises_delivered`, `exit_status`, `push_handler`, `pop_handler`,
-  `deliver_handler`, `run_quantum`, `diverged`.
-- `runtime/src/ir_runtime.rs` — `fz_try_push`, `fz_try_pop`.
+- `runtime/src/process.rs` — `Raised`, `handlers`, `raised`,
+  `delivered`, `raises_delivered`, `exit_status`, `push_interpreter_handler`,
+  `pop_handler`, `deliver_handler`, `run_quantum`, `diverged`.
+- `runtime/src/handler_stack.rs` — `HandlerStack`, `Innermost`.
+- `runtime/src/ir_runtime.rs` — `fz_handler_reserve`.
 - `runtime/src/process_abi.rs` — `PROCESS_DELIVERED_OFFSET`, read by
-  `continue_after_raise`.
+  `continue_after_raise`; `PROCESS_HANDLER_TOP_OFFSET` and
+  `PROCESS_HANDLER_END_OFFSET`, read and written by `emit_try` and
+  `Prim::PopHandler`.
 - `lib/kernel.fz` — `panic/1`, `raise/1`, `raise/2`, `to_exception/1`,
   `defexception/1`, `inspect/1`, `throw/1`, `exit/1`, `reraise/2`;
   `lib/runtime.fz` lists the raise functions for auto-import.

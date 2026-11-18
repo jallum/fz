@@ -1,10 +1,10 @@
-use super::{
-    ClosureRef, Disposition, Handler, Node, Process, ProcessState, YIELD_REASON_EXPLICIT, YIELD_REASON_REDUCTIONS,
-};
+use super::{Disposition, Node, Process, ProcessState, YIELD_REASON_EXPLICIT, YIELD_REASON_REDUCTIONS};
 use crate::any_value::{
     AnyValue, AnyValueRef, ClosureDenotationId, EMPTY_LIST, ValueKind, closure_addr_from_tagged, closure_capture_set,
     closure_capture_value, list_addr_from_tagged,
 };
+use crate::handler_stack::Innermost;
+use crate::handler_stack::handler_stack_test::push_template;
 use crate::heap::{Heap, SchemaRegistry};
 use crate::park::park_test::{frame_of, leaked_site};
 use crate::park::{ParkRecord, ReceiveClause};
@@ -205,14 +205,16 @@ fn collect_forwards_every_root_a_parked_process_holds() {
 fn handlers_pop_innermost_first() {
     let mut process = Process::new(Rc::new(RefCell::new(SchemaRegistry::new())));
     let capture = int_list(&mut process.heap, 1);
-    let outer = ClosureRef::new(closure_capturing(&mut process, capture));
-    process.push_handler(Handler::Closure(outer));
-    process.push_handler(Handler::Interpreter);
+    let template = closure_capturing(&mut process, capture);
+    let outer = push_template(&mut process.handlers, template.closure_addr().unwrap());
+    process.push_interpreter_handler();
 
-    assert_eq!(process.handlers.len(), 2);
-    assert_eq!(process.pop_handler(), Handler::Interpreter);
-    assert_eq!(process.pop_handler(), Handler::Closure(outer));
-    assert!(process.handlers.is_empty());
+    assert_eq!(process.handlers.depth(), 2);
+    assert_eq!(process.handlers.innermost(), Some(Innermost::Interpreter));
+    process.pop_handler();
+    assert_eq!(process.handlers.innermost(), Some(Innermost::Compiled(outer)));
+    process.pop_handler();
+    assert_eq!(process.handlers.innermost(), None);
 }
 
 #[test]
@@ -222,28 +224,27 @@ fn popping_without_a_handler_is_a_compiler_defect() {
     process.pop_handler();
 }
 
-/// A compiled handler is a root: a collection while a `try` body runs moves
-/// its template and what it captures, and the interpreter's marker frame
-/// holds nothing to move.
+/// What a compiled handler captures is a root: a collection while a `try`
+/// body runs moves the values its record holds and writes them back into the
+/// record, and the interpreter's record holds nothing to move. The record
+/// itself lives on the handler stack, so nothing else moves.
 #[test]
-fn collect_forwards_every_compiled_handler_on_the_stack() {
+fn collect_forwards_what_every_compiled_handler_captures() {
     let mut process = Process::new(Rc::new(RefCell::new(SchemaRegistry::new())));
     let capture = int_list(&mut process.heap, 11);
-    let handler = closure_capturing(&mut process, capture);
-    process.push_handler(Handler::Closure(ClosureRef::new(handler)));
-    process.push_handler(Handler::Interpreter);
+    let template = closure_capturing(&mut process, capture);
+    let image = push_template(&mut process.handlers, template.closure_addr().unwrap());
+    process.push_interpreter_handler();
 
     let stats = process.collect(&mut []);
 
-    let Handler::Closure(moved) = process.handlers[0] else {
-        panic!("the closure handler keeps its place under the interpreter marker");
-    };
-    assert_ne!(moved.as_ref(), handler, "the handler template moved");
-    assert_eq!(list_head(captured_list(moved.as_ref())), 11);
-    assert_eq!(process.handlers[1], Handler::Interpreter);
+    assert_eq!(process.handlers.depth(), 2, "both records keep their places");
+    let moved = AnyValueRef::from_heap_object(ValueKind::CLOSURE, image).unwrap();
+    assert_ne!(captured_list(moved), capture, "the captured list moved");
+    assert_eq!(list_head(captured_list(moved)), 11);
     assert_eq!(
-        stats.copied_objects, 2,
-        "the handler template and its capture are everything the collection moves"
+        stats.copied_objects, 1,
+        "the captured list is everything the collection moves"
     );
 }
 

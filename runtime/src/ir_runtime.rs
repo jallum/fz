@@ -40,7 +40,7 @@ use crate::exec_ctx::ExecCtx;
 use crate::heap::{AllocStat, StubSite, closure_capture_ref, list_head_ref, list_tail_ref};
 use crate::module_name::STRUCT_MODULE_FIELD;
 use crate::park::{ParkRecord, ReceiveSite};
-use crate::process::{ClosureRef, Handler, Process};
+use crate::process::Process;
 use crate::resource::{ResourceHandle, ResourceStub, alloc_resource};
 use crate::sched::{ReceiveStep, reach_receive};
 use crate::scheduler_hooks::YIELD_PTR;
@@ -461,23 +461,14 @@ pub extern "C" fn fz_send(process: *mut Process, receiver_pid_bits: u64, msg_ref
     msg_ref_word
 }
 
-/// Enter a `try`: `template_ref_word` is the handler's continuation template,
-/// a closure whose environment is `[outer_cont, captures...]`, as a closure
-/// reference word, the form codegen holds a heap closure in. The handler stack
-/// keeps the reference, literal bit included. The next raise in this process
-/// reaches it first.
+/// Make room for a `try`'s handler record when the handler stack is full:
+/// grow it and reserve `bytes` on top, answering where they start. Compiled
+/// code reserves inline while the stack has room and calls this only at its
+/// end; either way it then writes the record, trailer last.
 #[unsafe(no_mangle)]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn fz_try_push(process: *mut Process, template_ref_word: u64) {
-    let handler = ClosureRef::new(closure_ref_from_word(template_ref_word, "fz_try_push handler template"));
-    unsafe { &mut *process }.push_handler(Handler::Closure(handler));
-}
-
-/// Leave a `try` whose body completed: its handler is popped unreached.
-#[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn fz_try_pop(process: *mut Process) {
-    unsafe { &mut *process }.pop_handler();
+pub extern "C" fn fz_handler_reserve(process: *mut Process, bytes: u64) -> u64 {
+    unsafe { &mut *process }.handlers.reserve(bytes as usize) as u64
 }
 
 /// Selective receive entry. Generated code calls it where a `receive` is

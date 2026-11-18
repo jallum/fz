@@ -1961,12 +1961,10 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 )?;
                 let captures = self.entry_capture_args(ctx, executable, entries, *handler, env)?;
                 let body_block = ctx.builder.block(vec![]);
-                let handler_diverges = !self.entry_can_deliver(executable, entries, *handler);
                 ctx.set_term(Term::Try {
                     handler: handler_fn,
                     captures,
                     body: body_block,
-                    handler_diverges,
                 });
                 ctx.current_block = body_block;
                 let body_args = self.entry_capture_args(ctx, executable, entries, *body, env)?;
@@ -3205,49 +3203,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             }
         };
         self.emit_raise(ctx, last_resort, subject)
-    }
-
-    /// Whether control that enters `entry` can deliver a value to the
-    /// executable's caller. A value of the empty type and a call that never
-    /// returns deliver nothing, and neither does anything that would follow.
-    fn entry_can_deliver(
-        &mut self,
-        executable: &BackendExecutable,
-        entries: &[BackendEntry],
-        entry: ControlEntryId,
-    ) -> bool {
-        let mut seen = HashSet::default();
-        let mut pending = vec![entry];
-        while let Some(entry) = pending.pop() {
-            if !seen.insert(entry) {
-                continue;
-            }
-            let tail = &entries[entry.as_u32() as usize].tail;
-            let delivered = match tail {
-                BackendTail::Value { value, dest } => {
-                    let value_ty = executable.abi.materialized.value_types.get(value).copied();
-                    (!value_ty.is_some_and(|ty| self.world.types().is_empty(&ty))).then_some(dest)
-                }
-                BackendTail::DirectCall { target, dest, .. } => (!target.never_returns()).then_some(dest),
-                BackendTail::ClosureCall { return_flow, dest, .. } => {
-                    (!matches!(return_flow, Some(BackendReturnFlow::NoReturn))).then_some(dest)
-                }
-                BackendTail::If { .. }
-                | BackendTail::Dispatch { .. }
-                | BackendTail::Receive(_)
-                | BackendTail::Try { .. }
-                | BackendTail::Unreachable => {
-                    pending.extend(tail.transfers().into_iter().map(|(next, _)| next));
-                    continue;
-                }
-            };
-            match delivered {
-                Some(ControlDestination::Return) => return true,
-                Some(ControlDestination::Deliver(next)) => pending.push(*next),
-                None => {}
-            }
-        }
-        false
     }
 
     /// Ends the block raising the struct `failure` builds: each field its

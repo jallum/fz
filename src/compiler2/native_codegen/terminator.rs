@@ -16,9 +16,7 @@ use cranelift_codegen::ir::{self, AbiParam, BlockArg, InstBuilder, MemFlagsData,
 use cranelift_codegen::isa::CallConv;
 use cranelift_module::FuncId;
 use fz_runtime::failure::{fz_panic, fz_raise_undefined_function, fz_reraise};
-use fz_runtime::ir_runtime::{
-    fz_receive_park_matched, fz_try_push, fz_yield_mid_flight_report, fz_yield_slow_path_begin,
-};
+use fz_runtime::ir_runtime::{fz_receive_park_matched, fz_yield_mid_flight_report, fz_yield_slow_path_begin};
 use fz_runtime::process::YIELD_REASON_REDUCTIONS;
 use fz_runtime::process_abi::PROCESS_REDUCTIONS_REMAINING_OFFSET;
 use fz_runtime::scheduler_hooks::YIELD_PTR;
@@ -219,6 +217,16 @@ impl ContinuationPayload {
         Self::from_parts(env, cont_sid, cap_bindings)
     }
 
+    fn push_handler_record<M: cranelift_module::Module>(&self, body: &mut CodegenFn<'_, '_, M>, cont_param: ir::Value) {
+        closure::push_handler_record(
+            body,
+            cont_param,
+            self.cont_fid,
+            &self.semantic_cap_bindings,
+            self.empty_slots,
+        );
+    }
+
     fn emit_value<M: cranelift_module::Module>(
         &self,
         body: &mut CodegenFn<'_, '_, M>,
@@ -260,18 +268,7 @@ pub(crate) fn emit_terminator<M: cranelift_module::Module>(
             handler,
             captures,
             body: body_block,
-            handler_diverges,
-        } => emit_try(
-            body,
-            env,
-            var_env,
-            &edges,
-            cont_param,
-            *handler,
-            captures,
-            body_block,
-            *handler_diverges,
-        ),
+        } => emit_try(body, env, var_env, &edges, cont_param, *handler, captures, body_block),
         Term::If {
             cond, then_b, else_b, ..
         } => emit_if(body, var_env, block_map, caller_fn_id, blk.id, cond, then_b, else_b),
@@ -335,13 +332,11 @@ pub(crate) fn emit_terminator<M: cranelift_module::Module>(
     }
 }
 
-/// Enter a `try`: build the handler's continuation template over the live
-/// captures, push it as the process's innermost handler, and fall into the
-/// body block. The template is the same shape as a receive outcome template,
-/// so `fz_panic` materialises it the same way with the raise's three values.
-/// A handler that captures nothing and never returns has a constant
-/// template, which is a read-only object the program emits once.
-#[allow(clippy::too_many_arguments)]
+/// Enter a `try`: push the handler's record over the live captures as the
+/// process's innermost handler, and fall into the body block. The record holds
+/// the image of the handler's continuation, so `fz_panic` materialises it the
+/// way it does a receive outcome template, with the raise's three values; a
+/// body that completes pops it without having built anything on the heap.
 fn emit_try<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
     env: &CodegenEnv<'_>,
@@ -351,47 +346,16 @@ fn emit_try<M: cranelift_module::Module>(
     handler: FnId,
     captures: &[Var],
     body_block: &BlockId,
-    handler_diverges: bool,
 ) -> Result<(), CodegenError> {
     let cont_sid = env
         .body_id_for_fn(handler)
         .unwrap_or_else(|| panic!("native try handler fn {} has no registered codegen body id", handler.0));
-    // A constant template has no slots for a frame to keep values in, and a
-    // build that poisons released frames writes into every resumed one.
-    let constant = captures.is_empty()
-        && handler_diverges
-        && env.body_native(cont_sid).frame.is_none()
-        && !closure::POISON_DEAD_FRAMES;
-    let template = if constant {
-        static_handler_template(body, env, cont_sid)?
-    } else {
-        let cap_bindings: Vec<ClosureCapture> = captures
-            .iter()
-            .map(|cv| closure_capture_for_var(body, var_env, cv.0))
-            .collect();
-        let payload = ContinuationPayload::from_parts(env, cont_sid, cap_bindings);
-        payload.emit_value(body, cont_param)
-    };
-    let process = body.process_arg();
-    runtime_call!(body, fz_try_push, [process, template]);
+    let cap_bindings: Vec<ClosureCapture> = captures
+        .iter()
+        .map(|cv| closure_capture_for_var(body, var_env, cv.0))
+        .collect();
+    ContinuationPayload::from_parts(env, cont_sid, cap_bindings).push_handler_record(body, cont_param);
     edges.emit(body, var_env, body_block, &[])
-}
-
-/// The tagged ref to a read-only template for the handler body `cont_sid`.
-fn static_handler_template<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, M>,
-    env: &CodegenEnv<'_>,
-    cont_sid: u32,
-) -> Result<ir::Value, CodegenError> {
-    let code = *env.fn_ids.get(&cont_sid).expect("cont fn_id missing");
-    let idx = body.cache.static_handler_count;
-    body.cache.static_handler_count += 1;
-    let name = format!(
-        ".fz_static_handler_{}_{}_{}_{}",
-        env.active_body_fn_id.0, env.active_spec_id, cont_sid, idx
-    );
-    let data_id = define_static_handler_template(body.jmod, &name, CONT_ARITY as u32, code)?;
-    Ok(body.static_object_ref(data_id, fz_runtime::any_value::ValueKind::CLOSURE))
 }
 
 /// The jumps between one function's blocks. Each jump hands every argument

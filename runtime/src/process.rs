@@ -23,6 +23,7 @@ use crate::any_value::AnyValueRef;
 use crate::bitstr::BitWriter;
 use crate::delivery::DeliveryLock;
 use crate::exec_ctx::ExecCtx;
+use crate::handler_stack::HandlerStack;
 use crate::heap::{Footprint, GcStats, Heap, SIZE_TABLE, SchemaRegistry};
 use crate::park::ParkRecord;
 
@@ -134,10 +135,10 @@ pub struct Process {
     /// quantum is unwinding to its entry; `run_quantum` resumes it before the
     /// quantum ends.
     pub delivered: Option<ClosureRef>,
-    /// The handlers a raise can reach, innermost last. See [`Handler`].
-    pub handlers: Vec<Handler>,
+    /// The handlers a raise can reach, innermost on top. See [`HandlerStack`].
+    pub handlers: HandlerStack,
     /// A raise waiting for the interpreter's handler frame. Set by `fz_panic`
-    /// when the top handler is [`Handler::Interpreter`]; the interpreter takes
+    /// when the innermost handler is the interpreter's; the interpreter takes
     /// it when the panicking extern returns.
     pub raised: Option<Raised>,
     /// Cumulative raises this process delivered to a handler rather than
@@ -248,35 +249,6 @@ impl ClosureRef {
 
     pub fn as_ref(self) -> AnyValueRef {
         AnyValueRef::from_raw_word(self.0.get()).expect("a ClosureRef holds a valid ref word")
-    }
-}
-
-/// One frame of a process's handler stack: what the next raise reaches.
-///
-/// A `try` pushes one frame on entry and pops it when its body completes.
-/// `fz_panic` pops the top frame and delivers the raise to it; with no frame
-/// the process fails.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Handler {
-    /// Compiled code's handler: a continuation template whose environment is
-    /// `[outer_cont, captures...]`. Delivery materializes it with the raise's
-    /// `(kind, value, name)` as its bound values, the way a receive outcome is
-    /// materialized, and stores it in `Process::delivered`; the raising frame
-    /// returns to the quantum entry, which resumes it.
-    Closure(ClosureRef),
-    /// The interpreter's handler. The interpreter keeps the frame itself; the
-    /// raise is left in `Process::raised` for it to read when the panicking
-    /// extern returns.
-    Interpreter,
-}
-
-impl Handler {
-    /// The handler's closure, when compiled code installed it.
-    pub fn closure(&self) -> Option<ClosureRef> {
-        match self {
-            Self::Closure(closure) => Some(*closure),
-            Self::Interpreter => None,
-        }
     }
 }
 
@@ -618,7 +590,7 @@ impl Process {
             mailbox: VecDeque::new(),
             runnable: None,
             delivered: None,
-            handlers: Vec::new(),
+            handlers: HandlerStack::default(),
             raised: None,
             raises_delivered: 0,
             stack_base: 0,
@@ -713,18 +685,16 @@ impl Process {
         self.failed || self.raised.is_some()
     }
 
-    /// Enter a `try`: the next raise reaches `handler` first.
-    pub fn push_handler(&mut self, handler: Handler) {
-        self.handlers.push(handler);
+    /// Enter an interpreted `try`: the next raise reaches the interpreter's
+    /// handler frame first.
+    pub fn push_interpreter_handler(&mut self) {
+        self.handlers.push_interpreter();
     }
 
     /// Leave a `try` whose body completed: its handler can no longer be
-    /// reached. A pop with no handler is a compiler defect, never a program
-    /// state.
-    pub fn pop_handler(&mut self) -> Handler {
-        self.handlers
-            .pop()
-            .expect("a try body completes under the handler it pushed")
+    /// reached.
+    pub fn pop_handler(&mut self) {
+        self.handlers.pop();
     }
 
     pub fn reset_reduction_budget(&mut self) {
@@ -763,7 +733,7 @@ impl Process {
     /// Collect this process's heap. The roots are everything the process
     /// holds into its heap, in one flat slice: the runnable closure, the park
     /// record's frame, a delivered handler,
-    /// the compiled handlers of the `try` bodies the process is inside, the mailbox and the
+    /// the values the compiled handlers of the `try` bodies the process is inside capture, the mailbox and the
     /// caller's `transient` values. Each holds its forwarded value on return.
     ///
     /// The delivery lock is held throughout, so a sender cannot probe the
@@ -778,12 +748,7 @@ impl Process {
             roots.push(park.frame);
         }
         roots.extend(self.delivered.map(ClosureRef::as_ref));
-        roots.extend(
-            self.handlers
-                .iter()
-                .filter_map(Handler::closure)
-                .map(ClosureRef::as_ref),
-        );
+        roots.extend(self.handlers.captures());
         roots.extend(self.mailbox.iter().copied());
         roots.extend_from_slice(transient);
 
@@ -800,11 +765,7 @@ impl Process {
         if self.delivered.is_some() {
             self.delivered = Some(ClosureRef::new(next()));
         }
-        for handler in self.handlers.iter_mut() {
-            if let Handler::Closure(closure) = handler {
-                *closure = ClosureRef::new(next());
-            }
-        }
+        self.handlers.set_captures(&mut std::iter::from_fn(|| Some(next())));
         for message in self.mailbox.iter_mut() {
             *message = next();
         }
