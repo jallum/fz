@@ -9,7 +9,8 @@
 # `\r` and `\n` bytes, and the file does not end in a newline, so a read that
 # folds, trims or drops a byte shows. The program prints the size read, whether
 # the bytes equal what was written, and the binaries and shared-buffer bytes
-# allocated across the read: one binary of the file's size. A reader that
+# allocated across the read. The read allocates two: one shared buffer of the
+# file's size, and the view of it that `File.read` returns. A reader that
 # appends a byte at a time allocates one binary per byte.
 defmodule Main do
   def binaries(stats), do: stats[:binview_allocs] + stats[:bitstring_allocs] + stats[:shared_bin_allocs]
