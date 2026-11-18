@@ -8,9 +8,15 @@
   "id": "fz-sc8.192.4",
   "labels": [],
   "parent": "fz-sc8.192",
+  "comments": [
+    {
+      "text": "Concordant evidence 2026-11-18 (MDF bench profile at 37c5473cd): map put 16.2% inclusive; key position search 11.5%, generic term compare 6.4%. map_key_position calls the generic comparator on every binary-search probe; the tag-decode helpers (storage_raw 3.5%, decode_parts 2.3%, heap_object_word 2.4%, from_ref 1.4% self) are real calls under map_put_slot/map_slot/compare. Map sizes per call site not measured (CPS stack hides fz callers).",
+      "timestamp": "2026-11-18T19:16:20Z"
+    }
+  ],
   "priority": 2,
   "status": "closed",
   "title": "A map insert decodes each slot it visits once",
   "type": "task",
-  "updated_at": "2026-11-18T05:25:57Z"
+  "updated_at": "2026-11-18T19:16:20Z"
 }
