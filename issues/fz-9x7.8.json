@@ -47,11 +47,15 @@
     {
       "text": "User ruling 2026-11-17: the old-binary major fold is dropped from .8; survive's binary memory belongs to fz-9x7.11 (three block ages). Fold diff kept at scratchpad/8fold/fold.patch for reference. .8 lands as a2e5c45f9, with survive's mean in-use cost stated in its PR; giftbin peak 1.015x base (present in a2e5c45f9) to be traced before the PR.",
       "timestamp": "2026-11-18T03:07:08Z"
+    },
+    {
+      "text": "User ruling 2026-11-17 (relayed by GC): the old-binary major fold is DROPPED from this ticket (it cost survive +14.4% instructions and json +21% peak); survive's mechanism belongs to fz-9x7.11. .8 lands as a2e5c45f9 with survive's cost stated in its PR; its giftbin peak (1.015x base) is traced before the PR.",
+      "timestamp": "2026-11-18T03:07:28Z"
     }
   ],
   "priority": 2,
   "status": "in_progress",
   "title": "Off-heap binary bytes count toward the collection trigger",
   "type": "bug",
-  "updated_at": "2026-11-18T03:07:08Z"
+  "updated_at": "2026-11-18T03:07:28Z"
 }
