@@ -4,7 +4,8 @@
     "fz-sc8.192.6"
   ],
   "blocks": [
-    "fz-sc8.192.11"
+    "fz-sc8.192.11",
+    "fz-sc8.192.13"
   ],
   "created": "2026-11-18T21:26:48Z",
   "description": "The user approved page v1 at 2026-11-18T21:26Z, verbatim via Optimize: \"approved; proceed.\" The user then said: \"goals approved; now, dig into the code, and figure out what needs to change, consolidate, fold, clean up, organize, be corrected to get us from where we are to the goal. update the proposal with a concrete plan of action, composed into steps that build inexorably toward the goal.\" The user then approved page v2, verbatim via Optimize: \"approved. proceed.\" v2 keeps storage order as it is (term order): a one-word key (atom, int, float, pid, ref) is found by word equality, as BEAM does, and order is consulted only to place a new key. Atom ids are not stable, so the v1 decisions on atom order are withdrawn. Page: https://claude.ai/artifact/MmnrdprbWQMF24ejqsUaQL (/Users/j5n/Workspace/fz-map-raw-words.html); measurements https://claude.ai/artifact/KASxGisqvtZNq498dbRi8D. User direction: meet or exceed BEAM in all cases; hand-written optimal arm64 first, then make the compiler emit it. Builder: Optimize. Pass rules are judged on bench and pre-registered on the page.\n\nPage v3 ruling (user 2026-11-18, verbatim via Optimize): \"a, b approved. continue to stack.\" Page: https://claude.ai/artifact/MmnrdprbWQMF24ejqsUaQL\n\nStep 3a, the runtime half (PR #760). One find(map, word, kind) returns slot + found and serves the flat, trie-leaf and struct layouts. It is used by the runtime's put/get/has-key/fetch/delete/update/replace. Removed: map_key_position, locate_key and StructMap::position. The library half (lib/map.fz searching once) moved to its own ticket, which is blocked on the pinned-key pattern.",
@@ -21,5 +22,5 @@
   "status": "open",
   "title": "Every map operation in the runtime finds its key with one find",
   "type": "task",
-  "updated_at": "2026-11-18T23:10:02Z"
+  "updated_at": "2026-11-18T23:10:04Z"
 }
