@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-9zq.2"
+  ],
   "created": "2026-11-18T23:22:43Z",
   "description": "Found while tracing fz-9zq.2's last red (fixture 00911 yield sizes rise 16-32 bytes per collection).\n\nUnder fz-9zq.2 one Range.reduce_step executable serves both rungs of Enum.to_list's reduce (accumulator empty_list() and list(int)). Its reducer closure then has two target activations at one call site, (int, empty_list()) and (int, list(int)), and the plan marks the callable `opaque=true`: `callable(\u003cunknown\u003e/0) carrier=ValueRef(fp[F] fun)`, an extra ValueRef parameter, effect `calls_opaque`. On develop each rung has its own executable, the closure is statically known and carries nothing. In 00911, executables with calls_opaque go 0 -\u003e 15 and unknown callables 6 -\u003e 37 (develop already has 6, so the shape exists on develop).\n\nNot every program: a plain Enum.to_list(1..N) folds the two rows into one closure activation (int, list(int)) and shows no opaque call. Why the rows stay separate in 00911 is not yet known. The fold spike of the sibling ticket does not change it.\n\nRun-path cost measured so far is within 0.2% on sum, range sum, to_list and list-building probes, but none of those plans contains the added opaque calls.\n\nOwed: root cause (why two target activations of one closure make the site opaque; why the rows do not fold in 00911), then the fix. Either the site keys the closure call from the joined rows, or a site whose targets are activations of one closure with one capture layout stays direct. Acceptance: 00911's yield pins hold at develop's values with fz-9zq.2 applied, and calls_opaque in 00911 returns to 0.\nBlocks fz-9zq.2's push.",
   "id": "fz-9zq.14",
