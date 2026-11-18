@@ -539,7 +539,11 @@ fn any_value_ref_map_construction_and_put_write_scalar_and_heap_values() {
         Ok(10)
     );
 
-    let map_ref = h.map_put_ref(map_ref, atom_key, child_ref).expect("put child");
+    let map_ref = h.map_put_slot(
+        map_ref,
+        AnyValue::atom(key_atom),
+        AnyValue::from_ref(child_ref).expect("child value"),
+    );
     assert_eq!(
         h.read_map_value_ref(map_ref, atom_key)
             .unwrap()
@@ -556,7 +560,7 @@ fn any_value_ref_map_construction_and_put_write_scalar_and_heap_values() {
         Ok(child_addr)
     );
 
-    let map_ref = h.map_put_int(map_ref, int_key, 11).expect("replace int key");
+    let map_ref = h.map_put_slot(map_ref, AnyValue::int(1), AnyValue::int(11));
     assert_eq!(
         h.read_map_value_ref(map_ref, int_key)
             .unwrap()
@@ -564,21 +568,6 @@ fn any_value_ref_map_construction_and_put_write_scalar_and_heap_values() {
             .load_int(),
         Ok(11)
     );
-}
-
-#[test]
-#[should_panic(expected = "map_put_ref value requires a heap/sentinel ref; use the typed scalar write path")]
-fn map_put_ref_rejects_scalar_value() {
-    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
-    let key_slot = 1u64;
-    let any_value = 2u64;
-    let key_ref = AnyValueRef::from_scalar_slot(ValueKind::INT, &key_slot).expect("key ref");
-    let value_ref = AnyValueRef::from_scalar_slot(ValueKind::INT, &any_value).expect("value ref");
-    let map_bits = h.alloc_map_slots(&[]);
-    let map_addr = map_addr_from_tagged(map_bits).expect("map addr");
-    let map_ref = AnyValueRef::from_heap_object(ValueKind::MAP, map_addr).expect("map ref");
-
-    let _ = h.map_put_ref(map_ref, key_ref, value_ref);
 }
 
 #[test]

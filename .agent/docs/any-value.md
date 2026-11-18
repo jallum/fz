@@ -235,16 +235,6 @@ under Cheney. Without it, copying is invisible: a view costs the same whether
 its bytes were freshly copied or shared, so the view counters alone cannot tell
 the two apart.
 
-**Typed fast reads** are fused helpers for callers the typer already proved the
-shape of. They project then load, and `.expect()` the projection, so they panic
-on a mismatched ref rather than inventing a second value model:
-
-```text
-fz_map_get_int(map, key)   -> i64
-fz_map_get_float(map, key) -> f64
-fz_map_get_atom(map, key)  -> atom id
-```
-
 **Typed writes** hand a known scalar straight into a container's compact
 object-local layout, with no detour through a built scalar ref:
 

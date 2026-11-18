@@ -504,21 +504,6 @@ fn ref_projection_helpers_load_scalar_payloads() {
 }
 
 #[test]
-fn map_typed_get_projects_expected_scalar_value() {
-    with_process(|process| {
-        let key_atom = process.node.intern_atom("key");
-        let key_ref = AnyValueRef::atom(key_atom);
-        let map_bits = process
-            .heap
-            .alloc_map_slots(&[(AnyValue::atom(key_atom), AnyValue::int(42))]);
-        let map_addr = map_addr_from_tagged(map_bits).expect("map addr");
-        let map_ref = AnyValueRef::from_heap_object(ValueKind::MAP, map_addr).expect("map ref");
-
-        assert_eq!(map_get_int_impl(process, map_ref.raw_word(), key_ref.raw_word()), 42);
-    });
-}
-
-#[test]
 fn typed_map_put_ffi_round_trips_atom_key_int_value() {
     with_process(|process| {
         let key_atom = process.node.intern_atom("key");
@@ -532,18 +517,13 @@ fn typed_map_put_ffi_round_trips_atom_key_int_value() {
 
 #[test]
 #[should_panic(expected = "fz_ref_load_int")]
-fn map_typed_get_panics_on_wrong_scalar_type() {
+fn loading_an_int_from_a_map_value_that_is_an_atom_panics() {
     with_process(|process| {
-        let key_atom = process.node.intern_atom("key");
-        let value_atom = process.node.intern_atom("value");
-        let key_ref = AnyValueRef::atom(key_atom);
-        let map_bits = process
-            .heap
-            .alloc_map_slots(&[(AnyValue::atom(key_atom), AnyValue::atom(value_atom))]);
-        let map_addr = map_addr_from_tagged(map_bits).expect("map addr");
-        let map_ref = AnyValueRef::from_heap_object(ValueKind::MAP, map_addr).expect("map ref");
+        let key = AnyValueRef::atom(process.node.intern_atom("key")).raw_word();
+        let value = AnyValueRef::atom(process.node.intern_atom("value")).raw_word();
+        let map = fz_map_put_atom_ref(process, fz_map_empty(process), key, value);
 
-        let _ = map_get_int_impl(process, map_ref.raw_word(), key_ref.raw_word());
+        let _ = ref_load_int_impl(fz_map_get_ref(process, map, key));
     });
 }
 
