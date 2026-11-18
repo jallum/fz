@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-18T04:51:59Z",
+  "description": "Approved by the user 2026-11-17 (relayed by Bugs and Cleanup, verbatim \"3. yes.\").\n\nFrom #720's missed page prediction (bench, release, instructions over control): of the +47 instructions a tail try still costs, ~20 are the generic capture-0 store (store_ref_word) in fill_cont_captures. Every continuation fill pays it. Specializing the store to the capture's statically known kind takes it from ~20 to ~3 instructions.\n\nConcordant work, agree the seam before building: Callables' continuation-cost page (https://claude.ai/artifact/BvwfPpc9Q9kGxcJCG4S2zK, /Users/j5n/Workspace/fz-9x7-cheap-continuations.html) step B, \"static capture kinds, static frame size\" (pending the user), covers the same stores; fz-9x7.37 (allocation statistics leave the inline path) edits the same place_cont_closure / alloc path in native_codegen/closure.rs. This ticket is the capture-kind store; it should become step B's first piece, not a second implementation.\n\nSignal: bench instructions per continuation fill on the tail-try probe (#720's), and the distiller; three paths agree; no pin rises.",
+  "id": "fz-9x7.39",
+  "labels": [],
+  "parent": "fz-9x7",
+  "priority": 1,
+  "status": "open",
+  "title": "A continuation's capture slots are filled by stores specialized to each capture's kind",
+  "type": "task",
+  "updated_at": "2026-11-18T04:51:59Z"
+}
