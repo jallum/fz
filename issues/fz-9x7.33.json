@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-18T00:31:42Z",
+  "description": "Approved by the user 2026-11-17 (relayed by Optimize: \"proceed\" on the receive page, https://claude.ai/artifact/UxRskxPS2PDs3j1x5TF6Aq v2).\n\ntry_match (runtime/src/park.rs:74, :85) loses both Vecs: the matcher writes into a buffer its caller holds. Delivery holds Option\u003cParkRecord\u003e instead of a Box (delivery.rs:40).\n\nSignal: receive-site mallocs per message on g-msg ~4.5 -\u003e 0 (GC's counting allocator; measured today: try_match 2, Box\u003cParkRecord\u003e 1, fz_receive_park_matched Vecs ~1.5 of msg's ~12 per message).",
+  "id": "fz-9x7.33",
+  "labels": [],
+  "parent": "fz-9x7",
+  "priority": 2,
+  "status": "open",
+  "title": "The matcher writes into its caller's buffer and a park record is not boxed",
+  "type": "task",
+  "updated_at": "2026-11-18T00:31:42Z"
+}
