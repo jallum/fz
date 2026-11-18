@@ -6,14 +6,15 @@
   "blocks": [
     "fz-9x7.34"
   ],
+  "closed_at": "2026-11-18T00:55:24Z",
   "created": "2026-11-18T00:31:42Z",
   "description": "Approved by the user 2026-11-17 (relayed by Optimize: \"proceed\" on the receive page, https://claude.ai/artifact/UxRskxPS2PDs3j1x5TF6Aq v2).\n\nDelivery holds Option\u003cParkRecord\u003e instead of a Box (delivery.rs:40). Scope narrowed at GC's request (2026-11-17): the matcher-buffer half is split to its own ticket because GC's fz-9x7.28 design ruling may change how bound values leave a matched message.",
   "id": "fz-9x7.33",
   "labels": [],
   "parent": "fz-9x7",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "A park record sits in the delivery state, not in a box",
   "type": "task",
-  "updated_at": "2026-11-18T00:55:04Z"
+  "updated_at": "2026-11-18T00:55:24Z"
 }
