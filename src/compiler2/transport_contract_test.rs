@@ -821,7 +821,7 @@ def main(), do: fz_any_id(1.0)
 #[test]
 fn compiler2_transport_flow_publishes_callable_value_lane_for_spawn_boundary_input() {
     let source = r#"
-extern "C" defp callable_sink(() -> any) :: pid
+extern "C" defp callable_sink((-> any)) :: pid
 def spawn(fun), do: callable_sink(fun)
 def child(), do: 42
 def main(), do: spawn(child)
@@ -1576,7 +1576,7 @@ fn compiler2_transport_plan_requires_a_boundary_for_an_opaque_callable_input() {
 #[test]
 fn compiler2_runtime_demand_excludes_unused_same_source_callable_sibling() {
     let source = r#"
-@spec use((integer) -> integer) :: integer
+@spec use((integer -> integer)) :: integer
 def use(f), do: f.(1)
 
 def ignore(_), do: 0
@@ -2076,7 +2076,7 @@ fn assert_tuple_returned_callable_resume_publishes_its_boundary(source: &str) {
 fn compiler2_transport_plan_proves_protocol_dispatched_escaped_continuation_capture_surface() {
     let source = r#"
 defprotocol Susp do
-  @spec run(t(a), (a) -> b) :: () -> b
+  @spec run(t(a), (a -> b)) :: (-> b)
   def run(coll, f)
 end
 

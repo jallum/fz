@@ -19,23 +19,23 @@ defmodule File.Stream do
 
   @type t :: %File.Stream{path: binary, modes: [atom], line_or_bytes: atom, raw: boolean, node: atom}
 
-  @spec step(File.t, {:cont, b} | {:halt, b} | {:suspend, b}, (binary, b | c) -> {:cont, b | c} | {:halt, b | c} | {:suspend, b | c}) :: {:done, b | c} | {:halted, b | c} | {:suspended, b | c, () -> any} when b: var, c: var
+  @spec step(File.t, {:cont, b} | {:halt, b} | {:suspend, b}, (binary, b | c -> {:cont, b | c} | {:halt, b | c} | {:suspend, b | c})) :: {:done, b | c} | {:halted, b | c} | {:suspended, b | c, (-> any)} when b: var, c: var
   def step(handle, {:cont, acc}, reducer), do: line_step(read_line(handle.value), handle, acc, reducer)
   def step(handle, {:halt, acc}, _reducer), do: closed(File.close(handle), {:halted, acc})
   def step(handle, {:suspend, acc}, reducer), do: {:suspended, acc, (fn () -> step(handle, {:cont, acc}, reducer) end)}
 
-  @spec line_step([binary], File.t, b | c, (binary, b | c) -> {:cont, b | c} | {:halt, b | c} | {:suspend, b | c}) :: {:done, b | c} | {:halted, b | c} | {:suspended, b | c, () -> any} when b: var, c: var
+  @spec line_step([binary], File.t, b | c, (binary, b | c -> {:cont, b | c} | {:halt, b | c} | {:suspend, b | c})) :: {:done, b | c} | {:halted, b | c} | {:suspended, b | c, (-> any)} when b: var, c: var
   defp line_step([], handle, acc, _reducer), do: closed(File.close(handle), {:done, acc})
   defp line_step([line], handle, acc, reducer), do: step(handle, reducer.(line, acc), reducer)
 
-  @spec step_while(File.t, a, (binary, a) -> {:cont, a} | {:halt, b}) :: a | b when a: var, b: var
+  @spec step_while(File.t, a, (binary, a -> {:cont, a} | {:halt, b})) :: a | b when a: var, b: var
   def step_while(handle, acc, reducer), do: line_step_while(read_line(handle.value), handle, acc, reducer)
 
-  @spec line_step_while([binary], File.t, a, (binary, a) -> {:cont, a} | {:halt, b}) :: a | b when a: var, b: var
+  @spec line_step_while([binary], File.t, a, (binary, a -> {:cont, a} | {:halt, b})) :: a | b when a: var, b: var
   defp line_step_while([], handle, acc, _reducer), do: closed(File.close(handle), acc)
   defp line_step_while([line], handle, acc, reducer), do: after_line(reducer.(line, acc), handle, reducer)
 
-  @spec after_line({:cont, a} | {:halt, b}, File.t, (binary, a) -> {:cont, a} | {:halt, b}) :: a | b when a: var, b: var
+  @spec after_line({:cont, a} | {:halt, b}, File.t, (binary, a -> {:cont, a} | {:halt, b})) :: a | b when a: var, b: var
   defp after_line({:cont, acc}, handle, reducer), do: step_while(handle, acc, reducer)
   defp after_line({:halt, acc}, handle, _reducer), do: closed(File.close(handle), acc)
 

@@ -4,8 +4,8 @@
 //! signature, not an encounter-order counter:
 //!
 //! ```text
-//! @spec foo(a, {b, c}, d)   -->  (a0, {a1_0, a1_1}, a2) -> r0
-//! @spec flibble(t, t) :: t  -->  (a0, a0) -> a0
+//! @spec foo(a, {b, c}, d)   -->  (a0, {a1_0, a1_1}, a2 -> r0)
+//! @spec flibble(t, t) :: t  -->  (a0, a0 -> a0)
 //! ```
 //!
 //! parameter `i` addresses to `a{i}`; the result slot to `r0`; component `j`

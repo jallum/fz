@@ -244,7 +244,7 @@ unchanged. The INSTANTIATION is the join of the lower bounds and nothing else �
 an upper bound is not evidence about a value, so it never grounds the result,
 the parameters, or a variable. `map([a], (a) -> b)` folded against a reducer
 whose parameter is typed `any` keeps `a = int` (the list's element), not
-`a = any`; and `f(a, (a) -> nil) :: (a) -> nil` at `(int, (any) -> nil)`
+`a = any`; and `f(a, (a -> nil)) :: (a -> nil)` at `(int, (any) -> nil)`
 publishes `(int) -> nil` — a supertype of every legal answer — rather than the
 unsound `(any) -> nil`.
 

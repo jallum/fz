@@ -223,7 +223,7 @@ defmodule File do
   defp wrap_open(0), do: {:error, :io}
   defp wrap_open(stream), do: {:ok, fz_make_resource(stream, &dtor/1)}
 
-  extern "fz" defp fz_make_resource(c_pointer, (c_pointer) -> nil) :: resource(c_pointer)
+  extern "fz" defp fz_make_resource(c_pointer, (c_pointer -> nil)) :: resource(c_pointer)
 
   @spec dtor(c_pointer) :: nil
   defp dtor(stream) do

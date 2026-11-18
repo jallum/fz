@@ -367,18 +367,12 @@ impl<'a> TypeExprParser<'a> {
         }
         self.expect(&Tok::RParen, "`)`")?;
         if matches!(self.peek(), Tok::Arrow) {
-            self.bump();
-            let result = self.parse_union()?;
-            return Ok(TypeExpr::Arrow {
-                params: elems,
-                result: Box::new(result),
-            });
+            return Err(self.err("a function type writes its arrow inside the parentheses: `(A, B -> R)`, or `(-> R)` with no parameters"));
         }
         if elems.len() == 1 {
             Ok(elems.pop().unwrap())
         } else {
-            Err(self
-                .err("a parenthesized type with multiple elements must be followed by `->` (use `{T, U}` for a tuple)"))
+            Err(self.err("parentheses hold one type or a function type `(A, B -> R)`; a tuple is `{T, U}`"))
         }
     }
 

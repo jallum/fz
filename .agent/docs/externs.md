@@ -731,8 +731,8 @@ declaration is refused at each door.
 flows from the boundary:
 
 ```fz
-extern "fz" defp fz_make_resource(t, (t) -> nil) :: resource(t) when t: integer | cpointer
-@spec make_resource(t, (t) -> nil) :: resource(t) when t: integer | cpointer
+extern "fz" defp fz_make_resource(t, (t -> nil)) :: resource(t) when t: integer | cpointer
+@spec make_resource(t, (t -> nil)) :: resource(t) when t: integer | cpointer
 ```
 
 The destructor captures nothing. It is a literal closure (`is_literal()` on its

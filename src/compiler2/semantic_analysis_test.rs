@@ -29,7 +29,7 @@ fn compiler2_protocol_dispatched_escaped_continuation_closes_captured_callable()
         Some("protocol_escaped_continuation.fz".to_string()),
         r#"
 defprotocol Susp do
-  @spec run(t(a), (a) -> b) :: () -> b
+  @spec run(t(a), (a -> b)) :: (-> b)
   def run(coll, f)
 end
 
