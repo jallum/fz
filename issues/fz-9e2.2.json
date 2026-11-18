@@ -4,14 +4,15 @@
   "blocks": [
     "fz-9e2.5"
   ],
+  "closed_at": "2026-11-18T22:12:43Z",
   "created": "2026-11-18T21:21:28Z",
   "description": "Delete binary code with no callers. Each item is confirmed by grep over src, runtime/src, lib and the tests, and by `cargo check --workspace --all-targets` staying clean after the deletion:\n- bits::bitstring_like_eq (runtime/src/bits.rs), which duplicates the comparison in term.rs\n- bitstr::decode_utf8, decode_utf16 and decode_utf32 (runtime/src/bitstr.rs)\n- ast::BitFieldSpec::resolved_unit and default_size (src/ast/mod.rs)\n- the fz_ir::default_unit_for wrapper (src/fz_ir/mod.rs); its four callers ask BitType::default_unit directly\n- the stale \"thread-local BitWriter\" comment (native_codegen/support.rs); the writer is process.bs_builder\n\nListed by the audit (runtime.md R17, compiler.md C14) but live on develop 37c5473cd, so not part of this ticket:\n- ValueKind::BINARY_REPRS: the Binaries axis of the emitted runtime type test iterates it (native_codegen/runtime_test.rs), and semantic-authorities.md names it the owner of binary representation. It stays.\n- SHARED_BIN_ROOM_OFFSET: bits_test.rs pins the static buffer layout with it, and aot_main.rs hard-codes the same offsets. fz-9e2.4 writes the room word of a baked buffer, so the constant is used or removed there.\n- bitstring_like_word: 17 call sites in ir_runtime.rs and failure.rs. It goes when fz-9e2.5 replaces them with the one decoder.\n- fz_brand_bitstring_as_utf8: lib/utf8.fz calls it three times, and its `:: any` return is what the callers' types see. Removing it changes inferred types, so it is a separate proposal.\n- the BitSizeIr::ByteSizeOf arm in Prim::MakeBitstring: an `unreachable!` the match needs for exhaustiveness. It goes when a construction's size has its own type, in fz-9e2.10.\n\nAcceptance: deleted. The gate is green, and no pin moves.",
   "id": "fz-9e2.2",
   "labels": [],
   "parent": "fz-9e2",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Binary code with no callers is deleted",
   "type": "task",
-  "updated_at": "2026-11-18T21:24:38Z"
+  "updated_at": "2026-11-18T22:12:43Z"
 }
