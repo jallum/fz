@@ -25,7 +25,7 @@ write rather than corrupting a run. Hand-built test executables carry
 
 `enter_entry` prepares the frame for a target entry in place: it encodes the
 values the entry is handed (a decision hands each subject in the form it holds,
-a cursor included) into the lanes of the parameters' layouts, binds each
+a cursor included, and hands nothing for a parameter laid out in no lanes) into the lanes of the parameters' layouts, binds each
 parameter by decoding its layout from those lanes, and, for a `DeliveredResume` origin, binds the value
 the call returned. Entries reached by a branch, a `Deliver` destination, a
 receive match or a receive `after` continue in the current frame. A return
