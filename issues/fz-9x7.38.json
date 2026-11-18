@@ -2,14 +2,16 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-18T19:16:38Z",
+  "close_reason": "Merged in #735 (d4094fe7b).",
   "created": "2026-11-18T04:51:58Z",
   "description": "Approved by the user 2026-11-17 (relayed by Bugs and Cleanup, verbatim \"1. yes.\").\n\nRegression: #720 (fz-9x7.31, 6ef901351) costs the distiller +1.91% instructions (+1.94G), +1.07% cycles (MDF bisect; #717, #723, #722, #719, #718 contribute 0).\n\nCause (proven, B\u0026C): in 6ef901351 cheney_scan calls forward_heap_value out of line at all 8 trace sites (bl forward_heap_value x8); at 2f0658c5e all 8 were inlined. No collector source changed; forward_heap_value carries #[inline] under the doc line \"The Cheney trace's speed depends on this being inlined into each trace function\". Release is thin LTO with 16 codegen units; #720's new handler_stack module moved the unit split and LLVM declined the hint.\n\nEvidence (bench, 5 alternated runs per arm, all 20 outputs md5-identical, medians; arms at bench ~/Workspace/fz/hunt31 l.base/l.head/l.always/l.never): base 2f0658c5e 102.31G instr, 0 calls; head 6ef901351 104.25G (+1.90%), 8 calls; head + #[inline(always)] 102.19G (-0.12% vs base), 0 calls; head + #[inline(never)] on relocate_tail_for_gc and decode_tagged_heap_bits 104.30G, 8 calls (keep-it-small shape refuted; those helpers were already out of line in the fast binary).\n\nFix: #[inline(always)] on forward_heap_value. Same commit: the stale doc at runtime static_object.rs:3 (\"try handlers that capture nothing and never return\"). No release-build disassembly check (GC and B\u0026C agree: the attribute is the construction; the bench A/B in the PR is the evidence). GC reviews.",
   "id": "fz-9x7.38",
   "labels": [],
   "parent": "fz-9x7",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "The collector's forwarding step is always inlined into the Cheney trace",
   "type": "bug",
-  "updated_at": "2026-11-18T04:51:58Z"
+  "updated_at": "2026-11-18T19:16:38Z"
 }
