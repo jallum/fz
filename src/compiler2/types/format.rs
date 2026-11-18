@@ -103,12 +103,21 @@ fn format_resource_clause(cx: TyCtx<'_>, c: &Conj<ResourceSig>) -> String {
 fn format_arrow_clause(cx: TyCtx<'_>, c: &Conj<ArrowSig>) -> String {
     format_conj(c, "fun", |sig| {
         let args: Vec<String> = sig.args.iter().map(|ty| display(cx, cx.descr(ty))).collect();
-        let base = format!("({}) -> {}", args.join(", "), display(cx, cx.descr(&sig.ret)));
+        let base = elixir_arrow(&args, &display(cx, cx.descr(&sig.ret)));
         match &sig.lit {
             Some(lit) => format_closure_lit_suffix(cx, &base, lit),
             None => base,
         }
     })
+}
+
+/// Elixir's function type: the arrow sits inside the parentheses, and a
+/// function of no arguments is `(-> R)`.
+fn elixir_arrow(args: &[String], result: &str) -> String {
+    match args {
+        [] => format!("(-> {result})"),
+        _ => format!("({} -> {result})", args.join(", ")),
+    }
 }
 
 /// Render a `ClosureLit`-bearing arrow's suffix so that distinct `ClosureLit`

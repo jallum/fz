@@ -54,6 +54,8 @@ with no factors denotes every value of ITS kind, which is not `any`, and both
 surfaces say so — canon names the five axis tops
 `tuple`/`list`/`fun`/`map`/`resource`, while `display` names each as the widest
 type a user could write where there is one (`[any]`, `resource(any)`).
+`display` writes a function type in Elixir's spelling, `(A, B -> R)` and
+`(-> R)`, as source does; the canonical form writes `(A, B) -> R`.
 
 Getting there takes normalization, because one type has many descriptors. Each
 step below rewrites a descriptor to a semantically EQUAL one, which is what

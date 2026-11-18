@@ -176,7 +176,7 @@ entry and the structural arm are proven concordant by
 (`Types::tuple_top`); `tuple(T)` is an arity error, so `{T, U}` is the only
 fixed-arity spelling. `fun` is the nullary name for the function top, every
 function of every arity (`Types::fun_top`), and `function` is the same type, as
-in Elixir's typespecs; `fun(T)` is an arity error, so an arrow `(T) -> U` is
+in Elixir's typespecs; `fun(T)` is an arity error, so an arrow `(T -> U)` is
 the only spelling of a signature.
 
 ## Where it lives
