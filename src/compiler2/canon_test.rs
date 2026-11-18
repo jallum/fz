@@ -563,7 +563,8 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // own message, so the raise no longer carries `inspect` and its extern to build
             // the text: `panic` and its extern stand where `raise/2` and its extern stood.
             // 75 -> 70: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
-            70,
+            // 70 -> 59: `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
+            59,
         ),
         (
             569, // enum_map_family
@@ -581,7 +582,8 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // as a recursive key does, so callers that differ only in such freight share one
             // activation.
             // 126 -> 123: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
-            123,
+            // 123 -> 110: `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
+            110,
         ),
         // fz-sc8.8: 36 -> 54. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
         // An activation key names only the literals a use can tell apart: 54 -> 52.
@@ -666,7 +668,8 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // 258 -> 256: an exception record nothing asks about keys by its class, so the
             // functions that carry one are emitted once.
             // 256 -> 255: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
-            255,
+            // 255 -> 239: `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
+            239,
         ),
     ] {
         let settled = Drive::fixture(number).dump_stage(DumpStage::Backend);

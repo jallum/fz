@@ -12718,8 +12718,11 @@ const SOURCE_ORDER_BLIND_ESCAPES: &[&str] = &[];
 /// plans, 142 -> 140 unreadable.
 /// A self call keeps its caller's key at a slot the recursion supplies, so one
 /// fewer `entry` plan exists: 153 -> 152 plans, 140 -> 139 unreadable.
+/// `Enum.to_list/1` builds a range's list itself, so the census programs that
+/// only list a range no longer reach the reduce-and-reverse path: `entry`
+/// 133 -> 130 plans, 122 -> 119 unreadable.
 const SOURCE_ORDER_PLANS_ON_THE_CENSUS: &[(&str, usize, usize)] =
-    &[("case", 16, 16), ("entry", 133, 122), ("receive", 2, 0)];
+    &[("case", 16, 16), ("entry", 130, 119), ("receive", 2, 0)];
 
 /// The subjects at which seating `early` before `late` lets a value reach a
 /// body that never named it: the two arms put one and the same question there,
@@ -24431,7 +24434,7 @@ fn compiler2_a_stream_over_any_enumerable_keeps_its_activations_finite() {
         ("Enumerable.Stream.reduce/3", 2),
         ("Enumerable.List.reduce/3", 4),
         ("Enumerable.Map.reduce/3", 2),
-        ("Enumerable.Range.reduce/3", 2),
+        ("Enumerable.Range.reduce/3", 1),
         ("List.reduce_cont/3", 4),
         ("Map.reduce_cont/5", 3),
         ("Range.reduce_cont/6", 2),
@@ -24450,7 +24453,11 @@ fn compiler2_a_stream_over_any_enumerable_keeps_its_activations_finite() {
         // 132 -> 136: the ordering operators' `binary` clause adds its `fz_op_*_bb`
         // activation and splits the catch-all's `compare/2` activations, the same way
         // the int and float clauses already do.
-        136,
+        // 136 -> 147: `Enum.to_list/1` has a clause that builds a range's list itself. This
+        // program's enumerable is `any`, so the clause is reachable with `any` fields: its
+        // arithmetic (`Range.count/3`, `-`, `*`, `div` and their int and float externs) is
+        // 14 activations, less the 3 of the range's reduce-and-reverse path.
+        147,
         "activations of the whole program"
     );
 }

@@ -4013,15 +4013,12 @@ fn a_matched_reply_fixture_collects_on_every_path_though_only_the_jit_yields_mid
     let fixture =
         FixtureCase::new("fixtures/00901_a_matched_reply_is_gifted_by_the_sender_and_grafted_by_the_parent.fz");
 
-    // The child yields on its reduction budget, 62 times, while it builds and
-    // sends the 50000-element log; a yield collects only when the heap is due,
-    // once the child has allocated as many bytes as it held live after its last
-    // collection. Each quantum's continuation frames raise the bytes allocated:
-    // a frame that resumes as the newest object is given back, but a frame
-    // under a newer cons cell stays until the collection, so a quantum
-    // allocates about 224 KB of which about 12.9 KB survive. The child is
-    // collected on 18 of its yields, more than the 7 it was when its
-    // continuations lived on the stack. The parent is collected once as it
+    // The child yields on its reduction budget while it builds and sends the
+    // 50000-element log; a yield collects only when the heap is due, once the
+    // child has allocated as many bytes as it held live after its last
+    // collection. The log is built one cell per element, so the bytes a
+    // quantum allocates are mostly cells that survive, and the child is
+    // collected on 4 of its yields. The parent is collected once as it
     // parks on its receive (976 bytes: the values the parked receive holds,
     // among them the heap-stats maps the fixture binds, each of 36 entries, plus the closures and
     // continuation frames its park record holds). The gifts it grafts
@@ -4031,20 +4028,13 @@ fn a_matched_reply_fixture_collects_on_every_path_though_only_the_jit_yields_mid
     let count = |boundary: &str| events.iter().filter(|e| e.boundary == boundary).count();
     assert_eq!(
         (count("yield"), count("park"), count("exit")),
-        (18, 1, 0),
+        (4, 1, 0),
         "run: the child's collected yields, the parent's park, no exit"
     );
-    assert_eq!(events.len(), 19, "run: one gc event per collection");
+    assert_eq!(events.len(), 5, "run: one gc event per collection");
     assert_eq!(
         events.iter().map(|e| e.copied_bytes).sum::<usize>(),
-        // 2_680_080 -> 2_680_272: a process's entry calls its body inside the handler that words
-        // an uncaught raise, so the continuation that call returns to, 32 bytes, is live in six
-        // of the collections.
-        // 2_680_272 -> 2_680_304: a process's heap stats count BinRefs as their own object kind,
-        // so the stats maps the fixture keeps live hold two more keys. A map of more than 32
-        // entries is a hash trie whose node sizes follow its keys' hashes; with these 36 keys
-        // the live maps copy 32 bytes more.
-        2_680_304,
+        737_568,
         "run: the bytes every collection copied"
     );
 
@@ -4160,12 +4150,12 @@ fn a_receiver_left_parked_with_queued_gifts_drops_them_at_teardown() {
 /// an object no minor collection looks inside, so the write goes to a copy at
 /// the heap tip. The fixture's twenty calls each build and drop a
 /// thirty-thousand-element list, so collections run while the frame is live and
-/// four steps find it old. The interpreter has no frames and copies none.
+/// one step finds it old. The interpreter has no frames and copies none.
 fn a_long_body_copies_its_frame_forward_when_a_collection_kept_it() {
     let fixture = FixtureCase::new("fixtures/01254_a_long_body_copies_its_frame_forward_when_a_collection_kept_it.fz");
     for (path, label, copies) in [
-        (FixtureMatrixPath::Run, "run", 4),
-        (FixtureMatrixPath::Build, "build", 4),
+        (FixtureMatrixPath::Run, "run", 1),
+        (FixtureMatrixPath::Build, "build", 1),
         (FixtureMatrixPath::Interp, "interp", 0),
     ] {
         assert_eq!(
@@ -4178,20 +4168,20 @@ fn a_long_body_copies_its_frame_forward_when_a_collection_kept_it() {
 
 /// The body frame holds a forty-thousand-element list until the step
 /// that measures it, and the step after clears the slot. The collections that
-/// follow copy what the program still uses and not the list: none of the last
-/// fifty copies more than 48,576 bytes, a three-thousand-element list of `g`'s
-/// and little else. When the program's last expression still reads the list,
-/// the collections after it copy the list's 640,000 bytes too: the most is
-/// then 672,656.
+/// follow copy what the program still uses and not the list: neither of the
+/// last two copies more than 32,528 bytes, cells of a three-thousand-element
+/// list of `g`'s and little else. When the program's last expression still
+/// reads the list, the collection after it copies the list's young cells too:
+/// 192,528 bytes.
 fn a_list_the_body_no_longer_uses_is_not_kept_by_its_frame() {
     let fixture = FixtureCase::new("fixtures/01256_a_list_the_body_no_longer_uses_is_not_kept_by_its_frame.fz");
     for (path, label) in [(FixtureMatrixPath::Run, "run"), (FixtureMatrixPath::Build, "build")] {
         let events = gc_events_for_fixture(&fixture, path, label);
-        let tail = &events[events.len().saturating_sub(50)..];
+        let tail = &events[events.len().saturating_sub(2)..];
         assert_eq!(
             tail.iter().map(|e| e.copied_bytes).max(),
-            Some(48_576),
-            "{label}: the most bytes one of the last fifty collections copied"
+            Some(32_528),
+            "{label}: the most bytes one of the last two collections copied"
         );
     }
 }
@@ -4302,18 +4292,12 @@ fn a_large_list_passed_back_and_forth_crosses_as_one_gift_per_message_on_every_p
 
     // The interpreter never yields, so it collects the parent once, at its
     // park for the announcement, with nothing live. The JIT yields while the
-    // parent builds the list, and a yield collects only when the heap is due:
-    // the continuation frames a quantum builds that resume under a newer cons
-    // cell stay on the heap until a collection, so a quantum allocates several
-    // times the bytes of the cells that survive (the parent's yields are 39; it
-    // is collected on 15 of them). Each minor collection copies what was
-    // allocated since the last one; those whose old bytes passed twice what the
-    // last major collection left are major and copy everything live. The child
-    // is collected once, as it parks (288 bytes). The parent's park mid-run,
-    // where it waits for the next ball, collects only if the heap is due there,
-    // and due is a margin of a few hundred bytes of young bytes against a
-    // budget the last collection set. It is due here: 512352 young bytes
-    // against a budget of 384176.
+    // parent builds the list, and a yield collects only when the heap is due.
+    // Each minor collection copies what was allocated since the last one;
+    // those whose old bytes passed twice what the last major collection left
+    // are major and copy everything live. The child is collected once, as it
+    // parks (320 bytes). The parent's park mid-run, where it waits for the
+    // next ball, collects only if the heap is due there, and it is not.
     let events = gc_events_for_fixture(&fixture, FixtureMatrixPath::Interp, "interp");
     assert_eq!(
         collections_as_tuples(&events),
@@ -4327,24 +4311,16 @@ fn a_large_list_passed_back_and_forth_crosses_as_one_gift_per_message_on_every_p
             // Each entry's call of its body returns to a 32-byte continuation, live in the child's
             // park and in the parent's collections that copy its oldest values.
             (2, "park", 320),
-            (1, "yield", 32_224),
-            (1, "yield", 64_224),
-            (1, "yield", 32_064),
-            (1, "yield", 32_064),
-            (1, "yield", 32_064),
-            (1, "yield", 192_224),
-            (1, "yield", 32_064),
-            (1, "yield", 64_064),
-            (1, "yield", 32_064),
-            (1, "yield", 64_048),
-            (1, "yield", 320_160),
-            (1, "yield", 64_048),
-            (1, "park", 208),
-            (1, "yield", 42_816),
+            (1, "yield", 32_144),
+            (1, "yield", 96_144),
+            (1, "yield", 128_064),
+            (1, "yield", 85_472),
+            (1, "yield", 48),
+            (1, "yield", 48),
             (1, "yield", 48),
             (1, "yield", 48),
         ],
-        "run: the child's park, then the parent's collected yields and its mid-run park"
+        "run: the child's park, then the parent's collected yields"
     );
 }
 

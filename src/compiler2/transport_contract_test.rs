@@ -4894,7 +4894,8 @@ fn positioned_callable_owners_have_observable_obligations() {
                 classes,
                 BTreeMap::from([
                     (("construction", true), 38),
-                    (("metadata", false), 201),
+                    // 201 -> 156: `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
+                    (("metadata", false), 156),
                     // 180 -> 212 callable owners: a returned callable keeps its brand in its
                     // function's key, and a protocol callback counts every input but the
                     // receiver as returned, so `Enum.reduce_while/3` and its Enum wrappers are

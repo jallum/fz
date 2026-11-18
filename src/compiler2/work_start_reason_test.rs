@@ -384,7 +384,8 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // the fixture's own declarations are checked, which is one
         // `CheckDeclarations` run. The fixture declares nothing, so it defines
         // no module and derives no contract for it.
-        (2982, 15, 31, 261),
+        // (2982, 15, 31, 261) -> (2770, 15, 31, 245): `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
+        (2770, 15, 31, 245),
         "ordinary generic helper work has the exact source/module/executable-fact census"
     );
     // Every applied work step is a run, and every run is charged to exactly
@@ -494,7 +495,8 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // function's reach lands, where it used to start on its edges and then wait on a product.
         // 1163 -> 1164: the ordering operators' `binary` clause adds its `fz_op_*_bb` activation and splits the catch-all's `compare/2` activations, the same way the int and float clauses already do.
         // 1164 -> 1153: a module is started once its enclosing scope exists, so each module's definition runs once fewer.
-        1153,
+        // 1153 -> 1055: `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
+        1055,
         "ordinary generic helper facts have the exact non-demand changed-revision census",
     );
     assert_eq!(
@@ -575,7 +577,8 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // 641 -> 630: a module is started once its enclosing scope exists, so each module's definition runs once fewer.
         // 630 -> 631: the product waits on the fixture's own declarations being
         // checked, and that wait starts its one `CheckDeclarations`.
-        631,
+        // 631 -> 588: `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
+        588,
         "the blocked-waiter census includes only the prerequisites each completion's own waits expand",
     );
     assert_eq!(
@@ -646,7 +649,8 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // (622, 624, [24, 261, 82, 257, 0]) -> (623, 625, [24, 262, 82, 257, 0]): the library
         // exception a failure raises adds one activation, whose runtime demand is derived.
         // (623, 625, [24, 262, 82, 257, 0]) -> (621, 623, [24, 261, 82, 256, 0]): `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
-        (621, 623, [24, 261, 82, 256, 0]),
+        // (621, 623, [24, 261, 82, 256, 0]) -> (582, 589, [24, 245, 80, 240, 0]): `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
+        (582, 589, [24, 245, 80, 240, 0]),
         "every demand completion and ordinary helper wake retains its precise cause",
     );
     assert_eq!(
@@ -668,7 +672,8 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // recursive key does, so callers that differ only in such freight share one activation.
         // 333 -> 334: one key for the library exception a failure raises.
         // 334 -> 333: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
-        333,
+        // 333 -> 317: `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
+        317,
         "the demand frontier retains every ordinary generic helper key",
     );
     assert_eq!(
@@ -802,7 +807,8 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // 745 -> 740: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
         // 740 -> 738: recursion verdicts now publish on the schedule of the reach facts, and
         // this fixture's schedule-dependent convergence repeats two analyses fewer.
-        738,
+        // 738 -> 691: `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
+        691,
         "the fixture's total AnalyzeActivation completions, repeats included",
     );
     let frontier_analyses = analyzed_activations.iter().cloned().collect::<HashSet<_>>();
@@ -830,7 +836,8 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // recursive key does, so callers that differ only in such freight share one activation.
         // 261 -> 262: the library exception a failure raises adds one activation.
         // 262 -> 261: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
-        261,
+        // 261 -> 245: `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
+        245,
         "the demand frontier's distinct activations, deduplicated across repeats",
     );
 
