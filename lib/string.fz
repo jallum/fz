@@ -1059,7 +1059,7 @@ defmodule String do
   @doc """
   Returns the integer that `s` names, in base 10.
 
-  `s` must be an optional leading `-` followed by one or more decimal
+  `s` must be an optional leading `-` or `+` followed by one or more decimal
   digits; anything else raises `ArgumentError`. There is no base argument, so
   callers wanting another base cannot use this function.
 
@@ -1073,19 +1073,11 @@ defmodule String do
 
   """
   @spec to_integer(binary) :: integer
-  def to_integer(<<45, rest :: binary>>), do: 0 - digits_value(rest, 0, byte_size(rest))
-  def to_integer(s), do: digits_value(s, 0, byte_size(s))
+  def to_integer(s), do: whole_integer(Integer.parse(s))
 
-  @spec digits_value(binary, integer, integer) :: integer
-  defp digits_value(_s, _acc, 0), do: not_an_integer()
-  defp digits_value(s, acc, _n), do: digits_fold(s, acc)
-
-  @spec digits_fold(binary, integer) :: integer
-  defp digits_fold(<<>>, acc), do: acc
-  defp digits_fold(<<c, rest :: binary>>, acc) when c >= 48 and c <= 57 do
-    digits_fold(rest, acc * 10 + (c - 48))
-  end
-  defp digits_fold(_s, _acc), do: not_an_integer()
+  @spec whole_integer({integer, binary} | :error) :: integer
+  defp whole_integer({n, ""}), do: n
+  defp whole_integer(_partial), do: not_an_integer()
 
   @spec not_an_integer() :: never
   defp not_an_integer(),
@@ -1098,48 +1090,37 @@ defmodule String do
   @doc """
   Returns the float that `s` names, or raises `ArgumentError`.
 
-  `s` must have exactly one `.`, with digits on both sides -- `"1"` raises
-  where `"1.0"` succeeds, matching Elixir's own `to_float/1`.
+  `s` is an optional sign, digits, a decimal point, digits, and an optional
+  exponent (`"1.0e3"`). The decimal point is required: `"1"` and `"1e3"` raise
+  where `"1.0"` and `"1.0e3"` succeed, matching Elixir's own `to_float/1`.
 
   ## Examples
 
       String.to_float("2.5")
       #=> 2.5
 
-      String.to_float("-0.25")
-      #=> -0.25
+      String.to_float("-1.5e-2")
+      #=> -0.015
 
   """
   @spec to_float(binary) :: float
-  def to_float(s), do: float_parts(split(s, "."))
+  def to_float(s), do: whole_float(Float.parse(s), s)
 
-  # `to_float/1` requires a decimal point -- `to_float("1")` panics where
-  # `to_float("1.0")` is `1.0` -- so the split has to find exactly two parts
-  # and both have to be digits.
-  @spec float_parts([binary]) :: float
-  defp float_parts([whole, fraction]), do: float_of(whole, fraction)
-  defp float_parts(_parts),
+  # `Float.parse` takes a `.` only when a digit follows it, so once it has
+  # consumed the whole text, any `.` in that text is its decimal point.
+  @spec whole_float({float, binary} | :error, binary) :: float
+  defp whole_float({f, ""}, s) do
+    if contains?(s, "."), do: f, else: not_a_float()
+  end
+  defp whole_float(_partial, _s), do: not_a_float()
+
+  @spec not_a_float() :: never
+  defp not_a_float(),
     do:
       raise(
         ArgumentError,
         "errors were found at the given arguments:\n\n  * 1st argument: not a textual representation of a float\n"
       )
-
-  @spec float_of(binary, binary) :: float
-  defp float_of(<<45, whole :: binary>>, fraction), do: 0.0 - float_magnitude(whole, fraction)
-  defp float_of(whole, fraction), do: float_magnitude(whole, fraction)
-
-  @spec float_magnitude(binary, binary) :: float
-  defp float_magnitude(whole, fraction) do
-    scale = pow10(byte_size(fraction))
-    whole_value = digits_value(whole, 0, byte_size(whole))
-    fraction_value = digits_value(fraction, 0, byte_size(fraction))
-    whole_value + fraction_value / scale
-  end
-
-  @spec pow10(integer) :: float
-  defp pow10(0), do: 1.0
-  defp pow10(n), do: 10.0 * pow10(n - 1)
 
   @doc """
   Replaces every invalid UTF-8 byte sequence in `s` with `replacement`.
