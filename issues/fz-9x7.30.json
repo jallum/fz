@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-18T00:12:26Z",
+  "description": "Approved by the user 2026-11-17 (relayed by GC: \"proceed with the fold\"). Found by Make Distiller Fast in the distiller's gc logs (/Users/j5n/Workspace/fz-distill-hunt: gc.baseline.a6ae5759d.jsonl, gc.expA.jsonl); traced by GC and JSON.\n\nTwo sizing defects in runtime/src/heap/imp.rs (origin/develop):\n- Minor: imp.rs:1555 records last_copied_bytes after every collection, majors included, and imp.rs:1488 sizes a minor's to-space from it. The first minor after a major allocates a to-space as large as the whole major copy (distiller: a 384 MB block to copy 727 KB), which then stays as old space. For every major over 8 MB, the next minor's in_use rises by exactly that major's copied_bytes (ratio 1.00, both runs). Majors over 8 MB occur on enum 3/9, distiller 3/11, fanin 1/18, none elsewhere.\n- Major: imp.rs:1487 guesses a major's to-space as live_baseline, the old generation's bytes, leaving out the young survivors it also copies. A copy that overflows the guess by a few hundred KB climbs the tip (climb_tip, imp.rs:233) to next_block_capacity = 1.2x the whole block. expA gc 608: guess 384,594,464, copied 384,893,312 (299 KB over), ~461 MB block allocated, post in_use - copied = 487 MB. Whether the last major fits is a coin flip; it is the whole ~500 MB in_use gap behind the JSON session's P2 (baseline last major fit: 26 MB excess).\n\nChange:\n- Minor: the guess is the last MINOR's copy, not the last major's.\n- Major: the guess is live_baseline + young bytes in use: an upper bound, so the copy never overflows; slack at most one young budget (~7 MB).\n\nTests: a major whose young survivors push the copy past the old bytes stays a single block; the first minor after a big major allocates a to-space of its own copy's class.\n\nRule (pre-registered): in_use at gc \u003c= live + one young budget + one to-space class, checked on the distiller logs; instructions and cycles within noise; output identical; full gate green.\n\nClaim: in-use (the measure memory rules judge) stops counting capacity nobody touches, removing a fake swing. NOT a promised resident-memory win: MDF bench of the minor half alone (5 alternated runs vs a6ae5759d): cycles 17.03 -\u003e 17.01 G, peak RSS 1.435 -\u003e 1.429 GB; the oversized blocks are most likely reserved but untouched (untested).\n\nOrder: stacked on #699 after fz-9x7.28. Lands before fz-9x7.15 and fz-9x7.23 re-measure their baselines (at this commit), and before the JSON P2 memory clause is judged. fz-9x7.8 is unaffected (deadbinlive, quantum have no big majors).",
+  "id": "fz-9x7.30",
+  "labels": [],
+  "parent": "fz-9x7",
+  "priority": 2,
+  "status": "open",
+  "title": "A collection's to-space is sized by what it can copy",
+  "type": "bug",
+  "updated_at": "2026-11-18T00:12:26Z"
+}
