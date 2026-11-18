@@ -43,11 +43,15 @@
     {
       "text": "User ruling 2026-11-18 (relayed by GC): a fresh look; earlier arms (A1/A2/A1G/A2G) were measured on bases since changed (#719, #722, #731, #735). GC starts it.",
       "timestamp": "2026-11-18T05:55:05Z"
+    },
+    {
+      "text": "Input (MDF bench profile, develop 37c5473cd, 5 runs): collector 13.6% inclusive of the distiller; memmove under cheney_forward_object 4.2%; heap_object_word 2.4% self and AnyValue::decode_parts 2.3% self as out-of-line calls from cheney_scan (any_value.rs:365/518/573 carry no #[inline]; only the free fn at :897 does). Per-byte trace cost, independent of the round-5 arms.",
+      "timestamp": "2026-11-18T19:16:39Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "A value becomes old only after it survives two collections",
   "type": "task",
-  "updated_at": "2026-11-18T05:55:05Z"
+  "updated_at": "2026-11-18T19:16:39Z"
 }
