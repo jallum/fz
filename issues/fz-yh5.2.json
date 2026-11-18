@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-18T21:45:29Z",
+  "description": "The back-edge reduction check is the minimum sequence.\n\nToday (machine.md M13; src/compiler2/native_codegen/terminator.rs:703-730), every back edge runs:\n`mov x0,x21; ldr w1,[x0,#0x458]; sub; str; cmp; mov x25,x2; b.le`\nThat is 7 instructions. The `mov x0,x21` copy of the process register and the `mov x25,x2` copy are dead on the common (no-yield) path.\n\nFix: load, decrement and branch on the process field directly. Move any copies the yield path needs into the yield path. Coordinate with fz-sc8.249, whose hypothesis is that the inlined yield slow path drives callee-saved register traffic. A cold out-of-line yield stub may serve both.\n\nAsm first: target listing for the back edge (`ldr w1,[x21,#0x458]; subs w1,w1,#1; str w1,[x21,#0x458]; b.le yield`, or better if the counter can live in a register across the loop).\n\nAcceptance: p00 falls by the counted instructions (bench). Yield behaviour is unchanged: the scheduler fixtures and fz-wje's reduction-parity test pass.",
+  "id": "fz-yh5.2",
+  "labels": [],
+  "parent": "fz-yh5",
+  "priority": 2,
+  "status": "open",
+  "title": "The back-edge reduction check is the minimum sequence",
+  "type": "task",
+  "updated_at": "2026-11-18T21:45:29Z"
+}
