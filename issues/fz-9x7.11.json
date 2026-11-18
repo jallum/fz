@@ -6,7 +6,6 @@
     "fz-9x7.18",
     "fz-9x7.19",
     "fz-9x7.20",
-    "fz-9x7.23",
     "fz-9x7.8"
   ],
   "blocks": [
@@ -51,5 +50,5 @@
   "status": "open",
   "title": "The collector runs the hand-written sequence, then its policy round",
   "type": "task",
-  "updated_at": "2026-11-18T23:59:30Z"
+  "updated_at": "2026-11-18T23:59:31Z"
 }
