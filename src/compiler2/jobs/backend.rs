@@ -1433,7 +1433,10 @@ fn collect_dispatch_atoms(world: &mut World, plan: &PatternDispatchPlan<Ty>, nam
         match &subject.source {
             SubjectSource::Input { .. } => {}
             SubjectSource::Projection(projection) => {
-                if let ProjectionKind::MapValue { key } = &projection.kind {
+                if let ProjectionKind::MapValue {
+                    key: ComparisonValue::Const(key),
+                } = &projection.kind
+                {
                     collect_dispatch_const_atoms(key, names);
                 }
                 if let ProjectionKind::StructField(field) = &projection.kind {
@@ -1473,7 +1476,10 @@ fn collect_dispatch_graph_atoms(
 
 fn collect_region_atoms(world: &mut World, region: &Region<Ty>, names: &mut ExecutableNames) {
     match region {
-        Region::Equal(ComparisonValue::Const(value)) | Region::MapKeyPresent { key: value } => {
+        Region::Equal(ComparisonValue::Const(value))
+        | Region::MapKeyPresent {
+            key: ComparisonValue::Const(value),
+        } => {
             collect_dispatch_const_atoms(value, names);
         }
         Region::Type(ty) => {
@@ -1482,6 +1488,9 @@ fn collect_region_atoms(world: &mut World, region: &Region<Ty>, names: &mut Exec
             }
         }
         Region::Equal(ComparisonValue::Pinned(_))
+        | Region::MapKeyPresent {
+            key: ComparisonValue::Pinned(_),
+        }
         | Region::TupleArity(_)
         | Region::List(_)
         | Region::MapKind

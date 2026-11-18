@@ -5,6 +5,7 @@
 //! fact gathers its settled inputs; product producers only read this value.
 
 use crate::compiler2::ValueMap;
+use crate::dispatch_matrix::ComparisonValue;
 use crate::fast_hash::{HashMap, HashSet};
 use std::collections::BTreeSet;
 use std::rc::Rc;
@@ -1096,9 +1097,13 @@ fn step_transport_origins(step: &LoweredStep) -> Vec<(ValueId, TransportOrigin)>
         LoweredStep::FieldAccess { value, base, field } => {
             projection(*value, *base, ProjectionKind::StructField(field.clone()))
         }
-        LoweredStep::RequireMapValue { value, source, key } => {
-            projection(*value, *source, ProjectionKind::MapValue { key: key.clone() })
-        }
+        LoweredStep::RequireMapValue { value, source, key } => projection(
+            *value,
+            *source,
+            ProjectionKind::MapValue {
+                key: ComparisonValue::Const(key.clone()),
+            },
+        ),
         LoweredStep::SplitList { source, head, tail } => {
             return vec![
                 projection(*head, *source, ProjectionKind::ListHead),

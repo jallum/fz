@@ -134,7 +134,7 @@ fn edge_evidence_keeps_proofs_and_projections_branch_local() {
 fn map_key_presence_question_produces_value_or_absent_evidence() {
     let map = SubjectId(0);
     let value = SubjectId(1);
-    let key = GroundValue::Atom("id".to_string());
+    let key = ComparisonValue::Const(GroundValue::Atom("id".to_string()));
 
     let question: RegionQuestion<Ty> = RegionQuestion::map_key_present(map, key.clone(), value);
 
@@ -160,13 +160,14 @@ fn map_key_presence_question_produces_value_or_absent_evidence() {
 fn present_nil_map_value_is_value_equality_after_presence() {
     let map = SubjectId(0);
     let value = SubjectId(1);
-    let presence: RegionQuestion<Ty> = RegionQuestion::map_key_present(map, GroundValue::Int(7), value);
+    let presence: RegionQuestion<Ty> =
+        RegionQuestion::map_key_present(map, ComparisonValue::Const(GroundValue::Int(7)), value);
     let nil_value: RegionQuestion<Ty> = RegionQuestion::equality(value, ComparisonValue::Const(GroundValue::Nil));
 
     assert!(matches!(
         presence.predicate.region,
         Region::MapKeyPresent {
-            key: GroundValue::Int(7)
+            key: ComparisonValue::Const(GroundValue::Int(7))
         }
     ));
     assert_eq!(
@@ -476,12 +477,12 @@ fn compile_places_projection_only_on_proven_edge() {
         .add_projected_subject(
             map,
             ProjectionKind::MapValue {
-                key: GroundValue::Atom("id".to_string()),
+                key: ComparisonValue::Const(GroundValue::Atom("id".to_string())),
             },
         )
         .expect("map value subject");
     let matched = builder.add_outcome(OutcomeMultiplicity::Unique);
-    let key = GroundValue::Atom("id".to_string());
+    let key = ComparisonValue::Const(GroundValue::Atom("id".to_string()));
 
     builder
         .add_arm_questions(
@@ -528,7 +529,7 @@ fn compiled_graph_keeps_the_matrix_subjects_after_consuming_it() {
         .add_projected_subject(
             map,
             ProjectionKind::MapValue {
-                key: GroundValue::Atom("id".to_string()),
+                key: ComparisonValue::Const(GroundValue::Atom("id".to_string())),
             },
         )
         .expect("map value subject");
@@ -537,7 +538,7 @@ fn compiled_graph_keeps_the_matrix_subjects_after_consuming_it() {
         .add_arm_questions(
             vec![RegionQuestion::map_key_present(
                 map,
-                GroundValue::Atom("id".to_string()),
+                ComparisonValue::Const(GroundValue::Atom("id".to_string())),
                 value,
             )],
             EdgeEvidence::empty(),
@@ -1137,7 +1138,7 @@ fn pattern_dispatch_matrix_preserves_map_presence_before_value_tests() {
                     RegionPredicate {
                         region:
                             Region::MapKeyPresent {
-                                key: GroundValue::Atom(name),
+                                key: ComparisonValue::Const(GroundValue::Atom(name)),
                             },
                         ..
                     },
@@ -1154,7 +1155,7 @@ fn pattern_dispatch_matrix_preserves_map_presence_before_value_tests() {
         matches!(
             projection.kind,
             ProjectionKind::MapValue {
-                key: GroundValue::Atom(ref name),
+                key: ComparisonValue::Const(GroundValue::Atom(ref name)),
             } if name == "id"
         )
     }));
@@ -1162,6 +1163,91 @@ fn pattern_dispatch_matrix_preserves_map_presence_before_value_tests() {
         region,
         Region::Equal(ComparisonValue::Const(GroundValue::Nil))
     )));
+}
+
+/// `%{^key => value}` asks the map for whatever the variable holds. The plan
+/// carries the pin as the question's key, reads it as an input, and prepares no
+/// constant for it.
+#[test]
+fn a_pinned_map_key_is_looked_up_by_the_pin_and_not_by_a_constant() {
+    let plan = pattern_plan(SourcePatternRows::lexical(
+        1,
+        vec![
+            pattern_row(
+                vec![Pattern::Map(vec![(
+                    sp(Pattern::Pinned(Var::user("key"))),
+                    sp(Pattern::Var(Var::user("value"))),
+                )])],
+                0,
+            ),
+            pattern_row(vec![Pattern::Wildcard], 1),
+        ],
+    ));
+
+    assert_eq!(plan.pinned.len(), 1);
+    assert_eq!(plan.pinned[0].name.name, "key");
+    assert!(plan.prepared_keys.is_empty());
+    assert!(has_region(&plan, |region| matches!(region, Region::MapKind)));
+    assert!(has_region(&plan, |region| matches!(
+        region,
+        Region::MapKeyPresent {
+            key: ComparisonValue::Pinned(PinnedValueId(0))
+        }
+    )));
+}
+
+/// A pinned key and a literal key of one map are separate questions: at run
+/// time they may or may not be the same key, so neither answers the other.
+#[test]
+fn a_pinned_key_and_a_literal_key_are_asked_separately() {
+    let plan = pattern_plan(SourcePatternRows::lexical(
+        1,
+        vec![
+            pattern_row(
+                vec![Pattern::Map(vec![
+                    (sp(Pattern::Pinned(Var::user("key"))), sp(Pattern::Wildcard)),
+                    (sp(Pattern::Atom("b".to_string())), sp(Pattern::Wildcard)),
+                ])],
+                0,
+            ),
+            pattern_row(vec![Pattern::Wildcard], 1),
+        ],
+    ));
+
+    assert!(has_region(&plan, |region| matches!(
+        region,
+        Region::MapKeyPresent {
+            key: ComparisonValue::Pinned(_)
+        }
+    )));
+    assert!(has_region(&plan, |region| matches!(
+        region,
+        Region::MapKeyPresent {
+            key: ComparisonValue::Const(GroundValue::Atom(name))
+        } if name == "b"
+    )));
+}
+
+/// A map key that is neither written out nor pinned has no value to look up.
+#[test]
+fn a_map_key_that_is_neither_a_literal_nor_a_pin_is_refused() {
+    let refused = pattern::pattern_dispatch_from_source(SourcePatternRows::lexical(
+        1,
+        vec![pattern_row(
+            vec![Pattern::Map(vec![(
+                sp(Pattern::Var(Var::user("key"))),
+                sp(Pattern::Wildcard),
+            )])],
+            0,
+        )],
+    ));
+
+    assert!(matches!(
+        refused,
+        Err(pattern::PatternDispatchError::SourcePattern(
+            pattern::SourcePatternError::UnsupportedMapKey
+        ))
+    ));
 }
 
 #[test]
@@ -1346,7 +1432,7 @@ fn pattern_dispatch_plan_carries_executable_payloads_directly() {
     assert!(has_region(&plan, |region| matches!(
         region,
         Region::MapKeyPresent {
-            key: GroundValue::Atom(name),
+            key: ComparisonValue::Const(GroundValue::Atom(name)),
         } if name == "id"
     )));
     assert!(has_region(&plan, |region| matches!(

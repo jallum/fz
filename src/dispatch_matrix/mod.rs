@@ -131,7 +131,7 @@ pub(crate) enum ProjectionKind {
     StructField(String),
     ListHead,
     ListTail,
-    MapValue { key: GroundValue },
+    MapValue { key: ComparisonValue },
     BitstringField(BitstringExtraction),
 }
 
@@ -191,7 +191,7 @@ pub(crate) enum Region<TypeHandle> {
     TupleArity(u32),
     List(ListRegion),
     MapKind,
-    MapKeyPresent { key: GroundValue },
+    MapKeyPresent { key: ComparisonValue },
     Bitstring(BitstringShape),
     Guard(GuardId),
 }
@@ -218,6 +218,17 @@ impl<TypeHandle> Region<TypeHandle> {
 pub(crate) enum ComparisonValue {
     Const(GroundValue),
     Pinned(PinnedValueId),
+}
+
+impl ComparisonValue {
+    /// The value itself when the source wrote it, and nothing when it is
+    /// whatever a pinned variable holds at run time.
+    pub(crate) fn as_const(&self) -> Option<&GroundValue> {
+        match self {
+            Self::Const(value) => Some(value),
+            Self::Pinned(_) => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -496,7 +507,7 @@ impl<TypeHandle> RegionQuestion<TypeHandle> {
         }
     }
 
-    pub(crate) fn map_key_present(subject: SubjectId, key: GroundValue, value: SubjectId) -> Self {
+    pub(crate) fn map_key_present(subject: SubjectId, key: ComparisonValue, value: SubjectId) -> Self {
         let predicate = RegionPredicate::new(subject, Region::MapKeyPresent { key: key.clone() });
         let match_key = key.clone();
         let miss_key = key;
@@ -1253,7 +1264,10 @@ impl<'a, TypeHandle: Clone + Eq> DispatchGraphBuilder<'a, TypeHandle> {
         );
         self.ask(predicate.subject);
         match &predicate.region {
-            Region::Equal(ComparisonValue::Pinned(pinned)) => self.charge_pin(*pinned),
+            Region::Equal(ComparisonValue::Pinned(pinned))
+            | Region::MapKeyPresent {
+                key: ComparisonValue::Pinned(pinned),
+            } => self.charge_pin(*pinned),
             Region::Bitstring(shape) => self.charge_bitstring_sizes(shape),
             _ => {}
         }

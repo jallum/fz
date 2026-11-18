@@ -1,0 +1,67 @@
+#---
+# purpose: a map pattern whose key is a pinned variable looks the map up by that variable's value on the interpreter, the JIT and a built program
+# kind: run
+#---
+#
+# `%{^key => value}` asks whether the map holds whatever `key` holds, and binds
+# what it finds. `get` is the one-search lookup with a default. A key that is
+# present with `nil` is a hit; a subject that is not a map is a miss. `both`
+# asks for a pinned key and a literal key of one map, and `same` asks for one
+# key twice, once through each form. `await` matches a message by a pinned key.
+defmodule Main do
+  def get(map, key, default) do
+    case map do
+      %{^key => value} -> value
+      _ -> default
+    end
+  end
+
+  def both(map, key) do
+    case map do
+      %{^key => left, b: right} -> {left, right}
+      %{b: right} -> {:only_b, right}
+      _ -> :neither
+    end
+  end
+
+  def same(map, key) do
+    case map do
+      %{^key => pinned, a: literal} -> pinned == literal
+      _ -> :miss
+    end
+  end
+
+  def await(key) do
+    receive do
+      %{^key => value} -> value
+    after
+      0 -> :nothing
+    end
+  end
+end
+
+map = %{:a => 1, :b => nil, 7 => :seven, "name" => "fz", {1, 2} => :pair, 1.5 => :float}
+
+IO.inspect(Main.get(map, :a, :none))
+IO.inspect(Main.get(map, :b, :none))
+IO.inspect(Main.get(map, :c, :none))
+IO.inspect(Main.get(map, 7, :none))
+IO.inspect(Main.get(map, 8, :none))
+IO.inspect(Main.get(map, "name", :none))
+IO.inspect(Main.get(map, "nam", :none))
+IO.inspect(Main.get(map, {1, 2}, :none))
+IO.inspect(Main.get(map, {2, 1}, :none))
+IO.inspect(Main.get(map, 1.5, :none))
+IO.inspect(Main.get([a: 1], :a, :none))
+IO.inspect(Main.get(:a, :a, :none))
+IO.inspect(Main.both(map, :a))
+IO.inspect(Main.both(map, :zz))
+IO.inspect(Main.both(%{a: 1}, :a))
+IO.inspect(Main.same(map, :a))
+IO.inspect(Main.same(map, :b))
+IO.inspect(Main.same(map, :zz))
+send(self(), %{other: 1})
+send(self(), %{wanted: 2})
+IO.inspect(Main.await(:wanted))
+IO.inspect(Main.await(:wanted))
+IO.inspect(Main.await(:other))

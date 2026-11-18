@@ -1,0 +1,21 @@
+1
+nil
+:none
+:seven
+:none
+"fz"
+:none
+:pair
+:none
+:float
+:none
+:none
+{1, nil}
+{:only_b, nil}
+:neither
+true
+false
+:miss
+2
+:nothing
+1
