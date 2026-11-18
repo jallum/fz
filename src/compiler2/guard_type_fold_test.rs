@@ -103,11 +103,22 @@ fn a_conjunct_that_is_not_a_type_test_stays_the_guard() {
 #[test]
 fn guards_that_are_not_an_and_chain_of_type_tests_stay_guards() {
     let planned = planned();
-    for name in ["either", "negated", "projected"] {
+    for name in ["either", "negated"] {
         let plan = planned.plan(name, 1);
         assert_eq!(plan.guards.len(), 1, "{name} keeps its guard whole");
         assert_eq!(type_question_count(&plan), 0, "{name} lifts no type question");
     }
+}
+
+/// `elem/2` answers only for a tuple and fails the guard for anything else,
+/// so `is_integer(elem(t, 0))` holds only when `t` is a tuple. The row asks
+/// that of `t` before the guard, and the guard itself is left whole.
+#[test]
+fn a_guard_sure_to_call_a_function_asks_the_type_the_function_answers_for() {
+    let plan = planned().plan("projected", 1);
+
+    assert_eq!(plan.guards.len(), 1, "is_integer(elem(t, 0)) stays the guard");
+    assert_eq!(type_question_count(&plan), 1, "t is asked to be a tuple");
 }
 
 #[test]

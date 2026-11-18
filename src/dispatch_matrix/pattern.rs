@@ -510,6 +510,10 @@ pub(crate) struct PatternGuardDispatch<TypeHandle> {
     /// Set when the helper only asks of each listed argument whether it has a
     /// type: a call to it holds exactly when every listed argument has its type.
     pub(crate) type_predicate: Option<Vec<(u32, TypeHandle)>>,
+    /// The arguments every clause that answers asks one type of: a call to
+    /// the helper answers only when each listed argument has its type, and
+    /// fails the guard that makes it otherwise.
+    pub(crate) answers_only_for: Vec<(u32, TypeHandle)>,
 }
 
 /// The subjects the bodies of a guard helper read when an outcome wins.
@@ -536,6 +540,11 @@ impl<TypeHandle> PatternGuardDispatch<TypeHandle> {
                 .type_predicate
                 .as_ref()
                 .map(|asked| asked.iter().map(|(argument, ty)| (*argument, map(ty))).collect()),
+            answers_only_for: self
+                .answers_only_for
+                .iter()
+                .map(|(argument, ty)| (*argument, map(ty)))
+                .collect(),
         }
     }
 }
@@ -619,11 +628,89 @@ where
         )?);
     }
 
+    let answers_only_for = answers_only_for(surface, &source_patterns.rows, &bodies, resolver)?;
+
     Ok(PatternGuardDispatch {
         plan: Box::new(plan),
         bodies,
         type_predicate,
+        answers_only_for,
     })
+}
+
+/// The types a helper's arguments must have for a call to it to answer. A
+/// clause whose body fails answers nothing, so only the others are read: an
+/// argument is listed when each of them asks the same type of it, through an
+/// annotation, a type predicate in its guard, or a call that itself answers
+/// only for that type.
+fn answers_only_for<F, TypeHandle>(
+    surface: &impl CallableSurface,
+    rows: &[PatternRow<TypeHandle>],
+    bodies: &[PatternGuardExpr<TypeHandle>],
+    resolver: &mut F,
+) -> Result<Vec<(u32, TypeHandle)>, SourcePatternError>
+where
+    F: PatternResolver<TypeHandle>,
+    TypeHandle: Clone + PartialEq,
+{
+    let mut common: Option<Vec<(u32, TypeHandle)>> = None;
+    for ((clause, row), body) in surface.clauses().iter().zip(rows).zip(bodies) {
+        if matches!(body, PatternGuardExpr::Fails) {
+            continue;
+        }
+        let asked = types_a_clause_asks(clause, row, resolver)?;
+        common = Some(match common {
+            None => asked,
+            Some(common) => common.into_iter().filter(|entry| asked.contains(entry)).collect(),
+        });
+    }
+    Ok(common.unwrap_or_default())
+}
+
+/// The types one clause of a helper asks of its arguments before it answers.
+fn types_a_clause_asks<F, TypeHandle>(
+    clause: &crate::ast::FnClause,
+    row: &PatternRow<TypeHandle>,
+    resolver: &mut F,
+) -> Result<Vec<(u32, TypeHandle)>, SourcePatternError>
+where
+    F: PatternResolver<TypeHandle>,
+    TypeHandle: Clone + PartialEq,
+{
+    let mut asked: Vec<(u32, TypeHandle)> = row
+        .preconditions
+        .iter()
+        .filter_map(|(subject, ty)| match subject {
+            PatternSubjectRef::Input(argument) => Some((*argument, ty.clone())),
+            _ => None,
+        })
+        .collect();
+    let arguments: HashMap<Var, u32> = clause
+        .params
+        .iter()
+        .enumerate()
+        .filter_map(|(argument, param)| match &param.node {
+            Pattern::Var(name) => Some((name.clone(), argument as u32)),
+            _ => None,
+        })
+        .collect();
+    let mut ask = |entry: (u32, TypeHandle)| {
+        if !asked.contains(&entry) {
+            asked.push(entry);
+        }
+    };
+    for conjunct in clause.guard.iter().flat_map(and_chain) {
+        match type_test_of(conjunct, &arguments, resolver)? {
+            Some(tested) => tested.into_iter().for_each(&mut ask),
+            None => types_its_calls_need(conjunct, &arguments, resolver)?
+                .into_iter()
+                .for_each(&mut ask),
+        }
+    }
+    types_its_calls_need(&clause.body, &arguments, resolver)?
+        .into_iter()
+        .for_each(&mut ask);
+    Ok(asked)
 }
 
 /// What a helper asks when it is only a type test: exactly two clauses, the
@@ -971,7 +1058,15 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
                             }
                         }
                     }
-                    None => remaining.push(conjunct),
+                    None => {
+                        for (subject, ty) in types_its_calls_need(conjunct, &bound, resolver)? {
+                            let question = RegionQuestion::type_region(subject, ty);
+                            if !questions.contains(&question) {
+                                questions.push(question);
+                            }
+                        }
+                        remaining.push(conjunct);
+                    }
                 }
             }
             let mut guard_exprs = Vec::with_capacity(remaining.len());
@@ -1445,11 +1540,11 @@ fn and_chain(guard: &Spanned<Expr>) -> Vec<&Spanned<Expr>> {
 
 /// The type questions a conjunct amounts to: it calls a type predicate and
 /// hands it only variables its row binds. Anything else stays a guard.
-fn type_test_of<F, TypeHandle>(
+fn type_test_of<F, TypeHandle, Subject: Copy>(
     conjunct: &Spanned<Expr>,
-    bound: &HashMap<Var, SubjectId>,
+    bound: &HashMap<Var, Subject>,
     resolver: &mut F,
-) -> Result<Option<Vec<(SubjectId, TypeHandle)>>, SourcePatternError>
+) -> Result<Option<Vec<(Subject, TypeHandle)>>, SourcePatternError>
 where
     F: PatternResolver<TypeHandle>,
     TypeHandle: Clone,
@@ -1479,6 +1574,51 @@ where
             .map(|(argument, ty)| (subjects[*argument as usize], ty.clone()))
             .collect()
     }))
+}
+
+/// The types `expr` can only hold a value for: each call it is sure to make to
+/// a helper that answers only for some argument types, where the argument is a
+/// variable `bound` knows. A helper called with anything else fails the guard,
+/// so the guard holds only when every one of these types does.
+///
+/// A call is sure to be made unless it sits under `and` or `or`, which may
+/// decide without their right-hand side.
+fn types_its_calls_need<F, TypeHandle, Subject: Copy>(
+    expr: &Spanned<Expr>,
+    bound: &HashMap<Var, Subject>,
+    resolver: &mut F,
+) -> Result<Vec<(Subject, TypeHandle)>, SourcePatternError>
+where
+    F: PatternResolver<TypeHandle>,
+    TypeHandle: Clone,
+{
+    let mut needed = Vec::new();
+    let mut pending = vec![expr];
+    while let Some(expr) = pending.pop() {
+        match &expr.node {
+            Expr::BinOp(crate::ast::BinOp::And | crate::ast::BinOp::Or, _, _) => {}
+            Expr::BinOp(_, lhs, rhs) => pending.extend([&**lhs, &**rhs]),
+            Expr::UnOp(_, arg) | Expr::Ascribe(arg, _) => pending.push(arg),
+            Expr::Call(target, args) => {
+                pending.extend(args);
+                let Some(callee) = crate::ast::Callee::for_call(&target.node, args.len()) else {
+                    continue;
+                };
+                let Some(GuardCallee::Helper(helper)) = resolver.guard_call(&callee, args.len())? else {
+                    continue;
+                };
+                for (argument, ty) in &helper.answers_only_for {
+                    if let Expr::Var(name) = &args[*argument as usize].node
+                        && let Some(subject) = bound.get(name)
+                    {
+                        needed.push((*subject, ty.clone()));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(needed)
 }
 
 fn intern_prepared_key(keys: &mut Vec<GroundValue>, key: &GroundValue) -> PreparedKeyId {

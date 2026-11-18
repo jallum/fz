@@ -204,6 +204,22 @@ clauses, `case` arms, `receive` arms and lambda clauses fold alike, and the
 analysis reads the folded question like a typed parameter's: the body narrows by
 it and an activation whose type decides the clause skips the test.
 
+A helper that fails for some arguments narrows too. `answers_only_for` reads
+the clauses of a helper whose body is not a failing node and lists each
+argument they all ask the same type of, through an annotation, a type predicate
+in the clause's guard, or a call that itself answers only for that type
+(`PatternGuardDispatch::answers_only_for`). `byte_size/1` answers in its
+`when is_bitstring(bits)` clause and raises in the other, so it answers only
+for a bitstring. A guard that is sure to call such a helper with a variable its
+row binds holds only when the variable has that type, because the call would
+otherwise fail the guard. `add_row` therefore asks that type of the variable's
+subject before the guard (`types_its_calls_need`), and the conjunct stays in
+the guard: in `def kind(b) when byte_size(b) > 1, do: byte_size(b)` the body is
+typed with `b` a bitstring, and `kind(:a)` never reaches it. A call is sure to
+be made at any depth of a conjunct, under `not` and inside a comparison or
+another call's arguments, but not under `and` or `or` within the conjunct,
+which may decide without their right-hand side.
+
 A reified guard helper is an ordinary function, so `guard_dispatch_from_rows`
 builds its plan with an empty `Inputs` list and a pin in the helper's head is
 refused while the helper's own plan is built. The diagnostic therefore lands on
