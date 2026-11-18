@@ -11,11 +11,15 @@
     {
       "text": "Measured (Optimize, develop a3edb6f32, release, slope over a loop with the slice inlined into its head): no slice 112 instr/iteration; skip 16 bytes 122; rest-of-binary field 125; 8-byte sized field 464 (copied inline); 65-byte sized field 411 (a view, no copy). A sized field costs ~340, of which copying ~50; the view path costs ~290 with no copy. \"Copies no bytes\" would save at most ~15% of a slice and would enlarge small slices (a view object is bigger than an inline binary under ~24 bytes; the \u003c= 64-byte copy policy in alloc_bitstring_slice is deliberate). Profile of the 8-byte case: fz_bs_read_binary_ref self 21%, heap_object_word_from_ref_word 9%, alloc_kind 9%, alloc_bitstring 9%, fz_mark_published_ref_aliased + Heap::share 14%, field_end 6%, memset/bzero 7.5%, memmove 3%. Title contradicted by the numbers; re-description proposed to the user (zero small-binary padding with stores instead of memset; static whole-byte sized field reads through an entry taking byte position and length, ~290 fixed cost, overlapping fz-sc8.183.9 / fz-sc8.195).",
       "timestamp": "2026-11-18T05:23:52Z"
+    },
+    {
+      "text": "Binary Handling's study (2026-11-18, https://claude.ai/artifact/TcAEDvtpU2HKcCV66ppTe6): BEAM itself copies a slice below 64 bytes, and only larger slices share the source (sub-binary). So 'a slice copies no bytes' asks for more than BEAM does. A size threshold may be the right target. Weigh this in the re-describe (decision 74).",
+      "timestamp": "2026-11-18T21:55:34Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "A slice of a binary copies no bytes",
   "type": "task",
-  "updated_at": "2026-11-18T05:23:52Z"
+  "updated_at": "2026-11-18T21:55:34Z"
 }
