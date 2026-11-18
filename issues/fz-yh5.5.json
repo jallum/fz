@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-18T21:45:30Z",
+  "description": "send finds its receiver without hashing.\n\nToday (machine.md M12; runtime/src/aot_shim.rs, aot_send_hook), every send runs `tasks.get_mut(\u0026receiver_pid)` on the scheduler's HashMap\u003cu32, Task\u003e with the default SipHash: about 94 instructions per send (71 hash plus 23 probe). send(self(), b) followed by receive costs 1500 instructions in total. The rest is ParkRecord (~260), reach_receive (80), a 64 B closure per receive and 2 continuations per round trip; those belong to other tickets.\n\nFix: index tasks by pid directly. Pids are dense u32 from the scheduler, so a slab or Vec indexed by pid, with a generation check if pids are reused, is enough. Otherwise use a non-cryptographic hasher. Choose from how pids are allocated (read the scheduler first).\n\nAsm first: target listing for the lookup (load, bounds check, state check).\n\nAcceptance: the send probe (p10) falls by the lookup's cost (bench). Process fixtures pass, including exit and unknown pid.",
+  "id": "fz-yh5.5",
+  "labels": [],
+  "parent": "fz-yh5",
+  "priority": 3,
+  "status": "open",
+  "title": "send finds its receiver without hashing",
+  "type": "task",
+  "updated_at": "2026-11-18T21:45:30Z"
+}
