@@ -1,5 +1,6 @@
 //! Primitive lowering helpers for codegen.
 
+use super::recipe::{Emitted, emit_inline};
 use super::repr::ExternLane;
 use super::runtime_test::{KindEvidence, RuntimeTestEmitter, emit_runtime_type_test};
 use super::*;
@@ -18,8 +19,8 @@ use cranelift_codegen::ir::{
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage};
 use fz_runtime::any_value::{
-    AnyValue, AnyValueRefPacking, BITSTRING_BIT_LEN_SHIFT, BITSTRING_BYTES_OFFSET, FALSE_ATOM_ID, SlotLayout,
-    TRUE_ATOM_ID, ValueKind, shared_struct_header_word,
+    AnyValue, BITSTRING_BIT_LEN_SHIFT, BITSTRING_BYTES_OFFSET, FALSE_ATOM_ID, SlotLayout, TRUE_ATOM_ID, ValueKind,
+    shared_struct_header_word,
 };
 use fz_runtime::bits::{BINVIEW_BIT_LEN_OFFSET, BINVIEW_BYTES_PTR_OFFSET};
 use fz_runtime::extern_binary::{fz_binary_as_cstring, fz_binary_as_ptr};
@@ -713,10 +714,8 @@ fn emit_by_binary_representation<M: cranelift_module::Module>(
     inline: impl FnOnce(&mut CodegenFn<'_, '_, M>, ir::Value) -> ir::Value,
     binview: impl FnOnce(&mut CodegenFn<'_, '_, M>, ir::Value) -> ir::Value,
 ) -> ir::Value {
-    let packing = AnyValueRefPacking::current();
-    let addr = body.b.ins().band_imm_u(source_ref, packing.address_mask() as i64);
-    let kind_bits = body.b.ins().band_imm_u(source_ref, !packing.literal_bit() as i64);
-    let kind = body.b.ins().ushr_imm_u(kind_bits, packing.tag_shift() as i64);
+    let addr = address_field(body.b, source_ref);
+    let kind = kind_field(body.b, source_ref);
     let is_binview = body
         .b
         .ins()
@@ -1085,7 +1084,7 @@ fn unbox_opaque_word<M: cranelift_module::Module>(
     kind: ValueKind,
 ) -> ir::Value {
     if kind == ValueKind::PID {
-        return immediate_payload(body.b, value_ref);
+        return address_field(body.b, value_ref);
     }
     let kind = body.b.ins().iconst(types::I64, kind.tag() as i64);
     runtime_call1!(body, fz_unbox_opaque, [value_ref, kind])
@@ -1167,7 +1166,11 @@ fn emit_variadic_extern_call<M: cranelift_module::Module>(
         ExternTy::I64 => Ok(LowerOut::RawI64(raw)),
         ExternTy::Opaque(kind) => Ok(LowerOut::ValueRef(box_extern_opaque_word(body, raw, kind))),
         ExternTy::I32 => Ok(LowerOut::RawI64(body.b.ins().sextend(types::I64, raw))),
-        ExternTy::Bool => Ok(LowerOut::Strict(decode_foreign_boolean_word(body, raw))),
+        ExternTy::Bool => Ok(LowerOut::Strict(decode_foreign_boolean_word(
+            body,
+            raw,
+            body.cache.if_only_conds.contains(&dest_var.0),
+        ))),
         ExternTy::Any | ExternTy::Binary | ExternTy::CString => Ok(LowerOut::ValueRef(raw)),
         ExternTy::F64 => unreachable!("a float-returning variadic extern is refused above"),
         ExternTy::Unit | ExternTy::Never => unreachable!("a lane-less return produced no result"),
@@ -1960,8 +1963,7 @@ where
         // actual tag.
         let dyn_ref = body.tagged_var(var_env, dyn_var.0);
         let kind_tag = body.b.ins().iconst(types::I32, i64::from(kind.tag()));
-        let eq = runtime_call1!(body, fz_value_eq_raw_const, [dyn_ref, kind_tag, raw]);
-        let eq_bool = body.b.ins().icmp_imm_s(IntCC::NotEqual, eq, 0);
+        let eq_bool = runtime_condition!(body, fz_value_eq_raw_const, [dyn_ref, kind_tag, raw]);
         let cmp = if is_eq {
             eq_bool
         } else {
@@ -2216,20 +2218,6 @@ fn lower_extern_generic<M: cranelift_module::Module>(
     })?;
     let ret_lane = ret.lane();
     let returns_value = ret_lane.is_some();
-    let mut sig = body.jmod.make_signature();
-    sig.params.extend(param_tys.iter().copied().map(ir::AbiParam::new));
-    sig.returns.extend(ret_lane.map(ir::AbiParam::new));
-    let fref = if let Some(&cached) = body.cache.extern_funcs.get(eid) {
-        cached
-    } else {
-        let func_id = body
-            .jmod
-            .declare_function(&decl.symbol, Linkage::Import, &sig)
-            .map_err(|e| CodegenError::new(format!("declare extern `{}`: {}", decl.symbol, e)))?;
-        let fref = body.jmod.declare_func_in_func(func_id, body.b.func);
-        body.cache.extern_funcs.insert(*eid, fref);
-        fref
-    };
     let param_kinds = &decl.params;
     // Arity is enforced in ir_lower; this assert is
     // defense-in-depth so a future caller that bypasses lowering
@@ -2248,6 +2236,23 @@ fn lower_extern_generic<M: cranelift_module::Module>(
         .zip(param_kinds.iter())
         .map(|(v, ty)| marshal_extern_arg(body, var_env, v.var, *ty, takes_process))
         .collect::<Result<_, _>>()?;
+    if !takes_process && let Some(out) = inline_scalar_extern(body, decl, ret, &arg_vals, dest_var)? {
+        return Ok(out);
+    }
+    let mut sig = body.jmod.make_signature();
+    sig.params.extend(param_tys.iter().copied().map(ir::AbiParam::new));
+    sig.returns.extend(ret_lane.map(ir::AbiParam::new));
+    let fref = if let Some(&cached) = body.cache.extern_funcs.get(eid) {
+        cached
+    } else {
+        let func_id = body
+            .jmod
+            .declare_function(&decl.symbol, Linkage::Import, &sig)
+            .map_err(|e| CodegenError::new(format!("declare extern `{}`: {}", decl.symbol, e)))?;
+        let fref = body.jmod.declare_func_in_func(func_id, body.b.func);
+        body.cache.extern_funcs.insert(*eid, fref);
+        fref
+    };
     let call_args: Vec<ir::Value> = match process_arg {
         Some(process) => std::iter::once(process).chain(arg_vals).collect(),
         None => arg_vals,
@@ -2271,7 +2276,11 @@ fn lower_extern_generic<M: cranelift_module::Module>(
             // whole register instead is what turned `open`'s -1 into
             // 4294967295 on a platform whose libc leaves the upper half zero.
             ExternTy::I32 => LowerOut::RawI64(body.b.ins().sextend(types::I64, raw)),
-            ExternTy::Bool => LowerOut::Strict(decode_foreign_boolean_word(body, raw)),
+            ExternTy::Bool => LowerOut::Strict(decode_foreign_boolean_word(
+                body,
+                raw,
+                body.cache.if_only_conds.contains(&dest_var.0),
+            )),
             ExternTy::F64 => LowerOut::RawF64(raw),
             ExternTy::Any | ExternTy::Binary | ExternTy::CString => LowerOut::ValueRef(raw),
             // Spelled out rather than defaulted: the defect above WAS a wire
@@ -2286,6 +2295,43 @@ fn lower_extern_generic<M: cranelift_module::Module>(
         return Ok(LowerOut::Strict(strict_const_value(body.b, AnyValue::nil_atom())));
     }
     Ok(LowerOut::DeadUnit)
+}
+
+/// The scalar extern `decl` computed in place by its recipe, when the table
+/// has a row for its symbol. The row's answer must be the lane the declaration
+/// returns: a disagreement is an error, not a conversion.
+fn inline_scalar_extern<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, M>,
+    decl: &ExternDecl,
+    ret: ExternTy,
+    args: &[ir::Value],
+    dest_var: Var,
+) -> Result<Option<LowerOut>, CodegenError> {
+    let Some(emitted) = emit_inline(body.b, &decl.symbol, args) else {
+        return Ok(None);
+    };
+    let disagreement = |what: &str| {
+        CodegenError::new(format!(
+            "recipe for extern `{}` answers {what}, but the declaration returns {ret:?}",
+            decl.symbol
+        ))
+    };
+    Ok(Some(match (emitted, ret) {
+        (Emitted::Value(value), ExternTy::I64) if body.b.func.dfg.value_type(value) == types::I64 => {
+            LowerOut::RawI64(value)
+        }
+        (Emitted::Value(value), ExternTy::F64) if body.b.func.dfg.value_type(value) == types::F64 => {
+            LowerOut::RawF64(value)
+        }
+        (Emitted::Condition(condition), ExternTy::Bool) => LowerOut::Strict(condition_value(
+            body.b,
+            condition,
+            body.cache.if_only_conds.contains(&dest_var.0),
+        )),
+        (Emitted::Value(_), _) => return Err(disagreement("a value of another lane")),
+        (Emitted::Condition(_), _) => return Err(disagreement("a condition")),
+        (Emitted::Checked { .. }, _) => return Err(disagreement("a checked pair")),
+    }))
 }
 
 /// What follows a call that cannot return: the callee raised. `fz_panic` either
@@ -2314,22 +2360,15 @@ pub(super) fn continue_after_raise<M: cranelift_module::Module>(body: &mut Codeg
     body.b.seal_block(after);
 }
 
+/// The values a pair-returning extern binds to `vars`. A boolean field whose
+/// variable is only ever branched on is a raw condition.
 pub(crate) fn lower_extern_pair<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
     decl: &ExternDecl,
     eid: &ExternId,
     args: &[ExternArg],
-) -> Result<Vec<CodegenValue>, CodegenError> {
-    lower_extern_pair_call(body, var_env, decl, eid, args)
-}
-
-fn lower_extern_pair_call<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, M>,
-    var_env: &HashMap<u32, CodegenValue>,
-    decl: &ExternDecl,
-    eid: &ExternId,
-    args: &[ExternArg],
+    vars: &[Var],
 ) -> Result<Vec<CodegenValue>, CodegenError> {
     let Some(fields) = decl.ret.pair_fields() else {
         return Err(CodegenError::new(format!(
@@ -2337,6 +2376,14 @@ fn lower_extern_pair_call<M: cranelift_module::Module>(
             decl.symbol, decl.ret
         )));
     };
+    if vars.len() != fields.len() {
+        return Err(CodegenError::new(format!(
+            "extern `{}` produces {} result lanes for {} bindings",
+            decl.symbol,
+            fields.len(),
+            vars.len()
+        )));
+    }
     if decl.abi != crate::fz_ir::ExternAbi::C || decl.variadic {
         return Err(CodegenError::new(format!(
             "extern `{}` pair results require one fixed `C` declaration",
@@ -2350,6 +2397,15 @@ fn lower_extern_pair_call<M: cranelift_module::Module>(
             args.len(),
             decl.params.len()
         )));
+    }
+    let branch_only = [0, 1].map(|field| body.cache.if_only_conds.contains(&vars[field].0));
+    let call_args = args
+        .iter()
+        .zip(decl.params.iter().copied())
+        .map(|(arg, ty)| marshal_extern_arg(body, var_env, arg.var, ty, false))
+        .collect::<Result<Vec<_>, _>>()?;
+    if let Some(inline) = inline_checked_extern(body, decl, fields, &call_args, branch_only)? {
+        return Ok(inline);
     }
     let mut sig = body.jmod.make_signature();
     sig.params.extend(
@@ -2370,19 +2426,51 @@ fn lower_extern_pair_call<M: cranelift_module::Module>(
         body.cache.extern_funcs.insert(*eid, fref);
         fref
     };
-    let call_args = args
-        .iter()
-        .zip(decl.params.iter().copied())
-        .map(|(arg, ty)| marshal_extern_arg(body, var_env, arg.var, ty, false))
-        .collect::<Result<Vec<_>, _>>()?;
     let call = body.b.ins().call(fref, &call_args);
     let results = body.b.inst_results(call).to_vec();
     results
         .into_iter()
         .zip(physical)
         .zip(fields)
-        .map(|((value, physical), semantic)| decode_pair_result(body, value, physical, semantic))
+        .zip(branch_only)
+        .map(|(((value, physical), semantic), branch_only)| {
+            decode_pair_result(body, value, physical, semantic, branch_only)
+        })
         .collect()
+}
+
+/// The pair a checked extern's recipe computes in place, when the table has a
+/// row for its symbol: the value in the declared first field's lane, and the
+/// failure condition in the boolean second field.
+fn inline_checked_extern<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, M>,
+    decl: &ExternDecl,
+    fields: [ExternTy; 2],
+    args: &[ir::Value],
+    branch_only: [bool; 2],
+) -> Result<Option<Vec<CodegenValue>>, CodegenError> {
+    let Some(emitted) = emit_inline(body.b, &decl.symbol, args) else {
+        return Ok(None);
+    };
+    let Emitted::Checked { value, failed } = emitted else {
+        return Err(CodegenError::new(format!(
+            "recipe for extern `{}` answers {emitted:?}, but the declaration returns a pair",
+            decl.symbol
+        )));
+    };
+    let first = match (fields, body.b.func.dfg.value_type(value)) {
+        ([ExternTy::I64, ExternTy::Bool], types::I64) => CodegenValue::RawInt(value),
+        ([ExternTy::F64, ExternTy::Bool], types::F64) => CodegenValue::RawF64(value),
+        _ => {
+            return Err(CodegenError::new(format!(
+                "recipe for extern `{}` answers a checked {} value, but the declaration returns {fields:?}",
+                decl.symbol,
+                body.b.func.dfg.value_type(value)
+            )));
+        }
+    };
+    let failed = condition_value(body.b, failed, branch_only[1]);
+    Ok(Some(vec![first, failed]))
 }
 
 pub(super) fn c_pair_return_types(triple: &Triple, fields: [ExternTy; 2]) -> Result<[ir::Type; 2], CodegenError> {
@@ -2433,24 +2521,28 @@ fn decode_pair_result<M: cranelift_module::Module>(
     value: ir::Value,
     physical: ir::Type,
     semantic: ExternTy,
+    branch_only: bool,
 ) -> Result<CodegenValue, CodegenError> {
     Ok(match semantic {
         ExternTy::I64 => CodegenValue::RawInt(value),
         ExternTy::F64 if physical == types::F64 => CodegenValue::RawF64(value),
         ExternTy::F64 => CodegenValue::RawF64(body.b.ins().bitcast(types::F64, MemFlagsData::new(), value)),
-        ExternTy::Bool => decode_foreign_boolean_word(body, value),
+        ExternTy::Bool => decode_foreign_boolean_word(body, value, branch_only),
         other => {
             return Err(CodegenError::new(format!("{other:?} is not a scalar C pair field")));
         }
     })
 }
 
+/// A C boolean word, which is zero or not, as the binding its variable's
+/// consumers read.
 fn decode_foreign_boolean_word<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
     word: ir::Value,
+    branch_only: bool,
 ) -> CodegenValue {
     let condition = body.b.ins().icmp_imm_s(IntCC::NotEqual, word, 0);
-    strict_bool(body.b, condition)
+    condition_value(body.b, condition, branch_only)
 }
 
 fn settled_callable_boundary_id(env: &CodegenEnv<'_>, fn_id: FnId) -> Result<u32, CodegenError> {

@@ -151,15 +151,7 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
                 }
                 Stmt::LetMany(vars, Prim::Extern(_, eid, args)) => {
                     let decl = env.module.extern_by_id(*eid);
-                    let values = lower_extern_pair(&mut body, &var_env, decl, eid, args)?;
-                    if vars.len() != values.len() {
-                        return Err(CodegenError::new(format!(
-                            "extern `{}` produced {} result lanes for {} bindings",
-                            decl.symbol,
-                            values.len(),
-                            vars.len()
-                        )));
-                    }
+                    let values = lower_extern_pair(&mut body, &var_env, decl, eid, args, vars)?;
                     var_env.extend(vars.iter().map(|var| var.0).zip(values));
                 }
                 Stmt::LetMany(_, prim) => {

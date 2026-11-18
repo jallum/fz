@@ -112,10 +112,27 @@ pub(crate) fn immediate_ref_word(b: &mut FunctionBuilder<'_>, raw: ir::Value, ki
     b.ins().bor_imm_u(raw, tag_word)
 }
 
-/// The payload of an atom or pid ref word: its address field.
-pub(crate) fn immediate_payload(b: &mut FunctionBuilder<'_>, ref_word: ir::Value) -> ir::Value {
+/// The kind of a ref word, in the low bits of an `I64`: the kind field with
+/// the literal bit dropped. The single reading of a word's kind.
+pub(crate) fn kind_field(b: &mut FunctionBuilder<'_>, ref_word: ir::Value) -> ir::Value {
+    let packing = AnyValueRefPacking::current();
+    let without_literal = b.ins().band_imm_u(ref_word, !packing.literal_bit() as i64);
+    b.ins().ushr_imm_u(without_literal, packing.tag_shift() as i64)
+}
+
+/// The address field of a ref word: the object it names, or the payload of an
+/// atom or pid. Kind and literal bit are dropped. The single reading of a
+/// word's address.
+pub(crate) fn address_field(b: &mut FunctionBuilder<'_>, ref_word: ir::Value) -> ir::Value {
     b.ins()
         .band_imm_u(ref_word, AnyValueRefPacking::current().address_mask() as i64)
+}
+
+/// The address field of a ref word together with its literal bit: the stored
+/// form of a reference that names an object.
+pub(crate) fn payload_field(b: &mut FunctionBuilder<'_>, ref_word: ir::Value) -> ir::Value {
+    b.ins()
+        .band_imm_u(ref_word, AnyValueRefPacking::current().payload_mask() as i64)
 }
 
 /// Convert an i8 Cranelift bool to the reserved true/false atom bit patterns.

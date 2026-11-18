@@ -22,6 +22,7 @@ mod frame;
 mod function;
 mod prim;
 mod receive;
+pub(crate) mod recipe;
 pub(crate) mod repr;
 pub(crate) mod runtime_call;
 mod runtime_test;

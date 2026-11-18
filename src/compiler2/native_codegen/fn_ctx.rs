@@ -101,14 +101,7 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
     }
 
     pub(crate) fn truthy_ref(&mut self, value_ref: ir::Value) -> ir::Value {
-        runtime_call1!(self, fz_truthy_ref, [value_ref])
-    }
-
-    /// The address of the object `object_ref` names: the reference without
-    /// its kind and literal bit.
-    fn object_address(&mut self, object_ref: ir::Value) -> ir::Value {
-        let address_mask = AnyValueRefPacking::current().address_mask() as i64;
-        self.b.ins().band_imm_u(object_ref, address_mask)
+        runtime_condition!(self, fz_truthy_ref, [value_ref])
     }
 
     /// Whether `value_ref` names an object in the struct layout of schema
@@ -116,14 +109,12 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
     /// header is loaded before the kind is known and the two tests are one
     /// condition.
     pub(crate) fn has_struct_layout(&mut self, value_ref: ir::Value, schema_id: u32) -> ir::Value {
-        let packing = AnyValueRefPacking::current();
-        let kind_bits = self.b.ins().band_imm_u(value_ref, !packing.literal_bit() as i64);
-        let kind = self.b.ins().ushr_imm_u(kind_bits, packing.tag_shift() as i64);
+        let kind = kind_field(self.b, value_ref);
         let is_struct = self
             .b
             .ins()
             .icmp_imm_s(IntCC::Equal, kind, ValueKind::STRUCT.tag() as i64);
-        let object = self.object_address(value_ref);
+        let object = address_field(self.b, value_ref);
         let header = self.b.ins().load(types::I64, MemFlagsData::new(), object, 0);
         let schema = self.b.ins().ushr_imm_u(header, STRUCT_HEADER_SCHEMA_SHIFT);
         let is_schema = self.b.ins().icmp_imm_s(IntCC::Equal, schema, i64::from(schema_id));
@@ -143,7 +134,7 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
         let copy_blk = self.b.create_block();
         let done_blk = self.b.create_block();
         let target = self.b.append_block_param(done_blk, types::I64);
-        let object = self.object_address(base_ref);
+        let object = address_field(self.b, base_ref);
         let header = self.b.ins().load(types::I64, MemFlagsData::trusted(), object, 0);
         let shared = self.b.ins().band_imm_u(header, STRUCT_HEADER_SHARED_MASK as i64);
         self.b.ins().brif(shared, copy_blk, &[], reuse_blk, &[]);
@@ -186,7 +177,7 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
 
         self.b.switch_to_block(check_blk);
         self.b.seal_block(check_blk);
-        let object = self.object_address(reference);
+        let object = address_field(self.b, reference);
         let header = self.b.ins().load(types::I64, MemFlagsData::trusted(), object, 0);
         let shared = self.b.ins().band_imm_u(header, STRUCT_HEADER_SHARED_MASK as i64);
         self.b.ins().brif(shared, done_blk, &[], mark_blk, &[]);
@@ -206,7 +197,7 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
     /// holds, so its kind byte is not read. The load may trap: a bad
     /// reference here is a compiler fault that must not pass silently.
     pub(crate) fn load_slot(&mut self, object_ref: ir::Value, slot: u32, ty: ir::Type) -> ir::Value {
-        let object = self.object_address(object_ref);
+        let object = address_field(self.b, object_ref);
         let offset = SlotLayout::slot_offset(slot as usize) as i32;
         self.b.ins().load(ty, MemFlagsData::new(), object, offset)
     }
@@ -222,7 +213,7 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
         let reference = runtime_call1!(self, fz_alloc_struct, [process, schema, size]);
         NewStruct {
             reference,
-            address: self.object_address(reference),
+            address: address_field(self.b, reference),
             layout,
         }
     }
@@ -244,7 +235,7 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
         };
         NewStruct {
             reference,
-            address: self.object_address(reference),
+            address: address_field(self.b, reference),
             layout: SlotLayout::of(fields),
         }
     }
@@ -309,10 +300,8 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
     /// The stored form of a reference that names an object by its address:
     /// the reference without its kind, and the kind the reference carries.
     fn addressed_form(&mut self, reference: ir::Value) -> (ir::Value, ir::Value) {
-        let packing = AnyValueRefPacking::current();
-        let raw = self.b.ins().band_imm_u(reference, packing.payload_mask() as i64);
-        let tagged = self.b.ins().band_imm_u(reference, !packing.literal_bit() as i64);
-        let kind = self.b.ins().ushr_imm_u(tagged, packing.tag_shift() as i64);
+        let raw = payload_field(self.b, reference);
+        let kind = kind_field(self.b, reference);
         (raw, self.b.ins().ireduce(types::I8, kind))
     }
 
@@ -450,16 +439,9 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
         runtime_call1!(self, fz_list_reuse_or_cons_ref, [process, source, head, tail, rewrite])
     }
 
-    /// The address of a closure's object: its ref word without kind or literal bit.
-    fn closure_address(&mut self, closure_ref: ir::Value) -> ir::Value {
-        self.b
-            .ins()
-            .band_imm_u(closure_ref, AnyValueRefPacking::current().address_mask() as i64)
-    }
-
     /// The address of capture `index`'s raw slot.
     fn closure_capture_slot(&mut self, closure_ref: ir::Value, index: ir::Value) -> ir::Value {
-        let address = self.closure_address(closure_ref);
+        let address = address_field(self.b, closure_ref);
         let offset = self.b.ins().ishl_imm_u(index, 3);
         let slot = self.b.ins().iadd(address, offset);
         self.b.ins().iadd_imm_s(slot, CLOSURE_CAPTURES_OFFSET as i64)
@@ -485,7 +467,7 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
     pub(crate) fn closure_capture_ref(&mut self, closure_ref: ir::Value, index: ir::Value) -> ir::Value {
         let packing = AnyValueRefPacking::current();
         let flags = MemFlagsData::trusted();
-        let address = self.closure_address(closure_ref);
+        let address = address_field(self.b, closure_ref);
         let layout = self.b.ins().uload32(flags, address, 0);
         let flags_field = self.b.ins().ushr_imm_u(layout, CLOSURE_LAYOUT_FLAGS_SHIFT as i64);
         let count = self
@@ -519,7 +501,7 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
     }
 
     pub(crate) fn closure_code_ref(&mut self, closure_ref: ir::Value) -> ir::Value {
-        let address = self.closure_address(closure_ref);
+        let address = address_field(self.b, closure_ref);
         self.b
             .ins()
             .load(types::I64, MemFlagsData::trusted(), address, CLOSURE_CODE_OFFSET)

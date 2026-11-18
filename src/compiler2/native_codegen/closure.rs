@@ -29,10 +29,7 @@ pub(crate) fn build_cont_closure<M: cranelift_module::Module>(
     let count = cap_bindings.len() + empty_slots + 1;
     let code_addr = fn_addr(body.jmod, cont_fid, body.b);
     let closure_ref = place_cont_closure(body, count, code_addr);
-    let address = body
-        .b
-        .ins()
-        .band_imm_u(closure_ref, AnyValueRefPacking::current().address_mask() as i64);
+    let address = address_field(body.b, closure_ref);
     fill_cont_captures(body, address, outer_cont, cap_bindings, empty_slots);
     closure_ref
 }
@@ -251,12 +248,10 @@ impl CaptureStores {
         idx: usize,
         word: ir::Value,
     ) {
-        let packing = AnyValueRefPacking::current();
         let flags = MemFlagsData::trusted();
-        let shifted = body.b.ins().ushr_imm_u(word, i64::from(packing.tag_shift()));
-        let tag = body.b.ins().band_imm_u(shifted, 0xF);
-        let named_address = body.b.ins().band_imm_u(word, packing.address_mask() as i64);
-        let payload = body.b.ins().band_imm_u(word, packing.payload_mask() as i64);
+        let tag = kind_field(body.b, word);
+        let named_address = address_field(body.b, word);
+        let payload = payload_field(body.b, word);
         let names_slot = body.kind_names_its_slot(tag);
         let source = body.b.ins().select(names_slot, named_address, self.address);
         let loaded = body.b.ins().load(types::I64, MemFlagsData::new(), source, 0);
@@ -335,10 +330,8 @@ pub(crate) fn release_resumed_frame<M: cranelift_module::Module>(
     ref_slots: &[usize],
     slot_count: usize,
 ) {
-    let packing = AnyValueRefPacking::current();
     let flags = MemFlagsData::trusted();
-    let tag = body.b.ins().ushr_imm_u(frame, i64::from(packing.tag_shift()));
-    let tag = body.b.ins().band_imm_u(tag, 0xF);
+    let tag = kind_field(body.b, frame);
     let is_closure = body
         .b
         .ins()
@@ -349,7 +342,7 @@ pub(crate) fn release_resumed_frame<M: cranelift_module::Module>(
 
     body.b.switch_to_block(examine);
     body.b.seal_block(examine);
-    let address = body.b.ins().band_imm_u(frame, packing.address_mask() as i64);
+    let address = address_field(body.b, frame);
     let layout = body.b.ins().uload32(flags, address, 0);
     let count = body.b.ins().ushr_imm_u(layout, CLOSURE_LAYOUT_FLAGS_SHIFT as i64);
     let count = body.b.ins().band_imm_u(count, i64::from(CLOSURE_FLAGS_CAPTURED_MASK));

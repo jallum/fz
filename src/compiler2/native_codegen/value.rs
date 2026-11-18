@@ -120,6 +120,17 @@ pub(crate) fn strict_bool(b: &mut FunctionBuilder<'_>, value: ir::Value) -> Code
     CodegenValue::known(b.ins().select(value, true_raw, false_raw), ValueKind::ATOM)
 }
 
+/// The boolean `condition` as the binding a consumer reads: the raw condition
+/// when every use of the variable is a branch on it, the atom boolean
+/// otherwise.
+pub(crate) fn condition_value(b: &mut FunctionBuilder<'_>, condition: ir::Value, branch_only: bool) -> CodegenValue {
+    if branch_only {
+        CodegenValue::Condition(condition)
+    } else {
+        strict_bool(b, condition)
+    }
+}
+
 pub(crate) fn binding_for_var(var_env: &HashMap<u32, CodegenValue>, v: u32) -> CodegenValue {
     *var_env.get(&v).expect("unbound var")
 }

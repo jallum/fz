@@ -34,12 +34,8 @@ impl<M: ClModule> RuntimeCaller for AotMain<'_, '_, M> {
         callee
     }
 
-    fn emit_call(&mut self, callee: ir::FuncRef, args: &[ir::Value]) -> ir::Inst {
-        self.b.ins().call(callee, args)
-    }
-
-    fn sole_result(&self, call: ir::Inst) -> ir::Value {
-        self.b.inst_results(call)[0]
+    fn with_builder<R>(&mut self, emit: impl FnOnce(&mut FunctionBuilder<'_>) -> R) -> R {
+        emit(self.b)
     }
 }
 
