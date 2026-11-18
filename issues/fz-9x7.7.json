@@ -21,11 +21,15 @@
     {
       "text": "Base caveat: the 2026-11-17 measurements ran on develop 458eb43eb, after #720 (fz-9x7.31), where release cheney_scan calls forward_heap_value out of line at its 8 trace sites (distiller +1.91% instructions per the Make Distiller Fast session's bisect; fix under test by the Bugs and Cleanup session). Collection-heavy ratios (and round 3's per-collection cost F) should be re-read once the inlining is restored.",
       "timestamp": "2026-11-18T04:14:58Z"
+    },
+    {
+      "text": "User ruling 2026-11-18: round 3 closes as failed by rule; the ticket stays open and its floor is re-tested after fz-9x7.11 (which gets a fresh look).",
+      "timestamp": "2026-11-18T05:55:03Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "A process with a nearly empty young generation does not collect at every park or yield",
   "type": "task",
-  "updated_at": "2026-11-18T04:14:58Z"
+  "updated_at": "2026-11-18T05:55:03Z"
 }
