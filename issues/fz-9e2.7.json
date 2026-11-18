@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-18T21:21:29Z",
+  "description": "A proven binary is read inline: byte_size, bit_size, ==, a whole rest at position 0, and a small aligned slice.\n\nToday:\n- byte_size is a 23-instruction extern (fz_bitstring_byte_extent, lib/kernel.fz:1308, ir_runtime.rs:1065) for about 6 instructions of work, and it is not folded for a literal: 49 instructions to compute a constant (M3, C8, JSON proposal P2).\n- Binary == takes fz_value_eq_widening_ref (prim.rs:1936-1952): AnyValue round trips, a schema RefCell borrow, no length early-out, and 10 instructions turning the C bool into an atom and back. Equal and different both cost ~500. a == \"true\" costs 385, while case a do \"true\" is ~34 inline (M4, C10).\n- A whole-rest read always calls fz_bs_read_binary_ref (prim.rs:880-899), even at the constant position 0, where the runtime returns the source anyway after 158 instructions (M7a).\n- A 4 B slice costs 653 instructions. The extern recomputes the field_end the caller proved (BitFieldFits) (M11).\n\nFix: on lanes proven binary, emit the decode inline (the match code already has it):\n- byte_size/bit_size inline; literals folded.\n- A binary == arm: length compare, pointer shortcut, memcmp (or one small extern on ptr/len). The result is a condition, so no atom. a == literal reuses the inline literal compare that matching already emits.\n- Whole rest at position 0 is the source.\n- Small aligned slices are inline, with no re-validation (debug_assert only).\n\nWhat goes away: byte_extent as a call, the binary path through the widening eq, field_end re-validation, and fz_bs_read_* recomputing ends (R5).\n\nAsm first: target listings from the probes child, for p02a/b/c, p07a/b/c/e, p03c and p08. Predictions are written before building:\n- byte_size ~30 (after the share child) and the literal folded\n- == under 100\n- the accumulator loop with a later byte_size: 448 -\u003e 279\nJudged on bench.",
+  "id": "fz-9e2.7",
+  "labels": [],
+  "parent": "fz-9e2",
+  "priority": 1,
+  "status": "open",
+  "title": "A proven binary is read inline: byte_size, ==, whole rest, small slice",
+  "type": "task",
+  "updated_at": "2026-11-18T21:21:29Z"
+}
