@@ -11,11 +11,15 @@
     {
       "text": "Binary Handling's spikes (2026-11-18): rem/2 on integers is a runtime call returning a checked pair, about 20 instructions in probe 06b's loop, and it has no RECIPES row. It belongs with this ticket's integer arithmetic.",
       "timestamp": "2026-11-18T23:20:38Z"
+    },
+    {
+      "text": "Bugs and Cleanup's hand-written listing (develop a3edb6f32): sum(n) = n + sum(n-1) is a second listing for this ticket. The way back up costs 56 instructions per level against a hand-written 12: resume 37, the fn_2 forwarder 4, and fz_op_add_ii 15 (its prologue, cset vs; tst; b.ne, and an epilogue that saves x19/x20/x22 only for the overflow slow path). Going down costs 61 against 18. Per level, today's ~118 is consistent with the bench (2.36G over 20M levels) against a target of ~30.",
+      "timestamp": "2026-11-18T23:24:23Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "Integer arithmetic on known integers is an instruction, not a flag dance or a call",
   "type": "task",
-  "updated_at": "2026-11-18T23:20:38Z"
+  "updated_at": "2026-11-18T23:24:23Z"
 }
