@@ -6,7 +6,8 @@ use crate::any_value::{
     closure_capture_value, list_addr_from_tagged,
 };
 use crate::heap::{Heap, SchemaRegistry};
-use crate::park::ParkRecord;
+use crate::park::park_test::{frame_of, leaked_site};
+use crate::park::{ParkRecord, ReceiveClause};
 use std::cell::RefCell;
 use std::ptr::null_mut;
 use std::rc::Rc;
@@ -118,42 +119,50 @@ extern "C" fn pinned_head_matcher(
     u32::from(list_head(msg) == list_head(pinned))
 }
 
-fn park_on(process: &mut Process, pinned: AnyValueRef, bodies: Vec<AnyValueRef>, after_cont: Option<AnyValueRef>) {
+/// Park on a one-clause receive whose frame captures `capture` and pins `pinned`.
+fn park_on(process: &mut Process, capture: AnyValueRef, pinned: AnyValueRef) {
+    let clause = ReceiveClause {
+        code: 0x10,
+        bound_count: 0,
+        empty_slots: 0,
+    };
+    let frame = frame_of(&mut process.heap, &[capture, pinned]);
     process.delivery.lock().install_park(ParkRecord {
-        matcher_fn: pinned_head_matcher,
-        pinned: vec![pinned],
-        clause_bound_counts: vec![0; bodies.len()],
-        clause_bodies: bodies,
-        bound_arity: 0,
+        site: leaked_site(pinned_head_matcher, None, 1, &[clause]),
+        frame,
         after_deadline_ms: None,
-        after_cont,
         after_timer_id: None,
     });
 }
 
+/// The list a receive frame captures behind its outer continuation.
+fn frame_capture(frame: AnyValueRef) -> AnyValueRef {
+    match unsafe { closure_capture_value(frame.closure_addr().expect("frame addr"), 1) } {
+        AnyValue::HeapRef(list) => list,
+        other => panic!("a captured list stays a heap ref: {other:?}"),
+    }
+}
+
 /// A collection moves everything the process holds into its heap: the
-/// runnable closure, the parked receive's clause bodies, after body and
-/// pinned values, the mailbox and the caller's transient values. Each is
+/// runnable closure, the parked receive's frame with its capture and
+/// pinned value, the mailbox and the caller's transient values. Each is
 /// forwarded and still reads as it did, so the parked receive still matches.
 #[test]
 fn collect_forwards_every_root_a_parked_process_holds() {
     let mut process = Process::new(Rc::new(RefCell::new(SchemaRegistry::new())));
     let pinned = int_list(&mut process.heap, 1);
     let body_capture = int_list(&mut process.heap, 2);
-    let after_capture = int_list(&mut process.heap, 3);
     let runnable_capture = int_list(&mut process.heap, 4);
     let mailbox_message = int_list(&mut process.heap, 5);
     let mut transient = [int_list(&mut process.heap, 6)];
-    let body = closure_capturing(&mut process, body_capture);
-    let after = closure_capturing(&mut process, after_capture);
     let runnable = closure_capturing(&mut process, runnable_capture);
-    park_on(&mut process, pinned, vec![body], Some(after));
+    park_on(&mut process, body_capture, pinned);
+    let frame = process.delivery.lock().park().expect("parked").frame;
     process.set_runnable_closure(runnable);
     process.mailbox.push_back(mailbox_message);
     let before = (
         pinned.list_addr().unwrap(),
-        body,
-        after,
+        frame,
         runnable,
         mailbox_message.list_addr().unwrap(),
         transient[0].list_addr().unwrap(),
@@ -163,19 +172,20 @@ fn collect_forwards_every_root_a_parked_process_holds() {
 
     let delivery = process.delivery.lock();
     let park = delivery.park().expect("still parked");
-    assert_ne!(park.pinned[0].list_addr().unwrap(), before.0, "pinned value moved");
-    assert_ne!(park.clause_bodies[0], before.1, "clause body moved");
-    assert_ne!(park.after_cont, Some(before.2), "after body moved");
-    assert_ne!(process.runnable_closure(), Some(before.3), "runnable closure moved");
+    assert_ne!(park.frame, before.1, "frame moved");
+    assert_ne!(process.runnable_closure(), Some(before.2), "runnable closure moved");
     assert_ne!(
         process.mailbox[0].list_addr().unwrap(),
-        before.4,
+        before.3,
         "mailbox message moved"
     );
-    assert_ne!(transient[0].list_addr().unwrap(), before.5, "transient value moved");
-    assert_eq!(list_head(park.pinned[0]), 1);
-    assert_eq!(list_head(captured_list(park.clause_bodies[0])), 2);
-    assert_eq!(list_head(captured_list(park.after_cont.expect("after body"))), 3);
+    assert_ne!(transient[0].list_addr().unwrap(), before.4, "transient value moved");
+    assert_ne!(
+        frame_capture(park.frame).list_addr().unwrap(),
+        before.0,
+        "pinned and captured lists moved"
+    );
+    assert_eq!(list_head(frame_capture(park.frame)), 2);
     assert_eq!(
         list_head(captured_list(process.runnable_closure().expect("runnable"))),
         4
@@ -188,8 +198,8 @@ fn collect_forwards_every_root_a_parked_process_holds() {
         "the moved pinned value still matches"
     );
     assert_eq!(
-        stats.copied_objects, 9,
-        "each of the six roots moved with what it captures: three closures with a capture, three lists"
+        stats.copied_objects, 7,
+        "each of the four roots moved with what it holds: the frame with its capture and pinned value, the runnable closure with its capture, two lists"
     );
 }
 
@@ -260,14 +270,12 @@ fn collect_roots_only_what_the_process_holds() {
 
     let pinned = int_list(&mut process.heap, 8);
     let body_capture = int_list(&mut process.heap, 9);
-    let body = closure_capturing(&mut process, body_capture);
-    park_on(&mut process, pinned, vec![body], None);
+    park_on(&mut process, body_capture, pinned);
     let parked = process.collect(&mut []);
     assert_eq!(
         parked.copied_objects, 3,
-        "clause body, its capture and the pinned value move; the runnable closure is already kept and there is no after body"
+        "the frame, its capture and its pinned value move; the runnable closure is already kept"
     );
-    assert!(process.delivery.lock().park().unwrap().after_cont.is_none());
 }
 
 /// How a quantum ended is read off the process: runnable means it

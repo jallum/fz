@@ -1,4 +1,5 @@
 use super::*;
+use crate::park::park_test::{code_of, frame_of, leaked_site};
 use std::time::Duration;
 
 /// A bare scheduler for unit tests. The caller pushes tasks into
@@ -197,18 +198,12 @@ fn timer_drain_wakes_after_cont() {
     let mut p = Box::new(Process::new(schemas));
     p.pid = 7;
     let timer_id = timer_schedule_hook::<AotScheduler>()(sched_handle(&mut sched), p.pid, 1);
-    let after_cont_addr: usize = 0xCAFE_BABE;
+    let after_code: usize = 0xCAFE_BABE;
+    let frame = frame_of(&mut p.heap, &[]);
     p.delivery.lock().install_park(ParkRecord {
-        matcher_fn: never_match,
-        pinned: vec![],
-        clause_bodies: vec![],
-        clause_bound_counts: vec![],
-        bound_arity: 0,
+        site: leaked_site(never_match, Some((after_code, 0)), 0, &[]),
+        frame,
         after_deadline_ms: Some(1),
-        after_cont: Some(
-            AnyValueRef::from_heap_object(crate::any_value::ValueKind::CLOSURE, after_cont_addr as *const u8)
-                .expect("after body ref"),
-        ),
         after_timer_id: Some(timer_id),
     });
     p.state = ProcessState::Blocked;
@@ -221,10 +216,7 @@ fn timer_drain_wakes_after_cont() {
     let task = sched.tasks.get(&7).unwrap();
     assert_eq!(task.state, ProcessState::Ready);
     assert!(task.delivery.lock().park().is_none());
-    assert_eq!(
-        task.runnable_closure().map(|closure| closure.storage_addr() as usize),
-        Some(after_cont_addr)
-    );
+    assert_eq!(task.runnable_closure().map(code_of), Some(after_code));
     assert_eq!(next_runnable(&mut sched), None, "nothing else runs or waits");
 }
 

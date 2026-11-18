@@ -762,7 +762,7 @@ impl Process {
 
     /// Collect this process's heap. The roots are everything the process
     /// holds into its heap, in one flat slice: the runnable closure, the park
-    /// record (clause bodies, after body, pinned values), a delivered handler,
+    /// record's frame, a delivered handler,
     /// the compiled handlers of the `try` bodies the process is inside, the mailbox and the
     /// caller's `transient` values. Each holds its forwarded value on return.
     ///
@@ -775,9 +775,7 @@ impl Process {
         let mut roots: Vec<AnyValueRef> = Vec::new();
         roots.extend(self.runnable_closure());
         if let Some(park) = park.as_deref() {
-            roots.extend(park.clause_bodies.iter().copied());
-            roots.extend(park.after_cont);
-            roots.extend(park.pinned.iter().copied());
+            roots.push(park.frame);
         }
         roots.extend(self.delivered.map(ClosureRef::as_ref));
         roots.extend(
@@ -797,15 +795,7 @@ impl Process {
             self.runnable = Some(ClosureRef::new(next()));
         }
         if let Some(park) = park {
-            for body in park.clause_bodies.iter_mut() {
-                *body = next();
-            }
-            if park.after_cont.is_some() {
-                park.after_cont = Some(next());
-            }
-            for pinned in park.pinned.iter_mut() {
-                *pinned = next();
-            }
+            park.frame = next();
         }
         if self.delivered.is_some() {
             self.delivered = Some(ClosureRef::new(next()));

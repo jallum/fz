@@ -325,7 +325,7 @@ pub fn reach_receive(task: &mut Process, mut park: ParkRecord) -> ReceiveStep {
         return ReceiveStep::Continue(park.outcome_closure(&mut task.heap, clause_idx, &bound_vals));
     }
     match park.after_deadline_ms {
-        Some(0) => ReceiveStep::Continue(park.after_cont.expect("an `after 0` receive has an after body")),
+        Some(0) => ReceiveStep::Continue(park.after_closure(&mut task.heap)),
         after_ms => {
             park.after_timer_id = after_ms.and_then(|ms| timer_schedule(task, task.pid, ms));
             delivery.install_park(park);
@@ -352,10 +352,8 @@ pub fn fire_after_timer(task: &mut Process, id: TimerId) -> bool {
     }
     let park = delivery.take_park().expect("checked above");
     drop(delivery);
-    task.set_runnable_closure(
-        park.after_cont
-            .expect("an after timer fires only for a receive with an after body"),
-    );
+    let after = park.after_closure(&mut task.heap);
+    task.set_runnable_closure(after);
     true
 }
 

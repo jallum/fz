@@ -1,0 +1,69 @@
+#---
+# purpose: "reaching a receive builds one frame for the arrival, whether the receive has one clause, three, or three and an after body; the clause table is a constant of the program"
+# kind: run
+#---
+#
+# Each loop receives a thousand queued `:a` messages. The program prints, per
+# loop, the continuations built beyond the ones reduction yields build (one per
+# yield) and the closures built: one frame and one outcome closure per receive,
+# and one continuation for the call that enters the loop.
+# The last loop finds its mailbox empty and takes its `after 0` body, which is
+# also one frame and one closure.
+defmodule R do
+  def fill(_me, 0), do: :ok
+  def fill(me, n) do
+    send(me, :a)
+    fill(me, n - 1)
+  end
+
+  def one(0, acc), do: acc
+  def one(n, acc) do
+    receive do
+      :a -> one(n - 1, acc + 1)
+    end
+  end
+
+  def three(0, acc), do: acc
+  def three(n, acc) do
+    receive do
+      :a -> three(n - 1, acc + 1)
+      :b -> three(n - 1, acc + 2)
+      {:c, _x} -> three(n - 1, acc + 3)
+    end
+  end
+
+  def three_and_after(0, acc), do: acc
+  def three_and_after(n, acc) do
+    receive do
+      :a -> three_and_after(n - 1, acc + 1)
+      :b -> three_and_after(n - 1, acc + 2)
+      {:c, _x} -> three_and_after(n - 1, acc + 3)
+    after
+      0 -> three_and_after(n - 1, acc + 5)
+    end
+  end
+end
+
+def built(before, after_run) do
+  yields = after_run[:reduction_yields] - before[:reduction_yields]
+  {after_run[:continuation_allocs] - before[:continuation_allocs] - yields,
+   after_run[:closure_allocs] - before[:closure_allocs]}
+end
+
+def main() do
+  R.fill(self(), 3000)
+  s0 = Process.heap_alloc_stats()
+  a = R.one(1000, 0)
+  s1 = Process.heap_alloc_stats()
+  b = R.three(1000, 0)
+  s2 = Process.heap_alloc_stats()
+  c = R.three_and_after(1000, 0)
+  s3 = Process.heap_alloc_stats()
+  d = R.three_and_after(1000, 0)
+  s4 = Process.heap_alloc_stats()
+  dbg({a, b, c, d})
+  dbg(built(s0, s1))
+  dbg(built(s1, s2))
+  dbg(built(s2, s3))
+  dbg(built(s3, s4))
+end
