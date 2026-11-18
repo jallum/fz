@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-18T20:44:04Z",
+  "description": "'resolve/type-alias: unknown type name dynamic'. Also unknown: byte, iodata, iolist, no_return, non_neg_integer, pos_integer, number, charlist, nonempty_list, maybe_improper_list, none, timeout, struct. dynamic() is also the honest replacement for the any-extern type eraser in fz-mue.2. Reproducer: /Users/j5n/Workspace/fz-otp-json/punch/28_spec_dynamic.fz\n\nPart of fz-mue (fz runs OTP's json.erl unchanged). Port and harness: /Users/j5n/Workspace/fz-otp-json/.",
+  "id": "fz-mue.16",
+  "labels": [],
+  "parent": "fz-mue",
+  "priority": 2,
+  "status": "open",
+  "title": "dynamic() and Elixir's standard type names resolve",
+  "type": "feature",
+  "updated_at": "2026-11-18T20:44:04Z"
+}
