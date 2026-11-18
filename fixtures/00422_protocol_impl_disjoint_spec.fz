@@ -2,7 +2,7 @@
 # purpose: an impl's @spec is not checked against its protocol's @spec; a returned atom against the protocol's declared integer return is accepted
 #---
 defprotocol P do
-  @spec to_thing(t(a)) :: integer
+  @spec to_thing(t(a)) :: integer when a: term()
   def to_thing(value)
 end
 

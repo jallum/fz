@@ -1,0 +1,7 @@
+error[resolve/type-alias]: type variable `a` is not declared; declare it in `when`, as `a: var` when it links two positions or `a: term()` when it does not
+  --> fixtures/01384_a_spec_type_variable_when_does_not_declare_is_refused.fz:2:16
+   |
+2 |   @spec first([a]) :: a
+   |                ^
+   |
+

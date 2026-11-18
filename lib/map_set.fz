@@ -43,7 +43,7 @@ defmodule MapSet do
       #=> 2
 
   """
-  @spec new(Enumerable.t(a)) :: t
+  @spec new(Enumerable.t(a)) :: t when a: term()
   def new(enumerable), do: Enum.reduce(enumerable, new(), fn x, set -> put(set, x) end)
 
   @doc """

@@ -40,9 +40,9 @@ in the arrow:
   params left-to-right, then result); repeats reuse it
 
 ```text
-@spec foo(a, {b, c}, d)    -->  (a0, {a1_0, a1_1}, a2) -> r0    %{a:a0, b:a1_0, c:a1_1, d:a2}
-@spec flibble(t, t) :: t   -->  (a0, a0) -> a0                  %{t:a0}
-@spec g(t, {t, u})         -->  (a0, {a0, a1_1}) -> r0          %{t:a0, u:a1_1}
+foo(a, {b, c}, d)    -->  (a0, {a1_0, a1_1}, a2) -> r0    %{a:a0, b:a1_0, c:a1_1, d:a2}
+flibble(t, t) :: t   -->  (a0, a0) -> a0                  %{t:a0}
+g(t, {t, u})         -->  (a0, {a0, a1_1}) -> r0          %{t:a0, u:a1_1}
 ```
 
 The address is the structural *path*, not a sequence position. In `foo`, `d` is

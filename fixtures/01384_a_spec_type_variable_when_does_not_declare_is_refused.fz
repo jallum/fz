@@ -1,0 +1,10 @@
+#---
+# purpose: a @spec type variable that `when` does not declare stops the compile under its first use, as Elixir refuses it
+# expect: diagnostic
+#---
+defmodule M do
+  @spec first([a]) :: a
+  def first([head | _]), do: head
+end
+
+def main(), do: dbg(M.first([1]))

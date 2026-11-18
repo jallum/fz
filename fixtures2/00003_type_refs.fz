@@ -2,5 +2,5 @@
 @type tkf_param :: integer
 @type tkf_box(a) :: list(a)
 @type tkf_wrapper :: tkf_box(tkf_target)
-@spec tkf_uses(tkf_target, a) :: tkf_param
+@spec tkf_uses(tkf_target, a) :: tkf_param when a: term()
 def tkf_uses(x, y), do: x

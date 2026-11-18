@@ -2,7 +2,7 @@
 # purpose: an impl's @spec whose return type matches its protocol's declared return type is accepted, same as a mismatched one
 #---
 defprotocol P do
-  @spec to_thing(t(a)) :: integer
+  @spec to_thing(t(a)) :: integer when a: term()
   def to_thing(value)
 end
 

@@ -111,6 +111,7 @@ const CONSTRUCTORS: &[ConstructorEntry] = &[
     ConstructorEntry { name: "bitstring", arity: Arity::Fixed(0), build: |t, _| t.bitstring() },
     ConstructorEntry { name: "atom",     arity: Arity::Fixed(0), build: |t, _| t.atom() },
     ConstructorEntry { name: "any",      arity: Arity::Fixed(0), build: |t, _| t.any() },
+    ConstructorEntry { name: "term",     arity: Arity::Fixed(0), build: |t, _| t.any() },
     ConstructorEntry { name: "never",    arity: Arity::Fixed(0), build: |t, _| t.none() },
     ConstructorEntry { name: "utf8",     arity: Arity::Fixed(0), build: |t, _| { let inner = t.str_t(); t.mint_brand(inner, "utf8") } },
     ConstructorEntry { name: "pid",      arity: Arity::Fixed(0), build: |t, _| t.pid() },
@@ -125,6 +126,66 @@ const CONSTRUCTORS: &[ConstructorEntry] = &[
 
 fn find_constructor(name: &str) -> Option<&'static ConstructorEntry> {
     CONSTRUCTORS.iter().find(|entry| entry.name == name)
+}
+
+/// One type variable as a spec writes it: how often, and where first.
+struct VariableUse {
+    name: String,
+    count: usize,
+    first: Span,
+}
+
+/// Every type variable in `written`, in the order the spec first writes it.
+fn variable_uses(vars: &HashMap<String, TypeVarId>, written: &[TypeExpr]) -> Vec<VariableUse> {
+    let mut uses: Vec<VariableUse> = Vec::new();
+    for expr in written {
+        expr.visit_bare_names(&mut |name, span| {
+            if !vars.contains_key(name) {
+                return;
+            }
+            match uses.iter_mut().find(|known| known.name == name) {
+                Some(known) => known.count += 1,
+                None => uses.push(VariableUse {
+                    name: name.to_string(),
+                    count: 1,
+                    first: span,
+                }),
+            }
+        });
+    }
+    uses
+}
+
+/// Elixir's rule for a spec's type variables: `when` declares each one, and
+/// one declared `var` links at least two positions, because a variable that
+/// links nothing is just `term()`.
+fn check_declared_variables(
+    spec: &SpecDecl,
+    vars: &HashMap<String, TypeVarId>,
+    written: &[TypeExpr],
+) -> Result<(), TypeExprError> {
+    for VariableUse { name, count, first } in variable_uses(vars, written) {
+        match spec.constraints.iter().find(|(declared, _)| *declared == name) {
+            None => {
+                return Err(TypeExprError {
+                    msg: format!(
+                        "type variable `{name}` is not declared; declare it in `when`, as `{name}: var` when it links two positions or `{name}: term()` when it does not"
+                    ),
+                    span: first,
+                });
+            }
+            Some((_, bound)) if bound.declares_no_bound() && count == 1 => {
+                return Err(TypeExprError {
+                    msg: format!(
+                        "type variable `{name}` is used only once; a `var` links two positions, so a variable used once is written `{name}: term()`"
+                    ),
+                    span: first,
+                });
+            }
+            Some(_) => {}
+        }
+    }
+    Ok(())
 }
 
 impl World {
@@ -174,14 +235,16 @@ impl World {
         spec: &SpecDecl,
     ) -> Result<ResolvedSpec, TypeExprError> {
         let mut vars: HashMap<String, TypeVarId> = HashMap::default();
+        let mut written = Vec::with_capacity(spec.param_body_tokens.len() + 1 + spec.constraints.len());
         let mut params = Vec::with_capacity(spec.param_body_tokens.len());
         for body in &spec.param_body_tokens {
             let expr = parse_type_expr(&body.0)?;
-            let ty = self.resolve_ty(namespace, &expr, &mut vars)?;
-            params.push(ty);
+            params.push(self.resolve_ty(namespace, &expr, &mut vars)?);
+            written.push(expr);
         }
         let result_expr = parse_type_expr(&spec.result_body_tokens.0)?;
         let result = self.resolve_ty(namespace, &result_expr, &mut vars)?;
+        written.push(result_expr);
         let mut constraints = HashMap::default();
         for (var_name, body) in &spec.constraints {
             let Some(&id) = vars.get(var_name) else {
@@ -196,7 +259,9 @@ impl World {
             let expr = parse_type_expr(&body.0)?;
             let bound = self.resolve_ty(namespace, &expr, &mut vars)?;
             constraints.insert(id, bound);
+            written.push(expr);
         }
+        check_declared_variables(spec, &vars, &written)?;
         // fz-hwn.27.14 — address the whole spec scope at the binder. The
         // resolver's first-occurrence ids are raw material; a variable's
         // canonical identity is its STRUCTURAL ADDRESS (param i -> a{i}, result

@@ -12,7 +12,7 @@
 # an uncovered witness from the veto (it only accepts witnesses that
 # actually land in it, like `:first`).
 defmodule M do
-  @spec f(:first | {:acc, a}) :: a
+  @spec f(:first | {:acc, a}) :: a when a: var
   def f(:first), do: panic("empty")
   def f({:acc, acc}), do: acc
 end

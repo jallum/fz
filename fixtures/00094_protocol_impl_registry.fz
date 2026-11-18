@@ -2,7 +2,7 @@
 # purpose: defprotocol and defimpl register the protocol, its implementation, and the domain type facts they declare.
 #---
 defprotocol Enumerable do
-  @spec reduce(t(a), acc, (a, acc) -> acc) :: acc
+  @spec reduce(t(a), acc, (a, acc) -> acc) :: acc when a: var
   def reduce(enumerable, acc, reducer)
 end
 

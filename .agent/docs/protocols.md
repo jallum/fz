@@ -22,7 +22,7 @@ module like `Enum`), but the semantic object is a registry fact. The pieces:
 
 ```fz
 defprotocol Enumerable do
-  @spec reduce(t(a), b, (a, b) -> {:cont, b} | {:halt, b}) :: any
+  @spec reduce(t(a), b, (a, b) -> {:cont, b} | {:halt, b}) :: any when a: var, b: var
   def reduce(enumerable, acc, reducer)
 end
 

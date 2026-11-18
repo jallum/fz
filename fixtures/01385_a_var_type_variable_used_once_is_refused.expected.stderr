@@ -1,0 +1,7 @@
+error[resolve/type-alias]: type variable `a` is used only once; a `var` links two positions, so a variable used once is written `a: term()`
+  --> fixtures/01385_a_var_type_variable_used_once_is_refused.fz:2:16
+   |
+2 |   @spec count([a]) :: integer when a: var
+   |                ^
+   |
+

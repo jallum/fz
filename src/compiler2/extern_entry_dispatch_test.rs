@@ -25,7 +25,7 @@ extern "C" defp spell_resource_of(resource(t)) :: integer when t: integer | c_po
 extern "C" defp spell_callable((c_pointer) -> nil) :: integer
 extern "C" defp spell_any(any) :: integer
 extern "C" defp spell_free(t) :: integer when t: any
-extern "C" defp spell_var(t) :: integer when t: var
+extern "C" defp spell_var(t, t) :: integer when t: var
 extern "C" defp spell_bounded(t) :: integer when t: integer | c_pointer
 extern "C" defp spell_bounded_with_callable(t, (t) -> nil) :: integer when t: integer | c_pointer
 def main(), do: 0
@@ -115,7 +115,7 @@ fn a_bounded_variable_is_tested_as_its_bound_and_a_parameter_that_admits_everyth
         "an unbounded variable admits every value, so it has no precondition"
     );
     assert_eq!(
-        planned.type_tests("spell_var", 1),
+        planned.type_tests("spell_var", 2),
         0,
         "Elixir's `t: var` is the same unbounded variable"
     );

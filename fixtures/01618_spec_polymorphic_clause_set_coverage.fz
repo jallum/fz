@@ -14,8 +14,8 @@
 # rows instead reported no coverage where coverage holds, and this program --
 # which has always run -- died with error[spec/violation] on all three paths.
 defmodule M do
-  @spec pick({integer, a}) :: a
-  @spec pick({binary, a}) :: a
+  @spec pick({integer, a}) :: a when a: var
+  @spec pick({binary, a}) :: a when a: var
   def pick({_tag, v}), do: v
 end
 

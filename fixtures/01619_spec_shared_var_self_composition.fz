@@ -16,7 +16,7 @@
 # The user-defined `My.rev/2` is the same shape written out, so the fixture
 # fails whether or not the runtime library happens to spell reverse this way.
 defmodule My do
-  @spec rev([a], [a]) :: [a]
+  @spec rev([a], [a]) :: [a] when a: var
   def rev([], tail), do: tail
   def rev([h | t], acc), do: rev(t, [h | acc])
 end

@@ -99,6 +99,41 @@ pub struct TypeDefBody {
     pub inner: TypeExpr,
 }
 
+impl TypeExpr {
+    /// Visits every one-segment name in source order, with the span it is
+    /// written at: the names a type variable can be spelled with.
+    pub fn visit_bare_names(&self, visit: &mut impl FnMut(&str, Span)) {
+        match self {
+            TypeExpr::Name { path, args, span } => {
+                if let [name] = path.as_slice() {
+                    visit(name, *span);
+                }
+                args.iter().for_each(|arg| arg.visit_bare_names(visit));
+            }
+            TypeExpr::List(inner) => inner.visit_bare_names(visit),
+            TypeExpr::Tuple(elems) | TypeExpr::Union(elems) => {
+                elems.iter().for_each(|elem| elem.visit_bare_names(visit))
+            }
+            TypeExpr::Arrow { params, result } => {
+                params.iter().for_each(|param| param.visit_bare_names(visit));
+                result.visit_bare_names(visit);
+            }
+            TypeExpr::StructRecord { fields, .. } => fields.iter().for_each(|(_, field)| field.visit_bare_names(visit)),
+            TypeExpr::Map(entries) => entries.iter().for_each(|(key, value)| {
+                key.visit_bare_names(visit);
+                value.visit_bare_names(visit);
+            }),
+            TypeExpr::EmptyList
+            | TypeExpr::AtomLit(_)
+            | TypeExpr::IntLit(_)
+            | TypeExpr::FloatLit(_)
+            | TypeExpr::Wildcard
+            | TypeExpr::Nil
+            | TypeExpr::Bool => {}
+        }
+    }
+}
+
 /// A failure to parse a type expression, carrying the offending span.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypeExprError {
