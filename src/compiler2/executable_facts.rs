@@ -225,10 +225,10 @@ impl RuntimeDemandFacts<'_> {
         (!unnamed.is_empty()).then_some(unnamed)
     }
 
-    /// Marks escaped every callable this demand asks for at a position whose
-    /// type also admits a value that is not a callable.
-    pub(crate) fn escape_mixed_callables(&self, demand: &mut RuntimeDemand, ty: Ty) {
-        escape_mixed_callables(self.type_projections, demand, ty);
+    /// Reads `demand` as a value of type `ty` carries it; see
+    /// [`read_against_type`].
+    pub(crate) fn read_against_type(&self, demand: &mut RuntimeDemand, ty: Ty) {
+        read_against_type(self.type_projections, demand, ty);
     }
 
     pub(crate) fn callable_value_demand(&self, ty: Ty) -> Option<RuntimeDemand> {
@@ -243,22 +243,26 @@ fn projection_of(projections: &HashMap<Ty, Rc<RuntimeDemandTypeProjection>>, ty:
         .unwrap_or_else(|| panic!("World omitted runtime-demand projection for {ty:?}"))
 }
 
-/// Marks escaped every callable `demand` asks for at a position whose type
-/// also admits a value that is not a callable, field by field through a
-/// tuple. A reader of such a position tells the callable from the rest by its
-/// tag, and only a boxed callable carries one.
-fn escape_mixed_callables(
-    projections: &HashMap<Ty, Rc<RuntimeDemandTypeProjection>>,
-    demand: &mut RuntimeDemand,
-    ty: Ty,
-) {
+/// Reads `demand` as a value of type `ty` carries it, field by field through a
+/// tuple.
+///
+/// A callable at a position whose type also admits a value that is not a
+/// callable escapes: a reader tells the callable from the rest by its tag, and
+/// only a boxed callable carries one. A value that is not one exact tuple
+/// travels as one built value, and a built tuple has every field, so a reading
+/// of some of its fields is a reading of all of it.
+fn read_against_type(projections: &HashMap<Ty, Rc<RuntimeDemandTypeProjection>>, demand: &mut RuntimeDemand, ty: Ty) {
     let projection = projection_of(projections, ty);
     if demand.is_callable() && projection.admits_non_callable {
         demand.callable.escape = true;
     }
     if let ShapeDemand::TupleFields(fields) = &mut demand.shape {
+        if projection.field_tys.is_empty() {
+            demand.shape = ShapeDemand::Whole;
+            return;
+        }
         for (field, &field_ty) in fields.iter_mut().zip(&projection.field_tys) {
-            escape_mixed_callables(projections, field, field_ty);
+            read_against_type(projections, field, field_ty);
         }
     }
 }
@@ -665,10 +669,11 @@ fn prepare_runtime_demand_for_type(
     })
 }
 
-/// The field types of a tuple type of one arity, each with its projection
-/// prepared; empty for every other type, the empty tuple included.
+/// The field types of a type whose values are all tuples of one arity, each
+/// with its projection prepared; empty for every other type, the empty tuple
+/// included. These are the values transport can carry field by field.
 fn prepare_tuple_field_types(world: &mut World, builder: &mut RuntimeDemandTypeBuilder, ty: Ty) -> Vec<Ty> {
-    let Some(arity) = world.types().single_tuple_arity(&ty) else {
+    let Some(arity) = world.types().exact_tuple_arity(&ty) else {
         return Vec::new();
     };
     let mut fields = world.types_mut().tuple_projections(&ty, arity);

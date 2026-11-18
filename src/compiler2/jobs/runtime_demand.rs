@@ -1111,7 +1111,7 @@ fn local_call_targets(summary: &CallSiteSummary, need: ExecutableNeed) -> impl I
 /// input's whole type is seen.
 fn settle_input_demands(facts: &RuntimeDemandFacts<'_>, input_demands: &mut [RuntimeDemand], input_tys: &[Ty]) {
     for (slot, &ty) in input_demands.iter_mut().zip(input_tys) {
-        facts.escape_mixed_callables(slot, ty);
+        facts.read_against_type(slot, ty);
     }
 }
 
@@ -2848,7 +2848,7 @@ fn note_live_demand(
         return;
     }
     if let Some(&ty) = facts.value_types.get(&value) {
-        facts.escape_mixed_callables(&mut demand, ty);
+        facts.read_against_type(&mut demand, ty);
     }
     join_map_demand(live, value, demand.clone());
     join_map_demand(&mut out.value_demands, value, demand);

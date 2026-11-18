@@ -1,0 +1,39 @@
+#---
+# purpose: "a value whose type admits tuples of more than one size travels as one built tuple, so a match that reads only some of its fields still finds every field built"
+# oracle: self
+# oracle.stamp: e26a79d228d3e93d
+#---
+#
+# A case that tests a tuple's size and then one of its fields reads only the
+# fields it names. The value it reads may be a tuple of another size, or not a
+# tuple at all, and such a value travels as one built tuple. A built tuple has
+# every field, so each tuple flowing into the case is built in full, whether
+# it is returned by a call or meets the others at a join.
+defmodule Main do
+  def pick(0), do: {:a, 1}
+  def pick(1), do: {:a, 1, 2, 3}
+  def pick(_), do: {1, 2, ""}
+
+  def first_of_three(t) do
+    case t do
+      {r, _, ""} -> r
+      _ -> :other
+    end
+  end
+
+  def joined(n) do
+    t = if n > 1, do: {n, 2, ""}, else: {:a, n}
+
+    case t do
+      {r, _, ""} -> r
+      _ -> :other
+    end
+  end
+
+  def main() do
+    IO.inspect({first_of_three(pick(0)), first_of_three(pick(1)), first_of_three(pick(2))})
+    IO.inspect({joined(0), joined(5)})
+  end
+end
+
+Main.main()

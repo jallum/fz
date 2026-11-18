@@ -753,8 +753,8 @@ pub(crate) struct RuntimeDemandTypeProjection {
     /// A callable at such a position has to be told apart from the rest, so
     /// it travels boxed.
     pub(crate) admits_non_callable: bool,
-    /// The field types of a tuple type of one arity, in order; empty for
-    /// every other type.
+    /// The field types of a type whose values are all tuples of one arity, in
+    /// order; empty for every other type.
     pub(crate) field_tys: Vec<Ty>,
 }
 
