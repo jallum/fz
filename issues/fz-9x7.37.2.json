@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-9x7.37.1"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-9x7.37.3"
+  ],
   "created": "2026-11-18T23:37:24Z",
   "description": "User approved the fz-9x7.37 page in Binary Handling's session (\"fz-9x7.37 approved\"; \"proceed\"). Settled: one site table per program (processes must be cheap); counters run in production (a compiler option to omit them is a possible later step); fixtures are re-expressed by intent, never re-blessed. Agreed with GC: .37 lands in full before the fz-9x7.11 collector steps. Builder: Binary Handling.\n\nStep 2 of 4: these two spawning stats fixtures are re-expressed by intent on named sites.",
   "id": "fz-9x7.37.2",
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "Fixtures 00901 and 00902 state who copied, by site and send event",
   "type": "task",
-  "updated_at": "2026-11-18T23:37:26Z"
+  "updated_at": "2026-11-18T23:37:27Z"
 }
