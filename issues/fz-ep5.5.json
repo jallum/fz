@@ -13,9 +13,15 @@
   "id": "fz-ep5.5",
   "labels": [],
   "parent": "fz-ep5",
+  "comments": [
+    {
+      "text": "fz-sc8.233 (Callables, 2026-11-17) adds fixture 01374 written with a `name :: type` pattern (def one(_ :: ((any) -\u003e any))) plus an .oracle.exs twin using is_function guards, as 00632 does. When :: becomes an error, 01374 is rewritten or dropped with the rest; its runtime arity test stays reachable only if fz-ep5.4 recognises is_function(f, n) as the callable type test.",
+      "timestamp": "2026-11-18T03:14:05Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "'::' in a pattern is a spanned error; the parameter-annotation machinery is deleted",
   "type": "task",
-  "updated_at": "2026-11-17T23:49:32Z"
+  "updated_at": "2026-11-18T03:14:05Z"
 }
