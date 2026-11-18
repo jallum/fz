@@ -14,9 +14,15 @@
   "description": "Goal: OtpJSON, a faithful line-for-line port of OTP 28.3 json.erl (stdlib-7.2) in Elixir syntax, compiles and runs unchanged on interp, run and build, with the same results and errors as :json on the BEAM. Its fz/BEAM cycle ratio then measures fz alone.\n\nThe port is proven 1:1 on the BEAM: 113,386 differential cases vs :json, 0 mismatches (results, raised class/term, error_info, prefixes, decode_continue chunking); per-function call counts match :json; bench cycles within code-layout noise (docs 0.98, strings 1.00).\n\nThe port is never bent around fz limitations: every place fz cannot run it is a child of this epic (user, 2026-11-18).\n\nFiles (durable): /Users/j5n/Workspace/fz-otp-json/\n- otp_json.ex (canonical port; generated from otp_json.ex.in + gen_guards.py)\n- difftest.exs (differential test vs :json), callcounts.out, bench.r1/r2.txt\n- punch/NN_*.fz: one reproducer per gap; punch/INDEX.txt has each error on interp/run/build\n- beamharness/: BEAM bench method (baseline.sh, mk.sh, tpl/)\nAll reproducers re-verified failing on develop 37c5473cd.\n\nAcceptance: elixirc compiles otp_json.ex and fz runs it on all three paths; the five workloads (beamharness/tpl) and difftest's corpus give identical output on fz and the BEAM. Bignums (punch/39) are excluded pending the user's decision.\n\nSummary page: https://claude.ai/artifact/EMbTDK1Csp8w6FmJVSAHTp",
   "id": "fz-mue",
   "labels": [],
+  "comments": [
+    {
+      "text": "Integration branch fz-mue/otp-json-integration, draft PR #752 (2026-11-18). The port is fixture 01860, oracle: self, running on all three paths. tools/otp_json/difftest.exs proves the port against :json on the BEAM. The PR description holds the master checklist. The branch is rebased onto develop as fixes land, and the epic is done when its CI goes green. Fixture block 01860-01879. Today's first failure is @compile (fz-mue.13).",
+      "timestamp": "2026-11-18T21:52:46Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "fz runs OTP's json.erl unchanged",
   "type": "epic",
-  "updated_at": "2026-11-18T20:44:08Z"
+  "updated_at": "2026-11-18T21:52:46Z"
 }
