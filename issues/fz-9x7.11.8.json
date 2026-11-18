@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-18T23:59:20Z",
+  "description": "User approved 2026-11-18, verbatim via GC: \"agreed; proceed\". Step C6 of fz-9x7.11 page v4 (https://claude.ai/artifact/BB1FpQ1Cf7Jd5spZeLEWtg). One commit, judged on bench. Builder: GC.",
+  "id": "fz-9x7.11.8",
+  "labels": [],
+  "parent": "fz-9x7.11",
+  "priority": 2,
+  "status": "open",
+  "title": "One edge enumeration per kind is shared with deep_copy",
+  "type": "task",
+  "updated_at": "2026-11-18T23:59:20Z"
+}
