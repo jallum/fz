@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-18T05:17:20Z",
+  "description": "User ruling 2026-11-18 (relayed by Make Distiller Fast, verbatim: \"delegate the map building, slicing, struct field work to the Optimize agent\"). Builder: Optimize. Source: MDF distiller profile at develop 2eff1dec2 (bench, sample 1 ms for 2 s from 0.4 s in, 1,498 samples of a 2.84 s run, inclusive shares, one run; raw: bench distill-hunt/prof.j.base.txt).\n\nfz_map_put_int / _ref / _atom = 16.3% (244 samples), reached from JSON object building (each of 215k lines is an object with nested objects). Inside: map_put_slot self 58; decoding and validating words (AnyValueRef::storage_raw 37, AnyValue::decode_parts 28, map_slot 8) = 73 (~30%); finding the key position (map_key_position 28, TermComparator::compare 22, memcmp 9, bitstring_cmp 8) = 67 (~27%); allocation 7.\n\nMeasure first: instructions per fz_map_put on a probe that builds a 6-key map a million times, and the cost of a put into an N-key map as N grows. Then a proposal from the numbers.",
+  "id": "fz-sc8.192.4",
+  "labels": [],
+  "parent": "fz-sc8.192",
+  "priority": 2,
+  "status": "open",
+  "title": "A map insert decodes each slot it visits once",
+  "type": "task",
+  "updated_at": "2026-11-18T05:17:20Z"
+}
