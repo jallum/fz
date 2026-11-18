@@ -2,7 +2,7 @@
 # purpose: "fz-axu.18 (P3) — `==` between utf8 strings compares bytes"
 #---
 def main() do
-  assert("hi" == "hi", "equal utf8 strings compare equal")
-  refute("hi" == "bye", "different utf8 strings compare unequal")
-  assert("héllo" == "héllo", "multibyte utf8 strings compare by bytes")
+  "hi" == "hi" || raise("equal utf8 strings compare equal")
+  "hi" == "bye" && raise("different utf8 strings compare unequal")
+  "héllo" == "héllo" || raise("multibyte utf8 strings compare by bytes")
 end

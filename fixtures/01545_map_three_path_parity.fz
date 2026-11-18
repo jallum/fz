@@ -6,9 +6,9 @@ def main() do
   m = %{b: 2, a: 1, pi: 1.5, xs: xs}
   n = Map.put(%{m | b: 20}, :c, 3)
 
-  assert(m[:a] == 1, "map lookup by atom key")
-  assert(m[:pi] == 1.5, "float value lookup")
-  assert(n[:b] == 20, "map update overrides an existing key")
-  assert(n[:missing] == nil, "missing key lookup yields nil")
-  assert(n[:xs] == [1, 2], "pointer value lookup returns the bound list")
+  m[:a] == 1 || raise("map lookup by atom key")
+  m[:pi] == 1.5 || raise("float value lookup")
+  n[:b] == 20 || raise("map update overrides an existing key")
+  n[:missing] == nil || raise("missing key lookup yields nil")
+  n[:xs] == [1, 2] || raise("pointer value lookup returns the bound list")
 end

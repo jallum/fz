@@ -4,5 +4,5 @@
 def apply(f, x), do: f.(x)
 def main() do
   f = fn (x) -> x end
-  assert(apply(f, 41) == 41, "a zero-capture lambda applies correctly")
+  apply(f, 41) == 41 || raise("a zero-capture lambda applies correctly")
 end

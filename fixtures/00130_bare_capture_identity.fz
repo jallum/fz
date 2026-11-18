@@ -3,5 +3,5 @@
 #---
 def main() do
   f = &1
-  assert(f.(42) == 42, "&1 alone desugars to fn(x) -> x end")
+  f.(42) == 42 || raise("&1 alone desugars to fn(x) -> x end")
 end

@@ -11,5 +11,5 @@ end
 pair(10, 20)
 
 def main() do
-  assert(first() + second() == 30, "pair spliced both first/0 and second/0")
+  first() + second() == 30 || raise("pair spliced both first/0 and second/0")
 end

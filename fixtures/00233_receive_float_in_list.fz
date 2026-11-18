@@ -3,7 +3,7 @@
 #---
 def main() do
   send(self(), [2.5])
-  assert(receive do
+  receive do
     [2.5] -> 7
-  end == 7, "the [2.5] pattern matches the sent message")
+  end == 7 || raise("the [2.5] pattern matches the sent message")
 end

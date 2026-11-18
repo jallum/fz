@@ -4,6 +4,6 @@
 def main() do
   x = 1
   {:ok, _y} = {:ok, 2}
-  assert(x == 1, "matching {:ok, _y} leaves x's earlier binding untouched")
+  x == 1 || raise("matching {:ok, _y} leaves x's earlier binding untouched")
   x
 end

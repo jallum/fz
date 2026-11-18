@@ -116,14 +116,8 @@ def main() do
   dbg(call_pair(pair_widened(5)))
 
   after_direct = Process.heap_alloc_stats()
-  assert(
-    after_direct[:closure_allocs] - before[:closure_allocs] == 0,
-    "a tuple field that names one target is called directly, so no closure is built"
-  )
-  assert(
-    after_direct[:struct_allocs] - before[:struct_allocs] == 1,
-    "only the printed tuple is materialized; the destructured ones travel as field lanes"
-  )
+  after_direct[:closure_allocs] - before[:closure_allocs] == 0 || raise("a tuple field that names one target is called directly, so no closure is built")
+  after_direct[:struct_allocs] - before[:struct_allocs] == 1 || raise("only the printed tuple is materialized; the destructured ones travel as field lanes")
 
   dbg(call_and_hold(pair_escaping(5)))
   {kept_result, kept} = call_and_keep(pair_escaping(5))
@@ -133,12 +127,6 @@ def main() do
 
   after_whole = Process.heap_alloc_stats()
   whole_closures = after_whole[:closure_allocs] - after_direct[:closure_allocs]
-  assert(
-    whole_closures > 0,
-    "a tuple handed on whole carries its lambda as a value, so a closure is built to hold it"
-  )
-  assert(
-    whole_closures <= 8,
-    "two escaping tuples cost a handful of closures on any path, not an unbounded number"
-  )
+  whole_closures > 0 || raise("a tuple handed on whole carries its lambda as a value, so a closure is built to hold it")
+  whole_closures <= 8 || raise("two escaping tuples cost a handful of closures on any path, not an unbounded number")
 end

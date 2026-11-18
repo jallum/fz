@@ -8,5 +8,5 @@ end
 make_const(:answer, 42)
 
 def main() do
-  assert(answer() == 42, "make_const spliced a callable answer/0")
+  answer() == 42 || raise("make_const spliced a callable answer/0")
 end

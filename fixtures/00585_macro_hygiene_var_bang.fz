@@ -11,5 +11,5 @@ end
 def main() do
   t = 9
   result = bump_and_shadow()
-  assert(result == {10, 1}, "var!(t) reaches the caller's t (9 + 1 == 10); the macro's own t stays isolated at 1")
+  result == {10, 1} || raise("var!(t) reaches the caller's t (9 + 1 == 10); the macro's own t stays isolated at 1")
 end

@@ -4,6 +4,6 @@
 def main() do
   x = 41
   result = x + 1
-  assert(result == 42, "x=41; x + 1 evaluates to 42")
+  result == 42 || raise("x=41; x + 1 evaluates to 42")
   result
 end

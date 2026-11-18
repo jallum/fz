@@ -9,5 +9,5 @@ defmodule User do
   def run(), do: bump(41)
 end
 def main() do
-  assert(User.run() == 42, "imported bump/1 is callable unqualified")
+  User.run() == 42 || raise("imported bump/1 is callable unqualified")
 end

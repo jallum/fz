@@ -10,5 +10,5 @@ defmacro test(name_atom, [do: body]) do
 end
 
 test(:test_one) do
-  assert(1 + 1 == 2)
+  1 + 1 == 2 || raise("expected 1 + 1 == 2")
 end

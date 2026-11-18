@@ -10,5 +10,5 @@ def run() do
   a + b
 end
 def main() do
-  assert(run() == 60, "double(10) + double(20) == 60")
+  run() == 60 || raise("double(10) + double(20) == 60")
 end

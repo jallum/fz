@@ -10,5 +10,5 @@ end
 def main() do
   n = 4
   result = sized_bits()
-  assert({byte_size(result), n} == {1, 4}, "sized_bits' own n sizes the bitstring; the caller's n stays 4")
+  {byte_size(result), n} == {1, 4} || raise("sized_bits' own n sizes the bitstring; the caller's n stays 4")
 end

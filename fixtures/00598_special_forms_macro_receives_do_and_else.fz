@@ -20,6 +20,6 @@ def main() do
   else
     2
   end
-  assert(a == 1, "pick2(true) receives the do section")
-  assert(b == 2, "pick2(false) receives the else section")
+  a == 1 || raise("pick2(true) receives the do section")
+  b == 2 || raise("pick2(false) receives the else section")
 end

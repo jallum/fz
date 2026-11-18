@@ -8,6 +8,6 @@ end
 
 def main() do
   result = User.run()
-  assert(result == true, "Utf8.valid? imported into a module returns true for valid UTF-8")
+  result == true || raise("Utf8.valid? imported into a module returns true for valid UTF-8")
   result
 end

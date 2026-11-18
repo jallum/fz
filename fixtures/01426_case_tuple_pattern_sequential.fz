@@ -13,10 +13,10 @@ def g(v) do
 end
 
 def main() do
-  assert(f({:ok, 7}) == 7, "case tuple-pattern arm returns the bound value")
-  assert(f(:err) == 0, "case atom fallback returns 0")
-  assert(f(:err) == 0, "sequential call: atom fallback again")
-  assert(f({:ok, 7}) == 7, "sequential call: tuple arm again")
-  assert(g({:ok, 7}) == 7, "with tuple-pattern returns the bound value")
-  assert(g(:err) == 0, "with else atom fallback returns 0")
+  f({:ok, 7}) == 7 || raise("case tuple-pattern arm returns the bound value")
+  f(:err) == 0 || raise("case atom fallback returns 0")
+  f(:err) == 0 || raise("sequential call: atom fallback again")
+  f({:ok, 7}) == 7 || raise("sequential call: tuple arm again")
+  g({:ok, 7}) == 7 || raise("with tuple-pattern returns the bound value")
+  g(:err) == 0 || raise("with else atom fallback returns 0")
 end

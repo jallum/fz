@@ -10,5 +10,5 @@ end
 
 def main() do
   h = A.make()
-  assert(A.get(h) == 7)
+  A.get(h) == 7 || raise("expected A.get(h) == 7")
 end

@@ -5,7 +5,7 @@ def main() do
   if1 = if true do 1 else 2 end
   if2 = if true, do: 1, else: 2
   if3 = if(true, do: 1, else: 2)
-  assert(if1 == 1 and if2 == 1 and if3 == 1, "if agrees across all three call spellings")
+  (if1 == 1 and if2 == 1 and if3 == 1) || raise("if agrees across all three call spellings")
 
   case1 = case 1 do
     1 -> :one
@@ -19,7 +19,7 @@ def main() do
     1 -> :one
     _ -> :other
   ))
-  assert(case1 == :one and case2 == :one and case3 == :one, "case agrees across all three call spellings")
+  (case1 == :one and case2 == :one and case3 == :one) || raise("case agrees across all three call spellings")
 
   cond1 = cond do
     1 == 2 -> :a
@@ -33,12 +33,12 @@ def main() do
     1 == 2 -> :a
     true -> :b
   ))
-  assert(cond1 == :b and cond2 == :b and cond3 == :b, "cond agrees across all three call spellings")
+  (cond1 == :b and cond2 == :b and cond3 == :b) || raise("cond agrees across all three call spellings")
 
   with1 = with {:ok, x} <- {:ok, 1}, {:ok, y} <- {:ok, 2} do
     x + y
   end
   with2 = with {:ok, x} <- {:ok, 1}, {:ok, y} <- {:ok, 2}, do: x + y
   with3 = with({:ok, x} <- {:ok, 1}, {:ok, y} <- {:ok, 2}, do: x + y)
-  assert(with1 == 3 and with2 == 3 and with3 == 3, "with agrees across all three call spellings")
+  (with1 == 3 and with2 == 3 and with3 == 3) || raise("with agrees across all three call spellings")
 end

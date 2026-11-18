@@ -7,6 +7,6 @@ def classify(0), do: helper()
 def classify(_), do: 99
 
 def main() do
-  assert(classify(0) == 7, "clause-0 body Call lowers via the per-clause cont-fn path")
-  assert(classify(5) == 99, "wildcard clause returns 99")
+  classify(0) == 7 || raise("clause-0 body Call lowers via the per-clause cont-fn path")
+  classify(5) == 99 || raise("wildcard clause returns 99")
 end

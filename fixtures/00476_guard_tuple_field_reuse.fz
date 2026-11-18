@@ -9,6 +9,6 @@ def classify(t) do
   end
 end
 def main() do
-  assert(classify({:ok, 3}) == 6, "a positive guarded field dispatches to the doubling clause")
-  assert(classify({:ok, -1}) == 0, "a non-positive guarded field falls through to the default clause")
+  classify({:ok, 3}) == 6 || raise("a positive guarded field dispatches to the doubling clause")
+  classify({:ok, -1}) == 0 || raise("a non-positive guarded field falls through to the default clause")
 end

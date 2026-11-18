@@ -6,4 +6,4 @@ defmodule M do
   def f(_), do: :any
   def f(0), do: :zero
 end
-def main(), do: assert(M.f(0) == :any, "the wildcard clause matches first regardless of the spec")
+def main(), do: M.f(0) == :any || raise("the wildcard clause matches first regardless of the spec")

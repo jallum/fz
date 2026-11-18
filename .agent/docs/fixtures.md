@@ -176,7 +176,7 @@ each path:
 
 `fz2 test` discovers every `test(:name) do ... end` item in the source — at
 top level or nested inside a `defmodule` — and runs each as its own root, one
-subprocess per test (a failing `assert` aborts its process on the JIT backend,
+subprocess per test (a check that raises aborts its process on the JIT backend,
 so sibling tests must not share one). `--interp` runs each discovered test
 through the backend interpreter instead of the JIT. A test nested in a
 `defmodule` is qualified by its enclosing module's dotted alias in both its
@@ -328,7 +328,7 @@ location), and raises a plain value with `:erlang.error/1`.
 **A twin** (`oracle: <file>.exs`) is kept only for a fixture whose source is
 not valid Elixir or whose output Elixir does not share: typed parameters,
 `extern`, the `%` operator, a guard that calls a `defp`, a top-level call to a later `def`,
-fz-only library functions (`assert/2`, `range/3`, `compare/2`, `Utf8`, ...),
+fz-only library functions (`range/3`, `compare/2`, `Utf8`, ...),
 `__MODULE__` outside a module, an `Enumerable` that implements fz's
 `reduce_while`, a macro that unquotes a map, or `dbg`'s own rendering. The twin is the Elixir program whose output the fixture
 must match; for an `expect: abort` fixture it also fails uncaught.
@@ -388,9 +388,11 @@ through `erlef/setup-beam`.
 
 A fixture pins its claim in the most direct medium for what it tests.
 
-1. **In-language assertion** — `assert(expr == expected, "why")` / `refute`.
-   The program checks itself and aborts on failure, so the claim is verified on
-   every path with no golden file. The default for behavioural claims.
+1. **In-language check** — `expr == expected || raise("why")`, or
+   `expr && raise("why")` for a claim that must not hold. The program checks
+   itself and raises on failure, so the claim is verified on every path with no
+   golden file, and the check is plain Elixir. The default for behavioural
+   claims.
 2. **Rendering golden** — `IO.inspect(x)` + `expected.txt`, when the rendered string
    itself is the artifact (how a value prints). The matrix canonicalizes a
    closure's process-local numeric denotation to `id` (`#fn<id/arity>`), so a
@@ -406,12 +408,12 @@ A fixture pins its claim in the most direct medium for what it tests.
    `build` each ship their own path-specific golden when needed; equality between
    those two files is a property of the maintained artifacts, not something the
    harness enforces.
-   When only a handful of counters matter, print or assert those scalars directly
+   When only a handful of counters matter, print or check those scalars directly
    rather than goldening the whole stats map.
 4. **Compiler-shape signal** — compiler2 telemetry and metric assertions.
 5. **Expect-failure** — `expect: abort` / `expect: diagnostic`. The only medium
    that pins what the language must *refuse*: the program must abort (run-time)
-   or be rejected (compile-time). Positive media (assertions, goldens) can only
+   or be rejected (compile-time). Positive media (checks, goldens) can only
    say what it must accept.
 6. **Compiler2 contract** — `fixtures2` comment-frontmatter plus optional
    sidecars. Use when the point is compiler2's own semantic/codegen surface:
@@ -422,19 +424,19 @@ A fixture pins its claim in the most direct medium for what it tests.
 > Pin in the medium your *purpose* requires. One fixture, one job.
 
 - Purpose is "this feature computes / dispatches / matches correctly" →
-  **assertion**, no golden.
+  **in-language check**, no golden.
 - Purpose is "this value renders as exactly this string" → **rendering golden**.
 - Purpose is "this allocates exactly this much" → **memory-floor stats**.
 - Purpose is "this lowers to this shape" → a **compiler2 contract**.
 - Purpose is "this is rejected / aborts" → **expect-failure** (`expect:` +
   `expected.stderr`).
 
-Behavioural correctness is path-invariant, so an assertion runs all three paths
+Behavioural correctness is path-invariant, so a check runs all three paths
 for free. Compiler-shape and memory facts are not the program's behaviour, so
 they do not belong in the program; they stay as contract metrics and stats
-goldens respectively. Do **not** add an assertion to a shape-primary fixture: the
-`assert` adds IR (an `==`, an `if`, a panic branch) and pollutes the very shape
-it pins.
+goldens respectively. Do **not** add a check to a shape-primary fixture: the
+check adds IR (an `==`, the `case` that `||` expands to, a raise branch) and
+pollutes the very shape it pins.
 
 ### Source comment convention
 
@@ -572,12 +574,12 @@ written as a pattern) are `expect: diagnostic` with Elixir's text.
 ## Relationship to the runtime library
 
 Behavioural fixtures call the same runtime library that user programs do
-(`Kernel.assert`/`refute`/`panic`, `Enum`, `Enumerable`, `Process`), so the
-assertion machinery a fixture uses is itself fz source under `lib/`.
-`assert`/`refute` route a failure through
-`Kernel.panic`, whose private `fz_panic` foreign declaration prints the failure
+(`Kernel.raise`/`panic`, `Enum`, `Enumerable`, `Process`), so the
+checking machinery a fixture uses is itself fz source under `lib/`.
+`raise("why")` expands to `panic(%RuntimeError{message: "why"})`, and
+`Kernel.panic`'s private `fz_panic` foreign declaration prints the failure
 line through the execution context and has a `never` return contract; that is
-why a failed assertion exits 1 on every path without requiring the interpreter
+why a failed check exits 1 on every path without requiring the interpreter
 to abort its host (see [exceptions](exceptions.md)). A fixture that exercises a runtime-library
 function both proves the function and (via allocation goldens) pins its
 allocation floor.

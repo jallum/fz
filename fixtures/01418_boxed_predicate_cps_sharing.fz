@@ -17,6 +17,6 @@ def main() do
   left = make_reducer(select_left(flag))
   right = make_reducer(select_right(flag))
   result = left.(1, 0) + right.(3, 0)
-  assert(result == 2, "each shared reducer invokes its own runtime predicate")
+  result == 2 || raise("each shared reducer invokes its own runtime predicate")
   result
 end

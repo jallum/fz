@@ -4,6 +4,6 @@
 def child(), do: nil
 def main() do
   pid = spawn(child)
-  assert(is_pid(pid), "plain spawn of a zero-arity function returns a pid")
-  assert(pid != self(), "the child is not the parent")
+  is_pid(pid) || raise("plain spawn of a zero-arity function returns a pid")
+  pid != self() || raise("the child is not the parent")
 end

@@ -13,7 +13,7 @@ def classify(n) do
 end
 
 def main() do
-  assert(classify(5) == :pos, "guard calling a pure user fn fires")
-  assert(classify(0) == :other, "0 falls through both guards")
-  assert(classify(-3) == :other, "negative falls through both guards")
+  classify(5) == :pos || raise("guard calling a pure user fn fires")
+  classify(0) == :other || raise("0 falls through both guards")
+  classify(-3) == :other || raise("negative falls through both guards")
 end

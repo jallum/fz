@@ -17,8 +17,8 @@ defmacro classify(flag) do
 end
 
 def main() do
-  assert(pick(true) == 1, "pick(true) takes the if branch")
-  assert(pick(false) == 2, "pick(false) takes the else branch, not the if branch")
-  assert(pick(nil) == 2, "pick(nil) takes the else branch, same as false")
-  assert(classify(false) == 2, "a case on false inside a macro takes the false arm")
+  pick(true) == 1 || raise("pick(true) takes the if branch")
+  pick(false) == 2 || raise("pick(false) takes the else branch, not the if branch")
+  pick(nil) == 2 || raise("pick(nil) takes the else branch, same as false")
+  classify(false) == 2 || raise("a case on false inside a macro takes the false arm")
 end

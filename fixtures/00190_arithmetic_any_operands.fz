@@ -4,5 +4,5 @@
 def add(left, right), do: left + right
 
 def main() do
-  assert(add(1, 2) == 3, "add(1, 2) settles through Kernel.+/2's declared overload set")
+  add(1, 2) == 3 || raise("add(1, 2) settles through Kernel.+/2's declared overload set")
 end

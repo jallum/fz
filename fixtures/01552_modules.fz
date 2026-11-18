@@ -11,9 +11,9 @@ defmodule N do
 end
 
 def main() do
-  assert(M.double(21) == 42, "qualified call M.double")
-  assert(M.quad(5) == 20, "M.quad calls sibling M.double")
-  assert(N.helper(7) == 107, "qualified call N.helper")
-  assert(M.__info__(:functions) == [{:double, 1}, {:quad, 1}], "M exports double/1 and quad/1")
-  assert(N.__info__(:functions) == [{:helper, 1}], "N exports helper/1")
+  M.double(21) == 42 || raise("qualified call M.double")
+  M.quad(5) == 20 || raise("M.quad calls sibling M.double")
+  N.helper(7) == 107 || raise("qualified call N.helper")
+  M.__info__(:functions) == [{:double, 1}, {:quad, 1}] || raise("M exports double/1 and quad/1")
+  N.__info__(:functions) == [{:helper, 1}] || raise("N exports helper/1")
 end

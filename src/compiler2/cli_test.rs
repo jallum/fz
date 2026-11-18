@@ -15,11 +15,11 @@ mod discover_tests_test {
 test(:t_two_args, 42)
 
 test(\"not_an_atom\") do
-  assert(true)
+  true || raise(\"expected true\")
 end
 
 test(:ok) do
-  assert(true)
+  true || raise(\"expected true\")
 end
 ";
         let tests = discover_tests("mixed.fz", source, &tel).expect("discover mixed tests");
@@ -35,11 +35,11 @@ end
         let tel = ConfiguredTelemetry::new();
         let source = "\
 test(:test_truthiness) do
-  assert(true)
+  true || raise(\"expected true\")
 end
 
 test(:test_addition) do
-  assert(1 + 1 == 2)
+  1 + 1 == 2 || raise(\"expected 1 + 1 == 2\")
 end
 ";
         let tests = discover_tests("top_level.fz", source, &tel).expect("discover top-level tests");
@@ -58,12 +58,12 @@ end
         let source = "\
 defmodule MathTest do
   test(:test_arithmetic) do
-    assert(1 + 1 == 2)
+    1 + 1 == 2 || raise(\"expected 1 + 1 == 2\")
   end
 end
 
 test(:test_top_level) do
-  assert(true)
+  true || raise(\"expected true\")
 end
 ";
         let tests = discover_tests("nested.fz", source, &tel).expect("discover nested tests");
@@ -101,7 +101,9 @@ mod test_prelude_span_test {
             name: Some(TEST_MACRO_PRELUDE_NAME.to_string()),
             text: TEST_MACRO_PRELUDE_SOURCE.to_string(),
         });
-        let user_text = "def helper(x), do: x\n\ntest(:my_test) do\n  assert(helper(1) == 1)\nend\n".to_string();
+        let user_text =
+            "def helper(x), do: x\n\ntest(:my_test) do\n  helper(1) == 1 || raise(\"expected helper(1) == 1\")\nend\n"
+                .to_string();
         let user_code = compiler.submit_code(CodeSubmission {
             name: Some("user_test.fz".to_string()),
             text: user_text.clone(),

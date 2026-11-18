@@ -10,7 +10,7 @@ defmacro double(x) do
 end
 
 def main() do
-  assert(inc(41) == 42, "inc macro expands to +1")
-  assert(double(21) == 42, "double macro expands to *2")
-  assert(inc(double(20)) == 41, "nested macro expansion: double(20) then inc")
+  inc(41) == 42 || raise("inc macro expands to +1")
+  double(21) == 42 || raise("double macro expands to *2")
+  inc(double(20)) == 41 || raise("nested macro expansion: double(20) then inc")
 end

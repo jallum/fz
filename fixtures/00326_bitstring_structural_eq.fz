@@ -1,4 +1,4 @@
 #---
 # purpose: bitstring equality compares byte content structurally
 #---
-def main(), do: assert(<<1, 2, 3>> == <<1, 2, 3>>, "bitstring equality compares byte content")
+def main(), do: <<1, 2, 3>> == <<1, 2, 3>> || raise("bitstring equality compares byte content")

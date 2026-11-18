@@ -30,5 +30,5 @@ def main() do
   else
     99
   end
-  assert(result == 99, "constant false cond still lowers an arm body with a non-tail call without panicking")
+  result == 99 || raise("constant false cond still lowers an arm body with a non-tail call without panicking")
 end

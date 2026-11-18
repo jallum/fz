@@ -102,20 +102,20 @@ def main() do
   send(self(), different)
   c = receive_different()
   dbg({a, b, c})
-  assert(case_plain(%{"key" => 7}) == 7)
+  case_plain(%{"key" => 7}) == 7 || raise("expected case_plain(%{\"key\" => 7}) == 7")
   send(self(), %{"key" => 7})
   send(self(), %{"key" => 8})
   send(self(), value)
   before = Process.heap_alloc_stats().bitstring_allocs
-  assert(receive_only_wanted() == 42)
+  receive_only_wanted() == 42 || raise("expected receive_only_wanted() == 42")
   count_after = Process.heap_alloc_stats().bitstring_allocs
-  assert(count_after - before == 1)
+  count_after - before == 1 || raise("expected count_after - before == 1")
   send(self(), <<8, 42>>)
-  assert(receive_sized() == 42)
+  receive_sized() == 42 || raise("expected receive_sized() == 42")
   send(self(), %{"alt" => 42})
-  assert(receive_either() == 42)
-  assert(case <<8, 42>> do
+  receive_either() == 42 || raise("expected receive_either() == 42")
+  (case <<8, 42>> do
     value when sized(value) -> true
     _ -> false
-  end)
+  end) || raise("expected case <<8, 42>> do value when sized(value) -> true _ -> false end")
 end

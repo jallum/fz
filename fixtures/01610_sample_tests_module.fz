@@ -6,21 +6,21 @@ defmodule MathTest do
   def helper(x), do: x * 2
 
   test(:test_helper) do
-    assert(helper(21) == 42)
+    helper(21) == 42 || raise("expected helper(21) == 42")
   end
 
   test(:test_arithmetic) do
-    assert(1 + 1 == 2)
-    assert(40 + 2 == 42)
+    1 + 1 == 2 || raise("expected 1 + 1 == 2")
+    40 + 2 == 42 || raise("expected 40 + 2 == 42")
   end
 end
 
 defmodule AtomTest do
   test(:test_eq) do
-    assert(:ok == :ok)
+    :ok == :ok || raise("expected :ok == :ok")
   end
 
   test(:test_neq) do
-    refute(:ok == :error)
+    :ok == :error && raise("expected not :ok == :error")
   end
 end

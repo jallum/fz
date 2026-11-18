@@ -4,7 +4,7 @@
 def id(x), do: x
 
 def main() do
-  assert(id(42) == 42, "id on int")
-  assert(id(:hello) == :hello, "id on atom")
-  assert(id(true), "id on bool")
+  id(42) == 42 || raise("id on int")
+  id(:hello) == :hello || raise("id on atom")
+  id(true) || raise("id on bool")
 end

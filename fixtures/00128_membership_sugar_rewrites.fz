@@ -2,6 +2,6 @@
 # purpose: `in` and `not in` desugar to Enum.member? at expansion time
 #---
 def main() do
-  assert(2 in [1, 2, 3], "in desugars to Enum.member?")
-  assert(4 not in [1, 2, 3], "not in desugars to not(Enum.member?(...))")
+  2 in [1, 2, 3] || raise("in desugars to Enum.member?")
+  4 not in [1, 2, 3] || raise("not in desugars to not(Enum.member?(...))")
 end

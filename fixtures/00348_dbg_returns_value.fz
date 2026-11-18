@@ -3,6 +3,6 @@
 #---
 def main() do
   x = dbg(41)
-  assert(x == 41, "dbg returns its argument unchanged")
-  assert(x + 1 == 42, "the returned value is usable in a further expression")
+  x == 41 || raise("dbg returns its argument unchanged")
+  x + 1 == 42 || raise("the returned value is usable in a further expression")
 end

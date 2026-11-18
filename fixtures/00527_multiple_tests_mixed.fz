@@ -1,5 +1,5 @@
 #---
-# purpose: multiple test blocks run independently; one failing assert aborts the fixture
+# purpose: multiple test blocks run independently; one whose check raises aborts the fixture
 # expect: abort
 #---
 # Source-surface coverage:
@@ -11,11 +11,11 @@ defmacro test(name_atom, [do: body]) do
 end
 
 test(:test_a) do
-  assert(true)
+  true || raise("expected true")
 end
 test(:test_b) do
-  assert(:x == :x)
+  :x == :x || raise("expected :x == :x")
 end
 test(:test_c) do
-  assert(1 == 2)
+  1 == 2 || raise("expected 1 == 2")
 end

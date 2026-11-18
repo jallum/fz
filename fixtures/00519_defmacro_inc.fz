@@ -7,6 +7,6 @@ end
 
 def main() do
   result = inc(41)
-  assert(result == 42, "inc(41) expands to 41 + 1")
+  result == 42 || raise("inc(41) expands to 41 + 1")
   result
 end

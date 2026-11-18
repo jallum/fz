@@ -6,5 +6,5 @@ defmacro emit(x) do
 end
 def main() do
   x = 7
-  assert(emit(x) == 8, "unquote(x) splices 7, so 7 + 1 == 8")
+  emit(x) == 8 || raise("unquote(x) splices 7, so 7 + 1 == 8")
 end

@@ -8,5 +8,5 @@ end
 def main() do
   first = make(1)
   second = make(2)
-  assert(first.() * 10 + second.() == 12, "each expansion site's lambda is independent: first.()=1, second.()=2")
+  first.() * 10 + second.() == 12 || raise("each expansion site's lambda is independent: first.()=1, second.()=2")
 end

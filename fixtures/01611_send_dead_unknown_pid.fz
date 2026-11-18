@@ -11,6 +11,6 @@ def main() do
   end
 
   dead_msg = {:dead, [1, 2]}
-  assert(send(child, dead_msg) == dead_msg, "send to exited pid returns its message")
+  send(child, dead_msg) == dead_msg || raise("send to exited pid returns its message")
   dbg(:ok)
 end

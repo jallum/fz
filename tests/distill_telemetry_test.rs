@@ -272,7 +272,8 @@ fn read_compile_spend(trace: &Path) -> CompileSpend {
 // 19_658 -> 19_593: `JSON` decodes a `\uXXXX` by guarding on its hex digits and matches each
 // simple escape in a clause of `escaped`, so `simple_escape`, `join_run`, `hex4_join` and the
 // `:error` results they carried are no longer derived.
-const DERIVATIONS: u64 = 19_593;
+// 19_593 -> 19_589: Kernel no longer defines `assert/1,2` and `refute/1,2`.
+const DERIVATIONS: u64 = 19_589;
 // 111_876 -> 111_888: an extern that declares `raises:` reads the struct of
 // the exception it names, to raise that struct. The distiller calls twelve
 // such externs, and each contract reads `StructDefined` once.
@@ -301,7 +302,8 @@ const DERIVATIONS: u64 = 19_593;
 // 156_894 -> 155_916: the reads of those 145 derivations.
 // 155_916 -> 155_904: String's three fewer private functions, four reads each.
 // 155_904 -> 155_345: the reads of those 65 derivations.
-const READS_HANDED: u64 = 155_345;
+// 155_345 -> 155_321: Kernel's four fewer functions, six reads each.
+const READS_HANDED: u64 = 155_321;
 
 /// Compiling the distiller spends this much of the product stack. The largest
 /// drive is the one `PRODUCT_DRIVE_BUDGET` bounds, so its headroom is the

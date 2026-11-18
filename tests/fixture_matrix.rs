@@ -1903,7 +1903,7 @@ fn kind_test_commands_signal_execution_ready_per_test() {
     let fixture = temp_dir().join(format!("fz_kind_test_ready_{}_{}.fz", id(), nonce));
     fs::write(
         &fixture,
-        "#---\n# purpose: readiness probe\n# kind: test\n#---\ntest(:passes, do: assert(true))\ntest(:also_passes, do: assert(true))\n",
+        "#---\n# purpose: readiness probe\n# kind: test\n#---\ntest(:passes, do: true || raise(\"expected true\"))\ntest(:also_passes, do: true || raise(\"expected true\"))\n",
     )
     .expect("write kind:test readiness probe");
 

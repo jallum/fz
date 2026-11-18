@@ -55,6 +55,6 @@ defmodule Shadowed do
 end
 
 def main() do
-  assert(App.run(41) == 42, "a caller that binds the provider only as F still expands its inner/1")
-  assert(Shadowed.run(41) == 42, "a caller alias bound elsewhere cannot redirect the quoted macro")
+  App.run(41) == 42 || raise("a caller that binds the provider only as F still expands its inner/1")
+  Shadowed.run(41) == 42 || raise("a caller alias bound elsewhere cannot redirect the quoted macro")
 end

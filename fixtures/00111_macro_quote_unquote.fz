@@ -5,5 +5,5 @@ defmacro plus_one(x) do
   quote do: unquote(x) + 1
 end
 def main() do
-  assert(plus_one(41) == 42, "quote/unquote macro expands to unquote(x) + 1")
+  plus_one(41) == 42 || raise("quote/unquote macro expands to unquote(x) + 1")
 end

@@ -8,5 +8,5 @@ defmodule A do
 end
 
 def main() do
-  assert(A.get(1) == 1)
+  A.get(1) == 1 || raise("expected A.get(1) == 1")
 end

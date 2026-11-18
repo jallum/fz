@@ -42,6 +42,6 @@ defmodule Shadowed do
 end
 
 def main() do
-  assert(App.run(21) == 42, "a caller that binds the provider only as F still reaches its double/1")
-  assert(Shadowed.run(21) == 42, "a caller alias bound elsewhere cannot redirect the quoted helper")
+  App.run(21) == 42 || raise("a caller that binds the provider only as F still reaches its double/1")
+  Shadowed.run(21) == 42 || raise("a caller alias bound elsewhere cannot redirect the quoted helper")
 end

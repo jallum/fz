@@ -702,10 +702,10 @@ fn compiler2_tuple_ownership_work_at_most_doubles_when_a_nested_chain_doubles() 
 }
 
 /// Source for the join-walk probe: `if`, `case`, `cond` and `with` chained in
-/// one body, each result asserted right after it. Every construct lowers to
+/// one body, each result checked right after it by `check/1`. Every construct lowers to
 /// one shared resume entry that both arms flow into, so this body
 /// carries four joins in a row.
-const WALK_CHAIN_SOURCE: &str = "def main() do\n  a = if true do 1 else 2 end\n  assert(a == 1 or a == 2)\n\n  b = case 1 do\n    1 -> :one\n    _ -> :other\n  end\n  assert(b == :one or b == :other)\n\n  c = cond do\n    1 == 2 -> :a\n    true -> :b\n  end\n  assert(c == :a or c == :b)\n\n  d = with {:ok, x} <- {:ok, 1}, {:ok, y} <- {:ok, 2} do\n    x + y\n  end\n  assert(d == 3)\nend\n";
+const WALK_CHAIN_SOURCE: &str = "def check(x), do: if x, do: nil, else: panic(\"check failed\")\n\ndef main() do\n  a = if true do 1 else 2 end\n  check(a == 1 or a == 2)\n\n  b = case 1 do\n    1 -> :one\n    _ -> :other\n  end\n  check(b == :one or b == :other)\n\n  c = cond do\n    1 == 2 -> :a\n    true -> :b\n  end\n  check(c == :a or c == :b)\n\n  d = with {:ok, x} <- {:ok, 1}, {:ok, y} <- {:ok, 2} do\n    x + y\n  end\n  check(d == 3)\nend\n";
 
 /// Every recorder the three entry walkers fill is a lattice join, so a join
 /// reached twice with the same input records nothing new the second time.
@@ -758,10 +758,10 @@ fn compiler2_join_walk_visits_each_entry_and_scope_once() {
         // `or` to a decision whose miss raises in place: one clause entry, 18 arm
         // entries and 14 delivered resumes.
         33,
-        "if/case/cond/with chained once each, an assert after each, lower main/0 to 33 resume entries"
+        "if/case/cond/with chained once each, a check after each, lower main/0 to 33 resume entries"
     );
 
-    // Type analysis re-runs main/0's activation as callee facts settle (`assert`
+    // Type analysis re-runs main/0's activation as callee facts settle (`check`
     // and the comparisons it chains are ordinary calls, so early rounds see
     // absent evidence and stop short); each round's own walk visits an entry
     // once per distinct scope, so the last round -- the settled one -- is what
@@ -12834,8 +12834,11 @@ const SOURCE_ORDER_BLIND_ESCAPES: &[&str] = &[];
 /// The census list named `00281_opaque_reducer_closure` twice, so its plans
 /// were counted twice: `case` 16 -> 15 plans, 16 -> 15 unreadable; `entry`
 /// 130 -> 128 plans, 119 -> 118 unreadable.
+/// `01527_list_literal_trailing_call` checks its five results with `||`, a
+/// `case` on `nil`, `false` and a catch-all: `case` 15 -> 20 plans, 15 -> 20
+/// unreadable.
 const SOURCE_ORDER_PLANS_ON_THE_CENSUS: &[(&str, usize, usize)] =
-    &[("case", 15, 15), ("entry", 128, 118), ("receive", 2, 0)];
+    &[("case", 20, 20), ("entry", 128, 118), ("receive", 2, 0)];
 
 /// The subjects at which seating `early` before `late` lets a value reach a
 /// body that never named it: the two arms put one and the same question there,
@@ -16629,8 +16632,8 @@ def classify(0), do: :zero
 def classify(_), do: :other
 
 def main() do
-  assert(classify(0) == :zero, "zero")
-  assert(classify(7) == :other, "other")
+  classify(0)
+  classify(7)
 end
 "#,
     );

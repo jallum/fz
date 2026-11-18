@@ -6,5 +6,5 @@ defmacro mk(x) do
   quote do: unquote(Enum.map([x], fn b -> b * 10 end)) ++ [unquote(g.(x))]
 end
 def main() do
-  assert(mk(2) == [20, 3], "two lambdas, one inside an unquote, stay distinct")
+  mk(2) == [20, 3] || raise("two lambdas, one inside an unquote, stay distinct")
 end

@@ -17,6 +17,6 @@ end
 
 def main() do
   result = Reducible.reduce([1, 2, 3], {:cont, 0}, fn (x, acc) -> {:cont, x + acc} end)
-  assert(result == {:done, 6}, "protocol reduce converges to {:done, 6}")
+  result == {:done, 6} || raise("protocol reduce converges to {:done, 6}")
   result
 end

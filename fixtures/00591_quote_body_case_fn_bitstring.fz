@@ -21,9 +21,9 @@ defmacro pack_two() do
 end
 
 def main() do
-  assert(classify_via_case(true) == 1, "a case's true arm lowers and runs inside a quote")
-  assert(classify_via_case(false) == 2, "a case's other arm lowers and runs inside a quote")
+  classify_via_case(true) == 1 || raise("a case's true arm lowers and runs inside a quote")
+  classify_via_case(false) == 2 || raise("a case's other arm lowers and runs inside a quote")
   adder = make_adder(10)
-  assert(adder.(5) == 15, "an fn literal inside a quote lowers to a working closure")
-  assert(pack_two() == <<1, 2>>, "a bitstring literal inside a quote lowers to its bytes")
+  adder.(5) == 15 || raise("an fn literal inside a quote lowers to a working closure")
+  pack_two() == <<1, 2>> || raise("a bitstring literal inside a quote lowers to its bytes")
 end

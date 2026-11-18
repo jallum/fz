@@ -8,6 +8,6 @@ end
 
 def main() do
   result = double_plus(20)
-  assert(result == 42, "double_plus(20) = (20+1)*2 = 42")
+  result == 42 || raise("double_plus(20) = (20+1)*2 = 42")
   result
 end

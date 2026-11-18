@@ -22,8 +22,5 @@ def main() do
     {:c, v} -> v + 3
   end
 
-  assert(
-    {x, y} == {22, 11},
-    "same-arity tuple receive clauses keep their tag-specific arms distinct across consecutive receives"
-  )
+  {x, y} == {22, 11} || raise("same-arity tuple receive clauses keep their tag-specific arms distinct across consecutive receives")
 end

@@ -30,5 +30,5 @@ defmodule Provider do
 end
 
 def main() do
-  assert(Provider.answer() == 42, "unreachable: the module body is refused")
+  Provider.answer() == 42 || raise("unreachable: the module body is refused")
 end

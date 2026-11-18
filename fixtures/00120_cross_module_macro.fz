@@ -13,6 +13,6 @@ defmodule User do
 end
 def main() do
   result = User.run()
-  assert(result == 107, "M.bump(7) expands to M's own helper(7), 7 + 100 == 107")
+  result == 107 || raise("M.bump(7) expands to M's own helper(7), 7 + 100 == 107")
   result
 end

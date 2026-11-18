@@ -4,4 +4,4 @@
 def double(x), do: x * 2
 def map_l(_, []), do: []
 def map_l(f, [h | t]), do: [f.(h) | map_l(f, t)]
-def main(), do: assert(map_l(double, [1, 2, 3]) == [2, 4, 6], "higher-order map applies a function to each element")
+def main(), do: map_l(double, [1, 2, 3]) == [2, 4, 6] || raise("higher-order map applies a function to each element")

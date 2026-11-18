@@ -26,8 +26,5 @@ def g(v) do
 end
 
 def main() do
-  assert(
-    {f({:ok, 7}), f(:err), f(:other), g({:ok, 8}), g(:err), g(:other)} == {7, 0, -1, 8, 0, -1},
-    "total case/with clauses return their tuple-bound values and explicit fallbacks"
-  )
+  {f({:ok, 7}), f(:err), f(:other), g({:ok, 8}), g(:err), g(:other)} == {7, 0, -1, 8, 0, -1} || raise("total case/with clauses return their tuple-bound values and explicit fallbacks")
 end

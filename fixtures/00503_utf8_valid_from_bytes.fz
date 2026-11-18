@@ -4,8 +4,8 @@
 def main() do
   good = <<104, 105>>
   bad = <<0xff, 0xff>>
-  assert(Utf8.valid?(good))
-  refute(Utf8.valid?(bad) == true)
-  assert(Utf8.from_bytes(good) == {:ok, "hi"})
-  assert(Utf8.from_bytes(bad) == {:error, :invalid_utf8})
+  Utf8.valid?(good) || raise("expected Utf8.valid?(good)")
+  Utf8.valid?(bad) == true && raise("expected not Utf8.valid?(bad) == true")
+  Utf8.from_bytes(good) == {:ok, "hi"} || raise("expected Utf8.from_bytes(good) == {:ok, \"hi\"}")
+  Utf8.from_bytes(bad) == {:error, :invalid_utf8} || raise("expected Utf8.from_bytes(bad) == {:error, :invalid_utf8}")
 end

@@ -2,4 +2,4 @@
 # purpose: a binary pattern splits the header byte from the rest of the bitstring
 #---
 def parse(<<n, rest::binary>>), do: {n, rest}
-def main(), do: assert(parse(<<0xa5, 0x01, 0x02>>) == {165, <<1, 2>>}, "binary pattern splits the header byte from the rest")
+def main(), do: parse(<<0xa5, 0x01, 0x02>>) == {165, <<1, 2>>} || raise("binary pattern splits the header byte from the rest")

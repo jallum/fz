@@ -30,13 +30,7 @@ def eval({:add, a, b}), do: eval(a) + eval(b)
 def eval({:mul, a, b}), do: eval(a) * eval(b)
 
 def main() do
-  assert(eval({:num, 42}) == 42, "literal number node evaluates directly")
-  assert(
-    eval({:add, {:num, 2}, {:mul, {:num, 3}, {:num, 4}}}) == 14,
-    "nested add/mul tree evaluates through sequential recursive calls"
-  )
-  assert(
-    eval({:mul, {:add, {:num, 1}, {:num, 2}}, {:add, {:num, 3}, {:num, 4}}}) == 21,
-    "second sequential recursive tree still evaluates after the first two"
-  )
+  eval({:num, 42}) == 42 || raise("literal number node evaluates directly")
+  eval({:add, {:num, 2}, {:mul, {:num, 3}, {:num, 4}}}) == 14 || raise("nested add/mul tree evaluates through sequential recursive calls")
+  eval({:mul, {:add, {:num, 1}, {:num, 2}}, {:add, {:num, 3}, {:num, 4}}}) == 21 || raise("second sequential recursive tree still evaluates after the first two")
 end

@@ -3,4 +3,4 @@
 #---
 def k(_), do: :first
 def k(_) when true, do: :second
-def main(), do: assert(k(1) == :first, "the guardless wildcard clause matches before the guarded one is tried")
+def main(), do: k(1) == :first || raise("the guardless wildcard clause matches before the guarded one is tried")

@@ -2855,7 +2855,10 @@ fn tail_recursion_plans_one_entry_dispatch_per_compiled_function() {
     // 18 -> 14: no function decodes an arithmetic extern's result.
     // 14 -> 16: the operators' guards name `is_integer` and `is_float`, so
     // those two helpers are defined so the guards can be folded.
-    assert_eq!(functions, 85, "the fixture compiles its known function population");
+    // 85 -> 61: the fixture checks its result with `|| raise("...")`, which raises a
+    // `RuntimeError` that its own module words; `assert` panicked with the bare message,
+    // whose wording reached `String`, `ArgumentError` and `UndefinedFunctionError`.
+    assert_eq!(functions, 61, "the fixture compiles its known function population");
     assert_eq!(
         counter("fz.compiler2.entry_dispatch.defined"),
         // fz-xxd.11: 24 -> 15. The nine uncalled typed-clause externs named
@@ -2866,7 +2869,8 @@ fn tail_recursion_plans_one_entry_dispatch_per_compiled_function() {
         // 18 -> 14, the same dropped decoding functions.
         // 77 -> 76: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run
         // time, so its result stays `binary` and callers need no second `bitstring` activation.
-        76,
+        // 76 -> 53: the same `RuntimeError` wording in place of the bare message's.
+        53,
         "every called function plans its own entry dispatch",
     );
 }

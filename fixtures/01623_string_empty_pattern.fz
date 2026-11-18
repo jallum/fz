@@ -21,8 +21,8 @@
 # combining sequence: they are exactly in the part of the contract fz and
 # Elixir share today.
 def main() do
-  assert(String.index_of("hello", "") == 0, "the first zero-width match is at byte offset 0")
-  assert(String.index_of("", "") == 0, "the empty subject has one zero-width match")
+  String.index_of("hello", "") == 0 || raise("the first zero-width match is at byte offset 0")
+  String.index_of("", "") == 0 || raise("the empty subject has one zero-width match")
 
   dbg(String.contains?("hello", ""))
   dbg(String.contains?("", ""))

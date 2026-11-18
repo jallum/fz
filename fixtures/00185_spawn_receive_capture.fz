@@ -10,5 +10,5 @@ def parent(tag) do
 end
 
 def main() do
-  assert(parent(99) == 99, "spawned closure captures tag and relays it back")
+  parent(99) == 99 || raise("spawned closure captures tag and relays it back")
 end

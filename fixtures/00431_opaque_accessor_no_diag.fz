@@ -9,5 +9,5 @@ end
 
 def main() do
   h = make_resource(5, &dbg/1)
-  assert(A.get(h) == 5)
+  A.get(h) == 5 || raise("expected A.get(h) == 5")
 end
