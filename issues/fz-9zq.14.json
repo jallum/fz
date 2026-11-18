@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-9zq.2"
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-9zq",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "A closure call with several target activations of one closure stays a direct call",
   "type": "bug",
-  "updated_at": "2026-11-18T23:22:43Z"
+  "updated_at": "2026-11-18T23:25:34Z"
 }
