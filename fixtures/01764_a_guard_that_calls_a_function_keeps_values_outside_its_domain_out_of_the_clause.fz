@@ -1,0 +1,44 @@
+#---
+# purpose: "a clause guarded by a call to byte_size, bit_size, map_size or tuple_size runs only for values the function accepts, so its body may call the function again"
+# oracle: self
+# oracle.stamp: e8488586db252cc9
+#---
+#
+# A guard function given a value it does not accept makes the guard false.
+# The body of a clause whose guard calls one is therefore reached only by
+# values the function accepts, and calling it again there is not a fault.
+defmodule Main do
+  def bytes(b) when byte_size(b) > 1, do: byte_size(b)
+  def bytes(_), do: :other
+
+  def bits(b) when bit_size(b) > 8, do: bit_size(b)
+  def bits(_), do: :other
+
+  def entries(m) when map_size(m) > 0, do: map_size(m)
+  def entries(_), do: :other
+
+  def items(t) when is_atom(elem(t, 0)) and tuple_size(t) == 2, do: tuple_size(t)
+  def items(_), do: :other
+
+  def negated(b) when not (byte_size(b) > 1), do: byte_size(b)
+  def negated(_), do: :other
+
+  def either(b) when is_atom(b) or byte_size(b) > 1, do: b
+  def either(_), do: :other
+
+  def main() do
+    IO.inspect({bytes("abc"), bytes("a"), bytes(:a), bytes(12)})
+    IO.inspect({bits("ab"), bits(<<1::3>>), bits(:a), bits([])})
+    IO.inspect({entries(%{a: 1}), entries(%{}), entries(:a), entries("m")})
+    IO.inspect({items({:a, 1}), items({:a}), items(:a), items([1, 2])})
+    IO.inspect({negated("a"), negated("abc"), negated(:a)})
+    IO.inspect({either(:a), either("abc"), either("a"), either(1)})
+
+    case "abc" do
+      b when byte_size(b) == 3 -> IO.inspect(byte_size(b))
+      _ -> IO.inspect(:other)
+    end
+  end
+end
+
+Main.main()
