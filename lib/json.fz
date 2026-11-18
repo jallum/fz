@@ -340,44 +340,60 @@ defmodule JSON do
   # correctly; building a float out of digit arithmetic does not. Every
   # function here carries `start`, where the number began, so the text is one
   # slice taken once at the end.
+  #
+  # Integers are 64-bit, so arithmetic past either end raises `ArithmeticError`.
+  # That is the cold path: `wide_digits/2` scans the digits again, without
+  # arithmetic, to find where the number ends. A wide integer part followed by
+  # a fraction or an exponent is a float, and anything else is reported whole.
   @spec number(binary) :: any
-  defp number(start = <<"-", r :: binary>>), do: integer_lead(start, r, -1)
-  defp number(start), do: integer_lead(start, start, 1)
+  defp number(start = <<"-", r :: binary>>) do
+    try do
+      integer_lead(start, r, -1)
+    rescue
+      ArithmeticError -> wide_digits(start, r)
+    end
+  end
+  defp number(start) do
+    try do
+      integer_lead(start, start, 1)
+    rescue
+      ArithmeticError -> wide_digits(start, start)
+    end
+  end
 
+  # What the scan remembers of the integer part when it is not an integer is
+  # its `shape`: whether it is a lone `0`, which is all the exponent
+  # conversion below needs to know.
   @spec integer_lead(binary, binary, integer) :: any
-  defp integer_lead(start, <<"0", r :: binary>>, _sign), do: after_integer(start, r, 0)
+  defp integer_lead(start, <<"0", r :: binary>>, _sign), do: after_integer(start, r, :zero_exponent, 0)
   defp integer_lead(start, <<c, r :: binary>>, sign) when c >= 49 and c <= 57 do
     integer_digits(start, r, sign * (c - 48), sign)
   end
   defp integer_lead(_start, b, _sign), do: {:error, b}
 
-  @spec integer_digits(binary, binary, integer | :overflow, integer) :: any
+  # The sign is applied to each digit rather than to the total, so the value
+  # stays on its own side of zero and `-9223372036854775808` fits.
+  @spec integer_digits(binary, binary, integer, integer) :: any
   defp integer_digits(start, <<c, r :: binary>>, acc, sign) when c >= 48 and c <= 57 do
-    integer_digits(start, r, integer_step(acc, c - 48, sign), sign)
+    integer_digits(start, r, acc * 10 + sign * (c - 48), sign)
   end
-  defp integer_digits(start, b, acc, _sign), do: after_integer(start, b, acc)
-
-  # Integers are 64-bit, so a digit that would carry the value past either end
-  # turns it into `:overflow` instead of raising. The scan still finds where
-  # the number ends, and the whole number is reported.
-  @spec integer_step(integer | :overflow, integer, integer) :: integer | :overflow
-  defp integer_step(:overflow, _d, _sign), do: :overflow
-  defp integer_step(acc, _d, 1) when acc > 922337203685477580, do: :overflow
-  defp integer_step(922337203685477580, d, 1) when d > 7, do: :overflow
-  defp integer_step(acc, d, 1), do: acc * 10 + d
-  defp integer_step(acc, _d, _sign) when acc < -922337203685477580, do: :overflow
-  defp integer_step(-922337203685477580, d, _sign) when d > 8, do: :overflow
-  defp integer_step(acc, d, _sign), do: acc * 10 - d
+  defp integer_digits(start, b, acc, _sign), do: after_integer(start, b, :exponent_only, acc)
 
   # A digit can only follow the integer part when that part is a lone `0`, so
   # `01` stops at the `1`.
-  @spec after_integer(binary, binary, integer | :overflow) :: any
-  defp after_integer(_start, b = <<c, _r :: binary>>, _acc) when c >= 48 and c <= 57, do: {:error, b}
-  defp after_integer(start, <<".", r :: binary>>, _acc), do: fraction_first(start, r)
-  defp after_integer(start, <<"e", r :: binary>>, acc), do: exponent_sign(start, r, {:exponent_only, acc})
-  defp after_integer(start, <<"E", r :: binary>>, acc), do: exponent_sign(start, r, {:exponent_only, acc})
-  defp after_integer(start, b, :overflow), do: {:error, {:sequence, start, token(start, b)}}
-  defp after_integer(_start, b, acc), do: {:ok, acc, b}
+  @spec after_integer(binary, binary, :zero_exponent | :exponent_only, integer) :: any
+  defp after_integer(_start, b = <<c, _r :: binary>>, _shape, _acc) when c >= 48 and c <= 57, do: {:error, b}
+  defp after_integer(start, <<".", r :: binary>>, _shape, _acc), do: fraction_first(start, r)
+  defp after_integer(start, <<"e", r :: binary>>, shape, _acc), do: exponent_sign(start, r, shape)
+  defp after_integer(start, <<"E", r :: binary>>, shape, _acc), do: exponent_sign(start, r, shape)
+  defp after_integer(_start, b, _shape, acc), do: {:ok, acc, b}
+
+  @spec wide_digits(binary, binary) :: any
+  defp wide_digits(start, <<c, r :: binary>>) when c >= 48 and c <= 57, do: wide_digits(start, r)
+  defp wide_digits(start, <<".", r :: binary>>), do: fraction_first(start, r)
+  defp wide_digits(start, <<"e", r :: binary>>), do: exponent_sign(start, r, :exponent_only)
+  defp wide_digits(start, <<"E", r :: binary>>), do: exponent_sign(start, r, :exponent_only)
+  defp wide_digits(start, b), do: {:error, {:sequence, start, token(start, b)}}
 
   @spec fraction_first(binary, binary) :: any
   defp fraction_first(start, <<c, r :: binary>>) when c >= 48 and c <= 57, do: fraction_digits(start, r)
@@ -407,7 +423,7 @@ defmodule JSON do
   # rewritten text (`1E400` is reported as `"1.0e400"`), and an integer part of
   # zero is converted without its sign, so `-0e0` is `0.0`.
   @spec float(binary, binary, any) :: any
-  defp float(_start, b, {:exponent_only, 0}), do: {:ok, 0.0, b}
+  defp float(_start, b, :zero_exponent), do: {:ok, 0.0, b}
   defp float(start, b, shape), do: float_value(Float.parse(token(start, b)), start, b, shape)
 
   @spec float_value({float, binary} | :error, binary, binary, any) :: any
