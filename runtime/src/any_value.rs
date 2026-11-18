@@ -1448,14 +1448,6 @@ pub fn map_destination_header_word(capacity: usize, filled: usize, kind: MapDest
         | ((capacity as u64) << MAP_HEADER_FIELD_SHIFT)
 }
 
-/// # Safety
-///
-/// `addr` must point to the start of an initialized strict Map object.
-pub unsafe fn map_header_is_destination(addr: *const u8) -> bool {
-    let header = unsafe { ptr::read(addr as *const u64) };
-    header & MAP_DESTINATION_FLAG != 0
-}
-
 /// `(capacity, filled, kind)` of an unpublished map destination.
 ///
 /// # Safety
@@ -1528,18 +1520,6 @@ pub fn map_key_kind(tag_byte: u8) -> ValueKind {
 #[inline]
 pub fn map_value_kind(tag_byte: u8) -> ValueKind {
     ValueKind::new(tag_byte & KIND_FIELD_MASK as u8).expect("map value kind tag")
-}
-
-/// The raw words and kinds of entry `index` of the map at `addr`, in node
-/// order.
-///
-/// # Safety
-///
-/// `addr` must point to the start of an initialized strict Map object, and
-/// `index` must be in bounds for that map's entry count.
-pub unsafe fn map_entry_raw_kinds(addr: *const u8, index: usize) -> (u64, ValueKind, u64, ValueKind) {
-    let (node, slot) = unsafe { map_locate(addr, index) };
-    unsafe { map_slot_raw_kinds(node, slot) }
 }
 
 /// Entry `index` of the map at `addr`, in node order: key order in a flat map,

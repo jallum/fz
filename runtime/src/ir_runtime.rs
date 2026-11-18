@@ -1989,23 +1989,6 @@ pub extern "C" fn fz_map_put_int(process: *mut Process, map_ref_word: u64, key_r
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_map_put_opaque(
-    process: *mut Process,
-    map_ref_word: u64,
-    key_ref_word: u64,
-    word: u64,
-    kind: u64,
-) -> u64 {
-    let key = any_value_ref_from_word(key_ref_word, "fz_map_put_opaque key");
-    map_put_slot_value(
-        process,
-        map_ref_word,
-        AnyValue::from_ref(key).expect("fz_map_put_opaque key"),
-        AnyValue::Opaque(ValueKind::new(kind as u8).expect("opaque word kind"), word),
-    )
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn fz_map_put_float(process: *mut Process, map_ref_word: u64, key_ref_word: u64, value: f64) -> u64 {
     let key = any_value_ref_from_word(key_ref_word, "fz_map_put_float key");
     map_put_slot_value(
@@ -2046,11 +2029,8 @@ pub extern "C" fn fz_map_from_kv(process: *mut Process, keys_ref_word: u64, valu
 
 /// `Map.put` with an ATOM value, taking the atom as a tagged ref.
 ///
-/// The sibling below takes a raw atom ID, which is what the interpreter's
-/// map-literal construction already has in hand. fz source does not: an `atom`
-/// parameter marshals as a tagged ref, so calling that one from fz put the ref
-/// WORD where an id belonged and stored a garbage atom -- `{"deep": true}`
-/// decoded to `:atom_847002048`.
+/// An `atom` parameter of an fz extern marshals as a tagged ref, so the id is
+/// loaded from the ref here.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_map_put_atom_ref(
     process: *mut Process,
@@ -2060,37 +2040,13 @@ pub extern "C" fn fz_map_put_atom_ref(
 ) -> u64 {
     let atom = any_value_ref_from_word(atom_ref_word, "fz_map_put_atom_ref value");
     let atom_id = atom.load_atom().expect("fz_map_put_atom_ref expects an atom");
-    fz_map_put_atom(process, map_ref_word, key_ref_word, atom_id)
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_map_put_atom(process: *mut Process, map_ref_word: u64, key_ref_word: u64, atom_id: u64) -> u64 {
-    let key = any_value_ref_from_word(key_ref_word, "fz_map_put_atom key");
+    let key = any_value_ref_from_word(key_ref_word, "fz_map_put_atom_ref key");
     map_put_slot_value(
         process,
         map_ref_word,
-        AnyValue::from_ref(key).expect("fz_map_put_atom key"),
+        AnyValue::from_ref(key).expect("fz_map_put_atom_ref key"),
         AnyValue::atom(atom_id as u32),
     )
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_map_get_int(process: *mut Process, map_ref_word: u64, key_ref_word: u64) -> i64 {
-    map_get_int_impl(process, map_ref_word, key_ref_word)
-}
-
-fn map_get_int_impl(process: *mut Process, map_ref_word: u64, key_ref_word: u64) -> i64 {
-    ref_load_int_impl(fz_map_get_ref(process, map_ref_word, key_ref_word))
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_map_get_float(process: *mut Process, map_ref_word: u64, key_ref_word: u64) -> f64 {
-    ref_load_float_impl(fz_map_get_ref(process, map_ref_word, key_ref_word))
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_map_get_atom(process: *mut Process, map_ref_word: u64, key_ref_word: u64) -> u64 {
-    ref_load_atom_impl(fz_map_get_ref(process, map_ref_word, key_ref_word))
 }
 
 #[unsafe(no_mangle)]

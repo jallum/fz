@@ -813,60 +813,6 @@ impl Heap {
         AnyValueRef::from_heap_object(ValueKind::MAP, map_addr)
     }
 
-    pub fn map_put_ref(
-        &mut self,
-        map: AnyValueRef,
-        key: AnyValueRef,
-        value: AnyValueRef,
-    ) -> Result<AnyValueRef, AnyValueRefError> {
-        reject_scalar_ref_write("map_put_ref value", value);
-        self.map_put_value(map, key, value)
-    }
-
-    pub fn map_put_int(
-        &mut self,
-        map: AnyValueRef,
-        key: AnyValueRef,
-        value: i64,
-    ) -> Result<AnyValueRef, AnyValueRefError> {
-        let value = value as u64;
-        let value = AnyValueRef::from_scalar_slot(ValueKind::INT, &value)?;
-        self.map_put_value(map, key, value)
-    }
-
-    pub fn map_put_float(
-        &mut self,
-        map: AnyValueRef,
-        key: AnyValueRef,
-        value: f64,
-    ) -> Result<AnyValueRef, AnyValueRefError> {
-        let value = value.to_bits();
-        let value = AnyValueRef::from_scalar_slot(ValueKind::FLOAT, &value)?;
-        self.map_put_value(map, key, value)
-    }
-
-    pub fn map_put_atom(
-        &mut self,
-        map: AnyValueRef,
-        key: AnyValueRef,
-        atom_id: u32,
-    ) -> Result<AnyValueRef, AnyValueRefError> {
-        self.map_put_value(map, key, AnyValueRef::atom(atom_id))
-    }
-
-    fn map_put_value(
-        &mut self,
-        map: AnyValueRef,
-        key: AnyValueRef,
-        value: AnyValueRef,
-    ) -> Result<AnyValueRef, AnyValueRefError> {
-        let layout = self.map_layout(map).ok_or(AnyValueRefError::ExpectedTag {
-            expected: ValueKind::MAP,
-            found: map.tag(),
-        })?;
-        Ok(self.map_view_put(layout, AnyValue::from_ref(key)?, AnyValue::from_ref(value)?))
-    }
-
     /// An absent deletion borrows the original map without allocating.
     pub fn map_delete_ref(&mut self, map: AnyValueRef, key: AnyValueRef) -> Result<AnyValueRef, AnyValueRefError> {
         Ok(self.map_view_delete(map, AnyValue::from_ref(key)?))
