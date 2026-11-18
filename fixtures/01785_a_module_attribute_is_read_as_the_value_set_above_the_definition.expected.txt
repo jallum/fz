@@ -1,0 +1,3 @@
+{20, %{name: "box", sides: [1, 10, {:double, 20}]}}
+{true, false, :base, :other, 3}
+{10, :changed, :inner, 8}

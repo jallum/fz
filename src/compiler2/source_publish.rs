@@ -31,10 +31,10 @@ use super::quoted_expander::{
     read_compiler_fragment_root,
 };
 use super::quoted_surface::{
-    CompilerService, CompilerServiceForm, FunctionForm, MacroCallForm, OverridableForm, ProtocolImplForm,
-    ReservedSourceDefinition, ScopeForm, ScopeSurface, StatementForm, StructFields, StructForm, defines_a_function,
-    read_module_body_surface, read_protocol_body_surface, read_protocol_impl_body_surface, read_struct_fields,
-    reserved_source_definition,
+    AttributeForm, CompilerService, CompilerServiceForm, FunctionForm, MacroCallForm, OverridableForm,
+    ProtocolImplForm, ReservedSourceDefinition, ScopeForm, ScopeSurface, StatementForm, StructFields, StructForm,
+    attribute_symbol, defines_a_function, is_written_literal, read_module_body_surface, read_protocol_body_surface,
+    read_protocol_impl_body_surface, read_struct_fields, reserved_source_definition,
 };
 use super::scope::ScopeSnapshot;
 use super::source::{QuotedSourceError, QuotedSourceHeap, QuotedSourceMetadata, QuotedSourceRoot};
@@ -816,7 +816,8 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
                 | ScopeForm::CompilerService(_)
                 | ScopeForm::Overridable(_)
                 | ScopeForm::Statement(_)
-                | ScopeForm::ProtocolImpl(_) => {}
+                | ScopeForm::ProtocolImpl(_)
+                | ScopeForm::Attribute(_) => {}
                 ScopeForm::MacroCall(macro_call) => {
                     let source_map = self.world.source_map();
                     let Some(definition) = reserved_source_definition(&macro_call.source, &source_map.borrow())
@@ -1110,6 +1111,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
             ScopeForm::ProtocolImpl(protocol_impl) => self.register_protocol_impl(protocol_impl),
             ScopeForm::MacroCall(macro_call) => self.apply_item_macro_call(macro_call),
             ScopeForm::Statement(statement) => self.apply_statement(statement),
+            ScopeForm::Attribute(attribute) => self.apply_attribute(attribute),
             ScopeForm::Struct(form) => {
                 let def = match self.struct_def(form)? {
                     Evaluated::Value(def) => def,
@@ -1122,6 +1124,34 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
                 self.apply_function(&function, context)
             }
         }
+    }
+
+    /// Binds `@name` to the attribute's value for every definition after it
+    /// in the module, as Elixir's `Module.put_attribute/3` does.
+    fn apply_attribute(&mut self, attribute: &AttributeForm) -> Result<Option<JobEffects>, FatalError> {
+        let value = match self.attribute_value(attribute)? {
+            Evaluated::Value(value) => value,
+            Evaluated::Blocked(effects) => return Ok(Some(*effects)),
+        };
+        self.namespace = self.world.bind_namespace(
+            self.namespace,
+            attribute_symbol(&attribute.name),
+            NamespaceSymbol::Splice(value),
+        );
+        Ok(None)
+    }
+
+    /// The quoted code that rebuilds an attribute's value. A written literal
+    /// is its own; an expression that computes runs now, once, and its value
+    /// is escaped.
+    fn attribute_value(&mut self, attribute: &AttributeForm) -> Result<Evaluated<QuotedSourceRoot>, FatalError> {
+        let source_map = self.world.source_map();
+        let written = is_written_literal(&attribute.value, attribute.span, &source_map.borrow())
+            .map_err(|error| emit_surface_read_error(self.telemetry, "module attribute read failed", &error))?;
+        if written {
+            return Ok(Evaluated::Value(attribute.value.clone()));
+        }
+        self.evaluate_at_definition(&attribute.value, MACRO_ESCAPE, attribute.span)
     }
 
     /// The definition a `defstruct` makes. A field list that computes is
@@ -2145,6 +2175,7 @@ fn build_script_main(statements: &[StatementForm], span: Span) -> Result<Functio
 /// The library function that escapes an evaluated `defstruct` field list,
 /// as Elixir's `Kernel.Utils.defstruct` does.
 const DEFSTRUCT_FIELDS: (&str, &str) = ("Kernel.Utils", "defstruct_fields");
+const MACRO_ESCAPE: (&str, &str) = ("Macro", "escape");
 
 /// The function a program's first process starts in.
 pub(crate) const PROGRAM_ENTRY: &str = "__entry__";

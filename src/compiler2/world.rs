@@ -3673,7 +3673,8 @@ fn code_surface_function_match(
             | ScopeForm::Protocol(_)
             | ScopeForm::ProtocolImpl(_)
             | ScopeForm::Struct(_)
-            | ScopeForm::Overridable(_) => FunctionSurfaceMatch::None,
+            | ScopeForm::Overridable(_)
+            | ScopeForm::Attribute(_) => FunctionSurfaceMatch::None,
         };
         // `Certain` beats `Opaque` beats `None`: one certain form is enough to
         // call the whole code a certain home even if it also contains

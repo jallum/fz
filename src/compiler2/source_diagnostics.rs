@@ -14,6 +14,18 @@ pub(crate) fn redundant_clause_diagnostic(clause_span: Span, always_matches_line
     .with_label("unreachable")
 }
 
+/// `@name` read where the module has not set it. Elixir warns in these words
+/// and reads `nil`.
+pub(crate) fn undefined_attribute_diagnostic(span: Span, name: &str) -> Diagnostic {
+    Diagnostic::warning(
+        codes::LOWER_UNDEFINED_ATTRIBUTE,
+        format!(
+            "undefined module attribute @{name}, please remove access to @{name} or explicitly set it before access"
+        ),
+        span,
+    )
+}
+
 /// A `try` with an `else` and none of `rescue`, `catch` or `after`. Elixir
 /// warns in these words, naming the form that wrote the `try`, and compiles
 /// it as the `case` it is.

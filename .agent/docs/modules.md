@@ -94,7 +94,10 @@ backward and the first matching symbol wins. A `NamespaceSymbol` is a `Module`,
 `Function`, `Callable`, `Macro`, `Type`, or `Splice`. A `Splice` binds a name to
 a quoted AST snippet that the macro expander substitutes in place when the name
 is referenced — a generic primitive that binds `__ENV__` and `__MODULE__` (see
-macro-expansion.md).
+macro-expansion.md) and a module's attributes (see "A module attribute" below).
+A splice binding is interned by what its value says (`semantically_eq` at
+`Horizon::Full`), not by the heap that holds it: binding a name to a rebuilt but
+equal value on the same head returns the namespace bound before.
 
 ```text
 bind(head, "add", Function(f))  -> head'      (a new savepoint over head)
@@ -474,3 +477,25 @@ cargo test --lib compiler2::drive_test::a_replaced_definition_is_never_noted_and
 cargo test --lib compiler2::drive_test::compiler2_submit_root_pulls_scope_and_seeds_entry_semantics_without_warming_foo
 cargo test --lib compiler2::drive_test::compiler2_enum_reduce_selects_list_protocol_impl_and_callable_reducer
 ```
+
+## A module attribute
+
+`@name value` is a `ScopeForm::Attribute`, ordered among the module's forms.
+`@doc` and `@spec` attach to the next function, `@moduledoc` and `@type` are
+scope attributes, and any other name is a value attribute; `@doc false` and
+`@moduledoc false` document nothing. `ScopePublisher::apply_attribute` binds
+`"@name"` as a `Splice` to the value's quoted code: a written literal is its own
+code, and an expression that computes runs once, while the module is defined,
+through the definition-time evaluator with `Macro.escape/1`
+(`src/compiler2/definition_time.rs`), so it sees the attributes set above it.
+Every definition after it records that namespace, so `@name` in its head, guard
+or body reads the value nearest above the definition, as in Elixir. The
+expander rewrites the read `{:@, _, [{name, _, nil}]}` to that splice; a read
+of an attribute never set warns `lower/undefined-attribute` in Elixir's words
+and reads `nil`. A macro's quoted `@name` is read in the module the macro
+expands in. A nested module starts from its own namespace, so it reads only
+its own attributes. Fixtures `01785` and `01786` hold these.
+
+A form between two clauses of one function, an attribute among them, closes
+the clause group, so the later clause is a second definition.
+

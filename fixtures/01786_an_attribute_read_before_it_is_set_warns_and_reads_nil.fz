@@ -1,0 +1,16 @@
+#---
+# purpose: "an attribute read where the module has not set it reads nil, with Elixir's warning; setting it later does not reach the read above"
+# oracle: self
+# oracle.stamp: 063cc5a01a0c707f
+#---
+defmodule Main do
+  def early(), do: @size
+  @size 4
+  def late(), do: @size
+
+  def main() do
+    IO.inspect({early(), late()})
+  end
+end
+
+Main.main()

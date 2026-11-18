@@ -207,6 +207,11 @@ binding is transient; it is never recorded on the function. The env is the lean
 appears. (`decode_expr` decodes a raw map value as a map literal, alongside
 lists and tuples, so the spliced env map decodes as source.)
 
+A module attribute is a splice too, bound as `"@name"` when the module sets it
+(modules.md, "A module attribute"). The read `@name` is not a `__` variable,
+so the expander recognizes its `{:@, _, [{name, _, nil}]}` shape and splices
+the binding in force, or warns and reads `nil` when there is none.
+
 `__MODULE__` is bound beside `__ENV__` as a second splice: the atom the
 definition's module is in value position (`World::module_atom_value`), and nil
 in a definition outside any module. Code a macro quotes is expanded in the

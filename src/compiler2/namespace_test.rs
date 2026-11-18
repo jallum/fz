@@ -136,3 +136,42 @@ fn compiler2_namespace_required_macro_is_invisible_to_name_lookup() {
         "a required macro is not an imported symbol",
     );
 }
+
+fn quoted_value(text: &str) -> super::QuotedSourceRoot {
+    let telemetry = crate::telemetry::ConfiguredTelemetry::new();
+    let mut sources = crate::source::SourceMap::default();
+    let version = sources.add_code(Some("value.fz"), text);
+    crate::compiler2::parse_quoted_program(&sources, version, &telemetry).expect("quoted parse should succeed")
+}
+
+#[test]
+fn compiler2_namespace_splice_is_bound_by_what_its_value_says() {
+    // A module attribute's value is computed again each time its module is
+    // walked, into a new heap. The namespace a definition records must be the
+    // same one each time, or the definition never settles.
+    let mut namespaces = NamespaceStore::new();
+    let first = namespaces.bind(
+        BindingId::END,
+        "@size",
+        NamespaceSymbol::Splice(quoted_value("[1, {:a, 2}]")),
+    );
+    let rebuilt = namespaces.bind(
+        BindingId::END,
+        "@size",
+        NamespaceSymbol::Splice(quoted_value("[1, {:a, 2}]")),
+    );
+    let other = namespaces.bind(
+        BindingId::END,
+        "@size",
+        NamespaceSymbol::Splice(quoted_value("[1, {:a, 3}]")),
+    );
+
+    assert_eq!(
+        first, rebuilt,
+        "a splice whose value says the same thing binds the same namespace"
+    );
+    assert_ne!(
+        first, other,
+        "a splice whose value differs binds a namespace of its own"
+    );
+}

@@ -134,6 +134,30 @@ pub(crate) trait QuotedExpansionCtx {
         }
     }
 
+    /// `@name` in a definition reads the value the module last set for it
+    /// above the definition. An attribute never set reads as `nil`, and
+    /// Elixir's warning says so.
+    fn expand_attribute_read(
+        &mut self,
+        owner: &QuotedSourceRoot,
+        name: &str,
+        span: Option<Span>,
+        scope: ScopeSnapshot,
+        depth: usize,
+    ) -> Result<ExpandedValue, fz_engine::FatalError> {
+        let symbol = super::quoted_surface::attribute_symbol(name);
+        let Some(NamespaceSymbol::Splice(value)) = self.world().lookup_namespace(scope.namespace(), &symbol) else {
+            let warning = super::source_diagnostics::undefined_attribute_diagnostic(span.unwrap_or(Span::DUMMY), name);
+            let (world, telemetry) = self.split();
+            super::drive::ExecutionContext::new(world, telemetry).emit_warning_once(warning);
+            return Ok(ExpandedValue::Complete(owner.builder().nil()));
+        };
+        match self.expand_root(value, scope, depth)? {
+            ExpandedRoot::Complete(root) => Ok(ExpandedValue::Complete(root.root())),
+            ExpandedRoot::Blocked(effects) => Ok(ExpandedValue::Blocked(effects)),
+        }
+    }
+
     fn expand_cursor(
         &mut self,
         owner: &QuotedSourceRoot,
@@ -179,6 +203,11 @@ pub(crate) trait QuotedExpansionCtx {
                 .is_some()
             {
                 return Ok(ExpandedValue::Complete(cursor.root()));
+            }
+            if let Some(name) = attribute_read_name(&node, &source_map.borrow()).map_err(|error| {
+                emit_internal_surface_error(self.telemetry(), format!("module attribute read failed: {error}"))
+            })? {
+                return self.expand_attribute_read(owner, &name, node.span, scope, depth);
             }
             if let Some(name) = splice_candidate_name(&node).map_err(|error| {
                 emit_internal_surface_error(
@@ -1054,6 +1083,24 @@ fn is_quote_call(node: &QuotedAstNode) -> Result<bool, QuotedSourceError> {
         return Ok(false);
     }
     Ok(node.head.atom_name()? == "quote" && is_list_like(&node.tail))
+}
+
+/// The name `@name` reads, when `node` is that read.
+fn attribute_read_name(node: &QuotedAstNode, sources: &SourceMap) -> Result<Option<String>, QuotedSourceError> {
+    if node.head.root().tag() != ValueKind::ATOM || node.head.atom_name()? != "@" || !is_list_like(&node.tail) {
+        return Ok(None);
+    }
+    let mut args = node.tail.list_iter();
+    let (Some(arg), None) = (args.next().transpose()?, args.next()) else {
+        return Ok(None);
+    };
+    let Some(name_node) = arg.ast_node(sources)? else {
+        return Ok(None);
+    };
+    if name_node.head.root().tag() != ValueKind::ATOM || is_list_like(&name_node.tail) {
+        return Ok(None);
+    }
+    Ok(Some(name_node.head.atom_name()?.to_string()))
 }
 
 /// The name of a splice-candidate variable: a compiler-reserved `__`-prefixed

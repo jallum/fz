@@ -48,6 +48,16 @@ pub enum ScopeForm {
     Overridable(OverridableForm),
     MacroCall(MacroCallForm),
     Statement(StatementForm),
+    Attribute(AttributeForm),
+}
+
+/// `@name value`: a module attribute. Every definition after it in the module
+/// reads `@name` as this value, until a later `@name` sets another.
+#[derive(Debug, Clone)]
+pub struct AttributeForm {
+    pub name: String,
+    pub value: QuotedSourceRoot,
+    pub span: Span,
 }
 
 /// `defoverridable name: arity, ..`: the functions a later definition in the
@@ -245,10 +255,17 @@ fn read_surface(source: &QuotedSourceRoot, sources: &SourceMap) -> Result<ScopeS
         }
         let head_name = node.head.atom_name()?;
         if head_name.starts_with('@') {
-            if matches!(head_name.as_str(), "@doc" | "@spec") {
-                pending_function_attrs.push(quoted_item.root());
-            } else {
-                attrs.push(parse_scope_attr(&quoted_item, sources)?);
+            match head_name.as_str() {
+                "@doc" | "@spec" => pending_function_attrs.push(quoted_item.root()),
+                "@moduledoc" | "@type" => attrs.push(parse_scope_attr(&quoted_item, sources)?),
+                _ => {
+                    flush_function_groups(source, &mut forms, &mut group_order, &mut groups, sources)?;
+                    forms.push(ScopeForm::Attribute(parse_value_attribute(
+                        source,
+                        &quoted_item,
+                        sources,
+                    )?));
+                }
             }
             continue;
         }
@@ -501,6 +518,50 @@ fn matches_alias(
     Ok(segments.iter().map(String::as_str).eq(expected.iter().copied()))
 }
 
+fn parse_value_attribute(
+    source: &QuotedSourceRoot,
+    item: &QuotedSourceCursor,
+    sources: &SourceMap,
+) -> Result<AttributeForm, QuotedSourceError> {
+    let node = expect_ast_cursor_node(item, "module attribute", sources)?;
+    let head = node.head.atom_name()?;
+    let Some(value) = node.tail.list_iter().next().transpose()? else {
+        return Err(QuotedSourceError::new(format!(
+            "module attribute `{head}` is missing its value"
+        )));
+    };
+    Ok(AttributeForm {
+        name: head.trim_start_matches('@').to_string(),
+        value: source.subroot(value.root()),
+        span: node.span.unwrap_or(Span::DUMMY),
+    })
+}
+
+/// The namespace name an attribute's value is bound under. No source name
+/// starts with `@`, so it shadows nothing.
+pub(crate) fn attribute_symbol(name: &str) -> String {
+    format!("@{name}")
+}
+
+/// Whether `value` is written out as a literal, so that the code is its own
+/// value and nothing needs to run to have it.
+pub(crate) fn is_written_literal(
+    value: &QuotedSourceRoot,
+    span: Span,
+    sources: &SourceMap,
+) -> Result<bool, QuotedSourceError> {
+    let expr = decode_standalone_expr(&value.cursor(), Some(span), sources)?;
+    Ok(LiteralTerm::of(&expr.node).is_some())
+}
+
+/// The text of `@doc` or `@moduledoc`; `false` documents nothing.
+pub(crate) fn doc_text(value: &QuotedSourceCursor) -> Result<Option<String>, QuotedSourceError> {
+    if value.root().tag() == fz_runtime::any_value::ValueKind::ATOM && value.atom_name()? == "false" {
+        return Ok(None);
+    }
+    value.utf8_binary_text().map(Some)
+}
+
 fn parse_scope_attr(cursor: &QuotedSourceCursor, sources: &SourceMap) -> Result<Attribute, QuotedSourceError> {
     let node = expect_ast_cursor_node(cursor, "scope attribute", sources)?;
     let head = node.head.atom_name()?;
@@ -511,7 +572,7 @@ fn parse_scope_attr(cursor: &QuotedSourceCursor, sources: &SourceMap) -> Result<
     };
     let span = node.span.unwrap_or(Span::DUMMY);
     match head.as_str() {
-        "@moduledoc" => Ok(Attribute::ModuleDoc(value.utf8_binary_text()?)),
+        "@moduledoc" => Ok(Attribute::ModuleDoc(doc_text(&value)?)),
         "@type" => decode_type_alias_attr(&value, span, sources),
         other => Err(QuotedSourceError::new(format!(
             "unsupported quoted scope attribute `{other}`"
