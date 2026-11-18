@@ -15,11 +15,15 @@
     {
       "text": "Bugs and Cleanup's hand-written listing (develop a3edb6f32): sum(n) = n + sum(n-1) is a second listing for this ticket. The way back up costs 56 instructions per level against a hand-written 12: resume 37, the fn_2 forwarder 4, and fz_op_add_ii 15 (its prologue, cset vs; tst; b.ne, and an epilogue that saves x19/x20/x22 only for the overflow slow path). Going down costs 61 against 18. Per level, today's ~118 is consistent with the bench (2.36G over 20M levels) against a target of ~30.",
       "timestamp": "2026-11-18T23:24:23Z"
+    },
+    {
+      "text": "Optimize's pinned-key probe: a value found by a pinned key is typed any, so each + goes through the generic operator (fz_fn_4 376 + fz_op_add_ii 78 + ~186 in helpers, box_any_value_ref 162, alloc_kind 234, box_int 66 for five additions). The typing half is a separate proposal (decision 106).",
+      "timestamp": "2026-11-18T23:41:40Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "Integer arithmetic on known integers is an instruction, not a flag dance or a call",
   "type": "task",
-  "updated_at": "2026-11-18T23:24:23Z"
+  "updated_at": "2026-11-18T23:41:40Z"
 }
