@@ -7,9 +7,15 @@
   "id": "fz-sc8.246",
   "labels": [],
   "parent": "fz-sc8",
+  "comments": [
+    {
+      "text": "Folds fz-sc8.59 (closed as duplicate): String.to_float must also parse exponents (\"1.0e3\" -\u003e 1000.0) and raise ArgumentError where Elixir does; delegating to Float.parse covers it. Collision: fz-nhb.17 (String.index_of/2, lib/string.fz 680/742/775) and fz-nhb.12 (lib/*.fz specs) edit lib/string.fz; second to land rebases.",
+      "timestamp": "2026-11-18T00:06:13Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "String.to_integer and String.to_float convert through Integer.parse and Float.parse",
   "type": "bug",
-  "updated_at": "2026-11-18T00:05:50Z"
+  "updated_at": "2026-11-18T00:06:13Z"
 }
