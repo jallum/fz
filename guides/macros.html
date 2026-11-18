@@ -81,9 +81,11 @@ it:</p>
 
 Macro.escape({<span class="num">1</span>, <span class="num">2</span>, <span class="num">3</span>})  <span class="com"># {:{}, [], [1, 2, 3]}</span></pre>
 
-<p>A PID, a reference or a function can't be escaped: none of them means
-anything in the compiled program, so <code>Macro.escape</code> raises
-<code>ArgumentError</code>.</p>
+<p>A function a module defines by name is escaped as the capture that names
+it, so <code>Macro.escape(&amp;String.length/1)</code> is the code
+<code>&amp;String.length/1</code>. A PID, a reference or an anonymous function
+can't be escaped: none of them means anything in the compiled program, so
+<code>Macro.escape</code> raises <code>ArgumentError</code>.</p>
 
 <!-- ─────────────────────────────── 3 ─────────────────────────────── -->
 <h2 id="defmacro">3. defmacro, step by step</h2>

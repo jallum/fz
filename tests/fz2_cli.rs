@@ -73,7 +73,8 @@ const TARGET_FIXTURES: [TargetFixture; 3] = [
         // time, so its result stays `binary` and callers need no second `bitstring` activation.
         // 826 -> 787: `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
         // 787 -> 772: a first-class callable's boundary demand is not contributed back to its target's inputs, so the target's demand is not derived again for it.
-        runtime_demand_walks: 772,
+        // 772 -> 775: a case arm's parameter is laid out by its own demand, so each outcome parameter is a position the demand walk reads.
+        runtime_demand_walks: 775,
         mainline_runtime_demand_walks: 6252,
         mainline_runtime_demand_door: ObservationDoor::Interp,
     },
@@ -90,7 +91,8 @@ const TARGET_FIXTURES: [TargetFixture; 3] = [
         // 527 -> 669: the same cause as `00567_fz_f98_range_map_converges` below.
         // 669 -> 671: the same cause.
         // 671 -> 617: the same cause as `00420_enum_take_drop_split` above.
-        runtime_demand_walks: 617,
+        // 617 -> 620: as for the first fixture.
+        runtime_demand_walks: 620,
         mainline_runtime_demand_walks: 6378,
         mainline_runtime_demand_door: ObservationDoor::Interp,
     },
@@ -2757,7 +2759,9 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
         // list where they built a map, and each of those values is asked for its transport once.
         // 1500 -> 1398 settled products and 8 -> 5 blocked cache hits: a reach is a fact, so the
         // 102 reach products that settled, and the 3 cache hits that read one, are gone.
-        (1398, 1398, 1398, 0, 5, 0),
+        // 1398 -> 1400 settled products, all changed: a case arm's parameter is laid out by its own
+        // demand, so each outcome parameter is a `Value` position that settles.
+        (1400, 1400, 1400, 0, 5, 0),
         "{fixture}: reactive product settlement work includes ordinary helper products"
     );
     assert!(

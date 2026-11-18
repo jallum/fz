@@ -475,6 +475,7 @@ impl IrInterpRuntime {
             ..
         } = park;
         let mut env = env;
+        let params = whole_params(params);
         enter_entry(self, transport, program, &executable, &mut env, target, None, &params)?;
         self.backend_resume.insert(
             pid,
@@ -1559,8 +1560,9 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                         .arguments
                         .iter()
                         .map(|argument| {
+                            let layout = entry_param_layout(executable, argument.parameter)?;
                             let value = decided
-                                .subject_word(argument.subject)
+                                .subject_handed(argument.subject, layout)
                                 .map_err(|_| format!("winning outcome lacks subject {:?}", argument.subject))?;
                             Ok((argument.parameter, value))
                         })
@@ -1619,6 +1621,7 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
             }
             if let Some((mb_idx, target, params)) = hit {
                 unsafe { &mut *runtime.cur_proc() }.mailbox.remove(mb_idx);
+                let params = whole_params(params);
                 enter_entry(runtime, transport, program, executable, &mut env, target, None, &params)?;
                 return Ok(BackendEvalTransition::Next(BackendEvalState::Entry {
                     executable: executable.clone(),
@@ -2255,6 +2258,14 @@ fn rebuild_backend_list_from_source(
     )
 }
 
+/// Parameters a runtime matcher hands over as whole values.
+fn whole_params(params: Vec<(ValueId, AnyValue)>) -> Vec<(ValueId, BackendBoundValue)> {
+    params
+        .into_iter()
+        .map(|(param, word)| (param, BackendBoundValue::Runtime(word)))
+        .collect()
+}
+
 fn enter_entry(
     runtime: &mut IrInterpRuntime,
     transport: &TransportStore,
@@ -2263,7 +2274,7 @@ fn enter_entry(
     env: &mut Frame,
     entry_id: crate::compiler2::ControlEntryId,
     delivered: Option<BackendBoundValue>,
-    params: &[(ValueId, AnyValue)],
+    params: &[(ValueId, BackendBoundValue)],
 ) -> Result<(), String> {
     let entries = entries_for_executable(executable)?;
     let entry = entries
@@ -2310,19 +2321,12 @@ fn bind_entry_params(
     executable: &BackendExecutable,
     env: &mut Frame,
     entry: &BackendEntry,
-    params: &[(ValueId, AnyValue)],
+    params: &[(ValueId, BackendBoundValue)],
 ) -> Result<(), String> {
     let mut lanes = Lanes::new();
-    for (param, word) in params {
+    for (param, value) in params {
         let layout = entry_param_layout(executable, *param)?;
-        encode_transport_layout(
-            transport,
-            program,
-            proc,
-            &BackendBoundValue::Runtime(*word),
-            layout,
-            &mut lanes,
-        )?;
+        encode_transport_layout(transport, program, proc, value, layout, &mut lanes)?;
     }
     let mut lane_index = 0;
     for param in &entry.params {
@@ -2614,7 +2618,7 @@ fn after_panic(
         .into_iter()
         .map(AnyValue::from_any_value_ref)
         .collect::<Result<Vec<_>, _>>()?;
-    let params = entry.params.iter().copied().zip(values).collect::<Vec<_>>();
+    let params = whole_params(entry.params.iter().copied().zip(values).collect());
     let mut env = frame.env;
     enter_entry(
         runtime,
@@ -3785,6 +3789,7 @@ fn literal_term_value(runtime: &mut IrInterpRuntime, term: &LiteralTerm) -> Resu
     let proc = runtime.cur_proc();
     match term {
         LiteralTerm::Ground(value) => literal_value(runtime, value),
+        LiteralTerm::Function { .. } => unreachable!("`LastResort::struct_fields` refuses a function"),
         LiteralTerm::List(items) => items.iter().rev().try_fold(interp_empty_list_value(), |tail, item| {
             interp_list_cons(proc, literal_term_value(runtime, item)?, tail, CONTEXT)
         }),

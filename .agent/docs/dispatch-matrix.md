@@ -1260,9 +1260,10 @@ Runtime demand reads an inline decision's input as what its questions ask plus
 what its arms read of the subjects they are handed
 (`runtime_demand::inline_dispatch_input_demands`). The walk records each arm
 entry's parameter demand, and each is lifted back through the subject's
-projections: a tuple field becomes a field prefix, any other projection reads
-its source whole. An arm takes its parameters as whole values, so a handed
-subject is always read whole, and a callable handed to an arm is first-class
+projections: a tuple field becomes a field prefix, a bitstring field is a
+`Matched` read of its source, and any other projection reads its source whole.
+A handed subject is read as its arm's parameter reads it, so a rest the arm only
+walks stays a cursor over its input. A callable handed to an arm is first-class
 (`escape`) while keeping the calls the arm makes on it. The callsite-return
 trace (`callsite_returns_feeding`) follows an arm parameter back to the input
 it was carved from, so a callable taken out of a call's result by `case` or

@@ -1827,6 +1827,31 @@ pub extern "C" fn fz_function_arity(_process: *mut Process, function_ref_word: u
     i64::from(unsafe { closure_arity(addr) })
 }
 
+/// What `&Mod.fun/arity` spells for a function: the list `[module, name,
+/// arity]`, the first two as atoms, when the function is a named one in a
+/// module, and `[]` for a lambda or a function outside every module.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_function_name(process: *mut Process, function_ref_word: u64) -> u64 {
+    let addr = closure_addr_from_tagged(function_ref_word).expect("fz_function_name: a function");
+    let process = unsafe { &mut *process };
+    let Some((module, name)) = process
+        .node
+        .closure_module_and_name(unsafe { closure_denotation(addr) })
+    else {
+        return AnyValueRef::empty_list().raw_word();
+    };
+    let arity = i64::from(unsafe { closure_arity(addr) });
+    let (module, name) = (process.node.intern_atom(&module), process.node.intern_atom(&name));
+    let heap = &mut process.heap;
+    let list = heap
+        .alloc_list_cons_int(arity, AnyValueRef::empty_list())
+        .expect("fz_function_name arity");
+    let list = heap.alloc_list_cons_atom(name, list).expect("fz_function_name name");
+    heap.alloc_list_cons_atom(module, list)
+        .expect("fz_function_name module")
+        .raw_word()
+}
+
 /// The number of fields of a tuple; -1 for any other value, so a caller checks
 /// the answer instead of aborting.
 #[unsafe(no_mangle)]

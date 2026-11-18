@@ -7,7 +7,7 @@ use super::backend::{
 };
 use super::extern_call::{ExternCallValue, call_fixed_extern};
 use super::*;
-use crate::compiler2::transport::{ShapeId, TransportStore};
+use crate::compiler2::transport::{ShapeId, TransportLayout, TransportStore};
 use crate::compiler2::{BackendProgram, DispatchBindings, Ty, Types, ValueId};
 use crate::dispatch_matrix::pattern::{
     PatternDispatchPlan, PatternGuardBinOp, PatternGuardExpr, PatternGuardUnaryOp, PatternPinnedInput,
@@ -1182,6 +1182,28 @@ impl Decided<'_> {
     /// The one runtime word one of the winning outcome's arguments denotes.
     pub(super) fn subject_word(&mut self, subject: SubjectId) -> Result<AnyValue, DispatchStop> {
         self.run.subject_word(subject)
+    }
+
+    /// One of the winning outcome's arguments in the form its parameter's
+    /// layout asks for. A held value travels as it is held, so a cursor handed
+    /// to a cursor parameter keeps its two lanes and builds nothing; a cursor
+    /// handed to a layout of lanes that are not its own is built here, once per
+    /// source and position.
+    pub(super) fn subject_handed(
+        &mut self,
+        subject: SubjectId,
+        layout: TransportLayout,
+    ) -> Result<BackendBoundValue, DispatchStop> {
+        self.run.resolve_subject(subject)?;
+        let held = required(self.run.state.get(subject))?.clone();
+        match &held {
+            BackendBoundValue::Transport { shape, .. }
+                if is_cursor_shape(self.run.operands.transport, *shape) && *shape != layout.structural =>
+            {
+                self.run.subject_word(subject).map(BackendBoundValue::Runtime)
+            }
+            _ => Ok(held),
+        }
     }
 }
 

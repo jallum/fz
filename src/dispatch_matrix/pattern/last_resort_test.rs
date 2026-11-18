@@ -106,6 +106,28 @@ fn a_failure_that_sets_a_field_its_exception_lacks_has_no_struct_to_raise() {
 }
 
 #[test]
+fn an_exception_whose_default_is_a_function_has_no_struct_a_backend_can_build() {
+    let declared = ["term".to_string(), "format".to_string()];
+    let function = LiteralTerm::Function {
+        module: fz_runtime::module_name::ModuleDenotation::Named(fz_runtime::module_name::ModuleName::from_segments(
+            vec!["String".to_string()],
+        )),
+        name: "length".to_string(),
+        arity: 1,
+    };
+    let defaults = [NIL, LiteralTerm::List(vec![function])];
+    let raised = LastResort::Exception {
+        exception: "Elixir.Odd".into(),
+        fields: vec![("term".into(), FieldTerm::Subject)],
+    };
+    assert_eq!(
+        raised.struct_fields(&declared, &defaults),
+        Err("exception `Elixir.Odd` holds a function in its field `format`, which a backend cannot build".to_string()),
+        "a backend builds a raised struct from written values, and a function is compiled code"
+    );
+}
+
+#[test]
 fn the_words_an_exception_declares_are_its_default_not_a_copy_the_compiler_keeps() {
     let message = library_declaration("ArgumentError");
     assert_eq!(

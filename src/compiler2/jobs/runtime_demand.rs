@@ -2128,11 +2128,10 @@ pub(super) fn propagate_steps_reverse(
 }
 
 /// What an inline decision reads of each input: what its questions ask, each
-/// subject it hands an arm (whole, since an arm takes its parameters as whole
-/// values, and as that arm reads it, so a callable keeps the calls made on
-/// it), and the whole input when its last resort shows the value that matched
-/// nothing. A tuple it takes apart is read field by field, so it can travel as
-/// lanes.
+/// subject it hands an arm (as that arm reads it, so a callable keeps the
+/// calls made on it), and the whole input when its last resort shows the value
+/// that matched nothing. A tuple it takes apart is read field by field, so it
+/// can travel as lanes.
 fn inline_dispatch_input_demands(
     dispatch: &ControlDispatch,
     mut parameter_demand: impl FnMut(ValueId) -> RuntimeDemand,
@@ -2157,17 +2156,15 @@ fn inline_dispatch_input_demands(
         })
         .collect::<Vec<_>>();
     for argument in dispatch.outcomes.iter().flat_map(|edge| edge.arguments.iter()) {
-        let mut handed = RuntimeDemand::whole();
-        handed.join_assign(&parameter_demand(argument.parameter));
-        let (ordinal, demand) = input_demand_through_subject(plan, argument.subject, handed);
+        let (ordinal, demand) =
+            input_demand_through_subject(plan, argument.subject, parameter_demand(argument.parameter));
         input_demands[ordinal as usize].join_assign(&demand);
     }
     input_demands
 }
 
-/// An arm takes its parameters as whole values, so a callable a decision
-/// hands to one is a first-class value from there on, whatever the arm then
-/// does with it.
+/// A callable a decision hands to an arm is a first-class value from there
+/// on, whatever the arm then does with it.
 fn handed_to_arm_demand(
     facts: &RuntimeDemandFacts<'_>,
     callable_flows: &mut CallableFlowBuilder,
