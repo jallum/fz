@@ -1,0 +1,35 @@
+#---
+# purpose: File.read returns a file's bytes exactly, allocating one binary about the size of the file, whatever the file holds; an empty file reads as an empty binary and a missing file as an io error
+# kind: run
+#---
+#
+# The file is 300,001 bytes: 18,750 repeats of a 16-byte unit and one more byte.
+# The runtime reads in 65,536-byte blocks, so the file spans five blocks and the
+# last is partial. The unit holds bytes above 127, NUL, `\r\n` pairs and lone
+# `\r` and `\n` bytes, and the file does not end in a newline, so a read that
+# folds, trims or drops a byte shows. The program prints the size read, whether
+# the bytes equal what was written, and the binaries and shared-buffer bytes
+# allocated across the read: one binary of the file's size. A reader that
+# appends a byte at a time allocates one binary per byte.
+defmodule Main do
+  def binaries(stats), do: stats[:binview_allocs] + stats[:bitstring_allocs] + stats[:shared_bin_allocs]
+
+  def main() do
+    path = "01761_read.tmp"
+    unit = <<0, 1, 127, 128, 200, 255, 13, 10, 13, 13, 10, 10, 97, 98, 99, 255>>
+    written = :binary.copy(unit, 18_750) <> <<7>>
+    File.write!(path, written)
+
+    a = Process.heap_alloc_stats()
+    {:ok, data} = File.read(path)
+    b = Process.heap_alloc_stats()
+    IO.inspect({byte_size(data), data == written, binaries(b) - binaries(a), b[:shared_bin_bytes] - a[:shared_bin_bytes]})
+
+    File.write!(path, "")
+    IO.inspect(File.read(path))
+    File.rm!(path)
+    IO.inspect(File.read(path))
+  end
+end
+
+Main.main()

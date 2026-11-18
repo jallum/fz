@@ -181,21 +181,14 @@ defmodule File do
   defp read_open(0), do: {:error, :io}
 
   defp read_open(stream) do
-    contents = read_bytes(stream, "")
+    contents = fz_file_read_rest(stream)
     read_result(contents, libc::ferror(stream), libc::fclose(stream))
   end
 
   extern "C" defp libc::fclose(c_pointer) :: c_int
   extern "C" defp libc::ferror(c_pointer) :: c_int
 
-  @spec read_bytes(c_pointer, binary) :: binary
-  defp read_bytes(stream, contents), do: read_byte(stream, libc::fgetc(stream), contents)
-
-  extern "C" defp libc::fgetc(c_pointer) :: c_int
-
-  @spec read_byte(c_pointer, integer, binary) :: binary
-  defp read_byte(_stream, -1, contents), do: contents
-  defp read_byte(stream, byte, contents), do: read_bytes(stream, contents <> <<byte>>)
+  extern "fz" defp fz_file_read_rest(c_pointer) :: binary
 
   @spec read_result(binary, integer, integer) :: {:ok, binary} | {:error, :io}
   defp read_result(contents, 0, 0), do: {:ok, contents}
