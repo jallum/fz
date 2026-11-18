@@ -19,11 +19,15 @@
     {
       "text": "Optimize's pinned-key probe: a value found by a pinned key is typed any, so each + goes through the generic operator (fz_fn_4 376 + fz_op_add_ii 78 + ~186 in helpers, box_any_value_ref 162, alloc_kind 234, box_int 66 for five additions). The typing half is a separate proposal (decision 106).",
       "timestamp": "2026-11-18T23:41:40Z"
+    },
+    {
+      "text": "Trace location update: Optimize's pinned-key probe traces now live durably in /Users/j5n/Workspace/fz-map-traces/ (iter.txt = a whole iteration of case_a_12; trace.txt = one lookup before the scan; the probe sources; and the lldb tracer script). The scratch path in the earlier comment is superseded.",
+      "timestamp": "2026-11-18T23:41:56Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "Integer arithmetic on known integers is an instruction, not a flag dance or a call",
   "type": "task",
-  "updated_at": "2026-11-18T23:41:40Z"
+  "updated_at": "2026-11-18T23:41:56Z"
 }
