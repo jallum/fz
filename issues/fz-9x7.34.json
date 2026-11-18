@@ -5,14 +5,16 @@
     "fz-9x7.33"
   ],
   "blocks": [],
+  "closed_at": "2026-11-18T02:23:58Z",
+  "close_reason": "Folded into fz-9x7.28 round 2 (user ruled option b 2026-11-17; fold agreed by GC and Optimize): the gift carries disjoint roots and the receiver projects bound values, which removes try_match's out Vec and the per-attempt pinned Vec.",
   "created": "2026-11-18T00:55:03Z",
   "description": "Approved by the user 2026-11-17 as part of the receive page (relayed by Optimize; https://claude.ai/artifact/UxRskxPS2PDs3j1x5TF6Aq v2); split from fz-9x7.33.\n\ntry_match (runtime/src/park.rs) allocates two Vecs per attempt: the out buffer of bound values, and, since #707 (fz-9x7.32), the pinned words read from the frame when a receive pins values. The matcher writes into a buffer its caller owns (a reusable scratch on the Process that runs the matcher).\n\nSignal: with fz-9x7.33, receive-site mallocs per message on g-msg ~4.5 -\u003e 0 (GC's counting allocator).\n\nWaits on the user's ruling on fz-9x7.28's design (forwarding map only for receive matches / project bound values on the receiver / re-bless 01592), which may change how bound values leave a matched message. Owner agreed between Optimize and GC after that ruling.",
   "id": "fz-9x7.34",
   "labels": [],
   "parent": "fz-9x7",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "The matcher writes into a buffer its caller owns",
   "type": "task",
-  "updated_at": "2026-11-18T00:55:04Z"
+  "updated_at": "2026-11-18T02:23:58Z"
 }
