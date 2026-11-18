@@ -15,11 +15,15 @@
     {
       "text": "Re-measured on merged fz-sc8.247 (MDF, 2eff1dec2): in the walk probe the five callee-saved pairs are saved once per call and the loop runs inside the function, so the per-turn save is gone for self-recursive loops. It remains for a leaf called once per item from another function; scope narrowed to that (title updated).",
       "timestamp": "2026-11-18T04:58:29Z"
+    },
+    {
+      "text": "Contradicts the 2026-11-18 narrowing (Bugs and Cleanup, develop with fz-sc8.247 merged). Non-tail self-recursion still saves callee-saved registers at every level. sum(n) = n + sum(n-1) allocates its continuation, then branches 'b _fz_fn_23_sum__e23' to the function ENTRY, not to a loop block. So each level runs the x29/x30 frame and saves x19/x20/x22: 8 instructions and 6 memory operations. fz_op_add_ii saves x19/x20/x22 only for its overflow slow path.",
+      "timestamp": "2026-11-18T23:24:24Z"
     }
   ],
   "priority": 3,
   "status": "open",
   "title": "Measure why a native leaf called once per item saves x19-x28",
   "type": "task",
-  "updated_at": "2026-11-18T04:58:29Z"
+  "updated_at": "2026-11-18T23:24:24Z"
 }
