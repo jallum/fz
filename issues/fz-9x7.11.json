@@ -33,11 +33,15 @@
     {
       "text": "User ruling 2026-11-17: the next round's rule adds collection counts (minor/major) against BEAM's, measured with scratchpad/beam/gctrace.exs.",
       "timestamp": "2026-11-18T03:07:08Z"
+    },
+    {
+      "text": "Input (Make Distiller Fast session's profile, bench, develop 2eff1dec2, 1,498 samples, one run; bench:distill-hunt/prof.j.base.txt): collection is 15.4% of the distiller. Samples: memmove 70, cheney_scan 48, cheney_forward_object 43, strict_object_size 26, forward_heap_value 25. Predates fz-9x7.38 (forward_heap_value inline(always)).",
+      "timestamp": "2026-11-18T05:00:20Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "A value becomes old only after it survives two collections",
   "type": "task",
-  "updated_at": "2026-11-18T03:07:08Z"
+  "updated_at": "2026-11-18T05:00:20Z"
 }
