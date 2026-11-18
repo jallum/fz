@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-18T21:21:29Z",
+  "description": "A binary is Bin { ptr, bit_len }: one decoder, one equality, one slice, one failure.\n\nToday (runtime.md R1, R3, R4, R12, R13, R16, R18, R23; machine.md M2):\n- About 24 runtime functions decode a binary word; 13 are hand-rolled in ir_runtime.rs. They fail three ways: panic, sentinel return, abort.\n- Each extern re-classifies the word 3-9 times.\n- Same predicate twice in a row: ir_runtime.rs:1106-1107 and 741-745.\n- 6 byte-equality implementations: term.rs:488, bits.rs:650 (dead), fz_matcher_eq_bytes ir_runtime.rs:2774, dispatch_exec.rs:1308, source.rs:1210 (copies to Vec), term_hash.rs:249. None has a length or pointer early-out.\n- fz_bs_read_binary_ref has three slice policies, and alloc_bitstring_slice holds a fourth.\n- Receive keeps a third table of literal bytes: binary_data_gvs, receive.rs.\n\nFix:\n- One runtime type Bin { ptr, bit_len }, built by one checked constructor. It raises ArgumentError through one raiser, shared with fz-9e2's contract child.\n- Bin::eq and Bin::eq_bytes, with length and identity early-outs; hash consistent with it.\n- Heap::slice(Bin, pos, len) owns every slice policy.\n- Receive compares against the literal object.\n\nWhat goes away: the hand-rolled decodes, the double checks, bitstring_like_word, equality copies 2, 4 and 5, fz_matcher_eq_bytes, binary_data_gvs, and the twin slice condition.\n\nAsm first: the extern bodies for byte_extent, concat decode, slice and eq get target listings (from the probes child). A runtime extern's listing is judged like emitted code.\n\nAcceptance:\n- Decode sites counted before and after; one decoder.\n- Every binary extern given bad input raises a catchable ArgumentError on all three paths.\n- Probe slopes do not rise.",
+  "id": "fz-9e2.5",
+  "labels": [],
+  "parent": "fz-9e2",
+  "priority": 1,
+  "status": "open",
+  "title": "A binary is Bin { ptr, bit_len }: one decoder, one equality, one slice, one failure",
+  "type": "task",
+  "updated_at": "2026-11-18T21:21:29Z"
+}
