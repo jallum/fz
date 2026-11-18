@@ -164,6 +164,18 @@ fn hand_continuation_on<M: cranelift_module::Module>(
     ContinuationPayload::from_capture_vars(body, env, var_env, cont_sid, captured).emit_value(body, cont_param)
 }
 
+/// The slots a continuation's body keeps empty behind the outer continuation
+/// and its `capture_count` captures.
+fn continuation_empty_slots(env: &CodegenEnv<'_>, cont_sid: u32, capture_count: usize) -> usize {
+    match env.body_native(cont_sid).frame {
+        Some(BodyFrame {
+            role: FrameRole::Root,
+            slots,
+        }) => slots as usize - 1 - capture_count,
+        _ => 0,
+    }
+}
+
 struct ContinuationPayload {
     cont_fid: FuncId,
     semantic_cap_bindings: Vec<ClosureCapture>,
@@ -173,13 +185,7 @@ struct ContinuationPayload {
 impl ContinuationPayload {
     fn from_parts(env: &CodegenEnv<'_>, cont_sid: u32, semantic_cap_bindings: Vec<ClosureCapture>) -> Self {
         let cont_fid = *env.fn_ids.get(&cont_sid).expect("cont fn_id missing");
-        let empty_slots = match env.body_native(cont_sid).frame {
-            Some(BodyFrame {
-                role: FrameRole::Root,
-                slots,
-            }) => slots as usize - 1 - semantic_cap_bindings.len(),
-            _ => 0,
-        };
+        let empty_slots = continuation_empty_slots(env, cont_sid, semantic_cap_bindings.len());
         Self {
             cont_fid,
             semantic_cap_bindings,
@@ -883,24 +889,14 @@ fn emit_tail_call_closure<M: cranelift_module::Module>(
 
 // Selective-receive park-site CLIF.
 //
-// Layout, mirroring fz_runtime::park::ParkRecord:
-//   - matcher fn addr (declared/emitted from the receive dispatch plan).
-//   - pinned[]: plan-indexed pinned inputs followed by prepared keys.
-//   - clause_bodies[]: i64 array of cont-closure refs,
-//     one per source clause; each closure carries the clause-body
-//     fn entry, while captures are populated through closure
-//     accessors in source order (ContinuationPayload handles all
-//     bookkeeping).
-//   - clause_bound_counts[]: i64 array, one per source clause.
-//     The matcher scratch uses max bound_arity; the resumed
-//     outcome env uses only the winning edge's semantic/physical arguments.
-//   - bound_arity: max outcome-argument count across clauses; sizes
-//     the `out` buffer the matcher fills on a hit.
-//   - after_deadline_or_neg1: -1 when no after clause,
-//     else the unboxed timeout in ms.
-//   - after_cont: closure ptr when after is Some, else null.
+// A receive has a site and an arrival (see fz_runtime::park):
+//   - the site is a read-only record emitted once: the matcher, the after
+//     body's code, the pinned count, and each clause's code, bound count and
+//     empty slot count.
+//   - the arrival is one frame closure, [outer_cont, captures..., pinned...],
+//     where pinned is the plan-indexed pinned inputs followed by prepared keys.
 //
-// After laying these out the helper calls fz_receive_park_matched, which
+// The helper hands both to fz_receive_park_matched, which
 // decides the receive. Anything but the YIELD sentinel is the closure to run
 // next (the matched clause, or the `after 0` body): the receive tail-calls
 // it. The sentinel is returned so the trampoline parks.
@@ -920,18 +916,19 @@ fn emit_receive_matched<M: cranelift_module::Module>(
         .receive_dispatch_fn_ids
         .get(&(caller_fn_id.0, blk.id.0))
         .expect("receive dispatch fn pre-declared by planned codegen pass");
-    let dispatch_addr = fn_addr(body.jmod, dispatch_fid, body.b);
+    let site_name = format!("__fz_receive_site_{}_{}", caller_fn_id.0, blk.id.0);
     let park_result = build_park_record(
         body,
         env,
         var_env,
         cont_param,
+        &site_name,
         clauses,
         after,
         pinned,
         captures,
-        dispatch_addr,
-    );
+        dispatch_fid,
+    )?;
     let yield_sentinel = body.b.ins().iconst(types::I64, YIELD_PTR as i64);
     let parked = body.b.ins().icmp(IntCC::Equal, park_result, yield_sentinel);
     let yield_blk = body.b.create_block();
@@ -960,136 +957,66 @@ pub(super) fn emit_resume_closure<M: cranelift_module::Module>(body: &mut Codege
     body.b.ins().return_call_indirect(sig_ref, code, &[closure]);
 }
 
-// Lay out the ParkRecord fields described in
-// `fz_runtime::park::ParkRecord` (pinned inputs, clause cont
-// closures, optional after closure, bound-arity), then call
-// fz_receive_park_matched and return its result.
+// Build this arrival's frame, `[outer_cont, captures..., pinned...]`, and
+// hand it to fz_receive_park_matched with the receive's site record.
 fn build_park_record<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
     env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
     cont_param: ir::Value,
+    site_name: &str,
     clauses: &[ReceiveClause],
     after: Option<&ReceiveAfter>,
     pinned: &[Var],
     captures: &[Var],
-    matcher_addr: ir::Value,
-) -> ir::Value {
-    use cranelift_codegen::ir::{StackSlotData, StackSlotKind};
-
-    // Pinned inputs: alloca [AnyValueRef; n_pinned], take base addr.
-    let n_pinned = pinned.len();
-    let pinned_ptr = if n_pinned == 0 {
-        body.b.ins().iconst(types::I64, 0)
-    } else {
-        let slot = body.b.create_sized_stack_slot(StackSlotData::new(
-            StackSlotKind::ExplicitSlot,
-            (n_pinned * SLOT_BYTES as usize) as u32,
-            3,
-        ));
-        for (i, v) in pinned.iter().enumerate() {
-            let value_ref = body.tagged_var(var_env, v.0);
-            body.b
-                .ins()
-                .stack_store(types::I64, value_ref, slot, (i * SLOT_BYTES as usize) as i32);
-        }
-        body.b.ins().stack_addr(types::I64, slot, 0)
-    };
-
-    // Capture operands, shared across every clause body /
-    // guard / after closure. `Term::ReceiveMatched::captures`
-    // is already deduplicated by ir_lower; the cont fns'
-    // capture-param slots line up with this order.
-    let cap_bindings: Vec<ClosureCapture> = captures
-        .iter()
-        .map(|cv| closure_capture_for_var(body, var_env, cv.0))
-        .collect();
-    // bound_arity: max outcome-argument count across clauses (matcher
-    // ABI sizes the out buffer to this).
-    let bound_arity = clauses.iter().map(|c| c.arguments.len()).max().unwrap_or(0);
-
-    // clause_bodies[]: build one cont-closure per clause body
-    // and stack-store its ptr.
-    let n_clauses = clauses.len();
+    matcher: FuncId,
+) -> Result<ir::Value, CodegenError> {
     assert!(
-        n_clauses > 0,
+        !clauses.is_empty(),
         "ReceiveMatched with zero clauses should not reach codegen"
     );
-    let bodies_slot = body.b.create_sized_stack_slot(StackSlotData::new(
-        StackSlotKind::ExplicitSlot,
-        (n_clauses * SLOT_BYTES as usize) as u32,
-        3,
-    ));
-    let needs_bound_counts = clauses.iter().any(|c| c.arguments.len() != bound_arity);
-    let bound_counts_slot = needs_bound_counts.then(|| {
-        body.b.create_sized_stack_slot(StackSlotData::new(
-            StackSlotKind::ExplicitSlot,
-            (n_clauses * SLOT_BYTES as usize) as u32,
-            3,
-        ))
-    });
-    let resolve_body_sid = |body: FnId| -> u32 {
-        env.body_id_for_fn(body)
-            .unwrap_or_else(|| panic!("native receive outcome fn {} has no registered codegen body id", body.0))
+    // Each resume body's code and the slots it keeps empty behind the captures.
+    let resume_body = |fn_id: FnId| -> (FuncId, u32) {
+        let cont_sid = env.body_id_for_fn(fn_id).unwrap_or_else(|| {
+            panic!(
+                "native receive outcome fn {} has no registered codegen body id",
+                fn_id.0
+            )
+        });
+        let code = *env.fn_ids.get(&cont_sid).expect("cont fn_id missing");
+        (code, continuation_empty_slots(env, cont_sid, captures.len()) as u32)
     };
-    for (i, c) in clauses.iter().enumerate() {
-        let cont_sid = resolve_body_sid(c.body);
-        let payload = ContinuationPayload::from_parts(env, cont_sid, cap_bindings.clone());
-        let cl_ptr = payload.emit_value(body, cont_param);
-        body.b
-            .ins()
-            .stack_store(types::I64, cl_ptr, bodies_slot, (i * 8) as i32);
-        if let Some(slot) = bound_counts_slot {
-            let bound_count_v = body.b.ins().iconst(types::I64, c.arguments.len() as i64);
-            body.b
-                .ins()
-                .stack_store(types::I64, bound_count_v, slot, (i * 8) as i32);
-        }
+    let site = ReceiveSiteLayout {
+        matcher,
+        after: after.map(|a| resume_body(a.body)),
+        pinned_count: pinned.len() as u32,
+        clauses: clauses
+            .iter()
+            .map(|c| {
+                let (code, empty_slots) = resume_body(c.body);
+                (code, c.arguments.len() as u32, empty_slots)
+            })
+            .collect(),
+    };
+    let first_clause_code = site.clauses[0].0;
+    let site_data = define_receive_site(body.jmod, site_name, &site)?;
+    let site_addr = data_addr(body.jmod, site_data, body.b);
+
+    // The frame is never called; its code word names the first clause.
+    let mut frame_captures: Vec<ClosureCapture> = Vec::with_capacity(captures.len() + pinned.len());
+    for capture in captures {
+        frame_captures.push(closure_capture_for_var(body, var_env, capture.0));
     }
-    let bodies_ptr = body.b.ins().stack_addr(types::I64, bodies_slot, 0);
-    let bound_counts_ptr = if let Some(slot) = bound_counts_slot {
-        body.b.ins().stack_addr(types::I64, slot, 0)
-    } else {
-        body.b.ins().iconst(types::I64, 0)
+    for pinned_var in pinned {
+        frame_captures.push(ClosureCapture::RefWord(body.tagged_var(var_env, pinned_var.0)));
+    }
+    let frame = build_cont_closure(body, cont_param, first_clause_code, &frame_captures, 0);
+
+    let after_ms = match after {
+        Some(a) => body.as_raw_i64(var_env, a.timeout.0),
+        None => body.b.ins().iconst(types::I64, -1),
     };
-
-    // After: build the after closure if present and unbox the
-    // timeout from its tagged Int. `-1` sentinel when no after.
-    let (after_deadline_v, after_cont_v) = match after {
-        Some(a) => {
-            let cont_sid = resolve_body_sid(a.body);
-            let payload = ContinuationPayload::from_parts(env, cont_sid, cap_bindings);
-            let cl_ptr = payload.emit_value(body, cont_param);
-            let unboxed = body.as_raw_i64(var_env, a.timeout.0);
-            (unboxed, cl_ptr)
-        }
-        None => {
-            let neg1 = body.b.ins().iconst(types::I64, -1);
-            let nullp = body.b.ins().iconst(types::I64, 0);
-            (neg1, nullp)
-        }
-    };
-
-    let n_pinned_v = body.b.ins().iconst(types::I64, n_pinned as i64);
-    let n_clauses_v = body.b.ins().iconst(types::I64, n_clauses as i64);
-    let bound_arity_v = body.b.ins().iconst(types::I32, bound_arity as i64);
-
     let process = body.process_arg();
-    let park_inst = runtime_call!(
-        body,
-        fz_receive_park_matched,
-        [
-            process,
-            matcher_addr,
-            pinned_ptr,
-            n_pinned_v,
-            bodies_ptr,
-            n_clauses_v,
-            bound_counts_ptr,
-            bound_arity_v,
-            after_deadline_v,
-            after_cont_v,
-        ]
-    );
-    body.b.inst_results(park_inst)[0]
+    let park_inst = runtime_call!(body, fz_receive_park_matched, [process, site_addr, frame, after_ms]);
+    Ok(body.b.inst_results(park_inst)[0])
 }

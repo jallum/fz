@@ -20,7 +20,7 @@
 //!   scratch buffer; the dispatch writes the winning edge's semantic and
 //!   physical arguments at the receiving parameter slots.
 //! - returns `0` on miss; `k > 0` is the 1-based clause index (caller
-//!   indexes `clause_bodies[k-1]`).
+//!   indexes the site's `clauses[k-1]`).
 //!
 //! Production codegen consumes the cached AST-free `PatternDispatchPlan`
 //! attached to `Term::ReceiveMatched`; it does not rebuild source clauses.

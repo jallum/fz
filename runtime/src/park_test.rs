@@ -1,118 +1,197 @@
 use super::*;
-use crate::any_value::ValueKind;
-use std::ptr::null_mut;
+use crate::any_value::{ClosureDenotationId, closure_capture_value};
+use crate::heap::SchemaRegistry;
+use std::alloc::{Layout, alloc};
+use std::cell::RefCell;
+use std::mem::{align_of, size_of, size_of_val};
+use std::ptr::{copy_nonoverlapping, null_mut};
+use std::rc::Rc;
 
-static INT_42: u64 = 42;
-static INT_99: u64 = 99;
-static INT_100: u64 = 100;
-static INT_123: u64 = 123;
-
-/// A clause body no test dereferences.
-fn placeholder_closure() -> AnyValueRef {
-    AnyValueRef::from_heap_object(ValueKind::CLOSURE, 0x10 as *const u8).expect("placeholder closure ref")
+/// A receive site that lives for the rest of the test process, laid out the
+/// way codegen emits one: the record, then its clauses. `after` is the after
+/// body's code and empty slot count.
+pub(crate) fn leaked_site(
+    matcher: MatcherFn,
+    after: Option<(usize, u32)>,
+    pinned_count: u32,
+    clauses: &[ReceiveClause],
+) -> &'static ReceiveSite {
+    let (after_code, after_empty_slots) = after.unwrap_or((0, 0));
+    let layout = Layout::from_size_align(
+        size_of::<ReceiveSite>() + size_of_val(clauses),
+        align_of::<ReceiveSite>(),
+    )
+    .expect("site layout");
+    // SAFETY: the allocation holds the record and `clauses.len()` clauses behind it, and is never freed.
+    unsafe {
+        let site = alloc(layout) as *mut ReceiveSite;
+        site.write(ReceiveSite {
+            matcher,
+            after_code,
+            clause_count: clauses.len() as u32,
+            pinned_count,
+            bound_arity: clauses.iter().map(|c| c.bound_count).max().unwrap_or(0),
+            after_empty_slots,
+        });
+        copy_nonoverlapping(clauses.as_ptr(), site.add(1) as *mut ReceiveClause, clauses.len());
+        &*site
+    }
 }
 
-fn int_ref(slot: &'static u64) -> AnyValueRef {
-    AnyValueRef::from_scalar_slot(ValueKind::INT, slot).expect("int ref")
+/// A receive frame on `heap`: a null outer continuation, then `captures`
+/// (the receive's captures followed by its pinned values).
+pub(crate) fn frame_of(heap: &mut Heap, captures: &[AnyValueRef]) -> AnyValueRef {
+    let bits = heap.alloc_closure_slots(ClosureDenotationId::user(0), 0, 1 + captures.len(), 0);
+    let frame = closure_addr_from_tagged(bits).expect("frame ptr");
+    // SAFETY: `frame` is a new closure of `1 + captures.len()` captures.
+    unsafe {
+        closure_capture_set(frame, 0, AnyValue::null());
+        for (i, capture) in captures.iter().enumerate() {
+            closure_capture_set_ref_word(frame, 1 + i, capture.raw_word());
+        }
+    }
+    AnyValueRef::from_heap_object(ValueKind::CLOSURE, frame).expect("frame ref")
 }
 
-/// A deterministic mock matcher used by the runtime tests. Layout:
-///   pinned[0]: expected message value.
-///   out[0]: matched int value.
-/// Returns 1 if `msg == pinned[0]`, else 0.
-extern "C" fn mock_eq_matcher(
+/// The code word of a closure.
+pub(crate) fn code_of(closure: AnyValueRef) -> usize {
+    let addr = closure.closure_addr().expect("closure addr");
+    // SAFETY: a closure's code word is its second word.
+    unsafe { read(addr.add(8) as *const u64) as usize }
+}
+
+fn clause(code: usize, bound_count: u32, empty_slots: u32) -> ReceiveClause {
+    ReceiveClause {
+        code,
+        bound_count,
+        empty_slots,
+    }
+}
+
+fn int_ref(n: i64) -> AnyValueRef {
+    let slot = Box::leak(Box::new(n as u64));
+    AnyValueRef::from_scalar_slot(ValueKind::INT, slot as *const u64).expect("int ref")
+}
+
+fn fresh_process() -> Process {
+    Process::new(Rc::new(RefCell::new(SchemaRegistry::new())))
+}
+
+fn record(site: &'static ReceiveSite, frame: AnyValueRef) -> ParkRecord {
+    ParkRecord {
+        site,
+        frame,
+        after_deadline_ms: None,
+        after_timer_id: None,
+    }
+}
+
+/// Matches a message equal to the first pinned value and binds it.
+extern "C" fn pinned_eq_matcher(
     _process: *mut Process,
     msg: u64,
     pinned: *const AnyValueRef,
     out: *mut AnyValueRef,
 ) -> u32 {
+    let msg = AnyValueRef::from_raw_word(msg).expect("msg ref");
     let want = unsafe { *pinned };
-    if msg == want.raw_word() {
-        unsafe {
-            *out = AnyValueRef::from_raw_word(msg).expect("msg ref");
-        }
-        1
-    } else {
-        0
+    if msg.load_int().expect("int msg") != want.load_int().expect("int pinned") {
+        return 0;
+    }
+    unsafe { *out = msg };
+    1
+}
+
+/// Always picks the second clause, after writing one value into the buffer.
+extern "C" fn second_clause(
+    _process: *mut Process,
+    msg: u64,
+    _pinned: *const AnyValueRef,
+    out: *mut AnyValueRef,
+) -> u32 {
+    unsafe { *out = AnyValueRef::from_raw_word(msg).expect("msg ref") };
+    2
+}
+
+/// The matcher is handed the frame's pinned values, which sit behind the
+/// captures: a capture that equals the message is not mistaken for one.
+#[test]
+fn the_matcher_reads_the_pinned_values_behind_the_frames_captures() {
+    let mut process = fresh_process();
+    let site = leaked_site(pinned_eq_matcher, None, 1, &[clause(0x10, 1, 0)]);
+    let frame = frame_of(&mut process.heap, &[int_ref(7), int_ref(42)]);
+    let park = record(site, frame);
+
+    let (clause_idx, bound) = park.try_match(null_mut(), int_ref(42)).expect("42 is the pinned value");
+    assert_eq!(clause_idx, 0);
+    assert_eq!(bound.len(), 1);
+    assert_eq!(bound[0].load_int(), Ok(42));
+    assert!(
+        park.try_match(null_mut(), int_ref(7)).is_none(),
+        "7 is a capture, not the pinned value"
+    );
+}
+
+#[test]
+fn a_hit_hands_back_only_the_winning_clauses_bound_values() {
+    let mut process = fresh_process();
+    let site = leaked_site(second_clause, None, 0, &[clause(0x10, 1, 0), clause(0x20, 0, 0)]);
+    let park = record(site, frame_of(&mut process.heap, &[]));
+
+    let (clause_idx, bound) = park.try_match(null_mut(), int_ref(99)).expect("match");
+    assert_eq!(clause_idx, 1);
+    assert!(bound.is_empty(), "the second clause binds nothing");
+}
+
+/// The outcome closure is the frame re-cut for the winning clause: that
+/// clause's code, the bound values right behind the outer continuation, the
+/// captures behind them, the clause's empty slots last. Pinned values are for
+/// the matcher only and do not travel.
+#[test]
+fn an_outcome_closure_is_the_winning_clauses_code_over_bound_values_then_captures() {
+    let mut process = fresh_process();
+    let site = leaked_site(pinned_eq_matcher, None, 1, &[clause(0x10, 0, 0), clause(0xbeef, 1, 2)]);
+    let frame = frame_of(&mut process.heap, &[int_ref(7), int_ref(42)]);
+    let park = record(site, frame);
+
+    let outcome = park.outcome_closure(&mut process.heap, 1, &[int_ref(99)]);
+
+    assert_eq!(code_of(outcome), 0xbeef);
+    let addr = outcome.closure_addr().expect("outcome addr");
+    // SAFETY: `outcome` is a live closure.
+    unsafe {
+        assert_eq!(closure_flags_captured(closure_flags(addr)), 5);
+        assert_eq!(closure_capture_value(addr, 0), AnyValue::null(), "outer continuation");
+        assert_eq!(closure_capture_value(addr, 1), AnyValue::Int(99), "bound value");
+        assert_eq!(closure_capture_value(addr, 2), AnyValue::Int(7), "capture");
+        assert_eq!(closure_capture_value(addr, 3), AnyValue::nil_atom(), "empty slot");
+        assert_eq!(closure_capture_value(addr, 4), AnyValue::nil_atom(), "empty slot");
     }
 }
 
 #[test]
-fn park_record_holds_matcher_and_pinned() {
-    let p = ParkRecord {
-        matcher_fn: mock_eq_matcher,
-        pinned: vec![int_ref(&INT_42)],
-        clause_bodies: vec![placeholder_closure()],
-        clause_bound_counts: vec![1],
-        bound_arity: 1,
-        after_deadline_ms: None,
-        after_cont: None,
-        after_timer_id: None,
-    };
-    assert_eq!(p.pinned, vec![int_ref(&INT_42)]);
-    assert_eq!(p.bound_arity, 1);
-    assert!(p.after_timer_id.is_none());
-}
+fn an_after_closure_is_the_after_bodys_code_over_the_captures() {
+    let mut process = fresh_process();
+    let site = leaked_site(pinned_eq_matcher, Some((0xaf7e, 1)), 1, &[clause(0x10, 1, 0)]);
+    let frame = frame_of(&mut process.heap, &[int_ref(7), int_ref(42)]);
+    let park = record(site, frame);
+    assert!(park.has_after());
 
-#[test]
-fn try_match_hit_returns_clause_and_bound_vals() {
-    let p = ParkRecord {
-        matcher_fn: mock_eq_matcher,
-        pinned: vec![int_ref(&INT_99)],
-        clause_bodies: vec![placeholder_closure()],
-        clause_bound_counts: vec![1],
-        bound_arity: 1,
-        after_deadline_ms: None,
-        after_cont: None,
-        after_timer_id: None,
-    };
-    let hit = p.try_match(null_mut(), int_ref(&INT_99));
-    assert!(hit.is_some());
-    let (idx, vals) = hit.unwrap();
-    assert_eq!(idx, 0);
-    assert_eq!(vals.len(), 1);
-    assert_eq!(vals[0], int_ref(&INT_99));
-}
+    let after = park.after_closure(&mut process.heap);
 
-#[test]
-fn try_match_trims_scratch_to_winning_clause_bound_count() {
-    extern "C" fn second_clause(
-        _process: *mut Process,
-        _msg: u64,
-        _pinned: *const AnyValueRef,
-        out: *mut AnyValueRef,
-    ) -> u32 {
-        unsafe {
-            *out = int_ref(&INT_123);
-        }
-        2
+    assert_eq!(code_of(after), 0xaf7e);
+    let addr = after.closure_addr().expect("after addr");
+    // SAFETY: `after` is a live closure.
+    unsafe {
+        assert_eq!(closure_flags_captured(closure_flags(addr)), 3);
+        assert_eq!(closure_capture_value(addr, 1), AnyValue::Int(7), "capture");
+        assert_eq!(closure_capture_value(addr, 2), AnyValue::nil_atom(), "empty slot");
     }
-    let p = ParkRecord {
-        matcher_fn: second_clause,
-        pinned: vec![],
-        clause_bodies: vec![placeholder_closure(), placeholder_closure()],
-        clause_bound_counts: vec![1, 0],
-        bound_arity: 1,
-        after_deadline_ms: None,
-        after_cont: None,
-        after_timer_id: None,
-    };
-    let (idx, vals) = p.try_match(null_mut(), int_ref(&INT_99)).expect("match");
-    assert_eq!(idx, 1);
-    assert!(vals.is_empty());
 }
 
 #[test]
-fn try_match_miss_returns_none() {
-    let p = ParkRecord {
-        matcher_fn: mock_eq_matcher,
-        pinned: vec![int_ref(&INT_99)],
-        clause_bodies: vec![placeholder_closure()],
-        clause_bound_counts: vec![1],
-        bound_arity: 1,
-        after_deadline_ms: None,
-        after_cont: None,
-        after_timer_id: None,
-    };
-    assert!(p.try_match(null_mut(), int_ref(&INT_100)).is_none());
+fn a_site_without_an_after_body_says_so() {
+    let mut process = fresh_process();
+    let site = leaked_site(pinned_eq_matcher, None, 0, &[clause(0x10, 1, 0)]);
+    assert!(!record(site, frame_of(&mut process.heap, &[])).has_after());
 }

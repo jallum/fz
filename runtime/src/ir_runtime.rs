@@ -39,14 +39,13 @@ use crate::bitstr::{
 use crate::exec_ctx::ExecCtx;
 use crate::heap::{AllocStat, StubSite, closure_capture_ref, list_head_ref, list_tail_ref};
 use crate::module_name::STRUCT_MODULE_FIELD;
-use crate::park::{MatcherFn, ParkRecord};
+use crate::park::{ParkRecord, ReceiveSite};
 use crate::process::{ClosureRef, Handler, Process};
 use crate::resource::{ResourceHandle, ResourceStub, alloc_resource};
 use crate::sched::{ReceiveStep, reach_receive};
 use crate::scheduler_hooks::YIELD_PTR;
 use crate::term::{NumericMode, TermComparator};
 use crate::write_output;
-use std::mem::transmute;
 use std::slice::from_raw_parts;
 use std::sync::atomic::{AtomicU64, Ordering};
 use unicode_segmentation::GraphemeCursor;
@@ -481,93 +480,35 @@ pub extern "C" fn fz_try_pop(process: *mut Process) {
     unsafe { &mut *process }.pop_handler();
 }
 
-/// Selective receive entry. Called by JIT/AOT
-/// codegen at the `Term::ReceiveMatched` seam after the matcher fn,
-/// pinned snapshot, clause-body table, and (optional) after-cont
-/// closure have been laid out by `build_park_record` (B3).
+/// Selective receive entry. Generated code calls it where a `receive` is
+/// reached, with the site's constant record and the frame this arrival built.
 ///
 /// Args:
-/// - `matcher_fn_bits`: raw pointer to the codegen'd matcher fn.
-/// - `pinned_ptr` / `n_pinned`: array of `AnyValueRef` pinned matcher
-///   values. `n_pinned` is the logical entry count.
-/// - `clause_bodies_ptr` / `n_clauses`: array of clause-body closure
-///   pointers (one per source clause, in declaration order).
-/// - `clause_bound_counts_ptr`: array of per-clause bound-variable counts.
-/// - `bound_arity`: max bound-var count across clauses.
-/// - `after_deadline_or_neg1`: the `after` timeout as a relative duration in
+/// - `site`: the receive's `ReceiveSite`, emitted once by codegen.
+/// - `frame_bits`: the frame closure, `[outer_cont, captures..., pinned...]`.
+/// - `after_ms_or_neg1`: the `after` timeout as a relative duration in
 ///   millis, or `-1` when there is no after (no timer; matcher hit is the
 ///   only way the receiver wakes).
-/// - `after_cont_bits`: after-body closure pointer, or `0` when no
-///   after clause.
 ///
 /// The receive is decided here (`sched::reach_receive`): a message that
 /// matches, or an `after 0` with nothing matching, returns the closure ref
 /// word to run next; a miss that must wait returns the YIELD sentinel so the
 /// trampoline parks the task.
 #[unsafe(no_mangle)]
-#[allow(clippy::too_many_arguments, clippy::not_unsafe_ptr_arg_deref)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_receive_park_matched(
     process: *mut Process,
-    matcher_fn_bits: u64,
-    pinned_ptr: *const AnyValueRef,
-    n_pinned: u64,
-    clause_bodies_ptr: *const u64,
-    n_clauses: u64,
-    clause_bound_counts_ptr: *const u64,
-    bound_arity: u32,
-    after_deadline_or_neg1: i64,
-    after_cont_bits: u64,
+    site: *const ReceiveSite,
+    frame_bits: u64,
+    after_ms_or_neg1: i64,
 ) -> *mut u8 {
-    let matcher_fn: MatcherFn = unsafe { transmute(matcher_fn_bits as usize) };
-    // Codegen passes `null` for `pinned_ptr` / `clause_bodies_ptr`
-    // when the corresponding count is 0. `slice::from_raw_parts` rejects
-    // null even with len 0 (its safety contract requires a valid aligned
-    // pointer), so guard the zero-len case explicitly.
-    let pinned: Vec<AnyValueRef> = if n_pinned == 0 {
-        Vec::new()
-    } else {
-        unsafe { from_raw_parts(pinned_ptr, n_pinned as usize).to_vec() }
-    };
-    let clause_bodies: Vec<AnyValueRef> = if n_clauses == 0 {
-        Vec::new()
-    } else {
-        unsafe {
-            from_raw_parts(clause_bodies_ptr, n_clauses as usize)
-                .iter()
-                .map(|&bits| closure_ref_from_word(bits, "fz_receive_park_matched clause body"))
-                .collect()
-        }
-    };
-    let clause_bound_counts: Vec<u16> = if n_clauses == 0 {
-        Vec::new()
-    } else if clause_bound_counts_ptr.is_null() {
-        vec![bound_arity as u16; n_clauses as usize]
-    } else {
-        unsafe { from_raw_parts(clause_bound_counts_ptr, n_clauses as usize) }
-            .iter()
-            .map(|&n| n as u16)
-            .collect()
-    };
-    let after_deadline_ms = if after_deadline_or_neg1 < 0 {
-        None
-    } else {
-        Some(after_deadline_or_neg1 as u64)
-    };
-
-    let after_cont =
-        (after_cont_bits != 0).then(|| closure_ref_from_word(after_cont_bits, "fz_receive_park_matched after cont"));
-
     let park = ParkRecord {
-        matcher_fn,
-        pinned,
-        clause_bodies,
-        clause_bound_counts,
-        bound_arity: bound_arity as u16,
-        after_deadline_ms,
-        after_cont,
+        // SAFETY: codegen passes the address of a read-only site record that lives as long as the program.
+        site: unsafe { &*site },
+        frame: closure_ref_from_word(frame_bits, "fz_receive_park_matched frame"),
+        after_deadline_ms: u64::try_from(after_ms_or_neg1).ok(),
         after_timer_id: None,
     };
-
     let p = unsafe { &mut *process };
     match reach_receive(p, park) {
         ReceiveStep::Continue(closure) => closure.raw_word() as *mut u8,

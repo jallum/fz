@@ -71,12 +71,18 @@ every task through this one shim.
 
 A `receive` scans its mailbox when it is reached, oldest message first, and only
 a miss parks. The park snapshot is a `WaitState` (alias for `ParkRecord`) stored
-in `Process.delivery` once a miss must wait. It holds the compiled `matcher_fn`, the pinned `^name` values in
-matcher order, one `clause_bodies` closure-template pointer per clause, the
-per-clause bound-var counts, and (if there is an `after`) the timeout state.
+in `Process.delivery` once a miss must wait. It holds the receive's `site`, the
+arrival's `frame`, and (if there is an `after`) the timeout state.
+
+The site (`ReceiveSite`) is what the compiler knows about the receive: the
+matcher, the `after` body's code, the pinned-value count, and each clause's
+code and bound-value count. Codegen emits it once per receive as read-only
+data. The frame is one closure built each time the receive is reached,
+`[outer_cont, captures..., pinned...]`, and is never called. A receive of any
+number of clauses builds one frame.
 
 Receive lowering compiles the clause patterns into one matcher via the pattern
-matrix and mints one continuation-template fn per clause body. A bare
+matrix and mints one continuation fn per clause body. A bare
 `receive do msg -> msg end` is just the degenerate case: its matcher always
 matches and binds `msg`.
 
@@ -86,9 +92,9 @@ exactly as `fz_resume` would, and returns the yield sentinel only when it parks.
 
 ```text
 receive:
-  build WaitState (matcher + pinned + clause templates)
+  build the frame ; WaitState = (site, frame)
   a message matches clause k -> splice it out, return the outcome closure (no yield)
-  no match, `after 0`        -> return the after body closure (no yield)
+  no match, `after 0`        -> build and return the after body closure (no yield)
   no match otherwise         -> park = WaitState ; arm the after-timer ; Blocked ; yield
 ```
 
@@ -139,14 +145,14 @@ the callee's continuation. Passing the receiver's outer continuation straight
 through would let the callee deliver on the wrong ABI lane and corrupt the
 resumed receive path.
 
-The parked template always resumes clause/after bodies through an explicit
+The parked frame always resumes clause/after bodies through an explicit
 continuation closure for the post-`receive` join. There is one receive-join
 contract now: outcome code hands the joined value off explicitly instead of
 relying on an alternate `outer_cont` mode.
 
 ```text
 message arrives for a waiting receive and matches clause k:
-  outcome = materialize_outcome_closure(clause_bodies[k], bound_vals)
+  outcome = wait.outcome_closure(k, bound_vals)   # clause k's code over [outer_cont, bound..., captures...]
   wait = None ; runnable = outcome
   core.make_runnable(pid, &mut state)   # Blocked -> Ready, queued once
 ```
@@ -212,12 +218,11 @@ one worker the lock is never contended.
 ## Timeout
 
 An `after` clause is a second closure to run if the timer wins. Receive lowering
-mints the after-clause body alongside the message-clause bodies, and the after
-body closure (`after_cont`) is stored on the `WaitState`.
+mints the after-clause body alongside the message-clause bodies, and the site
+records its code. The after closure is built from the frame when the timer wins.
 
 ```text
 receive ... after 500 -> :timeout:
-  WaitState.after_cont       = after-body closure
   scheduling core schedule_timer(pid, 500ms) -> TimerId
   WaitState.after_timer_id   = TimerId
   state = Blocked
@@ -225,7 +230,7 @@ receive ... after 500 -> :timeout:
 
 The timer wheel entry holds only `(id, deadline, pid)` — not the closure. When it
 fires, `fire_after_timer` checks the parked task still holds that exact timer id,
-then moves `after_cont` into `runnable`; the scheduler makes the task runnable
+then builds the after closure from the frame into `runnable`; the scheduler makes the task runnable
 through its core. If a message matches first, the matcher-hit path cancels the
 timer via `timer_cancel` and schedules the matched outcome instead. Either way
 the runnable result has the same shape: `runnable()`.
@@ -520,8 +525,7 @@ handlers that produce a closure. There is no separate "pending resume" vs.
 passes arguments into a helper, because the closure already carries its own state.
 The roots the boundary GC traces are the `runnable` closure, the `delivered`
 handler slot (a raise's handler, resumed inside the quantum that raised it, see
-[exceptions](exceptions.md)), the park record's clause bodies, after body and
-pinned values, the handlers of the `try` bodies the process is inside, the
+[exceptions](exceptions.md)), the park record's frame, the handlers of the `try` bodies the process is inside, the
 `mailbox`, and the caller's transient values, all gathered by
 `Process::collect`; the process `heap` is the arena being collected, not a root.
 

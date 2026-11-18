@@ -5,10 +5,11 @@ use crate::bits::{SharedBinHandle, alloc_buffer_view};
 use crate::exec_ctx::ExecCtx;
 use crate::heap::StubSite;
 use crate::heap::{SchemaRegistry, pool_drain_for_test, pool_outstanding_blocks, pool_total_cached_blocks};
-use crate::park::ParkRecord;
+use crate::park::park_test::{code_of, frame_of, leaked_site};
+use crate::park::{MatcherFn, ParkRecord, ReceiveClause};
 use crate::sync::Ordering;
 use std::cell::RefCell;
-use std::ptr::{read, write};
+use std::ptr::read;
 use std::rc::Rc;
 
 extern "C" fn match_42(_process: *mut Process, msg: u64, _pinned: *const AnyValueRef, out: *mut AnyValueRef) -> u32 {
@@ -37,35 +38,27 @@ fn fresh_task() -> Process {
     Process::new(schemas)
 }
 
-fn template_closure(task: &mut Process, stub: usize) -> AnyValueRef {
-    let bits = task
-        .heap
-        .alloc_closure_slots(crate::any_value::ClosureDenotationId::user(0), 0, 1, 0);
-    let p = any_value::closure_addr_from_tagged(bits).expect("template closure ptr");
-    unsafe {
-        write(p.add(8) as *mut u64, stub as u64);
-        any_value::closure_capture_set(p, 0, AnyValue::null());
-    }
-    AnyValueRef::from_heap_object(ValueKind::CLOSURE, p).expect("template closure ref")
-}
+const CLAUSE_CODE: usize = 0xdead_beef;
+const AFTER_CODE: usize = 0xcafe_babe;
 
-/// A closure ref to an address nothing dereferences, for a record that is only compared.
-fn fake_closure(addr: usize) -> AnyValueRef {
-    AnyValueRef::from_heap_object(ValueKind::CLOSURE, addr as *const u8).expect("fake closure ref")
+/// A parked receive of one clause that binds `bound_count` values, with an
+/// after body, over a frame that captures nothing.
+fn record_of(task: &mut Process, matcher: MatcherFn, bound_count: u32, timer: Option<TimerId>) -> ParkRecord {
+    let clause = ReceiveClause {
+        code: CLAUSE_CODE,
+        bound_count,
+        empty_slots: 0,
+    };
+    ParkRecord {
+        site: leaked_site(matcher, Some((AFTER_CODE, 0)), 0, &[clause]),
+        frame: frame_of(&mut task.heap, &[]),
+        after_deadline_ms: timer.map(|_| 0),
+        after_timer_id: timer,
+    }
 }
 
 fn record_on_42(task: &mut Process, timer: Option<TimerId>) -> ParkRecord {
-    let template = template_closure(task, 0xdead_beef);
-    ParkRecord {
-        matcher_fn: match_42,
-        pinned: vec![],
-        clause_bodies: vec![template],
-        clause_bound_counts: vec![1],
-        bound_arity: 1,
-        after_deadline_ms: timer.map(|_| 0),
-        after_cont: Some(fake_closure(0xcafe_babe)),
-        after_timer_id: timer,
-    }
+    record_of(task, match_42, 1, timer)
 }
 
 fn park_on_42(task: &mut Process, timer: Option<TimerId>) {
@@ -124,32 +117,14 @@ extern "C" fn match_7_binding_nothing(
 }
 
 fn park_binding_nothing(task: &mut Process) {
-    let template = template_closure(task, 0xdead_beef);
-    task.delivery.lock().install_park(ParkRecord {
-        matcher_fn: match_7_binding_nothing,
-        pinned: vec![],
-        clause_bodies: vec![template],
-        clause_bound_counts: vec![0],
-        bound_arity: 0,
-        after_deadline_ms: None,
-        after_cont: Some(fake_closure(0xcafe_babe)),
-        after_timer_id: None,
-    });
+    let record = record_of(task, match_7_binding_nothing, 0, None);
+    task.delivery.lock().install_park(record);
     task.state = ProcessState::Blocked;
 }
 
 fn park_binding_twice(task: &mut Process) {
-    let template = template_closure(task, 0xdead_beef);
-    task.delivery.lock().install_park(ParkRecord {
-        matcher_fn: bind_list_twice,
-        pinned: vec![],
-        clause_bodies: vec![template],
-        clause_bound_counts: vec![2],
-        bound_arity: 2,
-        after_deadline_ms: None,
-        after_cont: Some(fake_closure(0xcafe_babe)),
-        after_timer_id: None,
-    });
+    let record = record_of(task, bind_list_twice, 2, None);
+    task.delivery.lock().install_park(record);
     task.state = ProcessState::Blocked;
 }
 
@@ -214,7 +189,7 @@ fn deliver_in_queue_finishes_a_matched_receive_with_the_gifted_values() {
         .closure_addr()
         .expect("runnable closure addr");
     unsafe {
-        assert_eq!(read((runnable as *const u8).add(8) as *const u64), 0xdead_beef);
+        assert_eq!(read((runnable as *const u8).add(8) as *const u64), CLAUSE_CODE as u64);
         let capture_ref =
             AnyValueRef::from_raw_word(any_value::closure_capture_ref_word(runnable, 1)).expect("capture ref");
         assert_eq!(capture_ref.load_int().expect("capture int ref"), 42);
@@ -439,7 +414,7 @@ fn reach_receive_hit_continues_with_the_clause_and_splices_the_message_out() {
     };
     let cont = cont.closure_addr().expect("continuation closure addr");
     unsafe {
-        assert_eq!(read(cont.add(8) as *const u64), 0xdead_beef);
+        assert_eq!(read(cont.add(8) as *const u64), CLAUSE_CODE as u64);
         let capture_ref =
             AnyValueRef::from_raw_word(any_value::closure_capture_ref_word(cont, 1)).expect("capture ref");
         assert_eq!(capture_ref.load_int().expect("capture int ref"), 42);
@@ -478,10 +453,10 @@ fn reach_receive_after_zero_miss_continues_with_the_after_body() {
     task.mailbox.push_back(int_ref(1));
     let mut record = record_on_42(&mut task, None);
     record.after_deadline_ms = Some(0);
-    assert_eq!(
-        reach_receive(&mut task, record),
-        ReceiveStep::Continue(fake_closure(0xcafe_babe))
-    );
+    let ReceiveStep::Continue(after) = reach_receive(&mut task, record) else {
+        panic!("an `after 0` receive that misses must continue");
+    };
+    assert_eq!(code_of(after), AFTER_CODE);
     assert!(task.delivery.lock().park().is_none());
     assert_eq!(task.state, ProcessState::Running);
     assert_eq!(mailbox_ints(&task), vec![1]);
@@ -496,7 +471,7 @@ fn reach_receive_after_zero_hit_prefers_the_clause_to_the_after_body() {
     let ReceiveStep::Continue(cont) = reach_receive(&mut task, record) else {
         panic!("a matching message must continue the receive");
     };
-    assert_ne!(cont, fake_closure(0xcafe_babe));
+    assert_eq!(code_of(cont), CLAUSE_CODE);
     assert!(task.mailbox.is_empty());
 }
 
@@ -537,9 +512,7 @@ extern "C" fn match_42_noting_the_lock(
 fn watch_matches_on(task: &mut Process) -> ParkRecord {
     WATCHED.with(|watched| watched.set(task as *const Process));
     LOCK_HELD_AT_MATCH.with(|notes| notes.borrow_mut().clear());
-    let mut record = record_on_42(task, None);
-    record.matcher_fn = match_42_noting_the_lock;
-    record
+    record_of(task, match_42_noting_the_lock, 1, None)
 }
 
 fn matcher_runs_and_whether_the_lock_was_held() -> Vec<bool> {
@@ -579,8 +552,8 @@ fn the_timer_then_a_sender_decides_the_receive_once_and_the_sender_delivers_a_mi
 
     assert!(fire_after_timer(&mut task, TIMER), "the timer took the park");
     assert_eq!(
-        task.runnable_closure(),
-        Some(fake_closure(0xcafe_babe)),
+        task.runnable_closure().map(code_of),
+        Some(AFTER_CODE),
         "the timer woke the after body"
     );
 
@@ -599,8 +572,8 @@ fn the_timer_then_a_sender_decides_the_receive_once_and_the_sender_delivers_a_mi
     deliver_in_queue(&mut task);
     assert_eq!(mailbox_ints(&task), vec![42], "the message waits for a later receive");
     assert_eq!(
-        task.runnable_closure(),
-        Some(fake_closure(0xcafe_babe)),
+        task.runnable_closure().map(code_of),
+        Some(AFTER_CODE),
         "the sender woke nothing"
     );
 }

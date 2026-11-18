@@ -196,8 +196,7 @@ how far past budget the process ran before reaching a back edge.
 
 `needs_boundary_gc()` is true when `heap.should_gc()` holds. When it fires,
 `Process::collect` runs `Heap::collect` over one root slice that it builds from
-the process: the runnable continuation closure; the park record's clause
-bodies, after body and pinned values; the mailbox; and any transient values the
+the process: the runnable continuation closure; the park record's frame; the mailbox; and any transient values the
 caller passes. Each slot holds its forwarded value afterwards and is written
 back to where it came from. The decision is made at scheduler-quantum
 boundaries, never per back edge. Gifts waiting in the delivery in-queue are not

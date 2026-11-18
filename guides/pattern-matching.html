@@ -476,16 +476,18 @@ else's job.</p>
 
 <p>Each receive clause body is compiled as a separate function. Its
 parameters are <em>bound pattern vars first, then the outer-scope
-captures</em>. At the receive site, we park one closure
-<em>template</em> per clause:</p>
+captures</em>. Reaching the receive builds one closure, the
+<em>frame</em>, whatever the number of clauses:</p>
 
-<pre>template env: [outer_cont, cap0, cap1, ...]</pre>
+<pre>frame    env: [outer_cont, cap0, cap1, ..., pinned0, ...]</pre>
 
-<p>That's a closure that's missing its bound values &mdash; it just
-carries the continuation and the captured outer vars.</p>
+<p>The frame is never called. It holds what this arrival has in hand:
+the continuation, the captured outer vars and the pinned values the
+matcher reads. Everything else about the receive &mdash; the matcher and
+each clause's code &mdash; is a constant the compiler emits once.</p>
 
-<p>When the matcher hits, the runtime takes the template and splices the
-plucked bindings into the middle:</p>
+<p>When the matcher hits, the runtime builds the winning clause's
+closure from the frame, with the plucked bindings in the middle:</p>
 
 <pre>outcome  env: [outer_cont, bound0, bound1, ..., cap0, cap1, ...]</pre>
 
@@ -516,16 +518,21 @@ wildcard clause doesn't pick up someone else's slots.</p>
 carries the cached AST-free dispatch plan, one body function per clause, the
 pinned snapshot, the captures, and an optional <code>after</code>
 clause. Native codegen calls <code>fz_receive_park_matched</code>,
-which builds a <code>ParkRecord</code> on the process and yields.</p>
+passing the receive's constant <code>ReceiveSite</code> and the frame.
+A receive that must wait keeps a <code>ParkRecord</code> on the process
+and yields.</p>
 
-<pre>ParkRecord
-  matcher_fn              <span class="com"># the extern "C" matcher</span>
-  pinned                  <span class="com"># snapshot of ^name values</span>
-  clause_bodies           <span class="com"># one closure template per clause</span>
-  clause_bound_counts     <span class="com"># per-clause bound arity (for truncation)</span>
+<pre>ReceiveSite               <span class="com"># one per receive, read-only</span>
+  matcher                 <span class="com"># the extern "C" matcher</span>
+  after_code              <span class="com"># the after body, if any</span>
+  pinned_count            <span class="com"># how many ^name values the frame ends with</span>
   bound_arity             <span class="com"># widest clause, sizes the out buffer</span>
+  clauses[]               <span class="com"># per clause: code, bound count (for truncation)</span>
+
+ParkRecord                <span class="com"># one per arrival that waits</span>
+  site
+  frame                   <span class="com"># [outer_cont, captures..., pinned...]</span>
   after_deadline_ms       <span class="com"># optional after timer</span>
-  after_cont
   after_timer_id</pre>
 
 <h3>When a sender sends</h3>
@@ -633,9 +640,9 @@ MapHasKey :name?    <span class="ok">yes</span>
 pluck MapValue :name → <span class="atm">:alice</span>
 result: clause 1, bound = [n = :alice]</pre>
 
-<p>The runtime takes the clause-1 template
-<code>[outer_cont, ...captures]</code>, splices <code>n = :alice</code>
-between <code>outer_cont</code> and the captures, and resumes through
+<p>The runtime takes the frame
+<code>[outer_cont, ...captures]</code>, puts <code>n = :alice</code>
+between <code>outer_cont</code> and the captures under clause 1's code, and resumes through
 that closure. The body is just <code>n -&gt; n</code>, so the receive
 expression evaluates to <code>:alice</code> &mdash; and crucially, the
 <code>age</code> field is never copied anywhere, because nothing in the
@@ -654,8 +661,8 @@ default → Leaf(body=2, bindings=[])
 result: clause 2, bound = []</pre>
 
 <p>The wildcard outcome closure has no bound values. Its environment is
-just <code>[outer_cont, ...captures]</code> &mdash; the template itself,
-unchanged &mdash; because there's nothing pattern-derived to splice in.
+just <code>[outer_cont, ...captures]</code> &mdash; the frame's own
+values under clause 2's code &mdash; because there's nothing pattern-derived to put in.
 The body returns <code>:unknown</code>.</p>
 
 <p>And then <code>dbg({a, b, c})</code> prints
