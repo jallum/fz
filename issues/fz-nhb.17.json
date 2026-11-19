@@ -9,9 +9,15 @@
   "id": "fz-nhb.17",
   "labels": [],
   "parent": "fz-nhb",
+  "comments": [
+    {
+      "text": "From Elixir Parity (fz-nhb.5, PR #786): String.to_byte_list/1 is defined at lib/string.fz:1006-1008, and lib/string.fz:52 refers to it in prose. Its only other user is fixtures/01625_string_surface.fz. #786 adds String.to_charlist/1, which is Elixir API, so a caller that wants a binary's elements as a list can use it (for UTF-8 text) or :erlang.binary_to_list/1 (for raw bytes) instead.",
+      "timestamp": "2026-11-19T02:40:08Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "fz's stdlib exposes Elixir's names only: Kernel.range/3, Kernel.compare/2, String.index_of/2, String.to_byte_list/1 and List.reverse/2 leave the public surface",
   "type": "task",
-  "updated_at": "2026-11-18T00:56:34Z"
+  "updated_at": "2026-11-19T02:40:08Z"
 }
