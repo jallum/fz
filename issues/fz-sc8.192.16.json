@@ -14,11 +14,15 @@
     {
       "text": "Concordant evidence (Bugs and Cleanup, 2026-11-19): ORACLE=regen locally with Elixir 1.19.4 / OTP 28 rewrites fixtures 01174 and 01760 — small atom-key maps print in a different order (%{b: 3, a: 1} vs %{a: 1, b: 3}). CI pins OTP 28.5.0.1 / Elixir 1.19.5 (.github/workflows/ci.yml:37-38). OTP orders a small map's atom keys by atom-table index, so the golden depends on which atoms the Elixir build created first: oracle goldens with small atom-key maps are only reproducible on CI's exact versions.",
       "timestamp": "2026-11-19T03:22:18Z"
+    },
+    {
+      "text": "Second report (Optimize, 2026-11-19): ORACLE=regen on 1.19.4/OTP 28 rewrites 01760's atom-key maps again. CI's 1.19.5 golden stands.",
+      "timestamp": "2026-11-19T04:38:52Z"
     }
   ],
   "priority": 3,
   "status": "open",
   "title": "A map's atom keys are listed in the order Elixir lists them, or the difference is a documented one",
   "type": "task",
-  "updated_at": "2026-11-19T03:22:18Z"
+  "updated_at": "2026-11-19T04:38:52Z"
 }
