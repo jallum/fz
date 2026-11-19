@@ -18,7 +18,6 @@ use fz_runtime::process_abi::{PROCESS_HANDLER_END_OFFSET, PROCESS_HANDLER_TOP_OF
 /// Capture 0 is the synthetic outer cont; user captures follow.
 pub(crate) fn build_cont_closure<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
-    env: &CodegenEnv<'_>,
     outer_cont: ir::Value,
     cont_fid: FuncId,
     cap_bindings: &[ClosureCapture],
@@ -26,7 +25,7 @@ pub(crate) fn build_cont_closure<M: cranelift_module::Module>(
 ) -> ir::Value {
     let count = cap_bindings.len() + empty_slots + 1;
     let code_addr = fn_addr(body.jmod, cont_fid, body.b);
-    let closure_ref = place_cont_closure(body, env, count, code_addr);
+    let closure_ref = place_cont_closure(body, count, code_addr);
     let address = address_field(body.b, closure_ref);
     fill_cont_captures(body, address, outer_cont, cap_bindings, empty_slots);
     closure_ref
@@ -147,20 +146,11 @@ fn fill_cont_captures<M: cranelift_module::Module>(
 /// code address are written, the captures are not.
 pub(super) fn place_cont_closure<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
-    env: &CodegenEnv<'_>,
     count: usize,
     code_addr: ir::Value,
 ) -> ir::Value {
     let header = closure_header_word(ClosureDenotationId::INTERNAL, count as u16, 0, CONT_ARITY as u16);
-    emit_closure(
-        body,
-        env.site_scope(),
-        HeapAllocKind::Continuation,
-        header,
-        count,
-        code_addr,
-    )
-    .reference
+    emit_closure(body, HeapAllocKind::Continuation, header, count, code_addr).reference
 }
 
 /// What codegen knows, where a ref word is stored, of the kind it names.

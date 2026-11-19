@@ -13,7 +13,6 @@
 //! A continuation frame is a closure, so it is placed here too, under its own
 //! statistics kind.
 
-use super::alloc_site::SiteScope;
 use super::place::emit_place;
 use super::*;
 use cranelift_codegen::ir::{self, InstBuilder, MemFlagsData, types};
@@ -32,11 +31,10 @@ pub(crate) struct Placed {
 /// header word.
 pub(super) fn emit_struct<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
-    scope: SiteScope<'_>,
     schema_id: u32,
     size: usize,
 ) -> Placed {
-    let address = emit_place(body, scope, HeapAllocKind::Struct, size);
+    let address = emit_place(body, HeapAllocKind::Struct, size);
     let header = body.b.ins().iconst(types::I64, struct_header_word(schema_id) as i64);
     body.b.ins().store(MemFlagsData::trusted(), header, address, 0);
     Placed {
@@ -50,14 +48,13 @@ pub(super) fn emit_struct<M: cranelift_module::Module>(
 /// its `code_addr`.
 pub(super) fn emit_closure<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
-    scope: SiteScope<'_>,
     kind: HeapAllocKind,
     header: u64,
     captured_count: usize,
     code_addr: ir::Value,
 ) -> Placed {
     let size = closure_size_for_count(captured_count);
-    let address = emit_place(body, scope, kind, size);
+    let address = emit_place(body, kind, size);
     let flags = MemFlagsData::trusted();
     let header = body.b.ins().iconst(types::I64, header as i64);
     body.b.ins().store(flags, header, address, 0);

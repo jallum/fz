@@ -17,7 +17,6 @@
 //! places through it, and it counts the site after the join, so a placement
 //! the runtime made room for is counted by the same site as one the tip took.
 
-use super::alloc_site::SiteScope;
 use super::*;
 use cranelift_codegen::ir::{self, InstBuilder, MemFlagsData, condcodes::IntCC, types};
 use fz_runtime::alloc_site::AllocSite;
@@ -29,7 +28,6 @@ use fz_runtime::process_abi::PROCESS_HEAP_OFFSET;
 /// the object starts at. The caller writes every word of the object.
 pub(super) fn emit_place<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
-    scope: SiteScope<'_>,
     kind: HeapAllocKind,
     size: usize,
 ) -> ir::Value {
@@ -64,6 +62,7 @@ pub(super) fn emit_place<M: cranelift_module::Module>(
     body.b.switch_to_block(placed);
     body.b.seal_block(placed);
     count_statistics(body, kind, size);
+    let scope = body.scope;
     scope.sites.borrow_mut().count(
         body,
         AllocSite {

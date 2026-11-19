@@ -19,7 +19,12 @@ fn runtime_call_is_near<M: Module>(mut module: M) -> bool {
     let entry = b.create_block();
     b.switch_to_block(entry);
     let mut cache = CodegenCache::default();
-    let mut body = CodegenFn::new(&mut b, &mut module, &mut cache);
+    let sites = std::cell::RefCell::new(AllocSites::declare(&mut module).expect("declare the site counters"));
+    let scope = SiteScope {
+        sites: &sites,
+        function: "test",
+    };
+    let mut body = CodegenFn::new(&mut b, &mut module, &mut cache, scope);
     let callee = runtime_func_ref!(body, fz_type_of(_));
     body.b.func.dfg.ext_funcs[callee].colocated
 }

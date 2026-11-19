@@ -92,7 +92,7 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
     // populated from. Builder, module, cache, and import table are bound once,
     // here.
     let mut cache = CodegenCache::default();
-    let mut body = CodegenFn::new(&mut b, jmod, &mut cache);
+    let mut body = CodegenFn::new(&mut b, jmod, &mut cache, env.site_scope());
     let EntryHarnessOut {
         mut var_env,
         cont_param,

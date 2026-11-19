@@ -151,6 +151,7 @@ fn declare_callable_boundary_fns<M: cranelift_module::Module>(
 fn emit_callable_boundary_bodies<M: cranelift_module::Module>(
     m: &mut M,
     fbctx: &mut FunctionBuilderContext,
+    sites: &RefCell<AllocSites>,
     fn_ids: &HashMap<u32, FuncId>,
     callable_boundary_fn_ids: &HashMap<u32, FuncId>,
     surface: &NativeCodegenSurface<'_>,
@@ -177,7 +178,15 @@ fn emit_callable_boundary_bodies<M: cranelift_module::Module>(
             let self_value = params[arg_reprs.len()];
             let cont_value = params[arg_reprs.len() + 1];
             let mut shim_cache = CodegenCache::default();
-            let mut cg = CodegenFn::new(b, m, &mut shim_cache);
+            let mut cg = CodegenFn::new(
+                b,
+                m,
+                &mut shim_cache,
+                SiteScope {
+                    sites,
+                    function: &boundary_name,
+                },
+            );
             let body_fref = cg.func_ref(body_func_id);
             let mut direct_args: Vec<ir::Value> =
                 Vec::with_capacity(boundary.capture_reprs.len() + arg_reprs.len() + 1);
@@ -315,6 +324,7 @@ fn define_halt_conts<M: cranelift_module::Module>(
 fn emit_main_trampoline<M: cranelift_module::Module>(
     m: &mut M,
     fbctx: &mut FunctionBuilderContext,
+    sites: &RefCell<AllocSites>,
     locals: &LocalBodies,
 ) -> Result<(), CodegenError> {
     let mut sig = Signature::new(CallConv::Tail);
@@ -329,7 +339,15 @@ fn emit_main_trampoline<M: cranelift_module::Module>(
         let self_cl = b.block_params(entry)[0];
         let cont = b.block_params(entry)[1];
         let mut shim_cache = CodegenCache::default();
-        let mut cg = CodegenFn::new(b, m, &mut shim_cache);
+        let mut cg = CodegenFn::new(
+            b,
+            m,
+            &mut shim_cache,
+            SiteScope {
+                sites,
+                function: "fz_main_trampoline",
+            },
+        );
         // capture[0] holds the raw `(cont)` main fn pointer (raw int).
         let zero = cg.b.ins().iconst(types::I64, 0);
         let main_fp = cg.closure_capture_i64(self_cl, zero);
@@ -363,6 +381,7 @@ fn drain_dtor_entry_signature<M: cranelift_module::Module>(m: &mut M) -> Signatu
 fn emit_drain_dtor_entry<M: cranelift_module::Module>(
     m: &mut M,
     fbctx: &mut FunctionBuilderContext,
+    sites: &RefCell<AllocSites>,
     locals: &LocalBodies,
 ) -> Result<(), CodegenError> {
     let sig = drain_dtor_entry_signature(m);
@@ -374,7 +393,15 @@ fn emit_drain_dtor_entry<M: cranelift_module::Module>(
         let closure = b.block_params(entry)[0];
         let payload_ref = b.block_params(entry)[1];
         let mut shim_cache = CodegenCache::default();
-        let mut cg = CodegenFn::new(b, m, &mut shim_cache);
+        let mut cg = CodegenFn::new(
+            b,
+            m,
+            &mut shim_cache,
+            SiteScope {
+                sites,
+                function: "fz_drain_dtor_entry",
+            },
+        );
         // Strict halt-cont (kind=0). Dtor return is discarded;
         // ValueRef avoids RawInt/F64 unboxing.
         let halt_cl = cg.halt_cont_ref(locals, ArgRepr::ValueRef);
@@ -413,6 +440,7 @@ fn emit_drain_dtor_entry<M: cranelift_module::Module>(
 fn emit_entry_thunk<M: cranelift_module::Module>(
     m: &mut M,
     fbctx: &mut FunctionBuilderContext,
+    sites: &RefCell<AllocSites>,
     locals: &LocalBodies,
 ) -> Result<(), CodegenError> {
     let mut sig = Signature::new(CallConv::Tail);
@@ -425,7 +453,15 @@ fn emit_entry_thunk<M: cranelift_module::Module>(
         b.seal_block(entry);
         let self_cl = b.block_params(entry)[0];
         let mut shim_cache = CodegenCache::default();
-        let mut cg = CodegenFn::new(b, m, &mut shim_cache);
+        let mut cg = CodegenFn::new(
+            b,
+            m,
+            &mut shim_cache,
+            SiteScope {
+                sites,
+                function: "fz_entry_thunk",
+            },
+        );
         // capture[0] is the inner closure to launch.
         let zero_idx = cg.b.ins().iconst(types::I64, 0);
         let closure = cg.closure_capture_ref(self_cl, zero_idx);
@@ -465,6 +501,7 @@ fn emit_entry_thunk<M: cranelift_module::Module>(
 fn emit_halt_cont_bodies<M: cranelift_module::Module>(
     m: &mut M,
     fbctx: &mut FunctionBuilderContext,
+    sites: &RefCell<AllocSites>,
     locals: &LocalBodies,
 ) -> Result<(), CodegenError> {
     for repr in [ArgRepr::ValueRef, ArgRepr::RawInt, ArgRepr::RawF64, ArgRepr::RawAtom] {
@@ -479,7 +516,15 @@ fn emit_halt_cont_bodies<M: cranelift_module::Module>(
             b.seal_block(entry);
             let value = b.block_params(entry)[0];
             let mut shim_cache = CodegenCache::default();
-            let mut cg = CodegenFn::new(b, m, &mut shim_cache);
+            let mut cg = CodegenFn::new(
+                b,
+                m,
+                &mut shim_cache,
+                SiteScope {
+                    sites,
+                    function: "fz_halt_cont_body",
+                },
+            );
             cg.halt_implicit(repr, value);
             let zero = cg.b.ins().iconst(types::I64, 0);
             cg.b.ins().return_(&[zero]);
@@ -507,6 +552,7 @@ fn resume_signature<M: cranelift_module::Module>(m: &mut M) -> Signature {
 fn emit_resume<M: cranelift_module::Module>(
     m: &mut M,
     fbctx: &mut FunctionBuilderContext,
+    sites: &RefCell<AllocSites>,
 ) -> Result<FuncId, CodegenError> {
     let sig = resume_signature(m);
     let id = m
@@ -519,7 +565,15 @@ fn emit_resume<M: cranelift_module::Module>(
         b.seal_block(entry);
         let cont = b.block_params(entry)[0];
         let mut shim_cache = CodegenCache::default();
-        let mut cg = CodegenFn::new(b, m, &mut shim_cache);
+        let mut cg = CodegenFn::new(
+            b,
+            m,
+            &mut shim_cache,
+            SiteScope {
+                sites,
+                function: "fz_resume",
+            },
+        );
         let code = cg.closure_code_ref(cont);
         let mut stub_sig = Signature::new(CallConv::Tail);
         stub_sig.params.push(AbiParam::new(types::I64)); // self
@@ -677,6 +731,7 @@ fn emit_receive_dispatch_bodies<M: cranelift_module::Module>(
 fn emit_mid_flight_cont_bodies<M: cranelift_module::Module>(
     m: &mut M,
     fbctx: &mut FunctionBuilderContext,
+    sites: &RefCell<AllocSites>,
     fn_ids: &HashMap<u32, FuncId>,
     mid_flight_cont_tail_fn_ids: &HashMap<(u32, Vec<MidFlightArgShape>), FuncId>,
 ) -> Result<(), CodegenError> {
@@ -696,7 +751,15 @@ fn emit_mid_flight_cont_bodies<M: cranelift_module::Module>(
             let self_bits = b.block_params(entry)[0];
             let mut args = Vec::with_capacity(arg_shapes.iter().map(MidFlightArgShape::abi_arity).sum());
             let mut shim_cache = CodegenCache::default();
-            let mut cg = CodegenFn::new(b, m, &mut shim_cache);
+            let mut cg = CodegenFn::new(
+                b,
+                m,
+                &mut shim_cache,
+                SiteScope {
+                    sites,
+                    function: &tail_name,
+                },
+            );
             let mut ref_slots: Vec<usize> = Vec::new();
             for (i, arg_shape) in arg_shapes.iter().enumerate() {
                 match arg_shape {
@@ -937,11 +1000,12 @@ pub(crate) fn compile_with_backend_surface<
     let locals = declare_local_bodies(backend.module_mut())?;
 
     let mut fbctx = FunctionBuilderContext::new();
+    let alloc_sites = RefCell::new(AllocSites::declare(backend.module_mut())?);
 
-    emit_main_trampoline(backend.module_mut(), &mut fbctx, &locals)?;
-    emit_drain_dtor_entry(backend.module_mut(), &mut fbctx, &locals)?;
-    emit_entry_thunk(backend.module_mut(), &mut fbctx, &locals)?;
-    emit_halt_cont_bodies(backend.module_mut(), &mut fbctx, &locals)?;
+    emit_main_trampoline(backend.module_mut(), &mut fbctx, &alloc_sites, &locals)?;
+    emit_drain_dtor_entry(backend.module_mut(), &mut fbctx, &alloc_sites, &locals)?;
+    emit_entry_thunk(backend.module_mut(), &mut fbctx, &alloc_sites, &locals)?;
+    emit_halt_cont_bodies(backend.module_mut(), &mut fbctx, &alloc_sites, &locals)?;
 
     let user_schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
     let (tuple_arities, tuple_schema_ids) = collect_tuple_arities_and_register_schemas(surface.module, &user_schemas);
@@ -968,7 +1032,6 @@ pub(crate) fn compile_with_backend_surface<
     let mid_flight_cont_tail_fn_ids = declare_mid_flight_conts(backend.module_mut(), surface)?;
 
     let bitstring_literals = RefCell::new(BitstringLiterals::default());
-    let alloc_sites = RefCell::new(AllocSites::declare(backend.module_mut())?);
     let (receive_dispatch_fn_ids, receive_matched_sites) = declare_receive_dispatch_fns(backend.module_mut(), module)?;
     let verifier_isa = host_isa_for(CodeHome::ThisProcess);
     drop(declare_span);
@@ -1057,15 +1120,22 @@ pub(crate) fn compile_with_backend_surface<
         tel,
     )?;
 
-    emit_mid_flight_cont_bodies(backend.module_mut(), &mut fbctx, &fn_ids, &mid_flight_cont_tail_fn_ids)?;
+    emit_mid_flight_cont_bodies(
+        backend.module_mut(),
+        &mut fbctx,
+        &alloc_sites,
+        &fn_ids,
+        &mid_flight_cont_tail_fn_ids,
+    )?;
     emit_callable_boundary_bodies(
         backend.module_mut(),
         &mut fbctx,
+        &alloc_sites,
         &fn_ids,
         &callable_boundary_fn_ids,
         surface,
     )?;
-    let resume_id = emit_resume(backend.module_mut(), &mut fbctx)?;
+    let resume_id = emit_resume(backend.module_mut(), &mut fbctx, &alloc_sites)?;
     drop(emit_runtime_span);
 
     let (alloc_site_counts, alloc_sites) = alloc_sites.into_inner().define(backend.module_mut())?;

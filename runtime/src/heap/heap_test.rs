@@ -3429,6 +3429,14 @@ fn inline_alloc_layout_names_the_fields_a_placement_updates() {
         layout.closure_bytes,
         at((&heap.alloc_stats.closure.bytes as *const u64).addr())
     );
+    assert_eq!(
+        layout.scalar_box_allocs,
+        at((&heap.alloc_stats.scalar_box.allocs as *const u64).addr())
+    );
+    assert_eq!(
+        layout.scalar_box_bytes,
+        at((&heap.alloc_stats.scalar_box.bytes as *const u64).addr())
+    );
 }
 
 /// Prepend `cells` fresh cells to `tail`, collect with the list as the only

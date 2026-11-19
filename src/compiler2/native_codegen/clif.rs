@@ -165,10 +165,10 @@ pub(crate) fn payload_field(b: &mut FunctionBuilder<'_>, ref_word: ir::Value) ->
 }
 
 /// A map key test whose key is one word of a kind known when compiling. The
-/// flat map is searched where the test stands; `slow` is entered for a map in
-/// any other layout and is the caller's to fill with the runtime's lookup.
+/// flat map is searched where the test stands; a slow block is entered for a map in
+/// any other layout and is the caller's to fill with the runtime's lookup, in as
+/// many blocks as the lookup needs, and to close with `finish`.
 pub(crate) struct FlatMapScan {
-    slow: ir::Block,
     done: ir::Block,
     found: ir::Value,
 }
@@ -266,13 +266,12 @@ impl FlatMapScan {
 
         b.switch_to_block(slow);
         b.seal_block(slow);
-        Self { slow, done, found }
+        Self { done, found }
     }
 
     /// Close the slow block with the runtime's answer and continue after the
     /// test with the value's ref word, or the null ref for an absent key.
     pub(crate) fn finish(self, b: &mut FunctionBuilder<'_>, slow_answer: ir::Value) -> ir::Value {
-        debug_assert_eq!(b.current_block(), Some(self.slow));
         b.ins().jump(self.done, &[BlockArg::Value(slow_answer)]);
         b.switch_to_block(self.done);
         b.seal_block(self.done);

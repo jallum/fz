@@ -485,6 +485,7 @@ fn every_row_is_proved_against_its_runtime_function() {
         .iter()
         .map(|proof| proof.symbol)
         .chain(cell_proofs().iter().map(|proof| proof.symbol))
+        .chain(box_proofs().iter().map(|proof| proof.symbol))
         .collect();
     let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
     let proved: HashSet<&str> = proved
@@ -744,17 +745,17 @@ fn compile_cell(proof: &CellProof) -> CompiledCell {
         b.seal_block(entry);
         let params = b.block_params(entry).to_vec();
         let mut cache = CodegenCache::default();
-        let mut body = CodegenFn::new(&mut b, module, &mut cache);
+        let scope = SiteScope {
+            sites: &sites,
+            function: "recipe_parity",
+        };
+        let mut body = CodegenFn::new(&mut b, module, &mut cache, scope);
         let process = body.process_arg();
         let head = match proof.lane {
             HeadLane::Float => body.b.ins().bitcast(types::F64, MemFlagsData::new(), params[0]),
             _ => params[0],
         };
-        let scope = SiteScope {
-            sites: &sites,
-            function: "recipe_parity",
-        };
-        let cell = emit_cell(&mut body, scope, proof.symbol, &[process, head, params[1]]);
+        let cell = emit_cell(&mut body, proof.symbol, &[process, head, params[1]]);
         body.b.ins().return_(&[cell]);
         b.finalize(module.target_config());
     }
@@ -1048,15 +1049,15 @@ fn compile_object(case: &ObjectCase, schemas: &Rc<RefCell<SchemaRegistry>>) -> C
         b.seal_block(entry);
         let code = b.block_params(entry)[0];
         let mut cache = CodegenCache::default();
-        let mut body = CodegenFn::new(&mut b, module, &mut cache);
         let scope = SiteScope {
             sites: &sites,
             function: "recipe_parity",
         };
+        let mut body = CodegenFn::new(&mut b, module, &mut cache, scope);
         let reference = match case.object {
             Object::Struct { schema } => {
                 let fields = schemas.borrow().get(schema).value_field_count();
-                body.alloc_struct(scope, schema, fields).reference
+                body.alloc_struct(schema, fields).reference
             }
             Object::Closure {
                 denotation,
@@ -1067,7 +1068,7 @@ fn compile_object(case: &ObjectCase, schemas: &Rc<RefCell<SchemaRegistry>>) -> C
                 let arity = body.b.ins().iconst(types::I32, i64::from(arity));
                 let captures = body.b.ins().iconst(types::I32, captures as i64);
                 let halt_kind = body.b.ins().iconst(types::I32, i64::from(halt_kind));
-                body.alloc_closure(scope, denotation, arity, captures, halt_kind, code)
+                body.alloc_closure(denotation, arity, captures, halt_kind, code)
             }
         };
         body.b.ins().return_(&[reference]);
@@ -1268,5 +1269,192 @@ fn a_placed_header_leaves_the_forwarding_nibble_and_the_shared_bit_clear() {
                 );
             }
         }
+    }
+}
+
+// Scalar box rows are proved on the one word the runtime writes, with the
+// result word: the box's address under the value's kind.
+
+/// A box row's proof: the runtime function it must agree with and the payload
+/// words it is tried on. A float payload is the float's bits.
+struct BoxProof {
+    symbol: &'static str,
+    lane: BoxLane,
+    kind: ValueKind,
+    reference: fn(*mut Process, u64) -> u64,
+    payloads: Vec<(&'static str, u64)>,
+}
+
+fn box_proofs() -> Vec<BoxProof> {
+    let ints = [
+        ("zero", 0),
+        ("one", 1),
+        ("minus one", u64::MAX),
+        ("max", i64::MAX as u64),
+        ("min", i64::MIN as u64),
+    ];
+    let floats = [
+        ("a float", 1.5f64.to_bits()),
+        ("negative zero", (-0.0f64).to_bits()),
+        ("zero", 0.0f64.to_bits()),
+        ("a subnormal", 5e-324f64.to_bits()),
+        ("the smallest normal", f64::MIN_POSITIVE.to_bits()),
+        ("the largest", f64::MAX.to_bits()),
+        ("a large negative", (-1e300f64).to_bits()),
+    ];
+    let references = [("zero", 0), ("a word", 9), ("a full word", u64::MAX)];
+    vec![
+        BoxProof {
+            symbol: "fz_box_int_for_any",
+            lane: BoxLane::Int,
+            kind: ValueKind::INT,
+            reference: |process, payload| fz_box_int_for_any(process, payload as i64),
+            payloads: ints.to_vec(),
+        },
+        BoxProof {
+            symbol: "fz_box_float_for_any",
+            lane: BoxLane::Float,
+            kind: ValueKind::FLOAT,
+            reference: |process, payload| fz_box_float_for_any(process, f64::from_bits(payload)),
+            payloads: floats.to_vec(),
+        },
+        BoxProof {
+            symbol: "fz_box_opaque_for_any",
+            lane: BoxLane::Opaque,
+            kind: ValueKind::REF,
+            reference: |process, payload| fz_box_opaque_for_any(process, payload, u64::from(ValueKind::REF.tag())),
+            payloads: references.to_vec(),
+        },
+    ]
+}
+
+/// A box row compiled to a function of the payload word, and the runtime
+/// functions its code imports.
+struct CompiledBox {
+    object: CompiledObject,
+    imports: Vec<String>,
+}
+
+fn compile_box(proof: &BoxProof) -> CompiledBox {
+    let mut backend = JitBackend::new();
+    let module = backend.module_mut();
+    let mut ctx = module.make_context();
+    let mut fbctx = FunctionBuilderContext::new();
+    let mut sig = module.make_signature();
+    sig.params = vec![ir::AbiParam::new(types::I64)];
+    sig.returns = vec![ir::AbiParam::new(types::I64)];
+    ctx.func.signature = sig.clone();
+    let sites = RefCell::new(AllocSites::declare(module).expect("declare the site counters"));
+    {
+        let mut b = FunctionBuilder::new(&mut ctx.func, &mut fbctx);
+        let entry = b.create_block();
+        b.append_block_params_for_function_params(entry);
+        b.switch_to_block(entry);
+        b.seal_block(entry);
+        let payload = b.block_params(entry)[0];
+        let mut cache = CodegenCache::default();
+        let scope = SiteScope {
+            sites: &sites,
+            function: "recipe_parity",
+        };
+        let mut body = CodegenFn::new(&mut b, module, &mut cache, scope);
+        let process = body.process_arg();
+        let reference = match proof.lane {
+            BoxLane::Int => emit_box(&mut body, proof.symbol, &[process, payload]),
+            BoxLane::Float => {
+                let float = body.b.ins().bitcast(types::F64, MemFlagsData::new(), payload);
+                emit_box(&mut body, proof.symbol, &[process, float])
+            }
+            BoxLane::Opaque => {
+                let kind = body.b.ins().iconst(types::I64, i64::from(proof.kind.tag()));
+                emit_box(&mut body, proof.symbol, &[process, payload, kind])
+            }
+        };
+        body.b.ins().return_(&[reference]);
+        b.finalize(module.target_config());
+    }
+    let id = module
+        .declare_function("recipe_parity_box", Linkage::Export, &sig)
+        .expect("declare the box function");
+    module.define_function(id, &mut ctx).expect("define the box function");
+    let (counts_id, registered) = sites.into_inner().define(module).expect("define the site counters");
+    assert_eq!(registered.len(), 1, "one placement is one site");
+    assert_eq!(registered[0].kind, HeapAllocKind::ScalarBox);
+    assert_eq!(registered[0].bytes, 16);
+    let imports = module
+        .declarations()
+        .get_functions()
+        .filter(|(_, declaration)| declaration.linkage == Linkage::Import)
+        .filter_map(|(_, declaration)| declaration.name.clone())
+        .collect();
+    module.finalize_definitions().expect("finalize the box function");
+    let code = module.get_finalized_function(id);
+    let (counts, _) = module.get_finalized_data(counts_id);
+    CompiledBox {
+        object: CompiledObject {
+            code,
+            counts: counts.cast(),
+            _backend: backend,
+        },
+        imports,
+    }
+}
+
+/// A box row, run on heaps over every payload and both tip states, writes the
+/// word its runtime function writes and leaves the heap as it leaves it: the
+/// ref word, the tip, the object count and every statistic.
+#[test]
+fn every_box_row_leaves_the_heap_its_runtime_function_leaves() {
+    let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
+    for proof in box_proofs() {
+        let compiled = compile_box(&proof);
+        for &(name, payload) in &proof.payloads {
+            for tip in [Tip::Roomy, Tip::Full] {
+                let expected = run_object(tip, 1, &schemas, |process| (proof.reference)(process, payload));
+                let inline = run_object(tip, 1, &schemas, |process| unsafe {
+                    pinned_abi::call1(compiled.object.code, process, payload) as u64
+                });
+                assert_eq!(
+                    inline.tip_changed,
+                    tip == Tip::Full,
+                    "`{}` on {name} with a {tip:?} tip: the tip moved only when it had no room",
+                    proof.symbol
+                );
+                assert_eq!(
+                    inline, expected,
+                    "`{}` on {name} with a {tip:?} tip: inline against the runtime function",
+                    proof.symbol
+                );
+                assert_eq!(
+                    inline.result >> AnyValueRefPacking::current().tag_shift(),
+                    u64::from(proof.kind.tag()),
+                    "`{}` on {name}: the ref word's kind",
+                    proof.symbol
+                );
+            }
+        }
+        let counted = unsafe { *compiled.object.counts };
+        assert_eq!(
+            counted,
+            2 * proof.payloads.len() as u64,
+            "`{}` counts its site once per placement",
+            proof.symbol
+        );
+    }
+}
+
+/// A float that is not finite is not a language value, and the runtime function
+/// refuses it. The float row hands such a float to that function rather than
+/// boxing it, and the int and opaque rows have no such path.
+#[test]
+fn only_the_float_row_can_reach_the_runtime_function_for_a_value_it_refuses() {
+    for proof in box_proofs() {
+        let compiled = compile_box(&proof);
+        assert_eq!(
+            compiled.imports.iter().any(|name| name == "fz_box_float_for_any"),
+            proof.lane == BoxLane::Float,
+            "`{}`: whether its code can call fz_box_float_for_any",
+            proof.symbol
+        );
     }
 }

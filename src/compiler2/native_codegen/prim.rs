@@ -1,7 +1,7 @@
 //! Primitive lowering helpers for codegen.
 
 use super::bitstring_literal::BitstringLiteral;
-use super::recipe::{Emitted, emit_cell, emit_inline};
+use super::recipe::{Emitted, emit_box, emit_cell, emit_inline};
 use super::repr::ExternLane;
 use super::runtime_test::{KindEvidence, RuntimeTestEmitter, emit_runtime_type_test};
 use super::*;
@@ -25,6 +25,7 @@ use fz_runtime::any_value::{
 };
 use fz_runtime::bits::{BINVIEW_BIT_LEN_OFFSET, BINVIEW_BYTES_PTR_OFFSET};
 use fz_runtime::extern_binary::{fz_binary_as_cstring, fz_binary_as_ptr};
+use fz_runtime::ir_runtime::fz_unbox_opaque;
 use fz_runtime::ir_runtime::{
     fz_alloc_binview_from_static, fz_bs_begin, fz_bs_field_end, fz_bs_field_spec, fz_bs_finalize,
     fz_bs_read_binary_ref, fz_bs_read_int_ref, fz_bs_write_field_ref, fz_bs_write_word, fz_function_arity,
@@ -35,7 +36,6 @@ use fz_runtime::ir_runtime::{
     fz_struct_get_named_field_ref, fz_struct_module, fz_struct_schema_id_ref, fz_value_cmp_raw_const, fz_value_cmp_ref,
     fz_value_eq_raw_const, fz_value_eq_ref, fz_value_eq_widening_ref,
 };
-use fz_runtime::ir_runtime::{fz_box_opaque_for_any, fz_unbox_opaque};
 use fz_runtime::process::AtomName;
 use fz_runtime::process_abi::{PROCESS_DELIVERED_OFFSET, PROCESS_FAILED_OFFSET};
 use target_lexicon::{Architecture, OperatingSystem, Triple};
@@ -103,7 +103,6 @@ fn emit_map_destination_put<M: cranelift_module::Module>(
 
 pub(crate) fn emit_list_cons_bif<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
-    scope: SiteScope<'_>,
     var_env: &HashMap<u32, CodegenValue>,
     head: Var,
     head_kind: Option<ValueKind>,
@@ -115,19 +114,19 @@ pub(crate) fn emit_list_cons_bif<M: cranelift_module::Module>(
     match cons_head_kind(head_kind, head_value) {
         Some(ValueKind::INT) => {
             let head_raw = body.value_raw_int(head_value);
-            emit_cell(body, scope, "fz_list_cons_int", &[process, head_raw, tail_ref])
+            emit_cell(body, "fz_list_cons_int", &[process, head_raw, tail_ref])
         }
         Some(ValueKind::FLOAT) => {
             let head_raw = body.value_raw_float(head_value);
-            emit_cell(body, scope, "fz_list_cons_float", &[process, head_raw, tail_ref])
+            emit_cell(body, "fz_list_cons_float", &[process, head_raw, tail_ref])
         }
         Some(ValueKind::ATOM) => {
             let head_raw = body.value_raw_atom(head_value);
-            emit_cell(body, scope, "fz_list_cons_atom", &[process, head_raw, tail_ref])
+            emit_cell(body, "fz_list_cons_atom", &[process, head_raw, tail_ref])
         }
         _ => {
             let head_ref = body.value_as_any_ref(head_value);
-            emit_cell(body, scope, "fz_list_cons_any", &[process, head_ref, tail_ref])
+            emit_cell(body, "fz_list_cons_any", &[process, head_ref, tail_ref])
         }
     }
 }
@@ -262,7 +261,7 @@ fn build_struct<M: cranelift_module::Module, T: Types<Ty = Ty>>(
     if let Some(static_ref) = try_static_struct_literal(body, env, var_env, dest_var, schema_id, fields)? {
         return Ok(LowerOut::ValueRefWord(static_ref));
     }
-    let object = body.alloc_struct(env.site_scope(), schema_id, fields.len());
+    let object = body.alloc_struct(schema_id, fields.len());
     for (index, field) in fields.iter().enumerate() {
         let addressed = addressed_object_share(t, env.active_value_types(), *field);
         body.store_field(&object, index, binding_for_var(var_env, field.0), addressed);
@@ -314,14 +313,7 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
                 None => ListTailBits::Empty,
             };
             for e in elems.iter().rev() {
-                let cons = emit_list_cons_bif(
-                    body,
-                    env.site_scope(),
-                    var_env,
-                    *e,
-                    expected_runtime_value_kind(t, value_types, *e),
-                    acc,
-                );
+                let cons = emit_list_cons_bif(body, var_env, *e, expected_runtime_value_kind(t, value_types, *e), acc);
                 acc = ListTailBits::NonEmptyValueRef(cons);
             }
             match acc {
@@ -1027,7 +1019,7 @@ fn box_opaque_word<M: cranelift_module::Module>(
         return immediate_ref_word(body.b, raw, kind);
     }
     let kind = body.b.ins().iconst(types::I64, kind.tag() as i64);
-    runtime_call1!(body, fz_box_opaque_for_any, [process, raw, kind])
+    emit_box(body, "fz_box_opaque_for_any", &[process, raw, kind])
 }
 
 /// The pid or reference word a ref word holds. A pid is read from the ref; a
@@ -2636,7 +2628,6 @@ pub(crate) fn lower_make_closure<M: cranelift_module::Module>(
     let cl_sid = settled_callable_boundary_id(env, fn_id)?;
     Ok(LowerOut::ValueRef(emit_capturing_closure(
         body,
-        env.site_scope(),
         var_env,
         env.surface,
         env.callable_boundary_fn_ids,
@@ -2652,7 +2643,6 @@ pub(crate) fn lower_make_closure<M: cranelift_module::Module>(
 /// captures from `self` in its entry harness.
 fn emit_capturing_closure<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
-    scope: SiteScope<'_>,
     var_env: &HashMap<u32, CodegenValue>,
     surface: &NativeCodegenSurface<'_>,
     callable_boundary_fn_ids: &HashMap<u32, FuncId>,
@@ -2681,7 +2671,7 @@ fn emit_capturing_closure<M: cranelift_module::Module>(
     let halt_repr = boundary.task_halt_repr.unwrap_or(ArgRepr::ValueRef);
     let hk_v = body.b.ins().iconst(types::I32, halt_repr.halt_kind() as i64);
     let body_addr = fn_addr(body.jmod, body_func_id, body.b);
-    let cl_ptr = body.alloc_closure(scope, boundary.denotation, arity_v, nc_v, hk_v, body_addr);
+    let cl_ptr = body.alloc_closure(boundary.denotation, arity_v, nc_v, hk_v, body_addr);
     for (i, cv) in captured.iter().enumerate() {
         match closure_capture_for_var_as(body, var_env, cv.0, boundary.capture_reprs[i]) {
             ClosureCapture::RefWord(value) => body.store_closure_capture_ref_word(cl_ptr, i, value),

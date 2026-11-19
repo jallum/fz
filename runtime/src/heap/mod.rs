@@ -91,8 +91,8 @@ pub const SHARED_BIN_THRESHOLD_BYTES: usize = 64;
 /// updates to place an object at the tip without calling the runtime: the
 /// bump pointer and its block's end, the object count, and the allocation
 /// statistics a placement must keep truthful (the total and the counters of
-/// each kind compiled code places: continuation frames, list cells, structs
-/// and closures).
+/// each kind compiled code places: continuation frames, list cells, structs,
+/// closures and scalar boxes).
 #[derive(Clone, Copy, Debug)]
 pub struct InlineAllocLayout {
     pub block_start: usize,
@@ -109,6 +109,8 @@ pub struct InlineAllocLayout {
     pub struct_bytes: usize,
     pub closure_allocs: usize,
     pub closure_bytes: usize,
+    pub scalar_box_allocs: usize,
+    pub scalar_box_bytes: usize,
 }
 
 impl InlineAllocLayout {
@@ -120,6 +122,7 @@ impl InlineAllocLayout {
             HeapAllocKind::ListCons => Some((self.list_cons_allocs, self.list_cons_bytes)),
             HeapAllocKind::Struct => Some((self.struct_allocs, self.struct_bytes)),
             HeapAllocKind::Closure => Some((self.closure_allocs, self.closure_bytes)),
+            HeapAllocKind::ScalarBox => Some((self.scalar_box_allocs, self.scalar_box_bytes)),
             _ => None,
         }
     }
@@ -140,6 +143,8 @@ pub const INLINE_ALLOC_LAYOUT: InlineAllocLayout = InlineAllocLayout {
     struct_bytes: std::mem::offset_of!(Heap, alloc_stats.struct_.bytes),
     closure_allocs: std::mem::offset_of!(Heap, alloc_stats.closure.allocs),
     closure_bytes: std::mem::offset_of!(Heap, alloc_stats.closure.bytes),
+    scalar_box_allocs: std::mem::offset_of!(Heap, alloc_stats.scalar_box.allocs),
+    scalar_box_bytes: std::mem::offset_of!(Heap, alloc_stats.scalar_box.bytes),
 };
 
 pub struct Heap {

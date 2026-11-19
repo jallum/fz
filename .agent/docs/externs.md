@@ -283,11 +283,13 @@ A recipe does not validate its argument: the Rust function panics on a
 malformed word, the instructions read whatever the word says.
 
 A row that allocates is the other kind of row (`Emit::Cell`, `Emit::Struct`,
-`Emit::Closure`): it takes the
+`Emit::Closure`, `Emit::Box`): it takes the
 process as its first argument, as the runtime function does, and writes the
 object itself. Asking `emit_inline` for one panics; a call site asks
-`emit_cell(body, scope, symbol, args)`, which registers the allocation site
-in `scope` (`SiteScope`, from `CodegenEnv::site_scope`). The four list-cell
+`emit_cell(body, symbol, args)`, which registers the allocation site in the
+body's `SiteScope` (`CodegenFn::scope`, given when the body is made: the
+function's display name for a compiled function, the shim's name for a shim).
+The four list-cell
 rows, `fz_list_cons_int`, `fz_list_cons_float`, `fz_list_cons_atom` and
 `fz_list_cons_any`, place the 16-byte cell through `emit_place` (the one inline
 bump, see [scheduler zero-arg closures](scheduler-zero-arg-closures.md)) and
@@ -305,7 +307,7 @@ named by the heap method the interpreter calls, as the runtime has no extern
 for them: `Heap::alloc_struct_unwritten` (the process, the schema id and the
 size) and `Heap::alloc_closure` (the process, the denotation, the arity, the
 capture count, the halt kind and the code address). A call site asks
-`emit_object(body, scope, symbol, args)`, which reads the arguments after the
+`emit_object(body, symbol, args)`, which reads the arguments after the
 process back as constants (a closure's code address stays a value) and
 answers the object's address and ref word. `native_codegen/inline_object.rs`
 writes the struct's header word, or the closure's header word (denotation,
@@ -314,9 +316,22 @@ that builds the object stores the fields or captures and their kind bytes. The
 runtime writes nothing: compiled code places a continuation frame the same
 way, through the same `emit_closure`.
 
+A scalar box is placed the same way. `fz_box_int_for_any`,
+`fz_box_float_for_any` and `fz_box_opaque_for_any` (a reference's word; a pid
+is packed into its ref and has no box) are rows, and a call site asks
+`emit_box(body, symbol, args)`. `native_codegen/scalar_box.rs` places one
+16-byte slot, counted as a `ScalarBox`, stores the one payload word and answers
+the box's address under the value's kind; the slot's second word is padding the
+runtime leaves unwritten too. A float whose exponent bits are all ones (a NaN
+or an infinity, which a foreign function can return) is not a language value:
+the row sends it to `fz_box_float_for_any`, which raises, so the refusal is the
+runtime's on every path. The receive dispatch bodies are entered from Rust with
+the process as a parameter rather than in the pinned register, so they still
+call the three functions (`runtime_call!`, not an inline row).
+
 The rows are the typed `fz_op_*_ii` arithmetic and comparison externs, the
 `fz_op_*_ff` comparisons, `fz_op_neg_f`, `fz_op_abs_f`, the list-cell,
-struct and closure allocations above, and the helpers
+struct, closure and scalar-box allocations above, and the helpers
 `fz_type_of`, `fz_truthy_ref`, `fz_unbox_int`, `fz_unbox_atom`,
 `fz_struct_schema_id_ref` and `fz_value_eq_raw_const` (an atom or integer
 constant kind only; another kind keeps the call). The Rust function stays the
@@ -324,7 +339,7 @@ definition and the interpreter keeps calling it. To add an intrinsic, add one
 `recipe!` row and one entry in `proofs()` in `recipe_test.rs`: the parity test
 compiles every row and compares its answer with the runtime function over
 inputs for its signature, and fails for a row with no entry. An allocation row
-has an entry in `cell_proofs()` or `object_proofs()` instead, and its test
+has an entry in `cell_proofs()`, `object_proofs()` or `box_proofs()` instead, and its test
 compares heaps: it runs the runtime function (or heap method) in one fresh
 process and the row's instructions in another, with room in the tip and with a
 full tip. A cell is tried over every head kind, each with a tail of `[]` and of
