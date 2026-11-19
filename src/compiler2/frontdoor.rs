@@ -287,7 +287,6 @@ impl<'t> FrontDoorParser<'t> {
                 let name = name.clone();
                 (name, self.type_expression_payload()?)
             }
-            Tok::Type => ("type".to_string(), self.type_expression_payload()?),
             Tok::Ident(name) => {
                 let name = name.clone();
                 (name, self.parse_expr(module_path, &[])?.root)
@@ -2533,12 +2532,11 @@ impl<'t> FrontDoorParser<'t> {
     }
 }
 
-/// The attributes whose payload is a type expression, besides `@type`, which
-/// the lexer reads as its own keyword. `@typep` and `@opaque` declare a type
-/// as `@type` does: Elixir's compiler treats all three alike, and only a
-/// static analyser reads a type as private or opaque.
+/// The attributes whose payload is a type expression. `@typep` and `@opaque`
+/// declare a type as `@type` does: Elixir's compiler treats all three alike,
+/// and only a static analyser reads a type as private or opaque.
 fn is_type_attribute_name(name: &str) -> bool {
-    matches!(name, "spec" | "typep" | "opaque")
+    matches!(name, "spec" | "type" | "typep" | "opaque")
 }
 
 /// Whether a line end after `tok` continues the expression: after an infix

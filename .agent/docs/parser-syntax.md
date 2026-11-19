@@ -152,7 +152,9 @@ newline to guess intent.
   for the enclosing block, so the next call remains a separate statement.
 
 - **Type attributes**: `@spec`, `@type`, `@typep` and `@opaque` carry their
-  type expression as a token payload, not a parsed expression, so the front
+  type expression as a token payload. Their names are ordinary identifiers;
+  `type`, like `spec`, is a variable, function or key name anywhere else, as in
+  Elixir. The payload is not a parsed expression, so the front
   door finds its end itself (`FrontDoorParser::type_expression_token_range`).
   A newline ends the payload only outside every bracket and only when the token
   before it can end an expression; after an infix-only operator, a comma or a
