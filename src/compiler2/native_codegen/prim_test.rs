@@ -60,7 +60,7 @@ fn read_var_as(
     read: impl FnOnce(&mut CodegenFn<'_, '_, cranelift_object::ObjectModule>, &HashMap<u32, CodegenValue>),
 ) {
     use cranelift_module::{Module as _, default_libcall_names};
-    let isa = super::super::host_isa_with(true);
+    let isa = super::super::host_isa_for(super::super::CodeHome::Executable);
     let object = cranelift_object::ObjectBuilder::new(isa, "lane_reader_test", default_libcall_names())
         .expect("an object builder for the host");
     let mut module = cranelift_object::ObjectModule::new(object);
@@ -98,4 +98,37 @@ fn an_integer_lane_value_is_refused_by_the_float_reader() {
             body.as_raw_f64(env, 0);
         },
     );
+}
+
+/// Calling an extern takes a near reference in an executable, but a near
+/// address is pc-relative and cannot name a function in a shared library. A
+/// function that both calls an extern and takes its address therefore holds
+/// two references to it: a near one for the call and a far one for the address.
+#[test]
+fn an_extern_called_and_addressed_in_one_function_is_called_near_and_addressed_far() {
+    use cranelift_module::{Module as _, default_libcall_names};
+    let isa = super::super::host_isa_for(super::super::CodeHome::Executable);
+    let object = cranelift_object::ObjectBuilder::new(isa, "extern_refs_test", default_libcall_names())
+        .expect("an object builder for the host");
+    let mut module = cranelift_object::ObjectModule::new(object);
+    let mut ctx = module.make_context();
+    let mut fbctx = cranelift_frontend::FunctionBuilderContext::new();
+    let mut b = FunctionBuilder::new(&mut ctx.func, &mut fbctx);
+    let entry = b.create_block();
+    b.switch_to_block(entry);
+    let mut cache = CodegenCache::default();
+    let mut body = CodegenFn::new(&mut b, &mut module, &mut cache);
+    let eid = ExternId(0);
+    let sig = body.jmod.make_signature();
+
+    let called = extern_call_ref(&mut body, eid, "strlen", &sig).unwrap();
+    let address = foreign_symbol_addr(&mut body, eid, "strlen").unwrap();
+    let addressed = match body.b.func.dfg.insts[body.b.func.dfg.value_def(address).unwrap_inst()] {
+        ir::InstructionData::FuncAddr { func_ref, .. } => func_ref,
+        ref other => panic!("an extern's address is a func_addr, not {other:?}"),
+    };
+
+    let ext_funcs = &body.b.func.dfg.ext_funcs;
+    assert!(ext_funcs[called].colocated);
+    assert!(!ext_funcs[addressed].colocated);
 }

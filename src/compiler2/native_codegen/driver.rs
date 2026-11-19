@@ -970,7 +970,7 @@ pub(crate) fn compile_with_backend_surface<
     let bitstring_literals = RefCell::new(BitstringLiterals::default());
     let alloc_sites = RefCell::new(AllocSites::declare(backend.module_mut())?);
     let (receive_dispatch_fn_ids, receive_matched_sites) = declare_receive_dispatch_fns(backend.module_mut(), module)?;
-    let verifier_isa = host_isa();
+    let verifier_isa = host_isa_for(CodeHome::ThisProcess);
     drop(declare_span);
 
     for body_slot in body_slots {

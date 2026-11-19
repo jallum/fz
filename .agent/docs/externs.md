@@ -220,18 +220,40 @@ item, the convention comes from the target module's default
 (`Module::make_signature`), which is the platform C ABI.
 
 A helper is declared `Import` on first use in the body that calls it and
-memoized there, the way `lower_extern_generic` declares a source-visible extern.
-Calling a new helper is one `runtime_call!` and an import of its name. The AOT
-`main` reaches `fz_aot_setup` and its neighbours the same way. All of this lives
-in `native_codegen/runtime_call.rs`.
+memoized there by `runtime_call_ref`, the way `extern_call_ref` declares a
+source-visible extern. Calling a new helper is one `runtime_call!` and an import
+of its name. All of this lives in `native_codegen/runtime_call.rs`.
 
 A body that can call helpers is a `RuntimeCaller`: it holds the module that
 declares the symbol, the builder that emits the call (`with_builder`), and the
-memo. `CodegenFn`
-is one, for an fz function; `DispatchBody` (`native_codegen/receive.rs`) is the
-other, for the receive-dispatch function, which is emitted straight onto a
-`FunctionBuilder` and takes its `Process*` as a parameter rather than reading
-the pinned register. Both reach a helper by the same `runtime_call!`.
+memo. `CodegenFn` is one, for an fz function; `DispatchBody`
+(`native_codegen/receive.rs`) is another, for the receive-dispatch function,
+which is emitted straight onto a `FunctionBuilder` and takes its `Process*` as a
+parameter rather than reading the pinned register; the AOT `main`
+(`ir_codegen/aot_main.rs`), which reaches `fz_aot_setup` and its neighbours, is
+the third. All reach a helper by the same `runtime_call!`.
+
+### How a call reaches an import
+
+Every call to an import (a helper, a source-visible extern, an extern a guard
+calls) takes its function-local reference from `import_call_ref`
+(`native_codegen/clif.rs`). Where the code will run is a `CodeHome`, fixed when
+the ISA is built (`host_isa_for`):
+
+- `Executable`: the object is linked with the runtime archive, so the linker
+  places every import within a direct branch's reach, adding a stub or PLT entry
+  for a C library function. The ISA sets `is_pic` and `use_colocated_libcalls`,
+  `import_call_ref` marks the reference colocated, and the call is one `bl`
+  (`call rel32` on x86-64). Cranelift's own library calls follow the same flag.
+- `ThisProcess`: JIT code lives in its own arena, which may lie beyond a direct
+  branch's ±128 MiB reach of the runtime in the process image. The reference is
+  not colocated, so the call loads its callee's address and branches through a
+  register.
+
+Only calls take the near reference. A near address is pc-relative and cannot
+name a function in a shared library, so taking an extern's address (the variadic
+path below) declares it afresh: `CodegenCache` keeps `extern_calls` and
+`extern_addrs` apart.
 
 ### Inline recipes
 

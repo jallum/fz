@@ -21,9 +21,9 @@ through it, and the host wrappers that install it at the engine boundary.
 
 ## The register
 
-`enable_pinned_reg` is set on the shared host-ISA builder (`host_isa_with` in
-`src/compiler2/native_codegen/clif.rs`), which both engines use: the JIT builds it with
-`is_pic = false`, AOT with `is_pic = true`. With the flag on, CLIF may use
+`enable_pinned_reg` is set on the shared host-ISA builder (`host_isa_for` in
+`src/compiler2/native_codegen/clif.rs`), which both engines use: the JIT builds it for
+`CodeHome::ThisProcess`, AOT for `CodeHome::Executable`. With the flag on, CLIF may use
 `get_pinned_reg` / `set_pinned_reg`, and Cranelift drops the register from its
 allocatable set. Which register it is, is architecture-selected by Cranelift, not
 chosen here:

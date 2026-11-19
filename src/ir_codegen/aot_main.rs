@@ -1,6 +1,6 @@
 use super::*;
 use crate::compiler2::native_codegen::runtime_call::{
-    RuntimeCaller, RuntimeFn, declare_runtime_fn, runtime_call, runtime_fn_id,
+    RuntimeCaller, RuntimeFn, runtime_call, runtime_call_ref, runtime_fn_id,
 };
 use crate::fast_hash::HashMap;
 use cranelift_codegen::ir::{self, InstBuilder, Signature, types};
@@ -25,13 +25,7 @@ struct AotMain<'a, 'fb, M: ClModule> {
 
 impl<M: ClModule> RuntimeCaller for AotMain<'_, '_, M> {
     fn runtime_func_ref<F: RuntimeFn + Copy>(&mut self, name: &'static str, item: F) -> ir::FuncRef {
-        if let Some(&callee) = self.runtime_funcs.get(name) {
-            return callee;
-        }
-        let id = declare_runtime_fn(self.jmod, name, item);
-        let callee = self.jmod.declare_func_in_func(id, self.b.func);
-        self.runtime_funcs.insert(name, callee);
-        callee
+        runtime_call_ref(self.jmod, self.b.func, &mut self.runtime_funcs, name, item)
     }
 
     fn with_builder<R>(&mut self, emit: impl FnOnce(&mut FunctionBuilder<'_>) -> R) -> R {

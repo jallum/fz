@@ -14,19 +14,31 @@ use fz_runtime::any_value::{
 };
 use std::sync::Arc;
 
-pub(crate) fn host_isa() -> Arc<dyn TargetIsa> {
-    host_isa_with(false)
+/// Where compiled code runs, which decides how it reaches the functions it
+/// imports: the runtime's helpers, externs, and Cranelift's own library calls.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CodeHome {
+    /// In this process, in the JIT's arena. The runtime lives in the process
+    /// image, which may lie beyond a direct branch's reach, so a call loads
+    /// its callee's address and branches through a register.
+    ThisProcess,
+    /// Linked into an executable with the runtime archive. The linker places
+    /// every import within reach (a C library function gets a stub or PLT
+    /// entry), so a call is one direct branch. The code is position
+    /// independent: macOS rejects text relocations in an executable.
+    Executable,
 }
 
-/// Build a host ISA. `pic = false` is right for the JIT (no relocations
-/// needed inside in-memory code). `pic = true` is required for AOT on
-/// macOS, where the linker rejects text relocations in regular
-/// executables.
-pub(crate) fn host_isa_with(pic: bool) -> Arc<dyn TargetIsa> {
+/// Build the host ISA for code that runs in `home`.
+pub(crate) fn host_isa_for(home: CodeHome) -> Arc<dyn TargetIsa> {
+    let linked_with_imports = match home {
+        CodeHome::ThisProcess => "false",
+        CodeHome::Executable => "true",
+    };
     let mut flag_builder = settings::builder();
     flag_builder.set("opt_level", "speed").unwrap();
-    flag_builder.set("is_pic", if pic { "true" } else { "false" }).unwrap();
-    flag_builder.set("use_colocated_libcalls", "false").unwrap();
+    flag_builder.set("is_pic", linked_with_imports).unwrap();
+    flag_builder.set("use_colocated_libcalls", linked_with_imports).unwrap();
     // Cranelift's Tail CC implementation asserts frame pointers are present.
     // macOS preserves them by default; Linux does not.
     flag_builder.set("preserve_frame_pointers", "true").unwrap();
@@ -46,10 +58,25 @@ pub(crate) const JIT_ARENA_BYTES: usize = 1 << 31;
 /// pc-relative reach. The reservation is address space only; memory is
 /// committed as the module writes it.
 pub(crate) fn jit_builder() -> JITBuilder {
-    let mut builder = JITBuilder::with_isa(host_isa(), cranelift_module::default_libcall_names());
+    let mut builder = JITBuilder::with_isa(
+        host_isa_for(CodeHome::ThisProcess),
+        cranelift_module::default_libcall_names(),
+    );
     let arena = ArenaMemoryProvider::new_with_size(JIT_ARENA_BYTES).expect("reserve the JIT module's address space");
     builder.memory_provider(Box::new(arena));
     builder
+}
+
+/// The reference a function calls the import `id` through. Where the module's
+/// code is linked together with its imports, the reference is near
+/// (colocated) and the call is a direct branch. Only calls take this
+/// reference: a near address is pc-relative and cannot name a function in a
+/// shared library, so taking an import's address declares it afresh.
+pub(crate) fn import_call_ref<M: Module>(module: &mut M, id: FuncId, func: &mut ir::Function) -> ir::FuncRef {
+    let near = module.isa().flags().use_colocated_libcalls();
+    let callee = module.declare_func_in_func(id, func);
+    func.dfg.ext_funcs[callee].colocated = near;
+    callee
 }
 
 /// Declare `id` in the current function and return its address as an i64.
@@ -275,3 +302,7 @@ pub(crate) fn bool_to_fz(b: &mut FunctionBuilder<'_>, cache: &mut CodegenCache, 
     let false_v = cached_iconst(b, cache, FALSE_BITS);
     b.ins().select(v, true_v, false_v)
 }
+
+#[cfg(test)]
+#[path = "clif_test.rs"]
+mod clif_test;
