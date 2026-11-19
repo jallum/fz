@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-19T01:32:15Z",
+  "description": "Board cleanup approved by the user, verbatim \"fz-9e2 cleanup approved\" (in Binary Handling's session, 2026-11-19). A grouping parent only: each child keeps its own owner and scope. Children: fz-g03, fz-mue.18, fz-sc8.244, fz-sc8.104, fz-sc8.67.",
+  "id": "fz-9e2.13",
+  "labels": [],
+  "parent": "fz-9e2",
+  "priority": 2,
+  "status": "open",
+  "title": "A binary pattern accepts what Elixir accepts",
+  "type": "task",
+  "updated_at": "2026-11-19T01:32:15Z"
+}
