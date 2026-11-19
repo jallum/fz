@@ -69,17 +69,23 @@ pub(crate) fn ty_is_tuple<T: Types<Ty = Ty>>(t: &mut T, value_types: &HashMap<Va
     t.is_tuple_type(&got)
 }
 
-/// True when every value of `v`'s type is a tuple, a map or a bitstring: an
-/// object a reference names by its address. Such a reference is never a list,
-/// whose spine a holder must share, and never a boxed scalar, whose value
-/// sits behind the reference.
-pub(crate) fn ty_is_addressed_object<T: Types<Ty = Ty>>(t: &mut T, value_types: &HashMap<Var, Ty>, v: Var) -> bool {
+/// How a store shares `v`, when every value of `v`'s type is a tuple, a map
+/// or a bitstring: an object a reference names by its address. Such a
+/// reference is never a list, whose spine a holder must share, and never a
+/// boxed scalar, whose value sits behind the reference. `None` when the type
+/// allows either.
+pub(crate) fn addressed_object_share<T: Types<Ty = Ty>>(
+    t: &mut T,
+    value_types: &HashMap<Var, Ty>,
+    v: Var,
+) -> Option<ShareClass> {
     let tuples = t.tuple_top();
     let maps = t.map_top();
     let bitstrings = t.bitstring();
     let objects = t.union(tuples, maps);
     let objects = t.union(objects, bitstrings);
-    value_types.get(&v).is_some_and(|got| t.is_subtype(got, &objects))
+    let addressed = value_types.get(&v).is_some_and(|got| t.is_subtype(got, &objects));
+    addressed.then(|| share_class(t, value_types, v))
 }
 
 /// What sharing `v` must do, by its type.

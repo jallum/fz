@@ -637,7 +637,9 @@ fn ref_cases() -> Vec<CellCase> {
     head("null", |_| (AnyValueRef::null(), Vec::new()));
     head("the empty list", |_| (AnyValueRef::empty_list(), Vec::new()));
     head("a bitstring", |heap| {
-        (heap.alloc_bitstring(&[1, 2, 3], 24).ref_word(), Vec::new())
+        let bitstring = heap.alloc_bitstring(&[1, 2, 3], 24).ref_word();
+        let address = bitstring.bitstring_addr().expect("a bitstring") as *const u8;
+        (bitstring, vec![address])
     });
     head("an unshared list", |heap| int_list(heap, 3));
     head("a literal list", |heap| {
