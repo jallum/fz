@@ -9,9 +9,15 @@
   "id": "fz-nml.29.1",
   "labels": [],
   "parent": "fz-nml.29",
+  "comments": [
+    {
+      "text": "Correction to match the approved page (fz-nml-29-private-append.html v3 §221): 'a copy into another process is set' applies to a view (born MessageCopy). A small bitstring copied into another process is a fresh private object and is born clear, so its receiver can append in place. Pin it that way. The ticket text came from Optimize's proposal and mis-transcribed the page; the page is what the user approved.",
+      "timestamp": "2026-11-19T01:55:18Z"
+    }
+  ],
   "priority": 1,
   "status": "in_progress",
   "title": "A binary has a shared mark that every publish point sets",
   "type": "task",
-  "updated_at": "2026-11-19T01:33:55Z"
+  "updated_at": "2026-11-19T01:55:18Z"
 }
