@@ -281,7 +281,9 @@ fn read_compile_spend(trace: &Path) -> CompileSpend {
 // narrower activations its closure callsites had settled are not derived.
 // 19_521 -> 17_076: a call round a recursion cycle keeps the entering activation's key at the
 // slots the cycle supplies, so the reduce families have fewer activations to derive.
-const DERIVATIONS: u64 = 17_076;
+// 17_076 -> 17_088: +12: a body that writes a module's name asks whether that module
+// declares a struct, and one more struct schema enters the program; authorized by the user.
+const DERIVATIONS: u64 = 17_088;
 // 111_876 -> 111_888: an extern that declares `raises:` reads the struct of
 // the exception it names, to raise that struct. The distiller calls twelve
 // such externs, and each contract reads `StructDefined` once.
@@ -315,7 +317,8 @@ const DERIVATIONS: u64 = 17_076;
 // 155_313 -> 155_014: the reads of those 23 derivations.
 // 155_014 -> 154_544: the reads of those 43 derivations.
 // 154_544 -> 128_751: the same, each activation read once per derivation.
-const READS_HANDED: u64 = 128_751;
+// 128_751 -> 128_782: +31: the reads of the same rise as `DERIVATIONS`; authorized by the user.
+const READS_HANDED: u64 = 128_782;
 
 /// Compiling the distiller spends this much of the product stack. The largest
 /// drive is the one `PRODUCT_DRIVE_BUDGET` bounds, so its headroom is the
@@ -388,7 +391,10 @@ fn the_distiller_compiles_inside_the_product_drive_budget() {
         // of each closure, so 8 fewer callsites settle and 30 fewer jobs run; in the new order six
         // positions are asked for once more and two once fewer.
         // (46_268, 46_556, 26) -> (37_345, 37_633, 26): a call inside a recursion cycle keys the slots the cycle supplies from the cycle's entry, so the distiller's reduces compile one activation per cycle member where each ascent state had its own.
-        (37_345, 37_633, 26),
+        // (37_345, 37_633, 26) -> (37_346, 37_634, 26): +1: a body that writes a module's name
+        // carries that module's struct schema, so one more schema enters the program;
+        // authorized by the user
+        (37_346, 37_634, 26),
         "(largest drive requests, total requests, drives) for the distiller's compile moved. \
          A fall is lowered in this pin; a rise is investigated first, because the largest drive \
          may not exceed PRODUCT_DRIVE_BUDGET (50,000)."

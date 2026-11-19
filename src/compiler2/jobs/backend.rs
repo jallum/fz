@@ -348,11 +348,8 @@ pub(crate) fn produce_backend_executable_product(
             });
         }
     }
-    waits.extend(undecided_struct_modules(
-        world,
-        context,
-        &backend.abi.materialized.struct_modules,
-    ));
+    let candidates = struct_candidates(world, context, root, &backend, &names.atoms);
+    waits.extend(undefined_modules(world, context, &candidates));
     if !waits.is_empty() {
         return PullOutcome::Waiting(waits);
     }
@@ -370,8 +367,7 @@ pub(crate) fn produce_backend_executable_product(
             context.include_product(ProductKey::BackendExecutable(target));
         }
     }
-    for name in &backend.abi.materialized.struct_modules {
-        let module = world.reference_module(name.clone());
+    for module in candidates {
         if context.read_fact(world, FactUse::settled(FactKey::StructDefined(module))) {
             context.include_product(ProductKey::StructSchema(module));
         }
@@ -380,20 +376,55 @@ pub(crate) fn produce_backend_executable_product(
     PullOutcome::Produced(ProductValue::BackendExecutable(backend))
 }
 
-/// The definitions still to wait for before the schemas of `named` can be
-/// decided. A module the types name under `__struct__` is a struct exactly
-/// when its definition declares one, so each module that can be defined (it
-/// has source, or is a runtime module) is waited on until it is. A name
-/// nothing defines is not a struct, and nothing waits on it.
-fn undecided_struct_modules(
+/// The modules whose schemas an executable may need. Its types spell some
+/// under `__struct__`. A map may also be given a module under `__struct__`
+/// while the program runs, and the program holds that module's atom one of
+/// two ways: a body `writes` it, or the program makes it from text, and then
+/// it can be any module a value can name. A macro root runs while its source
+/// is still being defined, so it waits on neither.
+fn struct_candidates(
     world: &mut World,
     context: &mut ProductReadContext<'_>,
-    named: &[ModuleName],
+    root: RootId,
+    executable: &BackendExecutable,
+    writes: &[String],
+) -> indexmap::IndexSet<ModuleId> {
+    let spelled = &executable.abi.materialized.struct_modules;
+    let mut candidates: indexmap::IndexSet<ModuleId> = spelled
+        .iter()
+        .map(|name| world.reference_module(name.clone()))
+        .collect();
+    if world.root_entry(root).kind != RootKind::Runtime {
+        return candidates;
+    }
+    let written = writes.iter().filter_map(|atom| ModuleName::from_atom_name(atom));
+    candidates.extend(written.map(|name| world.reference_module(name)));
+    if makes_an_atom_from_text(executable) {
+        context.read_fact(world, FactUse::settled(FactKey::NameableModules));
+        candidates.extend(world.nameable_modules());
+    }
+    candidates
+}
+
+/// Whether `executable` is the runtime entry that makes an atom from text.
+/// Every other atom a program holds is one its source writes.
+fn makes_an_atom_from_text(executable: &BackendExecutable) -> bool {
+    let wire = executable.abi.materialized.extern_wire.as_ref();
+    wire.is_some_and(|wire| wire.symbol == "fz_binary_to_atom")
+}
+
+/// The definitions still to wait for before the schemas of `candidates` can
+/// be decided. A module is a struct exactly when its definition declares one,
+/// so each module that can be defined is waited on until it is. A name
+/// nothing defines is not a struct, and nothing waits on it.
+fn undefined_modules(
+    world: &mut World,
+    context: &mut ProductReadContext<'_>,
+    candidates: &indexmap::IndexSet<ModuleId>,
 ) -> Vec<PullWait> {
     let mut waits = Vec::new();
-    for name in named {
-        let module = world.reference_module(name.clone());
-        if !world.module_has_source_state(module) && !world.is_runtime_module(module) {
+    for &module in candidates {
+        if !world.can_be_defined(module) {
             continue;
         }
         let defined = FactUse::settled(FactKey::ModuleDefined(module));

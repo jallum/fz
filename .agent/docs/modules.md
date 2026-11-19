@@ -265,7 +265,11 @@ An `UndefinedFunctionError` carries `module`, `function`, `arity`, `reason`
 (`nil`) and `message`.
 
 A module in a library file the compile never indexed is not nameable, so a
-call that reaches it by a computed atom raises "is not available". With no
+call that reaches it by a computed atom raises "is not available". A map given
+such a module under `__struct__` is likewise no struct of it: it prints as a
+map and reaches no `defimpl`. A nameable module is the struct it declares for
+a map that names it while the program runs (see
+[fact engine](fact-engine.md#root-local-struct-schemas)). With no
 arguments and parentheses, `m.f()` on a map raises `ArgumentError`; Elixir
 reads the field and warns.
 

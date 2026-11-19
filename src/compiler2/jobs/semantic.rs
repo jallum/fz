@@ -1729,7 +1729,7 @@ fn nameable_module_callees(
             continue;
         }
         if world.module_defined_revision(module).is_none() {
-            if world.module_has_source_state(module) || world.is_runtime_module(module) {
+            if world.can_be_defined(module) {
                 note_call_into(world, module, call.clone(), call_span);
                 uses.wait(FactKey::ModuleDefined(module));
                 awaited = true;
@@ -2806,7 +2806,7 @@ fn wait_for_unresolved_function_module(
     if module.is_global() || world.module_defined_revision(module).is_some() {
         return false;
     }
-    if !world.module_has_source_state(module) && !world.is_runtime_module(module) {
+    if !world.can_be_defined(module) {
         return false;
     }
     // This site needs the function's module DEFINED (its scope walked), not its

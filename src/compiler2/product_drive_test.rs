@@ -1308,6 +1308,48 @@ fn a_root_backend_contains_only_struct_schemas_its_reachable_program_needs() {
     assert!(fresh.struct_schemas.is_empty());
 }
 
+/// A map can be given its module under `__struct__` while the program runs,
+/// and a program holds a module's atom only if a body writes it. So the
+/// schema travels with the body that writes the name, whatever its types say,
+/// and a struct no reached body names stays out.
+#[test]
+fn a_body_that_writes_a_struct_modules_name_carries_its_schema() {
+    let tel = ConfiguredTelemetry::new();
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(Box::new(fz_runtime::output::NullOutput));
+    compiler.submit_code(CodeSubmission {
+        name: Some("written_struct_module.fz".to_string()),
+        text: concat!(
+            "defmodule Written do\n",
+            "  defstruct [:value]\n",
+            "end\n",
+            "defmodule Unwritten do\n",
+            "  defstruct [:value]\n",
+            "end\n",
+            "def pick(true), do: Written\n",
+            "def pick(false), do: :other\n",
+            "def main() do\n",
+            "  _module = pick(true)\n",
+            "  7\n",
+            "end\n",
+        )
+        .to_string(),
+    });
+    let main = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(main), Ok(7));
+    let program = compiler.retained_backend_program(main);
+    assert!(
+        program.schema(&module_name("Written")).is_some(),
+        "the module a reached body writes brings its schema"
+    );
+    assert_eq!(program.struct_schemas.len(), 1, "no other declared struct enters");
+}
+
 #[test]
 fn a_newly_reached_callee_adds_its_exact_struct_schema() {
     let tel = ConfiguredTelemetry::new();

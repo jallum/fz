@@ -338,18 +338,6 @@ impl Heap {
         copy
     }
 
-    pub fn range_fields(&self, range: AnyValueRef) -> Result<(i64, i64, i64), AnyValueRefError> {
-        let p = range.struct_addr()?;
-        let schema_id = unsafe { struct_schema_id(p.cast_const()) };
-        let reg = self.schemas.borrow();
-        assert!(reg.get(schema_id).is_range(), "expected Range schema");
-        drop(reg);
-        let first = self.read_struct_named_field_ref(range, "first")?.load_int()?;
-        let last = self.read_struct_named_field_ref(range, "last")?.load_int()?;
-        let step = self.read_struct_named_field_ref(range, "step")?.load_int()?;
-        Ok((first, last, step))
-    }
-
     fn alloc_list_cons_value(&mut self, head: AnyValueRef, tail_bits: u64) -> u64 {
         self.mark_published_ref_aliased(head).expect("published list head");
         let p = self.alloc_kind(HeapAllocKind::ListCons, 16);

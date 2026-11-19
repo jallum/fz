@@ -731,7 +731,13 @@ A map prints as `%Name{...}` exactly when it holds what the struct it names
 declares. A value in the struct layout always does. A map in the entries
 layout does when `Heap::entries_spelling_a_struct` answers: its `__struct__`
 names a registered schema and its keys are that schema's fields and nothing
-else. Its fields print in declaration order. Any other map naming a module
+else. Its fields print in declaration order. A `Range` prints as its literal
+in either layout (`1..3`, `1..9//2`): `named_struct` is the one printer of a
+named struct and writes a range that way. The schema is registered for each module
+the program's types name, each module whose atom a body writes, and, where
+the program makes an atom from text (`String.to_atom`), every module a value
+can name, so a map given its module while the program runs prints as its
+struct too. Any other map naming a module
 prints as a map, `__struct__` among its keys: `Map.delete(p, :y)` is
 `%{__struct__: Pt, x: 1}`.
 
