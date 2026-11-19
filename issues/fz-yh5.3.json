@@ -7,9 +7,15 @@
   "id": "fz-yh5.3",
   "labels": [],
   "parent": "fz-yh5",
+  "comments": [
+    {
+      "text": "Draft PR #793 on 4c32b4708 (proposal https://claude.ai/artifact/BVPTTV6snawCEbMeMD6wJH approved by the user). Executable calls into runtime/externs are one bl; folds 3 RuntimeCaller memoizers + 2 extern-call copies; bench instr/iter falls on all probes (p02b −3 … p10 −10); no pins.",
+      "timestamp": "2026-11-19T03:03:53Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "A call into the runtime is a direct bl",
   "type": "task",
-  "updated_at": "2026-11-18T21:45:30Z"
+  "updated_at": "2026-11-19T03:03:53Z"
 }
