@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-nhb.5"
+  ],
   "blocks": [],
   "created": "2026-11-19T02:11:20Z",
   "description": "Out of scope of fz-nhb.5 by the user's approval of /Users/j5n/Workspace/fz-nhb.5.html (relayed by Elixir Parity, 2026-11-19), filed as the follow-up that deferral requires. Unowned.\nWhy: fz has no Regex module, so once fz-nhb.5 lands (sigils are sigil_x macro calls) ~r fails with 'undefined function sigil_r/2'.\nDone: a Regex module that ~r and its modifiers can answer; Elixir-oracle fixtures on run, interp and build.",
@@ -10,5 +12,5 @@
   "status": "open",
   "title": "~r and ~R make a Regex, as in Elixir",
   "type": "feature",
-  "updated_at": "2026-11-19T02:11:20Z"
+  "updated_at": "2026-11-19T02:11:23Z"
 }
