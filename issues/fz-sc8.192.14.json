@@ -12,6 +12,12 @@
   "id": "fz-sc8.192.14",
   "labels": [],
   "parent": "fz-sc8.192",
+  "comments": [
+    {
+      "text": "User ruling, verbatim via Optimize: \"decision 3: acceptable for now.\" The case_a_40 guard miss (+9 instructions per lookup) is accepted until fz-sc8.192.15 (the hand-written trie walk) lands and removes it.",
+      "timestamp": "2026-11-19T00:08:43Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "A map pattern's key test is the hand-written scan",
