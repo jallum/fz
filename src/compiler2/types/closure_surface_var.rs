@@ -30,14 +30,13 @@ pub(crate) fn closure_var_id(fn_id: FnId, position: usize) -> TypeVarId {
         VAR_STRIDE_PER_FN,
     );
     let id = fn_id.0 * VAR_STRIDE_PER_FN + pos;
-    // A closure-surface var is a FREE var: it must stay in the untagged half of
-    // the id space so display never mistakes it for a structural address. The
-    // top bit is reserved for addresses (`addressed::ADDRESS_TAG`); reaching it
-    // would also overflow the `fn_id * 64` stride this allocator already assumes
-    // fits a `u32`.
-    debug_assert!(
-        id < super::addressed::ADDRESS_TAG,
-        "closure-var id collided with the address tag bit"
+    // A closure-surface var is a FREE var: it must stay below every tagged
+    // range of the id space. The top bit is reserved for structural addresses
+    // (`addressed::ADDRESS_TAG`) and the next for recursive binders
+    // (`recursive::BINDER_TAG`).
+    assert!(
+        id < super::recursive::BINDER_TAG,
+        "closure-var id collided with the recursive binder tag"
     );
     TypeVarId(id)
 }
@@ -47,7 +46,7 @@ pub(crate) fn closure_var_id(fn_id: FnId, position: usize) -> TypeVarId {
 /// positions when the same closure is rendered at different apparent
 /// arities (value-form vs called-form).
 pub(crate) fn closure_ret_var_id(fn_id: FnId) -> TypeVarId {
-    TypeVarId(fn_id.0 * VAR_STRIDE_PER_FN + MAX_CLOSURE_ARG_VAR)
+    closure_var_id(fn_id, MAX_CLOSURE_ARG_VAR as usize)
 }
 
 /// The structural position a closure-surface var addresses within its owner's

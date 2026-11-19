@@ -6,6 +6,7 @@ use super::dnf::{dnf_diff, dnf_intersect, dnf_union, is_dnf_top};
 use super::emptiness::{
     func_clause_empty, list_clause_empty, map_clause_empty, resource_clause_empty, tuple_clause_empty,
 };
+use super::recursive::Question;
 use super::sigs::{ArrowSig, ClosureLit, ListSig, MapSig, ResourceSig, TupleSig};
 use super::{BuiltinOpaque, MapKey, Ty, TyCtx, TypeVarId};
 use crate::finite_set::FiniteSet;
@@ -771,6 +772,14 @@ impl Descr {
     }
 
     pub(super) fn is_empty(&self, cx: TyCtx<'_>) -> bool {
+        if !cx.reaches_recursion(self) {
+            return self.is_empty_walked(cx);
+        }
+        cx.recursion
+            .assume(Question::Empty(self.clone()), || self.is_empty_walked(cx))
+    }
+
+    fn is_empty_walked(&self, cx: TyCtx<'_>) -> bool {
         self.brands.is_none()
             || self.basic.is_empty()
                 && self.atoms.is_none()
@@ -792,6 +801,15 @@ impl Descr {
     /// [`diff`](Self::diff) our slot is inhabited and the difference keeps
     /// every kind axis of `self`, so it is empty exactly when `self` is.
     pub(super) fn is_subtype(&self, cx: TyCtx<'_>, other: &Descr) -> bool {
+        if !(cx.reaches_recursion(self) || cx.reaches_recursion(other)) {
+            return self.is_subtype_walked(cx, other);
+        }
+        cx.recursion.assume(Question::Subtype(self.clone(), other.clone()), || {
+            self.is_subtype_walked(cx, other)
+        })
+    }
+
+    fn is_subtype_walked(&self, cx: TyCtx<'_>, other: &Descr) -> bool {
         if !other.brands.contains_all(&self.brands) {
             return self.is_empty(cx);
         }
@@ -814,6 +832,16 @@ impl Descr {
     /// members overlap; a structural axis is decided only where both sides
     /// have clauses, because an axis one side lacks meets in nothing.
     pub(super) fn is_disjoint(&self, cx: TyCtx<'_>, other: &Descr) -> bool {
+        if !(cx.reaches_recursion(self) || cx.reaches_recursion(other)) {
+            return self.is_disjoint_walked(cx, other);
+        }
+        cx.recursion
+            .assume(Question::Disjoint(self.clone(), other.clone()), || {
+                self.is_disjoint_walked(cx, other)
+            })
+    }
+
+    fn is_disjoint_walked(&self, cx: TyCtx<'_>, other: &Descr) -> bool {
         !self.brands.overlaps(&other.brands)
             || self.basic.intersect(other.basic).is_empty()
                 && !self.atoms.overlaps(&other.atoms)

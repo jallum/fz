@@ -33,9 +33,10 @@
 //! before rendering while this walks the descriptor as stored. Compared in
 //! place rather than materialized as text, so a comparison stops at the first
 //! difference and nothing is allocated. Two `Ty`s are compared by their
-//! descriptors, recursively; the recursion terminates because a descriptor can
-//! only name `Ty`s that were interned before it, so every step moves to strictly
-//! smaller ids. `Types` memoizes repeated activation-order verdicts; storage
+//! descriptors, recursively. An ordinary descriptor names only `Ty`s interned
+//! before it, so that step moves to strictly smaller ids; a member of a
+//! recursive type is compared by its cluster key instead (`cmp_ty`), and a key
+//! names only older types. `Types` memoizes repeated activation-order verdicts; storage
 //! canonicalization remains a direct walk.
 //!
 //! # Why it is injective
@@ -187,14 +188,23 @@ impl<'a> ClauseOrder<'a> {
     // Types
     // ------------------------------------------------------------------
 
+    /// A member of a recursive type sorts after every other type, and two
+    /// members compare by their clusters (see `recursive::cmp_members`): its
+    /// descriptor names itself, so comparing descriptors would not end.
     pub(super) fn cmp_ty(&self, a: Ty, b: Ty) -> Ordering {
         if a == b {
             return Ordering::Equal;
         }
-        self.cmp_descr(self.cx.descr(&a), self.cx.descr(&b))
+        let recursion = self.cx.recursion;
+        match (recursion.member_key(a), recursion.member_key(b)) {
+            (Some(a), Some(b)) => super::recursive::cmp_members(self, a, b),
+            (Some(_), None) => Ordering::Greater,
+            (None, Some(_)) => Ordering::Less,
+            (None, None) => self.cmp_descr(self.cx.descr(&a), self.cx.descr(&b)),
+        }
     }
 
-    fn cmp_descr(&self, a: &Descr, b: &Descr) -> Ordering {
+    pub(super) fn cmp_descr(&self, a: &Descr, b: &Descr) -> Ordering {
         a.basic
             .cmp(&b.basic)
             .then_with(|| a.atoms.cmp(&b.atoms))
