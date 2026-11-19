@@ -16,11 +16,15 @@
     {
       "text": "fz-mue.4 is folded in, by agreement of Elixir Parity and Binary Handling. Add the rows: utf8/utf16/utf32 construction with 0xDC00, and with a value past 0x10FFFF, raises an ArgumentError that try catches, on all three paths. Today it panics at ir_runtime.rs:694. Required: /Users/j5n/Workspace/fz-otp-json/punch/38_bs_utf8_construct_badarg.fz prints {:bad, :bad, {:ok, \"aA\"}} on interp, run and build. json.erl (fz-mue) depends on it.",
       "timestamp": "2026-11-18T21:41:20Z"
+    },
+    {
+      "text": "User approved 14 pin rises (relayed by Binary Handling 2026-11-19): all the one-time price of the raise path's two Kernel bodies plus \u003c\u003e's miss clause; many pins fell (the \u003c\u003e miss no longer reaches FunctionClauseError's wording). Next: docs, rebase, PR.",
+      "timestamp": "2026-11-19T03:36:34Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "A constructor field of the wrong type raises ArgumentError on all three paths, and so does \u003c\u003e",
   "type": "task",
-  "updated_at": "2026-11-19T02:04:55Z"
+  "updated_at": "2026-11-19T03:36:34Z"
 }
