@@ -1176,16 +1176,10 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
     match prim {
         Prim::Share(value) => {
             let binding = binding_for_var(var_env, value.0);
-            if matches!(
-                binding,
-                CodegenValue::AnyRef(_)
-                    | CodegenValue::Known {
-                        kind: ValueKind::LIST | ValueKind::BITSTRING | ValueKind::BINVIEW,
-                        ..
-                    }
-            ) {
-                let value_ref = body.value_as_any_ref(binding);
-                let _ = body.mark_published_ref_aliased(value_ref);
+            match (binding, share_class(t, value_types, *value)) {
+                (_, ShareClass::Markless) => {}
+                (CodegenValue::AnyRef(reference), ShareClass::Kind(kind)) => body.share_kind(reference, kind),
+                _ => body.share(binding),
             }
             Ok(LowerOut::Strict(binding))
         }

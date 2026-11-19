@@ -850,6 +850,42 @@ def main() do
 end
 ";
 
+const PASSED_TWICE_SOURCE: &str = "\
+defmodule M do
+  def loop(0, kept, _last), do: kept
+  def loop(n, kept, _last), do: loop(n - 1, kept, kept)
+end
+
+def main() do
+  M.loop(3, {\"a\", \"b\", \"c\"}, {\"d\", \"e\", \"f\"})
+end
+";
+
+#[test]
+fn a_value_passed_twice_in_one_call_is_shared_once() {
+    let program = native_program_of(PASSED_TWICE_SOURCE);
+    let fns = fns_of_executable(&program, "loop");
+    let origin = block_param_origins(&fns);
+    let mut shares: HashMap<crate::fz_ir::Var, usize> = HashMap::default();
+    for function in &fns {
+        for block in &function.blocks {
+            for stmt in &block.stmts {
+                if let crate::fz_ir::Stmt::Let(_, Prim::Share(value)) = stmt {
+                    *shares.entry(origin(*value)).or_default() += 1;
+                }
+            }
+        }
+    }
+    assert!(
+        !shares.is_empty(),
+        "the kept tuple is shared before the call that passes it twice"
+    );
+    assert!(
+        shares.values().all(|count| *count == 1),
+        "a mark once set is never cleared, so each value is shared once per call: {shares:?}"
+    );
+}
+
 /// The value each variable of `fns` names, found by following a block
 /// parameter back through the jumps that pass it along; a block that more
 /// than one jump enters keeps its parameters as their own values.

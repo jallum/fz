@@ -82,6 +82,41 @@ pub(crate) fn ty_is_addressed_object<T: Types<Ty = Ty>>(t: &mut T, value_types: 
     value_types.get(&v).is_some_and(|got| t.is_subtype(got, &objects))
 }
 
+/// What sharing `v` must do, by its type.
+pub(crate) enum ShareClass {
+    /// Every value of the type is a number or an atom, which carries no mark.
+    Markless,
+    /// Every value of the type keeps its mark the way objects of this kind
+    /// do: a binary of either layout, a tuple, or a list.
+    Kind(fz_runtime::any_value::ValueKind),
+    /// The type does not say; the reference's kind does, when the program runs.
+    Dynamic,
+}
+
+pub(crate) fn share_class<T: Types<Ty = Ty>>(t: &mut T, value_types: &HashMap<Var, Ty>, v: Var) -> ShareClass {
+    use fz_runtime::any_value::ValueKind;
+    let int = t.int();
+    let float = t.float();
+    let atom = t.atom();
+    let numbers = t.union(int, float);
+    let markless = t.union(numbers, atom);
+    if var_ty_satisfies(t, value_types, v, markless) {
+        return ShareClass::Markless;
+    }
+    let bitstrings = t.bitstring();
+    if var_ty_satisfies(t, value_types, v, bitstrings) {
+        return ShareClass::Kind(ValueKind::BITSTRING);
+    }
+    let tuples = t.tuple_top();
+    if var_ty_satisfies(t, value_types, v, tuples) {
+        return ShareClass::Kind(ValueKind::STRUCT);
+    }
+    if ty_is_list(t, value_types, v) {
+        return ShareClass::Kind(ValueKind::LIST);
+    }
+    ShareClass::Dynamic
+}
+
 /// True when `v` is statically nil-or-bool. Both occupy disjoint, fixed raw
 /// atom payloads, so equality on them is bit-eq when the kind is known.
 pub(crate) fn descr_is_nil_or_bool<T: Types<Ty = Ty>>(t: &mut T, value_types: &HashMap<Var, Ty>, v: Var) -> bool {

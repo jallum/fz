@@ -8584,15 +8584,27 @@ fn compiler2_native_program_jit_runs_variadic_extern_through_compiler2_codegen()
 /// The instructions the boundary emits are the same on every host, so that is
 /// what a `c_int` declaration is pinned by.
 fn lowered_clif_text(source: &str) -> String {
-    struct ClifCapture(Rc<RefCell<Vec<String>>>);
+    let text = lowered_clif_by_function(source)
+        .into_iter()
+        .map(|(_, text)| text)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(!text.is_empty(), "compiling should have lowered at least one function");
+    text
+}
+
+/// The lowered CLIF of every function a program compiles, by function name.
+fn lowered_clif_by_function(source: &str) -> Vec<(String, String)> {
+    struct ClifCapture(Rc<RefCell<Vec<(String, String)>>>);
 
     impl crate::compiler2::dump::RequestedOutputSink for ClifCapture {
         fn wants_clif(&self) -> bool {
             true
         }
 
-        fn clif(&mut self, _: &crate::fz_ir::Module, _: FnId, text: &str) {
-            self.0.borrow_mut().push(text.to_string());
+        fn clif(&mut self, module: &crate::fz_ir::Module, fn_id: FnId, text: &str) {
+            let name = module.fn_by_id(fn_id).name.clone();
+            self.0.borrow_mut().push((name, text.to_string()));
         }
     }
 
@@ -8609,12 +8621,88 @@ fn lowered_clif_text(source: &str) -> String {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    compiler
-        .compile_root_jit(root)
-        .expect("c_int program should JIT-compile");
-    let text = observed.borrow().join("\n");
-    assert!(!text.is_empty(), "compiling should have lowered at least one function");
-    text
+    compiler.compile_root_jit(root).expect("the program should JIT-compile");
+    observed.take()
+}
+
+/// The lowered CLIF of the body of the one executable of `function`: the
+/// function named `<function>__e<id>`, not its resume points.
+fn lowered_clif_of(source: &str, function: &str) -> String {
+    let prefix = format!("{function}__e");
+    let found: Vec<(String, String)> = lowered_clif_by_function(source)
+        .into_iter()
+        .filter(|(name, _)| {
+            name.strip_prefix(&prefix)
+                .is_some_and(|id| !id.is_empty() && id.chars().all(|c| c.is_ascii_digit()))
+        })
+        .collect();
+    let names: Vec<&str> = found.iter().map(|(name, _)| name.as_str()).collect();
+    let [(_, text)] = found.as_slice() else {
+        panic!("one executable of {function}, found {names:?} in\n{source}");
+    };
+    text.clone()
+}
+
+/// A share is written where it stands, from what the value's type says. In
+/// each program below `retained` passes its argument to `keep` and still
+/// holds it, so the argument is shared before the call. Sharing a binary
+/// tests its mark and sets it, with no question about its kind; sharing an
+/// integer emits nothing; sharing a value of any type asks its kind and may
+/// walk a list's spine. No share calls the runtime's general marker.
+#[test]
+fn compiler2_native_share_is_inline_and_follows_the_shared_values_type() {
+    let program = |guard: &str, argument: &str| {
+        format!(
+            "defmodule P do\n\
+             \x20 def keep(v), do: v\n\
+             \x20 def pair(a, b), do: {{a, b}}\n\
+             \x20 def retained(v){guard}, do: pair(keep(v), v)\n\
+             end\n\
+             def main(), do: P.retained({argument})\n"
+        )
+    };
+    let mark = format!("{:#x}", fz_runtime::any_value::BINARY_SHARED_MASK);
+    let mark = mark.trim_start_matches("0x");
+    let mark_hex = format!(
+        "0x{}",
+        mark.as_bytes()
+            .chunks(4)
+            .map(|chunk| std::str::from_utf8(chunk).expect("hex"))
+            .collect::<Vec<_>>()
+            .join("_")
+    );
+
+    let binary = lowered_clif_of(&program(" when is_binary(v)", "\"ab\" <> \"cd\""), "retained");
+    assert!(
+        binary.contains("bor.i64") && binary.contains(&mark_hex),
+        "a binary's share sets its mark:\n{binary}"
+    );
+    assert!(
+        !binary.contains("ushr"),
+        "a binary's share does not read the reference's kind:\n{binary}"
+    );
+
+    let integer = lowered_clif_of(&program(" when is_integer(v)", "41 + 1"), "retained");
+    assert!(
+        !integer.contains(&mark_hex) && !integer.contains("fz_share_list_spine"),
+        "an integer's share emits nothing:\n{integer}"
+    );
+
+    let any = lowered_clif_of(
+        "defmodule P do\n  def keep(v), do: v\n  def pair(a, b), do: {a, b}\n  @spec retained(any) :: any\n  def retained(v), do: pair(keep(v), v)\nend\ndef main(), do: Enum.map([\"ab\" <> \"cd\", [1], 1], &P.retained/1)\n",
+        "retained",
+    );
+    assert!(
+        any.contains("ushr") && any.contains(&mark_hex) && any.contains("fz_share_list_spine"),
+        "a share of any value asks its kind:\n{any}"
+    );
+
+    for text in [&binary, &integer, &any] {
+        assert!(
+            !text.contains("fz_mark_published_ref_aliased"),
+            "no share calls the runtime's marker:\n{text}"
+        );
+    }
 }
 
 /// A C `int` result fills only the low half of the integer return register,
