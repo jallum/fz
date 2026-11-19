@@ -19,11 +19,15 @@
     {
       "text": "Integration branch fz-mue/otp-json-integration, draft PR #752 (2026-11-18). The port is fixture 01860, oracle: self, running on all three paths. tools/otp_json/difftest.exs proves the port against :json on the BEAM. The PR description holds the master checklist. The branch is rebased onto develop as fixes land, and the epic is done when its CI goes green. Fixture block 01860-01879. Today's first failure is @compile (fz-mue.13).",
       "timestamp": "2026-11-18T21:52:46Z"
+    },
+    {
+      "text": "Integration PR is now #791. #752 was closed as merged by mistake (its branch was pushed equal to develop in the middle of a rebase), and nothing reached develop. The first failure is now fz-mue.20 at fixture line 440.",
+      "timestamp": "2026-11-19T03:01:49Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "fz runs OTP's json.erl unchanged",
   "type": "epic",
-  "updated_at": "2026-11-19T01:32:32Z"
+  "updated_at": "2026-11-19T03:01:49Z"
 }
