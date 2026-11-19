@@ -207,13 +207,11 @@ fn canon_is_faithful_over_the_full_arena_of_both_target_fixtures() {
 /// intermediate types are not.
 fn duplicate_ceiling(number: u32) -> usize {
     match number {
-        // 122 -> 142: a non-recursive key collapses a list nothing asks about to its
-        // class, so the Enum `*_while`, `*_every` and `*_positive` wrappers gain key
-        // arrows beside their evidence arrows, and each holds a closure literal whose
-        // surface views are separate ids.
+        // The Enum `*_while`, `*_every` and `*_positive` wrappers have key arrows beside their evidence
+        // arrows, and each holds a closure literal whose surface views are separate ids.
         420 => 142,
-        // 14 -> 15: the widened key type `%{1: atom}` beside `%{1: :a}` holds a
-        // closure literal whose surface views are separate ids.
+        // The widened key type `%{1: atom}` stands beside `%{1: :a}` and holds a closure literal whose
+        // surface views are separate ids.
         567 => 15,
         other => panic!("no pinned ceiling for fixture {other:05}"),
     }
@@ -390,152 +388,17 @@ fn two_compiles_of_one_root_produce_one_canonical_form() {
     );
 }
 
-/// fz-kdt.63's specialization-width watch. Removing the analysis's
-/// retract-and-remint churn moved the emitted inventory on 6 of 574 fixtures,
-/// in BOTH directions: `enum_take_drop_split` improved (237 -> 214
-/// executables; 32 widened activations replaced by 7 precise ones) while
-/// `enum_predicate_search` WIDENED (207 -> 221; fourteen extra activations
-/// keyed on `int | :false | :ok | :true`). The mechanism: rebasing is the one
-/// reset of the return-widening ladder (`define_return`'s `ascents`,
-/// semantic.rs), and the churn was exercising it by accident -- fz-kdt.65
-/// owns giving the ladder an explicit reset. Until then these pins hold both
-/// directions still: a drop is an improvement worth re-pinning with its
-/// cause; a rise is the ladder running away.
+/// The specialization-width watch: the emitted executable inventory of each target
+/// fixture. A drop is an improvement worth re-pinning with its cause; a rise is the
+/// return-widening ladder running away, or precision replacing collapse-driven sharing
+/// where the classification gate admits it.
 ///
 /// WHICH LENS: these numbers come from `drive_root_to_dump_stage` on a freshly
-/// submitted root, which is what this test drives. On the tree that set them
-/// the three production front doors agree -- `fz2 interp`, `fz2 run` and
-/// `fz2 build`, each with `--dump backend=`, all report 59/217/211 and repeat
-/// bit-stably -- but agreement between the doors is not a property anything
-/// proves, and a report of them diverging is being tracked under fz-kdt.106.
-/// So: re-measure through THIS door before re-pinning, and say which door any
+/// submitted root, which is what this test drives. The three production front doors
+/// (`fz2 interp`, `fz2 run` and `fz2 build`, each with `--dump backend=`) are
+/// expected to agree, but agreement between the doors is not a property anything
+/// proves. So: re-measure through THIS door before re-pinning, and say which door any
 /// new number came from.
-///
-/// Re-pinned DOWNWARD again by fz-kdt.105, which put every DNF axis in
-/// canonical clause order at `Types::intern`: `enum_take_drop_split` 211 -> 207,
-/// the other two unchanged (their canonical backend dumps are byte-identical).
-/// The cause, measured: `drop_while`'s accumulator `{[], :true} | {[int],
-/// :false}` was interned TWICE at base -- `Ty(501)` and `Ty(517)`, the same two
-/// clauses in the two orders `dnf_union` can produce -- so re-deriving the
-/// answer looked like a CHANGE and the return-widening ladder climbed past it to
-/// the wider `{[int], :false} | {[int], :true}`. With one id for one carving the
-/// answer reproduces, the ladder stops a rung lower, and the four
-/// `Enum.drop_while/2#lambda@7205-7420/2` specializations keyed on the wide type
-/// lose their only callers to the precise sibling that already existed beside
-/// them; the same narrowing turns one `List.reduce_while_cont/3` key into its
-/// precise form (1-for-1, no count change). Every one of the eight boundaries
-/// that named a wide arm still names an arm -- no destination was dropped, and
-/// the fixture corpus is stdout byte-identical. The differently-CARVED twin
-/// `{[int], :false | :true}` still interns apart: one denotation, two
-/// decompositions, which clause ORDER cannot reconcile (fz-kdt.48).
-///
-/// Re-pinned DOWNWARD by fz-kdt.104, which stopped offering dispatch
-/// alternatives no runtime test could ever route to. Each disappearance is a
-/// dropped arm: `enum_predicate_search` 221 -> 217 (four narrow
-/// `List.reduce_while_step/3` halt-payload specializations, whose two
-/// three-armed dispatches each collapse to the arm that stands in for them);
-/// `enum_take_drop_split` 214 -> 211 (one `List.reduce_while_cont/3`, one
-/// `List.reduce_while_step/3` and one `Range.reduce_while_step/6`, each the
-/// narrow half of a `{:cont, _}` / `{:cont | :halt, _}` pair the runtime reads
-/// as the same 2-tuple). `fz_f98_range_map_converges` has no such pair and
-/// holds at 59.
-///
-/// Re-pinned in BOTH directions by fz-kdt.106, which made a correlated-input
-/// row set absorb the rows it dominates instead of accumulating one per
-/// superseded conclusion. Same door as every number above: this test's own
-/// `drive_root_to_dump_stage(root, DumpStage::Backend)`.
-///
-/// `enum_predicate_search` 217 -> 203: the ladder is gone, so its row set no
-/// longer crosses `ACTIVATION_INPUT_ROW_BUDGET`, no longer widens to one
-/// column-wise joined row, and the fourteen specializations keyed on the
-/// resulting `int | :false | :ok | :true` are never minted. Those fourteen are
-/// exactly the FIFO-only surplus fz-kdt.105 isolated, so this number is now
-/// what the LIFO schedule already reached: the count no longer depends on the
-/// agenda.
-///
-/// `enum_take_drop_split` 207 -> 215, a RISE, and it is the same cause read
-/// from the other side. Thirty budget collapses on this fixture were widening
-/// row sets into shared wide keys; without them the callers' correlation
-/// survives and the specializations it names stay distinct, so precision
-/// REPLACES collapse-driven sharing and the inventory grows. The
-/// classification gate (fz-zih) admits a rise exactly when it is paired with a
-/// reduction in budget collapses on that fixture; here that pairing is 30 -> 0,
-/// asserted by
-/// `correlated_input_rows_never_reach_the_widening_budget_on_the_lenses`, and
-/// the fixture's stdout is byte-identical through interp, JIT and AOT.
-/// `fz_f98_range_map_converges` collapses at neither base nor head and holds
-/// at 59.
-///
-/// Re-pinned UPWARD by fz-kdt.125, which gave the runtime predicate a callable
-/// axis: `enum_predicate_search` 203 -> 204. The one arrival is
-/// `List.reduce_while_step/3[list(a0_e), {:halt, :false}, a2]`, an arm
-/// fz-kdt.118 had dropped as "runtime-indistinguishable and strictly
-/// contained". It is not indistinguishable any more -- its sibling is keyed on
-/// a different reducer literal, and a closure value's heap word names the
-/// lambda it was minted from -- so the pair is two destinations the plan tests
-/// for, and the specialization that was dead code becomes reachable. This is
-/// fz-kdt.123's resolution, measured: arms BECOME LIVE. Nothing else moved --
-/// no key, demand, or transport fact on any lens changed text, and the
-/// fixture corpus is stdout byte-identical through interp, JIT and AOT.
-///
-/// Re-pinned DOWNWARD by fz-kdt.132: `enum_take_drop_split` 215 -> 196. A
-/// fold's reducer was clamped onto the specialization it was minted beside, so
-/// its accumulator climbed in partial rungs -- `{[], []}`, then
-/// `{[], [int]}`, then `{[], [int]} | {[int], []}` -- and stopped one short of
-/// the `{[int], [int]}` the fold actually produces. Unclamped, the ladder is
-/// one rung: three `split_while`/`split_with` reducer specializations per
-/// captured lambda become one, and `split_pair_finish` is keyed on the pair it
-/// really receives instead of a union that never named it. Nineteen
-/// executables leave; the analysis that finds the one true rung costs 39 more
-/// activations, ratcheted in `analysis_claims_survive_a_run_that_could_not_re_derive_them`.
-/// The other two lenses hold, and stdout is byte-identical on all three doors.
-///
-/// Re-pinned UPWARD by fz-kdt.127, which made the forwarder erasure keep
-/// capture TYPES and drop only the brand: `enum_predicate_search` 204 -> 206,
-/// `enum_take_drop_split` 196 -> 204. Both arrivals are the SAME cause and it
-/// is not this fixture's own shape -- a forwarder that takes closures from
-/// DIFFERENT lambdas whose capture tuples differ now keys one activation per
-/// tuple. In `enum_predicate_search` the `reduce_while/3` chain splits the
-/// capture-free `Enum.all?/1`/`any?/1` wrappers from the capture-bearing
-/// `all?/2`/`any?/2` ones; in `enum_take_drop_split` the same chain splits
-/// capture-free `take_positive`/`drop_positive` from `take_every`/`drop_every`,
-/// which close over the step. `enum_take_drop_split` also gains two new
-/// dispatch nodes, and they ask real questions -- the accumulator tag
-/// `{:cont, _}` vs `{:cont | :halt, _}` and which construction the reducer
-/// is -- in the recursive core. Corpus-wide (597 fixtures, 469 backend dumps)
-/// the same erasure REMOVES dispatch nodes from five fixtures --
-/// `00275_enum_count_member_reduce`, `a_mixed`, `enum_predicate_search`,
-/// `repr_seam_enum_count_after_reduce2`, `same_lambda_two_capture_types` --
-/// and ADDS ten to four: two here, two to this fixture's `00420_` twin, four
-/// to `same_lambda_two_capture_types_dynamic`, and two to
-/// `callable_union_capture_containment`, which this same commit rehomes on
-/// that dynamic shape so fz-kdt.167's containment law keeps an end-to-end
-/// witness (fz-kdt.171). fz-kdt.169 resolved the remaining question:
-/// context-free arity-only or whole-tuple erasure loses dispatch-free static
-/// grounding. The measured flow-sensitive component preserved behavior, but
-/// was rejected because it added 3,173 work-graph applies to remove only 89
-/// product evaluations. Stdout remained byte-identical on all three doors over
-/// this historical 597-fixture corpus.
-///
-/// Re-pinned DOWNWARD by fz-kdt.182, which makes the intern boundary absorb a
-/// plain list clause contained in its sibling. `empty_list() | list(int)` now
-/// reuses `list(int)`'s `Ty`, so re-derived evidence cannot mint another
-/// executable identity. `enum_map_family` falls 153 -> 149 and both take/drop
-/// twins 237 -> 230; the other six pins hold. A typed census over the current
-/// 607-source, 478-backend corpus finds 34 fewer mutually-subtype executable
-/// identities, exactly the aggregate executable-count reduction. Rendered
-/// backend diffs are display corroboration only. Normalized
-/// interp/run/build/AOT behavior is byte-identical, while work-graph applies
-/// fall by 352 and product evaluations by 786.
-///
-/// Re-pinned DOWNWARD again by fz-5xp.2, which gives `Enum.to_list/1` a clause
-/// typed `[a]` so a list reaches it as itself instead of through
-/// `reverse(reverse(_))`. Every builder is `builder_list(to_list(enumerable), fun)`,
-/// so the two reduce-and-reverse activations that used to stand between a list
-/// argument and its builder disappear along with the executables that were
-/// specialized for them. `enum_map_family` falls 149 -> 113; the other seven
-/// pins hold. Stdout is byte-identical on all three doors — the accompanying
-/// matrix goldens moved only in diagnostic line numbers.
 ///
 /// Kernel's arithmetic externs declare their failure with `raises:`, so an
 /// operator's wrapper executable raises for itself and no result-decoding
@@ -543,99 +406,25 @@ fn two_compiles_of_one_root_produce_one_canonical_form() {
 /// generic fz call.
 #[test]
 fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
-    // Every pin below is two to four executables lower than it was before
-    // Kernel's arithmetic externs declared their failure: no executable decodes
-    // an extern's result.
     for (number, executables) in [
         (
             568, // enum_count_member_reduce
-            // fz-5xp.22: 26 -> 27. `List.member?` asks `===` for identity where
-            // it used to spell that `==` in a guard and rely on guards being
-            // strict, so the strict operator becomes an executable of its own.
-            // fz-sc8.9: 31 -> 34. `Enumerable`'s list `count` reads Kernel's `length`, which keeps Elixir's
-            // proper-list check: `proper_length` aborts with `:badarg` on an improper
-            // list, so the check and its abort path become executables of their own.
-            // fz-sc8.8: 34 -> 50. The fixture's `dbg` is `IO.inspect`, which
-            // renders its value into a binary and writes it through
-            // `fz_io_write`; the cone it pulls in (`IO.puts`, `to_chardata`,
-            // `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`)
-            // is emitted code.
-            // An activation key names only the literals a use can tell
-            // apart, so fewer activations are emitted: 50 -> 46.
-            // 44 -> 42: an exception record nothing asks about keys by its class, so the
-            // functions that carry one are emitted once.
-            // 42 -> 39: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
             39,
         ),
         (
             567, // fz_f98_range_map_converges
-            // fz-sc8.9: 64 -> 65.
-            // `Enumerable`'s map `count` reads Kernel's `map_size`, a typed wrapper
-            // over `fz_map_count`, where it used to call the extern directly.
-            // fz-sc8.8: 65 -> 83. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
-            // An activation key names only the literals a use can tell
-            // apart, so fewer activations are emitted: 83 -> 81.
-            // 79 -> 77: a non-recursive key collapses structure nothing asks about to its class, as
-            // a recursive key does, so callers that differ only in such freight share one
-            // activation.
-            // 77 -> 75: an arithmetic failure raises a library exception whose module words its
-            // own message, so the raise no longer carries `inspect` and its extern to build
-            // the text: `panic` and its extern stand where `raise/2` and its extern stood.
-            // 75 -> 70: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
-            // 70 -> 59: `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
-            // 59 -> 55: a call round a recursion cycle keeps the entering activation's key at the
-            // slots the cycle supplies, so the `reduce_cont`/`reduce_step` pairs no longer mint
-            // one activation per rung of the accumulator's ascent.
             55,
         ),
         (
             569, // enum_map_family
-            // fz-5xp.30 re-measured 113 -> 114: binary-concat sugar now
-            // retains the public Kernel.<>/2 wrapper between source callers
-            // and the private fz_binary_concat/2 physical gateway.
-            // fz-sc8.64: 118 -> 116. `Enum.map_every/2`, `take_every/2` and
-            // `drop_every/2` no longer carry a negative-step clause, and the
-            // three `reduce_first` catch-alls are gone, so their executables
-            // are not emitted.
-            // fz-sc8.8: 116 -> 138. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
-            // An activation key names only the literals a use can tell
-            // apart, so fewer activations are emitted: 138 -> 136.
-            // 134 -> 126: a non-recursive key collapses structure nothing asks about to its class,
-            // as a recursive key does, so callers that differ only in such freight share one
-            // activation.
-            // 126 -> 123: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
-            // 123 -> 110: `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
             110,
         ),
-        // fz-sc8.8: 36 -> 54. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
-        // An activation key names only the literals a use can tell apart: 54 -> 52.
         (
             562, // mailbox_closure_each
-            // 50 -> 48: an exception record nothing asks about keys by its class, so the
-            // functions that carry one are emitted once.
-            // 48 -> 45: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
-            // 45 -> 44: the fixture calls `IO.inspect` where it called `dbg` (two fewer executables)
-            // inside `Main`, whose root script calls `Main.main/0` (one more).
             44,
         ),
         (
             563, // mailbox_closure_reduce
-            // fz-xxd.11: 46 -> 47. `Kernel.fz_send/2` held two blended
-            // executables, one keyed on an arrow that still carried type
-            // variables (`(a1_p0, a1_p1) -> a1_r`) and one on
-            // `closure[?](int)`. Now each of the three lambdas this fixture
-            // sends is known before the call is keyed, so there are three
-            // exact executables, one per lambda.
-            // fz-sc8.8: 47 -> 65. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
-            // An activation key names only the literals a use can tell
-            // apart, so fewer activations are emitted: 65 -> 63.
-            // 61 -> 59: an exception record nothing asks about keys by its class, so the
-            // functions that carry one are emitted once.
-            // 59 -> 56: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
-            // 56 -> 55: the fixture calls `IO.inspect` where it called `dbg` (two fewer executables)
-            // inside `Main`, whose root script calls `Main.main/0` (one more).
-            // 55 -> 53: a call round a recursion cycle keeps the entering activation's key at the
-            // slots the cycle supplies, so the reduce families mint one activation per entry.
             53,
         ),
         (
@@ -643,64 +432,15 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
             // The ring's `got == 5` compares a mailbox value, so all three
             // reachable `==` clauses emit: `fz_op_eq_ii`, `fz_op_eq_fi` and
             // the `any`/`any` `fz_op_eq`.
-            // 31 -> 29: no executable decodes an arithmetic extern's result.
-            // 29 -> 113: `spawn/1` runs its callable under the handler that words a raise
-            // nothing caught, so a program that spawns emits the banner and the `message/1`
-            // of each exception it can raise.
-            // 113 -> 112: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
-            // 112 -> 72: the ring checks its count with `|| raise("...")`, which raises a
-            // `RuntimeError` that its own module words; `assert` panicked with the bare message,
-            // whose wording reached `String`, `ArgumentError` and `UndefinedFunctionError`.
             72,
         ),
         (
             571, // enum_predicate_search
             // Exact caller rows retain four specializations hidden by blended evidence.
-            // fz-sc8.8: 174 -> 200. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
-            // An activation key names only the literals a use can tell
-            // apart, so fewer activations are emitted: 200 -> 190.
-            // 188 -> 199: a returned callable keeps its brand
-            // in its function's key, and a protocol callback counts every input but the
-            // receiver as returned, so `Enum.reduce_while/3` and its Enum wrappers are keyed
-            // once per reducer lambda.
-            // 199 -> 197: a library exception's module words its own message, so the raise
-            // no longer carries `inspect` and its extern to build the text.
-            // 197 -> 194: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
-            // 194 -> 190: a call round a recursion cycle keeps the entering activation's key at the
-            // slots the cycle supplies, so the reduce families mint one activation per entry.
             190,
         ),
         (
             420, // enum_take_drop_split, over both a list and a range
-            // fz-kdt.199 re-measured 204 -> 237: the `returned` axis keys the
-            // accumulators of the reduce families this fixture drives
-            // (`List.reduce_cont/3` slot 1, `Range.reduce_cont/6` slot 4,
-            // `List.reduce_while_cont/3` slot 1), each one ascent rung apart,
-            // and the wrapper surfaces they ground stop sharing.
-            // fz-5xp.2 re-measured 230 -> 226: the take/drop/split families
-            // reach their list arguments through `Enum.to_list/1`'s `[a]`
-            // clause, so the reduce-and-reverse activations they used to mint
-            // on the way in are never specialized.
-            // fz-sc8.9: 230 -> 233.
-            // `Enumerable`'s list `count` reads Kernel's `length`, which keeps Elixir's
-            // proper-list check: `proper_length` aborts with `:badarg` on an improper
-            // list, so the check and its abort path become executables of their own.
-            // fz-sc8.8: 233 -> 249. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
-            // An activation key names only the literals a use can tell
-            // apart, so fewer activations are emitted: 249 -> 245.
-            // 243 -> 259: a returned callable keeps its brand in its function's key, and a
-            // protocol callback counts every input but the receiver as returned, so
-            // `Enum.reduce_while/3` and its Enum wrappers are keyed once per reducer lambda.
-            // 259 -> 258: a non-recursive key collapses structure nothing asks about to its class,
-            // as a recursive key does, so callers that differ only in such freight share one
-            // activation.
-            // 258 -> 256: an exception record nothing asks about keys by its class, so the
-            // functions that carry one are emitted once.
-            // 256 -> 255: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
-            // 255 -> 239: `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
-            // 239 -> 188: a call round a recursion cycle keeps the entering activation's key at the
-            // slots the cycle supplies, so the take/drop/split reduce families mint one activation
-            // per entry instead of one per rung of the accumulator's ascent.
             188,
         ),
     ] {
@@ -863,16 +603,12 @@ const LENSES: [u32; 4] = [571, 420, 183, 567];
 /// (`callsite_dispatch::specificity_order`). Its executable COUNT is
 /// schedule-independent too (204 under both), which is what this gate pins.
 ///
-/// `enum_map_family` used to move between the schedules by 1170 backend-canon
-/// lines; fz-kdt.108 closes it (0 either way) by giving the callable-flow
-/// construction wrapper one canonical typed activation edge order. TWO corpus
-/// fixtures still move and are not this gate's business:
-/// `00277_enum_tier0_fixture` (562 lines -- fz-kdt.107's dispatch-twin class
-/// plus a structural free-var tie whose fallback to `TypeVarId` mint order is
-/// itself schedule-visible, fz-kdt.161) and `dead_closure_capture_empty_list`
-/// (2 lines -- fz-kdt.120's return-precision residue). Measured base-vs-head
-/// on 2026-09-02: enum_map_family 1170 -> 0, the other two unchanged at
-/// 562/2.
+/// `enum_map_family` is schedule-stable: the callable-flow construction wrapper has one
+/// canonical typed activation edge order. TWO corpus fixtures still move and are not this
+/// gate's business:
+/// `00277_enum_tier0_fixture` (fz-kdt.107's dispatch-twin class plus a structural free-var
+/// tie whose fallback to `TypeVarId` mint order is itself schedule-visible, fz-kdt.161) and
+/// `dead_closure_capture_empty_list` (fz-kdt.120's return-precision residue).
 ///
 /// The budget itself STAYS — it is what makes termination a theorem rather
 /// than a property of lucky inputs. A collapse after this change would be

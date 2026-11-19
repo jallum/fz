@@ -39,45 +39,6 @@ const TARGET_FIXTURES: [TargetFixture; 3] = [
     TargetFixture {
         source: "fixtures/00420_enum_take_drop_split.fz",
         golden: "fixtures/00420_enum_take_drop_split.fz",
-        // fz-afu.13: 620 -> 616. This fixture's own AnalyzeActivation count
-        // moves under this ticket too (see
-        // `root_entries_and_caller_discovered_callees_share_the_activation_frontier`
-        // in `work_start_reason_test.rs` for the measured, flagged repeat-
-        // analysis cost); a need starting at record time rather than drain
-        // time changes which rung of a climbing read a `DeriveRuntimeDemand`
-        // walk observes, same mechanism, different job family.
-        // A caller reads only a callee's concluded answer, so two
-        // `DeriveRuntimeDemand` walks that would otherwise run again on an
-        // intermediate, soon-to-be-revised answer run once, on the
-        // concluded one.
-        // fz-sc8.9: 614 -> 619. The list `count` reads Kernel's `length`,
-        // whose proper-list check and abort path are bodies of their own.
-        // fz-sc8.37: 619 -> 620. Kernel defines `&&`, `||` and `!` as macros.
-        // 620 -> 624: a tuple-field demand derived from an `=` arm settles one round after the floor it replaces, with the same final facts.
-        // fz-sc8.64: 624 -> 626. `raise/2` and `fz_raise/2` are walked beside
-        // `panic/1` and `fz_panic/1`, and `main`'s lambdas 13 and 14 each run
-        // once more because `raise/2`'s demand concludes after their first
-        // runs.
-        // fz-sc8.8: 626 -> 658. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
-        // An activation key names only the literals a use can tell apart: 658 -> 649.
-        // 645 -> 677: a returned callable keeps its brand in its function's
-        // key, and a protocol callback counts every input but the receiver as returned, so
-        // `Enum.reduce_while/3` and its Enum wrappers are keyed once per reducer lambda.
-        // 677 -> 675: a non-recursive key collapses structure nothing asks about to its class, as a
-        // recursive key does, so callers that differ only in such freight share one activation.
-        // 675 -> 826: the same cause as `00567_fz_f98_range_map_converges` below.
-        // 826 -> 828: a text that one caller matches and another holds whole is asked for twice,
-        // whole and then matched, so `Kernel.inspect/1` and `Kernel.fz_inspect/1` are each walked once more
-        // for the uncaught-raise handler's indenting.
-        // 828 -> 826: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run
-        // time, so its result stays `binary` and callers need no second `bitstring` activation.
-        // 826 -> 787: `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
-        // 787 -> 772: a first-class callable's boundary demand is not contributed back to its target's inputs, so the target's demand is not derived again for it.
-        // 772 -> 775: a case arm's parameter is laid out by its own demand, so each outcome parameter is a position the demand walk reads.
-        // 775 -> 636: a call round a recursion cycle keeps the entering activation's key at the
-        // slots the cycle supplies, so the reduce families have fewer activations to walk.
-        // 636 -> 625: a field reading of a value that is not one exact tuple is read whole, so
-        // its runtime demand settles at once rather than widening field by field.
         runtime_demand_walks: 627,
         mainline_runtime_demand_walks: 6252,
         mainline_runtime_demand_door: ObservationDoor::Interp,
@@ -85,18 +46,6 @@ const TARGET_FIXTURES: [TargetFixture; 3] = [
     TargetFixture {
         source: "fixtures/00571_enum_predicate_search.fz",
         golden: "fixtures/00571_enum_predicate_search.fz",
-        // The same cause as `00420_enum_take_drop_split` above.
-        // fz-sc8.37: 472 -> 473. Kernel defines `&&`, `||` and `!` as macros.
-        // fz-sc8.8: 473 -> 528. Same cause.
-        // An activation key names only the literals a use can tell apart: 528 -> 512.
-        // 505 -> 527: a returned callable keeps its brand in its function's
-        // key, and a protocol callback counts every input but the receiver as returned, so
-        // `Enum.reduce_while/3` and its Enum wrappers are keyed once per reducer lambda.
-        // 527 -> 669: the same cause as `00567_fz_f98_range_map_converges` below.
-        // 669 -> 671: the same cause.
-        // 671 -> 617: the same cause as `00420_enum_take_drop_split` above.
-        // 617 -> 620: as for the first fixture.
-        // 620 -> 590: the same cause.
         runtime_demand_walks: 592,
         mainline_runtime_demand_walks: 6378,
         mainline_runtime_demand_door: ObservationDoor::Interp,
@@ -104,26 +53,6 @@ const TARGET_FIXTURES: [TargetFixture; 3] = [
     TargetFixture {
         source: "fixtures/00567_fz_f98_range_map_converges.fz",
         golden: "fixtures/00567_fz_f98_range_map_converges.fz",
-        // fz-sc8.9: 145 -> 147. The map `count` reads Kernel's `map_size`, a
-        // typed wrapper over `fz_map_count`.
-        // fz-sc8.37: 147 -> 148. Kernel defines `&&`, `||` and `!` as macros.
-        // fz-sc8.8: 148 -> 183. `dbg` is `IO.inspect`, whose cone (`IO.puts`,
-        // `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`,
-        // `raise`, `==`) is walked.
-        // An activation key names only the literals a use can tell apart,
-        // so fewer activations are walked: 183 -> 179.
-        // 175 -> 172: a non-recursive key collapses structure nothing asks about to its class, as a
-        // recursive key does, so callers that differ only in such freight share one activation.
-        // 172 -> 246: the program's entry wraps `main` in the handler that words an uncaught
-        // raise, so the banner and the `message/1` of each exception the fixture can raise are
-        // walked too.
-        // 246 -> 247: the same cause; this fixture walks `Kernel.inspect/1` once more.
-        // 247 -> 242: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at
-        // run time, so its result stays `binary` and callers need no second `bitstring`
-        // activation.
-        // 242 -> 212: `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
-        // 212 -> 200: a call round a recursion cycle keeps the entering activation's key at the
-        // slots the cycle supplies, so the reduce families have fewer activations to walk.
         runtime_demand_walks: 202,
         mainline_runtime_demand_walks: 2971,
         mainline_runtime_demand_door: ObservationDoor::Run,
@@ -1436,38 +1365,15 @@ def main(), do: Enum.reduce([1, 2, 3, 4, 5], 0, fn (x, acc) -> x + acc end)
 
 #[test]
 fn compiler2_pull_telemetry_is_bounded_and_keeps_public_trace_signals() {
-    // Budgets re-pinned for the fz-kdt.34 causality stream (fz-kdt.52), then
-    // again for its self-describing definition lines (fz-kdt.34.6), and again
-    // for fz-kdt.56: the public trace deliberately carries one
-    // `work_graph.applied` per applied job (the completion seam) plus product
-    // settlement/cache/displacement events, so events and bytes scale with work
-    // done, and one `fz.compiler2.canon.*` line per DISTINCT raw id so the log
-    // is a self-contained dictionary. fz-kdt.56 split the call graph's edge
-    // extraction out of `DeriveRecursive` into its own `DeriveStaticCallees`
-    // job, so the stream gained that job's completions: +100 events / +53,539
-    // bytes on 00181, +6 events on 00009. fz-kdt.44 then made settledness
-    // transitive, which moved the stream in BOTH directions: it added the drain
-    // arbiter's `work_graph.quiesced` steps (+37 on 00181, none on 00009) while
-    // shrinking every `changed` array, because a fact that is transitively
-    // unfinal no longer flips its settled bit on each local dirty/clean cycle.
-    // fz-kdt.5's request/evaluation/wait identities make product work exactly
-    // attributable. fz-tfn.38 then made each product evaluation's exact fact
-    // prerequisite set one arbiter boundary and made the job span timing-only;
-    // under llvm-cov 00181 emits 2,958 events / 1,394,744 bytes / 32 quiescence
-    // steps. The bounds retain modest headroom while unrelated public-stream
-    // creep still trips. `==` carries a typed clause per numeric pair, and
-    // 00181 compares, so its stream carries that family's completions: about
-    // a dozen events and eight kilobytes, with only `lib/kernel.fz` swapped.
-    // The semantic fixpoint's own ascent is public too: `return_type.defined`
-    // and `.widened`, `activation_analysis.defined` and `callsite.defined`, so
-    // the stream carries one event per round that moves a return and per claim
-    // that drove it. Adding them took 00181 from 3,012 to 3,114 events (16
-    // return revisions, 44 analyses, 42 callsite edges) and from 1,475,036 to
-    // 1,523,747 bytes, and 00009 from 322 to 326 events. The bound is the
-    // measured 3,114 plus the same headroom the old 3,012/3,060 pair carried.
-    // A quote builds only the nodes above an `unquote`, which took 00181 from
-    // 9,772 to 9,004 events and from 5,347,429 to 4,985,458 bytes; its bounds
-    // fell with it and keep the same four percent of headroom.
+    // The public trace carries one `work_graph.applied` per applied job plus product
+    // settlement/cache/displacement events, the drain arbiter's `work_graph.quiesced` steps,
+    // and one `fz.compiler2.canon.*` line per distinct raw id so the log is a self-contained
+    // dictionary, so events and bytes scale with work done. The semantic fixpoint's own ascent
+    // is public too: `return_type.defined` and `.widened`, `activation_analysis.defined` and
+    // `callsite.defined`, one event per round that moves a return and per claim that drove it.
+    // `==` carries a typed clause per numeric pair, and 00181 compares, so its stream carries
+    // that family's completions. The bounds keep four percent of headroom while unrelated
+    // public-stream creep still trips.
     for (fixture, max_events, max_bytes) in [
         ("fixtures/00181_enum_reduce_operator_ref.fz", 9_364, 5_040 * 1024),
         ("fixtures/00009_no_runtime.fz", 548, 256 * 1024),
@@ -2307,9 +2213,6 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
         .collect();
     assert_eq!(
         quiesced.len(),
-        // fz-5xp.30: 14 -> 20. Ordinary generic arithmetic result/status
-        // helper facts settle through the same arbiter and publish six more
-        // readiness-only steps.
         4,
         "{fixture}: every ordinary helper co-output shares the same readiness arbiter"
     );
@@ -2345,30 +2248,20 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             // What a program can raise is final only once every body of that program has been
             // analysed, so the bottom handler and the banner it calls settle here, with the
             // facts they read: the modules a value can name, and what each program raises.
-            // 64 -> 62 (and every fact below that follows an activation): `String.Chars`'
-            // binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result
-            // stays `binary` and callers need no second `bitstring` activation.
             ("Activation", 62),
             ("ActivationAnalyzed", 66),
             ("ActivationInputs", 64),
             ("CallSiteSummary", 123),
             ("CallSiteTargets", 123),
-            // fz-sc8.64: 26 -> 28. Kernel's failure heads now reach `raise/2`
-            // and `fz_raise/2` where they reached `panic/1` and `fz_panic/1`;
-            // each of the pair has one more parameter than its predecessor
-            // (`raise/2` two, `panic/1` one), so each publishes one more
-            // slot.
             ("IncomingInputSlot", 87),
             ("NameableModules", 1),
-            // 1 -> 2: each program settles what it can raise. The fixture's program does, and
-            // so does the program of a macro that raises.
+            // Each program settles what it can raise: the fixture's program, and the program of a
+            // macro that raises.
             ("Raisable", 2),
             ("ReturnType", 66),
             ("RuntimeDemand", 56),
             ("RuntimeDemandInput", 51),
             ("RuntimeDemandInputs", 56),
-            // Readiness transitions fell because no result-decoding function
-            // publishes facts.
         ]),
         "ordinary generic helper co-outputs publish every exact readiness transition without changing values"
     );
@@ -2453,8 +2346,6 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
     );
     assert_eq!(
         wake_admissions,
-        // fz-5xp.30: 6 -> 9. Three ordinary helper executable facts wake
-        // their exact settled consumers.
         // The one producer `declares_message?/1`'s group wakes.
         BTreeMap::from([("started", 1)]),
         "{fixture}: direct-fact readiness wake accounting includes ordinary helpers"
@@ -2480,123 +2371,6 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
     assert_eq!(
         formula_totals,
         FormulaWork {
-            // fz-5xp.30: 349 -> 443 evaluations. The enum reducer reaches
-            // ordinary generic arithmetic result/status calls, whose facts
-            // add only attributed initial, content, and readiness work.
-            // Two downstream readers now wake off the singular
-            // RuntimeDemandInput fact a step ahead of the batched
-            // RuntimeDemandInputs fact, and the same drain fix removes three
-            // stale no-op re-runs elsewhere in the same job family.
-            // Publishing a function's source from the walk that scoped it
-            // removes one formula, one wake and one blocked prerequisite per
-            // reached function; the readiness and runtime-demand classes are
-            // untouched.
-            // A job gated on a fact its subject already carries never
-            // starts to discover that fact missing, then wake once the
-            // fact lands (`Job::missing_gates`).
-            // fz-afu.2: 306 -> 304. `World::submit_root` no longer enqueues
-            // `SeedRoot` directly, so `SeedRoot(main)` no longer rediscovers
-            // its own gate chain hop by hop, removing its two blocked-only
-            // runs (the same two `transport_contract_test.rs`'s
-            // `EXPECTED_00181_NO_DUMP_JOB_STARTS` drops for this fixture).
-            // fz-afu.3: 304 -> 296, all of it RuntimeDemand (37 -> 29 runs,
-            // 39 -> 31 body walks). A run missing a callee's answer waits
-            // for it instead of concluding on a guess, so the eight content-
-            // caused re-runs that revised those guesses are gone, taking
-            // 23 of their wakes, one blocked run, and five runs that changed
-            // nothing with them. One AnalyzeActivation run that reproduces
-            // its answer now also concludes a fact it publishes, a change
-            // `Concluded` readers hear, so zero-change falls 53 -> 47 in all.
-            // fz-afu.10: 296 -> 290, all of it InputDemand (34 -> 28 runs).
-            // A caller reads each callee's concluded answer instead of
-            // walking the callee's body, so it no longer re-runs once per
-            // callee fact that lands: content-caused runs fall 91 -> 82,
-            // with 9 of their wakes and 10 blocked runs. Three callees the
-            // walk used to cross -- `Enumerable.reduce/3`, `fz_op_add_ff/2`
-            // and `fz_op_add_if/2` -- now derive answers of their own, so
-            // initial runs rise 205 -> 208, and with the runs that no longer
-            // re-walk to the same answer, changed outputs rise 249 -> 253
-            // and unchanged outputs fall 47 -> 37.
-            // fz-afu.11: 290 -> 286 evaluations, content-caused 82 -> 78,
-            // wakes 81 -> 77, blocked 64 -> 63. The protocol callback no
-            // longer joins over `ProtocolDispatch`'s arms, so an
-            // implementation defined later never re-runs it or the callers
-            // built on it. Changed outputs fall 253 -> 250 and unchanged
-            // outputs fall 37 -> 36 in the same motion; initial runs are
-            // untouched.
-            // fz-p8p.19: 286 -> 282 evaluations, content-caused 78 -> 74.
-            // The exhaustiveness check that used to run per function head is
-            // gone; redundancy is checked from the compiled dispatch plan
-            // instead, which removes its own formula, wake, and blocked
-            // prerequisite from every function that declared a contract.
-            // fz-xxd.3: 282 -> 284 evaluations, initial 208 -> 210, changed
-            // outputs 250 -> 252. An extern's declaration is resolved once,
-            // by its own contract job, instead of a second time inside
-            // `LowerFunction`, where that work was never counted.
-            // fz-xxd.11: 284 -> 276 evaluations, initial 210 -> 202, changed
-            // outputs 252 -> 244; content-caused, wakes, and blocked
-            // prerequisites untouched. Six of the eight are
-            // `EXPECTED_00181_NO_DUMP_JOB_STARTS`'s own -4 LowerFunction/-2
-            // DeriveExecutableFacts (`LoweredBody::Extern` and its
-            // `LowerFunction` job are gone), unmeasured here until now; the
-            // other two are that same pin's own AnalyzeActivation fall --
-            // `analyze_activation_gates` (`Job::missing_gates`) holds a
-            // called extern's own activation back until its `EntryDispatch`
-            // exists, for the two externs this fixture calls.
-            // fz-xxd.10: 276 -> 232 evaluations, initial 202 -> 165,
-            // content-caused 74 -> 67, changed outputs 244 -> 207, unchanged
-            // outputs 32 -> 25 -- the same `EXPECTED_00181_NO_DUMP_JOB_STARTS`
-            // drop (`Recursive`, `InputDemand` and `StaticCallees` no longer
-            // asked for this fixture's self-keyed monomorphic activations),
-            // carried through every formula that reads one of those facts.
-            // 232 -> 229 evaluations, content-caused 67 -> 64, unchanged
-            // outputs 25 -> 22: DeriveRecursive reads a shared reach product
-            // instead of walking the static graph.
-            // fz-sc8.37: 229 -> 239 evaluations, runtime demand 31 -> 32,
-            // initial 165 -> 173, content-caused 64 -> 66, changed outputs
-            // 207 -> 216, unchanged outputs 22 -> 23, wakes 150 -> 154,
-            // blocked completions 62 -> 64. Kernel defines `&&`, `||` and `!`
-            // as macros.
-            // 239 -> 259 evaluations, initial 173 -> 189, content-caused
-            // 66 -> 70, changed outputs 216 -> 232, unchanged outputs
-            // 23 -> 27, wakes 154 -> 165, blocked completions 64 -> 68:
-            // literal-argument calls are no longer self-keyed, so Kernel's
-            // arithmetic and compare cone derives its input demand once per
-            // program.
-            // 204 -> 213 evaluations, initial 148 -> 154, content-caused
-            // 56 -> 59, changed outputs 179 -> 185, unchanged outputs 25 -> 28,
-            // wakes 130 -> 135, blocked completions 54 -> 57: the operators'
-            // guards name `is_integer` and `is_float`, so those helpers are
-            // defined and reified so the guards can be folded.
-            // The program's entry wraps `main` in the handler that words an uncaught raise, so
-            // the banner and the `message/1` of each exception the fixture can raise are part
-            // of the compile: 213 -> 882 evaluations, every one initial or content-caused.
-            // A text that one caller matches and another holds whole is asked for twice, whole
-            // and then matched: `Kernel.inspect/1` and `Kernel.fz_inspect/1` are each evaluated
-            // once more, content-caused: 882 -> 884.
-            // 884 -> 864: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at
-            // run time, so its result stays `binary` and callers need no second `bitstring`
-            // activation.
-            // A reach is a fact answered by a job of its own: 35 `DeriveStaticReach` and 58
-            // `DeriveExecutableReach` evaluations, less 7 `DeriveRecursive` evaluations that no
-            // longer start to find their reach missing: 864 -> 948, 77 of them initial and 7
-            // content-caused.
-            // 948 -> 935, content_caused 248 -> 235, unchanged_outputs 93 -> 80 and
-            // blocked_completions 234 -> 221: a module is started once its enclosing scope
-            // exists, so thirteen module definitions no longer start, find no scope and stop.
-            // 935 -> 936, initial 700 -> 701, changed outputs +1: the product
-            // waits on the fixture's own declarations being checked, one
-            // `CheckDeclarations` evaluation.
-            // 936 -> 937, content_caused 235 -> 236, unchanged_outputs 80 -> 81 and
-            // blocked_completions 221 -> 222: what a program can raise is a fact of that
-            // program, so the entry publishes its own program's first raise and is analysed
-            // once more on it, to the same answer.
-            // 937 -> 955, initial 701 -> 721, content_caused 236 -> 234, changed outputs
-            // 856 -> 874, blocked_completions 222 -> 220: a call that hands over a struct, tuple,
-            // list or map asks its callee's recursion verdict before it is keyed. Ten callees in
-            // the cone that words an uncaught raise are asked for the first time (ten
-            // `DeriveRecursive` and ten `DeriveStaticReach`), and two activations are no longer
-            // analysed.
             evaluations: 957,
             runtime_demand_evaluations: 117,
             initial: 723,
@@ -2605,8 +2379,6 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             concluded_caused: 0,
             uncaused: 0,
             changed_outputs: 876,
-            // unchanged_outputs 85 -> 86: `String.Chars`' binary impl is selected for any bitstring, so its shared activation is typed `bitstring` with two clauses, and a caller that holds a `binary` gets its own `String.Chars.Binary.to_string(binary)` activation with the raise clause trimmed.
-            // 86 -> 93 and blocked_completions 227 -> 234: the seven content-caused reach evaluations.
             unchanged_outputs: 81,
             already_pending: 9,
             blocked_completions: 220,
@@ -2627,22 +2399,7 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
     assert_eq!(
         by_reason(ledger.ran),
         BTreeMap::from([
-            // 138 -> 140: `String.Chars`' binary impl is selected for any bitstring, so its shared activation is typed `bitstring` with two clauses, and a caller that holds a `binary` gets its own `String.Chars.Binary.to_string(binary)` activation with the raise clause trimmed.
-            // 140/521/202 -> 187/547/213 (+84): a reach is a fact answered by a job of its own.
-            // The 35 `DeriveStaticReach` and 56 `DeriveExecutableReach` completions are 91 runs
-            // that did not exist, less the 7 `DeriveRecursive` runs that no longer restart when a
-            // reach product settles (28 -> 21).
-            // 187/547/213 -> 174/534/226 (-13): a module is started once its enclosing scope
-            // exists. Thirteen module definitions no longer start early and stop, which were
-            // thirteen runs queued by a waiter and thirteen re-queued by a wake; each now starts
-            // once, when its gate clears.
-            // 174 -> 175: the product's wait on the fixture's own declarations
-            // starts its one `CheckDeclarations`.
             ("blocked_waiter_expansion", 180),
-            // 534 -> 535: the entry's one more analysis, queued by its own program's first
-            // raise.
-            // 535/226 -> 543/236 (+18): the recursion verdicts and reaches of the ten callees
-            // a constructor-carrying call asks for, less the two activations no longer analysed.
             ("changed_revision_wake", 545),
             ("gate_expansion", 231),
             ("ignition", 1),
@@ -2652,25 +2409,15 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
     assert_eq!(
         by_reason(ledger.already_pending),
         BTreeMap::from([
-            // 44 -> 45: `String.Chars`' binary impl is selected for any bitstring, so its shared activation is typed `bitstring` with two clauses, and a caller that holds a `binary` gets its own `String.Chars.Binary.to_string(binary)` activation with the raise clause trimmed.
             ("activation_published", 54),
             ("blocked_waiter_expansion", 6),
             ("changed_revision_wake", 9),
-            // 36 -> 37: a reach is a fact answered by a job of its own, and one request for it
-            // finds the job already queued.
-            // 37 -> 38: the entry's one more analysis asks again for the job it waits on, which
-            // is already queued.
-            // 38 -> 43: five calls ask a recursion verdict whose job is already queued.
             ("gate_expansion", 67),
         ]),
         "{fixture}: requests that found their job already queued"
     );
     assert_eq!(
         by_reason(ledger.reparked),
-        // 36 -> 34: a reach is a fact answered by a job of its own.
-        // 34 -> 47: a runtime module's first definition run registers its source and waits for
-        // the index. The index wakes it, and the pop gate parks it on its enclosing scope where
-        // it used to run and stop: thirteen runs became thirteen parks.
         BTreeMap::from([("changed_revision_wake", 60)]),
         "{fixture}: started jobs the pop gate parked again without running"
     );
@@ -2695,26 +2442,11 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             wake_records("applied", &["completion"]),
             wake_records("dependencies_moved", &["step"])
         ),
-        // (553, 12) -> (584, 5): a reach is a fact answered by a job of its own. In completions
-        // (+31): settled `StaticReach` facts wake `DeriveRecursive` 21 times (+21); `StaticCallees`
-        // wakes `DeriveStaticReach` 21 times, 14 as a `Concluded` waiter when one of three
-        // recursive groups closes and 7 as a settled fact, and those 7 replace the 7 wakes of
-        // `DeriveRecursive` (+14 +7 -7); `InputDemand` -> `AnalyzeActivation` rises 2 -> 7 while
-        // `Recursive` -> `AnalyzeActivation` falls 15 -> 10 and `StaticCallees` ->
-        // `DeriveInputDemand` falls 35 -> 30 (+5 -5 -5); `ModuleDefined` -> `DeriveStaticCallees`
-        // rises 3 -> 4 (+1). Between completions (-7): the settled reach products that woke
-        // `DeriveRecursive` are gone. `wake_moved_waiters` wakes no job in this fixture.
-        // (584, 5) -> (585, 5): the entry's first raise wakes the entry, its handler's reader.
-        // (585, 5) -> (593, 5): the eight more changed-revision wakes of the recursion verdicts
-        // and reaches a constructor-carrying call asks for.
         (608, 5),
         "{fixture}: wake records of the completions, and of the external changes between them"
     );
     assert_eq!(
         ledger.requested(fz_engine::WorkStart::ChangedRevisionWake),
-        // 566 -> 591: the 585 + 5 wake records above and the one wake the arbiter's own step
-        // records.
-        // 591 -> 599 with the eight more wake records.
         614,
         "{fixture}: every wake record is one request at the door"
     );
@@ -2775,35 +2507,6 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
         // Every settled product here is a fresh, changed generation. The
         // generic result/status boundary and each node's reach (one product per
         // function or executable a reach question touches) are among them.
-        // fz-sc8.37: 308 -> 330 settled products, all changed. Kernel defines `&&`, `||` and `!`
-        // as macros.
-        // fz-sc8.64: 330 -> 335 settled products, all changed. The
-        // `raise/2` and `fz_raise/2` pair replaces `panic/1` and `fz_panic/1`
-        // one for one in every product kind but `transport_shape`
-        // (207 -> 212): `raise/2` and `fz_raise/2` carry two parameters where
-        // the pair they replace carried one, so each has one more
-        // `ExecutableInput` shape, `raise/2` one more `CallArg`, and
-        // `arithmetic_error/0`, which now calls `raise/2` with a message,
-        // gains a `CallArg` and a `Value` shape.
-        // Literal-argument calls are no longer self-keyed: 335 -> 339 settled
-        // products, 12 -> 10 unchanged-by-content settlements.
-        // (339, 339, 339, 0, 10, 0) -> (281, 281, 281, 0, 10, 0): no result-decoding
-        // function settles a product.
-        // 10 -> 8 cache hits: a settle wakes only the pending reader directly
-        // above it, so the readers above that one are not re-requested.
-        // 1524 -> 1494 settled products, all changed: `String.Chars`' binary impl no longer
-        // asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers
-        // need no second `bitstring` activation.
-        // 1494 -> 1500 settled products, all changed: quoted metadata is a keyword list, so the
-        // `panic` calls `Kernel.raise/1` and `Kernel.defexception/1` quote build a tuple inside a
-        // list where they built a map, and each of those values is asked for its transport once.
-        // 1500 -> 1398 settled products and 8 -> 5 blocked cache hits: a reach is a fact, so the
-        // 102 reach products that settled, and the 3 cache hits that read one, are gone.
-        // 1398 -> 1400 settled products, all changed: a case arm's parameter is laid out by its own
-        // demand, so each outcome parameter is a `Value` position that settles.
-        // 1400 -> 1156 settled products, all changed: a quote builds only the nodes above an
-        // `unquote`, so the head, metadata and argument-list values of every constant node are no
-        // longer asked for a transport.
         (1119, 1119, 1119, 0, 5, 0),
         "{fixture}: reactive product settlement work includes ordinary helper products"
     );
@@ -2888,31 +2591,9 @@ fn tail_recursion_plans_one_entry_dispatch_per_compiled_function() {
             .unwrap_or_else(|| panic!("the stats summary must count {name}; got:\n{stats}"))
     };
     let functions = counter("fz.compiler2.function.defined");
-    // fz-xxd.10: 24 -> 15. The nine uncalled typed-clause externs named above
-    // never get a `DefineFunction` job either now: nothing calls them, so
-    // nothing demands their definition at all.
-    // fz-sc8.37: 15 -> 16. Kernel defines `&&`, `||` and `!` as macros.
-    // fz-sc8.64: 16 -> 18. The fixture's `assert` keeps `panic/1` and
-    // `fz_panic/1` live, and Kernel's failure heads now also define `raise/2`
-    // and `fz_raise/2`.
-    // 18 -> 14: no function decodes an arithmetic extern's result.
-    // 14 -> 16: the operators' guards name `is_integer` and `is_float`, so
-    // those two helpers are defined so the guards can be folded.
-    // 85 -> 61: the fixture checks its result with `|| raise("...")`, which raises a
-    // `RuntimeError` that its own module words; `assert` panicked with the bare message,
-    // whose wording reached `String`, `ArgumentError` and `UndefinedFunctionError`.
     assert_eq!(functions, 61, "the fixture compiles its known function population");
     assert_eq!(
         counter("fz.compiler2.entry_dispatch.defined"),
-        // fz-xxd.11: 24 -> 15. The nine uncalled typed-clause externs named
-        // above never get a `PlanEntryDispatch` job: nothing demands their
-        // `EntryDispatch` once nothing calls them.
-        // fz-sc8.37: 15 -> 16. Kernel defines `&&`, `||` and `!` as macros.
-        // fz-sc8.64: 16 -> 18, the same `raise/2` and `fz_raise/2` pair.
-        // 18 -> 14, the same dropped decoding functions.
-        // 77 -> 76: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run
-        // time, so its result stays `binary` and callers need no second `bitstring` activation.
-        // 76 -> 53: the same `RuntimeError` wording in place of the bare message's.
         54,
         "every called function plans its own entry dispatch",
     );

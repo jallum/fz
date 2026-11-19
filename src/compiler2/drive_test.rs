@@ -11862,31 +11862,9 @@ fn compiler2_dispatch_offers_no_runtime_indistinguishable_arm() {
 /// row, or a row on a call edge or an entry dispatch, is a new latent
 /// miscompile and wants a ticket rather than a re-blessed constant.
 ///
-/// fz-kdt.183 shrank every moving site and retired none: `enum_map_family`
-/// 3 -> 1 at fifteen wrappers, `00277` 3 -> 1 at five and 4 -> 1 or 2 at
-/// seven. The sites are the same because the wrapper is the same; the GROUPS
-/// fall because the members whose arms asked one question were reducer
-/// specializations keyed on a blind list element. With the element in the key
-/// most of those members are one member, so there is nothing left to be
-/// indistinguishable from. fz-kdt.179 then dissolved the last groups a stand-in
-/// could reach (three of `00277`'s wrappers went 2 -> 1; they were `w15`, `w18`
-/// and `w19` in the PUBLISHED numbering of the tree that was measured in, and
-/// 00277 publishes five wrappers at head, so those names point at nothing now
-/// -- nor would they point at the same wrappers in a dump, which is
-/// fz-kdt.193's), and fz-kdt.199 drove the remainder to ZERO on every fixture
-/// the gate reads. The 44 groups this
-/// constant held -- 16 on `00277_enum_tier0_fixture`, 12 on
-/// `00420_enum_take_drop_split`, 16 on `enum_map_family`, each at group
-/// count 1 -- were construction-wrapper member selections whose members no
-/// runtime predicate told apart: two members carrying the same joined
-/// accumulator type. Keying a returned accumulator position gives each member
-/// its own type, so the selections discriminate and the groups dissolve.
-///
-/// The emptiness is a CURE and not vacuity, and the ratchet is its own proof:
-/// this constant is compared against what the walk FINDS, so the green tree at
-/// fz-kdt.199's base is the same walk over the same 13 fixtures reading
-/// exactly those 44 groups. The walk did not stop looking; the cause stopped
-/// existing.
+/// The population is empty: every construction-wrapper member selection discriminates,
+/// because keying a returned accumulator position gives each member its own type, so no
+/// two members carry the same joined accumulator type and the groups dissolve.
 ///
 /// But zero here is the strongest thing THIS gate can say, and it reads 13
 /// named fixtures -- it is not a proof that no such group exists anywhere.
@@ -12746,84 +12724,6 @@ const SOURCE_ORDER_BLIND_ESCAPES: &[&str] = &[];
 /// A kind that reads zero plans is ABSENT here rather than zero, because the
 /// walk only reports the kinds it saw; a row appearing or leaving is the
 /// census fixtures changing shape, which wants looking at either way.
-///
-/// fz-kdt.183: `entry` 144 -> 153 plans, 137 -> 146 unreadable. Nine more
-/// entry plans exist because a demanded list element keys nine more reducer
-/// specializations apart, and every one of them asks a `Region::List`
-/// question, which this walk does not read -- so the readable denominator is
-/// unchanged and the zero above still speaks for exactly what it did.
-/// fz-kdt.199: `entry` 153 -> 169 plans, 146 -> 162 unreadable. Sixteen more
-/// entry plans exist because a returned accumulator keys its seed apart from
-/// its ascent, and every one of them asks a `Region::List` or
-/// `Region::TupleArity` question, which this walk does not read -- so the
-/// READABLE denominator is 7 either way and the zero above still speaks for
-/// exactly what it did.
-/// fz-kdt.120: `entry` 169 -> 171 plans, 162 -> 164 unreadable, and both new
-/// plans are `Region::TupleArity` (25 -> 27; every other variant is flat). The
-/// two are one apiece on `00420_enum_take_drop_split` and
-/// `behavior/enum_take_drop_split`: with the fz-f98.16 empty-list veto gone,
-/// `List.reduce_while_step/3` keys on the accumulator the fold really carries,
-/// `{:cont | :halt, []} | {:cont, [int]}`, where the veto had erased the seed
-/// rung and left `{:cont, [int]}` alone -- so each fixture's artifact gains two
-/// dispatch plans and its `tuple_arity` questions go 21 -> 28. The READABLE
-/// denominator is 7 either way and the zero above still speaks for exactly what
-/// it did.
-/// fz-5xp.2: `entry` 171 -> 156 plans, 164 -> 149 unreadable. `Enum.to_list/1`
-/// gains a clause typed `[a]`, so a list argument reaches it as itself rather
-/// than through `reverse(reverse(_))`, and the reduce-and-reverse activations
-/// that stood between every builder and its list argument stop being
-/// specialized. Fifteen entry plans go away with them; the READABLE denominator
-/// is 7 either way, and the escape populations this census actually ratchets --
-/// `reachable`, `SOURCE_ORDER_BLIND_ESCAPES`, and the permuted-arrival stresses
-/// -- are all unchanged. This moves the denominator, not the zero.
-/// fz-5xp.22: `entry` 157 -> 156 plans, 149 -> 148 unreadable. `List.member?`
-/// stops asking its question in a `when head == value` guard -- where it got
-/// identity semantics only because guards happen to be strict -- and says
-/// `===` in the body instead, so the guard region it used to contribute goes
-/// away with it. The escape populations this census ratchets are unchanged.
-/// fz-5xp.30: `entry` 159 -> 179 plans, 151 -> 171 unreadable.
-/// An arithmetic operator's extern wrapper declares its failure, so no
-/// status-pair entry dispatch asks `Region::TupleArity` after it: `entry` 179
-/// -> 160 plans, 171 -> 148 unreadable there, and 155 -> 136, 142 -> 123 once
-/// the later changes below are counted. The readable denominator and every
-/// blind population are unchanged.
-/// `==` and `===` carry a typed clause per numeric pair, so each has an entry
-/// dispatch asking `Region::Type` where a lone `any`/`any` clause asks
-/// nothing. Those plans are `Kernel.==/2` in `00231_joined_fn_refs_enum_reduce`,
-/// `00281_opaque_reducer_closure` and `opaque_fn_value_join`, and `Kernel.===/2`
-/// in `00277_enum_tier0_fixture` and `map_enumerable`. They are readable, so
-/// they count in the denominator and every blind population stays empty.
-/// `00566_enum_take_drop_split` was a second copy of `00420_enum_take_drop_split`
-/// -- same program, same plans -- and `ARM_ORDER_CENSUS` now walks the program
-/// once instead of twice: `entry` 184 -> 155 plans, 171 -> 142 unreadable.
-/// fz-sc8.37: `case` 3 -> 11 plans, 3 -> 11 unreadable. `and`/`or`/`not` lower
-/// to a `case` with a halting miss arm, and eight more `case` plans exist for
-/// them: `Map.member_pair?/5` in `00277_enum_tier0_fixture` and in
-/// `map_enumerable`, twice in the latter; `Range.contains?/4` twice in
-/// `00277_enum_tier0_fixture` and twice in `range_enumerable`;
-/// `Enum.reject/2#lambda@0/1` in `00569`.
-/// `case` 11 -> 17 plans, 11 -> 17 unreadable: a tuple match with `=` is a
-/// decision of the same class as a `case`, and six of them are on the census:
-/// both matches in `Enum.map_reduce_list/3` in `00569`, at each of its two
-/// activations, and one in `main/0` of `map_enumerable` and of
-/// `range_enumerable`.
-/// An activation key names only the literals a use can tell apart, so fewer
-/// plans exist: `case` 17 -> 16 plans, 17 -> 16 unreadable; `entry` 155 -> 153
-/// plans, 142 -> 140 unreadable.
-/// A self call keeps its caller's key at a slot the recursion supplies, so one
-/// fewer `entry` plan exists: 153 -> 152 plans, 140 -> 139 unreadable.
-/// `Enum.to_list/1` builds a range's list itself, so the census programs that
-/// only list a range no longer reach the reduce-and-reverse path: `entry`
-/// 133 -> 130 plans, 122 -> 119 unreadable.
-/// The census list named `00281_opaque_reducer_closure` twice, so its plans
-/// were counted twice: `case` 16 -> 15 plans, 16 -> 15 unreadable; `entry`
-/// 130 -> 128 plans, 119 -> 118 unreadable.
-/// `01527_list_literal_trailing_call` checks its five results with `||`, a
-/// `case` on `nil`, `false` and a catch-all: `case` 15 -> 20 plans, 15 -> 20
-/// unreadable.
-/// A call round a recursion cycle keeps the entering activation's key at the
-/// slots the cycle supplies, so the reduce families have fewer activations and
-/// so fewer plans: `entry` 128 -> 115 plans, 118 -> 107 unreadable.
 const SOURCE_ORDER_PLANS_ON_THE_CENSUS: &[(&str, usize, usize)] =
     &[("case", 20, 20), ("entry", 115, 107), ("receive", 2, 0)];
 
@@ -14580,12 +14480,6 @@ fn compiler2_quicksort_root_closes_with_a_finite_recursive_frontier() {
             .all(|activation| activation.input_len(types) == 2),
         "append/2 should stay keyed on its two inputs"
     );
-    // fz-5xp.30: 17 -> 22. The three additions that total the observable heap
-    // statistics now traverse ordinary Kernel arithmetic and its generic
-    // result/status helper; all five extra activations are rooted and reached.
-    // fz-sc8.8: 22 -> 42. `dbg` is `IO.inspect`: the activations of its
-    // cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`,
-    // `Binary.to_string`, `raise`, `==`) are rooted and reached.
     assert!(
         activations.len() <= 42,
         "quicksort should settle within its bounded rooted activation frontier (main + the collapsed \
@@ -24615,8 +24509,8 @@ fn compiler2_a_stream_over_any_enumerable_keeps_its_activations_finite() {
         ("Enumerable.List.reduce/3", 4),
         ("Enumerable.Map.reduce/3", 2),
         ("Enumerable.Range.reduce/3", 1),
-        // `List.reduce_cont/3` 4 -> 2, `Map.reduce_cont/5` 3 -> 1, `Range.reduce_cont/6` 2 -> 1: a call round a
-        // recursion cycle keeps the entering activation's key at the slots the cycle supplies.
+        // A call round a recursion cycle keeps the entering activation's key at the slots the cycle
+        // supplies, so each reduce cycle's accumulator is keyed once per entry.
         ("List.reduce_cont/3", 2),
         ("Map.reduce_cont/5", 1),
         ("Range.reduce_cont/6", 1),
@@ -24626,22 +24520,6 @@ fn compiler2_a_stream_over_any_enumerable_keeps_its_activations_finite() {
     }
     assert_eq!(
         activations.values().map(BTreeSet::len).sum::<usize>(),
-        // 140 -> 138: a non-recursive key collapses structure nothing asks about to its class, as a
-        // recursive key does, so callers that differ only in such freight share one activation.
-        // 138 -> 136: an exception record nothing asks about keys by its class.
-        // 136 -> 133: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
-        // 133 -> 132: the fixture calls `IO.inspect` where it called `dbg` (two fewer activations)
-        // inside `Main`, whose root script calls `Main.main/0` (one more).
-        // 132 -> 136: the ordering operators' `binary` clause adds its `fz_op_*_bb`
-        // activation and splits the catch-all's `compare/2` activations, the same way
-        // the int and float clauses already do.
-        // 136 -> 147: `Enum.to_list/1` has a clause that builds a range's list itself. This
-        // program's enumerable is `any`, so the clause is reachable with `any` fields: its
-        // arithmetic (`Range.count/3`, `-`, `*`, `div` and their int and float externs) is
-        // 14 activations, less the 3 of the range's reduce-and-reverse path.
-        // 147 -> 133: a call round a recursion cycle keeps the entering activation's key at the
-        // slots the cycle supplies, so each reduce cycle's accumulator is keyed once per entry
-        // and the reducer lambdas it carries are compiled for fewer states.
         133,
         "activations of the whole program"
     );

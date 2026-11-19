@@ -229,101 +229,10 @@ fn read_compile_spend(trace: &Path) -> CompileSpend {
     spend
 }
 
-// 18_324 -> 18_405 derivations, and 227 more reads: a binary that one user holds whole and
-// another matches is asked for twice, whole and then matched, so the functions between them
-// derive their demand once more: `JSON.decode/1` and its helpers, `String.take_bytes/2`,
-// `String.graphemes/1`, `Kernel.inspect/1`.
-// 18_405 -> 18_410 derivations, and more reads: `JSON.encode/1` writes into one
-// accumulator, and its pass is the helpers `encode_into`, `key_into`, `string_into`, `walk`,
-// `walk_scalar` and `append_run` in place of `encode_binary!` and `encode_key!`, so the
-// distiller derives demand for more functions.
-// 18_410 -> 18_335 derivations, and fewer reads: a `JSON` string decodes in one pass with
-// the `utf8` segment, so `Utf8.next`'s result handling, `Utf8.from_codepoint` and the
-// decoder's second pass are no longer compiled for decoding.
-// 18_335 -> 18_334: `String.duplicate/2` is `:binary.copy/2`, so the doubling helper is no
-// longer compiled.
-// 18_334 -> 18_340: `Kernel.byte_size` narrows an `any` argument to `bitstring`, so `fz_bitstring_byte_extent/1` and `JSON.offset/2` each take one more activation.
-// 18_340 -> 18_338: JSON's string clause is guarded by `is_binary` and no longer passes an alignment argument, so `string_into/3` and its two clauses are not compiled.
-// 18_338 -> 18_339: `:erlang` defines `error/1`, and the distiller reaches `:erlang`, so
-// defining the module derives one more function.
-// 18_339 -> 18_342: `Kernel` defines `is_function/1`, `is_function/2` and
-// `fz_function_arity/1`, and defining a module publishes each of its functions'
-// source, one derivation each, whether or not the distiller calls them.
-// 18_342 -> 18_344: `Kernel` defines `bit_size/1` and `fz_bitstring_bit_extent/1`, one
-// derivation each, as above.
-// 18_344 -> 18_345: `Kernel` defines `is_number/1`, one derivation, as above.
-// 18_345 -> 19_800: a reach is a fact answered by a job of its own: 356 `DeriveStaticReach` runs
-// (292 functions whose recursion is asked) and 1_202 `DeriveExecutableReach` runs (one per
-// executable whose return a transport position names), less 104 runs elsewhere that no longer
-// restart for a reach they were waiting on.
-// 19_800 -> 19_850: the ordering operators' `binary` clause adds its `fz_op_*_bb` activation and splits the catch-all's `compare/2` activations, the same way the int and float clauses already do.
-// 19_850 -> 19_810: a module is started once its enclosing scope exists, so each module's
-// definition runs once fewer.
-// 19_810 -> 19_811: the product waits on the distiller's own declarations
-// being checked. It declares nothing, so the check is one `CheckDeclarations`.
-// 19_811 -> 19_812: what a program can raise is a fact of that program, so the entry's handler
-// no longer starts from the raises of the macros' programs. The entry publishes its own program's
-// first raise and is analysed once more on it.
-// 19_812 -> 19_806: `Enum.to_list/1` has a clause that builds a range's list itself.
-// 19_806 -> 19_661: a first-class callable's boundary demand is not contributed back to its target's inputs, so the target's demand is not derived again for it.
-// 19_661 -> 19_658: `String.to_integer` and `String.to_float` read through
-// `Integer.parse` and `Float.parse`, so String defines three fewer private
-// functions and its `DefineModule` notes three fewer.
-// 19_658 -> 19_593: `JSON` decodes a `\uXXXX` by guarding on its hex digits and matches each
-// simple escape in a clause of `escaped`, so `simple_escape`, `join_run`, `hex4_join` and the
-// `:error` results they carried are no longer derived.
-// 19_593 -> 19_589: Kernel no longer defines `assert/1,2` and `refute/1,2`.
-// 19_589 -> 19_587: `File.read/1` reads through one `fz_file_read_rest` extern, so `File`
-// defines `read_bytes`, `read_byte` and the `fgetc` extern no more and derives them no more.
-// 19_587 -> 19_564: `JSON` adds an integer's digits as they are scanned and reports a wide one
-// after a re-scan, so `integer_step`'s seven clauses and the `:overflow` they carried are gone.
-// 19_564 -> 19_521: a closure call names the widest activation of each closure, so the
-// narrower activations its closure callsites had settled are not derived.
-// 19_521 -> 17_076: a call round a recursion cycle keeps the entering activation's key at the
-// slots the cycle supplies, so the reduce families have fewer activations to derive.
-// 17_076 -> 17_088: +12: a body that writes a module's name asks whether that module
-// declares a struct, and one more struct schema enters the program; authorized by the user.
-// 17_088 -> 16_958: a field reading of a value that is not one exact tuple is read whole, so
-// its runtime demand settles at once rather than widening field by field: 130 fewer
-// `DeriveRuntimeDemand` derivations, and every other job kind unchanged.
-// 16_958 -> 16_959: the runtime library defines `defmacrop`, one more definition its
-// `ScopeCode` notes.
+// Jobs the World completes to derive the distiller's compile.
 const DERIVATIONS: u64 = 16_820;
-// 111_876 -> 111_888: an extern that declares `raises:` reads the struct of
-// the exception it names, to raise that struct. The distiller calls twelve
-// such externs, and each contract reads `StructDefined` once.
-// 111_888 -> 111_880: a replaced definition's source is part of the answer of
-// the definition that replaces it, so `KeyError` and
-// `Protocol.UndefinedError`, which override `message/1`, file one derivation
-// for it, not two.
-// 111_880 -> 112_107: the 227 reads of the demand derived once more.
-// 112_107 -> 112_127: the reads of the encoder's helpers.
-// 112_127 -> 111_800: the reads the one-pass decoder no longer derives.
-// 111_800 -> 111_796: the same fall as `DERIVATIONS`.
-// 111_796 -> 111_800: the same rise as `DERIVATIONS`.
-// 111_800 -> 111_792: the same fall as `DERIVATIONS`.
-// 111_792 -> 111_794: the reads of the same `:erlang.error/1` definition.
-// 111_794 -> 111_812: the six reads each of the three new `Kernel` functions.
-// 111_812 -> 111_824: the six reads each of the two new `Kernel` functions.
-// 111_824 -> 111_830: the six reads of the new `Kernel.is_number/1`.
-// 111_830 -> 156_110: a reach job reads the edge fact of every node it reaches, so each of its
-// 1_558 runs hands the World one read per node of its cone.
-// 156_110 -> 156_740: the same activations, each read once per derivation, and each reach
-// job whose cone now holds the binary clause's activations reads them too.
-// 156_740 -> 156_741: that check reads the source's index.
-// 156_741 -> 156_747: the six reads of the entry's one more analysis, as in `DERIVATIONS`.
-// 156_747 -> 156_894: `Enum.to_list/1`'s range clause is reachable where the distiller lists an
-// `any` enumerable, so the reach jobs whose cones hold it read its activations too.
-// 156_894 -> 155_916: the reads of those 145 derivations.
-// 155_916 -> 155_904: String's three fewer private functions, four reads each.
-// 155_904 -> 155_345: the reads of those 65 derivations.
-// 155_345 -> 155_321: Kernel's four fewer functions, six reads each.
-// 155_321 -> 155_313: the reads of File's 2 fewer derivations.
-// 155_313 -> 155_014: the reads of those 23 derivations.
-// 155_014 -> 154_544: the reads of those 43 derivations.
-// 154_544 -> 128_751: the same, each activation read once per derivation.
-// 128_751 -> 128_782: +31: the reads of the same rise as `DERIVATIONS`; authorized by the user.
-// 128_782 -> 128_429: the reads of those 130 derivations.
+// Reads the World hands those jobs. A reach job reads the edge fact of every node in
+// its cone, so each of its runs hands one read per node.
 const READS_HANDED: u64 = 127_634;
 
 /// Compiling the distiller spends this much of the product stack. The largest
@@ -347,59 +256,6 @@ fn the_distiller_compiles_inside_the_product_drive_budget() {
     let measured = (spend.largest_drive(), spend.requests, spend.drives.len());
     assert_eq!(
         measured,
-        // (47_681, 49_093, 28) -> (47_534, 48_946, 28): a non-recursive key collapses structure
-        // nothing asks about to its class, as a recursive key does, so callers that differ only in
-        // such freight share one activation.
-        // (47_534, 48_946, 28) -> (47_447, 48_858, 28): `Enum.uniq` asks a map whether it has
-        // seen a value, so the distiller no longer compiles a list scan for it.
-        // (47_447, 48_858, 28) -> (47_803, 49_224, 28): `JSON` reads a number by its grammar
-        // and converts its text with `Float.parse`, so the distiller compiles that grammar and
-        // the parse.
-        // (47_803, 49_224, 28) -> (48_886, 50_745, 65): the program's entry wraps `main` in the
-        // handler that words an uncaught raise, so the compile also covers the exception modules
-        // the distiller can raise and the banner that prints them, and each `defexception` in
-        // those modules expands in a drive of its own.
-        // (48_886, 50_745, 65) -> (49_041, 50_908, 66): `Enum.into` runs its reduction under a
-        // handler that tells the collector `:halt` and raises again, so the distiller's `into`
-        // calls compile that handler and `:erlang.raise/3`.
-        // (49_041, 50_908, 66) -> (49_044, 50_911, 66): code after a map update's key check
-        // reads the update's own value rather than the check's result, so that value is
-        // carried through the check and its transport is asked for once more per carry.
-        // (49_044, 50_911, 66) -> (48_664, 50_522, 66): a `JSON` string is one pass that matches
-        // a multi-byte character with the `utf8` segment and appends `<<codepoint :: utf8>>`
-        // for a `\u` escape, so the distiller no longer compiles `Utf8.next`'s result handling
-        // or `Utf8.from_codepoint` for decoding.
-        // (48_664, 50_522, 66) -> (48_666, 50_524, 66): `Kernel.byte_size` narrows an `any`
-        // argument to `bitstring`, so `fz_bitstring_byte_extent/1` and `JSON.offset/2` each take
-        // one more activation.
-        // (48_666, 50_524, 66) -> (48_666, 50_530, 66): quoted metadata is a keyword list, so the
-        // `panic` calls `Kernel.raise/1` and `Kernel.defexception/1` quote build a tuple inside a
-        // list where they built a map, and each of those values is asked for its transport once.
-        // (48_666, 50_530, 66) -> (46_243, 46_797, 26): a reach is a fact, so no product request
-        // asks for one and no drive starts to serve one. The 4_813 reach requests are gone, and
-        // the 35 drives that only served reach and the 5 root drives that only waited on one with
-        // them (66 -> 26). A transport shape waiting on a reach is evaluated 1_202 times as
-        // waiting on the fact, where it waited on the product 165 times: its reach is answered
-        // by a job outside the drive, so the shape is requested again once that job lands
-        // (30_289 -> 31_325 transport shape requests).
-        // (46_243, 46_797, 26) -> (46_285, 46_839, 26): the ordering operators' `binary` clause adds its `fz_op_*_bb` activation and splits the catch-all's `compare/2` activations, the same way the int and float clauses already do.
-        // (46_285, 46_839, 26) -> (46_237, 46_791, 26): `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
-        // (46_237, 46_791, 26) -> (46_402, 46_956, 26): a case arm's parameter is laid out by its
-        // own demand, so each outcome parameter is a `Value` position the compile requests.
-        // (46_402, 46_956, 26) -> (46_477, 47_031, 26): +75: each simple escape is its own clause of `escaped`; the added clauses cost transport_shape positions; authorized by the user
-        // (46_477, 47_031, 26) -> (46_341, 46_629, 26): a literal made of constants is one
-        // constant and a quote builds only the nodes above an `unquote`, so the values that were
-        // their parts are no longer positions the compile requests.
-        // (46_341, 46_629, 26) -> (46_264, 46_552, 26): `JSON` adds an integer's digits as they are scanned
-        // and a wide integer raises `ArithmeticError`, so the compile no longer carries the
-        // `:overflow` clauses of `integer_step`.
-        // (46_264, 46_552, 26) -> (46_268, 46_556, 26): a closure call names the widest activation
-        // of each closure, so 8 fewer callsites settle and 30 fewer jobs run; in the new order six
-        // positions are asked for once more and two once fewer.
-        // (46_268, 46_556, 26) -> (37_345, 37_633, 26): a call inside a recursion cycle keys the slots the cycle supplies from the cycle's entry, so the distiller's reduces compile one activation per cycle member where each ascent state had its own.
-        // (37_345, 37_633, 26) -> (37_346, 37_634, 26): +1: a body that writes a module's name
-        // carries that module's struct schema, so one more schema enters the program;
-        // authorized by the user
         (36_453, 36_728, 26),
         "(largest drive requests, total requests, drives) for the distiller's compile moved. \
          A fall is lowered in this pin; a rise is investigated first, because the largest drive \

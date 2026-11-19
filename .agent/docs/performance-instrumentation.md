@@ -397,6 +397,13 @@ Prefer asserting a count, a round, or a work-start reason over asserting a
 duration — the first three are properties of the program and the lattice, and
 the last is a property of the machine.
 
+A pinned number carries no history. Its comment, if it has one, is a single
+present-tense sentence saying what it counts, and none when the test's name or
+assertion message already says it. Why a pin moved, and who agreed to the
+move, belong in the commit message and PR body that move it: `git log -L`
+recovers them beside the line, and a changelog kept beside a shared pin is
+where concurrent PRs collide.
+
 Never infer identity or causality from counts. Two `AnalyzeActivation`
 evaluations are not "the same job twice" because they share a kind, and an
 evaluation is not caused by whatever happened to precede it. Both questions are

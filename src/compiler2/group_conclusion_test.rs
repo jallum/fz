@@ -167,15 +167,6 @@ fn a_caller_outside_a_ring_of_three_reads_its_return_type_once_at_the_final_revi
 /// took an unfinished step of it would key activations of its own and each of
 /// those would climb in turn. The climb runs inside its group and `main`'s
 /// three decodes wait for it to close.
-///
-/// 151 -> 154: a failure raises a library exception, so the group also analyses the
-/// `defexception` and `raise` macros, `declares_message?/1` and `IO.puts`, and no longer
-/// analyses `inspect` and `Binary.to_string` to build the failure's text.
-///
-/// 154 -> 142: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
-///
-/// 142 -> 118: a call round a recursion cycle keeps the entering activation's key at the slots
-/// the cycle supplies, so the decoders' accumulators no longer key an activation per rung.
 const NESTED_DECODERS_ANALYSES: u64 = 118;
 /// The distinct activations of `array_value`: the cycle supplies the decoders'
 /// accumulator, so there is one however many steps the climb takes.
