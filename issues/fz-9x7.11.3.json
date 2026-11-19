@@ -1,8 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-9x7.11.2",
-    "fz-9x7.37.4"
+    "fz-9x7.11.2"
   ],
   "blocks": [
     "fz-9x7.11.6"
@@ -16,5 +15,5 @@
   "status": "open",
   "title": "The collector's per-object stats are derived, not counted",
   "type": "task",
-  "updated_at": "2026-11-18T23:59:25Z"
+  "updated_at": "2026-11-19T00:00:28Z"
 }

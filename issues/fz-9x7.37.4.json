@@ -3,9 +3,7 @@
   "blocked_by": [
     "fz-9x7.37.3"
   ],
-  "blocks": [
-    "fz-9x7.11.3"
-  ],
+  "blocks": [],
   "created": "2026-11-18T23:37:25Z",
   "description": "User approved the fz-9x7.37 page in Binary Handling's session (\"fz-9x7.37 approved\"; \"proceed\"). Settled: one site table per program (processes must be cheap); counters run in production (a compiler option to omit them is a possible later step); fixtures are re-expressed by intent, never re-blessed. Agreed with GC: .37 lands in full before the fz-9x7.11 collector steps. Builder: Binary Handling.\n\nStep 4 of 4. The per-fixture list of pinned sites (01332, 01592 and the rest) goes to the user for approval before it is built.",
   "id": "fz-9x7.37.4",
@@ -15,5 +13,5 @@
   "status": "open",
   "title": "The remaining stats fixtures pin named sites",
   "type": "task",
-  "updated_at": "2026-11-18T23:59:23Z"
+  "updated_at": "2026-11-19T00:00:28Z"
 }
