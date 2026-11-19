@@ -13249,29 +13249,29 @@ fn compiler2_no_value_reaches_a_construction_member_that_never_named_it() {
 /// cure, or a fixture that stopped exercising the property, and all three want
 /// the table edited deliberately rather than a number re-blessed.
 const SURFACE_MEMBERSHIP_CENSUS: [(&str, &str, usize, usize); 14] = [
-    ("fixtures/01429_closure_capture_requirement_projection.fz", "", 34, 0),
+    ("fixtures/01429_closure_capture_requirement_projection.fz", "", 37, 0),
     (
         "fixtures/01429_closure_capture_requirement_projection.fz",
         "arms:6",
-        34,
+        37,
         0,
     ),
     (
         "fixtures/01429_closure_capture_requirement_projection.fz",
         "wrappers:1",
-        34,
+        37,
         0,
     ),
     (
         "fixtures/01429_closure_capture_requirement_projection.fz",
         "wrappers:6",
-        34,
+        37,
         0,
     ),
     (
         "fixtures/01429_closure_capture_requirement_projection.fz",
         "wrappers:reverse",
-        34,
+        37,
         0,
     ),
     ("fixtures/00613_enum_over_runtime_typed_values.fz", "", 5, 0),

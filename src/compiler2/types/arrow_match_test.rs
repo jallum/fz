@@ -1114,9 +1114,9 @@ mod pinned_verdicts {
     // A7. `f(a, a) :: a` at `(int, <unanalyzed arrow>)`. `a` is owed two terms
     // of its join and gets one: the second position's witness carries
     // variables, so what `a` becomes there is unread. `int` is a sound LOWER
-    // bound and the parameter surface keeps it, but the result cannot claim
-    // the call returns an `int` when the unread term may be an arrow
-    // (fz-kdt.210).
+    // bound, but the result cannot claim the call returns an `int` when the
+    // unread term may be an arrow (fz-kdt.210), and the second parameter,
+    // which read nothing of `a`, keeps `a` free rather than claiming `int`.
     #[test]
     fn a7_var_carrying_argument_contributes_no_bound() {
         let mut t = Types::new();
@@ -1124,7 +1124,7 @@ mod pinned_verdicts {
         let int = t.int();
         let unanalyzed = unanalyzed_arrow(&mut t, 1);
         let v = t.match_arrow(&[a, a], &a, &no_bounds(), &[int, unanalyzed]);
-        assert_eq!(render(&t, &v), "Underconstrained params=[int, int] result=int", "A7");
+        assert_eq!(render(&t, &v), "Underconstrained params=[int, a0] result=int", "A7");
     }
 
     /// fz-kdt.210. The fold shape, as `List.reduce_cont/3` declares it: the
@@ -1466,6 +1466,7 @@ mod pinned_verdicts {
     // `int | []` and every position passes the gate. The third position is an
     // unanalyzed arrow the walk cannot read, so the join is partial and the
     // verdict is honestly `Underconstrained` (fz-kdt.210) rather than `Known`.
+    // That third parameter read nothing of `a`, so it keeps `a` free.
     #[test]
     fn a8_three_positions_one_variable() {
         let mut t = Types::new();
@@ -1476,7 +1477,7 @@ mod pinned_verdicts {
         let v = t.match_arrow(&[a, a, a], &a, &no_bounds(), &[int, empty, unanalyzed]);
         assert_eq!(
             render(&t, &v),
-            "Underconstrained params=[int | [], int | [], int | []] result=int | []",
+            "Underconstrained params=[int | [], int | [], a0] result=int | []",
             "A8"
         );
     }
@@ -1668,7 +1669,9 @@ mod pinned_verdicts {
     // lower solution and the calculator claimed a runtime FACT (`Known`) from an
     // observation that is not ground (fz-kdt.197); the polarity split withholds
     // that fact instead. The result `b` is still read from one clause of the
-    // union, but it is no longer published as Known.
+    // union, but it is no longer published as Known, and the parameter keeps
+    // `b` free: the free member's result is unread, so `int` is not what the
+    // column observed.
     #[test]
     fn x2_var_carrying_union_member_is_ignored_and_the_verdict_is_underconstrained() {
         let mut t = Types::new();
@@ -1682,13 +1685,14 @@ mod pinned_verdicts {
         let pat = t.arrow(&[a], b);
         assert!(t.has_vars(&arg), "the argument is NOT ground");
         let v = t.match_arrow(&[pat], &b, &no_bounds(), &[arg]);
-        assert_eq!(render(&t, &v), "Underconstrained params=[(a0 -> int)] result=int", "X2");
+        assert_eq!(render(&t, &v), "Underconstrained params=[(a0 -> a1)] result=int", "X2");
     }
 
     // X2B. The same shape one level up: the argument's free member has a
     // DIFFERENT domain from the ground member. `a` is still only an upper bound
     // from a var-carrying argument, so the verdict is Underconstrained and the
-    // which-member-did-we-read hazard never reaches a published fact.
+    // which-member-did-we-read hazard never reaches a published fact or the
+    // parameter, which keeps `b` free.
     #[test]
     fn x2b_var_carrying_union_member_with_a_wider_domain() {
         let mut t = Types::new();
@@ -1703,11 +1707,7 @@ mod pinned_verdicts {
         let arg = t.union(ground_clause, free_clause);
         let pat = t.arrow(&[a], b);
         let v = t.match_arrow(&[pat], &b, &no_bounds(), &[arg]);
-        assert_eq!(
-            render(&t, &v),
-            "Underconstrained params=[(a0 -> int)] result=int",
-            "X2B"
-        );
+        assert_eq!(render(&t, &v), "Underconstrained params=[(a0 -> a1)] result=int", "X2B");
     }
 
     // X3. An uninhabited argument at a POLYMORPHIC pattern: `none` is a row
@@ -1932,6 +1932,46 @@ mod pinned_verdicts {
             render(&t, &verdict),
             "Known params=[%{:k: int, :v: int}] result=int",
             "X8"
+        );
+    }
+
+    /// A one-variable fold at an opaque reducer: the seed binds `a` to `[]`,
+    /// and the reducer column, whose result says what `a` becomes, is never
+    /// read. The seed column still refines from its own reading, but the
+    /// reducer column keeps `a` free, so no caller narrows the reducer to one
+    /// that only ever sees and returns `[]`. The result stays withheld.
+    #[test]
+    fn an_unread_reducer_column_keeps_its_accumulator_variable() {
+        let mut t = Types::new();
+        let a = t.param_alpha(0);
+        let int = t.int();
+        let list_int = t.list(int);
+        let (cont, halt, done, halted) = (
+            t.atom_lit("cont"),
+            t.atom_lit("halt"),
+            t.atom_lit("done"),
+            t.atom_lit("halted"),
+        );
+        let cont_a = t.tuple(&[cont, a]);
+        let halt_a = t.tuple(&[halt, a]);
+        let step = t.union(cont_a, halt_a);
+        let reducer = t.arrow(&[int, a], step);
+        let done_a = t.tuple(&[done, a]);
+        let halted_a = t.tuple(&[halted, a]);
+        let result = t.union(done_a, halted_a);
+        let empty = t.empty_list();
+        let seed = t.tuple(&[cont, empty]);
+        let opaque = unanalyzed_arrow(&mut t, 2);
+        let v = t.match_arrow(
+            &[list_int, step, reducer],
+            &result,
+            &no_bounds(),
+            &[list_int, seed, opaque],
+        );
+        assert_eq!(
+            render(&t, &v),
+            "Underconstrained params=[[int], {:cont | :halt, []}, (int, a0 -> {:cont | :halt, a0})] \
+             result={:done | :halted, []}",
         );
     }
 }

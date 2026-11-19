@@ -76,8 +76,13 @@ fn function_contract_application_refines_callable_params_from_outer_bindings() {
     assert_eq!(closure.kind, CallableValueKind::FnRef);
 }
 
+/// A fold from `0` doesn't stay `0`. The seed binds `acc`, but the reducer is a
+/// bare `fn_ref` whose result, the occurrence that says what the accumulator
+/// becomes, is unread; so the reducer column keeps `acc` free rather than
+/// clamping the reducer to `(int, 0) -> 0`. The element slot, read from the
+/// list, still refines.
 #[test]
-fn function_contract_application_refines_reduce_style_callable_from_list_and_accumulator_bindings() {
+fn function_contract_application_refines_the_reducer_element_and_leaves_its_unread_accumulator_free() {
     let mut types = Types::new();
     let elem = types.type_var(TypeVarId(0));
     let acc = types.type_var(TypeVarId(1));
@@ -111,13 +116,11 @@ fn function_contract_application_refines_reduce_style_callable_from_list_and_acc
         "the reducer element input should inherit the list element binding: {}",
         types.display(&matched_callable.args[0]),
     );
-    assert_eq!(
-        matched_callable.args[1], actual_acc,
-        "the reducer accumulator input should inherit the concrete accumulator binding",
-    );
-    assert_eq!(
-        matched_callable.ret, actual_acc,
-        "the reducer return should inherit the concrete accumulator binding",
+    assert!(
+        types.has_vars(&matched_callable.args[1]) && types.has_vars(&matched_callable.ret),
+        "the reducer's accumulator was never read, so it stays free: ({}) -> {}",
+        types.display(&matched_callable.args[1]),
+        types.display(&matched_callable.ret),
     );
 
     let refined_callable = types.intersect(actual_callable, applied.matched_arrows[0][2]);
@@ -132,8 +135,11 @@ fn function_contract_application_refines_reduce_style_callable_from_list_and_acc
         "the callable element input should stay specialized after intersect: {}",
         types.display(&callable.args[0]),
     );
-    assert_eq!(callable.args[1], actual_acc);
-    assert_eq!(callable.ret, actual_acc);
+    assert!(
+        !types.is_equivalent(&callable.args[1], &actual_acc),
+        "intersecting with the matched surface must not clamp the accumulator to the seed: {}",
+        types.display(&callable.args[1]),
+    );
     let closure = callable
         .closure
         .expect("reduce-style fn ref should preserve closure identity");
@@ -383,13 +389,9 @@ fn addressed_function_contract_keeps_reduce_halt_payload_free_until_callable_ret
 /// and the join behind `acc` is partial; the clause answers `Underconstrained`
 /// and `AppliedFunctionContract::result` stays `None` (fz-kdt.210).
 ///
-/// THE PARAMETER HALF IS PINNED KNOWN-WRONG. A partial join still instantiates
-/// the clause domain, so the reducer surface comes back clamped to the seed's
-/// own type -- `(int, []) -> []` -- and a later rung whose accumulator has grown
-/// does not fit the domain the first rung published. That is fz-kdt.216's
-/// subject, and it owns the fix. Until fz-kdt.120 the fz-f98.16 empty-list veto
-/// hid this shape by deleting the seed's binding outright; the veto is gone,
-/// the clamp is visible here, and it moves no fixture on the corpus.
+/// The reducer column read nothing of `acc`, so it keeps `acc` free instead of
+/// clamping the reducer to the seed's own type, `(int, []) -> []`: a later
+/// rung whose accumulator has grown still fits the surface this one publishes.
 #[test]
 fn function_contract_application_publishes_no_result_for_an_empty_list_seed() {
     let mut types = Types::new();
@@ -431,12 +433,10 @@ fn function_contract_application_publishes_no_result_for_an_empty_list_seed() {
         types.display(&matched_callable.args[0]),
     );
     assert!(
-        types.is_equivalent(&matched_callable.args[1], &actual_acc),
-        "KNOWN-WRONG (fz-kdt.216): the parameter surface clamps the reducer accumulator to the seed",
-    );
-    assert!(
-        types.is_equivalent(&matched_callable.ret, &actual_acc),
-        "KNOWN-WRONG (fz-kdt.216): and clamps its return to the seed with it",
+        types.has_vars(&matched_callable.args[1]) && types.has_vars(&matched_callable.ret),
+        "the reducer accumulator stays free rather than clamping to the seed: ({}) -> {}",
+        types.display(&matched_callable.args[1]),
+        types.display(&matched_callable.ret),
     );
 }
 

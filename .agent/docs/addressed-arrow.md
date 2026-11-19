@@ -270,11 +270,31 @@ that node were owed are UNKNOWN, not `none`. `collect_match_subst` records those
 variables (`collect_lower_occurrences`, which mirrors the collectors and flips at
 an arrow's parameters exactly as they do) into `MatchBounds::undetermined`.
 What `Sigma` holds for such a variable is a PARTIAL join: still a sound lower
-bound, so the instantiated PARAMETER surface keeps refining the call's inputs,
-but not the solution. `Known` claims a runtime FACT, so a result naming a
+bound, but not the solution. `Known` claims a runtime FACT, so a result naming a
 partially-joined variable answers `Underconstrained` instead, and
 `FunctionContract::apply` drops an `Underconstrained` clause's result while
 keeping its parameters.
+
+A parameter is rebuilt only from what its OWN position read. The walk keeps each
+position's unread variables, and a position that could not read a variable
+another position bound keeps that variable FREE in its parameter rather than
+taking the partial join (`withheld_by_position`). A free variable leaves the
+column var-carrying, so `instantiate_open_inputs` treats it as evidence still in
+flight and narrows nothing by it. `fold([binary], a, (binary, a -> a)) :: a`
+seeded `[]` at an opaque reducer publishes the reducer column as
+`(binary, a -> a)`, not `(binary, [] -> [])`; the clamped form had callers
+analyse the reducer as if the accumulator never grew, and a correct list then
+failed a cons match (`01769`). The verdict still asks whether every parameter
+closes under the full solution, so no verdict moves.
+
+Publishing the unread variable as its declared bound instead (`any` for
+`a: var`) also removes the clamp, but a ground column is no longer in flight:
+callers narrow the reducer to its concrete closure literal and the reduce loops
+key once per lambda. Measured on the distiller, that is 38,201 requests and
+1,168 executables against 37,370 and 1,141 for the free variable. The free
+variable's own cost is one executable: a loop reached both with a reducer whose
+accumulator is the contract's variable, `(a2_p0, a1) -> a1`, and with a wholly
+free one, `(a2_p0, a2_p1) -> a2_r`, keys the two apart.
 
 The unit is the NODE, and that is what a `Known` verdict delivers: no node the
 walk visited was wholly unreadable. It is not the stronger claim that every
@@ -302,8 +322,8 @@ REMOVES a term from a multi-clause contract's published result, which
 half-(a) mechanism. It does not fire on the corpus: no contract loses a term and
 no new narrowing of a published return appears.
 
-The fold declares the shape. `reduce_cont([a], b | c, (a, b | c) -> {:cont,
-b | c} | ..) :: {:done, b | c} | ..` gives `b | c` two covariant occurrences:
+The fold declares the shape. `reduce_cont([a], b, (a, b -> {:cont, b} | ..))
+:: {:done, b} | ..` gives `b` two covariant occurrences:
 the SEED, and the reducer arrow's RESULT — the occurrence that says what the
 accumulator BECOMES. `Enumerable` hands the reducer over as a bare address var,
 so only the seed is readable; reading it alone and calling the answer a fact

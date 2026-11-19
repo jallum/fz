@@ -157,9 +157,10 @@ Compiler2 owns the active contract path:
   it is owed a term it did not get, and what `Sigma` holds is a PARTIAL join.
   (The unit is the node's merged outcome, not the individual occurrence; see
   [`addressed-arrow`](addressed-arrow.md) for the two collectors that skip an
-  occurrence without marking it.) The parameter surface still refines from it
-  (it is a sound lower bound), but the verdict is `Underconstrained`, so
-  `FunctionContract::apply` publishes no result for that clause. `reduce_cont`'s
+  occurrence without marking it.) The verdict is `Underconstrained`, so
+  `FunctionContract::apply` publishes no result for that clause, and each
+  parameter is rebuilt only from what its own position read: the reducer column
+  keeps the accumulator variable free rather than taking the seed's type. `reduce_cont`'s
   accumulator variable occurs at the SEED and inside the reducer arrow's RESULT;
   `Enumerable` hands the reducer over as a bare address var, so a `[]`-seeded
   fold over `[int]` reads the seed alone and `{:done, []}` would be a claim that

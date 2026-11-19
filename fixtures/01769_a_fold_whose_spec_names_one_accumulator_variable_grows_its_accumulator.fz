@@ -1,0 +1,63 @@
+#---
+# purpose: a fold whose @spec names its accumulator with one type variable returns the accumulator the reducer built, not the seed's type
+# kind: run
+# oracle: self
+# oracle.stamp: 005b9c74106e59de
+#---
+#
+# Each fold below is spec'd with a single variable `a` for its accumulator and
+# starts from a seed narrower than what the reducer builds: `[]` that grows
+# into a list of binaries, `0` that grows by byte sizes. The reducer is either
+# a function the fold can't see into (one that arrives by message) or the
+# struct's own `Enumerable.reduce` loop, so nothing ties the accumulator to
+# the seed. Every result is then matched as the shape the reducer gave it.
+defmodule Lines do
+  defstruct lines: []
+
+  @spec step([binary], {:cont, a} | {:halt, a} | {:suspend, a}, (binary, a -> {:cont, a} | {:halt, a} | {:suspend, a})) :: {:done, a} | {:halted, a} | {:suspended, a, (-> any)} when a: var
+  def step(lines, {:cont, acc}, reducer), do: line_step(lines, acc, reducer)
+  def step(_lines, {:halt, acc}, _reducer), do: {:halted, acc}
+  def step(lines, {:suspend, acc}, reducer), do: {:suspended, acc, fn -> step(lines, {:cont, acc}, reducer) end}
+
+  @spec line_step([binary], a, (binary, a -> {:cont, a} | {:halt, a} | {:suspend, a})) :: {:done, a} | {:halted, a} | {:suspended, a, (-> any)} when a: var
+  defp line_step([], acc, _reducer), do: {:done, acc}
+  defp line_step([line | rest], acc, reducer), do: step(rest, reducer.(line, acc), reducer)
+end
+
+defimpl Enumerable, for: Lines do
+  def reduce(%Lines{lines: lines}, acc, reducer), do: Lines.step(lines, acc, reducer)
+  def reduce_while(%Lines{lines: lines}, acc, reducer), do: Enum.reduce_while(lines, acc, reducer)
+  def count(_lines), do: {:error, __MODULE__}
+  def member?(_lines, _value), do: {:error, __MODULE__}
+  def slice(_lines), do: {:error, __MODULE__}
+end
+
+defmodule Main do
+  @spec fold([binary], a, (binary, a -> a)) :: a when a: var
+  def fold([], acc, _f), do: acc
+  def fold([x | rest], acc, f), do: fold(rest, f.(x, acc), f)
+
+  @spec tagged(a, [binary]) :: {a, [binary]} when a: var
+  def tagged(tag, xs) do
+    f = receive do g -> g end
+    {tag, fold(xs, [], f)}
+  end
+
+  def main() do
+    [h | t] = Enum.reverse(%Lines{lines: ["a", "b", "c"]})
+    IO.inspect({h, t})
+
+    [h | t] = fold(["a", "b"], [], fn x, acc -> [x | acc] end)
+    IO.inspect({h, t})
+
+    send(self(), fn x, acc -> [x | acc] end)
+    {tag, [h | t]} = tagged(42, ["a", "b"])
+    IO.inspect({tag, h, t})
+
+    send(self(), fn x, acc -> acc + byte_size(x) end)
+    total = fold(["ab", "cde"], 0, receive do g -> g end)
+    IO.inspect(total * 2)
+  end
+end
+
+Main.main()

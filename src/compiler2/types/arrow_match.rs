@@ -28,19 +28,29 @@
 //! `MatchWitness::Unknown`, because the witness carries variables or names no
 //! structure of the pattern's kind — the terms the covariant variables beneath
 //! that node were owed are UNKNOWN, not `none`. What `Sigma` then holds for
-//! such a variable is a partial join: still a sound LOWER bound, and the
-//! PARAMETER surface may keep refining from it, but not the solution. `Known`
-//! claims a runtime FACT, so a result naming such a variable answers
-//! `Underconstrained` instead.
+//! such a variable is a partial join: still a sound LOWER bound, but not the
+//! solution. `Known` claims a runtime FACT, so a result naming such a variable
+//! answers `Underconstrained` instead.
 //!
-//! `reduce_cont([a], b | c, (a, b | c) -> {:cont, b | c} | ..) :: {:done, b |
-//! c} | ..` folding `[int]` from a `[]` seed at an opaque reducer is the shape:
-//! `b | c` occurs covariantly twice — at the SEED, and inside the reducer
-//! arrow's RESULT, which is the occurrence that says what the accumulator
-//! BECOMES — and only the seed is readable, so `{:done, []}` would claim the
-//! fold returns what it started with.
+//! `reduce_cont([a], b, (a, b) -> {:cont, b} | ..) :: {:done, b} | ..`
+//! folding `[int]` from a `[]` seed at an opaque reducer is the shape: `b`
+//! occurs covariantly twice — at the SEED, and inside the reducer arrow's
+//! RESULT, which is the occurrence that says what the accumulator BECOMES —
+//! and only the seed is readable, so `{:done, []}` would claim the fold
+//! returns what it started with.
 //!
-//! The rule reads the merged outcome of a NODE, and that is precisely what it
+//! A PARAMETER IS REBUILT ONLY FROM WHAT ITS OWN POSITION READ. A position that
+//! could not read a variable another position bound keeps that variable FREE
+//! in its parameter, rather than taking the partial join as if it were the
+//! answer. `fold([binary], a, (binary, a -> a)) :: a` seeded `[]` at an opaque
+//! reducer binds `a` from the seed alone; rebuilding the reducer column from
+//! that join would publish `(binary, [] -> [])`, and callers that narrow the
+//! argument by it would analyse the reducer as if the accumulator never grew.
+//! The free variable keeps the column var-carrying, which is what an
+//! unobserved column is. The verdict is unaffected: `Known` still asks whether
+//! every parameter closes under the full solution.
+//!
+//! The partial-join rule reads the merged outcome of a NODE, and that is what it
 //! delivers: a `Known` verdict means no node the walk visited was wholly
 //! unreadable — NOT that every covariant occurrence was individually read. Two
 //! collectors skip a single unread occurrence while a sibling keeps the node's
@@ -283,6 +293,7 @@ impl Types {
         args: &[Ty],
     ) -> ArrowMatch {
         let mut solution = MatchBounds::default();
+        let mut unread_by_position: Vec<HashSet<TypeVarId>> = Vec::with_capacity(params.len());
         for (pattern, witness) in params.iter().zip(args.iter()) {
             // An uninhabited argument is a position no call can supply, so the
             // signature does not apply to this row. Disjointness from
@@ -294,7 +305,8 @@ impl Types {
             if self.collect_match_subst(pattern, witness, BindingSide::Lower, &mut position) == MatchWitness::Invalid {
                 return ArrowMatch::Invalid;
             }
-            solution.undetermined.extend(position.undetermined);
+            solution.undetermined.extend(position.undetermined.iter().copied());
+            unread_by_position.push(position.undetermined);
             self.merge_subst_union(&mut solution.lower, position.lower);
             // A var-carrying argument's evidence is still in flight: an upper
             // bound read from it could ratchet the meet down to a false
@@ -305,6 +317,7 @@ impl Types {
             }
         }
         let sigma = solution.lower;
+        let withheld = withheld_by_position(unread_by_position, &sigma);
 
         // The solvability CHECK. `join(lowers) ⊆ meet(uppers)` is a necessary
         // condition for some instantiation `A` with `lower ⊆ A ⊆ upper` to
@@ -333,8 +346,11 @@ impl Types {
                 if closed.contains_key(&var) {
                     continue;
                 }
-                let (params, result) = self.instantiated_clause(params, result, &sigma);
-                return ArrowMatch::Underconstrained { params, result };
+                let clause = self.instantiated_clause(params, result, &sigma, &withheld);
+                return ArrowMatch::Underconstrained {
+                    params: clause.params,
+                    result: clause.result,
+                };
             };
             let bound = self.instantiate(&bounds[&var], &closed);
             if !self.is_subtype(actual, &bound) {
@@ -343,8 +359,12 @@ impl Types {
         }
 
         let result_is_a_fact = self.result_variables_are_determined(result, &sigma, &solution.undetermined);
-        let (params, result) = self.instantiated_clause(params, result, &closed);
-        if params.iter().any(|param| self.has_vars(param)) || self.has_vars(&result) || !result_is_a_fact {
+        let InstantiatedClause {
+            params,
+            result,
+            params_close,
+        } = self.instantiated_clause(params, result, &closed, &withheld);
+        if !params_close || self.has_vars(&result) || !result_is_a_fact {
             ArrowMatch::Underconstrained { params, result }
         } else {
             ArrowMatch::Known { params, result }
@@ -360,9 +380,9 @@ impl Types {
     /// declaration is a fact the call cannot contradict. A variable the walk
     /// observed at some occurrences and could not read at others is in
     /// `sigma` holding a partial join -- a lower bound, not the solution --
-    /// and a result built from it is a guess. The `reduce_cont([a], b | c,
-    /// (a, b | c) -> ..) :: {:done, b | c} | ..` fold seeded `[]` at an opaque
-    /// reducer is exactly that: `b | c` is read from the SEED alone, the
+    /// and a result built from it is a guess. The `reduce_cont([a], b,
+    /// (a, b) -> ..) :: {:done, b} | ..` fold seeded `[]` at an opaque
+    /// reducer is exactly that: `b` is read from the SEED alone, the
     /// reducer's arrow result -- the occurrence that says what the accumulator
     /// becomes -- is never read, and `{:done, []}` claims the walk finished a
     /// list that has not been walked (fz-kdt.210).
@@ -390,10 +410,39 @@ impl Types {
             .all(|var| !undetermined.contains(var) || !sigma.contains_key(var))
     }
 
-    fn instantiated_clause(&mut self, params: &[Ty], result: &Ty, sigma: &Sigma<Ty>) -> (Vec<Ty>, Ty) {
-        let params = params.iter().map(|param| self.instantiate(param, sigma)).collect();
-        let result = self.instantiate(result, sigma);
-        (params, result)
+    /// The clause under `sigma`, each parameter rebuilt without the variables
+    /// its own position left unread, and whether every parameter closes under
+    /// `sigma` in full.
+    fn instantiated_clause(
+        &mut self,
+        params: &[Ty],
+        result: &Ty,
+        sigma: &Sigma<Ty>,
+        withheld: &[HashSet<TypeVarId>],
+    ) -> InstantiatedClause {
+        let mut params_close = true;
+        let params = params
+            .iter()
+            .zip(withheld)
+            .map(|(param, withheld)| {
+                let full = self.instantiate(param, sigma);
+                params_close &= !self.has_vars(&full);
+                if withheld.is_empty() {
+                    return full;
+                }
+                let read: Sigma<Ty> = sigma
+                    .iter()
+                    .filter(|(var, _)| !withheld.contains(var))
+                    .map(|(var, ty)| (*var, *ty))
+                    .collect();
+                self.instantiate(param, &read)
+            })
+            .collect();
+        InstantiatedClause {
+            params,
+            result: self.instantiate(result, sigma),
+            params_close,
+        }
     }
 
     /// Collect the bindings the constraint at `side` licenses, and decide the
@@ -827,3 +876,21 @@ impl Types {
 #[cfg(test)]
 #[path = "arrow_match_test.rs"]
 mod arrow_match_test;
+
+/// A clause instantiated for one call: its parameters, its result, and whether
+/// every parameter closed under the full solution.
+struct InstantiatedClause {
+    params: Vec<Ty>,
+    result: Ty,
+    params_close: bool,
+}
+
+/// Per position, the variables it could not read that another position bound:
+/// the ones its parameter must not take from `sigma`. A variable no position
+/// bound is not withheld; it keeps whatever its declared bound gives it.
+fn withheld_by_position(unread_by_position: Vec<HashSet<TypeVarId>>, sigma: &Sigma<Ty>) -> Vec<HashSet<TypeVarId>> {
+    unread_by_position
+        .into_iter()
+        .map(|unread| unread.into_iter().filter(|var| sigma.contains_key(var)).collect())
+        .collect()
+}
