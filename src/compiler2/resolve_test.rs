@@ -35,6 +35,7 @@ fn nullary_scalars_resolve_to_the_same_ty_as_the_direct_types_call() {
         ("atom", |t| t.atom()),
         ("any", |t| t.any()),
         ("term", |t| t.any()),
+        ("dynamic", |t| t.any()),
         ("never", |t| t.none()),
         ("utf8", |t| {
             let inner = t.str_t();
@@ -90,6 +91,19 @@ fn a_nullary_builtin_applied_with_arguments_reports_the_uniform_arity_error() {
         .expect_err("a nullary builtin applied with an argument should fail to resolve");
 
     assert_eq!(error.msg, "expected 0 type argument(s), got 1 `integer`");
+}
+
+/// Elixir's typespecs know only `dynamic()`; the gradual `dynamic(T)` of its
+/// type checker is not a typespec, and Elixir refuses it as an undefined type.
+#[test]
+fn dynamic_takes_no_type_argument() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+
+    let error = resolve(&tel, &mut world, "dynamic(integer)")
+        .expect_err("dynamic applied with an argument should fail to resolve");
+
+    assert_eq!(error.msg, "expected 0 type argument(s), got 1 `dynamic`");
 }
 
 #[test]

@@ -91,13 +91,17 @@ struct ConstructorEntry {
 }
 
 /// The single authoritative source for every builtin type-constructor name:
-/// the seventeen nullary scalars (including `map`, `tuple` and `fun`, the
+/// the nullary scalars (including `map`, `tuple` and `fun`, the
 /// fully-unconstrained "any map", "any tuple" and "any function" types — the
 /// named counterparts to the structural `%{k => v}`, `{T, U}` and `(T) -> U`
 /// syntax — and `function`, which is `fun`, as in Elixir) plus the
 /// two parametric constructors, `list` (0 or 1 type argument —
 /// `list()`/`list(any)` and `[T]` mint the identical `Ty`) and `resource`
 /// (0 or 1 type argument, defaulting the payload to `any`).
+///
+/// `dynamic` is `any`: a typespec's `dynamic()` is the statically unknown
+/// type, which a spec check treats the same as `term()`, as Erlang's typespec
+/// reference says Dialyzer does.
 ///
 /// `tuple` takes no arguments: `{T, U}` is the only fixed-arity spelling.
 #[rustfmt::skip]
@@ -112,6 +116,7 @@ const CONSTRUCTORS: &[ConstructorEntry] = &[
     ConstructorEntry { name: "atom",     arity: Arity::Fixed(0), build: |t, _| t.atom() },
     ConstructorEntry { name: "any",      arity: Arity::Fixed(0), build: |t, _| t.any() },
     ConstructorEntry { name: "term",     arity: Arity::Fixed(0), build: |t, _| t.any() },
+    ConstructorEntry { name: "dynamic",  arity: Arity::Fixed(0), build: |t, _| t.any() },
     ConstructorEntry { name: "never",    arity: Arity::Fixed(0), build: |t, _| t.none() },
     ConstructorEntry { name: "utf8",     arity: Arity::Fixed(0), build: |t, _| { let inner = t.str_t(); t.mint_brand(inner, "utf8") } },
     ConstructorEntry { name: "pid",      arity: Arity::Fixed(0), build: |t, _| t.pid() },

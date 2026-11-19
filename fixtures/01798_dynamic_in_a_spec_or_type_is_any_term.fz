@@ -1,0 +1,27 @@
+#---
+# purpose: "dynamic() in a @spec or @type admits any term, as term() does"
+# oracle: self
+# oracle.stamp: fcbbff82a0641085
+#---
+defmodule Main do
+  @type encoder() :: (dynamic(), fun() -> [dynamic()])
+  @type from_binary_fun() :: (binary() -> dynamic())
+
+  @spec encode(dynamic(), encoder()) :: [dynamic()]
+  def encode(term, encoder), do: encoder.(term, encoder)
+
+  @spec decode(binary(), from_binary_fun()) :: dynamic()
+  def decode(bin, fun), do: fun.(bin)
+
+  @spec same(dynamic()) :: dynamic()
+  def same(x), do: x
+
+  def main() do
+    IO.inspect(encode(1, fn x, _ -> [x] end))
+    IO.inspect(encode(:a, fn x, _ -> [x, x] end))
+    IO.inspect(decode("42", &String.to_integer/1))
+    IO.inspect(decode("ok", &String.to_atom/1))
+    IO.inspect({same(1), same("two"), same([3]), same(%{four: 4})})
+  end
+end
+Main.main()
