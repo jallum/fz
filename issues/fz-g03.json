@@ -11,11 +11,15 @@
     {
       "text": "Another form, found by the fz-nml.8 builder (JSON session, develop 4a05ae2be): `def g(x, s), do: \u003c\u003cx :: float-size(s)\u003e\u003e` warns unused-variable \"s\" though s is read as the size and the output is correct. The acceptance fixture should cover a size inside a typed segment (float-size(s)) as well as size(n).",
       "timestamp": "2026-11-17T22:36:53Z"
+    },
+    {
+      "text": "Owner: Binary Handling. PR #781 (one-arm scope-walk fix + fixture 01821, oracle self). Blocks fz-9e2.3's fixture.",
+      "timestamp": "2026-11-19T02:04:54Z"
     }
   ],
   "priority": 2,
   "status": "in_progress",
   "title": "A variable used only as a segment size is not reported unused",
   "type": "bug",
-  "updated_at": "2026-11-19T02:04:53Z"
+  "updated_at": "2026-11-19T02:04:54Z"
 }
