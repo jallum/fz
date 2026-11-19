@@ -19,11 +19,15 @@
     {
       "text": "#799 01344 timeout was the fold running per contribution against its own rows: partial μs stacked, 54 folds and 9.7s CPU against 0.05s. Fix: fold the joined column the contribution grew. 01344 is back to 0.05s and 8 folds with the same answer, μt. :a | {:l|:r, t}. New pin on 01344: clash_folded 8. Rebased onto bac027b42; gates running. Merge waits on the user (01353 two plans; #788 deviation).",
       "timestamp": "2026-11-19T04:02:16Z"
+    },
+    {
+      "text": "Pushed aaf8843e1 on bac027b42 with the 01344 fix (Types::clash_fold_join; pin type.clash_folded 8). Side effects: 01356 answers μA. int | [A] (the R5 page's hand answer); the surface census drops its 01348 row (reduce chains fold at the seed); canon stays 197.",
+      "timestamp": "2026-11-19T04:13:26Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "The clash fold makes back edges, not any",
   "type": "task",
-  "updated_at": "2026-11-19T04:02:16Z"
+  "updated_at": "2026-11-19T04:13:26Z"
 }
