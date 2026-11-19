@@ -183,15 +183,45 @@ impl Heap {
             "placements are whole 16-byte slots"
         );
         let new_top = unsafe { self.bump_top.add(size) };
-        if new_top > self.block_end {
-            if self.parks_alone(size) {
-                return self.alloc_parked(size);
-            }
-            self.climb_tip();
-        }
-        let p = self.bump_top;
-        self.bump_top = unsafe { self.bump_top.add(size) };
+        let p = if new_top > self.block_end {
+            self.room(size)
+        } else {
+            self.take_from_tip(size)
+        };
         self.alloc_count += 1;
+        p
+    }
+
+    /// The slow half of `bump`, which compiled code calls when its inline bump
+    /// finds the tip full: place `size` bytes (a multiple of 16) beyond the
+    /// full tip and answer where they start. An object larger than the
+    /// capacity one step above the tip is parked alone in a block sized for it
+    /// and the tip is unchanged; any other object abandons the tip for a fresh
+    /// tip one capacity step up and lands in it. Nothing is written into the
+    /// object, and the allocation is not counted: the caller counts it.
+    #[cold]
+    #[inline(never)]
+    pub fn room(&mut self, size: usize) -> *mut u8 {
+        debug_assert!(
+            size >= 16 && size.is_multiple_of(16),
+            "placements are whole 16-byte slots"
+        );
+        debug_assert!(
+            unsafe { self.bump_top.add(size) } > self.block_end,
+            "room is asked for only when the tip is full"
+        );
+        if self.parks_alone(size) {
+            return self.alloc_parked(size);
+        }
+        self.climb_tip();
+        self.take_from_tip(size)
+    }
+
+    /// Advance `bump_top` over `size` bytes the tip has room for.
+    #[inline]
+    fn take_from_tip(&mut self, size: usize) -> *mut u8 {
+        let p = self.bump_top;
+        self.bump_top = unsafe { p.add(size) };
         p
     }
 
@@ -220,7 +250,6 @@ impl Heap {
             top: unsafe { start.add(size) },
             capacity,
         });
-        self.alloc_count += 1;
         start
     }
 
@@ -243,15 +272,15 @@ impl Heap {
             "placements are whole 16-byte slots"
         );
         let new_top = unsafe { self.bump_top.add(size) };
-        if new_top > self.block_end {
-            if size > self.overflow_step {
-                return self.alloc_parked(size);
-            }
+        let p = if new_top <= self.block_end {
+            self.take_from_tip(size)
+        } else if size > self.overflow_step {
+            self.alloc_parked(size)
+        } else {
             self.park_tip_and_install(self.overflow_step);
             self.overflow_step = next_block_capacity(self.overflow_step);
-        }
-        let p = self.bump_top;
-        self.bump_top = unsafe { self.bump_top.add(size) };
+            self.take_from_tip(size)
+        };
         self.alloc_count += 1;
         p
     }

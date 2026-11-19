@@ -587,17 +587,13 @@ pub extern "C" fn fz_alloc_closure(
     closure_ref_word_from_bits(bits)
 }
 
-/// Allocate a continuation frame with `captured_count` capture slots, for the
-/// inline builder whose tip block is full. Generated code stores the
-/// captures.
+/// Room for `size` bytes (a multiple of 16) beyond a full tip block, for the
+/// inline bump of compiled code: the address the object starts at, in a fresh
+/// tip or, for a huge object, in a block of its own. Nothing is written into
+/// the object; compiled code writes every word of it.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_alloc_continuation(process: *mut Process, arity: u32, captured_count: u32, body_addr: u64) -> u64 {
-    let bits = (unsafe { &mut *process })
-        .heap
-        .alloc_continuation_slots(arity as u16, captured_count as usize);
-    let addr = closure_addr_from_tagged(bits).expect("new continuation bits");
-    unsafe { std::ptr::write(addr.add(8) as *mut u64, body_addr) };
-    closure_ref_word_from_bits(bits)
+pub extern "C" fn fz_heap_room(process: *mut Process, size: usize) -> *mut u8 {
+    (unsafe { &mut *process }).heap.room(size)
 }
 
 /// The body frame a write goes to: `frame` itself when it is young, else a copy

@@ -1258,6 +1258,48 @@ fn a_pid_and_a_reference_render_in_elixir_shapes() {
     });
 }
 
+/// Compiled code asks `fz_heap_room` only when its inline bump found the tip
+/// full: the answer is room in a fresh tip, which the heap then bumps from.
+#[test]
+fn fz_heap_room_places_beyond_a_full_tip() {
+    with_process(|process| {
+        let full = process.heap.bytes_remaining_in_block();
+        process.heap.alloc(full);
+        let process_ptr: *mut Process = process;
+
+        let placed = fz_heap_room(process_ptr, 48);
+
+        let process = unsafe { &mut *process_ptr };
+        assert!(process.heap.is_young(placed), "the object is in the young generation");
+        let next = process.heap.alloc(16);
+        assert_eq!(
+            next,
+            unsafe { placed.add(48) },
+            "the fresh tip's bump follows the object"
+        );
+    });
+}
+
+/// A huge object is parked alone in a block of its own.
+#[test]
+fn fz_heap_room_parks_a_huge_object_alone() {
+    with_process(|process| {
+        let full = process.heap.bytes_remaining_in_block();
+        process.heap.alloc(full);
+        let huge = full * 8;
+        let process_ptr: *mut Process = process;
+
+        let placed = fz_heap_room(process_ptr, huge);
+
+        let process = unsafe { &mut *process_ptr };
+        assert!(process.heap.is_young(placed));
+        assert!(
+            process.heap.bytes_used() >= huge,
+            "the heap holds the huge object's block"
+        );
+    });
+}
+
 /// A body frame of `slots` capture slots, its first slot holding `value`, and
 /// the reference word that names it.
 fn body_frame_holding(process: &mut Process, slots: usize, value: i64) -> u64 {
