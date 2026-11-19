@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-mue.1"
   ],
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-mue",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "A tuple field whose type is a single constant takes no lane, even when the tuple is read whole",
   "type": "task",
-  "updated_at": "2026-11-19T01:05:07Z"
+  "updated_at": "2026-11-19T02:16:45Z"
 }
