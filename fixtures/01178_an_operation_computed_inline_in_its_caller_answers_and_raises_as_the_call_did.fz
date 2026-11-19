@@ -1,13 +1,14 @@
 #---
 # purpose: "an operation computed inline in its caller answers and raises as the call did: sums of integers and floats, byte_size and map_size, and a division by zero that a try around the caller rescues"
 # oracle: self
-# oracle.stamp: b441235844981a0f
+# oracle.stamp: ea782f579c4cd8a4
 #---
 #
 # `a + b` with an integer on the left and a float on the right is the extern
 # `fz_op_add_if` behind its Kernel clause; with the float on the left the
-# clause swaps its parameters, so it is a real call. `byte_size` and
-# `map_size` are each one typed clause over an extern.
+# clause swaps its parameters before calling it. Every one of these callees
+# is lowered in its caller. `byte_size` and `map_size` are each one typed
+# clause over an extern.
 defmodule Inline do
   def sum_then_double(a, b), do: double(a + b)
   def double(x), do: x * 2 + 1

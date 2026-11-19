@@ -49,12 +49,10 @@ defmodule String do
 
   ## Byte-level operations
 
-  Not every function here needs codepoints. `to_byte_list/1` is not
-  Elixir's `to_charlist/1` -- fz has no charlist type, so it returns the
-  same list of raw byte integers under a name that does not claim a parity
-  it cannot show. `take_bytes/2`, `drop_bytes/2`, and `byte_slice/3` work
-  in bytes directly, for callers who already know their boundaries line up
-  with codepoints.
+  Not every function here needs codepoints. `to_byte_list/1` lists the bytes
+  of a string where `to_charlist/1` lists its codepoints. `take_bytes/2`,
+  `drop_bytes/2`, and `byte_slice/3` work in bytes directly, for callers who
+  already know their boundaries line up with codepoints.
 
   ## Invalid UTF-8
 
@@ -781,6 +779,54 @@ defmodule String do
   end
 
   @doc """
+  Splits `s` on runs of whitespace, dropping the empty strings that leading,
+  trailing and repeated whitespace would leave.
+
+  The separators are Unicode whitespace except the non-breaking spaces
+  U+00A0, U+2007 and U+202F, as in Elixir: those stay inside a word.
+
+  ## Examples
+
+      String.split(" a  b\n")
+      #=> ["a", "b"]
+
+      String.split("")
+      #=> []
+
+  """
+  @spec split(binary) :: [binary]
+  def split(s), do: split_words(s)
+
+  # `s` is where a word may start. A byte that is not UTF-8 is a word byte.
+  @spec split_words(binary) :: [binary]
+  defp split_words(<<>>), do: []
+
+  defp split_words(<<cp :: utf8, rest :: binary>> = s) do
+    if separator?(cp), do: split_words(rest), else: split_word(s, byte_size(s) - byte_size(rest), rest)
+  end
+
+  defp split_words(<<_byte, rest :: binary>> = s), do: split_word(s, 1, rest)
+
+  # `s` starts at the word, `size` bytes of which are read and `rest` follows.
+  @spec split_word(binary, integer, binary) :: [binary]
+  defp split_word(s, _size, <<>>), do: [s]
+
+  defp split_word(s, size, <<cp :: utf8, rest :: binary>> = tail) do
+    if separator?(cp),
+      do: [take_bytes(s, size) | split_words(rest)],
+      else: split_word(s, size + byte_size(tail) - byte_size(rest), rest)
+  end
+
+  defp split_word(s, size, <<_byte, rest :: binary>>), do: split_word(s, size + 1, rest)
+
+  # Unicode whitespace except the non-breaking spaces U+00A0, U+2007 and U+202F.
+  @spec separator?(integer) :: boolean
+  defp separator?(cp) do
+    (cp >= 9 and cp <= 13) or cp == 32 or cp == 133 or cp == 5760 or (cp >= 8192 and cp <= 8198) or
+      (cp >= 8200 and cp <= 8202) or cp == 8232 or cp == 8233 or cp == 8287 or cp == 12288
+  end
+
+  @doc """
   Replaces every occurrence of `pattern` in `s` with `replacement`.
 
   `pattern` is a single binary. An empty pattern inserts `replacement` at
@@ -944,17 +990,12 @@ defmodule String do
   @spec valid?(binary) :: boolean
   def valid?(s), do: Utf8.valid?(s)
 
-  # Not `to_charlist/1`: Elixir's returns a charlist, a list of integers that
-  # `inspect` renders as `~c"abc"`; charlists are deferred project-wide, so fz
-  # has no such type or rendering. This returns the same list of integers,
-  # under a name that does not claim a parity it cannot show.
   @doc """
   Returns every byte of `s` as an integer.
 
-  Not `to_charlist/1`: Elixir's returns a charlist, which `inspect`
-  renders as `~c"abc"`, and fz has no charlist type. This returns the
-  same list of integers under a name that does not claim a parity it
-  cannot show.
+  This is `to_charlist/1` for text that is not UTF-8, or whose bytes are
+  wanted as they are: a codepoint above 127 is several integers here and one
+  there.
 
   ## Examples
 
@@ -965,6 +1006,35 @@ defmodule String do
   @spec to_byte_list(binary) :: [integer]
   def to_byte_list(<<c, rest :: binary>>), do: [c | to_byte_list(rest)]
   def to_byte_list(_s), do: []
+
+  @doc """
+  Returns every codepoint of `s` as an integer: the charlist of `s`.
+
+  Raises `UnicodeConversionError` when `s` is not valid UTF-8.
+
+  ## Examples
+
+      String.to_charlist("héllo")
+      #=> [104, 233, 108, 108, 111]
+
+      String.to_charlist(<<255>>)
+      # ** (UnicodeConversionError) invalid encoding starting at <<255>>
+
+  """
+  @spec to_charlist(binary) :: [integer]
+  def to_charlist(string) when is_binary(string), do: codepoint_integers(string, [])
+
+  @spec codepoint_integers(binary, [integer]) :: [integer]
+  defp codepoint_integers(<<c :: utf8, rest :: binary>>, acc), do: codepoint_integers(rest, [c | acc])
+  defp codepoint_integers(<<>>, acc), do: List.reverse(acc, [])
+
+  defp codepoint_integers(invalid, acc) do
+    raise UnicodeConversionError, encoded: List.reverse(acc, []), rest: invalid, kind: conversion_kind(Utf8.next(invalid))
+  end
+
+  @spec conversion_kind({:error, binary} | any) :: :invalid | :incomplete
+  defp conversion_kind({:error, ""}), do: :incomplete
+  defp conversion_kind(_next), do: :invalid
 
   @doc """
   Returns the atom named `s`, interning it if it does not already exist.

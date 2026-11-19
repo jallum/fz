@@ -14,6 +14,7 @@ pub mod bits;
 pub mod bitstr;
 pub mod clock;
 pub mod delivery;
+pub mod escape;
 pub mod exec_ctx;
 pub mod extern_binary;
 pub mod failure;

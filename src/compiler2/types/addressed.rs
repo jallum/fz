@@ -69,7 +69,7 @@ pub enum AddrStep {
 /// already established inside that surface remain stable when the callable is
 /// embedded elsewhere.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum AddressOwner {
+pub(super) enum AddressOwner {
     EmbeddedValue,
     CallableSurface,
     CapturedValue,
@@ -295,7 +295,13 @@ impl Types {
             return ty;
         }
         path.push(step);
-        let remapped = self.address_remap_with(ty, path, correlations, owner);
+        let remapped = self
+            .map_type(
+                || super::recursive::Mapper::Address(owner),
+                ty,
+                |types| types.address_remap_with(ty, path, correlations, owner),
+            )
+            .0;
         path.pop();
         remapped
     }

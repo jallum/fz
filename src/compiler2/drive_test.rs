@@ -10346,7 +10346,10 @@ fn compiler2_native_program_reads_continuation_reprs_from_transport_seams() {
     compiler.submit_code(CodeSubmission {
         name: Some("native_float_resume_reads_transport_seam.fz".to_string()),
         text: r#"
-def inc(x), do: x + 1.0
+def inc(x), do: step(x, 1)
+
+defp step(x, 0), do: x
+defp step(x, n), do: step(x + 1.0, n - 1)
 
 def main() do
   y = inc(1.0)
@@ -10478,19 +10481,18 @@ fn compiler2_native_program_delivers_exact_callee_return_lanes_straight_to_resum
         .expect("the exact count-result demand should project one delivered integer lane");
     assert_eq!(count_resume.layout.carrier, TransportCarrier::Absent);
 
+    // The count-result clause needs no frame, so native lowering runs it in
+    // `count`'s own function and the delivered lane reaches the resume entry
+    // as a block parameter: `count` builds no continuation.
     let program = native.last(root_id).program;
     assert!(
-        program.bodies.iter().any(|body| {
-            let function = program.module.fn_by_id(body.fn_id);
+        !program.bodies.iter().any(|body| {
             let NativeBodyOrigin::Continuation { owner } = body.origin else {
                 return false;
             };
-            function.name.contains("__resume_")
-                && program.module.fn_by_id(owner).name.starts_with("count__")
-                && matches!(body.entry_abi, NativeEntryAbi::Continuation { extra_params: 1 })
-                && body.param_reprs == [AbiValueRepr::RawInt]
+            program.module.fn_by_id(owner).name.starts_with("count__")
         }),
-        "the count call continues straight into a resume entry that takes the exact delivered integer lane",
+        "the count call continues in count's own function, with no continuation",
     );
 }
 
@@ -16191,7 +16193,8 @@ fn compiler2_list_retention_crosses_continuations_as_a_traced_construction_opera
     compiler.submit_code(CodeSubmission {
         name: Some("list_retention_continuation.fz".to_string()),
         text: r#"
-def ping(x), do: x
+def ping(0), do: 0
+def ping(n), do: ping(n - 1)
 
 def rebuild(xs) do
   [h | t] = xs
@@ -16348,10 +16351,9 @@ end
         (run.live_count, run.bytes_used),
         // `dbg` renders the tuple into a binary on the process heap before
         // writing it: two more objects, sixty-four more bytes over the
-        // program's own (6, 160), none of them list conses. Resuming frames
-        // that are the newest heap object are given back; two resume under a
-        // newer object and stay on the heap: two more objects, 64 more bytes.
-        (10, 288),
+        // program's own (6, 160), none of them list conses. `rebuild` needs
+        // no frame, so its call is lowered in `main` and builds none.
+        (8, 224),
         "preserving the source list type avoids a redundant 16-byte cons"
     );
     assert!(run.source_and_rebuild_share_return);
@@ -16567,13 +16569,14 @@ def main(), do: depth(20)
 
 /// A call whose result the resume entry does not read (the entry takes no
 /// lanes while the callee returns one) keeps a `deliver_lanes` continuation
-/// that adapts the returned lanes to the entry.
+/// that adapts the returned lanes to the entry. `classify` is a call cycle, so
+/// it needs a frame and its call stays a call.
 #[test]
 fn compiler2_a_call_whose_result_layout_differs_from_its_resume_entry_keeps_a_shim() {
     let clif = lowered_clif_text(
         r#"
 def classify(0), do: :zero
-def classify(_), do: :other
+def classify(n), do: classify(n - 1)
 
 def main() do
   classify(0)
@@ -24937,8 +24940,8 @@ fn a_continuations_outer_continuation_is_stored_and_read_as_a_closure() {
         "def main(), do: P.sum(3)\n",
     ));
     assert!(
-        clif.contains("fz_alloc_continuation"),
-        "the non-tail call builds a continuation:\n{clif}"
+        clif.contains("fz_heap_room"),
+        "the non-tail call places a continuation, asking the runtime only for room:\n{clif}"
     );
     assert!(
         !clif.contains("ireduce.i8"),

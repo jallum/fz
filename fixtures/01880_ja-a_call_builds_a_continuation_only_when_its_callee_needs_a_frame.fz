@@ -1,0 +1,83 @@
+#---
+# purpose: "a call to a function that needs no frame of its own builds no continuation, however many clauses, branches and calls that function has; a call to a function in a call cycle, one that enters a try or a receive, or a closure call builds at least one per call"
+# kind: run
+#---
+#
+# Each loop runs 1,000 iterations and makes one non-tail call per iteration.
+# `classify/1` has three clauses, an `if`, a call to `half/1` and arithmetic
+# externs; nothing in it can suspend the process, so it is lowered in the
+# loop and the loop builds no continuation. `count_down/1` loops, `guarded/1`
+# enters a `try` and the closure's target is not known, so each of those calls
+# builds one. `polled/1` enters a `receive`, which builds continuations of its
+# own: its loop builds four per iteration, as the same `receive` written in the
+# loop's body does. The program prints, per loop,
+# the continuations it built beyond one per scheduler yield, less the one the
+# call from `main` into the loop builds.
+defmodule Callee do
+  def classify(0), do: 0
+  def classify(n) when n < 0, do: -1
+  def classify(n), do: if(rem(n, 2) == 0, do: half(n), else: n * 3 + 1)
+  def half(n), do: div(n, 2)
+
+  def count_down(0), do: 0
+  def count_down(n), do: count_down(n - 1)
+
+  def guarded(n) do
+    try do
+      n + 1
+    rescue
+      _ -> 0
+    end
+  end
+
+  def polled(n) do
+    receive do
+      m -> m
+    after
+      0 -> n
+    end
+  end
+end
+
+defmodule Loop do
+  def frame_free(0, acc), do: acc
+  def frame_free(n, acc), do: frame_free(n - 1, acc + Callee.classify(n))
+
+  def cycle(0, acc), do: acc
+  def cycle(n, acc), do: cycle(n - 1, acc + Callee.count_down(3))
+
+  def tried(0, acc), do: acc
+  def tried(n, acc), do: tried(n - 1, acc + Callee.guarded(n))
+
+  def received(0, acc), do: acc
+  def received(n, acc), do: received(n - 1, acc + Callee.polled(n))
+
+  def closure(0, _f, acc), do: acc
+  def closure(n, f, acc), do: closure(n - 1, f, acc + f.(n))
+end
+
+defmodule Main do
+  def built(before, after_run) do
+    continuations = after_run[:continuation_allocs] - before[:continuation_allocs]
+    yields = after_run[:scheduler_yields] - before[:scheduler_yields]
+    continuations - yields - 1
+  end
+
+  def main() do
+    s0 = Process.heap_alloc_stats()
+    r1 = Loop.frame_free(1000, 0)
+    s1 = Process.heap_alloc_stats()
+    r2 = Loop.cycle(1000, 0)
+    s2 = Process.heap_alloc_stats()
+    r3 = Loop.tried(1000, 0)
+    s3 = Process.heap_alloc_stats()
+    r4 = Loop.received(1000, 0)
+    s4 = Process.heap_alloc_stats()
+    r5 = Loop.closure(1000, fn n -> n * 2 end, 0)
+    s5 = Process.heap_alloc_stats()
+    IO.inspect({r1, r2, r3, r4, r5})
+    IO.inspect({built(s0, s1), built(s1, s2), built(s2, s3), built(s3, s4), built(s4, s5)})
+  end
+end
+
+Main.main()

@@ -111,10 +111,34 @@ struct Cluster {
 /// A construction over recursive types that can arrive back at itself: a set
 /// operation, or the interning of a descriptor whose normalization interns
 /// its coordinates.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq)]
 pub(super) enum Open {
     Operation(BinaryTypeOperation),
     Intern(Box<Descr>),
+    Map(Mapper, Ty),
+}
+
+/// A reading of a type as a type. One that maps a type by mapping its
+/// children arrives, on a recursive type, back at the member it is mapping,
+/// and the in-flight protocol makes the result a recursive type too.
+#[derive(Clone, PartialEq)]
+pub(super) enum Mapper {
+    ValueLane,
+    StructuralSurface,
+    RuntimeReading,
+    WidenLiterals,
+    EraseClosureIdentity,
+    /// Under the lambdas whose captures the type sits inside.
+    FoldSelfNestedClosures(Vec<crate::fz_ir::FnId>),
+    Instantiate(super::Sigma<Ty>),
+    /// A variable's address is its first occurrence, so a member met again
+    /// below itself is addressed as it was the first time.
+    Address(super::addressed::AddressOwner),
+    RuntimeEnvelope(
+        super::RuntimeEnvelopePolarity,
+        super::RuntimeEnvelopePurpose,
+        super::Sigma<Ty>,
+    ),
 }
 
 /// A question emptiness or containment can arrive back at.
@@ -172,6 +196,13 @@ impl TyCtx<'_> {
 }
 
 impl Types {
+    /// Whether `ty` is a member of a recursive type. A walk that follows a
+    /// path stops here: the member is its own fixpoint, so it stands whole at
+    /// the path where the walk entered it.
+    pub(super) fn is_recursive_member(&self, ty: &Ty) -> bool {
+        self.interner.recursion.is_member(*ty)
+    }
+
     /// The recursive types `count` equations define. `write` receives one
     /// binder per equation and returns each right-hand side, built as an
     /// ordinary type that mentions the binders.
@@ -238,6 +269,23 @@ impl Types {
             .position(|b| *b == id)
             .expect("the operation's own binder");
         (solved[at], true)
+    }
+
+    /// `ty` mapped by `mapper`, through the in-flight protocol when `ty`
+    /// reaches a recursive type. Returns the result and whether it may be
+    /// remembered.
+    /// `mapper` is called only for such a type, so a reading keyed by what it
+    /// carries copies that only where it is needed.
+    pub(super) fn map_type(
+        &mut self,
+        mapper: impl FnOnce() -> Mapper,
+        ty: Ty,
+        compute: impl FnOnce(&mut Self) -> Ty,
+    ) -> (Ty, bool) {
+        if !self.ctx().attrs(&ty).recursive() {
+            return (compute(self), true);
+        }
+        self.recursive_operation(Open::Map(mapper(), ty), compute)
     }
 
     /// Every operation binder `result` mentions, through the bodies of the

@@ -78,10 +78,13 @@ fn compile_and_run_here(name: &str, source: &str) -> FramedRun {
     }
 }
 
-/// `main` calls `f` `calls` times, holds every result, and sums them.
+/// `main` calls `f` `calls` times, holds every result, and sums them. `f`
+/// tail-calls a loop, so it needs a frame and each call builds a continuation.
 fn sequential_calls(calls: usize) -> String {
     let names: Vec<String> = (1..=calls).map(|i| format!("a{i}")).collect();
-    let mut source = String::from("def f(x), do: x + 1\n\ndef main() do\n");
+    let mut source = String::from(
+        "def f(x), do: bump(x, 1)\n\ndefp bump(x, 0), do: x\ndefp bump(x, k), do: bump(x + 1, k - 1)\n\ndef main() do\n",
+    );
     for (i, name) in names.iter().enumerate() {
         source.push_str(&format!("  {name} = f({})\n", i + 1));
     }

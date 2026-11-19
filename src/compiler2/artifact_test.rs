@@ -618,38 +618,3 @@ fn a_position_is_found_by_key_and_positions_keep_collection_order() {
         vec![position(0), position(1), position(2)]
     );
 }
-
-/// Fixture 01178 adds an integer to an integer, an integer to a float and a
-/// float to an integer. Kernel's clause for the first two passes its
-/// parameters to an extern in order; the third swaps them, so it is more than
-/// a pass-through and forwards to nothing.
-#[test]
-fn an_executable_forwards_to_the_extern_its_one_clause_only_passes_its_parameters_to() {
-    let settled =
-        crate::compiler2::drive_harness::Drive::fixture(1178).dump_stage(crate::compiler2::dump::DumpStage::Backend);
-    let program = settled.backend_program();
-    let world = settled.world();
-    let name = |key: &ExecutableKey| world.function_ref(key.activation.function).display_name();
-    let mut forwards = program
-        .executables()
-        .iter()
-        .filter(|executable| name(&executable.key) == "+")
-        .map(|executable| executable.forwards_to().map(name))
-        .collect::<Vec<_>>();
-    forwards.sort();
-    assert_eq!(
-        forwards,
-        vec![None, Some("fz_op_add_if".to_string()), Some("fz_op_add_ii".to_string())],
-        "the swapped float-and-integer clause forwards to nothing"
-    );
-    let call_site = program
-        .executables()
-        .iter()
-        .find(|executable| name(&executable.key) == "sum_then_double")
-        .expect("the fixture's caller of `+`");
-    assert_eq!(
-        call_site.forwards_to(),
-        None,
-        "a caller with two entries is more than a pass-through"
-    );
-}

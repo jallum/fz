@@ -1,14 +1,16 @@
 #---
-# purpose: "a delivered call to Kernel.+, Kernel.-, Kernel.* is the extern inline in the caller, so a loop whose body adds, subtracts and multiplies builds one continuation per iteration for its one real call, and the loop spends one reduction per iteration"
+# purpose: "a delivered call to Kernel.+, Kernel.-, Kernel.* is the extern inline in the caller, and so is a call to a function that only calls them, so a loop whose body adds, subtracts, multiplies and calls such a function builds no continuation, and the loop spends one reduction per iteration"
 # kind: run
 #---
 #
 # `run/2` makes four non-tail calls per iteration: `n - 1`, `P.f(n, 0)`, the
-# `+` inside `P.f` and the `*` inside `P.g`. Only `P.f` is more than an extern,
-# so only that call builds a continuation. The program prints the iteration
-# count, the continuations built beyond the ones reduction yields build (one
-# per yield), the iterations it ran, and the reductions it spent per
-# iteration. The interpreter builds no continuations and spends no reductions.
+# `+` inside `P.f` and the `*` inside `P.g`. None of the callees can suspend
+# the process, so every one is lowered in the loop and the loop builds no
+# continuation. The program prints the iteration count, the continuations
+# built beyond the ones reduction yields build (one per yield), and the
+# reductions spent. The one continuation left is `main`'s own call into the
+# loop, which is a call cycle. The interpreter builds no continuations and
+# spends no reductions.
 defmodule P do
   def f(a, b), do: g(a + b)
   def g(x), do: x * 2 + 1

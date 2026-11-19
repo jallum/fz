@@ -1163,39 +1163,6 @@ impl BackendExecutable {
             .as_ref()
             .is_some_and(ExecutableDispatch::asks_anything)
     }
-
-    /// The callee this executable does nothing but call: one clause whose
-    /// entry dispatch asks nothing and hands each input over as it is, with no
-    /// steps, whose tail is a direct call that passes the clause's parameters
-    /// in order and returns the callee's result as it comes.
-    pub fn forwards_to(&self) -> Option<&ExecutableKey> {
-        let BackendBody::Clauses { clauses, entries, .. } = &self.body else {
-            return None;
-        };
-        let [clause] = clauses.as_slice() else { return None };
-        let entry = &entries[clause.entry.as_u32() as usize];
-        let dispatch = self.abi.materialized.entry_dispatch.as_ref()?;
-        if dispatch.asks_anything() || !entry.steps.is_empty() {
-            return None;
-        }
-        let BackendTail::DirectCall {
-            target:
-                CallEdge::Direct(DirectCallEdge {
-                    callee: CallTarget::Local(callee),
-                    return_flow: BackendReturnFlow::Tail,
-                    ..
-                }),
-            args,
-            dest: ControlDestination::Return,
-            ..
-        } = &entry.tail
-        else {
-            return None;
-        };
-        let passes_parameters_in_order = args.len() == clause.params.len()
-            && args.iter().zip(&clause.params).all(|(arg, param)| arg.value == *param);
-        passes_parameters_in_order.then_some(callee)
-    }
 }
 
 #[cfg(test)]

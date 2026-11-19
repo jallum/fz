@@ -1,0 +1,31 @@
+#---
+# purpose: "`type` is an ordinary name, as in Elixir: a variable, a function, a map key and a keyword key may all be called `type`, while `@type` still declares a type"
+# oracle: self
+# oracle.stamp: d8ac263e64646b63
+#---
+defmodule Main do
+  @type kind() :: :a | :b
+  @type type() :: kind()
+
+  @spec type(integer()) :: type()
+  def type(0), do: :a
+  def type(_), do: :b
+
+  @spec classify(integer()) :: {type(), integer()}
+  def classify(n) do
+    type = type(n)
+    {type, n}
+  end
+
+  def main() do
+    IO.inspect(classify(0))
+    IO.inspect(classify(5))
+    type = elem({:x, :y, :z}, 1)
+    IO.inspect(type)
+    event = %{type: :start}
+    IO.inspect(event.type)
+    IO.inspect(Keyword.get([type: :kw], :type))
+  end
+end
+
+Main.main()

@@ -824,8 +824,28 @@ has to stop where it started.
   a re-entry is answered by the construction's binder, and a result that
   mentions it is committed as a recursive type. A result that still names a
   construction in flight is not remembered.
-- **Display.** A member is written `μt. body` where it is first reached and
-  `t` where its body reaches it again.
+- **Mappers.** A reading of a type as a type (`widen_literals`,
+  `runtime_reading`, `structural_surface`, `value_lane_repr`,
+  `erase_closure_identity`, `fold_self_nested_closures`, `instantiate`,
+  `runtime_envelope`, and addressing in `addressed.rs`) runs on a type that
+  reaches recursion through `Types::map_type`, keyed by `recursive::Mapper`:
+  the same in-flight protocol as constructions, so the image of a recursive
+  type is a recursive type. `Types::memoized` is the memo these readings share,
+  and it does not remember an unfinished image.
+- **Paths.** A walker whose answer depends on the path it is at
+  (`convergence_class`, `convergence_class_at`, `convergence_collapse_ty`)
+  stops at a member (`Types::is_recursive_member`): the member stands whole
+  where the path entered it, being its own fixpoint already.
+- **Runtime tests.** `runtime_type_predicate` reads a member in full where it
+  is first reached; met again below itself (a back edge), it is read by its
+  shapes alone (`Reading::Shapes`: tuple arities, list shapes, callable
+  arities), the coarse form every consumer already takes as admitting
+  whatever lies below. A type projection in `executable_facts` descends only
+  through tuple-of-one-arity types, and a cycle made only of those has no
+  finite value, so it never meets its own projection.
+- **Display and canon.** A member is written `μt. body` where it is first
+  reached and `t` where its body reaches it again, in `format` and in the
+  canonical form (`types/canon.rs`) alike.
 - **Residual.** Tuple fusion and list arithmetic treat a member as an opaque
   coordinate, so a spelling only those steps would recognise can get a second
   id for one meaning.

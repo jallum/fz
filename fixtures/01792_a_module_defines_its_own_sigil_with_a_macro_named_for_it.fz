@@ -1,0 +1,72 @@
+#---
+# purpose: "a macro named sigil_x defines ~x for the modules that import it: it receives the body pieces and the modifier codes, and a long name and a name with digits are sigils too"
+# oracle: self
+# oracle.stamp: 9df516729a4bf71a
+#---
+#
+# A sigil is the call `sigil_name(body, modifiers)`, so a module defines one
+# with `defmacro`. `body` is `{:<<>>, meta, pieces}`: a text piece is a
+# binary, and an interpolated `#{...}` of a lowercase sigil is
+# `{:"::", meta, [expression, type]}`. `modifiers` is the list of character
+# codes after the closing delimiter. An uppercase name may be several
+# letters, with digits after the first, and its body is not interpolated. A
+# sigil may stand where a pattern does when its expansion is a literal.
+defmodule Sigils do
+  defmacro sigil_x({:<<>>, _, [text]}, modifiers) when is_binary(text) do
+    quote do: {:text, unquote(text), unquote(modifiers)}
+  end
+
+  defmacro sigil_x({:<<>>, _, pieces}, modifiers) do
+    expressions = Enum.flat_map(pieces, fn
+      {:"::", _, [expression, _type]} -> [expression]
+      _text -> []
+    end)
+
+    quote do
+      {:interpolated, unquote(length(pieces)), unquote(expressions), unquote(modifiers)}
+    end
+  end
+
+  defmacro sigil_u({:<<>>, _, [text]}, []) when is_binary(text) do
+    String.upcase(text)
+  end
+
+  defmacro sigil_HTML({:<<>>, _, [text]}, modifiers) do
+    quote do: {:html, unquote(text), unquote(modifiers)}
+  end
+
+  defmacro sigil_A1({:<<>>, _, [text]}, _modifiers) do
+    {:a1, text}
+  end
+end
+
+defmodule Main do
+  import Sigils
+
+  def literal(), do: [~x(plain), ~x(a\nb), ~x[with modifiers]ab, ~x"quoted", ~x|bar|z]
+
+  def interpolated(value), do: [~x(a#{value}b), ~x(#{value}), ~x(#{value} and #{value})xyz]
+
+  def uppercase(), do: [~HTML(<p>hi #{1}</p>), ~HTML<bold>html, ~A1(digits), ~A1{braces}]
+
+  def heredoc() do
+    ~x"""
+    lines
+    here
+    """
+  end
+
+  def in_a_pattern(~u(abc)), do: :matched_upcased
+  def in_a_pattern(~s(abc)), do: :matched_string
+  def in_a_pattern(_other), do: :nothing
+
+  def main() do
+    Enum.each(literal(), &IO.inspect/1)
+    Enum.each(interpolated(:v), &IO.inspect/1)
+    Enum.each(uppercase(), &IO.inspect/1)
+    IO.inspect(heredoc())
+    Enum.each(["ABC", "abc", "other"], fn text -> IO.inspect(in_a_pattern(text)) end)
+  end
+end
+
+Main.main()

@@ -53,6 +53,7 @@ use super::super::semantic::{RuntimeDemand, ShapeDemand, UndefinedFunction};
 use super::super::transport::{BoundValue, CallableId, ShapeDescr, ShapeId, TransportLayout};
 use super::super::types::{ClosureTarget, Ty, Types};
 use super::super::world::World;
+use super::frame_free::{self, FrameFree};
 use fz_engine::FatalError;
 
 pub(crate) fn produce_native_program(
@@ -92,6 +93,8 @@ struct NativeLowerer<'a, 'tel, T: crate::telemetry::Telemetry> {
     module: ModuleBuilder,
     atom_ids: HashMap<AtomName, u32>,
     executable_fns: Vec<FnId>,
+    /// Which executables a call lowers in its caller instead of calling.
+    frame_free: FrameFree,
     construction_identity_fns: HashMap<TransportPosition, FnId>,
     callable_boundaries: Vec<NativeCallableBoundary>,
     extern_ids: HashMap<usize, ExternId>,
@@ -233,6 +236,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             });
         }
 
+        let frame_free = FrameFree::of(program, world.types());
         Ok(Self {
             world,
             telemetry,
@@ -241,6 +245,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             module,
             atom_ids,
             executable_fns,
+            frame_free,
             construction_identity_fns,
             callable_boundaries,
             extern_ids,
@@ -258,9 +263,8 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 match &executable.body {
                     BackendBody::Extern { signature } => self.lower_extern_executable(index, executable, signature),
                     BackendBody::Clauses { clauses, entries, .. } => {
-                        let mut entry_fns = EntryFns::for_executable(entries, clauses, |tail| {
-                            self.spliced_extern_of_tail(tail).is_some()
-                        });
+                        let mut entry_fns =
+                            EntryFns::for_executable(entries, clauses, |tail| self.continues_in_caller(tail));
                         self.lower_executable_head(index, executable, clauses, entries, &mut entry_fns)?;
                         while let Some((entry, fn_id)) = entry_fns.pending.pop_front() {
                             self.lower_entry_fn(index, executable, entries, &mut entry_fns, entry, fn_id, None)?;
@@ -719,26 +723,28 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         );
         let entry_tys = executable_input_tys(executable);
         let entry_vars = ctx.entry_params(entry_tys.as_slice());
-        if executable.asks_anything_of_inputs() {
-            self.lower_extern_after_dispatch(&mut ctx, index, executable, signature, &entry_vars)?;
-        } else {
-            let result = self.emit_extern_call(&mut ctx, index, signature, &entry_vars)?;
+        if let Some(result) = self.lower_extern_here(&mut ctx, index, executable, signature, &entry_vars)? {
             ctx.set_term(Term::Return(result));
         }
         self.finish_native_fn(ctx);
         Ok(())
     }
 
-    /// The extern's dispatch, whose every outcome enters one block that calls
-    /// the extern on the inputs and returns its result.
-    fn lower_extern_after_dispatch(
+    /// Calls extern executable `index` on `entry_vars` where control is, after
+    /// its dispatch when it has one, and answers the extern's result in the
+    /// block where the call succeeded. A dispatch with no outcome answers
+    /// nothing.
+    fn lower_extern_here(
         &mut self,
         ctx: &mut NativeFnCtx,
         index: usize,
         executable: &BackendExecutable,
         signature: &LoweredExtern,
         entry_vars: &[Var],
-    ) -> Result<(), FatalError> {
+    ) -> Result<Option<Var>, FatalError> {
+        if !executable.asks_anything_of_inputs() {
+            return self.emit_extern_call(ctx, index, signature, entry_vars).map(Some);
+        }
         let entry_tys = executable_input_tys(executable);
         let mut call_block = None;
         self.lower_executable_entry_dispatch(ctx, executable, entry_vars, [], &mut |_, ctx, _clause, state| {
@@ -751,12 +757,11 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             ctx.set_term(Term::Goto(block, state.forwarded_args.clone()));
             Ok(())
         })?;
-        if let Some((block, lanes)) = call_block {
-            ctx.current_block = block;
-            let result = self.emit_extern_call(ctx, index, signature, &lanes)?;
-            ctx.set_term(Term::Return(result));
-        }
-        Ok(())
+        let Some((block, lanes)) = call_block else {
+            return Ok(None);
+        };
+        ctx.current_block = block;
+        self.emit_extern_call(ctx, index, signature, &lanes).map(Some)
     }
 
     /// Calls extern executable `index` on `params`. A declared failure raises
@@ -879,13 +884,27 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         );
         let entry_tys = executable_input_tys(executable);
         let entry_vars = ctx.entry_params(entry_tys.as_slice());
+        self.lower_clauses_here(&mut ctx, executable, clauses, entries, &entry_vars)?;
+        self.finish_entry_lowering_fn(ctx, executable, entries, entry_fns)
+    }
+
+    /// Lowers an executable's entry dispatch where control is: each clause it
+    /// selects is entered as a block, handed the values the dispatch read.
+    fn lower_clauses_here(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        executable: &BackendExecutable,
+        clauses: &[BackendClause],
+        entries: &[BackendEntry],
+        entry_vars: &[Var],
+    ) -> Result<(), FatalError> {
         if executable.abi.materialized.entry_dispatch.is_none() {
             return Err(incomplete_native_program(
                 self.telemetry,
                 self.root_id,
                 format!(
-                    "backend executable {} has {} clauses but no settled entry dispatch",
-                    index,
+                    "backend executable {:?} has {} clauses but no settled entry dispatch",
+                    executable.key,
                     clauses.len()
                 ),
             ));
@@ -894,13 +913,12 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             .iter()
             .flat_map(|clause| clause.arguments.iter().map(|argument| argument.subject));
         self.lower_executable_entry_dispatch(
-            &mut ctx,
+            ctx,
             executable,
-            &entry_vars,
+            entry_vars,
             handed,
             &mut |lowerer, ctx, clause, state| lowerer.enter_clause(ctx, executable, entries, &clauses[clause], state),
-        )?;
-        self.finish_entry_lowering_fn(ctx, executable, entries, entry_fns)
+        )
     }
 
     /// Emits the executable's entry dispatch into `ctx`: each outcome is
@@ -1011,15 +1029,29 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         entries: &[BackendEntry],
         entry_fns: &mut EntryFns,
     ) -> Result<(), FatalError> {
-        while let Some((entry_id, block, entry_vars)) = ctx.pending_entry_blocks.pop_front() {
+        self.lower_entry_blocks(&mut ctx, executable, entries, entry_fns)?;
+        self.finish_native_fn(ctx);
+        Ok(())
+    }
+
+    /// Lowers every entry and clause body of `executable` that control has
+    /// reached as a block of this function and that is not lowered yet.
+    fn lower_entry_blocks(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        executable: &BackendExecutable,
+        entries: &[BackendEntry],
+        entry_fns: &mut EntryFns,
+    ) -> Result<(), FatalError> {
+        while let Some((entry_id, block, entry_vars)) = ctx.scope.pending.pop_front() {
             ctx.current_block = block;
             match clause_entered_at(executable, entry_id) {
                 Some(clause) => {
-                    self.lower_clause_body_here(&mut ctx, executable, entries, entry_fns, clause, &entry_vars)?
+                    self.lower_clause_body_here(ctx, executable, entries, entry_fns, clause, &entry_vars)?
                 }
                 None => {
                     self.lower_entry_here(
-                        &mut ctx,
+                        ctx,
                         executable,
                         entries,
                         entry_fns,
@@ -1030,7 +1062,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 }
             }
         }
-        self.finish_native_fn(ctx);
         Ok(())
     }
 
@@ -1616,9 +1647,19 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     args,
                     dest,
                     &direct.return_flow,
+                    self.call_continues_here(ctx, target, dest),
                 ),
                 CallEdge::Dispatch(dispatch) => self.lower_dispatch_call_tail(
-                    ctx, executable, entries, entry_fns, env, dispatch, *selector, args, dest,
+                    ctx,
+                    executable,
+                    entries,
+                    entry_fns,
+                    env,
+                    dispatch,
+                    *selector,
+                    args,
+                    dest,
+                    self.call_continues_here(ctx, target, dest),
                 ),
                 CallEdge::Indirect { .. } => Err(incomplete_native_program(
                     self.telemetry,
@@ -2001,12 +2042,20 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         args: &[super::super::artifact::BackendCallArg],
         dest: &ControlDestination,
         return_flow: &BackendReturnFlow,
+        in_place: bool,
     ) -> Result<(), FatalError> {
         if let CallTarget::Undefined(undefined) = callee {
             return self.raise_undefined_function(ctx, executable, env, undefined, selector);
         }
-        if let Some(spliced) = self.spliced_extern(callee, dest, return_flow) {
-            return self.lower_spliced_extern(ctx, executable, entries, entry_fns, env, &spliced, args);
+        if in_place && !matches!(return_flow, BackendReturnFlow::NoReturn) {
+            let CallTarget::Local(callee) = callee else {
+                unreachable!("only a local callee is lowered in its caller")
+            };
+            let callee = self
+                .program
+                .executable_index(callee, self.world.types())
+                .ok_or(FatalError)?;
+            return self.lower_call_in_place(ctx, executable, entries, entry_fns, env, callee, args, dest);
         }
         let (callee, call_args) = self.native_direct_call_target_and_args(ctx, executable, env, callee, args)?;
         self.emit_native_direct_call_tail(
@@ -2022,74 +2071,124 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         )
     }
 
-    fn spliced_extern_of_tail(&self, tail: &BackendTail) -> Option<SplicedExtern> {
-        let BackendTail::DirectCall {
-            target: CallEdge::Direct(direct),
-            dest,
-            ..
-        } = tail
-        else {
-            return None;
+    /// Whether a tail is a call that continues in this function, so that the
+    /// entry it delivers to is reached by a direct transfer.
+    fn continues_in_caller(&self, tail: &BackendTail) -> bool {
+        let BackendTail::DirectCall { target, dest, .. } = tail else {
+            return false;
         };
-        self.spliced_extern(&direct.callee, dest, &direct.return_flow)
+        frame_free::delivered_call_continues_here(target, dest, &mut |callee| self.callee_is_frame_free(callee))
     }
 
-    /// The extern a delivered call is, when the callee is nothing but that
-    /// extern: the call then needs no callee and no continuation, only the
-    /// extern's one result lane handed to the entry that resumes the caller.
-    fn spliced_extern(
+    /// Whether this call is lowered in this function instead of being a call:
+    /// a delivered call whose callees are all frame-free, or, inside a body
+    /// that is itself lowered in place, a tail call, whose callees are then
+    /// frame-free by that body's own rule.
+    fn call_continues_here(
         &self,
-        callee: &CallTarget<ExecutableKey>,
+        ctx: &NativeFnCtx,
+        target: &CallEdge<ExecutableKey, BackendReturnFlow>,
         dest: &ControlDestination,
-        return_flow: &BackendReturnFlow,
-    ) -> Option<SplicedExtern> {
-        let (ControlDestination::Deliver(resume), BackendReturnFlow::Deliver { .. }) = (dest, return_flow) else {
-            return None;
-        };
-        let CallTarget::Local(callee) = callee else { return None };
-        let types = self.world.types();
-        let callee = &self.program.executables()[self.program.executable_index(callee, types)?];
-        let behind = self
-            .program
-            .executable_index(callee.forwards_to().unwrap_or(&callee.key), types)?;
-        let target = &self.program.executables()[behind];
-        let is_extern_without_dispatch = matches!(target.body, BackendBody::Extern { .. })
-            && !callee.asks_anything_of_inputs()
-            && !target.asks_anything_of_inputs();
-        is_extern_without_dispatch.then_some(SplicedExtern {
-            extern_index: behind,
-            resume: *resume,
-        })
+    ) -> bool {
+        let frame_free = &mut |callee: &CallTarget<ExecutableKey>| self.callee_is_frame_free(callee);
+        match dest {
+            ControlDestination::Deliver(_) => frame_free::delivered_call_continues_here(target, dest, frame_free),
+            ControlDestination::Return if ctx.scope.returns_to_join() => {
+                assert!(
+                    frame_free::tail_call_continues_here(target, frame_free),
+                    "a body lowered in its caller tail-calls only frame-free callees"
+                );
+                true
+            }
+            ControlDestination::Return => false,
+        }
     }
 
-    /// Calls the extern in this function and continues in the resume entry,
-    /// which is a block of this function whenever this is its only way in.
+    fn callee_is_frame_free(&self, callee: &CallTarget<ExecutableKey>) -> bool {
+        self.frame_free.callee(self.program, self.world.types(), callee)
+    }
+
+    /// Lowers frame-free executable `callee` as blocks of this function. Its
+    /// inputs are the call's lanes, read at the types the callee declares as
+    /// a function of its own would read them. Its returns meet in one block,
+    /// which goes on in the entry the call delivers to; a tail call shares the
+    /// meeting block of the body it is in.
     #[allow(clippy::too_many_arguments)]
-    fn lower_spliced_extern(
+    fn lower_call_in_place(
         &mut self,
         ctx: &mut NativeFnCtx,
         executable: &BackendExecutable,
         entries: &[BackendEntry],
         entry_fns: &mut EntryFns,
         env: &ValueEnv,
-        spliced: &SplicedExtern,
+        callee: usize,
         args: &[super::super::artifact::BackendCallArg],
+        dest: &ControlDestination,
     ) -> Result<(), FatalError> {
         let program = self.program;
-        let target = &program.executables()[spliced.extern_index];
-        let BackendBody::Extern { signature } = &target.body else {
-            unreachable!("a spliced call reaches an extern executable")
+        let callee_executable = &program.executables()[callee];
+        let lanes = self.call_lanes(ctx, executable, env, callee, args)?;
+        let inputs = ctx.typed_params(executable_input_tys(callee_executable).iter());
+        let head = ctx.builder.block(inputs.clone());
+        ctx.set_term(Term::Goto(head, lanes));
+        ctx.current_block = head;
+        let returns = match dest {
+            ControlDestination::Deliver(_) => Returns::to_join(&callee_executable.abi.return_layout.layout),
+            ControlDestination::Return => ctx.scope.take_returns(),
         };
-        let lanes = self.call_lanes(ctx, executable, env, spliced.extern_index, args)?;
-        let result = self.emit_extern_call(ctx, spliced.extern_index, signature, &lanes)?;
-        let entry = &entries[spliced.resume.as_u32() as usize];
+        let caller_scope = ctx.enter_scope(returns);
+        self.lower_executable_here(ctx, callee, callee_executable, &inputs)?;
+        let callee_scope = ctx.leave_scope(caller_scope);
+        let ControlDestination::Deliver(resume) = dest else {
+            ctx.scope.returns = callee_scope.returns;
+            return Ok(());
+        };
+        let Some((join, returned)) = callee_scope.returns.joined() else {
+            return Ok(());
+        };
+        ctx.current_block = join;
+        let entry = &entries[resume.as_u32() as usize];
         let input = entry.origin.input_value().ok_or(FatalError)?;
-        let delivered = self.decode_runtime_value_for_layout(&target.abi.return_layout.layout, &[result], &mut 0)?;
+        let delivered =
+            self.decode_runtime_value_for_layout(&callee_executable.abi.return_layout.layout, &returned, &mut 0)?;
         let mut resumed = env.clone();
         bind_local_value(ctx, executable, &mut resumed, input, delivered);
-        let resume_args = self.entry_call_args_from_value(ctx, executable, entries, spliced.resume, &resumed, input)?;
-        self.transfer_to_entry(ctx, executable, entries, entry_fns, spliced.resume, resume_args);
+        let resume_args = self.entry_call_args_from_value(ctx, executable, entries, *resume, &resumed, input)?;
+        self.transfer_to_entry(ctx, executable, entries, entry_fns, *resume, resume_args);
         Ok(())
+    }
+
+    /// Lowers an executable's whole body where control is, on `inputs`, into
+    /// the current entry scope: an extern call, or its dispatch and every
+    /// entry its clauses reach. A frame-free executable reaches no entry that
+    /// needs a function of its own.
+    fn lower_executable_here(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        index: usize,
+        executable: &BackendExecutable,
+        inputs: &[Var],
+    ) -> Result<(), FatalError> {
+        match &executable.body {
+            BackendBody::Extern { signature } => {
+                if let Some(result) = self.lower_extern_here(ctx, index, executable, signature, inputs)? {
+                    let carries_a_value = !executable.abi.return_layout.layout.reprs.is_empty();
+                    ctx.return_lanes(if carries_a_value { vec![result] } else { Vec::new() });
+                }
+                Ok(())
+            }
+            BackendBody::Clauses { clauses, entries, .. } => {
+                let mut entry_fns = EntryFns::for_executable(entries, clauses, |tail| self.continues_in_caller(tail));
+                self.lower_clauses_here(ctx, executable, clauses, entries, inputs)?;
+                self.lower_entry_blocks(ctx, executable, entries, &mut entry_fns)?;
+                assert!(
+                    entry_fns.ids.is_empty(),
+                    "a frame-free executable {:?} reached an entry that needs a function of its own",
+                    executable.key
+                );
+                Ok(())
+            }
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2104,6 +2203,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         selector: Option<ValueId>,
         args: &[super::super::artifact::BackendCallArg],
         dest: &ControlDestination,
+        in_place: bool,
     ) -> Result<(), FatalError> {
         let word_inputs = selector
             .into_iter()
@@ -2129,6 +2229,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             selector,
             args,
             dest,
+            in_place,
             dispatch.plan.graph.root,
             &mut state,
         )
@@ -2146,6 +2247,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         selector: Option<ValueId>,
         args: &[super::super::artifact::BackendCallArg],
         dest: &ControlDestination,
+        in_place: bool,
         node_id: GraphNodeId,
         state: &mut DispatchState,
     ) -> Result<(), FatalError> {
@@ -2180,6 +2282,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     args,
                     dest,
                     &arm.return_flow,
+                    in_place,
                 )
             }
             DispatchNode::Test {
@@ -2196,7 +2299,8 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 state,
                 &mut |lowerer, ctx, target, state| {
                     lowerer.lower_dispatch_call_node(
-                        ctx, executable, entries, entry_fns, env, dispatch, selector, args, dest, target, state,
+                        ctx, executable, entries, entry_fns, env, dispatch, selector, args, dest, in_place, target,
+                        state,
                     )
                 },
             ),
@@ -2418,7 +2522,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         match dest {
             ControlDestination::Return => {
                 let lanes = self.return_lane_vars(ctx, executable, env, value_id)?;
-                ctx.set_term(Term::ReturnLanes(lanes));
+                ctx.return_lanes(lanes);
                 Ok(())
             }
             ControlDestination::Deliver(entry_id) => {
@@ -5218,11 +5322,6 @@ fn same_entry_capture_contract(left: &BackendEntryCapture, right: &BackendEntryC
 }
 
 /// A delivered call that is the extern behind its callee.
-struct SplicedExtern {
-    extern_index: usize,
-    resume: ControlEntryId,
-}
-
 /// How one executable's entries become native code. Something outside a
 /// function can arrive in it by a call from elsewhere, by a call's return, or
 /// from the runtime. An entry that only its own function's direct transfers
@@ -5252,14 +5351,14 @@ struct EntryHomes {
 }
 
 impl EntryHomes {
-    fn new(entries: &[BackendEntry], clauses: &[BackendClause], is_spliced: impl Fn(&BackendTail) -> bool) -> Self {
+    fn new(entries: &[BackendEntry], clauses: &[BackendClause], continues_here: impl Fn(&BackendTail) -> bool) -> Self {
         let mut incoming: HashMap<ControlEntryId, Vec<(ControlEntryId, EntryTransfer)>> = HashMap::default();
         for (source, entry) in entries.iter().enumerate() {
             let source = ControlEntryId::from_u32(source as u32);
-            let spliced = is_spliced(&entry.tail);
+            let continues = continues_here(&entry.tail);
             for (target, transfer) in entry.tail.transfers() {
                 let transfer = match transfer {
-                    EntryTransfer::CallReturn if spliced => EntryTransfer::Direct,
+                    EntryTransfer::CallReturn if continues => EntryTransfer::Direct,
                     other => other,
                 };
                 incoming.entry(target).or_default().push((source, transfer));
@@ -5302,15 +5401,15 @@ impl EntryHomes {
 }
 
 impl EntryFns {
-    /// `is_spliced` says which tails are calls that continue in this function
+    /// `continues_here` says which tails are calls lowered in this function
     /// instead of returning to it: their resume entry is reached by a direct
     /// transfer like any other.
     fn for_executable(
         entries: &[BackendEntry],
         clauses: &[BackendClause],
-        is_spliced: impl Fn(&BackendTail) -> bool,
+        continues_here: impl Fn(&BackendTail) -> bool,
     ) -> Self {
-        let mut homes = EntryHomes::new(entries, clauses, is_spliced);
+        let mut homes = EntryHomes::new(entries, clauses, continues_here);
         let blocks = (0..entries.len() as u32)
             .map(ControlEntryId::from_u32)
             .filter(|entry| homes.home(*entry) != Home::Entry(*entry))
@@ -5644,6 +5743,62 @@ impl DispatchState {
     }
 }
 
+/// The entries of one executable as blocks of the function being built: the
+/// block each entry reached has, the blocks reached and not yet lowered, and
+/// where the executable's returns go.
+#[derive(Default)]
+struct EntryScope {
+    blocks: HashMap<ControlEntryId, BlockId>,
+    /// Entries reached as blocks and not yet lowered, with their block and
+    /// the parameters the block binds.
+    pending: VecDeque<(ControlEntryId, BlockId, Vec<Var>)>,
+    returns: Returns,
+}
+
+impl EntryScope {
+    fn returns_to_join(&self) -> bool {
+        matches!(self.returns, Returns::ToJoin { .. })
+    }
+
+    /// The returns of this scope, handed to a tail call lowered in place,
+    /// whose returns are this scope's own.
+    fn take_returns(&mut self) -> Returns {
+        std::mem::take(&mut self.returns)
+    }
+}
+
+#[derive(Default)]
+enum Returns {
+    /// The executable is the function's own: a return leaves the function.
+    #[default]
+    FromFunction,
+    /// The executable is lowered in its caller: a return jumps to the block
+    /// where its returns meet, which takes the lanes of its return layout and
+    /// is made by the first return.
+    ToJoin {
+        tys: Vec<Ty>,
+        join: Option<(BlockId, Vec<Var>)>,
+    },
+}
+
+impl Returns {
+    fn to_join(layout: &BackendValueLayout) -> Self {
+        Self::ToJoin {
+            tys: layout.tys.to_vec(),
+            join: None,
+        }
+    }
+
+    /// The block the returns met in and its parameters, when any return was
+    /// lowered.
+    fn joined(self) -> Option<(BlockId, Vec<Var>)> {
+        match self {
+            Self::ToJoin { join, .. } => join,
+            Self::FromFunction => unreachable!("only a body lowered in its caller has a meeting block"),
+        }
+    }
+}
+
 struct NativeFnCtx {
     fn_id: FnId,
     builder: FnBuilder,
@@ -5657,10 +5812,8 @@ struct NativeFnCtx {
     return_ty: Ty,
     return_reprs: Vec<AbiValueRepr>,
     effects: EffectSummary,
-    entry_blocks: HashMap<ControlEntryId, BlockId>,
-    /// Entries reached as blocks and not yet lowered, with their block and
-    /// the parameters the block binds.
-    pending_entry_blocks: VecDeque<(ControlEntryId, BlockId, Vec<Var>)>,
+    /// The executable whose entries are being lowered into this function.
+    scope: EntryScope,
     /// The whole binary a cursor was made into, with the block that made it:
     /// the same cursor asked again in that block is not made again.
     whole_cursors: HashMap<(Var, Var), (BlockId, Var)>,
@@ -5692,8 +5845,7 @@ impl NativeFnCtx {
             return_ty,
             return_reprs,
             effects,
-            entry_blocks: HashMap::default(),
-            pending_entry_blocks: VecDeque::new(),
+            scope: EntryScope::default(),
             whole_cursors: HashMap::default(),
         }
     }
@@ -5701,14 +5853,65 @@ impl NativeFnCtx {
     /// The block an entry is lowered into within this function, created the
     /// first time control reaches it.
     fn entry_block(&mut self, entry: ControlEntryId, tys: &[Ty]) -> BlockId {
-        if let Some(block) = self.entry_blocks.get(&entry) {
+        if let Some(block) = self.scope.blocks.get(&entry) {
             return *block;
         }
         let params = self.typed_params(tys);
         let block = self.builder.block(params.clone());
-        self.entry_blocks.insert(entry, block);
-        self.pending_entry_blocks.push_back((entry, block, params));
+        self.scope.blocks.insert(entry, block);
+        self.scope.pending.push_back((entry, block, params));
         block
+    }
+
+    /// Lowers another executable's entries into this function from here on,
+    /// its returns going where `returns` says. Answers the scope it replaces.
+    fn enter_scope(&mut self, returns: Returns) -> EntryScope {
+        std::mem::replace(
+            &mut self.scope,
+            EntryScope {
+                returns,
+                ..EntryScope::default()
+            },
+        )
+    }
+
+    /// Goes back to lowering `outer`'s entries, answering the scope left.
+    fn leave_scope(&mut self, outer: EntryScope) -> EntryScope {
+        assert!(
+            self.scope.pending.is_empty(),
+            "an executable lowered in its caller leaves no entry unlowered"
+        );
+        std::mem::replace(&mut self.scope, outer)
+    }
+
+    /// Ends the block returning `lanes`: from this function, or, in a body
+    /// lowered in its caller, by a jump to the block where its returns meet.
+    fn return_lanes(&mut self, lanes: Vec<Var>) {
+        let term = match &mut self.scope.returns {
+            Returns::FromFunction => Term::ReturnLanes(lanes),
+            Returns::ToJoin { tys, join } => {
+                assert_eq!(
+                    tys.len(),
+                    lanes.len(),
+                    "a return in a body lowered in its caller carries the lanes of its return layout"
+                );
+                let block = match join {
+                    Some((block, _)) => *block,
+                    None => {
+                        let tys = tys.clone();
+                        let params = self.typed_params(tys.iter());
+                        let block = self.builder.block(params.clone());
+                        let Returns::ToJoin { join, .. } = &mut self.scope.returns else {
+                            unreachable!()
+                        };
+                        *join = Some((block, params));
+                        block
+                    }
+                };
+                Term::Goto(block, lanes)
+            }
+        };
+        self.set_term(term);
     }
 
     fn entry_params<'t>(&mut self, tys: impl IntoIterator<Item = &'t Ty>) -> Vec<Var> {

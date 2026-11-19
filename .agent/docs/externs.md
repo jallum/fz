@@ -58,6 +58,12 @@ marshalling code rather than being consumed at the front door. `integer` and
 `float` are unaffected BY THE ABI: they are raw scalars under both. They are
 not interchangeable, though — see the register banks below.
 
+**An fz extern's answer is one scalar or an `any`.** A helper that can fail
+returns a tagged list. `fz_unescape_string(binary)`, behind
+`Macro.unescape_string/1`, answers `[1, text]` on success and `[0, message]` on
+a malformed escape, and the library function raises `ArgumentError` for the
+second.
+
 Both doors read the same property from the same declaration
 (`prim.rs::lower_extern_generic` and `ir_interp/extern_call.rs`), so adding an
 allocating primitive is a Rust function and a declaration. There is no lowering
@@ -430,10 +436,11 @@ the pair is physical only: no fz tuple is built, and no declaration spells it.
   the value. The atom is interned by `collect_executable_atoms`. A caller
   therefore tail-calls the wrapper; no continuation or decoder stands between it
   and the C symbol. A caller that is not in tail position and whose callee is
-  only that extern, or one clause that passes its parameters to it, makes the
-  extern call itself (`emit_extern_call`, shared with the wrapper): the failing
-  edge raises from the caller and the caller goes on in the same function (see
-  [`pipeline`](pipeline.md), the delivered call that is spliced).
+  frame-free, as an extern and any function that only calls externs are, makes
+  the extern call itself (`lower_extern_here`, shared with the wrapper): the
+  failing edge raises from the caller and the caller goes on in the same
+  function (see [`pipeline`](pipeline.md), the delivered call lowered in its
+  caller).
 - The interpreter reads the same pair and answers `ExternCallValue::CheckedFailure`,
   which `continue_after_extern` hands to `raise_last_resort`, the function a
   decision's failure calls.

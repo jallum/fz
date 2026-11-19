@@ -1,0 +1,90 @@
+#---
+# purpose: "~c reads escapes and interpolation as a double-quoted string does and ~C keeps its body as written, and each answers the list of code points of the text, in every delimiter and in heredocs"
+# oracle: self
+# oracle.stamp: 7c061310427b875c
+#---
+#
+# `~c` and `~C` are the macros `sigil_c` and `sigil_C`. The value is a list of
+# integers, so every result is also shown as the list itself: `inspect` prints
+# a list of printable ASCII as `~c"..."`, and `Enum.sum/1` and `length/1` see
+# the integers. A `~c` with an interpolation converts as the program runs,
+# and the interpolated value is turned into text by `to_string` first.
+defmodule Main do
+  def delimiters() do
+    [~c(a), ~c[a], ~c{a}, ~c<a>, ~c|a|, ~c/a/, ~c"a", ~c'a']
+  end
+
+  def otp_json_shapes() do
+    [~c"\\u00", ~c": ", ~c"\n", ~c"]", ~c"[", ~c",", ~c"\"", ~c"\\"]
+  end
+
+  def escapes() do
+    [
+      ~c(a\nb\tc\\d),
+      ~c(\x41\u00e9\u{1F600}),
+      ~c(\s\0\a\b\d\e\f\v\r),
+      ~c(\q\"\'\#),
+      ~c(a\)b)
+    ]
+  end
+
+  def interpolation(x, n) do
+    [
+      ~c(a#{x}b),
+      ~c(#{x}),
+      ~c(#{n}#{x}#{n}),
+      ~c(sum #{1 + 1}),
+      ~c(f\#{x}o),
+      ~c(#{"é"}ü)
+    ]
+  end
+
+  def empty(x) do
+    [~c(), ~C(), ~c(#{x}), ~c"", ~C[]]
+  end
+
+  def uppercase(_x) do
+    [
+      ~C(a\nb#{x}),
+      ~C{\x41 \u00e9 \\},
+      ~C"quote \n",
+      ~C|bar|,
+      ~C</slash/>,
+      ~C'tick #{x}'
+    ]
+  end
+
+  def heredocs(x) do
+    [
+      ~c"""
+      a #{x}
+        indented\tline
+      """,
+      ~C"""
+      raw #{x}\n
+      """,
+      ~c'''
+      single #{x}
+      ''',
+      ~c"""
+      """
+    ]
+  end
+
+  def values() do
+    {length(~c"héllo"), Enum.sum(~c(abc)), ~c(abc) == [97, 98, 99], ~C(a\n) == [?a, ?\\, ?n]}
+  end
+
+  def main() do
+    Enum.each(delimiters(), &IO.inspect/1)
+    Enum.each(otp_json_shapes(), &IO.inspect/1)
+    Enum.each(escapes(), &IO.inspect/1)
+    Enum.each(interpolation("X", 42), &IO.inspect/1)
+    Enum.each(empty("E"), &IO.inspect/1)
+    Enum.each(uppercase("U"), &IO.inspect/1)
+    Enum.each(heredocs("H"), &IO.inspect/1)
+    IO.inspect(values())
+  end
+end
+
+Main.main()

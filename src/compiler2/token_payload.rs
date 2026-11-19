@@ -41,7 +41,11 @@ fn encode_tok(builder: &QuotedSourceBuilder, tok: &Tok) -> Result<(&'static str,
         Tok::Ident(value) => ("ident", builder.utf8_binary(value)?),
         Tok::Upper(value) => ("upper", builder.utf8_binary(value)?),
         Tok::KwKey(value) => ("kw_key", builder.utf8_binary(value)?),
-        Tok::Sigil(value) => ("sigil", builder.utf8_binary(value)?),
+        Tok::Sigil(_) => {
+            return Err(QuotedSourceError::new(
+                "a sigil cannot appear in a type or spec attribute: it is an expression",
+            ));
+        }
         Tok::Binary(bytes) => {
             let items = bytes
                 .iter()
@@ -66,7 +70,6 @@ fn encode_tok(builder: &QuotedSourceBuilder, tok: &Tok) -> Result<(&'static str,
         Tok::End => ("end", nil()),
         Tok::Else => ("else", nil()),
         Tok::When => ("when", nil()),
-        Tok::Type => ("type", nil()),
         Tok::In => ("in", nil()),
         Tok::Not => ("not", nil()),
         Tok::And => ("and", nil()),
@@ -156,7 +159,6 @@ fn decode_tok(kind: &str, payload: &QuotedSourceCursor) -> Result<Tok, QuotedSou
         "ident" => Tok::Ident(payload.utf8_binary_text()?),
         "upper" => Tok::Upper(payload.utf8_binary_text()?),
         "kw_key" => Tok::KwKey(payload.utf8_binary_text()?),
-        "sigil" => Tok::Sigil(payload.utf8_binary_text()?),
         "binary" => Tok::Binary(decode_bytes(payload)?),
         "true" => Tok::True,
         "false" => Tok::False,
@@ -175,7 +177,6 @@ fn decode_tok(kind: &str, payload: &QuotedSourceCursor) -> Result<Tok, QuotedSou
         "end" => Tok::End,
         "else" => Tok::Else,
         "when" => Tok::When,
-        "type" => Tok::Type,
         "in" => Tok::In,
         "not" => Tok::Not,
         "and" => Tok::And,

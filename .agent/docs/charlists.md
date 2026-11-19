@@ -4,10 +4,13 @@ fz has no charlist type. A list of integers is a list of integers, and text is
 a binary (`<<>>`, UTF-8). There is no separate "list of codepoints" value with
 its own identity. There is no `'...'` literal: the lexer has no rule for the
 single-quote byte, so `'` lands in the catch-all arm and raises a lex error
-(`unexpected character '\''`). There is no `~c`: the lexer tokenizes `~c` like
-any lowercase sigil into `Tok::Sigil("c")`, and the parser rejects every sigil
-with `unsupported sigil ~c`. A double-quoted `"..."` is the only text literal and
-lexes to `Tok::Binary`.
+(`unexpected character '\''`). A double-quoted `"..."` is the only text literal
+and lexes to `Tok::Binary`.
+
+A charlist is written with a sigil. `~c"hi"` expands to the list `[104, 105]`
+(`Kernel.sigil_c/2`; `~C` keeps its body as written). `String.to_charlist/1`
+and `List.to_charlist/1` build the same list from text and from chardata. See
+"Sigils are expressions" in `parser-syntax.md`.
 
 ## Rendering
 
@@ -37,8 +40,8 @@ two-tuple with a non-alias atom key renders as a keyword list, `[a: 1]`.
 Every other list renders its elements. A list's tail is always a list or `[]`,
 so there is no improper form to print.
 
-The `~c"..."` text has no source form in fz: the lexer rejects every sigil, so
-the renderer prints text the language cannot read back.
+The `~c"..."` text is the sigil's source form: the renderer prints what the
+program can read back.
 
 An atom renders as `Macro.inspect_atom(:literal, atom)` does. `nil`, `true` and
 `false` print bare. An atom whose name `module_name::alias_spelling` recognises
