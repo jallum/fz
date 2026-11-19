@@ -288,7 +288,7 @@ fn read_compile_spend(trace: &Path) -> CompileSpend {
 // `DeriveRuntimeDemand` derivations, and every other job kind unchanged.
 // 16_958 -> 16_959: the runtime library defines `defmacrop`, one more definition its
 // `ScopeCode` notes.
-const DERIVATIONS: u64 = 16_959;
+const DERIVATIONS: u64 = 16_822;
 // 111_876 -> 111_888: an extern that declares `raises:` reads the struct of
 // the exception it names, to raise that struct. The distiller calls twelve
 // such externs, and each contract reads `StructDefined` once.
@@ -324,7 +324,7 @@ const DERIVATIONS: u64 = 16_959;
 // 154_544 -> 128_751: the same, each activation read once per derivation.
 // 128_751 -> 128_782: +31: the reads of the same rise as `DERIVATIONS`; authorized by the user.
 // 128_782 -> 128_429: the reads of those 130 derivations.
-const READS_HANDED: u64 = 128_429;
+const READS_HANDED: u64 = 127_382;
 
 /// Compiling the distiller spends this much of the product stack. The largest
 /// drive is the one `PRODUCT_DRIVE_BUDGET` bounds, so its headroom is the
@@ -400,7 +400,7 @@ fn the_distiller_compiles_inside_the_product_drive_budget() {
         // (37_345, 37_633, 26) -> (37_346, 37_634, 26): +1: a body that writes a module's name
         // carries that module's struct schema, so one more schema enters the program;
         // authorized by the user
-        (37_346, 37_634, 26),
+        (37_053, 37_341, 26),
         "(largest drive requests, total requests, drives) for the distiller's compile moved. \
          A fall is lowered in this pin; a rise is investigated first, because the largest drive \
          may not exceed PRODUCT_DRIVE_BUDGET (50,000)."
