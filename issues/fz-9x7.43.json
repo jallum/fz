@@ -9,9 +9,15 @@
   "id": "fz-9x7.43",
   "labels": [],
   "parent": "fz-9x7",
+  "comments": [
+    {
+      "text": "Make Distiller Fast's prediction (page 4JyVHKjbDBw1bzRDu17PZd v5 §9): 64.4M decode continuations × (170 − 22) ≈ 9.5G less parse work, so the gap to the BEAM goes from ~24.0G to ~14.5G. N4 is folded into this ticket.",
+      "timestamp": "2026-11-19T04:17:42Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "A continuation lives in its process's continuation region and is given back by one store",
   "type": "feature",
-  "updated_at": "2026-11-19T04:17:18Z"
+  "updated_at": "2026-11-19T04:17:42Z"
 }
