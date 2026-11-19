@@ -129,9 +129,9 @@ fn fill_cont_captures<M: cranelift_module::Module>(
 ) {
     let count = cap_bindings.len() + empty_slots + 1;
     let stores = CaptureStores::new(address, count);
-    stores.store_ref_word(body, 0, outer_cont);
+    stores.store_ref_word(body, 0, outer_cont, StoredRefKind::Heap(ValueKind::CLOSURE));
     store_user_captures(cap_bindings, |idx, capture| match capture {
-        ClosureCapture::RefWord(word) => stores.store_ref_word(body, idx, word),
+        ClosureCapture::RefWord(word) => stores.store_ref_word(body, idx, word, StoredRefKind::Open),
         ClosureCapture::RawInt(raw) => stores.store_raw(body, idx, raw, ValueKind::INT),
         ClosureCapture::RawF64(raw) => {
             let bits = body.b.ins().bitcast(types::I64, MemFlagsData::new(), raw);
@@ -204,6 +204,16 @@ fn place_cont_closure<M: cranelift_module::Module>(
     body.b.block_params(placed)[0]
 }
 
+/// What codegen knows, where a ref word is stored, of the kind it names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum StoredRefKind {
+    /// Any kind: the store reads the kind off the word.
+    Open,
+    /// One heap kind: the slot holds the word's payload under a constant kind
+    /// byte, as the open store would write for a word of that kind.
+    Heap(ValueKind),
+}
+
 /// Stores into the capture slots and kind bytes of one closure being built.
 pub(super) struct CaptureStores {
     address: ir::Value,
@@ -237,12 +247,30 @@ impl CaptureStores {
     }
 
     /// Store the value a ref word names: its kind byte, and the raw word the
-    /// slot holds. An int, float, pid or reference ref names a slot that holds
-    /// the raw word, which is read through it; an atom's raw word is its id,
-    /// and every other kind's is its payload. The slot read is branch-free: a
-    /// ref that names no slot reads the closure's own header, and that word
-    /// goes unused.
+    /// slot holds. A heap kind's raw word is the word's payload.
     pub(super) fn store_ref_word<M: cranelift_module::Module>(
+        &self,
+        body: &mut CodegenFn<'_, '_, M>,
+        idx: usize,
+        word: ir::Value,
+        kind: StoredRefKind,
+    ) {
+        match kind {
+            StoredRefKind::Open => self.store_open_ref_word(body, idx, word),
+            StoredRefKind::Heap(kind) => {
+                debug_assert!(kind.is_heap(), "a known stored kind is a heap kind");
+                let payload = payload_field(body.b, word);
+                self.store_raw(body, idx, payload, kind);
+            }
+        }
+    }
+
+    /// Store a ref word of any kind. An int, float, pid or reference ref names
+    /// a slot that holds the raw word, which is read through it; an atom's raw
+    /// word is its id, and every other kind's is its payload. The slot read is
+    /// branch-free: a ref that names no slot reads the closure's own header,
+    /// and that word goes unused.
+    fn store_open_ref_word<M: cranelift_module::Module>(
         &self,
         body: &mut CodegenFn<'_, '_, M>,
         idx: usize,
