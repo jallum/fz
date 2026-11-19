@@ -222,6 +222,13 @@ it), `allocs` and `bytes`. `function` is the compiled function's symbol, or
 `runtime::<function>` for a runtime site. Two sites in one function are two
 events with the same `function`.
 
+A list cell a deep copy places is counted at `runtime::copy_list_cell`, apart
+from the cells a program builds (`runtime::alloc_list_cons_storage` and
+`runtime::alloc_list_cons_value`). A message's cells are copied by its sender
+into a gift, so a run whose copy site counts exactly the cells its
+`fz.runtime.send.probe` gifts carry copied nothing on the receiving side;
+fixtures 00901 and 00902 are pinned that way.
+
 The sites count for the whole program, from the moment it is loaded. A
 process's own `heap_alloc_stats` start after the scheduler has built the
 closures that enter it, so the sites of a one-process program sum to that
@@ -319,7 +326,8 @@ outcome as `"hit"` or `"miss"` and the rest as numbers. A self-send is a mailbox
 push and emits nothing, as does a send to an exited or unknown receiver. `tests/fixture_matrix.rs`
 (`a_send_probes_on_the_sender_and_gifts_its_result_through_the_receivers_in_queue`)
 pins the event sequence of fixtures 00901 and 00902 on the `run`, `interp` and
-`build` paths, and `a_receiver_left_parked_with_queued_gifts_drops_them_at_teardown`
+`build` paths, together with the cells their run copied (see
+[`fz.runtime.alloc_site`](#fzruntimealloc_site)), and `a_receiver_left_parked_with_queued_gifts_drops_them_at_teardown`
 pins each of fixture 00903's three gifts (`gift_bytes` 16032, 64 and 16, one
 block each).
 `many_senders_into_one_guarded_receive_gift_one_message_each_and_leave_the_misses_queued`
@@ -436,12 +444,12 @@ counts); `Heap::collect` and `Process::collect` return all of it to their
 callers and the heap's unit tests read it there. Every scheduler's
 `end_quantum` observes it, so a built binary logs it too.
 `tests/fixture_matrix.rs`
-(`a_matched_reply_fixture_collects_on_every_path_though_only_the_jit_yields_mid_run`)
-pins fixture 00901: 19 collections on `run` (18 child yields, one parent
-park) copying 2680080 bytes in all, and 1 on `interp` (the parent's park)
-copying 864, since the interpreter charges no reductions and
-never yields mid-run. Neither parent collects after its graft: the gifts raised
-its baseline to its fill.
+(`a_matched_reply_fixture_collects_only_the_child_and_only_where_it_yields`)
+pins fixture 00901: 3 collections on `run`, all the child's yields, copying
+512416 bytes in all, and none on `interp`, since the interpreter charges no
+reductions and never yields mid-run. The parent is collected on neither path:
+its heap is not due when it parks, and the gifts it grafts afterwards raise its
+baseline to its fill.
 The same file pins fixture 00910 (`interp`: the parent's park at 48 bytes;
 `run`: its park at 288 bytes) and fixture 00911 (`interp`:
 the parent's park at 0 bytes; `run`: the child's park at 288 bytes, then the

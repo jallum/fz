@@ -345,7 +345,7 @@ fn deep_copy_list(sp: *mut u8, src_heap: &HeapView, dst_heap: &mut Heap) -> AnyV
 /// Allocate the copy of one cell and copy its head.
 /// The tail is written by `link_list_tail` once the caller knows it.
 fn copy_list_cell(sp: *mut u8, src_heap: &HeapView, dst_heap: &mut Heap) -> (*mut u8, AnyValue) {
-    let bits = dst_heap.alloc_list_cons_slot(AnyValue::nil_atom(), EMPTY_LIST);
+    let bits = dst_heap.alloc_copied_list_cell();
     let dp = list_addr_from_tagged(bits).expect("new list ptr");
     let cons = unsafe { &*(sp as *const ListCons) };
     let new_head = if cons.head_kind().is_heap() {

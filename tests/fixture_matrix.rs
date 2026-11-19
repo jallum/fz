@@ -284,8 +284,8 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             a_hit_gifts_the_roots_a_clause_reads_and_not_one_copy_per_variable,
         ),
         (
-            "a_matched_reply_fixture_collects_on_every_path_though_only_the_jit_yields_mid_run",
-            a_matched_reply_fixture_collects_on_every_path_though_only_the_jit_yields_mid_run,
+            "a_matched_reply_fixture_collects_only_the_child_and_only_where_it_yields",
+            a_matched_reply_fixture_collects_only_the_child_and_only_where_it_yields,
         ),
         (
             "a_long_body_copies_its_frame_forward_when_a_collection_kept_it",
@@ -4049,14 +4049,14 @@ fn a_send_probes_on_the_sender_and_gifts_its_result_through_the_receivers_in_que
         FixtureCase::new("fixtures/00901_a_matched_reply_is_gifted_by_the_sender_and_grafted_by_the_parent.fz");
     let expected = fs::read_to_string(matched.sidecar_path("expected.txt")).expect("read 00901 expected.txt");
     assert_eq!(
-        expected, "[1, 2, 3]\n0\n50000\n",
-        "the parent prints the matched reply, allocates no list cells across its receive, and finds the whole log in its mailbox"
+        expected, "[1, 2, 3]\n50000\n",
+        "the parent prints the matched reply and finds the whole log in its mailbox"
     );
     let unmatched = FixtureCase::new("fixtures/00902_an_unmatched_message_is_gifted_whole_and_waits_in_the_mailbox.fz");
     let expected = fs::read_to_string(unmatched.sidecar_path("expected.txt")).expect("read 00902 expected.txt");
     assert_eq!(
-        expected, ":go\n~c\"\\a\\b\"\n0\n",
-        "the parent takes :go first, then the earlier unmatched tuple from its mailbox, and allocates no list cells for either"
+        expected, ":go\n~c\"\\a\\b\"\n",
+        "the parent takes :go first, then the earlier unmatched tuple from its mailbox"
     );
 
     for (path, label) in RUNTIME_TELEMETRY_PATHS {
@@ -4089,12 +4089,38 @@ fn a_send_probes_on_the_sender_and_gifts_its_result_through_the_receivers_in_que
             ],
             "{label}: the unmatched tuple is gifted whole; the matching atom gifts nothing"
         );
+
+        // The probes say the sender built each gift. The copy site says how
+        // many cells were copied in the whole run: exactly the cells those
+        // gifts carry, so the receiver copied none of them again.
+        assert_eq!(
+            copied_list_cells_for_fixture(&matched, path, label),
+            50_003,
+            "{label}: the log's 50000 cells and the reply's 3 are each copied once"
+        );
+        assert_eq!(
+            copied_list_cells_for_fixture(&unmatched, path, label),
+            2,
+            "{label}: the unmatched tuple's 2 cells are copied once"
+        );
     }
 }
 
-/// Every path collects at its scheduler boundaries. The interpreter charges no
-/// reductions, so it never yields mid-run and its counts differ from `run`'s.
-fn a_matched_reply_fixture_collects_on_every_path_though_only_the_jit_yields_mid_run() {
+/// The list cells deep copies placed during the fixture's run, whichever
+/// process made them.
+fn copied_list_cells_for_fixture(fixture: &FixtureCase, path: FixtureMatrixPath, label: &str) -> usize {
+    alloc_sites_for_fixture(fixture, path, label)
+        .iter()
+        .filter(|site| site.function == "runtime::copy_list_cell")
+        .map(|site| site.allocs)
+        .sum()
+}
+
+/// In fixture 00901 only the child is ever collected, and only on the path that
+/// yields mid-run. The parent is collected on no path: its heap is not due when
+/// it parks, and the gifts it grafts afterwards raise its baseline to its fill.
+/// (Fixture 00905 pins a collection at a park on every path.)
+fn a_matched_reply_fixture_collects_only_the_child_and_only_where_it_yields() {
     let fixture =
         FixtureCase::new("fixtures/00901_a_matched_reply_is_gifted_by_the_sender_and_grafted_by_the_parent.fz");
 
@@ -4103,45 +4129,27 @@ fn a_matched_reply_fixture_collects_on_every_path_though_only_the_jit_yields_mid
     // child has allocated as many bytes as it held live after its last
     // collection. The log is built one cell per element, so the bytes a
     // quantum allocates are mostly cells that survive, and the child is
-    // collected on 3 of its yields. The parent is collected once as it
-    // parks on its receive (976 bytes: the values the parked receive holds,
-    // among them the heap-stats maps the fixture binds, each of 36 entries, plus the closures and
-    // continuation frames its park record holds). The gifts it grafts
-    // afterwards raise its baseline to its fill, so it is not collected again,
-    // and the child's exit is not a collection.
+    // collected on 3 of its yields. Its exit is not a collection.
     let events = gc_events_for_fixture(&fixture, FixtureMatrixPath::Run, "run");
     let count = |boundary: &str| events.iter().filter(|e| e.boundary == boundary).count();
     assert_eq!(
         (count("yield"), count("park"), count("exit")),
-        (3, 1, 0),
-        "run: the child's collected yields, the parent's park, no exit"
+        (3, 0, 0),
+        "run: the child's collected yields and nothing else"
     );
-    assert_eq!(events.len(), 4, "run: one gc event per collection");
+    assert!(events.iter().all(|e| e.pid != 1), "run: the parent is never collected");
     assert_eq!(
         events.iter().map(|e| e.copied_bytes).sum::<usize>(),
-        513_392,
+        512_416,
         "run: the bytes every collection copied"
     );
 
-    // The interpreter never yields, so the child builds and sends its whole
-    // log inside one quantum and is never collected: it exits without a
-    // collection. The parent is collected as it parks (896 bytes, the
-    // values its parked receive holds, among them the heap-stats maps the
-    // fixture binds, each of 36 entries and so not a flat map: the JIT's 976
-    // also counts the closures its park record holds); the gifts it grafts afterwards are baseline, so
-    // it is not collected again.
+    // The interpreter charges no reductions, so the child builds and sends its
+    // whole log inside one quantum and is never collected.
     let events = gc_events_for_fixture(&fixture, FixtureMatrixPath::Interp, "interp");
-    let count = |boundary: &str| events.iter().filter(|e| e.boundary == boundary).count();
-    assert_eq!(
-        (count("yield"), count("park"), count("exit")),
-        (0, 1, 0),
-        "interp: only the parent's park"
-    );
-    assert_eq!(
-        events.iter().map(|e| e.copied_bytes).sum::<usize>(),
-        // 864 -> 896: the same two heap-stats keys, through the same hash trie, as the `run` path.
-        896,
-        "interp: only the parent's park copies anything"
+    assert!(
+        events.is_empty(),
+        "interp: no yield mid-run and no parent collection, so nothing is collected"
     );
 }
 

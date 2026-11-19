@@ -547,10 +547,11 @@ handler slot (a raise's handler, resumed inside the quantum that raised it, see
   with `^`-pinned matchers and an `after` timeout resumes through the closure entry
   across all four paths.
 - `cargo test --test fixture_matrix a_send_probes_on_the_sender_and_gifts_its_result_through_the_receivers_in_queue`
-  — fixtures 00901 and 00902 on the `run` and `interp` paths: a miss gifts the
+  — fixtures 00901 and 00902 on the `run`, `interp` and `build` paths: a miss gifts the
   whole message in one block (800032 bytes for the 50000-element log), a hit gifts the clause's one root (48 bytes for `[1, 2, 3]`),
-  the receiver is woken once, and its own heap allocates no list cells for the
-  delivery.
+  the receiver is woken once, and the run's `runtime::copy_list_cell` site
+  counts exactly the cells those gifts carry (50003 and 2), so no cell is
+  copied a second time on the receiver's side.
 - `runtime/src/sched_core_test.rs` (`end_quantum` tests) — a resource freed by a
   collection has its destructor closure dispatched at the same boundary, and a
   queued raw payload is boxed as an integer only at dispatch; a held resource is left alone; a halted process dispatches every

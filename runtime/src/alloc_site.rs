@@ -59,6 +59,7 @@ impl AllocSites {
 pub enum RuntimeAllocSite {
     ListConsValue,
     ListConsStorage,
+    ListConsCopy,
     Struct,
     Closure,
     Continuation,
@@ -76,9 +77,10 @@ pub enum RuntimeAllocSite {
 }
 
 impl RuntimeAllocSite {
-    pub const ALL: [Self; 16] = [
+    pub const ALL: [Self; 17] = [
         Self::ListConsValue,
         Self::ListConsStorage,
+        Self::ListConsCopy,
         Self::Struct,
         Self::Closure,
         Self::Continuation,
@@ -97,7 +99,7 @@ impl RuntimeAllocSite {
 
     pub fn kind(self) -> HeapAllocKind {
         match self {
-            Self::ListConsValue | Self::ListConsStorage => HeapAllocKind::ListCons,
+            Self::ListConsValue | Self::ListConsStorage | Self::ListConsCopy => HeapAllocKind::ListCons,
             Self::Struct => HeapAllocKind::Struct,
             Self::Closure => HeapAllocKind::Closure,
             Self::Continuation => HeapAllocKind::Continuation,
@@ -116,6 +118,7 @@ impl RuntimeAllocSite {
         match self {
             Self::ListConsValue => "runtime::alloc_list_cons_value",
             Self::ListConsStorage => "runtime::alloc_list_cons_storage",
+            Self::ListConsCopy => "runtime::copy_list_cell",
             Self::Struct => "runtime::alloc_struct_unwritten",
             Self::Closure => "runtime::alloc_closure",
             Self::Continuation => "runtime::alloc_continuation",
