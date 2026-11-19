@@ -7,6 +7,12 @@
   "id": "fz-mue.29",
   "labels": [],
   "parent": "fz-mue",
+  "comments": [
+    {
+      "text": "Widened 2026-11-19 (Elixir Parity, Coordinator). A bare non-literal key, e.g. %{atom =\u003e v} or %{binary() | atom() | integer() | float() =\u003e v}, fails with 'a map type key must be a literal atom or int'. Elixir reads it as optional(K). Needed by fz-9zq.6's R6 probes and by json.erl's encode_map/decode_value. optional(K)/required(K) stay in scope.",
+      "timestamp": "2026-11-19T04:33:38Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "A map type key may be any type, as in Elixir",
