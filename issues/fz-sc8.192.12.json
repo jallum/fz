@@ -18,11 +18,15 @@
     {
       "text": "#763 merged as dbab4de63. Kept open for the authorized deferral: the closure-head form fn %{^key =\u003e v} lands after the rebase over #753.",
       "timestamp": "2026-11-19T00:58:19Z"
+    },
+    {
+      "text": "Closure-head deferral resolved by PR #797 (fixture 01767, single- and two-clause closures, three paths match Elixir). Close on #797 merge.",
+      "timestamp": "2026-11-19T03:29:36Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "A map pattern's key may be a pinned variable",
   "type": "task",
-  "updated_at": "2026-11-19T00:58:19Z"
+  "updated_at": "2026-11-19T03:29:36Z"
 }
