@@ -17,11 +17,15 @@
     {
       "text": "From fz-9x7.42's results (Callables, develop 1d2b4f6fa), in scope here:\n(a) The frame-copy path (frame_in_tip_or_copy/fz_frame_for_write) is deleted; a long body's frame is written in place (01254, 01256, distiller timeline/1).\n(b) A long body ending in a tail call pops at its last call (01166).\n(c) Receive: the runtime builds the outcome frame on the region in the parked frame's place (park.rs resume_closure). The raise handler (materialize_outcome_closure) is pushed after resetting to the saved cont_top.\n(d) A mid-flight yield's frame points down the stack, so it is not a holder and builds on the region like any other frame.\n(e) A process exiting with live frames needs nothing: the region goes with the process.\nDebug checks replace the spike: assert each pop is at or below cont_top, and during a collection assert that no heap object points into a region chunk. The spike diff (9 files) is in Callables' scratch for the builder.",
       "timestamp": "2026-11-19T04:54:28Z"
+    },
+    {
+      "text": "The fz-9x7.42 spike diff (9 files: runtime/src/cont_spike.rs plus hooks in closure.rs, entry.rs, park.rs, failure.rs, heap/imp.rs, process.rs, sched_core.rs, lib.rs) is at /Users/j5n/Workspace/fz-9x7.42-spike.diff, off develop 1d2b4f6fa. It is reference material only and never lands.",
+      "timestamp": "2026-11-19T04:54:40Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "A continuation lives in its process's continuation region and is given back by one store",
   "type": "feature",
-  "updated_at": "2026-11-19T04:54:28Z"
+  "updated_at": "2026-11-19T04:54:40Z"
 }
