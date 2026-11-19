@@ -253,3 +253,83 @@ fn a_case_arm_is_handed_only_the_bindings_its_body_reads() {
         }
     }
 }
+
+/// The values a ground constant of `atom` defines in a lowered body, as the
+/// entry and step that define each.
+fn atom_const_sites(
+    entries: &[super::super::body::LoweredEntry],
+    atom: &str,
+) -> Vec<(usize, super::super::body::ValueId)> {
+    use super::super::body::LoweredStep;
+    use crate::ground_value::GroundValue;
+    use crate::literal_term::LiteralTerm;
+    entries
+        .iter()
+        .enumerate()
+        .flat_map(|(index, entry)| {
+            entry.steps.iter().filter_map(move |step| match step {
+                LoweredStep::Const {
+                    value,
+                    literal: LiteralTerm::Ground(GroundValue::Atom(name)),
+                } if name == atom => Some((index, *value)),
+                _ => None,
+            })
+        })
+        .collect()
+}
+
+/// A constant built before a call and read only after it is computed by the
+/// code that resumes after the call, so the continuation entry captures
+/// nothing for it.
+#[test]
+fn a_constant_read_only_after_a_call_is_not_a_capture_of_the_continuation() {
+    use super::super::body::{ControlEntryOrigin, LoweredBody};
+    let settled = Drive::source(
+        "constant_after_call.fz",
+        "def id(x), do: x\ndef main(), do: {:tag, id(1)}\n",
+    )
+    .settle();
+    let body = settled.world().lowered_body(settled.function("main", 0));
+    let LoweredBody::Clauses { entries, .. } = &*body;
+    let sites = atom_const_sites(entries, "tag");
+    let [(site, value)] = sites[..] else {
+        panic!("the constant is defined once: {sites:?}")
+    };
+    assert!(
+        matches!(entries[site].origin, ControlEntryOrigin::DeliveredResume { .. }),
+        "the constant is defined by the entry that resumes after the call"
+    );
+    assert!(
+        entries.iter().all(|entry| !entry.captures.contains(&value)),
+        "no entry captures the constant"
+    );
+}
+
+/// A constant the call itself reads must exist before the call, and the code
+/// after the call that reads it again captures that one definition.
+#[test]
+fn a_constant_read_before_and_after_a_call_keeps_its_one_definition_and_is_captured() {
+    use super::super::body::{ControlEntryOrigin, LoweredBody};
+    let settled = Drive::source(
+        "constant_around_call.fz",
+        "def id(x), do: x\ndef main() do\n  tag = :tag\n  {tag, id(tag)}\nend\n",
+    )
+    .settle();
+    let body = settled.world().lowered_body(settled.function("main", 0));
+    let LoweredBody::Clauses { entries, .. } = &*body;
+    let sites = atom_const_sites(entries, "tag");
+    let [(site, value)] = sites[..] else {
+        panic!("the constant is defined once: {sites:?}")
+    };
+    assert!(
+        !matches!(entries[site].origin, ControlEntryOrigin::DeliveredResume { .. }),
+        "the constant is defined before the call"
+    );
+    assert!(
+        entries.iter().any(
+            |entry| matches!(entry.origin, ControlEntryOrigin::DeliveredResume { .. })
+                && entry.captures.contains(&value)
+        ),
+        "the entry after the call captures it"
+    );
+}

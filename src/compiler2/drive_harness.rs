@@ -179,6 +179,11 @@ impl Drive {
         Self::new(fixture_path, text)
     }
 
+    /// Submits `text` as a program named `name`.
+    pub(crate) fn source(name: &str, text: &str) -> Self {
+        Self::new(name.to_string(), text.to_string())
+    }
+
     fn new(fixture_path: String, text: String) -> Self {
         let telemetry = ConfiguredTelemetry::new();
         let captures = Captures::install(&telemetry);

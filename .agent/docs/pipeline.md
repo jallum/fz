@@ -398,6 +398,11 @@ Compiler2 lowers one function body as:
   several entries owns every capture. `construct_entry_captures` records the
   owners once, through `record_capture_owners`, right after it settles the
   captures themselves
+- Ground constants: a constant has no effect, so lowering defines it where it
+  is used: ahead of the first step that reads it, or, when a call splits the
+  block and does not read it, in the entry that resumes after the call
+  (`Unplaced` in `jobs/body.rs`). A constant read on both sides of a call keeps
+  its one definition before the call and is captured like any other value
 - `LoweredTail`: the only place control can branch, call, or return
 - `ControlDestination`: either `Return` or `Deliver(next_entry)`
 - `BodyTables`: which step defines each value, which values each step and tail

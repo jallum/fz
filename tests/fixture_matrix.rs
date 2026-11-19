@@ -4338,7 +4338,7 @@ fn many_senders_into_one_guarded_receive_gift_one_message_each_and_leave_the_mis
     }
 
     // The interpreter collects the parent once, as it parks (32 bytes live).
-    // The JIT collects it once as it parks (320 bytes, which include the
+    // The JIT collects it once as it parks (304 bytes, which include the
     // closures its park record holds); the parent's exit after grafting 99
     // gifts is not a collection. Neither path collects a child.
     let events = gc_events_for_fixture(&fixture, FixtureMatrixPath::Interp, "interp");
@@ -4350,7 +4350,7 @@ fn many_senders_into_one_guarded_receive_gift_one_message_each_and_leave_the_mis
     let events = gc_events_for_fixture(&fixture, FixtureMatrixPath::Run, "run");
     assert_eq!(
         collections_as_tuples(&events),
-        vec![(1, "park", 320)],
+        vec![(1, "park", 304)],
         "run: the parent's park only; its exit is not collected"
     );
 }
@@ -4413,8 +4413,7 @@ fn a_large_list_passed_back_and_forth_crosses_as_one_gift_per_message_on_every_p
             // parent's collections that copy its oldest values.
             (1, "yield", 64_144),
             (1, "yield", 192_144),
-            (1, "yield", 128_160),
-            (1, "yield", 48),
+            (1, "yield", 96_160),
             (1, "yield", 48),
             (1, "yield", 48),
             (1, "yield", 48),
