@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-19T03:15:27Z",
+  "description": "Follow-up of fz-mue.12, filed on the user's approval of /Users/j5n/Workspace/fz-mue.12.html (relayed by Elixir Parity, 2026-11-19). Owner: Elixir Parity. quote do @x unquote(v) end fails 'unexpected second expression without a newline'. Done: the quoted attribute sets the module attribute when the quote is injected, as in Elixir.",
+  "id": "fz-mue.36",
+  "labels": [],
+  "parent": "fz-mue",
+  "priority": 3,
+  "status": "open",
+  "title": "@attr value inside a quote sets an attribute, as in Elixir",
+  "type": "feature",
+  "updated_at": "2026-11-19T03:15:27Z"
+}
