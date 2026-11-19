@@ -7,9 +7,15 @@
   "id": "fz-mue.16",
   "labels": [],
   "parent": "fz-mue",
+  "comments": [
+    {
+      "text": "dynamic() split out to fz-mue.39. The other standard type names stay here.",
+      "timestamp": "2026-11-19T04:33:40Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "dynamic() and Elixir's standard type names resolve",
   "type": "feature",
-  "updated_at": "2026-11-18T20:44:04Z"
+  "updated_at": "2026-11-19T04:33:40Z"
 }
