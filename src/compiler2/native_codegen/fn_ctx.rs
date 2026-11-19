@@ -6,6 +6,7 @@
 //! semantic lowering code should ask this context for operations, while
 //! runtime helper calls remain an implementation detail behind those methods.
 
+use super::recipe::emit_object;
 use super::type_pred::ShareClass;
 use super::*;
 use crate::fast_hash::HashMap;
@@ -20,10 +21,10 @@ use fz_runtime::any_value::{
     TaggedRefArch, ValueKind,
 };
 use fz_runtime::ir_runtime::{
-    fz_alloc_closure, fz_alloc_struct, fz_box_float_for_any, fz_box_int_for_any, fz_closure_halt_kind_ref,
-    fz_closure_set_capture_atom, fz_closure_set_capture_f64, fz_closure_set_capture_i64, fz_closure_set_capture_ref,
-    fz_halt_implicit_atom, fz_halt_implicit_f64, fz_halt_implicit_i64, fz_halt_implicit_ref, fz_list_head_float_ref,
-    fz_list_head_int_ref, fz_list_head_ref, fz_list_reuse_or_cons_parts, fz_list_reuse_or_cons_ref, fz_list_tail_ref,
+    fz_box_float_for_any, fz_box_int_for_any, fz_closure_halt_kind_ref, fz_closure_set_capture_atom,
+    fz_closure_set_capture_f64, fz_closure_set_capture_i64, fz_closure_set_capture_ref, fz_halt_implicit_atom,
+    fz_halt_implicit_f64, fz_halt_implicit_i64, fz_halt_implicit_ref, fz_list_head_float_ref, fz_list_head_int_ref,
+    fz_list_head_ref, fz_list_reuse_or_cons_parts, fz_list_reuse_or_cons_ref, fz_list_tail_ref,
     fz_number_ref_float_bits, fz_share_list_spine, fz_struct_copy, fz_struct_store_ref, fz_truthy_ref, fz_type_of,
     fz_unbox_atom, fz_unbox_float, fz_unbox_int,
 };
@@ -314,18 +315,18 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
         self.b.ins().load(ty, MemFlagsData::new(), object, offset)
     }
 
-    /// Allocate a struct or tuple of `fields` values. Only its header is
-    /// written; `store_field` must follow for every field before any other
-    /// code runs, since nothing may read the object until then.
-    pub(crate) fn alloc_struct(&mut self, schema_id: u32, fields: usize) -> NewStruct {
+    /// Place a struct or tuple of `fields` values and write its header.
+    /// `store_field` must follow for every field before any other code runs,
+    /// since nothing may read the object until then.
+    pub(crate) fn alloc_struct(&mut self, scope: SiteScope<'_>, schema_id: u32, fields: usize) -> NewStruct {
         let layout = SlotLayout::of(fields);
         let schema = self.b.ins().iconst(types::I32, schema_id as i64);
         let size = self.b.ins().iconst(types::I32, layout.size() as i64);
         let process = self.process_arg();
-        let reference = runtime_call1!(self, fz_alloc_struct, [process, schema, size]);
+        let placed = emit_object(self, scope, "Heap::alloc_struct_unwritten", &[process, schema, size]);
         NewStruct {
-            reference,
-            address: address_field(self.b, reference),
+            reference: placed.reference,
+            address: placed.address,
             layout,
         }
     }
@@ -475,8 +476,11 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
         self.static_object_ref(locals.halt_cont_data_id(repr), ValueKind::CLOSURE)
     }
 
+    /// Place a closure and write its header and code address. The captures
+    /// are stored next, before any other code runs.
     pub(crate) fn alloc_closure(
         &mut self,
+        scope: SiteScope<'_>,
         denotation: fz_runtime::any_value::ClosureDenotationId,
         arity: ir::Value,
         captured_count: ir::Value,
@@ -485,11 +489,8 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
     ) -> ir::Value {
         let denotation = self.b.ins().iconst(types::I32, denotation.as_u32() as i64);
         let process = self.process_arg();
-        runtime_call1!(
-            self,
-            fz_alloc_closure,
-            [process, denotation, arity, captured_count, halt_kind, code_addr]
-        )
+        let args = [process, denotation, arity, captured_count, halt_kind, code_addr];
+        emit_object(self, scope, "Heap::alloc_closure", &args).reference
     }
 
     pub(crate) fn list_head(&mut self, list_ref: ir::Value) -> ir::Value {

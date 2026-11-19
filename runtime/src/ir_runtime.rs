@@ -560,37 +560,10 @@ pub extern "C" fn fz_yield_slow_path_begin(process: *mut Process) {
 // Invocation is a call_indirect through that code pointer; captures are
 // ordinary env fields read and written through the runtime accessors.
 
-/// Allocate a closure heap object with `captured_count` capture slots.
-/// The runtime stores the body pointer while the tagged closure ref is still
-/// opaque to generated code; callers populate captures through accessors.
-/// `halt_kind` is packed into the closure header's `flags` so
-/// `fz_entry_thunk` can pick the matching halt continuation at task launch. `arity` rides the header's high half; it is the
-/// closure's user-visible parameter count, taken from the callable boundary
-/// that decides the call surface.
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_alloc_closure(
-    process: *mut Process,
-    denotation: u32,
-    arity: u32,
-    captured_count: u32,
-    halt_kind: u32,
-    body_addr: u64,
-) -> u64 {
-    let bits = (unsafe { &mut *process }).heap.alloc_closure_slots(
-        crate::any_value::ClosureDenotationId::from_runtime_word(denotation),
-        arity as u16,
-        captured_count as usize,
-        halt_kind as u16,
-    );
-    let addr = closure_addr_from_tagged(bits).expect("new closure bits");
-    unsafe { std::ptr::write(addr.add(8) as *mut u64, body_addr) };
-    closure_ref_word_from_bits(bits)
-}
-
 /// Room for `size` bytes (a multiple of 16) beyond a full tip block, for the
 /// inline bump of compiled code: the address the object starts at, in a fresh
 /// tip or, for a huge object, in a block of its own. Nothing is written into
-/// the object; compiled code writes every word of it.
+/// the object; compiled code writes it.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_heap_room(process: *mut Process, size: usize) -> *mut u8 {
     (unsafe { &mut *process }).heap.room(size)
@@ -2232,17 +2205,6 @@ pub extern "C" fn fz_list_reuse_or_cons_parts(
         process.list_retention_hits = process.list_retention_hits.saturating_add(1);
     }
     result.raw_word()
-}
-
-/// Allocate a struct or tuple of `size` bytes for `schema_id` and answer its
-/// reference. Only the header is written: compiled code stores every slot and
-/// kind byte next, in place, before anything can read the object.
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_alloc_struct(process: *mut Process, schema_id: u32, size: u32) -> u64 {
-    let p = (unsafe { &mut *process })
-        .heap
-        .alloc_struct_unwritten(schema_id, size as usize);
-    heap_ref_word(ValueKind::STRUCT, p)
 }
 
 /// An unpublished copy of a struct of `fields` fields, for an update that

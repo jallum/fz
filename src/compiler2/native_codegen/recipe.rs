@@ -22,6 +22,13 @@
 //! object's words, the words of every object the row may share, the tip each
 //! leaves and the heap's allocation statistics.
 //!
+//! A struct or tuple and a closure are allocation rows too, which place the
+//! object and write its header (and a closure's code address) and leave its
+//! fields or captures to the code that builds it. The runtime has no extern
+//! for them, so their rows are named by the heap method the interpreter calls,
+//! `Heap::alloc_struct_unwritten` and `Heap::alloc_closure`, and a call site
+//! asks for one through [`emit_object`].
+//!
 //! A recipe does not validate its arguments. The Rust function panics on a
 //! malformed word; the instructions read whatever the word says.
 //!
@@ -37,6 +44,7 @@
 //! kind it has no instructions for; the call is then emitted as if the table
 //! had no row.
 
+use super::inline_object::{Placed, emit_closure, emit_struct};
 use super::list_cell::{HeadLane, emit_list_cell};
 use super::*;
 use cranelift_codegen::ir::{
@@ -45,7 +53,10 @@ use cranelift_codegen::ir::{
     types,
 };
 use cranelift_frontend::FunctionBuilder;
-use fz_runtime::any_value::{FALSE_ATOM_ID, NIL_ATOM_ID, STRUCT_HEADER_SCHEMA_SHIFT, ValueKind};
+use fz_runtime::any_value::{
+    ClosureDenotationId, FALSE_ATOM_ID, NIL_ATOM_ID, STRUCT_HEADER_SCHEMA_SHIFT, ValueKind, closure_header_word,
+};
+use fz_runtime::heap::{Heap, HeapAllocKind};
 use fz_runtime::ir_runtime::{
     fz_list_cons_any, fz_list_cons_atom, fz_list_cons_float, fz_list_cons_int, fz_op_abs_f, fz_op_add_ii, fz_op_eq_ff,
     fz_op_eq_ii, fz_op_gt_ff, fz_op_gt_ii, fz_op_gte_ff, fz_op_gte_ii, fz_op_identical_ii, fz_op_lt_ff, fz_op_lt_ii,
@@ -65,11 +76,13 @@ pub(crate) enum Emitted {
 type InPlace = fn(&mut FunctionBuilder<'_>, &[ir::Value]) -> Option<Emitted>;
 
 /// What a row emits: instructions that compute the function's answer, or the
-/// list cell the function places.
+/// object the function places.
 #[derive(Clone, Copy)]
 enum Emit {
     InPlace(InPlace),
     Cell(HeadLane),
+    Struct,
+    Closure,
 }
 
 /// One row: the runtime function's symbol, its parameter count, and the
@@ -121,6 +134,23 @@ macro_rules! list_cell {
             },
             arity: 3,
             emit: Emit::Cell($lane),
+        }
+    };
+}
+
+/// An allocation row for an object the heap method `$definition` places: the
+/// symbol is the method's path, which the `let` checks names a method. The row
+/// takes the method's arguments after the process, and `$emit` says how the
+/// object is written.
+macro_rules! heap_object {
+    ($definition:literal, $check:path, $arity:expr, $emit:expr) => {
+        Recipe {
+            symbol: {
+                let _ = $check;
+                $definition
+            },
+            arity: $arity,
+            emit: $emit,
         }
     };
 }
@@ -215,6 +245,14 @@ pub(crate) const RECIPES: &[Recipe] = &[
     list_cell!(fz_list_cons_float(process, head, tail), HeadLane::Float),
     list_cell!(fz_list_cons_atom(process, head, tail), HeadLane::Atom),
     list_cell!(fz_list_cons_any(process, head, tail), HeadLane::Ref),
+    // Structs, tuples and closures: the heap methods the interpreter calls.
+    heap_object!(
+        "Heap::alloc_struct_unwritten",
+        Heap::alloc_struct_unwritten,
+        3,
+        Emit::Struct
+    ),
+    heap_object!("Heap::alloc_closure", Heap::alloc_closure, 6, Emit::Closure),
 ];
 
 /// The row for the runtime function `symbol`, if the table has one.
@@ -239,7 +277,9 @@ pub(crate) fn emit_inline(b: &mut FunctionBuilder<'_>, symbol: &str, args: &[ir:
     );
     match row.emit {
         Emit::InPlace(emit) => emit(b, args),
-        Emit::Cell(_) => panic!("`{symbol}` places an object; ask for it through `emit_cell`"),
+        Emit::Cell(_) | Emit::Struct | Emit::Closure => {
+            panic!("`{symbol}` places an object; ask for it through `emit_cell` or `emit_object`")
+        }
     }
 }
 
@@ -263,6 +303,48 @@ pub(crate) fn emit_cell<M: cranelift_module::Module>(
     match row.emit {
         Emit::Cell(lane) => emit_list_cell(body, scope, lane, args),
         Emit::InPlace(_) => panic!("`{symbol}` computes in place; ask for it through `emit_inline`"),
+        Emit::Struct | Emit::Closure => {
+            panic!("`{symbol}` places a struct or closure; ask for it through `emit_object`")
+        }
+    }
+}
+
+/// Place the struct or closure the heap method `symbol` places, applied to
+/// `args`, and write its header. The arguments after the process are
+/// constants, except a closure's code address: they fix the object's size and
+/// header words when the code is emitted. The site is registered in `scope`.
+pub(crate) fn emit_object<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, M>,
+    scope: SiteScope<'_>,
+    symbol: &str,
+    args: &[ir::Value],
+) -> Placed {
+    let row = recipe_for(symbol).unwrap_or_else(|| panic!("`{symbol}` has no recipe"));
+    assert_eq!(
+        args.len(),
+        row.arity,
+        "recipe `{symbol}` takes {} arguments, got {}",
+        row.arity,
+        args.len()
+    );
+    let constant = |index: usize| {
+        let word = constant_of(body.b, args[index])
+            .unwrap_or_else(|| panic!("`{symbol}` needs argument {index} to be a constant"));
+        word as u32
+    };
+    match row.emit {
+        Emit::Struct => emit_struct(body, scope, constant(1), constant(2) as usize),
+        Emit::Closure => {
+            let count = constant(3) as usize;
+            let header = closure_header_word(
+                ClosureDenotationId::from_runtime_word(constant(1)),
+                u16::try_from(count).expect("a capture count fits the closure header"),
+                u16::try_from(constant(4)).expect("a halt kind fits the closure header"),
+                u16::try_from(constant(2)).expect("an arity fits the closure header"),
+            );
+            emit_closure(body, scope, HeapAllocKind::Closure, header, count, args[5])
+        }
+        Emit::InPlace(_) | Emit::Cell(_) => panic!("`{symbol}` does not place a struct or closure"),
     }
 }
 

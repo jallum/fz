@@ -1,12 +1,10 @@
-use super::place::emit_place;
+use super::inline_object::emit_closure;
 use super::*;
 use cranelift_codegen::ir::{self, InstBuilder, MemFlagsData, condcodes::IntCC, types};
-use cranelift_frontend::FunctionBuilder;
 use cranelift_module::FuncId;
 use fz_runtime::any_value::{
-    AnyValueRefPacking, CLOSURE_CAPTURES_OFFSET, CLOSURE_CODE_OFFSET, CLOSURE_FLAGS_CAPTURED_MASK,
-    CLOSURE_LAYOUT_FLAGS_SHIFT, ClosureDenotationId, NIL_ATOM_ID, TAG_CLOSURE, TaggedRefArch, ValueKind,
-    closure_header_word, closure_size_for_count,
+    CLOSURE_CAPTURES_OFFSET, CLOSURE_CODE_OFFSET, CLOSURE_FLAGS_CAPTURED_MASK, CLOSURE_LAYOUT_FLAGS_SHIFT,
+    ClosureDenotationId, NIL_ATOM_ID, ValueKind, closure_header_word, closure_size_for_count,
 };
 use fz_runtime::heap::{HeapAllocKind, INLINE_ALLOC_LAYOUT};
 use fz_runtime::ir_runtime::fz_handler_reserve;
@@ -153,14 +151,16 @@ pub(super) fn place_cont_closure<M: cranelift_module::Module>(
     count: usize,
     code_addr: ir::Value,
 ) -> ir::Value {
-    let size = closure_size_for_count(count);
-    let address = emit_place(body, env.site_scope(), HeapAllocKind::Continuation, size);
-    let flags = MemFlagsData::trusted();
     let header = closure_header_word(ClosureDenotationId::INTERNAL, count as u16, 0, CONT_ARITY as u16);
-    let header = body.b.ins().iconst(types::I64, header as i64);
-    body.b.ins().store(flags, header, address, 0);
-    body.b.ins().store(flags, code_addr, address, CLOSURE_CODE_OFFSET);
-    emit_tagged_pointer_ref_word(body.b, address, TAG_CLOSURE)
+    emit_closure(
+        body,
+        env.site_scope(),
+        HeapAllocKind::Continuation,
+        header,
+        count,
+        code_addr,
+    )
+    .reference
 }
 
 /// What codegen knows, where a ref word is stored, of the kind it names.
@@ -269,32 +269,6 @@ where
 
 /// A continuation is applied to exactly the one value it receives.
 pub(crate) const CONT_ARITY: i64 = 1;
-
-fn emit_tagged_pointer_ref_word(b: &mut FunctionBuilder<'_>, ptr: ir::Value, tag: u64) -> ir::Value {
-    emit_tagged_pointer_ref_word_for_arch(b, ptr, tag, TaggedRefArch::current())
-}
-
-fn emit_tagged_pointer_ref_word_for_arch(
-    b: &mut FunctionBuilder<'_>,
-    ptr: ir::Value,
-    tag: u64,
-    arch: TaggedRefArch,
-) -> ir::Value {
-    let ptr_payload = emit_tagged_pointer_payload_for_arch(b, ptr, arch);
-    let tag_word = (tag << AnyValueRefPacking::for_arch(arch).tag_shift()) as i64;
-    b.ins().bor_imm_u(ptr_payload, tag_word)
-}
-
-fn emit_tagged_pointer_payload_for_arch(b: &mut FunctionBuilder<'_>, ptr: ir::Value, arch: TaggedRefArch) -> ir::Value {
-    match arch {
-        TaggedRefArch::Arm64Tbi => ptr,
-        TaggedRefArch::X86_64Canonical57 => {
-            let clear_shift = i64::from(64 - AnyValueRefPacking::for_arch(arch).tag_shift());
-            let shifted = b.ins().ishl_imm_u(ptr, clear_shift);
-            b.ins().ushr_imm_u(shifted, clear_shift)
-        }
-    }
-}
 
 /// Which captures a resumed frame hands back and what happens to its bytes.
 ///

@@ -6,8 +6,11 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::JITModule;
 use cranelift_module::{Linkage, Module};
 use fz_runtime::any_value::AnyValueRefPacking;
-use fz_runtime::any_value::{AnyValue, AnyValueRef, FALSE_ATOM_ID, NIL_ATOM_ID, TRUE_ATOM_ID, ValueKind};
-use fz_runtime::heap::{Heap, HeapAllocKind, INLINE_ALLOC_LAYOUT, Schema, SchemaRegistry};
+use fz_runtime::any_value::{
+    AnyValue, AnyValueRef, ClosureDenotationId, FALSE_ATOM_ID, NIL_ATOM_ID, SlotLayout, TRUE_ATOM_ID, ValueKind,
+    closure_addr_from_tagged, struct_size_for_payload,
+};
+use fz_runtime::heap::{Heap, HeapAllocKind, HeapAllocStats, INLINE_ALLOC_LAYOUT, Schema, SchemaRegistry};
 use fz_runtime::ir_runtime::*;
 use fz_runtime::pinned_abi;
 use fz_runtime::process::Process;
@@ -483,6 +486,11 @@ fn every_row_is_proved_against_its_runtime_function() {
         .map(|proof| proof.symbol)
         .chain(cell_proofs().iter().map(|proof| proof.symbol))
         .collect();
+    let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
+    let proved: HashSet<&str> = proved
+        .into_iter()
+        .chain(object_proofs(&schemas).iter().map(|proof| proof.symbol))
+        .collect();
     let rows: HashSet<&str> = RECIPES.iter().map(|row| row.symbol).collect();
     assert_eq!(rows.len(), RECIPES.len(), "a symbol has two rows");
     let unproved: Vec<_> = rows.difference(&proved).collect();
@@ -912,4 +920,353 @@ fn the_ref_row_is_tried_on_heads_that_must_be_shared() {
         link & fz_runtime::any_value::LIST_LINK_ALIAS_MASK != 0
     };
     assert!(marked("an unshared list"), "a list head is shared by the cell");
+}
+
+// Struct and closure rows are proved the same way, on the words the code
+// writes: a struct's header, and a closure's header and code address. The
+// slots and kind bytes that follow are written by the code that builds the
+// object, and the runtime path leaves them for it too (a closure's are zeroed
+// first, then overwritten).
+
+/// How a struct or closure row is tried: the object it places.
+#[derive(Clone, Copy)]
+enum Object {
+    Struct {
+        schema: u32,
+    },
+    Closure {
+        denotation: ClosureDenotationId,
+        arity: u16,
+        captures: usize,
+        halt_kind: u16,
+    },
+}
+
+struct ObjectCase {
+    name: String,
+    object: Object,
+}
+
+struct ObjectProof {
+    symbol: &'static str,
+    cases: Vec<ObjectCase>,
+}
+
+/// The code address every closure case is given.
+const CODE_ADDRESS: u64 = 0x1234_5678_9abc;
+
+/// Tuples of several sizes, named structs, and a size past the largest block
+/// a tip steps up to, so the runtime parks the object alone.
+fn struct_cases(schemas: &Rc<RefCell<SchemaRegistry>>) -> Vec<ObjectCase> {
+    let register = |name: String, schema: Schema| ObjectCase {
+        name,
+        object: Object::Struct {
+            schema: schemas.borrow_mut().register(schema),
+        },
+    };
+    let mut cases: Vec<_> = [0, 1, 2, 3, 7, 8, 9, 16, 200]
+        .into_iter()
+        .map(|arity| register(format!("a {arity}-tuple"), Schema::tuple_of_arity(arity)))
+        .collect();
+    cases.push(register("a Range".to_owned(), Schema::range()));
+    let name = fz_runtime::module_name::ModuleName::from_segments(vec!["Point".into()]);
+    cases.push(register(
+        "a named struct of five fields".to_owned(),
+        Schema::named_struct(name, ["a", "b", "c", "d", "e"].map(String::from)),
+    ));
+    cases
+}
+
+/// Closures of no, one and many captures, of every halt kind, with the
+/// denotations a program's closures carry and the internal one.
+fn closure_cases() -> Vec<ObjectCase> {
+    let closure = |captures, denotation, arity, halt_kind| ObjectCase {
+        name: format!("a closure of {captures} captures, arity {arity}, halt kind {halt_kind}"),
+        object: Object::Closure {
+            denotation,
+            arity,
+            captures,
+            halt_kind,
+        },
+    };
+    let mut cases: Vec<_> = [0, 1, 2, 7, 8, 9, 100, 200]
+        .into_iter()
+        .map(|captures| closure(captures, ClosureDenotationId::user(5), 2, 0))
+        .collect();
+    for halt_kind in 1..=3 {
+        cases.push(closure(3, ClosureDenotationId::user(70_000), 0, halt_kind));
+    }
+    cases.push(closure(1, ClosureDenotationId::INTERNAL, 1, 0));
+    cases.push(closure(4, ClosureDenotationId::user(0), 255, 2));
+    cases
+}
+
+fn object_proofs(schemas: &Rc<RefCell<SchemaRegistry>>) -> Vec<ObjectProof> {
+    vec![
+        ObjectProof {
+            symbol: "Heap::alloc_struct_unwritten",
+            cases: struct_cases(schemas),
+        },
+        ObjectProof {
+            symbol: "Heap::alloc_closure",
+            cases: closure_cases(),
+        },
+    ]
+}
+
+/// A struct or closure row compiled to a function of the code address.
+struct CompiledObject {
+    code: *const u8,
+    counts: *const u64,
+    _backend: JitBackend,
+}
+
+/// The object's size as the compiled code derives it: from the field or
+/// capture count alone.
+fn compiled_size(object: Object, schemas: &SchemaRegistry) -> usize {
+    match object {
+        Object::Struct { schema } => SlotLayout::of(schemas.get(schema).value_field_count()).size(),
+        Object::Closure { captures, .. } => fz_runtime::any_value::closure_size_for_count(captures),
+    }
+}
+
+fn compile_object(case: &ObjectCase, schemas: &Rc<RefCell<SchemaRegistry>>) -> CompiledObject {
+    let mut backend = JitBackend::new();
+    let module = backend.module_mut();
+    let mut ctx = module.make_context();
+    let mut fbctx = FunctionBuilderContext::new();
+    let mut sig = module.make_signature();
+    sig.params = vec![ir::AbiParam::new(types::I64)];
+    sig.returns = vec![ir::AbiParam::new(types::I64)];
+    ctx.func.signature = sig.clone();
+    let sites = RefCell::new(AllocSites::declare(module).expect("declare the site counters"));
+    {
+        let mut b = FunctionBuilder::new(&mut ctx.func, &mut fbctx);
+        let entry = b.create_block();
+        b.append_block_params_for_function_params(entry);
+        b.switch_to_block(entry);
+        b.seal_block(entry);
+        let code = b.block_params(entry)[0];
+        let mut cache = CodegenCache::default();
+        let mut body = CodegenFn::new(&mut b, module, &mut cache);
+        let scope = SiteScope {
+            sites: &sites,
+            function: "recipe_parity",
+        };
+        let reference = match case.object {
+            Object::Struct { schema } => {
+                let fields = schemas.borrow().get(schema).value_field_count();
+                body.alloc_struct(scope, schema, fields).reference
+            }
+            Object::Closure {
+                denotation,
+                arity,
+                captures,
+                halt_kind,
+            } => {
+                let arity = body.b.ins().iconst(types::I32, i64::from(arity));
+                let captures = body.b.ins().iconst(types::I32, captures as i64);
+                let halt_kind = body.b.ins().iconst(types::I32, i64::from(halt_kind));
+                body.alloc_closure(scope, denotation, arity, captures, halt_kind, code)
+            }
+        };
+        body.b.ins().return_(&[reference]);
+        b.finalize(module.target_config());
+    }
+    let id = module
+        .declare_function("recipe_parity_object", Linkage::Export, &sig)
+        .expect("declare the object function");
+    module
+        .define_function(id, &mut ctx)
+        .expect("define the object function");
+    let (counts_id, registered) = sites.into_inner().define(module).expect("define the site counters");
+    assert_eq!(registered.len(), 1, "one placement is one site");
+    let expected_kind = match case.object {
+        Object::Struct { .. } => HeapAllocKind::Struct,
+        Object::Closure { .. } => HeapAllocKind::Closure,
+    };
+    assert_eq!(registered[0].kind, expected_kind);
+    assert_eq!(
+        registered[0].bytes as usize,
+        compiled_size(case.object, &schemas.borrow())
+    );
+    module.finalize_definitions().expect("finalize the object function");
+    let code = module.get_finalized_function(id);
+    let (counts, _) = module.get_finalized_data(counts_id);
+    CompiledObject {
+        code,
+        counts: counts.cast(),
+        _backend: backend,
+    }
+}
+
+/// Everything an object run leaves that the two runs must agree on. The
+/// result word and the object's own words name addresses by the block they
+/// are in and the offset there; an object parked alone is in neither block,
+/// so only that fact is compared.
+#[derive(Debug, PartialEq, Eq)]
+struct ObjectLeft {
+    result: u64,
+    words: Vec<u64>,
+    tip_used: usize,
+    tip_capacity: usize,
+    tip_changed: bool,
+    object_count: u64,
+    stats: HeapAllocStats,
+}
+
+fn words_of(address: *const u8, count: usize) -> Vec<u64> {
+    (0..count)
+        .map(|index| unsafe { *address.cast::<u64>().add(index) })
+        .collect()
+}
+
+/// Bring a fresh process's tip to `tip`, run `run` and say what was left.
+/// `defined` is how many words from the object's start the code writes.
+fn run_object(
+    tip: Tip,
+    defined: usize,
+    schemas: &Rc<RefCell<SchemaRegistry>>,
+    run: impl FnOnce(*mut Process) -> u64,
+) -> ObjectLeft {
+    let mut process = Box::new(Process::new(schemas.clone()));
+    if tip == Tip::Full {
+        while tip_of(&process).1 - (heap_field(&process, INLINE_ALLOC_LAYOUT.bump_top) - tip_of(&process).0) >= 16 {
+            process.heap.alloc(16);
+        }
+    }
+    let before = tip_of(&process);
+    let result = run(&mut *process);
+    let after = tip_of(&process);
+    let blocks = [before, after];
+    let packing = AnyValueRefPacking::current();
+    let address = packing.raw_address(result);
+    let in_a_block = blocks
+        .iter()
+        .any(|(start, length)| address >= *start && address < start + length);
+    let place = |word: u64| {
+        if in_a_block {
+            rebased(word, blocks)
+        } else {
+            word & !packing.address_mask()
+        }
+    };
+    ObjectLeft {
+        result: place(result),
+        words: words_of(address as *const u8, defined),
+        tip_used: heap_field(&process, INLINE_ALLOC_LAYOUT.bump_top) - after.0,
+        tip_capacity: after.1,
+        tip_changed: before != after,
+        object_count: heap_field(&process, INLINE_ALLOC_LAYOUT.alloc_count) as u64,
+        stats: process.heap.alloc_stats_snapshot(),
+    }
+}
+
+/// What the runtime does to place the object: the heap method that is the
+/// row's definition, then the ref word a caller holds.
+fn place_in_runtime(object: Object, schemas: &SchemaRegistry, process: *mut Process) -> u64 {
+    let heap = &mut unsafe { &mut *process }.heap;
+    match object {
+        Object::Struct { schema } => {
+            let size = struct_size_for_payload(schemas.get(schema).allocation_payload_size());
+            let address = heap.alloc_struct_unwritten(schema, size);
+            AnyValueRef::from_heap_object(ValueKind::STRUCT, address)
+                .expect("a struct ref")
+                .raw_word()
+        }
+        Object::Closure {
+            denotation,
+            arity,
+            captures,
+            halt_kind,
+        } => {
+            let bits = heap.alloc_closure(denotation, arity, captures, halt_kind, CODE_ADDRESS, &[]);
+            let address = closure_addr_from_tagged(bits).expect("a closure address");
+            AnyValueRef::from_heap_object(ValueKind::CLOSURE, address)
+                .expect("a closure ref")
+                .raw_word()
+        }
+    }
+}
+
+fn defined_words(object: Object) -> usize {
+    match object {
+        Object::Struct { .. } => 1,
+        Object::Closure { .. } => 2,
+    }
+}
+
+/// A struct or closure row, run on heaps over every case and both tip states,
+/// writes the words its heap method writes and leaves the heap as it leaves
+/// it: the tip, the object count and every statistic.
+#[test]
+fn every_object_row_leaves_the_heap_its_heap_method_leaves() {
+    let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
+    for proof in object_proofs(&schemas) {
+        for case in &proof.cases {
+            let compiled = compile_object(case, &schemas);
+            let defined = defined_words(case.object);
+            let size = compiled_size(case.object, &schemas.borrow());
+            for tip in [Tip::Roomy, Tip::Full] {
+                let expected = run_object(tip, defined, &schemas, |process| {
+                    place_in_runtime(case.object, &schemas.borrow(), process)
+                });
+                let inline = run_object(tip, defined, &schemas, |process| unsafe {
+                    pinned_abi::call1(compiled.code, process, CODE_ADDRESS) as u64
+                });
+                if size <= 512 {
+                    assert_eq!(
+                        inline.tip_changed,
+                        tip == Tip::Full,
+                        "`{}` on {} with a {tip:?} tip: the tip moved only when it had no room",
+                        proof.symbol,
+                        case.name
+                    );
+                }
+                assert_eq!(
+                    inline, expected,
+                    "`{}` on {} with a {tip:?} tip: inline against the heap method",
+                    proof.symbol, case.name
+                );
+            }
+            let counted = unsafe { *compiled.counts };
+            assert_eq!(
+                counted, 2,
+                "`{}` on {} counts its site once per placement",
+                proof.symbol, case.name
+            );
+        }
+    }
+}
+
+/// A word every placed object must leave clear: a live object's header has
+/// its low four bits free for the forwarding marker, and a new struct is
+/// unshared.
+#[test]
+fn a_placed_header_leaves_the_forwarding_nibble_and_the_shared_bit_clear() {
+    let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
+    for proof in object_proofs(&schemas) {
+        for case in &proof.cases {
+            let compiled = compile_object(case, &schemas);
+            let left = run_object(Tip::Roomy, 1, &schemas, |process| unsafe {
+                pinned_abi::call1(compiled.code, process, CODE_ADDRESS) as u64
+            });
+            assert_eq!(
+                left.words[0] & 0xf,
+                0,
+                "`{}` on {}: forwarding nibble",
+                proof.symbol,
+                case.name
+            );
+            if matches!(case.object, Object::Struct { .. }) {
+                assert_eq!(
+                    left.words[0] & fz_runtime::any_value::STRUCT_HEADER_SHARED_MASK,
+                    0,
+                    "`{}` on {}: a new struct is unshared",
+                    proof.symbol,
+                    case.name
+                );
+            }
+        }
+    }
 }

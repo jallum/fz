@@ -202,7 +202,7 @@ process.
 ## Helpers the code generator calls itself
 
 Some calls in compiled code come from lowering rather than from source: a
-closure allocation, a boxed integer, the sharing of a list. Each helper is an
+boxed integer, the sharing of a list. Each helper is an
 ordinary `extern "C"` function in the runtime library, and codegen names it by
 that Rust function item:
 
@@ -282,7 +282,8 @@ A row answers in one of three shapes (`Emitted`) and no others:
 A recipe does not validate its argument: the Rust function panics on a
 malformed word, the instructions read whatever the word says.
 
-A row that allocates is the other kind of row (`Emit::Cell`): it takes the
+A row that allocates is the other kind of row (`Emit::Cell`, `Emit::Struct`,
+`Emit::Closure`): it takes the
 process as its first argument, as the runtime function does, and writes the
 object itself. Asking `emit_inline` for one panics; a call site asks
 `emit_cell(body, scope, symbol, args)`, which registers the allocation site
@@ -299,9 +300,23 @@ and a list or struct head is shared first by a call to
 `fz_mark_published_ref_aliased`, the one call a cell makes. The runtime
 (`fz_heap_room`) is asked only for room when the tip is full.
 
+A struct or tuple and a closure are placed the same way, and their rows are
+named by the heap method the interpreter calls, as the runtime has no extern
+for them: `Heap::alloc_struct_unwritten` (the process, the schema id and the
+size) and `Heap::alloc_closure` (the process, the denotation, the arity, the
+capture count, the halt kind and the code address). A call site asks
+`emit_object(body, scope, symbol, args)`, which reads the arguments after the
+process back as constants (a closure's code address stays a value) and
+answers the object's address and ref word. `native_codegen/inline_object.rs`
+writes the struct's header word, or the closure's header word (denotation,
+capture count and halt kind packed in, arity) and its code address; the code
+that builds the object stores the fields or captures and their kind bytes. The
+runtime writes nothing: compiled code places a continuation frame the same
+way, through the same `emit_closure`.
+
 The rows are the typed `fz_op_*_ii` arithmetic and comparison externs, the
-`fz_op_*_ff` comparisons, `fz_op_neg_f`, `fz_op_abs_f`, the list-cell
-allocations above, and the helpers
+`fz_op_*_ff` comparisons, `fz_op_neg_f`, `fz_op_abs_f`, the list-cell,
+struct and closure allocations above, and the helpers
 `fz_type_of`, `fz_truthy_ref`, `fz_unbox_int`, `fz_unbox_atom`,
 `fz_struct_schema_id_ref` and `fz_value_eq_raw_const` (an atom or integer
 constant kind only; another kind keeps the call). The Rust function stays the
@@ -309,12 +324,17 @@ definition and the interpreter keeps calling it. To add an intrinsic, add one
 `recipe!` row and one entry in `proofs()` in `recipe_test.rs`: the parity test
 compiles every row and compares its answer with the runtime function over
 inputs for its signature, and fails for a row with no entry. An allocation row
-has an entry in `cell_proofs()` instead, and its test compares heaps: it runs
-the runtime function in one fresh process and the row's instructions in another,
-over every head kind, each with a tail of `[]` and of a list, with room in the
-tip and with a full tip, and compares the placed cell's words, the words of
-every object the row may share, the tip each leaves, and the heap's allocation
-statistics and object count.
+has an entry in `cell_proofs()` or `object_proofs()` instead, and its test
+compares heaps: it runs the runtime function (or heap method) in one fresh
+process and the row's instructions in another, with room in the tip and with a
+full tip. A cell is tried over every head kind, each with a tail of `[]` and of
+a list, and the test compares the placed cell's words, the words of every
+object the row may share, the tip each leaves, and the heap's allocation
+statistics and object count. A struct is tried as tuples of several sizes,
+named structs and a size that parks alone, and a closure with no, one and many
+captures, each halt kind and the internal denotation; the test compares the
+words the row writes (the header, and for a closure the code address) with the
+same tip, statistics and object count.
 
 The bodies codegen emits itself — the four halt-cont bodies, `fz_entry_thunk`,
 `fz_main_trampoline`, `fz_drain_dtor_entry` — are not Rust functions, so their

@@ -22,6 +22,7 @@ pub(crate) mod env;
 mod fn_ctx;
 mod frame;
 mod function;
+mod inline_object;
 mod list_cell;
 mod place;
 mod prim;
