@@ -50,6 +50,17 @@ fn a_line_starting_with_an_infix_only_operator_continues_the_previous_expression
     }
 }
 
+/// `type` is an ordinary name, as in Elixir: only the attribute `@type` gives
+/// it a meaning, and that is the attribute's name, not a keyword.
+#[test]
+fn type_is_an_ordinary_name() {
+    assert_eq!(
+        toks_of("type = 1"),
+        vec![Tok::Ident("type".into()), Tok::Eq, Tok::Int(1)]
+    );
+    assert_eq!(toks_of("@type"), vec![Tok::At, Tok::Ident("type".into())]);
+}
+
 #[test]
 fn rescue_and_catch_are_block_keywords() {
     let tokens = test_lexer("try do\n  x\nrescue\n  e -> e\ncatch\n  v -> v\nafter\n  y\nend\n")

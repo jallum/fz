@@ -43,7 +43,6 @@ pub enum Tok {
     End,
     Else,
     When,
-    Type,
     In,  // membership operator: `x in xs`
     Not, // boolean negation and `not in`
     And, // boolean conjunction: `a and b`
@@ -304,7 +303,6 @@ fn classify_source_word(name: &str) -> SourceWord {
         "after" => SourceWord::Keyword(Tok::After),
         "rescue" => SourceWord::Keyword(Tok::Rescue),
         "catch" => SourceWord::Keyword(Tok::Catch),
-        "type" => SourceWord::Keyword(Tok::Type),
         "in" => SourceWord::Keyword(Tok::In),
         "not" => SourceWord::Keyword(Tok::Not),
         "and" => SourceWord::Keyword(Tok::And),
