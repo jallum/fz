@@ -6,10 +6,10 @@
   "description": "Found by the fz-nml.8 builder (JSON session); fails on develop. `\u003c\u003clibc::sqrt(2.0) :: float-64\u003e\u003e` stops with internal/post-resolution-leftover ... ExpectedTag. Guess, unverified: the extern call's :: collides with the segment's ::. Nearest ticket fz-4i4 (:: inside patterns) is a different form. Done when it compiles and runs on all three paths, pinned by a fixture.\n\nApproved by the user 2026-11-17 (relayed by the JSON session). Census and probes: fz-nml.9 description (JSON session, develop 4a05ae2be; per 1000 steps interp/run/build).",
   "id": "fz-sc8.244",
   "labels": [],
-  "parent": "fz-sc8",
+  "parent": "fz-9e2.13",
   "priority": 3,
   "status": "open",
   "title": "A binary segment whose value is an extern call compiles",
   "type": "bug",
-  "updated_at": "2026-11-17T22:48:51Z"
+  "updated_at": "2026-11-19T01:32:17Z"
 }
