@@ -868,14 +868,6 @@ fn lower_bit_match_prim<M: cranelift_module::Module>(
             };
             LowerOut::RawI64(body.b.ins().iadd(pos, total))
         }
-        Prim::BitPositionAdd(a, b) => {
-            let (a, b) = (body.as_raw_i64(var_env, a.0), body.as_raw_i64(var_env, b.0));
-            LowerOut::RawI64(body.b.ins().iadd(a, b))
-        }
-        Prim::BitPositionSub(a, b) => {
-            let (a, b) = (body.as_raw_i64(var_env, a.0), body.as_raw_i64(var_env, b.0));
-            LowerOut::RawI64(body.b.ins().isub(a, b))
-        }
         Prim::BitFieldEnd { source, pos, field } => {
             let source_ref = body.tagged_var(var_env, source.0);
             let pos = body.as_raw_i64(var_env, pos.0);
@@ -1382,8 +1374,6 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         | Prim::BitReadByteIntAt { .. }
         | Prim::BitFieldFits { .. }
         | Prim::BitFieldNext { .. }
-        | Prim::BitPositionAdd(..)
-        | Prim::BitPositionSub(..)
         | Prim::BitFieldEnd { .. }
         | Prim::BitReadField { .. } => lower_bit_match_prim(body, var_env, prim, dest_var),
         Prim::MakeFnRef(_, fn_id) => lower_make_fn_ref(body, env, *fn_id),

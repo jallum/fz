@@ -225,11 +225,6 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         .drive_root_backend_work_starts(root)
         .expect("the activation-edge fixture should settle its backend product");
     let (demand_completions, demand_wake_starts, demanded_formula_keys) = &*demand_work.borrow();
-    // fz-5xp.30: 3 -> 2. One generic arithmetic helper path reaches its
-    // result/status fact directly, rather than becoming a macro-definition
-    // consumer; the retained consumers still take both exact dependencies.
-    // 2 -> 4: the arithmetic failure the fixture can reach raises a library
-    // exception, so the `raise` and `defexception` macros are consumed too.
     assert_eq!(macro_definition_consumers.borrow().len(), 4);
     assert_eq!(
         *macro_definition_consumers.borrow(),
@@ -252,147 +247,13 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // field demands join as prefixes, so a field one consumer reads stays
         // distinct from a field another ignores and each such field earns its
         // own demand evaluation. The drain arbiter certifies a whole clean
-        // cone at once instead of one layer per stall, so the executable-fact
-        // tally no longer double-counts layers re-arbitrated after they were
-        // already proven final. Publishing a function's source from the walk
-        // that scoped it removes one source job per reached function.
+        // cone at once, so the executable-fact tally counts each layer once.
+        // A function's source is published by the walk that scoped it, so no
+        // separate source job runs per reached function.
         // A job gated on a fact its subject already carries never starts to
         // discover that fact missing, then wake once the fact lands
         // (`Job::missing_gates`).
-        // fz-afu.2: 3170 -> 3168. `World::submit_root` no longer enqueues
-        // `SeedRoot` directly; it demands `RootEntry` through the same
-        // gate-checked path every other job uses. `SeedRoot(main)` used to
-        // run 3 times -- an ignition run that discovered its own gate, one
-        // more rediscovering the second, then the real run -- and now runs
-        // once, removing its two blocked-only applied steps.
-        // fz-afu.3: 3168 -> 2794. A run missing a callee's answer waits for it
-        // instead of concluding on `ignore`, so no caller re-runs to revise
-        // what it concluded.
-        // fz-afu.10: 2794 -> 2797. DeriveInputDemand falls 197 -> 190: a
-        // caller reads each callee's concluded answer instead of walking the
-        // callee's body. AnalyzeActivation rises 888 -> 898. Four of those
-        // runs are `InputDemand` wakes: a protocol callback's answer covers
-        // the implementations defined so far, and with callers now reading
-        // that answer, each new implementation moves more of them, which
-        // re-keys their activations. The other six are callee `ReturnType`
-        // (369 -> 373 enqueued, 25 -> 26 coalesced) and `Recursive`
-        // (46 -> 47) wakes.
-        // fz-afu.11: 2797 -> 2771. The callback no longer joins over
-        // `ProtocolDispatch`'s arms: it is a leaf with no forwards and no
-        // protocol reads, answered from its own arity alone. An
-        // implementation defined later never revises it or the callers built
-        // on it, so the four extra `InputDemand` wakes fz-afu.10 added above
-        // are gone with the join.
-        // fz-p8p.19: 2771 -> 2747. The exhaustiveness check that used to run
-        // per function head is gone; redundancy is checked from the compiled
-        // dispatch plan instead, which removes its own source job from every
-        // function that declared a contract.
-        // fz-xxd.3: 2747 -> 2761. +18 DeriveFunctionContract: eighteen Kernel
-        // operator externs this fixture lowers but never calls. Their
-        // declarations used to be resolved a second time inside
-        // `LowerFunction`, where no job was counted; now their own contract
-        // job resolves them once. AnalyzeActivation falls by 4.
-        // fz-xxd.11: 2761 -> 2715 -> 2696, net of LowerFunction -28,
-        // PlanEntryDispatch -18, DeriveFunctionContract -18,
-        // AnalyzeActivation -19. The eighteen Kernel operator externs this
-        // fixture never calls no longer get a LowerFunction or
-        // PlanEntryDispatch job at all, and -- since nothing needs their
-        // body to compute static callees any more -- most no longer get
-        // their FunctionContract demanded either. AnalyzeActivation's own
-        // fall is `analyze_activation_gates` (`Job::missing_gates`): each
-        // called extern's activation used to start once blocked on its own
-        // `EntryDispatch`, changing nothing, before its real run; the gate
-        // now holds the job back until `EntryDispatch` (and, for a
-        // non-extern, `LoweredBody`) already exists, so the ten blocked
-        // extern runs never happen, and nine more ordinary-caller runs a
-        // caller no longer needs to re-settle after them fall with them.
-        // fz-afu.13: 2696 -> 2688. A need now starts its producer the instant
-        // it is recorded instead of waiting for a later drain sweep to
-        // discover it; the eight fewer applied steps are blocked-only runs
-        // the sweep used to take before its real run, now skipped entirely.
-        // A caller reads only a callee's concluded answer, so a run that
-        // would otherwise revise its own conclusion after reading a
-        // callee's unsettled answer instead waits for the concluded one,
-        // and never reruns to revise what it never got to conclude early.
-        // fz-xxd.10: 2466 -> 2338. `Recursive`, `InputDemand` and
-        // `StaticCallees` are no longer asked for every monomorphic
-        // activation this fixture's Enum helpers key under (R1's self-keyed
-        // shortcut): DeriveCallGraphComponent/DeriveRecursive net -15,
-        // DeriveInputDemand -51, DeriveStaticCallees -28. Fewer sources ever
-        // reach a definition once their only callers are among those:
-        // DefineFunction -18, ExpandFunctionSource -18. AnalyzeActivation +2,
-        // DeriveTypeDef +1 and PlanEntryDispatch -1 are small knock-ons of
-        // the same drop; same-pass keying keeps AnalyzeActivation from
-        // rising further for this fixture's genuinely polymorphic callers.
-        // 2338 -> 2303: recursion is read from one shared reach product per
-        // function instead of a walk per caller; DeriveRecursive 113 -> 78.
-        // fz-sc8.9: 2303 -> 2317 steps (two of them `proper_length`'s `@spec`),
-        // 232 -> 235 executable facts. `Enumerable`'s list `count` reads
-        // Kernel's `length`, which keeps Elixir's proper-list check: `proper_length` aborts with `:badarg` on an improper
-        // list, so the check and its abort path become executables of their own.
-        // fz-sc8.37: 2317 -> 2327 steps, 19 -> 21 runs-with-wake, 235 -> 236
-        // executable facts. Kernel defines `&&`, `||` and `!` as macros.
-        // 2327 -> 2331 steps: a tuple-field demand derived from an `=` arm settles one round after the floor it replaces, with the same final facts.
-        // fz-sc8.64: 2331 -> 2346 steps, executable facts stay 236. The
-        // fixture's own `panic("late ...")` calls keep `panic/1` and
-        // `fz_panic/1` live, while Kernel's heads and `arithmetic_error/0`
-        // now reach `raise/2` and `fz_raise/2`. Nine steps define that second
-        // pair (DefineFunction, ExpandFunctionSource, DeriveFunctionContract
-        // and PlanEntryDispatch two each, LowerFunction one). Six are
-        // ordering knock-ons: `raise/2`'s contract and `panic/1`'s demand now
-        // conclude after their callers' first runs (AnalyzeActivation:
-        // `arithmetic_error/0` +1, the panic/raise pair +1, `main`'s lambdas
-        // 12, 13 and 14 +1 each, `split_counted_finish` -1;
-        // DeriveRuntimeDemand: lambdas 13 and 14 +1 each).
-        // fz-sc8.8: 2346 -> 2516 steps, 9 -> 11 modules, 21 -> 28 runs-with-wake,
-        // 236 -> 252 executable facts. The fixture's `dbg` is `IO.inspect`,
-        // whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`,
-        // `Binary.to_string`, `raise`, `==`) is defined, lowered and planned.
-        // Literal-argument calls are no longer self-keyed: 2516 -> 2528 steps
-        // (Kernel's arithmetic and compare cone derives its input demand once
-        // per program), 252 -> 248 executable facts (fewer activations).
-        // (2528, 11, 28, 248) -> (2513, 11, 28, 246): no result-decoding
-        // function is defined, analyzed or lowered.
-        // (2513, 11, 28, 246) -> (2529, 11, 28, 246): the operators' guards name
-        // `is_integer`, `is_float` and `is_binary`, so those helpers are defined
-        // and reified so the guards can be folded.
-        // (2529, 11, 28, 246) -> (2653, 11, 28, 262): a returned callable keeps its brand in
-        // its function's key, and a protocol callback counts every input but the receiver as
-        // returned, so `Enum.reduce_while/3` and its Enum wrappers are keyed once per reducer
-        // lambda; 16 more executables, 76 more AnalyzeActivation runs.
-        // (2653, 11, 28, 262) -> (2649, 11, 28, 261): a non-recursive key collapses structure
-        // nothing asks about to its class, as a recursive key does, so callers that differ only in
-        // such freight share one activation.
-        // (2649, 11, 28, 261) -> (2687, 14, 39, 262): the fixture's failures raise library
-        // exceptions, each a module of its own that `defexception` builds, so three more
-        // files are scoped, their modules defined, and the `raise` and `defexception` macros
-        // become executable facts.
-        // (2687, 14, 39, 262) -> (2692, 15, 42, 262): a function head that can miss raises a
-        // struct of `FunctionClauseError`, so the executable waits for that module's
-        // declaration: its file is scoped and its module defined. A program `fz2` runs
-        // defines it already, for the handler of an uncaught raise.
-        // (2692, 15, 42, 262) -> (2680, 15, 42, 261): `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
-        // 2680 -> 2988: a reach is a fact answered by a job of its own, where it was a
-        // product evaluation no job count saw. 124 `DeriveStaticReach` runs: one per function
-        // whose recursion is asked, and one more per callee layer its walk waited for. 203
-        // `DeriveExecutableReach` runs: one per executable whose return a transport position
-        // names. Eighteen fewer runs elsewhere: a recursion verdict starts once its reach
-        // exists.
-        // (2988, 15, 42, 261) -> (2992, 15, 42, 261): the ordering operators' `binary` clause adds its `fz_op_*_bb` activation and splits the catch-all's `compare/2` activations, the same way the int and float clauses already do.
-        // (2992, 15, 42, 261) -> (2981, 15, 31, 261): a module is started once its enclosing scope exists, so each module's definition runs once fewer.
-        // (2981, 15, 31, 261) -> (2982, 15, 31, 261): the product waits until
-        // the fixture's own declarations are checked, which is one
-        // `CheckDeclarations` run. The fixture declares nothing, so it defines
-        // no module and derives no contract for it.
-        // (2982, 15, 31, 261) -> (2770, 15, 31, 245): `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
-        // (2770, 15, 31, 245) -> (2755, 15, 31, 245): a first-class callable's boundary demand is not contributed back to its target's inputs, so the target's demand is not derived again for it.
-        // (2755, 15, 31, 245) -> (2487, 15, 31, 194): a call round a recursion cycle keeps the
-        // entering activation's key at the slots the cycle supplies, so the reduce families mint
-        // one activation per entry and every job that runs per activation runs fewer times.
-        // (2487, 15, 31, 194) -> (2476, 15, 31, 194): a field reading of a value that is not one
-        // exact tuple is read whole, so its runtime demand settles at once: 11 fewer
-        // `DeriveRuntimeDemand` walks.
-        (2476, 15, 31, 194),
+        (2478, 15, 31, 194),
         "ordinary generic helper work has the exact source/module/executable-fact census"
     );
     // Every applied work step is a run, and every run is charged to exactly
@@ -408,188 +269,12 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
     // then wakes those same consumers through the retained product dependency.
     assert_eq!(
         starts[WorkStart::ChangedRevisionWake] - demand_wake_starts,
-        // fz-5xp.30: 1430 -> 1447. The generic result/status helper facts
-        // publish sixteen additional non-demand changed revisions.
-        // The typed `==` clauses and their externs publish non-demand changed
-        // revisions of their own.
-        // Each ordering operator's `any`/`any` clause publishes one non-demand
-        // changed revision, and this fixture reaches `<` and `>`.
-        // A function's source and its consumable fact are one publication now,
-        // so each reached body costs one changed revision instead of two.
-        // A job gated on a fact its subject already carries never starts to
-        // discover that fact missing, then wake once the fact lands
-        // (`Job::missing_gates`).
-        // fz-afu.2: 781 -> 779. `SeedRoot(main)`'s two now-eliminated
-        // blocked-only runs (see above) each published one non-demand
-        // changed revision on their way to discovering their own gate.
-        // fz-afu.10: 779 -> 757. DeriveInputDemand's wakes fall 94 -> 63: the
-        // 84 it took from callee `EntryDispatch` and `StaticCallees` facts,
-        // one per callee its walk discovered, become 57 wakes on concluded
-        // callee answers, and `ProtocolDispatch` shifts wake it 10 -> 6 times.
-        // AnalyzeActivation's nine extra runs (see above) add nine.
-        // fz-afu.11: 757 -> 731. `ProtocolDispatch` no longer shifts the
-        // callback's wake at all -- the callback reads no protocol fact, so
-        // those six wakes and the extra `InputDemand` wakes they fed (above)
-        // both go with the join.
-        // fz-p8p.19: 731 -> 707. The exhaustiveness check that used to run
-        // per function head is gone; redundancy is checked from the compiled
-        // dispatch plan instead, which removes its own changed revision from
-        // every function that declared a contract.
-        // fz-xxd.3: 707 -> 705.
-        // fz-xxd.11: 705 -> 719 -> 702. Removing the caller-side wait on an
-        // extern callee's `LoweredBody` (it has none) briefly raised this to
-        // 719: some caller activations used to wait on that `LoweredBody`
-        // together with the callee's `EntryDispatch`/`ReturnType`, and
-        // AND-semantics coalesced their settlement into one wake attributed
-        // to whichever fact -- always the FunctionContract-gated
-        // LowerFunction publishing `LoweredBody` late -- settled last; with
-        // that fact out of the wait set, the same two settle events
-        // (EntryDispatch, then ReturnType) surfaced as two wakes instead of
-        // one. `analyze_activation_gates` (`Job::missing_gates`) removes the
-        // root cause instead: an extern's own `AnalyzeActivation` no longer
-        // starts before its `EntryDispatch` exists, so it never wakes again
-        // on that fact once the gate is satisfied, and the ten new
-        // `EntryDispatch` wakes fz-xxd.11 measured are gone with it, along
-        // with the coalescing artifact that split them.
-        // fz-afu.13: 702 -> 1045. A need now starts its producer the instant
-        // it is recorded instead of waiting for a drain sweep, so a caller
-        // with many call sites -- this fixture's `main/0` makes thirty-eight
-        // `dbg` calls -- wakes once per callee answer as each lands, rather
-        // than once per drain after a sweep happened to let several land
-        // first (see `main/0`'s own repeated analysis, below). The reason
-        // tally itself was previously double-counting
-        // a job popped, found gated, and re-enqueued later (every `enqueue`
-        // path now records its reason and charges it once, at the moment a
-        // job is actually popped to run, in `Scheduler::record_run_start`);
-        // correcting that tally is what moves this number from a transient
-        // 1156 (the inflated, double-counted reading) to this exact 1045.
-        // main/0 wakes on a `dbg` callee's concluded answer rather than on
-        // each intermediate one landing, so it publishes one non-demand
-        // changed revision per callee instead of one per callee wake.
-        // fz-xxd.10: 857 -> 898. Measured (start reasons tallied per job
-        // kind): LowerFunction keeps 102 runs but now starts on
-        // changed-revision wakes instead of gate expansion (+67);
-        // DeriveFunctionContract keeps 78 runs, +26 moved off
-        // blocked-waiter expansion; DeriveRecursive +31 changed-wake starts
-        // on 15 fewer runs; AnalyzeActivation +32 changed-wake starts on 2
-        // more runs; DeriveStaticCallees -53, DeriveInputDemand -42,
-        // DefineFunction -18.
-        // 898 -> 869: the same DeriveRecursive drop (shared reach products).
-        // fz-sc8.9: 869 -> 870, the `@spec` that declares `proper_length`'s
-        // domains.
-        // fz-sc8.37: 870 -> 874. Kernel defines `&&`, `||` and `!` as macros.
-        // fz-sc8.64: 874 -> 885, measured with the fifteen-step rise
-        // decomposed above; the two DeriveRuntimeDemand reruns are charged
-        // in the demand census below.
-        // fz-sc8.8: 885 -> 960. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
-        // Literal-argument calls are no longer self-keyed: each function
-        // reached with an atom argument derives its demand: 960 -> 987.
-        // 985 -> 995: the operators' guards name `is_integer`, `is_float` and
-        // `is_binary`, so those helpers are defined and reified so the guards
-        // can be folded.
-        // 995 -> 1055: a returned callable keeps its brand in its function's key, and a
-        // protocol callback counts every input but the receiver as returned, so
-        // `Enum.reduce_while/3` and its Enum wrappers are keyed once per reducer lambda.
-        // 1055 -> 1076: the library exception modules and the two macros that build and raise
-        // them publish changed revisions of their own.
-        // 1076 -> 1078: `FunctionClauseError`'s module is defined (see the source census
-        // above), and its definition starts again when its source is indexed and when it
-        // is scoped.
-        // 1078 -> 1071: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
-        // 1071 -> 1163: `DeriveStaticReach` starts 72 times on a changed revision: the 56 runs
-        // beyond one per function resume when a callee's edges land, and 16 first runs start
-        // when their own function's edges land. Every `DeriveRecursive` run (68) starts when its
-        // function's reach lands, where it used to start on its edges and then wait on a product.
-        // 1163 -> 1164: the ordering operators' `binary` clause adds its `fz_op_*_bb` activation and splits the catch-all's `compare/2` activations, the same way the int and float clauses already do.
-        // 1164 -> 1153: a module is started once its enclosing scope exists, so each module's definition runs once fewer.
-        // 1153 -> 1055: `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
-        // 1055 -> 1054: a call round a recursion cycle keeps the entering activation's key at the
-        // slots the cycle supplies, so the reduce families have fewer activations to publish.
-        1054,
+        1060,
         "ordinary generic helper facts have the exact non-demand changed-revision census",
     );
     assert_eq!(
         starts[WorkStartReason::BlockedWaiterExpansion.into()],
-        // fz-5xp.30: 1162 -> 1184 (as the count beyond the 304-key demand
-        // frontier, below). The ordinary generic result/status contracts
-        // retain twenty-two more blocked prerequisite waits.
-        // The typed `==` clauses retain blocked prerequisite waits of their own.
-        // A consumer of a function's source no longer waits behind a copy job,
-        // so each reached body retains one blocked prerequisite fewer.
-        // fz-afu.2: 1113 -> 1103. `SeedRoot(main)`'s gate chain used to be
-        // rediscovered hop by hop through the blocked-waiter sweep; it now
-        // demands through `submit_root`'s own ignition call and the
-        // `root_frontier` standing demand instead, so those hops move off
-        // this count rather than adding to it.
-        // fz-afu.10: 1103 -> 1127, all of it DeriveInputDemand (102 -> 126
-        // starts). A caller composes from its callees' answers, so each
-        // callee its walk used to cross inline now derives an answer of its
-        // own, started by the caller that waits for it: 103 -> 127 distinct
-        // functions. Those starts replace re-runs rather than adding to them
-        // -- DeriveInputDemand runs fall 197 -> 190.
-        // fz-xxd.3: 1127 -> 1145. An extern's `LowerFunction` is gated on its
-        // `FunctionContract`, so each of the eighteen new contract jobs above
-        // is started by expanding that blocked waiter to its producer.
-        // fz-xxd.11: 1145 -> 1071 -> 426 (still above the demand frontier's
-        // 304 keys). `AnalyzeActivation` now gates on `FunctionDefined`,
-        // `EntryDispatch` and (for a non-extern) `LoweredBody`
-        // (`analyze_activation_gates`), so it never starts to discover one of
-        // those three missing and then wait for it -- the blocked-waiter
-        // sweep first had that many fewer stalled jobs to expand
-        // (1145 -> 1071). Uniformly tallying every gate detour under
-        // `GateExpansion`, not only `ActivationFrontier`'s, then moves the
-        // 645 detours this blocked-waiter sweep itself still triggered --
-        // a still-missing gate's own producer getting demanded, the same
-        // event `GateExpansion` already named elsewhere -- out of this count
-        // (1071 -> 426, i.e. 730 raw before the 304-key subtraction below).
-        // fz-afu.13: 730 -> 282, now BELOW the 304-key demand frontier for
-        // the first time. The drain-time blocked-waiter sweep this reason
-        // used to also count is gone entirely (`World::demand_recorded_needs`
-        // expands each wait once, the moment it is recorded, instead of a
-        // later sweep revisiting every still-blocked job); what is left is
-        // only the direct expansions a completion's own waits trigger, which
-        // no longer dominates the demand frontier's own key count, so the
-        // two counts are compared directly instead of by subtraction.
-        // A caller waits on the return of nearly every activation it
-        // mints, so the wait starts that activation's analysis before the
-        // publish does: activation-published starts fall to 3 while these
-        // blocked-waiter starts rise to 500.
-        // fz-xxd.10: 500 -> 434. `Recursive`, `InputDemand` and
-        // `StaticCallees` are no longer asked for every monomorphic
-        // activation this fixture's Enum helpers key under, so fewer
-        // completions ever have one of those three as a blocked waiter to
-        // expand.
-        // 434 -> 416: DeriveRecursive no longer blocks once per level of a
-        // static walk; it waits once on its reach product.
-        // fz-sc8.9: 416 -> 417, the `@spec` that declares `proper_length`'s
-        // domains.
-        // fz-sc8.37: 417 -> 418. Kernel defines `&&`, `||` and `!` as macros.
-        // fz-sc8.64: 418 -> 416, measured alongside the fifteen-step rise
-        // decomposed above.
-        // fz-sc8.8: 416 -> 440. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
-        // An activation key names only the literals a use can tell apart:
-        // 440 -> 424.
-        // 420 -> 423: one blocked-waiter start for each of the three Kernel type
-        // predicates (`is_integer`, `is_float`, `is_binary`) defined so the
-        // operators' guards can be folded.
-        // 423 -> 439: a returned callable keeps its brand in its function's key, and a protocol
-        // callback counts every input but the receiver as returned, so `Enum.reduce_while/3`
-        // and its Enum wrappers are keyed once per reducer lambda.
-        // 439 -> 438: a non-recursive key collapses structure nothing asks about to its class, as a
-        // recursive key does, so callers that differ only in such freight share one activation.
-        // 438 -> 450: the same exception modules and macros wait on their prerequisites.
-        // 450 -> 453: the other three of the five steps that define `FunctionClauseError`
-        // start as prerequisites of a waiter.
-        // 453 -> 638: a transport position that names an executable's return waits on that
-        // executable's reach, and the wait starts its `DeriveExecutableReach`.
-        // 638 -> 641: the ordering operators' `binary` clause adds its `fz_op_*_bb` activation and splits the catch-all's `compare/2` activations, the same way the int and float clauses already do.
-        // 641 -> 630: a module is started once its enclosing scope exists, so each module's definition runs once fewer.
-        // 630 -> 631: the product waits on the fixture's own declarations being
-        // checked, and that wait starts its one `CheckDeclarations`.
-        // 631 -> 588: `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
-        // 588 -> 515: a call round a recursion cycle keeps the entering activation's key at the
-        // slots the cycle supplies, so fewer reduce activations block on prerequisites.
-        515,
+        522,
         "the blocked-waiter census includes only the prerequisites each completion's own waits expand",
     );
     assert_eq!(
@@ -598,102 +283,12 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // and those wakes split by the prerequisite that caused each one:
         // construction target, settled executable facts, one exact runtime-
         // demand input, the whole input vector, and unclassified.
-        //
         // The last slot is zero because every wake names the fact that moved.
-        // The exact-input slot carries the wakes the whole-input-vector slot
-        // would otherwise absorb: a formula that reads one target's inputs
-        // wakes on that input alone. Tuple-field demands join as prefixes, so
-        // fields distinct consumers read stay distinct, and each one is its
-        // own completion woken on that same exact cause. The drain arbiter's
-        // whole-cone certification removes the re-arbitration wakes that used
-        // to inflate the whole-input-vector slot. A job gated on a fact its
-        // subject already carries never starts to discover that fact
-        // missing, then wake once the fact lands (`Job::missing_gates`) --
-        // the settled-executable-facts slot drops to zero since that wake
-        // was entirely the discovery bounce.
-        // fz-afu.3: (937, 705) -> (563, 331), every cause slot falling. A run
-        // missing a callee's answer waits for it instead of concluding on a
-        // guess, so the wakes that re-ran callers to revise their guesses
-        // are gone. A wait for a callee's concluded answer is counted in the
-        // whole-input-vector slot, since it names that vector.
-        // fz-afu.13: (563, 331, [24, 0, 79, 228, 0]) -> (562, 562,
-        // [24, 232, 79, 227, 0]). One fewer `DeriveRuntimeDemand` completion:
-        // a formula that used to settle in two runs under the drain sweep's
-        // batching now settles in one, its need started the instant it was
-        // recorded. The settled-executable-facts slot, zero since xxd.11
-        // removed the discovery bounce for `AnalyzeActivation`, reappears
-        // here for `DeriveRuntimeDemand`: starting a formula's producer the
-        // moment its need is recorded can still start it before
-        // `ExecutableFacts` itself is settled, so it wakes again once that
-        // settles, the same discovery-bounce shape in a different job. The
-        // whole-input-vector slot falls by one, the single wake the new
-        // settled-executable-facts slot intercepts earlier than before.
-        // A caller reads only a callee's concluded answer, so two
-        // `DeriveRuntimeDemand` formulas that would otherwise complete once
-        // on a guess and again on the concluded answer complete just once,
-        // on the concluded answer alone; the wake count and its cause
-        // split are unaffected, since each formula already waits on the
-        // same fact it completes against.
-        // fz-sc8.9: (560, 562) -> (566, 568), three more wakes each on settled
-        // executable facts and on the whole input vector.
-        // `Enumerable`'s list `count` reads Kernel's `length`, which keeps Elixir's
-        // proper-list check: `proper_length` aborts with `:badarg` on an improper
-        // list, so the check and its abort path are analyzed as functions of
-        // their own.
-        // fz-sc8.37: (566, 568, [24, 235, 79, 230, 0]) -> (567, 569, [24, 236, 79, 230, 0]). Kernel defines `&&`, `||` and `!` as macros.
-        // (567, 569, [24, 236, 79, 230, 0]) -> (571, 573, [24, 236, 82, 231, 0]): a tuple-field demand derived from an `=` arm settles one round after the floor it replaces, with the same final facts.
-        // fz-sc8.64: (571, 573, [24, 236, 82, 231, 0]) -> (573, 575, [24, 236, 82, 233, 0]).
-        // `main`'s lambdas 13 and 14 each run `DeriveRuntimeDemand` once more
-        // because `raise/2`'s demand concludes after their first runs; both
-        // reruns are charged to the fourth cause.
-        // fz-sc8.8: (573, 575, [24, 236, 82, 233, 0]) -> (605, 607, [24, 252, 82, 249, 0]). `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
-        // Literal-argument calls are no longer self-keyed: (605, 607,
-        // [24, 252, 82, 249, 0]) -> (596, 598, [24, 248, 82, 244, 0]).
-        // (592, 594, [24, 246, 82, 242, 0]) -> (624, 626, [24, 262, 82, 258, 0]): a returned
-        // callable keeps its brand in its function's key, and a protocol callback counts every
-        // input but the receiver as returned, so `Enum.reduce_while/3` and its Enum wrappers
-        // are keyed once per reducer lambda; each new activation's runtime demand is derived
-        // once.
-        // (624, 626, [24, 262, 82, 258, 0]) -> (622, 624, [24, 261, 82, 257, 0]): a non-recursive
-        // key collapses structure nothing asks about to its class, as a recursive key does, so
-        // callers that differ only in such freight share one activation.
-        // (622, 624, [24, 261, 82, 257, 0]) -> (623, 625, [24, 262, 82, 257, 0]): the library
-        // exception a failure raises adds one activation, whose runtime demand is derived.
-        // (623, 625, [24, 262, 82, 257, 0]) -> (621, 623, [24, 261, 82, 256, 0]): `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
-        // (621, 623, [24, 261, 82, 256, 0]) -> (582, 589, [24, 245, 80, 240, 0]): `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
-        // (582, 589, [24, 245, 80, 240, 0]) -> (567, 574, [24, 245, 65, 240, 0]): the same fifteen
-        // `DeriveRuntimeDemand` runs, each woken by a changed input demand.
-        // (567, 574, [24, 245, 65, 240, 0]) -> (429, 431, [24, 194, 11, 202, 0]): a call round a
-        // recursion cycle keeps the entering activation's key at the slots the cycle supplies, so
-        // the reduce families have fewer activations to derive demand for.
-        // (429, 431, [24, 194, 11, 202, 0]) -> (418, 420, [24, 194, 0, 202, 0]): a field reading of
-        // a value that is not one exact tuple is read whole, so no runtime demand is woken again by
-        // one exact input widening field by field.
         (418, 420, [24, 194, 0, 202, 0]),
         "every demand completion and ordinary helper wake retains its precise cause",
     );
     assert_eq!(
         demanded_formula_keys.len(),
-        // fz-5xp.30: the ordinary generic result/status boundary contributes
-        // four exact RuntimeDemand/construction-target keys.
-        // fz-sc8.9: 304 -> 307.
-        // `Enumerable`'s list `count` reads Kernel's `length`, which keeps Elixir's
-        // proper-list check: `proper_length` aborts with `:badarg` on an improper
-        // list, so the check and its abort path become executables of their own.
-        // fz-sc8.37: 307 -> 308. Kernel defines `&&`, `||` and `!` as macros.
-        // fz-sc8.8: 308 -> 324. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
-        // An activation key names only the literals a use can tell apart:
-        // 324 -> 320.
-        // 318 -> 334: a returned callable keeps its brand in its function's key, and a protocol
-        // callback counts every input but the receiver as returned, so `Enum.reduce_while/3`
-        // and its Enum wrappers are keyed once per reducer lambda.
-        // 334 -> 333: a non-recursive key collapses structure nothing asks about to its class, as a
-        // recursive key does, so callers that differ only in such freight share one activation.
-        // 333 -> 334: one key for the library exception a failure raises.
-        // 334 -> 333: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
-        // 333 -> 317: `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
-        // 317 -> 232: a call round a recursion cycle keeps the entering activation's key at the
-        // slots the cycle supplies, so the reduce families key fewer demanded activations.
         232,
         "the demand frontier retains every ordinary generic helper key",
     );
@@ -703,100 +298,12 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
             starts[WorkStartReason::ActivationPublished.into()],
             starts[WorkStart::Unclassified],
         ),
-        // fz-5xp.30: 261 -> 265. Four ordinary generic result/status helper
-        // activations enter through the same attributed frontier.
-        // fz-afu.10: 265 -> 266. `Enum.drop_positive/2` is now analyzed once
-        // while its accumulator is still only `empty_list()`, so it names an
-        // intermediate `Enum.drop_positive_finish/1` activation,
-        // `({empty_list(), int})`, before the settled `({list(int), int})`.
-        // `drop_positive_finish/1`'s own input demand is derived once,
-        // identically; only the order its caller runs in moved.
-        // fz-xxd.3: 266 -> 264. `Kernel.dbg/1`, `Kernel.fz_dbg_value/1`, and
-        // the `{empty_list(), int}` shapes of `Enum.drop_positive_finish/1`
-        // and `Enum.take_positive_finish/1` are no longer activated;
-        // `Range.reduce_while_step/6` and `List.reduce_while_step/3` each gain
-        // one activation.
-        // fz-xxd.11: activation_frontier 264 -> 276 -> 266.
-        // `AnalyzeActivation` now gates on `FunctionDefined`, `EntryDispatch`
-        // and (for a non-extern) `LoweredBody` (`analyze_activation_gates`).
-        // Ten called Kernel operator externs -- `fz_dbg_value`, `fz_panic`,
-        // and `fz_op_{add,sub,div,rem,lt,gt,eq,eq_ii}` -- reach the frontier
-        // before their own `EntryDispatch` exists, so each was credited twice
-        // under the raw `started>0` count: once when its missing gate was
-        // expanded, again once the gate cleared and its `AnalyzeActivation`
-        // was actually queued (confirmed by tracing every credited key: ten
-        // repeat, no others). A still-missing gate's own producer is a
-        // different job than the activation waiting on it, so it is now
-        // tallied under `GateExpansion` instead
-        // (`World::demand_producer_if_needed`), and the frontier credits only
-        // the call that actually places the activation's own job on the
-        // agenda. That retires the false ten: 276 raw credits, 266 distinct
-        // activations. The two above fz-xxd.3's 264 predate this fix --
-        // reverting `require_callee_prerequisites` and both `keying.rs` gates
-        // and re-measuring still gives 266 -- so `analyze_activation_gates`
-        // itself, landed after fz-xxd.3 pinned 264, is what changed which
-        // activations this fixture's frontier discovers. fz-afu.13 leaves
-        // 266 unchanged -- the set of activations recorded is the same; only
-        // when each one's analysis starts moved earlier.
-        // fz-xxd.11: ignition 2 -> 1. `submit_root`'s own first demand always
-        // finds `SeedRoot`'s `FunctionDefined` gate missing -- the root
-        // function is never defined yet at that instant -- so it was always
-        // a gate detour, not a bare `SeedRoot` start; `GateExpansion` now
-        // covers that detour uniformly for every reason, not only
-        // `ActivationFrontier`'s, so it moves out of `Ignition` here too.
-        // Only `submit_code`'s own `IndexCode` remains a bare ignition.
-        // fz-afu.13: activation_frontier is renamed activation_published --
-        // every analysis it credits is now demanded the instant it is
-        // recorded (`World::demand_recorded_needs`) rather than discovered by
-        // a later drain sweep. 266 -> 265: one fewer distinct activation
-        // reaches the frontier at all (see the census below). Of the 265
-        // that do, only 255 place their own job on the agenda directly; the
-        // other ten are each still gated on their own `EntryDispatch`, so the
-        // call that actually starts each one is the gate detour that clears
-        // that gate, tallied under `GateExpansion` rather than this reason
-        // (`World::demand_producer_if_needed`'s blocked branch now records
-        // the reason current when a job is popped to run, not the reason it
-        // was first demanded under -- see `Scheduler::record_run_start`). Ten
-        // is also the count xxd.11 named for the same shape of gate detour,
-        // one layer up (raw credits vs. distinct activations); the two tens
-        // are not independently confirmed to be the same ten functions.
-        // `World::demand_recorded_needs` expands a completion's waits
-        // before it expands the activations that same completion
-        // published. This fixture's callers wait on a callee's concluded
-        // `ReturnType` in the same run that first publishes that callee's
-        // `Activation` edge, so the wait loop already starts the callee's
-        // analysis under `BlockedWaiterExpansion` before the activation
-        // loop reaches it; `has_run` is already true by then, so this
-        // reason credits only the few activations no caller happened to
-        // wait on in their publishing run.
-        // fz-xxd.10: activation_published 3 -> 0. `Recursive`, `InputDemand`
-        // and `StaticCallees` are no longer asked for every monomorphic
-        // activation this fixture's Enum helpers key under, which changes
-        // which code path first discovers the few activations this reason
-        // used to credit; they now land as a `BlockedWaiterExpansion` wake
-        // instead (see the blocked-waiter census above).
         (1, 0, 0),
         "ordinary generic helper activations preserve the pull-only frontier",
     );
 
     let world = compiler.world();
     let analyzed_activations = analyzed_activations.borrow();
-    // fz-xxd.11 (base): every distinct activation is analyzed exactly once --
-    // 266 completions, 266 distinct keys, no repeats at all.
-    // fz-afu.13: 266 -> 875 completions over 265 distinct keys (below), a
-    // repeat rate this test did not previously have to state because the
-    // assertion reaching this far always failed first on an earlier number
-    // in this same test. `main/0` alone accounts for 45 of those completions
-    // (one activation key, re-run 45 times); it makes thirty-eight `dbg`
-    // calls, each reading one callee's answer, and a need started the
-    // instant it is recorded wakes `main/0` again on each answer landing
-    // rather than once after a drain let several land together. This is a
-    // genuine, measured, reproducible cost of removing the drain-time
-    // batching the sweep used to provide for free, surfaced here rather than
-    // hidden behind a pin that never got this far before; it has not been
-    // weighed against fz-afu.13's own net job-count win (2696 -> 2688, still
-    // a decrease) or diagnosed against the separately-tracked schedule-
-    // dependent convergence behavior already known on this exact fixture.
     // `main/0`'s thirty-eight `dbg` calls each read one callee's answer,
     // and each read waits for its callee's concluded answer, so `main/0`
     // is woken once per callee, on its concluded answer, rather than once
@@ -804,34 +311,7 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
     // way there.
     assert_eq!(
         analyzed_activations.len(),
-        // fz-xxd.10: 617 -> 619. Same-pass keying's early ask -- asking a
-        // callee's keying facts in the same pass as its contract, rather
-        // than a run later -- settles two activations one run earlier,
-        // which this fixture's schedule-dependent convergence turns into
-        // two extra completions rather than two fewer.
-        // fz-sc8.9: 619 holds; the three added frontier activations below
-        // are each analyzed once.
-        // fz-sc8.37: 619 -> 620. Kernel defines `&&`, `||` and `!` as macros.
-        // fz-sc8.64: 620 -> 624. `arithmetic_error/0` is analyzed once more,
-        // the panic/raise pair once more, and `main`'s lambdas 12, 13 and 14
-        // once more each, while `split_counted_finish` is analyzed once
-        // fewer: `raise/2`'s contract concludes after its callers' first
-        // runs.
-        // fz-sc8.8: 624 -> 669. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
-        // 666 -> 742: a returned callable keeps its brand in its function's key, and a protocol
-        // callback counts every input but the receiver as returned, so `Enum.reduce_while/3`
-        // and its Enum wrappers are keyed once per reducer lambda.
-        // 742 -> 741: a non-recursive key collapses structure nothing asks about to its class, as a
-        // recursive key does, so callers that differ only in such freight share one activation.
-        // 741 -> 745: the `defexception` and `raise` macros and the functions of the library
-        // exception a failure raises are analysed.
-        // 745 -> 740: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
-        // 740 -> 738: recursion verdicts now publish on the schedule of the reach facts, and
-        // this fixture's schedule-dependent convergence repeats two analyses fewer.
-        // 738 -> 691: `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
-        // 691 -> 665: a call round a recursion cycle keeps the entering activation's key at the
-        // slots the cycle supplies, so the reduce families have fewer activations to analyze.
-        665,
+        664,
         "the fixture's total AnalyzeActivation completions, repeats included",
     );
     let frontier_analyses = analyzed_activations.iter().cloned().collect::<HashSet<_>>();
@@ -844,24 +324,6 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
     // naming a new function.
     assert_eq!(
         frontier_analyses.len(),
-        // fz-sc8.9: 232 -> 235.
-        // Kernel's `length`, `fz_list_length`, `proper_length`, `panic` and
-        // `fz_panic` replace `List.count/1` and `List.count/2`: the list
-        // `count` keeps Elixir's proper-list check and its abort path.
-        // fz-sc8.37: 235 -> 236. Kernel defines `&&`, `||` and `!` as macros.
-        // fz-sc8.8: 236 -> 252. `dbg` is `IO.inspect`, whose cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`, `Binary.to_string`, `raise`, `==`) is emitted/walked.
-        // An activation key names only the literals a use can tell apart:
-        // 252 -> 248.
-        // 246 -> 262: a returned callable keeps its brand in its function's key, and a protocol
-        // callback counts every input but the receiver as returned, so `Enum.reduce_while/3`
-        // and its Enum wrappers are keyed once per reducer lambda.
-        // 262 -> 261: a non-recursive key collapses structure nothing asks about to its class, as a
-        // recursive key does, so callers that differ only in such freight share one activation.
-        // 261 -> 262: the library exception a failure raises adds one activation.
-        // 262 -> 261: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
-        // 261 -> 245: `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
-        // 245 -> 227: a call round a recursion cycle keeps the entering activation's key at the
-        // slots the cycle supplies, so the reduce families have fewer distinct activations.
         227,
         "the demand frontier's distinct activations, deduplicated across repeats",
     );

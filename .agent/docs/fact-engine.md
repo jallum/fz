@@ -1286,7 +1286,7 @@ runtimes stop with an internal error when they are not. A receive outcome and a
 handler are filled by the runtime one lane per parameter, so native stops with
 an internal error when one of their layouts is not a single lane. Every fresh construction step
 (`Tuple`/`List`/`Map`/`Struct`/`Bitstring`/`FunctionRef`/`Lambda`)
-and every projection (`FieldAccess`/`StructSlot`/`TupleField`) goes through
+and every projection (`FieldAccess`/`StructSlot`) goes through
 `step_or_omitted_when_absent` and becomes `BackendStep::Omitted` when its own
 value is proven absent. `MapUpdate` and `StructUpdate` are the exception: an
 update also answers `ok`, which a decision reads to raise `KeyError`, so it

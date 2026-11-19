@@ -1,0 +1,52 @@
+#---
+# purpose: a function clause is handed the values its head binds by the entry dispatch that selected it, and runs on the interpreter, the JIT and a built program
+# kind: run
+#---
+#
+# Each function here is a different shape of clause head: a tuple that binds one
+# element and ignores another, a bound value that carries no lanes (`:ok`'s
+# empty payload), a name the body never reads, a list head and tail, a struct
+# field, a guard, a function value that is handed to the clause and called, and
+# a self tail call that re-enters the same clause with new values.
+defmodule Main do
+  defstruct [:x, :y]
+
+  def second({_, b}), do: b
+
+  def payload({:ok, nil}), do: :nothing
+  def payload({:ok, value}), do: value
+  def payload(_), do: :other
+
+  def ignores({_a, _b}), do: :unread
+
+  def split([head | tail]), do: {head, tail}
+  def split([]), do: :empty
+
+  def field(%Main{y: y, x: x}), do: {x, y}
+
+  def sign(n) when n > 0, do: :positive
+  def sign(0), do: :zero
+  def sign(_), do: :negative
+
+  def apply_to({f, arg}), do: f.(arg)
+
+  def sum([], total), do: total
+  def sum([head | tail], total), do: sum(tail, total + head)
+
+  def main() do
+    IO.inspect(second({1, 2}))
+    IO.inspect(payload({:ok, nil}))
+    IO.inspect(payload({:ok, 7}))
+    IO.inspect(payload(:error))
+    IO.inspect(ignores({1, 2}))
+    IO.inspect(split([1, 2, 3]))
+    IO.inspect(split([]))
+    IO.inspect(field(%Main{x: 1, y: 2}))
+    IO.inspect({sign(5), sign(0), sign(-5)})
+    offset = 10
+    IO.inspect(apply_to({fn n -> n + offset end, 5}))
+    IO.inspect(sum([1, 2, 3, 4], 0))
+  end
+end
+
+Main.main()

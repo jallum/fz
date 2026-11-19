@@ -6,7 +6,7 @@ use std::rc::Rc;
 
 use super::super::body::{
     CallArg, CallInputMode, CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, DeliveredValueSource,
-    LoweredBody, LoweredEntry, LoweredStep, LoweredTail, ValueId,
+    LoweredBody, LoweredEntry, LoweredStep, LoweredTail, SubjectOwner, ValueId,
 };
 use super::super::callsite_dispatch::dispatch_stress;
 use super::super::drive::{AnswerUse, FactKey, Job, JobEffects, UseCollector, settled_uses};
@@ -1197,18 +1197,12 @@ fn derive_executable_runtime_demand(
             &mut callable_flows,
             &mut walks,
         );
-        // The matcher's reads seed the walk, so a projection feeding one passes
-        // its demand on to the value it projects from.
-        note_clause_matcher_demands(facts, clause.projections.as_slice(), &mut live, &mut out);
-        propagate_steps_reverse(
-            types,
-            clause.projections.as_slice(),
-            &mut live,
-            facts,
-            demands,
-            &mut out,
-            &mut callable_flows,
-        );
+        let entry_plan = facts.body.decision_plan(SubjectOwner::Clause(clause_id));
+        for argument in &clause.arguments {
+            let read = live.remove(&argument.parameter).unwrap_or_else(RuntimeDemand::ignore);
+            let (ordinal, demand) = input_demand_through_subject(entry_plan, argument.subject, read);
+            note_live_demand(facts, &mut out, &mut live, clause.params[ordinal as usize], demand);
+        }
         for (index, param) in clause.params.iter().enumerate() {
             if let Some(demand) = live.remove(param) {
                 out.input_demands[index].join_assign(&demand);
@@ -1847,26 +1841,6 @@ fn push_step_sources(step: &LoweredStep, value: ValueId, out: &mut PendingValues
         LoweredStep::FieldAccess {
             value: defined, base, ..
         } if *defined == value => out.push(*base),
-        LoweredStep::RequireMapValue {
-            value: defined, source, ..
-        } if *defined == value => out.push(*source),
-        LoweredStep::TupleField {
-            value: defined, source, ..
-        } if *defined == value => out.push(*source),
-        LoweredStep::SplitList { source, head, tail } if *head == value || *tail == value => out.push(*source),
-        LoweredStep::BitstringRead {
-            value: read_value,
-            source,
-            pos,
-            spec,
-            ..
-        } if *read_value == value => out.extend([*source, *pos].into_iter().chain(size_value(&spec.size))),
-        LoweredStep::BitstringRead {
-            next: Some(next),
-            pos,
-            spec,
-            ..
-        } if *next == value => out.extend(std::iter::once(*pos).chain(size_value(&spec.size))),
         LoweredStep::Const { .. }
         | LoweredStep::FunctionRef { .. }
         | LoweredStep::Lambda { .. }
@@ -1880,11 +1854,7 @@ fn push_step_sources(step: &LoweredStep, value: ValueId, out: &mut PendingValues
         | LoweredStep::BinaryOp { .. }
         | LoweredStep::UnaryOp { .. }
         | LoweredStep::MapIndex { .. }
-        | LoweredStep::FieldAccess { .. }
-        | LoweredStep::RequireMapValue { .. }
-        | LoweredStep::TupleField { .. }
-        | LoweredStep::SplitList { .. }
-        | LoweredStep::BitstringRead { .. } => {}
+        | LoweredStep::FieldAccess { .. } => {}
     }
 }
 
@@ -2075,53 +2045,6 @@ pub(super) fn propagate_steps_reverse(
                     note_live_demand(facts, out, live, *base, RuntimeDemand::whole());
                 }
             }
-            LoweredStep::RequireMapValue { value, source, .. } => {
-                if !take_live_demand(live, *value).is_ignore() {
-                    note_live_demand(facts, out, live, *source, RuntimeDemand::whole());
-                }
-            }
-            LoweredStep::TupleField { value, source, index } => {
-                let demand = take_live_demand(live, *value);
-                if !demand.is_ignore() {
-                    // This names the fields up to the one it reads and stops.
-                    // That is a prefix, not a guess about the arity: a sibling
-                    // projection that reaches further joins its own longer
-                    // prefix onto this one.
-                    let mut fields = vec![RuntimeDemand::ignore(); index + 1];
-                    fields[*index] = demand;
-                    note_live_demand(facts, out, live, *source, RuntimeDemand::tuple_fields(fields));
-                }
-            }
-            LoweredStep::SplitList { source, head, tail } => {
-                let head_demand = take_live_demand(live, *head);
-                let tail_demand = take_live_demand(live, *tail);
-                if !head_demand.is_ignore() || !tail_demand.is_ignore() {
-                    note_live_demand(facts, out, live, *source, RuntimeDemand::whole());
-                }
-            }
-            LoweredStep::BitstringRead {
-                value,
-                next,
-                source,
-                pos,
-                spec,
-            } => {
-                let value_live = !take_live_demand(live, *value).is_ignore();
-                let next_live = next.is_some_and(|next| !take_live_demand(live, next).is_ignore());
-                if value_live {
-                    note_live_demand(facts, out, live, *source, RuntimeDemand::matched());
-                }
-                if value_live || next_live {
-                    note_live_demand(facts, out, live, *pos, RuntimeDemand::whole());
-                    if let Some(size) = spec
-                        .size
-                        .as_ref()
-                        .and_then(super::super::body::LoweredBitSize::read_value)
-                    {
-                        note_live_demand(facts, out, live, size, RuntimeDemand::whole());
-                    }
-                }
-            }
             LoweredStep::PopHandler => {}
         }
     }
@@ -2179,9 +2102,8 @@ fn handed_to_arm_demand(
 }
 
 /// What reading `subject` with `demand` asks of the input it is carved out
-/// of. A tuple field is read as the fields up to it, as a `TupleField` step
-/// reads it, a bitstring field is read as a match reads it, and every other
-/// projection reads its source whole.
+/// of. A tuple field is read as the fields up to it, a bitstring field is read
+/// as a match reads it, and every other projection reads its source whole.
 fn input_demand_through_subject(
     plan: &PatternDispatchPlan<Ty>,
     mut subject: SubjectId,
@@ -2213,9 +2135,8 @@ fn subject_input_ordinal(plan: &PatternDispatchPlan<Ty>, subject: SubjectId) -> 
 }
 
 /// A dispatch demand as a runtime demand. A tuple whose fields are read is
-/// read field by field up to the last field asked for, as a `TupleField`
-/// step reads it, or across the whole proven arity; any other question needs
-/// the value itself.
+/// read field by field up to the last field asked for, or across the whole
+/// proven arity; any other question needs the value itself.
 fn runtime_demand_of_dispatch(demand: &DispatchDemand, proven_arity: Option<usize>) -> RuntimeDemand {
     match demand {
         DispatchDemand::Ignore => RuntimeDemand::ignore(),
@@ -2232,53 +2153,6 @@ fn runtime_demand_of_dispatch(demand: &DispatchDemand, proven_arity: Option<usiz
         | DispatchDemand::Whole
         | DispatchDemand::ListShape(_)
         | DispatchDemand::MapValues(_) => RuntimeDemand::whole(),
-    }
-}
-
-fn note_clause_matcher_demands(
-    facts: &RuntimeDemandFacts<'_>,
-    steps: &[LoweredStep],
-    live: &mut ValueMap<RuntimeDemand>,
-    out: &mut ExecutableRuntimeDemand,
-) {
-    for step in steps {
-        match step {
-            LoweredStep::RequireMapValue { source, .. } => {
-                let source_demand = boundary_value_demand(facts, *source, RuntimeDemand::whole());
-                note_live_demand(facts, out, live, *source, source_demand);
-            }
-            LoweredStep::SplitList { source, .. } => {
-                let demand = boundary_value_demand(facts, *source, RuntimeDemand::whole());
-                note_live_demand(facts, out, live, *source, demand);
-            }
-            LoweredStep::BitstringRead { source, pos, spec, .. } => {
-                let demand = boundary_value_demand(facts, *source, RuntimeDemand::matched());
-                note_live_demand(facts, out, live, *source, demand);
-                note_live_demand(facts, out, live, *pos, RuntimeDemand::whole());
-                if let Some(size) = spec
-                    .size
-                    .as_ref()
-                    .and_then(super::super::body::LoweredBitSize::read_value)
-                {
-                    note_live_demand(facts, out, live, size, RuntimeDemand::whole());
-                }
-            }
-            LoweredStep::PopHandler => {}
-            LoweredStep::Const { .. }
-            | LoweredStep::Tuple { .. }
-            | LoweredStep::List { .. }
-            | LoweredStep::Map { .. }
-            | LoweredStep::MapUpdate { .. }
-            | LoweredStep::Struct { .. }
-            | LoweredStep::Bitstring { .. }
-            | LoweredStep::FunctionRef { .. }
-            | LoweredStep::Lambda { .. }
-            | LoweredStep::BinaryOp { .. }
-            | LoweredStep::UnaryOp { .. }
-            | LoweredStep::MapIndex { .. }
-            | LoweredStep::FieldAccess { .. }
-            | LoweredStep::TupleField { .. } => {}
-        }
     }
 }
 

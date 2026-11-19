@@ -4,7 +4,7 @@ use std::mem::discriminant;
 use std::rc::Rc;
 
 use crate::diag::{Diagnostic, codes::PARSE_EXPECTED_TOKEN};
-use crate::parser::lexer::{Lexer, Tok, Token};
+use crate::parser::lexer::{Lexer, Tok, Token, is_infix_only_continuation};
 use crate::source::{SourceVersion, Span};
 use crate::telemetry::RawSpanTelemetry;
 use fz_runtime::any_value::AnyValueRef;
@@ -278,20 +278,11 @@ impl<'t> FrontDoorParser<'t> {
                 }
                 (name.clone(), value)
             }
-            Tok::Ident(name) if name == "spec" => {
-                let line = self.line_token_range()?;
-                (
-                    name.clone(),
-                    token_payload::encode_tokens(&self.builder, &self.toks[line])?,
-                )
+            Tok::Ident(name) if is_type_attribute_name(name) => {
+                let name = name.clone();
+                (name, self.type_expression_payload()?)
             }
-            Tok::Type => {
-                let line = self.line_token_range()?;
-                (
-                    "type".to_string(),
-                    token_payload::encode_tokens(&self.builder, &self.toks[line])?,
-                )
-            }
+            Tok::Type => ("type".to_string(), self.type_expression_payload()?),
             Tok::Ident(name) => {
                 let name = name.clone();
                 (name, self.parse_expr(module_path, &[])?.root)
@@ -2298,16 +2289,43 @@ impl<'t> FrontDoorParser<'t> {
         Ok(())
     }
 
-    fn line_token_range(&mut self) -> Result<std::ops::Range<usize>, FrontDoorError> {
+    /// A type attribute's payload: the tokens of its type expression, without
+    /// the line ends that continue it.
+    fn type_expression_payload(&mut self) -> Result<AnyValueRef, FrontDoorError> {
+        let range = self.type_expression_token_range()?;
+        let tokens = self.toks[range]
+            .iter()
+            .filter(|token| !matches!(token.tok, Tok::Newline));
+        Ok(token_payload::encode_tokens(&self.builder, tokens)?)
+    }
+
+    /// The tokens of a type attribute's payload, read to the end of its
+    /// expression: a line end inside brackets, or after a token that cannot
+    /// end an expression, continues it, as it does in Elixir. The enclosing
+    /// block's `end` always ends it.
+    fn type_expression_token_range(&mut self) -> Result<std::ops::Range<usize>, FrontDoorError> {
         self.skip_newlines();
         let start = self.pos;
-        while !matches!(self.peek(), Tok::Newline | Tok::Eof | Tok::End) {
+        let mut depth = 0usize;
+        loop {
+            match self.peek() {
+                Tok::Eof => break,
+                Tok::End if depth == 0 => break,
+                Tok::Newline if depth == 0 && self.expression_may_end_here(start) => break,
+                Tok::LParen | Tok::LBrack | Tok::LBrace | Tok::PercentLBrace | Tok::LBitstr => depth += 1,
+                Tok::RParen | Tok::RBrack | Tok::RBrace | Tok::RBitstr => depth = depth.saturating_sub(1),
+                _ => {}
+            }
             self.advance();
         }
         if self.pos == start {
             return self.err("expected attribute payload");
         }
         Ok(start..self.pos)
+    }
+
+    fn expression_may_end_here(&self, start: usize) -> bool {
+        self.pos == start || !leaves_expression_open(&self.toks[self.pos - 1].tok)
     }
 
     fn err<T>(&self, msg: impl Into<String>) -> Result<T, FrontDoorError> {
@@ -2457,6 +2475,20 @@ impl<'t> FrontDoorParser<'t> {
             _ => return None,
         })
     }
+}
+
+/// The attributes whose payload is a type expression, besides `@type`, which
+/// the lexer reads as its own keyword. `@typep` and `@opaque` declare a type
+/// as `@type` does: Elixir's compiler treats all three alike, and only a
+/// static analyser reads a type as private or opaque.
+fn is_type_attribute_name(name: &str) -> bool {
+    matches!(name, "spec" | "typep" | "opaque")
+}
+
+/// Whether a line end after `tok` continues the expression: after an infix
+/// operator or a comma, the expression is not finished.
+fn leaves_expression_open(tok: &Tok) -> bool {
+    is_infix_only_continuation(tok) || matches!(tok, Tok::Comma | Tok::Minus)
 }
 
 fn segments_ref(segments: &[String]) -> Vec<&str> {

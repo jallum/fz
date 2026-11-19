@@ -320,11 +320,14 @@ fn native_root_product_is_lowered_once_and_reused_by_exact_identity() {
             // activation, so its completions land as a `blocked_waiter_expansion`
             // wake rather than an `activation_published` one.
             (WorkStartReason::Ignition.into(), 1),
-            (WorkStart::ChangedRevisionWake, 11),
+            // Lowering a function waits on its entry dispatch plan, so `main/0`
+            // and its definition macro are lowered when their plans land, as
+            // changed-revision wakes.
+            (WorkStart::ChangedRevisionWake, 13),
             // The product waits until the source's own declarations are
             // checked; `main/0` declares nothing, so that check is one
             // `CheckDeclarations` run, woken once the source is indexed.
-            (WorkStartReason::GateExpansion.into(), 9),
+            (WorkStartReason::GateExpansion.into(), 7),
             (WorkStartReason::BlockedWaiterExpansion.into(), 2),
         ]),
         "cold native production must preserve its exact sanctioned work-start census without an artifact bridge job",
@@ -1896,9 +1899,8 @@ fn live_executable_order_distinguishes_noninjective_display_pairs() {
     }
     assert_eq!(
         measured_pairs.len(),
-        // 6 -> 1: a non-recursive key collapses a list nothing asks about to its class,
-        // so five of the pairs no longer live in two executables; the one left keeps the
-        // order tested.
+        // A non-recursive key collapses a list nothing asks about to its class; the one pair left
+        // keeps the order tested.
         1,
         "fixture must retain the live empty/non-empty list pair that display conflates"
     );
@@ -3853,12 +3855,7 @@ fn a_field_of_a_known_struct_is_read_by_slot_and_any_other_field_by_name() {
         .executables()
         .into_iter()
         .filter_map(|executable| match &executable.body {
-            BackendBody::Clauses { clauses, entries, .. } => Some(
-                clauses
-                    .iter()
-                    .flat_map(|clause| &clause.projections)
-                    .chain(entries.iter().flat_map(|entry| &entry.steps)),
-            ),
+            BackendBody::Clauses { entries, .. } => Some(entries.iter().flat_map(|entry| &entry.steps)),
             _ => None,
         })
         .flatten()

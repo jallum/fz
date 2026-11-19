@@ -116,10 +116,7 @@ taken apart by a match, or measured through a `binary_cursor` extern parameter
 bit-position lane. A value that is not a proven binary, and any consumer with no
 cursor to offer, reads `Matched` as `Whole`. A bit read at a runtime position
 that is a whole number of bytes past the cursor is the inline
-`Prim::BitReadByteIntAt`; other offsets read through the runtime. A step position
-is counted from the start of its match; `Prim::BitPositionAdd` and
-`Prim::BitPositionSub` move it to and from the match's place in the cursor's
-binary. A bitstring region holds a rest it matched, when a later question or the
+`Prim::BitReadByteIntAt`; other offsets read through the runtime. A bitstring region holds a rest it matched, when a later question or the
 winning outcome reads it, as a `ShapeDescr::Cursor` value in the dispatch state
 on both backends, in the store's `binary_cursor` shape. A later bit question
 reads it from its position, and a question that needs the bytes builds the
@@ -385,8 +382,13 @@ after bootstrap bindings — visibility, not a stage.
 special-cased `if`, but it was too weak for `case`, `with`, and `receive`.
 Compiler2 lowers one function body as:
 
-- `LoweredClause`: head projections plus the `ControlEntryId` where the clause
-  body starts
+- `LoweredClause`: the function's inputs as `params`, the `OutcomeArgument`s its
+  entry plan's outcome hands it (one per name its head binds to a projection of
+  an input that the body reads) plus the `ControlEntryId` where the clause body
+  starts. A name its head binds to an input is that input's `params` value and
+  is handed nothing. The clause's entry takes the arguments as its parameters. The body's
+  `entry_plan` is the function's `EntryDispatch` plan, which owns the subjects the
+  arguments name (`SubjectOwner::Clause`)
 - `LoweredEntry`: one reusable local control node with `captures`, straight-line
   `steps`, and one `LoweredTail`
 - `CaptureOwner`: for each capture, the capture where its value first joined
@@ -484,18 +486,19 @@ per executable, where each entry lives (`EntryFns::for_executable` in
   loop inside a function is a tail call to the function itself, which jumps to
   its head block.
 - A clause body is such an entry: the executable's function evaluates its
-  dispatch, each outcome is a `Goto` carrying the function's inputs to the
-  clause's block, and the block binds the clause's parameters and runs its
-  projections. A function with several clauses is one machine function.
+  dispatch, each outcome is a `Goto` carrying the function's input lanes and then
+  the values its clause's arguments name, encoded in the layouts of the clause
+  entry's parameters, to the clause's block. A parameter laid out in no lanes is handed nothing, and its
+  subject is not read. A function with several clauses is one machine function.
 - A `try` body is such an entry: the function that pushes the handler record
   (`Term::Try`) continues into the body's block, so the body builds no function.
   The handler is a function of its own, because only a raise, which the runtime
   delivers, reaches it (`EntryTransfer::Runtime`). A join the body and the
   handler both deliver to is reached from two functions, so it stays a function.
 - A delivered direct call whose callee is nothing but an extern is spliced: the
-  callee is the extern itself, or one clause with no entry dispatch, no
-  projections and no steps whose tail is a direct call that passes the clause's
-  parameters in order to an extern with no entry dispatch
+  callee is the extern itself, or one clause whose entry dispatch asks nothing
+  (a direct outcome) and which has no steps, whose tail is a direct call that
+  passes the clause's parameters in order to an extern whose entry dispatch asks nothing
   (`BackendExecutable::forwards_to`, `NativeLowerer::spliced_extern`). The
   caller then contains the extern call (`emit_extern_call`, the same code the
   extern's own function runs, so a declared failure raises from the caller),

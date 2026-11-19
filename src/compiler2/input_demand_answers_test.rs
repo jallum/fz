@@ -266,17 +266,6 @@ fn enum_take_derives_input_demand_proportionally() {
     let work = input_demand_work("def main(), do: Enum.take([1, 2, 3], 2)\n");
     assert_eq!(
         (work.runs.len(), total_reads(&work), most_reads_in_one_run(&work)),
-        // fz-sc8.9: 149 -> 146. `Enumerable` counts through Kernel's `length`
-        // and `map_size`, whose answers are read in place of `List.count`'s.
-        // An activation key names only the literals a use can tell apart, so
-        // Kernel's arithmetic and compare cone derives its input demand once
-        // per program: (45, 146, 6) -> (76, 247, 8).
-        // (76, 247, 8) -> (75, 244, 8): no result-decoding function derives input demand.
-        // (75, 244, 8) -> (76, 247, 8): the `defexception` macro's `declares_message?/1` derives
-        // its input demand.
-        // (76, 247, 8) -> (77, 249, 9): the ordering operators' `binary` clause adds its
-        // `fz_op_*_bb` activation and splits the catch-all's `compare/2` activations, the same
-        // way the int and float clauses already do.
         (77, 249, 9)
     );
 }

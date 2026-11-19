@@ -174,12 +174,8 @@ pub(crate) fn step_defined_values(step: &LoweredStep) -> impl Iterator<Item = Va
         | LoweredStep::BinaryOp { value, .. }
         | LoweredStep::UnaryOp { value, .. }
         | LoweredStep::MapIndex { value, .. }
-        | LoweredStep::FieldAccess { value, .. }
-        | LoweredStep::RequireMapValue { value, .. }
-        | LoweredStep::TupleField { value, .. } => [Some(*value), None, None],
+        | LoweredStep::FieldAccess { value, .. } => [Some(*value), None, None],
         LoweredStep::MapUpdate { value, ok, .. } => [Some(*value), Some(*ok), None],
-        LoweredStep::SplitList { head, tail, .. } => [Some(*head), Some(*tail), None],
-        LoweredStep::BitstringRead { value, next, .. } => [Some(*value), *next, None],
         LoweredStep::PopHandler => [None; 3],
     };
     values.into_iter().flatten()
@@ -230,16 +226,6 @@ pub(crate) fn step_used_values(step: &LoweredStep, out: &mut Vec<ValueId>) {
         LoweredStep::FieldAccess { base, .. } => {
             out.push(*base);
         }
-        LoweredStep::RequireMapValue { source, .. }
-        | LoweredStep::TupleField { source, .. }
-        | LoweredStep::SplitList { source, .. } => {
-            out.push(*source);
-        }
-        LoweredStep::BitstringRead { source, pos, spec, .. } => {
-            out.push(*source);
-            out.push(*pos);
-            out.extend(spec.size.as_ref().and_then(LoweredBitSize::read_value));
-        }
     }
 }
 
@@ -281,12 +267,12 @@ pub(crate) fn tail_used_values(tail: &LoweredTail, out: &mut Vec<ValueId>) {
     }
 }
 
-/// Where one step sits in a lowered body: in a clause's projections, or in a
-/// control entry's steps.
+/// Where one step sits in a lowered body: the control entry holding it and its
+/// position in that entry's steps.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum StepSite {
-    Projection { clause: u32, index: u32 },
-    Entry { entry: ControlEntryId, index: u32 },
+pub(crate) struct StepSite {
+    entry: ControlEntryId,
+    index: u32,
 }
 
 /// What one run of steps defines, uses and retains.
@@ -338,7 +324,7 @@ fn positions_from(positions: &[(u32, ValueId)], first_step: u32) -> impl Iterato
     positions[start..].iter().map(|(_, value)| *value)
 }
 
-/// A clause body's definition and use tables, recorded as its steps join the
+/// A body's definition and use tables, recorded as its steps join the
 /// body.
 ///
 /// Ownership construction asks the same two questions over and over -- where
@@ -360,7 +346,6 @@ fn positions_from(positions: &[(u32, ValueId)], first_step: u32) -> impl Iterato
 #[derive(Debug, Clone)]
 pub struct BodyTables {
     definitions: ValueMap<StepSite>,
-    projections: Vec<StepUses>,
     entries: Vec<StepUses>,
     callsite_entries: Vec<Option<ControlEntryId>>,
 }
@@ -372,27 +357,15 @@ impl PartialEq for BodyTables {
 }
 
 impl BodyTables {
-    fn of(clauses: &[LoweredClause], entries: &[LoweredEntry]) -> Self {
-        let projections = clauses
-            .iter()
-            .map(|clause| StepUses::of(&clause.projections, None))
-            .collect::<Vec<_>>();
+    fn of(entries: &[LoweredEntry]) -> Self {
         let entry_uses = entries
             .iter()
             .map(|entry| StepUses::of(&entry.steps, Some(&entry.tail)))
             .collect::<Vec<_>>();
         let mut definitions = ValueMap::new();
-        for (clause, table) in projections.iter().enumerate() {
-            for (index, value) in &table.defined {
-                definitions.entry(*value).or_insert(StepSite::Projection {
-                    clause: clause as u32,
-                    index: *index,
-                });
-            }
-        }
         for (entry, table) in entry_uses.iter().enumerate() {
             for (index, value) in &table.defined {
-                definitions.entry(*value).or_insert(StepSite::Entry {
+                definitions.entry(*value).or_insert(StepSite {
                     entry: ControlEntryId::from_u32(entry as u32),
                     index: *index,
                 });
@@ -400,7 +373,6 @@ impl BodyTables {
         }
         Self {
             definitions,
-            projections,
             entries: entry_uses,
             callsite_entries: callsite_entries(entries),
         }
@@ -415,10 +387,8 @@ impl BodyTables {
 
     /// The entry and step that define `value`, when an entry step does.
     pub(crate) fn entry_definition_site(&self, value: ValueId) -> Option<(ControlEntryId, u32)> {
-        match self.definitions.get(&value)? {
-            StepSite::Entry { entry, index } => Some((*entry, *index)),
-            StepSite::Projection { .. } => None,
-        }
+        let site = self.definitions.get(&value)?;
+        Some((site.entry, site.index))
     }
 
     /// Every `(step, value)` operand position of this entry, tail included.
@@ -441,14 +411,6 @@ impl BodyTables {
             .defined
             .iter()
             .map(|(_, value)| *value)
-    }
-
-    pub(crate) fn clause_defines(&self, clause: usize) -> impl Iterator<Item = ValueId> + '_ {
-        self.projections[clause].defined.iter().map(|(_, value)| *value)
-    }
-
-    pub(crate) fn clause_uses(&self, clause: usize) -> impl Iterator<Item = ValueId> + '_ {
-        self.projections[clause].used_from(0)
     }
 }
 
@@ -474,6 +436,11 @@ fn callsite_entries(entries: &[LoweredEntry]) -> Vec<Option<ControlEntryId>> {
     table
 }
 
+/// The plan of a function's entry, shared with the `EntryDispatch` fact it is
+/// read from.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EntryPlan(Rc<PatternDispatchPlan<Ty>>);
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum LoweredBody {
     Clauses {
@@ -483,6 +450,9 @@ pub enum LoweredBody {
         tables: BodyTables,
         /// One past the largest value id the function's lowering allocated.
         value_count: usize,
+        /// The function's entry plan: the decision that hands each clause the
+        /// values its pattern binds. A body with no clause has none.
+        entry_plan: Option<EntryPlan>,
     },
 }
 
@@ -502,14 +472,27 @@ impl LoweredBody {
     /// The one way to build a clause body: the tables are recorded here, from
     /// the steps themselves, so they cannot disagree with what they index.
     pub(crate) fn clauses(clauses: Vec<LoweredClause>, entries: Vec<LoweredEntry>, generated: Vec<FunctionId>) -> Self {
-        let tables = BodyTables::of(&clauses, &entries);
+        let tables = BodyTables::of(&entries);
         Self::Clauses {
             clauses,
             entries,
             generated,
             tables,
             value_count: 0,
+            entry_plan: None,
         }
+    }
+
+    /// The body of a function whose clauses the plan selects among and feeds.
+    pub(crate) fn with_entry_plan(self, plan: Rc<PatternDispatchPlan<Ty>>) -> Self {
+        self.with_entry_plan_of(&Some(EntryPlan(plan)))
+    }
+
+    /// The body of the same function with a different set of its clauses.
+    pub(crate) fn with_entry_plan_of(mut self, plan: &Option<EntryPlan>) -> Self {
+        let Self::Clauses { entry_plan, .. } = &mut self;
+        entry_plan.clone_from(plan);
+        self
     }
 
     /// The tail of the entry that makes the call at `callsite`.
@@ -571,16 +554,9 @@ impl LoweredBody {
     /// The step that defines `value`, or `None` when the value arrives as a
     /// clause parameter, an entry parameter or a dispatch outcome argument.
     pub(crate) fn value_definition(&self, value: ValueId) -> Option<&LoweredStep> {
-        let Self::Clauses {
-            clauses,
-            entries,
-            tables,
-            ..
-        } = self;
-        match tables.definitions.get(&value)? {
-            StepSite::Projection { clause, index } => Some(&clauses[*clause as usize].projections[*index as usize]),
-            StepSite::Entry { entry, index } => Some(&entries[entry.as_u32() as usize].steps[*index as usize]),
-        }
+        let Self::Clauses { entries, tables, .. } = self;
+        let site = tables.definitions.get(&value)?;
+        Some(&entries[site.entry.as_u32() as usize].steps[site.index as usize])
     }
 
     /// Record that a list step rebuilds `source`, taking a share of its
@@ -629,7 +605,9 @@ impl LoweredBody {
 pub struct LoweredClause {
     pub span: Span,
     pub params: Vec<ValueId>,
-    pub projections: Vec<LoweredStep>,
+    /// The subject each parameter of `entry` is handed when the function's
+    /// entry plan selects this clause, as an arm's outcome edge hands them.
+    pub(crate) arguments: Box<[OutcomeArgument]>,
     pub entry: ControlEntryId,
 }
 
@@ -919,26 +897,110 @@ impl LoweredTail {
 /// first. Patterns nest a few levels at most, so the path lives on the stack.
 pub(crate) type SubjectPath<'a> = smallvec::SmallVec<[&'a crate::dispatch_matrix::ProjectionKind; 4]>;
 
+/// The decision that hands a subject to the parameter of an entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum SubjectOwner {
+    /// A `case`, a handler or a receive: the tail of this entry.
+    Entry(ControlEntryId),
+    /// The function's entry plan, handing the clause at this index the values
+    /// its pattern binds.
+    Clause(u32),
+}
+
 impl LoweredBody {
+    /// The plan a decision asks its questions with, and the arguments it hands.
+    pub(crate) fn decision_plan(&self, owner: SubjectOwner) -> &PatternDispatchPlan<Ty> {
+        let Self::Clauses {
+            entries, entry_plan, ..
+        } = self;
+        match owner {
+            SubjectOwner::Entry(entry) => entries[entry.as_u32() as usize].tail.dispatch_plan(),
+            SubjectOwner::Clause(_) => {
+                &entry_plan
+                    .as_ref()
+                    .expect("a clause is fed by its function's entry plan")
+                    .0
+            }
+        }
+    }
+
+    /// The entry a decision hands `parameter` to, and the parameter of that
+    /// entry that already carries `subject`, when one does.
+    pub(crate) fn decision_edge_of(
+        &self,
+        owner: SubjectOwner,
+        parameter: ValueId,
+        subject: crate::dispatch_matrix::SubjectId,
+    ) -> (ControlEntryId, Option<ValueId>) {
+        let Self::Clauses { clauses, entries, .. } = self;
+        let (target, arguments) = match owner {
+            SubjectOwner::Entry(entry) => {
+                let edge = entries[entry.as_u32() as usize]
+                    .tail
+                    .outcome_edges()
+                    .iter()
+                    .find(|edge| edge.arguments.iter().any(|argument| argument.parameter == parameter))
+                    .expect("a parameter has the edge that hands it");
+                (edge.target, &edge.arguments)
+            }
+            SubjectOwner::Clause(clause) => {
+                let clause = &clauses[clause as usize];
+                (clause.entry, &clause.arguments)
+            }
+        };
+        let existing = arguments
+            .iter()
+            .find(|argument| argument.subject == subject)
+            .map(|argument| argument.parameter);
+        (target, existing)
+    }
+
+    /// The edge a decision hands the entry `target`: the arguments it carries.
+    pub(crate) fn decision_arguments_mut(
+        &mut self,
+        owner: SubjectOwner,
+        target: ControlEntryId,
+    ) -> &mut Box<[OutcomeArgument]> {
+        let Self::Clauses { clauses, entries, .. } = self;
+        match owner {
+            SubjectOwner::Entry(entry) => {
+                &mut entries[entry.as_u32() as usize]
+                    .tail
+                    .outcome_edges_mut()
+                    .iter_mut()
+                    .find(|edge| edge.target == target)
+                    .expect("a decision hands the entries it targets")
+                    .arguments
+            }
+            SubjectOwner::Clause(clause) => &mut clauses[clause as usize].arguments,
+        }
+    }
+
     pub(crate) fn dispatch_subject_origin(
         &self,
-        owner: ControlEntryId,
+        owner: SubjectOwner,
         mut subject: crate::dispatch_matrix::SubjectId,
     ) -> (SubjectOriginRoot, SubjectPath<'_>) {
-        let Self::Clauses { entries, .. } = self;
-        let tail = &entries[owner.as_u32() as usize].tail;
+        let Self::Clauses { clauses, entries, .. } = self;
+        let plan = self.decision_plan(owner);
         let mut path = SubjectPath::new();
         loop {
-            match tail.dispatch_plan().subject(subject) {
+            match plan.subject(subject) {
                 crate::dispatch_matrix::SubjectSource::Input { ordinal } => {
                     path.reverse();
-                    let root = match tail {
-                        LoweredTail::Dispatch { inputs, .. } => SubjectOriginRoot::Value(inputs[*ordinal as usize]),
-                        LoweredTail::Receive(_) => {
-                            assert_eq!(*ordinal, 0, "receive has one mailbox message input");
-                            SubjectOriginRoot::MailboxMessage(owner)
+                    let ordinal = *ordinal as usize;
+                    let root = match owner {
+                        SubjectOwner::Clause(clause) => {
+                            SubjectOriginRoot::Value(clauses[clause as usize].params[ordinal])
                         }
-                        _ => unreachable!(),
+                        SubjectOwner::Entry(entry) => match &entries[entry.as_u32() as usize].tail {
+                            LoweredTail::Dispatch { inputs, .. } => SubjectOriginRoot::Value(inputs[ordinal]),
+                            LoweredTail::Receive(_) => {
+                                assert_eq!(ordinal, 0, "receive has one mailbox message input");
+                                SubjectOriginRoot::MailboxMessage(entry)
+                            }
+                            _ => unreachable!(),
+                        },
                     };
                     return (root, path);
                 }
@@ -1064,7 +1126,7 @@ impl CallInputMode {
 /// A lowered map key position: the runtime value, plus the compile-time
 /// constant when the source wrote a literal. Map keys are VALUES — the
 /// carried literal is what lets analysis type the field precisely without
-/// singleton numeric types in the lattice (mirroring `RequireMapValue`).
+/// singleton numeric types in the lattice.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LoweredMapKey {
     pub value: ValueId,
@@ -1140,32 +1202,6 @@ pub enum LoweredStep {
         value: ValueId,
         base: ValueId,
         field: String,
-    },
-    RequireMapValue {
-        value: ValueId,
-        source: ValueId,
-        key: GroundValue,
-    },
-    TupleField {
-        value: ValueId,
-        source: ValueId,
-        index: usize,
-    },
-    SplitList {
-        source: ValueId,
-        head: ValueId,
-        tail: ValueId,
-    },
-    /// The field of `source` that starts at bit `pos`. A clause body runs only
-    /// after its dispatch proved the whole pattern, so the field is there to
-    /// read. `next` is the position after the field, bound for a later field to
-    /// start from; the last field has none.
-    BitstringRead {
-        value: ValueId,
-        next: Option<ValueId>,
-        source: ValueId,
-        pos: ValueId,
-        spec: LoweredBitFieldSpec,
     },
     /// The `try` body completed: its handler leaves the process's handler
     /// stack before the body's value travels on.

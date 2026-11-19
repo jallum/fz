@@ -35,8 +35,10 @@ fail the preceding typed discriminator before field evidence is considered.
 The reachable clauses stay in the activation-analysis fact as an
 `EntryReachability` value, and the entry's dispatch plan is the plan trimmed to
 what the activation's types leave (`TrimmedPlans`). A trimmed entry plan that
-is a direct outcome enters the clause body without rebuilding the function's
-runtime dispatch; any other trimmed plan is the executable's dispatch graph.
+is a direct outcome asks nothing: the executable keeps the plan, whose outcome
+hands the clause its values, and native and the interpreter enter the clause
+without a runtime test (`ExecutableDispatch::asks_anything`). Any other trimmed
+plan is the executable's dispatch graph.
 
 List head/tail observations are positional, while `ListSig` element types are
 homogeneous. The calculator may select an already-correlated list alternative
@@ -92,15 +94,12 @@ Operators are typed inline by `binop_ty`/`unop_ty` — there is no
 `Kernel.<op>/2` spec lookup and no declared-spec backstop in inference. An
 extern body types its return as `any()`.
 
-Control flow and pattern steps refine the environment instead of producing a new
-value:
+Control flow refines the environment instead of producing a new value:
 
 ```text
 If              clone `values` into each branch, type both, union the results
 Dispatch        each reachable outcome types its arm with the inputs the
                 plan's questions narrowed (calculate_dispatch_reachability)
-TupleField      values[value]  := tuple_field_type(source, index)
-SplitList       values[head] := elem(source); values[tail] := list(elem(source))
 ```
 
 `=` is a decision like `case`, so `{:ok, handle} = result` narrows `result` to
@@ -109,8 +108,9 @@ typed from that narrowed input.
 
 `If` clones the value map per branch so a narrowing in one arm does not leak into
 the other, then unions the arm results — the same shape `union` gives any branch.
-The clause-level dispatch already proved the head shape, so clause params bind
-by projection alone.
+The clause-level dispatch already proved the head shape and read the values it
+binds, so a clause's entry parameters are typed by projecting its arguments'
+subjects.
 
 ### Cross-activation flow
 

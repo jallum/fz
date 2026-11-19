@@ -141,10 +141,13 @@ defmodule Map do
 
   @spec taken(any, [any], [{any, any}]) :: [{any, any}]
   defp taken(_map, [], acc), do: reverse(acc, [])
-  defp taken(map, [k | t], acc), do: taken(map, t, take_one(map, k, acc, has_key?(map, k)))
-  @spec take_one(any, any, [{any, any}], boolean) :: [{any, any}]
-  defp take_one(map, k, acc, true), do: [{k, map[k]} | acc]
-  defp take_one(_map, _k, acc, false), do: acc
+  defp taken(map, [k | t], acc) do
+    case map do
+      %{^k => v} -> taken(map, t, [{k, v} | acc])
+      %{} -> taken(map, t, acc)
+      other -> raise(%BadMapError{term: other})
+    end
+  end
 
   @spec dropped([{a, b}], [any], [{a, b}]) :: [{a, b}] when a: var, b: var
   defp dropped([], _keys, acc), do: reverse(acc, [])
@@ -229,11 +232,13 @@ defmodule Map do
 
   """
   @spec get(any, any, any) :: any
-  def get(map, key, default), do: value_or(fetch(map, key), default)
-
-  @spec value_or({:ok, any} | :error, any) :: any
-  defp value_or({:ok, value}, _default), do: value
-  defp value_or(:error, default), do: default
+  def get(map, key, default) do
+    case map do
+      %{^key => value} -> value
+      %{} -> default
+      other -> raise(%BadMapError{term: other})
+    end
+  end
 
   @doc """
   Returns `{:ok, value}` for `key`, or `:error` when the key is absent.
@@ -253,11 +258,13 @@ defmodule Map do
 
   """
   @spec fetch(any, any) :: {:ok, any} | :error
-  def fetch(map, key), do: fetched(map, key, has_key?(map, key))
-
-  @spec fetched(any, any, boolean) :: {:ok, any} | :error
-  defp fetched(map, key, true), do: {:ok, map[key]}
-  defp fetched(_map, _key, false), do: :error
+  def fetch(map, key) do
+    case map do
+      %{^key => value} -> {:ok, value}
+      %{} -> :error
+      other -> raise(%BadMapError{term: other})
+    end
+  end
 
   @doc """
   Returns the value for `key`, and aborts with `KeyError` when the key is
@@ -270,11 +277,13 @@ defmodule Map do
 
   """
   @spec fetch!(any, any) :: any
-  def fetch!(map, key), do: fetch_value(fetch(map, key), map, key)
-
-  @spec fetch_value({:ok, any} | :error, any, any) :: any
-  defp fetch_value({:ok, value}, _map, _key), do: value
-  defp fetch_value(:error, map, key), do: key_error(map, key)
+  def fetch!(map, key) do
+    case map do
+      %{^key => value} -> value
+      %{} -> key_error(map, key)
+      other -> raise(%BadMapError{term: other})
+    end
+  end
 
   @doc """
   Aborts with the `KeyError` for a `key` absent from `container`. `Map` and
@@ -325,7 +334,13 @@ defmodule Map do
 
   """
   @spec update!(any, any, (any -> any)) :: any
-  def update!(map, key, fun), do: put(map, key, fun.(fetch!(map, key)))
+  def update!(map, key, fun) do
+    case map do
+      %{^key => value} -> put(map, key, fun.(value))
+      %{} -> key_error(map, key)
+      other -> raise(%BadMapError{term: other})
+    end
+  end
 
   @doc """
   Puts `value` under `key` when `map` already has `key`, and returns `map`
@@ -341,11 +356,13 @@ defmodule Map do
 
   """
   @spec replace(any, any, any) :: any
-  def replace(map, key, value), do: replaced(map, key, value, has_key?(map, key))
-
-  @spec replaced(any, any, any, boolean) :: any
-  defp replaced(map, key, value, true), do: put(map, key, value)
-  defp replaced(map, _key, _value, false), do: map
+  def replace(map, key, value) do
+    case map do
+      %{^key => _} -> put(map, key, value)
+      %{} -> map
+      other -> raise(%BadMapError{term: other})
+    end
+  end
 
   @doc """
   Puts `value` under `key` when `map` already has `key`, and raises `KeyError`
@@ -363,11 +380,13 @@ defmodule Map do
 
   """
   @spec replace!(any, any, any) :: any
-  def replace!(map, key, value), do: replaced!(map, key, value, has_key?(map, key))
-
-  @spec replaced!(any, any, any, boolean) :: any
-  defp replaced!(map, key, value, true), do: put(map, key, value)
-  defp replaced!(map, key, _value, false), do: key_error(map, key)
+  def replace!(map, key, value) do
+    case map do
+      %{^key => _} -> put(map, key, value)
+      %{} -> key_error(map, key)
+      other -> raise(%BadMapError{term: other})
+    end
+  end
 
   @doc """
   Returns the map with `fun` applied to the value at `key`, or with `key`
@@ -385,11 +404,13 @@ defmodule Map do
 
   """
   @spec update(map, any, any, (any -> any)) :: map
-  def update(map, key, default, fun), do: updated(map, key, default, fun, fetch(map, key))
-
-  @spec updated(any, any, any, (any -> any), {:ok, any} | :error) :: any
-  defp updated(map, key, _default, fun, {:ok, value}), do: put(map, key, fun.(value))
-  defp updated(map, key, default, _fun, :error), do: put(map, key, default)
+  def update(map, key, default, fun) do
+    case map do
+      %{^key => value} -> put(map, key, fun.(value))
+      %{} -> put(map, key, default)
+      other -> raise(%BadMapError{term: other})
+    end
+  end
 
   @doc """
   Returns the map without `key`, or `map` unchanged if `key` is absent.

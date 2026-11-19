@@ -5,7 +5,6 @@
 //! fact gathers its settled inputs; product producers only read this value.
 
 use crate::compiler2::ValueMap;
-use crate::dispatch_matrix::ComparisonValue;
 use crate::fast_hash::{HashMap, HashSet};
 use std::collections::BTreeSet;
 use std::rc::Rc;
@@ -15,7 +14,7 @@ use crate::dispatch_matrix::demand::DispatchDemand;
 use super::artifact::ExecutableDispatch;
 use super::body::{
     CallSiteId, ControlDestination, ControlEntryId, DeliveredValueJoin, DeliveredValueSource, LoweredBody,
-    LoweredClause, LoweredEntry, LoweredExtern, LoweredStep, LoweredTail, ValueId, delivered_value_joins,
+    LoweredClause, LoweredEntry, LoweredExtern, LoweredStep, LoweredTail, SubjectOwner, ValueId, delivered_value_joins,
 };
 use super::callsite_dispatch::{CallDestinations, call_destinations};
 use super::identity::{ExecutableKey, ExecutableNeed, FunctionId};
@@ -87,7 +86,7 @@ pub(crate) enum TransportOrigin {
         kind: crate::dispatch_matrix::ProjectionKind,
     },
     OutcomeSubject {
-        owner: ControlEntryId,
+        owner: SubjectOwner,
         subject: crate::dispatch_matrix::SubjectId,
     },
     CallableValue(LocalCallableProducer),
@@ -695,14 +694,11 @@ fn read_tuple_demand(field_demands: Vec<RuntimeDemand>) -> RuntimeDemand {
     }
 }
 
-/// The dispatch an executable runs to pick its clause: the entry plan its
-/// activation's types leave. A plan that wins its one outcome without asking
-/// anything selects nothing, and an extern has no clauses to select among.
+/// The dispatch an executable runs to pick its clause and hand it the values
+/// its head binds: the entry plan its activation's types leave. A plan that
+/// wins its one outcome without asking anything still hands those values.
 fn executable_dispatch(analysis: &ActivationAnalysis) -> Option<ExecutableDispatch> {
     let plan = analysis.trimmed.entry.as_ref()?;
-    if plan.is_direct_outcome() {
-        return None;
-    }
     Some(ExecutableDispatch::new(
         plan.clone(),
         analysis.entry_reachability.clauses().to_vec(),
@@ -892,24 +888,12 @@ fn collect_entry_callsite_needs(
             | LoweredStep::BinaryOp { value, .. }
             | LoweredStep::UnaryOp { value, .. }
             | LoweredStep::MapIndex { value, .. }
-            | LoweredStep::FieldAccess { value, .. }
-            | LoweredStep::RequireMapValue { value, .. }
-            | LoweredStep::TupleField { value, .. } => {
+            | LoweredStep::FieldAccess { value, .. } => {
                 tuple_demands.remove(value);
             }
             LoweredStep::MapUpdate { value, ok, .. } => {
                 tuple_demands.remove(value);
                 tuple_demands.remove(ok);
-            }
-            LoweredStep::SplitList { head, tail, .. } => {
-                tuple_demands.remove(head);
-                tuple_demands.remove(tail);
-            }
-            LoweredStep::BitstringRead { value, next, .. } => {
-                tuple_demands.remove(value);
-                if let Some(next) = next {
-                    tuple_demands.remove(next);
-                }
             }
             LoweredStep::PopHandler => {}
         }
@@ -1028,28 +1012,30 @@ fn local_callable_origin_from<'a>(
 pub(crate) fn collect_value_origins(body: &LoweredBody) -> ValueMap<TransportOrigin> {
     let mut origins = ValueMap::with_capacity(body.value_count());
     let LoweredBody::Clauses { clauses, entries, .. } = body;
-    for clause in clauses {
-        for step in &clause.projections {
-            for (value, origin) in step_transport_origins(step) {
-                origins.insert(value, origin);
-            }
-        }
+    for (index, clause) in clauses.iter().enumerate() {
         for (semantic_index, value) in clause.params.iter().copied().enumerate() {
             origins.insert(value, TransportOrigin::ExecutableInput(semantic_index));
         }
+        for argument in &clause.arguments {
+            origins.insert(
+                argument.parameter,
+                TransportOrigin::OutcomeSubject {
+                    owner: SubjectOwner::Clause(index as u32),
+                    subject: argument.subject,
+                },
+            );
+        }
     }
     for (owner, entry) in entries.iter().enumerate() {
-        for step in &entry.steps {
-            for (value, origin) in step_transport_origins(step) {
-                origins.insert(value, origin);
-            }
+        for (value, origin) in entry.steps.iter().filter_map(step_transport_origin) {
+            origins.insert(value, origin);
         }
         for edge in entry.tail.outcome_edges() {
             for argument in &edge.arguments {
                 origins.insert(
                     argument.parameter,
                     TransportOrigin::OutcomeSubject {
-                        owner: ControlEntryId::from_u32(owner as u32),
+                        owner: SubjectOwner::Entry(ControlEntryId::from_u32(owner as u32)),
                         subject: argument.subject,
                     },
                 );
@@ -1088,33 +1074,20 @@ pub(crate) fn collect_value_origins(body: &LoweredBody) -> ValueMap<TransportOri
     origins
 }
 
-fn step_transport_origins(step: &LoweredStep) -> Vec<(ValueId, TransportOrigin)> {
+fn step_transport_origin(step: &LoweredStep) -> Option<(ValueId, TransportOrigin)> {
     use crate::dispatch_matrix::ProjectionKind;
-    let projection = |value, source, kind| (value, TransportOrigin::Projection { source, kind });
     let origin = match step {
         LoweredStep::Tuple { value, items } => (
             *value,
             TransportOrigin::TupleValue(items.iter().map(|item| item.value).collect()),
         ),
-        LoweredStep::TupleField { value, source, index } => {
-            projection(*value, *source, ProjectionKind::TupleField(*index as u32))
-        }
-        LoweredStep::FieldAccess { value, base, field } => {
-            projection(*value, *base, ProjectionKind::StructField(field.clone()))
-        }
-        LoweredStep::RequireMapValue { value, source, key } => projection(
+        LoweredStep::FieldAccess { value, base, field } => (
             *value,
-            *source,
-            ProjectionKind::MapValue {
-                key: ComparisonValue::Const(key.clone()),
+            TransportOrigin::Projection {
+                source: *base,
+                kind: ProjectionKind::StructField(field.clone()),
             },
         ),
-        LoweredStep::SplitList { source, head, tail } => {
-            return vec![
-                projection(*head, *source, ProjectionKind::ListHead),
-                projection(*tail, *source, ProjectionKind::ListTail),
-            ];
-        }
         LoweredStep::FunctionRef { value, function } => (
             *value,
             TransportOrigin::CallableValue(LocalCallableProducer {
@@ -1133,9 +1106,9 @@ fn step_transport_origins(step: &LoweredStep) -> Vec<(ValueId, TransportOrigin)>
                 captures: captures.clone().into_boxed_slice(),
             }),
         ),
-        _ => return Vec::new(),
+        _ => return None,
     };
-    vec![origin]
+    Some(origin)
 }
 
 fn collect_return_origins(body: &LoweredBody, analysis: &ActivationAnalysis) -> Box<[TransportOrigin]> {

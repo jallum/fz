@@ -6,7 +6,7 @@ use std::rc::Rc;
 use super::binop::{eval_binop, eval_unop, unpack_callable, unpack_closure};
 use super::dispatch_exec::{Dispatch, DispatchInputs, DispatchSource, dispatch_values, project_from_root};
 use super::extern_call::{ExternCallValue, call_lowered_extern};
-use super::prim::{interp_list_cons, interp_list_head, interp_list_tail, interp_map_get};
+use super::prim::{interp_list_cons, interp_map_get};
 use super::value::{
     AnyValue, HeapRef, binary_literal_value, interp_bool_value, interp_empty_list_value, interp_named_field,
     interp_nil_value, interp_read_bit_field, interp_value_from_ref_word, with_value_ref,
@@ -36,8 +36,8 @@ use fz_runtime::heap::{GcStats, Schema};
 use fz_runtime::ir_runtime::{
     fz_bs_begin, fz_bs_finalize, fz_bs_write_field_ref, fz_bs_write_word, fz_list_reuse_or_cons_parts,
     fz_map_dest_begin, fz_map_dest_begin_update, fz_map_dest_freeze, fz_map_dest_publish, fz_map_dest_put_parts,
-    fz_mark_published_ref_aliased, fz_matcher_map_get_ref, fz_struct_get_field_ref, fz_struct_module,
-    fz_struct_reuse_or_copy, fz_struct_store_ref,
+    fz_mark_published_ref_aliased, fz_struct_get_field_ref, fz_struct_module, fz_struct_reuse_or_copy,
+    fz_struct_store_ref,
 };
 use fz_runtime::module_name::{ModuleName, STRUCT_MODULE_FIELD};
 use fz_runtime::output::{OUTPUT_HOOK, OutputContext, OutputSink};
@@ -923,36 +923,37 @@ fn step_backend_executable<T: Telemetry + ?Sized>(
         ),
         BackendBody::Clauses { clauses, entries, .. } => {
             let semantic_inputs = bind_executable_inputs(transport, types, runtime, &executable, &args)?;
-            let clause_index = match &executable.abi.materialized.entry_dispatch {
-                None => 0,
-                Some(dispatch) => {
-                    match select_clause(runtime, types, transport, program, module, dispatch, &semantic_inputs)? {
-                        Some(index) => index,
-                        None => {
-                            return raise_unmatched_entry(
-                                runtime,
-                                transport,
-                                program,
-                                &executable,
-                                dispatch,
-                                &semantic_inputs,
-                                continuations,
-                            );
-                        }
-                    }
-                }
+            let Some(dispatch) = &executable.abi.materialized.entry_dispatch else {
+                return Err(format!(
+                    "backend executable {:?} has {} clauses but no settled entry dispatch",
+                    executable.key,
+                    clauses.len()
+                ));
+            };
+            let Some(selected) = select_clause(
+                runtime,
+                types,
+                transport,
+                program,
+                module,
+                dispatch,
+                &semantic_inputs,
+                &executable,
+            )?
+            else {
+                return raise_unmatched_entry(
+                    runtime,
+                    transport,
+                    program,
+                    &executable,
+                    dispatch,
+                    &semantic_inputs,
+                    continuations,
+                );
             };
             let clause = clauses
-                .get(clause_index)
-                .ok_or_else(|| format!("backend clause {} is out of bounds", clause_index))?;
-            if clause.params.len() != semantic_inputs.len() {
-                return Err(format!(
-                    "backend executable {:?} expected {} semantic input(s), got {}",
-                    executable.key,
-                    clause.params.len(),
-                    semantic_inputs.len()
-                ));
-            }
+                .get(selected.clause)
+                .ok_or_else(|| format!("backend clause {} is out of bounds", selected.clause))?;
             runtime.counts.frames += 1;
             let mut env = Frame::sized(executable.value_count);
             for (param, value) in clause.params.iter().copied().zip(semantic_inputs) {
@@ -960,28 +961,16 @@ fn step_backend_executable<T: Telemetry + ?Sized>(
                     env.insert(param, value);
                 }
             }
-            let mut continuations = continuations;
-            eval_steps(
+            enter_entry(
                 runtime,
-                types,
-                tel,
                 transport,
                 program,
-                module,
                 &executable,
-                &clause.projections,
                 &mut env,
-                &mut continuations,
-            )
-            .map_err(|error| {
-                format!(
-                    "backend executable {:?} function {} clause {} failed before entry {}: {error}",
-                    executable.key,
-                    executable.key.activation.function.as_u32(),
-                    clause_index,
-                    clause.entry.as_u32()
-                )
-            })?;
+                clause.entry,
+                None,
+                &selected.handed,
+            )?;
             step_eval_entry(
                 runtime,
                 types,
@@ -1017,7 +1006,18 @@ fn step_extern_executable(
 ) -> Result<BackendEvalTransition, String> {
     if let Some(dispatch) = &executable.abi.materialized.entry_dispatch {
         let semantic_inputs = bind_executable_inputs(transport, types, runtime, executable, args)?;
-        if select_clause(runtime, types, transport, program, module, dispatch, &semantic_inputs)?.is_none() {
+        if select_clause(
+            runtime,
+            types,
+            transport,
+            program,
+            module,
+            dispatch,
+            &semantic_inputs,
+            executable,
+        )?
+        .is_none()
+        {
             return raise_unmatched_entry(
                 runtime,
                 transport,
@@ -1110,6 +1110,16 @@ fn raise_unmatched_entry(
     )
 }
 
+/// The clause an entry dispatch selected, and the value of each subject the
+/// clause binds, which the deciding run already holds.
+#[derive(Debug)]
+struct SelectedClause {
+    clause: usize,
+    handed: Vec<(ValueId, BackendBoundValue)>,
+}
+
+/// Which clause of `clauses` the entry dispatch chooses for `args`. An extern
+/// has no clauses, so selecting its one outcome hands nothing.
 fn select_clause(
     runtime: &mut IrInterpRuntime,
     types: &crate::compiler2::Types,
@@ -1118,21 +1128,44 @@ fn select_clause(
     module: &Module,
     dispatch: &ExecutableDispatch,
     args: &[Option<BackendBoundValue>],
-) -> Result<Option<usize>, String> {
+    executable: &BackendExecutable,
+) -> Result<Option<SelectedClause>, String> {
+    let clauses = match &executable.body {
+        BackendBody::Clauses { clauses, .. } => clauses.as_slice(),
+        BackendBody::Extern { .. } => &[],
+    };
     let plan = dispatch.plan();
     refuse_omitted_required_inputs(plan, args)?;
     let values = dispatch_values(runtime.cur_proc(), transport, plan, DispatchSource::Inputs(args))?;
     // Dispatch reads an input in whatever form it arrived in: a tuple delivered
     // as lanes is questioned lane-wise, never rebuilt.
     let operands = values.over(transport, args);
-    let decided = Dispatch::new(runtime, types, program, module, plan, operands).run()?;
-    decided
-        .map(|decided| {
-            dispatch
-                .clause_index(decided.outcome())
-                .ok_or_else(|| format!("internal error: entry outcome {:?} names no clause", decided.outcome()))
+    let handed = clauses
+        .iter()
+        .flat_map(|clause| clause.arguments.iter().map(|argument| argument.subject));
+    let Some(mut decided) = Dispatch::new(runtime, types, program, module, plan, operands)
+        .reading(handed)
+        .run()?
+    else {
+        return Ok(None);
+    };
+    let clause = dispatch
+        .clause_index(decided.outcome())
+        .ok_or_else(|| format!("internal error: entry outcome {:?} names no clause", decided.outcome()))?;
+    let handed = clauses
+        .get(clause)
+        .map(|clause| &clause.arguments[..])
+        .unwrap_or_default()
+        .iter()
+        .map(|argument| {
+            let layout = entry_param_layout(executable, argument.parameter)?;
+            let value = decided
+                .subject_handed(argument.subject, layout)
+                .map_err(|_| format!("winning outcome lacks subject {:?}", argument.subject))?;
+            Ok((argument.parameter, value))
         })
-        .transpose()
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok(Some(SelectedClause { clause, handed }))
 }
 
 /// An input the plan reads has to have arrived. The demand lattice says which
@@ -2113,124 +2146,9 @@ fn eval_steps<T: Telemetry + ?Sized>(
                 };
                 env.insert(*value, BackendBoundValue::Runtime(read));
             }
-            ProgramStep::RequireMapValue { value, source, key } => {
-                let key = literal_value(runtime, key)?;
-                let result = matcher_map_get(runtime, env_get(transport, runtime.cur_proc(), env, *source)?, key)?;
-                if matches!(result, AnyValue::Null) {
-                    return Err(
-                        "internal error: a map pattern's key is missing after its decision proved it present"
-                            .to_string(),
-                    );
-                }
-                env.insert(*value, BackendBoundValue::Runtime(result));
-            }
-            ProgramStep::TupleField { value, source, index } => {
-                let field = match env_get_value(env, *source)? {
-                    BackendBoundValue::Transport { shape, lanes }
-                        if transport.interners().tuple_arity(*shape).is_some() =>
-                    {
-                        transport_field_view(transport, *shape, lanes, *index)?
-                            .ok_or_else(|| {
-                                format!("internal error: tuple-field index {index} is out of bounds after its decision proved the arity")
-                            })?
-                    }
-                    other => {
-                        let source = materialize_backend_value(transport, runtime.cur_proc(), other)?;
-                        BackendBoundValue::Runtime(interp_slot(runtime, source, *index as u32)?)
-                    }
-                };
-                env.insert(*value, field);
-            }
-            ProgramStep::SplitList { source, head, tail } => {
-                let source_value = env_get(transport, runtime.cur_proc(), env, *source)?;
-                let head_value = interp_list_head(runtime.cur_proc(), source_value)?;
-                let tail_value = interp_list_tail(runtime.cur_proc(), source_value)?;
-                env.insert(*head, BackendBoundValue::Runtime(head_value));
-                env.insert(*tail, BackendBoundValue::Runtime(tail_value));
-            }
-            ProgramStep::BitstringRead {
-                value,
-                next,
-                source,
-                pos,
-                spec,
-            } => {
-                let proc = runtime.cur_proc();
-                let (source_value, base) = bit_source_and_base(transport, proc, env, *source)?;
-                let source_ref = source_value.as_ref_word(proc)?;
-                let relative = env_get(transport, proc, env, *pos)?
-                    .as_i64()
-                    .ok_or_else(|| "bitstring position must be an integer".to_string())?
-                    as u64;
-                let pos = base + relative;
-                let (size_present, size_value) = backend_bit_size_value(transport, proc, env, &spec.size)?;
-                let field_spec = fz_runtime::ir_runtime::fz_bs_field_spec(
-                    backend_bit_type_tag(spec.ty),
-                    size_present,
-                    spec.unit.unwrap_or(backend_default_bit_unit(spec.ty)),
-                    backend_endian_tag(spec.endian),
-                    spec.signed as u32,
-                    next.is_none() as u32,
-                );
-                if let Some(value) = value {
-                    let is_rest = next.is_none()
-                        && spec.size.is_none()
-                        && matches!(spec.ty, crate::ast::BitType::Binary | crate::ast::BitType::Bits);
-                    let cursor_shape = executable
-                        .abi
-                        .value_layouts
-                        .get(value)
-                        .map(|layout| layout.structural)
-                        .filter(|shape| matches!(transport.interners().shape(*shape), ShapeDescr::Cursor { .. }));
-                    let bound = match cursor_shape {
-                        Some(shape) if is_rest => BackendBoundValue::Transport {
-                            shape,
-                            lanes: vec![source_value, AnyValue::Int(pos as i64)],
-                        },
-                        _ => BackendBoundValue::Runtime(interp_read_bit_field(
-                            proc,
-                            source_ref,
-                            pos,
-                            field_spec,
-                            size_value,
-                            spec.ty.reads_as_integer(),
-                        )?),
-                    };
-                    env.insert(*value, bound);
-                }
-                if let Some(next) = next {
-                    let end = fz_runtime::ir_runtime::bs_field_end(field_spec, size_value, pos, source_ref)
-                        .ok_or_else(|| "a clause body reads a bitstring field its dispatch proved".to_string())?;
-                    env.insert(*next, BackendBoundValue::Runtime(AnyValue::Int((end - base) as i64)));
-                }
-            }
         }
     }
     Ok(())
-}
-
-/// The binary a match reads and the bit position its reads are counted from:
-/// the source and position of a cursor, or a whole binary and zero.
-fn bit_source_and_base(
-    transport: &TransportStore,
-    proc: *mut Process,
-    env: &Frame,
-    source: ValueId,
-) -> Result<(AnyValue, u64), String> {
-    match env_get_value(env, source)? {
-        BackendBoundValue::Transport { shape, lanes }
-            if matches!(transport.interners().shape(*shape), ShapeDescr::Cursor { .. }) =>
-        {
-            let [source, position] = lanes.as_slice() else {
-                return Err("a cursor has a source and a position".to_string());
-            };
-            let position = position
-                .as_i64()
-                .ok_or_else(|| "a cursor position must be an integer".to_string())?;
-            Ok((*source, position as u64))
-        }
-        held => Ok((materialize_backend_value(transport, proc, held)?, 0)),
-    }
 }
 
 fn rebuild_backend_list_from_source(
@@ -4106,19 +4024,6 @@ fn interp_has_struct_layout(
             .has_struct_layout_of(object.raw(), module),
         _ => false,
     }
-}
-
-fn matcher_map_get(runtime: &mut IrInterpRuntime, map: AnyValue, key: AnyValue) -> Result<AnyValue, String> {
-    let map_slot = map.value(runtime.cur_proc())?;
-    if !super::value::is_map_value(runtime.cur_proc(), map_slot) {
-        return Err("MatcherMapGet expects a map".to_string());
-    }
-    let value = with_value_ref(runtime.cur_proc(), map, "MatcherMapGet map", |map_ref| {
-        with_value_ref(runtime.cur_proc(), key, "MatcherMapGet key", |key_ref| {
-            fz_matcher_map_get_ref(runtime.cur_proc(), map_ref, key_ref)
-        })
-    })??;
-    interp_value_from_ref_word(value, "MatcherMapGet")
 }
 
 fn backend_binop(op: crate::ast::BinOp) -> Result<IrBinOp, String> {

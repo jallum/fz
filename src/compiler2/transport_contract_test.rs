@@ -142,69 +142,6 @@ const SEAM_FACTS: &[(&str, &str)] = &[];
 // A job gated on a fact its subject already carries never starts to
 // discover that fact missing, then wake once the fact lands
 // (`Job::missing_gates`).
-// fz-afu.2: 306 -> 304. `World::submit_root` no longer enqueues `SeedRoot`
-// directly, so `SeedRoot(main)` no longer rediscovers its own gate chain
-// hop by hop, removing its two blocked-only runs.
-// fz-afu.3: 304 -> 296, all of it DeriveRuntimeDemand (37 -> 29). A run
-// missing a callee's answer waits for it instead of concluding on `ignore`,
-// so no caller re-runs to revise what it concluded.
-// fz-afu.10: 296 -> 290, all of it DeriveInputDemand (34 -> 28). A caller
-// reads each callee's concluded answer instead of walking the callee's
-// body, so it no longer re-runs once per callee fact that lands.
-// fz-afu.11: 290 -> 286. The protocol callback no longer joins over
-// `ProtocolDispatch`'s arms, so an implementation defined later never
-// revises the callback or re-runs the callers built on it.
-// fz-p8p.19: 286 -> 282. The exhaustiveness check that used to run per
-// function head is gone; redundancy is checked from the compiled dispatch
-// plan instead, which removes its own source job from every function that
-// declared a contract.
-// fz-xxd.3: 282 -> 284, +2 DeriveFunctionContract. An extern's declaration
-// is resolved once, by its own contract job, instead of a second time inside
-// `LowerFunction`, where that work was never counted as a job.
-// fz-xxd.11: 284 -> 278, -4 LowerFunction and -2 DeriveExecutableFacts. An
-// extern never gets a LowerFunction job at all now, so the two externs here
-// no longer each cost one blocked-then-resumed LowerFunction pair (the
-// block was fz-xxd.3's own FunctionContract gate, since removed); and
-// DeriveExecutableFacts no longer waits a second time for that LowerFunction
-// to catch up, since its wire ABI now comes straight off the contract.
-// fz-xxd.11 (start gate): 278 -> 276, -2 AnalyzeActivation. `analyze_activation_gates`
-// (`Job::missing_gates`) holds a called extern's own activation back until
-// its `EntryDispatch` exists, so the two externs this fixture calls no
-// longer each start their activation once blocked (changing nothing) before
-// the real run.
-// fz-xxd.10: 276 -> 232. `Recursive`, `InputDemand` and `StaticCallees` are
-// no longer asked for every monomorphic activation this fixture's Enum
-// helpers key under (R1's self-keyed shortcut): DeriveRecursive -15,
-// DeriveInputDemand -14, DeriveStaticCallees -11. Fewer sources ever reach a
-// definition once their only callers are among those: DefineFunction -2,
-// ExpandFunctionSource -2. AnalyzeActivation -1 and DeriveTypeDef +1 are
-// small knock-ons of the same drop.
-// 232 -> 229: a function's recursion is read from its shared reach product
-// instead of a walk of the static graph, so DeriveRecursive reruns less.
-// fz-sc8.37: 229 -> 239. Kernel defines `&&`, `||` and `!` as macros.
-// 239 -> 259: literal-argument calls are no longer self-keyed, so Kernel's
-// arithmetic and compare cone derives its input demand once per program.
-// 259 -> 204: Kernel's operators call their declared-failure extern wrappers
-// directly, so no result-decoding function is defined, analyzed or lowered.
-// 204 -> 213: a guard that names a Kernel type predicate (`is_integer`,
-// `is_float`) defines that helper so the guard can be folded into a type
-// question; each helper adds a definition, a source expansion and two guard
-// reifications, and each function whose guard calls one is planned twice.
-// 213 -> 245: Kernel's arithmetic externs declare `raises: ArithmeticError`,
-// and an extern's contract reads that exception's struct to build what it
-// raises. This harness roots `main` with no handler for an uncaught raise, so
-// the contract is what defines `ArithmeticError` here: its source is indexed
-// and scoped, its module and `defexception` are defined and expanded, and the
-// arithmetic chain's waiters run again once the struct is there. A program
-// run by `fz2` defines the struct for the banner and its count is unchanged.
-// 245 -> 265: a reach is a fact answered by a job of its own, where it was a
-// product evaluation no job count saw. The harness runs 13 `DeriveStaticReach` and 10
-// `DeriveExecutableReach` jobs, less three `DeriveRecursive` runs: a recursion
-// verdict starts once its reach exists.
-// 265 -> 260: a module is started once its enclosing scope exists, so each module's definition runs once fewer.
-// 260 -> 261: the product waits until the fixture's own declarations are
-// checked, which is one `CheckDeclarations` run; the fixture declares nothing
-// for it to warm.
 const EXPECTED_00181_NO_DUMP_JOB_STARTS: usize = 261;
 const ENUM_REDUCE_OPERATOR_REF_SOURCE: &str = r#"
 def main() do
@@ -2652,7 +2589,10 @@ def main(), do: Enum.with_index(["a", "b"], fn (x, _index) -> x <> "!" end)
             .is_some_and(|plan| plan.is_direct_outcome())
     );
     assert!(
-        materialized.entry_dispatch.is_none(),
+        materialized
+            .entry_dispatch
+            .as_ref()
+            .is_none_or(|dispatch| !dispatch.asks_anything()),
         "a settled single-clause activation with no reachable failure should not re-test its lane-free mapper input",
     );
 }
@@ -3672,7 +3612,7 @@ fn assert_direct_clause_param_forwards_have_abi_reprs(world: &World, program: &s
         };
         let clause_params = clauses
             .iter()
-            .flat_map(|clause| clause.params.iter().copied())
+            .flat_map(|clause| clause.arguments.iter().map(|argument| argument.parameter))
             .collect::<HashSet<_>>();
         for entry in entries {
             let super::artifact::BackendTail::DirectCall { target, args, .. } = &entry.tail else {
@@ -4894,14 +4834,9 @@ fn positioned_callable_owners_have_observable_obligations() {
                 classes,
                 BTreeMap::from([
                     (("construction", true), 38),
-                    // 201 -> 156: `Enum.to_list/1` builds a range's list itself, so listing a range no longer reaches the reduce-and-reverse path.
-                    // 156 -> 67: a call round a recursion cycle keeps the entering activation's key at the
-                    // slots the cycle supplies, so the reduce families have fewer activations and so
-                    // fewer callable owners.
                     (("metadata", false), 67),
-                    // 180 -> 212 callable owners: a returned callable keeps its brand in its
-                    // function's key, and a protocol callback counts every input but the
-                    // receiver as returned, so `Enum.reduce_while/3` and its Enum wrappers are
+                    // A returned callable keeps its brand in its function's key, and a protocol callback counts
+                    // every input but the receiver as returned, so `Enum.reduce_while/3` and its Enum wrappers are
                     // keyed once per reducer lambda.
                     (("metadata", true), 173)
                 ]),

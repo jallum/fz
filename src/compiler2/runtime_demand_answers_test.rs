@@ -159,14 +159,10 @@ fn a_recursive_pair_sends_demand_out_of_the_cycle_once() {
         "def f(0), do: 0\ndef f(n), do: g(n - 1)\ndef g(n), do: f(n)\ndef main(), do: f(3)\n",
         0,
     );
-    // fz-sc8.37: 19 -> 20. Kernel defines `&&`, `||` and `!` as macros.
-    // 20 -> 12: the arithmetic chain is the operator and its extern wrapper.
-    // 12 -> 15: the arithmetic extern declares `raises: ArithmeticError`,
-    // and its contract reads that exception's struct. This harness roots
-    // `main` with no handler for an uncaught raise, so nothing else has
-    // defined the struct, and three more demand derivations run while the
-    // contract waits for it. A program run by `fz2` defines the struct for
-    // the banner, and its job count is unchanged.
+    // This harness roots `main` with no handler for an uncaught raise, so the arithmetic extern's
+    // contract, which reads the struct of the exception it raises, is what defines that struct here:
+    // three demand derivations run while the contract waits for it. A program run by `fz2` defines
+    // the struct for the banner.
     assert_eq!((work.runs, work.shift_wakes), (15, 0));
 }
 
@@ -196,13 +192,9 @@ fn a_self_call_sends_demand_down_from_its_own_answer() {
         "def loop(acc, 0), do: 0\ndef loop(acc, n), do: loop(acc, n - 1)\ndef main(), do: loop(1, 3)\n",
         0,
     );
-    // fz-sc8.37: 17 -> 18. Kernel defines `&&`, `||` and `!` as macros.
-    // 18 -> 10: the arithmetic chain is the operator and its extern wrapper.
-    // 10 -> 13: the arithmetic extern declares `raises: ArithmeticError`,
-    // and its contract reads that exception's struct. This harness roots
-    // `main` with no handler for an uncaught raise, so nothing else has
-    // defined the struct, and three more demand derivations run while the
-    // contract waits for it. A program run by `fz2` defines the struct for
-    // the banner, and its job count is unchanged.
+    // This harness roots `main` with no handler for an uncaught raise, so the arithmetic extern's
+    // contract, which reads the struct of the exception it raises, is what defines that struct here:
+    // three demand derivations run while the contract waits for it. A program run by `fz2` defines
+    // the struct for the banner.
     assert_eq!((work.runs, work.shift_wakes), (13, 0));
 }

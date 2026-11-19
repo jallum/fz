@@ -201,33 +201,25 @@ and no `fz_truthy_ref` decodes it. An
 unsigned big-endian integer field of one to seven whole bytes at a position
 known statically to be a whole byte (`BitMatchField::whole_byte_integer_width`,
 `static_bits`) lowers to `BitReadByteInt`, a load from the base plus a byte
-swap. A dispatch region resolves the base once, at its first such field, and a
-run of body steps (`lower_entry_steps`) once per source binary
-(`BitstringBases`); a position is known when it is a literal or follows known
+swap. A dispatch region resolves the base once, at its first such field, once
+per source binary (`BitstringBases`); a position is known when it is a literal or follows known
 positions by statically sized fields. The base is a raw address, safe only
 because the heap moves objects only at a quantum boundary, which compiled code
-reaches at a call or a back edge, and neither occurs inside a dispatch region or
-a run of entry steps. Every other field (rest, signed, little-endian, unaligned
+reaches at a call or a back edge, and neither occurs inside a dispatch region.
+Every other field (rest, signed, little-endian, unaligned
 or dynamically sized position, float, utf) keeps its runtime call, as does the
 receive matcher. The receive matcher and the interpreter
-share the arithmetic through `bs_field_end`. The CLAUSE HEAD is lowered twice —
-once into a dispatch region to select the clause, once into body steps to
-bind — but only the body step builds a field the dispatch does not read. A
-dispatch region (`lower_bitstring_region`, `Dispatch::read_bitstring`,
+share the arithmetic through `bs_field_end`. The CLAUSE HEAD is lowered once,
+into the entry dispatch region that selects the clause and hands it the values
+it binds. A dispatch region (`lower_bitstring_region`, `Dispatch::read_bitstring`,
 `emit_bitstring_test`) emits `BitReadField` for a field only when
 `DispatchGraph::asks` says a question reads its value (a comparison, a guard
 leaf, a later field's `size(len)`, and the subjects those were projected from)
 or the executor's outcome reads it (`DispatchState::outcome_reads`: the
-subjects of the control dispatch's outcome arguments or of a guard helper's
-bodies). Every other field is only checked to fit. A function-head entry
-dispatch reads nothing off its outcome, so a walk over `<<_c, r :: binary>>`
-builds one view of the rest per step, in the clause body. The body follows the
-same rule through value demand: a field whose value the body never uses has a
-semantically absent layout, so `BackendProgram` lowering emits
-`BackendStep::BitstringRead { value: None, .. }` for it (interpreter and native
-alike skip the read and still bind `next`, the position after the field), and
-`BackendStep::Omitted` when no later field starts from its position either.
-`first(<<c, _ :: binary>>)` builds no view.
+subjects of the outcome arguments of a control dispatch or of a function's entry
+dispatch, or of a guard helper's bodies). Every other field is only checked to
+fit. An entry dispatch hands a clause only the arguments its body reads, so
+`first(<<c, _ :: binary>>)` builds no view of the rest.
 
 **What a dispatch plan demands** — owner `DispatchGraphBuilder`
 (`dispatch_matrix/mod.rs`). The builder folds each question into

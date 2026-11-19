@@ -326,14 +326,15 @@ pub(super) fn analyze_activation(
             for (value, ty) in clause.params.iter().copied().zip(clause_inputs.iter().cloned()) {
                 values.insert(value, ty);
             }
-            apply_steps(
-                world,
-                &clause.projections,
-                &mut values,
-                &mut analysis_calls,
-                activation,
-                &mut walk,
-            )?;
+            for argument in &clause.arguments {
+                let ty = super::super::dispatch_reachability::project_subject(
+                    world.types_mut(),
+                    &entry_dispatch,
+                    clause_inputs,
+                    argument.subject,
+                );
+                values.insert(argument.parameter, ty);
+            }
             merge_value_types(world, &mut value_types, &values);
             let clause_return = analyze_entry(
                 world,
@@ -790,46 +791,6 @@ fn apply_step_evidence(
                 .field_lookup(&base_ty, &super::super::types::MapKey::Atom(field.clone()))
                 .unwrap_or_else(|| any_ty(world));
             values.insert(*value, field_ty);
-        }
-        LoweredStep::RequireMapValue { value, source, key } => {
-            let Some(source_ty) = value_ty(values, *source) else {
-                return Ok(());
-            };
-            let field_ty = literal_map_key(key)
-                .and_then(|key| world.types_mut().field_lookup(&source_ty, &key))
-                .unwrap_or_else(|| any_ty(world));
-            values.insert(*value, field_ty);
-        }
-        LoweredStep::TupleField { value, source, index } => {
-            let Some(source_ty) = value_ty(values, *source) else {
-                return Ok(());
-            };
-            let field_ty = world.types_mut().tuple_field_type(&source_ty, *index);
-            values.insert(*value, field_ty);
-        }
-        LoweredStep::SplitList { source, head, tail } => {
-            let Some(source_ty) = value_ty(values, *source) else {
-                return Ok(());
-            };
-            let elem = world.types_mut().list_element_type(&source_ty);
-            let rest = world.types_mut().list(elem);
-            // A successful split proves the source is a non-empty list. Record
-            // that refinement on the source: the proof a clause was
-            // entered must reach the source's type, or typed head/tail
-            // projection (and the owned-cons reuse it unlocks) is left on the
-            // table for any list whose static type is the proper `[T] | []`.
-            let any = world.types_mut().any();
-            let non_empty = world.types_mut().non_empty_list(any);
-            let refined_source = world.types_mut().intersect(source_ty, non_empty);
-            values.insert(*source, refined_source);
-            values.insert(*head, elem);
-            values.insert(*tail, rest);
-        }
-        LoweredStep::BitstringRead { value, next, spec, .. } => {
-            values.insert(*value, bitfield_value_ty(world, spec));
-            if let Some(next) = next {
-                values.insert(*next, world.types_mut().int());
-            }
         }
         LoweredStep::PopHandler => {}
     }
@@ -3098,18 +3059,6 @@ fn constructed_bitstring_ty(
             .map(|(total, bits)| total + bits);
     }
     Some(world.types_mut().bitstring_of_len(remainder))
-}
-
-fn bitfield_value_ty(world: &mut World, spec: &super::super::body::LoweredBitFieldSpec) -> Ty {
-    match spec.ty {
-        crate::ast::BitType::Integer
-        | crate::ast::BitType::Utf8
-        | crate::ast::BitType::Utf16
-        | crate::ast::BitType::Utf32 => world.types_mut().int(),
-        crate::ast::BitType::Float => world.types_mut().float(),
-        crate::ast::BitType::Binary => world.types_mut().str_t(),
-        crate::ast::BitType::Bits => world.types_mut().bitstring(),
-    }
 }
 
 fn lowered_binop_ty(world: &mut World, op: BinOp, _left: Ty, _right: Ty) -> Ty {

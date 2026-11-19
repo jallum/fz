@@ -962,19 +962,7 @@ fn compiler2_inline_forwarding_preserves_input_return_demand() {
 
 #[test]
 fn compiler2_impossible_map_clause_has_no_runtime_requirement() {
-    let tel = ConfiguredTelemetry::new();
-    let analyses = Rc::new(RefCell::new(HashMap::default()));
-    let sink = Rc::clone(&analyses);
-    tel.attach_raw_event2::<World, ActivationKey, _>(
-        &["fz", "compiler2", "activation_analysis", "defined"],
-        move |_, _, _, world, activation| {
-            sink.borrow_mut().insert(
-                activation.function,
-                world.activation_analysis(activation).unwrap().clone(),
-            );
-        },
-    );
-    let mut compiler = Compiler2::new(tel);
+    let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
     compiler.submit_code(CodeSubmission {
         name: Some("impossible_map_clause.fz".into()),
         text: concat!(
@@ -995,27 +983,11 @@ fn compiler2_impossible_map_clause_has_no_runtime_requirement() {
         need: ExecutableNeed::Value,
     });
     assert_eq!(compiler.run_root_interp(root), Ok(42));
-    let program = compiler.retained_backend_program(root);
-    let analysis = analyses.borrow();
-    let analysis = &analysis[&compiler.root_function(root)];
-    for executable in program.executables() {
-        let BackendBody::Clauses { clauses, entries, .. } = &executable.body else {
-            continue;
-        };
-        assert!(
-            !clauses
-                .iter()
-                .flat_map(|clause| &clause.projections)
-                .chain(entries.iter().flat_map(|entry| &entry.steps))
-                .any(|step| matches!(step, BackendStep::RequireMapValue { .. })),
-            "the impossible wildcard clause has no bound value to materialize; analysis: {analysis:?}"
-        );
-    }
 }
 
 #[test]
 fn compiler2_receive_outcomes_own_typed_semantic_and_physical_arguments() {
-    use super::body::{SubjectOriginRoot, ValueRole};
+    use super::body::{SubjectOriginRoot, SubjectOwner, ValueRole};
     use super::executable_facts::{TransportOrigin, collect_value_origins};
     use crate::dispatch_matrix::{BitstringFieldKind, ProjectionKind, SubjectSource};
     let tel = ConfiguredTelemetry::new();
@@ -1094,14 +1066,17 @@ fn compiler2_receive_outcomes_own_typed_semantic_and_physical_arguments() {
                     assert_eq!(
                         origins[&argument.parameter],
                         TransportOrigin::OutcomeSubject {
-                            owner: super::ControlEntryId::from_u32(owner as u32),
+                            owner: SubjectOwner::Entry(super::ControlEntryId::from_u32(owner as u32)),
                             subject: argument.subject,
                         }
                     );
                     assert_eq!(
                         facts
                             .body()
-                            .dispatch_subject_origin(super::ControlEntryId::from_u32(owner as u32), argument.subject)
+                            .dispatch_subject_origin(
+                                SubjectOwner::Entry(super::ControlEntryId::from_u32(owner as u32)),
+                                argument.subject,
+                            )
                             .0,
                         SubjectOriginRoot::MailboxMessage(super::ControlEntryId::from_u32(owner as u32))
                     );
@@ -1176,17 +1151,9 @@ fn compiler2_inline_bitstring_outcomes_reuse_typed_dispatch_reads() {
     let backend = compiler.retained_backend_program(root);
     let mut arm_arities = Vec::new();
     for executable in backend.executables() {
-        let BackendBody::Clauses { clauses, entries, .. } = &executable.body else {
+        let BackendBody::Clauses { entries, .. } = &executable.body else {
             continue;
         };
-        assert!(
-            !clauses
-                .iter()
-                .flat_map(|clause| &clause.projections)
-                .chain(entries.iter().flat_map(|entry| &entry.steps))
-                .any(|step| matches!(step, BackendStep::BitstringRead { .. })),
-            "inline bodies must not extract bitstring fields a second time"
-        );
         for entry in entries {
             let BackendTail::Dispatch { dispatch, .. } = &entry.tail else {
                 continue;
@@ -3675,20 +3642,27 @@ fn compiler2_struct_literal_and_pattern_lowering_wait_out_of_order_then_use_sche
     );
 
     let body = lowered_body(&bodies, convert);
+    let plan = body
+        .decision_plan(crate::compiler2::body::SubjectOwner::Clause(0))
+        .clone();
     let LoweredBody::Clauses { clauses, entries, .. } = body;
 
-    let field_access_order = clauses[0]
-        .projections
+    let mut delivered_fields = clauses[0]
+        .arguments
         .iter()
-        .filter_map(|step| match step {
-            LoweredStep::FieldAccess { field, .. } => Some(field.clone()),
+        .filter_map(|argument| match &plan.graph.subject(argument.subject)?.source {
+            crate::dispatch_matrix::SubjectSource::Projection(projection) => match &projection.kind {
+                crate::dispatch_matrix::ProjectionKind::StructField(field) => Some(field.clone()),
+                _ => None,
+            },
             _ => None,
         })
         .collect::<Vec<_>>();
+    delivered_fields.sort();
     assert_eq!(
-        field_access_order,
+        delivered_fields,
         vec!["x".to_string(), "y".to_string()],
-        "the struct pattern should destructure fields in Point's schema order (x, y), not the pattern's own reversed write order (y, x)"
+        "the struct pattern's clause is handed each bound field of Point, read by the entry plan"
     );
 
     let struct_fields = entries
@@ -5756,12 +5730,11 @@ fn compiler2_import_only_exact_fn_refs_lower_as_function_ids_without_provider_bo
     );
 
     let body = lowered_body(&bodies, main_id);
-    let LoweredBody::Clauses { clauses, entries, .. } = body;
+    let LoweredBody::Clauses { entries, .. } = body;
 
-    let has_function_ref = clauses
+    let has_function_ref = entries
         .iter()
-        .flat_map(|clause| clause.projections.iter())
-        .chain(entries.iter().flat_map(|entry| entry.steps.iter()))
+        .flat_map(|entry| entry.steps.iter())
         .any(|step| matches!(step, LoweredStep::FunctionRef { .. }));
     assert!(
         has_function_ref,
@@ -11889,31 +11862,9 @@ fn compiler2_dispatch_offers_no_runtime_indistinguishable_arm() {
 /// row, or a row on a call edge or an entry dispatch, is a new latent
 /// miscompile and wants a ticket rather than a re-blessed constant.
 ///
-/// fz-kdt.183 shrank every moving site and retired none: `enum_map_family`
-/// 3 -> 1 at fifteen wrappers, `00277` 3 -> 1 at five and 4 -> 1 or 2 at
-/// seven. The sites are the same because the wrapper is the same; the GROUPS
-/// fall because the members whose arms asked one question were reducer
-/// specializations keyed on a blind list element. With the element in the key
-/// most of those members are one member, so there is nothing left to be
-/// indistinguishable from. fz-kdt.179 then dissolved the last groups a stand-in
-/// could reach (three of `00277`'s wrappers went 2 -> 1; they were `w15`, `w18`
-/// and `w19` in the PUBLISHED numbering of the tree that was measured in, and
-/// 00277 publishes five wrappers at head, so those names point at nothing now
-/// -- nor would they point at the same wrappers in a dump, which is
-/// fz-kdt.193's), and fz-kdt.199 drove the remainder to ZERO on every fixture
-/// the gate reads. The 44 groups this
-/// constant held -- 16 on `00277_enum_tier0_fixture`, 12 on
-/// `00420_enum_take_drop_split`, 16 on `enum_map_family`, each at group
-/// count 1 -- were construction-wrapper member selections whose members no
-/// runtime predicate told apart: two members carrying the same joined
-/// accumulator type. Keying a returned accumulator position gives each member
-/// its own type, so the selections discriminate and the groups dissolve.
-///
-/// The emptiness is a CURE and not vacuity, and the ratchet is its own proof:
-/// this constant is compared against what the walk FINDS, so the green tree at
-/// fz-kdt.199's base is the same walk over the same 13 fixtures reading
-/// exactly those 44 groups. The walk did not stop looking; the cause stopped
-/// existing.
+/// The population is empty: every construction-wrapper member selection discriminates,
+/// because keying a returned accumulator position gives each member its own type, so no
+/// two members carry the same joined accumulator type and the groups dissolve.
 ///
 /// But zero here is the strongest thing THIS gate can say, and it reads 13
 /// named fixtures -- it is not a proof that no such group exists anywhere.
@@ -12269,7 +12220,13 @@ fn artifact_plans<'a>(world: &crate::compiler2::World, program: &'a BackendProgr
     let canonical = crate::compiler2::canon::canonical_wrapper_numbers(world, program);
     let mut plans = Vec::new();
     for (index, executable) in program.executables().iter().enumerate() {
-        if let Some(entry) = &executable.abi.materialized.entry_dispatch {
+        if let Some(entry) = executable
+            .abi
+            .materialized
+            .entry_dispatch
+            .as_ref()
+            .filter(|entry| entry.asks_anything())
+        {
             plans.push(ArtifactPlan {
                 site: PlanSite::Entry { executable: index },
                 plan: entry.plan(),
@@ -12767,84 +12724,6 @@ const SOURCE_ORDER_BLIND_ESCAPES: &[&str] = &[];
 /// A kind that reads zero plans is ABSENT here rather than zero, because the
 /// walk only reports the kinds it saw; a row appearing or leaving is the
 /// census fixtures changing shape, which wants looking at either way.
-///
-/// fz-kdt.183: `entry` 144 -> 153 plans, 137 -> 146 unreadable. Nine more
-/// entry plans exist because a demanded list element keys nine more reducer
-/// specializations apart, and every one of them asks a `Region::List`
-/// question, which this walk does not read -- so the readable denominator is
-/// unchanged and the zero above still speaks for exactly what it did.
-/// fz-kdt.199: `entry` 153 -> 169 plans, 146 -> 162 unreadable. Sixteen more
-/// entry plans exist because a returned accumulator keys its seed apart from
-/// its ascent, and every one of them asks a `Region::List` or
-/// `Region::TupleArity` question, which this walk does not read -- so the
-/// READABLE denominator is 7 either way and the zero above still speaks for
-/// exactly what it did.
-/// fz-kdt.120: `entry` 169 -> 171 plans, 162 -> 164 unreadable, and both new
-/// plans are `Region::TupleArity` (25 -> 27; every other variant is flat). The
-/// two are one apiece on `00420_enum_take_drop_split` and
-/// `behavior/enum_take_drop_split`: with the fz-f98.16 empty-list veto gone,
-/// `List.reduce_while_step/3` keys on the accumulator the fold really carries,
-/// `{:cont | :halt, []} | {:cont, [int]}`, where the veto had erased the seed
-/// rung and left `{:cont, [int]}` alone -- so each fixture's artifact gains two
-/// dispatch plans and its `tuple_arity` questions go 21 -> 28. The READABLE
-/// denominator is 7 either way and the zero above still speaks for exactly what
-/// it did.
-/// fz-5xp.2: `entry` 171 -> 156 plans, 164 -> 149 unreadable. `Enum.to_list/1`
-/// gains a clause typed `[a]`, so a list argument reaches it as itself rather
-/// than through `reverse(reverse(_))`, and the reduce-and-reverse activations
-/// that stood between every builder and its list argument stop being
-/// specialized. Fifteen entry plans go away with them; the READABLE denominator
-/// is 7 either way, and the escape populations this census actually ratchets --
-/// `reachable`, `SOURCE_ORDER_BLIND_ESCAPES`, and the permuted-arrival stresses
-/// -- are all unchanged. This moves the denominator, not the zero.
-/// fz-5xp.22: `entry` 157 -> 156 plans, 149 -> 148 unreadable. `List.member?`
-/// stops asking its question in a `when head == value` guard -- where it got
-/// identity semantics only because guards happen to be strict -- and says
-/// `===` in the body instead, so the guard region it used to contribute goes
-/// away with it. The escape populations this census ratchets are unchanged.
-/// fz-5xp.30: `entry` 159 -> 179 plans, 151 -> 171 unreadable.
-/// An arithmetic operator's extern wrapper declares its failure, so no
-/// status-pair entry dispatch asks `Region::TupleArity` after it: `entry` 179
-/// -> 160 plans, 171 -> 148 unreadable there, and 155 -> 136, 142 -> 123 once
-/// the later changes below are counted. The readable denominator and every
-/// blind population are unchanged.
-/// `==` and `===` carry a typed clause per numeric pair, so each has an entry
-/// dispatch asking `Region::Type` where a lone `any`/`any` clause asks
-/// nothing. Those plans are `Kernel.==/2` in `00231_joined_fn_refs_enum_reduce`,
-/// `00281_opaque_reducer_closure` and `opaque_fn_value_join`, and `Kernel.===/2`
-/// in `00277_enum_tier0_fixture` and `map_enumerable`. They are readable, so
-/// they count in the denominator and every blind population stays empty.
-/// `00566_enum_take_drop_split` was a second copy of `00420_enum_take_drop_split`
-/// -- same program, same plans -- and `ARM_ORDER_CENSUS` now walks the program
-/// once instead of twice: `entry` 184 -> 155 plans, 171 -> 142 unreadable.
-/// fz-sc8.37: `case` 3 -> 11 plans, 3 -> 11 unreadable. `and`/`or`/`not` lower
-/// to a `case` with a halting miss arm, and eight more `case` plans exist for
-/// them: `Map.member_pair?/5` in `00277_enum_tier0_fixture` and in
-/// `map_enumerable`, twice in the latter; `Range.contains?/4` twice in
-/// `00277_enum_tier0_fixture` and twice in `range_enumerable`;
-/// `Enum.reject/2#lambda@0/1` in `00569`.
-/// `case` 11 -> 17 plans, 11 -> 17 unreadable: a tuple match with `=` is a
-/// decision of the same class as a `case`, and six of them are on the census:
-/// both matches in `Enum.map_reduce_list/3` in `00569`, at each of its two
-/// activations, and one in `main/0` of `map_enumerable` and of
-/// `range_enumerable`.
-/// An activation key names only the literals a use can tell apart, so fewer
-/// plans exist: `case` 17 -> 16 plans, 17 -> 16 unreadable; `entry` 155 -> 153
-/// plans, 142 -> 140 unreadable.
-/// A self call keeps its caller's key at a slot the recursion supplies, so one
-/// fewer `entry` plan exists: 153 -> 152 plans, 140 -> 139 unreadable.
-/// `Enum.to_list/1` builds a range's list itself, so the census programs that
-/// only list a range no longer reach the reduce-and-reverse path: `entry`
-/// 133 -> 130 plans, 122 -> 119 unreadable.
-/// The census list named `00281_opaque_reducer_closure` twice, so its plans
-/// were counted twice: `case` 16 -> 15 plans, 16 -> 15 unreadable; `entry`
-/// 130 -> 128 plans, 119 -> 118 unreadable.
-/// `01527_list_literal_trailing_call` checks its five results with `||`, a
-/// `case` on `nil`, `false` and a catch-all: `case` 15 -> 20 plans, 15 -> 20
-/// unreadable.
-/// A call round a recursion cycle keeps the entering activation's key at the
-/// slots the cycle supplies, so the reduce families have fewer activations and
-/// so fewer plans: `entry` 128 -> 115 plans, 118 -> 107 unreadable.
 const SOURCE_ORDER_PLANS_ON_THE_CENSUS: &[(&str, usize, usize)] =
     &[("case", 20, 20), ("entry", 115, 107), ("receive", 2, 0)];
 
@@ -13398,7 +13277,7 @@ const SURFACE_MEMBERSHIP_CENSUS: [(&str, &str, usize, usize); 14] = [
     (
         "fixtures/01125_a_never_returning_closure_call_over_decoded_records_asks_nothing_of_the_boxed_return.fz",
         "",
-        12,
+        10,
         0,
     ),
     (
@@ -14601,12 +14480,6 @@ fn compiler2_quicksort_root_closes_with_a_finite_recursive_frontier() {
             .all(|activation| activation.input_len(types) == 2),
         "append/2 should stay keyed on its two inputs"
     );
-    // fz-5xp.30: 17 -> 22. The three additions that total the observable heap
-    // statistics now traverse ordinary Kernel arithmetic and its generic
-    // result/status helper; all five extra activations are rooted and reached.
-    // fz-sc8.8: 22 -> 42. `dbg` is `IO.inspect`: the activations of its
-    // cone (`IO.puts`, `to_chardata`, `Kernel.to_string`, `<>`,
-    // `Binary.to_string`, `raise`, `==`) are rooted and reached.
     assert!(
         activations.len() <= 42,
         "quicksort should settle within its bounded rooted activation frontier (main + the collapsed \
@@ -15821,7 +15694,7 @@ fn compiler2_recursive_keying_sees_recursion_through_generated_lambdas() {
 }
 
 #[test]
-fn compiler2_lowered_body_keeps_clause_projections_separate_from_entry_matching() {
+fn compiler2_lowered_clause_receives_the_values_its_head_binds_from_the_entry_plan() {
     let tel = ConfiguredTelemetry::new();
     let capture = Capture::new();
     capture.install(&tel, &[]);
@@ -15867,18 +15740,21 @@ fn compiler2_lowered_body_keeps_clause_projections_separate_from_entry_matching(
     let LoweredBody::Clauses { clauses, .. } = body;
 
     assert_eq!(clauses.len(), 2, "wanted/1 should preserve both source clauses");
-    assert!(
-        !clauses[0].projections.is_empty(),
-        "destructuring heads should retain projection steps after dispatch picks the clause",
+    assert_eq!(
+        clauses[0].arguments.len(),
+        1,
+        "the destructuring head binds `n`, so its clause is handed exactly that one value",
     );
     assert!(
-        clauses[0].projections.iter().all(|step| {
-            matches!(
-                step,
-                LoweredStep::TupleField { .. } | LoweredStep::FieldAccess { .. } | LoweredStep::SplitList { .. }
-            )
-        }),
-        "entry-clause lowering should keep only projection steps and not repeat matcher asserts",
+        clauses[0]
+            .arguments
+            .iter()
+            .all(|argument| argument.role == crate::compiler2::body::ValueRole::Semantic),
+        "a bound name is a semantic argument",
+    );
+    assert!(
+        clauses[1].arguments.is_empty(),
+        "the catch-all clause binds nothing, so it is handed nothing",
     );
 }
 
@@ -15994,11 +15870,6 @@ fn compiler2_lowered_body_decides_a_local_match_inside_the_body() {
     let body = lowered_body(&bodies, main_id);
     let LoweredBody::Clauses { clauses, entries, .. } = body;
 
-    assert_eq!(
-        clauses[0].projections.len(),
-        0,
-        "main/0 has no head params to project after entry dispatch",
-    );
     assert!(
         matches!(
             &entries[clauses[0].entry.as_u32() as usize].tail,
@@ -16286,7 +16157,14 @@ end
         .expect("the `=` match lowers to a decision with one arm entry");
     assert_eq!(
         source_operand, clauses[0].params[0],
-        "the delivered entry should capture the decision's input, the exact source cons",
+        "the delivered entry should capture the decision's input, the clause's own `xs`, which its head binds as it stands",
+    );
+    assert!(
+        clauses[0]
+            .arguments
+            .iter()
+            .all(|argument| argument.parameter != source_operand),
+        "a name bound to an input is that input, so the entry plan hands it nothing",
     );
     assert!(
         arm.params.contains(&head_value) && arm.physical_captures.contains(&source_operand),
@@ -24631,8 +24509,8 @@ fn compiler2_a_stream_over_any_enumerable_keeps_its_activations_finite() {
         ("Enumerable.List.reduce/3", 4),
         ("Enumerable.Map.reduce/3", 2),
         ("Enumerable.Range.reduce/3", 1),
-        // `List.reduce_cont/3` 4 -> 2, `Map.reduce_cont/5` 3 -> 1, `Range.reduce_cont/6` 2 -> 1: a call round a
-        // recursion cycle keeps the entering activation's key at the slots the cycle supplies.
+        // A call round a recursion cycle keeps the entering activation's key at the slots the cycle
+        // supplies, so each reduce cycle's accumulator is keyed once per entry.
         ("List.reduce_cont/3", 2),
         ("Map.reduce_cont/5", 1),
         ("Range.reduce_cont/6", 1),
@@ -24642,22 +24520,6 @@ fn compiler2_a_stream_over_any_enumerable_keeps_its_activations_finite() {
     }
     assert_eq!(
         activations.values().map(BTreeSet::len).sum::<usize>(),
-        // 140 -> 138: a non-recursive key collapses structure nothing asks about to its class, as a
-        // recursive key does, so callers that differ only in such freight share one activation.
-        // 138 -> 136: an exception record nothing asks about keys by its class.
-        // 136 -> 133: `String.Chars`' binary impl no longer asks `fz_bitstring_is_binary` at run time, so its result stays `binary` and callers need no second `bitstring` activation.
-        // 133 -> 132: the fixture calls `IO.inspect` where it called `dbg` (two fewer activations)
-        // inside `Main`, whose root script calls `Main.main/0` (one more).
-        // 132 -> 136: the ordering operators' `binary` clause adds its `fz_op_*_bb`
-        // activation and splits the catch-all's `compare/2` activations, the same way
-        // the int and float clauses already do.
-        // 136 -> 147: `Enum.to_list/1` has a clause that builds a range's list itself. This
-        // program's enumerable is `any`, so the clause is reachable with `any` fields: its
-        // arithmetic (`Range.count/3`, `-`, `*`, `div` and their int and float externs) is
-        // 14 activations, less the 3 of the range's reduce-and-reverse path.
-        // 147 -> 133: a call round a recursion cycle keeps the entering activation's key at the
-        // slots the cycle supplies, so each reduce cycle's accumulator is keyed once per entry
-        // and the reducer lambdas it carries are compiled for fewer states.
         133,
         "activations of the whole program"
     );

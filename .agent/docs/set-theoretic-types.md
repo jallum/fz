@@ -104,13 +104,10 @@ trait surface.
 A value belongs to a type if it belongs to the axis for its kind AND its brand is
 one the slot admits. `any()` is every axis at top, `none()` every axis at bottom,
 and a descriptor is empty when its brand slot is empty (`Meters and Feet`) or every
-kind axis is (structural clauses checked recursively; the recursion carries no path of
-descriptors in flight, because a descriptor names only `Ty`s interned before it, so every
-step descends to strictly earlier descriptors and ends: `Ty` has one constructor,
-`TypeInterner::intern`, which runs after the descriptor it numbers is built. A descriptor
-design that lets a descriptor name itself or a later id, a recursive type, makes emptiness a
-greatest fixpoint again and needs a path of descriptors under decision, with a re-entered
-one assumed empty). `Descr::none()` alone carries the empty slot; every value
+kind axis is (structural clauses checked recursively). Below an ordinary type the
+recursion descends to strictly earlier descriptors and ends. Below a recursive type
+(see "Recursive types") it can arrive back at a question it is deciding; that question
+is assumed to hold. `Descr::none()` alone carries the empty slot; every value
 constructor starts from `Descr::unbranded()`, whose slot is top. Because a bottom
 therefore has more than one shape, `union` asks `looks_empty()` before it joins
 anything, so a bottom is the identity however it was reached — a pointwise hull
@@ -158,8 +155,10 @@ inside the axis union. A rectangle only grows and never past the union, so the
 denoted set is invariant and the outcome does not depend on the order the steps
 are taken in. Fusion mints the union coordinate it merges on, so this is a fold
 that can spend an interned type to save an identity: the coordinate it builds
-is interned through this same boundary, which terminates because a coordinate
-names only types interned before it.
+is interned through this same boundary. Below an ordinary type that recursion
+descends and ends; below a recursive type a coordinate can lead back to the
+descriptor being interned, and the in-flight protocol of "Recursive types"
+answers the re-entry.
 
 Then, still before the sort, the LIST NORMAL FORM (`emptiness::list_denotation`,
 `types/axis.rs`). A `ListSig` denotes `[]` (when `empty`) together with every
@@ -207,8 +206,10 @@ order is a function of the clause set only once each clause is a function of
 its own factors. Sorting also puts equal factors adjacent, which is where
 `A ∧ A = A` collapses. The order is lexicographic over the structure,
 compared in place rather than rendered as text: two `Ty`s compare by their
-descriptors, recursively, which terminates because a descriptor can only name
-`Ty`s interned before it. It is injective — ties happen only between identical
+descriptors, recursively, except that a member of a recursive type sorts after
+every other type and two members compare by their cluster keys and positions
+(`recursive::cmp_members`). A cluster's key names only older types, so the
+comparison terminates. It is injective — ties happen only between identical
 clauses — because the interner is keyed by `Descr`, so distinct ids have
 distinct structure; a comparator that could tie two DIFFERENT clauses would hand
 the survivor back to arrival order. Structural address vars order by their
@@ -535,6 +536,11 @@ same values, fewer of them. An opaque type is its inner type; nothing about
 structure from code outside its declaring module, so `opaque` and `refines`
 differ only in the name a reader gives the declaration.
 
+Elixir's `@opaque` and `@typep` attributes are not these brands. Elixir's
+compiler treats both exactly as `@type`, and only a static analyser reads one as
+opaque or private, so fz declares `@opaque t :: U` and `@typep t :: U` as the
+plain alias `@type t :: U`.
+
 The `opaques` axis is reserved for the one shape a brand cannot express: a
 nominal tag with NO inner, disjoint from every structural value including its
 own bare representation. The compiler mints exactly one of these from source —
@@ -787,3 +793,39 @@ paths on branded values (`bsx_nested_eq`, `bsx_nested_match`, `bsx_guard_eq`), a
 that the typing side is brand-AWARE in both directions: `brand_refines_its_inner`
 passes a branded value to an inner-typed `@spec`, and `brand_rejects_a_bare_inner`
 is a `spec/violation` for the bare inner at a brand-typed one.
+
+## Recursive types
+
+`types/recursive.rs`. A recursive type is an ordinary `Ty` whose descriptor
+names a member of its own cluster: `μt. :nil | {int, t, t}` is the type whose
+descriptor is `:nil | {int, T, T}` with `T` its own id. Walkers that read one
+descriptor read it unchanged; a walker that follows children to the bottom
+has to stop where it started.
+
+- **Meaning.** A value is finite, so a recursive type denotes the least
+  solution of its equations. `X = {int, X}` commits as `none`.
+- **Writing one.** `Types::recursive(count, write)` hands `write` one binder
+  variable per equation (`recursive::BINDER_TAG`, below the address tag and
+  above every closure-surface variable) and solves the bodies it returns.
+- **One meaning, one id.** The commit inlines a binder that stands alone in a
+  union (`X = X | A` is `X = A`), drops what is empty, absorbs covered
+  clauses, and merges nodes that unfold alike by partition refinement. Each
+  strongly connected group that remains is a cluster, keyed by its bodies with
+  members renamed to canonical binders in an order computed from the bodies.
+  Members are indexed like any other descriptor, so one written-out unfolding
+  (`:nil | {int, T, T}`) interns to `T`.
+- **Questions.** `Descr::is_empty`, `is_subtype` and `is_disjoint` keep the
+  questions in flight (`Recursion::assume`) once any recursive type exists and
+  only for descriptors whose children reach one (`TyAttrs::recursive`). A
+  re-entered question is assumed to hold; nothing below the root question is
+  remembered.
+- **Constructions.** A set operation on a recursive operand, and the interning
+  of a descriptor that reaches one, run through `Types::recursive_operation`:
+  a re-entry is answered by the construction's binder, and a result that
+  mentions it is committed as a recursive type. A result that still names a
+  construction in flight is not remembered.
+- **Display.** A member is written `μt. body` where it is first reached and
+  `t` where its body reaches it again.
+- **Residual.** Tuple fusion and list arithmetic treat a member as an opaque
+  coordinate, so a spelling only those steps would recognise can get a second
+  id for one meaning.

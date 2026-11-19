@@ -156,7 +156,14 @@ fn a_proven_extern_call_has_no_dispatch_and_an_unproven_one_has_one() {
         .executables()
         .iter()
         .filter(|executable| executable.key.activation.function == add)
-        .map(|executable| executable.abi.materialized.entry_dispatch.is_some())
+        .map(|executable| {
+            executable
+                .abi
+                .materialized
+                .entry_dispatch
+                .as_ref()
+                .is_some_and(|dispatch| dispatch.asks_anything())
+        })
         .collect::<Vec<_>>();
     assert_eq!(rows.len(), 2, "one executable per row: proven and received");
     assert_eq!(

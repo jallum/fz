@@ -677,12 +677,6 @@ pub enum Prim {
         pos: Var,
         field: BitMatchField,
     },
-    /// The sum of two bit positions, as raw integers: a position counted from
-    /// the start of a match, moved to where the match begins in its binary.
-    BitPositionAdd(Var, Var),
-    /// The difference of two bit positions, as raw integers: an absolute
-    /// position, counted again from where a match begins.
-    BitPositionSub(Var, Var),
     /// The position just after `field`, which starts at bit `pos` of `source`,
     /// or -1 when the binary does not hold it. The runtime reads the bytes, for
     /// a field whose width they decide: a `utf8` field.
@@ -862,10 +856,6 @@ impl Prim {
             Prim::BitReadByteIntAt { base, pos, .. } => {
                 used.insert(*base);
                 used.insert(*pos);
-            }
-            Prim::BitPositionAdd(a, b) | Prim::BitPositionSub(a, b) => {
-                used.insert(*a);
-                used.insert(*b);
             }
             Prim::BitFieldFits { pos, bit_len, field } => {
                 used.insert(*pos);
@@ -1640,8 +1630,6 @@ impl fmt::Display for Prim {
             }
             Prim::BitFieldFits { pos, bit_len, .. } => write!(f, "bit_field_fits({}, {})", pos, bit_len),
             Prim::BitFieldNext { pos, .. } => write!(f, "bit_field_next({})", pos),
-            Prim::BitPositionAdd(a, b) => write!(f, "bit_position_add({}, {})", a, b),
-            Prim::BitPositionSub(a, b) => write!(f, "bit_position_sub({}, {})", a, b),
             Prim::BitFieldEnd { source, pos, .. } => write!(f, "bit_field_end({}, {})", source, pos),
             Prim::BitReadField { source, pos, .. } => write!(f, "bit_read_field({}, {})", source, pos),
             Prim::PopHandler => write!(f, "pop_handler"),

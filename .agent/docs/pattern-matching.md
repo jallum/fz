@@ -125,7 +125,7 @@ input saying what the plan's questions read of it. `input_demand` and
 pattern, so `%{} = m`, `m = %{}`, `{a, _} = {_, b}` and `[h | _] = [_, x | _] = l`
 all decode. Every consumer handles the two sides against the same subject:
 the planner (`append_pattern`) appends both sides' questions and bindings on
-one subject, the lowerings (`bind_pattern`) bind both from one source, and the
+one subject, the lowering of a pattern that asks nothing (`bind_unasked_pattern`) binds both from one source, and the
 collectors of bound names, pins and requirements recurse into both. Function
 heads, `case`, `fn`, `receive` and body matches share this path. Reachability
 and the interpreter, native and receive doors read only the compiled plan, so
@@ -376,9 +376,10 @@ Each of these plans carries the exception it raises
 - `receive` builds one subject for the candidate message. The receive term
   stores an `Arc<PatternDispatchPlan>`; the interpreter and native receive probe
   both run that cached plan against mailbox messages.
-- Function heads retain their separate `bind_pattern` lowering until
-  fz-5xp.56. Inline `case`, `with`, `with else` and `=` outcomes do not re-walk
-  syntax to bind values.
+- Function heads, inline `case`, `with`, `with else` and `=` outcomes do not
+  re-walk syntax to bind values: an outcome argument names the subject each
+  bound name reads. Only a pattern that asks nothing is bound from syntax
+  (`bind_unasked_pattern`): every name in it is the matched value itself.
 
 ## Outcome Values and Retained Lists
 

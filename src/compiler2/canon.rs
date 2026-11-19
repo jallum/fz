@@ -58,7 +58,7 @@ use super::artifact::{
 };
 use super::body::{
     CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, DispatchBindings, LoweredBitField,
-    LoweredBitFieldSpec, LoweredBitSize, LoweredExtern, OutcomeEdge, ReceiveAfter, ValueId,
+    LoweredBitFieldSpec, LoweredBitSize, LoweredExtern, OutcomeArgument, OutcomeEdge, ReceiveAfter, ValueId,
 };
 use super::contract::ContractArrow;
 use super::identity::{ActivationKey, ExecutableKey, FunctionId};
@@ -917,10 +917,8 @@ impl ProgramCanon<'_> {
         out.enter(&format!("clause {index} {}", self.span(clause.span)));
         let params: Vec<String> = clause.params.iter().map(|v| self.names.value(*v)).collect();
         out.put(&format!("params [{}]", params.join(", ")));
-        for step in &clause.projections {
-            let text = self.step(step);
-            out.put(&text);
-        }
+        let arguments = self.outcome_arguments(&clause.arguments);
+        out.put(&format!("arguments [{arguments}]"));
         out.put(&format!("entry e{}", clause.entry.as_u32()));
         out.exit();
     }
@@ -1109,41 +1107,6 @@ impl ProgramCanon<'_> {
                 let base = self.names.value(*base);
                 format!("{name} = slot {base}.{slot}")
             }
-            BackendStep::RequireMapValue { value, source, key } => {
-                let name = self.names.value(*value);
-                let source = self.names.value(*source);
-                format!("{name} = require_map_value {source}[{}]", ground(key))
-            }
-            BackendStep::TupleField { value, source, index } => {
-                let name = self.names.value(*value);
-                let source = self.names.value(*source);
-                format!("{name} = tuple_field {source}.{index}")
-            }
-            BackendStep::SplitList { source, head, tail } => {
-                let source = self.names.value(*source);
-                let head = self.names.value(*head);
-                let tail = self.names.value(*tail);
-                format!("split_list {source} -> head={head} tail={tail}")
-            }
-            BackendStep::BitstringRead {
-                value,
-                next,
-                source,
-                pos,
-                spec,
-            } => {
-                let defined = value
-                    .iter()
-                    .chain(next)
-                    .copied()
-                    .map(|defined| self.names.value(defined))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let source = self.names.value(*source);
-                let pos = self.names.value(*pos);
-                let spec = self.bit_spec(spec);
-                format!("{defined} = bitstring_read {source} at {pos} {spec}")
-            }
             BackendStep::PopHandler => "pop_handler".to_string(),
         }
     }
@@ -1324,8 +1287,12 @@ impl ProgramCanon<'_> {
     }
 
     fn outcome_edge(&mut self, index: usize, edge: &OutcomeEdge) -> String {
-        let arguments = edge
-            .arguments
+        let arguments = self.outcome_arguments(&edge.arguments);
+        format!("o{index} -> e{} [{arguments}]", edge.target.as_u32())
+    }
+
+    fn outcome_arguments(&mut self, arguments: &[OutcomeArgument]) -> String {
+        arguments
             .iter()
             .map(|argument| {
                 format!(
@@ -1336,8 +1303,7 @@ impl ProgramCanon<'_> {
                 )
             })
             .collect::<Vec<_>>()
-            .join(", ");
-        format!("o{index} -> e{} [{arguments}]", edge.target.as_u32())
+            .join(", ")
     }
 
     fn receive(&mut self, out: &mut Out, receive: &BackendReceive) {

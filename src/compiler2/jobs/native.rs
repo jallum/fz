@@ -80,6 +80,10 @@ fn emit_list_retention(tel: &impl crate::telemetry::Telemetry, root: &RootId, pr
     tel.raw_event2(&["fz", "compiler2", "native_program", "list_retention"], root, program);
 }
 
+/// What an entry dispatch does with the clause an outcome selects.
+type EnterClause<'e, 'a, 'tel, T> = dyn FnMut(&mut NativeLowerer<'a, 'tel, T>, &mut NativeFnCtx, usize, &mut DispatchState) -> Result<(), FatalError>
+    + 'e;
+
 struct NativeLowerer<'a, 'tel, T: crate::telemetry::Telemetry> {
     world: &'a mut World,
     telemetry: &'tel T,
@@ -715,7 +719,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         );
         let entry_tys = executable_input_tys(executable);
         let entry_vars = ctx.entry_params(entry_tys.as_slice());
-        if executable.abi.materialized.entry_dispatch.is_some() {
+        if executable.asks_anything_of_inputs() {
             self.lower_extern_after_dispatch(&mut ctx, index, executable, signature, &entry_vars)?;
         } else {
             let result = self.emit_extern_call(&mut ctx, index, signature, &entry_vars)?;
@@ -737,13 +741,15 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
     ) -> Result<(), FatalError> {
         let entry_tys = executable_input_tys(executable);
         let mut call_block = None;
-        self.lower_executable_entry_dispatch(ctx, executable, entry_vars, &mut |ctx, _clause| {
-            call_block
+        self.lower_executable_entry_dispatch(ctx, executable, entry_vars, [], &mut |_, ctx, _clause, state| {
+            let block = call_block
                 .get_or_insert_with(|| {
                     let lanes = ctx.typed_params(entry_tys.iter());
                     (ctx.builder.block(lanes.clone()), lanes)
                 })
-                .0
+                .0;
+            ctx.set_term(Term::Goto(block, state.forwarded_args.clone()));
+            Ok(())
         })?;
         if let Some((block, lanes)) = call_block {
             ctx.current_block = block;
@@ -873,36 +879,40 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         );
         let entry_tys = executable_input_tys(executable);
         let entry_vars = ctx.entry_params(entry_tys.as_slice());
-        if executable.abi.materialized.entry_dispatch.is_some() {
-            self.lower_executable_entry_dispatch(&mut ctx, executable, &entry_vars, &mut |ctx, clause| {
-                ctx.entry_block(clauses[clause].entry, &entry_tys)
-            })?;
-        } else {
-            let [clause] = clauses else {
-                return Err(incomplete_native_program(
-                    self.telemetry,
-                    self.root_id,
-                    format!(
-                        "backend executable {} has {} clauses but no settled entry dispatch",
-                        index,
-                        clauses.len()
-                    ),
-                ));
-            };
-            self.lower_clause_body_here(&mut ctx, executable, entries, entry_fns, clause, &entry_vars)?;
+        if executable.abi.materialized.entry_dispatch.is_none() {
+            return Err(incomplete_native_program(
+                self.telemetry,
+                self.root_id,
+                format!(
+                    "backend executable {} has {} clauses but no settled entry dispatch",
+                    index,
+                    clauses.len()
+                ),
+            ));
         }
+        let handed = clauses
+            .iter()
+            .flat_map(|clause| clause.arguments.iter().map(|argument| argument.subject));
+        self.lower_executable_entry_dispatch(
+            &mut ctx,
+            executable,
+            &entry_vars,
+            handed,
+            &mut |lowerer, ctx, clause, state| lowerer.enter_clause(ctx, executable, entries, &clauses[clause], state),
+        )?;
         self.finish_entry_lowering_fn(ctx, executable, entries, entry_fns)
     }
 
-    /// Emits the executable's entry dispatch into `ctx`: each outcome goes to
-    /// the block `clause_block` names for its clause, carrying the
-    /// executable's inputs, and a miss raises the plan's arm of last resort.
+    /// Emits the executable's entry dispatch into `ctx`: each outcome is
+    /// handed to `enter_clause` with the clause it selects, and a miss raises
+    /// the plan's arm of last resort.
     fn lower_executable_entry_dispatch(
         &mut self,
         ctx: &mut NativeFnCtx,
         executable: &BackendExecutable,
         entry_vars: &[Var],
-        clause_block: &mut dyn FnMut(&mut NativeFnCtx, usize) -> BlockId,
+        handed: impl IntoIterator<Item = SubjectId>,
+        enter_clause: &mut EnterClause<'_, 'a, 'tel, T>,
     ) -> Result<(), FatalError> {
         let semantic_inputs = self.bind_executable_inputs(executable, entry_vars)?;
         let dispatch = executable
@@ -917,8 +927,9 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             .map(
                 |(semantic_index, value)| match (dispatch.plan().required_input(semantic_index), value) {
                     // Dispatch reads an input in whatever form it arrived in: a
-                    // tuple delivered as lanes is questioned lane-wise.
-                    (true, Some(value)) => Ok(value),
+                    // tuple delivered as lanes is questioned lane-wise. An
+                    // input nothing reads was never delivered.
+                    (_, Some(value)) => Ok(value),
                     (true, None) => Err(incomplete_native_program(
                         self.telemetry,
                         self.root_id,
@@ -928,17 +939,48 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                             executable.key.activation.function.as_u32(),
                         ),
                     )),
-                    (false, _) => Ok(NativeBoundValue::Absent),
+                    (false, None) => Ok(NativeBoundValue::Absent),
                 },
             )
             .collect::<Result<Vec<_>, _>>()?;
         let bindings = self.lower_argument_bindings(ctx, dispatch.plan(), &inputs)?;
-        let mut state = DispatchState::new(inputs, entry_vars.to_vec(), bindings);
-        self.lower_dispatch_node(ctx, dispatch, dispatch.plan().graph.root, clause_block, &mut state)
+        let mut state = DispatchState::new(inputs, entry_vars.to_vec(), bindings).reading(handed);
+        self.lower_dispatch_node(ctx, dispatch, dispatch.plan().graph.root, enter_clause, &mut state)
+    }
+
+    /// Enters the block of the clause an outcome selected. The block receives
+    /// the executable's input lanes, and after them the value of each subject
+    /// its arguments name in the layout its parameter arrives in, exactly as a
+    /// `case` arm is handed its subjects.
+    fn enter_clause(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        executable: &BackendExecutable,
+        entries: &[BackendEntry],
+        clause: &BackendClause,
+        state: &mut DispatchState,
+    ) -> Result<(), FatalError> {
+        let entry = &entries[clause.entry.as_u32() as usize];
+        self.check_outcome_arguments_follow_parameters(entry, &clause.arguments)?;
+        let plan = executable
+            .abi
+            .materialized
+            .entry_dispatch
+            .as_ref()
+            .expect("a clause is entered by the entry dispatch")
+            .plan();
+        let mut args = state.forwarded_args.clone();
+        args.extend(self.encode_outcome_arguments(ctx, executable, plan, state, &clause.arguments)?);
+        let mut tys = executable_input_tys(executable);
+        tys.extend(self.entry_signature(executable, entry).0);
+        let block = ctx.entry_block(clause.entry, &tys);
+        ctx.set_term(Term::Goto(block, args));
+        Ok(())
     }
 
     /// Lowers a clause body where control already is: its parameters are the
-    /// executable's inputs, and its projections read them again.
+    /// executable's inputs, and the arguments its entry dispatch handed
+    /// follow them.
     fn lower_clause_body_here(
         &mut self,
         ctx: &mut NativeFnCtx,
@@ -948,15 +990,15 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         clause: &BackendClause,
         entry_vars: &[Var],
     ) -> Result<(), FatalError> {
+        let (input_vars, argument_vars) = entry_vars.split_at(executable_input_tys(executable).len());
         let mut env = ValueEnv::default();
-        let semantic_inputs = self.bind_executable_inputs(executable, entry_vars)?;
+        let semantic_inputs = self.bind_executable_inputs(executable, input_vars)?;
         for (value, bound) in clause.params.iter().copied().zip(semantic_inputs) {
             if let Some(bound) = bound {
                 bind_local_value(ctx, executable, &mut env, value, bound);
             }
         }
-        self.lower_entry_steps(ctx, executable, &mut env, &clause.projections)?;
-        self.lower_entry_here(ctx, executable, entries, entry_fns, clause.entry, &[], env)?;
+        self.lower_entry_here(ctx, executable, entries, entry_fns, clause.entry, argument_vars, env)?;
         Ok(())
     }
 
@@ -1083,7 +1125,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         let Some(edge) = outcome else {
             return Ok(Vec::new());
         };
-        self.check_arguments_follow_parameters(entry, edge)?;
+        self.check_outcome_arguments_follow_parameters(entry, &edge.arguments)?;
         let mut lane_index = 0;
         let mut arguments = Vec::with_capacity(edge.arguments.len());
         for argument in &edge.arguments {
@@ -1107,13 +1149,46 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
     /// An outcome hands its arguments in the order the target entry's
     /// parameters are laid out, so the lanes it passes line up with the lanes
     /// the entry reads.
-    fn check_arguments_follow_parameters(
+    /// The lanes an outcome hands its target entry: each argument's subject
+    /// in the layout its parameter declares. A parameter of no lanes is handed
+    /// nothing, so its subject is never read.
+    fn encode_outcome_arguments(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        executable: &BackendExecutable,
+        plan: &PatternDispatchPlan<Ty>,
+        state: &mut DispatchState,
+        arguments: &[super::super::body::OutcomeArgument],
+    ) -> Result<Vec<Var>, FatalError> {
+        let mut args = Vec::new();
+        for argument in arguments {
+            let layout = entry_param_layout(executable, argument.parameter);
+            if self.world.layout_width(TransportLayout {
+                structural: layout.structural,
+                carrier: layout.carrier,
+            }) == 0
+            {
+                continue;
+            }
+            let subject = self.dispatch_subject_value(ctx, plan, state, argument.subject)?.clone();
+            self.encode_runtime_value_for_layout(
+                ctx,
+                executable,
+                Some(argument.parameter),
+                &subject,
+                layout,
+                &mut args,
+            )?;
+        }
+        Ok(args)
+    }
+
+    fn check_outcome_arguments_follow_parameters(
         &self,
         entry: &BackendEntry,
-        edge: &super::super::body::OutcomeEdge,
+        arguments: &[super::super::body::OutcomeArgument],
     ) -> Result<(), FatalError> {
-        let in_order = edge
-            .arguments
+        let in_order = arguments
             .iter()
             .map(|argument| argument.parameter)
             .eq(entry.params.iter().copied());
@@ -1125,10 +1200,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             self.root_id,
             format!(
                 "outcome arguments {:?} are not the parameters {:?} of the entry they target, in order",
-                edge.arguments
-                    .iter()
-                    .map(|argument| argument.parameter)
-                    .collect::<Vec<_>>(),
+                arguments.iter().map(|argument| argument.parameter).collect::<Vec<_>>(),
                 entry.params
             ),
         ))
@@ -1191,19 +1263,12 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         env: &mut ValueEnv,
         steps: &[BackendStep],
     ) -> Result<(), FatalError> {
-        // Entry steps never end a quantum: none calls a function or loops back,
-        // so an address a read resolves stays good for the later reads here.
-        let mut bases = BitstringBases::default();
-        let mut known_positions: HashMap<ValueId, u64> = HashMap::default();
         for step in steps {
             match step {
                 BackendStep::Omitted { value } => {
                     bind_local_value(ctx, executable, env, *value, NativeBoundValue::Absent);
                 }
                 BackendStep::Const { value, literal } => {
-                    if let LiteralTerm::Ground(GroundValue::Int(bits)) = literal {
-                        known_positions.extend(u64::try_from(*bits).ok().map(|bits| (*value, bits)));
-                    }
                     let layout = executable.abi.value_layouts.get(value).map(|layout| TransportLayout {
                         structural: layout.structural,
                         carrier: layout.carrier,
@@ -1504,76 +1569,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                         field: field.clone(),
                     });
                     self.bind_runtime_value(ctx, executable, env, *value, var);
-                }
-                BackendStep::RequireMapValue { value, source, key } => {
-                    let source = self.env_runtime_var(ctx, executable, env, *source);
-                    let key = self.ground_var(ctx, key);
-                    let (var, _) = ctx.emit_let(Prim::MatcherMapGet(source, key));
-                    self.bind_runtime_value(ctx, executable, env, *value, var);
-                }
-                BackendStep::TupleField { value, source, index } => {
-                    let realized = env_local_value(env, *source)?;
-                    if let Some(field) = self.transport_tuple_field(realized, *index)? {
-                        bind_local_value(ctx, executable, env, *value, field);
-                    } else {
-                        let tuple = self.materialize_native_value(ctx, None, realized)?;
-                        let (var, _) = ctx.emit_let(Prim::TupleField(tuple, *index as u32));
-                        bind_local_value(ctx, executable, env, *value, NativeBoundValue::Runtime(var));
-                    }
-                }
-                BackendStep::SplitList { source, head, tail } => {
-                    let source = self.env_runtime_var(ctx, executable, env, *source);
-                    let (head_var, _) = ctx.emit_let(Prim::ListHead(source));
-                    self.bind_runtime_value(ctx, executable, env, *head, head_var);
-                    let (tail_var, _) = ctx.emit_let(Prim::ListTail(source));
-                    self.bind_runtime_value(ctx, executable, env, *tail, tail_var);
-                }
-                BackendStep::BitstringRead {
-                    value,
-                    next,
-                    source,
-                    pos,
-                    spec,
-                } => {
-                    let (source, base) = self.bit_source(ctx, executable, env, *source)?;
-                    let relative_bits = known_positions.get(pos).copied();
-                    let relative = self.env_runtime_var(ctx, executable, env, *pos);
-                    let (pos, start) = match base {
-                        Some(base) => (
-                            self.emit_cursor_position(ctx, base, relative),
-                            FieldStart::PastCursor(relative_bits),
-                        ),
-                        None => (relative, FieldStart::from_first_bit(relative_bits)),
-                    };
-                    let field = BitMatchField {
-                        ty: spec.ty,
-                        size: lower_bit_size_ir(self.world, &spec.size, env)?,
-                        endian: spec.endian,
-                        signed: spec.signed,
-                        unit: spec.unit,
-                        is_last: next.is_none(),
-                    };
-                    if let Some(value) = value {
-                        if self.is_rest_read(&field) && value_layout_is_cursor(self.world, executable, *value) {
-                            let shape = value_shape(executable, *value);
-                            let bound = NativeBoundValue::Transport {
-                                shape,
-                                lanes: vec![source, pos],
-                            };
-                            bind_local_value(ctx, executable, env, *value, bound);
-                        } else {
-                            let value_var = self.emit_bit_read(ctx, &mut bases, source, pos, start, &field);
-                            self.bind_runtime_value(ctx, executable, env, *value, value_var);
-                        }
-                    }
-                    if let Some(next) = next {
-                        if let Some(next_bits) = relative_bits.zip(field.static_bits()).map(|(at, extent)| at + extent)
-                        {
-                            known_positions.insert(*next, next_bits);
-                        }
-                        let next_var = self.emit_step_next(ctx, source, base, pos, relative, field);
-                        self.bind_runtime_value(ctx, executable, env, *next, next_var);
-                    }
                 }
                 BackendStep::PopHandler => {
                     ctx.emit_let(Prim::PopHandler);
@@ -2059,8 +2054,8 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             .executable_index(callee.forwards_to().unwrap_or(&callee.key), types)?;
         let target = &self.program.executables()[behind];
         let is_extern_without_dispatch = matches!(target.body, BackendBody::Extern { .. })
-            && callee.abi.materialized.entry_dispatch.is_none()
-            && target.abi.materialized.entry_dispatch.is_none();
+            && !callee.asks_anything_of_inputs()
+            && !target.asks_anything_of_inputs();
         is_extern_without_dispatch.then_some(SplicedExtern {
             extern_index: behind,
             resume: *resume,
@@ -2465,8 +2460,10 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         entry: &BackendEntry,
     ) -> (Vec<Ty>, Vec<AbiValueRepr>, NativeEntryAbi) {
         match &entry.origin {
-            BackendEntryOrigin::Clause => panic!("clause entries are lowered through their owning clause"),
-            BackendEntryOrigin::Branch | BackendEntryOrigin::ReceiveOutcome | BackendEntryOrigin::Handler => {
+            BackendEntryOrigin::Clause
+            | BackendEntryOrigin::Branch
+            | BackendEntryOrigin::ReceiveOutcome
+            | BackendEntryOrigin::Handler => {
                 let (mut tys, mut reprs) = (Vec::new(), Vec::new());
                 for value in &entry.params {
                     let layout = entry_param_layout(executable, *value);
@@ -2475,7 +2472,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 }
                 self.append_entry_capture_lanes(executable, entry, &mut tys, &mut reprs);
                 let abi = match &entry.origin {
-                    BackendEntryOrigin::Branch => NativeEntryAbi::Direct,
+                    BackendEntryOrigin::Clause | BackendEntryOrigin::Branch => NativeEntryAbi::Direct,
                     _ => NativeEntryAbi::Continuation { extra_params: 0 },
                 };
                 (tys, reprs, abi)
@@ -2528,8 +2525,10 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         env: &mut ValueEnv,
     ) -> Result<usize, FatalError> {
         match &entry.origin {
-            BackendEntryOrigin::Clause => Ok(0),
-            BackendEntryOrigin::Branch | BackendEntryOrigin::ReceiveOutcome | BackendEntryOrigin::Handler => {
+            BackendEntryOrigin::Clause
+            | BackendEntryOrigin::Branch
+            | BackendEntryOrigin::ReceiveOutcome
+            | BackendEntryOrigin::Handler => {
                 let mut lane_index = 0;
                 for value in entry.params.iter().copied() {
                     let layout = entry_param_layout(executable, value);
@@ -3281,7 +3280,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         ctx: &mut NativeFnCtx,
         dispatch: &crate::compiler2::ExecutableDispatch,
         node_id: GraphNodeId,
-        clause_block: &mut dyn FnMut(&mut NativeFnCtx, usize) -> BlockId,
+        enter_clause: &mut EnterClause<'_, 'a, 'tel, T>,
         state: &mut DispatchState,
     ) -> Result<(), FatalError> {
         let Some(node) = dispatch.plan().graph.node(node_id) else {
@@ -3298,9 +3297,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     ctx.set_term(Term::Unreachable);
                     return Ok(());
                 };
-                let block = clause_block(ctx, clause_index);
-                ctx.set_term(Term::Goto(block, state.forwarded_args.clone()));
-                Ok(())
+                enter_clause(self, ctx, clause_index, state)
             }
             DispatchNode::Test {
                 predicate,
@@ -3315,7 +3312,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 BranchOrigin::ClauseDispatch,
                 state,
                 &mut |lowerer, ctx, target, state| {
-                    lowerer.lower_dispatch_node(ctx, dispatch, target, &mut *clause_block, state)
+                    lowerer.lower_dispatch_node(ctx, dispatch, target, &mut *enter_clause, state)
                 },
             ),
         }
@@ -3356,20 +3353,8 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     .get(outcome.0 as usize)
                     .expect("every native dispatch outcome has an edge");
                 let arm_entry = edge.target;
-                self.check_arguments_follow_parameters(&entries[arm_entry.as_u32() as usize], edge)?;
-                let mut args = Vec::new();
-                for argument in &edge.arguments {
-                    let subject = self.dispatch_subject_value(ctx, plan, state, argument.subject)?.clone();
-                    let layout = entry_param_layout(executable, argument.parameter);
-                    self.encode_runtime_value_for_layout(
-                        ctx,
-                        executable,
-                        Some(argument.parameter),
-                        &subject,
-                        layout,
-                        &mut args,
-                    )?;
-                }
+                self.check_outcome_arguments_follow_parameters(&entries[arm_entry.as_u32() as usize], &edge.arguments)?;
+                let mut args = self.encode_outcome_arguments(ctx, executable, plan, state, &edge.arguments)?;
                 args.extend(self.entry_capture_args(ctx, executable, entries, arm_entry, env)?);
                 self.transfer_to_entry(ctx, executable, entries, entry_fns, arm_entry, args);
                 Ok(())
@@ -3787,7 +3772,8 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         }));
         ctx.set_term(Term::Goto(done_b, vec![decided]));
         ctx.current_block = rhs_b;
-        let rhs = self.lower_guard_boolean(ctx, plan, state, rhs, fail)?;
+        // What the right side builds exists only on the path that reaches it.
+        let rhs = self.lower_guard_boolean(ctx, plan, &mut state.clone(), rhs, fail)?;
         ctx.set_term(Term::Goto(done_b, vec![rhs]));
         ctx.current_block = done_b;
         self.record_guard_boolean(ctx, answer);
@@ -4160,65 +4146,10 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         Ok(RegionOutcome::Matched { missed: fail_b })
     }
 
-    /// Where the field after `field` starts, counted from the start of the
-    /// match as every step position is. `pos` is the field's absolute position
-    /// and `relative` the same position counted from the start of the match;
-    /// they differ by `base` when the match reads a cursor.
-    fn emit_step_next(
-        &mut self,
-        ctx: &mut NativeFnCtx,
-        source: Var,
-        base: Option<Var>,
-        pos: Var,
-        relative: Var,
-        field: BitMatchField,
-    ) -> Var {
-        match (field.ty, base) {
-            (BitType::Utf8, Some(base)) => {
-                let end = self.emit_bit_next(ctx, source, pos, field);
-                self.emit_position_prim(ctx, Prim::BitPositionSub(end, base))
-            }
-            (BitType::Utf8, None) => self.emit_bit_next(ctx, source, pos, field),
-            _ => self.emit_bit_next(ctx, source, relative, field),
-        }
-    }
-
     /// Whether `field` is the rest of a binary: a `binary` or `bits` field with
     /// no size, which reads to the end.
     fn is_rest_read(&self, field: &BitMatchField) -> bool {
         field.is_last && field.size.is_none() && matches!(field.ty, BitType::Binary | BitType::Bits)
-    }
-
-    /// The binary a match reads and the position it starts at, which is
-    /// `Some` when the value is a cursor and `None` when it is a whole binary
-    /// and the match starts at its first bit.
-    fn bit_source(
-        &mut self,
-        ctx: &mut NativeFnCtx,
-        executable: &BackendExecutable,
-        env: &ValueEnv,
-        source: ValueId,
-    ) -> Result<(Var, Option<Var>), FatalError> {
-        if let Some(NativeBoundValue::Transport { shape, lanes }) = env.value(source)
-            && matches!(self.world.shape(*shape), ShapeDescr::Cursor { .. })
-            && let [source, position] = lanes.as_slice()
-        {
-            return Ok((*source, Some(*position)));
-        }
-        Ok((self.env_runtime_var(ctx, executable, env, source), None))
-    }
-
-    /// The absolute bit position of `relative`, a position counted from the
-    /// start of a match that began at `base`.
-    fn emit_cursor_position(&mut self, ctx: &mut NativeFnCtx, base: Var, relative: Var) -> Var {
-        self.emit_position_prim(ctx, Prim::BitPositionAdd(base, relative))
-    }
-
-    fn emit_position_prim(&mut self, ctx: &mut NativeFnCtx, prim: Prim) -> Var {
-        let (position, _) = ctx.emit_let(prim);
-        let int = self.world.types_mut().int();
-        ctx.value_types.insert(position, int);
-        position
     }
 
     /// The binary a bitstring region reads and the position it starts at: the
@@ -5870,10 +5801,6 @@ enum FieldStart {
 }
 
 impl FieldStart {
-    fn from_first_bit(bits: Option<u64>) -> Self {
-        bits.map_or(Self::Unknown, Self::Fixed)
-    }
-
     /// The start of the field after one that spans `extent` bits, when the
     /// text says how many.
     fn advanced_by(self, extent: Option<u64>) -> Self {
@@ -5884,14 +5811,6 @@ impl FieldStart {
             (Self::Fixed(_) | Self::Unknown, _) => Self::Unknown,
         }
     }
-}
-
-fn value_layout_is_cursor(world: &World, executable: &BackendExecutable, value: ValueId) -> bool {
-    executable
-        .abi
-        .value_layouts
-        .get(&value)
-        .is_some_and(|layout| matches!(world.shape(layout.structural), ShapeDescr::Cursor { .. }))
 }
 
 fn value_shape(executable: &BackendExecutable, value: ValueId) -> ShapeId {
@@ -5948,26 +5867,13 @@ fn collect_extern_marshals(
 ) -> Result<HashMap<usize, Vec<ExternTy>>, FatalError> {
     let mut out = HashMap::default();
     for executable in program.executables() {
-        if let BackendBody::Clauses { clauses, entries, .. } = &executable.body {
-            for clause in clauses {
-                collect_extern_marshals_in_steps(world, root_id, program, &clause.projections, &mut out)?;
-            }
+        if let BackendBody::Clauses { entries, .. } = &executable.body {
             for entry in entries {
                 collect_extern_marshals_in_tail(world, tel, root_id, program, &entry.tail, &mut out)?;
             }
         }
     }
     Ok(out)
-}
-
-fn collect_extern_marshals_in_steps(
-    _world: &World,
-    _root_id: RootId,
-    _program: &BackendProgram,
-    _steps: &[BackendStep],
-    _out: &mut HashMap<usize, Vec<ExternTy>>,
-) -> Result<(), FatalError> {
-    Ok(())
 }
 
 fn collect_extern_marshals_in_tail(
