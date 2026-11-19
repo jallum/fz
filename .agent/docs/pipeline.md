@@ -791,6 +791,13 @@ parameter value, so the input is the only place the input's whole type is
 seen. Every value type, every activation input type and `any` therefore has a
 runtime-demand type projection.
 
+A dispatch is the other reader that holds a callable without calling it. When
+a pattern or guard reads a callable input -- `is_function(f, 2)` in a guard
+hands `f` to the `fz_function_arity` extern -- the input's dispatch projection
+asks for the callable first-class (`CallableDemand::escaped()`), naming no
+surface, because the dispatch never calls it. A question the input's type
+already answers reads nothing, so it asks nothing.
+
 Demand narrows a value only where the narrowing reaches whatever produces it,
 and the **boxed apply seam** is where that rule has to be applied from both
 sides at once. A callable whose members are reached first-class mints a

@@ -629,7 +629,9 @@ fn prepare_type_projection(world: &mut World, builder: &mut RuntimeDemandTypeBui
 }
 
 /// What a value of this type needs when it crosses a boundary (`escape`) or is
-/// inspected by a choice, which holds a callable whole and never calls it.
+/// inspected by a choice. A choice holds a callable whole and never calls it,
+/// but what it holds is a runtime value -- a guard's extern takes it as one --
+/// so it asks for the callable first-class and names no surface to call it at.
 fn prepare_runtime_demand_for_type(
     world: &mut World,
     builder: &mut RuntimeDemandTypeBuilder,
@@ -654,7 +656,7 @@ fn prepare_runtime_demand_for_type(
         return read_tuple_demand(demands);
     };
     if !escape {
-        return RuntimeDemand::whole();
+        return RuntimeDemand::callable(CallableDemand::escaped());
     }
     let unnamed = clauses
         .into_iter()
