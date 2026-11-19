@@ -9,13 +9,13 @@
     "fz-9zq.6"
   ],
   "created": "2026-11-15T03:40:19Z",
-  "description": "Step R5 of fz-9zq. Buys: precision where R1 folds to any (keeps μX. nil|{int,X,X}); the representation R6 needs. Design C (/private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/mu2/round3.md section 3): Rec(id) leaf is a new Descr axis (like opaques); RecDefs: id -\u003e Ty beside Types, so descend-only holds and the 17 unguarded walkers see a leaf; set operations treat Rec as the top of its heads (today's fold with a name); emptiness carries an in-flight RecId set (one sentence in .agent/docs/set-theoretic-types.md); contractive only; equation clusters committed by partition refinement (Moore/Hopcroft) with committed Rec handles fixed, so id equality = bisimilarity. R1's cycle firings become the equations. Prior art reusable from #217: db9873893 (commit algorithm), 48e6b884b (canonicalizer). Not reusable: 68f38050a, 40e8c94ee (assumed self-naming descriptors).",
+  "description": "Step R5.1 of fz-9zq (page /Users/j5n/Workspace/fz-9zq.5.html, approved 2026-11-18: representation A, least fixpoint, path rule, four steps). The kernel holds recursive types; nothing produces one yet, so no fixture, plan or pin moves. Cluster commit through the interner: build members with local references, drop unproductive members to none (least fixpoint: values are finite), minimize by partition refinement so one meaning has one id, give ids, compute attrs by fixpoint (every bit is an OR of child bits), normalize over the cluster; one cluster index beside the descriptor index. Coinductive emptiness, subtyping, intersect and difference (an in-flight set of descriptor pairs carried in TyCtx; a pair met again is assumed empty); ComparisonCache gains an in-flight state. Storage order for clusters by minimal form. Binder rendering in canon and display. Production builder Types::recursive is the API for R5.3 and R6. Red-first unit tests: union(T,nil)==T; {int,T,T} \u003c= T; an isomorphic second build is the same id; T meet {int,_,_} = {int,T,T}; {int,T} without a base is none. Docs: replace the descend-only termination arguments in set-theoretic-types.md, type-world.md, order.rs, attrs.rs with the cluster invariant. Walker ledger and census: scratch 9zq_5/paper.md.",
   "id": "fz-9zq.5",
   "labels": [],
   "parent": "fz-9zq",
   "priority": 2,
   "status": "in_progress",
-  "title": "A recursive type is a named leaf with an equation",
+  "title": "A recursive type is a Ty whose descriptor names itself",
   "type": "task",
-  "updated_at": "2026-11-19T01:22:43Z"
+  "updated_at": "2026-11-19T01:29:05Z"
 }
