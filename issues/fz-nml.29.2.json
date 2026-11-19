@@ -11,9 +11,15 @@
   "id": "fz-nml.29.2",
   "labels": [],
   "parent": "fz-nml.29",
+  "comments": [
+    {
+      "text": "PR #796 stacked on #789. Bench release probes, instr/iter: one binary passed twice 139→22 (target ≤30); tuple of three binaries passed twice 385→35 (target ≤40). share_class reads the type; IR shares each distinct variable once per call/tuple/closure; generated code no longer calls fz_mark_published_ref_aliased. Matrix 3914/0; 01309/01711/01712 and retention pins unmoved.",
+      "timestamp": "2026-11-19T03:25:45Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "A share is one store in generated code, and nothing for a value that holds no mark",
   "type": "task",
-  "updated_at": "2026-11-19T01:33:55Z"
+  "updated_at": "2026-11-19T03:25:45Z"
 }
