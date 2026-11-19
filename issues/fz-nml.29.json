@@ -19,11 +19,15 @@
     {
       "text": "Edge to set when step 3 (the private append) is filed: step 3 blocks fz-9e2.10 in place of fz-nml.29 as a whole (agreed by Binary Handling and Optimize). Ordering note from Binary Handling: build the view mark behind one accessor so fz-9e2.12 (view length first) does not undo it.",
       "timestamp": "2026-11-19T01:33:56Z"
+    },
+    {
+      "text": "For step 3 (Optimize, from nml.29.1): (a) native yield marks the accumulator, so it copies once after each yield; (b) byte_size(binary) in any clause of a multi-clause function makes the parameter a cursor in every clause; passing it on makes it whole via fz_bs_read_binary_ref, which marks the source, so that accumulator never appends in place.",
+      "timestamp": "2026-11-19T02:48:06Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "An append to an unshared accumulator extends it in place",
   "type": "task",
-  "updated_at": "2026-11-19T01:33:56Z"
+  "updated_at": "2026-11-19T02:48:06Z"
 }
