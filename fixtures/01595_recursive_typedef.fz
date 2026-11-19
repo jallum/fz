@@ -1,24 +1,19 @@
 #---
-# purpose: "a legal recursive @type declaration that the compiler cannot yet resolve"
-# expect: diagnostic
-# diagnostic.code: resolve/type-alias
+# purpose: "A @type that names itself, t :: :start | {integer, t}, is the recursive type μt. :start | {int, t}, and a function spec'd to return it runs"
+# root: main/0
+# oracle: self
+# oracle.stamp: 2004caadd912845f
 #---
-#
-# `t` is a legal recursive declaration: it is `:start` or a pair whose second
-# field is another `t`. Resolving it needs a recursive denotation — a type whose
-# definition names itself. The compiler has none, so `DeriveTypeDef(t)` waits on
-# `TypeDefined(t)`, which is its own output: a job waiting on the very fact it
-# would produce, so nothing ever runs it.
-#
-# `World::unresolved_issue` recognizes a self-referential `TypeDefined` wait and
-# reports it at the `@type` declaration's own span, so every door names the same
-# problem: `t` could not be resolved because its definition waits on itself.
-def main() do
-  dbg(build(3))
+defmodule Main do
+  @type t :: :start | {integer, t}
+
+  @spec build(integer) :: t
+  def build(0), do: :start
+  def build(n), do: {n, build(n - 1)}
+
+  def main() do
+    IO.inspect(build(3))
+  end
 end
 
-@type t :: :start | {integer, t}
-
-@spec build(integer) :: t
-def build(0), do: :start
-def build(n), do: {n, build(n - 1)}
+Main.main()

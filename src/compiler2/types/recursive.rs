@@ -195,6 +195,20 @@ impl TyCtx<'_> {
     }
 }
 
+/// Recursive equations opened by [`Types::recursive_equations`]: one binder
+/// per equation, each standing for that equation's solution while its
+/// right-hand side is built. [`Types::solve_recursive`] consumes them.
+pub struct RecursiveEquations {
+    ids: Vec<TypeVarId>,
+    binders: Vec<Ty>,
+}
+
+impl RecursiveEquations {
+    pub fn binders(&self) -> &[Ty] {
+        &self.binders
+    }
+}
+
 impl Types {
     /// Whether `ty` is a member of a recursive type. A walk that follows a
     /// path stops here: the member is its own fixpoint, so it stands whole at
@@ -207,11 +221,28 @@ impl Types {
     /// binder per equation and returns each right-hand side, built as an
     /// ordinary type that mentions the binders.
     pub fn recursive(&mut self, count: usize, write: impl FnOnce(&mut Types, &[Ty]) -> Vec<Ty>) -> Vec<Ty> {
-        let binders: Vec<TypeVarId> = (0..count).map(|_| self.mint_binder()).collect();
-        let vars: Vec<Ty> = binders.iter().map(|b| self.type_var(*b)).collect();
-        let bodies = write(self, &vars);
-        assert_eq!(bodies.len(), count, "one right-hand side per recursive equation");
-        self.solve_equations(&binders, &bodies)
+        let equations = self.recursive_equations(count);
+        let bodies = write(self, equations.binders());
+        self.solve_recursive(equations, &bodies)
+    }
+
+    /// Opens `count` recursive equations, for a caller that builds their
+    /// right-hand sides somewhere `recursive`'s closure cannot reach.
+    pub fn recursive_equations(&mut self, count: usize) -> RecursiveEquations {
+        let ids: Vec<TypeVarId> = (0..count).map(|_| self.mint_binder()).collect();
+        let binders = ids.iter().map(|id| self.type_var(*id)).collect();
+        RecursiveEquations { ids, binders }
+    }
+
+    /// The recursive types the opened `equations` define, given one
+    /// right-hand side per binder.
+    pub fn solve_recursive(&mut self, equations: RecursiveEquations, bodies: &[Ty]) -> Vec<Ty> {
+        assert_eq!(
+            bodies.len(),
+            equations.ids.len(),
+            "one right-hand side per recursive equation"
+        );
+        self.solve_equations(&equations.ids, bodies)
     }
 
     pub(super) fn mint_binder(&mut self) -> TypeVarId {

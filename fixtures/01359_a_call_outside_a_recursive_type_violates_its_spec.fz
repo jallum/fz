@@ -1,0 +1,20 @@
+#---
+# purpose: "A call whose argument leaves a recursive @type somewhere inside it violates the spec over that type"
+# expect: diagnostic
+# diagnostic.code: spec/violation
+#---
+defmodule Stack do
+  @type stack() :: [] | {integer(), stack()}
+
+  @spec size(stack()) :: integer()
+  def size([]), do: 0
+  def size({_, s}), do: 1 + size(s)
+end
+
+defmodule Main do
+  def main() do
+    IO.puts(Stack.size({1, {:x, []}}))
+  end
+end
+
+Main.main()

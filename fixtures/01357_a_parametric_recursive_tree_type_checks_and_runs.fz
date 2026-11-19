@@ -1,0 +1,28 @@
+#---
+# purpose: "A parametric recursive @type, tree(a) naming tree(a), is the recursive type μt. nil | {int, t, t} at tree(integer()), and functions spec'd over it run"
+# root: main/0
+# oracle: self
+# oracle.stamp: b26bb9a0d82ca8a8
+#---
+defmodule Tree do
+  @type tree(a) :: nil | {a, tree(a), tree(a)}
+
+  @spec insert(tree(integer()), integer()) :: tree(integer())
+  def insert(nil, k), do: {k, nil, nil}
+  def insert({v, l, r}, k) when k < v, do: {v, insert(l, k), r}
+  def insert({v, l, r}, k), do: {v, l, insert(r, k)}
+
+  @spec count(tree(integer())) :: integer()
+  def count(nil), do: 0
+  def count({_, l, r}), do: 1 + count(l) + count(r)
+end
+
+defmodule Main do
+  def main() do
+    t = Enum.reduce([5, 3, 8, 1], nil, fn k, acc -> Tree.insert(acc, k) end)
+    IO.inspect(t)
+    IO.puts(Tree.count(t))
+  end
+end
+
+Main.main()

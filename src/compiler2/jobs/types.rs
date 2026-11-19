@@ -10,7 +10,9 @@ use crate::diag::Diagnostic;
 use crate::diag::codes;
 
 use super::super::drive::{FactKey, JobEffects, current_uses, emit_job_diagnostic};
-use super::super::identity::TypeName;
+use super::super::identity::{NotedTypeDecl, TypeName};
+use super::super::type_expr::TypeExprError;
+use super::super::typedef::TypeDef;
 use super::super::world::World;
 use fz_engine::FatalError;
 
@@ -31,23 +33,36 @@ pub(super) fn derive_type_def(
         return Ok(super::super::drive::ExecutionContext::new(world, tel).wait_for_type_decl(name.module));
     };
 
-    // Wait on the `TypeDefined` of every type the body names before resolving.
-    let refs = world.type_def_refs(name).to_vec();
-    let mut waits = Vec::new();
-    for referenced in &refs {
-        if !world.has_fact(&FactKey::TypeDefined(referenced.clone())) {
-            waits.push(FactKey::TypeDefined(referenced.clone()));
+    // A type in a cycle of `@type`s that name each other cannot wait for a
+    // member's definition, since that member waits for it in turn. Its job
+    // resolves the whole cycle and publishes its own member; every member's
+    // job reaches the same identities, so which runs first changes nothing.
+    // It waits only on what lies outside the cycle.
+    let cycle = world.type_def_cycle(name);
+    let alone = [name.clone()];
+    let members: &[TypeName] = if cycle.is_empty() { &alone } else { &cycle };
+    let mut refs = Vec::new();
+    let mut struct_refs = Vec::new();
+    for member in members {
+        for referenced in world.type_def_refs(member) {
+            if !members.contains(referenced) && !refs.contains(referenced) {
+                refs.push(referenced.clone());
+            }
+        }
+        for module in world.type_def_struct_refs(member) {
+            if !struct_refs.contains(module) {
+                struct_refs.push(*module);
+            }
         }
     }
-    // Same wait, `StructDefined` side: a `%Mod{...}` in this body needs
-    // `Mod`'s precise field order before `resolve_type_def` can classify it
-    // (fz-rh2.17.5.6.10).
-    let struct_refs = world.type_def_struct_refs(name).to_vec();
-    for module in &struct_refs {
-        if !world.has_fact(&FactKey::StructDefined(*module)) {
-            waits.push(FactKey::StructDefined(*module));
-        }
-    }
+    // A `%Mod{...}` in a body needs `Mod`'s precise field order before the
+    // body can classify it (fz-rh2.17.5.6.10).
+    let facts: Vec<FactKey> = refs
+        .iter()
+        .map(|referenced| FactKey::TypeDefined(referenced.clone()))
+        .chain(struct_refs.iter().map(|module| FactKey::StructDefined(*module)))
+        .collect();
+    let waits: Vec<FactKey> = facts.iter().filter(|fact| !world.has_fact(fact)).cloned().collect();
     if !waits.is_empty() {
         return Ok(JobEffects {
             waits: current_uses(waits),
@@ -55,18 +70,12 @@ pub(super) fn derive_type_def(
         });
     }
 
-    let def = world.resolve_type_def(name, &decl).map_err(|error| {
+    let def = resolve_member(world, name, decl, &cycle).map_err(|error| {
         emit_job_diagnostic(tel, Diagnostic::error(codes::RESOLVE_TYPE_ALIAS, error.msg, error.span))
     })?;
-
-    let mut reads: Vec<_> = refs
-        .iter()
-        .map(|referenced| FactKey::TypeDefined(referenced.clone()))
-        .collect();
-    reads.extend(struct_refs.iter().map(|module| FactKey::StructDefined(*module)));
     let changed = super::super::drive::ExecutionContext::new(world, tel).define_type_def(name, def);
     Ok(JobEffects {
-        reads: current_uses(reads),
+        reads: current_uses(facts),
         outputs: vec![FactKey::TypeDefined(name.clone())],
         changed: changed
             .then_some(FactKey::TypeDefined(name.clone()))
@@ -74,4 +83,32 @@ pub(super) fn derive_type_def(
             .collect(),
         ..JobEffects::default()
     })
+}
+
+/// `name`'s definition: its own body when it is in no cycle, otherwise its
+/// member of `cycle` solved together.
+fn resolve_member(
+    world: &mut World,
+    name: &TypeName,
+    decl: NotedTypeDecl,
+    cycle: &[TypeName],
+) -> Result<TypeDef, TypeExprError> {
+    if cycle.is_empty() {
+        return world.resolve_type_def(name, &decl);
+    }
+    let noted: Vec<(TypeName, NotedTypeDecl)> = cycle
+        .iter()
+        .map(|member| {
+            let decl = world
+                .type_decl(member)
+                .cloned()
+                .expect("a cycle member's declaration is noted");
+            (member.clone(), decl)
+        })
+        .collect();
+    let index = cycle
+        .iter()
+        .position(|member| member == name)
+        .expect("a type is in its own cycle");
+    Ok(world.resolve_type_cycle(&noted)?.swap_remove(index))
 }
