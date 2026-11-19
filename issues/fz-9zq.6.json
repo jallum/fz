@@ -24,11 +24,15 @@
     {
       "text": "User approved /Users/j5n/Workspace/fz-9zq.6.html (relayed by fz-engine on 2026-11-19), with three decisions. (1) @type t :: t is a loud resolve/type-alias error at the declaration. (2) Only regular parametric recursion is supported; non-regular recursion is a clear error. (3) Build now and land when CI is green and the board unblocks it. Close only once 29_type_fun_recursive.fz runs unchanged, which waits on fz-mue.39. Fixtures 01357-01359.",
       "timestamp": "2026-11-19T04:40:43Z"
+    },
+    {
+      "text": "PR #809 on 1ca80111e: a self-naming @type, direct or across modules, resolves as one recursive type. Parametric recursion is regular only. A type with no values is refused at its declaration. No pins moved; fixtures 01357-01359 fill the fz-9zq block. Ticket stays open until 29_type_fun_recursive.fz runs unchanged (fz-mue.39); encode_value/decode_value wait on fz-mue.29.",
+      "timestamp": "2026-11-19T04:51:34Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "A recursive @type resolves, admits and lays out",
   "type": "task",
-  "updated_at": "2026-11-19T04:40:43Z"
+  "updated_at": "2026-11-19T04:51:34Z"
 }
