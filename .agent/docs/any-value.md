@@ -303,7 +303,11 @@ atom-subtype -> `RawAtom`, else `ValueRef`. `CodegenValue` adds `AnyRef` (an
 both report `ArgRepr::ValueRef`. Every lane has `abi_arity() == 1`: a value is
 always one machine word across a call boundary, never split into payload + kind.
 
-A boundary crossing allocates only for an int or float. An atom has no box:
+A boundary crossing allocates only for an int or float. Compiled code places
+that one-word box itself with `emit_place` and stores the payload; the runtime
+functions `fz_box_int_for_any` and `fz_box_float_for_any` are the definition the
+recipe test compares against, the interpreter's calls, and the receive dispatch
+bodies' calls (those bodies are entered from Rust, not in the pinned register). An atom has no box:
 native code ors the id with the atom tag word inline (`atom_ref_word`), the
 interpreter calls `AnyValueRef::atom`, and neither touches the heap.
 
@@ -311,8 +315,8 @@ Boxing happens only where a typed lane meets an `any` boundary.
 `CodegenFn::coerce_binding_to` is the one seam:
 
 ```text
-RawInt   -> ValueRef : box_int_for_any
-RawF64   -> ValueRef : box_float_for_any
+RawInt   -> ValueRef : box_int_for_any   (placed in place: native_codegen/scalar_box.rs)
+RawF64   -> ValueRef : box_float_for_any (placed in place when finite)
 RawAtom  -> ValueRef : box_atom_for_any (one `or` of the id with the atom tag)
 Condition-> ValueRef : select true/false atom, then box
 ValueRef -> RawInt/RawF64/RawAtom : unbox via the ref API
@@ -958,8 +962,9 @@ durable root slot, GC copies its boxed payload (`copy_scalar_box_to_space`, a
 small `ScalarBox` heap object) and rewrites the root to the copy — copied, not
 followed. An atom or pid ref has no payload to copy: GC and deep copy leave it as it is,
 like `null`, and a measuring pass charges it nothing. Generated code packs and
-reads a pid ref inline (`immediate_ref_word`, `address_field`); only a
-reference goes through `fz_box_opaque_for_any` and `fz_unbox_opaque`.
+reads a pid ref inline (`immediate_ref_word`, `address_field`); a
+reference is boxed in place by compiled code (the `fz_box_opaque_for_any` row)
+and read through `fz_unbox_opaque`.
 
 Off-heap binaries and resources have their own atomic reference counts. A
 16-byte `BinRef` owns one edge to a `SharedBin`, and a binary view names its

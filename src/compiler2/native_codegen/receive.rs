@@ -424,8 +424,14 @@ fn emit_receive_value_ref<M: cranelift_module::Module>(
 ) -> Result<ir::Value, CodegenError> {
     match value {
         ReceiveValue::AnyRef(value_ref) => Ok(value_ref),
-        ReceiveValue::Int(raw) => Ok(runtime_call1!(body, fz_box_int_for_any, [ctx.process, raw])),
-        ReceiveValue::Float(raw) => Ok(runtime_call1!(body, fz_box_float_for_any, [ctx.process, raw])),
+        ReceiveValue::Int(raw) => {
+            let call = runtime_call!(body, fz_box_int_for_any, [ctx.process, raw]);
+            Ok(body.sole_result(call))
+        }
+        ReceiveValue::Float(raw) => {
+            let call = runtime_call!(body, fz_box_float_for_any, [ctx.process, raw]);
+            Ok(body.sole_result(call))
+        }
         ReceiveValue::Atom(raw) => Ok(immediate_ref_word(body.b, raw, ValueKind::ATOM)),
     }
 }
@@ -1584,11 +1590,8 @@ fn emit_guard_extern<M: cranelift_module::Module>(
                 return Ok(ReceiveValue::AnyRef(immediate_ref_word(body.b, raw, kind)));
             }
             let kind = body.b.ins().iconst(types::I64, kind.tag() as i64);
-            Ok(ReceiveValue::AnyRef(runtime_call1!(
-                body,
-                fz_box_opaque_for_any,
-                [ctx.process, raw, kind]
-            )))
+            let call = runtime_call!(body, fz_box_opaque_for_any, [ctx.process, raw, kind]);
+            Ok(ReceiveValue::AnyRef(body.sole_result(call)))
         }
         ExternTy::F64 => Ok(ReceiveValue::Float(raw)),
         ExternTy::Any => Ok(ReceiveValue::AnyRef(raw)),

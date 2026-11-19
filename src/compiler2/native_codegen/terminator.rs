@@ -163,7 +163,7 @@ fn hand_continuation_on<M: cranelift_module::Module>(
     if is_frame_member(env, cont_sid) {
         return hand_frame_on(body, env, var_env, cont_sid, captured);
     }
-    ContinuationPayload::from_capture_vars(body, env, var_env, cont_sid, captured).emit_value(body, env, cont_param)
+    ContinuationPayload::from_capture_vars(body, env, var_env, cont_sid, captured).emit_value(body, cont_param)
 }
 
 /// The slots a continuation's body keeps empty behind the outer continuation
@@ -230,12 +230,10 @@ impl ContinuationPayload {
     fn emit_value<M: cranelift_module::Module>(
         &self,
         body: &mut CodegenFn<'_, '_, M>,
-        env: &CodegenEnv<'_>,
         cont_param: ir::Value,
     ) -> ir::Value {
         build_cont_closure(
             body,
-            env,
             cont_param,
             self.cont_fid,
             &self.semantic_cap_bindings,
@@ -757,7 +755,7 @@ fn emit_back_edge_yield_check<M: cranelift_module::Module>(
     runtime_call!(body, fz_yield_slow_path_begin, [process]);
     let stub_fref = body.jmod.declare_func_in_func(cont_id, body.b.func);
     let stub_addr = body.b.ins().func_addr(types::I64, stub_fref);
-    let cont_closure = place_cont_closure(body, env, native_root_values.len(), stub_addr);
+    let cont_closure = place_cont_closure(body, native_root_values.len(), stub_addr);
     for (i, root) in native_root_values.iter().copied().enumerate() {
         match root {
             CodegenValue::RawInt(word) => body.store_closure_capture_i64(cont_closure, i, word),
@@ -987,7 +985,7 @@ fn build_park_record<M: cranelift_module::Module>(
     for pinned_var in pinned {
         frame_captures.push(ClosureCapture::RefWord(body.tagged_var(var_env, pinned_var.0)));
     }
-    let frame = build_cont_closure(body, env, cont_param, first_clause_code, &frame_captures, 0);
+    let frame = build_cont_closure(body, cont_param, first_clause_code, &frame_captures, 0);
 
     let after_ms = match after {
         Some(a) => body.as_raw_i64(var_env, a.timeout.0),

@@ -31,6 +31,7 @@ pub(crate) mod recipe;
 pub(crate) mod repr;
 pub(crate) mod runtime_call;
 mod runtime_test;
+mod scalar_box;
 mod static_object;
 mod support;
 pub(crate) mod surface;

@@ -18,7 +18,6 @@
 //!
 //! A new cell carries no alias bit: only a second holder sets one.
 
-use super::alloc_site::SiteScope;
 use super::place::emit_place;
 use super::*;
 use cranelift_codegen::ir::{self, BlockArg, InstBuilder, MemFlagsData, types};
@@ -55,7 +54,6 @@ enum HeadKind {
 /// `emit_place` reads from the pinned register.
 pub(super) fn emit_list_cell<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
-    scope: SiteScope<'_>,
     lane: HeadLane,
     args: &[ir::Value],
 ) -> ir::Value {
@@ -88,7 +86,7 @@ pub(super) fn emit_list_cell<M: cranelift_module::Module>(
             body.b.ins().bor(tail_address, kind_bits)
         }
     };
-    let address = emit_place(body, scope, HeapAllocKind::ListCons, CELL_BYTES);
+    let address = emit_place(body, HeapAllocKind::ListCons, CELL_BYTES);
     let flags = MemFlagsData::trusted();
     body.b.ins().store(flags, head.raw, address, 0);
     body.b.ins().store(flags, link, address, 8);
