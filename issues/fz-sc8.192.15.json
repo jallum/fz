@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-sc8.192.14"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-sc8.192.16"
+  ],
   "created": "2026-11-19T00:08:42Z",
   "description": "User ruling 2026-11-18, verbatim via Optimize: \"decision 3: acceptable for now.\" It accepted the 9-instruction-per-lookup rise of fz-sc8.192.14 on case_a_40, on the condition that the trie lookup is filed as its own step with its own hand-written target. \"For now\": the rise stands as accepted until this ticket lands.\n\nScope: a pattern key test with one-word keys on a map past 32 keys (the hash tree from fz-sc8.192.1) walks the trie as the hand-written sequence. Method: the target listing is checked into bench/maps/floor first, then the compiler and runtime are made to produce it. Baseline: case_a_40, fz 6,810 vs BEAM 574 instructions per six lookups. Done when the listing is met on bench, and the 9-instruction rise from fz-sc8.192.14 is gone. Builder: Optimize.",
   "id": "fz-sc8.192.15",
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "A map pattern's key test on a large map is the hand-written trie walk",
   "type": "task",
-  "updated_at": "2026-11-19T00:08:43Z"
+  "updated_at": "2026-11-19T00:10:28Z"
 }
