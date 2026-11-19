@@ -65,8 +65,8 @@ same way, one question per position, through the predicate's own
 present `nil` value and an absent key remain distinguishable. The key is a
 `ComparisonValue`, the type an equality question compares against: a literal
 (`%{name: v}`) or a pin (`%{^key => v}`), which looks the map up by the value
-the pinned variable holds. A pinned key is read as a plan input like any other
-pin, narrows nothing about the map's type, and projects a value typed `any`.
+the pinned variable holds, in a `case`, a `receive` or a closure head. A
+pinned key is read as a plan input like any other pin, narrows nothing about the map's type, and projects a value typed `any`.
 A key that is neither is `SourcePatternError::UnsupportedMapKey`.
 `fixtures/01767_a_map_pattern_looks_a_key_up_by_the_value_of_a_pinned_variable.fz`
 checks the pinned form against Elixir on all three paths.

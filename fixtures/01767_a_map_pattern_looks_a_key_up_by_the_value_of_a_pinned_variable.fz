@@ -8,6 +8,8 @@
 # present with `nil` is a hit; a subject that is not a map is a miss. `both`
 # asks for a pinned key and a literal key of one map, and `same` asks for one
 # key twice, once through each form. `await` matches a message by a pinned key.
+# `reader` and `reader_or` pin a captured key in a closure head, the second
+# with a clause for a miss.
 defmodule Main do
   def get(map, key, default) do
     case map do
@@ -28,6 +30,15 @@ defmodule Main do
     case map do
       %{^key => pinned, a: literal} -> pinned == literal
       _ -> :miss
+    end
+  end
+
+  def reader(key), do: fn %{^key => value} -> value end
+
+  def reader_or(key, default) do
+    fn
+      %{^key => value} -> value
+      _ -> default
     end
   end
 
@@ -60,6 +71,10 @@ IO.inspect(Main.both(%{a: 1}, :a))
 IO.inspect(Main.same(map, :a))
 IO.inspect(Main.same(map, :b))
 IO.inspect(Main.same(map, :zz))
+IO.inspect(Main.reader("name").(map))
+IO.inspect(Main.reader(:a).(map))
+IO.inspect(Main.reader_or(7, :none).(map))
+IO.inspect(Main.reader_or(8, :none).(map))
 send(self(), %{other: 1})
 send(self(), %{wanted: 2})
 IO.inspect(Main.await(:wanted))
