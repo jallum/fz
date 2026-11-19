@@ -9,9 +9,15 @@
   "id": "fz-9x7.41.4",
   "labels": [],
   "parent": "fz-9x7.41",
+  "comments": [
+    {
+      "text": "PR #811 rebased after #803. Bench: reqrep −1.8%, ring −0.65%, maps and fanin −0.5% (17–21 instructions per box); nothing rises. SCOPE NARROWED from the approved page: constant bitstrings (compiled code never allocated them) and static views (retain off-heap state) stay runtime calls, as do boxes made in receive-dispatch bodies (entered from Rust). The narrowing awaits the user's word.",
+      "timestamp": "2026-11-19T04:56:03Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Boxes, constant bitstrings and static views are placed inline",
   "type": "task",
-  "updated_at": "2026-11-18T23:59:40Z"
+  "updated_at": "2026-11-19T04:56:03Z"
 }
