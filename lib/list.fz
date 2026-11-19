@@ -90,6 +90,63 @@ defmodule List do
   end
 
   @doc """
+  Converts chardata to a charlist: a list of integers that are code points.
+
+  `list` holds integers that are code points, strings, and lists of these.
+  An integer that is not a code point raises `UnicodeConversionError`, a
+  string that is not UTF-8 raises it too, and any other element raises
+  `ArgumentError`.
+
+  ## Examples
+
+      List.to_charlist([0x00E6, 0x00DF])
+      #=> [230, 223]
+
+      List.to_charlist(["abc", [100, "e"]])
+      #=> [97, 98, 99, 100, 101]
+
+  """
+  @spec to_charlist([integer | binary | list]) :: [integer]
+  def to_charlist(list) when is_list(list), do: chardata_codepoints(list, list)
+
+  # `whole` is the list the caller gave, for the message of an element that is not chardata.
+  @spec chardata_codepoints(list, list) :: [integer]
+  defp chardata_codepoints([], _whole), do: []
+
+  defp chardata_codepoints([head | tail], whole) when is_integer(head) do
+    [code_point(head, tail) | chardata_codepoints(tail, whole)]
+  end
+
+  defp chardata_codepoints([head | tail], whole) when is_binary(head) do
+    String.to_charlist(head) ++ chardata_codepoints(tail, whole)
+  end
+
+  defp chardata_codepoints([head | tail], whole) when is_list(head) do
+    chardata_codepoints(head, whole) ++ chardata_codepoints(tail, whole)
+  end
+
+  defp chardata_codepoints(_improper, whole) do
+    raise ArgumentError, """
+    cannot convert the given list to a charlist.
+
+    To be converted to a charlist, a list must contain only:
+
+      * strings
+      * integers representing Unicode code points
+      * or a list containing one of these three elements
+
+    Please check the given list or call inspect/1 to get the list representation, got:
+
+    #{inspect(whole)}
+    """
+  end
+
+  @spec code_point(integer, list) :: integer
+  defp code_point(integer, _tail) when integer >= 0 and integer < 55296, do: integer
+  defp code_point(integer, _tail) when integer > 57343 and integer < 1114112, do: integer
+  defp code_point(integer, tail), do: raise(UnicodeConversionError, encoded: [], rest: [integer | tail], kind: :invalid)
+
+  @doc """
   Reverses `list`, prepending the result onto `tail`.
 
   ## Examples

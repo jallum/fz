@@ -508,6 +508,168 @@ defmodule Kernel do
     end
   end
 
+  @doc """
+  Handles the sigil `~S`: a string, as written. Escapes and `\#{...}` stay as
+  text.
+
+  A sigil is the call `sigil_x(body, modifiers)` that the compiler reads from
+  `~x"..."`: `body` is `{:<<>>, meta, pieces}`, the text with an interpolated
+  `\#{...}` of a lowercase sigil as its own piece, and `modifiers` is the list of
+  character codes after the closing delimiter. A module defines `~x` with
+  `defmacro sigil_x(body, modifiers)`.
+
+  ## Examples
+
+      ~S(foo\\n\#{bar})
+      #=> "foo\\\\n\\\#{bar}"
+
+  """
+  defmacro sigil_S({:<<>>, _, [binary]}, []) when is_binary(binary), do: binary
+
+  @doc """
+  Handles the sigil `~s`: a string, as a double-quoted one reads, with its
+  escapes and its `\#{...}` interpolations.
+
+  ## Examples
+
+      ~s(foo)
+      #=> "foo"
+
+      ~s(f\#{:o}o)
+      #=> "foo"
+
+      ~s(f\\\#{:o}o)
+      #=> "f\\\#{:o}o"
+
+  """
+  defmacro sigil_s({:<<>>, _, [piece]}, []) when is_binary(piece) do
+    Macro.unescape_string(piece)
+  end
+
+  defmacro sigil_s({:<<>>, line, pieces}, []) do
+    {:<<>>, line, unescape_tokens(pieces)}
+  end
+
+  @doc """
+  Handles the sigil `~C`: a charlist, as written, with no escapes and no
+  interpolation.
+
+  ## Examples
+
+      ~C(foo\\n)
+      #=> ~c"foo\\\\n"
+
+  """
+  defmacro sigil_C({:<<>>, _meta, [string]}, []) when is_binary(string) do
+    String.to_charlist(string)
+  end
+
+  @doc """
+  Handles the sigil `~c`: a charlist, with its escapes and its `\#{...}`
+  interpolations. A text with none is computed when the program is compiled.
+
+  ## Examples
+
+      ~c(foo)
+      #=> ~c"foo"
+
+      ~c(f\#{:o}o)
+      #=> ~c"foo"
+
+  """
+  defmacro sigil_c({:<<>>, _meta, [string]}, []) when is_binary(string) do
+    String.to_charlist(Macro.unescape_string(string))
+  end
+
+  defmacro sigil_c({:<<>>, _meta, pieces}, []) do
+    quote(do: List.to_charlist(unquote(unescape_list_tokens(pieces))))
+  end
+
+  @doc """
+  Handles the sigil `~w`: the list of words of a text split at whitespace,
+  after the text's escapes and interpolations are read.
+
+  ## Modifiers
+
+    * `s`: the words are strings (the default)
+    * `a`: the words are atoms
+    * `c`: the words are charlists
+
+  ## Examples
+
+      ~w(foo \#{:bar} baz)
+      #=> ["foo", "bar", "baz"]
+
+      ~w(foo bar)a
+      #=> [:foo, :bar]
+
+  """
+  defmacro sigil_w({:<<>>, _meta, [string]}, modifiers) when is_binary(string) do
+    split_words(Macro.unescape_string(string), modifiers)
+  end
+
+  defmacro sigil_w({:<<>>, meta, pieces}, modifiers) do
+    split_words({:<<>>, meta, unescape_tokens(pieces)}, modifiers)
+  end
+
+  @doc """
+  Handles the sigil `~W`: the list of words of a text split at whitespace,
+  with no escapes and no interpolation. It takes the modifiers `~w` takes.
+
+  ## Examples
+
+      ~W(foo \#{bar} baz)
+      #=> ["foo", "\\\#{bar}", "baz"]
+
+  """
+  defmacro sigil_W({:<<>>, _meta, [string]}, modifiers) when is_binary(string) do
+    split_words(string, modifiers)
+  end
+
+  @spec split_words(any, [integer]) :: any
+  defp split_words(string, []), do: split_words(string, [?s])
+
+  defp split_words(string, [modifier]) when modifier == ?s or modifier == ?a or modifier == ?c do
+    if is_binary(string) do
+      parts = String.split(string)
+
+      case modifier do
+        ?s -> parts
+        ?a -> Enum.map(parts, &String.to_atom/1)
+        ?c -> Enum.map(parts, &String.to_charlist/1)
+      end
+    else
+      parts = quote(do: String.split(unquote(string)))
+
+      case modifier do
+        ?s -> parts
+        ?a -> quote(do: Enum.map(unquote(parts), &String.to_atom/1))
+        ?c -> quote(do: Enum.map(unquote(parts), &String.to_charlist/1))
+      end
+    end
+  end
+
+  defp split_words(_string, _modifiers) do
+    raise ArgumentError, "modifier must be one of: s, a, c"
+  end
+
+  # The pieces of a sigil body: text pieces are binaries, an interpolation
+  # is `{:"::", meta, [expression, type]}`.
+  @spec unescape_tokens([any]) :: [any]
+  defp unescape_tokens([]), do: []
+
+  defp unescape_tokens([token | rest]) when is_binary(token),
+    do: [Macro.unescape_string(token) | unescape_tokens(rest)]
+
+  defp unescape_tokens([token | rest]), do: [token | unescape_tokens(rest)]
+
+  @spec unescape_list_tokens([any]) :: [any]
+  defp unescape_list_tokens([]), do: []
+  defp unescape_list_tokens([{:"::", _, [expression, _]} | rest]), do: [expression | unescape_list_tokens(rest)]
+
+  defp unescape_list_tokens([binary | rest]) when is_binary(binary),
+    do: [Macro.unescape_string(binary) | unescape_list_tokens(rest)]
+
   # In Elixir, `to_string/1` is a macro expanding to `String.Chars.to_string/1`.
   # Here it is an ordinary function, since the macro's expansion has nothing
   # to do at compile time.

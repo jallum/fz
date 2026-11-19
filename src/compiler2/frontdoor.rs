@@ -4,7 +4,7 @@ use std::mem::discriminant;
 use std::rc::Rc;
 
 use crate::diag::{Diagnostic, codes::PARSE_EXPECTED_TOKEN};
-use crate::parser::lexer::{Lexer, Tok, Token, is_infix_only_continuation};
+use crate::parser::lexer::{Lexer, Sigil, SigilPiece, Tok, Token, is_infix_only_continuation};
 use crate::source::{SourceVersion, Span};
 use crate::telemetry::RawSpanTelemetry;
 use fz_runtime::any_value::AnyValueRef;
@@ -165,7 +165,12 @@ impl<'t> ParsedExpr<'t> {
 impl<'t> FrontDoorParser<'t> {
     fn new(toks: &'t [Token]) -> Self {
         let heap = Rc::new(QuotedSourceHeap::new());
-        let builder = heap.builder();
+        Self::building_into(toks, heap.builder())
+    }
+
+    /// A parser over `toks` that builds into an existing heap, for reading a
+    /// stretch of tokens nested inside the ones another parser is reading.
+    fn building_into(toks: &'t [Token], builder: QuotedSourceBuilder) -> Self {
         Self {
             toks,
             pos: 0,
@@ -960,6 +965,7 @@ impl<'t> FrontDoorParser<'t> {
                 Ok(ParsedExpr::direct_name(root, start.merge(self.prev_span()), name))
             }
             Tok::Upper(name) => self.parse_alias_expr(name, start),
+            Tok::Sigil(sigil) => self.parse_sigil_call(sigil, start, module_path, scope),
             Tok::LParen => {
                 let root = self.with_matched_do_boundary(|parser| {
                     parser.with_comma_unbound(|parser| {
@@ -1010,6 +1016,57 @@ impl<'t> FrontDoorParser<'t> {
                 start,
             )),
         }
+    }
+
+    /// A sigil is the call Elixir quotes it as: `~c"a#{x}"b` is
+    /// `sigil_c(<<"a", Kernel.to_string(x)::binary>>, ~c"b")`, whose second
+    /// argument is the modifier characters as a list of codes. Ordinary import
+    /// resolution then finds the `sigil_c` macro.
+    fn parse_sigil_call(
+        &mut self,
+        sigil: &'t Sigil,
+        span: Span,
+        module_path: &[String],
+        scope: &[String],
+    ) -> Result<ParsedExpr<'t>, FrontDoorError> {
+        let meta = self.meta(span)?;
+        let mut pieces = Vec::new();
+        for piece in &sigil.pieces {
+            pieces.push(match piece {
+                SigilPiece::Text(bytes) => self.builder.bitstring(bytes, (bytes.len() * 8) as u64)?,
+                SigilPiece::Interpolation(tokens) => {
+                    let text = self.parse_interpolation(tokens, module_path, scope)?;
+                    let binary = self.builder.user_variable("binary", &meta)?;
+                    self.builder.call("::", &meta, &[text, binary])?
+                }
+            });
+        }
+        let body = self.builder.call("<<>>", &meta, &pieces)?;
+        let modifiers: Vec<AnyValueRef> = sigil
+            .modifiers
+            .bytes()
+            .map(|c| self.builder.int(i64::from(c)))
+            .collect();
+        let modifiers = self.builder.list(&modifiers)?;
+        let call = self
+            .builder
+            .call(&format!("sigil_{}", sigil.name), &meta, &[body, modifiers])?;
+        Ok(ParsedExpr::plain(call, span))
+    }
+
+    /// The expression a `#{...}` holds, read from its own tokens.
+    fn parse_interpolation(
+        &mut self,
+        tokens: &'t [Token],
+        module_path: &[String],
+        scope: &[String],
+    ) -> Result<AnyValueRef, FrontDoorError> {
+        let mut inner = FrontDoorParser::building_into(tokens, self.builder.clone());
+        inner.emit_type_payloads = self.emit_type_payloads;
+        inner.allow_extern_symbol_folding = self.allow_extern_symbol_folding;
+        let expr = inner.parse_expr(module_path, scope)?;
+        inner.expect(&Tok::Eof, "the end of the interpolation")?;
+        Ok(expr.root)
     }
 
     fn parse_prefix_operator(

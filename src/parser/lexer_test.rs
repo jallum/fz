@@ -774,7 +774,7 @@ fn a_name_mixing_latin_and_cyrillic_is_rejected() {
     assert_eq!((error.span.start, error.span.end), (0, 3));
 }
 
-/// The rule applies to atoms, keyword keys and the sigil name as to variables.
+/// The rule applies to atoms and keyword keys as to variables.
 #[test]
 fn an_atom_and_a_keyword_key_mixing_scripts_are_rejected() {
     assert!(
@@ -1500,4 +1500,236 @@ fn a_double_colon_is_never_an_operator_atom() {
 #[test]
 fn a_colon_before_a_space_stays_a_bare_colon() {
     assert_eq!(kinds_of("+: 2"), vec![Tok::Plus, Tok::Colon, Tok::Int(2)]);
+}
+
+/// The one sigil a source is, or the error lexing it raised.
+fn sigil(src: &str) -> Sigil {
+    match lex_kinds(src).expect("lex").as_slice() {
+        [Tok::Sigil(sigil), Tok::Eof] => sigil.clone(),
+        other => panic!("expected one sigil, got {other:?}"),
+    }
+}
+
+/// The text of a sigil that has no interpolation.
+fn sigil_text(src: &str) -> Vec<u8> {
+    match sigil(src).pieces.as_slice() {
+        [SigilPiece::Text(bytes)] => bytes.clone(),
+        other => panic!("expected one text piece, got {other:?}"),
+    }
+}
+
+/// A sigil is one token: the name, the body and the modifiers, with no loose
+/// delimiter tokens beside it.
+#[test]
+fn a_sigil_is_one_token_with_its_name_body_and_modifiers() {
+    let found = sigil("~w(a b)ac");
+    assert_eq!(found.name, "w");
+    assert_eq!(found.pieces, vec![SigilPiece::Text(b"a b".to_vec())]);
+    assert_eq!(found.modifiers, "ac");
+}
+
+/// Eight delimiters close a body, each ending at its own closing character.
+#[test]
+fn every_sigil_delimiter_closes_at_its_own_character() {
+    for src in ["~s(a)", "~s[a]", "~s{a}", "~s<a>", "~s|a|", "~s/a/", "~s\"a\"", "~s'a'"] {
+        assert_eq!(sigil_text(src), b"a", "{src}");
+    }
+}
+
+/// A body does not nest: the first closing delimiter ends it, and an opening
+/// delimiter inside it is text.
+#[test]
+fn a_sigil_body_ends_at_the_first_closing_delimiter() {
+    assert_eq!(sigil_text("~s(a(b)"), b"a(b");
+    assert_eq!(sigil_text("~s<a<b>"), b"a<b");
+}
+
+/// A name is one lowercase letter, or an uppercase letter followed by
+/// uppercase letters and digits.
+#[test]
+fn a_sigil_name_is_a_lowercase_letter_or_an_uppercase_word() {
+    for name in ["s", "S", "HTML", "A1", "ABC123"] {
+        assert_eq!(sigil(&format!("~{name}(x)")).name, name);
+    }
+}
+
+/// A lowercase letter after the name's first letter is refused rather than
+/// read as a modifier of a shorter name.
+#[test]
+fn a_sigil_name_with_a_lowercase_tail_is_rejected() {
+    for src in ["~sigil(x)", "~Ab(x)", "~HTMLx(x)"] {
+        let error = lex_kinds(src).unwrap_err();
+        assert!(error.msg.starts_with("invalid sigil name"), "{src}: {}", error.msg);
+    }
+}
+
+#[test]
+fn a_sigil_with_no_delimiter_is_rejected() {
+    for src in ["~s", "~s x", "~s1", "~S;"] {
+        let error = lex_kinds(src).unwrap_err();
+        assert!(error.msg.starts_with("invalid sigil delimiter"), "{src}: {}", error.msg);
+    }
+}
+
+#[test]
+fn an_unclosed_sigil_names_the_delimiter_it_wants() {
+    assert_eq!(
+        lex_kinds("~s(abc").unwrap_err().msg,
+        "missing terminator `)` for sigil ~s"
+    );
+    assert_eq!(
+        lex_kinds("~S\"abc").unwrap_err().msg,
+        "missing terminator `\"` for sigil ~S"
+    );
+}
+
+/// Modifiers are the letters and digits right after the closing delimiter; a
+/// space or a symbol ends them.
+#[test]
+fn sigil_modifiers_are_the_letters_and_digits_after_the_closing_delimiter() {
+    assert_eq!(sigil("~r/x/iU1").modifiers, "iU1");
+    assert_eq!(sigil("~w(x)").modifiers, "");
+    assert_eq!(
+        lex_kinds("~w(x)a b").unwrap(),
+        vec![
+            Tok::Sigil(Sigil {
+                name: "w".into(),
+                pieces: vec![SigilPiece::Text(b"x".to_vec())],
+                modifiers: "a".into()
+            }),
+            Tok::Ident("b".into()),
+            Tok::Eof
+        ]
+    );
+}
+
+/// The lexer does not unescape: the body keeps every escape as written, for
+/// the `sigil_x` macro to read.
+#[test]
+fn a_sigil_body_keeps_its_escapes_as_written() {
+    assert_eq!(sigil_text(r"~s(a\nb\x41\\)"), br"a\nb\x41\\");
+    assert_eq!(sigil_text(r"~S(a\nb)"), br"a\nb");
+}
+
+/// An escaped closing delimiter lets the delimiter into the text, without its
+/// backslash, as Elixir's tokenizer does.
+#[test]
+fn an_escaped_closing_delimiter_is_the_delimiter_in_the_text() {
+    assert_eq!(sigil_text(r#"~c"a\"b""#), b"a\"b");
+    assert_eq!(sigil_text(r"~s(a\)b)"), b"a)b");
+    assert_eq!(sigil_text(r"~S|a\|b|"), b"a|b");
+}
+
+/// A backslash and the character after it are a pair, so an escaped backslash
+/// does not escape the delimiter that follows.
+#[test]
+fn an_escaped_backslash_does_not_escape_the_delimiter_after_it() {
+    assert_eq!(sigil_text(r#"~c"\\""#), br"\\");
+}
+
+/// A lowercase sigil splits its `#{...}` out of the text; the interpolation is
+/// the tokens of `Kernel.to_string(expr)` and an `Eof`.
+#[test]
+fn a_lowercase_sigil_splits_out_its_interpolations() {
+    let pieces = sigil("~s(a#{x}b)").pieces;
+    assert_eq!(pieces.len(), 3);
+    assert_eq!(pieces[0], SigilPiece::Text(b"a".to_vec()));
+    assert_eq!(pieces[2], SigilPiece::Text(b"b".to_vec()));
+    let SigilPiece::Interpolation(tokens) = &pieces[1] else {
+        panic!("expected an interpolation, got {:?}", pieces[1]);
+    };
+    let toks: Vec<Tok> = tokens.iter().map(|token| token.tok.clone()).collect();
+    assert_eq!(
+        toks,
+        vec![
+            Tok::Ident("Kernel".into()),
+            Tok::Dot,
+            Tok::Ident("to_string".into()),
+            Tok::LParen,
+            Tok::Ident("x".into()),
+            Tok::RParen,
+            Tok::Eof
+        ]
+    );
+}
+
+/// An uppercase sigil keeps `#{...}` as text.
+#[test]
+fn an_uppercase_sigil_keeps_its_interpolation_as_text() {
+    assert_eq!(sigil_text("~S(a#{x}b)"), b"a#{x}b");
+    assert_eq!(sigil_text("~HTML(#{1})"), b"#{1}");
+}
+
+/// A backslash before `#{` keeps the text `\#{`, so the macro's unescape turns
+/// it into `#{` and nothing is interpolated.
+#[test]
+fn an_escaped_interpolation_stays_text_with_its_backslash() {
+    assert_eq!(sigil_text(r"~s(a\#{x})"), br"a\#{x}");
+}
+
+/// A braced interpolation holds nested braces and strings whose braces are
+/// not its own.
+#[test]
+fn a_sigil_interpolation_may_hold_braces_and_strings() {
+    let found = sigil("~s(#{%{a: \"}\"}})");
+    assert_eq!(found.pieces.len(), 1);
+    assert!(matches!(found.pieces[0], SigilPiece::Interpolation(_)));
+}
+
+/// A body with nothing in it is one empty text piece, and a body that is only
+/// interpolations has no text pieces.
+#[test]
+fn a_sigil_with_no_text_has_one_empty_piece_and_interpolations_alone_have_none() {
+    assert_eq!(sigil("~s()").pieces, vec![SigilPiece::Text(Vec::new())]);
+    let found = sigil("~s(#{a}#{b})");
+    assert_eq!(found.pieces.len(), 2);
+    assert!(
+        found
+            .pieces
+            .iter()
+            .all(|piece| matches!(piece, SigilPiece::Interpolation(_)))
+    );
+}
+
+/// A heredoc sigil takes the closing line's indentation off every line, in
+/// either quote, and keeps its escapes as written.
+#[test]
+fn a_sigil_heredoc_is_dedented_and_raw() {
+    assert_eq!(sigil_text("~S\"\"\"\n  a\\n\n    b\n  \"\"\""), b"a\\n\n  b\n");
+    assert_eq!(sigil_text("~s'''\n  a\n  '''"), b"a\n");
+    assert_eq!(sigil("~s\"\"\"\n\"\"\"").pieces, vec![SigilPiece::Text(Vec::new())]);
+}
+
+/// A heredoc ends at its closing line, so a lone quote inside is text; a
+/// backslash before the three quotes lets them into the text.
+#[test]
+fn a_sigil_heredoc_may_hold_quotes() {
+    assert_eq!(sigil_text("~S\"\"\"\na \" b\n\"\"\""), b"a \" b\n");
+    assert_eq!(sigil_text("~S\"\"\"\na \\\"\"\" b\n\"\"\""), b"a \"\"\" b\n");
+}
+
+/// A lowercase heredoc sigil splits interpolations too, and takes modifiers
+/// after its closing quotes.
+#[test]
+fn a_lowercase_sigil_heredoc_interpolates_and_takes_modifiers() {
+    let found = sigil("~w\"\"\"\na #{x}\n\"\"\"c");
+    assert_eq!(found.modifiers, "c");
+    assert_eq!(found.pieces.len(), 3);
+    assert!(matches!(found.pieces[1], SigilPiece::Interpolation(_)));
+}
+
+/// A sigil may begin an expression, so a call without parentheses takes one as
+/// an argument.
+#[test]
+fn a_sigil_starts_an_expression() {
+    assert!(Tok::Sigil(sigil("~s(a)")).starts_expression());
+}
+
+/// A sigil's span covers the `~` through the modifiers.
+#[test]
+fn a_sigil_span_runs_from_its_tilde_through_its_modifiers() {
+    let tokens = test_lexer("x ~w(a b)c y")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("lex");
+    assert_eq!((tokens[1].span.start, tokens[1].span.end), (2, 10));
 }

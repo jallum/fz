@@ -7,6 +7,8 @@ use unicode_normalization::{UnicodeNormalization, is_nfc};
 use unicode_security::GeneralSecurityProfile;
 use unicode_security::mixed_script::AugmentedScriptSet;
 
+use fz_runtime::escape::{Escape, EscapeError, read_escape};
+
 use crate::source::{SourceVersion, Span};
 use crate::telemetry::{RawSpanTelemetry, Telemetry};
 
@@ -60,7 +62,7 @@ pub enum Tok {
     LBitstr,
     RBitstr,       // << and >>
     PercentLBrace, // %{   (map literal)
-    Sigil(String), // ~name (followed by a delimiter token like LBrack)
+    Sigil(Sigil),  // `~c"..."`: the whole sigil, name through modifiers
 
     Comma,
     Dot,
@@ -146,6 +148,7 @@ impl Tok {
                 | Tok::Amp
                 | Tok::Caret
                 | Tok::Defstruct
+                | Tok::Sigil(_)
         )
     }
 }
@@ -219,6 +222,32 @@ fn operator_atom_len(rest: &[u8]) -> Option<usize> {
         .filter(|spelling| rest.starts_with(spelling.as_bytes()))
         .map(|spelling| spelling.len())
         .max()
+}
+
+/// A sigil read whole, as Elixir's tokenizer reads it: `~`, a name, a
+/// delimited body and the modifier letters after it. The body is raw: neither
+/// kind of sigil unescapes, because the `sigil_x` macro it calls decides what
+/// an escape means.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Sigil {
+    /// The name after `~`: one lowercase letter, or an uppercase letter and
+    /// then uppercase letters and digits.
+    pub name: String,
+    /// The body in order. It is never empty: a sigil with no text is one empty
+    /// `Text`.
+    pub pieces: Vec<SigilPiece>,
+    /// The letters and digits right after the closing delimiter.
+    pub modifiers: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum SigilPiece {
+    /// Body bytes as written, with only an escaped closing delimiter
+    /// reduced to the delimiter.
+    Text(Vec<u8>),
+    /// The `#{...}` of a lowercase sigil: the tokens of `Kernel.to_string(expr)`
+    /// and a final `Eof`, ready to be read as one expression.
+    Interpolation(Vec<Token>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -397,9 +426,6 @@ fn invalid_alias_character(name: &str) -> Option<char> {
     name.chars().find(|c| !(c.is_ascii_alphanumeric() || *c == '_'))
 }
 
-const UNICODE_ESCAPE_SHAPE: &str =
-    "invalid Unicode escape character, expected \\uHHHH or \\u{H*} where H is a hexadecimal digit";
-
 /// The name and escape letter of the whitespace characters a literal must spell as an escape.
 fn whitespace_escape(c: char) -> Option<(&'static str, char)> {
     match c {
@@ -408,25 +434,6 @@ fn whitespace_escape(c: char) -> Option<(&'static str, char)> {
         '\t' => Some(("tab", 't')),
         '\r' => Some(("carriage return", 'r')),
         _ => None,
-    }
-}
-
-const HEX_ESCAPE_SHAPE: &str = "invalid hex escape character, expected \\xHH where H is a hexadecimal digit";
-
-/// What an escape denotes: a character, which a string stores as its UTF-8
-/// encoding, or a single byte, which `\xHH` stores as it is.
-#[derive(Debug, Clone, Copy)]
-enum Escape {
-    Char(char),
-    Byte(u8),
-}
-
-impl Escape {
-    fn push_onto(self, bytes: &mut Vec<u8>) {
-        match self {
-            Escape::Char(c) => bytes.extend_from_slice(c.encode_utf8(&mut [0; 4]).as_bytes()),
-            Escape::Byte(b) => bytes.push(b),
-        }
     }
 }
 
@@ -661,6 +668,24 @@ enum StringPart {
     Interpolation(std::ops::Range<usize>),
 }
 
+/// How a literal's body is read.
+#[derive(Clone, Copy)]
+enum Body {
+    /// A string: escapes become the bytes they denote and `#{` interpolates.
+    Escaped,
+    /// A sigil: every byte stays as written.
+    Raw { interpolates: bool },
+}
+
+impl Body {
+    fn interpolates(self) -> bool {
+        match self {
+            Body::Escaped => true,
+            Body::Raw { interpolates } => interpolates,
+        }
+    }
+}
+
 impl<'a> Lexer<'a> {
     /// fz-5xp.5 — read a quoted literal as alternating literal bytes and
     /// `#{...}` expressions.
@@ -671,23 +696,80 @@ impl<'a> Lexer<'a> {
     /// been wrong.
     fn read_quoted_binary_parts(&mut self) -> Result<Vec<StringPart>, LexError> {
         self.bump(); // consume opening "
+        self.read_delimited_parts(b'"', Body::Escaped, "unterminated string")
+    }
+
+    /// The body of a quoted literal up to its closing `terminator`, which is
+    /// consumed.
+    fn read_delimited_parts(
+        &mut self,
+        terminator: u8,
+        body: Body,
+        unterminated: &str,
+    ) -> Result<Vec<StringPart>, LexError> {
         let mut parts: Vec<StringPart> = Vec::new();
         let mut bytes: Vec<u8> = Vec::new();
         loop {
             match self.bump() {
-                None => return Err(self.err("unterminated string".into())),
-                Some(b'"') => {
+                None => return Err(self.err(unterminated.into())),
+                Some(c) if c == terminator => {
                     parts.push(StringPart::Bytes(bytes));
                     return Ok(parts);
                 }
-                Some(b'\\') => self.read_escape()?.push_onto(&mut bytes),
-                Some(b'#') if self.peek(0) == Some(b'{') => {
-                    self.bump(); // consume {
-                    let range = self.read_interpolation_range()?;
-                    parts.push(StringPart::Bytes(std::mem::take(&mut bytes)));
-                    parts.push(StringPart::Interpolation(range));
-                }
-                Some(c) => bytes.push(c),
+                Some(c) => self.read_body_byte(c, body, &[terminator], &mut parts, &mut bytes)?,
+            }
+        }
+    }
+
+    /// One byte of a literal's body, after it is known not to close the
+    /// literal. An escaped body reads escapes into the bytes they denote; a
+    /// raw body keeps every escape as written, except that a backslash before
+    /// the `closer` drops out, as Elixir's tokenizer does, so the closer can
+    /// appear in the text. Only a body that `interpolates` splits at `#{`.
+    fn read_body_byte(
+        &mut self,
+        c: u8,
+        body: Body,
+        closer: &[u8],
+        parts: &mut Vec<StringPart>,
+        bytes: &mut Vec<u8>,
+    ) -> Result<(), LexError> {
+        match (c, body) {
+            (b'\\', Body::Escaped) => self.read_escape()?.push_onto(bytes),
+            (b'\\', Body::Raw { interpolates }) => self.read_raw_escape(closer, interpolates, bytes),
+            (b'#', _) if body.interpolates() && self.peek(0) == Some(b'{') => {
+                self.bump(); // consume {
+                let range = self.read_interpolation_range()?;
+                parts.push(StringPart::Bytes(std::mem::take(bytes)));
+                parts.push(StringPart::Interpolation(range));
+            }
+            (c, _) => bytes.push(c),
+        }
+        Ok(())
+    }
+
+    /// A raw body's backslash, after it is consumed. The closer it escapes
+    /// stands for itself. `\#{` stays as written so the `#{` does not
+    /// interpolate. A backslash before a newline leaves the newline to the
+    /// caller, which tracks lines. Any other escaped character is kept with
+    /// its backslash, and is not itself looked at, so `\\` is a pair.
+    fn read_raw_escape(&mut self, closer: &[u8], interpolates: bool, bytes: &mut Vec<u8>) {
+        if self.src[self.pos..].starts_with(closer) {
+            bytes.extend_from_slice(closer);
+            self.pos += closer.len();
+            return;
+        }
+        bytes.push(b'\\');
+        let hides_interpolation = interpolates && self.src[self.pos..].starts_with(b"#{");
+        match self.peek(0) {
+            Some(b'\n') | None => {}
+            Some(_) if hides_interpolation => {
+                bytes.extend_from_slice(b"#{");
+                self.pos += 2;
+            }
+            Some(next) => {
+                bytes.push(next);
+                self.pos += 1;
             }
         }
     }
@@ -708,10 +790,11 @@ impl<'a> Lexer<'a> {
     /// A line indented less than the closing delimiter gives up whatever
     /// leading whitespace it has, which is the value Elixir produces; Elixir
     /// also warns there, and fz does not yet.
-    fn read_heredoc_parts(&mut self) -> Result<Vec<StringPart>, LexError> {
-        self.pos += 3; // consume the opening """
+    fn read_heredoc_parts(&mut self, quote: u8, body: Body) -> Result<Vec<StringPart>, LexError> {
+        self.pos += 3; // consume the opening quotes
         self.consume_heredoc_opening_line()?;
-        let (body_end, indent) = self.find_heredoc_close(self.pos)?;
+        let (body_end, indent) = self.find_heredoc_close(self.pos, quote)?;
+        let closer = [quote; 3];
 
         let mut parts: Vec<StringPart> = Vec::new();
         let mut bytes: Vec<u8> = Vec::new();
@@ -728,18 +811,11 @@ impl<'a> Lexer<'a> {
                     bytes.push(b'\n');
                     at_line_start = true;
                 }
-                Some(b'\\') => self.read_escape()?.push_onto(&mut bytes),
-                Some(b'#') if self.peek(0) == Some(b'{') => {
-                    self.bump(); // consume {
-                    let range = self.read_interpolation_range()?;
-                    parts.push(StringPart::Bytes(std::mem::take(&mut bytes)));
-                    parts.push(StringPart::Interpolation(range));
-                }
-                Some(c) => bytes.push(c),
+                Some(c) => self.read_body_byte(c, body, &closer, &mut parts, &mut bytes)?,
             }
         }
         parts.push(StringPart::Bytes(bytes));
-        self.pos = body_end + indent + 3; // past the closing line's indent and """
+        self.pos = body_end + indent + 3; // past the closing line's indent and quotes
         Ok(parts)
     }
 
@@ -768,7 +844,7 @@ impl<'a> Lexer<'a> {
     /// Find the line that closes a heredoc, answering where that line starts
     /// and how far it is indented. The start doubles as the end of the body,
     /// so the closing line contributes nothing to the content.
-    fn find_heredoc_close(&self, from: usize) -> Result<(usize, usize), LexError> {
+    fn find_heredoc_close(&self, from: usize, quote: u8) -> Result<(usize, usize), LexError> {
         let mut line_start = from;
         loop {
             if line_start > self.src.len() {
@@ -778,7 +854,7 @@ impl<'a> Lexer<'a> {
             while matches!(self.src.get(cursor), Some(b' ') | Some(b'\t')) {
                 cursor += 1;
             }
-            if self.src[cursor..].starts_with(b"\"\"\"") {
+            if self.src[cursor..].starts_with(&[quote; 3]) {
                 return Ok((line_start, cursor - line_start));
             }
             match self.src[line_start..].iter().position(|c| *c == b'\n') {
@@ -832,29 +908,24 @@ impl<'a> Lexer<'a> {
     }
 
     /// What an escape denotes, read after its backslash. Strings, heredocs,
-    /// quoted atoms and character literals share this reader.
+    /// quoted atoms and character literals share this reader, which is
+    /// `fz_runtime::escape::read_escape`, the one `Macro.unescape_string/1` uses.
     fn read_escape(&mut self) -> Result<Escape, LexError> {
         let start = self.pos - 1;
-        match self.bump() {
-            Some(b'n') => Ok(Escape::Char('\n')),
-            Some(b't') => Ok(Escape::Char('\t')),
-            Some(b'r') => Ok(Escape::Char('\r')),
-            Some(b'\\') => Ok(Escape::Char('\\')),
-            Some(b'"') => Ok(Escape::Char('"')),
-            Some(b'#') => Ok(Escape::Char('#')),
-            Some(b'\'') => Ok(Escape::Char('\'')),
-            Some(b's') => Ok(Escape::Char(' ')),
-            Some(b'0') => Ok(Escape::Char('\0')),
-            Some(b'a') => Ok(Escape::Char('\u{7}')),
-            Some(b'b') => Ok(Escape::Char('\u{8}')),
-            Some(b'd') => Ok(Escape::Char('\u{7f}')),
-            Some(b'e') => Ok(Escape::Char('\u{1b}')),
-            Some(b'f') => Ok(Escape::Char('\u{c}')),
-            Some(b'v') => Ok(Escape::Char('\u{b}')),
-            Some(b'u') => self.read_unicode_escape(start).map(Escape::Char),
-            Some(b'x') => self.read_hex_escape(start),
-            Some(c) => Err(self.escape_error(start, &format!("unknown escape `\\{}`", c as char))),
-            None => Err(self.err("unterminated escape".into())),
+        match read_escape(&self.src[self.pos..]) {
+            Ok((escape, consumed)) => {
+                self.pos += consumed;
+                Ok(escape)
+            }
+            Err(EscapeError::Unterminated) => Err(self.err("unterminated escape".into())),
+            Err(EscapeError::Unknown(byte)) => {
+                self.pos += 1;
+                Err(self.escape_error(start, &format!("unknown escape `\\{}`", byte as char)))
+            }
+            Err(EscapeError::Malformed { message, consumed }) => {
+                self.pos += consumed;
+                Err(self.escape_error(start, &message))
+            }
         }
     }
 
@@ -894,74 +965,136 @@ impl<'a> Lexer<'a> {
         Ok(Tok::Int(i64::from(u32::from(c))))
     }
 
-    /// `\uHHHH` or `\u{H...}` with one to six digits, after the `u`.
-    fn read_unicode_escape(&mut self, start: usize) -> Result<char, LexError> {
-        if self.peek(0) == Some(b'{') {
-            self.bump();
-            return self.read_braced_code_point(start, 'u', UNICODE_ESCAPE_SHAPE);
-        }
-        let digits = self.read_hex_digits(4);
-        if digits.len() != 4 {
-            return Err(self.escape_error(start, UNICODE_ESCAPE_SHAPE));
-        }
-        self.code_point(start, 'u', digits)
-    }
-
-    /// `\xHH` is the byte of one or two hex digits, whatever it is; `\x{H...}`
-    /// is a code point, stored as its UTF-8 encoding. Elixir deprecates the
-    /// one-digit and braced forms with a warning; the lexer has no channel for
-    /// a warning, so both are accepted.
-    fn read_hex_escape(&mut self, start: usize) -> Result<Escape, LexError> {
-        if self.peek(0) == Some(b'{') {
-            self.bump();
-            return self
-                .read_braced_code_point(start, 'x', HEX_ESCAPE_SHAPE)
-                .map(Escape::Char);
-        }
-        let digits = self.read_hex_digits(2);
-        if digits.is_empty() {
-            return Err(self.escape_error(start, HEX_ESCAPE_SHAPE));
-        }
-        let byte = u8::from_str_radix(digits, 16).expect("one or two hexadecimal digits fit a byte");
-        Ok(Escape::Byte(byte))
-    }
-
-    /// The one to six digits of a braced escape and its closing brace, after
-    /// the opening one.
-    fn read_braced_code_point(&mut self, start: usize, letter: char, shape: &str) -> Result<char, LexError> {
-        let digits = self.read_hex_digits(usize::MAX);
-        if !(1..=6).contains(&digits.len()) || self.peek(0) != Some(b'}') {
-            return Err(self.escape_error(start, shape));
-        }
-        self.bump(); // consume }
-        self.code_point(start, letter, digits)
-    }
-
-    /// Up to `limit` hexadecimal digits at the cursor.
-    fn read_hex_digits(&mut self, limit: usize) -> &'a str {
-        let digits_start = self.pos;
-        while self.pos - digits_start < limit && self.peek(0).is_some_and(|c| c.is_ascii_hexdigit()) {
-            self.pos += 1;
-        }
-        &self.text[digits_start..self.pos]
-    }
-
-    fn code_point(&self, start: usize, letter: char, digits: &str) -> Result<char, LexError> {
-        let value = u32::from_str_radix(digits, 16).expect("the digits are hexadecimal");
-        char::from_u32(value).ok_or_else(|| {
-            self.escape_error(
-                start,
-                &format!("invalid or reserved Unicode code point \\{letter}{{{digits}}}"),
-            )
-        })
-    }
-
     /// An error underlining the escape from its backslash to the cursor.
     fn escape_error(&self, start: usize, msg: &str) -> LexError {
         LexError {
             msg: msg.to_string(),
             span: self.span_from(start),
         }
+    }
+
+    /// A sigil, from its `~`: the name, a delimited raw body and the modifiers
+    /// after it, as Elixir's tokenizer reads them. A lowercase sigil splits its
+    /// body at `#{...}`; an uppercase one keeps those characters as text.
+    fn read_sigil(&mut self, start: usize) -> Result<Tok, LexError> {
+        self.bump(); // consume ~
+        let name = self.read_sigil_name()?;
+        let body = Body::Raw {
+            interpolates: name.starts_with(|c: char| c.is_ascii_lowercase()),
+        };
+        let parts = match self.peek(0) {
+            Some(quote @ (b'"' | b'\'')) if self.peek(1) == Some(quote) && self.peek(2) == Some(quote) => {
+                self.read_heredoc_parts(quote, body)?
+            }
+            Some(open @ (b'/' | b'|' | b'"' | b'\'' | b'(' | b'[' | b'{' | b'<')) => {
+                self.bump(); // consume the opening delimiter
+                let close = match open {
+                    b'(' => b')',
+                    b'[' => b']',
+                    b'{' => b'}',
+                    b'<' => b'>',
+                    same => same,
+                };
+                let unterminated = format!("missing terminator `{}` for sigil ~{name}", close as char);
+                self.read_delimited_parts(close, body, &unterminated)?
+            }
+            _ => {
+                return Err(self.err(format!(
+                    "invalid sigil delimiter after ~{name}; the available delimiters are: //, ||, \"\", '', (), [], {{}}, <>"
+                )));
+            }
+        };
+        let modifiers_start = self.pos;
+        self.eat_while(|c| c.is_ascii_alphanumeric());
+        let modifiers = self.text[modifiers_start..self.pos].to_string();
+        let span = self.span_from(start);
+        let pieces = self.sigil_pieces(parts, span)?;
+        Ok(Tok::Sigil(Sigil {
+            name,
+            pieces,
+            modifiers,
+        }))
+    }
+
+    /// The name after `~`. A lowercase sigil has one letter; an uppercase one
+    /// has uppercase letters and digits. A lowercase letter that follows is an
+    /// error either way, so `~sigil` and `~Ab` are refused rather than read
+    /// as a short name and a stray modifier.
+    fn read_sigil_name(&mut self) -> Result<String, LexError> {
+        let start = self.pos;
+        let first = self.bump().expect("the caller peeked a letter");
+        if first.is_ascii_uppercase() {
+            self.eat_while(|c| c.is_ascii_uppercase() || c.is_ascii_digit());
+        }
+        if self.peek(0).is_some_and(|c| c.is_ascii_lowercase()) {
+            return Err(self.err(
+                "invalid sigil name, it should be either a one-letter lowercase letter or an uppercase letter \
+                 optionally followed by uppercase letters and digits"
+                    .into(),
+            ));
+        }
+        Ok(self.text[start..self.pos].to_string())
+    }
+
+    /// A sigil body's parts as the token's pieces. A body with no text is one
+    /// empty piece, and empty text between two interpolations is dropped.
+    fn sigil_pieces(&self, parts: Vec<StringPart>, span: Span) -> Result<Vec<SigilPiece>, LexError> {
+        let mut pieces = Vec::new();
+        for part in parts {
+            match part {
+                StringPart::Bytes(bytes) if bytes.is_empty() => {}
+                StringPart::Bytes(bytes) => pieces.push(SigilPiece::Text(bytes)),
+                StringPart::Interpolation(range) => {
+                    let mut tokens: Vec<Token> = self
+                        .to_string_call(range)?
+                        .into_iter()
+                        .map(|tok| Token {
+                            tok,
+                            span,
+                            space_before: false,
+                        })
+                        .collect();
+                    tokens.push(Token {
+                        tok: Tok::Eof,
+                        span,
+                        space_before: false,
+                    });
+                    pieces.push(SigilPiece::Interpolation(tokens));
+                }
+            }
+        }
+        if pieces.is_empty() {
+            pieces.push(SigilPiece::Text(Vec::new()));
+        }
+        Ok(pieces)
+    }
+
+    /// The tokens of `Kernel.to_string(expr)` for the `#{expr}` whose source
+    /// text is `range`, which is lexed on its own.
+    fn to_string_call(&self, range: std::ops::Range<usize>) -> Result<Vec<Tok>, LexError> {
+        let source =
+            from_utf8(&self.src[range]).map_err(|e| self.err(format!("invalid UTF-8 in interpolation: {}", e)))?;
+        let inner =
+            Lexer::with_source_version_and_name(source, self.source_version, self.source_name.as_deref().unwrap_or(""))
+                .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+                .map_err(|e| self.err(format!("in interpolation: {}", e.msg)))?;
+        let mut toks: Vec<Tok> = inner
+            .into_iter()
+            .map(|token| token.tok)
+            .filter(|tok| !matches!(tok, Tok::Eof | Tok::Newline))
+            .collect();
+        if toks.is_empty() {
+            return Err(self.err("empty interpolation `#{}`".into()));
+        }
+        let mut call = vec![
+            Tok::Ident("Kernel".into()),
+            Tok::Dot,
+            Tok::Ident("to_string".into()),
+            Tok::LParen,
+        ];
+        call.append(&mut toks);
+        call.push(Tok::RParen);
+        Ok(call)
     }
 
     /// Desugar an interpolated literal into the tokens it means, which is
@@ -988,34 +1121,7 @@ impl<'a> Lexer<'a> {
             match part {
                 StringPart::Bytes(bytes) if bytes.is_empty() => {}
                 StringPart::Bytes(bytes) => pieces.push(vec![Tok::Binary(bytes)]),
-                StringPart::Interpolation(range) => {
-                    let source = from_utf8(&self.src[range.clone()])
-                        .map_err(|e| self.err(format!("invalid UTF-8 in interpolation: {}", e)))?;
-                    let inner = Lexer::with_source_version_and_name(
-                        source,
-                        self.source_version,
-                        self.source_name.as_deref().unwrap_or(""),
-                    )
-                    .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
-                    .map_err(|e| self.err(format!("in interpolation: {}", e.msg)))?;
-                    let mut toks: Vec<Tok> = inner
-                        .into_iter()
-                        .map(|token| token.tok)
-                        .filter(|tok| !matches!(tok, Tok::Eof | Tok::Newline))
-                        .collect();
-                    if toks.is_empty() {
-                        return Err(self.err("empty interpolation `#{}`".into()));
-                    }
-                    let mut call = vec![
-                        Tok::Ident("Kernel".into()),
-                        Tok::Dot,
-                        Tok::Ident("to_string".into()),
-                        Tok::LParen,
-                    ];
-                    call.append(&mut toks);
-                    call.push(Tok::RParen);
-                    pieces.push(call);
-                }
+                StringPart::Interpolation(range) => pieces.push(self.to_string_call(range)?),
             }
         }
         if pieces.is_empty() {
@@ -1214,11 +1320,7 @@ impl<'a> Lexer<'a> {
                 Tok::Percent
             }
 
-            b'~' if self.peek(1).is_some_and(|c| c.is_ascii_lowercase()) => {
-                self.bump(); // ~
-                let name = self.read_ident()?;
-                Tok::Sigil(name)
-            }
+            b'~' if self.peek(1).is_some_and(|c| c.is_ascii_alphabetic()) => self.read_sigil(start)?,
 
             b'<' => match self.peek(1) {
                 Some(b'<') => {
@@ -1405,7 +1507,7 @@ impl<'a> Lexer<'a> {
             },
 
             b'"' if self.peek(1) == Some(b'"') && self.peek(2) == Some(b'"') => {
-                let parts = self.read_heredoc_parts()?;
+                let parts = self.read_heredoc_parts(b'"', Body::Escaped)?;
                 if parts.iter().any(|part| matches!(part, StringPart::Interpolation(_))) {
                     return self.interpolation_tokens(parts, start, space_before);
                 }

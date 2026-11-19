@@ -2,9 +2,10 @@ defmodule Macro do
   @moduledoc """
   Works with quoted code, as Elixir's `Macro` does.
 
-  `escape/1` is the only function defined. The rest of Elixir's `Macro`
-  (`to_string/1`, `expand/2`, `prewalk/2` and the others) and the options of
-  `escape/2` are not defined.
+  `escape/1` and `unescape_string/1` are the only functions defined. The rest
+  of Elixir's `Macro` (`to_string/1`, `expand/2`, `prewalk/2` and the others),
+  the options of `escape/2` and the escape map of `unescape_string/2` are not
+  defined.
   """
 
   @doc """
@@ -49,6 +50,33 @@ defmodule Macro do
 
   def escape(value) when is_function(value), do: escape_function(value, fz_function_name(value))
   def escape(value), do: refuse(value)
+
+  @doc """
+  Returns `string` with each escape sequence replaced by the character it
+  names, as a string literal would read it.
+
+  The escapes are `\\n \\t \\r \\s \\0 \\a \\b \\d \\e \\f \\v`, `\\\\`, `\\"`, `\\'`, `\\#`,
+  `\\xHH` (a byte), and `\\uHHHH` or `\\u{H...}` (a code point). A backslash before a
+  newline is removed, and a backslash before any other character leaves the
+  character. A `\\x` or `\\u` of the wrong form raises `ArgumentError`.
+
+  ## Examples
+
+      Macro.unescape_string("a\\\\nb")
+      #=> "a\\nb"
+
+      Macro.unescape_string("\\\\u00e9")
+      #=> "é"
+
+  """
+  @spec unescape_string(binary) :: binary
+  def unescape_string(string) when is_binary(string), do: unescaped(fz_unescape_string(string))
+
+  @spec unescaped([integer | binary]) :: binary
+  defp unescaped([1, text]), do: text
+  defp unescaped([0, message]), do: raise(ArgumentError, message)
+
+  extern "fz" defp fz_unescape_string(binary) :: any
 
   @spec escape_function(fun, list) :: tuple
   defp escape_function(_function, [module, name, arity]) do

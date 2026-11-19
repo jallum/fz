@@ -1,0 +1,77 @@
+#---
+# purpose: "~w splits its unescaped, interpolated text at whitespace and ~W splits it as written, into strings, atoms (a) or charlists (c)"
+# oracle: self
+# oracle.stamp: 6a98bd8aa77969b1
+#---
+#
+# `~w` and `~W` are the macros `sigil_w` and `sigil_W`. The words are the
+# pieces of the text between runs of whitespace; the modifier `s` (the
+# default), `a` or `c` makes each a string, an atom or a charlist. `~w`
+# unescapes and interpolates first, so an interpolated string that holds
+# spaces adds words; `~W` splits the text as written.
+defmodule Main do
+  def delimiters() do
+    [~w(a b), ~w[a b], ~w{a b}, ~w<a b>, ~w|a b|, ~w/a b/, ~w"a b", ~w'a b']
+  end
+
+  def modifiers() do
+    [~w(foo bar baz), ~w(foo bar baz)s, ~w(foo bar baz)a, ~w(foo bar baz)c, ~W(foo bar)a, ~W(foo bar)c]
+  end
+
+  def whitespace() do
+    [
+      ~w(  leading and   repeated  trailing  ),
+      ~w(tab\tsep newline\nsep),
+      ~w(line
+break words),
+      ~w(),
+      ~w(   ),
+      ~w(single),
+      ~w(a\u00a0b c\u2003d)
+    ]
+  end
+
+  def escapes() do
+    [~w(a\sb c\\d), ~w(\x41\x42 \u00e9), ~w(a\)b), ~W(a\sb c\\d), ~W(x#{y} z)]
+  end
+
+  def interpolation(x, spaced) do
+    [
+      ~w(foo #{x} baz),
+      ~w(foo #{spaced} baz),
+      ~w(#{x}#{x} #{x}),
+      ~w(#{spaced}),
+      ~w(#{x} #{x})a,
+      ~w(a#{x} b#{x})c,
+      ~w(f\#{x} o)
+    ]
+  end
+
+  def heredocs(x) do
+    [
+      ~w"""
+      alpha #{x}
+        beta
+      """,
+      ~W"""
+      raw #{x}
+      words
+      """,
+      ~w"""
+      one two
+      three
+      """a
+    ]
+  end
+
+  def main() do
+    Enum.each(delimiters(), &IO.inspect/1)
+    Enum.each(modifiers(), &IO.inspect/1)
+    Enum.each(whitespace(), &IO.inspect/1)
+    Enum.each(escapes(), &IO.inspect/1)
+    Enum.each(interpolation("X", " p  q "), &IO.inspect/1)
+    Enum.each(heredocs("H"), &IO.inspect/1)
+  end
+end
+
+Main.main()

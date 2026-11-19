@@ -21,7 +21,8 @@
   <li><a href="#var-bang">6. var! — reaching into the caller on purpose</a></li>
   <li><a href="#env">7. __CALLER__ and __ENV__</a></li>
   <li><a href="#footguns">8. Footguns</a></li>
-  <li><a href="#contract">9. The contract</a></li>
+  <li><a href="#sigils">9. Sigils: a macro named for a letter</a></li>
+  <li><a href="#contract">10. The contract</a></li>
 </ul>
 </div>
 
@@ -297,7 +298,35 @@ the code the macro returns, which runs later.
 </div>
 
 <!-- ─────────────────────────────── 9 ─────────────────────────────── -->
-<h2 id="contract">9. The contract</h2>
+<h2 id="sigils">9. Sigils: a macro named for a letter</h2>
+
+<p><code>~s(text)</code> is a call to the macro <code>sigil_s/2</code>. The
+lexer reads the whole sigil &mdash; its letter, its body and its trailing
+modifiers &mdash; and the macro receives the body as unevaluated code,
+<code>{:&lt;&lt;&gt;&gt;, meta, pieces}</code>, and the modifiers as a list of
+character codes. A lowercase sigil splits <code>#{...}</code> out of the body
+into pieces of the form <code>Kernel.to_string(expr)::binary</code>; an
+uppercase one keeps it as text. The body arrives with its escapes as written,
+and <code>Macro.unescape_string/1</code> reads them.</p>
+
+<pre><span class="kw">defmodule</span> Shout <span class="kw">do</span>
+  <span class="kw">defmacro</span> sigil_u({:&lt;&lt;&gt;&gt;, _, [text]}, _modifiers) <span class="kw">when</span> is_binary(text) <span class="kw">do</span>
+    String.upcase(Macro.unescape_string(text))
+  <span class="kw">end</span>
+<span class="kw">end</span>
+
+<span class="kw">import</span> Shout
+~u(hello)   <span class="com"># "HELLO"</span></pre>
+
+<p>Kernel provides <code>~s</code> and <code>~S</code> (strings),
+<code>~c</code> and <code>~C</code> (charlists) and <code>~w</code> and
+<code>~W</code> (word lists, with the modifiers <code>s</code>,
+<code>a</code> and <code>c</code> choosing strings, atoms or charlists). A
+sigil without a macro of that name in scope is an undefined-function error
+naming <code>sigil_x/2</code>.</p>
+
+<!-- ─────────────────────────────── 10 ─────────────────────────────── -->
+<h2 id="contract">10. The contract</h2>
 
 <p>A macro's own variables never collide with the caller's, and never collide
 between two different calls to the same macro &mdash; unless you say

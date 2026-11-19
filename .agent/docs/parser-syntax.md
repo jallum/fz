@@ -416,6 +416,48 @@ text: a doc explaining interpolation contains `#{...}` and will interpolate it,
 and an unbound name there currently changes what the module compiles to without
 reporting anything (fz-5xp.96). Escape the sigil in prose that describes it.
 
+## Sigils are expressions
+
+`~` followed by a letter starts a sigil, which the lexer reads whole into one
+`Tok::Sigil(Sigil { name, pieces, modifiers })`; no delimiter is a token of its
+own.
+
+- **Name.** One lowercase letter, or an uppercase letter followed by uppercase
+  letters and digits. A lowercase letter after the name is a lex error
+  (`~sigil`, `~Ab`).
+- **Delimiters.** `/ | " ' ( [ { <` close at `/ | " ' ) ] } >`, and a triple
+  quote (`"` or `'`) opens a heredoc that closes at the same three quotes on a
+  line of its own, with that line's indentation stripped. Delimiters do not
+  nest: the first closing delimiter ends the body.
+- **Modifiers.** The ASCII letters and digits right after the closing
+  delimiter.
+- **Raw body.** The lexer keeps every escape as written. The one exception is a
+  backslash before the closing delimiter: it is dropped and the delimiter is
+  text (a heredoc's backslash before its three quotes keeps the quotes). A
+  backslash and the character after it are a pair, so `\\` does not escape what
+  follows.
+- **Interpolation.** A lowercase sigil splits `#{...}` out of its body into
+  `SigilPiece::Interpolation` tokens, the same `Kernel.to_string(expr)` tokens a
+  string interpolation uses. An uppercase sigil keeps `#{...}` as text, and
+  `\#{` stays text with its backslash in a lowercase one. `pieces` is never
+  empty: an empty body is one empty `SigilPiece::Text`.
+
+The front door (`parse_sigil_call`) builds `sigil_x(<<pieces>>, modifiers)`: the
+pieces are a bitstring whose interpolations are
+`Kernel.to_string(expr)::binary`, and the modifiers are a list of their
+character codes, as Elixir quotes it. Which `sigil_x/2` runs is ordinary macro
+resolution: Kernel's `sigil_s`, `sigil_S`, `sigil_c`, `sigil_C`, `sigil_w` and
+`sigil_W` are imported through `lib/runtime.fz`, and a module defines its own
+with `defmacro sigil_x(term, modifiers)`. A sigil with no macro is an
+undefined-function error naming `sigil_x/2`. A sigil is an expression and a
+pattern, never a type or spec token (`token_payload` rejects it).
+
+A macro reads the body's escapes with `Macro.unescape_string/1`, whose reader
+is `runtime/src/escape.rs`, the reader the lexer's string literals use. The
+lexer is strict (an unknown escape is an error) and `unescape_string` is
+lenient (an unknown escape leaves its character, a backslash and a newline
+vanish), as in Elixir.
+
 ## Captures
 
 `parse_capture_expr` reads `&` as a prefix operator with one operand. Only
