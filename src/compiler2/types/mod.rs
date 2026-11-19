@@ -19,6 +19,7 @@ mod emptiness;
 mod format;
 mod memo;
 mod order;
+mod recursive;
 mod sigs;
 
 use crate::fast_hash::RandomState;
@@ -253,6 +254,9 @@ struct TypeInterner {
     /// observable.
     index: HashTable<Ty>,
     hasher: RandomState,
+    /// The recursive types among `arena`, and the questions being decided
+    /// about them.
+    recursion: recursive::Recursion,
     #[cfg(test)]
     work: InterningWork,
 }
@@ -325,6 +329,13 @@ enum BinaryTypeOperation {
     RefineWiden(Ty, Ty),
 }
 
+impl BinaryTypeOperation {
+    fn has_recursive_operand(self, cx: TyCtx<'_>) -> bool {
+        let (Self::Union(a, b) | Self::Intersect(a, b) | Self::Difference(a, b) | Self::RefineWiden(a, b)) = self;
+        cx.attrs(&a).recursive() || cx.attrs(&b).recursive()
+    }
+}
+
 /// Test-only work accounting for the immutable binary-operation result table.
 ///
 /// The production table stores only canonical answers. These counts make its
@@ -382,6 +393,7 @@ pub(super) struct TyCtx<'a> {
     /// structural address as `a1_0`/`r0`. Empty for the interner-internal ctx,
     /// which only resolves descriptors and never renders.
     addresses: &'a [Vec<addressed::AddrStep>],
+    recursion: &'a recursive::Recursion,
     #[cfg(test)]
     tuple_emptiness_steps: &'a std::cell::Cell<usize>,
     #[cfg(test)]
@@ -469,6 +481,43 @@ impl TypeInterner {
         self.find(self.hasher.hash_one(d), d)
     }
 
+    /// The id of this exact descriptor, if it was interned, without counting
+    /// a probe.
+    fn lookup_existing(&self, d: &Descr) -> Option<Ty> {
+        self.find(self.hasher.hash_one(d), d)
+    }
+
+    /// Store `d` without indexing it: a node of a recursive equation being
+    /// solved, or a member of a cluster whose descriptor is still being put in
+    /// normal form.
+    fn push_unindexed(&mut self, d: Descr, attrs: attrs::TyAttrs) -> Ty {
+        let ty = Ty(u32::try_from(self.arena.len()).expect("type interner exhausted ids"));
+        self.arena.push(d);
+        self.attrs.push(attrs);
+        ty
+    }
+
+    /// Take back every id from `len` up. Only unindexed nodes are ever taken
+    /// back, and nothing outside the equation being solved names them.
+    fn truncate(&mut self, len: usize) {
+        self.arena.truncate(len);
+        self.attrs.truncate(len);
+    }
+
+    /// Index a member pushed by `push_unindexed`, now that its descriptor is
+    /// final.
+    fn index_existing(&mut self, ty: Ty) {
+        let d = &self.arena[ty.0 as usize];
+        let hash = self.hasher.hash_one(d);
+        assert!(
+            self.find(hash, d).is_none(),
+            "a recursive type's member has the descriptor of another type"
+        );
+        let (arena, hasher) = (&self.arena, &self.hasher);
+        self.index
+            .insert_unique(hash, ty, |ty| hasher.hash_one(&arena[ty.0 as usize]));
+    }
+
     fn find(&self, hash: u64, d: &Descr) -> Option<Ty> {
         self.index.find(hash, |ty| &self.arena[ty.0 as usize] == d).copied()
     }
@@ -485,6 +534,7 @@ impl TypeInterner {
             arena: &self.arena,
             attrs: &self.attrs,
             addresses: &[],
+            recursion: &self.recursion,
             #[cfg(test)]
             tuple_emptiness_steps: &self.work.tuple_emptiness_steps,
             #[cfg(test)]
@@ -748,8 +798,7 @@ impl Types {
     /// carvings reach: `{A,C} ∨ {B,C}` is `{A∨B, C}`, so
     /// `{[int], :false} ∨ {[int], :true}` and `{[int], :false | :true}` are one
     /// descriptor before identity is assigned. Fusion mints the coordinate it
-    /// merges on, through this same boundary; the recursion terminates because
-    /// a coordinate names only types interned before it.
+    /// merges on, through this same boundary.
     ///
     /// LIST NORMALIZATION comes next, and is the same idea on the list axis. A
     /// list clause says only two things -- does it hold `[]`, and which
@@ -805,10 +854,29 @@ impl Types {
     /// descriptor already in the index. Idempotence is also what makes the
     /// lookup above an optimization rather than a second rule: running the pass
     /// on an indexed descriptor would return it unchanged.
-    fn intern(&mut self, mut d: Descr) -> Ty {
+    ///
+    /// Normalizing a descriptor that names a recursive type can intern its
+    /// coordinates, and those can arrive back at this same descriptor; the
+    /// recursive protocol answers that re-entry (`Types::recursive_operation`).
+    fn intern(&mut self, d: Descr) -> Ty {
         if let Some(ty) = self.interner.lookup(&d) {
             return ty;
         }
+        if self.ctx().reaches_recursion(&d) {
+            let open = recursive::Open::Intern(Box::new(d.clone()));
+            let (ty, _) = self.recursive_operation(open, |types| types.normalize_and_insert(d));
+            return ty;
+        }
+        self.normalize_and_insert(d)
+    }
+
+    fn normalize_and_insert(&mut self, d: Descr) -> Ty {
+        let d = self.normal_form(d);
+        self.interner.intern(d)
+    }
+
+    /// The one normal form every stored descriptor is in. See `intern`.
+    fn normal_form(&mut self, mut d: Descr) -> Descr {
         self.interner.normalized();
         self.normalize_tuple_axis(&mut d);
         self.normalize_list_clauses(&mut d);
@@ -820,7 +888,7 @@ impl Types {
         if d.looks_empty() {
             d = Descr::none();
         }
-        self.interner.intern(d)
+        d
     }
 
     /// Return an input whose operation has proved unchanged before any
@@ -1071,8 +1139,8 @@ impl Types {
     ///
     /// Carving works on descriptors and the coordinates it builds are interned
     /// here, so a coordinate is a `Ty` by the time the descriptor reaches the
-    /// index. That recursion terminates for the same reason the rest of the
-    /// boundary does: a coordinate names only types interned before it.
+    /// index. Below an ordinary type that recursion descends and ends; below a
+    /// recursive type `Types::intern` answers a re-entry.
     fn normalize_tuple_axis(&mut self, d: &mut Descr) {
         let clauses = std::mem::take(&mut d.tuples);
         let mut complex = Vec::with_capacity(clauses.len());
@@ -1149,6 +1217,7 @@ impl Types {
             arena: &self.interner.arena,
             attrs: &self.interner.attrs,
             addresses: &self.address_paths,
+            recursion: &self.interner.recursion,
             #[cfg(test)]
             tuple_emptiness_steps: &self.interner.work.tuple_emptiness_steps,
             #[cfg(test)]
@@ -1175,8 +1244,14 @@ impl Types {
         if let Some(result) = self.binary_type_operations.lookup(key) {
             return result;
         }
-        let result = compute(self);
-        self.binary_type_operations.remember(key, result);
+        let (result, settled) = if key.has_recursive_operand(self.ctx()) {
+            self.recursive_operation(recursive::Open::Operation(key), compute)
+        } else {
+            (compute(self), true)
+        };
+        if settled {
+            self.binary_type_operations.remember(key, result);
+        }
         result
     }
 
@@ -3525,11 +3600,11 @@ impl Types {
 
 impl Types {
     pub fn display(&self, a: &Ty) -> String {
-        format::display(self.ctx(), self.descr(a))
+        format::display_ty(self.ctx(), a)
     }
 
     pub fn display_for_diag(&self, a: &Ty) -> String {
-        format::display_for_diag(self.ctx(), self.descr(a))
+        format::display_ty(self.ctx(), a)
     }
 }
 

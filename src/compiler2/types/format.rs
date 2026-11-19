@@ -1,7 +1,10 @@
 //! Display helpers for interned descriptors.
 
+use std::cell::RefCell;
+
 use super::CallableValueKind;
 use super::MapKey;
+use super::Ty;
 use super::TyCtx;
 use super::bits::basic_names;
 use super::conj::Conj;
@@ -9,24 +12,70 @@ use super::descr::Descr;
 use super::sigs::{ArrowSig, ListSig, MapSig, ResourceSig, TupleSig};
 use crate::finite_set::FiniteSet;
 
-pub(crate) fn display(cx: TyCtx<'_>, d: &Descr) -> String {
-    if d.looks_empty() {
-        return "none".to_string();
+/// Display of a type by handle, so a recursive type can be written with its
+/// binder.
+pub(crate) fn display_ty(cx: TyCtx<'_>, ty: &Ty) -> String {
+    Render::new(cx).ty(ty)
+}
+
+/// One rendering. A member of a recursive type is written `μt. body` where it
+/// is first reached, and as `t` wherever its own body reaches it again.
+struct Render<'a> {
+    cx: TyCtx<'a>,
+    entered: RefCell<Vec<Ty>>,
+}
+
+impl<'a> Render<'a> {
+    fn new(cx: TyCtx<'a>) -> Self {
+        Self {
+            cx,
+            entered: RefCell::new(Vec::new()),
+        }
     }
-    if d.looks_full() {
-        return "any".to_string();
+
+    fn ty(&self, ty: &Ty) -> String {
+        if !self.cx.recursion.is_member(*ty) {
+            return self.descr(self.cx.descr(ty));
+        }
+        if let Some(depth) = self.entered.borrow().iter().position(|t| t == ty) {
+            return binder_name(depth);
+        }
+        let depth = self.entered.borrow().len();
+        self.entered.borrow_mut().push(*ty);
+        let body = self.descr(self.cx.descr(ty));
+        self.entered.borrow_mut().pop();
+        format!("μ{}. {body}", binder_name(depth))
     }
-    let mut parts = Vec::new();
-    parts.extend(basic_names(d.basic).into_iter().map(str::to_string));
-    append_axis(&mut parts, &d.atoms, "atom", |s| format!(":{}", s));
-    append_axis(&mut parts, &d.opaques, "opaque", ToString::to_string);
-    append_axis(&mut parts, &d.vars, "var", |id| cx.render_var(*id));
-    parts.extend(d.tuples.iter().map(|c| format_tuple_clause(cx, c)));
-    parts.extend(d.lists.iter().map(|c| format_list_clause(cx, c)));
-    parts.extend(d.resources.iter().map(|c| format_resource_clause(cx, c)));
-    parts.extend(d.funcs.iter().map(|c| format_arrow_clause(cx, c)));
-    parts.extend(d.maps.iter().map(|c| format_map_clause(cx, c)));
-    brand_refinement(&d.brands, parts.join(" | "))
+
+    fn descr(&self, d: &Descr) -> String {
+        if d.looks_empty() {
+            return "none".to_string();
+        }
+        if d.looks_full() {
+            return "any".to_string();
+        }
+        let cx = self.cx;
+        let mut parts = Vec::new();
+        parts.extend(basic_names(d.basic).into_iter().map(str::to_string));
+        append_axis(&mut parts, &d.atoms, "atom", |s| format!(":{}", s));
+        append_axis(&mut parts, &d.opaques, "opaque", ToString::to_string);
+        append_axis(&mut parts, &d.vars, "var", |id| cx.render_var(*id));
+        parts.extend(d.tuples.iter().map(|c| self.tuple_clause(c)));
+        parts.extend(d.lists.iter().map(|c| self.list_clause(c)));
+        parts.extend(d.resources.iter().map(|c| self.resource_clause(c)));
+        parts.extend(d.funcs.iter().map(|c| self.arrow_clause(c)));
+        parts.extend(d.maps.iter().map(|c| self.map_clause(c)));
+        brand_refinement(&d.brands, parts.join(" | "))
+    }
+}
+
+/// The name of the binder entered at `depth`: `t`, `u`, ... `z`, then `t1`.
+fn binder_name(depth: usize) -> String {
+    const NAMES: [&str; 7] = ["t", "u", "v", "w", "x", "y", "z"];
+    match depth / NAMES.len() {
+        0 => NAMES[depth].to_string(),
+        round => format!("{}{round}", NAMES[depth % NAMES.len()]),
+    }
 }
 
 /// A brand is a REFINEMENT of the structure beside it, not another member of
@@ -55,10 +104,6 @@ pub(super) fn brand_refinement(brands: &FiniteSet<String>, body: String) -> Stri
     }
 }
 
-pub(crate) fn display_for_diag(cx: TyCtx<'_>, d: &Descr) -> String {
-    display(cx, d)
-}
-
 fn append_axis<T, F>(parts: &mut Vec<String>, set: &FiniteSet<T>, top_name: &str, render: F)
 where
     T: Ord + Clone,
@@ -79,36 +124,82 @@ where
     }
 }
 
-fn format_tuple_clause(cx: TyCtx<'_>, c: &Conj<TupleSig>) -> String {
-    format_conj(c, "tuple", |sig| {
-        let elems: Vec<String> = sig.elems.iter().map(|ty| display(cx, cx.descr(ty))).collect();
-        format!("{{{}}}", elems.join(", "))
-    })
-}
+impl Render<'_> {
+    fn tuple_clause(&self, c: &Conj<TupleSig>) -> String {
+        format_conj(c, "tuple", |sig| {
+            let elems: Vec<String> = sig.elems.iter().map(|ty| self.ty(ty)).collect();
+            format!("{{{}}}", elems.join(", "))
+        })
+    }
 
-fn format_list_clause(cx: TyCtx<'_>, c: &Conj<ListSig>) -> String {
-    format_conj(c, "[any]", |sig| match (sig.empty, sig.elem) {
-        (true, None) => "[]".to_string(),
-        (_, Some(elem)) => format!("[{}]", display(cx, cx.descr(&elem))),
-        (false, None) => "nonempty([])".to_string(),
-    })
-}
+    fn list_clause(&self, c: &Conj<ListSig>) -> String {
+        format_conj(c, "[any]", |sig| match (sig.empty, sig.elem) {
+            (true, None) => "[]".to_string(),
+            (_, Some(elem)) => format!("[{}]", self.ty(&elem)),
+            (false, None) => "nonempty([])".to_string(),
+        })
+    }
 
-fn format_resource_clause(cx: TyCtx<'_>, c: &Conj<ResourceSig>) -> String {
-    format_conj(c, "resource(any)", |sig| {
-        format!("resource({})", display(cx, cx.descr(&sig.payload)))
-    })
-}
+    fn resource_clause(&self, c: &Conj<ResourceSig>) -> String {
+        format_conj(c, "resource(any)", |sig| format!("resource({})", self.ty(&sig.payload)))
+    }
 
-fn format_arrow_clause(cx: TyCtx<'_>, c: &Conj<ArrowSig>) -> String {
-    format_conj(c, "fun", |sig| {
-        let args: Vec<String> = sig.args.iter().map(|ty| display(cx, cx.descr(ty))).collect();
-        let base = elixir_arrow(&args, &display(cx, cx.descr(&sig.ret)));
-        match &sig.lit {
-            Some(lit) => format_closure_lit_suffix(cx, &base, lit),
-            None => base,
+    fn arrow_clause(&self, c: &Conj<ArrowSig>) -> String {
+        format_conj(c, "fun", |sig| {
+            let args: Vec<String> = sig.args.iter().map(|ty| self.ty(ty)).collect();
+            let base = elixir_arrow(&args, &self.ty(&sig.ret));
+            match &sig.lit {
+                Some(lit) => self.closure_lit_suffix(&base, lit),
+                None => base,
+            }
+        })
+    }
+
+    /// Render a `ClosureLit`-bearing arrow's suffix so that distinct `ClosureLit`
+    /// identities (which differ by `kind`, `fn_id`, and/or elementwise `captures`
+    /// — see `ClosureLit`'s doc comment in `sigs.rs`) never collide on the same
+    /// rendered string.
+    ///
+    /// `kind = FnRef` clauses always carry empty `captures` (a `ClosureLit`
+    /// invariant), so the plain `#{fn_id}` suffix stays as it was — this keeps
+    /// the overwhelmingly common case (a bare function reference) readable and
+    /// unchanged. It is also why a `FnRef` literal is never ANONYMOUS: the erasure
+    /// drops a capture-free literal whole instead of anonymising it, so the `#?` an
+    /// erased brand renders as only ever appears in front of a `closure[...]`
+    /// tail. `kind = Closure` clauses additionally render their captures
+    /// structurally (never as raw interner ids) behind a `closure[...]` tag, so a
+    /// `Closure` lit can never collide with a `FnRef` lit on the same `fn_id`,
+    /// and two `Closure` lits on the same `fn_id` collide only if their captures
+    /// also render identically.
+    fn closure_lit_suffix(&self, base: &str, lit: &super::sigs::ClosureLit) -> String {
+        let head = match lit.fn_id {
+            Some(fn_id) => format!("{}#{}", base, fn_id.0),
+            None => format!("{base}#?"),
+        };
+        match lit.kind {
+            CallableValueKind::FnRef => head,
+            CallableValueKind::Closure => {
+                let caps: Vec<String> = lit.captures.iter().map(|ty| self.ty(ty)).collect();
+                format!("{}closure[{}]", head, caps.join(", "))
+            }
         }
-    })
+    }
+
+    fn map_clause(&self, c: &Conj<MapSig>) -> String {
+        format_conj(c, "map", |sig| {
+            let module = super::sig_struct(self.cx, sig);
+            let fields: Vec<String> = sig
+                .fields
+                .iter()
+                .filter(|(k, _)| module.is_none() || !super::is_struct_module_key(k))
+                .map(|(k, v)| format!("{}: {}", format_map_key(k), self.ty(v)))
+                .collect();
+            match &module {
+                None => format!("%{{{}}}", fields.join(", ")),
+                Some(name) => format!("%{}{{{}}}", name, fields.join(", ")),
+            }
+        })
+    }
 }
 
 /// Elixir's function type: the arrow sits inside the parentheses, and a
@@ -118,52 +209,6 @@ fn elixir_arrow(args: &[String], result: &str) -> String {
         [] => format!("(-> {result})"),
         _ => format!("({} -> {result})", args.join(", ")),
     }
-}
-
-/// Render a `ClosureLit`-bearing arrow's suffix so that distinct `ClosureLit`
-/// identities (which differ by `kind`, `fn_id`, and/or elementwise `captures`
-/// — see `ClosureLit`'s doc comment in `sigs.rs`) never collide on the same
-/// rendered string.
-///
-/// `kind = FnRef` clauses always carry empty `captures` (a `ClosureLit`
-/// invariant), so the plain `#{fn_id}` suffix stays as it was — this keeps
-/// the overwhelmingly common case (a bare function reference) readable and
-/// unchanged. It is also why a `FnRef` literal is never ANONYMOUS: the erasure
-/// drops a capture-free literal whole instead of anonymising it, so the `#?` an
-/// erased brand renders as only ever appears in front of a `closure[...]`
-/// tail. `kind = Closure` clauses additionally render their captures
-/// structurally (never as raw interner ids) behind a `closure[...]` tag, so a
-/// `Closure` lit can never collide with a `FnRef` lit on the same `fn_id`,
-/// and two `Closure` lits on the same `fn_id` collide only if their captures
-/// also render identically.
-fn format_closure_lit_suffix(cx: TyCtx<'_>, base: &str, lit: &super::sigs::ClosureLit) -> String {
-    let head = match lit.fn_id {
-        Some(fn_id) => format!("{}#{}", base, fn_id.0),
-        None => format!("{base}#?"),
-    };
-    match lit.kind {
-        CallableValueKind::FnRef => head,
-        CallableValueKind::Closure => {
-            let caps: Vec<String> = lit.captures.iter().map(|ty| display(cx, cx.descr(ty))).collect();
-            format!("{}closure[{}]", head, caps.join(", "))
-        }
-    }
-}
-
-fn format_map_clause(cx: TyCtx<'_>, c: &Conj<MapSig>) -> String {
-    format_conj(c, "map", |sig| {
-        let module = super::sig_struct(cx, sig);
-        let fields: Vec<String> = sig
-            .fields
-            .iter()
-            .filter(|(k, _)| module.is_none() || !super::is_struct_module_key(k))
-            .map(|(k, v)| format!("{}: {}", format_map_key(k), display(cx, cx.descr(v))))
-            .collect();
-        match &module {
-            None => format!("%{{{}}}", fields.join(", ")),
-            Some(name) => format!("%{}{{{}}}", name, fields.join(", ")),
-        }
-    })
 }
 
 /// One clause, with `top` naming the clause that carries no factors at all.

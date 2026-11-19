@@ -50,12 +50,13 @@ and confirmed by comparing against the arena. The structural kernel (`dnf`,
 
 ## What a handle settles once
 
-A `Ty`'s descriptor never changes and its children are interned before it, so the
-facts that follow from the descriptor and its children's facts are computed once,
-in `Types::intern`, into one byte per type (`types/attrs.rs`, read through
+A `Ty`'s descriptor never changes, so the facts that follow from the descriptor and
+its children's facts are computed once, in `Types::intern` (for the members of a
+recursive type, as a least fixpoint over the cluster), into one byte per type (`types/attrs.rs`, read through
 `TyCtx::attrs`): `has_vars`, `has_open_vars`, `mentions_closure_literal`,
 `path_free` (no list, callable or variable at any depth, so no structural address
-is minted below it) and `literal_blind`. `Types::has_vars`, `has_open_vars` and
+is minted below it), `literal_blind` and `recursive` (a member of a recursive type
+occurs at any depth). `Types::has_vars`, `has_open_vars` and
 `is_literal_blind` are byte reads. An attribute is a function of the descriptor and
 its children's attributes only; world state such as closure registration never
 feeds one, because it would go stale where the descriptor does not.
