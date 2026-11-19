@@ -4,14 +4,16 @@
   "blocks": [
     "fz-3ul.13"
   ],
+  "closed_at": "2026-11-19T01:12:28Z",
+  "close_reason": "Merged in PR #764 (ad5a9af60)",
   "created": "2026-11-18T03:16:28Z",
   "description": "Approved by the user 2026-11-17 (relayed verbatim by Bugs and Cleanup: \"do so; we'll want to recheck the current fixtures to ensure that we use this feature where possible.\").\n\nBug: fz rejects\n  def convert(n) do String.to_integer(n) rescue e in ArgumentError -\u003e {:error, e.message} end\non every path with error[parse/invalid-function-definition]: `def` function clause must have exactly one `do` body (quoted_surface.rs:729 clause_group_key -\u003e is_single_do_keyword). Elixir 1.19 accepts it.\n\nElixir: elixir_def.erl:241-253 def_to_clauses. A body of exactly [do: B] stays B; any other keyword list containing do becomes {:try, [definition: Kind | Meta], [Keywords]}, so do/rescue/catch/else/after become an ordinary try's options, validated by elixir_clauses:'try'/4. definition: Kind lets diagnostics say def instead of try. Each clause wraps only its body; args and guards stay outside.\n\nChange: clause_group_key accepts a def/defp/defmacro/defmacrop body whose keyword list is do plus only rescue/catch/else/after, rewritten into a try node for decode_try (quoted_function.rs:884) so validation is shared. Bodyless and unknown-key (nope:) bodies keep today's error (compiler2_test.rs:1424 pins them). Check quoted_function.rs's body decode for a second single-do assumption.\n\nFixture: oracle: self, a multi-clause def using rescue, catch, else and after with a guarded clause, all three paths; plus an error fixture for an implicit-try-only refusal (e.g. else without rescue/catch) if diagnostics name def.\n\nAcceptance: three paths agree with Elixir; pinned refusals unchanged; full gate.",
   "id": "fz-3ul.12",
   "labels": [],
   "parent": "fz-3ul",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "A function body may carry rescue, catch, else and after, as an implicit try",
   "type": "task",
-  "updated_at": "2026-11-18T23:24:42Z"
+  "updated_at": "2026-11-19T01:12:28Z"
 }
