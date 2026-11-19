@@ -57,6 +57,35 @@ disagrees with its definition, or that no module ever defines, is an
 unresolved-frontier diagnostic surfaced when the drive goes quiet — the same
 machinery as an unknown import.
 
+## Types that name themselves
+
+A `@type` that names itself, directly or through other `@type`s that name it
+back, is a recursive type: `@type t :: :start | {integer, t}` is
+`μt. :start | {int, t}`. Such a type cannot wait for its own `TypeDefined`, so
+`DeriveTypeDef(t)` first asks `World::type_def_cycle` for the cycle `t` belongs
+to: the noted declarations reachable from `t` that reach back to it. It waits
+only on the `TypeDefined` and `StructDefined` facts outside the cycle, then
+`World::resolve_type_cycle` opens one binder per member
+(`Types::recursive_equations`), resolves every member's body with each member's
+name standing for its binder, solves the bodies together
+(`Types::solve_recursive`), and the job publishes its own member.
+
+Every member's job solves the whole cycle and publishes only itself. The kernel
+interns a recursive type canonically, so each job lands on the same identities,
+and so does a member resolved alone against a sibling that is already
+published. Which member a program pulls first therefore changes nothing
+(`types_that_name_each_other_are_one_recursive_type_whichever_is_pulled_first`).
+A job that runs before a sibling's module is noted sees no cycle and waits for
+that sibling's `TypeDefined`; the sibling, noted later, sees the whole cycle.
+
+A parametric member names a member only with its own parameters, in order
+(`tree(a)` inside `tree(a)`): the solved body keeps them as variables, and a use
+site instantiates it like any template. Any other arguments (`nest({a})` inside
+`nest(a)`) wrap each unrolling once more, so no finite recursive type answers
+them, and the use is refused. A member that solves to no values — `t :: t`, or
+`t :: {integer, t}` with no case that ends — is refused at its declaration.
+Fixtures `01357`–`01359` and `01595` run these.
+
 ## A name nothing declares
 
 Every `TypeExpr::Name` carries the span of the name as written, the whole dotted

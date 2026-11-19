@@ -133,6 +133,34 @@ fn find_constructor(name: &str) -> Option<&'static ConstructorEntry> {
     CONSTRUCTORS.iter().find(|entry| entry.name == name)
 }
 
+/// What a name means while one type expression resolves: the type variables
+/// written so far, and, inside a cycle of `@type`s that name each other, the
+/// binder each member's name stands for.
+struct TypeScope<'c> {
+    vars: HashMap<String, TypeVarId>,
+    cycle: &'c [(TypeName, Ty)],
+}
+
+impl<'c> TypeScope<'c> {
+    fn open() -> Self {
+        Self::within(&[])
+    }
+
+    fn within(cycle: &'c [(TypeName, Ty)]) -> Self {
+        Self {
+            vars: HashMap::default(),
+            cycle,
+        }
+    }
+
+    fn binder_of(&self, name: &TypeName) -> Option<Ty> {
+        self.cycle
+            .iter()
+            .find(|(member, _)| member == name)
+            .map(|(_, binder)| *binder)
+    }
+}
+
 /// One type variable as a spec writes it: how often, and where first.
 struct VariableUse {
     name: String,
@@ -202,18 +230,66 @@ impl World {
     /// type's values, exactly like a refinement; only a `ProtocolDomain`
     /// marker publishes a pure nominal tag with no inner.
     pub(crate) fn resolve_type_def(&mut self, name: &TypeName, decl: &NotedTypeDecl) -> Result<TypeDef, TypeExprError> {
-        let mut vars: HashMap<String, TypeVarId> = HashMap::default();
+        self.resolve_type_def_within(name, decl, &[])
+    }
+
+    /// Resolves the `@type`s of one cycle of declarations that name each
+    /// other, in `members`' order. Each member's name stands for its own
+    /// binder while the bodies resolve, and the bodies are solved together as
+    /// one recursive type. A member that solves to no values names itself on
+    /// every path through it, and is refused at its declaration.
+    pub(crate) fn resolve_type_cycle(
+        &mut self,
+        members: &[(TypeName, NotedTypeDecl)],
+    ) -> Result<Vec<TypeDef>, TypeExprError> {
+        let equations = self.types_mut().recursive_equations(members.len());
+        let cycle: Vec<(TypeName, Ty)> = members
+            .iter()
+            .map(|(name, _)| name.clone())
+            .zip(equations.binders().iter().copied())
+            .collect();
+        let mut definitions = Vec::with_capacity(members.len());
+        for (name, decl) in members {
+            definitions.push(self.resolve_type_def_within(name, decl, &cycle)?);
+        }
+        let bodies: Vec<Ty> = definitions.iter().map(|definition| definition.ty).collect();
+        let solved = self.types_mut().solve_recursive(equations, &bodies);
+        for ((name, decl), ty) in members.iter().zip(&solved) {
+            if self.types().is_empty(ty) {
+                return Err(TypeExprError {
+                    msg: format!(
+                        "type `{}` has no values: every way through it names `{}` again",
+                        name.name, name.name
+                    ),
+                    span: decl.span,
+                });
+            }
+        }
+        Ok(definitions
+            .into_iter()
+            .zip(solved)
+            .map(|(definition, ty)| TypeDef { ty, ..definition })
+            .collect())
+    }
+
+    fn resolve_type_def_within(
+        &mut self,
+        name: &TypeName,
+        decl: &NotedTypeDecl,
+        cycle: &[(TypeName, Ty)],
+    ) -> Result<TypeDef, TypeExprError> {
+        let mut scope = TypeScope::within(cycle);
         let params: Vec<TypeVarId> = decl
             .params
             .iter()
             .enumerate()
             .map(|(index, param)| {
                 let id = TypeVarId(index as u32);
-                vars.insert(param.clone(), id);
+                scope.vars.insert(param.clone(), id);
                 id
             })
             .collect();
-        let inner = self.resolve_ty(decl.namespace, &decl.body.inner, &mut vars)?;
+        let inner = self.resolve_ty(decl.namespace, &decl.body.inner, &mut scope)?;
         let ty = match decl.body.kind {
             NominalKind::Plain => inner,
             NominalKind::Refines | NominalKind::Opaque => {
@@ -239,20 +315,20 @@ impl World {
         namespace: Namespace,
         spec: &SpecDecl,
     ) -> Result<ResolvedSpec, TypeExprError> {
-        let mut vars: HashMap<String, TypeVarId> = HashMap::default();
+        let mut scope = TypeScope::open();
         let mut written = Vec::with_capacity(spec.param_body_tokens.len() + 1 + spec.constraints.len());
         let mut params = Vec::with_capacity(spec.param_body_tokens.len());
         for body in &spec.param_body_tokens {
             let expr = parse_type_expr(&body.0)?;
-            params.push(self.resolve_ty(namespace, &expr, &mut vars)?);
+            params.push(self.resolve_ty(namespace, &expr, &mut scope)?);
             written.push(expr);
         }
         let result_expr = parse_type_expr(&spec.result_body_tokens.0)?;
-        let result = self.resolve_ty(namespace, &result_expr, &mut vars)?;
+        let result = self.resolve_ty(namespace, &result_expr, &mut scope)?;
         written.push(result_expr);
         let mut constraints = HashMap::default();
         for (var_name, body) in &spec.constraints {
-            let Some(&id) = vars.get(var_name) else {
+            let Some(&id) = scope.vars.get(var_name) else {
                 return Err(TypeExprError {
                     msg: format!("constraint references unknown type variable `{}`", var_name),
                     span: body.0.first().map(|token| token.span).unwrap_or(Span::DUMMY),
@@ -262,11 +338,11 @@ impl World {
                 continue;
             }
             let expr = parse_type_expr(&body.0)?;
-            let bound = self.resolve_ty(namespace, &expr, &mut vars)?;
+            let bound = self.resolve_ty(namespace, &expr, &mut scope)?;
             constraints.insert(id, bound);
             written.push(expr);
         }
-        check_declared_variables(spec, &vars, &written)?;
+        check_declared_variables(spec, &scope.vars, &written)?;
         // fz-hwn.27.14 — address the whole spec scope at the binder. The
         // resolver's first-occurrence ids are raw material; a variable's
         // canonical identity is its STRUCTURAL ADDRESS (param i -> a{i}, result
@@ -307,8 +383,7 @@ impl World {
         body: &TypeExprBody,
     ) -> Result<Ty, TypeExprError> {
         let expr = parse_type_expr(&body.0)?;
-        let mut vars: HashMap<String, TypeVarId> = HashMap::default();
-        self.resolve_ty(namespace, &expr, &mut vars)
+        self.resolve_ty(namespace, &expr, &mut TypeScope::open())
     }
 
     /// Resolves one spec to the shared downstream contract shape:
@@ -330,12 +405,12 @@ impl World {
         &mut self,
         namespace: Namespace,
         expr: &TypeExpr,
-        vars: &mut HashMap<String, TypeVarId>,
+        scope: &mut TypeScope<'_>,
     ) -> Result<Ty, TypeExprError> {
         match expr {
-            TypeExpr::Name { path, args, span } => self.resolve_name(namespace, path, args, *span, vars),
+            TypeExpr::Name { path, args, span } => self.resolve_name(namespace, path, args, *span, scope),
             TypeExpr::List(inner) => {
-                let elem = self.resolve_ty(namespace, inner, vars)?;
+                let elem = self.resolve_ty(namespace, inner, scope)?;
                 Ok(self.types_mut().list(elem))
             }
             // `[]` in type position is the empty-list type (list axis, kind
@@ -343,16 +418,16 @@ impl World {
             // `nil` written in expr/type position (`nil()`, atom axis).
             TypeExpr::EmptyList => Ok(self.types_mut().empty_list()),
             TypeExpr::Tuple(elems) => {
-                let tys = self.resolve_each(namespace, elems, vars)?;
+                let tys = self.resolve_each(namespace, elems, scope)?;
                 Ok(self.types_mut().tuple(&tys))
             }
             TypeExpr::Arrow { params, result } => {
-                let param_tys = self.resolve_each(namespace, params, vars)?;
-                let result_ty = self.resolve_ty(namespace, result, vars)?;
+                let param_tys = self.resolve_each(namespace, params, scope)?;
+                let result_ty = self.resolve_ty(namespace, result, scope)?;
                 Ok(self.types_mut().arrow(&param_tys, result_ty))
             }
             TypeExpr::Union(elems) => {
-                let tys = self.resolve_each(namespace, elems, vars)?;
+                let tys = self.resolve_each(namespace, elems, scope)?;
                 let mut tys = tys.into_iter();
                 let mut acc = tys.next().expect("a parsed union has at least two members");
                 for ty in tys {
@@ -374,7 +449,7 @@ impl World {
                 // schema says exists.
                 let mut written = Vec::with_capacity(fields.len());
                 for (name, field) in fields {
-                    written.push((name.clone(), self.resolve_ty(namespace, field, vars)?));
+                    written.push((name.clone(), self.resolve_ty(namespace, field, scope)?));
                 }
                 Ok(self.struct_record_ty(module_id, written))
             }
@@ -382,7 +457,7 @@ impl World {
                 let mut fields = Vec::with_capacity(pairs.len());
                 for (key_expr, value_expr) in pairs {
                     let map_key = self.resolve_map_key(key_expr)?;
-                    let value_ty = self.resolve_ty(namespace, value_expr, vars)?;
+                    let value_ty = self.resolve_ty(namespace, value_expr, scope)?;
                     fields.push((map_key, value_ty));
                 }
                 Ok(self.types_mut().map(&fields))
@@ -409,11 +484,11 @@ impl World {
         &mut self,
         namespace: Namespace,
         exprs: &[TypeExpr],
-        vars: &mut HashMap<String, TypeVarId>,
+        scope: &mut TypeScope<'_>,
     ) -> Result<Vec<Ty>, TypeExprError> {
         let mut tys = Vec::with_capacity(exprs.len());
         for expr in exprs {
-            tys.push(self.resolve_ty(namespace, expr, vars)?);
+            tys.push(self.resolve_ty(namespace, expr, scope)?);
         }
         Ok(tys)
     }
@@ -424,14 +499,14 @@ impl World {
         path: &[String],
         args: &[TypeExpr],
         span: Span,
-        vars: &mut HashMap<String, TypeVarId>,
+        scope: &mut TypeScope<'_>,
     ) -> Result<Ty, TypeExprError> {
         let name_error = |msg: &str| TypeExprError {
             msg: format!("{} `{}`", msg, path.join(".")),
             span,
         };
-        let arg_tys = self.resolve_each(namespace, args, vars)?;
-        match self.classify_name(namespace, path, args.len(), vars) {
+        let arg_tys = self.resolve_each(namespace, args, scope)?;
+        match self.classify_name(namespace, path, args.len(), scope) {
             NameClass::Builtin(entry) => {
                 if !entry.arity.accepts(args.len()) {
                     return Err(name_error(&format!(
@@ -443,6 +518,18 @@ impl World {
                 Ok((entry.build)(self.types_mut(), &arg_tys))
             }
             NameClass::Named(type_name) => {
+                if let Some(binder) = scope.binder_of(&type_name) {
+                    if !self.passes_own_parameters(&arg_tys) {
+                        return Err(TypeExprError {
+                            msg: format!(
+                                "a recursive type must pass its own parameters, in order, where it names itself; `{}` does not",
+                                path.join(".")
+                            ),
+                            span,
+                        });
+                    }
+                    return Ok(binder);
+                }
                 let Some(ty) = self.instantiate_type_def(&type_name, &arg_tys) else {
                     return Err(name_error("type is referenced before it is resolved"));
                 };
@@ -463,13 +550,13 @@ impl World {
         namespace: Namespace,
         path: &[String],
         arity: usize,
-        vars: &mut HashMap<String, TypeVarId>,
+        scope: &mut TypeScope<'_>,
     ) -> NameClass {
         if let [name] = path {
             if let Some(entry) = find_constructor(name) {
                 return NameClass::Builtin(entry);
             }
-            if let Some(&id) = vars.get(name) {
+            if let Some(&id) = scope.vars.get(name) {
                 return NameClass::Var(id);
             }
         }
@@ -479,11 +566,20 @@ impl World {
         if let [name] = path
             && name.chars().count() == 1
         {
-            let next = TypeVarId(vars.len() as u32);
-            let id = *vars.entry(name.clone()).or_insert(next);
+            let next = TypeVarId(scope.vars.len() as u32);
+            let id = *scope.vars.entry(name.clone()).or_insert(next);
             return NameClass::Var(id);
         }
         NameClass::Unknown
+    }
+
+    /// Whether `args` are exactly a declaration's own parameters, in order:
+    /// the only arguments with which a member of a recursive cycle may name
+    /// a member, since any other wraps each unrolling once more.
+    fn passes_own_parameters(&mut self, args: &[Ty]) -> bool {
+        args.iter()
+            .enumerate()
+            .all(|(index, arg)| *arg == self.types_mut().type_var(TypeVarId(index as u32)))
     }
 
     fn warn_numeric_literal_type(&mut self, literal: &str) {

@@ -1,0 +1,25 @@
+#---
+# purpose: "Two @types in two modules that name each other resolve together as one recursive type, μt. :leaf | {:a, μu. {:b, t}}, and a function spec'd over it runs"
+# root: main/0
+# oracle: self
+# oracle.stamp: b28b8f8c2eaf1def
+#---
+defmodule A do
+  @type a() :: :leaf | {:a, B.b()}
+
+  @spec depth(a()) :: integer()
+  def depth(:leaf), do: 0
+  def depth({:a, {:b, rest}}), do: 1 + depth(rest)
+end
+
+defmodule B do
+  @type b() :: {:b, A.a()}
+end
+
+defmodule Main do
+  def main() do
+    IO.puts(A.depth({:a, {:b, {:a, {:b, :leaf}}}}))
+  end
+end
+
+Main.main()

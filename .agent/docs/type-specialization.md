@@ -459,11 +459,10 @@ concluded return moves, and its own return moves once.
 ceiling. The other four `json_*` fixtures share its decode loop, so pinning the
 goal program pins them too.
 
-Two companions fail from opposite ends. `fixtures/01595_recursive_typedef.fz` declares
-the type the ladder is reaching for, `@type t :: :start | {integer, t}`, and
-stalls before any return can climb: `DeriveTypeDef(t)` waits on the
-`TypeDefined(t)` it alone produces, and `World::unresolved_issue` reports that
-self-reference as a `resolve/type-alias` diagnostic at the `@type` declaration.
+Two companions approach it from opposite ends. `fixtures/01595_recursive_typedef.fz`
+declares the type the ladder is reaching for, `@type t :: :start | {integer, t}`,
+which resolves to `μt. :start | {int, t}` (see
+[`type-naming`](type-naming.md#types-that-name-themselves)).
 `fixtures/01603_return_tuple_accumulator.fz` grows the same nesting in an argument
 instead, so each rung would key a new activation with a fresh budget; the
 evidence row of each rung repeats the standing row's tuple, the clash rule folds

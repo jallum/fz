@@ -1395,6 +1395,33 @@ impl World {
         self.type_refs.type_refs(name)
     }
 
+    /// The cycle of `@type`s that name each other which `name` belongs to,
+    /// in order, `name` included; empty when no path through the noted
+    /// declarations leads from `name` back to itself. A name whose
+    /// declaration is not noted yet leads nowhere: its own job, once noted,
+    /// is the one that sees the whole cycle.
+    pub(crate) fn type_def_cycle(&self, name: &TypeName) -> Vec<TypeName> {
+        let reached = self.type_names_reached_from(name);
+        if !reached.contains(name) {
+            return Vec::new();
+        }
+        reached
+            .into_iter()
+            .filter(|member| member == name || self.type_names_reached_from(member).contains(name))
+            .collect()
+    }
+
+    fn type_names_reached_from(&self, from: &TypeName) -> BTreeSet<TypeName> {
+        let mut reached = BTreeSet::new();
+        let mut pending = self.type_def_refs(from).to_vec();
+        while let Some(next) = pending.pop() {
+            if self.type_decl(&next).is_some() && reached.insert(next.clone()) {
+                pending.extend(self.type_def_refs(&next).iter().cloned());
+            }
+        }
+        reached
+    }
+
     /// Records the struct modules a `@type` body's `%Mod{...}` records name
     /// — the `StructDefined` half of `DeriveTypeDef`'s wait-set, alongside
     /// `record_type_def_refs`'s `TypeDefined` half (fz-rh2.17.5.6.10).
@@ -3444,13 +3471,6 @@ impl World {
         })
     }
 
-    /// A `TypeDefined(name)` wait that survives to the terminal frontier and
-    /// names itself among the type names its own body references is a
-    /// recursive denotation: `DeriveTypeDef` waits on the very fact it would
-    /// produce, so nothing ever runs it. The span is the `@type` declaration's
-    /// own, when one was noted; there is always one here, since a name can
-    /// only reference itself after its declaration recorded that reference.
-    ///
     /// A `TypeDefined` wait on a name that no `@type` ever declared is a
     /// reference to a type that does not exist: nothing can publish the fact,
     /// so the terminal frontier is where the reference is refused, under the
@@ -3458,36 +3478,22 @@ impl World {
     /// name looks in was never defined, that is the fault, and it is the one
     /// reported, at the same name.
     ///
-    /// A `TypeDefined` wait that is neither -- some other type further down
+    /// A `TypeDefined` wait on a declared name -- some other type further down
     /// its reference chain never resolving -- is not diagnosed here; `None`
     /// lets it fall through the way an unrecognized fact kind already does.
     fn unresolved_type_issue(&self, name: &TypeName) -> Option<UnresolvedIssue> {
-        let Some(decl) = self.type_decl(name) else {
-            if self.module_defined_revision(name.module).is_none() && !self.is_runtime_module(name.module) {
-                return Some(self.unresolved_module_issue(name.module));
-            }
-            return Some(UnresolvedIssue {
-                key: UnresolvedIssueKey::Type(name.clone()),
-                diagnostic: Diagnostic::error(
-                    codes::RESOLVE_TYPE_ALIAS,
-                    format!("unknown type name `{}`", self.dotted_type_name(name)),
-                    self.type_refs.first_written_at(name).unwrap_or(Span::DUMMY),
-                ),
-            });
-        };
-        if !self.type_def_refs(name).contains(name) {
+        if self.type_decl(name).is_some() {
             return None;
         }
-        let span = decl.span;
+        if self.module_defined_revision(name.module).is_none() && !self.is_runtime_module(name.module) {
+            return Some(self.unresolved_module_issue(name.module));
+        }
         Some(UnresolvedIssue {
             key: UnresolvedIssueKey::Type(name.clone()),
             diagnostic: Diagnostic::error(
                 codes::RESOLVE_TYPE_ALIAS,
-                format!(
-                    "type `{}` could not be resolved because its definition waits on itself",
-                    name.name
-                ),
-                span,
+                format!("unknown type name `{}`", self.dotted_type_name(name)),
+                self.type_refs.first_written_at(name).unwrap_or(Span::DUMMY),
             ),
         })
     }

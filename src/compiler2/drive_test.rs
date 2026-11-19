@@ -20989,40 +20989,112 @@ fn compiler2_extern_return_binds_to_each_activations_own_row() {
     );
 }
 
+/// Resolves the global `@type`s in `source`, pulling `order`'s names one at a
+/// time with a drive after each, and returns the world that stores them.
+fn resolve_global_types_in_order(source: &str, order: &[&str]) -> Compiler2<ConfiguredTelemetry> {
+    let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
+    let source_owner = compiler.submit_code(CodeSubmission {
+        name: Some("types.fz".to_string()),
+        text: source.to_string(),
+    });
+    assert_resolved(compiler.drive(), "the first drive indexes the source");
+    assert!(compiler.demand(Job::ScopeCode(source_owner)));
+    assert_resolved(compiler.drive(), "the second drive notes the types");
+    for name in order {
+        assert!(compiler.demand(Job::DeriveTypeDef(global_type(name))));
+        assert_resolved(compiler.drive(), "a demanded type resolves");
+    }
+    compiler
+}
+
+fn global_type(name: &str) -> TypeName {
+    TypeName {
+        module: ModuleId::GLOBAL,
+        name: name.to_string(),
+        arity: 0,
+    }
+}
+
 #[test]
-fn compiler2_recursive_typedef_deadlocks_on_its_own_definition() {
-    // @type t :: :start | {integer, t} is a legal recursive declaration, and
-    // resolving it needs a type whose definition names itself. There is no such
-    // denotation, so DeriveTypeDef(t) waits on TypeDefined(t) — its own output
-    // — and the product pull every door makes fails on that stall (the
-    // resolve/type-alias diagnostic World::unresolved_issue reports for it is
-    // a separate concern, covered by the recursive_typedef fixture; this test
-    // proves the stall's own shape in the fact graph).
-    let (mut compiler, root) = submit_main_root(
-        ConfiguredTelemetry::new(),
-        "recursive_typedef.fz",
-        include_str!("../../fixtures/01595_recursive_typedef.fz"),
-    );
+fn types_that_name_each_other_are_one_recursive_type_whichever_is_pulled_first() {
+    // `ta` and `tb` each name the other, so neither can wait for the other's
+    // definition. Whichever is pulled first solves the pair as one cycle, and
+    // the other lands on the same identities, so the order a program happens
+    // to pull them in never changes what they are.
+    let source = "@type ta :: :leaf | {:a, tb}\n@type tb :: {:b, ta}\n";
+    for order in [["ta", "tb"], ["tb", "ta"]] {
+        let mut compiler = resolve_global_types_in_order(source, &order);
+        let world = compiler.world_mut();
+        let ta = world.type_def(&global_type("ta")).expect("ta is defined").ty;
+        let tb = world.type_def(&global_type("tb")).expect("tb is defined").ty;
+        let types = world.types_mut();
+        let hand = types.recursive(2, |t, me| {
+            let leaf = t.atom_lit("leaf");
+            let a = t.atom_lit("a");
+            let b = t.atom_lit("b");
+            let a_node = t.tuple(&[a, me[1]]);
+            let ta = t.union(leaf, a_node);
+            let tb = t.tuple(&[b, me[0]]);
+            vec![ta, tb]
+        });
+        assert_eq!(
+            (ta, tb),
+            (hand[0], hand[1]),
+            "pulled {order:?}: the pair is the recursive cycle written by hand",
+        );
+    }
+}
+
+/// The `resolve/type-alias` messages a program's compile reports.
+fn type_alias_diagnostics(name: &str, source: &str) -> Vec<String> {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    capture.install(&tel, &["fz", "diag"]);
+    let (mut compiler, root) = submit_main_root(tel, name, source);
     let outcome = compiler.drive_root_to_dump_stage(root, super::dump::DumpStage::Backend);
-    assert!(
-        outcome.is_err(),
-        "a self-referential typedef must stall the product, not deliver one",
+    assert!(outcome.is_err(), "{name}: a refused @type has no backend program");
+    capture
+        .find(&["fz", "diag"])
+        .into_iter()
+        .filter_map(|event| event.diagnostic)
+        .filter(|diagnostic| diagnostic.code == codes::RESOLVE_TYPE_ALIAS)
+        .map(|diagnostic| diagnostic.message)
+        .collect()
+}
+
+#[test]
+fn a_type_with_no_way_out_of_its_recursion_is_refused_at_its_declaration() {
+    // `t :: t` names only itself, and `t :: {integer, t}` has no case that
+    // ends: as recursive types neither has a value. Every call through one
+    // would fail far from the cause; the declaration is where the mistake is,
+    // and where it is reported.
+    for body in ["t", "{integer, t}"] {
+        let reported = type_alias_diagnostics(
+            "no_values.fz",
+            &format!("@type t :: {body}\n@spec f(t) :: integer\ndef f(_), do: 1\ndef main(), do: f(1)\n"),
+        );
+        assert_eq!(
+            reported,
+            vec!["type `t` has no values: every way through it names `t` again".to_string()],
+            "@type t :: {body}",
+        );
+    }
+}
+
+#[test]
+fn a_recursive_type_that_names_itself_with_other_arguments_is_refused() {
+    // `nest(a)` names `nest({a})`: each unrolling wraps the argument once
+    // more, so no finite recursive type is its answer.
+    let reported = type_alias_diagnostics(
+        "nonregular.fz",
+        "@type nest(a) :: a | nest({a})\n@spec f(nest(integer)) :: integer\ndef f(_), do: 1\ndef main(), do: f(1)\n",
     );
-    let waits = compiler.world().unresolved_waits();
-    let self_wait = waits
-        .iter()
-        .find(|wait| {
-            wait.jobs
-                .iter()
-                .any(|job| matches!(job, Job::DeriveTypeDef(name) if name.name == "t"))
-        })
-        .expect("DeriveTypeDef(t) is among the stalled jobs");
-    let FactUse::Current(DependencyKey::Fact(FactKey::TypeDefined(awaited))) = &self_wait.fact else {
-        panic!("DeriveTypeDef(t) stalls on the current TypeDefined fact: {self_wait:?}");
-    };
     assert_eq!(
-        awaited.name, "t",
-        "the fact DeriveTypeDef(t) waits on is the one it is itself the producer of",
+        reported,
+        vec![
+            "a recursive type must pass its own parameters, in order, where it names itself; `nest` does not"
+                .to_string()
+        ],
     );
 }
 
