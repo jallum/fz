@@ -15,11 +15,15 @@
     {
       "text": "Stacks on fz-bpd. After fz-bpd, a resume's layout reads only value_origin(payload), built from delivered_value_joins, so a filter on join sources reaches resume layouts with no second change. Before it, a resume aliasing its last delivering call bypasses the filter. fz-bpd also deletes artifact.rs's separate diverges filter, because the origin's Join already tolerates a never-returning raise member (Bugs and Cleanup).",
       "timestamp": "2026-11-19T04:53:45Z"
+    },
+    {
+      "text": "Findings (Binary Handling, develop 10f9a175d). (1) The problem is general: an if whose else raises gives a loop body 6 Shares against 1 with no join. raise expands to panic/1 :: never, so this ticket covers raise arms. (2) fz-bpd's diverges note does not reach it: ownership (construct_call_ownership, values_overlap → origin_source_path) is decided in the untyped body job, where a Join with differing alternatives has no source path and so overlaps everything. That job sees only DirectCallee::Function(FunctionId). Reading the callee's declared contract there is the open design question, and the page measures its cost.",
+      "timestamp": "2026-11-19T04:54:36Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "A value delivered by a call whose spec is never is not a join source",
   "type": "feature",
-  "updated_at": "2026-11-19T04:53:45Z"
+  "updated_at": "2026-11-19T04:54:36Z"
 }
