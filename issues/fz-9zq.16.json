@@ -15,11 +15,15 @@
     {
       "text": "PR #799 (CI). bst insert one activation returning {int,T,T}; build/wrap μR. :start | {int,R}; 01353 μt. int | list(t); no pins. ACCEPTANCE GAP for the user: 01353 gives 2 plans in 12 orders (keys/returns equal; one callsite surface reads :array | :ok in 2 orders, + empty_list() in 10). develop dc114f30b splits identically, so not caused by the fold; comes from callsite-surface evidence joining.",
       "timestamp": "2026-11-19T03:31:27Z"
+    },
+    {
+      "text": "#799 01344 timeout was the fold running per contribution against its own rows: partial μs stacked, 54 folds and 9.7s CPU against 0.05s. Fix: fold the joined column the contribution grew. 01344 is back to 0.05s and 8 folds with the same answer, μt. :a | {:l|:r, t}. New pin on 01344: clash_folded 8. Rebased onto bac027b42; gates running. Merge waits on the user (01353 two plans; #788 deviation).",
+      "timestamp": "2026-11-19T04:02:16Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "The clash fold makes back edges, not any",
   "type": "task",
-  "updated_at": "2026-11-19T03:31:27Z"
+  "updated_at": "2026-11-19T04:02:16Z"
 }
