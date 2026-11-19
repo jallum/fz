@@ -11,9 +11,15 @@
   "id": "fz-9e2.9",
   "labels": [],
   "parent": "fz-9e2",
+  "comments": [
+    {
+      "text": "User approved in JSON's session, verbatim \"yes\" (relayed by JSON, 2026-11-19). Source: /Users/j5n/Workspace/fz-json-four-proposals.html, item P4, folded here. Each added function clause costs 17 more transport_shape requests (1/2/4/8/16 clauses: 555/572/606/674/810; every added request is transport_shape). Causes: lower_bitstring_pattern (src/compiler2/jobs/body.rs ~3787-3830) emits push_const(0) plus a read for every field, including literal, ignored and omitted-rest fields the dispatch plan already tests; lower_clause (body.rs ~1281-1305) gives each clause fresh parameter ValueIds instead of aliasing the plan's shared subjects. Fix: emit only the reads the body uses; alias parameters to the subjects. Predictions (unmeasured): constant-return clause 5 -\u003e ~1, call clause 8 -\u003e ~6, append-plus-call 17 -\u003e ~13. Numbers predate recent develop: re-measure first. Acceptance: the N-clause reproducer's per-clause slope falls, the distiller drive pin falls, three paths agree.",
+      "timestamp": "2026-11-19T02:05:40Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "One match-region step list serves every consumer",
   "type": "task",
-  "updated_at": "2026-11-19T01:31:53Z"
+  "updated_at": "2026-11-19T02:05:40Z"
 }
