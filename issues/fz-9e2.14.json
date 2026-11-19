@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-19T04:53:30Z",
+  "description": "The user answered fz-9e2.3's design question (relayed by Binary Handling on 2026-11-19): fix it generally. Owner: Binary Handling. A page comes before any build.\n\n## Why\n#806 (fz-9e2.3) shows proven constructions costing about 9 instructions more per iteration (probes 04b, 05a, 06a, 06b). The failure call's result joins the success value. __construction_failed__ already declares :: never, so its delivery can never reach the join. The same applies to case ... -\u003e raise arms (not yet probed).\n\n## Done when\nA call whose @spec returns never contributes no source to a join, on all three paths. #806's +9 instructions per iteration is gone on the bench. The cost in jobs and pins is measured.\n\n## Coordinate\nfz-bpd (Bugs and Cleanup, page /Users/j5n/Workspace/fz-bpd.html) changes how a join's deliverers are read: ResumePayload from value_origin via body.rs delivered_value_joins. This ticket edits the same deliverer set, so it builds on fz-bpd's answer.",
+  "id": "fz-9e2.14",
+  "labels": [],
+  "parent": "fz-9e2",
+  "priority": 1,
+  "status": "open",
+  "title": "A value delivered by a call whose spec is never is not a join source",
+  "type": "feature",
+  "updated_at": "2026-11-19T04:53:30Z"
+}
