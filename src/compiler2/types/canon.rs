@@ -259,6 +259,10 @@ impl<'a> TyCanon<'a> {
     /// denotation here regardless gives that pair ONE canonical form, which is
     /// what lets the census count it as one denotation holding two ids instead
     /// of hiding it as a difference that is not there.
+    ///
+    /// A clause of one element type and no subtraction denotes that element
+    /// type, already interned, so it is rendered as that type: a member of a
+    /// recursive type then meets itself by name rather than by unfolding.
     fn list_clause(&mut self, cx: TyCtx<'_>, c: &Conj<ListSig>) -> String {
         if c.pos.is_empty() && c.neg.is_empty() {
             return "list".to_string();
@@ -274,10 +278,11 @@ impl<'a> TyCanon<'a> {
         } else {
             "non_empty_list"
         };
-        let mut factors = vec![format!(
-            "{head}({})",
-            self.descr_body(cx, &elem, Provenance::Synthesized)
-        )];
+        let elem = match c.pos.as_slice() {
+            [ListSig { elem: Some(only), .. }] if c.neg.is_empty() => self.body(cx, *only).to_string(),
+            _ => self.descr_body(cx, &elem, Provenance::Synthesized),
+        };
+        let mut factors = vec![format!("{head}({elem})")];
         for cut in &minus {
             let rendered = self.descr_body(cx, cut, Provenance::Synthesized);
             factors.push(format!("not(non_empty_list({rendered}))"));

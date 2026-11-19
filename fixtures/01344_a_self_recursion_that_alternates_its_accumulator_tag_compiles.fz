@@ -1,8 +1,9 @@
 #---
 # purpose: "A recursion whose accumulator is wrapped under a different atom tag on each call compiles: the repeated tuple folds under its untagged ancestor"
 # root: main/0
+# assert.metric.type.clash_folded: 8
 # oracle: self
-# oracle.stamp: 8764d5cf23789a52
+# oracle.stamp: 0dbb3de1396ae025
 #---
 defmodule Alternate do
   def mix(0, acc), do: acc

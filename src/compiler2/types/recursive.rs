@@ -214,7 +214,7 @@ impl Types {
         self.solve_equations(&binders, &bodies)
     }
 
-    fn mint_binder(&mut self) -> TypeVarId {
+    pub(super) fn mint_binder(&mut self) -> TypeVarId {
         let recursion = &mut self.interner.recursion;
         let id = recursion.next_binder;
         assert!(id < CANON_TAG - BINDER_TAG, "recursive binders exhausted");
@@ -325,7 +325,7 @@ impl Types {
     }
 
     /// Solve the equations `binders[i] = bodies[i]` and commit the solution.
-    fn solve_equations(&mut self, binders: &[TypeVarId], bodies: &[Ty]) -> Vec<Ty> {
+    pub(super) fn solve_equations(&mut self, binders: &[TypeVarId], bodies: &[Ty]) -> Vec<Ty> {
         self.interner.recursion.active = true;
         let graph = self.equation_graph(binders, bodies);
         let graph = self.settle(graph);

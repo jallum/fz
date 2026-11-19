@@ -1,0 +1,19 @@
+#---
+# purpose: "A value built by wrapping an accumulator in a list is the recursive type μA. int | [A], with no widening"
+# root: main/0
+# assert.metric.return_type.widened: 0
+# oracle: self
+# oracle.stamp: 0bb264c0fc6c25b1
+#---
+defmodule Nest do
+  def wrap(0, acc), do: acc
+  def wrap(n, acc), do: wrap(n - 1, [acc])
+end
+
+defmodule Main do
+  def main() do
+    IO.inspect(Nest.wrap(3, 1))
+  end
+end
+
+Main.main()

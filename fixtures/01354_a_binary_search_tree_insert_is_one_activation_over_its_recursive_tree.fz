@@ -1,0 +1,23 @@
+#---
+# purpose: "Inserting into a binary search tree compiles to one insert over the recursive tree μT. nil | {int, T, T}, returning a non-empty tree, with no widening"
+# root: main/0
+# assert.metric.return_type.widened: 0
+# oracle: self
+# oracle.stamp: e3dbca07fbdba572
+#---
+defmodule Tree do
+  def insert(nil, k), do: {k, nil, nil}
+  def insert({v, l, r}, k) when k < v, do: {v, insert(l, k), r}
+  def insert({v, l, r}, k), do: {v, l, insert(r, k)}
+
+  def build(0, _, t), do: t
+  def build(n, x, t), do: build(n - 1, rem(x * 7, 23), insert(t, x))
+end
+
+defmodule Main do
+  def main() do
+    IO.inspect(Tree.build(6, 5, nil))
+  end
+end
+
+Main.main()
