@@ -1,4 +1,4 @@
-use super::super::host_isa_with;
+use super::super::{CodeHome, host_isa_for};
 use super::*;
 use crate::compiler2::native_codegen::runtime_call::runtime_func_ref;
 use cranelift_module::{Module as ClModule, default_libcall_names};
@@ -9,7 +9,7 @@ use cranelift_object::{ObjectBuilder, ObjectModule};
 /// names each helper once however many times its plan calls it.
 #[test]
 fn a_body_declares_each_runtime_helper_once() {
-    let isa = host_isa_with(true);
+    let isa = host_isa_for(CodeHome::Executable);
     let object = ObjectBuilder::new(isa, "receive_dispatch_test", default_libcall_names())
         .expect("an object builder for the host");
     let mut module = ObjectModule::new(object);
@@ -77,7 +77,7 @@ fn dispatch_const_value_materializes_only_receive_scalar_consts() {
 /// so a successor that no value can reach is never lowered by accident.
 #[test]
 fn a_receive_value_is_refused_by_a_reader_of_another_lane() {
-    let isa = host_isa_with(true);
+    let isa = host_isa_for(CodeHome::Executable);
     let object =
         ObjectBuilder::new(isa, "receive_lane_test", default_libcall_names()).expect("an object builder for the host");
     let mut module = ObjectModule::new(object);

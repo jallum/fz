@@ -15,6 +15,7 @@
 
 use super::recipe::{Emitted, emit_inline};
 use super::*;
+use crate::fast_hash::HashMap;
 use cranelift_codegen::ir::{self, AbiParam, InstBuilder, Signature, condcodes::IntCC};
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::{FuncId, Linkage, Module};
@@ -102,6 +103,24 @@ pub(crate) fn declare_runtime_fn<M: Module, F: RuntimeFn>(module: &mut M, name: 
         .unwrap_or_else(|error| panic!("declare runtime helper `{name}`: {error}"))
 }
 
+/// The reference `func` calls runtime helper `name` through, declared on first
+/// use and memoized in `refs` by its linker name.
+pub(crate) fn runtime_call_ref<M: Module, F: RuntimeFn>(
+    module: &mut M,
+    func: &mut ir::Function,
+    refs: &mut HashMap<&'static str, ir::FuncRef>,
+    name: &'static str,
+    item: F,
+) -> ir::FuncRef {
+    if let Some(&callee) = refs.get(name) {
+        return callee;
+    }
+    let id = declare_runtime_fn(module, name, item);
+    let callee = import_call_ref(module, id, func);
+    refs.insert(name, callee);
+    callee
+}
+
 /// A body under construction that can call runtime helpers: it holds the
 /// module that declares the symbol and the builder that emits the call.
 pub(crate) trait RuntimeCaller {
@@ -165,13 +184,7 @@ pub(crate) trait RuntimeCaller {
 
 impl<M: Module> RuntimeCaller for CodegenFn<'_, '_, M> {
     fn runtime_func_ref<F: RuntimeFn + Copy>(&mut self, name: &'static str, item: F) -> ir::FuncRef {
-        if let Some(&callee) = self.cache.runtime_funcs.get(name) {
-            return callee;
-        }
-        let id = declare_runtime_fn(self.jmod, name, item);
-        let callee = self.jmod.declare_func_in_func(id, self.b.func);
-        self.cache.runtime_funcs.insert(name, callee);
-        callee
+        runtime_call_ref(self.jmod, self.b.func, &mut self.cache.runtime_funcs, name, item)
     }
 
     fn with_builder<R>(&mut self, emit: impl FnOnce(&mut FunctionBuilder<'_>) -> R) -> R {

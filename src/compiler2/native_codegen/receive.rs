@@ -69,10 +69,8 @@ use fz_runtime::process::AtomName;
 
 use super::prim::c_pair_return_types;
 use super::repr::ExternLane;
-use super::runtime_call::{
-    RuntimeCaller, RuntimeFn, declare_runtime_fn, runtime_call, runtime_call1, runtime_condition,
-};
-use super::{CodegenError, FlatMapScan, SLOT_BYTES, address_field, emit_fn_body, immediate_ref_word};
+use super::runtime_call::{RuntimeCaller, RuntimeFn, runtime_call, runtime_call_ref, runtime_call1, runtime_condition};
+use super::{CodegenError, FlatMapScan, SLOT_BYTES, address_field, emit_fn_body, immediate_ref_word, import_call_ref};
 
 type ReceiveDispatchPlan = PatternDispatchPlan<RuntimeTypePredicate>;
 type ReceiveRegion = Region<RuntimeTypePredicate>;
@@ -184,13 +182,7 @@ impl<'a, 'fb, M: cranelift_module::Module> DispatchBody<'a, 'fb, M> {
 
 impl<M: cranelift_module::Module> RuntimeCaller for DispatchBody<'_, '_, M> {
     fn runtime_func_ref<F: RuntimeFn + Copy>(&mut self, name: &'static str, item: F) -> ir::FuncRef {
-        if let Some(&callee) = self.runtime_funcs.get(name) {
-            return callee;
-        }
-        let id = declare_runtime_fn(self.module, name, item);
-        let callee = self.module.declare_func_in_func(id, self.b.func);
-        self.runtime_funcs.insert(name, callee);
-        callee
+        runtime_call_ref(self.module, self.b.func, &mut self.runtime_funcs, name, item)
     }
 
     fn with_builder<R>(&mut self, emit: impl FnOnce(&mut FunctionBuilder<'_>) -> R) -> R {
@@ -1575,7 +1567,7 @@ fn emit_guard_extern<M: cranelift_module::Module>(
         .module
         .declare_function(&extern_fn.symbol, Linkage::Import, &sig)
         .map_err(|e| CodegenError::new(format!("declare guard extern `{}`: {e}", extern_fn.symbol)))?;
-    let callee = body.module.declare_func_in_func(func_id, body.b.func);
+    let callee = import_call_ref(body.module, func_id, body.b.func);
     let call = body.b.ins().call(callee, &call_args);
     let (raw, failed) = {
         let results = body.b.inst_results(call);

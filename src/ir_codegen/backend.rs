@@ -1,5 +1,5 @@
 use super::*;
-use crate::compiler2::native_codegen::{host_isa_with, jit_builder};
+use crate::compiler2::native_codegen::{CodeHome, host_isa_for, jit_builder};
 use crate::diag::Diagnostics;
 use crate::fast_hash::HashMap;
 use cranelift_codegen::ir::{AbiParam, types};
@@ -158,9 +158,7 @@ pub struct AotBackend {
 
 impl AotBackend {
     pub fn new(name: &str) -> Self {
-        // PIC is required on macOS (linker rejects text relocations in
-        // regular executables) and conventional for Linux distributables.
-        let isa = host_isa_with(true);
+        let isa = host_isa_for(CodeHome::Executable);
         let builder = ObjectBuilder::new(isa, name.to_string(), cranelift_module::default_libcall_names())
             .expect("ObjectBuilder::new");
         Self {

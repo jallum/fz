@@ -1129,12 +1129,32 @@ fn emit_variadic_extern_call<M: cranelift_module::Module>(
 /// declared once as an ordinary import to name it for the linker (or the JIT's
 /// symbol lookup) and then reached through its address. The declared signature
 /// is a placeholder: nothing ever calls through it.
+/// The reference this function calls extern `eid` through, declared with `sig`
+/// on first use.
+fn extern_call_ref<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, M>,
+    eid: ExternId,
+    symbol: &str,
+    sig: &ir::Signature,
+) -> Result<ir::FuncRef, CodegenError> {
+    if let Some(&cached) = body.cache.extern_calls.get(&eid) {
+        return Ok(cached);
+    }
+    let func_id = body
+        .jmod
+        .declare_function(symbol, Linkage::Import, sig)
+        .map_err(|e| CodegenError::new(format!("declare extern `{symbol}`: {e}")))?;
+    let fref = import_call_ref(body.jmod, func_id, body.b.func);
+    body.cache.extern_calls.insert(eid, fref);
+    Ok(fref)
+}
+
 fn foreign_symbol_addr<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
     eid: ExternId,
     symbol: &str,
 ) -> Result<ir::Value, CodegenError> {
-    let fref = if let Some(&cached) = body.cache.extern_funcs.get(&eid) {
+    let fref = if let Some(&cached) = body.cache.extern_addrs.get(&eid) {
         cached
     } else {
         let sig = body.jmod.make_signature();
@@ -1143,7 +1163,7 @@ fn foreign_symbol_addr<M: cranelift_module::Module>(
             .declare_function(symbol, Linkage::Import, &sig)
             .map_err(|e| CodegenError::new(format!("declare extern `{}`: {}", symbol, e)))?;
         let fref = body.jmod.declare_func_in_func(func_id, body.b.func);
-        body.cache.extern_funcs.insert(eid, fref);
+        body.cache.extern_addrs.insert(eid, fref);
         fref
     };
     Ok(body.b.ins().func_addr(types::I64, fref))
@@ -2191,17 +2211,7 @@ fn lower_extern_generic<M: cranelift_module::Module>(
     let mut sig = body.jmod.make_signature();
     sig.params.extend(param_tys.iter().copied().map(ir::AbiParam::new));
     sig.returns.extend(ret_lane.map(ir::AbiParam::new));
-    let fref = if let Some(&cached) = body.cache.extern_funcs.get(eid) {
-        cached
-    } else {
-        let func_id = body
-            .jmod
-            .declare_function(&decl.symbol, Linkage::Import, &sig)
-            .map_err(|e| CodegenError::new(format!("declare extern `{}`: {}", decl.symbol, e)))?;
-        let fref = body.jmod.declare_func_in_func(func_id, body.b.func);
-        body.cache.extern_funcs.insert(*eid, fref);
-        fref
-    };
+    let fref = extern_call_ref(body, *eid, &decl.symbol, &sig)?;
     let call_args: Vec<ir::Value> = match process_arg {
         Some(process) => std::iter::once(process).chain(arg_vals).collect(),
         None => arg_vals,
@@ -2364,17 +2374,7 @@ pub(crate) fn lower_extern_pair<M: cranelift_module::Module>(
     );
     let physical = c_pair_return_types(body.jmod.isa().triple(), fields)?;
     sig.returns.extend(physical.iter().copied().map(ir::AbiParam::new));
-    let fref = if let Some(&cached) = body.cache.extern_funcs.get(eid) {
-        cached
-    } else {
-        let func_id = body
-            .jmod
-            .declare_function(&decl.symbol, Linkage::Import, &sig)
-            .map_err(|error| CodegenError::new(format!("declare extern `{}`: {error}", decl.symbol)))?;
-        let fref = body.jmod.declare_func_in_func(func_id, body.b.func);
-        body.cache.extern_funcs.insert(*eid, fref);
-        fref
-    };
+    let fref = extern_call_ref(body, *eid, &decl.symbol, &sig)?;
     let call = body.b.ins().call(fref, &call_args);
     let results = body.b.inst_results(call).to_vec();
     results
