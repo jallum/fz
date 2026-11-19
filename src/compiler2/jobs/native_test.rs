@@ -832,3 +832,79 @@ def main(), do: dbg(guarded(2))
     assert_eq!(of_guarded("__handler"), 1, "the handler is a function: {names:?}");
     assert_eq!(of_guarded("__branch"), 0, "the body is a block of guarded: {names:?}");
 }
+
+/// Two appends whose left operand the function still reads after the call:
+/// one result feeds a tail call, the other is delivered into a tuple.
+const RETAINED_APPEND_SOURCE: &str = "\
+defmodule M do
+  def into_tail_call(acc, x), do: pair(acc <> x, acc)
+  def delivered(acc, x) do
+    longer = acc <> x
+    {acc, longer}
+  end
+  def pair(a, b), do: {a, b}
+end
+
+def main() do
+  {M.into_tail_call(\"ab\", \"c\"), M.delivered(\"ab\", \"c\")}
+end
+";
+
+/// The value each variable of `fns` names, found by following a block
+/// parameter back through the jumps that pass it along; a block that more
+/// than one jump enters keeps its parameters as their own values.
+fn block_param_origins(fns: &[&crate::fz_ir::FnIr]) -> impl Fn(crate::fz_ir::Var) -> crate::fz_ir::Var {
+    let mut passed: HashMap<crate::fz_ir::Var, Vec<crate::fz_ir::Var>> = HashMap::default();
+    for function in fns {
+        for block in &function.blocks {
+            if let crate::fz_ir::Term::Goto(target, args) = &block.terminator {
+                let target = function
+                    .blocks
+                    .iter()
+                    .find(|candidate| candidate.id == *target)
+                    .expect("a jump's block");
+                for (param, arg) in target.params.iter().zip(args) {
+                    passed.entry(*param).or_default().push(*arg);
+                }
+            }
+        }
+    }
+    move |mut var| {
+        while let Some([from]) = passed.get(&var).map(Vec::as_slice) {
+            var = *from;
+        }
+        var
+    }
+}
+
+/// `<>` may write past its left operand's last byte when nothing else holds
+/// it, so a left operand the caller reads again must be shared before the
+/// call that appends to it. The append is an extern inline in its caller, and
+/// a share of the extern's left operand comes ahead of it.
+#[test]
+fn an_append_whose_left_operand_is_read_again_shares_it_before_the_append() {
+    let program = native_program_of(RETAINED_APPEND_SOURCE);
+    for caller in ["into_tail_call", "delivered"] {
+        let fns = fns_of_executable(&program, caller);
+        let stmts: Vec<&crate::fz_ir::Stmt> = fns
+            .iter()
+            .flat_map(|function| function.blocks.iter().flat_map(|block| &block.stmts))
+            .collect();
+        let origin = block_param_origins(&fns);
+        let shared_before_its_append = stmts.iter().enumerate().any(|(appended_at, stmt)| {
+            let crate::fz_ir::Stmt::Let(_, Prim::Extern(_, _, args)) = stmt else {
+                return false;
+            };
+            let Some(left) = args.first().map(|arg| origin(arg.var)) else {
+                return false;
+            };
+            stmts[..appended_at].iter().any(
+                |earlier| matches!(earlier, crate::fz_ir::Stmt::Let(_, Prim::Share(value)) if origin(*value) == left),
+            )
+        });
+        assert!(
+            shared_before_its_append,
+            "{caller}: an append's left operand is shared before the append"
+        );
+    }
+}

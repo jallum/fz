@@ -24955,3 +24955,61 @@ fn a_continuations_outer_continuation_is_stored_and_read_as_a_closure() {
         "no stored or read capture asks whether its kind names a slot:\n{clif}"
     );
 }
+
+/// The interpreter publishes a call argument whose ownership is `Share`. In
+/// both appends below the caller reads its left operand again after `<>`, so
+/// the backend call that appends passes it shared: once where the result
+/// feeds a tail call, once where it is delivered into a tuple.
+#[test]
+fn compiler2_interp_shares_an_appends_left_operand_the_caller_reads_again() {
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("retained_append.fz".to_string()),
+        text: concat!(
+            "defmodule M do\n",
+            "  def into_tail_call(acc, x), do: pair(acc <> x, acc)\n",
+            "  def delivered(acc, x) do\n",
+            "    longer = acc <> x\n",
+            "    {acc, longer}\n",
+            "  end\n",
+            "  def pair(a, b), do: {a, b}\n",
+            "end\n",
+            "\n",
+            "def main() do\n",
+            "  {{_, \"ab\"}, {\"ab\", _}} = {M.into_tail_call(\"ab\", \"c\"), M.delivered(\"ab\", \"c\")}\n",
+            "  42\n",
+            "end\n",
+        )
+        .to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(42));
+    let program = compiler.retained_backend_program(root);
+    for caller in ["into_tail_call", "delivered"] {
+        let caller_id = module_function_id(&functions, "M", caller, 2);
+        let shared_left = program
+            .executables()
+            .iter()
+            .filter(|executable| executable.key.activation.function == caller_id)
+            .any(|executable| {
+                let BackendBody::Clauses { clauses, entries, .. } = &executable.body else {
+                    return false;
+                };
+                let left = clauses[0].params[0];
+                entries.iter().any(|entry| {
+                    matches!(&entry.tail, BackendTail::DirectCall { args, .. }
+                        if args.iter().any(|arg| arg.value == left
+                            && arg.ownership == crate::fz_ir::OwnershipMode::Share))
+                })
+            });
+        assert!(shared_left, "{caller}: the append receives its left operand shared");
+    }
+}

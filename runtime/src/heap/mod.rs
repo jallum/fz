@@ -169,6 +169,10 @@ pub struct Heap {
     /// Total allocation requests made by kind since the last explicit
     /// process/user-code reset. Unlike `alloc_count`, GC never rewrites this.
     alloc_stats: HeapAllocStats,
+    /// Binaries this heap has marked shared since it was made: each counts
+    /// once, when its mark goes from clear to set. Compiled code that marks a
+    /// binary inline adds to it at `BINARIES_SHARED_OFFSET`.
+    pub(crate) binaries_shared: u64,
     /// Intrusive chain of the young off-heap
     /// objects: tagged head bits for a singly-linked list of the BinRefs and
     /// resource stubs allocated since the last collection; each entry's

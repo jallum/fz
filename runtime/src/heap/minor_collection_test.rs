@@ -694,3 +694,133 @@ fn a_send_gives_the_receiver_its_own_binref_and_both_heaps_release() {
     drop(receiver);
     assert_eq!(shared_refs(&witness), 1);
 }
+
+/// Collect `root` with a minor collection, then with a major one: the minor
+/// promotes a retained list beside it, and the next collection is major.
+fn collect_through_a_major(heap: &mut Heap, root: &mut AnyValueRef) {
+    assert_eq!(heap.collect(std::slice::from_mut(root)).generation, Generation::Minor);
+    let retained = list_of(heap, 0, 100, EMPTY_LIST);
+    let mut roots = [*root, root_of(retained)];
+    assert_eq!(heap.collect(&mut roots).generation, Generation::Minor);
+    assert_eq!(heap.collect(&mut roots).generation, Generation::Major);
+    *root = roots[0];
+}
+
+fn small_bitstring_is_shared(root: AnyValueRef) -> bool {
+    unsafe { crate::any_value::bitstring_is_shared(root.bitstring_addr().expect("a small bitstring")) }
+}
+
+fn small_bitstring_bytes(root: AnyValueRef) -> Vec<u8> {
+    let addr = root.bitstring_addr().expect("a small bitstring");
+    let len = (unsafe { crate::any_value::bitstring_bit_len(addr) } as usize).div_ceil(8);
+    unsafe { std::slice::from_raw_parts(crate::any_value::bitstring_bytes_ptr(addr), len) }.to_vec()
+}
+
+/// A small bitstring is born unshared. Sharing it sets the mark in its first
+/// word, above the length, so the length still reads as before, and the
+/// collector carries the mark through a minor and a major collection.
+#[test]
+fn a_small_bitstrings_shared_mark_leaves_its_length_and_survives_collection() {
+    let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let small = heap.alloc_bitstring(b"abc", 24);
+    let mut roots = [small.ref_word()];
+    assert!(!small_bitstring_is_shared(roots[0]), "a new bitstring has one holder");
+
+    heap.mark_published_ref_aliased(roots[0]).expect("share");
+    heap.mark_published_ref_aliased(roots[0]).expect("share again");
+    assert!(small_bitstring_is_shared(roots[0]));
+    assert_eq!(
+        heap.binaries_shared(),
+        1,
+        "a binary is counted once, when its mark is set"
+    );
+    assert_eq!(
+        small_bitstring_bytes(roots[0]),
+        b"abc",
+        "the mark is not part of the length"
+    );
+
+    collect_through_a_major(&mut heap, &mut roots[0]);
+    assert!(small_bitstring_is_shared(roots[0]), "collection keeps the mark");
+    assert_eq!(small_bitstring_bytes(roots[0]), b"abc");
+}
+
+/// A view's mark sits in the word that points at its BinRef. The collector
+/// rewrites that pointer when it moves the BinRef, and keeps the mark; the
+/// BinRef still reads without it.
+#[test]
+fn a_views_shared_mark_survives_the_collectors_rewrite_of_its_binref_word() {
+    let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let bytes: Vec<u8> = (0..200u8).collect();
+    let (whole, _witness) = witnessed_buffer(&mut heap, &bytes);
+    assert!(!view_of(whole).is_shared(), "a filled buffer's view has one holder");
+    let mut roots = [whole.ref_word()];
+    heap.mark_published_ref_aliased(roots[0]).expect("share");
+    assert!(view_in(roots[0]).is_shared());
+    let before = view_in(roots[0]).binref().as_raw();
+
+    collect_through_a_major(&mut heap, &mut roots[0]);
+    let moved = view_in(roots[0]);
+    assert_ne!(
+        moved.binref().as_raw(),
+        before,
+        "the major moved the BinRef and rewrote the view"
+    );
+    assert!(moved.is_shared(), "the rewrite keeps the mark");
+    assert_eq!(view_bytes(moved), bytes);
+}
+
+/// A slice does not own the room after its buffer's bytes, so it is born
+/// shared, and it marks its source: two views now reach the same bytes.
+#[test]
+fn a_slice_is_born_shared_and_marks_its_source() {
+    let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let bytes: Vec<u8> = (0..200u8).collect();
+    let (whole, _witness) = witnessed_buffer(&mut heap, &bytes);
+    let window = unsafe { heap.alloc_bitstring_slice(view_of(whole), 70, 100) };
+    assert!(view_of(window).is_shared());
+    assert!(view_of(whole).is_shared());
+    assert_eq!(
+        heap.binaries_shared(),
+        1,
+        "the source is marked; the slice is born marked"
+    );
+}
+
+/// An append that writes into its left view's buffer leaves that view short
+/// of the buffer's end, so the view is marked; the longer view it makes is
+/// the one view that reaches the end, and is born clear.
+#[test]
+fn an_append_in_place_marks_the_view_it_grew_from_and_not_the_new_one() {
+    let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let left: Vec<u8> = (0..100u8).collect();
+    let grown = unsafe { heap.alloc_concatenation(&left, None, &[1; 100]) };
+    let grown_bytes = view_bytes(view_of(grown));
+    let longer = unsafe { heap.alloc_concatenation(&grown_bytes, Some(view_of(grown)), b"x") };
+    assert_eq!(
+        view_of(longer).shared_raw(),
+        view_of(grown).shared_raw(),
+        "the append wrote into the left's buffer"
+    );
+    assert!(view_of(grown).is_shared());
+    assert!(!view_of(longer).is_shared());
+}
+
+/// A copy into another process: a view's copy names a frozen buffer the
+/// sender also reaches, so it is born shared; a small bitstring's copy is a
+/// new object only the receiver holds, so it is born clear.
+#[test]
+fn a_copied_view_is_shared_and_a_copied_small_bitstring_is_not() {
+    let mut sender = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let mut receiver = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let bytes: Vec<u8> = (0..200u8).collect();
+    let (whole, _witness) = witnessed_buffer(&mut sender, &bytes);
+    let small = sender.alloc_bitstring(b"abc", 24);
+    sender.mark_published_ref_aliased(small.ref_word()).expect("share");
+
+    let view_copy = deep_copy_slot(whole, &sender.view(), &mut receiver);
+    let small_copy = deep_copy_slot(small, &sender.view(), &mut receiver);
+    assert!(view_of(view_copy).is_shared());
+    assert!(!small_bitstring_is_shared(small_copy.ref_word()));
+    assert_eq!(small_bitstring_bytes(small_copy.ref_word()), b"abc");
+}

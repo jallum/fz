@@ -86,6 +86,9 @@ reduction budget ran out and it yielded to the scheduler. `write_line` also
 renders `parks` after `reduction_yields`: the quanta that ended with the
 process parked on a receive (`sched_core::end_quantum` counts them), so
 `reduction_yields + parks` is the boundaries at which a collection could run.
+It renders `binaries_shared` after `struct_retention_hits`: the binaries the
+process marked shared (see [any-value](any-value.md), "Shared Lists, Structs
+And Binaries").
 `frame_copies` counts the
 shared body frames a store copied to the heap tip because a collection had kept
 them (see [scheduler-zero-arg-closures](scheduler-zero-arg-closures.md)). `ProcessExitCapture`

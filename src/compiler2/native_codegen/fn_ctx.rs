@@ -13,9 +13,9 @@ use cranelift_codegen::ir::{self, BlockArg, InstBuilder, MemFlagsData, condcodes
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::{DataId, FuncId, Module};
 use fz_runtime::any_value::{
-    AnyValueRef, AnyValueRefPacking, CLOSURE_CAPTURES_OFFSET, CLOSURE_CODE_OFFSET, CLOSURE_FLAGS_CAPTURED_MASK,
-    CLOSURE_LAYOUT_FLAGS_SHIFT, FALSE_ATOM_ID, NIL_ATOM_ID, STRUCT_HEADER_SCHEMA_SHIFT, STRUCT_HEADER_SHARED_MASK,
-    SlotLayout, TaggedRefArch, ValueKind,
+    AnyValueRef, AnyValueRefPacking, BINARY_SHARED_MASK, CLOSURE_CAPTURES_OFFSET, CLOSURE_CODE_OFFSET,
+    CLOSURE_FLAGS_CAPTURED_MASK, CLOSURE_LAYOUT_FLAGS_SHIFT, FALSE_ATOM_ID, NIL_ATOM_ID, STRUCT_HEADER_SCHEMA_SHIFT,
+    STRUCT_HEADER_SHARED_MASK, SlotLayout, TaggedRefArch, ValueKind,
 };
 use fz_runtime::ir_runtime::{
     fz_alloc_closure, fz_alloc_struct, fz_box_float_for_any, fz_box_int_for_any, fz_closure_halt_kind_ref,
@@ -25,7 +25,9 @@ use fz_runtime::ir_runtime::{
     fz_mark_published_ref_aliased, fz_number_ref_float_bits, fz_struct_copy, fz_struct_store_ref, fz_truthy_ref,
     fz_type_of, fz_unbox_atom, fz_unbox_float, fz_unbox_int,
 };
-use fz_runtime::process_abi::{PROCESS_STRUCT_RETENTION_ATTEMPTS_OFFSET, PROCESS_STRUCT_RETENTION_HITS_OFFSET};
+use fz_runtime::process_abi::{
+    PROCESS_BINARIES_SHARED_OFFSET, PROCESS_STRUCT_RETENTION_ATTEMPTS_OFFSET, PROCESS_STRUCT_RETENTION_HITS_OFFSET,
+};
 
 /// A struct or tuple that is allocated and whose fields are being stored.
 pub(crate) struct NewStruct {
@@ -156,40 +158,58 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
     }
 
     fn bump_process_counter(&mut self, offset: i32) {
-        let process = self.process_arg();
-        let count = self.b.ins().load(types::I64, MemFlagsData::trusted(), process, offset);
-        let bumped = self.b.ins().iadd_imm_s(count, 1);
-        self.b.ins().store(MemFlagsData::trusted(), bumped, process, offset);
+        let one = self.b.ins().iconst(types::I64, 1);
+        self.add_process_counter(offset, one);
     }
 
-    /// Mark the object `reference` names shared when its `kind` is a struct
-    /// or tuple, as storing it into a container must. A struct already
-    /// shared is only read: it may be read-only program data or old.
-    fn share_if_struct(&mut self, reference: ir::Value, kind: ir::Value) {
+    fn add_process_counter(&mut self, offset: i32, amount: ir::Value) {
+        let process = self.process_arg();
+        let count = self.b.ins().load(types::I64, MemFlagsData::trusted(), process, offset);
+        let added = self.b.ins().iadd(count, amount);
+        self.b.ins().store(MemFlagsData::trusted(), added, process, offset);
+    }
+
+    /// Mark the object `reference` names shared when its `kind` carries a
+    /// shared mark in its first word, as storing it into a container must: a
+    /// struct or tuple at `STRUCT_HEADER_SHARED_MASK`, a binary of either
+    /// layout at `BINARY_SHARED_MASK`. An object already shared is only read:
+    /// it may be read-only program data or old. A binary this marks is
+    /// counted in the heap's `binaries_shared`.
+    fn share_if_published_kind(&mut self, reference: ir::Value, kind: ir::Value) {
         let check_blk = self.b.create_block();
         let mark_blk = self.b.create_block();
         let done_blk = self.b.create_block();
-        let is_struct = self
-            .b
-            .ins()
-            .icmp_imm_s(IntCC::Equal, kind, ValueKind::STRUCT.tag() as i64);
-        self.b.ins().brif(is_struct, check_blk, &[], done_blk, &[]);
+        let is_struct = self.kind_is(kind, ValueKind::STRUCT);
+        let is_bitstring = self.kind_is(kind, ValueKind::BITSTRING);
+        let is_view = self.kind_is(kind, ValueKind::BINVIEW);
+        let is_binary = self.b.ins().bor(is_bitstring, is_view);
+        let markable = self.b.ins().bor(is_struct, is_binary);
+        self.b.ins().brif(markable, check_blk, &[], done_blk, &[]);
 
         self.b.switch_to_block(check_blk);
         self.b.seal_block(check_blk);
+        let struct_mask = self.b.ins().iconst(types::I64, STRUCT_HEADER_SHARED_MASK as i64);
+        let binary_mask = self.b.ins().iconst(types::I64, BINARY_SHARED_MASK as i64);
+        let mask = self.b.ins().select(is_struct, struct_mask, binary_mask);
         let object = address_field(self.b, reference);
         let header = self.b.ins().load(types::I64, MemFlagsData::trusted(), object, 0);
-        let shared = self.b.ins().band_imm_u(header, STRUCT_HEADER_SHARED_MASK as i64);
+        let shared = self.b.ins().band(header, mask);
         self.b.ins().brif(shared, done_blk, &[], mark_blk, &[]);
 
         self.b.switch_to_block(mark_blk);
         self.b.seal_block(mark_blk);
-        let marked = self.b.ins().bor_imm_u(header, STRUCT_HEADER_SHARED_MASK as i64);
+        let marked = self.b.ins().bor(header, mask);
         self.b.ins().store(MemFlagsData::trusted(), marked, object, 0);
+        let newly_shared_binaries = self.b.ins().uextend(types::I64, is_binary);
+        self.add_process_counter(PROCESS_BINARIES_SHARED_OFFSET, newly_shared_binaries);
         self.b.ins().jump(done_blk, &[]);
 
         self.b.switch_to_block(done_blk);
         self.b.seal_block(done_blk);
+    }
+
+    fn kind_is(&mut self, kind: ir::Value, expected: ValueKind) -> ir::Value {
+        self.b.ins().icmp_imm_s(IntCC::Equal, kind, expected.tag() as i64)
     }
 
     /// The raw word in `slot` of the struct or tuple `object_ref` names,
@@ -289,7 +309,7 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
             CodegenValue::Known { kind, .. } => (self.b.ins().iconst(types::I64, 0), kind),
             CodegenValue::AnyRef(reference) if addressed_object => {
                 let (raw, kind) = self.addressed_form(reference);
-                self.share_if_struct(reference, kind);
+                self.share_if_published_kind(reference, kind);
                 return Some((raw, kind));
             }
             CodegenValue::AnyRef(_) => return None,

@@ -276,6 +276,10 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             a_struct_update_rewrites_only_a_base_nothing_else_holds,
         ),
         (
+            "each_place_a_binary_gains_a_second_holder_marks_it_shared",
+            each_place_a_binary_gains_a_second_holder_marks_it_shared,
+        ),
+        (
             "a_send_probes_on_the_sender_and_gifts_its_result_through_the_receivers_in_queue",
             a_send_probes_on_the_sender_and_gifts_its_result_through_the_receivers_in_queue,
         ),
@@ -3808,6 +3812,75 @@ fn struct_retention_for_fixture(fixture: &FixtureCase, path: FixtureMatrixPath) 
             )
         })
         .fold((0, 0), |(attempts, hits), (a, h)| (attempts + a, hits + h))
+}
+
+/// The binaries each process of `fixture` marked shared on `path`, in pid
+/// order, read from the processes' exit events.
+fn binaries_shared_by_process(fixture: &FixtureCase, path: FixtureMatrixPath) -> Vec<usize> {
+    let header = parse_header(fixture).unwrap_or_else(|error| panic!("parse fixture header: {error}"));
+    let (out, log) = run_path_logged(fixture, &header, path)
+        .unwrap_or_else(|error| panic!("{path:?} {} with telemetry: {error}", fixture.display_path().display()));
+    assert!(
+        out.status.success(),
+        "{path:?} {} exited {}: {}",
+        fixture.display_path().display(),
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let context = fixture.display_path().display().to_string();
+    let mut by_pid: Vec<(usize, usize)> = log
+        .lines()
+        .filter(|line| line.contains("\"name\":[\"fz\",\"runtime\",\"process_exited\"]"))
+        .map(|line| {
+            (
+                required_json_u64_field(line, "pid", &context),
+                required_json_u64_field(line, "binaries_shared", &context),
+            )
+        })
+        .collect();
+    by_pid.sort_unstable();
+    by_pid.into_iter().map(|(_, shared)| shared).collect()
+}
+
+/// Each process publishes one fresh binary at one place and sends what it
+/// published as its last act, so its count is what that publication marked:
+/// a store into a container or a closure marks the binary, as does a call
+/// made while the caller holds it; a message copy and a bare send leave the
+/// sender's binary with its one holder. A reduction yield differs by path:
+/// native code leaves its frame and builds a continuation from the yielding
+/// function's arguments, which marks them, while the interpreter keeps its
+/// frame across the yield and marks nothing. Every path counts
+/// the same, because every mark is `Heap::share` or its inline form. The main
+/// process, which spawns them and prints what they send, comes first and is
+/// not part of the claim.
+fn each_place_a_binary_gains_a_second_holder_marks_it_shared() {
+    let fixture = FixtureCase::new("fixtures/01711_each_place_a_binary_gains_a_second_holder_marks_it_shared.fz");
+    let expected = vec![
+        0, 0, // unpublished
+        2, 1, // tuple field
+        2, 1, // struct field
+        2, 1, // list head
+        2, 1, // map key
+        2, 1, // map value
+        2, 1, // closure capture
+        1, 1, // a call made while the caller holds it
+        0, 0, // self-send
+    ];
+    for path in [
+        FixtureMatrixPath::Run,
+        FixtureMatrixPath::Interp,
+        FixtureMatrixPath::Build,
+    ] {
+        let yield_marks = match path {
+            FixtureMatrixPath::Interp => [0, 0],
+            FixtureMatrixPath::Run | FixtureMatrixPath::Build => [1, 1],
+        };
+        assert_eq!(
+            binaries_shared_by_process(&fixture, path)[1..],
+            [expected.as_slice(), &yield_marks].concat(),
+            "{path:?}: (small, large) per publication",
+        );
+    }
 }
 
 fn a_struct_update_rewrites_only_a_base_nothing_else_holds() {

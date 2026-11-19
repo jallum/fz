@@ -21,7 +21,7 @@ use crate::any_value::{
     closure_capture_value, closure_header_word, closure_header_write, closure_size_for_count, heap_object_word,
     list_addr_from_tagged, map_addr_from_tagged, map_count, map_destination_header_word, map_destination_state,
     map_entry, map_header_word, map_key, map_key_in_arrays, map_key_kind, map_keys_ptr, map_pack_tag,
-    map_size_for_count, map_tag_bytes_len, map_tag_ptr, map_value_kind, map_values_ptr, share_struct,
+    map_size_for_count, map_tag_bytes_len, map_tag_ptr, map_value_kind, map_values_ptr, share_bitstring, share_struct,
     struct_field_kind_slot, struct_field_raw_slot, struct_header_word, struct_schema_id, struct_size_for_payload,
 };
 use crate::bits::{BinView, SharedBinHandle, alloc_buffer_view, alloc_view, shared_bin_append};
@@ -119,6 +119,7 @@ impl Heap {
             alloc_count: 0,
             old_objects: 0,
             alloc_stats: HeapAllocStats::default(),
+            binaries_shared: 0,
             off_heap_head: 0,
             off_heap_old_head: 0,
             binary_budget: BinaryBudget::new(),
@@ -422,7 +423,11 @@ impl Heap {
     }
 
     pub(super) fn publish_contained_parts(&mut self, raw: u64, kind: ValueKind) {
-        if matches!(kind, ValueKind::LIST | ValueKind::STRUCT) && raw != 0 {
+        if matches!(
+            kind,
+            ValueKind::LIST | ValueKind::STRUCT | ValueKind::BITSTRING | ValueKind::BINVIEW
+        ) && raw != 0
+        {
             let value = AnyValueRef::from_heap_object(kind, raw as *const u8).expect("contained value");
             self.mark_published_ref_aliased(value)
                 .expect("published contained value");
@@ -1070,6 +1075,7 @@ impl Heap {
             let shared = view.shared_raw();
             if right.len() <= unsafe { &*shared }.spare() {
                 unsafe { shared_bin_append(shared, right) };
+                self.count_binary_shared(view.share());
                 let bit_len = (left_bytes.len() + right.len()) as u64 * 8;
                 let longer = alloc_view(
                     self,
@@ -1130,6 +1136,7 @@ impl Heap {
         );
         let first = unsafe { parent.bytes_ptr().add(byte_offset as usize) };
         if byte_len as usize > SHARED_BIN_THRESHOLD_BYTES {
+            self.count_binary_shared(parent.share());
             let window = alloc_view(self, parent.binref(), first, byte_len * 8, StubSite::WindowOfBuffer);
             return AnyValue::heap_ptr(window.as_raw(), ValueKind::BINVIEW);
         }
@@ -1322,14 +1329,34 @@ impl Heap {
     /// never written again. A list marks its spine up to the first cell
     /// already marked, so an aliased cell certifies an entirely shared tail. A
     /// struct or tuple marks its header; everything it holds was shared when
-    /// it was stored. Other kinds are never written in place and carry no
-    /// mark. The count is the objects this call newly protected.
+    /// it was stored. A binary marks its first word, in either layout. Other
+    /// kinds are never written in place and carry no mark. The count is the
+    /// objects this call newly protected.
     pub(super) fn share(&mut self, value: AnyValueRef) -> Result<usize, AnyValueRefError> {
         match value.tag() {
             ValueKind::LIST if !value.is_empty_list() => Ok(unsafe { ListCons::share_spine(value.list_addr()?) }),
             ValueKind::STRUCT => Ok(usize::from(unsafe { share_struct(value.struct_addr()?) })),
+            ValueKind::BITSTRING => {
+                let marked = unsafe { share_bitstring(value.bitstring_addr()?) };
+                Ok(usize::from(self.count_binary_shared(marked)))
+            }
+            ValueKind::BINVIEW => {
+                let marked = unsafe { BinView::from_raw(value.binview_addr()?) }.share();
+                Ok(usize::from(self.count_binary_shared(marked)))
+            }
             _ => Ok(0),
         }
+    }
+
+    /// Count a binary whose mark `marked` says this call just set.
+    pub(crate) fn count_binary_shared(&mut self, marked: bool) -> bool {
+        self.binaries_shared += u64::from(marked);
+        marked
+    }
+
+    /// How many binaries this heap has marked shared.
+    pub fn binaries_shared(&self) -> u64 {
+        self.binaries_shared
     }
 
     /// Retain identical immutable contents without allocation. Changed contents
