@@ -12,9 +12,15 @@
   "id": "fz-9zq.15",
   "labels": [],
   "parent": "fz-9zq",
+  "comments": [
+    {
+      "text": "PR #788 (types/mod.rs, memo.rs, addressed.rs, canon.rs). Every walker terminates on a recursive type; row F settled (shape-only predicate sound, never coarser than the any cut). DEVIATION from approved page: addressing maps THROUGH a recursive type instead of stopping at it (tree(α) needs α addressed canonically); stated in PR body; needs the user's ok.",
+      "timestamp": "2026-11-19T02:44:02Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Every type walker meets a recursive type correctly",
   "type": "task",
-  "updated_at": "2026-11-19T01:29:32Z"
+  "updated_at": "2026-11-19T02:44:02Z"
 }
