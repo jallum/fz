@@ -13,11 +13,15 @@
     {
       "text": "Widened 2026-11-19 (Elixir Parity, Coordinator). A bare non-literal key, e.g. %{atom =\u003e v} or %{binary() | atom() | integer() | float() =\u003e v}, fails with 'a map type key must be a literal atom or int'. Elixir reads it as optional(K). Needed by fz-9zq.6's R6 probes and by json.erl's encode_map/decode_value. optional(K)/required(K) stay in scope.",
       "timestamp": "2026-11-19T04:33:38Z"
+    },
+    {
+      "text": "CORRECTION to the 04:33 comment: a bare non-literal key means required pairs, not optional(K), and typespec maps are closed. The description now carries the corrected scope.",
+      "timestamp": "2026-11-19T04:48:52Z"
     }
   ],
   "priority": 2,
   "status": "in_progress",
   "title": "A map type key may be any type, as in Elixir",
   "type": "feature",
-  "updated_at": "2026-11-19T04:48:51Z"
+  "updated_at": "2026-11-19T04:48:52Z"
 }
