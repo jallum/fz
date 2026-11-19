@@ -381,7 +381,10 @@ placed:                                            both paths join
 [top+16+8*n+i]      = kind byte of capture i
 ```
 
-The yield closure of an exhausted budget is placed the same way.
+The yield closure of an exhausted budget is placed the same way. The header
+and code address are written by `emit_closure` (`native_codegen/inline_object.rs`),
+which also writes them for a program's closures with captures, counted under
+`closure` instead of `continuation`.
 
 `heap::INLINE_ALLOC_LAYOUT` and `process_abi::PROCESS_HEAP_OFFSET` give the field
 offsets, and a heap test pins them against the real fields. Because the placement

@@ -574,7 +574,7 @@ mutual recursion (<code>f → g → f</code>) is covered automatically.</p>
 
   <span class="note">; slow path (budget exhausted):</span>
   call fz_yield_slow_path_begin()
-  cont = call fz_alloc_closure(next_loop_fn, argc, halt_kind, code_ptr)
+  cont = place closure(next_loop_fn, argc, halt_kind, code_ptr)  <span class="note">; inline bump, header and code address written in place</span>
   store arg0, cont.capture[0]
   store arg1, cont.capture[1]
   ...

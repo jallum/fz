@@ -559,9 +559,12 @@ place a field by it.
 
 Compiled code builds one in `build_struct`. When every field is a constant
 the object is read-only program data. Otherwise `CodegenFn::alloc_struct`
-calls `fz_alloc_struct` with the schema and the layout's size, both constants,
-and gets back an object with only its header written. `CodegenFn::store_field`
-then stores each field:
+places the object with `emit_place` (the one inline bump) and writes its header
+word itself, the schema id in the high half (`emit_struct`,
+`native_codegen/inline_object.rs`; the row is `Heap::alloc_struct_unwritten`
+in the recipe table). The size is the layout's, a constant. The runtime is
+asked only for room, when the tip is full. `CodegenFn::store_field` then
+stores each field:
 
 - A value whose kind the compiler holds (a raw integer, float or atom, a
   comparison's answer, the empty list) is two stores in place: the raw word
@@ -577,7 +580,9 @@ then stores each field:
 
 The payload is not zeroed first. Every slot and kind byte is written before
 the construction's next instruction, and the collector runs only between
-quanta (`end_quantum`), so nothing reads the object half built. The
+quanta (`end_quantum`), so nothing reads the object half built. The bytes
+after the last kind byte only pad the object to whole 16-byte slots, and
+nothing reads them. The
 interpreter and the runtime's own tuples use `Heap::alloc_struct`, which does
 zero the payload, since their stores are not adjacent to the allocation.
 

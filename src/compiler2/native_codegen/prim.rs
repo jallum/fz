@@ -262,7 +262,7 @@ fn build_struct<M: cranelift_module::Module, T: Types<Ty = Ty>>(
     if let Some(static_ref) = try_static_struct_literal(body, env, var_env, dest_var, schema_id, fields)? {
         return Ok(LowerOut::ValueRefWord(static_ref));
     }
-    let object = body.alloc_struct(schema_id, fields.len());
+    let object = body.alloc_struct(env.site_scope(), schema_id, fields.len());
     for (index, field) in fields.iter().enumerate() {
         let addressed = addressed_object_share(t, env.active_value_types(), *field);
         body.store_field(&object, index, binding_for_var(var_env, field.0), addressed);
@@ -2636,6 +2636,7 @@ pub(crate) fn lower_make_closure<M: cranelift_module::Module>(
     let cl_sid = settled_callable_boundary_id(env, fn_id)?;
     Ok(LowerOut::ValueRef(emit_capturing_closure(
         body,
+        env.site_scope(),
         var_env,
         env.surface,
         env.callable_boundary_fn_ids,
@@ -2645,12 +2646,13 @@ pub(crate) fn lower_make_closure<M: cranelift_module::Module>(
     )?))
 }
 
-/// Non-zero captures: alloc closure heap object, write body's
-/// func_addr, and store captures as env fields. The body has
+/// Non-zero captures: place the closure heap object, write its header and
+/// body's func_addr, and store captures as env fields. The body has
 /// closure-target sig `(args..., self, cont) tail` and projects
 /// captures from `self` in its entry harness.
 fn emit_capturing_closure<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
+    scope: SiteScope<'_>,
     var_env: &HashMap<u32, CodegenValue>,
     surface: &NativeCodegenSurface<'_>,
     callable_boundary_fn_ids: &HashMap<u32, FuncId>,
@@ -2679,7 +2681,7 @@ fn emit_capturing_closure<M: cranelift_module::Module>(
     let halt_repr = boundary.task_halt_repr.unwrap_or(ArgRepr::ValueRef);
     let hk_v = body.b.ins().iconst(types::I32, halt_repr.halt_kind() as i64);
     let body_addr = fn_addr(body.jmod, body_func_id, body.b);
-    let cl_ptr = body.alloc_closure(boundary.denotation, arity_v, nc_v, hk_v, body_addr);
+    let cl_ptr = body.alloc_closure(scope, boundary.denotation, arity_v, nc_v, hk_v, body_addr);
     for (i, cv) in captured.iter().enumerate() {
         match closure_capture_for_var_as(body, var_env, cv.0, boundary.capture_reprs[i]) {
             ClosureCapture::RefWord(value) => body.store_closure_capture_ref_word(cl_ptr, i, value),
