@@ -14,11 +14,15 @@
     {
       "text": "AUTHORIZED DEFERRAL (the user's ruling 1: 'whichever gets us there faster'). Step 1 is pushed with the single-clause closure head 'fn %{^key =\u003e v} -\u003e v end' still refused. It binds through RequireMapValue, which #753 (fz-sc8.248.1) deletes. Once the stack is rebased over #753, that form is accepted and joins fixture 01767. This ticket stays open until it does.",
       "timestamp": "2026-11-18T23:27:53Z"
+    },
+    {
+      "text": "#763 merged as dbab4de63. Kept open for the authorized deferral: the closure-head form fn %{^key =\u003e v} lands after the rebase over #753.",
+      "timestamp": "2026-11-19T00:58:19Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "A map pattern's key may be a pinned variable",
   "type": "task",
-  "updated_at": "2026-11-18T23:27:53Z"
+  "updated_at": "2026-11-19T00:58:19Z"
 }
