@@ -1,0 +1,19 @@
+#---
+# purpose: "a function that a guard checks with is_function/2 and the clause then calls is the same function on every path: a capture and a lambda are called, and a value that is not a function takes the next clause"
+# oracle: self
+# oracle.stamp: 5622b569234567e1
+#---
+defmodule Main do
+  def apply2(t, f) when is_function(f, 2), do: f.(t, 1)
+  def apply2(_t, _f), do: :not_a_function
+
+  def first(v, _n), do: v
+
+  def main() do
+    IO.inspect(apply2("a", &Main.first/2))
+    IO.inspect(apply2("b", fn v, n -> {v, n} end))
+    IO.inspect(apply2("c", :first))
+  end
+end
+
+Main.main()

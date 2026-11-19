@@ -1,0 +1,3 @@
+"a"
+{"b", 1}
+:not_a_function
