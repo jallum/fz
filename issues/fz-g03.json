@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-15T15:57:36Z",
@@ -14,8 +14,8 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "A variable used only as a segment size is not reported unused",
   "type": "bug",
-  "updated_at": "2026-11-19T01:32:16Z"
+  "updated_at": "2026-11-19T02:04:53Z"
 }
