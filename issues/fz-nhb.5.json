@@ -21,11 +21,15 @@
     {
       "text": "Owner: Elixir Parity (taken whole, 2026-11-19), fresh worktree off develop.",
       "timestamp": "2026-11-19T02:08:13Z"
+    },
+    {
+      "text": "PR #786 on develop 4c32b4708: sigil = sigil_x macro call; Kernel ~s ~S ~c ~C ~w ~W; Macro.unescape_string/1, String.to_charlist/1, List.to_charlist/1, String.split/1, UnicodeConversionError; one escape reader runtime/src/escape.rs; fixtures 01789-01793 (Elixir oracle); no pins.",
+      "timestamp": "2026-11-19T02:39:56Z"
     }
   ],
   "priority": 3,
   "status": "in_progress",
   "title": "Sigils are expressions, as in Elixir",
   "type": "feature",
-  "updated_at": "2026-11-19T02:11:24Z"
+  "updated_at": "2026-11-19T02:39:56Z"
 }
