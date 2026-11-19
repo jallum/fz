@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-mue.12"
+  ],
   "created": "2026-11-19T03:52:39Z",
   "description": "The user chose to land this before fz-mue.12, relayed by Elixir Parity on 2026-11-19. Owner: Elixir Parity. A proposal page comes first.\n\n## Why\nElixir code builds hygienic variables from helper functions and from atom contexts. For example, Record.__access__ is a helper function that hoists values through Macro.unique_var(key, module). fz rejects both forms:\n1. {:x, [counter: 7], Gen} fails with \"a variable's context atom must be nil or generated, got Elixir.Gen\".\n2. A variable written by quote inside a helper function that a macro calls fails with \"a macro- or sugar-generated variable is missing its hygiene ordinal\". Only the invoked macro's own quotes are stamped (stamp_hygiene, quoted_expander.rs).\n\n## Done when\n- Macro.var/2 and Macro.unique_var/2 exist.\n- Atom-context variables are hygienic per Elixir's rules: context and counter.\n- Quotes in helper functions are hygienic.\n- Elixir-oracle fixtures pass on all three paths.\n\n## Related\nfz-p8p.25 (var!/2) needs the same decision this ticket makes: what a context atom denotes. p8p.25 builds on this answer and does not make it again.",
   "id": "fz-mue.38",
