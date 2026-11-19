@@ -1221,6 +1221,31 @@ pub extern "C" fn fz_float_parse(process: *mut Process, binary_ref: u64) -> u64 
         .raw_word()
 }
 
+/// `Macro.unescape_string/1`: `[1, text]` with the escapes of the binary read
+/// as Elixir's `unescape_string` reads them, or `[0, message]` when an escape
+/// is malformed. The reading lives in `escape::unescape`, which the lexer's
+/// escape reader serves too.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_unescape_string(process: *mut Process, binary_ref: u64) -> u64 {
+    let (ptr, len) = byte_aligned_binary_slice(binary_ref, "fz_unescape_string");
+    let bytes = unsafe { from_raw_parts(ptr, len) };
+    let (status, answer) = match crate::escape::unescape(bytes) {
+        Ok(text) => (1, text),
+        Err(message) => (0, message.into_bytes()),
+    };
+    let process = unsafe { &mut *process };
+    let answer_ref = process.alloc_bitstring(&answer, (answer.len() * 8) as u64).ref_word();
+    let tail = process
+        .heap
+        .alloc_list_cons_ref(answer_ref, AnyValueRef::empty_list())
+        .expect("fz_unescape_string tail");
+    process
+        .heap
+        .alloc_list_cons_int(status, tail)
+        .expect("fz_unescape_string list")
+        .raw_word()
+}
+
 unsafe extern "C" {
     fn getline(line: *mut *mut std::ffi::c_char, capacity: *mut usize, stream: *mut std::ffi::c_void) -> isize;
     fn free(ptr: *mut std::ffi::c_void);

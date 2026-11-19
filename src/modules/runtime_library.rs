@@ -169,6 +169,10 @@ const RUNTIME_MODULE_SOURCES: &[RuntimeModuleSource] = &[
         source: include_str!("../../lib/exceptions/undefined_function_error.fz"),
     },
     RuntimeModuleSource {
+        name: "UnicodeConversionError",
+        source: include_str!("../../lib/exceptions/unicode_conversion_error.fz"),
+    },
+    RuntimeModuleSource {
         name: "WithClauseError",
         source: include_str!("../../lib/exceptions/with_clause_error.fz"),
     },

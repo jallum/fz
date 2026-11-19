@@ -58,6 +58,12 @@ marshalling code rather than being consumed at the front door. `integer` and
 `float` are unaffected BY THE ABI: they are raw scalars under both. They are
 not interchangeable, though — see the register banks below.
 
+**An fz extern's answer is one scalar or an `any`.** A helper that can fail
+returns a tagged list. `fz_unescape_string(binary)`, behind
+`Macro.unescape_string/1`, answers `[1, text]` on success and `[0, message]` on
+a malformed escape, and the library function raises `ArgumentError` for the
+second.
+
 Both doors read the same property from the same declaration
 (`prim.rs::lower_extern_generic` and `ir_interp/extern_call.rs`), so adding an
 allocating primitive is a Rust function and a declaration. There is no lowering

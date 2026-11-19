@@ -1,0 +1,15 @@
+defmodule UnicodeConversionError do
+  defexception [:encoded, :message]
+
+  def exception(opts) do
+    %UnicodeConversionError{
+      encoded: Keyword.fetch!(opts, :encoded),
+      message: "#{Keyword.fetch!(opts, :kind)} #{detail(Keyword.fetch!(opts, :rest))}"
+    }
+  end
+
+  @spec detail(any) :: binary
+  defp detail(rest) when is_binary(rest), do: "encoding starting at #{inspect(rest)}"
+  defp detail([head | _]) when is_integer(head), do: "code point #{head}"
+  defp detail([head | _]), do: detail(head)
+end

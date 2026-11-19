@@ -1,0 +1,82 @@
+#---
+# purpose: "String.split/1, String.to_charlist/1, List.to_charlist/1 and Macro.unescape_string/1 answer what Elixir's do, including the exceptions they raise"
+# oracle: self
+# oracle.stamp: 8aeaa4d32eb8f7d9
+#---
+#
+# The functions a sigil's macro is built from are public API. `String.split/1`
+# splits at runs of Unicode whitespace except the non-breaking spaces and drops
+# the empty strings. `String.to_charlist/1` and `List.to_charlist/1` list code
+# points, and refuse text that is not UTF-8 and integers that are not code
+# points. `Macro.unescape_string/1` reads a string literal's escapes from text
+# that is already in a program: a backslash before an unknown character leaves
+# the character, and a backslash and a newline vanish.
+defmodule Main do
+  def splits() do
+    [
+      String.split(""),
+      String.split("   "),
+      String.split(" a  b "),
+      String.split("a\tb\nc\vd\fe\rf"),
+      String.split("a\u00a0b c\u2003d"),
+      String.split("a\u2007b\u202fc\u3000d\u1680e\u0085f\u2028g"),
+      String.split(<<255, 32, 65>>)
+    ]
+  end
+
+  def charlists() do
+    [
+      String.to_charlist(""),
+      String.to_charlist("abc"),
+      String.to_charlist("h\u00e9llo"),
+      String.to_charlist("\u{1F600}"),
+      List.to_charlist([]),
+      List.to_charlist([104, "i", [33, ["?"]]]),
+      List.to_charlist(["h\u00e9", 233])
+    ]
+  end
+
+  def unescapes() do
+    [
+      Macro.unescape_string("plain"),
+      Macro.unescape_string("a\\nb"),
+      Macro.unescape_string("\\x41\\u00e9\\u{1F600}"),
+      Macro.unescape_string("\\q\\1\\z"),
+      Macro.unescape_string("a\\\nb"),
+      Macro.unescape_string("\\\"\\'\\#"),
+      Macro.unescape_string(<<92, 120, 102, 102>>)
+    ]
+  end
+
+  def failure(fun) do
+    try do
+      fun.()
+    rescue
+      error -> {error.__struct__, Exception.message(error)}
+    end
+  end
+
+  def failures() do
+    [
+      failure(fn -> String.to_charlist(<<97, 255>>) end),
+      failure(fn -> String.to_charlist(<<97, 226, 130>>) end),
+      failure(fn -> List.to_charlist([55296]) end),
+      failure(fn -> List.to_charlist([1114112]) end),
+      failure(fn -> Macro.unescape_string("\\u00") end),
+      failure(fn -> Macro.unescape_string("\\xZ") end),
+      failure(fn -> Macro.unescape_string("\\ud800") end)
+    ]
+  end
+
+  def main() do
+    Enum.each(splits(), &IO.inspect/1)
+    Enum.each(charlists(), &IO.inspect/1)
+    Enum.each(unescapes(), &IO.inspect/1)
+    Enum.each(failures(), fn {module, message} ->
+      IO.inspect(module)
+      IO.puts(message)
+    end)
+  end
+end
+
+Main.main()

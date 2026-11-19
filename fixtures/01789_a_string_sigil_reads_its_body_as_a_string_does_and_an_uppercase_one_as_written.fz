@@ -1,0 +1,109 @@
+#---
+# purpose: "~s reads escapes and interpolation as a double-quoted string does and ~S keeps its body as written, in every delimiter and in heredocs"
+# oracle: self
+# oracle.stamp: 8e88ed56d8054a7f
+#---
+#
+# `~s` and `~S` are the macros `sigil_s` and `sigil_S`. A sigil's body is raw
+# to the compiler: `~s` unescapes it and splices its `#{...}` pieces, `~S`
+# returns the text as written. Eight delimiters close a body (`/ | " ' ( [ { <`),
+# a backslash before the closing delimiter lets it appear in the text, and a
+# heredoc of `"""` or `'''` takes the indentation of its closing line off every
+# line.
+defmodule Main do
+  def delimiters() do
+    [~s(a), ~s[a], ~s{a}, ~s<a>, ~s|a|, ~s/a/, ~s"a", ~s'a']
+  end
+
+  def escapes() do
+    [
+      ~s(a\nb\tc\\d),
+      ~s(\x41\x4a\u00e9\u{1F600}),
+      ~s(\s\0\a\b\d\e\f\v\r),
+      ~s(\q\"\'\#),
+      ~s(a\
+b)
+    ]
+  end
+
+  def closers() do
+    [~s(a\)b), ~s[a\]b], ~s{a\}b}, ~s<a\>b>, ~s|a\|b|, ~s/a\/b/, ~s"a\"b", ~s'a\'b']
+  end
+
+  def interpolation(x) do
+    [
+      ~s(a#{x}b),
+      ~s(#{x}),
+      ~s(#{x}#{x}),
+      ~s(sum #{1 + 1} and #{"nested #{x}"}),
+      ~s(f\#{x}o),
+      ~s(#{inspect(%{k: [1, 2]})})
+    ]
+  end
+
+  def empty(x) do
+    [~s(), ~S(), ~s(#{x}), ~s"", ~S[]]
+  end
+
+  def uppercase(_x) do
+    [
+      ~S(a\nb#{x}),
+      ~S{\x41 \u00e9 \\},
+      ~S[parens (stay) {too}],
+      ~S"quote \n",
+      ~S|bar|,
+      ~S</slash/>,
+      ~S'tick #{x}'
+    ]
+  end
+
+  def heredocs(x) do
+    [
+      ~s"""
+      a #{x}
+        indented\tline
+      """,
+      ~S"""
+      raw #{x}\n
+      """,
+      ~s'''
+      single #{x}
+      ''',
+      ~S'''
+      raw ' " #{x}
+      ''',
+      ~s"""
+      escaped \""" quotes
+      """,
+      ~s"""
+      """
+    ]
+  end
+
+  def spanning() do
+    [
+      ~s(one
+two),
+      ~S(three
+four)
+    ]
+  end
+
+  def unicode() do
+    [~s(héllo wörld), ~S(日本語), ~s(#{"é"}ü)]
+  end
+
+  def main() do
+    Enum.each(delimiters(), &IO.inspect/1)
+    Enum.each(escapes(), &IO.inspect/1)
+    Enum.each(closers(), &IO.inspect/1)
+    Enum.each(interpolation("X"), &IO.inspect/1)
+    Enum.each(empty("E"), &IO.inspect/1)
+    Enum.each(uppercase("U"), &IO.inspect/1)
+    Enum.each(heredocs("H"), &IO.inspect/1)
+    Enum.each(spanning(), &IO.inspect/1)
+    Enum.each(unicode(), &IO.inspect/1)
+  end
+end
+
+Main.main()

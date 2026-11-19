@@ -1,0 +1,43 @@
+~c"a"
+~c"a"
+~c"a"
+~c"a"
+~c"a"
+~c"a"
+~c"a"
+~c"a"
+~c"\\u00"
+~c": "
+~c"\n"
+~c"]"
+~c"["
+~c","
+~c"\""
+~c"\\"
+~c"a\nb\tc\\d"
+[65, 233, 128512]
+[32, 0, 7, 8, 127, 27, 12, 11, 13]
+~c"q\"'#"
+~c"a)b"
+~c"aXb"
+~c"X"
+~c"42X42"
+~c"sum 2"
+~c"f\#{x}o"
+[233, 252]
+[]
+[]
+~c"E"
+[]
+[]
+~c"a\\nb\#{x}"
+~c"\\x41 \\u00e9 \\\\"
+~c"quote \\n"
+~c"bar"
+~c"/slash/"
+~c"tick \#{x}"
+~c"a H\n  indented\tline\n"
+~c"raw \#{x}\\n\n"
+~c"single H\n"
+[]
+{5, 294, true, true}

@@ -1,0 +1,16 @@
+{:text, "plain", []}
+{:text, "a\\nb", []}
+{:text, "with modifiers", ~c"ab"}
+{:text, "quoted", []}
+{:text, "bar", ~c"z"}
+{:interpolated, 3, ["v"], []}
+{:interpolated, 1, ["v"], []}
+{:interpolated, 3, ["v", "v"], ~c"xyz"}
+{:html, "<p>hi \#{1}</p>", []}
+{:html, "bold", ~c"html"}
+{:a1, "digits"}
+{:a1, "braces"}
+{:text, "lines\nhere\n", []}
+:matched_upcased
+:matched_string
+:nothing

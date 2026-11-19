@@ -1,0 +1,35 @@
+[]
+[]
+["a", "b"]
+["a", "b", "c", "d", "e", "f"]
+["a\u00A0b", "c", "d"]
+["a\u2007b c", "d", "e", "f", "g"]
+[<<255>>, "A"]
+[]
+~c"abc"
+[104, 233, 108, 108, 111]
+[128512]
+[]
+~c"hi!?"
+[104, 233, 233]
+"plain"
+"a\nb"
+"Aé😀"
+"q1z"
+"ab"
+"\"'#"
+<<255>>
+UnicodeConversionError
+invalid encoding starting at <<255>>
+UnicodeConversionError
+incomplete encoding starting at <<226, 130>>
+UnicodeConversionError
+invalid code point 55296
+UnicodeConversionError
+invalid code point 1114112
+ArgumentError
+invalid Unicode escape character, expected \uHHHH or \u{H*} where H is a hexadecimal digit
+ArgumentError
+invalid hex escape character, expected \xHH where H is a hexadecimal digit
+ArgumentError
+invalid or reserved Unicode code point \u{d800}
