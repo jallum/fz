@@ -1,0 +1,45 @@
+#---
+# purpose: "a type attribute reads to the end of its expression, across line ends, and @typep and @opaque declare types as @type does"
+# oracle: self
+# oracle.stamp: 6cbf6b05a8e85c56
+#---
+#
+# A type attribute's expression continues past a line end that follows `::`,
+# a line that begins with `|`, and any line end inside brackets, as Elixir
+# reads it. `@typep` and `@opaque` declare a type just as `@type` does: only a
+# static analyser treats one as private or opaque.
+defmodule Main do
+  @type scalar() ::
+          integer()
+          | float()
+          | binary()
+
+  @typep pair() :: {scalar(), scalar()}
+  @opaque handle() :: {:handle, integer()}
+
+  @type options() :: %{
+          scale: integer(),
+          label: binary()
+        }
+
+  @spec describe(scalar(), options()) ::
+          {scalar(), binary()} | :none
+  def describe(_value, %{scale: 0}), do: :none
+  def describe(value, %{label: label}), do: {value, label}
+
+  @spec twice(scalar()) :: pair()
+  def twice(value), do: {value, value}
+
+  @spec open(integer()) ::
+          handle()
+  def open(n), do: {:handle, n}
+
+  def main() do
+    IO.inspect(describe(1, %{scale: 1, label: "one"}))
+    IO.inspect(describe(2.5, %{scale: 0, label: "none"}))
+    IO.inspect(twice("ab"))
+    IO.inspect(open(7))
+  end
+end
+
+Main.main()

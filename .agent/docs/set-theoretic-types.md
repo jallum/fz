@@ -535,6 +535,11 @@ same values, fewer of them. An opaque type is its inner type; nothing about
 structure from code outside its declaring module, so `opaque` and `refines`
 differ only in the name a reader gives the declaration.
 
+Elixir's `@opaque` and `@typep` attributes are not these brands. Elixir's
+compiler treats both exactly as `@type`, and only a static analyser reads one as
+opaque or private, so fz declares `@opaque t :: U` and `@typep t :: U` as the
+plain alias `@type t :: U`.
+
 The `opaques` axis is reserved for the one shape a brand cannot express: a
 nominal tag with NO inner, disjoint from every structural value including its
 own bare representation. The compiler mints exactly one of these from source —

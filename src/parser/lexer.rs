@@ -167,10 +167,13 @@ impl fmt::Display for Tok {
 /// classification (elixir_tokenizer.erl), which never swallows a preceding
 /// eol for an ambiguous prefix-capable operator; `%` has no modulo in Elixir,
 /// so that dual role is fz-specific and must be excluded here explicitly.
-fn is_infix_only_continuation(tok: &Tok) -> bool {
+pub(crate) fn is_infix_only_continuation(tok: &Tok) -> bool {
     matches!(
         tok,
         Tok::Dot
+            | Tok::Bar
+            | Tok::FatArrow
+            | Tok::LArrow
             | Tok::Eq
             | Tok::When
             | Tok::Or

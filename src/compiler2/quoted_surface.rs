@@ -257,7 +257,7 @@ fn read_surface(source: &QuotedSourceRoot, sources: &SourceMap) -> Result<ScopeS
         if head_name.starts_with('@') {
             match head_name.as_str() {
                 "@doc" | "@spec" => pending_function_attrs.push(quoted_item.root()),
-                "@moduledoc" | "@type" => attrs.push(parse_scope_attr(&quoted_item, sources)?),
+                "@moduledoc" | "@type" | "@typep" | "@opaque" => attrs.push(parse_scope_attr(&quoted_item, sources)?),
                 _ => {
                     flush_function_groups(source, &mut forms, &mut group_order, &mut groups, sources)?;
                     forms.push(ScopeForm::Attribute(parse_value_attribute(
@@ -573,7 +573,7 @@ fn parse_scope_attr(cursor: &QuotedSourceCursor, sources: &SourceMap) -> Result<
     let span = node.span.unwrap_or(Span::DUMMY);
     match head.as_str() {
         "@moduledoc" => Ok(Attribute::ModuleDoc(doc_text(&value)?)),
-        "@type" => decode_type_alias_attr(&value, span, sources),
+        "@type" | "@typep" | "@opaque" => decode_type_alias_attr(&value, span, sources),
         other => Err(QuotedSourceError::new(format!(
             "unsupported quoted scope attribute `{other}`"
         ))),
@@ -585,10 +585,7 @@ fn decode_type_alias_attr(
     span: Span,
     sources: &SourceMap,
 ) -> Result<Attribute, QuotedSourceError> {
-    let mut tokens = token_payload::decode_tokens(payload, sources)?
-        .into_iter()
-        .filter(|token| !matches!(token.tok, Tok::Newline | Tok::Eof))
-        .peekable();
+    let mut tokens = token_payload::decode_tokens(payload, sources)?.into_iter().peekable();
 
     let name = match tokens.next().map(|token| token.tok) {
         Some(Tok::Upper(name)) | Some(Tok::Ident(name)) => name,

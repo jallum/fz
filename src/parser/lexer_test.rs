@@ -28,6 +28,28 @@ fn when_at_the_start_of_a_line_continues_the_previous_expression() {
     );
 }
 
+/// `|`, `=>` and `<-` never begin an expression, so a line that starts with
+/// one continues the line before, as a union type's `| t` lines do.
+#[test]
+fn a_line_starting_with_an_infix_only_operator_continues_the_previous_expression() {
+    for (source, operator) in [
+        ("integer()\n  | float()\n", Tok::Bar),
+        ("k\n  => v\n", Tok::FatArrow),
+        ("p\n  <- e\n", Tok::LArrow),
+    ] {
+        let tokens = test_lexer(source)
+            .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+            .expect("lex");
+        let kinds = tokens.into_iter().map(|token| token.tok).collect::<Vec<_>>();
+        let operator_at = kinds.iter().position(|tok| *tok == operator).expect("operator lexed");
+        assert_ne!(
+            kinds[operator_at - 1],
+            Tok::Newline,
+            "{source:?}: the line end before the operator is dropped"
+        );
+    }
+}
+
 #[test]
 fn rescue_and_catch_are_block_keywords() {
     let tokens = test_lexer("try do\n  x\nrescue\n  e -> e\ncatch\n  v -> v\nafter\n  y\nend\n")
