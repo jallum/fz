@@ -7,9 +7,15 @@
   "id": "fz-sc8.220",
   "labels": [],
   "parent": "fz-sc8",
+  "comments": [
+    {
+      "text": "Concordant evidence from Make Distiller Fast's BEAM-gap page (https://claude.ai/artifact/4JyVHKjbDBw1bzRDu17PZd): a case value of two tuple shapes passed to a call costs 4 field-read calls and 2 shares per step (1,124 vs 747 instructions per step); {:ok, v, r} structs ≈3.2G of the distiller's JSON decode (with fz-sc8.251).",
+      "timestamp": "2026-11-19T03:14:24Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "A return of two tuple shapes travels as fields",
   "type": "task",
-  "updated_at": "2026-11-15T03:18:41Z"
+  "updated_at": "2026-11-19T03:14:24Z"
 }
