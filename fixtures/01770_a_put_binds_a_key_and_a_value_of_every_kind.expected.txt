@@ -1,0 +1,14 @@
+{:small_integer, 7, true, :v, 2}
+{:wide_integer, 9223372036854775807, true, :v, 2}
+{:negative_integer, -42, true, :v, 2}
+{:float, 2.5, true, :v, 2}
+{:atom, :blue, true, :v, 2}
+{nil, nil, true, :v, 2}
+{:pid, :opaque, true, :v, 2}
+{:reference, :opaque, true, :v, 2}
+{:binary, "a binary", true, :v, 2}
+{:list, [1, 2, 3], true, :v, 2}
+{:tuple, {:ok, 1}, true, :v, 2}
+{:map, %{inner: 1}, true, :v, 2}
+{:struct, %Point{x: 1, y: 2}, true, :v, 2}
+{:closure, :called, true, :v, 2}

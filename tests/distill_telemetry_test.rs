@@ -230,10 +230,10 @@ fn read_compile_spend(trace: &Path) -> CompileSpend {
 }
 
 // Jobs the World completes to derive the distiller's compile.
-const DERIVATIONS: u64 = 16_277;
+const DERIVATIONS: u64 = 16_236;
 // Reads the World hands those jobs. A reach job reads the edge fact of every node in
 // its cone, so each of its runs hands one read per node.
-const READS_HANDED: u64 = 120_143;
+const READS_HANDED: u64 = 119_704;
 
 /// Compiling the distiller spends this much of the product stack. The largest
 /// drive is the one `PRODUCT_DRIVE_BUDGET` bounds, so its headroom is the
@@ -256,7 +256,7 @@ fn the_distiller_compiles_inside_the_product_drive_budget() {
     let measured = (spend.largest_drive(), spend.requests, spend.drives.len());
     assert_eq!(
         measured,
-        (35_113, 35_388, 25),
+        (35_040, 35_315, 25),
         "(largest drive requests, total requests, drives) for the distiller's compile moved. \
          A fall is lowered in this pin; a rise is investigated first, because the largest drive \
          may not exceed PRODUCT_DRIVE_BUDGET (50,000)."

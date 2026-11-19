@@ -82,6 +82,18 @@ pub(crate) fn value_raw_kind_parts<M: Module>(
     }
 }
 
+/// The word a container stores for `value` and its kind, as two `I64`s. A
+/// value whose kind codegen knows gives its word and a constant kind; any
+/// other is read through its reference.
+pub(crate) fn stored_parts<M: Module>(body: &mut CodegenFn<'_, '_, M>, value: CodegenValue) -> [ir::Value; 2] {
+    if let Some((word, kind)) = value_raw_kind_parts(body, value) {
+        return [word, body.b.ins().iconst(types::I64, i64::from(kind.tag()))];
+    }
+    let reference = body.value_as_any_ref(value);
+    let kind = kind_field(body.b, reference);
+    [super::list_cell::payload_of(body, reference, kind), kind]
+}
+
 pub(crate) const TRUE_BITS: i64 = TRUE_BITS_RAW as i64;
 pub(crate) const FALSE_BITS: i64 = FALSE_BITS_RAW as i64;
 

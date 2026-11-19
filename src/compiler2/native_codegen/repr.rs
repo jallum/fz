@@ -68,6 +68,10 @@ pub(crate) trait ExternLane {
     /// which bank and width it travels in rather than defaulting into the
     /// full integer word.
     fn lane(self) -> Option<types::Type>;
+
+    /// The lanes one parameter of this class occupies in a C signature: two
+    /// integer words for a `stored_value`, and its one lane for any other.
+    fn param_lanes(self) -> impl Iterator<Item = types::Type>;
 }
 
 impl ExternLane for ExternTy {
@@ -81,9 +85,17 @@ impl ExternLane for ExternTy {
             | ExternTy::Any
             | ExternTy::Binary
             | ExternTy::BinaryCursor
+            | ExternTy::StoredValue
             | ExternTy::CString => Some(types::I64),
             ExternTy::Unit | ExternTy::Never => None,
         }
+    }
+
+    fn param_lanes(self) -> impl Iterator<Item = types::Type> {
+        let words = if self == ExternTy::StoredValue { 2 } else { 1 };
+        // A parameter that carries no value has no lane; its marshal refuses
+        // it, so the word it would occupy is never reached.
+        std::iter::repeat_n(self.lane().unwrap_or(types::I64), words)
     }
 }
 

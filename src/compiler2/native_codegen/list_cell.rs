@@ -117,7 +117,7 @@ fn decode_and_share<M: cranelift_module::Module>(body: &mut CodegenFn<'_, '_, M>
 /// The payload word a container stores for the value `word` names: what a
 /// boxed scalar's box holds, and for any other kind the word's address field
 /// with its literal bit.
-fn payload_of<M: cranelift_module::Module>(
+pub(crate) fn payload_of<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
     word: ir::Value,
     kind: ir::Value,

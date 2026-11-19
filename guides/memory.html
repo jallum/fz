@@ -289,16 +289,19 @@ publishes the immutable map:</p>
 
 <pre>
   dest = fz_map_dest_begin(extra=2)        <span class="note">// unpublished storage</span>
-  _    = fz_map_dest_put_parts(dest, k0, v0)
-  _    = fz_map_dest_put_ref(dest, k1, v1)
+  _    = fz_map_dest_put(dest, k0, v0)
+  _    = fz_map_dest_put(dest, k1, v1)
   out  = fz_map_dest_freeze(dest)          <span class="note">// immutable canonical map</span>
 </pre>
 
 <p>The destination lives on the owning process heap and is not visible as a
 published value. Freeze sorts by runtime map ordering, removes overwritten
-duplicate keys, and returns the canonical immutable map. Known key/value
-representations use <code>fz_map_dest_put_parts</code>; unknown refs use
-<code>fz_map_dest_put_ref</code>. Dynamic map reads still return
+duplicate keys, and returns the canonical immutable map. Each put hands over
+its key and its value as the word the map stores and the value's kind, so an
+integer or a float goes in without a box; a key or a value whose kind is
+known only when the program runs has its kind read from its reference.
+<code>Map.put</code> takes the same two words through
+<code>fz_map_put</code>. Dynamic map reads still return
 <code>AnyValueRef</code>s when the caller needs an <code>any</code>.</p>
 
 <p>An update, <code>%{m | k: v}</code>, starts from a copy of <code>m</code>
@@ -307,7 +310,7 @@ already has:</p>
 
 <pre>
   dest = fz_map_dest_begin_update(m)       <span class="note">// m's entries, unpublished</span>
-  _    = fz_map_dest_put_ref(dest, k, v)   <span class="note">// replaces, or notes a missing key</span>
+  _    = fz_map_dest_put(dest, k, v)       <span class="note">// replaces, or notes a missing key</span>
   out  = fz_map_dest_freeze(dest)          <span class="note">// the map, or the miss sentinel</span>
 </pre>
 

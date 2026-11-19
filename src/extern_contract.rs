@@ -102,6 +102,7 @@ const WIRE_SPELLINGS: &[WireSpelling] = &[
     WireSpelling::wire_only("c_string", ExternTy::CString, "binary"),
     WireSpelling::wire_only("unit", ExternTy::Unit, "nil"),
     WireSpelling::wire_only("binary_cursor", ExternTy::BinaryCursor, "bitstring"),
+    WireSpelling::wire_only("stored_value", ExternTy::StoredValue, "any"),
 ];
 
 fn wire_spelling(name: &str) -> Option<&'static WireSpelling> {

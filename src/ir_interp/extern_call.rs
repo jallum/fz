@@ -63,6 +63,9 @@ fn marshal_arg(proc: *mut Process, value: AnyValue, ty: ExternTy, fz_abi: bool) 
                 "`binary_cursor` is two arguments, the binary and its position, before it is marshalled".to_string(),
             );
         }
+        ExternTy::StoredValue => {
+            return Err("`stored_value` is two words, marshalled by `stored_words`".to_string());
+        }
         ExternTy::Binary | ExternTy::CString if fz_abi => ArgWord::Int(value.extern_arg_ref_word(proc)?),
         ExternTy::Binary => ArgWord::Int((unsafe { fz_binary_as_ptr(value.extern_arg_ref_word(proc)?) }) as u64),
         ExternTy::CString => {
@@ -129,6 +132,13 @@ pub(super) fn call_lowered_extern(
     )
 }
 
+/// A `stored_value` argument: the word a container stores for `value`, then
+/// its kind.
+fn stored_words(proc: *mut Process, value: AnyValue) -> Result<[ArgWord; 2], String> {
+    let stored = value.value(proc)?;
+    Ok([ArgWord::Int(stored.raw()), ArgWord::Int(u64::from(stored.kind().tag()))])
+}
+
 pub(super) fn call_fixed_extern(
     runtime: &mut IrInterpRuntime,
     signature: FixedExtern<'_>,
@@ -137,12 +147,12 @@ pub(super) fn call_fixed_extern(
     // Arity is enforced where the call is lowered; this guards the transmute
     // below against a caller that bypassed lowering, where `zip` would
     // silently truncate.
-    let words: usize = signature.params.iter().map(|ty| ty.wire_words()).sum();
-    if args.len() != words {
+    let arguments: usize = signature.params.iter().map(|ty| ty.wire().count()).sum();
+    if args.len() != arguments {
         return Err(format!(
-            "extern `{}` declares {} argument word(s) but was called with {}",
+            "extern `{}` declares {} argument(s) but was called with {}",
             signature.symbol,
-            words,
+            arguments,
             args.len()
         ));
     }
@@ -160,7 +170,11 @@ pub(super) fn call_fixed_extern(
             let value = values
                 .next()
                 .expect("argument words were counted against the parameters");
-            raw_args.push(marshal_arg(runtime.cur_proc(), value, wire, fz_abi)?);
+            if wire == ExternTy::StoredValue {
+                raw_args.extend(stored_words(runtime.cur_proc(), value)?);
+            } else {
+                raw_args.push(marshal_arg(runtime.cur_proc(), value, wire, fz_abi)?);
+            }
         }
     }
     // `dispatch_fn_*` transmute to a concrete fn type, so the interpreter has a
@@ -244,7 +258,7 @@ fn call_variadic_extern(
     let words: Vec<u64> = args
         .iter()
         .zip(arg_tys.iter().copied())
-        .map(|(value, ty)| marshal_arg(runtime.cur_proc(), *value, ty, false).map(ArgWord::int))
+        .map(|(value, ty)| marshal_arg(runtime.cur_proc(), *value, ty, false).map(ArgWord::bits))
         .collect::<Result<_, _>>()?;
 
     let fixed_count = signature.params.len();
@@ -273,8 +287,8 @@ fn call_variadic_extern(
         ExternTy::Unit => Ok(ExternCallValue::Scalar(interp_nil_value())),
         ExternTy::Never => Err(format!("extern `{}` declared Never returned", signature.symbol)),
         ExternTy::F64 => unreachable!("a float-returning variadic extern is refused above"),
-        ExternTy::BinaryCursor => Err(format!(
-            "extern `{}` returns `binary_cursor`, a parameter-only type",
+        ExternTy::BinaryCursor | ExternTy::StoredValue => Err(format!(
+            "extern `{}` returns {ret_ty:?}, a parameter-only type",
             signature.symbol
         )),
     }
@@ -424,8 +438,8 @@ unsafe fn call_declared_return(
             let value = unsafe { dispatch_fn_returning_int(fp, raw_args) };
             interp_value_from_extern_ref_word(value).map(ExternCallValue::Scalar)
         }
-        ExternReturn::Scalar(ExternTy::BinaryCursor) => {
-            Err("`binary_cursor` stands only as a parameter, never as a result".to_string())
+        ExternReturn::Scalar(ExternTy::BinaryCursor | ExternTy::StoredValue) => {
+            Err("`binary_cursor` and `stored_value` stand only as parameters, never as results".to_string())
         }
         ExternReturn::Checked(lane, failure) => {
             let fields = [*lane, ExternTy::Bool];
@@ -445,12 +459,10 @@ fn decode_bool_word(word: u64) -> AnyValue {
     interp_bool_value(word != 0)
 }
 
-/// How many machine words the `dispatch_fn_*` family can forward. They
-/// transmute to a concrete `extern "C" fn` type, so the enumerated shapes are
-/// the limit -- and a shape is an arity TIMES an assignment of its parameters
-/// to the integer and float register banks. An `extern "fz"` spends one slot on
-/// the implicit process word.
-const MAX_INTERP_EXTERN_ARGS: usize = 4;
+/// How many machine words the `dispatch_fn_*` family can forward: as many as
+/// SysV x86-64 passes in integer registers, so none spills to the stack. An
+/// `extern "fz"` spends one on the implicit process word.
+const MAX_INTERP_EXTERN_ARGS: usize = 6;
 
 /// The address to call for a declared extern symbol.
 ///
@@ -487,98 +499,63 @@ enum ArgWord {
 }
 
 impl ArgWord {
-    /// Total, though the cross cases cannot arise: the shape dispatched on is
-    /// derived from these same values by `lane_mask`.
-    fn int(self) -> u64 {
+    /// The argument's bits as one word, whichever bank it travels in.
+    fn bits(self) -> u64 {
         match self {
             Self::Int(word) => word,
             Self::Float(value) => value.to_bits(),
         }
     }
+}
 
-    fn float(self) -> f64 {
-        match self {
-            Self::Float(value) => value,
-            Self::Int(word) => f64::from_bits(word),
+/// The integer-bank words of `args` in order, then the float-bank words in
+/// order, each bank padded to `MAX_INTERP_EXTERN_ARGS`.
+fn register_banks(args: &[ArgWord]) -> ([u64; MAX_INTERP_EXTERN_ARGS], [f64; MAX_INTERP_EXTERN_ARGS]) {
+    let mut ints = [0; MAX_INTERP_EXTERN_ARGS];
+    let mut floats = [0.0; MAX_INTERP_EXTERN_ARGS];
+    let (mut next_int, mut next_float) = (0, 0);
+    for arg in args {
+        match *arg {
+            ArgWord::Int(word) => {
+                ints[next_int] = word;
+                next_int += 1;
+            }
+            ArgWord::Float(value) => {
+                floats[next_float] = value;
+                next_float += 1;
+            }
         }
     }
+    (ints, floats)
 }
 
-/// Bit `i` is set when argument `i` travels in the float bank.
-fn lane_mask(args: &[ArgWord]) -> u32 {
-    args.iter().enumerate().fold(0, |mask, (index, arg)| match arg {
-        ArgWord::Float(_) => mask | (1 << index),
-        ArgWord::Int(_) => mask,
-    })
-}
-
-macro_rules! lane_ty {
-    (I) => {
-        u64
-    };
-    (F) => {
-        f64
-    };
-}
-
-macro_rules! lane_get {
-    (I, $arg:expr) => {
-        $arg.int()
-    };
-    (F, $arg:expr) => {
-        $arg.float()
-    };
-}
-
-macro_rules! extern_call {
-    ($fp:expr, $args:expr, $ret:ty $(, $lane:ident @ $index:tt)*) => {{
-        let call: unsafe extern "C" fn($(lane_ty!($lane)),*) -> $ret = unsafe { transmute($fp) };
-        unsafe { call($(lane_get!($lane, $args[$index])),*) }
+/// Call `fp` with `args` and read the result as `$ret`.
+///
+/// The C ABIs the interpreter runs under (SysV x86-64 and AAPCS64) give a
+/// scalar argument the next free register of its own bank, integer or float,
+/// whatever the other bank holds. So every arrangement of up to
+/// `MAX_INTERP_EXTERN_ARGS` arguments is one call: the integer words in the
+/// integer registers in order, and the float words in the float registers in
+/// order. A callee reads the registers its parameters name and never the
+/// padding after them.
+macro_rules! dispatch_shapes {
+    ($fp:expr, $args:expr, $ret:ty) => {{
+        assert!(
+            $args.len() <= MAX_INTERP_EXTERN_ARGS,
+            "arity {} is refused before dispatch (max {MAX_INTERP_EXTERN_ARGS})",
+            $args.len()
+        );
+        let ([i0, i1, i2, i3, i4, i5], [f0, f1, f2, f3, f4, f5]) = register_banks($args);
+        let call: unsafe extern "C" fn(u64, u64, u64, u64, u64, u64, f64, f64, f64, f64, f64, f64) -> $ret =
+            unsafe { transmute($fp) };
+        unsafe { call(i0, i1, i2, i3, i4, i5, f0, f1, f2, f3, f4, f5) }
     }};
 }
 
-/// Every argument shape the interpreter can forward: each arity up to
-/// `MAX_INTERP_EXTERN_ARGS`, times each assignment of its parameters to the two
-/// register banks. Written once and instantiated per return lane, so a return
-/// lane cannot be given a different set of argument shapes than another.
-macro_rules! dispatch_shapes {
-    ($fp:expr, $args:expr, $ret:ty) => {
-        match ($args.len(), lane_mask($args)) {
-            (0, _) => extern_call!($fp, $args, $ret),
-            (1, 0b0) => extern_call!($fp, $args, $ret, I @ 0),
-            (1, 0b1) => extern_call!($fp, $args, $ret, F @ 0),
-            (2, 0b00) => extern_call!($fp, $args, $ret, I @ 0, I @ 1),
-            (2, 0b01) => extern_call!($fp, $args, $ret, F @ 0, I @ 1),
-            (2, 0b10) => extern_call!($fp, $args, $ret, I @ 0, F @ 1),
-            (2, 0b11) => extern_call!($fp, $args, $ret, F @ 0, F @ 1),
-            (3, 0b000) => extern_call!($fp, $args, $ret, I @ 0, I @ 1, I @ 2),
-            (3, 0b001) => extern_call!($fp, $args, $ret, F @ 0, I @ 1, I @ 2),
-            (3, 0b010) => extern_call!($fp, $args, $ret, I @ 0, F @ 1, I @ 2),
-            (3, 0b011) => extern_call!($fp, $args, $ret, F @ 0, F @ 1, I @ 2),
-            (3, 0b100) => extern_call!($fp, $args, $ret, I @ 0, I @ 1, F @ 2),
-            (3, 0b101) => extern_call!($fp, $args, $ret, F @ 0, I @ 1, F @ 2),
-            (3, 0b110) => extern_call!($fp, $args, $ret, I @ 0, F @ 1, F @ 2),
-            (3, 0b111) => extern_call!($fp, $args, $ret, F @ 0, F @ 1, F @ 2),
-            (4, 0b0000) => extern_call!($fp, $args, $ret, I @ 0, I @ 1, I @ 2, I @ 3),
-            (4, 0b0001) => extern_call!($fp, $args, $ret, F @ 0, I @ 1, I @ 2, I @ 3),
-            (4, 0b0010) => extern_call!($fp, $args, $ret, I @ 0, F @ 1, I @ 2, I @ 3),
-            (4, 0b0011) => extern_call!($fp, $args, $ret, F @ 0, F @ 1, I @ 2, I @ 3),
-            (4, 0b0100) => extern_call!($fp, $args, $ret, I @ 0, I @ 1, F @ 2, I @ 3),
-            (4, 0b0101) => extern_call!($fp, $args, $ret, F @ 0, I @ 1, F @ 2, I @ 3),
-            (4, 0b0110) => extern_call!($fp, $args, $ret, I @ 0, F @ 1, F @ 2, I @ 3),
-            (4, 0b0111) => extern_call!($fp, $args, $ret, F @ 0, F @ 1, F @ 2, I @ 3),
-            (4, 0b1000) => extern_call!($fp, $args, $ret, I @ 0, I @ 1, I @ 2, F @ 3),
-            (4, 0b1001) => extern_call!($fp, $args, $ret, F @ 0, I @ 1, I @ 2, F @ 3),
-            (4, 0b1010) => extern_call!($fp, $args, $ret, I @ 0, F @ 1, I @ 2, F @ 3),
-            (4, 0b1011) => extern_call!($fp, $args, $ret, F @ 0, F @ 1, I @ 2, F @ 3),
-            (4, 0b1100) => extern_call!($fp, $args, $ret, I @ 0, I @ 1, F @ 2, F @ 3),
-            (4, 0b1101) => extern_call!($fp, $args, $ret, F @ 0, I @ 1, F @ 2, F @ 3),
-            (4, 0b1110) => extern_call!($fp, $args, $ret, I @ 0, F @ 1, F @ 2, F @ 3),
-            (4, 0b1111) => extern_call!($fp, $args, $ret, F @ 0, F @ 1, F @ 2, F @ 3),
-            (n, _) => unreachable!("arity {n} is refused before dispatch (max {MAX_INTERP_EXTERN_ARGS})"),
-        }
-    };
-}
+#[cfg(not(all(unix, any(target_arch = "x86_64", target_arch = "aarch64"))))]
+compile_error!(
+    "the interpreter's extern call assigns integer and float registers independently, as SysV x86-64 and AAPCS64 do"
+);
 
 unsafe fn dispatch_fn_returning_int(fp: *const (), args: &[ArgWord]) -> u64 {
     dispatch_shapes!(fp, args, u64)

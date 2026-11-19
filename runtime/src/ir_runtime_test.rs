@@ -503,15 +503,48 @@ fn ref_projection_helpers_load_scalar_payloads() {
     assert_eq!(fz_ref_load_atom(atom_ref.raw_word()), 17);
 }
 
+/// The arguments of `fz_map_put` in the order it takes them: a key and a
+/// value, each as its stored word and kind.
+fn stored(value: AnyValue) -> [u64; 2] {
+    [value.raw(), u64::from(value.kind().tag())]
+}
+
 #[test]
-fn typed_map_put_ffi_round_trips_atom_key_int_value() {
+fn a_put_binds_a_key_to_a_value_each_given_as_word_and_kind() {
     with_process(|process| {
-        let key_atom = process.node.intern_atom("key");
-        let key = AnyValueRef::atom(key_atom).raw_word();
-        let map = fz_map_put_int(process, fz_map_empty(process), key, 42);
-        let map_ref = AnyValueRef::from_raw_word(map).expect("map ref");
-        let got = fz_map_get_ref(process, map_ref.raw_word(), key);
-        assert_eq!(fz_ref_load_int(got), 42);
+        let key = AnyValue::atom(process.node.intern_atom("key"));
+        let [key_word, key_kind] = stored(key);
+        let [value_word, value_kind] = stored(AnyValue::int(42));
+        let map = fz_map_put(
+            process,
+            fz_map_empty(process),
+            key_word,
+            key_kind,
+            value_word,
+            value_kind,
+        );
+        let key_ref = AnyValueRef::atom(process.node.intern_atom("key")).raw_word();
+        assert_eq!(fz_ref_load_int(fz_map_get_ref(process, map, key_ref)), 42);
+    });
+}
+
+#[test]
+fn a_put_of_an_integer_or_a_float_allocates_only_the_map() {
+    with_process(|process| {
+        let key = AnyValue::atom(process.node.intern_atom("key"));
+        let [key_word, key_kind] = stored(key);
+        let empty = fz_map_empty(process);
+        for value in [AnyValue::int(i64::MAX), AnyValue::float(2.5)] {
+            let before = process.heap.alloc_stats_snapshot();
+            let [value_word, value_kind] = stored(value);
+            let _ = fz_map_put(process, empty, key_word, key_kind, value_word, value_kind);
+            let after = process.heap.alloc_stats_snapshot();
+            assert_eq!(
+                after.total.allocs - before.total.allocs,
+                1,
+                "a scalar crosses as its word, so the put makes the map and no box for {value:?}"
+            );
+        }
     });
 }
 
@@ -520,8 +553,16 @@ fn typed_map_put_ffi_round_trips_atom_key_int_value() {
 fn loading_an_int_from_a_map_value_that_is_an_atom_panics() {
     with_process(|process| {
         let key = AnyValueRef::atom(process.node.intern_atom("key")).raw_word();
-        let value = AnyValueRef::atom(process.node.intern_atom("value")).raw_word();
-        let map = fz_map_put_atom_ref(process, fz_map_empty(process), key, value);
+        let [key_word, key_kind] = stored(AnyValue::atom(process.node.intern_atom("key")));
+        let [value_word, value_kind] = stored(AnyValue::atom(process.node.intern_atom("value")));
+        let map = fz_map_put(
+            process,
+            fz_map_empty(process),
+            key_word,
+            key_kind,
+            value_word,
+            value_kind,
+        );
 
         let _ = ref_load_int_impl(fz_map_get_ref(process, map, key));
     });

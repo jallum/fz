@@ -30,11 +30,11 @@ use fz_runtime::ir_runtime::{
     fz_alloc_binview_from_static, fz_bs_begin, fz_bs_field_end, fz_bs_field_spec, fz_bs_finalize,
     fz_bs_read_binary_ref, fz_bs_read_int_ref, fz_bs_write_field_ref, fz_bs_write_word, fz_function_arity,
     fz_int_float_cmp, fz_map_dest_begin, fz_map_dest_begin_update, fz_map_dest_freeze, fz_map_dest_publish,
-    fz_map_dest_put_parts, fz_map_dest_put_ref, fz_map_get_atom_key_ref, fz_map_get_float_key_ref,
-    fz_map_get_int_key_ref, fz_map_get_ref, fz_map_named_schema_ref, fz_matcher_map_get_ref,
-    fz_pinned_binary_segment_size, fz_ref_load_atom, fz_ref_load_float, fz_ref_load_int, fz_struct_get_field_ref,
-    fz_struct_get_named_field_ref, fz_struct_module, fz_struct_schema_id_ref, fz_value_cmp_raw_const, fz_value_cmp_ref,
-    fz_value_eq_raw_const, fz_value_eq_ref, fz_value_eq_widening_ref,
+    fz_map_dest_put, fz_map_get_atom_key_ref, fz_map_get_float_key_ref, fz_map_get_int_key_ref, fz_map_get_ref,
+    fz_map_named_schema_ref, fz_matcher_map_get_ref, fz_pinned_binary_segment_size, fz_ref_load_atom,
+    fz_ref_load_float, fz_ref_load_int, fz_struct_get_field_ref, fz_struct_get_named_field_ref, fz_struct_module,
+    fz_struct_schema_id_ref, fz_value_cmp_raw_const, fz_value_cmp_ref, fz_value_eq_raw_const, fz_value_eq_ref,
+    fz_value_eq_widening_ref,
 };
 use fz_runtime::process::AtomName;
 use fz_runtime::process_abi::{PROCESS_DELIVERED_OFFSET, PROCESS_FAILED_OFFSET};
@@ -80,25 +80,14 @@ fn emit_map_destination_put<M: cranelift_module::Module>(
     key: CodegenValue,
     value: CodegenValue,
 ) -> ir::Value {
-    if let (Some((key_raw, key_kind)), Some((value_raw, value_kind))) =
-        (value_raw_kind_parts(body, key), value_raw_kind_parts(body, value))
-        && key_kind.is_scalar()
-        && value_kind.is_scalar()
-    {
-        let key_kind = body.b.ins().iconst(types::I64, key_kind.tag() as i64);
-        let value_kind = body.b.ins().iconst(types::I64, value_kind.tag() as i64);
-        let process = body.process_arg();
-        runtime_call1!(
-            body,
-            fz_map_dest_put_parts,
-            [process, map_bits, key_raw, key_kind, value_raw, value_kind]
-        )
-    } else {
-        let key_ref = body.value_as_any_ref(key);
-        let value_ref = body.value_as_any_ref(value);
-        let process = body.process_arg();
-        runtime_call1!(body, fz_map_dest_put_ref, [process, map_bits, key_ref, value_ref])
-    }
+    let [key_word, key_kind] = stored_parts(body, key);
+    let [value_word, value_kind] = stored_parts(body, value);
+    let process = body.process_arg();
+    runtime_call1!(
+        body,
+        fz_map_dest_put,
+        [process, map_bits, key_word, key_kind, value_word, value_kind]
+    )
 }
 
 pub(crate) fn emit_list_cons_bif<M: cranelift_module::Module>(
@@ -988,7 +977,7 @@ fn marshal_extern_arg<M: cranelift_module::Module>(
             runtime_call1!(body, fz_binary_as_ptr, [bits])
         }
         ExternTy::Any => body.tagged_var(var_env, var.0),
-        ExternTy::Unit | ExternTy::Never | ExternTy::BinaryCursor => {
+        ExternTy::Unit | ExternTy::Never | ExternTy::BinaryCursor | ExternTy::StoredValue => {
             return Err(CodegenError::new(format!(
                 "{:?} is not a valid extern argument marshal class",
                 ty
@@ -1120,7 +1109,9 @@ fn emit_variadic_extern_call<M: cranelift_module::Module>(
         ExternTy::Any | ExternTy::Binary | ExternTy::CString => Ok(LowerOut::ValueRef(raw)),
         ExternTy::F64 => unreachable!("a float-returning variadic extern is refused above"),
         ExternTy::Unit | ExternTy::Never => unreachable!("a lane-less return produced no result"),
-        ExternTy::BinaryCursor => unreachable!("`binary_cursor` stands only as a parameter"),
+        ExternTy::BinaryCursor | ExternTy::StoredValue => {
+            unreachable!("`binary_cursor` and `stored_value` stand only as parameters")
+        }
     }
 }
 
@@ -2169,7 +2160,7 @@ fn lower_extern_generic<M: cranelift_module::Module>(
     }
     // A parameter that carries no value has no lane; `marshal_extern_arg`
     // refuses one, so the word it would occupy here is never reached.
-    param_tys.extend(decl.params.iter().map(|t| t.lane().unwrap_or(types::I64)));
+    param_tys.extend(decl.params.iter().flat_map(|t| t.param_lanes()));
     let ret = decl.ret.scalar_ty().ok_or_else(|| {
         CodegenError::new(format!(
             "extern `{}` aggregate result reached scalar Prim::Extern lowering",
@@ -2191,11 +2182,14 @@ fn lower_extern_generic<M: cranelift_module::Module>(
         param_kinds.len()
     );
     let process_arg = takes_process.then(|| body.process_arg());
-    let arg_vals: Vec<ir::Value> = args
-        .iter()
-        .zip(param_kinds.iter())
-        .map(|(v, ty)| marshal_extern_arg(body, var_env, v.var, *ty, takes_process))
-        .collect::<Result<_, _>>()?;
+    let mut arg_vals: Vec<ir::Value> = Vec::with_capacity(param_tys.len());
+    for (arg, ty) in args.iter().zip(param_kinds.iter().copied()) {
+        if ty == ExternTy::StoredValue {
+            arg_vals.extend(stored_parts(body, binding_for_var(var_env, arg.var.0)));
+        } else {
+            arg_vals.push(marshal_extern_arg(body, var_env, arg.var, ty, takes_process)?);
+        }
+    }
     if !takes_process && let Some(out) = inline_scalar_extern(body, decl, ret, &arg_vals, dest_var)? {
         return Ok(out);
     }
@@ -2238,7 +2232,9 @@ fn lower_extern_generic<M: cranelift_module::Module>(
             // it. A wildcard here would silently do it again to the next
             // variant added; `returns_value` already excluded these two.
             ExternTy::Unit | ExternTy::Never => unreachable!("a non-returning extern took the returns_value path"),
-            ExternTy::BinaryCursor => unreachable!("`binary_cursor` stands only as a parameter"),
+            ExternTy::BinaryCursor | ExternTy::StoredValue => {
+                unreachable!("`binary_cursor` and `stored_value` stand only as parameters")
+            }
         });
     }
     if body.cache.used_vars.contains(&dest_var.0) {

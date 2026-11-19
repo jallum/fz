@@ -515,6 +515,7 @@ impl AnyValue {
         })
     }
 
+    #[inline]
     pub fn decode_parts(raw: u64, kind_tag: u8) -> Option<Self> {
         let kind = ValueKind::new(kind_tag)?;
         Some(match kind {
