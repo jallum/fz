@@ -127,6 +127,12 @@ impl Backend for JitBackend {
         for (id, denotation) in &meta.closure_denotations {
             node.register_closure_denotation(*id, Arc::clone(denotation));
         }
+        let (counts, _) = jmod.get_finalized_data(meta.alloc_site_counts);
+        // The counters live in the module's data, which the CompiledModule
+        // keeps for as long as it keeps the node.
+        node.register_alloc_sites(unsafe {
+            fz_runtime::alloc_site::AllocSites::new(meta.alloc_sites, counts.cast_mut().cast())
+        });
         Ok(CompiledModule {
             _module: jmod,
             fn_ptrs,
@@ -275,6 +281,19 @@ impl Backend for AotBackend {
             (Some(id), len)
         };
 
+        let alloc_sites_bytes = fz_runtime::alloc_site::encode_alloc_sites(&meta.alloc_sites);
+        let alloc_sites_len = u32::try_from(alloc_sites_bytes.len())
+            .map_err(|_| CodegenError::new("allocation site table exceeds u32"))?;
+        let alloc_sites_data = self
+            .omod
+            .declare_data("fz_aot_alloc_sites", Linkage::Local, false, false)
+            .map_err(|e| CodegenError::new(format!("declare allocation sites: {e}")))?;
+        let mut desc = DataDescription::new();
+        desc.define(alloc_sites_bytes.into_boxed_slice());
+        self.omod
+            .define_data(alloc_sites_data, &desc)
+            .map_err(|e| CodegenError::new(format!("define allocation sites: {e}")))?;
+
         // C `main(argc, argv) -> int`: not a runtime item, so its signature
         // is written out here.
         let mut c_main_sig = self.omod.make_signature();
@@ -298,6 +317,9 @@ impl Backend for AotBackend {
             atom_blob_len,
             closure_denotations_data,
             closure_denotations_len,
+            meta.alloc_site_counts,
+            alloc_sites_data,
+            alloc_sites_len,
             tuple_arities_data,
             tuple_arities_len,
             named_schemas_data,

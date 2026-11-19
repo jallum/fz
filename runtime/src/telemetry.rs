@@ -6,6 +6,7 @@
 //! that keeps a telemetry bus raises the matching typed raw event, and any sink
 //! that writes the line calls the same function.
 
+use crate::alloc_site::AllocSiteCount;
 use crate::heap::{Footprint, pool_footprint, pool_outstanding_blocks, pool_total_cached_blocks};
 use crate::process::{Collection, PidId, Process};
 use crate::sched::{ProbeOutcome, SendProbe};
@@ -34,6 +35,7 @@ pub const GC: [&str; 3] = ["fz", "runtime", "gc"];
 /// One per run, after every process has been torn down; carries the `RunEnded`
 /// pool census.
 pub const RUN_ENDED: [&str; 3] = ["fz", "runtime", "run_ended"];
+pub const ALLOC_SITE: [&str; 3] = ["fz", "runtime", "alloc_site"];
 
 /// One per raise, before the runtime decides where it goes; carries the `Raise`.
 pub const RAISE: [&str; 3] = ["fz", "runtime", "raise"];
@@ -138,6 +140,8 @@ pub enum RuntimeEvent<'a> {
     SendProbe(&'a SendProbe),
     Raise(&'a Raise),
     Gc(&'a Collection),
+    /// What one allocation site placed during the run.
+    AllocSite(&'a AllocSiteCount),
     RunEnded(RunEnded),
 }
 
@@ -153,6 +157,7 @@ impl RuntimeEvent<'_> {
             RuntimeEvent::SendProbe(_) => &SEND_PROBE,
             RuntimeEvent::Raise(_) => &RAISE,
             RuntimeEvent::Gc(_) => &GC,
+            RuntimeEvent::AllocSite(..) => &ALLOC_SITE,
             RuntimeEvent::RunEnded(_) => &RUN_ENDED,
         }
     }
@@ -250,6 +255,18 @@ fn write_metadata(out: &mut String, event: &RuntimeEvent<'_>) {
             out.push_str(",\"stubs_survived\":");
             stats.stubs_survived.write_json(out);
         }
+        RuntimeEvent::AllocSite(site) => {
+            out.push_str("\"function\":");
+            write_json_string(out, &site.function);
+            write!(
+                out,
+                ",\"object\":\"{}\",\"allocs\":{},\"bytes\":{}",
+                site.kind.as_str(),
+                site.placed.allocs,
+                site.placed.bytes
+            )
+            .unwrap();
+        }
         RuntimeEvent::RunEnded(ended) => {
             write!(
                 out,
@@ -294,3 +311,25 @@ fn write_process_exited(out: &mut String, process: &Process) {
 #[cfg(test)]
 #[path = "telemetry_test.rs"]
 mod telemetry_test;
+
+/// `text` as a JSON string.
+fn write_json_string(out: &mut String, text: &str) {
+    out.push('"');
+    for c in text.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            c if (c as u32) < 0x20 => write!(out, "\\u{:04x}", c as u32).unwrap(),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+}
+
+/// Report every site of `node`'s program that placed an object during the
+/// run.
+pub fn report_alloc_sites(node: &crate::process::Node, mut report: impl FnMut(RuntimeEvent<'_>)) {
+    for site in node.alloc_site_counts() {
+        report(RuntimeEvent::AllocSite(&site));
+    }
+}

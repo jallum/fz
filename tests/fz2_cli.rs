@@ -1301,12 +1301,17 @@ fn execution_ready_separates_the_compile_from_the_program() {
         (
             "run",
             "fz.compiler2.native_backend.compile",
-            &["fz.runtime.process_exited", "fz.runtime.run_ended"][..],
+            &[
+                "fz.runtime.alloc_site",
+                "fz.runtime.process_exited",
+                "fz.runtime.run_ended",
+            ][..],
         ),
         (
             "interp",
             "fz.compiler2.backend_request.finished",
             &[
+                "fz.runtime.alloc_site",
                 "fz.runtime.interp_ran",
                 "fz.runtime.process_exited",
                 "fz.runtime.run_ended",

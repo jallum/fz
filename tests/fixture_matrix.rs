@@ -300,6 +300,10 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             a_receiver_parked_on_a_pinned_list_is_collected_on_every_path_and_still_matches,
         ),
         (
+            "a_programs_allocation_sites_are_reported_on_every_path_and_agree_between_run_and_build",
+            a_programs_allocation_sites_are_reported_on_every_path_and_agree_between_run_and_build,
+        ),
+        (
             "a_resource_freed_by_a_collection_runs_its_destructor_once_on_every_path",
             a_resource_freed_by_a_collection_runs_its_destructor_once_on_every_path,
         ),
@@ -3914,6 +3918,57 @@ fn a_hit_gifts_the_roots_a_clause_reads_and_not_one_copy_per_variable() {
             "{label}: the one gifted hit carries five roots for seven variables"
         );
     }
+}
+
+/// One `fz.runtime.alloc_site` event as the jsonl log renders it.
+#[derive(Debug, PartialEq, Eq)]
+struct AllocSiteEvent {
+    function: String,
+    object: String,
+    allocs: usize,
+    bytes: usize,
+}
+
+/// Every site the fixture's run reports having placed an object, in emission
+/// order.
+fn alloc_sites_for_fixture(fixture: &FixtureCase, path: FixtureMatrixPath, label: &str) -> Vec<AllocSiteEvent> {
+    telemetry_log_for_fixture(fixture, path, label)
+        .lines()
+        .filter(|line| line.contains("\"name\":[\"fz\",\"runtime\",\"alloc_site\"]"))
+        .map(|line| AllocSiteEvent {
+            function: json_str_field(line, "function").unwrap_or_else(|| panic!("alloc_site event missing function")),
+            object: json_str_field(line, "object").unwrap_or_else(|| panic!("alloc_site event missing object")),
+            allocs: required_json_u64_field(line, "allocs", "alloc_site event"),
+            bytes: required_json_u64_field(line, "bytes", "alloc_site event"),
+        })
+        .collect()
+}
+
+/// The sites belong to the program, not to the path it took: the ring of
+/// actors names the same functions with the same counts when it is compiled and
+/// run in one step and when it is built and then run. Compiled code places the
+/// ring's frames itself, so some sites are functions of the program and the
+/// rest are runtime functions it called.
+fn a_programs_allocation_sites_are_reported_on_every_path_and_agree_between_run_and_build() {
+    let fixture = FixtureCase::new("fixtures/00570_actor_ring.fz");
+    let run = alloc_sites_for_fixture(&fixture, FixtureMatrixPath::Run, "run");
+    let built = alloc_sites_for_fixture(&fixture, FixtureMatrixPath::Build, "build");
+    assert!(
+        run.iter()
+            .any(|site| site.object == "continuation" && !site.function.starts_with("runtime::")),
+        "the ring's own functions place continuation frames: {run:?}"
+    );
+    assert!(
+        run.iter().any(|site| site.function.starts_with("runtime::")),
+        "the ring calls runtime functions that allocate: {run:?}"
+    );
+    assert_eq!(run, built);
+
+    let interpreted = alloc_sites_for_fixture(&fixture, FixtureMatrixPath::Interp, "interp");
+    assert!(
+        !interpreted.is_empty() && interpreted.iter().all(|site| site.function.starts_with("runtime::")),
+        "an interpreted program has no compiled code, so every site is a runtime function: {interpreted:?}"
+    );
 }
 
 /// One `fz.runtime.gc` event as the jsonl log renders it.

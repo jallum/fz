@@ -24,6 +24,7 @@
 //! selective-receive probe path. This matches the JIT's `run_until_idle`
 //! semantics.
 
+use crate::alloc_site::{AllocSites, decode_alloc_sites};
 use crate::any_value::AnyValueRef;
 use crate::exec_ctx::{Argv, ExecCtx};
 use crate::function_denotation::decode_closure_denotations;
@@ -37,7 +38,7 @@ use crate::sched::{
 use crate::sched_core::{
     MAIN_PID, Scheduler, SchedulingCore, end_quantum, halt_hook, next_runnable, timer_cancel_hook, timer_schedule_hook,
 };
-use crate::telemetry::{RunEnded, RuntimeEvent, write_line};
+use crate::telemetry::{RunEnded, RuntimeEvent, report_alloc_sites, write_line};
 use crate::timer::TimerId;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -444,6 +445,27 @@ pub extern "C" fn fz_aot_register_closure_denotations(proc: *mut Process, blob: 
     }
 }
 
+/// Name the linked program's allocation sites and the counters its code
+/// increments.
+///
+/// # Safety
+/// `proc` must be a process produced by `fz_aot_setup`. `counts` must point at
+/// one `u64` per encoded site, alive for the program's whole run, and `blob`
+/// at `len` bytes emitted by AOT codegen.
+#[unsafe(no_mangle)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_aot_register_alloc_sites(proc: *mut Process, counts: *mut u64, blob: *const u8, len: u32) {
+    assert!(!proc.is_null(), "fz_aot_register_alloc_sites: null process");
+    let bytes = unsafe { blob_bytes(blob, len, "fz_aot_register_alloc_sites") }.unwrap_or_default();
+    let sites = decode_alloc_sites(bytes).unwrap_or_else(|error| {
+        eprintln!("fz_aot_register_alloc_sites: {error}");
+        abort();
+    });
+    unsafe { &*proc }
+        .node
+        .register_alloc_sites(unsafe { AllocSites::new(sites, counts) });
+}
+
 /// Spawn hook. Allocates a child Process, deep-copies the
 /// closure into its heap, sets pending_closure_entry, and enqueues the
 /// child — returning immediately to the caller. The run-queue loop in
@@ -560,6 +582,7 @@ pub extern "C" fn fz_aot_run_main(
     // Scaffolding is prepared before main runs; reset so alloc telemetry
     // measures only main's execution.
     process.heap.reset_alloc_stats();
+    let node = Rc::clone(&process.node);
     unsafe {
         (*sched).core.make_runnable(MAIN_PID, &mut process.state);
     }
@@ -582,6 +605,7 @@ pub extern "C" fn fz_aot_run_main(
     let before = scheduler.pool_outstanding_before_run;
     drop(scheduler);
     if let Some(mut log) = log {
+        report_alloc_sites(&node, |event| log.write(&event));
         log.write(&RuntimeEvent::RunEnded(RunEnded::sample(before)));
     }
     status

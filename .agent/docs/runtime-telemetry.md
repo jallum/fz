@@ -41,6 +41,8 @@ Ten events matter:
   where it goes.
 - `fz.runtime.gc` — one per heap collection a scheduler boundary performs,
   carrying the collection's stats.
+- `fz.runtime.alloc_site` — one per allocation site that placed an object,
+  after every process has been torn down; see [`fz.runtime.alloc_site`](#fzruntimealloc_site).
 - `fz.runtime.run_ended` — one per run, after every process has been torn down,
   carrying the block pool's census.
 
@@ -179,6 +181,51 @@ timer is armed for exactly 1 ms then fired, 00692's is armed for exactly 60000 m
 timers of 00693 and 00691 fire in the order of the deadlines their `armed` events
 reported. That order is read from the run's own deadlines, so it holds however
 long the machine stalled between the two arms.
+
+## `fz.runtime.alloc_site`
+
+An allocation site is one place that puts an object on a heap
+(`runtime/src/alloc_site.rs`). There are two kinds:
+
+- A **compiled site** is a place in a compiled function that allocates
+  inline. `AllocSites::count` (`src/compiler2/native_codegen/alloc_site.rs`)
+  registers it while the function is lowered and emits one increment of the
+  site's own counter, placed where the fast and slow paths of the allocation
+  join, so one placement is one count. The counters are one zeroed, writable
+  data object of the module; its kind and size are fixed per site, so bytes are
+  the count times the size. The continuation frame is the allocation compiled
+  code places inline.
+- A **runtime site** is a runtime function that allocates:
+  `Heap::alloc_at` takes a `RuntimeAllocSite`, which fixes the object's kind,
+  and records the allocation and its bytes in `Node::runtime_allocs`.
+
+Both tables belong to the program's `Node`, so a process carries no site
+state and spawning one costs nothing for it. The compiled table is registered
+once: `JitBackend::finalize` hands the node the module's sites and the address
+of its counters, and a built program's `main` calls
+`fz_aot_register_alloc_sites` with the same two things before any compiled code
+runs. An interpreted program has no compiled sites.
+
+`report_alloc_sites` (`runtime/src/telemetry.rs`) raises one event per site
+that placed at least one object, compiled sites first in registration order,
+then runtime sites. Each path raises them at the end of the run, just before
+`run_ended`.
+
+```text
+raw event:    fz.runtime.alloc_site
+signature:    (&AllocSiteCount)
+```
+
+`AllocSiteCount` is `{ function, kind, placed }`; `write_line` renders it as
+`function`, `object` (the kind, spelled as `Process.heap_alloc_stats()` spells
+it), `allocs` and `bytes`. `function` is the compiled function's symbol, or
+`runtime::<function>` for a runtime site. Two sites in one function are two
+events with the same `function`.
+
+The sites count for the whole program, from the moment it is loaded. A
+process's own `heap_alloc_stats` start after the scheduler has built the
+closures that enter it, so the sites of a one-process program sum to that
+process's figures plus those two closures.
 
 ## `fz.runtime.run_ended`
 

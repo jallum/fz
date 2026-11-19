@@ -11,6 +11,7 @@ pub(crate) use crate::compiler2::Ty;
 use crate::telemetry::RawSpanTelemetry;
 pub(crate) use crate::types::{ClosureTypes, LiteralTypes, RenderTypes, Types};
 
+mod alloc_site;
 mod bitstring_literal;
 mod clif;
 pub(crate) mod closure;
@@ -37,6 +38,7 @@ pub(crate) mod variadic;
 
 // Glob re-exports keep cross-module references resolvable through
 // `use super::*;` in each submodule.
+pub(crate) use alloc_site::AllocSites;
 pub(crate) use bitstring_literal::BitstringLiterals;
 pub(crate) use clif::*;
 pub(crate) use closure::*;

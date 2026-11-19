@@ -43,6 +43,7 @@ pub struct HeapAllocStats {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
 pub enum HeapAllocKind {
     ListCons,
     Struct,
@@ -55,6 +56,47 @@ pub enum HeapAllocKind {
     ScalarBox,
     Resource,
     Other,
+}
+
+impl HeapAllocKind {
+    const ALL: [Self; 11] = [
+        Self::ListCons,
+        Self::Struct,
+        Self::Closure,
+        Self::Continuation,
+        Self::Map,
+        Self::Bitstring,
+        Self::BinView,
+        Self::BinRef,
+        Self::ScalarBox,
+        Self::Resource,
+        Self::Other,
+    ];
+
+    /// The kind as `Process.heap_alloc_stats()` names it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ListCons => "list_cons",
+            Self::Struct => "struct",
+            Self::Closure => "closure",
+            Self::Continuation => "continuation",
+            Self::Map => "map",
+            Self::Bitstring => "bitstring",
+            Self::BinView => "binview",
+            Self::BinRef => "binref",
+            Self::ScalarBox => "scalar_box",
+            Self::Resource => "resource",
+            Self::Other => "other",
+        }
+    }
+
+    /// The kind whose discriminant is `byte`.
+    pub fn from_u8(byte: u8) -> Result<Self, String> {
+        Self::ALL
+            .into_iter()
+            .find(|kind| *kind as u8 == byte)
+            .ok_or_else(|| format!("no allocation kind {byte}"))
+    }
 }
 
 impl HeapAllocStats {

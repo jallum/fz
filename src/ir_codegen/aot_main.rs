@@ -9,8 +9,8 @@ use cranelift_codegen::verifier::verify_function;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module as ClModule};
 use fz_runtime::aot_shim::{
-    fz_aot_register_closure_denotations, fz_aot_register_named_schemas, fz_aot_register_tuple_schemas, fz_aot_run_main,
-    fz_aot_set_drain_dtor_entry, fz_aot_set_resume_addr, fz_aot_setup,
+    fz_aot_register_alloc_sites, fz_aot_register_closure_denotations, fz_aot_register_named_schemas,
+    fz_aot_register_tuple_schemas, fz_aot_run_main, fz_aot_set_drain_dtor_entry, fz_aot_set_resume_addr, fz_aot_setup,
 };
 use fz_runtime::bits::{SHARED_BIN_BYTES, shared_bin_destructor_noop};
 
@@ -80,6 +80,9 @@ pub(crate) fn emit_aot_c_main<M: ClModule>(
     atom_blob_len: u32,
     closure_denotations_data: Option<DataId>,
     closure_denotations_len: u32,
+    alloc_site_counts: DataId,
+    alloc_sites_data: DataId,
+    alloc_sites_len: u32,
     tuple_arities_data: Option<DataId>,
     tuple_arities_len: u32,
     named_schemas_data: Option<DataId>,
@@ -128,6 +131,18 @@ pub(crate) fn emit_aot_c_main<M: ClModule>(
                 main,
                 fz_aot_register_closure_denotations,
                 [proc_v, denotations_addr, denotations_len]
+            );
+        }
+
+        // Name the allocation sites before any compiled code counts at one.
+        {
+            let counts_addr = main.data_addr(Some(alloc_site_counts));
+            let sites_addr = main.data_addr(Some(alloc_sites_data));
+            let sites_len = main.iconst32(alloc_sites_len);
+            runtime_call!(
+                main,
+                fz_aot_register_alloc_sites,
+                [proc_v, counts_addr, sites_addr, sites_len]
             );
         }
 

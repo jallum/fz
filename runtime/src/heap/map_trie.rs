@@ -24,12 +24,12 @@
 //! entries and no flat map more.
 
 use super::Heap;
+use crate::alloc_site::RuntimeAllocSite;
 use crate::any_value::{
     AnyValue, MAP_FLAT_MAX, ValueKind, heap_object_word, map_collision_header_word, map_count, map_entries,
     map_header_is_collision, map_node_child, map_node_entry_count, map_node_size, map_slot, map_trie_bitmaps,
     map_trie_header_word,
 };
-use crate::heap::HeapAllocKind;
 use crate::term::TermComparator;
 use crate::term_hash::TermHasher;
 use std::cmp::Ordering;
@@ -249,7 +249,7 @@ impl Heap {
 
     /// A node whose header is `header` holding `entries` and `children`.
     pub(super) fn alloc_map_node(&mut self, header: u64, entries: &[Entry], children: &[*mut u8]) -> *mut u8 {
-        let node = self.alloc_kind(HeapAllocKind::Map, map_node_size(entries.len(), children.len()));
+        let node = self.alloc_at(RuntimeAllocSite::MapNode, map_node_size(entries.len(), children.len()));
         unsafe { write(node as *mut u64, header) };
         self.write_map_entries(node, entries.len(), entries.iter().copied());
         let child_words = unsafe { crate::any_value::map_node_children_ptr(node) };

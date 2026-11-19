@@ -44,8 +44,8 @@ use fz_runtime::sched_core::{
     Scheduler, SchedulingCore, end_quantum, halt_hook, next_runnable, timer_cancel_hook, timer_schedule_hook,
 };
 use fz_runtime::telemetry::{
-    EXECUTION_READY, GC, PROCESS_EXITED, RAISE, RUN_ENDED, Raise, RunEnded, RuntimeEvent, SCHEDULER_SLEPT, SEND_PROBE,
-    TIMER_ARMED, TIMER_CANCELLED, TIMER_FIRED,
+    ALLOC_SITE, EXECUTION_READY, GC, PROCESS_EXITED, RAISE, RUN_ENDED, Raise, RunEnded, RuntimeEvent, SCHEDULER_SLEPT,
+    SEND_PROBE, TIMER_ARMED, TIMER_CANCELLED, TIMER_FIRED, report_alloc_sites,
 };
 use fz_runtime::timer::TimerId;
 #[cfg(test)]
@@ -102,6 +102,7 @@ pub fn emit_runtime_event<T: Telemetry + ?Sized>(tel: &T, event: RuntimeEvent<'_
         RuntimeEvent::SendProbe(probe) => tel.raw_event1(&SEND_PROBE, probe),
         RuntimeEvent::Raise(raise) => tel.raw_event1(&RAISE, raise),
         RuntimeEvent::Gc(collection) => tel.raw_event1(&GC, collection),
+        RuntimeEvent::AllocSite(site) => tel.raw_event1(&ALLOC_SITE, site),
         RuntimeEvent::RunEnded(ended) => tel.raw_event1(&RUN_ENDED, &ended),
     }
 }
@@ -365,6 +366,7 @@ impl<T: Telemetry + ?Sized> Drop for Runtime<'_, T> {
     /// away; drop them all, then report what the pool still holds.
     fn drop(&mut self) {
         self.tasks.clear();
+        report_alloc_sites(&self.compiled.node, |event| emit_runtime_event(self.tel, event));
         emit_runtime_event(
             self.tel,
             RuntimeEvent::RunEnded(RunEnded::sample(self.pool_outstanding_before_run)),

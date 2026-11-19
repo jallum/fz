@@ -13,6 +13,7 @@ use super::ref_io::{
 use super::schema::{Schema, SchemaRegistry};
 use super::stats::{GcStats, Generation, StubCounts, StubSite};
 use super::{BinaryBudget, Heap, HeapAllocKind, HeapAllocStats, MapLayout, SHARED_BIN_THRESHOLD_BYTES};
+use crate::alloc_site::RuntimeAllocSite;
 use crate::any_value::{
     AnyValue, AnyValueRef, AnyValueRefError, CLOSURE_FLAGS_CAPTURED_MASK, ListCons, MAP_FLAT_MAX, MapDestinationKind,
     STRUCT_PAYLOAD_OFFSET, SlotLayout, ValueKind, bitstring_header_word, bitstring_size_for_bit_len,
@@ -160,13 +161,15 @@ impl Heap {
     /// step up. The next collection copies what is live out of the
     /// parked blocks and releases them.
     pub fn alloc(&mut self, size: usize) -> *mut u8 {
-        self.alloc_kind(HeapAllocKind::Other, size)
+        self.alloc_at(RuntimeAllocSite::Other, size)
     }
 
-    pub fn alloc_kind(&mut self, kind: HeapAllocKind, size: usize) -> *mut u8 {
+    /// Place `size` bytes for the runtime function `site`.
+    pub fn alloc_at(&mut self, site: RuntimeAllocSite, size: usize) -> *mut u8 {
         let size = round_up_16(size);
         assert!(size >= 16, "alloc must reserve at least one 16-byte object slot");
-        self.alloc_stats.record(kind, size as u64);
+        self.alloc_stats.record(site.kind(), size as u64);
+        self.node.runtime_allocs.record(site, size as u64);
         self.bump(size)
     }
 
@@ -311,7 +314,7 @@ impl Heap {
             struct_size_for_payload(self.schemas.borrow().get(schema_id).allocation_payload_size()),
             "the size is the schema's"
         );
-        let p = self.alloc_kind(HeapAllocKind::Struct, size);
+        let p = self.alloc_at(RuntimeAllocSite::Struct, size);
         unsafe { write(p as *mut u64, struct_header_word(schema_id)) };
         p
     }
@@ -353,7 +356,7 @@ impl Heap {
 
     fn alloc_list_cons_value(&mut self, head: AnyValueRef, tail_bits: u64) -> u64 {
         self.mark_published_ref_aliased(head).expect("published list head");
-        let p = self.alloc_kind(HeapAllocKind::ListCons, 16);
+        let p = self.alloc_at(RuntimeAllocSite::ListConsValue, 16);
         unsafe {
             write(
                 p as *mut ListCons,
@@ -377,7 +380,7 @@ impl Heap {
     }
 
     fn alloc_list_cons_storage(&mut self, head_raw: u64, head_kind: ValueKind, tail_bits: u64) -> u64 {
-        let p = self.alloc_kind(HeapAllocKind::ListCons, 16);
+        let p = self.alloc_at(RuntimeAllocSite::ListConsStorage, 16);
         unsafe {
             write(p as *mut ListCons, ListCons::new(head_raw, head_kind, tail_bits));
         }
@@ -405,7 +408,7 @@ impl Heap {
             AnyValue::EmptyList => AnyValueRef::empty_list(),
             AnyValue::HeapRef(value) => value,
             AnyValue::Int(value) => {
-                let slot = self.alloc_kind(HeapAllocKind::ScalarBox, size_of::<u64>()) as *mut u64;
+                let slot = self.alloc_at(RuntimeAllocSite::ScalarBox, size_of::<u64>()) as *mut u64;
                 unsafe {
                     write(slot, value as u64);
                 }
@@ -413,7 +416,7 @@ impl Heap {
             }
             AnyValue::Opaque(ValueKind::PID, word) => AnyValueRef::pid(word).expect("a pid fits its ref"),
             AnyValue::Opaque(kind, word) => {
-                let slot = self.alloc_kind(HeapAllocKind::ScalarBox, size_of::<u64>()) as *mut u64;
+                let slot = self.alloc_at(RuntimeAllocSite::ScalarBox, size_of::<u64>()) as *mut u64;
                 unsafe {
                     write(slot, word);
                 }
@@ -421,7 +424,7 @@ impl Heap {
             }
             AnyValue::Float(bits) => {
                 let bits = AnyValue::float(f64::from_bits(bits)).raw();
-                let slot = self.alloc_kind(HeapAllocKind::ScalarBox, size_of::<u64>()) as *mut u64;
+                let slot = self.alloc_at(RuntimeAllocSite::ScalarBox, size_of::<u64>()) as *mut u64;
                 unsafe {
                     write(slot, bits);
                 }
@@ -539,7 +542,7 @@ impl Heap {
     ) -> u64 {
         let count = entries.len();
         debug_assert!(count <= MAP_FLAT_MAX, "a flat map holds at most {MAP_FLAT_MAX} entries");
-        let p = self.alloc_kind(HeapAllocKind::Map, map_size_for_count(count));
+        let p = self.alloc_at(RuntimeAllocSite::OrderedMapEntries, map_size_for_count(count));
         unsafe { write(p as *mut u64, map_header_word(count)) };
         self.write_map_entries(p, count, entries);
         heap_object_word(p, ValueKind::MAP)
@@ -572,7 +575,7 @@ impl Heap {
     /// An unpublished destination with room for `extra` entries, which freezes
     /// into a new map.
     pub fn alloc_map_destination(&mut self, extra: usize) -> u64 {
-        let p = self.alloc_kind(HeapAllocKind::Map, map_size_for_count(extra));
+        let p = self.alloc_at(RuntimeAllocSite::MapDestination, map_size_for_count(extra));
         unsafe {
             write(
                 p as *mut u64,
@@ -851,7 +854,7 @@ impl Heap {
         );
         let put = edit.puts.map(|(key, value)| self.publish_entry(key, value));
         let size = map_size_for_count(new_count);
-        let p = self.alloc_kind(HeapAllocKind::Map, size);
+        let p = self.alloc_at(RuntimeAllocSite::FlatMap, size);
         unsafe {
             let to = StoredEntries::of(p, new_count);
             if new_count == count {
@@ -995,7 +998,7 @@ impl Heap {
         fill: impl FnOnce(&mut [MaybeUninit<u8>]),
     ) -> AnyValue {
         let total = bitstring_size_for_bit_len(bit_len);
-        let p = self.alloc_kind(HeapAllocKind::Bitstring, total);
+        let p = self.alloc_at(RuntimeAllocSite::InlineBitstring, total);
         unsafe {
             write(p as *mut u64, bitstring_header_word(bit_len));
             fill(from_raw_parts_mut(p.add(8) as *mut MaybeUninit<u8>, byte_len));
@@ -1108,7 +1111,7 @@ impl Heap {
         captured_count: usize,
         halt_kind: u16,
     ) -> u64 {
-        self.alloc_closure_slots_of(HeapAllocKind::Closure, denotation, arity, captured_count, halt_kind)
+        self.alloc_closure_slots_of(RuntimeAllocSite::Closure, denotation, arity, captured_count, halt_kind)
     }
 
     /// A continuation frame: an internal closure the compiler builds to
@@ -1116,7 +1119,7 @@ impl Heap {
     /// closures a program makes.
     pub fn alloc_continuation_slots(&mut self, arity: u16, captured_count: usize) -> u64 {
         self.alloc_closure_slots_of(
-            HeapAllocKind::Continuation,
+            RuntimeAllocSite::Continuation,
             crate::any_value::ClosureDenotationId::INTERNAL,
             arity,
             captured_count,
@@ -1126,7 +1129,7 @@ impl Heap {
 
     fn alloc_closure_slots_of(
         &mut self,
-        kind: HeapAllocKind,
+        site: RuntimeAllocSite,
         denotation: crate::any_value::ClosureDenotationId,
         arity: u16,
         captured_count: usize,
@@ -1137,7 +1140,7 @@ impl Heap {
             "closure captured count overflow"
         );
         let total = closure_size_for_count(captured_count);
-        let p = self.alloc_kind(kind, total);
+        let p = self.alloc_at(site, total);
         unsafe {
             closure_header_write(
                 p,

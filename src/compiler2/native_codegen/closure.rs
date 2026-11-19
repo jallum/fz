@@ -2,12 +2,13 @@ use super::*;
 use cranelift_codegen::ir::{self, InstBuilder, MemFlagsData, condcodes::IntCC, types};
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::FuncId;
+use fz_runtime::alloc_site::AllocSite;
 use fz_runtime::any_value::{
     AnyValueRefPacking, CLOSURE_CAPTURES_OFFSET, CLOSURE_CODE_OFFSET, CLOSURE_FLAGS_CAPTURED_MASK,
     CLOSURE_LAYOUT_FLAGS_SHIFT, ClosureDenotationId, NIL_ATOM_ID, TAG_CLOSURE, TaggedRefArch, ValueKind,
     closure_header_word, closure_size_for_count,
 };
-use fz_runtime::heap::INLINE_ALLOC_LAYOUT;
+use fz_runtime::heap::{HeapAllocKind, INLINE_ALLOC_LAYOUT};
 use fz_runtime::ir_runtime::fz_handler_reserve;
 use fz_runtime::process_abi::{PROCESS_HANDLER_END_OFFSET, PROCESS_HANDLER_TOP_OFFSET, PROCESS_HEAP_OFFSET};
 
@@ -21,6 +22,7 @@ use fz_runtime::process_abi::{PROCESS_HANDLER_END_OFFSET, PROCESS_HANDLER_TOP_OF
 /// Capture 0 is the synthetic outer cont; user captures follow.
 pub(crate) fn build_cont_closure<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
+    env: &CodegenEnv<'_>,
     outer_cont: ir::Value,
     cont_fid: FuncId,
     cap_bindings: &[ClosureCapture],
@@ -28,7 +30,7 @@ pub(crate) fn build_cont_closure<M: cranelift_module::Module>(
 ) -> ir::Value {
     let count = cap_bindings.len() + empty_slots + 1;
     let code_addr = fn_addr(body.jmod, cont_fid, body.b);
-    let closure_ref = place_cont_closure(body, count, code_addr);
+    let closure_ref = place_cont_closure(body, env, count, code_addr);
     let address = address_field(body.b, closure_ref);
     fill_cont_captures(body, address, outer_cont, cap_bindings, empty_slots);
     closure_ref
@@ -151,6 +153,7 @@ fn fill_cont_captures<M: cranelift_module::Module>(
 /// are counted here; a full block asks the runtime.
 fn place_cont_closure<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
+    env: &CodegenEnv<'_>,
     count: usize,
     code_addr: ir::Value,
 ) -> ir::Value {
@@ -201,6 +204,14 @@ fn place_cont_closure<M: cranelift_module::Module>(
 
     body.b.switch_to_block(placed);
     body.b.seal_block(placed);
+    env.alloc_sites.borrow_mut().count(
+        body,
+        AllocSite {
+            kind: HeapAllocKind::Continuation,
+            bytes: size as u32,
+            function: env.active_body_name.to_owned(),
+        },
+    );
     body.b.block_params(placed)[0]
 }
 

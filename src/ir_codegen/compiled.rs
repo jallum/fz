@@ -109,6 +109,9 @@ impl CompiledModule {
 /// Everything compiler2 native codegen collects during the shared pipeline,
 /// handed to the backend's `emit_metadata_carriers` and `finalize`.
 pub struct CompiledMetadata {
+    /// The module's allocation sites and the object holding their counters.
+    pub alloc_sites: Vec<fz_runtime::alloc_site::AllocSite>,
+    pub alloc_site_counts: cranelift_module::DataId,
     pub closure_denotations: Vec<(
         fz_runtime::any_value::ClosureDenotationId,
         std::sync::Arc<fz_runtime::function_denotation::FunctionDenotation>,
