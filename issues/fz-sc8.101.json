@@ -11,11 +11,15 @@
     {
       "text": "Approved by the user (relayed by B\u0026C 2026-11-19); building on fz-sc8.101/reducer-not-clamped in ../fz-101; fixture 01769 (last free in fz-sc8 block before 01770).",
       "timestamp": "2026-11-19T03:22:04Z"
+    },
+    {
+      "text": "PR #798 (a4def2b39 on a7435a515, fixture 01769). Pins: distiller +26 requests (one extra Enumerable.List.reduce/3 executable); distiller derivations/reads FALL (16839,127728)→(16828,127480); 01429 census 34→37; canon 00420 142→197; canon 00567 15→19 — NOT on the approved page (alpha-variants: 9→9 after canonical renaming); needs the user's yes.",
+      "timestamp": "2026-11-19T03:29:55Z"
     }
   ],
   "priority": 1,
   "status": "in_progress",
   "title": "A @spec with one type variable across a reducer loop makes a correct list fail a cons match",
   "type": "bug",
-  "updated_at": "2026-11-19T03:22:04Z"
+  "updated_at": "2026-11-19T03:29:55Z"
 }
