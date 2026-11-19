@@ -19,11 +19,15 @@
     {
       "text": "Trace location update: Optimize's pinned-key probe traces now live durably in /Users/j5n/Workspace/fz-map-traces/ (iter.txt = a whole iteration of case_a_12; trace.txt = one lookup before the scan; the probe sources; and the lldb tracer script). The scratch path in the earlier comment is superseded.",
       "timestamp": "2026-11-18T23:41:55Z"
+    },
+    {
+      "text": "User approved route A, no size bound (relayed by Callables, 2026-11-19), and the one pin rise on the page: fixture 01254 frame copies 2 -\u003e 3. Page: https://claude.ai/artifact/5YqHmZ6yLrqG6FCP8dF4D2. Builder: Callables, branch fz-yh5.4/calls-that-cannot-suspend in ../fz-176. Overlap: jobs/native.rs entry mapping (EntryFns, NativeFnCtx) vs Optimize's fz-sc8.192.8 marshal sites.",
+      "timestamp": "2026-11-19T01:15:26Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "A non-tail call to a callee that cannot suspend builds no continuation",
   "type": "task",
-  "updated_at": "2026-11-18T23:41:55Z"
+  "updated_at": "2026-11-19T01:15:26Z"
 }
