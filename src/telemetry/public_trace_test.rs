@@ -1644,9 +1644,9 @@ const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64, u64); 7] = [
     // The ordering operators end in an `any`/`any` clause through `compare/2`; this
     // fixture's operands stay numeric, so no `compare/2` activation is minted and the
     // StaticCallees count covers only the numeric families' callee layers.
-    ("fixtures/00567_fz_f98_range_map_converges.fz", 26, 0, 78, 0, 43),
-    ("fixtures/00571_enum_predicate_search.fz", 34, 0, 49, 0, 66),
-    ("fixtures/00420_enum_take_drop_split.fz", 57, 0, 113, 0, 104),
+    ("fixtures/00567_fz_f98_range_map_converges.fz", 26, 0, 80, 0, 43),
+    ("fixtures/00571_enum_predicate_search.fz", 34, 0, 51, 0, 66),
+    ("fixtures/00420_enum_take_drop_split.fz", 57, 0, 115, 0, 104),
     // 00607-00610 pin the shared-reach shape directly. Four callers (p1-p4)
     // share one call chain of depth eight. Each caller's reach walks the chain's
     // edge facts itself and reads no other reach, so the work is the same
@@ -1831,7 +1831,7 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         analyze_evaluations: 174,
         analyze_zero_change: 3,
         // Macro readiness is a retained content dependency.
-        total_evaluations: 808,
+        total_evaluations: 814,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures/00571_enum_predicate_search.fz",
@@ -1840,7 +1840,7 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         shifts: shifts(25, 75),
         analyze_evaluations: 595,
         analyze_zero_change: 25,
-        total_evaluations: 1201,
+        total_evaluations: 1207,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures/00420_enum_take_drop_split.fz",
@@ -1849,7 +1849,7 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         shifts: shifts(44, 91),
         analyze_evaluations: 664,
         analyze_zero_change: 23,
-        total_evaluations: 1665,
+        total_evaluations: 1671,
     },
 ];
 

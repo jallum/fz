@@ -1,0 +1,6 @@
+Main.main/0[] | @183-236 | direct | IO.inspect/1({binary, binary}) => {binary, binary} => {binary, binary}
+Main.main/0[] | @195-210 | direct | Main.proven/2(binary, int) => binary => binary
+Main.main/0[] | @212-234 | direct | Main.open/1(int | :nil) => binary => binary
+Main.main/0[] | @217-233 | direct | Enum.at/2([int], int) => int | :nil => int | :nil
+Main.open/1[int | :nil] | @146-161 | direct | Kernel.__construction_failed__/1([{int, int | :nil, :nil, int}]) => none => none
+main/0[] | @248-259 | direct | Main.main/0() => {binary, binary} => {binary, binary}

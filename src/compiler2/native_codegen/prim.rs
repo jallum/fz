@@ -370,7 +370,7 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
             let process = body.process_arg();
             runtime_call!(body, fz_bs_begin, [process]);
             for f in fields {
-                let ty_tag = body.b.ins().iconst(types::I32, encode_bit_type(f.ty) as i64);
+                let ty_tag = body.b.ins().iconst(types::I32, f.ty.runtime_tag() as i64);
                 let unit = body
                     .b
                     .ins()
@@ -599,7 +599,7 @@ fn emit_runtime_field_operands<M: cranelift_module::Module>(
         None => body.b.ins().iconst(types::I32, 0),
     };
     let field_spec = fz_bs_field_spec(
-        encode_bit_type(field.ty),
+        field.ty.runtime_tag(),
         field.size.is_some() as u32,
         field.unit.unwrap_or(field.ty.default_unit()),
         encode_endian(field.endian),

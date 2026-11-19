@@ -129,20 +129,20 @@ fn a_function_that_neither_raises_nor_handles_pays_nothing_for_exceptions() {
 #[test]
 fn each_raise_site_and_handler_costs_a_fixed_number_of_jobs() {
     assert_eq!(jobs_per_unit("site", raise_sites, [1, 5, 20]), 13, "per raise site");
-    assert_eq!(jobs_per_unit("handler", handlers, [1, 4, 16]), 15, "per handler");
+    assert_eq!(jobs_per_unit("handler", handlers, [1, 4, 16]), 13, "per handler");
 }
 
-/// An exception type costs 42 jobs: 15 for the function that raises it, 7 for
-/// its `exception/1`, 16 for its `message/1`, one to define its module, one
+/// An exception type costs 38 jobs: 15 for the function that raises it, 7 for
+/// its `exception/1`, 12 for its `message/1`, one to define its module, one
 /// more analysis of `Exception.message/1`, which dispatches to every type, and
 /// two `DeriveExecutableReach` for the executables its transport positions ask
 /// whether they return to themselves. The `DeriveStaticReach` that answers its
 /// recursion takes the place of one `DeriveRecursive` run.
 #[test]
-fn each_exception_type_costs_forty_two_jobs() {
+fn each_exception_type_costs_thirty_eight_jobs() {
     let one = jobs("few_types1", exception_types(1));
     let six = jobs("few_types6", exception_types(6));
-    assert_eq!(six - one, 5 * 42, "five further exception types");
+    assert_eq!(six - one, 5 * 38, "five further exception types");
 }
 
 /// Past eight exception types the program pays a bounded extra that does not
@@ -155,7 +155,7 @@ fn each_exception_type_costs_forty_two_jobs() {
 #[test]
 fn many_exception_types_cost_a_bounded_extra_for_the_union_raised() {
     let one = jobs("many_types1", exception_types(1));
-    let extra = |count: usize| jobs(&format!("many_types{count}"), exception_types(count)) - one - (count - 1) * 42;
+    let extra = |count: usize| jobs(&format!("many_types{count}"), exception_types(count)) - one - (count - 1) * 38;
     let (sixteen, twenty_six) = (extra(16), extra(26));
     assert!(
         (1..=6).contains(&sixteen),

@@ -1,0 +1,31 @@
+{:integer_atom, ArgumentError, "construction of binary failed: segment 1 of type 'integer': expected an integer but got: :a"}
+{:integer_float, ArgumentError, "construction of binary failed: segment 1 of type 'integer': expected an integer but got: 1.5"}
+{:float_atom, ArgumentError, "construction of binary failed: segment 1 of type 'float': expected a float or an integer but got: :a"}
+{:float_integer, :ok, <<64, 20, 0, 0, 0, 0, 0, 0>>}
+{:binary_atom, ArgumentError, "construction of binary failed: segment 1 of type 'binary': expected a binary but got: :a"}
+{:binary_integer, ArgumentError, "construction of binary failed: segment 1 of type 'binary': expected a binary but got: 5"}
+{:binary_short, ArgumentError, "construction of binary failed: segment 1 of type 'binary': the value \"a\" is shorter than the size of the segment"}
+{:binary_prefix, :ok, "ab"}
+{:binary_not_bytes, ArgumentError, "construction of binary failed: segment 1 of type 'binary': the size of the value <<1::size(3)>> is not a multiple of the unit for the segment"}
+{:bits_atom, ArgumentError, "construction of binary failed: segment 1 of type 'binary': expected a binary but got: :a"}
+{:bits_of_bits, :ok, "!"}
+{:utf8_atom, ArgumentError, "construction of binary failed: segment 1 of type 'utf8': expected a non-negative integer encodable as utf8 but got: :a"}
+{:utf8_surrogate, ArgumentError, "construction of binary failed: segment 1 of type 'utf8': expected a non-negative integer encodable as utf8 but got: 56320"}
+{:utf16_past_max, ArgumentError, "construction of binary failed: segment 1 of type 'utf16': expected a non-negative integer encodable as utf16 but got: 1114112"}
+{:utf32_surrogate, ArgumentError, "construction of binary failed: segment 1 of type 'utf32': expected a non-negative integer encodable as utf32 but got: 56320"}
+{:utf8_negative, ArgumentError, "construction of binary failed: segment 1 of type 'utf8': expected a non-negative integer encodable as utf8 but got: -1"}
+{:utf8_valid, :ok, "A"}
+{:size_negative, ArgumentError, "construction of binary failed: segment 1 of type 'integer': expected a non-negative integer as size but got: -1"}
+{:size_atom, ArgumentError, "construction of binary failed: segment 1 of type 'integer': expected a non-negative integer as size but got: :a"}
+{:binary_size_negative, ArgumentError, "construction of binary failed: segment 1 of type 'binary': expected a non-negative integer as size but got: -1"}
+{:float_size_two, ArgumentError, "construction of binary failed: segment 1 of type 'float': expected one of the supported sizes 16, 32, or 64 but got: 2"}
+{:second_segment, ArgumentError, "construction of binary failed: segment 2 of type 'integer': expected an integer but got: :a"}
+{:sizing_before_writing, ArgumentError, "construction of binary failed: segment 2 of type 'binary': expected a binary but got: :b"}
+{:writing_in_order, ArgumentError, "construction of binary failed: segment 1 of type 'integer': expected an integer but got: :a"}
+{:unit_is_a_write_check, ArgumentError, "construction of binary failed: segment 1 of type 'integer': expected an integer but got: :a"}
+{:code_point_is_a_sizing_check, ArgumentError, "construction of binary failed: segment 2 of type 'utf8': expected a non-negative integer encodable as utf8 but got: 56320"}
+{:size_before_value, ArgumentError, "construction of binary failed: segment 2 of type 'integer': expected a non-negative integer as size but got: :b"}
+{:concat_left, ArgumentError, "construction of binary failed: segment 1 of type 'binary': expected a binary but got: :a"}
+{:concat_right_not_bytes, ArgumentError, "construction of binary failed: segment 2 of type 'binary': the size of the value <<1::size(3)>> is not a multiple of the unit for the segment"}
+{:concat_valid, :ok, "aabc"}
+{:bad, :bad, {:ok, "aA"}}

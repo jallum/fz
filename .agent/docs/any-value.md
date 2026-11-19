@@ -122,6 +122,23 @@ utf32) from the raw word the field already is: an integer's bits, or an f64's bi
 Nothing is boxed to write it. `fz_bs_write_field_ref` writes the fields that name a heap bitstring
 (binary, bits) from the value's ref.
 
+Before a construction writes anything, it tests every segment's contract
+(`src/compiler2/jobs/body/construction_contract.rs`): an `integer` takes an
+integer, a `float` a number, an unsized `binary` a binary (or a bitstring of
+whole units), a sized one a bitstring at least `size * unit` bits long, `bits`
+a bitstring, a `utf` segment a Unicode scalar value, and a named size a
+non-negative integer (16, 32 or 64 for a `float`). The test is the guard of one
+dispatch row, so a term the value's type already proves folds away and a
+construction of proven values compiles to the build alone (fixture `01822`).
+The miss calls `Kernel.__construction_failed__/1` with each segment's
+`{type tag, value, size, unit}`. It raises `%ArgumentError{}` with the message
+`fz_construction_failure_message` words (`runtime/src/construction_failure.rs`),
+so the Raisable analysis sees an exact `ArgumentError`. The runtime picks the
+segment the BEAM reports by the BEAM's two passes: sizes, unsized binaries and
+code points first, then values, lengths and units in segment order. `<>`'s
+fallback clause makes the same call. The write functions therefore panic on a
+value outside its segment's contract as a broken invariant, not as a user error.
+
 `Heap::alloc_bitstring_with(byte_len, bit_len, fill)` is the allocator under
 `alloc_bitstring`: it picks the storage and hands `fill` the destination bytes,
 so a primitive that computes its payload writes it once, in place, with no

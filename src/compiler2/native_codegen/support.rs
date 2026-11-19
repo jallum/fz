@@ -2,7 +2,7 @@
 
 use super::recipe::{REUSE_REF_HEAD, emit_reuse};
 use super::*;
-use crate::ast::{BitType, Endian};
+use crate::ast::Endian;
 use crate::fast_hash::HashMap;
 use crate::fz_ir::Var;
 use crate::types::Types;
@@ -125,18 +125,6 @@ pub(crate) const FALSE_BITS: i64 = FALSE_BITS_RAW as i64;
 // carries as an integer: `BitFieldFits` and `BitFieldNext` are arithmetic on
 // that position, and `BitReadField` takes the source binary and the position.
 // A match allocates nothing but the binaries its fields extract.
-
-pub(crate) fn encode_bit_type(t: BitType) -> u32 {
-    match t {
-        BitType::Integer => 0,
-        BitType::Float => 1,
-        BitType::Binary => 2,
-        BitType::Bits => 3,
-        BitType::Utf8 => 4,
-        BitType::Utf16 => 5,
-        BitType::Utf32 => 6,
-    }
-}
 
 pub(crate) fn encode_endian(e: Endian) -> u32 {
     match e {

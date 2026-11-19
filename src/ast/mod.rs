@@ -630,6 +630,19 @@ pub enum BitSizeKnowledge {
 }
 
 impl BitType {
+    /// The number the runtime reads a segment's type from.
+    pub fn runtime_tag(self) -> u32 {
+        match self {
+            BitType::Integer => 0,
+            BitType::Float => 1,
+            BitType::Binary => 2,
+            BitType::Bits => 3,
+            BitType::Utf8 => 4,
+            BitType::Utf16 => 5,
+            BitType::Utf32 => 6,
+        }
+    }
+
     /// Default bitstring unit per source type.
     pub fn default_unit(self) -> u32 {
         match self {

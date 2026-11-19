@@ -13,6 +13,7 @@ pub mod aot_shim;
 pub mod bits;
 pub mod bitstr;
 pub mod clock;
+pub mod construction_failure;
 pub mod delivery;
 pub mod escape;
 pub mod exec_ctx;

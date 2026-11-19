@@ -1,0 +1,18 @@
+#---
+# purpose: "a construction whose values' types prove their segments' contracts compiles to the build alone, with no call to Kernel.__construction_failed__/1; a value the types leave open is tested, and its failing edge calls it; a literal code point is never tested"
+# oracle: self
+# oracle.stamp: b5814aad5f4472bf
+# root: main/0
+# snapshot.call_edges: call_edges
+#---
+defmodule Main do
+  def proven(acc, byte) when is_binary(acc) and is_integer(byte), do: <<acc::binary, byte, 0x41::utf8>>
+
+  def open(value), do: <<value::utf8>>
+
+  def main() do
+    IO.inspect({proven("a", 98), open(Enum.at([67], 0))})
+  end
+end
+
+Main.main()

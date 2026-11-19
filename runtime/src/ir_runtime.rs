@@ -668,7 +668,7 @@ pub extern "C" fn fz_bs_write_word(
                 BitType::Utf16 => encode_utf16(cp, endian),
                 _ => encode_utf32(cp, endian),
             };
-            w.write_bytes(&bytes.expect("invalid codepoint"));
+            w.write_bytes(&bytes.expect("a construction's check passes only a Unicode scalar value to a utf segment"));
         }
         BitType::Float => {
             let total = size.unwrap_or(64) * unit;
@@ -707,15 +707,15 @@ pub extern "C" fn fz_bs_write_field_ref(
     let w = builder(process, "fz_bs_write_field_ref");
     match ty {
         BitType::Binary | BitType::Bits => {
-            // Source must be a heap Bitstring (Vec(U8) lands in .11.14;
-            // until then both Binary and Bits read from a Bitstring).
             let bits = value
                 .heap_object_word()
-                .unwrap_or_else(|| panic!("binary/bits bit field expects heap bitstring"));
-            let p = bitstring_like_word(bits).unwrap_or_else(|| panic!("binary/bits bit field expects heap bitstring"));
-            if !is_bitstring_like(p) {
-                panic!("binary/bits bit field source is not a Bitstring");
-            }
+                .expect("a construction's check passes only a bitstring to a binary or bits segment");
+            let p = bitstring_like_word(bits)
+                .expect("a construction's check passes only a bitstring to a binary or bits segment");
+            assert!(
+                is_bitstring_like(p),
+                "a construction's check passes only a bitstring to a binary or bits segment"
+            );
             let src_bit_len = unsafe { bitstring_bit_len(p) } as usize;
             let src_bytes_ptr = unsafe { bitstring_byte_ptr(p) };
             let needed_bits = match (ty, size) {
@@ -725,7 +725,10 @@ pub extern "C" fn fz_bs_write_field_ref(
                 (BitType::Bits, Some(n)) => (n * unit) as usize,
                 _ => unreachable!(),
             };
-            assert!(needed_bits <= src_bit_len, "binary/bits field exceeds source");
+            assert!(
+                needed_bits <= src_bit_len,
+                "a construction's check passes only a bitstring as long as its segment"
+            );
             let src_bytes = unsafe { from_raw_parts(src_bytes_ptr, src_bit_len.div_ceil(8)) };
             if needed_bits % 8 == 0 && w.bit_len.is_multiple_of(8) {
                 w.bytes.extend_from_slice(&src_bytes[..needed_bits / 8]);
@@ -1441,7 +1444,7 @@ pub extern "C" fn fz_alloc_binview_from_static(process: *mut Process, static_sha
     heap_ref_word(ValueKind::BINVIEW, pb.as_raw() as *const u8)
 }
 
-fn decode_bit_type(t: u32) -> BitType {
+pub(crate) fn decode_bit_type(t: u32) -> BitType {
     match t {
         0 => BitType::Integer,
         1 => BitType::Float,
