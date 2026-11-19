@@ -11,6 +11,12 @@
   "id": "fz-9e2.14",
   "labels": [],
   "parent": "fz-9e2",
+  "comments": [
+    {
+      "text": "Stacks on fz-bpd. After fz-bpd, a resume's layout reads only value_origin(payload), built from delivered_value_joins, so a filter on join sources reaches resume layouts with no second change. Before it, a resume aliasing its last delivering call bypasses the filter. fz-bpd also deletes artifact.rs's separate diverges filter, because the origin's Join already tolerates a never-returning raise member (Bugs and Cleanup).",
+      "timestamp": "2026-11-19T04:53:45Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "A value delivered by a call whose spec is never is not a join source",
