@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-bpd"
+  ],
   "blocks": [
     "fz-9e2.3"
   ],
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "A value delivered by a call whose spec is never is not a join source",
   "type": "feature",
-  "updated_at": "2026-11-19T04:53:30Z"
+  "updated_at": "2026-11-19T04:53:45Z"
 }
