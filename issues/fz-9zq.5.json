@@ -14,9 +14,15 @@
   "id": "fz-9zq.5",
   "labels": [],
   "parent": "fz-9zq",
+  "comments": [
+    {
+      "text": "PR #784 (base develop): Types::recursive, canonical cluster commit, coinductive emptiness/subtype/disjoint, in-flight binder protocol, μ display; 11 new tests; no pin moves.",
+      "timestamp": "2026-11-19T02:08:32Z"
+    }
+  ],
   "priority": 2,
   "status": "in_progress",
   "title": "A recursive type is a Ty whose descriptor names itself",
   "type": "task",
-  "updated_at": "2026-11-19T01:29:27Z"
+  "updated_at": "2026-11-19T02:08:32Z"
 }
