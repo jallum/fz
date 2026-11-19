@@ -11,9 +11,15 @@
   "id": "fz-9x7.41.1",
   "labels": [],
   "parent": "fz-9x7.41",
+  "comments": [
+    {
+      "text": "PR #787 (rebased after #776). Bench instr ratio: reqrep 0.904, enum 0.952, msg 0.957, trickle 0.957, distiller 0.981; outputs identical, nothing rises. Drop from splitting the runtime slow path out of alloc_at; codegen-half deviations (msg +0.09, enum +0.11, trickle −1.3 pts) explained and accepted by the user. Hold on the instruction-fall explanation is cleared.",
+      "timestamp": "2026-11-19T02:40:12Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "An object is placed by emit_place, and fz_heap_room finds room",
   "type": "task",
-  "updated_at": "2026-11-18T23:59:39Z"
+  "updated_at": "2026-11-19T02:40:12Z"
 }
