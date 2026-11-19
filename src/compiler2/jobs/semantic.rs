@@ -422,7 +422,8 @@ pub(super) fn analyze_activation(
     );
     if !walk.withholds_return() {
         let return_changed = super::super::drive::ExecutionContext::new(world, tel)
-            .define_activation_return(activation, return_evidence);
+            .define_activation_return(activation, return_evidence)
+            .map_err(|diverged| emit_return_did_not_converge(tel, world, function, diverged))?;
         let return_fact = FactKey::ReturnType(activation.clone());
         outputs.push(return_fact.clone());
         if return_changed {
@@ -1749,6 +1750,32 @@ fn emit_never_a_module(
     emit_job_diagnostic(
         tel,
         Diagnostic::error(codes::MODULE_VALUE_CALL, message, span).with_label("a module is an atom"),
+    )
+}
+
+/// A return that climbed `RETURN_ASCENT_BOUND` rounds without repeating
+/// itself. The compile stops here rather than settle on a type the program
+/// never earned.
+fn emit_return_did_not_converge(
+    tel: &impl crate::telemetry::Telemetry,
+    world: &World,
+    function: FunctionId,
+    diverged: crate::compiler2::semantic::ReturnDiverged,
+) -> FatalError {
+    let denotation = world.function_ref(function);
+    let name = match world.module_denotation(denotation.module) {
+        Some(module) => format!("{module}.{}/{}", denotation.display_name(), denotation.arity),
+        None => format!("{}/{}", denotation.display_name(), denotation.arity),
+    };
+    let reached = world.types().display_for_diag(&diverged.reached);
+    let message = format!(
+        "the return type of `{name}` did not converge: it grew for {} rounds without repeating itself, \
+         and had reached `{reached}`",
+        crate::compiler2::semantic::RETURN_ASCENT_BOUND,
+    );
+    emit_job_diagnostic(
+        tel,
+        Diagnostic::error(codes::TYPE_RETURN_DID_NOT_CONVERGE, message, Span::DUMMY),
     )
 }
 

@@ -1190,6 +1190,7 @@ mod tests {
         assert!(
             activations
                 .define_return(world.types_mut(), &key, Some(any), false)
+                .expect("a return within its bound")
                 .changed
         );
         // Within an epoch evidence only ascends: int joins into any and
@@ -1197,6 +1198,7 @@ mod tests {
         assert!(
             !activations
                 .define_return(world.types_mut(), &key, Some(int), false)
+                .expect("a return within its bound")
                 .changed
         );
         assert_eq!(activations.get(&key).and_then(|slot| slot.return_ty()), Some(&any));
@@ -1205,6 +1207,7 @@ mod tests {
         assert!(
             activations
                 .define_return(world.types_mut(), &key, Some(int), true)
+                .expect("a return within its bound")
                 .changed
         );
         assert_eq!(activations.get(&key).and_then(|slot| slot.return_ty()), Some(&int));
@@ -1219,13 +1222,24 @@ mod tests {
         let int = world.types_mut().int();
 
         // No evidence adds nothing — before and after real evidence lands.
-        assert!(!activations.define_return(world.types_mut(), &key, None, false).changed);
+        assert!(
+            !activations
+                .define_return(world.types_mut(), &key, None, false)
+                .expect("a return within its bound")
+                .changed
+        );
         assert!(
             activations
                 .define_return(world.types_mut(), &key, Some(int), false)
+                .expect("a return within its bound")
                 .changed
         );
-        assert!(!activations.define_return(world.types_mut(), &key, None, false).changed);
+        assert!(
+            !activations
+                .define_return(world.types_mut(), &key, None, false)
+                .expect("a return within its bound")
+                .changed
+        );
         assert_eq!(activations.get(&key).and_then(|slot| slot.return_ty()), Some(&int));
     }
 
@@ -1242,6 +1256,7 @@ mod tests {
         assert!(
             activations
                 .define_return(world.types_mut(), &key, Some(int), false)
+                .expect("a return within its bound")
                 .changed
         );
         // Equal republication is quiet — the load-bearing scheduler
@@ -1249,11 +1264,13 @@ mod tests {
         assert!(
             !activations
                 .define_return(world.types_mut(), &key, Some(int), false)
+                .expect("a return within its bound")
                 .changed
         );
         assert!(
             activations
                 .define_return(world.types_mut(), &key, Some(atom), false)
+                .expect("a return within its bound")
                 .changed
         );
         assert_eq!(activations.get(&key).and_then(|slot| slot.return_ty()), Some(&both));
@@ -1272,11 +1289,13 @@ mod tests {
         assert!(
             activations
                 .define_return(world.types_mut(), &key, Some(closure), false)
+                .expect("a return within its bound")
                 .changed
         );
         assert!(
             activations
                 .define_return(world.types_mut(), &key, Some(int), false)
+                .expect("a return within its bound")
                 .changed
         );
         let joined = *activations
@@ -1290,42 +1309,42 @@ mod tests {
     }
 
     #[test]
-    fn activation_return_widening_reports_only_real_coarsening() {
+    fn a_return_that_climbs_past_its_bound_without_repeating_diverges() {
         let tel = ConfiguredTelemetry::new();
         let mut world = World::new();
         let mut activations = ActivationMap::new();
         let key = test_key(&mut world, &tel);
 
-        // Atom-by-atom growth ascends strictly but never builds a list
-        // spine, so past the budget `convergence_class` is the identity:
-        // crossing the threshold coarsens nothing and must not be reported
-        // as widening.
-        for index in 0..(2 * RETURN_WIDENING_BUDGET) {
+        // Atom-by-atom growth ascends strictly and never builds a tuple, list,
+        // resource or map, so no clash can fold it. It climbs the bound, and
+        // the next ascent is the divergence, carrying what it had reached.
+        let mut reached = world.types_mut().none();
+        for index in 0..RETURN_ASCENT_BOUND {
             let atom = world.types_mut().atom_lit(&format!("a{index}"));
-            let outcome = activations.define_return(world.types_mut(), &key, Some(atom), false);
+            reached = world.types_mut().union(reached, atom);
+            let outcome = activations
+                .define_return(world.types_mut(), &key, Some(atom), false)
+                .expect("a climb within its bound is an ordinary ascent");
             assert!(outcome.changed, "each fresh atom is a strict ascent");
-            assert!(
-                !outcome.widened,
-                "round {index}: nothing was coarsened, so nothing may report as widened",
-            );
         }
-
-        // The ascent past twice the budget tops out at `any` — a real
-        // coarsening, reported exactly once; at the top further evidence
-        // joins quietly.
-        let atom = world.types_mut().atom_lit("top");
-        let outcome = activations.define_return(world.types_mut(), &key, Some(atom), false);
-        assert!(outcome.changed && outcome.widened, "topping out at any IS a coarsening");
-        let atom = world.types_mut().atom_lit("after");
-        let outcome = activations.define_return(world.types_mut(), &key, Some(atom), false);
-        assert!(
-            !outcome.changed && !outcome.widened,
-            "evidence joins quietly at the top"
+        let atom = world.types_mut().atom_lit("past");
+        let diverged = activations
+            .define_return(world.types_mut(), &key, Some(atom), false)
+            .expect_err("the ascent past the bound diverges");
+        let reached = world.types_mut().union(reached, atom);
+        assert_eq!(
+            diverged.reached, reached,
+            "the divergence names the type the climb reached"
+        );
+        assert_ne!(
+            activations.get(&key).and_then(|slot| slot.return_ty()),
+            Some(&world.types_mut().any()),
+            "nothing earned `any`, so it is never written",
         );
     }
 
     #[test]
-    fn activation_return_of_ever_deeper_lists_folds_at_the_repeat_and_terminates_before_the_budget() {
+    fn activation_return_of_ever_deeper_lists_folds_at_the_repeat() {
         let tel = ConfiguredTelemetry::new();
         let mut world = World::new();
         let mut activations = ActivationMap::new();
@@ -1335,10 +1354,11 @@ mod tests {
         // rung gives a list element a list its ancestor already is, so the
         // slot folds and the ascent reaches a fixed point within a few rounds.
         let mut ty = world.types_mut().int();
-        for round in 0..RETURN_WIDENING_BUDGET {
+        for round in 0..RETURN_ASCENT_BOUND {
             ty = world.types_mut().list(ty);
-            let outcome = activations.define_return(world.types_mut(), &key, Some(ty), false);
-            assert!(!outcome.widened, "the budget never fires: the fold ends the ascent");
+            let outcome = activations
+                .define_return(world.types_mut(), &key, Some(ty), false)
+                .expect("a return within its bound");
             if !outcome.changed {
                 assert!(
                     !world.types_mut().take_clash_folds().is_empty(),
@@ -1347,7 +1367,7 @@ mod tests {
                 return;
             }
         }
-        panic!("a nested list must fold within the widening budget");
+        panic!("a nested list must fold within the ascent bound");
     }
 
     #[test]
@@ -1371,8 +1391,10 @@ mod tests {
             world.types_mut().list(bin),
         ];
         for rung in rungs {
-            let outcome = activations.define_return(world.types_mut(), &key, Some(rung), false);
-            assert!(outcome.changed && !outcome.widened);
+            let outcome = activations
+                .define_return(world.types_mut(), &key, Some(rung), false)
+                .expect("a return within its bound");
+            assert!(outcome.changed);
             assert!(
                 world.types_mut().take_clash_folds().is_empty(),
                 "ordinary growth is not a repeat"

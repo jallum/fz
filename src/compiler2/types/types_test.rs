@@ -2380,30 +2380,6 @@ macro_rules! semantic_helper_conformance_tests {
             }
 
             #[test]
-            fn evidence_collapse_only_widens_variable_non_dispatch_payloads() {
-                let mut t = $ctor;
-                let int = t.int();
-                let concrete = t.list(int.clone());
-                let var = t.type_var(TypeVarId(0));
-                let variable = t.list(var);
-                let collapsed = t.convergence_collapse_evidence_inputs(
-                    &[concrete, variable],
-                    &[DispatchDemand::Ignore, DispatchDemand::Ignore],
-                );
-
-                let any = t.any();
-                let list_any = t.list(any);
-                assert!(
-                    t.is_equivalent(&collapsed[0], &concrete),
-                    "concrete non-dispatch evidence should stay precise"
-                );
-                assert!(
-                    t.is_equivalent(&collapsed[1], &list_any),
-                    "variable non-dispatch evidence should converge to list(any)"
-                );
-            }
-
-            #[test]
             fn refine_widen_recurses_into_tuple_fields() {
                 let mut t = $ctor;
                 let empty = t.empty_list();

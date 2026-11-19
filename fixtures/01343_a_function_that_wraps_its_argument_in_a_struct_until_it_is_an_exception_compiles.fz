@@ -1,10 +1,9 @@
 #---
-# purpose: "A recursion that wraps its argument in a struct on every call compiles: the repeated struct folds where it grew, and the budget never fires"
+# purpose: "A recursion that wraps its argument in a struct on every call compiles: the repeated struct folds where it grew"
 # root: main/0
-# assert.metric.return_type.widened: 0
 # assert.metric.type.clash_folded: 1
 # oracle: self
-# oracle.stamp: 63a5ebd80854e2fa
+# oracle.stamp: aafa817400ce7bfc
 #---
 defmodule W do
   defexception [:original]

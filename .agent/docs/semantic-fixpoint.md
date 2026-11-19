@@ -376,13 +376,11 @@ join stores, the clash rule folds a type that repeats itself at the slot where
 it grew (`Types::clash_fold`, [`type-specialization`](type-specialization.md#the-clash-rule));
 the same fold runs on each activation's evidence rows in
 `World::normalize_contributions`. Past a per-epoch
-budget of strict ascents (`RETURN_WIDENING_BUDGET`, a total since the last
+bound of strict ascents (`RETURN_ASCENT_BOUND`, a total since the last
 rebase — not a consecutive-ascent delay, which spurious quiet wakes could
-starve) the join widens the growing spine (`convergence_class`, then `any`),
-emitting `fz.compiler2.return_type.widened` only when the operator actually
-coarsened the stored value; corpus programs converge in a few rungs and never
-meet it, and the clash fold ends the ladders that nest a constructor in
-itself before it is reached. `CallSiteSummary` snapshots carry
+starve) the compile stops with `type/return-did-not-converge`; corpus programs
+converge in a few rungs and never meet it, and the clash fold ends the ladders
+that nest a constructor in itself before it is reached. `CallSiteSummary` snapshots carry
 `return_ty: Option<Ty>` — honest mid-ascent records whose `None` reads, behind
 the settled gate, as "provably never returns" (`settled_return`).
 

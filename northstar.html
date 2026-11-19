@@ -926,8 +926,7 @@ ReturnType(root, main/0#lambda@0/2, [int, int]) = int</code></pre>
         Telemetry carries raw ids, facts, and opaque structures. Formatting belongs in handlers.
         The compiler surface emits spans for the drive and each job, each carrying the reason the
         work started, plus state-defining events such as <code>function.defined</code>,
-        <code>callsite.defined</code>, <code>return_type.defined</code> and
-        <code>return_type.widened</code>, retained artifact settlements through
+        <code>callsite.defined</code> and <code>return_type.defined</code>, retained artifact settlements through
         <code>pull.product.settled</code>, product dependency movements through
         <code>work_graph.dependencies_moved</code>, and <code>pull.session.finished</code>. Tests
         observe those events instead of poking through world internals.

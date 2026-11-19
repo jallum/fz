@@ -93,16 +93,9 @@ defmodule Distill do
   end
 
   # How many rounds each activation's return type took. Every
-  # return_type.defined is one strict ascent of the fixpoint's central fact,
-  # and a return_type.widened says the ascent ran past its budget, so the
-  # answer was widened rather than found.
+  # return_type.defined is one strict ascent of the fixpoint's central fact.
   defp return_revisions(records, names, top) do
     IO.puts("return-type revisions per activation")
-
-    widened =
-      for %{"name" => ["fz", "compiler2", "return_type", "widened"], "metadata" => %{"activation" => a}} <- records,
-          into: MapSet.new(),
-          do: subject(a, names)
 
     defined =
       for %{"name" => ["fz", "compiler2", "return_type", "defined"], "metadata" => %{"activation" => a}} <- records,
@@ -112,8 +105,7 @@ defmodule Distill do
     |> Enum.frequencies()
     |> Enum.sort_by(fn {activation, n} -> {-n, activation} end)
     |> Enum.take(top)
-    |> Enum.map(fn {activation, n} -> {activation, n, if(activation in widened, do: "yes", else: "-")} end)
-    |> table(["activation", "revisions", "widened"])
+    |> table(["activation", "revisions"])
   end
 
   # Every job kind's work: how many times it ran, how many distinct subjects

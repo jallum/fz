@@ -1,9 +1,8 @@
 #---
-# purpose: "Inserting into a binary search tree compiles to one insert over the recursive tree μT. nil | {int, T, T}, returning a non-empty tree, with no widening"
+# purpose: "Inserting into a binary search tree compiles to one insert over the recursive tree μT. nil | {int, T, T}, returning a non-empty tree"
 # root: main/0
-# assert.metric.return_type.widened: 0
 # oracle: self
-# oracle.stamp: e3dbca07fbdba572
+# oracle.stamp: eb8cc0b6324df5a4
 #---
 defmodule Tree do
   def insert(nil, k), do: {k, nil, nil}

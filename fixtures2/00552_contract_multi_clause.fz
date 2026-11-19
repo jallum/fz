@@ -5,7 +5,6 @@
 # assert.metric.semantic.executables: 3
 # assert.metric.semantic.callsites: 11
 # assert.metric.call_edges.count: 11
-# assert.metric.return_type.widened: 0
 # assert.edge: fact/1[int] | @141-152 | direct | fact/1
 # assert.edge: main/0[] | @174-185 | direct | classify/1
 # assert.edge: main/0[] | @232-239 | direct | fact/1

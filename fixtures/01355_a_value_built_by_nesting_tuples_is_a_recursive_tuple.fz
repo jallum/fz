@@ -1,9 +1,8 @@
 #---
-# purpose: "A value built by nesting tuples, by recursion on the result or by an accumulator, is the recursive type μR. :start | {int, R}, with no widening"
+# purpose: "A value built by nesting tuples, by recursion on the result or by an accumulator, is the recursive type μR. :start | {int, R}"
 # root: main/0
-# assert.metric.return_type.widened: 0
 # oracle: self
-# oracle.stamp: e77aa1b1307ab85f
+# oracle.stamp: 3822f50dbc78245f
 #---
 defmodule Chain do
   def build(0), do: :start
