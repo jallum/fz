@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-19T01:05:07Z",
+  "description": "The user accepted #746's 00911 rise on condition that a ticket brings it back down (relayed by Elixir Parity, 2026-11-19). Found by Elixir Parity while building fz-mue.1.\n\nMeasured: develop a379a280d passes 00911; the rebased #746 fails it. Mechanism, from a --dump backend A/B: List.reduce_cont and Range.reduce_cont call the reducer as an unspecialised callable, so {:cont, acc} reaches reduce_step typed any. Before #746, its fields(ignore, whole) demand reached the producer, :cont was a nothing lane, and the boxing seam rebuilt it from the producer's singleton type. #746 reads a field demand on a value that is not one exact tuple as Whole, which 01780 needs (the omitted field is a real value). That also gives the constant :cont a RawAtom lane, so every reduce-step frame grows 8 bytes: 00911 park 320 -\u003e 336, third yield 96160 -\u003e 128160. One extra yield collection is not explained by that arithmetic (recorded in #746's commit).\n\nWhy: a field typed as a single constant can be rebuilt from its type at the boxing seam, so a physical lane for it is pure cost.\nWhere: the producer's lane layout (decomposed_field_tys / transport.rs), not read_against_type.\nDone when: 00911's park and yields return to (or below) 320 and 96160, the extra yield is explained or gone, and 01780 still passes. Expect many pins to fall.",
+  "id": "fz-mue.21",
+  "labels": [],
+  "parent": "fz-mue",
+  "priority": 2,
+  "status": "open",
+  "title": "A tuple field whose type is a single constant takes no lane, even when the tuple is read whole",
+  "type": "task",
+  "updated_at": "2026-11-19T01:05:07Z"
+}
