@@ -372,3 +372,16 @@ fn the_canonical_form_of_a_recursive_type_is_the_same_in_every_world() {
     assert_ne!(tree_text, render(chain));
     assert!(tree_text.contains('μ'), "{tree_text}");
 }
+
+#[test]
+fn the_canonical_form_names_a_list_that_holds_itself() {
+    let labels = |_| String::new();
+    let mut t = Types::new();
+    let nested = t.recursive(1, |t, me| {
+        let int = t.int();
+        let list = t.list(me[0]);
+        vec![t.union(int, list)]
+    })[0];
+    let text = crate::compiler2::types::canon::TyCanon::new(&labels).render(&t, nested);
+    assert!(text.ends_with("μt. int | list(t)"), "{text}");
+}

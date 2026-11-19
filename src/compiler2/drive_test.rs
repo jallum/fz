@@ -13325,7 +13325,7 @@ fn compiler2_no_value_reaches_a_construction_member_that_never_named_it() {
 /// others hold the settled one. A fixture whose wrappers are all single-member
 /// observes ZERO, because `select_construction_member` takes its
 /// `None if members.len() == 1` branch and no dispatch runs: the reduce
-/// fixtures `00183`, `00419`, `00420` and `00277` are of that kind, since a
+/// fixtures `00183`, `00419`, `00420`, `00277` and `01348` are of that kind, since a
 /// call inside a recursion cycle keys the supplied slots from the cycle's entry.
 /// `01450_dispatch_list_head_separates` reads its two observations from a
 /// dispatch plan rather than a wrapper, and its header says why the mixed list
@@ -13336,7 +13336,7 @@ fn compiler2_no_value_reaches_a_construction_member_that_never_named_it() {
 /// direction, and in either column -- is either a new latent miscompile, a
 /// cure, or a fixture that stopped exercising the property, and all three want
 /// the table edited deliberately rather than a number re-blessed.
-const SURFACE_MEMBERSHIP_CENSUS: [(&str, &str, usize, usize); 14] = [
+const SURFACE_MEMBERSHIP_CENSUS: [(&str, &str, usize, usize); 13] = [
     ("fixtures/01429_closure_capture_requirement_projection.fz", "", 37, 0),
     (
         "fixtures/01429_closure_capture_requirement_projection.fz",
@@ -13380,12 +13380,6 @@ const SURFACE_MEMBERSHIP_CENSUS: [(&str, &str, usize, usize); 14] = [
         "fixtures/01135_two_reduces_over_one_value_through_a_user_enumerable_each_keep_their_own_accumulator_type.fz",
         "",
         6,
-        0,
-    ),
-    (
-        "fixtures/01348_two_reduces_sharing_one_reducer_function_compile.fz",
-        "",
-        8,
         0,
     ),
     ("fixtures/01425_callable_union_capture_containment.fz", "", 6, 0),
@@ -24181,6 +24175,56 @@ fn add_infers_int_return() {
     let mut settled = Drive::fixture(171).settle();
     let int_ty = settled.compiler_mut().types_mut_for_test().int();
     assert_settles_to(&settled, "add", 2, int_ty, "int");
+}
+
+/// Inserting into a binary search tree keys `insert` once, on the tree
+/// `T = μT. nil | {int, T, T}` that `build` threads through: the pattern
+/// `{v, l, r}` binds `l` and `r` to `T`, so the recursive call is the same
+/// activation. A non-nil clause always answers a node, so `insert` returns
+/// `{int, T, T}` and `build` returns `T`.
+#[test]
+fn a_tree_insert_settles_to_the_recursive_tree() {
+    let mut settled = Drive::fixture(1354).settle();
+    let types = settled.compiler_mut().types_mut_for_test();
+    let (int, nil) = (types.int(), types.atom_lit("nil"));
+    let tree = types.recursive(1, |t, me| {
+        let node = t.tuple(&[int, me[0], me[0]]);
+        vec![t.union(nil, node)]
+    })[0];
+    let node = types.tuple(&[int, tree, tree]);
+    assert_settles_to_in_module(&settled, "Tree", "insert", 2, node, "{int, T, T}");
+    assert_settles_to_in_module(&settled, "Tree", "build", 3, tree, "μT. nil | {int, T, T}");
+}
+
+/// A chain of tuples is the same recursive type whether the recursion nests
+/// its own result (`build`) or an accumulator (`wrap`): `μR. :start | {int, R}`.
+#[test]
+fn a_tuple_chain_settles_to_a_recursive_tuple() {
+    let mut settled = Drive::fixture(1355).settle();
+    let types = settled.compiler_mut().types_mut_for_test();
+    let (int, start) = (types.int(), types.atom_lit("start"));
+    let chain = types.recursive(1, |t, me| {
+        let link = t.tuple(&[int, me[0]]);
+        vec![t.union(start, link)]
+    })[0];
+    assert_settles_to_in_module(&settled, "Chain", "build", 1, chain, "μR. :start | {int, R}");
+    assert_settles_to_in_module(&settled, "Chain", "wrap", 2, chain, "μR. :start | {int, R}");
+}
+
+/// Wrapping an accumulator in a one-element list nests it: `1`, `[1]`,
+/// `[[1]]`, ... The answer is `μA. int | [A]`. A list node's alternatives
+/// merge by head, so the fold cannot keep each depth's list uniform, and it
+/// never admits an empty list, since every wrap is `[acc]`.
+#[test]
+fn a_list_nesting_settles_to_a_recursive_list() {
+    let mut settled = Drive::fixture(1356).settle();
+    let types = settled.compiler_mut().types_mut_for_test();
+    let int = types.int();
+    let answer = types.recursive(1, |t, me| {
+        let wrapped = t.non_empty_list(me[0]);
+        vec![t.union(int, wrapped)]
+    })[0];
+    assert_settles_to_in_module(&settled, "Nest", "wrap", 2, answer, "μA. int | [A]");
 }
 
 /// The same direct-call function is instantiated separately per callsite

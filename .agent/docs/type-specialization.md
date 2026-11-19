@@ -525,8 +525,10 @@ A function that wraps its argument and calls itself (`f(x) = f({x})`) hands the
 analysis a type one level deeper on every pass. `Types::clash_fold(old, new)`
 (`types/clash.rs`) is the widening that ends it, the clash rule of Van Hentenryck,
 Cortesi and Le Charlier (PLDI'94): compare the previous iterate with the new one
-slot by slot, and fold to `any` the slot that gained a constructor one of its own
-ancestors already has.
+slot by slot, and turn the slot that gained a constructor one of its own
+ancestors already has into a back edge to that ancestor. The answer is a
+recursive type: `build(n) = {n, build(n - 1)}` returns `μR. :start | {int, R}`,
+and a tree insert keyed on `μT. nil | {int, T, T}` returns `{int, T, T}`.
 
 - A node's HEAD is its constructor kind. A tuple's head is its arity plus at
   most one atom tag: a clause whose first slot is a finite set of atoms yields one
@@ -542,7 +544,14 @@ ancestors already has.
   has no ancestor and never folds.
 - The fold's `kind` is `cycle` when the node's values lie inside the covering
   ancestor's and `replace` when the ancestor covers its heads but not all its
-  values.
+  values. Both rebuild the same way: every node on a folded path becomes an
+  equation, the cut child becomes the ancestor's binder and joins the
+  ancestor's body, and `Types::solve_equations` commits the result. A fold
+  that changes nothing answers `None`.
+- A recursive type met on the walk is its own fixpoint: the walk enters only a
+  node's other members and judges growth on them. A recursive member never
+  counts as covering a neighbour, because a tuple slot gathers members from
+  every rectangle (`types/clash.rs`).
 
 Detection is a read-only walk over `&Types` that builds a plan of cut points and
 interns nothing; only a non-empty plan takes `&mut Types` to rebuild the nodes on
@@ -550,12 +559,15 @@ the folded paths. A call is cheap to reject: it returns at once when the iterate
 are equal or either holds no tuple, list, resource or map, and only then asks
 whether the new iterate is a subtype of the old. Folding is idempotent.
 
-Two sites run it. The EVIDENCE site (`World::normalize_contributions`) folds each
-column of a contribution against the activation's joined column and then against
-that column of each standing row. A row that widened (a list of `any`, say) makes
-the joined column take the contribution in whole, and `clash_fold` returns at
-once on a subtype; another row still shows the growth the contribution repeats,
-and asking it ends the ladder. The RETURN site
+Two sites run it. The EVIDENCE site (`World::normalize_contributions`) folds the
+activation's joined column grown by a contribution's column against the joined
+column, and the folded type replaces the contribution's column. The join is what
+climbs, so the join is what folds: in `mix(n - 1, {:l, acc})` beside
+`mix(n - 1, {:r, acc})` neither callsite's history alone shows the alternation,
+and folding each by itself leaves `{:l, μt. :a | {:l, t}}` and
+`{:r, μt. :a | {:r, t}}`, which no union merges into `μt. :a | {:l | :r, t}`. A
+contribution the joined column already covers grows nothing, and `clash_fold`
+returns at once. The RETURN site
 (`ActivationMap::define_return`) folds the joined return against the previous
 one. Each fold emits `fz.compiler2.type.clash_folded` (see
 [`telemetry`](telemetry.md)). The widening budget stays behind the rule for

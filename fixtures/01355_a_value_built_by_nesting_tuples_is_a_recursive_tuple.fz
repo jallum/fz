@@ -1,0 +1,23 @@
+#---
+# purpose: "A value built by nesting tuples, by recursion on the result or by an accumulator, is the recursive type μR. :start | {int, R}, with no widening"
+# root: main/0
+# assert.metric.return_type.widened: 0
+# oracle: self
+# oracle.stamp: e77aa1b1307ab85f
+#---
+defmodule Chain do
+  def build(0), do: :start
+  def build(n), do: {n, build(n - 1)}
+
+  def wrap(0, acc), do: acc
+  def wrap(n, acc), do: wrap(n - 1, {n, acc})
+end
+
+defmodule Main do
+  def main() do
+    IO.inspect(Chain.build(3))
+    IO.inspect(Chain.wrap(3, :start))
+  end
+end
+
+Main.main()

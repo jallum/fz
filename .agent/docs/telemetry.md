@@ -323,7 +323,7 @@ the `World` that produced it instead of leaking into the next reader.
 `[fz, compiler2, type, clash_folded]` is public (allowlisted in
 `is_public_compiler2_trace_event`). It fires from
 `ExecutionContext::complete_job`, once per slot a clash fold cut: a type that
-repeated itself was folded to `any` at the slot where it grew (see
+repeated itself became a back edge to its ancestor at the slot where it grew (see
 [the clash rule](type-specialization.md#the-clash-rule)).
 `measurements.ancestor_depth` is the depth of the covering ancestor, root 0;
 `measurements.path_len` is the length of the slot path from the folded type's

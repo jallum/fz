@@ -1068,22 +1068,20 @@ impl World {
         next
     }
 
-    /// Fold each column of a new contribution where it repeats the type the
-    /// activation already holds in that column. The joined column is asked
-    /// first and then that column of each standing row: a row that widened
-    /// makes the joined column wide enough to take the contribution in whole,
-    /// while another row still shows the growth the contribution repeats.
+    /// Fold each column of a new contribution where taking it in would make
+    /// the activation's joined column repeat itself. The fold is asked of the
+    /// joined column grown by the contribution, because the join is what
+    /// climbs: two callsites that each wrap the accumulator under their own
+    /// tag fold into one recursive type only when their growth is judged
+    /// together, while folding each against its own history leaves two
+    /// partial recursive types that no union merges.
     fn fold_clashes_against_standing_row(&mut self, activation: &ActivationKey, columns: &mut [Ty]) {
         let Some(standing) = self.activation_inputs.get(activation) else {
             return;
         };
         for (index, column) in columns.iter_mut().enumerate() {
-            let held =
-                std::iter::once(standing.joined()[index]).chain(standing.rows().iter().map(|row| row.columns()[index]));
-            for held in held {
-                if let Some(folded) = self.types.clash_fold(held, *column) {
-                    *column = folded;
-                }
+            if let Some(folded) = self.types.clash_fold_join(standing.joined()[index], *column) {
+                *column = folded;
             }
         }
         self.report_clash_folds(ClashSite::Evidence, activation.function);
