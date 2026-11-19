@@ -70,7 +70,7 @@ impl<'a> Render<'a> {
 }
 
 /// The name of the binder entered at `depth`: `t`, `u`, ... `z`, then `t1`.
-fn binder_name(depth: usize) -> String {
+pub(super) fn binder_name(depth: usize) -> String {
     const NAMES: [&str; 7] = ["t", "u", "v", "w", "x", "y", "z"];
     match depth / NAMES.len() {
         0 => NAMES[depth].to_string(),

@@ -1,8 +1,7 @@
 use super::{
     ClosureLit, ClosureTarget, Descr, FiniteSet, MapKey, RuntimeEnvelopePolarity, RuntimeEnvelopePurpose, Sigma, Ty,
-    TypeVarId, Types, bound_variables_reading, callable_identity_clauses, map_recursive_inputs,
-    map_recursive_inputs_with, runtime_arrow_sig, runtime_list_sig, runtime_map_sig, runtime_resource_sig,
-    runtime_structural_conj, runtime_tuple_sig,
+    TypeVarId, Types, bound_variables_reading, callable_identity_clauses, map_recursive_inputs_with, runtime_arrow_sig,
+    runtime_list_sig, runtime_map_sig, runtime_resource_sig, runtime_structural_conj, runtime_tuple_sig,
 };
 use std::collections::BTreeSet;
 
@@ -95,7 +94,10 @@ fn sigmas(t: &mut Types) -> Vec<Sigma<Ty>> {
 /// interner before it was rewritten.
 fn erase_by_copying(t: &mut Types, a: Ty) -> Descr {
     let base = t.descr(&a).clone();
-    let mut erased = map_recursive_inputs(t, base, erase_by_copying);
+    let mut erased = map_recursive_inputs_with(t, base, &mut |t, nested| {
+        let d = erase_by_copying(t, nested);
+        t.intern(d)
+    });
     for conj in &mut erased.funcs {
         for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
             let Some(lit) = sig.lit.take() else {

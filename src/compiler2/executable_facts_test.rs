@@ -224,3 +224,24 @@ fn a_calls_return_origin_is_derived_from_its_tail() {
     );
     assert_eq!(callsite_return_origin(&body, CallSiteId::from_u32(5)), None);
 }
+
+/// A recursive type whose every value is a tuple holds itself only below a
+/// field that is not one -- here a list -- because a value is finite. So
+/// preparing it descends through its tuple fields, stops at the list, and
+/// never reads its own unfinished projection.
+#[test]
+fn a_recursive_tuple_type_is_projected_field_by_field() {
+    let mut world = World::new();
+    let rose = world.types_mut().recursive(1, |t, me| {
+        let int = t.int();
+        let children = t.list(me[0]);
+        vec![t.tuple(&[int, children])]
+    })[0];
+    let any = world.types_mut().any();
+    let mut builder = RuntimeDemandTypeBuilder::new(any);
+    prepare_type_projection(&mut world, &mut builder, rose);
+    let int = world.types_mut().int();
+    let children = world.types_mut().list(rose);
+    assert_eq!(builder.projections[&rose].field_tys, vec![int, children]);
+    assert!(builder.projections[&children].field_tys.is_empty());
+}
