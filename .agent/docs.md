@@ -24,6 +24,7 @@ Read:
 - [externs](docs/externs.md) — the FFI door: the two ABIs (`"C"` vs `"fz"`, the implicit process argument, what `binary` means), the `ExternTy` wire alphabet, marshal classes + auto-resolution, borrow-only args, C-vs-fz return ABI, runtime variadic dispatchers + symbol resolution, and resource typing.
 - [telemetry](docs/telemetry.md) — compile-time telemetry internals plus the emission contract, trace harness, and test-observability guidance.
 - [performance instrumentation](docs/performance-instrumentation.md) — finding where compile time goes and why work started: the `--log-telemetry` / `--emit=stats` switches, causal job/product/work-start records, and reading settle counts against per-settle cost.
+- [machine floor](docs/machine-floor.md) — `tools/floor`: instructions per iteration for a run-time operation on fz and the BEAM, beside the hand-written arm64 it should compile to; one command, `tools/floor/report.sh`.
 - [runtime telemetry](docs/runtime-telemetry.md) — the runtime events (exit, `send.probe`, `run_ended`) and semantic output sink contracts, and how tests observe a run without poking process internals.
 - [parser syntax](docs/parser-syntax.md) — source front-door boundary: `src/parser` is lexer-only; compiler2 parses tokens to quoted source in `compiler2/frontdoor.rs`.
 - [dispatch matrix](docs/dispatch-matrix.md) — the shared `DispatchMatrix`/`DispatchGraph` model behind function heads, `case`, receive, guard helpers, and protocol dispatch.
