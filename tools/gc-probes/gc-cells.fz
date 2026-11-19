@@ -1,0 +1,14 @@
+# Isolates the collector's cost per list cell. Each round builds a one million
+# element integer list whose every cell stays live while it grows, so the
+# collections during the build copy cells and little else.
+# Read it as: instructions(gc-cells) - instructions(gc-cells-short), divided
+# by copied_objects(gc-cells) - copied_objects(gc-cells-short), summed over the
+# fz.runtime.gc events.
+def build(0, acc), do: acc
+def build(n, acc), do: build(n - 1, [n | acc])
+def rounds(0, sum), do: sum
+def rounds(r, sum) do
+  xs = build(1000000, [])
+  rounds(r - 1, sum + length(xs))
+end
+def main(), do: dbg(rounds(10, 0))

@@ -350,6 +350,8 @@ A minor collection's from-space is the young blocks (the tip and the blocks
 allocation parked since the last collection) and leaves old blocks in place; a
 major collection's from-space is every block (`Heap::next_generation`):
 
+- `copied_objects`: objects the pass copied, the survivors of its from-space; a list
+  cell, a tuple, a map, a closure and a binary view each count one;
 - `copied_bytes`: bytes the pass copied, the survivors of its from-space; a minor
   pass copies only young survivors, a major pass every live object;
 - `live_bytes`: bytes the heap holds once the pass finished: what earlier

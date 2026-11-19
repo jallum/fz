@@ -1,0 +1,11 @@
+# Isolates the collector's cost per map. Each round builds a list of one
+# hundred thousand two-key maps that stay live while it grows. Read it as
+# gc-cells, against gc-maps-short.
+def build(0, acc), do: acc
+def build(n, acc), do: build(n - 1, [%{a: n, b: n + 1} | acc])
+def rounds(0, sum), do: sum
+def rounds(r, sum) do
+  xs = build(100000, [])
+  rounds(r - 1, sum + length(xs))
+end
+def main(), do: dbg(rounds(10, 0))

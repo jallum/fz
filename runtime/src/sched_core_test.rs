@@ -565,6 +565,38 @@ fn payload_of(payload_ref: u64) -> i64 {
     value.storage_raw().expect("scalar slot") as i64
 }
 
+/// A collection reports the objects it copied: a yielding process whose
+/// runnable closure captures a three-cell list keeps four objects across the
+/// boundary collection, however much garbage the quantum left behind.
+#[test]
+fn a_collection_reports_the_objects_it_copied() {
+    let mut scheduler = Recording::new();
+    let mut process = new_process();
+    let mut list = EMPTY_LIST;
+    for head in 0..3 {
+        list = process.heap.alloc_list_cons_slot(AnyValue::int(head), list);
+    }
+    let list = AnyValueRef::from_heap_object(ValueKind::LIST, list_addr_from_tagged(list).expect("list addr"))
+        .expect("list ref");
+    let runnable = closure_ref_capturing(&mut process, AnyValue::HeapRef(list));
+    process.set_runnable_closure(runnable);
+    process.state = ProcessState::Running;
+    allocate_until_due(&mut process);
+
+    end_quantum(&mut scheduler, &mut process);
+
+    let [collection] = scheduler.collections[..] else {
+        panic!(
+            "a heap past its threshold is collected once: {:?}",
+            scheduler.collections
+        );
+    };
+    assert_eq!(
+        collection.stats.copied_objects, 4,
+        "the closure and the three cells of the list it captures survive; the garbage does not"
+    );
+}
+
 /// A resource whose last reference died in the heap a collection just moved
 /// still has its destructor run, at the same boundary as the collection.
 #[test]
