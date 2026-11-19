@@ -1,0 +1,22 @@
+#---
+# purpose: "A parser that pushes its accumulator onto a stack and restores it later compiles: a restored accumulator that widens one row of the evidence does not hide the growth another row repeats"
+# root: main/0
+# oracle: self
+# oracle.stamp: 93ffa82454c0ec36
+#---
+defmodule Parser do
+  def value(<<?[, rest::bits>>, acc, stack), do: value(rest, [], [:array, acc | stack])
+  def value(<<?1, rest::bits>>, acc, stack), do: cont(rest, acc, stack, 1)
+
+  def cont(<<?], rest::bits>>, acc, [:array, old | stack], v), do: cont(rest, old, stack, [v | acc])
+  def cont(<<?,, rest::bits>>, acc, stack, v), do: value(rest, [v | acc], stack)
+  def cont(<<>>, acc, [], v), do: {v, acc}
+end
+
+defmodule Main do
+  def main() do
+    IO.inspect(Parser.value("[1,[1]]", :ok, []))
+  end
+end
+
+Main.main()

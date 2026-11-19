@@ -1069,14 +1069,21 @@ impl World {
     }
 
     /// Fold each column of a new contribution where it repeats the type the
-    /// activation's standing row already holds in that column.
+    /// activation already holds in that column. The joined column is asked
+    /// first and then that column of each standing row: a row that widened
+    /// makes the joined column wide enough to take the contribution in whole,
+    /// while another row still shows the growth the contribution repeats.
     fn fold_clashes_against_standing_row(&mut self, activation: &ActivationKey, columns: &mut [Ty]) {
         let Some(standing) = self.activation_inputs.get(activation) else {
             return;
         };
-        for (column, own) in columns.iter_mut().zip(standing.joined()) {
-            if let Some(folded) = self.types.clash_fold(*own, *column) {
-                *column = folded;
+        for (index, column) in columns.iter_mut().enumerate() {
+            let held =
+                std::iter::once(standing.joined()[index]).chain(standing.rows().iter().map(|row| row.columns()[index]));
+            for held in held {
+                if let Some(folded) = self.types.clash_fold(held, *column) {
+                    *column = folded;
+                }
             }
         }
         self.report_clash_folds(ClashSite::Evidence, activation.function);

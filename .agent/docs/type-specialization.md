@@ -551,7 +551,11 @@ are equal or either holds no tuple, list, resource or map, and only then asks
 whether the new iterate is a subtype of the old. Folding is idempotent.
 
 Two sites run it. The EVIDENCE site (`World::normalize_contributions`) folds each
-column of a contribution against the activation's standing row. The RETURN site
+column of a contribution against the activation's joined column and then against
+that column of each standing row. A row that widened (a list of `any`, say) makes
+the joined column take the contribution in whole, and `clash_fold` returns at
+once on a subtype; another row still shows the growth the contribution repeats,
+and asking it ends the ladder. The RETURN site
 (`ActivationMap::define_return`) folds the joined return against the previous
 one. Each fold emits `fz.compiler2.type.clash_folded` (see
 [`telemetry`](telemetry.md)). The widening budget stays behind the rule for
