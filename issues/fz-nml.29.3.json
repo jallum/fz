@@ -2,6 +2,7 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-19T04:24:58Z",
   "created": "2026-11-19T04:14:28Z",
   "description": "Filed to fix a red develop: develop bac027b42 fails each_place_a_binary_gains_a_second_holder_marks_it_shared. Fix is PR #801 (Optimize).\n\n## Why\n#795 (fz-9x7.41.2) has compiled code place a list cell. The cell shared its head only for LIST|STRUCT, through fz_mark_published_ref_aliased, so a binary list head was never marked: the Run row reads (1,0) where (2,1) is expected. #796 (fz-nml.29.2) and #795 went through CI apart, so the combination first ran on develop. Separately, stored_form (a store into a tuple) asked a value's kind even when its type said binary, so a typed value took the ~20-instruction dispatch (Make Distiller Fast's c1 probe).\n\n## What changes\nA list cell and a tuple store share through CodegenFn::share / share_as(value, class), with the class taken from the type. Generated code makes no runtime share call.\n\n## Done when\nThe second-holder test passes on all three paths. The cell parity test watches the bitstring head's words and fails without the fix. c1 falls back toward its pre-nml.29 figure.",
   "id": "fz-nml.29.3",
@@ -14,8 +15,8 @@
     }
   ],
   "priority": 0,
-  "status": "in_progress",
+  "status": "closed",
   "title": "A list cell and a tuple store share through the one inline share",
   "type": "bug",
-  "updated_at": "2026-11-19T04:15:12Z"
+  "updated_at": "2026-11-19T04:24:58Z"
 }
