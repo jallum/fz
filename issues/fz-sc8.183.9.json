@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-nml.27"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-9e2.9"
+  ],
   "created": "2026-11-18T04:08:43Z",
   "description": "Approved by the user 2026-11-17 (relayed by JSON) from the JSON machine-code study (fz vs BEAM JIT, lldb single-step traces). Study files: /private/tmp/claude-501/-Users-j5n-Workspace-fz/ebbfffd8-2561-4da7-bcda-f9a316d00a1e/scratchpad/jsonasm/ (listings/, listings/beam/, CLIF dumps).\n\nEvidence: each literal clause test re-derives the tag check, length load, -1 sentinel compare, bounds check, data-pointer load, alignment test and byte load (13-20 instructions each). val's { path repeats this five times before its final one-byte select: 228 instructions vs BEAM ~70 (one bs_start_match3, one ensure_at_least, one read, then select_val).\n\nSource: lower_bitstring_region (src/compiler2/jobs/native.rs ~4048) emits per-region BitstringBitLen / IsNotBinary / BitFieldFits / BitReadByteIntAt; prim.rs emit_binary_bit_len (778), emit_binary_base (795), emit_int_read_at_bit (965); the redundant ule 8,64 constant compare.\n\nConcordant evidence: Make Distiller Fast's byte walk (after fz-sc8.247) still re-tests the binary's layout three times and its alignment twice per byte (~19 of 61 instructions); carrying the byte pointer and bit length with the cursor makes them loop-invariant. fz-sc8.183.4 (one implementation of bounds arithmetic) is the same seam.\n\nDone when: a fixture or CLIF pin counts binary region reads in a multi-literal dispatch at one per function entry; three paths agree.\n\nOrder: after fz-nml.27 (same lowering, in flight).\n\nBoard cleanup approved by the user, verbatim \"fz-9e2 cleanup approved\" (in Binary Handling's session, 2026-11-19), from the Board hygiene section of /Users/j5n/Workspace/fz-binaries/proposal.v1.html. Folded in from fz-sc8.183.4 (same seam, in this ticket's own words), and moved under fz-9e2 as an input to fz-9e2.9 (the same lowering: one match-region step list).\nfz-sc8.183.4's text: After fz-sc8.183.1 the question 'where does this field end, and does it fit' is answered twice: by bs_field_end in runtime/src/ir_runtime.rs (used by the interpreter, the receive matcher via fz_bs_field_end, and re-checked inside fz_bs_read_int_ref / fz_bs_read_binary_ref) and by Cranelift emission in src/compiler2/native_codegen/prim.rs (match_field_extent, Prim::BitFieldFits, Prim::BitFieldNext). Candidate fold: lowering emits ordinary integer IR (multiply, add, compare) for the position, so native code and the interpreter share one source and BitFieldFits / BitFieldNext go away; the read's own re-check goes with it. Not blocking: found while reviewing fz-sc8.183.1.",
   "id": "fz-sc8.183.9",
@@ -19,5 +21,5 @@
   "status": "open",
   "title": "A binary match reads its region once, and sibling literal clauses become one byte decision",
   "type": "task",
-  "updated_at": "2026-11-19T01:31:51Z"
+  "updated_at": "2026-11-19T01:31:53Z"
 }
