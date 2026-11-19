@@ -1680,3 +1680,122 @@ fn joined_callable_demands_union_their_surfaces_and_the_borrowed_view_agrees() {
         left.surfaces().into_iter().collect::<Vec<_>>()
     );
 }
+
+mod a_closure_call_names_one_activation {
+    use super::super::super::World;
+    use super::super::super::identity::{ActivationKey, RootId};
+    use super::super::super::semantic::{CallSiteSummary, CallTargetSummary, SelectedCallee};
+    use crate::compiler2::types::Ty;
+    use crate::types::ClosureTarget;
+
+    fn target(world: &mut World, inputs: Vec<Ty>, return_ty: Ty) -> CallTargetSummary {
+        let callee = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "reducer", 2);
+        let activation = ActivationKey::from_inputs(RootId::for_test(0), callee, &inputs, world.types_mut());
+        CallTargetSummary {
+            selector: None,
+            callee: SelectedCallee::Function(callee),
+            surface_inputs: inputs[1..].to_vec(),
+            activation: Some(activation),
+            activation_inputs: Some(inputs),
+            extern_params: None,
+            return_ty: Some(return_ty),
+        }
+    }
+
+    fn named(world: &mut World, targets: Vec<CallTargetSummary>) -> CallSiteSummary {
+        let mut summary = CallSiteSummary {
+            last_resort: None,
+            targets,
+            return_ty: None,
+        };
+        summary.name_the_widest_activation_of_each_closure(world.types_mut());
+        summary
+    }
+
+    /// A reduce that starts from `[]` and carries `[int]` afterwards calls its
+    /// reducer at both types from one site. The `[int]` activation takes the
+    /// `[]` call as well, so the site names it alone and stays a direct call.
+    #[test]
+    fn the_wider_activation_of_one_closure_serves_the_narrower_call() {
+        let mut world = World::new();
+        let (int, empty) = (world.types_mut().int(), world.types_mut().empty_list());
+        let ints = world.types_mut().list(int);
+        let closure = world.types_mut().closure_lit(ClosureTarget(7), vec![], 2);
+        let narrow = target(&mut world, vec![closure, int, empty], empty);
+        let wide = target(&mut world, vec![closure, int, ints], ints);
+        let wide_activation = wide.activation.clone();
+
+        let summary = named(&mut world, vec![narrow, wide]);
+
+        assert_eq!(summary.targets.len(), 1, "one executable is named");
+        assert_eq!(
+            summary.targets[0].activation, wide_activation,
+            "and it is the wider one"
+        );
+        assert_eq!(
+            summary.targets[0].return_ty,
+            Some(ints),
+            "whose return takes in what the narrower call returned"
+        );
+    }
+
+    /// Two readings of one closure literal differ only in the arrow each was
+    /// read at; they hand over the same closure, so the wider activation still
+    /// serves both.
+    #[test]
+    fn one_closure_read_at_two_arrows_is_still_one_closure() {
+        let mut world = World::new();
+        let (int, empty) = (world.types_mut().int(), world.types_mut().empty_list());
+        let ints = world.types_mut().list(int);
+        let inner = world.types_mut().closure_lit(ClosureTarget(8), vec![], 2);
+        let inner_read_again = world.types_mut().closure_lit(ClosureTarget(8), vec![], 1);
+        let outer = world.types_mut().closure_lit(ClosureTarget(7), vec![inner], 2);
+        let outer_read_again = world
+            .types_mut()
+            .closure_lit(ClosureTarget(7), vec![inner_read_again], 2);
+        assert_ne!(outer, outer_read_again, "the two readings are two types");
+        let narrow = target(&mut world, vec![outer_read_again, int, empty], empty);
+        let wide = target(&mut world, vec![outer, int, ints], ints);
+
+        let summary = named(&mut world, vec![narrow, wide]);
+
+        assert_eq!(summary.targets.len(), 1);
+    }
+
+    /// Two closures of one function that captured different types have
+    /// different environments. Neither activation can stand in for the other,
+    /// however their other inputs compare.
+    #[test]
+    fn closures_that_captured_different_values_keep_their_own_activations() {
+        let mut world = World::new();
+        let (int, float, empty) = (
+            world.types_mut().int(),
+            world.types_mut().float(),
+            world.types_mut().empty_list(),
+        );
+        let ints = world.types_mut().list(int);
+        let captured_int = world.types_mut().closure_lit(ClosureTarget(7), vec![int], 2);
+        let number = world.types_mut().union(int, float);
+        let captured_number = world.types_mut().closure_lit(ClosureTarget(7), vec![number], 2);
+        let narrow = target(&mut world, vec![captured_int, int, empty], empty);
+        let wide = target(&mut world, vec![captured_number, int, ints], ints);
+
+        let summary = named(&mut world, vec![narrow, wide]);
+
+        assert_eq!(summary.targets.len(), 2);
+    }
+
+    /// Activations whose inputs do not take one another in are both needed.
+    #[test]
+    fn activations_that_do_not_take_one_another_in_are_both_named() {
+        let mut world = World::new();
+        let (int, float) = (world.types_mut().int(), world.types_mut().float());
+        let closure = world.types_mut().closure_lit(ClosureTarget(7), vec![], 2);
+        let on_int = target(&mut world, vec![closure, int, int], int);
+        let on_float = target(&mut world, vec![closure, int, float], float);
+
+        let summary = named(&mut world, vec![on_int, on_float]);
+
+        assert_eq!(summary.targets.len(), 2);
+    }
+}

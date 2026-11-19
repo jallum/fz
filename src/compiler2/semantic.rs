@@ -201,6 +201,51 @@ impl CallSiteSummary {
         }
         self.targets = coalesced;
     }
+
+    /// A call on a closure value names one executable. When the rows of the
+    /// calling activation reach several activations of one closure, the one
+    /// whose inputs take in another's serves both calls, and the call names
+    /// it alone.
+    pub(crate) fn name_the_widest_activation_of_each_closure(&mut self, types: &mut Types) {
+        let mut index = 0;
+        while index < self.targets.len() {
+            let cover = (0..self.targets.len())
+                .find(|&other| other != index && target_covers(types, &self.targets[other], &self.targets[index]));
+            let Some(cover) = cover else {
+                index += 1;
+                continue;
+            };
+            let covered = self.targets.remove(index);
+            let cover = if cover > index { cover - 1 } else { cover };
+            let wider = &mut self.targets[cover];
+            merge_callsite_input_vec(types, &mut wider.surface_inputs, &covered.surface_inputs);
+            wider.return_ty = join_optional_ty(types, wider.return_ty, covered.return_ty);
+        }
+    }
+}
+
+fn target_covers(types: &mut Types, wider: &CallTargetSummary, narrower: &CallTargetSummary) -> bool {
+    if wider.callee != narrower.callee
+        || wider.selector != narrower.selector
+        || wider.extern_params.is_some()
+        || narrower.extern_params.is_some()
+    {
+        return false;
+    }
+    let (Some(wide_key), Some(narrow_key)) = (&wider.activation, &narrower.activation) else {
+        return false;
+    };
+    if wide_key == narrow_key || wide_key.function != narrow_key.function || wide_key.root != narrow_key.root {
+        return false;
+    }
+    let (Some(wide), Some(narrow)) = (&wider.activation_inputs, &narrower.activation_inputs) else {
+        return false;
+    };
+    wide.len() == narrow.len()
+        && narrow
+            .iter()
+            .zip(wide)
+            .all(|(narrow, wide)| types.fits_with_the_same_closures(narrow, wide))
 }
 
 impl CallSiteTargets {
