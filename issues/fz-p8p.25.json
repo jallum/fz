@@ -11,9 +11,15 @@
   "id": "fz-p8p.25",
   "labels": [],
   "parent": "fz-p8p",
+  "comments": [
+    {
+      "text": "What a context atom denotes is decided by fz-mue.38 (atom-context hygiene, Macro.var/2, Macro.unique_var/2). This ticket builds var!/2 on that answer.",
+      "timestamp": "2026-11-19T03:52:41Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "var!/2: a macro names the hygiene context a variable binds in",
   "type": "feature",
-  "updated_at": "2026-11-19T03:52:40Z"
+  "updated_at": "2026-11-19T03:52:41Z"
 }
