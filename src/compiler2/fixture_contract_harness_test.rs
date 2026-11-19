@@ -54,7 +54,6 @@ impl EventCounter {
     }
 }
 
-const RETURN_WIDENED: &[&str] = &["fz", "compiler2", "return_type", "widened"];
 const CLASH_FOLDED: &[&str] = &["fz", "compiler2", "type", "clash_folded"];
 
 fn discover_contract_fixtures() -> Vec<ContractFixture> {
@@ -104,9 +103,7 @@ fn evaluate_fixture(fixture: &ContractFixture) -> EvaluatedFixture {
         .unwrap_or_else(|| panic!("fixture {} is missing `root:`", fixture.name));
 
     let tel = ConfiguredTelemetry::new();
-    let widened = EventCounter::new(RETURN_WIDENED);
     let clash_folded = EventCounter::new(CLASH_FOLDED);
-    tel.attach(widened.name, widened.handler());
     tel.attach(clash_folded.name, clash_folded.handler());
 
     let mut compiler = Compiler2::new(tel);
@@ -154,7 +151,6 @@ fn evaluate_fixture(fixture: &ContractFixture) -> EvaluatedFixture {
     metrics.insert("semantic.executables".to_string(), local_executables);
     metrics.insert("semantic.callsites".to_string(), facts.len() as u64);
     metrics.insert("call_edges.count".to_string(), facts.len() as u64);
-    metrics.insert("return_type.widened".to_string(), widened.get());
     metrics.insert("type.clash_folded".to_string(), clash_folded.get());
 
     EvaluatedFixture {

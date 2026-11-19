@@ -980,19 +980,29 @@ impl TrimmedPlans {
 pub struct ActivationSlot {
     return_ty: Option<Ty>,
     /// Strict ascents of the return evidence since the last rebase. Past
-    /// `RETURN_WIDENING_BUDGET` the join widens; past twice that it tops out.
+    /// `RETURN_ASCENT_BOUND` the compile stops.
     ascents: u32,
     analysis: Option<ActivationAnalysis>,
 }
 
-pub const RETURN_WIDENING_BUDGET: u32 = 8;
+/// How many strict ascents one return may take in an epoch. A return that
+/// repeats itself folds into a recursive type within a few rounds, so a climb
+/// this long is a ladder nothing folds: the compile stops and names it rather
+/// than writing a type the program never earned.
+pub const RETURN_ASCENT_BOUND: u32 = 16;
 
 /// The outcome of installing one round's return evidence.
 #[derive(Debug, Clone, Copy)]
 pub struct ReturnDefine {
     pub changed: bool,
     pub ascents: u32,
-    pub widened: bool,
+}
+
+/// A return that climbed past `RETURN_ASCENT_BOUND`, and the type it had
+/// reached.
+#[derive(Debug, Clone, Copy)]
+pub struct ReturnDiverged {
+    pub reached: Ty,
 }
 
 #[derive(Debug, Default)]
@@ -1122,8 +1132,8 @@ impl<K> Default for ContributionReplace<K> {
 pub type ActivationInputMap<P> = ContributionMap<ActivationKey, P, ActivationInputAlternatives>;
 
 /// Past this many alternatives the antichain widens to its single column-wise
-/// joined row. The mirror of `RETURN_WIDENING_BUDGET`: termination is a
-/// theorem for every program, not a property of lucky inputs.
+/// joined row, so termination is a theorem for every program, not a property
+/// of lucky inputs.
 pub const ACTIVATION_INPUT_ROW_BUDGET: usize = 8;
 
 /// One correlated publication of an activation's inputs: these columns arrived
@@ -1395,76 +1405,52 @@ impl ActivationMap {
     /// descent is unrepresentable. A `rebased` publisher REPLACES instead:
     /// the only narrowing path, taken when its ground shifted.
     ///
-    /// The ladder must end: past `RETURN_WIDENING_BUDGET` strict ascents the
-    /// join widens the growing spine (`convergence_class`); past twice the
-    /// budget it tops out at `any`. Termination is then a theorem for every
-    /// program, not a property of lucky inputs.
+    /// A ladder that repeats itself ends at its clash fold. One that climbs
+    /// past `RETURN_ASCENT_BOUND` without folding is `ReturnDiverged`, so the
+    /// climb always ends, and it never ends by writing a type nothing earned.
     pub fn define_return(
         &mut self,
         types: &mut Types,
         key: &ActivationKey,
         evidence: Option<Ty>,
         rebased: bool,
-    ) -> ReturnDefine {
+    ) -> Result<ReturnDefine, ReturnDiverged> {
         let slot = self.slots.entry(key.clone()).or_insert_with(ActivationSlot::new);
         if rebased {
             let changed = slot.return_ty != evidence;
             slot.return_ty = evidence;
             slot.ascents = 0;
-            return ReturnDefine {
-                changed,
-                ascents: 0,
-                widened: false,
-            };
+            return Ok(ReturnDefine { changed, ascents: 0 });
         }
+        let unchanged = ReturnDefine {
+            changed: false,
+            ascents: slot.ascents,
+        };
         let Some(next) = evidence else {
-            return ReturnDefine {
-                changed: false,
-                ascents: slot.ascents,
-                widened: false,
-            };
+            return Ok(unchanged);
         };
         let joined = match slot.return_ty {
             None => next,
-            Some(current) if current == next => {
-                return ReturnDefine {
-                    changed: false,
-                    ascents: slot.ascents,
-                    widened: false,
-                };
-            }
+            Some(current) if current == next => return Ok(unchanged),
             Some(current) => types.union(current, next),
         };
         if Some(joined) == slot.return_ty {
-            return ReturnDefine {
-                changed: false,
-                ascents: slot.ascents,
-                widened: false,
-            };
+            return Ok(unchanged);
         }
         slot.ascents += 1;
         let joined = match slot.return_ty {
             Some(previous) => types.clash_fold(previous, joined).unwrap_or(joined),
             None => joined,
         };
-        let stored = if slot.ascents > 2 * RETURN_WIDENING_BUDGET {
-            types.any()
-        } else if slot.ascents > RETURN_WIDENING_BUDGET {
-            types.convergence_class(&joined)
-        } else {
-            joined
-        };
-        // `widened` reports what actually happened to the stored value, not
-        // that the budget threshold was crossed: past the threshold the
-        // operator is often the identity (the spine already collapsed).
-        let widened = stored != joined;
-        let changed = Some(stored) != slot.return_ty;
-        slot.return_ty = Some(stored);
-        ReturnDefine {
+        if slot.ascents > RETURN_ASCENT_BOUND {
+            return Err(ReturnDiverged { reached: joined });
+        }
+        let changed = Some(joined) != slot.return_ty;
+        slot.return_ty = Some(joined);
+        Ok(ReturnDefine {
             changed,
             ascents: slot.ascents,
-            widened,
-        }
+        })
     }
 
     pub fn define_analysis(&mut self, key: &ActivationKey, analysis: ActivationAnalysis) -> bool {
@@ -1678,8 +1664,7 @@ impl ActivationSlot {
     }
 
     /// Strict ascents of the return evidence since the last rebase: which
-    /// round of the ladder the stored value came from. `RETURN_WIDENING_BUDGET`
-    /// is where the join starts widening, twice it is where it tops out.
+    /// round of the ladder the stored value came from.
     pub fn return_ascents(&self) -> u32 {
         self.ascents
     }

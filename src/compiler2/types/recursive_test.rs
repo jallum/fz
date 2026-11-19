@@ -1,7 +1,6 @@
 use super::*;
 use crate::compiler2::types::addressed::AddrStep;
 use crate::compiler2::types::{ClassReach, KeyCollapse, Sigma, Types};
-use crate::dispatch_matrix::demand::DispatchDemand;
 
 /// `T = nil | {int, T, T}`: a binary tree of ints.
 fn tree(t: &mut Types) -> Ty {
@@ -323,9 +322,6 @@ fn a_path_stops_at_a_recursive_type() {
         assert_eq!(class, held, "the recursive type stands whole where the path entered it");
     }
     assert_eq!(t.convergence_class(&held), held);
-    let demand = DispatchDemand::TupleFields([(1, DispatchDemand::Ignore)].into_iter().collect());
-    let keyed = t.convergence_collapse_evidence_inputs(&[held], &[demand]);
-    assert_eq!(keyed, vec![held]);
 }
 
 #[test]

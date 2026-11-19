@@ -48,8 +48,7 @@ Read the sections in order, each narrower than the last:
   woken by a changed fact; the count is the number of climbs the fixpoint took
   there.
 - **return-type revisions per activation**: how many rounds each activation's
-  return type took and whether the widening budget ended the climb; an
-  activation at the ceiling widened its answer instead of finding it.
+  return type took.
 - **cause of every wake**: every wake in the stream (not just the hottest
   subjects), grouped by (job kind, changed fact + use, completing job kind,
   admission) so the same shape of cause across many subjects is one row
@@ -95,8 +94,7 @@ numbers are the aggravating case that ticket wants.
 
 `fixtures/01521_json_roundtrip.fz` on `run`: 4527 jobs, 54% of them
 re-runs; three activations analyzed 32, 55 and 77 times, every re-run woken by
-`JSON.value/1`'s `ReturnType` changing, which it does 18 times and never
-converges: it tops out at `any` when the widening budget runs out. The sample
+`JSON.value/1`'s `ReturnType` changing, which it does 18 times. The sample
 of the plain binary puts about two thirds of the lane in the fixpoint drive and
 a third in Cranelift, with the program's own execution under a fifth of a
 percent; the stream's span times said 97% in one job kind, and that number was

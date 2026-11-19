@@ -408,11 +408,11 @@ Termination is a theorem, not a property of lucky inputs. Four facts carry it:
 numeric literal chains cannot exist (the lattice has no numeric singletons —
 see [`set-theoretic-types`](set-theoretic-types.md)); atom chains are bounded
 by the program's finite atom set; and structural deepening is cut where it
-repeats ([the clash rule](#the-clash-rule)), with the return join's widening
-operator (`ActivationMap::define_return`, `RETURN_WIDENING_BUDGET`) behind it
-for the ladders no ancestor can cover: past N strict ascents of one
-activation's return within an epoch the growing spine collapses via
-`convergence_class`, past 2N it tops out at `any`. The fourth fact covers the callable slot, which the others
+repeats ([the clash rule](#the-clash-rule)), with a bound behind it for the
+ladders no ancestor can cover: one activation's return that climbs past
+`RETURN_ASCENT_BOUND` strict ascents within an epoch stops the compile with
+`type/return-did-not-converge`, naming the function and the type it reached,
+rather than settling on a type nothing earned. The fourth fact covers the callable slot, which the others
 do not reach: no activation key holds a closure of a lambda inside the captures
 of a closure of the same lambda (`Types::fold_self_nested_closures`, applied
 first in `derive_activation_key_arrow` to every slot, `Whole` included). Where
@@ -427,41 +427,29 @@ stays there. The input evidence rows contributed under a key fold the same way
 `Types::fold_self_nested_closures_in_inputs` the key's fold calls), so the rows
 of one key never grow the tower the key has cut. Values keep their exact types;
 only keys and the evidence rows stored under them fold. The fact is about
-closures: a tuple names no builder, so a tuple ladder is not cut by it. Every
-widening that coarsens the stored value emits
-`fz.compiler2.return_type.widened`, so widening on a real program is a
-visible regression, never silent precision loss. The key ops
+closures: a tuple names no builder, so a tuple ladder is not cut by it. The key ops
 live in [`type-world`](type-world.md).
 
 What the ladder costs is measured rather than assumed, and **which driver does
 the measuring decides the answer**. `Compiler2::drive()` alone is a shorter
-calculation than any door takes: on `json_roundtrip.fz` it reaches 277
-activations that revise a return, 843 analyses, a deepest climb of nine, and no
-widening at all. Every door instead pulls the root's `BackendProgram` product —
-the stage `run_root_interp` and `run_root_jit` reach before executing anything —
-and that same file reaches 380 activations, 1,476 analyses, a deepest climb of
-seventeen, and five widenings.
-
-The extra climb is a population, not an edge. The pull does not add a demand
-that pushes `JSON.value/1` higher; it adds 103 activations, and their evidence
-flows into returns they share. Three keys carry it: `JSON.decode/1` goes from 9
-to 17, `JSON.val/1` from 8 to 17, and `JSON.value/1` from 8 to 17, all three on
-the same arrow. A recursive value type keys a new activation per level, each new
-activation publishes into the shared return, and the shared return climbs again.
-That is why a number taken from the standalone drive describes no door, and why
+calculation than any door takes, because every door pulls the root's
+`BackendProgram` product — the stage `run_root_interp` and `run_root_jit` reach
+before executing anything — and the pull reaches activations the standalone
+drive does not, whose evidence flows into returns they share. That is why a
+number taken from the standalone drive describes no door, and why
 `PublicTrace::compile` — which drives the standalone path — says so in its own
 documentation.
 
 `return_ladders_are_pinned_per_activation` in `drive_test.rs` is the pin. It
 pulls two fixtures through that product path and compares, per activation, every
 return revised more than five times against a table of (function label,
-revisions, widened). The table is empty for both fixtures: no activation of
-either climbs past the ceiling, and nothing in those compiles widens.
+revisions). The table is empty for both fixtures: no activation of either
+climbs past the ceiling.
 
 `return_tuple_ladder.fz` is the bare reproducer: `def build(n), do: {n,
 build(n - 1)}` has one activation, analyzed 6 times, with a return revised 3
 times; the third rung repeats the tuple the first holds, the clash rule folds it,
-and the ladder ends there rather than at the widening budget.
+and the ladder ends there.
 `compiler2_tuple_return_ladder_cost_does_not_depend_on_the_ladders_length`
 compiles the program recursing to 3 and to 9 and finds the same counts. Its
 caller does not climb: `main/0` is re-analyzed 5 times, once when `build/1`'s
@@ -570,7 +558,7 @@ contribution the joined column already covers grows nothing, and `clash_fold`
 returns at once. The RETURN site
 (`ActivationMap::define_return`) folds the joined return against the previous
 one. Each fold emits `fz.compiler2.type.clash_folded` (see
-[`telemetry`](telemetry.md)). The widening budget stays behind the rule for
+[`telemetry`](telemetry.md)). `RETURN_ASCENT_BOUND` stays behind the rule for
 leaf-only ladders (a ladder that grows atom by atom), which no ancestor can
 cover; `Types::convergence_class_at` carries no depth cap of its own.
 

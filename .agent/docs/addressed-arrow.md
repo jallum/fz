@@ -188,10 +188,11 @@ without erasing the discriminator that chose the clause.
 
 Key != evidence is intentional. The precise arrow stays in the
 `ActivationInputs` fact; the collapsed arrow is the `HashMap` dispatch key.
-Recursive activation-input evidence uses the same demand shape, but only widens
-variable-bearing ignored payloads so concrete caller evidence is not lowered by
-key convergence. This is a bounded-specialization control, and it is
-one whole-arrow operation on the interned arrow — not a per-input pre-pass.
+Evidence is never collapsed: what bounds an evidence row that repeats itself is
+the clash fold (`World::fold_clashes_against_standing_row`), which turns the
+repetition into a recursive type. The key collapse is a bounded-specialization
+control, and it is one whole-arrow operation on the interned arrow — not a
+per-input pre-pass.
 
 ## Matching is subsumption — the trichotomy calculator
 

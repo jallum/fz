@@ -1301,17 +1301,14 @@ fn is_public_compiler2_trace_event(ev: &Event<'_, '_, '_>) -> bool {
             | ["fz", "compiler2", "pull", "recursive_group", "searched"]
             | ["fz", "compiler2", "work", "started"]
             // The semantic fixpoint's own ascent. `return_type.defined` is the
-            // join point every recursive activation climbs through and
-            // `return_type.widened` is the budget's escape hatch firing, so
-            // together they say how many rounds a return took and whether the
-            // answer was widened rather than found. `activation_analysis.defined`
+            // join point every recursive activation climbs through, so it says
+            // how many rounds a return took. `activation_analysis.defined`
             // is the round itself -- the analysis that produced that evidence --
             // and `callsite.defined` is the edge that carries a callee's return
             // back to its caller, which is what wakes the next round. Each
             // already has a semantic projection below; without them the stream
             // shows the cost of the climb but not the claim that drove it.
             | ["fz", "compiler2", "return_type", "defined"]
-            | ["fz", "compiler2", "return_type", "widened"]
             | ["fz", "compiler2", "activation_analysis", "defined"]
             | ["fz", "compiler2", "callsite", "defined"]
             | ["fz", "compiler2", "drive", "stalled"]
@@ -1455,11 +1452,11 @@ fn write_compiler2_semantic(out: &mut String, ev: &Event<'_, '_, '_>) {
         return;
     };
     match ev.name {
-        ["fz", "compiler2", "return_type", "defined"] | ["fz", "compiler2", "return_type", "widened"] => {
+        ["fz", "compiler2", "return_type", "defined"] => {
             // `ascents` is the ladder's own round counter, not a fact
             // revision: it counts strict ascents of this activation's return
-            // evidence since its last rebase, so it says how far into the
-            // widening budget the climb has gone.
+            // evidence since its last rebase, so it says how close the climb
+            // has come to `RETURN_ASCENT_BOUND`.
             out.push_str(",\"semantic\":{\"return\":");
             write_optional_type(out, world, world.activation_return_evidence(activation));
             out.push_str(",\"ascents\":");

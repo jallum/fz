@@ -1369,7 +1369,7 @@ fn compiler2_pull_telemetry_is_bounded_and_keeps_public_trace_signals() {
     // settlement/cache/displacement events, the drain arbiter's `work_graph.quiesced` steps,
     // and one `fz.compiler2.canon.*` line per distinct raw id so the log is a self-contained
     // dictionary, so events and bytes scale with work done. The semantic fixpoint's own ascent
-    // is public too: `return_type.defined` and `.widened`, `activation_analysis.defined` and
+    // is public too: `return_type.defined`, `activation_analysis.defined` and
     // `callsite.defined`, one event per round that moves a return and per claim that drove it.
     // `==` carries a typed clause per numeric pair, and 00181 compares, so its stream carries
     // that family's completions. The bounds keep four percent of headroom while unrelated
