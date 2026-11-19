@@ -6,6 +6,7 @@
 //! semantic lowering code should ask this context for operations, while
 //! runtime helper calls remain an implementation detail behind those methods.
 
+use super::type_pred::ShareClass;
 use super::*;
 use crate::fast_hash::HashMap;
 use crate::fz_ir::Var;
@@ -192,6 +193,15 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
         }
     }
 
+    /// Share `value`, as its type's `class` says.
+    pub(crate) fn share_as(&mut self, value: CodegenValue, class: ShareClass) {
+        match (value, class) {
+            (_, ShareClass::Markless) => {}
+            (CodegenValue::AnyRef(reference), ShareClass::Kind(kind)) => self.share_kind(reference, kind),
+            _ => self.share(value),
+        }
+    }
+
     /// Share a reference whose kind is read from the reference itself.
     fn share_any(&mut self, reference: ir::Value) {
         let done = self.b.create_block();
@@ -346,18 +356,18 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
     /// the compiler can name is two stores in place: its raw word and its
     /// kind byte. Any other reference may be a list, which a struct shares,
     /// or a boxed scalar, so the runtime reads it and stores it.
-    /// `addressed_object` says the value's type makes it a tuple, a map or a
-    /// binary.
+    /// `addressed` says the value's type makes it a tuple, a map or a binary,
+    /// and how a holder shares it.
     pub(crate) fn store_field(
         &mut self,
         object: &NewStruct,
         index: usize,
         value: CodegenValue,
-        addressed_object: bool,
+        addressed: Option<ShareClass>,
     ) {
         let slot_offset = SlotLayout::slot_offset(index) as i32;
         let kind_offset = object.layout.kind_offset(index) as i32;
-        match self.stored_form(value, addressed_object) {
+        match self.stored_form(value, addressed) {
             Some((raw, kind)) => {
                 self.b
                     .ins()
@@ -381,7 +391,7 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
 
     /// The raw word and the kind byte `value` is stored as, when both follow
     /// from what the compiler holds without reading the value.
-    fn stored_form(&mut self, value: CodegenValue, addressed_object: bool) -> Option<(ir::Value, ir::Value)> {
+    fn stored_form(&mut self, value: CodegenValue, addressed: Option<ShareClass>) -> Option<(ir::Value, ir::Value)> {
         let (raw, kind) = match value {
             CodegenValue::RawInt(raw) => (raw, ValueKind::INT),
             CodegenValue::RawF64(raw) => (raw, ValueKind::FLOAT),
@@ -389,11 +399,11 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
             CodegenValue::Condition(flag) => (bool_to_fz(self.b, self.cache, flag), ValueKind::ATOM),
             CodegenValue::Known { payload, kind } if kind.is_scalar() => (payload, kind),
             CodegenValue::Known { kind, .. } => (self.b.ins().iconst(types::I64, 0), kind),
-            CodegenValue::AnyRef(reference) if addressed_object => {
-                self.share_any(reference);
+            CodegenValue::AnyRef(reference) => {
+                let share = addressed?;
+                self.share_as(value, share);
                 return Some(self.addressed_form(reference));
             }
-            CodegenValue::AnyRef(_) => return None,
         };
         Some((raw, self.b.ins().iconst(types::I8, kind.tag() as i64)))
     }

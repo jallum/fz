@@ -882,7 +882,9 @@ can gain a second holder:
 - a closure capture, including the mid-flight continuation a reduction yield
   builds (`store_closure_capture_ref_word`);
 - a store into a container: a struct or tuple field, a list head, a map key
-  or value (`publish_contained_parts`, and natively `CodegenFn::stored_form`);
+  or value (`publish_contained_parts`; natively `CodegenFn::stored_form`,
+  shaped by the stored value's type as a call argument's share is, and the
+  list cell a cons places);
 - a collection that keeps it (`cheney_trace_struct`), since a kept struct is
   old;
 - a gift copy (`deep_copy_strict_struct`).
