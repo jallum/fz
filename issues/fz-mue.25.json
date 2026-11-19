@@ -7,9 +7,15 @@
   "id": "fz-mue.25",
   "labels": [],
   "parent": "fz-mue",
+  "comments": [
+    {
+      "text": "Owner: JSON (taken 2026-11-19, agreed with Elixir Parity), in parallel with Elixir Parity's walk.",
+      "timestamp": "2026-11-19T04:55:48Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "A program that reaches OtpJSON.decode_continue/2 compiles within the request budget",
   "type": "bug",
-  "updated_at": "2026-11-19T03:09:40Z"
+  "updated_at": "2026-11-19T04:55:48Z"
 }
