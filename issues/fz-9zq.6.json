@@ -1,6 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [
+    "fz-9zq.15",
     "fz-9zq.5"
   ],
   "blocks": [
@@ -22,5 +23,5 @@
   "status": "open",
   "title": "A recursive @type resolves, admits and lays out",
   "type": "task",
-  "updated_at": "2026-11-18T20:44:10Z"
+  "updated_at": "2026-11-19T01:29:32Z"
 }
