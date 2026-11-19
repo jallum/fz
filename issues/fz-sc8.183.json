@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-19T01:31:55Z",
   "created": "2026-11-14T04:03:29Z",
   "description": "Measured on develop e515ae314 (AOT) with Process.heap_alloc_stats(): walking a 10,000-byte binary with \u003c\u003c_c, r :: binary\u003e\u003e costs 12 allocations and 544 heap bytes per step (10 structs, 2 views); a 5-clause walk shaped like JSON.string/2 costs 21 allocations and 864 bytes. JSON.decode! of one 172-byte log line makes 4,558 allocations and 177,376 heap bytes (2,831 structs); the decoded map is 1,344 bytes. By hand a step needs at most one 32-byte view of the rest.\n\nCauses: (1) the reader is a heap struct and every fz_bs_read_field allocates a new reader and a result struct (runtime/src/ir_runtime.rs); (2) each pattern is read twice, once by clause dispatch (jobs/native.rs bitstring dispatch node) and again by the body's BackendStep::BitstringInit/BitstringRead; (3) a clause that fails still builds its rest binary.\n\nEffect: the built distiller spends 87% of its time collecting this garbage: 16,000 lines of a compile log take 13 s.\n\nProposal page: /Users/j5n/Workspace/fz-sc8.183.html (steps, predictions, removal ledger). Probes: /private/tmp/claude-501/-Users-j5n-Workspace-fz-xxd13-build/d6960461-b7a2-4585-a9e7-9f2477e57ee2/scratchpad/slow (s1-s4.fz, w1-w4.fz, dec.fz, m.py).",
   "id": "fz-sc8.183",
   "labels": [],
   "parent": "fz-sc8",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "A binary pattern match allocates nothing per field read",
   "type": "bug",
-  "updated_at": "2026-11-14T04:08:21Z"
+  "updated_at": "2026-11-19T01:31:55Z"
 }
