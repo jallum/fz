@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-g03"
+  ],
   "blocks": [
     "fz-9e2.10",
     "fz-9e2.5"
@@ -20,5 +22,5 @@
   "status": "open",
   "title": "A constructor field of the wrong type raises ArgumentError on all three paths, and so does \u003c\u003e",
   "type": "task",
-  "updated_at": "2026-11-18T21:41:31Z"
+  "updated_at": "2026-11-19T02:04:55Z"
 }

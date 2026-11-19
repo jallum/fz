@@ -1,7 +1,9 @@
 {
   "assignee": "Jason Allum",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-9e2.3"
+  ],
   "created": "2026-11-15T15:57:36Z",
   "description": "Found 2026-11-15 (bitstring split experiments, /Users/j5n/Workspace/fz-bitstring-split.html section 8a). On fz-nml.11 31823421d: 'defmodule Main do def build(n), do: \u003c\u003c1::size(n)\u003e\u003e end' and 'fn n -\u003e \u003c\u003c1::size(n)\u003e\u003e end' both emit warning[lower/unused-variable] for n, though n is read as the segment size; '{n, \u003c\u003c1::size(n)\u003e\u003e}' does not warn. Warnings are errors under our rules, so a correct Elixir program fails to compile cleanly. Elixir does not warn. Introduced with fz-rik (unused-variable warning): the use collector does not visit a bitstring segment's size expression in construction. Acceptance: fixture with size(n) in a def body, a fn body and a match pattern (size(n) after n is bound) produces no warning on interp/run/build; an actually unused variable beside it still warns.",
   "id": "fz-g03",
@@ -21,5 +23,5 @@
   "status": "in_progress",
   "title": "A variable used only as a segment size is not reported unused",
   "type": "bug",
-  "updated_at": "2026-11-19T02:04:54Z"
+  "updated_at": "2026-11-19T02:04:55Z"
 }
