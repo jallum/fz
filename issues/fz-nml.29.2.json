@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-nml.29.1"
+  ],
   "blocks": [],
   "created": "2026-11-19T01:33:54Z",
   "description": "User approved version 3 of /Users/j5n/Workspace/fz-nml-29-private-append.html, verbatim \"agreed. this is a good place to start.\" (in JSON's session, relayed by JSON and Optimize, 2026-11-19). Step 2b; lands with step 2, ahead of fz-nml.28's measurement. Builder: Optimize. Agreed with Binary Handling: this is the share step; fz-9e2.6 keeps only the self-tail-call back edge.\nPrim::Share and the container store (stored_form / share_if_struct -\u003e share_if_published_kind) lower to an inline store of the mark: a store for a value typed as a mark-holding kind, nothing for one that holds no mark (integer, float, atom), a kind branch for any. Generated code no longer calls fz_mark_published_ref_aliased; the function stays for the interpreter.\nAcceptance: a native-dump test that a share of a binary-typed, an integer-typed and an any-typed value emits a store, nothing, and a kind branch; the two probe loops from the page at or under 30 and 40 instructions per iteration (112 and 301 today), judged on bench; every ownership fixture unchanged on all three paths. Also removes most of the 252 instructions per iteration (mark_published_ref_aliased 150 + share 102) measured in the map case probe.",
