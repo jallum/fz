@@ -7,7 +7,7 @@
     "fz-9e2.5"
   ],
   "created": "2026-11-18T23:49:20Z",
-  "description": "User agreed all four decisions on the fz-9e2 page (\"1-4 agreed\", in Binary Handling's session, 2026-11-18). Page: https://claude.ai/artifact/Wb77AvyLphyW8L6XmsMLL7 (decision 1).\n\nA view becomes [bit_len \u003c\u003c 4][first byte][BinRef], so a binary's length sits at one place for both forms. A match reads its subject's length once and makes no kind test for a cursor. GC agreed the layout: its fz-9x7.11 steps C1-C6 never assume view word 0 is a pointer, and the forwarding.rs doc is to be updated. Census: /Users/j5n/Workspace/fz-binaries/view-layout.md (all view word access is in bits.rs; two compiler loads in prim.rs; the collector's marker rule already holds). Spike: the whole suite passes; the match loop goes from 33.6 to 19.4 instructions per iteration (BEAM 33.4). Builder: Binary Handling.",
+  "description": "User agreed all four decisions on the fz-9e2 page (\"1-4 agreed\", in Binary Handling's session, 2026-11-18). Page: https://claude.ai/artifact/Wb77AvyLphyW8L6XmsMLL7 (decision 1).\n\nA view becomes [bit_len \u003c\u003c 4][first byte][BinRef], so a binary's length sits at one place for both forms. A match reads its subject's length once and makes no kind test for a cursor. GC agreed the layout: its fz-9x7.11 steps C1-C6 never assume view word 0 is a pointer, and the forwarding.rs doc is to be updated. Census: /Users/j5n/Workspace/fz-binaries/view-layout.md (all view word access is in bits.rs; two compiler loads in prim.rs; the collector's marker rule already holds). Spike: the whole suite passes; the match loop goes from 33.6 to 19.4 instructions per iteration (BEAM 33.4). Builder: Binary Handling.\n\nAgreed by Optimize and Binary Handling (2026-11-19): fz-nml.29.1 marks a view through one accessor and masks the mark in a view's word 0. Whoever builds this ticket replaces that accessor's body and deletes the view-word masking fz-nml.29.1 adds.",
   "id": "fz-9e2.12",
   "labels": [],
   "parent": "fz-9e2",
@@ -15,5 +15,5 @@
   "status": "open",
   "title": "A binary view holds its length first",
   "type": "task",
-  "updated_at": "2026-11-18T23:49:21Z"
+  "updated_at": "2026-11-19T01:34:05Z"
 }
