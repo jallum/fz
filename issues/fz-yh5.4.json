@@ -23,11 +23,15 @@
     {
       "text": "User approved route A, no size bound (relayed by Callables, 2026-11-19), and the one pin rise on the page: fixture 01254 frame copies 2 -\u003e 3. Page: https://claude.ai/artifact/5YqHmZ6yLrqG6FCP8dF4D2. Builder: Callables, branch fz-yh5.4/calls-that-cannot-suspend in ../fz-176. Overlap: jobs/native.rs entry mapping (EntryFns, NativeFnCtx) vs Optimize's fz-sc8.192.8 marshal sites.",
       "timestamp": "2026-11-19T01:15:26Z"
+    },
+    {
+      "text": "Draft PR #782 'A call to a function that cannot suspend is lowered in its caller'. Local gate green; CI gate. Rise (user-authorized): 01254 frame copies 2→3. Falls: 01256 48,528→48,512; returned-list run 10,288→8,224; 00911 child park collection gone (A/B vs branch root). Fixture 01880 (block 01880-01899 claimed for fz-yh5).",
+      "timestamp": "2026-11-19T02:06:31Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "A non-tail call to a callee that cannot suspend builds no continuation",
   "type": "task",
-  "updated_at": "2026-11-19T01:15:26Z"
+  "updated_at": "2026-11-19T02:06:31Z"
 }
