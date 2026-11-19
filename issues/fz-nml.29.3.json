@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-19T04:14:28Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-nml.29",
   "priority": 0,
-  "status": "open",
+  "status": "in_progress",
   "title": "A list cell and a tuple store share through the one inline share",
   "type": "bug",
-  "updated_at": "2026-11-19T04:14:28Z"
+  "updated_at": "2026-11-19T04:14:29Z"
 }
