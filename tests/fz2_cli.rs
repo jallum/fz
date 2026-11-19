@@ -2507,7 +2507,7 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
         // Every settled product here is a fresh, changed generation. The
         // generic result/status boundary and each node's reach (one product per
         // function or executable a reach question touches) are among them.
-        (1119, 1119, 1119, 0, 5, 0),
+        (1102, 1102, 1102, 0, 5, 0),
         "{fixture}: reactive product settlement work includes ordinary helper products"
     );
     assert!(

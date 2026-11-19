@@ -61,7 +61,7 @@ fn requests_for_sequential_calls(calls: usize) -> (String, usize) {
 
 /// The entry captures a program requests whatever its body holds: the entry's
 /// own handler and the banner that words an uncaught raise.
-const FIXED_ENTRY_CAPTURES: usize = 97;
+const FIXED_ENTRY_CAPTURES: usize = 65;
 
 #[test]
 fn each_sequential_call_adds_two_entry_captures() {

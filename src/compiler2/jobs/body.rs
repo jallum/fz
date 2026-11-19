@@ -74,6 +74,7 @@ impl ExprBlock {
             span: self.span,
             steps: self.steps.into_iter(),
             result: self.result,
+            unplaced: Unplaced::default(),
         }
     }
 }
@@ -84,6 +85,66 @@ struct PendingBlock {
     span: Span,
     steps: std::vec::IntoIter<ExprStep>,
     result: ValueId,
+    /// Ground constants an earlier block met and left for the first step
+    /// here that reads one.
+    unplaced: Unplaced,
+}
+
+impl PendingBlock {
+    /// Whether nothing remains but the value of the step that was just taken.
+    fn resumes_nothing_after(&self, value: ValueId) -> bool {
+        self.steps.len() == 0 && value == self.result
+    }
+}
+
+/// Ground constants whose definition waits for the step that reads them. A
+/// constant has no effect, so it is computed where it is used: ahead of its
+/// first reader in the block, or in the block that resumes after a call when
+/// the call does not read it, instead of in a frame carried across the call.
+#[derive(Default)]
+struct Unplaced(Vec<(ValueId, LiteralTerm)>);
+
+impl Unplaced {
+    fn hold(&mut self, value: ValueId, literal: LiteralTerm) {
+        self.0.push((value, literal));
+    }
+
+    /// Places the constants among `operands` ahead of the step that reads them.
+    fn place_read_by(&mut self, operands: &[ValueId], lowered: &mut Vec<LoweredStep>) {
+        let (read, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut self.0)
+            .into_iter()
+            .partition(|(value, _)| operands.contains(value));
+        self.0 = rest;
+        lowered.extend(
+            read.into_iter()
+                .map(|(value, literal)| LoweredStep::Const { value, literal }),
+        );
+    }
+
+    /// Places the constants a call reads ahead of it, and, when no block
+    /// resumes after the call, the rest as well.
+    fn place_before_call(
+        &mut self,
+        operands: &[ValueId],
+        rest: &PendingBlock,
+        call: ValueId,
+        lowered: &mut Vec<LoweredStep>,
+    ) {
+        if rest.resumes_nothing_after(call) {
+            self.place_all(lowered);
+        } else {
+            self.place_read_by(operands, lowered);
+        }
+    }
+
+    /// Places every constant, for a step whose nested blocks may read any.
+    fn place_all(&mut self, lowered: &mut Vec<LoweredStep>) {
+        lowered.extend(
+            std::mem::take(&mut self.0)
+                .into_iter()
+                .map(|(value, literal)| LoweredStep::Const { value, literal }),
+        );
+    }
 }
 
 #[derive(Debug)]
@@ -3359,16 +3420,25 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
     /// Where the value of a control step goes: out of the block when the step
     /// is the block's last and its result, otherwise into an entry that plans
     /// the rest of the block.
+    ///
+    /// `unplaced` are the constants the step does not read; the rest of the
+    /// block places them.
     fn plan_continuation(
         &mut self,
-        rest: PendingBlock,
+        mut rest: PendingBlock,
         value: ValueId,
         dest: ControlDestination,
+        unplaced: Unplaced,
         entries: &mut Vec<LoweredEntry>,
     ) -> ControlDestination {
-        if rest.steps.len() == 0 && value == rest.result {
+        if rest.resumes_nothing_after(value) {
+            debug_assert!(
+                unplaced.0.is_empty(),
+                "a call that resumes nothing has placed its constants"
+            );
             return dest;
         }
+        rest.unplaced = unplaced;
         let resume = self.plan_block(
             rest,
             ControlEntryOrigin::DeliveredResume { value },
@@ -3387,6 +3457,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         entries: &mut Vec<LoweredEntry>,
     ) -> (Vec<LoweredStep>, LoweredTail) {
         let mut lowered = Vec::new();
+        let mut unplaced = std::mem::take(&mut block.unplaced);
         while let Some(step) = block.steps.next() {
             match step {
                 ExprStep::DirectCall {
@@ -3395,7 +3466,12 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                     callee,
                     args,
                 } => {
-                    let dest = self.plan_continuation(block, value, dest, entries);
+                    let operands = callee
+                        .module_value()
+                        .into_iter()
+                        .chain(args.iter().map(|arg| arg.value));
+                    unplaced.place_before_call(&operands.collect::<Vec<_>>(), &block, value, &mut lowered);
+                    let dest = self.plan_continuation(block, value, dest, unplaced, entries);
                     return (
                         lowered,
                         LoweredTail::DirectCall {
@@ -3413,7 +3489,9 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                     callee,
                     args,
                 } => {
-                    let dest = self.plan_continuation(block, value, dest, entries);
+                    let operands = std::iter::once(callee).chain(args.iter().map(|arg| arg.value));
+                    unplaced.place_before_call(&operands.collect::<Vec<_>>(), &block, value, &mut lowered);
+                    let dest = self.plan_continuation(block, value, dest, unplaced, entries);
                     return (
                         lowered,
                         LoweredTail::ClosureCall {
@@ -3431,7 +3509,8 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                     then_block,
                     else_block,
                 } => {
-                    let branch_dest = self.plan_continuation(block, value, dest, entries);
+                    unplaced.place_all(&mut lowered);
+                    let branch_dest = self.plan_continuation(block, value, dest, Unplaced::default(), entries);
                     let then_entry = self.plan_block(
                         then_block.into_pending(),
                         ControlEntryOrigin::Branch,
@@ -3468,7 +3547,8 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                         arm_blocks,
                         miss_block,
                     } = *dispatch;
-                    let branch_dest = self.plan_continuation(block, value, dest, entries);
+                    unplaced.place_all(&mut lowered);
+                    let branch_dest = self.plan_continuation(block, value, dest, Unplaced::default(), entries);
                     let outcomes = arm_blocks
                         .into_iter()
                         .map(|arm| {
@@ -3515,7 +3595,8 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                         after,
                         captures,
                     } = *receive;
-                    let branch_dest = self.plan_continuation(block, value, dest, entries);
+                    unplaced.place_all(&mut lowered);
+                    let branch_dest = self.plan_continuation(block, value, dest, Unplaced::default(), entries);
                     let receive_dest = branch_dest.clone();
                     let outcomes = outcomes
                         .into_iter()
@@ -3568,7 +3649,8 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                         params,
                         captures,
                     } = *try_step;
-                    let branch_dest = self.plan_continuation(block, value, dest, entries);
+                    unplaced.place_all(&mut lowered);
+                    let branch_dest = self.plan_continuation(block, value, dest, Unplaced::default(), entries);
                     let body = self.plan_block(
                         body.into_pending(),
                         ControlEntryOrigin::Branch,
@@ -3587,9 +3669,20 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                     );
                     return (lowered, LoweredTail::Try { body, handler });
                 }
-                step => lowered.push(lower_straight_step(step)),
+                ExprStep::Const {
+                    value,
+                    literal: literal @ LiteralTerm::Ground(_),
+                } => unplaced.hold(value, literal),
+                step => {
+                    let step = lower_straight_step(step);
+                    let mut operands = Vec::new();
+                    step_used_values(&step, &mut operands);
+                    unplaced.place_read_by(&operands, &mut lowered);
+                    lowered.push(step);
+                }
             }
         }
+        unplaced.place_all(&mut lowered);
         (
             lowered,
             LoweredTail::Value {
