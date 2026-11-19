@@ -4,6 +4,7 @@
   "blocks": [
     "fz-nml.29.2"
   ],
+  "closed_at": "2026-11-19T03:51:19Z",
   "created": "2026-11-19T01:32:59Z",
   "description": "User approved version 3 of /Users/j5n/Workspace/fz-nml-29-private-append.html, verbatim \"agreed. this is a good place to start.\" (in JSON's session, relayed by JSON and Optimize, 2026-11-19). Rulings: steps 2 and 2b land first, ahead of fz-nml.28's measurement; step 3 waits for fz-nml.28; Optimize builds fz-nml.29; Binary Handling's fz-9e2.6 and fz-9e2.10 build on 2 and 2b. Step 2. Builder: Optimize.\nThe list link's alias bit (LIST_LINK_ALIAS_MASK, bit 60 on arm64 / 61 on x86-64) in word 0 of a small bitstring and of a BinView, behind one accessor. The length readers (bitstring_bit_len, emit_binary_bit_len) and the three readers of a view's BinRef word (BinView::binref, the collector's rewrite in gc/trace.rs, deep copy) mask it. Views are born clear or set by the birth table on the page (FilledBuffer, GrownBuffer, AppendedInPlace clear; WindowOfBuffer set and marks its source; StaticLiteral, MessageCopy set); a function that returns its argument marks it. Heap::share and publish_contained_parts handle BITSTRING and BINVIEW. Nothing reads the mark yet.\nStep zero: a dump-based test that Share precedes the \u003c\u003e call when the left operand is retained, on the native tail, native delivered and interpreter paths.\nAcceptance: a fixture per publish point (tuple field, struct field, list head, map key, map value, closure capture, call Share, self-send, reduction yield) asserting the published binary reads back unchanged and its mark is set, through the runtime accessor step 3 will read (no test-only hook); a copy into another process is set; a slice and its source are both set; the mark survives minor and major collection, including the collector's rewrite of a view's first word; every bitstring test, fixture and bit-match path unchanged; no heap statistic changes.",
   "id": "fz-nml.29.1",
@@ -20,8 +21,8 @@
     }
   ],
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "A binary has a shared mark that every publish point sets",
   "type": "task",
-  "updated_at": "2026-11-19T02:48:05Z"
+  "updated_at": "2026-11-19T03:51:19Z"
 }
