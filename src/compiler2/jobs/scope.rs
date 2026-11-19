@@ -268,7 +268,15 @@ impl ScopeWalk {
             Expr::Var(var) => self.reference(var),
             Expr::List(items, tail) => self.exprs(items.iter().chain(tail.as_deref())),
             Expr::Tuple(items) => self.exprs(items),
-            Expr::Bitstring(fields) => self.exprs(fields.iter().map(|field| &field.value)),
+            Expr::Bitstring(fields) => {
+                for field in fields {
+                    self.expr(&field.value.node);
+                    match &field.spec.size {
+                        Some(BitSize::Var(var) | BitSize::ByteSizeOf(var)) => self.reference(var),
+                        Some(BitSize::Literal(_)) | None => {}
+                    }
+                }
+            }
             Expr::Map(entries) => self.exprs(entries.iter().flat_map(|(key, value)| [key, value])),
             Expr::MapUpdate(base, entries) => {
                 self.expr(&base.node);

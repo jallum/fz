@@ -638,7 +638,9 @@ its siblings), which is what each captures. `lower_function` asks it for the
 unused bindings of each clause, judged on its own, and emits them through
 `emit_warning_once`. Only a lowered function warns: a function the program
 never reaches is never lowered, where Elixir warns for every function it
-compiles. Fixtures `01304` through `01308` are the cases.
+compiles. Fixtures `01304` through `01308` are the cases. A variable named
+as a segment's size, in a construction or a pattern, is read there; `01821`
+is the case.
 
 ## A rest that is only matched is a cursor
 

@@ -1,0 +1,7 @@
+warning[lower/unused-variable]: variable "unread" is unused (if the variable is not meant to be used, prefix it with an underscore)
+  --> fixtures/01821_a_variable_read_only_as_a_segment_size_is_used.fz:6:5
+   |
+6 |     unread = 5
+   |     ^^^^^^
+   |
+
