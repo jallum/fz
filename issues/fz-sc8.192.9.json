@@ -12,9 +12,15 @@
   "id": "fz-sc8.192.9",
   "labels": [],
   "parent": "fz-sc8.192",
+  "comments": [
+    {
+      "text": "From fz-sc8.192.8 (Optimize): the heap's map put still works in AnyValue. If it took the stored (word, kind) pair directly, the decode_parts step would disappear.",
+      "timestamp": "2026-11-19T04:54:01Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "A map built by puts with literal keys is constructed once, and a put with a known key kind is emitted inline",
   "type": "task",
-  "updated_at": "2026-11-19T00:10:27Z"
+  "updated_at": "2026-11-19T04:54:01Z"
 }
