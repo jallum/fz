@@ -17,11 +17,15 @@
     {
       "text": "fz-sc8.233 (Callables, 2026-11-17) adds fixture 01374 written with a `name :: type` pattern (def one(_ :: ((any) -\u003e any))) plus an .oracle.exs twin using is_function guards, as 00632 does. When :: becomes an error, 01374 is rewritten or dropped with the rest; its runtime arity test stays reachable only if fz-ep5.4 recognises is_function(f, n) as the callable type test.",
       "timestamp": "2026-11-18T03:14:05Z"
+    },
+    {
+      "text": "Folded in fz-6ny (2026-11-19). Acceptance: def f(xs :: [integer]) is the spanned error. Until then that form still parses and is unsound: interp reports 'internal error: an integer extern parameter received a non-integer', and run exits with SIGSEGV (139). clause.param_annotations (compiler2/dispatch.rs:103) is the only route from a list annotation into a run-time test, and this ticket deletes it. The @spec form already behaves as Elixir does.",
+      "timestamp": "2026-11-19T04:38:33Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "'::' in a pattern is a spanned error; the parameter-annotation machinery is deleted",
   "type": "task",
-  "updated_at": "2026-11-18T03:14:05Z"
+  "updated_at": "2026-11-19T04:38:33Z"
 }
