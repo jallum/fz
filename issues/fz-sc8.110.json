@@ -7,9 +7,15 @@
   "id": "fz-sc8.110",
   "labels": [],
   "parent": "fz-mue",
+  "comments": [
+    {
+      "text": "Moved under fz-mue (Elixir Parity) on 2026-11-19. fz-engine's fz-9zq.6 R6 probes need it: max(1, 2) fails with 'lower/unbound ... max/2' on develop 1d2b4f6fa.",
+      "timestamp": "2026-11-19T04:33:38Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Kernel.max/2 and Kernel.min/2 compare any two terms, as in Elixir",
   "type": "feature",
-  "updated_at": "2026-11-19T04:33:37Z"
+  "updated_at": "2026-11-19T04:33:38Z"
 }
