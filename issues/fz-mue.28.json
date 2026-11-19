@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-19T03:09:42Z",
+  "description": "User directed 2026-11-19: \"add the elixir parity issues as tickets to the epic we gave to Elixir Parity\". Owner: Elixir Parity. Found by JSON walking the json.erl port (/Users/j5n/Workspace/fz-752-walk/walk.md, fz2 from #786 head). After a FunctionClauseError, catch kind, reason binds %FunctionClauseError{} in fz; Elixir's catch normalisation binds the raw :function_clause. Done: catch sees what Elixir's sees, on three paths.",
+  "id": "fz-mue.28",
+  "labels": [],
+  "parent": "fz-mue",
+  "priority": 3,
+  "status": "open",
+  "title": "catch kind, reason normalises a FunctionClauseError as Elixir does",
+  "type": "bug",
+  "updated_at": "2026-11-19T03:09:42Z"
+}
