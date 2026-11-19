@@ -20,11 +20,15 @@
     {
       "text": "User approved 14 pin rises (relayed by Binary Handling 2026-11-19): all the one-time price of the raise path's two Kernel bodies plus \u003c\u003e's miss clause; many pins fell (the \u003c\u003e miss no longer reaches FunctionClauseError's wording). Next: docs, rebase, PR.",
       "timestamp": "2026-11-19T03:36:34Z"
+    },
+    {
+      "text": "#806 rebased onto 1ca80111e (25d2ae3d6). The entry-capture red was this PR's own: the raise banner no longer reaches FunctionClauseError/Exception helpers, the same fall the user approved for the lexer pins. FIXED_ENTRY_CAPTURES lowered 65→7; per-call slope still 2. Distiller re-measured: (35_243,35_518,25), 16_321, 120_874. HELD: bench A/B shows proven constructions +~9 instr/iter (04b, 05a, 06a, 06b), cause confirmed; the fix is a design question for the user.",
+      "timestamp": "2026-11-19T04:51:40Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "A constructor field of the wrong type raises ArgumentError on all three paths, and so does \u003c\u003e",
   "type": "task",
-  "updated_at": "2026-11-19T03:36:34Z"
+  "updated_at": "2026-11-19T04:51:40Z"
 }
