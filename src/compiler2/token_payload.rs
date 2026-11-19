@@ -5,9 +5,12 @@ use crate::source::SourceMap;
 
 use super::source::{QuotedSourceBuilder, QuotedSourceCursor, QuotedSourceError};
 
-pub(crate) fn encode_tokens(builder: &QuotedSourceBuilder, tokens: &[Token]) -> Result<AnyValueRef, QuotedSourceError> {
+pub(crate) fn encode_tokens<'a>(
+    builder: &QuotedSourceBuilder,
+    tokens: impl IntoIterator<Item = &'a Token>,
+) -> Result<AnyValueRef, QuotedSourceError> {
     let encoded = tokens
-        .iter()
+        .into_iter()
         .map(|token| encode_token(builder, token))
         .collect::<Result<Vec<_>, _>>()?;
     builder.list(&encoded)

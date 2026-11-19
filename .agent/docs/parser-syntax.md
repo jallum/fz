@@ -127,7 +127,10 @@ newline to guess intent.
   and modulo — so a `-` or `%` leading a fresh physical line always starts a
   *new* statement (mirrors Elixir's tokenizer, where a prefix-capable
   operator never swallows a preceding eol; `%` has no modulo in Elixir, so
-  that dual role is fz-specific). `Tok::Plus` stays infix-only at a line start
+  that dual role is fz-specific). `|`, `=>` and `<-` are infix-only, as they
+  are in Elixir. `->` is not: a line that begins with `->` starts a zero-head
+  clause, as `catch` clauses do, where Elixir's tokenizer would continue the line
+  before. `Tok::Plus` stays infix-only at a line start
   (a leading `+` continues the previous expression), yet the front door's
   prefix parser accepts a `+` inside an expression as unary plus, the call
   `+(n)`, as it does `-`.
@@ -145,6 +148,14 @@ newline to guess intent.
   ownership: it consumes newlines only when the next non-newline token is its
   comma or closing delimiter. A newline after a no-parens keyword call is left
   for the enclosing block, so the next call remains a separate statement.
+
+- **Type attributes**: `@spec`, `@type`, `@typep` and `@opaque` carry their
+  type expression as a token payload, not a parsed expression, so the front
+  door finds its end itself (`FrontDoorParser::type_expression_token_range`).
+  A newline ends the payload only outside every bracket and only when the token
+  before it can end an expression; after an infix-only operator, a comma or a
+  `-`, the expression continues. The enclosing block's `end` always ends it.
+  The payload leaves the newlines out, since a type expression never needs one.
 
 There is no `starts_expr_continuation` / `peek_after_newlines`-style
 lookahead in the parser. Continuation vs. new-statement is a static,
