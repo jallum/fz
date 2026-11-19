@@ -19,11 +19,15 @@
     {
       "text": "Findings (Binary Handling, develop 10f9a175d). (1) The problem is general: an if whose else raises gives a loop body 6 Shares against 1 with no join. raise expands to panic/1 :: never, so this ticket covers raise arms. (2) fz-bpd's diverges note does not reach it: ownership (construct_call_ownership, values_overlap → origin_source_path) is decided in the untyped body job, where a Join with differing alternatives has no source path and so overlaps everything. That job sees only DirectCallee::Function(FunctionId). Reading the callee's declared contract there is the open design question, and the page measures its cost.",
       "timestamp": "2026-11-19T04:54:36Z"
+    },
+    {
+      "text": "Hypothesis for the page (Binary Handling): overlap with a Join is the overlap of any one of its alternatives, each judged by its own source path. A fresh construction overlaps only its children. __construction_failed__'s return is a CallsiteReturn, already its own root in origin_source_path, so no callee spec read is needed. If the probes (06b, raise arm, value arm) confirm it, this is one data-model change covering the fresh-arm proposal too.",
+      "timestamp": "2026-11-19T04:54:49Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "A value delivered by a call whose spec is never is not a join source",
   "type": "feature",
-  "updated_at": "2026-11-19T04:54:36Z"
+  "updated_at": "2026-11-19T04:54:49Z"
 }
