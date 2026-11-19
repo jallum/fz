@@ -12,9 +12,15 @@
   "id": "fz-9x7.37.3",
   "labels": [],
   "parent": "fz-9x7.37",
+  "comments": [
+    {
+      "text": "Found by Binary Handling while building fz-9x7.37.1 (#776); added to this step's deletion and review list:\n1. Heap::record_external_alloc (runtime/src/heap/imp.rs) has no caller; delete it here.\n2. The site counts include the two entry closures the scheduler builds before a process resets its own stats. So 'heap_alloc_stats is a sum over sites' shifts the closure figures by that scaffolding. This moves pins: it goes on the per-fixture list for the user before fz-9x7.37.4.",
+      "timestamp": "2026-11-19T00:29:39Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "heap_alloc_stats is a sum over sites",
   "type": "task",
-  "updated_at": "2026-11-19T00:00:28Z"
+  "updated_at": "2026-11-19T00:29:39Z"
 }
