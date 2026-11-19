@@ -22,6 +22,8 @@ import Kernel, only: [
   ||: 2,
   !: 1,
   abs: 1,
+  max: 2,
+  min: 2,
   apply: 3,
   dbg: 1,
   defexception: 1,

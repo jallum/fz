@@ -230,10 +230,10 @@ fn read_compile_spend(trace: &Path) -> CompileSpend {
 }
 
 // Jobs the World completes to derive the distiller's compile.
-const DERIVATIONS: u64 = 16_275;
+const DERIVATIONS: u64 = 16_277;
 // Reads the World hands those jobs. A reach job reads the edge fact of every node in
 // its cone, so each of its runs hands one read per node.
-const READS_HANDED: u64 = 120_131;
+const READS_HANDED: u64 = 120_143;
 
 /// Compiling the distiller spends this much of the product stack. The largest
 /// drive is the one `PRODUCT_DRIVE_BUDGET` bounds, so its headroom is the
