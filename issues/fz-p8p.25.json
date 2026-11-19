@@ -1,6 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [
+    "fz-mue.38",
     "fz-p8p.22",
     "fz-xxd.3"
   ],
@@ -14,5 +15,5 @@
   "status": "open",
   "title": "var!/2: a macro names the hygiene context a variable binds in",
   "type": "feature",
-  "updated_at": "2026-09-27T20:14:03Z"
+  "updated_at": "2026-11-19T03:52:40Z"
 }
