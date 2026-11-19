@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-08T03:34:29Z",
@@ -7,8 +7,8 @@
   "id": "fz-bpd",
   "labels": [],
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "A call returning a raw int can join a branch of another kind",
   "type": "bug",
-  "updated_at": "2026-11-19T04:38:32Z"
+  "updated_at": "2026-11-19T04:38:33Z"
 }
