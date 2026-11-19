@@ -16,6 +16,10 @@ nil
 true
 false
 :miss
+"fz"
+1
+:seven
+:none
 2
 :nothing
 1
