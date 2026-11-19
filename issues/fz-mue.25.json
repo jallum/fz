@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-19T03:09:40Z",
+  "description": "User directed 2026-11-19: \"add the elixir parity issues as tickets to the epic we gave to Elixir Parity\". Owner: Elixir Parity. Found by JSON walking the json.erl port (/Users/j5n/Workspace/fz-752-walk/walk.md, fz2 from #786 head). It exhausts the 50,000-request budget ('waiting on transport_shape' / abi_executable) on all paths, with no source location. No small repro yet: repro_25.fz is the whole port. Same family as fz-mue.2. Done: a reduced reproducer, the cause traced from the job trace, and the port's decode_continue path compiles within budget.",
+  "id": "fz-mue.25",
+  "labels": [],
+  "parent": "fz-mue",
+  "priority": 1,
+  "status": "open",
+  "title": "A program that reaches OtpJSON.decode_continue/2 compiles within the request budget",
+  "type": "bug",
+  "updated_at": "2026-11-19T03:09:40Z"
+}
