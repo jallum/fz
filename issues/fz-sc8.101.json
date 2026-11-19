@@ -7,9 +7,15 @@
   "id": "fz-sc8.101",
   "labels": [],
   "parent": "fz-sc8",
+  "comments": [
+    {
+      "text": "Approved by the user (relayed by B\u0026C 2026-11-19); building on fz-sc8.101/reducer-not-clamped in ../fz-101; fixture 01769 (last free in fz-sc8 block before 01770).",
+      "timestamp": "2026-11-19T03:22:04Z"
+    }
+  ],
   "priority": 1,
   "status": "in_progress",
   "title": "A @spec with one type variable across a reducer loop makes a correct list fail a cons match",
   "type": "bug",
-  "updated_at": "2026-11-19T01:32:58Z"
+  "updated_at": "2026-11-19T03:22:04Z"
 }
