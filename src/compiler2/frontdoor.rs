@@ -1163,7 +1163,9 @@ impl<'t> FrontDoorParser<'t> {
             }
             self.skip_newlines();
             if self.eat(&Tok::Bar) {
+                self.skip_newlines();
                 let tail = self.parse_expr(module_path, scope)?.root;
+                self.skip_newlines();
                 self.expect(&Tok::RBrack, "`]`")?;
                 let span = start.merge(self.prev_span());
                 let root = self.improper_list(&items, tail, span)?;
@@ -1890,9 +1892,6 @@ impl<'t> FrontDoorParser<'t> {
 
         if allow_update && !matches!(self.peek(), Tok::KwKey(_)) {
             let base = self.parse_expr(module_path, scope)?;
-            if matches!(self.peek_non_newline_from(0), Tok::Bar) {
-                self.skip_newlines();
-            }
             if self.eat(&Tok::Bar) {
                 self.skip_newlines();
                 let updates = self.parse_map_entry_list(module_path, scope)?;
