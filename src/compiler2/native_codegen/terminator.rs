@@ -755,11 +755,9 @@ fn emit_back_edge_yield_check<M: cranelift_module::Module>(
     debug_assert_eq!(abi_cursor, native_args.len());
     let process = body.process_arg();
     runtime_call!(body, fz_yield_slow_path_begin, [process]);
-    let cont_arity = body.b.ins().iconst(types::I32, CONT_ARITY);
-    let n_caps_v = body.b.ins().iconst(types::I32, native_root_values.len() as i64);
     let stub_fref = body.jmod.declare_func_in_func(cont_id, body.b.func);
     let stub_addr = body.b.ins().func_addr(types::I64, stub_fref);
-    let cont_closure = body.alloc_continuation(cont_arity, n_caps_v, stub_addr);
+    let cont_closure = place_cont_closure(body, env, native_root_values.len(), stub_addr);
     for (i, root) in native_root_values.iter().copied().enumerate() {
         match root {
             CodegenValue::RawInt(word) => body.store_closure_capture_i64(cont_closure, i, word),

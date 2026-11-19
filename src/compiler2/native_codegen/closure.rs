@@ -1,8 +1,8 @@
+use super::place::emit_place;
 use super::*;
 use cranelift_codegen::ir::{self, InstBuilder, MemFlagsData, condcodes::IntCC, types};
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::FuncId;
-use fz_runtime::alloc_site::AllocSite;
 use fz_runtime::any_value::{
     AnyValueRefPacking, CLOSURE_CAPTURES_OFFSET, CLOSURE_CODE_OFFSET, CLOSURE_FLAGS_CAPTURED_MASK,
     CLOSURE_LAYOUT_FLAGS_SHIFT, ClosureDenotationId, NIL_ATOM_ID, TAG_CLOSURE, TaggedRefArch, ValueKind,
@@ -12,10 +12,8 @@ use fz_runtime::heap::{HeapAllocKind, INLINE_ALLOC_LAYOUT};
 use fz_runtime::ir_runtime::fz_handler_reserve;
 use fz_runtime::process_abi::{PROCESS_HANDLER_END_OFFSET, PROCESS_HANDLER_TOP_OFFSET, PROCESS_HEAP_OFFSET};
 
-/// Build a cont closure and answer its ref word: placed at the heap tip by
-/// inline code, with its header, code address, and every capture stored in
-/// place. Only a full tip block calls the runtime, which places the object
-/// and leaves the stores to the same inline code.
+/// Build a cont closure and answer its ref word: placed by `emit_place`, with
+/// its header, code address, and every capture stored in place by inline code.
 ///
 /// `cap_bindings` is a slice of user captures. Typed captures stay in raw
 /// payload slots; `ValueRef` captures are already one-word any value refs.
@@ -148,71 +146,21 @@ fn fill_cont_captures<M: cranelift_module::Module>(
 }
 
 /// Place an unfilled continuation closure of `count` captures: the header and
-/// code address are written, the captures are not. The tip block takes it
-/// inline when it has room, and the statistics a runtime allocation records
-/// are counted here; a full block asks the runtime.
-fn place_cont_closure<M: cranelift_module::Module>(
+/// code address are written, the captures are not.
+pub(super) fn place_cont_closure<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
     env: &CodegenEnv<'_>,
     count: usize,
     code_addr: ir::Value,
 ) -> ir::Value {
-    let size = closure_size_for_count(count) as i64;
-    let layout = INLINE_ALLOC_LAYOUT;
-    let heap = PROCESS_HEAP_OFFSET;
-    let field = |offset: usize| heap + offset as i32;
+    let size = closure_size_for_count(count);
+    let address = emit_place(body, env, HeapAllocKind::Continuation, size);
     let flags = MemFlagsData::trusted();
-    let process = body.process_arg();
-    let top = body.b.ins().load(types::I64, flags, process, field(layout.bump_top));
-    let end = body.b.ins().load(types::I64, flags, process, field(layout.block_end));
-    let new_top = body.b.ins().iadd_imm_s(top, size);
-    let fits = body.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, new_top, end);
-    let inline = body.b.create_block();
-    let runtime = body.b.create_block();
-    let placed = body.b.create_block();
-    body.b.append_block_param(placed, types::I64);
-    body.b.ins().brif(fits, inline, &[], runtime, &[]);
-
-    body.b.switch_to_block(runtime);
-    body.b.seal_block(runtime);
-    let arity = body.b.ins().iconst(types::I32, CONT_ARITY);
-    let captured = body.b.ins().iconst(types::I32, count as i64);
-    let from_runtime = body.alloc_continuation(arity, captured, code_addr);
-    body.b.ins().jump(placed, &[from_runtime.into()]);
-
-    body.b.switch_to_block(inline);
-    body.b.seal_block(inline);
-    let process = body.process_arg();
-    body.b.ins().store(flags, new_top, process, field(layout.bump_top));
-    for (counter, add) in [
-        (layout.alloc_count, 1),
-        (layout.total_allocs, 1),
-        (layout.continuation_allocs, 1),
-        (layout.total_bytes, size),
-        (layout.continuation_bytes, size),
-    ] {
-        let old = body.b.ins().load(types::I64, flags, process, field(counter));
-        let new = body.b.ins().iadd_imm_s(old, add);
-        body.b.ins().store(flags, new, process, field(counter));
-    }
     let header = closure_header_word(ClosureDenotationId::INTERNAL, count as u16, 0, CONT_ARITY as u16);
     let header = body.b.ins().iconst(types::I64, header as i64);
-    body.b.ins().store(flags, header, top, 0);
-    body.b.ins().store(flags, code_addr, top, CLOSURE_CODE_OFFSET);
-    let from_tip = emit_tagged_pointer_ref_word(body.b, top, TAG_CLOSURE);
-    body.b.ins().jump(placed, &[from_tip.into()]);
-
-    body.b.switch_to_block(placed);
-    body.b.seal_block(placed);
-    env.alloc_sites.borrow_mut().count(
-        body,
-        AllocSite {
-            kind: HeapAllocKind::Continuation,
-            bytes: size as u32,
-            function: env.active_body_name.to_owned(),
-        },
-    );
-    body.b.block_params(placed)[0]
+    body.b.ins().store(flags, header, address, 0);
+    body.b.ins().store(flags, code_addr, address, CLOSURE_CODE_OFFSET);
+    emit_tagged_pointer_ref_word(body.b, address, TAG_CLOSURE)
 }
 
 /// What codegen knows, where a ref word is stored, of the kind it names.

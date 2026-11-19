@@ -22,6 +22,7 @@ pub(crate) mod env;
 mod fn_ctx;
 mod frame;
 mod function;
+mod place;
 mod prim;
 mod receive;
 pub(crate) mod recipe;

@@ -24937,8 +24937,8 @@ fn a_continuations_outer_continuation_is_stored_and_read_as_a_closure() {
         "def main(), do: P.sum(3)\n",
     ));
     assert!(
-        clif.contains("fz_alloc_continuation"),
-        "the non-tail call builds a continuation:\n{clif}"
+        clif.contains("fz_heap_room"),
+        "the non-tail call places a continuation, asking the runtime only for room:\n{clif}"
     );
     assert!(
         !clif.contains("ireduce.i8"),
