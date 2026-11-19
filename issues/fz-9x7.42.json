@@ -9,9 +9,15 @@
   "id": "fz-9x7.42",
   "labels": [],
   "parent": "fz-9x7",
+  "comments": [
+    {
+      "text": "Interim (Callables): the spike ran over every fixture on run and build, and no resumed frame was ever out of newest-first order. The final sweep, the JSON workloads and the distiller are running.",
+      "timestamp": "2026-11-19T04:52:09Z"
+    }
+  ],
   "priority": 1,
   "status": "in_progress",
   "title": "Every continuation is resumed newest-first, and no heap object holds one",
   "type": "task",
-  "updated_at": "2026-11-19T04:52:08Z"
+  "updated_at": "2026-11-19T04:52:09Z"
 }
