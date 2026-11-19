@@ -4,6 +4,7 @@
     "fz-9x7.41.2"
   ],
   "blocks": [],
+  "closed_at": "2026-11-19T04:42:35Z",
   "created": "2026-11-18T23:59:37Z",
   "description": "User approved 2026-11-18, verbatim via GC: \"agreed; proceed\". Page: https://claude.ai/artifact/HXKZB5yxJqA4aiMvcocuG5 (From: GC; Inline Allocation Split, /Users/j5n/Workspace/fz-alloc-split.html). Answers the user's question on splitting allocation between generated code and the runtime: fixed-size allocations become inline recipes on the existing recipe table, with one shared bump and one cold runtime entry that finds room. Projected (unmeasured): enum −11%, msg −5%, distiller −1.7%. Builder: GC. Step I3.",
   "id": "fz-9x7.41.3",
@@ -16,8 +17,8 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Structs, tuples and closures are placed inline",
   "type": "task",
-  "updated_at": "2026-11-19T04:17:02Z"
+  "updated_at": "2026-11-19T04:42:35Z"
 }
