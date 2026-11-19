@@ -3405,6 +3405,14 @@ fn inline_alloc_layout_names_the_fields_a_placement_updates() {
         layout.continuation_bytes,
         at((&heap.alloc_stats.continuation.bytes as *const u64).addr())
     );
+    assert_eq!(
+        layout.list_cons_allocs,
+        at((&heap.alloc_stats.list_cons.allocs as *const u64).addr())
+    );
+    assert_eq!(
+        layout.list_cons_bytes,
+        at((&heap.alloc_stats.list_cons.bytes as *const u64).addr())
+    );
 }
 
 /// Prepend `cells` fresh cells to `tail`, collect with the list as the only

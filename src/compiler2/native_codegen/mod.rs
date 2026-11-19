@@ -22,6 +22,7 @@ pub(crate) mod env;
 mod fn_ctx;
 mod frame;
 mod function;
+mod list_cell;
 mod place;
 mod prim;
 mod receive;
@@ -39,7 +40,7 @@ pub(crate) mod variadic;
 
 // Glob re-exports keep cross-module references resolvable through
 // `use super::*;` in each submodule.
-pub(crate) use alloc_site::AllocSites;
+pub(crate) use alloc_site::{AllocSites, SiteScope};
 pub(crate) use bitstring_literal::BitstringLiterals;
 pub(crate) use clif::*;
 pub(crate) use closure::*;

@@ -37,6 +37,14 @@ pub(crate) struct CodegenEnv<'a> {
 }
 
 impl CodegenEnv<'_> {
+    /// Where the allocation sites of the active body register.
+    pub(super) fn site_scope(&self) -> super::alloc_site::SiteScope<'_> {
+        super::alloc_site::SiteScope {
+            sites: self.alloc_sites,
+            function: self.active_body_name,
+        }
+    }
+
     pub(super) fn body_id_for_fn(&self, fn_id: FnId) -> Option<u32> {
         self.surface.body_id_for_fn(fn_id)
     }

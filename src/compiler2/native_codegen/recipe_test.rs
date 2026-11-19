@@ -1,12 +1,16 @@
 use super::*;
 use crate::fast_hash::HashSet;
+use crate::ir_codegen::backend::{Backend, JitBackend};
 use cranelift_codegen::ir::{self, InstBuilder, MemFlagsData, types};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::JITModule;
 use cranelift_module::{Linkage, Module};
+use fz_runtime::any_value::AnyValueRefPacking;
 use fz_runtime::any_value::{AnyValue, AnyValueRef, FALSE_ATOM_ID, NIL_ATOM_ID, TRUE_ATOM_ID, ValueKind};
-use fz_runtime::heap::{Heap, Schema, SchemaRegistry};
+use fz_runtime::heap::{Heap, HeapAllocKind, INLINE_ALLOC_LAYOUT, Schema, SchemaRegistry};
 use fz_runtime::ir_runtime::*;
+use fz_runtime::pinned_abi;
+use fz_runtime::process::Process;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -474,7 +478,11 @@ fn every_row_computes_what_its_runtime_function_computes() {
 /// does not exist.
 #[test]
 fn every_row_is_proved_against_its_runtime_function() {
-    let proved: HashSet<&str> = proofs().iter().map(|proof| proof.symbol).collect();
+    let proved: HashSet<&str> = proofs()
+        .iter()
+        .map(|proof| proof.symbol)
+        .chain(cell_proofs().iter().map(|proof| proof.symbol))
+        .collect();
     let rows: HashSet<&str> = RECIPES.iter().map(|row| row.symbol).collect();
     assert_eq!(rows.len(), RECIPES.len(), "a symbol has two rows");
     let unproved: Vec<_> = rows.difference(&proved).collect();
@@ -520,4 +528,386 @@ fn a_row_declines_the_instance_it_has_no_instructions_for() {
 #[test]
 fn a_symbol_without_a_row_is_a_call() {
     assert!(recipe_for("fz_op_div_ii").is_none());
+}
+
+// Allocation rows are proved on heaps. Each case builds the same objects in
+// two fresh processes, runs the runtime function in one and the row's
+// instructions in the other, and compares everything the run left behind.
+
+/// What a case hands the row: its head and tail words, and the objects the
+/// row may change by sharing them.
+struct CellInputs {
+    head: u64,
+    tail: u64,
+    watched: Vec<*const u8>,
+}
+
+struct CellCase {
+    name: &'static str,
+    build: Box<dyn Fn(&mut Heap) -> CellInputs>,
+}
+
+/// A row's proof: the runtime function it must agree with, and the heads and
+/// tails it is tried on. A head's word is its payload for a scalar lane and a
+/// ref word for the ref lane.
+struct CellProof {
+    symbol: &'static str,
+    lane: HeadLane,
+    reference: fn(*mut Process, u64, u64) -> u64,
+    cases: Vec<CellCase>,
+}
+
+fn case(name: &'static str, build: impl Fn(&mut Heap) -> CellInputs + 'static) -> CellCase {
+    CellCase {
+        name,
+        build: Box::new(build),
+    }
+}
+
+/// A case whose head word is `head` and whose tail is the empty list or a
+/// one-cell list.
+fn scalar_cases(heads: &[(&'static str, u64)]) -> Vec<CellCase> {
+    let mut cases = Vec::new();
+    for &(name, head) in heads {
+        cases.push(case(name, move |_| CellInputs {
+            head,
+            tail: AnyValueRef::empty_list().raw_word(),
+            watched: Vec::new(),
+        }));
+        cases.push(case(name, move |heap| {
+            let tail = heap
+                .alloc_list_cons_int(9, AnyValueRef::empty_list())
+                .expect("a one-cell tail");
+            CellInputs {
+                head,
+                tail: tail.raw_word(),
+                watched: vec![list_address(tail)],
+            }
+        }));
+    }
+    cases
+}
+
+fn list_address(list: AnyValueRef) -> *const u8 {
+    list.list_addr().expect("a list address") as *const u8
+}
+
+/// A list of `len` cells holding 1, 2, ..., with no cell shared.
+fn int_list(heap: &mut Heap, len: i64) -> (AnyValueRef, Vec<*const u8>) {
+    let mut list = AnyValueRef::empty_list();
+    let mut cells = Vec::new();
+    for value in (1..=len).rev() {
+        list = heap.alloc_list_cons_int(value, list).expect("a cell");
+        cells.push(list_address(list));
+    }
+    (list, cells)
+}
+
+fn ref_cases() -> Vec<CellCase> {
+    let mut cases = Vec::new();
+    let mut head = |name: &'static str, make: fn(&mut Heap) -> (AnyValueRef, Vec<*const u8>)| {
+        cases.push(case(name, move |heap| {
+            let (head, watched) = make(heap);
+            CellInputs {
+                head: head.raw_word(),
+                tail: AnyValueRef::empty_list().raw_word(),
+                watched,
+            }
+        }));
+        cases.push(case(name, move |heap| {
+            let (head, mut watched) = make(heap);
+            let (tail, cells) = int_list(heap, 2);
+            watched.extend(cells);
+            CellInputs {
+                head: head.raw_word(),
+                tail: tail.raw_word(),
+                watched,
+            }
+        }));
+    };
+    head("an int box", |heap| (int_ref(heap, -7), Vec::new()));
+    head("a float box", |heap| {
+        (heap.box_any_value_ref(AnyValue::float(1.5)), Vec::new())
+    });
+    head("a reference box", |heap| {
+        (heap.box_any_value_ref(AnyValue::Opaque(ValueKind::REF, 9)), Vec::new())
+    });
+    head("an atom", |_| (AnyValueRef::atom(7), Vec::new()));
+    head("a pid", |_| (AnyValueRef::pid(5).expect("a pid ref"), Vec::new()));
+    head("null", |_| (AnyValueRef::null(), Vec::new()));
+    head("the empty list", |_| (AnyValueRef::empty_list(), Vec::new()));
+    head("a bitstring", |heap| {
+        (heap.alloc_bitstring(&[1, 2, 3], 24).ref_word(), Vec::new())
+    });
+    head("an unshared list", |heap| int_list(heap, 3));
+    head("a literal list", |heap| {
+        let (list, cells) = int_list(heap, 2);
+        (list.literal(), cells)
+    });
+    head("a list shared from its second cell", |heap| {
+        let (list, cells) = int_list(heap, 3);
+        let second = AnyValueRef::from_heap_object(ValueKind::LIST, cells[1]).expect("a list ref");
+        heap.mark_published_ref_aliased(second).expect("a shared tail");
+        (list, cells)
+    });
+    head("a list shared whole", |heap| {
+        let (list, cells) = int_list(heap, 2);
+        heap.mark_published_ref_aliased(list).expect("a shared list");
+        (list, cells)
+    });
+    head("a struct", |heap| {
+        let pair = heap.register_schema(Schema::tuple_of_arity(2));
+        let address = heap.alloc_struct(pair);
+        (
+            AnyValueRef::from_heap_object(ValueKind::STRUCT, address).expect("a struct ref"),
+            vec![address as *const u8],
+        )
+    });
+    cases
+}
+
+fn cell_proofs() -> Vec<CellProof> {
+    let ints = [
+        ("zero", 0),
+        ("one", 1),
+        ("minus one", u64::MAX),
+        ("max", i64::MAX as u64),
+        ("min", i64::MIN as u64),
+    ];
+    let floats = [1.5f64, -0.0, 0.0, 5e-324, -1e300].map(|value| ("a float", value.to_bits()));
+    let atoms = [
+        ("true", u64::from(TRUE_ATOM_ID)),
+        ("nil", u64::from(NIL_ATOM_ID)),
+        ("another", u64::from(OTHER_ATOM_ID)),
+    ];
+    vec![
+        CellProof {
+            symbol: "fz_list_cons_int",
+            lane: HeadLane::Int,
+            reference: |process, head, tail| fz_list_cons_int(process, head as i64, tail),
+            cases: scalar_cases(&ints),
+        },
+        CellProof {
+            symbol: "fz_list_cons_float",
+            lane: HeadLane::Float,
+            reference: |process, head, tail| fz_list_cons_float(process, f64::from_bits(head), tail),
+            cases: scalar_cases(&floats),
+        },
+        CellProof {
+            symbol: "fz_list_cons_atom",
+            lane: HeadLane::Atom,
+            reference: |process, head, tail| fz_list_cons_atom(process, head, tail),
+            cases: scalar_cases(&atoms),
+        },
+        CellProof {
+            symbol: "fz_list_cons_any",
+            lane: HeadLane::Ref,
+            reference: |process, head, tail| fz_list_cons_any(process, head, tail),
+            cases: ref_cases(),
+        },
+    ]
+}
+
+/// A row compiled to a function of two words: the head's and the tail's.
+struct CompiledCell {
+    code: *const u8,
+    /// The row's site counters, one word per site.
+    counts: *const u64,
+    _backend: JitBackend,
+}
+
+fn compile_cell(proof: &CellProof) -> CompiledCell {
+    let mut backend = JitBackend::new();
+    let module = backend.module_mut();
+    let mut ctx = module.make_context();
+    let mut fbctx = FunctionBuilderContext::new();
+    let mut sig = module.make_signature();
+    sig.params = vec![ir::AbiParam::new(types::I64); 2];
+    sig.returns = vec![ir::AbiParam::new(types::I64)];
+    ctx.func.signature = sig.clone();
+    let sites = RefCell::new(AllocSites::declare(module).expect("declare the site counters"));
+    {
+        let mut b = FunctionBuilder::new(&mut ctx.func, &mut fbctx);
+        let entry = b.create_block();
+        b.append_block_params_for_function_params(entry);
+        b.switch_to_block(entry);
+        b.seal_block(entry);
+        let params = b.block_params(entry).to_vec();
+        let mut cache = CodegenCache::default();
+        let mut body = CodegenFn::new(&mut b, module, &mut cache);
+        let process = body.process_arg();
+        let head = match proof.lane {
+            HeadLane::Float => body.b.ins().bitcast(types::F64, MemFlagsData::new(), params[0]),
+            _ => params[0],
+        };
+        let scope = SiteScope {
+            sites: &sites,
+            function: "recipe_parity",
+        };
+        let cell = emit_cell(&mut body, scope, proof.symbol, &[process, head, params[1]]);
+        body.b.ins().return_(&[cell]);
+        b.finalize(module.target_config());
+    }
+    let id = module
+        .declare_function("recipe_parity_cell", Linkage::Export, &sig)
+        .expect("declare the cell function");
+    module.define_function(id, &mut ctx).expect("define the cell function");
+    let (counts_id, registered) = sites.into_inner().define(module).expect("define the site counters");
+    assert_eq!(registered.len(), 1, "one placement is one site");
+    assert_eq!(registered[0].kind, HeapAllocKind::ListCons);
+    assert_eq!(registered[0].bytes, 16);
+    module.finalize_definitions().expect("finalize the cell function");
+    let code = module.get_finalized_function(id);
+    let (counts, _) = module.get_finalized_data(counts_id);
+    CompiledCell {
+        code,
+        counts: counts.cast(),
+        _backend: backend,
+    }
+}
+
+/// How full a tip is when the row runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Tip {
+    /// Room for the cell.
+    Roomy,
+    /// No room: the runtime must find some.
+    Full,
+}
+
+/// Everything a run leaves that the two runs must agree on, with each address
+/// replaced by the block it is in and its offset there.
+#[derive(Debug, PartialEq, Eq)]
+struct Left {
+    result: u64,
+    cell: [u64; 2],
+    watched: Vec<[u64; 2]>,
+    tip_used: usize,
+    tip_capacity: usize,
+    tip_changed: bool,
+    object_count: u64,
+    list_cons: (u64, u64),
+    total: (u64, u64),
+}
+
+fn heap_field(process: &Process, offset: usize) -> usize {
+    unsafe { *(((&process.heap as *const Heap).cast::<u8>()).add(offset) as *const usize) }
+}
+
+fn tip_of(process: &Process) -> (usize, usize) {
+    let start = heap_field(process, INLINE_ALLOC_LAYOUT.block_start);
+    (start, heap_field(process, INLINE_ALLOC_LAYOUT.block_end) - start)
+}
+
+/// A word with the address it holds replaced by `(block, offset)` when the
+/// address is in one of `blocks`.
+fn rebased(word: u64, blocks: [(usize, usize); 2]) -> u64 {
+    let packing = AnyValueRefPacking::current();
+    let address = packing.raw_address(word);
+    for (index, (start, length)) in blocks.into_iter().enumerate() {
+        if address >= start && address < start + length {
+            return (word & !packing.address_mask()) | ((index as u64 + 1) << 40) | (address - start) as u64;
+        }
+    }
+    word
+}
+
+fn words_at(address: *const u8) -> [u64; 2] {
+    unsafe { [*address.cast::<u64>(), *address.cast::<u64>().add(1)] }
+}
+
+/// Build the case in a fresh process, bring its tip to `tip`, run `run` on it
+/// and say what was left.
+fn run_cell(
+    case: &CellCase,
+    tip: Tip,
+    schemas: &Rc<RefCell<SchemaRegistry>>,
+    run: impl FnOnce(*mut Process, &CellInputs) -> u64,
+) -> Left {
+    let mut process = Box::new(Process::new(schemas.clone()));
+    let inputs = (case.build)(&mut process.heap);
+    if tip == Tip::Full {
+        while tip_of(&process).1 - (heap_field(&process, INLINE_ALLOC_LAYOUT.bump_top) - tip_of(&process).0) >= 16 {
+            process.heap.alloc(16);
+        }
+    }
+    let before = tip_of(&process);
+    let result = run(&mut *process, &inputs);
+    let after = tip_of(&process);
+    let blocks = [before, after];
+    let stats = process.heap.alloc_stats_snapshot();
+    let address = AnyValueRefPacking::current().raw_address(result) as *const u8;
+    Left {
+        result: rebased(result, blocks),
+        cell: words_at(address).map(|word| rebased(word, blocks)),
+        watched: inputs
+            .watched
+            .iter()
+            .map(|object| words_at(*object).map(|word| rebased(word, blocks)))
+            .collect(),
+        tip_used: heap_field(&process, INLINE_ALLOC_LAYOUT.bump_top) - after.0,
+        tip_capacity: after.1,
+        tip_changed: before != after,
+        object_count: heap_field(&process, INLINE_ALLOC_LAYOUT.alloc_count) as u64,
+        list_cons: (stats.list_cons.allocs, stats.list_cons.bytes),
+        total: (stats.total.allocs, stats.total.bytes),
+    }
+}
+
+/// A row, run on heaps over every case and both tip states, leaves what its
+/// runtime function leaves: the cell's words, the objects it shares, the tip
+/// and the statistics. The runtime function stays the definition.
+#[test]
+fn every_allocation_row_leaves_the_heap_its_runtime_function_leaves() {
+    let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
+    for proof in cell_proofs() {
+        let compiled = compile_cell(&proof);
+        let mut runs = 0;
+        for case in &proof.cases {
+            for tip in [Tip::Roomy, Tip::Full] {
+                let expected = run_cell(case, tip, &schemas, |process, inputs| {
+                    (proof.reference)(process, inputs.head, inputs.tail)
+                });
+                let inline = run_cell(case, tip, &schemas, |process, inputs| unsafe {
+                    pinned_abi::call2(compiled.code, process, inputs.head, inputs.tail) as u64
+                });
+                runs += 1;
+                assert_eq!(
+                    inline.tip_changed,
+                    tip == Tip::Full,
+                    "`{}` on {} with a {tip:?} tip: the tip moved only when it had no room",
+                    proof.symbol,
+                    case.name
+                );
+                assert_eq!(
+                    inline, expected,
+                    "`{}` on {} with a {tip:?} tip: inline against the runtime function",
+                    proof.symbol, case.name
+                );
+            }
+        }
+        let counted = unsafe { *compiled.counts };
+        assert_eq!(counted, runs, "`{}` counts its site once per placement", proof.symbol);
+    }
+}
+
+/// A list or struct head is shared, so the run must have marked something;
+/// the harness would pass vacuously if the proofs never shared anything.
+#[test]
+fn the_ref_row_is_tried_on_heads_that_must_be_shared() {
+    let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
+    let proofs = cell_proofs();
+    let proof = proofs
+        .iter()
+        .find(|proof| proof.symbol == "fz_list_cons_any")
+        .expect("the ref row");
+    let marked = |name: &str| {
+        let case = proof.cases.iter().find(|case| case.name == name).expect("a case");
+        let left = run_cell(case, Tip::Roomy, &schemas, |process, inputs| {
+            (proof.reference)(process, inputs.head, inputs.tail)
+        });
+        let link = left.watched[0][1];
+        link & fz_runtime::any_value::LIST_LINK_ALIAS_MASK != 0
+    };
+    assert!(marked("an unshared list"), "a list head is shared by the cell");
 }

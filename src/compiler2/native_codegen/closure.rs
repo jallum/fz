@@ -154,7 +154,7 @@ pub(super) fn place_cont_closure<M: cranelift_module::Module>(
     code_addr: ir::Value,
 ) -> ir::Value {
     let size = closure_size_for_count(count);
-    let address = emit_place(body, env, HeapAllocKind::Continuation, size);
+    let address = emit_place(body, env.site_scope(), HeapAllocKind::Continuation, size);
     let flags = MemFlagsData::trusted();
     let header = closure_header_word(ClosureDenotationId::INTERNAL, count as u16, 0, CONT_ARITY as u16);
     let header = body.b.ins().iconst(types::I64, header as i64);

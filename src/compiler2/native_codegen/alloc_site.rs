@@ -12,8 +12,17 @@ use super::static_object::data_addr;
 use cranelift_codegen::ir::{InstBuilder, MemFlagsData, types};
 use cranelift_module::{DataDescription, DataId, Linkage, Module};
 use fz_runtime::alloc_site::AllocSite;
+use std::cell::RefCell;
 
 const COUNTER_BYTES: usize = size_of::<u64>();
+
+/// Where an allocation registers: the module's table of sites and the name of
+/// the function being lowered.
+#[derive(Clone, Copy)]
+pub(crate) struct SiteScope<'a> {
+    pub(crate) sites: &'a RefCell<AllocSites>,
+    pub(crate) function: &'a str,
+}
 
 pub(crate) struct AllocSites {
     counts: DataId,

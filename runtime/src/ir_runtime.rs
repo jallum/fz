@@ -2107,17 +2107,6 @@ pub extern "C" fn fz_list_is_cons(list_ref_word: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_list_cons_ref(process: *mut Process, head_ref_word: u64, tail_ref_word: u64) -> u64 {
-    let head = any_value_ref_from_word(head_ref_word, "fz_list_cons_ref head");
-    let tail = any_value_ref_from_word(tail_ref_word, "fz_list_cons_ref tail");
-    (unsafe { &mut *process })
-        .heap
-        .alloc_list_cons_ref(head, tail)
-        .expect("fz_list_cons_ref")
-        .raw_word()
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn fz_list_cons_any(process: *mut Process, head_ref_word: u64, tail_ref_word: u64) -> u64 {
     let head = any_value_from_ref_word(head_ref_word, "fz_list_cons_any head");
     let tail = any_value_ref_from_word(tail_ref_word, "fz_list_cons_any tail");

@@ -17,6 +17,7 @@
 //! places through it, and it counts the site after the join, so a placement
 //! the runtime made room for is counted by the same site as one the tip took.
 
+use super::alloc_site::SiteScope;
 use super::*;
 use cranelift_codegen::ir::{self, InstBuilder, MemFlagsData, condcodes::IntCC, types};
 use fz_runtime::alloc_site::AllocSite;
@@ -28,7 +29,7 @@ use fz_runtime::process_abi::PROCESS_HEAP_OFFSET;
 /// the object starts at. The caller writes every word of the object.
 pub(super) fn emit_place<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
-    env: &CodegenEnv<'_>,
+    scope: SiteScope<'_>,
     kind: HeapAllocKind,
     size: usize,
 ) -> ir::Value {
@@ -63,12 +64,12 @@ pub(super) fn emit_place<M: cranelift_module::Module>(
     body.b.switch_to_block(placed);
     body.b.seal_block(placed);
     count_statistics(body, kind, size);
-    env.alloc_sites.borrow_mut().count(
+    scope.sites.borrow_mut().count(
         body,
         AllocSite {
             kind,
             bytes: size as u32,
-            function: env.active_body_name.to_owned(),
+            function: scope.function.to_owned(),
         },
     );
     body.b.block_params(placed)[0]
@@ -82,17 +83,15 @@ fn count_statistics<M: cranelift_module::Module>(body: &mut CodegenFn<'_, '_, M>
     let flags = MemFlagsData::trusted();
     let field = |offset: usize| PROCESS_HEAP_OFFSET + offset as i32;
     let process = body.process_arg();
-    assert_eq!(
-        kind,
-        HeapAllocKind::Continuation,
-        "only continuation frames are placed inline and counted in place"
-    );
+    let (kind_allocs, kind_bytes) = layout
+        .kind_counters(kind)
+        .unwrap_or_else(|| panic!("{kind:?} is not placed inline"));
     for (counter, add) in [
         (layout.alloc_count, 1),
         (layout.total_allocs, 1),
-        (layout.continuation_allocs, 1),
+        (kind_allocs, 1),
         (layout.total_bytes, size as i64),
-        (layout.continuation_bytes, size as i64),
+        (kind_bytes, size as i64),
     ] {
         let old = body.b.ins().load(types::I64, flags, process, field(counter));
         let new = body.b.ins().iadd_imm_s(old, add);

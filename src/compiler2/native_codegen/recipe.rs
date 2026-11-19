@@ -11,6 +11,17 @@
 //! row's instructions with the function over inputs for its signature; a row
 //! without such inputs fails the test.
 //!
+//! A row answers in place or it places an object. An in-place row is a pure
+//! function of its arguments, and the test compares its words. An allocation
+//! row takes the process as its first argument, as the runtime function does,
+//! and writes the object itself: it places through `emit_place`, which calls
+//! the runtime only for room, and fills the object's words. A call site asks
+//! for one through [`emit_cell`], which also registers the site. The test
+//! compares what an allocation row does to a heap: it runs the runtime
+//! function and the instructions on two fresh heaps and compares the placed
+//! object's words, the words of every object the row may share, the tip each
+//! leaves and the heap's allocation statistics.
+//!
 //! A recipe does not validate its arguments. The Rust function panics on a
 //! malformed word; the instructions read whatever the word says.
 //!
@@ -26,6 +37,7 @@
 //! kind it has no instructions for; the call is then emitted as if the table
 //! had no row.
 
+use super::list_cell::{HeadLane, emit_list_cell};
 use super::*;
 use cranelift_codegen::ir::{
     self, BlockArg, InstBuilder, InstructionData, MemFlagsData, Opcode, ValueDef,
@@ -35,10 +47,11 @@ use cranelift_codegen::ir::{
 use cranelift_frontend::FunctionBuilder;
 use fz_runtime::any_value::{FALSE_ATOM_ID, NIL_ATOM_ID, STRUCT_HEADER_SCHEMA_SHIFT, ValueKind};
 use fz_runtime::ir_runtime::{
-    fz_op_abs_f, fz_op_add_ii, fz_op_eq_ff, fz_op_eq_ii, fz_op_gt_ff, fz_op_gt_ii, fz_op_gte_ff, fz_op_gte_ii,
-    fz_op_identical_ii, fz_op_lt_ff, fz_op_lt_ii, fz_op_lte_ff, fz_op_lte_ii, fz_op_mul_ii, fz_op_neg_f, fz_op_neg_i,
-    fz_op_neq_ff, fz_op_neq_ii, fz_op_not_identical_ii, fz_op_sub_ii, fz_struct_schema_id_ref, fz_truthy_ref,
-    fz_type_of, fz_unbox_atom, fz_unbox_int, fz_value_eq_raw_const,
+    fz_list_cons_any, fz_list_cons_atom, fz_list_cons_float, fz_list_cons_int, fz_op_abs_f, fz_op_add_ii, fz_op_eq_ff,
+    fz_op_eq_ii, fz_op_gt_ff, fz_op_gt_ii, fz_op_gte_ff, fz_op_gte_ii, fz_op_identical_ii, fz_op_lt_ff, fz_op_lt_ii,
+    fz_op_lte_ff, fz_op_lte_ii, fz_op_mul_ii, fz_op_neg_f, fz_op_neg_i, fz_op_neq_ff, fz_op_neq_ii,
+    fz_op_not_identical_ii, fz_op_sub_ii, fz_struct_schema_id_ref, fz_truthy_ref, fz_type_of, fz_unbox_atom,
+    fz_unbox_int, fz_value_eq_raw_const,
 };
 
 /// What a recipe computed, in one of the three shapes.
@@ -49,10 +62,18 @@ pub(crate) enum Emitted {
     Checked { value: ir::Value, failed: ir::Value },
 }
 
-type Emit = fn(&mut FunctionBuilder<'_>, &[ir::Value]) -> Option<Emitted>;
+type InPlace = fn(&mut FunctionBuilder<'_>, &[ir::Value]) -> Option<Emitted>;
+
+/// What a row emits: instructions that compute the function's answer, or the
+/// list cell the function places.
+#[derive(Clone, Copy)]
+enum Emit {
+    InPlace(InPlace),
+    Cell(HeadLane),
+}
 
 /// One row: the runtime function's symbol, its parameter count, and the
-/// instructions that compute its answer.
+/// instructions that compute its answer or place its object.
 pub(crate) struct Recipe {
     pub(crate) symbol: &'static str,
     pub(crate) arity: usize,
@@ -76,16 +97,31 @@ macro_rules! recipe {
                 stringify!($item)
             },
             arity: count!($($param)+),
-            emit: |$b, args| {
+            emit: Emit::InPlace(|$b, args| {
                 let &[$($param),+] = args else {
                     panic!("recipe `{}` takes {} arguments, got {}", stringify!($item), count!($($param)+), args.len());
                 };
                 $body
-            },
+            }),
         }
     };
     (@lane $param:ident) => {
         _
+    };
+}
+
+/// An allocation row: the runtime function places a list cell whose head
+/// reaches it as `$lane` says.
+macro_rules! list_cell {
+    ($item:ident($process:ident, $head:ident, $tail:ident), $lane:expr) => {
+        Recipe {
+            symbol: {
+                let _: unsafe extern "C" fn(_, _, _) -> _ = $item;
+                stringify!($item)
+            },
+            arity: 3,
+            emit: Emit::Cell($lane),
+        }
     };
 }
 
@@ -174,6 +210,11 @@ pub(crate) const RECIPES: &[Recipe] = &[
     // Float negation and absolute value.
     recipe!(fz_op_neg_f(operand), |b| Some(Emitted::Value(b.ins().fneg(operand)))),
     recipe!(fz_op_abs_f(operand), |b| Some(Emitted::Value(b.ins().fabs(operand)))),
+    // List cells.
+    list_cell!(fz_list_cons_int(process, head, tail), HeadLane::Int),
+    list_cell!(fz_list_cons_float(process, head, tail), HeadLane::Float),
+    list_cell!(fz_list_cons_atom(process, head, tail), HeadLane::Atom),
+    list_cell!(fz_list_cons_any(process, head, tail), HeadLane::Ref),
 ];
 
 /// The row for the runtime function `symbol`, if the table has one.
@@ -183,7 +224,10 @@ pub(crate) fn recipe_for(symbol: &str) -> Option<&'static Recipe> {
 
 /// Emit the instructions for the runtime function `symbol` applied to `args`,
 /// or `None` when the table has no row for it or the row declines this
-/// instance, and the call is to be emitted instead.
+/// instance, and the call is to be emitted instead. A row that places an
+/// object is not emitted here, because placing needs the body and its sites:
+/// asking for one is a bug, and answered by a panic rather than a call that
+/// would quietly bring the runtime path back.
 pub(crate) fn emit_inline(b: &mut FunctionBuilder<'_>, symbol: &str, args: &[ir::Value]) -> Option<Emitted> {
     let row = recipe_for(symbol)?;
     assert_eq!(
@@ -193,7 +237,33 @@ pub(crate) fn emit_inline(b: &mut FunctionBuilder<'_>, symbol: &str, args: &[ir:
         row.arity,
         args.len()
     );
-    (row.emit)(b, args)
+    match row.emit {
+        Emit::InPlace(emit) => emit(b, args),
+        Emit::Cell(_) => panic!("`{symbol}` places an object; ask for it through `emit_cell`"),
+    }
+}
+
+/// Place the list cell the runtime function `symbol` places, applied to
+/// `args` (the process, the head and the tail), and answer its ref word. The
+/// site is registered in `scope`.
+pub(crate) fn emit_cell<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, M>,
+    scope: SiteScope<'_>,
+    symbol: &str,
+    args: &[ir::Value],
+) -> ir::Value {
+    let row = recipe_for(symbol).unwrap_or_else(|| panic!("`{symbol}` has no recipe"));
+    assert_eq!(
+        args.len(),
+        row.arity,
+        "recipe `{symbol}` takes {} arguments, got {}",
+        row.arity,
+        args.len()
+    );
+    match row.emit {
+        Emit::Cell(lane) => emit_list_cell(body, scope, lane, args),
+        Emit::InPlace(_) => panic!("`{symbol}` computes in place; ask for it through `emit_inline`"),
+    }
 }
 
 /// Whether a ref word is not `false` and not `nil`: every word of another kind

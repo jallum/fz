@@ -196,10 +196,11 @@ An allocation site is one place that puts an object on a heap
   site's own counter, placed where the fast and slow paths of the allocation
   join, so one placement is one count. The counters are one zeroed, writable
   data object of the module; its kind and size are fixed per site, so bytes are
-  the count times the size. The continuation frame is the allocation compiled
-  code places inline, through `emit_place` (`native_codegen/place.rs`), the one
-  emitter of the bump: a non-tail call's frame and the frame a budget yield
-  leaves are both compiled sites. The runtime's own continuation site is the
+  the count times the size. The continuation frame and the list cell are the
+  allocations compiled code places inline, through `emit_place`
+  (`native_codegen/place.rs`), the one emitter of the bump: a non-tail call's
+  frame, the frame a budget yield leaves, and each cell a list literal or a
+  cons builds are compiled sites. The runtime's own continuation site is the
   copy `fz_frame_for_write` makes of an old frame.
 - A **runtime site** is a runtime function that allocates:
   `Heap::alloc_at` takes a `RuntimeAllocSite`, which fixes the object's kind,
@@ -229,8 +230,9 @@ it), `allocs` and `bytes`. `function` is the compiled function's symbol, or
 events with the same `function`.
 
 A list cell a deep copy places is counted at `runtime::copy_list_cell`, apart
-from the cells a program builds (`runtime::alloc_list_cons_storage` and
-`runtime::alloc_list_cons_value`). A message's cells are copied by its sender
+from the cells the runtime builds for the interpreter and its own helpers
+(`runtime::alloc_list_cons_storage` and `runtime::alloc_list_cons_value`); a
+compiled program's own cells are compiled sites. A message's cells are copied by its sender
 into a gift, so a run whose copy site counts exactly the cells its
 `fz.runtime.send.probe` gifts carry copied nothing on the receiving side;
 fixtures 00901 and 00902 are pinned that way.

@@ -193,7 +193,7 @@ impl<M: Module> RuntimeCaller for CodegenFn<'_, '_, M> {
 }
 
 /// Call a runtime helper named by its Rust function item:
-/// `runtime_call!(body, fz_list_cons_int, [process, head, tail])`. The item
+/// `runtime_call!(body, fz_mark_published_ref_aliased, [process, head])`. The item
 /// must be in scope at the call site.
 macro_rules! runtime_call {
     ($body:expr, $item:ident, [$($arg:expr),* $(,)?]) => {{
