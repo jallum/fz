@@ -6,9 +6,15 @@
   "description": "User approved 2026-11-19 (\"proceed\"), after calling the pin-history comments \"the most useless kinds of comments\".\nPin tests carry changelog comments: one line per past PR, of the form \"(a, b, c) -\u003e (d, e, f): why it moved\", sometimes ending \"authorized by the user\". They tell a reader nothing about what the pin measures now, they duplicate the commit messages (git log -L recovers each), and every PR that moves a shared pin appends a line, so concurrent PRs conflict there (#748 on tests/distill_telemetry_test.rs, 2026-11-19).\nOn develop 69e5380e4, lines of that shape: src/compiler2/work_start_reason_test.rs 28, tests/distill_telemetry_test.rs 19, src/telemetry/public_trace_test.rs 11, tests/fz2_cli.rs 4, src/compiler2/input_demand_answers_test.rs 4, src/compiler2/reach_test.rs 2. Also sweep for other forms (single-number \"636 -\u003e 625\", \"was N\", \"+N:\") across tests/, src/ and runtime/.\nChange: delete every history chain. A pin keeps at most one present-tense sentence saying what it counts, or none when the test name says it. No pin value changes.\nDocs: add the rule to the agent docs where pins and goldens are described: a pin's comment says what it counts; why it moved goes in the commit message and PR body, never beside the pin.\nDone when: the sweep finds no history comments; gate green; no pin value changed.",
   "id": "fz-fzb",
   "labels": [],
+  "comments": [
+    {
+      "text": "Develop 9089f7616 also carries history lines from Elixir Parity's #746/#757, merged before their strip push: distill_telemetry_test (3), work_start_reason_test (2), public_trace_test (1), fz2_cli (1), and two on 00911 in tests/fixture_matrix.rs — add fixture_matrix.rs to the sweep.",
+      "timestamp": "2026-11-19T01:51:12Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "A pinned number carries no history of its past values",
   "type": "task",
-  "updated_at": "2026-11-19T01:48:36Z"
+  "updated_at": "2026-11-19T01:51:12Z"
 }
