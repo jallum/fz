@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-9x7.43"
+  ],
   "created": "2026-11-19T04:17:17Z",
   "description": "The user approved step C, a per-process continuation region, relayed by Callables on 2026-11-19. This answers decision 72 (3). Design page: https://claude.ai/artifact/DLaBcsPBUr1LwXpc4rhAvX. Owner: Callables.\n\nSpike, E0 + E1.\n\n## E0\nCount how often release_resumed_frame gives a frame back today, on the JSON workloads and the distiller. Prediction: under 30% on docs decode.\n\n## E1\nRun a region spike with two debug traps over every fixture on run and build, and on the distiller. One trap fires when a region address is stored into a heap object; the other when a resumed frame is not the newest.\n\n## Output\nA list of every holder found, with its fix. Nothing lands except the traps, and only if they earn their place.",
   "id": "fz-9x7.42",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Every continuation is resumed newest-first, and no heap object holds one",
   "type": "task",
-  "updated_at": "2026-11-19T04:17:17Z"
+  "updated_at": "2026-11-19T04:17:18Z"
 }
