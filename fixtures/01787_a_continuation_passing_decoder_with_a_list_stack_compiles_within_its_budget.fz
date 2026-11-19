@@ -1,0 +1,26 @@
+#---
+# purpose: "a decoder written in continuation-passing style, with a list for its stack and a bare accumulator, compiles within the job budget and decodes as on the BEAM"
+# oracle: self
+# oracle.stamp: 79b3234961a62532
+#---
+#
+# The shape of OTP json.erl's decoder: `value` and `cont` call each other,
+# threading the rest of the input, an accumulator and a stack of what to
+# resume. An array pushes the accumulator it interrupts onto the stack, and
+# its closing bracket pops it again, so each pass hands the pair a deeper
+# stack and a differently shaped accumulator. The two functions form one
+# recursion cycle, and its calls key from the cycle's entry.
+defmodule Main do
+  def value(<<?[, rest::bits>>, acc, stack), do: value(rest, [], [:array, acc | stack])
+  def value(<<?1, rest::bits>>, acc, stack), do: cont(rest, acc, stack, 1)
+  def cont(<<?], rest::bits>>, acc, [:array, old | stack], v), do: cont(rest, old, stack, Enum.reverse([v | acc]))
+  def cont(<<?,, rest::bits>>, acc, stack, v), do: value(rest, [v | acc], stack)
+  def cont(<<>>, acc, [], v), do: {v, acc}
+
+  def main() do
+    IO.inspect(value("[1,[1]]", :ok, []))
+    IO.inspect(value("[1,[1,[1,1]],1]", :ok, []))
+  end
+end
+
+Main.main()
