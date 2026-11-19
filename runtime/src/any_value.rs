@@ -1321,16 +1321,19 @@ pub fn bitstring_size_for_bit_len(bit_len: u64) -> usize {
     (8 + bytes_len + 1 + 15) & !15
 }
 
-/// The bytes of an inline bitstring object holding `bytes` as `bit_len` bits:
-/// the header word, the payload, the NUL after it, and zeros up to the
-/// object's size. A heap bitstring and a read-only literal are both this image.
+/// The bytes of a read-only inline bitstring holding `bytes` as `bit_len`
+/// bits: the header word, shared from birth because program data is never
+/// written, then the payload, the NUL after it, and zeros up to the object's
+/// size.
 pub fn bitstring_object_image(bytes: &[u8], bit_len: u64) -> Vec<u8> {
     assert_eq!(
         bytes.len(),
         (bit_len as usize).div_ceil(8),
         "a bitstring holds exactly the bytes its bit length covers"
     );
-    let mut image = bitstring_header_word(bit_len).to_le_bytes().to_vec();
+    let mut image = (bitstring_header_word(bit_len) | BINARY_SHARED_MASK)
+        .to_le_bytes()
+        .to_vec();
     image.extend_from_slice(bytes);
     image.resize(bitstring_size_for_bit_len(bit_len), 0);
     image
@@ -1348,15 +1351,55 @@ pub const BITSTRING_BIT_LEN_SHIFT: u32 = 4;
 /// Where an inline bitstring's bytes start, in bytes from the object.
 pub const BITSTRING_BYTES_OFFSET: usize = 8;
 
-/// An inline bitstring's first word: the bit length above four clear bits. A
-/// live bitstring's low nibble is clear; only a forwarding marker sets it.
+/// The bit of a binary's first word that says a second holder may exist. It
+/// is the bit a list cell's link uses for the same answer, above the kind
+/// field of a tagged pointer, so it means one thing in both binary layouts: a
+/// small bitstring's length header and a view's pointer to its BinRef. Clear,
+/// the binary has one holder, and that holder owns the room after its last
+/// byte. Set once and never cleared.
+pub const BINARY_SHARED_MASK: u64 = LIST_LINK_ALIAS_MASK;
+
+/// The bits of a small bitstring's first word that hold its length, below the
+/// shared mark. The low nibble is clear in a live object.
+pub const BITSTRING_HEADER_LEN_MASK: u64 = BINARY_SHARED_MASK - 1;
+
+/// An inline bitstring's first word for a new, unshared object: the bit length
+/// above four clear bits. A live bitstring's low nibble is clear; only a
+/// forwarding marker sets it.
 #[inline]
 pub fn bitstring_header_word(bit_len: u64) -> u64 {
     assert!(
-        bit_len < 1 << (64 - BITSTRING_BIT_LEN_SHIFT),
+        bit_len <= BITSTRING_HEADER_LEN_MASK >> BITSTRING_BIT_LEN_SHIFT,
         "bitstring bit length overflow"
     );
     bit_len << BITSTRING_BIT_LEN_SHIFT
+}
+
+/// Whether the inline bitstring at `addr` may have a second holder.
+///
+/// # Safety
+///
+/// `addr` must point to the start of an initialized strict inline Bitstring.
+#[inline]
+pub unsafe fn bitstring_is_shared(addr: *const u8) -> bool {
+    let header = unsafe { ptr::read(addr as *const u64) };
+    header & BINARY_SHARED_MASK != 0
+}
+
+/// Mark the inline bitstring at `addr` shared, writing only when it is not
+/// already: a shared bitstring may be read-only program data. Answers whether
+/// this call marked it.
+///
+/// # Safety
+///
+/// `addr` must point to the start of an initialized strict inline Bitstring.
+pub unsafe fn share_bitstring(addr: *mut u8) -> bool {
+    if unsafe { bitstring_is_shared(addr) } {
+        return false;
+    }
+    let header = unsafe { ptr::read(addr as *const u64) };
+    unsafe { ptr::write(addr as *mut u64, header | BINARY_SHARED_MASK) };
+    true
 }
 
 /// # Safety
@@ -1365,7 +1408,7 @@ pub fn bitstring_header_word(bit_len: u64) -> u64 {
 #[inline]
 pub unsafe fn bitstring_bit_len(addr: *const u8) -> u64 {
     let header = unsafe { ptr::read(addr as *const u64) };
-    header >> BITSTRING_BIT_LEN_SHIFT
+    (header & BITSTRING_HEADER_LEN_MASK) >> BITSTRING_BIT_LEN_SHIFT
 }
 
 /// # Safety

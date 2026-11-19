@@ -1,0 +1,96 @@
+#---
+# purpose: "when a binary's owner and the holder it was published to both append, each keeps its own bytes"
+# oracle: self
+# oracle.stamp: d83da948b92679a7
+#---
+#
+# Each publication point stores a fresh binary, small or large. Then the
+# function appends to its original, and appends to what it reads back from the
+# publication. An append may write into the room past a binary's last byte;
+# had both appends written there, the second would overwrite the first. Each
+# result must hold its own suffix, checked against the same binary built anew.
+defmodule Box do
+  defstruct [:v]
+end
+
+defmodule Main do
+  def fresh(:small, seed), do: seed <> "-small"
+  def fresh(:large, seed), do: "0123456789012345678901234567890123456789012345678901234567890123456789" <> seed
+
+  def published(:tuple_field, binary), do: {binary}
+  def published(:struct_field, binary), do: %Box{v: binary}
+  def published(:list_head, binary), do: [binary]
+  def published(:map_key, binary), do: %{binary => 1}
+  def published(:map_value, binary), do: %{v: binary}
+  def published(:closure_capture, binary), do: fn -> binary end
+  def published(:returned_argument, binary), do: keep(binary)
+
+  def published(:cursor, binary) do
+    <<_, rest::binary>> = binary
+    rest
+  end
+
+  def keep(binary), do: binary
+
+  def read_back(:tuple_field, {binary}), do: binary
+  def read_back(:struct_field, %Box{v: binary}), do: binary
+  def read_back(:list_head, [binary]), do: binary
+  def read_back(:map_key, map), do: hd(Map.keys(map))
+  def read_back(:map_value, %{v: binary}), do: binary
+  def read_back(:closure_capture, read), do: read.()
+  def read_back(:returned_argument, binary), do: binary
+  def read_back(:cursor, rest), do: rest
+
+  def expected(:cursor, <<_, rest::binary>>), do: rest
+  def expected(_point, binary), do: binary
+
+  def both_append(point, size) do
+    seed = Atom.to_string(point)
+    binary = fresh(size, seed)
+    stored = published(point, binary)
+    owners = binary <> "-owner"
+    readers = read_back(point, stored) <> "-reader"
+    owners == fresh(size, seed) <> "-owner" || raise("#{point} #{size}: the owner's append lost its bytes")
+
+    readers == expected(point, fresh(size, seed)) <> "-reader" ||
+      raise("#{point} #{size}: the reader's append lost its bytes")
+  end
+
+  def both_append_after_sending_to_self(size) do
+    binary = fresh(size, "self_send")
+    send(self(), binary)
+    owners = binary <> "-owner"
+
+    receive do
+      received ->
+        readers = received <> "-reader"
+        readers == fresh(size, "self_send") <> "-reader" ||
+          raise("self_send #{size}: the reader's append lost its bytes")
+    end
+
+    owners == fresh(size, "self_send") <> "-owner" || raise("self_send #{size}: the owner's append lost its bytes")
+  end
+
+  def main() do
+    points = [
+      :tuple_field,
+      :struct_field,
+      :list_head,
+      :map_key,
+      :map_value,
+      :closure_capture,
+      :returned_argument,
+      :cursor
+    ]
+
+    for point <- points, size <- [:small, :large] do
+      both_append(point, size)
+    end
+
+    both_append_after_sending_to_self(:small)
+    both_append_after_sending_to_self(:large)
+    IO.puts("each holder kept its own bytes")
+  end
+end
+
+Main.main()

@@ -146,7 +146,8 @@ on those chains and holds the one atomic retain. A `BinView`
 (`ValueKind::BINVIEW`, 24 bytes of fields in a 32-byte slot) is the value:
 
 ```text
-offset  0  tagged pointer to its heap's BinRef (the collector traces it)
+offset  0  tagged pointer to its heap's BinRef (the collector traces it),
+           with the view's shared mark in BINARY_SHARED_MASK
 offset  8  bytes_ptr: the window's first byte
 offset 16  bit_len: the window's length in bits
 ```
@@ -228,6 +229,12 @@ paths in `aot_shim.rs`, `ir_interp/backend.rs` and `exec/runtime.rs`). An
 unfrozen buffer has stubs on one heap only, so changing `bytes_len` has no
 concurrent reader. The heap destructor frees `capacity + 1` bytes, frozen or
 not.
+
+Within one process a binary carries a shared mark (see "Shared Lists, Structs
+And Binaries" below). A clear mark says the binary has one holder and, for a
+view, that the view ends at its buffer's `bytes_len`: an in-place append marks
+the view it grew from, and a window marks the view it was cut from. Nothing
+reads the mark yet.
 
 Copied bytes are counted. `HeapAllocStats::shared_bin` records off-heap binary
 buffers, separately from `total` because they are not heap bytes and do not move
@@ -422,7 +429,7 @@ the Cheney forwarding marker (see "GC: Roots, Edges, And Lifetime" below). Littl
 ```text
 Struct:    schema_id << 32
 Closure:   (denotation << 32) | (flags << 4) | (arity << 20)   arity < 4096
-Bitstring: bit_len << 4
+Bitstring: bit_len << 4 | shared mark (BINARY_SHARED_MASK)
 Map:       count << 4                                  (published)
            FLAG(bit 63) | filled << 33 | capacity << 4  (destination, 29-bit fields)
 ```
@@ -775,7 +782,7 @@ destination when the base is in the struct's own layout. It is
 cannot miss. It picks the object to store into, then `CodegenFn::store_field`
 stores each replaced slot in place, the same stores a construction uses. The
 object is the base itself when `rewrite` is `Rewrite` and the base's header
-says it is not shared (see "Shared Lists And Structs"); the update is then the
+says it is not shared (see "Shared Lists, Structs And Binaries"); the update is then the
 stores alone. Otherwise `fz_struct_copy` copies the base. For example,
 `%{p | y: 5}` with `p` a `Point` of fields `x` and `y` is one store at slot 1
 when nothing else holds `p`, and one copy and that store when something may.
@@ -796,7 +803,7 @@ nonfinite payloads before publication. Unfinished maps, internal absence
 (`NULL`), forged nonfinite float payloads, and unregistered atoms also have no
 language comparison semantics and are rejected at comparator entry.
 
-## Shared Lists And Structs
+## Shared Lists, Structs And Binaries
 
 A list cell or a struct may be rewritten in place only when two answers agree.
 The compiler's answer is a `RewritePermission` on the construction:
@@ -877,6 +884,26 @@ when it was stored. An unshared struct is therefore young, which
 `struct_retention_hits`, both reported on `process_exited`; native code bumps
 them inline, at `PROCESS_STRUCT_RETENTION_ATTEMPTS_OFFSET` and
 `PROCESS_STRUCT_RETENTION_HITS_OFFSET`.
+
+A binary's shared mark is `BINARY_SHARED_MASK`, the list link's alias bit,
+in word 0: a small bitstring's header, whose length then reads through
+`BITSTRING_HEADER_LEN_MASK`, and a view's tagged `BinRef` word, which
+`BinView::binref_word` reads with the mark masked off so the collector and a
+deep copy rewrite the pointer and keep the mark. It is set once and never
+cleared (`share_bitstring`, `BinView::share`), and `Heap::share` and
+`publish_contained_parts` reach a binary at the same publish points as a
+struct; native `stored_form` marks a stored binary inline. A view is born by
+its `StubSite`: a filled or grown buffer and an in-place append are born
+clear; a window of a buffer, a message copy and a static literal are born
+shared (`StubSite::born_shared`). A small bitstring is born clear, a message
+copy of one included, since the copy is the receiver's own; a literal image is
+born shared. `fz_bs_read_binary_ref` returning its whole source marks it, as
+the source then has two names. A reduction yield in native code marks the
+yielding function's arguments when it builds their continuation; the
+interpreter keeps its frame across the yield and marks nothing. The process
+counts each binary it marks in `binaries_shared`, reported on
+`process_exited`; native code adds to it inline at
+`PROCESS_BINARIES_SHARED_OFFSET`.
 
 ## GC: Roots, Edges, And Lifetime
 

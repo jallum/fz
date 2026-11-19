@@ -190,6 +190,18 @@ impl StubSite {
         }
     }
 
+    /// Whether a view made here is shared from birth. A window does not own
+    /// the room after its buffer's bytes; a literal is never written; a
+    /// message copy's buffer is frozen and also held by the sender. A view of a
+    /// new buffer, or of one an append just lengthened, is that buffer's only
+    /// view that reaches its end.
+    pub(crate) fn born_shared(self) -> bool {
+        match self {
+            StubSite::WindowOfBuffer | StubSite::MessageCopy | StubSite::StaticLiteral => true,
+            StubSite::AppendedInPlace | StubSite::GrownBuffer | StubSite::FilledBuffer => false,
+        }
+    }
+
     pub(crate) fn code(self) -> u8 {
         self as u8
     }

@@ -20,8 +20,8 @@ use cranelift_codegen::ir::{
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::{DataId, FuncId, Linkage, Module};
 use fz_runtime::any_value::{
-    AnyValue, BITSTRING_BIT_LEN_SHIFT, BITSTRING_BYTES_OFFSET, FALSE_ATOM_ID, SlotLayout, TRUE_ATOM_ID, ValueKind,
-    shared_struct_header_word,
+    AnyValue, BITSTRING_BIT_LEN_SHIFT, BITSTRING_BYTES_OFFSET, BITSTRING_HEADER_LEN_MASK, FALSE_ATOM_ID, SlotLayout,
+    TRUE_ATOM_ID, ValueKind, shared_struct_header_word,
 };
 use fz_runtime::bits::{BINVIEW_BIT_LEN_OFFSET, BINVIEW_BYTES_PTR_OFFSET};
 use fz_runtime::extern_binary::{fz_binary_as_cstring, fz_binary_as_ptr};
@@ -725,8 +725,8 @@ fn load_word<M: cranelift_module::Module>(
         .load(types::I64, MemFlagsData::trusted(), address, offset as i32)
 }
 
-/// The bit length of a binary, read from its header or from its binary view's own
-/// length; `NOT_A_BINARY` for any other value.
+/// The bit length of a binary, read from its header below the shared mark or from
+/// its binary view's own length; `NOT_A_BINARY` for any other value.
 fn emit_binary_bit_len<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
     source_ref: ir::Value,
@@ -737,7 +737,8 @@ fn emit_binary_bit_len<M: cranelift_module::Module>(
         Some(NOT_A_BINARY),
         |body, addr| {
             let header = load_word(body, addr, 0);
-            body.b.ins().ushr_imm_u(header, BITSTRING_BIT_LEN_SHIFT as i64)
+            let length_field = body.b.ins().band_imm_u(header, BITSTRING_HEADER_LEN_MASK as i64);
+            body.b.ins().ushr_imm_u(length_field, BITSTRING_BIT_LEN_SHIFT as i64)
         },
         |body, addr| load_word(body, addr, BINVIEW_BIT_LEN_OFFSET),
     )
@@ -1199,7 +1200,7 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
                 binding,
                 CodegenValue::AnyRef(_)
                     | CodegenValue::Known {
-                        kind: ValueKind::LIST,
+                        kind: ValueKind::LIST | ValueKind::BITSTRING | ValueKind::BINVIEW,
                         ..
                     }
             ) {

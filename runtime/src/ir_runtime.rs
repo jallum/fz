@@ -1670,9 +1670,9 @@ pub extern "C" fn fz_bs_read_binary_ref(
     let end = field_end(field_spec, size_value, pos, bytes, bit_len)
         .unwrap_or_else(|| panic!("fz_bs_read_binary_ref: the field at bit {pos} does not fit"));
     let (pos, end, bit_len) = (pos as usize, end as usize, bit_len as usize);
-    // A field that spans the whole source is the source.
+    // A field that spans the whole source is the source, under a second name.
     if pos == 0 && end == bit_len {
-        return source_ref;
+        return fz_mark_published_ref_aliased(process, source_ref);
     }
     let needed_bits = end - pos;
     let process = unsafe { &mut *process };

@@ -1,0 +1,104 @@
+#---
+# purpose: "each place a binary gains a second holder marks it shared, for a small binary and for a view of a buffer"
+# oracle: self
+# oracle.stamp: ce13021c195392ae
+#---
+#
+# Each publication runs in a process of its own, spawned in turn, once with a
+# small binary and once with a large one. The process builds the binary with
+# `<>`, publishes it at one place, and sends what it published to the main
+# process as its last act, so nothing but the publication can mark it.
+#
+# The processes' `binaries_shared` counts, in spawn order:
+#   unpublished               0 0   a binary sent bare is copied, not marked
+#   tuple, struct, list head,
+#   map key, map value,
+#   closure capture           2 1   the store marks the binary; the message's
+#                                   copy of a small binary is stored in the
+#                                   copied container and marked there too, and
+#                                   a large one's copy is a view born shared
+#   call_share                1 1   a call made while the caller still holds it
+#   self_send                 0 0   the mailbox takes the sender's own binary,
+#                                   which the sender no longer reads: it keeps
+#                                   one holder
+#   reduction_yield           1 1   natively, the continuation a yield builds
+#                                   from the yielding function's arguments;
+#                                   the interpreter keeps its frame across a
+#                                   yield and marks nothing (0 0)
+defmodule Box do
+  defstruct [:v]
+end
+
+defmodule Main do
+  def fresh(:small, seed), do: seed <> "-small"
+  def fresh(:large, seed), do: "0123456789012345678901234567890123456789012345678901234567890123456789" <> seed
+
+  def digits(), do: "0123456789012345678901234567890123456789012345678901234567890123456789"
+
+  def publish(:unpublished, binary, parent), do: send(parent, binary)
+  def publish(:tuple_field, binary, parent), do: send(parent, {binary})
+  def publish(:struct_field, binary, parent), do: send(parent, %Box{v: binary})
+  def publish(:list_head, binary, parent), do: send(parent, [binary])
+  def publish(:map_key, binary, parent), do: send(parent, %{binary => 1})
+  def publish(:map_value, binary, parent), do: send(parent, %{v: binary})
+  def publish(:closure_capture, binary, parent), do: send(parent, fn -> binary end)
+
+  def publish(:call_share, binary, parent) do
+    keep(binary)
+    send(parent, binary)
+  end
+
+  def publish(:self_send, binary, parent) do
+    send(self(), binary)
+
+    receive do
+      received -> send(parent, received)
+    end
+  end
+
+  def publish(:reduction_yield, binary, parent), do: send(parent, hold(binary, 200_000))
+
+  def keep(binary), do: binary
+
+  def hold(binary, 0), do: binary
+  def hold(binary, n), do: hold(binary, n - 1)
+
+  def shown(published) when is_function(published), do: published.()
+  def shown(published), do: published
+
+  def run_alone(point, size) do
+    me = self()
+
+    spawn(fn ->
+      seed = Atom.to_string(point)
+      publish(point, fresh(size, seed), me)
+    end)
+
+    receive do
+      published ->
+        shown = inspect({point, size, shown(published)})
+        IO.puts(String.replace(shown, digits(), "<digits>"))
+    end
+  end
+
+  def main() do
+    points = [
+      :unpublished,
+      :tuple_field,
+      :struct_field,
+      :list_head,
+      :map_key,
+      :map_value,
+      :closure_capture,
+      :call_share,
+      :self_send,
+      :reduction_yield
+    ]
+
+    for point <- points, size <- [:small, :large] do
+      run_alone(point, size)
+    end
+  end
+end
+
+Main.main()

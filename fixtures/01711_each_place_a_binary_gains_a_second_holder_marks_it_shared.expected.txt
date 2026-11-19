@@ -1,0 +1,20 @@
+{:unpublished, :small, "unpublished-small"}
+{:unpublished, :large, "<digits>unpublished"}
+{:tuple_field, :small, {"tuple_field-small"}}
+{:tuple_field, :large, {"<digits>tuple_field"}}
+{:struct_field, :small, %Box{v: "struct_field-small"}}
+{:struct_field, :large, %Box{v: "<digits>struct_field"}}
+{:list_head, :small, ["list_head-small"]}
+{:list_head, :large, ["<digits>list_head"]}
+{:map_key, :small, %{"map_key-small" => 1}}
+{:map_key, :large, %{"<digits>map_key" => 1}}
+{:map_value, :small, %{v: "map_value-small"}}
+{:map_value, :large, %{v: "<digits>map_value"}}
+{:closure_capture, :small, "closure_capture-small"}
+{:closure_capture, :large, "<digits>closure_capture"}
+{:call_share, :small, "call_share-small"}
+{:call_share, :large, "<digits>call_share"}
+{:self_send, :small, "self_send-small"}
+{:self_send, :large, "<digits>self_send"}
+{:reduction_yield, :small, "reduction_yield-small"}
+{:reduction_yield, :large, "<digits>reduction_yield"}

@@ -31,8 +31,8 @@
 
 use crate::alloc_site::RuntimeAllocSite;
 use crate::any_value::{
-    ValueKind, bitstring_bit_len as any_bitstring_bit_len, bitstring_bytes_ptr, heap_kind_from_tagged,
-    heap_object_word, heap_word_addr,
+    BINARY_SHARED_MASK, ValueKind, bitstring_bit_len as any_bitstring_bit_len, bitstring_bytes_ptr,
+    heap_kind_from_tagged, heap_object_word, heap_word_addr,
 };
 use crate::heap::{binary_buffer_allocated, binary_buffer_freed, poisoned};
 use crate::sync::{AtomicUsize, Ordering, fence};
@@ -462,7 +462,8 @@ impl BinRef {
 /// The object a binary value above the inline threshold points at: a
 /// byte-aligned window of a `SharedBin`'s bytes, reached through its heap's
 /// BinRef. `BINVIEW_BYTES` total, of which the first 24 are fields:
-///   offset 0..8    binref:    u64 tagged pointer to this heap's BinRef
+///   offset 0..8    binref:    u64 tagged pointer to this heap's BinRef, with
+///                             `BINARY_SHARED_MASK` above its kind field
 ///   offset 8..16   bytes_ptr: address of the window's first byte
 ///   offset 16..24  bit_len:   u64 length of the window in bits
 ///
@@ -497,13 +498,42 @@ impl BinView {
         self.0.as_ptr()
     }
 
-    /// The tagged pointer to this view's BinRef.
-    pub(crate) fn binref_word(&self) -> u64 {
+    /// The view's first word as stored: the BinRef pointer and the shared mark.
+    fn first_word(&self) -> u64 {
         unsafe { read(self.as_raw().add(BINVIEW_BINREF_OFFSET) as *const u64) }
     }
 
+    /// The tagged pointer to this view's BinRef.
+    pub(crate) fn binref_word(&self) -> u64 {
+        self.first_word() & !BINARY_SHARED_MASK
+    }
+
+    /// Point this view at `word`, a tagged pointer to a BinRef, keeping its
+    /// shared mark.
     pub(crate) fn binref_word_set(&self, word: u64) {
-        unsafe { write(self.as_raw().add(BINVIEW_BINREF_OFFSET) as *mut u64, word) }
+        let mark = self.first_word() & BINARY_SHARED_MASK;
+        unsafe { write(self.as_raw().add(BINVIEW_BINREF_OFFSET) as *mut u64, word | mark) }
+    }
+
+    /// Whether this view may have a second holder, or may not own the room
+    /// after its last byte.
+    pub fn is_shared(&self) -> bool {
+        self.first_word() & BINARY_SHARED_MASK != 0
+    }
+
+    /// Mark this view shared. Answers whether this call marked it.
+    pub fn share(&self) -> bool {
+        let word = self.first_word();
+        if word & BINARY_SHARED_MASK != 0 {
+            return false;
+        }
+        unsafe {
+            write(
+                self.as_raw().add(BINVIEW_BINREF_OFFSET) as *mut u64,
+                word | BINARY_SHARED_MASK,
+            )
+        };
+        true
     }
 
     /// The BinRef that holds the reference to this view's buffer.
@@ -525,9 +555,13 @@ impl BinView {
         unsafe { read(self.as_raw().add(BINVIEW_BIT_LEN_OFFSET) as *const u64) }
     }
 
-    fn init(&self, binref: BinRef, bytes_ptr: *const u8, bit_len: u64) {
+    fn init(&self, binref: BinRef, bytes_ptr: *const u8, bit_len: u64, shared: bool) {
+        let mark = if shared { BINARY_SHARED_MASK } else { 0 };
         unsafe {
-            write(self.as_raw().add(BINVIEW_BINREF_OFFSET) as *mut u64, binref.word());
+            write(
+                self.as_raw().add(BINVIEW_BINREF_OFFSET) as *mut u64,
+                binref.word() | mark,
+            );
             write(self.as_raw().add(BINVIEW_BYTES_PTR_OFFSET) as *mut *const u8, bytes_ptr);
             write(self.as_raw().add(BINVIEW_BIT_LEN_OFFSET) as *mut u64, bit_len);
         }
@@ -568,7 +602,7 @@ pub fn alloc_binref(heap: &mut Heap, handle: SharedBinHandle, site: StubSite) ->
 
 /// Allocate a view on `heap` of `bit_len` bits of `binref`'s buffer starting at
 /// `bytes_ptr`. It takes no reference and joins no chain; `site` names what is
-/// making the view and the heap counts it.
+/// making the view, whether it is born shared, and the heap counts it.
 /// A view only ever points at a BinRef of its own heap.
 pub fn alloc_view(heap: &mut Heap, binref: BinRef, bytes_ptr: *const u8, bit_len: u64, site: StubSite) -> BinView {
     let shared = unsafe { &*binref.shared_raw() };
@@ -579,7 +613,7 @@ pub fn alloc_view(heap: &mut Heap, binref: BinRef, bytes_ptr: *const u8, bit_len
     );
     let p = heap.alloc_at(RuntimeAllocSite::BinView, BINVIEW_BYTES);
     let view = unsafe { BinView::from_raw(p) };
-    view.init(binref, bytes_ptr, bit_len);
+    view.init(binref, bytes_ptr, bit_len, site.born_shared());
     heap.stubs_made.record(site);
     view
 }

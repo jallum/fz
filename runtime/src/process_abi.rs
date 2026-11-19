@@ -22,6 +22,11 @@ pub const PROCESS_STRUCT_RETENTION_HITS_OFFSET: i32 = offset_of!(Process, struct
 /// heap field that inline allocation updates.
 pub const PROCESS_HEAP_OFFSET: i32 = offset_of!(Process, heap) as i32;
 
+/// `Heap::binaries_shared`, which compiled code adds to when it marks a binary
+/// shared without a runtime call.
+pub const PROCESS_BINARIES_SHARED_OFFSET: i32 =
+    (offset_of!(Process, heap) + offset_of!(crate::heap::Heap, binaries_shared)) as i32;
+
 /// The handler stack's `top` and `end`, which a compiled `try` reads and
 /// writes to push and pop its handler record without a runtime call.
 pub const PROCESS_HANDLER_TOP_OFFSET: i32 = (offset_of!(Process, handlers) + HANDLER_STACK_TOP_OFFSET) as i32;
