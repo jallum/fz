@@ -1,7 +1,9 @@
 {
   "assignee": "Jason Allum",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-mue.21"
+  ],
   "created": "2026-11-18T20:43:59Z",
   "description": "OTP json.erl's decoder (value/stack/acc continuation shape) fails to compile. run/build: 'native attempted to materialize absent value as runtime value with ty None'; interp: 'backend value was absent and cannot be materialized'. Blocks the whole decoder even with every other gap stripped. Reproducer (28 lines, delta-debugged): /Users/j5n/Workspace/fz-otp-json/punch/01_backend_absent_value_cps.fz\n\nPart of fz-mue (fz runs OTP's json.erl unchanged). Port and harness: /Users/j5n/Workspace/fz-otp-json/.",
   "id": "fz-mue.1",
@@ -11,5 +13,5 @@
   "status": "in_progress",
   "title": "A continuation-passing decoder compiles: no absent value is materialized",
   "type": "bug",
-  "updated_at": "2026-11-18T20:44:59Z"
+  "updated_at": "2026-11-19T01:05:07Z"
 }
