@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-9zq.6"
@@ -16,8 +16,8 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Kernel.max/2 and Kernel.min/2 compare any two terms, as in Elixir",
   "type": "feature",
-  "updated_at": "2026-11-19T04:33:40Z"
+  "updated_at": "2026-11-19T04:47:34Z"
 }
