@@ -69,6 +69,15 @@ use sigs::{ArrowSig, ClosureLit, ListSig, MapSig, MergeSig, PosMeet, ResourceSig
 /// `(brand, captures, args, ret)`, the brand `None` for an anonymous literal.
 pub(crate) type LitArrowShape = (Option<FnId>, Vec<Ty>, Vec<Ty>, Ty);
 
+/// How far a runtime test reads a type: below its shapes, or, at a back edge
+/// of a recursive type, its shapes alone. An axis with no clauses has nothing
+/// below it, so both readings of it are one.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Reading {
+    Below,
+    Shapes,
+}
+
 /// How far demand reached a position an addressed convergence class is
 /// taken at. Each reach keeps more of the value than the one before it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -1269,6 +1278,7 @@ impl Types {
     /// Memoized — a derived fact about the type, not recomputed per lane.
     pub fn value_lane_repr(&mut self, ty: Ty) -> Ty {
         self.memoized(
+            recursive::Mapper::ValueLane,
             |t| &mut t.value_lane_reprs,
             ty,
             |t| {
@@ -1298,6 +1308,7 @@ impl Types {
     /// the surface is what a call may be refined against. Memoized.
     pub(crate) fn structural_surface(&mut self, ty: Ty) -> Ty {
         self.memoized(
+            recursive::Mapper::StructuralSurface,
             |t| &mut t.structural_surfaces,
             ty,
             |t| {
@@ -1891,6 +1902,9 @@ impl Types {
     }
 
     pub fn convergence_class(&mut self, a: &Ty) -> Ty {
+        if self.is_recursive_member(a) {
+            return *a;
+        }
         let any = self.any();
         let descr = self.descr(a);
         if descr.as_pure_list(any).is_some() {
@@ -1943,7 +1957,7 @@ impl Types {
     /// callable captured into a closure the body builds would be typed by
     /// every caller's arguments at once.
     fn convergence_class_at(&mut self, a: &Ty, path: &[AddrStep], reach: ClassReach, collapse: KeyCollapse) -> Ty {
-        if self.ctx().attrs(a).path_free() {
+        if self.ctx().attrs(a).path_free() || self.is_recursive_member(a) {
             return *a;
         }
         let descr = self.descr(a);
@@ -2190,6 +2204,9 @@ impl Types {
         path: &[AddrStep],
         collapse: KeyCollapse,
     ) -> Ty {
+        if self.is_recursive_member(&ty) {
+            return ty;
+        }
         // The two axes ask for two collapses and the DISPATCH axis wins where
         // they meet: `Whole` there means a question reads the value itself, so
         // the key keeps it verbatim, which is at least as precise as the class
@@ -2775,6 +2792,31 @@ impl Types {
     }
 
     pub(crate) fn runtime_type_predicate(&self, a: &Ty) -> RuntimeTypePredicate {
+        self.runtime_type_predicate_along(a, &mut Vec::new())
+    }
+
+    /// The test for `a`, reached through the recursive members on `entered`.
+    /// A member met again is a back edge, and a finite test reads it by its
+    /// shapes alone: the coarse reading every consumer already takes as
+    /// admitting whatever lies below it.
+    fn runtime_type_predicate_along(&self, a: &Ty, entered: &mut Vec<Ty>) -> RuntimeTypePredicate {
+        let member = self.is_recursive_member(a);
+        let reading = if member && entered.contains(a) {
+            Reading::Shapes
+        } else {
+            Reading::Below
+        };
+        if member && reading == Reading::Below {
+            entered.push(*a);
+        }
+        let predicate = self.runtime_type_predicate_reading(a, reading, entered);
+        if member && reading == Reading::Below {
+            entered.pop();
+        }
+        predicate
+    }
+
+    fn runtime_type_predicate_reading(&self, a: &Ty, reading: Reading, entered: &mut Vec<Ty>) -> RuntimeTypePredicate {
         let descr = self.descr(a);
         let widen_non_structs = runtime_type_predicate_widens_non_structs(descr);
         let (plain_maps, tagged_structs) = runtime_type_predicate_map_modules(self.ctx(), descr);
@@ -2810,13 +2852,17 @@ impl Types {
             },
             lists: if widen_non_structs {
                 ListShapes::any()
+            } else if reading == Reading::Shapes && !descr.lists.is_empty() {
+                ListShapes::shape_only(runtime_type_predicate_list_shapes(descr))
             } else {
-                self.runtime_type_predicate_lists(descr)
+                self.runtime_type_predicate_lists(descr, entered)
             },
             tuples: if widen_non_structs {
                 TupleShapes::any()
+            } else if reading == Reading::Shapes && !descr.tuples.is_empty() {
+                TupleShapes::arity_only(runtime_type_predicate_tuple_arities(descr))
             } else {
-                self.runtime_type_predicate_tuples(descr)
+                self.runtime_type_predicate_tuples(descr, entered)
             },
             named_structs,
             // A struct with no name is a tuple, so the unnamed structs pass
@@ -2833,8 +2879,10 @@ impl Types {
             },
             callables: if widen_non_structs {
                 CallableShapes::any()
+            } else if reading == Reading::Shapes && !descr.funcs.is_empty() {
+                CallableShapes::of_arities(callable_arities(&descr.funcs))
             } else {
-                self.runtime_type_predicate_callables(descr)
+                self.runtime_type_predicate_callables(descr, entered)
             },
             resources: widen_non_structs || !descr.resources.is_empty(),
             opaques: if widen_non_structs {
@@ -2910,7 +2958,7 @@ impl Types {
     ///
     /// A shape set with no `NonEmpty` puts no head question at all: `[]` is a
     /// single value and there is no cons cell to read.
-    fn runtime_type_predicate_lists(&self, descr: &Descr) -> ListShapes {
+    fn runtime_type_predicate_lists(&self, descr: &Descr, entered: &mut Vec<Ty>) -> ListShapes {
         let shapes = runtime_type_predicate_list_shapes(descr);
         if !shapes.contains(&ListShape::NonEmpty) {
             return ListShapes::exact(shapes, Vec::new());
@@ -2932,7 +2980,7 @@ impl Types {
                 // head question and the other clauses' heads still stand.
                 continue;
             };
-            heads.push(self.runtime_type_predicate(&elem));
+            heads.push(self.runtime_type_predicate_along(&elem, entered));
         }
         if heads.is_empty() {
             // Every clause admits a cons cell that no element type describes,
@@ -2959,7 +3007,7 @@ impl Types {
     /// emitted test could not honour. Those degrade the whole axis to the
     /// arity-only reading, which is what every clause answered before
     /// fz-kdt.119.
-    fn runtime_type_predicate_tuples(&self, descr: &Descr) -> TupleShapes {
+    fn runtime_type_predicate_tuples(&self, descr: &Descr, entered: &mut Vec<Ty>) -> TupleShapes {
         let mut shapes = Vec::with_capacity(descr.tuples.len());
         for clause in &descr.tuples {
             if clause.pos.len() != 1 || !clause.neg.is_empty() {
@@ -2969,7 +3017,7 @@ impl Types {
                 clause.pos[0]
                     .elems
                     .iter()
-                    .map(|elem| self.runtime_type_predicate(elem))
+                    .map(|elem| self.runtime_type_predicate_along(elem, entered))
                     .collect::<Vec<_>>(),
             );
         }
@@ -2990,7 +3038,7 @@ impl Types {
     /// empty and the boundary drops it. `callable_identity_literal` refuses
     /// clauses that name no literal, subtract one, or name an anonymous
     /// literal.
-    fn runtime_type_predicate_callables(&self, descr: &Descr) -> CallableShapes {
+    fn runtime_type_predicate_callables(&self, descr: &Descr, entered: &mut Vec<Ty>) -> CallableShapes {
         let mut shapes = Vec::with_capacity(descr.funcs.len());
         for clause in &descr.funcs {
             let Some(lit) = callable_identity_literal(clause) else {
@@ -3004,7 +3052,7 @@ impl Types {
                 captures: lit
                     .captures
                     .iter()
-                    .map(|capture| self.runtime_type_predicate(capture))
+                    .map(|capture| self.runtime_type_predicate_along(capture, entered))
                     .collect(),
             });
         }
@@ -3317,8 +3365,15 @@ impl Types {
         if sigma.is_empty() || !self.has_vars(a) {
             return self.unchanged(*a);
         }
-        let d = instantiate(self, *a, sigma);
-        self.intern(d)
+        self.map_type(
+            || recursive::Mapper::Instantiate(sigma.clone()),
+            *a,
+            |t| {
+                let d = instantiate(t, *a, sigma);
+                t.intern(d)
+            },
+        )
+        .0
     }
 
     /// UNIFY `pattern` against `witness`: the two describe the SAME thing, so
@@ -3532,13 +3587,14 @@ impl Types {
         if let Some(&cached) = self.self_nested_closure_folds.get(&key) {
             return cached;
         }
-        let descr = fold_self_nested_closures(self, *a, enclosing);
-        let folded = if descr == *self.descr(a) {
-            *a
-        } else {
-            self.intern(descr)
-        };
-        self.self_nested_closure_folds.insert(key, folded);
+        let mapper = || recursive::Mapper::FoldSelfNestedClosures(enclosing.to_vec());
+        let (folded, settled) = self.map_type(mapper, *a, |t| {
+            let descr = fold_self_nested_closures(t, *a, enclosing);
+            if descr == *t.descr(a) { *a } else { t.intern(descr) }
+        });
+        if settled {
+            self.self_nested_closure_folds.insert(key, folded);
+        }
         folded
     }
 
@@ -3552,6 +3608,7 @@ impl Types {
     /// reach a test are those of this reading. Memoized.
     pub fn runtime_reading(&mut self, a: &Ty) -> Ty {
         self.memoized(
+            recursive::Mapper::RuntimeReading,
             |t| &mut t.runtime_readings,
             *a,
             |t| {
@@ -3586,6 +3643,7 @@ impl Types {
     /// distributes over union. Memoized.
     pub fn widen_literals(&mut self, a: &Ty) -> Ty {
         self.memoized(
+            recursive::Mapper::WidenLiterals,
             |t| &mut t.literal_widenings,
             *a,
             |t| {
@@ -4558,6 +4616,21 @@ fn runtime_envelope(
     if is_envelope_leaf(types.descr(&ty)) {
         return types.unchanged(ty);
     }
+    let mapper = || recursive::Mapper::RuntimeEnvelope(polarity, purpose, bounds.clone());
+    types
+        .map_type(mapper, ty, |types| {
+            runtime_envelope_of(types, ty, polarity, purpose, bounds)
+        })
+        .0
+}
+
+fn runtime_envelope_of(
+    types: &mut Types,
+    ty: Ty,
+    polarity: RuntimeEnvelopePolarity,
+    purpose: RuntimeEnvelopePurpose,
+    bounds: &Sigma<Ty>,
+) -> Ty {
     let mut descr = types.descr(&ty).clone();
     if !descr.vars.values.is_empty() {
         match (polarity, descr.vars.cofinite) {
@@ -4900,6 +4973,15 @@ fn erase_closure_identity(t: &mut Types, a: Ty) -> Ty {
     if !t.ctx().attrs(&a).mentions_closure_literal() {
         return t.unchanged(a);
     }
+    t.map_type(
+        || recursive::Mapper::EraseClosureIdentity,
+        a,
+        |t| erase_closure_identity_of(t, a),
+    )
+    .0
+}
+
+fn erase_closure_identity_of(t: &mut Types, a: Ty) -> Ty {
     let base = t.descr(&a).clone();
     let mut erased = map_recursive_inputs_with(t, base, &mut erase_closure_identity);
     for conj in &mut erased.funcs {
@@ -4984,7 +5066,7 @@ fn runtime_reading(t: &mut Types, a: Ty) -> Descr {
     if base.looks_empty() {
         return Descr::none();
     }
-    let mut erased = map_recursive_inputs(t, base, runtime_reading);
+    let mut erased = map_recursive_inputs_with(t, base, &mut |t, nested| t.runtime_reading(&nested));
     erased.brands = FiniteSet::any();
     erased
 }
@@ -5200,13 +5282,6 @@ fn collect_subst_into(
     for (p, w, child_side) in children {
         collect_subst_into(t, p, w, child_side, target, sigma);
     }
-}
-
-fn map_recursive_inputs(t: &mut Types, d: Descr, f: fn(&mut Types, Ty) -> Descr) -> Descr {
-    map_recursive_inputs_with(t, d, &mut |t, nested| {
-        let d = f(t, nested);
-        t.intern(d)
-    })
 }
 
 /// `d` with each child type but a closure's captures replaced by what `f`

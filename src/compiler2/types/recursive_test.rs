@@ -1,5 +1,7 @@
 use super::*;
-use crate::compiler2::types::Types;
+use crate::compiler2::types::addressed::AddrStep;
+use crate::compiler2::types::{ClassReach, KeyCollapse, Sigma, Types};
+use crate::dispatch_matrix::demand::DispatchDemand;
 
 /// `T = nil | {int, T, T}`: a binary tree of ints.
 fn tree(t: &mut Types) -> Ty {
@@ -209,4 +211,164 @@ fn an_operation_that_meets_itself_builds_a_recursive_type() {
         both, tree,
         "a tree keyed by ints or :a, that is also keyed by ints or :b, is keyed by ints"
     );
+}
+
+/// `T = nil | {label, T, T}`.
+fn labelled_tree(t: &mut Types, label: Ty) -> Ty {
+    t.recursive(1, |t, me| {
+        let nil = t.nil();
+        let node = t.tuple(&[label, me[0], me[0]]);
+        vec![t.union(nil, node)]
+    })[0]
+}
+
+#[test]
+fn widening_literals_maps_every_unfolding() {
+    let mut t = Types::new();
+    let a = t.atom_lit("a");
+    let tree = labelled_tree(&mut t, a);
+    let atom = t.atom();
+    let widened = t.recursive(1, |t, me| {
+        let node = t.tuple(&[atom, me[0], me[0]]);
+        vec![t.union(atom, node)]
+    })[0];
+    assert_eq!(t.widen_literals(&tree), widened, "every :a and every nil reads as atom");
+}
+
+#[test]
+fn readings_that_change_nothing_return_the_recursive_type() {
+    let mut t = Types::new();
+    let tree = tree(&mut t);
+    assert_eq!(t.runtime_reading(&tree), tree);
+    assert_eq!(t.value_lane_repr(tree), tree);
+    assert_eq!(t.structural_surface(tree), tree);
+    assert_eq!(t.erase_closure_identity(&tree), tree);
+    assert_eq!(t.fold_self_nested_closures(&tree), tree);
+}
+
+#[test]
+fn instantiating_a_recursive_type_substitutes_every_unfolding() {
+    let mut t = Types::new();
+    let alpha = t.type_var(TypeVarId(7));
+    let generic = labelled_tree(&mut t, alpha);
+    let int = t.int();
+    let mut sigma = Sigma::default();
+    sigma.insert(TypeVarId(7), int);
+    let tree = tree(&mut t);
+    assert_eq!(t.instantiate(&generic, &sigma), tree);
+}
+
+#[test]
+fn the_runtime_envelope_of_a_recursive_type_is_recursive() {
+    let mut t = Types::new();
+    let tree = tree(&mut t);
+    assert_eq!(
+        t.runtime_type_test_envelope(tree),
+        tree,
+        "a tree of ints is testable as it stands"
+    );
+    let alpha = t.type_var(TypeVarId(7));
+    let generic = labelled_tree(&mut t, alpha);
+    let envelope = t.runtime_envelope(generic);
+    assert!(!t.has_vars(&envelope), "the envelope reads every variable away");
+    assert!(
+        t.is_subtype(&tree, &envelope),
+        "and still holds every tree a variable could stand for"
+    );
+}
+
+#[test]
+fn refining_a_recursive_type_by_itself_is_itself() {
+    let mut t = Types::new();
+    let tree = tree(&mut t);
+    let int = t.int();
+    let node = t.tuple(&[int, tree, tree]);
+    assert_eq!(t.refine_widen(&tree, &tree), tree);
+    let refined = t.refine_widen(&node, &tree);
+    assert!(t.is_subtype(&node, &refined) && t.is_subtype(&tree, &refined));
+}
+
+#[test]
+fn a_variable_inside_a_recursive_type_is_addressed_at_its_first_occurrence() {
+    let mut t = Types::new();
+    let alpha = t.type_var(TypeVarId(7));
+    let generic = labelled_tree(&mut t, alpha);
+    let mut inputs = [generic, alpha];
+    t.address_inputs(&mut inputs);
+    let [tree, repeat] = inputs;
+    let named = t.free_var_ids(&tree);
+    assert_eq!(named.len(), 1, "one variable, however many unfoldings hold it");
+    assert_eq!(t.free_var_ids(&repeat), named, "a repeat reuses the first address");
+    assert!(t.ctx().attrs(&tree).recursive());
+}
+
+/// `V = {int, [V]}`: a node with a list of children, every one a node.
+fn rose(t: &mut Types) -> Ty {
+    t.recursive(1, |t, me| {
+        let int = t.int();
+        let children = t.list(me[0]);
+        vec![t.tuple(&[int, children])]
+    })[0]
+}
+
+#[test]
+fn a_path_stops_at_a_recursive_type() {
+    let mut t = Types::new();
+    let rose = rose(&mut t);
+    let int = t.int();
+    let held = t.tuple(&[int, rose]);
+    let path = [AddrStep::Param(0)];
+    for reach in [ClassReach::Freight, ClassReach::Demanded, ClassReach::Returned] {
+        let class = t.convergence_class_at(&held, &path, reach, KeyCollapse::Recursive);
+        assert_eq!(class, held, "the recursive type stands whole where the path entered it");
+    }
+    assert_eq!(t.convergence_class(&held), held);
+    let demand = DispatchDemand::TupleFields([(1, DispatchDemand::Ignore)].into_iter().collect());
+    let keyed = t.convergence_collapse_evidence_inputs(&[held], &[demand]);
+    assert_eq!(keyed, vec![held]);
+}
+
+#[test]
+fn a_runtime_test_reads_a_recursive_type_to_its_first_back_edge() {
+    let mut t = Types::new();
+    let tree = tree(&mut t);
+    let is_tree = t.runtime_type_predicate(&tree);
+    let (nil, int, atom, any) = (t.nil(), t.int(), t.atom(), t.any());
+    let cut = t.tuple(&[int, any, any]);
+    let cut = t.union(nil, cut);
+    assert!(
+        is_tree.contained_in(&t.runtime_type_predicate(&cut)),
+        "never coarser than the type a depth cut leaves behind"
+    );
+    let wrong_label = t.tuple(&[atom, tree, tree]);
+    let is_wrong = t.runtime_type_predicate(&wrong_label);
+    assert!(
+        !is_wrong.overlaps(&is_tree),
+        "the root is read in full: {{:x, _, _}} is no tree"
+    );
+    let node = t.tuple(&[int, tree, tree]);
+    assert!(t.runtime_type_predicate(&node).contained_in(&is_tree));
+}
+
+#[test]
+fn the_canonical_form_of_a_recursive_type_is_the_same_in_every_world() {
+    let labels = |_| String::new();
+    let render = |build: fn(&mut Types) -> Ty| {
+        let mut t = Types::new();
+        let _unrelated = chain(&mut t);
+        let ty = build(&mut t);
+        crate::compiler2::types::canon::TyCanon::new(&labels).render(&t, ty)
+    };
+    let tree_text = render(tree);
+    assert_eq!(
+        tree_text,
+        render(|t| {
+            let tree = tree(t);
+            let (nil, int) = (t.nil(), t.int());
+            let leaf = t.tuple(&[int, nil, nil]);
+            t.union(leaf, tree)
+        })
+    );
+    assert_ne!(tree_text, render(chain));
+    assert!(tree_text.contains('μ'), "{tree_text}");
 }
