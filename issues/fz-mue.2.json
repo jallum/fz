@@ -5,6 +5,8 @@
     "fz-9zq.2"
   ],
   "blocks": [],
+  "closed_at": "2026-11-19T01:55:37Z",
+  "close_reason": "Merged in #780",
   "created": "2026-11-18T20:43:59Z",
   "description": "The same CPS shape with a list stack and a bare accumulator exhausts the 50,000-job fact-wait budget on interp/run/build. It compiles only when every threaded accumulator passes through an extern typed any (a type eraser), i.e. polyvariant specialization does not converge on the literal OTP algorithm. Reproducer: /Users/j5n/Workspace/fz-otp-json/punch/02_budget_cps_list_stack.fz\n\nPart of fz-mue (fz runs OTP's json.erl unchanged). Port and harness: /Users/j5n/Workspace/fz-otp-json/.",
   "id": "fz-mue.2",
@@ -17,8 +19,8 @@
     }
   ],
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "A continuation-passing decoder with a list stack specializes within the budget",
   "type": "bug",
-  "updated_at": "2026-11-18T23:22:44Z"
+  "updated_at": "2026-11-19T01:55:37Z"
 }
