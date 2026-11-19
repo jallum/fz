@@ -2,7 +2,7 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
-  "closed_at": "2026-11-19T00:02:13Z",
+  "closed_at": "2026-11-19T01:42:51Z",
   "created": "2026-11-17T20:59:47Z",
   "description": "Found investigating fz-sc8.238. A map whose struct module atom is computed at run time (Map.put(m, :__struct__, String.to_atom(\"Elixir.S\"))), or picked among written modules, named a module no type names. So the schema was absent: the map printed as a map, and missed S's defimpl (Protocol.UndefinedError), where Elixir prints %S{...} and dispatches.\n\nRule (user approved 2026-11-18 via Callables; page https://claude.ai/artifact/Phar2f3mC1XWeftr8tNZB8): a program carries the struct schema of every module whose atom it can hold.\n- A runtime-root executable adds the modules whose atoms its body writes.\n- The fz_binary_to_atom extern (behind String.to_atom) adds every nameable module.\n- Macro roots add neither.\nThis supersedes option B (a type trigger on __struct__), which failed the gate because is_struct, is_exception and %{__struct__: m} patterns give the same type.\n\nThe user approved the distiller pin rises: requests (46,264, 46,552, 26) → (46,265, 46,553, 26); derivations 19,564 → 19,576; reads handed 155,014 → 155,045.\n\nDone when: oracle fixture 01766 prints such a map as %S{...} and dispatches it to S's defimpl, on interp, run and build. PR #769.",
   "id": "fz-sc8.242",
@@ -19,8 +19,8 @@
     }
   ],
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "A map whose struct module is known only at run time prints and dispatches as that struct",
   "type": "task",
-  "updated_at": "2026-11-19T00:02:30Z"
+  "updated_at": "2026-11-19T01:42:51Z"
 }
