@@ -4,6 +4,7 @@
     "fz-mue.1"
   ],
   "blocks": [],
+  "closed_at": "2026-11-19T03:27:32Z",
   "created": "2026-11-19T01:05:07Z",
   "description": "The user accepted #746's 00911 rise on condition that a ticket brings it back down. The user approved the plan on 2026-11-19 (/Users/j5n/Workspace/fz-mue.21.html).\n\nMechanism (A/B of 00911's backend dumps before and after #746): Enum.reduce/3's lambda (lib/enum.fz:54-57), fn entry, acc -\u003e {:cont, reducer.(entry, acc)} end, lowers v3 = const :cont before the reducer call and builds tuple [v3, v4] after it, so the continuation entry captures v3. Before #746 the consumer (List.reduce_step/3, whose key slot is spec-typed any and which reads only field 1) demanded fields(ignore, whole), so v3 had no lane. Since #746, read_against_type reads that demand as Whole, so v3 takes a RawAtom slot in every continuation frame: __e149 grows from 32 to 48 bytes (20000 allocs), __e146/__e147 from 128 to 192, the park from 320 to 336, and the 3rd yield from 96160 to 128160. The extra minor yield follows from those 320000 extra young bytes and the young_bytes \u003e= live_baseline trigger (runtime/src/heap/imp.rs:141-155).\n\nWhy: a ground constant has no effect, and the code after a call can produce it for free, so carrying it in a heap frame across the call is pure cost.\n\nWhat: when a call splits a block in lowering (plan_steps / plan_continuation, src/compiler2/jobs/body.rs), a ground Const step before the split whose value is used only after it moves into the continuation. It keeps its single definition, and compute_entry_captures no longer captures it. A constant used on both sides of the call stays captured.\n\nNot built: 'a singleton-typed tuple field takes a Nothing shape whatever its demand'. That would thread the type through about ten transport readers in native and the interpreter, to save one register. Measure after this change before proposing it.\n\nDone when: 00911's park is 320 and its 3rd yield is 96160 or lower, with 3 trailing minor yields; the young-delta question (32000 against an expected 64000 per tail collection) is answered; 01780 passes; a lowering test states the intent; and pins elsewhere only fall.",
   "id": "fz-mue.21",
@@ -16,8 +17,8 @@
     }
   ],
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "A constant is computed where it is used, not captured across a call",
   "type": "task",
-  "updated_at": "2026-11-19T03:04:55Z"
+  "updated_at": "2026-11-19T03:27:32Z"
 }
