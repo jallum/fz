@@ -13,11 +13,15 @@
     {
       "text": "Correction to match the approved page (fz-nml-29-private-append.html v3 §221): 'a copy into another process is set' applies to a view (born MessageCopy). A small bitstring copied into another process is a fresh private object and is born clear, so its receiver can append in place. Pin it that way. The ticket text came from Optimize's proposal and mis-transcribed the page; the page is what the user approved.",
       "timestamp": "2026-11-19T01:55:18Z"
+    },
+    {
+      "text": "PR #789 (CI). Fixtures 01711 (count per publish point, 3 paths), 01712 (owner + published holder both append, each keeps its bytes); block 01700-01719 used through 01712. Native reduction yield DOES mark (continuation captures args via store_closure_capture_ref_word; page §225 right); interp keeps its frame and marks nothing; pinned per path in 01711. Step 3 impact: an accumulator loop copies once after each yield on native.",
+      "timestamp": "2026-11-19T02:48:05Z"
     }
   ],
   "priority": 1,
   "status": "in_progress",
   "title": "A binary has a shared mark that every publish point sets",
   "type": "task",
-  "updated_at": "2026-11-19T01:55:18Z"
+  "updated_at": "2026-11-19T02:48:05Z"
 }
