@@ -1,0 +1,28 @@
+# Isolates the cost of a near-empty collection. A ring of sixteen processes
+# passes one counter around; a process holds a few objects at each park, and
+# its young generation is past the collection budget after a few hops, so
+# collections are frequent and copy about three objects. The program has no
+# control twin: read the fz.runtime.gc event count against the sampler's share
+# of samples inside the collector (pcprof), which splits a near-empty
+# collection by function.
+def node(next) do
+  receive do
+    0 -> send(next, 0)
+    t -> send(next, t - 1)
+         node(next)
+  end
+end
+def build(next, 0), do: next
+def build(next, k), do: build(spawn(fn () -> node(next) end), k - 1)
+def pump(first) do
+  receive do
+    0 -> :ok
+    t -> send(first, t - 1)
+         pump(first)
+  end
+end
+def main() do
+  first = build(self(), 15)
+  send(first, 300000)
+  dbg(pump(first))
+end

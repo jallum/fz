@@ -1,0 +1,11 @@
+# The control twin of gc-structs: the same ten million tuples and cells are
+# built, but in lists of a thousand, so a collection copies almost nothing.
+# It carries the mutator's instructions.
+def build(0, acc), do: acc
+def build(n, acc), do: build(n - 1, [{n, n + 1, n + 2} | acc])
+def rounds(0, sum), do: sum
+def rounds(r, sum) do
+  xs = build(1000, [])
+  rounds(r - 1, sum + length(xs))
+end
+def main(), do: dbg(rounds(10000, 0))
