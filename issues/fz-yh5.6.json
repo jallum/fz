@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-19T02:05:39Z",
+  "description": "User approved in JSON's session, verbatim \"yes\" (relayed by JSON, 2026-11-19). Source: /Users/j5n/Workspace/fz-json-four-proposals.html, item P1. Builder: Callables, queued behind its current work (JSON no longer needs it: fz-nml.25 deleted the union).\nA dispatch plan already carries DoesNotHold proofs for every clause after one whose pattern missed. Example: integer_step(:overflow, ...) first, then integer_step(acc, _d, 1) when acc \u003e 922337203685477580. After clause 1 misses, the plan proves s0 is not :overflow, and the later clause bodies are typed int. But the guard still compares s0 as the union ValueRef: prim.rs's 'One side unboxed and the other dynamic' path calls fz_value_cmp_raw_const, about 219 instructions per evaluation (cmp 59, TermComparator::compare 71, compare_values 36, AnyValue::from_ref 31, decode_parts 22).\nFix: the guard evaluator reads the subject's type at that point in the dispatch, narrowed by the miss proofs, so the guard lowers to an unbox and an icmp.\nNot fz-sc8.240 (narrowed a clause body by a guard call's domain; this is its sibling, per Callables) and not fz-sc8.198 (drops the boolean test of a closed guard type).\nAcceptance: an oracle fixture whose later clause guards a subject that earlier clauses narrowed matches Elixir on interp, run and build, and its loop makes no fz_value_cmp_raw_const call.",
+  "id": "fz-yh5.6",
+  "labels": [],
+  "parent": "fz-yh5",
+  "priority": 3,
+  "status": "open",
+  "title": "A guard subject is narrowed by what earlier clauses' patterns ruled out",
+  "type": "task",
+  "updated_at": "2026-11-19T02:05:39Z"
+}
