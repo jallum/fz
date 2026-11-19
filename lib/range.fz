@@ -54,7 +54,7 @@ defmodule Range do
   reached through `Enum.reduce/2`, `Enum.reduce/3`, and every other
   `Enum` function that folds over a range, by way of `Enum.to_list/1`.
   """
-  @spec reduce(integer, integer, integer, {:cont, b} | {:halt, b} | {:suspend, b}, (integer, b | c -> {:cont, b | c} | {:halt, b | c} | {:suspend, b | c})) :: {:done, b | c} | {:halted, b | c} | {:suspended, b | c, (-> any)} when b: var, c: var
+  @spec reduce(integer, integer, integer, {:cont, b} | {:halt, b} | {:suspend, b}, (integer, b -> {:cont, b} | {:halt, b} | {:suspend, b})) :: {:done, b} | {:halted, b} | {:suspended, b, (-> any)} when b: var
   def reduce(first, last, step, {:cont, :first}, reducer), do: reduce_start(first, last, step, first, :first, reducer)
   def reduce(first, last, step, {:cont, acc}, reducer), do: reduce_cont(first, last, step, first, acc, reducer)
   def reduce(_first, _last, _step, {:halt, acc}, _reducer), do: {:halted, acc}
@@ -154,7 +154,7 @@ defmodule Range do
     slice_from(last, step + stride - 1, first + (start * step), amount, [])
   end
 
-  @spec reduce_start(integer, integer, integer, integer, b, (integer, b | c -> {:cont, b | c} | {:halt, b | c} | {:suspend, b | c})) :: {:done, b | c} | {:halted, b | c} | {:suspended, b | c, (-> any)} when b: var, c: var
+  @spec reduce_start(integer, integer, integer, integer, b, (integer, b -> {:cont, b} | {:halt, b} | {:suspend, b})) :: {:done, b} | {:halted, b} | {:suspended, b, (-> any)} when b: var
   defp reduce_start(first, last, step, current, acc, reducer) do
     if done?(last, step, current) do
       {:done, acc}
@@ -163,7 +163,7 @@ defmodule Range do
     end
   end
 
-  @spec reduce_cont(integer, integer, integer, integer, b | c, (integer, b | c -> {:cont, b | c} | {:halt, b | c} | {:suspend, b | c})) :: {:done, b | c} | {:halted, b | c} | {:suspended, b | c, (-> any)} when b: var, c: var
+  @spec reduce_cont(integer, integer, integer, integer, b, (integer, b -> {:cont, b} | {:halt, b} | {:suspend, b})) :: {:done, b} | {:halted, b} | {:suspended, b, (-> any)} when b: var
   defp reduce_cont(first, last, step, current, acc, reducer) do
     if done?(last, step, current) do
       {:done, acc}
@@ -172,7 +172,7 @@ defmodule Range do
     end
   end
 
-  @spec reduce_step(integer, integer, integer, integer, {:cont, b | c} | {:halt, b | c} | {:suspend, b | c}, (integer, b | c -> {:cont, b | c} | {:halt, b | c} | {:suspend, b | c})) :: {:done, b | c} | {:halted, b | c} | {:suspended, b | c, (-> any)} when b: var, c: var
+  @spec reduce_step(integer, integer, integer, integer, {:cont, b} | {:halt, b} | {:suspend, b}, (integer, b -> {:cont, b} | {:halt, b} | {:suspend, b})) :: {:done, b} | {:halted, b} | {:suspended, b, (-> any)} when b: var
   defp reduce_step(first, last, step, current, {:cont, acc}, reducer), do: reduce_cont(first, last, step, current + step, acc, reducer)
   defp reduce_step(_first, _last, _step, _current, {:halt, acc}, _reducer), do: {:halted, acc}
   defp reduce_step(first, last, step, current, {:suspend, acc}, reducer) do

@@ -208,11 +208,13 @@ fn canon_is_faithful_over_the_full_arena_of_both_target_fixtures() {
 fn duplicate_ceiling(number: u32) -> usize {
     match number {
         // The Enum `*_while`, `*_every` and `*_positive` wrappers have key arrows beside their evidence
-        // arrows, and each holds a closure literal whose surface views are separate ids.
-        420 => 142,
+        // arrows, and each holds a closure literal whose surface views are separate ids; a view whose
+        // accumulator is still a type variable is interned once per call site that names it.
+        420 => 197,
         // The widened key type `%{1: atom}` stands beside `%{1: :a}` and holds a closure literal whose
-        // surface views are separate ids.
-        567 => 15,
+        // surface views are separate ids; a view whose accumulator is still a type variable is
+        // interned once per call site that names it.
+        567 => 19,
         other => panic!("no pinned ceiling for fixture {other:05}"),
     }
 }

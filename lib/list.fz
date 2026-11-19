@@ -54,7 +54,7 @@ defmodule List do
   reached through `Enum.reduce/2`, `Enum.reduce/3`, and every other
   `Enum` function that folds over a list, by way of `Enum.to_list/1`.
   """
-  @spec reduce([a], {:cont, b} | {:halt, b} | {:suspend, b}, (a, b | c -> {:cont, b | c} | {:halt, b | c} | {:suspend, b | c})) :: {:done, b | c} | {:halted, b | c} | {:suspended, b | c, (-> any)} when a: var, b: var, c: var
+  @spec reduce([a], {:cont, b} | {:halt, b} | {:suspend, b}, (a, b -> {:cont, b} | {:halt, b} | {:suspend, b})) :: {:done, b} | {:halted, b} | {:suspended, b, (-> any)} when a: var, b: var
   def reduce(list, {:cont, acc}, reducer), do: reduce_cont(list, acc, reducer)
   def reduce(_list, {:halt, acc}, _reducer), do: {:halted, acc}
   def reduce(list, {:suspend, acc}, reducer) do
@@ -162,13 +162,13 @@ defmodule List do
   def reverse([], tail), do: tail
   def reverse([head | tail], acc), do: reverse(tail, [head | acc])
 
-  @spec reduce_cont([a], b | c, (a, b | c -> {:cont, b | c} | {:halt, b | c} | {:suspend, b | c})) :: {:done, b | c} | {:halted, b | c} | {:suspended, b | c, (-> any)} when a: var, b: var, c: var
+  @spec reduce_cont([a], b, (a, b -> {:cont, b} | {:halt, b} | {:suspend, b})) :: {:done, b} | {:halted, b} | {:suspended, b, (-> any)} when a: var, b: var
   defp reduce_cont([], acc, _reducer), do: {:done, acc}
   defp reduce_cont([head | tail], acc, reducer) do
     reduce_step(tail, reducer.(head, acc), reducer)
   end
 
-  @spec reduce_step([a], {:cont, b | c} | {:halt, b | c} | {:suspend, b | c}, (a, b | c -> {:cont, b | c} | {:halt, b | c} | {:suspend, b | c})) :: {:done, b | c} | {:halted, b | c} | {:suspended, b | c, (-> any)} when a: var, b: var, c: var
+  @spec reduce_step([a], {:cont, b} | {:halt, b} | {:suspend, b}, (a, b -> {:cont, b} | {:halt, b} | {:suspend, b})) :: {:done, b} | {:halted, b} | {:suspended, b, (-> any)} when a: var, b: var
   defp reduce_step(list, {:cont, acc}, reducer), do: reduce_cont(list, acc, reducer)
   defp reduce_step(_list, {:halt, acc}, _reducer), do: {:halted, acc}
   defp reduce_step(list, {:suspend, acc}, reducer) do

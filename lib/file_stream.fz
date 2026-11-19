@@ -19,12 +19,12 @@ defmodule File.Stream do
 
   @type t :: %File.Stream{path: binary, modes: [atom], line_or_bytes: atom, raw: boolean, node: atom}
 
-  @spec step(File.t, {:cont, b} | {:halt, b} | {:suspend, b}, (binary, b | c -> {:cont, b | c} | {:halt, b | c} | {:suspend, b | c})) :: {:done, b | c} | {:halted, b | c} | {:suspended, b | c, (-> any)} when b: var, c: var
+  @spec step(File.t, {:cont, b} | {:halt, b} | {:suspend, b}, (binary, b -> {:cont, b} | {:halt, b} | {:suspend, b})) :: {:done, b} | {:halted, b} | {:suspended, b, (-> any)} when b: var
   def step(handle, {:cont, acc}, reducer), do: line_step(read_line(handle.value), handle, acc, reducer)
   def step(handle, {:halt, acc}, _reducer), do: closed(File.close(handle), {:halted, acc})
   def step(handle, {:suspend, acc}, reducer), do: {:suspended, acc, (fn () -> step(handle, {:cont, acc}, reducer) end)}
 
-  @spec line_step([binary], File.t, b | c, (binary, b | c -> {:cont, b | c} | {:halt, b | c} | {:suspend, b | c})) :: {:done, b | c} | {:halted, b | c} | {:suspended, b | c, (-> any)} when b: var, c: var
+  @spec line_step([binary], File.t, b, (binary, b -> {:cont, b} | {:halt, b} | {:suspend, b})) :: {:done, b} | {:halted, b} | {:suspended, b, (-> any)} when b: var
   defp line_step([], handle, acc, _reducer), do: closed(File.close(handle), {:done, acc})
   defp line_step([line], handle, acc, reducer), do: step(handle, reducer.(line, acc), reducer)
 

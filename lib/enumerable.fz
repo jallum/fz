@@ -17,7 +17,7 @@ defprotocol Enumerable do
   implementation has to get it right: it is what every other `Enum` operation
   -- `map`, `filter`, `count`'s fallback, and so on -- ultimately reduces to.
   """
-  @spec reduce(t(a), b, (a, b | c -> {:cont, b | c} | {:halt, b | c} | {:suspend, b | c})) :: {:done, b | c} | {:halted, b | c} | {:suspended, b | c, (-> any)} when a: var, b: var, c: var
+  @spec reduce(t(a), b, (a, b -> {:cont, b} | {:halt, b} | {:suspend, b})) :: {:done, b} | {:halted, b} | {:suspended, b, (-> any)} when a: var, b: var
   def reduce(enumerable, acc, reducer)
 
   @doc """
