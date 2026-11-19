@@ -5,6 +5,8 @@
     "fz-mue",
     "fz-mue.15"
   ],
+  "closed_at": "2026-11-19T01:50:44Z",
+  "close_reason": "Merged in #759",
   "created": "2026-11-08T13:06:21Z",
   "description": "Elixir reads an attribute by one rule: @name followed by an expression. fz's front door (parse_attribute_item) accepts only @doc/@moduledoc followed by a string literal, plus @spec and @type. The surface (parse_scope_attr, quoted_function) decodes only those names, and everything else is 'unsupported attribute head'.\n\nUnder the one rule:\n- A value attribute ('@read_ahead_size 64 * 1024') is read back as @read_ahead_size in function bodies. Seen writing lib/option_parser.fz (fz-sc8.16), and fz-mue's integration fixture 01860 reads @nums, @strs and @ws in bodies (lines 1806-1849).\n- @compile {:inline, [...]} is a value attribute that nothing reads. It spans 6 lines in fixture 01860. Folded from fz-mue.13 (reproducer /Users/j5n/Workspace/fz-otp-json/punch/23_compile_attr.fz).\n- @moduledoc false (and @doc false) is the doc attribute taking a value that is not a string. Folded from fz-mue.14 (reproducer /Users/j5n/Workspace/fz-otp-json/punch/40_moduledoc_none.fz).\n- Library code that inlined a constant for want of attributes is folded back onto an attribute.\n\nDone when: a fixture on all three paths reads value attributes in bodies, and the punch/23 and punch/40 reproducers compile.\n\nThe multi-line @spec half of the old description moved to fz-mue.15 (type attributes read to the end of their expression). Re-cut agreed by Elixir Parity, which builds both; one PR each, stacked.",
   "id": "fz-sc8.96",
@@ -21,8 +23,8 @@
     }
   ],
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "A module attribute is @name followed by an expression",
   "type": "feature",
-  "updated_at": "2026-11-18T22:26:21Z"
+  "updated_at": "2026-11-19T01:50:44Z"
 }
