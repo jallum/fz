@@ -15,11 +15,15 @@
     {
       "text": "Owner change 2026-11-18: the user said \"delegate private append to Optimize\" (relayed by JSON). Optimize owns this ticket and its page https://claude.ai/artifact/A5B7Pv2mfjBRg1EVDrNftn. User design directions given to Optimize, then \"proceed\": one indicator bit for small and large binaries; small binaries born with room; the list link high bit as the position.",
       "timestamp": "2026-11-18T05:42:59Z"
+    },
+    {
+      "text": "Edge to set when step 3 (the private append) is filed: step 3 blocks fz-9e2.10 in place of fz-nml.29 as a whole (agreed by Binary Handling and Optimize). Ordering note from Binary Handling: build the view mark behind one accessor so fz-9e2.12 (view length first) does not undo it.",
+      "timestamp": "2026-11-19T01:33:56Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "An append to an unshared accumulator extends it in place",
   "type": "task",
-  "updated_at": "2026-11-18T21:21:42Z"
+  "updated_at": "2026-11-19T01:33:56Z"
 }
