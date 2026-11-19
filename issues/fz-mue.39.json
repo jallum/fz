@@ -9,9 +9,15 @@
   "id": "fz-mue.39",
   "labels": [],
   "parent": "fz-mue",
+  "comments": [
+    {
+      "text": "PR #810. dynamic() resolves as any, as Dialyzer treats it per Erlang's typespec reference. dynamic(T) is refused, as in Elixir 1.19. No pins moved. Close on merge.",
+      "timestamp": "2026-11-19T04:55:47Z"
+    }
+  ],
   "priority": 2,
   "status": "in_progress",
   "title": "dynamic() resolves as a type, as in Elixir",
   "type": "feature",
-  "updated_at": "2026-11-19T04:49:32Z"
+  "updated_at": "2026-11-19T04:55:47Z"
 }
