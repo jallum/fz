@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-sc8.192.14"
   ],
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-sc8.192",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "A map pattern's key test on a large map is the hand-written trie walk",
   "type": "task",
-  "updated_at": "2026-11-19T00:10:28Z"
+  "updated_at": "2026-11-19T04:57:11Z"
 }
