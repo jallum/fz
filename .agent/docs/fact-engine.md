@@ -1489,8 +1489,15 @@ tracking. Consumers read that typed identity directly.
 The artifact also drops `value_types`
 for values removed by control pruning before it walks those surfaces, so dead
 types cannot overpackage a schema.
+A map can also be given its module under `__struct__` while the program
+runs, so an executable of a runtime root adds the modules whose atoms the
+program can hold without a type spelling them (`struct_candidates`): each
+module whose atom its own body writes, and, for the runtime entry that makes
+an atom from text (`fz_binary_to_atom`, behind `String.to_atom`), every module
+a value can name (`FactKey::NameableModules`). A macro root adds neither: it
+runs while its source is still being defined.
 Producing a `BackendExecutable` waits on `ModuleDefined` for each module in that set that can be defined, meaning one that has source or is
-a runtime module (`undecided_struct_modules`). `StructDefined` is published
+a runtime module (`undefined_modules`). `StructDefined` is published
 together with `ModuleDefined`, so after that wait whether the module declares
 a struct is decided. A name nothing defines is not a struct and is never
 waited on. Waiting on `StructDefined` itself would never end for a module

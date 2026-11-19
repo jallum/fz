@@ -2061,6 +2061,12 @@ impl World {
         self.modules.get(module).source().is_some()
     }
 
+    /// Whether something can define `module`: it has source, or it is a
+    /// runtime module.
+    pub(crate) fn can_be_defined(&self, module: ModuleId) -> bool {
+        self.module_has_source_state(module) || self.is_runtime_module(module)
+    }
+
     /// Whether `module` is defined, in `owner`'s source, inside `scope`'s
     /// own body at any depth. The global scope contains every module its
     /// source defines.

@@ -150,6 +150,14 @@ no match           -> the call is bottom: no implementation can take this receiv
 many matches       -> every match is activated; the callsite dispatches among them
 ```
 
+A target is a struct once its module is defined and declares one
+(`classify_impl_target` reads `StructDefined`). A receiver given its module
+while the program runs reaches the struct targets the program can name: the
+backend defines each module whose atom a body writes, and every nameable
+module where the program makes an atom from text (`struct_candidates`); each
+definition revises `StructDefined`, and the callsite is resolved again with
+the struct target among its arms.
+
 The values the receiver type allows beyond the union of the matched targets are
 the call's remainder. A non-empty remainder gives the callsite a `LastResort`
 (`CallSiteSummary::last_resort`, `LastResort::protocol_undefined`): the call is

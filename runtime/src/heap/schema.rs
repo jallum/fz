@@ -50,8 +50,8 @@ pub struct Schema {
 impl Schema {
     pub const RANGE_NAME: &str = "Range";
 
-    pub fn is_range(&self) -> bool {
-        matches!(&self.identity, SchemaIdentity::Named(name) if name.segments().len() == 1 && name.last_segment() == Self::RANGE_NAME)
+    pub fn is_range_module(module: &ModuleName) -> bool {
+        module.segments().len() == 1 && module.last_segment() == Self::RANGE_NAME
     }
 
     /// One typed arity and layout shared by interpreter, JIT, and AOT tuples.

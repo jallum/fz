@@ -1,0 +1,60 @@
+#---
+# purpose: "A map given its __struct__ while the program runs, from an atom made from text or one picked among written modules, is that module's struct: it prints as one when it has exactly the declared fields, and a protocol call reaches the module's defimpl by name alone; a module that declares no struct stays a map"
+# oracle: self
+# oracle.stamp: e3b87236657bff06
+#---
+defmodule Pt do
+  defstruct x: 1, y: 2
+end
+
+defmodule Plain do
+  def hello(), do: :hello
+end
+
+defprotocol Named do
+  def name(value)
+end
+
+defimpl Named, for: Pt do
+  def name(pt), do: {:pt, pt.x}
+end
+
+defimpl Named, for: Map do
+  def name(map), do: {:map, map_size(map)}
+end
+
+defmodule Main do
+  def module(text), do: String.to_atom(text)
+
+  def made(fields, text), do: Map.put(fields, :__struct__, module(text))
+
+  def picked(true), do: Pt
+  def picked(false), do: :other
+
+  def main() do
+    pt = made(%{x: 5, y: 6}, "Elixir.Pt")
+    IO.inspect(pt)
+    IO.inspect({is_struct(pt), pt.__struct__, pt == %Pt{x: 5, y: 6}})
+    IO.inspect(Named.name(pt))
+    IO.inspect(%{%{x: 7, y: 8} | x: 9} |> made("Elixir.Pt"))
+
+    chosen = Map.put(%{x: 3, y: 4}, :__struct__, picked(true))
+    IO.inspect(chosen)
+    IO.inspect(Named.name(chosen))
+    IO.inspect(Named.name(made(%{x: 0}, "Elixir.Pt")))
+
+    range = made(%{first: 1, last: 3, step: 1}, "Elixir.Range")
+    IO.inspect(range)
+    IO.inspect(made(%{first: 1, last: 9, step: 2}, "Elixir.Range"))
+    IO.inspect(Enum.to_list(range))
+
+    short = made(%{x: 5}, "Elixir.Pt")
+    IO.inspect({map_size(short), short.__struct__})
+    plain = made(%{x: 5, y: 6}, "Elixir.Plain")
+    IO.inspect({map_size(plain), plain.__struct__})
+    nobody = made(%{x: 5, y: 6}, "Elixir.Nobody")
+    IO.inspect({map_size(nobody), nobody.__struct__})
+  end
+end
+
+Main.main()

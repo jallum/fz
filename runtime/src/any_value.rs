@@ -1816,8 +1816,8 @@ pub mod debug {
             format!("{open}{}{close}", parts.join(", "))
         }
 
-        /// A heap Struct, by its schema's identity: a range as its literal, a
-        /// named struct as `%Name{field: value}` in schema order, a tuple as
+        /// A heap Struct, by its schema's identity: a named struct as
+        /// `%Name{field: value}` in schema order (a range as its literal), a tuple as
         /// `{a, b}`. Non-value fields are elided.
         fn struct_value(&mut self, bits: u64) -> String {
             let p = struct_addr_from_tagged(bits).expect("struct bits");
@@ -1827,9 +1827,6 @@ pub mod debug {
                 let reg = heap.schemas_registry();
                 let registry = reg.borrow();
                 let schema = registry.get(schema_id);
-                if schema.is_range() {
-                    return self.range(bits);
-                }
                 let fields = schema
                     .fields
                     .iter()
@@ -1857,9 +1854,15 @@ pub mod debug {
             }
         }
 
-        /// `%Name{field: value}`, the fields in the struct's declared order.
+        /// `%Name{field: value}`, the fields in the struct's declared order; a
+        /// range prints as its literal.
         /// The `__exception__` field that marks an exception is not printed.
         fn named_struct(&mut self, module: &ModuleName, fields: Vec<(String, AnyValue)>) -> String {
+            if crate::heap::Schema::is_range_module(module)
+                && let [(_, first), (_, last), (_, step)] = fields[..]
+            {
+                return self.range(first, last, step);
+            }
             let open = format!("%{}{{", atom_literal(&module.atom_name()));
             let entries = fields
                 .into_iter()
@@ -1869,20 +1872,13 @@ pub mod debug {
             self.keyword_container(&open, "}", entries)
         }
 
-        fn range(&self, bits: u64) -> String {
-            let range_ref = AnyValueRef::from_heap_object(
-                ValueKind::STRUCT,
-                struct_addr_from_tagged(bits).expect("range struct bits"),
-            )
-            .expect("range ref");
-            let (first, last, step) = unsafe { &*self.proc }
-                .heap
-                .range_fields(range_ref)
-                .expect("range fields");
-            if step == 1 {
-                format!("{}..{}", first, last)
-            } else {
-                format!("{}..{}//{}", first, last, step)
+        /// A range as its literal: `first..last`, and `//step` for a step
+        /// other than 1.
+        fn range(&mut self, first: AnyValue, last: AnyValue, step: AnyValue) -> String {
+            let bounds = format!("{}..{}", self.value(first), self.value(last));
+            match step {
+                AnyValue::Int(1) => bounds,
+                step => format!("{bounds}//{}", self.value(step)),
             }
         }
 
