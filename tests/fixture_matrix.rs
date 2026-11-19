@@ -4244,13 +4244,14 @@ fn a_receiver_left_parked_with_queued_gifts_drops_them_at_teardown() {
 /// the heap tip. The fixture's twenty calls each build and drop a
 /// thirty-thousand-element list, so collections run while the frame is live.
 /// A clause loop charges one reduction per step, so collections fall every
-/// 4,000 steps, and two of them find the frame old: two copies. The interpreter
-/// has no frames and copies none.
+/// 4,000 steps, and three of them find the frame old: three copies. Which
+/// collections find it old depends on the step of the body each one falls at.
+/// The interpreter has no frames and copies none.
 fn a_long_body_copies_its_frame_forward_when_a_collection_kept_it() {
     let fixture = FixtureCase::new("fixtures/01254_a_long_body_copies_its_frame_forward_when_a_collection_kept_it.fz");
     for (path, label, copies) in [
-        (FixtureMatrixPath::Run, "run", 2),
-        (FixtureMatrixPath::Build, "build", 2),
+        (FixtureMatrixPath::Run, "run", 3),
+        (FixtureMatrixPath::Build, "build", 3),
         (FixtureMatrixPath::Interp, "interp", 0),
     ] {
         assert_eq!(
@@ -4264,11 +4265,11 @@ fn a_long_body_copies_its_frame_forward_when_a_collection_kept_it() {
 /// The body frame holds a forty-thousand-element list until the step
 /// that measures it, and the step after clears the slot. The collections that
 /// follow copy what the program still uses and not the list: neither of the
-/// last two copies more than 48,528 bytes, cells of a three-thousand-element
+/// last two copies more than 48,512 bytes, cells of a three-thousand-element
 /// list of `g`'s and little else. Collections fall every 4,000 steps of a
 /// clause loop's one reduction each, so that is where the last two land. When
 /// the program's last expression still reads the list, the collection after it
-/// copies the list's young cells too: 192,528 bytes.
+/// copies the list's young cells too: 656,432 bytes.
 fn a_list_the_body_no_longer_uses_is_not_kept_by_its_frame() {
     let fixture = FixtureCase::new("fixtures/01256_a_list_the_body_no_longer_uses_is_not_kept_by_its_frame.fz");
     for (path, label) in [(FixtureMatrixPath::Run, "run"), (FixtureMatrixPath::Build, "build")] {
@@ -4276,7 +4277,7 @@ fn a_list_the_body_no_longer_uses_is_not_kept_by_its_frame() {
         let tail = &events[events.len().saturating_sub(2)..];
         assert_eq!(
             tail.iter().map(|e| e.copied_bytes).max(),
-            Some(48_528),
+            Some(48_512),
             "{label}: the most bytes one of the last two collections copied"
         );
     }
@@ -4392,9 +4393,12 @@ fn a_large_list_passed_back_and_forth_crosses_as_one_gift_per_message_on_every_p
     // yield falls every 4,000 steps, and it collects only when the heap is due.
     // Each minor collection copies what was allocated since the last one;
     // those whose old bytes passed twice what the last major collection left
-    // are major and copy everything live. The child is collected once, as it
-    // parks (320 bytes). The parent's park mid-run, where it waits for the
-    // next ball, collects only if the heap is due there, and it is not.
+    // are major and copy everything live. The child's heap is not due at any
+    // of its parks: before its first, the calls it makes into functions that
+    // need a frame build 272 bytes of continuations, and its young bytes stay
+    // under the 512 a collection waits for. The parent's park mid-run, where it
+    // waits for the next ball, collects only if the heap is due there, and it
+    // is not.
     let events = gc_events_for_fixture(&fixture, FixtureMatrixPath::Interp, "interp");
     assert_eq!(
         collections_as_tuples(&events),
@@ -4405,9 +4409,8 @@ fn a_large_list_passed_back_and_forth_crosses_as_one_gift_per_message_on_every_p
     assert_eq!(
         collections_as_tuples(&events),
         vec![
-            // Each entry's call of its body returns to a 32-byte continuation, live in the child's
-            // park and in the parent's collections that copy its oldest values.
-            (2, "park", 336),
+            // Each entry's call of its body returns to a 32-byte continuation, live in the
+            // parent's collections that copy its oldest values.
             (1, "yield", 64_144),
             (1, "yield", 192_144),
             (1, "yield", 128_160),
@@ -4416,7 +4419,7 @@ fn a_large_list_passed_back_and_forth_crosses_as_one_gift_per_message_on_every_p
             (1, "yield", 48),
             (1, "yield", 48),
         ],
-        "run: the child's park, then the parent's collected yields"
+        "run: the parent's collected yields"
     );
 }
 

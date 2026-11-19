@@ -51,11 +51,14 @@ fn run(source: &str) -> SiteRun {
     }
 }
 
+/// `step` loops once through itself, and a callee in a call cycle can suspend,
+/// so each call of it places a frame.
 const COUNTING_LOOP: &str = "
 def count(0, acc), do: acc
-def count(n, acc), do: count(n - 1, step(acc) + 1)
+def count(n, acc), do: count(n - 1, step(acc, 1) + 1)
 
-def step(acc), do: acc + 0
+def step(acc, 0), do: acc
+def step(acc, k), do: step(acc, k - 1)
 
 def main(), do: count(1000, 0)
 ";

@@ -473,7 +473,7 @@ per executable, where each entry lives (`EntryFns::for_executable` in
 - An entry every transfer to which is a direct transfer from one and the same
   function -- an `if` arm, a decision's outcome or miss, a clause body reached
   from the executable's dispatch, a join that several arms deliver to, or the
-  entry a spliced call resumes (below) -- is a block of that function. The
+  entry a call lowered in its caller resumes (below) -- is a block of that function. The
   transfer is a `Goto` carrying the same arguments a call would; the block's
   parameters follow the entry's signature, and the entry's steps and tail are
   lowered into it before that function is finished. An entry with several
@@ -495,24 +495,37 @@ per executable, where each entry lives (`EntryFns::for_executable` in
   The handler is a function of its own, because only a raise, which the runtime
   delivers, reaches it (`EntryTransfer::Runtime`). A join the body and the
   handler both deliver to is reached from two functions, so it stays a function.
-- A delivered direct call whose callee is nothing but an extern is spliced: the
-  callee is the extern itself, or one clause whose entry dispatch asks nothing
-  (a direct outcome) and which has no steps, whose tail is a direct call that
-  passes the clause's parameters in order to an extern whose entry dispatch asks nothing
-  (`BackendExecutable::forwards_to`, `NativeLowerer::spliced_extern`). The
-  caller then contains the extern call (`emit_extern_call`, the same code the
-  extern's own function runs, so a declared failure raises from the caller),
-  binds its one result to the resume entry's input and transfers to the resume
+- A delivered direct call whose every callee is frame-free is lowered in its
+  caller. An executable is frame-free when nothing outside a function holding
+  it could arrive in it: none of its entries reaches a `receive`, a `try`, a
+  closure call, a call across a provider boundary, an indirect call, or a call
+  into a call cycle, and every executable it calls is frame-free. An extern is
+  frame-free, with or without an entry dispatch; a callee nothing defines
+  counts as frame-free, because the call raises where it stands, and so does a
+  call that never returns. `FrameFree::of` in `src/compiler2/jobs/frame_free.rs`
+  answers this once per program by a depth-first walk in which an executable
+  met again while its own answer is pending is in a cycle; one rule
+  (`delivered_call_continues_here`, `tail_call_continues_here`) decides both the
+  table and each call site. A dispatch call edge is lowered in place only when
+  every arm is. The caller jumps to a head block typed with the callee's own
+  input types and lowers the callee's dispatch, clause bodies and entries as
+  its blocks (`NativeLowerer::lower_call_in_place`, `lower_executable_here`,
+  under an `EntryScope` of the callee's entries); an extern callee is the
+  extern call itself (`lower_extern_here`, the same code the extern's own
+  function runs, so a declared failure raises from the caller). Each of the
+  callee's returns jumps to one block typed with its return layout
+  (`Returns::ToJoin`); a tail call inside it to another frame-free callee is
+  lowered in place too and shares that block. From the block the caller binds
+  the returned value to the resume entry's input and transfers to the resume
   entry. The call builds no continuation and names no callee, and the resume
-  entry is reached by a direct transfer, so `EntryFns::for_executable` counts the
-  spliced call's transfer as `EntryTransfer::Direct`. `n + 1` over integers is
-  such a call: `Kernel.+` is one clause that passes both parameters to
-  `fz_op_add_ii`. A clause that reorders its parameters (`Kernel.+` for a float
-  on the left and an integer on the right) and a call whose callee asks an entry
-  dispatch are not spliced and stay calls. A call in tail position
-  (`ControlDestination::Return`) is not delivered and stays a tail call. The
-  splice is a native lowering choice; the backend program and the interpreter,
-  which runs it as it stands, are unchanged.
+  entry is reached by a direct transfer, so `EntryFns::for_executable` counts
+  the call's transfer as `EntryTransfer::Direct`. `n + 1` over integers is such
+  a call, and so is a call to a multi-clause helper that branches and calls
+  other such helpers. A call in tail position (`ControlDestination::Return`)
+  from a function of its own stays a tail call. Lowering in place is a native
+  lowering choice; the backend program and the interpreter, which runs it as
+  it stands, are unchanged. Fixture 01880 pins which calls build a
+  continuation.
 - Every other entry is a function of its own: a join whose arms are in
   different functions, the entry a call's return resumes, and the entries the runtime enters from a
   `receive` (its outcomes, its timeout, and the entry its value continues in).

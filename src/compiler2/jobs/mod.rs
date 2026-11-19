@@ -21,6 +21,7 @@ mod declarations;
 mod dispatch;
 pub(super) use dispatch::is_guard_expr;
 mod executable_facts;
+mod frame_free;
 mod keying;
 mod native;
 mod reach;

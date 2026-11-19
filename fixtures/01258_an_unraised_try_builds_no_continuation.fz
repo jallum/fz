@@ -3,14 +3,17 @@
 # kind: run
 #---
 #
-# Each loop calls one helper per iteration. `plain/1` has no try; the two
+# Each loop calls one helper per iteration. `plain/2` has no try; the two
 # others wrap the same work in one, with a handler that returns a value and
-# one that captures `x` and raises. The program prints how many more
+# one that captures `x` and raises. Each helper needs a frame of its own:
+# `plain/2` is a call cycle, and the others enter a try. So each call builds
+# one continuation for the call itself. The program prints how many more
 # continuations the tried loops build than the plain loop: none, on every
 # path. It then raises inside each helper so that each handler runs, and
 # prints what it delivers.
 defmodule G do
-  def plain(n), do: n * 3
+  def plain(0, n), do: n * 3
+  def plain(k, n), do: plain(k - 1, n)
 
   def returning(n) do
     n * 3
@@ -47,7 +50,7 @@ end
 
 defmodule L do
   def plain(0, s), do: s
-  def plain(n, s), do: plain(n - 1, s + G.plain(n))
+  def plain(n, s), do: plain(n - 1, s + G.plain(0, n))
 
   def returning(0, s), do: s
   def returning(n, s), do: returning(n - 1, s + G.returning(n))

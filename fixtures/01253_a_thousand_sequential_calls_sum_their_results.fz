@@ -1,14 +1,19 @@
 #---
 # purpose: "A thousand sequential calls sum their results"
 # oracle: self
-# oracle.stamp: ce11d14e3e2abdae
+# oracle.stamp: cebd041c5bfdd3ae
 #---
 #
 # Every result stays live until the sum, so the body is cut into a thousand
 # resume steps that each hold every result before them. The steps run in one
-# frame, so the native code and stack stay proportional to the calls.
+# frame, so the native code and stack stay proportional to the calls. `f`
+# tail-calls a loop, so it needs a frame of its own and each call to it is a
+# call.
 defmodule Main do
-  def f(x), do: x + 1
+  def f(x), do: bump(x, 1)
+
+  defp bump(x, 0), do: x
+  defp bump(x, k), do: bump(x + 1, k - 1)
 
   def main() do
     a1 = f(1)
