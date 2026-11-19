@@ -7,9 +7,15 @@
   "id": "fz-mue.5",
   "labels": [],
   "parent": "fz-mue",
+  "comments": [
+    {
+      "text": "Board cleanup approved by the user, verbatim \"fz-9e2 cleanup approved\" (in Binary Handling's session, 2026-11-19). Its binary_part is folded with fz-j8z (Kernel binary_part/3): one implementation, owned by whichever lands first; the other closes against it.",
+      "timestamp": "2026-11-19T01:32:15Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": ":erlang exports the BIFs json.erl calls",
   "type": "feature",
-  "updated_at": "2026-11-18T20:44:00Z"
+  "updated_at": "2026-11-19T01:32:15Z"
 }
