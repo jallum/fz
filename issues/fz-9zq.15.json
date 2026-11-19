@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-9zq.5"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-9zq.16"
+  ],
   "created": "2026-11-19T01:29:26Z",
   "description": "User approved the R5 page (/Users/j5n/Workspace/fz-9zq.5.html) and its four-step split, relayed by fz-engine 2026-11-19. Builder: fz-engine. Step R5.2.\n- One map-a-cluster helper serves every type-\u003etype mapper: widen_literals, runtime_reading, structural_surface, erase_closure_identity, instantiate, fold_self_nested_closures, runtime_envelope, refine_widen.\n- Path rule: address, convergence, collapse, apply_plan and prepare_type_projection stop at a recursive type.\n- runtime_type_predicate at a back edge takes a shape-only form; which form is settled by experiment first.\n- Red-first test per ledger row (fz-engine scratch 9zq_5/paper.md).",
   "id": "fz-9zq.15",
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "Every type walker meets a recursive type correctly",
   "type": "task",
-  "updated_at": "2026-11-19T01:29:27Z"
+  "updated_at": "2026-11-19T01:29:28Z"
 }

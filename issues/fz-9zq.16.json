@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-9zq.15"
+  ],
   "blocks": [],
   "created": "2026-11-19T01:29:26Z",
   "description": "User approved the R5 page (/Users/j5n/Workspace/fz-9zq.5.html) and its four-step split, relayed by fz-engine 2026-11-19. Builder: fz-engine. Step R5.3.\n- A cycle clash becomes a back edge to the covering ancestor; a replace clash becomes a back edge from ancestor ∪ node.\n- apply_plan stops writing any (the user's ruling: any must be earned or declared).\n- Fixtures: build, the tuple and list wrappers, and bst, with hand-written answers in the plan dump; 01353 settles to one plan in all 12 job orders.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "The clash fold makes back edges, not any",
   "type": "task",
-  "updated_at": "2026-11-19T01:29:26Z"
+  "updated_at": "2026-11-19T01:29:28Z"
 }
