@@ -9,6 +9,7 @@
     "fz-9zq.15",
     "fz-9zq.6"
   ],
+  "closed_at": "2026-11-19T02:23:47Z",
   "created": "2026-11-15T03:40:19Z",
   "description": "Step R5.1 of fz-9zq (page /Users/j5n/Workspace/fz-9zq.5.html, approved 2026-11-18: representation A, least fixpoint, path rule, four steps). The kernel holds recursive types; nothing produces one yet, so no fixture, plan or pin moves. Cluster commit through the interner: build members with local references, drop unproductive members to none (least fixpoint: values are finite), minimize by partition refinement so one meaning has one id, give ids, compute attrs by fixpoint (every bit is an OR of child bits), normalize over the cluster; one cluster index beside the descriptor index. Coinductive emptiness, subtyping, intersect and difference (an in-flight set of descriptor pairs carried in TyCtx; a pair met again is assumed empty); ComparisonCache gains an in-flight state. Storage order for clusters by minimal form. Binder rendering in canon and display. Production builder Types::recursive is the API for R5.3 and R6. Red-first unit tests: union(T,nil)==T; {int,T,T} \u003c= T; an isomorphic second build is the same id; T meet {int,_,_} = {int,T,T}; {int,T} without a base is none. Docs: replace the descend-only termination arguments in set-theoretic-types.md, type-world.md, order.rs, attrs.rs with the cluster invariant. Walker ledger and census: scratch 9zq_5/paper.md.",
   "id": "fz-9zq.5",
@@ -21,8 +22,8 @@
     }
   ],
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "A recursive type is a Ty whose descriptor names itself",
   "type": "task",
-  "updated_at": "2026-11-19T02:08:32Z"
+  "updated_at": "2026-11-19T02:23:47Z"
 }
