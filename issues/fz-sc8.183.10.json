@@ -6,7 +6,7 @@
   "description": "User ruling 2026-11-18 (relayed by Make Distiller Fast, verbatim: \"delegate the map building, slicing, struct field work to the Optimize agent\"). Builder: Optimize. Source: MDF distiller profile at develop 2eff1dec2 (bench, sample 1 ms for 2 s from 0.4 s in, 1,498 samples of a 2.84 s run, inclusive shares, one run; raw: bench distill-hunt/prof.j.base.txt).\n\nfz_bs_read_binary_ref = 10.5% (158): memmove 33 + memset 12 (alloc_bitstring \u003c- fz_bs_read_binary_ref: a slice that copies and zeroes bytes), field_end 20, alloc_bitstring_slice 18, alloc_kind 17, word decoding 20, self 31. Callers: JSON string/3 and run_join (end of a run of plain bytes; item C of JSON's machine-code study, study files /private/tmp/claude-501/-Users-j5n-Workspace-fz/ebbfffd8-2561-4da7-bcda-f9a316d00a1e/scratchpad/jsonasm/). 45 samples (3%) move and zero bytes for a slice.\n\nEstablish first: why this path copies rather than building a slice view; then a proposal. Related: fz-sc8.183.9 (one region read per entry), fz-sc8.195 (a walk passes its position).",
   "id": "fz-sc8.183.10",
   "labels": [],
-  "parent": "fz-sc8.183",
+  "parent": "fz-9e2",
   "comments": [
     {
       "text": "Measured (Optimize, develop a3edb6f32, release, slope over a loop with the slice inlined into its head): no slice 112 instr/iteration; skip 16 bytes 122; rest-of-binary field 125; 8-byte sized field 464 (copied inline); 65-byte sized field 411 (a view, no copy). A sized field costs ~340, of which copying ~50; the view path costs ~290 with no copy. \"Copies no bytes\" would save at most ~15% of a slice and would enlarge small slices (a view object is bigger than an inline binary under ~24 bytes; the \u003c= 64-byte copy policy in alloc_bitstring_slice is deliberate). Profile of the 8-byte case: fz_bs_read_binary_ref self 21%, heap_object_word_from_ref_word 9%, alloc_kind 9%, alloc_bitstring 9%, fz_mark_published_ref_aliased + Heap::share 14%, field_end 6%, memset/bzero 7.5%, memmove 3%. Title contradicted by the numbers; re-description proposed to the user (zero small-binary padding with stores instead of memset; static whole-byte sized field reads through an entry taking byte position and length, ~290 fixed cost, overlapping fz-sc8.183.9 / fz-sc8.195).",
@@ -21,5 +21,5 @@
   "status": "open",
   "title": "A slice of a binary copies no bytes",
   "type": "task",
-  "updated_at": "2026-11-18T21:55:34Z"
+  "updated_at": "2026-11-19T01:31:38Z"
 }
