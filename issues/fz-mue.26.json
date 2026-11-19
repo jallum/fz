@@ -11,11 +11,15 @@
     {
       "text": "Handed to Callables (native callable materialization is its area), agreed by Elixir Parity and Coordinator 2026-11-19. Repro: /Users/j5n/Workspace/fz-752-walk/repro_26.fz.",
       "timestamp": "2026-11-19T03:10:43Z"
+    },
+    {
+      "text": "Draft PR #805 on 1d2b4f6fa: a dispatch that reads a callable input asks for it first-class (CallableDemand::escaped()) and names no surface. New fixture 01796, Elixir-oracle confirmed; fails on develop (run). No pins moved. Close on merge.",
+      "timestamp": "2026-11-19T04:35:26Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "A captured function passed under is_function(f, 2) is called on native paths",
   "type": "bug",
-  "updated_at": "2026-11-19T03:10:43Z"
+  "updated_at": "2026-11-19T04:35:26Z"
 }
