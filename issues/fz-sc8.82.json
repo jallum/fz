@@ -3,13 +3,13 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-08T03:00:54Z",
-  "description": "Elixir accepts fn -\u003e a; b end (and fn x -\u003e a; b end) with the semicolon separating two expressions of the body. fz refuses it with parse/expected-token ... Semi. Found while writing a spawned-process probe for fz-sc8.61; rewritten with newlines as a workaround in the probe only. Deviation from Elixir surface syntax; fix in the parser's block-body rule wherever ; is already accepted between expressions.",
+  "description": "Widened (Binary Handling's probe, develop 9089f7616): fz accepts ';' nowhere. The lexer makes Tok::Semi (src/parser/lexer.rs:1197) but no grammar rule consumes it, so the earlier premise 'wherever ; is already accepted' is wrong. All of these fail with parse/expected-token ... Semi:\n- x = 1; IO.inspect(x) in a def body\n- (x = 2; x)\n- fn -\u003e 3; 4 end\n- if true do 5; IO.inspect(6) end\nElixir treats ';' as an end of expression exactly as a newline, so the fix is at that level: one rule, not one per construct. Fixtures for each form above on three paths.\n\nPrevious description: Elixir accepts fn -\u003e a; b end (and fn x -\u003e a; b end) with the semicolon separating two expressions of the body. fz refuses it with parse/expected-token ... Semi. Found while writing a spawned-process probe for fz-sc8.61; rewritten with newlines as a workaround in the probe only. Deviation from Elixir surface syntax; fix in the parser's block-body rule wherever ; is already accepted between expressions.",
   "id": "fz-sc8.82",
   "labels": [],
   "parent": "fz-sc8",
   "priority": 3,
   "status": "open",
-  "title": "fn -\u003e a; b end parses: a semicolon separates expressions in a one-line anonymous function body",
+  "title": "A semicolon separates expressions wherever a newline does",
   "type": "bug",
-  "updated_at": "2026-11-08T03:00:54Z"
+  "updated_at": "2026-11-19T01:56:21Z"
 }
