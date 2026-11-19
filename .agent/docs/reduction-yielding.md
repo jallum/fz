@@ -27,14 +27,17 @@ dispatch hands control to a clause body by `Goto`, so a step through a
 multi-clause function spends one reduction, at its tail call. An entry is a
 block only when every transfer that reaches it is a direct transfer from its own
 function (see [`pipeline`](pipeline.md)), so blocks never form a loop of their
-own and every loop closes at a tail call. A call that is only an extern is
-spliced into its caller (see [`pipeline`](pipeline.md)): it is neither a tail
-call nor a continuation, so it spends no reduction and builds no continuation
-closure. The closures a loop builds are those of its calls to functions that
-are more than an extern and one per yield. Fixture 01177 pins both through
-`Process.heap_alloc_stats()`: `continuation_allocs` minus `reduction_yields` is
-the number of such calls, and `reductions_executed` is the reductions the
-loop's back edges spent, one per iteration. Fixture 01376 loops past many
+own and every loop closes at a tail call. A call to a frame-free function is
+lowered in its caller (see [`pipeline`](pipeline.md)): it is neither a tail
+call nor a continuation, and a frame-free function is in no call cycle, so it
+has no back edge; it spends no reduction and builds no continuation closure.
+The closures a loop builds are those of its calls to functions that need a
+frame and one per yield. Fixture 01177 pins both through
+`Process.heap_alloc_stats()`: its loop's calls are all frame-free, so
+`continuation_allocs` minus `reduction_yields` is 1, for `main`'s call into the
+loop, and `reductions_executed` is the reductions the loop's back edges spent,
+one per iteration. Fixture 01880 counts the continuations of calls to callees
+that are and are not frame-free. Fixture 01376 loops past many
 quanta through a self tail call beside a second process.
 
 ## Who owns what

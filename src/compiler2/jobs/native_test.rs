@@ -602,8 +602,9 @@ fn fns_of_executable<'p>(
 
 /// `P.f` adds in a position that is not its tail and `P.g` multiplies in one.
 /// Kernel's `+` and `*` are each a clause that only calls an extern, so each
-/// caller is one function: it calls the extern itself and continues in the
-/// entry that resumes it, with no function for that entry and no call.
+/// is frame-free and lowered in its caller: each caller is one function that
+/// calls the extern itself, with no call and no function for the entry that
+/// goes on after it.
 #[test]
 fn a_delivered_call_to_a_forwarder_of_an_extern_is_the_extern_inline_in_its_caller() {
     let settled = Drive::fixture(1177).dump_stage(crate::compiler2::dump::DumpStage::Native);
@@ -614,12 +615,8 @@ fn a_delivered_call_to_a_forwarder_of_an_extern_is_the_extern_inline_in_its_call
         let [function] = fns.as_slice() else {
             panic!("{caller} is one function, with no resume function of its own: {names:?}");
         };
-        let calls_nothing = function
-            .blocks
-            .iter()
-            .all(|block| !matches!(block.terminator, Term::Call { .. } | Term::CallClosure { .. }));
         assert!(
-            calls_nothing,
+            makes_no_call(function),
             "{caller} reaches its extern without a call and its continuation"
         );
         let calls_extern = function.blocks.iter().flat_map(|block| &block.stmts).any(|stmt| {
@@ -632,30 +629,55 @@ fn a_delivered_call_to_a_forwarder_of_an_extern_is_the_extern_inline_in_its_call
     }
 }
 
-/// `L.run` calls `P.f`, which is two entries and a call and not an extern, so
-/// that call keeps its resume function: only a callee that is nothing but an
-/// extern is spliced.
+/// `Loop.frame_free` calls `Callee.classify/1`, which has three clauses, an
+/// `if` and a call of its own, and can suspend nothing. The loop is then one
+/// function: classify's clauses and its call to `half/1` are blocks of it, and
+/// it makes no call and has no function for the entry that goes on after the
+/// call.
 #[test]
-fn a_delivered_call_to_a_callee_that_is_more_than_an_extern_keeps_its_continuation() {
-    let settled = Drive::fixture(1177).dump_stage(crate::compiler2::dump::DumpStage::Native);
+fn a_delivered_call_to_a_frame_free_callee_is_lowered_as_blocks_of_its_caller() {
+    let settled = Drive::fixture(1880).dump_stage(crate::compiler2::dump::DumpStage::Native);
     let program = settled.native_program();
-    let run = fns_of_executable(&program, "run");
+    let fns = fns_of_executable(&program, "frame_free");
+    let [function] = fns.as_slice() else {
+        panic!(
+            "the loop is one function, with no resume function: {:?}",
+            native_fn_names(&program)
+        );
+    };
     assert!(
-        run.iter().any(|function| function.name.contains("__resume_")),
-        "the call to P.f resumes in a function of its own: {:?}",
-        native_fn_names(&program)
+        makes_no_call(function),
+        "the loop reaches classify/1 and half/1 without a call"
     );
-    assert!(
-        run.iter().all(|function| {
-            function
-                .blocks
-                .iter()
-                .filter(|block| matches!(block.terminator, Term::Call { .. }))
-                .count()
-                <= 1
-        }),
-        "run's one call that is not an extern is its only call with a continuation"
-    );
+}
+
+/// A callee in a call cycle, one that enters a `try` or a `receive`, and a
+/// closure each can be left and returned to by something outside the loop, so
+/// each loop's call keeps its continuation and the entry after it is a
+/// function of its own.
+#[test]
+fn a_delivered_call_to_a_callee_that_needs_a_frame_keeps_its_continuation() {
+    let settled = Drive::fixture(1880).dump_stage(crate::compiler2::dump::DumpStage::Native);
+    let program = settled.native_program();
+    for caller in ["cycle", "tried", "received", "closure"] {
+        let fns = fns_of_executable(&program, caller);
+        assert!(
+            fns.iter().any(|function| function.name.contains("__resume_")),
+            "{caller}'s call resumes in a function of its own: {:?}",
+            native_fn_names(&program)
+        );
+        assert!(
+            fns.iter().any(|function| !makes_no_call(function)),
+            "{caller} calls its callee with a continuation"
+        );
+    }
+}
+
+fn makes_no_call(function: &crate::fz_ir::FnIr) -> bool {
+    function
+        .blocks
+        .iter()
+        .all(|block| !matches!(block.terminator, Term::Call { .. } | Term::CallClosure { .. }))
 }
 /// How many times the functions of `function` test a value for being `true`
 /// or `false`, which is how a guard checks that an operand is a boolean.
