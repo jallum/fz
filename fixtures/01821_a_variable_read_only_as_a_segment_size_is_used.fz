@@ -1,0 +1,18 @@
+#---
+# purpose: "a variable read only as a bitstring segment's size is used, in a function head, a fn head and a match after it is bound; a variable never read beside them still warns"
+# oracle: self
+# oracle.stamp: 5e7c3fd46dc5a4d2
+#---
+defmodule Main do
+  def build(n), do: <<1::size(n)>>
+
+  def main() do
+    sized = fn n -> <<2::size(n)>> end
+    unread = 5
+    k = 8
+    <<x::size(k)>> = <<7>>
+    IO.inspect({build(8), sized.(8), x})
+  end
+end
+
+Main.main()
