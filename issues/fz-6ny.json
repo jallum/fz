@@ -2,13 +2,14 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-19T04:38:35Z",
   "created": "2026-11-14T03:15:00Z",
   "description": "On develop 01e69178a, `def f(xs :: [integer]), do: Enum.map(xs, fn x -\u003e x + 1 end)` called with `[1, String.to_atom(\"a\")]` passes the clause's run-time test (it asks only 'is a list'), and the body then reads every element as an integer: interp stops with 'internal error: an integer extern parameter received a non-integer after entry dispatch'; run panics in fz_ref_load_int (ExpectedTag expected 13 found 15). With a second clause `def f(_), do: :other` the call answers :ints instead of :other. Probe: scratchpad 4i4/deep2.fz and deeplist2.fz. A tuple annotation is tested per position ({:ok, :x} against {:ok, integer} goes to the next clause), so the hole is the list element. runtime_type_test_envelope keeps the element type (runtime_list_sig, src/compiler2/types/mod.rs:4631) while the emitted list question observes only list kind. Either the test walks the elements, or the type a passing value is narrowed to is what the test observed (a list), not the annotation. The same test serves fz-i89's spec-domain test, so a spec like @spec f([integer]) inherits the hole. Fails before, passes after: fixtures for both probes on interp, run and build. Acceptance: full gate green.",
   "id": "fz-6ny",
   "labels": [],
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "A list annotation's element type is trusted but never tested at run time",
   "type": "bug",
-  "updated_at": "2026-11-14T03:15:00Z"
+  "updated_at": "2026-11-19T04:38:35Z"
 }
