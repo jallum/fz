@@ -38,6 +38,7 @@ use super::bits::{self, BasicBits};
 use super::conj::Conj;
 use super::descr::Descr;
 use super::emptiness::{self, NonEmptyLists};
+use super::format::binder_name;
 use super::format::brand_refinement;
 use super::sigs::{ArrowSig, ClosureLit, ListSig, MapSig, ResourceSig, TupleSig};
 use super::{CallableValueKind, MapKey, Ty, TyCtx, TypeVarId, Types};
@@ -55,6 +56,9 @@ pub(crate) struct TyCanon<'a> {
     bodies: HashMap<Ty, Arc<str>>,
     fingerprints: HashMap<Ty, Arc<str>>,
     whole: HashMap<Ty, Arc<str>>,
+    /// The members of recursive types the rendering is inside, outermost
+    /// first; a member met again is named by its depth here.
+    entered: Vec<Ty>,
     #[cfg(test)]
     alpha_names: Option<HashMap<TypeVarId, usize>>,
     #[cfg(test)]
@@ -68,6 +72,7 @@ impl<'a> TyCanon<'a> {
             bodies: HashMap::default(),
             fingerprints: HashMap::default(),
             whole: HashMap::default(),
+            entered: Vec::new(),
             #[cfg(test)]
             alpha_names: None,
             #[cfg(test)]
@@ -140,12 +145,32 @@ impl<'a> TyCanon<'a> {
         text
     }
 
+    /// A member of a recursive type renders as `μt. body`, and as `t` where
+    /// its body meets it again. Its text names the binders entered above it,
+    /// so it is remembered only when nothing is. Any other type that mentions
+    /// a member is not reachable from that member, so its text never depends
+    /// on what is entered.
     fn body(&mut self, cx: TyCtx<'_>, ty: Ty) -> Arc<str> {
         if let Some(hit) = self.bodies.get(&ty) {
             return Arc::clone(hit);
         }
-        let text: Arc<str> = self.descr_body(cx, cx.descr(&ty), Provenance::Interned).into();
-        self.bodies.insert(ty, Arc::clone(&text));
+        if !cx.recursion.is_member(ty) {
+            let text: Arc<str> = self.descr_body(cx, cx.descr(&ty), Provenance::Interned).into();
+            self.bodies.insert(ty, Arc::clone(&text));
+            return text;
+        }
+        if let Some(depth) = self.entered.iter().position(|t| *t == ty) {
+            return binder_name(depth).into();
+        }
+        let outermost = self.entered.is_empty();
+        let binder = binder_name(self.entered.len());
+        self.entered.push(ty);
+        let inner = self.descr_body(cx, cx.descr(&ty), Provenance::Interned);
+        self.entered.pop();
+        let text: Arc<str> = format!("μ{binder}. {inner}").into();
+        if outermost {
+            self.bodies.insert(ty, Arc::clone(&text));
+        }
         text
     }
 

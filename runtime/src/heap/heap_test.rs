@@ -3493,3 +3493,47 @@ fn a_minor_that_outgrows_its_guess_overflows_into_a_smallest_class_block() {
     assert_overflow_leaves_at_most_a_smallest_class_unused(&stats, &h, SIZE_TABLE[0]);
     assert_eq!(stats.blocks_after, 2);
 }
+
+/// A full tip is left behind for a fresh one a step up, and the answer is the
+/// first address of that fresh tip with `size` taken from it. The allocation
+/// is not counted: whoever asked for room counts it.
+#[test]
+fn room_beyond_a_full_tip_answers_the_start_of_a_fresh_tip() {
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let (tip_start, tip_capacity) = (h.block_start, h.block_size);
+    h.alloc(tip_capacity);
+    let counted = h.alloc_count;
+
+    let p = h.room(32);
+
+    assert_eq!(
+        h.block_size,
+        next_block_capacity(tip_capacity),
+        "the tip climbed a step"
+    );
+    assert_eq!(p, h.block_start, "the object starts the fresh tip");
+    assert_eq!(h.bump_top, unsafe { p.add(32) }, "the tip is advanced past the object");
+    assert_eq!(h.young_blocks.len(), 1);
+    assert_eq!(h.young_blocks[0].start, tip_start, "the full tip is what was parked");
+    assert_eq!(h.alloc_count, counted, "room does not count the allocation");
+}
+
+/// An object too large for any tip one step up is parked alone, and the tip
+/// the compiled code was bumping stays where it was.
+#[test]
+fn room_for_a_huge_object_parks_it_alone_and_leaves_the_tip() {
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let (tip_start, tip_capacity) = (h.block_start, h.block_size);
+    h.alloc(tip_capacity);
+    let (top, counted) = (h.bump_top, h.alloc_count);
+    let huge = next_block_capacity(tip_capacity) + 16;
+
+    let p = h.room(huge);
+
+    assert_eq!(h.block_start, tip_start, "the tip did not move");
+    assert_eq!(h.bump_top, top);
+    assert_eq!(h.young_blocks.len(), 1);
+    assert_eq!(h.young_blocks[0].start, p, "the parked block starts with the object");
+    assert_eq!(h.young_blocks[0].capacity, pick_block_capacity(huge));
+    assert_eq!(h.alloc_count, counted, "room does not count the allocation");
+}

@@ -128,7 +128,9 @@ newline to guess intent.
   *new* statement (mirrors Elixir's tokenizer, where a prefix-capable
   operator never swallows a preceding eol; `%` has no modulo in Elixir, so
   that dual role is fz-specific). `|`, `=>` and `<-` are infix-only, as they
-  are in Elixir. `->` is not: a line that begins with `->` starts a zero-head
+  are in Elixir, so a list's `| tail` and a map update's `| key: value` may
+  begin a line. Inside the brackets, a line end after the `|` and one before the
+  closing `]` or `}` are skipped. `->` is not: a line that begins with `->` starts a zero-head
   clause, as `catch` clauses do, where Elixir's tokenizer would continue the line
   before. `Tok::Plus` stays infix-only at a line start
   (a leading `+` continues the previous expression), yet the front door's

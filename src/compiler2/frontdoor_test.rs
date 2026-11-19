@@ -1172,6 +1172,35 @@ fn compiler2_frontdoor_parses_assignment_rhs_after_newline() {
     assert_quoted_mentions(&root, &["def", "=", "+"]);
 }
 
+#[test]
+fn compiler2_frontdoor_reads_a_list_tail_across_lines_as_on_one_line() {
+    // Elixir lets a list's `| tail` begin a line, end one, and close on the
+    // next: each spelling below is the list `[[a, b] | rest]`, as on one line.
+    let tel = ConfiguredTelemetry::new();
+    let shape = |name: &str, list: &str| {
+        quoted_shapes(&parse_quoted_program(name, &format!("x = {list}\n"), &tel).expect(name))
+    };
+    let one_line = shape("one-line.fz", "[[a, b] | rest]");
+    for (name, list) in [
+        ("bar-starts-line.fz", "[\n  [a, b]\n  | rest\n]"),
+        ("bar-ends-line.fz", "[[a, b] |\n  rest]"),
+        ("closer-on-own-line.fz", "[[a, b] | rest\n]"),
+    ] {
+        assert_eq!(shape(name, list), one_line, "{name} reads as the one-line list");
+    }
+}
+
+#[test]
+fn compiler2_frontdoor_reads_a_map_update_bar_starting_a_line_as_on_one_line() {
+    let tel = ConfiguredTelemetry::new();
+    let shape =
+        |name: &str, map: &str| quoted_shapes(&parse_quoted_program(name, &format!("x = {map}\n"), &tel).expect(name));
+    assert_eq!(
+        shape("map-bar-starts-line.fz", "%{\n  m\n  | a: 1\n}"),
+        shape("map-one-line.fz", "%{m | a: 1}"),
+    );
+}
+
 // The four cases below pin the grammar-owned eol/eoe model: newline
 // continuation falls out of which token follows a run of physical
 // newlines (infix-only tokens swallow it at tokenize time; the parser

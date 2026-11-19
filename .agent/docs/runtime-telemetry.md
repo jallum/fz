@@ -194,7 +194,10 @@ An allocation site is one place that puts an object on a heap
   join, so one placement is one count. The counters are one zeroed, writable
   data object of the module; its kind and size are fixed per site, so bytes are
   the count times the size. The continuation frame is the allocation compiled
-  code places inline.
+  code places inline, through `emit_place` (`native_codegen/place.rs`), the one
+  emitter of the bump: a non-tail call's frame and the frame a budget yield
+  leaves are both compiled sites. The runtime's own continuation site is the
+  copy `fz_frame_for_write` makes of an old frame.
 - A **runtime site** is a runtime function that allocates:
   `Heap::alloc_at` takes a `RuntimeAllocSite`, which fixes the object's kind,
   and records the allocation and its bytes in `Node::runtime_allocs`.

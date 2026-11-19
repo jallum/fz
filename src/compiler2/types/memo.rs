@@ -7,6 +7,7 @@
 
 use crate::fast_hash::HashMap;
 
+use super::recursive::Mapper;
 use super::{Ty, Types};
 
 pub(crate) struct TyMemo<V>(HashMap<Ty, V>);
@@ -28,19 +29,23 @@ impl<V: Copy> TyMemo<V> {
 }
 
 impl Types {
-    /// The answer of the walker whose memo is `table` for `ty`: remembered when
-    /// asked before, else `compute`d and remembered.
-    pub(super) fn memoized<V: Copy>(
+    /// The type the mapper whose memo is `table` makes of `ty`. A mapping that
+    /// is still unfinished — it names a recursive construction in flight — is
+    /// not remembered.
+    pub(super) fn memoized(
         &mut self,
-        table: fn(&mut Types) -> &mut TyMemo<V>,
+        mapper: Mapper,
+        table: fn(&mut Types) -> &mut TyMemo<Ty>,
         ty: Ty,
-        compute: impl FnOnce(&mut Types) -> V,
-    ) -> V {
+        compute: impl FnOnce(&mut Types) -> Ty,
+    ) -> Ty {
         if let Some(answer) = table(self).get(&ty) {
             return answer;
         }
-        let answer = compute(self);
-        table(self).remember(ty, answer);
+        let (answer, settled) = self.map_type(|| mapper, ty, compute);
+        if settled {
+            table(self).remember(ty, answer);
+        }
         answer
     }
 

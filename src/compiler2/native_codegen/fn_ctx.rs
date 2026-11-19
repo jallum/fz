@@ -18,12 +18,12 @@ use fz_runtime::any_value::{
     SlotLayout, TaggedRefArch, ValueKind,
 };
 use fz_runtime::ir_runtime::{
-    fz_alloc_closure, fz_alloc_continuation, fz_alloc_struct, fz_box_float_for_any, fz_box_int_for_any,
-    fz_closure_halt_kind_ref, fz_closure_set_capture_atom, fz_closure_set_capture_f64, fz_closure_set_capture_i64,
-    fz_closure_set_capture_ref, fz_halt_implicit_atom, fz_halt_implicit_f64, fz_halt_implicit_i64,
-    fz_halt_implicit_ref, fz_list_head_float_ref, fz_list_head_int_ref, fz_list_head_ref, fz_list_reuse_or_cons_parts,
-    fz_list_reuse_or_cons_ref, fz_list_tail_ref, fz_mark_published_ref_aliased, fz_number_ref_float_bits,
-    fz_struct_copy, fz_struct_store_ref, fz_truthy_ref, fz_type_of, fz_unbox_atom, fz_unbox_float, fz_unbox_int,
+    fz_alloc_closure, fz_alloc_struct, fz_box_float_for_any, fz_box_int_for_any, fz_closure_halt_kind_ref,
+    fz_closure_set_capture_atom, fz_closure_set_capture_f64, fz_closure_set_capture_i64, fz_closure_set_capture_ref,
+    fz_halt_implicit_atom, fz_halt_implicit_f64, fz_halt_implicit_i64, fz_halt_implicit_ref, fz_list_head_float_ref,
+    fz_list_head_int_ref, fz_list_head_ref, fz_list_reuse_or_cons_parts, fz_list_reuse_or_cons_ref, fz_list_tail_ref,
+    fz_mark_published_ref_aliased, fz_number_ref_float_bits, fz_struct_copy, fz_struct_store_ref, fz_truthy_ref,
+    fz_type_of, fz_unbox_atom, fz_unbox_float, fz_unbox_int,
 };
 use fz_runtime::process_abi::{PROCESS_STRUCT_RETENTION_ATTEMPTS_OFFSET, PROCESS_STRUCT_RETENTION_HITS_OFFSET};
 
@@ -384,16 +384,6 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
             fz_alloc_closure,
             [process, denotation, arity, captured_count, halt_kind, code_addr]
         )
-    }
-
-    pub(crate) fn alloc_continuation(
-        &mut self,
-        arity: ir::Value,
-        captured_count: ir::Value,
-        code_addr: ir::Value,
-    ) -> ir::Value {
-        let process = self.process_arg();
-        runtime_call1!(self, fz_alloc_continuation, [process, arity, captured_count, code_addr])
     }
 
     pub(crate) fn list_head(&mut self, list_ref: ir::Value) -> ir::Value {

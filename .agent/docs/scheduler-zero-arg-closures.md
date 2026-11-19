@@ -364,23 +364,28 @@ non-tail call leaves behind is built every time, as described next.
 Every continuation a non-tail call leaves behind (`Term::Call`,
 `Term::CallClosure`, and the `NativeEntryAbi::Continuation` delivery) is a
 one-argument closure on the process heap. `build_cont_closure`
-(`src/compiler2/native_codegen/closure.rs`) emits the whole construction as CLIF:
+(`src/compiler2/native_codegen/closure.rs`) emits the whole construction as CLIF.
+The placement is `emit_place` (`native_codegen/place.rs`), the one inline bump:
 
 ```text
 top, end = heap.bump_top, heap.block_end
 if top + closure_size_for_count(n) <= end:        inline
   heap.bump_top += size
+else:                                              tip block full (cold)
+  top = fz_heap_room(process, size)                the runtime climbs or parks; writes nothing
+placed:                                            both paths join
   heap.alloc_count, alloc_stats.total, alloc_stats.continuation += 1 object, size bytes
-  [top+0] = header; [top+8] = code address
-else:                                              block full
-  top = fz_alloc_continuation(...)                 header and code written there
+  the allocation site's counter += 1
+[top+0] = header; [top+8] = code address
 [top+16+8*i]        = raw word of capture i        (capture 0 is the outer cont)
 [top+16+8*n+i]      = kind byte of capture i
 ```
 
+The yield closure of an exhausted budget is placed the same way.
+
 `heap::INLINE_ALLOC_LAYOUT` and `process_abi::PROCESS_HEAP_OFFSET` give the field
-offsets, and a heap test pins them against the real fields. Because the inline
-path counts its own allocation, `Process.heap_alloc_stats()` reports every
+offsets, and a heap test pins them against the real fields. Because the placement
+counts its own allocation after the join, `Process.heap_alloc_stats()` reports every
 continuation in its own `continuation_allocs` / `continuation_bytes` row (the
 total includes it); the `closure` rows count only closures a program makes. The
 stats map holds 34 entries, past `MAP_FLAT_MAX` (32). A ref capture's raw word is the payload of

@@ -1,0 +1,42 @@
+#---
+# purpose: "a list's `| tail` and a map update's `|` may begin a line, end one, or leave the closing bracket on its own line, and the value is the one the same expression has on one line"
+# oracle: self
+# oracle.stamp: 76f14291b5b4d7ac
+#---
+#
+# Elixir reads a line that begins with `|` as the continuation of the line
+# before, and a line end after `|` or before a closing bracket as nothing.
+defmodule Main do
+  def prepend(a, b, rest) do
+    [
+      [a, b]
+      | rest
+    ]
+  end
+
+  def bar_ends_line(a, rest) do
+    [a |
+      rest]
+  end
+
+  def closer_on_own_line(a, rest) do
+    [a | rest
+    ]
+  end
+
+  def update(map) do
+    %{
+      map
+      | count: map.count + 1
+    }
+  end
+
+  def main() do
+    IO.inspect(prepend(1, 2, [3]))
+    IO.inspect(bar_ends_line(1, [2, 3]))
+    IO.inspect(closer_on_own_line(:a, [:b]))
+    IO.inspect(update(%{count: 1, name: "n"}))
+  end
+end
+
+Main.main()
