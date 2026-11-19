@@ -25,7 +25,6 @@ use cranelift_codegen::ir::{self, BlockArg, InstBuilder, MemFlagsData, types};
 use cranelift_frontend::FunctionBuilder;
 use fz_runtime::any_value::{AnyValueRefPacking, ValueKind};
 use fz_runtime::heap::HeapAllocKind;
-use fz_runtime::ir_runtime::fz_mark_published_ref_aliased;
 
 /// How a cell's head reaches it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -105,35 +104,16 @@ impl Head {
     }
 }
 
-/// The head a ref word names, as a cell stores it, after the runtime has
-/// shared it when it is a list or a struct.
+/// The head a ref word names, as a cell stores it, after it is shared: a
+/// cell is a second holder.
 fn decode_and_share<M: cranelift_module::Module>(body: &mut CodegenFn<'_, '_, M>, head_ref: ir::Value) -> Head {
+    body.share(CodegenValue::AnyRef(head_ref));
     let kind = kind_field(body.b, head_ref);
-    share_if_list_or_struct(body, head_ref, kind);
     let raw = payload_of(body, head_ref, kind);
     Head {
         raw,
         kind: HeadKind::Read(kind),
     }
-}
-
-/// Call the runtime to share `head_ref` when `kind` is one it shares.
-fn share_if_list_or_struct<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, M>,
-    head_ref: ir::Value,
-    kind: ir::Value,
-) {
-    let shared = kind_is_one_of(body.b, kind, |kind| matches!(kind, ValueKind::LIST | ValueKind::STRUCT));
-    let share = body.b.create_block();
-    let after = body.b.create_block();
-    body.b.ins().brif(shared, share, &[], after, &[]);
-    body.b.switch_to_block(share);
-    body.b.seal_block(share);
-    let process = body.process_arg();
-    runtime_call!(body, fz_mark_published_ref_aliased, [process, head_ref]);
-    body.b.ins().jump(after, &[]);
-    body.b.switch_to_block(after);
-    body.b.seal_block(after);
 }
 
 /// The payload word a container stores for the value `word` names: what a

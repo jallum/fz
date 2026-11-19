@@ -264,8 +264,8 @@ fn build_struct<M: cranelift_module::Module, T: Types<Ty = Ty>>(
     }
     let object = body.alloc_struct(schema_id, fields.len());
     for (index, field) in fields.iter().enumerate() {
-        let addressed_object = ty_is_addressed_object(t, env.active_value_types(), *field);
-        body.store_field(&object, index, binding_for_var(var_env, field.0), addressed_object);
+        let addressed = addressed_object_share(t, env.active_value_types(), *field);
+        body.store_field(&object, index, binding_for_var(var_env, field.0), addressed);
     }
     Ok(LowerOut::ValueRef(object.reference))
 }
@@ -496,12 +496,12 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
             body.b.seal_block(slot_blk);
             let object = body.reuse_or_copy_struct(base_ref, *arity as usize, *rewrite);
             for store in stores {
-                let addressed_object = ty_is_addressed_object(t, value_types, store.value);
+                let addressed = addressed_object_share(t, value_types, store.value);
                 body.store_field(
                     &object,
                     store.slot as usize,
                     binding_for_var(var_env, store.value.0),
-                    addressed_object,
+                    addressed,
                 );
             }
             body.b.ins().jump(join_blk, &[BlockArg::Value(object.reference)]);
@@ -1204,11 +1204,7 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
     match prim {
         Prim::Share(value) => {
             let binding = binding_for_var(var_env, value.0);
-            match (binding, share_class(t, value_types, *value)) {
-                (_, ShareClass::Markless) => {}
-                (CodegenValue::AnyRef(reference), ShareClass::Kind(kind)) => body.share_kind(reference, kind),
-                _ => body.share(binding),
-            }
+            body.share_as(binding, share_class(t, value_types, *value));
             Ok(LowerOut::Strict(binding))
         }
         Prim::Const(c) => match c {

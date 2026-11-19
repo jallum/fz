@@ -8648,7 +8648,8 @@ fn lowered_clif_of(source: &str, function: &str) -> String {
 /// holds it, so the argument is shared before the call. Sharing a binary
 /// tests its mark and sets it, with no question about its kind; sharing an
 /// integer emits nothing; sharing a value of any type asks its kind and may
-/// walk a list's spine. No share calls the runtime's general marker.
+/// walk a list's spine. A store into a tuple shares the same way. No share
+/// calls the runtime's general marker.
 #[test]
 fn compiler2_native_share_is_inline_and_follows_the_shared_values_type() {
     let program = |guard: &str, argument: &str| {
@@ -8697,7 +8698,16 @@ fn compiler2_native_share_is_inline_and_follows_the_shared_values_type() {
         "a share of any value asks its kind:\n{any}"
     );
 
-    for text in [&binary, &integer, &any] {
+    let stored = lowered_clif_of(
+        "defmodule P do\n  def boxed(v) when is_binary(v), do: %{k: {:ok, v}}\nend\ndef main(), do: P.boxed(\"ab\" <> \"cd\")\n",
+        "boxed",
+    );
+    assert!(
+        stored.contains(&mark_hex) && !stored.contains("fz_share_list_spine"),
+        "a binary stored in a tuple is shared as a binary, not by asking its kind:\n{stored}"
+    );
+
+    for text in [&binary, &integer, &any, &stored] {
         assert!(
             !text.contains("fz_mark_published_ref_aliased"),
             "no share calls the runtime's marker:\n{text}"
