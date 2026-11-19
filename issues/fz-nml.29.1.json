@@ -2,7 +2,6 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
-    "fz-9e2.6",
     "fz-nml.29.2"
   ],
   "created": "2026-11-19T01:32:59Z",
@@ -14,5 +13,5 @@
   "status": "in_progress",
   "title": "A binary has a shared mark that every publish point sets",
   "type": "task",
-  "updated_at": "2026-11-19T01:33:54Z"
+  "updated_at": "2026-11-19T01:33:55Z"
 }

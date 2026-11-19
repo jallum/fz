@@ -1,8 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-9e2.1",
-    "fz-nml.29.1"
+    "fz-9e2.1"
   ],
   "blocks": [],
   "created": "2026-11-18T21:21:29Z",
@@ -28,5 +27,5 @@
   "status": "open",
   "title": "A lane received unchanged at a self-tail-call back edge is not shared again",
   "type": "task",
-  "updated_at": "2026-11-19T01:33:07Z"
+  "updated_at": "2026-11-19T01:33:55Z"
 }
