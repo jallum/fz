@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-9zq.6"
+  ],
   "created": "2026-11-19T03:09:42Z",
   "description": "User directed 2026-11-19: \"add the elixir parity issues as tickets to the epic we gave to Elixir Parity\". Owner: Elixir Parity. Found by Elixir Parity. The port's decoders() @type (otp_json.ex:865) is %{optional(:array_start) =\u003e array_start_fun(), ...}; decode_value() uses %{optional(binary()) =\u003e decode_value()}. fz's type parser rejects them: 'a map type key must be a literal atom or int'. Done: both parse and declare types on three paths; a self-oracle fixture covers them.",
   "id": "fz-mue.29",
@@ -17,5 +19,5 @@
   "status": "open",
   "title": "A map type key may be any type, as in Elixir",
   "type": "feature",
-  "updated_at": "2026-11-19T04:33:38Z"
+  "updated_at": "2026-11-19T04:33:41Z"
 }
