@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-19T01:32:33Z",
+  "description": "Board cleanup approved by the user, verbatim \"fz-9e2 cleanup approved\" (in Binary Handling's session, 2026-11-19). Split from fz-sc8.231: the handler half. A handler's parameters cannot take layouts without a runtime ABI change (found by MDF's establish-first on fz-sc8.231), so this half needs its own proposal for that ABI change before it is built. Done when a handler hands no matched rest whole by rule; fixtures on three paths.",
+  "id": "fz-sc8.254",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "A rescued exception's rest arrives the way its handler reads it",
+  "type": "task",
+  "updated_at": "2026-11-19T01:32:33Z"
+}
