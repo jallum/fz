@@ -7,9 +7,15 @@
   "id": "fz-mue.32",
   "labels": [],
   "parent": "fz-mue",
+  "comments": [
+    {
+      "text": "When this lands, Record.__record__'s duplicate-key IO.warn joins (Elixir Parity, fz-mue.12).",
+      "timestamp": "2026-11-19T03:15:30Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "A macro can emit a compile-time warning",
   "type": "feature",
-  "updated_at": "2026-11-19T03:09:43Z"
+  "updated_at": "2026-11-19T03:15:30Z"
 }
