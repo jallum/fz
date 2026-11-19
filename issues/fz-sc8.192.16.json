@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-19T00:10:27Z",
+  "description": "User, 2026-11-18, verbatim via Optimize: \"note the discrepancy as a ticket at the end of the epic.\" Optimize's reading (not confirmed by the user): the discrepancy is this map-order difference. If the user meant the case_a_40 guard miss, fz-sc8.192.15 covers it and this ticket is closed.\n\nfz lists a small atom-keyed map's keys by name. Elixir 1.19.4 / OTP 28 lists them by atom-table index, so an atom the VM interned early sorts ahead of later ones:\n  IO.inspect(Map.put(%{a: 1, b: nil}, :c, 0))   Elixir %{c: 0, a: 1, b: nil}   fz %{a: 1, b: nil, c: 0}\n  IO.inspect(%{a: 1, b: nil, c: 0})             the same difference\n  Map.to_list of it                              Elixir [c: 0, a: 1, b: nil]     fz [a: 1, b: nil, c: 0]\n  with :zebra_fresh_atom in place of :c          both agree\nIt predates this epic: develop prints the same. Repro: /Users/j5n/Workspace/fz-map-traces/ord.fz.\n\nContext: fz-sc8.192.6's approved page v2 withdrew the v1 decisions on atom order, because atom ids are not stable. fz-sc8.219 records the oracle side of the same thing: Elixir's order for an atom-keyed map is not defined across runs and versions (01174). So \"match Elixir\" may not be a reachable target; the decision this ticket asks for is which order fz promises, and where that is written down (guides, and the oracle rule for fixtures).\n\nPlaced at the end of fz-sc8.192; it blocks nothing.",
+  "id": "fz-sc8.192.16",
+  "labels": [],
+  "parent": "fz-sc8.192",
+  "priority": 3,
+  "status": "open",
+  "title": "A map's atom keys are listed in the order Elixir lists them, or the difference is a documented one",
+  "type": "task",
+  "updated_at": "2026-11-19T00:10:27Z"
+}
