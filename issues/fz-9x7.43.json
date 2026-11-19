@@ -13,11 +13,15 @@
     {
       "text": "Make Distiller Fast's prediction (page 4JyVHKjbDBw1bzRDu17PZd v5 §9): 64.4M decode continuations × (170 − 22) ≈ 9.5G less parse work, so the gap to the BEAM goes from ~24.0G to ~14.5G. N4 is folded into this ticket.",
       "timestamp": "2026-11-19T04:17:42Z"
+    },
+    {
+      "text": "From fz-9x7.42's results (Callables, develop 1d2b4f6fa), in scope here:\n(a) The frame-copy path (frame_in_tip_or_copy/fz_frame_for_write) is deleted; a long body's frame is written in place (01254, 01256, distiller timeline/1).\n(b) A long body ending in a tail call pops at its last call (01166).\n(c) Receive: the runtime builds the outcome frame on the region in the parked frame's place (park.rs resume_closure). The raise handler (materialize_outcome_closure) is pushed after resetting to the saved cont_top.\n(d) A mid-flight yield's frame points down the stack, so it is not a holder and builds on the region like any other frame.\n(e) A process exiting with live frames needs nothing: the region goes with the process.\nDebug checks replace the spike: assert each pop is at or below cont_top, and during a collection assert that no heap object points into a region chunk. The spike diff (9 files) is in Callables' scratch for the builder.",
+      "timestamp": "2026-11-19T04:54:28Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "A continuation lives in its process's continuation region and is given back by one store",
   "type": "feature",
-  "updated_at": "2026-11-19T04:17:42Z"
+  "updated_at": "2026-11-19T04:54:28Z"
 }
