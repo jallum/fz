@@ -379,8 +379,25 @@ impl Heap {
         self.alloc_list_cons_storage(head_raw, head_kind, tail_bits)
     }
 
+    /// Place the cell a deep copy is about to fill: an empty cell, counted as
+    /// a copy so a run can tell cells that were copied from cells that were
+    /// built.
+    pub(super) fn alloc_copied_list_cell(&mut self) -> u64 {
+        let unfilled = AnyValue::nil_atom();
+        self.place_list_cons(
+            RuntimeAllocSite::ListConsCopy,
+            unfilled.raw(),
+            unfilled.kind(),
+            crate::any_value::EMPTY_LIST,
+        )
+    }
+
     fn alloc_list_cons_storage(&mut self, head_raw: u64, head_kind: ValueKind, tail_bits: u64) -> u64 {
-        let p = self.alloc_at(RuntimeAllocSite::ListConsStorage, 16);
+        self.place_list_cons(RuntimeAllocSite::ListConsStorage, head_raw, head_kind, tail_bits)
+    }
+
+    fn place_list_cons(&mut self, site: RuntimeAllocSite, head_raw: u64, head_kind: ValueKind, tail_bits: u64) -> u64 {
+        let p = self.alloc_at(site, 16);
         unsafe {
             write(p as *mut ListCons, ListCons::new(head_raw, head_kind, tail_bits));
         }
