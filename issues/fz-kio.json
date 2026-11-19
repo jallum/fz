@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-19T02:11:22Z",
+  "description": "Out of scope of fz-nhb.5 by the user's approval of /Users/j5n/Workspace/fz-nhb.5.html (relayed by Elixir Parity, 2026-11-19), filed as the follow-up that deferral requires. Unowned.\nWhy: fz has no Date, Time, NaiveDateTime or DateTime.\nDone: those structs exist and the four sigils build them, matching Elixir on run, interp and build.",
+  "id": "fz-kio",
+  "labels": [],
+  "priority": 3,
+  "status": "open",
+  "title": "~D, ~T, ~N and ~U make calendar values, as in Elixir",
+  "type": "feature",
+  "updated_at": "2026-11-19T02:11:22Z"
+}
