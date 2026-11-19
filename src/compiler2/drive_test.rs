@@ -13398,7 +13398,7 @@ const SURFACE_MEMBERSHIP_CENSUS: [(&str, &str, usize, usize); 14] = [
     (
         "fixtures/01125_a_never_returning_closure_call_over_decoded_records_asks_nothing_of_the_boxed_return.fz",
         "",
-        12,
+        10,
         0,
     ),
     (
