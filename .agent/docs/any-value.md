@@ -861,16 +861,22 @@ A struct's shared mark is bit 4 of its header word
 (`STRUCT_HEADER_SHARED_MASK`). The schema id sits in the high 32 bits
 (`STRUCT_HEADER_SCHEMA_SHIFT`) and the low nibble is the forwarding marker, so
 neither a schema read nor the collector notices the mark. `Heap::share` is the
-one setter for both kinds: a list marks its spine, a struct its header. It is
-reached wherever a struct can gain a second holder:
+one setter for both kinds: a list marks its spine, a struct its header. Native
+code writes the same share where it stands (`CodegenFn::share`), shaped by
+what the compiler knows of the value: nothing for a type whose values are
+numbers or atoms, a test and a store of the mark for a struct, tuple or
+binary, a test of a list's first cell before the runtime walks its spine
+(`fz_share_list_spine`), and a branch on the reference's kind when the type
+does not say (`share_class` decides). An object already marked is only read,
+since it may be read-only program data. A share is reached wherever a struct
+can gain a second holder:
 
-- a call argument or tuple field passed `Share` (`fz_mark_published_ref_aliased`
-  natively, `publish_backend_capture` in the interpreter);
+- a call argument or tuple field passed `Share` (`Prim::Share` natively,
+  `publish_backend_capture` in the interpreter);
 - a closure capture, including the mid-flight continuation a reduction yield
   builds (`store_closure_capture_ref_word`);
 - a store into a container: a struct or tuple field, a list head, a map key
-  or value (`publish_contained_parts`, and natively `CodegenFn::stored_form`,
-  which marks the header inline);
+  or value (`publish_contained_parts`, and natively `CodegenFn::stored_form`);
 - a collection that keeps it (`cheney_trace_struct`), since a kept struct is
   old;
 - a gift copy (`deep_copy_strict_struct`).
@@ -892,7 +898,7 @@ in word 0: a small bitstring's header, whose length then reads through
 deep copy rewrite the pointer and keep the mark. It is set once and never
 cleared (`share_bitstring`, `BinView::share`), and `Heap::share` and
 `publish_contained_parts` reach a binary at the same publish points as a
-struct; native `stored_form` marks a stored binary inline. A view is born by
+struct, and native code marks it in place as it does a struct. A view is born by
 its `StubSite`: a filled or grown buffer and an in-place append are born
 clear; a window of a buffer, a message copy and a static literal are born
 shared (`StubSite::born_shared`). A small bitstring is born clear, a message

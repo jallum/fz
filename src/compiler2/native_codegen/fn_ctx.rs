@@ -14,16 +14,17 @@ use cranelift_frontend::FunctionBuilder;
 use cranelift_module::{DataId, FuncId, Module};
 use fz_runtime::any_value::{
     AnyValueRef, AnyValueRefPacking, BINARY_SHARED_MASK, CLOSURE_CAPTURES_OFFSET, CLOSURE_CODE_OFFSET,
-    CLOSURE_FLAGS_CAPTURED_MASK, CLOSURE_LAYOUT_FLAGS_SHIFT, FALSE_ATOM_ID, NIL_ATOM_ID, STRUCT_HEADER_SCHEMA_SHIFT,
-    STRUCT_HEADER_SHARED_MASK, SlotLayout, TaggedRefArch, ValueKind,
+    CLOSURE_FLAGS_CAPTURED_MASK, CLOSURE_LAYOUT_FLAGS_SHIFT, FALSE_ATOM_ID, LIST_CONS_LINK_OFFSET,
+    LIST_LINK_ALIAS_MASK, NIL_ATOM_ID, STRUCT_HEADER_SCHEMA_SHIFT, STRUCT_HEADER_SHARED_MASK, SlotLayout,
+    TaggedRefArch, ValueKind,
 };
 use fz_runtime::ir_runtime::{
     fz_alloc_closure, fz_alloc_struct, fz_box_float_for_any, fz_box_int_for_any, fz_closure_halt_kind_ref,
     fz_closure_set_capture_atom, fz_closure_set_capture_f64, fz_closure_set_capture_i64, fz_closure_set_capture_ref,
     fz_halt_implicit_atom, fz_halt_implicit_f64, fz_halt_implicit_i64, fz_halt_implicit_ref, fz_list_head_float_ref,
     fz_list_head_int_ref, fz_list_head_ref, fz_list_reuse_or_cons_parts, fz_list_reuse_or_cons_ref, fz_list_tail_ref,
-    fz_mark_published_ref_aliased, fz_number_ref_float_bits, fz_struct_copy, fz_struct_store_ref, fz_truthy_ref,
-    fz_type_of, fz_unbox_atom, fz_unbox_float, fz_unbox_int,
+    fz_number_ref_float_bits, fz_share_list_spine, fz_struct_copy, fz_struct_store_ref, fz_truthy_ref, fz_type_of,
+    fz_unbox_atom, fz_unbox_float, fz_unbox_int,
 };
 use fz_runtime::process_abi::{
     PROCESS_BINARIES_SHARED_OFFSET, PROCESS_STRUCT_RETENTION_ATTEMPTS_OFFSET, PROCESS_STRUCT_RETENTION_HITS_OFFSET,
@@ -169,47 +170,128 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
         self.b.ins().store(MemFlagsData::trusted(), added, process, offset);
     }
 
-    /// Mark the object `reference` names shared when its `kind` carries a
-    /// shared mark in its first word, as storing it into a container must: a
-    /// struct or tuple at `STRUCT_HEADER_SHARED_MASK`, a binary of either
-    /// layout at `BINARY_SHARED_MASK`. An object already shared is only read:
-    /// it may be read-only program data or old. A binary this marks is
-    /// counted in the heap's `binaries_shared`.
-    fn share_if_published_kind(&mut self, reference: ir::Value, kind: ir::Value) {
-        let check_blk = self.b.create_block();
-        let mark_blk = self.b.create_block();
-        let done_blk = self.b.create_block();
-        let is_struct = self.kind_is(kind, ValueKind::STRUCT);
-        let is_bitstring = self.kind_is(kind, ValueKind::BITSTRING);
-        let is_view = self.kind_is(kind, ValueKind::BINVIEW);
-        let is_binary = self.b.ins().bor(is_bitstring, is_view);
-        let markable = self.b.ins().bor(is_struct, is_binary);
-        self.b.ins().brif(markable, check_blk, &[], done_blk, &[]);
-
-        self.b.switch_to_block(check_blk);
-        self.b.seal_block(check_blk);
-        let struct_mask = self.b.ins().iconst(types::I64, STRUCT_HEADER_SHARED_MASK as i64);
-        let binary_mask = self.b.ins().iconst(types::I64, BINARY_SHARED_MASK as i64);
-        let mask = self.b.ins().select(is_struct, struct_mask, binary_mask);
-        let object = address_field(self.b, reference);
-        let header = self.b.ins().load(types::I64, MemFlagsData::trusted(), object, 0);
-        let shared = self.b.ins().band(header, mask);
-        self.b.ins().brif(shared, done_blk, &[], mark_blk, &[]);
-
-        self.b.switch_to_block(mark_blk);
-        self.b.seal_block(mark_blk);
-        let marked = self.b.ins().bor(header, mask);
-        self.b.ins().store(MemFlagsData::trusted(), marked, object, 0);
-        let newly_shared_binaries = self.b.ins().uextend(types::I64, is_binary);
-        self.add_process_counter(PROCESS_BINARIES_SHARED_OFFSET, newly_shared_binaries);
-        self.b.ins().jump(done_blk, &[]);
-
-        self.b.switch_to_block(done_blk);
-        self.b.seal_block(done_blk);
+    /// Mark `value` shared: from here on it may have a second holder, so it is
+    /// never written in place again. What the compiler knows of the value
+    /// decides the code: nothing for a value that holds no mark, a test and a
+    /// store for a struct, tuple or binary, a test of the first cell and a
+    /// spine walk for a list, and a branch on the reference's kind for a
+    /// value whose kind is known only when it runs. It is `Heap::share`,
+    /// written in place.
+    pub(crate) fn share(&mut self, value: CodegenValue) {
+        match value {
+            CodegenValue::AnyRef(reference) => self.share_any(reference),
+            CodegenValue::Known { kind, .. } if !kind.is_scalar() => {
+                let reference = self.value_as_any_ref(value);
+                self.share_kind(reference, kind);
+            }
+            CodegenValue::Known { .. }
+            | CodegenValue::RawInt(_)
+            | CodegenValue::RawF64(_)
+            | CodegenValue::RawAtom(_)
+            | CodegenValue::Condition(_) => {}
+        }
     }
 
-    fn kind_is(&mut self, kind: ir::Value, expected: ValueKind) -> ir::Value {
-        self.b.ins().icmp_imm_s(IntCC::Equal, kind, expected.tag() as i64)
+    /// Share a reference whose kind is read from the reference itself.
+    fn share_any(&mut self, reference: ir::Value) {
+        let done = self.b.create_block();
+        let kind = kind_field(self.b, reference);
+        for marked_kinds in [
+            &[ValueKind::STRUCT][..],
+            &[ValueKind::BITSTRING, ValueKind::BINVIEW],
+            &[ValueKind::LIST],
+        ] {
+            let this_kind = self.b.create_block();
+            let next = self.b.create_block();
+            let is_kind = self.kind_in(kind, marked_kinds);
+            self.b.ins().brif(is_kind, this_kind, &[], next, &[]);
+            self.b.switch_to_block(this_kind);
+            self.b.seal_block(this_kind);
+            self.share_kind(reference, marked_kinds[0]);
+            self.b.ins().jump(done, &[]);
+            self.b.switch_to_block(next);
+            self.b.seal_block(next);
+        }
+        self.b.ins().jump(done, &[]);
+        self.b.switch_to_block(done);
+        self.b.seal_block(done);
+    }
+
+    /// Whether `kind` is one of `kinds`.
+    fn kind_in(&mut self, kind: ir::Value, kinds: &[ValueKind]) -> ir::Value {
+        let (first, rest) = kinds.split_first().expect("a kind");
+        let mut is = self.b.ins().icmp_imm_s(IntCC::Equal, kind, first.tag() as i64);
+        for other in rest {
+            let is_other = self.b.ins().icmp_imm_s(IntCC::Equal, kind, other.tag() as i64);
+            is = self.b.ins().bor(is, is_other);
+        }
+        is
+    }
+
+    /// Share a reference of a kind known while compiling. A binary's kind
+    /// may name either layout: both keep the mark in their first word.
+    pub(crate) fn share_kind(&mut self, reference: ir::Value, kind: ValueKind) {
+        match kind {
+            ValueKind::STRUCT => self.mark_first_word(reference, STRUCT_HEADER_SHARED_MASK, None),
+            ValueKind::BITSTRING | ValueKind::BINVIEW => {
+                self.mark_first_word(reference, BINARY_SHARED_MASK, Some(PROCESS_BINARIES_SHARED_OFFSET))
+            }
+            ValueKind::LIST => self.share_list(reference),
+            _ => {}
+        }
+    }
+
+    /// Set `mask` in the first word of the object `reference` names unless it
+    /// is set already; an object already shared may be read-only program
+    /// data, so it is only read. A mark this sets adds one to the process
+    /// counter at `counted`.
+    fn mark_first_word(&mut self, reference: ir::Value, mask: u64, counted: Option<i32>) {
+        let mark = self.b.create_block();
+        let done = self.b.create_block();
+        let object = address_field(self.b, reference);
+        let word = self.b.ins().load(types::I64, MemFlagsData::trusted(), object, 0);
+        let shared = self.b.ins().band_imm_u(word, mask as i64);
+        self.b.ins().brif(shared, done, &[], mark, &[]);
+
+        self.b.switch_to_block(mark);
+        self.b.seal_block(mark);
+        let marked = self.b.ins().bor_imm_u(word, mask as i64);
+        self.b.ins().store(MemFlagsData::trusted(), marked, object, 0);
+        if let Some(offset) = counted {
+            self.bump_process_counter(offset);
+        }
+        self.b.ins().jump(done, &[]);
+
+        self.b.switch_to_block(done);
+        self.b.seal_block(done);
+    }
+
+    /// Share a list: nothing for the empty list or for one whose first cell
+    /// is marked, since a marked cell has a marked tail; otherwise the
+    /// runtime walks the spine.
+    fn share_list(&mut self, reference: ir::Value) {
+        let check = self.b.create_block();
+        let walk = self.b.create_block();
+        let done = self.b.create_block();
+        let cell = address_field(self.b, reference);
+        self.b.ins().brif(cell, check, &[], done, &[]);
+
+        self.b.switch_to_block(check);
+        self.b.seal_block(check);
+        let link = self
+            .b
+            .ins()
+            .load(types::I64, MemFlagsData::trusted(), cell, LIST_CONS_LINK_OFFSET as i32);
+        let shared = self.b.ins().band_imm_u(link, LIST_LINK_ALIAS_MASK as i64);
+        self.b.ins().brif(shared, done, &[], walk, &[]);
+
+        self.b.switch_to_block(walk);
+        self.b.seal_block(walk);
+        runtime_call!(self, fz_share_list_spine, [cell]);
+        self.b.ins().jump(done, &[]);
+
+        self.b.switch_to_block(done);
+        self.b.seal_block(done);
     }
 
     /// The raw word in `slot` of the struct or tuple `object_ref` names,
@@ -308,9 +390,8 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
             CodegenValue::Known { payload, kind } if kind.is_scalar() => (payload, kind),
             CodegenValue::Known { kind, .. } => (self.b.ins().iconst(types::I64, 0), kind),
             CodegenValue::AnyRef(reference) if addressed_object => {
-                let (raw, kind) = self.addressed_form(reference);
-                self.share_if_published_kind(reference, kind);
-                return Some((raw, kind));
+                self.share_any(reference);
+                return Some(self.addressed_form(reference));
             }
             CodegenValue::AnyRef(_) => return None,
         };
@@ -323,11 +404,6 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
         let raw = payload_field(self.b, reference);
         let kind = kind_field(self.b, reference);
         (raw, self.b.ins().ireduce(types::I8, kind))
-    }
-
-    pub(crate) fn mark_published_ref_aliased(&mut self, value_ref: ir::Value) -> ir::Value {
-        let process = self.process_arg();
-        runtime_call1!(self, fz_mark_published_ref_aliased, [process, value_ref])
     }
 
     pub(crate) fn box_int_for_any(&mut self, raw: ir::Value) -> ir::Value {
@@ -859,7 +935,7 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
     }
 
     pub(crate) fn store_closure_capture_ref_word(&mut self, closure_ref: ir::Value, idx: usize, value: ir::Value) {
-        let value = self.mark_published_ref_aliased(value);
+        self.share_any(value);
         let index = self.index_const(idx);
         self.set_closure_capture_ref(closure_ref, index, value);
     }

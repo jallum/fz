@@ -1308,11 +1308,14 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     bind_local_value(ctx, executable, env, *value, bound);
                 }
                 BackendStep::Tuple { value, items } => {
-                    for item in items {
-                        if item.mode == crate::fz_ir::OwnershipMode::Share {
-                            share_native_value(ctx, env.value(item.value));
-                        }
-                    }
+                    share_native_values(
+                        ctx,
+                        env,
+                        items
+                            .iter()
+                            .filter(|item| item.mode == crate::fz_ir::OwnershipMode::Share)
+                            .map(|item| item.value),
+                    );
                     let item_values = || items.iter().map(|item| item.value);
                     if let Some(layout) = executable.abi.value_layouts.get(value)
                         && let shape = layout.structural
@@ -1491,9 +1494,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     captures,
                     construction,
                 } => {
-                    for capture in captures {
-                        share_native_value(ctx, env.value(*capture));
-                    }
+                    share_native_values(ctx, env, captures.iter().copied());
                     // As with `FunctionRef`, a settled-`Nothing` closure is omitted
                     // by backend lowering, so every surviving `Lambda` really is
                     // constructed and its captures really are demanded.
@@ -1619,11 +1620,13 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         tail: &BackendTail,
     ) -> Result<(), FatalError> {
         if let BackendTail::DirectCall { args, .. } | BackendTail::ClosureCall { args, .. } = tail {
-            for arg in args {
-                if arg.ownership == crate::fz_ir::OwnershipMode::Share {
-                    share_native_value(ctx, env.value(arg.value));
-                }
-            }
+            share_native_values(
+                ctx,
+                env,
+                args.iter()
+                    .filter(|arg| arg.ownership == crate::fz_ir::OwnershipMode::Share)
+                    .map(|arg| arg.value),
+            );
         }
         match tail {
             BackendTail::Value { value, dest } => {
@@ -5602,17 +5605,22 @@ fn annotate_back_edges(module: &mut crate::fz_ir::Module) {
 
 type NativeBoundValue = BoundValue<Var>;
 
-fn share_native_value(ctx: &mut NativeFnCtx, value: Option<&NativeBoundValue>) {
-    match value {
-        Some(NativeBoundValue::Runtime(var)) => {
-            ctx.emit_let(Prim::Share(*var));
-        }
-        Some(NativeBoundValue::Transport { lanes, .. }) => {
-            for lane in lanes {
-                ctx.emit_let(Prim::Share(*lane));
+/// Share the variables that carry `values`, each once: a value passed or
+/// stored in more than one place gains its second holder once, and a mark,
+/// once set, is never cleared.
+fn share_native_values(ctx: &mut NativeFnCtx, env: &ValueEnv, values: impl IntoIterator<Item = ValueId>) {
+    let mut shared = HashSet::default();
+    for value in values {
+        let vars = match env.value(value) {
+            Some(NativeBoundValue::Runtime(var)) => std::slice::from_ref(var),
+            Some(NativeBoundValue::Transport { lanes, .. }) => lanes.as_slice(),
+            Some(NativeBoundValue::Absent) | None => &[],
+        };
+        for var in vars {
+            if shared.insert(*var) {
+                ctx.emit_let(Prim::Share(*var));
             }
         }
-        Some(NativeBoundValue::Absent) | None => {}
     }
 }
 

@@ -994,6 +994,9 @@ const _: () = {
     assert!(mem::align_of::<ListCons>() == 8);
 };
 
+/// Where a list cell keeps its link word, which holds the cell's alias bit.
+pub const LIST_CONS_LINK_OFFSET: usize = mem::offset_of!(ListCons, link);
+
 const LIST_LINK_KIND_SHIFT: u8 = AnyValueRefPacking::current().tag_shift();
 const LIST_LINK_ALIAS_SHIFT: u8 = LIST_LINK_KIND_SHIFT + TAG_BITS as u8;
 const LIST_LINK_KIND_MASK: u64 = KIND_FIELD_MASK << LIST_LINK_KIND_SHIFT;

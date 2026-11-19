@@ -24,7 +24,7 @@
 
 use crate::any_value::debug::{Limit, render_value, render_with_limit};
 use crate::any_value::{
-    AnyValue, AnyValueRef, FALSE_ATOM_ID, NIL_ATOM_ID, SlotLayout, ValueKind, binview_addr_from_tagged,
+    AnyValue, AnyValueRef, FALSE_ATOM_ID, ListCons, NIL_ATOM_ID, SlotLayout, ValueKind, binview_addr_from_tagged,
     closure_addr_from_tagged, closure_arity, closure_capture_ref_word, closure_captured_count, closure_denotation,
     closure_fn_ptr, closure_halt_kind, map_addr_from_tagged, object_size, struct_is_shared, struct_schema_id,
 };
@@ -2182,6 +2182,14 @@ pub extern "C" fn fz_list_head_float_ref(list_ref_word: u64) -> f64 {
 pub extern "C" fn fz_list_tail_ref(list_ref_word: u64) -> u64 {
     let list = any_value_ref_from_word(list_ref_word, "fz_list_tail_ref");
     list_tail_ref(list).expect("fz_list_tail_ref").raw_word()
+}
+
+/// Mark the spine of the list whose first cell is at `cell_addr` shared, up
+/// to the first cell already marked. Generated code calls it only for a first
+/// cell it has seen unmarked.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_share_list_spine(cell_addr: *mut u8) {
+    unsafe { ListCons::share_spine(cell_addr) };
 }
 
 #[unsafe(no_mangle)]
