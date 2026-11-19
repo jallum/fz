@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-19T02:57:34Z",
   "created": "2026-11-18T20:44:04Z",
   "description": "'[x' then '| tail]' on the next line (and '|' before ']' across a newline): 'expected ], got Newline'. Reproducer: /Users/j5n/Workspace/fz-otp-json/punch/32_list_tail_bar_on_next_line.fz\n\nPart of fz-mue (fz runs OTP's json.erl unchanged). Port and harness: /Users/j5n/Workspace/fz-otp-json/.",
   "id": "fz-mue.17",
   "labels": [],
   "parent": "fz-mue",
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "A list's | tail may start a new line",
   "type": "bug",
-  "updated_at": "2026-11-19T02:44:16Z"
+  "updated_at": "2026-11-19T02:57:34Z"
 }
