@@ -9,9 +9,15 @@
   "id": "fz-9x7.41.3",
   "labels": [],
   "parent": "fz-9x7.41",
+  "comments": [
+    {
+      "text": "PR #803 rebased on develop after #795 (CI). trickle −2.5%; json/distiller/fanin/giftbin about −0.3%; nothing else moves. fz_alloc_struct and fz_alloc_closure are removed. survive's '+0.38%' was symbol-order bimodality, refuted by 6 compiles.",
+      "timestamp": "2026-11-19T04:17:02Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Structs, tuples and closures are placed inline",
   "type": "task",
-  "updated_at": "2026-11-18T23:59:39Z"
+  "updated_at": "2026-11-19T04:17:02Z"
 }
