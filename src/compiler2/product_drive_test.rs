@@ -1899,9 +1899,8 @@ fn live_executable_order_distinguishes_noninjective_display_pairs() {
     }
     assert_eq!(
         measured_pairs.len(),
-        // 6 -> 1: a non-recursive key collapses a list nothing asks about to its class,
-        // so five of the pairs no longer live in two executables; the one left keeps the
-        // order tested.
+        // A non-recursive key collapses a list nothing asks about to its class; the one pair left
+        // keeps the order tested.
         1,
         "fixture must retain the live empty/non-empty list pair that display conflates"
     );
