@@ -20695,19 +20695,13 @@ fn compiler2_never_returning_function_settles_with_empty_evidence() {
 }
 
 #[test]
-fn compiler2_unproductive_deepening_settles_at_bottom_without_widening() {
+fn compiler2_unproductive_deepening_settles_at_bottom() {
     // def deep(x), do: [deep(x)] — the inner call must produce a value before
     // the list ever exists, so this function NEVER returns: its least
     // fixpoint is bottom. Under the old absent-reads-as-none lie this very
     // program manufactured a divergent ascent (list(none), list(list(none)),
     // …); honest paths never start the chain.
     let tel = ConfiguredTelemetry::new();
-    let widened = Rc::new(Cell::new(false));
-    let widened_sink = Rc::clone(&widened);
-    tel.attach_raw_event2::<crate::compiler2::World, ActivationKey, _>(
-        &["fz", "compiler2", "return_type", "widened"],
-        move |_, _, _, _, _| widened_sink.set(true),
-    );
     let mut world = crate::compiler2::World::new();
     world.submit_code(
         Some("deep_unproductive.fz".to_string()),
@@ -20717,10 +20711,6 @@ fn compiler2_unproductive_deepening_settles_at_bottom_without_widening() {
     assert_resolved(
         super::drive::ExecutionContext::new(&mut world, &tel).drive(),
         "an unproductive deepening program quiesces at bottom",
-    );
-    assert!(
-        !widened.get(),
-        "no evidence ever ascends, so widening must never engage",
     );
 }
 
@@ -20732,14 +20722,8 @@ fn compiler2_productive_deepening_terminates_by_a_cycle_fold() {
     // the recursive type μt.([] | list(t)), which the lattice cannot
     // express, so the precise ascent provably never lands. Termination comes
     // from the clash fold: the type that repeats itself folds at the slot where
-    // it grew, and the widening budget never has to fire.
+    // it grew.
     let tel = ConfiguredTelemetry::new();
-    let widened = Rc::new(Cell::new(false));
-    let widened_sink = Rc::clone(&widened);
-    tel.attach_raw_event2::<crate::compiler2::World, ActivationKey, _>(
-        &["fz", "compiler2", "return_type", "widened"],
-        move |_, _, _, _, _| widened_sink.set(true),
-    );
     let folded = Rc::new(Cell::new(false));
     let folded_sink = Rc::clone(&folded);
     tel.attach(
@@ -20765,10 +20749,6 @@ fn compiler2_productive_deepening_terminates_by_a_cycle_fold() {
         folded.get(),
         "termination of a true divergent ascent comes from the clash fold"
     );
-    assert!(
-        !widened.get(),
-        "the widening budget never fires on a type that repeats itself"
-    );
 }
 
 /// What one cold compile of a tuple-ladder program costs through the product
@@ -20784,7 +20764,6 @@ struct TupleLadderCosts {
     build_return_revisions: Vec<u64>,
     main_analyses: Vec<u64>,
     main_return_revisions: Vec<u64>,
-    widened: bool,
     clash_folds: u64,
 }
 
@@ -20792,12 +20771,6 @@ fn tuple_ladder_costs(file_name: &str, source: &str) -> TupleLadderCosts {
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
     functions.install(&tel);
-    let widened = Rc::new(Cell::new(false));
-    let widened_sink = Rc::clone(&widened);
-    tel.attach_raw_event2::<crate::compiler2::World, ActivationKey, _>(
-        &["fz", "compiler2", "return_type", "widened"],
-        move |_, _, _, _, _| widened_sink.set(true),
-    );
     let clash_folds = Rc::new(Cell::new(0u64));
     let clash_sink = Rc::clone(&clash_folds);
     tel.attach(
@@ -20836,7 +20809,6 @@ fn tuple_ladder_costs(file_name: &str, source: &str) -> TupleLadderCosts {
         build_return_revisions: counts_for(&revisions.borrow(), build),
         main_analyses: counts_for(&analyses.borrow(), main),
         main_return_revisions: counts_for(&revisions.borrow(), main),
-        widened: widened.get(),
         clash_folds: clash_folds.get(),
     }
 }
@@ -20850,9 +20822,9 @@ fn compiler2_tuple_return_ladder_ends_at_its_first_repeat() {
     // The true return is the recursive type mu t.(:start | {integer, t}), which
     // the lattice cannot name. The return climbs `:start`, `{int, :start}`,
     // `{int, :start | {int, :start}}`; that third rung gives the slot a tuple
-    // its ancestor `{int, _}` already is, so the clash fold names the slot
-    // `any` and the ladder stops at the first repeat, not at the widening
-    // budget. The caller pays only for the rungs that exist: `main/0` is
+    // its ancestor `{int, _}` already is, so the clash fold makes the slot a
+    // back edge to its ancestor and the ladder stops at the first repeat. The
+    // caller pays only for the rungs that exist: `main/0` is
     // re-analyzed when `build/1`'s concluded return moves.
     let costs = tuple_ladder_costs("return_tuple_ladder.fz", TUPLE_LADDER_SOURCE);
     assert_eq!(
@@ -20862,10 +20834,9 @@ fn compiler2_tuple_return_ladder_ends_at_its_first_repeat() {
             build_return_revisions: vec![TUPLE_LADDER_BUILD_RETURN_REVISIONS],
             main_analyses: vec![TUPLE_LADDER_MAIN_ANALYSES],
             main_return_revisions: vec![TUPLE_LADDER_MAIN_RETURN_REVISIONS],
-            widened: false,
             clash_folds: 1,
         },
-        "the ladder ends at the repeat the clash fold names, and the budget never fires",
+        "the ladder ends at the repeat the clash fold names",
     );
 }
 
@@ -21078,15 +21049,11 @@ fn submit_main_root(
 
 /// One activation's return ascent: the label the canon events name its function
 /// by — which carries the arity, so `build/1` and `JSON.array_item/2` are whole
-/// identities — how many times that activation's `ReturnType` was revised, and
-/// whether the widening budget engaged on that same activation. The three
-/// describe one activation, so "something widened" can never be read as "this
-/// row widened".
+/// identities — and how many times that activation's `ReturnType` was revised.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct ActivationAscent {
     function: String,
     revisions: u64,
-    widened: bool,
 }
 
 /// A return settles once its activation is analyzed and its callees' returns
@@ -21095,8 +21062,8 @@ struct ActivationAscent {
 const RETURN_LADDER_CEILING: u64 = 5;
 
 /// One climbing activation, as pinned: the canon function label (which carries
-/// the arity), the revisions its return took, and whether it widened.
-type PinnedAscent = (&'static str, u64, bool);
+/// the arity) and the revisions its return took.
+type PinnedAscent = (&'static str, u64);
 
 /// One fixture's ladder: the fixture path, and every activation of it that
 /// climbs past `RETURN_LADDER_CEILING`.
@@ -21133,23 +21100,18 @@ const RETURN_LADDER_FIXTURES: &[(&str, &str)] = &[
 fn return_ladders_are_pinned_per_activation() {
     for (name, text) in RETURN_LADDER_FIXTURES {
         let measured = measure_return_ascents(name, text);
-        let (climbing, settled): (Vec<_>, Vec<_>) = measured
+        let climbing = measured
             .into_iter()
-            .partition(|ascent| ascent.revisions > RETURN_LADDER_CEILING);
-        let settled_but_widened = settled.iter().filter(|ascent| ascent.widened).collect::<Vec<_>>();
-        assert!(
-            settled_but_widened.is_empty(),
-            "{name}: widening can only fire past the budget, so no settled return may carry it: {settled_but_widened:?}",
-        );
+            .filter(|ascent| ascent.revisions > RETURN_LADDER_CEILING)
+            .collect::<Vec<_>>();
         let pinned = RETURN_LADDERS
             .iter()
             .find(|(pinned, _)| pinned == name)
             .map(|(_, rows)| {
                 rows.iter()
-                    .map(|(function, revisions, widened)| ActivationAscent {
+                    .map(|(function, revisions)| ActivationAscent {
                         function: (*function).to_string(),
                         revisions: *revisions,
-                        widened: *widened,
                     })
                     .collect::<Vec<_>>()
             })
@@ -21164,14 +21126,6 @@ fn return_ladders_are_pinned_per_activation() {
 /// return was revised, sorted.
 fn measure_return_ascents(name: &str, text: &str) -> Vec<ActivationAscent> {
     let tel = ConfiguredTelemetry::new();
-    let widened: Rc<RefCell<HashSet<ActivationKey>>> = Rc::new(RefCell::new(HashSet::default()));
-    let widened_sink = Rc::clone(&widened);
-    tel.attach_raw_event2::<crate::compiler2::World, ActivationKey, _>(
-        &["fz", "compiler2", "return_type", "widened"],
-        move |_, _, _, _, activation| {
-            widened_sink.borrow_mut().insert(activation.clone());
-        },
-    );
     let revisions: Rc<RefCell<HashMap<ActivationKey, u64>>> = Rc::new(RefCell::new(HashMap::default()));
     let revision_sink = Rc::clone(&revisions);
     tel.attach_raw_event2::<crate::compiler2::World, ActivationKey, _>(
@@ -21184,14 +21138,12 @@ fn measure_return_ascents(name: &str, text: &str) -> Vec<ActivationAscent> {
         .drive_root_to_dump_stage(root, super::dump::DumpStage::Backend)
         .unwrap_or_else(|error| panic!("{name} should reach a backend program: {error}"));
     let world = compiler.world();
-    let widened = widened.borrow();
     let mut ascents = revisions
         .borrow()
         .iter()
         .map(|(activation, revisions)| ActivationAscent {
             function: super::canon::function_label(world, activation.function),
             revisions: *revisions,
-            widened: widened.contains(activation),
         })
         .collect::<Vec<_>>();
     ascents.sort();
@@ -25154,4 +25106,51 @@ fn compiler2_interp_shares_an_appends_left_operand_the_caller_reads_again() {
             });
         assert!(shared_left, "{caller}: the append receives its left operand shared");
     }
+}
+
+/// A return that climbs past `RETURN_ASCENT_BOUND` without repeating itself
+/// stops the compile and names the function, rather than settling on a type
+/// nothing earned. `next/1` returns `:a0`, then whatever atom follows its own
+/// previous answer, so its return gains one atom per round: it does terminate,
+/// at the program's last atom, but only after more rounds than the bound
+/// allows, and an atom never nests in itself for the clash fold to name.
+#[test]
+fn a_return_that_climbs_past_its_bound_stops_the_compile_and_names_the_function() {
+    let steps = super::semantic::RETURN_ASCENT_BOUND as usize + 4;
+    let arms = (0..steps)
+        .map(|index| format!("    :a{index} -> :a{}\n", index + 1))
+        .collect::<String>();
+    let source = format!(
+        "def next(0), do: :a0\n\
+         def next(n) do\n  case next(n - 1) do\n{arms}    other -> other\n  end\nend\n\
+         def main(), do: next(3)\n"
+    );
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    capture.install(&tel, &["fz", "diag"]);
+    let mut world = crate::compiler2::World::new();
+    let mut sessions = super::pull::ProductSessions::default();
+    world.submit_code(Some("atom_chain.fz".to_string()), source);
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+
+    let outcome = super::product_drive::drive_retained_product(
+        &mut world,
+        &tel,
+        &mut sessions,
+        super::drive::ProductAddress::of(ProductKey::RootBackendProduct(root), root),
+    );
+
+    assert!(outcome.is_err(), "a return that never converges has no backend product");
+    let reported = capture
+        .find(&["fz", "diag"])
+        .into_iter()
+        .filter_map(|event| event.diagnostic)
+        .filter(|diagnostic| diagnostic.code == codes::TYPE_RETURN_DID_NOT_CONVERGE)
+        .map(|diagnostic| diagnostic.message)
+        .collect::<Vec<_>>();
+    assert_eq!(reported.len(), 1, "the divergence is reported once: {reported:#?}");
+    assert!(
+        reported[0].contains("`next/1`") && reported[0].contains(":a0"),
+        "the diagnostic names the function and the type it reached: {reported:#?}",
+    );
 }

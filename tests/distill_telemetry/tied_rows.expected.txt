@@ -93,11 +93,11 @@ most re-run jobs
   DeriveRecursive Map.get/2                                      2      0.0
 
 return-type revisions per activation
-  activation                    revisions  widened
-  Map.get/2 arrow=36 root_id=0          1        -
-  def/1 arrow=16 root_id=1              1        -
-  defp/1 arrow=16 root_id=2             1        -
-  main/0 arrow=15 root_id=0             1        -
+  activation                    revisions
+  Map.get/2 arrow=36 root_id=0          1
+  def/1 arrow=16 root_id=1              1
+  defp/1 arrow=16 root_id=2             1
+  main/0 arrow=15 root_id=0             1
 
 cause of every wake
   job kind                              changed fact (use)         completing job  admission  count

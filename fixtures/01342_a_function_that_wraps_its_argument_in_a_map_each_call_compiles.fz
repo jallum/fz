@@ -1,10 +1,9 @@
 #---
-# purpose: "A recursion that wraps its argument in a one-key map on every call compiles: the repeated map folds where it grew, and the budget never fires"
+# purpose: "A recursion that wraps its argument in a one-key map on every call compiles: the repeated map folds where it grew"
 # root: main/0
-# assert.metric.return_type.widened: 0
 # assert.metric.type.clash_folded: 1
 # oracle: self
-# oracle.stamp: 4cb7690f0aa78715
+# oracle.stamp: 91cd88fe7be3a1cb
 #---
 defmodule Wrap do
   def m(acc, 0), do: acc

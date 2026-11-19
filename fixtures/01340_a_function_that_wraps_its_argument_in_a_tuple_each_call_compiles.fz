@@ -1,10 +1,9 @@
 #---
-# purpose: "A recursion that wraps its argument in a tuple on every call compiles: the repeated tuple folds where it grew, and the budget never fires"
+# purpose: "A recursion that wraps its argument in a tuple on every call compiles: the repeated tuple folds where it grew"
 # root: main/0
-# assert.metric.return_type.widened: 0
 # assert.metric.type.clash_folded: 1
 # oracle: self
-# oracle.stamp: 6fb535d5ce71c771
+# oracle.stamp: b68c4af4e9850863
 #---
 defmodule Wrap do
   def f(x, 0), do: x

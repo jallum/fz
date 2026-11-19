@@ -819,7 +819,7 @@ fn an_unresolved_callsite_edge_renders_as_itself() {
 
 /// A recursive return whose value grows each round: `build/1` returns
 /// `:start` or a tuple wrapping its own next return, so the fixpoint climbs
-/// the ladder one round at a time until the widening budget stops it.
+/// the ladder one round at a time until the clash fold ends it.
 const ASCENDING_RETURN_SOURCE: &str =
     "def build(0), do: :start\ndef build(n), do: {n, build(n - 1)}\ndef main(), do: build(3)\n";
 
@@ -843,11 +843,10 @@ fn canon_function_names(trace: &crate::telemetry::public_trace::PublicTrace) -> 
 
 /// The return ascent is the compiler's central cost signal: every round of the
 /// semantic fixpoint that moves an activation's return type is one
-/// `return_type.defined`, and `return_type.widened` is the round where the
-/// budget ended the climb instead of the program doing so. A profile that
-/// cannot see them can measure that a compile was slow but not that its
-/// returns kept moving, so both belong in the public stream with the
-/// activation they are about and the evidence they installed.
+/// `return_type.defined`. A profile that cannot see it can measure that a
+/// compile was slow but not that its returns kept moving, so it belongs in the
+/// public stream with the activation it is about and the evidence it
+/// installed.
 #[test]
 fn jsonl_emits_return_type_revisions() {
     let trace = crate::telemetry::public_trace::PublicTrace::compile(ASCENDING_RETURN_SOURCE);
@@ -900,11 +899,6 @@ fn jsonl_emits_return_type_revisions() {
         );
     }
 
-    let widened = trace.events_named(&["fz", "compiler2", "return_type", "widened"]);
-    assert!(
-        widened.is_empty(),
-        "a return that grows a tuple spine every round folds at its first repeat, so the budget never fires: {widened:?}"
-    );
     let folded = trace.events_named(&["fz", "compiler2", "type", "clash_folded"]);
     assert_eq!(folded.len(), 1, "the stream shows the one fold that ended the ladder");
     let fold = &folded[0];

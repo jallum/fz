@@ -1039,20 +1039,6 @@ impl World {
             self.types.address_inputs(&mut normalized);
             self.types.fold_self_nested_closures_in_inputs(&mut normalized);
             self.fold_clashes_against_standing_row(&activation, &mut normalized);
-            let normalized = if self
-                .body_keying(activation.function)
-                .is_some_and(|keying| keying.recursive)
-            {
-                // The evidence collapse mirrors the KEY collapse, so it reads
-                // the same half of the demand fact the key does.
-                let mask = self
-                    .input_demands
-                    .get(activation.function)
-                    .map_or(&[][..], |demand| &demand.forwarded_dispatch);
-                self.types.convergence_collapse_evidence_inputs(&normalized, mask)
-            } else {
-                normalized
-            };
             // Each contribution stays one correlated row (fz-9i4.7.10.2):
             // a publisher's second row for the same activation is an
             // ALTERNATIVE, never a column-wise blend of the two.
@@ -3937,15 +3923,11 @@ impl World {
         self.activations.define_analysis(key, analysis)
     }
 
-    pub fn define_activation_return(&mut self, key: &ActivationKey, evidence: Option<Ty>) -> bool {
-        self.define_activation_return_outcome(key, evidence).changed
-    }
-
     fn define_activation_return_outcome(
         &mut self,
         key: &ActivationKey,
         evidence: Option<Ty>,
-    ) -> super::semantic::ReturnDefine {
+    ) -> Result<super::semantic::ReturnDefine, super::semantic::ReturnDiverged> {
         let rebased = self.work_graph.rebased(&Job::AnalyzeActivation(key.clone()));
         let outcome = self.activations.define_return(&mut self.types, key, evidence, rebased);
         self.report_clash_folds(ClashSite::Return, key.function);
@@ -4544,21 +4526,22 @@ impl<T: Telemetry> ExecutionContext<'_, T> {
         changed
     }
 
-    pub fn define_activation_return(&mut self, key: &ActivationKey, evidence: Option<Ty>) -> bool {
+    pub fn define_activation_return(
+        &mut self,
+        key: &ActivationKey,
+        evidence: Option<Ty>,
+    ) -> Result<bool, super::semantic::ReturnDiverged> {
         // Return evidence is produced in the activation's addressed frame (clause
         // returns over addressed inputs), so it is already canonical — the old
         // encounter-order pass diverged it from the key (fz-hwn.27.8).
         // The publisher of a ReturnType claim is, by construction, the
         // activation's own analysis job — its rebase state selects join
         // (the within-epoch ascent) or replace (the narrowing path).
-        let outcome = self.world.define_activation_return_outcome(key, evidence);
+        let outcome = self.world.define_activation_return_outcome(key, evidence)?;
         if outcome.changed {
             self.emit_world_key(&["fz", "compiler2", "return_type", "defined"], key);
         }
-        if outcome.widened {
-            self.emit_world_key(&["fz", "compiler2", "return_type", "widened"], key);
-        }
-        outcome.changed
+        Ok(outcome.changed)
     }
 
     pub fn define_callsite_summary(

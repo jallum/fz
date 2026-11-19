@@ -96,9 +96,6 @@ enum ClassReach {
 /// What a collapse of an activation arrow is for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum KeyCollapse {
-    /// The recorded evidence: every ground position stays verbatim, and only
-    /// what carries variables widens.
-    Evidence,
     /// A recursive body's key: undemanded structure widens to its convergence
     /// class, undemanded literals widen to their kind, and every collapse is
     /// bounded so the ascent settles: a callable becomes its addressed surface
@@ -2179,23 +2176,6 @@ impl Types {
         changed
     }
 
-    pub(crate) fn convergence_collapse_evidence_inputs(&mut self, inputs: &[Ty], mask: &[DispatchDemand]) -> Vec<Ty> {
-        inputs
-            .iter()
-            .enumerate()
-            .map(|(slot, input)| {
-                let demand = mask.get(slot).unwrap_or(&DispatchDemand::Whole);
-                let path = [AddrStep::Param(slot as u16)];
-                // EVIDENCE reads the dispatch axis alone. The `returned` axis
-                // asks the key to KEEP a position, and evidence already keeps
-                // every ground position verbatim (the `Ignore` arm widens only
-                // what carries variables), so there is nothing for it to say
-                // here (fz-kdt.199).
-                self.convergence_collapse_ty(*input, demand, &DispatchDemand::Ignore, &path, KeyCollapse::Evidence)
-            })
-            .collect()
-    }
-
     fn convergence_collapse_ty(
         &mut self,
         ty: Ty,
@@ -2225,21 +2205,11 @@ impl Types {
                 // bottoming out at `any`/`fun_top` (fz-f98.14.10.2). Breadth is
                 // still var-bounded (one address per position) so fz-y6w
                 // termination holds; depth is capped in `convergence_class_at`.
-                // The EVIDENCE path keeps a var-bearing pure callable verbatim and
-                // collapses every other var-bearing type to its (path-blind) class.
-                if collapse == KeyCollapse::Evidence && !(self.has_vars(&ty) && !self.descr(&ty).is_pure_callable()) {
-                    ty
-                } else {
-                    self.convergence_collapse_ignored_leaf(&ty, path, collapse)
-                }
+                self.convergence_collapse_ignored_leaf(&ty, path, collapse)
             }
             // Read, but by nothing that tells one literal from another: the
-            // slot keeps its structure and loses which atoms it held. Evidence
-            // is the precise record, so it keeps them.
-            DispatchDemand::Class => match collapse {
-                KeyCollapse::Evidence => ty,
-                KeyCollapse::Recursive | KeyCollapse::NonRecursive => self.widen_literals(&ty),
-            },
+            // slot keeps its structure and loses which atoms it held.
+            DispatchDemand::Class => self.widen_literals(&ty),
             DispatchDemand::Whole => ty,
             DispatchDemand::TupleFields(fields) => {
                 self.convergence_collapse_tuple_fields(ty, fields, returned_fields(returned), path, collapse)
@@ -2283,9 +2253,7 @@ impl Types {
     ) -> Option<Ty> {
         let keep_returned = |types: &mut Self| match collapse {
             KeyCollapse::NonRecursive => ty,
-            KeyCollapse::Recursive | KeyCollapse::Evidence => {
-                types.convergence_class_at(&ty, path, ClassReach::Returned, collapse)
-            }
+            KeyCollapse::Recursive => types.convergence_class_at(&ty, path, ClassReach::Returned, collapse),
         };
         match (demand, returned) {
             (_, DispatchDemand::Ignore) => None,
@@ -2399,67 +2367,43 @@ impl Types {
         path: &[AddrStep],
         collapse: KeyCollapse,
     ) -> Ty {
-        let mut d = self.descr(&ty).clone();
-        if d.lists.is_empty() {
+        if self.descr(&ty).lists.is_empty() {
             return self.convergence_collapse_ignored_leaf(&ty, path, collapse);
         }
         let mut child = path.to_vec();
         child.push(AddrStep::Elem);
-        if collapse != KeyCollapse::Evidence {
-            let elem = self.list_element_type(&ty);
-            // Demand reached this list's SHAPE, so the element is meaning, not
-            // freight -- at every depth, because nothing here can say how far
-            // down the forwarding chain that reads it looks (fz-kdt.183). An
-            // element the demand names further (`ListShape(Whole)`, a tuple
-            // field) is still collapsed by that demand; an element it stops at
-            // is KEPT -- its structure, though not its literals when no use of
-            // the element can tell them apart.
-            let returned_elem = returned_elem.unwrap_or(&DispatchDemand::Ignore);
-            let elem =
-                if matches!(elem_demand, DispatchDemand::Ignore) && matches!(returned_elem, DispatchDemand::Ignore) {
-                    let kept = self.convergence_class_at(&elem, &child, ClassReach::Demanded, collapse);
-                    self.widen_literals(&kept)
-                } else {
-                    self.convergence_collapse_ty(elem, elem_demand, returned_elem, &child, collapse)
-                };
-            return self.list(elem);
-        }
-        for conj in &mut d.lists {
-            for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
-                if let Some(elem) = sig.elem {
-                    sig.elem = Some(self.convergence_collapse_ty(
-                        elem,
-                        elem_demand,
-                        returned_elem.unwrap_or(&DispatchDemand::Ignore),
-                        &child,
-                        collapse,
-                    ));
-                }
-            }
-        }
-        self.intern(d)
+        // Demand reached this list's SHAPE, so the element is meaning, not
+        // freight -- at every depth, because nothing here can say how far
+        // down the forwarding chain that reads it looks. An element the demand
+        // names further (`ListShape(Whole)`, a tuple field) is still collapsed
+        // by that demand; an element it stops at is KEPT -- its structure,
+        // though not its literals when no use of the element can tell them
+        // apart.
+        let elem = self.list_element_type(&ty);
+        let returned_elem = returned_elem.unwrap_or(&DispatchDemand::Ignore);
+        let elem = if matches!(elem_demand, DispatchDemand::Ignore) && matches!(returned_elem, DispatchDemand::Ignore) {
+            let kept = self.convergence_class_at(&elem, &child, ClassReach::Demanded, collapse);
+            self.widen_literals(&kept)
+        } else {
+            self.convergence_collapse_ty(elem, elem_demand, returned_elem, &child, collapse)
+        };
+        self.list(elem)
     }
 
     /// The collapse for an ignored slot that did not match the demanded shape:
-    /// KEY path uses the addressed class (stays resolvable); EVIDENCE path the
-    /// path-blind class (its earned ⊤). Either key path also drops the literals
+    /// the addressed class, which stays resolvable, without the literals
     /// nothing read.
     ///
-    /// A record nothing asks about keys as the map class on either key path,
+    /// A record nothing asks about keys as the map class,
     /// so two structs handed to a body that never reads them share one key.
     /// A record nested in freight structure keeps its fields: only a position
     /// demand reached and found unread collapses this way.
     fn convergence_collapse_ignored_leaf(&mut self, ty: &Ty, path: &[AddrStep], collapse: KeyCollapse) -> Ty {
-        match collapse {
-            KeyCollapse::Recursive | KeyCollapse::NonRecursive if self.descr(ty).sole_record().is_some() => {
-                self.map_top()
-            }
-            KeyCollapse::Recursive | KeyCollapse::NonRecursive => {
-                let class = self.convergence_class_at(ty, path, ClassReach::Freight, collapse);
-                self.widen_literals(&class)
-            }
-            KeyCollapse::Evidence => self.convergence_class(ty),
+        if self.descr(ty).sole_record().is_some() {
+            return self.map_top();
         }
+        let class = self.convergence_class_at(ty, path, ClassReach::Freight, collapse);
+        self.widen_literals(&class)
     }
 
     pub fn union(&mut self, a: Ty, b: Ty) -> Ty {
