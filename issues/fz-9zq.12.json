@@ -10,9 +10,15 @@
   "id": "fz-9zq.12",
   "labels": [],
   "parent": "fz-9zq",
+  "comments": [
+    {
+      "text": "PR #804 on 1d2b4f6fa. A return climbing more than RETURN_ASCENT_BOUND (16) steps without repeating is a type/return-did-not-converge error naming the function (the user's 'Loud error'). Removes convergence_class, the any rungs, the return_type.widened event and KeyCollapse::Evidence (no measurable effect). The key collapse stays: without it distiller requests go 36,481→47,788 and 23 lib tests fail. An atom chain longer than 16 passes now errors where it used to widen; no corpus program reaches that.",
+      "timestamp": "2026-11-19T04:24:59Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "Remove what back edges made unnecessary",
   "type": "task",
-  "updated_at": "2026-11-19T01:29:31Z"
+  "updated_at": "2026-11-19T04:24:59Z"
 }
