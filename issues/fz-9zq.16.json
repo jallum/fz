@@ -11,9 +11,15 @@
   "id": "fz-9zq.16",
   "labels": [],
   "parent": "fz-9zq",
+  "comments": [
+    {
+      "text": "PR #799 (CI). bst insert one activation returning {int,T,T}; build/wrap μR. :start | {int,R}; 01353 μt. int | list(t); no pins. ACCEPTANCE GAP for the user: 01353 gives 2 plans in 12 orders (keys/returns equal; one callsite surface reads :array | :ok in 2 orders, + empty_list() in 10). develop dc114f30b splits identically, so not caused by the fold; comes from callsite-surface evidence joining.",
+      "timestamp": "2026-11-19T03:31:27Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "The clash fold makes back edges, not any",
   "type": "task",
-  "updated_at": "2026-11-19T01:29:31Z"
+  "updated_at": "2026-11-19T03:31:27Z"
 }
