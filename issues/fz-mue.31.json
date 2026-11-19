@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-19T03:09:43Z",
+  "description": "User directed 2026-11-19: \"add the elixir parity issues as tickets to the epic we gave to Elixir Parity\". Owner: Elixir Parity. Found by Elixir Parity. @doc ~S\"\"\"...\"\"\" is common Elixir; fz's @doc accepts only a binary literal or false. Done: @doc ~S\"\"\" and @moduledoc ~s(...) compile as in Elixir.",
+  "id": "fz-mue.31",
+  "labels": [],
+  "parent": "fz-mue",
+  "priority": 3,
+  "status": "open",
+  "title": "@doc and @moduledoc take any expression that is a binary at compile time",
+  "type": "feature",
+  "updated_at": "2026-11-19T03:09:43Z"
+}
