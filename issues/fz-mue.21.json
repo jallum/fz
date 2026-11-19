@@ -9,9 +9,15 @@
   "id": "fz-mue.21",
   "labels": [],
   "parent": "fz-mue",
+  "comments": [
+    {
+      "text": "PR #792 on a7435a515. All pins fall: 00911 3rd yield 128160→96160, minor yields 4→3; 00910 park 320→304; distill drive (36453,36728,26)→(36206,36481,26); FIXED_ENTRY_CAPTURES 97→65; fz2_cli 00181 1119→1102.",
+      "timestamp": "2026-11-19T03:04:55Z"
+    }
+  ],
   "priority": 2,
   "status": "in_progress",
   "title": "A constant is computed where it is used, not captured across a call",
   "type": "task",
-  "updated_at": "2026-11-19T02:25:07Z"
+  "updated_at": "2026-11-19T03:04:55Z"
 }
