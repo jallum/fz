@@ -46,7 +46,7 @@ use fz_runtime::sched::{ProbeOutcome, SendProbe, drain_in_queue, gift_match, gif
 use fz_runtime::sched_core::{
     MAIN_PID, Scheduler, SchedulingCore, end_quantum, halt_hook, next_runnable, timer_cancel_hook, timer_schedule_hook,
 };
-use fz_runtime::telemetry::{Raise, RunEnded, RuntimeEvent};
+use fz_runtime::telemetry::{Raise, RunEnded, RuntimeEvent, report_alloc_sites};
 use fz_runtime::timer::TimerId;
 
 enum BackendRunStep {
@@ -135,8 +135,10 @@ pub(crate) fn run_backend_main<T: Telemetry + ?Sized>(
     })();
     output.flush();
     let counts = runtime.counts;
+    let node = Rc::clone(&runtime.node);
     drop(runtime);
     tel.raw_event1(&INTERP_RAN, &counts);
+    report_alloc_sites(&node, |event| emit_runtime_event(tel, event));
     emit_runtime_event(
         tel,
         RuntimeEvent::RunEnded(RunEnded::sample(pool_outstanding_before_run)),

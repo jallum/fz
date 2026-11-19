@@ -5,19 +5,20 @@
 //! in debug builds, its address ranges), so a sender that copies into a gift window on its own heap
 //! holds one `&mut Heap` and no second reference to the same heap.
 
+use crate::alloc_site::RuntimeAllocSite;
 use smallvec::SmallVec;
 use std::cell::RefCell;
 use std::ptr::{copy_nonoverlapping, read, write};
 use std::rc::Rc;
 use std::slice::from_raw_parts;
 
+use super::Heap;
 use super::block_pool::round_up_16;
 #[cfg(debug_assertions)]
 use super::ref_io::ptr_in_ranges;
 use super::ref_io::strict_object_size;
 use super::schema::{FieldKind, SchemaRegistry};
 use super::stats::StubSite;
-use super::{Heap, HeapAllocKind};
 use crate::any_value::AnyValueRef;
 use crate::any_value::{
     AnyValue, EMPTY_LIST, ListCons, ValueKind, bitstring_bit_len, bitstring_bytes_ptr, closure_addr_from_tagged,
@@ -224,7 +225,7 @@ pub fn deep_copy_any_value_ref(value: AnyValueRef, src_heap: &HeapView, dst_heap
         tag if tag.is_immediate() => value,
         tag if tag.is_boxed_scalar() => {
             let src = value.storage_addr();
-            let dst = dst_heap.alloc_kind(HeapAllocKind::ScalarBox, 8);
+            let dst = dst_heap.alloc_at(RuntimeAllocSite::ScalarBoxCopy, 8);
             unsafe {
                 write(dst as *mut u64, read(src as *const u64));
             }

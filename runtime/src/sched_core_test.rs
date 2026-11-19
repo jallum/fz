@@ -85,6 +85,7 @@ impl Scheduler for Recording {
             RuntimeEvent::ExecutionReady
             | RuntimeEvent::SendProbe(_)
             | RuntimeEvent::Raise(_)
+            | RuntimeEvent::AllocSite(_)
             | RuntimeEvent::RunEnded(_) => {}
         }
     }

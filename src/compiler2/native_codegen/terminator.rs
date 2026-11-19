@@ -163,7 +163,7 @@ fn hand_continuation_on<M: cranelift_module::Module>(
     if is_frame_member(env, cont_sid) {
         return hand_frame_on(body, env, var_env, cont_sid, captured);
     }
-    ContinuationPayload::from_capture_vars(body, env, var_env, cont_sid, captured).emit_value(body, cont_param)
+    ContinuationPayload::from_capture_vars(body, env, var_env, cont_sid, captured).emit_value(body, env, cont_param)
 }
 
 /// The slots a continuation's body keeps empty behind the outer continuation
@@ -230,10 +230,12 @@ impl ContinuationPayload {
     fn emit_value<M: cranelift_module::Module>(
         &self,
         body: &mut CodegenFn<'_, '_, M>,
+        env: &CodegenEnv<'_>,
         cont_param: ir::Value,
     ) -> ir::Value {
         build_cont_closure(
             body,
+            env,
             cont_param,
             self.cont_fid,
             &self.semantic_cap_bindings,
@@ -987,7 +989,7 @@ fn build_park_record<M: cranelift_module::Module>(
     for pinned_var in pinned {
         frame_captures.push(ClosureCapture::RefWord(body.tagged_var(var_env, pinned_var.0)));
     }
-    let frame = build_cont_closure(body, cont_param, first_clause_code, &frame_captures, 0);
+    let frame = build_cont_closure(body, env, cont_param, first_clause_code, &frame_captures, 0);
 
     let after_ms = match after {
         Some(a) => body.as_raw_i64(var_env, a.timeout.0),

@@ -8,8 +8,10 @@
 //! register, the interpreter threads it as a parameter — so there is no
 //! ambient current-process and two schedulers can be live at once.
 
+use crate::alloc_site::{AllocSiteCount, AllocSites, RuntimeAllocCounts};
 use crate::any_value::{ClosureDenotationId, ValueKind, bitstring_object_image, closure_header_word};
 use crate::function_denotation::FunctionDenotation;
+use crate::heap::AllocStat;
 use crate::term_hash::name_hash;
 use std::cell::RefCell;
 use std::cmp::Ordering;
@@ -426,6 +428,10 @@ pub struct Node {
     closure_denotations: RefCell<HashMap<ClosureDenotationId, ClosureOrigin>>,
     static_closures: RefCell<HashMap<StaticClosureKey, Box<StaticClosure>>>,
     static_bitstrings: RefCell<HashMap<StaticBitstringKey, Box<[StaticObjectChunk]>>>,
+    /// The allocation sites of the module the node runs, once it is loaded.
+    alloc_sites: RefCell<Option<AllocSites>>,
+    /// What the runtime's own allocation sites have placed for the program.
+    pub runtime_allocs: RuntimeAllocCounts,
 }
 
 /// A bitstring literal's bytes and bit length; one object exists per key.
@@ -461,7 +467,41 @@ impl Node {
             closure_denotations: RefCell::new(HashMap::new()),
             static_closures: RefCell::new(HashMap::new()),
             static_bitstrings: RefCell::new(HashMap::new()),
+            alloc_sites: RefCell::new(None),
+            runtime_allocs: RuntimeAllocCounts::default(),
         }
+    }
+
+    /// Name the loaded module's allocation sites. A module is loaded once.
+    pub fn register_alloc_sites(&self, sites: AllocSites) {
+        let previous = self.alloc_sites.borrow_mut().replace(sites);
+        assert!(previous.is_none(), "a node's allocation sites are registered once");
+    }
+
+    /// Every site that has placed an object, compiled and runtime, with what
+    /// it placed.
+    pub fn alloc_site_counts(&self) -> Vec<AllocSiteCount> {
+        let sites = self.alloc_sites.borrow();
+        let compiled = sites
+            .iter()
+            .flat_map(AllocSites::counted)
+            .map(|(site, allocs)| AllocSiteCount {
+                function: site.function.clone(),
+                kind: site.kind,
+                placed: AllocStat {
+                    allocs,
+                    bytes: allocs * u64::from(site.bytes),
+                },
+            });
+        let runtime = self.runtime_allocs.counted().map(|(site, placed)| AllocSiteCount {
+            function: site.function().to_owned(),
+            kind: site.kind(),
+            placed,
+        });
+        compiled
+            .chain(runtime)
+            .filter(|count| count.placed.allocs > 0)
+            .collect()
     }
 
     /// No node-global tables: the shape a bare `Process::new` carries.

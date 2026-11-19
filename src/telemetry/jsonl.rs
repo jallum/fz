@@ -38,8 +38,8 @@ use super::handler::{Event, EventKind, Handler};
 use super::value::Value;
 use fz_engine::SemanticOrd;
 use fz_runtime::telemetry::{
-    EXECUTION_READY, GC, PROCESS_EXITED, RAISE, RUN_ENDED, Raise, RunEnded, RuntimeEvent, SCHEDULER_SLEPT, SEND_PROBE,
-    TIMER_ARMED, TIMER_CANCELLED, TIMER_FIRED, TimerArmed, TimerCancelled, TimerFired,
+    ALLOC_SITE, EXECUTION_READY, GC, PROCESS_EXITED, RAISE, RUN_ENDED, Raise, RunEnded, RuntimeEvent, SCHEDULER_SLEPT,
+    SEND_PROBE, TIMER_ARMED, TIMER_CANCELLED, TIMER_FIRED, TimerArmed, TimerCancelled, TimerFired,
     write_line as write_runtime_line,
 };
 
@@ -808,6 +808,10 @@ impl JsonlBackend {
         let cancelled_backend = Rc::clone(backend);
         telemetry.attach_raw_event1::<TimerCancelled, _>(&TIMER_CANCELLED, move |_, _, _, cancelled| {
             cancelled_backend.append_runtime_event(&RuntimeEvent::TimerCancelled(*cancelled));
+        });
+        let site_backend = Rc::clone(backend);
+        telemetry.attach_raw_event1::<fz_runtime::alloc_site::AllocSiteCount, _>(&ALLOC_SITE, move |_, _, _, site| {
+            site_backend.append_runtime_event(&RuntimeEvent::AllocSite(site));
         });
         let ended_backend = Rc::clone(backend);
         telemetry.attach_raw_event1::<RunEnded, _>(&RUN_ENDED, move |_, _, _, ended| {

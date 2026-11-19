@@ -7,6 +7,7 @@
 //! binaries link against this crate as a staticlib; the fz binary
 //! links against it as an rlib.
 
+pub mod alloc_site;
 pub mod any_value;
 pub mod aot_shim;
 pub mod bits;

@@ -181,3 +181,22 @@ fn a_sample_reads_the_threads_footprint_with_a_live_process_holding_bytes() {
     assert_eq!(returned.in_use_bytes, before.in_use_bytes, "teardown returns its bytes");
     assert!(returned.peak_in_use_bytes >= held.peak_in_use_bytes);
 }
+
+/// A site's line names where the objects were placed, what they are, and how
+/// many and how large; a function name is written as a JSON string whatever
+/// characters a symbol carries.
+#[test]
+fn an_allocation_site_writes_its_function_object_count_and_bytes() {
+    let site = crate::alloc_site::AllocSiteCount {
+        function: r#"Main."odd"/2__e7"#.to_owned(),
+        kind: crate::heap::HeapAllocKind::Continuation,
+        placed: crate::heap::AllocStat {
+            allocs: 1000,
+            bytes: 48_000,
+        },
+    };
+    assert_eq!(
+        line(RuntimeEvent::AllocSite(&site)),
+        r#"{"name":["fz","runtime","alloc_site"],"time_ns":12,"kind":"event","span_id":3,"parent_span_id":4,"measurements":{},"metadata":{"function":"Main.\"odd\"/2__e7","object":"continuation","allocs":1000,"bytes":48000}}"#
+    );
+}

@@ -968,6 +968,7 @@ pub(crate) fn compile_with_backend_surface<
     let mid_flight_cont_tail_fn_ids = declare_mid_flight_conts(backend.module_mut(), surface)?;
 
     let bitstring_literals = RefCell::new(BitstringLiterals::default());
+    let alloc_sites = RefCell::new(AllocSites::declare(backend.module_mut())?);
     let (receive_dispatch_fn_ids, receive_matched_sites) = declare_receive_dispatch_fns(backend.module_mut(), module)?;
     let verifier_isa = host_isa();
     drop(declare_span);
@@ -998,6 +999,7 @@ pub(crate) fn compile_with_backend_surface<
             tuple_schema_ids: &tuple_schema_ids,
             named_schema_ids: &named_schema_ids,
             bitstring_literals: &bitstring_literals,
+            alloc_sites: &alloc_sites,
             param_reprs: &surface.param_reprs,
             return_diverges: &surface.return_diverges,
             cont_fns: &surface.cont_fns,
@@ -1066,7 +1068,10 @@ pub(crate) fn compile_with_backend_surface<
     let resume_id = emit_resume(backend.module_mut(), &mut fbctx)?;
     drop(emit_runtime_span);
 
+    let (alloc_site_counts, alloc_sites) = alloc_sites.into_inner().define(backend.module_mut())?;
     let metadata = CompiledMetadata {
+        alloc_site_counts,
+        alloc_sites,
         closure_denotations: surface
             .callable_boundaries
             .values()

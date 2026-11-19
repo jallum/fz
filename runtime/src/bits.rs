@@ -29,6 +29,7 @@
 //! Release on release, Acquire fence on final drop). Loom verification
 //! runs through the `crate::sync` abstraction module.
 
+use crate::alloc_site::RuntimeAllocSite;
 use crate::any_value::{
     ValueKind, bitstring_bit_len as any_bitstring_bit_len, bitstring_bytes_ptr, heap_kind_from_tagged,
     heap_object_word, heap_word_addr,
@@ -549,14 +550,14 @@ impl BinView {
 
 // ===== Allocation on a per-process heap =====================================
 
-use crate::heap::{Heap, HeapAllocKind, StubSite};
+use crate::heap::{Heap, StubSite};
 
 /// Allocate a BinRef on `heap`, taking ownership of the SharedBin reference
 /// encapsulated in `handle`. The new BinRef is pushed onto `heap.off_heap_head`, the
 /// young off-heap chain, as the new chain head. `site` names what is making the
 /// BinRef; the heap counts it and the BinRef remembers it.
 pub fn alloc_binref(heap: &mut Heap, handle: SharedBinHandle, site: StubSite) -> BinRef {
-    let p = heap.alloc_kind(HeapAllocKind::BinRef, BINREF_BYTES);
+    let p = heap.alloc_at(RuntimeAllocSite::BinRef, BINREF_BYTES);
     let binref = unsafe { BinRef::from_raw(p) };
     binref.init(handle.into_raw(), site);
     heap.binrefs_made.record(site);
@@ -576,7 +577,7 @@ pub fn alloc_view(heap: &mut Heap, binref: BinRef, bytes_ptr: *const u8, bit_len
         first.saturating_add((bit_len as usize).div_ceil(8)) <= shared.bytes_len,
         "BinView [{first}, +{bit_len} bits) lies outside the shared buffer"
     );
-    let p = heap.alloc_kind(HeapAllocKind::BinView, BINVIEW_BYTES);
+    let p = heap.alloc_at(RuntimeAllocSite::BinView, BINVIEW_BYTES);
     let view = unsafe { BinView::from_raw(p) };
     view.init(binref, bytes_ptr, bit_len);
     heap.stubs_made.record(site);

@@ -57,10 +57,11 @@
 //! within a process collapse to a single 1→0 transition — the dtor
 //! fires exactly once per `make_resource` call, regardless of aliasing.
 
+use crate::alloc_site::RuntimeAllocSite;
 use crate::any_value::{AnyValue, ValueKind, heap_object_word};
 #[cfg(test)]
 use crate::any_value::{object_size, resource_addr_from_tagged};
-use crate::heap::{Heap, HeapAllocKind};
+use crate::heap::Heap;
 use crate::sync::{AtomicUsize, Ordering, fence};
 use std::mem::{align_of, forget, size_of};
 #[cfg(test)]
@@ -380,7 +381,7 @@ impl ResourceStub {
 /// Resource reference encapsulated in `handle`. The new stub is pushed onto
 /// `heap.off_heap_head`, the young off-heap chain, as the new chain head.
 pub fn alloc_resource(heap: &mut Heap, handle: ResourceHandle) -> ResourceStub {
-    let p = heap.alloc_kind(HeapAllocKind::Resource, RESOURCE_STUB_SIZE);
+    let p = heap.alloc_at(RuntimeAllocSite::Resource, RESOURCE_STUB_SIZE);
     let rs = unsafe { ResourceStub::from_raw(p) };
     rs.shared_raw_set(handle.into_raw());
     let previous_head = heap.off_heap_push(heap_object_word(p, ValueKind::RESOURCE));

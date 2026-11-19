@@ -24,6 +24,8 @@ pub(crate) struct CodegenEnv<'a> {
     pub(super) named_schema_ids: &'a HashMap<fz_runtime::module_name::ModuleName, u32>,
     /// The bitstring literals this module has emitted.
     pub(super) bitstring_literals: &'a RefCell<BitstringLiterals>,
+    /// The allocation sites this module's code has registered.
+    pub(super) alloc_sites: &'a RefCell<AllocSites>,
     pub(super) param_reprs: &'a [Vec<ArgRepr>],
     pub(super) return_diverges: &'a [bool],
     pub(super) cont_fns: &'a HashSet<FnId>,
