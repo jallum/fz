@@ -24,6 +24,9 @@ Compiler2 owns the active contract path:
   (`SpecDecl::bounds()` in `ast` leaves it out), since a declared variable
   without a bound is already unbounded.
 - `term` is a builtin type name for `any`, as in Erlang and Elixir.
+- `dynamic` is also `any`. A typespec's `dynamic()` is the statically unknown
+  type, and a spec check treats it as `term()`, as Erlang's typespec reference
+  says Dialyzer does. `dynamic(T)` is not a typespec, in Elixir or here.
 - `compiler2/resolve.rs` resolves names against the namespace captured where a
   declaration appeared and returns hard compiler2 `Ty` values plus parallel
   `ResolvedTypeShape` values.
