@@ -12,9 +12,15 @@
   "id": "fz-sc8.192.8",
   "labels": [],
   "parent": "fz-sc8.192",
+  "comments": [
+    {
+      "text": "PR #807 (e23cfcd2e on 1d2b4f6fa). One fz_map_put and one fz_map_dest_put take (stored word, kind), and Map.put is one clause. The interpreter's extern ceiling is 6, filling register banks per ABI. Bench instr/iter: int put 534.7→515.7, float put 503.8→483.8, mixed keys 3159→3110. Pins fall: analyses 118→112, census 01125/01130/01135/00626, distiller.",
+      "timestamp": "2026-11-19T04:54:00Z"
+    }
+  ],
   "priority": 1,
   "status": "in_progress",
   "title": "A value crosses into the runtime as a word and a kind",
   "type": "task",
-  "updated_at": "2026-11-19T04:53:59Z"
+  "updated_at": "2026-11-19T04:54:00Z"
 }
