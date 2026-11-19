@@ -201,13 +201,13 @@ process.
 
 ## Helpers the code generator calls itself
 
-Some calls in compiled code come from lowering rather than from source: a cons
-cell, a closure allocation, a boxed integer. Each helper is an ordinary
-`extern "C"` function in the runtime library, and codegen names it by that Rust
-function item:
+Some calls in compiled code come from lowering rather than from source: a
+closure allocation, a boxed integer, the sharing of a list. Each helper is an
+ordinary `extern "C"` function in the runtime library, and codegen names it by
+that Rust function item:
 
 ```rust
-runtime_call!(body, fz_list_cons_int, [process, head, tail])
+runtime_call!(body, fz_mark_published_ref_aliased, [process, head])
 ```
 
 The item says everything. `stringify!` of the identifier is the linker symbol,
@@ -260,15 +260,39 @@ A row answers in one of three shapes (`Emitted`) and no others:
 A recipe does not validate its argument: the Rust function panics on a
 malformed word, the instructions read whatever the word says.
 
+A row that allocates is the other kind of row (`Emit::Cell`): it takes the
+process as its first argument, as the runtime function does, and writes the
+object itself. Asking `emit_inline` for one panics; a call site asks
+`emit_cell(body, scope, symbol, args)`, which registers the allocation site
+in `scope` (`SiteScope`, from `CodegenEnv::site_scope`). The four list-cell
+rows, `fz_list_cons_int`, `fz_list_cons_float`, `fz_list_cons_atom` and
+`fz_list_cons_any`, place the 16-byte cell through `emit_place` (the one inline
+bump, see [scheduler zero-arg closures](scheduler-zero-arg-closures.md)) and
+write its two words in `native_codegen/list_cell.rs`: the head's payload, and
+the link word, the tail's address with the head's kind in the bits a ref word
+keeps its kind in. A new cell carries no alias bit. A scalar head's kind is a
+constant. A ref head is decoded as `AnyValue::from_ref` decodes it (a boxed
+int, float or reference is read from its box, any other word is its payload),
+and a list or struct head is shared first by a call to
+`fz_mark_published_ref_aliased`, the one call a cell makes. The runtime
+(`fz_heap_room`) is asked only for room when the tip is full.
+
 The rows are the typed `fz_op_*_ii` arithmetic and comparison externs, the
-`fz_op_*_ff` comparisons, `fz_op_neg_f`, `fz_op_abs_f`, and the helpers
+`fz_op_*_ff` comparisons, `fz_op_neg_f`, `fz_op_abs_f`, the list-cell
+allocations above, and the helpers
 `fz_type_of`, `fz_truthy_ref`, `fz_unbox_int`, `fz_unbox_atom`,
 `fz_struct_schema_id_ref` and `fz_value_eq_raw_const` (an atom or integer
 constant kind only; another kind keeps the call). The Rust function stays the
 definition and the interpreter keeps calling it. To add an intrinsic, add one
 `recipe!` row and one entry in `proofs()` in `recipe_test.rs`: the parity test
 compiles every row and compares its answer with the runtime function over
-inputs for its signature, and fails for a row with no entry.
+inputs for its signature, and fails for a row with no entry. An allocation row
+has an entry in `cell_proofs()` instead, and its test compares heaps: it runs
+the runtime function in one fresh process and the row's instructions in another,
+over every head kind, each with a tail of `[]` and of a list, with room in the
+tip and with a full tip, and compares the placed cell's words, the words of
+every object the row may share, the tip each leaves, and the heap's allocation
+statistics and object count.
 
 The bodies codegen emits itself — the four halt-cont bodies, `fz_entry_thunk`,
 `fz_main_trampoline`, `fz_drain_dtor_entry` — are not Rust functions, so their

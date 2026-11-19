@@ -243,9 +243,15 @@ fz_map_put_int(process, map, key, value_i64)
 fz_list_cons_int(process, head_i64, tail)
 ```
 
-The `*_put_ref` / `*_cons_ref` paths are for already-dynamic refs. They call
-`reject_scalar_ref_write` and panic on a scalar ref, so a scalar always travels
-the typed-write path and the representation stays honest.
+Compiled code does not call `fz_list_cons_*`: it writes the cell itself from
+the same definition (`native_codegen/list_cell.rs`, a row of the recipe table;
+see [externs](externs.md), "Inline recipes"), and the functions stay as the
+definition the recipe's test compares against.
+
+The `*_put_ref` / `Heap::alloc_list_cons_ref` paths are for already-dynamic
+refs. They call `reject_scalar_ref_write` and panic on a scalar ref, so a
+scalar always travels the typed-write path and the representation stays
+honest.
 
 ### Walkthrough: read a value out of a map
 

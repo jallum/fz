@@ -363,7 +363,7 @@ variadic arguments being integers and pointers only, which the marshal front
 end enforces.
 
 **How a runtime helper is typed at a compiled call site** — owner the Rust
-function item. `runtime_call!(body, fz_list_cons_int, [process, head, tail])`
+function item. `runtime_call!(body, fz_mark_published_ref_aliased, [process, head])`
 reads the linker symbol off the identifier and the Cranelift signature off the
 item's type (`native_codegen/runtime_call.rs`), so a compiled call cannot
 describe a helper differently from the function it reaches. The helper is

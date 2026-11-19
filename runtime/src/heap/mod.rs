@@ -88,10 +88,10 @@ pub use self::stats::{AllocStat, GcStats, Generation, HeapAllocKind, HeapAllocSt
 pub const SHARED_BIN_THRESHOLD_BYTES: usize = 64;
 
 /// Byte offsets, from the start of a `Heap`, of the fields compiled code
-/// updates to place a continuation frame at the tip without calling the runtime: the
+/// updates to place an object at the tip without calling the runtime: the
 /// bump pointer and its block's end, the object count, and the allocation
-/// statistics a placement must keep truthful (the total and the continuation
-/// counters).
+/// statistics a placement must keep truthful (the total and the counters of
+/// each kind compiled code places: continuation frames and list cells).
 #[derive(Clone, Copy, Debug)]
 pub struct InlineAllocLayout {
     pub block_start: usize,
@@ -102,6 +102,20 @@ pub struct InlineAllocLayout {
     pub total_bytes: usize,
     pub continuation_allocs: usize,
     pub continuation_bytes: usize,
+    pub list_cons_allocs: usize,
+    pub list_cons_bytes: usize,
+}
+
+impl InlineAllocLayout {
+    /// The offsets of the count and byte counters of `kind`, when compiled
+    /// code places that kind.
+    pub fn kind_counters(&self, kind: HeapAllocKind) -> Option<(usize, usize)> {
+        match kind {
+            HeapAllocKind::Continuation => Some((self.continuation_allocs, self.continuation_bytes)),
+            HeapAllocKind::ListCons => Some((self.list_cons_allocs, self.list_cons_bytes)),
+            _ => None,
+        }
+    }
 }
 
 pub const INLINE_ALLOC_LAYOUT: InlineAllocLayout = InlineAllocLayout {
@@ -113,6 +127,8 @@ pub const INLINE_ALLOC_LAYOUT: InlineAllocLayout = InlineAllocLayout {
     total_bytes: std::mem::offset_of!(Heap, alloc_stats.total.bytes),
     continuation_allocs: std::mem::offset_of!(Heap, alloc_stats.continuation.allocs),
     continuation_bytes: std::mem::offset_of!(Heap, alloc_stats.continuation.bytes),
+    list_cons_allocs: std::mem::offset_of!(Heap, alloc_stats.list_cons.allocs),
+    list_cons_bytes: std::mem::offset_of!(Heap, alloc_stats.list_cons.bytes),
 };
 
 pub struct Heap {
