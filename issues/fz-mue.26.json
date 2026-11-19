@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-19T03:09:41Z",
+  "description": "User directed 2026-11-19: \"add the elixir parity issues as tickets to the epic we gave to Elixir Parity\". Owner: Elixir Parity. Found by JSON walking the json.erl port (/Users/j5n/Workspace/fz-752-walk/walk.md, fz2 from #786 head). Run and build fail 'native attempted to materialize direct-only callable' when a captured function is passed into a function guarded by when is_function(f, 2) that calls f.(t, 1); interp works. Repro: repro_26.fz. Callables' area: coordinate with Callables (or hand it over). Done: three paths agree with Elixir.",
+  "id": "fz-mue.26",
+  "labels": [],
+  "parent": "fz-mue",
+  "priority": 1,
+  "status": "open",
+  "title": "A captured function passed under is_function(f, 2) is called on native paths",
+  "type": "bug",
+  "updated_at": "2026-11-19T03:09:41Z"
+}
