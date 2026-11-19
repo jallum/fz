@@ -3,7 +3,7 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-18T05:17:20Z",
-  "description": "User ruling 2026-11-18 (relayed by Make Distiller Fast, verbatim: \"delegate the map building, slicing, struct field work to the Optimize agent\"). Builder: Optimize. Source: MDF distiller profile at develop 2eff1dec2 (bench, sample 1 ms for 2 s from 0.4 s in, 1,498 samples of a 2.84 s run, inclusive shares, one run; raw: bench distill-hunt/prof.j.base.txt).\n\nfz_bs_read_binary_ref = 10.5% (158): memmove 33 + memset 12 (alloc_bitstring \u003c- fz_bs_read_binary_ref: a slice that copies and zeroes bytes), field_end 20, alloc_bitstring_slice 18, alloc_kind 17, word decoding 20, self 31. Callers: JSON string/3 and run_join (end of a run of plain bytes; item C of JSON's machine-code study, study files /private/tmp/claude-501/-Users-j5n-Workspace-fz/ebbfffd8-2561-4da7-bcda-f9a316d00a1e/scratchpad/jsonasm/). 45 samples (3%) move and zero bytes for a slice.\n\nEstablish first: why this path copies rather than building a slice view; then a proposal. Related: fz-sc8.183.9 (one region read per entry), fz-sc8.195 (a walk passes its position).",
+  "description": "Board cleanup approved by the user, verbatim \"fz-9e2 cleanup approved\" (in Binary Handling's session, 2026-11-19), from the Board hygiene section of /Users/j5n/Workspace/fz-binaries/proposal.v1.html. Re-described. Optimize's measurement puts the byte copy at about 50 of a small slice's 340 instructions; the rest is the share, zeroing and field_end. Copying a slice of 64 bytes or fewer is deliberate (BEAM does it too), so the copy stays and everything around it goes: done when a slice of 64 bytes or fewer costs its copy and nothing else, measured with tools/floor against a hand-written target.\n\nPrevious description: User ruling 2026-11-18 (relayed by Make Distiller Fast, verbatim: \"delegate the map building, slicing, struct field work to the Optimize agent\"). Builder: Optimize. Source: MDF distiller profile at develop 2eff1dec2 (bench, sample 1 ms for 2 s from 0.4 s in, 1,498 samples of a 2.84 s run, inclusive shares, one run; raw: bench distill-hunt/prof.j.base.txt).\n\nfz_bs_read_binary_ref = 10.5% (158): memmove 33 + memset 12 (alloc_bitstring \u003c- fz_bs_read_binary_ref: a slice that copies and zeroes bytes), field_end 20, alloc_bitstring_slice 18, alloc_kind 17, word decoding 20, self 31. Callers: JSON string/3 and run_join (end of a run of plain bytes; item C of JSON's machine-code study, study files /private/tmp/claude-501/-Users-j5n-Workspace-fz/ebbfffd8-2561-4da7-bcda-f9a316d00a1e/scratchpad/jsonasm/). 45 samples (3%) move and zero bytes for a slice.\n\nEstablish first: why this path copies rather than building a slice view; then a proposal. Related: fz-sc8.183.9 (one region read per entry), fz-sc8.195 (a walk passes its position).",
   "id": "fz-sc8.183.10",
   "labels": [],
   "parent": "fz-9e2",
@@ -19,7 +19,7 @@
   ],
   "priority": 2,
   "status": "open",
-  "title": "A slice of a binary copies no bytes",
+  "title": "A small slice costs its copy and nothing else",
   "type": "task",
-  "updated_at": "2026-11-19T01:31:38Z"
+  "updated_at": "2026-11-19T01:31:49Z"
 }
