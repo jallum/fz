@@ -13,9 +13,15 @@
   "id": "fz-9x7.41.2",
   "labels": [],
   "parent": "fz-9x7.41",
+  "comments": [
+    {
+      "text": "PR #795 (rebased after #787). Bench instr: reqrep −8.0%, enum −6.7%, survive/trickle −3.7%, msg −2.7%, json −1.3%, distiller −0.9%; nothing rises, outputs identical. A cons ~32 instr (was 88); ~18 of the 32 are the old stats counters fz-9x7.37.3 removes.",
+      "timestamp": "2026-11-19T03:14:24Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "List cells are placed by allocation recipes, checked by a heap-parity harness",
   "type": "task",
-  "updated_at": "2026-11-18T23:59:41Z"
+  "updated_at": "2026-11-19T03:14:24Z"
 }
