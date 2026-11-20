@@ -1,5 +1,5 @@
 {
-  "assignee": "Callables",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-20T22:14:56Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-9x7",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "A body-recursive list builder fills its tail in place, with no continuation per element",
   "type": "feature",
-  "updated_at": "2026-11-20T22:14:59Z"
+  "updated_at": "2026-11-20T22:47:01Z"
 }
