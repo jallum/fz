@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-9zq.6"
+  ],
   "created": "2026-11-20T18:55:14Z",
   "description": "Split from fz-mue.16. User answer (verbatim, relayed by Elixir Parity 2026-11-20): \"Recursive, proper\". iodata = binary | iolist; iolist = μt. [integer | binary | t]; byte = integer (no integer ranges in the lattice; list types have no improper tail, so an improper iolist is outside iolist until the improper-tail ticket lands). Unblocks fz-otp-json punch/29_type_fun_recursive. Fixtures 01800, 01801. Owner: Elixir Parity.",
   "id": "fz-mue.40",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "byte, iolist and iodata resolve as in Elixir",
   "type": "feature",
-  "updated_at": "2026-11-20T18:55:14Z"
+  "updated_at": "2026-11-20T18:55:15Z"
 }
