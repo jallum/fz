@@ -2,7 +2,8 @@
   "assignee": "Jason Allum",
   "blocked_by": [
     "fz-mue.22",
-    "fz-mue.38"
+    "fz-mue.38",
+    "fz-sc8.174"
   ],
   "blocks": [
     "fz-mue.35",
@@ -19,5 +20,5 @@
   "status": "in_progress",
   "title": "Record.defrecordp defines a record, and a record pattern matches in a function head",
   "type": "feature",
-  "updated_at": "2026-11-20T21:11:54Z"
+  "updated_at": "2026-11-20T21:11:55Z"
 }
