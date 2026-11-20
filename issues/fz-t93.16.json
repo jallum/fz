@@ -11,9 +11,15 @@
   "id": "fz-t93.16",
   "labels": [],
   "parent": "fz-t93",
+  "comments": [
+    {
+      "text": "See fz-t93.26: on the distiller the backend plan itself differs across agenda orders (FIFO 1101 vs LIFO 1133 executables).",
+      "timestamp": "2026-11-20T21:14:16Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Compile work does not depend on the agenda's pop order",
   "type": "task",
-  "updated_at": "2026-11-15T03:40:40Z"
+  "updated_at": "2026-11-20T21:14:16Z"
 }
