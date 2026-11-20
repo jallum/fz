@@ -1,0 +1,22 @@
+#---
+# purpose: "Kernel.max/2 and min/2 compare any two terms by structural order, return the first of two equal terms, and may be called in a guard"
+# oracle: self
+# oracle.stamp: dada151a779249bd
+#---
+defmodule Main do
+  def clamp(x) when max(x, 0) > 5, do: :big
+  def clamp(_), do: :small
+  def main() do
+    IO.inspect(max(1, 2))
+    IO.inspect(min(1, 2))
+    IO.inspect(max(1, 1.0))
+    IO.inspect(min(1.0, 1))
+    IO.inspect(max(:a, 3))
+    IO.inspect(min("foo", "bar"))
+    IO.inspect(max({1, 2}, [1]))
+    IO.inspect(min(%{a: 1}, {9}))
+    IO.inspect(Enum.reduce([3, 9, 2], 0, fn x, acc -> max(x, acc) end))
+    IO.inspect({clamp(9), clamp(2)})
+  end
+end
+Main.main()

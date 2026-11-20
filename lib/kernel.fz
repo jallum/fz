@@ -17,7 +17,8 @@ defmodule Kernel do
     * `dbg/1`, `inspect/1`, `to_string/1`, `div/2`, `rem/2` and `range/3`
     * the sizes and accessors `bit_size/1`, `byte_size/1`, `map_size/1`,
       `tuple_size/1`, `length/1`, `elem/2`, `hd/1` and `tl/1`, the numeric functions `abs/1`,
-      `round/1`, `trunc/1`, `floor/1` and `ceil/1`, and the type tests `is_integer/1`,
+      `round/1`, `trunc/1`, `floor/1` and `ceil/1`, the comparisons `max/2` and `min/2`,
+      and the type tests `is_integer/1`,
       `is_float/1`, `is_number/1`, `is_binary/1`, `is_bitstring/1`, `is_list/1`, `is_map/1`, `is_tuple/1`,
       `is_atom/1`, `is_boolean/1`, `is_pid/1`, `is_reference/1`, `is_function/1`, `is_function/2`, `is_nil/1`,
       `is_struct/1` and `is_struct/2`, all of which a guard may call
@@ -912,6 +913,47 @@ defmodule Kernel do
     raises: ArithmeticError,
     message: "bad argument in arithmetic expression"
   extern "C" defp fz_op_abs_f(float) :: float
+
+  @doc """
+  Returns the bigger of `first` and `second` by structural comparison, which
+  orders any two terms: a number is less than an atom, then a reference, a
+  function, a pid, a tuple, a map, a list and a bitstring. When the two compare
+  equal, `first` is returned, so `max(1, 1.0)` is `1`.
+
+  A guard may call it.
+
+  ## Examples
+
+      max(1, 2)
+      #=> 2
+
+      max("a", "b")
+      #=> "b"
+
+  """
+  @spec max(any, any) :: any
+  def max(first, second) when first < second, do: second
+  def max(first, _second), do: first
+
+  @doc """
+  Returns the smaller of `first` and `second` by structural comparison, which
+  orders any two terms as `max/2` does. When the two compare equal, `first` is
+  returned, so `min(1, 1.0)` is `1`.
+
+  A guard may call it.
+
+  ## Examples
+
+      min(1, 2)
+      #=> 1
+
+      min("foo", "bar")
+      #=> "bar"
+
+  """
+  @spec min(any, any) :: any
+  def min(first, second) when second < first, do: second
+  def min(first, _second), do: first
 
   @doc """
   Returns `x` rounded to the nearest integer, halves away from zero.
