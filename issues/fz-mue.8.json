@@ -6,14 +6,15 @@
   "blocks": [
     "fz-mue.44"
   ],
+  "closed_at": "2026-11-20T21:53:08Z",
   "created": "2026-11-18T20:44:01Z",
   "description": "module :lists is not defined. Reproducer: /Users/j5n/Workspace/fz-otp-json/punch/17_lists_mod_calls.fz\n\nPart of fz-mue (fz runs OTP's json.erl unchanged). Port and harness: /Users/j5n/Workspace/fz-otp-json/.",
   "id": "fz-mue.8",
   "labels": [],
   "parent": "fz-mue",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": ":lists is defined with map, foldl, reverse and duplicate",
   "type": "feature",
-  "updated_at": "2026-11-20T21:17:08Z"
+  "updated_at": "2026-11-20T21:53:08Z"
 }
