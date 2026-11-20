@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Elixir Parity",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-20T21:58:56Z",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": ":unicode_util.cp/1 and gc/1 take the next codepoint and grapheme cluster of any chardata, as in OTP",
   "type": "feature",
-  "updated_at": "2026-11-20T21:58:56Z"
+  "updated_at": "2026-11-20T21:58:58Z"
 }
