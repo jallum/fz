@@ -9,9 +9,15 @@
   "id": "fz-9x7.36",
   "labels": [],
   "parent": "fz-9x7",
+  "comments": [
+    {
+      "text": "Ring census from GC (fz-9x7.14 round 5, 2026-11-20), evidence for this ticket: ring holds +259 KB because empty retired to-space blocks pile up between majors. Each minor retires its \u003e=1,024 B to-space as old while it holds 50-100 B (runtime imp.rs:1662, :1770-1779); the major trigger counts fill, not capacity (imp.rs:1546); about 21 blocks pile up per heap. This is existing develop behaviour that dead gifts used to hide. Census: /private/tmp/claude-501/-Users-j5n-Workspace-fz/d1d265b3-f8e7-419b-8316-906f89c17e6b/scratchpad/i14/results-r5-ring-census.txt",
+      "timestamp": "2026-11-20T21:45:47Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "A minor's to-space guess does not exceed what it can copy",
   "type": "task",
-  "updated_at": "2026-11-18T03:40:40Z"
+  "updated_at": "2026-11-20T21:45:47Z"
 }
