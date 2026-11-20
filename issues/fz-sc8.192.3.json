@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-sc8.192.2"
   ],
@@ -16,8 +16,8 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "A walk over a large map does not pay per entry to find its place",
   "type": "task",
-  "updated_at": "2026-11-20T20:32:13Z"
+  "updated_at": "2026-11-20T20:32:14Z"
 }
