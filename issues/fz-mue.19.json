@@ -11,11 +11,15 @@
     {
       "text": "Wider than the title (Elixir Parity, 2026-11-20). (1) def unquote(x)(...) fails for every name: these are Elixir's unquote fragments, evaluated in the module body and spliced as quoted code (unquote({:+,[],[1,2]}) becomes 1 + 2; a map is refused as an invalid quoted expression). They reuse sc8.144's definition-time evaluator. (2) Clauses from separate items can't join one function: two item-macro calls each emitting t/1 give 't/1 is already defined', where Elixir accepts them. Same idea as gap (A), an attribute between clauses splitting the group: a function is every clause written for its name/arity anywhere in the module body. json.erl's true/6 and false/6 need both. A page comes first.",
       "timestamp": "2026-11-20T13:04:19Z"
+    },
+    {
+      "text": "Proposal page /Users/j5n/Workspace/fz-mue.19.html awaits the user. (1) Build fragments over the definition-time evaluator, as quote do \u003cclause\u003e end run in the module body. (2) A function's clauses join across items, republished the way defoverridable already republishes. Correction: gap (A) is already fixed; written clauses with an attribute or def between them group today. Only clauses from separate items fail to join.",
+      "timestamp": "2026-11-20T13:23:07Z"
     }
   ],
   "priority": 3,
   "status": "in_progress",
   "title": "def unquote(:true)(...) defines a function named true",
   "type": "bug",
-  "updated_at": "2026-11-20T13:04:19Z"
+  "updated_at": "2026-11-20T13:23:07Z"
 }
