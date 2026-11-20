@@ -28,11 +28,15 @@
     {
       "text": "PR #809 on 1ca80111e: a self-naming @type, direct or across modules, resolves as one recursive type. Parametric recursion is regular only. A type with no values is refused at its declaration. No pins moved; fixtures 01357-01359 fill the fz-9zq block. Ticket stays open until 29_type_fun_recursive.fz runs unchanged (fz-mue.39); encode_value/decode_value wait on fz-mue.29.",
       "timestamp": "2026-11-19T04:51:34Z"
+    },
+    {
+      "text": "#809 merged as e97247ee6. Stays open until 29_type_fun_recursive.fz runs unchanged; fz-mue.39 has merged (4346a37d9), fz-sc8.110 and fz-mue.29 remain.",
+      "timestamp": "2026-11-20T13:02:53Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "A recursive @type resolves, admits and lays out",
   "type": "task",
-  "updated_at": "2026-11-19T04:51:34Z"
+  "updated_at": "2026-11-20T13:02:53Z"
 }
