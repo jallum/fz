@@ -436,7 +436,8 @@ pub extern "C" fn fz_self(process: *mut Process) -> u64 {
     (unsafe { &mut *process }).pid as u64
 }
 
-/// Process-global monotonic counter feeding `fz_make_ref`.
+/// Process-global monotonic counter feeding `fz_make_ref` and
+/// `fz_unique_integer`.
 /// Starts at 1 so 0 can remain a "no ref" sentinel if a future ticket
 /// needs one. AtomicU64 + Relaxed is sufficient under single-worker
 /// today and remains correct under future multi-worker.
@@ -445,6 +446,13 @@ static FZ_NEXT_REF: AtomicU64 = AtomicU64::new(1);
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_make_ref() -> u64 {
     FZ_NEXT_REF.fetch_add(1, Ordering::Relaxed)
+}
+
+/// `:erlang.unique_integer/0`: an integer no other call in this run returns,
+/// drawn from the counter references are drawn from.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_unique_integer() -> i64 {
+    FZ_NEXT_REF.fetch_add(1, Ordering::Relaxed) as i64
 }
 
 /// fz_send(receiver_pid, msg_ref) -> msg_ref.

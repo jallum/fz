@@ -4946,10 +4946,14 @@ fn compiler2_macro_executable_runs_quote_unquote_on_the_source_heap() {
         .expect("quoted variable AST node");
     assert_eq!(var_node.head.atom_name().expect("quoted variable head"), "x");
     assert_eq!(
-        var_node.tail.int_value().expect("quoted variable context"),
-        i64::from(quoted_var.as_u32()),
-        "a variable written inside a macro's own quote carries that macro's FunctionId as a bare marker; \
-         hygiene stamps this invocation's ordinal onto it later, in the wrapper this call bypasses"
+        var_node.tail.atom_name().expect("quoted variable context").as_str(),
+        "Elixir",
+        "a quote outside any module writes `Elixir` as its variables' context, as Elixir's does"
+    );
+    assert_eq!(
+        var_node.meta.var_counter().expect("quoted variable counter"),
+        None,
+        "the counter comes from the expansion, in the wrapper this call bypasses"
     );
 
     let forward_define = function_id(&functions, "forward_define", 1);

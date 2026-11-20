@@ -457,9 +457,8 @@ struct FunctionSourceExpander<'world, 'tel, T: crate::telemetry::Telemetry> {
     current_module: ModuleId,
     namespace: Namespace,
     reads: Vec<FactKey>,
-    /// See `ScopeSession::next_hygiene_counter` (source_publish.rs): one
-    /// ordinal per macro invocation this expander visits.
-    next_hygiene_counter: u32,
+    /// See `ScopeSession::expansions_visited` (source_publish.rs).
+    expansions_visited: i64,
     /// How many guards enclose the expansion in progress; see
     /// `QuotedExpansionCtx::expand_guard`.
     guard_depth: u32,
@@ -515,13 +514,12 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> QuotedExpansionCtx for Functi
         &mut self.guard_depth
     }
 
-    fn next_hygiene_ordinal(&mut self) -> u32 {
-        let ordinal = self.next_hygiene_counter;
-        self.next_hygiene_counter = self
-            .next_hygiene_counter
+    fn next_expansion_number(&mut self) -> i64 {
+        self.expansions_visited = self
+            .expansions_visited
             .checked_add(1)
-            .expect("hygiene ordinal space exhausted");
-        ordinal
+            .expect("expansion number space exhausted");
+        -self.expansions_visited
     }
 }
 
@@ -543,7 +541,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> FunctionSourceExpander<'world
             current_module,
             namespace: source.namespace,
             reads: Vec::new(),
-            next_hygiene_counter: 0,
+            expansions_visited: 0,
             guard_depth: 0,
         }
     }

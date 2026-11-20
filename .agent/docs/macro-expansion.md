@@ -388,57 +388,63 @@ Two important guardrails fall out of this:
 
 ## Variable Hygiene
 
-A variable's identity is its spelling plus where that spelling was written —
-`Var { name, context }` (`src/ast/mod.rs`). `VarContext::User` is a variable
-written by hand. `VarContext::Macro(function, ordinal)` is a variable a
-macro's own `quote` wrote, distinguished by which of that macro's expansions
-produced it. `VarContext::Generated(ordinal)` is a variable the compiler
-synthesized itself — the capture (`&1`) and multi-clause lambda-sugar
-parameters — with no source spelling for a user's own variable to collide
-with. `Expr::Var`, `Pattern::Var`, `Pattern::Pinned`, and
-a bitstring's `size(n)` all carry a `Var`, and every map that resolves a
-variable by name — the lowering environment, closure free/bound-name
-tracking, and dispatch_matrix's pattern-binding tables — is keyed by `Var`,
-never by a bare string. Two variables with the same spelling but a different
-context never share a binding: a macro's own `t = 99` cannot shadow, or be
-shadowed by, the caller's `t`.
+A variable's identity is Elixir's: its spelling, its context and its
+counter, `Var { name, context: VarContext { context, counter } }`
+(`src/ast/mod.rs`).
 
-A quoted variable's tail carries its context, the same slot a call's argument
-list would otherwise occupy: `nil` for a variable a user wrote, a macro's
-`FunctionId` (as a bare integer) for one written inside that macro's own
-`quote`, or the atom `generated` for one the compiler synthesized.
+- The **context** is an atom: `nil` for a variable written by hand, the
+  quoting module for one a `quote` wrote (`Elixir` outside any module), and
+  the compiler pass for a name the compiler minted (`fz_source_sugar` for the
+  capture, lambda and `for` sugar, `fz_guard_hoist` for a hoisted guard call),
+  as Elixir mints `&1` in context `:elixir_fn`.
+- The **counter** is `VarCounter::Module { module, n }`, the `n`-th expansion
+  whose caller is `module`, or `VarCounter::Integer(n)`, from
+  `Macro.unique_var/2` or a minted name.
+
+`Expr::Var`, `Pattern::Var`, `Pattern::Pinned`, and a bitstring's `size(n)`
+all carry a `Var`, and every map that resolves a variable by name (the
+lowering environment, closure free/bound-name tracking, and dispatch_matrix's
+pattern-binding tables) is keyed by `Var`, never by a bare string. Two
+variables that differ in context or counter never share a binding.
+
+A quoted variable is `{name, meta, context}`: the context atom in the slot a
+call's argument list would otherwise occupy, and the counter as Elixir's
+`counter:` meta entry, `{module, n}` or an integer.
 `QuotedSourceBuilder::variable` is the one constructor for this shape; the
-front door, quote lowering, and sugar's capture and lambda desugaring all
-build a variable node through it, and decode reads the tail back into a
-`VarContext`.
+front door, quote lowering, and sugar all build a variable node through it,
+and decode reads it back (`decode_var_context`, `quoted_function.rs`).
 
-A macro's `FunctionId` alone cannot tell one call to that macro apart from the
-next, so quote lowering writes only that bare marker, with no ordinal yet.
-One walk, run over the macro's own returned tree immediately after it runs and
-before the expansion is memoized, then stamps this invocation's ordinal onto
-every variable still carrying that macro's bare marker. The ordinal is local
-to the job attempt: it advances once per macro invocation the attempt visits,
-whether or not the memoization cache already holds an answer, so a retry
-reproduces the identical sequence. A variable spliced in by `unquote`, or one
-a nested macro's own expansion already stamped with a concrete ordinal, does
-not carry this macro's bare marker and is left untouched.
+**Quote.** `Lowerer::lower_variable` (jobs/body.rs) writes the quoting
+function's module atom as the context, so `quote(do: x)` in `Main` is
+`{:x, [], Main}`.
 
-This is the same underlying question `bound_callable` answers for a call
-written inside a quote — "where was this written" — asked at a different
-cardinality. A call's target does not fork per invocation, so it is resolved
-once, eagerly, at quote-lowering time, and baked into meta as a `FunctionId`.
-A variable's binding does fork per invocation — two calls to the same macro
-need two distinct `t` bindings — so it is resolved in two steps: a bare
-marker at lowering time, and a concrete `(FunctionId, ordinal)` pair once the
-expansion it belongs to is known.
+**Expansion.** `stamp_expansion_counter` (quoted_expander.rs) is Elixir's
+`linify_with_context_counter`. It runs over a macro's result right after the
+macro runs and before the expansion is memoized. Every variable whose context
+is the macro's module and that has no counter gets
+`counter: {CallerModule, n}`. That covers a quote in a helper function of the
+macro's module as much as one in the macro itself. A variable with another
+context, one that already has a counter (a nested expansion's, or
+`Macro.unique_var/2`'s), and `_` are left alone. A quote in another module
+that the macro calls keeps its context with no counter, so its variables are
+shared across expansions, as in Elixir.
 
-`var!(x)`, an ordinary macro in `lib/runtime.fz`, rewrites a quoted
-variable's context back to `nil` and drops its ordinal, so it reads and binds
-exactly as if the caller had written it by hand.
+`n` comes from the expander, once per macro invocation the job attempt visits,
+whether or not the memoization cache already holds the answer, so a retry
+reproduces the same numbers. The module-scope expander (`ScopeSession`,
+source_publish.rs) counts up from 0 and a function body's expander
+(`FunctionSourceExpander`, jobs/source.rs) counts down from -1. A function
+body can hold variables stamped by both, and the two ranges never meet.
 
-An undefined macro variable — one whose context names a macro but whose name
-was never bound anywhere lowering can see — reports `lower/unbound`, and the
-message names the macro.
+`var!(x)`, an ordinary macro in `lib/runtime.fz`, deletes a quoted variable's
+counter and sets its context to `nil`, so it reads and binds exactly as if the
+caller had written it by hand. `Macro.var/2` and `Macro.unique_var/2`
+(`lib/macro.fz`) build variables as Elixir's do; `unique_var`'s counter comes
+from `:erlang.unique_integer/0`, which draws from the counter `make_ref/0`
+draws from.
+
+An undefined variable whose context is not `nil` reports `lower/unbound`, and
+the message names the context module.
 
 ## How The Macro Actually Runs
 

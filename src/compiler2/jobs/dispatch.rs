@@ -524,6 +524,9 @@ pub(super) struct HoistedGuardCall {
 /// with no arguments has no inputs but process state, so the receiver
 /// evaluates it once, and the guard sees the result as a pinned value like any
 /// other variable the guard reads from outside the pattern.
+/// The context of the names that hoist a guard's zero-argument calls.
+const GUARD_HOIST_CONTEXT: &str = "fz_guard_hoist";
+
 pub(super) fn hoist_zero_argument_guard_calls(
     guard: &Spanned<Expr>,
     hoisted: &mut Vec<HoistedGuardCall>,
@@ -532,7 +535,7 @@ pub(super) fn hoist_zero_argument_guard_calls(
         Expr::Call(_, args) if args.is_empty() => {
             let name = Var {
                 name: "__fz_guard_call".to_string(),
-                context: VarContext::Generated(hoisted.len() as u32),
+                context: VarContext::minted(GUARD_HOIST_CONTEXT, hoisted.len() as i64),
             };
             hoisted.push(HoistedGuardCall {
                 name: name.clone(),

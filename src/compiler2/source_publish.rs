@@ -190,10 +190,10 @@ struct ScopeSession<'world, 'tel, T: crate::telemetry::Telemetry> {
     /// The expressions a submitted file's top level holds, in walk order. They
     /// become the file's `main/0` once every definition is published.
     statements: Vec<StatementForm>,
-    /// One ordinal per macro invocation this session visits, drawn whether
-    /// or not the expansion hits the memoization cache (`next_hygiene_ordinal`
-    /// on `QuotedExpansionCtx`). Local to this job attempt, reset with it.
-    next_hygiene_counter: u32,
+    /// How many macro invocations this session has visited, whether or not
+    /// an expansion hit the memoization cache (`next_expansion_number` on
+    /// `QuotedExpansionCtx`). Local to this job attempt, reset with it.
+    expansions_visited: i64,
     /// How many guards enclose the expansion in progress; see
     /// `QuotedExpansionCtx::expand_guard`.
     guard_depth: u32,
@@ -245,13 +245,13 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> QuotedExpansionCtx for ScopeS
         &mut self.guard_depth
     }
 
-    fn next_hygiene_ordinal(&mut self) -> u32 {
-        let ordinal = self.next_hygiene_counter;
-        self.next_hygiene_counter = self
-            .next_hygiene_counter
+    fn next_expansion_number(&mut self) -> i64 {
+        let number = self.expansions_visited;
+        self.expansions_visited = self
+            .expansions_visited
             .checked_add(1)
-            .expect("hygiene ordinal space exhausted");
-        ordinal
+            .expect("expansion number space exhausted");
+        number
     }
 }
 
@@ -548,7 +548,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
             struct_form_seen: false,
             definition_time_evaluations: 0,
             statements: Vec::new(),
-            next_hygiene_counter: 0,
+            expansions_visited: 0,
             guard_depth: 0,
         }
     }

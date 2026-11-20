@@ -12,7 +12,7 @@ use std::rc::Rc;
 
 use crate::ast::{
     AfterClause, BinOp, BitField, BitSize, CallableName, Callee, CatchClause, Expr, FnClause, LambdaClause,
-    MatchClause, Pattern, RescueClause, Spanned, TryForm, UnOp, Var, VarContext, WithBinding,
+    MatchClause, Pattern, RescueClause, Spanned, TryForm, UnOp, Var, WithBinding,
 };
 use crate::diag::Diagnostic;
 use crate::diag::codes;
@@ -1187,13 +1187,12 @@ impl<'a, 'w, 'tel, 'f, 'env, 'steps, 'q, T: crate::telemetry::Telemetry>
 
     fn lower_variable(&mut self, name: &str) -> Quoted {
         let head = Quoted::Constant(GroundValue::Atom(name.to_string()).into());
-        // Every variable this quote's own body writes is, by construction,
-        // written inside this macro's quote. Its tail carries the macro's
-        // `FunctionId` as an unstamped marker; the walk in `stamp_hygiene`
-        // (quoted_expander.rs) rewrites it to `Var{context: Macro(fid, ordinal)}`
-        // once this expansion's ordinal is known, right after the macro runs.
-        let owner = i64::from(self.lowerer.owner.as_u32());
-        let tail = Quoted::Constant(GroundValue::Int(owner).into());
+        // A quote's variables take the quoting module as their context, as
+        // Elixir's do. An expansion of a macro of that module later gives
+        // them a counter (`stamp_expansion_counter`, quoted_expander.rs).
+        let module = self.lowerer.world.function_ref(self.lowerer.owner).module;
+        let context = self.lowerer.world.quote_context(module);
+        let tail = Quoted::Constant(GroundValue::Atom(context.as_str().to_string()).into());
         self.ast_node_of(head, tail)
     }
 
@@ -1447,26 +1446,20 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                         Diagnostic::error(codes::LOWER_UNBOUND, STACKTRACE_OUTSIDE_A_HANDLER_CLAUSE, expr.span),
                     ));
                 }
-                if let VarContext::Macro(function, _) = name.context {
-                    let macro_name = self.world.function_ref(function).display_name();
+                if !name.context.is_user() {
+                    let context = name
+                        .context
+                        .context
+                        .as_ref()
+                        .map_or("nil", |atom| atom.strip_prefix("Elixir.").unwrap_or(atom));
                     return Err(emit_job_diagnostic(
                         self.telemetry,
                         Diagnostic::error(
                             codes::LOWER_UNBOUND,
                             format!(
-                                "compiler2 lowering found unbound variable `{}` (context {macro_name})",
+                                "compiler2 lowering found unbound variable `{}` (context {context})",
                                 name.name
                             ),
-                            expr.span,
-                        ),
-                    ));
-                }
-                if matches!(name.context, VarContext::Generated(_)) {
-                    return Err(emit_job_diagnostic(
-                        self.telemetry,
-                        Diagnostic::error(
-                            codes::LOWER_UNBOUND,
-                            format!("compiler2 lowering found unbound generated variable `{}`", name.name),
                             expr.span,
                         ),
                     ));

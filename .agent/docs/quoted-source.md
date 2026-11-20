@@ -266,8 +266,9 @@ old entry goes and the new one is put first).
   (see [macro-expansion.md](macro-expansion.md#where-expanded-code-is-reported)).
 - `__fz_from_brackets__`: `true` on the callee the front door builds for
   `lhs[key]` (see Source Shape).
-- `__fz_hygiene__`: the expansion ordinal the hygiene walk gives a macro- or
-  sugar-generated variable; absent on a variable the user wrote.
+- `counter`: a variable's counter, as Elixir writes it: `{module, n}` from an
+  expansion, or an integer from `Macro.unique_var/2` or a minted name (see
+  [macro-expansion.md](macro-expansion.md#variable-hygiene)).
 - `__fz_from_operator__`: the operator atom on a `<>` or `++` call the
   expander made from that operator (see Source Shape).
 - `__fz_bound__`: the exact callable a quoted call was resolved to, as that

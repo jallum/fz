@@ -80,7 +80,7 @@ fn meta(_source_name: &str, line: u32) -> QuotedSourceMetadata {
             line,
             line.checked_add(3).expect("test span end fits in u32"),
         )),
-        hygiene_ordinal: None,
+        counter: None,
     }
 }
 
@@ -778,7 +778,7 @@ fn metadata_is_a_keyword_list_in_the_order_the_builder_writes_it() {
     let meta = builder
         .meta(&QuotedSourceMetadata {
             span: Some(Span::new(version, 0, 2)),
-            hygiene_ordinal: Some(3),
+            counter: Some(crate::ast::VarCounter::Integer(3)),
             ..Default::default()
         })
         .unwrap();
@@ -790,7 +790,7 @@ fn metadata_is_a_keyword_list_in_the_order_the_builder_writes_it() {
         .iter()
         .map(|(key, _)| key.atom_name().unwrap().to_string())
         .collect();
-    assert_eq!(keys, [META_SPAN_KEY, super::source::META_HYGIENE_KEY]);
+    assert_eq!(keys, [META_SPAN_KEY, super::source::META_COUNTER_KEY]);
     let nothing = builder
         .root(builder.meta(&QuotedSourceMetadata::default()).unwrap())
         .unwrap();
@@ -839,7 +839,7 @@ fn metadata_that_is_not_a_keyword_list_is_refused_not_read_as_empty() {
             error.to_string().contains("quoted metadata must be a keyword list"),
             "{error}"
         );
-        assert!(builder.root(meta).unwrap().cursor().hygiene_ordinal().is_err());
+        assert!(builder.root(meta).unwrap().cursor().var_counter().is_err());
     }
 }
 
@@ -872,11 +872,11 @@ fn two_nodes_that_differ_only_in_span_are_equal_and_in_another_entry_are_not() {
     let builder = heap.builder();
     let mut sources = crate::source::SourceMap::new();
     let version = sources.add_code(Some("keyword-meta-eq.fz"), "abcdef");
-    let node = |start: u32, ordinal: u32| {
+    let node = |start: u32, counter: i64| {
         let meta = builder
             .meta(&QuotedSourceMetadata {
                 span: Some(Span::new(version, start, start + 1)),
-                hygiene_ordinal: Some(ordinal),
+                counter: Some(crate::ast::VarCounter::Integer(counter)),
                 ..Default::default()
             })
             .unwrap();
@@ -890,6 +890,6 @@ fn two_nodes_that_differ_only_in_span_are_equal_and_in_another_entry_are_not() {
     );
     assert!(
         !node(0, 1).semantically_eq(&node(0, 2), Horizon::Full),
-        "hygiene is meaning"
+        "a counter is meaning"
     );
 }

@@ -2,11 +2,44 @@ defmodule Macro do
   @moduledoc """
   Works with quoted code, as Elixir's `Macro` does.
 
-  `escape/1` and `unescape_string/1` are the only functions defined. The rest
-  of Elixir's `Macro` (`to_string/1`, `expand/2`, `prewalk/2` and the others),
+  `escape/1`, `unescape_string/1`, `var/2` and `unique_var/2` are the only
+  functions defined. The rest of Elixir's `Macro` (`to_string/1`, `expand/2`,
+  `prewalk/2` and the others),
   the options of `escape/2` and the escape map of `unescape_string/2` are not
   defined.
   """
+
+  @doc """
+  Returns the quoted variable `name` in `context`, as a `quote` in module
+  `context` writes it. A context of `nil` is the variable the caller writes
+  by that name.
+
+  ## Examples
+
+      Macro.var(:foo, nil)
+      #=> {:foo, [], nil}
+
+      Macro.var(:foo, Other)
+      #=> {:foo, [], Other}
+
+  """
+  @spec var(atom, atom) :: {atom, list, atom}
+  def var(name, context) when is_atom(name) and is_atom(context), do: {name, [], context}
+
+  @doc """
+  Returns a quoted variable `name` in `context` that no other variable is:
+  its `counter` is one no expansion and no other call hands out.
+
+  ## Examples
+
+      Macro.unique_var(:x, __MODULE__) == Macro.unique_var(:x, __MODULE__)
+      #=> false
+
+  """
+  @spec unique_var(atom, atom) :: {atom, list, atom}
+  def unique_var(name, context) when is_atom(name) and is_atom(context) do
+    {name, [counter: :erlang.unique_integer()], context}
+  end
 
   @doc """
   Returns the quoted code that rebuilds `value`.
