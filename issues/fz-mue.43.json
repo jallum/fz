@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-20T20:16:16Z",
+  "description": "Found by Elixir Parity (2026-11-20). `import Mod` inside a def body fails with 'unsupported expression prefix in compiler2 front door: Import'. Elixir allows lexical import, require and alias in function bodies, scoped to the rest of the body. Once it works, a def emitted by an item macro can hold a macro call only the body expander expands; fz-mue.38's disjoint counter ranges already cover that. Owner: Elixir Parity. Related: fz-p8p.21 (ambiguous imports).",
+  "id": "fz-mue.43",
+  "labels": [],
+  "parent": "fz-mue",
+  "priority": 2,
+  "status": "open",
+  "title": "import, require and alias work inside a function body, as in Elixir",
+  "type": "feature",
+  "updated_at": "2026-11-20T20:16:16Z"
+}
