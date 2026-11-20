@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-20T21:14:14Z",
+  "description": "Approved by the user (relayed by fz-engine, 2026-11-20).\n\nOn develop 59e5bda1e (release), `interp --dump backend` of tools/distill-telemetry.exs over main_returns_one under 8 agenda orders gives identical stdout but 5 distinct backend plans (FIFO 1101 executables, LIFO 1133). This goes further than fz-t93.16, which says the final plan is the same in every order: on the distiller the plan itself changes. It may be related to fz-t93.12 (duplicate canon keys).\n\nEvidence: the knob is /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/edge/knob.diff (Agenda::pop by FZ_A15_ORDER, does not ship) and the dumps are in /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/edge/ord/.\n\nPaper first: shrink to the smallest program whose plan differs between two orders, and find the first decision that differs. Done when the plan is identical under every order on the distiller and the matrix; any order knob kept is cfg(test) only.",
+  "id": "fz-t93.26",
+  "labels": [],
+  "parent": "fz-t93",
+  "priority": 2,
+  "status": "open",
+  "title": "The distiller's backend plan does not depend on job order",
+  "type": "bug",
+  "updated_at": "2026-11-20T21:14:14Z"
+}
