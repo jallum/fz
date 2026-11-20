@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-9x7.44.8"
+  ],
   "blocks": [],
   "created": "2026-11-13T23:00:34Z",
   "description": "Found by the fz-sc8.165 builder; measured on 6f631de13.\n`:z \u003c :a` (two static atoms) allocates 2 scalar boxes on run and build and 0 on interp (Process.heap_alloc_stats scalar_box_allocs delta around the expression). They are ints: the result of compare and the literal 0.\nMechanism as read from the backend dump (not independently re-derived): Kernel.\u003c/2 has the generic clause `def left \u003c right, do: compare(left, right) \u003c 0`, which calls \u003c/2 again with int arguments. The spec for (atom, atom) therefore has parameters typed `int | :z` and `int | :a` (key Kernel.\u003c/2[atom, atom], param_reprs [ValueRef, ValueRef]), and the tail call boxes the two raw ints into those ValueRef lanes (emit_tail_call_term -\u003e push_binding_as_abi_arg, RawInt to ValueRef). The same shape with a typed `c \u003c 0` allocates nothing.\nThe send(self(), :ping) box once listed here is the self() pid box (prim.rs:2238 boxes the PID extern result; fz_send unboxes it at once: 0/1000/1000 per 1000, 0/1/1 with the pid hoisted; JSON session census, develop 4a05ae2be). It is site 3 of fz-nml.9 and not part of this ticket.\nDone when: `:z \u003c :a` allocates 0 scalar boxes on interp, run and build, pinned by a behavior fixture; the cause is fixed where the spec join widens the recursive call, not by a special case for \u003c/2.",
@@ -17,5 +19,5 @@
   "status": "open",
   "title": "Comparing two atoms with \u003c boxes no integers in native code",
   "type": "bug",
-  "updated_at": "2026-11-18T01:45:35Z"
+  "updated_at": "2026-11-20T19:54:58Z"
 }

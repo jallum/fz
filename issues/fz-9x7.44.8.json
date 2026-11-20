@@ -11,7 +11,8 @@
   "blocks": [
     "fz-9x7.44.9",
     "fz-nml.9",
-    "fz-nml.9.2"
+    "fz-nml.9.2",
+    "fz-sc8.167"
   ],
   "created": "2026-11-20T19:54:50Z",
   "description": "User approved page \"Scalars without addresses\" (https://claude.ai/artifact/6jYdi5cw1d27CZC85xkJih, From: Callables) on 2026-11-20, relayed by Callables. Owner: Callables. S2, one ticket (cannot land partly). The Stored lane chosen by AbiValueRepr::for_ty: ArgRepr::Stored (abi_arity 2), CodegenValue::Stored generalizing Known. Calls, continuation arguments and returns; the boxed apply wrapper; reads and writes of captures, frames, list heads, struct fields, map values; receive out-slots. Signal: X1 passes with the pin ignored. The PR repeats the register census and runs the bench A/B. Closes fz-nml.9 (after its site 4 split) and fz-nml.9.2.",
@@ -22,5 +23,5 @@
   "status": "open",
   "title": "Generated code carries a value that can be a number as two words",
   "type": "task",
-  "updated_at": "2026-11-20T19:54:57Z"
+  "updated_at": "2026-11-20T19:54:58Z"
 }
