@@ -5,7 +5,7 @@
   ],
   "blocks": [],
   "created": "2026-11-18T03:40:38Z",
-  "description": "Approved by the user 2026-11-17 (relayed by GC: \"yes\"). Successor to fz-9x7.30 (#719).\n\nA minor sizes its to-space from the previous minor's copy (last_minor_copied_bytes, after #719). When the previous minor copied far more than this one can, the difference sits idle. Worst case: distiller event 788 in #719's measurement, a 3,564,448 B guess for 399,216 B copied, 3.16 MB unused. Data: GC session scratchpad 30/r2/pk.distiller.new.jsonl; the gc event carries to_space_guess_bytes and to_space_capacity_bytes. Related: fz-9x7.15 and .23 size the young generation itself, not this guess.\n\nExperiment first, with a paper-first page (pre-registered predictions and rule) before any builder. Memory judged in in-use bytes.",
+  "description": "Approved by the user 2026-11-17 (relayed by GC: \"yes\"). Successor to fz-9x7.30 (#719).\n\nA minor sizes its to-space from the previous minor's copy (last_minor_copied_bytes, after #719). When the previous minor copied far more than this one can, the difference sits idle. Worst case: distiller event 788 in #719's measurement, a 3,564,448 B guess for 399,216 B copied, 3.16 MB unused. Data: GC session scratchpad 30/r2/pk.distiller.new.jsonl; the gc event carries to_space_guess_bytes and to_space_capacity_bytes. Related: fz-9x7.15 and .23 size the young generation itself, not this guess.\n\nExperiment first, with a paper-first page (pre-registered predictions and rule) before any builder. Memory judged in in-use bytes.\n\nSecond symptom, ring census (GC, fz-9x7.14 round 5, 2026-11-20): ring holds +259 KB in empty retired to-space blocks that pile up between majors. Each minor retires its \u003e=1,024 B to-space as old while it holds 50-100 B (runtime imp.rs:1662, :1770-1779). The major trigger counts fill, not capacity (imp.rs:1546), so about 21 blocks pile up per heap. This is develop's behaviour; dead gifts used to hide it. Census: /private/tmp/claude-501/-Users-j5n-Workspace-fz/d1d265b3-f8e7-419b-8316-906f89c17e6b/scratchpad/i14/results-r5-ring-census.txt",
   "id": "fz-9x7.36",
   "labels": [],
   "parent": "fz-9x7",
@@ -19,5 +19,5 @@
   "status": "open",
   "title": "A minor's to-space guess does not exceed what it can copy",
   "type": "task",
-  "updated_at": "2026-11-20T21:45:47Z"
+  "updated_at": "2026-11-20T21:46:08Z"
 }
