@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-mue.16"
+  ],
   "blocks": [],
   "created": "2026-11-20T20:50:28Z",
   "description": "User direction 2026-11-20 (answering the fz-mue.16 page, relayed by Elixir Parity): neg_integer, non_neg_integer and pos_integer resolve to integer for now, like byte, and this ticket goes at the END of the parity epic. Done: the type lattice carries integer ranges, so byte (0..255), char (0..0x10FFFF), neg_integer, non_neg_integer and pos_integer are exact as in Elixir's typespecs, on all three paths, with diagnostics rendering them as Elixir does. Owner: Elixir Parity.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Integer range types: byte, char, neg_integer, non_neg_integer and pos_integer are exact, as in Elixir",
   "type": "feature",
-  "updated_at": "2026-11-20T20:50:28Z"
+  "updated_at": "2026-11-20T20:50:29Z"
 }
