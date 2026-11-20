@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-9x7.42"
+    "fz-9x7.42",
+    "fz-9x7.44.9"
   ],
   "blocks": [],
   "created": "2026-11-19T04:17:17Z",
@@ -27,5 +28,5 @@
   "status": "open",
   "title": "A continuation lives in its process's continuation region and is given back by one store",
   "type": "feature",
-  "updated_at": "2026-11-19T04:54:40Z"
+  "updated_at": "2026-11-20T19:54:56Z"
 }
