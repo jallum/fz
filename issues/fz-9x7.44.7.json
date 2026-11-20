@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-9x7.44.1"
+  ],
   "blocks": [],
   "created": "2026-11-20T19:54:50Z",
   "description": "User approved page \"Scalars without addresses\" (https://claude.ai/artifact/6jYdi5cw1d27CZC85xkJih, From: Callables) on 2026-11-20, relayed by Callables. Owner: Callables. S1.6: the lib extern \"fz\" declarations typed any (16 returns, plus parameters) lower to stored_value. Each entry takes and answers #807's stored_value on native and interpreter paths; the interpreter's as_ref_word boxing ends at these calls.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "A library extern typed any lowers to a stored word and its kind",
   "type": "task",
-  "updated_at": "2026-11-20T19:54:50Z"
+  "updated_at": "2026-11-20T19:54:55Z"
 }
