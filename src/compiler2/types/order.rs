@@ -314,14 +314,17 @@ impl<'a> ClauseOrder<'a> {
     }
 
     fn cmp_map_sig(&self, a: &MapSig, b: &MapSig) -> Ordering {
-        a.fields.len().cmp(&b.fields.len()).then_with(|| {
-            first_difference(
-                a.fields
-                    .iter()
-                    .zip(b.fields.iter())
-                    .map(|((ka, va), (kb, vb))| ka.cmp(kb).then_with(|| self.cmp_ty(*va, *vb))),
-            )
-        })
+        a.fields
+            .len()
+            .cmp(&b.fields.len())
+            .then_with(|| {
+                first_difference(a.fields.iter().zip(b.fields.iter()).map(|((ka, fa), (kb, fb))| {
+                    ka.cmp(kb)
+                        .then_with(|| fa.optional.cmp(&fb.optional))
+                        .then_with(|| self.cmp_ty(fa.ty, fb.ty))
+                }))
+            })
+            .then_with(|| first_difference(a.domains.tys().zip(b.domains.tys()).map(|(x, y)| self.cmp_ty(x, y))))
     }
 
     // ------------------------------------------------------------------

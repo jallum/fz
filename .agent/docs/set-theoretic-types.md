@@ -298,8 +298,10 @@ The split falls where it does because a clause carrying a NEGATIVE factor
 carves a set no signature comparison can read. A finite union of positive-only
 TUPLE clauses is never every tuple — a positive `TupleSig` fixes an arity, and
 arity is unbounded — and a finite union of positive-only MAP clauses is never
-every map, because a positive `MapSig` requires its keys and no finite union
-of key requirements covers the map holding none of them. But `{any, any} ∨ ¬{any, any}`
+every map, because a positive `MapSig` that requires a key excludes the maps
+holding none of them, and no finite union of key requirements covers them.
+The one positive-only clause that is every map is the open map: no field and
+every domain `any`. But `{any, any} ∨ ¬{any, any}`
 IS every tuple and `%{k: any} ∨ ¬%{k: any}` is every map, so "those axes have no
 top to reach" would be false, and the two carvings would intern apart while the
 calculator called them equal. The LIST axis answers its positive-only case
@@ -744,8 +746,32 @@ the module it is called in. A list the macro computes is spliced in whole, as
 `defstruct [tag: :shape] ++ unquote(fields)`, is evaluated as a computed field
 list is.
 
-A `MapSig` is an open record: the keys it lists, each with a type, and any
-other keys besides. A struct type is the record whose `__struct__` field is the
+A `MapSig` has named `fields` and one `domains` entry per kind of key
+(`MapDomain::ALL`: atom, binary, bitstring that is no binary, int, float, pid,
+ref, c_pointer, fun, tuple, map, list, resource). A key a field names holds that
+field's type and is required unless the field is `optional`. Any other key
+holds the domain of its kind, when present; a domain is never required, so the
+empty map belongs to every domain. A domain of `any` constrains nothing, so the
+open map (`Types::map_top`) is the signature whose every domain is `any`, and
+a map type is open unless its domains say otherwise.
+
+`@type` writes these as Elixir's type language does: a literal key is a
+field, `optional(k) => v` and `required(k) => v` choose whether it may be
+absent, and any other key is a type read as optional pairs — the atoms it names
+are optional fields and each other kind it covers is a domain
+(`Types::map_key_kinds`, `Types::map_of_entries`). A key that is no kind of
+key, a type variable, is a resolution error.
+
+Over fields and domains the lattice follows the map rules of the Elixir type
+checker (`Module.Types.Descr`): intersection takes the effective type per key
+(the other side's domain is the default for a key one side leaves unnamed), and
+a clause with a negative is empty only when the negative's domains each contain
+the clause's domain and the per-key field differences leave nothing — a negative
+that limits a kind of key the clause leaves free cannot cover it, because a key
+of that kind outside any finite set always exists. Two domains over one kind of
+key with disjoint value types therefore still meet in the maps holding no such
+key; a required field against a domain of its kind with a disjoint value type is
+empty. A struct type is the record whose `__struct__` field is the
 literal atom `Elixir.<Name>` beside the declared fields, so
 `%Range{first: integer}` is `%{__struct__: Range, first: integer}`
 (`Types::struct_map`). Nothing else marks a struct:

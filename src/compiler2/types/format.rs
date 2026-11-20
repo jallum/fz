@@ -188,12 +188,21 @@ impl Render<'_> {
     fn map_clause(&self, c: &Conj<MapSig>) -> String {
         format_conj(c, "map", |sig| {
             let module = super::sig_struct(self.cx, sig);
-            let fields: Vec<String> = sig
+            let mut fields: Vec<String> = sig
                 .fields
                 .iter()
                 .filter(|(k, _)| module.is_none() || !super::is_struct_module_key(k))
-                .map(|(k, v)| format!("{}: {}", format_map_key(k), self.ty(v)))
+                .map(|(k, field)| match field.optional {
+                    false => format!("{}: {}", format_map_key(k), self.ty(&field.ty)),
+                    true => format!("optional({}) => {}", format_map_key(k), self.ty(&field.ty)),
+                })
                 .collect();
+            fields.extend(
+                sig.domains
+                    .iter()
+                    .filter(|(_, ty)| !self.cx.descr(ty).is_full(self.cx))
+                    .map(|(domain, ty)| format!("{} => {}", domain.name(), self.ty(&ty))),
+            );
             match &module {
                 None => format!("%{{{}}}", fields.join(", ")),
                 Some(name) => format!("%{}{{{}}}", name, fields.join(", ")),

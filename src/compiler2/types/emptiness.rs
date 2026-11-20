@@ -2,11 +2,11 @@
 
 use crate::fz_ir::FnId;
 use std::borrow::Cow;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::conj::Conj;
 use super::descr::Descr;
-use super::sigs::{ArrowSig, ClosureLit, ListSig, MapSig, ResourceSig, TupleSig};
+use super::sigs::{ArrowSig, ClosureLit, ListSig, MapDomain, MapField, MapSig, ResourceSig, TupleSig};
 use super::{MapKey, Ty, TyCtx};
 
 pub(crate) fn tuple_clause_empty(cx: TyCtx<'_>, c: &Conj<TupleSig>) -> bool {
@@ -416,42 +416,131 @@ pub(crate) fn func_clause_empty(cx: TyCtx<'_>, c: &Conj<ArrowSig>) -> bool {
     false
 }
 
+/// A map clause: the maps every positive signature admits and no negative
+/// signature does.
+///
+/// Following Elixir's `map_line_empty?`, a negative removes from the line
+/// exactly what it constrains: at each key either signature names, the line
+/// keeps what the negative does not hold there, and the clause is empty when
+/// every such remainder is empty against the negatives still to come. A
+/// negative whose domain admits less than the line's somewhere removes
+/// nothing a key of that kind could not escape: the kinds are infinite, so a
+/// fresh key of that kind exists whose value the negative rejects, and the
+/// line keeps a map holding it.
 pub(crate) fn map_clause_empty(cx: TyCtx<'_>, c: &Conj<MapSig>) -> bool {
-    if c.pos.is_empty() {
+    let Some((first, rest)) = c.pos.split_first() else {
         return false;
+    };
+    if c.neg.is_empty() && rest.is_empty() {
+        return first
+            .fields
+            .values()
+            .any(|field| !field.optional && cx.descr(&field.ty).is_empty(cx));
     }
-    let mut merged: BTreeMap<MapKey, Descr> = c.pos[0]
-        .fields
-        .iter()
-        .map(|(k, v)| (k.clone(), cx.descr(v).clone()))
-        .collect();
-    for p in &c.pos[1..] {
-        for (k, v) in &p.fields {
-            merged
-                .entry(k.clone())
-                .and_modify(|e| *e = e.intersect(cx.descr(v)))
-                .or_insert_with(|| cx.descr(v).clone());
+    let mut line = MapLine::of(cx, first);
+    for sig in rest {
+        line.meet(cx, sig);
+    }
+    line.has_empty_required_field(cx) || map_line_empty(cx, &line, &c.neg)
+}
+
+/// The meet of a clause's positive signatures, as descriptors.
+#[derive(Clone)]
+struct MapLine {
+    fields: BTreeMap<MapKey, LineField>,
+    domains: Vec<Descr>,
+}
+
+#[derive(Clone)]
+struct LineField {
+    ty: Descr,
+    optional: bool,
+}
+
+impl LineField {
+    fn of(cx: TyCtx<'_>, field: MapField) -> Self {
+        Self {
+            ty: cx.descr(&field.ty).clone(),
+            optional: field.optional,
         }
     }
-    if merged.values().any(|v| v.is_empty(cx)) {
-        return true;
-    }
-    for n in &c.neg {
-        let n_keys_subset = n.fields.keys().all(|k| merged.contains_key(k));
-        if !n_keys_subset {
-            continue;
+}
+
+impl MapLine {
+    fn of(cx: TyCtx<'_>, sig: &MapSig) -> Self {
+        Self {
+            fields: sig
+                .fields
+                .iter()
+                .map(|(key, field)| (key.clone(), LineField::of(cx, *field)))
+                .collect(),
+            domains: sig.domains.tys().map(|ty| cx.descr(&ty).clone()).collect(),
         }
-        let value_refines = n.fields.iter().all(|(k, nv)| {
-            merged
-                .get(k)
-                .map(|pv| pv.diff(cx.descr(nv)).is_empty(cx))
-                .unwrap_or(false)
-        });
-        if value_refines {
+    }
+
+    fn field_at(&self, key: &MapKey) -> LineField {
+        self.fields.get(key).cloned().unwrap_or_else(|| LineField {
+            ty: self.domains[MapDomain::of_key(key) as usize].clone(),
+            optional: true,
+        })
+    }
+
+    fn meet(&mut self, cx: TyCtx<'_>, sig: &MapSig) {
+        let keys: BTreeSet<MapKey> = self.fields.keys().chain(sig.fields.keys()).cloned().collect();
+        for key in keys {
+            let ours = self.field_at(&key);
+            let theirs = LineField::of(cx, sig.field_at(&key));
+            self.fields.insert(
+                key,
+                LineField {
+                    ty: ours.ty.intersect(&theirs.ty),
+                    optional: ours.optional && theirs.optional,
+                },
+            );
+        }
+        for (domain, ty) in sig.domains.iter() {
+            let slot = &mut self.domains[domain as usize];
+            *slot = slot.intersect(cx.descr(&ty));
+        }
+    }
+
+    fn has_empty_required_field(&self, cx: TyCtx<'_>) -> bool {
+        self.fields
+            .values()
+            .any(|field| !field.optional && field.ty.is_empty(cx))
+    }
+
+    /// Whether every key kind the line allows, the negative allows too.
+    fn domains_within(&self, cx: TyCtx<'_>, negative: &MapSig) -> bool {
+        negative
+            .domains
+            .iter()
+            .all(|(domain, ty)| self.domains[domain as usize].is_subtype(cx, cx.descr(&ty)))
+    }
+}
+
+fn map_line_empty(cx: TyCtx<'_>, line: &MapLine, negatives: &[MapSig]) -> bool {
+    let Some((negative, rest)) = negatives.split_first() else {
+        return false;
+    };
+    if !line.domains_within(cx, negative) {
+        return map_line_empty(cx, line, rest);
+    }
+    let keys: BTreeSet<&MapKey> = line.fields.keys().chain(negative.fields.keys()).collect();
+    keys.into_iter().all(|key| {
+        let ours = line.field_at(key);
+        let theirs = negative.field_at(key);
+        let remainder = LineField {
+            ty: ours.ty.diff(cx.descr(&theirs.ty)),
+            optional: ours.optional && !theirs.optional,
+        };
+        if !remainder.optional && remainder.ty.is_empty(cx) {
             return true;
         }
-    }
-    false
+        let mut next = line.clone();
+        next.fields.insert(key.clone(), remainder);
+        map_line_empty(cx, &next, rest)
+    })
 }
 
 #[cfg(test)]

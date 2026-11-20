@@ -365,12 +365,20 @@ impl<'a> TyCanon<'a> {
 
     fn map_sig(&mut self, cx: TyCtx<'_>, sig: &MapSig) -> String {
         let module = super::sig_struct(cx, sig);
-        let fields: Vec<String> = sig
+        let mut fields: Vec<String> = sig
             .fields
             .iter()
             .filter(|(key, _)| module.is_none() || !super::is_struct_module_key(key))
-            .map(|(key, value)| format!("{} => {}", map_key(key), self.body(cx, *value)))
+            .map(|(key, field)| {
+                let marker = if field.optional { "?" } else { "" };
+                format!("{}{marker} => {}", map_key(key), self.body(cx, field.ty))
+            })
             .collect();
+        for (domain, ty) in sig.domains.iter() {
+            if !cx.descr(&ty).is_full(cx) {
+                fields.push(format!("{}() => {}", domain.name(), self.body(cx, ty)));
+            }
+        }
         match &module {
             None => format!("%{{{}}}", fields.join(", ")),
             Some(name) => format!("%{}{{{}}}", name, fields.join(", ")),

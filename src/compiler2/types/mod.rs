@@ -63,7 +63,78 @@ use descr::Descr;
 use descr::OpaqueTag;
 use dnf::dnf_intersect_with;
 use fz_runtime::module_name::STRUCT_MODULE_FIELD;
-use sigs::{ArrowSig, ClosureLit, ListSig, MapSig, MergeSig, PosMeet, ResourceSig, TupleSig, specialize_surface};
+pub use sigs::MapDomain;
+use sigs::{
+    ArrowSig, ClosureLit, ListSig, MapField, MapSig, MergeSig, PosMeet, ResourceSig, TupleSig, specialize_surface,
+};
+
+/// The key of one entry in a map type: a literal that names a field, or a kind
+/// of key whose every member the entry's value types.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MapTypeKey {
+    Literal(MapKey),
+    Domain(MapDomain),
+}
+
+/// One `key => value` entry of a map type as written.
+#[derive(Clone, Debug)]
+pub struct MapTypeEntry {
+    pub key: MapTypeKey,
+    pub optional: bool,
+    pub value: Ty,
+}
+
+/// What a map key type reaches: the atoms it names outright, and the kinds of
+/// key it covers.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MapKeyKinds {
+    pub atoms: Vec<MapKey>,
+    pub domains: Vec<MapDomain>,
+}
+
+impl MapKeyKinds {
+    /// Whether a key of these kinds may be `key`.
+    fn reaches(&self, key: &MapKey) -> bool {
+        self.atoms.contains(key) || self.domains.contains(&MapDomain::of_key(key))
+    }
+
+    /// The domains of `sig` a key of these kinds may be held in: each kind it
+    /// covers, and the atom domain when a named atom it may be is not a field
+    /// of `sig`, which then holds that atom.
+    fn domains_written_in(&self, sig: &MapSig) -> Vec<MapDomain> {
+        let mut written = self.domains.clone();
+        if self.atoms.iter().any(|atom| !sig.fields.contains_key(atom)) && !written.contains(&MapDomain::Atom) {
+            written.push(MapDomain::Atom);
+        }
+        written
+    }
+
+    /// Whether `sig` limits a slot a key of these kinds may be in.
+    fn limited_by(&self, cx: TyCtx<'_>, sig: &MapSig) -> bool {
+        sig.fields.keys().any(|key| self.reaches(key))
+            || self
+                .domains_written_in(sig)
+                .into_iter()
+                .any(|domain| !cx.descr(&sig.domains[domain]).is_full(cx))
+    }
+}
+
+/// What `sig` holds under a key of `kinds`: the type of every slot such a key
+/// may be.
+fn held_by_key_kinds(cx: TyCtx<'_>, sig: &MapSig, kinds: &MapKeyKinds) -> Descr {
+    let named = sig
+        .fields
+        .iter()
+        .filter(|(key, _)| kinds.reaches(key))
+        .map(|(_, field)| field.ty);
+    let domains = kinds
+        .domains_written_in(sig)
+        .into_iter()
+        .map(|domain| sig.domains[domain]);
+    named
+        .chain(domains)
+        .fold(Descr::none(), |held, ty| held.union(cx, cx.descr(&ty)))
+}
 
 /// One closure-literal arrow as [`Types::lit_arrow_shapes`] reports it:
 /// `(brand, captures, args, ret)`, the brand `None` for an anonymous literal.
@@ -1093,14 +1164,16 @@ impl Types {
     /// Every type reachable from any of `roots`, each visited once however
     /// many roots reach it.
     fn reachable_from(&self, roots: impl IntoIterator<Item = Ty>, mut visit: impl FnMut(Ty)) -> HashSet<Ty> {
-        let mut pending: Vec<Ty> = roots.into_iter().collect();
         let mut seen = HashSet::default();
+        let mut pending: Vec<Ty> = roots.into_iter().filter(|root| seen.insert(*root)).collect();
         while let Some(ty) = pending.pop() {
-            if !seen.insert(ty) {
-                continue;
-            }
             visit(ty);
-            pending.extend(self.descr(&ty).children().map(|(child, _)| child));
+            let unseen = self
+                .descr(&ty)
+                .children()
+                .map(|(child, _)| child)
+                .filter(|child| seen.insert(*child));
+            pending.extend(unseen);
         }
         seen
     }
@@ -1629,7 +1702,94 @@ impl Types {
         let Some(final_fields) = self.final_required_fields(fields) else {
             return self.core.none;
         };
-        self.intern(Descr::map_of(final_fields))
+        let sig = MapSig::open(final_fields, self.core.any);
+        self.intern(Descr::map_sig(sig))
+    }
+
+    /// The map type its entries write, as `%{required(k) => v, optional(k) => v}`
+    /// does. A literal key names a field, required unless the entry says
+    /// otherwise. A domain entry sets the value type of every key of that kind
+    /// the fields do not name, and several entries for one domain join: a
+    /// domain is never required, so the empty map belongs to it. The domains
+    /// no entry names stay `any`, so the type is open.
+    pub fn map_of_entries(&mut self, entries: &[MapTypeEntry]) -> Ty {
+        let (any, none) = (self.core.any, self.core.none);
+        let mut sig = MapSig::open(BTreeMap::new(), any);
+        let mut written = BTreeSet::new();
+        for entry in entries {
+            match &entry.key {
+                MapTypeKey::Literal(key) => {
+                    let field = MapField {
+                        ty: entry.value,
+                        optional: entry.optional,
+                    };
+                    sig.fields.insert(key.clone(), field);
+                }
+                MapTypeKey::Domain(domain) => {
+                    sig.domains[*domain] = if written.insert(*domain) {
+                        entry.value
+                    } else {
+                        self.union(sig.domains[*domain], entry.value)
+                    };
+                }
+            }
+        }
+        if sig.fields.values().any(|field| !field.optional && field.ty == none) {
+            return none;
+        }
+        self.intern(Descr::map_sig(sig))
+    }
+
+    /// What a map key of type `key` can be: the atoms it names when it is a
+    /// finite set of them, and the kinds of key it reaches otherwise. `None`
+    /// when a part of the type is no kind of key: a type variable, or a
+    /// protocol marker.
+    pub fn map_key_kinds(&self, key: &Ty) -> Option<MapKeyKinds> {
+        let descr = self.descr(key);
+        if !descr.vars.is_none() {
+            return None;
+        }
+        let mut kinds = MapKeyKinds::default();
+        let mut reach = |present: bool, domain: MapDomain| {
+            if present {
+                kinds.domains.push(domain);
+            }
+        };
+        reach(descr.basic.contains_all(BasicBits::INT), MapDomain::Integer);
+        reach(descr.basic.contains_all(BasicBits::FLOAT), MapDomain::Float);
+        reach(descr.basic.contains_all(BasicBits::BINARY), MapDomain::Binary);
+        reach(
+            descr.basic.contains_all(BasicBits::BITSTRING_NO_BINARY),
+            MapDomain::BitstringNoBinary,
+        );
+        reach(!descr.tuples.is_empty(), MapDomain::Tuple);
+        reach(!descr.lists.is_empty(), MapDomain::List);
+        reach(!descr.resources.is_empty(), MapDomain::Resource);
+        reach(!descr.funcs.is_empty(), MapDomain::Fun);
+        reach(!descr.maps.is_empty(), MapDomain::Map);
+        match descr.atoms.cofinite {
+            true => reach(true, MapDomain::Atom),
+            false => kinds
+                .atoms
+                .extend(descr.atoms.values.iter().map(|name| MapKey::Atom(name.clone()))),
+        }
+        if descr.opaques.cofinite {
+            kinds
+                .domains
+                .extend([MapDomain::Pid, MapDomain::Reference, MapDomain::CPointer]);
+        } else {
+            for tag in &descr.opaques.values {
+                match tag {
+                    OpaqueTag::Builtin(BuiltinOpaque::Pid) => kinds.domains.push(MapDomain::Pid),
+                    OpaqueTag::Builtin(BuiltinOpaque::Ref) => kinds.domains.push(MapDomain::Reference),
+                    OpaqueTag::Builtin(BuiltinOpaque::CPointer) => kinds.domains.push(MapDomain::CPointer),
+                    OpaqueTag::ProtocolDomain(_) | OpaqueTag::ProtocolTarget(_) => return None,
+                }
+            }
+        }
+        kinds.domains.sort();
+        kinds.domains.dedup();
+        Some(kinds)
     }
 
     pub fn str_t(&mut self) -> Ty {
@@ -1722,15 +1882,36 @@ impl Types {
             return self.core.none;
         };
         let module = self.atom_lit(&name.atom_name());
-        final_fields.insert(struct_module_key(), module);
-        self.intern(Descr::map_of(final_fields))
+        final_fields.insert(struct_module_key(), MapField::required(module));
+        let sig = MapSig::open(final_fields, self.core.any);
+        self.intern(Descr::map_sig(sig))
     }
 
     /// The map a literal with these entries builds. One that writes no
     /// `__struct__` entry names no module.
     pub(crate) fn map_literal(&mut self, fields: &[(MapKey, Ty)]) -> Ty {
-        let record = self.map(fields);
-        if fields.iter().any(|(key, _)| is_struct_module_key(key)) {
+        let entries: Vec<MapTypeEntry> = fields
+            .iter()
+            .map(|(key, value)| MapTypeEntry {
+                key: MapTypeKey::Literal(key.clone()),
+                optional: false,
+                value: *value,
+            })
+            .collect();
+        self.map_literal_of_entries(&entries)
+    }
+
+    /// The map a literal builds when some keys are known only by type: a
+    /// literal key is a required field, and every kind of key the others may
+    /// be holds their values as a domain, joined where several share a kind.
+    /// The entries of a key known only by type are written `optional`, as the
+    /// literal does not say which of its kinds the key is.
+    pub(crate) fn map_literal_of_entries(&mut self, entries: &[MapTypeEntry]) -> Ty {
+        let record = self.map_of_entries(entries);
+        let names_a_module = entries
+            .iter()
+            .any(|entry| matches!(&entry.key, MapTypeKey::Literal(key) if is_struct_module_key(key)));
+        if names_a_module {
             return record;
         }
         let plain = self.plain_map();
@@ -1746,12 +1927,15 @@ impl Types {
         self.difference(every, named)
     }
 
-    fn final_required_fields(&self, fields: &[(MapKey, Ty)]) -> Option<BTreeMap<MapKey, Ty>> {
+    fn final_required_fields(&self, fields: &[(MapKey, Ty)]) -> Option<BTreeMap<MapKey, MapField>> {
         let none = self.core.none;
         let mut final_fields = BTreeMap::new();
         let mut empty_required_fields = 0;
         for (key, value) in fields {
-            if final_fields.insert(key.clone(), *value) == Some(none) {
+            if final_fields
+                .insert(key.clone(), MapField::required(*value))
+                .is_some_and(|replaced| replaced.ty == none)
+            {
                 empty_required_fields -= 1;
             }
             if *value == none {
@@ -1831,6 +2015,49 @@ impl Types {
         Some(self.intern(d))
     }
 
+    /// What reading a key of type `key` from the maps of `a` answers when the
+    /// type names no single key: what the maps hold under every key the type
+    /// may be, beside `nil`, since a key that is not known may be absent. A
+    /// key of a kind the maps limit reads that kind's domain, and a named
+    /// field of the kind is one of the values it may read. `None` when `a`
+    /// has no map in it or the key is no kind of key.
+    pub fn domain_lookup(&mut self, a: &Ty, key: &Ty) -> Option<Ty> {
+        let kinds = self.map_key_kinds(key)?;
+        let held = {
+            let cx = self.ctx();
+            let read = |sig: &MapSig| held_by_key_kinds(cx, sig, &kinds);
+            held_by_maps(cx, cx.descr(a), &Descr::any(), read)?.union(cx, &Descr::nil())
+        };
+        Some(self.intern(held))
+    }
+
+    /// `a` after an update that writes `value` under a key of type `key`,
+    /// when the type names no single key: every slot the key may be gains
+    /// `value` beside what it held. An exclusion that limits such a slot no
+    /// longer holds of the result, so it goes. The result is a map whatever `a`
+    /// holds besides. `None` when the key is no kind of key.
+    pub fn widen_map_at_key_type(&mut self, a: &Ty, key: &Ty, value: &Ty) -> Option<Ty> {
+        let kinds = self.map_key_kinds(key)?;
+        let mut widened = self.descr(a).clone();
+        for conj in &mut widened.maps {
+            for sig in &mut conj.pos {
+                for (named, field) in &mut sig.fields {
+                    if kinds.reaches(named) {
+                        field.ty = self.union(field.ty, *value);
+                    }
+                }
+                for domain in kinds.domains_written_in(sig) {
+                    sig.domains[domain] = self.union(sig.domains[domain], *value);
+                }
+            }
+            let cx = self.ctx();
+            conj.neg.retain(|sig| !kinds.limited_by(cx, sig));
+        }
+        let widened = self.intern(widened);
+        let maps = self.map_top();
+        Some(self.intersect(widened, maps))
+    }
+
     /// Whether every map `a` describes has each of `keys`, so an update
     /// naming only these keys cannot miss. A type with no map in it has none.
     pub fn map_surely_has_keys(&self, a: &Ty, keys: &[MapKey]) -> bool {
@@ -1873,6 +2100,26 @@ impl Types {
 
     pub fn map_known_keys(&self, a: &Ty) -> Vec<MapKey> {
         map_known_keys(self.descr(a))
+    }
+
+    /// Every slot the maps of `a` hold a type in: each key a map names, and each
+    /// kind of key. A type with no map in it has none.
+    pub fn map_known_slots(&self, a: &Ty) -> Vec<MapTypeKey> {
+        if self.descr(a).maps.is_empty() {
+            return Vec::new();
+        }
+        let keys = map_known_keys(self.descr(a)).into_iter().map(MapTypeKey::Literal);
+        keys.chain(MapDomain::ALL.into_iter().map(MapTypeKey::Domain)).collect()
+    }
+
+    /// The type the maps of `a` hold in `slot`, as the signature wrote it: an
+    /// optional field's own type, without the `nil` a read of it may answer.
+    pub fn map_slot_ty(&mut self, a: &Ty, slot: &MapTypeKey) -> Option<Ty> {
+        let held = {
+            let cx = self.ctx();
+            slot_lookup(cx, cx.descr(a), slot)?
+        };
+        Some(self.intern(held))
     }
 
     pub fn refine_widen(&mut self, a: &Ty, b: &Ty) -> Ty {
@@ -1918,12 +2165,12 @@ impl Types {
         } else if descr.is_pure_callable() {
             self.fun_top()
         } else if let Some(record) = descr.sole_record() {
-            let mut fields = record.sig.fields.clone();
+            let mut sig = record.sig.clone();
             let excluded = record.excluded.to_vec();
-            for value in fields.values_mut() {
+            for value in sig.child_tys_mut() {
                 *value = self.convergence_class(value);
             }
-            self.intern(Descr::record_excluding(fields, excluded))
+            self.intern(Descr::record_excluding(sig, excluded))
         } else {
             *a
         }
@@ -1990,14 +2237,14 @@ impl Types {
             let payload = self.convergence_class_at(&payload, &child, reach, collapse);
             self.resource(payload)
         } else if let Some(record) = descr.sole_record() {
-            let mut fields = record.sig.fields.clone();
+            let mut sig = record.sig.clone();
             let excluded = record.excluded.to_vec();
-            for (j, value) in fields.values_mut().enumerate() {
+            for (j, value) in sig.child_tys_mut().enumerate() {
                 let mut child = path.to_vec();
                 child.push(AddrStep::MapField(j as u16));
                 *value = self.convergence_class_at(value, &child, reach, collapse);
             }
-            self.intern(Descr::record_excluding(fields, excluded))
+            self.intern(Descr::record_excluding(sig, excluded))
         } else if reach > ClassReach::Freight && self.has_open_vars(a) {
             // A kept leaf that still carries an open variable (not a closure's own
             // arrow variables) is replaced by the canonical address var for its
@@ -2297,12 +2544,18 @@ impl Types {
         let returned = returned_values.unwrap_or(&DispatchDemand::Ignore);
         for conj in &mut d.maps {
             for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
-                for (index, (key, value)) in sig.fields.iter_mut().enumerate() {
+                let named = sig.fields.len();
+                for (index, (key, field)) in sig.fields.iter_mut().enumerate() {
                     if is_struct_module_key(key) {
                         continue;
                     }
                     let mut child = path.to_vec();
                     child.push(AddrStep::MapField(index as u16));
+                    field.ty = self.convergence_collapse_ty(field.ty, values_demand, returned, &child, collapse);
+                }
+                for (index, value) in sig.domains.tys_mut().enumerate() {
+                    let mut child = path.to_vec();
+                    child.push(AddrStep::MapField((named + index) as u16));
                     *value = self.convergence_collapse_ty(*value, values_demand, returned, &child, collapse);
                 }
             }
@@ -2704,8 +2957,8 @@ impl Types {
         }
         for conj in &descr.maps {
             for sig in &conj.pos {
-                for field in sig.fields.values() {
-                    self.collect_protocol_domain_obligations(*field, seen, obligations);
+                for child in sig.child_tys() {
+                    self.collect_protocol_domain_obligations(child, seen, obligations);
                 }
             }
         }
@@ -4146,38 +4399,55 @@ fn tuple_field_type(cx: TyCtx<'_>, d: &Descr, index: usize) -> Descr {
 /// fields, a struct's module under `__struct__`, and — for the atom `value` only — a resource's payload. A resource
 /// carries no field but `value`, so any other key skips the resource axis
 /// exactly as it would a type with no resource axis at all.
+///
+/// A read of a key the map may lack answers `nil` beside the value, as a read
+/// of a missing key does.
 fn field_lookup(cx: TyCtx<'_>, d: &Descr, key: &MapKey) -> Option<Descr> {
-    let mut found = false;
-    let mut acc = Descr::none();
-    for conj in &d.maps {
-        if conj.pos.is_empty() {
-            acc = acc.union(cx, &Descr::any()).union(cx, &Descr::nil());
-            found = true;
-            continue;
+    let mut acc = held_by_maps(cx, d, &Descr::any().union(cx, &Descr::nil()), |sig| {
+        let field = sig.field_at(key);
+        let value = cx.descr(&field.ty).clone();
+        if field.optional {
+            value.union(cx, &Descr::nil())
+        } else {
+            value
         }
-        let mut clause_v: Option<Descr> = None;
-        for sig in &conj.pos {
-            let sig_v = match sig.fields.get(key) {
-                Some(t) => cx.descr(t).clone(),
-                None => Descr::any().union(cx, &Descr::nil()),
-            };
-            clause_v = Some(match clause_v {
-                None => sig_v,
-                Some(prev) => prev.intersect(&sig_v),
-            });
-        }
-        if let Some(v) = clause_v {
-            acc = acc.union(cx, &v);
-            found = true;
-        }
-    }
+    });
     if matches!(key, MapKey::Atom(name) if name == "value")
         && let Some(payload) = resource_payload_type(cx, d)
     {
-        acc = acc.union(cx, &payload);
-        found = true;
+        acc = Some(acc.map_or(payload.clone(), |held| held.union(cx, &payload)));
     }
-    if found { Some(acc) } else { None }
+    acc
+}
+
+/// What the maps of `d` hold in one slot, as the signature's own type and
+/// never widened by absence: a named key's field, or a kind's domain. `None`
+/// when `d` has no map in it.
+fn slot_lookup(cx: TyCtx<'_>, d: &Descr, slot: &MapTypeKey) -> Option<Descr> {
+    held_by_maps(cx, d, &Descr::any(), |sig| match slot {
+        MapTypeKey::Literal(key) => cx.descr(&sig.field_at(key).ty).clone(),
+        MapTypeKey::Domain(domain) => cx.descr(&sig.domains[*domain]).clone(),
+    })
+}
+
+/// The union over `d`'s map clauses of what `read` finds in the clause's
+/// positive signatures, met. A clause that constrains nothing holds
+/// `unconstrained`.
+fn held_by_maps(cx: TyCtx<'_>, d: &Descr, unconstrained: &Descr, read: impl Fn(&MapSig) -> Descr) -> Option<Descr> {
+    let mut acc: Option<Descr> = None;
+    for conj in &d.maps {
+        let held = conj
+            .pos
+            .iter()
+            .map(&read)
+            .reduce(|met, next| met.intersect(&next))
+            .unwrap_or_else(|| unconstrained.clone());
+        acc = Some(match acc {
+            None => held,
+            Some(prev) => prev.union(cx, &held),
+        });
+    }
+    acc
 }
 
 /// The module a map conjunction's positive signatures name under
@@ -4189,7 +4459,7 @@ fn conj_struct(cx: TyCtx<'_>, conj: &Conj<MapSig>) -> Option<ModuleName> {
 /// The module a map signature names: its `__struct__` field is exactly one
 /// module's atom.
 pub(super) fn sig_struct(cx: TyCtx<'_>, sig: &MapSig) -> Option<ModuleName> {
-    let module = cx.descr(sig.fields.get(&struct_module_key())?);
+    let module = cx.descr(&sig.fields.get(&struct_module_key()).filter(|field| !field.optional)?.ty);
     let name = module.as_atom_singleton()?;
     (*module == Descr::atom_lit(name.to_string()))
         .then(|| ModuleName::from_atom_name(name))
@@ -4211,7 +4481,7 @@ fn struct_module_key() -> MapKey {
 }
 
 fn map_sig_has_key(sig: &MapSig, key: &MapKey) -> bool {
-    sig.fields.contains_key(key)
+    sig.requires(key)
 }
 
 fn map_known_keys(d: &Descr) -> Vec<MapKey> {
@@ -4289,7 +4559,7 @@ fn runtime_type_predicate_map_modules(cx: TyCtx<'_>, descr: &Descr) -> (bool, Fi
             .pos
             .iter()
             .filter_map(|sig| sig.fields.get(&struct_module_key()))
-            .map(|module| map_module_axes(cx.descr(module)))
+            .map(|module| map_module_axes(cx.descr(&module.ty)))
             .fold(
                 (true, FiniteSet::any()),
                 |(plain, structs), (sig_plain, sig_structs)| (plain && sig_plain, structs.intersect(&sig_structs)),
@@ -4297,11 +4567,18 @@ fn runtime_type_predicate_map_modules(cx: TyCtx<'_>, descr: &Descr) -> (bool, Fi
         for negative in &clause.neg {
             // The test observes a map's module, not its fields. A negative
             // naming any other field removes only part of what it names, so
-            // subtracting its module would under-admit.
+            // subtracting its module would under-admit. A limit on a kind of
+            // key is such a naming.
+            let limits_a_kind_of_key = negative.domains.tys().any(|ty| !cx.descr(&ty).is_full(cx));
             match negative.fields.iter().next() {
-                None => (clause_plain, clause_structs) = (false, FiniteSet::none()),
-                Some((key, module)) if negative.fields.len() == 1 && is_struct_module_key(key) => {
-                    let (_, removed) = map_module_axes(cx.descr(module));
+                None if !limits_a_kind_of_key => (clause_plain, clause_structs) = (false, FiniteSet::none()),
+                Some((key, module))
+                    if negative.fields.len() == 1
+                        && is_struct_module_key(key)
+                        && !module.optional
+                        && !limits_a_kind_of_key =>
+                {
+                    let (_, removed) = map_module_axes(cx.descr(&module.ty));
                     if removed.cofinite && removed.values.is_empty() {
                         clause_structs = FiniteSet::none();
                     } else if !removed.cofinite {
@@ -4310,7 +4587,7 @@ fn runtime_type_predicate_map_modules(cx: TyCtx<'_>, descr: &Descr) -> (bool, Fi
                         }
                     }
                 }
-                Some(_) => {}
+                _ => {}
             }
         }
         plain |= clause_plain;
@@ -4815,36 +5092,45 @@ fn runtime_resource_sig(
 
 fn runtime_map_sig(
     types: &mut Types,
-    sig: sigs::MapSig,
+    mut sig: sigs::MapSig,
     polarity: RuntimeEnvelopePolarity,
     purpose: RuntimeEnvelopePurpose,
     bounds: &Sigma<Ty>,
 ) -> Option<sigs::MapSig> {
     let names_module = sig.fields.contains_key(&struct_module_key());
+    let cx = types.ctx();
+    let limits_a_kind_of_key = sig.domains.tys().any(|ty| !cx.descr(&ty).is_full(cx));
     match (purpose, names_module, polarity) {
         // A struct question observes the module; the fields' layout is owned
         // by the settled schema and lowered operation, not the question.
         (RuntimeEnvelopePurpose::Predicate, true, RuntimeEnvelopePolarity::Positive) => {
-            let mut fields = sig.fields;
-            fields.retain(|key, _| is_struct_module_key(key));
-            Some(sigs::MapSig { fields })
+            let any = types.any();
+            sig.fields.retain(|key, _| is_struct_module_key(key));
+            Some(sigs::MapSig::open(sig.fields, any))
         }
         // A struct negative naming a field cannot be tested exactly.
         // Dropping it widens in the safe direction; one naming only the
         // module names the whole family.
-        (RuntimeEnvelopePurpose::Predicate, true, RuntimeEnvelopePolarity::Negative) if sig.fields.len() == 1 => {
+        (RuntimeEnvelopePurpose::Predicate, true, RuntimeEnvelopePolarity::Negative)
+            if sig.fields.len() == 1 && !limits_a_kind_of_key =>
+        {
             Some(sig)
         }
         (RuntimeEnvelopePurpose::Predicate, true, RuntimeEnvelopePolarity::Negative) => None,
         // Semantic projection retains every record's field evidence. A map
         // naming no module also retains it in the runtime test surface.
         _ => {
-            let fields = sig
+            for field in sig.fields.values_mut() {
+                field.ty = runtime_envelope(types, field.ty, polarity, purpose, bounds);
+            }
+            for ty in sig.domains.tys_mut() {
+                *ty = runtime_envelope(types, *ty, polarity, purpose, bounds);
+            }
+            let required_field_is_empty = sig
                 .fields
-                .into_iter()
-                .map(|(key, ty)| (key, runtime_envelope(types, ty, polarity, purpose, bounds)))
-                .collect::<BTreeMap<_, _>>();
-            (!fields.values().any(|ty| types.is_empty(ty))).then_some(sigs::MapSig { fields })
+                .values()
+                .any(|field| !field.optional && types.is_empty(&field.ty));
+            (!required_field_is_empty).then_some(sig)
         }
     }
 }
@@ -5088,35 +5374,32 @@ fn refine_widen_uncached(t: &mut Types, a: Ty, b: Ty) -> Ty {
             });
         }
     }
-    if let Some((mut fields, theirs, excluded)) = records_of_one_kind(t, a, b) {
-        for (key, rv) in theirs {
-            if let Some(lv) = fields.get_mut(&key) {
-                *lv = t.refine_widen(lv, &rv);
+    if let Some((mut sig, theirs, excluded)) = records_of_one_kind(t, a, b) {
+        for (key, rv) in theirs.fields {
+            if let Some(lv) = sig.fields.get_mut(&key) {
+                lv.ty = t.refine_widen(&lv.ty, &rv.ty);
+                lv.optional |= rv.optional;
             } else {
-                fields.insert(key, rv);
+                sig.fields.insert(key, rv);
             }
         }
-        return t.intern(Descr::record_excluding(fields, excluded));
+        for domain in MapDomain::ALL {
+            sig.domains[domain] = t.refine_widen(&sig.domains[domain], &theirs.domains[domain]);
+        }
+        return t.intern(Descr::record_excluding(sig, excluded));
     }
 
     t.union(a, b)
 }
 
-type Fields = BTreeMap<MapKey, Ty>;
-
-/// The fields of two records that name the same module, or both name none,
+/// The signatures of two records that name the same module, or both name none,
 /// and exclude the same maps: the pairs a field-wise widening may merge.
-fn records_of_one_kind(t: &Types, a: Ty, b: Ty) -> Option<(Fields, Fields, Vec<MapSig>)> {
+fn records_of_one_kind(t: &Types, a: Ty, b: Ty) -> Option<(MapSig, MapSig, Vec<MapSig>)> {
     let cx = t.ctx();
     let ours = t.descr(&a).sole_record()?;
     let theirs = t.descr(&b).sole_record()?;
-    (ours.excluded == theirs.excluded && sig_struct(cx, ours.sig) == sig_struct(cx, theirs.sig)).then(|| {
-        (
-            ours.sig.fields.clone(),
-            theirs.sig.fields.clone(),
-            ours.excluded.to_vec(),
-        )
-    })
+    (ours.excluded == theirs.excluded && sig_struct(cx, ours.sig) == sig_struct(cx, theirs.sig))
+        .then(|| (ours.sig.clone(), theirs.sig.clone(), ours.excluded.to_vec()))
 }
 
 /// `a` with its variables replaced by `sigma`, for a type that has some: the
@@ -5216,12 +5499,18 @@ fn collect_subst_into(
     if let (Some(ps), Some(ws)) = (pat.sole_record(), wit.sole_record())
         && witness_is_of_the_patterns_struct(t.ctx(), ps.sig, ws.sig)
     {
-        children.extend(
-            ps.sig
-                .fields
-                .iter()
-                .filter_map(|(key, p)| ws.sig.fields.get(key).map(|w| (*p, *w, side))),
-        );
+        let fields = ps
+            .sig
+            .fields
+            .iter()
+            .filter_map(|(key, p)| ws.sig.fields.get(key).map(|w| (p.ty, w.ty, side)));
+        let domains = ps
+            .sig
+            .domains
+            .tys()
+            .zip(ws.sig.domains.tys())
+            .map(|(p, w)| (p, w, side));
+        children.extend(fields.chain(domains));
     }
     for (p, w, child_side) in children {
         collect_subst_into(t, p, w, child_side, target, sigma);
@@ -5254,3 +5543,6 @@ mod attrs_test;
 
 #[cfg(test)]
 mod walker_cost_test;
+
+#[cfg(test)]
+mod map_domains_test;

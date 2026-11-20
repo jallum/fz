@@ -3,7 +3,7 @@
 //! here (resolution decides) and no `ModuleTypeEnv` is consulted. These tests
 //! pin that intent against the worked examples the rework is built around.
 
-use super::type_expr::{NominalKind, TypeDefBody, TypeExpr, parse_type_def_body, parse_type_expr};
+use super::type_expr::{MapTypePair, NominalKind, TypeDefBody, TypeExpr, parse_type_def_body, parse_type_expr};
 use crate::parser::lexer::{Lexer, Token};
 use crate::source::Span;
 use crate::telemetry::ConfiguredTelemetry;
@@ -52,7 +52,11 @@ fn unspanned(expr: TypeExpr) -> TypeExpr {
         TypeExpr::Map(pairs) => TypeExpr::Map(
             pairs
                 .into_iter()
-                .map(|(key, value)| (unspanned(key), unspanned(value)))
+                .map(|pair| MapTypePair {
+                    key: unspanned(pair.key),
+                    optional: pair.optional,
+                    value: unspanned(pair.value),
+                })
                 .collect(),
         ),
         leaf => leaf,
@@ -193,7 +197,54 @@ fn a_map_parses_its_key_value_pairs() {
     // `%{k => v}`: parity with `[T]` for lists — the structural map type.
     assert_eq!(
         parse("%{ok => integer}"),
-        TypeExpr::Map(vec![(name(&["ok"], vec![]), name(&["integer"], vec![]))]),
+        TypeExpr::Map(vec![pair(name(&["ok"], vec![]), name(&["integer"], vec![]))]),
+    );
+}
+
+fn pair(key: TypeExpr, value: TypeExpr) -> MapTypePair {
+    MapTypePair {
+        key,
+        optional: false,
+        value,
+    }
+}
+
+#[test]
+fn a_map_key_wrapped_in_optional_is_an_optional_entry() {
+    // Elixir's typespec reference: `optional(k) => v` may be absent.
+    assert_eq!(
+        parse("%{optional(:array_start) => integer}"),
+        TypeExpr::Map(vec![MapTypePair {
+            key: TypeExpr::AtomLit("array_start".to_string()),
+            optional: true,
+            value: name(&["integer"], vec![]),
+        }]),
+    );
+}
+
+#[test]
+fn a_map_key_wrapped_in_required_is_the_same_entry_as_the_bare_key() {
+    assert_eq!(parse("%{required(:x) => integer}"), parse("%{:x => integer}"));
+}
+
+#[test]
+fn a_parenthesized_union_is_a_map_key() {
+    // `%{(binary() | atom()) => v}`: the key is one type, written with parentheses.
+    assert_eq!(
+        parse("%{(binary() | atom()) => integer}"),
+        TypeExpr::Map(vec![pair(
+            TypeExpr::Union(vec![name(&["binary"], vec![]), name(&["atom"], vec![])]),
+            name(&["integer"], vec![]),
+        )]),
+    );
+}
+
+#[test]
+fn optional_names_a_type_everywhere_but_the_wrapper_position_of_a_map_key() {
+    // `optional` followed by no `(` in key position is an ordinary type name.
+    assert_eq!(
+        parse("%{optional => integer}"),
+        TypeExpr::Map(vec![pair(name(&["optional"], vec![]), name(&["integer"], vec![]))]),
     );
 }
 
@@ -205,8 +256,8 @@ fn a_map_key_shorthand_matches_the_struct_record_field_shorthand() {
     assert_eq!(
         parse("%{ok: integer, err: atom}"),
         TypeExpr::Map(vec![
-            (TypeExpr::AtomLit("ok".to_string()), name(&["integer"], vec![])),
-            (TypeExpr::AtomLit("err".to_string()), name(&["atom"], vec![])),
+            pair(TypeExpr::AtomLit("ok".to_string()), name(&["integer"], vec![])),
+            pair(TypeExpr::AtomLit("err".to_string()), name(&["atom"], vec![])),
         ]),
     );
 }
@@ -217,7 +268,7 @@ fn a_map_key_can_be_any_type_expression_via_fat_arrow() {
     // atom/ident, unlike the `:`-shorthand.
     assert_eq!(
         parse("%{1 => atom}"),
-        TypeExpr::Map(vec![(TypeExpr::IntLit(1), name(&["atom"], vec![]))]),
+        TypeExpr::Map(vec![pair(TypeExpr::IntLit(1), name(&["atom"], vec![]))]),
     );
 }
 

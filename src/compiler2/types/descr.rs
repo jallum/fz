@@ -7,11 +7,10 @@ use super::emptiness::{
     func_clause_empty, list_clause_empty, map_clause_empty, resource_clause_empty, tuple_clause_empty,
 };
 use super::recursive::Question;
-use super::sigs::{ArrowSig, ClosureLit, ListSig, MapSig, ResourceSig, TupleSig};
+use super::sigs::{ArrowSig, ClosureLit, ListSig, MapField, MapSig, ResourceSig, TupleSig};
 use super::{BuiltinOpaque, MapKey, Ty, TyCtx, TypeVarId};
 use crate::finite_set::FiniteSet;
 use crate::modules::identity::ModuleName;
-use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(super) enum OpaqueTag {
@@ -249,9 +248,9 @@ impl Descr {
         d
     }
 
-    pub(super) fn map_of(fields: BTreeMap<MapKey, Ty>) -> Self {
+    pub(super) fn map_sig(sig: MapSig) -> Self {
         let mut d = Self::unbranded();
-        d.maps.push(Conj::pos_of(MapSig { fields }));
+        d.maps.push(Conj::pos_of(sig));
         d
     }
 
@@ -341,8 +340,9 @@ impl Descr {
     /// before, so an exclusion naming the key goes; one naming only other
     /// keys still holds of the map that results.
     pub(super) fn refine_map_field(&self, key: &MapKey, vt: Ty) -> Option<Descr> {
+        let refined = MapField::required(vt);
         let changed = self.maps.iter().any(|clause| {
-            clause.pos.iter().any(|sig| sig.fields.get(key) != Some(&vt))
+            clause.pos.iter().any(|sig| sig.fields.get(key) != Some(&refined))
                 || clause.neg.iter().any(|sig| sig.fields.contains_key(key))
         });
         if !changed {
@@ -351,7 +351,7 @@ impl Descr {
         let mut out = self.clone();
         for clause in &mut out.maps {
             for sig in &mut clause.pos {
-                sig.fields.insert(key.clone(), vt);
+                sig.fields.insert(key.clone(), refined);
             }
             clause.neg.retain(|sig| !sig.fields.contains_key(key));
         }
@@ -536,10 +536,10 @@ impl Descr {
         })
     }
 
-    pub(super) fn record_excluding(fields: BTreeMap<MapKey, Ty>, excluded: Vec<MapSig>) -> Self {
+    pub(super) fn record_excluding(sig: MapSig, excluded: Vec<MapSig>) -> Self {
         let mut d = Self::unbranded();
         d.maps.push(Conj {
-            pos: vec![MapSig { fields }],
+            pos: vec![sig],
             neg: excluded,
         });
         d

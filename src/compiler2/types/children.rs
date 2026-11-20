@@ -9,7 +9,7 @@ use crate::fz_ir::FnId;
 
 use super::descr::Descr;
 use super::sigs::ArrowSig;
-use super::{CallableValueKind, Ty, is_struct_module_key};
+use super::{CallableValueKind, MapKey, Ty, is_struct_module_key};
 
 /// What a child type is to the descriptor that names it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -50,14 +50,9 @@ impl Descr {
             .flat_map(|c| c.sigs())
             .map(|sig| (sig.payload, ChildRole::Value));
         let maps = self.maps.iter().flat_map(|c| c.sigs()).flat_map(|sig| {
-            sig.fields.iter().map(|(key, ty)| {
-                let role = if is_struct_module_key(key) {
-                    ChildRole::StructModule
-                } else {
-                    ChildRole::Value
-                };
-                (*ty, role)
-            })
+            let fields = sig.fields.iter().map(|(key, field)| (field.ty, field_role(key)));
+            let domains = sig.domains.tys().map(|ty| (ty, ChildRole::Value));
+            fields.chain(domains)
         });
         let funcs = self.funcs.iter().flat_map(|c| c.sigs()).flat_map(|sig| {
             let surface = surface_role(sig);
@@ -95,13 +90,11 @@ impl Descr {
             sig.payload = f(sig.payload, ChildRole::Value);
         }
         for sig in self.maps.iter_mut().flat_map(|c| c.sigs_mut()) {
-            for (key, ty) in sig.fields.iter_mut() {
-                let role = if is_struct_module_key(key) {
-                    ChildRole::StructModule
-                } else {
-                    ChildRole::Value
-                };
-                *ty = f(*ty, role);
+            for (key, field) in sig.fields.iter_mut() {
+                field.ty = f(field.ty, field_role(key));
+            }
+            for ty in sig.domains.tys_mut() {
+                *ty = f(*ty, ChildRole::Value);
             }
         }
         for sig in self.funcs.iter_mut().flat_map(|c| c.sigs_mut()) {
@@ -116,6 +109,14 @@ impl Descr {
                 lit.captures.iter_mut().for_each(|ty| *ty = f(*ty, role));
             }
         }
+    }
+}
+
+fn field_role(key: &MapKey) -> ChildRole {
+    if is_struct_module_key(key) {
+        ChildRole::StructModule
+    } else {
+        ChildRole::Value
     }
 }
 

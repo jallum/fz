@@ -2380,8 +2380,8 @@ impl<'t> FragmentCursor<'t> {
                 break;
             }
             match tok {
-                Tok::LParen | Tok::LBrack | Tok::LBrace => depth += 1,
-                Tok::RParen | Tok::RBrack | Tok::RBrace => depth -= 1,
+                Tok::LParen | Tok::LBrack | Tok::LBrace | Tok::PercentLBrace | Tok::LBitstr => depth += 1,
+                Tok::RParen | Tok::RBrack | Tok::RBrace | Tok::RBitstr => depth -= 1,
                 _ => {}
             }
             self.pos += 1;
