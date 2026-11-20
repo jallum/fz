@@ -64,3 +64,24 @@ fn struct_retention_counter_offsets_match_process_layout() {
     assert_eq!(PROCESS_STRUCT_RETENTION_ATTEMPTS_OFFSET, (attempts - base) as i32);
     assert_eq!(PROCESS_STRUCT_RETENTION_HITS_OFFSET, (hits - base) as i32);
 }
+
+#[test]
+fn compiled_code_reads_an_atoms_key_hash_through_the_process_while_the_table_grows() {
+    let process = process();
+    let first = process.node.intern_atom("first");
+    let words = (&process as *const Process).cast::<u8>();
+    let key_hash = |id: u32| unsafe {
+        let at = words
+            .add(PROCESS_ATOM_KEY_HASHES_OFFSET as usize)
+            .cast::<*const *const u64>()
+            .read();
+        at.read().add(id as usize).read()
+    };
+    assert_eq!(key_hash(first), crate::term_hash::atom_key_hash("first"));
+
+    let grown: Vec<u32> = (0..10_000)
+        .map(|n| process.node.intern_atom(&format!("grown_{n}")))
+        .collect();
+    assert_eq!(key_hash(first), crate::term_hash::atom_key_hash("first"));
+    assert_eq!(key_hash(grown[9_999]), crate::term_hash::atom_key_hash("grown_9999"));
+}

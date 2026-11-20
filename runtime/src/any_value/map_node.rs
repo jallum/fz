@@ -37,7 +37,8 @@ use std::ptr;
 /// The most entries a map holds as a flat array.
 pub const MAP_FLAT_MAX: usize = 32;
 
-const MAP_TRIE_FLAG: u64 = 1 << 62;
+/// The header bit of a trie node, a collision node included.
+pub const MAP_TRIE_FLAG: u64 = 1 << 62;
 
 /// The header bits a published flat map has clear: it is neither a destination
 /// still being filled nor a trie node.
@@ -47,9 +48,17 @@ pub const MAP_FLAT_COUNT_SHIFT: i64 = MAP_HEADER_FIELD_SHIFT as i64;
 /// Where a flat map's kind bytes begin, one byte per entry padded to a word;
 /// its key words follow them and its value words follow those.
 pub const MAP_KIND_BYTES_OFFSET: i64 = 8;
-const MAP_COLLISION_FLAG: u64 = 1 << 61;
-const MAP_DATA_MAP_SHIFT: u32 = MAP_HEADER_FIELD_SHIFT;
-const MAP_CHILD_MAP_SHIFT: u32 = MAP_DATA_MAP_SHIFT + 16;
+/// The header bit of a collision node.
+pub const MAP_COLLISION_FLAG: u64 = 1 << 61;
+/// Where a trie node's data map and child map begin in its header. The child
+/// map lies right above the data map, and the bits below the data map are
+/// clear, so one left shift of the header and a popcount count the set bits
+/// of either map below a slot.
+pub const MAP_DATA_MAP_SHIFT: u32 = MAP_HEADER_FIELD_SHIFT;
+pub const MAP_CHILD_MAP_SHIFT: u32 = MAP_DATA_MAP_SHIFT + 16;
+/// The bits of a key's hash that choose its slot at each level of a trie,
+/// the top bits first.
+pub const MAP_TRIE_SLOT_BITS: u32 = 4;
 const MAP_TOTAL_SHIFT: u32 = MAP_CHILD_MAP_SHIFT + 16;
 const MAP_TOTAL_BITS: u32 = 61 - MAP_TOTAL_SHIFT;
 

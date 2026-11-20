@@ -12,7 +12,7 @@ use crate::alloc_site::{AllocSiteCount, AllocSites, RuntimeAllocCounts};
 use crate::any_value::{ClosureDenotationId, ValueKind, bitstring_object_image, closure_header_word};
 use crate::function_denotation::FunctionDenotation;
 use crate::heap::AllocStat;
-use crate::term_hash::name_hash;
+use crate::term_hash::atom_key_hash;
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{HashMap, VecDeque};
@@ -114,6 +114,9 @@ pub struct Process {
     /// shared and append-only across the context's processes — runtime atom
     /// interning is visible to every process, like the BEAM's node-global table.
     pub node: Rc<Node>,
+    /// The node's word that holds where the atom key hashes begin, which
+    /// compiled code reads to hash an atom key without a call.
+    pub atom_key_hashes: *const *const u64,
     // Scheduler-level fields. Populated when a Process is
     // owned by a Runtime; the standalone `make_process()` path
     // leaves these at defaults.
@@ -283,9 +286,13 @@ pub struct Raised {
 /// either name being read.
 pub struct AtomTable {
     by_id: Vec<AtomName>,
-    name_hashes: Vec<u64>,
+    key_hashes: Vec<u64>,
     name_prefixes: Vec<u64>,
     by_name: HashMap<AtomName, u32>,
+    /// Where `key_hashes` begins, kept current as it grows. Compiled code
+    /// reads an atom's key hash through this word (`Process::atom_key_hashes`),
+    /// which stays where it is for the life of the node.
+    key_hashes_at: *const u64,
 }
 
 /// The first eight bytes of a name as one big-endian word, a shorter name
@@ -353,19 +360,17 @@ impl std::fmt::Debug for AtomName {
 
 impl AtomTable {
     pub fn new(names: Vec<AtomName>) -> Self {
-        let by_name = names
-            .iter()
-            .enumerate()
-            .map(|(id, name)| (name.clone(), id as u32))
-            .collect();
-        let name_hashes = names.iter().map(|name| name_hash(name)).collect();
-        let name_prefixes = names.iter().map(|name| name_prefix(name)).collect();
-        Self {
-            by_id: names,
-            name_hashes,
-            name_prefixes,
-            by_name,
+        let mut table = Self {
+            by_id: Vec::with_capacity(names.len()),
+            key_hashes: Vec::with_capacity(names.len()),
+            name_prefixes: Vec::with_capacity(names.len()),
+            by_name: HashMap::with_capacity(names.len()),
+            key_hashes_at: std::ptr::null(),
+        };
+        for name in names {
+            table.append(name);
         }
+        table
     }
 
     /// Return the atom's id, allocating a fresh one (the next dense index) if
@@ -388,7 +393,8 @@ impl AtomTable {
 
     fn append(&mut self, name: AtomName) -> u32 {
         let id = self.by_id.len() as u32;
-        self.name_hashes.push(name_hash(&name));
+        self.key_hashes.push(atom_key_hash(&name));
+        self.key_hashes_at = self.key_hashes.as_ptr();
         self.name_prefixes.push(name_prefix(&name));
         self.by_id.push(name.clone());
         self.by_name.insert(name, id);
@@ -405,9 +411,9 @@ impl AtomTable {
         self.by_id.get(id as usize)
     }
 
-    /// The hash of the atom's name, or `None` if `id` is out of range. O(1).
-    pub fn name_hash(&self, id: u32) -> Option<u64> {
-        self.name_hashes.get(id as usize).copied()
+    /// The atom's key hash, or `None` if `id` is out of range. O(1).
+    pub fn key_hash(&self, id: u32) -> Option<u64> {
+        self.key_hashes.get(id as usize).copied()
     }
 }
 
@@ -642,13 +648,19 @@ impl Node {
         self.atoms.borrow_mut().intern_shared(name)
     }
 
-    /// The hash of the atom's name, kept in the table since the atom was
-    /// interned. Published values always name registered atoms.
-    pub fn atom_name_hash(&self, id: u32) -> u64 {
+    /// The atom's key hash, kept in the table since the atom was interned.
+    /// Published values always name registered atoms.
+    pub fn atom_key_hash(&self, id: u32) -> u64 {
         self.atoms
             .borrow()
-            .name_hash(id)
+            .key_hash(id)
             .expect("published atom must be registered")
+    }
+
+    /// The word that holds where the atom key hashes begin. It stays where it
+    /// is while the node lives, as the hashes move when the table grows.
+    fn atom_key_hashes_at(&self) -> *const *const u64 {
+        unsafe { &raw const (*self.atoms.as_ptr()).key_hashes_at }
     }
 
     /// Every atom's name in id order, shared with the table.
@@ -694,6 +706,7 @@ impl Process {
             failed: false,
             exit_status: 0,
             bs_builder: None,
+            atom_key_hashes: node.atom_key_hashes_at(),
             node,
             pid,
             state: ProcessState::New,

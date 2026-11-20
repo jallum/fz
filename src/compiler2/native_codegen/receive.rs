@@ -70,7 +70,7 @@ use fz_runtime::process::AtomName;
 use super::prim::c_pair_return_types;
 use super::repr::ExternLane;
 use super::runtime_call::{RuntimeCaller, RuntimeFn, runtime_call, runtime_call_ref, runtime_call1, runtime_condition};
-use super::{CodegenError, FlatMapScan, SLOT_BYTES, address_field, emit_fn_body, immediate_ref_word, import_call_ref};
+use super::{CodegenError, SLOT_BYTES, WordKeyFind, address_field, emit_fn_body, immediate_ref_word, import_call_ref};
 
 type ReceiveDispatchPlan = PatternDispatchPlan<RuntimeTypePredicate>;
 type ReceiveRegion = Region<RuntimeTypePredicate>;
@@ -1197,7 +1197,7 @@ fn emit_dispatch_map_get_value<M: cranelift_module::Module>(
         ReceiveValue::Atom(word) => Some((word, ValueKind::ATOM)),
         ReceiveValue::AnyRef(_) | ReceiveValue::Float(_) => None,
     }
-    .map(|(word, kind)| FlatMapScan::emit(body.b, map_ref, word, kind));
+    .map(|(word, kind)| WordKeyFind::emit(body.b, ctx.process, map_ref, word, kind));
     let key_ref = emit_receive_value_ref(body, ctx, key)?;
     let answer = runtime_call1!(body, fz_matcher_map_get_ref, [ctx.process, map_ref, key_ref]);
     let out_ref = match scan {
