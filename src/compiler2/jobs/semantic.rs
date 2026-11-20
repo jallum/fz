@@ -233,8 +233,8 @@ pub(super) fn analyze_activation(
         // exactly as final as its ground -- never settled from amnesia (the
         // one-absent-read conclusion was measured to do exactly that). The
         // `Activation` read wakes this job on a first or later claim; the
-        // full cone retires in fz-kdt.69's decommission conclusion, with its
-        // `ActivationSlot` reset.
+        // full cone retires when the activation's function is orphaned, which
+        // also clears its `ActivationSlot`.
         let (outputs, standing_reads) = world.standing_claims_and_reads(&Job::AnalyzeActivation(activation.clone()));
         // Order is immaterial: JobEffects.reads lands in the ledger's read
         // SET; nothing observes this Vec's sequence.
@@ -410,11 +410,10 @@ pub(super) fn analyze_activation(
         }
     }
 
-    // Revision-0 precondition (fz-kdt.84): a cumulative fact's STORE must be
-    // empty whenever its fact is absent, or a re-claim after retraction would
-    // mint revision 0 while carrying real reader-visible content -- a silent
-    // missed movement. Holds today (nothing retracts ReturnType); the
-    // fz-kdt.69 decommission must clear the ActivationSlot to keep it.
+    // A cumulative fact's STORE must be empty whenever its fact is absent, or
+    // a re-claim after retraction would mint revision 0 while carrying real
+    // reader-visible content -- a silent missed movement. Retiring an
+    // activation clears its slot, which keeps this true.
     debug_assert!(
         world.has_fact(&FactKey::ReturnType(activation.clone()))
             || world.activation_return_evidence(activation).is_none(),

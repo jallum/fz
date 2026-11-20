@@ -300,26 +300,6 @@ pub enum FunctionState {
     },
 }
 
-impl FunctionState {
-    pub fn state_source_heap_id(&self) -> Option<usize> {
-        match self {
-            FunctionState::Placeholder => None,
-            FunctionState::Noted { source } | FunctionState::Defined { source, .. } => {
-                Some(source.source.key().heap_id)
-            }
-        }
-    }
-
-    pub fn state_source_root_word(&self) -> Option<u64> {
-        match self {
-            FunctionState::Placeholder => None,
-            FunctionState::Noted { source } | FunctionState::Defined { source, .. } => {
-                Some(source.source.root().raw_word())
-            }
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FunctionSource {
     pub owner: SourceOwner,
@@ -327,7 +307,48 @@ pub struct FunctionSource {
     pub namespace: Namespace,
     pub capture_params: Vec<crate::ast::Var>,
     pub variadic: bool,
-    pub source: QuotedSourceRoot,
+    pub body: FunctionBody,
+}
+
+impl FunctionSource {
+    pub fn declared_root(&self) -> Option<&QuotedSourceRoot> {
+        self.body.declared_root()
+    }
+}
+
+/// Where a function's clauses come from. A declared function is written in
+/// source. A generated function (a lambda) has no text of its own: its owner's
+/// lowering mints it, so the owner is its only origin.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FunctionBody {
+    Declared(QuotedSourceRoot),
+    Generated { owner: FunctionId },
+}
+
+impl FunctionBody {
+    /// Declared bodies agree when their quoted roots mean the same thing in
+    /// full; generated bodies agree when they come from the same owner.
+    fn same_as(&self, other: &FunctionBody) -> bool {
+        match (self, other) {
+            (FunctionBody::Declared(left), FunctionBody::Declared(right)) => left.semantically_eq(right, Horizon::Full),
+            (FunctionBody::Generated { owner: left }, FunctionBody::Generated { owner: right }) => left == right,
+            _ => false,
+        }
+    }
+
+    pub fn declared_root(&self) -> Option<&QuotedSourceRoot> {
+        match self {
+            FunctionBody::Declared(root) => Some(root),
+            FunctionBody::Generated { .. } => None,
+        }
+    }
+
+    pub fn generated_owner(&self) -> Option<FunctionId> {
+        match self {
+            FunctionBody::Declared(_) => None,
+            FunctionBody::Generated { owner } => Some(*owner),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -1201,7 +1222,7 @@ fn source_same(left: &FunctionSource, right: &FunctionSource) -> bool {
         && left.namespace == right.namespace
         && left.capture_params == right.capture_params
         && left.variadic == right.variadic
-        && left.source.semantically_eq(&right.source, Horizon::Full)
+        && left.body.same_as(&right.body)
 }
 
 #[cfg(test)]

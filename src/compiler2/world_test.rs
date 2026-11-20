@@ -4,8 +4,8 @@ use super::identity::Raised;
 use super::keying::{BodyKeying, InputDemand};
 use super::types::ClosureTarget;
 use super::{
-    FactKey, FunctionSource, Job, ModuleId, ModuleInterface, Namespace, NamespaceSymbol, RootId, TypeName, Types,
-    World, parse_quoted_program,
+    FactKey, FunctionBody, FunctionSource, Job, ModuleId, ModuleInterface, Namespace, NamespaceSymbol, RootId,
+    TypeName, Types, World, parse_quoted_program,
 };
 use crate::ast::Attribute;
 use crate::compiler2::drive::{DependencyKey, JobEffects};
@@ -675,8 +675,8 @@ fn compiler2_define_function_stages_expanded_source_before_definition() {
         .expanded_function_source(main)
         .expect("DefineFunction should first materialize staged expanded source");
     assert_eq!(
-        raw.source.key(),
-        expanded.source.key(),
+        raw.declared_root().unwrap().key(),
+        expanded.declared_root().unwrap().key(),
         "before raw publication flips over, staged expanded source should preserve the same quoted root",
     );
     assert!(
@@ -2047,14 +2047,14 @@ fn compiler2_demand_leaves_a_blocked_producer_alone_even_when_it_is_rebased() {
     ectx.note_function_source(
         function,
         FunctionSource {
-            source: second_body.clone(),
+            body: FunctionBody::Declared(second_body.clone()),
             ..raw_source
         },
     );
     ectx.note_expanded_function_source(
         function,
         FunctionSource {
-            source: second_body,
+            body: FunctionBody::Declared(second_body),
             ..expanded_source
         },
     );

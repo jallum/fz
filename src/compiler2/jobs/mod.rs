@@ -5,7 +5,7 @@
 //! private to the relevant job family.
 
 use super::drive::{ExecutionContext, FactKey, Job, JobEffects, current_uses, settled_uses};
-use super::world::World;
+use super::world::{FunctionRetirement, World};
 use fz_engine::FactUse;
 use fz_engine::FatalError;
 
@@ -41,6 +41,9 @@ pub(crate) fn run<T: crate::telemetry::RawSpanTelemetry>(
     context: &mut ExecutionContext<'_, T>,
     job: &Job,
 ) -> Result<JobEffects, FatalError> {
+    if let Some(retired) = retire_orphan(context, job) {
+        return Ok(retired);
+    }
     let ExecutionContext {
         world,
         telemetry,
@@ -76,7 +79,53 @@ pub(crate) fn run<T: crate::telemetry::RawSpanTelemetry>(
     }
 }
 
+/// A job on an orphaned generated function concludes empty: whatever it
+/// published is withdrawn, and the read of the owner's lowering wakes it should
+/// the owner mint the lambda again.
+fn retire_orphan<T: crate::telemetry::RawSpanTelemetry>(
+    context: &mut ExecutionContext<'_, T>,
+    job: &Job,
+) -> Option<JobEffects> {
+    let function = job
+        .subject_function()
+        .filter(|function| context.world.is_orphaned(*function))?;
+    let owner = context.world.generated_owner(function)?;
+    if let Job::AnalyzeActivation(activation) = job {
+        context.world.clear_activation(activation);
+    }
+    context.emit_function_retired(&FunctionRetirement {
+        job: job.clone(),
+        function,
+        owner,
+    });
+    Some(JobEffects {
+        reads: current_uses([FactKey::LoweredBody(owner)]),
+        ..JobEffects::default()
+    })
+}
+
 impl Job {
+    /// The function this job is about, for the kinds whose subject is one.
+    pub(crate) fn subject_function(&self) -> Option<super::FunctionId> {
+        match self {
+            Job::ExpandFunctionSource(function)
+            | Job::DefineFunction(function)
+            | Job::DeriveFunctionContract(function)
+            | Job::LowerFunction(function)
+            | Job::ReifyGuardDispatch(function)
+            | Job::PlanEntryDispatch(function)
+            | Job::DeriveStaticCallees(function)
+            | Job::DeriveRecursive(function)
+            | Job::DeriveStaticReach(function)
+            | Job::DeriveInputDemand(function) => Some(*function),
+            Job::SeedActivation(activation) | Job::AnalyzeActivation(activation) => Some(activation.function),
+            Job::DeriveExecutableReach(executable, _)
+            | Job::DeriveExecutableFacts(executable)
+            | Job::DeriveRuntimeDemand(executable) => Some(executable.activation.function),
+            _ => None,
+        }
+    }
+
     /// The facts this job cannot conclude without, given its subject and the
     /// facts already present, each carrying the readiness it must be present
     /// at. Empty means every gate is satisfied, or this kind declares none.
@@ -96,6 +145,12 @@ impl Job {
     /// settled answer, since both read their gate's value rather than merely
     /// its presence; every other kind gates on current.
     pub(crate) fn missing_gates(&self, world: &mut World) -> Vec<FactUse<FactKey>> {
+        if self
+            .subject_function()
+            .is_some_and(|function| world.is_orphaned(function))
+        {
+            return Vec::new();
+        }
         match self {
             Job::SeedRoot(root_id) => current_uses(root::seed_root_gates(world, *root_id)),
             Job::DefineFunction(function_id) => current_uses(source::define_function_gates(world, *function_id)),

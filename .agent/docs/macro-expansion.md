@@ -62,6 +62,14 @@ with identical spans (including missing metadata) therefore define distinct
 lambdas. Generated functions retain their
 typed owner chain; `__ENV__.function` and quoted lexical context reflect the
 enclosing named source function, never an internal generated display name.
+A generated function's `FunctionSource.body` is `FunctionBody::Generated { owner }`:
+it holds no source text, its owner's `LowerFunction` publishes its
+`FunctionDefined`, and its source is never expanded. When a revision makes the
+owner stop minting a lambda, the lambda is orphaned (`World::is_orphaned`): each
+job on it concludes empty, reports `fz.compiler2.function.retired`, and reads
+the owner's `LoweredBody` so it wakes if the owner mints the lambda again. A
+retired `AnalyzeActivation` also clears its activation slot, and a concluded
+read of a retired job's product does not hold its reader back.
 The existing recursive decoder assigns occurrences across the grouped function's
 clauses; unchanged decoding retries reproduce them. AST cloning preserves them,
 so duplicating a `with`-else branch in lowering cannot split one denotation.

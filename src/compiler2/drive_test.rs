@@ -1510,6 +1510,7 @@ fn retained_closure_source_replacement_does_not_request_obsolete_products() {
         &["fz", "compiler2", "pull", "product", "requested"],
         move |_, _, _, product, _| observed.borrow_mut().push(product.clone()),
     );
+    let watch = RevisionWatch::install(&tel);
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: None,
@@ -1533,11 +1534,13 @@ fn retained_closure_source_replacement_does_not_request_obsolete_products() {
         })
         .expect("lowering publishes the generated closure definition");
     requests.borrow_mut().clear();
+    watch.restart();
     compiler.submit_code(CodeSubmission {
         name: None,
         text: "def main(), do: 42\n".into(),
     });
     assert_eq!(compiler.run_root_interp(root), Ok(42));
+    assert_orphans_retired_not_rebuilt(&watch, &[generated], owner);
     assert!(
         !requests.borrow().iter().any(|product| match product {
             ProductKey::MaterializedExecutable(executable)
@@ -1550,6 +1553,166 @@ fn retained_closure_source_replacement_does_not_request_obsolete_products() {
         }),
         "the replaced owner's membership must not request its obsolete generated child"
     );
+}
+
+/// What a revision did to the jobs of the lambdas its owner stopped minting:
+/// every job that ran on one, and every retirement the run reported.
+struct RevisionWatch {
+    applied: Rc<RefCell<Vec<Job>>>,
+    retired: Rc<RefCell<Vec<(Job, FunctionId, FunctionId)>>>,
+}
+
+impl RevisionWatch {
+    fn install(telemetry: &ConfiguredTelemetry) -> Self {
+        let applied = Rc::new(RefCell::new(Vec::new()));
+        let retired = Rc::new(RefCell::new(Vec::new()));
+        let seen = Rc::clone(&applied);
+        telemetry.attach_raw_event2::<crate::compiler2::World, crate::compiler2::JobCompletion, _>(
+            &["fz", "compiler2", "work_graph", "applied"],
+            move |_, _, _, _, completion| seen.borrow_mut().push(completion.job.clone()),
+        );
+        let reported = Rc::clone(&retired);
+        telemetry.attach_raw_event2::<crate::compiler2::World, crate::compiler2::FunctionRetirement, _>(
+            &["fz", "compiler2", "function", "retired"],
+            move |_, _, _, _, retirement| {
+                reported
+                    .borrow_mut()
+                    .push((retirement.job.clone(), retirement.function, retirement.owner))
+            },
+        );
+        Self { applied, retired }
+    }
+
+    fn restart(&self) {
+        self.applied.borrow_mut().clear();
+        self.retired.borrow_mut().clear();
+    }
+
+    fn applied_on(&self, functions: &[FunctionId]) -> Vec<Job> {
+        self.applied
+            .borrow()
+            .iter()
+            .filter(|job| {
+                job.subject_function()
+                    .is_some_and(|function| functions.contains(&function))
+            })
+            .cloned()
+            .collect()
+    }
+}
+
+fn generated_children(compiler: &Compiler2<ConfiguredTelemetry>, owner: FunctionId) -> Vec<FunctionId> {
+    compiler
+        .world()
+        .job_outputs(&Job::LowerFunction(owner))
+        .into_iter()
+        .filter_map(|fact| match fact {
+            FactKey::FunctionDefined(function) if function != owner => Some(function),
+            _ => None,
+        })
+        .collect()
+}
+
+fn main_root(compiler: &mut Compiler2<ConfiguredTelemetry>) -> crate::compiler2::RootId {
+    compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    })
+}
+
+fn run_program(
+    compiler: &mut Compiler2<ConfiguredTelemetry>,
+    root: crate::compiler2::RootId,
+    text: &str,
+) -> Result<i64, RunFailure> {
+    compiler.submit_code(CodeSubmission {
+        name: Some("lambdas.fz".into()),
+        text: text.into(),
+    });
+    compiler.run_root_interp(root)
+}
+
+fn assert_orphans_retired_not_rebuilt(watch: &RevisionWatch, orphans: &[FunctionId], owner: FunctionId) {
+    let applied = watch.applied_on(orphans);
+    let retired = watch.retired.borrow();
+    assert!(
+        !retired.is_empty(),
+        "the orphaned lambdas' jobs must report their retirement"
+    );
+    assert!(
+        retired
+            .iter()
+            .all(|(_, function, retired_owner)| orphans.contains(function) && *retired_owner == owner),
+        "every retirement names an orphaned lambda and its owner: {retired:?}"
+    );
+    let mut retired_jobs: Vec<_> = retired.iter().map(|(job, _, _)| job.clone()).collect();
+    for job in applied {
+        let at = retired_jobs
+            .iter()
+            .position(|retired| *retired == job)
+            .unwrap_or_else(|| panic!("{job:?} ran on an orphaned lambda without retiring"));
+        retired_jobs.swap_remove(at);
+    }
+    assert!(
+        retired_jobs.is_empty(),
+        "every retirement is a job that ran: {retired_jobs:?}"
+    );
+}
+
+#[test]
+fn a_lambda_its_owner_no_longer_mints_is_retired_not_rebuilt_from_the_owner() {
+    let tel = ConfiguredTelemetry::new();
+    let watch = RevisionWatch::install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    let root = main_root(&mut compiler);
+    assert_eq!(
+        run_program(
+            &mut compiler,
+            root,
+            "def main() do\n f = fn x -> x + 1 end\n f.(41)\nend\n"
+        ),
+        Ok(42)
+    );
+    let owner = compiler.root_function(root);
+    let orphans = generated_children(&compiler, owner);
+    assert_eq!(orphans.len(), 1, "the lambda is minted by its owner's lowering");
+    watch.restart();
+
+    assert_eq!(run_program(&mut compiler, root, "def main() do\n 7\nend\n"), Ok(7));
+    assert_orphans_retired_not_rebuilt(&watch, &orphans, owner);
+}
+
+#[test]
+fn several_lambdas_an_owner_stops_minting_are_all_retired() {
+    let lambdas: String = (1..=4).map(|i| format!(" f{i} = fn x -> x + {i} end\n")).collect();
+    let calls = (1..=4).map(|i| format!("f{i}.(0)")).collect::<Vec<_>>().join(" + ");
+    let tel = ConfiguredTelemetry::new();
+    let watch = RevisionWatch::install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    let root = main_root(&mut compiler);
+    assert_eq!(
+        run_program(&mut compiler, root, &format!("def main() do\n{lambdas} {calls}\nend\n")),
+        Ok(10)
+    );
+    let owner = compiler.root_function(root);
+    let orphans = generated_children(&compiler, owner);
+    assert_eq!(orphans.len(), 4);
+    watch.restart();
+
+    assert_eq!(run_program(&mut compiler, root, "def main() do\n 7\nend\n"), Ok(7));
+    assert_orphans_retired_not_rebuilt(&watch, &orphans, owner);
+}
+
+#[test]
+fn a_retired_lambda_its_owner_mints_again_is_rebuilt() {
+    let with_lambda = "def main() do\n f = fn x -> x + 1 end\n f.(41)\nend\n";
+    let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
+    let root = main_root(&mut compiler);
+    assert_eq!(run_program(&mut compiler, root, with_lambda), Ok(42));
+    assert_eq!(run_program(&mut compiler, root, "def main() do\n 7\nend\n"), Ok(7));
+    assert_eq!(run_program(&mut compiler, root, with_lambda), Ok(42));
 }
 
 #[test]
@@ -23454,8 +23617,8 @@ fn quoted_call_retains_the_provider_function_id() {
         .world()
         .expanded_function_source(run)
         .expect("expanded source for the macro caller");
-    let (spelling, retained) =
-        retained_quoted_call(&expanded.source.cursor()).expect("the expanded call retains its callable");
+    let (spelling, retained) = retained_quoted_call(&expanded.declared_root().unwrap().cursor())
+        .expect("the expanded call retains its callable");
     assert_eq!(
         retained, helper,
         "the quoted call keeps the callable the provider resolved, not a name to resolve again"

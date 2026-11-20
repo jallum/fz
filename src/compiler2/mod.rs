@@ -88,9 +88,9 @@ mod macro_product_test;
 pub use drive::{DependencyKey, FactKey, Job, ProductAddress, WorkGraph};
 pub use frontdoor::{FrontDoorError, parse_quoted_program};
 pub use identity::{
-    ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, FunctionMap, FunctionRef, FunctionSource, FunctionState,
-    ModuleId, ModuleMap, ModuleSource, ModuleSourceKind, ModuleState, NotedTypeDecl, RootEntry, RootId, RootKind,
-    RootMap, TypeName,
+    ActivationKey, ExecutableKey, ExecutableNeed, FunctionBody, FunctionId, FunctionMap, FunctionRef, FunctionSource,
+    FunctionState, ModuleId, ModuleMap, ModuleSource, ModuleSourceKind, ModuleState, NotedTypeDecl, RootEntry, RootId,
+    RootKind, RootMap, TypeName,
 };
 pub(crate) use keying::InputDemand;
 pub use module_interface::{
@@ -117,8 +117,8 @@ pub use types::{
     Types,
 };
 pub use work_start::{WorkLedger, WorkStartReason, WorkStartTally};
-pub(crate) use world::JobCompletion;
 pub use world::World;
+pub(crate) use world::{FunctionRetirement, JobCompletion};
 
 #[cfg(test)]
 pub(crate) mod allocation_probe;
