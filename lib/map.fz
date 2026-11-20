@@ -285,7 +285,7 @@ defmodule Map do
       #
       #     []
   """
-  @spec key_error(any, any) :: never
+  @spec key_error(any, any) :: no_return()
   def key_error(container, key),
     do: raise(%KeyError{key: key, term: container})
 
@@ -299,7 +299,7 @@ defmodule Map do
       Map.update_key_error(%{a: 1}, [:a, :b])
       # ** (KeyError) key :b not found
   """
-  @spec update_key_error(any, [any]) :: never
+  @spec update_key_error(any, [any]) :: no_return()
   def update_key_error(map, keys),
     do: raise(%KeyError{key: first_missing_key(map, keys)})
 

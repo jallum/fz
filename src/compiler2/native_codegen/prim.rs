@@ -2285,7 +2285,7 @@ fn inline_scalar_extern<M: cranelift_module::Module>(
 /// this frame returns 0, as a yield does, so every frame above it unwinds to
 /// the quantum entry, which resumes the delivered handler or ends the process.
 /// A process that neither failed nor has a delivered handler was ended by an
-/// extern that broke its `never` contract, which traps. Code after the call is
+/// extern that broke its `none` contract, which traps. Code after the call is
 /// unreachable and lands in a block nothing enters.
 pub(super) fn continue_after_raise<M: cranelift_module::Module>(body: &mut CodegenFn<'_, '_, M>) {
     let process = body.process_arg();

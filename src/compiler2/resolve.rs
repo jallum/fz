@@ -100,7 +100,14 @@ struct ConstructorEntry {
 /// (0 or 1 type argument, defaulting the payload to `any`).
 ///
 /// `byte`, `iolist` and `iodata` are Elixir's: `iodata` is `binary | iolist`,
-/// and `iolist` is recursive (see `iolist`).
+/// and `iolist` is recursive (see `iolist`). `byte`, `neg_integer`,
+/// `non_neg_integer` and `pos_integer` are `integer`, because the lattice has
+/// no integer ranges.
+///
+/// `none` is the bottom type, the type no value has, and `no_return` is its
+/// name for a function's result. Names Elixir defines in terms of these
+/// (`number`, `timeout`, `struct`, ...) are `@type`s in the prelude,
+/// `lib/runtime.fz`.
 ///
 /// `dynamic` is `any`: a typespec's `dynamic()` is the statically unknown
 /// type, which a spec check treats the same as `term()`, as Erlang's typespec
@@ -120,14 +127,19 @@ const CONSTRUCTORS: &[ConstructorEntry] = &[
     ConstructorEntry { name: "any",      arity: Arity::Fixed(0), build: |t, _| t.any() },
     ConstructorEntry { name: "term",     arity: Arity::Fixed(0), build: |t, _| t.any() },
     ConstructorEntry { name: "dynamic",  arity: Arity::Fixed(0), build: |t, _| t.any() },
-    ConstructorEntry { name: "never",    arity: Arity::Fixed(0), build: |t, _| t.none() },
+    ConstructorEntry { name: "none",     arity: Arity::Fixed(0), build: |t, _| t.none() },
+    ConstructorEntry { name: "no_return", arity: Arity::Fixed(0), build: |t, _| t.none() },
     ConstructorEntry { name: "utf8",     arity: Arity::Fixed(0), build: |t, _| { let inner = t.str_t(); t.mint_brand(inner, "utf8") } },
     ConstructorEntry { name: "byte",     arity: Arity::Fixed(0), build: |t, _| t.int() },
+    ConstructorEntry { name: "neg_integer", arity: Arity::Fixed(0), build: |t, _| t.int() },
+    ConstructorEntry { name: "non_neg_integer", arity: Arity::Fixed(0), build: |t, _| t.int() },
+    ConstructorEntry { name: "pos_integer", arity: Arity::Fixed(0), build: |t, _| t.int() },
     ConstructorEntry { name: "iolist",   arity: Arity::Fixed(0), build: |t, _| iolist(t) },
     ConstructorEntry { name: "iodata",   arity: Arity::Fixed(0), build: |t, _| { let binary = t.str_t(); let iolist = iolist(t); t.union(binary, iolist) } },
     ConstructorEntry { name: "pid",      arity: Arity::Fixed(0), build: |t, _| t.pid() },
     ConstructorEntry { name: "ref",      arity: Arity::Fixed(0), build: |t, _| t.reference() },
     ConstructorEntry { name: "list",     arity: Arity::Range(0, 1), build: |t, a| { let inner = a.first().copied().unwrap_or_else(|| t.any()); t.list(inner) } },
+    ConstructorEntry { name: "nonempty_list", arity: Arity::Range(0, 1), build: |t, a| { let inner = a.first().copied().unwrap_or_else(|| t.any()); t.non_empty_list(inner) } },
     ConstructorEntry { name: "resource", arity: Arity::Range(0, 1), build: |t, a| { let inner = a.first().copied().unwrap_or_else(|| t.any()); t.resource(inner) } },
     ConstructorEntry { name: "map",      arity: Arity::Fixed(0), build: |t, _| t.map_top() },
     ConstructorEntry { name: "tuple",    arity: Arity::Fixed(0), build: |t, _| t.tuple_top() },

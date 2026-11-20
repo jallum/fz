@@ -178,11 +178,11 @@ those names in compiler lowering. `spawn/1` is the only process-spawn surface;
 there is no heap-hint variant or compatibility export.
 
 `Kernel.panic/1` likewise wraps a private `extern "fz" defp fz_panic(any) ::
-never`. Its arbitrary fz value stays borrowed from the current process while
+none`. Its arbitrary fz value stays borrowed from the current process while
 the physical export renders its failure line, marks the process failed and
 hands the line to the `ExecCtx` fault sink, all before it returns, unless a
 `try` handler is on the stack, in which case it delivers the raise there
-instead. A `never` extern that returns has raised: native code runs the queued
+instead. A `none` extern that returns has raised: native code runs the queued
 handler in the call's place or returns to the scheduler when the process
 failed (and traps when neither happened), and the interpreter runs its handler
 frame or ends the process. See [exceptions](exceptions.md).
@@ -196,7 +196,7 @@ dispatch-pure helper (guard helpers such as `map_size/1` call it to word their
 failure) and must not box an argument: a literal list is not a guard
 expression, and a scalar `any` argument allocates a heap box on every call.
 The list is checked in fz source (`checked_inspect_options/2` in
-`lib/kernel.fz`) and refused there, because only a `never` extern may fail its
+`lib/kernel.fz`) and refused there, because only a `none` extern may fail its
 process.
 
 ## Helpers the code generator calls itself
@@ -424,7 +424,7 @@ wire-only row needs no new message.
 The spellings, and what a declaration writes:
 
 ```text
-integer  float  boolean  atom  any  binary  cstring  c_int  unit  nil  never
+integer  float  boolean  atom  any  binary  cstring  c_int  unit  nil  none
 ```
 
 ### A C `int` is narrower than an fz integer
@@ -547,7 +547,7 @@ An extern whose call hands its first argument to the nearest handler says so,
 and names the kind the handler receives:
 
 ```fz
-extern "fz" defp fz_throw(any) :: never, delivers: :throw
+extern "fz" defp fz_throw(any) :: none, delivers: :throw
 ```
 
 `parse_extern_delivers` accepts `:error`, `:throw` or `:exit`. The kind rides
@@ -950,7 +950,7 @@ code before they own it.
 Every extern is callable from a guard; the guard-expression node is
 `PatternGuardExpr::Extern`. `GuardExtern::new` (dispatch_matrix/pattern.rs)
 admits parameters of class `I64`, `Opaque`, `F64` or `Any` and returns of `I64`,
-`Opaque`, `F64`, `Any`, `Bool` or `never`, plain or `Checked`; any other class
+`Opaque`, `F64`, `Any`, `Bool` or `Never`, plain or `Checked`; any other class
 is `SourcePatternError::GuardExternClass`, a compile error on every path. The
 receive matcher's shim (`emit_guard_extern`) therefore marshals four classes
 of operand: an integer (`receive_value_int`), a float (`receive_value_float`),
@@ -958,7 +958,7 @@ a pid or reference (a pid is read from and packed into its ref inline; a referen
 on the way out) and a reference word (`emit_receive_value_ref`); a `Bool` return is a nonzero
 word read as the atom `true` or `false`. `===` and `!==` in a guard are the
 Kernel functions a body calls, so they reach `fz_op_identical*` and
-`fz_op_not_identical*` through this node. An extern returning `never` fails the
+`fz_op_not_identical*` through this node. An extern returning `none` fails the
 guard without being called, and a `Checked` extern that reports failure fails it
 too. The interpreter calls the extern through `call_lowered_extern`;
 native lowering emits `Prim::Extern`. Domain checks live in the Kernel heads
