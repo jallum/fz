@@ -1,6 +1,7 @@
 {
   "assignee": "Jason Allum",
   "blocked_by": [
+    "fz-9x7.44.8",
     "fz-sc8.192.8"
   ],
   "blocks": [],
@@ -27,5 +28,5 @@
   "status": "open",
   "title": "A runtime entry answers a value that can be a number as its stored word and its kind",
   "type": "task",
-  "updated_at": "2026-11-20T20:47:36Z"
+  "updated_at": "2026-11-20T20:47:37Z"
 }
