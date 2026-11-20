@@ -20,9 +20,15 @@
   "id": "fz-mue.12",
   "labels": [],
   "parent": "fz-mue",
+  "comments": [
+    {
+      "text": "Split per Amendment 2 (user, relayed by Elixir Parity 2026-11-20): Macro.Env -\u003e fz-mue.50, Macro.expand/2 -\u003e fz-mue.51, Macro.to_string/1 -\u003e fz-mue.52, closure-union bug -\u003e fz-sc8.256. Record now waits on mue.22, sc8.174, mue.51, mue.52, mue.32, sc8.256.",
+      "timestamp": "2026-11-20T21:12:02Z"
+    }
+  ],
   "priority": 2,
   "status": "in_progress",
   "title": "Record.defrecordp defines a record, and a record pattern matches in a function head",
   "type": "feature",
-  "updated_at": "2026-11-20T21:11:59Z"
+  "updated_at": "2026-11-20T21:12:02Z"
 }
