@@ -1165,9 +1165,15 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
         };
         #[cfg(test)]
         let source_matrix = matrix.clone();
-        let graph = compile_dispatch_matrix(matrix, inputs)
+        let mut graph = compile_dispatch_matrix(matrix, inputs)
             .map_err(PatternDispatchError::Compile)?
             .graph;
+        // Raising the last resort reads the inputs it shows, whether or not
+        // any test did.
+        let raised = self.last_resort.as_ref().map_or(0, LastResort::consumed_inputs);
+        for demand in graph.input_demand.iter_mut().take(raised) {
+            demand.join_assign(DispatchDemand::Whole);
+        }
         let proven_tuple_arities = (0..self.input_count)
             .map(|ordinal| graph.proven_input_arity(ordinal as u32))
             .collect();

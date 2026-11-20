@@ -1,7 +1,6 @@
 #---
-# purpose: a protocol call on a receiver type with no implementation surfaces a diagnostic naming the call.
-# expect: diagnostic
-# diagnostic.code: artifact/incomplete-semantic-plan
+# purpose: "a protocol call on a receiver type with no implementation compiles and raises Protocol.UndefinedError naming the protocol and the kind of the value, and the process exits 1"
+# expect: abort
 #---
 defprotocol P do
   def each(value)

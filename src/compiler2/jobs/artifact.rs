@@ -834,21 +834,15 @@ fn materialize_direct_call_edge(
     // One door: a callsite that named no targets -- never reached, proven
     // dead, or reached and still unresolved -- materializes no edge.
     //
-    // In TAIL position the caller now treats that as fatal and names the
-    // callee (`call_reaches_no_target`), because for a protocol call it means
-    // the receiver's type has no impl and the program cannot run. That rests
-    // on the third case above -- "reached and still unresolved" -- not
-    // occurring by the time edges are materialized, which the lib suite and
-    // the 576-fixture corpus agree with. If one ever does, it will arrive as
-    // that diagnostic on a program that should have compiled, and the fix is
-    // to distinguish the two here rather than to soften the caller. (The
-    // `has_fact` pre-test that used to stand here asked a DIFFERENT question:
-    // the ledger's, where the store below is lowering's authority and is
-    // never pruned. The two diverge only in the ledger-withdrawn/store-stale
-    // state, measured to occur zero times across the 574-fixture corpus, lib,
-    // and matrix -- so the store answers alone: fz-kdt.69.2. fz-kdt.69.3
-    // makes the ledger authoritative over exactly this divergence; revisit
-    // then.)
+    // In TAIL position the caller treats that as fatal and names the callee
+    // (`call_reaches_no_target`). That rests on the third case above --
+    // "reached and still unresolved" -- not occurring by the time edges are
+    // materialized. (The `has_fact` pre-test that used to stand here asked a
+    // DIFFERENT question: the ledger's, where the store below is lowering's
+    // authority and is never pruned. The two diverge only in the
+    // ledger-withdrawn/store-stale state, so the store answers alone:
+    // fz-kdt.69.2. fz-kdt.69.3 makes the ledger authoritative over exactly
+    // this divergence; revisit then.)
     let Some(summary) = summaries.get(&callsite) else {
         return Ok(None);
     };
@@ -1808,15 +1802,10 @@ pub(super) fn abi_layout_contract(world: &mut World, layout: TransportLayout) ->
 
 /// A tail-position direct call whose callsite settled on no reachable target.
 ///
-/// For a PROTOCOL call this is Elixir's `Protocol.UndefinedError`: the
-/// receiver's type has no implementation, so there is nothing to route to.
-/// `to_string(%{a: 1})` and `Enum.count(:atom)` both land here.
-///
-/// It used to fall out of `materialize_call_edges` as `Ok(None)` and hit the
-/// caller's "should have complete call edges after waits" assertion, aborting
-/// the compiler with no span, no code, and no mention of the protocol or the
-/// receiver (fz-5xp.40). A closure call in the same position already skipped
-/// quietly; only the direct-call arm insisted the edge must exist.
+/// A protocol call whose receiver no implementation takes is not this: it is a
+/// callsite that raises `Protocol.UndefinedError`. What reaches here is a call
+/// whose receiver an implementation takes but that implementation does not
+/// define the callback.
 fn call_reaches_no_target(
     world: &World,
     tel: &impl crate::telemetry::Telemetry,
@@ -1835,7 +1824,7 @@ fn call_reaches_no_target(
         codes::ARTIFACT_INCOMPLETE_SEMANTIC_PLAN,
         format!(
             "`{qualified}/{}` has no implementation for the value it is called with; \
-             a protocol dispatches on its receiver's type, and this call matched none",
+             the implementations that take its receiver do not define it",
             callee.arity
         ),
         Span::DUMMY,

@@ -1,0 +1,37 @@
+#---
+# purpose: "Enum.reverse and Enum.map of a value that no Enumerable implementation takes (a binary, an integer) compile and raise Protocol.UndefinedError at run time, where the same function given a list returns its result"
+# oracle: self
+# oracle.stamp: b4ad18d49bf14a89
+#---
+defmodule M do
+  def rev(enumerable), do: Enum.reverse(enumerable)
+end
+
+defmodule Main do
+  def attempt(enumerable) do
+    {:ok, M.rev(enumerable)}
+  rescue
+    e in Protocol.UndefinedError -> {:raised, e.protocol, e.value}
+  end
+
+  def map_an_integer() do
+    Enum.map(5, fn x -> x end)
+  rescue
+    e in Protocol.UndefinedError -> {:raised, e.protocol, e.value}
+  end
+
+  def main() do
+    IO.inspect(attempt([1, 2]))
+    IO.inspect(attempt("abc"))
+    IO.inspect(map_an_integer())
+    IO.puts(message_of_a_binary())
+  end
+
+  def message_of_a_binary() do
+    M.rev("abc")
+  rescue
+    e -> Exception.message(e)
+  end
+end
+
+Main.main()

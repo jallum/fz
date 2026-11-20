@@ -2268,6 +2268,32 @@ fn a_miss_is_one_more_destination_selected_by_every_value_no_module_claims() {
     );
 }
 
+/// A protocol call whose receiver no implementation takes has no target; its
+/// plan is the raise alone, and the raise shows the receiver, so the receiver
+/// is an input the call must pass.
+#[test]
+fn a_call_with_no_target_and_a_last_resort_passes_the_receiver_it_raises_for() {
+    let _tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    let summary = CallSiteSummary {
+        targets: Vec::new(),
+        return_ty: Some(world.types_mut().none()),
+        last_resort: Some(LastResort::protocol_undefined("Enumerable".to_string())),
+    };
+
+    let CallDestinations::Dispatch(dispatch) =
+        call_destinations(world.types_mut(), &summary).expect("a raise-only plan builds")
+    else {
+        panic!("a call that only raises is a decision with no arm");
+    };
+
+    assert!(dispatch.targets.is_empty(), "no implementation is called");
+    assert!(
+        dispatch.plan.required_input(0),
+        "the raise shows the receiver, so the call passes it"
+    );
+}
+
 #[test]
 fn callable_flow_dispatches_on_the_surface_argument_that_distinguishes_members() {
     let _tel = ConfiguredTelemetry::new();
