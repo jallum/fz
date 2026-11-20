@@ -9,9 +9,15 @@
   "id": "fz-9zq.17",
   "labels": [],
   "parent": "fz-9zq",
+  "comments": [
+    {
+      "text": "fz-engine, 2026-11-20: the two List.reduce_cont input rows in this mechanism differ only in the reducer closure's arrow parameter (any vs {any,any}), as do the duplicate executable keys Optimize reported (proposal pending the user). Possibly one root: an activation key distinguishes closure arrows that differ only in a parameter. Measure one keying rule for closure arrows against both before building either.",
+      "timestamp": "2026-11-20T22:34:11Z"
+    }
+  ],
   "priority": 2,
   "status": "in_progress",
   "title": "A call edge names the closure activation its walk read a return type from",
   "type": "bug",
-  "updated_at": "2026-11-20T21:17:02Z"
+  "updated_at": "2026-11-20T22:34:11Z"
 }
