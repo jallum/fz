@@ -5,7 +5,7 @@
     "fz-9x7.44.8"
   ],
   "created": "2026-11-20T19:54:50Z",
-  "description": "User approved page \"Scalars without addresses\" (https://claude.ai/artifact/6jYdi5cw1d27CZC85xkJih, From: Callables) on 2026-11-20, relayed by Callables. Owner: Callables. S1.6: the lib extern \"fz\" declarations typed any (16 returns, plus parameters) lower to stored_value. Each entry takes and answers #807's stored_value on native and interpreter paths; the interpreter's as_ref_word boxing ends at these calls.",
+  "description": "User approved page \"Scalars without addresses\" (https://claude.ai/artifact/6jYdi5cw1d27CZC85xkJih, From: Callables) on 2026-11-20, relayed by Callables. Owner: Callables. PARAMETERS ONLY (results wait for fz-9x7.44.1).\n\nS1.6. Of the 28 lib extern \"fz\" declarations with any parameters, 11 remain to lower to stored_value. 1 is already stored_value, 2 land in #823 (fz-9x7.44.2), and 14 cannot be scalars (guarded, or they take a list, map or binary). Done when the 11 take (word, kind) on the native and interpreter paths.\n\nCensus of origin/develop fb9ea0ec5 by Callables, 2026-11-20: /private/tmp/claude-501/-Users-j5n-Workspace-fz/98909c07-a0ca-4f82-8202-cb03fb090a79/scratchpad/census-44.3-7.md.",
   "id": "fz-9x7.44.7",
   "labels": [],
   "parent": "fz-9x7.44",
@@ -19,5 +19,5 @@
   "status": "open",
   "title": "A library extern's any parameters lower to a stored word and its kind",
   "type": "task",
-  "updated_at": "2026-11-20T20:47:41Z"
+  "updated_at": "2026-11-20T21:32:29Z"
 }
