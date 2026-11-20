@@ -5,7 +5,7 @@
     "fz-9x7.44.8"
   ],
   "created": "2026-11-20T19:54:48Z",
-  "description": "User approved page \"Scalars without addresses\" (https://claude.ai/artifact/6jYdi5cw1d27CZC85xkJih, From: Callables) on 2026-11-20, relayed by Callables. Owner: Callables. S1.3: tuple_elem, struct_get_field_ref, struct_get_named_field_ref, struct_store_ref, closure_get_capture_ref, closure_set_capture_ref. Each entry takes and answers #807's stored_value on native and interpreter paths; the interpreter's as_ref_word boxing ends at these calls.",
+  "description": "User approved page \"Scalars without addresses\" (https://claude.ai/artifact/6jYdi5cw1d27CZC85xkJih, From: Callables) on 2026-11-20, relayed by Callables. Owner: Callables. PARAMETERS ONLY (results wait for fz-9x7.44.1).\n\nS1.3, narrowed by the census. struct_store_ref and closure_set_capture_ref take the stored value as (word, kind) on the native and interpreter paths. tuple_elem, struct_get_field_ref, struct_get_named_field_ref and closure_get_capture_ref need no change: none of their parameters can be a number.\n\nCensus of origin/develop fb9ea0ec5 by Callables, 2026-11-20: /private/tmp/claude-501/-Users-j5n-Workspace-fz/98909c07-a0ca-4f82-8202-cb03fb090a79/scratchpad/census-44.3-7.md.",
   "id": "fz-9x7.44.4",
   "labels": [],
   "parent": "fz-9x7.44",
@@ -17,7 +17,7 @@
   ],
   "priority": 1,
   "status": "open",
-  "title": "Tuple, struct and closure field entries take a stored word and its kind",
+  "title": "Struct and closure stores take a stored word and its kind",
   "type": "task",
-  "updated_at": "2026-11-20T20:47:39Z"
+  "updated_at": "2026-11-20T21:32:27Z"
 }
