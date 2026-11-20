@@ -11,11 +11,15 @@
     {
       "text": "dynamic() split out to fz-mue.39. The other standard type names stay here.",
       "timestamp": "2026-11-19T04:33:40Z"
+    },
+    {
+      "text": "byte, iolist and iodata split out to fz-mue.40 (user answer \"Recursive, proper\"); maybe_improper_list moves to fz-mue.41. The other standard type names stay here.",
+      "timestamp": "2026-11-20T18:55:17Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "dynamic() and Elixir's standard type names resolve",
   "type": "feature",
-  "updated_at": "2026-11-20T18:55:16Z"
+  "updated_at": "2026-11-20T18:55:17Z"
 }
