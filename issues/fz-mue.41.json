@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-mue.40"
+  ],
   "blocks": [],
   "created": "2026-11-20T18:55:14Z",
   "description": "The user's fz-mue.16 iodata answer (\"Recursive, proper\") accepted that improper iolists are outside iolist until list types carry an improper tail. This ticket adds a tail slot to list types (maybe_improper_list/2, nonempty_maybe_improper_list), and widens iolist to Elixir's definition so an improper iolist is iodata. Related: fz-sc8.22 (improper list [1 | 2] panics at runtime). maybe_improper_list moves here from fz-mue.16's name list.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "A list type may have an improper tail (maybe_improper_list), so an improper iolist is iodata",
   "type": "feature",
-  "updated_at": "2026-11-20T18:55:14Z"
+  "updated_at": "2026-11-20T18:55:17Z"
 }
