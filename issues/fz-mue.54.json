@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Elixir Parity",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-20T22:13:58Z",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "Clauses of one name and arity that are not adjacent warn \"should be grouped together\", as in Elixir",
   "type": "feature",
-  "updated_at": "2026-11-20T22:13:58Z"
+  "updated_at": "2026-11-20T22:14:00Z"
 }
