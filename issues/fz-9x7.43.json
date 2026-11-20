@@ -6,7 +6,7 @@
   ],
   "blocks": [],
   "created": "2026-11-19T04:17:17Z",
-  "description": "The user approved step C, a per-process continuation region, relayed by Callables on 2026-11-19. This answers decision 72 (3). Design page: https://claude.ai/artifact/DLaBcsPBUr1LwXpc4rhAvX. Owner: Callables.\n\n## Design\n- The region is made of aligned chunks, with a pointer-only room test.\n- Pop is cont_top = frame.\n- The handler record saves cont_top, and a raise resets to it.\n- Region frames are collector roots.\n\n## Removes\nrelease_resumed_frame's tests, the continuation kind bytes, frame_in_tip_or_copy, fz_frame_for_write and frame_copies.\n\n## Includes\n- E2: walk the whole chain on deep recursion: fixtures 01293/01294 and build(1_000_000). Cycles may rise at most 1%; if they rise more, add a high-water mark.\n- E3: the chunk-crossing rate at 4, 16 and 64 KiB must be under 1 per 10,000.\n\n## Budget\n- At most 22 instructions per continuation in the value→skip_ws listing.\n- No workload's cycles rise more than 1%.\n- In-use bytes do not rise.\n\n## Not filed\nDropping the header word, until C is measured.",
+  "description": "The user approved step C, a per-process continuation region, relayed by Callables on 2026-11-19. This answers decision 72 (3). Design page: https://claude.ai/artifact/DLaBcsPBUr1LwXpc4rhAvX. Owner: Callables. Retargeted 2026-11-20 as S4 of fz-9x7.44 (\"Scalars without addresses\", user approved, https://claude.ai/artifact/6jYdi5cw1d27CZC85xkJih): blocked by fz-9x7.44.9, after which no ref names a number and region pops are unconditional.\n\n## Design\n- The region is made of aligned chunks, with a pointer-only room test.\n- Pop is cont_top = frame.\n- The handler record saves cont_top, and a raise resets to it.\n- Region frames are collector roots.\n- No pin test, no scalar area, no floor: addendum PEgbhjGkqm6iD2gSG5s4io D1 is void.\n- D2 counters come after fz-9x7.37.3.\n\n## Removes\nrelease_resumed_frame's tests, the continuation kind bytes, frame_in_tip_or_copy, fz_frame_for_write and frame_copies.",
   "id": "fz-9x7.43",
   "labels": [],
   "parent": "fz-9x7",
@@ -28,5 +28,5 @@
   "status": "open",
   "title": "A continuation lives in its process's continuation region and is given back by one store",
   "type": "feature",
-  "updated_at": "2026-11-20T19:54:56Z"
+  "updated_at": "2026-11-20T19:55:15Z"
 }
