@@ -1,7 +1,7 @@
 #---
 # purpose: "else clauses are a case over the body's value; the first clause that matches gives the try's value"
 # oracle: self
-# oracle.stamp: 296fc968bcd4aef7
+# oracle.stamp: f3810fe53f725dd1
 #---
 defmodule Main do
   def main() do
@@ -10,7 +10,7 @@ defmodule Main do
     rescue
       _ -> :rescued
     else
-      {:ok, n} -> {:got, n}
+      {:ok, n} -> n
       other -> other
     end
     b = try do
@@ -18,8 +18,8 @@ defmodule Main do
     rescue
       _ -> :rescued
     else
-      {:ok, n} -> {:got, n}
-      other -> {:other, other}
+      {:ok, n} -> n
+      other -> other
     end
     IO.inspect(a)
     IO.inspect(b)

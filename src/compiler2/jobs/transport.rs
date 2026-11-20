@@ -382,33 +382,15 @@ fn produce_generic_callable_owner(
                     });
                 }
             }
-            TransportPosition::ResumePayload { callsite, entry, .. } => {
-                if let Some(callsite) = callsite {
-                    if facts.callsite_return_origin(*callsite).is_none_or(|origin| {
-                        !append_origin_children(
-                            executable,
-                            position.executable(),
-                            facts,
-                            &origin,
-                            &mut source_positions,
-                        )
-                    }) {
-                        source_positions.clear();
-                    }
-                } else {
-                    let LoweredBody::Clauses { entries, .. } = facts.body();
-                    if let Some(value) = entries
-                        .get(entry.as_u32() as usize)
-                        .and_then(|entry| match entry.origin {
-                            super::super::body::ControlEntryOrigin::DeliveredResume { value } => Some(value),
-                            _ => None,
-                        })
-                    {
-                        source_positions.push(TransportPosition::Value {
-                            executable: position.executable().clone(),
-                            value,
-                        });
-                    }
+            TransportPosition::ResumePayload { entry, .. } => {
+                if !append_origin_children(
+                    executable,
+                    position.executable(),
+                    facts,
+                    resume_payload_origin(facts, *entry),
+                    &mut source_positions,
+                ) {
+                    source_positions.clear();
                 }
             }
         }
@@ -1715,6 +1697,15 @@ fn entry_capture_ty(executable: &ExecutableKey, facts: &ExecutableFacts, capture
     })
 }
 
+/// Where a delivered resume's payload comes from: the one source that
+/// delivers there, or the join of every call and local value that does.
+fn resume_payload_origin(facts: &ExecutableFacts, entry: ControlEntryId) -> &TransportSource {
+    let value = resume_payload_value(facts, entry);
+    facts
+        .value_origin(value)
+        .unwrap_or_else(|| panic!("a reachable delivered resume's payload {value:?} has a delivered origin"))
+}
+
 fn resume_payload_ty(types: &Types, executable: &ExecutableKey, facts: &ExecutableFacts, entry: ControlEntryId) -> Ty {
     let value = resume_payload_value(facts, entry);
     facts.analysis().value_types.get(&value).copied().unwrap_or_else(|| {
@@ -1954,22 +1945,9 @@ fn produce_named_transport_position(
                     .unwrap_or_default(),
             )
         }
-        TransportPosition::ResumePayload { callsite, entry, .. } => {
+        TransportPosition::ResumePayload { entry, .. } => {
             let value = resume_payload_value(&facts, *entry);
-            if let Some(callsite) = callsite {
-                recipe = origin_transport_recipe(
-                    &symbol,
-                    &facts,
-                    &facts
-                        .callsite_return_origin(*callsite)
-                        .expect("every resume payload must have a normalized callsite origin"),
-                );
-            } else {
-                recipe = TransportRecipe::Alias(TransportPosition::Value {
-                    executable: symbol,
-                    value,
-                });
-            }
+            recipe = origin_transport_recipe(&symbol, &facts, resume_payload_origin(&facts, *entry));
             (
                 resume_payload_ty(world.types(), executable, &facts, *entry),
                 runtime.value_demands.get(&value).map(Cow::Borrowed).unwrap_or_default(),

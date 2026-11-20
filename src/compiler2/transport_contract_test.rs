@@ -202,6 +202,56 @@ fn compiler2_transport_flow_contract_separates_shared_descriptors_from_root_plan
     assert_no_trash_authority(all_contract_strings());
 }
 
+/// A join is laid out from everything that delivers to it. Here an atom
+/// arrives from one arm and a raw int from a call in the other, so the join
+/// is one boxed `int | :fine` payload. Copying the call's raw-int lane would
+/// leave the atom arm nothing it could be converted into.
+#[test]
+fn compiler2_transport_a_join_fed_by_a_value_and_a_call_is_laid_out_from_both() {
+    let source = r#"
+def num(n), do: n + 1
+
+def main(x, n) when is_integer(n) do
+  a = if x, do: :fine, else: num(n)
+  [a]
+end
+"#;
+
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    world.submit_code(
+        Some("transport_join_of_a_value_and_a_call.fz".to_string()),
+        source.to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 2, ExecutableNeed::Value);
+    let (driver, program) = pull_backend_for_test(&tel, &mut world, root);
+    let session = driver.session();
+    let num = executable_for(&world, &session, "num", 1);
+    let main = executable_for(&world, &session, "main", 2);
+    assert_eq!(
+        retained_executable(&program, &num)
+            .abi
+            .return_layout
+            .layout
+            .reprs
+            .as_ref(),
+        &[AbiValueRepr::RawInt],
+        "the call returns a raw int, so copying its lane would mis-lay the join"
+    );
+    let joins = retained_executable(&program, &main)
+        .abi
+        .return_endpoints
+        .iter()
+        .filter(|(position, _)| matches!(position, TransportPosition::ResumePayload { .. }))
+        .map(|(_, layout)| layout.layout.reprs.as_ref())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        joins,
+        vec![&[AbiValueRepr::ValueRef][..]],
+        "the join has one payload position, boxed because an atom and an int both arrive there"
+    );
+}
+
 #[test]
 fn compiler2_transport_float_resume_consumes_the_emitted_abi_endpoint() {
     let source = r#"
@@ -238,9 +288,7 @@ end
         .abi
         .return_endpoints
         .iter()
-        .find_map(|(position, layout)| {
-            matches!(position, TransportPosition::ResumePayload { callsite: Some(_), .. }).then_some(layout)
-        })
+        .find_map(|(position, layout)| matches!(position, TransportPosition::ResumePayload { .. }).then_some(layout))
         .expect("the non-tail call has a delivered return endpoint");
     assert_eq!(resume.layout.structural, producer.abi.return_layout.layout.structural);
     assert_eq!(resume.layout.reprs.as_ref(), &[AbiValueRepr::RawF64]);
@@ -893,9 +941,7 @@ end
         .abi
         .return_endpoints
         .iter()
-        .find_map(|(position, layout)| {
-            matches!(position, TransportPosition::ResumePayload { callsite: Some(_), .. }).then_some(layout)
-        })
+        .find_map(|(position, layout)| matches!(position, TransportPosition::ResumePayload { .. }).then_some(layout))
         .expect("the tuple call has a continuation endpoint");
     assert_eq!(endpoint.layout.structural, pair_return);
     assert_eq!(
@@ -994,9 +1040,7 @@ end
         .abi
         .return_endpoints
         .iter()
-        .find_map(|(position, layout)| {
-            matches!(position, TransportPosition::ResumePayload { callsite: Some(_), .. }).then_some(layout)
-        })
+        .find_map(|(position, layout)| matches!(position, TransportPosition::ResumePayload { .. }).then_some(layout))
         .expect("the binary result has a continuation endpoint");
     assert_eq!(endpoint.layout.structural, id_box_return);
     assert_eq!(endpoint.layout.reprs.as_ref(), &[AbiValueRepr::ValueRef]);
@@ -1326,8 +1370,7 @@ end
         .return_endpoints
         .iter()
         .find_map(|(position, layout)| {
-            (matches!(position, TransportPosition::ResumePayload { callsite: Some(_), .. })
-                && layout.layout.structural == double_return)
+            (matches!(position, TransportPosition::ResumePayload { .. }) && layout.layout.structural == double_return)
                 .then_some(layout)
         })
         .expect("double/1 has an emitted continuation endpoint");
@@ -1922,11 +1965,7 @@ fn assert_tuple_returned_callable_resume_publishes_its_boundary(source: &str) {
         .find(|(position, layout)| {
             matches!(
                 position,
-                TransportPosition::ResumePayload {
-                    executable,
-                    callsite: Some(_),
-                    ..
-                } if *executable == main
+                TransportPosition::ResumePayload { executable, .. } if *executable == main
             ) && shape_contains_callable(&world, layout.structural)
         })
         .unwrap_or_else(|| {
