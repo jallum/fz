@@ -11,7 +11,7 @@
   "parent": "fz-9x7.44",
   "priority": 1,
   "status": "open",
-  "title": "A library extern typed any lowers to a stored word and its kind",
+  "title": "A library extern's any parameters lower to a stored word and its kind",
   "type": "task",
-  "updated_at": "2026-11-20T20:47:36Z"
+  "updated_at": "2026-11-20T20:47:41Z"
 }
