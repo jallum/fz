@@ -436,7 +436,8 @@ pub extern "C" fn fz_self(process: *mut Process) -> u64 {
     (unsafe { &mut *process }).pid as u64
 }
 
-/// Process-global monotonic counter feeding `fz_make_ref`.
+/// Process-global monotonic counter feeding `fz_make_ref` and
+/// `fz_unique_integer`.
 /// Starts at 1 so 0 can remain a "no ref" sentinel if a future ticket
 /// needs one. AtomicU64 + Relaxed is sufficient under single-worker
 /// today and remains correct under future multi-worker.
@@ -445,6 +446,13 @@ static FZ_NEXT_REF: AtomicU64 = AtomicU64::new(1);
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_make_ref() -> u64 {
     FZ_NEXT_REF.fetch_add(1, Ordering::Relaxed)
+}
+
+/// `:erlang.unique_integer/0`: an integer no other call in this run returns,
+/// drawn from the counter references are drawn from.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_unique_integer() -> i64 {
+    FZ_NEXT_REF.fetch_add(1, Ordering::Relaxed) as i64
 }
 
 /// fz_send(receiver_pid, msg_ref) -> msg_ref.
@@ -2112,25 +2120,6 @@ pub extern "C" fn fz_mark_published_ref_aliased(process: *mut Process, value_ref
         .mark_published_ref_aliased(value)
         .expect("fz_mark_published_ref_aliased")
         .raw_word()
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_list_reuse_or_cons_ref(
-    process: *mut Process,
-    list_ref_word: u64,
-    head_ref_word: u64,
-    tail_ref_word: u64,
-    may_rewrite: u64,
-) -> u64 {
-    let head = any_value_ref_from_word(head_ref_word, "fz_list_reuse_or_cons_ref head");
-    fz_list_reuse_or_cons_parts(
-        process,
-        list_ref_word,
-        head.storage_raw().expect("list head storage"),
-        u64::from(head.tag().tag()),
-        tail_ref_word,
-        may_rewrite,
-    )
 }
 
 #[unsafe(no_mangle)]

@@ -356,6 +356,71 @@ fn compiler2_operand_returning_boolean_ops_retain_source_ownership() {
     }
 }
 
+/// The ownership mode of each argument `joined/2` passes to `pair/2`, where
+/// `joined` first binds `r` from an `if` whose arms are `then_arm` and
+/// `else_arm`, and keeps `r` live across the call.
+fn pair_argument_modes_after_join(then_arm: &str, else_arm: &str) -> Vec<crate::fz_ir::OwnershipMode> {
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let bodies = LoweredBodyCapture::new();
+    bodies.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("joined_ownership.fz".into()),
+        text: format!(
+            "def pair(a, b), do: {{a, b}}\n\
+             def joined(xs, c) do\n r = if c, do: {then_arm}, else: {else_arm}\n p = pair(xs, [1])\n {{p, r}}\nend\n\
+             def main(), do: joined([2], true)\n"
+        ),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    settle_native_product(&mut compiler, root);
+    let pair = function_id(&functions, "pair", 2);
+    let LoweredBody::Clauses { entries, .. } = lowered_body(&bodies, function_id(&functions, "joined", 2));
+    entries
+        .iter()
+        .find_map(|entry| match &entry.tail {
+            LoweredTail::DirectCall { callee, args, .. } if callee.function() == Some(pair) => {
+                Some(args.iter().map(|arg| arg.ownership).collect())
+            }
+            _ => None,
+        })
+        .expect("joined/2 calls pair/2")
+}
+
+/// A joined value is one of the values its arms deliver, so it holds what one
+/// of them holds. A raise delivers a value of its own and an arm that builds a
+/// list holds only that list, so a later call keeps its arguments' ownership.
+#[test]
+fn a_value_joined_from_a_raise_or_a_fresh_value_leaves_later_calls_their_own_arguments() {
+    use crate::fz_ir::OwnershipMode::Transfer;
+    for else_arm in ["raise(\"no\")", "[3]"] {
+        assert_eq!(
+            pair_argument_modes_after_join("[0]", else_arm),
+            vec![Transfer, Transfer],
+            "r joins [0] and {else_arm}, neither of which is xs"
+        );
+    }
+}
+
+/// An arm that delivers `xs` itself makes the joined value hold `xs`, so a
+/// later call that passes `xs` while the joined value lives shares it.
+#[test]
+fn a_value_joined_from_a_held_value_still_shares_it() {
+    use crate::fz_ir::OwnershipMode::{Share, Transfer};
+    assert_eq!(
+        pair_argument_modes_after_join("xs", "[3]"),
+        vec![Share, Transfer],
+        "r may be xs, so passing xs to pair/2 shares it"
+    );
+}
+
 /// The rewrite permission of each `%{base | ...}` update in `function`/`arity`
 /// of `program`, in body order.
 fn update_permissions(program: &str, function: &str, arity: u64) -> Vec<crate::fz_ir::RewritePermission> {
@@ -4881,10 +4946,14 @@ fn compiler2_macro_executable_runs_quote_unquote_on_the_source_heap() {
         .expect("quoted variable AST node");
     assert_eq!(var_node.head.atom_name().expect("quoted variable head"), "x");
     assert_eq!(
-        var_node.tail.int_value().expect("quoted variable context"),
-        i64::from(quoted_var.as_u32()),
-        "a variable written inside a macro's own quote carries that macro's FunctionId as a bare marker; \
-         hygiene stamps this invocation's ordinal onto it later, in the wrapper this call bypasses"
+        var_node.tail.atom_name().expect("quoted variable context").as_str(),
+        "Elixir",
+        "a quote outside any module writes `Elixir` as its variables' context, as Elixir's does"
+    );
+    assert_eq!(
+        var_node.meta.var_counter().expect("quoted variable counter"),
+        None,
+        "the counter comes from the expansion, in the wrapper this call bypasses"
     );
 
     let forward_define = function_id(&functions, "forward_define", 1);

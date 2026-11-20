@@ -1,0 +1,34 @@
+#---
+# purpose: "A def an item macro emits keeps its own variables apart from those of a macro expanded in its body"
+# oracle: self
+# oracle.stamp: 61be70ef4f1a9db2
+#---
+defmodule Gen do
+  defmacro inner() do
+    quote do
+      x = 20
+      x
+    end
+  end
+
+  defmacro define_f() do
+    quote do
+      def f() do
+        x = 1
+        y = Gen.inner()
+        {x, y}
+      end
+    end
+  end
+end
+
+defmodule Main do
+  import Gen
+  define_f()
+
+  def main() do
+    IO.inspect(f())
+  end
+end
+
+Main.main()

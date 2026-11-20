@@ -23,9 +23,9 @@ use fz_runtime::any_value::{
 use fz_runtime::ir_runtime::{
     fz_closure_halt_kind_ref, fz_closure_set_capture_atom, fz_closure_set_capture_f64, fz_closure_set_capture_i64,
     fz_closure_set_capture_ref, fz_halt_implicit_atom, fz_halt_implicit_f64, fz_halt_implicit_i64,
-    fz_halt_implicit_ref, fz_list_head_float_ref, fz_list_head_int_ref, fz_list_head_ref, fz_list_reuse_or_cons_parts,
-    fz_list_reuse_or_cons_ref, fz_list_tail_ref, fz_number_ref_float_bits, fz_share_list_spine, fz_struct_copy,
-    fz_struct_store_ref, fz_truthy_ref, fz_type_of, fz_unbox_atom, fz_unbox_float, fz_unbox_int,
+    fz_halt_implicit_ref, fz_list_head_float_ref, fz_list_head_int_ref, fz_list_head_ref, fz_list_tail_ref,
+    fz_number_ref_float_bits, fz_share_list_spine, fz_struct_copy, fz_struct_store_ref, fz_truthy_ref, fz_type_of,
+    fz_unbox_atom, fz_unbox_float, fz_unbox_int,
 };
 use fz_runtime::process_abi::{
     PROCESS_BINARIES_SHARED_OFFSET, PROCESS_STRUCT_RETENTION_ATTEMPTS_OFFSET, PROCESS_STRUCT_RETENTION_HITS_OFFSET,
@@ -167,7 +167,7 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
         target
     }
 
-    fn bump_process_counter(&mut self, offset: i32) {
+    pub(super) fn bump_process_counter(&mut self, offset: i32) {
         let one = self.b.ins().iconst(types::I64, 1);
         self.add_process_counter(offset, one);
     }
@@ -513,33 +513,6 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
 
     pub(crate) fn list_tail(&mut self, list_ref: ir::Value) -> ir::Value {
         runtime_call1!(self, fz_list_tail_ref, [list_ref])
-    }
-
-    pub(crate) fn list_reuse_or_cons_parts(
-        &mut self,
-        source_ref: ir::Value,
-        head_raw: ir::Value,
-        head_kind: ir::Value,
-        tail_ref: ir::Value,
-        rewrite: ir::Value,
-    ) -> ir::Value {
-        let process = self.process_arg();
-        runtime_call1!(
-            self,
-            fz_list_reuse_or_cons_parts,
-            [process, source_ref, head_raw, head_kind, tail_ref, rewrite]
-        )
-    }
-
-    pub(crate) fn list_reuse_or_cons_ref(
-        &mut self,
-        source: ir::Value,
-        head: ir::Value,
-        tail: ir::Value,
-        rewrite: ir::Value,
-    ) -> ir::Value {
-        let process = self.process_arg();
-        runtime_call1!(self, fz_list_reuse_or_cons_ref, [process, source, head, tail, rewrite])
     }
 
     /// The address of capture `index`'s raw slot.

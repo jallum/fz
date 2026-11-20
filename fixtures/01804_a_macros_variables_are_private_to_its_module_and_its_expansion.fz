@@ -1,0 +1,71 @@
+#---
+# purpose: "A quote writes its module as a variable's context, and an expansion makes that module's variables private: a same-module helper's quote stays hygienic, another module's quote shares, Macro.var/2 with nil binds the caller's variable, Macro.unique_var/2 gives distinct variables and var!/1 binds in the caller"
+# oracle: self
+# oracle.stamp: 033e29837a9d416e
+#---
+defmodule Other do
+  def shared(e) do
+    quote do
+      y = unquote(e)
+      y
+    end
+  end
+
+  def read(), do: quote(do: y)
+end
+
+defmodule Hyg do
+  def helper(e) do
+    quote do
+      x = unquote(e)
+      x + 100
+    end
+  end
+
+  defmacro via_helper(e), do: helper(e)
+
+  defmacro via_other(e), do: Other.shared(e)
+
+  defmacro other_y(), do: Other.read()
+
+  defmacro bind_caller(name, value) do
+    var = Macro.var(name, nil)
+    quote do: unquote(var) = unquote(value)
+  end
+
+  defmacro two_unique() do
+    a = Macro.unique_var(:v, __MODULE__)
+    b = Macro.unique_var(:v, __MODULE__)
+    quote do
+      unquote(a) = 1
+      unquote(b) = 2
+      {unquote(a), unquote(b)}
+    end
+  end
+
+  defmacro set_t(value) do
+    quote do: var!(t) = unquote(value)
+  end
+end
+
+defmodule Main do
+  require Hyg
+
+  def main() do
+    IO.inspect(quote(do: x))
+    x = 1
+    IO.inspect(Hyg.via_helper(2))
+    IO.inspect(Hyg.via_helper(3))
+    IO.inspect(x)
+    _ = Hyg.via_other(5)
+    IO.inspect(Hyg.other_y())
+    Hyg.bind_caller(:z, 7)
+    IO.inspect(z)
+    IO.inspect(Hyg.two_unique())
+    Hyg.set_t(9)
+    IO.inspect(t)
+    IO.inspect(:erlang.unique_integer() == :erlang.unique_integer())
+    IO.inspect(Macro.var(:foo, Other))
+  end
+end
+Main.main()

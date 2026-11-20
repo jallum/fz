@@ -12,7 +12,7 @@ use std::rc::Rc;
 
 use crate::ast::{
     AfterClause, BinOp, BitField, BitSize, CallableName, Callee, CatchClause, Expr, FnClause, LambdaClause,
-    MatchClause, Pattern, RescueClause, Spanned, TryForm, UnOp, Var, VarContext, WithBinding,
+    MatchClause, Pattern, RescueClause, Spanned, TryForm, UnOp, Var, WithBinding,
 };
 use crate::diag::Diagnostic;
 use crate::diag::codes;
@@ -1187,13 +1187,12 @@ impl<'a, 'w, 'tel, 'f, 'env, 'steps, 'q, T: crate::telemetry::Telemetry>
 
     fn lower_variable(&mut self, name: &str) -> Quoted {
         let head = Quoted::Constant(GroundValue::Atom(name.to_string()).into());
-        // Every variable this quote's own body writes is, by construction,
-        // written inside this macro's quote. Its tail carries the macro's
-        // `FunctionId` as an unstamped marker; the walk in `stamp_hygiene`
-        // (quoted_expander.rs) rewrites it to `Var{context: Macro(fid, ordinal)}`
-        // once this expansion's ordinal is known, right after the macro runs.
-        let owner = i64::from(self.lowerer.owner.as_u32());
-        let tail = Quoted::Constant(GroundValue::Int(owner).into());
+        // A quote's variables take the quoting module as their context, as
+        // Elixir's do. An expansion of a macro of that module later gives
+        // them a counter (`stamp_expansion_counter`, quoted_expander.rs).
+        let module = self.lowerer.world.function_ref(self.lowerer.owner).module;
+        let context = self.lowerer.world.quote_context(module);
+        let tail = Quoted::Constant(GroundValue::Atom(context.as_str().to_string()).into());
         self.ast_node_of(head, tail)
     }
 
@@ -1447,26 +1446,20 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                         Diagnostic::error(codes::LOWER_UNBOUND, STACKTRACE_OUTSIDE_A_HANDLER_CLAUSE, expr.span),
                     ));
                 }
-                if let VarContext::Macro(function, _) = name.context {
-                    let macro_name = self.world.function_ref(function).display_name();
+                if !name.context.is_user() {
+                    let context = name
+                        .context
+                        .context
+                        .as_ref()
+                        .map_or("nil", |atom| atom.strip_prefix("Elixir.").unwrap_or(atom));
                     return Err(emit_job_diagnostic(
                         self.telemetry,
                         Diagnostic::error(
                             codes::LOWER_UNBOUND,
                             format!(
-                                "compiler2 lowering found unbound variable `{}` (context {macro_name})",
+                                "compiler2 lowering found unbound variable `{}` (context {context})",
                                 name.name
                             ),
-                            expr.span,
-                        ),
-                    ));
-                }
-                if matches!(name.context, VarContext::Generated(_)) {
-                    return Err(emit_job_diagnostic(
-                        self.telemetry,
-                        Diagnostic::error(
-                            codes::LOWER_UNBOUND,
-                            format!("compiler2 lowering found unbound generated variable `{}`", name.name),
                             expr.span,
                         ),
                     ));
@@ -4335,6 +4328,34 @@ fn values_overlap(
     values_overlap_inner(body, origins, left, right, None, &mut HashSet::default())
 }
 
+/// The deliverers of `value` when it is a join of several: each a local
+/// value or the call that delivers it.
+fn join_deliverers(
+    origins: &ValueMap<super::super::executable_facts::TransportOrigin>,
+    value: ValueId,
+) -> Option<&[super::super::executable_facts::TransportOrigin]> {
+    match origins.get(&value)? {
+        super::super::executable_facts::TransportOrigin::Join(deliverers) => Some(deliverers),
+        _ => None,
+    }
+}
+
+/// The value a join receives from `deliverer`: the local value, or the result
+/// of the delivering call.
+fn delivered_value(body: &LoweredBody, deliverer: &super::super::executable_facts::TransportOrigin) -> Option<ValueId> {
+    use super::super::executable_facts::TransportOrigin;
+    match deliverer {
+        TransportOrigin::LocalValue(value) => Some(*value),
+        TransportOrigin::CallsiteReturn(callsite) | TransportOrigin::ClosureCallReturn { callsite, .. } => {
+            match body.callsite_tail(*callsite)? {
+                LoweredTail::DirectCall { value, .. } | LoweredTail::ClosureCall { value, .. } => Some(*value),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
 fn values_overlap_inner(
     body: &LoweredBody,
     origins: &ValueMap<super::super::executable_facts::TransportOrigin>,
@@ -4352,6 +4373,18 @@ fn values_overlap_inner(
             || value_is_new_owner_projection(body, origins, right, owner)
     }) {
         return false;
+    }
+    if let Some(deliverers) = join_deliverers(origins, left) {
+        return deliverers.iter().any(|deliverer| {
+            delivered_value(body, deliverer)
+                .is_none_or(|left| values_overlap_inner(body, origins, left, right, exempt, visited))
+        });
+    }
+    if let Some(deliverers) = join_deliverers(origins, right) {
+        return deliverers.iter().any(|deliverer| {
+            delivered_value(body, deliverer)
+                .is_none_or(|right| values_overlap_inner(body, origins, left, right, exempt, visited))
+        });
     }
     let Some(left_path) = origin_source_path(body, origins, &TransportOrigin::LocalValue(left)) else {
         return true;
@@ -4436,6 +4469,15 @@ fn construct_call_ownership(
                         .iter()
                         .any(|capture| values_overlap(body, origins, arg, *capture))
                         || target.physical_captures.iter().any(|capture| {
+                            if let Some(deliverers) = join_deliverers(origins, *capture) {
+                                return deliverers.iter().any(|deliverer| {
+                                    delivered_value(body, deliverer)
+                                        .and_then(|value| {
+                                            origin_source_path(body, origins, &TransportOrigin::LocalValue(value))
+                                        })
+                                        .is_none_or(|source| value_retains_source(body, origins, arg, &source, None))
+                                });
+                            }
                             let Some(source) =
                                 origin_source_path(body, origins, &TransportOrigin::LocalValue(*capture))
                             else {

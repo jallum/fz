@@ -2451,13 +2451,23 @@ impl World {
             bound_callable: None,
             from_brackets: false,
             span: None,
-            hygiene_ordinal: None,
+            counter: None,
         };
         if denotation.named_path().is_some_and(ModuleName::is_bare_atom) {
             return Ok(builder.atom(&denotation.atom_name()));
         }
         let segments = denotation.display_segments().map(String::as_str).collect::<Vec<_>>();
         builder.alias(&metadata, &segments)
+    }
+
+    /// The context a `quote` written in `module` gives its variables: the
+    /// module's atom, and `Elixir` outside any module, as Elixir's `quote`
+    /// writes them.
+    pub(crate) fn quote_context(&self, module: ModuleId) -> crate::ast::AtomName {
+        match self.module_denotation(module) {
+            Some(denotation) => crate::ast::AtomName::from(denotation.atom_name().as_str()),
+            None => crate::ast::AtomName::from("Elixir"),
+        }
     }
 
     /// `__MODULE__` where `module` is the enclosing module: the atom the

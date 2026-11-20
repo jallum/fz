@@ -208,18 +208,31 @@ step(<span class="kw">false</span>)  <span class="com"># diagnostic: lower/unbou
 <h2 id="context">5. How fz tells two same-named variables apart</h2>
 
 <p>A variable's real identity is its spelling plus <em>where it was
-written</em>, not its spelling alone. A variable written by hand is
-<code>User</code>. A variable written inside a macro's own
-<code>quote</code> carries that macro, plus a number saying which of that
-macro's calls produced it. So <code>t</code> the caller wrote and
-<code>t</code> the macro's quote wrote are never the same binding, no matter
-how many times the macro runs.</p>
+written</em>, not its spelling alone. fz uses Elixir's rule:</p>
 
-<div class="box blue">
-This is the same idea Elixir uses under the name <em>context</em>: a variable
-is <code>{name, context}</code>, and only variables with an identical pair
-ever resolve to the same binding.
-</div>
+<ul>
+  <li>Every variable has a <em>context</em>. A variable you write by hand has
+  context <code>nil</code>. A variable a <code>quote</code> writes has the
+  quoting module as its context: <code>quote(do: x)</code> inside
+  <code>Main</code> is <code>{:x, [], Main}</code>.</li>
+  <li>When a macro of module <code>M</code> expands, every variable whose
+  context is <code>M</code> gets a <code>counter</code> naming that one
+  expansion. This happens wherever the quote was written, in the macro itself
+  or in a helper function of <code>M</code>.</li>
+  <li>Two variables are the same binding only when their spelling, context and
+  counter all agree.</li>
+</ul>
+
+<p>So <code>t</code> the caller wrote and <code>t</code> the macro's quote
+wrote are never the same binding, and neither are the <code>t</code>s of two
+expansions. A quote written in <em>another</em> module that your macro calls
+keeps that module's context with no counter. Its variables are therefore
+shared by every expansion that uses them, exactly as in Elixir.</p>
+
+<p>You can build variables yourself, as in Elixir:
+<code>Macro.var(:x, nil)</code> is the caller's <code>x</code>, and
+<code>Macro.unique_var(:x, __MODULE__)</code> is a variable no other code
+names.</p>
 
 <!-- ─────────────────────────────── 6 ─────────────────────────────── -->
 <h2 id="var-bang">6. var! — reaching into the caller on purpose</h2>

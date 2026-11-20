@@ -1,5 +1,6 @@
 //! Compiler2 native codegen support constants and small scans.
 
+use super::recipe::{REUSE_REF_HEAD, emit_reuse};
 use super::*;
 use crate::ast::{BitType, Endian};
 use crate::fast_hash::HashMap;
@@ -46,12 +47,21 @@ pub(crate) fn emit_list_retention_or_alloc<M: Module>(
         types::I64,
         i64::from(retention.permission == crate::fz_ir::RewritePermission::Rewrite),
     );
+    let process = body.process_arg();
     if let CodegenValue::AnyRef(head_ref) = head_value {
-        return Some(body.list_reuse_or_cons_ref(source_ref, head_ref, tail_ref, rewrite));
+        return Some(emit_reuse(
+            body,
+            REUSE_REF_HEAD,
+            &[process, source_ref, head_ref, tail_ref, rewrite],
+        ));
     }
     let (head_raw, head_kind) = value_raw_kind_parts(body, head_value)?;
     let head_kind = body.b.ins().iconst(types::I64, head_kind.tag() as i64);
-    Some(body.list_reuse_or_cons_parts(source_ref, head_raw, head_kind, tail_ref, rewrite))
+    Some(emit_reuse(
+        body,
+        "fz_list_reuse_or_cons_parts",
+        &[process, source_ref, head_raw, head_kind, tail_ref, rewrite],
+    ))
 }
 
 pub(crate) fn value_raw_kind_parts<M: Module>(

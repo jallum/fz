@@ -547,7 +547,7 @@ impl ComprehensionBuild<'_> {
         let wildcard = builder.variable(
             &Var {
                 name: "_".to_string(),
-                context: VarContext::User,
+                context: VarContext::user(),
             },
             &QuotedSourceMetadata::default(),
         )?;
@@ -802,8 +802,13 @@ fn capture_lambda(
     named_call(builder, "fn", meta, &[clause])
 }
 
-/// The one shape a sugar-synthesised parameter or reference takes: a `Var`
-/// with `Generated(ordinal)` context, so it can never collide with a
+/// The context of the names this sugar mints. Elixir names a minted
+/// variable's context after the compiler module that minted it, as its
+/// capture sugar mints `&1` in context `:elixir_fn`.
+const SUGAR_CONTEXT: &str = "fz_source_sugar";
+
+/// The one shape a sugar-synthesised parameter or reference takes: the
+/// `ordinal`-th name in [`SUGAR_CONTEXT`], so it can never collide with a
 /// same-spelled variable the user wrote, no matter how it reads on the page.
 fn generated_variable(
     builder: &QuotedSourceBuilder,
@@ -813,14 +818,14 @@ fn generated_variable(
 ) -> Result<AnyValueRef, QuotedSourceError> {
     let var = Var {
         name: name.to_string(),
-        context: VarContext::Generated(ordinal as u32),
+        context: VarContext::minted(SUGAR_CONTEXT, ordinal as i64),
     };
     let meta = QuotedSourceMetadata {
         module: None,
         bound_callable: None,
         from_brackets: false,
         span,
-        hygiene_ordinal: None,
+        counter: None,
     };
     builder.variable(&var, &meta)
 }

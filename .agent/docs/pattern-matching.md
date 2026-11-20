@@ -443,7 +443,12 @@ Peer overlap and caller-retained semantic/physical sources force Share before
 independent incoming or returned roots are used. Both questions -- where a value
 is defined, and whether a use that can still happen wants it -- are answered
 from the body's tables (see [pipeline](pipeline.md#function-local-control-is-an-entry-graph)),
-so a decision costs a lookup rather than a search through the body. Unknown overlap stays
+so a decision costs a lookup rather than a search through the body. A value that
+several deliverers join (the arms of an `if` or `case`, or a call and a local
+value) is one of the values they deliver, so it overlaps what one of them
+overlaps, each judged by its own origin. A delivering call's result is a root of
+its own, so an arm that raises holds nothing the program still uses, and an arm
+that builds a value holds only what that value holds. Unknown overlap stays
 conservative; one-shot captures themselves do not split ownership. Receive arms
 share their traced physical capture layout. The runtime guard and container/copy
 publication rules live in [AnyValue's shared lists and structs section](any-value.md#shared-lists-and-structs).
@@ -632,7 +637,7 @@ it is made (a rebinding match, a `case` clause over an outer name) carries
 Elixir's other advice: "there is a variable with the same name in the context,
 use the pin operator (^) to match on it or prefix this variable with
 underscore if it is not meant to be used". A name that starts with `_`, and a
-name a macro wrote (`VarContext::Macro` or `Generated`), never warns.
+name a macro or the compiler wrote (any context but `nil`), never warns.
 
 The question is one of scope, not of matching, and
 `src/compiler2/jobs/scope.rs` answers it. `ScopeWalk` holds the function's

@@ -110,7 +110,7 @@ fn the_other_rewritten_operators_carry_no_stamp() {
 
 /// The quoted form as one line: calls as `head(args)`, remote calls as
 /// `Mod.fun(args)`, closure calls as `(var.)(args)`, lists as `[..]`, tuples
-/// as `{..}`, and a generated variable as `name#ordinal`.
+/// as `{..}`, and a variable with a counter as `name#counter`.
 fn show(cursor: &crate::compiler2::QuotedSourceCursor, sources: &crate::source::SourceMap) -> String {
     use fz_runtime::any_value::ValueKind;
     let Some(node) = cursor.ast_node(sources).expect("node read") else {
@@ -142,8 +142,9 @@ fn show(cursor: &crate::compiler2::QuotedSourceCursor, sources: &crate::source::
     };
     if !node.tail.is_list_like() {
         let name = node.head.atom_name().expect("variable name").to_string();
-        return match node.meta.hygiene_ordinal().expect("hygiene") {
-            Some(ordinal) => format!("{name}#{ordinal}"),
+        return match node.meta.var_counter().expect("counter") {
+            Some(crate::ast::VarCounter::Integer(k)) => format!("{name}#{k}"),
+            Some(crate::ast::VarCounter::Module { module, n }) => format!("{name}#{module}.{n}"),
             None => name,
         };
     }
@@ -264,14 +265,14 @@ fn reduce_starts_from_its_value_and_matches_the_accumulator_against_the_clauses(
 }
 
 #[test]
-fn the_variables_a_comprehension_generates_carry_generated_ordinals() {
+fn the_variables_a_comprehension_generates_carry_their_counters() {
     let rewritten = rewrite_for("for x <- xs, y <- ys, do: x + y\n").unwrap();
     for generated in ["__fz_for_acc#0", "__fz_for_acc#1"] {
         assert!(rewritten.contains(generated), "{generated} missing from {rewritten}");
     }
     assert!(
         !rewritten.contains("__fz_for_acc,") && !rewritten.contains("__fz_for_acc)"),
-        "a generated variable lost its ordinal: {rewritten}"
+        "a generated variable lost its counter: {rewritten}"
     );
 }
 

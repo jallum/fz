@@ -38,13 +38,13 @@ pub(crate) enum HeadLane {
 const CELL_BYTES: usize = 16;
 
 /// The head as the cell stores it: its payload word and its kind.
-struct Head {
-    raw: ir::Value,
-    kind: HeadKind,
+pub(super) struct Head {
+    pub(super) raw: ir::Value,
+    pub(super) kind: HeadKind,
 }
 
 #[derive(Clone, Copy)]
-enum HeadKind {
+pub(super) enum HeadKind {
     Known(ValueKind),
     Read(ir::Value),
 }
@@ -70,10 +70,22 @@ pub(super) fn emit_list_cell<M: cranelift_module::Module>(
             Head::known(bits, ValueKind::FLOAT)
         }
         HeadLane::Atom => Head::known(head, ValueKind::ATOM),
-        HeadLane::Ref => decode_and_share(body, head),
+        HeadLane::Ref => {
+            body.share(CodegenValue::AnyRef(head));
+            decode(body, head)
+        }
     };
     let tail_address = address_field(body.b, tail);
-    let link = match head.kind {
+    place_cell(body, &head, tail_address)
+}
+
+/// The link word a cell holds: the tail's address with the head's kind above it.
+pub(super) fn link_word<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, M>,
+    head: &Head,
+    tail_address: ir::Value,
+) -> ir::Value {
+    match head.kind {
         HeadKind::Known(kind) => {
             let kind_bits = (u64::from(kind.tag()) << AnyValueRefPacking::current().tag_shift()) as i64;
             body.b.ins().bor_imm_u(tail_address, kind_bits)
@@ -85,7 +97,17 @@ pub(super) fn emit_list_cell<M: cranelift_module::Module>(
                 .ishl_imm_u(kind, i64::from(AnyValueRefPacking::current().tag_shift()));
             body.b.ins().bor(tail_address, kind_bits)
         }
-    };
+    }
+}
+
+/// Place a cell holding `head`, which is already shared, over the tail at
+/// `tail_address`, and answer its ref word.
+pub(super) fn place_cell<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, M>,
+    head: &Head,
+    tail_address: ir::Value,
+) -> ir::Value {
+    let link = link_word(body, head, tail_address);
     let address = emit_place(body, HeapAllocKind::ListCons, CELL_BYTES);
     let flags = MemFlagsData::trusted();
     body.b.ins().store(flags, head.raw, address, 0);
@@ -94,7 +116,7 @@ pub(super) fn emit_list_cell<M: cranelift_module::Module>(
 }
 
 impl Head {
-    fn known(raw: ir::Value, kind: ValueKind) -> Self {
+    pub(super) fn known(raw: ir::Value, kind: ValueKind) -> Self {
         Self {
             raw,
             kind: HeadKind::Known(kind),
@@ -102,10 +124,8 @@ impl Head {
     }
 }
 
-/// The head a ref word names, as a cell stores it, after it is shared: a
-/// cell is a second holder.
-fn decode_and_share<M: cranelift_module::Module>(body: &mut CodegenFn<'_, '_, M>, head_ref: ir::Value) -> Head {
-    body.share(CodegenValue::AnyRef(head_ref));
+/// The head a ref word names, as a cell stores it.
+pub(super) fn decode<M: cranelift_module::Module>(body: &mut CodegenFn<'_, '_, M>, head_ref: ir::Value) -> Head {
     let kind = kind_field(body.b, head_ref);
     let raw = payload_of(body, head_ref, kind);
     Head {

@@ -108,13 +108,11 @@ defmacro defimpl(protocol, kw) do
   quote do: Fz.Compiler.define(unquote(source), unquote(__CALLER__))
 end
 
-# `name` arrives unevaluated: the quoted variable a macro's own `quote`
-# wrote, still carrying that macro's hygiene context in its third slot.
-# Rewriting that slot to `nil` is what makes the variable ordinary again --
-# indistinguishable from one the macro's caller wrote by hand, so it reads
-# and binds together with the caller's own same-spelled variable instead of
-# staying a private, unreachable name of the macro's own.
+# `name` arrives unevaluated: the quoted variable a macro's `quote` wrote,
+# with the macro's module as its context and, once expanded, a counter.
+# Deleting the counter and setting the context to `nil` makes it the
+# variable the caller writes by that name, as Elixir's `var!/1` does.
 defmacro var!(name) do
   {var_name, meta, _context} = name
-  {var_name, meta, nil}
+  {var_name, Keyword.delete(meta, :counter), nil}
 end

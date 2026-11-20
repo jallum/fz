@@ -58,7 +58,11 @@ pub(crate) trait QuotedExpansionCtx {
     /// the memoization cache or runs fresh. Local to the job attempt and
     /// reset with it: the sequence this hands out is a pure function of how
     /// many invocations were visited, never of scheduling or caching.
-    fn next_hygiene_ordinal(&mut self) -> u32;
+    ///
+    /// A function body holds variables from the expansions of the scope that
+    /// defined it as well as from its own, so the two never share a number:
+    /// a scope's expansions count up from 0 and a body's count down from -1.
+    fn next_expansion_number(&mut self) -> i64;
 
     /// How many guards enclose the expansion in progress. A guard expands
     /// macros but applies no source sugar: dispatch evaluates its operators
@@ -722,8 +726,8 @@ pub(crate) trait QuotedExpansionCtx {
         let macro_call_span = self.invocation_span(&invocation)?;
         // Drawn once this invocation is committed to (past both blocking
         // checks above), whether it turns out to hit the memoization cache
-        // or not -- see `next_hygiene_ordinal`.
-        let ordinal = self.next_hygiene_ordinal();
+        // or not -- see `next_expansion_number`.
+        let expansion_number = self.next_expansion_number();
         if let Some(expanded) = self
             .world()
             .memoized_macro_expansion(function, &invocation, caller_scope, &program)
@@ -757,7 +761,14 @@ pub(crate) trait QuotedExpansionCtx {
         } else {
             expanded
         };
-        let stamped = stamp_hygiene(&expanded, &expanded.cursor(), function, ordinal, &source_map.borrow())
+        let claim = ExpansionClaim {
+            receiver: world.quote_context(world.function_ref(function).module),
+            counter: crate::ast::VarCounter::Module {
+                module: world.quote_context(caller_scope.module_id()),
+                n: expansion_number,
+            },
+        };
+        let stamped = stamp_expansion_counter(&expanded, &expanded.cursor(), &claim, &source_map.borrow())
             .map_err(|error| emit_internal_surface_error(tel, format!("hygiene stamping failed: {error}")))?;
         let expanded = expanded.subroot(stamped);
         emit_macro_expanded(world, tel, &function, &expanded);
@@ -884,41 +895,39 @@ pub(crate) fn is_list_like(cursor: &QuotedSourceCursor) -> bool {
     cursor.root().is_empty_list() || cursor.root().tag() == ValueKind::LIST
 }
 
-/// The stamping walk hygiene needs once a macro's own quote-lowered body has
-/// run and before its output is memoized. Every variable that quote wrote
-/// left an unstamped marker (`Lowerer::lower_variable`, jobs/body.rs): its
-/// tail is this macro's own `FunctionId`, with no ordinal in its meta yet.
-/// This walk gives every such marker the one ordinal this invocation drew,
-/// so the variables the quote introduced bind to each other by that shared
-/// identity and never collide with a same-spelled variable the caller wrote.
-///
-/// A tail from a nested (already-expanded) macro call, an unquoted splice,
-/// or a plain user variable is never this shape — it is `nil`, a different
-/// macro's `FunctionId`, or already carries an ordinal — and this walk
-/// leaves it exactly as it found it.
-fn stamp_hygiene(
+/// What one expansion claims: the variables a `quote` of the macro's module
+/// wrote (context `receiver`) that have no counter yet get `counter`.
+struct ExpansionClaim {
+    pub(super) receiver: crate::ast::AtomName,
+    pub(super) counter: crate::ast::VarCounter,
+}
+
+/// Elixir's `linify_with_context_counter`, run on a macro's result once it
+/// has run and before it is memoized. Every variable whose context is the
+/// macro's module and that has no counter gets this expansion's counter, so
+/// the variables it introduced bind to each other and never to a
+/// same-spelled variable of the caller's or of another expansion. This holds
+/// for a quote in a helper function of the macro's module as much as for one
+/// in the macro itself. A variable with another context, one that already
+/// has a counter, and `_` are left as they are.
+fn stamp_expansion_counter(
     owner: &QuotedSourceRoot,
     cursor: &QuotedSourceCursor,
-    function: FunctionId,
-    ordinal: u32,
+    claim: &ExpansionClaim,
     sources: &SourceMap,
 ) -> Result<AnyValueRef, QuotedSourceError> {
     if let Some(node) = cursor.ast_node(sources)? {
-        if !is_list_like(&node.tail)
-            && node.tail.root().tag() == ValueKind::INT
-            && node.tail.int_value()? == i64::from(function.as_u32())
-            && node.meta.hygiene_ordinal()?.is_none()
-        {
+        if is_claimed_variable(&node, claim)? {
             let builder = owner.builder();
             let meta = builder.meta_put(
                 &node.meta,
-                super::source::META_HYGIENE_KEY,
-                builder.int(i64::from(ordinal)),
+                super::source::META_COUNTER_KEY,
+                builder.var_counter(&claim.counter)?,
             )?;
             return builder.tuple(&[node.head.root(), meta, node.tail.root()]);
         }
-        let head = stamp_hygiene(owner, &node.head, function, ordinal, sources)?;
-        let tail = stamp_hygiene(owner, &node.tail, function, ordinal, sources)?;
+        let head = stamp_expansion_counter(owner, &node.head, claim, sources)?;
+        let tail = stamp_expansion_counter(owner, &node.tail, claim, sources)?;
         if head == node.head.root() && tail == node.tail.root() {
             return Ok(cursor.root());
         }
@@ -927,14 +936,14 @@ fn stamp_hygiene(
     match cursor.root().tag() {
         ValueKind::LIST => match changed_elements(
             || Ok(cursor.list_iter()),
-            |item| stamp_hygiene(owner, item, function, ordinal, sources),
+            |item| stamp_expansion_counter(owner, item, claim, sources),
         )? {
             Some(out) => owner.builder().list(&out),
             None => Ok(cursor.root()),
         },
         ValueKind::STRUCT => match changed_elements(
             || cursor.tuple_iter(),
-            |item| stamp_hygiene(owner, item, function, ordinal, sources),
+            |item| stamp_expansion_counter(owner, item, claim, sources),
         )? {
             Some(out) => owner.builder().tuple(&out),
             None => Ok(cursor.root()),
@@ -944,8 +953,8 @@ fn stamp_hygiene(
             let mut changed = false;
             let mut out = Vec::with_capacity(entries.len());
             for (key, value) in &entries {
-                let key_root = stamp_hygiene(owner, key, function, ordinal, sources)?;
-                let value_root = stamp_hygiene(owner, value, function, ordinal, sources)?;
+                let key_root = stamp_expansion_counter(owner, key, claim, sources)?;
+                let value_root = stamp_expansion_counter(owner, value, claim, sources)?;
                 changed |= key_root != key.root() || value_root != value.root();
                 out.push((key_root, value_root));
             }
@@ -957,6 +966,14 @@ fn stamp_hygiene(
         }
         _ => Ok(cursor.root()),
     }
+}
+
+fn is_claimed_variable(node: &QuotedAstNode, claim: &ExpansionClaim) -> Result<bool, QuotedSourceError> {
+    Ok(node.head.root().tag() == ValueKind::ATOM
+        && node.tail.root().tag() == ValueKind::ATOM
+        && node.tail.atom_name()? == claim.receiver
+        && node.head.atom_name()?.as_str() != "_"
+        && node.meta.var_counter()?.is_none())
 }
 
 /// The elements of a list or tuple after `visit` has rewritten each one, or

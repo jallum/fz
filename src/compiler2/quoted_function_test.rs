@@ -978,3 +978,89 @@ fn rescue_else_and_after_decode_beside_the_body_in_any_section_order() {
     assert_eq!(else_clauses.len(), 2);
     assert!(matches!(after.as_deref().map(|after| &after.node), Some(Expr::Int(4))));
 }
+
+fn decoded_var(
+    build: impl FnOnce(&super::QuotedSourceBuilder) -> fz_runtime::any_value::AnyValueRef,
+) -> Result<Var, super::QuotedSourceError> {
+    let heap = std::rc::Rc::new(QuotedSourceHeap::new());
+    let builder = heap.builder();
+    let root = builder.root(build(&builder)).expect("root");
+    let expr =
+        super::quoted_function::decode_standalone_expr(&root.cursor(), None, &crate::source::SourceMap::default())?;
+    match expr.node {
+        Expr::Var(var) => Ok(var),
+        other => panic!("expected a variable, got {other:?}"),
+    }
+}
+
+#[test]
+fn every_variable_identity_survives_writing_and_reading_back() {
+    use crate::ast::{AtomName, VarContext, VarCounter};
+    let identities = [
+        VarContext::user(),
+        VarContext {
+            context: Some(AtomName::from("Elixir.Main")),
+            counter: None,
+        },
+        VarContext {
+            context: Some(AtomName::from("Elixir.Gen")),
+            counter: Some(VarCounter::Module {
+                module: AtomName::from("Elixir.Main"),
+                n: -3,
+            }),
+        },
+        VarContext {
+            context: Some(AtomName::from("Elixir.Gen")),
+            counter: Some(VarCounter::Integer(41)),
+        },
+        VarContext::minted("fz_source_sugar", 2),
+    ];
+    for context in identities {
+        let var = Var {
+            name: "x".to_string(),
+            context,
+        };
+        let read = decoded_var(|builder| builder.variable(&var, &QuotedSourceMetadata::default()).expect("write"))
+            .expect("read back");
+        assert_eq!(read, var, "a variable reads back as the variable written");
+    }
+}
+
+#[test]
+fn a_variable_built_by_hand_reads_as_elixir_names_it() {
+    use crate::ast::{AtomName, VarContext, VarCounter};
+    let read = decoded_var(|b| {
+        let counter = b.tuple(&[b.atom("Elixir.Main"), b.int(7)]).unwrap();
+        let meta = b.list(&[b.tuple(&[b.atom("counter"), counter]).unwrap()]).unwrap();
+        b.tuple(&[b.atom("x"), meta, b.atom("Elixir.Gen")]).unwrap()
+    })
+    .expect("decodes");
+    assert_eq!(
+        read.context,
+        VarContext {
+            context: Some(AtomName::from("Elixir.Gen")),
+            counter: Some(VarCounter::Module {
+                module: AtomName::from("Elixir.Main"),
+                n: 7
+            }),
+        },
+        "`{{:x, [counter: {{Main, 7}}], Gen}}` is Gen's x, claimed by Main's seventh expansion"
+    );
+    let user = decoded_var(|b| b.tuple(&[b.atom("x"), b.list(&[]).unwrap(), b.nil()]).unwrap()).expect("decodes");
+    assert!(
+        user.context.is_user(),
+        "`{{:x, [], nil}}` is the variable the user writes"
+    );
+}
+
+#[test]
+fn a_counter_that_is_neither_an_integer_nor_a_module_pair_is_refused() {
+    let error = decoded_var(|b| {
+        let meta = b
+            .list(&[b.tuple(&[b.atom("counter"), b.atom("bad")]).unwrap()])
+            .unwrap();
+        b.tuple(&[b.atom("x"), meta, b.atom("Elixir.Gen")]).unwrap()
+    })
+    .unwrap_err();
+    assert!(error.to_string().contains("a variable's counter must be"), "{error}");
+}

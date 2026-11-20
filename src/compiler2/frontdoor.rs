@@ -2240,7 +2240,7 @@ impl<'t> FrontDoorParser<'t> {
             // The lexer's byte-offset span travels verbatim into the quoted
             // heap; no line/column is computed here (fz-hyj).
             span: Some(span),
-            hygiene_ordinal: None,
+            counter: None,
         })
     }
 

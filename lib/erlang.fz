@@ -61,4 +61,19 @@ defmodule :erlang do
   def raise(:error, reason, _stacktrace), do: panic(reason)
   def raise(:throw, value, _stacktrace), do: throw(value)
   def raise(:exit, reason, _stacktrace), do: exit(reason)
+
+  @doc """
+  Returns an integer no other call in this run of the program returns. It is
+  drawn from the counter `make_ref/0` draws from.
+
+  ## Examples
+
+      :erlang.unique_integer() == :erlang.unique_integer()
+      #=> false
+
+  """
+  @spec unique_integer() :: integer
+  def unique_integer(), do: fz_unique_integer()
+
+  extern "C" defp fz_unique_integer() :: integer
 end

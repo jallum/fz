@@ -282,7 +282,7 @@ A row answers in one of three shapes (`Emitted`) and no others:
 A recipe does not validate its argument: the Rust function panics on a
 malformed word, the instructions read whatever the word says.
 
-A row that allocates is the other kind of row (`Emit::Cell`, `Emit::Struct`,
+A row that allocates is the other kind of row (`Emit::Cell`, `Emit::Reuse`, `Emit::Struct`,
 `Emit::Closure`, `Emit::Box`): it takes the
 process as its first argument, as the runtime function does, and writes the
 object itself. Asking `emit_inline` for one panics; a call site asks
@@ -301,6 +301,20 @@ int, float or reference is read from its box, any other word is its payload),
 and a list or struct head is shared first by a call to
 `fz_mark_published_ref_aliased`, the one call a cell makes. The runtime
 (`fz_heap_room`) is asked only for room when the tip is full.
+
+A list cell rebuilt from the cell it replaces is decided in place too.
+`fz_list_reuse_or_cons_parts` (the head's payload word and a kind constant)
+and the same function applied to a head given as a ref word (decoded by
+`storage_raw` and `tag`; `REUSE_REF_HEAD`) are rows, and a call site asks `emit_reuse(body, symbol, args)`;
+`native_codegen/list_reuse.rs` writes them in the runtime function's order. The
+attempt is counted in `Process::list_retention_attempts`. A cell whose head
+word, head kind and tail already are the new ones is the answer and counts a
+hit, with nothing written. Otherwise the head is shared, then a cell the
+construction may rewrite (a constant the call site passes) whose alias bit is
+clear is rewritten in place and counts a hit, and any other is replaced by a
+new cell placed through `emit_place` and written by `list_cell.rs`. The alias
+bit is read after the head is shared, because a head that is the source cell
+itself marks it. The interpreter calls `fz_list_reuse_or_cons_parts`.
 
 A struct or tuple and a closure are placed the same way, and their rows are
 named by the heap method the interpreter calls, as the runtime has no extern
@@ -331,7 +345,7 @@ call the three functions (`runtime_call!`, not an inline row).
 
 The rows are the typed `fz_op_*_ii` arithmetic and comparison externs, the
 `fz_op_*_ff` comparisons, `fz_op_neg_f`, `fz_op_abs_f`, the list-cell,
-struct, closure and scalar-box allocations above, and the helpers
+list-reuse, struct, closure and scalar-box allocations above, and the helpers
 `fz_type_of`, `fz_truthy_ref`, `fz_unbox_int`, `fz_unbox_atom`,
 `fz_struct_schema_id_ref` and `fz_value_eq_raw_const` (an atom or integer
 constant kind only; another kind keeps the call). The Rust function stays the
