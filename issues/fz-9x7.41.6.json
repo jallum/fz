@@ -9,9 +9,15 @@
   "id": "fz-9x7.41.6",
   "labels": [],
   "parent": "fz-9x7.41",
+  "comments": [
+    {
+      "text": "Closes against fz-9x7.44.9 (No value is the address of a number); listed in that page's removal ledger. GC holds it.",
+      "timestamp": "2026-11-20T19:55:15Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "A box made in a receive dispatch body is placed inline",
   "type": "task",
-  "updated_at": "2026-11-20T19:54:57Z"
+  "updated_at": "2026-11-20T19:55:15Z"
 }
