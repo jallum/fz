@@ -105,7 +105,7 @@ their block. A new epic claims the next free block and adds a row here.
 | Block         | Owner                             | State                  |
 | ------------- | --------------------------------- | ---------------------- |
 | `00600-00799` | fz-sc8                            | full                   |
-| `00800-00899` | fz-3ul                            | in use through `00897` |
+| `00800-00899` | fz-3ul                            | in use through `00898` |
 | `00900-00999` | fz-a9y                            | reserved               |
 | `01000-01039` | fz-sc8 (stack #274)               | in use through `01039` |
 | `01040-01059` | fz-sc8 (session fz-38: .77, .105) | in use through `01042` |
@@ -552,6 +552,11 @@ Fixtures `00895` through `00897` are function bodies that carry `try` sections:
 (`parse/invalid-try`) for a `catch` section that is not clauses, refused naming
 `defp`; `00897` is an `else`-only body, whose `.expected.diagnostics` holds
 Elixir's warning naming `def`.
+
+Fixture `00898` (oracle `self`) uses a `try`'s value after the `try`, where its
+body hands back an atom and its `rescue` arm an integer, once with the body
+ending in a value and once with both arms ending in calls. The entry after the
+`try` is one boxed payload that both arms convert into.
 
 Fixtures `00841` through `00847` and `00807` through `00814` are the `throw`, `exit` and `catch` set, with
 the same oracle discipline. `catch` matching: one head (`00841`), `catch :throw,

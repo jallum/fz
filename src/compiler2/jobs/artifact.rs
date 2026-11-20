@@ -307,11 +307,7 @@ pub(crate) fn produce_abi_executable_product(
         .positions()
         .cloned()
         .collect::<Vec<_>>();
-    transport_positions.extend(required_executable_transport_positions(
-        world,
-        executable,
-        &materialized,
-    ));
+    transport_positions.extend(required_executable_transport_positions(executable, &materialized));
     let position_layouts = match read_transport_layouts(tel, context, world.types(), transport_positions) {
         Ok(position_layouts) => position_layouts,
         Err(transport_waits) => {
@@ -459,14 +455,13 @@ fn required_entry_capture_transport_positions(
 /// in the executable's ABI. The ABI product drives them before building the ABI
 /// value.
 fn required_executable_transport_positions(
-    world: &World,
     executable: &ExecutableKey,
     materialized: &MaterializedExecutable,
 ) -> Vec<TransportPosition> {
     let mut positions = Vec::new();
     positions.extend(required_executable_input_transport_positions(executable, materialized));
     positions.extend(required_entry_capture_transport_positions(executable, materialized));
-    positions.extend(required_resume_transport_positions(world, executable, materialized));
+    positions.extend(required_resume_transport_positions(executable, materialized));
     positions.extend(required_local_backend_transport_positions(executable, materialized));
     positions
 }
@@ -494,60 +489,27 @@ fn required_executable_input_transport_positions(
         .collect()
 }
 
+/// Each delivered resume an executable can reach has one payload position.
+/// Its layout is the payload value's own: whoever delivers there -- one call,
+/// several calls, local values, or a mix -- the value is their join.
 fn required_resume_transport_positions(
-    world: &World,
     executable: &ExecutableKey,
     materialized: &MaterializedExecutable,
 ) -> Vec<TransportPosition> {
     let LoweredBody::Clauses { entries, .. } = &materialized.body;
     let symbol = ExecutableSymbol::new(executable);
-    let mut positions = Vec::new();
-    let mut deliver_callsites = HashMap::default();
-    for entry in entries {
-        let Some((callsite, ControlDestination::Deliver(entry_id))) = (match &entry.tail {
-            LoweredTail::DirectCall { callsite, dest, .. } | LoweredTail::ClosureCall { callsite, dest, .. } => {
-                Some((*callsite, dest))
-            }
-            LoweredTail::Value { .. }
-            | LoweredTail::If { .. }
-            | LoweredTail::Dispatch { .. }
-            | LoweredTail::Receive(_)
-            | LoweredTail::Try { .. }
-            | LoweredTail::Unreachable => None,
-        }) else {
-            continue;
-        };
-        // A call that cannot return delivers nothing, so it is not one of
-        // the entry's deliverers: the resume's layout comes from the values
-        // that do arrive there.
-        let diverges = materialized
-            .call_edges
-            .get(&callsite)
-            .is_some_and(|edge| world.types().is_empty(&edge.return_ty()));
-        if diverges {
-            continue;
-        }
-        let entry_id = materialized.original_entry_id(*entry_id);
-        deliver_callsites.insert(entry_id, callsite);
-    }
-    for (entry_index, entry) in entries.iter().enumerate() {
-        let ControlEntryOrigin::DeliveredResume { .. } = entry.origin else {
-            continue;
-        };
+    entries
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| matches!(entry.origin, ControlEntryOrigin::DeliveredResume { .. }))
         // A resume nothing can reach has no payload to lay out; the backend
         // lowers it as a plain unreachable branch.
-        if matches!(&entry.tail, LoweredTail::Unreachable) {
-            continue;
-        }
-        let entry_id = materialized.original_entry_id(ControlEntryId::from_u32(entry_index as u32));
-        let position = TransportPosition::ResumePayload {
+        .filter(|(_, entry)| !matches!(&entry.tail, LoweredTail::Unreachable))
+        .map(|(entry_index, _)| TransportPosition::ResumePayload {
             executable: symbol.clone(),
-            callsite: deliver_callsites.get(&entry_id).copied(),
-            entry: entry_id,
-        };
-        positions.push(position);
-    }
-    positions
+            entry: materialized.original_entry_id(ControlEntryId::from_u32(entry_index as u32)),
+        })
+        .collect()
 }
 
 fn required_local_backend_transport_positions(
@@ -1192,7 +1154,6 @@ fn call_return_flow(
                 .unwrap_or(*entry);
             let resume = TransportPosition::ResumePayload {
                 executable: caller_symbol.clone(),
-                callsite: Some(callsite),
                 entry: transport_entry,
             };
             let source = if public_callable {

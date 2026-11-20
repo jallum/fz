@@ -449,9 +449,18 @@ call-site number, so a call site that pruning dropped answers `None`.
   is unioned with the callee return position and a field this caller ignores is
   never erased — the caller's value-demand may select the callable-boundary lane
   for a callable return, but it never drops delivered data structure.
-- `ControlEntryOrigin::LocalResume { value }` is where local control like
-  `if` or `dispatch` delivers a value without creating a callable
-  continuation boundary.
+  An entry can be delivered to by several calls and local values at once: the
+  arms of an `if`, a `case`, or a `try` body and its `rescue` arms all deliver
+  to the entry after them. Each delivered-resume entry has exactly one payload
+  position, `TransportPosition::ResumePayload { executable, entry }`, and its
+  layout is built from the payload value's origin (`value_origin`): the one
+  source when one thing delivers there, and the join of every source
+  `delivered_value_joins` lists otherwise. So a join an atom and a raw-int call
+  both reach is one boxed payload, and each deliverer converts into it.
+- `ControlEntryOrigin::ReceiveOutcome` is a `receive` clause's body, handed its
+  bindings by the runtime matcher.
+- `ControlEntryOrigin::Handler` is entered by a raise under its `try`, with the
+  raise's kind, value and exception name as params.
 
 So a non-tail direct call is not "call, then keep walking the remaining steps."
 It is:

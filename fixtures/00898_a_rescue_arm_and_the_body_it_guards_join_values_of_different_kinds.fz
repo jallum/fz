@@ -1,0 +1,49 @@
+#---
+# purpose: "a try's value is whatever its body or its rescue arm hands back, an atom from one and an integer from the other, whether each arm ends in a value or a call"
+# oracle: self
+# oracle.stamp: 5e42ddfbc4b0a654
+#---
+defmodule Main do
+  def tag(x) do
+    if x, do: raise("boom"), else: :fine
+  end
+
+  def double(n), do: n * 2
+
+  def body_value_rescue_call(x) do
+    a = try do
+      if x, do: raise("boom"), else: :fine
+    rescue
+      _ -> 10 + 10
+    end
+    IO.inspect(a)
+  end
+
+  def body_call_rescue_call(x, n) do
+    a = try do
+      tag(x)
+    rescue
+      _ -> double(n)
+    end
+    IO.inspect(a)
+  end
+
+  def main() do
+    send(self(), true)
+    send(self(), false)
+    send(self(), 21)
+    x1 = receive do v -> v end
+    x2 = receive do v -> v end
+    n = receive do v when is_integer(v) -> v end
+    body_value_rescue_call(true)
+    body_value_rescue_call(false)
+    body_value_rescue_call(x1)
+    body_value_rescue_call(x2)
+    body_call_rescue_call(true, n)
+    body_call_rescue_call(false, n)
+    body_call_rescue_call(x1, n)
+    body_call_rescue_call(x2, n)
+  end
+end
+
+Main.main()

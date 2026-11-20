@@ -336,7 +336,6 @@ pub enum TransportPosition {
     },
     ResumePayload {
         executable: ExecutableSymbol,
-        callsite: Option<CallSiteId>,
         entry: ControlEntryId,
     },
     ReturnPayload {
@@ -388,20 +387,9 @@ impl SemanticOrd<Types> for TransportPosition {
                         semantic_index: right, ..
                     },
                 ) => left.cmp(right),
-                (
-                    Self::ResumePayload {
-                        callsite: left_callsite,
-                        entry: left_entry,
-                        ..
-                    },
-                    Self::ResumePayload {
-                        callsite: right_callsite,
-                        entry: right_entry,
-                        ..
-                    },
-                ) => left_callsite
-                    .cmp(right_callsite)
-                    .then_with(|| left_entry.as_u32().cmp(&right_entry.as_u32())),
+                (Self::ResumePayload { entry: left, .. }, Self::ResumePayload { entry: right, .. }) => {
+                    left.as_u32().cmp(&right.as_u32())
+                }
                 (Self::ReturnPayload { callsite: left, .. }, Self::ReturnPayload { callsite: right, .. }) => {
                     left.cmp(right)
                 }

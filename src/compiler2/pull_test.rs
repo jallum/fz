@@ -2655,12 +2655,7 @@ fn owner_position_key(position: &TransportPosition) -> OwnerPositionKey {
     let local = match position {
         TransportPosition::ExecutableInput { semantic_index, .. } => (0, 0, 0, *semantic_index),
         TransportPosition::ExecutableReturn { .. } => (1, 0, 0, 0),
-        TransportPosition::ResumePayload { callsite, entry, .. } => (
-            2,
-            callsite.map_or(0, |callsite| u64::from(callsite.as_u32()) + 1),
-            u64::from(entry.as_u32()),
-            0,
-        ),
+        TransportPosition::ResumePayload { entry, .. } => (2, 0, u64::from(entry.as_u32()), 0),
         TransportPosition::ReturnPayload { callsite, .. } => (3, u64::from(callsite.as_u32()), 0, 0),
         TransportPosition::CallArg {
             callsite,
