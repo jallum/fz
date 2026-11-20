@@ -138,7 +138,7 @@ use super::conj::Conj;
 use super::descr::Descr;
 use super::dnf::is_dnf_top;
 use super::emptiness::{self, ListDenotation, NonEmptyLists};
-use super::sigs::{ListSig, ResourceSig, TupleSig};
+use super::sigs::{ListSig, MapDomain, MapSig, ResourceSig, TupleSig};
 
 /// Install one axis's clauses into an otherwise contentless descriptor. The
 /// axis's containment questions are then asked of the shared type calculator
@@ -469,26 +469,25 @@ pub(super) const RESOURCES: AxisView<ResourceSig> = AxisView {
         }
     },
 };
-pub(super) const MAPS: AxisView<super::sigs::MapSig> = AxisView {
+pub(super) const MAPS: AxisView<MapSig> = AxisView {
     install: |d, clauses| d.maps = clauses,
-    // A map clause constrains exactly the fields it names, so the clause that
-    // names MORE is the narrower one, and on the fields they share the
-    // narrower one's types are inside the wider one's.
+    // A map clause constrains each key it names and each kind of key it does
+    // not, so the clause that constrains MORE is the narrower one: at every key
+    // and every domain its types are inside the wider one's, and a key the
+    // wider one may leave out is not required of it.
     clause_covers: |wider, narrower, sub| {
         factors_are_superset(wider, narrower)
             || match (plain_sig(narrower), plain_sig(wider)) {
-                (Some(a), Some(b)) => b
-                    .fields
-                    .iter()
-                    .all(|(key, wide)| a.fields.get(key).is_some_and(|narrow| sub(narrow, wide))),
+                (Some(a), Some(b)) => map_sig_within(a, b, sub),
                 _ => false,
             }
     },
-    // Fieldwise, like a product, over the fields the clause names. A map
-    // clause is OPEN: it restricts exactly the fields it names and admits any
-    // value at the others, so a sibling that does not name one of our fields
-    // places no restriction there and reaches every value of it. Siblings
-    // under a different tag cannot contribute at all.
+    // Key by key and kind by kind, over what the clause constrains. A map
+    // clause is OPEN: a sibling that does not name one of our keys holds its
+    // kind's domain there, which is `any` unless the sibling says otherwise,
+    // and reaches every value of it. A value of ours that no sibling holds at
+    // some key (or at a fresh key of some kind) is a map no sibling admits.
+    // Siblings under a different tag cannot contribute at all.
     coverage: |cx, clause, siblings, _subtype| {
         let Some(ours) = plain_sig(clause) else {
             return Coverage::Unproven;
@@ -497,13 +496,18 @@ pub(super) const MAPS: AxisView<super::sigs::MapSig> = AxisView {
             return Coverage::Unproven;
         };
         for (key, ours) in &ours.fields {
-            let reachable = theirs
-                .iter()
-                .fold(Descr::none(), |acc, theirs| match theirs.fields.get(key) {
-                    Some(theirs) => acc.union(cx, cx.descr(theirs)),
-                    None => acc.union(cx, &Descr::any()),
-                });
-            if !cx.descr(ours).is_subtype(cx, &reachable) {
+            let reachable = theirs.iter().fold(Descr::none(), |acc, theirs| {
+                acc.union(cx, cx.descr(&theirs.field_at(key).ty))
+            });
+            if !cx.descr(&ours.ty).is_subtype(cx, &reachable) {
+                return Coverage::NotCovered;
+            }
+        }
+        for (domain, ours) in ours.domains.iter() {
+            let reachable = theirs.iter().fold(Descr::none(), |acc, theirs| {
+                acc.union(cx, cx.descr(&theirs.domains[domain]))
+            });
+            if !cx.descr(&ours).is_subtype(cx, &reachable) {
                 return Coverage::NotCovered;
             }
         }
@@ -512,16 +516,36 @@ pub(super) const MAPS: AxisView<super::sigs::MapSig> = AxisView {
         }
         Coverage::Unproven
     },
-    // A clause that names no field is every map. A clause that names a field
-    // requires it, so no union of such clauses reaches the empty map.
-    plain_top: |_, sigs| {
-        if sigs.iter().any(|sig| sig.fields.is_empty()) {
+    // A clause that names no field and leaves every domain `any` is every map.
+    // A clause that requires a field never holds the empty map, so no union of
+    // such clauses reaches it. A clause that only limits optional pairs may
+    // join with others to cover the axis, and the calculator decides.
+    plain_top: |cx, sigs| {
+        if sigs
+            .iter()
+            .any(|sig| sig.fields.is_empty() && sig.domains.tys().all(|ty| is_full(cx, ty)))
+        {
             Coverage::Covered
-        } else {
+        } else if sigs.iter().all(|sig| sig.fields.values().any(|field| !field.optional)) {
             Coverage::NotCovered
+        } else {
+            Coverage::Unproven
         }
     },
 };
+
+/// `a ⊆ b` for two inhabited map signatures: at every key either names and
+/// every domain, what `a` holds is inside what `b` holds, and `a` requires
+/// every key `b` does. Exact, because a key or a fresh key of a kind that
+/// breaks any of these is a map `a` admits and `b` does not.
+fn map_sig_within(a: &MapSig, b: &MapSig, sub: IsSubtype<'_>) -> bool {
+    a.fields.keys().chain(b.fields.keys()).all(|key| {
+        let (ours, theirs) = (a.field_at(key), b.field_at(key));
+        sub(&ours.ty, &theirs.ty) && (theirs.optional || !ours.optional)
+    }) && MapDomain::ALL
+        .iter()
+        .all(|domain| sub(&a.domains[*domain], &b.domains[*domain]))
+}
 
 /// Whether a clause's child denotes every value, asked of the one
 /// implementation of that question ([`Descr::is_full`]). A structural answer

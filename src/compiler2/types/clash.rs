@@ -117,7 +117,8 @@ impl Pf {
                     let kids = sig
                         .fields
                         .iter()
-                        .map(|(k, v)| (!is_struct_module_key(k)).then_some(*v))
+                        .map(|(k, field)| (!is_struct_module_key(k)).then_some(field.ty))
+                        .chain(sig.domains.tys().map(Some))
                         .collect();
                     add(&mut heads, head, kids);
                 }
@@ -430,10 +431,14 @@ impl Types {
         for conj in &mut d.maps {
             for sig in &mut conj.pos {
                 let head = [Head::Map(sig.fields.keys().cloned().collect())];
-                for (i, (k, v)) in sig.fields.iter_mut().enumerate() {
+                let named = sig.fields.len();
+                for (i, (k, field)) in sig.fields.iter_mut().enumerate() {
                     if !is_struct_module_key(k) {
-                        *v = at(self, &head, i, *v);
+                        field.ty = at(self, &head, i, field.ty);
                     }
+                }
+                for (i, ty) in sig.domains.tys_mut().enumerate() {
+                    *ty = at(self, &head, named + i, *ty);
                 }
             }
         }

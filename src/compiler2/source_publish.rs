@@ -2510,9 +2510,9 @@ fn collect_type_references(
             }
         }
         TypeExpr::Map(pairs) => {
-            for (key, value) in pairs {
-                collect_type_references(world, tel, scope, key, requester, refs)?;
-                collect_type_references(world, tel, scope, value, requester, refs)?;
+            for pair in pairs {
+                collect_type_references(world, tel, scope, &pair.key, requester, refs)?;
+                collect_type_references(world, tel, scope, &pair.value, requester, refs)?;
             }
         }
         TypeExpr::EmptyList

@@ -1,7 +1,7 @@
 //! Structural signatures: `TupleSig`, `ListSig`, `ArrowSig`, `MapSig`,
 //! the `ClosureLit` tag, and the `MergeSig` trait + per-sig impls.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::hash::Hash;
 
 use crate::fz_ir::FnId;
@@ -106,16 +106,184 @@ pub(crate) struct ArrowSig {
     pub lit: Option<ClosureLit>,
 }
 
-/// Open-shape map type: "any map containing AT LEAST these literal keys with
-/// values of the corresponding types." Keys are concrete singleton values
-/// (atoms, ints, strs); arbitrary-keyed maps fall back to `map_top`.
+/// The kind of a map key. A domain stands for every key of its kind that the
+/// signature's fields do not name, so the kinds partition every possible key.
 ///
-/// Subtyping (open record): `s <: t` iff every field in `t` is in `s` with
-/// subtype value. More required keys = smaller set.
+/// The set is Elixir's domain keys, with `port` replaced by the two key kinds
+/// fz has in its place: `CPointer` and `Resource`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum MapDomain {
+    Atom,
+    Binary,
+    BitstringNoBinary,
+    Integer,
+    Float,
+    Pid,
+    Reference,
+    CPointer,
+    Fun,
+    Tuple,
+    Map,
+    List,
+    Resource,
+}
+
+impl MapDomain {
+    pub(crate) const ALL: [MapDomain; 13] = [
+        Self::Atom,
+        Self::Binary,
+        Self::BitstringNoBinary,
+        Self::Integer,
+        Self::Float,
+        Self::Pid,
+        Self::Reference,
+        Self::CPointer,
+        Self::Fun,
+        Self::Tuple,
+        Self::Map,
+        Self::List,
+        Self::Resource,
+    ];
+
+    /// The domain a literal key belongs to.
+    pub(crate) fn of_key(key: &MapKey) -> Self {
+        match key {
+            MapKey::Atom(_) => Self::Atom,
+            MapKey::Int(_) => Self::Integer,
+        }
+    }
+
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Atom => "atom",
+            Self::Binary => "binary",
+            Self::BitstringNoBinary => "bitstring_no_binary",
+            Self::Integer => "int",
+            Self::Float => "float",
+            Self::Pid => "pid",
+            Self::Reference => "ref",
+            Self::CPointer => "c_pointer",
+            Self::Fun => "fun",
+            Self::Tuple => "tuple",
+            Self::Map => "map",
+            Self::List => "list",
+            Self::Resource => "resource",
+        }
+    }
+}
+
+/// One value type per [`MapDomain`]: what every key of that kind, outside the
+/// signature's fields, maps to when it is present. A domain is never
+/// required, so the empty map belongs to every domain assignment.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(test, derive(Debug))]
+pub(crate) struct MapDomains([Ty; 13]);
+
+impl MapDomains {
+    /// Every domain holds `value`.
+    pub(crate) fn all(value: Ty) -> Self {
+        Self([value; 13])
+    }
+
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (MapDomain, Ty)> + '_ {
+        MapDomain::ALL.iter().map(|domain| (*domain, self[*domain]))
+    }
+
+    pub(crate) fn tys(&self) -> impl Iterator<Item = Ty> + '_ {
+        self.0.iter().copied()
+    }
+
+    pub(crate) fn tys_mut(&mut self) -> impl Iterator<Item = &mut Ty> + '_ {
+        self.0.iter_mut()
+    }
+}
+
+impl std::ops::Index<MapDomain> for MapDomains {
+    type Output = Ty;
+    fn index(&self, domain: MapDomain) -> &Ty {
+        &self.0[domain as usize]
+    }
+}
+
+impl std::ops::IndexMut<MapDomain> for MapDomains {
+    fn index_mut(&mut self, domain: MapDomain) -> &mut Ty {
+        &mut self.0[domain as usize]
+    }
+}
+
+/// What a map holds under one key: the value's type, and whether the key may
+/// be absent. An optional field of type `none` is a key that must be absent.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(test, derive(Debug))]
+pub(crate) struct MapField {
+    pub ty: Ty,
+    pub optional: bool,
+}
+
+impl MapField {
+    pub(crate) fn required(ty: Ty) -> Self {
+        Self { ty, optional: false }
+    }
+
+    pub(crate) fn optional(ty: Ty) -> Self {
+        Self { ty, optional: true }
+    }
+}
+
+/// A map type, following Elixir's `Module.Types.Descr`: the maps in which
+/// every key holds what this signature says it holds.
+///
+/// A key a field names holds that field's type, and the key is required
+/// unless the field is optional. Every other key holds its kind's domain type
+/// when present. A map type is open: a domain of `any` puts no limit on the
+/// keys of its kind, so a signature of required fields with every domain
+/// `any` is the open record of those fields, and no fields with every domain
+/// `any` is every map.
+///
+/// Subtyping: `s <: t` iff every key `t` constrains is constrained at least as
+/// tightly by `s`. More required keys, and narrower domains, mean a smaller
+/// set.
 #[derive(Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(test, derive(Debug))]
 pub(crate) struct MapSig {
-    pub fields: BTreeMap<MapKey, Ty>,
+    pub fields: BTreeMap<MapKey, MapField>,
+    pub domains: MapDomains,
+}
+
+impl MapSig {
+    /// The open map holding exactly `fields`, with every domain `any`.
+    pub(crate) fn open(fields: BTreeMap<MapKey, MapField>, any: Ty) -> Self {
+        Self {
+            fields,
+            domains: MapDomains::all(any),
+        }
+    }
+
+    /// What this map holds under `key`: the field that names it, or else the
+    /// optional entry its kind's domain gives.
+    pub(crate) fn field_at(&self, key: &MapKey) -> MapField {
+        self.fields
+            .get(key)
+            .copied()
+            .unwrap_or_else(|| MapField::optional(self.domains[MapDomain::of_key(key)]))
+    }
+
+    /// Every child type: the fields' values in key order, then the domains'.
+    pub(crate) fn child_tys(&self) -> impl Iterator<Item = Ty> + '_ {
+        self.fields.values().map(|field| field.ty).chain(self.domains.tys())
+    }
+
+    pub(crate) fn child_tys_mut(&mut self) -> impl Iterator<Item = &mut Ty> + '_ {
+        self.fields
+            .values_mut()
+            .map(|field| &mut field.ty)
+            .chain(self.domains.tys_mut())
+    }
+
+    /// Whether the map names `key` as a field it requires.
+    pub(crate) fn requires(&self, key: &MapKey) -> bool {
+        self.fields.get(key).is_some_and(|field| !field.optional)
+    }
 }
 
 /// The outcome of intersecting two same-axis positive sigs inside one clause.
@@ -286,8 +454,13 @@ pub(super) fn specialize_surface(types: &mut Types, callable: (&[Ty], Ty), surfa
 }
 
 impl MergeSig for MapSig {
-    // Always `Merged`, never `Empty`: a field intersected to `∅` (an
-    // uninhabited required field) makes the whole merged clause `∅` and
+    // A key holds the intersection of what each side holds under it, where a
+    // side that does not name the key holds its kind's domain; the key is
+    // optional only if both sides leave it optional. The domains intersect
+    // kind by kind.
+    //
+    // Always `Merged`, never `Empty`: a required field intersected to `∅`
+    // (an uninhabited required field) makes the whole merged clause `∅` and
     // ought to drop rather than persist, mirroring `TupleSig`'s empty-
     // coordinate rule. Measured and left unfixed: an intern-smell probe (the
     // same method that justified the tuples-axis fix) instrumented every
@@ -301,13 +474,22 @@ impl MergeSig for MapSig {
     // provably-empty clauses). Re-measure before adding this if map-heavy
     // evidence-join traffic starts to matter.
     fn intersect_pos(types: &mut Types, a: &Self, b: &Self) -> PosMeet<Self> {
-        let mut fields = a.fields.clone();
-        for (key, value) in &b.fields {
-            fields
-                .entry(key.clone())
-                .and_modify(|current| *current = types.intersect(*current, *value))
-                .or_insert(*value);
+        let keys: BTreeSet<&MapKey> = a.fields.keys().chain(b.fields.keys()).collect();
+        let mut fields = BTreeMap::new();
+        for key in keys {
+            let (ours, theirs) = (a.field_at(key), b.field_at(key));
+            fields.insert(
+                key.clone(),
+                MapField {
+                    ty: types.intersect(ours.ty, theirs.ty),
+                    optional: ours.optional && theirs.optional,
+                },
+            );
         }
-        PosMeet::Merged(MapSig { fields })
+        let mut domains = a.domains;
+        for domain in MapDomain::ALL {
+            domains[domain] = types.intersect(a.domains[domain], b.domains[domain]);
+        }
+        PosMeet::Merged(MapSig { fields, domains })
     }
 }

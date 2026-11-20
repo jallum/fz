@@ -23757,8 +23757,9 @@ fn called_modules(settled: &Settled) -> Vec<String> {
 /// The built-in exceptions are library modules, defined when something names
 /// them. An uncaught exception is asked for its message through its module, so
 /// a program defines the exceptions it can raise: here the `KeyError` it
-/// writes and the five the library code it reaches can raise, and none of the
-/// other sixteen.
+/// writes and the four the library code it reaches can raise, and none of the
+/// other seventeen. `Exception.message` is called on the `KeyError` alone, so
+/// no module without `message/1` is a target of its call.
 #[test]
 fn a_program_defines_only_the_exception_modules_it_can_raise() {
     let settled = Drive::fixture(1152).settle();
@@ -23769,8 +23770,7 @@ fn a_program_defines_only_the_exception_modules_it_can_raise() {
             "ArithmeticError",
             "FunctionClauseError",
             "KeyError",
-            "Protocol.UndefinedError",
-            "UndefinedFunctionError"
+            "Protocol.UndefinedError"
         ]
     );
 }

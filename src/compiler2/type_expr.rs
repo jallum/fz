@@ -57,9 +57,9 @@ pub enum TypeExpr {
         fields: Vec<(String, TypeExpr)>,
     },
     /// `%{k => v, …}` — the structural map type, parity with `[T]` for
-    /// lists. Keys stay syntactic here; resolution requires each to be a
-    /// literal atom or int (the exact-map `Ty`'s key domain).
-    Map(Vec<(TypeExpr, TypeExpr)>),
+    /// lists. Keys stay syntactic here; resolution reads each as a literal
+    /// field or as the kinds of key a type covers.
+    Map(Vec<MapTypePair>),
     /// `:ok`.
     AtomLit(String),
     /// `42`.
@@ -72,6 +72,26 @@ pub enum TypeExpr {
     Nil,
     /// `true` / `false` in type position (both denote the bool type).
     Bool,
+}
+
+/// One entry of a map type: `key => value`, `required(key) => value` or
+/// `optional(key) => value`. `required` is the default and writes the same
+/// entry as no wrapper.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MapTypePair {
+    pub key: TypeExpr,
+    pub optional: bool,
+    pub value: TypeExpr,
+}
+
+impl MapTypePair {
+    fn required(key: TypeExpr, value: TypeExpr) -> Self {
+        Self {
+            key,
+            optional: false,
+            value,
+        }
+    }
 }
 
 /// How an `@type` declaration wraps its inner type.
@@ -119,9 +139,9 @@ impl TypeExpr {
                 result.visit_bare_names(visit);
             }
             TypeExpr::StructRecord { fields, .. } => fields.iter().for_each(|(_, field)| field.visit_bare_names(visit)),
-            TypeExpr::Map(entries) => entries.iter().for_each(|(key, value)| {
-                key.visit_bare_names(visit);
-                value.visit_bare_names(visit);
+            TypeExpr::Map(entries) => entries.iter().for_each(|pair| {
+                pair.key.visit_bare_names(visit);
+                pair.value.visit_bare_names(visit);
             }),
             TypeExpr::EmptyList
             | TypeExpr::AtomLit(_)
@@ -421,11 +441,11 @@ impl<'a> TypeExprParser<'a> {
         Ok(TypeExpr::Map(pairs))
     }
 
-    fn parse_map_pair(&mut self) -> Result<(TypeExpr, TypeExpr), TypeExprError> {
+    fn parse_map_pair(&mut self) -> Result<MapTypePair, TypeExprError> {
         if let Tok::KwKey(name) = self.peek() {
             self.bump();
             let value = self.parse_union()?;
-            return Ok((TypeExpr::AtomLit(name.clone()), value));
+            return Ok(MapTypePair::required(TypeExpr::AtomLit(name.clone()), value));
         }
         if let Tok::Atom(name) | Tok::Ident(name) = self.peek()
             && matches!(self.tokens.get(self.pos + 1).map(|token| &token.tok), Some(Tok::Colon))
@@ -433,12 +453,32 @@ impl<'a> TypeExprParser<'a> {
             self.bump();
             self.bump();
             let value = self.parse_union()?;
-            return Ok((TypeExpr::AtomLit(name.clone()), value));
+            return Ok(MapTypePair::required(TypeExpr::AtomLit(name.clone()), value));
         }
-        let key = self.parse_union()?;
+        let (optional, key) = self.parse_map_key()?;
         self.expect(&Tok::FatArrow, "`=>` after map key")?;
         let value = self.parse_union()?;
-        Ok((key, value))
+        Ok(MapTypePair { key, optional, value })
+    }
+
+    /// A map key as written before `=>`: a type, or that type wrapped in
+    /// `required(…)` or `optional(…)`. The wrapper is read only in key
+    /// position, so it names no type anywhere else.
+    fn parse_map_key(&mut self) -> Result<(bool, TypeExpr), TypeExprError> {
+        let wrapper = match self.peek() {
+            Tok::Ident(word) if word == "optional" => Some(true),
+            Tok::Ident(word) if word == "required" => Some(false),
+            _ => None,
+        };
+        let wraps_a_key = matches!(self.tokens.get(self.pos + 1).map(|token| &token.tok), Some(Tok::LParen));
+        let Some(optional) = wrapper.filter(|_| wraps_a_key) else {
+            return Ok((false, self.parse_union()?));
+        };
+        self.bump();
+        self.bump();
+        let key = self.parse_union()?;
+        self.expect(&Tok::RParen, "`)` closing the map key")?;
+        Ok((optional, key))
     }
 
     fn parse_module_path(&mut self) -> Result<Vec<String>, TypeExprError> {

@@ -514,8 +514,8 @@ impl Types {
         if let Some(payload) = self.resource_payload_type(pattern) {
             self.collect_lower_occurrences(&payload, side, seen, out);
         }
-        for key in self.map_known_keys(pattern) {
-            if let Some(field) = self.field_lookup(pattern, &key) {
+        for slot in self.map_known_slots(pattern) {
+            if let Some(field) = self.map_slot_ty(pattern, &slot) {
                 self.collect_lower_occurrences(&field, side, seen, out);
             }
         }
@@ -760,22 +760,22 @@ impl Types {
         side: BindingSide,
         bounds: &mut MatchBounds,
     ) -> MatchWitness {
-        let witness_keys = self.map_known_keys(witness);
+        let witness_slots = self.map_known_slots(witness);
         let mut outcome = MatchWitness::Unknown;
-        for key in self.map_known_keys(pattern) {
-            let Some(pattern_field) = self.field_lookup(pattern, &key) else {
+        for slot in self.map_known_slots(pattern) {
+            let Some(pattern_field) = self.map_slot_ty(pattern, &slot) else {
                 continue;
             };
             if !self.has_vars(&pattern_field) {
                 continue;
             }
-            if !witness_keys.contains(&key) {
+            if !witness_slots.contains(&slot) {
                 if !self.has_vars(witness) && !self.witness_escapes_kind(pattern, witness, |d| d.maps.clear()) {
                     outcome = outcome.merge(MatchWitness::Invalid);
                 }
                 continue;
             }
-            if let Some(witness_field) = self.field_lookup(witness, &key) {
+            if let Some(witness_field) = self.map_slot_ty(witness, &slot) {
                 outcome = outcome.merge(self.collect_match_subst(&pattern_field, &witness_field, side, bounds));
             }
         }

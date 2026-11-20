@@ -31,7 +31,7 @@ use super::super::semantic::{
     ActivationAnalysis, CallSiteKey, CallSiteResolution, CallSiteSummary, CallSiteTargets, CallTargetSummary,
     SelectedCallee, TrimmedPlans, UndefinedFunction,
 };
-use super::super::types::{ClosureTarget, Ty, Types};
+use super::super::types::{ClosureTarget, MapTypeEntry, MapTypeKey, Ty, Types};
 use super::super::world::{BodyShape, World};
 use super::keying;
 use fz_engine::FatalError;
@@ -689,8 +689,8 @@ fn apply_step_evidence(
             let mut map_ty = base_ty;
             let mut keys = Vec::with_capacity(entries.len());
             let mut keys_are_literal = true;
-            for (key, item) in entries {
-                let Some(key) = lowered_map_key(world, values, key) else {
+            for (entry_key, item) in entries {
+                let Some(key) = lowered_map_key(world, values, entry_key) else {
                     return Ok(());
                 };
                 let Some(item_ty) = value_ty(values, *item) else {
@@ -700,9 +700,14 @@ fn apply_step_evidence(
                     map_ty = world.types_mut().refine_map_field(&map_ty, &key, &item_ty);
                     keys.push(key);
                 } else {
-                    map_ty = world.types_mut().map_top();
                     keys_are_literal = false;
-                    break;
+                    let Some(key_ty) = value_ty(values, entry_key.value) else {
+                        return Ok(());
+                    };
+                    map_ty = match world.types_mut().widen_map_at_key_type(&map_ty, &key_ty, &item_ty) {
+                        Some(widened) => widened,
+                        None => world.types_mut().map_top(),
+                    };
                 }
             }
             let types = world.types_mut();
@@ -771,16 +776,23 @@ fn apply_step_evidence(
             };
             values.insert(*value, lowered_unop_ty(world, *op, input));
         }
-        LoweredStep::MapIndex { value, base, key } => {
+        LoweredStep::MapIndex {
+            value,
+            base,
+            key: index_key,
+        } => {
             let Some(base_ty) = value_ty(values, *base) else {
                 return Ok(());
             };
-            let Some(key) = lowered_map_key(world, values, key) else {
+            let Some(key) = lowered_map_key(world, values, index_key) else {
                 return Ok(());
             };
-            let field_ty = key
-                .and_then(|key| world.types_mut().field_lookup(&base_ty, &key))
-                .unwrap_or_else(|| any_ty(world));
+            let read = match key {
+                Some(key) => world.types_mut().field_lookup(&base_ty, &key),
+                None => value_ty(values, index_key.value)
+                    .and_then(|key_ty| world.types_mut().domain_lookup(&base_ty, &key_ty)),
+            };
+            let field_ty = read.unwrap_or_else(|| any_ty(world));
             values.insert(*value, field_ty);
         }
         LoweredStep::FieldAccess { value, base, field } => {
@@ -3021,14 +3033,31 @@ fn list_ty(world: &mut World, values: &SemanticValues, items: &[ValueId], tail: 
 }
 
 fn map_ty(world: &mut World, values: &SemanticValues, entries: &[(LoweredMapKey, ValueId)]) -> Option<Ty> {
-    let mut fields = BTreeMap::new();
+    let mut written = Vec::with_capacity(entries.len());
     for (key, value) in entries {
-        let Some(key) = lowered_map_key(world, values, key)? else {
-            return Some(world.types_mut().map_top());
-        };
-        fields.insert(key, value_ty(values, *value)?);
+        let value = value_ty(values, *value)?;
+        match lowered_map_key(world, values, key)? {
+            Some(key) => written.push(MapTypeEntry {
+                key: MapTypeKey::Literal(key),
+                optional: false,
+                value,
+            }),
+            None => {
+                let key_ty = value_ty(values, key.value)?;
+                let Some(kinds) = world.types().map_key_kinds(&key_ty) else {
+                    return Some(world.types_mut().map_top());
+                };
+                let atoms = kinds.atoms.into_iter().map(MapTypeKey::Literal);
+                let domains = kinds.domains.into_iter().map(MapTypeKey::Domain);
+                written.extend(atoms.chain(domains).map(|key| MapTypeEntry {
+                    key,
+                    optional: true,
+                    value,
+                }));
+            }
+        }
     }
-    Some(world.types_mut().map_literal(&fields.into_iter().collect::<Vec<_>>()))
+    Some(world.types_mut().map_literal_of_entries(&written))
 }
 
 /// The map key at a lowered key position. Outer `None` = no evidence yet for

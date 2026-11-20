@@ -659,7 +659,7 @@ impl Types {
         }
         for conj in &mut d.maps {
             for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
-                for (j, (_, ty)) in sig.fields.iter_mut().enumerate() {
+                for (j, ty) in sig.child_tys_mut().enumerate() {
                     path.push(AddrStep::MapField(j as u16));
                     *ty = self.reference_remap_with(*ty, path, correlations, owner);
                     path.pop();

@@ -1,0 +1,54 @@
+#---
+# purpose: "A map type key may be a kind of key, a union of kinds, an optional(...) or required(...) literal, and a type may recurse through a map's values, as in Elixir"
+# oracle: self
+# oracle.stamp: ab258de16a7434dd
+#---
+defmodule Main do
+  @type m(value) :: %{atom() => value}
+  @type encode_map(v) :: %{(binary() | atom() | integer() | float()) => v}
+  @type decode_value() :: integer() | binary() | [decode_value()] | %{binary() => decode_value()}
+  @type decoders() :: %{optional(:array_start) => (term() -> term()), required(:x) => integer()}
+
+  @spec count(m(integer())) :: integer()
+  def count(map), do: map_size(map)
+
+  @spec keys(encode_map(integer())) :: [term()]
+  def keys(map), do: Enum.sort(Map.keys(map))
+
+  @spec depth(decode_value()) :: integer()
+  def depth(value) when is_list(value), do: 1 + Enum.reduce(value, 0, fn v, acc -> max(depth(v), acc) end)
+  def depth(value) when is_map(value), do: 1 + Enum.reduce(Map.values(value), 0, fn v, acc -> max(depth(v), acc) end)
+  def depth(_), do: 0
+
+  @spec fetch(m(integer()), atom()) :: integer() | nil
+  def fetch(map, key), do: map[key]
+
+  @spec built(binary(), integer()) :: %{binary() => integer()}
+  def built(key, value), do: %{key => value}
+
+  @spec bumped(%{binary() => integer()}, binary(), integer()) :: %{binary() => integer()}
+  def bumped(map, key, value), do: %{map | key => value}
+
+  @spec run(decoders()) :: integer()
+  def run(%{x: x} = decoders) do
+    case decoders do
+      %{array_start: f} -> f.(x)
+      _ -> x
+    end
+  end
+
+  def main() do
+    IO.inspect(count(%{a: 1, b: 2}))
+    IO.inspect(count(%{}))
+    IO.inspect(keys(%{"k" => 1, :a => 2, 3 => 3, 4.5 => 4}))
+    IO.inspect(depth(%{"a" => [1, %{"b" => "x"}], "c" => 2}))
+    IO.inspect(depth(7))
+    IO.inspect(run(%{x: 5}))
+    IO.inspect(run(%{x: 5, array_start: fn n -> n * 2 end}))
+    IO.inspect(fetch(%{a: 1}, :a))
+    IO.inspect(fetch(%{a: 1}, :b))
+    IO.inspect(built("k", 3))
+    IO.inspect(bumped(%{"k" => 1}, "k", 9))
+  end
+end
+Main.main()

@@ -276,21 +276,75 @@ fn an_int_keyed_map_type_resolves_using_the_literal_int_key() {
     );
 }
 
+/// Whether two type sources denote the same type, resolved in one world.
+fn same_type(left: &str, right: &str) -> bool {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    let left = resolve(&tel, &mut world, left).expect("left resolves");
+    let right = resolve(&tel, &mut world, right).expect("right resolves");
+    world.types_mut().is_equivalent(&left, &right)
+}
+
+/// Whether the type of `left` is a subtype of the type of `right`.
+fn within(left: &str, right: &str) -> bool {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    let left = resolve(&tel, &mut world, left).expect("left resolves");
+    let right = resolve(&tel, &mut world, right).expect("right resolves");
+    world.types_mut().is_subtype(&left, &right)
+}
+
 #[test]
-fn a_non_literal_map_key_is_a_clean_resolution_error() {
-    // `%{integer => atom}` — a homogeneous/parametric key the exact-map
-    // `Ty` cannot represent. This must fail cleanly rather than silently
-    // widen to `map_top`; a real homogeneous-map axis is a separate,
-    // unauthorized question.
+fn a_map_type_key_may_be_a_kind_of_key() {
+    // `%{binary => integer}` reads as optional pairs: a binary key, when
+    // present, holds an integer. It is not the open map and not the empty map.
+    assert!(within("%{binary => integer}", "map"));
+    assert!(!within("map", "%{binary => integer}"));
+    assert!(!same_type("%{binary => integer}", "%{}"));
+}
+
+#[test]
+fn a_map_type_key_union_names_one_domain_per_kind() {
+    assert!(same_type(
+        "%{(binary | integer) => atom}",
+        "%{binary => atom, integer => atom}",
+    ));
+}
+
+#[test]
+fn an_atom_union_key_names_optional_fields() {
+    assert!(same_type(
+        "%{(:a | :b) => integer}",
+        "%{optional(:a) => integer, optional(:b) => integer}",
+    ));
+}
+
+#[test]
+fn optional_and_required_wrappers_set_whether_a_field_may_be_absent() {
+    assert!(same_type("%{required(:x) => integer}", "%{x: integer}"));
+    assert!(!same_type("%{optional(:x) => integer}", "%{x: integer}"));
+    assert!(within("%{x: integer}", "%{optional(:x) => integer}"));
+    assert!(!within("%{optional(:x) => integer}", "%{x: integer}"));
+}
+
+#[test]
+fn a_required_field_and_an_optional_field_mix_in_one_map_type() {
+    assert!(within(
+        "%{optional(:array_start) => (term -> term), required(:x) => integer}",
+        "%{x: integer}"
+    ));
+}
+
+#[test]
+fn a_type_variable_is_not_a_kind_of_map_key() {
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new();
 
-    let error =
-        resolve(&tel, &mut world, "%{integer => atom}").expect_err("a non-literal map key should fail to resolve");
+    let error = resolve(&tel, &mut world, "%{k => atom}").expect_err("a type variable key is refused");
 
     assert!(
-        error.msg.contains("literal atom or int"),
-        "expected a literal-key diagnostic, got: {}",
+        error.msg.contains("not a kind of key"),
+        "expected a key-kind diagnostic, got: {}",
         error.msg
     );
 }

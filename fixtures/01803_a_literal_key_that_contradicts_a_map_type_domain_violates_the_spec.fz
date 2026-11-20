@@ -1,0 +1,15 @@
+#---
+# purpose: "A map with a required atom key whose value is an atom violates a spec whose map type holds integers under every atom key"
+# expect: diagnostic
+# diagnostic.code: spec/violation
+#---
+defmodule Main do
+  @spec total(%{atom() => integer()}) :: integer()
+  def total(map), do: map_size(map)
+
+  def main() do
+    IO.inspect(total(%{a: :b}))
+  end
+end
+
+Main.main()

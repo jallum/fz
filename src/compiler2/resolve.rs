@@ -28,9 +28,9 @@ use crate::type_expr::ResolvedSpecDecl;
 
 use super::identity::{NotedTypeDecl, TypeName};
 use super::namespace::Namespace;
-use super::type_expr::{NominalKind, TypeExpr, TypeExprError, parse_type_expr};
+use super::type_expr::{MapTypePair, NominalKind, TypeExpr, TypeExprError, parse_type_expr};
 use super::typedef::TypeDef;
-use super::types::{MapKey, Ty, TypeVarId, Types};
+use super::types::{MapKey, MapTypeEntry, MapTypeKey, Ty, TypeVarId, Types};
 use super::world::World;
 
 /// An `@spec` resolved against its captured namespace: hard compiler2 types in
@@ -474,13 +474,16 @@ impl World {
                 Ok(self.struct_record_ty(module_id, written))
             }
             TypeExpr::Map(pairs) => {
-                let mut fields = Vec::with_capacity(pairs.len());
-                for (key_expr, value_expr) in pairs {
-                    let map_key = self.resolve_map_key(key_expr)?;
-                    let value_ty = self.resolve_ty(namespace, value_expr, scope)?;
-                    fields.push((map_key, value_ty));
+                let mut entries = Vec::with_capacity(pairs.len());
+                for pair in pairs {
+                    let keys = self.resolve_map_keys(namespace, pair, scope)?;
+                    let value = self.resolve_ty(namespace, &pair.value, scope)?;
+                    entries.extend(
+                        keys.into_iter()
+                            .map(|(key, optional)| MapTypeEntry { key, optional, value }),
+                    );
                 }
-                Ok(self.types_mut().map(&fields))
+                Ok(self.types_mut().map_of_entries(&entries))
             }
             TypeExpr::AtomLit(name) => Ok(self.types_mut().atom_lit(name)),
             // The lattice cannot express a numeric singleton (Elixir's
@@ -612,25 +615,44 @@ impl World {
         ));
     }
 
-    /// A `%{k => v}` key must be a literal atom or int — the exact-map
-    /// `Ty`'s only key domain. This reads the key straight off the
-    /// syntactic literal rather than resolving it to a `Ty` first: the
-    /// lattice keeps no numeric singletons (`Types::as_int_singleton` is
-    /// always `None`, by design — see its doc comment), so a `Ty` built
-    /// from an `IntLit` has already forgotten the literal's value. Any
-    /// other key shape (a name, a homogeneous key type, a nested
-    /// structure, …) cannot be represented by today's exact map and is a
-    /// clean resolution error, not a silent `map_top` fallback.
-    fn resolve_map_key(&self, key_expr: &TypeExpr) -> Result<MapKey, TypeExprError> {
-        match key_expr {
-            TypeExpr::AtomLit(name) => Ok(MapKey::Atom(name.clone())),
-            TypeExpr::IntLit(value) => Ok(MapKey::Int(*value)),
-            _ => Err(TypeExprError {
-                msg: "a map type key must be a literal atom or int (e.g. `%{ok: T}` or `%{1 => T}`); \
-                      a non-literal key type is not yet representable"
-                    .to_string(),
-                span: Span::DUMMY,
-            }),
+    /// The keys one map type entry writes, each with whether it is optional.
+    ///
+    /// A literal atom or int key names a field, required unless the entry
+    /// wraps it in `optional(…)`. It is read off the syntactic literal rather
+    /// than resolved to a `Ty`: the lattice keeps no numeric singletons
+    /// (`Types::as_int_singleton` is always `None`, by design), so a `Ty`
+    /// built from an `IntLit` has already forgotten the literal's value.
+    ///
+    /// Any other key is a type, and the entry reads as optional pairs, as
+    /// Elixir's type checker does: the atoms the type names are optional
+    /// fields, and every other kind of key it covers is a domain. A key that
+    /// is no kind of key, such as a type variable, is refused.
+    fn resolve_map_keys(
+        &mut self,
+        namespace: Namespace,
+        pair: &MapTypePair,
+        scope: &mut TypeScope<'_>,
+    ) -> Result<Vec<(MapTypeKey, bool)>, TypeExprError> {
+        match &pair.key {
+            TypeExpr::AtomLit(name) => Ok(vec![(MapTypeKey::Literal(MapKey::Atom(name.clone())), pair.optional)]),
+            TypeExpr::IntLit(value) => Ok(vec![(MapTypeKey::Literal(MapKey::Int(*value)), pair.optional)]),
+            key_expr => {
+                let key = self.resolve_ty(namespace, key_expr, scope)?;
+                let Some(kinds) = self.types_mut().map_key_kinds(&key) else {
+                    return Err(TypeExprError {
+                        msg: "a map type key must be a literal or a type of keys; \
+                              a type variable or a protocol is not a kind of key"
+                            .to_string(),
+                        span: match key_expr {
+                            TypeExpr::Name { span, .. } => *span,
+                            _ => Span::DUMMY,
+                        },
+                    });
+                };
+                let atoms = kinds.atoms.into_iter().map(MapTypeKey::Literal);
+                let domains = kinds.domains.into_iter().map(MapTypeKey::Domain);
+                Ok(atoms.chain(domains).map(|key| (key, true)).collect())
+            }
         }
     }
 }

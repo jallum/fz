@@ -54,7 +54,8 @@ pub enum AddrStep {
     Elem,
     /// The payload of the resource at the current address.
     Payload,
-    /// Field `j` (by position) of the map at the current address.
+    /// Child `j` (by position) of the map at the current address: its fields
+    /// in key order, then its domains.
     MapField(u16),
     /// Disambiguator for the `k`-th variable when a single node carries a
     /// union of several variables (rare in signatures).
@@ -569,7 +570,7 @@ impl Types {
     ) {
         for ci in 0..self.descr(&ty).maps.len() {
             for si in 0..self.descr(&ty).maps[ci].sig_count() {
-                let children: Vec<Ty> = self.descr(&ty).maps[ci].sig(si).fields.values().copied().collect();
+                let children: Vec<Ty> = self.descr(&ty).maps[ci].sig(si).child_tys().collect();
                 let remapped: Vec<Ty> = children
                     .iter()
                     .enumerate()
@@ -579,7 +580,7 @@ impl Types {
                     .collect();
                 if remapped != children {
                     let sig = self.owned_copy(changed, ty).maps[ci].sig_mut(si);
-                    for (field, remapped) in sig.fields.values_mut().zip(remapped) {
+                    for (field, remapped) in sig.child_tys_mut().zip(remapped) {
                         *field = remapped;
                     }
                 }
