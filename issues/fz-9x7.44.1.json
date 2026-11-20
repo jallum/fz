@@ -22,11 +22,15 @@
     {
       "text": "Shared pair definition agreed with GC's C1 (fz-9x7.11.2), 2026-11-20: #[repr(C)] pub struct Stored { pub word: u64, pub kind: u64 } in any_value.rs; word = AnyValue::raw(), kind = ValueKind tag zero-extended; Stored::of / Stored::value inline(always), Stored::value is #807's stored_value moved there. C1 uses forward(word: u64, kind: ValueKind) -\u003e u64 internally. Whichever builds first adds the type and points #807's entries at it; the other rebases. Recorded on the collector page's C1 row (https://claude.ai/artifact/BB1FpQ1Cf7Jd5spZeLEWtg).",
       "timestamp": "2026-11-20T19:56:44Z"
+    },
+    {
+      "text": "Re-sequenced by the user 2026-11-20: blocked by fz-9x7.44.8 (S2) instead of #807; two-word returns plus the JIT test come after generated code can carry a pair. Each family's results are their own tickets after this one.",
+      "timestamp": "2026-11-20T20:47:42Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "A runtime entry answers a value that can be a number as its stored word and its kind",
   "type": "task",
-  "updated_at": "2026-11-20T20:47:37Z"
+  "updated_at": "2026-11-20T20:47:42Z"
 }
