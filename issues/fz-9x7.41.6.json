@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-20T19:01:19Z",
+  "description": "Follow-up to fz-9x7.41.4 (I4). User (verbatim, relayed by GC 2026-11-20): \"we should shore up the gaps in I4, if they're necessary to continue.\" Does not block I5 or the fz-9x7.11 collector steps; filed at the end of the epic.\n\nRust enters receive dispatch bodies with the process as an ordinary argument, not in the pinned register emit_place reads, so their boxes still call fz_box_*_for_any. ring makes 300,000 of them (~6M instructions, ~0.65% of ring). First step, on paper: should emit_place take the body's process value, or should the bodies enter with the process pinned? Related: fz-nml.9.5 (receive dispatch reuses native guard lowering). Owner: GC.",
+  "id": "fz-9x7.41.6",
+  "labels": [],
+  "parent": "fz-9x7.41",
+  "priority": 3,
+  "status": "open",
+  "title": "A box made in a receive dispatch body is placed inline",
+  "type": "task",
+  "updated_at": "2026-11-20T19:01:19Z"
+}
