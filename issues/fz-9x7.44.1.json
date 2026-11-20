@@ -4,7 +4,6 @@
     "fz-sc8.192.8"
   ],
   "blocks": [
-    "fz-9x7.44.2",
     "fz-9x7.44.3",
     "fz-9x7.44.4",
     "fz-9x7.44.5",
@@ -34,5 +33,5 @@
   "status": "open",
   "title": "A runtime entry answers a value that can be a number as its stored word and its kind",
   "type": "task",
-  "updated_at": "2026-11-20T20:47:21Z"
+  "updated_at": "2026-11-20T20:47:34Z"
 }
