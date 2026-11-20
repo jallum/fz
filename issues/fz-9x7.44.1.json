@@ -9,7 +9,8 @@
     "fz-9x7.44.11",
     "fz-9x7.44.12",
     "fz-9x7.44.13",
-    "fz-9x7.44.14"
+    "fz-9x7.44.14",
+    "fz-9x7.44.15"
   ],
   "created": "2026-11-20T19:54:47Z",
   "description": "User approved page \"Scalars without addresses\" (https://claude.ai/artifact/6jYdi5cw1d27CZC85xkJih, From: Callables) on 2026-11-20, relayed by Callables. Owner: Callables. S1.0. First: a JIT test of a two-I64 return under apple_aarch64 and system_v, checking both words. Then stored_value as an ExternTy return (prim.rs return match; an R type for ir_interp register_banks), native and interpreter paths; the interpreter's as_ref_word boxing ends at these calls. Report any entry the 6-slot MAX_INTERP_EXTERN_ARGS limit refuses.",
@@ -38,5 +39,5 @@
   "status": "open",
   "title": "A runtime entry answers a value that can be a number as its stored word and its kind",
   "type": "task",
-  "updated_at": "2026-11-20T20:47:50Z"
+  "updated_at": "2026-11-20T20:47:51Z"
 }
