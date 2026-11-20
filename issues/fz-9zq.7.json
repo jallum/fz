@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-15T03:40:19Z",
@@ -14,8 +14,8 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "A generated lambda has a source of its own",
   "type": "task",
-  "updated_at": "2026-11-20T18:48:59Z"
+  "updated_at": "2026-11-20T18:49:24Z"
 }
