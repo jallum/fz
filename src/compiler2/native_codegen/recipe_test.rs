@@ -486,6 +486,7 @@ fn every_row_is_proved_against_its_runtime_function() {
         .map(|proof| proof.symbol)
         .chain(cell_proofs().iter().map(|proof| proof.symbol))
         .chain(box_proofs().iter().map(|proof| proof.symbol))
+        .chain(REUSE_SYMBOLS)
         .collect();
     let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
     let proved: HashSet<&str> = proved
@@ -1457,4 +1458,425 @@ fn only_the_float_row_can_reach_the_runtime_function_for_a_value_it_refuses() {
             proof.symbol
         );
     }
+}
+
+// List reuse rows decide between the source cell and a new one. They are
+// proved on every head kind, against a tail that is the source's, another
+// list or empty, with the source shared and not, with and without permission
+// to rewrite, and with a tip that has room and one that has none.
+
+const REUSE_SYMBOLS: [&str; 2] = [REUSE_REF_HEAD, "fz_list_reuse_or_cons_parts"];
+
+/// The source cell: an int head 1 over the tail, with the tail's cells and
+/// the other tail a case may hand over.
+struct ReuseWorld {
+    source: AnyValueRef,
+    tail: AnyValueRef,
+    other_tail: AnyValueRef,
+    watched: Vec<*const u8>,
+}
+
+fn reuse_world(heap: &mut Heap, shared: bool) -> ReuseWorld {
+    let (tail, mut watched) = int_list(heap, 2);
+    let (other_tail, others) = int_list(heap, 1);
+    let source = heap.alloc_list_cons_int(1, tail).expect("a source cell");
+    if shared {
+        heap.mark_published_ref_aliased(source).expect("a shared source");
+    }
+    watched.insert(0, list_address(source));
+    watched.extend(others);
+    ReuseWorld {
+        source,
+        tail,
+        other_tail,
+        watched,
+    }
+}
+
+/// A replacement head: the ref word that names it, and the objects it may
+/// have shared.
+struct ReuseHead {
+    name: &'static str,
+    /// Whether a parts call can hand this head over as a payload and a kind.
+    parts: bool,
+    make: fn(&mut Heap, &ReuseWorld) -> (AnyValueRef, Vec<*const u8>),
+}
+
+fn reuse_heads() -> Vec<ReuseHead> {
+    fn head(name: &'static str, make: fn(&mut Heap, &ReuseWorld) -> (AnyValueRef, Vec<*const u8>)) -> ReuseHead {
+        ReuseHead {
+            name,
+            parts: true,
+            make,
+        }
+    }
+    vec![
+        head("the source's own int", |heap, _| (int_ref(heap, 1), Vec::new())),
+        head("another int", |heap, _| (int_ref(heap, 2), Vec::new())),
+        head("a float", |heap, _| {
+            (heap.box_any_value_ref(AnyValue::float(1.5)), Vec::new())
+        }),
+        head("a reference box", |heap, _| {
+            (heap.box_any_value_ref(AnyValue::Opaque(ValueKind::REF, 9)), Vec::new())
+        }),
+        head("an atom", |_, _| (AnyValueRef::atom(7), Vec::new())),
+        head("a pid", |_, _| (AnyValueRef::pid(5).expect("a pid ref"), Vec::new())),
+        head("null", |_, _| (AnyValueRef::null(), Vec::new())),
+        head("the empty list", |_, _| (AnyValueRef::empty_list(), Vec::new())),
+        head("a bitstring", |heap, _| {
+            let bitstring = heap.alloc_bitstring(&[1, 2, 3], 24).ref_word();
+            let address = bitstring.bitstring_addr().expect("a bitstring") as *const u8;
+            (bitstring, vec![address])
+        }),
+        head("an unshared list", |heap, _| int_list(heap, 3)),
+        head("a list shared from its second cell", |heap, _| {
+            let (list, cells) = int_list(heap, 3);
+            let second = AnyValueRef::from_heap_object(ValueKind::LIST, cells[1]).expect("a list ref");
+            heap.mark_published_ref_aliased(second).expect("a shared tail");
+            (list, cells)
+        }),
+        head("a list shared whole", |heap, _| {
+            let (list, cells) = int_list(heap, 2);
+            heap.mark_published_ref_aliased(list).expect("a shared list");
+            (list, cells)
+        }),
+        head("a struct", |heap, _| {
+            let pair = heap.register_schema(Schema::tuple_of_arity(2));
+            let address = heap.alloc_struct(pair);
+            (
+                AnyValueRef::from_heap_object(ValueKind::STRUCT, address).expect("a struct ref"),
+                vec![address as *const u8],
+            )
+        }),
+        head("the source cell itself", |_, world| (world.source, Vec::new())),
+        ReuseHead {
+            name: "a literal list",
+            parts: false,
+            make: |heap, _| {
+                let (list, cells) = int_list(heap, 2);
+                (list.literal(), cells)
+            },
+        },
+    ]
+}
+
+#[derive(Clone, Copy, Debug)]
+enum ReuseTail {
+    Same,
+    Other,
+    Empty,
+}
+
+impl ReuseTail {
+    fn word(self, world: &ReuseWorld) -> u64 {
+        match self {
+            Self::Same => world.tail,
+            Self::Other => world.other_tail,
+            Self::Empty => AnyValueRef::empty_list(),
+        }
+        .raw_word()
+    }
+}
+
+/// One run's inputs. A parts call carries the head's payload word and kind.
+struct ReuseInputs {
+    source: u64,
+    head: u64,
+    head_kind: ValueKind,
+    tail: u64,
+    watched: Vec<*const u8>,
+}
+
+fn reuse_inputs(heap: &mut Heap, head: &ReuseHead, tail: ReuseTail, shared: bool, parts: bool) -> ReuseInputs {
+    let world = reuse_world(heap, shared);
+    let (value, mut watched) = (head.make)(heap, &world);
+    let tail_word = tail.word(&world);
+    let mut all = world.watched.clone();
+    all.append(&mut watched);
+    ReuseInputs {
+        source: world.source.raw_word(),
+        head: if parts {
+            value.storage_raw().expect("a head payload")
+        } else {
+            value.raw_word()
+        },
+        head_kind: value.tag(),
+        tail: tail_word,
+        watched: all,
+    }
+}
+
+/// Everything a run leaves that the two runs must agree on.
+#[derive(Debug, PartialEq, Eq)]
+struct ReuseLeft {
+    result: u64,
+    /// Whether the answer is a cell the call placed.
+    fresh: bool,
+    words: Vec<[u64; 2]>,
+    answer: [u64; 2],
+    tip_used: usize,
+    tip_capacity: usize,
+    tip_changed: bool,
+    object_count: u64,
+    list_cons: (u64, u64),
+    total: (u64, u64),
+    retention: (u64, u64),
+    binaries_shared: u64,
+}
+
+fn run_reuse(
+    tip: Tip,
+    schemas: &Rc<RefCell<SchemaRegistry>>,
+    build: impl FnOnce(&mut Heap) -> ReuseInputs,
+    run: impl FnOnce(*mut Process, &ReuseInputs) -> u64,
+) -> ReuseLeft {
+    let mut process = Box::new(Process::new(schemas.clone()));
+    let inputs = build(&mut process.heap);
+    if tip == Tip::Full {
+        while tip_of(&process).1 - (heap_field(&process, INLINE_ALLOC_LAYOUT.bump_top) - tip_of(&process).0) >= 16 {
+            process.heap.alloc(16);
+        }
+    }
+    let before = tip_of(&process);
+    let result = run(&mut *process, &inputs);
+    let after = tip_of(&process);
+    let blocks = [before, after];
+    let stats = process.heap.alloc_stats_snapshot();
+    let address = AnyValueRefPacking::current().raw_address(result) as *const u8;
+    ReuseLeft {
+        result: rebased(result, blocks),
+        fresh: result != inputs.source,
+        words: inputs
+            .watched
+            .iter()
+            .map(|object| words_at(*object).map(|word| rebased(word, blocks)))
+            .collect(),
+        answer: words_at(address).map(|word| rebased(word, blocks)),
+        tip_used: heap_field(&process, INLINE_ALLOC_LAYOUT.bump_top) - after.0,
+        tip_capacity: after.1,
+        tip_changed: before != after,
+        object_count: heap_field(&process, INLINE_ALLOC_LAYOUT.alloc_count) as u64,
+        list_cons: (stats.list_cons.allocs, stats.list_cons.bytes),
+        total: (stats.total.allocs, stats.total.bytes),
+        retention: (process.list_retention_attempts, process.list_retention_hits),
+        binaries_shared: process.heap.binaries_shared(),
+    }
+}
+
+/// A reuse row compiled to a function of the source, head and tail words,
+/// with the head's kind and the permission to rewrite as constants.
+fn compile_reuse(lane: ReuseLane, kind: ValueKind, rewrite: bool) -> CompiledCell {
+    let mut backend = JitBackend::new();
+    let module = backend.module_mut();
+    let mut ctx = module.make_context();
+    let mut fbctx = FunctionBuilderContext::new();
+    let mut sig = module.make_signature();
+    sig.params = vec![ir::AbiParam::new(types::I64); 3];
+    sig.returns = vec![ir::AbiParam::new(types::I64)];
+    ctx.func.signature = sig.clone();
+    let sites = RefCell::new(AllocSites::declare(module).expect("declare the site counters"));
+    {
+        let mut b = FunctionBuilder::new(&mut ctx.func, &mut fbctx);
+        let entry = b.create_block();
+        b.append_block_params_for_function_params(entry);
+        b.switch_to_block(entry);
+        b.seal_block(entry);
+        let params = b.block_params(entry).to_vec();
+        let mut cache = CodegenCache::default();
+        let scope = SiteScope {
+            sites: &sites,
+            function: "recipe_parity",
+        };
+        let mut body = CodegenFn::new(&mut b, module, &mut cache, scope);
+        let process = body.process_arg();
+        let permission = body.b.ins().iconst(types::I64, i64::from(rewrite));
+        let answer = match lane {
+            ReuseLane::Ref => emit_reuse(
+                &mut body,
+                REUSE_REF_HEAD,
+                &[process, params[0], params[1], params[2], permission],
+            ),
+            ReuseLane::Parts => {
+                let kind = body.b.ins().iconst(types::I64, i64::from(kind.tag()));
+                emit_reuse(
+                    &mut body,
+                    "fz_list_reuse_or_cons_parts",
+                    &[process, params[0], params[1], kind, params[2], permission],
+                )
+            }
+        };
+        body.b.ins().return_(&[answer]);
+        b.finalize(module.target_config());
+    }
+    let id = module
+        .declare_function("recipe_parity_reuse", Linkage::Export, &sig)
+        .expect("declare the reuse function");
+    module.define_function(id, &mut ctx).expect("define the reuse function");
+    let (counts_id, registered) = sites.into_inner().define(module).expect("define the site counters");
+    assert_eq!(registered.len(), 1, "one placement is one site");
+    assert_eq!(registered[0].kind, HeapAllocKind::ListCons);
+    assert_eq!(registered[0].bytes, 16);
+    module.finalize_definitions().expect("finalize the reuse function");
+    let code = module.get_finalized_function(id);
+    let (counts, _) = module.get_finalized_data(counts_id);
+    CompiledCell {
+        code,
+        counts: counts.cast(),
+        _backend: backend,
+    }
+}
+
+/// What a run of the whole matrix saw, so the proof can say it was not vacuous.
+#[derive(Default)]
+struct ReuseCoverage {
+    hits_unchanged: u64,
+    hits_rewritten: u64,
+    fresh_on_alias: u64,
+    fresh_without_permission: u64,
+    shared_head: u64,
+    head_miss: u64,
+    tail_miss: u64,
+}
+
+/// A reuse row, run on heaps over every head, tail, source state, permission
+/// and tip, answers the cell its runtime function answers and leaves the heap
+/// as it leaves it: the cells' words, the tip, the statistics, the retention
+/// counters and the binaries shared.
+#[test]
+fn every_list_reuse_row_leaves_the_heap_its_runtime_function_leaves() {
+    let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
+    let mut coverage = ReuseCoverage::default();
+    for lane in [ReuseLane::Ref, ReuseLane::Parts] {
+        let parts = lane == ReuseLane::Parts;
+        for head in reuse_heads().iter().filter(|head| head.parts || !parts) {
+            let kind = {
+                let mut probe = Box::new(Process::new(schemas.clone()));
+                let world = reuse_world(&mut probe.heap, false);
+                (head.make)(&mut probe.heap, &world).0.tag()
+            };
+            for rewrite in [false, true] {
+                let compiled = compile_reuse(lane, kind, rewrite);
+                let mut fresh_runs = 0;
+                for tail in [ReuseTail::Same, ReuseTail::Other, ReuseTail::Empty] {
+                    for shared in [false, true] {
+                        for tip in [Tip::Roomy, Tip::Full] {
+                            let build = |heap: &mut Heap| reuse_inputs(heap, head, tail, shared, parts);
+                            let reference = |process: *mut Process, inputs: &ReuseInputs| match lane {
+                                ReuseLane::Ref => {
+                                    let head = AnyValueRef::from_raw_word(inputs.head).expect("a head ref");
+                                    fz_list_reuse_or_cons_parts(
+                                        process,
+                                        inputs.source,
+                                        head.storage_raw().expect("a head payload"),
+                                        u64::from(head.tag().tag()),
+                                        inputs.tail,
+                                        rewrite as u64,
+                                    )
+                                }
+                                ReuseLane::Parts => fz_list_reuse_or_cons_parts(
+                                    process,
+                                    inputs.source,
+                                    inputs.head,
+                                    u64::from(inputs.head_kind.tag()),
+                                    inputs.tail,
+                                    rewrite as u64,
+                                ),
+                            };
+                            let expected = run_reuse(tip, &schemas, build, reference);
+                            let inline = run_reuse(tip, &schemas, build, |process, inputs| unsafe {
+                                pinned_abi::call3(compiled.code, process, inputs.source, inputs.head, inputs.tail)
+                                    as u64
+                            });
+                            let name = format!(
+                                "{lane:?} on {} over {tail:?}, shared {shared}, rewrite {rewrite}, {tip:?} tip",
+                                head.name
+                            );
+                            assert_eq!(inline, expected, "{name}: inline against the runtime function");
+                            assert_eq!(
+                                inline.tip_changed,
+                                inline.fresh && tip == Tip::Full,
+                                "{name}: the tip moves only for a new cell with no room"
+                            );
+                            fresh_runs += u64::from(inline.fresh);
+                            let (attempts, hits) = inline.retention;
+                            assert_eq!(attempts, 1, "{name}: one attempt");
+                            assert_eq!(hits, u64::from(!inline.fresh), "{name}: a hit is a reused cell");
+                            coverage.note(&inline, &expected, rewrite, shared, head.name, tail);
+                        }
+                    }
+                }
+                let counted = unsafe { *compiled.counts };
+                assert_eq!(counted, fresh_runs, "{lane:?} counts its site once per new cell");
+            }
+        }
+    }
+    coverage.assert_complete();
+}
+
+impl ReuseCoverage {
+    fn note(
+        &mut self,
+        inline: &ReuseLeft,
+        _expected: &ReuseLeft,
+        rewrite: bool,
+        shared: bool,
+        head: &str,
+        tail: ReuseTail,
+    ) {
+        let same_head = head == "the source's own int";
+        let same_tail = matches!(tail, ReuseTail::Same);
+        if same_head && same_tail {
+            self.hits_unchanged += u64::from(!inline.fresh);
+        }
+        if !same_head || !same_tail {
+            if !inline.fresh {
+                self.hits_rewritten += 1;
+            } else if rewrite && shared {
+                self.fresh_on_alias += 1;
+            } else if !rewrite {
+                self.fresh_without_permission += 1;
+            }
+        }
+        self.head_miss += u64::from(!same_head && same_tail);
+        self.tail_miss += u64::from(same_head && !same_tail);
+        self.shared_head += u64::from(matches!(head, "an unshared list" | "a struct" | "a bitstring"));
+    }
+
+    fn assert_complete(&self) {
+        assert!(self.hits_unchanged > 0, "no run reused an unchanged cell");
+        assert!(self.hits_rewritten > 0, "no run rewrote a cell in place");
+        assert!(self.fresh_on_alias > 0, "no run replaced a shared source");
+        assert!(
+            self.fresh_without_permission > 0,
+            "no run replaced for want of permission"
+        );
+        assert!(
+            self.head_miss > 0 && self.tail_miss > 0,
+            "a miss on the head and one on the tail"
+        );
+        assert!(self.shared_head > 0, "no run shared a head");
+    }
+}
+
+/// A head that is the source cell itself is shared before the alias bit is
+/// read, so an unshared source cannot be rewritten to hold itself.
+#[test]
+fn a_source_that_is_its_own_new_head_is_replaced_not_rewritten() {
+    let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
+    let compiled = compile_reuse(ReuseLane::Ref, ValueKind::LIST, true);
+    let heads = reuse_heads();
+    let head = heads
+        .iter()
+        .find(|head| head.name == "the source cell itself")
+        .expect("a head");
+    let left = run_reuse(
+        Tip::Roomy,
+        &schemas,
+        |heap| reuse_inputs(heap, head, ReuseTail::Same, false, false),
+        |process, inputs| unsafe {
+            pinned_abi::call3(compiled.code, process, inputs.source, inputs.head, inputs.tail) as u64
+        },
+    );
+    assert!(left.fresh, "the source became shared, so a new cell holds it");
+    assert_eq!(left.retention, (1, 0));
 }

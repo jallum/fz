@@ -29,6 +29,13 @@
 //! `Heap::alloc_struct_unwritten` and `Heap::alloc_closure`, and a call site
 //! asks for one through [`emit_object`].
 //!
+//! The two list-reuse rows, `fz_list_reuse_or_cons_parts` and the same function
+//! applied to a head given as a ref word ([`REUSE_REF_HEAD`]), answer a list cell that is either the source
+//! cell or a new one. They are asked for through [`emit_reuse`], which reads
+//! the head's kind and the rewrite permission as constants. The test compares
+//! the answer, the cells' words, the retention counters and everything a
+//! placement leaves.
+//!
 //! The scalar boxes, `fz_box_int_for_any`, `fz_box_float_for_any` and
 //! `fz_box_opaque_for_any`, are allocation rows too, asked for through
 //! [`emit_box`]. A row is for a body compiled code runs in the pinned register;
@@ -52,6 +59,7 @@
 
 use super::inline_object::{Placed, emit_closure, emit_struct};
 use super::list_cell::{HeadLane, emit_list_cell};
+use super::list_reuse::{ReuseLane, emit_list_reuse};
 use super::scalar_box::{BoxLane, emit_scalar_box};
 use super::*;
 use cranelift_codegen::ir::{
@@ -66,10 +74,11 @@ use fz_runtime::any_value::{
 use fz_runtime::heap::{Heap, HeapAllocKind};
 use fz_runtime::ir_runtime::{
     fz_box_float_for_any, fz_box_int_for_any, fz_box_opaque_for_any, fz_list_cons_any, fz_list_cons_atom,
-    fz_list_cons_float, fz_list_cons_int, fz_op_abs_f, fz_op_add_ii, fz_op_eq_ff, fz_op_eq_ii, fz_op_gt_ff,
-    fz_op_gt_ii, fz_op_gte_ff, fz_op_gte_ii, fz_op_identical_ii, fz_op_lt_ff, fz_op_lt_ii, fz_op_lte_ff, fz_op_lte_ii,
-    fz_op_mul_ii, fz_op_neg_f, fz_op_neg_i, fz_op_neq_ff, fz_op_neq_ii, fz_op_not_identical_ii, fz_op_sub_ii,
-    fz_struct_schema_id_ref, fz_truthy_ref, fz_type_of, fz_unbox_atom, fz_unbox_int, fz_value_eq_raw_const,
+    fz_list_cons_float, fz_list_cons_int, fz_list_reuse_or_cons_parts, fz_op_abs_f, fz_op_add_ii, fz_op_eq_ff,
+    fz_op_eq_ii, fz_op_gt_ff, fz_op_gt_ii, fz_op_gte_ff, fz_op_gte_ii, fz_op_identical_ii, fz_op_lt_ff, fz_op_lt_ii,
+    fz_op_lte_ff, fz_op_lte_ii, fz_op_mul_ii, fz_op_neg_f, fz_op_neg_i, fz_op_neq_ff, fz_op_neq_ii,
+    fz_op_not_identical_ii, fz_op_sub_ii, fz_struct_schema_id_ref, fz_truthy_ref, fz_type_of, fz_unbox_atom,
+    fz_unbox_int, fz_value_eq_raw_const,
 };
 
 /// What a recipe computed, in one of the three shapes.
@@ -88,6 +97,7 @@ type InPlace = fn(&mut FunctionBuilder<'_>, &[ir::Value]) -> Option<Emitted>;
 enum Emit {
     InPlace(InPlace),
     Cell(HeadLane),
+    Reuse(ReuseLane),
     Struct,
     Closure,
     Box(BoxLane),
@@ -142,6 +152,22 @@ macro_rules! list_cell {
             },
             arity: 3,
             emit: Emit::Cell($lane),
+        }
+    };
+}
+
+/// An allocation row: the runtime function answers the cell that holds a
+/// rebuilt list, reusing the source cell or placing a new one. The head
+/// reaches it as `$lane` says.
+macro_rules! list_reuse {
+    ($item:ident($($param:ident),+), $lane:expr) => {
+        Recipe {
+            symbol: {
+                let _: unsafe extern "C" fn($(recipe!(@lane $param)),+) -> _ = $item;
+                stringify!($item)
+            },
+            arity: count!($($param)+),
+            emit: Emit::Reuse($lane),
         }
     };
 }
@@ -206,6 +232,11 @@ macro_rules! overflowing {
     };
 }
 
+/// The reuse row whose head is a ref word. Its definition is
+/// `fz_list_reuse_or_cons_parts` applied to the payload word and kind the ref
+/// word decodes to (`AnyValueRef::storage_raw` and `tag`).
+pub(crate) const REUSE_REF_HEAD: &str = "fz_list_reuse_or_cons_parts(ref head)";
+
 pub(crate) const RECIPES: &[Recipe] = &[
     // Helpers compiled code calls on a ref word.
     recipe!(fz_type_of(word), |b| {
@@ -268,6 +299,19 @@ pub(crate) const RECIPES: &[Recipe] = &[
     list_cell!(fz_list_cons_float(process, head, tail), HeadLane::Float),
     list_cell!(fz_list_cons_atom(process, head, tail), HeadLane::Atom),
     list_cell!(fz_list_cons_any(process, head, tail), HeadLane::Ref),
+    // List cells rebuilt from the cell they replace.
+    Recipe {
+        symbol: {
+            let _: unsafe extern "C" fn(_, _, _, _, _, _) -> _ = fz_list_reuse_or_cons_parts;
+            REUSE_REF_HEAD
+        },
+        arity: 5,
+        emit: Emit::Reuse(ReuseLane::Ref),
+    },
+    list_reuse!(
+        fz_list_reuse_or_cons_parts(process, list, head_raw, head_kind, tail, rewrite),
+        ReuseLane::Parts
+    ),
     // Scalar boxes.
     scalar_box!(fz_box_int_for_any(process, raw), BoxLane::Int),
     scalar_box!(fz_box_float_for_any(process, raw), BoxLane::Float),
@@ -304,8 +348,10 @@ pub(crate) fn emit_inline(b: &mut FunctionBuilder<'_>, symbol: &str, args: &[ir:
     );
     match row.emit {
         Emit::InPlace(emit) => emit(b, args),
-        Emit::Cell(_) | Emit::Struct | Emit::Closure | Emit::Box(_) => {
-            panic!("`{symbol}` places an object; ask for it through `emit_cell`, `emit_box` or `emit_object`")
+        Emit::Cell(_) | Emit::Reuse(_) | Emit::Struct | Emit::Closure | Emit::Box(_) => {
+            panic!(
+                "`{symbol}` places an object; ask for it through `emit_cell`, `emit_reuse`, `emit_box` or `emit_object`"
+            )
         }
     }
 }
@@ -329,6 +375,37 @@ pub(crate) fn emit_cell<M: cranelift_module::Module>(
     match row.emit {
         Emit::Cell(lane) => emit_list_cell(body, lane, args),
         Emit::InPlace(_) => panic!("`{symbol}` computes in place; ask for it through `emit_inline`"),
+        Emit::Reuse(_) => panic!("`{symbol}` reuses or places a list cell; ask for it through `emit_reuse`"),
+        Emit::Struct | Emit::Closure => {
+            panic!("`{symbol}` places a struct or closure; ask for it through `emit_object`")
+        }
+        Emit::Box(_) => panic!("`{symbol}` places a scalar box; ask for it through `emit_box`"),
+    }
+}
+
+/// Answer the cell the runtime function `symbol` answers: the source cell
+/// reused, or a new cell placed. `args` are the function's, process first; the
+/// head kind of the parts row and the rewrite permission are constants. The
+/// site of a new cell is registered in the body's scope.
+pub(crate) fn emit_reuse<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, M>,
+    symbol: &str,
+    args: &[ir::Value],
+) -> ir::Value {
+    let row = recipe_for(symbol).unwrap_or_else(|| panic!("`{symbol}` has no recipe"));
+    assert_eq!(
+        args.len(),
+        row.arity,
+        "recipe `{symbol}` takes {} arguments, got {}",
+        row.arity,
+        args.len()
+    );
+    match row.emit {
+        Emit::Reuse(lane) => emit_list_reuse(body, lane, args, |body, value| {
+            constant_of(body.b, value).unwrap_or_else(|| panic!("`{symbol}` needs its kind and permission constant"))
+        }),
+        Emit::InPlace(_) => panic!("`{symbol}` computes in place; ask for it through `emit_inline`"),
+        Emit::Cell(_) => panic!("`{symbol}` places a list cell; ask for it through `emit_cell`"),
         Emit::Struct | Emit::Closure => {
             panic!("`{symbol}` places a struct or closure; ask for it through `emit_object`")
         }
@@ -356,6 +433,7 @@ pub(crate) fn emit_box<M: cranelift_module::Module>(
         Emit::Box(lane) => emit_scalar_box(body, lane, args),
         Emit::InPlace(_) => panic!("`{symbol}` computes in place; ask for it through `emit_inline`"),
         Emit::Cell(_) => panic!("`{symbol}` places a list cell; ask for it through `emit_cell`"),
+        Emit::Reuse(_) => panic!("`{symbol}` reuses or places a list cell; ask for it through `emit_reuse`"),
         Emit::Struct | Emit::Closure => {
             panic!("`{symbol}` places a struct or closure; ask for it through `emit_object`")
         }
@@ -396,7 +474,9 @@ pub(crate) fn emit_object<M: cranelift_module::Module>(
             );
             emit_closure(body, HeapAllocKind::Closure, header, count, args[5])
         }
-        Emit::InPlace(_) | Emit::Cell(_) | Emit::Box(_) => panic!("`{symbol}` does not place a struct or closure"),
+        Emit::InPlace(_) | Emit::Cell(_) | Emit::Reuse(_) | Emit::Box(_) => {
+            panic!("`{symbol}` does not place a struct or closure")
+        }
     }
 }
 

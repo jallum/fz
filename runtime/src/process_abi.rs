@@ -18,6 +18,11 @@ pub const PROCESS_DELIVERED_OFFSET: i32 = offset_of!(Process, delivered) as i32;
 pub const PROCESS_STRUCT_RETENTION_ATTEMPTS_OFFSET: i32 = offset_of!(Process, struct_retention_attempts) as i32;
 pub const PROCESS_STRUCT_RETENTION_HITS_OFFSET: i32 = offset_of!(Process, struct_retention_hits) as i32;
 
+/// The list retention counters, which a compiled list-cell reuse bumps
+/// without a runtime call.
+pub const PROCESS_LIST_RETENTION_ATTEMPTS_OFFSET: i32 = offset_of!(Process, list_retention_attempts) as i32;
+pub const PROCESS_LIST_RETENTION_HITS_OFFSET: i32 = offset_of!(Process, list_retention_hits) as i32;
+
 /// `Process::heap`; add a `heap::INLINE_ALLOC_LAYOUT` field offset to reach a
 /// heap field that inline allocation updates.
 pub const PROCESS_HEAP_OFFSET: i32 = offset_of!(Process, heap) as i32;
