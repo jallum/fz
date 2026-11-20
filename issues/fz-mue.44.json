@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-mue.8"
   ],
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-mue",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Enum.reduce over a list folds the list directly, as in Elixir",
   "type": "feature",
-  "updated_at": "2026-11-20T20:16:17Z"
+  "updated_at": "2026-11-20T21:58:37Z"
 }
