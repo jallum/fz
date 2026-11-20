@@ -67,6 +67,21 @@ defmodule IO do
     item
   end
 
+  @doc """
+  Returns the bytes of `iodata` as one binary: a binary is returned as it is,
+  and a list of bytes, binaries and lists of the same is joined.
+
+  Raises `ArgumentError` for anything that is not iodata.
+
+  ## Examples
+
+      IO.iodata_to_binary([?a, "bc", [100, 101]])
+      #=> "abcde"
+
+  """
+  @spec iodata_to_binary(iodata) :: binary
+  def iodata_to_binary(iodata), do: :erlang.iolist_to_binary(iodata)
+
   @spec to_chardata(any) :: binary
   defp to_chardata(list) when is_list(list), do: raise(%ArgumentError{message: "IO over chardata lists is not built"})
   defp to_chardata(other), do: Kernel.to_string(other)
