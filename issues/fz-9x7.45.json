@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-20T22:14:56Z",
+  "description": "Requested by the user, verbatim (relayed by Optimize 2026-11-20): \"file the TRMC gap as a ticket that Callables agent should handle at it's next opportunity.\" Owner: Callables, at its next opportunity.\n\nEvidence (Optimize's probe, 2026-11-20, release fz2 built 2026-11-18, fz2 run, 1,000,000 elements): no stack overflow, but continuation_allocs 2,000,261 and continuation_bytes 96,016,400, one 48-byte heap continuation per element per function. Tail recursion modulo cons would allocate none. Owned-cons reuse works: list_cons_allocs is 2,000,001, not 3M, because app relinks inc's private cells.\n\n```elixir\ndefmodule T do\n  def inc([]), do: []\n  def inc([h | t]), do: [h + 1 | inc(t)]\n  def app([], ys), do: ys\n  def app([h | t], ys), do: [h | app(t, ys)]\nend\n\ndef main() do\n  xs = Enum.to_list(1..1_000_000)\n  ys = T.inc(xs)\n  zs = T.app(ys, [0])\n  dbg(length(zs))\n  dbg(Process.heap_alloc_stats())\nend\n```\n\nThe docs already claim the mechanism: guides/memory.html:347-355 (\"builds the list forward with an O(1) continuation (tail recursion modulo cons)\") and README.md:362-366 (a callee whose list's eventual tail is known builds its cells pointing at that tail). The guide is also stale: ReturnDemand no longer exists (now ShapeDemand / ExecutableNeed), and fixtures/quicksort is now fixtures/01577_quicksort.\n\nFirst step: re-run the probe on a current develop binary, since fz-9x7's heap-continuation work may have moved it.\n\nDone when:\n- the probe shape on interp, run and build reports continuation_allocs independent of list length, with cells written front to back into the destination hole;\n- an oracle fixture pins that with heap_alloc_stats;\n- a bench A/B is done;\n- guides/memory.html, README and .agent/docs state the mechanism as built, with current names.",
+  "id": "fz-9x7.45",
+  "labels": [],
+  "parent": "fz-9x7",
+  "priority": 2,
+  "status": "open",
+  "title": "A body-recursive list builder fills its tail in place, with no continuation per element",
+  "type": "feature",
+  "updated_at": "2026-11-20T22:14:56Z"
+}
