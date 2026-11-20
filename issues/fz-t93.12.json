@@ -9,9 +9,15 @@
   "id": "fz-t93.12",
   "labels": [],
   "parent": "fz-t93",
+  "comments": [
+    {
+      "text": "Possibly related: fz-t93.26 (plan varies with agenda order).",
+      "timestamp": "2026-11-20T21:14:17Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Two executables with the same canon key are one executable",
   "type": "bug",
-  "updated_at": "2026-11-14T04:26:51Z"
+  "updated_at": "2026-11-20T21:14:17Z"
 }
