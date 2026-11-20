@@ -11,7 +11,7 @@
   "parent": "fz-9x7.44",
   "priority": 1,
   "status": "open",
-  "title": "List runtime entries take and answer a stored word and its kind",
+  "title": "List runtime entries take a stored word and its kind",
   "type": "task",
-  "updated_at": "2026-11-20T20:47:34Z"
+  "updated_at": "2026-11-20T20:47:38Z"
 }
