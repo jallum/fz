@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-20T20:31:53Z",
+  "description": "Found by Elixir Parity reviewing fz-mue.29 (2026-11-20); filed under the user's standing direction to put Elixir parity gaps on fz-mue. `struct!(KeyError, [{:__struct__, Other}, ...])`: Elixir raises ArgumentError when struct!/2 is given a __struct__ pair naming another module. fz's lib/kernel.fz skips the pair silently (put_declared_field!({:__struct__, _}, base)) and returns the struct. Done: the same call raises ArgumentError with Elixir's message on interp, run and build, pinned by an oracle fixture. Follows fz-3sy.21. Owner: Elixir Parity.",
+  "id": "fz-mue.46",
+  "labels": [],
+  "parent": "fz-mue",
+  "priority": 3,
+  "status": "open",
+  "title": "struct!/2 given a different __struct__ raises ArgumentError, as in Elixir",
+  "type": "bug",
+  "updated_at": "2026-11-20T20:31:53Z"
+}
