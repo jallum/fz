@@ -9,7 +9,7 @@
     "fz-9x7.15"
   ],
   "created": "2026-11-17T22:45:54Z",
-  "description": "Approved by the user 2026-11-17 (GC session, BEAM comparison on bench, fz develop vs BEAM 28.3). Investigation first.\nEvidence: enum copies 119.8 MB in 47 collections while allocating 36 MB; BEAM copies 4.3 MB in 3. GC time 39.9 ms vs 0.44 ms.\nCompare against BEAM's grow-to-fit young heap (erl_gc.c heap_sizes, the shrink rule at 1536). Feeds the fz-9x7.15 and fz-9x7.11 re-tests. Memory judged in in-use bytes (fz-9x7.16).",
+  "description": "Approved by the user 2026-11-17 (GC session) as an investigation; the user approved step 1 of the page (https://claude.ai/artifact/1oeVYNYedP8MCUMWSFWx1f, /Users/j5n/Workspace/fz-9x7.23.html) on 2026-11-20 (\"proceed\", relayed by GC). Owner: GC.\n\n## Lands\nR5: a young tip or to-space larger than SIZE_TABLE[31] is a chain of pooled table-max blocks. The exact-size and x1.2 path is deleted.\n\n## Measured (bench, 3 compiles per arm)\nCycles neutral everywhere; dist-full RSS 0.709, enum RSS 0.947; fanin RSS +10% from an idle pool with in-use bytes unchanged. Memory judged in in-use bytes (fz-9x7.16).\n\n## Context\ndevelop's enum now does 10 collections and 34 MB; a cold BEAM does about 80 collections, so the original 47-collection framing no longer holds. The budget rule (step 2: cap removal, folded with fz-9x7.14's floor and fz-9x7.12's pool bound into one young_target) belongs to fz-9x7.15. C2 and C1b were refuted and stay open for re-test. enum's 2x major trigger (23% of its copying) belongs to fz-9x7.11.10.",
   "id": "fz-9x7.23",
   "labels": [],
   "parent": "fz-9x7",
@@ -17,5 +17,5 @@
   "status": "in_progress",
   "title": "enum's young generation is sized so its live list is not copied over and over",
   "type": "task",
-  "updated_at": "2026-11-20T19:43:58Z"
+  "updated_at": "2026-11-20T20:49:38Z"
 }
