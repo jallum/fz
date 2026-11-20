@@ -20,11 +20,15 @@
     {
       "text": "Pair definition agreed with GC (C1, fz-9x7.11.2) on 2026-11-20: `#[repr(C)] pub struct Stored { pub word: u64, pub kind: u64 }` in runtime/src/any_value.rs. word = AnyValue::raw(); kind = ValueKind tag zero-extended to u64. Stored::of(AnyValue) and Stored::value(self) -\u003e AnyValue, both #[inline(always)]; value() is #807's stored_value moved here, keeping the cold panic. C1's forward is (word: u64, kind: ValueKind) -\u003e u64. Whichever of .44.1 and C1 builds first adds Stored and points #807's entries at it; the other rebases.",
       "timestamp": "2026-11-20T19:56:26Z"
+    },
+    {
+      "text": "Name settled with GC as `Stored` (same word as the codegen lane). The definition is on the C1 row of GC's collector page, https://claude.ai/artifact/BB1FpQ1Cf7Jd5spZeLEWtg, which is authoritative for both .44.1 and fz-9x7.11.2.",
+      "timestamp": "2026-11-20T19:56:37Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "A runtime entry answers a value that can be a number as its stored word and its kind",
   "type": "task",
-  "updated_at": "2026-11-20T19:56:26Z"
+  "updated_at": "2026-11-20T19:56:37Z"
 }
