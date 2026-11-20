@@ -142,7 +142,7 @@ fn frame_capture(frame: AnyValueRef) -> AnyValueRef {
 
 /// A collection moves everything the process holds into its heap: the
 /// runnable closure, the parked receive's frame with its capture and
-/// pinned value, the mailbox and the caller's transient values. Each is
+/// pinned value and the caller's transient values; the mailbox is no root. Each is
 /// forwarded and still reads as it did, so the parked receive still matches.
 #[test]
 fn collect_forwards_every_root_a_parked_process_holds() {
@@ -156,7 +156,8 @@ fn collect_forwards_every_root_a_parked_process_holds() {
     park_on(&mut process, body_capture, pinned);
     let frame = process.delivery.lock().park().expect("parked").frame;
     process.set_runnable_closure(runnable);
-    process.mailbox.push_back(mailbox_message);
+    let (segment, mailbox_message) = crate::sched::gift_copy_one(&mut process.heap, mailbox_message);
+    process.mailbox.push(mailbox_message, segment);
     let before = (
         pinned.list_addr().unwrap(),
         frame,
@@ -171,10 +172,10 @@ fn collect_forwards_every_root_a_parked_process_holds() {
     let park = delivery.park().expect("still parked");
     assert_ne!(park.frame, before.1, "frame moved");
     assert_ne!(process.runnable_closure(), Some(before.2), "runnable closure moved");
-    assert_ne!(
-        process.mailbox[0].list_addr().unwrap(),
+    assert_eq!(
+        process.mailbox.front().unwrap().list_addr().unwrap(),
         before.3,
-        "mailbox message moved"
+        "a message waiting in the mailbox is no root and stays where it is"
     );
     assert_ne!(transient[0].list_addr().unwrap(), before.4, "transient value moved");
     assert_ne!(
@@ -187,7 +188,7 @@ fn collect_forwards_every_root_a_parked_process_holds() {
         list_head(captured_list(process.runnable_closure().expect("runnable"))),
         4
     );
-    assert_eq!(list_head(process.mailbox[0]), 5);
+    assert_eq!(list_head(process.mailbox.front().unwrap()), 5);
     assert_eq!(list_head(transient[0]), 6);
     let probe = int_list(&mut process.heap, 1);
     assert!(
@@ -196,8 +197,8 @@ fn collect_forwards_every_root_a_parked_process_holds() {
         "the moved pinned value still matches"
     );
     assert_eq!(
-        stats.copied_objects, 7,
-        "each of the four roots moved with what it holds: the frame with its capture and pinned value, the runnable closure with its capture, two lists"
+        stats.copied_objects, 6,
+        "each of the three roots moved with what it holds, and the mailbox's message was not copied"
     );
 }
 

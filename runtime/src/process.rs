@@ -15,7 +15,7 @@ use crate::heap::AllocStat;
 use crate::term_hash::atom_key_hash;
 use std::cell::RefCell;
 use std::cmp::Ordering;
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::num::NonZeroU64;
 use std::ptr::null_mut;
 use std::rc::Rc;
@@ -27,6 +27,7 @@ use crate::delivery::DeliveryLock;
 use crate::exec_ctx::ExecCtx;
 use crate::handler_stack::HandlerStack;
 use crate::heap::{Footprint, GcStats, Heap, SIZE_TABLE, SchemaRegistry};
+use crate::mailbox::Mailbox;
 use crate::park::ParkRecord;
 
 pub const DEFAULT_REDUCTIONS_PER_QUANTUM: i32 = 4000;
@@ -126,7 +127,7 @@ pub struct Process {
     /// this in a local; on yield/halt boundaries the Runtime swaps state
     /// here. v1 only writes this on halt (next_frame = null).
     pub next_frame: *mut u8,
-    pub mailbox: VecDeque<AnyValueRef>,
+    pub mailbox: Mailbox,
     /// The one re-entry verb: a `(self)`-callable closure the scheduler
     /// resumes via the single `fz_resume` shim. It is either a continuation
     /// (halt continuation baked into its captures, from a receive hit or
@@ -711,7 +712,7 @@ impl Process {
             pid,
             state: ProcessState::New,
             next_frame: null_mut(),
-            mailbox: VecDeque::new(),
+            mailbox: Mailbox::default(),
             runnable: None,
             delivered: None,
             handlers: HandlerStack::default(),
@@ -857,8 +858,8 @@ impl Process {
     /// Collect this process's heap. The roots are everything the process
     /// holds into its heap, in one flat slice: the runnable closure, the park
     /// record's frame, a delivered handler,
-    /// the values the compiled handlers of the `try` bodies the process is inside capture, the mailbox and the
-    /// caller's `transient` values. Each holds its forwarded value on return.
+    /// the values the compiled handlers of the `try` bodies the process is inside capture and the caller's `transient` values. The mailbox is not a root: its messages wait
+    /// in gift segments outside the heap. Each holds its forwarded value on return.
     ///
     /// The delivery lock is held throughout, so a sender cannot probe the
     /// park record while its closures and pinned values move. Gifts waiting in
@@ -873,7 +874,6 @@ impl Process {
         }
         roots.extend(self.delivered.map(ClosureRef::as_ref));
         roots.extend(self.handlers.captures());
-        roots.extend(self.mailbox.iter().copied());
         roots.extend_from_slice(transient);
 
         let stats = self.heap.collect(&mut roots);
@@ -890,9 +890,6 @@ impl Process {
             self.delivered = Some(ClosureRef::new(next()));
         }
         self.handlers.set_captures(&mut std::iter::from_fn(|| Some(next())));
-        for message in self.mailbox.iter_mut() {
-            *message = next();
-        }
         for value in transient.iter_mut() {
             *value = next();
         }

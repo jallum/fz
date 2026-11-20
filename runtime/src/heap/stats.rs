@@ -275,6 +275,9 @@ pub struct GcStats {
     pub young_bytes: u64,
     /// The young bytes at which this collection was due.
     pub young_budget: u64,
+    /// The bytes of `young_bytes` that receives brought in: blocks of messages
+    /// grafted since the previous collection.
+    pub received_bytes: u64,
     /// Capacity of the shared binary buffers the heap made since its previous
     /// collection: what `should_gc` compared with `binary_budget`.
     pub young_binary_bytes: u64,

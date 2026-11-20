@@ -23,6 +23,7 @@ pub mod function_denotation;
 pub mod handler_stack;
 pub mod heap;
 pub mod ir_runtime;
+pub mod mailbox;
 pub mod module_name;
 pub mod off_heap;
 pub mod output;

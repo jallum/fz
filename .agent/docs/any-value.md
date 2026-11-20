@@ -872,7 +872,7 @@ The bit setter and link are private; shared cells cannot relink, and GC relocate
 the same logical tail without changing this invariant. A collection marks every
 cell it keeps (`ListCons::keep_across_collection`, from `cheney_trace_list`), and
 a gift copy marks every cell it writes (`link_list_tail`), so a cell in an old
-block (one a collection kept, or one a graft brought) is never rewritten in place
+block (one a collection kept) or in a message is never rewritten in place
 and never comes to point at a value allocated after it. A minor collection relies
 on this: it does not trace through old blocks.
 
@@ -893,19 +893,17 @@ every internal field write, owns publication. No structural runtime scan is adde
 
 Cross-process send copies into storage the receiver will own: the sender
 copies into a gift window on its own heap (`sched::gift_copy`), and the receiver
-grafts the segment at its next dispatch. Every list cell and struct the copy
-writes is shared from birth, because the grafted segment is old and an old cell is never
+holds the segment in its mailbox until a receive takes the message, and
+grafts it then. Every list cell and struct the copy
+writes is shared from birth, so a message's cells are never
 rewritten in place; copied container fields protect
 receiver-side sharing the same way. A copy keeps no record of what it has copied,
 as a send in BEAM does not, so a subterm reached twice arrives as two copies
 and nothing in a gift is aliased within it. The sender's own cells are not marked merely
-because a copy was sent. Self-send copies nothing and the runtime publishes nothing: the
-sender's own reference is pushed onto its mailbox (`sched::self_send`). The
-mailbox is then a second holder, and the compiler's call-site ownership rule is
-what protects it: `construct_call_ownership` (src/compiler2/jobs/body.rs) marks
-a send argument `Share` when the continuation retains a name that may alias it,
-and Share publishes the spine before the call on every path. The alias bit
-remains one-way within a heap.
+because a copy was sent. Self-send copies the message into a gift on the sender's own
+heap, as a send to another process does, and the segment waits in the sender's
+mailbox (`sched::self_send`), so the mailbox holds no reference to anything the
+sender holds. The alias bit remains one-way within a heap.
 
 A struct's shared mark is bit 4 of its header word
 (`STRUCT_HEADER_SHARED_MASK`). The schema id sits in the high 32 bits
@@ -967,8 +965,8 @@ counts each binary it marks in `binaries_shared`, reported on
 
 The process heap is a moving, generational Cheney collector
 (`runtime/src/heap/gc/`). Blocks have an age: the tip and the blocks allocation
-has parked since the last collection are young; blocks a collection filled with
-survivors and blocks a graft brought are old. A minor collection copies the
+has parked since the last collection, and the blocks a graft brought, are young;
+blocks a collection filled with survivors are old. A minor collection copies the
 reachable objects of the young blocks into fresh blocks, which become old, and
 leaves old objects where they are; a major collection copies every reachable
 object (`Heap::next_generation` chooses). Nothing old points at anything young:
@@ -1038,7 +1036,8 @@ destruction, and allocations made by another test do not enter either proof.
 Anything that outlives a scheduler or GC boundary is held as `AnyValueRef`,
 because the ref is self-describing — a scalar ref has no children, a heap ref is
 scanned by object layout, and sentinels have no children. The process mailbox is
-`VecDeque<AnyValueRef>` (`runtime/src/process.rs`); a parked receive
+a `Mailbox` (`runtime/src/mailbox.rs`), which is no root: every message waits in its
+gift segment outside the heap; a parked receive
 (`runtime/src/park.rs`) keeps its pinned inputs, per-outcome matcher outputs,
 and semantic/physical arguments as `Vec<AnyValueRef>`. Map construction carries its unpublished
 heap destination through the same value representation.
@@ -1055,11 +1054,12 @@ another.
 `any`, then calls `fz_send_ref(pid, msg_ref)`. The runtime
 (`src/exec/runtime.rs send_via`) never shares heap pointers across processes:
 the sender copies what the receiver will keep into a gift window on its own heap
-and queues the segment on the receiver's `in_queue`; the receiver grafts it at
-its next dispatch (see [scheduler](scheduler-zero-arg-closures.md)):
+and queues the segment on the receiver's `in_queue`; the receiver moves a message
+and its segment into its mailbox at its next dispatch and grafts the segment when
+a receive takes the message (see [scheduler](scheduler-zero-arg-closures.md)):
 
 ```text
-self-send:                push the sender's own ref onto its mailbox; nothing is copied
+self-send:                copy the message into a gift; it waits in the sender's own mailbox
 cross-process, parked:    run the receiver's matcher on the sender's ref;
                           on a hit, gift the clause's roots (nothing when the clause
                           reads none) and wake the receiver; on a miss, gift the

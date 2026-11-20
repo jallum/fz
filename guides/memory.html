@@ -47,7 +47,7 @@ is the atom id under the atom tag.</p>
   boundaries. Its high tag bits say whether the address points at an int,
   float, atom id, list, map, tuple/struct, closure, binary, or resource.
   It may survive allocation, yield, or GC only when stored in a traced root
-  owner such as the mailbox or a parked receive record.</li>
+  owner such as a parked receive record.</li>
   <li><strong>Container-local typed storage</strong>: used inside lists, maps,
   tuples, and closures. Containers store compact payload words and the minimal
   kind metadata their layout needs. This is private object layout, not a second
@@ -462,7 +462,8 @@ block.</p>
 <p>A heap can lend its allocation path to a copy whose result belongs to another
 heap. Cross-process send is its user: the sender copies a message, or a match's
 roots, inside one, and the segment waits on the receiver's
-<code>in_queue</code> until the receiver's next dispatch grafts it.</p>
+<code>in_queue</code> until the receiver's next dispatch moves it into the mailbox,
+where it waits again until a receive takes the message and grafts it.</p>
 
 <p>The sender measures first. <code>measure_deep_copy</code> walks the value
 set the way the copy will and returns the bytes it will allocate. A send
@@ -480,14 +481,22 @@ and the number of objects allocated. The heap's allocation statistics stay with
 it, its <code>live_count</code> goes back to what it was. A collection cannot
 run while a window is open.</p>
 
-<p>The receiving heap calls <code>Heap::graft</code>: the segment's block joins
-its <code>blocks</code>, its off-heap
-prefixes are spliced ahead of the receiver's old chain of the same kind. Every parked block counts
+<p>The receiving heap calls <code>Heap::graft</code>: the segment's block is
+parked among the young blocks, and its off-heap
+prefix is spliced ahead of the receiver's young chain. Every parked block counts
 toward <code>bytes_used</code> by fill, never by capacity, so a kilobyte block
 holding one cons cell is sixteen bytes of <code>bytes_used</code>. The same fill
-raises <code>live_baseline</code>: a gift is packed and fully live, so it is
-survivor data and never allocation pressure. A segment that is dropped without being grafted releases its block
+counts toward the next collection exactly as allocation does, and it is reported
+as <code>received_bytes</code> in the next <code>fz.runtime.gc</code> event.
+<code>graft</code> leaves <code>live_baseline</code> and the old blocks alone. A
+segment that is dropped without being grafted releases its block
 and every stub's off-heap reference.</p>
+
+<p>A message waits outside the heap until a receive takes it. The process's
+<code>Mailbox</code> holds its messages in arrival order, each with its segment,
+ungrafted and not a root, and <code>Mailbox::take</code> grafts the segment as
+the receive removes the message. A message the process sent to itself is copied
+into a segment like any other.</p>
 
 <h3>The off-heap chains</h3>
 
@@ -506,8 +515,8 @@ The off-heap chains are a "things to clean up later" list. Every time the heap
 makes a BinRef or Resource, it adds the stub to the chain. After each GC,
 we walk the chain to figure out which stubs survived and which need to release
 their off-heap payload. The chain is split by age: <code>off_heap_head</code>
-holds stubs made since the last collection; <code>off_heap_old_head</code> holds the
-ones a collection already kept, plus the ones that arrived in gifts. See
+holds stubs made or received since the last collection; <code>off_heap_old_head</code> holds the
+ones a collection already kept. See
 <a href="#shared-zone">§9</a> for the details.
 </div>
 
@@ -526,12 +535,13 @@ does not force a yield.</p>
 collection is due is a question about the heap's state, answered by
 <code>Heap::should_gc</code> when the scheduler asks at a boundary: the fill of
 the young blocks (the tip and every parked block) against the heap's
-<code>live_baseline</code>, held between half the smallest tip and the largest
+<code>live_baseline</code>, held between the 4096-byte budget floor and the largest
 pooled block. The baseline is the
-fill of the old blocks: a collection sets it to the bytes that survived,
-<code>graft</code> raises it by the gift's fill, and allocation leaves it alone.
+fill of the old blocks: a collection sets it to the bytes that survived, and
+allocation and <code>graft</code> leave it alone. The young blocks include the
+blocks of the messages receives have taken.
 A heap holding N old bytes is therefore due a collection once it has allocated
-N more, and never more than the largest pooled block (about 7.4 MB): a large
+or received N more, and never more than the largest pooled block (about 7.4 MB): a large
 heap keeps its young data in one pooled block, so a collection neither obtains
 nor returns a large block. A collection that reclaims those bytes answers the question by itself;
 nothing is cleared. If an allocation no longer fits in the current
@@ -549,7 +559,7 @@ the object gets a parked block of its own and the tip stays.</p>
       }
   }
 
-  should_gc = young_bytes >= max(live_baseline, SIZE_TABLE[0] / 2)
+  should_gc = young_bytes >= max(live_baseline, BUDGET_FLOOR)
               || young_binary_bytes >= max(held_binary_bytes, 256 KiB)
 </pre>
 
@@ -596,13 +606,13 @@ process to reach a boundary.</p>
 <h2 id="gc-parktime">4. Collection — Cheney with explicit roots, minor and major</h2>
 
 <p>When the scheduler finds a heap due at a boundary, all live data is reachable
-from the roots the process holds: mailbox values, the park record's outcome
+from the roots the process holds: the park record's outcome
 closure templates, after body and pinned values, and the runnable continuation
 closure. No stack scan, no register enumeration.</p>
 
 <p>Blocks have an age. The tip, the parked tips and huge blocks are
-<strong>young</strong>. The blocks a collection filled with survivors, and the
-blocks of a grafted gift, are <strong>old</strong>. A <strong>minor</strong>
+<strong>young</strong>, and so are the blocks of the messages receives have taken.
+The blocks a collection filled with survivors are <strong>old</strong>. A <strong>minor</strong>
 collection takes only the young blocks as from-space; old blocks stay where they
 are and are not traced through, because nothing old points at anything young. A
 <strong>major</strong> collection takes every block. A heap goes major when its
@@ -633,11 +643,14 @@ Once you're done, you walk out and burn the old room. Nothing dead gets a
 ride.
 </div>
 
-<p>The accepted consequence: a receiver that consumed a lot of mail keeps the
-dead blocks, once the mail is dropped, until a major collection takes them; old
-data that dies is reclaimed only then. A process that receives a large gift, drops it and
-then goes quiet holds that memory; shrinking an idle heap is a separate policy,
-for which the census would have to show a need.</p>
+<p>A message a receive has taken is young. If it is dead at the next collection
+a minor collection reclaims its block, and if it is live the collection copies it
+once and it is old from then on. The received bytes count toward the next
+collection like allocation, so a heap that takes in a lot of mail collects often
+enough that the dead mail does not pile up. The accepted consequence: a message
+that waits in the mailbox is held in its segment, outside the heap and outside
+the young-byte count, until a receive takes it or the process exits; a process
+whose receives skip a message holds it that long.</p>
 
 <h3>To-space is a chain</h3>
 
@@ -773,18 +786,15 @@ pinned values (heap values the matcher compares against). The matcher reads
 the pinned values whenever a message arrives, so they move with everything
 else. Every parked receive carries a compiled matcher; the catch-all form
 <code>receive do msg -&gt; msg end</code> is the accept-any shape.<br><br>
-<code>process.mailbox</code> — every message is an <code>AnyValueRef</code>.
-Heap-object refs are forwarded in place. Integer and float refs are scalar
-boxes: the box is copied, but the payload is not followed as a child edge. An
-atom ref is left as it is. This matters for
-self-send: a process can send itself a message and keep running; that message
-lives only in the mailbox and would otherwise be collected.<br><br>
+<code>process.mailbox</code> — not a root. Every message waits in its gift segment
+outside the heap, a self-sent one included, so a collection neither traces nor moves it.<br><br>
 Transient values — whatever the caller holds across the call.
 </div>
 
-<p>Gifts waiting in the delivery in-queue are not roots. Their blocks join the
-heap only when <code>drain_in_queue</code> grafts them, and every reference in
-a gift points into its own segment. <code>Process::collect</code> holds the
+<p>Gifts waiting in the delivery in-queue and messages waiting in the mailbox are
+not roots. Their blocks join the heap only when they are grafted (a match by
+<code>drain_in_queue</code>, a message by the receive that takes it), and every
+reference in a gift points into its own segment. <code>Process::collect</code> holds the
 delivery lock for the whole pass, so a sender cannot probe the park record
 while it moves.</p>
 
@@ -825,9 +835,9 @@ the same walk with nothing live and no to-space):</p>
 
 <p>A minor sweep is O(young BinRefs and resource stubs), so a young view of an old
 BinRef costs it nothing; a major sweep is O(all stubs on this heap),
-not O(heap size). A gift's off-heap prefix is spliced onto <code>off_heap_old_head</code>
-when it is grafted, so a minor never revisits it. A dead old Resource therefore
-queues its destructor at the next major collection, and a young one at the next
+not O(heap size). A gift's off-heap prefix is spliced onto <code>off_heap_head</code>
+when it is grafted, so the next minor sweeps it. A dead old Resource queues its
+destructor at the next major collection, and a young or received one at the next
 minor.</p>
 
 <p>A dead Resource's destructor is fz code, so it never runs inside the sweep.
@@ -887,32 +897,26 @@ crosses as it is. The segment is
 queued on the receiver's <code>in_queue</code> with its payload, and a hit makes
 the receiver runnable.</p>
 
-<p>The receiver grafts every queued segment as the first act of its next
+<p>The receiver drains every queued segment as the first act of its next
 dispatch, before any of its code or a collection runs. A miss payload joins the
-mailbox, which process-root GC traces directly; the hit payload finishes the
+mailbox with its segment and waits there outside the heap; the hit payload's
+segment is grafted and finishes the
 receive, building the outcome closure on the receiver's own heap over the
 gifted bound values. A receiver whose receive is already matched is not probed
 again, so there is at most one match in its queue. A receiver that exits with
-gifts still queued drops them: each un-grafted segment returns its block to
-the pool and releases its stubs' references.</p>
+gifts still queued, or messages still waiting in its mailbox, drops them: each
+un-grafted segment returns its block to the pool and releases its stubs' references.</p>
 
 <h3>Self-send (same process)</h3>
 
-<p>A process sending to itself pushes the <code>AnyValueRef</code> it already
-holds onto its own mailbox (<code>sched::self_send</code>). Nothing is copied
-and the runtime publishes nothing: the sender is running, so it cannot be
-parked, and the push is the whole delivery. Since process-root GC roots the
-mailbox, the value survives any subsequent back-edge GC even if the sending
-code no longer holds a local reference to it.</p>
-
-<p>The mailbox is now a second holder of the same cells, and the in-place list
-rewrite guard must see them as aliased. The compiler owns that: when the
-continuation after a call retains a name that may alias an argument,
-<code>construct_call_ownership</code> (src/compiler2/jobs/body.rs) marks the
-argument <code>Share</code>, and the Share mode publishes the list spine before
-the call on every path. A self-sent list the sender can still reach is
-therefore already published when it enters the mailbox, and a later rewrite of
-one of its cells allocates a fresh cell instead.</p>
+<p>A process sending to itself copies the message into a gift on its own heap,
+as a send to another process does, and the segment waits in its own mailbox
+(<code>sched::self_send</code>). The sender is running, so it cannot be
+parked, and the push is the whole delivery. The mailbox is no collection root:
+the copy lives in its segment outside the heap until a receive takes it, so it
+survives any collection even if the sending code no longer holds a reference.
+The mailbox holds no reference to anything the sender holds, so no cell the
+sender rewrites is also held by the mailbox.</p>
 
 <h3>BinView — bytes are shared, not copied</h3>
 
@@ -1087,7 +1091,7 @@ first (<code>BinView::ends_at_buffer_end</code> tells the two apart).
   made with it is the sole reference; views of it take none.</li>
   <li><strong>Send</strong> across processes: <code>deep_copy_any_value_ref</code>
   retains the shared_ptr (refcount ++) and allocates a fresh BinRef and BinView
-  in the sender's gift window; the receiver adopts it when it grafts the segment.
+  in the sender's gift window; the receiver adopts it when a receive takes the message and grafts the segment.
   Bytes don't move.</li>
   <li><strong>Die</strong>: either a BinRef fails to survive a GC (no live view
   names it; refcount −− in the <a href="#roots">off-heap sweep</a>), or the entire
@@ -1161,9 +1165,7 @@ so the sender's list cells need not be marked aliased just because they were
 sent. A singly copied list can remain
 unshared; copied container fields protect sharing in the receiver. A copy keeps
 no record of what it has copied, so a subterm the message holds twice arrives as
-two separate copies. Self-send copies nothing: the sender's own reference enters the
-mailbox, and the compiler's call-site Share publication is what marks a list
-the sender still names. Inside a single heap the alias bit is one-way, so a
+two separate copies. Self-send copies too: the copy waits in the sender's own mailbox. Inside a single heap the alias bit is one-way, so a
 rewrite miss falls back to allocation rather than rewiring a value another
 observer may still hold.</p>
 

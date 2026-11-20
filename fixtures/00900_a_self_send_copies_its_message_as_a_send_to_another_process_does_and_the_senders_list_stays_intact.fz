@@ -1,5 +1,5 @@
 #---
-# purpose: "a self-send pushes the sender's own reference and copies nothing; the message stays intact because the compiler publishes a send argument that a retained name may alias"
+# purpose: "a self-send copies its message into a gift, as a send to another process does, so the sender's list stays intact and the copy is counted as the sender's allocation"
 #---
 #
 # The program runs the same alias-and-rewrite shape twice. `retail` takes a
@@ -13,15 +13,16 @@
 # telemetry counts it as a hit.
 #
 # The sent case builds `ys` the same way from `xs`, sends `xs` to self, then
-# passes `ys` to `retail`. The send is a mailbox push of the sender's own
-# reference: the runtime copies nothing, and the `list_cons_allocs` delta
-# across the send is 0. The mailbox and `ys` now hold the same cell. The
-# message is still `[4, 5, 6]` when received because the compiler's call-site
-# ownership rule (`construct_call_ownership` in src/compiler2/jobs/body.rs)
-# marks the send argument Share, since the continuation retains `ys` and `ys`
-# may alias it, and the Share mode publishes the list spine before the call.
-# The later rewrite finds the cell aliased and allocates a fresh one instead,
-# which telemetry counts as a retention attempt without a hit.
+# passes `ys` to `retail`. The send copies the three cells of `xs` into a gift
+# that waits in the sender's mailbox, so the `list_cons_allocs` delta across
+# the send is 3, and the mailbox holds no cell that `ys` or `xs` holds. The
+# message is `[4, 5, 6]` when received. The rewrite of `ys` is still refused,
+# because the compiler's call-site ownership rule
+# (`construct_call_ownership` in src/compiler2/jobs/body.rs) marks the send
+# argument Share, since the continuation retains `ys` and `ys` may alias it,
+# and the Share mode publishes the list spine before the call. The rewrite
+# finds the cell aliased and allocates a fresh one, which telemetry counts as a
+# retention attempt without a hit.
 #
 # Across the run: four retention attempts, three hits. The missing hit is the
 # refused rewrite of the sent cell.

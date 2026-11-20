@@ -17,7 +17,8 @@
 //! collector marks every list cell it keeps as shared, so none is rewritten in
 //! place. A major collection's from-space is every block, and runs once the old
 //! blocks have outgrown what the last major collection left. A grafted gift
-//! block is old at birth: a gift references only itself and literals.
+//! block is young, parked with the blocks allocation parked: a minor
+//! collection reclaims it if the message is dead and copies it once if live.
 //!
 //! GC is *not* synchronous on allocation. `Heap::should_gc` is a pure
 //! function of the heap's state: the young bytes against the old bytes (or half
@@ -155,9 +156,8 @@ pub struct Heap {
     /// above the table for a block made to hold a larger object.
     block_size: usize,
     /// The bytes in old blocks: set by a major collection to the bytes it
-    /// copied, raised by a minor collection by the bytes it copied and by a
-    /// graft by the gift's fill, left alone by allocation. Zero until the
-    /// first collection or graft. `should_gc` counts the young bytes against
+    /// copied, raised by a minor collection by the bytes it copied, left alone
+    /// by allocation and by a graft. Zero until the first collection. `should_gc` counts the young bytes against
     /// it, and a major collection's to-space guess is sized to it.
     pub live_baseline: usize,
     /// The old bytes the last major collection left: what the next one is
@@ -172,12 +172,19 @@ pub struct Heap {
     /// reaches it, and raised a class per overflow block up to that entry.
     overflow_step: usize,
     /// Blocks allocation has stopped bumping into since the last collection:
-    /// tips abandoned by `climb_tip` and single-object blocks from
-    /// `alloc_parked`. With the tip they are the young blocks. Each records its
-    /// fill and capacity, so a collection counts it by fill and releases it.
+    /// tips abandoned by `climb_tip`, single-object blocks from
+    /// `alloc_parked`, and blocks grafted from gift segments. With the tip they
+    /// are the young blocks. Each records its fill and capacity, so a
+    /// collection counts it by fill and releases it.
     young_blocks: Vec<Block>,
-    /// Blocks a collection filled with survivors and blocks grafted from
-    /// gift segments. Released by `Drop` and by a major collection.
+    /// The sum of the fill of `young_blocks`, kept as blocks are parked so
+    /// `young_bytes` is asked in constant time at every scheduling boundary.
+    parked_fill: usize,
+    /// The bytes of `young_blocks` that grafts parked since the last
+    /// collection: the received share of the young bytes.
+    received_bytes: usize,
+    /// Blocks a collection filled with survivors. Released by `Drop` and by a
+    /// major collection.
     old_blocks: Vec<Block>,
     /// The open gift window, if `begin_gift` has set the tip aside and
     /// `end_gift` has not yet cut the segment.
@@ -197,7 +204,7 @@ pub struct Heap {
     /// backs `live_count()`: under bump-only with no reclaim, every object
     /// allocated is "live".
     alloc_count: u64,
-    /// Objects in old blocks: those collections kept and gifts brought.
+    /// Objects in old blocks: those collections kept.
     old_objects: u64,
     /// Total allocation requests made by kind since the last explicit
     /// process/user-code reset. Unlike `alloc_count`, GC never rewrites this.
@@ -208,7 +215,7 @@ pub struct Heap {
     pub(crate) binaries_shared: u64,
     /// Intrusive chain of the young off-heap
     /// objects: tagged head bits for a singly-linked list of the BinRefs and
-    /// resource stubs allocated since the last collection; each entry's
+    /// resource stubs allocated or received since the last collection; each entry's
     /// `off_heap_next` slot stores the previous tagged chain entry, and its kind tag
     /// names which of the two it is. Binary views are on no chain.
     /// The post-Cheney sweep (`off_heap::sweep`) moves each survivor onto
@@ -216,8 +223,7 @@ pub struct Heap {
     /// `off_heap::drop_all` before pool reclaim so SharedBin references are
     /// balanced.
     pub off_heap_head: u64,
-    /// The chain of the old off-heap objects: those a collection kept and those
-    /// gifts brought. A minor sweep never walks it, so an old BinRef or resource
+    /// The chain of the old off-heap objects: those a collection kept. A minor sweep never walks it, so an old BinRef or resource
     /// stub is found dead by a major collection.
     pub off_heap_old_head: u64,
     /// The shared-binary bytes made since the last collection and the budget

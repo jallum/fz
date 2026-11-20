@@ -19,10 +19,10 @@ use crate::any_value::{self, AnyValue, AnyValueRef, ValueKind};
 use crate::delivery::Delivery;
 use crate::exec_ctx::{timer_cancel, timer_schedule};
 use crate::heap::{GiftSegment, Heap, HeapView, deep_copy_any_value_ref, measure_deep_copy};
+use crate::mailbox::Mailbox;
 use crate::park::{ParkRecord, Roots};
 use crate::process::{PidId, Process, ProcessState};
 use crate::timer::TimerId;
-use std::collections::VecDeque;
 use std::ptr::write;
 
 /// Mint a fresh-task entry thunk on `heap`: a one-capture closure whose code
@@ -263,23 +263,21 @@ fn queue_gift(
     probe
 }
 
-/// Graft every queued gift into the task's heap, in arrival order. Messages
-/// join the mailbox; the match for the parked receive, if a sender queued
-/// one, is returned for the caller to deliver. The caller holds the task's
-/// delivery lock and passes the task's heap and mailbox. Runs at the start of
-/// a dispatch, before any of the task's code or a collection touches the
-/// heap, so the task never sees a reference into storage it does not own.
-pub fn drain_in_queue(
-    delivery: &mut Delivery,
-    heap: &mut Heap,
-    mailbox: &mut VecDeque<AnyValueRef>,
-) -> Option<(usize, Roots)> {
+/// Drain every queued gift, in arrival order. A message joins the mailbox
+/// with its gift segment and waits outside the heap until a receive takes it.
+/// The match for the parked receive, if a sender queued one, is grafted into
+/// the task's heap and returned for the caller to deliver. The caller holds
+/// the task's delivery lock and passes the task's heap and mailbox. Runs at
+/// the start of a dispatch, before any of the task's code or a collection
+/// touches the heap, so the task never sees a reference into storage it does
+/// not own.
+pub fn drain_in_queue(delivery: &mut Delivery, heap: &mut Heap, mailbox: &mut Mailbox) -> Option<(usize, Roots)> {
     let mut matched = None;
     while let Some(Gift { segment, payload }) = delivery.pop_gift() {
-        heap.graft(segment);
         match payload {
-            GiftPayload::Message(msg) => mailbox.push_back(msg),
+            GiftPayload::Message(msg) => mailbox.push(msg, segment),
             GiftPayload::Match { clause_idx, roots } => {
+                heap.graft(segment);
                 assert!(matched.is_none(), "a receiver takes one match per parked receive");
                 matched = Some((clause_idx, roots));
             }
@@ -305,15 +303,22 @@ pub fn deliver_in_queue(task: &mut Process) {
     task.set_runnable_closure(cont);
 }
 
-/// A process sending to itself hands its own mailbox the reference it already
-/// holds; nothing leaves the heap. The sender is running, so it cannot be
-/// parked, and the mailbox push is the whole delivery.
+/// A process sending to itself copies the message into a gift, as a send to
+/// another process does, and the gift waits in its own mailbox until a receive
+/// takes it. The sender is running, so it cannot be parked, and the mailbox
+/// push is the whole delivery. It does not go through the in-queue: a receive
+/// reads only the mailbox (`reach_receive`, the interpreter's receive), and
+/// the in-queue is drained only at the start of a dispatch, so a queued
+/// self-send would be invisible to a receive in the same dispatch. The
+/// in-queue is empty while the process runs, so the push also keeps the
+/// message after every message other senders queued earlier.
 pub fn self_send(task: &mut Process, msg: AnyValueRef) {
     assert!(
         task.delivery.lock().park().is_none(),
         "a running process has no parked receive"
     );
-    task.mailbox.push_back(msg);
+    let (segment, copy) = gift_copy_one(&mut task.heap, msg);
+    task.mailbox.push(copy, segment);
 }
 
 /// What reaching a `receive` does to the running process.
@@ -345,13 +350,18 @@ pub fn reach_receive(task: &mut Process, mut park: ParkRecord) -> ReceiveStep {
     let task_ptr: *mut Process = task;
     let mut delivery = task.delivery.lock();
     let mut roots = Roots::new();
-    let hit = (0..task.mailbox.len()).find_map(|i| {
-        park.try_match(task_ptr, task.mailbox[i], &mut roots)
-            .map(|(clause_idx, roots)| (i, clause_idx, roots.len()))
-    });
+    let hit = task
+        .mailbox
+        .first_match::<_, std::convert::Infallible>(|message| {
+            Ok(park
+                .try_match(task_ptr, message, &mut roots)
+                .map(|(clause_idx, roots)| (clause_idx, roots.len())))
+        })
+        .unwrap_or_else(|never| match never {})
+        .map(|(index, (clause_idx, root_count))| (index, clause_idx, root_count));
     if let Some((i, clause_idx, root_count)) = hit {
         drop(delivery);
-        task.mailbox.remove(i);
+        task.mailbox.take(i, &mut task.heap);
         return ReceiveStep::Continue(park.outcome_closure(task, clause_idx, &roots[..root_count]));
     }
     match park.after_deadline_ms {

@@ -237,24 +237,28 @@ fn dropping_a_heap_releases_its_young_and_its_old_stubs() {
 }
 
 #[test]
-fn a_grafted_gift_is_old_so_a_minor_collection_leaves_it_and_what_points_at_it_stays_valid() {
+fn a_grafted_gift_is_young_so_a_minor_collection_copies_it_and_what_points_at_it_stays_valid() {
     let reg = fresh_registry();
     let mut sender = Heap::new(SIZE_TABLE[0], reg.clone());
     let mut receiver = Heap::new(SIZE_TABLE[0], reg);
     let (segment, gift) = gift_of_list(&mut sender, 1, 3);
     receiver.graft(segment);
-    assert_eq!(receiver.live_baseline, 3 * 16, "the gift is old bytes, not allocation");
+    assert_eq!(receiver.live_baseline, 0, "the gift is young bytes, not old");
 
     let above = cons(&mut receiver, 0, gift);
     let (above, stats) = collect_list(&mut receiver, above);
 
     assert_eq!(stats.generation, Generation::Minor);
-    assert_eq!(stats.copied_bytes, 16, "only the receiver's own cell was copied");
-    assert_eq!(stats.live_bytes, 4 * 16);
     assert_eq!(
+        stats.copied_bytes,
+        4 * 16,
+        "the receiver's cell and the gift's three were copied"
+    );
+    assert_eq!(stats.live_bytes, 4 * 16);
+    assert_ne!(
         tail_addr(above),
         list_addr_from_tagged(gift).unwrap() as u64,
-        "the gift stayed in place"
+        "the gift's cells moved out of its block"
     );
     let mut sum = 0;
     let mut cursor = root_of(above);
@@ -269,8 +273,8 @@ fn a_grafted_gift_is_old_so_a_minor_collection_leaves_it_and_what_points_at_it_s
     assert_eq!(sum, 1 + 2 + 3);
 }
 
-/// An old cell must never come to point at a value made after it, and a
-/// grafted gift is old: its cells refuse an in-place rewrite as a kept cell does.
+/// A gift's cells are shared from birth: they refuse an in-place rewrite as a
+/// kept cell does, so a rebuilt cell is always a fresh one.
 #[test]
 fn a_grafted_list_cell_is_not_rewritten_in_place() {
     let reg = fresh_registry();

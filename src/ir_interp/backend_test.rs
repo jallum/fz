@@ -326,7 +326,7 @@ fn scheduler_adapter_copies_spawn_inputs_and_dead_send_is_observation_free() {
     let message_ref = message.as_any_value_ref(sender).unwrap();
     let receiver = runtime.process_ref(receiver_pid).unwrap();
     let before_heap = receiver.heap.alloc_stats_snapshot();
-    let before_mailbox = receiver.mailbox.clone();
+    let before_mailbox: Vec<_> = receiver.mailbox.messages().collect();
     let before_queue = runtime.core.queued().clone();
     let before_resume_len = runtime.backend_resume.len();
     let before_parked_len = runtime.backend_parked.len();
@@ -347,7 +347,7 @@ fn scheduler_adapter_copies_spawn_inputs_and_dead_send_is_observation_free() {
 
     let receiver = runtime.process_ref(receiver_pid).unwrap();
     assert_eq!(receiver.heap.alloc_stats_snapshot(), before_heap);
-    assert_eq!(receiver.mailbox, before_mailbox);
+    assert_eq!(receiver.mailbox.messages().collect::<Vec<_>>(), before_mailbox);
     assert_eq!(receiver.state, ProcessState::Exited);
     assert_eq!(runtime.core.queued(), &before_queue);
     assert_eq!(runtime.backend_resume.len(), before_resume_len);

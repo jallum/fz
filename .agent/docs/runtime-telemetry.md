@@ -334,8 +334,8 @@ for every gift that allocates; both are `0` when a hit gifts nothing and no
 window opens. `gift_roots` is the number of roots a hit carries (see
 [pattern matching](pattern-matching.md#outcome-values-and-retained-lists)) and
 `0` for a miss. `write_line` renders the
-outcome as `"hit"` or `"miss"` and the rest as numbers. A self-send is a mailbox
-push and emits nothing, as does a send to an exited or unknown receiver. `tests/fixture_matrix.rs`
+outcome as `"hit"` or `"miss"` and the rest as numbers. A self-send is a copy into
+the sender's own mailbox and emits nothing, as does a send to an exited or unknown receiver. `tests/fixture_matrix.rs`
 (`a_send_probes_on_the_sender_and_gifts_its_result_through_the_receivers_in_queue`)
 pins the event sequence of fixtures 00901 and 00902 on the `run`, `interp` and
 `build` paths, together with the cells their run copied (see
@@ -375,15 +375,17 @@ major collection's from-space is every block (`Heap::next_generation`):
 - `copied_bytes`: bytes the pass copied, the survivors of its from-space; a minor
   pass copies only young survivors, a major pass every live object;
 - `live_bytes`: bytes the heap holds once the pass finished: what earlier
-  collections kept and gifts brought (old bytes a minor pass left) plus what this
+  collections kept (old bytes a minor pass left) plus what this
   pass copied, so after a major pass it equals `copied_bytes`; dead old data a
   minor pass cannot see is included until a major pass reclaims it;
-- `young_bytes`: bytes the heap allocated since its previous collection, by
+- `young_bytes`: bytes the heap allocated or received since its previous collection, by
   fill (`Heap::young_bytes`): what `Heap::should_gc` compared with the budget
   when the collection became due. A process runs its whole quantum before the
   boundary asks, so it can be many times `young_budget`;
 - `young_budget`: the young bytes at which the collection was due: the old
-  bytes, at most the largest pooled block and at least half the smallest tip;
+  bytes, at most the largest pooled block and at least `BUDGET_FLOOR` (4096);
+- `received_bytes`: the bytes of `young_bytes` that receives brought in, the fill of
+  the gift blocks `Heap::graft` parked since the previous collection;
 - `young_binary_bytes`: capacity of the shared binary buffers the heap made since
   its previous collection (`BinaryBudget::young_binary_bytes`): the filled-buffer
   and concatenation-buffer sites, never an in-place append. `Heap::should_gc`
@@ -460,13 +462,13 @@ callers and the heap's unit tests read it there. Every scheduler's
 pins fixture 00901: 3 collections on `run`, all the child's yields, copying
 512416 bytes in all, and none on `interp`, since the interpreter charges no
 reductions and never yields mid-run. The parent is collected on neither path:
-its heap is not due when it parks, and the gifts it grafts afterwards raise its
-baseline to its fill.
+its heap is not due when it parks, and no collection follows before it exits.
 The same file pins fixture 00910 (`interp`: the parent's park at 48 bytes;
 `run`: its park at 288 bytes) and fixture 00911 (`interp`:
-the parent's park at 0 bytes; `run`: the child's park at 288 bytes, then the
-parent collected on 15 of its 39 yields while it builds the list, four of them
-major; its park mid-run finds the heap due and collects, copying 208 bytes). The
+seven collections, each at a park and each copying 0 bytes, since a ball is dead by
+the park after the receive that took it; `run`: thirteen collections, the parent's
+yields while it builds the list, each park that follows a ball taken, and the
+parent's later yields). The
 run-ended equality is pinned for both fixtures on `run`, `interp` and `build`.
 `sched_core_test.rs` pins the `Collection` that `end_quantum` observes, that a
 halting process is not collected, and the exit it observes and the destructors it dispatches.

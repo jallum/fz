@@ -128,8 +128,10 @@ as a `GiftPayload::Message`. These two functions are the only implementation of
 the after-timer. A copy that allocates nothing gifts nothing: `gift_copy` of no
 values, or of values that cross as they are (the empty list, a pointer the
 sender does not own), measures zero and returns `GiftSegment::empty()` without
-opening a window, and grafting it is a no-op. The receiver's dispatch grafts each segment, takes the park record
-and materializes the outcome closure (`sched::deliver_in_queue`). The queued
+opening a window, and grafting it is a no-op. The receiver's dispatch drains its in-queue: a matched
+receive's segment is grafted, the park record is taken, and the outcome closure
+is materialized (`sched::deliver_in_queue`); a message's segment waits in the
+receiver's `Mailbox` until a receive takes the message, and grafts then. The queued
 entry is the partial closure: a clause index and the gifted roots, no new
 heap object type.
 
@@ -139,7 +141,8 @@ scan. The matcher projects only the winning arm's useful payload, the sender
 copies only that projected capture set, and the receiver resumes from an
 outcome closure built on its own heap. Mailbox traffic is the miss path only: a
 rejected message is gifted whole as `GiftPayload::Message` and joins the
-mailbox when the receiver next drains its queue. A sender never writes into a
+mailbox, with its segment and outside the receiver's heap, when the receiver
+next drains its queue. A sender never writes into a
 receiver's heap, and a receiver whose receive is already matched is not probed
 again; its later arrivals are misses.
 
@@ -177,7 +180,8 @@ the interpreter runs the same shape with its own matcher
 entry is taken: `deliver_in_queue` in `run_until_idle` (JIT) and
 `dispatch_quantum` (AOT), `IrInterpRuntime::deliver_in_queue` in
 `drive_backend_until_idle`. A receiver that exits with gifts still queued drops
-them with its `Process`; each un-grafted segment returns its block to the pool.
+them with its `Process`, as it does the segments of messages still waiting in its
+mailbox; each un-grafted segment returns its block to the pool.
 
 ## Delivery lock
 

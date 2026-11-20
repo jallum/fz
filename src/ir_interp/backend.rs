@@ -1643,7 +1643,7 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
             for mb_idx in 0..mailbox_len {
                 let msg = {
                     let proc = unsafe { &mut *runtime.cur_proc() };
-                    AnyValue::from_any_value_ref(proc.mailbox[mb_idx])?
+                    AnyValue::from_any_value_ref(proc.mailbox.get(mb_idx).expect("an index below the length"))?
                 };
                 if let Some((clause_idx, roots)) = match_backend_receive(
                     runtime, types, transport, program, module, outcomes, dispatch, msg, bindings, &env,
@@ -1655,7 +1655,8 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
                 }
             }
             if let Some((mb_idx, target, params)) = hit {
-                unsafe { &mut *runtime.cur_proc() }.mailbox.remove(mb_idx);
+                let proc = unsafe { &mut *runtime.cur_proc() };
+                proc.mailbox.take(mb_idx, &mut proc.heap);
                 let params = whole_params(params);
                 enter_entry(runtime, transport, program, executable, &mut env, target, None, &params)?;
                 return Ok(BackendEvalTransition::Next(BackendEvalState::Entry {
