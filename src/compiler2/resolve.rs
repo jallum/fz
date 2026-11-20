@@ -99,6 +99,9 @@ struct ConstructorEntry {
 /// `list()`/`list(any)` and `[T]` mint the identical `Ty`) and `resource`
 /// (0 or 1 type argument, defaulting the payload to `any`).
 ///
+/// `byte`, `iolist` and `iodata` are Elixir's: `iodata` is `binary | iolist`,
+/// and `iolist` is recursive (see `iolist`).
+///
 /// `dynamic` is `any`: a typespec's `dynamic()` is the statically unknown
 /// type, which a spec check treats the same as `term()`, as Erlang's typespec
 /// reference says Dialyzer does.
@@ -119,6 +122,9 @@ const CONSTRUCTORS: &[ConstructorEntry] = &[
     ConstructorEntry { name: "dynamic",  arity: Arity::Fixed(0), build: |t, _| t.any() },
     ConstructorEntry { name: "never",    arity: Arity::Fixed(0), build: |t, _| t.none() },
     ConstructorEntry { name: "utf8",     arity: Arity::Fixed(0), build: |t, _| { let inner = t.str_t(); t.mint_brand(inner, "utf8") } },
+    ConstructorEntry { name: "byte",     arity: Arity::Fixed(0), build: |t, _| t.int() },
+    ConstructorEntry { name: "iolist",   arity: Arity::Fixed(0), build: |t, _| iolist(t) },
+    ConstructorEntry { name: "iodata",   arity: Arity::Fixed(0), build: |t, _| { let binary = t.str_t(); let iolist = iolist(t); t.union(binary, iolist) } },
     ConstructorEntry { name: "pid",      arity: Arity::Fixed(0), build: |t, _| t.pid() },
     ConstructorEntry { name: "ref",      arity: Arity::Fixed(0), build: |t, _| t.reference() },
     ConstructorEntry { name: "list",     arity: Arity::Range(0, 1), build: |t, a| { let inner = a.first().copied().unwrap_or_else(|| t.any()); t.list(inner) } },
@@ -128,6 +134,20 @@ const CONSTRUCTORS: &[ConstructorEntry] = &[
     ConstructorEntry { name: "fun",      arity: Arity::Fixed(0), build: |t, _| t.fun_top() },
     ConstructorEntry { name: "function", arity: Arity::Fixed(0), build: |t, _| t.fun_top() },
 ];
+
+/// Elixir's `iolist()`: a list whose elements are bytes, binaries or iolists.
+/// Elixir allows a binary as an improper tail; a list type here has no
+/// improper tail, so this is the proper-list part. `byte()` is `integer`,
+/// since the lattice has no integer ranges.
+fn iolist(types: &mut Types) -> Ty {
+    types.recursive(1, |types, binders| {
+        let int = types.int();
+        let binary = types.str_t();
+        let leaf = types.union(int, binary);
+        let element = types.union(leaf, binders[0]);
+        vec![types.list(element)]
+    })[0]
+}
 
 fn find_constructor(name: &str) -> Option<&'static ConstructorEntry> {
     CONSTRUCTORS.iter().find(|entry| entry.name == name)

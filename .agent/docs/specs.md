@@ -27,6 +27,10 @@ Compiler2 owns the active contract path:
 - `dynamic` is also `any`. A typespec's `dynamic()` is the statically unknown
   type, and a spec check treats it as `term()`, as Erlang's typespec reference
   says Dialyzer does. `dynamic(T)` is not a typespec, in Elixir or here.
+- `iodata` is Elixir's `binary | iolist`, and `iolist` is the recursive list
+  `μt. [integer | binary | t]`. `byte` is `integer`, because the lattice has no
+  integer ranges, and a list type has no improper tail, so an improper iolist
+  such as `["a" | "b"]` is outside `iolist` here.
 - `compiler2/resolve.rs` resolves names against the namespace captured where a
   declaration appeared and returns hard compiler2 `Ty` values plus parallel
   `ResolvedTypeShape` values.

@@ -1,0 +1,15 @@
+#---
+# purpose: "An atom nested in lists given as iodata() leaves iolist(), however deep, and violates the spec"
+# expect: diagnostic
+# diagnostic.code: spec/violation
+#---
+defmodule Main do
+  @spec keep(iodata()) :: iodata()
+  def keep(data), do: data
+
+  def main() do
+    IO.inspect(keep([[:b]]))
+  end
+end
+
+Main.main()

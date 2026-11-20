@@ -1,0 +1,33 @@
+#---
+# purpose: "iodata(), iolist() and byte() admit what Elixir's do, nested to any depth, including in a recursive function type"
+# oracle: self
+# oracle.stamp: ef9b01af305972c7
+#---
+defmodule Main do
+  @type encoder() :: (term(), encoder() -> iodata())
+
+  @spec keep(iodata()) :: iodata()
+  def keep(data), do: data
+
+  @spec chunks(iolist()) :: integer()
+  def chunks(list), do: length(list)
+
+  @spec small(byte()) :: iolist()
+  def small(b), do: [b, "!", [b]]
+
+  @spec encode(term(), encoder()) :: iodata()
+  def encode(term, encoder), do: encoder.(term, encoder)
+
+  def main() do
+    IO.inspect(keep("plain"))
+    IO.inspect(keep(["a", ?b, ["c", [?d]], "e"]))
+    IO.inspect(keep([]))
+    IO.inspect(chunks(["x", [?y], ?z]))
+    IO.inspect(small(?h))
+    IO.inspect(encode([1, [2]], fn
+      list, enc when is_list(list) -> ["[", Enum.map(list, &enc.(&1, enc)), "]"]
+      other, _ -> inspect(other)
+    end))
+  end
+end
+Main.main()
