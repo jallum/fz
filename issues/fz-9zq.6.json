@@ -9,7 +9,6 @@
     "fz-sc8.110"
   ],
   "blocks": [
-    "fz-9zq.7",
     "fz-mue"
   ],
   "created": "2026-11-15T03:40:19Z",
@@ -39,5 +38,5 @@
   "status": "open",
   "title": "A recursive @type resolves, admits and lays out",
   "type": "task",
-  "updated_at": "2026-11-20T18:48:50Z"
+  "updated_at": "2026-11-20T18:48:58Z"
 }
