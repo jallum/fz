@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-mue.8"
+  ],
   "blocks": [],
   "created": "2026-11-20T20:16:17Z",
   "description": "Found by Optimize (fz-sc8.192.3 bench, develop ec0ca8a8a), traced by Callables. Elixir's Enum.reduce/3 and reduce/2 have an is_list clause that calls :lists.foldl (enum.ex:2642); fz's lib/enum.fz:54 lacks it and goes through the Enumerable protocol (2 continuations per element, no boxes). Enum.reduce over a 100k-element list: 757 instructions per element vs BEAM 44. Port the clause faithfully. Optimize re-measures after; what remains (one closure call and one continuation per element) belongs to fz-9x7.43 / fz-yh5.1, and anything large goes to Callables as a fz-yh5 child. Owner: Elixir Parity.",
