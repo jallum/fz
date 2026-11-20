@@ -309,6 +309,21 @@ pub(crate) enum BitstringFieldKind {
 }
 
 impl BitstringFieldKind {
+    /// The number the runtime reads a field's type from, as
+    /// `BitType::runtime_tag` gives it.
+    pub(crate) fn runtime_tag(self) -> u32 {
+        let ty = match self {
+            BitstringFieldKind::Integer => crate::ast::BitType::Integer,
+            BitstringFieldKind::Float => crate::ast::BitType::Float,
+            BitstringFieldKind::Binary => crate::ast::BitType::Binary,
+            BitstringFieldKind::Bits => crate::ast::BitType::Bits,
+            BitstringFieldKind::Utf8 => crate::ast::BitType::Utf8,
+            BitstringFieldKind::Utf16 => crate::ast::BitType::Utf16,
+            BitstringFieldKind::Utf32 => crate::ast::BitType::Utf32,
+        };
+        ty.runtime_tag()
+    }
+
     /// A match binds this field's value as an integer: an `integer`'s bits, or
     /// the scalar value a `utf8` field decodes.
     pub(crate) fn reads_as_integer(self) -> bool {

@@ -1251,7 +1251,7 @@ fn emit_bitstring_test<M: cranelift_module::Module>(
         let field = &extraction.spec;
         let (size_present, size_value) = emit_dispatch_bit_size(body, ctx, field, state)?;
         let field_spec = fz_bs_field_spec(
-            dispatch_bit_type_tag(field.runtime_kind()),
+            field.runtime_kind().runtime_tag(),
             size_present,
             field.unit.unwrap_or(default_dispatch_bit_unit(field.kind)),
             dispatch_endian_tag(field.endian),
@@ -1379,18 +1379,6 @@ fn strict_int_i32<M: cranelift_module::Module>(
 ) -> Result<ir::Value, CodegenError> {
     let raw = receive_value_int(body, v)?;
     Ok(body.b.ins().ireduce(types::I32, raw))
-}
-
-fn dispatch_bit_type_tag(ty: BitstringFieldKind) -> u32 {
-    match ty {
-        BitstringFieldKind::Integer => 0,
-        BitstringFieldKind::Float => 1,
-        BitstringFieldKind::Binary => 2,
-        BitstringFieldKind::Bits => 3,
-        BitstringFieldKind::Utf8 => 4,
-        BitstringFieldKind::Utf16 => 5,
-        BitstringFieldKind::Utf32 => 6,
-    }
 }
 
 fn dispatch_endian_tag(endian: BitstringEndian) -> u32 {

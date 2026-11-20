@@ -1948,16 +1948,16 @@ fn eval_steps<T: Telemetry + ?Sized>(
                     let item = env_get(transport, runtime.cur_proc(), env, field.value)?;
                     let (size_present, size_value) =
                         backend_bit_size_value(transport, runtime.cur_proc(), env, &field.spec.size)?;
-                    let ty = backend_bit_type_tag(field.spec.ty);
+                    let ty = field.spec.ty.runtime_tag();
                     let unit = field.spec.unit.unwrap_or(backend_default_bit_unit(field.spec.ty));
                     let endian = backend_endian_tag(field.spec.endian);
                     if field.spec.ty.writes_scalar_word() {
                         let raw = if field.spec.ty == crate::ast::BitType::Float {
                             item.as_float_word()
-                                .ok_or_else(|| "a float bit field expects an integer or a float".to_string())?
+                                .expect("a construction's check passes only a number to a float segment")
                         } else {
                             item.as_i64()
-                                .ok_or_else(|| "an integer bit field expects an integer".to_string())?
+                                .expect("a construction's check passes only an integer to a scalar segment")
                         };
                         fz_bs_write_word(runtime.cur_proc(), raw, ty, size_present, size_value, unit, endian);
                     } else {
@@ -3187,7 +3187,7 @@ pub(super) fn materialize_cursor(proc: *mut Process, source: AnyValue, position:
         .ok_or_else(|| "a cursor position must be an integer".to_string())? as u64;
     let source_ref = source.as_ref_word(proc)?;
     let rest = fz_runtime::ir_runtime::fz_bs_field_spec(
-        backend_bit_type_tag(crate::ast::BitType::Bits),
+        crate::ast::BitType::Bits.runtime_tag(),
         0,
         backend_default_bit_unit(crate::ast::BitType::Bits),
         backend_endian_tag(crate::ast::Endian::Big),
@@ -3944,18 +3944,6 @@ fn run_pending_dtor<T: Telemetry + ?Sized>(
 
 fn unpack_pending_dtor_closure(closure: RuntimeAnyValue) -> Result<(FnId, Vec<AnyValue>), String> {
     unpack_closure(closure).map_err(|error| format!("backend dtor drain: invalid closure: {error}"))
-}
-
-fn backend_bit_type_tag(ty: crate::ast::BitType) -> u32 {
-    match ty {
-        crate::ast::BitType::Integer => 0,
-        crate::ast::BitType::Float => 1,
-        crate::ast::BitType::Binary => 2,
-        crate::ast::BitType::Bits => 3,
-        crate::ast::BitType::Utf8 => 4,
-        crate::ast::BitType::Utf16 => 5,
-        crate::ast::BitType::Utf32 => 6,
-    }
 }
 
 fn backend_default_bit_unit(ty: crate::ast::BitType) -> u32 {

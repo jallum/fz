@@ -39,21 +39,21 @@ const TARGET_FIXTURES: [TargetFixture; 3] = [
     TargetFixture {
         source: "fixtures/00420_enum_take_drop_split.fz",
         golden: "fixtures/00420_enum_take_drop_split.fz",
-        runtime_demand_walks: 627,
+        runtime_demand_walks: 631,
         mainline_runtime_demand_walks: 6252,
         mainline_runtime_demand_door: ObservationDoor::Interp,
     },
     TargetFixture {
         source: "fixtures/00571_enum_predicate_search.fz",
         golden: "fixtures/00571_enum_predicate_search.fz",
-        runtime_demand_walks: 592,
+        runtime_demand_walks: 598,
         mainline_runtime_demand_walks: 6378,
         mainline_runtime_demand_door: ObservationDoor::Interp,
     },
     TargetFixture {
         source: "fixtures/00567_fz_f98_range_map_converges.fz",
         golden: "fixtures/00567_fz_f98_range_map_converges.fz",
-        runtime_demand_walks: 202,
+        runtime_demand_walks: 147,
         mainline_runtime_demand_walks: 2971,
         mainline_runtime_demand_door: ObservationDoor::Run,
     },
@@ -1332,12 +1332,7 @@ def main(), do: Enum.reduce([1, 2, 3, 4, 5], 0, fn (x, acc) -> x + acc end)
             "runtime:Exception.fz".to_string(),
             "runtime:ArithmeticError.fz".to_string(),
             "runtime:ErlangError.fz".to_string(),
-            "runtime:FunctionClauseError.fz".to_string(),
-            "runtime:Protocol.UndefinedError.fz".to_string(),
-            "runtime:String.Chars.fz".to_string(),
-            "runtime:Atom.fz".to_string(),
-            "runtime:Float.fz".to_string(),
-            "runtime:Integer.fz".to_string(),
+            "runtime:ArgumentError.fz".to_string(),
         ];
         let out = run_fz2(&[
             OsStr::new("--log-telemetry"),
@@ -1552,11 +1547,7 @@ fn quicksort_run_lexes_each_source_once() {
         "runtime:ArgumentError.fz".to_string(),
         "runtime:ArithmeticError.fz".to_string(),
         "runtime:ErlangError.fz".to_string(),
-        "runtime:FunctionClauseError.fz".to_string(),
         "runtime:Protocol.UndefinedError.fz".to_string(),
-        "runtime:Atom.fz".to_string(),
-        "runtime:Float.fz".to_string(),
-        "runtime:Integer.fz".to_string(),
     ];
 
     let out = run_fz2(&[
@@ -2248,20 +2239,20 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             // What a program can raise is final only once every body of that program has been
             // analysed, so the bottom handler and the banner it calls settle here, with the
             // facts they read: the modules a value can name, and what each program raises.
-            ("Activation", 62),
-            ("ActivationAnalyzed", 66),
-            ("ActivationInputs", 64),
-            ("CallSiteSummary", 123),
-            ("CallSiteTargets", 123),
-            ("IncomingInputSlot", 87),
+            ("Activation", 29),
+            ("ActivationAnalyzed", 32),
+            ("ActivationInputs", 30),
+            ("CallSiteSummary", 38),
+            ("CallSiteTargets", 38),
+            ("IncomingInputSlot", 45),
             ("NameableModules", 1),
             // Each program settles what it can raise: the fixture's program, and the program of a
             // macro that raises.
             ("Raisable", 2),
-            ("ReturnType", 66),
-            ("RuntimeDemand", 56),
-            ("RuntimeDemandInput", 51),
-            ("RuntimeDemandInputs", 56),
+            ("ReturnType", 32),
+            ("RuntimeDemand", 27),
+            ("RuntimeDemandInput", 22),
+            ("RuntimeDemandInputs", 27),
         ]),
         "ordinary generic helper co-outputs publish every exact readiness transition without changing values"
     );
@@ -2371,17 +2362,17 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
     assert_eq!(
         formula_totals,
         FormulaWork {
-            evaluations: 957,
-            runtime_demand_evaluations: 117,
-            initial: 723,
-            content_caused: 234,
+            evaluations: 538,
+            runtime_demand_evaluations: 58,
+            initial: 402,
+            content_caused: 136,
             readiness_caused: 0,
             concluded_caused: 0,
             uncaused: 0,
-            changed_outputs: 876,
-            unchanged_outputs: 81,
-            already_pending: 9,
-            blocked_completions: 220,
+            changed_outputs: 483,
+            unchanged_outputs: 55,
+            already_pending: 5,
+            blocked_completions: 130,
         },
         "{fixture}: the reactive RuntimeDemand formula work or its causal classification moved"
     );
@@ -2399,9 +2390,9 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
     assert_eq!(
         by_reason(ledger.ran),
         BTreeMap::from([
-            ("blocked_waiter_expansion", 180),
-            ("changed_revision_wake", 545),
-            ("gate_expansion", 231),
+            ("blocked_waiter_expansion", 93),
+            ("changed_revision_wake", 316),
+            ("gate_expansion", 128),
             ("ignition", 1),
         ]),
         "{fixture}: the jobs run, by the reason that queued each"
@@ -2409,16 +2400,16 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
     assert_eq!(
         by_reason(ledger.already_pending),
         BTreeMap::from([
-            ("activation_published", 54),
-            ("blocked_waiter_expansion", 6),
-            ("changed_revision_wake", 9),
-            ("gate_expansion", 67),
+            ("activation_published", 23),
+            ("blocked_waiter_expansion", 1),
+            ("changed_revision_wake", 5),
+            ("gate_expansion", 36),
         ]),
         "{fixture}: requests that found their job already queued"
     );
     assert_eq!(
         by_reason(ledger.reparked),
-        BTreeMap::from([("changed_revision_wake", 60)]),
+        BTreeMap::from([("changed_revision_wake", 32)]),
         "{fixture}: started jobs the pop gate parked again without running"
     );
     for reason in fz::compiler2::WorkStartReason::TELEMETRY_ORDER {
@@ -2442,12 +2433,12 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             wake_records("applied", &["completion"]),
             wake_records("dependencies_moved", &["step"])
         ),
-        (608, 5),
+        (347, 5),
         "{fixture}: wake records of the completions, and of the external changes between them"
     );
     assert_eq!(
         ledger.requested(fz_engine::WorkStart::ChangedRevisionWake),
-        614,
+        353,
         "{fixture}: every wake record is one request at the door"
     );
     let products = report.product_totals();
@@ -2507,7 +2498,7 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
         // Every settled product here is a fresh, changed generation. The
         // generic result/status boundary and each node's reach (one product per
         // function or executable a reach question touches) are among them.
-        (1102, 1102, 1102, 0, 5, 0),
+        (506, 506, 506, 0, 5, 0),
         "{fixture}: reactive product settlement work includes ordinary helper products"
     );
     assert!(
@@ -2591,10 +2582,10 @@ fn tail_recursion_plans_one_entry_dispatch_per_compiled_function() {
             .unwrap_or_else(|| panic!("the stats summary must count {name}; got:\n{stats}"))
     };
     let functions = counter("fz.compiler2.function.defined");
-    assert_eq!(functions, 61, "the fixture compiles its known function population");
+    assert_eq!(functions, 35, "the fixture compiles its known function population");
     assert_eq!(
         counter("fz.compiler2.entry_dispatch.defined"),
-        54,
+        31,
         "every called function plans its own entry dispatch",
     );
 }

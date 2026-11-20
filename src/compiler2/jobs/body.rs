@@ -47,6 +47,7 @@ use super::dispatch::{
 };
 use fz_engine::{FactUse, FatalError};
 
+mod construction_contract;
 mod storage_roots;
 use storage_roots::{LaterUses, StorageRootIndex, entries_reached_from};
 
@@ -787,6 +788,10 @@ fn collect_local_dispatch_requirements(
                     reads,
                     waits,
                 )?;
+            }
+            let segment_values: Vec<Var> = (0..fields.len()).map(segment_value).collect();
+            if let Some(check) = construction_contract::construction_check(fields, &segment_values, expr.span) {
+                collect_local_guard_requirements(world, tel, namespace, &check.test, reads, waits)?;
             }
         }
         Expr::Map(entries) | Expr::MapUpdate(_, entries) => {
@@ -1605,7 +1610,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                 Ok(updated)
             }
             Expr::Struct { module, fields } => self.lower_struct_expr(expr.span, module, fields, env, steps),
-            Expr::Bitstring(fields) => self.lower_bitstring_expr(fields, env, steps),
+            Expr::Bitstring(fields) => self.lower_bitstring_expr(expr.span, fields, env, steps),
             Expr::Index(base, key) => {
                 let base = self.lower_expr(base, env, steps)?;
                 let value = self.fresh_value();
@@ -2118,8 +2123,15 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         }
     }
 
+    /// A construction evaluates its segments' values in order, then tests
+    /// every segment's contract the program text leaves open. The test is the
+    /// guard of one dispatch row whose patterns bind the values, so a term the
+    /// values' types prove is decided by the plan and costs nothing. The row's
+    /// arm builds; the miss calls `Kernel.__construction_failed__/1`, which
+    /// raises Elixir's `ArgumentError`.
     fn lower_bitstring_expr(
         &mut self,
+        span: Span,
         fields: &[BitField<Spanned<Expr>>],
         env: &mut HashMap<Var, ValueId>,
         steps: &mut Vec<ExprStep>,
@@ -2139,9 +2151,53 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                 )?,
             });
         }
+        let segment_values: Vec<Var> = (0..fields.len()).map(segment_value).collect();
+        let Some(check) = construction_contract::construction_check(fields, &segment_values, span) else {
+            return Ok(self.push_bitstring(lowered, steps));
+        };
+        let inputs: Vec<ValueId> = lowered.iter().map(|field| field.value).collect();
+        let row = PatternRow {
+            patterns: segment_values
+                .iter()
+                .map(|value| Spanned::new(Pattern::Var(value.clone()), span))
+                .collect(),
+            preconditions: Vec::new(),
+            guard: Some(check.test),
+            body_id: 0,
+        };
+        let plan = self.compile_match_dispatch("construction", span, inputs.len(), vec![row], None)?;
+        let bindings = self.lower_dispatch_bindings(&plan, env, steps)?;
+        let mut build_steps = Vec::new();
+        let built = self.push_bitstring(lowered, &mut build_steps);
+        let build = ExprOutcome {
+            arguments: self.bind_outcome_arguments(&plan.outcomes[0], |_| None, &mut env.clone()),
+            block: ExprBlock {
+                span,
+                steps: build_steps,
+                result: built,
+            },
+        };
+        let mut failure_env = env.clone();
+        failure_env.extend(segment_values.into_iter().zip(inputs.iter().copied()));
+        let miss_block = self.lower_expr_as_block(&check.failure, failure_env)?;
         let value = self.fresh_value();
-        steps.push(ExprStep::Bitstring { value, fields: lowered });
+        steps.push(ExprStep::Dispatch {
+            value,
+            inputs,
+            bindings,
+            dispatch: Box::new(ExprDispatch {
+                plan: Rc::new(plan),
+                arm_blocks: vec![build],
+                miss_block: Some(miss_block),
+            }),
+        });
         Ok(value)
+    }
+
+    fn push_bitstring(&mut self, fields: Vec<LoweredBitField>, steps: &mut Vec<ExprStep>) -> ValueId {
+        let value = self.fresh_value();
+        steps.push(ExprStep::Bitstring { value, fields });
+        value
     }
 
     fn lower_bitfield_spec(
@@ -4767,6 +4823,18 @@ pub(super) fn child_entries(tail: &LoweredTail) -> impl Iterator<Item = ControlE
         .iter()
         .map(|edge| edge.target)
         .chain(beside_the_outcomes.into_iter().flatten())
+}
+
+/// The context of the names a construction's check gives its segments'
+/// values: a compiler-minted context, so no name the program wrote meets one.
+const CONSTRUCTION_CHECK_CONTEXT: &str = "fz_construction_check";
+
+/// The name a construction's check gives the value of its segment `index`.
+fn segment_value(index: usize) -> Var {
+    Var {
+        name: "segment".to_string(),
+        context: crate::ast::VarContext::minted(CONSTRUCTION_CHECK_CONTEXT, index as i64),
+    }
 }
 
 fn match_rows(clauses: &[MatchClause]) -> Vec<PatternRow<super::super::types::Ty>> {

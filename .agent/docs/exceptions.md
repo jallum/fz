@@ -525,6 +525,7 @@ clause that cannot match is left to the decision's own `FunctionClauseError`.
 | `map_size/1` of a non-map | `** (BadMapError) expected a map, got:` then the value |
 | `elem/2` with a non-integer index | `** (ArithmeticError) bad argument in arithmetic expression`, as Elixir adds one to the index |
 | `abs/1` of the minimum integer; `round/1`, `trunc/1`, `floor/1`, `ceil/1` of a float outside the 64-bit range (Elixir answers a bignum) | `** (ArithmeticError) bad argument in arithmetic expression` |
+| a `<<...>>` construction or `<>` given a field of the wrong kind, a size that is no non-negative integer, a too-short binary or a value that is no Unicode scalar | `** (ArgumentError) construction of binary failed: segment N of type 'T':` then what the segment expected, naming the segment the BEAM names |
 | `div/2`, `rem/2`, `/` and the other arithmetic that fails | `** (ArithmeticError) bad argument in arithmetic expression` |
 | `Map.fetch!/2`, `Map.update!/3`, `Map.replace!/3`, `Keyword.fetch!/2`, `struct!/2` on a struct | `** (KeyError) key <key> not found in:` then the collection |
 | `struct!/2` on a module, naming a key its struct does not declare | `** (KeyError) key <key> not found` |
