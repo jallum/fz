@@ -5,6 +5,8 @@
   probes.py measure --out DIR                           run everything in DIR, print instructions per iteration
 
 A figure is a slope: (instructions at 2N iterations - instructions at N) / N, so start-up cancels.
+A walk row (`to_list`, `keys`, `reduce`) turns a map of integer keys into a list once per iteration,
+and its figure is per entry: the slope divided by the map's size.
 `measure` needs only python3, /usr/bin/time and, for the BEAM column, erlc and erl; DIR can be
 built on one host and measured on another.
 """
@@ -23,6 +25,10 @@ SHAPES = [("build", 6, 200_000, 2_000_000), ("build", 12, 200_000, 1_000_000), (
           ("case", 12, 500_000, 2_000_000), ("case", 40, 500_000, 2_000_000),
           ("replace", 12, 500_000, 2_000_000), ("delete", 12, 500_000, 2_000_000)]
 PROBES = [(op, kind, k, fz_n, beam_n) for (op, k, fz_n, beam_n) in SHAPES for kind in "ab"]
+# (walk, keys in the map, fz iterations, BEAM iterations); the map's keys are (j + 1) * 7919 with value j.
+WALK_SHAPES = [("to_list", 40, 50_000, 200_000), ("keys", 40, 50_000, 200_000), ("reduce", 40, 50_000, 200_000),
+               ("to_list", 100_000, 20, 40), ("keys", 100_000, 20, 40), ("reduce", 100_000, 20, 40)]
+WALKS = [(op, "i", k, fz_n, beam_n) for (op, k, fz_n, beam_n) in WALK_SHAPES]
 
 
 def name(op, kind, k):
@@ -30,6 +36,10 @@ def name(op, kind, k):
 
 
 def expected(op, k, n):
+    if op == "reduce":
+        return n * (k * (k - 1) // 2)
+    if op in ("to_list", "keys"):
+        return n * k
     return sum(PICKS) * n if op in ("get", "case") else k
 
 
@@ -65,6 +75,26 @@ def fz_source(op, kind, k, n):
                 + "".join(f"    m = Map.put(m, {key(i)}, n)\n" for i in PICKS[:3]))
     return (f"defmodule P do\n  def step(m, n) do\n{body}    m\n  end\n  def loop(0, m), do: m\n"
             f"  def loop(n, m), do: loop(n - 1, step(m, n))\nend\ndbg(map_size(P.loop({n}, {literal})))\n")
+
+
+WALK_FZ = {"to_list": "length(Map.to_list(m))", "keys": "length(Map.keys(m))",
+           "reduce": "Enum.reduce(m, 0, fn ({_k, v}, s) -> s + v end)"}
+WALK_ERL = {"to_list": "length(maps:to_list(M))", "keys": "length(maps:keys(M))",
+            "reduce": "lists:foldl(fun({_K, V}, S) -> S + V end, 0, maps:to_list(M))"}
+
+
+def walk_fz_source(op, k, n):
+    return (f"defmodule P do\n  def loop(0, _m, acc), do: acc\n"
+            f"  def loop(n, m, acc), do: loop(n - 1, m, acc + {WALK_FZ[op]})\nend\n"
+            f"m = Map.new(1..{k}, fn (j) -> {{j * 7919, j - 1}} end)\ndbg(P.loop({n}, m, 0))\n")
+
+
+def walk_erl_source(module, op, k):
+    # Elixir's Enum.reduce over a map is :lists.foldl over :maps.to_list.
+    return (f"-module({module}).\n-export([main/1]).\n"
+            f"loop(0, _M, Acc) -> Acc;\nloop(N, M, Acc) -> loop(N - 1, M, Acc + {WALK_ERL[op]}).\n"
+            f"main(N) -> M = maps:from_list([{{J * 7919, J - 1}} || J <- lists:seq(1, {k})]),\n"
+            f'    io:format("~p~n", [loop(N, M, 0)]).\n')
 
 
 def erl_source(module, op, kind, k):
@@ -110,20 +140,22 @@ def run(command, **kwargs):
 def build(args):
     out, here = os.path.abspath(args.out), os.path.dirname(os.path.abspath(__file__))
     os.makedirs(out, exist_ok=True)
-    for op, kind, k, fz_n, _ in PROBES:
+    for op, kind, k, fz_n, _ in PROBES + WALKS:
+        walk = kind == "i"
         for n in (fz_n, 2 * fz_n):
             source = os.path.join(out, f"{name(op, kind, k)}_{n}.fz")
-            open(source, "w").write(fz_source(op, kind, k, n))
+            open(source, "w").write(walk_fz_source(op, k, n) if walk else fz_source(op, kind, k, n))
             run([args.fz2, "build", "-o", source[:-3], source])
         module = f"map_{name(op, kind, k)}"
-        open(os.path.join(out, f"{module}.erl"), "w").write(erl_source(module, op, kind, k))
+        open(os.path.join(out, f"{module}.erl"), "w").write(
+            walk_erl_source(module, op, k) if walk else erl_source(module, op, kind, k))
     names = ", ".join(f'"{key}"' for key in KEYS)
     open(os.path.join(out, "keys.h"), "w").write(
         f"#define KEY_COUNT {len(KEYS)}\nstatic const char *KEY_NAMES[KEY_COUNT] = {{{names}}};\n"
         f"static const int PICKS[6] = {{{', '.join(map(str, PICKS))}}};\n")
     floor = os.path.join(here, "floor")
     run(["cc", "-O2", "-Wall", "-Werror", f"-I{out}", "-o", os.path.join(out, "floor"),
-         os.path.join(floor, "harness.c"), os.path.join(floor, "flat.s"), os.path.join(floor, "trie.s")])
+         os.path.join(floor, "harness.c"), os.path.join(floor, "flat.s"), os.path.join(floor, "trie.s"), os.path.join(floor, "walk.s")])
     print(run([os.path.join(out, "floor"), "test"]).stdout.strip(), "(floor agrees with its reference)")
 
 
@@ -148,7 +180,7 @@ def measure(args):
     out = os.path.abspath(args.out)
     beam = shutil.which("erlc") and shutil.which("erl")
     if beam:
-        for op, kind, k, _, _ in PROBES:
+        for op, kind, k, _, _ in PROBES + WALKS:
             run(["erlc", "-o", out, os.path.join(out, f"map_{name(op, kind, k)}.erl")])
     print(f"{'probe':<16}{'fz':>10}{'BEAM':>10}{'floor':>10}{'ordered':>10}")
     for op, kind, k, fz_n, beam_n in PROBES:
@@ -167,6 +199,22 @@ def measure(args):
             row += [slope(floor, want, 1_000_000), "-"]
         else:
             row += ["-", "-"]
+        print(f"{label:<16}" + "".join(f"{value:>10}" for value in row), flush=True)
+    print(f"\n{'walk':<16}{'fz':>10}{'BEAM':>10}{'floor':>10}   (instructions per entry)")
+    for op, kind, k, fz_n, beam_n in WALKS:
+        label, want = name(op, kind, k), lambda n: expected(op, k, n)
+        row = [slope(lambda n: [os.path.join(out, f"{label}_{n}")], want, fz_n) // k]
+        if beam:
+            erl = lambda n: ["erl", "-noshell", "-pa", out, "-eval", f"map_{label}:main({n}), halt()."]
+            row.append(slope(erl, want, beam_n) // k)
+        else:
+            row.append("-")
+        if op == "reduce":
+            row.append("-")
+        else:
+            floor_n = max(1, 40_000_000 // k)
+            floor = lambda n: [os.path.join(out, "floor"), op, str(n), str(k)]
+            row.append(slope(floor, lambda n: n * k, floor_n) // k)
         print(f"{label:<16}" + "".join(f"{value:>10}" for value in row), flush=True)
 
 

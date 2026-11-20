@@ -1,0 +1,45 @@
+defmodule :maps do
+  @moduledoc "The Erlang `:maps` functions, as OTP's maps.erl defines them."
+
+  @doc """
+  Returns the map's entries as `{key, value}` pairs, in the map's iteration order.
+
+  ## Examples
+
+      :maps.to_list(%{"b" => 2, "a" => 1, "c" => 3})
+      #=> [{"a", 1}, {"b", 2}, {"c", 3}]
+
+  """
+  @spec to_list(any) :: [{any, any}]
+  def to_list(map), do: fz_map_to_list(map)
+
+  extern "fz" defp fz_map_to_list(any) :: any
+
+  @doc """
+  Returns the map's keys, in the map's iteration order.
+
+  ## Examples
+
+      :maps.keys(%{"b" => 2, "a" => 1, "c" => 3})
+      #=> ["a", "b", "c"]
+
+  """
+  @spec keys(any) :: [any]
+  def keys(map), do: fz_map_keys(map)
+
+  extern "fz" defp fz_map_keys(any) :: any
+
+  @doc """
+  Returns the map's values, in the map's iteration order.
+
+  ## Examples
+
+      :maps.values(%{"b" => 2, "a" => 1, "c" => 3})
+      #=> [1, 2, 3]
+
+  """
+  @spec values(any) :: [any]
+  def values(map), do: fz_map_values(map)
+
+  extern "fz" defp fz_map_values(any) :: any
+end

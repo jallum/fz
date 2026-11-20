@@ -221,6 +221,10 @@ guard `is_function(f, 1)` and `is_function(f, 2)`; `duplicate/2` guards
 `is_integer(n) and n >= 0`. The specs are OTP's, so a call whose arguments are
 proven outside them is refused at compile time.
 
+`lib/maps.fz` defines `:maps` with `to_list/1`, `keys/1` and `values/1`, each a
+single runtime walk of the map's entries; `Map.to_list/1`, `Map.keys/1` and
+`Map.values/1` delegate to them.
+
 ## A call by name
 
 `f(a)` always names the function `f/1`, as in Elixir, even where a variable

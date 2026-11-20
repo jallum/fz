@@ -21,12 +21,67 @@ use super::Heap;
 use super::imp::position_of_word;
 use super::schema::SchemaIdentity;
 use super::schema::{NamedSchema, StructKey};
+use crate::alloc_site::RuntimeAllocSite;
 use crate::any_value::{
-    AnyValue, AnyValueRef, SlotLayout, ValueKind, heap_object_word, map_addr_from_tagged, map_count, map_entries,
-    map_entry, map_header_is_trie, map_slot, struct_addr_from_tagged, struct_schema_id,
+    AnyValue, AnyValueRef, ListCons, STRUCT_PAYLOAD_OFFSET, SlotLayout, ValueKind, heap_object_word,
+    map_addr_from_tagged, map_count, map_entries, map_entry, map_header_is_trie, map_key_kind, map_keys_ptr,
+    map_node_child, map_node_child_count, map_node_entry_count, map_slot, map_tag_ptr, map_value_kind, map_values_ptr,
+    struct_addr_from_tagged, struct_field_kind_slot, struct_field_raw_slot, struct_header_word, struct_schema_id,
+    struct_size_for_payload,
 };
-use crate::heap::{map_entry_refs, map_slot_refs};
+use crate::heap::map_slot_refs;
 use crate::module_name::{ModuleName, STRUCT_MODULE_FIELD};
+use std::ptr::{read, write};
+
+/// Which part of each entry a map's list holds: `Map.keys`, `Map.values` or
+/// `Map.to_list`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MapPart {
+    Keys,
+    Values,
+    Pairs,
+}
+
+const LIST_CELL_SIZE: usize = size_of::<ListCons>();
+
+/// Where a `{key, value}` tuple's parts go: its schema, its size in bytes, and
+/// the payload offset of its kind bytes.
+#[derive(Clone, Copy)]
+struct PairShape {
+    schema: u32,
+    size: usize,
+    kinds: u32,
+}
+
+/// A map's list as it is built, last entry first: the address of its first
+/// cell so far (0 while it is empty), the entries still to list, and the
+/// records the heap has placed for them and not yet filled. A record is one
+/// list cell, or a pair followed by its cell.
+struct Listing {
+    part: MapPart,
+    pair: Option<PairShape>,
+    first: u64,
+    unlisted: usize,
+    next: *mut u8,
+    room: usize,
+}
+
+impl Listing {
+    fn new(part: MapPart, pair: Option<PairShape>, entries: usize) -> Self {
+        Listing {
+            part,
+            pair,
+            first: 0,
+            unlisted: entries,
+            next: std::ptr::null_mut(),
+            room: 0,
+        }
+    }
+
+    fn record_size(&self) -> usize {
+        self.pair.map_or(0, |pair| pair.size) + LIST_CELL_SIZE
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MapLayout {
@@ -189,22 +244,6 @@ impl Heap {
         }
     }
 
-    /// The entry at `index` as references. A struct's keys and module live in
-    /// no slot of the object, so they are boxed.
-    pub fn map_view_entry_refs(&mut self, layout: MapLayout, index: usize) -> (AnyValueRef, AnyValueRef) {
-        match layout {
-            MapLayout::Entries(addr) | MapLayout::Trie(addr) => {
-                assert!(index < unsafe { map_count(addr) }, "map entry index out of bounds");
-                unsafe { map_entry_refs(addr, index) }
-            }
-            MapLayout::Struct { object, schema_id } => {
-                let map = self.struct_map(schema_id);
-                let key = self.box_any_value_ref(map.key_atom(index));
-                (key, self.struct_key_value_ref(object, &map, index))
-            }
-        }
-    }
-
     /// Every entry, in the map's own order, in one pass.
     pub fn map_view_entries(&self, layout: MapLayout) -> Vec<(AnyValue, AnyValue)> {
         match layout {
@@ -213,6 +252,144 @@ impl Heap {
                 .map(|index| self.map_view_entry(layout, index))
                 .collect(),
         }
+    }
+
+    /// The map as a list of `part` of each entry, in the map's own order, in
+    /// one pass. Each element is the word and kind the map stores, placed in
+    /// its cell or tuple field as it is; nothing is decoded or boxed. The list
+    /// is built from its end, so a node's children are listed last to first
+    /// before its own entries, last to first.
+    pub fn map_list(&mut self, map: AnyValueRef, part: MapPart) -> AnyValueRef {
+        let layout = self.expect_map_layout(map, "map list");
+        let pair = (part == MapPart::Pairs).then(|| self.pair_shape());
+        let mut listing = Listing::new(part, pair, self.map_view_count(layout));
+        match layout {
+            MapLayout::Entries(addr) | MapLayout::Trie(addr) => unsafe { self.list_node(addr, &mut listing) },
+            MapLayout::Struct { .. } => {
+                for index in (0..self.map_view_count(layout)).rev() {
+                    let (key, value) = self.map_view_entry(layout, index);
+                    let entry = ((key.raw(), key.kind()), (value.raw(), value.kind()));
+                    self.list_part(&mut listing, part, entry);
+                }
+            }
+        }
+        debug_assert_eq!(listing.unlisted, 0, "every entry is listed");
+        if listing.first == 0 {
+            return AnyValueRef::empty_list();
+        }
+        AnyValueRef::from_heap_object(ValueKind::LIST, listing.first as *const u8).expect("a listed map is a list")
+    }
+
+    /// Lists the entries of the node at `addr` and of its children, last
+    /// entry first, so the list reads them in node order.
+    ///
+    /// # Safety
+    ///
+    /// `addr` is a node of a published map.
+    unsafe fn list_node(&mut self, addr: *const u8, listing: &mut Listing) {
+        for child in (0..unsafe { map_node_child_count(addr) }).rev() {
+            unsafe { self.list_node(map_node_child(addr, child), listing) };
+        }
+        let count = unsafe { map_node_entry_count(addr) };
+        let (tags, keys, values) = unsafe {
+            (
+                map_tag_ptr(addr),
+                map_keys_ptr(addr, count),
+                map_values_ptr(addr, count),
+            )
+        };
+        let entry = |slot: usize| unsafe {
+            let tag = read(tags.add(slot));
+            (
+                (read(keys.add(slot)), map_key_kind(tag)),
+                (read(values.add(slot)), map_value_kind(tag)),
+            )
+        };
+        match listing.part {
+            MapPart::Keys => (0..count)
+                .rev()
+                .for_each(|slot| self.list_part(listing, MapPart::Keys, entry(slot))),
+            MapPart::Values => (0..count)
+                .rev()
+                .for_each(|slot| self.list_part(listing, MapPart::Values, entry(slot))),
+            MapPart::Pairs => (0..count)
+                .rev()
+                .for_each(|slot| self.list_part(listing, MapPart::Pairs, entry(slot))),
+        }
+    }
+
+    /// Puts `part` of one entry, given as its key's and its value's words and
+    /// kinds, in front of the list. Inlined where `part` is a constant, so each
+    /// part's loop carries only its own work.
+    #[inline(always)]
+    fn list_part(&mut self, listing: &mut Listing, part: MapPart, (key, value): ((u64, ValueKind), (u64, ValueKind))) {
+        if listing.room == 0 {
+            let cell = (RuntimeAllocSite::ListConsStorage, LIST_CELL_SIZE);
+            (listing.next, listing.room) = match listing.pair {
+                None => self.alloc_run_at(&[cell], listing.unlisted),
+                Some(pair) => self.alloc_run_at(&[(RuntimeAllocSite::Struct, pair.size), cell], listing.unlisted),
+            };
+        }
+        let record = listing.next;
+        listing.next = unsafe { record.add(listing.record_size()) };
+        listing.room -= 1;
+        listing.unlisted -= 1;
+        // A key or a value the map holds is now held by the list too, so it is
+        // published; a new pair is held by its cell alone.
+        let (head, cell) = match part {
+            MapPart::Keys | MapPart::Values => {
+                let head = if part == MapPart::Keys { key } else { value };
+                self.publish_contained_parts(head.0, head.1);
+                (head, record)
+            }
+            MapPart::Pairs => {
+                let pair = listing.pair.expect("a pair's shape");
+                (self.write_pair(record, pair, key, value), unsafe {
+                    record.add(pair.size)
+                })
+            }
+        };
+        unsafe { write(cell as *mut ListCons, ListCons::to_addr(head.0, head.1, listing.first)) };
+        listing.first = cell as u64;
+    }
+
+    /// The 2-tuple's schema and the bytes one takes.
+    fn pair_shape(&mut self) -> PairShape {
+        let schema = self.schemas.borrow_mut().tuple(2);
+        let schemas = self.schemas.borrow();
+        let tuple = schemas.get(schema);
+        let size = struct_size_for_payload(tuple.allocation_payload_size());
+        assert!(
+            tuple.size.is_multiple_of(8) && size == STRUCT_PAYLOAD_OFFSET + tuple.size as usize + 8,
+            "a pair's two kind bytes fill one word, last in the tuple"
+        );
+        PairShape {
+            schema,
+            size,
+            kinds: tuple.size,
+        }
+    }
+
+    /// Writes the `{key, value}` tuple of `pair`'s shape at `object`: its
+    /// header, its two fields, and the word that holds their kind bytes.
+    #[inline(always)]
+    fn write_pair(
+        &mut self,
+        object: *mut u8,
+        pair: PairShape,
+        key: (u64, ValueKind),
+        value: (u64, ValueKind),
+    ) -> (u64, ValueKind) {
+        self.publish_contained_parts(key.0, key.1);
+        self.publish_contained_parts(value.0, value.1);
+        let kinds = u64::from(key.1.tag()) | u64::from(value.1.tag()) << 8;
+        unsafe {
+            write(object as *mut u64, struct_header_word(pair.schema));
+            write(struct_field_raw_slot(object, 0), key.0);
+            write(struct_field_raw_slot(object, 8), value.0);
+            write(struct_field_kind_slot(object, pair.kinds) as *mut u64, kinds);
+        }
+        (object as u64, ValueKind::STRUCT)
     }
 
     /// The node and entry slot that hold `key` in the map at `addr`, a flat

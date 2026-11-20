@@ -430,7 +430,7 @@ defmodule Map do
 
   """
   @spec to_list(any) :: [{any, any}]
-  def to_list(map), do: to_list(map, map_size(map), 0, [])
+  def to_list(map), do: :maps.to_list(map)
 
   @doc """
   Returns just the keys, in the map's iteration order.
@@ -442,7 +442,7 @@ defmodule Map do
 
   """
   @spec keys(any) :: [any]
-  def keys(map), do: keys(map, map_size(map), 0, [])
+  def keys(map), do: :maps.keys(map)
 
   @doc """
   Returns just the values, in the map's iteration order.
@@ -454,7 +454,7 @@ defmodule Map do
 
   """
   @spec values(any) :: [any]
-  def values(map), do: values(map, map_size(map), 0, [])
+  def values(map), do: :maps.values(map)
 
   @doc """
   Returns true when `key` is present in `map`.
@@ -476,28 +476,6 @@ defmodule Map do
 
   extern "fz" defp fz_map_has_key(any, stored_value) :: boolean
 
-  extern "fz" defp fz_map_entry_key(any, integer) :: any
-
-  @spec keys(any, integer, integer, [any]) :: [any]
-  defp keys(map, count, index, acc) do
-    if index >= count do
-      reverse(acc, [])
-    else
-      keys(map, count, index + 1, [fz_map_entry_key(map, index) | acc])
-    end
-  end
-
-  @spec values(any, integer, integer, [any]) :: [any]
-  defp values(map, count, index, acc) do
-    if index >= count do
-      reverse(acc, [])
-    else
-      values(map, count, index + 1, [fz_map_entry_value(map, index) | acc])
-    end
-  end
-
-  extern "fz" defp fz_map_entry_value(any, integer) :: any
-
   @doc """
   The `Enumerable.reduce/3` callback body for maps.
 
@@ -511,7 +489,7 @@ defmodule Map do
 
   """
   @spec reduce(any, {:cont, b} | {:halt, b} | {:suspend, b}, (any, b -> {:cont, b} | {:halt, b} | {:suspend, b})) :: {:done, b} | {:halted, b} | {:suspended, b, (-> any)} when b: var
-  def reduce(map, acc, reducer), do: reduce(map, map_size(map), acc, reducer)
+  def reduce(map, acc, reducer), do: List.reduce(to_list(map), acc, reducer)
 
   @doc """
   The `Enumerable.reduce_while/3` callback body for maps.
@@ -532,7 +510,7 @@ defmodule Map do
 
   """
   @spec reduce_while(any, b, (any, b -> {:cont, b} | {:halt, c})) :: b | c when b: var, c: var
-  def reduce_while(map, acc, reducer), do: reduce_while_cont(map, map_size(map), 0, acc, reducer)
+  def reduce_while(map, acc, reducer), do: List.reduce_while(to_list(map), acc, reducer)
 
   @doc """
   Returns true when the `{key, value}` pair appears in `map`, the
@@ -553,7 +531,7 @@ defmodule Map do
 
   """
   @spec member?(any, any) :: boolean
-  def member?(map, {key, value}), do: member_pair?(map, map_size(map), 0, key, value)
+  def member?(map, {key, value}), do: match?(%{^key => ^value}, map)
   def member?(_map, _value), do: false
 
   @doc """
@@ -574,69 +552,6 @@ defmodule Map do
   @spec slice(any) :: {:ok, integer, any}
   def slice(map) do
     {:ok, map_size(map), (fn (_map) -> to_list(map) end)}
-  end
-
-  @spec reduce(any, integer, {:cont, b} | {:halt, b} | {:suspend, b}, (any, b -> {:cont, b} | {:halt, b} | {:suspend, b})) :: {:done, b} | {:halted, b} | {:suspended, b, (-> any)} when b: var
-  defp reduce(map, count, {:cont, acc}, reducer), do: reduce_cont(map, count, 0, acc, reducer)
-  defp reduce(_map, _count, {:halt, acc}, _reducer), do: {:halted, acc}
-  defp reduce(map, count, {:suspend, acc}, reducer) do
-    {:suspended, acc, (fn () -> reduce_cont(map, count, 0, acc, reducer) end)}
-  end
-
-  @spec reduce_cont(any, integer, integer, b, (any, b -> {:cont, b} | {:halt, b} | {:suspend, b})) :: {:done, b} | {:halted, b} | {:suspended, b, (-> any)} when b: var
-  defp reduce_cont(map, count, index, acc, reducer) do
-    if index >= count do
-      {:done, acc}
-    else
-      reduce_step(map, count, index, reducer.(entry(map, index), acc), reducer)
-    end
-  end
-
-  @spec reduce_step(any, integer, integer, {:cont, b} | {:halt, b} | {:suspend, b}, (any, b -> {:cont, b} | {:halt, b} | {:suspend, b})) :: {:done, b} | {:halted, b} | {:suspended, b, (-> any)} when b: var
-  defp reduce_step(map, count, index, {:cont, acc}, reducer), do: reduce_cont(map, count, index + 1, acc, reducer)
-  defp reduce_step(_map, _count, _index, {:halt, acc}, _reducer), do: {:halted, acc}
-  defp reduce_step(map, count, index, {:suspend, acc}, reducer) do
-    {:suspended, acc, (fn () -> reduce_cont(map, count, index + 1, acc, reducer) end)}
-  end
-
-  @spec reduce_while_cont(any, integer, integer, b, (any, b -> {:cont, b} | {:halt, c})) :: b | c when b: var, c: var
-  defp reduce_while_cont(map, count, index, acc, reducer) do
-    if index >= count do
-      acc
-    else
-      reduce_while_step(map, count, index, reducer.(entry(map, index), acc), reducer)
-    end
-  end
-
-  @spec reduce_while_step(any, integer, integer, {:cont, b} | {:halt, c}, (any, b -> {:cont, b} | {:halt, c})) :: b | c when b: var, c: var
-  defp reduce_while_step(map, count, index, {:cont, acc}, reducer), do: reduce_while_cont(map, count, index + 1, acc, reducer)
-  defp reduce_while_step(_map, _count, _index, {:halt, acc}, _reducer), do: acc
-
-  @spec member_pair?(any, integer, integer, any, any) :: boolean
-  defp member_pair?(map, count, index, key, value) do
-    if index >= count do
-      false
-    else
-      if fz_map_entry_key(map, index) === key and fz_map_entry_value(map, index) === value do
-        true
-      else
-        member_pair?(map, count, index + 1, key, value)
-      end
-    end
-  end
-
-  @spec entry(any, integer) :: {any, any}
-  defp entry(map, index) do
-    {fz_map_entry_key(map, index), fz_map_entry_value(map, index)}
-  end
-
-  @spec to_list(any, integer, integer, [{any, any}]) :: [{any, any}]
-  defp to_list(map, count, index, acc) do
-    if index >= count do
-      reverse(acc, [])
-    else
-      to_list(map, count, index + 1, [entry(map, index) | acc])
-    end
   end
 
   @spec reverse([a], [b]) :: [a | b] when a: var, b: var

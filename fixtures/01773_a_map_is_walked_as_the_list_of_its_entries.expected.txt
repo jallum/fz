@@ -1,0 +1,15 @@
+{[{10, 1}, {20, 2}, {30, 3}], [10, 20, 30], [1, 2, 3]}
+[{1, :one}, {1.5, :t}, {:atom, "s"}, {{:k}, %{in: 1}}, {[3], nil}, {"b", [1]}]
+{[1, 1.5, :atom, {:k}, [3], "b"], [:one, :t, "s", %{in: 1}, nil, [1]]}
+{[__struct__: Shape, name: "square", side: 2], [a: 1, b: 2, c: 3]}
+{[:__struct__, :name, :side], [2, Shape, "square"], {true, true, true, true}}
+{[], [], [], []}
+{{true, true, true, true}, {true, true, true, true}}
+{{true, true, true, true}, {true, true, true, true}}
+{{6494400, 820, 40}, {2670668000, 2668667000, 2000}}
+{true, true}
+{[{10, 1}, {20, 2}], 5, [{{10, 1}, :x}, {{20, 2}, :y}]}
+3
+{true, false, true}
+{true, false, false}
+{{30, 3}, {1, :one}, nil}

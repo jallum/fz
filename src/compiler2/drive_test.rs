@@ -13204,7 +13204,7 @@ const SOURCE_ORDER_BLIND_ESCAPES: &[&str] = &[];
 /// walk only reports the kinds it saw; a row appearing or leaving is the
 /// census fixtures changing shape, which wants looking at either way.
 const SOURCE_ORDER_PLANS_ON_THE_CENSUS: &[(&str, usize, usize)] =
-    &[("case", 20, 20), ("entry", 115, 107), ("receive", 2, 0)];
+    &[("case", 21, 21), ("entry", 114, 108), ("receive", 2, 0)];
 
 /// The subjects at which seating `early` before `late` lets a value reach a
 /// body that never named it: the two arms put one and the same question there,
@@ -13752,7 +13752,7 @@ const SURFACE_MEMBERSHIP_CENSUS: [(&str, &str, usize, usize); 13] = [
         0,
     ),
     ("fixtures/00613_enum_over_runtime_typed_values.fz", "", 5, 0),
-    ("fixtures/01032_mapset_collects_and_answers_in.fz", "", 18, 0),
+    ("fixtures/01032_mapset_collects_and_answers_in.fz", "", 15, 0),
     (
         "fixtures/01125_a_never_returning_closure_call_over_decoded_records_asks_nothing_of_the_boxed_return.fz",
         "",
@@ -14853,10 +14853,9 @@ fn compiler2_membership_operator_protocol_receivers_settle_to_direct_impls() {
         // `not in` lowers to a `case` with a halting miss arm, so `IO.inspect(x not in map)`
         // receives a result typed as the literal union `false | true` and
         // `IO.inspect` dispatches per literal.
-        ["Kernel.===/2", "Main.main/0"],
-        "each protocol receiver should settle to a direct impl rather than lower a dispatch edge; the two \
-         multi-target callsites left are `Main.main/0`'s `IO.inspect` over a `case` result, and one inside `===`, whose `any`/`any` clause serves every non-numeric pair \
-         at once and calls an extern that is keyed per operand type",
+        ["Main.main/0"],
+        "each protocol receiver should settle to a direct impl rather than lower a dispatch edge; the one \
+         multi-target callsite left is `Main.main/0`'s `IO.inspect` over a `case` result",
     );
 }
 
@@ -25113,8 +25112,7 @@ fn compiler2_a_stream_over_any_enumerable_keeps_its_activations_finite() {
         ("Enumerable.Range.reduce/3", 1),
         // A call round a recursion cycle keeps the entering activation's key at the slots the cycle
         // supplies, so each reduce cycle's accumulator is keyed once per entry.
-        ("List.reduce_cont/3", 2),
-        ("Map.reduce_cont/5", 1),
+        ("List.reduce_cont/3", 3),
         ("Range.reduce_cont/6", 1),
     ];
     for (label, expected) in measured {
@@ -25122,7 +25120,7 @@ fn compiler2_a_stream_over_any_enumerable_keeps_its_activations_finite() {
     }
     assert_eq!(
         activations.values().map(BTreeSet::len).sum::<usize>(),
-        133,
+        129,
         "activations of the whole program"
     );
 }

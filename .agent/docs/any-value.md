@@ -84,7 +84,7 @@ Generated code handles values only through these entry points. A few examples:
 fz_type_of(ref)                      -> tag byte
 fz_ref_load_int / _float / _atom(ref)
 fz_map_get_ref(process, map, key_word, key_kind)    -> ref
-fz_map_count(process, map) / fz_map_entry_key(process, map, i) / fz_map_entry_value(process, map, i)
+fz_map_count(process, map) / fz_map_to_list(process, map) / fz_map_keys(process, map) / fz_map_values(process, map)
 fz_map_has_key(process, map, key_word, key_kind)    -> 0 or 1
 fz_map_delete(process, map, key_word, key_kind)     -> map ref
 fz_list_head_ref(list) / fz_list_tail_ref(list)
@@ -98,17 +98,21 @@ fz_binary_concat(process, left, right)
 ```
 
 **Dynamic reads return refs into existing storage, not copies.**
-`fz_map_get_ref`, `fz_map_entry_key`/`_value`, `fz_list_head_ref`, and
+`fz_map_get_ref`, `fz_list_head_ref`, and
 `fz_struct_get_field_ref` build a ref over the slot already living in the
 container. For an int or float slot the returned ref points straight at that
 payload word (`any_value_ref_from_storage`); for a heap slot it carries the
 slot's heap pointer; for an atom slot it is the atom ref of the id the slot
 holds, so no ref to an atom points into the container. A struct read as a map
 keeps one more difference: its keys and its `__struct__` module live in no slot,
-and each is an atom, so each comes back as an atom ref. `Enumerable.Map` (`lib/map.fz`) is plain
-fz source that declares `fz_map_count`, `fz_map_entry_key`, `fz_map_entry_value`
-as externs and folds over the map's canonical sorted entries; the tuple/list it
-builds copies those values into fresh containers before publishing them.
+and each is an atom, so each comes back as an atom ref. `Map.to_list`, `keys` and
+`values` (`lib/map.fz`) are the externs `fz_map_to_list`, `fz_map_keys` and
+`fz_map_values`, which list the map in one walk (`Heap::map_list`): each entry's
+stored word and kind are copied into a new list cell, or into the two fields of
+a new `{k, v}` tuple, so nothing is decoded or boxed. `Enumerable.Map`'s
+`reduce` and `reduce_while` are `List.reduce` and `List.reduce_while` over
+`Map.to_list`, as Elixir's are over `:maps.to_list`, and `member?` is the match
+`%{^key => ^value}`.
 
 `fz_binary_concat` validates byte-aligned binary inputs and builds `left <> right`
 through `Heap::alloc_concatenation`, which returns the VALUE. When `left` is a
@@ -787,7 +791,7 @@ Enumeration (`map_view_entries`, `Enum`, `Map.to_list`, `for`,
 is a function of the hashes, so anything that needs key order sorts the entries. Entry `i` of a trie (`map_view_entry`) skips
 whole children by their totals and costs one header read per child passed, so
 reading every entry by index costs more than one walk; `Map.to_list`, `keys`
-and `values` read by index. Equality and ordering of two maps are those of the
+and `values` walk once (`Heap::map_list`). Equality and ordering of two maps are those of the
 same entries in a flat map: ordering sorts both sides by key.
 
 ### A struct is a map in its own layout
