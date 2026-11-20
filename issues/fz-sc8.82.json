@@ -11,11 +11,15 @@
     {
       "text": "Another instance (Optimize, 2026-11-19): fn -\u003e a; b end rejected; Elixir accepts.",
       "timestamp": "2026-11-19T02:48:07Z"
+    },
+    {
+      "text": "Also hit by macro code (Elixir Parity, 2026-11-20): def f(e), do: quote(do: (x = unquote(e); x + 100)) fails with 'expected `)`, got Semi'; Elixir parses (a; b) as a __block__.",
+      "timestamp": "2026-11-20T20:16:16Z"
     }
   ],
   "priority": 3,
   "status": "open",
   "title": "A semicolon separates expressions wherever a newline does",
   "type": "bug",
-  "updated_at": "2026-11-19T02:48:07Z"
+  "updated_at": "2026-11-20T20:16:16Z"
 }
