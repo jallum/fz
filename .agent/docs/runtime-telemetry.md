@@ -98,11 +98,13 @@ same fields when it renders the event, nested under
 a JSON boolean. The emitter does not traverse the process for telemetry.
 
 List-retention fallbacks are derived, not emitted separately:
-`fallback_count = list_retention_attempts - list_retention_hits`. The runtime
-FFI helper increments `attempts` for every `fz_list_reuse_or_cons_parts` call,
-and increments `hits` when the heap returns the original source cell, either
-unchanged or after guarded rewrite. That keeps the runtime telemetry seam at one
-boundary event instead of a per-attempt side channel.
+`fallback_count = list_retention_attempts - list_retention_hits`. Each attempt
+adds one to `attempts`, and each answer that is the original source cell,
+unchanged or after guarded rewrite, adds one to `hits`. The interpreter's call
+to `fz_list_reuse_or_cons_parts` and the instructions compiled code emits for
+the same row (`native_codegen/list_reuse.rs`) update the same two process
+fields, so the telemetry seam stays at one boundary event instead of a
+per-attempt side channel.
 
 `dtors_dispatched` is `Process::dtors_dispatched`: the resource destructors the
 scheduling core ran for the process over its whole life, whether a collection

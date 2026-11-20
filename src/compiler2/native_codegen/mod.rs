@@ -24,6 +24,7 @@ mod frame;
 mod function;
 mod inline_object;
 mod list_cell;
+mod list_reuse;
 mod place;
 mod prim;
 mod receive;

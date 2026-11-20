@@ -457,10 +457,12 @@ fn parked_receive_copies_only_winning_subjects_into_receiver_heap() {
     let mut roots = [copied];
     unsafe { &mut *receiver }.heap.collect(&mut roots);
     let source = roots[0].raw_word();
-    let retained = fz_runtime::ir_runtime::fz_list_reuse_or_cons_ref(
+    let head = fz_runtime::any_value::AnyValueRef::from_raw_word(fz_list_head_ref(source)).unwrap();
+    let retained = fz_runtime::ir_runtime::fz_list_reuse_or_cons_parts(
         receiver,
         source,
-        fz_list_head_ref(source),
+        head.storage_raw().unwrap(),
+        u64::from(head.tag().tag()),
         fz_list_tail_ref(source),
         0,
     );
