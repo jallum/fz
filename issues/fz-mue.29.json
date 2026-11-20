@@ -1,9 +1,7 @@
 {
   "assignee": "Jason Allum",
   "blocked_by": [],
-  "blocks": [
-    "fz-9zq.6"
-  ],
+  "blocks": [],
   "created": "2026-11-19T03:09:42Z",
   "description": "User directed 2026-11-19: \"add the elixir parity issues as tickets to the epic we gave to Elixir Parity\". Owner: Elixir Parity. Found by Elixir Parity. The port's decoders() @type (otp_json.ex:865) is %{optional(:array_start) =\u003e array_start_fun(), ...}; decode_value() uses %{optional(binary()) =\u003e decode_value()}. fz's type parser rejects them: 'a map type key must be a literal atom or int'. Done: both parse and declare types on three paths; a self-oracle fixture covers them.\n\n## Scope (widened 2026-11-19, corrected the same day)\nA map type key may be any type, as in Elixir (lib/elixir/pages/references/typespecs.md:137):\n- %{key_type =\u003e value_type} with a non-literal key is a map with required pairs, the same as required(K).\n- optional(K) and required(K) are written explicitly.\n- Typespec maps are closed: a map containing a key outside the allowed keys does not belong to the type, and %{} is the empty map.\nToday %{atom =\u003e v} and %{binary() | atom() | integer() | float() =\u003e v} fail with 'a map type key must be a literal atom or int'. Needed by fz-9zq.6's R6 probes and by json.erl's encode_map/decode_value.\n\n## Size\nThis is a lattice change, not a parser fix. MapSig holds only required literal atom/int keys and is always open. Key domains and optional fields are ported from Elixir's descr.ex. Elixir Parity writes a proposal page with the user's decisions before building.",
   "id": "fz-mue.29",
@@ -27,5 +25,5 @@
   "status": "in_progress",
   "title": "A map type key may be any type, as in Elixir",
   "type": "feature",
-  "updated_at": "2026-11-19T04:49:33Z"
+  "updated_at": "2026-11-20T19:08:45Z"
 }

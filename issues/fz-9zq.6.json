@@ -3,7 +3,6 @@
   "blocked_by": [
     "fz-9zq.15",
     "fz-9zq.5",
-    "fz-mue.29",
     "fz-mue.39",
     "fz-mue.40",
     "fz-sc8.110"
@@ -38,5 +37,5 @@
   "status": "open",
   "title": "A recursive @type resolves, admits and lays out",
   "type": "task",
-  "updated_at": "2026-11-20T18:55:16Z"
+  "updated_at": "2026-11-20T19:08:45Z"
 }
