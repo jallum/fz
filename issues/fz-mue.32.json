@@ -11,11 +11,15 @@
     {
       "text": "When this lands, Record.__record__'s duplicate-key IO.warn joins (Elixir Parity, fz-mue.12).",
       "timestamp": "2026-11-19T03:15:30Z"
+    },
+    {
+      "text": "Also (fz-mue.19 page, approved by the user 2026-11-20): the \"clauses with the same name and arity should be grouped together\" warning, emitted when clauses of one function are split across items, as Elixir does.",
+      "timestamp": "2026-11-20T19:13:49Z"
     }
   ],
   "priority": 3,
   "status": "open",
   "title": "A macro can emit a compile-time warning",
   "type": "feature",
-  "updated_at": "2026-11-19T03:15:30Z"
+  "updated_at": "2026-11-20T19:13:49Z"
 }
