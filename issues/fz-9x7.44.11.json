@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-9x7.44.1"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-9x7.44.9"
+  ],
   "created": "2026-11-20T20:47:44Z",
   "description": "User re-sequenced fz-9x7.44 on 2026-11-20 (relayed by Callables; page https://claude.ai/artifact/6jYdi5cw1d27CZC85xkJih, S2b). Converts this family's results to stored_value on native and interpreter paths, after generated code carries a pair (fz-9x7.44.8) and runtime entries can answer one (fz-9x7.44.1). Owner: Callables. Scope: list heads (list_head_ref, list_head_int_ref, list_head_float_ref).",
   "id": "fz-9x7.44.11",
