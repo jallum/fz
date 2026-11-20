@@ -4,6 +4,7 @@
   "blocks": [
     "fz-9zq.6"
   ],
+  "closed_at": "2026-11-20T13:02:53Z",
   "created": "2026-11-19T04:33:39Z",
   "description": "Split from fz-mue.16 on 2026-11-19, so it doesn't wait on the user's iodata and integer()-display answers (decision 19). Owner: Elixir Parity. 'resolve/type-alias: unknown type name dynamic' blocks fz-engine's 29_type_fun_recursive probe (fz-9zq.6, R6). Done: dynamic() in a @spec/@type resolves as Elixir's gradual dynamic type, on three paths with an Elixir-oracle fixture.",
   "id": "fz-mue.39",
@@ -16,8 +17,8 @@
     }
   ],
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "dynamic() resolves as a type, as in Elixir",
   "type": "feature",
-  "updated_at": "2026-11-19T04:55:47Z"
+  "updated_at": "2026-11-20T13:02:53Z"
 }
