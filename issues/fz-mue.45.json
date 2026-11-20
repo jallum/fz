@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-mue.12"
+  ],
   "blocks": [],
   "created": "2026-11-20T20:30:30Z",
   "description": "Approved by the user (relayed by Elixir Parity, 2026-11-20) in the fz-mue.12 amendment, which chose a full %Macro.Env{} for __CALLER__ and __ENV__ (field table in /Users/j5n/Workspace/fz-mue.12.html). Until this lands versioned_vars is %{} because fz's expander does not track variables. Done: the expander tracks the variables bound at the macro call site, and Macro.Env.versioned_vars, Macro.Env.vars/1 and Macro.Env.has_var?/2 answer as Elixir does. Owner: Elixir Parity.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "The macro expander knows the caller's variables, so Macro.Env.versioned_vars, vars/1 and has_var?/2 are as in Elixir",
   "type": "feature",
-  "updated_at": "2026-11-20T20:30:30Z"
+  "updated_at": "2026-11-20T20:30:31Z"
 }
