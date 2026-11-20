@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-20T19:54:47Z",
+  "description": "User approved page \"Scalars without addresses\" (https://claude.ai/artifact/6jYdi5cw1d27CZC85xkJih, From: Callables) on 2026-11-20, relayed by Callables. Owner: Callables.\n\nA value whose type admits an int, float or reference travels as #807's (stored word, kind) pair (fz-sc8.192.8: two I64, kind = zero-extended tag); every other type keeps its one-word lane. No ref then names a number, so scalar boxing and slot-naming refs go away and fz-9x7.43's region frames pop unconditionally. Evidence: X1 (frame reuse with today's pin ignored) breaks 31 fixtures' output and 15 exit codes and the distiller's float total; X3 (box at read) costs +1.8% to +3.3% on JSON; register census refutes pairing every ref (up to 77% of entries spill), the narrow rule adds 0.00-0.04 stack words per entry. Steps: S1 runtime doors (S1.0, then S1.1-S1.6 independent), S2 lane, S3 removal ledger, S4 = fz-9x7.43. Shares the (raw, kind) primitive with GC's C1 (fz-9x7.11.2, forward(raw, kind)). Entry lists checked against develop 8aafabd8a.",
+  "id": "fz-9x7.44",
+  "labels": [],
+  "parent": "fz-9x7",
+  "priority": 1,
+  "status": "open",
+  "title": "A value that can be a number travels as its stored word and its kind",
+  "type": "epic",
+  "updated_at": "2026-11-20T19:54:47Z"
+}
