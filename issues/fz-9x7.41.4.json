@@ -21,7 +21,7 @@
   ],
   "priority": 2,
   "status": "open",
-  "title": "Boxes, constant bitstrings and static views are placed inline",
+  "title": "Compiled code places a box itself",
   "type": "task",
-  "updated_at": "2026-11-19T04:57:08Z"
+  "updated_at": "2026-11-20T13:02:51Z"
 }
