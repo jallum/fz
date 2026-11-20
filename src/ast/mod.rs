@@ -156,7 +156,7 @@ impl Var {
     pub fn user(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
-            context: VarContext::User,
+            context: VarContext::user(),
         }
     }
 }
@@ -167,18 +167,54 @@ impl std::fmt::Display for Var {
     }
 }
 
-/// Where a variable's name was written. `User` is ordinary source text.
-/// `Macro(function, ordinal)` is a name written inside that macro's own
-/// `quote`, distinguished per expansion by `ordinal` so two calls to the same
-/// macro never share a binding. `Generated(k)` is a name minted by the
-/// compiler itself (capture and lambda sugar) — no source spelling can ever
-/// collide with it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum VarContext {
-    User,
-    Macro(crate::compiler2::FunctionId, u32),
-    Generated(u32),
+/// Where a variable's name was written, as Elixir records it: a context atom
+/// (`nil` for code the user wrote, the quoting module for code a `quote`
+/// wrote, the compiler pass for a name the compiler minted) and, once a macro
+/// expansion has claimed it, a counter. Two variables are the same variable
+/// when their name, context and counter agree. An expansion gives every
+/// variable its macro's module quoted a counter of its own, so a macro's
+/// variables never meet the caller's or another expansion's.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct VarContext {
+    pub context: Option<AtomName>,
+    pub counter: Option<VarCounter>,
 }
+
+impl VarContext {
+    /// A variable the user wrote: context `nil`, no counter.
+    pub const fn user() -> Self {
+        VarContext {
+            context: None,
+            counter: None,
+        }
+    }
+
+    /// The `k`-th name compiler pass `pass` minted, as Elixir's `&1` is
+    /// `{:_&, [counter: n], :elixir_fn}`: the pass is the context, so the name
+    /// is no variable the user writes.
+    pub fn minted(pass: &str, k: i64) -> Self {
+        VarContext {
+            context: Some(AtomName::from(pass)),
+            counter: Some(VarCounter::Integer(k)),
+        }
+    }
+
+    pub fn is_user(&self) -> bool {
+        self.context.is_none() && self.counter.is_none()
+    }
+}
+
+/// The counter that makes a variable private to one origin, as Elixir's
+/// `counter` meta holds it. `Module { module, n }` is the `n`-th expansion
+/// whose caller is `module`; `Integer(n)` is `Macro.unique_var/2`'s, drawn
+/// from `:erlang.unique_integer/0`. The two shapes never compare equal.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum VarCounter {
+    Module { module: AtomName, n: i64 },
+    Integer(i64),
+}
+
+pub use fz_runtime::process::AtomName;
 
 /// Wraps an AST node with the source span that produced it. Every Expr
 /// and Pattern reference in the AST is `Spanned<…>`; the outer enum

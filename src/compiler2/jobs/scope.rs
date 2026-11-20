@@ -5,8 +5,7 @@
 //! unused-variable warning).
 
 use crate::ast::{
-    BitSize, CatchClause, Expr, FnClause, LambdaClause, MatchClause, Pattern, RescueClause, Spanned, Var, VarContext,
-    WithBinding,
+    BitSize, CatchClause, Expr, FnClause, LambdaClause, MatchClause, Pattern, RescueClause, Spanned, Var, WithBinding,
 };
 use crate::diag::{Diagnostic, codes};
 use crate::fast_hash::{HashMap, HashSet};
@@ -82,7 +81,7 @@ pub(super) fn unused_variable_diagnostics(clauses: &[FnClause]) -> Vec<Diagnosti
 }
 
 fn is_warned(var: &Var) -> bool {
-    var.context == VarContext::User && !var.name.starts_with('_')
+    var.context.is_user() && !var.name.starts_with('_')
 }
 
 fn unused_variable_diagnostic(binding: &Binding) -> Diagnostic {

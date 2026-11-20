@@ -2512,40 +2512,15 @@ fn expect_ast_node(
         .ok_or_else(|| QuotedSourceError::new(format!("expected quoted AST node for {context}")))
 }
 
-/// A `Var`-shaped node's tail carries its hygiene context, exactly as
-/// [`super::source::QuotedSourceBuilder::variable`] wrote it: `nil` for a
-/// variable the user wrote, the quoting macro's coordinate for one it
-/// introduced, or the `generated` marker for one sugar introduced. The
-/// latter two also carry an expansion ordinal, stamped beside the context in
-/// `meta`.
+/// A `Var`-shaped node's identity, as [`super::source::QuotedSourceBuilder::variable`]
+/// writes it: its tail is the context atom (`nil` for code the user wrote)
+/// and its meta may carry a `counter`.
 fn decode_var_context(node: &QuotedAstNode) -> Result<VarContext, QuotedSourceError> {
-    match node.tail.root().tag() {
-        fz_runtime::any_value::ValueKind::ATOM => match node.tail.atom_name()?.as_str() {
-            "nil" => Ok(VarContext::User),
-            "generated" => Ok(VarContext::Generated(hygiene_ordinal(node)?)),
-            other => Err(QuotedSourceError::new(format!(
-                "a variable's context atom must be `nil` or `generated`, got `{other}`"
-            ))),
-        },
-        fz_runtime::any_value::ValueKind::INT => {
-            let coordinate = u32::try_from(node.tail.int_value()?).map_err(|_| {
-                QuotedSourceError::new("a macro variable's context is outside the function coordinate space")
-            })?;
-            Ok(VarContext::Macro(
-                FunctionId::from_coordinate(coordinate),
-                hygiene_ordinal(node)?,
-            ))
-        }
-        other => Err(QuotedSourceError::new(format!(
-            "a variable's context must be `nil`, an int, or `generated`, got a {other:?}"
-        ))),
-    }
-}
-
-fn hygiene_ordinal(node: &QuotedAstNode) -> Result<u32, QuotedSourceError> {
-    node.meta
-        .hygiene_ordinal()?
-        .ok_or_else(|| QuotedSourceError::new("a macro- or sugar-generated variable is missing its hygiene ordinal"))
+    let atom = node.tail.atom_name()?;
+    Ok(VarContext {
+        context: (atom.as_str() != "nil").then_some(atom),
+        counter: node.meta.var_counter()?,
+    })
 }
 
 /// True when `node.head` is itself an atom equal to `name`.

@@ -63,10 +63,10 @@ pub(crate) const META_FROM_OPERATOR_KEY: &str = "__fz_from_operator__";
 /// is present nothing re-reads that spelling to choose a target.
 pub(crate) const META_BOUND_CALLABLE_KEY: &str = "__fz_bound__";
 
-/// The expansion ordinal the hygiene-stamping walk gave a macro- or
-/// sugar-generated variable. A variable the user wrote carries no such
-/// ordinal; its `Var` context is `User` and this key is absent.
-pub(crate) const META_HYGIENE_KEY: &str = "__fz_hygiene__";
+/// A variable's counter, as Elixir writes it: `{module, n}` for the `n`-th
+/// expansion whose caller is `module`, or an integer from
+/// `Macro.unique_var/2`. A variable without one is named by its context.
+pub(crate) const META_COUNTER_KEY: &str = "counter";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QuotedSourceError {
@@ -155,7 +155,7 @@ pub struct QuotedSourceMetadata {
     pub span: Option<Span>,
     /// Set by [`QuotedSourceBuilder::variable`] itself from the `Var`'s own
     /// context; a caller building metadata for anything else never sets this.
-    pub hygiene_ordinal: Option<u32>,
+    pub counter: Option<crate::ast::VarCounter>,
 }
 
 const PROCESS_LENT: &str = "the quoted-source process is on loan to a running macro";
@@ -366,8 +366,8 @@ impl QuotedSourceBuilder {
         if meta.from_brackets {
             entries.push((self.atom(META_FROM_BRACKETS_KEY), self.bool(true)));
         }
-        if let Some(ordinal) = meta.hygiene_ordinal {
-            entries.push((self.atom(META_HYGIENE_KEY), self.int(i64::from(ordinal))));
+        if let Some(counter) = &meta.counter {
+            entries.push((self.atom(META_COUNTER_KEY), self.var_counter(counter)?));
         }
         self.keyword_list(&entries)
     }
@@ -418,39 +418,45 @@ impl QuotedSourceBuilder {
 
     /// The one constructor for a `Var`-shaped quoted node, front door, quote
     /// lowering and sugar alike. Elixir's own layout: the context sits in the
-    /// tail, exactly where a call's arguments would be, and the expansion
-    /// ordinal a macro- or sugar-generated variable carries sits in `meta`
-    /// beside its span. A user-written variable carries neither: its tail is
-    /// `nil` and its `meta` has no hygiene entry.
+    /// tail, exactly where a call's arguments would be, and a counter, when
+    /// the variable has one, sits in `meta` beside its span. A user-written
+    /// variable has context `nil` and no counter.
     pub fn variable(
         &self,
         var: &crate::ast::Var,
         meta: &QuotedSourceMetadata,
     ) -> Result<AnyValueRef, QuotedSourceError> {
-        self.variable_named(&var.name, var.context, meta)
+        self.variable_named(&var.name, &var.context, meta)
     }
 
     /// A user-written variable named `name`, without building a `Var` for it.
     pub fn user_variable(&self, name: &str, meta: &QuotedSourceMetadata) -> Result<AnyValueRef, QuotedSourceError> {
-        self.variable_named(name, crate::ast::VarContext::User, meta)
+        self.variable_named(name, &crate::ast::VarContext::user(), meta)
     }
 
     fn variable_named(
         &self,
         name: &str,
-        context: crate::ast::VarContext,
+        context: &crate::ast::VarContext,
         meta: &QuotedSourceMetadata,
     ) -> Result<AnyValueRef, QuotedSourceError> {
-        let (tail, ordinal) = match context {
-            crate::ast::VarContext::User => (self.nil(), None),
-            crate::ast::VarContext::Generated(ordinal) => (self.atom("generated"), Some(ordinal)),
-            crate::ast::VarContext::Macro(function, ordinal) => (self.int(i64::from(function.as_u32())), Some(ordinal)),
-        };
+        let tail = context
+            .context
+            .as_ref()
+            .map_or_else(|| self.nil(), |atom| self.atom(atom));
         let meta = QuotedSourceMetadata {
-            hygiene_ordinal: ordinal,
+            counter: context.counter.clone(),
             ..meta.clone()
         };
         self.ast_node(self.atom(name), &meta, tail)
+    }
+
+    /// A counter as Elixir's `counter` meta holds it.
+    pub fn var_counter(&self, counter: &crate::ast::VarCounter) -> Result<AnyValueRef, QuotedSourceError> {
+        match counter {
+            crate::ast::VarCounter::Module { module, n } => self.tuple(&[self.atom(module), self.int(*n)]),
+            crate::ast::VarCounter::Integer(n) => Ok(self.int(*n)),
+        }
     }
 
     pub fn call(
@@ -696,15 +702,31 @@ impl QuotedSourceCursor {
         Ok(Some(FunctionId::from_coordinate(coordinate)))
     }
 
-    /// The expansion ordinal stamped on a macro- or sugar-generated
-    /// variable's meta. `None` on a variable a user wrote themselves.
-    pub(crate) fn hygiene_ordinal(&self) -> Result<Option<u32>, QuotedSourceError> {
-        let Some(value) = self.meta_value(META_HYGIENE_KEY)? else {
+    /// The `counter` in a variable's meta, if it has one.
+    pub(crate) fn var_counter(&self) -> Result<Option<crate::ast::VarCounter>, QuotedSourceError> {
+        let Some(value) = self.meta_value(META_COUNTER_KEY)? else {
             return Ok(None);
         };
-        let ordinal =
-            u32::try_from(value.int_value()?).map_err(|_| QuotedSourceError::new("hygiene ordinal is outside u32"))?;
-        Ok(Some(ordinal))
+        match value.root().tag() {
+            ValueKind::INT => Ok(Some(crate::ast::VarCounter::Integer(value.int_value()?))),
+            ValueKind::STRUCT => {
+                let parts = value.tuple_iter()?.collect::<Result<Vec<_>, _>>()?;
+                match parts.as_slice() {
+                    [module, n] if module.root().tag() == ValueKind::ATOM && n.root().tag() == ValueKind::INT => {
+                        Ok(Some(crate::ast::VarCounter::Module {
+                            module: module.atom_name()?,
+                            n: n.int_value()?,
+                        }))
+                    }
+                    _ => Err(QuotedSourceError::new(
+                        "a variable's counter must be an integer or a `{module, integer}` tuple",
+                    )),
+                }
+            }
+            other => Err(QuotedSourceError::new(format!(
+                "a variable's counter must be an integer or a `{{module, integer}}` tuple, got a {other:?}"
+            ))),
+        }
     }
 
     pub fn root(&self) -> AnyValueRef {

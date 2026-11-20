@@ -637,7 +637,7 @@ it is made (a rebinding match, a `case` clause over an outer name) carries
 Elixir's other advice: "there is a variable with the same name in the context,
 use the pin operator (^) to match on it or prefix this variable with
 underscore if it is not meant to be used". A name that starts with `_`, and a
-name a macro wrote (`VarContext::Macro` or `Generated`), never warns.
+name a macro or the compiler wrote (any context but `nil`), never warns.
 
 The question is one of scope, not of matching, and
 `src/compiler2/jobs/scope.rs` answers it. `ScopeWalk` holds the function's
