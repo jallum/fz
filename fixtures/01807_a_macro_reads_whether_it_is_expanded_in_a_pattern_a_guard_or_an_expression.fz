@@ -1,0 +1,68 @@
+#---
+# purpose: "Macro.Env.in_match?/1 and in_guard?/1 read __CALLER__.context, which a macro sees as :match at every position that binds a pattern (heads, the left of = and <-, the left of -> in case, fn, receive, try and with else, for reduce), :guard after when, and nil in an expression, including a cond test and a receive after timeout"
+# oracle: self
+# oracle.stamp: b58afb7c16d7ad83
+#---
+defmodule Ctx do
+  defmacro ctx() do
+    cond do
+      Macro.Env.in_match?(__CALLER__) -> :match
+      Macro.Env.in_guard?(__CALLER__) -> true
+      true -> nil
+    end
+  end
+end
+
+defmodule Main do
+  require Ctx
+  import Ctx
+
+  def head(ctx()), do: :head
+  def guarded(x) when ctx(), do: {:guard, x}
+
+  def main() do
+    IO.inspect(ctx())
+    IO.inspect(head(:match))
+    IO.inspect(guarded(1))
+    ctx() = :match
+    IO.inspect(:eq)
+    IO.inspect(for ctx() <- [:match, :x], do: :for)
+    IO.inspect(with ctx() <- :match, do: :with)
+    IO.inspect(case :match do ctx() -> :case end)
+    IO.inspect((fn ctx() -> :fn end).(:match))
+    send(self(), :match)
+    IO.inspect(receive do ctx() -> :receive end)
+
+    IO.inspect(
+      try do
+        :match
+      rescue
+        _ -> :rescued
+      else
+        ctx() -> :try_else
+      end
+    )
+
+    IO.inspect(
+      try do
+        throw(:match)
+      catch
+        ctx() -> :catch
+      end
+    )
+
+    IO.inspect(with :a <- :match do :no else ctx() -> :with_else end)
+    IO.inspect(for _ <- [1], reduce: :match do ctx() -> :reduce end)
+    IO.inspect(cond do ctx() == nil -> :cond_expr end)
+
+    IO.inspect(
+      receive do
+        :never -> :no
+      after
+        if(ctx() == nil, do: 0, else: 1000) -> :after_expr
+      end
+    )
+  end
+end
+
+Main.main()

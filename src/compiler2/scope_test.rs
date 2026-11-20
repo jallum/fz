@@ -1,5 +1,7 @@
 use std::rc::Rc;
 
+use super::env_projection::CallSite;
+use super::quoted_expander::ExpansionContext;
 use super::quoted_surface::ScopeSurface;
 use super::{Job, ModuleId, NamespaceSymbol, QuotedSourceHeap, ScopeSnapshot, World};
 use crate::telemetry::ConfiguredTelemetry;
@@ -15,7 +17,14 @@ fn compiler2_impl_environment_projects_alias_without_rekeying_its_owner() {
     let scope = ScopeSnapshot::module(owner, world.prelude_head());
     let heap = Rc::new(QuotedSourceHeap::new());
     let builder = heap.builder();
-    let env = builder.root(world.project_env_value(&builder, scope).unwrap()).unwrap();
+    let site = CallSite::locate(None, &world.source_map().borrow());
+    let env = builder
+        .root(
+            world
+                .project_env_value(&builder, scope, ExpansionContext::Expression, &site)
+                .unwrap(),
+        )
+        .unwrap();
     let projected = env
         .cursor()
         .map_value("module")
@@ -61,8 +70,13 @@ fn compiler2_scope_snapshot_projects_module_alias_and_env_from_one_authority() {
         "__MODULE__ should project from the current module identity, not from bare namespace state",
     );
 
+    let site = CallSite::locate(None, &world.source_map().borrow());
     let env_root = builder
-        .root(world.project_env_value(&builder, scope).expect("project __ENV__"))
+        .root(
+            world
+                .project_env_value(&builder, scope, ExpansionContext::Expression, &site)
+                .expect("project __ENV__"),
+        )
         .expect("env root");
     let env = env_root.cursor();
     let env_module = env
@@ -87,15 +101,6 @@ fn compiler2_scope_snapshot_projects_module_alias_and_env_from_one_authority() {
         .expect("env function tuple");
     assert_eq!(env_function[0].atom_name().expect("function name"), "run");
     assert_eq!(env_function[1].int_value().expect("function arity"), 2);
-    assert_eq!(
-        env.map_value("namespace")
-            .expect("env namespace lookup")
-            .expect("env namespace value")
-            .int_value()
-            .expect("namespace integer"),
-        scope.namespace().as_u32() as i64,
-        "__ENV__.namespace should carry the current namespace transport handle",
-    );
 }
 
 #[test]

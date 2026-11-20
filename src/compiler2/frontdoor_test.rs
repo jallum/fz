@@ -1095,12 +1095,24 @@ fn compiler2_frontdoor_accepts_any_expression_at_the_top_level_of_a_file() {
 #[test]
 fn compiler2_frontdoor_refuses_an_expression_at_item_position_inside_a_module() {
     let tel = ConfiguredTelemetry::new();
-    let (error, _) = parse_quoted_error("module_expr.fz", "defmodule M do\n  Foo.bar(1)\nend\n", &tel);
+    let (error, _) = parse_quoted_error("module_expr.fz", "defmodule M do\n  42\nend\n", &tel);
     assert!(
         error.msg.contains("at item position"),
         "a module body still accepts only items; got `{}`",
         error.msg
     );
+}
+
+#[test]
+fn compiler2_frontdoor_reads_a_remote_macro_call_at_item_position() {
+    let tel = ConfiguredTelemetry::new();
+    let parsed = parse_quoted_program(
+        "remote_item_macro.fz",
+        "defmodule M do\n  Helpers.define(:rd, a: 1)\nend\n",
+        &tel,
+    )
+    .expect("a remote macro call is an item, as a local one is");
+    assert_quoted_mentions(&parsed, &["define", "Helpers", "."]);
 }
 
 #[test]

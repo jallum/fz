@@ -77,3 +77,78 @@ fn an_expansion_claims_exactly_its_modules_unclaimed_variables() {
         "only Gen's counterless `x` is claimed; a kept counter, another context, the user's x and `_` are left alone"
     );
 }
+
+/// What a macro that answers with the context it was expanded in becomes at
+/// each position that binds a pattern, guards, or tests. A match yields
+/// `:match`, a guard `true`, and an expression `nil`; the program returns 1
+/// only when the macro saw the context its position has.
+const EACH_POSITION_SEES_ITS_CONTEXT: &[(&str, &str)] = &[
+    (
+        "a function head",
+        "def head(ctx()), do: 1\ndef main(), do: head(:match)",
+    ),
+    (
+        "a guard",
+        "def guarded(_x) when ctx(), do: 1\ndef main(), do: guarded(0)",
+    ),
+    ("the left of =", "def main() do\n ctx() = :match\n 1\nend"),
+    (
+        "a generator",
+        "def main(), do: length(for ctx() <- [:match, :other], do: 1)",
+    ),
+    ("a with clause", "def main(), do: with(ctx() <- :match, do: 1)"),
+    ("a case clause", "def main(), do: case(:match, do: (ctx() -> 1))"),
+    ("a fn clause", "def main(), do: (fn ctx() -> 1 end).(:match)"),
+    (
+        "a receive clause",
+        "def main() do\n send(self(), :match)\n receive do\n ctx() -> 1\n end\nend",
+    ),
+    (
+        "a try else clause",
+        "def main(), do: try(do: :match, else: (ctx() -> 1))",
+    ),
+    (
+        "a catch clause",
+        "def main(), do: try(do: throw(:match), catch: (ctx() -> 1))",
+    ),
+    (
+        "a with else clause",
+        "def main(), do: with(:a <- :match, do: 0, else: (ctx() -> 1))",
+    ),
+    (
+        "a for reduce clause",
+        "def main(), do: for(_ <- [1], reduce: :match, do: (ctx() -> 1))",
+    ),
+    (
+        "an ordinary expression",
+        "def main(), do: if(ctx() == nil, do: 1, else: 0)",
+    ),
+    ("a cond test", "def main(), do: cond(do: (ctx() == nil -> 1))"),
+    (
+        "a receive after timeout",
+        "def main(), do: receive(do: (:never -> 0), after: ((if ctx() == nil, do: 0, else: 1000) -> 1))",
+    ),
+];
+
+#[test]
+fn a_macro_sees_the_context_of_the_position_it_is_expanded_in() {
+    use crate::compiler2::{CodeSubmission, Compiler2, ExecutableNeed, RootSubmission};
+    use crate::telemetry::ConfiguredTelemetry;
+
+    let context_macro =
+        "defmacro ctx() do\n case __CALLER__.context do\n :match -> :match\n :guard -> true\n nil -> nil\n end\nend\n";
+    for (position, body) in EACH_POSITION_SEES_ITS_CONTEXT {
+        let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
+        compiler.submit_code(CodeSubmission {
+            name: Some("context_positions.fz".into()),
+            text: format!("{context_macro}{body}\n"),
+        });
+        let root = compiler.submit_root(RootSubmission {
+            module_name: None,
+            name: "main".into(),
+            arity: 0,
+            need: ExecutableNeed::Value,
+        });
+        assert_eq!(compiler.run_root_interp(root), Ok(1), "in {position}");
+    }
+}

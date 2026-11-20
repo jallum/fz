@@ -242,7 +242,7 @@ impl<'t> FrontDoorParser<'t> {
             Tok::Defimpl => self.parse_protocol_impl_item(module_path),
             Tok::Extern => self.parse_extern_item(),
             Tok::Defmacro => self.parse_defmacro_item(module_path),
-            Tok::Ident(_) => self.parse_item_macro_call(module_path),
+            Tok::Ident(_) | Tok::Upper(_) => self.parse_item_macro_call(module_path),
             other => self.err(format!(
                 "compiler2 quoted front door does not yet parse {:?} at item position",
                 other

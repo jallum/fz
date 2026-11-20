@@ -39,6 +39,10 @@ accepts any other expression as an item, so `Distill.main(argv)`, `x = 1`, `42`
 and `if ... do ... end` parse there, and the same line inside a `defmodule`
 fails with `does not yet parse ... at item position`.
 
+A call at item position is local (`make(:x)`) or remote (`Helpers.define(...)`):
+`parse_item` sends an identifier or an uppercase alias to the same
+item-macro-call reader.
+
 The parser cannot tell a statement from a macro call (`def`, `test` and user
 macros all lex as plain identifiers), so it does not try: a call-shaped item is
 a `ScopeForm::MacroCall` and a non-call item (a literal) is a

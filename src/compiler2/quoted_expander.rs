@@ -6,6 +6,7 @@ use crate::source::{SourceMap, Span};
 use crate::telemetry::TelemetryExt as _;
 
 use super::drive::{FactKey, JobEffects, ProductAddress, emit_job_diagnostic};
+use super::env_projection::CallSite;
 use super::identity::{FunctionId, ModuleId};
 use super::jobs::is_guard_expr;
 use super::module_interface::{InterfaceRequester, ReferencingCall};
@@ -19,6 +20,46 @@ use super::source_sugar::rewrite_source_sugar;
 use super::world::World;
 
 pub(crate) const MAX_MACRO_EXPANSION_DEPTH: usize = 64;
+
+/// Where the expansion in progress stands, as Elixir's `__CALLER__.context`
+/// reports it: inside a pattern, inside a guard, or in an ordinary
+/// expression. A macro may expand differently in each, as a record's
+/// `rec()` builds its defaults in an expression and matches any field in a
+/// pattern.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub(crate) enum ExpansionContext {
+    #[default]
+    Expression,
+    Match,
+    Guard,
+}
+
+impl ExpansionContext {
+    /// The atom `__CALLER__.context` holds, `nil` for an expression.
+    pub(crate) fn atom_name(self) -> Option<&'static str> {
+        match self {
+            ExpansionContext::Expression => None,
+            ExpansionContext::Match => Some("match"),
+            ExpansionContext::Guard => Some("guard"),
+        }
+    }
+}
+
+/// The operators whose left side is a pattern: a match, a generator, and a
+/// clause.
+fn binds_its_left_side(head: &str) -> bool {
+    matches!(head, "=" | "<-" | "->")
+}
+
+/// The special forms one of whose sections holds `test -> body` clauses
+/// rather than `pattern -> body` ones, and that section's keyword.
+fn expression_clause_section(head: &str) -> Option<&'static str> {
+    match head {
+        "cond" => Some("do"),
+        "receive" => Some("after"),
+        _ => None,
+    }
+}
 
 pub(crate) enum ExpandedRoot {
     Complete(QuotedSourceRoot),
@@ -64,10 +105,26 @@ pub(crate) trait QuotedExpansionCtx {
     /// a scope's expansions count up from 0 and a body's count down from -1.
     fn next_expansion_number(&mut self) -> i64;
 
-    /// How many guards enclose the expansion in progress. A guard expands
-    /// macros but applies no source sugar: dispatch evaluates its operators
-    /// itself, so `-x` stays a negation rather than becoming a `Kernel` call.
-    fn guard_depth(&mut self) -> &mut u32;
+    /// Where the expansion in progress stands. A guard expands macros but
+    /// applies no source sugar: dispatch evaluates its operators itself, so
+    /// `-x` stays a negation rather than becoming a `Kernel` call.
+    fn expansion_context(&mut self) -> &mut ExpansionContext;
+
+    /// Expands `cursor` standing in `context`, and returns to the enclosing
+    /// context after it.
+    fn expand_in(
+        &mut self,
+        context: ExpansionContext,
+        owner: &QuotedSourceRoot,
+        cursor: &QuotedSourceCursor,
+        scope: ScopeSnapshot,
+        depth: usize,
+    ) -> Result<ExpandedValue, fz_engine::FatalError> {
+        let enclosing = std::mem::replace(self.expansion_context(), context);
+        let expanded = self.expand_cursor(owner, cursor, scope, depth);
+        *self.expansion_context() = enclosing;
+        expanded
+    }
 
     /// Expands a guard. A guard holds only what dispatch can evaluate, so a
     /// macro that expands there must expand to such code; `expand_macro_invocation`
@@ -79,10 +136,19 @@ pub(crate) trait QuotedExpansionCtx {
         scope: ScopeSnapshot,
         depth: usize,
     ) -> Result<ExpandedValue, fz_engine::FatalError> {
-        *self.guard_depth() += 1;
-        let expanded = self.expand_cursor(owner, guard, scope, depth);
-        *self.guard_depth() -= 1;
-        expanded
+        self.expand_in(ExpansionContext::Guard, owner, guard, scope, depth)
+    }
+
+    /// Expands a pattern: a function head's parameter, or the left side of
+    /// `=`, `<-` or a clause's `->`.
+    fn expand_pattern(
+        &mut self,
+        owner: &QuotedSourceRoot,
+        pattern: &QuotedSourceCursor,
+        scope: ScopeSnapshot,
+        depth: usize,
+    ) -> Result<ExpandedValue, fz_engine::FatalError> {
+        self.expand_in(ExpansionContext::Match, owner, pattern, scope, depth)
     }
 
     /// The source-visible caller scope for macro execution and memoization.
@@ -224,7 +290,7 @@ pub(crate) trait QuotedExpansionCtx {
                 return Ok(ExpandedValue::Complete(snippet.root()));
             }
             if allow_root_sugar
-                && *self.guard_depth() == 0
+                && *self.expansion_context() != ExpansionContext::Guard
                 && let Some(rewritten) = rewrite_source_sugar(owner, cursor.root(), &node, &source_map.borrow())
                     .map_err(|error| emit_surface_read_error(self.telemetry(), "source sugar rewrite failed", &error))?
             {
@@ -236,7 +302,7 @@ pub(crate) trait QuotedExpansionCtx {
             if let Some(result) = self.expand_ast_call(owner, cursor, &node, scope, depth)? {
                 return Ok(result);
             }
-            return self.expand_ast_node(owner, cursor, &node, scope, depth);
+            return self.expand_syntax_form(owner, cursor, &node, scope, depth);
         }
 
         match cursor.root().tag() {
@@ -244,6 +310,44 @@ pub(crate) trait QuotedExpansionCtx {
             ValueKind::STRUCT => self.expand_tuple(owner, cursor, scope, depth),
             ValueKind::MAP => self.expand_map(owner, cursor, scope, depth),
             _ => Ok(ExpandedValue::Complete(cursor.root())),
+        }
+    }
+
+    /// A call that no macro answers: a form whose left side or clause section
+    /// reads differently from an ordinary call's arguments, or else a plain
+    /// node whose parts expand in turn. Being no macro, it is never an item
+    /// macro (`x = 1` at the top of a file is a statement).
+    fn expand_syntax_form(
+        &mut self,
+        owner: &QuotedSourceRoot,
+        cursor: &QuotedSourceCursor,
+        node: &QuotedAstNode,
+        scope: ScopeSnapshot,
+        depth: usize,
+    ) -> Result<ExpandedValue, fz_engine::FatalError> {
+        let head = (node.head.root().tag() == ValueKind::ATOM)
+            .then(|| node.head.atom_name())
+            .transpose()
+            .map_err(|error| {
+                emit_internal_surface_error(self.telemetry(), format!("quoted call head read failed: {error}"))
+            })?;
+        let arity = match is_list_like(&node.tail) {
+            true => node.tail.list_len().map_err(|error| {
+                emit_internal_surface_error(self.telemetry(), format!("quoted call arg read failed: {error}"))
+            })?,
+            false => return self.expand_ast_node(owner, cursor, node, scope, depth),
+        };
+        match head {
+            Some(head) if binds_its_left_side(&head) && arity == 2 => {
+                let args = self.call_args(&node.tail)?;
+                self.expand_binding_call(owner, cursor, node, &args, scope, depth)
+            }
+            Some(head) if arity == 1 && expression_clause_section(&head).is_some() => {
+                let args = self.call_args(&node.tail)?;
+                let section = expression_clause_section(&head).expect("guarded by the match arm");
+                self.expand_with_expression_clauses(owner, cursor, node, &args[0], section, scope, depth)
+            }
+            _ => self.expand_ast_node(owner, cursor, node, scope, depth),
         }
     }
 
@@ -378,6 +482,195 @@ pub(crate) trait QuotedExpansionCtx {
         })
     }
 
+    /// `pattern = value`, `pattern <- value` and `patterns -> body`: the left
+    /// side binds, so it expands as a pattern; the right side stands where
+    /// the call does.
+    fn expand_binding_call(
+        &mut self,
+        owner: &QuotedSourceRoot,
+        cursor: &QuotedSourceCursor,
+        node: &QuotedAstNode,
+        args: &[QuotedSourceCursor],
+        scope: ScopeSnapshot,
+        depth: usize,
+    ) -> Result<ExpandedValue, fz_engine::FatalError> {
+        let left = match self.expand_pattern(owner, &args[0], scope, depth)? {
+            ExpandedValue::Complete(value) => value,
+            blocked @ ExpandedValue::Blocked(_) => return Ok(blocked),
+        };
+        let right = match self.expand_cursor(owner, &args[1], scope, depth)? {
+            ExpandedValue::Complete(value) => value,
+            blocked @ ExpandedValue::Blocked(_) => return Ok(blocked),
+        };
+        self.rebuild_call(owner, cursor, node, args, &[left, right])
+    }
+
+    /// `cond`'s clauses, and `receive`'s `after` clause, test an expression
+    /// on the left of `->` rather than match a pattern. `section` names the
+    /// keyword whose clauses those are; every other keyword expands as usual.
+    #[allow(clippy::too_many_arguments)]
+    fn expand_with_expression_clauses(
+        &mut self,
+        owner: &QuotedSourceRoot,
+        cursor: &QuotedSourceCursor,
+        node: &QuotedAstNode,
+        keywords: &QuotedSourceCursor,
+        section: &str,
+        scope: ScopeSnapshot,
+        depth: usize,
+    ) -> Result<ExpandedValue, fz_engine::FatalError> {
+        if !keywords.is_list_like() {
+            return self.expand_ast_node(owner, cursor, node, scope, depth);
+        }
+        let read_failed = |tel: &Self::Telemetry, error: QuotedSourceError| {
+            emit_internal_surface_error(tel, format!("quoted clause section read failed: {error}"))
+        };
+        let entries = keywords
+            .list_items()
+            .map_err(|error| read_failed(self.telemetry(), error))?;
+        let builder = owner.builder();
+        let mut expanded = Vec::with_capacity(entries.len());
+        for entry in &entries {
+            // A tuple is a schema'd struct in quoted source.
+            let pair = match entry.root().tag() == ValueKind::STRUCT {
+                true => entry
+                    .tuple_items()
+                    .map_err(|error| read_failed(self.telemetry(), error))?,
+                false => Vec::new(),
+            };
+            let is_section = match pair.as_slice() {
+                [key, _] if key.root().tag() == ValueKind::ATOM => {
+                    key.atom_name().map_err(|error| read_failed(self.telemetry(), error))? == section
+                }
+                _ => false,
+            };
+            let value = if is_section {
+                let clauses = match self.expand_expression_clauses(owner, &pair[1], scope, depth)? {
+                    ExpandedValue::Complete(value) => value,
+                    blocked @ ExpandedValue::Blocked(_) => return Ok(blocked),
+                };
+                builder.tuple(&[pair[0].root(), clauses]).map_err(|error| {
+                    emit_internal_surface_error(
+                        self.telemetry(),
+                        format!("quoted clause section rebuild failed: {error}"),
+                    )
+                })?
+            } else {
+                match self.expand_cursor(owner, entry, scope, depth)? {
+                    ExpandedValue::Complete(value) => value,
+                    blocked @ ExpandedValue::Blocked(_) => return Ok(blocked),
+                }
+            };
+            expanded.push(value);
+        }
+        if expanded
+            .iter()
+            .copied()
+            .eq(entries.iter().map(QuotedSourceCursor::root))
+        {
+            return Ok(ExpandedValue::Complete(cursor.root()));
+        }
+        let keywords_root = builder.list(&expanded).map_err(|error| {
+            emit_internal_surface_error(
+                self.telemetry(),
+                format!("quoted clause section rebuild failed: {error}"),
+            )
+        })?;
+        self.rebuild_call(owner, cursor, node, std::slice::from_ref(keywords), &[keywords_root])
+    }
+
+    /// Each `test -> body` clause of `clauses`, with `test` an expression.
+    fn expand_expression_clauses(
+        &mut self,
+        owner: &QuotedSourceRoot,
+        clauses: &QuotedSourceCursor,
+        scope: ScopeSnapshot,
+        depth: usize,
+    ) -> Result<ExpandedValue, fz_engine::FatalError> {
+        if !clauses.is_list_like() {
+            return self.expand_cursor(owner, clauses, scope, depth);
+        }
+        let read_failed = |tel: &Self::Telemetry, error: QuotedSourceError| {
+            emit_internal_surface_error(tel, format!("quoted clause read failed: {error}"))
+        };
+        let items = clauses
+            .list_items()
+            .map_err(|error| read_failed(self.telemetry(), error))?;
+        let source_map = self.world().source_map();
+        let mut expanded = Vec::with_capacity(items.len());
+        for item in &items {
+            let node = item
+                .ast_node(&source_map.borrow())
+                .map_err(|error| read_failed(self.telemetry(), error))?;
+            let arrow = match node {
+                Some(node) if node.head.root().tag() == ValueKind::ATOM && node.tail.is_list_like() => {
+                    let is_arrow = node
+                        .head
+                        .atom_name()
+                        .map_err(|error| read_failed(self.telemetry(), error))?
+                        == "->";
+                    is_arrow.then_some(node)
+                }
+                _ => None,
+            };
+            let Some(arrow) = arrow else {
+                match self.expand_cursor(owner, item, scope, depth)? {
+                    ExpandedValue::Complete(value) => expanded.push(value),
+                    blocked @ ExpandedValue::Blocked(_) => return Ok(blocked),
+                }
+                continue;
+            };
+            let sides = arrow
+                .tail
+                .list_items()
+                .map_err(|error| read_failed(self.telemetry(), error))?;
+            let mut expanded_sides = Vec::with_capacity(sides.len());
+            for side in &sides {
+                match self.expand_in(ExpansionContext::Expression, owner, side, scope, depth)? {
+                    ExpandedValue::Complete(value) => expanded_sides.push(value),
+                    blocked @ ExpandedValue::Blocked(_) => return Ok(blocked),
+                }
+            }
+            match self.rebuild_call(owner, item, &arrow, &sides, &expanded_sides)? {
+                ExpandedValue::Complete(value) => expanded.push(value),
+                blocked @ ExpandedValue::Blocked(_) => return Ok(blocked),
+            }
+        }
+        if expanded.iter().copied().eq(items.iter().map(QuotedSourceCursor::root)) {
+            return Ok(ExpandedValue::Complete(clauses.root()));
+        }
+        owner
+            .builder()
+            .list(&expanded)
+            .map(ExpandedValue::Complete)
+            .map_err(|error| {
+                emit_internal_surface_error(self.telemetry(), format!("quoted clause rebuild failed: {error}"))
+            })
+    }
+
+    /// `node` with its arguments replaced by `expanded`, or `cursor` itself
+    /// when no argument changed.
+    fn rebuild_call(
+        &self,
+        owner: &QuotedSourceRoot,
+        cursor: &QuotedSourceCursor,
+        node: &QuotedAstNode,
+        args: &[QuotedSourceCursor],
+        expanded: &[AnyValueRef],
+    ) -> Result<ExpandedValue, fz_engine::FatalError> {
+        if expanded.iter().copied().eq(args.iter().map(QuotedSourceCursor::root)) {
+            return Ok(ExpandedValue::Complete(cursor.root()));
+        }
+        let builder = owner.builder();
+        builder
+            .list(expanded)
+            .and_then(|tail| builder.tuple(&[node.head.root(), node.meta.root(), tail]))
+            .map(ExpandedValue::Complete)
+            .map_err(|error| {
+                emit_internal_surface_error(self.telemetry(), format!("quoted call rebuild failed: {error}"))
+            })
+    }
+
     /// `left when guard`: everything before the last argument is a pattern or
     /// head, the last is the guard.
     fn expand_when_call(
@@ -401,19 +694,7 @@ pub(crate) trait QuotedExpansionCtx {
             ExpandedValue::Complete(value) => expanded.push(value),
             ExpandedValue::Blocked(effects) => return Ok(ExpandedValue::Blocked(effects)),
         }
-        if expanded.iter().copied().eq(args.iter().map(QuotedSourceCursor::root)) {
-            return Ok(ExpandedValue::Complete(cursor.root()));
-        }
-        let builder = owner.builder();
-        let tail = builder.list(&expanded).map_err(|error| {
-            emit_internal_surface_error(self.telemetry(), format!("quoted `when` rebuild failed: {error}"))
-        })?;
-        let rebuilt = builder
-            .tuple(&[node.head.root(), node.meta.root(), tail])
-            .map_err(|error| {
-                emit_internal_surface_error(self.telemetry(), format!("quoted `when` rebuild failed: {error}"))
-            })?;
-        Ok(ExpandedValue::Complete(rebuilt))
+        self.rebuild_call(owner, cursor, node, args, &expanded)
     }
 
     fn expand_remote_ast_call(
@@ -641,7 +922,7 @@ pub(crate) trait QuotedExpansionCtx {
     ) -> Result<ExpandedValue, fz_engine::FatalError> {
         let call_span = self.invocation_span(&invocation)?;
         let expanded = self.run_macro_invocation(owner, invocation, function, scope, depth, args)?;
-        if *self.guard_depth() > 0
+        if *self.expansion_context() == ExpansionContext::Guard
             && let ExpandedValue::Complete(root) = &expanded
         {
             self.refuse_unguardable_expansion(owner.subroot(*root), function, call_span)?;
@@ -728,9 +1009,11 @@ pub(crate) trait QuotedExpansionCtx {
         // checks above), whether it turns out to hit the memoization cache
         // or not -- see `next_expansion_number`.
         let expansion_number = self.next_expansion_number();
-        if let Some(expanded) = self
-            .world()
-            .memoized_macro_expansion(function, &invocation, caller_scope, &program)
+        let context = *self.expansion_context();
+        let call_site = CallSite::locate(macro_call_span, &self.world().source_map().borrow());
+        if let Some(expanded) =
+            self.world()
+                .memoized_macro_expansion(function, &invocation, caller_scope, context, &call_site, &program)
         {
             return match self.expand_root(expanded, scope, depth + 1)? {
                 ExpandedRoot::Complete(root) => Ok(ExpandedValue::Complete(root.root())),
@@ -741,7 +1024,7 @@ pub(crate) trait QuotedExpansionCtx {
         let builder = owner.builder();
         let caller = self
             .world()
-            .project_env_value(&builder, caller_scope)
+            .project_env_value(&builder, caller_scope, context, &call_site)
             .map_err(|error| {
                 emit_internal_surface_error(self.telemetry(), format!("__ENV__ projection failed: {error}"))
             })?;
@@ -772,7 +1055,15 @@ pub(crate) trait QuotedExpansionCtx {
             .map_err(|error| emit_internal_surface_error(tel, format!("hygiene stamping failed: {error}")))?;
         let expanded = expanded.subroot(stamped);
         emit_macro_expanded(world, tel, &function, &expanded);
-        world.memoize_macro_expansion(function, invocation, caller_scope, &program, expanded.clone());
+        world.memoize_macro_expansion(
+            function,
+            invocation,
+            caller_scope,
+            context,
+            call_site,
+            &program,
+            expanded.clone(),
+        );
         match self.expand_root(expanded, scope, depth + 1)? {
             ExpandedRoot::Complete(root) => Ok(ExpandedValue::Complete(root.root())),
             ExpandedRoot::Blocked(effects) => Ok(ExpandedValue::Blocked(effects)),

@@ -2,10 +2,12 @@ use std::rc::Rc;
 
 use super::super::code::SourceOwner;
 use super::super::drive::{FactKey, JobEffects, current_uses, emit_job_diagnostic};
+use super::super::env_projection::CallSite;
 use super::super::identity::{FunctionId, FunctionSource, ModuleId, ModuleSourceKind};
 use super::super::namespace::{Namespace, NamespaceSymbol};
 use super::super::quoted_expander::{
-    ExpandedRoot, ExpandedValue, QuotedExpansionCtx, emit_internal_surface_error, emit_surface_read_error,
+    ExpandedRoot, ExpandedValue, ExpansionContext, QuotedExpansionCtx, emit_internal_surface_error,
+    emit_surface_read_error,
 };
 use super::super::quoted_surface::{
     is_function_body_section, is_function_definition_head, read_compiler_fragment_surface, read_scope_surface,
@@ -459,9 +461,9 @@ struct FunctionSourceExpander<'world, 'tel, T: crate::telemetry::Telemetry> {
     reads: Vec<FactKey>,
     /// See `ScopeSession::expansions_visited` (source_publish.rs).
     expansions_visited: i64,
-    /// How many guards enclose the expansion in progress; see
-    /// `QuotedExpansionCtx::expand_guard`.
-    guard_depth: u32,
+    /// Where the expansion in progress stands; see
+    /// `QuotedExpansionCtx::expansion_context`.
+    expansion_context: ExpansionContext,
 }
 
 impl<'world, 'tel, T: crate::telemetry::Telemetry> QuotedExpansionCtx for FunctionSourceExpander<'world, 'tel, T> {
@@ -510,8 +512,8 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> QuotedExpansionCtx for Functi
         }
     }
 
-    fn guard_depth(&mut self) -> &mut u32 {
-        &mut self.guard_depth
+    fn expansion_context(&mut self) -> &mut ExpansionContext {
+        &mut self.expansion_context
     }
 
     fn next_expansion_number(&mut self) -> i64 {
@@ -542,7 +544,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> FunctionSourceExpander<'world
             namespace: source.namespace,
             reads: Vec::new(),
             expansions_visited: 0,
-            guard_depth: 0,
+            expansion_context: ExpansionContext::Expression,
         }
     }
 
@@ -553,9 +555,21 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> FunctionSourceExpander<'world
         // __ENV__; it is transient — it is never recorded on the function.
         let def_scope = ScopeSnapshot::function(self.current_module, self.namespace, self.function);
         let builder = source.source.builder();
-        let env = self.world.project_env_value(&builder, def_scope).map_err(|error| {
-            emit_internal_surface_error(self.telemetry, format!("__ENV__ projection failed: {error}"))
-        })?;
+        let definition_span = source
+            .source
+            .cursor()
+            .ast_node(&self.world.source_map().borrow())
+            .map_err(|error| {
+                emit_internal_surface_error(self.telemetry, format!("definition span read failed: {error}"))
+            })?
+            .and_then(|node| node.span);
+        let definition_site = CallSite::locate(definition_span, &self.world.source_map().borrow());
+        let env = self
+            .world
+            .project_env_value(&builder, def_scope, ExpansionContext::Expression, &definition_site)
+            .map_err(|error| {
+                emit_internal_surface_error(self.telemetry, format!("__ENV__ projection failed: {error}"))
+            })?;
         let env = source.source.subroot(env);
         let namespace = self
             .world
@@ -830,7 +844,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> FunctionSourceExpander<'world
         })?;
         let mut expanded = Vec::with_capacity(params.len());
         for param in &params {
-            match self.expand_cursor(owner, param, scope, depth)? {
+            match self.expand_pattern(owner, param, scope, depth)? {
                 ExpandedValue::Complete(value) => expanded.push(value),
                 ExpandedValue::Blocked(effects) => return Ok(ExpandedValue::Blocked(effects)),
             }

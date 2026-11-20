@@ -266,10 +266,27 @@ and that <code>10</code> is what the caller sees afterward.</p>
 <h2 id="env">7. __CALLER__ and __ENV__</h2>
 
 <p>A macro that needs to know something about where it's being called from
-can ask for <code>__CALLER__</code>, a small map with the calling module,
-function, and namespace. <code>__ENV__</code> is the same shape, but for
-where the macro <em>itself</em> was defined &mdash; useful for a macro that
-wants to refer back to its own defining module.</p>
+can ask for <code>__CALLER__</code>, a <code>%Macro.Env{}</code> struct, as
+in Elixir. It holds the calling <code>module</code> and
+<code>function</code>, the <code>file</code> and <code>line</code> of the call,
+and what the caller's scope has made available: its <code>aliases</code>,
+<code>requires</code>, imported <code>functions</code> and
+<code>macros</code>, and <code>context_modules</code>. <code>__ENV__</code> is
+the same struct for where the code itself is written. The fields Elixir
+tracks that fz does not &mdash; <code>lexical_tracker</code>,
+<code>tracers</code>, <code>macro_aliases</code> and
+<code>versioned_vars</code> &mdash; are <code>nil</code>, <code>[]</code>,
+<code>[]</code> and <code>%{}</code>.</p>
+
+<p><code>__CALLER__.context</code> says where the call stands:
+<code>:match</code> inside a pattern (a function head, the left of
+<code>=</code> or <code>&lt;-</code>, the left of a <code>-&gt;</code> clause
+in <code>case</code>, <code>fn</code>, <code>receive</code>,
+<code>try</code> and <code>with</code>'s <code>else</code>),
+<code>:guard</code> after <code>when</code>, and <code>nil</code> in an
+ordinary expression. <code>Macro.Env.in_match?/1</code> and
+<code>Macro.Env.in_guard?/1</code> read it, so one macro can build a value in
+an expression and match any value in a pattern.</p>
 
 <p><code>__MODULE__</code> is the atom of the module it stands in, and
 <code>nil</code> outside any module. Inside a <code>quote</code> it names the
