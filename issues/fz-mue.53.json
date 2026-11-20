@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-20T21:58:56Z",
+  "description": "Approved by the user (\"New :unicode_util ticket first\", relayed by Elixir Parity 2026-11-20). Owner: Elixir Parity.\n\n:unicode_util.cp/1 and gc/1 return the next codepoint and the next grapheme cluster of any chardata: lists, binaries and nested chardata, with {error, Bin} for a malformed binary, as OTP does. gc shares String.next_grapheme_size's existing grapheme-break tables, so there is one implementation of the break rules. OTP generates unicode_util.erl at build time, so there is no source in ../otp to port; the spec is OTP's documented behaviour, probed with erl and elixir.\n\nBlocks fz-mue.9 (:string.take/next_codepoint, which json.erl:785-786 calls on charlists).",
+  "id": "fz-mue.53",
+  "labels": [],
+  "parent": "fz-mue",
+  "priority": 2,
+  "status": "open",
+  "title": ":unicode_util.cp/1 and gc/1 take the next codepoint and grapheme cluster of any chardata, as in OTP",
+  "type": "feature",
+  "updated_at": "2026-11-20T21:58:56Z"
+}
