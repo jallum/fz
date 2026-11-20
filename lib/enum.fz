@@ -1098,7 +1098,7 @@ defmodule Enum do
   @spec min_max(Enumerable.t(a)) :: {a, a} when a: var
   def min_max(enumerable), do: {min(enumerable), max(enumerable)}
 
-  @spec empty_error() :: never
+  @spec empty_error() :: no_return()
   defp empty_error(), do: raise(%Enum.EmptyError{message: "empty error"})
 
   @spec extreme([a], integer, (-> b)) :: a | b when a: var, b: var

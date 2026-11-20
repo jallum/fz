@@ -31,6 +31,15 @@ Compiler2 owns the active contract path:
   `μt. [integer | binary | t]`. `byte` is `integer`, because the lattice has no
   integer ranges, and a list type has no improper tail, so an improper iolist
   such as `["a" | "b"]` is outside `iolist` here.
+- `none` is the bottom type, the type no value has, and `no_return` is the
+  same type, Elixir's name for the result of a function that never returns.
+  An extern that never returns writes `:: none` (the extern spelling table in
+  `extern_contract.rs`).
+- `neg_integer`, `non_neg_integer` and `pos_integer` are `integer`, like
+  `byte`. `nonempty_list(T)` is `list(T)` without the empty list.
+- `number`, `char`, `charlist`, `timeout` and `struct` are `@type`s in the
+  prelude (`lib/runtime.fz`), written as Elixir's typespec reference defines
+  them; `char` is `integer` for the same reason `byte` is.
 - `compiler2/resolve.rs` resolves names against the namespace captured where a
   declaration appeared and returns hard compiler2 `Ty` values plus parallel
   `ResolvedTypeShape` values.
@@ -232,7 +241,7 @@ Compiler2 owns the active contract path:
   a user callsite (e.g. `:bad + 1`) are fatal compile-time spec violations on
   every path. Each ends in a default clause outside its `@spec`
   (`def _left + _right, do: arithmetic_error()`): the contract is the `@spec`,
-  so the clause adds no refusal and no result type (it returns `never`), and an
+  so the clause adds no refusal and no result type (it returns `none`), and an
   operand known only at runtime that is not a number reaches it and raises
   `ArithmeticError` instead of a clause miss or a trap in a typed extern.
   `send/2` is specced `(pid, t)`: the receiver is a pid, gotten

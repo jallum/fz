@@ -1,0 +1,33 @@
+#---
+# purpose: "Elixir's standard type names resolve in specs: the integer ranges, number, char, charlist, timeout, struct, nonempty_list, none and no_return"
+# oracle: self
+# oracle.stamp: e6535b745e1cde9a
+#---
+defmodule Main do
+  @spec a(non_neg_integer(), pos_integer(), neg_integer()) :: number()
+  def a(x, y, z), do: x + y + z + 0.5
+  @spec b(nonempty_list(integer())) :: integer()
+  def b([h | _]), do: h
+  @spec c(charlist()) :: timeout()
+  def c(l), do: length(l)
+  @spec d(timeout()) :: struct()
+  def d(:infinity), do: %ArgumentError{message: "inf"}
+  def d(n), do: %KeyError{key: n}
+  @spec e(nonempty_list()) :: char()
+  def e([_ | _]), do: ?a
+  @spec f(any()) :: no_return()
+  def f(x), do: :erlang.error(x)
+  @spec g(none()) :: none()
+  def g(x), do: x
+  def main() do
+    IO.inspect(a(1, 2, -3))
+    IO.inspect(b([7, 8]))
+    IO.inspect(c(~c"abc"))
+    IO.inspect(d(:infinity).message)
+    IO.inspect(d(5).key)
+    IO.inspect(e([:x]))
+    IO.inspect(try do f(:boom) rescue e -> e end)
+  end
+end
+
+Main.main()

@@ -2658,7 +2658,7 @@ fn an_extern_that_delivers_carries_its_kind() {
     let mut world = World::new();
     world.submit_code(
         Some("delivers.fz".to_string()),
-        "extern \"fz\" defp fz_throw(any) :: never, delivers: :throw\nextern \"C\" defp abs(c_int) :: c_int\n"
+        "extern \"fz\" defp fz_throw(any) :: none, delivers: :throw\nextern \"C\" defp abs(c_int) :: c_int\n"
             .to_string(),
     );
     assert!(matches!(

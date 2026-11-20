@@ -1,0 +1,16 @@
+#---
+# purpose: "An empty list given where a spec says nonempty_list violates the spec"
+# expect: diagnostic
+# diagnostic.code: spec/violation
+#---
+defmodule Main do
+  @spec first(nonempty_list(integer())) :: integer()
+  def first([head | _]), do: head
+  def first([]), do: 0
+
+  def main() do
+    IO.inspect(first([]))
+  end
+end
+
+Main.main()

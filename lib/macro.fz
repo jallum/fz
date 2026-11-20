@@ -118,7 +118,7 @@ defmodule Macro do
 
   defp escape_function(function, _unnamed), do: refuse(function)
 
-  @spec refuse(any) :: never
+  @spec refuse(any) :: no_return()
   defp refuse(value) do
     raise(ArgumentError, "cannot escape #{inspect(value)}. The supported values are: lists, tuples, maps, atoms, numbers, bitstrings and remote functions in the format &Mod.fun/arity")
   end

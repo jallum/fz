@@ -95,7 +95,7 @@ const WIRE_SPELLINGS: &[WireSpelling] = &[
     WireSpelling::from_semantic_type("boolean", ExternTy::Bool),
     WireSpelling::from_semantic_type("integer", ExternTy::I64),
     WireSpelling::from_semantic_type("float", ExternTy::F64),
-    WireSpelling::from_semantic_type("never", ExternTy::Never),
+    WireSpelling::from_semantic_type("none", ExternTy::Never),
     WireSpelling::names_its_lane("nil", ExternTy::Unit),
     WireSpelling::names_its_lane("binary", ExternTy::Binary),
     WireSpelling::wire_only("c_int", ExternTy::I32, "integer"),

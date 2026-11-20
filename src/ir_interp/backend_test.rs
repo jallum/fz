@@ -183,7 +183,7 @@ fn a_foreign_function_declared_never_cannot_return_into_interpreted_code() {
     let mut compiler = Compiler2::new(crate::telemetry::ConfiguredTelemetry::new());
     compiler.submit_code(CodeSubmission {
         name: Some("returning_never_extern.fz".into()),
-        text: "extern \"C\" defp _test_never_returns() :: never\ndef main() do\n  _test_never_returns()\n  dbg(:unreachable)\nend\n".into(),
+        text: "extern \"C\" defp _test_never_returns() :: none\ndef main() do\n  _test_never_returns()\n  dbg(:unreachable)\nend\n".into(),
     });
     let root = compiler.submit_root(RootSubmission {
         module_name: None,

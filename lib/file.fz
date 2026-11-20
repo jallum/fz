@@ -266,7 +266,7 @@ defmodule File do
 
   # The exception and message Elixir's bang functions raise. `:io` is the
   # failure of a C call, which Elixir spells `:eio`.
-  @spec raise_file(tuple, atom) :: never
+  @spec raise_file(tuple, atom) :: no_return()
   defp raise_file({:rename, source, destination}, reason),
     do: raise(%File.RenameError{reason: reason, action: "rename", source: source, destination: destination})
 

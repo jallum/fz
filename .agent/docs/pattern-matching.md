@@ -521,13 +521,13 @@ are never emitted for a value that is not a list.
 interpreter, the JIT and AOT; `tests/guard_matrix/generate.py` regenerates the
 table, and the test's doc gives the command.
 
-An extern whose return is `never` fails the guard and is not called. That is
+An extern whose return is `none` fails the guard and is not called. That is
 decided by the declared return, not by a name: `Kernel.raise/2` reaches
-`fz_panic :: never`, so a helper clause
+`fz_panic :: none`, so a helper clause
 `def tuple_size(_), do: raise(ArgumentError, "...")` makes the guard false for a
 non-tuple and raises `ArgumentError` in a body. A call that can only abort is
 one `PatternGuardExpr::Fails` node, made in `guard_expr_from_ast` for an extern
-returning `never` and for a helper whose every body is itself `Fails`: the callee
+returning `none` and for a helper whose every body is itself `Fails`: the callee
 is resolved before its arguments, so they are never built and no evaluator
 lowers them. The walk that gathers what a guard function's reification needs
 (`collect_requirements`, `jobs/dispatch.rs`) follows the same order: it asks

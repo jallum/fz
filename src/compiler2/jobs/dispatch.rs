@@ -320,7 +320,7 @@ fn guard_call_arguments(world: &mut World, function: FunctionId) -> GuardArgumen
 }
 
 /// Whether a call to `function` can only abort: an extern that returns
-/// `never`, or a function whose every clause body is one such call. `None`
+/// `none`, or a function whose every clause body is one such call. `None`
 /// while a definition or an extern's wire on the way is unsettled.
 fn only_aborts(world: &mut World, function: FunctionId, visiting: &mut Vec<FunctionId>) -> Option<bool> {
     world.function_defined_revision(function)?;

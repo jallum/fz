@@ -1,5 +1,10 @@
 @type keyword() :: [{atom, any}]
 @type keyword(t) :: [{atom, t}]
+@type number() :: integer() | float()
+@type char() :: integer()
+@type charlist() :: [char()]
+@type timeout() :: :infinity | non_neg_integer()
+@type struct() :: %{:__struct__ => atom(), optional(atom()) => any()}
 
 alias String.Chars
 
