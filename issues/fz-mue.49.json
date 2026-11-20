@@ -7,9 +7,15 @@
   "id": "fz-mue.49",
   "labels": [],
   "parent": "fz-mue",
+  "comments": [
+    {
+      "text": "2026-11-20: fixtures 01810 (mue.22) and 01812 (mue.8) avoid IO.inspect of long tuples because of this gap. When this lands, those fixtures inspect their long tuples directly.",
+      "timestamp": "2026-11-20T21:41:47Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "IO.inspect wraps a long value at 80 columns, as Elixir's pretty printer does",
   "type": "bug",
-  "updated_at": "2026-11-20T20:56:25Z"
+  "updated_at": "2026-11-20T21:41:47Z"
 }
