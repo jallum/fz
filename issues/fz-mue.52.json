@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-20T21:11:45Z",
+  "description": "Split from fz-mue.12 (Amendment 2, approved by the user, relayed by Elixir Parity 2026-11-20). Macro.to_string/1 renders quoted code with Elixir's output. Owner: Elixir Parity.",
+  "id": "fz-mue.52",
+  "labels": [],
+  "parent": "fz-mue",
+  "priority": 3,
+  "status": "open",
+  "title": "Macro.to_string/1 renders quoted code as Elixir does",
+  "type": "feature",
+  "updated_at": "2026-11-20T21:11:45Z"
+}
