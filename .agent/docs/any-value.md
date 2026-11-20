@@ -220,8 +220,8 @@ a view pays for its NUL; `fz_binary_as_ptr` promises no NUL and never copies.
 
 ### Spare room belongs to one process
 
-A `SharedBin` has a capacity and a written length (`bytes_len`). The word at
-`SHARED_BIN_ROOM_OFFSET` holds the capacity, with a frozen flag in its top bit;
+A `SharedBin` has a capacity and a written length (`bytes_len`). Its `room`
+word holds the capacity, with a frozen flag in its top bit;
 the spare room is the capacity less `bytes_len`, and zero once frozen. Buffers
 that no concatenation allocated (`shared_bin_alloc`, the compiler-baked static
 buffers, whose word is 0) have no room. `bytes_ptr` never moves for a live
@@ -239,12 +239,16 @@ Only the process that owns a buffer appends to it. A view that ends where the
 written bytes end is handed to C as a string with no copy because the byte after
 it is a NUL; another process writing there would replace that NUL under a call
 in progress. So every path that makes a buffer reachable from another process
-freezes it first, on the sender's thread: `deep_copy_any_value`'s view arm
-calls `shared_bin_freeze`, and every cross-process copy goes through it
+closes its spare room first, on the sender's thread: `deep_copy_any_value`'s
+view arm calls `shared_bin_freeze`, and every cross-process copy goes through it
 (`gift_copy` for a message or a spawned closure's captured values, and the spawn
-paths in `aot_shim.rs`, `ir_interp/backend.rs` and `exec/runtime.rs`). An
-unfrozen buffer has stubs on one heap only, so changing `bytes_len` has no
-concurrent reader. The heap destructor frees `capacity + 1` bytes, frozen or
+paths in `aot_shim.rs`, `ir_interp/backend.rs` and `exec/runtime.rs`). `shared_bin_freeze` writes only a buffer with spare
+room; one with none, such as a compiler-baked static buffer every scheduler
+thread sends views of, is only read, as OTP's `erts_pin_writable_binary`
+touches only a binary that is still writable. An unfrozen buffer with spare
+room has stubs on one heap only, so changing `bytes_len` has no concurrent
+reader. A message copy makes one BinRef for each view it copies, as OTP's copy
+makes one per copied sub-bitstring. The heap destructor frees `capacity + 1` bytes, frozen or
 not.
 
 Within one process a binary carries a shared mark (see "Shared Lists, Structs

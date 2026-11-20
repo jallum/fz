@@ -920,12 +920,14 @@ BinRef points into the <a href="#shared-zone">shared zone</a>), it does not copy
 the bytes. Instead:</p>
 
 <pre>
+  shared_bin_freeze(src.binref.shared_ptr)  <span class="note">// closes spare room; a buffer with none is only read</span>
   shared_bin_retain(src.binref.shared_ptr)  <span class="note">// atomic ++ on refcount</span>
   dst_binref = alloc_binref(dst_heap, shared_ptr)
   dst_view = alloc_view(dst_heap, dst_binref, src.bytes_ptr, src.bit_len)
 </pre>
 
-<p>The gift gets a fresh 16-byte BinRef and a 32-byte BinView viewing the same
+<p>The gift gets a fresh 16-byte BinRef and a 32-byte BinView for each view it
+copies, viewing the same
 window of the same SharedBin, and the receiver's heap adopts them with the
 segment. The SharedBin's refcount is now one higher. The bytes themselves
 never move. A 1 MiB binary sent to 100 receivers exists once in memory, with

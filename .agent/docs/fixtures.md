@@ -130,7 +130,7 @@ their block. A new epic claims the next free block and adds a row here.
 | `01740-01759` | fz-9x7                            | in use through `01740` |
 | `01760-01779` | fz-sc8                            | in use through `01771` |
 | `01780-01819` | fz-mue                            | in use through `01809` |
-| `01820-01859` | fz-9e2                            | in use through `01822` |
+| `01820-01859` | fz-9e2                            | in use through `01823` |
 | `01880-01899` | fz-yh5                            | in use through `01880` |
 
 A fixture orders its processes with messages and never by a timing margin: an

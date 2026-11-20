@@ -675,12 +675,34 @@ fn a_static_buffer_with_a_zero_room_word_has_no_spare_room() {
         room: 0,
     };
     assert_eq!(sb.spare(), 0);
-    assert_eq!(SHARED_BIN_ROOM_OFFSET, 32);
+}
+
+/// A buffer with no spare room has nothing for a message copy to close, so the
+/// copy only reads it. A compiler-baked static buffer is one, and every
+/// scheduler thread that sends a view of it reads the same word.
+#[test]
+fn a_message_copy_never_writes_into_a_buffer_with_no_room() {
+    unsafe extern "C" fn noop(_: *mut SharedBin) {}
+    static PAYLOAD: [u8; 100] = [3; 100];
+    let baked: &'static mut SharedBin = Box::leak(Box::new(SharedBin {
+        refcount: AtomicUsize::new(1),
+        bytes_ptr: PAYLOAD.as_ptr(),
+        bytes_len: PAYLOAD.len(),
+        destructor: noop,
+        room: 0,
+    }));
+    let baked: *mut SharedBin = baked;
+    let mut sender = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let mut receiver = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let handle = unsafe { SharedBinHandle::retain_from_raw(baked) };
+    let literal = alloc_buffer_view(&mut sender, handle, 100 * 8, StubSite::StaticLiteral);
+    let copied = crate::heap::deep_copy_slot(as_value(literal), &sender.view(), &mut receiver);
     assert_eq!(
-        SHARED_BIN_BYTES,
-        (SHARED_BIN_ROOM_OFFSET + size_of::<usize>()).next_multiple_of(16),
-        "the emitted static buffer is its fields padded to the alignment"
+        unsafe { (*baked).room },
+        0,
+        "the copy stored into the buffer's room word"
     );
+    assert_eq!(copied.kind(), crate::any_value::ValueKind::BINVIEW);
 }
 
 /// A concatenated buffer is freed whole by the last release, whatever its

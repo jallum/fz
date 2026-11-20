@@ -230,7 +230,7 @@ pub(crate) fn define_static_sharedbin<M: ClModule>(
     // bytes_ptr at 8..16 — zero placeholder; relocation patches at link.
     buf[16..24].copy_from_slice(&(bytes.len() as u64).to_le_bytes());
     // destructor at 24..32 — zero placeholder; function-addr reloc patches.
-    // room at 32..40 stays zero (SHARED_BIN_ROOM_OFFSET).
+    // room at 32..40 stays zero: no spare room, so nothing ever writes it.
     // padding at 40..48 stays zero.
     let mut desc = DataDescription::new();
     desc.define(buf.into_boxed_slice());
