@@ -35,8 +35,9 @@
 //!
 //! Compiling the script is itself a measurement. One drive of the product
 //! stack spends at most `PRODUCT_DRIVE_BUDGET` requests, and a compile runs
-//! several drives; the pin below holds the script's compile to the numbers
-//! `pull.drive.finished` and `pull.product.requested` report.
+//! several drives; the ceilings below bound the script's compile by the numbers
+//! `pull.drive.finished`, `pull.product.requested` and `work_graph.applied`
+//! report.
 
 use std::env::temp_dir;
 use std::fs::{File, read_to_string, remove_file};
@@ -229,18 +230,26 @@ fn read_compile_spend(trace: &Path) -> CompileSpend {
     spend
 }
 
-// Jobs the World completes to derive the distiller's compile.
-const DERIVATIONS: u64 = 16_279;
-// Reads the World hands those jobs. A reach job reads the edge fact of every node in
-// its cone, so each of its runs hands one read per node.
-const READS_HANDED: u64 = 120_147;
+/// The most the distiller's compile may spend, part by part. Each is develop's
+/// measured value when it was last lowered: a fall leaves room under it, and a
+/// rise past it is investigated before any ceiling moves.
+const CEILINGS: [(&str, u64); 5] = [
+    // The drive `PRODUCT_DRIVE_BUDGET` (50,000) bounds: its headroom is the margin
+    // before the compile stops with a budget error.
+    ("largest drive requests", 35_113),
+    ("total requests", 35_388),
+    ("drives", 25),
+    ("derivations", 16_279),
+    // A reach job reads the edge fact of every node in its cone, so each of its
+    // runs hands one read per node.
+    ("reads handed", 120_147),
+];
 
-/// Compiling the distiller spends this much of the product stack. The largest
-/// drive is the one `PRODUCT_DRIVE_BUDGET` bounds, so its headroom is the
-/// margin before the compile stops with a budget error; the total and the
-/// drive count say how the rest of the compile is spread.
+/// Compiling the distiller spends no more of the product stack and of the
+/// World's completions than its ceilings allow. The test prints what it
+/// measured, so lowering a ceiling is copying a figure from its output.
 #[test]
-fn the_distiller_compiles_inside_the_product_drive_budget() {
+fn the_distiller_compiles_inside_its_ceilings() {
     let trace = unique_temp_path("fz2_distiller_compile", ".jsonl");
     let output = Command::new(FZ2_BIN)
         .arg("--log-telemetry")
@@ -253,19 +262,27 @@ fn the_distiller_compiles_inside_the_product_drive_budget() {
     let _ = remove_file(&trace);
     assert_prints_expected(&stdout, "fz2 interp --log-telemetry");
 
-    let measured = (spend.largest_drive(), spend.requests, spend.drives.len());
-    assert_eq!(
-        measured,
-        (35_113, 35_388, 25),
-        "(largest drive requests, total requests, drives) for the distiller's compile moved. \
-         A fall is lowered in this pin; a rise is investigated first, because the largest drive \
-         may not exceed PRODUCT_DRIVE_BUDGET (50,000)."
-    );
-    assert_eq!(
-        (spend.derivations, spend.reads_handed),
-        (DERIVATIONS, READS_HANDED),
-        "(derivations, reads handed) the World's job completions took for the distiller's compile \
-         moved. A fall is lowered in this pin; a rise is investigated first, because each read \
-         handed to the World is paid for per derivation."
+    let measured = [
+        spend.largest_drive(),
+        spend.requests,
+        spend.drives.len() as u64,
+        spend.derivations,
+        spend.reads_handed,
+    ];
+    let mut overshoots = Vec::new();
+    for ((part, ceiling), value) in CEILINGS.into_iter().zip(measured) {
+        println!("{part}: {value} (ceiling {ceiling})");
+        if value > ceiling {
+            overshoots.push(format!(
+                "{part} is {value}, {} over its ceiling of {ceiling}",
+                value - ceiling
+            ));
+        }
+    }
+    assert!(
+        overshoots.is_empty(),
+        "the distiller's compile spent more than its ceilings allow: {}. A rise is investigated \
+         before a ceiling moves.",
+        overshoots.join("; ")
     );
 }

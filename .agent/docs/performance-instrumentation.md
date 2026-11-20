@@ -109,8 +109,14 @@ drive, not a compile: a compile runs several drives, each with its own budget, s
 and the largest `requests` says how close any drive came to stopping. A turn that
 hands a program-scoped key to the program session is charged to the drive that
 made it but emits no `pull.product.requested`, so `requests` can exceed that
-drive's request events. `tests/distill_telemetry_test.rs` pins the largest drive,
-the total and the drive count for compiling `tools/distill-telemetry.exs`.
+drive's request events. `tests/distill_telemetry_test.rs` holds compiling
+`tools/distill-telemetry.exs` under ceilings: the largest drive, the total, the
+drive count, and the `derivations` and `reads_handed` its `work_graph.applied`
+events sum to. A measured value at or under its ceiling passes, and the test
+prints every measured value. A change that lowers the spend leaves its ceiling
+where it is; ceilings are lowered to develop's measured values now and then. A
+rise past a ceiling fails, naming the part and the overshoot, and is investigated
+before the ceiling moves.
 
 **Deferred drives** — `pull.drive.deferred` fires when a drive that has another
 drive beneath it runs dry with its product still waiting and unwinds, its
