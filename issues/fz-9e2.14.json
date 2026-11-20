@@ -23,6 +23,10 @@
     {
       "text": "Hypothesis for the page (Binary Handling): overlap with a Join is the overlap of any one of its alternatives, each judged by its own source path. A fresh construction overlaps only its children. __construction_failed__'s return is a CallsiteReturn, already its own root in origin_source_path, so no callee spec read is needed. If the probes (06b, raise arm, value arm) confirm it, this is one data-model change covering the fresh-arm proposal too.",
       "timestamp": "2026-11-19T04:54:49Z"
+    },
+    {
+      "text": "Fresh-arm join proposal folded in (user approved, via Binary Handling 2026-11-20). PR #815 (a4307ae95 on 8aafabd8a).",
+      "timestamp": "2026-11-20T19:38:30Z"
     }
   ],
   "priority": 1,
