@@ -6,7 +6,7 @@
   "description": "Approved by the user 2026-11-17 (relayed by the JSON session). Proposal page first, before any build.\n\nNative has two implementations of guard lowering:\n- src/compiler2/jobs/native.rs lowers function-clause guards to native IR: lower_guard_expr, lower_guard_boolean, lower_guard_short_circuit, lower_guard_extern, lower_guard_dispatch(_node), lower_guard_binop (~3690-4060, ~6126).\n- src/compiler2/native_codegen/receive.rs emits receive guards straight to Cranelift with a parallel set: emit_dispatch_guard_expr, emit_guard_boolean, emit_short_circuit_guard, emit_guard_extern, emit_guard_dispatch(_node), leave_guard, fail_guard (~1241-1865).\n\nEvidence: fz-nml.9.1 (#692) had to apply the same join-lane rule twice (a type union in native.rs, a hand-written lane check in receive.rs); its first attempt fixed one copy and the count did not move.\nCause: receive dispatch is emitted by its own Cranelift emitter (emit_receive_dispatch_body), not through native lowering.\n\nThe page answers whether receive guard expressions can go through the same lowering as function-clause guards, and what the receive emitter needs in exchange (subjects read from the message, out-slots, park).\nRemoval ledger: the receive.rs guard emitters.\nOverlap: Optimize's unfiled proposal A (one continuation closure per receive, terminator.rs build_park_record) touches the same receive lowering; sequence the two.",
   "id": "fz-nml.9.5",
   "labels": [],
-  "parent": "fz-nml.9",
+  "parent": "fz-nml",
   "comments": [
     {
       "text": "Done-when also (Binary Handling, develop 9c9a39e8a): a receive guard comparing against a binary literal compiles natively. send(self(), {:m, \"ab\"}); receive do {:m, b} when b == \"ab\" -\u003e IO.inspect(:eq); _ -\u003e IO.inspect(:ne) end prints :eq on interp but fails on run and build with 'codegen: guard const Utf8Binary([97, 98]) cannot be materialized in receive dispatch' (native_codegen/receive.rs:1411; dispatch_const_value has no binary arm), at any length. One guard lowering removes it; the repro joins this ticket's oracle fixture on all three paths.",
@@ -17,5 +17,5 @@
   "status": "open",
   "title": "A guard is lowered once: receive dispatch reuses native guard lowering",
   "type": "task",
-  "updated_at": "2026-11-20T21:08:33Z"
+  "updated_at": "2026-11-20T21:08:34Z"
 }
