@@ -59,10 +59,11 @@ use std::slice::{from_raw_parts, from_raw_parts_mut};
 /// because the one byte after it is a NUL; a write by another process would
 /// replace that NUL under a call in progress. Ownership is therefore
 /// single: every path that makes a buffer reachable from another process
-/// freezes it first (`shared_bin_freeze`), on the owner's thread, and a
-/// frozen buffer is never written again. Until then every view of it lives on
-/// the owner's heap, so `bytes_len` changes with no concurrent reader, and
-/// `bytes_ptr` never moves. The buffer holds whole bytes and says nothing of
+/// closes its spare room first (`shared_bin_freeze`), on the owner's thread,
+/// and a frozen buffer is never written again. Until then every view of it
+/// lives on the owner's heap, so `bytes_len` changes with no concurrent reader,
+/// and `bytes_ptr` never moves. A buffer with no spare room has nothing to
+/// close, so no path writes it at all. The buffer holds whole bytes and says nothing of
 /// how many bits of the last one a value uses: a view's own `bit_len` is the
 /// one authority on a value's length.
 ///
@@ -117,9 +118,6 @@ pub const BINVIEW_BYTES_PTR_OFFSET: usize = 8;
 /// Where a binary view keeps the bit length of its window, in bytes from the
 /// view.
 pub const BINVIEW_BIT_LEN_OFFSET: usize = 16;
-/// Where a `SharedBin` keeps its capacity and frozen flag. A compiler-baked
-/// static buffer holds 0 here.
-pub const SHARED_BIN_ROOM_OFFSET: usize = std::mem::offset_of!(SharedBin, room);
 
 impl SharedBin {
     /// Bytes the buffer can hold ahead of its trailing NUL.
@@ -234,17 +232,19 @@ pub fn shared_bin_alloc_with(
     bin
 }
 
-/// Forbid any further append into `p`'s buffer. Called on the owner's thread
-/// before a view of the buffer becomes reachable from another process. A
-/// buffer that is already frozen is left untouched, so a process that
-/// received it never writes the word the sender's other receivers read.
+/// Close `p`'s spare room, so no one appends into the buffer again. Called on
+/// the owner's thread before a view of the buffer becomes reachable from
+/// another process. A buffer with no spare room, frozen already or never
+/// given any, is only read: a compiler-baked static buffer is shared by every
+/// scheduler thread, and a buffer a process received is read by the sender's
+/// other receivers.
 ///
 /// # Safety
 /// `p` must point at a live SharedBin, and the caller must be its owner or
-/// hold it frozen already.
+/// find it with no spare room.
 pub unsafe fn shared_bin_freeze(p: *mut SharedBin) {
     let bin = unsafe { &mut *p };
-    if bin.room & ROOM_FROZEN == 0 {
+    if bin.spare() > 0 {
         bin.room |= ROOM_FROZEN;
     }
 }

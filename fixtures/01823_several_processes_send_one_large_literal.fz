@@ -1,0 +1,28 @@
+#---
+# purpose: "several processes each send a view of one 100-byte literal, whose buffer the compiler bakes once and every scheduler thread shares; the copy into each message only reads that buffer, and every message arrives equal to the literal"
+# oracle: self
+# oracle.stamp: bcf9b0b46f19767a
+#---
+defmodule Main do
+  def literal(), do: "0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789"
+
+  def same(bytes) do
+    if bytes == literal(), do: 1, else: 0
+  end
+
+  def collect(0, equal), do: equal
+
+  def collect(left, equal) do
+    receive do
+      {:literal, bytes} -> collect(left - 1, equal + same(bytes))
+    end
+  end
+
+  def main() do
+    parent = self()
+    Enum.each(1..8, fn _ -> spawn(fn -> send(parent, {:literal, literal()}) end) end)
+    IO.inspect({collect(8, 0), byte_size(literal())})
+  end
+end
+
+Main.main()
