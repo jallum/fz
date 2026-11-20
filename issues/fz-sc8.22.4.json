@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-sc8.22.1"
+    "fz-sc8.22.1",
+    "fz-sc8.22.2"
   ],
   "blocks": [],
   "created": "2026-11-20T20:00:57Z",
