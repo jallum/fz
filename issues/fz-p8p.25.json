@@ -20,11 +20,15 @@
     {
       "text": "Scope set by Elixir Parity, 2026-11-20 (user chose var!/2 as its own ticket on the fz-mue.38 page): var!(v, ctx) runs Macro.expand(ctx, __CALLER__) because ctx arrives as an alias, so this adds Macro.expand/2 first, then var!/2 with Elixir's two ArgumentErrors (\"expected a variable to be given to var!\", \"expected var! context to expand to an atom\"); kernel.ex:4885. Moved under fz-mue; owner Elixir Parity.",
       "timestamp": "2026-11-20T20:16:15Z"
+    },
+    {
+      "text": "Macro.expand/2 is now its own ticket, fz-mue.51 (fz-mue.12 Amendment 2), which blocks this one.",
+      "timestamp": "2026-11-20T21:12:01Z"
     }
   ],
   "priority": 3,
   "status": "open",
   "title": "var!/2: a macro names the hygiene context a variable binds in",
   "type": "feature",
-  "updated_at": "2026-11-20T21:12:00Z"
+  "updated_at": "2026-11-20T21:12:01Z"
 }
