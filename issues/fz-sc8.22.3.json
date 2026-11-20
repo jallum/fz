@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-sc8.22.2"
+  ],
   "blocks": [],
   "created": "2026-11-20T20:00:57Z",
   "description": "User approved fz-sc8.22 option A (\"approved;\", relayed by Bugs and Cleanup 2026-11-20; page /Users/j5n/Workspace/fz-sc8.22.html): fz-mue.41 folds in, terminator-flag representation, iolist/iodata widened to Elixir's definition. Owner: Bugs and Cleanup. Step 3, lib and fixtures. concat's contract; Macro.escape's improper form ([{:|, [], [1, 2]}]); fixture 01772 (build, match, inspect, guard length/1 falls through) on interp, run and build; 00665 regains improper/1 on [1 | 2]; the json.erl reproducers (fz-otp-json punch/26_improper_iodata.fz, punch/mue25/u4.fz).",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Improper lists work through concat, Macro.escape and the fixtures",
   "type": "task",
-  "updated_at": "2026-11-20T20:00:57Z"
+  "updated_at": "2026-11-20T20:00:58Z"
 }
