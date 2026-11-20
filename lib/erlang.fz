@@ -6,7 +6,10 @@ defmodule :erlang do
   `decimals` being an integer from 0 to 253. The digits are rounded from the
   float's exact value, and a tie goes away from zero.
 
-  Any option other than `decimals: n` raises `FunctionClauseError`.
+  The options `[:short]` give the shortest text that reads back as the same
+  float, as `Float.to_string/1` does.
+
+  Any other option raises `FunctionClauseError`.
 
   ## Examples
 
@@ -16,10 +19,15 @@ defmodule :erlang do
       :erlang.float_to_binary(1.0e10, decimals: 0)
       #=> "10000000000"
 
+      :erlang.float_to_binary(1.5e-10, [:short])
+      #=> "1.5e-10"
+
   """
-  @spec float_to_binary(float, [{:decimals, integer}]) :: binary
+  @spec float_to_binary(float, [{:decimals, integer}] | [:short]) :: binary
   def float_to_binary(f, [decimals: n]) when is_float(f) and is_integer(n) and n >= 0 and n <= 253,
     do: fz_float_to_fixed_binary(f, n)
+
+  def float_to_binary(f, [:short]) when is_float(f), do: Float.to_string(f)
 
   extern "fz" defp fz_float_to_fixed_binary(float, integer) :: binary
 
@@ -41,6 +49,25 @@ defmodule :erlang do
   """
   @spec error(any) :: no_return()
   def error(reason), do: panic(reason)
+
+  @doc """
+  Raises `reason` as `error/1` does. `args` is the argument list of the
+  failed call, or `:none`, and `options` may carry `error_info:`, which tells
+  Erlang's error formatter how to describe the call; neither changes what a
+  `rescue` or a `catch` sees, because fz carries no stacktraces.
+
+  ## Examples
+
+      try do
+        :erlang.error(:boom, :none, error_info: %{module: :erl_stdlib_errors})
+      rescue
+        e in ErlangError -> e.original
+      end
+      #=> :boom
+
+  """
+  @spec error(any, :none | [any], [any]) :: no_return()
+  def error(reason, _args, _options), do: panic(reason)
 
   @doc """
   Raises again what a `catch kind, reason` clause caught, with the same
@@ -110,4 +137,265 @@ defmodule :erlang do
     do: raise(%ArgumentError{message: "errors were found at the given arguments:\n\n  * 1st argument: out of range\n"})
 
   extern "fz" defp fz_tuple_put(any, integer, any) :: any
+
+  @doc """
+  Returns the `index`th element of `tuple`, counting from 1.
+
+  Raises `ArgumentError` for an index below 1 or above the tuple's size, and
+  for an index that is not an integer or a tuple that is not a tuple.
+
+  ## Examples
+
+      :erlang.element(2, {10, 20, 30})
+      #=> 20
+
+  """
+  @spec element(integer, tuple) :: any
+  def element(index, tuple) when is_integer(index) and is_tuple(tuple) and index >= 1 and index <= tuple_size(tuple),
+    do: elem(tuple, index - 1)
+
+  def element(index, tuple),
+    do: bad_arguments(complaint("1st", index_reason(index, tuple)) <> complaint("2nd", tuple_reason(tuple)))
+
+  @spec index_reason(any, any) :: binary
+  defp index_reason(index, _tuple) when not is_integer(index), do: "not an integer"
+  defp index_reason(index, _tuple) when index <= 0, do: "out of range"
+  defp index_reason(index, tuple) when is_tuple(tuple) and index > tuple_size(tuple), do: "out of range"
+  defp index_reason(_index, _tuple), do: ""
+
+  @spec tuple_reason(any) :: binary
+  defp tuple_reason(tuple) when is_tuple(tuple), do: ""
+  defp tuple_reason(_), do: "not a tuple"
+
+  @doc """
+  Returns the `length` bytes of `binary` that start at byte `start`. A
+  negative `length` takes the bytes that end at `start`, so
+  `binary_part(b, 3, -2)` is `binary_part(b, 1, 2)`.
+
+  Raises `ArgumentError` when the part is not inside `binary`, or an argument
+  is of the wrong type.
+
+  ## Examples
+
+      :erlang.binary_part("abcd", 1, 2)
+      #=> "bc"
+
+      :erlang.binary_part("abcd", 3, -2)
+      #=> "bc"
+
+  """
+  @spec binary_part(binary, integer, integer) :: binary
+  def binary_part(binary, start, length)
+      when is_binary(binary) and is_integer(start) and is_integer(length) and start >= 0 and start <= byte_size(binary) and
+             start + length >= 0 and start + length <= byte_size(binary) do
+    from = min(start, start + length)
+    size = abs(length)
+
+    case binary do
+      <<_skipped :: binary-size(from), part :: binary-size(size), _rest :: binary>> -> part
+    end
+  end
+
+  def binary_part(binary, start, length),
+    do: bad_arguments(complaint("1st", binary_reason(binary)) <> part_complaints(binary, start, length))
+
+  # A `start` inside the binary is the usual case, so a part that still fails
+  # blames its `length`; a `start` past the end blames itself.
+  @spec part_complaints(any, any, any) :: binary
+  defp part_complaints(binary, start, length) when is_binary(binary) and is_integer(start) and start >= 0 and is_integer(length) do
+    if start > byte_size(binary), do: complaint("2nd", "out of range"), else: complaint("3rd", "out of range")
+  end
+
+  defp part_complaints(_binary, start, length),
+    do: complaint("2nd", natural_reason(start)) <> complaint("3rd", integer_reason(length))
+
+  @doc """
+  Returns the bytes of `iolist` as one binary. An `iolist` is a list whose
+  elements are bytes (integers from 0 to 255), binaries and lists of the
+  same, and whose tail may be a binary.
+
+  Raises `ArgumentError` for anything else, a bitstring that is not a binary
+  included.
+
+  ## Examples
+
+      :erlang.iolist_to_binary([?a, "bc", [100, 101]])
+      #=> "abcde"
+
+  """
+  @spec iolist_to_binary(iodata) :: binary
+  def iolist_to_binary(iodata) when is_binary(iodata), do: iodata
+  def iolist_to_binary(iodata), do: iodata_bytes(iodata, "")
+
+  @spec iodata_bytes(any, binary) :: binary
+  defp iodata_bytes([], bytes), do: bytes
+  defp iodata_bytes([byte | rest], bytes) when is_integer(byte) and byte >= 0 and byte <= 255, do: iodata_bytes(rest, bytes <> <<byte>>)
+  defp iodata_bytes([chunk | rest], bytes) when is_binary(chunk), do: iodata_bytes(rest, bytes <> chunk)
+  defp iodata_bytes([nested | rest], bytes) when is_list(nested), do: iodata_bytes(rest, iodata_bytes(nested, bytes))
+  defp iodata_bytes(tail, bytes) when is_binary(tail), do: bytes <> tail
+  defp iodata_bytes(_, _bytes), do: bad_arguments(complaint("1st", "not an iodata term"))
+
+  @doc """
+  Returns the number of bytes `iolist_to_binary/1` would return for
+  `iodata`, and raises `ArgumentError` for what it raises for.
+
+  ## Examples
+
+      :erlang.iolist_size([?a, "bc", [100, 101]])
+      #=> 5
+
+  """
+  @spec iolist_size(iodata) :: integer
+  def iolist_size(iodata), do: byte_size(iolist_to_binary(iodata))
+
+  @doc """
+  Returns `n` as text in `base`, a number from 2 to 36, with the digits above
+  9 in capital letters and a `-` before a negative `n`.
+
+  ## Examples
+
+      :erlang.integer_to_binary(255, 16)
+      #=> "FF"
+
+      :erlang.integer_to_binary(-5, 2)
+      #=> "-101"
+
+  """
+  @spec integer_to_binary(integer, integer) :: binary
+  def integer_to_binary(n, base) when is_integer(n) and is_integer(base) and base >= 2 and base <= 36 and n < 0,
+    do: "-" <> digits(n, base, "")
+
+  def integer_to_binary(n, base) when is_integer(n) and is_integer(base) and base >= 2 and base <= 36, do: digits(-n, base, "")
+
+  def integer_to_binary(n, base), do: bad_arguments(complaint("1st", integer_reason(n)) <> complaint("2nd", base_reason(base)))
+
+  # `n` is never positive: the most negative integer has no positive
+  # counterpart, so every `n` is taken apart on the negative side.
+  @spec digits(integer, integer, binary) :: binary
+  defp digits(n, base, text) do
+    digit = -rem(n, base)
+    char = if digit < 10, do: ?0 + digit, else: ?A + digit - 10
+    quotient = div(n, base)
+    if quotient == 0, do: <<char>> <> text, else: digits(quotient, base, <<char>> <> text)
+  end
+
+  @spec base_reason(any) :: binary
+  defp base_reason(base) when is_integer(base) and base >= 2 and base <= 36, do: ""
+  defp base_reason(_), do: "not an integer in the range 2 through 36"
+
+  @doc """
+  Returns the name of `atom` as a binary in `encoding`: `:utf8` and
+  `:unicode` give its UTF-8 bytes, `:latin1` gives one byte per character.
+
+  Raises `ArgumentError` when `atom` is not an atom, when `encoding` is not
+  one of the three, and for `:latin1` when a character is above 255.
+
+  ## Examples
+
+      :erlang.atom_to_binary(:foo, :utf8)
+      #=> "foo"
+
+      :erlang.atom_to_binary(:é, :latin1)
+      #=> <<233>>
+
+  """
+  @spec atom_to_binary(atom, :utf8 | :unicode | :latin1) :: binary
+  def atom_to_binary(atom, encoding) when is_atom(atom) and (encoding == :utf8 or encoding == :unicode), do: Atom.to_string(atom)
+  def atom_to_binary(atom, :latin1) when is_atom(atom), do: latin1_bytes(Atom.to_string(atom), "", atom)
+
+  def atom_to_binary(atom, encoding),
+    do: bad_arguments(complaint("1st", atom_reason(atom, encoding)) <> complaint("2nd", encoding_reason(encoding)))
+
+  @spec latin1_bytes(binary, binary, atom) :: binary
+  defp latin1_bytes(<<>>, bytes, _atom), do: bytes
+  defp latin1_bytes(<<c :: utf8, rest :: binary>>, bytes, atom) when c <= 255, do: latin1_bytes(rest, bytes <> <<c>>, atom)
+  defp latin1_bytes(_, _bytes, atom), do: bad_arguments(complaint("1st", atom_reason(atom, :latin1)))
+
+  @spec atom_reason(any, any) :: binary
+  defp atom_reason(atom, _encoding) when not is_atom(atom), do: "not an atom"
+  defp atom_reason(_atom, :latin1), do: "contains a character not expressible in latin1"
+  defp atom_reason(_atom, _encoding), do: ""
+
+  @spec encoding_reason(any) :: binary
+  defp encoding_reason(encoding) when encoding == :utf8 or encoding == :unicode or encoding == :latin1, do: ""
+  defp encoding_reason(_), do: "is an invalid encoding option"
+
+  @doc """
+  Returns whether `map` has `key`. Raises `BadMapError` when `map` is not a
+  map.
+
+  ## Examples
+
+      :erlang.is_map_key(:a, %{a: 1})
+      #=> true
+
+  """
+  @spec is_map_key(any, map) :: boolean
+  def is_map_key(key, map), do: Map.has_key?(map, key)
+
+  @doc """
+  Returns the float `text` spells: an optional sign, digits, a decimal point,
+  digits and an optional exponent. The decimal point is required, so `"1"` and
+  `"1e3"` raise `ArgumentError` where `"1.0"` and `"1.0e3"` succeed.
+
+  ## Examples
+
+      :erlang.binary_to_float("2.5")
+      #=> 2.5
+
+      :erlang.binary_to_float("-1.5e-2")
+      #=> -0.015
+
+  """
+  @spec binary_to_float(binary) :: float
+  def binary_to_float(text) when is_binary(text), do: whole_float(Float.parse(text), String.contains?(text, "."))
+  def binary_to_float(text), do: bad_arguments(complaint("1st", binary_reason(text)))
+
+  # `Float.parse` takes a `.` only when a digit follows it, so once it has
+  # consumed the whole text, any `.` in that text is its decimal point.
+  @spec whole_float({float, binary} | :error, boolean) :: float
+  defp whole_float({float, ""}, true), do: float
+  defp whole_float(_partial, _point), do: bad_arguments(complaint("1st", "not a textual representation of a float"))
+
+  @doc """
+  Returns the integer `text` spells in base 10: an optional `-` or `+` and one
+  or more digits. Anything else raises `ArgumentError`.
+
+  ## Examples
+
+      :erlang.binary_to_integer("42")
+      #=> 42
+
+      :erlang.binary_to_integer("-7")
+      #=> -7
+
+  """
+  @spec binary_to_integer(binary) :: integer
+  def binary_to_integer(text) when is_binary(text), do: whole_integer(Integer.parse(text))
+  def binary_to_integer(text), do: bad_arguments(complaint("1st", binary_reason(text)))
+
+  @spec whole_integer({integer, binary} | :error) :: integer
+  defp whole_integer({n, ""}), do: n
+  defp whole_integer(_partial), do: bad_arguments(complaint("1st", "not a textual representation of an integer"))
+
+  @spec integer_reason(any) :: binary
+  defp integer_reason(n) when is_integer(n), do: ""
+  defp integer_reason(_), do: "not an integer"
+
+  @spec natural_reason(any) :: binary
+  defp natural_reason(n) when is_integer(n) and n < 0, do: "out of range"
+  defp natural_reason(n), do: integer_reason(n)
+
+  @spec binary_reason(any) :: binary
+  defp binary_reason(b) when is_binary(b), do: ""
+  defp binary_reason(_), do: "not a binary"
+
+  # One line of Erlang's error formatter's message; "" when `reason` is "".
+  @spec complaint(binary, binary) :: binary
+  defp complaint(_ordinal, ""), do: ""
+  defp complaint(ordinal, reason), do: "  * " <> ordinal <> " argument: " <> reason <> "\n"
+
+  @spec bad_arguments(binary) :: no_return()
+  defp bad_arguments(complaints),
+    do: raise(%ArgumentError{message: "errors were found at the given arguments:\n\n" <> complaints})
 end

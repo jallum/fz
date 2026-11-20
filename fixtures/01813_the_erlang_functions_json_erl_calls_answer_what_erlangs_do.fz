@@ -1,0 +1,46 @@
+#---
+# purpose: ":erlang element, binary_part, iolist_to_binary, iolist_size, integer_to_binary, atom_to_binary, is_map_key, binary_to_float, binary_to_integer, float_to_binary(short) and IO.iodata_to_binary answer what Erlang's do"
+# oracle: self
+# oracle.stamp: e5ba29cb93fcce8a
+#---
+defmodule Main do
+  def main() do
+    IO.inspect(Enum.map([1, 2, 3], &:erlang.element(&1, {10, 20, 30})))
+    IO.inspect(:erlang.element(1, {:only}))
+
+    IO.inspect({:erlang.binary_part("abcd", 1, 2), :erlang.binary_part("abcd", 3, -2)})
+    IO.inspect({:erlang.binary_part("abcd", 0, 4), :erlang.binary_part("abcd", 4, 0), :erlang.binary_part("abcd", 4, -4)})
+    IO.inspect(:erlang.binary_part("héllo", 1, 2))
+
+    IO.inspect(:erlang.iolist_to_binary([?a, "bc", [100, 101], []]))
+    IO.inspect({:erlang.iolist_to_binary("abc"), :erlang.iolist_to_binary([]), :erlang.iolist_to_binary([[], [[]]])})
+    IO.inspect(:erlang.iolist_to_binary([0, 255, <<1, 2>>]))
+    IO.inspect({:erlang.iolist_size([?a, "bc", [100, 101]]), :erlang.iolist_size("héllo"), :erlang.iolist_size([])})
+    IO.inspect({IO.iodata_to_binary([1, "a", [2]]), IO.iodata_to_binary("x")})
+
+    IO.inspect(Enum.map([255, 0, -255, 35, 36], &:erlang.integer_to_binary(&1, 16)))
+    IO.inspect({:erlang.integer_to_binary(5, 2), :erlang.integer_to_binary(35, 36), :erlang.integer_to_binary(-9223372036854775807, 10)})
+    IO.inspect(:erlang.integer_to_binary(elem(Integer.parse("-9223372036854775808"), 0), 16))
+
+    IO.inspect({:erlang.atom_to_binary(:foo, :utf8), :erlang.atom_to_binary(:é, :unicode), :erlang.atom_to_binary(nil, :utf8)})
+    IO.inspect({:erlang.atom_to_binary(:foo, :latin1), :erlang.atom_to_binary(:é, :latin1)})
+
+    IO.inspect({:erlang.is_map_key("a", %{"a" => 1}), :erlang.is_map_key(:b, %{a: 1}), :erlang.is_map_key(1, %{})})
+
+    IO.inspect(Enum.map(["1.5", "-2.5e3", "+0.25", "1.0E2"], &:erlang.binary_to_float/1))
+    IO.inspect(Enum.map(["12", "-7", "+5", "0"], &:erlang.binary_to_integer/1))
+
+    IO.inspect(Enum.map([1.5e-10, 1.0, 0.1, 100.0, 1.0e22], &:erlang.float_to_binary(&1, [:short])))
+    IO.inspect(Enum.map([123456789.0, 5.0e-324, -0.0, 12345.678], &:erlang.float_to_binary(&1, [:short])))
+
+    IO.inspect(:erlang.float_to_binary(1.5, decimals: 2))
+
+    try do
+      :erlang.error({:invalid_byte, 1}, :none, error_info: %{module: :erl_stdlib_errors})
+    rescue
+      e in ErlangError -> IO.inspect(e.original)
+    end
+  end
+end
+
+Main.main()

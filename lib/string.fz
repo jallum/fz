@@ -1151,19 +1151,7 @@ defmodule String do
 
   """
   @spec to_integer(binary) :: integer
-  def to_integer(s), do: whole_integer(Integer.parse(s))
-
-  @spec whole_integer({integer, binary} | :error) :: integer
-  defp whole_integer({n, ""}), do: n
-  defp whole_integer(_partial), do: not_an_integer()
-
-  @spec not_an_integer() :: no_return()
-  defp not_an_integer(),
-    do:
-      raise(
-        ArgumentError,
-        "errors were found at the given arguments:\n\n  * 1st argument: not a textual representation of an integer\n"
-      )
+  def to_integer(s), do: :erlang.binary_to_integer(s)
 
   @doc """
   Returns the float that `s` names, or raises `ArgumentError`.
@@ -1182,26 +1170,7 @@ defmodule String do
 
   """
   @spec to_float(binary) :: float
-  def to_float(s) when is_binary(s), do: whole_float(Float.parse(s), s)
-
-  def to_float(_s),
-    do: raise(ArgumentError, "errors were found at the given arguments:\n\n  * 1st argument: not a binary\n")
-
-  # `Float.parse` takes a `.` only when a digit follows it, so once it has
-  # consumed the whole text, any `.` in that text is its decimal point.
-  @spec whole_float({float, binary} | :error, binary) :: float
-  defp whole_float({f, ""}, s) do
-    if contains?(s, "."), do: f, else: not_a_float()
-  end
-  defp whole_float(_partial, _s), do: not_a_float()
-
-  @spec not_a_float() :: no_return()
-  defp not_a_float(),
-    do:
-      raise(
-        ArgumentError,
-        "errors were found at the given arguments:\n\n  * 1st argument: not a textual representation of a float\n"
-      )
+  def to_float(s), do: :erlang.binary_to_float(s)
 
   @doc """
   Replaces every invalid UTF-8 byte sequence in `s` with `replacement`.
