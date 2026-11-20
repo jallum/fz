@@ -8,6 +8,7 @@ use cranelift_codegen::ir::{self, AbiParam, InstBuilder, MemFlagsData, types};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::JITModule;
 use cranelift_module::{Linkage, Module};
+use fz_runtime::any_value::Stored;
 use fz_runtime::extern_binary::{fz_binary_as_cstring, fz_binary_as_ptr};
 use fz_runtime::symbol_lookup::fz_extern_symbol_addr;
 use std::ffi::CString;
@@ -135,8 +136,8 @@ pub(super) fn call_lowered_extern(
 /// A `stored_value` argument: the word a container stores for `value`, then
 /// its kind.
 fn stored_words(proc: *mut Process, value: AnyValue) -> Result<[ArgWord; 2], String> {
-    let stored = value.value(proc)?;
-    Ok([ArgWord::Int(stored.raw()), ArgWord::Int(u64::from(stored.kind().tag()))])
+    let Stored { word, kind } = Stored::of(value.value(proc)?);
+    Ok([ArgWord::Int(word), ArgWord::Int(kind)])
 }
 
 pub(super) fn call_fixed_extern(

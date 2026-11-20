@@ -837,10 +837,6 @@ impl Heap {
     }
 
     /// An absent deletion borrows the original map without allocating.
-    pub fn map_delete_ref(&mut self, map: AnyValueRef, key: AnyValueRef) -> Result<AnyValueRef, AnyValueRefError> {
-        Ok(self.map_view_delete(map, AnyValue::from_ref(key)?))
-    }
-
     /// `map` with `key` bound to `value`; a map of that one entry when `map`
     /// is the null ref a fresh literal starts from.
     pub fn map_put_slot(&mut self, map: AnyValueRef, key: AnyValue, value: AnyValue) -> AnyValueRef {
@@ -1393,19 +1389,7 @@ impl Heap {
         AnyValueRef::from_heap_object(ValueKind::LIST, addr)
     }
 
-    pub fn read_map_value_ref(
-        &mut self,
-        map: AnyValueRef,
-        key: AnyValueRef,
-    ) -> Result<Option<AnyValueRef>, AnyValueRefError> {
-        self.read_map_value_for_any_key(map, AnyValue::from_ref(key)?)
-    }
-
-    pub fn read_map_value_for_any_key(
-        &mut self,
-        map: AnyValueRef,
-        key: AnyValue,
-    ) -> Result<Option<AnyValueRef>, AnyValueRefError> {
+    pub fn read_map_value(&mut self, map: AnyValueRef, key: AnyValue) -> Result<Option<AnyValueRef>, AnyValueRefError> {
         let layout = self.map_layout(map).ok_or(AnyValueRefError::ExpectedTag {
             expected: ValueKind::MAP,
             found: map.tag(),

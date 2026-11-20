@@ -503,10 +503,10 @@ fn ref_projection_helpers_load_scalar_payloads() {
     assert_eq!(fz_ref_load_atom(atom_ref.raw_word()), 17);
 }
 
-/// The arguments of `fz_map_put` in the order it takes them: a key and a
-/// value, each as its stored word and kind.
+/// A value as the two words an entry takes it in: its stored word and kind.
 fn stored(value: AnyValue) -> [u64; 2] {
-    [value.raw(), u64::from(value.kind().tag())]
+    let Stored { word, kind } = Stored::of(value);
+    [word, kind]
 }
 
 #[test]
@@ -523,8 +523,7 @@ fn a_put_binds_a_key_to_a_value_each_given_as_word_and_kind() {
             value_word,
             value_kind,
         );
-        let key_ref = AnyValueRef::atom(process.node.intern_atom("key")).raw_word();
-        assert_eq!(fz_ref_load_int(fz_map_get_ref(process, map, key_ref)), 42);
+        assert_eq!(fz_ref_load_int(fz_map_get_ref(process, map, key_word, key_kind)), 42);
     });
 }
 
@@ -549,10 +548,57 @@ fn a_put_of_an_integer_or_a_float_allocates_only_the_map() {
 }
 
 #[test]
+fn a_lookup_takes_its_key_as_word_and_kind_and_boxes_nothing() {
+    with_process(|process| {
+        let found = AnyValue::atom(process.node.intern_atom("found"));
+        let [found_word, found_kind] = stored(found);
+        let keys = [AnyValue::int(i64::MAX), AnyValue::float(2.5), AnyValue::atom(7)];
+        let map = keys.iter().fold(fz_map_empty(process), |map, key| {
+            let [key_word, key_kind] = stored(*key);
+            fz_map_put(process, map, key_word, key_kind, found_word, found_kind)
+        });
+        for key in keys {
+            let [key_word, key_kind] = stored(key);
+            let before = process.heap.alloc_stats_snapshot();
+            let got = fz_map_get_ref(process, map, key_word, key_kind);
+            assert_eq!(any_value_from_ref_word(got, "got"), found, "Map.get finds {key:?}");
+            assert_eq!(
+                fz_map_has_key(process, map, key_word, key_kind),
+                1,
+                "Map.has_key? finds {key:?}"
+            );
+            let matched = fz_matcher_map_get_ref(process, map, key_word, key_kind);
+            assert_eq!(
+                any_value_from_ref_word(matched, "matched"),
+                found,
+                "a pinned key matches {key:?}"
+            );
+            let without = fz_map_delete(process, map, key_word, key_kind);
+            assert_eq!(fz_map_count(process, without), 2, "Map.delete drops {key:?}");
+            let after = process.heap.alloc_stats_snapshot();
+            assert_eq!(
+                after.total.allocs - before.total.allocs,
+                1,
+                "only the map Map.delete answers is made; {key:?} crosses as its word, unboxed"
+            );
+        }
+        let [missing_word, missing_kind] = stored(AnyValue::int(8));
+        assert_eq!(
+            any_value_from_ref_word(fz_map_get_ref(process, map, missing_word, missing_kind), "miss"),
+            AnyValue::nil_atom()
+        );
+        assert_eq!(fz_map_has_key(process, map, missing_word, missing_kind), 0);
+        assert_eq!(
+            fz_ref_tag(fz_matcher_map_get_ref(process, map, missing_word, missing_kind)),
+            ValueKind::NULL.tag()
+        );
+    });
+}
+
+#[test]
 #[should_panic(expected = "fz_ref_load_int")]
 fn loading_an_int_from_a_map_value_that_is_an_atom_panics() {
     with_process(|process| {
-        let key = AnyValueRef::atom(process.node.intern_atom("key")).raw_word();
         let [key_word, key_kind] = stored(AnyValue::atom(process.node.intern_atom("key")));
         let [value_word, value_kind] = stored(AnyValue::atom(process.node.intern_atom("value")));
         let map = fz_map_put(
@@ -564,7 +610,7 @@ fn loading_an_int_from_a_map_value_that_is_an_atom_panics() {
             value_kind,
         );
 
-        let _ = ref_load_int_impl(fz_map_get_ref(process, map, key));
+        let _ = ref_load_int_impl(fz_map_get_ref(process, map, key_word, key_kind));
     });
 }
 

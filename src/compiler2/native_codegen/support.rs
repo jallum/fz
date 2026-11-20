@@ -100,8 +100,7 @@ pub(crate) fn stored_parts<M: Module>(body: &mut CodegenFn<'_, '_, M>, value: Co
         return [word, body.b.ins().iconst(types::I64, i64::from(kind.tag()))];
     }
     let reference = body.value_as_any_ref(value);
-    let kind = kind_field(body.b, reference);
-    [super::list_cell::payload_of(body, reference, kind), kind]
+    super::list_cell::stored_parts_of_ref(body.b, reference)
 }
 
 pub(crate) const TRUE_BITS: i64 = TRUE_BITS_RAW as i64;

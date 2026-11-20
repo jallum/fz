@@ -394,11 +394,15 @@ StoredValue  a parameter only: two integer words, the word a container stores
 
 A `stored_value` parameter is how a runtime helper takes a value of any kind
 without a box: `Map.put` is one clause over `fz_map_put(any, stored_value,
-stored_value)`, and the helper rebuilds each value with
-`AnyValue::decode_parts`. Natively the pair is `native_codegen::stored_parts`:
-a value whose kind codegen knows gives its word and a constant kind, and any
-other is read through its reference. The interpreter passes
-`AnyValue::raw()` and `kind()`. Like an `any` slot, the slot takes a value
+stored_value)`, and `Map.delete` and `Map.has_key?` take their key the same
+way. The helper rebuilds each value with `Stored::value`
+(`runtime/src/any_value.rs`). Natively the pair is
+`native_codegen::stored_parts`: a value whose kind codegen knows gives its
+word and a constant kind, and any other is read through its reference. The
+interpreter passes the words of `Stored::of`. The lookups compiled code calls
+without an extern, `fz_map_get_ref` for `Map.get` and
+`fz_matcher_map_get_ref` for a map pattern, take their key as the same two
+words. Like an `any` slot, the slot takes a value
 whole, so a tuple or a closure crosses it as one reference
 (`ExternTy::takes_a_whole_value`).
 

@@ -1,0 +1,32 @@
+#---
+# purpose: a map lookup whose integer or float key has a kind known only at run time allocates no box for it, on every path
+#---
+#
+# The keys come out of a list, so the compiler knows none of their kinds. Each
+# crosses into the runtime as the word the map stores and its kind, so neither
+# `Map.get`, `Map.has_key?`, `Map.delete` nor a pinned-key pattern boxes the
+# integer or the float.
+defmodule Main do
+  def pinned(map, key) do
+    case map do
+      %{^key => found} -> found
+      _ -> :missing
+    end
+  end
+
+  def look(map, key) do
+    {Map.get(map, key), Map.has_key?(map, key), pinned(map, key), map_size(Map.delete(map, key))}
+  end
+
+  def main() do
+    map = %{7 => :int, 2.5 => :float, :a => :atom}
+    keys = [7, 2.5, :a]
+    before = Process.heap_alloc_stats()[:scalar_box_allocs]
+    found = Enum.map(keys, fn key -> look(map, key) end)
+    boxes = Process.heap_alloc_stats()[:scalar_box_allocs] - before
+    dbg(found)
+    dbg(boxes)
+  end
+end
+
+Main.main()

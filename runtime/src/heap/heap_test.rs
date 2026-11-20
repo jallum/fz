@@ -105,16 +105,11 @@ fn map_freeze_keeps_one_allocation_and_gc_preserves_structural_lookup() {
     let map = roots[0];
     assert_eq!(unsafe { map_count(map.map_addr().unwrap()) }, 2);
     assert_eq!(
-        heap.read_map_value_for_any_key(map, heap_root(fresh))
-            .unwrap()
-            .unwrap()
-            .load_int(),
+        heap.read_map_value(map, heap_root(fresh)).unwrap().unwrap().load_int(),
         Ok(3)
     );
     let before = heap.alloc_stats_snapshot();
-    let missing = 99u64;
-    let missing = AnyValueRef::from_scalar_slot(ValueKind::INT, &missing).unwrap();
-    assert_eq!(heap.map_delete_ref(map, missing).unwrap(), map);
+    assert_eq!(heap.map_view_delete(map, AnyValue::int(99)), map);
     assert_eq!(
         heap.alloc_stats_snapshot(),
         before,
@@ -182,13 +177,7 @@ fn map_publication_collapses_independently_allocated_structural_keys_last_wins()
         1,
         "one strict structural key must occupy one entry"
     );
-    assert_eq!(
-        heap.read_map_value_for_any_key(slots, keys[2])
-            .unwrap()
-            .unwrap()
-            .load_int(),
-        Ok(20)
-    );
+    assert_eq!(heap.read_map_value(slots, keys[2]).unwrap().unwrap().load_int(), Ok(20));
 
     let first = AnyValueRef::from_heap_object(ValueKind::STRUCT, keys[0].raw() as *const u8).unwrap();
     let second = AnyValueRef::from_heap_object(ValueKind::STRUCT, keys[1].raw() as *const u8).unwrap();
@@ -207,13 +196,7 @@ fn map_publication_collapses_independently_allocated_structural_keys_last_wins()
         ])
         .unwrap();
     assert_eq!(unsafe { map_count(refs.map_addr().unwrap()) }, 1);
-    assert_eq!(
-        heap.read_map_value_for_any_key(refs, keys[2])
-            .unwrap()
-            .unwrap()
-            .load_int(),
-        Ok(20)
-    );
+    assert_eq!(heap.read_map_value(refs, keys[2]).unwrap().unwrap().load_int(), Ok(20));
 }
 
 #[test]
@@ -400,27 +383,19 @@ fn any_value_ref_map_lookup_reads_scalar_and_heap_values() {
     ]);
     let map_addr = map_addr_from_tagged(map_bits).expect("map addr");
     let map_ref = AnyValueRef::from_heap_object(ValueKind::MAP, map_addr).expect("map ref");
-    let int_key_slot = 1u64;
-
     let scalar = h
-        .read_map_value_ref(
-            map_ref,
-            AnyValueRef::from_scalar_slot(ValueKind::INT, &int_key_slot).expect("int key"),
-        )
+        .read_map_value(map_ref, AnyValue::int(1))
         .unwrap()
         .expect("present int key");
     assert_eq!(scalar.load_int(), Ok(10));
 
     let heap_value = h
-        .read_map_value_ref(map_ref, AnyValueRef::atom(key_atom))
+        .read_map_value(map_ref, AnyValue::atom(key_atom))
         .unwrap()
         .expect("present atom key");
     assert_eq!(heap_value.list_addr(), Ok(child_addr));
 
-    assert_eq!(
-        h.read_map_value_ref(map_ref, AnyValueRef::atom(missing_atom),).unwrap(),
-        None
-    );
+    assert_eq!(h.read_map_value(map_ref, AnyValue::atom(missing_atom)).unwrap(), None);
 }
 
 #[test]
@@ -515,7 +490,6 @@ fn any_value_ref_map_construction_and_put_write_scalar_and_heap_values() {
     let int_key_slot = 1u64;
     let int_any_value = 10u64;
     let int_key = AnyValueRef::from_scalar_slot(ValueKind::INT, &int_key_slot).expect("int key");
-    let atom_key = AnyValueRef::atom(key_atom);
 
     let map_ref = h
         .alloc_map_refs(&[(
@@ -524,17 +498,9 @@ fn any_value_ref_map_construction_and_put_write_scalar_and_heap_values() {
         )])
         .expect("map ref");
     assert_eq!(
-        h.read_map_value_ref(map_ref, int_key)
+        h.read_map_value(map_ref, AnyValue::int(1))
             .unwrap()
             .expect("int key")
-            .load_int(),
-        Ok(10)
-    );
-    let int_key_by_value = h.box_any_value_ref(AnyValue::int(1));
-    assert_eq!(
-        h.read_map_value_ref(map_ref, int_key_by_value)
-            .unwrap()
-            .expect("int key by slot")
             .load_int(),
         Ok(10)
     );
@@ -545,24 +511,16 @@ fn any_value_ref_map_construction_and_put_write_scalar_and_heap_values() {
         AnyValue::from_ref(child_ref).expect("child value"),
     );
     assert_eq!(
-        h.read_map_value_ref(map_ref, atom_key)
+        h.read_map_value(map_ref, AnyValue::atom(key_atom))
             .unwrap()
             .expect("atom key")
-            .list_addr(),
-        Ok(child_addr)
-    );
-    let atom_key_by_value = h.box_any_value_ref(AnyValue::atom(key_atom));
-    assert_eq!(
-        h.read_map_value_ref(map_ref, atom_key_by_value)
-            .unwrap()
-            .expect("atom key by slot")
             .list_addr(),
         Ok(child_addr)
     );
 
     let map_ref = h.map_put_slot(map_ref, AnyValue::int(1), AnyValue::int(11));
     assert_eq!(
-        h.read_map_value_ref(map_ref, int_key)
+        h.read_map_value(map_ref, AnyValue::int(1))
             .unwrap()
             .expect("int key")
             .load_int(),
@@ -650,7 +608,7 @@ fn any_value_ref_heap_writes_are_traced_by_gc() {
     let moved_list_head = h.read_list_head_ref(moved_list_ref).unwrap().map_addr();
 
     let moved_map_value = h
-        .read_map_value_ref(moved_map_ref, key_ref)
+        .read_map_value(moved_map_ref, AnyValue::from_ref(key_ref).unwrap())
         .unwrap()
         .expect("map value")
         .list_addr();
@@ -2945,7 +2903,7 @@ fn a_map_holding_a_literal_closure_and_a_literal_struct_survives_a_collection_wi
     let moved = roots[0].map_addr().expect("moved map");
     assert!(h.contains_heap_addr(moved), "the map itself was forwarded");
     let mut held = |key: u32| {
-        h.read_map_value_for_any_key(roots[0], AnyValue::atom(key))
+        h.read_map_value(roots[0], AnyValue::atom(key))
             .expect("map")
             .expect("entry")
     };
@@ -3200,8 +3158,7 @@ fn an_atom_read_from_a_map_key_or_value_is_the_atom_stored() {
     assert_eq!(key, AnyValueRef::atom(key_atom));
     assert_eq!(value, AnyValueRef::atom(value_atom));
     assert_eq!(
-        h.read_map_value_ref(map, AnyValueRef::atom(key_atom))
-            .expect("map read"),
+        h.read_map_value(map, AnyValue::atom(key_atom)).expect("map read"),
         Some(AnyValueRef::atom(value_atom))
     );
 }
@@ -3323,10 +3280,7 @@ fn a_pid_read_from_a_list_head_map_value_struct_field_or_capture_is_the_pid_stor
     let map_bits = h.alloc_map_slots(&[(AnyValue::atom(key), pid_value)]);
     let map = AnyValueRef::from_heap_object(ValueKind::MAP, map_addr_from_tagged(map_bits).expect("map addr"))
         .expect("map ref");
-    assert_eq!(
-        h.read_map_value_ref(map, AnyValueRef::atom(key)).expect("map read"),
-        Some(pid)
-    );
+    assert_eq!(h.read_map_value(map, AnyValue::atom(key)).expect("map read"), Some(pid));
 
     let struct_addr = h.alloc_struct(schema);
     let struct_ref = AnyValueRef::from_heap_object(ValueKind::STRUCT, struct_addr).expect("struct ref");
