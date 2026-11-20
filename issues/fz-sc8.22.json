@@ -17,11 +17,15 @@
     {
       "text": "OTP json.erl parity (fz-mue) needs this; reproducer from the faithful port: /Users/j5n/Workspace/fz-otp-json/punch/25_improper_list_stack.fz",
       "timestamp": "2026-11-18T20:44:09Z"
+    },
+    {
+      "text": "Second reproducer (JSON, 2026-11-20): /Users/j5n/Workspace/fz-otp-json/punch/mue25/u4.fz. Enum.reduce([1, 2], :start, fn x, acc -\u003e [x | acc] end) builds the improper list [2, 1 | :start] and fails on interp with the same 'cannot allocate list cons: ExpectedTag { expected: ValueKind(1), found: ValueKind(15) }'. Owner: Bugs and Cleanup (assigned by Coordinator).",
+      "timestamp": "2026-11-20T19:28:15Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "An improper list [1 | 2] panics at runtime",
   "type": "bug",
-  "updated_at": "2026-11-18T20:44:09Z"
+  "updated_at": "2026-11-20T19:28:15Z"
 }
