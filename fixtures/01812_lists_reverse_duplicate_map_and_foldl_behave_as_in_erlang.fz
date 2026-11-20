@@ -1,0 +1,23 @@
+#---
+# purpose: ":lists.reverse, duplicate, map and foldl behave as in Erlang's lists module"
+# oracle: self
+# oracle.stamp: a785b6d86df70f4a
+#---
+defmodule Main do
+  def main() do
+    IO.inspect(Enum.map([[], [1], [1, 2], [1, 2, 3, 4, 5]], &:lists.reverse/1))
+    IO.inspect(:lists.reverse([1, 2, 3], [4, 5]))
+    IO.inspect(:lists.reverse([], :tail))
+    IO.inspect({:lists.duplicate(0, :a), :lists.duplicate(3, [1, 2])})
+    IO.inspect(:lists.map(&(&1 * 2), [1, 2, 3]))
+    k = 1000
+    IO.inspect(:lists.map(fn x -> x + k end, [1, 2, 3]))
+    IO.inspect(:lists.map(fn x -> {x, x * x} end, [1, 2, 3]))
+    IO.inspect(:lists.map(&(&1 + 1), []))
+    IO.inspect(:lists.foldl(fn x, acc -> [x | acc] end, [], [1, 2, 3]))
+    IO.inspect(:lists.foldl(&(&1 - &2), 0, [1, 2, 3]))
+    IO.inspect(:lists.foldl(fn x, acc -> x + acc end, 7, []))
+  end
+end
+
+Main.main()

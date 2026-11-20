@@ -198,6 +198,13 @@ length is not a multiple of 8, given to `copy`, is reported as
 `bitstring`, so a call whose argument is proven to be something else is refused
 at compile time; a value that may be a binary compiles and raises when it runs.
 
+`lib/lists.fz` defines `:lists` with `reverse/1`, `reverse/2`, `duplicate/2`,
+`map/2` and `foldl/3`, clause for clause as OTP's `lists.erl` writes them.
+`reverse/2` is a BIF in OTP and is written in fz here. `map/2` and `foldl/3`
+guard `is_function(f, 1)` and `is_function(f, 2)`; `duplicate/2` guards
+`is_integer(n) and n >= 0`. The specs are OTP's, so a call whose arguments are
+proven outside them is refused at compile time.
+
 ## A call by name
 
 `f(a)` always names the function `f/1`, as in Elixir, even where a variable
