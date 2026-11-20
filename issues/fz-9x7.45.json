@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Callables",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-20T22:14:56Z",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "A body-recursive list builder fills its tail in place, with no continuation per element",
   "type": "feature",
-  "updated_at": "2026-11-20T22:14:56Z"
+  "updated_at": "2026-11-20T22:14:59Z"
 }
