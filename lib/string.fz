@@ -1149,7 +1149,7 @@ defmodule String do
   defp whole_integer({n, ""}), do: n
   defp whole_integer(_partial), do: not_an_integer()
 
-  @spec not_an_integer() :: never
+  @spec not_an_integer() :: no_return()
   defp not_an_integer(),
     do:
       raise(
@@ -1184,7 +1184,7 @@ defmodule String do
   end
   defp whole_float(_partial, _s), do: not_a_float()
 
-  @spec not_a_float() :: never
+  @spec not_a_float() :: no_return()
   defp not_a_float(),
     do:
       raise(

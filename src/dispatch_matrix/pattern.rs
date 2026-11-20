@@ -287,7 +287,7 @@ pub(crate) enum GuardCallee<TypeHandle> {
 }
 
 impl<TypeHandle> GuardCallee<TypeHandle> {
-    /// Whether a call can only abort: the extern returns `never`, or the
+    /// Whether a call can only abort: the extern returns `none`, or the
     /// helper has bodies and every one of them is a failing node.
     fn always_fails(&self) -> bool {
         match self {
@@ -307,7 +307,7 @@ impl<TypeHandle> GuardCallee<TypeHandle> {
 /// guard evaluators can carry: an integer, a float, a reference word, or a
 /// binary whose byte count is what the extern receives. The
 /// return is one of those or a boolean, which the guard reads as `true` or
-/// `false`. A return of `never` is the call that fails the guard, and
+/// `false`. A return of `none` is the call that fails the guard, and
 /// so is the failure a checked return declares: either way the clause does not
 /// match.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -440,12 +440,12 @@ pub(crate) enum PatternGuardExpr<TypeHandle> {
         dispatch: Arc<PatternGuardDispatch<TypeHandle>>,
     },
     /// A call to an extern. Externs are assumed pure for now, so a guard may
-    /// make the call; one that returns `never` fails the guard instead.
+    /// make the call; one that returns `none` fails the guard instead.
     Extern {
         extern_fn: Arc<GuardExtern>,
         args: Vec<PatternGuardExpr<TypeHandle>>,
     },
-    /// A call that can only abort the process: an extern returning `never`,
+    /// A call that can only abort the process: an extern returning `none`,
     /// or a helper every body of which is itself this node. In a guard the
     /// abort is the guard's failure, so the node carries no arguments and no
     /// evaluator builds any.

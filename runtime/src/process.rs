@@ -802,7 +802,7 @@ impl Process {
         self.failed && self.exit_status != 0
     }
 
-    /// Whether a `never`-returning call has ended this process's current
+    /// Whether a `none`-returning call has ended this process's current
     /// work: it failed, or a raise is waiting for the interpreter's handler
     /// frame.
     pub fn diverged(&self) -> bool {

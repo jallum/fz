@@ -619,11 +619,11 @@ fn compiler2_frontdoor_extern_takes_one_well_formed_option() {
             "expected `raises:` or `delivers:` after the extern return type, got `throws:`; an extern takes one of them",
         ),
         (
-            "extern \"fz\" defp f(any) :: never, delivers: :panic\n",
+            "extern \"fz\" defp f(any) :: none, delivers: :panic\n",
             "`delivers:` names the kind a handler receives, `:error`, `:throw` or `:exit`, got the atom `:panic`",
         ),
         (
-            "extern \"fz\" defp f(any) :: never, delivers: Throw\n",
+            "extern \"fz\" defp f(any) :: none, delivers: Throw\n",
             "`delivers:` names the kind a handler receives, `:error`, `:throw` or `:exit`, got",
         ),
     ];
@@ -662,7 +662,7 @@ fn compiler2_frontdoor_extern_delivers_keeps_the_kind_with_the_declaration() {
     for kind in ["error", "throw", "exit"] {
         let root = parse_quoted_program(
             "extern_delivers.fz",
-            &format!("extern \"fz\" defp f(any) :: never, delivers: :{kind}\n"),
+            &format!("extern \"fz\" defp f(any) :: none, delivers: :{kind}\n"),
             &tel,
         )
         .expect("an extern that delivers its argument parses");

@@ -37,7 +37,15 @@ fn nullary_scalars_resolve_to_the_same_ty_as_the_direct_types_call() {
         ("term", |t| t.any()),
         ("dynamic", |t| t.any()),
         ("byte", |t| t.int()),
-        ("never", |t| t.none()),
+        ("none", |t| t.none()),
+        ("no_return", |t| t.none()),
+        ("neg_integer", |t| t.int()),
+        ("non_neg_integer", |t| t.int()),
+        ("pos_integer", |t| t.int()),
+        ("nonempty_list", |t| {
+            let any = t.any();
+            t.non_empty_list(any)
+        }),
         ("utf8", |t| {
             let inner = t.str_t();
             t.mint_brand(inner, "utf8")
@@ -116,6 +124,33 @@ fn compact_c_pointer_spelling_is_not_a_builtin_alias() {
         .expect_err("the legacy spelling should fail rather than silently alias c_pointer");
 
     assert_eq!(error.msg, "unknown type name `cpointer`");
+}
+
+/// The bottom type has Elixir's name, `none`; fz's former `never` is gone.
+#[test]
+fn the_bottom_type_is_named_none_and_never_is_unknown() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+
+    let error = resolve(&tel, &mut world, "never").expect_err("`never` is not a type name");
+
+    assert_eq!(error.msg, "unknown type name `never`");
+}
+
+/// `nonempty_list(T)` is the lists of `T` that have at least one element, so
+/// it admits `[T]` minus the empty list and nothing else.
+#[test]
+fn nonempty_list_is_list_without_the_empty_list() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+
+    let nonempty = resolve(&tel, &mut world, "nonempty_list(integer)").expect("nonempty_list(T) resolves");
+    let list = resolve(&tel, &mut world, "list(integer)").expect("list(T) resolves");
+    let types = world.types_mut();
+    let empty = types.empty_list();
+    let list_minus_empty = types.difference(list, empty);
+
+    assert!(types.is_equivalent(&nonempty, &list_minus_empty));
 }
 
 /// `[T]` (structural), `list(T)`, and bare `list` (defaulting the element to

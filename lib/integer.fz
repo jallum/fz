@@ -80,7 +80,7 @@ defmodule Integer do
   @spec min_integer() :: integer
   defp min_integer(), do: -9223372036854775807 - 1
 
-  @spec too_wide() :: never
+  @spec too_wide() :: no_return()
   defp too_wide(),
     do: raise(%ArgumentError{message: "Integer.parse/1 cannot represent an integer wider than 64 bits: fz has no bignums"})
 end

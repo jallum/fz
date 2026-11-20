@@ -42,10 +42,10 @@ defmodule Kernel do
   Erlang error, `** (ErlangError) Erlang error: :reason`. Other processes
   carry on, and a failed main process exits the program with status 1.
   """
-  @spec panic(any) :: never
+  @spec panic(any) :: no_return()
   def panic(reason), do: fz_panic(reason)
 
-  extern "fz" defp fz_panic(any) :: never, delivers: :error
+  extern "fz" defp fz_panic(any) :: none, delivers: :error
 
   @doc """
   Returns `value` as the text Elixir's `inspect/1` gives it: `dbg/1`,
@@ -109,10 +109,10 @@ defmodule Kernel do
   A throw no `catch` takes fails the process like any other raise: the line
   is `** (throw) :found`, and a failed main process exits with status 1.
   """
-  @spec throw(any) :: never
+  @spec throw(any) :: no_return()
   def throw(value), do: fz_throw(value)
 
-  extern "fz" defp fz_throw(any) :: never, delivers: :throw
+  extern "fz" defp fz_throw(any) :: none, delivers: :throw
 
   @doc """
   Ends the current process with `reason`: the nearest `catch :exit, reason`
@@ -130,10 +130,10 @@ defmodule Kernel do
   that ends this way exits the program with status 0, 0, and `status`. Any
   other reason prints `** (exit) reason` and exits the program with status 1.
   """
-  @spec exit(any) :: never
+  @spec exit(any) :: no_return()
   def exit(reason), do: fz_exit(reason)
 
-  extern "fz" defp fz_exit(any) :: never, delivers: :exit
+  extern "fz" defp fz_exit(any) :: none, delivers: :exit
 
   @doc """
   Raises the exception `exception` again. The stacktrace is accepted for
@@ -145,7 +145,7 @@ defmodule Kernel do
         e -> reraise e, []
       end
   """
-  @spec reraise(any, any) :: never
+  @spec reraise(any, any) :: no_return()
   def reraise(exception, _stacktrace), do: panic(exception)
 
   @doc """
@@ -835,7 +835,7 @@ defmodule Kernel do
   # at runtime, raises `ArithmeticError` where a typed clause would otherwise
   # be missed. The default clause returns `never`, so it adds nothing to the
   # result type.
-  @spec arithmetic_error() :: never
+  @spec arithmetic_error() :: no_return()
   defp arithmetic_error(), do: raise(%ArithmeticError{message: "bad argument in arithmetic expression"})
 
   @doc """
@@ -859,7 +859,7 @@ defmodule Kernel do
   # segment's type from (`2` is `binary`), and `size` is `nil` where the
   # segment names none. The runtime words the message for the segment Elixir
   # reports.
-  @spec __construction_failed__(list) :: never
+  @spec __construction_failed__(list) :: no_return()
   def __construction_failed__(segments),
     do: raise(%ArgumentError{message: fz_construction_failure_message(segments)})
 

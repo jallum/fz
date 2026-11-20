@@ -18,14 +18,14 @@ defmodule Exception do
   the line Elixir prints: the exception's name and its message. A value that
   is not an exception is shown as an `ErlangError`.
   """
-  @spec __uncaught__(any) :: never
+  @spec __uncaught__(any) :: no_return()
   def __uncaught__(%{__exception__: true, __struct__: module} = exception) when is_atom(module), do: banner(module, exception)
   def __uncaught__(reason), do: banner(ErlangError, %ErlangError{original: reason})
 
-  @spec banner(atom, any) :: never
+  @spec banner(atom, any) :: no_return()
   defp banner(module, exception), do: fz_fail("** (" <> inspect(module) <> ") " <> message(exception))
 
-  extern "fz" defp fz_fail(binary) :: never
+  extern "fz" defp fz_fail(binary) :: none
 
   @doc """
   Returns `lead`, a blank line, and `term` as `inspect/1` shows it, indented

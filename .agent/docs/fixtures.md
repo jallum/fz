@@ -129,7 +129,7 @@ their block. A new epic claims the next free block and adds a row here.
 | `01720-01739` | fz-3sy                            | in use through `01721` |
 | `01740-01759` | fz-9x7                            | in use through `01740` |
 | `01760-01779` | fz-sc8                            | in use through `01771` |
-| `01780-01819` | fz-mue                            | in use through `01805` |
+| `01780-01819` | fz-mue                            | in use through `01809` |
 | `01820-01859` | fz-9e2                            | in use through `01822` |
 | `01880-01899` | fz-yh5                            | in use through `01880` |
 
@@ -594,7 +594,7 @@ Behavioural fixtures call the same runtime library that user programs do
 checking machinery a fixture uses is itself fz source under `lib/`.
 `raise("why")` expands to `panic(%RuntimeError{message: "why"})`, and
 `Kernel.panic`'s private `fz_panic` foreign declaration prints the failure
-line through the execution context and has a `never` return contract; that is
+line through the execution context and has a `none` return contract; that is
 why a failed check exits 1 on every path without requiring the interpreter
 to abort its host (see [exceptions](exceptions.md)). A fixture that exercises a runtime-library
 function both proves the function and (via allocation goldens) pins its

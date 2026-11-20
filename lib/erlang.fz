@@ -39,7 +39,7 @@ defmodule :erlang do
       #=> :boom
 
   """
-  @spec error(any) :: never
+  @spec error(any) :: no_return()
   def error(reason), do: panic(reason)
 
   @doc """
@@ -57,7 +57,7 @@ defmodule :erlang do
       # ** (throw) :ball
 
   """
-  @spec raise(:error | :throw | :exit, any, any) :: never
+  @spec raise(:error | :throw | :exit, any, any) :: no_return()
   def raise(:error, reason, _stacktrace), do: panic(reason)
   def raise(:throw, value, _stacktrace), do: throw(value)
   def raise(:exit, reason, _stacktrace), do: exit(reason)

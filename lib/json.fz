@@ -215,7 +215,7 @@ defmodule JSON do
   defp encode_into(v, acc) when is_map(v), do: pairs(Map.to_list(v), acc <> "{") <> "}"
   defp encode_into(v, _acc), do: unsupported_value(v)
 
-  @spec unsupported_value(any) :: never
+  @spec unsupported_value(any) :: no_return()
   defp unsupported_value(v) do
     raise(
       Protocol.UndefinedError,
@@ -256,14 +256,14 @@ defmodule JSON do
   # What Elixir's encoder fails with where a UTF-8 sequence goes wrong: the
   # first byte no sequence can contain, or the end of input when a sequence is
   # cut short. `Utf8.next` makes the same decision the `utf8` match just failed.
-  @spec invalid_utf8(binary) :: never
+  @spec invalid_utf8(binary) :: no_return()
   defp invalid_utf8(b), do: invalid_utf8_at(Utf8.next(b))
 
-  @spec invalid_utf8_at({:error, binary} | nil | {:ok, utf8, binary}) :: never
+  @spec invalid_utf8_at({:error, binary} | nil | {:ok, utf8, binary}) :: no_return()
   defp invalid_utf8_at({:error, <<byte, _rest :: binary>>}), do: invalid_byte(byte)
   defp invalid_utf8_at(_truncated), do: Kernel.panic(:unexpected_end)
 
-  @spec invalid_byte(integer) :: never
+  @spec invalid_byte(integer) :: no_return()
   defp invalid_byte(byte), do: Kernel.panic({:invalid_byte, byte})
 
   @spec escape(integer) :: binary

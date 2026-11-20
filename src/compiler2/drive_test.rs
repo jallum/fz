@@ -20762,7 +20762,7 @@ fn compiler2_recursive_first_round_reads_absence_not_the_empty_type() {
     );
 
     // The two lies are gone at the recursive source callsite. Kernel helper
-    // error paths may correctly return `never`; they are not an absent read of
+    // error paths may correctly return `none`; they are not an absent read of
     // count/1's recursive result.
     let any = world.types_mut().any();
     for record in recursive_result_records {
