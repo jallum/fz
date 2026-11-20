@@ -109,7 +109,7 @@ An `ImplTarget` is a module identity, never a display string. Builtin targets
 are exact top-level source names and map to their concrete value family:
 
 ```text
-List -> list(any)   Integer -> int   Float -> float   Atom -> atom
+List -> any_list()   Integer -> int   Float -> float   Atom -> atom
 BitString -> bitstring   Map -> plain_map
 ```
 

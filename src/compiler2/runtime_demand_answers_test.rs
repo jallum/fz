@@ -161,9 +161,10 @@ fn a_recursive_pair_sends_demand_out_of_the_cycle_once() {
     );
     // This harness roots `main` with no handler for an uncaught raise, so the arithmetic extern's
     // contract, which reads the struct of the exception it raises, is what defines that struct here:
-    // three demand derivations run while the contract waits for it. A program run by `fz2` defines
-    // the struct for the banner.
-    assert_eq!((work.runs, work.shift_wakes), (15, 0));
+    // five demand derivations run while the contract waits for it: `defexception` twice and
+    // `declares_message?` three times, which is keyed at an unknown tail as well as a proper one.
+    // A program run by `fz2` defines the struct for the banner.
+    assert_eq!((work.runs, work.shift_wakes), (17, 0));
 }
 
 /// A cycle made of closure calls, which the static call graph cannot see:
@@ -194,7 +195,8 @@ fn a_self_call_sends_demand_down_from_its_own_answer() {
     );
     // This harness roots `main` with no handler for an uncaught raise, so the arithmetic extern's
     // contract, which reads the struct of the exception it raises, is what defines that struct here:
-    // three demand derivations run while the contract waits for it. A program run by `fz2` defines
-    // the struct for the banner.
-    assert_eq!((work.runs, work.shift_wakes), (13, 0));
+    // five demand derivations run while the contract waits for it: `defexception` twice and
+    // `declares_message?` three times, which is keyed at an unknown tail as well as a proper one.
+    // A program run by `fz2` defines the struct for the banner.
+    assert_eq!((work.runs, work.shift_wakes), (15, 0));
 }

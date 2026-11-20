@@ -1316,8 +1316,8 @@ cofinite variable axis with no excluded IDs remains ordinary top. Exact tuple
 and named-struct projections lift to their roots; ambiguous positional list
 projections keep their root type on both edges. The traversal separately
 retains the graph's branch-local empty/cons fact for each subject. When the
-projected domain is already a proper list, `not empty` therefore proves cons
-and `not cons` proves empty; contradictory tail-shape paths are rejected
+projected domain is already a list, proper or not, `not empty` therefore
+proves cons and `not cons` proves empty; contradictory tail-shape paths are rejected
 without adding spine length to the type lattice or covering non-list inputs.
 Each reachable outcome retains its refined root inputs for clause analysis, so
 reachability and clause binding consume the same proof.

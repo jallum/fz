@@ -316,9 +316,8 @@ impl ReachabilityCalculator<'_> {
             ProofSense::Holds => region,
             ProofSense::DoesNotHold => {
                 let projected = project_subject(self.types, self.plan, &state.roots, subject);
-                let any = self.types.any();
-                let proper_list = self.types.list(any);
-                if !self.types.is_subtype(&projected, &proper_list) {
+                let any_list = self.types.any_list();
+                if !self.types.is_subtype(&projected, &any_list) {
                     return Some(());
                 }
                 match region {
@@ -361,9 +360,11 @@ fn predicate_target(types: &mut Types, region: &Region<Ty>) -> Option<PredicateT
             types.tuple(&fields)
         }
         Region::List(ListRegion::Empty) => types.empty_list(),
+        // The cons test reads one cell, so it passes every non-empty list,
+        // proper or not.
         Region::List(ListRegion::Cons) => {
             let any = types.any();
-            types.non_empty_list(any)
+            types.cons(any, any)
         }
         Region::MapKind => types.map_top(),
         Region::MapKeyPresent { key } => {
@@ -424,10 +425,7 @@ pub(crate) fn project_subject(
             .field_lookup(&source, &crate::types::MapKey::Atom(field.clone()))
             .unwrap_or_else(|| types.any()),
         ProjectionKind::ListHead => types.list_element_type(&source),
-        ProjectionKind::ListTail => {
-            let element = types.list_element_type(&source);
-            types.list(element)
-        }
+        ProjectionKind::ListTail => types.list_tail_type(&source),
         ProjectionKind::MapValue { key } => key
             .as_const()
             .and_then(GroundValue::as_map_key)

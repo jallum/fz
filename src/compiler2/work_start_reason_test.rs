@@ -253,7 +253,7 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // A job gated on a fact its subject already carries never starts to
         // discover that fact missing, then wake once the fact lands
         // (`Job::missing_gates`).
-        (2484, 15, 31, 194),
+        (2492, 15, 31, 195),
         "ordinary generic helper work has the exact source/module/executable-fact census"
     );
     // Every applied work step is a run, and every run is charged to exactly
@@ -269,12 +269,12 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
     // then wakes those same consumers through the retained product dependency.
     assert_eq!(
         starts[WorkStart::ChangedRevisionWake] - demand_wake_starts,
-        1063,
+        1066,
         "ordinary generic helper facts have the exact non-demand changed-revision census",
     );
     assert_eq!(
         starts[WorkStartReason::BlockedWaiterExpansion.into()],
-        523,
+        525,
         "the blocked-waiter census includes only the prerequisites each completion's own waits expand",
     );
     assert_eq!(
@@ -284,12 +284,12 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // construction target, settled executable facts, one exact runtime-
         // demand input, the whole input vector, and unclassified.
         // The last slot is zero because every wake names the fact that moved.
-        (418, 420, [24, 194, 0, 202, 0]),
+        (420, 422, [24, 195, 0, 203, 0]),
         "every demand completion and ordinary helper wake retains its precise cause",
     );
     assert_eq!(
         demanded_formula_keys.len(),
-        232,
+        233,
         "the demand frontier retains every ordinary generic helper key",
     );
     assert_eq!(
@@ -311,11 +311,11 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
     // way there.
     assert_eq!(
         analyzed_activations.len(),
-        664,
+        668,
         "the fixture's total AnalyzeActivation completions, repeats included",
     );
     let frontier_analyses = analyzed_activations.iter().cloned().collect::<HashSet<_>>();
-    // Grouped by `FunctionId` alone, the same 103 distinct functions reach
+    // Grouped by `FunctionId` alone, the same 105 distinct functions reach
     // the frontier, but several are reached under fewer distinct `arrow`
     // shapes: a caller that propagates a callee's unconcluded,
     // soon-to-be-revised answer into a further call analyzes that call
@@ -324,7 +324,7 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
     // naming a new function.
     assert_eq!(
         frontier_analyses.len(),
-        227,
+        228,
         "the demand frontier's distinct activations, deduplicated across repeats",
     );
 

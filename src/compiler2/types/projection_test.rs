@@ -11,12 +11,12 @@ mod by_copying {
         }
         let mut elem = Descr::none();
         for conj in &d.lists {
-            if conj.pos.iter().any(|sig| sig.elem.is_none()) {
+            if conj.pos.iter().any(|sig| sig.cons.is_none()) {
                 continue;
             }
             let mut clause_elem: Option<Descr> = None;
             for sig in &conj.pos {
-                let sig_elem = cx.descr(&sig.elem.unwrap());
+                let sig_elem = cx.descr(&sig.elem().unwrap());
                 clause_elem = Some(match clause_elem {
                     None => sig_elem.clone(),
                     Some(prev) => prev.intersect(sig_elem),

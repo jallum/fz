@@ -665,13 +665,14 @@ fn a_recipe_with_three_unready_children_costs_its_owner_two_pulls() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
+    let main = compiler.root_function(root);
     compiler.compile_root_jit(root).expect("compiles");
 
     let evaluations = evaluations.borrow();
     let three_wait_owners: Vec<&ProductKey> = evaluations
         .iter()
         .filter(|(key, outcome)| {
-            matches!(key, ProductKey::TransportShape(_))
+            matches!(key, ProductKey::TransportShape(position) if position.executable().activation.function == main)
                 && matches!(outcome, PullOutcome::Waiting(waits)
                     if waits.len() == 3 && waits.iter().all(|wait| matches!(wait, PullWait::Product(ProductKey::TransportShape(_)))))
         })

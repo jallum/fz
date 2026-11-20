@@ -54,6 +54,9 @@ has succeeded. The graph carries that rule structurally.
 
 For `[head | tail]`, the dispatch asks `ListCons(subject)`. The success edge
 projects `ListHead(subject)` and `ListTail(subject)`; the miss edge does not.
+A cons is non-empty and says nothing of its terminator, so the test passes
+improper lists too; `ListTail` of a list type is `cons(E, L) ∪ L`, where `E` is
+its element type and `L` its terminator (`Types::list_tail_type`).
 For tuples, `TupleArity(n)` dominates every `TupleField` projection. Where the
 subject already arrives in field form -- a caller delivered the tuple as one
 lane per field -- the arity is read from the transport shape and the projection

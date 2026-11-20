@@ -142,7 +142,7 @@ const SEAM_FACTS: &[(&str, &str)] = &[];
 // A job gated on a fact its subject already carries never starts to
 // discover that fact missing, then wake once the fact lands
 // (`Job::missing_gates`).
-const EXPECTED_00181_NO_DUMP_JOB_STARTS: usize = 261;
+const EXPECTED_00181_NO_DUMP_JOB_STARTS: usize = 267;
 const ENUM_REDUCE_OPERATOR_REF_SOURCE: &str = r#"
 def main() do
   {

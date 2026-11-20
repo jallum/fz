@@ -13766,7 +13766,7 @@ const SURFACE_MEMBERSHIP_CENSUS: [(&str, &str, usize, usize); 13] = [
         0,
     ),
     ("fixtures/01425_callable_union_capture_containment.fz", "", 6, 0),
-    ("fixtures/00626_map_fetch_and_update_agree_with_elixir.fz", "", 9, 0),
+    ("fixtures/00626_map_fetch_and_update_agree_with_elixir.fz", "", 17, 0),
     ("fixtures/01450_dispatch_list_head_separates.fz", "", 2, 0),
 ];
 
@@ -23419,7 +23419,7 @@ fn compiler2_two_seeds_of_different_element_types_keep_their_returns_apart() {
         let types = compiler.world_mut().types_mut();
         let with_atom = types.union(int, atom_a);
         let with_binary = types.union(int, binary);
-        (types.list(with_atom), types.list(with_binary))
+        (types.non_empty_list(with_atom), types.non_empty_list(with_binary))
     };
     let world = compiler.world();
     let returns: Vec<Ty> = program
@@ -25098,7 +25098,7 @@ fn compiler2_a_stream_over_any_enumerable_keeps_its_activations_finite() {
 
     let counted = |label: &str| activations.get(label).map_or(0, BTreeSet::len);
     let measured = [
-        ("Stream.compose/2#lambda@0/2", 5),
+        ("Stream.compose/2#lambda@0/2", 3),
         ("Stream.compose/2", 2),
         ("Enumerable.Stream.reduce/3", 2),
         ("Enumerable.List.reduce/3", 4),
@@ -25106,7 +25106,7 @@ fn compiler2_a_stream_over_any_enumerable_keeps_its_activations_finite() {
         ("Enumerable.Range.reduce/3", 1),
         // A call round a recursion cycle keeps the entering activation's key at the slots the cycle
         // supplies, so each reduce cycle's accumulator is keyed once per entry.
-        ("List.reduce_cont/3", 3),
+        ("List.reduce_cont/3", 4),
         ("Range.reduce_cont/6", 1),
     ];
     for (label, expected) in measured {
@@ -25114,7 +25114,7 @@ fn compiler2_a_stream_over_any_enumerable_keeps_its_activations_finite() {
     }
     assert_eq!(
         activations.values().map(BTreeSet::len).sum::<usize>(),
-        129,
+        125,
         "activations of the whole program"
     );
 }

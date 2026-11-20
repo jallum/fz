@@ -14,11 +14,28 @@ pub(crate) struct TupleSig {
     pub elems: Vec<Ty>,
 }
 
+/// A list type: whether it holds `[]`, and which non-empty lists it holds.
 #[derive(Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(test, derive(Debug))]
 pub(crate) struct ListSig {
     pub empty: bool,
-    pub elem: Option<Ty>,
+    pub cons: Option<ConsSig>,
+}
+
+/// Every non-empty list whose elements all lie in `elem` and whose
+/// terminator -- the value after its last cell -- lies in `last`.
+///
+/// A proper list ends in `[]`, so `list(T)` is `last = []`. An improper list
+/// such as `[1 | 2]` ends in a value that is not a list. A non-empty list
+/// never terminates a list (its cells would be the outer list's cells), so
+/// only `last`'s non-list part and its `[]` count: a terminator means what
+/// [`Types::terminator`](super::Types::terminator) keeps of it. The
+/// constructors fold the rest into `elem`, as Elixir's `list_descr` does.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(test, derive(Debug))]
+pub(crate) struct ConsSig {
+    pub elem: Ty,
+    pub last: Ty,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -31,30 +48,34 @@ impl ListSig {
     pub(super) fn empty() -> Self {
         Self {
             empty: true,
-            elem: None,
+            cons: None,
         }
     }
 
-    pub(super) fn possibly_empty(elem: Ty) -> Self {
+    pub(super) fn possibly_empty(elem: Ty, last: Ty) -> Self {
         Self {
             empty: true,
-            elem: Some(elem),
+            cons: Some(ConsSig { elem, last }),
         }
     }
 
-    pub(super) fn non_empty(elem: Ty) -> Self {
+    pub(super) fn non_empty(elem: Ty, last: Ty) -> Self {
         Self {
             empty: false,
-            elem: Some(elem),
+            cons: Some(ConsSig { elem, last }),
         }
+    }
+
+    pub(super) fn elem(&self) -> Option<Ty> {
+        self.cons.map(|cons| cons.elem)
     }
 
     pub(super) fn is_exact_empty(&self) -> bool {
-        self.empty && self.elem.is_none()
+        self.empty && self.cons.is_none()
     }
 
     pub(super) fn is_exact_non_empty(&self) -> bool {
-        !self.empty && self.elem.is_some()
+        !self.empty && self.cons.is_some()
     }
 
     pub(super) fn allow_empty(&mut self) {
@@ -308,20 +329,23 @@ pub(crate) trait MergeSig: Clone + PartialEq {
 
 impl MergeSig for ListSig {
     fn intersect_pos(types: &mut Types, a: &Self, b: &Self) -> PosMeet<Self> {
-        let elem = match (a.elem, b.elem) {
+        let cons = match (a.cons, b.cons) {
             (Some(a), Some(b)) => {
-                let elem = types.intersect(a, b);
-                if types.is_empty(&elem) { None } else { Some(elem) }
+                let elem = types.intersect(a.elem, b.elem);
+                let last = types.intersect(a.last, b.last);
+                let last = types.terminator(last);
+                (!types.is_empty(&elem) && !types.is_empty(&last)).then_some(ConsSig { elem, last })
             }
             _ => None,
         };
         let empty = a.empty && b.empty;
-        // A non-empty list needs a head in the element intersection; with no
-        // element left and `[]` excluded, the merged sig denotes `∅`.
-        if !empty && elem.is_none() {
+        // A non-empty list needs a head in the element intersection and a
+        // terminator in the terminator intersection; with neither left and
+        // `[]` excluded, the merged sig denotes `∅`.
+        if !empty && cons.is_none() {
             return PosMeet::Empty;
         }
-        PosMeet::Merged(ListSig { empty, elem })
+        PosMeet::Merged(ListSig { empty, cons })
     }
 }
 

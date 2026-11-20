@@ -33,6 +33,11 @@ impl<'a> Render<'a> {
         }
     }
 
+    /// Whether a terminator is exactly `[]`: the list it ends is proper.
+    fn is_empty_list(&self, last: Ty) -> bool {
+        *self.cx.descr(&last) == Descr::empty_list()
+    }
+
     fn ty(&self, ty: &Ty) -> String {
         if !self.cx.recursion.is_member(*ty) {
             return self.descr(self.cx.descr(ty));
@@ -133,9 +138,10 @@ impl Render<'_> {
     }
 
     fn list_clause(&self, c: &Conj<ListSig>) -> String {
-        format_conj(c, "[any]", |sig| match (sig.empty, sig.elem) {
+        format_conj(c, "[any | any]", |sig| match (sig.empty, sig.cons) {
             (true, None) => "[]".to_string(),
-            (_, Some(elem)) => format!("[{}]", self.ty(&elem)),
+            (_, Some(cons)) if self.is_empty_list(cons.last) => format!("[{}]", self.ty(&cons.elem)),
+            (_, Some(cons)) => format!("[{} | {}]", self.ty(&cons.elem), self.ty(&cons.last)),
             (false, None) => "nonempty([])".to_string(),
         })
     }

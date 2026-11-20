@@ -56,7 +56,7 @@ atoms      finite-or-cofinite set of atom names   (:ok, :error, nil, true, …)
 opaques    finite-or-cofinite set of opaque-type names   (nominal)
 vars       finite-or-cofinite set of type-variable ids
 tuples     DNF of tuple shapes (nested type per element)
-lists      DNF of list shapes  (nested elem type, empty/non-empty flag)
+lists      DNF of list shapes  (empty flag; non-empty part: elem type + terminator type)
 resources  DNF of resource shapes (nested payload type)
 funcs      DNF of arrow shapes (arg types + ret type, optional closure lit)
 maps       DNF of map shapes   (nested value types)
@@ -122,7 +122,7 @@ the structural kernel (`Descr::intersect`) and the semantic path
 both positively and negatively (`P ∧ ¬P = ∅`), and clauses a `MergeSig` merge
 proves empty (`PosMeet::Empty`: tuple arity mismatch, arrow arity mismatch,
 an empty tuple coordinate or resource payload, a non-empty list sig with no
-element left).
+element or no terminator left).
 `dnf_union` drops duplicate clauses and `dnf_neg` skips duplicate factors.
 
 The persistence boundary (`Types::intern`) canonicalizes every descriptor
@@ -162,8 +162,14 @@ answers the re-entry.
 
 Then, still before the sort, the LIST NORMAL FORM (`emptiness::list_denotation`,
 `types/axis.rs`). A `ListSig` denotes `[]` (when `empty`) together with every
-non-empty list over `elem`, so a list clause says exactly two things: does it
-hold `[]`, and which non-empty lists does it keep. One function reads those two
+non-empty list over `elem` that ends in `last` (a `ConsSig`), so a list clause
+says exactly two things: does it hold `[]`, and which non-empty lists does it
+keep. A list type carries its terminator, as in Elixir's `descr.ex`: a proper
+list ends in `[]`, so `list(T)` is `[] ∨ non_empty_list(T, [])`, and `[1 | 2]`
+ends in `2`. `Types::cons(h, t)` is the type of `[h | t]`: always non-empty,
+improper when `t` may be a non-list, and the tail of a cell is `cons(E, L) ∪ L`.
+`Types::list(any)` is the proper lists only; `Types::any_list()` is every list,
+improper ones included. One function reads those two
 facts off a clause's factors, and the boundary writes them back as the clause —
 one positive sig carrying the fragment and the `[]` flag, one negative sig per
 surviving subtraction. So `list(T) ∧ ¬[]` is stored as `non_empty_list(T)`, a
@@ -173,7 +179,7 @@ instead of kept as a factor, and one that removes the whole fragment leaves
 clause that keeps only non-empty lists is widened to hold it too and a bare `[]`
 clause is then redundant: `[] ∨ non_empty_list(T)` is `list(T)`. That decision
 reads the finished clause SET, never the order a fold arrived in. A merge that
-reaches `list(any)` leaves the axis's widest SIG, which absorption below rewrites
+reaches `any_list()` leaves the axis's widest SIG, which absorption below rewrites
 to the contentless clause, so the merge feeds the one top spelling rather than
 competing with it.
 `Descr::union` used to carry the same merge and could not: over the members
@@ -277,12 +283,13 @@ the rule — an axis written `[ListSig { empty: true, elem: any }]` and an axis
 written `[Conj::top()]` denote the same set, so leaving both spellings in play
 hands one set two identities, and `any | [any]` stops being `any`. A single
 plain clause that IS the axis top is therefore rewritten to the contentless
-clause at the same boundary, and `list(any)`,
-`empty_list() ∨ non_empty_list(any)` and `any | [any]` all land on it.
+clause at the same boundary, and `any_list()` and
+`empty_list() ∨ non_empty_list(any, terminator)` land on it. `list(any)` does
+not: it holds only the proper lists.
 
 What that costs is that a reader projecting a positive signature off a list or
 resource clause has to read a contentless clause as the widest signature
-(`[any]`, `resource(any)`) rather than as "no list at all": `Descr::as_pure_list`
+(every list, `resource(any)`) rather than as "no list at all": `Descr::as_pure_list`
 and `Descr::pure_resource` take the caller's interned `any` for exactly that,
 `list_element_type` and `resource_payload_type` already answered `any` there,
 and `Types::display` renders each axis top as the widest type a user could
@@ -305,13 +312,14 @@ every domain `any`. But `{any, any} ∨ ¬{any, any}`
 IS every tuple and `%{k: any} ∨ ¬%{k: any}` is every map, so "those axes have no
 top to reach" would be false, and the two carvings would intern apart while the
 calculator called them equal. The LIST axis answers its positive-only case
-exactly — one clause admits `[]` and one admits every element — and the
+exactly — one clause admits `[]`, and the clauses whose element is every value
+take every terminator between them — and the
 RESOURCE axis likewise — one clause's payload is every value. Neither rule is
 set reasoning; both are read off the kernel's own clause-emptiness rule. `top`
 minus a union of plain clauses is the single clause negating them all, and
 `emptiness::list_clause_empty` calls that empty exactly when one negated
-signature admits `[]` and one negated signature's element swallows the
-fragment, while `emptiness::resource_clause_empty` calls it empty exactly when
+signature admits `[]` and the negated signatures whose element swallows the
+fragment take every terminator between them, while `emptiness::resource_clause_empty` calls it empty exactly when
 a SINGLE negated payload swallows `any` — which is why two resource clauses
 that partition the payloads between them are still not every resource. Both go
 to the calculator for the rest, as the CALLABLE axis always does: a positive

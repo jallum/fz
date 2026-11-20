@@ -200,12 +200,19 @@ impl Descr {
         d
     }
 
-    pub(super) fn list_of(elem: Ty) -> Self {
-        Self::list_sig(ListSig::possibly_empty(elem))
+    pub(super) fn list_of(elem: Ty, last: Ty) -> Self {
+        Self::list_sig(ListSig::possibly_empty(elem, last))
     }
 
-    pub(super) fn non_empty_list_of(elem: Ty) -> Self {
-        Self::list_sig(ListSig::non_empty(elem))
+    pub(super) fn non_empty_list_of(elem: Ty, last: Ty) -> Self {
+        Self::list_sig(ListSig::non_empty(elem, last))
+    }
+
+    /// Every value that can end a list: everything but a non-empty list.
+    pub(super) fn any_terminator() -> Self {
+        let mut d = Self::any();
+        d.lists = vec![Conj::pos_of(ListSig::empty())];
+        d
     }
 
     pub(super) fn empty_list() -> Self {
@@ -361,19 +368,16 @@ impl Descr {
     /// This type read as ONE list signature, when it is purely a list and
     /// nothing else.
     ///
-    /// `any_ty` is the caller's interned `any`, and it is what the axis TOP is
-    /// read as: `types::axis` writes every axis's top as the clause with no
-    /// factors, so the widest list carries no sig for this to borrow and the
-    /// widest one has to be built. Every other clause shape answers from what
-    /// it stores.
-    pub(super) fn as_pure_list(&self, any_ty: Ty) -> Option<ListSig> {
-        self.pure_axis(&self.lists, || ListSig {
-            empty: true,
-            elem: Some(any_ty),
-        })
-        .filter(|_| {
-            self.tuples.is_empty() && self.resources.is_empty() && self.funcs.is_empty() && self.maps.is_empty()
-        })
+    /// `any_ty` and `terminator_ty` are the caller's interned `any` and
+    /// [`Descr::any_terminator`], and they are what the axis TOP is read as:
+    /// `types::axis` writes every axis's top as the clause with no factors, so
+    /// the widest list carries no sig for this to borrow and the widest one
+    /// has to be built. Every other clause shape answers from what it stores.
+    pub(super) fn as_pure_list(&self, any_ty: Ty, terminator_ty: Ty) -> Option<ListSig> {
+        self.pure_axis(&self.lists, || ListSig::possibly_empty(any_ty, terminator_ty))
+            .filter(|_| {
+                self.tuples.is_empty() && self.resources.is_empty() && self.funcs.is_empty() && self.maps.is_empty()
+            })
     }
 
     /// True when this type is purely the list FAMILY — one or more list

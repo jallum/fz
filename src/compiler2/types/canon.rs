@@ -270,7 +270,7 @@ impl<'a> TyCanon<'a> {
         let Some(denotation) = emptiness::list_denotation(cx, c) else {
             return "none".to_string();
         };
-        let Some(NonEmptyLists { elem, minus }) = denotation.non_empty else {
+        let Some(NonEmptyLists { elem, last, minus }) = denotation.non_empty else {
             return "empty_list()".to_string();
         };
         let head = if denotation.holds_empty {
@@ -278,16 +278,36 @@ impl<'a> TyCanon<'a> {
         } else {
             "non_empty_list"
         };
-        let elem = match c.pos.as_slice() {
-            [ListSig { elem: Some(only), .. }] if c.neg.is_empty() => self.body(cx, *only).to_string(),
-            _ => self.descr_body(cx, &elem, Provenance::Synthesized),
+        let (elem, last) = match c.pos.as_slice() {
+            [ListSig { cons: Some(only), .. }] if c.neg.is_empty() => (
+                self.body(cx, only.elem).to_string(),
+                self.terminator_suffix(cx, cx.descr(&only.last), Some(only.last)),
+            ),
+            _ => (
+                self.descr_body(cx, &elem, Provenance::Synthesized),
+                self.terminator_suffix(cx, &last, None),
+            ),
         };
-        let mut factors = vec![format!("{head}({elem})")];
+        let mut factors = vec![format!("{head}({elem}{last})")];
         for cut in &minus {
-            let rendered = self.descr_body(cx, cut, Provenance::Synthesized);
-            factors.push(format!("not(non_empty_list({rendered}))"));
+            let rendered = self.descr_body(cx, &cut.elem, Provenance::Synthesized);
+            let last = self.terminator_suffix(cx, &cut.last, None);
+            factors.push(format!("not(non_empty_list({rendered}{last}))"));
         }
         factors.join(" & ")
+    }
+
+    /// A list's terminator as the second argument Elixir writes it with, or
+    /// nothing for `[]`, which is the proper list's.
+    fn terminator_suffix(&mut self, cx: TyCtx<'_>, last: &Descr, interned: Option<Ty>) -> String {
+        if *last == Descr::empty_list() {
+            return String::new();
+        }
+        let body = match interned {
+            Some(ty) => self.body(cx, ty).to_string(),
+            None => self.descr_body(cx, last, Provenance::Synthesized),
+        };
+        format!(", {body}")
     }
 
     fn resource_clause(&mut self, cx: TyCtx<'_>, c: &Conj<ResourceSig>) -> String {

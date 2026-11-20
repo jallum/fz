@@ -155,7 +155,8 @@ fn multi_target_summary_builds_receiver_type_dispatch_rows() {
     let list_impl = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "list_impl", 1);
     let range_impl = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "range_impl", 1);
     let any = world.types_mut().any();
-    let list = world.types_mut().list(any);
+    let proper_list = world.types_mut().list(any);
+    let any_list = world.types_mut().any_list();
     let range = world
         .types_mut()
         .nominal_protocol_target(crate::modules::identity::ModuleName::from_segments(vec![
@@ -167,7 +168,7 @@ fn multi_target_summary_builds_receiver_type_dispatch_rows() {
             CallTargetSummary {
                 selector: None,
                 callee: SelectedCallee::Function(list_impl),
-                surface_inputs: vec![list],
+                surface_inputs: vec![proper_list],
                 activation: None,
                 activation_inputs: None,
                 extern_params: None,
@@ -226,7 +227,9 @@ fn multi_target_summary_builds_receiver_type_dispatch_rows() {
             _ => None,
         })
         .collect::<Vec<_>>();
-    assert!(type_regions.contains(&list) && type_regions.contains(&range));
+    // A run-time list test reads one cell and never the terminator, so the list target's region is
+    // every list, not the proper lists its surface names.
+    assert!(type_regions.contains(&any_list) && type_regions.contains(&range));
     assert!(
         matches!(
             dispatch.plan.graph.node(dispatch.plan.graph.root),

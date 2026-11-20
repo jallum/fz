@@ -1535,7 +1535,7 @@ fn target_fixture_reports_exercise_all_five_request_scenarios() {
                 runtime_demand.runtime_demand_evaluations,
                 // Executable facts are a pure function of their declared reads, so a reached leaf
                 // edit re-derives nothing it did not change and walks exactly the edited body.
-                [[111, 0, 0, 1, 4], [444, 0, 0, 1, 4], [476, 0, 0, 1, 4]][fixture_index][scenario],
+                [[113, 0, 0, 1, 4], [446, 0, 0, 1, 4], [478, 0, 0, 1, 4]][fixture_index][scenario],
                 "{fixture} {name}: count actual body walks, not scheduler completions; all scenarios: {:?}",
                 reports
                     .iter()
@@ -1825,31 +1825,31 @@ const fn shifts(shift_wakes: u64, rebased_completions: u64) -> ShiftWork {
 const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
     AnalysisClaimRatchet {
         fixture: "fixtures/00567_fz_f98_range_map_converges.fz",
-        activations: lifecycle(56, 56, 0),
-        callsites: lifecycle(60, 60, 0),
+        activations: lifecycle(57, 57, 0),
+        callsites: lifecycle(61, 61, 0),
         shifts: shifts(4, 12),
-        analyze_evaluations: 157,
+        analyze_evaluations: 159,
         analyze_zero_change: 5,
         // Macro readiness is a retained content dependency.
-        total_evaluations: 707,
+        total_evaluations: 711,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures/00571_enum_predicate_search.fz",
-        activations: lifecycle(196, 196, 0),
-        callsites: lifecycle(249, 249, 0),
+        activations: lifecycle(197, 197, 0),
+        callsites: lifecycle(250, 250, 0),
         shifts: shifts(25, 75),
-        analyze_evaluations: 595,
+        analyze_evaluations: 597,
         analyze_zero_change: 25,
-        total_evaluations: 1207,
+        total_evaluations: 1211,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures/00420_enum_take_drop_split.fz",
-        activations: lifecycle(227, 227, 0),
-        callsites: lifecycle(388, 388, 0),
+        activations: lifecycle(228, 228, 0),
+        callsites: lifecycle(389, 389, 0),
         shifts: shifts(44, 91),
-        analyze_evaluations: 664,
+        analyze_evaluations: 668,
         analyze_zero_change: 23,
-        total_evaluations: 1671,
+        total_evaluations: 1677,
     },
 ];
 
@@ -1895,7 +1895,7 @@ fn analysis_claims_survive_a_run_that_could_not_re_derive_them() {
                 executable_fact_work.evaluations,
                 executable_fact_work.changed_outputs
             ),
-            (6, 6, 6),
+            (7, 7, 7),
             "{fixture}: the total is the World fact producers that replaced the product formula: \
              {executable_fact_work:?}",
         );

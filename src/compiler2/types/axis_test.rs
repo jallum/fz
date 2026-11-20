@@ -19,10 +19,8 @@ fn absorbed<T: Clone + 'static>(t: &Types, mut clauses: Vec<Conj<T>>, view: &Axi
 fn the_widest_sig_and_the_contentless_clause_are_one_spelling() {
     let mut t = Types::new();
     let any = t.any();
-    let widest = Conj::pos_of(ListSig {
-        empty: true,
-        elem: Some(any),
-    });
+    let terminator = t.any_terminator();
+    let widest = Conj::pos_of(ListSig::possibly_empty(any, terminator));
     assert_eq!(
         vec![Conj::top()],
         absorbed(&t, vec![widest.clone()], &LISTS),
@@ -40,10 +38,8 @@ fn the_widest_sig_and_the_contentless_clause_are_one_spelling() {
 fn a_contentless_clause_beside_narrower_sigs_absorbs_them_either_way() {
     let mut t = Types::new();
     let int = t.int();
-    let narrow = Conj::pos_of(ListSig {
-        empty: false,
-        elem: Some(int),
-    });
+    let empty = t.empty_list();
+    let narrow = Conj::pos_of(ListSig::non_empty(int, empty));
     let forward = absorbed(&t, vec![Conj::top(), narrow.clone()], &LISTS);
     let backward = absorbed(&t, vec![narrow, Conj::top()], &LISTS);
     assert_eq!(forward, backward);

@@ -61,6 +61,8 @@ enum Arity {
     Fixed(usize),
     /// Between `min` and `max` arguments, inclusive.
     Range(usize, usize),
+    /// Either of two counts and nothing between them.
+    Either(usize, usize),
 }
 
 impl Arity {
@@ -68,6 +70,7 @@ impl Arity {
         match self {
             Arity::Fixed(k) => n == *k,
             Arity::Range(min, max) => (*min..=*max).contains(&n),
+            Arity::Either(a, b) => n == *a || n == *b,
         }
     }
 }
@@ -77,6 +80,7 @@ impl std::fmt::Display for Arity {
         match self {
             Arity::Fixed(k) => write!(f, "{k}"),
             Arity::Range(min, max) => write!(f, "{min} to {max}"),
+            Arity::Either(a, b) => write!(f, "{a} or {b}"),
         }
     }
 }
@@ -98,6 +102,11 @@ struct ConstructorEntry {
 /// two parametric constructors, `list` (0 or 1 type argument —
 /// `list()`/`list(any)` and `[T]` mint the identical `Ty`) and `resource`
 /// (0 or 1 type argument, defaulting the payload to `any`).
+///
+/// `maybe_improper_list` and `nonempty_maybe_improper_list` are Elixir's lists
+/// with a terminator (no arguments, or the element and terminator types), and
+/// `nonempty_improper_list` takes the element and terminator types alone; see
+/// `terminated_list`.
 ///
 /// `byte`, `iolist` and `iodata` are Elixir's: `iodata` is `binary | iolist`,
 /// and `iolist` is recursive (see `iolist`). `byte`, `neg_integer`,
@@ -140,6 +149,9 @@ const CONSTRUCTORS: &[ConstructorEntry] = &[
     ConstructorEntry { name: "ref",      arity: Arity::Fixed(0), build: |t, _| t.reference() },
     ConstructorEntry { name: "list",     arity: Arity::Range(0, 1), build: |t, a| { let inner = a.first().copied().unwrap_or_else(|| t.any()); t.list(inner) } },
     ConstructorEntry { name: "nonempty_list", arity: Arity::Range(0, 1), build: |t, a| { let inner = a.first().copied().unwrap_or_else(|| t.any()); t.non_empty_list(inner) } },
+    ConstructorEntry { name: "maybe_improper_list", arity: Arity::Either(0, 2), build: |t, a| terminated_list(t, a, Terminated::PossiblyEmpty) },
+    ConstructorEntry { name: "nonempty_improper_list", arity: Arity::Fixed(2), build: |t, a| terminated_list(t, a, Terminated::NeverProper) },
+    ConstructorEntry { name: "nonempty_maybe_improper_list", arity: Arity::Either(0, 2), build: |t, a| terminated_list(t, a, Terminated::NonEmpty) },
     ConstructorEntry { name: "resource", arity: Arity::Range(0, 1), build: |t, a| { let inner = a.first().copied().unwrap_or_else(|| t.any()); t.resource(inner) } },
     ConstructorEntry { name: "map",      arity: Arity::Fixed(0), build: |t, _| t.map_top() },
     ConstructorEntry { name: "tuple",    arity: Arity::Fixed(0), build: |t, _| t.tuple_top() },
@@ -147,9 +159,43 @@ const CONSTRUCTORS: &[ConstructorEntry] = &[
     ConstructorEntry { name: "function", arity: Arity::Fixed(0), build: |t, _| t.fun_top() },
 ];
 
+/// Which of Elixir's three lists with a terminator a name spells.
+enum Terminated {
+    /// `[]`, or a non-empty list ending in `[]` or the terminator.
+    PossiblyEmpty,
+    /// A non-empty list ending in the terminator, never in `[]`.
+    NeverProper,
+    /// A non-empty list ending in `[]` or the terminator.
+    NonEmpty,
+}
+
+/// `name(element, terminator)`, or the bare `name()` for the shapes Elixir
+/// defines it for, both `any`.
+fn terminated_list(types: &mut Types, args: &[Ty], shape: Terminated) -> Ty {
+    let (elem, last) = match args {
+        [elem, last] => (*elem, *last),
+        _ => (types.any(), types.any()),
+    };
+    let empty = types.empty_list();
+    match shape {
+        Terminated::PossiblyEmpty => {
+            let last = types.union(last, empty);
+            types.possibly_empty_cons(elem, last)
+        }
+        Terminated::NeverProper => {
+            let last = types.difference(last, empty);
+            types.cons(elem, last)
+        }
+        Terminated::NonEmpty => {
+            let last = types.union(last, empty);
+            types.cons(elem, last)
+        }
+    }
+}
+
 /// Elixir's `iolist()`: a list whose elements are bytes, binaries or iolists.
-/// Elixir allows a binary as an improper tail; a list type here has no
-/// improper tail, so this is the proper-list part. `byte()` is `integer`,
+/// Elixir allows a binary as an improper tail; this is the proper-list part,
+/// whose terminator is `[]`. `byte()` is `integer`,
 /// since the lattice has no integer ranges.
 fn iolist(types: &mut Types) -> Ty {
     types.recursive(1, |types, binders| {

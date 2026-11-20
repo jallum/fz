@@ -37,8 +37,7 @@ whose every element is an integer in 7..=13, 27 or 32..=126
 `[104, 105]` is `~c"hi"`, `[7, 104]` is `~c"\ah"`. Any other integer list, such
 as `[0]`, `[128]` or `[126, 127]`, stays a list. A list whose every element is a
 two-tuple with a non-alias atom key renders as a keyword list, `[a: 1]`.
-Every other list renders its elements. A list's tail is always a list or `[]`,
-so there is no improper form to print.
+Every other list renders its elements. The forms above are those of proper lists.
 
 The `~c"..."` text is the sigil's source form: the renderer prints what the
 program can read back.

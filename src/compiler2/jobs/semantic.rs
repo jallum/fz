@@ -2343,7 +2343,7 @@ fn callee_has_no_inhabitants(types: &Types, callee_ty: Ty) -> bool {
 /// Is an unresolved callee a genuine dynamic edge — the one place a closure
 /// call may EARN `any`?
 ///
-/// Only when its type is GROUND. A ground callable the engine cannot resolve to
+/// Only when its type is GROUND, or denotes every value. A ground callable the engine cannot resolve to
 /// closure targets really could be anything at runtime, exactly as at a provider
 /// boundary. A callee whose type still carries type VARIABLES is a different
 /// thing entirely: the slot has not been instantiated yet, so the call has no
@@ -2353,8 +2353,14 @@ fn callee_has_no_inhabitants(types: &Types, callee_ty: Ty) -> bool {
 /// `any` unioned in from a not-yet-instantiated slot is never retracted once the
 /// slot grounds, so the callsite ends up holding two disagreeing facts — a
 /// precisely-resolved `CallSiteSummary` and an `any` value type (fz-f98.17).
+///
+/// A callee that denotes every value is ground in the sense that matters, even
+/// when a closure literal carrying variables is written beside it: `any ∨ λ`
+/// is `any`, nothing grounding the literal can narrow it, and `any` is never
+/// retracted. The head of `[fun | funs]` over an unconstrained `funs` is that
+/// type, since the tail's own elements are elements of the list.
 fn callee_is_a_dynamic_edge(world: &World, callee_ty: Ty) -> bool {
-    !world.types().has_vars(&callee_ty)
+    !world.types().has_vars(&callee_ty) || world.types().is_top(&callee_ty)
 }
 
 fn resolve_closure_call(
@@ -3086,46 +3092,21 @@ fn literal_ty(world: &mut World, literal: &GroundValue) -> Ty {
     }
 }
 
+/// `[a, b | t]` is `cons(a ∪ b, t)`, and with no `| t` the tail is `[]`.
 fn list_ty(world: &mut World, values: &SemanticValues, items: &[ValueId], tail: Option<ValueId>) -> Option<Ty> {
-    let mut elem_ty = none_ty(world);
-    for item in items {
-        let item_ty = value_ty(values, *item)?;
-        elem_ty = if world.types().is_empty(&elem_ty) {
-            item_ty
-        } else {
-            world.types_mut().union(elem_ty, item_ty)
-        };
-    }
-    let list = match tail {
-        Some(tail) => {
-            let tail_ty = value_ty(values, tail)?;
-            if world.types().has_list_shape(&tail_ty) {
-                let tail_elem = world.types_mut().list_element_type(&tail_ty);
-                let elem_ty = if world.types().is_empty(&elem_ty) {
-                    tail_elem
-                } else {
-                    world.types_mut().union(elem_ty, tail_elem)
-                };
-                world.types_mut().list(elem_ty)
-            } else if world.types().is_empty(&elem_ty) {
-                let any = any_ty(world);
-                world.types_mut().list(any)
-            } else {
-                world.types_mut().non_empty_list(elem_ty)
-            }
-        }
-        None => {
-            if items.is_empty() {
-                world.types_mut().empty_list()
-            } else if world.types().is_empty(&elem_ty) {
-                let any = any_ty(world);
-                world.types_mut().list(any)
-            } else {
-                world.types_mut().non_empty_list(elem_ty)
-            }
-        }
+    let tail_ty = match tail {
+        Some(tail) => value_ty(values, tail)?,
+        None => world.types_mut().empty_list(),
     };
-    Some(list)
+    let Some((first, rest)) = items.split_first() else {
+        return Some(tail_ty);
+    };
+    let mut elem_ty = value_ty(values, *first)?;
+    for item in rest {
+        let item_ty = value_ty(values, *item)?;
+        elem_ty = world.types_mut().union(elem_ty, item_ty);
+    }
+    Some(world.types_mut().cons(elem_ty, tail_ty))
 }
 
 fn map_ty(world: &mut World, values: &SemanticValues, entries: &[(LoweredMapKey, ValueId)]) -> Option<Ty> {

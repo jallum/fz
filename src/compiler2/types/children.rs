@@ -43,7 +43,8 @@ impl Descr {
             .lists
             .iter()
             .flat_map(|c| c.sigs())
-            .filter_map(|sig| sig.elem.map(|ty| (ty, ChildRole::Value)));
+            .filter_map(|sig| sig.cons)
+            .flat_map(|cons| [(cons.elem, ChildRole::Value), (cons.last, ChildRole::Value)]);
         let resources = self
             .resources
             .iter()
@@ -82,8 +83,9 @@ impl Descr {
             sig.elems.iter_mut().for_each(|ty| *ty = f(*ty, ChildRole::Value));
         }
         for sig in self.lists.iter_mut().flat_map(|c| c.sigs_mut()) {
-            if let Some(ty) = &mut sig.elem {
-                *ty = f(*ty, ChildRole::Value);
+            if let Some(cons) = &mut sig.cons {
+                cons.elem = f(cons.elem, ChildRole::Value);
+                cons.last = f(cons.last, ChildRole::Value);
             }
         }
         for sig in self.resources.iter_mut().flat_map(|c| c.sigs_mut()) {

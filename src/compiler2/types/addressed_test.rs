@@ -622,9 +622,12 @@ impl Types {
         }
         for conj in &mut d.lists {
             for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
-                if let Some(elem) = sig.elem {
+                if let Some(cons) = &mut sig.cons {
                     path.push(AddrStep::Elem);
-                    sig.elem = Some(self.reference_remap_with(elem, path, correlations, owner));
+                    cons.elem = self.reference_remap_with(cons.elem, path, correlations, owner);
+                    path.pop();
+                    path.push(AddrStep::Last);
+                    cons.last = self.reference_remap_with(cons.last, path, correlations, owner);
                     path.pop();
                 }
             }

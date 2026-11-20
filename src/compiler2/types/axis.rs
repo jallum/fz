@@ -11,7 +11,7 @@
 //! - an axis whose clauses between them cover the axis IS that axis's top, and
 //!   collapses to it, written as the ONE clause with no factors at all. The
 //!   lattice reaches a top through ordinary clauses —
-//!   `empty_list() ∨ non_empty_list(any)` is every list, `{any, any} ∨
+//!   `empty_list() ∨ non_empty_list(any, terminator)` is every list, `{any, any} ∨
 //!   ¬{any, any}` is every tuple — and without this the one set takes one
 //!   identity per spelling the arena happens to mint.
 //!
@@ -33,15 +33,18 @@
 //!
 //! The top of every axis is the clause with no factors, [`Conj::top`] — the
 //! spelling `Descr::any()` already writes on all five axes. Nothing else is a
-//! spelling of it: an axis written `[ListSig { empty: true, elem: any }]` and
-//! an axis written `[Conj::top()]` denote one set, and two descriptors that
-//! denote one set take two ids. So a single plain clause that IS the axis top
-//! is rewritten to the contentless clause here, at the same boundary, and
-//! `t.list(any)`, `[] ∨ non_empty_list(any)` and `any ∨ [any]` all land on it.
+//! spelling of it: an axis written as the one list sig that admits `[]` and
+//! cells of any element ending in any terminator, and an axis written
+//! `[Conj::top()]`, denote one set, and two descriptors that denote one set
+//! take two ids. So a single plain clause that IS the axis top is rewritten
+//! to the contentless clause here, at the same boundary, and
+//! `t.any_list()` and `[] ∨ non_empty_list(any, terminator)` land on it. The
+//! list axis's top is every list, improper ones included: `t.list(any)` is
+//! the proper lists only, a strictly smaller set that keeps its own clause.
 //!
 //! What that costs is that a reader projecting a positive sig off a list or
 //! resource clause has to read a contentless clause as the widest sig —
-//! `[any]`, `resource(any)` — rather than as "no list at all". `as_pure_list`
+//! every list, `resource(any)` — rather than as "no list at all". `as_pure_list`
 //! and `pure_resource` do; `list_element_type` and `resource_payload_type`
 //! already did; `format` renders the axis top as the widest type a user could
 //! write.
@@ -138,7 +141,7 @@ use super::conj::Conj;
 use super::descr::Descr;
 use super::dnf::is_dnf_top;
 use super::emptiness::{self, ListDenotation, NonEmptyLists};
-use super::sigs::{ListSig, MapDomain, MapSig, ResourceSig, TupleSig};
+use super::sigs::{ConsSig, ListSig, MapDomain, MapSig, ResourceSig, TupleSig};
 
 /// Install one axis's clauses into an otherwise contentless descriptor. The
 /// axis's containment questions are then asked of the shared type calculator
@@ -289,29 +292,33 @@ pub(super) const TUPLES: AxisView<TupleSig> = AxisView {
 };
 pub(super) const LISTS: AxisView<ListSig> = AxisView {
     install: |d, clauses| d.lists = clauses,
-    // A plain list clause has two exact dimensions: whether it admits `[]`,
-    // and what its non-empty fragment's element type is.
+    // A plain list clause has three exact dimensions: whether it admits `[]`,
+    // and its non-empty fragment's element and terminator types.
     clause_covers: |wider, narrower, sub| {
         factors_are_superset(wider, narrower)
             || match (plain_sig(narrower), plain_sig(wider)) {
                 (Some(a), Some(b)) => {
                     (!a.empty || b.empty)
-                        && match (a.elem, b.elem) {
+                        && match (a.cons, b.cons) {
                             (None, _) => true,
                             (Some(_), None) => false,
-                            (Some(a), Some(b)) => sub(&a, &b),
+                            (Some(a), Some(b)) => sub(&a.elem, &b.elem) && sub(&a.last, &b.last),
                         }
                 }
                 _ => false,
             }
     },
-    // EXACT, and no descriptor arithmetic: a list clause has two independent
-    // shapes, and a union covers it only by covering each shape with ONE
-    // sibling. There is no union-of-elements case — a list whose elements come
-    // from `A ∪ B` is in neither `[A]` nor `[B]` — so the non-empty shape
-    // needs a single sibling whose element already contains ours. The two
-    // shapes may be covered by DIFFERENT siblings, which is what pairwise
+    // No descriptor arithmetic: a list clause has two independent shapes, and
+    // the two may be covered by DIFFERENT siblings, which is what pairwise
     // containment cannot see: `[] ∨ non_empty_list(int)` covers `list(int)`.
+    //
+    // The non-empty shape has no union-of-elements case -- a list whose
+    // elements come from `A ∪ B` is in neither `[A]` nor `[B]` -- so only a
+    // sibling whose element already contains ours covers any of it, and with
+    // none the shape is not covered. Its terminators, though, may be split
+    // across such siblings (`non_empty_list(int, :a) ∨ non_empty_list(int,
+    // :b)` covers `non_empty_list(int, :a | :b)`); one sibling taking all of
+    // them is proven here, and a split is left to the exact question.
     coverage: |_, clause, siblings, subtype| {
         let Some(ours) = plain_sig(clause) else {
             return Coverage::Unproven;
@@ -319,70 +326,89 @@ pub(super) const LISTS: AxisView<ListSig> = AxisView {
         let Some(plain) = plain_sigs(siblings.iter().copied()) else {
             return Coverage::Unproven;
         };
-        let empty_covered = !ours.empty || plain.iter().any(|theirs| theirs.empty);
-        let non_empty_covered = match ours.elem {
-            None => true,
-            Some(ours) => plain.iter().any(|theirs| match theirs.elem {
-                None => false,
-                Some(theirs) => (subtype)(&ours, &theirs),
-            }),
+        if ours.empty && !plain.iter().any(|theirs| theirs.empty) {
+            return Coverage::NotCovered;
+        }
+        let Some(ours) = ours.cons else {
+            return Coverage::Covered;
         };
-        if empty_covered && non_empty_covered {
+        let wider: Vec<_> = plain
+            .iter()
+            .filter_map(|theirs| theirs.cons)
+            .filter(|theirs| (subtype)(&ours.elem, &theirs.elem))
+            .collect();
+        if wider.iter().any(|theirs| (subtype)(&ours.last, &theirs.last)) {
             Coverage::Covered
-        } else {
+        } else if wider.is_empty() {
             Coverage::NotCovered
+        } else {
+            Coverage::Unproven
         }
     },
-    // EXACT, and read off the kernel's own rule rather than from set
-    // reasoning. `top \ (C₁ ∨ … ∨ Cₙ)` over plain clauses is the single clause
-    // `¬C₁ ∧ … ∧ ¬Cₙ`, and `emptiness::list_clause_empty` calls that empty
-    // exactly when ONE negated sig admits `[]` and ONE negated sig's element
-    // swallows the whole fragment. So the axis is its top exactly when one
-    // clause admits `[]` and one clause's element is every value — and when
-    // neither holds, the exact question would only say so again.
+    // Read off the kernel's own rule rather than from set reasoning. `top \
+    // (C₁ ∨ … ∨ Cₙ)` over plain clauses is the single clause `¬C₁ ∧ … ∧ ¬Cₙ`,
+    // and `emptiness::list_clause_empty` calls that empty exactly when one
+    // negated sig admits `[]` and the negated sigs whose element is every
+    // value take every terminator between them. One such sig taking every
+    // terminator is proven here; no such sig at all proves the axis is not
+    // its top; a split is left to the exact question.
     //
-    // "Every value" is a question about the DENOTATION, so it goes to
-    // `Descr::is_full`. A spelling test would answer no for an `any` written
-    // some other way and leave `[x]` and `[any]` two ids for one set.
+    // "Every value" and "every terminator" are questions about the
+    // DENOTATION. A spelling test would answer no for an `any` written some
+    // other way and leave two ids for one set.
     plain_top: |cx, sigs| {
-        let admits_empty = sigs.iter().any(|sig| sig.empty);
-        let admits_every_element = sigs.iter().any(|sig| sig.elem.is_some_and(|elem| is_full(cx, elem)));
-        if admits_empty && admits_every_element {
+        if !sigs.iter().any(|sig| sig.empty) {
+            return Coverage::NotCovered;
+        }
+        let every_element: Vec<_> = sigs
+            .iter()
+            .filter_map(|sig| sig.cons)
+            .filter(|cons| is_full(cx, cons.elem))
+            .collect();
+        if every_element.iter().any(|cons| ends_anywhere(cx, cons.last)) {
             Coverage::Covered
-        } else {
+        } else if every_element.is_empty() {
             Coverage::NotCovered
+        } else {
+            Coverage::Unproven
         }
     },
 };
 
+/// Whether a terminator type admits every value that can end a list.
+fn ends_anywhere(cx: TyCtx<'_>, last: Ty) -> bool {
+    Descr::any_terminator().diff(cx.descr(&last)).is_empty(cx)
+}
+
 /// One list clause written from what it DENOTES.
 ///
 /// A clause that keeps non-empty lists becomes ONE positive sig carrying the
-/// fragment's element type and the `[]` flag, plus one negative sig per
-/// surviving subtraction, each a bare non-empty fragment. The negatives' own
-/// `[]` flags were read into the positive's, so repeating them would be a
-/// second spelling of one fact; a clause that keeps no non-empty list is `[]`
-/// itself.
+/// fragment's element and terminator types and the `[]` flag, plus one
+/// negative sig per surviving subtraction, each a bare non-empty fragment.
+/// The negatives' own `[]` flags were read into the positive's, so repeating
+/// them would be a second spelling of one fact; a clause that keeps no
+/// non-empty list is `[]` itself.
 ///
 /// `intern` is injected because the fragment and the subtractions are
 /// descriptors that this rewrite computes: giving them identity is the
 /// interner's job, and only the boundary is holding it.
 pub(super) fn list_clause_of(denotation: ListDenotation, intern: &mut dyn FnMut(Descr) -> Ty) -> Conj<ListSig> {
     let ListDenotation { holds_empty, non_empty } = denotation;
-    let Some(NonEmptyLists { elem, minus }) = non_empty else {
+    let Some(NonEmptyLists { elem, last, minus }) = non_empty else {
         return Conj::pos_of(ListSig::empty());
     };
+    let positive = ListSig {
+        empty: holds_empty,
+        cons: Some(ConsSig {
+            elem: intern(elem),
+            last: intern(last),
+        }),
+    };
     Conj {
-        pos: vec![ListSig {
-            empty: holds_empty,
-            elem: Some(intern(elem)),
-        }],
+        pos: vec![positive],
         neg: minus
             .into_iter()
-            .map(|cut| ListSig {
-                empty: false,
-                elem: Some(intern(cut)),
-            })
+            .map(|cut| ListSig::non_empty(intern(cut.elem), intern(cut.last)))
             .collect(),
     }
 }
@@ -409,7 +435,7 @@ pub(super) fn merge_empty_list_clause(clauses: &mut Vec<Conj<ListSig>>) {
     // Not `plain_sig`: a clause carrying a residual subtraction still keeps
     // only non-empty lists, and widening its positive is the same one step.
     fn keeps_only_non_empty(c: &Conj<ListSig>) -> bool {
-        matches!(c.pos.as_slice(), [sig] if !sig.empty && sig.elem.is_some()) && !c.neg.iter().any(|n| n.empty)
+        matches!(c.pos.as_slice(), [sig] if sig.is_exact_non_empty()) && !c.neg.iter().any(|n| n.empty)
     }
     if !clauses.iter().any(emptiness::clause_holds_empty) {
         return;

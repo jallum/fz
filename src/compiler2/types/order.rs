@@ -249,11 +249,11 @@ impl<'a> ClauseOrder<'a> {
     // ------------------------------------------------------------------
 
     fn cmp_list_sig(&self, a: &ListSig, b: &ListSig) -> Ordering {
-        a.empty.cmp(&b.empty).then_with(|| match (a.elem, b.elem) {
+        a.empty.cmp(&b.empty).then_with(|| match (a.cons, b.cons) {
             (None, None) => Ordering::Equal,
             (None, Some(_)) => Ordering::Less,
             (Some(_), None) => Ordering::Greater,
-            (Some(x), Some(y)) => self.cmp_ty(x, y),
+            (Some(x), Some(y)) => self.cmp_ty(x.elem, y.elem).then_with(|| self.cmp_ty(x.last, y.last)),
         })
     }
 

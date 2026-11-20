@@ -1161,7 +1161,8 @@ impl ActivationInputAlternatives {
     /// afterwards.
     ///
     /// Two compressions fire here, and they are DIFFERENT judgements about a
-    /// pair of rows:
+    /// pair of rows, and a third fuses rows that differ only by list emptiness
+    /// (`fusion_with`):
     ///
     /// 1. Whole-row EQUIVALENCE (`Vec<Ty>::equivalent`, pointwise mutual
     ///    `is_subtype`): the incoming row says exactly what a standing row
@@ -1209,7 +1210,7 @@ impl ActivationInputAlternatives {
     /// never be: a polymorphic template row absorbing its exact ground
     /// siblings would erase the very correlation this type preserves, which is
     /// why the free-var-set conjunct is not negotiable.
-    fn insert_row(&mut self, types: &Types, row: ActivationInputRow) -> bool {
+    fn insert_row(&mut self, types: &mut Types, row: ActivationInputRow) -> bool {
         if !self.members.is_empty() {
             assert_eq!(
                 self.members[0].columns.len(),
@@ -1233,8 +1234,26 @@ impl ActivationInputAlternatives {
         }
         self.members
             .retain(|standing| !types.row_dominates(&standing.columns, &row.columns));
+        if let Some((index, fused)) = self.fusion_with(types, &row) {
+            self.members.remove(index);
+            self.insert_row(types, ActivationInputRow::new(fused));
+            return true;
+        }
         self.members.push(row);
         true
+    }
+
+    /// The standing row `row` fuses with by list emptiness alone, and the row
+    /// they fuse to (`Types::fuse_rows_by_emptiness`): a `[]`-seeded
+    /// accumulator and the accumulator built from it are one reduce, so they
+    /// are one alternative, as a possibly-empty accumulator.
+    fn fusion_with(&self, types: &mut Types, row: &ActivationInputRow) -> Option<(usize, Vec<Ty>)> {
+        self.members.iter().enumerate().find_map(|(index, standing)| {
+            let fused = types
+                .fuse_rows_by_emptiness(&row.columns, &standing.columns)
+                .or_else(|| types.fuse_rows_by_emptiness(&standing.columns, &row.columns))?;
+            Some((index, fused))
+        })
     }
 
     /// Restore the row-set form: surviving incomparable rows in the type

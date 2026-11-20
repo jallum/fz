@@ -3798,16 +3798,21 @@ mod clause_absorption {
 
         let every_list = {
             let empty = t.empty_list();
-            let non_empty = t.non_empty_list(any);
+            let non_empty = t.cons(any, any);
             t.union(empty, non_empty)
         };
-        assert_eq!(every_list, t.list(any), "one set of lists, one id");
+        assert_eq!(every_list, t.any_list(), "one set of lists, one id");
         assert!(
             t.descr(&every_list).lists.iter().all(Conj::is_top),
             "the top is the contentless clause: {:?}",
             t.descr(&every_list).lists
         );
-        assert_eq!(t.display(&every_list), "[any]", "and a type a user could write");
+        assert_eq!(t.display(&every_list), "[any | any]", "and a type a user could write");
+        let proper = t.list(any);
+        assert!(
+            !t.descr(&proper).lists.iter().all(Conj::is_top),
+            "every PROPER list is not every list: `[1 | 2]` is a list"
+        );
         assert_eq!(
             t.list_element_type(&every_list),
             any,
@@ -3867,10 +3872,10 @@ mod clause_absorption {
         let mut t = Types::new();
         let any = t.any();
 
-        let by_sig = t.list(any);
+        let by_sig = t.any_list();
         let by_shapes = {
             let empty = t.empty_list();
-            let non_empty = t.non_empty_list(any);
+            let non_empty = t.cons(any, any);
             t.union(empty, non_empty)
         };
         let by_clause = t.intern(Descr {
@@ -3920,7 +3925,7 @@ mod clause_absorption {
         let labels = |_: FnId| String::new();
         let mut canon = TyCanon::new(&labels);
 
-        let (widest, top) = (t.list(every_value), t.list(any));
+        let (widest, top) = (t.possibly_empty_cons(every_value, every_value), t.any_list());
         assert_eq!(
             widest,
             top,
@@ -3970,7 +3975,7 @@ mod clause_absorption {
         let joined = t.union(carved, open);
         assert_eq!(joined, every_map, "got {}", t.display(&joined));
 
-        let every_list = t.list(any);
+        let every_list = t.any_list();
         let ints = t.list(int);
         let carved = t.difference(every_list, ints);
         let joined = t.union(carved, ints);
@@ -5058,10 +5063,7 @@ mod list_normal_form {
             joined.lists,
             vec![
                 Conj::pos_of(ListSig::empty()),
-                Conj::pos_of(ListSig {
-                    empty: false,
-                    elem: Some(int),
-                }),
+                Conj::pos_of(ListSig::non_empty(int, empty)),
             ],
             "Descr::union concatenates the two clauses and leaves them alone"
         );
@@ -5609,13 +5611,27 @@ fn interning_a_new_descriptor_stores_it_once() {
     let atom = t.atom();
     let descr = Descr::tuple_of(vec![int, atom]);
     let probe = descr.clone();
+    // Room for one more entry, so what is counted is the entry and not the
+    // stores growing at whatever size the core inventory left them.
+    let interner = &mut t.interner;
+    interner.arena.reserve(1);
+    interner.attrs.reserve(1);
+    let (arena, hasher) = (&interner.arena, &interner.hasher);
+    interner.index.reserve(1, |ty| hasher.hash_one(&arena[ty.0 as usize]));
+
+    // A debug build checks the descriptor's clauses on the way in, and that
+    // check allocates; it is all a new entry may cost beyond its room.
+    #[cfg(debug_assertions)]
+    let (_, checking) = allocations_during(|| t.interner.debug_assert_dnf_axes_hygienic(&descr));
+    #[cfg(not(debug_assertions))]
+    let checking = 0;
 
     let (ty, allocations) = allocations_during(|| t.interner.intern(probe));
 
     assert_eq!(t.descr(&ty), &descr);
     assert_eq!(
-        allocations, 3,
-        "a new entry allocates the growth of the arena and the index; the descriptor moves into the arena and no copy of it is made"
+        allocations, checking,
+        "the descriptor moves into the arena and no copy of it is made"
     );
 }
 
@@ -5865,4 +5881,201 @@ fn the_runtime_test_of_each_bitstring_type_asks_exactly_its_bit_lengths() {
         BitstringAlignment::PARTIAL_BYTE
     );
     assert_eq!(t.runtime_type_predicate(&bitstring).bitstrings, BitstringAlignment::ANY);
+}
+
+/// A list ends in its terminator: `[]` for a proper list, any other value for
+/// an improper one such as `[1 | :end]`. List types carry it as Elixir's do.
+mod terminators {
+    use super::*;
+
+    #[test]
+    fn a_cons_onto_a_non_list_is_an_improper_list_and_not_a_proper_one() {
+        let mut t = Types::new();
+        let int = t.int();
+        let end = t.atom_lit("end");
+        let improper = t.cons(int, end);
+        let proper = t.list(int);
+        assert!(!t.is_empty(&improper), "`[1 | :end]` is a value");
+        assert!(
+            !t.is_subtype(&improper, &proper),
+            "an improper list is not a list(int): its tail is not a list"
+        );
+        let any_list = t.any_list();
+        assert!(t.is_subtype(&improper, &any_list), "but it is a list");
+        assert_eq!(t.list_element_type(&improper), int);
+        assert_eq!(t.list_terminator_type(&improper), end);
+        assert_eq!(t.display(&improper), "[int | :end]");
+    }
+
+    #[test]
+    fn a_cons_onto_a_proper_list_is_a_non_empty_proper_list() {
+        let mut t = Types::new();
+        let int = t.int();
+        let atom = t.atom();
+        let ints = t.list(int);
+        let consed = t.cons(atom, ints);
+        let int_or_atom = t.union(int, atom);
+        assert_eq!(
+            consed,
+            t.non_empty_list(int_or_atom),
+            "`[x | xs]` keeps every element and is never `[]`: {}",
+            t.display(&consed)
+        );
+    }
+
+    /// A tail's own lists add their elements and their terminators: consing
+    /// onto `[1 | :end]` still ends in `:end`.
+    #[test]
+    fn a_cons_onto_an_improper_list_keeps_its_terminator() {
+        let mut t = Types::new();
+        let int = t.int();
+        let atom = t.atom();
+        let end = t.atom_lit("end");
+        let inner = t.cons(int, end);
+        let outer = t.cons(atom, inner);
+        let int_or_atom = t.union(int, atom);
+        assert_eq!(outer, t.cons(int_or_atom, end), "{}", t.display(&outer));
+    }
+
+    /// A tail that may or may not be a list ends the list in either way.
+    #[test]
+    fn a_tail_that_may_be_a_list_or_not_splits_into_elements_and_terminator() {
+        let mut t = Types::new();
+        let int = t.int();
+        let atom = t.atom();
+        let ints = t.list(int);
+        let tail = t.union(ints, atom);
+        let consed = t.cons(int, tail);
+        let empty = t.empty_list();
+        let ends = t.union(atom, empty);
+        assert_eq!(consed, t.cons(int, ends), "{}", t.display(&consed));
+        assert_eq!(t.list_terminator_type(&consed), ends);
+    }
+
+    /// The tail of a cell is the rest of the list or the terminator.
+    #[test]
+    fn the_tail_of_an_improper_list_is_the_rest_or_the_terminator() {
+        let mut t = Types::new();
+        let int = t.int();
+        let end = t.atom_lit("end");
+        let improper = t.cons(int, end);
+        let tail = t.list_tail_type(&improper);
+        let rest_or_end = t.union(improper, end);
+        assert_eq!(tail, rest_or_end, "{}", t.display(&tail));
+
+        let ints = t.list(int);
+        assert_eq!(
+            t.list_tail_type(&ints),
+            ints,
+            "a proper list's tail is the same proper list"
+        );
+    }
+
+    /// Every list over `int` that ends in `:a` or `:b` is one of the lists
+    /// ending in `:a` or one ending in `:b`: two subtractions whose elements
+    /// cover the fragment take their terminators out between them.
+    #[test]
+    fn subtractions_that_cover_the_elements_share_out_the_terminators() {
+        let mut t = Types::new();
+        let int = t.int();
+        let a = t.atom_lit("a");
+        let b = t.atom_lit("b");
+        let a_or_b = t.union(a, b);
+        let either = t.cons(int, a_or_b);
+        let ends_a = t.cons(int, a);
+        let ends_b = t.cons(int, b);
+        let without_a = t.difference(either, ends_a);
+        assert_eq!(without_a, ends_b, "{}", t.display(&without_a));
+        let without_both = t.difference(without_a, ends_b);
+        assert!(t.is_empty(&without_both), "{}", t.display(&without_both));
+        let split = t.union(ends_a, ends_b);
+        assert!(t.is_equivalent(&split, &either));
+    }
+
+    /// A subtraction over a smaller element leaves the lists that hold an
+    /// element outside it, whatever they end in.
+    #[test]
+    fn a_subtraction_over_fewer_elements_leaves_lists_that_escape_it() {
+        let mut t = Types::new();
+        let int = t.int();
+        let atom = t.atom();
+        let end = t.atom_lit("end");
+        let int_or_atom = t.union(int, atom);
+        let wide = t.cons(int_or_atom, end);
+        let narrow = t.cons(int, end);
+        let rest = t.difference(wide, narrow);
+        assert!(!t.is_empty(&rest), "`[1, :x | :end]` is left");
+        let atoms = t.cons(atom, end);
+        let met = t.intersect(rest, atoms);
+        assert!(
+            t.is_equivalent(&met, &atoms),
+            "so is every list of atoms ending in :end"
+        );
+    }
+
+    #[test]
+    fn a_proper_list_is_a_list_that_may_be_improper() {
+        let mut t = Types::new();
+        let int = t.int();
+        let end = t.atom_lit("end");
+        let empty = t.empty_list();
+        let ends = t.union(end, empty);
+        let proper = t.non_empty_list(int);
+        let maybe = t.cons(int, ends);
+        assert!(t.is_subtype(&proper, &maybe));
+        assert!(!t.is_subtype(&maybe, &proper));
+        let improper = t.cons(int, end);
+        let joined = t.union(proper, improper);
+        assert!(t.is_equivalent(&joined, &maybe), "{}", t.display(&joined));
+    }
+
+    /// A run-time list test reads cells and never reaches what a list ends
+    /// in, so what it narrows a value to keeps every terminator.
+    #[test]
+    fn a_run_time_list_test_proves_nothing_about_the_terminator() {
+        let mut t = Types::new();
+        let int = t.int();
+        let ints = t.list(int);
+        let tested = t.runtime_type_test_envelope(ints);
+        let end = t.atom_lit("end");
+        let improper = t.cons(int, end);
+        assert!(
+            t.is_subtype(&improper, &tested),
+            "`[1 | :end]` passes the test for list(int): {}",
+            t.display(&tested)
+        );
+    }
+
+    /// A terminator variable that a substitution fills with a list type adds
+    /// that list's elements, exactly as building the cons directly does.
+    #[test]
+    fn substituting_a_list_into_a_terminator_folds_it_as_cons_does() {
+        let mut t = Types::new();
+        let int = t.int();
+        let atom = t.atom();
+        let var = t.type_var(TypeVarId(0));
+        let template = t.cons(int, var);
+        let atoms = t.list(atom);
+        let sigma: Sigma<Ty> = [(TypeVarId(0), atoms)].into_iter().collect();
+        let substituted = t.instantiate(&template, &sigma);
+        assert_eq!(substituted, t.cons(int, atoms), "{}", t.display(&substituted));
+    }
+
+    /// Elixir's spellings of the lists that carry a terminator.
+    #[test]
+    fn the_three_terminated_list_names_differ_only_in_empty_and_proper_ends() {
+        let mut t = Types::new();
+        let int = t.int();
+        let end = t.atom_lit("end");
+        let empty = t.empty_list();
+        let ends = t.union(end, empty);
+        let non_empty_maybe = t.cons(int, ends);
+        let maybe = t.possibly_empty_cons(int, ends);
+        let improper = t.cons(int, end);
+        assert_eq!(t.union(non_empty_maybe, empty), maybe);
+        assert!(t.is_subtype(&improper, &non_empty_maybe));
+        let proper = t.non_empty_list(int);
+        let overlap = t.intersect(improper, proper);
+        assert!(t.is_empty(&overlap), "an improper list is never proper");
+    }
 }

@@ -33,6 +33,7 @@ use std::collections::BTreeSet;
 
 use super::conj::Conj;
 use super::descr::Descr;
+use super::sigs::ConsSig;
 use super::{Ty, TypeVarId, Types};
 use crate::finite_set::FiniteSet;
 
@@ -52,6 +53,8 @@ pub enum AddrStep {
     Variant(u16),
     /// The element of the list at the current address.
     Elem,
+    /// The terminator of the list at the current address.
+    Last,
     /// The payload of the resource at the current address.
     Payload,
     /// Child `j` (by position) of the map at the current address: its fields
@@ -136,6 +139,7 @@ pub(super) fn format_address(path: &[AddrStep]) -> String {
             (_, AddrStep::Variant(k)) => out.push_str(&format!("_u{k}")),
             (_, AddrStep::VarSlot(k)) => out.push_str(&format!("_v{k}")),
             (_, AddrStep::Elem) => out.push_str("_e"),
+            (_, AddrStep::Last) => out.push_str("_t"),
             (_, AddrStep::Payload) => out.push_str("_p"),
         }
     }
@@ -480,12 +484,13 @@ impl Types {
     ) {
         for ci in 0..self.descr(&ty).lists.len() {
             for si in 0..self.descr(&ty).lists[ci].sig_count() {
-                let Some(child) = self.descr(&ty).lists[ci].sig(si).elem else {
+                let Some(cons) = self.descr(&ty).lists[ci].sig(si).cons else {
                     continue;
                 };
-                let remapped = self.address_child(child, AddrStep::Elem, path, correlations, owner);
-                if remapped != child {
-                    self.owned_copy(changed, ty).lists[ci].sig_mut(si).elem = Some(remapped);
+                let elem = self.address_child(cons.elem, AddrStep::Elem, path, correlations, owner);
+                let last = self.address_child(cons.last, AddrStep::Last, path, correlations, owner);
+                if elem != cons.elem || last != cons.last {
+                    self.owned_copy(changed, ty).lists[ci].sig_mut(si).cons = Some(ConsSig { elem, last });
                 }
             }
         }

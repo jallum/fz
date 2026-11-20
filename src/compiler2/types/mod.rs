@@ -65,7 +65,8 @@ use dnf::dnf_intersect_with;
 use fz_runtime::module_name::STRUCT_MODULE_FIELD;
 pub use sigs::MapDomain;
 use sigs::{
-    ArrowSig, ClosureLit, ListSig, MapField, MapSig, MergeSig, PosMeet, ResourceSig, TupleSig, specialize_surface,
+    ArrowSig, ClosureLit, ConsSig, ListSig, MapField, MapSig, MergeSig, PosMeet, ResourceSig, TupleSig,
+    specialize_surface,
 };
 
 /// The key of one entry in a map type: a literal that names a field, or a kind
@@ -304,6 +305,7 @@ struct CoreTypes {
     float: Ty,
     atom: Ty,
     empty_list: Ty,
+    terminator: Ty,
     str_t: Ty,
     bitstring: Ty,
     map_top: Ty,
@@ -775,6 +777,7 @@ impl Types {
             float: interner.intern(Descr::float()),
             atom: interner.intern(Descr::atom_top()),
             empty_list: interner.intern(Descr::empty_list()),
+            terminator: interner.intern(Descr::any_terminator()),
             str_t: interner.intern(Descr::str_t()),
             bitstring: interner.intern(Descr::bitstring()),
             map_top: interner.intern(Descr::map_top()),
@@ -1041,13 +1044,17 @@ impl Types {
         // bottom collapse has already given it the one empty shape and reading
         // the descriptor answers exactly, without a query.
         if let ([sig], []) = (c.pos.as_slice(), c.neg.as_slice())
-            && sig.elem.is_none_or(|elem| !self.descr(&elem).looks_empty())
+            && sig
+                .cons
+                .is_none_or(|cons| !self.descr(&cons.elem).looks_empty() && !self.descr(&cons.last).looks_empty())
+            && !self.terminator_carries_lists(sig)
         {
             return c;
         }
         if Self::needs_element_arithmetic(&c) && self.clause_has_vars(&c) {
             return c;
         }
+        let c = self.fold_terminators(c);
         let denotation = {
             let cx = self.ctx();
             emptiness::list_denotation(cx, &c)
@@ -1068,15 +1075,40 @@ impl Types {
     /// it stands, neither true once `α` is substituted. The `[]` bookkeeping
     /// carries no such risk: it reads flags the substitution never touches.
     fn needs_element_arithmetic(c: &Conj<ListSig>) -> bool {
-        c.pos.len() > 1 || c.neg.iter().any(|n| n.elem.is_some())
+        c.pos.len() > 1 || c.neg.iter().any(|n| n.cons.is_some())
     }
 
     fn clause_has_vars(&self, c: &Conj<ListSig>) -> bool {
         c.pos
             .iter()
             .chain(&c.neg)
-            .filter_map(|sig| sig.elem)
-            .any(|elem| self.has_vars(&elem))
+            .filter_map(|sig| sig.cons)
+            .any(|cons| self.has_vars(&cons.elem) || self.has_vars(&cons.last))
+    }
+
+    /// Whether a sig's terminator still holds lists of its own, as one does
+    /// after a substitution writes a list type into a terminator variable.
+    fn terminator_carries_lists(&self, sig: &ListSig) -> bool {
+        sig.cons.is_some_and(|cons| {
+            let lists = &self.descr(&cons.last).lists;
+            !lists.is_empty() && !matches!(lists.as_slice(), [only] if only.pos.len() == 1 && only.neg.is_empty() && only.pos[0].is_exact_empty())
+        })
+    }
+
+    /// Every sig's terminator split as [`Types::cons`] splits a tail: its
+    /// lists' elements join the sig's elements, and only what ends a list
+    /// stays a terminator. A sig is spelled this one way whichever route
+    /// built it.
+    fn fold_terminators(&mut self, mut c: Conj<ListSig>) -> Conj<ListSig> {
+        for sig in c.pos.iter_mut().chain(c.neg.iter_mut()) {
+            if !self.terminator_carries_lists(sig) {
+                continue;
+            }
+            let cons = sig.cons.expect("a terminator carrying lists belongs to a cons");
+            let (elem, last) = self.fold_tail(cons.elem, cons.last);
+            sig.cons = Some(ConsSig { elem, last });
+        }
+        c
     }
 
     fn order_clauses(&self, d: &mut Descr) {
@@ -1339,8 +1371,9 @@ impl Types {
     }
 
     /// The transport-lane representative of `ty`. A `Value` lane is one boxed
-    /// reference word, so a list's empty/non-empty refinement and element type
-    /// do not change its representation: every list-shaped type shares one lane
+    /// reference word, so a list's empty/non-empty refinement, element type
+    /// and terminator do not change its representation: every list-shaped
+    /// type shares one lane
     /// (the precise type still lives in `value_types` for codegen). Returning
     /// one canonical lane is what lets a clause whose return is a narrower list
     /// (`[int]`) than the function's joined return (`[int] | []`) deliver into
@@ -1352,14 +1385,13 @@ impl Types {
             |t| &mut t.value_lane_reprs,
             ty,
             |t| {
-                let any = t.any();
-                let list_top = t.list(any);
+                let list_top = t.any_list();
                 if !t.is_empty(&ty) && t.is_subtype(&ty, &list_top) {
                     list_top
                 } else if t.descr(&ty).is_pure_callable() {
                     // A callable value is one word — a code pointer or a closure ref —
                     // regardless of its signature, identity, or captures. Collapse every
-                    // callable to one lane, exactly as lists collapse to `list(any)`, so
+                    // callable to one lane, exactly as lists collapse to every list, so
                     // two representations of the same callable (e.g. an opaque join of
                     // same-signature functions, addressed vs not) never split across
                     // lanes (fz-hwn.27.12). The contract stays out-of-band in boundaries.
@@ -1684,18 +1716,102 @@ impl Types {
         self.core.empty_list
     }
 
+    /// Every proper list over `elem`, `[]` included.
     pub fn list(&mut self, elem: Ty) -> Ty {
         if elem == self.core.none {
             return self.core.empty_list;
         }
-        self.intern(Descr::list_of(elem))
+        self.intern(Descr::list_of(elem, self.core.empty_list))
     }
 
+    /// Every non-empty proper list over `elem`.
     pub fn non_empty_list(&mut self, elem: Ty) -> Ty {
         if elem == self.core.none {
             return self.core.none;
         }
-        self.intern(Descr::non_empty_list_of(elem))
+        self.intern(Descr::non_empty_list_of(elem, self.core.empty_list))
+    }
+
+    /// The type of `[head | tail]`: a non-empty list whose elements are
+    /// `head` and the elements of `tail`'s lists, ending in what `tail`'s
+    /// lists end in or in `tail` itself where it is not a list. This is
+    /// Elixir's `non_empty_list(head, tail)`, and every list type with a
+    /// terminator is built through it.
+    pub fn cons(&mut self, head: Ty, tail: Ty) -> Ty {
+        let (elem, last) = self.fold_tail(head, tail);
+        if self.is_empty(&elem) || self.is_empty(&last) {
+            return self.core.none;
+        }
+        self.intern(Descr::non_empty_list_of(elem, last))
+    }
+
+    /// `[] | cons(elem, tail)`: every list over `elem` ending in `tail`, and
+    /// `[]`. Elixir's `maybe_improper_list(elem, tail)` is this with `[]`
+    /// added to `tail`.
+    pub fn possibly_empty_cons(&mut self, elem: Ty, tail: Ty) -> Ty {
+        let (elem, last) = self.fold_tail(elem, tail);
+        if self.is_empty(&elem) || self.is_empty(&last) {
+            return self.core.empty_list;
+        }
+        self.intern(Descr::list_of(elem, last))
+    }
+
+    /// Every list that can be a cons's tail or `[]`, proper or not: the list
+    /// axis's top. It is what a run-time list test -- which reads one cell --
+    /// can prove of a value.
+    pub fn any_list(&mut self) -> Ty {
+        let any = self.core.any;
+        let terminator = self.core.terminator;
+        self.possibly_empty_cons(any, terminator)
+    }
+
+    /// `tail` split into what it adds to a list's elements and what it ends
+    /// the list in: the elements and terminators of its lists, and its own
+    /// non-list part.
+    fn fold_tail(&mut self, elem: Ty, tail: Ty) -> (Ty, Ty) {
+        if self.descr(&tail).lists.is_empty() {
+            return (elem, tail);
+        }
+        let (tail_elem, tail_last) = {
+            let cx = self.ctx();
+            let d = cx.descr(&tail);
+            (
+                list_element_type(cx, d).unwrap_or_else(Descr::none),
+                list_terminator_type(cx, d).unwrap_or_else(Descr::none),
+            )
+        };
+        let tail_elem = self.intern(tail_elem);
+        let tail_last = self.intern(tail_last);
+        let own = self.terminator(tail);
+        (self.union(elem, tail_elem), self.union(own, tail_last))
+    }
+
+    /// Every value that can end a list: everything but a non-empty list.
+    #[cfg(test)]
+    pub(crate) fn any_terminator(&self) -> Ty {
+        self.core.terminator
+    }
+
+    /// The part of `ty` that can end a list: all of it but its non-empty
+    /// lists.
+    pub(crate) fn terminator(&mut self, ty: Ty) -> Ty {
+        let d = self.descr(&ty);
+        let lists_end = match d.lists.as_slice() {
+            [] => true,
+            [only] => only.pos.len() == 1 && only.neg.is_empty() && only.pos[0].is_exact_empty(),
+            _ => false,
+        };
+        if lists_end {
+            return ty;
+        }
+        let holds_empty = d.lists.iter().any(emptiness::clause_holds_empty);
+        let mut d = d.clone();
+        d.lists = if holds_empty {
+            vec![Conj::pos_of(ListSig::empty())]
+        } else {
+            Vec::new()
+        };
+        self.intern(d)
     }
 
     pub fn map(&mut self, fields: &[(MapKey, Ty)]) -> Ty {
@@ -1959,6 +2075,31 @@ impl Types {
         }
     }
 
+    /// What `a`'s non-empty lists end in: `[]` for proper lists. Every value
+    /// when `a` has no list axis.
+    pub fn list_terminator_type(&mut self, a: &Ty) -> Ty {
+        let projected = {
+            let cx = self.ctx();
+            list_terminator_type(cx, cx.descr(a))
+        };
+        match projected {
+            Some(d) => self.intern(d),
+            None => self.any(),
+        }
+    }
+
+    /// The tail of a cell of `a`: the rest of the list, or its terminator.
+    /// For a proper `list(T)` that is `list(T)`.
+    pub fn list_tail_type(&mut self, a: &Ty) -> Ty {
+        if !self.has_list_shape(a) {
+            return self.any();
+        }
+        let elem = self.list_element_type(a);
+        let last = self.list_terminator_type(a);
+        let rest = self.cons(elem, last);
+        self.union(rest, last)
+    }
+
     pub fn has_list_shape(&self, a: &Ty) -> bool {
         !self.descr(a).lists.is_empty()
     }
@@ -2145,14 +2286,31 @@ impl Types {
             && self.widen_literals(a) == *a
     }
 
+    /// The unaddressed class of `a`: structure with every element erased, so
+    /// two values of one shape share a class whatever they hold. A list's
+    /// class is `list(any)` when its members all end in `[]` and the any-list
+    /// otherwise; the terminator is not kept, because a class here names no
+    /// element and so has nothing to pair a terminator with. An addressed key
+    /// (`convergence_class_at`) keeps its element and therefore its
+    /// terminator, through `list_class`.
     pub fn convergence_class(&mut self, a: &Ty) -> Ty {
         if self.is_recursive_member(a) {
             return *a;
         }
         let any = self.any();
+        let terminator = self.core.terminator;
         let descr = self.descr(a);
-        if descr.as_pure_list(any).is_some() {
-            self.list(any)
+        if descr.as_pure_list(any, terminator).is_some() {
+            // Every proper list is one class, and every list that may be
+            // improper is the other: a class never claims a terminator its
+            // members do not have.
+            let ends = self.list_terminator_type(a);
+            let empty_list = self.core.empty_list;
+            if self.is_subtype(&ends, &empty_list) {
+                self.list(any)
+            } else {
+                self.any_list()
+            }
         } else if let Some(tuple) = descr.pure_tuple() {
             let mut elems = tuple.elems.clone();
             for elem in &mut elems {
@@ -2214,7 +2372,7 @@ impl Types {
             } else {
                 self.address_var(&child)
             };
-            self.list(elem)
+            self.list_class(elem, a)
         } else if descr.is_pure_callable() && (reach == ClassReach::Returned || collapse == KeyCollapse::NonRecursive) {
             self.widen_literals(a)
         } else if descr.is_pure_callable() {
@@ -2664,7 +2822,24 @@ impl Types {
         } else {
             self.convergence_collapse_ty(elem, elem_demand, returned_elem, &child, collapse)
         };
-        self.list(elem)
+        self.list_class(elem, &ty)
+    }
+
+    /// The possibly-empty list over a class's `elem` that ends where `lists`
+    /// end: a key contains the evidence it keys, so it keeps an improper
+    /// terminator, without the literals no demand reads. A proper list's
+    /// class is `list(elem)`. This differs from `convergence_class`, whose
+    /// class erases elements and so collapses every improper list to the
+    /// any-list: an addressed class keeps a real element, and a terminator
+    /// travels with it.
+    fn list_class(&mut self, elem: Ty, lists: &Ty) -> Ty {
+        let ends = self.list_terminator_type(lists);
+        let empty_list = self.core.empty_list;
+        if self.is_subtype(&ends, &empty_list) {
+            return self.list(elem);
+        }
+        let ends = self.widen_literals(&ends);
+        self.possibly_empty_cons(elem, ends)
     }
 
     /// The collapse for an ignored slot that did not match the demanded shape:
@@ -2764,7 +2939,9 @@ impl Types {
         args.iter().any(|arg| self.is_empty(arg))
     }
 
-    #[cfg(test)]
+    /// Whether `a` denotes every value, however it is written: a closure
+    /// literal beside `fun` keeps its own clause, so `any` can arrive spelled
+    /// `fun ∨ closure ∨ …` without looking full.
     pub fn is_top(&self, a: &Ty) -> bool {
         let cx = self.ctx();
         self.descr(a).is_equiv(cx, &Descr::any())
@@ -2956,8 +3133,9 @@ impl Types {
         }
         for conj in &descr.lists {
             for sig in &conj.pos {
-                if let Some(elem) = sig.elem {
-                    self.collect_protocol_domain_obligations(elem, seen, obligations);
+                if let Some(cons) = sig.cons {
+                    self.collect_protocol_domain_obligations(cons.elem, seen, obligations);
+                    self.collect_protocol_domain_obligations(cons.last, seen, obligations);
                 }
             }
         }
@@ -3196,7 +3374,7 @@ impl Types {
             if clause.pos.len() != 1 || !clause.neg.is_empty() {
                 return ListShapes::shape_only(shapes);
             }
-            let Some(elem) = clause.pos[0].elem else {
+            let Some(elem) = clause.pos[0].elem() else {
                 // `[]` exactly: the clause admits no cons cell, so it puts no
                 // head question and the other clauses' heads still stand.
                 continue;
@@ -3482,6 +3660,73 @@ impl Types {
                 .iter()
                 .zip(dom)
                 .all(|(sub, dom)| self.row_column_dominates(sub, dom))
+    }
+
+    /// The row `narrow` fuses into `wide`, when the two rows differ only by
+    /// list emptiness in one column.
+    ///
+    /// On every column but one, `wide` dominates `narrow`; in that one column
+    /// either type is covered by the other's possibly-empty form
+    /// ([`Types::with_empty_lists`]). The fused row is `wide` with that column
+    /// widened to the union. It names a `[]`-seeded accumulator and the
+    /// accumulator built from it as one row: `[]` and `non_empty_list(T)`
+    /// fuse to `list(T)`. The fused row covers both inputs, so it only widens
+    /// what is specialized; no definite error is hidden by it, since a
+    /// diagnostic is decided on the body analysed under the row, not on the
+    /// row's emptiness. Closure-literal arrows and free type variables are
+    /// never fused, because the row-level absorption judgement refuses them.
+    pub fn fuse_rows_by_emptiness(&mut self, narrow: &[Ty], wide: &[Ty]) -> Option<Vec<Ty>> {
+        if narrow.len() != wide.len() {
+            return None;
+        }
+        let mut differing =
+            (0..narrow.len()).filter(|&column| !self.row_column_dominates(&narrow[column], &wide[column]));
+        let column = differing.next()?;
+        if differing.next().is_some() {
+            return None;
+        }
+        let (narrow_ty, wide_ty) = (narrow[column], wide[column]);
+        if !self.lit_arrow_shapes(&narrow_ty).is_empty()
+            || !self.lit_arrow_shapes(&wide_ty).is_empty()
+            || self.free_var_ids(&narrow_ty) != self.free_var_ids(&wide_ty)
+        {
+            return None;
+        }
+        let narrow_open = self.with_empty_lists(narrow_ty);
+        let wide_open = self.with_empty_lists(wide_ty);
+        if !(self.is_subtype(&narrow_ty, &wide_open) || self.is_subtype(&wide_ty, &narrow_open)) {
+            return None;
+        }
+        let mut fused = wide.to_vec();
+        fused[column] = self.union(narrow_ty, wide_ty);
+        Some(fused)
+    }
+
+    /// `ty` with every list in it possibly empty, through tuples. A type that
+    /// is recursive or holds type variables is returned as it is.
+    pub fn with_empty_lists(&mut self, ty: Ty) -> Ty {
+        if self.is_recursive_member(&ty) || self.has_vars(&ty) {
+            return ty;
+        }
+        let mut descr = self.descr(&ty).clone();
+        if descr.is_pure_list_family() {
+            let elem = self.list_element_type(&ty);
+            let ends = self.list_terminator_type(&ty);
+            let empty_list = self.core.empty_list;
+            let ends = self.union(ends, empty_list);
+            return self.possibly_empty_cons(elem, ends);
+        }
+        if descr.tuples.is_empty() {
+            return ty;
+        }
+        for conjunction in &mut descr.tuples {
+            for signature in conjunction.pos.iter_mut().chain(conjunction.neg.iter_mut()) {
+                for elem in signature.elems.iter_mut() {
+                    *elem = self.with_empty_lists(*elem);
+                }
+            }
+        }
+        self.intern(descr)
     }
 
     pub fn runtime_envelope(&mut self, ty: Ty) -> Ty {
@@ -4262,7 +4507,7 @@ fn sole_list_element(d: &Descr) -> Option<Ty> {
     let [sig] = conj.pos.as_slice() else {
         return None;
     };
-    sig.elem
+    sig.elem()
 }
 
 /// The coordinates of a descriptor whose tuple axis is one clause with one
@@ -4288,27 +4533,34 @@ fn meet_of<'a>(mut descrs: impl Iterator<Item = &'a Descr>) -> Option<Cow<'a, De
 /// The element type of a descriptor's list axis, or `None` when it has no list
 /// axis and the projection is every value.
 fn list_element_type(cx: TyCtx<'_>, d: &Descr) -> Option<Descr> {
+    list_cons_coordinate(cx, d, |cons| cons.elem, Descr::any)
+}
+
+/// What a descriptor's non-empty lists end in, or `None` when it has no list
+/// axis.
+fn list_terminator_type(cx: TyCtx<'_>, d: &Descr) -> Option<Descr> {
+    list_cons_coordinate(cx, d, |cons| cons.last, Descr::any_terminator)
+}
+
+/// One coordinate of a list axis's non-empty fragments, joined across its
+/// clauses: within a clause the positives' coordinates meet, and a clause with
+/// no positive leaves the coordinate `top`. Negatives do not narrow it.
+fn list_cons_coordinate(cx: TyCtx<'_>, d: &Descr, coordinate: fn(ConsSig) -> Ty, top: fn() -> Descr) -> Option<Descr> {
     if d.lists.is_empty() {
         return None;
     }
-    let mut elem = Descr::none();
+    let mut joined = Descr::none();
     for conj in &d.lists {
-        // A positive sig with no elem is the exact empty list: the whole
-        // conjunction is a subset of it and has no head to project.
-        if conj.pos.iter().any(|sig| sig.elem.is_none()) {
+        // A positive that holds only `[]` makes the whole conjunction a
+        // subset of `[]`, which has no cell to read.
+        let Some(conses) = conj.pos.iter().map(|sig| sig.cons).collect::<Option<Vec<_>>>() else {
             continue;
-        }
-        let clause_elem = meet_of(
-            conj.pos
-                .iter()
-                .map(|sig| cx.descr(&sig.elem.expect("empty-list sigs were skipped above"))),
-        );
-        // No positive constraint at all (`Conj::top()`, as in `any`'s list
-        // fragment) leaves the element unconstrained: `any`, never `none`.
-        let clause_elem = clause_elem.unwrap_or_else(|| Cow::Owned(Descr::any()));
-        elem = elem.union(cx, &clause_elem);
+        };
+        let clause = meet_of(conses.iter().map(|cons| cx.descr(&coordinate(*cons))));
+        let clause = clause.unwrap_or_else(|| Cow::Owned(top()));
+        joined = joined.union(cx, &clause);
     }
-    Some(elem)
+    Some(joined)
 }
 
 /// Whether a resource clause constrains no payload: it has no positive
@@ -4649,7 +4901,7 @@ fn runtime_type_predicate_list_shapes(descr: &Descr) -> FiniteSet<ListShape> {
 /// is stored — so the case left is a clause the boundary left alone, where the
 /// negative names the positive's own element.
 fn negative_swallows_the_fragment(clause: &Conj<ListSig>, negative: &ListSig) -> bool {
-    matches!(clause.pos.as_slice(), [positive] if positive.elem.is_some() && positive.elem == negative.elem)
+    matches!(clause.pos.as_slice(), [positive] if positive.cons.is_some() && positive.cons == negative.cons)
 }
 
 /// The arities one tuple clause admits: none, one, or every arity but the
@@ -5067,14 +5319,25 @@ fn runtime_list_sig(
     purpose: RuntimeEnvelopePurpose,
     bounds: &Sigma<Ty>,
 ) -> Option<ListSig> {
-    let elem = sig
-        .elem
-        .map(|ty| runtime_envelope(types, ty, polarity, purpose, bounds));
-    match elem {
-        Some(elem) if types.is_empty(&elem) && !sig.empty => None,
-        Some(elem) if types.is_empty(&elem) => Some(ListSig::empty()),
-        _ => Some(ListSig { empty: sig.empty, elem }),
+    let Some(cons) = sig.cons else {
+        return Some(sig);
+    };
+    let elem = runtime_envelope(types, cons.elem, polarity, purpose, bounds);
+    // A run-time test never reaches a list's terminator: it reads cells, and
+    // a cell holds its tail, not what the tail ends in. So a value that
+    // passes is known to end anywhere.
+    let last = if purpose == RuntimeEnvelopePurpose::Predicate && polarity == RuntimeEnvelopePolarity::Positive {
+        types.core.terminator
+    } else {
+        runtime_envelope(types, cons.last, polarity, purpose, bounds)
+    };
+    if types.is_empty(&elem) || types.is_empty(&last) {
+        return sig.empty.then(ListSig::empty);
     }
+    Some(ListSig {
+        empty: sig.empty,
+        cons: Some(ConsSig { elem, last }),
+    })
 }
 
 fn runtime_resource_sig(
@@ -5348,17 +5611,22 @@ fn refine_widen_uncached(t: &mut Types, a: Ty, b: Ty) -> Ty {
         return t.intern(Descr::tuple_of(elems));
     }
     let any = t.any();
-    if let (Some(l), Some(r)) = (t.descr(&a).as_pure_list(any), t.descr(&b).as_pure_list(any)) {
-        let elem = match (l.elem, r.elem) {
-            (Some(l), Some(r)) => Some(t.refine_widen(&l, &r)),
-            (Some(l), None) => Some(l),
-            (None, Some(r)) => Some(r),
-            (None, None) => None,
+    let terminator = t.core.terminator;
+    if let (Some(l), Some(r)) = (
+        t.descr(&a).as_pure_list(any, terminator),
+        t.descr(&b).as_pure_list(any, terminator),
+    ) {
+        let cons = match (l.cons, r.cons) {
+            (Some(l), Some(r)) => Some(ConsSig {
+                elem: t.refine_widen(&l.elem, &r.elem),
+                last: t.union(l.last, r.last),
+            }),
+            (cons, None) | (None, cons) => cons,
         };
-        let d = match elem {
-            Some(elem) => Descr::list_sig(ListSig {
+        let d = match cons {
+            Some(cons) => Descr::list_sig(ListSig {
                 empty: l.empty || r.empty,
-                elem: Some(elem),
+                cons: Some(cons),
             }),
             None => Descr::empty_list(),
         };
@@ -5513,10 +5781,12 @@ fn collect_subst_into(
     {
         children.extend(ps.elems.iter().zip(&ws.elems).map(|(p, w)| (*p, *w, side)));
     }
-    if let (Some(ps), Some(ws)) = (pat.as_pure_list(any), wit.as_pure_list(any))
-        && let (Some(p), Some(w)) = (ps.elem, ws.elem)
+    let terminator = t.core.terminator;
+    if let (Some(ps), Some(ws)) = (pat.as_pure_list(any, terminator), wit.as_pure_list(any, terminator))
+        && let (Some(p), Some(w)) = (ps.cons, ws.cons)
     {
-        children.push((p, w, side));
+        children.push((p.elem, w.elem, side));
+        children.push((p.last, w.last, side));
     }
     if let (Some(ps), Some(ws)) = (pat.pure_resource(any), wit.pure_resource(any)) {
         children.push((ps.payload, ws.payload, side));

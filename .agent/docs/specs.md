@@ -29,14 +29,18 @@ Compiler2 owns the active contract path:
   says Dialyzer does. `dynamic(T)` is not a typespec, in Elixir or here.
 - `iodata` is Elixir's `binary | iolist`, and `iolist` is the recursive list
   `μt. [integer | binary | t]`. `byte` is `integer`, because the lattice has no
-  integer ranges, and a list type has no improper tail, so an improper iolist
-  such as `["a" | "b"]` is outside `iolist` here.
+  integer ranges, and `iolist` is the proper-list part (its terminator is `[]`),
+  so an improper iolist such as `["a" | "b"]` is outside `iolist` here.
+- `list(T)` and `[T]` are the proper lists, and `nonempty_list(T)` is `list(T)`
+  without the empty list. `maybe_improper_list(E, L)`,
+  `nonempty_improper_list(E, L)` and `nonempty_maybe_improper_list(E, L)` are
+  Elixir's lists with a terminator; with no arguments each takes `any` for both.
 - `none` is the bottom type, the type no value has, and `no_return` is the
   same type, Elixir's name for the result of a function that never returns.
   An extern that never returns writes `:: none` (the extern spelling table in
   `extern_contract.rs`).
 - `neg_integer`, `non_neg_integer` and `pos_integer` are `integer`, like
-  `byte`. `nonempty_list(T)` is `list(T)` without the empty list.
+  `byte`.
 - `number`, `char`, `charlist`, `timeout` and `struct` are `@type`s in the
   prelude (`lib/runtime.fz`), written as Elixir's typespec reference defines
   them; `char` is `integer` for the same reason `byte` is.
