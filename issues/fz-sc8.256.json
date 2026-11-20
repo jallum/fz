@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-mue.12"
+  ],
   "created": "2026-11-20T21:11:46Z",
   "description": "Found by Elixir Parity while building fz-mue.12, 2026-11-20.\n\nExpected (Elixir): prints 1.\nActual: interp says \"backend value 3 is unbound\"; run says \"native executable lowering failed\" (artifact/incomplete-semantic-plan).\n\nRepro:\n```elixir\ndefmodule Main do\n  def c(flag) do\n    default = if flag, do: {:a, 1}, else: {:k}\n    f = fn r -\u003e\n      case default do\n        {:k} -\u003e r\n        d -\u003e d\n      end\n    end\n    f.(1)\n  end\n  def main() do\n    IO.inspect(c(length(System.argv()) \u003e 5))\n  end\nend\nMain.main()\n```\n\nDone when this program prints 1 on all three paths, as a fixture.",
   "id": "fz-sc8.256",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "A closure that captures a union-valued variable and cases on it fails",
   "type": "bug",
-  "updated_at": "2026-11-20T21:11:46Z"
+  "updated_at": "2026-11-20T21:11:59Z"
 }
