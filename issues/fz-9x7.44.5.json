@@ -5,7 +5,7 @@
     "fz-9x7.44.8"
   ],
   "created": "2026-11-20T19:54:49Z",
-  "description": "User approved page \"Scalars without addresses\" (https://claude.ai/artifact/6jYdi5cw1d27CZC85xkJih, From: Callables) on 2026-11-20, relayed by Callables. Owner: Callables. S1.4: value_eq_ref, eq_widening_ref, cmp_ref, cmp_raw_const, eq_raw_const, truthy_ref, type_of, ref_tag, inspect, inspect_with, bs_write_field_ref. Covers fz-nml.9 site 1 with S2. Each entry takes and answers #807's stored_value on native and interpreter paths; the interpreter's as_ref_word boxing ends at these calls.",
+  "description": "User approved page \"Scalars without addresses\" (https://claude.ai/artifact/6jYdi5cw1d27CZC85xkJih, From: Callables) on 2026-11-20, relayed by Callables. Owner: Callables. PARAMETERS ONLY (results wait for fz-9x7.44.1).\n\nS1.4, narrowed by the census. value_eq_ref, eq_widening_ref, cmp_ref, type_of, inspect and inspect_with take (word, kind) on the native and interpreter paths. Covers fz-nml.9 site 1 together with S2.\n- Delete, don't convert: fz_ref_tag (no caller anywhere). fz_value_cmp_raw_const has no interpreter caller and no runtime test; decide whether it stays.\n- No change needed: truthy_ref, bs_write_field_ref, value_cmp_raw_const / value_eq_raw_const (the constant side is already a pair).\n- Native prim.rs boxes a scalar only to read its tag (539, 1283, 1636) or to compare it with [] (1264, 1617). Those boxes go with no new signature.\n- receive.rs:1515-1545 refuses StoredValue extern params; guard externs need that case first.\n\nCensus of origin/develop fb9ea0ec5 by Callables, 2026-11-20: /private/tmp/claude-501/-Users-j5n-Workspace-fz/98909c07-a0ca-4f82-8202-cb03fb090a79/scratchpad/census-44.3-7.md.",
   "id": "fz-9x7.44.5",
   "labels": [],
   "parent": "fz-9x7.44",
@@ -19,5 +19,5 @@
   "status": "open",
   "title": "Compare and inspect entries take a stored word and its kind",
   "type": "task",
-  "updated_at": "2026-11-20T20:47:40Z"
+  "updated_at": "2026-11-20T21:32:27Z"
 }
