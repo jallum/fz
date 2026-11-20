@@ -1,0 +1,7 @@
+"expected struct name returned by Point.__struct__/1 to be Point, got: Other"
+"expected struct name returned by Point.__struct__/1 to be Point, got: Other"
+%Point{x: 1, y: 0}
+"expected struct name returned by KeyError.__struct__/1 to be KeyError, got: Other"
+%KeyError{key: :z, term: nil, message: nil}
+%Point{x: 1, y: 0}
+%Point{x: 1, y: 0}

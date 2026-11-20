@@ -529,6 +529,7 @@ clause that cannot match is left to the decision's own `FunctionClauseError`.
 | `div/2`, `rem/2`, `/` and the other arithmetic that fails | `** (ArithmeticError) bad argument in arithmetic expression` |
 | `Map.fetch!/2`, `Map.update!/3`, `Map.replace!/3`, `Keyword.fetch!/2`, `struct!/2` on a struct | `** (KeyError) key <key> not found in:` then the collection |
 | `struct!/2` on a module, naming a key its struct does not declare | `** (KeyError) key <key> not found` |
+| `struct!/2` on a module, given another module as `:__struct__` | `** (ArgumentError) expected struct name returned by <module>.__struct__/1 to be <module>, got: <other>` |
 | `%{map \| k: v}` naming a key `map` lacks | `** (KeyError) key <key> not found`, the first such key in the order written |
 | `Enum.max/1` and the other empty reductions | `** (Enum.EmptyError) empty error` |
 | `Enum.fetch!/2` | `** (Enum.OutOfBoundsError) out of bounds error at position <n> when traversing enumerable <enumerable>` |

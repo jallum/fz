@@ -458,7 +458,8 @@ defmodule Kernel do
 
   @doc """
   Like `struct/2`, and raises `KeyError` for a key the struct does not
-  declare.
+  declare. Given a module, it raises `ArgumentError` when `fields` names
+  another module as `:__struct__`.
 
   ## Examples
 
@@ -468,20 +469,28 @@ defmodule Kernel do
       struct!(Point, z: 3)
       # ** (KeyError) key :z not found
 
+      struct!(Point, __struct__: Other)
+      # ** (ArgumentError) expected struct name returned by Point.__struct__/1 to be Point, got: Other
+
   """
   @spec struct!(any, any) :: any
-  def struct!(module, fields) when is_atom(module) and is_list(fields), do: put_declared_fields!(fields, module.__struct__())
-  def struct!(module, fields) when is_atom(module), do: Enum.reduce(fields, module.__struct__(), &put_declared_field!/2)
+  def struct!(module, fields) when is_atom(module) and is_list(fields),
+    do: put_declared_fields!(fields, module.__struct__(), module, module)
+
+  def struct!(module, fields) when is_atom(module), do: struct!(module, Enum.to_list(fields))
   def struct!(base, fields), do: Enum.reduce(fields, base, &replace_field!/2)
 
-  @spec put_declared_fields!([{any, any}], any) :: any
-  defp put_declared_fields!([], base), do: base
-  defp put_declared_fields!([field | rest], base), do: put_declared_fields!(rest, put_declared_field!(field, base))
+  @spec put_declared_fields!([{any, any}], any, atom, any) :: any
+  defp put_declared_fields!([], base, module, name) when name == module, do: base
 
-  @spec put_declared_field!({any, any}, any) :: any
-  defp put_declared_field!({:__struct__, _}, base), do: base
+  defp put_declared_fields!([], _, module, name),
+    do:
+      raise(%ArgumentError{
+        message: "expected struct name returned by " <> inspect(module) <> ".__struct__/1 to be " <> inspect(module) <> ", got: " <> inspect(name)
+      })
 
-  defp put_declared_field!({key, value}, base), do: %{base | key => value}
+  defp put_declared_fields!([{:__struct__, name} | rest], base, module, _), do: put_declared_fields!(rest, base, module, name)
+  defp put_declared_fields!([{key, value} | rest], base, module, name), do: put_declared_fields!(rest, %{base | key => value}, module, name)
 
   @spec replace_field!({any, any}, any) :: any
   defp replace_field!({:__struct__, _}, base), do: base
