@@ -9,9 +9,15 @@
   "id": "fz-9x7.44.6",
   "labels": [],
   "parent": "fz-9x7.44",
+  "comments": [
+    {
+      "text": "Re-sequenced by the user 2026-11-20 (relayed by Callables; page S1/S2b updated, https://claude.ai/artifact/6jYdi5cw1d27CZC85xkJih): PARAMETERS ONLY. Results stay as they are until fz-9x7.44.1 (after S2), because today's getters return a scalar as a ref into the container's slot with no box (heap/ref_io.rs any_value_ref_from_storage -\u003e from_scalar_slot); a pair result before generated code can hold one would be boxed back. Parameters are safe: #807's stored_parts never boxes.",
+      "timestamp": "2026-11-20T20:47:41Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Message and failure entries take a stored word and its kind",
   "type": "task",
-  "updated_at": "2026-11-20T20:47:40Z"
+  "updated_at": "2026-11-20T20:47:41Z"
 }
