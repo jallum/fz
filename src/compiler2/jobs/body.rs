@@ -4335,6 +4335,34 @@ fn values_overlap(
     values_overlap_inner(body, origins, left, right, None, &mut HashSet::default())
 }
 
+/// The deliverers of `value` when it is a join of several: each a local
+/// value or the call that delivers it.
+fn join_deliverers(
+    origins: &ValueMap<super::super::executable_facts::TransportOrigin>,
+    value: ValueId,
+) -> Option<&[super::super::executable_facts::TransportOrigin]> {
+    match origins.get(&value)? {
+        super::super::executable_facts::TransportOrigin::Join(deliverers) => Some(deliverers),
+        _ => None,
+    }
+}
+
+/// The value a join receives from `deliverer`: the local value, or the result
+/// of the delivering call.
+fn delivered_value(body: &LoweredBody, deliverer: &super::super::executable_facts::TransportOrigin) -> Option<ValueId> {
+    use super::super::executable_facts::TransportOrigin;
+    match deliverer {
+        TransportOrigin::LocalValue(value) => Some(*value),
+        TransportOrigin::CallsiteReturn(callsite) | TransportOrigin::ClosureCallReturn { callsite, .. } => {
+            match body.callsite_tail(*callsite)? {
+                LoweredTail::DirectCall { value, .. } | LoweredTail::ClosureCall { value, .. } => Some(*value),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
 fn values_overlap_inner(
     body: &LoweredBody,
     origins: &ValueMap<super::super::executable_facts::TransportOrigin>,
@@ -4352,6 +4380,18 @@ fn values_overlap_inner(
             || value_is_new_owner_projection(body, origins, right, owner)
     }) {
         return false;
+    }
+    if let Some(deliverers) = join_deliverers(origins, left) {
+        return deliverers.iter().any(|deliverer| {
+            delivered_value(body, deliverer)
+                .is_none_or(|left| values_overlap_inner(body, origins, left, right, exempt, visited))
+        });
+    }
+    if let Some(deliverers) = join_deliverers(origins, right) {
+        return deliverers.iter().any(|deliverer| {
+            delivered_value(body, deliverer)
+                .is_none_or(|right| values_overlap_inner(body, origins, left, right, exempt, visited))
+        });
     }
     let Some(left_path) = origin_source_path(body, origins, &TransportOrigin::LocalValue(left)) else {
         return true;
@@ -4436,6 +4476,15 @@ fn construct_call_ownership(
                         .iter()
                         .any(|capture| values_overlap(body, origins, arg, *capture))
                         || target.physical_captures.iter().any(|capture| {
+                            if let Some(deliverers) = join_deliverers(origins, *capture) {
+                                return deliverers.iter().any(|deliverer| {
+                                    delivered_value(body, deliverer)
+                                        .and_then(|value| {
+                                            origin_source_path(body, origins, &TransportOrigin::LocalValue(value))
+                                        })
+                                        .is_none_or(|source| value_retains_source(body, origins, arg, &source, None))
+                                });
+                            }
                             let Some(source) =
                                 origin_source_path(body, origins, &TransportOrigin::LocalValue(*capture))
                             else {
