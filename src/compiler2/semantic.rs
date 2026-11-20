@@ -1386,6 +1386,10 @@ impl ActivationMap {
         Self::default()
     }
 
+    pub fn retire(&mut self, key: &ActivationKey) {
+        self.slots.remove(key);
+    }
+
     pub fn get(&self, key: &ActivationKey) -> Option<&ActivationSlot> {
         self.slots.get(key)
     }

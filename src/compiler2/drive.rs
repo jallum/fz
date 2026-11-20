@@ -1059,6 +1059,7 @@ impl World {
                 FactUse::Concluded(DependencyKey::Fact(fact)) => Some(fact.clone()),
                 _ => None,
             })
+            .filter(|fact| !self.is_read_of_retired_job(fact))
             .filter_map(|fact| match self.answer_use(job, fact) {
                 AnswerUse::Wait(wait) => Some(fact_dependency(wait)),
                 AnswerUse::Partner(_) | AnswerUse::Concluded(_) => None,
@@ -1066,7 +1067,18 @@ impl World {
             .collect()
     }
 
+    /// A retired job concludes empty and will publish nothing, so a reader
+    /// whose concluded read names its product has nothing to wait for.
+    fn is_read_of_retired_job(&self, fact: &FactKey) -> bool {
+        self.fact_producer(fact)
+            .and_then(|producer| producer.subject_function())
+            .is_some_and(|function| self.is_orphaned(function))
+    }
+
     /// The job that publishes `fact`, when one job does.
+    ///
+    /// A generated function is defined by its owner's lowering, which mints
+    /// the lambda together with its surface; its source is never expanded.
     ///
     /// Facts whose producers publish them only as a co-output of a broader
     /// job's conclusion (`ModuleIndexed`, `StructDefined`, `ProtocolDispatch`,
@@ -1077,7 +1089,10 @@ impl World {
     pub(crate) fn fact_producer(&self, fact: &FactKey) -> Option<Job> {
         match fact {
             FactKey::RootEntry(root) => Some(Job::SeedRoot(*root)),
-            FactKey::FunctionDefined(function) => Some(Job::DefineFunction(*function)),
+            FactKey::FunctionDefined(function) => Some(match self.generated_owner(*function) {
+                Some(owner) => Job::LowerFunction(owner),
+                None => Job::DefineFunction(*function),
+            }),
             FactKey::ModuleDefined(module) => Some(Job::DefineModule(*module)),
             // `StructDefined` publishes as `DefineModule`'s co-output
             // (`source_publish::publish_struct_def`), exactly like
@@ -1109,7 +1124,10 @@ impl World {
             FactKey::ExecutableReach(executable, chain) => Some(Job::DeriveExecutableReach(executable.clone(), *chain)),
             FactKey::InputDemand(function) => Some(Job::DeriveInputDemand(*function)),
             FactKey::EntryDispatch(function) => Some(Job::PlanEntryDispatch(*function)),
-            FactKey::ExpandedFunctionSource(function) => Some(Job::ExpandFunctionSource(*function)),
+            FactKey::ExpandedFunctionSource(function) => match self.generated_owner(*function) {
+                Some(_) => None,
+                None => Some(Job::ExpandFunctionSource(*function)),
+            },
             FactKey::Activation(activation) | FactKey::ActivationInputs(activation) => {
                 self.seed_activation_producer(activation)
             }

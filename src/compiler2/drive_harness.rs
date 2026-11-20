@@ -1161,7 +1161,11 @@ pub(crate) fn record_function_definition(
             .function_source(function_id)
             .and_then(|source| {
                 let source_map = world.source_map();
-                crate::compiler2::quoted_function::derive_function_surface(&source.source, &source_map.borrow()).ok()
+                crate::compiler2::quoted_function::derive_function_surface(
+                    source.declared_root().unwrap(),
+                    &source_map.borrow(),
+                )
+                .ok()
             })
             .map_or(0, |surface| surface.clauses.len() as u64)
     } else {

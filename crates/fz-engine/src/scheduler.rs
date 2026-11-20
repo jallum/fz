@@ -739,6 +739,11 @@ where
         self.deps.has_run(job)
     }
 
+    /// Whether `job` is waiting in the agenda for its turn to run.
+    pub fn is_queued(&self, job: &P::Run) -> bool {
+        self.agenda.contains(job)
+    }
+
     /// Whether `job`'s most recent completion left waits standing.
     pub fn blocked(&self, job: &P::Run) -> bool {
         self.deps.blocked(job)

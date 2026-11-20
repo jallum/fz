@@ -322,6 +322,23 @@ impl JsonlBackend {
             &["fz", "compiler2"],
             "completion",
         );
+        let retirement_backend = Rc::clone(&backend);
+        telemetry.attach_raw_event2::<crate::compiler2::World, crate::compiler2::FunctionRetirement, _>(
+            &["fz", "compiler2", "function", "retired"],
+            move |name, span_id, parent_span_id, world, retirement| {
+                retirement_backend.handle_raw_event(
+                    name,
+                    span_id,
+                    parent_span_id,
+                    crate::metadata! {
+                        world: crate::telemetry::opaque(world),
+                        job: crate::telemetry::opaque(&retirement.job),
+                        function: crate::telemetry::opaque(&retirement.function),
+                        owner: crate::telemetry::opaque(&retirement.owner),
+                    },
+                );
+            },
+        );
         let function_owner_backend = Rc::clone(&backend);
         telemetry.attach_raw_event3::<
             crate::compiler2::World,

@@ -36,10 +36,10 @@ use super::drive::{DependencyKey, emit_job_diagnostic, fact_dependency};
 use super::drive::{ExecutionContext, FactKey, Job, JobEffects, UseCollector, WorkGraph};
 use super::env_projection::CallSite;
 use super::identity::{
-    ActivationKey, DeclaredCallableKind, ExecutableKey, ExecutableNeed, ExpandedFunctionSourceMap, FunctionId,
-    FunctionMap, FunctionRef, FunctionSource, ModuleId, ModuleMap, ModuleSourceKind, ModuleState, NameableModules,
-    NotedTypeDecl, Raisable, Raised, RootEntry, RootId, RootKind, RootMap, SourceDeclarationMap, SourceDeclarations,
-    TypeDeclMap, TypeName, TypeRefMap,
+    ActivationKey, DeclaredCallableKind, ExecutableKey, ExecutableNeed, ExpandedFunctionSourceMap, FunctionBody,
+    FunctionId, FunctionMap, FunctionRef, FunctionSource, ModuleId, ModuleMap, ModuleSourceKind, ModuleState,
+    NameableModules, NotedTypeDecl, Raisable, Raised, RootEntry, RootId, RootKind, RootMap, SourceDeclarationMap,
+    SourceDeclarations, TypeDeclMap, TypeName, TypeRefMap,
 };
 use super::incoming_inputs::{IncomingInputSource, IncomingInputSources, InputSlot};
 use super::keying::{BodyKeying, BodyKeyingMap, InputDemand, InputDemandMap, StaticCalleeMap, StaticReachMap};
@@ -252,6 +252,14 @@ pub struct World {
     pub(crate) work_graph: WorkGraph,
     #[cfg(test)]
     telemetry_query_count: Cell<u64>,
+}
+
+/// A job on an orphaned generated function that concluded empty, and the
+/// owner whose lowering no longer mints that function.
+pub(crate) struct FunctionRetirement {
+    pub(crate) job: Job,
+    pub(crate) function: FunctionId,
+    pub(crate) owner: FunctionId,
 }
 
 pub(crate) struct JobCompletion {
@@ -1662,6 +1670,32 @@ impl World {
         }
     }
 
+    /// The function whose lowering minted `function`, when it is a generated
+    /// lambda; its body names that owner.
+    pub(crate) fn generated_owner(&self, function: FunctionId) -> Option<FunctionId> {
+        self.function_source(function)?.body.generated_owner()
+    }
+
+    /// A generated lambda its owner no longer mints: the owner's lowering has
+    /// concluded without defining it. Every job about it is retired.
+    pub(crate) fn is_orphaned(&self, function: FunctionId) -> bool {
+        let Some(owner) = self.generated_owner(function) else {
+            return false;
+        };
+        let lowering = Job::LowerFunction(owner);
+        !self.has_fact(&FactKey::FunctionDefined(function))
+            && self.work_graph.has_run(&lowering)
+            && !self.work_graph.blocked(&lowering)
+            && !self.work_graph.is_queued(&lowering)
+            && self
+                .work_graph
+                .is_concluded(&super::drive::DependencyKey::Fact(FactKey::LoweredBody(owner)))
+    }
+
+    pub(crate) fn clear_activation(&mut self, key: &ActivationKey) {
+        self.activations.retire(key);
+    }
+
     /// The raw source form a scope walk built for `function`, present from the
     /// moment that walk noted it.
     pub(crate) fn function_source(&self, function: FunctionId) -> Option<&FunctionSource> {
@@ -1696,10 +1730,10 @@ impl World {
                         .iter()
                         .any(|attr| matches!(attr, crate::ast::Attribute::Spec(_)))
             }
-            super::identity::FunctionState::Noted { source } => {
-                let heads = self.noted_source_heads(&source.source);
+            super::identity::FunctionState::Noted { source } => source.declared_root().is_some_and(|root| {
+                let heads = self.noted_source_heads(root);
                 heads.is_extern || heads.declares_spec
-            }
+            }),
             super::identity::FunctionState::Placeholder => false,
         }
     }
@@ -1727,7 +1761,10 @@ impl World {
             }
             return match self.functions.get(function) {
                 super::identity::FunctionState::Noted { source } => {
-                    if self.noted_source_heads(&source.source).is_extern {
+                    if source
+                        .declared_root()
+                        .is_some_and(|root| self.noted_source_heads(root).is_extern)
+                    {
                         BodyShape::Extern
                     } else {
                         BodyShape::Clauses
@@ -3228,7 +3265,7 @@ impl World {
             .find(|(_, awaited)| *awaited == module)?;
         let callee = self.function_ref(callee);
         let source_map = self.source_map();
-        let span = first_clause_span(&self.function_source(caller)?.source, &source_map.borrow())?;
+        let span = first_clause_span(self.function_source(caller)?.declared_root()?, &source_map.borrow())?;
         Some((callee.name().to_string(), callee.arity, span))
     }
 
@@ -4247,7 +4284,7 @@ impl World {
             namespace,
             capture_params,
             variadic: surface.variadic,
-            source: owner_source.source.clone(),
+            body: FunctionBody::Generated { owner },
         };
         let owner_module = self.functions.reference_for(owner).module;
         let id = self
@@ -4415,6 +4452,11 @@ impl World {
 impl<T: Telemetry> ExecutionContext<'_, T> {
     pub(crate) fn emit_world_key<K: Any>(&self, name: &'static [&'static str], key: &K) {
         self.telemetry.raw_event2(name, &*self.world, key);
+    }
+
+    pub(crate) fn emit_function_retired(&self, retirement: &FunctionRetirement) {
+        self.telemetry
+            .raw_event2(&["fz", "compiler2", "function", "retired"], &*self.world, retirement);
     }
 
     fn emit_generated_function_defined(&self, function: &FunctionId, owner: &FunctionId) {

@@ -3,7 +3,7 @@ use std::rc::Rc;
 use super::super::code::SourceOwner;
 use super::super::drive::{FactKey, JobEffects, current_uses, emit_job_diagnostic};
 use super::super::env_projection::CallSite;
-use super::super::identity::{FunctionId, FunctionSource, ModuleId, ModuleSourceKind};
+use super::super::identity::{FunctionBody, FunctionId, FunctionSource, ModuleId, ModuleSourceKind};
 use super::super::namespace::{Namespace, NamespaceSymbol};
 use super::super::quoted_expander::{
     ExpandedRoot, ExpandedValue, ExpansionContext, QuotedExpansionCtx, emit_internal_surface_error,
@@ -322,9 +322,11 @@ pub(super) fn define_function(
         .clone();
 
     let source_map = world.source_map();
-    let surface =
-        crate::compiler2::quoted_function::derive_function_surface(&expanded_source.source, &source_map.borrow())
-            .map_err(|error| emit_surface_read_error(tel, "quoted function decode failed", &error))?;
+    let surface = crate::compiler2::quoted_function::derive_function_surface(
+        expanded_source.declared_root().expect("an expanded source is declared"),
+        &source_map.borrow(),
+    )
+    .map_err(|error| emit_surface_read_error(tel, "quoted function decode failed", &error))?;
     source_publish::record_function_type_refs(world, tel, function_id, &surface)?;
     let changed = super::super::drive::ExecutionContext::new(world, tel).define_function(
         function_id,
@@ -554,9 +556,9 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> FunctionSourceExpander<'world
         // namespace as a splice. The expander resolves it where the body names
         // __ENV__; it is transient — it is never recorded on the function.
         let def_scope = ScopeSnapshot::function(self.current_module, self.namespace, self.function);
-        let builder = source.source.builder();
-        let definition_span = source
-            .source
+        let root = source.declared_root().expect("only declared functions are expanded");
+        let builder = root.builder();
+        let definition_span = root
             .cursor()
             .ast_node(&self.world.source_map().borrow())
             .map_err(|error| {
@@ -570,18 +572,16 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> FunctionSourceExpander<'world
             .map_err(|error| {
                 emit_internal_surface_error(self.telemetry, format!("__ENV__ projection failed: {error}"))
             })?;
-        let env = source.source.subroot(env);
+        let env = root.subroot(env);
         let namespace = self
             .world
             .bind_namespace(self.namespace, "__ENV__", NamespaceSymbol::Splice(env));
-        let module = source
-            .source
-            .subroot(self.world.module_atom_value(&builder, self.current_module));
+        let module = root.subroot(self.world.module_atom_value(&builder, self.current_module));
         let namespace = self
             .world
             .bind_namespace(namespace, "__MODULE__", NamespaceSymbol::Splice(module));
         let scope = ScopeSnapshot::function(self.current_module, namespace, self.function);
-        let expanded = match self.expand_function_root(source.source.clone(), scope, 0)? {
+        let expanded = match self.expand_function_root(root.clone(), scope, 0)? {
             ExpandedRoot::Complete(expanded) => expanded,
             ExpandedRoot::Blocked(effects) => {
                 return Ok(FunctionSourceExpansion::Blocked(Box::new(
@@ -590,7 +590,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> FunctionSourceExpander<'world
             }
         };
         let mut source = source.clone();
-        source.source = expanded;
+        source.body = FunctionBody::Declared(expanded);
         Ok(FunctionSourceExpansion::Complete {
             source,
             reads: self.reads,

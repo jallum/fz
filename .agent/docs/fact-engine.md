@@ -736,6 +736,9 @@ run read an answer at `Concluded` that is being derived again would find it
 missing and wait for it (`World::answer_use`), so it waits for that answer
 without running (`Scheduler::wait_without_running`) and is woken by it like any
 other waiter. After an edit this lets callees answer before their callers walk.
+An answer whose producer is retired (a job on a lambda its owner no longer
+mints; `World::is_orphaned`, see macro-expansion.md) will never be published
+again, so it does not hold a reader back: the reader runs and finds it gone.
 
 This is the shape of `ExecutionContext::drive_until`, simplified; the real loop
 can exit early on a caller-supplied deadline (`DriveOutcome::TimedOut`) or an

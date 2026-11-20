@@ -20,7 +20,8 @@ use super::code::SourceOwner;
 use super::definition_time::{self, Evaluated};
 use super::drive::{DerivationKey, FactKey, JobDerivation, JobEffects, current_uses, emit_job_diagnostic};
 use super::identity::{
-    DeclaredCallableKind, FunctionId, FunctionSource, ModuleId, NotedTypeDecl, ProtocolImplSource, TypeName,
+    DeclaredCallableKind, FunctionBody, FunctionId, FunctionSource, ModuleId, NotedTypeDecl, ProtocolImplSource,
+    TypeName,
 };
 use super::module_interface::{InterfaceCallableKind, InterfaceRequester, ModuleInterface, ModuleInterfaceCallable};
 use super::namespace::{Namespace, NamespaceSymbol};
@@ -649,7 +650,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
         };
         let source = self.world.function_source(*function)?;
         let source_map = self.world.source_map();
-        first_clause_span(&source.source, &source_map.borrow())
+        first_clause_span(source.declared_root()?, &source_map.borrow())
     }
 
     fn publish_module_info(&mut self) -> Result<Option<JobEffects>, FatalError> {
@@ -2399,7 +2400,7 @@ fn publish_function_source(
         namespace,
         capture_params: Vec::new(),
         variadic: function.variadic,
-        source: function.source.clone(),
+        body: FunctionBody::Declared(function.source.clone()),
     };
     let source_changed =
         super::drive::ExecutionContext::new(world, tel).note_function_source(function_id, source.clone());
