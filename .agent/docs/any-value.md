@@ -668,10 +668,10 @@ floats hash under different tags, a float by its bits; a bitstring by bit
 length and content, whether inline or a view, with the bits
 past its length left out; a tuple by arity and fields; a map as a sum over its
 entries, so a flat map, a trie and a named struct spelling the same entries
-hash alike; a pid, ref or resource by its word. An atom hashes by its name's
-hash, which `AtomTable` keeps when it interns the atom, and a closure by the
-hash of its source denotation, which the `Node` keeps when it registers the
-denotation. Neither depends on an id, so trie order is the same under the
+hash alike; a pid, ref or resource by its word. An atom hashes by its key
+hash (`atom_key_hash`, a hash of its name), which `AtomTable` keeps when it
+interns the atom, and a closure by the hash of its source denotation, which the
+`Node` keeps when it registers the denotation. Neither depends on an id, so trie order is the same under the
 interpreter, `run` and `build`. A hash walks a tree of containers, so after 256
 containers it remembers each container's hash by address and a shared
 substructure costs one lookup.
@@ -694,6 +694,16 @@ told apart by equality. `total` counts the entries at and beneath a node, so
 the root answers `map_size` in constant time and bounds a map at 2^25 entries.
 The collector traces a node's own entries and its children from the header, and
 deep copy and gift copy each node once per path that reaches it.
+
+The child map lies right above the data map and the bits below the data map
+are clear, so where an entry or a child sits is one left shift of the header
+and a popcount: shifted by `60 - slot`, the header keeps the data bits below the
+slot; by `44 - slot`, the child bits below the slot and every data bit, which is
+the child word's distance from the first value. Compiled code walks a trie this
+way (`WordKeyFind`, in `docs/pattern-matching.md`), and reads an atom's key hash
+through `Process::atom_key_hashes`: the address of the table's word that holds
+where the key hashes begin, which the table updates as it grows and which
+stays where it is while the node lives.
 
 `Heap::map_layout` answers `MapLayout::Trie` for a root. A map of more than 32
 entries is always a trie and a map of 32 or fewer is always a flat array:

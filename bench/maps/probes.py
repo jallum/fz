@@ -123,7 +123,7 @@ def build(args):
         f"static const int PICKS[6] = {{{', '.join(map(str, PICKS))}}};\n")
     floor = os.path.join(here, "floor")
     run(["cc", "-O2", "-Wall", "-Werror", f"-I{out}", "-o", os.path.join(out, "floor"),
-         os.path.join(floor, "harness.c"), os.path.join(floor, "flat.s")])
+         os.path.join(floor, "harness.c"), os.path.join(floor, "flat.s"), os.path.join(floor, "trie.s")])
     print(run([os.path.join(out, "floor"), "test"]).stdout.strip(), "(floor agrees with its reference)")
 
 
@@ -159,10 +159,12 @@ def measure(args):
             row.append(slope(erl, want, beam_n, dict(os.environ, MAP_MODULE="maps")))
         else:
             row.append("-")
+        floor = lambda n: [os.path.join(out, "floor"), f"{op}_{kind}", str(n), str(k)]
         if k <= FLAT_MAX:
-            floor = lambda n: [os.path.join(out, "floor"), f"{op}_{kind}", str(n), str(k)]
             row.append(slope(floor, want, 1_000_000))
             row.append(slope(floor, want, 1_000_000, dict(os.environ, ORDERED="1")) if kind == "a" else "-")
+        elif kind == "a" and op in ("get", "case"):
+            row += [slope(floor, want, 1_000_000), "-"]
         else:
             row += ["-", "-"]
         print(f"{label:<16}" + "".join(f"{value:>10}" for value in row), flush=True)

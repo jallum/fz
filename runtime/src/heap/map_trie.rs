@@ -26,9 +26,9 @@
 use super::Heap;
 use crate::alloc_site::RuntimeAllocSite;
 use crate::any_value::{
-    AnyValue, MAP_FLAT_MAX, ValueKind, heap_object_word, map_collision_header_word, map_count, map_entries,
-    map_header_is_collision, map_node_child, map_node_entry_count, map_node_size, map_slot, map_trie_bitmaps,
-    map_trie_header_word,
+    AnyValue, MAP_FLAT_MAX, MAP_TRIE_SLOT_BITS, ValueKind, heap_object_word, map_collision_header_word, map_count,
+    map_entries, map_header_is_collision, map_node_child, map_node_entry_count, map_node_size, map_slot,
+    map_trie_bitmaps, map_trie_header_word,
 };
 use crate::term::TermComparator;
 use crate::term_hash::TermHasher;
@@ -152,11 +152,11 @@ unsafe fn collision_entries(node: *const u8) -> Vec<Entry> {
 }
 
 /// Levels of the trie: the 64 bits of a hash, four to a level.
-const LEVELS: u32 = 16;
+const LEVELS: u32 = u64::BITS / MAP_TRIE_SLOT_BITS;
 
 /// Which of a node's sixteen slots a hash takes at `level`.
 fn slot_at(hash: u64, level: u32) -> u16 {
-    ((hash >> (60 - 4 * level)) & 15) as u16
+    ((hash >> (u64::BITS - MAP_TRIE_SLOT_BITS * (level + 1))) & ((1 << MAP_TRIE_SLOT_BITS) - 1)) as u16
 }
 
 /// Where in the node's entries or children the slot `bit` of `bitmap` falls.

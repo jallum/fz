@@ -10,8 +10,11 @@ use cranelift_jit::{ArenaMemoryProvider, JITBuilder};
 use cranelift_module::{FuncId, Module, ModuleError};
 use cranelift_native::builder;
 use fz_runtime::any_value::{
-    AnyValueRefPacking, MAP_FLAT_COUNT_SHIFT, MAP_KIND_BYTES_OFFSET, MAP_NOT_FLAT_MASK, ValueKind,
+    AnyValueRefPacking, MAP_CHILD_MAP_SHIFT, MAP_COLLISION_FLAG, MAP_DATA_MAP_SHIFT, MAP_FLAT_COUNT_SHIFT,
+    MAP_KIND_BYTES_OFFSET, MAP_NOT_FLAT_MASK, MAP_TRIE_FLAG, MAP_TRIE_SLOT_BITS, ValueKind,
 };
+use fz_runtime::process_abi::PROCESS_ATOM_KEY_HASHES_OFFSET;
+use fz_runtime::term_hash::{FINALIZE_MULTIPLIERS, FINALIZE_SHIFT, SALT_INT};
 use std::sync::Arc;
 
 /// Where compiled code runs, which decides how it reaches the functions it
@@ -164,39 +167,45 @@ pub(crate) fn payload_field(b: &mut FunctionBuilder<'_>, ref_word: ir::Value) ->
         .band_imm_u(ref_word, AnyValueRefPacking::current().payload_mask() as i64)
 }
 
-/// A map key test whose key is one word of a kind known when compiling. The
-/// flat map is searched where the test stands; a slow block is entered for a map in
-/// any other layout and is the caller's to fill with the runtime's lookup, in as
-/// many blocks as the lookup needs, and to close with `finish`.
-pub(crate) struct FlatMapScan {
+/// A map key test whose key is one word of a kind known when compiling, made
+/// where the test stands: a flat map is scanned for the key's word and a trie
+/// is walked by the key's hash. A slow block is entered for a value that is
+/// not a published map and for a walk that reaches a collision node. It is the
+/// caller's to fill with the runtime's lookup, in as many blocks as the lookup
+/// needs, and to close with `finish`.
+pub(crate) struct WordKeyFind {
     done: ir::Block,
     found: ir::Value,
 }
 
-impl FlatMapScan {
-    /// Search the flat map `map_ref` names for the key `key_word` of
-    /// `key_kind`. The builder is left in the slow block.
+/// Where a key was found: the node's keys and its entry count, the entry's
+/// index, and its kind byte. The value sits `count` words past the key.
+const HIT_PARAMS: usize = 4;
+
+impl WordKeyFind {
+    /// Find the key `key_word` of `key_kind` in the map `map_ref` names. The
+    /// builder is left in the slow block.
     pub(crate) fn emit(
         b: &mut FunctionBuilder<'_>,
+        process: ir::Value,
         map_ref: ir::Value,
         key_word: ir::Value,
         key_kind: ValueKind,
     ) -> Self {
         let flags = MemFlagsData::trusted();
-        let [
-            header_blk,
-            scan_blk,
-            head_blk,
-            body_blk,
-            kind_blk,
-            next_blk,
-            hit_blk,
-            miss_blk,
-        ] = std::array::from_fn(|_| b.create_block());
+        let [header_blk, scan_blk, trie_blk, hit, miss] = std::array::from_fn(|_| b.create_block());
         let slow = b.create_block();
         let done = b.create_block();
         let found = b.append_block_param(done, types::I64);
-        let index = b.append_block_param(head_blk, types::I64);
+        for _ in 0..HIT_PARAMS {
+            b.append_block_param(hit, types::I64);
+        }
+        let key = SearchedKey {
+            word: key_word,
+            kind: key_kind,
+            hit,
+            miss,
+        };
 
         let kind = kind_field(b, map_ref);
         let is_map = b.ins().icmp_imm_s(IntCC::Equal, kind, ValueKind::MAP.tag() as i64);
@@ -207,56 +216,30 @@ impl FlatMapScan {
         let map = address_field(b, map_ref);
         let header = b.ins().load(types::I64, flags, map, 0);
         let not_flat = b.ins().band_imm_u(header, MAP_NOT_FLAT_MASK as i64);
-        b.ins().brif(not_flat, slow, &[], scan_blk, &[]);
+        b.ins().brif(not_flat, trie_blk, &[], scan_blk, &[]);
 
         b.switch_to_block(scan_blk);
         b.seal_block(scan_blk);
-        let count = b.ins().ushr_imm_u(header, MAP_FLAT_COUNT_SHIFT);
-        let kinds = b.ins().iadd_imm_s(map, MAP_KIND_BYTES_OFFSET);
-        let rounded = b.ins().iadd_imm_s(count, 7);
-        let kind_bytes = b.ins().band_imm_s(rounded, -8);
-        let keys = b.ins().iadd(kinds, kind_bytes);
-        let zero = b.ins().iconst(types::I64, 0);
-        b.ins().jump(head_blk, &[BlockArg::Value(zero)]);
+        key.scan_flat(b, map, header);
 
-        b.switch_to_block(head_blk);
-        let in_map = b.ins().icmp(IntCC::UnsignedLessThan, index, count);
-        b.ins().brif(in_map, body_blk, &[], miss_blk, &[]);
+        b.switch_to_block(trie_blk);
+        b.seal_block(trie_blk);
+        key.walk_trie(b, process, map, header, slow);
 
-        b.switch_to_block(body_blk);
-        b.seal_block(body_blk);
-        let offset = b.ins().ishl_imm_u(index, 3);
-        let key_slot = b.ins().iadd(keys, offset);
-        let stored = b.ins().load(types::I64, flags, key_slot, 0);
-        let same_word = b.ins().icmp(IntCC::Equal, stored, key_word);
-        b.ins().brif(same_word, kind_blk, &[], next_blk, &[]);
-
-        b.switch_to_block(kind_blk);
-        b.seal_block(kind_blk);
-        let kind_slot = b.ins().iadd(kinds, index);
-        let kind_byte = b.ins().uload8(types::I64, flags, kind_slot, 0);
-        let stored_kind = b.ins().ushr_imm_u(kind_byte, 4);
-        let same_kind = b.ins().icmp_imm_s(IntCC::Equal, stored_kind, key_kind.tag() as i64);
-        b.ins().brif(same_kind, hit_blk, &[], next_blk, &[]);
-
-        b.switch_to_block(next_blk);
-        b.seal_block(next_blk);
-        let following = b.ins().iadd_imm_s(index, 1);
-        b.ins().jump(head_blk, &[BlockArg::Value(following)]);
-        b.seal_block(head_blk);
-
-        b.switch_to_block(hit_blk);
-        b.seal_block(hit_blk);
-        let key_bytes = b.ins().ishl_imm_u(count, 3);
-        let values = b.ins().iadd(keys, key_bytes);
-        let found_at = b.ins().iadd(values, offset);
+        b.switch_to_block(hit);
+        b.seal_block(hit);
+        let &[keys, count, index, kind_byte] = b.block_params(hit) else {
+            unreachable!("a hit has {HIT_PARAMS} params")
+        };
+        let values = word_at(b, keys, count);
+        let found_at = word_at(b, values, index);
         let value_word = b.ins().load(types::I64, flags, found_at, 0);
         let value_kind = b.ins().band_imm_u(kind_byte, 0xF);
         let value_ref = stored_ref_word(b, found_at, value_word, value_kind);
         b.ins().jump(done, &[BlockArg::Value(value_ref)]);
 
-        b.switch_to_block(miss_blk);
-        b.seal_block(miss_blk);
+        b.switch_to_block(miss);
+        b.seal_block(miss);
         let packing = AnyValueRefPacking::current();
         let null = b.ins().iconst(
             types::I64,
@@ -277,6 +260,202 @@ impl FlatMapScan {
         b.seal_block(self.done);
         self.found
     }
+}
+
+/// The one-word key a `WordKeyFind` searches for, and the blocks a search
+/// ends in.
+struct SearchedKey {
+    word: ir::Value,
+    kind: ValueKind,
+    hit: ir::Block,
+    miss: ir::Block,
+}
+
+impl SearchedKey {
+    /// Scan the flat map at `map`, whose first word is `header`, entry by
+    /// entry for the key's word, then its kind.
+    fn scan_flat(&self, b: &mut FunctionBuilder<'_>, map: ir::Value, header: ir::Value) {
+        let flags = MemFlagsData::trusted();
+        let [head_blk, body_blk, kind_blk, next_blk] = std::array::from_fn(|_| b.create_block());
+        let index = b.append_block_param(head_blk, types::I64);
+        let count = b.ins().ushr_imm_u(header, MAP_FLAT_COUNT_SHIFT);
+        let (kinds, keys) = entry_columns(b, map, count);
+        let zero = b.ins().iconst(types::I64, 0);
+        b.ins().jump(head_blk, &[BlockArg::Value(zero)]);
+
+        b.switch_to_block(head_blk);
+        let in_map = b.ins().icmp(IntCC::UnsignedLessThan, index, count);
+        b.ins().brif(in_map, body_blk, &[], self.miss, &[]);
+
+        b.switch_to_block(body_blk);
+        b.seal_block(body_blk);
+        let key_slot = word_at(b, keys, index);
+        let stored = b.ins().load(types::I64, flags, key_slot, 0);
+        let same_word = b.ins().icmp(IntCC::Equal, stored, self.word);
+        b.ins().brif(same_word, kind_blk, &[], next_blk, &[]);
+
+        b.switch_to_block(kind_blk);
+        b.seal_block(kind_blk);
+        self.branch_on_kind(b, kinds, keys, count, index, next_blk);
+
+        b.switch_to_block(next_blk);
+        b.seal_block(next_blk);
+        let following = b.ins().iadd_imm_s(index, 1);
+        b.ins().jump(head_blk, &[BlockArg::Value(following)]);
+        b.seal_block(head_blk);
+    }
+
+    /// Walk the trie whose root is at `map`, its first word `header`, by the
+    /// key's hash, four bits a level, the top bits first. Slot `s` of a node
+    /// holds an entry when bit `s` of its data map is set and a child when bit
+    /// `s` of its child map is; entries and children are stored in the order
+    /// of their bits, so where one sits is the count of set bits below it.
+    fn walk_trie(
+        &self,
+        b: &mut FunctionBuilder<'_>,
+        process: ir::Value,
+        map: ir::Value,
+        header: ir::Value,
+        slow: ir::Block,
+    ) {
+        let flags = MemFlagsData::trusted();
+        let [hash_blk, walk_blk, entry_blk, kind_blk, child_test_blk, child_blk] =
+            std::array::from_fn(|_| b.create_block());
+        let shape = b
+            .ins()
+            .band_imm_u(header, (MAP_NOT_FLAT_MASK | MAP_COLLISION_FLAG) as i64);
+        let is_trie_node = b.ins().icmp_imm_u(IntCC::Equal, shape, MAP_TRIE_FLAG as i64);
+        b.ins().brif(is_trie_node, hash_blk, &[], slow, &[]);
+
+        b.switch_to_block(hash_blk);
+        b.seal_block(hash_blk);
+        let hash = self.hash(b, process);
+        let [node, node_header, rest] = [(); 3].map(|_| b.append_block_param(walk_blk, types::I64));
+        b.ins().jump(walk_blk, &[map, header, hash].map(BlockArg::Value));
+
+        b.switch_to_block(walk_blk);
+        let slot = b.ins().ushr_imm_u(rest, (u64::BITS - MAP_TRIE_SLOT_BITS) as i64);
+        let below = b.ins().ishl_imm_u(rest, MAP_TRIE_SLOT_BITS as i64);
+        let data_map_on_top = b
+            .ins()
+            .ishl_imm_u(node_header, (u64::BITS - MAP_CHILD_MAP_SHIFT) as i64);
+        let entries = b.ins().popcnt(data_map_on_top);
+        let (kinds, keys) = entry_columns(b, node, entries);
+        let data_bit_at = b.ins().iadd_imm_s(slot, MAP_DATA_MAP_SHIFT as i64);
+        let has_entry = header_bit(b, node_header, data_bit_at);
+        b.ins().brif(has_entry, entry_blk, &[], child_test_blk, &[]);
+
+        b.switch_to_block(entry_blk);
+        b.seal_block(entry_blk);
+        let index = set_bits_below(b, node_header, data_bit_at);
+        let key_slot = word_at(b, keys, index);
+        let stored = b.ins().load(types::I64, flags, key_slot, 0);
+        let same_word = b.ins().icmp(IntCC::Equal, stored, self.word);
+        b.ins().brif(same_word, kind_blk, &[], self.miss, &[]);
+
+        b.switch_to_block(kind_blk);
+        b.seal_block(kind_blk);
+        self.branch_on_kind(b, kinds, keys, entries, index, self.miss);
+
+        b.switch_to_block(child_test_blk);
+        b.seal_block(child_test_blk);
+        let child_bit_at = b.ins().iadd_imm_s(slot, MAP_CHILD_MAP_SHIFT as i64);
+        let has_child = header_bit(b, node_header, child_bit_at);
+        b.ins().brif(has_child, child_blk, &[], self.miss, &[]);
+
+        b.switch_to_block(child_blk);
+        b.seal_block(child_blk);
+        // The count below the child bit takes in every data bit too: the
+        // child's index plus the node's entries, its distance from the values.
+        let past_values = set_bits_below(b, node_header, child_bit_at);
+        let values = word_at(b, keys, entries);
+        let child_word = word_at(b, values, past_values);
+        let child = b.ins().load(types::I64, flags, child_word, 0);
+        let child_header = b.ins().load(types::I64, flags, child, 0);
+        let collision = b.ins().band_imm_u(child_header, MAP_COLLISION_FLAG as i64);
+        b.ins().brif(
+            collision,
+            slow,
+            &[],
+            walk_blk,
+            &[child, child_header, below].map(BlockArg::Value),
+        );
+        b.seal_block(walk_blk);
+    }
+
+    /// Compare the kind of entry `index` with the key's, going on to the hit
+    /// or to `otherwise`.
+    fn branch_on_kind(
+        &self,
+        b: &mut FunctionBuilder<'_>,
+        kinds: ir::Value,
+        keys: ir::Value,
+        count: ir::Value,
+        index: ir::Value,
+        otherwise: ir::Block,
+    ) {
+        let kind_slot = b.ins().iadd(kinds, index);
+        let kind_byte = b.ins().uload8(types::I64, MemFlagsData::trusted(), kind_slot, 0);
+        let stored_kind = b.ins().ushr_imm_u(kind_byte, 4);
+        let same_kind = b.ins().icmp_imm_s(IntCC::Equal, stored_kind, self.kind.tag() as i64);
+        let at = [keys, count, index, kind_byte].map(BlockArg::Value);
+        b.ins().brif(same_kind, self.hit, &at, otherwise, &[]);
+    }
+
+    /// The key's hash, as the runtime's `TermHasher` gives it: an atom's is
+    /// read from the key hashes its table keeps, an integer's is its word
+    /// mixed by the finalizer.
+    fn hash(&self, b: &mut FunctionBuilder<'_>, process: ir::Value) -> ir::Value {
+        let flags = MemFlagsData::trusted();
+        match self.kind {
+            ValueKind::ATOM => {
+                let at = b.ins().load(types::I64, flags, process, PROCESS_ATOM_KEY_HASHES_OFFSET);
+                let hashes = b.ins().load(types::I64, flags, at, 0);
+                let slot = word_at(b, hashes, self.word);
+                b.ins().load(types::I64, flags, slot, 0)
+            }
+            ValueKind::INT => {
+                let mut x = b.ins().bxor_imm_u(self.word, SALT_INT as i64);
+                for multiplier in FINALIZE_MULTIPLIERS {
+                    let high = b.ins().ushr_imm_u(x, FINALIZE_SHIFT as i64);
+                    let mixed = b.ins().bxor(x, high);
+                    x = b.ins().imul_imm_u(mixed, multiplier as i64);
+                }
+                let high = b.ins().ushr_imm_u(x, FINALIZE_SHIFT as i64);
+                b.ins().bxor(x, high)
+            }
+            kind => unreachable!("a one-word key is an atom or an integer, not {kind:?}"),
+        }
+    }
+}
+
+/// Where a map node's kind bytes and key words begin, given its entry count.
+fn entry_columns(b: &mut FunctionBuilder<'_>, node: ir::Value, count: ir::Value) -> (ir::Value, ir::Value) {
+    let kinds = b.ins().iadd_imm_s(node, MAP_KIND_BYTES_OFFSET);
+    let rounded = b.ins().iadd_imm_s(count, 7);
+    let kind_bytes = b.ins().band_imm_s(rounded, -8);
+    (kinds, b.ins().iadd(kinds, kind_bytes))
+}
+
+/// The address `index` words past `base`.
+fn word_at(b: &mut FunctionBuilder<'_>, base: ir::Value, index: ir::Value) -> ir::Value {
+    let bytes = b.ins().ishl_imm_u(index, 3);
+    b.ins().iadd(base, bytes)
+}
+
+/// Bit `at` of a trie node's header.
+fn header_bit(b: &mut FunctionBuilder<'_>, header: ir::Value, at: ir::Value) -> ir::Value {
+    let shifted = b.ins().ushr(header, at);
+    b.ins().band_imm_u(shifted, 1)
+}
+
+/// The set bits of a trie node's header below bit `at`, down to the data map:
+/// a left shift by `64 - at` drops bit `at` and every bit above it, and the
+/// bits below the data map are clear. A shift amount is taken modulo 64.
+fn set_bits_below(b: &mut FunctionBuilder<'_>, header: ir::Value, at: ir::Value) -> ir::Value {
+    let amount = b.ins().ineg(at);
+    let below = b.ins().ishl(header, amount);
+    b.ins().popcnt(below)
 }
 
 /// The ref word of the value stored at `slot` as `word` with kind `kind`: an

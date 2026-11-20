@@ -32,6 +32,9 @@ pub const PROCESS_BINARIES_SHARED_OFFSET: i32 =
 pub const PROCESS_HANDLER_TOP_OFFSET: i32 = (offset_of!(Process, handlers) + HANDLER_STACK_TOP_OFFSET) as i32;
 pub const PROCESS_HANDLER_END_OFFSET: i32 = (offset_of!(Process, handlers) + HANDLER_STACK_END_OFFSET) as i32;
 
+/// `Process::atom_key_hashes`: the address of the word that holds where the
+/// atom key hashes begin, one word per atom id.
+pub const PROCESS_ATOM_KEY_HASHES_OFFSET: i32 = offset_of!(Process, atom_key_hashes) as i32;
 #[cfg(test)]
 #[path = "process_abi_test.rs"]
 mod process_abi_test;

@@ -329,11 +329,21 @@ fn an_atom_hashes_by_its_name_whatever_order_atoms_were_interned_in() {
 }
 
 #[test]
-fn the_atom_table_keeps_each_names_hash_from_the_moment_it_is_interned() {
+fn the_atom_table_keeps_each_atoms_key_hash_from_the_moment_it_is_interned() {
     let node = Node::new(vec!["seeded".into()]);
     let later = node.intern_atom("later");
-    assert_eq!(node.atom_name_hash(0), name_hash("seeded"));
-    assert_eq!(node.atom_name_hash(later), name_hash("later"));
+    assert_eq!(node.atom_key_hash(0), atom_key_hash("seeded"));
+    assert_eq!(node.atom_key_hash(later), atom_key_hash("later"));
+}
+
+#[test]
+fn an_atom_hashes_as_the_key_hash_its_table_keeps() {
+    let node = Node::new(vec!["seeded".into()]);
+    let later = node.intern_atom("later");
+    let schemas = SchemaRegistry::new();
+    let hasher = TermHasher::new(&node, &schemas);
+    assert_eq!(hasher.hash(AnyValue::atom(0)), atom_key_hash("seeded"));
+    assert_eq!(hasher.hash(AnyValue::atom(later)), atom_key_hash("later"));
 }
 
 #[test]

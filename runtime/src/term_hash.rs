@@ -41,7 +41,10 @@ use std::slice::from_raw_parts;
 /// Containers one hash may walk before it starts remembering them.
 const SHARED_WALK_BUDGET: u32 = 256;
 
-const SALT_INT: u64 = 0x9e37_79b9_7f4a_7c15;
+/// What an integer's word is mixed with before `finalize`. Compiled code that
+/// walks a map's trie hashes an integer key itself, with this and
+/// `FINALIZE_SHIFT` and `FINALIZE_MULTIPLIERS`.
+pub const SALT_INT: u64 = 0x9e37_79b9_7f4a_7c15;
 const SALT_ATOM: u64 = 0xc2b2_ae3d_27d4_eb4f;
 const SALT_FLOAT: u64 = 0x1656_67b1_9e37_79f9;
 const SALT_WORD: u64 = 0x2545_f491_4f6c_dd1d;
@@ -53,14 +56,18 @@ const SALT_RESOURCE: u64 = 0x7e57_0000_0000_0001;
 const MULTIPLIER_A: u64 = 0x87c3_7b91_1142_53d5;
 const MULTIPLIER_B: u64 = 0x4cf5_ad43_2745_937f;
 
+/// The shift and the two multipliers of `finalize`.
+pub const FINALIZE_SHIFT: u32 = 33;
+pub const FINALIZE_MULTIPLIERS: [u64; 2] = [0xff51_afd7_ed55_8ccd, 0xc4ce_b9fe_1a85_ec53];
+
 /// MurmurHash3's 64-bit finalizer: a bijection with full avalanche.
 #[inline(always)]
 fn finalize(mut x: u64) -> u64 {
-    x ^= x >> 33;
-    x = x.wrapping_mul(0xff51_afd7_ed55_8ccd);
-    x ^= x >> 33;
-    x = x.wrapping_mul(0xc4ce_b9fe_1a85_ec53);
-    x ^ (x >> 33)
+    for multiplier in FINALIZE_MULTIPLIERS {
+        x ^= x >> FINALIZE_SHIFT;
+        x = x.wrapping_mul(multiplier);
+    }
+    x ^ (x >> FINALIZE_SHIFT)
 }
 
 /// Fold `next` into the running hash, so the order of the parts matters.
@@ -98,6 +105,12 @@ pub fn name_hash(name: &str) -> u64 {
     bytes_hash(name.as_bytes(), SALT_ATOM)
 }
 
+/// The hash of the atom named `name`, the one that places it in a map's trie.
+/// The atom table keeps it for every atom, so hashing an atom reads one word.
+pub fn atom_key_hash(name: &str) -> u64 {
+    finalize(name_hash(name) ^ SALT_ATOM)
+}
+
 /// One hash walk: the budget it has spent and, once it is spent, the
 /// containers it has already hashed.
 #[derive(Default)]
@@ -130,7 +143,7 @@ impl<'a> TermHasher<'a> {
     fn hash_in(&self, value: AnyValue, walk: &Walk) -> u64 {
         match value {
             AnyValue::Int(i) => finalize(i as u64 ^ SALT_INT),
-            AnyValue::Atom(id) => finalize(self.node.atom_name_hash(id) ^ SALT_ATOM),
+            AnyValue::Atom(id) => self.node.atom_key_hash(id),
             AnyValue::Float(bits) => finalize(bits ^ SALT_FLOAT),
             AnyValue::Opaque(kind, word) => finalize(word ^ u64::from(kind.tag()).wrapping_mul(SALT_INT)),
             AnyValue::EmptyList => self.hash_list(std::ptr::null(), walk),

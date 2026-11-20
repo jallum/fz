@@ -1,0 +1,6 @@
+[{:found, 0}, {:found, 299}, {:found, 599}, :absent]
+[{:found, 0}, {:found, -300}, {:found, 299}, :absent]
+[{:found, :int}, {:found, :int}, :absent]
+[{:found, :atom}, {:found, :atom}, :absent]
+{{:blue, 0}, :no_blue, {:blue, 1}}
+{{:received, 39}, {:other, 41}, {:received, 1}}

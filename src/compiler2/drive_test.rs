@@ -8643,6 +8643,42 @@ fn lowered_clif_of(source: &str, function: &str) -> String {
     text.clone()
 }
 
+/// A map pattern whose key is an atom or an integer finds it in a map past the
+/// flat limit where the test stands. The key is hashed in place, an atom by
+/// reading the key hash its table keeps through the process, an integer by
+/// the runtime's finalizer, and the trie is walked with a popcount at each
+/// node. The runtime's lookup is left for a value that is not a published map
+/// and for a walk that reaches a collision node.
+#[test]
+fn compiler2_native_map_pattern_walks_a_trie_where_the_test_stands() {
+    let program = |key: &str| {
+        format!(
+            "defmodule P do\n  def at(m, k) do\n    case m do\n      %{{^k => v}} -> v\n      _ -> 0\n    end\n  end\nend\n\
+             IO.inspect(P.at(%{{{key} => 1}}, {key}))\n"
+        )
+    };
+    let reads_atom_key_hash = format!("+{}\n", fz_runtime::process_abi::PROCESS_ATOM_KEY_HASHES_OFFSET);
+    let finalizes = format!(" = {}\n", fz_runtime::term_hash::FINALIZE_MULTIPLIERS[0] as i64);
+    for (key, hashes) in [(":k", &reads_atom_key_hash), ("7", &finalizes)] {
+        let clif = lowered_clif_of(&program(key), "at");
+        let hashed = clif.contains(hashes.as_str());
+        assert!(hashed, "the key {key} is hashed where the test stands:\n{clif}");
+        assert!(
+            clif.matches(" = popcnt ").count() >= 3,
+            "the walk counts with popcnt:\n{clif}"
+        );
+        let lookup = clif
+            .lines()
+            .find_map(|line| line.strip_prefix("; ")?.strip_suffix(" = fz_matcher_map_get_ref"))
+            .unwrap_or_else(|| panic!("the runtime's lookup is imported:\n{clif}"));
+        assert_eq!(
+            clif.matches(&format!(" = call {lookup}(")).count(),
+            1,
+            "the runtime's lookup is one call:\n{clif}"
+        );
+    }
+}
+
 /// A share is written where it stands, from what the value's type says. In
 /// each program below `retained` passes its argument to `keep` and still
 /// holds it, so the argument is shared before the call. Sharing a binary

@@ -1,0 +1,56 @@
+#---
+# purpose: A map pattern finds an atom key or an integer key in a map past 32 keys, by a pinned key, a literal key and in a receive, on the interpreter, the JIT and a built program
+# oracle: self
+# oracle.stamp: fb1ccee546582bb0
+#---
+#
+# A map of more than 32 entries is a hash trie, and a pattern whose key is an
+# atom or an integer walks it where the pattern stands. The maps below are
+# built while the program runs, the 600-atom one from names made into atoms
+# then, so their keys sit up to three levels deep and the atoms are new to the
+# atom table. Each lookup is of a present key, an absent one, or a key of the
+# other kind; a map holding both kinds answers each by its own.
+defmodule Main do
+  def at(m, k) do
+    case m do
+      %{^k => v} -> {:found, v}
+      _ -> :absent
+    end
+  end
+
+  def at_int(m, k) when is_integer(k) do
+    case m do
+      %{^k => v} -> {:found, v}
+      _ -> :absent
+    end
+  end
+
+  def blue(%{blue: v}), do: {:blue, v}
+  def blue(_), do: :no_blue
+
+  def received(m, k) do
+    send(self(), m)
+
+    receive do
+      %{^k => v} -> {:received, v}
+      other -> {:other, map_size(other)}
+    end
+  end
+
+  def main() do
+    atoms = for n <- 1..600, do: String.to_atom("key_#{n}")
+    by_atom = Map.new(Enum.with_index(atoms))
+    by_int = Map.new(for n <- -300..299, do: {n * 7919, n})
+    mixed = Map.new(Enum.flat_map(1..40, fn n -> [{n, :int}, {String.to_atom("m#{n}"), :atom}] end))
+    forty = Map.new(for n <- 1..40, do: {String.to_atom("k#{n}"), n}) |> Map.put(:blue, 0)
+
+    IO.inspect(Enum.map(Enum.map([1, 300, 600, 601], &String.to_atom("key_#{&1}")), &at(by_atom, &1)))
+    IO.inspect(Enum.map([0, -300 * 7919, 299 * 7919, 7920], &at_int(by_int, &1)))
+    IO.inspect(Enum.map([7, 40, 41], &at_int(mixed, &1)))
+    IO.inspect(Enum.map([:m7, :m40, :m41], &at(mixed, &1)))
+    IO.inspect({blue(forty), blue(by_atom), blue(%{blue: 1})})
+    IO.inspect({received(forty, :k39), received(forty, :k41), received(by_int, 7919)})
+  end
+end
+
+Main.main()

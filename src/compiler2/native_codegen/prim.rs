@@ -535,10 +535,10 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
         }
         Prim::MatcherMapGet(m, k) => {
             let map_ref = body.tagged_var(var_env, m.0);
-            let scan = one_word_key(body, binding_for_var(var_env, k.0))
-                .map(|(word, kind)| FlatMapScan::emit(body.b, map_ref, word, kind));
-            let key_ref = body.tagged_var(var_env, k.0);
             let process = body.process_arg();
+            let scan = one_word_key(body, binding_for_var(var_env, k.0))
+                .map(|(word, kind)| WordKeyFind::emit(body.b, process, map_ref, word, kind));
+            let key_ref = body.tagged_var(var_env, k.0);
             let answer = runtime_call1!(body, fz_matcher_map_get_ref, [process, map_ref, key_ref]);
             LowerOut::ValueRefWord(match scan {
                 Some(scan) => scan.finish(body.b, answer),
@@ -557,7 +557,7 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
 }
 
 /// The word and kind of a map key that is an integer or an atom wherever this
-/// code runs. Such a key is found in a flat map by comparing words.
+/// code runs. Such a key is found where the test stands (`WordKeyFind`).
 fn one_word_key<M: Module>(body: &mut CodegenFn<'_, '_, M>, key: CodegenValue) -> Option<(ir::Value, ValueKind)> {
     value_raw_kind_parts(body, key).filter(|(_, kind)| matches!(*kind, ValueKind::INT | ValueKind::ATOM))
 }
