@@ -15,9 +15,15 @@
   "id": "fz-9x7.11.2",
   "labels": [],
   "parent": "fz-9x7.11",
+  "comments": [
+    {
+      "text": "Shares the Stored { word, kind } carrier with fz-9x7.44.1 (definition on .44.1's comment, agreed 2026-11-20).",
+      "timestamp": "2026-11-20T19:56:44Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "The collector forwards every value through one forward(word, kind)",
   "type": "task",
-  "updated_at": "2026-11-18T23:59:27Z"
+  "updated_at": "2026-11-20T19:56:44Z"
 }
