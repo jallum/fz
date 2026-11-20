@@ -143,13 +143,16 @@ move, so the next small allocation lands in the tip it was already filling. This
 scheduler yield to remain total.
 
 `SIZE_TABLE` lists the capacities the block pool recycles, from 1 KiB to about
-7 MiB (32 entries). A tip starts at the first entry and climbs the table. A
-request below the first entry gets a block of the request rounded up to 16
+7 MiB (32 entries). A tip starts at the first entry and climbs the table, and
+`next_block_capacity` stays at the last entry once it reaches it. A request below the first entry gets a block of the request rounded up to 16
 bytes, and the pool keeps a free list for each such multiple of 16, so a small
 block is recycled like a table block and its in-use and idle bytes are its exact
-size. A request above the last entry is exact: `pick_block_capacity` returns the
-request rounded up to 16 bytes, and the block is allocated at that size and
-returned to the system allocator, not the pool, when it is released;
+size. A single allocation or gift above the last entry is exact:
+`pick_block_capacity` returns the request rounded up to 16 bytes, and the block is allocated at that size and
+returned to the system allocator, not the pool, when it is released. A young tip
+or a collection's to-space is never exact: `pick_tip_capacity` clamps
+`pick_block_capacity` to the last entry, so young space past the table is a chain
+of last-entry blocks that recycle through the pool;
 `pool_outstanding_blocks` counts pooled blocks, small ones included. An object above the table
 is parked in an exact block, is part of `bytes_used` and is copied by Cheney like any other, into an
 exact block of its own.
@@ -196,12 +199,13 @@ tip; a heap with nothing old is always minor. Either way the survivors are
 copied by `Heap::bump_to_space` into a to-space block whose capacity is a guess
 (the old bytes for a major collection; the bytes the last minor collection
 copied for a minor one; at least the smallest tip): a copy that fills the block
-parks it and installs an overflow block, the smallest class first and one class
-up for each later one regardless of the guess block's size, and an object above
+parks it and installs an overflow block, the smallest class first (the last table
+entry when the guess is at least that large) and one class up for each later one,
+saturating at the last entry, and an object above
 the next step parks alone. A wrong guess leaves at most about the overflow
 unused (`to_space_capacity_bytes` less `copied_bytes`). The blocks the copy filled become old, the
 from-space is released, and allocation continues in a fresh tip sized to the
-old bytes. After a minor collection `live_baseline` is the old bytes it had plus
+old bytes, at most the last table entry. After a minor collection `live_baseline` is the old bytes it had plus
 the bytes copied; after a major collection it is the bytes copied.
 
 Compiled yield telemetry samples the slow path that builds the yield

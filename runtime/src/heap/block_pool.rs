@@ -56,14 +56,21 @@ pub fn pick_block_capacity(bytes: usize) -> usize {
         .unwrap_or_else(|| round_up_16(bytes))
 }
 
-/// The capacity one step above `capacity`: the next table entry, or 1.2x
-/// rounded up to 16 once past the table.
+/// The capacity one step above `capacity`: the next table entry, and the last
+/// entry once `capacity` has reached it.
 pub fn next_block_capacity(capacity: usize) -> usize {
     SIZE_TABLE
         .iter()
         .copied()
         .find(|&size| size > capacity)
-        .unwrap_or_else(|| round_up_16((capacity * 6).div_ceil(5)))
+        .unwrap_or(SIZE_TABLE[SIZE_TABLE.len() - 1])
+}
+
+/// The capacity of a tip or to-space block for `bytes`: `pick_block_capacity`
+/// clamped to the last table entry, so a young space past the table is a chain
+/// of pooled blocks rather than one exact block.
+pub fn pick_tip_capacity(bytes: usize) -> usize {
+    pick_block_capacity(bytes).min(SIZE_TABLE[SIZE_TABLE.len() - 1])
 }
 
 /// The multiples of 16 below the first table entry: the 16-byte classes that
