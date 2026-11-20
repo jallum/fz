@@ -1,0 +1,31 @@
+#---
+# purpose: "struct!/2 given another module as __struct__ raises ArgumentError, accepts its own, and struct/2 ignores it"
+# oracle: self
+# oracle.stamp: 0a84e87ac1482695
+#---
+defmodule Point do
+  defstruct x: 0, y: 0
+end
+
+defmodule Main do
+  def attempt(fun) do
+    try do
+      fun.()
+    rescue
+      e in ArgumentError -> e.message
+      e -> e
+    end
+  end
+
+  def main() do
+    IO.inspect(attempt(fn -> struct!(Point, [{:__struct__, Other}, {:x, 1}]) end))
+    IO.inspect(attempt(fn -> struct!(Point, [{:x, 1}, {:__struct__, Other}]) end))
+    IO.inspect(attempt(fn -> struct!(Point, [{:__struct__, Point}, {:x, 1}]) end))
+    IO.inspect(attempt(fn -> struct!(KeyError, [{:__struct__, Other}, {:key, 1}]) end))
+    IO.inspect(attempt(fn -> struct!(Point, [{:__struct__, Other}, {:z, 1}]) end))
+    IO.inspect(attempt(fn -> struct!(struct(Point), [{:__struct__, Other}, {:x, 1}]) end))
+    IO.inspect(struct(Point, [{:__struct__, Other}, {:x, 1}]))
+  end
+end
+
+Main.main()

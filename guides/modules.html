@@ -210,7 +210,9 @@ are a list, both written out at the call.</p>
 <code>__struct__()</code>, each field at its default.
 <code>struct(m, fields)</code> starts there and sets the fields a keyword
 list or map names, leaving out any key the struct does not declare;
-<code>struct!(m, fields)</code> raises <code>KeyError</code> for one. Both
+<code>struct!(m, fields)</code> raises <code>KeyError</code> for one, and
+<code>ArgumentError</code> when <code>fields</code> names another module as
+<code>__struct__</code>. Both
 also take a struct to start from.</p>
 
 <pre><span class="kw">defmodule</span> <span class="ty">Point</span> <span class="kw">do</span>
