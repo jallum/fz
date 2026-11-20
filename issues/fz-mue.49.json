@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-20T20:56:25Z",
+  "description": "Parity gap found by Binary Handling (fz-9e2.3 work), filed under the user's standing direction to put Elixir parity gaps on fz-mue. A value whose inspection runs past 80 columns prints on one line in fz; Elixir's IO.inspect/inspect (Inspect.Algebra, default width: 80) breaks it across lines. Done: inspect/IO.inspect honor :width (default 80) and :pretty with Elixir's layout, matching Elixir byte for byte on an oracle fixture, on interp, run and build. Follows fz-sc8.10 (inspect with limit:). Owner: Elixir Parity.",
+  "id": "fz-mue.49",
+  "labels": [],
+  "parent": "fz-mue",
+  "priority": 3,
+  "status": "open",
+  "title": "IO.inspect wraps a long value at 80 columns, as Elixir's pretty printer does",
+  "type": "bug",
+  "updated_at": "2026-11-20T20:56:25Z"
+}
