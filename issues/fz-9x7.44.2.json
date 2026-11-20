@@ -4,6 +4,7 @@
   "blocks": [
     "fz-9x7.44.8"
   ],
+  "closed_at": "2026-11-20T21:53:07Z",
   "created": "2026-11-20T19:54:48Z",
   "description": "User approved page \"Scalars without addresses\" (https://claude.ai/artifact/6jYdi5cw1d27CZC85xkJih, From: Callables) on 2026-11-20, relayed by Callables. Owner: Callables. S1.1: fz_map_get_ref, get_{atom,int,float}_key_ref, has_key, delete, entry_key, entry_value, matcher_map_get_ref, and the put_*/dest_put_ref entries #807 leaves. Each entry takes and answers #807's stored_value on native and interpreter paths; the interpreter's as_ref_word boxing ends at these calls.",
   "id": "fz-9x7.44.2",
@@ -20,8 +21,8 @@
     }
   ],
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Map runtime entries take a stored word and its kind",
   "type": "task",
-  "updated_at": "2026-11-20T21:32:29Z"
+  "updated_at": "2026-11-20T21:53:07Z"
 }
