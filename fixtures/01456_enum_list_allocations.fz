@@ -36,9 +36,10 @@
 # - no map objects are needed before the stats snapshot;
 # - `list_cons_allocs = 5`;
 # - `list_cons_bytes = 80`;
-# - every path allocates `scalar_box_allocs = 2`, one per `dbg`'d integer
-#   result. The `true` that `Enum.member?/2` answers is an atom ref, which
-#   carries its id and allocates nothing. `Enum.member?/2` compares integers
+# - every path allocates `scalar_box_allocs = 0`: `dbg` hands an integer
+#   result to `inspect` as its word and kind, and the `true` that
+#   `Enum.member?/2` answers is an atom ref, which carries its id and
+#   allocates nothing. `Enum.member?/2` compares integers
 #   with `===`, whose typed integer/integer clause calls a raw C `fz_op_*`
 #   export, so the compared operands cross that door unboxed and allocate
 #   nothing;

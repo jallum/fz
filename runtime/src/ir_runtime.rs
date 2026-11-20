@@ -205,11 +205,6 @@ fn destination_ref_word(bits: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_ref_tag(ref_word: u64) -> u8 {
-    any_value_ref_from_word(ref_word, "fz_ref_tag").tag().tag()
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn fz_type_of(ref_word: u64) -> u8 {
     any_value_ref_from_word(ref_word, "fz_type_of").tag().tag()
 }
@@ -1353,8 +1348,8 @@ fn float_prefix(bytes: &[u8]) -> Option<(f64, usize)> {
 
 /// The text `inspect/1` gives the value, as a binary: Elixir's default options.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_inspect(process: *mut Process, ref_word: u64) -> u64 {
-    let value = any_value_from_ref_word(ref_word, "fz_inspect");
+pub extern "C" fn fz_inspect(process: *mut Process, word: u64, kind: u64) -> u64 {
+    let value = Stored { word, kind }.value("fz_inspect value");
     alloc_text(process, &render_value(process, value))
 }
 
@@ -1362,8 +1357,8 @@ pub extern "C" fn fz_inspect(process: *mut Process, ref_word: u64) -> u64 {
 /// keyword list `Kernel.inspect/2` has already checked: `limit:` is its only
 /// option.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_inspect_with(process: *mut Process, ref_word: u64, options_ref: u64) -> u64 {
-    let value = any_value_from_ref_word(ref_word, "fz_inspect_with");
+pub extern "C" fn fz_inspect_with(process: *mut Process, word: u64, kind: u64, options_ref: u64) -> u64 {
+    let value = Stored { word, kind }.value("fz_inspect_with value");
     let limit = Limit::from_options(process, any_value_from_ref_word(options_ref, "fz_inspect_with options"));
     alloc_text(process, &render_with_limit(process, value, limit))
 }
@@ -2338,11 +2333,20 @@ pub extern "C" fn fz_value_eq_raw_const(ref_word: u64, expected_tag: u32, raw: u
 }
 
 /// Widening language term order, borrowed from the same comparator that owns
-/// strict map-key identity. Returns -1, 0, or 1 without boxing scalar adapters.
+/// strict map-key identity. Each operand is its stored word and kind. Returns
+/// -1, 0, or 1.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_value_cmp_ref(process: *mut Process, a_ref: u64, b_ref: u64) -> i64 {
-    let a = any_value_from_ref_word(a_ref, "fz_value_cmp_ref lhs");
-    let b = any_value_from_ref_word(b_ref, "fz_value_cmp_ref rhs");
+pub extern "C" fn fz_value_cmp_ref(process: *mut Process, a_word: u64, a_kind: u64, b_word: u64, b_kind: u64) -> i64 {
+    let a = Stored {
+        word: a_word,
+        kind: a_kind,
+    }
+    .value("fz_value_cmp_ref lhs");
+    let b = Stored {
+        word: b_word,
+        kind: b_kind,
+    }
+    .value("fz_value_cmp_ref rhs");
     compare_values(process, a, b, NumericMode::Widening) as i64
 }
 
@@ -2420,9 +2424,23 @@ ref_bool_export!(fz_op_gte_bb, NumericMode::Widening, is_ge);
 macro_rules! ref_equality_export {
     ($name:ident, $mode:expr, $expected:expr) => {
         #[unsafe(no_mangle)]
-        pub extern "C" fn $name(process: *mut Process, left: u64, right: u64) -> u64 {
-            let left = any_value_from_ref_word(left, "runtime equality lhs");
-            let right = any_value_from_ref_word(right, "runtime equality rhs");
+        pub extern "C" fn $name(
+            process: *mut Process,
+            left_word: u64,
+            left_kind: u64,
+            right_word: u64,
+            right_kind: u64,
+        ) -> u64 {
+            let left = Stored {
+                word: left_word,
+                kind: left_kind,
+            }
+            .value("runtime equality lhs");
+            let right = Stored {
+                word: right_word,
+                kind: right_kind,
+            }
+            .value("runtime equality rhs");
             u64::from(values_equal(process, left, right, $mode) == $expected)
         }
     };
@@ -2481,16 +2499,38 @@ pub extern "C" fn fz_value_cmp_raw_const(
 
 /// Widen numeric values recursively for `==`; map keys remain strict.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_value_eq_widening_ref(process: *mut Process, a_ref: u64, b_ref: u64) -> u64 {
-    let a = any_value_from_ref_word(a_ref, "fz_value_eq_widening_ref lhs");
-    let b = any_value_from_ref_word(b_ref, "fz_value_eq_widening_ref rhs");
+pub extern "C" fn fz_value_eq_widening_ref(
+    process: *mut Process,
+    a_word: u64,
+    a_kind: u64,
+    b_word: u64,
+    b_kind: u64,
+) -> u64 {
+    let a = Stored {
+        word: a_word,
+        kind: a_kind,
+    }
+    .value("fz_value_eq_widening_ref lhs");
+    let b = Stored {
+        word: b_word,
+        kind: b_kind,
+    }
+    .value("fz_value_eq_widening_ref rhs");
     u64::from(values_equal(process, a, b, NumericMode::Widening))
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_value_eq_ref(process: *mut Process, a_ref: u64, b_ref: u64) -> u64 {
-    let a = any_value_from_ref_word(a_ref, "fz_value_eq_ref lhs");
-    let b = any_value_from_ref_word(b_ref, "fz_value_eq_ref rhs");
+pub extern "C" fn fz_value_eq_ref(process: *mut Process, a_word: u64, a_kind: u64, b_word: u64, b_kind: u64) -> u64 {
+    let a = Stored {
+        word: a_word,
+        kind: a_kind,
+    }
+    .value("fz_value_eq_ref lhs");
+    let b = Stored {
+        word: b_word,
+        kind: b_kind,
+    }
+    .value("fz_value_eq_ref rhs");
     u64::from(values_equal(process, a, b, NumericMode::Strict))
 }
 

@@ -230,6 +230,20 @@ fn a_guard_extern_may_return_a_boolean() {
     assert!(admitted.is_ok(), "expected the extern to be admitted, got {admitted:?}");
 }
 
+/// Intent: a guard may call an extern that takes a value of any kind as its
+/// stored word and kind, which is how `==` and `Kernel.compare/2` reach the
+/// runtime without boxing a number.
+#[test]
+fn a_guard_extern_may_take_a_stored_value() {
+    use crate::fz_ir::{ExternReturn, ExternTy};
+    let admitted = guard_extern(
+        &[ExternTy::StoredValue, ExternTy::StoredValue],
+        ExternReturn::Scalar(ExternTy::I64),
+        false,
+    );
+    assert!(admitted.is_ok(), "expected the extern to be admitted, got {admitted:?}");
+}
+
 /// Intent: a guard function may take and return numbers, and may declare a
 /// failure, because a guard calls the same Kernel operators a body does.
 #[test]

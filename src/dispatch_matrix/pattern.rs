@@ -339,7 +339,12 @@ impl GuardExtern {
         if let Some(param) = params.iter().find(|ty| {
             !matches!(
                 ty,
-                ExternTy::I64 | ExternTy::Opaque(_) | ExternTy::F64 | ExternTy::Any | ExternTy::BinaryCursor
+                ExternTy::I64
+                    | ExternTy::Opaque(_)
+                    | ExternTy::F64
+                    | ExternTy::Any
+                    | ExternTy::StoredValue
+                    | ExternTy::BinaryCursor
             )
         }) {
             return Err(refuse(format!(

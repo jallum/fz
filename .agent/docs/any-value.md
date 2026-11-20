@@ -81,7 +81,7 @@ owns packing, projection, and the platform difference behind the word.
 Generated code handles values only through these entry points. A few examples:
 
 ```text
-fz_ref_tag(ref)                      -> tag byte
+fz_type_of(ref)                      -> tag byte
 fz_ref_load_int / _float / _atom(ref)
 fz_map_get_ref(process, map, key_word, key_kind)    -> ref
 fz_map_count(process, map) / fz_map_entry_key(process, map, i) / fz_map_entry_value(process, map, i)
@@ -89,6 +89,9 @@ fz_map_has_key(process, map, key_word, key_kind)    -> 0 or 1
 fz_map_delete(process, map, key_word, key_kind)     -> map ref
 fz_list_head_ref(list) / fz_list_tail_ref(list)
 fz_struct_get_field_ref(process, struct, field_offset)
+fz_value_eq_ref / fz_value_eq_widening_ref(process, a_word, a_kind, b_word, b_kind) -> 0 or 1
+fz_value_cmp_ref(process, a_word, a_kind, b_word, b_kind)  -> -1, 0 or 1
+fz_inspect(process, word, kind) / fz_inspect_with(process, word, kind, options)  -> binary
 fz_binary_concat(process, left, right)
 ```
 
@@ -378,7 +381,7 @@ arm64 (TBI):          tagged = address | (tag << 56)
 x86_64 (canonical):   tagged = address | (tag << 57)
 ```
 
-`fz_ref_tag` returns the same semantic tag on both, so callers never see the
+`fz_type_of` returns the same semantic tag on both, so callers never see the
 difference.
 
 An atom ref is the tag word or'd with the id, on both archs. The id names no

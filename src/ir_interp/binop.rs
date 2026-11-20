@@ -1,7 +1,7 @@
 use super::*;
 use crate::fz_ir::{BinOp, FnId, UnOp};
 use fz_runtime::any_value::{
-    AnyValue as RuntimeAnyValue, TRUE_ATOM_ID, ValueKind, closure_captured_count, closure_fn_ptr,
+    AnyValue as RuntimeAnyValue, Stored, TRUE_ATOM_ID, ValueKind, closure_captured_count, closure_fn_ptr,
 };
 use fz_runtime::ir_runtime::{fz_closure_get_capture_ref, fz_value_cmp_ref, fz_value_eq_ref, fz_value_eq_widening_ref};
 use fz_runtime::process::Process;
@@ -75,7 +75,11 @@ pub(super) fn interp_operator_eq(proc: *mut Process, a: AnyValue, b: AnyValue) -
         (AnyValue::Int(integer), AnyValue::Float(float)) | (AnyValue::Float(float), AnyValue::Int(integer)) => {
             fz_runtime::term::compare_int_float(integer, float).is_eq()
         }
-        _ => fz_value_eq_widening_ref(proc, a.as_ref_word(proc)?, b.as_ref_word(proc)?) != 0,
+        _ => {
+            let [a_word, a_kind] = stored_words(proc, a)?;
+            let [b_word, b_kind] = stored_words(proc, b)?;
+            fz_value_eq_widening_ref(proc, a_word, a_kind, b_word, b_kind) != 0
+        }
     })
 }
 
@@ -91,7 +95,11 @@ pub(super) fn interp_cmp(proc: *mut Process, a: AnyValue, b: AnyValue) -> Result
         (AnyValue::Float(left), AnyValue::Int(right)) => {
             fz_runtime::term::compare_int_float(right, left).reverse() as i64
         }
-        _ => fz_value_cmp_ref(proc, a.as_ref_word(proc)?, b.as_ref_word(proc)?),
+        _ => {
+            let [a_word, a_kind] = stored_words(proc, a)?;
+            let [b_word, b_kind] = stored_words(proc, b)?;
+            fz_value_cmp_ref(proc, a_word, a_kind, b_word, b_kind)
+        }
     })
 }
 
@@ -108,9 +116,19 @@ pub(super) fn interp_value_eq(proc: *mut Process, a: AnyValue, b: AnyValue) -> R
         (AnyValue::Float(a), AnyValue::Float(b)) => Ok(a.to_bits() == b.to_bits()),
         (AnyValue::Atom(a), AnyValue::Atom(b)) => Ok(a == b),
         (AnyValue::EmptyList, AnyValue::EmptyList) => Ok(true),
-        (AnyValue::Ref(a), AnyValue::Ref(b)) => Ok(fz_value_eq_ref(proc, a.raw().raw_word(), b.raw().raw_word()) != 0),
-        (a, b) => Ok(fz_value_eq_ref(proc, a.as_ref_word(proc)?, b.as_ref_word(proc)?) != 0),
+        (a, b) => {
+            let [a_word, a_kind] = stored_words(proc, a)?;
+            let [b_word, b_kind] = stored_words(proc, b)?;
+            Ok(fz_value_eq_ref(proc, a_word, a_kind, b_word, b_kind) != 0)
+        }
     }
+}
+
+/// The word a container stores for `value` and its kind: how a runtime entry
+/// takes a `stored_value` operand, whatever its kind, without a box.
+pub(super) fn stored_words(proc: *mut Process, value: AnyValue) -> Result<[u64; 2], String> {
+    let Stored { word, kind } = Stored::of(value.value(proc)?);
+    Ok([word, kind])
 }
 
 /// Read an interp-side closure value. The interpreter stores the body FnId
