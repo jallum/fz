@@ -2,7 +2,8 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [
-    "fz-sc8.22.2"
+    "fz-sc8.22.2",
+    "fz-sc8.22.4"
   ],
   "created": "2026-11-20T20:00:56Z",
   "description": "User approved fz-sc8.22 option A (\"approved;\", relayed by Bugs and Cleanup 2026-11-20; page /Users/j5n/Workspace/fz-sc8.22.html): fz-mue.41 folds in, terminator-flag representation, iolist/iodata widened to Elixir's definition. Owner: Bugs and Cleanup. Step 1, types. ListSig gains `last` ([] for a proper list), as in Elixir's descr.ex. Covers construction typing in list_ty, the cons-pattern tail in project_subject, widen/collapse, canon/format/order/children/emptiness/intersection, the type names maybe_improper_list/2, nonempty_improper_list/2 and nonempty_maybe_improper_list/2, and a run-time list test that narrows to the maybe-improper list. Today `[1 | 2]` is typed non_empty_list(int) and `[h | t]` types t as list(int) (--dump backend, develop 8aafabd8a).",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "A list type carries its terminator",
   "type": "task",
-  "updated_at": "2026-11-20T20:00:58Z"
+  "updated_at": "2026-11-20T20:00:59Z"
 }
