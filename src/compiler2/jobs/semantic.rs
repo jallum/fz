@@ -2183,7 +2183,16 @@ fn resolve_protocol_call(
     }
 
     if matches.is_empty() {
-        return Ok((CallSiteResolution::Unresolved, Vec::new(), CallReturn::Bottom));
+        let last_resort = protocol_miss(world, protocol, receiver_ty, covered);
+        let resolution = match last_resort {
+            Some(last_resort) => CallSiteResolution::Resolved(CallSiteSummary {
+                targets: Vec::new(),
+                return_ty: CallReturn::Bottom.evidence(),
+                last_resort: Some(last_resort),
+            }),
+            None => CallSiteResolution::Unresolved,
+        };
+        return Ok((resolution, Vec::new(), CallReturn::Bottom));
     }
 
     let matches = merge_protocol_matches_by_function(world, matches);

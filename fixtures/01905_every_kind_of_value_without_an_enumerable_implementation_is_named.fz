@@ -1,0 +1,32 @@
+#---
+# purpose: "Enum.count of a float, an atom and a tuple raises Protocol.UndefinedError whose message names the kind of the value (Float, Atom, Tuple) and shows it, each a call whose receiver no implementation overlaps"
+# oracle: self
+# oracle.stamp: 95f40b75b59445c3
+#---
+defmodule Main do
+  def count_a_float() do
+    Enum.count(2.5)
+  rescue
+    e -> Exception.message(e)
+  end
+
+  def count_an_atom() do
+    Enum.count(:ok)
+  rescue
+    e -> Exception.message(e)
+  end
+
+  def count_a_tuple() do
+    Enum.count({1, 2})
+  rescue
+    e -> Exception.message(e)
+  end
+
+  def main() do
+    IO.puts(count_a_float())
+    IO.puts(count_an_atom())
+    IO.puts(count_a_tuple())
+  end
+end
+
+Main.main()

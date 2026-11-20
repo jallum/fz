@@ -1713,12 +1713,13 @@ impl CallSiteTargetsMap {
 
 impl CallSiteSummary {
     /// How many values the choice among targets can read: the arguments,
-    /// and ahead of them the module value when the call is made on one.
+    /// and ahead of them the module value when the call is made on one. A
+    /// call with no target reads what its last resort shows.
     pub fn arity(&self) -> usize {
-        self.targets
-            .first()
-            .map(|target| target.selector.iter().len() + target.surface_inputs.len())
-            .unwrap_or(0)
+        self.targets.first().map_or_else(
+            || self.last_resort.as_ref().map_or(0, LastResort::consumed_inputs),
+            |target| target.selector.iter().len() + target.surface_inputs.len(),
+        )
     }
 
     /// Whether the callsite chooses at runtime: several targets, or one that

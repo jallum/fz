@@ -145,8 +145,8 @@ implementations; there is still no broad dynamic lookup hidden behind the call.<
 <code>Protocol.UndefinedError</code>, worded as Elixir words it: the protocol,
 the kind of the value (<code>Map</code>, <code>Float</code>,
 <code>Tuple</code>, <code>Foo (a struct)</code> and so on), and the value. A
-call whose receiver no implementation can take at all is refused at compile
-time.</p>
+call whose receiver no implementation can take at all, such as
+<code>Enum.map(5, f)</code>, compiles and raises it when it runs.</p>
 
 <pre>defprotocol Sizer do
   def size(value)

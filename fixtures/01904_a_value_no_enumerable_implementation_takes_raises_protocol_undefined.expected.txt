@@ -1,0 +1,9 @@
+{:ok, [2, 1]}
+{:raised, Enumerable, "abc"}
+{:raised, Enumerable, 5}
+protocol Enumerable not implemented for BitString
+
+Got value:
+
+    "abc"
+
