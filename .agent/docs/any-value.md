@@ -68,8 +68,11 @@ owns packing, projection, and the platform difference behind the word.
   arity and `FnId`) and returns its literal ref word; the object's raw storage
   address is not a ref.
 - **Container object-local metadata**: each heap object stores payload words
-  plus its own kind bytes (see Container Storage). This is *not* a reusable
-  `{value, kind}` carrier — there is no public value model other than the ref.
+  plus its own kind bytes (see Container Storage).
+- **`Stored`** (`runtime/src/any_value.rs`): that same pair, the stored word
+  and its kind, held outside a container. `Stored::of(value)` makes it and
+  `Stored::value(context)` rebuilds the value. A runtime entry takes a key or
+  value of any kind as its two words, so nothing boxes a number to pass it.
 - **The `fz_*` runtime ABI** (`runtime/src/ir_runtime.rs`): the C entry points
   generated code calls to read, build, and project values.
 
@@ -80,9 +83,10 @@ Generated code handles values only through these entry points. A few examples:
 ```text
 fz_ref_tag(ref)                      -> tag byte
 fz_ref_load_int / _float / _atom(ref)
-fz_map_get_ref(process, map, key)    -> ref
+fz_map_get_ref(process, map, key_word, key_kind)    -> ref
 fz_map_count(process, map) / fz_map_entry_key(process, map, i) / fz_map_entry_value(process, map, i)
-fz_map_has_key(process, map, key)    -> 0 or 1
+fz_map_has_key(process, map, key_word, key_kind)    -> 0 or 1
+fz_map_delete(process, map, key_word, key_kind)     -> map ref
 fz_list_head_ref(list) / fz_list_tail_ref(list)
 fz_struct_get_field_ref(process, struct, field_offset)
 fz_binary_concat(process, left, right)
@@ -287,7 +291,7 @@ A map holds `:answer => 42`. The 42 lives in the map's value storage. The read
 hands back a ref over that slot:
 
 ```text
-value_ref = fz_map_get_ref(map_ref, atom_answer_ref)
+value_ref = fz_map_get_ref(process, map_ref, answer_atom_id, ATOM)
   value_ref.tag()      = Int
   value_ref points at  the stored i64 slot
 fz_ref_load_int(value_ref) -> 42
@@ -297,7 +301,7 @@ If the map holds another map at `:child`, the same call returns a `Map` ref
 directly — no two-part `{address, kind}` result is needed:
 
 ```text
-child_ref = fz_map_get_ref(parent_map_ref, atom_child_ref)
+child_ref = fz_map_get_ref(process, parent_map_ref, child_atom_id, ATOM)
   child_ref.tag() = Map  ->  child map object
 ```
 

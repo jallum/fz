@@ -1,6 +1,7 @@
 use super::value::{
     AnyValue, HeapRef, interp_is_list_cons, interp_nil_value, interp_value_from_ref_word, with_value_ref,
 };
+use fz_runtime::any_value::Stored;
 use fz_runtime::ir_runtime::{fz_list_head_ref, fz_list_tail_ref, fz_map_get_ref};
 use fz_runtime::process::Process;
 
@@ -50,10 +51,9 @@ pub(super) fn interp_map_get(proc: *mut Process, map: AnyValue, key: AnyValue) -
     if !super::value::is_map_value(proc, map_slot) {
         return Ok(interp_nil_value());
     }
+    let key = Stored::of(key.value(proc)?);
     with_value_ref(proc, map, "MapGet map", |map_ref| {
-        with_value_ref(proc, key, "MapGet key", |key_ref| {
-            fz_map_get_ref(proc, map_ref, key_ref)
-        })
-    })?
+        fz_map_get_ref(proc, map_ref, key.word, key.kind)
+    })
     .and_then(|ref_word| interp_value_from_ref_word(ref_word, "MapGet"))
 }

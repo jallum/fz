@@ -126,43 +126,45 @@ impl Head {
 
 /// The head a ref word names, as a cell stores it.
 pub(super) fn decode<M: cranelift_module::Module>(body: &mut CodegenFn<'_, '_, M>, head_ref: ir::Value) -> Head {
-    let kind = kind_field(body.b, head_ref);
-    let raw = payload_of(body, head_ref, kind);
+    let [raw, kind] = stored_parts_of_ref(body.b, head_ref);
     Head {
         raw,
         kind: HeadKind::Read(kind),
     }
 }
 
+/// The word a container stores for the value `word` names, and its kind, as
+/// two `I64`s read at run time.
+pub(crate) fn stored_parts_of_ref(b: &mut FunctionBuilder<'_>, word: ir::Value) -> [ir::Value; 2] {
+    let kind = kind_field(b, word);
+    [payload_of(b, word, kind), kind]
+}
+
 /// The payload word a container stores for the value `word` names: what a
 /// boxed scalar's box holds, and for any other kind the word's address field
 /// with its literal bit.
-pub(crate) fn payload_of<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, M>,
-    word: ir::Value,
-    kind: ir::Value,
-) -> ir::Value {
-    let boxed = kind_is_one_of(body.b, kind, ValueKind::is_boxed_scalar);
-    let in_box = body.b.create_block();
-    let in_word = body.b.create_block();
-    let joined = body.b.create_block();
-    body.b.append_block_param(joined, types::I64);
-    body.b.ins().brif(boxed, in_box, &[], in_word, &[]);
+fn payload_of(b: &mut FunctionBuilder<'_>, word: ir::Value, kind: ir::Value) -> ir::Value {
+    let boxed = kind_is_one_of(b, kind, ValueKind::is_boxed_scalar);
+    let in_box = b.create_block();
+    let in_word = b.create_block();
+    let joined = b.create_block();
+    b.append_block_param(joined, types::I64);
+    b.ins().brif(boxed, in_box, &[], in_word, &[]);
 
-    body.b.switch_to_block(in_box);
-    body.b.seal_block(in_box);
-    let box_address = address_field(body.b, word);
-    let stored = body.b.ins().load(types::I64, MemFlagsData::trusted(), box_address, 0);
-    body.b.ins().jump(joined, &[BlockArg::Value(stored)]);
+    b.switch_to_block(in_box);
+    b.seal_block(in_box);
+    let box_address = address_field(b, word);
+    let stored = b.ins().load(types::I64, MemFlagsData::trusted(), box_address, 0);
+    b.ins().jump(joined, &[BlockArg::Value(stored)]);
 
-    body.b.switch_to_block(in_word);
-    body.b.seal_block(in_word);
-    let payload = payload_field(body.b, word);
-    body.b.ins().jump(joined, &[BlockArg::Value(payload)]);
+    b.switch_to_block(in_word);
+    b.seal_block(in_word);
+    let payload = payload_field(b, word);
+    b.ins().jump(joined, &[BlockArg::Value(payload)]);
 
-    body.b.switch_to_block(joined);
-    body.b.seal_block(joined);
-    body.b.block_params(joined)[0]
+    b.switch_to_block(joined);
+    b.seal_block(joined);
+    b.block_params(joined)[0]
 }
 
 /// An `I8` condition: whether the kind value `kind` is one `member` admits.

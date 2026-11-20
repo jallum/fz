@@ -593,6 +593,55 @@ impl AnyValue {
     }
 }
 
+/// A value as a container keeps it: the word it stores (`AnyValue::raw`) and
+/// its kind tag, zero-extended to a full word. It is how a value of any kind
+/// crosses into the runtime without a box, as two integer words. Being
+/// `repr(C)` and two words wide, it also comes back from a call in two
+/// registers. An entry takes the two words as separate `u64` parameters
+/// rather than a `Stored`: a struct argument that finds one register free goes
+/// wholly on the stack, while two words go one in the register and one on the
+/// stack, so only separate words match the generated call on every target.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Stored {
+    pub word: u64,
+    pub kind: u64,
+}
+
+impl Stored {
+    #[inline(always)]
+    pub fn of(value: AnyValue) -> Self {
+        Self {
+            word: value.raw(),
+            kind: u64::from(value.kind().tag()),
+        }
+    }
+
+    /// The value the two words spell. A kind that names no kind is a broken
+    /// caller, refused with `context` in the panic. The decode stays inline,
+    /// so it folds into the entry that called it; only the panic is out of
+    /// line.
+    #[inline(always)]
+    pub fn value(self, context: &str) -> AnyValue {
+        match u8::try_from(self.kind)
+            .ok()
+            .and_then(|kind| AnyValue::decode_parts(self.word, kind))
+        {
+            Some(value) => value,
+            None => self.spells_no_value(context),
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn spells_no_value(self, context: &str) -> ! {
+        panic!(
+            "{context}: kind {} with word {:#x} spells no value",
+            self.kind, self.word
+        )
+    }
+}
+
 // Bitstring storage dispatchers live in `crate::bits`.
 // `any_value.rs` does not own bitstring layout; render uses the binview
 // helpers like every other read site.

@@ -24,9 +24,10 @@
 
 use crate::any_value::debug::{Limit, render_value, render_with_limit};
 use crate::any_value::{
-    AnyValue, AnyValueRef, FALSE_ATOM_ID, ListCons, NIL_ATOM_ID, SlotLayout, ValueKind, binview_addr_from_tagged,
-    closure_addr_from_tagged, closure_arity, closure_capture_ref_word, closure_captured_count, closure_denotation,
-    closure_fn_ptr, closure_halt_kind, map_addr_from_tagged, object_size, struct_is_shared, struct_schema_id,
+    AnyValue, AnyValueRef, FALSE_ATOM_ID, ListCons, NIL_ATOM_ID, SlotLayout, Stored, ValueKind,
+    binview_addr_from_tagged, closure_addr_from_tagged, closure_arity, closure_capture_ref_word,
+    closure_captured_count, closure_denotation, closure_fn_ptr, closure_halt_kind, map_addr_from_tagged, object_size,
+    struct_is_shared, struct_schema_id,
 };
 use crate::bits::{
     BinView, SharedBin, SharedBinHandle, alloc_buffer_view, bitstring_bit_len, bitstring_byte_ptr, is_bitstring_like,
@@ -1724,27 +1725,17 @@ pub extern "C" fn fz_map_dest_put(
     value_kind: u64,
 ) -> u64 {
     let dest_bits = destination_bits_from_ref_word(dest_ref_word, "fz_map_dest_put dest");
-    let key = stored_value(key_word, key_kind, "fz_map_dest_put key");
-    let value = stored_value(value_word, value_kind, "fz_map_dest_put value");
-    destination_ref_word(unsafe { (*process).heap.map_destination_put(dest_bits, key, value) })
-}
-
-/// The value a stored word and its kind spell.
-#[inline(always)]
-fn stored_value(word: u64, kind: u64, context: &str) -> AnyValue {
-    match u8::try_from(kind)
-        .ok()
-        .and_then(|kind| AnyValue::decode_parts(word, kind))
-    {
-        Some(value) => value,
-        None => spells_no_value(word, kind, context),
+    let key = Stored {
+        word: key_word,
+        kind: key_kind,
     }
-}
-
-#[cold]
-#[inline(never)]
-fn spells_no_value(word: u64, kind: u64, context: &str) -> ! {
-    panic!("{context}: kind {kind} with word {word:#x} spells no value")
+    .value("fz_map_dest_put key");
+    let value = Stored {
+        word: value_word,
+        kind: value_kind,
+    }
+    .value("fz_map_dest_put value");
+    destination_ref_word(unsafe { (*process).heap.map_destination_put(dest_bits, key, value) })
 }
 
 /// The published map, or the null reference when an update named a key its
@@ -1770,43 +1761,32 @@ pub extern "C" fn fz_map_dest_publish(process: *mut Process, dest_ref_word: u64)
         .raw_word()
 }
 
+/// `Map.get/2`: the value `map` binds to the key, given as its stored word
+/// and kind, or `nil`. A resource answers `nil` for every key.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_map_get_ref(process: *mut Process, map_ref_word: u64, key_ref_word: u64) -> u64 {
+pub extern "C" fn fz_map_get_ref(process: *mut Process, map_ref_word: u64, key_word: u64, key_kind: u64) -> u64 {
     let map = any_value_ref_from_word(map_ref_word, "fz_map_get_ref map");
-    let key = any_value_ref_from_word(key_ref_word, "fz_map_get_ref key");
-    fz_map_get_value_ref(process, map, key)
+    map_get(
+        process,
+        map,
+        Stored {
+            word: key_word,
+            kind: key_kind,
+        }
+        .value("fz_map_get_ref key"),
+    )
 }
 
-fn fz_map_get_value_ref(process: *mut Process, map: AnyValueRef, key: AnyValueRef) -> u64 {
+fn map_get(process: *mut Process, map: AnyValueRef, key: AnyValue) -> u64 {
     if map.tag() == ValueKind::RESOURCE {
-        let _ = key;
         return nil_atom_ref().raw_word();
     }
     (unsafe { &mut *process })
         .heap
-        .read_map_value_ref(map, key)
+        .read_map_value(map, key)
         .expect("fz_map_get_ref")
         .unwrap_or_else(nil_atom_ref)
         .raw_word()
-}
-
-fn fz_map_get_scalar_key_ref(process: *mut Process, map: AnyValueRef, key: AnyValue) -> u64 {
-    if map.tag() == ValueKind::RESOURCE {
-        let _ = key;
-        return nil_atom_ref().raw_word();
-    }
-    (unsafe { &mut *process })
-        .heap
-        .read_map_value_for_any_key(map, key)
-        .expect("fz_map_get scalar key")
-        .unwrap_or_else(nil_atom_ref)
-        .raw_word()
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_map_get_atom_key_ref(process: *mut Process, map_ref_word: u64, atom_id: u64) -> u64 {
-    let map = any_value_ref_from_word(map_ref_word, "fz_map_get_atom_key_ref map");
-    fz_map_get_scalar_key_ref(process, map, AnyValue::atom(atom_id as u32))
 }
 
 fn resource_payload_ref(resource: AnyValueRef) -> AnyValueRef {
@@ -1818,28 +1798,16 @@ fn nil_atom_ref() -> AnyValueRef {
     AnyValueRef::atom(NIL_ATOM_ID)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_map_get_int_key_ref(process: *mut Process, map_ref_word: u64, value: i64) -> u64 {
-    let map = any_value_ref_from_word(map_ref_word, "fz_map_get_int_key_ref map");
-    fz_map_get_scalar_key_ref(process, map, AnyValue::int(value))
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_map_get_float_key_ref(process: *mut Process, map_ref_word: u64, value: f64) -> u64 {
-    let map = any_value_ref_from_word(map_ref_word, "fz_map_get_float_key_ref map");
-    fz_map_get_scalar_key_ref(process, map, AnyValue::float(value))
-}
-
 /// `Map.delete/2`: the map without `key`, or the same map when absent.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_map_delete(process: *mut Process, map_ref: u64, key_ref: u64) -> u64 {
+pub extern "C" fn fz_map_delete(process: *mut Process, map_ref: u64, key_word: u64, key_kind: u64) -> u64 {
     let map = any_value_ref_from_word(map_ref, "fz_map_delete map");
-    let key = any_value_ref_from_word(key_ref, "fz_map_delete key");
-    (unsafe { &mut *process })
-        .heap
-        .map_delete_ref(map, key)
-        .expect("fz_map_delete")
-        .raw_word()
+    let key = Stored {
+        word: key_word,
+        kind: key_kind,
+    }
+    .value("fz_map_delete key");
+    (unsafe { &mut *process }).heap.map_view_delete(map, key).raw_word()
 }
 
 #[unsafe(no_mangle)]
@@ -1851,9 +1819,13 @@ pub extern "C" fn fz_map_count(process: *mut Process, map_ref_word: u64) -> i64 
 
 /// Whether `map`, in either layout, holds `key`.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_map_has_key(process: *mut Process, map_ref_word: u64, key_ref_word: u64) -> u64 {
+pub extern "C" fn fz_map_has_key(process: *mut Process, map_ref_word: u64, key_word: u64, key_kind: u64) -> u64 {
     let map = any_value_ref_from_word(map_ref_word, "fz_map_has_key map");
-    let key = any_value_from_ref_word(key_ref_word, "fz_map_has_key key");
+    let key = Stored {
+        word: key_word,
+        kind: key_kind,
+    }
+    .value("fz_map_has_key key");
     let heap = &(unsafe { &*process }).heap;
     u64::from(heap.map_view_has_key(heap.expect_map_layout(map, "fz_map_has_key"), key))
 }
@@ -1985,8 +1957,16 @@ pub extern "C" fn fz_map_put(
     map_put_slot_value(
         process,
         map_ref_word,
-        stored_value(key_word, key_kind, "fz_map_put key"),
-        stored_value(value_word, value_kind, "fz_map_put value"),
+        Stored {
+            word: key_word,
+            kind: key_kind,
+        }
+        .value("fz_map_put key"),
+        Stored {
+            word: value_word,
+            kind: value_kind,
+        }
+        .value("fz_map_put value"),
     )
 }
 
@@ -2234,7 +2214,7 @@ pub extern "C" fn fz_struct_get_named_field_ref(process: *mut Process, value_ref
         assert_eq!(field_name.as_deref(), Some("value"), "a resource's one field is value");
         return resource_payload_ref(value_ref).raw_word();
     }
-    fz_map_get_atom_key_ref(process, value_ref_word, field_atom_id)
+    map_get(process, value_ref, AnyValue::atom(field_atom_id as u32))
 }
 
 /// The module a struct value belongs to, as a value ref: its `__struct__`
@@ -2242,7 +2222,8 @@ pub extern "C" fn fz_struct_get_named_field_ref(process: *mut Process, value_ref
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_struct_module(process: *mut Process, value_ref_word: u64) -> u64 {
     let key = unsafe { &*process }.node.intern_atom(STRUCT_MODULE_FIELD);
-    fz_map_get_atom_key_ref(process, value_ref_word, key as u64)
+    let value = any_value_ref_from_word(value_ref_word, "fz_struct_module");
+    map_get(process, value, AnyValue::atom(key))
 }
 
 /// The struct schema of the module a map names, as a `NamedSchema` word.
@@ -2630,12 +2611,21 @@ pub extern "C" fn fz_bitstring_utf8_prefix(bs_bits: u64) -> i64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_matcher_map_get_ref(process: *mut Process, map_ref_word: u64, key_ref_word: u64) -> u64 {
+pub extern "C" fn fz_matcher_map_get_ref(
+    process: *mut Process,
+    map_ref_word: u64,
+    key_word: u64,
+    key_kind: u64,
+) -> u64 {
     let map = any_value_ref_from_word(map_ref_word, "fz_matcher_map_get_ref map");
-    let key = any_value_ref_from_word(key_ref_word, "fz_matcher_map_get_ref key");
+    let key = Stored {
+        word: key_word,
+        kind: key_kind,
+    }
+    .value("fz_matcher_map_get_ref key");
     (unsafe { &mut *process })
         .heap
-        .read_map_value_ref(map, key)
+        .read_map_value(map, key)
         .expect("fz_matcher_map_get_ref")
         .unwrap_or_else(AnyValueRef::null)
         .raw_word()

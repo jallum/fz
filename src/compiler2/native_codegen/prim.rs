@@ -30,11 +30,10 @@ use fz_runtime::ir_runtime::{
     fz_alloc_binview_from_static, fz_bs_begin, fz_bs_field_end, fz_bs_field_spec, fz_bs_finalize,
     fz_bs_read_binary_ref, fz_bs_read_int_ref, fz_bs_write_field_ref, fz_bs_write_word, fz_function_arity,
     fz_int_float_cmp, fz_map_dest_begin, fz_map_dest_begin_update, fz_map_dest_freeze, fz_map_dest_publish,
-    fz_map_dest_put, fz_map_get_atom_key_ref, fz_map_get_float_key_ref, fz_map_get_int_key_ref, fz_map_get_ref,
-    fz_map_named_schema_ref, fz_matcher_map_get_ref, fz_pinned_binary_segment_size, fz_ref_load_atom,
-    fz_ref_load_float, fz_ref_load_int, fz_struct_get_field_ref, fz_struct_get_named_field_ref, fz_struct_module,
-    fz_struct_schema_id_ref, fz_value_cmp_raw_const, fz_value_cmp_ref, fz_value_eq_raw_const, fz_value_eq_ref,
-    fz_value_eq_widening_ref,
+    fz_map_dest_put, fz_map_get_ref, fz_map_named_schema_ref, fz_matcher_map_get_ref, fz_pinned_binary_segment_size,
+    fz_ref_load_atom, fz_ref_load_float, fz_ref_load_int, fz_struct_get_field_ref, fz_struct_get_named_field_ref,
+    fz_struct_module, fz_struct_schema_id_ref, fz_value_cmp_raw_const, fz_value_cmp_ref, fz_value_eq_raw_const,
+    fz_value_eq_ref, fz_value_eq_widening_ref,
 };
 use fz_runtime::process::AtomName;
 use fz_runtime::process_abi::{PROCESS_DELIVERED_OFFSET, PROCESS_FAILED_OFFSET};
@@ -48,28 +47,37 @@ pub(crate) fn emit_map_get_value_ref_for_key<M: cranelift_module::Module, T: Typ
     map: Var,
     key: Var,
 ) -> ir::Value {
-    let value_types = env.active_value_types();
     let map_ref = body.tagged_var(var_env, map.0);
+    let [key_word, key_kind] = map_key_parts(body, t, env, var_env, key);
     let process = body.process_arg();
-    let key_kind = expected_runtime_value_kind(t, value_types, key);
-    match key_kind {
-        Some(ValueKind::ATOM) => {
-            let key_atom = body.value_raw_atom(binding_for_var(var_env, key.0));
-            runtime_call1!(body, fz_map_get_atom_key_ref, [process, map_ref, key_atom])
-        }
-        Some(ValueKind::INT) => {
-            let key_int = body.value_raw_int(binding_for_var(var_env, key.0));
-            runtime_call1!(body, fz_map_get_int_key_ref, [process, map_ref, key_int])
-        }
+    runtime_call1!(body, fz_map_get_ref, [process, map_ref, key_word, key_kind])
+}
+
+/// A map key as the word a map stores for it and its kind. A key the type
+/// says is an atom, integer or float gives its own word beside that constant
+/// kind, whatever binding holds it; any other key is read as `stored_parts`
+/// reads it.
+fn map_key_parts<M: cranelift_module::Module, T: Types<Ty = Ty>>(
+    body: &mut CodegenFn<'_, '_, M>,
+    t: &mut T,
+    env: &CodegenEnv<'_>,
+    var_env: &HashMap<u32, CodegenValue>,
+    key: Var,
+) -> [ir::Value; 2] {
+    let binding = binding_for_var(var_env, key.0);
+    let (word, kind) = match expected_runtime_value_kind(t, env.active_value_types(), key) {
+        Some(ValueKind::ATOM) => (body.value_raw_atom(binding), ValueKind::ATOM),
+        Some(ValueKind::INT) => (body.value_raw_int(binding), ValueKind::INT),
         Some(ValueKind::FLOAT) => {
-            let key_float = body.value_raw_float(binding_for_var(var_env, key.0));
-            runtime_call1!(body, fz_map_get_float_key_ref, [process, map_ref, key_float])
+            let float = body.value_raw_float(binding);
+            (
+                body.b.ins().bitcast(types::I64, MemFlagsData::new(), float),
+                ValueKind::FLOAT,
+            )
         }
-        _ => {
-            let key_ref = body.tagged_var(var_env, key.0);
-            runtime_call1!(body, fz_map_get_ref, [process, map_ref, key_ref])
-        }
-    }
+        _ => return stored_parts(body, binding),
+    };
+    [word, body.b.ins().iconst(types::I64, i64::from(kind.tag()))]
 }
 
 /// Put one entry in a map destination; the answer is the reference to the
@@ -527,8 +535,8 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
             let process = body.process_arg();
             let scan = one_word_key(body, binding_for_var(var_env, k.0))
                 .map(|(word, kind)| WordKeyFind::emit(body.b, process, map_ref, word, kind));
-            let key_ref = body.tagged_var(var_env, k.0);
-            let answer = runtime_call1!(body, fz_matcher_map_get_ref, [process, map_ref, key_ref]);
+            let [key_word, key_kind] = stored_parts(body, binding_for_var(var_env, k.0));
+            let answer = runtime_call1!(body, fz_matcher_map_get_ref, [process, map_ref, key_word, key_kind]);
             LowerOut::ValueRefWord(match scan {
                 Some(scan) => scan.finish(body.b, answer),
                 None => answer,

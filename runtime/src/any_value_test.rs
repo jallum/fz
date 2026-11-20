@@ -1627,3 +1627,52 @@ fn a_reference_ref_is_still_built_over_a_slot() {
     let reference = AnyValueRef::from_scalar_slot(ValueKind::REF, &slot).expect("a reference slot ref");
     assert_eq!(reference.load_opaque_word(ValueKind::REF), Ok(9));
 }
+
+/// The values a container can hold, one of each kind a `Stored` carries.
+fn values_of_every_kind(heap: &mut Heap) -> Vec<AnyValue> {
+    let list = AnyValue::decode_tagged_heap_bits(list_cell(heap, 1, EMPTY_LIST)).expect("a list cell");
+    vec![
+        AnyValue::int(i64::MAX),
+        AnyValue::int(-42),
+        AnyValue::float(2.5),
+        AnyValue::atom(42),
+        AnyValue::nil_atom(),
+        AnyValue::null(),
+        AnyValue::empty_list(),
+        list,
+    ]
+}
+
+#[test]
+fn a_stored_value_is_the_word_a_container_keeps_beside_its_kind() {
+    let mut heap = test_heap();
+    for value in values_of_every_kind(&mut heap) {
+        let stored = Stored::of(value);
+        assert_eq!(stored.word, value.raw(), "the word of {value:?}");
+        assert_eq!(stored.kind, u64::from(value.kind().tag()), "the kind of {value:?}");
+        assert_eq!(stored.value("a round trip"), value, "{value:?} comes back whole");
+    }
+}
+
+#[test]
+fn a_stored_value_is_two_words_so_it_returns_in_two_registers() {
+    assert_eq!(mem::size_of::<Stored>(), 16);
+    assert_eq!(mem::offset_of!(Stored, word), 0);
+    assert_eq!(mem::offset_of!(Stored, kind), 8);
+}
+
+#[test]
+#[should_panic(expected = "a test: kind 11 with word 0x0 spells no value")]
+fn a_stored_kind_that_names_no_kind_is_refused_loudly() {
+    let _ = Stored { word: 0, kind: 11 }.value("a test");
+}
+
+#[test]
+#[should_panic(expected = "spells no value")]
+fn a_stored_kind_wider_than_a_kind_byte_is_refused_loudly() {
+    let _ = Stored {
+        word: 0,
+        kind: u64::from(ValueKind::INT.tag()) | 0x100,
+    }
+    .value("a test");
+}

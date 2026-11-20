@@ -22,7 +22,7 @@ use crate::fz_ir::Module;
 use crate::runtime_type_predicate::{
     RuntimeTypePredicate, RuntimeValueReader, TuplePositions, matches_runtime_type_predicate, surface_membership,
 };
-use fz_runtime::any_value::{AnyValue as RuntimeAnyValue, TRUE_ATOM_ID, ValueKind, struct_schema_id};
+use fz_runtime::any_value::{AnyValue as RuntimeAnyValue, Stored, TRUE_ATOM_ID, ValueKind, struct_schema_id};
 use fz_runtime::bits::{bitstring_bit_len, bitstring_byte_ptr, is_bitstring_like};
 use fz_runtime::ir_runtime::{
     bs_field_end, fz_bs_bit_len_ref, fz_bs_field_spec, fz_list_head_ref, fz_list_tail_ref, fz_matcher_map_get_ref,
@@ -896,13 +896,13 @@ impl<'a> Dispatch<'a> {
         let Some(key) = key else {
             return Ok(None);
         };
+        let Ok(key) = key.value(proc).map(Stored::of) else {
+            return Ok(None);
+        };
         let found = with_value_ref(proc, map, "DispatchMapGet map", |map_ref| {
-            with_value_ref(proc, key, "DispatchMapGet key", |key_ref| {
-                fz_matcher_map_get_ref(proc, map_ref, key_ref)
-            })
+            fz_matcher_map_get_ref(proc, map_ref, key.word, key.kind)
         })
         .ok()
-        .and_then(Result::ok)
         .and_then(|ref_word| interp_value_from_ref_word(ref_word, "DispatchMapGet").ok());
         Ok(match found {
             None | Some(AnyValue::Null) => None,

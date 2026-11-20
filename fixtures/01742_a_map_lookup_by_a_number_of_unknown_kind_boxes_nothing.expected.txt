@@ -1,0 +1,2 @@
+[{:int, true, :int, 2}, {:float, true, :float, 2}, {:atom, true, :atom, 2}]
+0

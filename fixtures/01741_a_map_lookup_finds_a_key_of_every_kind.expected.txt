@@ -1,0 +1,16 @@
+{:small_integer, :small_integer, true, :small_integer, false, 12}
+{:wide_integer, :wide_integer, true, :wide_integer, false, 12}
+{:negative_integer, :negative_integer, true, :negative_integer, false, 12}
+{:float, :float, true, :float, false, 12}
+{:atom, :atom, true, :atom, false, 12}
+{nil, nil, true, nil, false, 12}
+{:pid, :pid, true, :pid, false, 12}
+{:reference, :reference, true, :reference, false, 12}
+{:binary, :binary, true, :binary, false, 12}
+{:list, :list, true, :list, false, 12}
+{:tuple, :tuple, true, :tuple, false, 12}
+{:map, :map, true, :map, false, 12}
+{:struct, :struct, true, :struct, false, 12}
+nil
+false
+:missing

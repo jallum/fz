@@ -436,6 +436,20 @@ fn emit_receive_value_ref<M: cranelift_module::Module>(
     }
 }
 
+/// The word a container stores for `value` and its kind, as two `I64`s.
+fn receive_value_stored_parts(b: &mut FunctionBuilder<'_>, value: ReceiveValue) -> [ir::Value; 2] {
+    let (word, kind) = match value {
+        ReceiveValue::AnyRef(reference) => return super::list_cell::stored_parts_of_ref(b, reference),
+        ReceiveValue::Int(word) => (word, ValueKind::INT),
+        ReceiveValue::Atom(word) => (word, ValueKind::ATOM),
+        ReceiveValue::Float(float) => (
+            b.ins().bitcast(types::I64, MemFlagsData::new(), float),
+            ValueKind::FLOAT,
+        ),
+    };
+    [word, b.ins().iconst(types::I64, i64::from(kind.tag()))]
+}
+
 fn receive_value_from_ref_word(_b: &mut FunctionBuilder<'_>, value_ref: ir::Value) -> ReceiveValue {
     ReceiveValue::AnyRef(value_ref)
 }
@@ -1198,8 +1212,8 @@ fn emit_dispatch_map_get_value<M: cranelift_module::Module>(
         ReceiveValue::AnyRef(_) | ReceiveValue::Float(_) => None,
     }
     .map(|(word, kind)| WordKeyFind::emit(body.b, ctx.process, map_ref, word, kind));
-    let key_ref = emit_receive_value_ref(body, ctx, key)?;
-    let answer = runtime_call1!(body, fz_matcher_map_get_ref, [ctx.process, map_ref, key_ref]);
+    let [key_word, key_kind] = receive_value_stored_parts(body.b, key);
+    let answer = runtime_call1!(body, fz_matcher_map_get_ref, [ctx.process, map_ref, key_word, key_kind]);
     let out_ref = match scan {
         Some(scan) => scan.finish(body.b, answer),
         None => answer,

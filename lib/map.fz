@@ -418,7 +418,7 @@ defmodule Map do
   @spec delete(any, any) :: any
   def delete(map, key), do: fz_map_delete(map, key)
 
-  extern "fz" defp fz_map_delete(any, any) :: any
+  extern "fz" defp fz_map_delete(any, stored_value) :: any
 
   @doc """
   Returns the entries as a `{key, value}` list, in the map's iteration order.
@@ -474,7 +474,7 @@ defmodule Map do
   def has_key?(map, key) when is_map(map), do: fz_map_has_key(map, key)
   def has_key?(map, _key), do: raise(%BadMapError{term: map})
 
-  extern "fz" defp fz_map_has_key(any, any) :: boolean
+  extern "fz" defp fz_map_has_key(any, stored_value) :: boolean
 
   extern "fz" defp fz_map_entry_key(any, integer) :: any
 

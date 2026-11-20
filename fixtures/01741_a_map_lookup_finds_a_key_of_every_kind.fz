@@ -1,0 +1,64 @@
+#---
+# purpose: Map.get, Map.has_key?, Map.delete and a pinned-key pattern find a key of every kind, on the interpreter, the JIT and a built program
+# oracle: self
+# oracle.stamp: 0b00ab732473bad8
+#---
+#
+# Every value below is a key of one map. Each is looked up four ways: by
+# `Map.get`, by `Map.has_key?`, by a `case` whose pattern pins it, and by
+# `Map.delete`, whose result no longer holds it. The keys come out of a list,
+# so the compiler knows none of their kinds and each crosses into the runtime
+# as a value of any kind. Each key's value is its name, so a pid or a
+# reference, which print differently in Elixir, is never printed.
+defmodule Point do
+  defstruct [:x, :y]
+end
+
+defmodule Main do
+  def keys(me, ref) do
+    [
+      {:small_integer, 7},
+      {:wide_integer, 9_223_372_036_854_775_807},
+      {:negative_integer, -42},
+      {:float, 2.5},
+      {:atom, :blue},
+      {:nil, nil},
+      {:pid, me},
+      {:reference, ref},
+      {:binary, "a binary"},
+      {:list, [1, 2, 3]},
+      {:tuple, {:ok, 1}},
+      {:map, %{inner: 1}},
+      {:struct, %Point{x: 1, y: 2}}
+    ]
+  end
+
+  def pinned(map, key) do
+    case map do
+      %{^key => found} -> found
+      _ -> :missing
+    end
+  end
+
+  def check({name, key}, map) do
+    IO.inspect({
+      name,
+      Map.get(map, key),
+      Map.has_key?(map, key),
+      pinned(map, key),
+      Map.has_key?(Map.delete(map, key), key),
+      map_size(Map.delete(map, key))
+    })
+  end
+
+  def main() do
+    keys = keys(self(), make_ref())
+    map = Map.new(keys, fn {name, key} -> {key, name} end)
+    Enum.each(keys, fn entry -> check(entry, map) end)
+    IO.inspect(Map.get(map, 8))
+    IO.inspect(Map.has_key?(map, 2.0))
+    IO.inspect(pinned(map, :red))
+  end
+end
+
+Main.main()

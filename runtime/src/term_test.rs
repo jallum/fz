@@ -97,10 +97,7 @@ fn lookup_by_the_retained_dag_key_does_no_structural_walk() {
         let map = heap_value(heap.alloc_map_slots(&[(key, AnyValue::int(7))]));
         let map = AnyValueRef::from_heap_object(ValueKind::MAP, map.raw() as *const u8).unwrap();
         COMPARISON_CALLS.with(|count| count.set(0));
-        assert_eq!(
-            heap.read_map_value_for_any_key(map, key).unwrap().unwrap().load_int(),
-            Ok(7)
-        );
+        assert_eq!(heap.read_map_value(map, key).unwrap().unwrap().load_int(), Ok(7));
         COMPARISON_CALLS.with(|count| {
             assert_eq!(
                 count.get(),
@@ -319,7 +316,7 @@ fn typed_closure_and_resource_identity_survive_transport_without_comparison_allo
     let moved = roots[0];
     assert_eq!(
         destination
-            .read_map_value_for_any_key(moved, heap_value(b))
+            .read_map_value(moved, heap_value(b))
             .unwrap()
             .unwrap()
             .load_int(),
