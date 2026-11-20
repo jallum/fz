@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-20T22:13:58Z",
+  "description": "Approved by the user as its own ticket on the fz-mue.32 page (/Users/j5n/Workspace/fz-mue.32.html), relayed by Elixir Parity 2026-11-20. Owner: Elixir Parity.\n\nWhen clauses of one name and arity are separated by another definition, Elixir warns: clauses with the same name and arity (number of arguments) should be grouped together, \"def h/1\" was previously defined (m.ex:16). fz emits the same warning from the definition walk through the existing emit_warning_once path. Done when an oracle fixture shows the warning text on all three paths.",
+  "id": "fz-mue.54",
+  "labels": [],
+  "parent": "fz-mue",
+  "priority": 3,
+  "status": "open",
+  "title": "Clauses of one name and arity that are not adjacent warn \"should be grouped together\", as in Elixir",
+  "type": "feature",
+  "updated_at": "2026-11-20T22:13:58Z"
+}
