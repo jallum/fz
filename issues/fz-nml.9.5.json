@@ -7,9 +7,15 @@
   "id": "fz-nml.9.5",
   "labels": [],
   "parent": "fz-nml.9",
+  "comments": [
+    {
+      "text": "Done-when also (Binary Handling, develop 9c9a39e8a): a receive guard comparing against a binary literal compiles natively. send(self(), {:m, \"ab\"}); receive do {:m, b} when b == \"ab\" -\u003e IO.inspect(:eq); _ -\u003e IO.inspect(:ne) end prints :eq on interp but fails on run and build with 'codegen: guard const Utf8Binary([97, 98]) cannot be materialized in receive dispatch' (native_codegen/receive.rs:1411; dispatch_const_value has no binary arm), at any length. One guard lowering removes it; the repro joins this ticket's oracle fixture on all three paths.",
+      "timestamp": "2026-11-20T21:08:33Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "A guard is lowered once: receive dispatch reuses native guard lowering",
   "type": "task",
-  "updated_at": "2026-11-17T23:09:29Z"
+  "updated_at": "2026-11-20T21:08:33Z"
 }
