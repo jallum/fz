@@ -13,11 +13,15 @@
     {
       "text": "fz-nml.9.3 (redirected 2026-11-17) packs a pid into its ref word as an atom is, so no pid box remains once it lands; this ticket drops the pid box from its scope then.",
       "timestamp": "2026-11-18T01:45:35Z"
+    },
+    {
+      "text": "After fz-9x7.44.8 the int|atom ValueRef lane carries (word, kind) and the tail call boxes nothing; the spec join's widening of the recursive \u003c/2 call remains but costs no box. Close-vs-keep-as-specialization question put to the user (Coordinator, 2026-11-20).",
+      "timestamp": "2026-11-20T19:55:14Z"
     }
   ],
   "priority": 3,
   "status": "open",
   "title": "Comparing two atoms with \u003c boxes no integers in native code",
   "type": "bug",
-  "updated_at": "2026-11-20T19:54:58Z"
+  "updated_at": "2026-11-20T19:55:14Z"
 }
