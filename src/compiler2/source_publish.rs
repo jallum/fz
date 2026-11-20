@@ -26,9 +26,9 @@ use super::module_interface::{InterfaceCallableKind, InterfaceRequester, ModuleI
 use super::namespace::{Namespace, NamespaceSymbol};
 use super::protocol::ProtocolCallbackImpl;
 use super::quoted_expander::{
-    ExpandedScopeFragment, ExpandedValue, QuotedExpansionCtx, emit_internal_surface_error, emit_surface_read_error,
-    expand_item_macro_fragment, item_macro_expanded_to_a_non_definition, item_macro_not_defmacro,
-    read_compiler_fragment_root,
+    ExpandedScopeFragment, ExpandedValue, ExpansionContext, QuotedExpansionCtx, emit_internal_surface_error,
+    emit_surface_read_error, expand_item_macro_fragment, item_macro_expanded_to_a_non_definition,
+    item_macro_not_defmacro, read_compiler_fragment_root,
 };
 use super::quoted_surface::{
     AttributeForm, CompilerService, CompilerServiceForm, FunctionForm, MacroCallForm, OverridableForm,
@@ -194,9 +194,9 @@ struct ScopeSession<'world, 'tel, T: crate::telemetry::Telemetry> {
     /// an expansion hit the memoization cache (`next_expansion_number` on
     /// `QuotedExpansionCtx`). Local to this job attempt, reset with it.
     expansions_visited: i64,
-    /// How many guards enclose the expansion in progress; see
-    /// `QuotedExpansionCtx::expand_guard`.
-    guard_depth: u32,
+    /// Where the expansion in progress stands; see
+    /// `QuotedExpansionCtx::expansion_context`.
+    expansion_context: ExpansionContext,
 }
 
 impl<'world, 'tel, T: crate::telemetry::Telemetry> QuotedExpansionCtx for ScopeSession<'world, 'tel, T> {
@@ -241,8 +241,8 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> QuotedExpansionCtx for ScopeS
         }
     }
 
-    fn guard_depth(&mut self) -> &mut u32 {
-        &mut self.guard_depth
+    fn expansion_context(&mut self) -> &mut ExpansionContext {
+        &mut self.expansion_context
     }
 
     fn next_expansion_number(&mut self) -> i64 {
@@ -549,7 +549,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
             definition_time_evaluations: 0,
             statements: Vec::new(),
             expansions_visited: 0,
-            guard_depth: 0,
+            expansion_context: ExpansionContext::Expression,
         }
     }
 
@@ -1604,6 +1604,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
         self.world
             .note_module_reference_expectation(required_module, self.interface_requester(import.span));
         self.bind_required_module_path(import, required_module);
+        self.namespace = self.world.bind_required_module(self.namespace, required_module);
         let selected = if self.world.module_interface_revision(required_module).is_none() {
             if let Some(only) = import.only.as_deref() {
                 only.iter()

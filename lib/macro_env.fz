@@ -1,0 +1,42 @@
+defmodule Macro.Env do
+  @moduledoc """
+  The environment a macro reads as `__CALLER__`, and a body reads as `__ENV__`,
+  as Elixir's `Macro.Env` holds it.
+
+  `module`, `function`, `context`, `file` and `line` say where the code is
+  written. `aliases`, `requires`, `functions`, `macros` and `context_modules`
+  say what its scope has made available. `lexical_tracker`, `macro_aliases`,
+  `tracers` and `versioned_vars` are the fields Elixir has that fz keeps empty.
+
+  `in_match?/1` and `in_guard?/1` are the only functions defined.
+  """
+
+  defstruct aliases: [],
+            context: nil,
+            context_modules: [],
+            file: "nofile",
+            function: nil,
+            functions: [],
+            lexical_tracker: nil,
+            line: 0,
+            macro_aliases: [],
+            macros: [],
+            module: nil,
+            requires: [],
+            tracers: [],
+            versioned_vars: %{}
+
+  @doc """
+  Returns whether the compilation environment is currently
+  inside a guard.
+  """
+  @spec in_guard?(map) :: boolean
+  def in_guard?(%{__struct__: __MODULE__, context: context}), do: context == :guard
+
+  @doc """
+  Returns whether the compilation environment is currently
+  inside a match clause.
+  """
+  @spec in_match?(map) :: boolean
+  def in_match?(%{__struct__: __MODULE__, context: context}), do: context == :match
+end

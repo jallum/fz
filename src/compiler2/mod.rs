@@ -16,6 +16,7 @@ mod dispatch;
 mod dispatch_reachability;
 mod drive;
 mod dump;
+mod env_projection;
 mod executable_facts;
 mod frontdoor;
 mod identity;
@@ -80,6 +81,8 @@ pub(crate) use compiler::BackendRequestEvent;
 pub use compiler::{CodeSubmission, Compiler2, RootSubmission, RunFailure};
 pub use contract::{FunctionContract, FunctionContractMap};
 pub(crate) use drive::JobEffects;
+#[cfg(test)]
+mod env_projection_test;
 #[cfg(test)]
 mod macro_product_test;
 pub use drive::{DependencyKey, FactKey, Job, ProductAddress, WorkGraph};

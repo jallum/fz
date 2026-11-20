@@ -34,6 +34,7 @@ use super::definition_time;
 use super::dispatch::{EntryDispatchMap, GuardDispatchMap};
 use super::drive::{DependencyKey, emit_job_diagnostic, fact_dependency};
 use super::drive::{ExecutionContext, FactKey, Job, JobEffects, UseCollector, WorkGraph};
+use super::env_projection::CallSite;
 use super::identity::{
     ActivationKey, DeclaredCallableKind, ExecutableKey, ExecutableNeed, ExpandedFunctionSourceMap, FunctionId,
     FunctionMap, FunctionRef, FunctionSource, ModuleId, ModuleMap, ModuleSourceKind, ModuleState, NameableModules,
@@ -52,7 +53,7 @@ use super::protocol::{
     ProtocolDispatchMap, ProtocolImpl, ProtocolImplKey, ProtocolImplMap, ProtocolImplProviderMap,
 };
 use super::pull::ProductScope;
-use super::quoted_expander::surface_read_diagnostic;
+use super::quoted_expander::{ExpansionContext, surface_read_diagnostic};
 use super::quoted_surface::{ReservedSourceDefinition, ScopeForm, ScopeSurface, reserved_source_definition};
 use super::reach::{CallChain, ReachSet};
 use super::runtime::{self, RuntimeModuleCode};
@@ -63,7 +64,7 @@ use super::semantic::{
     ContributionMap, ContributionReplace, ExecutableRuntimeDemand, RuntimeDemand, RuntimeDemandInputMap,
     RuntimeDemandTypeProjection, TargetDemandContribution,
 };
-use super::source::{QuotedSourceBuilder, QuotedSourceError, QuotedSourceMetadata, QuotedSourceRoot};
+use super::source::{QuotedSourceBuilder, QuotedSourceError, QuotedSourceRoot};
 use super::source_publish::first_clause_span;
 use super::structdef::{
     StructDef, StructDefMap, StructExpectationMap, StructFieldExpectation, StructReferenceExpectation,
@@ -113,6 +114,8 @@ struct MacroInvocationKey {
     function: FunctionId,
     source: QuotedSourceRoot,
     scope: ScopeSnapshot,
+    context: ExpansionContext,
+    call_site: CallSite,
 }
 
 struct MemoizedMacroExpansion {
@@ -1164,12 +1167,16 @@ impl World {
         function: FunctionId,
         source: &QuotedSourceRoot,
         scope: ScopeSnapshot,
+        context: ExpansionContext,
+        call_site: &CallSite,
         product: &Rc<BackendProgram>,
     ) -> Option<QuotedSourceRoot> {
         let entry = self.macro_expansions.get(&MacroInvocationKey {
             function,
             source: source.clone(),
             scope,
+            context,
+            call_site: call_site.clone(),
         })?;
         let retained_product = entry.product.upgrade()?;
         Rc::ptr_eq(&retained_product, product).then(|| entry.output.clone())
@@ -1180,6 +1187,8 @@ impl World {
         function: FunctionId,
         source: QuotedSourceRoot,
         scope: ScopeSnapshot,
+        context: ExpansionContext,
+        call_site: CallSite,
         product: &Rc<BackendProgram>,
         output: QuotedSourceRoot,
     ) {
@@ -1188,6 +1197,8 @@ impl World {
                 function,
                 source,
                 scope,
+                context,
+                call_site,
             },
             MemoizedMacroExpansion {
                 product: Rc::downgrade(product),
@@ -1964,12 +1975,26 @@ impl World {
         self.namespaces.bind(head, name, symbol)
     }
 
+    pub(crate) fn bind_required_module(&mut self, head: Namespace, module: ModuleId) -> Namespace {
+        self.namespaces.bind_required_module(head, module)
+    }
+
     pub(crate) fn bind_required_macro(&mut self, head: Namespace, function: FunctionId) -> Namespace {
         self.namespaces.bind_required_macro(head, function)
     }
 
     pub(crate) fn lookup_namespace(&self, head: Namespace, name: &str) -> Option<NamespaceSymbol> {
         self.namespaces.lookup(head, name).cloned()
+    }
+
+    /// The named bindings in the chain from `head`, newest first.
+    pub(crate) fn namespace_bindings(&self, head: Namespace) -> impl Iterator<Item = (&str, &NamespaceSymbol)> {
+        self.namespaces.named(head)
+    }
+
+    /// The modules `require`d from `head`.
+    pub(crate) fn required_modules(&self, head: Namespace) -> impl Iterator<Item = ModuleId> {
+        self.namespaces.required_modules(head)
     }
 
     pub fn module_interface(&self, module: ModuleId) -> &ModuleInterface {
@@ -2438,28 +2463,6 @@ impl World {
         }
     }
 
-    pub(crate) fn project_module_value(
-        &self,
-        builder: &QuotedSourceBuilder,
-        scope: ScopeSnapshot,
-    ) -> Result<AnyValueRef, QuotedSourceError> {
-        let Some(denotation) = self.module_denotation(scope.module_id()) else {
-            return Ok(builder.nil());
-        };
-        let metadata = QuotedSourceMetadata {
-            module: Some(denotation.clone()),
-            bound_callable: None,
-            from_brackets: false,
-            span: None,
-            counter: None,
-        };
-        if denotation.named_path().is_some_and(ModuleName::is_bare_atom) {
-            return Ok(builder.atom(&denotation.atom_name()));
-        }
-        let segments = denotation.display_segments().map(String::as_str).collect::<Vec<_>>();
-        builder.alias(&metadata, &segments)
-    }
-
     /// The context a `quote` written in `module` gives its variables: the
     /// module's atom, and `Elixir` outside any module, as Elixir's `quote`
     /// writes them.
@@ -2477,31 +2480,6 @@ impl World {
             Some(denotation) => builder.atom(&denotation.atom_name()),
             None => builder.nil(),
         }
-    }
-
-    pub(crate) fn project_env_value(
-        &self,
-        builder: &QuotedSourceBuilder,
-        scope: ScopeSnapshot,
-    ) -> Result<AnyValueRef, QuotedSourceError> {
-        let function = match scope.function_id() {
-            Some(function) => {
-                let function_ref = self.function_ref(function).lexical_owner();
-                builder.tuple(&[
-                    builder.atom(function_ref.name()),
-                    builder.int(function_ref.arity as i64),
-                ])?
-            }
-            None => builder.nil(),
-        };
-        builder.map(&[
-            (builder.atom("module"), self.project_module_value(builder, scope)?),
-            (builder.atom("function"), function),
-            (
-                builder.atom("namespace"),
-                builder.int(scope.namespace().as_u32() as i64),
-            ),
-        ])
     }
 
     /// The facts `canonical_activation_key` reads for `function` at `inputs`:

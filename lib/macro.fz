@@ -2,8 +2,8 @@ defmodule Macro do
   @moduledoc """
   Works with quoted code, as Elixir's `Macro` does.
 
-  `escape/1`, `unescape_string/1`, `var/2` and `unique_var/2` are the only
-  functions defined. The rest of Elixir's `Macro` (`to_string/1`, `expand/2`,
+  `escape/1`, `unescape_string/1`, `var/2`, `unique_var/2` and
+  `quoted_literal?/1` are the only functions defined. The rest of Elixir's `Macro` (`to_string/1`, `expand/2`,
   `prewalk/2` and the others),
   the options of `escape/2` and the escape map of `unescape_string/2` are not
   defined.
@@ -40,6 +40,74 @@ defmodule Macro do
   def unique_var(name, context) when is_atom(name) and is_atom(context) do
     {name, [counter: :erlang.unique_integer()], context}
   end
+
+  @doc """
+  Returns whether the given quoted expression is a literal.
+
+  Atoms and numbers are always literals. Binaries, lists, tuples,
+  maps, and structs are only literals if all of their terms are also literals.
+
+  ## Examples
+
+      Macro.quoted_literal?(quote(do: "foo"))
+      #=> true
+
+      Macro.quoted_literal?(quote(do: {"foo", 1}))
+      #=> true
+
+      Macro.quoted_literal?(quote(do: %{foo: "bar"}))
+      #=> true
+
+      Macro.quoted_literal?(quote(do: URI.parse("/")))
+      #=> false
+
+      Macro.quoted_literal?(quote(do: {foo, var}))
+      #=> false
+
+  """
+  @spec quoted_literal?(any) :: boolean
+  def quoted_literal?({:__aliases__, _, args}),
+    do: quoted_literal?(args)
+
+  def quoted_literal?({:__block__, _, [wrapped]}),
+    do: quoted_literal?(wrapped)
+
+  def quoted_literal?({:%, _, [left, right]}),
+    do: quoted_literal?(left) and quoted_literal?(right)
+
+  def quoted_literal?({:%{}, _, args}), do: quoted_literal?(args)
+  def quoted_literal?({:{}, _, args}), do: quoted_literal?(args)
+  def quoted_literal?({:__MODULE__, _, ctx}) when is_atom(ctx), do: true
+  def quoted_literal?({:<<>>, _, segments}), do: Enum.all?(segments, &quoted_bitstring_segment?/1)
+  def quoted_literal?({left, right}), do: quoted_literal?(left) and quoted_literal?(right)
+  def quoted_literal?(list) when is_list(list), do: Enum.all?(list, &quoted_literal?/1)
+  def quoted_literal?(term), do: is_atom(term) or is_number(term) or is_binary(term)
+
+  @spec quoted_bitstring_segment?(term) :: boolean
+  defp quoted_bitstring_segment?(term) when is_integer(term) or is_binary(term), do: true
+
+  defp quoted_bitstring_segment?({:"::", _, [term, modifier]})
+       when is_integer(term) or is_binary(term),
+       do: quoted_bitstring_modifier?(modifier)
+
+  defp quoted_bitstring_segment?(_other), do: false
+
+  @spec quoted_bitstring_modifier?(term) :: boolean
+  defp quoted_bitstring_modifier?({:-, _, [left, right]}),
+    do: quoted_bitstring_modifier?(left) and quoted_bitstring_modifier?(right)
+
+  defp quoted_bitstring_modifier?({atom, _, [size]})
+       when atom in [:size, :unit] and is_integer(size),
+       do: true
+
+  defp quoted_bitstring_modifier?({:*, _, [left, right]})
+       when is_integer(left) and is_integer(right),
+       do: true
+
+  defp quoted_bitstring_modifier?({modifier, _, ctx}) when is_atom(ctx) or ctx == [],
+    do: modifier in [:big, :little, :native, :integer, :float, :binary, :bytes, :bitstring, :bits, :utf8, :utf16, :utf32, :signed, :unsigned]
+
+  defp quoted_bitstring_modifier?(_other), do: false
 
   @doc """
   Returns the quoted code that rebuilds `value`.

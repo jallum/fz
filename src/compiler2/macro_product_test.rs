@@ -12,7 +12,7 @@ use super::{
 };
 
 #[test]
-fn body_macro_caller_uses_the_definition_function_and_source_namespace() {
+fn body_macro_caller_uses_the_definition_function_and_the_call_line() {
     let tel = ConfiguredTelemetry::new();
     let diagnostics = crate::telemetry::Capture::new();
     diagnostics.install(&tel, &["fz", "diag"]);
@@ -25,7 +25,7 @@ fn body_macro_caller_uses_the_definition_function_and_source_namespace() {
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("macro_cache_caller_scope.fz".into()),
-        text: "defmacro caller_function() do\n quote do: unquote(__CALLER__.function) == {:main, 0}\nend\ndefmacro caller_namespace() do\n quote do: unquote(__CALLER__.namespace) + 0\nend\ndef main() do\n caller_function() || raise(\"caller function\")\n caller_namespace()\nend\n".into(),
+        text: "defmacro caller_function() do\n quote do: unquote(__CALLER__.function) == {:main, 0}\nend\ndefmacro caller_line() do\n quote do: unquote(__CALLER__.line) + 0\nend\ndef main() do\n caller_function() || raise(\"caller function\")\n caller_line()\nend\n".into(),
     });
     let root = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -36,24 +36,18 @@ fn body_macro_caller_uses_the_definition_function_and_source_namespace() {
     let caller_function = compiler
         .world_mut()
         .reference_function(ModuleId::GLOBAL, "caller_function", 0);
-    let caller_namespace = compiler
+    let caller_line = compiler
         .world_mut()
-        .reference_function(ModuleId::GLOBAL, "caller_namespace", 0);
+        .reference_function(ModuleId::GLOBAL, "caller_line", 0);
 
     let result = compiler.run_root_interp(root);
-    let main = compiler.root_function(root);
-    let source_namespace = compiler
-        .world()
-        .function_scope(main)
-        .expect("main should have an authoritative definition scope")
-        .namespace()
-        .as_u32() as i64;
-    assert_eq!(result, Ok(source_namespace), "{:?}", diagnostics.events());
+    let call_line = 9;
+    assert_eq!(result, Ok(call_line), "{:?}", diagnostics.events());
     assert_eq!(
         expansions
             .borrow()
             .iter()
-            .filter(|function| **function == caller_function || **function == caller_namespace)
+            .filter(|function| **function == caller_function || **function == caller_line)
             .count(),
         2,
         "each caller-reflecting macro should execute once despite body-expansion retries"

@@ -42,6 +42,9 @@ enum Entry {
     /// A macro `require` made callable by its qualified name. It binds no
     /// name, so no lookup by name can meet it.
     RequiredMacro(FunctionId),
+    /// A `require` of a module, whether or not it has macros. It binds no
+    /// name, so no lookup by name can meet it.
+    RequiredModule(ModuleId),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -96,6 +99,11 @@ impl NamespaceStore {
         self.push(head, Entry::RequiredMacro(macro_function))
     }
 
+    /// Records that `module` was `require`d from `head` on.
+    pub fn bind_required_module(&mut self, head: Namespace, module: ModuleId) -> Namespace {
+        self.push(head, Entry::RequiredModule(module))
+    }
+
     fn push(&mut self, head: Namespace, entry: Entry) -> Namespace {
         let binding = Binding { entry, prev: head };
         if let Some(&id) = self.by_binding.get(&binding) {
@@ -116,11 +124,19 @@ impl NamespaceStore {
         .map(|link| &self.bindings[link.0 as usize - 1].entry)
     }
 
+    /// The modules `require`d in the chain from `head`, newest first.
+    pub fn required_modules(&self, head: Namespace) -> impl Iterator<Item = ModuleId> {
+        self.entries(head).filter_map(|entry| match entry {
+            Entry::RequiredModule(module) => Some(*module),
+            Entry::Named { .. } | Entry::RequiredMacro(_) => None,
+        })
+    }
+
     /// The chain's named bindings from `head`, newest first.
-    fn named(&self, head: Namespace) -> impl Iterator<Item = (&str, &NamespaceSymbol)> {
+    pub fn named(&self, head: Namespace) -> impl Iterator<Item = (&str, &NamespaceSymbol)> {
         self.entries(head).filter_map(|entry| match entry {
             Entry::Named { name, symbol } => Some((name.as_str(), symbol)),
-            Entry::RequiredMacro(_) => None,
+            Entry::RequiredMacro(_) | Entry::RequiredModule(_) => None,
         })
     }
 

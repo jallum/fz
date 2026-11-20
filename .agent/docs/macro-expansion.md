@@ -202,9 +202,8 @@ definition's own scope (`project_env_value(def_scope, Definition)`, so
 the namespace as `NamespaceSymbol::Splice`. The expander resolves a reserved
 `__`-prefixed variable against the namespace and splices a `Splice` binding in
 place — generically: it knows about splice bindings, not about `__ENV__`. The
-binding is transient; it is never recorded on the function. The env is the lean
-`%{module, function, namespace}` reflection for now; grow it when a real need
-appears. (`decode_expr` decodes a raw map value as a map literal, alongside
+binding is transient; it is never recorded on the function. The env is a `%Macro.Env{}`
+(below). (`decode_expr` decodes a raw map value as a map literal, alongside
 lists and tuples, so the spliced env map decodes as source.)
 
 A module attribute is a splice too, bound as `"@name"` when the module sets it
@@ -229,14 +228,47 @@ clause do (`FunctionSourceExpander::expand_signature`), so a splice in a head
 pattern is resolved. The signature itself is the definition's name and is not
 expanded as a call.
 
+### The `%Macro.Env{}` struct
+
+`__ENV__` and `__CALLER__` are `%Macro.Env{}` structs, projected by
+`World::project_env_value` (`src/compiler2/env_projection.rs`) with Elixir's
+field order. The `Macro.Env` module (`lib/macro_env.fz`) holds the
+`defstruct` and `in_match?/1` and `in_guard?/1`. Where each field comes from:
+
+| field | value |
+| --- | --- |
+| `module`, `function` | the scope's module (an alias that carries its exact denotation, `nil` outside a module) and function (`{name, arity}` or `nil`) |
+| `context` | the expansion context: `nil`, `:match` or `:guard` |
+| `file`, `line` | where the macro call is written (`__CALLER__`) or the definition is (`__ENV__`); `"nofile"` and `0` with no source position (`CallSite::locate`) |
+| `aliases` | `[{Short, Full}]` for each module the namespace binds under a name that is not its own, in the order written |
+| `functions`, `macros` | `[{Module, [{name, arity}]}]` for each callable the namespace binds that another module owns, modules and pairs sorted |
+| `requires` | the modules the namespace `require`s, macros or not, plus those it imports from, sorted |
+| `context_modules` | `[Module]` inside a module, `[]` outside |
+| `lexical_tracker`, `macro_aliases`, `tracers`, `versioned_vars` | `nil`, `[]`, `[]`, `%{}`: fz has no tracker, tracers or variable tracking in the expander |
+
+The macro-expansion memo key holds the call site (`file` and `line`) and the
+expansion context beside the macro, the call and the scope, since the env a
+macro reads differs by each.
+
+### Expansion context
+
+`ExpansionContext` (`Expression`, `Match`, `Guard`) in `quoted_expander.rs` is
+the one state the expander keeps about where a call stands. A position that
+binds a pattern expands it in `Match`: function-head parameters, the left of
+`=` and `<-`, and the left of `->` in `case`, `fn`, `receive`, `try`'s
+`rescue`, `catch` and `else`, `with`'s `else`, and `for ... reduce:` clauses.
+A `when` guard expands in `Guard`. The `->` clauses of `cond` and of
+`receive`'s `after` hold tests, so their left sides stay `Expression`, as in
+Elixir. `Macro.Env.in_match?/1` and `in_guard?/1` read it, so one macro can
+build a value in an expression and match any value in a pattern.
+
 `__CALLER__` varies per invocation and cannot be a compile-time splice: a macro
 is compiled once and executed many times, and the caller is unknown when the
 macro body is expanded. So it stays a runtime parameter — `lower_clause`
 prepends it, and `expand_macro_invocation` projects it from the call-site scope
-(`project_env_value(scope, Caller)`) and passes it as the macro's first
+(`project_env_value(scope, context, call_site)`) and passes it as the macro's first
 argument. Function-body expansion strips its transient `__ENV__` splice from
-that source-visible scope, so retries cannot invent a new `__CALLER__.namespace`
-or a new macro-cache identity. The def-head macros capture `__CALLER__` as
+that source-visible scope, so retries cannot invent a new macro-cache identity. The def-head macros capture `__CALLER__` as
 `Fz.Compiler.define(source, __CALLER__)`, the Elixir-aligned def-site env seam.
 
 ## How Remote Macros Stay Honest
