@@ -18,11 +18,15 @@
     {
       "text": "GC's answers on the scope. (a) Constant bitstrings: nothing to move. Compiled code never calls fz_alloc_bitstring_const; only the interpreter does (ir_interp/value.rs:268). A small literal is a static object (prim.rs static_object_ref), and a large one takes the static-view path. (b) Static views: the page's own condition, 'if the BinRef isn't static, the view stays a call', applies. fz_alloc_binview_from_static (ir_runtime.rs:1424) retains the SharedBin and allocates a heap BinRef. GC proposes 'A large binary literal is static data' under fz-9e2, blocked by 9e2.4. Receive-dispatch boxes are a real gap, about 0.65% of ring. GC proposes 'A box made in a receive dispatch body is placed inline' under fz-9x7.41. Both proposals await the user.",
       "timestamp": "2026-11-19T04:57:08Z"
+    },
+    {
+      "text": "Closing note (GC, 2026-11-20): compiled code never allocated constant bitstrings, so that part of the original title was moot; static views move to fz-9e2.15. Receive dispatch bodies' boxes are fz-9x7.41.6.",
+      "timestamp": "2026-11-20T19:01:22Z"
     }
   ],
   "priority": 2,
   "status": "closed",
   "title": "Compiled code places a box itself",
   "type": "task",
-  "updated_at": "2026-11-20T13:02:52Z"
+  "updated_at": "2026-11-20T19:01:22Z"
 }
