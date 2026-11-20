@@ -11,7 +11,7 @@
   "parent": "fz-9x7.44",
   "priority": 1,
   "status": "open",
-  "title": "Tuple, struct and closure field entries take and answer a stored word and its kind",
+  "title": "Tuple, struct and closure field entries take a stored word and its kind",
   "type": "task",
-  "updated_at": "2026-11-20T20:47:35Z"
+  "updated_at": "2026-11-20T20:47:39Z"
 }
