@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-20T19:01:20Z",
+  "description": "Follow-up to fz-9x7.41.4 (I4); same user word as its sibling: \"we should shore up the gaps in I4, if they're necessary to continue.\" Filed at the end of fz-9e2.\n\nfz_alloc_binview_from_static (ir_runtime.rs:1424) retains the static SharedBin and pushes a heap BinRef onto the off-heap chain on every evaluation. Once fz-9e2.4 makes a static buffer's refcount static, the view can be a static object, as a small literal already is (prim.rs, static_object_ref). Owner: Binary Handling (or GC by agreement).",
+  "id": "fz-9e2.15",
+  "labels": [],
+  "parent": "fz-9e2",
+  "priority": 3,
+  "status": "open",
+  "title": "A large binary literal is static data: no view, retain or BinRef is made at run time",
+  "type": "task",
+  "updated_at": "2026-11-20T19:01:20Z"
+}
