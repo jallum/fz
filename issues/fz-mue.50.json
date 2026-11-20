@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-20T21:11:43Z",
+  "description": "Split from fz-mue.12 by the user (answer \"Split: Macro.Env lands now\", page /Users/j5n/Workspace/fz-mue.12.html, Amendment 2; relayed by Elixir Parity 2026-11-20). The built half of mue.12: __CALLER__ and __ENV__ are a %Macro.Env{} with the field table on the page. Lands as its own PR. Owner: Elixir Parity.",
+  "id": "fz-mue.50",
+  "labels": [],
+  "parent": "fz-mue",
+  "priority": 2,
+  "status": "open",
+  "title": "__CALLER__ and __ENV__ are a %Macro.Env{}, as in Elixir",
+  "type": "feature",
+  "updated_at": "2026-11-20T21:11:43Z"
+}
