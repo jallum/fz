@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-20T20:28:16Z",
@@ -8,7 +8,7 @@
   "labels": [],
   "parent": "fz-sc8",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "The distiller's compile-cost pins are ceilings, lowered now and then",
   "type": "task",
   "updated_at": "2026-11-20T20:28:16Z"
