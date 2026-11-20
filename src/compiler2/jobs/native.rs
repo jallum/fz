@@ -3507,6 +3507,9 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
     where
         F: FnMut(&mut Self, &mut NativeFnCtx, GraphNodeId, &mut DispatchState) -> Result<(), FatalError>,
     {
+        if matches!(predicate.region, Region::Bitstring(_)) {
+            self.read_bitstring_subject(ctx, plan, state, predicate.subject)?;
+        }
         let mut match_state = state.clone();
         let outcome = self.lower_dispatch_region(
             ctx,
@@ -4150,23 +4153,21 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         shape: &crate::dispatch_matrix::BitstringShape,
         state: &mut DispatchState,
     ) -> Result<RegionOutcome, FatalError> {
-        let (subject_var, cursor_position) = self.dispatch_bit_source(ctx, plan, state, subject)?;
+        let (subject_var, cursor_position, bit_len) = self.read_bitstring_subject(ctx, plan, state, subject)?;
         let fail_b = ctx.builder.block(vec![]);
-
-        // The length is read straight out of the object, and the same read of
-        // the object's kind says whether it is a binary at all.
         let int = self.world.types_mut().int();
-        let (bit_len, _) = ctx.emit_let(Prim::BitstringBitLen(subject_var));
-        ctx.value_types.insert(bit_len, int);
-        let (not_binary, _) = ctx.emit_let(Prim::IsNotBinary(bit_len));
-        let read_b = ctx.builder.block(vec![]);
-        ctx.set_term(Term::If {
-            cond: not_binary,
-            then_b: fail_b,
-            else_b: read_b,
-            origin: BranchOrigin::ClauseDispatch,
-        });
-        ctx.current_block = read_b;
+        if cursor_position.is_none() {
+            // The length reads as not-a-binary for a value that is not one.
+            let (not_binary, _) = ctx.emit_let(Prim::IsNotBinary(bit_len));
+            let read_b = ctx.builder.block(vec![]);
+            ctx.set_term(Term::If {
+                cond: not_binary,
+                then_b: fail_b,
+                else_b: read_b,
+                origin: BranchOrigin::ClauseDispatch,
+            });
+            ctx.current_block = read_b;
+        }
 
         let (mut pos, mut start) = match cursor_position {
             Some(position) => (position, FieldStart::PastCursor(Some(0))),
@@ -4257,6 +4258,34 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
     /// no size, which reads to the end.
     fn is_rest_read(&self, field: &BitMatchField) -> bool {
         field.is_last && field.size.is_none() && matches!(field.ty, BitType::Binary | BitType::Bits)
+    }
+
+    /// What a bitstring test needs of its subject: the binary, the position of
+    /// a cursor, and the binary's bit length, loaded the first time the state
+    /// is asked and kept in `state.bit_lens` for every later test of the same
+    /// binary. A cursor's source is a binary by construction and is read
+    /// without asking its kind; any other subject's read answers a negative
+    /// length when the subject is not a binary.
+    fn read_bitstring_subject(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        plan: &PatternDispatchPlan<Ty>,
+        state: &mut DispatchState,
+        subject: SubjectId,
+    ) -> Result<(Var, Option<Var>, Var), FatalError> {
+        let (source, cursor_position) = self.dispatch_bit_source(ctx, plan, state, subject)?;
+        if let Some(&bit_len) = state.bit_lens.get(&source) {
+            return Ok((source, cursor_position, bit_len));
+        }
+        let prim = match cursor_position {
+            Some(_) => Prim::BinaryBitLen(source),
+            None => Prim::BitstringBitLen(source),
+        };
+        let (bit_len, _) = ctx.emit_let(prim);
+        let int = self.world.types_mut().int();
+        ctx.value_types.insert(bit_len, int);
+        state.bit_lens.insert(source, bit_len);
+        Ok((source, cursor_position, bit_len))
     }
 
     /// The binary a bitstring region reads and the position it starts at: the
@@ -5722,6 +5751,11 @@ struct DispatchState {
     /// The subjects the winning outcome reads, beyond what the decision asks.
     /// A bitstring field outside both is checked for fit and never built.
     outcome_reads: Vec<SubjectId>,
+    /// The bit length of each binary a bitstring test has read, by the variable
+    /// that holds the binary. The read sits in the block where the test begins,
+    /// which dominates every clause that tests the same binary after it, so the
+    /// next clause reuses the length rather than loading it again.
+    bit_lens: HashMap<Var, Var>,
 }
 
 impl DispatchState {
@@ -5732,6 +5766,7 @@ impl DispatchState {
             bindings,
             values: HashMap::default(),
             outcome_reads: Vec::new(),
+            bit_lens: HashMap::default(),
         }
     }
 

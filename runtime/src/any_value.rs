@@ -1367,15 +1367,19 @@ pub const BINARY_SHARED_MASK: u64 = LIST_LINK_ALIAS_MASK;
 /// shared mark. The low nibble is clear in a live object.
 pub const BITSTRING_HEADER_LEN_MASK: u64 = BINARY_SHARED_MASK - 1;
 
-/// An inline bitstring's first word for a new, unshared object: the bit length
-/// above four clear bits. A live bitstring's low nibble is clear; only a
+/// The most bits a binary's header can count.
+pub const BINARY_MAX_BIT_LEN: u64 = BITSTRING_HEADER_LEN_MASK >> BITSTRING_BIT_LEN_SHIFT;
+
+/// A binary's first word for a new, unshared object, in either form: the bit
+/// length above four clear bits. A live binary's low nibble is clear; only a
 /// forwarding marker sets it.
+///
+/// Every length fits by construction: an inline bitstring is under the inline
+/// threshold, and a view is a window of a buffer whose allocation checked that
+/// its bytes fit (`shared_bin_alloc_with`).
 #[inline]
 pub fn bitstring_header_word(bit_len: u64) -> u64 {
-    assert!(
-        bit_len <= BITSTRING_HEADER_LEN_MASK >> BITSTRING_BIT_LEN_SHIFT,
-        "bitstring bit length overflow"
-    );
+    debug_assert!(bit_len <= BINARY_MAX_BIT_LEN, "bitstring bit length overflow");
     bit_len << BITSTRING_BIT_LEN_SHIFT
 }
 

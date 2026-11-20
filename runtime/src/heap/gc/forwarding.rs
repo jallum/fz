@@ -3,8 +3,8 @@
 //! Every heap object is 16-byte aligned, so a live pointer's low nibble is
 //! clear. Each kind names one marker word whose live value has a clear low
 //! nibble by construction: the schema/denotation/length header of a Struct,
-//! Closure, Bitstring or Map, the pointer in word 0 of a BinRef, a binary view or a Resource,
-//! and the link in word 1 of a List cons (its head word stays untouched). A
+//! Closure, Bitstring, binary view or Map, the pointer in word 0 of a BinRef or a
+//! Resource, and the link in word 1 of a List cons (its head word stays untouched). A
 //! collector that copies an object overwrites that word with the new address
 //! plus a non-zero nibble, so "low nibble set" is the whole test.
 

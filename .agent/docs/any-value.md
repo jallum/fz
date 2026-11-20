@@ -163,11 +163,14 @@ on those chains and holds the one atomic retain. A `BinView`
 (`ValueKind::BINVIEW`, 24 bytes of fields in a 32-byte slot) is the value:
 
 ```text
-offset  0  tagged pointer to its heap's BinRef (the collector traces it),
-           with the view's shared mark in BINARY_SHARED_MASK
+offset  0  header: the window's length in bits, with the view's shared mark
+           in BINARY_SHARED_MASK -- the word a small inline bitstring leads with
 offset  8  bytes_ptr: the window's first byte
-offset 16  bit_len: the window's length in bits
+offset 16  tagged pointer to its heap's BinRef (the collector traces it)
 ```
+
+Because both forms of a binary lead with the same header word, the length and the
+shared mark of either are read from word 0 with no test of which form it is.
 
 A view is a byte-aligned *window*: it may start and stop anywhere on a byte
 boundary of the buffer, and the whole binary is the window at the buffer's
@@ -176,9 +179,12 @@ start spanning it. Its byte offset is derived (`bytes_ptr` less the buffer's
 or an in-place append makes only a view; a fresh buffer makes a `BinRef` and a
 view; a message copy makes the receiver its own `BinRef` and view per copied
 view, retaining the buffer once. A `SharedBin` does not store a bit length: the
-view's `bit_len` is the only authority. `BINREF_*` and `BINVIEW_*_OFFSET` in
+view's header is the only authority on its length. `BINREF_*` and `BINVIEW_*_OFFSET` in
 `bits.rs` are the one statement of that layout; native codegen reads the
-base with one load of `bytes_ptr` and the length at offset 16.
+base with one load of `bytes_ptr` (inline bytes start at +8), and the length of a
+binary it has proven one (`Prim::BinaryBitLen`, a cursor's source) with one load of
+word 0, masked and shifted. `Prim::BitstringBitLen` first tests that the kind is
+a bitstring or a view, and answers -1 otherwise.
 
 A match that takes a binary apart does not ask for a slice at all when the
 rest stays inside the compiler's own code. Its demand is `Matched` (see
@@ -940,10 +946,10 @@ them inline, at `PROCESS_STRUCT_RETENTION_ATTEMPTS_OFFSET` and
 `PROCESS_STRUCT_RETENTION_HITS_OFFSET`.
 
 A binary's shared mark is `BINARY_SHARED_MASK`, the list link's alias bit,
-in word 0: a small bitstring's header, whose length then reads through
-`BITSTRING_HEADER_LEN_MASK`, and a view's tagged `BinRef` word, which
-`BinView::binref_word` reads with the mark masked off so the collector and a
-deep copy rewrite the pointer and keep the mark. It is set once and never
+in word 0 of both forms: a small bitstring's header and a view's header, whose
+length then reads through `BITSTRING_HEADER_LEN_MASK`. A view's `BinRef` word
+(`BinView::binref_word`, offset 16) carries no mark, so the collector and a deep
+copy rewrite it freely. The mark is set once and never
 cleared (`share_bitstring`, `BinView::share`), and `Heap::share` and
 `publish_contained_parts` reach a binary at the same publish points as a
 struct, and native code marks it in place as it does a struct. A view is born by

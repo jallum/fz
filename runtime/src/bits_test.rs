@@ -772,3 +772,27 @@ fn bins_of_different_lengths_are_unequal_before_any_byte_is_read() {
     let unreadable = Bin::new(std::ptr::null(), 16);
     assert!(one != unreadable);
 }
+
+/// A binary's first word is its length in both forms: a view keeps its bit
+/// length where a small bitstring keeps its own, below the shared mark, so the
+/// one header read answers either.
+#[test]
+fn a_view_keeps_its_length_where_a_small_bitstring_does() {
+    let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let view = first_view(&mut heap);
+    assert!(view.share());
+    let header_length = unsafe { crate::any_value::bitstring_bit_len(view.as_raw()) };
+    assert_eq!(header_length, 101 * 8);
+    assert_eq!(view.bit_len(), 101 * 8);
+    assert!(view.is_shared());
+    assert_eq!(view_bytes(&view).len(), 101);
+}
+
+/// A buffer too long for a binary's header to count is refused when it is
+/// allocated, so every view of a buffer has a length its header can hold.
+#[test]
+#[should_panic(expected = "longer than a header can count")]
+fn a_buffer_longer_than_a_header_can_count_is_refused() {
+    let too_long = (crate::any_value::BINARY_MAX_BIT_LEN / 8 + 1) as usize;
+    shared_bin_alloc_with(too_long, 0, |_| {});
+}

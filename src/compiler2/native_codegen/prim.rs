@@ -23,7 +23,7 @@ use fz_runtime::any_value::{
     AnyValue, BITSTRING_BIT_LEN_SHIFT, BITSTRING_BYTES_OFFSET, BITSTRING_HEADER_LEN_MASK, FALSE_ATOM_ID, SlotLayout,
     TRUE_ATOM_ID, ValueKind, shared_struct_header_word,
 };
-use fz_runtime::bits::{BINVIEW_BIT_LEN_OFFSET, BINVIEW_BYTES_PTR_OFFSET};
+use fz_runtime::bits::BINVIEW_BYTES_PTR_OFFSET;
 use fz_runtime::extern_binary::{fz_binary_as_cstring, fz_binary_as_ptr};
 use fz_runtime::ir_runtime::fz_unbox_opaque;
 use fz_runtime::ir_runtime::{
@@ -642,68 +642,6 @@ fn match_field_extent<M: cranelift_module::Module>(
 /// no binary has a negative length.
 const NOT_A_BINARY: i64 = -1;
 
-/// A word computed from a binary's reference by one of its two representations:
-/// an inline bitstring on the heap, or a binary view over a refcounted
-/// `SharedBin`. `inline` and `binview` each get the address of the object the
-/// reference names and return the word. The reference's own kind bits say which
-/// form it is; a reference of any other kind answers `not_binary` when the
-/// caller asks for that, and is taken to be an inline bitstring when it does not
-/// (the caller has proven a binary).
-fn emit_by_binary_representation<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, M>,
-    source_ref: ir::Value,
-    not_binary: Option<i64>,
-    inline: impl FnOnce(&mut CodegenFn<'_, '_, M>, ir::Value) -> ir::Value,
-    binview: impl FnOnce(&mut CodegenFn<'_, '_, M>, ir::Value) -> ir::Value,
-) -> ir::Value {
-    let addr = address_field(body.b, source_ref);
-    let kind = kind_field(body.b, source_ref);
-    let is_binview = body
-        .b
-        .ins()
-        .icmp_imm_s(IntCC::Equal, kind, ValueKind::BINVIEW.tag() as i64);
-    let binview_b = body.b.create_block();
-    let inline_b = body.b.create_block();
-    let join_b = body.b.create_block();
-    body.b.append_block_param(join_b, types::I64);
-    body.b.ins().brif(is_binview, binview_b, &[], inline_b, &[]);
-
-    body.b.switch_to_block(binview_b);
-    body.b.seal_block(binview_b);
-    let from_binview = binview(body, addr);
-    body.b.ins().jump(join_b, &[BlockArg::Value(from_binview)]);
-
-    body.b.switch_to_block(inline_b);
-    body.b.seal_block(inline_b);
-    match not_binary {
-        None => {
-            let from_inline = inline(body, addr);
-            body.b.ins().jump(join_b, &[BlockArg::Value(from_inline)]);
-        }
-        Some(miss) => {
-            let is_inline = body
-                .b
-                .ins()
-                .icmp_imm_s(IntCC::Equal, kind, ValueKind::BITSTRING.tag() as i64);
-            let read_b = body.b.create_block();
-            let miss_b = body.b.create_block();
-            body.b.ins().brif(is_inline, read_b, &[], miss_b, &[]);
-            body.b.switch_to_block(read_b);
-            body.b.seal_block(read_b);
-            let from_inline = inline(body, addr);
-            body.b.ins().jump(join_b, &[BlockArg::Value(from_inline)]);
-            body.b.switch_to_block(miss_b);
-            body.b.seal_block(miss_b);
-            let missed = body.b.ins().iconst(types::I64, miss);
-            body.b.ins().jump(join_b, &[BlockArg::Value(missed)]);
-        }
-    }
-
-    body.b.switch_to_block(join_b);
-    body.b.seal_block(join_b);
-    body.b.block_params(join_b)[0]
-}
-
 fn load_word<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
     address: ir::Value,
@@ -714,34 +652,85 @@ fn load_word<M: cranelift_module::Module>(
         .load(types::I64, MemFlagsData::trusted(), address, offset as i32)
 }
 
-/// The bit length of a binary, read from its header below the shared mark or from
-/// its binary view's own length; `NOT_A_BINARY` for any other value.
+/// The bit length of a reference the lowering has proven a binary. An inline
+/// bitstring and a binary view both lead with the same header word, whose
+/// length field sits below the shared mark.
+fn emit_proven_binary_bit_len<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, M>,
+    source_ref: ir::Value,
+) -> ir::Value {
+    let addr = address_field(body.b, source_ref);
+    let header = load_word(body, addr, 0);
+    let length_field = body.b.ins().band_imm_u(header, BITSTRING_HEADER_LEN_MASK as i64);
+    body.b.ins().ushr_imm_u(length_field, BITSTRING_BIT_LEN_SHIFT as i64)
+}
+
+/// The bit length of a binary; `NOT_A_BINARY` for any other value. One test of
+/// the reference's kind decides whether it is a binary, and the length is read
+/// the same way from either form.
 fn emit_binary_bit_len<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
     source_ref: ir::Value,
 ) -> ir::Value {
-    emit_by_binary_representation(
-        body,
-        source_ref,
-        Some(NOT_A_BINARY),
-        |body, addr| {
-            let header = load_word(body, addr, 0);
-            let length_field = body.b.ins().band_imm_u(header, BITSTRING_HEADER_LEN_MASK as i64);
-            body.b.ins().ushr_imm_u(length_field, BITSTRING_BIT_LEN_SHIFT as i64)
-        },
-        |body, addr| load_word(body, addr, BINVIEW_BIT_LEN_OFFSET),
-    )
+    let kind = kind_field(body.b, source_ref);
+    let is_inline = body
+        .b
+        .ins()
+        .icmp_imm_s(IntCC::Equal, kind, ValueKind::BITSTRING.tag() as i64);
+    let is_view = body
+        .b
+        .ins()
+        .icmp_imm_s(IntCC::Equal, kind, ValueKind::BINVIEW.tag() as i64);
+    let is_binary = body.b.ins().bor(is_inline, is_view);
+    let read_b = body.b.create_block();
+    let miss_b = body.b.create_block();
+    let join_b = body.b.create_block();
+    body.b.append_block_param(join_b, types::I64);
+    body.b.ins().brif(is_binary, read_b, &[], miss_b, &[]);
+
+    body.b.switch_to_block(read_b);
+    body.b.seal_block(read_b);
+    let length = emit_proven_binary_bit_len(body, source_ref);
+    body.b.ins().jump(join_b, &[BlockArg::Value(length)]);
+
+    body.b.switch_to_block(miss_b);
+    body.b.seal_block(miss_b);
+    let missed = body.b.ins().iconst(types::I64, NOT_A_BINARY);
+    body.b.ins().jump(join_b, &[BlockArg::Value(missed)]);
+
+    body.b.switch_to_block(join_b);
+    body.b.seal_block(join_b);
+    body.b.block_params(join_b)[0]
 }
 
-/// The address of a binary's first byte.
+/// The address of a binary's first byte: inline bytes follow the header, and a
+/// view holds the address in its second word.
 fn emit_binary_base<M: cranelift_module::Module>(body: &mut CodegenFn<'_, '_, M>, source_ref: ir::Value) -> ir::Value {
-    emit_by_binary_representation(
-        body,
-        source_ref,
-        None,
-        |body, addr| body.b.ins().iadd_imm_s(addr, BITSTRING_BYTES_OFFSET as i64),
-        |body, addr| load_word(body, addr, BINVIEW_BYTES_PTR_OFFSET),
-    )
+    let addr = address_field(body.b, source_ref);
+    let kind = kind_field(body.b, source_ref);
+    let is_view = body
+        .b
+        .ins()
+        .icmp_imm_s(IntCC::Equal, kind, ValueKind::BINVIEW.tag() as i64);
+    let view_b = body.b.create_block();
+    let inline_b = body.b.create_block();
+    let join_b = body.b.create_block();
+    body.b.append_block_param(join_b, types::I64);
+    body.b.ins().brif(is_view, view_b, &[], inline_b, &[]);
+
+    body.b.switch_to_block(view_b);
+    body.b.seal_block(view_b);
+    let from_view = load_word(body, addr, BINVIEW_BYTES_PTR_OFFSET);
+    body.b.ins().jump(join_b, &[BlockArg::Value(from_view)]);
+
+    body.b.switch_to_block(inline_b);
+    body.b.seal_block(inline_b);
+    let from_inline = body.b.ins().iadd_imm_s(addr, BITSTRING_BYTES_OFFSET as i64);
+    body.b.ins().jump(join_b, &[BlockArg::Value(from_inline)]);
+
+    body.b.switch_to_block(join_b);
+    body.b.seal_block(join_b);
+    body.b.block_params(join_b)[0]
 }
 
 /// The big-endian integer of `bytes` bytes at `base + offset`, read in loads of
@@ -790,6 +779,10 @@ fn lower_bit_match_prim<M: cranelift_module::Module>(
         Prim::BitstringBitLen(source) => {
             let source_ref = body.tagged_var(var_env, source.0);
             LowerOut::RawI64(emit_binary_bit_len(body, source_ref))
+        }
+        Prim::BinaryBitLen(source) => {
+            let source_ref = body.tagged_var(var_env, source.0);
+            LowerOut::RawI64(emit_proven_binary_bit_len(body, source_ref))
         }
         Prim::BitstringBase(source) => {
             let source_ref = body.tagged_var(var_env, source.0);
@@ -1370,6 +1363,7 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         | Prim::MatcherMapGet(..)
         | Prim::IsMapMiss(..) => lower_collection_prim(body, t, env, var_env, prim, dest_var, block_id),
         Prim::BitstringBitLen(..)
+        | Prim::BinaryBitLen(..)
         | Prim::BitstringBase(..)
         | Prim::IsNotBinary(..)
         | Prim::BitReadByteInt { .. }
