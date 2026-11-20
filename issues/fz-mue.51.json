@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-20T21:11:44Z",
+  "description": "Split from fz-mue.12 (Amendment 2, approved by the user, relayed by Elixir Parity 2026-11-20). Macro.expand/2 expands a quoted macro call against a %Macro.Env{} (the caller's) until it is no longer a macro call, as Elixir does. fz-p8p.25 (var!/2) uses it to expand its context alias. Owner: Elixir Parity.",
+  "id": "fz-mue.51",
+  "labels": [],
+  "parent": "fz-mue",
+  "priority": 2,
+  "status": "open",
+  "title": "Macro.expand/2 expands a quoted macro call in the caller's environment, as in Elixir",
+  "type": "feature",
+  "updated_at": "2026-11-20T21:11:44Z"
+}
