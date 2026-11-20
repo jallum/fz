@@ -31,8 +31,8 @@
     }
   ],
   "priority": 1,
-  "status": "in_progress",
+  "status": "open",
   "title": "A runtime entry answers a value that can be a number as its stored word and its kind",
   "type": "task",
-  "updated_at": "2026-11-20T20:40:19Z"
+  "updated_at": "2026-11-20T20:47:21Z"
 }
