@@ -9,9 +9,15 @@
   "id": "fz-nml.9.2",
   "labels": [],
   "parent": "fz-nml.9",
+  "comments": [
+    {
+      "text": "Closes against fz-9x7.44.8: return lanes for a union that can be a number are its job (Scalars without addresses, user approved 2026-11-20).",
+      "timestamp": "2026-11-20T19:55:14Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "A union result returns without a box",
   "type": "bug",
-  "updated_at": "2026-11-20T19:54:57Z"
+  "updated_at": "2026-11-20T19:55:14Z"
 }
