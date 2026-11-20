@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-mue.16"
+  ],
   "blocks": [
     "fz-mue.44"
   ],
@@ -13,5 +15,5 @@
   "status": "open",
   "title": ":lists is defined with map, foldl, reverse and duplicate",
   "type": "feature",
-  "updated_at": "2026-11-20T20:16:17Z"
+  "updated_at": "2026-11-20T20:36:36Z"
 }
