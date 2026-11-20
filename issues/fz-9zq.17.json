@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-sc8.192.3"
+  ],
   "created": "2026-11-20T21:14:13Z",
   "description": "Approved by the user (relayed by fz-engine, 2026-11-20); proposal N7 from Optimize. Follow-up to fz-9zq.14 (#765).\n\nA closure callsite reached through two rows names only the widest closure activation (name_the_widest_activation_of_each_closure, in coalesce_call_emissions, src/compiler2/jobs/semantic.rs ~1849), but the walk read the narrow activation's ReturnType. Example: List.reduce_cont read the Enum.reduce lambda's ReturnType at acc [] while the edge names only acc [{any,any}] (two keys come from a spec'd type variable b). The output is correct; the edge-evidence bookkeeping is not.\n\nRepro: Optimize's Bag program in EDGE_COMPLETENESS_FIXTURES has 1 loss on develop; skipping that call gives 0 losses.\n\nPaper first: compare the two fixes, either the walk reads the activation the edge names or the edge keeps the narrow activation. Optimize claims (unverified) that 00567's duplicate executable key and List.reduce_cont going from 2 to 3 activations have the same cause; the page checks this.\n\nDone when the Bag program has 0 edge losses on all three paths and fz-sc8.192.3's remaining reds clear. Owner: fz-engine.",
   "id": "fz-9zq.17",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "A call edge names the closure activation its walk read a return type from",
   "type": "bug",
-  "updated_at": "2026-11-20T21:14:13Z"
+  "updated_at": "2026-11-20T21:14:16Z"
 }
