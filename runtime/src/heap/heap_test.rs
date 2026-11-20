@@ -1520,15 +1520,111 @@ fn pick_block_capacity_past_the_table_is_the_request_rounded_to_16() {
 }
 
 #[test]
-fn next_block_capacity_climbs_the_table_then_grows_by_a_fifth() {
+fn next_block_capacity_climbs_the_table_then_stays_at_its_last_entry() {
     assert_eq!(next_block_capacity(SIZE_TABLE[0]), SIZE_TABLE[1]);
     assert_eq!(next_block_capacity(SIZE_TABLE[0] + 1), SIZE_TABLE[1]);
     assert_eq!(next_block_capacity(TABLE_CEILING - 1), TABLE_CEILING);
-    let past = next_block_capacity(TABLE_CEILING);
-    assert!(past > TABLE_CEILING);
-    assert_eq!(past % 16, 0);
-    assert_eq!(past, (TABLE_CEILING * 6).div_ceil(5).next_multiple_of(16));
-    assert!(next_block_capacity(past) > past, "it never stops climbing");
+    assert_eq!(next_block_capacity(TABLE_CEILING), TABLE_CEILING);
+    assert_eq!(next_block_capacity(TABLE_CEILING * 10), TABLE_CEILING);
+}
+
+#[test]
+fn pick_tip_capacity_is_pick_block_capacity_clamped_to_the_last_table_entry() {
+    assert_eq!(pick_tip_capacity(1), pick_block_capacity(1));
+    assert_eq!(pick_tip_capacity(SIZE_TABLE[5] + 1), SIZE_TABLE[6]);
+    assert_eq!(pick_tip_capacity(TABLE_CEILING), TABLE_CEILING);
+    assert_eq!(pick_tip_capacity(TABLE_CEILING + 1), TABLE_CEILING);
+    assert_eq!(pick_tip_capacity(TABLE_CEILING * 10 + 3), TABLE_CEILING);
+}
+
+/// Grow a list until its cells hold more than `bytes`, without collecting.
+fn grow_list_past(h: &mut Heap, bytes: usize) -> u64 {
+    let mut head = EMPTY_LIST;
+    let mut i = 0;
+    while h.bytes_used() <= bytes {
+        head = alloc_int_list_cons(h, i, head);
+        i += 1;
+    }
+    head
+}
+
+/// Survivors larger than the size table's last entry are copied into a chain
+/// of table-max blocks when the to-space guess has reached that entry, so every
+/// to-space block is one the pool recycles.
+#[test]
+fn survivors_past_the_table_are_copied_into_table_max_blocks() {
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let head = grow_list_past(&mut h, 2 * TABLE_CEILING);
+    let mut roots = [heap_ref(head)];
+    h.collect(&mut roots);
+
+    let stats = h.collect(&mut roots);
+
+    assert_eq!(stats.generation, Generation::Major);
+    assert_eq!(stats.to_space_guess_bytes as usize, TABLE_CEILING);
+    assert!(stats.copied_bytes as usize > 2 * TABLE_CEILING);
+    assert!(
+        h.old_blocks.iter().all(|block| SIZE_TABLE.contains(&block.capacity)),
+        "every to-space block is a table entry"
+    );
+    let chain = h
+        .old_blocks
+        .iter()
+        .filter(|block| block.capacity == TABLE_CEILING)
+        .count();
+    assert!(
+        chain >= 3,
+        "the copy filled a chain of table-max blocks, not one exact block"
+    );
+    assert_eq!(stats.blocks_after as usize, h.old_blocks.len());
+}
+
+/// The table-max blocks collections filled return to the pool when a major
+/// collection releases them, and the tip the next collection installs is one
+/// of them.
+#[test]
+fn table_max_blocks_return_to_the_pool_and_a_later_tip_reuses_them() {
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let mut head = grow_list_past(&mut h, 2 * TABLE_CEILING);
+    let mut roots = [heap_ref(head)];
+    h.collect(&mut roots);
+    h.collect(&mut roots);
+    head = roots[0].raw_word();
+    let mut i = 0;
+    while h.young_bytes() <= h.old_after_last_major {
+        head = alloc_int_list_cons(&mut h, i, head);
+        i += 1;
+    }
+    let mut roots = [heap_ref(head)];
+    assert_eq!(h.collect(&mut roots).generation, Generation::Minor);
+    let chain: Vec<*mut u8> = h
+        .old_blocks
+        .iter()
+        .filter(|block| block.capacity == TABLE_CEILING)
+        .map(|block| block.start)
+        .collect();
+    assert!(chain.len() >= 6, "both collections left table-max blocks old");
+    let held: Vec<*mut u8> = h
+        .old_blocks
+        .iter()
+        .chain(&h.young_blocks)
+        .map(|block| block.start)
+        .chain([h.block_start])
+        .collect();
+
+    let stats = h.collect(&mut roots);
+
+    assert_eq!(stats.generation, Generation::Major, "the chain is in the from-space");
+    assert!(
+        pool_footprint().idle_bytes >= chain.len() * TABLE_CEILING,
+        "the released table-max blocks rest in the pool"
+    );
+    h.collect(&mut roots);
+    assert_eq!(h.block_size, TABLE_CEILING, "the tip is a table-max block");
+    assert!(
+        held.contains(&h.block_start),
+        "the fresh tip is a block the heap held before the collection released them"
+    );
 }
 
 /// Under increasing load, each round's list replaces the last. A major
@@ -3480,7 +3576,7 @@ fn a_minor_after_a_major_gets_a_to_space_of_its_own_copys_class() {
 /// A copy that outgrows its to-space block takes an overflow block sized for
 /// the overflow, not one a growth step above the whole block: the room the
 /// copy leaves unused in old blocks stays within one smallest class.
-fn assert_overflow_leaves_at_most_a_smallest_class_unused(stats: &GcStats, h: &Heap, guess: usize) {
+fn assert_overflow_leaves_at_most_one_step_unused(stats: &GcStats, h: &Heap, guess: usize, step: usize) {
     assert!(
         stats.copied_bytes as usize > guess,
         "the copy outgrew its to-space guess of {guess}"
@@ -3488,27 +3584,33 @@ fn assert_overflow_leaves_at_most_a_smallest_class_unused(stats: &GcStats, h: &H
     assert_eq!(stats.to_space_guess_bytes as usize, guess);
     let unused = stats.to_space_capacity_bytes - stats.copied_bytes;
     assert!(
-        unused <= SIZE_TABLE[0] as u64,
-        "{unused} bytes of the to-space are unused, more than the smallest class"
+        unused <= step as u64,
+        "{unused} bytes of the to-space are unused, more than the overflow step"
     );
     assert_eq!(
         stats.to_space_capacity_bytes as usize,
-        guess + SIZE_TABLE[0],
-        "one overflow block of the smallest class follows the guess block"
+        guess + step,
+        "one overflow block of the step's class follows the guess block"
     );
-    assert!(h.old_blocks.iter().any(|block| block.capacity == SIZE_TABLE[0]));
+    assert!(h.old_blocks.iter().any(|block| block.capacity == step));
 }
 
 #[test]
-fn a_major_that_outgrows_its_guess_overflows_into_a_smallest_class_block() {
+fn a_major_that_outgrows_its_guess_overflows_into_a_block_of_the_overflow_step() {
     let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
     let mut list = EMPTY_LIST;
     loop {
-        let guess = pick_block_capacity(h.live_baseline.max(SIZE_TABLE[0]));
+        let raw_guess = h.live_baseline.max(SIZE_TABLE[0]);
+        let guess = pick_tip_capacity(raw_guess);
+        let step = if raw_guess >= TABLE_CEILING {
+            TABLE_CEILING
+        } else {
+            SIZE_TABLE[0]
+        };
         let (next, stats) = grow_list_and_collect(&mut h, list, 8);
         list = next;
         if stats.generation == Generation::Major && stats.copied_bytes as usize > guess {
-            assert_overflow_leaves_at_most_a_smallest_class_unused(&stats, &h, guess);
+            assert_overflow_leaves_at_most_one_step_unused(&stats, &h, guess, step);
             assert_eq!(stats.blocks_after, 2);
             return;
         }
@@ -3522,7 +3624,7 @@ fn a_minor_that_outgrows_its_guess_overflows_into_a_smallest_class_block() {
     let (_, stats) = grow_list_and_collect(&mut h, EMPTY_LIST, SIZE_TABLE[0] / 16 + 8);
 
     assert_eq!(stats.generation, Generation::Minor);
-    assert_overflow_leaves_at_most_a_smallest_class_unused(&stats, &h, SIZE_TABLE[0]);
+    assert_overflow_leaves_at_most_one_step_unused(&stats, &h, SIZE_TABLE[0], SIZE_TABLE[0]);
     assert_eq!(stats.blocks_after, 2);
 }
 

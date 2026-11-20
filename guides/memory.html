@@ -441,7 +441,7 @@ view that names a 16-byte <strong>BinRef</strong>, which points into the <a href
 
 <p>Blocks come from a per-thread pool sized by a Fibonacci-then-geometric size
 table (1 KiB up to ~7 MiB); a heap's tip starts at the first entry and climbs
-the table. When a block fills before GC fires, a new block one step
+the table and stays at the last entry. When a block fills before GC fires, a new block one step
 up becomes the tip and the old one joins <code>blocks</code>, recorded
 with its fill and capacity. An object larger than that step is not made the
 tip: it gets a block sized for it, parked on <code>blocks</code> straight away,
@@ -644,7 +644,7 @@ for which the census would have to show a need.</p>
 <p>The collector installs a fresh tip and every copied object goes through
 <code>Heap::bump_to_space</code>: when the tip is full it is parked on
 <code>young_blocks</code> and an overflow block is installed, the smallest class
-first and one class up for each later overflow; an object larger than that step
+first (the table's last entry when the guess is at least that large) and one class up for each later overflow, never past the last entry; an object larger than that step
 is parked alone in a block of its own with the tip untouched. The scan pops a
 worklist of copied objects rather than walking an address, so to-space needs no
 contiguity: it is the new tip plus the parked blocks.</p>
@@ -652,7 +652,8 @@ contiguity: it is the new tip plus the parked blocks.</p>
 <p>The to-space block's capacity is only a guess at how many bytes the pass
 copies: a major starts from <code>live_baseline</code>; a minor starts from the
 bytes the previous <em>minor</em> pass copied, since a major's copy says nothing
-about what the young generation keeps. Both are no smaller than the smallest tip.
+about what the young generation keeps. Both are no smaller than the smallest tip and no larger than the table's last entry
+(~7 MiB): a young tip or to-space past that is a chain of last-entry blocks, which the pool recycles.
 A guess that is too small costs overflow blocks sized for the overflow, not for the
 whole guess, so the room the pass leaves unused in old blocks is bounded by the
 overflow (<code>to_space_capacity_bytes</code> less <code>copied_bytes</code> in

@@ -1,6 +1,8 @@
 //! impl Heap — the giant impl block + Drop.
 
-use super::block_pool::{Block, SIZE_TABLE, next_block_capacity, pick_block_capacity, pool_alloc, round_up_16};
+use super::block_pool::{
+    Block, SIZE_TABLE, next_block_capacity, pick_block_capacity, pick_tip_capacity, pool_alloc, round_up_16,
+};
 use super::gc::{
     CopiedObject, FromSpace, cheney_trace_binview, cheney_trace_closure, cheney_trace_list, cheney_trace_map,
     cheney_trace_struct, forward_any_value_ref_root,
@@ -1603,8 +1605,12 @@ impl Heap {
             Generation::Minor => self.last_minor_copied_bytes,
         };
         let from_blocks = self.take_from_space(generation);
-        let to_capacity = pick_block_capacity(to_capacity_guess.max(SIZE_TABLE[0]));
-        self.overflow_step = SIZE_TABLE[0];
+        let to_capacity = pick_tip_capacity(to_capacity_guess.max(SIZE_TABLE[0]));
+        self.overflow_step = if to_capacity_guess >= SIZE_TABLE[SIZE_TABLE.len() - 1] {
+            SIZE_TABLE[SIZE_TABLE.len() - 1]
+        } else {
+            SIZE_TABLE[0]
+        };
         let to_start = pool_alloc(to_capacity);
         self.install_block(Block {
             start: to_start,
@@ -1719,7 +1725,7 @@ impl Heap {
     /// Install the empty tip allocation continues in after a collection,
     /// sized to the old bytes: the heap collects again after allocating as many.
     fn install_fresh_tip(&mut self) {
-        let capacity = pick_block_capacity(self.young_budget().max(SIZE_TABLE[0]));
+        let capacity = pick_tip_capacity(self.young_budget().max(SIZE_TABLE[0]));
         let start = pool_alloc(capacity);
         self.install_block(Block {
             start,

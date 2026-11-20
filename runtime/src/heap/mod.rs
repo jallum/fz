@@ -70,7 +70,7 @@ pub(crate) use self::block_pool::UNWRITTEN_BYTE;
 #[cfg(test)]
 pub use self::block_pool::pool_drain_for_test;
 pub use self::block_pool::{Footprint, pool_footprint, pool_outstanding_blocks, pool_total_cached_blocks};
-pub use self::block_pool::{SIZE_TABLE, next_block_capacity, pick_block_capacity};
+pub use self::block_pool::{SIZE_TABLE, next_block_capacity, pick_block_capacity, pick_tip_capacity};
 pub(crate) use self::block_pool::{binary_buffer_allocated, binary_buffer_freed, poisoned};
 pub use self::deep_copy::{HeapView, deep_copy_any_value, deep_copy_any_value_ref, deep_copy_slot, measure_deep_copy};
 pub(crate) use self::gc::forwarding::forwarded_target;
@@ -167,8 +167,9 @@ pub struct Heap {
     /// next one will. Zero until the first minor collection.
     last_minor_copied_bytes: usize,
     /// The capacity of the next overflow block a collection's copy installs
-    /// when the to-space block fills. Reset to the smallest class when a
-    /// collection starts and raised a class per overflow block.
+    /// when the to-space block fills. Reset when a collection starts to the
+    /// smallest class, or to the last table entry when the to-space guess
+    /// reaches it, and raised a class per overflow block up to that entry.
     overflow_step: usize,
     /// Blocks allocation has stopped bumping into since the last collection:
     /// tips abandoned by `climb_tip` and single-object blocks from
