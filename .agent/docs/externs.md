@@ -387,7 +387,20 @@ Binary    under "C": *const u8 to the bytes, no NUL guarantee (caller passes
 CString   under "C": *const u8 to the bytes with a guaranteed trailing NUL.
           Under "fz": the tagged value ref.
 Never     no return lane; returning is a runtime contract violation
+StoredValue  a parameter only: two integer words, the word a container stores
+          for a value of any kind (a scalar's bits, or an object's address
+          with its literal bit) and the value's kind. Spelled `stored_value`.
 ```
+
+A `stored_value` parameter is how a runtime helper takes a value of any kind
+without a box: `Map.put` is one clause over `fz_map_put(any, stored_value,
+stored_value)`, and the helper rebuilds each value with
+`AnyValue::decode_parts`. Natively the pair is `native_codegen::stored_parts`:
+a value whose kind codegen knows gives its word and a constant kind, and any
+other is read through its reference. The interpreter passes
+`AnyValue::raw()` and `kind()`. Like an `any` slot, the slot takes a value
+whole, so a tuple or a closure crosses it as one reference
+(`ExternTy::takes_a_whole_value`).
 
 One table in `src/extern_contract.rs` names every source spelling of a wire
 type. Each row carries the `ExternTy` the spelling means, whether a declared
@@ -397,7 +410,8 @@ else, so an alias or a constraint can widen it; `atom` and `bitstring` read as
 `Any`, so their word passes through unchanged), and, for a wire-only spelling
 the type system has no type for, the semantic spelling the contract is
 rewritten to before the type checker sees it: `cstring` to `binary`, `c_int` to
-`integer`, `unit` to `nil`, `binary_cursor` to `bitstring`.
+`integer`, `unit` to `nil`, `binary_cursor` to `bitstring`, `stored_value` to
+`any`.
 
 A wire-only spelling names one lane, and a lane is a whole register, so it
 stands only as a whole parameter or result. Written inside a larger type,
@@ -586,12 +600,16 @@ What follows from the invariant:
   return match is exhaustive on purpose. A wildcard there is what let `F64`
   default into the `ValueRef` arm in the first place.
 - The interpreter cannot transmute an address by arity alone. `ArgWord` tags
-  each argument with its bank, and `dispatch_shapes!` enumerates every SHAPE —
-  an arity times an assignment of its parameters to the two banks, 31 in all —
-  instantiated once per return lane.
-- `MAX_INTERP_EXTERN_ARGS` (4) is a ceiling the backend does not have, so a
-  5-parameter extern is refused under `interp` and runs under `run`/`build`
-  (fz-5xp.32). An `extern "fz"` spends one slot on the implicit process word.
+  each argument with its bank. SysV x86-64 and AAPCS64 give a scalar argument
+  the next free register of its own bank whatever the other bank holds, so
+  `dispatch_shapes!` makes one call per return lane: the integer words in the
+  integer registers in order, the float words in the float registers in order,
+  and each bank padded to `MAX_INTERP_EXTERN_ARGS`. A callee reads only the
+  registers its parameters name. Any other target is a compile error.
+- `MAX_INTERP_EXTERN_ARGS` (6, the integer registers SysV x86-64 passes) is a
+  ceiling the backend does not have, so a 7-word extern is refused under
+  `interp` and runs under `run`/`build`. An `extern "fz"` spends one word on
+  the implicit process word, and a `stored_value` spends two.
 - A helper's Rust signature must be its declared wire types. The `fz_op_*`
   arithmetic shims took `u64` and bit-punned floats, which was correct only
   while the dispatcher bit-punned them too; fixing one half broke six fixtures

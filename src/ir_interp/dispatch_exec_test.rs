@@ -177,10 +177,15 @@ fn bitstring_value(proc: *mut Process, bytes: &[u8]) -> AnyValue {
 
 fn map_with_binary_key(proc: *mut Process, key: &str, value: i64) -> AnyValue {
     let empty = fz_runtime::ir_runtime::fz_map_empty(proc);
-    let key = bitstring_value(proc, key.as_bytes())
-        .as_ref_word(proc)
-        .expect("a binary key reference");
-    let map = fz_runtime::ir_runtime::fz_map_put_int(proc, empty, key, value);
+    let key = bitstring_value(proc, key.as_bytes()).value(proc).expect("a binary key");
+    let map = fz_runtime::ir_runtime::fz_map_put(
+        proc,
+        empty,
+        key.raw(),
+        u64::from(key.kind().tag()),
+        value as u64,
+        u64::from(fz_runtime::any_value::ValueKind::INT.tag()),
+    );
     interp_value_from_ref_word(map, "test map").expect("a map value")
 }
 

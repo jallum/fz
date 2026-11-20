@@ -323,20 +323,24 @@ pub enum ExternTy {
     /// caller hands over a cursor (source and position) or a whole binary
     /// (position 0), so the callee never needs the view built.
     BinaryCursor,
+    /// A value of any kind in two words: the word a container stores for it
+    /// (a scalar's bits, or an object's address with its literal bit) and its
+    /// kind. The callee rebuilds the value from the pair, so a scalar crosses
+    /// without a box.
+    StoredValue,
 }
 
 impl ExternTy {
-    /// How many words a parameter of this type occupies in the C signature.
-    pub fn wire_words(self) -> usize {
-        match self {
-            ExternTy::BinaryCursor => 2,
-            _ => 1,
-        }
+    /// Whether a parameter of this type takes a value of any kind whole, so a
+    /// composite value crosses it as one reference rather than in lanes.
+    pub fn takes_a_whole_value(self) -> bool {
+        matches!(self, ExternTy::Any | ExternTy::StoredValue)
     }
 
-    /// The C-signature classes one parameter occupies: a `binary_cursor` is a
-    /// reference word followed by a bit position, and every other type is
-    /// itself.
+    /// The argument classes one parameter is passed as: a `binary_cursor` is
+    /// a reference word followed by a bit position, and every other type is
+    /// itself. A `stored_value` is one argument that occupies two words of the
+    /// C signature.
     pub fn wire(self) -> impl Iterator<Item = ExternTy> {
         let (first, second) = match self {
             ExternTy::BinaryCursor => (ExternTy::Any, Some(ExternTy::I64)),

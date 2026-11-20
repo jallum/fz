@@ -35,7 +35,7 @@ use fz_runtime::heap::deep_copy_any_value_ref;
 use fz_runtime::heap::{GcStats, Schema};
 use fz_runtime::ir_runtime::{
     fz_bs_begin, fz_bs_finalize, fz_bs_write_field_ref, fz_bs_write_word, fz_list_reuse_or_cons_parts,
-    fz_map_dest_begin, fz_map_dest_begin_update, fz_map_dest_freeze, fz_map_dest_publish, fz_map_dest_put_parts,
+    fz_map_dest_begin, fz_map_dest_begin_update, fz_map_dest_freeze, fz_map_dest_publish, fz_map_dest_put,
     fz_mark_published_ref_aliased, fz_struct_get_field_ref, fz_struct_module, fz_struct_reuse_or_copy,
     fz_struct_store_ref,
 };
@@ -3688,7 +3688,7 @@ fn interp_map_dest_put(
 ) -> Result<u64, String> {
     let key = key.value(proc).map_err(|err| format!("{context}: key: {err}"))?;
     let value = value.value(proc).map_err(|err| format!("{context}: value: {err}"))?;
-    Ok(fz_map_dest_put_parts(
+    Ok(fz_map_dest_put(
         proc,
         dest,
         key.raw(),

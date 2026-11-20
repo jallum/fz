@@ -2002,7 +2002,8 @@ fn produce_named_transport_position(
 /// crossing it travels as a single boxed reference instead of unboxed lanes.
 ///
 /// Two boundaries are one word wide:
-/// - an `any`-typed extern slot holding a tuple or callable, and an extern's
+/// - an extern slot that takes a whole value (`any` or `stored_value`) holding
+///   a tuple or callable, and an extern's
 ///   return holding a binary that a caller only takes apart;
 /// - the return of the root's entry executable when the host asks for its
 ///   value, because the driver hands that one word to the halt continuation.
@@ -2021,7 +2022,7 @@ fn position_requires_value_ref(
     match position {
         TransportPosition::ExecutableInput { semantic_index, .. } => extern_wire
             .and_then(|signature| signature.params.get(*semantic_index))
-            .is_some_and(|param| *param == crate::fz_ir::ExternTy::Any && composite),
+            .is_some_and(|param| param.takes_a_whole_value() && composite),
         TransportPosition::ExecutableReturn { .. } => {
             extern_wire
                 .is_some_and(|signature| (signature.ret == crate::fz_ir::ExternTy::Any && composite) || is_cursor)

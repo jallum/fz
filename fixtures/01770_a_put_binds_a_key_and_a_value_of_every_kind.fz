@@ -1,0 +1,60 @@
+#---
+# purpose: Map.put binds a key and a value of every kind, and a get answers each one back on the interpreter, the JIT and a built program
+# oracle: self
+# oracle.stamp: fcc66afec158e068
+#---
+#
+# Every value below is put once as a key and once as a value of a map that
+# already holds one entry, and is read back by `Map.get`. An integer too wide
+# for a small immediate and a float stand beside an atom, `nil`, a pid, a
+# reference, a binary, a list, a tuple, a map, a struct and a closure. A pid and
+# a reference print differently in Elixir, so only whether each came back is
+# printed.
+defmodule Point do
+  defstruct [:x, :y]
+end
+
+defmodule Main do
+  def values(me, ref) do
+    [
+      {:small_integer, 7},
+      {:wide_integer, 9_223_372_036_854_775_807},
+      {:negative_integer, -42},
+      {:float, 2.5},
+      {:atom, :blue},
+      {:nil, nil},
+      {:pid, me},
+      {:reference, ref},
+      {:binary, "a binary"},
+      {:list, [1, 2, 3]},
+      {:tuple, {:ok, 1}},
+      {:map, %{inner: 1}},
+      {:struct, %Point{x: 1, y: 2}},
+      {:closure, fn -> :called end}
+    ]
+  end
+
+  def shown(value) when is_pid(value) or is_reference(value), do: :opaque
+  def shown(value) when is_function(value), do: value.()
+  def shown(value), do: value
+
+  def check({name, value}) do
+    as_value = Map.put(%{seed: 0}, :k, value)
+    as_key = Map.put(%{seed: 0}, value, :v)
+    got = Map.get(as_value, :k)
+
+    IO.inspect({
+      name,
+      shown(got),
+      got === value,
+      Map.get(as_key, value),
+      map_size(as_key)
+    })
+  end
+
+  def main() do
+    Enum.each(values(self(), make_ref()), &check/1)
+  end
+end
+
+Main.main()

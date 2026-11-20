@@ -246,7 +246,7 @@ the two apart.
 object-local layout, with no detour through a built scalar ref:
 
 ```text
-fz_map_put_int(process, map, key, value_i64)
+fz_map_put(process, map, key_word, key_kind, value_word, value_kind)
 fz_list_cons_int(process, head_i64, tail)
 ```
 

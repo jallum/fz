@@ -1709,34 +1709,39 @@ pub extern "C" fn fz_map_dest_begin_update(process: *mut Process, base_ref_word:
 }
 
 /// Store one entry and answer the destination to continue with: the null
-/// reference once an update has named a key its base lacks.
+/// reference once an update has named a key its base lacks. The key and the
+/// value each arrive as their stored word and kind.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_map_dest_put_parts(
+pub extern "C" fn fz_map_dest_put(
     process: *mut Process,
     dest_ref_word: u64,
-    key_raw: u64,
+    key_word: u64,
     key_kind: u64,
-    value_raw: u64,
+    value_word: u64,
     value_kind: u64,
 ) -> u64 {
-    let dest_bits = destination_bits_from_ref_word(dest_ref_word, "fz_map_dest_put_parts dest");
-    let key = AnyValue::decode_parts(key_raw, key_kind as u8).expect("fz_map_dest_put_parts key");
-    let value = AnyValue::decode_parts(value_raw, value_kind as u8).expect("fz_map_dest_put_parts value");
+    let dest_bits = destination_bits_from_ref_word(dest_ref_word, "fz_map_dest_put dest");
+    let key = stored_value(key_word, key_kind, "fz_map_dest_put key");
+    let value = stored_value(value_word, value_kind, "fz_map_dest_put value");
     destination_ref_word(unsafe { (*process).heap.map_destination_put(dest_bits, key, value) })
 }
 
-/// `fz_map_dest_put_parts` for a key and a value held by reference.
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_map_dest_put_ref(
-    process: *mut Process,
-    dest_ref_word: u64,
-    key_ref_word: u64,
-    value_ref_word: u64,
-) -> u64 {
-    let dest_bits = destination_bits_from_ref_word(dest_ref_word, "fz_map_dest_put_ref dest");
-    let key = any_value_from_ref_word(key_ref_word, "fz_map_dest_put_ref key");
-    let value = any_value_from_ref_word(value_ref_word, "fz_map_dest_put_ref value");
-    destination_ref_word(unsafe { (*process).heap.map_destination_put(dest_bits, key, value) })
+/// The value a stored word and its kind spell.
+#[inline(always)]
+fn stored_value(word: u64, kind: u64, context: &str) -> AnyValue {
+    match u8::try_from(kind)
+        .ok()
+        .and_then(|kind| AnyValue::decode_parts(word, kind))
+    {
+        Some(value) => value,
+        None => spells_no_value(word, kind, context),
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn spells_no_value(word: u64, kind: u64, context: &str) -> ! {
+    panic!("{context}: kind {kind} with word {word:#x} spells no value")
 }
 
 /// The published map, or the null reference when an update named a key its
@@ -1964,61 +1969,24 @@ fn map_put_slot_value(process: *mut Process, map_ref_word: u64, key: AnyValue, v
     (unsafe { &mut *process }).heap.map_put_slot(map, key, value).raw_word()
 }
 
+/// `map` with `key` bound to `value`, each given as its stored word and kind.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_map_put_ref(
+pub extern "C" fn fz_map_put(
     process: *mut Process,
     map_ref_word: u64,
-    key_ref_word: u64,
-    value_ref_word: u64,
+    key_word: u64,
+    key_kind: u64,
+    value_word: u64,
+    value_kind: u64,
 ) -> u64 {
-    let key = any_value_ref_from_word(key_ref_word, "fz_map_put_ref key");
-    let value = any_value_ref_from_word(value_ref_word, "fz_map_put_ref value");
-    if value.tag().is_scalar() {
-        panic!("fz_map_put_ref value requires a heap/sentinel ref; use the typed scalar write path");
-    }
     map_put_slot_value(
         process,
         map_ref_word,
-        AnyValue::from_ref(key).expect("fz_map_put_ref key"),
-        AnyValue::from_ref(value).expect("fz_map_put_ref value"),
+        stored_value(key_word, key_kind, "fz_map_put key"),
+        stored_value(value_word, value_kind, "fz_map_put value"),
     )
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_map_put_int(process: *mut Process, map_ref_word: u64, key_ref_word: u64, value: i64) -> u64 {
-    let key = any_value_ref_from_word(key_ref_word, "fz_map_put_int key");
-    map_put_slot_value(
-        process,
-        map_ref_word,
-        AnyValue::from_ref(key).expect("fz_map_put_int key"),
-        AnyValue::int(value),
-    )
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_map_put_float(process: *mut Process, map_ref_word: u64, key_ref_word: u64, value: f64) -> u64 {
-    let key = any_value_ref_from_word(key_ref_word, "fz_map_put_float key");
-    map_put_slot_value(
-        process,
-        map_ref_word,
-        AnyValue::from_ref(key).expect("fz_map_put_float key"),
-        AnyValue::float(value),
-    )
-}
-
-/// Build a map from parallel key and value lists in ONE allocation.
-///
-/// A map is a flat sorted array, so `put/3` in a loop copies the whole array
-/// per key -- O(n^2), and the exact idiom Elixir's docs encourage because a
-/// HAMT makes it cheap there. Every BULK function in `Map` funnels here
-/// instead: collect the pairs, allocate once.
-///
-/// Parallel lists rather than a list of pairs because a tuple's fields are not
-/// reachable from here; the caller already has both lists in hand.
-///
-/// Sorting and deduping are `alloc_map_refs_bits`'s -- which did NOT do either
-/// until this needed it -- so a duplicate key keeps the LAST value, which is
-/// what `merge/2` needs and what Elixir does.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_map_from_kv(process: *mut Process, keys_ref_word: u64, values_ref_word: u64) -> u64 {
     let mut keys = any_value_ref_from_word(keys_ref_word, "fz_map_from_kv keys");
@@ -2038,24 +2006,6 @@ pub extern "C" fn fz_map_from_kv(process: *mut Process, keys_ref_word: u64, valu
 ///
 /// An `atom` parameter of an fz extern marshals as a tagged ref, so the id is
 /// loaded from the ref here.
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_map_put_atom_ref(
-    process: *mut Process,
-    map_ref_word: u64,
-    key_ref_word: u64,
-    atom_ref_word: u64,
-) -> u64 {
-    let atom = any_value_ref_from_word(atom_ref_word, "fz_map_put_atom_ref value");
-    let atom_id = atom.load_atom().expect("fz_map_put_atom_ref expects an atom");
-    let key = any_value_ref_from_word(key_ref_word, "fz_map_put_atom_ref key");
-    map_put_slot_value(
-        process,
-        map_ref_word,
-        AnyValue::from_ref(key).expect("fz_map_put_atom_ref key"),
-        AnyValue::atom(atom_id as u32),
-    )
-}
-
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_map_is_map(process: *mut Process, map_ref_word: u64) -> u8 {
     let value = any_value_ref_from_word(map_ref_word, "fz_map_is_map");

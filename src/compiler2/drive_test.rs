@@ -8748,6 +8748,33 @@ fn compiler2_native_map_pattern_walks_a_trie_where_the_test_stands() {
     }
 }
 
+/// `Map.put` hands the runtime its key and its value each as the word a map
+/// stores for it and the value's kind. An integer the caller computed crosses
+/// as its own word beside the constant kind of an integer: nothing boxes it on
+/// the way in.
+#[test]
+fn compiler2_native_map_put_passes_an_integer_as_its_word_and_kind() {
+    use fz_runtime::any_value::ValueKind;
+    let clif = lowered_clif_of(
+        "defmodule P do\n\
+         \x20 def counted(m, n) when is_integer(n), do: Map.put(m, :count, n + 1)\n\
+         end\n\
+         def main(), do: P.counted(%{}, 41)\n",
+        "fz_map_put",
+    );
+    let constant_kind = |kind: ValueKind| format!("iconst.i64 {}\n", kind.tag());
+    assert!(
+        clif.contains("; fn0 = fz_map_put\n")
+            && clif.contains(&constant_kind(ValueKind::ATOM))
+            && clif.contains(&constant_kind(ValueKind::INT)),
+        "the key and the value cross with the constant kinds of an atom and an integer:\n{clif}"
+    );
+    assert!(
+        !clif.contains("ushr") && clif.matches(" = call ").count() == 1,
+        "nothing reads a kind at run time or boxes the integer before the put:\n{clif}"
+    );
+}
+
 /// A share is written where it stands, from what the value's type says. In
 /// each program below `retained` passes its argument to `keep` and still
 /// holds it, so the argument is shared before the call. Sharing a binary
@@ -13482,23 +13509,23 @@ const SURFACE_MEMBERSHIP_CENSUS: [(&str, &str, usize, usize); 13] = [
     (
         "fixtures/01125_a_never_returning_closure_call_over_decoded_records_asks_nothing_of_the_boxed_return.fz",
         "",
-        10,
+        6,
         0,
     ),
     (
         "fixtures/01130_a_reducer_wrapped_in_a_new_closure_on_each_lap_compiles_and_reduces.fz",
         "",
-        6,
+        5,
         0,
     ),
     (
         "fixtures/01135_two_reduces_over_one_value_through_a_user_enumerable_each_keep_their_own_accumulator_type.fz",
         "",
-        6,
+        5,
         0,
     ),
     ("fixtures/01425_callable_union_capture_containment.fz", "", 6, 0),
-    ("fixtures/00626_map_fetch_and_update_agree_with_elixir.fz", "", 10, 0),
+    ("fixtures/00626_map_fetch_and_update_agree_with_elixir.fz", "", 9, 0),
     ("fixtures/01450_dispatch_list_head_separates.fz", "", 2, 0),
 ];
 
