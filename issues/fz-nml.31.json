@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-20T19:55:13Z",
+  "description": "Split from fz-nml.9 site 4 (2026-11-20) when fz-nml.9 folded into fz-9x7.44.8 (two-word lane). A receive clause binding the body never reads, e.g. `\u003c\u003c_x::32\u003e\u003e -\u003e nil` or a guard-only `\u003c\u003cx::32\u003e\u003e when x \u003e= 0 -\u003e nil`, is still extracted and stored in the out-slot (receive.rs:~398-419 via store_receive_value_ref, receive.rs:363). After fz-9x7.44.8 the store costs no box, but the extraction is needless work. Fix: prune unread body parameters where the clause is built; guards read subjects through the dispatch, not the out-slot. Measured on develop 4a05ae2be: 0/1000/1000 scalar boxes per 1000 steps (interp/run/build).",
+  "id": "fz-nml.31",
+  "labels": [],
+  "parent": "fz-nml",
+  "priority": 3,
+  "status": "open",
+  "title": "A receive clause extracts only the bindings its body reads",
+  "type": "task",
+  "updated_at": "2026-11-20T19:55:13Z"
+}
