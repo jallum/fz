@@ -15,6 +15,10 @@
     {
       "text": "What a context atom denotes is decided by fz-mue.38 (atom-context hygiene, Macro.var/2, Macro.unique_var/2). This ticket builds var!/2 on that answer.",
       "timestamp": "2026-11-19T03:52:41Z"
+    },
+    {
+      "text": "Scope set by Elixir Parity, 2026-11-20 (user chose var!/2 as its own ticket on the fz-mue.38 page): var!(v, ctx) runs Macro.expand(ctx, __CALLER__) because ctx arrives as an alias, so this adds Macro.expand/2 first, then var!/2 with Elixir's two ArgumentErrors (\"expected a variable to be given to var!\", \"expected var! context to expand to an atom\"); kernel.ex:4885. Moved under fz-mue; owner Elixir Parity.",
+      "timestamp": "2026-11-20T20:16:15Z"
     }
   ],
   "priority": 3,
