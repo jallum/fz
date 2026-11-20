@@ -7,9 +7,15 @@
   "id": "fz-9zq.7",
   "labels": [],
   "parent": "fz-9zq",
+  "comments": [
+    {
+      "text": "Dep on fz-9zq.6 removed (Coordinator, 2026-11-20): the .6 code it needed merged in #809; .6 stays open only for 29_type_fun_recursive, now waiting on fz-mue.16 (iodata).",
+      "timestamp": "2026-11-20T18:48:59Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "A generated lambda has a source of its own",
   "type": "task",
-  "updated_at": "2026-11-20T18:48:58Z"
+  "updated_at": "2026-11-20T18:48:59Z"
 }
