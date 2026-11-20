@@ -1,0 +1,91 @@
+defmodule :lists do
+  @moduledoc "The Erlang `:lists` functions, as OTP's lists.erl defines them."
+
+  @doc """
+  Returns the elements of `list` in reverse order.
+
+  ## Examples
+
+      :lists.reverse([1, 2, 3])
+      #=> [3, 2, 1]
+
+  """
+  @spec reverse([t]) :: [t] when t: var
+  def reverse([] = l), do: l
+  def reverse([_] = l), do: l
+  def reverse([a, b]), do: [b, a]
+  def reverse([a, b | l]), do: :lists.reverse(l, [b, a])
+
+  @doc """
+  Returns the elements of `list` in reverse order, followed by `tail`.
+
+  ## Examples
+
+      :lists.reverse([1, 2, 3], [4, 5])
+      #=> [3, 2, 1, 4, 5]
+
+  """
+  @spec reverse([t], any) :: [t] when t: var
+  def reverse([], tail), do: tail
+  def reverse([head | rest], tail), do: reverse(rest, [head | tail])
+
+  @doc """
+  Returns a list of `n` copies of `elem`. `n` is a non-negative integer.
+
+  ## Examples
+
+      :lists.duplicate(3, :a)
+      #=> [:a, :a, :a]
+
+  """
+  @spec duplicate(non_neg_integer, t) :: [t] when t: var
+  def duplicate(n, x) when is_integer(n) and n >= 0, do: duplicate(n, x, [])
+
+  @spec duplicate(non_neg_integer, t, [t]) :: [t] when t: var
+  defp duplicate(0, _, l), do: l
+  defp duplicate(n, x, l), do: duplicate(n - 1, x, [x | l])
+
+  @doc """
+  Returns the list of `fun` applied to each element of `list`, in order.
+
+  ## Examples
+
+      :lists.map(fn x -> x * 2 end, [1, 2, 3])
+      #=> [2, 4, 6]
+
+  """
+  @spec map((a -> b), [a]) :: [b] when a: var, b: var
+  def map(f, list) when is_function(f, 1) do
+    case list do
+      [hd | tail] -> [f.(hd) | map_1(f, tail)]
+      [] -> []
+    end
+  end
+
+  @spec map_1((a -> b), [a]) :: [b] when a: var, b: var
+  defp map_1(f, [hd | tail]), do: [f.(hd) | map_1(f, tail)]
+  defp map_1(_f, []), do: []
+
+  @doc """
+  Calls `fun` on each element of `list` and the accumulator, starting from
+  `acc0`, and returns the final accumulator. The list is walked from left to
+  right.
+
+  ## Examples
+
+      :lists.foldl(fn x, sum -> x + sum end, 0, [1, 2, 3])
+      #=> 6
+
+  """
+  @spec foldl((t, any -> any), any, [t]) :: any when t: var
+  def foldl(f, accu, list) when is_function(f, 2) do
+    case list do
+      [hd | tail] -> foldl_1(f, f.(hd, accu), tail)
+      [] -> accu
+    end
+  end
+
+  @spec foldl_1((t, any -> any), any, [t]) :: any when t: var
+  defp foldl_1(f, accu, [hd | tail]), do: foldl_1(f, f.(hd, accu), tail)
+  defp foldl_1(_f, accu, []), do: accu
+end
