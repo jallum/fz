@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-9x7.44.1"
+  ],
   "blocks": [],
   "created": "2026-11-20T19:54:48Z",
   "description": "User approved page \"Scalars without addresses\" (https://claude.ai/artifact/6jYdi5cw1d27CZC85xkJih, From: Callables) on 2026-11-20, relayed by Callables. Owner: Callables. S1.3: tuple_elem, struct_get_field_ref, struct_get_named_field_ref, struct_store_ref, closure_get_capture_ref, closure_set_capture_ref. Each entry takes and answers #807's stored_value on native and interpreter paths; the interpreter's as_ref_word boxing ends at these calls.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Tuple, struct and closure field entries take and answer a stored word and its kind",
   "type": "task",
-  "updated_at": "2026-11-20T19:54:48Z"
+  "updated_at": "2026-11-20T19:54:53Z"
 }
