@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-9x7.44.1"
+  ],
   "blocks": [],
   "created": "2026-11-20T19:54:49Z",
   "description": "User approved page \"Scalars without addresses\" (https://claude.ai/artifact/6jYdi5cw1d27CZC85xkJih, From: Callables) on 2026-11-20, relayed by Callables. Owner: Callables. S1.4: value_eq_ref, eq_widening_ref, cmp_ref, cmp_raw_const, eq_raw_const, truthy_ref, type_of, ref_tag, inspect, inspect_with, bs_write_field_ref. Covers fz-nml.9 site 1 with S2. Each entry takes and answers #807's stored_value on native and interpreter paths; the interpreter's as_ref_word boxing ends at these calls.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Compare and inspect entries take a stored word and its kind",
   "type": "task",
-  "updated_at": "2026-11-20T19:54:49Z"
+  "updated_at": "2026-11-20T19:54:54Z"
 }
