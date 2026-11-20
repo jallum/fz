@@ -7,9 +7,15 @@
   "id": "fz-9x7.45",
   "labels": [],
   "parent": "fz-9x7",
+  "comments": [
+    {
+      "text": "Probe re-run on develop 49e06fe93: run/build 2,000,254 continuations at 1M (slope 2.0003/elt: inc__e20 + app__e21), interp 0 (Rust stack, 4.47s). Proposal page https://claude.ai/artifact/KbW7pSdbyg6xEHdS8qXHL4 (file ../fz-9x7.45.html) awaits the user: Into need + narrow remembered set (GC owns step G, after fz-9x7.11.2).",
+      "timestamp": "2026-11-20T22:54:12Z"
+    }
+  ],
   "priority": 2,
   "status": "in_progress",
   "title": "A body-recursive list builder fills its tail in place, with no continuation per element",
   "type": "feature",
-  "updated_at": "2026-11-20T22:47:01Z"
+  "updated_at": "2026-11-20T22:54:12Z"
 }
