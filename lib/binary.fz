@@ -1,5 +1,29 @@
 defmodule :binary do
-  @moduledoc "The Erlang `:binary` functions that make a copy of a binary or report what it references."
+  @moduledoc "The Erlang `:binary` functions that read a byte of a binary, make a copy of it, or report what it references."
+
+  @doc """
+  Returns the byte of `subject` at the zero-based position `pos`.
+
+  Raises `ArgumentError` when `pos` is at or past the end of `subject`, and
+  with Elixir's per-argument wording when `subject` is not a binary or `pos`
+  is not a non-negative integer.
+
+  ## Examples
+
+      :binary.at("abc", 1)
+      #=> 98
+
+  """
+  @spec at(binary, integer) :: integer
+  def at(subject, pos) when is_binary(subject) and is_integer(pos) and pos >= 0 and pos < byte_size(subject) do
+    <<_::binary-size(pos), byte, _::binary>> = subject
+    byte
+  end
+
+  def at(subject, pos) when is_binary(subject) and is_integer(pos) and pos >= 0, do: raise(%ArgumentError{message: "argument error"})
+
+  def at(subject, pos),
+    do: raise(%ArgumentError{message: "errors were found at the given arguments:\n\n" <> subject_complaint(subject) <> count_complaint(pos)})
 
   @doc """
   Returns a new binary with the bytes of `subject`.

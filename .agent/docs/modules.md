@@ -187,8 +187,11 @@ It also defines `raise/3`, which raises `reason` again as the kind it is
 given (`:error`, `:throw` or `:exit`) and ignores the stacktrace. `error/1` raises
 `reason` with the kind `:error`, as `Kernel.panic/1` does (`01382`).
 
-`lib/binary.fz` defines `:binary` with `copy/1`, `copy/2` and
-`referenced_byte_size/1`. `copy/2` is the extern `fz_binary_copy`, which builds
+`lib/binary.fz` defines `:binary` with `at/2`, `copy/1`, `copy/2` and
+`referenced_byte_size/1`. `at/2` reads the byte with a
+`<<_::binary-size(pos), byte, _::binary>>` match; a position at or past the end
+raises `ArgumentError` with the message `argument error`, as OTP's BIF does.
+`copy/2` is the extern `fz_binary_copy`, which builds
 the result in one buffer; `String.duplicate/2` is `:binary.copy/2`. `copy`
 takes a binary and `referenced_byte_size` takes any bitstring, as in OTP. A
 subject that is not a bitstring, or a count that is not a non-negative integer,
