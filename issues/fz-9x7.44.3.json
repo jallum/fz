@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-9x7.44.1"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-9x7.44.8"
+  ],
   "created": "2026-11-20T19:54:48Z",
   "description": "User approved page \"Scalars without addresses\" (https://claude.ai/artifact/6jYdi5cw1d27CZC85xkJih, From: Callables) on 2026-11-20, relayed by Callables. Owner: Callables. S1.2: list_cons_any, list_head_ref, list_head_int_ref, list_head_float_ref, list_reuse_or_cons_ref (its _parts twin exists). Each entry takes and answers #807's stored_value on native and interpreter paths; the interpreter's as_ref_word boxing ends at these calls.",
   "id": "fz-9x7.44.3",
