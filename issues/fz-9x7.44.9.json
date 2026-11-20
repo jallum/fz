@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-20T19:54:50Z",
+  "description": "User approved page \"Scalars without addresses\" (https://claude.ai/artifact/6jYdi5cw1d27CZC85xkJih, From: Callables) on 2026-11-20, relayed by Callables. Owner: Callables. S3: the page's removal ledger in one change: ScalarBox, box_*_for_any, the collector's scalar-root copy, the read-through store, I4 (#811), is_boxed_scalar, both deep-copy arms, docs. The 17 scalar_box_allocs fixtures switch to allocation counts. Closes fz-9x7.41.6.",
+  "id": "fz-9x7.44.9",
+  "labels": [],
+  "parent": "fz-9x7.44",
+  "priority": 1,
+  "status": "open",
+  "title": "No value is the address of a number",
+  "type": "task",
+  "updated_at": "2026-11-20T19:54:50Z"
+}
