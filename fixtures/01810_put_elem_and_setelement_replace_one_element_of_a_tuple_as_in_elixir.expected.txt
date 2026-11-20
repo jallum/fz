@@ -1,0 +1,25 @@
+{10}
+{:a, :z}
+{:atom, :two, "three", [4], %{five: 5}}
+{1, "binary", "three", [4], %{five: 5}}
+{1, :two, [1, 2, 3], [4], %{five: 5}}
+{1, :two, "three", %{a: 1}, %{five: 5}}
+{1, :two, "three", [4], {:nested, {1, 2}}}
+{[:x], %{y: 2}}
+{{1}, {:a, :b}, {1, :two, "three", [4], %{five: 5}}}
+{:first}
+{1, :two, "three", [4], 5.5}
+{:a, :b, :z}
+ArgumentError "errors were found at the given arguments:\n\n  * 1st argument: out of range\n"
+ArgumentError "errors were found at the given arguments:\n\n  * 1st argument: out of range\n"
+ArgumentError "errors were found at the given arguments:\n\n  * 1st argument: out of range\n"
+ArgumentError "errors were found at the given arguments:\n\n  * 2nd argument: not a tuple\n"
+ArgumentError "errors were found at the given arguments:\n\n  * 2nd argument: not a tuple\n"
+ArithmeticError "bad argument in arithmetic expression"
+ArgumentError "errors were found at the given arguments:\n\n  * 1st argument: out of range\n"
+ArgumentError "errors were found at the given arguments:\n\n  * 1st argument: out of range\n"
+ArgumentError "errors were found at the given arguments:\n\n  * 1st argument: not an integer\n"
+ArgumentError "errors were found at the given arguments:\n\n  * 1st argument: not an integer\n"
+ArgumentError "errors were found at the given arguments:\n\n  * 2nd argument: not a tuple\n"
+ArgumentError "errors were found at the given arguments:\n\n  * 1st argument: out of range\n  * 2nd argument: not a tuple\n"
+ArgumentError "errors were found at the given arguments:\n\n  * 1st argument: not an integer\n  * 2nd argument: not a tuple\n"

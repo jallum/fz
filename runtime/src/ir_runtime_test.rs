@@ -932,6 +932,48 @@ fn tuple_primitives_answer_for_every_value_they_are_handed() {
 }
 
 #[test]
+fn tuple_put_copies_the_tuple_and_leaves_the_original_alone() {
+    let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
+    let pair = schemas.borrow_mut().register(Schema::tuple_of_arity(2));
+    let mut process = Box::new(Process::new(schemas));
+    let process_ptr: *mut Process = &mut *process;
+    let tuple = tuple_ref(&mut process, pair, &[AnyValue::int(7), AnyValue::int(8)]);
+    let list = process
+        .heap
+        .alloc_list_cons_int(3, AnyValueRef::empty_list())
+        .expect("list");
+    let integer = process.heap.box_any_value_ref(AnyValue::int(5));
+
+    let replaced =
+        AnyValueRef::from_raw_word(fz_tuple_put(process_ptr, tuple.raw_word(), 1, list.raw_word())).expect("tuple ref");
+    assert_ne!(replaced.raw_word(), tuple.raw_word(), "the update is a copy");
+    assert_eq!(fz_tuple_size(process_ptr, replaced.raw_word()), 2);
+    let read = |tuple: AnyValueRef, index| {
+        AnyValueRef::from_raw_word(fz_tuple_elem(process_ptr, tuple.raw_word(), index)).expect("element")
+    };
+    assert_eq!(read(replaced, 0).load_int(), Ok(7), "the other field is kept");
+    assert_eq!(
+        read(replaced, 1).raw_word(),
+        list.raw_word(),
+        "the list is stored and readable"
+    );
+    assert_eq!(read(tuple, 1).load_int(), Ok(8), "the original keeps its field");
+
+    let again = AnyValueRef::from_raw_word(fz_tuple_put(process_ptr, replaced.raw_word(), 0, integer.raw_word()))
+        .expect("tuple ref");
+    assert_eq!(read(again, 0).load_int(), Ok(5));
+    assert_eq!(read(replaced, 0).load_int(), Ok(7));
+
+    for outside in [(tuple.raw_word(), 2), (tuple.raw_word(), -1), (integer.raw_word(), 0)] {
+        assert_eq!(
+            fz_tuple_put(process_ptr, outside.0, outside.1, integer.raw_word()),
+            nil_atom_ref().raw_word(),
+            "outside the tuple the answer is nil"
+        );
+    }
+}
+
+#[test]
 fn list_length_counts_a_proper_list_and_refuses_every_other_value() {
     with_process(|process| {
         let mut list = AnyValueRef::empty_list();

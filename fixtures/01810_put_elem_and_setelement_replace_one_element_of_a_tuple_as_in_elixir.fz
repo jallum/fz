@@ -1,0 +1,51 @@
+#---
+# purpose: "put_elem/3 and :erlang.setelement/3 return a copy of a tuple with one element replaced, leave the original alone, and raise ArgumentError for a bad index or a non-tuple, as in Elixir"
+# oracle: self
+# oracle.stamp: dddc296635d26b89
+#---
+defmodule Main do
+  def attempt(fun) do
+    try do
+      fun.()
+    rescue
+      e -> inspect(e.__struct__) <> " " <> inspect(Exception.message(e))
+    end
+  end
+
+  def main() do
+    one = {1}
+    two = {:a, :b}
+    five = {1, :two, "three", [4], %{five: 5}}
+
+    IO.inspect(put_elem(one, 0, 10))
+    IO.inspect(put_elem(two, 1, :z))
+    IO.inspect(put_elem(five, 0, :atom))
+    IO.inspect(put_elem(five, 1, "binary"))
+    IO.inspect(put_elem(five, 2, [1, 2, 3]))
+    IO.inspect(put_elem(five, 3, %{a: 1}))
+    IO.inspect(put_elem(five, 4, {:nested, {1, 2}}))
+    IO.inspect(put_elem(put_elem(two, 0, [:x]), 1, %{y: 2}))
+
+    IO.inspect({one, two, five})
+
+    IO.inspect(:erlang.setelement(1, one, :first))
+    IO.inspect(:erlang.setelement(5, five, 5.5))
+    IO.inspect(:erlang.setelement(3, {:a, :b, :c}, :z))
+
+    IO.puts(attempt(fn -> put_elem(two, 2, 0) end))
+    IO.puts(attempt(fn -> put_elem(two, -1, 0) end))
+    IO.puts(attempt(fn -> put_elem({}, 0, 0) end))
+    IO.puts(attempt(fn -> put_elem(:a, 0, 1) end))
+    IO.puts(attempt(fn -> put_elem([1, 2], 5, 1) end))
+    IO.puts(attempt(fn -> put_elem(two, :a, 1) end))
+    IO.puts(attempt(fn -> :erlang.setelement(0, {1}, 2) end))
+    IO.puts(attempt(fn -> :erlang.setelement(2, {1}, 2) end))
+    IO.puts(attempt(fn -> :erlang.setelement(:a, {1}, 2) end))
+    IO.puts(attempt(fn -> :erlang.setelement(1.0, {1}, 2) end))
+    IO.puts(attempt(fn -> :erlang.setelement(1, :a, 2) end))
+    IO.puts(attempt(fn -> :erlang.setelement(0, :a, 2) end))
+    IO.puts(attempt(fn -> :erlang.setelement(:a, :b, 2) end))
+  end
+end
+
+Main.main()

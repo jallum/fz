@@ -1899,6 +1899,32 @@ pub extern "C" fn fz_tuple_elem(process: *mut Process, tuple_ref_word: u64, inde
         .raw_word()
 }
 
+/// A copy of a tuple with the field at a zero-based index replaced by a
+/// value; `nil` where the first argument is no tuple or the index is outside
+/// it, so the call is total over what it is handed. The original is never
+/// written. Callers inside the domain never see the `nil`.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_tuple_put(process: *mut Process, tuple_ref_word: u64, index: i64, value_ref_word: u64) -> u64 {
+    let tuple = any_value_ref_from_word(tuple_ref_word, "fz_tuple_put tuple");
+    let value = any_value_ref_from_word(value_ref_word, "fz_tuple_put value");
+    let Some(arity) = tuple_arity_of(process, tuple) else {
+        return nil_atom_ref().raw_word();
+    };
+    let Some(index) = usize::try_from(index).ok().filter(|&index| index < arity) else {
+        return nil_atom_ref().raw_word();
+    };
+    let layout = SlotLayout::of(arity);
+    let copy_word = fz_struct_copy(process, tuple_ref_word, arity as u32);
+    fz_struct_store_ref(
+        process,
+        copy_word,
+        SlotLayout::slot_offset(index) as u32,
+        layout.kind_offset(index) as u32,
+        value.raw_word(),
+    );
+    copy_word
+}
+
 /// The length of a proper list; -1 where the chain ends in anything but the
 /// empty list, so an improper list or a non-list is told apart from `[]`.
 #[unsafe(no_mangle)]

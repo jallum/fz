@@ -521,9 +521,9 @@ clause that cannot match is left to the decision's own `FunctionClauseError`.
 
 | failure | prints |
 |---|---|
-| `bit_size/1`, `byte_size/1`, `tuple_size/1`, `length/1`, `elem/2` of the wrong kind; `abs/1`, `round/1`, `trunc/1`, `floor/1`, `ceil/1` of a non-number; `hd/1`, `tl/1` of anything but a non-empty list | `** (ArgumentError) errors were found at the given arguments:` then the argument and what is wrong with it |
+| `bit_size/1`, `byte_size/1`, `tuple_size/1`, `length/1`, `elem/2` of the wrong kind; `put_elem/3` and `:erlang.setelement/3` of a non-tuple or an index outside it (the message lists every argument at fault); `abs/1`, `round/1`, `trunc/1`, `floor/1`, `ceil/1` of a non-number; `hd/1`, `tl/1` of anything but a non-empty list | `** (ArgumentError) errors were found at the given arguments:` then the argument and what is wrong with it |
 | `map_size/1` of a non-map | `** (BadMapError) expected a map, got:` then the value |
-| `elem/2` with a non-integer index | `** (ArithmeticError) bad argument in arithmetic expression`, as Elixir adds one to the index |
+| `elem/2` or `put_elem/3` with a non-integer index | `** (ArithmeticError) bad argument in arithmetic expression`, as Elixir adds one to the index |
 | `abs/1` of the minimum integer; `round/1`, `trunc/1`, `floor/1`, `ceil/1` of a float outside the 64-bit range (Elixir answers a bignum) | `** (ArithmeticError) bad argument in arithmetic expression` |
 | a `<<...>>` construction or `<>` given a field of the wrong kind, a size that is no non-negative integer, a too-short binary or a value that is no Unicode scalar | `** (ArgumentError) construction of binary failed: segment N of type 'T':` then what the segment expected, naming the segment the BEAM names |
 | `div/2`, `rem/2`, `/` and the other arithmetic that fails | `** (ArithmeticError) bad argument in arithmetic expression` |
