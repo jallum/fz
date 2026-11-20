@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-20T20:28:16Z",
+  "description": "User direction 2026-11-20 (verbatim): \"i see that we have frequent problems with the distiller tests due to _exact_ pins. lets change that to a ceiling that we can occasionally lower.\"\n\nWhy: tests/distill_telemetry_test.rs's the_distiller_compiles_inside_the_product_drive_budget asserts assert_eq! on (largest drive requests, total requests, drives) and on (DERIVATIONS, READS_HANDED). Every PR that moves the compile by even one request conflicts with every other PR that does (#748, #806, #807, #813, #814 on 2026-11-19/20), and each needs a rebase plus a re-measure.\n\nChange: each figure is a ceiling. The test asserts measured \u003c= ceiling per component (largest drive, total requests, drive count, derivations, reads handed) and prints the measured values, so a fall passes without editing the file. A rise above a ceiling still fails and still needs the user's authorization to raise it; PRODUCT_DRIVE_BUDGET (50,000) stays the hard bound on the largest drive. Ceilings are lowered occasionally, in a PR of their own or alongside a change that lowers them, to the measured value on develop. The failure message says which component crossed its ceiling, by how much, and that a rise is investigated first.\n\nDocs: update the pin rule wherever the agent docs describe distiller pins (fall = lower the pin -\u003e fall passes; lower the ceiling occasionally; rise above ceiling = investigate + user authorization). One present-tense comment at most per ceiling (fz-fzb rule).\n\nDone when: a PR that lowers the distiller's compile cost passes the test unchanged; a PR that raises any component above its ceiling fails with a message naming it; ceilings set to develop's measured values at the time of the change; docs updated; gate green.",
+  "id": "fz-sc8.255",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 2,
+  "status": "open",
+  "title": "The distiller's compile-cost pins are ceilings, lowered now and then",
+  "type": "task",
+  "updated_at": "2026-11-20T20:28:16Z"
+}
