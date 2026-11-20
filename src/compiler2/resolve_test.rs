@@ -36,6 +36,7 @@ fn nullary_scalars_resolve_to_the_same_ty_as_the_direct_types_call() {
         ("any", |t| t.any()),
         ("term", |t| t.any()),
         ("dynamic", |t| t.any()),
+        ("byte", |t| t.int()),
         ("never", |t| t.none()),
         ("utf8", |t| {
             let inner = t.str_t();
@@ -447,4 +448,49 @@ fn a_var_bound_on_an_unknown_variable_is_refused() {
         .expect_err("an unused variable's bound is refused");
 
     assert_eq!(error.msg, "constraint references unknown type variable `zzz`");
+}
+
+/// `iodata` is Elixir's `binary | iolist`, and `iolist` nests to any depth.
+#[test]
+fn iodata_admits_binaries_and_nested_lists_of_bytes_and_binaries() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    let iodata = resolve(&tel, &mut world, "iodata").expect("iodata resolves");
+    let iolist = resolve(&tel, &mut world, "iolist").expect("iolist resolves");
+
+    for admitted in [
+        "binary",
+        "[integer]",
+        "[binary | integer]",
+        "[[[binary]]]",
+        "[integer | [binary | [integer]]]",
+    ] {
+        let ty = resolve(&tel, &mut world, admitted).expect("admitted type resolves");
+        assert!(world.types_mut().is_subtype(&ty, &iodata), "iodata admits `{admitted}`");
+    }
+    for nested in ["[integer]", "[[[binary]]]"] {
+        let ty = resolve(&tel, &mut world, nested).expect("nested type resolves");
+        assert!(world.types_mut().is_subtype(&ty, &iolist), "iolist admits `{nested}`");
+    }
+}
+
+#[test]
+fn iodata_refuses_what_is_neither_a_binary_nor_a_list_of_bytes_and_binaries() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    let iodata = resolve(&tel, &mut world, "iodata").expect("iodata resolves");
+    let iolist = resolve(&tel, &mut world, "iolist").expect("iolist resolves");
+
+    for refused in ["atom", "float", "[atom]", "[[float]]", "{binary}"] {
+        let ty = resolve(&tel, &mut world, refused).expect("refused type resolves");
+        assert!(
+            !world.types_mut().is_subtype(&ty, &iodata),
+            "iodata refuses `{refused}`"
+        );
+    }
+    let binary = resolve(&tel, &mut world, "binary").expect("binary resolves");
+    assert!(
+        !world.types_mut().is_subtype(&binary, &iolist),
+        "a bare binary is iodata but not an iolist"
+    );
 }
