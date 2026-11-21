@@ -1,0 +1,7 @@
+~c"abc"
+255
+119
+"argument error"
+"argument error"
+"argument error"
+"errors were found at the given arguments:\n\n  * 2nd argument: out of range\n"
