@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-yh5",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "is_function(f, n) narrows a callable to arity n, and dispatch on it runs as in Elixir",
   "type": "bug",
-  "updated_at": "2026-11-21T04:57:16Z"
+  "updated_at": "2026-11-21T04:57:51Z"
 }
