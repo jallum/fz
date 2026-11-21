@@ -3,7 +3,7 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-11T19:53:18Z",
-  "description": "In Elixir, def f(_s, limit, limit) matches only when the 2nd and 3rd arguments are equal. fz ignores the repetition: with def f(_s, limit, limit), do: :same and def f(_s, _l, _a), do: :different, M.f(:x, 1, 2) returns :same (Elixir: :different), and fz warns type/redundant-clause that the second clause is unreachable. Silent wrong answer, reproduced on ad21e1635. Found by the fz-sc8.14 builder. A repeated pattern variable must bind once and compare (===) at every other occurrence, in function heads, case and receive patterns, and = matches, on all three paths, with the decision tree and redundancy check seeing the equality.",
+  "description": "In Elixir, def f(_s, limit, limit) matches only when the 2nd and 3rd arguments are equal. fz ignores the repetition: with def f(_s, limit, limit), do: :same and def f(_s, _l, _a), do: :different, M.f(:x, 1, 2) returns :same (Elixir: :different), and fz warns type/redundant-clause that the second clause is unreachable. Silent wrong answer, reproduced on ad21e1635. Found by the fz-sc8.14 builder. A repeated pattern variable must bind once and compare (===) at every other occurrence, in function heads, case and receive patterns, and = matches, on all three paths, with the decision tree and redundancy check seeing the equality.\n\nSecond sighting (Elixir Parity, fz-mue.46 builder, 2026-11-20): def go([], m, m), do: :ok; def go([], _, name), do: {:bad, name}. go([], :m, :other) returns :ok (Elixir: {:bad, :other}), with a false type/redundant-clause warning on the second clause. Elixir's validate_struct! uses this pattern, so the struct! port depends on it. Repro: Elixir Parity's scratchpad fz-mue.46/p.fz.",
   "id": "fz-sc8.116",
   "labels": [],
   "parent": "fz-sc8",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "A variable repeated in a function head matches only equal arguments",
   "type": "bug",
-  "updated_at": "2026-11-11T19:53:18Z"
+  "updated_at": "2026-11-21T04:57:20Z"
 }
