@@ -963,7 +963,8 @@ fn materialize_closure_call_edge(
         // `none` (fz-kdt.130). It is also where a lambda goes when the tuple
         // carrying it is used whole beside being taken apart.
         ClosureCallForm::Seam => {
-            let return_ty = public_indirect_return_ty(world, tel, root_id, analysis, summary, callsite, result_value)?;
+            let return_ty =
+                public_indirect_return_ty(world, tel, root_id, analysis, summary, callsite, result_value, body)?;
             let return_flow = if world.types().is_empty(&return_ty) {
                 CallReturnFlow::NoReturn { local_source: None }
             } else {
@@ -1012,6 +1013,32 @@ fn materialize_closure_call_edge(
     }
 }
 
+/// Whether every callable the callee can be is a closure of another arity than
+/// the call's argument count. Such a call raises where it stands, so it settles
+/// no result value, and its return is the empty type.
+fn callee_takes_no_call_of_this_arity(
+    world: &mut World,
+    analysis: &ActivationAnalysis,
+    body: &LoweredBody,
+    callsite: CallSiteId,
+) -> bool {
+    let (Some(callee), Some(args)) = (body.closure_call_callee(callsite), body.call_args(callsite)) else {
+        return false;
+    };
+    let Some(callee_ty) = analysis.value_types.get(&callee).copied() else {
+        return false;
+    };
+    world
+        .types_mut()
+        .callable_value_clauses(&callee_ty)
+        .is_some_and(|clauses| {
+            !clauses.is_empty()
+                && clauses
+                    .iter()
+                    .all(|clause| clause.closure.is_some() && clause.args.len() != args.len())
+        })
+}
+
 fn public_indirect_return_ty(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
@@ -1020,10 +1047,14 @@ fn public_indirect_return_ty(
     summary: Option<&CallSiteSummary>,
     callsite: CallSiteId,
     result_value: ValueId,
+    body: &LoweredBody,
 ) -> Result<Ty, FatalError> {
     let settled_return = summary.map(|summary| summary.settled_return(world.types_mut()));
     if let Some(return_ty) = settled_return.filter(|return_ty| world.types().is_empty(return_ty)) {
         return Ok(return_ty);
+    }
+    if callee_takes_no_call_of_this_arity(world, analysis, body, callsite) {
+        return Ok(world.types_mut().none());
     }
     let result_ty = analysis.value_types.get(&result_value).copied().ok_or_else(|| {
         incomplete_semantic_plan(
