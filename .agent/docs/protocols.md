@@ -146,7 +146,7 @@ then, for each registered (protocol, target) impl:
         collect it
 exactly one match  -> activate that impl callback as an ordinary call
                       (the protocol callsite becomes a direct call to the impl)
-no match           -> the call is bottom: no implementation can take this receiver
+no match           -> the call only raises: no implementation can take this receiver
 many matches       -> every match is activated; the callsite dispatches among them
 ```
 
@@ -162,7 +162,11 @@ The values the receiver type allows beyond the union of the matched targets are
 the call's remainder. A non-empty remainder gives the callsite a `LastResort`
 (`CallSiteSummary::last_resort`, `LastResort::protocol_undefined`): the call is
 a decision even with one match, so it tests its receiver, and a receiver no
-implementation takes raises `Protocol.UndefinedError` on every path. The message
+implementation takes raises `Protocol.UndefinedError` on every path. A receiver
+that overlaps no implementation at all is the whole receiver as remainder: the
+summary has no target, the plan has no arm, its first input is demanded whole
+for the raise, and the call returns bottom. `Enum.map(5, f)` compiles and
+raises, as it does in Elixir. The message
 is Elixir's: `protocol P not implemented for <kind>`, a blank line, `Got value:`,
 a blank line and the inspected value indented four spaces. The kind is
 `Integer`, `Float`, `Atom`, `List`, `Map`, `Tuple`, `BitString`, `Function`,

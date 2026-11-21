@@ -23538,9 +23538,9 @@ fn compiler2_literal_keying_names_only_the_literals_a_use_can_tell_apart() {
     );
 }
 
-/// A producer that refuses a program says why, once. `Enum.count(:atom)` has
-/// no `Enumerable` implementation for an atom, so materializing the call edge
-/// reports `Protocol.UndefinedError` in the reader's terms and fails. The
+/// A producer that refuses a program says why, once. `P.each([1])` reaches the
+/// `List` implementation of `P`, which defines no `each`, so materializing the
+/// call edge reports the callback with no implementation and fails. The
 /// pull-drive boundary above it must forward that failure, not restate it:
 /// a second `artifact/incomplete-semantic-plan` under the same code, phrased
 /// as a product key, tells the reader nothing the first did not.
@@ -23552,8 +23552,11 @@ fn a_refused_program_reports_its_one_diagnostic() {
     let mut world = crate::compiler2::World::new();
     let mut sessions = super::pull::ProductSessions::default();
     world.submit_code(
-        Some("protocol_without_impl.fz".to_string()),
-        "def main(), do: Enum.count(:atom)\n".to_string(),
+        Some("protocol_impl_without_callback.fz".to_string()),
+        "defprotocol P do\n  def each(value)\n  def other(value)\nend\n\
+         defimpl P, for: List do\n  def other(value), do: value\nend\n\
+         def main(), do: P.each([1])\n"
+            .to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
 
@@ -23566,7 +23569,7 @@ fn a_refused_program_reports_its_one_diagnostic() {
 
     assert!(
         outcome.is_err(),
-        "a protocol call with no implementation has no backend product",
+        "a protocol call whose implementation lacks the callback has no backend product",
     );
     let reported = capture
         .find(&["fz", "diag"])
@@ -23581,7 +23584,7 @@ fn a_refused_program_reports_its_one_diagnostic() {
         "the refusal is reported once, by the producer that knows why: {reported:#?}",
     );
     assert!(
-        reported[0].contains("`Enumerable.count/1` has no implementation"),
+        reported[0].contains("`P.each/1` has no implementation"),
         "the one diagnostic names the protocol and the call: {reported:#?}",
     );
 }

@@ -1,0 +1,5 @@
+#---
+# purpose: "IO.puts converts through String.Chars, so a map argument, which has no String.Chars implementation, raises Protocol.UndefinedError at run time, as in Elixir"
+# expect: abort
+#---
+def main(), do: IO.puts(%{a: 1})
