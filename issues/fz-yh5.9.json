@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Callables",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-21T11:54:16Z",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "An is_function(f, n) guard is planned from the library, with fz_function_arity as a projection (option B)",
   "type": "bug",
-  "updated_at": "2026-11-21T11:54:16Z"
+  "updated_at": "2026-11-21T11:54:17Z"
 }
