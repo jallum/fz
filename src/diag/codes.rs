@@ -48,6 +48,7 @@ pub const PROTOCOL_MISSING_CALLBACK: DiagCode = DiagCode("protocol/missing-callb
 pub const MACRO_NOT_A_DEFMACRO: DiagCode = DiagCode("macro/not-a-defmacro");
 pub const MACRO_NOT_REQUIRED: DiagCode = DiagCode("macro/not-required");
 pub const MACRO_OWN_MODULE_ITEM_CALL: DiagCode = DiagCode("macro/own-module-item-call");
+pub const MACRO_INVALID_QUOTED_EXPR: DiagCode = DiagCode("macro/invalid-quoted-expr");
 
 // ----- ir_lower -----
 

@@ -128,7 +128,7 @@ fn encode_tok(builder: &QuotedSourceBuilder, tok: &Tok) -> Result<(&'static str,
     })
 }
 
-fn decode_token(cursor: &QuotedSourceCursor, sources: &SourceMap) -> Result<Token, QuotedSourceError> {
+pub(crate) fn decode_token(cursor: &QuotedSourceCursor, sources: &SourceMap) -> Result<Token, QuotedSourceError> {
     let arity = cursor.tuple_arity()?;
     if arity != 6 {
         return Err(QuotedSourceError::new(format!(

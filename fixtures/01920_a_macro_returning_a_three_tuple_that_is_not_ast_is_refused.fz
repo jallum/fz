@@ -1,0 +1,16 @@
+#---
+# purpose: "A macro that returns a three-tuple that is not an AST node is refused, naming the macro and the tuple"
+# expect: diagnostic
+# diagnostic.code: macro/invalid-quoted-expr
+#---
+defmodule Macros do
+  defmacro bad, do: {1, 2, 3}
+end
+
+defmodule Main do
+  require Macros
+
+  def main(), do: Macros.bad()
+end
+
+Main.main()

@@ -1,0 +1,16 @@
+#---
+# purpose: "A macro that returns a map without Macro.escape/1 is refused, naming the macro and the map"
+# expect: diagnostic
+# diagnostic.code: macro/invalid-quoted-expr
+#---
+defmodule Macros do
+  defmacro bad, do: %{a: 1}
+end
+
+defmodule Main do
+  require Macros
+
+  def main(), do: Macros.bad()
+end
+
+Main.main()
