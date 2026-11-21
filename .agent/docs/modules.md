@@ -182,10 +182,23 @@ paths.
 `lib/erlang.fz` defines `:erlang` with `float_to_binary/2`, which takes
 `decimals: n` for an integer `n` from 0 to 253 and writes the float in fixed
 notation (`fz_float_to_fixed_binary`, rounded from the exact value with a tie
-going away from zero). Any other option or an out-of-range `n` has no clause.
+going away from zero) and `[:short]`, which is `Float.to_string/1`'s shortest
+round-trip text. Any other option or an out-of-range `n` has no clause.
 It also defines `raise/3`, which raises `reason` again as the kind it is
 given (`:error`, `:throw` or `:exit`) and ignores the stacktrace. `error/1` raises
-`reason` with the kind `:error`, as `Kernel.panic/1` does (`01382`).
+`reason` with the kind `:error`, as `Kernel.panic/1` does (`01382`); `error/3`
+is `error/1` with the argument list and `error_info:` options ignored.
+
+The BIFs `json.erl` calls are source in the same module (`01813`, `01814`):
+`element/2`, `binary_part/3` (a negative length counts back from the start),
+`iolist_to_binary/1`, `iolist_size/1`, `integer_to_binary/2`,
+`atom_to_binary/2` (`:utf8`, `:unicode`, `:latin1`), `is_map_key/2`,
+`binary_to_float/1` and `binary_to_integer/1`. A call they cannot answer raises
+`ArgumentError` listing every faulty argument as Erlang's error formatter does
+(`is_map_key/2` raises `BadMapError`). `String.to_float/1`,
+`String.to_integer/1` and `IO.iodata_to_binary/1` delegate to them as
+Elixir's do. An iolist whose tail is a binary is handled by `iolist_to_binary/1`
+but cannot be built in fz source, which has no improper lists.
 
 `lib/binary.fz` defines `:binary` with `copy/1`, `copy/2` and
 `referenced_byte_size/1`. `copy/2` is the extern `fz_binary_copy`, which builds
