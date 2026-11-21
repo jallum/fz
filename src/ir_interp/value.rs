@@ -4,7 +4,7 @@ use crate::fz_ir::{FnId, Module};
 use crate::runtime_type_predicate::RuntimeTypePredicate;
 use fz_runtime::any_value::debug::render_value;
 use fz_runtime::any_value::{
-    AnyValue as RuntimeAnyValue, AnyValueRef, FALSE_ATOM_ID, NIL_ATOM_ID, TRUE_ATOM_ID, ValueKind,
+    AnyValue as RuntimeAnyValue, AnyValueRef, FALSE_ATOM_ID, NIL_ATOM_ID, Stored, TRUE_ATOM_ID, ValueKind,
 };
 use fz_runtime::ir_runtime::{
     fz_box_float_for_any, fz_box_int_for_any, fz_bs_read_binary_ref, fz_bs_read_int_ref, fz_struct_get_named_field_ref,
@@ -279,6 +279,21 @@ pub(super) fn interp_value_from_ref_word(ref_word: u64, context: &str) -> Result
     let value = AnyValueRef::from_raw_word(ref_word)
         .map_err(|err| format!("{context}: invalid any value ref {ref_word:#x}: {err:?}"))?;
     interp_value_from_ref(value, context)
+}
+
+/// The value a stored word and kind spell, with no box made for a number.
+pub(super) fn interp_value_from_stored(stored: Stored, context: &str) -> Result<AnyValue, String> {
+    Ok(match stored.value(context) {
+        RuntimeAnyValue::Null => AnyValue::Null,
+        RuntimeAnyValue::EmptyList => AnyValue::EmptyList,
+        RuntimeAnyValue::Int(value) => AnyValue::Int(value),
+        RuntimeAnyValue::Float(bits) => AnyValue::Float(f64::from_bits(bits)),
+        RuntimeAnyValue::Atom(id) => AnyValue::Atom(id),
+        RuntimeAnyValue::Opaque(kind, word) => AnyValue::Opaque(kind, word),
+        RuntimeAnyValue::HeapRef(value) => {
+            AnyValue::Ref(HeapRef::new(value).map_err(|err| format!("{context}: {err}"))?)
+        }
+    })
 }
 
 pub(super) fn interp_value_from_ref(value: AnyValueRef, context: &str) -> Result<AnyValue, String> {

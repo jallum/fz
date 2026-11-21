@@ -18749,7 +18749,7 @@ fn compiler2_kernel_panic_is_one_private_fz_never_extern() {
     };
     assert_eq!(signature.symbol, "fz_panic");
     assert_eq!(signature.abi, ExternAbi::Fz);
-    assert_eq!(signature.params, vec![ExternTy::Any]);
+    assert_eq!(signature.params, vec![ExternTy::StoredValue]);
     assert_eq!(signature.ret, ExternTy::Never);
     assert_eq!(
         crate::ir_interp::tests_support_resolved_symbol_addr("fz_panic").unwrap(),
@@ -18765,7 +18765,7 @@ fn compiler2_kernel_panic_is_one_private_fz_never_extern() {
         .find(|decl| decl.symbol == "fz_panic")
         .expect("native module extern fz_panic");
     assert_eq!(decl.abi, ExternAbi::Fz);
-    assert_eq!(decl.params, [ExternTy::Any]);
+    assert_eq!(decl.params, [ExternTy::StoredValue]);
     assert_eq!(decl.ret, ExternTy::Never);
 }
 

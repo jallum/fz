@@ -1,7 +1,7 @@
 use super::*;
 use crate::any_value::{
-    AnyValueRef, ClosureDenotationId, ValueKind, closure_addr_from_tagged, closure_capture_set, closure_capture_value,
-    map_addr_from_tagged,
+    AnyValueRef, ClosureDenotationId, Stored, ValueKind, closure_addr_from_tagged, closure_capture_set,
+    closure_capture_value, map_addr_from_tagged,
 };
 use crate::exec_ctx::ExecCtx;
 use crate::handler_stack::Innermost;
@@ -70,8 +70,13 @@ fn exception(process: &mut Process, name: &str, message: &str) -> AnyValue {
 }
 
 fn line(process: &mut Process, kind: RaiseKind, value: AnyValue) -> Option<String> {
-    let value = process.heap.box_any_value_ref(value);
     failure_line(process, kind, value)
+}
+
+/// `fz_panic` called as compiled code calls it: with the value's word and kind.
+fn panic_with(process: &mut Process, value: AnyValue) {
+    let Stored { word, kind } = Stored::of(value);
+    fz_panic(process, word, kind);
 }
 
 fn error_line(process: &mut Process, value: AnyValue) -> String {
@@ -152,7 +157,7 @@ fn a_panic_hands_its_line_to_the_fault_sink_marks_the_process_failed_and_returns
         let value = exception(process, "Elixir.RuntimeError", "boom");
         assert!(!process.failed, "a fresh process has not failed");
 
-        fz_panic(process, value.ref_word().raw_word());
+        panic_with(process, value);
 
         assert!(process.failed, "the panic marks the process failed");
         assert_eq!(
@@ -234,7 +239,7 @@ fn a_panic_under_a_compiled_handler_delivers_the_handler_with_kind_value_and_nam
         push_compiled(process, template);
         let value = exception(process, "Elixir.RuntimeError", "boom");
 
-        fz_panic(process, value.ref_word().raw_word());
+        panic_with(process, value);
 
         assert!(!process.failed, "a caught raise is not a failure");
         assert!(
@@ -275,9 +280,8 @@ fn a_panic_under_an_interpreter_handler_leaves_the_raise_for_the_interpreter_to_
     with_observed_process(|process, observed| {
         process.push_interpreter_handler();
         let value = atom(process, "boom");
-        let value_ref = process.heap.box_any_value_ref(value);
 
-        fz_panic(process, value_ref.raw_word());
+        panic_with(process, value);
 
         assert!(!process.failed);
         assert!(process.handlers.depth() == 0);
@@ -286,10 +290,10 @@ fn a_panic_under_an_interpreter_handler_leaves_the_raise_for_the_interpreter_to_
             "the interpreter owns its own frames"
         );
         let raised = process.raised.expect("the raise waits in the process");
-        assert_eq!(AnyValue::from_ref(raised.kind).expect("kind"), atom(process, "error"));
-        assert_eq!(AnyValue::from_ref(raised.value).expect("value"), value);
+        assert_eq!(raised.kind.value("kind"), atom(process, "error"));
+        assert_eq!(raised.value.value("value"), value);
         assert_eq!(
-            AnyValue::from_ref(raised.name).expect("name"),
+            raised.name.value("name"),
             AnyValue::nil_atom(),
             "a value that is not an exception has no name"
         );
@@ -306,7 +310,7 @@ fn a_panic_reaches_the_innermost_handler_and_leaves_the_outer_one_in_place() {
         process.push_interpreter_handler();
         let value = exception(process, "Elixir.KeyError", "key :a not found");
 
-        fz_panic(process, value.ref_word().raw_word());
+        panic_with(process, value);
 
         assert_eq!(process.handlers.depth(), 1);
         assert_eq!(process.handlers.innermost(), Some(Innermost::Compiled(outer)));
@@ -326,7 +330,7 @@ fn a_panic_without_a_handler_is_reported_at_depth_zero_and_still_fails_the_proce
     with_observed_process(|process, observed| {
         let value = exception(process, "Elixir.RuntimeError", "boom");
 
-        fz_panic(process, value.ref_word().raw_word());
+        panic_with(process, value);
 
         assert!(process.failed);
         assert_eq!(process.raises_delivered, 0);
@@ -350,9 +354,8 @@ fn a_panic_reports_nothing_when_the_context_does_not_observe_raises() {
         process.ctx = &mut ctx;
         process.push_interpreter_handler();
         let value = atom(process, "boom");
-        let value_ref = process.heap.box_any_value_ref(value);
 
-        fz_panic(process, value_ref.raw_word());
+        panic_with(process, value);
 
         assert!(process.raised.is_some());
         assert!(lines.is_empty());
@@ -371,12 +374,16 @@ fn pair(process: &mut Process, first: AnyValue, second: AnyValue) -> AnyValue {
 
 /// Raise `value` through `raise` with a closure handler installed and return
 /// what the handler was delivered as its kind and value.
-fn delivered_by(process: &mut Process, value: AnyValue, raise: impl FnOnce(*mut Process, u64)) -> (AnyValue, AnyValue) {
+fn delivered_by(
+    process: &mut Process,
+    value: AnyValue,
+    raise: impl FnOnce(*mut Process, u64, u64),
+) -> (AnyValue, AnyValue) {
     let template = handler_template(process);
     push_compiled(process, template);
-    let value_ref = process.heap.box_any_value_ref(value);
+    let Stored { word, kind } = Stored::of(value);
 
-    raise(process, value_ref.raw_word());
+    raise(process, word, kind);
 
     let handler = process
         .delivered
@@ -391,11 +398,11 @@ fn delivered_by(process: &mut Process, value: AnyValue, raise: impl FnOnce(*mut 
 fn a_throw_delivers_kind_throw_and_an_exit_delivers_kind_exit() {
     with_observed_process(|process, observed| {
         let ball = atom(process, "ball");
-        let (kind, value) = delivered_by(process, ball, |process, value| fz_throw(process, value));
+        let (kind, value) = delivered_by(process, ball, |process, word, kind| fz_throw(process, word, kind));
         assert_eq!((kind, value), (atom(process, "throw"), ball));
 
         let reason = atom(process, "gone");
-        let (kind, value) = delivered_by(process, reason, |process, value| fz_exit(process, value));
+        let (kind, value) = delivered_by(process, reason, |process, word, kind| fz_exit(process, word, kind));
         assert_eq!((kind, value), (atom(process, "exit"), reason));
 
         assert!(!process.failed, "a caught throw or exit is not a failure");
@@ -404,12 +411,49 @@ fn a_throw_delivers_kind_throw_and_an_exit_delivers_kind_exit() {
 }
 
 #[test]
+fn a_thrown_or_exited_number_reaches_its_handler_without_a_box() {
+    with_observed_process(|process, _| {
+        let boxes = |process: &Process| process.heap.node.alloc_stats().scalar_box.allocs;
+        let before = boxes(process);
+
+        let (_, value) = delivered_by(process, AnyValue::int(41), |process, word, kind| {
+            fz_throw(process, word, kind)
+        });
+        assert_eq!(value, AnyValue::int(41));
+
+        let (_, value) = delivered_by(process, AnyValue::float(2.5), |process, word, kind| {
+            fz_exit(process, word, kind)
+        });
+        assert_eq!(value, AnyValue::float(2.5));
+
+        assert_eq!(
+            boxes(process),
+            before,
+            "a number travels from the raise to the handler as a word"
+        );
+    });
+}
+
+#[test]
+#[should_panic(expected = "a collection ran between a raise and its handler")]
+fn a_collection_between_a_raise_and_its_handler_fails_loudly() {
+    with_observed_process(|process, _| {
+        process.push_interpreter_handler();
+        let value = atom(process, "boom");
+        panic_with(process, value);
+        assert!(process.raised.is_some());
+
+        drop(process.collect(&mut []));
+    });
+}
+
+#[test]
 fn a_raise_event_carries_the_kind_text_with_no_exception_name_for_a_throw_or_an_exit() {
     with_observed_process(|process, observed| {
-        let raises: [extern "C" fn(*mut Process, u64); 3] = [fz_panic, fz_throw, fz_exit];
+        let raises: [extern "C" fn(*mut Process, u64, u64); 3] = [fz_panic, fz_throw, fz_exit];
         for raise in raises {
             let value = atom(process, "v");
-            delivered_by(process, value, |process, value| raise(process, value));
+            delivered_by(process, value, |process, word, kind| raise(process, word, kind));
         }
         assert_eq!(
             observed.raises,
@@ -428,8 +472,8 @@ fn a_reraise_continues_with_the_kind_it_was_delivered() {
         for kind in ["error", "throw", "exit"] {
             let value = atom(process, "v");
             let kind_ref = process.heap.box_any_value_ref(atom(process, kind));
-            let (delivered_kind, delivered_value) = delivered_by(process, value, |process, value_ref| {
-                fz_reraise(process, kind_ref.raw_word(), value_ref)
+            let (delivered_kind, delivered_value) = delivered_by(process, value, |process, word, kind| {
+                fz_reraise(process, kind_ref.raw_word(), word, kind)
             });
             assert_eq!((delivered_kind, delivered_value), (atom(process, kind), value));
         }
@@ -449,10 +493,10 @@ fn a_reraise_continues_with_the_kind_it_was_delivered() {
 fn a_reraise_nothing_handles_fails_the_process_like_the_original_raise() {
     with_observed_process(|process, observed| {
         let ball = pair(process, atom(process, "ball"), AnyValue::int(1));
-        let value_ref = process.heap.box_any_value_ref(ball);
+        let Stored { word, kind } = Stored::of(ball);
         let kind_ref = process.heap.box_any_value_ref(atom(process, "throw"));
 
-        fz_reraise(process, kind_ref.raw_word(), value_ref.raw_word());
+        fz_reraise(process, kind_ref.raw_word(), word, kind);
 
         assert!(process.failed);
         assert_eq!(observed.lines, ["** (throw) {:ball, 1}"]);
@@ -463,9 +507,9 @@ fn a_reraise_nothing_handles_fails_the_process_like_the_original_raise() {
 #[should_panic(expected = "fz_reraise: the kind")]
 fn a_reraise_of_a_kind_the_runtime_never_delivered_is_an_invariant_violation() {
     with_observed_process(|process, _| {
-        let value_ref = process.heap.box_any_value_ref(atom(process, "v"));
+        let value = Stored::of(atom(process, "v"));
         let bogus = atom(process, "bogus");
-        reraise(process, bogus, value_ref.raw_word());
+        reraise(process, bogus, value);
     });
 }
 
@@ -473,9 +517,9 @@ fn a_reraise_of_a_kind_the_runtime_never_delivered_is_an_invariant_violation() {
 fn an_uncaught_throw_prints_its_value_and_ends_the_process_with_status_1() {
     with_observed_process(|process, observed| {
         let ball = pair(process, atom(process, "ball"), AnyValue::int(1));
-        let value_ref = process.heap.box_any_value_ref(ball);
+        let Stored { word, kind } = Stored::of(ball);
 
-        fz_throw(process, value_ref.raw_word());
+        fz_throw(process, word, kind);
 
         assert!(process.failed);
         assert_eq!(process.exit_status, 1);
@@ -485,10 +529,10 @@ fn an_uncaught_throw_prints_its_value_and_ends_the_process_with_status_1() {
 }
 
 fn uncaught_exit(process: &mut Process, reason: AnyValue) -> Option<String> {
-    let reason = process.heap.box_any_value_ref(reason);
+    let Stored { word, kind } = Stored::of(reason);
     process.failed = false;
     process.exit_status = 0;
-    fz_exit(process, reason.raw_word());
+    fz_exit(process, word, kind);
     assert!(process.failed, "an exit nothing handles ends the process");
     failure_line(process, RaiseKind::Exit, reason)
 }
@@ -596,7 +640,7 @@ fn delivered_exception(process: &mut Process, raise: impl FnOnce(&mut Process)) 
     process.push_interpreter_handler();
     raise(process);
     let raised = process.raised.expect("the raise waits in the process");
-    AnyValue::from_ref(raised.value).expect("exception")
+    raised.value.value("exception")
 }
 
 #[test]
@@ -659,7 +703,7 @@ fn undefined_function_raise(
     let function = atom(process, function);
     raise_undefined_function(process, receiver, function, arity, module_is_defined);
     let raised = process.raised.take().expect("the raise waits in the process");
-    let exception = AnyValue::from_ref(raised.value).expect("exception");
+    let exception = raised.value.value("exception");
     let message = exception_field(process, exception, "message").expect("message");
     (exception, binary_text(message).expect("a binary message"))
 }
@@ -742,7 +786,7 @@ fn the_extern_raise_finds_the_receiver_among_the_modules_that_lack_the_function(
         fz_raise_undefined_function(process, receiver, function, 0, modules);
 
         let raised = process.raised.expect("the raise waits in the process");
-        let exception = AnyValue::from_ref(raised.value).expect("exception");
+        let exception = raised.value.value("exception");
         let message = exception_field(process, exception, "message").expect("message");
         assert_eq!(
             binary_text(message).as_deref(),

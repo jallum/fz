@@ -9,7 +9,7 @@
 //! ambient current-process and two schedulers can be live at once.
 
 use crate::alloc_site::{AllocSiteCount, RuntimeAllocCounts};
-use crate::any_value::{ClosureDenotationId, ValueKind, bitstring_object_image, closure_header_word};
+use crate::any_value::{ClosureDenotationId, Stored, ValueKind, bitstring_object_image, closure_header_word};
 use crate::function_denotation::FunctionDenotation;
 use crate::heap::{AllocStat, HeapAllocStats};
 use crate::reuse_site::{Retention, ReuseKind, ReuseSiteCount, ReuseStat, RuntimeReuseCounts};
@@ -287,12 +287,14 @@ impl<T: Roots + ?Sized> Roots for ProcessRoots<'_, T> {
 
 /// A raise delivered to an interpreter handler, as the three values every
 /// handler receives: the kind atom, the raised value, and the exception's
-/// name atom (`nil` when the value is not an exception).
+/// name atom (`nil` when the value is not an exception), each as its word and
+/// kind. A raise is not a collector root: it is taken at once, so a collection
+/// never finds one pending.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Raised {
-    pub kind: AnyValueRef,
-    pub value: AnyValueRef,
-    pub name: AnyValueRef,
+    pub kind: Stored,
+    pub value: Stored,
+    pub name: Stored,
 }
 
 /// The node-global atom table: text↔id, append-only. Seeded from a module's
@@ -943,6 +945,10 @@ impl Process {
     /// park record while its closures and pinned values move. Gifts waiting in
     /// the in-queue are not roots (see `Heap::collect`).
     pub fn collect(&mut self, transient: &mut (impl Roots + ?Sized)) -> Collected<'_> {
+        debug_assert!(
+            self.raised.is_none(),
+            "a collection ran between a raise and its handler: the raised value is not a root"
+        );
         let mut delivery = self.delivery.lock();
         let mut roots = ProcessRoots {
             runnable: &mut self.runnable,

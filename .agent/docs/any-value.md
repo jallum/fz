@@ -73,6 +73,8 @@ owns packing, projection, and the platform difference behind the word.
   and its kind, held outside a container. `Stored::of(value)` makes it and
   `Stored::value(context)` rebuilds the value. A runtime entry takes a key or
   value of any kind as its two words, so nothing boxes a number to pass it.
+  A raised value is one: `fz_panic`, `fz_throw`, `fz_exit` and `fz_reraise`
+  take it as two words, and `Process::raised` holds it as a `Stored`.
 - **The `fz_*` runtime ABI** (`runtime/src/ir_runtime.rs`): the C entry points
   generated code calls to read, build, and project values.
 
