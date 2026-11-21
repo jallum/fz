@@ -735,6 +735,8 @@ fn decode_case(
 /// the same do-block grammar produces an empty block everywhere else. This
 /// reads either shape as the same empty clause list, so a case with no
 /// clauses compiles and only aborts if it is ever reached, matching Elixir.
+/// `receive` reads its `do:` body the same way: `receive do after 20 -> :ok
+/// end` has no message clauses.
 fn decode_clause_list_or_empty_block(
     occurrences: &mut LambdaOccurrences,
     body: &QuotedSourceCursor,
@@ -865,10 +867,7 @@ fn decode_receive(
     for (key, value) in entries {
         match key.as_str() {
             "do" => {
-                clauses = value
-                    .list_iter()
-                    .map(|clause| decode_match_clause(occurrences, &clause?, sources))
-                    .collect::<Result<Vec<_>, _>>()?;
+                clauses = decode_clause_list_or_empty_block(occurrences, &value, "receive", sources)?;
             }
             "after" => {
                 let after_items = value.list_items()?;

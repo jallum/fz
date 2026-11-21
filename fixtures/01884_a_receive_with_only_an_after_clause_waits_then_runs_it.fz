@@ -1,0 +1,33 @@
+#---
+# purpose: "a receive with no message clauses and only an after clause waits out its timeout, runs the after body for its value, and leaves every queued message in the mailbox"
+# oracle: self
+# oracle.stamp: 92e440ad84009f14
+#---
+#
+# `receive do after ms -> body end` is the idiomatic sleep. With no clause to
+# match, a message already queued is not consumed: the later receive still
+# finds it.
+defmodule Main do
+  def main() do
+    IO.inspect(receive do
+      after 20 -> :slept
+    end)
+
+    IO.inspect(receive do
+      after 0 -> :immediate
+    end)
+
+    send(self(), {:kept, 7})
+
+    IO.inspect(receive do
+      after 5 -> :waited
+    end)
+
+    IO.inspect(receive do
+      {:kept, n} -> n
+    after 0 -> :lost
+    end)
+  end
+end
+
+Main.main()
