@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Optimize",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-21T04:50:00Z",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": ":maps.iterator/1, next/1 and fold/3 walk a map in batches, as maps.erl writes them",
   "type": "feature",
-  "updated_at": "2026-11-21T04:50:00Z"
+  "updated_at": "2026-11-21T04:50:01Z"
 }
