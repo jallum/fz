@@ -10,7 +10,7 @@
     "fz-sc8.22.4"
   ],
   "created": "2026-11-20T20:00:57Z",
-  "description": "User approved fz-sc8.22 option A (\"approved;\", relayed by Bugs and Cleanup 2026-11-20; page /Users/j5n/Workspace/fz-sc8.22.html): fz-mue.41 folds in, terminator-flag representation, iolist/iodata widened to Elixir's definition. Owner: Bugs and Cleanup. Step 2, runtime. A spare link bit flags a 16-byte box holding the tail; proper lists are unchanged. One tail accessor; every walker (length, compare, hash, deep copy, GC, share, reuse, map_from_kv); inspect in Elixir's container_each form; native emits the inline cons only when the tail's type is a list, otherwise the checked runtime cons. Removes list_tail_addr_from_bits's nil -\u003e [] folding (any_value.rs:1158), which today makes native [1 | nil] print [1] and == [1] true. A/B on bench.\n\nToday's symptoms this step removes (see fz-sc8.22): a scalar tail prints as #slot\u003c...\u003e under run, and a map tail SIGSEGVs on run/build.",
+  "description": "User approved fz-sc8.22 option A (\"approved;\", relayed by Bugs and Cleanup 2026-11-20; page /Users/j5n/Workspace/fz-sc8.22.html): fz-mue.41 folds in, terminator-flag representation, iolist/iodata widened to Elixir's definition. Owner: Bugs and Cleanup. Step 2, runtime. A spare link bit flags a 16-byte box holding the tail; proper lists are unchanged. One tail accessor; every walker (length, compare, hash, deep copy, GC, share, reuse, map_from_kv); inspect in Elixir's container_each form; native emits the inline cons only when the tail's type is a list, otherwise the checked runtime cons. Removes list_tail_addr_from_bits's nil -\u003e [] folding (any_value.rs:1158), which today makes native [1 | nil] print [1] and == [1] true. A/B on bench.\n\nToday's symptoms this step removes (see fz-sc8.22): a scalar tail prints as #slot\u003c...\u003e under run, and a map tail SIGSEGVs on run/build.\n\nShared with fz-9x7.45's G (GC, 2026-11-21): develop's link word (runtime/src/any_value.rs:1050-1110) holds the tail address (0 = []), the head's kind (4 bits at tag_shift) and the alias bit (tag_shift+4). This ticket adds the one terminator flag. G will reuse it rather than take a bit of its own: flag set with address 0 is 'a hole, no box yet' (address 0 is never a box). So the single tail accessor returns three answers: proper tail / terminator box / hole. The hole is refused loudly in the terminator branch, off the proper-list path. GC tracing skips flag+0. G's fill_destination writes the address and clears the flag in one store, keeping kind and alias. Name the flag bit and the accessor so G can reuse both. G will be blocked by this ticket.",
   "id": "fz-sc8.22.2",
   "labels": [],
   "parent": "fz-sc8.22",
@@ -18,5 +18,5 @@
   "status": "open",
   "title": "An improper tail is a terminator box behind a link flag",
   "type": "task",
-  "updated_at": "2026-11-21T04:50:02Z"
+  "updated_at": "2026-11-21T05:46:09Z"
 }
