@@ -1873,7 +1873,7 @@ defmodule Kernel do
   def is_function(term :: fun, arity), do: fz_function_arity(term) == arity
   def is_function(_, _), do: false
 
-  extern "fz" defp fz_function_arity(fun) :: integer
+  extern "fz" defp fz_function_arity(fun) :: integer, projects: :arrow_arity
 
   @doc """
   Returns `true` when `term` is `true` or `false`.

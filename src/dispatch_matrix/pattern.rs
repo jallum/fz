@@ -1,4 +1,5 @@
 use self::source::{collect_pinned_names, direct_bitfield_bindings};
+use self::specialise::literal_of;
 #[cfg(test)]
 use super::DispatchMatrix;
 use super::{
@@ -18,6 +19,7 @@ use std::sync::Arc;
 pub(crate) mod last_resort;
 pub(crate) mod roots;
 pub(crate) mod source;
+pub(crate) mod specialise;
 pub(crate) use last_resort::{FieldTerm, LastResort, RaisedField, atom_name};
 pub(crate) use roots::OutcomeRoots;
 pub(crate) use source::{PatternBodyId, PatternRow, SourcePatternError, SourcePatternRows};
@@ -272,6 +274,37 @@ pub(crate) trait PatternResolver<TypeHandle> {
         callee: &crate::ast::Callee,
         arity: usize,
     ) -> Result<Option<GuardCallee<TypeHandle>>, SourcePatternError>;
+
+    /// The callee a guard reaches when its call hands it these literals, one
+    /// per argument, `None` where the argument is not a literal. A resolver
+    /// that plans a helper per literal answers with the helper decided at
+    /// them; any other answers with the helper itself.
+    fn guard_call_at(
+        &mut self,
+        callee: &crate::ast::Callee,
+        arity: usize,
+        _literals: &[Option<GroundValue>],
+    ) -> Result<Option<GuardCallee<TypeHandle>>, SourcePatternError> {
+        self.guard_call(callee, arity)
+    }
+
+    /// Whether the literal has the type, when the type calculator can say.
+    fn literal_has_type(&mut self, _value: &GroundValue, _ty: &TypeHandle) -> Option<bool> {
+        None
+    }
+
+    /// The type of the values `annotation` admits that the extern `callee`,
+    /// called on one of them, answers `literal` for. `None` when the callee
+    /// declares no projection, or none that reaches `literal`.
+    fn projected_type(
+        &mut self,
+        _callee: &crate::ast::Callee,
+        _arity: usize,
+        _literal: &GroundValue,
+        _annotation: &TypeHandle,
+    ) -> Result<Option<TypeHandle>, SourcePatternError> {
+        Ok(None)
+    }
 
     /// Whether a type test over this type can tell one literal from another.
     /// It cannot when the type names no specific atom anywhere inside it.
@@ -612,7 +645,7 @@ where
         return Err(SourcePatternError::UnsupportedGuardExpr);
     }
 
-    let type_predicate = type_predicate_of(surface, &rows);
+    let type_predicate = type_predicate_of(surface, &rows, resolver)?;
 
     // A helper is an ordinary function, entered with nothing bound before its
     // patterns, so a pin in one of its heads names a binding that never
@@ -736,14 +769,23 @@ where
 }
 
 /// What a helper asks when it is only a type test: exactly two clauses, the
-/// first answering `true` for annotated parameters and the second `false` for
+/// first answering for annotated parameters and the second `false` for
 /// anything, with every parameter a plain variable or `_` and no guard.
-fn type_predicate_of<TypeHandle: Clone>(
+///
+/// The first answers `true`, or it answers whether an extern that declares a
+/// projection, called on an annotated parameter, returns a literal; the
+/// parameter then has the annotation's values that the projection maps to that
+/// literal.
+fn type_predicate_of<F, TypeHandle: Clone>(
     surface: &impl CallableSurface,
     rows: &[PatternRow<TypeHandle>],
-) -> Option<Vec<(u32, TypeHandle)>> {
+    resolver: &mut F,
+) -> Result<Option<Vec<(u32, TypeHandle)>>, SourcePatternError>
+where
+    F: PatternResolver<TypeHandle>,
+{
     let ([yes, no], [yes_row, no_row]) = (surface.clauses(), rows) else {
-        return None;
+        return Ok(None);
     };
     let plain = |clause: &crate::ast::FnClause| {
         clause.guard.is_none()
@@ -752,9 +794,8 @@ fn type_predicate_of<TypeHandle: Clone>(
                 .iter()
                 .all(|param| matches!(param.node, Pattern::Var(_) | Pattern::Wildcard))
     };
-    let answers = matches!(yes.body.node, Expr::Bool(true)) && matches!(no.body.node, Expr::Bool(false));
-    if !(answers && plain(yes) && plain(no) && no_row.preconditions.is_empty()) {
-        return None;
+    if !(matches!(no.body.node, Expr::Bool(false)) && plain(yes) && plain(no) && no_row.preconditions.is_empty()) {
+        return Ok(None);
     }
     let asked = yes_row
         .preconditions
@@ -763,8 +804,52 @@ fn type_predicate_of<TypeHandle: Clone>(
             PatternSubjectRef::Input(argument) => Some((*argument, ty.clone())),
             _ => None,
         })
-        .collect::<Option<Vec<_>>>()?;
-    (!asked.is_empty()).then_some(asked)
+        .collect::<Option<Vec<_>>>();
+    let Some(mut asked) = asked.filter(|asked| !asked.is_empty()) else {
+        return Ok(None);
+    };
+    match &yes.body.node {
+        Expr::Bool(true) => Ok(Some(asked)),
+        Expr::BinOp(crate::ast::BinOp::Eq, projection, literal) => {
+            let Some((callee, parameter)) = projection_call_on_a_parameter(&projection.node, yes) else {
+                return Ok(None);
+            };
+            let Some(literal) = literal_of(&literal.node) else {
+                return Ok(None);
+            };
+            let Some(entry) = asked.iter_mut().find(|(argument, _)| *argument == parameter) else {
+                return Ok(None);
+            };
+            let Some(projected) = resolver.projected_type(&callee, 1, &literal, &entry.1)? else {
+                return Ok(None);
+            };
+            entry.1 = projected;
+            Ok(Some(asked))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// The callee of a one-argument call whose argument is a parameter of the
+/// clause, and which parameter it is.
+fn projection_call_on_a_parameter(expr: &Expr, clause: &crate::ast::FnClause) -> Option<(crate::ast::Callee, u32)> {
+    let Expr::Call(target, args) = expr else {
+        return None;
+    };
+    let [
+        Spanned {
+            node: Expr::Var(name), ..
+        },
+    ] = args.as_slice()
+    else {
+        return None;
+    };
+    let callee = crate::ast::Callee::for_call(&target.node, 1)?;
+    let parameter = clause
+        .params
+        .iter()
+        .position(|param| matches!(&param.node, Pattern::Var(bound) if bound == name))?;
+    Some((callee, parameter as u32))
 }
 
 /// Builds one guard expression from its source form.
@@ -1571,7 +1656,7 @@ fn and_chain(guard: &Spanned<Expr>) -> Vec<&Spanned<Expr>> {
 }
 
 /// The type questions a conjunct amounts to: it calls a type predicate and
-/// hands it only variables its row binds. Anything else stays a guard.
+/// hands it variables its row binds and literals. Anything else stays a guard.
 fn type_test_of<F, TypeHandle, Subject: Copy>(
     conjunct: &Spanned<Expr>,
     bound: &HashMap<Var, Subject>,
@@ -1587,23 +1672,28 @@ where
     let Some(callee) = crate::ast::Callee::for_call(&target.node, args.len()) else {
         return Ok(None);
     };
+    let literals = args.iter().map(|arg| literal_of(&arg.node)).collect::<Vec<_>>();
     let subjects = args
         .iter()
-        .map(|arg| match &arg.node {
-            Expr::Var(name) => bound.get(name).copied(),
+        .zip(&literals)
+        .map(|(arg, literal)| match (&arg.node, literal) {
+            (_, Some(_)) => Some(None),
+            (Expr::Var(name), None) => bound.get(name).map(|subject| Some(*subject)),
             _ => None,
         })
         .collect::<Option<Vec<_>>>();
     let Some(subjects) = subjects else {
         return Ok(None);
     };
-    let Some(GuardCallee::Helper(helper)) = resolver.guard_call(&callee, args.len())? else {
+    let Some(GuardCallee::Helper(helper)) = resolver.guard_call_at(&callee, args.len(), &literals)? else {
         return Ok(None);
     };
-    Ok(helper.type_predicate.as_ref().map(|asked| {
+    // A literal argument that the helper asks a type of is a question about a
+    // constant, which a type region cannot hold.
+    Ok(helper.type_predicate.as_ref().and_then(|asked| {
         asked
             .iter()
-            .map(|(argument, ty)| (subjects[*argument as usize], ty.clone()))
+            .map(|(argument, ty)| Some((subjects[*argument as usize]?, ty.clone())))
             .collect()
     }))
 }

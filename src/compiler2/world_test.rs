@@ -2677,3 +2677,32 @@ fn an_extern_that_delivers_carries_its_kind() {
     assert_eq!(delivers(&mut world, "fz_throw"), Some(RaiseKind::Throw));
     assert_eq!(delivers(&mut world, "abs"), None);
 }
+
+#[test]
+fn an_extern_that_projects_carries_its_property() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    world.submit_code(
+        Some("projects.fz".to_string()),
+        "extern \"fz\" defp fz_function_arity(fun) :: integer, projects: :arrow_arity\nextern \"C\" defp abs(c_int) :: c_int\n"
+            .to_string(),
+    );
+    assert!(matches!(
+        super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+        DriveOutcome::Resolved
+    ));
+    let projection = |world: &mut World, name: &str| {
+        let function = world.reference_function(ModuleId::GLOBAL, name, 1);
+        assert!(world.demand(Job::DefineFunction(function)));
+        assert!(matches!(
+            super::drive::ExecutionContext::new(world, &tel).drive(),
+            DriveOutcome::Resolved
+        ));
+        world.function_definition(function).1.extern_projection
+    };
+    assert_eq!(
+        projection(&mut world, "fz_function_arity"),
+        Some(crate::function_surface::ExternProjection::ArrowArity)
+    );
+    assert_eq!(projection(&mut world, "abs"), None);
+}

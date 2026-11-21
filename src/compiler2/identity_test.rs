@@ -105,6 +105,7 @@ fn function_surface_with_int(name: &str, value: i64) -> FunctionSurface {
         extern_constraints: vec![],
         extern_raises: None,
         extern_delivers: None,
+        extern_projection: None,
         variadic: false,
         attrs: vec![],
         span: crate::source::Span::DUMMY,

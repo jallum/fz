@@ -218,7 +218,7 @@ in `PatternGuardDispatch::type_predicate`; no name is matched, so `is_integer`,
 `is_boolean`, `is_nil` and a user's own helper qualify alike. In
 `PatternDispatchProducer::add_row` the guard's top-level `and` chain is read
 left to right, and a conjunct that calls a type predicate with every argument a
-variable the row binds becomes a type question on that variable's subject,
+variable the row binds (or a literal, below) becomes a type question on that variable's subject,
 placed after the pattern and precondition questions and before the guard (a
 question already asked of that subject is not asked twice). The other conjuncts
 stay the guard in their order, and a guard with none left disappears. Names
@@ -229,6 +229,32 @@ variable stays a guard. Every row source passes through `add_row`, so entry
 clauses, `case` arms, `receive` arms and lambda clauses fold alike, and the
 analysis reads the folded question like a typed parameter's: the body narrows by
 it and an activation whose type decides the clause skips the test.
+
+A guard call may also hand a type predicate literals: an integer, a float or an
+atom, beside the variables the row binds. `type_test_of` asks the resolver for
+the callee at those literals (`PatternResolver::guard_call_at`), and a literal
+argument the predicate asks a type of keeps the conjunct a guard. For a helper
+that is not itself a type predicate, `LiteralGuardPlans`
+(`src/compiler2/jobs/dispatch.rs`) plans it once per function and literals:
+`clauses_at_literals` (`src/dispatch_matrix/pattern/specialise.rs`) substitutes
+each literal for its plain parameter, decides every clause guard that is built
+from boolean literals, `not`, `and`, `or`, integer comparisons and calls to type
+predicates, drops the clauses whose guard fails and removes the guard of those
+that hold. A clause it cannot read stays as written. `Kernel.is_function/2`
+called with `2` loses its two raising clauses and keeps `term :: fun ->
+fz_function_arity(term) == 2` beside the `false` clause; called with `-1`, `:a`
+or `2.0` its raising clause stays, and the call stays a guard that raises.
+
+A residue of that shape is a type predicate: `type_predicate_of` accepts a first
+clause whose body compares a one-argument call on an annotated parameter with a
+literal, when the callee is an extern that declares a projection
+([externs](externs.md)). The parameter's type is its annotation intersected with
+what the projection maps the literal to (`PatternResolver::projected_type`):
+`:arrow_arity` at `n` is the type of a head annotation of `n` `any` parameters
+and an `any` result, so `is_function(f, 2)` narrows `f` exactly as
+`f :: (any, any -> any)` does, asks only its class, and builds no construction
+wrapper for the callable. `a_guard_that_asks_for_an_arity_builds_no_wrapper_and_narrows_the_callable_as_a_head_annotation_does`
+and fixture 01885 hold it.
 
 A helper that fails for some arguments narrows too. `answers_only_for` reads
 the clauses of a helper whose body is not a failing node and lists each

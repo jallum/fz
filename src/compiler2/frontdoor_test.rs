@@ -616,7 +616,7 @@ fn compiler2_frontdoor_extern_takes_one_well_formed_option() {
         ),
         (
             "extern \"C\" defp f(integer) :: integer, throws: ArithmeticError\n",
-            "expected `raises:` or `delivers:` after the extern return type, got `throws:`; an extern takes one of them",
+            "expected `raises:`, `delivers:` or `projects:` after the extern return type, got `throws:`; an extern takes one of them",
         ),
         (
             "extern \"fz\" defp f(any) :: none, delivers: :panic\n",
@@ -2205,4 +2205,36 @@ fn compiler2_frontdoor_no_parens_argument_may_start_with_any_expression_token() 
         .expect("body cursor")
         .expect("body node");
     assert_eq!(head_name(&body), "%", "`n % 4` stays the modulus");
+}
+
+#[test]
+fn compiler2_frontdoor_extern_projects_keeps_the_property_with_the_declaration() {
+    let tel = ConfiguredTelemetry::new();
+    let root = parse_quoted_program(
+        "extern_projects.fz",
+        "extern \"fz\" defp f(fun) :: integer, projects: :arrow_arity\n",
+        &tel,
+    )
+    .expect("an extern that projects its argument parses");
+    let form = root.cursor().list_items().unwrap()[0]
+        .ast_node(&root.sources)
+        .unwrap()
+        .unwrap();
+    let details = form.tail.list_items().unwrap()[1].map_entries().unwrap();
+    assert_eq!(
+        map_value(&details, "projects").atom_name().unwrap().as_str(),
+        "arrow_arity"
+    );
+}
+
+#[test]
+fn compiler2_frontdoor_extern_projects_names_a_property_that_exists() {
+    let tel = ConfiguredTelemetry::new();
+    let error = parse_quoted_program(
+        "extern_projects_unknown.fz",
+        "extern \"fz\" defp f(fun) :: integer, projects: :tuple_size\n",
+        &tel,
+    )
+    .expect_err("an unknown property is refused");
+    assert!(error.to_string().contains("`projects:` names the property"), "{error}");
 }

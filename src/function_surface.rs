@@ -47,8 +47,37 @@ pub struct FunctionSurface {
     /// The kind an extern's `delivers:` tail declares, when calling it hands
     /// its first argument to the nearest handler.
     pub extern_delivers: Option<fz_runtime::failure::RaiseKind>,
+    /// What the extern's `projects:` tail declares: the value its result
+    /// holds is a property of its argument, so a comparison of the result with
+    /// a literal is a question about the argument's type.
+    pub extern_projection: Option<ExternProjection>,
     pub attrs: Vec<Attribute>,
     pub span: Span,
+}
+
+/// A property of its argument that an extern's integer result reports. The
+/// result being `n` holds exactly when the argument has the type the property
+/// names at `n`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExternProjection {
+    /// The number of parameters of a function: `n` holds exactly when the
+    /// argument is a function that takes `n` arguments.
+    ArrowArity,
+}
+
+impl ExternProjection {
+    pub const ALL: [Self; 1] = [Self::ArrowArity];
+
+    /// The atom a `projects:` tail names it by.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::ArrowArity => "arrow_arity",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|projection| projection.name() == name)
+    }
 }
 
 /// The failure an extern declares: the exception a body raises, as written

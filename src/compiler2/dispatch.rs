@@ -14,11 +14,12 @@ use crate::ast::{Callee, ModuleTarget, Pattern, Spanned};
 use crate::dispatch_matrix::pattern::{
     GuardCallee, PatternBodyId, PatternDispatchPlan, PatternResolver, PatternRow, PatternSubjectRef, SourcePatternError,
 };
-use crate::function_surface::FunctionSurface;
+use crate::function_surface::{ExternProjection, FunctionSurface};
+use crate::ground_value::GroundValue;
 use crate::source::Span;
 
 use super::identity::FunctionId;
-use super::namespace::Namespace;
+use super::namespace::{Namespace, NamespaceSymbol};
 use super::types::Ty;
 use super::world::World;
 
@@ -134,7 +135,7 @@ pub(crate) struct SourcePatternResolver<'a, F> {
 
 impl<F> PatternResolver<Ty> for SourcePatternResolver<'_, F>
 where
-    F: FnMut(&mut World, &Callee, usize) -> Result<Option<GuardCallee<Ty>>, SourcePatternError>,
+    F: FnMut(&mut World, &Callee, usize, &[Option<GroundValue>]) -> Result<Option<GuardCallee<Ty>>, SourcePatternError>,
 {
     fn struct_type(&mut self, module: &ModuleTarget, _span: Span) -> Result<Ty, SourcePatternError> {
         let module_id = self.world.resolve_module_target(self.namespace, module);
@@ -149,7 +150,57 @@ where
     }
 
     fn guard_call(&mut self, callee: &Callee, arity: usize) -> Result<Option<GuardCallee<Ty>>, SourcePatternError> {
-        (self.guard)(self.world, callee, arity)
+        (self.guard)(self.world, callee, arity, &[])
+    }
+
+    fn guard_call_at(
+        &mut self,
+        callee: &Callee,
+        arity: usize,
+        literals: &[Option<GroundValue>],
+    ) -> Result<Option<GuardCallee<Ty>>, SourcePatternError> {
+        (self.guard)(self.world, callee, arity, literals)
+    }
+
+    fn literal_has_type(&mut self, value: &GroundValue, ty: &Ty) -> Option<bool> {
+        let types = self.world.types_mut();
+        let literal = match value {
+            GroundValue::Int(value) => types.int_lit(*value),
+            GroundValue::Float(bits) => types.float_lit(f64::from_bits(*bits)),
+            GroundValue::Atom(name) => types.atom_lit(name),
+            GroundValue::Bool(value) => types.bool_lit(*value),
+            GroundValue::Nil => types.nil(),
+            GroundValue::Binary(_) | GroundValue::Utf8Binary(_) => return None,
+        };
+        Some(types.is_subtype(&literal, ty))
+    }
+
+    fn projected_type(
+        &mut self,
+        callee: &Callee,
+        arity: usize,
+        literal: &GroundValue,
+        annotation: &Ty,
+    ) -> Result<Option<Ty>, SourcePatternError> {
+        let function = match self.world.lookup_callee(self.namespace, callee, arity) {
+            Some(NamespaceSymbol::Function(function) | NamespaceSymbol::Callable(function)) => function,
+            _ => return Ok(None),
+        };
+        let Some(projection) = self.world.function_surface(function).extern_projection else {
+            return Ok(None);
+        };
+        let types = self.world.types_mut();
+        let projected = match (projection, literal) {
+            (ExternProjection::ArrowArity, GroundValue::Int(arity)) if *arity >= 0 => {
+                // The type a head annotation `(any, ... -> any)` of that arity
+                // is, which is the test the runtime makes.
+                let any = types.any();
+                let arrow = types.arrow(&vec![any; *arity as usize], any);
+                types.runtime_type_test_envelope(arrow)
+            }
+            _ => return Ok(None),
+        };
+        Ok(Some(types.intersect(*annotation, projected)))
     }
 
     fn is_literal_blind(&self, ty: &Ty) -> bool {
