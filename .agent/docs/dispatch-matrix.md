@@ -219,7 +219,10 @@ keeps its literal `fn_id` AND the capture types beside it, and loses the
 parameter and result types of the arrow it was typed at, because a closure
 object's heap word at `+8` is the address of the construction wrapper that
 minted it — and a wrapper is one function at one capture layout, so the capture
-TYPES are a fact about the value while those types are not. The NUMBER of
+TYPES are a fact about the value while those types are not. A capture type
+keeps its type but not its literals (`:false` and `:true` are one `atom`
+layout), at every depth of nested closures, so a test asks no finer than an
+activation key does of a callable it keeps. The NUMBER of
 parameters is a fact about the value too: the closure's header holds it. So a
 function type that names no construction keeps its arity through the envelope,
 as the arrow `(none, …) -> any` of that arity, and
@@ -518,7 +521,7 @@ deciding it:
 | axis | precision | why |
 | --- | --- | --- |
 | atoms | separating | passing is BEING one of the named values |
-| callables | per position | passing is being MINTED FROM a named construction -- a function AND the capture types it closed over -- so it separates exactly as far as the capture sub-tests do |
+| callables | per position | passing is being MINTED FROM a named construction -- a function AND the capture types it closed over, literals widened -- so it separates exactly as far as the capture sub-tests do |
 | ints, floats | separating | presence bits: one representation, so no admitted body can misread what arrives — brands are runtime-erased by construction (fz-bsx), and restoring numeric singletons to the lattice would re-open this row |
 | pids and references (opaques) | separating | presence bits like ints: the value's kind says which of the two it is, so no admitted body can misread what arrives |
 | lists | per position | empty-or-cons, plus the first element's own question — as separating as two head questions are DISJOINT |

@@ -802,7 +802,8 @@ fn surface_inside(types: &Types, observable: &[Vec<Ty>], narrow: usize, wide: us
 /// at -- a callable's arrow goes, its CONSTRUCTION stays, function and capture
 /// types together, because the value's own heap word names the construction
 /// wrapper it was minted from and a wrapper is one function at one capture
-/// layout -- and `RuntimeTypePredicate` is coarser again: `{:cont, pair}` and
+/// layout, though a capture's literals go, since one layout holds them all --
+/// and `RuntimeTypePredicate` is coarser again: `{:cont, pair}` and
 /// `{:cont | :halt, pair}` both project to "a 2-tuple".
 pub(crate) fn question_groups(types: &mut Types, targets: &[CallTargetSummary]) -> Vec<Vec<usize>> {
     grouped_by_question(&target_questions(types, targets))

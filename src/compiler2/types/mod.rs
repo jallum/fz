@@ -3538,8 +3538,13 @@ impl Types {
     /// closed over, because a construction wrapper is one function at one
     /// capture layout. So the literal `fn_id`s and their captures survive
     /// here, each capture enveloped by this same reading, and the arrow the
-    /// literal was typed at is erased -- no value carries it (fz-kdt.125,
-    /// fz-kdt.127).
+    /// literal was typed at is erased -- no value carries it.
+    ///
+    /// A capture keeps its type but not its literals: `:false` and `:true`
+    /// are one capture layout, so a construction closed over either is one
+    /// construction here. This is the widening an activation key applies to a
+    /// callable it keeps, so a test never asks a capture literal that no key
+    /// separates on.
     ///
     /// AT EVERY DEPTH (fz-kdt.119). A tuple position holding a closure is read
     /// by the same one comparison as a top-level one, so `{:tag, #66(int)}`
@@ -4984,13 +4989,14 @@ fn callable_identity_clauses(types: &mut Types, funcs: &[Conj<ArrowSig>]) -> Vec
                 .captures
                 .iter()
                 .map(|capture| {
-                    runtime_envelope(
+                    let enveloped = runtime_envelope(
                         types,
                         *capture,
                         RuntimeEnvelopePolarity::Positive,
                         RuntimeEnvelopePurpose::Predicate,
                         &Sigma::default(),
-                    )
+                    );
+                    types.widen_literals(&enveloped)
                 })
                 .collect();
             pos.push(ArrowSig {

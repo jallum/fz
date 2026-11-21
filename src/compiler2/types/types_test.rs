@@ -1440,6 +1440,46 @@ fn the_envelope_and_the_predicate_agree_on_a_callable_clause() {
     );
 }
 
+/// A construction is a function at one capture layout, and a capture's literal
+/// is not part of a layout: one function closed over `:false` and over `:true`
+/// is one construction, at any depth of nesting. A different function, or a
+/// capture of another type, is another one.
+#[test]
+fn the_envelope_keeps_a_closures_construction_and_drops_its_capture_literals() {
+    let mut t = Types::new();
+    let (off, on) = (t.atom_lit("false"), t.atom_lit("true"));
+    let float = t.float();
+    let over = |t: &mut Types, target: u32, capture: Ty| t.closure_lit(ClosureTarget(target), vec![capture], 1);
+    let envelope = |t: &mut Types, ty: Ty| t.runtime_type_test_envelope(ty);
+
+    let (over_off, over_on) = (over(&mut t, 7, off), over(&mut t, 7, on));
+    assert_eq!(
+        envelope(&mut t, over_off),
+        envelope(&mut t, over_on),
+        "one function closed over :false and over :true is one construction"
+    );
+
+    let (wraps_off, wraps_on) = (over(&mut t, 9, over_off), over(&mut t, 9, over_on));
+    assert_eq!(
+        envelope(&mut t, wraps_off),
+        envelope(&mut t, wraps_on),
+        "the literal is dropped from a closure held in a capture as well"
+    );
+
+    let other_function = over(&mut t, 8, off);
+    assert_ne!(
+        envelope(&mut t, over_off),
+        envelope(&mut t, other_function),
+        "two functions are two constructions"
+    );
+    let over_float = over(&mut t, 7, float);
+    assert_ne!(
+        envelope(&mut t, over_off),
+        envelope(&mut t, over_float),
+        "an atom capture and a float capture are two capture layouts"
+    );
+}
+
 /// fz-kdt.127 -- WHY the erased forwarder key and the construction axis
 /// compose, stated from the side that actually decides it: the KEYING rule.
 ///

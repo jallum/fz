@@ -1,0 +1,41 @@
+#---
+# purpose: One reducer closed over :false in one call and :true in another is dispatched to the list's own reduce by its construction, not by the capture literal, on the interpreter, the JIT and a built program
+# oracle: self
+# oracle.stamp: 92853deb449cbe9c
+#---
+#
+# build/3 hands Enum.reduce a lambda that closes over its flag. The flag is
+# :false from one caller and :true from the other, and the two lists differ, so
+# the reduce reaches the list's reducer at two argument shapes. Both calls
+# share one lambda and one capture layout; the flag's value is not a layout.
+# The reducer builds a map in the first pair of callers and a list in the second.
+defmodule S do
+  def a(fields), do: build(%{x: 0}, fields, false)
+  def b(fields), do: build(%{x: 0}, fields, true)
+  def c(fields), do: collect([], fields, false)
+  def d(fields), do: collect([], fields, true)
+
+  defp build(base, fields, flag) do
+    Enum.reduce(fields, base, fn key, acc -> missing(key, acc, flag) end)
+  end
+
+  defp missing(_key, acc, false), do: acc
+  defp missing(key, acc, true), do: Map.put(acc, key, 0)
+
+  defp collect(base, fields, flag) do
+    Enum.reduce(fields, base, fn key, acc -> keep(key, acc, flag) end)
+  end
+
+  defp keep(_key, acc, false), do: acc
+  defp keep(key, acc, true), do: [key | acc]
+end
+
+defmodule Main do
+  def main() do
+    IO.inspect(S.a([:x]))
+    IO.inspect(S.b([:y]))
+    IO.inspect(S.c([:x]))
+    IO.inspect(S.d([:y, :z]))
+  end
+end
+Main.main()
