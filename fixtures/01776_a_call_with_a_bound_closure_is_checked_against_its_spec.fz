@@ -1,0 +1,15 @@
+#---
+# purpose: a call that passes a closure held in a variable is still checked against the @spec domain of its other argument, so an atom where a list is declared is refused
+# expect: diagnostic
+# diagnostic.code: spec/violation
+#---
+defmodule Spec do
+  @spec first_count([a], (a -> any)) :: integer when a: var
+  def first_count(_items, _fun), do: 1
+  @spec identity(integer) :: integer
+  def identity(n), do: n
+end
+def main() do
+  fun = fn x -> x end
+  dbg(Spec.first_count(:atom, fun))
+end

@@ -966,3 +966,31 @@ fn two_entries_into_one_cycle_keep_their_activations_apart() {
         "three seeds of three shapes enter the reduce cycle three times, and each chain is keyed by its own entry: {steps:?}"
     );
 }
+
+/// A closure argument does not hide a wrong argument beside it. The closure's
+/// own arrow variables are what the contract instantiates, so the row is
+/// still judged; an `any` or a bare unsolved variable is a value nobody
+/// knows, and the row is not.
+#[test]
+fn a_closure_column_does_not_stop_a_spec_violation_from_being_diagnosed() {
+    let mut world = World::new();
+    let types = world.types_mut();
+    let atom = types.atom();
+    let int = types.int();
+    let alpha = types.param_alpha(0);
+    let closure = types.arrow(&[alpha], alpha);
+    let any = types.any();
+
+    assert!(
+        spec_violation_is_actionable(&mut world, &[atom, closure]),
+        "an atom beside a closure is a known row the spec can refuse",
+    );
+    assert!(
+        !spec_violation_is_actionable(&mut world, &[any, closure]),
+        "an `any` column is unknown, closure or not",
+    );
+    assert!(
+        !spec_violation_is_actionable(&mut world, &[alpha, int]),
+        "a bare unsolved variable is an unknown column",
+    );
+}

@@ -1,0 +1,10 @@
+#---
+# purpose: a call that passes a list and a closure satisfies the @spec and runs
+#---
+defmodule Spec do
+  @spec first_count([a], (a -> any)) :: integer when a: var
+  def first_count(_items, _fun), do: 1
+  @spec identity(integer) :: integer
+  def identity(n), do: n
+end
+def main(), do: dbg(Spec.first_count([1, 2, 3], fn x -> x end))
