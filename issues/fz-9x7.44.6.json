@@ -1,6 +1,8 @@
 {
   "assignee": "Callables",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-9x7.14"
+  ],
   "blocks": [
     "fz-9x7.44.8"
   ],
@@ -23,5 +25,5 @@
   "status": "open",
   "title": "Message and failure entries take a stored word and its kind",
   "type": "task",
-  "updated_at": "2026-11-21T11:59:26Z"
+  "updated_at": "2026-11-21T11:59:38Z"
 }
