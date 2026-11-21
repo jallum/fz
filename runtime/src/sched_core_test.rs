@@ -635,7 +635,7 @@ fn a_resource_freed_by_a_collection_has_its_destructor_dispatched_at_the_boundar
 }
 
 /// A collection reports the bytes the process allocated since the last one and
-/// the budget they reached: on a heap with nothing old, half the smallest tip.
+/// the budget they reached: on a heap with nothing old, the budget floor.
 #[test]
 fn a_collection_reports_the_young_bytes_it_was_due_at_and_its_budget() {
     let mut scheduler = Recording::new();
@@ -651,8 +651,8 @@ fn a_collection_reports_the_young_bytes_it_was_due_at_and_its_budget() {
     };
     assert_eq!(collection.stats.young_bytes, allocated, "the bytes the trigger counted");
     assert_eq!(
-        collection.stats.young_budget, 512,
-        "half the smallest tip, with nothing old"
+        collection.stats.young_budget, 4096,
+        "the budget floor, with nothing old"
     );
     assert!(collection.stats.young_bytes >= collection.stats.young_budget);
 }

@@ -1,6 +1,7 @@
 //! A heap opens a gift window, cuts the segment, and another heap grafts it.
 //! Each test states the property it holds the gift window to.
 
+use super::imp::BUDGET_FLOOR;
 use super::*;
 use crate::any_value::{
     AnyValue, AnyValueRef, EMPTY_LIST, ValueKind, binview_addr_from_tagged, heap_kind_from_tagged, heap_object_word,
@@ -87,7 +88,7 @@ fn off_heap_chain(h: &Heap) -> Vec<u64> {
     chain_from(h.off_heap_head)
 }
 
-/// The heap's old off-heap chain: the stubs a collection kept and gifts brought.
+/// The heap's old off-heap chain: the stubs a collection kept.
 fn off_heap_old_chain(h: &Heap) -> Vec<u64> {
     chain_from(h.off_heap_old_head)
 }
@@ -208,30 +209,32 @@ fn a_gift_with_a_shared_bin_stub_survives_the_receivers_gc_on_its_off_heap_chain
     assert_eq!(shared_refs(&witness), 2, "the segment holds the heap-owned reference");
 
     receiver.graft(segment);
-    assert_eq!(off_heap_old_chain(&receiver), vec![gifted]);
-    assert_eq!(off_heap_chain(&receiver), Vec::<u64>::new());
+    assert_eq!(off_heap_chain(&receiver), vec![gifted]);
+    assert_eq!(off_heap_old_chain(&receiver), Vec::<u64>::new());
     let mut root = heap_object_word(pb.as_raw() as *const u8, ValueKind::BINVIEW) as *mut u8;
     assert_eq!(pool_total_cached_blocks(), 0);
     let stats = receiver.collect_tagged(&mut root);
 
     assert_eq!(stats.generation, Generation::Minor);
     let kept = binview_addr_from_tagged(root as u64).expect("binview root");
-    assert_eq!(
+    assert_ne!(
         kept,
         pb.as_raw(),
-        "a gift is old: a minor collection leaves its stub in place"
+        "a gift is young: the minor collection copied the live view out of it"
     );
+    let kept_view = unsafe { BinView::from_raw(kept) };
     assert_eq!(
         off_heap_old_chain(&receiver),
-        vec![gifted],
-        "the chain still names the stub in the adopted block"
+        vec![binref_word(&kept_view)],
+        "the surviving stub moved from the young chain to the old chain"
     );
-    assert_eq!(unsafe { BinView::from_raw(kept) }.shared_raw(), witness.as_raw());
+    assert_eq!(off_heap_chain(&receiver), Vec::<u64>::new());
+    assert_eq!(kept_view.shared_raw(), witness.as_raw());
     assert_eq!(shared_refs(&witness), 2, "the refcount is unchanged by the collection");
     assert_eq!(
         pool_total_cached_blocks(),
-        1,
-        "the receiver's old tip is back in the pool; the exact gift block is still the receiver's"
+        2,
+        "the receiver's old tip and the gift block are back in the pool"
     );
     drop(receiver);
     assert_eq!(
@@ -244,7 +247,7 @@ fn a_gift_with_a_shared_bin_stub_survives_the_receivers_gc_on_its_off_heap_chain
 }
 
 #[test]
-fn graft_splices_each_gifts_off_heap_prefix_ahead_of_the_receivers_old_chain() {
+fn graft_splices_each_gifts_off_heap_prefix_ahead_of_the_receivers_young_chain() {
     let witness = SharedBinHandle::from_bytes(&[1, 2, 3, 4]);
     let reg = fresh_registry();
     let mut sender = Heap::new(SIZE_TABLE[0], reg.clone());
@@ -296,15 +299,11 @@ fn graft_splices_each_gifts_off_heap_prefix_ahead_of_the_receivers_old_chain() {
     receiver.graft(segment);
     receiver.graft(later_segment);
     assert_eq!(
-        off_heap_old_chain(&receiver),
-        vec![latest, newer, older],
-        "each gift's stubs join the old chain ahead of the last gift's, newest to oldest"
-    );
-    assert_eq!(
         off_heap_chain(&receiver),
-        vec![receiver_own],
-        "the receiver's own stub is young and stays on the young chain"
+        vec![latest, newer, older, receiver_own],
+        "each gift's stubs join the young chain ahead of the receiver's own, newest to oldest"
     );
+    assert_eq!(off_heap_old_chain(&receiver), Vec::<u64>::new());
     assert_eq!(shared_refs(&witness), 6);
     drop(receiver);
     assert_eq!(
@@ -379,7 +378,7 @@ fn thousands_of_small_unread_gifts_do_not_grow_the_receivers_tip_after_gc() {
     assert_eq!(receiver.bytes_used(), own_live);
     assert!(
         receiver.should_gc(),
-        "a heap never collected is due at half the smallest tip"
+        "a heap never collected is due at the budget floor"
     );
 
     let gifts: u64 = 6000;
@@ -394,18 +393,16 @@ fn thousands_of_small_unread_gifts_do_not_grow_the_receivers_tip_after_gc() {
         own_live + adopted_fill,
         "adopted bytes count by fill"
     );
-    assert_eq!(
-        receiver.live_baseline, adopted_fill,
-        "adopted fill is baseline, not allocation"
-    );
+    assert_eq!(receiver.live_baseline, 0, "adopted fill is young, not old");
     assert!(
-        !receiver.should_gc(),
-        "32000 allocated bytes are under the 96000 the gifts raised the baseline to"
+        receiver.should_gc(),
+        "the 128000 young bytes are far past the budget floor"
     );
     let mut roots = [heap_ref(list)];
     let stats = receiver.collect(&mut roots);
 
-    assert_eq!(stats.generation, Generation::Major, "the gifts outgrew the old bytes");
+    assert_eq!(stats.generation, Generation::Minor, "the gifts raised no old bytes");
+    assert_eq!(stats.received_bytes, adopted_fill as u64);
     assert_eq!(
         receiver.block_size,
         pick_block_capacity(own_live),
@@ -437,23 +434,23 @@ fn end_gift_leaves_the_senders_should_gc_answering_for_the_restored_heap_alone()
     // Under the threshold before the window: the gift block's bytes left with
     // the segment.
     let mut sender = Heap::new(SIZE_TABLE[0], fresh_registry());
-    let _ = sender.alloc(256);
+    let _ = sender.alloc(BUDGET_FLOOR / 2);
     assert!(!sender.should_gc());
-    sender.begin_gift(608);
-    let _ = sender.alloc(608);
+    sender.begin_gift(BUDGET_FLOOR);
+    let _ = sender.alloc(BUDGET_FLOOR);
     assert!(sender.should_gc(), "the gift block alone crossed the threshold");
     let _segment = sender.end_gift();
-    assert_eq!(sender.bytes_used(), 256);
+    assert_eq!(sender.bytes_used(), BUDGET_FLOOR / 2);
     assert!(!sender.should_gc(), "the restored heap is under its threshold");
 
     // Over the threshold before the window: the window does not change that.
     let mut pressured = Heap::new(SIZE_TABLE[0], fresh_registry());
-    let _ = pressured.alloc(608);
+    let _ = pressured.alloc(BUDGET_FLOOR);
     assert!(pressured.should_gc());
     pressured.begin_gift(16);
     let _ = pressured.alloc(16);
     let _segment = pressured.end_gift();
-    assert_eq!(pressured.bytes_used(), 608);
+    assert_eq!(pressured.bytes_used(), BUDGET_FLOOR);
     assert!(pressured.should_gc(), "the restored heap is still over its threshold");
 }
 
@@ -529,7 +526,8 @@ fn a_grafted_list_is_readable_and_survives_the_receivers_gc() {
     let stats = receiver.collect(&mut roots);
     let kept = roots[0].heap_object_word().expect("kept list");
     assert_eq!(stats.generation, Generation::Minor);
-    assert_eq!(kept, bits, "a gift is old: a minor collection leaves the cell in place");
+    assert_ne!(kept, bits, "a gift is young: the minor collection copied the live cell");
+    assert!(receiver.contains_heap_addr(list_addr_from_tagged(kept).expect("addr")));
     let head = receiver.read_list_head_ref(list_ref_from_bits(kept)).expect("head");
     assert_eq!(head.load_int().expect("int"), 7);
 }
@@ -580,7 +578,7 @@ fn gift_of_cons_cells(sender: &mut Heap, cells: i64) -> GiftSegment {
 }
 
 #[test]
-fn gifts_raise_the_baseline_and_the_heaps_blocks_hold_every_live_byte() {
+fn gifts_leave_the_baseline_alone_and_the_heaps_blocks_hold_every_live_byte() {
     let reg = fresh_registry();
     let (mut receiver, live) = receiver_with_live_allocation_since_a_small_collection(&reg);
     assert_eq!(receiver.live_baseline, 2000);
@@ -592,14 +590,10 @@ fn gifts_raise_the_baseline_and_the_heaps_blocks_hold_every_live_byte() {
     for _ in 0..16 {
         receiver.graft(gift_of_cons_cells(&mut sender, 60));
     }
-    assert_eq!(
-        receiver.live_baseline,
-        2000 + 16 * 960,
-        "the gifts' fill raised the baseline"
-    );
+    assert_eq!(receiver.live_baseline, 2000, "the gifts are young, not old");
     assert!(
         receiver.should_gc(),
-        "80000 allocated bytes are still past the 17360-byte baseline"
+        "the gifts' 15360 bytes join the 80000 allocated bytes past the baseline"
     );
     let mut roots = [heap_ref(live)];
     let stats = receiver.collect(&mut roots);
@@ -655,39 +649,108 @@ fn a_gift_of_the_exact_measured_bytes_fills_its_block_without_overflow() {
     }
 }
 
-/// A gift arrives packed and fully live, which is the state of a heap after a
-/// collection: its fill raises the baseline instead of counting as allocation,
-/// and the receiver is due a collection only once its own allocation reaches
-/// that baseline.
+/// A gift's bytes count toward the next collection exactly as the receiver's
+/// own allocation does, and raise nothing old: received and allocated bytes
+/// add up to the young bytes, and the baseline stays where it was.
 #[test]
-fn a_grafted_gift_raises_the_baseline_and_the_receiver_collects_after_allocating_as_much_again() {
+fn a_grafted_gift_counts_as_young_bytes_alongside_allocation() {
     let reg = fresh_registry();
     let mut sender = Heap::new(SIZE_TABLE[0], reg.clone());
     let mut receiver = Heap::new(SIZE_TABLE[0], reg);
-    assert_eq!(receiver.live_baseline, 0);
 
     receiver.graft(gift_of_cons_cells(&mut sender, 100));
-    assert_eq!(receiver.live_baseline, 1600, "the gift's fill is survivor data");
+    assert_eq!(receiver.young_bytes(), 1600);
     assert_eq!(receiver.bytes_used(), 1600);
-    assert!(
-        !receiver.should_gc(),
-        "1600 grafted bytes are over half the 1024-byte tip, yet nothing has been allocated"
-    );
+    assert_eq!(receiver.live_baseline, 0, "the gift is not old data");
+    assert!(!receiver.should_gc(), "1600 young bytes are under the 4096-byte floor");
 
-    for _ in 0..99 {
+    for _ in 0..100 {
         let _ = receiver.alloc_list_cons_slot(AnyValue::nil_atom(), EMPTY_LIST);
     }
-    assert!(
-        !receiver.should_gc(),
-        "1584 allocated bytes are under the 1600 baseline"
-    );
-    let _ = receiver.alloc_list_cons_slot(AnyValue::nil_atom(), EMPTY_LIST);
-    assert!(receiver.should_gc(), "1600 allocated bytes reach the baseline");
-    assert_eq!(receiver.live_baseline, 1600, "allocation leaves the baseline alone");
+    assert_eq!(receiver.young_bytes(), 3200, "allocation adds to the received bytes");
+    assert!(!receiver.should_gc());
+
+    receiver.graft(gift_of_cons_cells(&mut sender, 56));
+    assert_eq!(receiver.young_bytes(), 3200 + 896);
+    assert!(receiver.should_gc(), "4096 young bytes reach the floor");
+    assert_eq!(receiver.live_baseline, 0);
+    assert!(receiver.old_blocks.is_empty(), "no gift block is old");
+}
+
+/// A gift nobody keeps is garbage like any young allocation: a minor collection
+/// reclaims its block, and the old generation never held it.
+#[test]
+fn a_dead_gift_is_reclaimed_by_a_minor_collection() {
+    pool_drain_for_test();
+    let reg = fresh_registry();
+    let mut sender = Heap::new(SIZE_TABLE[0], reg.clone());
+    let mut receiver = Heap::new(SIZE_TABLE[0], reg);
+    let (segment, bits) = gift_one_cons(&mut sender, 7);
+    receiver.graft(segment);
+    let gift_addr = list_addr_from_tagged(bits).expect("addr");
+    assert!(receiver.contains_heap_addr(gift_addr));
+
+    let stats = receiver.collect(&mut []);
+
+    assert_eq!(stats.generation, Generation::Minor);
+    assert_eq!(stats.received_bytes, 16);
+    assert_eq!(stats.copied_bytes, 0, "nothing reached the gift");
+    assert_eq!(stats.live_bytes, 0);
+    assert_eq!(receiver.bytes_used(), 0);
+    assert!(!receiver.contains_heap_addr(gift_addr), "the gift's block was released");
+    assert!(receiver.young_blocks.is_empty());
+    assert!(receiver.old_blocks.is_empty());
+    drop(receiver);
+    drop(sender);
+    pool_drain_for_test();
+}
+
+/// A gift a root reaches is copied once, by the first minor collection, and is
+/// old after it: the second minor collection leaves it where it is.
+#[test]
+fn a_live_gift_is_copied_once_and_then_stays_in_place() {
+    let reg = fresh_registry();
+    let mut sender = Heap::new(SIZE_TABLE[0], reg.clone());
+    let mut receiver = Heap::new(SIZE_TABLE[0], reg);
+    let (segment, bits) = gift_one_cons(&mut sender, 7);
+    receiver.graft(segment);
+    let mut roots = [heap_ref(bits)];
+
+    let first = receiver.collect(&mut roots);
+    let after_first = roots[0].heap_object_word().expect("kept list");
+
+    assert_eq!(first.generation, Generation::Minor);
+    assert_eq!(first.copied_bytes, 16, "the cell was copied once");
+    assert_ne!(after_first, bits);
+
+    let second = receiver.collect(&mut roots);
+
+    assert_eq!(second.generation, Generation::Minor);
+    assert_eq!(second.copied_bytes, 0, "an old cell is not copied again");
+    assert_eq!(roots[0].heap_object_word().expect("kept list"), after_first);
+}
+
+/// The collection event separates the bytes a receive brought from the bytes
+/// the process allocated, and counts each gift once.
+#[test]
+fn a_collection_reports_the_bytes_grafted_since_the_previous_one() {
+    let reg = fresh_registry();
+    let mut sender = Heap::new(SIZE_TABLE[0], reg.clone());
+    let mut receiver = Heap::new(SIZE_TABLE[0], reg);
+    receiver.graft(gift_of_cons_cells(&mut sender, 10));
+    receiver.graft(gift_of_cons_cells(&mut sender, 5));
+    let _ = alloc_int_list_cons(&mut receiver, 1, EMPTY_LIST);
+
+    let first = receiver.collect(&mut []);
+    assert_eq!(first.received_bytes, 15 * 16);
+    assert_eq!(first.young_bytes, 15 * 16 + 16);
+
+    let second = receiver.collect(&mut []);
+    assert_eq!(second.received_bytes, 0);
 }
 
 /// A gift that holds both kinds of off-heap object carries them on one chain,
-/// newest first, and graft splices that chain onto the receiver's old chain.
+/// newest first, and graft splices that chain onto the receiver's young chain.
 #[test]
 fn a_gift_carries_binary_and_resource_stubs_on_one_chain() {
     let witness = SharedBinHandle::from_bytes(&[1, 2, 3, 4]);
@@ -713,6 +776,6 @@ fn a_gift_carries_binary_and_resource_stubs_on_one_chain() {
     assert_eq!(chain_from(segment.off_heap_head()), vec![resource, binary]);
 
     receiver.graft(segment);
-    assert_eq!(chain_from(receiver.off_heap_old_head), vec![resource, binary]);
-    assert_eq!(receiver.off_heap_head, 0);
+    assert_eq!(chain_from(receiver.off_heap_head), vec![resource, binary]);
+    assert_eq!(receiver.off_heap_old_head, 0);
 }

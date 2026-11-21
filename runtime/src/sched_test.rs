@@ -76,7 +76,7 @@ fn running_task() -> Process {
 }
 
 fn mailbox_ints(task: &Process) -> Vec<i64> {
-    task.mailbox.iter().map(|v| v.load_int().unwrap()).collect()
+    task.mailbox.messages().map(|v| v.load_int().unwrap()).collect()
 }
 
 /// A sender's list `[n]`, allocated on the sender's heap so the copy has
@@ -226,8 +226,17 @@ fn probe_sender_miss_queues_the_message_and_keeps_the_park() {
     assert_eq!(task.delivery.lock().queued_gifts().count(), 1);
     deliver_in_queue(&mut task);
     assert_eq!(task.mailbox.len(), 1);
-    let delivered = task.mailbox[0];
-    assert!(task.heap.contains_heap_addr(delivered.list_addr().expect("list")));
+    let delivered = task.mailbox.front().expect("delivered");
+    let delivered_addr = delivered.list_addr().expect("list");
+    assert!(
+        !task.heap.contains_heap_addr(delivered_addr),
+        "the message waits outside the receiver's heap"
+    );
+    task.mailbox.take(0, &mut task.heap);
+    assert!(
+        task.heap.contains_heap_addr(delivered_addr),
+        "the receive that takes it brings it into the heap"
+    );
     assert!(
         task.delivery.lock().park().is_some(),
         "a miss never decides the receive"
@@ -348,7 +357,7 @@ fn a_second_match_for_one_parked_receive_is_refused() {
 }
 
 #[test]
-fn drain_in_queue_grafts_in_arrival_order() {
+fn drain_in_queue_keeps_messages_waiting_in_arrival_order() {
     let mut sender = running_task();
     let mut task = fresh_task();
     for n in [1, 2, 3] {
@@ -359,14 +368,14 @@ fn drain_in_queue_grafts_in_arrival_order() {
     assert!(task.delivery.lock().queued_gifts().next().is_none());
     let heads: Vec<i64> = task
         .mailbox
-        .iter()
-        .map(|m| task.heap.read_list_head_ref(*m).unwrap().load_int().unwrap())
+        .messages()
+        .map(|m| task.heap.read_list_head_ref(m).unwrap().load_int().unwrap())
         .collect();
     assert_eq!(heads, vec![1, 2, 3]);
-    for m in &task.mailbox {
+    for m in task.mailbox.messages() {
         assert!(
-            task.heap.contains_heap_addr(m.list_addr().expect("list")),
-            "grafted cells are the receiver's"
+            !task.heap.contains_heap_addr(m.list_addr().expect("list")),
+            "a drained message waits outside the receiver's heap"
         );
     }
 }
@@ -407,22 +416,26 @@ fn a_dropped_receiver_returns_its_pending_gifts_to_the_pool_and_releases_their_b
 }
 
 #[test]
-fn self_send_pushes_the_senders_own_reference_and_allocates_nothing() {
+fn self_send_copies_the_message_into_the_mailbox_and_leaves_the_senders_heap_as_it_was() {
     let mut task = running_task();
-    let msg = int_ref(7);
+    let msg = sender_list(&mut task, 7);
     let live_before = task.heap.live_count();
+    let young_before = task.heap.young_bytes();
     self_send(&mut task, msg);
     assert_eq!(
         task.heap.live_count(),
         live_before,
-        "a self-send allocates nothing on the sender's heap"
+        "the copy is a gift outside the sender's heap"
     );
+    assert_eq!(task.heap.young_bytes(), young_before);
     assert_eq!(task.mailbox.len(), 1);
-    assert_eq!(
-        task.mailbox.back().expect("pushed").raw_word(),
-        msg.raw_word(),
-        "the mailbox holds the very reference the sender passed"
+    let queued = task.mailbox.messages().last().expect("pushed");
+    assert_ne!(
+        queued.list_addr().expect("list"),
+        msg.list_addr().expect("list"),
+        "the mailbox holds a copy, not the reference the sender passed"
     );
+    assert_eq!(task.heap.read_list_head_ref(queued).unwrap().load_int().unwrap(), 7);
     assert_eq!(
         task.state,
         ProcessState::Running,
@@ -442,10 +455,10 @@ fn reach_receive_with_an_empty_mailbox_parks() {
 #[test]
 fn reach_receive_hit_continues_with_the_clause_and_splices_the_message_out() {
     let mut task = running_task();
-    task.mailbox.push_back(int_ref(1));
-    task.mailbox.push_back(int_ref(2));
-    task.mailbox.push_back(int_ref(42));
-    task.mailbox.push_back(int_ref(3));
+    task.mailbox.push(int_ref(1), GiftSegment::empty());
+    task.mailbox.push(int_ref(2), GiftSegment::empty());
+    task.mailbox.push(int_ref(42), GiftSegment::empty());
+    task.mailbox.push(int_ref(3), GiftSegment::empty());
     let record = record_on_42(&mut task, None);
     let ReceiveStep::Continue(cont) = reach_receive(&mut task, record) else {
         panic!("a matching message in the mailbox must continue the receive");
@@ -465,9 +478,9 @@ fn reach_receive_hit_continues_with_the_clause_and_splices_the_message_out() {
 #[test]
 fn reach_receive_takes_the_oldest_matching_message() {
     let mut task = running_task();
-    task.mailbox.push_back(int_ref(42));
-    task.mailbox.push_back(int_ref(42));
-    task.mailbox.push_back(int_ref(7));
+    task.mailbox.push(int_ref(42), GiftSegment::empty());
+    task.mailbox.push(int_ref(42), GiftSegment::empty());
+    task.mailbox.push(int_ref(7), GiftSegment::empty());
     let record = record_on_42(&mut task, None);
     assert!(matches!(reach_receive(&mut task, record), ReceiveStep::Continue(_)));
     assert_eq!(mailbox_ints(&task), vec![42, 7]);
@@ -476,8 +489,8 @@ fn reach_receive_takes_the_oldest_matching_message() {
 #[test]
 fn reach_receive_miss_parks_blocked_and_keeps_the_mailbox() {
     let mut task = running_task();
-    task.mailbox.push_back(int_ref(1));
-    task.mailbox.push_back(int_ref(2));
+    task.mailbox.push(int_ref(1), GiftSegment::empty());
+    task.mailbox.push(int_ref(2), GiftSegment::empty());
     let record = record_on_42(&mut task, None);
     assert_eq!(reach_receive(&mut task, record), ReceiveStep::Parked);
     assert_eq!(task.state, ProcessState::Blocked);
@@ -488,7 +501,7 @@ fn reach_receive_miss_parks_blocked_and_keeps_the_mailbox() {
 #[test]
 fn reach_receive_after_zero_miss_continues_with_the_after_body() {
     let mut task = running_task();
-    task.mailbox.push_back(int_ref(1));
+    task.mailbox.push(int_ref(1), GiftSegment::empty());
     let mut record = record_on_42(&mut task, None);
     record.after_deadline_ms = Some(0);
     let ReceiveStep::Continue(after) = reach_receive(&mut task, record) else {
@@ -503,7 +516,7 @@ fn reach_receive_after_zero_miss_continues_with_the_after_body() {
 #[test]
 fn reach_receive_after_zero_hit_prefers_the_clause_to_the_after_body() {
     let mut task = running_task();
-    task.mailbox.push_back(int_ref(42));
+    task.mailbox.push(int_ref(42), GiftSegment::empty());
     let mut record = record_on_42(&mut task, None);
     record.after_deadline_ms = Some(0);
     let ReceiveStep::Continue(cont) = reach_receive(&mut task, record) else {
@@ -518,7 +531,7 @@ fn reach_receive_never_leaves_the_process_ready() {
     for messages in [vec![], vec![1], vec![42], vec![1, 42]] {
         let mut task = running_task();
         for m in &messages {
-            task.mailbox.push_back(int_ref(*m));
+            task.mailbox.push(int_ref(*m), GiftSegment::empty());
         }
         let record = record_on_42(&mut task, None);
         reach_receive(&mut task, record);
@@ -643,8 +656,8 @@ fn a_matcher_run_by_a_sender_holds_the_receivers_delivery_lock() {
 fn a_delivery_waits_out_the_receive_entry_and_is_probed_against_the_installed_park() {
     let mut sender = running_task();
     let mut task = running_task();
-    task.mailbox.push_back(int_ref(1));
-    task.mailbox.push_back(int_ref(2));
+    task.mailbox.push(int_ref(1), GiftSegment::empty());
+    task.mailbox.push(int_ref(2), GiftSegment::empty());
     let record = watch_matches_on(&mut task);
 
     assert_eq!(reach_receive(&mut task, record), ReceiveStep::Parked);
@@ -679,7 +692,7 @@ extern "C" fn note_the_lock_while_arming_the_timer(_scheduler: *mut (), _pid: u3
 #[test]
 fn the_lock_stays_held_from_the_end_of_the_walk_to_the_park_install() {
     let mut task = running_task();
-    task.mailbox.push_back(int_ref(1));
+    task.mailbox.push(int_ref(1), GiftSegment::empty());
     let mut record = watch_matches_on(&mut task);
     record.after_deadline_ms = Some(10);
     let mut ctx = ExecCtx {

@@ -128,13 +128,21 @@ fn aot_send_gifts_the_message_and_the_receiver_grafts_it_at_its_next_dispatch() 
         "the sender never writes the receiver's heap"
     );
     deliver_in_queue(receiver);
-    let sender = sched.tasks.get(&1).expect("sender");
-    let receiver = sched.tasks.get(&2).expect("receiver");
     let copied = receiver.mailbox.front().expect("receiver mailbox");
     let copied_addr = copied.list_addr().expect("copied list addr");
+    assert!(
+        !receiver.heap.contains_heap_addr(copied_addr),
+        "the message waits outside the receiver's heap until a receive takes it"
+    );
+    receiver.mailbox.take(0, &mut receiver.heap);
+    let sender = sched.tasks.get(&1).expect("sender");
+    let receiver = sched.tasks.get(&2).expect("receiver");
     assert_ne!(copied_addr, sender_addr);
     assert!(sender.heap.contains_heap_addr(sender_addr));
-    assert!(receiver.heap.contains_heap_addr(copied_addr));
+    assert!(
+        receiver.heap.contains_heap_addr(copied_addr),
+        "the receive that took the message brought it into the receiver's heap"
+    );
 }
 
 #[test]
@@ -159,14 +167,14 @@ fn aot_send_to_exited_or_unknown_pid_does_not_copy_or_schedule() {
         .map(|p| p.as_mut() as *mut Process)
         .expect("sender task");
     let before_heap = sched.tasks[&2].heap.alloc_stats_snapshot();
-    let before_mailbox = sched.tasks[&2].mailbox.clone();
+    let before_mailbox: Vec<_> = sched.tasks[&2].mailbox.messages().collect();
     let before_queue = sched.core.queued().clone();
 
     aot_send_hook(sender_ptr, sched_handle(&mut sched), 2, msg.raw_word());
     aot_send_hook(sender_ptr, sched_handle(&mut sched), u32::MAX, msg.raw_word());
 
     assert_eq!(sched.tasks[&2].heap.alloc_stats_snapshot(), before_heap);
-    assert_eq!(sched.tasks[&2].mailbox, before_mailbox);
+    assert_eq!(sched.tasks[&2].mailbox.messages().collect::<Vec<_>>(), before_mailbox);
     assert_eq!(sched.tasks[&2].state, ProcessState::Exited);
     assert_eq!(sched.core.queued(), &before_queue);
 }

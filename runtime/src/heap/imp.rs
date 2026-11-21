@@ -43,6 +43,10 @@ use std::slice::{from_raw_parts, from_raw_parts_mut};
 /// one times the live old bytes. Two holds at most as much dead data as live.
 pub(super) const MAJOR_GROWTH_FACTOR: usize = 2;
 
+/// The least young budget in bytes: a heap holding less than this still takes
+/// in this many before a collection is due, and its tip is this large.
+pub(super) const BUDGET_FLOOR: usize = 4096;
+
 /// Map entry lists up to this length are normalized without a heap vector.
 /// It is the longest the standard stable sort orders without allocating.
 pub(super) const MAP_STACK_ENTRIES: usize = 20;
@@ -112,6 +116,8 @@ impl Heap {
             last_minor_copied_bytes: 0,
             overflow_step: SIZE_TABLE[0],
             young_blocks: Vec::new(),
+            parked_fill: 0,
+            received_bytes: 0,
             old_blocks: Vec::new(),
             gift: None,
             node,
@@ -131,11 +137,10 @@ impl Heap {
         }
     }
 
-    /// Whether a collection is due: the young bytes, those allocated since
-    /// the last collection, have reached the larger of the old bytes and half
-    /// the smallest tip. A collection sets the old bytes to what it keeps and a
-    /// graft raises them by the gift's fill, so only the heap's own allocation
-    /// counts, and a heap that holds N live bytes collects after allocating N
+    /// Whether a collection is due: the young bytes, those allocated or
+    /// received since the last collection, have reached the larger of the old
+    /// bytes and `BUDGET_FLOOR`. A collection sets the old bytes to what it
+    /// keeps, so a heap that holds N live bytes collects after taking in N
     /// more. A pure function of the heap's state, so a collection that
     /// reclaims the bytes answers the question by itself.
     pub fn should_gc(&self) -> bool {
@@ -143,9 +148,9 @@ impl Heap {
     }
 
     /// The young bytes at which a collection is due: the young budget, and at
-    /// least half the smallest tip.
+    /// least `BUDGET_FLOOR`.
     fn collection_budget(&self) -> usize {
-        self.young_budget().max(SIZE_TABLE[0] / 2)
+        self.young_budget().max(BUDGET_FLOOR)
     }
 
     /// The young bytes the heap allocates before a collection is due: as many
@@ -248,7 +253,7 @@ impl Heap {
         );
         let capacity = pick_block_capacity(size);
         let start = pool_alloc(capacity);
-        self.young_blocks.push(Block {
+        self.park(Block {
             start,
             top: unsafe { start.add(size) },
             capacity,
@@ -290,13 +295,20 @@ impl Heap {
 
     /// Park the tip and install an empty tip of `capacity`.
     fn park_tip_and_install(&mut self, capacity: usize) {
-        self.young_blocks.push(self.current_block());
+        self.park(self.current_block());
         let start = pool_alloc(capacity);
         self.install_block(Block {
             start,
             top: start,
             capacity,
         });
+    }
+
+    /// Park `block` among the young blocks: a tip allocation abandoned, a huge
+    /// object's block, or a received message's.
+    pub(super) fn park(&mut self, block: Block) {
+        self.parked_fill += block.fill();
+        self.young_blocks.push(block);
     }
 
     /// The block being bumped into, with its fill so far.
@@ -1499,7 +1511,7 @@ impl Heap {
     /// Bytes written since the last collection, which is also the most a minor
     /// collection can copy: the tip's fill plus every young parked block's fill.
     pub fn young_bytes(&self) -> usize {
-        self.current_block().fill() + self.young_blocks.iter().map(Block::fill).sum::<usize>()
+        self.current_block().fill() + self.parked_fill
     }
 
     /// The address range of the tip, of the tip set aside by an open gift
@@ -1608,6 +1620,7 @@ impl Heap {
             young_budget,
             young_binary_bytes,
             binary_budget,
+            received_bytes: std::mem::take(&mut self.received_bytes) as u64,
             from_space_capacity_bytes: from_blocks.iter().map(|block| block.capacity as u64).sum(),
             blocks_released: from_blocks.len() as u64,
             to_space_guess_bytes: to_capacity as u64,
@@ -1684,6 +1697,7 @@ impl Heap {
     /// the young parked blocks, and for a major collection the old blocks too.
     fn take_from_space(&mut self, generation: Generation) -> Vec<Block> {
         let mut blocks = std::mem::take(&mut self.young_blocks);
+        self.parked_fill = 0;
         blocks.push(self.current_block());
         if generation == Generation::Major {
             blocks.append(&mut self.old_blocks);
@@ -1703,13 +1717,14 @@ impl Heap {
             self.old_blocks.push(tip);
         }
         self.old_blocks.append(&mut self.young_blocks);
+        self.parked_fill = 0;
         capacity
     }
 
     /// Install the empty tip allocation continues in after a collection,
     /// sized to the old bytes: the heap collects again after allocating as many.
     fn install_fresh_tip(&mut self) {
-        let capacity = pick_tip_capacity(self.young_budget().max(SIZE_TABLE[0]));
+        let capacity = pick_tip_capacity(self.collection_budget().max(SIZE_TABLE[0]));
         let start = pool_alloc(capacity);
         self.install_block(Block {
             start,

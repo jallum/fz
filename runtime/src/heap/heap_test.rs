@@ -1,4 +1,4 @@
-use super::imp::MAJOR_GROWTH_FACTOR;
+use super::imp::{BUDGET_FLOOR, MAJOR_GROWTH_FACTOR};
 use super::*;
 use crate::any_value::{
     AnyValue, AnyValueRef, AnyValueRefError, AnyValueRefPacking, EMPTY_LIST, EMPTY_LIST_BITS, ListCons,
@@ -729,24 +729,25 @@ fn alloc_grows_to_next_capacity_on_overflow() {
 }
 
 /// `should_gc` is a function of the heap's state: it turns true once the
-/// bytes allocated reach half the smallest tip while nothing is live, and a collection that reclaims them turns
+/// bytes allocated reach the budget floor while nothing is live, and a collection that reclaims them turns
 /// it false again with nothing cleared in between.
 #[test]
-fn should_gc_follows_bytes_in_use_against_half_the_smallest_tip_and_a_collection_answers_it() {
+fn should_gc_follows_bytes_in_use_against_the_budget_floor_and_a_collection_answers_it() {
+    let cells_in_floor = 4096 / 16;
     let mut h = Heap::new(1024, fresh_registry());
     assert!(!h.should_gc());
-    for _ in 0..31 {
+    for _ in 0..cells_in_floor - 1 {
         let _ = h.alloc_list_cons_slot(AnyValue::nil_atom(), EMPTY_LIST);
     }
-    assert!(!h.should_gc(), "31 cells at 496 bytes are under 512");
+    assert!(!h.should_gc(), "one cell under the 4096-byte floor");
     let _ = h.alloc_list_cons_slot(AnyValue::nil_atom(), EMPTY_LIST);
-    assert!(h.should_gc(), "32 cells at 512 bytes reach half of 1024");
+    assert!(h.should_gc(), "256 cells at 4096 bytes reach the floor");
 
     let mut root: *mut u8 = null_mut();
     h.collect_tagged(&mut root);
     assert!(!h.should_gc(), "nothing was live, so nothing is due");
 
-    for _ in 0..32 {
+    for _ in 0..cells_in_floor {
         let _ = h.alloc_list_cons_slot(AnyValue::nil_atom(), EMPTY_LIST);
     }
     assert!(
@@ -1736,14 +1737,17 @@ fn a_collection_sets_the_live_baseline_to_the_bytes_it_copied() {
 
     h.collect(&mut roots);
     assert_eq!(h.live_baseline, 3 * 16, "live bytes unchanged");
-    assert_eq!(h.block_size, SIZE_TABLE[0], "tiny live set stays at smallest block");
+    assert_eq!(
+        h.block_size, BUDGET_FLOOR,
+        "a tiny live set keeps a tip of the budget floor"
+    );
 }
 
 #[test]
 fn allocation_pressure_marks_gc_without_spending_reductions() {
     let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
 
-    let _ = h.alloc(SIZE_TABLE[0] / 2);
+    let _ = h.alloc(BUDGET_FLOOR);
 
     assert!(h.should_gc(), "allocation pressure should request boundary GC");
 }
@@ -2222,7 +2226,7 @@ fn off_heap_chain(h: &Heap) -> Vec<u64> {
     chain_from(h.off_heap_head)
 }
 
-/// The old BinRefs: those a collection kept and those gifts brought.
+/// The old BinRefs: those a collection kept.
 fn off_heap_old_chain(h: &Heap) -> Vec<u64> {
     chain_from(h.off_heap_old_head)
 }
@@ -2313,7 +2317,7 @@ fn an_unrooted_view_lets_the_sweep_release_its_shared_bin() {
 /// the count when the sweep drops the last reference.
 #[test]
 fn a_binarys_bytes_are_in_use_until_its_stub_dies_at_a_collection() {
-    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let mut h = Heap::new(BUDGET_FLOOR, fresh_registry());
     let before = pool_footprint().in_use_bytes;
     let witness = SharedBinHandle::from_bytes(&[0x55; 4096]);
     let buffer_bytes = SHARED_BIN_BYTES + 4096 + 1;
@@ -2792,8 +2796,8 @@ fn an_unrooted_object_above_the_table_is_freed_by_a_collection() {
 
     h.collect_tagged(&mut root);
     assert_eq!(
-        h.block_size, SIZE_TABLE[0],
-        "with nothing live the heap is back to the smallest block"
+        h.block_size, BUDGET_FLOOR,
+        "with nothing live the heap is back to a tip of the budget floor"
     );
 }
 

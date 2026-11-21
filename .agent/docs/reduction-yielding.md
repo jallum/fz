@@ -49,17 +49,19 @@ quanta through a self tail call beside a second process.
   "Accounting at the boundary").
 - **`Heap`** (`runtime/src/heap`) owns allocation, block growth, and
   `should_gc`, a pure function of the heap's state: the young bytes, those
-  allocated since the last collection (`young_bytes`), against
-  `live_baseline`, the bytes in old blocks, held between half the smallest tip
-  and the largest pooled block (`young_budget`). A
-  collection sets `live_baseline` to the old bytes it leaves and `graft` raises
-  it by the gift's fill; allocation leaves it alone. Exhausting the current
+  allocated or received since the last collection (`young_bytes`), against
+  `live_baseline`, the bytes in old blocks, held between `BUDGET_FLOOR` (4096
+  bytes) and the largest pooled block (`young_budget`). A
+  collection sets `live_baseline` to the old bytes it leaves; allocation and
+  `graft` leave it alone. Exhausting the current
   block parks it in `young_blocks` for the next Cheney pass and installs a tip
   one capacity step up; an object larger than that step is parked in a block of
   its own and the tip is left as it was. The tip and `young_blocks` are the
-  young blocks; blocks a collection filled with survivors and blocks grafted
-  from another heap's gift segment (`Heap::graft`) are old (`old_blocks`) and
-  count by fill like any other block. `should_gc` is also due when the shared
+  young blocks, and so are the blocks grafted from another heap's gift segment
+  (`Heap::graft`); `parked_fill` is the running sum of the fill of the parked
+  ones, so `young_bytes` is the tip's fill plus `parked_fill`. Blocks a
+  collection filled with survivors are old (`old_blocks`). Every block counts by
+  fill. `should_gc` is also due when the shared
   binary bytes made since the last collection (`binary_budget.young_binary_bytes()`)
   reach the bytes of binary buffers the heap still holds, at least 256 KiB
   (`BinaryBudget` in `runtime/src/heap/binary_budget.rs`). A process allocating a
@@ -118,7 +120,7 @@ allocation        bump_top += size
                     allocate a larger block
                     move old current block to young_blocks
 
-boundary          if heap.should_gc():   (young_bytes >= max(live_baseline, SIZE_TABLE[0] / 2)
+boundary          if heap.should_gc():   (young_bytes >= max(live_baseline, BUDGET_FLOOR)
                                           or young_binary_bytes >= binary_budget)
                     Process::collect
                   clear yield_reasons
@@ -179,16 +181,27 @@ collection asserts that no window is open. Cross-process send is the window's us
 message, or a match's roots, and copies it inside one, and the segment travels to the
 receiver on its `in_queue` (see [scheduler](scheduler-zero-arg-closures.md)).
 
-A grafted block is old: its fill is part of `bytes_used` and of
-`live_baseline`, because a gift arrives packed and fully live, the state of a
-heap after a collection, and references only itself and literals. A gift
-therefore never makes a collection due: only the receiver's own allocation
-does, once it reaches the baseline. Its list cells are shared from birth
-(`link_list_tail` marks each cell copied inside a window), so no cell of an old
-block is rewritten in place to point at a younger value. A minor collection
-leaves the gift where it is and only a major collection copies the live data
-out of it; the gift's off-heap prefix, BinRefs and resource stubs on one chain, splices onto
-the old chain (`off_heap_old_head`).
+A grafted block is young: it is parked among the young blocks and its fill
+counts toward `young_bytes` exactly as allocation does, so received bytes bring
+the next collection nearer. `Heap::graft` leaves `live_baseline`, `old_blocks`
+and `old_objects` alone and adds the block's fill to `received_bytes`, which
+the next collection reports as `received_bytes` in the gc event and resets. A
+gift references only itself and literals. A minor collection reclaims the block
+of a gift that is dead and copies a live gift's data once, into an old block.
+Its list cells are shared from birth (`link_list_tail` marks each cell copied
+inside a window), so a message's cells are never rewritten in place. The gift's
+off-heap prefix, BinRefs and resource stubs on one chain, splices onto the
+young chain (`off_heap_head`) and a sweep moves the survivors to the old chain.
+
+A message waits outside the heap until a receive takes it. The `Mailbox`
+(`runtime/src/mailbox.rs`) holds one queue in arrival order of messages, each
+with the gift segment that holds it. A message the process sends to itself is
+copied into a gift like any other (`sched::self_send`). `sched::drain_in_queue`
+puts each arriving message in the mailbox with its segment, ungrafted, and
+grafts only a match for the parked receive. The receive that matches a waiting
+message calls `Mailbox::take`, which grafts the segment, so the message becomes
+young at the moment it is taken. A message nobody takes costs the heap nothing
+and is no collection root.
 
 A collection is minor or major (`Heap::next_generation`). A minor collection's
 from-space is the young blocks, so old blocks stay where they are and a
@@ -225,12 +238,12 @@ how far past budget the process ran before reaching a back edge.
 
 `needs_boundary_gc()` is true when `heap.should_gc()` holds. When it fires,
 `Process::collect` runs `Heap::collect` over one root slice that it builds from
-the process: the runnable continuation closure; the park record's frame; the mailbox; and any transient values the
+the process: the runnable continuation closure; the park record's frame; a delivered handler; the handler captures; and any transient values the
 caller passes. Each slot holds its forwarded value afterwards and is written
 back to where it came from. The decision is made at scheduler-quantum
-boundaries, never per back edge. Gifts waiting in the delivery in-queue are not
-roots: their blocks join the heap only when grafted, and every reference in a
-gift points into its own segment.
+boundaries, never per back edge. Gifts waiting in the delivery in-queue and
+messages waiting in the mailbox are not roots: their blocks join the heap only
+when grafted, and every reference in a gift points into its own segment.
 
 `sched_core::end_quantum` packages this decision (collect if needed, clear the
 reason bits, run the queued destructors) and returns the `Disposition` (`Requeue`, `Parked` or `Exited`); it reports the

@@ -10,10 +10,10 @@
 //! tip back. The copy allocates exactly the measured bytes, so it cannot run
 //! past the block; `end_gift` refuses a window whose fill is not the
 //! measurement. The receiver later
-//! calls `graft` and owns the segment's block and off-heap stubs as if a
-//! collection had kept them: they are old. A gift is packed, and references
+//! calls `graft` and owns the segment's block and off-heap stubs as if its own
+//! allocation had made them: they are young. A gift is packed, and references
 //! only itself and literals, so nothing in it points at the receiver's young
-//! data. Only a major collection copies the live data out of it.
+//! data. The next collection copies what is live out of it.
 //!
 //! No process ever writes into another process's live heap: the sender only
 //! writes into a block that is not yet anyone's, and the receiver only moves
@@ -202,18 +202,19 @@ impl Heap {
         }
     }
 
-    /// Take ownership of a segment: its block joins this heap's old blocks, its
-    /// off-heap prefix is spliced ahead of this heap's old chain.
-    /// The gift is packed and fully live, like the heap after a collection, so
-    /// its fill raises `live_baseline` rather than counting as allocation.
+    /// Take ownership of a segment: its block is parked among the young
+    /// blocks and its off-heap prefix is spliced ahead of this heap's young
+    /// chain. The block's fill counts toward the next collection like any
+    /// allocation, so a message that is dead by then is reclaimed by a minor
+    /// collection and one that is live is copied once.
     pub fn graft(&mut self, mut segment: GiftSegment) {
         if let Some(block) = segment.block.take() {
-            self.live_baseline += block.fill();
-            self.old_blocks.push(block);
+            self.received_bytes += block.fill();
+            self.park(block);
         }
-        self.off_heap_old_head = segment.offheap.splice_onto(self.off_heap_old_head);
+        self.off_heap_head = segment.offheap.splice_onto(self.off_heap_head);
         segment.offheap = SegmentChain::EMPTY;
-        self.old_objects += segment.objects;
+        self.alloc_count += segment.objects;
     }
 
     /// Whether `begin_gift` has set the tip aside and `end_gift` has not yet cut

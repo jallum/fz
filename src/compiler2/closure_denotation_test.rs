@@ -35,7 +35,7 @@ fn first_class_closures_retain_complete_lexical_values_in_interp_and_jit() {
         tel.attach_raw_event2::<crate::ir_codegen::PidId, Process, _>(
             &["fz", "runtime", "process_exited"],
             move |_, _, _, _, process| {
-                let tuple = *process.mailbox.front().expect("root exposes its closures");
+                let tuple = process.mailbox.front().expect("root exposes its closures");
                 for (index, expected) in [11, 22].into_iter().enumerate() {
                     let closure = process.heap.read_struct_field_ref(tuple, (index * 8) as u32).unwrap();
                     assert_eq!(
@@ -104,7 +104,7 @@ fn closure_denotation_survives_repeated_allocation_and_specialization_in_interp_
         tel.attach_raw_event2::<crate::ir_codegen::PidId, Process, _>(
             &["fz", "runtime", "process_exited"],
             move |_, _, _, _, process| {
-                let tuple = *process.mailbox.front().expect("root sent its closures to itself");
+                let tuple = process.mailbox.front().expect("root sent its closures to itself");
                 assert_ne!(
                     process
                         .heap
@@ -198,7 +198,8 @@ fn separate_backend_programs_keep_distinct_closures_on_one_process() {
     };
     let first_tuple = first_tuple.raw();
     let first_id = tuple_denotations(&process, first_tuple, 1)[0];
-    process.mailbox.push_back(first_tuple);
+    let (segment, first_tuple) = fz_runtime::sched::gift_copy_one(&mut process.heap, first_tuple);
+    process.mailbox.push(first_tuple, segment);
 
     compiler.submit_code(CodeSubmission {
         name: Some("closure_denotation_second_program.fz".into()),
@@ -232,7 +233,7 @@ fn separate_backend_programs_keep_distinct_closures_on_one_process() {
         "separately published programs cannot reuse package-local closure identities"
     );
     assert_eq!(
-        tuple_denotations(&process, *process.mailbox.front().unwrap(), 1)[0],
+        tuple_denotations(&process, process.mailbox.front().unwrap(), 1)[0],
         first_id,
         "publishing an earlier-sorting function cannot renumber a live closure"
     );

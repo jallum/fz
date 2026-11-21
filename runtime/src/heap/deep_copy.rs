@@ -358,8 +358,7 @@ fn copy_list_cell(sp: *mut u8, src_heap: &HeapView, dst_heap: &mut Heap) -> (*mu
 }
 
 /// Write the finished cell at `dp`. A cell copied into a gift window is shared
-/// from birth: the receiver grafts the gift as old data, and an old cell is
-/// never rewritten in place.
+/// from birth: a message's cells are never rewritten in place.
 fn link_list_tail(dst_heap: &Heap, dp: *mut u8, head: AnyValue, tail_bits: u64) {
     let mut cons = ListCons::new(head.raw(), head.kind(), tail_bits);
     if dst_heap.gift_window_is_open() {
@@ -395,8 +394,8 @@ fn deep_copy_strict_closure(sp: *mut u8, src_heap: &HeapView, dst_heap: &mut Hea
 fn deep_copy_strict_struct(sp: *mut u8, src_heap: &HeapView, dst_heap: &mut Heap) -> AnyValue {
     let schema_id = unsafe { struct_schema_id(sp as *const u8) };
     let dp = dst_heap.alloc_struct(schema_id);
-    // A struct copied into a gift window is shared from birth: the receiver
-    // grafts the gift as old data, and old data is never written in place.
+    // A struct copied into a gift window is shared from birth: a message is
+    // never written in place.
     if dst_heap.gift_window_is_open() {
         unsafe { share_struct(dp) };
     }

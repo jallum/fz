@@ -4,9 +4,9 @@ use super::super::Heap;
 use crate::heap::Generation;
 use std::cell::Cell;
 
-/// The young blocks' address ranges, sorted. Young blocks are few: the tip, the
-/// ones it climbed past since the last collection, and any huge object's block.
-/// The range a pointer hit last is tried first, since neighbouring pointers
+/// The young blocks' address ranges, sorted: the tip, the ones it climbed past
+/// since the last collection, any huge object's block, and the block of each
+/// message received. The range a pointer hit last is tried first, since neighbouring pointers
 /// mostly share a block; a miss searches the rest.
 struct YoungRanges {
     ranges: Vec<(usize, usize)>,

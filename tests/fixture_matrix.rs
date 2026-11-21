@@ -264,8 +264,8 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             enum_sort_constant_sorter_erased_under_return_demand_specs,
         ),
         (
-            "self_send_pushes_the_senders_reference_and_the_send_site_publishes_it",
-            self_send_pushes_the_senders_reference_and_the_send_site_publishes_it,
+            "self_send_copies_the_message_and_the_senders_list_stays_intact",
+            self_send_copies_the_message_and_the_senders_list_stays_intact,
         ),
         (
             "a_list_a_continuation_captures_stays_rewritable_in_place",
@@ -3744,19 +3744,20 @@ fn enum_sort_constant_sorter_erased_under_return_demand_specs() {
     assert_eq!(stats.runtime_fallback_count(), 0);
 }
 
-fn self_send_pushes_the_senders_reference_and_the_send_site_publishes_it() {
-    let fixture =
-        FixtureCase::new("fixtures/00900_a_self_sent_list_stays_intact_because_the_send_site_publishes_it.fz");
+fn self_send_copies_the_message_and_the_senders_list_stays_intact() {
+    let fixture = FixtureCase::new(
+        "fixtures/00900_a_self_send_copies_its_message_as_a_send_to_another_process_does_and_the_senders_list_stays_intact.fz",
+    );
     let expected = fs::read_to_string(fixture.sidecar_path("expected.txt")).expect("read 00900 expected.txt");
     assert_eq!(
-        expected, "[1, 9]\n0\n[4, 5, 6]\n[4, 9]\n",
-        "the control rewrite prints [1, 9]; the send allocates no list cells; the received message is intact; the refused rewrite still yields [4, 9]"
+        expected, "[1, 9]\n3\n[4, 5, 6]\n[4, 9]\n",
+        "the control rewrite prints [1, 9]; the send copies the message's three list cells; the received message is intact; the refused rewrite still yields [4, 9]"
     );
 
     // Four one-cons constructions retain a source cell: the two identical
     // aliases, the control rewrite that runs in place, and the rewrite of the
-    // sent cell. Only the last one misses, because the send site published
-    // the cell before the call.
+    // sent cell. Only the last one misses, because the call-site ownership rule
+    // published the cell at the send.
     let stats = list_retention_telemetry_stats_for_fixture(&fixture);
     assert_eq!(
         (stats.runtime_attempted_count, stats.runtime_reused_count),
@@ -4460,23 +4461,31 @@ fn a_large_list_passed_back_and_forth_crosses_as_one_gift_per_message_on_every_p
         assert_eq!(after, before, "{label}: the run returned every block it took");
     }
 
-    // The interpreter never yields, so it collects the parent once, at its
-    // park for the announcement, with nothing live. The JIT yields while the
+    // A ball waits outside the receiver's heap until the receive that takes it
+    // grafts it, young. At 320016 bytes a ball is far past the 4096-byte budget
+    // floor, so the receiver is due at the park that follows each receive, and
+    // the ball, dead by then, is reclaimed with nothing copied. The interpreter
+    // never yields, so every one of its collections is at a park: the parent's
+    // for the announcement, then one per ball taken. The JIT yields while the
     // parent builds the list: a clause loop charges one reduction per step, so a
     // yield falls every 4,000 steps, and it collects only when the heap is due.
     // Each minor collection copies what was allocated since the last one;
     // those whose old bytes passed twice what the last major collection left
-    // are major and copy everything live. The child's heap is not due at any
-    // of its parks: before its first, the calls it makes into functions that
-    // need a frame build 272 bytes of continuations, and its young bytes stay
-    // under the 512 a collection waits for. The parent's park mid-run, where it
-    // waits for the next ball, collects only if the heap is due there, and it
-    // is not.
+    // are major and copy everything live. A park copies the closures its park
+    // record holds.
     let events = gc_events_for_fixture(&fixture, FixtureMatrixPath::Interp, "interp");
     assert_eq!(
         collections_as_tuples(&events),
-        vec![(1, "park", 0)],
-        "interp: the parent's park only"
+        vec![
+            (1, "park", 0),
+            (2, "park", 0),
+            (1, "park", 0),
+            (2, "park", 0),
+            (1, "park", 0),
+            (2, "park", 0),
+            (1, "park", 0),
+        ],
+        "interp: the parent's park for the announcement, then the park after each ball a process took, with nothing live"
     );
     let events = gc_events_for_fixture(&fixture, FixtureMatrixPath::Run, "run");
     assert_eq!(
@@ -4486,12 +4495,19 @@ fn a_large_list_passed_back_and_forth_crosses_as_one_gift_per_message_on_every_p
             // parent's collections that copy its oldest values.
             (1, "yield", 64_144),
             (1, "yield", 192_144),
-            (1, "yield", 96_160),
+            (2, "park", 320),
+            (1, "park", 208),
+            (2, "park", 192),
+            (1, "park", 144),
+            (2, "park", 192),
+            (1, "park", 144),
+            (1, "yield", 288_128),
+            (1, "yield", 192_160),
             (1, "yield", 48),
             (1, "yield", 48),
             (1, "yield", 48),
         ],
-        "run: the parent's collected yields"
+        "run: the parent's collected yields and each park that follows a ball taken"
     );
 }
 
