@@ -206,7 +206,13 @@ impl AnyValue {
             AnyValue::Float(value) => value.to_string(),
             AnyValue::Atom(value) => render_value(proc, RuntimeAnyValue::atom(value)),
             AnyValue::EmptyList => render_value(proc, RuntimeAnyValue::empty_list()),
-            AnyValue::FnRef(_, arity, denotation) => format!("#fn<{}/{}>", denotation.user_index(), arity),
+            AnyValue::FnRef(_, arity, denotation) if proc.is_null() => {
+                fz_runtime::any_value::debug::closure_identity(denotation, arity)
+            }
+            AnyValue::FnRef(..) => render_value(
+                proc,
+                self.value(proc).expect("a fn ref materializes as a static closure"),
+            ),
             AnyValue::Ref(value) => render_value(
                 proc,
                 RuntimeAnyValue::from_ref(value.raw()).unwrap_or(RuntimeAnyValue::null()),

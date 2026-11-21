@@ -1,0 +1,17 @@
+#---
+# purpose: "inspect writes the delete byte as the escape \\d inside a string, and a binary with a byte that is not printable as <<...>>"
+# oracle: self
+# oracle.stamp: d0c1dab9c8eadeef
+#---
+defmodule Main do
+  def main() do
+    IO.inspect(<<127>>)
+    IO.inspect(<<65, 127>>)
+    IO.inspect(<<127, 195, 169>>)
+    IO.inspect(<<1, 127>>)
+    IO.inspect(<<127, 128>>)
+    IO.inspect(<<194, 133>>)
+  end
+end
+
+Main.main()
