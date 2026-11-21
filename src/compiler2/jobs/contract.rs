@@ -15,7 +15,7 @@ use crate::extern_contract::{
     ExternContractError, explicit_extern_wire_hint, extern_semantic_contract, extern_symbol_from_name, ty_to_extern_ty,
     variadic_tail_domain,
 };
-use crate::function_surface::{ExternRaises, FunctionSurface};
+use crate::function_surface::{ExternProjection, ExternRaises, FunctionSurface};
 use crate::fz_ir::{ExternAbi, ExternReturn, ExternTy};
 use crate::ground_value::GroundValue;
 
@@ -24,6 +24,7 @@ use super::super::code::SourceOwner;
 use super::super::contract::FunctionContract;
 use super::super::drive::{FactKey, JobEffects, current_uses, emit_job_diagnostic};
 use super::super::identity::{FunctionId, FunctionSource};
+use super::super::types::Ty;
 use super::super::world::World;
 use super::body::record_struct_reference;
 use crate::literal_term::LiteralTerm;
@@ -246,6 +247,7 @@ fn resolve_extern_wire(
             .map_err(|message| extern_abi_error(tel, surface, format!("`{}`: {message}", surface.name)))?,
         None => ret,
     };
+    check_projection(world, tel, surface, &params_ty, &ret)?;
     let symbol = extern_symbol_from_name(&surface.name);
     Ok(LoweredExtern {
         abi,
@@ -254,6 +256,42 @@ fn resolve_extern_wire(
         variadic: surface.variadic,
         ret,
     })
+}
+
+/// What `projects:` needs of the declaration it sits on: one argument of the
+/// type the property reads, and an integer result, since a comparison of the
+/// result with an integer literal is what the property turns into a type.
+fn check_projection(
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
+    surface: &FunctionSurface,
+    params: &[Ty],
+    ret: &ExternReturn,
+) -> Result<(), FatalError> {
+    let Some(projection) = surface.extern_projection else {
+        return Ok(());
+    };
+    projection_fits(world.types_mut(), projection, params, ret)
+        .map_err(|message| extern_abi_error(tel, surface, format!("`{}`: {message}", surface.name)))
+}
+
+pub(super) fn projection_fits(
+    types: &mut super::super::types::Types,
+    projection: ExternProjection,
+    params: &[Ty],
+    ret: &ExternReturn,
+) -> Result<(), String> {
+    let argument = match projection {
+        ExternProjection::ArrowArity => types.fun_top(),
+    };
+    let reads_one_argument = matches!(params, [param] if types.is_subtype(param, &argument));
+    if reads_one_argument && *ret == ExternTy::I64 {
+        return Ok(());
+    }
+    Err(format!(
+        "`projects: :{}` needs one `fun` parameter and an `integer` result",
+        projection.name()
+    ))
 }
 
 /// The field of an exception that holds the text `message:` declares.

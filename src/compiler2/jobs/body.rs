@@ -43,7 +43,7 @@ use super::super::quoted_expander::emit_surface_read_error;
 use super::super::source::{QuotedAstNode, QuotedSourceCursor, QuotedSourceError};
 use super::super::world::World;
 use super::dispatch::{
-    collect_guard_calls_in_expr, hoist_zero_argument_guard_calls, resolve_guard_callee, resolve_guard_callee_checked,
+    LiteralGuardPlans, collect_guard_calls_in_expr, hoist_zero_argument_guard_calls, resolve_guard_callee,
 };
 use fz_engine::{FactUse, FatalError};
 
@@ -3081,12 +3081,14 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
             None => source,
         };
         let namespace = self.namespace;
+        let mut literal_plans = LiteralGuardPlans::default();
         let mut resolver = super::super::dispatch::SourcePatternResolver {
             world: self.world,
             namespace,
-            guard: |world: &mut World, callee: &Callee, arity: usize| {
-                let callee = resolve_guard_callee_checked(world, namespace, callee, arity);
-                Ok(Some(world.guard_callee(callee)))
+            guard: |world: &mut World, callee: &Callee, arity: usize, literals: &[Option<GroundValue>]| {
+                literal_plans
+                    .callee(world, namespace, callee, arity, literals)
+                    .map(Some)
             },
         };
         let plan = pattern_dispatch_from_source_with_resolver(&source, &mut resolver)
@@ -3260,6 +3262,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
             extern_constraints: Vec::new(),
             extern_raises: None,
             extern_delivers: None,
+            extern_projection: None,
             variadic: false,
             attrs: Vec::new(),
             span,

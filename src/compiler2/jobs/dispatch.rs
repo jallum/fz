@@ -20,8 +20,10 @@ use crate::diag::codes;
 use crate::dispatch_matrix::pattern::{
     GuardCallee, GuardExtern, LastResort, PatternDispatchError, PatternPinnedInput, PatternRow, PatternSubjectRef,
     SourcePatternError, SourcePatternRows, guard_dispatch_from_rows, pattern_dispatch_from_source_with_resolver,
+    specialise::clauses_at_literals,
 };
 use crate::function_surface::FunctionSurface;
+use crate::ground_value::GroundValue;
 use crate::source::Span;
 use fz_engine::FatalError;
 
@@ -161,12 +163,14 @@ pub(super) fn plan_entry_dispatch(
     let source_patterns = entry_source_patterns(world, tel, function, &source, &surface)?.raising(no_clause);
     let namespace = source.namespace;
     let fn_span = surface.span;
+    let mut literal_plans = LiteralGuardPlans::default();
     let mut resolver = super::super::dispatch::SourcePatternResolver {
         world,
         namespace,
-        guard: |world: &mut World, callee: &Callee, arity: usize| {
-            let callee = resolve_guard_callee_checked(world, namespace, callee, arity);
-            Ok(Some(world.guard_callee(callee)))
+        guard: |world: &mut World, callee: &Callee, arity: usize, literals: &[Option<GroundValue>]| {
+            literal_plans
+                .callee(world, namespace, callee, arity, literals)
+                .map(Some)
         },
     };
     let plan = match pattern_dispatch_from_source_with_resolver(&source_patterns, &mut resolver) {
@@ -409,7 +413,7 @@ fn build_guard_dispatch(
     let mut resolver = super::super::dispatch::SourcePatternResolver {
         world,
         namespace,
-        guard: |world: &mut World, callee: &Callee, arity: usize| {
+        guard: |world: &mut World, callee: &Callee, arity: usize, _literals: &[Option<GroundValue>]| {
             let callee = resolve_guard_callee_checked(world, namespace, callee, arity);
             Ok(Some(build_guard_dispatch(world, callee, cache, stack)?))
         },
@@ -423,6 +427,78 @@ fn build_guard_dispatch(
     stack.pop();
     cache.insert(function, callee.clone());
     Ok(callee)
+}
+
+/// The guard helpers planned at the literals a call hands them, once per
+/// function and literals.
+#[derive(Default)]
+pub(super) struct LiteralGuardPlans {
+    plans: HashMap<LiteralCall, Option<GuardCallee<Ty>>>,
+}
+
+/// A helper and the literal each of its arguments is handed, `None` where the
+/// argument is not a literal.
+type LiteralCall = (FunctionId, Vec<Option<GroundValue>>);
+
+impl LiteralGuardPlans {
+    /// What a guard call reaches: the helper as it is reified, or, when the
+    /// call hands it literals that decide some of its clauses, the helper
+    /// planned from the clauses that can still win.
+    pub(super) fn callee(
+        &mut self,
+        world: &mut World,
+        namespace: Namespace,
+        callee: &Callee,
+        arity: usize,
+        literals: &[Option<GroundValue>],
+    ) -> Result<GuardCallee<Ty>, SourcePatternError> {
+        let function = resolve_guard_callee_checked(world, namespace, callee, arity);
+        let reified = world.guard_callee(function);
+        if literals.iter().all(Option::is_none) || !matches!(reified, GuardCallee::Helper(_)) {
+            return Ok(reified);
+        }
+        let key = (function, literals.to_vec());
+        if !self.plans.contains_key(&key) {
+            let planned = plan_at_literals(world, function, literals)?;
+            self.plans.insert(key.clone(), planned);
+        }
+        Ok(self.plans[&key].clone().unwrap_or(reified))
+    }
+}
+
+/// The helper planned from the clauses that can win at `literals`, or `None`
+/// when they decide no clause.
+fn plan_at_literals(
+    world: &mut World,
+    function: FunctionId,
+    literals: &[Option<GroundValue>],
+) -> Result<Option<GuardCallee<Ty>>, SourcePatternError> {
+    let (source, surface) = world.function_definition(function);
+    let namespace = source.namespace;
+    let surface = surface.clone();
+    let mut cache = HashMap::default();
+    let mut stack = vec![function];
+    let mut resolver = super::super::dispatch::SourcePatternResolver {
+        world,
+        namespace,
+        guard: |world: &mut World, callee: &Callee, arity: usize, _literals: &[Option<GroundValue>]| {
+            let callee = resolve_guard_callee_checked(world, namespace, callee, arity);
+            Ok(Some(build_guard_dispatch(world, callee, &mut cache, &mut stack)?))
+        },
+    };
+    let Some(clauses) = clauses_at_literals(surface.as_ref(), literals, &mut resolver)? else {
+        return Ok(None);
+    };
+    let planned = FunctionSurface {
+        clauses,
+        ..surface.as_ref().clone()
+    };
+    let rows = super::super::dispatch::surface_pattern_rows(resolver.world, namespace, &planned, &[])?;
+    Ok(Some(GuardCallee::Helper(Arc::new(guard_dispatch_from_rows(
+        &planned,
+        rows,
+        &mut resolver,
+    )?))))
 }
 
 fn entry_source_patterns(
@@ -929,3 +1005,7 @@ fn emit_undefined_pins(tel: &impl crate::telemetry::Telemetry, pinned: &[Pattern
 fn function_label(def: &FunctionSurface) -> String {
     format!("{}/{}", def.name, def.arity())
 }
+
+#[cfg(test)]
+#[path = "dispatch_test.rs"]
+mod dispatch_test;

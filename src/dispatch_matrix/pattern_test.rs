@@ -104,6 +104,8 @@ struct Helpers {
     is_int: Arc<PatternGuardDispatch<Ty>>,
     is_float: Arc<PatternGuardDispatch<Ty>>,
     opaque: Arc<PatternGuardDispatch<Ty>>,
+    /// A type test of its first argument that takes a second, which it ignores.
+    is_int_of_two: Arc<PatternGuardDispatch<Ty>>,
     /// What the operator `+` resolves to in a guard: a call like any other.
     plus: Arc<PatternGuardDispatch<Ty>>,
 }
@@ -117,6 +119,7 @@ impl Helpers {
             is_int: Arc::new(predicate_helper(1, &[(0, int)])),
             is_float: Arc::new(predicate_helper(1, &[(0, float)])),
             opaque: Arc::new(opaque_helper(1)),
+            is_int_of_two: Arc::new(predicate_helper(2, &[(0, int)])),
             plus: Arc::new(opaque_helper(2)),
         }
     }
@@ -128,6 +131,7 @@ impl Helpers {
                 "is_int" => Some(GuardCallee::Helper(Arc::clone(&self.is_int))),
                 "is_float" => Some(GuardCallee::Helper(Arc::clone(&self.is_float))),
                 "opaque" => Some(GuardCallee::Helper(Arc::clone(&self.opaque))),
+                "is_int_of_two" => Some(GuardCallee::Helper(Arc::clone(&self.is_int_of_two))),
                 "+" => Some(GuardCallee::Helper(Arc::clone(&self.plus))),
                 _ => None,
             })
@@ -286,6 +290,38 @@ fn a_conjunct_that_is_not_a_type_predicate_stays_the_guard_after_the_type_questi
         "the remaining guard is exactly opaque(x): {:?}",
         plan.guards[0]
     );
+}
+
+#[test]
+fn a_literal_beside_the_variable_a_type_predicate_asks_about_leaves_the_type_question() {
+    let helpers = Helpers::new();
+    let int = helpers.is_int.type_predicate.as_ref().unwrap()[0].1;
+    let plan = helpers.plan(
+        vec![x()],
+        Vec::new(),
+        call("is_int_of_two", vec![var("x"), Expr::Int(2)]),
+    );
+
+    assert_eq!(type_questions(&plan).len(), 1, "x is asked to be an integer");
+    assert_eq!(type_questions(&plan)[0].1, &int);
+    assert_eq!(guard_questions(&plan), 0, "the literal leaves no guard");
+}
+
+#[test]
+fn a_literal_where_a_type_predicate_asks_a_type_stays_the_guard() {
+    let helpers = Helpers::new();
+    let plan = helpers.plan(
+        vec![x()],
+        Vec::new(),
+        call("is_int_of_two", vec![Expr::Int(2), var("x")]),
+    );
+
+    assert_eq!(
+        type_questions(&plan).len(),
+        0,
+        "a constant is not a subject a type region holds"
+    );
+    assert_eq!(guard_questions(&plan), 1, "so the call is still asked as a guard");
 }
 
 #[test]

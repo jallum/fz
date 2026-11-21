@@ -1,0 +1,23 @@
+#---
+# purpose: "is_function(f, n) with a literal n holds for a function that takes n arguments: an arity-2 reducer takes the first clause, an arity-1 function falls through to the next, and no function is called to ask"
+# kind: run
+# oracle: self
+# oracle.stamp: 0da0a6451bb5a76b
+#---
+#
+# `fold/3` walks a list with a reducer of two arguments, or with a mapper of one
+# argument added to the accumulator. The guard `is_function(f, 2)` asks only the
+# class of `f`, so the arity-1 function reaches the second clause and anything
+# else, a function of another arity or no function at all, reaches the last.
+defmodule Fold do
+  def fold([], acc, _f), do: acc
+  def fold([h | t], acc, f) when is_function(f, 2), do: fold(t, f.(h, acc), f)
+  def fold([h | t], acc, f) when is_function(f, 1), do: fold(t, acc + f.(h), f)
+  def fold(_list, _acc, _f), do: :not_a_function_of_one_or_two_arguments
+end
+
+IO.inspect(Fold.fold([1, 2, 3], 0, fn x, acc -> x + acc end))
+IO.inspect(Fold.fold([1, 2, 3], 0, fn x -> x * 10 end))
+IO.inspect(Fold.fold([1, 2, 3], 0, fn x, y, z -> x + y + z end))
+IO.inspect(Fold.fold([1, 2, 3], 0, :not_a_function))
+IO.inspect(Fold.fold([], 7, :not_a_function))

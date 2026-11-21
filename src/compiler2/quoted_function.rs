@@ -3,7 +3,7 @@ use crate::ast::{
     FnClause, LambdaClause, MatchClause, Pattern, RescueClause, Spanned, SpecDecl, TryForm, TypeExprBody, UnOp, Var,
     VarContext, WithBinding,
 };
-use crate::function_surface::FunctionSurface;
+use crate::function_surface::{ExternProjection, FunctionSurface};
 use crate::modules::identity::{ModuleDenotation, ModuleName};
 use crate::parser::lexer::{Tok, Token};
 use crate::source::{SourceMap, Span};
@@ -176,6 +176,7 @@ pub(crate) fn derive_function_surface(
         variadic: false,
         extern_raises: None,
         extern_delivers: None,
+        extern_projection: None,
         attrs,
         span: group_span,
     })
@@ -232,6 +233,13 @@ fn decode_extern_fn(
         ),
         None => None,
     };
+    let extern_projection = match details.map_value("projects")? {
+        Some(name) => Some(
+            ExternProjection::from_name(name.atom_name()?.as_str())
+                .ok_or_else(|| QuotedSourceError::new("quoted extern `projects` expects :arrow_arity"))?,
+        ),
+        None => None,
+    };
 
     let extern_param_tokens = params
         .into_iter()
@@ -256,6 +264,7 @@ fn decode_extern_fn(
         variadic,
         extern_raises,
         extern_delivers,
+        extern_projection,
         attrs,
         span,
     })
