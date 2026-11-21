@@ -1,7 +1,9 @@
 {
   "assignee": "Callables",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-mue.44"
+  ],
   "created": "2026-11-21T11:54:16Z",
   "description": "Option B of the fz-yh5.8 page (https://claude.ai/artifact/MyYNgFG8V8uVvErvPXamku): the library states the guard. Guard plans are made per literal arity, and fz_function_arity is a projection, so a type test asks about the value without demanding a boxed callable.\n\nSame defect as fz-yh5.8: OTP's :lists.foldl guard 'when is_function(F, 2)' sends Enum.reduce's reducer across the boxed seam (+11.8% distiller requests, mue.44 evidence). fz-yh5.8 builds option A, the guard-domain table entry. The user chose (2026-11-21) to build both as separate PRs so they can be compared, and will then pick one; the other PR closes unmerged.\n\nNote from the user: Elixir supports tuple_size in guards; fz has not got there yet. It is not out of scope as a language feature.\n\nOwner: Callables.",
   "id": "fz-yh5.9",
