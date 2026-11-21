@@ -761,10 +761,7 @@ fn emit_back_edge_yield_check<M: cranelift_module::Module>(
             CodegenValue::RawInt(word) => body.store_closure_capture_i64(cont_closure, i, word),
             CodegenValue::RawF64(word) => body.store_closure_capture_f64(cont_closure, i, word),
             CodegenValue::RawAtom(word) => body.store_closure_capture_atom(cont_closure, i, word),
-            root => {
-                let root_ref = body.value_as_any_ref(root);
-                body.store_closure_capture_ref_word(cont_closure, i, root_ref);
-            }
+            root => body.store_closure_capture_value(cont_closure, i, root),
         }
     }
     let reason = body.b.ins().iconst(types::I32, YIELD_REASON_REDUCTIONS as i64);

@@ -1237,22 +1237,6 @@ impl Heap {
     }
 
     /// # Safety
-    /// The caller exclusively owns this live, unpublished closure, and `idx` is
-    /// an allocated capture slot. Captures must be published immutable finite
-    /// acyclic terms and cannot reach the closure being built.
-    pub unsafe fn write_closure_capture_ref(
-        &mut self,
-        closure: AnyValueRef,
-        idx: usize,
-        value: AnyValueRef,
-    ) -> Result<(), AnyValueRefError> {
-        let closure = closure.closure_addr()?;
-        self.assert_written_object_is_young(closure);
-        unsafe { closure_capture_set(closure, idx, AnyValue::from_ref(value)?) };
-        Ok(())
-    }
-
-    /// # Safety
     ///
     /// `closure_addr` must point to a live closure allocation with a capture
     /// slot at `idx`.
@@ -1279,19 +1263,20 @@ impl Heap {
     /// # Safety
     /// `object` is a struct under construction and the offsets are one
     /// field's, by its `SlotLayout`.
-    pub unsafe fn store_struct_field_ref(
+    pub unsafe fn store_struct_field(
         &mut self,
         object: *mut u8,
         slot_offset: usize,
         kind_offset: usize,
-        value: AnyValueRef,
+        value: AnyValue,
     ) -> Result<(), AnyValueRefError> {
         self.assert_written_object_is_young(object);
-        let raw = value.storage_raw()?;
-        self.share(value)?;
+        if let AnyValue::HeapRef(heap_value) = value {
+            self.share(heap_value)?;
+        }
         unsafe {
-            write(object.add(slot_offset).cast::<u64>(), raw);
-            write(object.add(kind_offset), value.tag().tag());
+            write(object.add(slot_offset).cast::<u64>(), value.raw());
+            write(object.add(kind_offset), value.kind().tag());
         }
         Ok(())
     }

@@ -388,10 +388,18 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
                 let slot_offset = self.b.ins().iconst(types::I32, slot_offset as i64);
                 let kind_offset = self.b.ins().iconst(types::I32, kind_offset as i64);
                 let process = self.process_arg();
+                let [value_word, value_kind] = super::list_cell::stored_parts_of_ref(self.b, value.value());
                 runtime_call!(
                     self,
                     fz_struct_store_ref,
-                    [process, object.reference, slot_offset, kind_offset, value.value()]
+                    [
+                        process,
+                        object.reference,
+                        slot_offset,
+                        kind_offset,
+                        value_word,
+                        value_kind
+                    ]
                 );
             }
         }
@@ -587,9 +595,19 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
         runtime_call1!(self, fz_closure_halt_kind_ref, [closure_ref])
     }
 
-    pub(crate) fn set_closure_capture_ref(&mut self, closure_ref: ir::Value, index: ir::Value, value: ir::Value) {
+    pub(crate) fn set_closure_capture_ref(
+        &mut self,
+        closure_ref: ir::Value,
+        index: ir::Value,
+        value_word: ir::Value,
+        value_kind: ir::Value,
+    ) {
         let process = self.process_arg();
-        runtime_call!(self, fz_closure_set_capture_ref, [process, closure_ref, index, value]);
+        runtime_call!(
+            self,
+            fz_closure_set_capture_ref,
+            [process, closure_ref, index, value_word, value_kind]
+        );
     }
 
     pub(crate) fn set_closure_capture_i64(&mut self, closure_ref: ir::Value, index: ir::Value, value: ir::Value) {
@@ -924,10 +942,13 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
         self.b.ins().bor_imm_u(payload, tag_word)
     }
 
-    pub(crate) fn store_closure_capture_ref_word(&mut self, closure_ref: ir::Value, idx: usize, value: ir::Value) {
-        self.share_any(value);
+    /// Capture `value` as the word and kind it is held as, shared since the
+    /// closure now holds it too. A number held in a register is stored as is.
+    pub(crate) fn store_closure_capture_value(&mut self, closure_ref: ir::Value, idx: usize, value: CodegenValue) {
+        self.share(value);
+        let [word, kind] = super::support::stored_parts(self, value);
         let index = self.index_const(idx);
-        self.set_closure_capture_ref(closure_ref, index, value);
+        self.set_closure_capture_ref(closure_ref, index, word, kind);
     }
 
     pub(crate) fn store_closure_capture_i64(&mut self, closure_ref: ir::Value, idx: usize, value: ir::Value) {

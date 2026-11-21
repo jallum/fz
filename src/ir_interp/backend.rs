@@ -27,7 +27,7 @@ use crate::runtime_type_predicate::CallableShape;
 use crate::telemetry::{Telemetry, TelemetryExt};
 use crate::types::ClosureTarget;
 use fz_runtime::any_value::{
-    AnyValue as RuntimeAnyValue, AnyValueRef, SlotLayout, ValueKind, closure_addr_from_tagged,
+    AnyValue as RuntimeAnyValue, AnyValueRef, SlotLayout, Stored, ValueKind, closure_addr_from_tagged,
 };
 use fz_runtime::delivery::Delivery;
 use fz_runtime::exec_ctx::{Argv, ExecCtx, NO_ARGV, timer_cancel, timer_schedule};
@@ -2110,16 +2110,15 @@ fn eval_steps<T: Telemetry + ?Sized>(
                     })?;
                     for store in stores {
                         let slot = store.slot as usize;
-                        let item = publish_runtime_value(proc, env_get(transport, proc, env, store.value)?)?;
-                        with_value_ref(proc, item, "backend struct update value", |item_ref| {
-                            fz_struct_store_ref(
-                                proc,
-                                copy,
-                                SlotLayout::slot_offset(slot) as u32,
-                                layout.kind_offset(slot) as u32,
-                                item_ref,
-                            )
-                        })?;
+                        let item = Stored::of(env_get(transport, proc, env, store.value)?.value(proc)?);
+                        fz_struct_store_ref(
+                            proc,
+                            copy,
+                            SlotLayout::slot_offset(slot) as u32,
+                            layout.kind_offset(slot) as u32,
+                            item.word,
+                            item.kind,
+                        );
                     }
                     interp_value_from_ref_word(copy, "backend struct update")?
                 } else {

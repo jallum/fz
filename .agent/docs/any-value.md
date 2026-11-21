@@ -92,6 +92,8 @@ fz_struct_get_field_ref(process, struct, field_offset)
 fz_value_eq_ref / fz_value_eq_widening_ref(process, a_word, a_kind, b_word, b_kind) -> 0 or 1
 fz_value_cmp_ref(process, a_word, a_kind, b_word, b_kind)  -> -1, 0 or 1
 fz_inspect(process, word, kind) / fz_inspect_with(process, word, kind, options)  -> binary
+fz_struct_store_ref(process, struct, slot_offset, kind_offset, value_word, value_kind)
+fz_closure_set_capture_ref(process, closure, index, value_word, value_kind)
 fz_binary_concat(process, left, right)
 ```
 
@@ -611,10 +613,12 @@ stores each field:
   (`ty_is_addressed_object`) names its object by address, so it is also two
   stores in place: the reference without its kind, and the kind the reference
   carries.
-- Any other reference may be a list or a boxed scalar. It goes through
-  `fz_struct_store_ref`, one call that reads the reference, shares the spine
-  if it is a list, and writes the slot and kind byte at the offsets it is
-  handed.
+- Any other reference may be a list or a boxed scalar. Its word and kind are
+  read out of it (`list_cell::stored_parts_of_ref`) and go through
+  `fz_struct_store_ref`, one call that shares the spine if the value is a
+  list, and writes the word at the slot and the kind byte at the offsets it
+  is handed. The interpreter's struct update calls the same entry with
+  `Stored::of(value)`, so it boxes no number either.
 
 The payload is not zeroed first. Every slot and kind byte is written before
 the construction's next instruction, and the collector runs only between
