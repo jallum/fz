@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Optimize",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-21T04:50:02Z",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": ":maps.iterator(M, ordered) walks keys in term order, through :lists.sort/2 and :erts_internal.cmp_term/2",
   "type": "feature",
-  "updated_at": "2026-11-21T04:50:02Z"
+  "updated_at": "2026-11-21T04:50:03Z"
 }
