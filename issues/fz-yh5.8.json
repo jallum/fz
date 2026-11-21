@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-21T04:57:17Z",
+  "description": "OTP's :lists.foldl guard 'when is_function(F, 2)' makes Enum.reduce's reducer cross the boxed seam: Enum.each over a list builds two construction wrappers where it built none, and the distiller costs +11.8% requests. Without the guard, every count falls. Found by fz-mue.44's builder (Elixir Parity). Evidence: the mue.44 report; probes in Elixir Parity's scratchpad distill_{base,a,b}.log; tests compiler2_never_boxed_discarded_closure_call_delivers_no_lanes and compiler2_no_value_reaches_a_construction_member_that_never_named_it.\n\nA type test is a question about the value, not a use of it; it should not by itself demand a boxed callable (the boxed apply wrapper is the sole boxing seam, used only when proven necessary).\n\nBlocks fz-mue.44, which the user chose to park on this (2026-11-20, relayed by Elixir Parity). Owner: Callables. Related: the is_function arity ticket fz-yh5.7.",
+  "id": "fz-yh5.8",
+  "labels": [],
+  "parent": "fz-yh5",
+  "priority": 1,
+  "status": "open",
+  "title": "An is_function(f, n) guard does not force a callable through the boxed seam",
+  "type": "bug",
+  "updated_at": "2026-11-21T04:57:17Z"
+}
