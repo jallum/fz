@@ -387,3 +387,40 @@ fn a_closure_call_with_an_uninhabited_argument_mints_no_activation() {
         "a callback that cannot be called has no construction target"
     );
 }
+
+/// A call of n arguments can only run a callable that takes n, so a surface of
+/// another arity is no flow to that callable's construction: nothing requests
+/// a target for it, and the drive settles instead of waiting on one.
+#[test]
+fn a_surface_of_another_arity_requests_no_construction_target() {
+    let drive = Drive::fixture(1881).program_entry();
+    let observed = Rc::new(RefCell::new(Vec::new()));
+    let sink = Rc::clone(&observed);
+    drive.telemetry().attach_raw_event2::<World, JobCompletion, _>(
+        &["fz", "compiler2", "work_graph", "applied"],
+        move |_, _, _, _, completion| {
+            if let Job::DeriveCallableConstructionTarget(key) = &completion.job {
+                sink.borrow_mut().push(key.clone());
+            }
+        },
+    );
+    let settled = drive.dump_stage(DumpStage::Backend);
+
+    let keys = observed.borrow();
+    assert!(
+        !keys.is_empty(),
+        "the arity-3 call in the second clause requests the lambda's construction target"
+    );
+    for key in keys.iter() {
+        let producer = settled
+            .world()
+            .executable_facts(&key.owner)
+            .and_then(|facts| facts.callable_origin(key.value))
+            .expect("a requested target names a callable producer of its owner");
+        assert_eq!(
+            key.surface.inputs.len(),
+            settled.world().function_arity(producer.function),
+            "a requested construction target has the arity of the lambda it constructs"
+        );
+    }
+}
