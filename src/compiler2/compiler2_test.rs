@@ -1326,7 +1326,7 @@ fn def_and_defp_bounce_through_definition_macros_and_preserve_visibility() {
     );
     assert_eq!(
         compiler.world().function_definition(public).1.attrs.len(),
-        2,
+        1,
         "function attributes must survive the def macro boundary"
     );
 }

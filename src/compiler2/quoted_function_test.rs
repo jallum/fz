@@ -401,27 +401,6 @@ fn a_decoded_ast_node_meta_span_retains_its_exact_source_version() {
     );
 }
 
-#[test]
-fn compiler2_quoted_function_surface_carries_a_heredoc_doc_whole() {
-    // A one-line `@doc` was all the attribute had ever been handed, because
-    // `"""` lexed as three quote characters rather than a delimiter. The
-    // attribute already took a string token, so a heredoc that lexes to one
-    // needs nothing further from it -- this pins that, text and all, so the
-    // library can carry Elixir-shaped docs instead of one-line labels.
-    let source = "@doc \"\"\"\nAdds one.\n\n## Examples\n\n    bump(1) == 2\n\"\"\"\ndef bump(n), do: n + 1\n";
-    let (root, sources) = grouped_function_root("bump.fz", source);
-    let surface = derive_function_surface(&root, &sources).expect("derive function surface");
-
-    let Attribute::Doc(doc) = &surface.attrs[0] else {
-        panic!("expected @doc attr, got {:?}", surface.attrs[0]);
-    };
-    assert_eq!(
-        doc.as_deref(),
-        Some("Adds one.\n\n## Examples\n\n    bump(1) == 2\n"),
-        "the doc should arrive with its blank lines and its example's indentation intact"
-    );
-}
-
 // ----- `<>` and `++` in patterns -----------------------------------------
 
 fn surface_of(text: &str) -> crate::function_surface::FunctionSurface {

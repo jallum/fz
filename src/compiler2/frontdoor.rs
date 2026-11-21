@@ -250,46 +250,20 @@ impl<'t> FrontDoorParser<'t> {
         }
     }
 
-    /// `@name value`. A documentation attribute holds a string or `false`; a
-    /// type or spec attribute holds its tokens, read by the type reader; any
-    /// other attribute holds an expression, its value.
+    /// `@name value`. A type or spec attribute holds its tokens, read by the
+    /// type reader; any other attribute, documentation included, holds an
+    /// expression, its value.
     fn parse_attribute_item(&mut self, module_path: &[String]) -> Result<AnyValueRef, FrontDoorError> {
         let start = self.cur_span();
         self.expect(&Tok::At, "`@`")?;
         let (name, value) = match self.bump() {
-            Tok::Ident(name) if name == "doc" || name == "moduledoc" => {
-                let value = match self.bump() {
-                    Tok::Binary(bytes) => self.builder.bitstring(bytes, (bytes.len() * 8) as u64)?,
-                    Tok::False => self.builder.bool(false),
-                    other => {
-                        return Err(self.error(format!(
-                            "expected a string or `false` after `@{}`, got {:?}",
-                            name, other
-                        )));
-                    }
-                };
-                // The lexer desugars `#{...}` into `fragment <> Kernel.to_string(x) <> ...`
-                // before the parser sees it, so an interpolating doc string arrives as a
-                // binary followed by `<>`. Taking the binary alone would silently keep the
-                // first fragment and leave the rest at item position, where it is rejected
-                // for being a `Concat` -- true, and useless to whoever wrote the prose.
-                // Documentation that describes interpolation contains one, so say that.
-                if self.peek_is(&Tok::Concat) {
-                    return Err(self.error(format!(
-                        "`@{name}` takes a literal string, and this one interpolates: \
-                         a `#{{...}}` in the text is evaluated, not shown. Write `\\#{{` to \
-                         keep the sigil as prose."
-                    )));
-                }
-                (name.clone(), value)
-            }
             Tok::Ident(name) if is_type_attribute_name(name) => {
                 let name = name.clone();
                 (name, self.type_expression_payload()?)
             }
             Tok::Ident(name) => {
                 let name = name.clone();
-                (name, self.parse_expr(module_path, &[])?.root)
+                (name, self.parse_attribute_value(module_path)?)
             }
             other => return Err(self.error(format!("expected an attribute name after `@`, got {:?}", other))),
         };
@@ -298,6 +272,15 @@ impl<'t> FrontDoorParser<'t> {
         self.builder
             .call(&format!("@{name}"), &meta, &[value])
             .map_err(FrontDoorError::from)
+    }
+
+    /// An attribute's value: an expression, or keyword entries written
+    /// without brackets, as `@doc since: "1.0"` writes them.
+    fn parse_attribute_value(&mut self, module_path: &[String]) -> Result<AnyValueRef, FrontDoorError> {
+        if matches!(self.peek(), Tok::KwKey(_)) {
+            return self.parse_keyword_list_expr(module_path, &[], &Tok::Eof);
+        }
+        Ok(self.parse_expr(module_path, &[])?.root)
     }
 
     fn parse_defmacro_item(&mut self, module_path: &[String]) -> Result<AnyValueRef, FrontDoorError> {

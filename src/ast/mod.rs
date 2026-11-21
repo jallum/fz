@@ -722,11 +722,6 @@ pub struct FnClause {
 /// fz-ul4.31.2 — uniform attribute carrier on parsed function/module surfaces.
 #[derive(Debug, Clone)]
 pub enum Attribute {
-    /// `@doc "..."` attached above a fn/defmacro; `@doc false` is `None`.
-    Doc(Option<String>),
-    /// `@moduledoc "..."` at the top of a module body; `@moduledoc false` is
-    /// `None`.
-    ModuleDoc(Option<String>),
     /// `@type Name :: <type-expr>`. The body is stored as raw tokens and
     /// resolved by compiler2 after the declaration namespace is known.
     TypeAlias(TypeAliasDecl),

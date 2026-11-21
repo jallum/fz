@@ -488,9 +488,16 @@ cargo test --lib compiler2::drive_test::compiler2_enum_reduce_selects_list_proto
 ## A module attribute
 
 `@name value` is a `ScopeForm::Attribute`, ordered among the module's forms.
-`@doc` and `@spec` attach to the next function, `@moduledoc` and `@type` are
-scope attributes, and any other name is a value attribute; `@doc false` and
-`@moduledoc false` document nothing. `ScopePublisher::apply_attribute` binds
+`@doc` and `@spec` attach to the next function, `@type` is a scope attribute,
+and any other name is a value attribute, `@moduledoc` and `@typedoc` among
+them. The documentation attributes take any expression: a heredoc, a sigil, a
+`<>` concatenation, another attribute, a bracketless keyword list
+(`@doc since: "1.0"`), `false` and `nil` all work. The value must be a binary,
+`false`, `nil` or a list, or the definition is refused with
+`lower/invalid-documentation`; the compiler keeps no documentation text. A
+function's `@doc` is evaluated, through the same evaluator, when the walk
+reaches the function (`ScopePublisher::evaluate_function_docs`).
+`ScopePublisher::apply_attribute` binds
 `"@name"` as a `Splice` to the value's quoted code: a written literal is its own
 code, and an expression that computes runs once, while the module is defined,
 through the definition-time evaluator with `Macro.escape/1`

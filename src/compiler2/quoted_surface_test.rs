@@ -70,8 +70,8 @@ fn compiler2_quoted_surface_groups_def_and_derives_defp_privacy_and_bare_arity()
     assert_eq!(alpha.clauses.len(), 2);
     assert_eq!(
         alpha.attrs.len(),
-        2,
-        "doc and spec attributes must remain attached to the grouped def surface"
+        1,
+        "the spec stays attached to the grouped def surface; a doc is evaluated by the publisher, not carried"
     );
     assert!(
         derive_function_surface(&functions[2].source, &sources)
@@ -608,7 +608,7 @@ fn compiler2_quoted_surface_rejects_a_spec_followed_by_a_non_function_form() {
 fn compiler2_quoted_surface_attaches_stacked_doc_and_spec_through_scope_attrs() {
     // The happy paths stay happy: stacked @doc/@spec attach to the next
     // function group, and intervening NON-function attrs (@moduledoc) do
-    // not orphan them.
+    // not orphan them. The `@moduledoc` is a form of its own.
     let tel = ConfiguredTelemetry::new();
     let source = concat!(
         "@doc \"adds one\"\n",
@@ -623,30 +623,7 @@ fn compiler2_quoted_surface_attaches_stacked_doc_and_spec_through_scope_attrs() 
     let surface = read_scope_surface(&root, &code.source_map().borrow()).expect("stacked attrs attach to the group");
     assert_eq!(
         surface.forms.len(),
-        1,
-        "one logical function form carries the attached attrs",
+        2,
+        "the moduledoc is one form and one logical function form carries the attached attrs",
     );
-}
-
-#[test]
-fn compiler2_quoted_surface_carries_a_heredoc_moduledoc_whole() {
-    // `@moduledoc` decodes on its own path (`parse_scope_attr`) rather than
-    // the one `@doc` takes, so it gets its own pin: a heredoc reaching the
-    // scope surface with its paragraphs intact.
-    let tel = ConfiguredTelemetry::new();
-    let source = "@moduledoc \"\"\"\nText handling.\n\nEverything here is bytes.\n\"\"\"\ndef a(), do: 1\n";
-    let mut code = CodeMap::new();
-    let source_owner = code.define(Some("mod_doc.fz".to_string()), source.to_string());
-    let root = parse_code(&code, source_owner, &tel);
-
-    let surface = read_scope_surface(&root, &code.source_map().borrow()).expect("surface read");
-
-    match &surface.attrs[0] {
-        crate::ast::Attribute::ModuleDoc(doc) => assert_eq!(
-            doc.as_deref(),
-            Some("Text handling.\n\nEverything here is bytes.\n"),
-            "a module doc should keep the blank line between its paragraphs"
-        ),
-        other => panic!("expected @moduledoc attr, got {other:?}"),
-    }
 }

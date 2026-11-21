@@ -1,0 +1,46 @@
+#---
+# purpose: "@doc, @moduledoc and @typedoc take a heredoc, a sigil, a concatenation, another attribute, false, nil or a keyword list, and the module compiles and runs as in Elixir"
+# oracle: self
+# oracle.stamp: 07b4244bee1cc431
+#---
+defmodule Main do
+  @shared "shared"
+
+  @moduledoc ~S"""
+  Raw text, so #{this} is prose.
+  """
+
+  @typedoc "a" <> " count"
+  @type count :: integer
+
+  @doc @shared <> " and more"
+  def concatenated(), do: 1
+
+  @doc ~s(two is #{1 + 1})
+  def sigil(), do: 2
+
+  @doc nil
+  def undocumented(), do: 3
+
+  @doc false
+  def hidden(), do: 4
+
+  @doc since: "1.0"
+  def with_metadata(), do: 5
+
+  @doc @shared
+  def from_attribute(), do: 6
+
+  @doc """
+  A heredoc.
+  """
+  def heredoc(), do: 7
+
+  def main() do
+    IO.inspect(
+      [concatenated(), sigil(), undocumented(), hidden(), with_metadata(), from_attribute(), heredoc()]
+    )
+  end
+end
+
+Main.main()

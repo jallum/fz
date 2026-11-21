@@ -133,8 +133,11 @@ above it. Setting it again changes what the definitions after it read:</p>
 <span class="kw">end</span></pre>
 
 <p>Reading an attribute the module has not set gives <code>nil</code> and a
-warning. <code>@doc false</code> and <code>@moduledoc false</code> leave a
-function or module undocumented, and <code>@compile</code> is an attribute
+warning. <code>@doc</code>, <code>@moduledoc</code> and <code>@typedoc</code> take
+any expression that is a binary at compile time (a heredoc, a <code>~S</code>
+sigil, a <code>&lt;&gt;</code> concatenation, another attribute), a keyword
+list, <code>nil</code> or <code>false</code>, which leaves a function, module
+or type undocumented, and <code>@compile</code> is an attribute
 like any other.</p>
 
 <p>A file can also be a script. Expressions written at the top level run in

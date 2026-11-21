@@ -1,0 +1,11 @@
+#---
+# purpose: "@doc whose value is an integer is refused at compile time, as Elixir refuses it"
+# expect: diagnostic
+# diagnostic.code: lower/invalid-documentation
+#---
+defmodule Main do
+  @doc 1
+  def main(), do: 1
+end
+
+Main.main()

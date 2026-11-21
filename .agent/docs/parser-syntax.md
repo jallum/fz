@@ -418,11 +418,11 @@ a raw string, so it carries both of a literal's behaviours:
   `\#{x}` suppresses it and stores `#{x}`; `dbg` re-escapes a literal `#{` when
   it renders, so a round trip looks doubled and is not.
 
-Both apply to `@doc """ ... """` and `@moduledoc """ ... """`, which take the
-same string token. Documentation that quotes fz syntax is therefore executable
-text: a doc explaining interpolation contains `#{...}` and will interpolate it,
-and an unbound name there currently changes what the module compiles to without
-reporting anything (fz-5xp.96). Escape the sigil in prose that describes it.
+A heredoc is one expression among those a documentation attribute (`@doc`,
+`@moduledoc`, `@typedoc`) takes, so documentation that quotes fz syntax is
+executable text: a doc explaining interpolation contains `#{...}` and will
+interpolate it. Escape the sigil in prose that describes it, or write the doc as
+a `~S` sigil, which keeps every byte.
 
 ## Sigils are expressions
 
