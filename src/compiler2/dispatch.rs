@@ -15,10 +15,12 @@ use crate::dispatch_matrix::pattern::{
     GuardCallee, PatternBodyId, PatternDispatchPlan, PatternResolver, PatternRow, PatternSubjectRef, SourcePatternError,
 };
 use crate::function_surface::FunctionSurface;
+use crate::ground_value::GroundValue;
 use crate::source::Span;
 
+use super::guard_domain::guard_domain_at;
 use super::identity::FunctionId;
-use super::namespace::Namespace;
+use super::namespace::{Namespace, NamespaceSymbol};
 use super::types::Ty;
 use super::world::World;
 
@@ -150,6 +152,23 @@ where
 
     fn guard_call(&mut self, callee: &Callee, arity: usize) -> Result<Option<GuardCallee<Ty>>, SourcePatternError> {
         (self.guard)(self.world, callee, arity)
+    }
+
+    fn guard_domain(
+        &mut self,
+        callee: &Callee,
+        arguments: &[Option<GroundValue>],
+    ) -> Result<Option<Vec<(u32, Ty)>>, SourcePatternError> {
+        let Some(NamespaceSymbol::Function(function)) =
+            self.world.lookup_callee(self.namespace, callee, arguments.len())
+        else {
+            return Ok(None);
+        };
+        let (module, name) = self.world.function_ref(function).elixir_module_and_name();
+        let Some(module) = module else {
+            return Ok(None);
+        };
+        Ok(guard_domain_at(self.world.types_mut(), &module, &name, arguments))
     }
 
     fn is_literal_blind(&self, ty: &Ty) -> bool {
