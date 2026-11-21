@@ -2,14 +2,15 @@
   "assignee": "fz-engine",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-21T13:42:38Z",
   "created": "2026-11-20T21:14:15Z",
   "description": "Approved by the user (relayed by fz-engine, 2026-11-20). One question, one implementation.\n\nforwarding_reach (src/compiler2/jobs/keying.rs:1466, called at :1432 inside derive_input_demand) computes reach over the input-forwarding demand graph by itself. Paper first: decide whether it is the same question as the shared reach fact. If it is, it folds into that fact and the local walk is deleted. If not, the difference is documented where both live.",
   "id": "fz-9zq.18",
   "labels": [],
   "parent": "fz-9zq",
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "forwarding_reach is the shared reach fact, or a documented different question",
   "type": "task",
-  "updated_at": "2026-11-21T13:07:31Z"
+  "updated_at": "2026-11-21T13:42:38Z"
 }
