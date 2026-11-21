@@ -1,0 +1,27 @@
+#---
+# purpose: a struct update that stores an integer or float held in a register allocates no box for it, on every path
+#---
+#
+# `n + 1` and `x * 2.0` are numbers the program holds in registers. The update
+# stores each as its word and kind in the struct's field, so the update boxes
+# neither.
+defmodule Point do
+  defstruct x: 0, y: 0.0
+end
+
+defmodule Main do
+  def move(point, n, x) do
+    %{point | x: n + 1, y: x * 2.0}
+  end
+
+  def main() do
+    start = %Point{}
+    before = Process.heap_alloc_stats()[:scalar_box_allocs]
+    moved = move(start, length([:a, :b]), 1.25)
+    boxes = Process.heap_alloc_stats()[:scalar_box_allocs] - before
+    dbg(moved)
+    dbg(boxes)
+  end
+end
+
+Main.main()

@@ -638,6 +638,66 @@ fn inspect_takes_its_value_as_word_and_kind_and_boxes_nothing() {
 }
 
 #[test]
+fn a_struct_field_and_a_closure_capture_take_their_value_as_word_and_kind_and_box_nothing() {
+    let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
+    let pair = schemas.borrow_mut().register(Schema::tuple_of_arity(2));
+    let mut process = Box::new(Process::new(schemas));
+    let process: &mut Process = &mut process;
+    let child = tuple_ref(process, pair, &[AnyValue::int(1), AnyValue::int(2)]);
+    let values = [
+        AnyValue::int(i64::MAX),
+        AnyValue::float(2.5),
+        AnyValue::atom(7),
+        AnyValue::from_ref(child).expect("child"),
+    ];
+    let object = process.heap.alloc_struct(pair);
+    let object_ref = AnyValueRef::from_heap_object(ValueKind::STRUCT, object as *const u8).expect("object");
+    let layout = SlotLayout::of(2);
+    let closure_bits =
+        process
+            .heap
+            .alloc_closure_slots(crate::any_value::ClosureDenotationId::user(0), 0, values.len(), 0);
+    let closure_ref = AnyValueRef::from_heap_object(
+        ValueKind::CLOSURE,
+        closure_addr_from_tagged(closure_bits).expect("closure addr"),
+    )
+    .expect("closure ref");
+    for (index, value) in values.into_iter().enumerate() {
+        let [word, kind] = stored(value);
+        let slot = index % 2;
+        let before = process.heap.alloc_stats_snapshot();
+        fz_struct_store_ref(
+            process,
+            object_ref.raw_word(),
+            SlotLayout::slot_offset(slot) as u32,
+            layout.kind_offset(slot) as u32,
+            word,
+            kind,
+        );
+        fz_closure_set_capture_ref(process, closure_ref.raw_word(), index as u64, word, kind);
+        let after = process.heap.alloc_stats_snapshot();
+        assert_eq!(
+            after.total.allocs, before.total.allocs,
+            "{value:?} is stored as its word and kind, boxed nowhere"
+        );
+        assert_eq!(
+            process.heap.read_field_slot(object, (slot * 8) as u32),
+            value,
+            "the struct field reads back {value:?}"
+        );
+        assert_eq!(
+            any_value_from_ref_word(
+                fz_closure_get_capture_ref(closure_ref.raw_word(), index as u64),
+                "capture"
+            ),
+            value,
+            "the capture reads back {value:?}"
+        );
+    }
+    assert!(is_shared(child), "a struct stored into a struct field is shared");
+}
+
+#[test]
 fn a_lookup_takes_its_key_as_word_and_kind_and_boxes_nothing() {
     with_process(|process| {
         let found = AnyValue::atom(process.node.intern_atom("found"));
@@ -949,6 +1009,7 @@ fn a_struct_becomes_shared_wherever_a_second_holder_can_appear() {
     let field = tuple_ref(&mut process, point, &[AnyValue::int(1), AnyValue::int(2)]);
     let outer = process.heap.alloc_struct(point);
     let layout = SlotLayout::of(2);
+    let [field_word, field_kind] = stored(AnyValue::from_ref(field).expect("field"));
     fz_struct_store_ref(
         process_ptr,
         AnyValueRef::from_heap_object(ValueKind::STRUCT, outer as *const u8)
@@ -956,7 +1017,8 @@ fn a_struct_becomes_shared_wherever_a_second_holder_can_appear() {
             .raw_word(),
         SlotLayout::slot_offset(0) as u32,
         layout.kind_offset(0) as u32,
-        field.raw_word(),
+        field_word,
+        field_kind,
     );
     assert!(is_shared(field), "a struct stored into another struct");
 

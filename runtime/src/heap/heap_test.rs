@@ -541,10 +541,24 @@ fn any_value_ref_struct_and_closure_writes_store_scalar_and_heap_values() {
     let struct_addr = h.alloc_struct(struct_schema);
     let struct_ref = AnyValueRef::from_heap_object(ValueKind::STRUCT, struct_addr).expect("struct ref");
     let pair = SlotLayout::of(2);
-    unsafe { h.store_struct_field_ref(struct_addr, SlotLayout::slot_offset(0), pair.kind_offset(0), scalar_ref) }
-        .expect("write scalar field");
-    unsafe { h.store_struct_field_ref(struct_addr, SlotLayout::slot_offset(1), pair.kind_offset(1), child_ref) }
-        .expect("write heap field");
+    unsafe {
+        h.store_struct_field(
+            struct_addr,
+            SlotLayout::slot_offset(0),
+            pair.kind_offset(0),
+            AnyValue::from_ref(scalar_ref).expect("value"),
+        )
+    }
+    .expect("write scalar field");
+    unsafe {
+        h.store_struct_field(
+            struct_addr,
+            SlotLayout::slot_offset(1),
+            pair.kind_offset(1),
+            AnyValue::from_ref(child_ref).expect("value"),
+        )
+    }
+    .expect("write heap field");
     assert_eq!(h.read_struct_field_ref(struct_ref, 0).unwrap().load_atom(), Ok(99));
     assert_eq!(
         h.read_struct_field_ref(struct_ref, 8).unwrap().map_addr(),
@@ -554,8 +568,20 @@ fn any_value_ref_struct_and_closure_writes_store_scalar_and_heap_values() {
     let closure_bits = h.alloc_closure_slots(crate::any_value::ClosureDenotationId::user(0), 0, 2, 0);
     let closure_addr = closure_addr_from_tagged(closure_bits).expect("closure addr");
     let closure_ref = AnyValueRef::from_heap_object(ValueKind::CLOSURE, closure_addr).expect("closure ref");
-    unsafe { h.write_closure_capture_ref(closure_ref, 0, scalar_ref) }.expect("write scalar capture");
-    unsafe { h.write_closure_capture_ref(closure_ref, 1, child_ref) }.expect("write heap capture");
+    unsafe {
+        h.write_closure_capture_value(
+            closure_ref.closure_addr().expect("closure addr"),
+            0,
+            AnyValue::from_ref(scalar_ref).expect("value"),
+        )
+    };
+    unsafe {
+        h.write_closure_capture_value(
+            closure_ref.closure_addr().expect("closure addr"),
+            1,
+            AnyValue::from_ref(child_ref).expect("value"),
+        )
+    };
     assert_eq!(h.read_closure_capture_ref(closure_ref, 0).unwrap().load_atom(), Ok(99));
     assert_eq!(
         h.read_closure_capture_ref(closure_ref, 1).unwrap().map_addr(),
@@ -587,11 +613,11 @@ fn any_value_ref_heap_writes_are_traced_by_gc() {
     let struct_ref = AnyValueRef::from_heap_object(ValueKind::STRUCT, struct_addr).expect("struct ref");
     let single = SlotLayout::of(1);
     unsafe {
-        h.store_struct_field_ref(
+        h.store_struct_field(
             struct_addr,
             SlotLayout::slot_offset(0),
             single.kind_offset(0),
-            child_list_ref,
+            AnyValue::from_ref(child_list_ref).expect("value"),
         )
     }
     .expect("write struct field");
@@ -599,7 +625,13 @@ fn any_value_ref_heap_writes_are_traced_by_gc() {
     let closure_bits = h.alloc_closure_slots(crate::any_value::ClosureDenotationId::user(0), 0, 1, 0);
     let closure_addr = closure_addr_from_tagged(closure_bits).expect("closure addr");
     let closure_ref = AnyValueRef::from_heap_object(ValueKind::CLOSURE, closure_addr).expect("closure ref");
-    unsafe { h.write_closure_capture_ref(closure_ref, 0, child_map_ref) }.expect("write closure capture");
+    unsafe {
+        h.write_closure_capture_value(
+            closure_ref.closure_addr().expect("closure addr"),
+            0,
+            AnyValue::from_ref(child_map_ref).expect("value"),
+        )
+    };
     let mut roots = [list_ref, map_ref, struct_ref, closure_ref];
 
     h.collect(&mut roots);
@@ -3066,8 +3098,15 @@ fn an_unwritten_struct_reads_back_exactly_what_was_stored() {
     let object = h.alloc_struct_unwritten(schema, layout.size());
     unsafe { std::ptr::write_bytes(object.add(STRUCT_PAYLOAD_OFFSET), 0xFF, layout.payload_size()) };
     for (index, value) in values.into_iter().enumerate() {
-        unsafe { h.store_struct_field_ref(object, SlotLayout::slot_offset(index), layout.kind_offset(index), value) }
-            .expect("store");
+        unsafe {
+            h.store_struct_field(
+                object,
+                SlotLayout::slot_offset(index),
+                layout.kind_offset(index),
+                AnyValue::from_ref(value).expect("value"),
+            )
+        }
+        .expect("store");
     }
 
     assert_eq!(h.read_field_slot(object, 0), AnyValue::int(41));
@@ -3273,11 +3312,11 @@ fn an_atom_read_from_a_struct_field_or_closure_capture_is_the_atom_stored() {
     let struct_ref = AnyValueRef::from_heap_object(ValueKind::STRUCT, struct_addr).expect("struct ref");
     let layout = SlotLayout::of(1);
     unsafe {
-        h.store_struct_field_ref(
+        h.store_struct_field(
             struct_addr,
             SlotLayout::slot_offset(0),
             layout.kind_offset(0),
-            AnyValueRef::atom(21),
+            AnyValue::from_ref(AnyValueRef::atom(21)).expect("value"),
         )
     }
     .expect("write atom field");
@@ -3289,7 +3328,13 @@ fn an_atom_read_from_a_struct_field_or_closure_capture_is_the_atom_stored() {
         closure_addr_from_tagged(closure_bits).expect("closure addr"),
     )
     .expect("closure ref");
-    unsafe { h.write_closure_capture_ref(closure, 0, AnyValueRef::atom(22)) }.expect("write atom capture");
+    unsafe {
+        h.write_closure_capture_value(
+            closure.closure_addr().expect("closure addr"),
+            0,
+            AnyValue::from_ref(AnyValueRef::atom(22)).expect("value"),
+        )
+    };
     assert_eq!(h.read_closure_capture_ref(closure, 0), Ok(AnyValueRef::atom(22)));
 }
 
@@ -3303,11 +3348,11 @@ fn an_atom_read_from_a_literal_struct_names_no_literal() {
         .expect("struct ref")
         .literal();
     unsafe {
-        h.store_struct_field_ref(
+        h.store_struct_field(
             struct_addr,
             SlotLayout::slot_offset(0),
             SlotLayout::of(1).kind_offset(0),
-            AnyValueRef::atom(5),
+            AnyValue::from_ref(AnyValueRef::atom(5)).expect("value"),
         )
     }
     .expect("write atom field");
@@ -3385,11 +3430,11 @@ fn a_pid_read_from_a_list_head_map_value_struct_field_or_capture_is_the_pid_stor
     let struct_addr = h.alloc_struct(schema);
     let struct_ref = AnyValueRef::from_heap_object(ValueKind::STRUCT, struct_addr).expect("struct ref");
     unsafe {
-        h.store_struct_field_ref(
+        h.store_struct_field(
             struct_addr,
             SlotLayout::slot_offset(0),
             SlotLayout::of(1).kind_offset(0),
-            pid,
+            AnyValue::from_ref(pid).expect("value"),
         )
     }
     .expect("write pid field");
@@ -3407,7 +3452,13 @@ fn a_pid_read_from_a_list_head_map_value_struct_field_or_capture_is_the_pid_stor
         closure_addr_from_tagged(closure_bits).expect("closure addr"),
     )
     .expect("closure ref");
-    unsafe { h.write_closure_capture_ref(closure, 0, pid) }.expect("write pid capture");
+    unsafe {
+        h.write_closure_capture_value(
+            closure.closure_addr().expect("closure addr"),
+            0,
+            AnyValue::from_ref(pid).expect("value"),
+        )
+    };
     assert_eq!(h.read_closure_capture_ref(closure, 0), Ok(pid));
 }
 
@@ -3419,11 +3470,11 @@ fn a_pid_in_a_struct_field_survives_a_collection() {
     let pid = h.box_any_value_ref(AnyValue::Opaque(ValueKind::PID, 21));
     let struct_addr = h.alloc_struct(schema);
     unsafe {
-        h.store_struct_field_ref(
+        h.store_struct_field(
             struct_addr,
             SlotLayout::slot_offset(0),
             SlotLayout::of(1).kind_offset(0),
-            pid,
+            AnyValue::from_ref(pid).expect("value"),
         )
     }
     .expect("write pid field");

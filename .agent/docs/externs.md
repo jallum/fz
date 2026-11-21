@@ -409,7 +409,11 @@ word and a constant kind, and any other is read through its reference. The
 interpreter passes the words of `Stored::of`. The lookups compiled code calls
 without an extern, `fz_map_get_ref` for `Map.get` and
 `fz_matcher_map_get_ref` for a map pattern, take their key as the same two
-words. Like an `any` slot, the slot takes a value
+words, and `fz_struct_store_ref` and `fz_closure_set_capture_ref` take the
+value they store as the same two words. A closure capture slot and a struct
+field each hold a raw word and a kind byte, so a number in a register is
+stored as it is. `CodegenFn::store_closure_capture_value` shares a heap value,
+reads its parts with `stored_parts` and makes the call. Like an `any` slot, the slot takes a value
 whole, so a tuple or a closure crosses it as one reference
 (`ExternTy::takes_a_whole_value`).
 

@@ -1910,12 +1910,14 @@ pub extern "C" fn fz_tuple_put(process: *mut Process, tuple_ref_word: u64, index
     };
     let layout = SlotLayout::of(arity);
     let copy_word = fz_struct_copy(process, tuple_ref_word, arity as u32);
+    let stored = Stored::of(AnyValue::from_ref(value).expect("fz_tuple_put value"));
     fz_struct_store_ref(
         process,
         copy_word,
         SlotLayout::slot_offset(index) as u32,
         layout.kind_offset(index) as u32,
-        value.raw_word(),
+        stored.word,
+        stored.kind,
     );
     copy_word
 }
@@ -2203,16 +2205,21 @@ pub extern "C" fn fz_struct_store_ref(
     struct_ref_word: u64,
     slot_offset: u32,
     kind_offset: u32,
-    value_ref_word: u64,
+    value_word: u64,
+    value_kind: u64,
 ) {
     let object = any_value_ref_from_word(struct_ref_word, "fz_struct_store_ref object")
         .struct_addr()
         .expect("fz_struct_store_ref object");
-    let value = any_value_ref_from_word(value_ref_word, "fz_struct_store_ref value");
+    let value = Stored {
+        word: value_word,
+        kind: value_kind,
+    }
+    .value("fz_struct_store_ref value");
     unsafe {
         (&mut *process)
             .heap
-            .store_struct_field_ref(object, slot_offset as usize, kind_offset as usize, value)
+            .store_struct_field(object, slot_offset as usize, kind_offset as usize, value)
     }
     .expect("fz_struct_store_ref");
 }
@@ -2291,16 +2298,22 @@ pub extern "C" fn fz_closure_set_capture_ref(
     process: *mut Process,
     closure_ref_word: u64,
     index: u64,
-    value_ref_word: u64,
+    value_word: u64,
+    value_kind: u64,
 ) {
-    let closure = any_value_ref_from_word(closure_ref_word, "fz_closure_set_capture_ref closure");
-    let value = any_value_ref_from_word(value_ref_word, "fz_closure_set_capture_ref value");
+    let closure = any_value_ref_from_word(closure_ref_word, "fz_closure_set_capture_ref closure")
+        .closure_addr()
+        .expect("fz_closure_set_capture_ref closure");
+    let value = Stored {
+        word: value_word,
+        kind: value_kind,
+    }
+    .value("fz_closure_set_capture_ref value");
     unsafe {
         (&mut *process)
             .heap
-            .write_closure_capture_ref(closure, index as usize, value)
-    }
-    .expect("fz_closure_set_capture_ref");
+            .write_closure_capture_value(closure, index as usize, value)
+    };
 }
 
 #[unsafe(no_mangle)]
