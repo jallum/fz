@@ -219,6 +219,13 @@ Compiler2 owns the active contract path:
   keys on the violation span's code and retires when activation evidence
   becomes correlation-sound.
 
+  A rejected row is diagnosed only when every column's value is known
+  (`column_is_judgeable`): the column is not `any` and carries no type
+  variable evidence still has to solve. A callable column, a closure or a
+  capture, is a known value whose own arrow variables are what the contract
+  instantiates, so a closure beside a wrong argument does not hide the
+  violation.
+
   Two users of one library reducer no longer share an activation over the
   ELEMENT their lists carry: the element is part of the key wherever demand
   reaches it (fz-kdt.183, see [`type-specialization`](type-specialization.md)),

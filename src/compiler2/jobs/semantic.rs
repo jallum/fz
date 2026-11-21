@@ -2535,7 +2535,16 @@ fn spec_violation_is_actionable(world: &mut World, input_types: &[Ty]) -> bool {
     let any = world.types_mut().any();
     input_types
         .iter()
-        .all(|ty| !world.types().has_vars(ty) && !world.types().is_equivalent(ty, &any))
+        .all(|ty| column_is_judgeable(world.types(), ty, &any))
+}
+
+/// A column can be judged against a spec's domain when its value is known: it
+/// is not `any` and carries no type variable that evidence still has to solve.
+/// A callable column is a known value, a closure or a capture, and its own
+/// arrow variables are what the contract instantiates, not unknowns about the
+/// argument.
+fn column_is_judgeable(types: &Types, column: &Ty, any: &Ty) -> bool {
+    !types.is_equivalent(column, any) && (types.is_pure_callable(column) || !types.has_open_vars(column))
 }
 
 fn activation_contract_return(
