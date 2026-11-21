@@ -655,6 +655,9 @@ pub enum Prim {
     /// which `IsNotBinary` recognizes, so one read of the value's kind both
     /// tests it and resolves its length.
     BitstringBitLen(Var),
+    /// The bit length of a value the lowering has proven a binary: one read of
+    /// its header, with no test of its kind.
+    BinaryBitLen(Var),
     /// True when a `BitstringBitLen` result says its value is not a binary.
     IsNotBinary(Var),
     /// The address of the first byte of a binary's bits, a raw integer.
@@ -848,7 +851,7 @@ impl Prim {
                     used.extend(f.size.as_ref().and_then(BitSizeIr::var));
                 }
             }
-            Prim::BitstringBitLen(a) => {
+            Prim::BitstringBitLen(a) | Prim::BinaryBitLen(a) => {
                 used.insert(*a);
             }
             Prim::BitstringBase(a) | Prim::IsNotBinary(a) => {
@@ -1622,6 +1625,7 @@ impl fmt::Display for Prim {
                 write!(f, "const_bitstring(byte_len={}, bit_len={})", bytes.len(), bit_len)
             }
             Prim::BitstringBitLen(v) => write!(f, "bitstring_bit_len({})", v),
+            Prim::BinaryBitLen(v) => write!(f, "binary_bit_len({})", v),
             Prim::BitstringBase(v) => write!(f, "bitstring_base({})", v),
             Prim::IsNotBinary(v) => write!(f, "is_not_binary({})", v),
             Prim::BitReadByteInt {

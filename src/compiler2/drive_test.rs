@@ -1281,6 +1281,90 @@ fn compiler2_inline_bitstring_outcomes_reuse_typed_dispatch_reads() {
     assert_eq!(compiled.run(compiler.telemetry(), program.entry), 2);
 }
 
+/// The native program of `text`, run from `main`, and the number of times each
+/// function of it asks whether a value is a binary and reads a binary's length.
+fn binary_question_counts(file: &str, text: &str) -> Vec<(String, usize, usize)> {
+    let tel = ConfiguredTelemetry::new();
+    let native = NativeProgramCapture::new();
+    native.install(&tel);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some(file.into()),
+        text: text.into(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler.run_root_interp(root).expect("the program runs");
+    settle_native_product(&mut compiler, root);
+    assert_resolved(compiler.drive(), "the binary matcher should lower natively");
+    let program = native.last(root).program;
+    let count = |function: &crate::fz_ir::FnIr, wanted: fn(&IrPrim) -> bool| {
+        function
+            .blocks
+            .iter()
+            .flat_map(|block| &block.stmts)
+            .filter(|stmt| wanted(stmt.prim()))
+            .count()
+    };
+    program
+        .module
+        .fns
+        .iter()
+        .map(|function| {
+            (
+                function.name.clone(),
+                count(function, |prim| matches!(prim, IrPrim::IsNotBinary(..))),
+                count(function, |prim| {
+                    matches!(prim, IrPrim::BitstringBitLen(..) | IrPrim::BinaryBitLen(..))
+                }),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn a_loop_over_a_binary_cursor_never_asks_whether_the_cursor_is_a_binary() {
+    let counts = binary_question_counts(
+        "cursor_loop.fz",
+        concat!(
+            "defp eat(<<>>), do: 0\n",
+            "defp eat(<<_c, rest :: binary>>), do: eat(rest)\n",
+            "def main(), do: eat(<<1, 2, 3, 4>>)\n",
+        ),
+    );
+    let (_, asks, reads) = counts
+        .iter()
+        .find(|(name, ..)| name.starts_with("eat"))
+        .expect("the loop is a native function");
+    assert_eq!(*asks, 0, "a cursor is a binary by construction: {counts:?}");
+    assert_eq!(*reads, 1, "the loop reads its cursor's length once: {counts:?}");
+}
+
+#[test]
+fn two_binary_clauses_on_one_argument_read_its_length_once() {
+    let counts = binary_question_counts(
+        "two_clause_length.fz",
+        concat!(
+            "defp tell(<<>>), do: 0\n",
+            "defp tell(<<_c, _rest :: binary>>), do: 1\n",
+            "def main(), do: tell(<<>>) + tell(<<3, 4>>) - 1\n",
+        ),
+    );
+    let (_, asks, reads) = counts
+        .iter()
+        .find(|(name, ..)| name.starts_with("tell"))
+        .expect("the matcher is a native function");
+    assert_eq!(
+        *asks, 2,
+        "each clause still asks whether its argument is a binary: {counts:?}"
+    );
+    assert_eq!(*reads, 1, "the argument's length is read once for both: {counts:?}");
+}
+
 /// A tuple parameter delivered in lane form is decided from those lanes.
 ///
 /// `unwrap/1` receives the pair `pair/1` returns as one lane per field and both

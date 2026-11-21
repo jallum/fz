@@ -31,8 +31,9 @@
 
 use crate::alloc_site::RuntimeAllocSite;
 use crate::any_value::{
-    BINARY_SHARED_MASK, ValueKind, bitstring_bit_len as any_bitstring_bit_len, bitstring_bytes_ptr,
-    heap_kind_from_tagged, heap_object_word, heap_word_addr,
+    BINARY_MAX_BIT_LEN, BINARY_SHARED_MASK, ValueKind, bitstring_bit_len as header_bit_len, bitstring_bytes_ptr,
+    bitstring_header_word, bitstring_is_shared, heap_kind_from_tagged, heap_object_word, heap_word_addr,
+    share_bitstring,
 };
 use crate::heap::{binary_buffer_allocated, binary_buffer_freed, poisoned};
 use crate::sync::{AtomicUsize, Ordering, fence};
@@ -109,15 +110,12 @@ pub const BINREF_SHARED_OFFSET: usize = 0;
 /// Where a BinRef keeps the link to the next BinRef on its chain, in bytes from
 /// the BinRef.
 const BINREF_LINK_OFFSET: usize = 8;
-/// Where a binary view keeps the tagged pointer to its BinRef, in bytes from the
-/// view.
-pub const BINVIEW_BINREF_OFFSET: usize = 0;
 /// Where a binary view keeps the address of its first byte, in bytes from the
 /// view.
 pub const BINVIEW_BYTES_PTR_OFFSET: usize = 8;
-/// Where a binary view keeps the bit length of its window, in bytes from the
+/// Where a binary view keeps the tagged pointer to its BinRef, in bytes from the
 /// view.
-pub const BINVIEW_BIT_LEN_OFFSET: usize = 16;
+const BINVIEW_BINREF_OFFSET: usize = 16;
 
 impl SharedBin {
     /// Bytes the buffer can hold ahead of its trailing NUL.
@@ -206,6 +204,10 @@ pub fn shared_bin_alloc_with(
     fill: impl FnOnce(&mut [MaybeUninit<u8>]),
 ) -> *mut SharedBin {
     let capacity = bytes_len + spare;
+    assert!(
+        capacity as u64 <= BINARY_MAX_BIT_LEN / 8,
+        "a binary of {capacity} bytes is longer than a header can count"
+    );
     let size = block_size(capacity);
     let block = unsafe { alloc(block_layout(size)) };
     assert!(!block.is_null(), "binary block: malloc failed");
@@ -462,10 +464,14 @@ impl BinRef {
 /// The object a binary value above the inline threshold points at: a
 /// byte-aligned window of a `SharedBin`'s bytes, reached through its heap's
 /// BinRef. `BINVIEW_BYTES` total, of which the first 24 are fields:
-///   offset 0..8    binref:    u64 tagged pointer to this heap's BinRef, with
-///                             `BINARY_SHARED_MASK` above its kind field
+///   offset 0..8    header:    the window's length in bits, with the shared
+///                             mark above it, exactly as a small bitstring's
+///                             header holds its own (`bitstring_header_word`)
 ///   offset 8..16   bytes_ptr: address of the window's first byte
-///   offset 16..24  bit_len:   u64 length of the window in bits
+///   offset 16..24  binref:    u64 tagged pointer to this heap's BinRef
+///
+/// Both forms of a binary keep their length and shared mark in their first
+/// word, so one read of it answers either, with no test of which form it is.
 ///
 /// A view holds no reference and sits on no chain: it is an ordinary heap
 /// object whose one child edge is its `binref`. A whole binary is the window at
@@ -480,8 +486,8 @@ impl BinRef {
 /// after it; any other window does not, and a C string over it needs a copy.
 ///
 /// Cheney forwarding overwrites offset 0 with a forwarding marker; a live
-/// `binref` word is a tagged pointer with a clear low nibble, so the two are
-/// told apart the way every marker is.
+/// header has a clear low nibble, so the two are told apart the way every
+/// marker is.
 #[repr(transparent)]
 #[derive(Clone, Copy)]
 pub struct BinView(NonNull<u8>);
@@ -498,42 +504,25 @@ impl BinView {
         self.0.as_ptr()
     }
 
-    /// The view's first word as stored: the BinRef pointer and the shared mark.
-    fn first_word(&self) -> u64 {
+    /// The tagged pointer to this view's BinRef.
+    pub(crate) fn binref_word(&self) -> u64 {
         unsafe { read(self.as_raw().add(BINVIEW_BINREF_OFFSET) as *const u64) }
     }
 
-    /// The tagged pointer to this view's BinRef.
-    pub(crate) fn binref_word(&self) -> u64 {
-        self.first_word() & !BINARY_SHARED_MASK
-    }
-
-    /// Point this view at `word`, a tagged pointer to a BinRef, keeping its
-    /// shared mark.
+    /// Point this view at `word`, a tagged pointer to a BinRef.
     pub(crate) fn binref_word_set(&self, word: u64) {
-        let mark = self.first_word() & BINARY_SHARED_MASK;
-        unsafe { write(self.as_raw().add(BINVIEW_BINREF_OFFSET) as *mut u64, word | mark) }
+        unsafe { write(self.as_raw().add(BINVIEW_BINREF_OFFSET) as *mut u64, word) }
     }
 
     /// Whether this view may have a second holder, or may not own the room
     /// after its last byte.
     pub fn is_shared(&self) -> bool {
-        self.first_word() & BINARY_SHARED_MASK != 0
+        unsafe { bitstring_is_shared(self.as_raw()) }
     }
 
     /// Mark this view shared. Answers whether this call marked it.
     pub fn share(&self) -> bool {
-        let word = self.first_word();
-        if word & BINARY_SHARED_MASK != 0 {
-            return false;
-        }
-        unsafe {
-            write(
-                self.as_raw().add(BINVIEW_BINREF_OFFSET) as *mut u64,
-                word | BINARY_SHARED_MASK,
-            )
-        };
-        true
+        unsafe { share_bitstring(self.as_raw()) }
     }
 
     /// The BinRef that holds the reference to this view's buffer.
@@ -552,18 +541,15 @@ impl BinView {
     }
 
     pub fn bit_len(&self) -> u64 {
-        unsafe { read(self.as_raw().add(BINVIEW_BIT_LEN_OFFSET) as *const u64) }
+        unsafe { header_bit_len(self.as_raw()) }
     }
 
     fn init(&self, binref: BinRef, bytes_ptr: *const u8, bit_len: u64, shared: bool) {
         let mark = if shared { BINARY_SHARED_MASK } else { 0 };
         unsafe {
-            write(
-                self.as_raw().add(BINVIEW_BINREF_OFFSET) as *mut u64,
-                binref.word() | mark,
-            );
+            write(self.as_raw() as *mut u64, bitstring_header_word(bit_len) | mark);
             write(self.as_raw().add(BINVIEW_BYTES_PTR_OFFSET) as *mut *const u8, bytes_ptr);
-            write(self.as_raw().add(BINVIEW_BIT_LEN_OFFSET) as *mut u64, bit_len);
+            write(self.as_raw().add(BINVIEW_BINREF_OFFSET) as *mut u64, binref.word());
         }
     }
 
@@ -631,7 +617,7 @@ pub fn alloc_buffer_view(heap: &mut Heap, handle: SharedBinHandle, bit_len: u64,
 //
 // fz bitstrings live in one of two storage modes:
 //   * `ValueKind::BITSTRING` -- inline payload: bit length at +0, bytes at +8.
-//   * `ValueKind::BINVIEW` -- a BinView: bytes pointer at +8, bit length at +16.
+//   * `ValueKind::BINVIEW` -- a BinView: bit length at +0, bytes pointer at +8.
 //
 // The helpers below take a heap object word, whose kind says which mode.
 
@@ -640,16 +626,12 @@ pub fn is_bitstring_like(word: u64) -> bool {
     heap_kind_from_tagged(word).is_some_and(ValueKind::is_binary_repr)
 }
 
-/// Bit length of a bitstring-like heap value.
+/// Bit length of a bitstring-like heap value: its header, in either form.
 ///
 /// # Safety
 /// `word` must be the heap object word of a live Bitstring or BinView.
 pub unsafe fn bitstring_bit_len(word: u64) -> u64 {
-    let addr = heap_word_addr(word);
-    if heap_kind_from_tagged(word) == Some(ValueKind::BINVIEW) {
-        return unsafe { BinView::from_raw(addr) }.bit_len();
-    }
-    unsafe { any_bitstring_bit_len(addr) }
+    unsafe { header_bit_len(heap_word_addr(word)) }
 }
 
 /// Byte pointer to the underlying bitstring payload.
@@ -686,11 +668,13 @@ impl Bin {
     #[inline]
     pub unsafe fn of_stored(word: u64, kind: ValueKind) -> Self {
         let addr = heap_word_addr(word);
-        if kind == ValueKind::BINVIEW {
-            let view = unsafe { BinView::from_raw(addr) };
-            return Self::new(view.bytes_ptr(), view.bit_len());
-        }
-        unsafe { Self::new(bitstring_bytes_ptr(addr), any_bitstring_bit_len(addr)) }
+        let bit_len = unsafe { header_bit_len(addr) };
+        let ptr = if kind == ValueKind::BINVIEW {
+            unsafe { BinView::from_raw(addr) }.bytes_ptr()
+        } else {
+            unsafe { bitstring_bytes_ptr(addr) }
+        };
+        Self::new(ptr, bit_len)
     }
 
     fn is(self, other: Bin) -> bool {
@@ -760,7 +744,7 @@ pub unsafe fn referenced_byte_len(word: u64) -> usize {
     if heap_kind_from_tagged(word) == Some(ValueKind::BINVIEW) {
         return unsafe { (*BinView::from_raw(addr).shared_raw()).bytes_len };
     }
-    (unsafe { any_bitstring_bit_len(addr) } as usize).div_ceil(8)
+    (unsafe { header_bit_len(addr) } as usize).div_ceil(8)
 }
 
 #[cfg(test)]
