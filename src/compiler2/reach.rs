@@ -8,6 +8,11 @@
 //! edge facts of everything the node reaches and reads every one of them, so
 //! a change to any edge in the cone reopens the answer. A reach never reads
 //! another reach.
+//!
+//! The input-demand solver asks a third, narrower question: which functions
+//! an input is forwarded to (`forwarding_reach` in `jobs/keying.rs`). Its
+//! edges are only the calls that carry an input on, it is computed inside the
+//! `InputDemand` job over that job's own graph, and it is not answered here.
 
 use crate::fast_hash::HashSet;
 
