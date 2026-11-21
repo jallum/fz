@@ -1,12 +1,17 @@
 defmodule IO do
   @moduledoc """
-  Writes to standard output.
+  Writes to standard output, and warnings to standard error.
 
   Every print is one write of bytes: `write/1` and `puts/1` convert their
   argument to a binary through `String.Chars`, so an atom, integer, float or
   binary prints as in Elixir, and a value with no `String.Chars`
   implementation, a map or a tuple, is refused at compile time. A list raises
   `ArgumentError`: chardata lists are not built.
+
+  `warn/1` and `warn/2` report a warning. Run by a macro while a program
+  compiles, a warning is a compile-time diagnostic that points at the macro's
+  call site, or at the file and line it names; run by a program, it is written
+  to standard error.
 
   Absent: a device argument, `inspect/2` options and `label:`, and the rest of
   Elixir's `IO`.
@@ -67,9 +72,69 @@ defmodule IO do
     item
   end
 
+  @doc """
+  Reports a warning with `message` and no location.
+
+  A warning raised by a macro points at the macro's call. A warning raised by a
+  running program is written to standard error as `warning: <message>`.
+
+  Returns `:ok`.
+
+  ## Examples
+
+      IO.warn("variable bar is unused")
+      # prints to stderr: warning: variable bar is unused
+
+  """
+  @spec warn(any) :: :ok
+  def warn(message), do: warn(message, [])
+
+  @doc """
+  Reports a warning with `message`, pointing at `location`.
+
+  `location` is a `Macro.Env` map, which points at its file and line, a keyword
+  list whose `:file` and optional `:line` say where to point, or a list
+  that points nowhere: `[]`, or a stacktrace, which fz does not carry.
+
+  Returns `:ok`.
+
+  ## Examples
+
+      IO.warn("variable bar is unused", file: "my_app.ex", line: 4)
+      # prints to stderr: warning: variable bar is unused
+      #                     my_app.ex:4
+
+  """
+  @spec warn(any, map | list) :: :ok
+  def warn(message, %Macro.Env{file: file, line: line}) do
+    fz_io_warn(to_chardata(message), file, line)
+    :ok
+  end
+
+  def warn(message, [{_, _} | _] = keyword) do
+    case Keyword.get(keyword, :file) do
+      file when is_binary(file) ->
+        case Keyword.get(keyword, :line) do
+          line when is_integer(line) -> fz_io_warn(to_chardata(message), file, line)
+          _ -> fz_io_warn(to_chardata(message), file, 0)
+        end
+
+        :ok
+
+      _ ->
+        warn(message, [])
+    end
+  end
+
+  def warn(message, location) when is_list(location) do
+    fz_io_warn(to_chardata(message), "", 0)
+    :ok
+  end
+
   @spec to_chardata(any) :: binary
   defp to_chardata(list) when is_list(list), do: raise(%ArgumentError{message: "IO over chardata lists is not built"})
   defp to_chardata(other), do: Kernel.to_string(other)
 
   extern "fz" defp fz_io_write(binary) :: unit
+  extern "fz" defp fz_io_warn(binary, binary, integer) :: unit
 end

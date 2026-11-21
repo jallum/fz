@@ -801,7 +801,7 @@ from its raw bytes. The JIT, the interpreter and the AOT scheduler each fill
 `ExecCtx.argv`; see [`runtime-telemetry`](runtime-telemetry.md), "Program
 Arguments".
 
-## The one output extern
+## The one output extern (and the warning extern)
 
 `IO` prints through a single private
 `extern "fz" defp fz_io_write(binary) :: unit`. `fz_io_write(process, binary_ref)`
@@ -812,6 +812,14 @@ hook. It returns `unit`, so a print allocates nothing; `IO.write/1` and
 caller owns the newline, so `IO.puts/1` concatenates `"\n"` itself and
 `IO.write/1` does not. `Kernel.dbg/1` is `IO.inspect/1`, so every print on the
 interpreter, JIT and AOT paths ends in this one function.
+
+`IO.warn/1,2` reports through one private
+`extern "fz" defp fz_io_warn(binary, binary, integer) :: unit`: the message, the
+file it points at (the empty binary is no location) and the line. The Elixir
+forms (`Macro.Env`, a keyword with `:file` and `:line`, `[]`, a stacktrace) are
+reduced to those three in `lib/io.fz`. `fz_io_warn` hands them to
+`write_warning` in `runtime/src/lib.rs`, which calls the process's
+`ExecCtx.warn` hook with the context `output` uses.
 
 ## A helper that may have no answer
 

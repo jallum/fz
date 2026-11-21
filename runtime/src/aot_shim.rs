@@ -344,6 +344,7 @@ pub extern "C" fn fz_aot_setup(
         argv: unsafe { command_line(argc, argv) },
         ctx: ExecCtx {
             output: Some(crate::output::STDOUT_OUTPUT_HOOK),
+            warn: Some(crate::output::STDOUT_WARN_HOOK),
             fault: Some(crate::failure::STDERR_FAULT_HOOK),
             halt: Some(halt_hook::<AotScheduler>()),
             spawn: Some(aot_spawn_hook),

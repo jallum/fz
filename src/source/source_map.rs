@@ -107,6 +107,19 @@ impl SourceMap {
         (end as usize <= code.bytes.len()).then(|| Span::new(source_version, start, end))
     }
 
+    /// The span of the text on 1-based `line` of `version`, from its first
+    /// non-blank character to its end; `None` when the file has no such line.
+    pub fn line_span(&self, version: SourceVersion, line: u32) -> Option<Span> {
+        let code = self.code(version);
+        let starts = code.line_starts();
+        let start = *starts.get(usize::try_from(line).ok()?.checked_sub(1)?)?;
+        let end = starts.get(line as usize).copied().unwrap_or(code.bytes.len() as u32);
+        let text = &code.bytes[start as usize..end as usize];
+        let text = text.trim_end_matches(['\n', '\r']);
+        let indent = text.len() - text.trim_start().len();
+        Some(Span::new(version, start + indent as u32, start + text.len() as u32))
+    }
+
     /// Returns the location of `span.start`. Panics on DUMMY spans —
     /// callers are responsible for the is_dummy guard.
     pub fn locate(&self, span: Span) -> Location {

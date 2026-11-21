@@ -293,6 +293,14 @@ an expression and match any value in a pattern.</p>
 module that calls the macro, so a macro can define functions that build and
 match the caller's own struct with <code>%__MODULE__{}</code>.</p>
 
+<p>A macro can warn the person who called it. <code>IO.warn(message,
+__CALLER__)</code> reports <code>message</code> as a compile-time warning that
+points at the macro call, and compilation goes on. <code>IO.warn(message)</code>
+points at the call too, and <code>IO.warn(message, file: file, line: line)</code>
+points at that line of the call's file. A program that calls
+<code>IO.warn</code> while it runs writes <code>warning: message</code> to
+standard error instead.</p>
+
 <div class="aside">
 Neither of these is a hygiene escape hatch on its own &mdash; they hand back
 data about a scope, not a way to read or write that scope's variables. Use
