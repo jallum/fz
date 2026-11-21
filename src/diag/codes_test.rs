@@ -30,6 +30,7 @@ fn all_codes_follow_stage_slash_kind_format() {
         MACRO_NOT_REQUIRED,
         MACRO_OWN_MODULE_ITEM_CALL,
         MACRO_INVALID_QUOTED_EXPR,
+        MACRO_WARNING,
         LOWER_UNSUPPORTED,
         LOWER_UNBOUND,
         LOWER_TRY_ELSE_ONLY,

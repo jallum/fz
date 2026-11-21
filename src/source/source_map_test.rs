@@ -108,3 +108,23 @@ fn locate_counts_columns_in_characters_not_bytes() {
     assert_eq!(loc.col, 6);
     assert_eq!(loc.line_end, 9);
 }
+
+#[test]
+fn line_span_covers_a_line_without_its_indent_or_newline() {
+    let mut sm = SourceMap::new();
+    let v = sm.add_code(Some("a.fz"), "one\n  two  \nthree");
+
+    let two = sm.line_span(v, 2).expect("line 2 exists");
+    assert_eq!((two.start, two.end), (6, 11));
+    let three = sm.line_span(v, 3).expect("a last line without a newline exists");
+    assert_eq!((three.start, three.end), (12, 17));
+}
+
+#[test]
+fn line_span_of_a_line_the_file_lacks_is_none() {
+    let mut sm = SourceMap::new();
+    let v = sm.add_code(Some("a.fz"), "one\ntwo\n");
+
+    assert!(sm.line_span(v, 0).is_none());
+    assert!(sm.line_span(v, 4).is_none());
+}

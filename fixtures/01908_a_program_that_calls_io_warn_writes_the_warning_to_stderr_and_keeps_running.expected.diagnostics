@@ -1,0 +1,6 @@
+warning: bare
+warning: keyword
+  a.ex:3
+warning: env
+  b.ex:7
+warning: chardata 2

@@ -1,0 +1,27 @@
+#---
+# purpose: "a macro's IO.warn compiles into a warning and the program still runs: IO.warn(msg, __CALLER__) and IO.warn(msg) point at the macro call, IO.warn(msg, file:, line:) points at that line, and every call of the macro warns"
+# oracle: self
+# oracle.stamp: 9458acb911120ccb
+#---
+defmodule Warns do
+  defmacro warn(value) do
+    IO.warn("the caller form", __CALLER__)
+    IO.warn("the bare form")
+    IO.warn("the keyword form", file: __CALLER__.file, line: __CALLER__.line + 1)
+    value
+  end
+end
+
+defmodule Main do
+  require Warns
+
+  def double(n), do: Warns.warn(n * 2)
+  def triple(n), do: Warns.warn(n * 3)
+  def main() do
+    IO.puts("ran")
+    IO.inspect(double(4))
+    IO.inspect(triple(4))
+  end
+end
+
+Main.main()

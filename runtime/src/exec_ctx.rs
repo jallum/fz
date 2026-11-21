@@ -19,7 +19,7 @@
 
 use crate::process::Process;
 use crate::scheduler_hooks::{
-    FaultHook, HaltHook, OutputHook, RaiseHook, SendHook, SpawnHook, TimerCancelHook, TimerScheduleHook,
+    FaultHook, HaltHook, OutputHook, RaiseHook, SendHook, SpawnHook, TimerCancelHook, TimerScheduleHook, WarnHook,
 };
 use std::ptr::{null, null_mut};
 
@@ -65,6 +65,8 @@ pub struct ExecCtx {
     /// the scheduler does not observe raises.
     pub raise: Option<RaiseHook>,
     pub output: Option<OutputHook>,
+    /// Where `IO.warn` goes; reads `output_context` like `output` does.
+    pub warn: Option<WarnHook>,
     pub timer_schedule: Option<TimerScheduleHook>,
     pub timer_cancel: Option<TimerCancelHook>,
     /// The program's command line, owned by the driver. Null reads as `[]`:
@@ -85,6 +87,7 @@ impl ExecCtx {
             halt: None,
             raise: None,
             output: None,
+            warn: None,
             timer_schedule: None,
             timer_cancel: None,
             argv: null(),
