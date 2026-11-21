@@ -518,6 +518,14 @@ bytes to stdout immediately. A retaining test sink copies them during the
 callback. `NullOutput` does nothing. No sink constructs an event or stages a
 second copy for a later telemetry call.
 
+A warning from `IO.warn` takes the same road through `ExecCtx.warn` to
+`OutputSink::warn`, which carries the message, the file (empty for none) and
+the line. The default writes `warning: <message>`, and `  <file>:<line>` when
+located, to stderr in one write, so the CLI, the AOT binary and a plain sink
+report a run-time warning there; `NullOutput` drops it. A macro run installs
+`MacroRunOutput`, which keeps each warning for the compiler (see
+macro-expansion.md).
+
 Interpreter, JIT, and AOT install the same raw callback boundary. An interpreter
 destructor-drain failure is propagated directly; it is not converted into a
 telemetry-only warning.

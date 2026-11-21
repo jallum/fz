@@ -5076,7 +5076,8 @@ fn compiler2_macro_executable_runs_quote_unquote_on_the_source_heap() {
 
     let expanded = compiler
         .run_macro_on_source(inc, &carrier, caller, &[arg])
-        .expect("macro should run over the source heap");
+        .expect("macro should run over the source heap")
+        .root;
     assert_eq!(
         expanded.key().heap_id,
         carrier.key().heap_id,
@@ -5096,7 +5097,8 @@ fn compiler2_macro_executable_runs_quote_unquote_on_the_source_heap() {
     let quoted_var = function_id(&functions, "quoted_var", 0);
     let quoted = compiler
         .run_macro_on_source(quoted_var, &carrier, caller, &[])
-        .expect("macro should return the quoted variable");
+        .expect("macro should return the quoted variable")
+        .root;
     assert_eq!(
         quoted.key().heap_id,
         carrier.key().heap_id,
@@ -5136,7 +5138,8 @@ fn compiler2_macro_executable_runs_quote_unquote_on_the_source_heap() {
         .expect("forwarded function source");
     let forwarded = compiler
         .run_macro_on_source(forward_define, &carrier, caller, &[forwarded_source])
-        .expect("macro should return a quoted compiler-service call");
+        .expect("macro should return a quoted compiler-service call")
+        .root;
     let forwarded_node = forwarded
         .cursor()
         .trusted_ast_node()
@@ -5188,7 +5191,8 @@ def subtract(left, [item | rest]), do: subtract(delete_first(left, item), rest)
         .expect("long-doc grouped function root");
     let forwarded_long_doc = compiler
         .run_macro_on_source(forward_define, &carrier, caller, &[long_doc_group.root()])
-        .expect("macro should forward long-doc grouped source");
+        .expect("macro should forward long-doc grouped source")
+        .root;
     let forwarded_long_doc_node = forwarded_long_doc
         .cursor()
         .trusted_ast_node()
@@ -5226,7 +5230,8 @@ end
     assert_eq!(module_items.len(), 1, "test module should have one top-level form");
     let forwarded_module = compiler
         .run_macro_on_source(forward_define, &carrier, caller, &[module_items[0].root()])
-        .expect("macro should forward a whole module source node");
+        .expect("macro should forward a whole module source node")
+        .root;
     let forwarded_module_node = forwarded_module
         .cursor()
         .trusted_ast_node()

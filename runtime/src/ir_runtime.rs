@@ -46,7 +46,7 @@ use crate::resource::{ResourceHandle, ResourceStub, alloc_resource};
 use crate::sched::{ReceiveStep, reach_receive};
 use crate::scheduler_hooks::YIELD_PTR;
 use crate::term::{NumericMode, TermComparator};
-use crate::write_output;
+use crate::{write_output, write_warning};
 use std::slice::from_raw_parts;
 use std::sync::atomic::{AtomicU64, Ordering};
 use unicode_segmentation::GraphemeCursor;
@@ -331,6 +331,23 @@ pub extern "C" fn fz_box_float_for_any(process: *mut Process, raw: f64) -> u64 {
 pub extern "C" fn fz_io_write(process: *mut Process, binary_ref: u64) -> u64 {
     let (ptr, len) = byte_aligned_binary_slice(binary_ref, "fz_io_write");
     write_output(process, unsafe { from_raw_parts(ptr, len) });
+    0
+}
+
+/// `IO.warn`'s only output: a message, and the file and line it points at
+/// (an empty file is no location), to the process's warning hook.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_io_warn(process: *mut Process, message_ref: u64, file_ref: u64, line: i64) -> u64 {
+    let (message, message_len) = byte_aligned_binary_slice(message_ref, "fz_io_warn");
+    let (file, file_len) = byte_aligned_binary_slice(file_ref, "fz_io_warn");
+    write_warning(
+        process,
+        message,
+        message_len,
+        file,
+        file_len,
+        u32::try_from(line).unwrap_or(0),
+    );
     0
 }
 

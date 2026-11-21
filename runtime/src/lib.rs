@@ -60,3 +60,26 @@ pub(crate) fn write_output(process: *mut Process, bytes: &[u8]) {
         }
     }
 }
+
+/// The one function behind every `IO.warn`: hands the message and its
+/// location to the process's warning hook.
+pub(crate) fn write_warning(
+    process: *mut Process,
+    message: *const u8,
+    message_len: usize,
+    file: *const u8,
+    file_len: usize,
+    line: u32,
+) {
+    if process.is_null() {
+        return;
+    }
+    let ctx = unsafe { &*process }.ctx;
+    if ctx.is_null() {
+        return;
+    }
+    let ctx = unsafe { &*ctx };
+    if let Some(warn) = ctx.warn {
+        unsafe { warn(ctx.output_context, message, message_len, file, file_len, line) };
+    }
+}

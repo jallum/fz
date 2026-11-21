@@ -43,6 +43,7 @@ use super::identity::{
 };
 use super::incoming_inputs::{IncomingInputSource, IncomingInputSources, InputSlot};
 use super::keying::{BodyKeying, BodyKeyingMap, InputDemand, InputDemandMap, StaticCalleeMap, StaticReachMap};
+use super::macro_warning::{MacroExpansion, MacroRunOutput};
 use super::module_interface::{
     InterfaceCallableKind, InterfaceExpectation, InterfaceRequester, ModuleInterface, ModuleReferenceExpectation,
     ModuleReferenceExpectationMap, ReferencingCall,
@@ -120,7 +121,7 @@ struct MacroInvocationKey {
 
 struct MemoizedMacroExpansion {
     product: Weak<BackendProgram>,
-    output: QuotedSourceRoot,
+    output: MacroExpansion,
 }
 
 impl WarningDiagnosticKey {
@@ -1178,7 +1179,7 @@ impl World {
         context: ExpansionContext,
         call_site: &CallSite,
         product: &Rc<BackendProgram>,
-    ) -> Option<QuotedSourceRoot> {
+    ) -> Option<MacroExpansion> {
         let entry = self.macro_expansions.get(&MacroInvocationKey {
             function,
             source: source.clone(),
@@ -1198,7 +1199,7 @@ impl World {
         context: ExpansionContext,
         call_site: CallSite,
         product: &Rc<BackendProgram>,
-        output: QuotedSourceRoot,
+        output: MacroExpansion,
     ) {
         self.macro_expansions.insert(
             MacroInvocationKey {
@@ -4598,8 +4599,9 @@ impl<T: Telemetry> ExecutionContext<'_, T> {
         source: &QuotedSourceRoot,
         caller: AnyValueRef,
         args: &[AnyValueRef],
-    ) -> Result<QuotedSourceRoot, String> {
-        self.world.run_macro_on_source_with(
+    ) -> Result<MacroExpansion, String> {
+        let output = MacroRunOutput::default();
+        let root = self.world.run_macro_on_source_with(
             program,
             source,
             caller,
@@ -4609,13 +4611,17 @@ impl<T: Telemetry> ExecutionContext<'_, T> {
                     types,
                     transport,
                     self.telemetry,
-                    &fz_runtime::output::STDOUT_OUTPUT,
+                    &output,
                     program,
                     process,
                     args,
                 )
             },
-        )
+        )?;
+        Ok(MacroExpansion {
+            root,
+            warnings: output.into_warnings(),
+        })
     }
 
     pub fn define_module(&mut self, id: ModuleId, base: Namespace, interface: ModuleInterface) -> bool {

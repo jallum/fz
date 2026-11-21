@@ -1,0 +1,17 @@
+#---
+# purpose: "IO.warn at run time writes warning: <message> to stderr, with the location a Macro.Env or a file and line gives, and stdout is unaffected"
+# oracle: self
+# oracle.stamp: 384e18da17493e63
+#---
+defmodule Main do
+  def main() do
+    IO.puts("before")
+    IO.warn("bare")
+    IO.warn("keyword", file: "a.ex", line: 3)
+    IO.warn("env", %Macro.Env{file: "b.ex", line: 7})
+    IO.warn("chardata #{1 + 1}")
+    IO.puts("after")
+  end
+end
+
+Main.main()

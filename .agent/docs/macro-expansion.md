@@ -550,6 +550,25 @@ diagnostic's message, its code is `lower/unsupported`, and its span is the
 macro call's (`run_macro_invocation`). `Kernel.apply/3` refuses a call it
 cannot rewrite this way.
 
+A macro run answers a `MacroExpansion` (`macro_warning.rs`): the expanded root
+and the warnings its body emitted with `IO.warn`, in the order it emitted them.
+`run_macro_on_source` hands the interpreter a `MacroRunOutput` sink. A print
+still goes to stdout, and the interpreter's warning hook records each `IO.warn`
+as a `MacroWarning` (message, and the file and line when the call named any).
+`run_macro_invocation` reports each one through `emit_warning_once` as
+`macro/warning`, so compilation continues, and the diagnostic reaches stderr
+and the `[fz, diag, warning]` event like every other warning. The memoized
+expansion stores its warnings beside its root, and a memo hit reports them
+again, so a later drive reports what a run did, and `emit_warning_once` keeps a
+warning from appearing twice in one drive.
+
+A warning points at the macro call. `IO.warn(message, __CALLER__)` and
+`IO.warn(message)` both point there. `IO.warn(message, file: file, line: line)`
+points at that line when `file` is the call's own file and the line exists, and
+otherwise at the macro call with a note naming `file:line`, since a diagnostic
+points only into source the compiler holds. Warnings from one call share its
+span, so they print in message order rather than emission order.
+
 A macro runs while the module that invokes it is being defined, so the
 functions of that module do not exist yet. A macro, or a function its program
 calls, that calls into that module makes the module's definition wait on itself.
