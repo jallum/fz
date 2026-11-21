@@ -1,0 +1,26 @@
+#---
+# purpose: "is_function(f, n) with a literal n tests that f takes n arguments: a lambda of another arity falls to the next clause, one of no clause's arity raises FunctionClauseError, and the calls through f need no construction wrapper"
+# oracle: self
+# oracle.stamp: ea6e53424344dc8e
+# root: main/0
+#---
+defmodule Fold do
+  def foldl([], acc, _f), do: acc
+  def foldl([h | t], acc, f) when is_function(f, 2), do: foldl(t, f.(h, acc), f)
+  def foldl([_ | t], acc, f) when is_function(f, 1), do: foldl(t, f.(acc), f)
+end
+
+defmodule Main do
+  def main() do
+    IO.inspect(Fold.foldl([1, 2, 3], 0, fn x, acc -> x + acc end))
+    IO.inspect(Fold.foldl([1, 2, 3], 1, fn acc -> acc * 2 end))
+
+    try do
+      Fold.foldl([1], 0, fn _x, _acc, _extra -> 0 end)
+    rescue
+      FunctionClauseError -> IO.inspect(:no_clause)
+    end
+  end
+end
+
+Main.main()

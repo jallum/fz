@@ -257,6 +257,21 @@ right-hand side. A residual that is an extern call on a callable
 (`is_function(f, 2)` leaves `fz_function_arity(f) == 2`) still reads the
 callable whole, so the callable is constructed first-class.
 
+A helper that is not a type predicate on its own can be one at literal
+arguments. `unfold_call` asks the guard-domain table before it reads the
+helper's clauses: the call's literals ask it
+(`PatternResolver::guard_domain`, filled by `compiler2/guard_domain.rs`) what
+the helper means at them: the table's entry for a helper is a function from the
+call's literals to the types its variable arguments must have. The one entry is
+`Kernel.is_function/2` at an integer literal `n >= 0`, which asks `f` for the
+arrow `(any, ..., any -> any)` of `n` arguments, the type `f :: (any, any -> any)`
+asks in a head, so `is_function(f, 2)` unfolds to the same type question and no
+residual, and `f` is read for its class alone. A negative or non-integer literal has no entry, so
+the call unfolds from the helper's clauses, whose first two raise. The entry and the helper's
+clauses in `lib/kernel.fz` state one meaning twice, and
+`the_table_entry_and_the_kernel_clauses_agree` runs both at arities 0 to 3, a
+negative and a non-integer. Fixture `01883` runs the folded guard on all paths.
+
 A reified guard helper is an ordinary function, so `guard_dispatch_from_rows`
 builds its plan with an empty `Inputs` list and a pin in the helper's head is
 refused while the helper's own plan is built. The diagnostic therefore lands on

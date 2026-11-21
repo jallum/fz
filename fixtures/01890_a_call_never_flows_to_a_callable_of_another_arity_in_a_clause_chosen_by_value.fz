@@ -1,0 +1,18 @@
+#---
+# purpose: "a clause that calls a closure with one argument beside a clause that calls it with three, chosen by an integer argument, runs the clause whose arity the closure has"
+# kind: run
+# oracle: self
+# oracle.stamp: 5df959809f75b44a
+#---
+#
+# `f` is an arity-3 closure carrying `k`. The first clause's call `f.(1)` names
+# one argument, so it can never run that closure: it contributes no flow to the
+# closure's construction. The integer argument selects the clause, which type
+# analysis does not decide, so both calls stay live and the second clause runs.
+defmodule Main do
+  def pick(f, 1), do: f.(1)
+  def pick(f, 3), do: f.(1, 2, 1)
+  def make(k), do: fn a, b, c -> [k, a, b, c] end
+  def main(), do: IO.inspect(pick(make(7), 3))
+end
+Main.main()

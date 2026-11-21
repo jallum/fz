@@ -19,6 +19,9 @@ mod dump;
 mod env_projection;
 mod executable_facts;
 mod frontdoor;
+mod guard_domain;
+#[cfg(test)]
+mod guard_domain_test;
 mod identity;
 pub(crate) mod incoming_inputs;
 mod jobs;

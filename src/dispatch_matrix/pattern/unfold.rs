@@ -336,6 +336,9 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
         if args.contains(&Arg::Opaque) {
             return Ok(None);
         }
+        if let Some(asked) = domain_at_literals(call, &args, resolver)? {
+            return Ok(Some(asked));
+        }
         let Some(facts) = helper.facts.as_ref() else {
             return Ok(None);
         };
@@ -823,6 +826,40 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
 
 /// A guard call's callee and the arguments it was given.
 type CalledGuard<'e, TypeHandle> = (GuardCallee<TypeHandle>, &'e [Spanned<Expr>]);
+
+/// The types a helper's guard domain asks of the call's variable arguments,
+/// when the helper has a domain at the call's literals. A domain that asks a
+/// literal argument something is not read as questions.
+fn domain_at_literals<TypeHandle: Clone + PartialEq, F: PatternResolver<TypeHandle>>(
+    call: &Spanned<Expr>,
+    args: &[Arg],
+    resolver: &mut F,
+) -> Result<Option<Conjunction<TypeHandle>>, SourcePatternError> {
+    let Expr::Call(target, call_args) = &call.node else {
+        return Ok(None);
+    };
+    let Some(callee) = Callee::for_call(&target.node, call_args.len()) else {
+        return Ok(None);
+    };
+    let literals: Vec<Option<GroundValue>> = args
+        .iter()
+        .map(|arg| match arg {
+            Arg::Const(value) => Some(value.clone()),
+            _ => None,
+        })
+        .collect();
+    let Some(asked) = resolver.guard_domain(&callee, &literals)? else {
+        return Ok(None);
+    };
+    let mut conjunction = Conjunction::default();
+    for (argument, ty) in asked {
+        let Arg::Subject(subject) = &args[argument as usize] else {
+            return Ok(None);
+        };
+        conjunction.ask(RegionQuestion::type_region(*subject, ty));
+    }
+    Ok(Some(conjunction))
+}
 
 /// The callee a call in a guard reaches, with the arguments it was given.
 fn guard_callee_of<'e, TypeHandle, F: PatternResolver<TypeHandle>>(

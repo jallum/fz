@@ -275,6 +275,20 @@ pub(crate) trait PatternResolver<TypeHandle> {
         arity: usize,
     ) -> Result<Option<GuardCallee<TypeHandle>>, SourcePatternError>;
 
+    /// What a call to a guard helper asks when some of its arguments are
+    /// literals: the type each remaining argument must have for the call to
+    /// hold, or `None` when the helper has no such domain at these literals.
+    /// `arguments` holds a literal's value where the call writes one and
+    /// `None` where it names a bound variable. A resolver with no domains
+    /// answers `None` for every call.
+    fn guard_domain(
+        &mut self,
+        _callee: &crate::ast::Callee,
+        _arguments: &[Option<GroundValue>],
+    ) -> Result<Option<Vec<(u32, TypeHandle)>>, SourcePatternError> {
+        Ok(None)
+    }
+
     /// Whether a type test over this type can tell one literal from another.
     /// It cannot when the type names no specific atom anywhere inside it.
     fn is_literal_blind(&self, ty: &TypeHandle) -> bool;
