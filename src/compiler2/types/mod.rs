@@ -3320,38 +3320,6 @@ impl Types {
     /// True when every value of `a` is a callable and nothing else. A callable
     /// column is the one place a closure's own arrow is the thing a contract
     /// refines, so its binder variables are open there.
-    /// Whether a value of `narrow` can be handed where `wide` is expected
-    /// without changing which closure is being handed: the two are one
-    /// closure, or `narrow` is a subtype of `wide` and neither mentions a
-    /// closure literal.
-    pub fn fits_with_the_same_closures(&mut self, narrow: &Ty, wide: &Ty) -> bool {
-        if self.is_one_closure(narrow, wide) {
-            return true;
-        }
-        let mentions_closure =
-            self.ctx().attrs(narrow).mentions_closure_literal() || self.ctx().attrs(wide).mentions_closure_literal();
-        !mentions_closure && self.is_subtype(narrow, wide)
-    }
-
-    /// Two closure literals are one closure when they name one function and
-    /// capture the same values, whatever arrow each has been read at.
-    fn is_one_closure(&self, left: &Ty, right: &Ty) -> bool {
-        if left == right {
-            return true;
-        }
-        let (Some(left), Some(right)) = (self.closure_lit_parts(left), self.closure_lit_parts(right)) else {
-            return false;
-        };
-        left.target == right.target
-            && left.kind == right.kind
-            && left.captures.len() == right.captures.len()
-            && left
-                .captures
-                .iter()
-                .zip(&right.captures)
-                .all(|(left, right)| self.is_one_closure(left, right))
-    }
-
     pub fn is_pure_callable(&self, a: &Ty) -> bool {
         self.descr(a).is_pure_callable()
     }

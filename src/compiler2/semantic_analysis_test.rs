@@ -702,7 +702,11 @@ fn a_reached_callsite_that_names_no_target_publishes_an_unresolved_edge() {
 /// The three fixtures every fz-kdt boundary measurement uses. Coalescing only
 /// has something to hide where one callsite is reached down several rows, and
 /// these are the corpus's dense cases.
-const EDGE_COMPLETENESS_FIXTURES: [(&str, &str); 3] = [
+const EDGE_COMPLETENESS_FIXTURES: [(&str, &str); 4] = [
+    (
+        "fixtures/01960_a_closure_call_edge_names_every_activation_its_walk_read.fz",
+        include_str!("../../fixtures/01960_a_closure_call_edge_names_every_activation_its_walk_read.fz"),
+    ),
     (
         "fixtures/00567_fz_f98_range_map_converges.fz",
         include_str!("../../fixtures/00567_fz_f98_range_map_converges.fz"),

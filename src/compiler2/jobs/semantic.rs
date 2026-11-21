@@ -138,9 +138,6 @@ struct CallEmission {
     key: CallSiteKey,
     resolution: CallSiteResolution<CallSiteSummary>,
     activations: Vec<ActivationContribution>,
-    /// The call is made on a closure value, so it can name one executable
-    /// and cannot choose among several by the types it is handed.
-    through_closure: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -1407,7 +1404,6 @@ fn reached_but_unresolved(activation: &ActivationKey, callsite: CallSiteId) -> C
         },
         resolution: CallSiteResolution::Unresolved,
         activations: Vec::new(),
-        through_closure: false,
     }
 }
 
@@ -1439,7 +1435,6 @@ fn resolve_direct_call(
             },
             resolution,
             activations,
-            through_closure: false,
         }),
         call_return,
     ))
@@ -1472,7 +1467,6 @@ fn resolve_module_value_call(
         },
         resolution,
         activations,
-        through_closure: false,
     };
     if world.types().has_vars(&module_ty) {
         return Ok((
@@ -1852,12 +1846,9 @@ fn coalesce_call_emissions(world: &mut World, calls: Vec<CallEmission>) -> Resul
 
     let mut coalesced = Vec::with_capacity(order.len());
     for key in order {
-        let mut grouped = grouped
+        let grouped = grouped
             .remove(&key)
             .expect("callsite order should resolve to a coalesced call");
-        if let (true, CallSiteResolution::Resolved(summary)) = (grouped.through_closure, &mut grouped.resolution) {
-            summary.name_the_widest_activation_of_each_closure(world.types_mut());
-        }
         coalesced.push(grouped);
     }
     Ok(coalesced)
@@ -1884,7 +1875,6 @@ fn merge_call_emission(
         (_, CallSiteResolution::Unresolved) => {}
     }
     current.activations.extend(observed.activations);
-    current.through_closure |= observed.through_closure;
     Ok(())
 }
 
@@ -2294,7 +2284,6 @@ fn resolve_closure_call(
                 key: key.clone(),
                 resolution: CallSiteResolution::Unresolved,
                 activations: Vec::new(),
-                through_closure: true,
             }),
             call_return,
         ))
@@ -2386,7 +2375,6 @@ fn resolve_closure_call(
                 last_resort: None,
             }),
             activations,
-            through_closure: true,
         }),
         call_return,
     ))
