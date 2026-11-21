@@ -1077,17 +1077,11 @@ targets, and a boundary type's surfaces. `CallableDemand::surfaces()` is every
 surface the value is called at: `unnamed` plus each target's surface.
 
 A closure callsite reached down several rows of its caller can settle several
-activations of one closure, one per row. A call on a closure value names one
-executable and cannot choose among several by its argument types, so
-`coalesce_call_emissions` asks the settled summary to
-`name_the_widest_activation_of_each_closure`: a target whose activation inputs
-all fit another target's of the same closure is dropped, and the wider target
-takes its surface and return. Inputs fit when the narrower is a subtype of the
-wider and neither mentions a closure literal, or when both are the same closure
-(`Types::fits_with_the_same_closures`: same function, same captured values, the
-arrow each was read at ignored). Two closures of one function that captured
-different types keep their own activations. Direct calls are not folded this
-way; their targets are told apart by a dispatch on the argument types.
+activations of one closure, one per row. `coalesce_call_emissions` keeps every
+one of them as a target of the callsite's edge: the edge names each activation
+whose `ReturnType` the walk read, so demand derived from the edge reaches all
+the evidence the edge's return type was built from. Direct calls are told apart
+by a dispatch on the argument types.
 
 A construction's first-class surfaces are the `unnamed` surfaces recorded for it
 plus the surfaces of the first-class targets that name it (the targets whose
