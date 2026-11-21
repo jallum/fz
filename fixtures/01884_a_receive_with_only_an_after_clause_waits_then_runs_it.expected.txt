@@ -1,0 +1,4 @@
+:slept
+:immediate
+:waited
+7

@@ -938,10 +938,6 @@ fn build_park_record<M: cranelift_module::Module>(
     captures: &[Var],
     fns: &ReceiveFns,
 ) -> Result<ir::Value, CodegenError> {
-    assert!(
-        !clauses.is_empty(),
-        "ReceiveMatched with zero clauses should not reach codegen"
-    );
     // Each resume body's code and the slots it keeps empty behind the captures.
     let resume_body = |fn_id: FnId| -> (FuncId, u32) {
         let cont_sid = env.body_id_for_fn(fn_id).unwrap_or_else(|| {
@@ -973,11 +969,18 @@ fn build_park_record<M: cranelift_module::Module>(
             })
             .collect(),
     };
-    let first_clause_code = site.clauses[0].code;
+    // The frame is never called. Its code word names the receive's first
+    // outcome: the first clause, or the `after` body when the receive has no
+    // clause.
+    let frame_code = site
+        .clauses
+        .first()
+        .map(|clause| clause.code)
+        .or(site.after.map(|(code, _)| code))
+        .expect("a receive has a clause or an after body");
     let site_data = define_receive_site(body.jmod, site_name, &site)?;
     let site_addr = data_addr(body.jmod, site_data, body.b);
 
-    // The frame is never called; its code word names the first clause.
     let mut frame_captures: Vec<ClosureCapture> = Vec::with_capacity(captures.len() + pinned.len());
     for capture in captures {
         frame_captures.push(closure_capture_for_var(body, var_env, capture.0));
@@ -985,7 +988,7 @@ fn build_park_record<M: cranelift_module::Module>(
     for pinned_var in pinned {
         frame_captures.push(ClosureCapture::RefWord(body.tagged_var(var_env, pinned_var.0)));
     }
-    let frame = build_cont_closure(body, cont_param, first_clause_code, &frame_captures, 0);
+    let frame = build_cont_closure(body, cont_param, frame_code, &frame_captures, 0);
 
     let after_ms = match after {
         Some(a) => body.as_raw_i64(var_env, a.timeout.0),

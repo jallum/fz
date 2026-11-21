@@ -1064,3 +1064,13 @@ fn a_counter_that_is_neither_an_integer_nor_a_module_pair_is_refused() {
     .unwrap_err();
     assert!(error.to_string().contains("a variable's counter must be"), "{error}");
 }
+
+#[test]
+fn a_receive_with_only_an_after_clause_decodes_to_no_message_clauses_and_an_after() {
+    let surface = surface_of("def f() do\n  receive do\n  after 20 -> :ok\n  end\nend\n");
+    let Expr::Receive { clauses, after } = &surface.clauses[0].body.node else {
+        panic!("expected a receive");
+    };
+    assert!(clauses.is_empty(), "no message clause was written");
+    assert!(after.is_some(), "the after clause is kept");
+}
