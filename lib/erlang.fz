@@ -76,4 +76,38 @@ defmodule :erlang do
   def unique_integer(), do: fz_unique_integer()
 
   extern "C" defp fz_unique_integer() :: integer
+
+  @doc """
+  Returns a copy of `tuple` with the element at the one-based `index`
+  replaced by `value`. `tuple` itself is unchanged.
+
+  Raises `ArgumentError` when `index` is not an integer, is outside the
+  tuple, or `tuple` is not a tuple; the message lists every argument at fault.
+
+  ## Examples
+
+      :erlang.setelement(2, {:a, :b, :c}, :z)
+      #=> {:a, :z, :c}
+
+  """
+  @spec setelement(any, any, any) :: tuple
+  def setelement(index, tuple, value) when is_integer(index) and is_tuple(tuple) and index >= 1 and index <= tuple_size(tuple),
+    do: fz_tuple_put(tuple, index - 1, value)
+
+  def setelement(index, tuple, _value) when not is_integer(index) and not is_tuple(tuple),
+    do: raise(%ArgumentError{message: "errors were found at the given arguments:\n\n  * 1st argument: not an integer\n  * 2nd argument: not a tuple\n"})
+
+  def setelement(index, tuple, _value) when not is_integer(index) and is_tuple(tuple),
+    do: raise(%ArgumentError{message: "errors were found at the given arguments:\n\n  * 1st argument: not an integer\n"})
+
+  def setelement(index, tuple, _value) when index >= 1 and not is_tuple(tuple),
+    do: raise(%ArgumentError{message: "errors were found at the given arguments:\n\n  * 2nd argument: not a tuple\n"})
+
+  def setelement(_index, tuple, _value) when not is_tuple(tuple),
+    do: raise(%ArgumentError{message: "errors were found at the given arguments:\n\n  * 1st argument: out of range\n  * 2nd argument: not a tuple\n"})
+
+  def setelement(_index, _tuple, _value),
+    do: raise(%ArgumentError{message: "errors were found at the given arguments:\n\n  * 1st argument: out of range\n"})
+
+  extern "fz" defp fz_tuple_put(any, integer, any) :: any
 end

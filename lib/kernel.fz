@@ -1612,6 +1612,23 @@ defmodule Kernel do
   extern "fz" defp fz_tuple_elem(any, integer) :: any
 
   @doc """
+  Puts `value` at the zero-based `index` in `tuple`, returning a new tuple;
+  `tuple` itself is unchanged.
+
+  Raises `ArgumentError` when `tuple` is not a tuple or `index` is outside it,
+  and `ArithmeticError` when `index` is not an integer.
+
+  ## Examples
+
+      tuple = {:foo, :bar, 3}
+      Kernel.put_elem(tuple, 0, :baz)
+      #=> {:baz, :bar, 3}
+
+  """
+  @spec put_elem(any, any, any) :: tuple
+  def put_elem(tuple, index, value), do: :erlang.setelement(index + 1, tuple, value)
+
+  @doc """
   Returns the number of elements in `list`.
 
   Raises `ArgumentError` when `list` is not a proper list. In a guard, an
