@@ -1,5 +1,5 @@
 {
-  "assignee": "Jason Allum",
+  "assignee": "fz-engine",
   "blocked_by": [],
   "blocks": [
     "fz-sc8.192.3"
@@ -19,5 +19,5 @@
   "status": "in_progress",
   "title": "A call edge names the closure activation its walk read a return type from",
   "type": "bug",
-  "updated_at": "2026-11-20T22:34:11Z"
+  "updated_at": "2026-11-21T04:48:40Z"
 }
