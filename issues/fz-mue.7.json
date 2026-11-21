@@ -13,7 +13,7 @@
   "parent": "fz-mue",
   "priority": 2,
   "status": "open",
-  "title": ":maps is defined with iterator, next, fold, put, merge, from_list and to_list",
+  "title": ":maps is defined with to_list, keys, values, put, merge and from_list",
   "type": "feature",
-  "updated_at": "2026-11-21T04:50:01Z"
+  "updated_at": "2026-11-21T04:50:04Z"
 }
