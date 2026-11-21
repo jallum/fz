@@ -110,7 +110,10 @@ fn named_struct_field_constraints_refine_their_exact_root_and_reject_other_famil
     let mut resolver = SourcePatternResolver {
         world: &mut world,
         namespace: Namespace::default(),
-        guard: |_world: &mut World, _callee: &crate::ast::Callee, _arity: usize| Ok(None),
+        guard: |_world: &mut World,
+                _callee: &crate::ast::Callee,
+                _arity: usize,
+                _literals: &[Option<crate::ground_value::GroundValue>]| Ok(None),
     };
     let plan = pattern_dispatch_from_source_with_resolver(
         &SourcePatternRows::lexical(

@@ -503,7 +503,7 @@ the pair is physical only: no fz tuple is built, and no declaration spells it.
 - `parse_extern_raises` (`src/compiler2/frontdoor.rs`) reads the tail. `message:`
   is required, because an exception carries no default message, and it is a
   literal string: an interpolated one is refused. The exception is a module
-  alias. The tail takes one option, `raises:` or `delivers:` (below)
+  alias. The tail takes one option, `raises:`, `delivers:` or `projects:` (below)
   (`parse_extern_option`). The parts ride the
   quoted extern map as `raises` and `message`, and `decode_extern_fn` carries
   them on `FunctionSurface::extern_raises` as `ExternRaises`, with the span of
@@ -555,6 +555,28 @@ zero divisor, raises `ArithmeticError` with Elixir's message. A user declaration
 names any exception: `raises: MyApp.DivisionByZero` raises that module's
 struct from a declaration of the same symbol, so with `defexception [:message,
 code: 7]` a handler reads `e.code` as `7`.
+
+### A result that reports a property of its argument
+
+An extern whose integer result is a property of its one argument says which,
+and a guard that compares the result with a literal becomes a type test:
+
+```fz
+extern "fz" defp fz_function_arity(fun) :: integer, projects: :arrow_arity
+```
+
+`parse_extern_projects` accepts the properties `ExternProjection` names, today
+`:arrow_arity`: the result is the number of parameters of the function it is
+handed, so `fz_function_arity(f) == n` holds exactly when `f` is a function
+that takes `n` arguments. The property rides the quoted extern map as
+`projects`, and `decode_extern_fn` carries it on
+`FunctionSurface::extern_projection`. `projection_fits`
+(`src/compiler2/jobs/contract.rs`) refuses a declaration that does not have one
+parameter of the type the property reads and an `integer` result. The
+declaration changes no code. `PatternResolver::projected_type` reads it so that
+`type_predicate_of` can turn the residue of `Kernel.is_function/2` into a type
+test (see [pattern matching](pattern-matching.md)); `fz_function_arity` in
+`lib/kernel.fz` is declared this way.
 
 ### A call that delivers its argument
 
