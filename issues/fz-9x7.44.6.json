@@ -5,7 +5,7 @@
     "fz-9x7.44.8"
   ],
   "created": "2026-11-20T19:54:49Z",
-  "description": "User approved page \"Scalars without addresses\" (https://claude.ai/artifact/6jYdi5cw1d27CZC85xkJih, From: Callables) on 2026-11-20, relayed by Callables. Owner: Callables. PARAMETERS ONLY (results wait for fz-9x7.44.1).\n\nS1.5. A pipeline change, not a parameter swap: the sender's box goes to gift_copy_one, then the mailbox (process.rs:129 VecDeque\u003cAnyValueRef\u003e, a GC root at process.rs:876/893), GiftPayload::Message, park.rs msg, then MatcherFn. Covers fz-nml.9's int-message box. A walkthrough page comes before the build (Callables writes it). halt_implicit_ref, receive_pinned_ref, mark_published_ref_aliased, fz_fail, fz_system_halt and construction_failure_message need no change (no parameter can be a number); the census checks whether the failure record (process.rs:265) still needs it.\n\nCensus of origin/develop fb9ea0ec5 by Callables, 2026-11-20: /private/tmp/claude-501/-Users-j5n-Workspace-fz/98909c07-a0ca-4f82-8202-cb03fb090a79/scratchpad/census-44.3-7.md.",
+  "description": "User approved page \"Scalars without addresses\" (https://claude.ai/artifact/6jYdi5cw1d27CZC85xkJih, From: Callables) on 2026-11-20, relayed by Callables. Owner: Callables. PARAMETERS ONLY (results wait for fz-9x7.44.1).\n\nS1.5. A pipeline change, not a parameter swap: the sender's box goes to gift_copy_one, then the mailbox (process.rs:129 VecDeque\u003cAnyValueRef\u003e, a GC root at process.rs:876/893), GiftPayload::Message, park.rs msg, then MatcherFn. Covers fz-nml.9's int-message box. A walkthrough page comes before the build (Callables writes it). halt_implicit_ref, receive_pinned_ref, mark_published_ref_aliased, fz_fail, fz_system_halt and construction_failure_message need no change (no parameter can be a number); the census checks whether the failure record (process.rs:265) still needs it.\n\nCensus of origin/develop fb9ea0ec5 by Callables, 2026-11-20: /private/tmp/claude-501/-Users-j5n-Workspace-fz/98909c07-a0ca-4f82-8202-cb03fb090a79/scratchpad/census-44.3-7.md.\n\nUser decision on page v2 (https://claude.ai/artifact/2tR72wGWbDaMYinH29KHPK), 2026-11-21: one ticket, two commits (a: failure entries, b: messages) rather than split tickets. Kernel.send returns the message from the library.",
   "id": "fz-9x7.44.6",
   "labels": [],
   "parent": "fz-9x7.44",
@@ -23,5 +23,5 @@
   "status": "open",
   "title": "Message and failure entries take a stored word and its kind",
   "type": "task",
-  "updated_at": "2026-11-20T21:34:10Z"
+  "updated_at": "2026-11-21T11:59:26Z"
 }
