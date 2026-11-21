@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-yh5",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "An is_function(f, n) guard is planned from the library, with fz_function_arity as a projection (option B)",
   "type": "bug",
-  "updated_at": "2026-11-21T11:54:17Z"
+  "updated_at": "2026-11-21T11:55:26Z"
 }
