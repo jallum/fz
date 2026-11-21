@@ -1,6 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [
+    "fz-mue.5",
     "fz-sc8.30"
   ],
   "blocks": [
@@ -24,5 +25,5 @@
   "status": "open",
   "title": "Kernel has binary_part/3, in bodies and guards, as in Elixir",
   "type": "feature",
-  "updated_at": "2026-11-21T04:58:07Z"
+  "updated_at": "2026-11-21T04:58:08Z"
 }

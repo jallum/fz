@@ -1,7 +1,9 @@
 {
   "assignee": "Jason Allum",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-j8z"
+  ],
   "created": "2026-11-18T20:44:00Z",
   "description": "Missing from :erlang (resolve/unknown-import on all paths): element/2, binary_part/3, iolist_to_binary/1, iolist_size/1, integer_to_binary/2, atom_to_binary/2, is_map_key/2, error/3 (with error_info), binary_to_float/1 and binary_to_integer/1 as captures (\u0026:erlang.f/1), and float_to_binary(f, [:short]) (spec allows only decimals:). Also missing: IO.iodata_to_binary/1, which Elixir defines as a delegate to :erlang.iolist_to_binary/1. Reproducers: /Users/j5n/Workspace/fz-otp-json/punch/03..12_*.fz, 26_improper_iodata.fz. Kernel binary_part/3 is fz-j8z.\n\nPart of fz-mue (fz runs OTP's json.erl unchanged). Port and harness: /Users/j5n/Workspace/fz-otp-json/.",
   "id": "fz-mue.5",
@@ -17,5 +19,5 @@
   "status": "in_progress",
   "title": ":erlang exports the BIFs json.erl calls",
   "type": "feature",
-  "updated_at": "2026-11-20T21:58:38Z"
+  "updated_at": "2026-11-21T04:58:08Z"
 }
