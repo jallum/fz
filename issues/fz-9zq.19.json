@@ -1,7 +1,9 @@
 {
   "assignee": "fz-engine",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-sc8.192.3"
+  ],
   "created": "2026-11-21T04:49:58Z",
   "description": "List.reduce/3 gets two executable keys that differ only in the reducer's parameter type ({any, any} vs any). Both carry the same closure (#383) and the same captures. The two arrows are mutual subtypes (is_subtype both ways; canon_test.rs:44), yet ActivationKey::from_inputs (identity.rs:135) -\u003e World::canonical_activation_key (world.rs:2833, 2846) / Types::activation_key_arrow keep the arrow's parameter, so one activation is compiled twice.\n\nReproducer (Optimize's scratch, on develop 56c37331e): repro/09999_dupkey_probe.fz and canon_test_probe.diff.\n\nBlocks fz-sc8.192.3: its reds come from this duplicate. fz-engine measured that fz-9zq.17 does not clear them (independent). fz-engine suspects a shared root with fz-9zq.17 (both distinguish closure arrows differing only in a parameter, any vs {any, any}), and will measure one closure-arrow keying rule for both before building either.\n\nRelated, not identical: fz-t93.12 (same canonical text, distinct type ids).\n\nUser approved filing 2026-11-20 (\"Proceed\", relayed by Optimize). Owner: fz-engine.",
   "id": "fz-9zq.19",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "One activation has one executable key: equivalent closure arrows key alike",
   "type": "bug",
-  "updated_at": "2026-11-21T04:49:59Z"
+  "updated_at": "2026-11-21T04:50:00Z"
 }
