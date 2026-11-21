@@ -1140,7 +1140,12 @@ Its job (`jobs/reach.rs`) walks the edge facts of everything the node reaches
 and reads each of them, so a change to any edge in the cone reopens the answer.
 No reach fact reads another: nodes that reach each other each walk the same
 cycle and conclude the same set, so no group is needed. A walk that meets an
-edge fact not yet answered waits on it and runs again when it lands. A
+edge fact not yet answered waits on it and runs again when it lands. The
+input-demand solver's cycle test is a different question and not a reach
+fact: `forwarding_reach` (`jobs/keying.rs`) follows only the calls that
+forward an input, inside the `InputDemand` job, so it is a subset of
+`StaticReach`. A cycle that rebuilds its arguments or closes through a lambda
+is a static cycle but not a forwarding one. A
 function is recursive exactly when its own `StaticReach` holds it;
 `DeriveRecursive` starts once that fact exists. Recursive
 `CallableConstruction(position)` products settle their position groups from

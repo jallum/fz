@@ -1436,6 +1436,14 @@ fn solve_forwarded_demand(
 
 /// The functions each function of the graph forwards an input to, directly or
 /// through others.
+///
+/// This is reach over forwarding edges only, among the functions the forwarding
+/// walk entered; a callee whose input demand has concluded is a leaf. It is
+/// not `FactKey::StaticReach`, which follows every direct call and every lambda
+/// creation, and it is always a subset of it. A call cycle that rebuilds its
+/// arguments before passing them on, or that closes only through a lambda (a
+/// reduce's step and continuation), is a static cycle but not a forwarding one:
+/// no input is carried around it, so its lifts are not widened to the whole slot.
 fn forwarding_reach(graph: &BTreeMap<FunctionId, DemandNode>) -> BTreeMap<FunctionId, BTreeSet<FunctionId>> {
     let mut reach = graph
         .iter()
