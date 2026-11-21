@@ -1506,9 +1506,10 @@ fn fail_guard<M: cranelift_module::Module>(body: &mut DispatchBody<'_, '_, M>, f
 
 /// A call to an extern, made from the receive matcher.
 ///
-/// The matcher holds its values as refs or raw words, so the call carries three
-/// classes of operand: an integer, a float, and a reference word; a binary that
-/// a `binary_cursor` parameter reads is a reference word and a position. A result is
+/// The matcher holds its values as refs or raw words, so the call carries four
+/// classes of operand: an integer, a float, a reference word, and a stored word
+/// with its kind; a binary that a `binary_cursor` parameter reads is a
+/// reference word and a position. A result is
 /// one of those or a boolean word, answered as the atom `true` or `false`. The
 /// guard's extern was admitted on that rule where the node was made, so no
 /// other class reaches here. A checked return's failure leaves through `fail`: the clause does not
@@ -1540,6 +1541,12 @@ fn emit_guard_extern<M: cranelift_module::Module>(
             }
             ExternTy::F64 => (types::F64, receive_value_float(body, value)?),
             ExternTy::Any => (types::I64, emit_receive_value_ref(body, ctx, value)?),
+            ExternTy::StoredValue => {
+                let [word, kind] = receive_value_stored_parts(body.b, value);
+                sig.params.push(ir::AbiParam::new(types::I64));
+                call_args.push(word);
+                (types::I64, kind)
+            }
             ExternTy::BinaryCursor => {
                 // A guard holds the binary whole: its view starts at 0.
                 let whole = emit_receive_value_ref(body, ctx, value)?;
@@ -1858,9 +1865,13 @@ fn emit_ordering_cmp_value<M: cranelift_module::Module>(
     let cmp = match (&lhs, &rhs) {
         (ReceiveValue::Int(l), ReceiveValue::Int(r)) => body.b.ins().icmp(cc, *l, *r),
         _ => {
-            let lhs = emit_receive_value_ref(body, ctx, lhs)?;
-            let rhs = emit_receive_value_ref(body, ctx, rhs)?;
-            let ordering = runtime_call1!(body, fz_value_cmp_ref, [ctx.process, lhs, rhs]);
+            let [lhs_word, lhs_kind] = receive_value_stored_parts(body.b, lhs);
+            let [rhs_word, rhs_kind] = receive_value_stored_parts(body.b, rhs);
+            let ordering = runtime_call1!(
+                body,
+                fz_value_cmp_ref,
+                [ctx.process, lhs_word, lhs_kind, rhs_word, rhs_kind]
+            );
             body.b.ins().icmp_imm_s(cc, ordering, 0)
         }
     };
@@ -1952,11 +1963,19 @@ fn emit_typed_eq_cmp<M: cranelift_module::Module>(
         }
         _ => {}
     }
-    let lhs_ref = emit_receive_value_ref(body, ctx, lhs)?;
-    let rhs_ref = emit_receive_value_ref(body, ctx, rhs)?;
+    let [lhs_word, lhs_kind] = receive_value_stored_parts(body.b, lhs);
+    let [rhs_word, rhs_kind] = receive_value_stored_parts(body.b, rhs);
     let eq = match equality {
-        Equality::Loose => runtime_call1!(body, fz_value_eq_widening_ref, [ctx.process, lhs_ref, rhs_ref]),
-        Equality::Strict => runtime_call1!(body, fz_value_eq_ref, [ctx.process, lhs_ref, rhs_ref]),
+        Equality::Loose => runtime_call1!(
+            body,
+            fz_value_eq_widening_ref,
+            [ctx.process, lhs_word, lhs_kind, rhs_word, rhs_kind]
+        ),
+        Equality::Strict => runtime_call1!(
+            body,
+            fz_value_eq_ref,
+            [ctx.process, lhs_word, lhs_kind, rhs_word, rhs_kind]
+        ),
     };
     Ok(body.b.ins().icmp_imm_s(IntCC::NotEqual, eq, 0))
 }

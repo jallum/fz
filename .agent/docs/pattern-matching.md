@@ -472,7 +472,7 @@ An extern call lowers to `PatternGuardExpr::Extern { extern_fn, args }`. Every
 extern is guard-callable. `Job::ReifyGuardDispatch` publishes the same
 `GuardDispatch(function)` fact for an extern, holding a `GuardExtern` built from
 the extern's settled wire, so a guard waits on the extern's `FunctionContract`.
-`GuardExtern::new` admits parameters of class `I64`, `F64` or `Any` and a return
+`GuardExtern::new` admits parameters of class `I64`, `F64`, `Any`, `StoredValue` or `BinaryCursor` and a return
 of `I64`, `F64`, `Any`, `Bool` or `Never`, either plain or `Checked` (an extern that
 declares `raises:`); any other class (a binary, a pair, a variadic extern) is
 refused with `GuardExternClass` where the node is made, so no evaluator is handed
@@ -485,8 +485,9 @@ node once:
 - native entry and case lowering (`lower_guard_extern`) emits `Prim::Extern`,
   declares the extern the first time a guard names it, and branches a `Checked`
   return's `failed` lane to the guard's failure block;
-- the receive matcher (`emit_guard_extern`) carries an integer, a float and a
-  reference word (`emit_receive_value_ref`), and answers a `Bool` return as the
+- the receive matcher (`emit_guard_extern`) carries an integer, a float, a
+  reference word (`emit_receive_value_ref`) and a stored word with its kind
+  (`receive_value_stored_parts`), and answers a `Bool` return as the
   atom `true` or `false`, and `emit_checked_return` branches
   the `failed` lane to the guard's failure block.
 

@@ -1,0 +1,26 @@
+#---
+# purpose: ==, !=, ===, !==, < and >= answer as Elixir does for a pair of integers, floats, atoms, tuples, lists and binaries, on every path
+# oracle: self
+# oracle.stamp: 533d3f6bb6ff4b90
+#---
+#
+# The values come out of a list, so the compiler knows none of their kinds and
+# every pair reaches the runtime as two values of any kind. An integer and a
+# float of the same value are `==` and not `===`; across kinds a number sorts
+# before an atom, an atom before a tuple, a tuple before a list and a list
+# before a binary.
+defmodule Main do
+  def row(a, b) do
+    {a == b, a != b, a === b, a !== b, a < b, a >= b}
+  end
+
+  def main() do
+    values = [1, 1.0, 2.5, :a, {1}, {1.0}, [1], [1.0], "a"]
+
+    Enum.each(values, fn a ->
+      Enum.each(values, fn b -> IO.inspect(row(a, b)) end)
+    end)
+  end
+end
+
+Main.main()

@@ -543,9 +543,7 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
             })
         }
         Prim::IsMapMiss(v) => {
-            let value_ref = body.tagged_var(var_env, v.0);
-            let tag = body.ref_tag(value_ref);
-            let is_miss = body.b.ins().icmp_imm_s(IntCC::Equal, tag, ValueKind::NULL.tag() as i64);
+            let is_miss = body.value_is_tag(binding_for_var(var_env, v.0), ValueKind::NULL);
             LowerOut::Strict(strict_bool(body.b, is_miss))
         }
         _ => unreachable!("lower_collection_prim: not a collection prim"),
@@ -1269,9 +1267,7 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
                 let is_empty_word = body.b.ins().icmp(IntCC::Equal, value, empty_list_v);
                 body.b.ins().band(is_list, is_empty_word)
             } else {
-                let cv = body.tagged_var(var_env, c.0);
-                let empty_list_v = body.empty_list_ref();
-                body.b.ins().icmp(IntCC::Equal, cv, empty_list_v)
+                held_outside_a_ref_is_empty_list(body, binding_for_var(var_env, c.0))
             };
             if body.cache.if_only_conds.contains(&dest_var.0) {
                 return Ok(LowerOut::Condition(cmp));
@@ -1287,13 +1283,7 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
                 let not_empty = body.b.ins().icmp_imm_s(IntCC::Equal, is_empty_word, 0);
                 body.b.ins().band(is_list, not_empty)
             } else {
-                let cv = body.tagged_var(var_env, c.0);
-                let tag = body.ref_tag(cv);
-                let empty_list_v = body.empty_list_ref();
-                let is_list = body.b.ins().icmp_imm_s(IntCC::Equal, tag, ValueKind::LIST.tag() as i64);
-                let is_empty_word = body.b.ins().icmp(IntCC::Equal, cv, empty_list_v);
-                let not_empty = body.b.ins().icmp_imm_s(IntCC::Equal, is_empty_word, 0);
-                body.b.ins().band(is_list, not_empty)
+                body.b.ins().iconst(types::I8, 0)
             };
             if body.cache.if_only_conds.contains(&dest_var.0) {
                 return Ok(LowerOut::Condition(cmp));
@@ -1622,10 +1612,18 @@ fn emit_is_empty_list_flag<M: cranelift_module::Module>(
         let is_empty_word = body.b.ins().icmp(IntCC::Equal, value_ref, empty_list_v);
         body.b.ins().band(is_list, is_empty_word)
     } else {
-        let cv = body.value_as_any_ref(value);
-        let empty_list_v = body.empty_list_ref();
-        body.b.ins().icmp(IntCC::Equal, cv, empty_list_v)
+        held_outside_a_ref_is_empty_list(body, value)
     }
+}
+
+/// Whether a value codegen holds outside a ref is the empty list. Such a value
+/// names its kind and the only list it can be is the empty one, so the answer
+/// is known without making a ref to read it from.
+fn held_outside_a_ref_is_empty_list<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, M>,
+    value: CodegenValue,
+) -> ir::Value {
+    body.value_is_tag(value, ValueKind::LIST)
 }
 
 fn emit_is_list_cons_flag<M: cranelift_module::Module>(
@@ -1640,13 +1638,7 @@ fn emit_is_list_cons_flag<M: cranelift_module::Module>(
         let not_empty = body.b.ins().icmp_imm_s(IntCC::Equal, is_empty_word, 0);
         body.b.ins().band(is_list, not_empty)
     } else {
-        let cv = body.value_as_any_ref(value);
-        let tag = body.ref_tag(cv);
-        let empty_list_v = body.empty_list_ref();
-        let is_list = body.b.ins().icmp_imm_s(IntCC::Equal, tag, ValueKind::LIST.tag() as i64);
-        let is_empty_word = body.b.ins().icmp(IntCC::Equal, cv, empty_list_v);
-        let not_empty = body.b.ins().icmp_imm_s(IntCC::Equal, is_empty_word, 0);
-        body.b.ins().band(is_list, not_empty)
+        body.b.ins().iconst(types::I8, 0)
     }
 }
 
@@ -1933,17 +1925,21 @@ where
         }
         Ok(LowerOut::Strict(strict_bool(body.b, cmp)))
     } else {
-        let a_ref = body.tagged_var(var_env, a.0);
-        let b_ref = body.tagged_var(var_env, bv.0);
+        let [a_word, a_kind] = stored_parts(body, binding_for_var(var_env, a.0));
+        let [b_word, b_kind] = stored_parts(body, binding_for_var(var_env, bv.0));
         let process = body.process_arg();
         // The `==` operator widens numerics; structural identity does not. The
         // flag that separates the two static arms has to separate the dynamic
         // one as well, or the widening leaks into pinned matches,
         // `Enum.member?/2` and `--`.
         let eq = if widen_numerics {
-            runtime_call1!(body, fz_value_eq_widening_ref, [process, a_ref, b_ref])
+            runtime_call1!(
+                body,
+                fz_value_eq_widening_ref,
+                [process, a_word, a_kind, b_word, b_kind]
+            )
         } else {
-            runtime_call1!(body, fz_value_eq_ref, [process, a_ref, b_ref])
+            runtime_call1!(body, fz_value_eq_ref, [process, a_word, a_kind, b_word, b_kind])
         };
         let eq_bool = body.b.ins().icmp_imm_s(IntCC::NotEqual, eq, 0);
         let cmp = if is_eq {
@@ -2086,10 +2082,14 @@ where
     // here and another under the interpreter.
     body.b.switch_to_block(slow_blk);
     body.b.seal_block(slow_blk);
-    let left = body.tagged_var(var_env, a.0);
-    let right = body.tagged_var(var_env, bv.0);
+    let [left_word, left_kind] = stored_parts(body, binding_for_var(var_env, a.0));
+    let [right_word, right_kind] = stored_parts(body, binding_for_var(var_env, bv.0));
     let process = body.process_arg();
-    let ordering = runtime_call1!(body, fz_value_cmp_ref, [process, left, right]);
+    let ordering = runtime_call1!(
+        body,
+        fz_value_cmp_ref,
+        [process, left_word, left_kind, right_word, right_kind]
+    );
     let zero = body.b.ins().iconst(types::I64, 0);
     let slow_cmp = body.b.ins().icmp(icc, ordering, zero);
     body.b.ins().jump(join_blk, &[BlockArg::Value(slow_cmp)]);

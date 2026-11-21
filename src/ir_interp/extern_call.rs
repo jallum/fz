@@ -1,3 +1,4 @@
+use super::binop::stored_words;
 use super::*;
 use crate::compiler2::LoweredExtern;
 use crate::compiler2::native_codegen::{ExternLane, emit_fn_body, emit_variadic_c_call, jit_builder};
@@ -8,7 +9,6 @@ use cranelift_codegen::ir::{self, AbiParam, InstBuilder, MemFlagsData, types};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::JITModule;
 use cranelift_module::{Linkage, Module};
-use fz_runtime::any_value::Stored;
 use fz_runtime::extern_binary::{fz_binary_as_cstring, fz_binary_as_ptr};
 use fz_runtime::symbol_lookup::fz_extern_symbol_addr;
 use std::ffi::CString;
@@ -133,13 +133,6 @@ pub(super) fn call_lowered_extern(
     )
 }
 
-/// A `stored_value` argument: the word a container stores for `value`, then
-/// its kind.
-fn stored_words(proc: *mut Process, value: AnyValue) -> Result<[ArgWord; 2], String> {
-    let Stored { word, kind } = Stored::of(value.value(proc)?);
-    Ok([ArgWord::Int(word), ArgWord::Int(kind)])
-}
-
 pub(super) fn call_fixed_extern(
     runtime: &mut IrInterpRuntime,
     signature: FixedExtern<'_>,
@@ -172,7 +165,7 @@ pub(super) fn call_fixed_extern(
                 .next()
                 .expect("argument words were counted against the parameters");
             if wire == ExternTy::StoredValue {
-                raw_args.extend(stored_words(runtime.cur_proc(), value)?);
+                raw_args.extend(stored_words(runtime.cur_proc(), value)?.map(ArgWord::Int));
             } else {
                 raw_args.push(marshal_arg(runtime.cur_proc(), value, wire, fz_abi)?);
             }

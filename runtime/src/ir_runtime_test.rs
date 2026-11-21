@@ -255,8 +255,12 @@ fn range_equality_comes_from_struct_fields() {
         let b = range_ref(process, 1, 3, 1);
         let c = range_ref(process, 1, 3, 2);
 
-        assert_eq!(fz_value_eq_ref(process_ptr, a, b), 1);
-        assert_eq!(fz_value_eq_ref(process_ptr, a, c), 0);
+        let [b_word, b_kind] = stored(AnyValue::from_ref(AnyValueRef::from_raw_word(b).unwrap()).unwrap());
+        let [a_word, a_kind] = stored(AnyValue::from_ref(AnyValueRef::from_raw_word(a).unwrap()).unwrap());
+        let [c_word, c_kind] = stored(AnyValue::from_ref(AnyValueRef::from_raw_word(c).unwrap()).unwrap());
+
+        assert_eq!(fz_value_eq_ref(process_ptr, a_word, a_kind, b_word, b_kind), 1);
+        assert_eq!(fz_value_eq_ref(process_ptr, a_word, a_kind, c_word, c_kind), 0);
     });
 }
 
@@ -497,7 +501,7 @@ fn ref_projection_helpers_load_scalar_payloads() {
     let float_ref = AnyValueRef::from_scalar_slot(ValueKind::FLOAT, &float_slot).expect("float ref");
     let atom_ref = AnyValueRef::atom(17);
 
-    assert_eq!(fz_ref_tag(int_ref.raw_word()), ValueKind::INT.tag());
+    assert_eq!(fz_type_of(int_ref.raw_word()), ValueKind::INT.tag());
     assert_eq!(fz_ref_load_int(int_ref.raw_word()), -42);
     assert_eq!(fz_ref_load_float(float_ref.raw_word()), 3.5);
     assert_eq!(fz_ref_load_atom(atom_ref.raw_word()), 17);
@@ -547,6 +551,92 @@ fn a_put_of_an_integer_or_a_float_allocates_only_the_map() {
     });
 }
 
+/// Every comparison entry answers for a pair given as two (word, kind) pairs,
+/// and none boxes an operand.
+#[test]
+fn a_comparison_takes_each_operand_as_word_and_kind_and_boxes_nothing() {
+    with_process(|process| {
+        let atom = AnyValue::atom(process.node.intern_atom("a"));
+        let other_atom = AnyValue::atom(process.node.intern_atom("b"));
+        let one = AnyValue::int(1);
+        let one_float = AnyValue::float(1.0);
+        let cases = [
+            // (left, right, `==`, `===`, ordering under widening)
+            (one, one, true, true, 0),
+            (one, one_float, true, false, 0),
+            (one_float, one, true, false, 0),
+            (one, AnyValue::float(2.5), false, false, -1),
+            (AnyValue::float(2.5), one, false, false, 1),
+            (one, atom, false, false, -1),
+            (atom, one, false, false, 1),
+            (atom, other_atom, false, false, -1),
+            (atom, atom, true, true, 0),
+        ];
+        for (left, right, loose, strict, ordering) in cases {
+            let [lw, lk] = stored(left);
+            let [rw, rk] = stored(right);
+            let before = process.heap.alloc_stats_snapshot();
+            let answers = [
+                fz_value_eq_widening_ref(process, lw, lk, rw, rk),
+                fz_value_eq_ref(process, lw, lk, rw, rk),
+                fz_op_eq(process, lw, lk, rw, rk),
+                fz_op_neq(process, lw, lk, rw, rk),
+                fz_op_identical(process, lw, lk, rw, rk),
+                fz_op_not_identical(process, lw, lk, rw, rk),
+            ];
+            let compared = fz_value_cmp_ref(process, lw, lk, rw, rk);
+            let after = process.heap.alloc_stats_snapshot();
+            assert_eq!(
+                answers,
+                [
+                    u64::from(loose),
+                    u64::from(strict),
+                    u64::from(loose),
+                    u64::from(!loose),
+                    u64::from(strict),
+                    u64::from(!strict)
+                ],
+                "{left:?} against {right:?}"
+            );
+            assert_eq!(compared, ordering, "{left:?} against {right:?}");
+            assert_eq!(
+                after.total.allocs, before.total.allocs,
+                "{left:?} and {right:?} cross as words, unboxed"
+            );
+        }
+    });
+}
+
+#[test]
+fn inspect_takes_its_value_as_word_and_kind_and_boxes_nothing() {
+    with_process(|process| {
+        let options = AnyValueRef::empty_list().raw_word();
+        for (value, text) in [
+            (AnyValue::int(i64::MAX), "9223372036854775807"),
+            (AnyValue::float(2.5), "2.5"),
+            (AnyValue::atom(NIL_ATOM_ID), "nil"),
+        ] {
+            let [word, kind] = stored(value);
+            let before = process.heap.alloc_stats_snapshot();
+            let plain = fz_inspect(process, word, kind);
+            let limited = fz_inspect_with(process, word, kind, options);
+            let after = process.heap.alloc_stats_snapshot();
+            for rendered in [plain, limited] {
+                let rendered = any_value_from_ref_word(rendered, "inspect");
+                assert_eq!(
+                    crate::any_value::debug::render_value(process, rendered),
+                    format!("\"{text}\""),
+                    "{value:?}"
+                );
+            }
+            assert_eq!(
+                after.scalar_box.allocs, before.scalar_box.allocs,
+                "{value:?} crosses as its word, unboxed"
+            );
+        }
+    });
+}
+
 #[test]
 fn a_lookup_takes_its_key_as_word_and_kind_and_boxes_nothing() {
     with_process(|process| {
@@ -589,7 +679,7 @@ fn a_lookup_takes_its_key_as_word_and_kind_and_boxes_nothing() {
         );
         assert_eq!(fz_map_has_key(process, map, missing_word, missing_kind), 0);
         assert_eq!(
-            fz_ref_tag(fz_matcher_map_get_ref(process, map, missing_word, missing_kind)),
+            fz_type_of(fz_matcher_map_get_ref(process, map, missing_word, missing_kind)),
             ValueKind::NULL.tag()
         );
     });

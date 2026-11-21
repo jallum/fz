@@ -131,9 +131,11 @@ numeric pairs — integer/integer, float/float, integer/float, float/integer —
 on raw `extern "C"` lanes, so comparing two unboxed numbers boxes neither;
 mixed-pair identity is answered in source, since an integer is never the same
 value as a float. All of them are total, so each also keeps a trailing
-`any`/`any` clause: equality and identity call the ref-carrying `fz_op_eq`,
-`fz_op_neq`, `fz_op_identical` or `fz_op_not_identical`, and an ordering calls
+`any`/`any` clause: equality and identity call `fz_op_eq`, `fz_op_neq`,
+`fz_op_identical` or `fz_op_not_identical`, and an ordering calls
 `Kernel.compare/2`, whose `fz_value_cmp_ref` answers by the total term order.
+Each of these takes both operands as `stored_value`, so a number of a kind the
+compiler cannot see crosses without a box.
 The orderings' `binary`/`binary` clauses are commented out in `Kernel`; the `fz_op_lt_bb`, `fz_op_lte_bb`,
 `fz_op_gt_bb` and `fz_op_gte_bb` declarations they call stay, so restoring a
 clause is the uncomment.
@@ -187,9 +189,9 @@ handler in the call's place or returns to the scheduler when the process
 failed (and traps when neither happened), and the interpreter runs its handler
 frame or ends the process. See [exceptions](exceptions.md).
 
-`Kernel.inspect/1` wraps a private `extern "fz" defp fz_inspect(any) :: binary`,
+`Kernel.inspect/1` wraps a private `extern "fz" defp fz_inspect(stored_value) :: binary`,
 which renders with Elixir's default options. `Kernel.inspect/2` wraps
-`fz_inspect_with(any, any) :: binary`, whose second argument is the option
+`fz_inspect_with(stored_value, any) :: binary`, whose second argument is the option
 keyword list; the physical export reads it for `limit:` (`Limit::from_options`)
 before it renders. The two are separate because `inspect/1` must stay a
 dispatch-pure helper (guard helpers such as `map_size/1` call it to word their
@@ -395,7 +397,12 @@ StoredValue  a parameter only: two integer words, the word a container stores
 A `stored_value` parameter is how a runtime helper takes a value of any kind
 without a box: `Map.put` is one clause over `fz_map_put(any, stored_value,
 stored_value)`, and `Map.delete` and `Map.has_key?` take their key the same
-way. The helper rebuilds each value with `Stored::value`
+way, as do `fz_inspect`, `fz_inspect_with` (its value; the options stay a
+reference), `fz_value_cmp_ref` and the equality externs `fz_op_eq`,
+`fz_op_neq`, `fz_op_identical` and `fz_op_not_identical`. The runtime
+entries `fz_value_eq_ref` and `fz_value_eq_widening_ref`, which compiled code
+calls for `===` and `==` of two values it cannot type, take both operands as
+the same words. The helper rebuilds each value with `Stored::value`
 (`runtime/src/any_value.rs`). Natively the pair is
 `native_codegen::stored_parts`: a value whose kind codegen knows gives its
 word and a constant kind, and any other is read through its reference. The
@@ -953,13 +960,14 @@ code before they own it.
 
 Every extern is callable from a guard; the guard-expression node is
 `PatternGuardExpr::Extern`. `GuardExtern::new` (dispatch_matrix/pattern.rs)
-admits parameters of class `I64`, `Opaque`, `F64` or `Any` and returns of `I64`,
+admits parameters of class `I64`, `Opaque`, `F64`, `Any`, `StoredValue` or `BinaryCursor` and returns of `I64`,
 `Opaque`, `F64`, `Any`, `Bool` or `Never`, plain or `Checked`; any other class
 is `SourcePatternError::GuardExternClass`, a compile error on every path. The
-receive matcher's shim (`emit_guard_extern`) therefore marshals four classes
+receive matcher's shim (`emit_guard_extern`) therefore marshals five classes
 of operand: an integer (`receive_value_int`), a float (`receive_value_float`),
 a pid or reference (a pid is read from and packed into its ref inline; a reference goes through `fz_unbox_opaque` on the way in and `fz_box_opaque_for_any`
-on the way out) and a reference word (`emit_receive_value_ref`); a `Bool` return is a nonzero
+on the way out), a reference word (`emit_receive_value_ref`) and a stored word
+with its kind (`receive_value_stored_parts`, two arguments, no box); a `Bool` return is a nonzero
 word read as the atom `true` or `false`. `===` and `!==` in a guard are the
 Kernel functions a body calls, so they reach `fz_op_identical*` and
 `fz_op_not_identical*` through this node. An extern returning `none` fails the

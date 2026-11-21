@@ -59,7 +59,7 @@ defmodule Kernel do
   # dispatch-pure, which the option walk of `inspect/2` is not.
   def inspect(value), do: fz_inspect(value)
 
-  extern "fz" defp fz_inspect(any) :: binary
+  extern "fz" defp fz_inspect(stored_value) :: binary
 
   @doc """
   Returns `value` as the text Elixir's `inspect/2` gives it.
@@ -93,7 +93,7 @@ defmodule Kernel do
 
   defp checked_inspect_options(_, _), do: raise(%ArgumentError{message: "inspect/2 options must be a keyword list"})
 
-  extern "fz" defp fz_inspect_with(any, any) :: binary
+  extern "fz" defp fz_inspect_with(stored_value, any) :: binary
 
   @doc """
   Raises `value` as a throw: the nearest `catch` clause that takes a throw
@@ -1916,7 +1916,7 @@ defmodule Kernel do
 
   # The total term order over every value. Takes the process (the `fz` ABI)
   # because atoms order by name, not by the id they were interned with.
-  extern "fz" defp fz_value_cmp_ref(any, any) :: integer
+  extern "fz" defp fz_value_cmp_ref(stored_value, stored_value) :: integer
 
   @doc """
   Returns whether `left` and `right` are equal, comparing numbers by value.
@@ -1947,7 +1947,7 @@ defmodule Kernel do
   extern "C" defp fz_op_eq_ff(float, float) :: boolean
   extern "C" defp fz_op_eq_if(integer, float) :: boolean
   extern "C" defp fz_op_eq_fi(float, integer) :: boolean
-  extern "fz" defp fz_op_eq(any, any) :: boolean
+  extern "fz" defp fz_op_eq(stored_value, stored_value) :: boolean
 
   @doc """
   Returns whether `left` and `right` are not equal; the negation of `==/2`.
@@ -1976,7 +1976,7 @@ defmodule Kernel do
   extern "C" defp fz_op_neq_ff(float, float) :: boolean
   extern "C" defp fz_op_neq_if(integer, float) :: boolean
   extern "C" defp fz_op_neq_fi(float, integer) :: boolean
-  extern "fz" defp fz_op_neq(any, any) :: boolean
+  extern "fz" defp fz_op_neq(stored_value, stored_value) :: boolean
 
   # `===` asks whether two values are the same value, where `==` compares
   # numbers by value: `1 == 1.0` is true and `1 === 1.0` is false. Membership,
@@ -2009,7 +2009,7 @@ defmodule Kernel do
 
   extern "C" defp fz_op_identical_ii(integer, integer) :: boolean
   extern "C" defp fz_op_identical_ff(float, float) :: boolean
-  extern "fz" defp fz_op_identical(any, any) :: boolean
+  extern "fz" defp fz_op_identical(stored_value, stored_value) :: boolean
 
   @doc """
   Returns whether `left` and `right` are not the same value; the negation
@@ -2037,5 +2037,5 @@ defmodule Kernel do
 
   extern "C" defp fz_op_not_identical_ii(integer, integer) :: boolean
   extern "C" defp fz_op_not_identical_ff(float, float) :: boolean
-  extern "fz" defp fz_op_not_identical(any, any) :: boolean
+  extern "fz" defp fz_op_not_identical(stored_value, stored_value) :: boolean
 end

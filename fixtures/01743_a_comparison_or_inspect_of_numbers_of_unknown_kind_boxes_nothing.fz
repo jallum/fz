@@ -1,0 +1,54 @@
+#---
+# purpose: ==, !=, ===, !==, compare/2, inspect/1, inspect/2 and a receive guard's == and compare/2 take numbers of a kind known only at run time without boxing them, on every path
+#---
+#
+# The values come out of a list, so the compiler knows none of their kinds.
+# Each crosses into the runtime as the word it holds and its kind, so no
+# comparison and no inspection allocates a scalar box for an integer or a
+# float. Only the number of boxes is measured; the answers are printed beside
+# it. The guarded value travels inside a tuple, which is no scalar to box.
+defmodule Main do
+  def compares(a, b) do
+    {a == b, a != b, a === b, a !== b, Kernel.compare(a, b)}
+  end
+
+  def shows(a) do
+    {byte_size(inspect(a)), byte_size(inspect(a, limit: 5))}
+  end
+
+  def guarded(a, b) do
+    send(self(), {a})
+
+    receive do
+      {m} when m == b -> :equal
+      _ -> :different
+    end
+  end
+
+  def guarded_by_extern(a, b) do
+    send(self(), {a})
+
+    receive do
+      {m} when Kernel.compare(m, b) == 0 -> :equal
+      _ -> :different
+    end
+  end
+
+  def main() do
+    values = [7, 2.5, :a, 7.0]
+    before = Process.heap_alloc_stats()[:scalar_box_allocs]
+
+    answers =
+      Enum.map(values, fn a ->
+        Enum.map(values, fn b -> {compares(a, b), guarded(a, b), guarded_by_extern(a, b)} end)
+      end)
+
+    shown = Enum.map(values, fn a -> shows(a) end)
+    boxes = Process.heap_alloc_stats()[:scalar_box_allocs] - before
+    Enum.each(answers, fn row -> dbg(row) end)
+    dbg(shown)
+    dbg(boxes)
+  end
+end
+
+Main.main()
