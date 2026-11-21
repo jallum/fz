@@ -9,7 +9,7 @@ use super::extern_call::{ExternCallValue, call_lowered_extern};
 use super::prim::{interp_list_cons, interp_map_get};
 use super::value::{
     AnyValue, HeapRef, binary_literal_value, interp_bool_value, interp_empty_list_value, interp_named_field,
-    interp_nil_value, interp_read_bit_field, interp_value_from_ref_word, with_value_ref,
+    interp_nil_value, interp_read_bit_field, interp_value_from_ref_word, interp_value_from_stored, with_value_ref,
 };
 use super::*;
 use crate::compiler2::pull::TransportCarrier;
@@ -2466,8 +2466,7 @@ fn raise_last_resort(
     match last_resort {
         LastResort::Reraise => {
             let (kind, value) = (input(0)?, input(1)?);
-            let value = unsafe { &mut *proc }.heap.box_any_value_ref(value).raw_word();
-            fz_runtime::failure::reraise(proc, kind, value);
+            fz_runtime::failure::reraise(proc, kind, fz_runtime::any_value::Stored::of(value));
         }
         LastResort::Exception { exception, .. } => {
             let module = ModuleName::from_atom_name(exception)
@@ -2539,7 +2538,7 @@ fn after_panic(
     let entry = &entries[frame.entry.as_u32() as usize];
     let values = [raised.kind, raised.value, raised.name]
         .into_iter()
-        .map(AnyValue::from_any_value_ref)
+        .map(|raised| interp_value_from_stored(raised, "a raise delivered to a handler"))
         .collect::<Result<Vec<_>, _>>()?;
     let params = whole_params(entry.params.iter().copied().zip(values).collect());
     let mut env = frame.env;

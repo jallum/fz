@@ -35,7 +35,7 @@
 //! the exception Elixir raises for it, and raises it through `fz_panic`.
 
 use crate::any_value::debug::render_value;
-use crate::any_value::{AnyValue, AnyValueRef, ValueKind};
+use crate::any_value::{AnyValue, AnyValueRef, Stored, ValueKind};
 use crate::bits::{Bin, is_bitstring_like};
 use crate::exec_ctx::ExecCtx;
 use crate::handler_stack::Innermost;
@@ -83,12 +83,14 @@ impl RaiseKind {
 /// shutdown, as Elixir's CLI reads it: `:normal` and `:shutdown` are 0,
 /// `{:shutdown, status}` is `status` and any other `{:shutdown, _}` is 0.
 /// Every other reason is not a shutdown.
-fn shutdown_status(process: *mut Process, reason: AnyValueRef) -> Option<i32> {
-    let word = reason.raw_word();
-    let value = AnyValue::from_ref(reason).ok()?;
-    if atom_named(process, value, "normal") || atom_named(process, value, "shutdown") {
+fn shutdown_status(process: *mut Process, reason: AnyValue) -> Option<i32> {
+    if atom_named(process, reason, "normal") || atom_named(process, reason, "shutdown") {
         return Some(0);
     }
+    let AnyValue::HeapRef(tuple) = reason else {
+        return None;
+    };
+    let word = tuple.raw_word();
     if fz_tuple_size(process, word) != 2 {
         return None;
     }
@@ -108,7 +110,7 @@ fn value_of_word(word: u64) -> Option<AnyValue> {
 
 /// The status a process ends with when a raise of `kind` and `value` reaches no
 /// handler: 1, except for an exit whose reason is a shutdown.
-pub fn exit_status(process: *mut Process, kind: RaiseKind, value: AnyValueRef) -> i32 {
+pub fn exit_status(process: *mut Process, kind: RaiseKind, value: AnyValue) -> i32 {
     match kind {
         RaiseKind::Exit => shutdown_status(process, value).unwrap_or(1),
         RaiseKind::Error | RaiseKind::Throw => 1,
@@ -117,8 +119,8 @@ pub fn exit_status(process: *mut Process, kind: RaiseKind, value: AnyValueRef) -
 
 /// The line an uncaught raise of `kind` and `value` prints, as Elixir prints
 /// it; `None` for an exit whose reason is a shutdown, which ends silently.
-pub fn failure_line(process: *mut Process, kind: RaiseKind, value: AnyValueRef) -> Option<String> {
-    let rendered = AnyValue::from_ref(value).expect("failure_line: a value");
+pub fn failure_line(process: *mut Process, kind: RaiseKind, value: AnyValue) -> Option<String> {
+    let rendered = value;
     match kind {
         RaiseKind::Error => Some(
             match exception_name(process, rendered).zip(exception_message(process, rendered)) {
@@ -198,24 +200,45 @@ unsafe extern "C" fn stderr_fault_hook(_context: *mut (), line: *const u8, len: 
 /// `Kernel.panic/1`, and the one the runtime's own traps use.
 #[unsafe(no_mangle)]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn fz_panic(process: *mut Process, value_ref: u64) {
-    raise(process, RaiseKind::Error, value_ref);
+pub extern "C" fn fz_panic(process: *mut Process, value_word: u64, value_kind: u64) {
+    raise(
+        process,
+        RaiseKind::Error,
+        Stored {
+            word: value_word,
+            kind: value_kind,
+        },
+    );
 }
 
 /// Raise `value` in the current process as a throw: the primitive behind
 /// `Kernel.throw/1`.
 #[unsafe(no_mangle)]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn fz_throw(process: *mut Process, value_ref: u64) {
-    raise(process, RaiseKind::Throw, value_ref);
+pub extern "C" fn fz_throw(process: *mut Process, value_word: u64, value_kind: u64) {
+    raise(
+        process,
+        RaiseKind::Throw,
+        Stored {
+            word: value_word,
+            kind: value_kind,
+        },
+    );
 }
 
 /// Raise `reason` in the current process as an exit: the primitive behind
 /// `Kernel.exit/1`.
 #[unsafe(no_mangle)]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn fz_exit(process: *mut Process, reason_ref: u64) {
-    raise(process, RaiseKind::Exit, reason_ref);
+pub extern "C" fn fz_exit(process: *mut Process, reason_word: u64, reason_kind: u64) {
+    raise(
+        process,
+        RaiseKind::Exit,
+        Stored {
+            word: reason_word,
+            kind: reason_kind,
+        },
+    );
 }
 
 /// End the current process as an uncaught error ends it, with `line` as the
@@ -257,12 +280,12 @@ pub extern "C" fn fz_system_halt(process: *mut Process, status: i64) {
     process.exit_status = status;
 }
 
-/// Continue the raise a handler was delivered: raise `value_ref` with the kind
+/// Continue the raise a handler was delivered: raise `value` with the kind
 /// the handler received, as the atom `kind`. The compiler re-raises only what a
 /// handler was delivered, so a kind the runtime never delivers is a fault in
 /// the compiler, not a program's error.
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub fn reraise(process: *mut Process, kind: AnyValue, value_ref: u64) {
+pub fn reraise(process: *mut Process, kind: AnyValue, value: Stored) {
     assert!(!process.is_null(), "reraise: no current process");
     let node = unsafe { &*process }.node.clone();
     let name = match kind {
@@ -273,14 +296,21 @@ pub fn reraise(process: *mut Process, kind: AnyValue, value_ref: u64) {
         .as_deref()
         .and_then(RaiseKind::from_name)
         .unwrap_or_else(|| panic!("fz_reraise: the kind {name:?} is not one the runtime delivers"));
-    raise(process, kind, value_ref);
+    raise(process, kind, value);
 }
 
 /// [`reraise`] for compiled code: `kind_ref` is the atom the handler received.
 #[unsafe(no_mangle)]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn fz_reraise(process: *mut Process, kind_ref: u64, value_ref: u64) {
-    reraise(process, value_from_word(kind_ref, "fz_reraise kind"), value_ref);
+pub extern "C" fn fz_reraise(process: *mut Process, kind_ref: u64, value_word: u64, value_kind: u64) {
+    reraise(
+        process,
+        value_from_word(kind_ref, "fz_reraise kind"),
+        Stored {
+            word: value_word,
+            kind: value_kind,
+        },
+    );
 }
 
 /// Report the raise to the context's raise observer, then deliver it to the
@@ -291,14 +321,13 @@ pub extern "C" fn fz_reraise(process: *mut Process, kind_ref: u64, value_ref: u6
 /// fault sink, and `failed` is set. The physical export returns, so each caller
 /// unwinds itself: compiled code returns to its quantum entry, the interpreter
 /// takes its raised or failed transition.
-fn raise(process: *mut Process, kind: RaiseKind, value_ref: u64) {
+fn raise(process: *mut Process, kind: RaiseKind, raised: Stored) {
     assert!(!process.is_null(), "raise: no current process");
     let process_ptr = process;
     let process = unsafe { &mut *process };
     assert!(!process.ctx.is_null(), "raise: process has no execution context");
     let ctx = unsafe { &*process.ctx };
-    let value_ref = AnyValueRef::from_raw_word(value_ref).expect("raise: a value ref");
-    let value = AnyValue::from_ref(value_ref).expect("raise: a value");
+    let value = raised.value("raise");
     let name = exception_name(process_ptr, value);
     let stack_marker = 0u8;
     let stack_bytes = match process.stack_base {
@@ -307,23 +336,21 @@ fn raise(process: *mut Process, kind: RaiseKind, value_ref: u64) {
     };
     report_raise(ctx, process, kind, name, process.handlers.depth(), stack_bytes);
     let Some(handler) = process.handlers.innermost() else {
-        let line = failure_line(process_ptr, kind, value_ref);
+        let line = failure_line(process_ptr, kind, value);
         process.failed = true;
-        process.exit_status = exit_status(process_ptr, kind, value_ref);
+        process.exit_status = exit_status(process_ptr, kind, value);
         if let Some(line) = line {
             let sink = ctx.fault.expect("raise: fault sink installed");
             unsafe { sink(ctx.scheduler, line.as_ptr(), line.len()) };
         }
         return;
     };
-    let kind = process
-        .heap
-        .box_any_value_ref(AnyValue::atom(process.node.intern_atom(kind.name())));
-    let name = process.heap.box_any_value_ref(name.unwrap_or(AnyValue::nil_atom()));
+    let kind = Stored::of(AnyValue::atom(process.node.intern_atom(kind.name())));
+    let name = Stored::of(name.unwrap_or(AnyValue::nil_atom()));
     match handler {
         Innermost::Compiled(image) => {
             // SAFETY: a compiled record is a closure image the collector keeps current.
-            let handler = unsafe { materialize_outcome_closure(&mut process.heap, image, &[kind, value_ref, name]) };
+            let handler = unsafe { materialize_outcome_closure(&mut process.heap, image, &[kind, raised, name]) };
             process.pop_handler();
             process.deliver_handler(
                 AnyValueRef::from_heap_object(ValueKind::CLOSURE, handler).expect("handler closure ref"),
@@ -333,7 +360,7 @@ fn raise(process: *mut Process, kind: RaiseKind, value_ref: u64) {
             process.pop_handler();
             process.raised = Some(Raised {
                 kind,
-                value: value_ref,
+                value: raised,
                 name,
             });
         }
@@ -378,7 +405,7 @@ fn report_raise(
 /// error, through the one route.
 pub fn raise_exception(process: *mut Process, name: AnyValue, fields: &[(&str, AnyValue)]) {
     let exception = exception(process, name, fields);
-    raise(process, RaiseKind::Error, exception);
+    raise(process, RaiseKind::Error, Stored::of(exception));
 }
 
 /// Raise what Elixir raises when `receiver.function(..)` with `arity`
@@ -456,11 +483,10 @@ fn text(process: *mut Process, text: &str) -> AnyValue {
     process.alloc_bitstring(text.as_bytes(), 8 * text.len() as u64)
 }
 
-/// A struct of the exception module `name` on the process heap, as a value
-/// word: `fields` gives every field the module declares but the
+/// A struct of the exception module `name` on the process heap: `fields` gives every field the module declares but the
 /// `__exception__` mark, which is `true`. The module's struct is registered
 /// with the heap before anything raises it.
-fn exception(process: *mut Process, name: AnyValue, fields: &[(&str, AnyValue)]) -> u64 {
+fn exception(process: *mut Process, name: AnyValue, fields: &[(&str, AnyValue)]) -> AnyValue {
     let marked = atom(process, "true");
     let process = unsafe { &mut *process };
     let module = match name {
@@ -500,9 +526,7 @@ fn exception(process: *mut Process, name: AnyValue, fields: &[(&str, AnyValue)])
         };
         unsafe { process.heap.write_field_slot(object, (index * 8) as u32, value) };
     }
-    AnyValueRef::from_heap_object(ValueKind::STRUCT, object)
-        .expect("an exception struct ref")
-        .raw_word()
+    AnyValue::HeapRef(AnyValueRef::from_heap_object(ValueKind::STRUCT, object).expect("an exception struct ref"))
 }
 
 fn value_from_word(word: u64, context: &str) -> AnyValue {

@@ -5,7 +5,7 @@
 //! outer continuation, the captures and the pinned values, in one frame.
 
 use crate::any_value::{
-    AnyValue, AnyValueRef, ValueKind, closure_addr_from_tagged, closure_arity, closure_capture_copy,
+    AnyValue, AnyValueRef, Stored, ValueKind, closure_addr_from_tagged, closure_arity, closure_capture_copy,
     closure_capture_set, closure_capture_set_ref_word, closure_flags, closure_flags_captured, closure_flags_halt_kind,
 };
 use crate::heap::Heap;
@@ -224,7 +224,7 @@ impl ParkRecord {
 /// # Safety
 ///
 /// `template` must point at a live closure whose first capture is the outer continuation.
-pub unsafe fn materialize_outcome_closure(heap: &mut Heap, template: *mut u8, arguments: &[AnyValueRef]) -> *mut u8 {
+pub unsafe fn materialize_outcome_closure(heap: &mut Heap, template: *mut u8, arguments: &[Stored]) -> *mut u8 {
     let flags = unsafe { closure_flags(template as *const u8) };
     let template_slots = closure_flags_captured(flags) as usize;
     assert!(
@@ -249,7 +249,7 @@ pub unsafe fn materialize_outcome_closure(heap: &mut Heap, template: *mut u8, ar
         closure_capture_copy(template_u8, 0, outcome_u8, 0);
 
         for (i, v) in arguments.iter().enumerate() {
-            closure_capture_set_ref_word(outcome_u8, i + 1, v.raw_word());
+            closure_capture_set(outcome_u8, i + 1, v.value("outcome closure argument"));
         }
 
         let template_caps = template_slots - 1;

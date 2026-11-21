@@ -45,7 +45,7 @@ defmodule Kernel do
   @spec panic(any) :: no_return()
   def panic(reason), do: fz_panic(reason)
 
-  extern "fz" defp fz_panic(any) :: none, delivers: :error
+  extern "fz" defp fz_panic(stored_value) :: none, delivers: :error
 
   @doc """
   Returns `value` as the text Elixir's `inspect/1` gives it: `dbg/1`,
@@ -131,7 +131,7 @@ defmodule Kernel do
   @spec throw(any) :: no_return()
   def throw(value), do: fz_throw(value)
 
-  extern "fz" defp fz_throw(any) :: none, delivers: :throw
+  extern "fz" defp fz_throw(stored_value) :: none, delivers: :throw
 
   @doc """
   Ends the current process with `reason`: the nearest `catch :exit, reason`
@@ -152,7 +152,7 @@ defmodule Kernel do
   @spec exit(any) :: no_return()
   def exit(reason), do: fz_exit(reason)
 
-  extern "fz" defp fz_exit(any) :: none, delivers: :exit
+  extern "fz" defp fz_exit(stored_value) :: none, delivers: :exit
 
   @doc """
   Raises the exception `exception` again. The stacktrace is accepted for

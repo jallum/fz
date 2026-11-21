@@ -200,8 +200,10 @@ match, and every execution door follows the declaration rather than claiming
 those names in compiler lowering. `spawn/1` is the only process-spawn surface;
 there is no heap-hint variant or compatibility export.
 
-`Kernel.panic/1` likewise wraps a private `extern "fz" defp fz_panic(any) ::
-none`. Its arbitrary fz value stays borrowed from the current process while
+`Kernel.panic/1` likewise wraps a private `extern "fz" defp
+fz_panic(stored_value) :: none`, as `throw/1` and `exit/1` wrap `fz_throw` and
+`fz_exit`. Its arbitrary fz value arrives as two words, so a number is never
+boxed to be raised, and stays borrowed from the current process while
 the physical export renders its failure line, marks the process failed and
 hands the line to the `ExecCtx` fault sink, all before it returns, unless a
 `try` handler is on the stack, in which case it delivers the raise there
@@ -479,8 +481,9 @@ A `stored_value` parameter is how a runtime helper takes a value of any kind
 without a box: `:maps.put` guards `is_map` and calls `fz_map_put(map,
 stored_value, stored_value)`, and `Map.delete` and `Map.has_key?` take their key the same
 way, as do `fz_inspect`, `fz_inspect_with` (its value; the options stay a
-reference), `fz_value_cmp_ref` and the equality externs `fz_op_eq`,
-`fz_op_neq`, `fz_op_identical` and `fz_op_not_identical`. The runtime
+reference), `fz_value_cmp_ref`, the equality externs `fz_op_eq`,
+`fz_op_neq`, `fz_op_identical` and `fz_op_not_identical`, and the raise
+primitives `fz_panic`, `fz_throw` and `fz_exit`. The runtime
 entries `fz_value_eq_ref` and `fz_value_eq_widening_ref`, which compiled code
 calls for `===` and `==` of two values it cannot type, take both operands as
 the same words. The helper rebuilds each value with `Stored::value`
@@ -661,7 +664,7 @@ An extern whose call hands its first argument to the nearest handler says so,
 and names the kind the handler receives:
 
 ```fz
-extern "fz" defp fz_throw(any) :: none, delivers: :throw
+extern "fz" defp fz_throw(stored_value) :: none, delivers: :throw
 ```
 
 `parse_extern_delivers` accepts `:error`, `:throw` or `:exit`. The kind rides

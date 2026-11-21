@@ -487,9 +487,9 @@ fn emit_raise<M: cranelift_module::Module>(
     var_env: &HashMap<u32, CodegenValue>,
     value: Var,
 ) -> Result<(), CodegenError> {
-    let value = body.any_ref_for_var(var_env, value.0);
+    let [value_word, value_kind] = stored_parts(body, binding_for_var(var_env, value.0));
     let process = body.process_arg();
-    runtime_call!(body, fz_panic, [process, value]);
+    runtime_call!(body, fz_panic, [process, value_word, value_kind]);
     continue_after_raise(body);
     Ok(())
 }
@@ -503,9 +503,9 @@ fn emit_reraise<M: cranelift_module::Module>(
     value: Var,
 ) -> Result<(), CodegenError> {
     let kind = body.any_ref_for_var(var_env, kind.0);
-    let value = body.any_ref_for_var(var_env, value.0);
+    let [value_word, value_kind] = stored_parts(body, binding_for_var(var_env, value.0));
     let process = body.process_arg();
-    runtime_call!(body, fz_reraise, [process, kind, value]);
+    runtime_call!(body, fz_reraise, [process, kind, value_word, value_kind]);
     continue_after_raise(body);
     Ok(())
 }

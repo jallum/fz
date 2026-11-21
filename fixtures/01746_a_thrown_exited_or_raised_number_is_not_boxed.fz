@@ -1,0 +1,71 @@
+#---
+# purpose: a number thrown, exited, raised or re-raised reaches its handler as its word and kind, with no box made for it, on every path
+#---
+#
+# `n + 1` and `x * 2.0` are numbers the program holds in registers. `throw`,
+# `exit` and `panic` hand each to the runtime as a word and a kind, and the
+# handler's closure stores them as they come, so none is boxed. The inner
+# `try` catches only `:error`, so the throw passes through it and is raised
+# again with the kind it arrived with. The answers are printed beside the number
+# of boxes each raise made.
+defmodule Main do
+  def boxes(), do: System.alloc_stats()[:scalar_box_allocs]
+
+  def thrown(n) do
+    try do
+      throw(n + 1)
+    catch
+      x -> x == 3
+    end
+  end
+
+  def exited(x) do
+    try do
+      exit(x * 2.0)
+    catch
+      :exit, y -> y == 2.5
+    end
+  end
+
+  def raised(n) do
+    try do
+      panic(n + 1)
+    catch
+      :error, x -> x == 3
+    end
+  end
+
+  def reraised(n) do
+    try do
+      try do
+        throw(n + 1)
+      catch
+        :error, _ -> :never
+      end
+    catch
+      x -> x == 3
+    end
+  end
+
+  def main() do
+    n = length([:a, :b])
+    x = hd([1.25])
+    thrown(n)
+    exited(x)
+    raised(n)
+    reraised(n)
+    b0 = boxes()
+    r1 = thrown(n)
+    b1 = boxes()
+    r2 = exited(x)
+    b2 = boxes()
+    r3 = raised(n)
+    b3 = boxes()
+    r4 = reraised(n)
+    b4 = boxes()
+    dbg({r1, r2, r3, r4})
+    dbg({b1 - b0, b2 - b1, b3 - b2, b4 - b3})
+  end
+end
+
+Main.main()

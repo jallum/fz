@@ -13,12 +13,13 @@ failed process, and the exit status that follows.
 
 `Kernel.panic/1`, `Kernel.throw/1` and `Kernel.exit/1` are the raise
 primitives, one per kind; `:erlang.error/1` is `panic/1` after `Exception.__normalize__/1` (below). Each wraps an `extern "fz" defp ... :: none` whose
-physical export is `fz_runtime::failure::fz_panic(process, value_ref)`,
-`fz_throw(process, value_ref)` or `fz_exit(process, value_ref)`; each is `raise`
-with its fixed kind (`error`, `throw`, `exit`). Nothing in Kernel takes a kind
+physical export is `fz_runtime::failure::fz_panic(process, value_word, value_kind)`,
+`fz_throw(process, value_word, value_kind)` or `fz_exit(process, value_word,
+value_kind)`: the raised value arrives as a `Stored` pair, so a number is never
+boxed to be raised, and each is `raise` with its fixed kind (`error`, `throw`, `exit`). Nothing in Kernel takes a kind
 from a program. The compiler continues a raise a handler was delivered through
-`fz_reraise(process, kind_ref, value_ref)`, which reads the kind from the atom
-the handler received and is `raise` with it; a kind the runtime never delivers
+`fz_reraise(process, kind_ref, value_word, value_kind)`, which reads the kind
+from the atom the handler received and is `raise` with it; a kind the runtime never delivers
 panics, as a fault in the compiler.
 `raise_exception(process, name, fields)` builds a struct of the exception
 module `name` and is `raise` with kind `error`. It allocates in the layout of
@@ -122,16 +123,19 @@ is by kind, whatever it holds).
   inline while the record fits, and calls `fz_handler_reserve` to grow the
   stack only when it is full. `Prim::PopHandler`, where the body's continuation
   begins, pops inline with `pop_handler_record`: `top` falls by the trailer's
-  size. Delivery materializes the image with the three values as its bound
-  values (`materialize_outcome_closure`, the receive-outcome machinery), pops
+  size. Delivery materializes the image with the three values, each a `Stored`
+  pair, as its bound values (`materialize_outcome_closure`, the receive-outcome
+  machinery), pops
   the record, and stores the result in `Process::delivered`. That slot is not
   `runnable`: `runnable` means queued for the scheduler, `delivered` means a
   handler the current quantum is about to run.
 - An interpreter record is the trailer alone. The interpreter keeps a
   `BackendContinuation` with `handler: true` on its continuation stack and
   pushes this record beside it (`Process::push_interpreter_handler`); delivery
-  leaves the three values in `Process::raised` for the interpreter to take when
-  the panicking extern returns.
+  leaves the three values in `Process::raised`, each a `Stored` pair, for the
+  interpreter to take when the panicking extern returns. A raise is not a
+  collector root: it is taken at once, and `Process::collect` asserts none is
+  pending.
 
 Both kinds share the one stack, so a raise reaches the innermost `try`
 whichever path entered it.
@@ -146,7 +150,8 @@ whichever path entered it.
   arm of last resort after a `Prim::MakeStruct` of the exception, calls
   `fz_panic` with that struct, and then the same; `Term::Reraise`, which lowering emits
   at a handler's arm of last resort, calls `fz_reraise` with the plan's first
-  two inputs and then the same.
+  two inputs and then the same. A raised value reaches either call as
+  `stored_parts`, never a box.
   The raising frame returns 0, as a yield does, and every frame above it
   returns that 0 to the quantum entry: the machine frames between the `try` and
   the raise are gone before the handler runs, so a loop that raises on every
