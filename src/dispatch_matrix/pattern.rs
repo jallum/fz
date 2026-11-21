@@ -273,6 +273,20 @@ pub(crate) trait PatternResolver<TypeHandle> {
         arity: usize,
     ) -> Result<Option<GuardCallee<TypeHandle>>, SourcePatternError>;
 
+    /// What a call to a guard helper asks when some of its arguments are
+    /// literals: the type each remaining argument must have for the call to
+    /// hold, or `None` when the helper has no such domain at these literals.
+    /// `arguments` holds a literal's value where the call writes one and
+    /// `None` where it names a bound variable. A resolver with no domains
+    /// answers `None` for every call.
+    fn guard_domain(
+        &mut self,
+        _callee: &crate::ast::Callee,
+        _arguments: &[Option<GroundValue>],
+    ) -> Result<Option<Vec<(u32, TypeHandle)>>, SourcePatternError> {
+        Ok(None)
+    }
+
     /// Whether a type test over this type can tell one literal from another.
     /// It cannot when the type names no specific atom anywhere inside it.
     fn is_literal_blind(&self, ty: &TypeHandle) -> bool;
@@ -1570,8 +1584,10 @@ fn and_chain(guard: &Spanned<Expr>) -> Vec<&Spanned<Expr>> {
     }
 }
 
-/// The type questions a conjunct amounts to: it calls a type predicate and
-/// hands it only variables its row binds. Anything else stays a guard.
+/// The type questions a conjunct amounts to: it calls a helper that is only a
+/// type test, or one with a guard domain at the call's literals, and hands it
+/// only variables its row binds and integer or atom literals. Anything else
+/// stays a guard.
 fn type_test_of<F, TypeHandle, Subject: Copy>(
     conjunct: &Spanned<Expr>,
     bound: &HashMap<Var, Subject>,
@@ -1587,25 +1603,54 @@ where
     let Some(callee) = crate::ast::Callee::for_call(&target.node, args.len()) else {
         return Ok(None);
     };
-    let subjects = args
+    let Some(arguments) = args
         .iter()
-        .map(|arg| match &arg.node {
-            Expr::Var(name) => bound.get(name).copied(),
-            _ => None,
-        })
-        .collect::<Option<Vec<_>>>();
-    let Some(subjects) = subjects else {
+        .map(|arg| test_argument(&arg.node, bound))
+        .collect::<Option<Vec<_>>>()
+    else {
         return Ok(None);
     };
     let Some(GuardCallee::Helper(helper)) = resolver.guard_call(&callee, args.len())? else {
         return Ok(None);
     };
-    Ok(helper.type_predicate.as_ref().map(|asked| {
+    let asked = match &helper.type_predicate {
+        Some(asked) => Some(asked.clone()),
+        None => {
+            let literals = arguments
+                .iter()
+                .map(|argument| match argument {
+                    TestArgument::Bound(_) => None,
+                    TestArgument::Literal(value) => Some(value.clone()),
+                })
+                .collect::<Vec<_>>();
+            resolver.guard_domain(&callee, &literals)?
+        }
+    };
+    Ok(asked.and_then(|asked| {
         asked
-            .iter()
-            .map(|(argument, ty)| (subjects[*argument as usize], ty.clone()))
+            .into_iter()
+            .map(|(argument, ty)| match &arguments[argument as usize] {
+                TestArgument::Bound(subject) => Some((*subject, ty)),
+                TestArgument::Literal(_) => None,
+            })
             .collect()
     }))
+}
+
+/// An argument a type test can take: a variable the row binds, or a literal
+/// that names a class of value on its own.
+enum TestArgument<Subject> {
+    Bound(Subject),
+    Literal(GroundValue),
+}
+
+fn test_argument<Subject: Copy>(arg: &Expr, bound: &HashMap<Var, Subject>) -> Option<TestArgument<Subject>> {
+    match arg {
+        Expr::Var(name) => bound.get(name).copied().map(TestArgument::Bound),
+        Expr::Int(value) => Some(TestArgument::Literal(GroundValue::Int(*value))),
+        Expr::Atom(name) => Some(TestArgument::Literal(GroundValue::Atom(name.clone()))),
+        _ => None,
+    }
 }
 
 /// The types `expr` can only hold a value for: each call it is sure to make to

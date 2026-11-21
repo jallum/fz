@@ -230,6 +230,21 @@ clauses, `case` arms, `receive` arms and lambda clauses fold alike, and the
 analysis reads the folded question like a typed parameter's: the body narrows by
 it and an activation whose type decides the clause skips the test.
 
+A helper that is not a type predicate on its own can be one at literal
+arguments. A call's arguments are variables the row binds or integer and atom
+literals, and the literals ask the guard-domain table
+(`PatternResolver::guard_domain`, filled by `compiler2/guard_domain.rs`) what
+the helper means at them: the table's entry for a helper is a function from the
+call's literals to the types its variable arguments must have. The one entry is
+`Kernel.is_function/2` at an integer literal `n >= 0`, which asks `f` for the
+arrow `(any, ..., any -> any)` of `n` arguments, the type `f :: (any, any -> any)`
+asks in a head, so `is_function(f, 2)` folds to the same type question and `f`
+is read for its class alone. A negative or non-integer literal has no entry, so
+the call stays the helper's own guard, which raises. The entry and the helper's
+clauses in `lib/kernel.fz` state one meaning twice, and
+`the_table_entry_and_the_kernel_clauses_agree` runs both at arities 0 to 3, a
+negative and a non-integer. Fixture `01883` runs the folded guard on all paths.
+
 A helper that fails for some arguments narrows too. `answers_only_for` reads
 the clauses of a helper whose body is not a failing node and lists each
 argument they all ask the same type of, through an annotation, a type predicate
