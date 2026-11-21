@@ -3,7 +3,7 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-19T03:09:40Z",
-  "description": "User directed 2026-11-19: \"add the elixir parity issues as tickets to the epic we gave to Elixir Parity\". Owner: Elixir Parity. Found by JSON walking the json.erl port (/Users/j5n/Workspace/fz-752-walk/walk.md, fz2 from #786 head). Today it is a compile error artifact/incomplete-semantic-plan with no source location, on all paths. Near fz-sc8.141 (an element of an any enumerable is accepted) but a different claim. Repro: repro_21.fz. Done: the program compiles and raises Protocol.UndefinedError at run time, as in Elixir.",
+  "description": "User directed 2026-11-19: \"add the elixir parity issues as tickets to the epic we gave to Elixir Parity\". Owner: Elixir Parity. Found by JSON walking the json.erl port (/Users/j5n/Workspace/fz-752-walk/walk.md, fz2 from #786 head). Today it is a compile error artifact/incomplete-semantic-plan with no source location, on all paths. Near fz-sc8.141 (an element of an any enumerable is accepted) but a different claim. Repro: /Users/j5n/Workspace/fz-752-walk/repro_26.fz. Done: the program compiles and raises Protocol.UndefinedError at run time, as in Elixir.",
   "id": "fz-mue.24",
   "labels": [],
   "parent": "fz-mue",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "Enumerable on a value with no implementation raises Protocol.UndefinedError at run time",
   "type": "bug",
-  "updated_at": "2026-11-19T03:09:40Z"
+  "updated_at": "2026-11-21T04:57:19Z"
 }
