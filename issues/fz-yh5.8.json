@@ -11,7 +11,7 @@
   "parent": "fz-yh5",
   "priority": 1,
   "status": "open",
-  "title": "An is_function(f, n) guard does not force a callable through the boxed seam",
+  "title": "An is_function(f, n) guard does not force a callable through the boxed seam (option A: guard-domain table)",
   "type": "bug",
-  "updated_at": "2026-11-21T04:57:18Z"
+  "updated_at": "2026-11-21T11:54:20Z"
 }
