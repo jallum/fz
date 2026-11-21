@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-21T04:50:02Z",
+  "description": "Split from fz-mue.7 (user approved 2026-11-20, relayed by Optimize; page /Users/j5n/Workspace/fz-mue.7.html, Decision 2).\n\njson.erl's encoder sorts a map's keys through maps:to_list(maps:iterator(Map, ordered)) (json.erl:671). iterator(M, ordered) is [lists:sort(fun cmp_term/2 =\u003c 0, maps:keys(M)) | M] and next on a key-list path looks each key up.\n\n- :lists.sort/2: OTP's merge sort with a compare fun (lists.erl:1882 and the fsplit/rmerge family), ported faithfully.\n- :erts_internal.cmp_term/2: one extern over the existing term-order comparator (map key order is term order on stored words, fz-sc8.192.6).\n- iterator/2 and map_next on a key-list path.\n- BEAM per entry for to_list(iterator(M, ordered)): 1,092 at 40 keys, 3,121 at 100,000. Predictions on this ticket's page, page first.\n\nAfter the improper iterator (blocked by the .7b ticket). Owner: Optimize.",
+  "id": "fz-mue.56",
+  "labels": [],
+  "parent": "fz-mue",
+  "priority": 2,
+  "status": "open",
+  "title": ":maps.iterator(M, ordered) walks keys in term order, through :lists.sort/2 and :erts_internal.cmp_term/2",
+  "type": "feature",
+  "updated_at": "2026-11-21T04:50:02Z"
+}
