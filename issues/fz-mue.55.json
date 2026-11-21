@@ -1,6 +1,8 @@
 {
   "assignee": "Optimize",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-mue.7"
+  ],
   "blocks": [],
   "created": "2026-11-21T04:50:00Z",
   "description": "Split from fz-mue.7 (user approved the split 2026-11-20, relayed by Optimize; page /Users/j5n/Workspace/fz-mue.7.html, Decision 1 and 3).\n\niterator(M) is [0 | M], an improper list whose tail is the map (maps.erl:1060), so this waits on fz-sc8.22.2.\n\n- :erts_internal.map_next/3 iterator mode: one descent to the position, then a linked batch of up to 32 {K, V, Next} tuples ending in [Path' | Map] or none. The position is fz's entry index, not BEAM's 4-bits-per-level path; map_locate is the existing cursor, nothing is added for it.\n- iterator/1, next/1 and fold/3 ported clause for clause from maps.erl.\n- Elixir's Map.filter, reject, split_with and map use :maps.iterator/next (map.ex:254, 933, 1154, 1191); fz's versions move to that shape here, so there is one walk per idea, and their own walks are deleted.\n- Floor: bench/maps/floor/walk.s gains fz_map_next_batch(map, index, bump); harness checks concatenated batches against the reference walk. probes.py gains next and fold rows at 40 and 100,000 keys (fz, floor, BEAM). BEAM per entry: next-sum 336/273, fold-sum 171/134. Predicted fz: next \u003c 200, fold \u003c 260. A miss is explained before landing, not waived.\n- Punch /Users/j5n/Workspace/fz-otp-json/punch/14_maps_iterator_next.fz and the fold part of 15 become fixtures (fz-mue block; check open PRs for the next free number).\n- Docs: .agent/docs/modules.md, any-value.md (walk paragraph names map_next), bench/maps/README.md.\n\nOwner: Optimize.",

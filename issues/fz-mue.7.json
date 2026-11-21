@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-sc8.192.3"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-mue.55"
+  ],
   "created": "2026-11-18T20:44:01Z",
   "description": "module :maps is not defined. json.erl encodes maps through :maps.iterator/next. Reproducers: /Users/j5n/Workspace/fz-otp-json/punch/14_maps_iterator_next.fz, 15_maps_fold_put_merge.fz, 16_maps_from_list_to_list.fz\n\nPart of fz-mue (fz runs OTP's json.erl unchanged). Port and harness: /Users/j5n/Workspace/fz-otp-json/.\n\nOwner: Optimize (reassigned 2026-11-20 at the user's request, agreed by Elixir Parity). Builds on fz-sc8.192.3, which moves the one-pass fz_map_to_list/keys/values into lib/maps.fz as :maps.to_list/keys/values with Map delegating, as Elixir does. This ticket adds :maps.iterator/next on a runtime cursor (entry order = the one-pass walk; bounded memory, as OTP's [Path | Map]), fold over iterator/next as OTP writes it, and put/merge/from_list as :maps names for the existing runtime operations. Punch 14-16 become fixtures. Erlang-module pattern: lib/lists.fz (defmodule :lists, registered in runtime_library.rs). Page first (asm-first, with a floor for next/1).",
   "id": "fz-mue.7",
@@ -13,5 +15,5 @@
   "status": "open",
   "title": ":maps is defined with iterator, next, fold, put, merge, from_list and to_list",
   "type": "feature",
-  "updated_at": "2026-11-20T21:58:36Z"
+  "updated_at": "2026-11-21T04:50:01Z"
 }
