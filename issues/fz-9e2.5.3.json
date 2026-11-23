@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Binary Handling",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-23T19:58:38Z",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "One equality: receive compares against the literal object",
   "type": "task",
-  "updated_at": "2026-11-23T19:58:38Z"
+  "updated_at": "2026-11-23T19:58:40Z"
 }
