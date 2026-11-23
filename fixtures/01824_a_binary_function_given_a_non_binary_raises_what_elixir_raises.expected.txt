@@ -1,0 +1,16 @@
+{:length_integer, FunctionClauseError}
+{:length_bits, FunctionClauseError}
+{:graphemes_integer, FunctionClauseError}
+{:next_grapheme_integer, FunctionClauseError}
+{:next_grapheme_size_integer, FunctionClauseError}
+{:upcase_integer, FunctionClauseError}
+{:downcase_bits, FunctionClauseError}
+{:to_atom_integer, ArgumentError, "errors were found at the given arguments:\n\n  * 1st argument: not a binary\n"}
+{:to_atom_bits, ArgumentError, "errors were found at the given arguments:\n\n  * 1st argument: not a binary\n"}
+{:to_atom_invalid_utf8, ArgumentError, "errors were found at the given arguments:\n\n  * 1st argument: invalid UTF8 encoding\n"}
+{:to_atom_valid, :ok, :héllo}
+{:to_float_integer, ArgumentError, "errors were found at the given arguments:\n\n  * 1st argument: not a binary\n"}
+{:float_parse_integer, FunctionClauseError}
+{:valid_integer, FunctionClauseError}
+{:valid_bits, FunctionClauseError}
+{:length_valid, :ok, 5}
