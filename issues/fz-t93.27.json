@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-t93.26"
+  ],
   "blocks": [],
   "created": "2026-11-23T19:59:37Z",
   "description": "From fz-t93.26's paper (M4). The rescue handler reads Raisable through uses.read (jobs/semantic.rs ~1219, raisable_ty) instead of waiting on it. Raisable only grows, so the handler is analysed at each step of the exception union and every step leaves a contribution row behind; the final plan depends on job order. Shows on 00795 and 00796 (Enum.into(list, %{})). Done when the handler waits on the finished Raisable and 00795/00796 plans are identical under fifo and lifo (fz-t93.26's cfg(test) order knob). Evidence: /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/t93_26/.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "A rescue handler waits for the exception type it rescues",
   "type": "bug",
-  "updated_at": "2026-11-23T19:59:37Z"
+  "updated_at": "2026-11-23T19:59:38Z"
 }
