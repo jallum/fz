@@ -28,6 +28,13 @@
 //! scheduler-owned closures, mailbox roots, and interpreter-owned explicit
 //! roots are traced.
 //!
+//! One `gc::forward::Tracer` carries a collection: the from-space, the heap,
+//! the schemas, the queue of copied objects and the stats. Its `forward(word,
+//! kind)` is the only way a collection moves a value: the word a container
+//! stores, with its kind, comes back unchanged unless the kind is a heap kind
+//! and the object is in from-space, in which case it comes back naming the
+//! to-space copy. Roots and every trace method go through it.
+//!
 //! Forwarding marker: every heap object is 16-byte aligned, so a live
 //! pointer's low nibble is clear. A copied from-space object has the one
 //! marker word of its kind (`gc::forwarding`) overwritten with the to-space

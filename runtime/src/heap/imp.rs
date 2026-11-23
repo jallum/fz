@@ -3,10 +3,7 @@
 use super::block_pool::{
     Block, SIZE_TABLE, next_block_capacity, pick_block_capacity, pick_tip_capacity, pool_alloc, round_up_16,
 };
-use super::gc::{
-    CopiedObject, FromSpace, cheney_trace_binview, cheney_trace_closure, cheney_trace_list, cheney_trace_map,
-    cheney_trace_struct, forward_any_value_ref_root,
-};
+use super::gc::{FromSpace, Tracer};
 use super::map_view::destination_layout;
 use super::ref_io::{
     any_value_ref_from_storage, list_tail_bits_from_ref, ptr_in_ranges, reject_scalar_ref_write,
@@ -1598,8 +1595,7 @@ impl Heap {
             top: to_start,
             capacity: to_capacity,
         });
-        let mut copied_objects: Vec<CopiedObject> = Vec::new();
-        let mut stats = GcStats {
+        let stats = GcStats {
             generation,
             young_bytes,
             young_budget,
@@ -1615,28 +1611,13 @@ impl Heap {
         };
         let schemas_handle = self.schemas.clone();
 
-        for value in roots.iter_mut() {
-            forward_any_value_ref_root(
-                value,
-                &from_space,
-                self,
-                &schemas_handle.borrow(),
-                &mut copied_objects,
-                &mut stats,
-            );
-        }
-
         let schemas = schemas_handle.borrow();
-        let mut scan_idx = 0usize;
-        cheney_scan(
-            &mut scan_idx,
-            &from_space,
-            self,
-            &schemas,
-            &mut copied_objects,
-            &mut stats,
-        );
-
+        let mut tracer = Tracer::new(from_space, self, &schemas, stats);
+        for root in roots.iter_mut() {
+            tracer.forward_root(root);
+        }
+        tracer.scan();
+        let (mut stats, kept_objects) = tracer.finish();
         drop(schemas);
 
         // The off-heap sweep walks the intrusive chain of the from-space: survivors
@@ -1649,7 +1630,6 @@ impl Heap {
         self.binary_budget.after_collection(generation, survivor_binary_bytes);
 
         stats.to_space_capacity_bytes = self.retire_to_space_as_old() as u64;
-        let kept_objects = copied_objects.len() as u64;
         match generation {
             Generation::Major => {
                 self.live_baseline = stats.copied_bytes as usize;
@@ -1724,39 +1704,6 @@ impl Heap {
     /// destructor on `pending_dtors`. Allocates no to-space.
     pub fn release_resources_at_exit(&mut self) {
         off_heap::sweep(self, Generation::Major, &mut 0, &mut StubCounts::default());
-    }
-}
-
-/// Scan the to-space objects copied since `scan_idx`, forwarding what each
-/// one references, until the scan catches up with the copy frontier.
-fn cheney_scan(
-    scan_idx: &mut usize,
-    from_space: &FromSpace,
-    heap: &mut Heap,
-    schemas: &SchemaRegistry,
-    copied_objects: &mut Vec<CopiedObject>,
-    stats: &mut GcStats,
-) {
-    while *scan_idx < copied_objects.len() {
-        let copied = copied_objects[*scan_idx];
-        *scan_idx += 1;
-        match copied.kind {
-            ValueKind::LIST => cheney_trace_list(
-                copied.ptr as *mut ListCons,
-                from_space,
-                heap,
-                schemas,
-                copied_objects,
-                stats,
-            ),
-            ValueKind::MAP => cheney_trace_map(copied.ptr, from_space, heap, schemas, copied_objects, stats),
-            ValueKind::CLOSURE => cheney_trace_closure(copied.ptr, from_space, heap, schemas, copied_objects, stats),
-            ValueKind::STRUCT => cheney_trace_struct(copied.ptr, from_space, heap, schemas, copied_objects, stats),
-            // These hold no heap edge for the scan to forward.
-            ValueKind::BITSTRING | ValueKind::BINREF | ValueKind::RESOURCE => {}
-            ValueKind::BINVIEW => cheney_trace_binview(copied.ptr, from_space, heap, schemas, copied_objects, stats),
-            kind => panic!("Cheney scan: invalid copied object kind {kind:?}"),
-        }
     }
 }
 

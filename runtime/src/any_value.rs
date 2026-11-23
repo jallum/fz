@@ -1101,8 +1101,17 @@ impl ListLink {
     }
 
     pub fn with_tail(self, tail_bits: u64) -> Self {
-        let metadata = self.0 & LIST_LINK_METADATA_MASK;
-        Self(metadata | list_tail_addr_from_bits(tail_bits))
+        self.with_tail_addr(list_tail_addr_from_bits(tail_bits))
+    }
+
+    /// This link with its tail at `tail_addr`, zero for the empty list.
+    pub fn with_tail_addr(self, tail_addr: u64) -> Self {
+        debug_assert_eq!(
+            tail_addr & !LIST_LINK_ADDR_MASK,
+            0,
+            "a tail address carries no metadata"
+        );
+        Self((self.0 & LIST_LINK_METADATA_MASK) | tail_addr)
     }
 
     pub fn with_head_kind(self, head_kind: ValueKind) -> Self {
@@ -1176,8 +1185,8 @@ impl ListCons {
     }
 
     /// Relocate the same logical tail in a collector-owned graph.
-    pub(crate) fn relocate_tail_for_gc(&mut self, tail_bits: u64) {
-        self.link = self.link().with_tail(tail_bits).raw();
+    pub(crate) fn relocate_tail_for_gc(&mut self, tail_addr: u64) {
+        self.link = self.link().with_tail_addr(tail_addr).raw();
     }
 
     fn set_head_raw_kind_tail(&mut self, head_raw: u64, head_kind: ValueKind, tail_bits: u64) {

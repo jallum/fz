@@ -451,6 +451,21 @@ the from-space range walk as a cross-check (`FromSpace::assert_classified`,
 an old block a minor collection leaves, a tagged one must lie in no heap block,
 and none may lie in to-space. No allocation or mutator path tests an address.
 
+One `Tracer` (from-space, heap, schemas, worklist of copied objects, stats) is
+the collection's context, and `Tracer::forward(word, kind)` is its one
+forwarding primitive. The pair is a stored word (address and literal bit) and
+its kind. A non-heap kind, a null address and an object `moves` rejects come
+back unchanged; any other object is copied once, its forwarding marker written,
+and the word returned with its address bits replaced, so a word that carries a
+tag above its address keeps it. A trace method reads (word, kind) from a slot
+and writes the returned word back; it never builds or decodes an `AnyValue`,
+and a kind is never rewritten, since forwarding never changes one.
+`forward_root` is the one root entry: a boxed scalar root copies its 16-byte
+box, and every other root forwards as its `AnyValueRef` word. `forward` is
+`#[inline(always)]` because the trace's speed depends on it inlining into each
+trace loop, and the optimizer's choice there shifts with the codegen-unit
+split.
+
 ## Container Storage
 
 Containers *appear* to store `AnyValueRef`s when dynamic code reads them, but
@@ -883,7 +898,7 @@ a marked tail. `ListCons::share_spine` stops at the first marked cell, so repeat
 publication visits only newly protected cells plus one check per Share edge.
 The bit setter and link are private; shared cells cannot relink, and GC relocates
 the same logical tail without changing this invariant. A collection marks every
-cell it keeps (`ListCons::keep_across_collection`, from `cheney_trace_list`), and
+cell it keeps (`ListCons::keep_across_collection`, from `Tracer::trace_list`), and
 a gift copy marks every cell it writes (`link_list_tail`), so a cell in an old
 block (one a collection kept) or in a message is never rewritten in place
 and never comes to point at a value allocated after it. A minor collection relies
@@ -940,7 +955,7 @@ can gain a second holder:
   or value (`publish_contained_parts`; natively `CodegenFn::stored_form`,
   shaped by the stored value's type as a call argument's share is, and the
   list cell a cons places);
-- a collection that keeps it (`cheney_trace_struct`), since a kept struct is
+- a collection that keeps it (`Tracer::trace_struct`), since a kept struct is
   old;
 - a gift copy (`deep_copy_strict_struct`).
 
@@ -992,7 +1007,7 @@ yield, unless it has been stored in a traced root.
 
 GC copies each reachable object as a whole unit, then follows only the payload
 slots whose object-local kind byte says `is_heap()`
-(`cheney_trace_list`/`_map`/`_struct`/`_closure`/`_binview`; a resource stub holds
+(`Tracer::trace_list`/`_map`/`_struct`/`_closure`/`_binview`; a resource stub holds
 no heap edge):
 
 ```text
@@ -1004,7 +1019,7 @@ Heap-object refs (`Map, List, Struct, Closure, Bitstring, BinView, BinRef, Resou
 are followed as edges. An int, float or reference ref points at a payload word, not a child
 object; a scalar payload can *look* like an address, but the kind byte is the
 authority, so scalars are never chased. When an int, float or reference ref sits in a
-durable root slot, GC copies its boxed payload (`copy_scalar_box_to_space`, a
+durable root slot, GC copies its boxed payload (`Tracer::forward_root`, a
 small `ScalarBox` heap object) and rewrites the root to the copy — copied, not
 followed. An atom or pid ref has no payload to copy: GC and deep copy leave it as it is,
 like `null`, and a measuring pass charges it nothing. Generated code packs and
