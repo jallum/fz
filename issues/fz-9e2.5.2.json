@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-23T19:58:38Z",
+  "description": "Every runtime, interpreter and source.rs decoder (34 sites today) goes through Bin::of_binary(word) / of_stored. Native keeps emit_binary_bit_len and emit_binary_base, and receive's length read uses emit_binary_bit_len instead of fz_bs_bit_len_ref.\n\nDeletes: bitstring_like_word, the word-form bitstring_byte_ptr, the 6 duplicate is_bitstring_like tests, and byte_aligned_binary_slice.\n\nAcceptance:\n- grep shows 0 decoders outside Bin and the two emitters.\n- Bench A/B with the == group judged against the page's 8-instruction listing (recovers #827's +2).\n\nPage: https://claude.ai/artifact/7oEdkmwEoL8RVcfbYXPZzg (From: Binary Handling), approved by the user 2026-11-23 (relayed by Binary Handling). Owner: Binary Handling.",
+  "id": "fz-9e2.5.2",
+  "labels": [],
+  "parent": "fz-9e2.5",
+  "priority": 1,
+  "status": "open",
+  "title": "One decoder: Bin::of_binary",
+  "type": "task",
+  "updated_at": "2026-11-23T19:58:38Z"
+}
