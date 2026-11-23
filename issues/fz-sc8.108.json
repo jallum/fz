@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-23T19:59:47Z",
   "created": "2026-11-11T15:16:50Z",
   "description": "Found while building fz-sc8.99. Fixture 00567's canon check finds pairs of distinct type ids that are mutually subtypes and render identically. The pairs are one callable, Enum.reduce/3#lambda@0/2 over Enum.reverse/1#lambda@0/2, carried with differently instantiated surfaces, e.g. (a2_p0,a2_p1)-\u003ea2_r and (any, a2_p1_v1|[])-\u003e{:cont|:halt|:suspend,..}. The defect exists at d9c9a842c. fz-sc8.99 adds the type %{1: atom} beside %{1: :a}, and that type inherits the same duplicate pair, which raised the mutually-subtype distinct-id ceiling on 00567 from 14 to 15 (user-approved re-pin). Fix at construction: a closure identity is interned to one id regardless of the surface it is carried with, or the surface variants are collapsed by the calculator. Then lower the 00567 ceiling to its new count. Evidence: the builder's probe in the fz-sc8.99 run (scratchpad p99/).\n\nRefuted (user, 2026-11-23, page ../fz-9zq.19.html). Interning one closure to one id whatever its surface (variant K, /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/9zq_19/r2/K_params.diff) miscompiles 01363 on run, interp and build (a spec violation on an int | float argument) and moves 28 pins. The surface is not redundant as a type: it carries a contract's instantiation (intersect_pos / specialize_surface in sigs.rs) and the wrapper ABI (CallableSurface in executable_facts.rs and transport.rs). The existing test activation_input_rows_keep_arrows_that_differ_only_where_subtyping_is_blind asserts such arrows stay distinct. The pairs counted on 00567 are one closure value seen through two surfaces: subtyping is right that the value sets are equal, and the ids are right to differ. The redundancy is only in activation keys, which fz-9zq.19 (F1b) removes in Types::activation_key_arrow.",
   "id": "fz-sc8.108",
   "labels": [],
   "parent": "fz-sc8",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "One closure has one type id whatever surface it is carried with",
   "type": "bug",
-  "updated_at": "2026-11-23T19:59:46Z"
+  "updated_at": "2026-11-23T19:59:47Z"
 }
