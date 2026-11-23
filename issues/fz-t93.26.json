@@ -3,7 +3,7 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-20T21:14:14Z",
-  "description": "Approved by the user (relayed by fz-engine, 2026-11-20).\n\nOn develop 59e5bda1e (release), `interp --dump backend` of tools/distill-telemetry.exs over main_returns_one under 8 agenda orders gives identical stdout but 5 distinct backend plans (FIFO 1101 executables, LIFO 1133). This goes further than fz-t93.16, which says the final plan is the same in every order: on the distiller the plan itself changes. It may be related to fz-t93.12 (duplicate canon keys).\n\nEvidence: the knob is /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/edge/knob.diff (Agenda::pop by FZ_A15_ORDER, does not ship) and the dumps are in /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/edge/ord/.\n\nPaper first: shrink to the smallest program whose plan differs between two orders, and find the first decision that differs. Done when the plan is identical under every order on the distiller and the matrix; any order knob kept is cfg(test) only.",
+  "description": "Approved by the user (relayed by fz-engine, 2026-11-20). Scope restated by the user on 2026-11-23 (page ../fz-t93.26.html).\n\nOn develop 59e5bda1e, interp --dump backend of tools/distill-telemetry.exs under 8 agenda orders gave identical stdout but 5 distinct backend plans (FIFO 1101 executables, LIFO 1133). The paper (scratch /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/t93_26/, r2/, r3/) found five causes; this ticket fixes three of them in one commit:\n- M1: NameableModules (identity.rs) keeps modules in first-noted order; built in a fixed order instead (23 print-order fixtures become identical).\n- M2: resolve_module_value_call prepares callees one at a time, so a partial preparation seeds wide ActivationInputs (seed_activation_producer). S1: plan every callee before preparing any (plan_direct_call, then prepare_keyed_call), as the protocol path already does.\n- M3: ActivationInputAlternatives' 8-row budget merges rows depending on batching. P: keep the full antichain as members and derive rows from it (members, or their join past 8); the per-value check in join_all and the in-place truncation in rebuild go. Budget stays 8.\nAlso: the drive.rs comment claiming the corpus makes no merges is corrected (the distiller makes 61).\nTDD: the Map.keys(Map.put(%{}, :a, 1)) program and the 10-call IO.inspect program as numbered fixtures; a cfg(test) order knob and a test that their plans match under fifo and lifo.\n\nDone when: the distiller's plan keys are identical under every order, and M1, M2 and M3 are gone; no pin moves (measured). Byte-identical plans everywhere moves to the follow-up tickets for M4, M5 and the untraced fixtures.",
   "id": "fz-t93.26",
   "labels": [],
   "parent": "fz-t93",
@@ -11,5 +11,5 @@
   "status": "in_progress",
   "title": "The distiller's backend plan does not depend on job order",
   "type": "bug",
-  "updated_at": "2026-11-21T13:07:31Z"
+  "updated_at": "2026-11-23T19:59:36Z"
 }
