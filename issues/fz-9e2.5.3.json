@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-9e2.5.2"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-9e2.5.4"
+  ],
   "created": "2026-11-23T19:58:38Z",
   "description": "Receive's binary literal is an object compared with Bin ==. That deletes binary_data_gvs, its collector and fz_matcher_eq_bytes. The interpreter's dispatch_const_eq and source.rs bitstring_eq/bitstring_payload (which copy into Vecs and leave padding unmasked) use Bin ==. hash_bitstring shares Bin's padding mask.\n\nAcceptance:\n- Receive on literals under and over 64 bytes works on all three paths.\n- Two binaries differing only in padding bits compare and hash equal.\n- grep shows 0 byte equalities outside Bin.\n\nPage: https://claude.ai/artifact/7oEdkmwEoL8RVcfbYXPZzg (From: Binary Handling), approved by the user 2026-11-23 (relayed by Binary Handling). Owner: Binary Handling.",
   "id": "fz-9e2.5.3",
