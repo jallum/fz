@@ -1,5 +1,5 @@
 {
-  "assignee": "fz-engine",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-sc8.192.3"
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-9zq",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "One activation has one executable key: equivalent closure arrows key alike",
   "type": "bug",
-  "updated_at": "2026-11-21T04:51:17Z"
+  "updated_at": "2026-11-23T20:00:02Z"
 }
