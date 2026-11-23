@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-t93.26"
+  ],
   "blocks": [],
   "created": "2026-11-23T19:59:37Z",
   "description": "From fz-t93.26's paper (M5). Construction wrappers are numbered w1/w2 in the order they are created, so 01574's plan prints differently under fifo and lifo (print order only). Same rule as fz-t93.26's M1: anything printed or numbered comes from a fixed order of the data. Done when 01574's plan is identical under fifo and lifo. Evidence: /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/t93_26/.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Wrapper numbers come from a fixed order, not creation order",
   "type": "bug",
-  "updated_at": "2026-11-23T19:59:37Z"
+  "updated_at": "2026-11-23T19:59:39Z"
 }
