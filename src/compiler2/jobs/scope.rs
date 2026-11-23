@@ -178,6 +178,14 @@ impl ScopeWalk {
                             Some(&binding) => self.bindings[binding].used = true,
                             None => self.reference(var),
                         },
+                        Some(BitSize::Expr(expr)) => {
+                            for var in free_names(&expr.node) {
+                                match head.get(&var) {
+                                    Some(&binding) => self.bindings[binding].used = true,
+                                    None => self.reference(&var),
+                                }
+                            }
+                        }
                         Some(BitSize::ByteSizeOf(var)) => self.reference(var),
                         Some(BitSize::Literal(_)) | None => {}
                     }
@@ -272,6 +280,7 @@ impl ScopeWalk {
                     self.expr(&field.value.node);
                     match &field.spec.size {
                         Some(BitSize::Var(var) | BitSize::ByteSizeOf(var)) => self.reference(var),
+                        Some(BitSize::Expr(expr)) => self.expr(&expr.node),
                         Some(BitSize::Literal(_)) | None => {}
                     }
                 }

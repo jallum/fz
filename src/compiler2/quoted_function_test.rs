@@ -1,4 +1,4 @@
-use crate::ast::{Attribute, BitSize, BitType, Expr, Pattern, Var, WithBinding};
+use crate::ast::{Attribute, BinOp, BitSize, BitType, Expr, Pattern, Var, WithBinding};
 use crate::parser::lexer::Tok;
 use crate::telemetry::ConfiguredTelemetry;
 
@@ -170,6 +170,23 @@ def pack(x :: integer), do: <<x::integer-size(16), rest::binary-size(len)-unit(8
     assert_eq!(fields[1].spec.ty, BitType::Binary);
     assert!(matches!(fields[1].spec.size, Some(BitSize::Var(ref name)) if name.name == "len"));
     assert_eq!(fields[1].spec.unit, Some(8));
+}
+
+#[test]
+fn compiler2_bitstring_size_written_as_an_expression_decodes_to_that_expression() {
+    let (root, sources) = grouped_function_root(
+        "size_expression.fz",
+        "def read(<<n, body::binary-size(n * 2 - 1)>>), do: body\n",
+    );
+    let surface = derive_function_surface(&root, &sources).expect("derive function surface");
+
+    let Pattern::Bitstring(fields) = &surface.clauses[0].params[0].node else {
+        panic!("expected bitstring parameter");
+    };
+    assert!(matches!(
+        fields[1].spec.size,
+        Some(BitSize::Expr(ref size)) if matches!(size.node, Expr::BinOp(BinOp::Sub, _, _))
+    ));
 }
 
 #[test]

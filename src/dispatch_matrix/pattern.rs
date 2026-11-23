@@ -1207,7 +1207,7 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
         bindings: &mut Vec<PatternDispatchBinding>,
         resolver: &mut impl PatternResolver<TypeHandle>,
     ) -> Result<(), SourcePatternError> {
-        let question = self.bitstring_question(subject, fields)?;
+        let question = self.bitstring_question(subject, fields, resolver)?;
         let Region::Bitstring(shape) = &question.predicate.region else {
             unreachable!();
         };
@@ -1273,6 +1273,7 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
         &mut self,
         subject: &PatternSubjectRef,
         fields: &[crate::ast::BitField<Spanned<Pattern>>],
+        resolver: &mut impl PatternResolver<TypeHandle>,
     ) -> Result<RegionQuestion<TypeHandle>, SourcePatternError> {
         let subject_id = self.subject_id(subject)?;
         let mut binding_subjects: HashMap<Var, SubjectId> = HashMap::default();
@@ -1292,6 +1293,7 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
                 Some(BitSize::ByteSizeOf(name)) => Some(BitstringFieldSize::PinnedByteSize(
                     self.pin_for_name(name, field.value.span),
                 )),
+                Some(BitSize::Expr(expr)) => Some(self.size_guard(expr, &binding_subjects, resolver)?),
             };
             let extraction = super::BitstringExtraction {
                 previous: shapes.last().copied(),
@@ -1355,6 +1357,32 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
             span,
         });
         Ok(())
+    }
+
+    /// A size written as an expression is a guard expression whose value is the
+    /// size: its names are earlier fields of the bitstring, or pins.
+    fn size_guard(
+        &mut self,
+        expr: &Spanned<Expr>,
+        earlier_fields: &HashMap<Var, SubjectId>,
+        resolver: &mut impl PatternResolver<TypeHandle>,
+    ) -> Result<BitstringFieldSize, SourcePatternError> {
+        let earlier_names = earlier_fields.keys().cloned().collect();
+        let mut captured = Vec::new();
+        source::collect_guard_capture_names(expr, &earlier_names, &mut captured);
+        for pin in captured {
+            self.pin_for_name(&pin.name, pin.span);
+        }
+        let guard = guard_expr_from_ast(
+            &expr.node,
+            earlier_fields,
+            &self.pinned_by_name,
+            &mut self.prepared_keys,
+            resolver,
+        )?;
+        let id = GuardId(self.guards.len() as u32);
+        self.guards.push(guard);
+        Ok(BitstringFieldSize::Guard(id))
     }
 
     /// A pin for a name the pattern does not bind, created on first use and

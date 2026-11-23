@@ -788,9 +788,26 @@ fn collect_local_dispatch_requirements(
                     reads,
                     waits,
                 )?;
+                if let Some(BitSize::Expr(size)) = &field.spec.size {
+                    collect_local_dispatch_requirements(
+                        world,
+                        tel,
+                        namespace,
+                        owner_module,
+                        owner,
+                        size,
+                        reads,
+                        waits,
+                    )?;
+                }
             }
             let segment_values: Vec<Var> = (0..fields.len()).map(segment_value).collect();
-            if let Some(check) = construction_contract::construction_check(fields, &segment_values, expr.span) {
+            let segment_sizes: Vec<Var> = (0..fields.len()).map(segment_size).collect();
+            let names = construction_contract::SegmentNames {
+                values: &segment_values,
+                sizes: &segment_sizes,
+            };
+            if let Some(check) = construction_contract::construction_check(fields, names, expr.span) {
                 collect_local_guard_requirements(world, tel, namespace, &check.test, reads, waits)?;
             }
         }
@@ -847,10 +864,9 @@ fn collect_local_dispatch_requirements(
 /// `Mod`'s schema before executable pattern dispatch or body binding can use its
 /// fields. Entry, guard-helper, and body jobs share these field obligations and
 /// the `StructDefined` wait, mirroring the `Expr::Struct` arm above.
-/// Patterns never carry dispatch calls of their own
-/// (guards are the only dispatch-call surface, and guards are walked
-/// separately), so this only needs to recurse far enough to find nested
-/// struct patterns.
+/// A pattern's only dispatch calls are the ones in a bitstring field's size
+/// expression, which is a guard; every other guard is walked separately. So
+/// this recurses far enough to find nested struct patterns and those sizes.
 pub(super) fn collect_local_pattern_requirements(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
@@ -912,6 +928,9 @@ pub(super) fn collect_local_pattern_requirements(
         }
         Pattern::Bitstring(fields) => {
             for field in fields {
+                if let Some(BitSize::Expr(size)) = &field.spec.size {
+                    collect_local_guard_requirements(world, tel, namespace, size, reads, waits)?;
+                }
                 collect_local_pattern_requirements(
                     world,
                     tel,
@@ -2137,10 +2156,15 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         steps: &mut Vec<ExprStep>,
     ) -> Result<ValueId, FatalError> {
         let mut lowered = Vec::with_capacity(fields.len());
-        for field in fields {
+        for (index, field) in fields.iter().enumerate() {
+            if let Some(BitSize::Expr(size)) = &field.spec.size {
+                let size_value = self.lower_expr(size, env, steps)?;
+                env.insert(segment_size(index), size_value);
+            }
             lowered.push(LoweredBitField {
                 value: self.lower_expr(&field.value, env, steps)?,
                 spec: self.lower_bitfield_spec(
+                    index,
                     &field.spec.size,
                     field.spec.ty,
                     field.spec.endian,
@@ -2152,7 +2176,12 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
             });
         }
         let segment_values: Vec<Var> = (0..fields.len()).map(segment_value).collect();
-        let Some(check) = construction_contract::construction_check(fields, &segment_values, span) else {
+        let segment_sizes: Vec<Var> = (0..fields.len()).map(segment_size).collect();
+        let names = construction_contract::SegmentNames {
+            values: &segment_values,
+            sizes: &segment_sizes,
+        };
+        let Some(check) = construction_contract::construction_check(fields, names, span) else {
             return Ok(self.push_bitstring(lowered, steps));
         };
         let inputs: Vec<ValueId> = lowered.iter().map(|field| field.value).collect();
@@ -2202,6 +2231,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
 
     fn lower_bitfield_spec(
         &mut self,
+        index: usize,
         size: &Option<BitSize>,
         ty: crate::ast::BitType,
         endian: crate::ast::Endian,
@@ -2212,7 +2242,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
     ) -> Result<LoweredBitFieldSpec, FatalError> {
         Ok(LoweredBitFieldSpec {
             ty,
-            size: self.lower_bit_size(size, span, env)?,
+            size: self.lower_bit_size(index, size, span, env)?,
             endian,
             signed,
             unit,
@@ -2221,6 +2251,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
 
     fn lower_bit_size(
         &mut self,
+        index: usize,
         size: &Option<BitSize>,
         span: Span,
         env: &HashMap<Var, ValueId>,
@@ -2230,6 +2261,11 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
             Some(BitSize::Literal(value)) => Some(LoweredBitSize::Literal(*value)),
             Some(BitSize::Var(name)) => Some(LoweredBitSize::Value(self.bit_size_value(name, span, env)?)),
             Some(BitSize::ByteSizeOf(name)) => Some(LoweredBitSize::ByteSizeOf(self.bit_size_value(name, span, env)?)),
+            Some(BitSize::Expr(_)) => Some(LoweredBitSize::Value(self.bit_size_value(
+                &segment_size(index),
+                span,
+                env,
+            )?)),
         })
     }
 
@@ -4833,6 +4869,15 @@ const CONSTRUCTION_CHECK_CONTEXT: &str = "fz_construction_check";
 fn segment_value(index: usize) -> Var {
     Var {
         name: "segment".to_string(),
+        context: crate::ast::VarContext::minted(CONSTRUCTION_CHECK_CONTEXT, index as i64),
+    }
+}
+
+/// The name a construction's check gives the value of segment `index`'s size
+/// when the program writes the size as an expression.
+fn segment_size(index: usize) -> Var {
+    Var {
+        name: "size".to_string(),
         context: crate::ast::VarContext::minted(CONSTRUCTION_CHECK_CONTEXT, index as i64),
     }
 }

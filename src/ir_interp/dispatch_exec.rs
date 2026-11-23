@@ -743,7 +743,7 @@ impl<'a> Dispatch<'a> {
         let Ok(value) = source.value(self.proc()) else {
             return Ok(false);
         };
-        Ok(self.read_bitstring(value, source, start, shape))
+        self.read_bitstring(value, source, start, shape)
     }
 
     /// The subject's runtime word, or `None` where it cannot be produced and the
@@ -933,12 +933,18 @@ impl<'a> Dispatch<'a> {
     /// Walk a bitstring subject field by field, checking that each fits. A
     /// field's value is built and bound only when a question or the winning
     /// outcome reads it.
-    fn read_bitstring(&mut self, value: RuntimeAnyValue, source: AnyValue, start: u64, shape: &BitstringShape) -> bool {
+    fn read_bitstring(
+        &mut self,
+        value: RuntimeAnyValue,
+        source: AnyValue,
+        start: u64,
+        shape: &BitstringShape,
+    ) -> Result<bool, DispatchStop> {
         let Some(value_bits) = value.heap_object_word() else {
-            return false;
+            return Ok(false);
         };
         if !is_bitstring_like(value_bits) {
-            return false;
+            return Ok(false);
         }
         let plan = self.plan;
         let proc = self.proc();
@@ -948,8 +954,8 @@ impl<'a> Dispatch<'a> {
         for field_subject in &shape.fields {
             let extraction = plan.bitstring_extraction(*field_subject);
             let field = &extraction.spec;
-            let Some((size_present, size_value)) = self.bit_size_value(&field.size) else {
-                return false;
+            let Some((size_present, size_value)) = self.bit_size_value(&field.size)? else {
+                return Ok(false);
             };
             let field_spec = fz_bs_field_spec(
                 field.runtime_kind().runtime_tag(),
@@ -960,7 +966,7 @@ impl<'a> Dispatch<'a> {
                 extraction.is_last as u32,
             );
             let Some(end) = bs_field_end(field_spec, size_value, pos, source_ref) else {
-                return false;
+                return Ok(false);
             };
             let is_rest = extraction.is_last
                 && field.size.is_none()
@@ -980,7 +986,7 @@ impl<'a> Dispatch<'a> {
                         size_value,
                         field.kind.reads_as_integer(),
                     ) else {
-                        return false;
+                        return Ok(false);
                     };
                     BackendBoundValue::Runtime(extracted)
                 };
@@ -988,12 +994,12 @@ impl<'a> Dispatch<'a> {
             }
             pos = end;
         }
-        !shape.require_done || pos == bit_len
+        Ok(!shape.require_done || pos == bit_len)
     }
 
     /// How wide one bitstring field is, and whether it says so at all.
-    fn bit_size_value(&self, size: &Option<BitstringFieldSize>) -> Option<(u32, u32)> {
-        match size {
+    fn bit_size_value(&mut self, size: &Option<BitstringFieldSize>) -> Result<Option<(u32, u32)>, DispatchStop> {
+        Ok(match size {
             None => Some((0, 0)),
             Some(BitstringFieldSize::Literal(n)) => Some((1, *n)),
             Some(BitstringFieldSize::Binding(subject)) => self
@@ -1012,10 +1018,19 @@ impl<'a> Dispatch<'a> {
                 .map(|n| (1, n as u32)),
             Some(BitstringFieldSize::PinnedByteSize(pin_id)) => {
                 let proc = self.proc();
-                let pinned = self.pin_value(*pin_id)?.as_ref_word(proc).ok()?;
-                Some((1, fz_pinned_binary_segment_size(pinned)))
+                let pinned = self.pin_value(*pin_id).and_then(|pin| pin.as_ref_word(proc).ok());
+                pinned.map(|pinned| (1, fz_pinned_binary_segment_size(pinned)))
             }
-        }
+            Some(BitstringFieldSize::Guard(guard)) => {
+                let plan = self.plan;
+                let Some(expr) = plan.guards.get(guard.0 as usize) else {
+                    return Ok(None);
+                };
+                or_miss(self.eval_guard(expr))?
+                    .and_then(|size| size.as_i64())
+                    .map(|n| (1, n as u32))
+            }
+        })
     }
 
     /// The runtime word one pin was bound to before this pattern began.

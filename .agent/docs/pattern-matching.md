@@ -162,6 +162,36 @@ into patterns the matrix already knows; no new row kind exists.
   of `<>`, or a left operand of `++` that is not a literal proper list is
   refused with `parse/concat-pattern-operand`, in Elixir's wording.
 
+## A Bitstring Size May Be An Expression
+
+`<<n, body::binary-size(n * 2 - 1), rest::binary>>` and
+`<<head::binary-size(byte_size(p) + 1), tail::binary>>` parse to
+`BitSize::Expr`: any guard expression other than a bare name (`decode_bit_size`
+in `quoted_function.rs`). A bare name stays `BitSize::Var`, and a pinned
+`binary` operand stays `BitSize::ByteSizeOf`.
+
+- In a pattern, `bitstring_question` (`dispatch_matrix/pattern.rs`) compiles the
+  expression with the same `guard_expr_from_ast` a `when` clause uses and
+  stores it in the plan's `guards`; the field's size is
+  `BitstringFieldSize::Guard(GuardId)`. Names an earlier field of the same
+  bitstring binds are that field's subject; every other name is a pin, resolved
+  like any size name. `collect_local_pattern_requirements` waits for the guard
+  callees (`+`, `div`, `byte_size`, ...) a size calls, so a size may call
+  whatever a guard may.
+- Every backend evaluates the size with its one guard evaluator: the interpreter
+  in `Dispatch::bit_size_value`, native dispatch in `lower_dispatch_bit_size`,
+  and the receive matcher in `emit_dispatch_bit_size`. A guard that fails (a
+  call that errors, an unbound earlier field) or a size the binary cannot hold
+  is a miss of the whole bitstring test, as for a guard; the result narrows to
+  `u32` like every other runtime size, so a negative size misses.
+- The matrix charges a size guard's leaves like a guard's (`charge_guard`), so
+  an earlier field the size reads is extracted even when no outcome reads it.
+- In a construction, `lower_bitstring_expr` evaluates the expression into a
+  value named by `segment_size(index)` before the segment's own value. That name
+  stands for the size in the construction check (`construction_contract.rs`) and
+  in the lowered `LoweredBitSize::Value`, so a negative size raises Elixir's
+  construction `ArgumentError` through the same check a named size meets.
+
 ## Pins Resolve Against The Prematch
 
 A pin names a binding that existed BEFORE the pattern began. Three spellings
@@ -264,10 +294,9 @@ the helper, which is the locus Elixir names too, not on the guard that calls it.
 
 A lambda closes over the names its pins reach for: `lambda_free_names` collects
 the free names of a clause's parameters against the empty pre-pattern scope
-before binding them, so a pinned capture is captured. A bitstring size is the
-exception — `collect_pattern_free_names` walks a field's value but not its size
-expression, so a lambda whose field size names a capture does not yet close
-over it.
+before binding them, so a pinned capture is captured. A bitstring field's size
+is walked too: a size name, or any name in a size expression, that the head does
+not bind is a capture.
 
 Nested guard calls carry their own typed operand-binding edge, and a child
 prepared key names a caller `PreparedKeyId`. The source constructor lifts child

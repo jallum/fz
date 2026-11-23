@@ -281,7 +281,9 @@ impl BitstringFieldShape {
         let size = match &self.size {
             None => BitSizeKnowledge::Absent,
             Some(BitstringFieldSize::Literal(size)) => BitSizeKnowledge::Literal(*size),
-            Some(BitstringFieldSize::Binding(_) | BitstringFieldSize::Pinned(_)) => BitSizeKnowledge::Runtime,
+            Some(BitstringFieldSize::Binding(_) | BitstringFieldSize::Pinned(_) | BitstringFieldSize::Guard(_)) => {
+                BitSizeKnowledge::Runtime
+            }
             Some(BitstringFieldSize::PinnedByteSize(_)) => BitSizeKnowledge::ByteSizeOf,
         };
         let ty = match self.kind {
@@ -344,6 +346,9 @@ pub(crate) enum BitstringFieldSize {
     /// A segment exactly as long as the binary a pin holds: the pin is the
     /// segment's value, and its byte size is the segment's size.
     PinnedByteSize(PinnedValueId),
+    /// A size written as an expression: the value of the plan's guard, read
+    /// from earlier fields and pins, and a miss when the guard fails.
+    Guard(GuardId),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1323,6 +1328,7 @@ impl<'a, TypeHandle: Clone + Eq> DispatchGraphBuilder<'a, TypeHandle> {
                     self.charge_pin(pinned)
                 }
                 Some(BitstringFieldSize::Binding(bound)) => self.ask(bound),
+                Some(BitstringFieldSize::Guard(guard)) => self.charge_guard(guard),
                 Some(BitstringFieldSize::Literal(_)) | None => {}
             }
         }
