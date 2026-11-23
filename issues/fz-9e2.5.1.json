@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Binary Handling",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-23T19:58:37Z",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "A binary function given a non-binary raises what Elixir raises",
   "type": "bug",
-  "updated_at": "2026-11-23T19:58:37Z"
+  "updated_at": "2026-11-23T19:58:39Z"
 }
