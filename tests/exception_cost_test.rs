@@ -132,37 +132,34 @@ fn each_raise_site_and_handler_costs_a_fixed_number_of_jobs() {
     assert_eq!(jobs_per_unit("handler", handlers, [1, 4, 16]), 13, "per handler");
 }
 
-/// An exception type costs 38 jobs: 15 for the function that raises it, 7 for
-/// its `exception/1`, 12 for its `message/1`, one to define its module, one
-/// more analysis of `Exception.message/1`, which dispatches to every type, and
+/// An exception type costs 36 jobs: 15 for the function that raises it, 7 for
+/// its `exception/1`, 11 for its `message/1`, one to define its module, and
 /// two `DeriveExecutableReach` for the executables its transport positions ask
 /// whether they return to themselves. The `DeriveStaticReach` that answers its
-/// recursion takes the place of one `DeriveRecursive` run.
+/// recursion takes the place of one `DeriveRecursive` run. `Exception.message/1`
+/// dispatches to every type's `message/1` through a call on a module value,
+/// which prepares every callee together. Each `message/1` is analysed from its
+/// caller's row and never seeded wide, and `Exception.message/1` is analysed
+/// once, not again for each type.
 #[test]
-fn each_exception_type_costs_thirty_eight_jobs() {
+fn each_exception_type_costs_thirty_six_jobs() {
     let one = jobs("few_types1", exception_types(1));
     let six = jobs("few_types6", exception_types(6));
-    assert_eq!(six - one, 5 * 38, "five further exception types");
+    assert_eq!(six - one, 5 * 36, "five further exception types");
 }
 
-/// Past eight exception types the program pays a bounded extra that does not
-/// grow with their number. `Kernel.panic/1` keeps one row of inputs for each
-/// type raised into it, up to `ACTIVATION_INPUT_ROW_BUDGET`; past that the rows
-/// widen to one, the union of the types. No single type keys the extern
-/// `panic/1` calls, but their union does, so `panic/1` is analysed once more
-/// and the extern is activated a second time: at most six jobs, however many
-/// types follow: the five it cost before and one reach job.
+/// From eight exception types on, the program pays one job more, however many
+/// types follow. `Kernel.panic/1` keeps one row of inputs for each exception
+/// raised into it: one for each type, and an `ArgumentError` that
+/// `Kernel.__construction_failed__/1` raises, which these programs reach. The
+/// eighth type makes nine rows, past `ACTIVATION_INPUT_ROW_BUDGET`; the rows
+/// widen to one, the union of them, and `panic/1` is analysed once more for it.
+/// The collapse is the same whatever order jobs run in, so the extra is exactly
+/// one job at every count from eight.
 #[test]
-fn many_exception_types_cost_a_bounded_extra_for_the_union_raised() {
+fn many_exception_types_cost_one_job_more_for_the_union_raised() {
     let one = jobs("many_types1", exception_types(1));
-    let extra = |count: usize| jobs(&format!("many_types{count}"), exception_types(count)) - one - (count - 1) * 38;
-    let (sixteen, twenty_six) = (extra(16), extra(26));
-    assert!(
-        (1..=6).contains(&sixteen),
-        "sixteen types cost {sixteen} jobs beyond forty-two each"
-    );
-    assert!(
-        (1..=6).contains(&twenty_six),
-        "twenty-six types cost {twenty_six} jobs beyond forty-two each"
-    );
+    let extra = |count: usize| jobs(&format!("many_types{count}"), exception_types(count)) - one - (count - 1) * 36;
+    assert_eq!(extra(16), 1, "sixteen types cost one job beyond thirty-six each");
+    assert_eq!(extra(26), 1, "twenty-six types cost one job beyond thirty-six each");
 }

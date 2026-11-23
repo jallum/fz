@@ -1109,14 +1109,21 @@ impl ActivationInputRow {
 /// A finite canonical antichain of correlated input rows, plus the derived
 /// column-wise joined projection.
 ///
-/// The rows are the semantic authority: analysis reads them one at a time.
+/// The `members` are the antichain of every row contributed; the rows are
+/// derived from them: the members themselves, or their single joined row once
+/// they outnumber `ACTIVATION_INPUT_ROW_BUDGET`. Analysis reads the rows one at
+/// a time.
 /// The `joined` projection exists for consumers whose question is genuinely
 /// uncorrelated — per-column transport typing after semantic decisions — and
 /// is maintained at the single write point (`rebuild`), where the type store
 /// is at hand, so reads stay borrow-free.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActivationInputAlternatives {
-    rows: Vec<ActivationInputRow>,
+    /// The antichain of every row contributed. Never truncated, so the
+    /// budget decision is a function of the contribution set.
+    members: Vec<ActivationInputRow>,
+    /// The joined row, present exactly when the members outnumber the budget.
+    collapsed: Option<ActivationInputRow>,
     joined: Vec<Ty>,
 }
 
@@ -1124,12 +1131,18 @@ impl ActivationInputAlternatives {
     pub fn from_row(columns: Vec<Ty>) -> Self {
         Self {
             joined: columns.clone(),
-            rows: vec![ActivationInputRow::new(columns)],
+            members: vec![ActivationInputRow::new(columns)],
+            collapsed: None,
         }
     }
 
+    /// What analysis reads: the members, or their single joined row once they
+    /// outnumber the budget.
     pub fn rows(&self) -> &[ActivationInputRow] {
-        &self.rows
+        match &self.collapsed {
+            Some(row) => std::slice::from_ref(row),
+            None => &self.members,
+        }
     }
 
     /// The column-wise joined projection: each column is the union of that
@@ -1197,30 +1210,30 @@ impl ActivationInputAlternatives {
     /// siblings would erase the very correlation this type preserves, which is
     /// why the free-var-set conjunct is not negotiable.
     fn insert_row(&mut self, types: &Types, row: ActivationInputRow) -> bool {
-        if !self.rows.is_empty() {
+        if !self.members.is_empty() {
             assert_eq!(
-                self.rows[0].columns.len(),
+                self.members[0].columns.len(),
                 row.columns.len(),
                 "one activation input fact cannot receive differing arities from one publisher",
             );
         }
         if self
-            .rows
+            .members
             .iter()
             .any(|existing| existing.columns.equivalent(&row.columns, types))
         {
             return false;
         }
         if self
-            .rows
+            .members
             .iter()
             .any(|standing| types.row_dominates(&row.columns, &standing.columns))
         {
             return false;
         }
-        self.rows
+        self.members
             .retain(|standing| !types.row_dominates(&standing.columns, &row.columns));
-        self.rows.push(row);
+        self.members.push(row);
         true
     }
 
@@ -1228,19 +1241,21 @@ impl ActivationInputAlternatives {
     /// store's semantic order, the budget widening applied, and the joined
     /// projection recomputed.
     fn rebuild(&mut self, types: &mut Types) {
-        self.rows
+        self.members
             .sort_by(|left, right| types.cmp_activation_tys(&left.columns, &right.columns));
         let mut joined = Vec::new();
-        for row in &self.rows {
+        for row in &self.members {
             joined.join_assign(&row.columns, types);
         }
         self.joined = joined;
-        if self.rows.len() > ACTIVATION_INPUT_ROW_BUDGET {
-            // The count goes to the type store because the type store is the
-            // only thing this join holds: see `Types::activation_input_collapses`.
-            types.note_activation_input_collapse();
-            self.rows = vec![ActivationInputRow::new(self.joined.clone())];
+        if self.members.len() <= ACTIVATION_INPUT_ROW_BUDGET {
+            self.collapsed = None;
+            return;
         }
+        if self.collapsed.is_none() {
+            types.note_activation_input_collapse();
+        }
+        self.collapsed = Some(ActivationInputRow::new(self.joined.clone()));
     }
 }
 
@@ -1249,7 +1264,8 @@ impl JoinContribution for ActivationInputAlternatives {
 
     fn bottom() -> Self {
         Self {
-            rows: Vec::new(),
+            members: Vec::new(),
+            collapsed: None,
             joined: Vec::new(),
         }
     }
@@ -1258,12 +1274,12 @@ impl JoinContribution for ActivationInputAlternatives {
     /// insertion under `insert_row`'s equivalence and dominance judgements,
     /// then one canonical rebuild when a row went in.
     fn join_assign(&mut self, other: &Self, types: &mut Types) -> bool {
-        if self.rows.is_empty() {
+        if self.members.is_empty() {
             self.clone_from(other);
-            return !other.rows.is_empty();
+            return !other.members.is_empty();
         }
         let mut changed = false;
-        for row in &other.rows {
+        for row in &other.members {
             changed |= self.insert_row(types, row.clone());
         }
         if changed {
@@ -1273,23 +1289,18 @@ impl JoinContribution for ActivationInputAlternatives {
     }
 
     /// The same rows `join_assign` would settle on, rebuilt once at the end
-    /// instead of after every value. The row budget is still checked after each
-    /// value, so a fold that outgrows it collapses at the same value it would
-    /// one rebuild at a time.
+    /// instead of after every value. The budget is applied by `rebuild` to the
+    /// whole antichain, so batching cannot change which rows collapse.
     fn join_all<'a>(types: &mut Types, values: impl Iterator<Item = &'a Self>) -> Self {
         let mut joined = Self::bottom();
         let mut unsorted = false;
         for value in values {
-            if joined.rows.is_empty() {
+            if joined.members.is_empty() {
                 joined.clone_from(value);
                 continue;
             }
-            for row in &value.rows {
+            for row in &value.members {
                 unsorted |= joined.insert_row(types, row.clone());
-            }
-            if joined.rows.len() > ACTIVATION_INPUT_ROW_BUDGET {
-                joined.rebuild(types);
-                unsorted = false;
             }
         }
         if unsorted {
@@ -1299,11 +1310,11 @@ impl JoinContribution for ActivationInputAlternatives {
     }
 
     fn equivalent(&self, other: &Self, types: &Types) -> bool {
-        self.rows.len() == other.rows.len()
+        self.members.len() == other.members.len()
             && self
-                .rows
+                .members
                 .iter()
-                .zip(&other.rows)
+                .zip(&other.members)
                 .all(|(left, right)| left.columns.equivalent(&right.columns, types))
     }
 }

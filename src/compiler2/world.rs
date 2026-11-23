@@ -1576,10 +1576,14 @@ impl World {
     /// Records that a value can name `module`: its source is indexed, or a
     /// lowered body writes its name as a value. Returns whether that is news.
     pub(crate) fn note_nameable_module(&mut self, module: ModuleId) -> bool {
-        self.nameable_modules.note(module)
+        let denotation = self
+            .module_denotation(module)
+            .cloned()
+            .expect("a module a value can name has a denotation");
+        self.nameable_modules.note(denotation, module)
     }
 
-    /// Every module a value can name, in the order each was first noted.
+    /// Every module a value can name, ordered by denotation.
     pub(crate) fn nameable_modules(&self) -> impl Iterator<Item = ModuleId> + '_ {
         self.nameable_modules.modules()
     }

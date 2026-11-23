@@ -16,6 +16,8 @@ mod waits;
 mod fast_hash;
 
 pub use agenda::Agenda;
+#[cfg(feature = "pop_order")]
+pub use agenda::pop_order;
 pub use deps::{DependencyIndex, UnresolvedWait};
 pub use facts::{
     ClaimShape, FactChange, FactMovement, FactReadiness, FactReplace, FactState, FactTable, FactUse, Publisher,

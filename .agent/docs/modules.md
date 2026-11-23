@@ -234,7 +234,9 @@ and `World::module_public_function` answers that module's public `f/n`; a
 qualified callee in source asks the same method.
 
 When the type holds atoms it does not list (`atom`, `any`), the value can be
-any module a value can name. `World::nameable_modules` is that set: every
+any module a value can name. `World::nameable_modules` is that set, ordered by module denotation, so the
+order of the callees and of the modules that lack `f/n` is a function of the
+set's members and not of when each was noted: every
 module whose source the compile has indexed (`source_publish::
 publish_module_indexed`), every module a lowered body writes as a value, in
 an alias or a struct (`Lowerer::name_module_as_value`), and the module of every
@@ -247,7 +249,14 @@ defined, reads its `ModuleInterface`, and keeps the ones that have a public
 for the call and none of its functions is compiled for it.
 
 Each function is then resolved as any direct call is, and its targets carry
-the atom that selects them in `CallTargetSummary.selector`.
+the atom that selects them in `CallTargetSummary.selector`. Every direct
+callee is planned (`plan_direct_call`) before any is prepared
+(`prepare_keyed_call`): preparing mints the callee's activation and waits on
+its return, so a call that finds one callee unready prepares none, and no wait
+stands without a row of the caller's behind it. A protocol callback among the
+callees is resolved by `resolve_protocol_call` after the direct callees are
+prepared; that call is all-or-none among its own targets, not with the
+module-value call's other callees.
 
 The values no module claims are the receiver's type less the selectors. When
 that is not empty the call has one more target, the miss:

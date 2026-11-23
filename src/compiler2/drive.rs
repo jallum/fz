@@ -154,9 +154,11 @@ impl<'a, T: crate::telemetry::Telemetry> ExecutionContext<'a, T> {
     /// A collapse throws away the correlation its publishers took the trouble
     /// to keep, so one wide activation key stands where several narrow ones
     /// would have; it is the compiler's own admission that it is specializing
-    /// on accumulated history rather than on the program. Since fz-kdt.106
-    /// absorbed the ascent ladders the corpus produces none of these, which is
-    /// what makes a single event worth reading.
+    /// on accumulated history rather than on the program. Whether a set collapses
+    /// is a function of the rows its publishers contributed, never of their
+    /// arrival order. Ascent ladders are absorbed, so most programs produce
+    /// none; a program with wide correlation, such as the distiller, produces
+    /// dozens.
     fn emit_activation_input_budget_collapses(&mut self) {
         let collapses = self.world.take_activation_input_collapses();
         if collapses == 0 {
