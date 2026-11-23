@@ -16,7 +16,7 @@ use super::quoted_function::decode_standalone_expr;
 use super::quoted_surface::{MacroCallForm, ScopeSurface, is_scope_definition_head, read_compiler_fragment_surface};
 use super::scope::ScopeSnapshot;
 use super::source::{ListItems, QuotedAstNode, QuotedSourceCursor, QuotedSourceError, QuotedSourceRoot};
-use super::source_sugar::rewrite_source_sugar;
+use super::source_sugar::{rewrite_guard_membership, rewrite_source_sugar};
 use super::world::World;
 
 pub(crate) const MAX_MACRO_EXPANSION_DEPTH: usize = 64;
@@ -299,6 +299,11 @@ pub(crate) trait QuotedExpansionCtx {
                     ExpandedRoot::Blocked(effects) => Ok(ExpandedValue::Blocked(effects)),
                 };
             }
+            if *self.expansion_context() == ExpansionContext::Guard
+                && let Some(result) = self.expand_guard_membership(owner, &node, scope, depth)?
+            {
+                return Ok(result);
+            }
             if let Some(result) = self.expand_ast_call(owner, cursor, &node, scope, depth)? {
                 return Ok(result);
             }
@@ -377,6 +382,50 @@ pub(crate) trait QuotedExpansionCtx {
                 emit_internal_surface_error(self.telemetry(), format!("quoted AST rebuild failed: {error}"))
             })?;
         Ok(ExpandedValue::Complete(rebuilt))
+    }
+
+    /// `in` and `not in` in a guard, as Elixir's `in` macro expands them
+    /// there. `None` when the node is no membership test or its right side is
+    /// no literal list or integer range, and the guard then reads it as
+    /// written.
+    fn expand_guard_membership(
+        &mut self,
+        owner: &QuotedSourceRoot,
+        node: &QuotedAstNode,
+        scope: ScopeSnapshot,
+        depth: usize,
+    ) -> Result<Option<ExpandedValue>, fz_engine::FatalError> {
+        if node.head.root().tag() != ValueKind::ATOM || !is_list_like(&node.tail) {
+            return Ok(None);
+        }
+        let op = node.head.atom_name().map_err(|error| {
+            emit_internal_surface_error(self.telemetry(), format!("quoted call head read failed: {error}"))
+        })?;
+        if !matches!(op.as_str(), "in" | "not in") {
+            return Ok(None);
+        }
+        let args = self.call_args(&node.tail)?;
+        let [left, right] = args.as_slice() else {
+            return Ok(None);
+        };
+        let mut expanded = Vec::with_capacity(2);
+        for operand in [left, right] {
+            match self.expand_cursor(owner, operand, scope, depth)? {
+                ExpandedValue::Complete(value) => expanded.push(owner.subroot(value)),
+                ExpandedValue::Blocked(effects) => return Ok(Some(ExpandedValue::Blocked(effects))),
+            }
+        }
+        let source_map = self.world().source_map();
+        let rewritten = rewrite_guard_membership(
+            owner,
+            node,
+            &op,
+            &expanded[0].cursor(),
+            &expanded[1].cursor(),
+            &source_map.borrow(),
+        )
+        .map_err(|error| emit_surface_read_error(self.telemetry(), "guard membership rewrite failed", &error))?;
+        Ok(rewritten.map(ExpandedValue::Complete))
     }
 
     fn expand_ast_call(
