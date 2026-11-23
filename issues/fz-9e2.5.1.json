@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-9e2.5",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "A binary function given a non-binary raises what Elixir raises",
   "type": "bug",
-  "updated_at": "2026-11-23T19:58:40Z"
+  "updated_at": "2026-11-23T19:58:42Z"
 }
