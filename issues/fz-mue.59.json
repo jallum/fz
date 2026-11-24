@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Optimize",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-24T22:16:32Z",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "An fz-ABI extern raises a term-carrying exception",
   "type": "feature",
-  "updated_at": "2026-11-24T22:16:32Z"
+  "updated_at": "2026-11-24T22:16:38Z"
 }
