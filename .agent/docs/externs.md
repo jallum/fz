@@ -445,8 +445,8 @@ StoredValue  a parameter only: two integer words, the word a container stores
 ```
 
 A `stored_value` parameter is how a runtime helper takes a value of any kind
-without a box: `Map.put` is one clause over `fz_map_put(any, stored_value,
-stored_value)`, and `Map.delete` and `Map.has_key?` take their key the same
+without a box: `Map.put` guards `is_map` and calls `fz_map_put(map,
+stored_value, stored_value)`, and `Map.delete` and `Map.has_key?` take their key the same
 way, as do `fz_inspect`, `fz_inspect_with` (its value; the options stay a
 reference), `fz_value_cmp_ref` and the equality externs `fz_op_eq`,
 `fz_op_neq`, `fz_op_identical` and `fz_op_not_identical`. The runtime
@@ -747,6 +747,39 @@ function head does: `String.length/1` and the grapheme functions test
 `is_binary`, and `String.to_atom/1` and `String.to_float/1` raise
 `ArgumentError` naming the first argument, as the BEAM does
 (`01824_a_binary_function_given_a_non_binary_raises_what_elixir_raises.fz`).
+
+### The runtime trusts the declared types
+
+An extern declares the types it really takes and returns, and the runtime
+helper trusts them: it does not test them again. The type check lives once, in
+fz, where the compiler can see it and drop it when the argument is proven.
+The map externs show the shape. `fz_map_put`, `fz_map_delete`,
+`fz_map_has_key`, `fz_map_count`, `fz_map_keys`, `fz_map_values` and
+`fz_map_to_list` take `map`, and `fz_map_put`, `fz_map_delete` and
+`fz_map_from_kv` return `map`. `Heap::expect_map_layout` reads the layout of
+its argument (flat, trie or struct, a choice of layout and not a type check)
+and asserts only in a debug build that the value is a map; `read_map_value`
+and `map_put_slot` do the same, and `fz_map_get_ref` has no error arm.
+
+The library wrapper carries the proof forward:
+
+- A function that raises `BadMapError` for a non-map keeps `any` for that
+  parameter and guards it with `is_map`, or ends in a clause that raises
+  `%BadMapError{term: x}` (`Map.put/3`, `Map.delete/2`, `Map.get/2`,
+  `Map.has_key?/2`, `Kernel.map_size/1`, `:maps.to_list/1`, `keys/1`,
+  `values/1`). The compiler drops the guard for a caller whose argument is
+  proven a map.
+- A function that returns a map says `:: map` in its spec, so a loop that feeds
+  one call's result to the next keeps the proof; a `:: any` return throws it
+  away and every later call re-tests the kind.
+- An `any` argument that reaches a `map` parameter unguarded is tested at the
+  call and raises `FunctionClauseError`; the wrapper's guard is what makes the
+  failure `BadMapError` as Elixir's.
+
+`map_size(1)`, `Map.put(1, ...)`, `Map.delete(1, ...)`, `Map.get(1, ...)` and
+`:erlang.is_map_key(:a, 1)` raise `BadMapError` carrying the term
+(`01928_a_map_function_given_a_non_map_raises_badmap_and_a_put_loop_keeps_the_map_proof.fz`,
+`compiler2_native_put_loop_over_a_proven_map_asks_no_kind_question`).
 
 The entry test for `pid` and `ref` reads the value's kind: a pid passes
 `pid` and a reference passes `ref`, and no integer, float, atom, binary or list

@@ -17,8 +17,8 @@ use cranelift_module::{DataId, FuncId, Module};
 use fz_runtime::any_value::{
     AnyValueRef, AnyValueRefPacking, BINARY_SHARED_MASK, CLOSURE_CAPTURES_OFFSET, CLOSURE_CODE_OFFSET,
     CLOSURE_FLAGS_CAPTURED_MASK, CLOSURE_LAYOUT_FLAGS_SHIFT, FALSE_ATOM_ID, LIST_CONS_LINK_OFFSET,
-    LIST_LINK_ALIAS_MASK, NIL_ATOM_ID, STRUCT_HEADER_SCHEMA_SHIFT, STRUCT_HEADER_SHARED_MASK, SlotLayout,
-    TaggedRefArch, ValueKind,
+    LIST_LINK_ALIAS_MASK, NIL_ATOM_ID, STRUCT_HEADER_SCHEMA_SHIFT, STRUCT_HEADER_SHARED_MASK, SlotLayout, StructName,
+    TaggedRefArch, ValueKind, struct_header_word,
 };
 use fz_runtime::ir_runtime::{
     fz_closure_halt_kind_ref, fz_closure_set_capture_atom, fz_closure_set_capture_f64, fz_closure_set_capture_i64,
@@ -336,9 +336,12 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
     /// Place a struct or tuple of `fields` values and write its header.
     /// `store_field` must follow for every field before any other code runs,
     /// since nothing may read the object until then.
-    pub(crate) fn alloc_struct(&mut self, schema_id: u32, fields: usize) -> NewStruct {
+    pub(crate) fn alloc_struct(&mut self, schema_id: u32, name: StructName, fields: usize) -> NewStruct {
         let layout = SlotLayout::of(fields);
-        let schema = self.b.ins().iconst(types::I32, schema_id as i64);
+        let schema = self
+            .b
+            .ins()
+            .iconst(types::I64, struct_header_word(schema_id, name) as i64);
         let size = self.b.ins().iconst(types::I32, layout.size() as i64);
         let process = self.process_arg();
         let placed = emit_object(self, "Heap::alloc_struct_unwritten", &[process, schema, size]);
@@ -700,7 +703,13 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
         }
     }
 
+    /// Whether the value's kind is `tag`. A ref's kind is compared as the
+    /// word it is read as, so no byte is cut out of it to compare.
     pub(crate) fn value_is_tag(&mut self, value: CodegenValue, tag: ValueKind) -> ir::Value {
+        if let CodegenValue::AnyRef(value_ref) = value {
+            let kind = kind_field(self.b, value_ref);
+            return self.b.ins().icmp_imm_s(IntCC::Equal, kind, tag.tag() as i64);
+        }
         let actual = self.value_type_tag(value);
         let b = &mut *self.b;
         b.ins().icmp_imm_s(IntCC::Equal, actual, tag.tag() as i64)

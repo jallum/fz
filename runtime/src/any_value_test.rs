@@ -332,7 +332,7 @@ fn object_size_dispatches_from_pointer_tag_and_object_local_metadata() {
         map_size_for_count(3)
     );
 
-    write_word0(struct_header_word(7));
+    write_word0(struct_header_word(7, StructName::Named));
     assert_eq!(
         object_size_with_struct_payload(heap_object_word(addr, ValueKind::STRUCT), |schema| {
             assert_eq!(schema, 7);

@@ -92,7 +92,7 @@ mod value_membership_tests {
     use super::super::surface_membership::SurfaceMembershipCensus;
     use super::super::*;
     use crate::compiler2::World;
-    use fz_runtime::any_value::AnyValueRef;
+    use fz_runtime::any_value::{AnyValueRef, StructName};
 
     /// A fake heap: cons cells and tuples addressed by synthetic words the
     /// reader closures resolve, so no value is ever dereferenced except a
@@ -165,10 +165,19 @@ mod value_membership_tests {
             cell
         }
 
-        /// Its header is a real struct header word behind a `Box`, because
-        /// `struct_schema_id` reads it off the value itself.
         fn tuple(&mut self, schema: u32, fields: Vec<RuntimeAnyValue>) -> RuntimeAnyValue {
-            let boxed = Box::new(StructHeader(fz_runtime::any_value::struct_header_word(schema)));
+            self.struct_of(schema, StructName::Anonymous, fields)
+        }
+
+        /// A value of a named struct's schema.
+        fn record(&mut self, schema: u32, fields: Vec<RuntimeAnyValue>) -> RuntimeAnyValue {
+            self.struct_of(schema, StructName::Named, fields)
+        }
+
+        /// Its header is a real struct header word behind a `Box`, because
+        /// `struct_schema_id` and `struct_is_named` read it off the value itself.
+        fn struct_of(&mut self, schema: u32, name: StructName, fields: Vec<RuntimeAnyValue>) -> RuntimeAnyValue {
+            let boxed = Box::new(StructHeader(fz_runtime::any_value::struct_header_word(schema, name)));
             let addr = (&*boxed) as *const StructHeader as *const u8;
             self.tuples.push((boxed, fields));
             RuntimeAnyValue::HeapRef(AnyValueRef::from_heap_object(ValueKind::STRUCT, addr).expect("a struct ref"))
@@ -477,7 +486,7 @@ mod value_membership_tests {
         let map = RuntimeAnyValue::HeapRef(
             AnyValueRef::from_heap_object(ValueKind::MAP, 0x1000 as *const u8).expect("a map ref"),
         );
-        let struct_value = heap.tuple(7, vec![RuntimeAnyValue::Int(1)]);
+        let struct_value = heap.record(7, vec![RuntimeAnyValue::Int(1)]);
         let tuple_schema_ids = HashMap::default();
         let named_schema_ids = HashMap::from_iter([(foo_name, 7)]);
         let callables = |_: u64| None;

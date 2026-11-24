@@ -1832,7 +1832,7 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         analyze_evaluations: 159,
         analyze_zero_change: 5,
         // Macro readiness is a retained content dependency.
-        total_evaluations: 712,
+        total_evaluations: 725,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures/00571_enum_predicate_search.fz",

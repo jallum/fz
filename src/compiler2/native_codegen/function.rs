@@ -133,7 +133,9 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         // SourceInfo.stmt_spans; encode each as a Cranelift SourceLoc so
         // Compiler2 CLIF dumps can render `; @file:line:col` comments.
         let stmt_spans = source.stmt_spans.get(&(f.id, blk.id));
-        for (idx, stmt) in blk.stmts.iter().enumerate() {
+        let branching_test = type_test_that_only_branches(blk, &body.cache.if_only_conds, &block_map);
+        let lowered = blk.stmts.len() - usize::from(branching_test.is_some());
+        for (idx, stmt) in blk.stmts[..lowered].iter().enumerate() {
             let span = stmt_spans.and_then(|v| v.get(idx)).copied().unwrap_or(Span::DUMMY);
             body.b.set_srcloc(span_to_srcloc(span));
             match stmt {
@@ -182,7 +184,10 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         let term_span = source.term_span.get(&(f.id, blk.id)).copied().unwrap_or(Span::DUMMY);
         body.b.set_srcloc(span_to_srcloc(term_span));
 
-        emit_terminator(&mut body, env, &var_env, blk, &block_map, this_spec_id, f, cont_param)?;
+        match branching_test {
+            Some(test) => lower_runtime_type_branch(&mut body, env, &var_env, test)?,
+            None => emit_terminator(&mut body, env, &var_env, blk, &block_map, this_spec_id, f, cont_param)?,
+        }
     }
 
     for blk in &f.blocks {

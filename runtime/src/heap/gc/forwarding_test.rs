@@ -1,6 +1,6 @@
 use super::*;
 use crate::any_value::{
-    AnyValue, AnyValueRef, ClosureDenotationId, EMPTY_LIST_BITS, MapDestinationKind, bitstring_bit_len,
+    AnyValue, AnyValueRef, ClosureDenotationId, EMPTY_LIST_BITS, MapDestinationKind, StructName, bitstring_bit_len,
     bitstring_bytes_ptr, bitstring_header_word, closure_capture_set, closure_capture_value, closure_denotation,
     closure_header_word, heap_object_word, list_addr_from_tagged, map_collision_header_word, map_count,
     map_destination_header_word, map_header_word, map_trie_header_word, struct_addr_from_tagged, struct_header_word,
@@ -97,11 +97,13 @@ fn the_predicate_reads_only_the_kinds_marker_word() {
 #[test]
 fn live_headers_of_every_kind_have_a_clear_low_nibble() {
     for schema_id in [0, 1, 8, 24, 40, u32::MAX] {
-        assert_eq!(
-            struct_header_word(schema_id) & LOW_NIBBLE,
-            0,
-            "struct schema {schema_id}"
-        );
+        for name in [StructName::Named, StructName::Anonymous] {
+            assert_eq!(
+                struct_header_word(schema_id, name) & LOW_NIBBLE,
+                0,
+                "struct schema {schema_id} {name:?}"
+            );
+        }
     }
     for bit_len in [0, 1, 8, 72, 0x48, u32::MAX as u64] {
         assert_eq!(

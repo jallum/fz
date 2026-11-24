@@ -72,7 +72,8 @@ use cranelift_codegen::ir::{
 };
 use cranelift_frontend::FunctionBuilder;
 use fz_runtime::any_value::{
-    ClosureDenotationId, FALSE_ATOM_ID, NIL_ATOM_ID, STRUCT_HEADER_SCHEMA_SHIFT, ValueKind, closure_header_word,
+    ClosureDenotationId, FALSE_ATOM_ID, NIL_ATOM_ID, STRUCT_HEADER_NAMED_MASK, STRUCT_HEADER_SCHEMA_SHIFT, ValueKind,
+    closure_header_word,
 };
 use fz_runtime::heap::{Heap, HeapAllocKind};
 use fz_runtime::ir_runtime::{
@@ -81,8 +82,8 @@ use fz_runtime::ir_runtime::{
     fz_op_abs_f, fz_op_add_ii, fz_op_eq_bb, fz_op_eq_ff, fz_op_eq_ii, fz_op_gt_bb, fz_op_gt_ff, fz_op_gt_ii,
     fz_op_gte_bb, fz_op_gte_ff, fz_op_gte_ii, fz_op_identical_ii, fz_op_lt_bb, fz_op_lt_ff, fz_op_lt_ii, fz_op_lte_bb,
     fz_op_lte_ff, fz_op_lte_ii, fz_op_mul_ii, fz_op_neg_f, fz_op_neg_i, fz_op_neq_bb, fz_op_neq_ff, fz_op_neq_ii,
-    fz_op_not_identical_ii, fz_op_sub_ii, fz_struct_schema_id_ref, fz_truthy_ref, fz_type_of, fz_unbox_atom,
-    fz_unbox_int, fz_value_eq_raw_const,
+    fz_op_not_identical_ii, fz_op_sub_ii, fz_struct_is_named_ref, fz_struct_schema_id_ref, fz_truthy_ref, fz_type_of,
+    fz_unbox_atom, fz_unbox_int, fz_value_eq_raw_const,
 };
 
 /// What a recipe computed, in one of the three shapes.
@@ -282,6 +283,12 @@ pub(crate) const RECIPES: &[Recipe] = &[
         let header = b.ins().load(types::I64, MemFlagsData::trusted(), address, 0);
         let schema = b.ins().ushr_imm_u(header, STRUCT_HEADER_SCHEMA_SHIFT);
         Some(Emitted::Value(b.ins().ireduce(types::I32, schema)))
+    }),
+    recipe!(fz_struct_is_named_ref(word), |b| {
+        let address = address_field(b, word);
+        let header = b.ins().load(types::I64, MemFlagsData::trusted(), address, 0);
+        let named = b.ins().band_imm_u(header, STRUCT_HEADER_NAMED_MASK as i64);
+        Some(Emitted::Condition(b.ins().icmp_imm_s(IntCC::NotEqual, named, 0)))
     }),
     recipe!(fz_value_eq_raw_const(word, expected_kind, raw), |b| {
         let expected = ValueKind::new(u8::try_from(constant_of(b, expected_kind)?).ok()?)?;
@@ -520,13 +527,12 @@ pub(crate) fn emit_object<M: cranelift_module::Module>(
         row.arity,
         args.len()
     );
-    let constant = |index: usize| {
-        let word = constant_of(body.b, args[index])
-            .unwrap_or_else(|| panic!("`{symbol}` needs argument {index} to be a constant"));
-        word as u32
+    let constant_word = |index: usize| {
+        constant_of(body.b, args[index]).unwrap_or_else(|| panic!("`{symbol}` needs argument {index} to be a constant"))
     };
+    let constant = |index: usize| constant_word(index) as u32;
     match row.emit {
-        Emit::Struct => emit_struct(body, constant(1), constant(2) as usize),
+        Emit::Struct => emit_struct(body, constant_word(1) as u64, constant(2) as usize),
         Emit::Closure => {
             let count = constant(3) as usize;
             let header = closure_header_word(

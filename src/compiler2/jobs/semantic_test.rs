@@ -554,9 +554,10 @@ end
     for activation in val_activations {
         assert_eq!(
             world.fact_revision(&FactKey::ReturnType(activation)),
-            Some(1),
-            "val/1 must publish its return exactly once, never from a subset of its clauses \
-             while arr/2's call back into it is still pending",
+            Some(3),
+            "val/1 publishes its return at its measured revisions -- the typed map union is \
+             climbed to its fixed point -- never from a subset of its clauses while arr/2's \
+             call back into it is still pending",
         );
     }
 }

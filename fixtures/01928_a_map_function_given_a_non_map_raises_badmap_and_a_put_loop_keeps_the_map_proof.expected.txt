@@ -1,0 +1,43 @@
+put: 1 expected a map, got:
+
+    1
+
+delete: 1 expected a map, got:
+
+    1
+
+get/2: 1 expected a map, got:
+
+    1
+
+map_size: 1 expected a map, got:
+
+    1
+
+is_map_key: 1 expected a map, got:
+
+    1
+
+:maps.to_list: 1 expected a map, got:
+
+    1
+
+:maps.keys: 1 expected a map, got:
+
+    1
+
+:maps.values: 1 expected a map, got:
+
+    1
+
+put list: [a: 1] expected a map, got:
+
+    [a: 1]
+
+40
+49
+nil
+true
+%{2 => :y}
+%{1 => :x, 2 => :y}
+1

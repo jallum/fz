@@ -16,7 +16,7 @@
 use super::place::emit_place;
 use super::*;
 use cranelift_codegen::ir::{self, InstBuilder, MemFlagsData, types};
-use fz_runtime::any_value::{CLOSURE_CODE_OFFSET, ValueKind, closure_size_for_count, struct_header_word};
+use fz_runtime::any_value::{CLOSURE_CODE_OFFSET, ValueKind, closure_size_for_count};
 use fz_runtime::heap::HeapAllocKind;
 
 /// An object placed on the heap: where it starts, and the ref word that names
@@ -27,15 +27,14 @@ pub(crate) struct Placed {
     pub(crate) reference: ir::Value,
 }
 
-/// Place a struct of `size` bytes whose schema is `schema_id`, and write its
-/// header word.
+/// Place a struct of `size` bytes and write its `header` word.
 pub(super) fn emit_struct<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
-    schema_id: u32,
+    header: u64,
     size: usize,
 ) -> Placed {
     let address = emit_place(body, HeapAllocKind::Struct, size);
-    let header = body.b.ins().iconst(types::I64, struct_header_word(schema_id) as i64);
+    let header = body.b.ins().iconst(types::I64, header as i64);
     body.b.ins().store(MemFlagsData::trusted(), header, address, 0);
     Placed {
         address,

@@ -2,11 +2,12 @@ use super::imp::{BUDGET_FLOOR, MAJOR_GROWTH_FACTOR};
 use super::*;
 use crate::any_value::{
     AnyValue, AnyValueRef, AnyValueRefError, AnyValueRefPacking, EMPTY_LIST, EMPTY_LIST_BITS, ListCons, ListLink,
-    ListTail, STRUCT_PAYLOAD_OFFSET, SlotLayout, ValueKind, binview_addr_from_tagged, bitstring_bytes_ptr,
-    bitstring_size_for_bit_len, closure_addr_from_tagged, closure_capture_set, closure_capture_value,
-    closure_captured_count, closure_fn_ptr, closure_halt_kind, heap_kind_from_tagged, heap_object_word, heap_word_addr,
-    list_addr_from_tagged, map_addr_from_tagged, map_count, map_entry, map_size_for_count, object_size,
-    struct_addr_from_tagged, struct_schema_id, struct_size_for_payload,
+    ListTail, STRUCT_HEADER_NAMED_MASK, STRUCT_PAYLOAD_OFFSET, SlotLayout, ValueKind, binview_addr_from_tagged,
+    bitstring_bytes_ptr, bitstring_size_for_bit_len, closure_addr_from_tagged, closure_capture_set,
+    closure_capture_value, closure_captured_count, closure_fn_ptr, closure_halt_kind, heap_kind_from_tagged,
+    heap_object_word, heap_word_addr, list_addr_from_tagged, map_addr_from_tagged, map_count, map_entry,
+    map_size_for_count, object_size, struct_addr_from_tagged, struct_is_named, struct_schema_id,
+    struct_size_for_payload,
 };
 use crate::module_name::ModuleName;
 use crate::resource::ResourceStub;
@@ -52,7 +53,10 @@ fn map_publication_shares_list_keys_and_values() {
                 heap.alloc_map_slots(&[(heap_root(key), heap_root(value))]);
             }
             1 => {
-                heap.map_put_slot(AnyValueRef::null(), heap_root(key), heap_root(value));
+                let empty = heap.alloc_map_slots(&[]);
+                let empty =
+                    AnyValueRef::from_heap_object(ValueKind::MAP, map_addr_from_tagged(empty).unwrap()).unwrap();
+                heap.map_put_slot(empty, heap_root(key), heap_root(value));
             }
             _ => {
                 let destination = heap.alloc_map_destination(1);
@@ -108,10 +112,7 @@ fn map_freeze_keeps_one_allocation_and_gc_preserves_structural_lookup() {
     let fresh = heap.alloc_list_cons_slot(AnyValue::int(7), EMPTY_LIST);
     let map = roots[0];
     assert_eq!(unsafe { map_count(map.map_addr().unwrap()) }, 2);
-    assert_eq!(
-        heap.read_map_value(map, heap_root(fresh)).unwrap().unwrap().load_int(),
-        Ok(3)
-    );
+    assert_eq!(heap.read_map_value(map, heap_root(fresh)).unwrap().load_int(), Ok(3));
     let before = heap.node.alloc_stats();
     assert_eq!(heap.map_view_delete(map, AnyValue::int(99)), map);
     assert_eq!(
@@ -181,7 +182,7 @@ fn map_publication_collapses_independently_allocated_structural_keys_last_wins()
         1,
         "one strict structural key must occupy one entry"
     );
-    assert_eq!(heap.read_map_value(slots, keys[2]).unwrap().unwrap().load_int(), Ok(20));
+    assert_eq!(heap.read_map_value(slots, keys[2]).unwrap().load_int(), Ok(20));
 
     let first = AnyValueRef::from_heap_object(ValueKind::STRUCT, keys[0].raw() as *const u8).unwrap();
     let second = AnyValueRef::from_heap_object(ValueKind::STRUCT, keys[1].raw() as *const u8).unwrap();
@@ -200,7 +201,7 @@ fn map_publication_collapses_independently_allocated_structural_keys_last_wins()
         ])
         .unwrap();
     assert_eq!(unsafe { map_count(refs.map_addr().unwrap()) }, 1);
-    assert_eq!(heap.read_map_value(refs, keys[2]).unwrap().unwrap().load_int(), Ok(20));
+    assert_eq!(heap.read_map_value(refs, keys[2]).unwrap().load_int(), Ok(20));
 }
 
 #[test]
@@ -412,19 +413,15 @@ fn any_value_ref_map_lookup_reads_scalar_and_heap_values() {
     ]);
     let map_addr = map_addr_from_tagged(map_bits).expect("map addr");
     let map_ref = AnyValueRef::from_heap_object(ValueKind::MAP, map_addr).expect("map ref");
-    let scalar = h
-        .read_map_value(map_ref, AnyValue::int(1))
-        .unwrap()
-        .expect("present int key");
+    let scalar = h.read_map_value(map_ref, AnyValue::int(1)).expect("present int key");
     assert_eq!(scalar.load_int(), Ok(10));
 
     let heap_value = h
         .read_map_value(map_ref, AnyValue::atom(key_atom))
-        .unwrap()
         .expect("present atom key");
     assert_eq!(heap_value.list_addr(), Ok(child_addr));
 
-    assert_eq!(h.read_map_value(map_ref, AnyValue::atom(missing_atom)).unwrap(), None);
+    assert_eq!(h.read_map_value(map_ref, AnyValue::atom(missing_atom)), None);
 }
 
 #[test]
@@ -527,10 +524,7 @@ fn any_value_ref_map_construction_and_put_write_scalar_and_heap_values() {
         )])
         .expect("map ref");
     assert_eq!(
-        h.read_map_value(map_ref, AnyValue::int(1))
-            .unwrap()
-            .expect("int key")
-            .load_int(),
+        h.read_map_value(map_ref, AnyValue::int(1)).expect("int key").load_int(),
         Ok(10)
     );
 
@@ -541,7 +535,6 @@ fn any_value_ref_map_construction_and_put_write_scalar_and_heap_values() {
     );
     assert_eq!(
         h.read_map_value(map_ref, AnyValue::atom(key_atom))
-            .unwrap()
             .expect("atom key")
             .list_addr(),
         Ok(child_addr)
@@ -549,10 +542,7 @@ fn any_value_ref_map_construction_and_put_write_scalar_and_heap_values() {
 
     let map_ref = h.map_put_slot(map_ref, AnyValue::int(1), AnyValue::int(11));
     assert_eq!(
-        h.read_map_value(map_ref, AnyValue::int(1))
-            .unwrap()
-            .expect("int key")
-            .load_int(),
+        h.read_map_value(map_ref, AnyValue::int(1)).expect("int key").load_int(),
         Ok(11)
     );
 }
@@ -670,7 +660,6 @@ fn any_value_ref_heap_writes_are_traced_by_gc() {
 
     let moved_map_value = h
         .read_map_value(moved_map_ref, AnyValue::from_ref(key_ref).unwrap())
-        .unwrap()
         .expect("map value")
         .list_addr();
 
@@ -1156,6 +1145,61 @@ fn a_struct_collection_moves_heap_fields_and_leaves_scalar_fields() {
     let moved = struct_addr_from_tagged(root as u64).expect("moved struct");
     assert_eq!(h.read_field_slot(moved, 0).raw(), decoy_addr as u64);
     assert_ne!(h.read_field_slot(moved, 8).raw() as *mut u8, child_addr);
+}
+
+/// A tuple and a named struct on one heap, each as a root, with the bit each
+/// header should carry.
+fn named_and_anonymous_structs(source: &mut Heap) -> [(u64, bool); 2] {
+    let reg = source.schemas.clone();
+    let tuple_schema = reg.borrow_mut().register(Schema::tuple_of_arity(1));
+    let record_schema = reg.borrow_mut().register(Schema::named_struct(
+        ModuleName::from_segments(vec!["Point".into()]),
+        ["x".to_string()],
+    ));
+    [(tuple_schema, false), (record_schema, true)].map(|(schema, named)| {
+        let object = source.alloc_struct(schema);
+        (heap_object_word(object, ValueKind::STRUCT), named)
+    })
+}
+
+fn named_bit(value: AnyValueRef) -> bool {
+    unsafe { struct_is_named(value.struct_addr().expect("a struct")) }
+}
+
+fn header_of(value: AnyValueRef) -> u64 {
+    unsafe { read(value.struct_addr().expect("a struct") as *const u64) }
+}
+
+#[test]
+fn a_struct_header_names_whether_its_schema_is_a_named_struct() {
+    let mut h = Heap::new(1024, fresh_registry());
+    for (bits, named) in named_and_anonymous_structs(&mut h) {
+        let value = heap_ref(bits);
+        assert_eq!(named_bit(value), named);
+        assert_eq!(header_of(value) & STRUCT_HEADER_NAMED_MASK != 0, named);
+        assert_eq!(header_of(value) & 0xf, 0, "the forwarding nibble stays clear");
+    }
+}
+
+#[test]
+fn a_struct_keeps_its_named_bit_through_a_collection() {
+    let mut h = Heap::new(1024, fresh_registry());
+    let structs = named_and_anonymous_structs(&mut h);
+    let mut roots = structs.map(|(bits, _)| heap_ref(bits));
+    h.collect_stats(&mut roots);
+    for (moved, (_, named)) in roots.into_iter().zip(structs) {
+        assert_eq!(named_bit(moved), named);
+    }
+}
+
+#[test]
+fn a_struct_keeps_its_named_bit_through_a_deep_copy() {
+    let mut source = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let mut destination = Heap::new(SIZE_TABLE[0], source.schemas.clone());
+    for (bits, named) in named_and_anonymous_structs(&mut source) {
+        let copied = deep_copy_slot(heap_root(bits), &source.view(), &mut destination);
+        assert_eq!(named_bit(copied.ref_word()), named);
+    }
 }
 
 #[test]
@@ -3122,11 +3166,7 @@ fn a_map_holding_a_literal_closure_and_a_literal_struct_survives_a_collection_wi
 
     let moved = roots[0].map_addr().expect("moved map");
     assert!(h.contains_heap_addr(moved), "the map itself was forwarded");
-    let mut held = |key: u32| {
-        h.read_map_value(roots[0], AnyValue::atom(key))
-            .expect("map")
-            .expect("entry")
-    };
+    let mut held = |key: u32| h.read_map_value(roots[0], AnyValue::atom(key)).expect("entry");
     assert!(held(k1).is_literal());
     assert_eq!(
         held(k1).closure_addr(),
@@ -3183,7 +3223,8 @@ fn an_unwritten_struct_reads_back_exactly_what_was_stored() {
         list_ref_from_bits(list),
         AnyValueRef::empty_list(),
     ];
-    let object = h.alloc_struct_unwritten(schema, layout.size());
+    let header = h.schemas.borrow().struct_header(schema);
+    let object = h.alloc_struct_unwritten(header, layout.size());
     unsafe { std::ptr::write_bytes(object.add(STRUCT_PAYLOAD_OFFSET), 0xFF, layout.payload_size()) };
     for (index, value) in values.into_iter().enumerate() {
         unsafe {
@@ -3385,7 +3426,7 @@ fn an_atom_read_from_a_map_key_or_value_is_the_atom_stored() {
     assert_eq!(key, AnyValueRef::atom(key_atom));
     assert_eq!(value, AnyValueRef::atom(value_atom));
     assert_eq!(
-        h.read_map_value(map, AnyValue::atom(key_atom)).expect("map read"),
+        h.read_map_value(map, AnyValue::atom(key_atom)),
         Some(AnyValueRef::atom(value_atom))
     );
 }
@@ -3513,7 +3554,7 @@ fn a_pid_read_from_a_list_head_map_value_struct_field_or_capture_is_the_pid_stor
     let map_bits = h.alloc_map_slots(&[(AnyValue::atom(key), pid_value)]);
     let map = AnyValueRef::from_heap_object(ValueKind::MAP, map_addr_from_tagged(map_bits).expect("map addr"))
         .expect("map ref");
-    assert_eq!(h.read_map_value(map, AnyValue::atom(key)).expect("map read"), Some(pid));
+    assert_eq!(h.read_map_value(map, AnyValue::atom(key)), Some(pid));
 
     let struct_addr = h.alloc_struct(schema);
     let struct_ref = AnyValueRef::from_heap_object(ValueKind::STRUCT, struct_addr).expect("struct ref");

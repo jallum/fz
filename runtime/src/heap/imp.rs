@@ -18,13 +18,13 @@ use super::{BinaryBudget, Heap, MapLayout, SHARED_BIN_THRESHOLD_BYTES};
 use crate::alloc_site::RuntimeAllocSite;
 use crate::any_value::{
     AnyValue, AnyValueRef, AnyValueRefError, CLOSURE_FLAGS_CAPTURED_MASK, ListCons, ListLink, ListTail, MAP_FLAT_MAX,
-    MapDestinationKind, STRUCT_PAYLOAD_OFFSET, SlotLayout, ValueKind, bitstring_header_word,
-    bitstring_size_for_bit_len, closure_addr_from_tagged, closure_capture_kind_slot, closure_capture_raw_slot,
-    closure_capture_set, closure_capture_value, closure_header_word, closure_header_write, closure_size_for_count,
-    heap_object_word, list_addr_from_tagged, map_addr_from_tagged, map_count, map_destination_header_word,
-    map_destination_state, map_entry, map_header_word, map_key, map_key_in_arrays, map_key_kind, map_keys_ptr,
-    map_pack_tag, map_size_for_count, map_tag_bytes_len, map_tag_ptr, map_value_kind, map_values_ptr, share_bitstring,
-    share_struct, struct_field_kind_slot, struct_field_raw_slot, struct_header_word, struct_schema_id,
+    MapDestinationKind, STRUCT_HEADER_SCHEMA_SHIFT, STRUCT_PAYLOAD_OFFSET, SlotLayout, ValueKind,
+    bitstring_header_word, bitstring_size_for_bit_len, closure_addr_from_tagged, closure_capture_kind_slot,
+    closure_capture_raw_slot, closure_capture_set, closure_capture_value, closure_header_word, closure_header_write,
+    closure_size_for_count, heap_object_word, list_addr_from_tagged, map_addr_from_tagged, map_count,
+    map_destination_header_word, map_destination_state, map_entry, map_header_word, map_key, map_key_in_arrays,
+    map_key_kind, map_keys_ptr, map_pack_tag, map_size_for_count, map_tag_bytes_len, map_tag_ptr, map_value_kind,
+    map_values_ptr, share_bitstring, share_struct, struct_field_kind_slot, struct_field_raw_slot, struct_schema_id,
     struct_size_for_payload,
 };
 use crate::bits::{Bin, BinView, SharedBinHandle, alloc_buffer_view, alloc_view, shared_bin_append};
@@ -430,23 +430,30 @@ impl Heap {
     pub fn alloc_struct(&mut self, schema_id: u32) -> *mut u8 {
         let payload_size = self.schemas.borrow().get(schema_id).allocation_payload_size();
         let size = struct_size_for_payload(payload_size);
-        let p = self.alloc_struct_unwritten(schema_id, size);
+        let header = self.schemas.borrow().struct_header(schema_id);
+        let p = self.alloc_struct_unwritten(header, size);
         unsafe { write_bytes(p.add(STRUCT_PAYLOAD_OFFSET), 0, size - STRUCT_PAYLOAD_OFFSET) };
         p
     }
 
-    /// A struct of `size` bytes whose header names `schema_id` and whose
-    /// payload is not yet written. The caller stores every slot and kind byte
+    /// A struct of `size` bytes whose first word is `header` (see
+    /// `SchemaRegistry::struct_header`) and whose payload is not yet written. The caller stores every slot and kind byte
     /// before the object can be read. A collection only runs between quanta,
     /// so one cannot see the object in between.
-    pub fn alloc_struct_unwritten(&mut self, schema_id: u32, size: usize) -> *mut u8 {
+    pub fn alloc_struct_unwritten(&mut self, header: u64, size: usize) -> *mut u8 {
+        let schema_id = (header >> STRUCT_HEADER_SCHEMA_SHIFT) as u32;
+        debug_assert_eq!(
+            header,
+            self.schemas.borrow().struct_header(schema_id),
+            "the header is the schema's"
+        );
         debug_assert_eq!(
             size,
             struct_size_for_payload(self.schemas.borrow().get(schema_id).allocation_payload_size()),
             "the size is the schema's"
         );
         let p = self.alloc_at(RuntimeAllocSite::Struct, size);
-        unsafe { write(p as *mut u64, struct_header_word(schema_id)) };
+        unsafe { write(p as *mut u64, header) };
         p
     }
 
@@ -457,7 +464,8 @@ impl Heap {
     /// # Safety
     /// `object` must be a published struct of `layout`'s field count.
     pub unsafe fn copy_struct(&mut self, object: *const u8, layout: SlotLayout) -> *mut u8 {
-        let copy = self.alloc_struct_unwritten(unsafe { struct_schema_id(object) }, layout.size());
+        let header = self.schemas.borrow().struct_header(unsafe { struct_schema_id(object) });
+        let copy = self.alloc_struct_unwritten(header, layout.size());
         unsafe {
             copy_nonoverlapping(
                 object.add(STRUCT_PAYLOAD_OFFSET),
@@ -962,15 +970,8 @@ impl Heap {
         AnyValueRef::from_heap_object(ValueKind::MAP, map_addr)
     }
 
-    /// An absent deletion borrows the original map without allocating.
-    /// `map` with `key` bound to `value`; a map of that one entry when `map`
-    /// is the null ref a fresh literal starts from.
+    /// `map`, a map, with `key` bound to `value`.
     pub fn map_put_slot(&mut self, map: AnyValueRef, key: AnyValue, value: AnyValue) -> AnyValueRef {
-        if map.tag() == ValueKind::NULL {
-            let bits = self.alloc_ordered_map_entries(std::iter::once((key, value)));
-            return AnyValueRef::from_heap_object(ValueKind::MAP, map_addr_from_tagged(bits).expect("new map"))
-                .expect("map ref");
-        }
         let layout = self.expect_map_layout(map, "map put");
         self.map_view_put(layout, key, value)
     }
@@ -1533,12 +1534,10 @@ impl Heap {
         AnyValueRef::from_heap_object(ValueKind::LIST, addr)
     }
 
-    pub fn read_map_value(&mut self, map: AnyValueRef, key: AnyValue) -> Result<Option<AnyValueRef>, AnyValueRefError> {
-        let layout = self.map_layout(map).ok_or(AnyValueRefError::ExpectedTag {
-            expected: ValueKind::MAP,
-            found: map.tag(),
-        })?;
-        Ok(self.map_view_get(layout, key))
+    /// The value `map`, a map, binds to `key`.
+    pub fn read_map_value(&mut self, map: AnyValueRef, key: AnyValue) -> Option<AnyValueRef> {
+        let layout = self.expect_map_layout(map, "map read");
+        self.map_view_get(layout, key)
     }
 
     pub fn read_struct_field_ref(&self, obj: AnyValueRef, field_offset: u32) -> Result<AnyValueRef, AnyValueRefError> {

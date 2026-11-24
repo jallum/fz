@@ -2,9 +2,10 @@
 
 use super::forward::Tracer;
 use crate::any_value::{
-    ListCons, ValueKind, closure_capture_raw_kind, closure_capture_raw_slot, closure_captured_count, map_key_kind,
-    map_keys_ptr, map_node_child_count, map_node_children_ptr, map_node_entry_count, map_tag_ptr, map_value_kind,
-    map_values_ptr, share_struct, struct_field_kind_slot, struct_field_raw_slot, struct_schema_id,
+    ListCons, StructName, ValueKind, closure_capture_raw_kind, closure_capture_raw_slot, closure_captured_count,
+    map_key_kind, map_keys_ptr, map_node_child_count, map_node_children_ptr, map_node_entry_count, map_tag_ptr,
+    map_value_kind, map_values_ptr, share_struct, struct_field_kind_slot, struct_field_raw_slot, struct_is_named,
+    struct_schema_id,
 };
 use crate::bits::BinView;
 use std::ptr::read;
@@ -46,6 +47,11 @@ impl Tracer<'_> {
         unsafe { share_struct(obj) };
         let schema_id = unsafe { struct_schema_id(obj as *const u8) };
         let schemas = self.schemas;
+        debug_assert_eq!(
+            unsafe { struct_is_named(obj as *const u8) },
+            schemas.get(schema_id).struct_name() == StructName::Named,
+            "a struct's named bit is its schema's"
+        );
         for (field, kind_offset) in schemas.get(schema_id).any_value_fields_with_kind_offsets() {
             let kind_slot = unsafe { struct_field_kind_slot(obj as *const u8, kind_offset) };
             let kind = ValueKind::new(unsafe { read(kind_slot) }).expect("struct field kind");

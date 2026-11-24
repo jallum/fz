@@ -1,0 +1,44 @@
+#---
+# purpose: "Map.put, Map.delete, Map.get/2, map_size and :erlang.is_map_key given a non-map raise BadMapError carrying the term, :maps.to_list, keys and values and a loop of puts over a map and the other map functions still work on valid maps"
+# oracle: self
+# oracle.stamp: d3f7e631eaaf1ecd
+#---
+#
+# A map extern takes a map and the runtime trusts it, so every wrapper that
+# can see a non-map raises BadMapError itself, with the offending term.
+defmodule Main do
+  def show(label, fun) do
+    try do
+      fun.()
+      IO.puts("#{label}: no raise")
+    rescue
+      e in BadMapError -> IO.puts("#{label}: #{inspect(e.term)} #{Exception.message(e)}")
+    end
+  end
+
+  def put_loop(map, 0), do: map
+  def put_loop(map, n), do: put_loop(Map.put(map, n, n * n), n - 1)
+
+  def main do
+    show("put", fn -> Map.put(1, :a, 1) end)
+    show("delete", fn -> Map.delete(1, :a) end)
+    show("get/2", fn -> Map.get(1, :a) end)
+    show("map_size", fn -> map_size(1) end)
+    show("is_map_key", fn -> :erlang.is_map_key(:a, 1) end)
+    show(":maps.to_list", fn -> :maps.to_list(1) end)
+    show(":maps.keys", fn -> :maps.keys(1) end)
+    show(":maps.values", fn -> :maps.values(1) end)
+    show("put list", fn -> Map.put([a: 1], :a, 1) end)
+
+    m = put_loop(%{}, 40)
+    IO.inspect(map_size(m))
+    IO.inspect(Map.get(m, 7))
+    IO.inspect(Map.get(m, 41))
+    IO.inspect(:erlang.is_map_key(40, m))
+    IO.inspect(Map.delete(%{1 => :x, 2 => :y}, 1))
+    IO.inspect(Map.put(%{1 => :x}, 2, :y))
+    IO.inspect(Map.get(%{a: 1}, :a))
+  end
+end
+
+Main.main()

@@ -9,7 +9,10 @@ use crate::finite_set::FiniteSet;
 use crate::fz_ir::Module;
 use crate::modules::identity::ModuleName;
 use crate::types::ClosureTarget;
-use fz_runtime::any_value::{AnyValue as RuntimeAnyValue, ValueKind, closure_arity, closure_fn_ptr, struct_schema_id};
+use fz_runtime::any_value::{
+    AnyValue as RuntimeAnyValue, StructName, ValueKind, closure_arity, closure_fn_ptr, struct_is_named,
+    struct_schema_id,
+};
 use fz_runtime::heap::NamedSchema;
 use std::collections::BTreeSet;
 use std::fmt;
@@ -1270,15 +1273,11 @@ pub(crate) struct RuntimeValueReader<'a> {
 }
 
 impl RuntimeValueReader<'_> {
-    /// Whether `schema` is the id of a named struct the program declares.
-    fn is_named_schema(&self, schema: u32) -> bool {
-        self.named_schema_ids.values().any(|id| *id == schema)
-    }
-
-    /// Whether `schema` is an UNNAMED struct whose arity `arities` admits.
+    /// Whether the struct of `schema` and `name` is an UNNAMED struct whose
+    /// arity `arities` admits.
     ///
     /// The one schema-space reading of an arity set. A tuple is a struct the
-    /// module never named, so a cofinite set is "not a named schema, and not
+    /// module never named, so a cofinite set is "not a named struct, and not
     /// one of the excluded arities' schemas" while a finite one is exactly the
     /// schemas of the arities it lists. An arity the runtime registered no
     /// schema for names no value and drops out of either reading.
@@ -1287,7 +1286,7 @@ impl RuntimeValueReader<'_> {
     /// axis and the other-structs axis cannot disagree about which schema a
     /// set of arities covers. The native emitter's `emit_arity_set_membership`
     /// renders the same three cases into Cranelift.
-    fn unnamed_struct_of_arity(&self, schema: u32, arities: &FiniteSet<usize>) -> bool {
+    fn unnamed_struct_of_arity(&self, (schema, name): (u32, StructName), arities: &FiniteSet<usize>) -> bool {
         let of_arities = arities
             .values
             .iter()
@@ -1295,7 +1294,7 @@ impl RuntimeValueReader<'_> {
         if !arities.cofinite {
             return of_arities;
         }
-        !self.is_named_schema(schema) && !of_arities
+        name == StructName::Anonymous && !of_arities
     }
 
     fn tuple_arity_of(&self, schema: u32) -> Option<usize> {
@@ -1409,12 +1408,19 @@ fn is_admitted_bitstring(admitted: BitstringAlignment, value: RuntimeAnyValue) -
     admitted.admits(bit_len)
 }
 
-fn struct_schema_of(value: RuntimeAnyValue) -> Option<u32> {
+/// The schema id of a struct value and whether its header says the schema is a
+/// named struct's.
+fn struct_read(value: RuntimeAnyValue) -> Option<(u32, StructName)> {
     if !has_kind(value, ValueKind::STRUCT) {
         return None;
     }
-    let ptr = value.heap_addr()?;
-    Some(unsafe { struct_schema_id(ptr.cast_const()) })
+    let ptr = value.heap_addr()?.cast_const();
+    let name = if unsafe { struct_is_named(ptr) } {
+        StructName::Named
+    } else {
+        StructName::Anonymous
+    };
+    Some((unsafe { struct_schema_id(ptr) }, name))
 }
 
 /// Read a closure value's arity and CONSTRUCTION and ask the predicate about
@@ -1466,11 +1472,11 @@ fn matches_tuple_axis(
     value: RuntimeAnyValue,
     scope: PositionScope,
 ) -> bool {
-    let Some(actual) = struct_schema_of(value) else {
+    let Some(read) = struct_read(value) else {
         return false;
     };
-    reader.unnamed_struct_of_arity(actual, predicate.tuples.arities())
-        && matches_tuple_shape(predicate, reader, value, actual, scope)
+    reader.unnamed_struct_of_arity(read, predicate.tuples.arities())
+        && matches_tuple_shape(predicate, reader, value, read.0, scope)
 }
 
 /// Whether some shape the test names matches the tuple's fields.
@@ -1673,8 +1679,8 @@ fn named_schema_of(reader: &RuntimeValueReader<'_>, value: RuntimeAnyValue) -> N
     if has_kind(value, ValueKind::MAP) {
         return (reader.map_module)(value);
     }
-    match struct_schema_of(value) {
-        Some(schema) if reader.is_named_schema(schema) => NamedSchema::Schema(schema),
+    match struct_read(value) {
+        Some((schema, StructName::Named)) => NamedSchema::Schema(schema),
         _ => NamedSchema::None,
     }
 }
@@ -1690,10 +1696,10 @@ fn matches_other_struct_axis(
     reader: &RuntimeValueReader<'_>,
     value: RuntimeAnyValue,
 ) -> bool {
-    let Some(actual) = struct_schema_of(value) else {
+    let Some(read) = struct_read(value) else {
         return false;
     };
-    reader.unnamed_struct_of_arity(actual, &predicate.other_struct_arities())
+    reader.unnamed_struct_of_arity(read, &predicate.other_struct_arities())
 }
 
 /// The dynamic surface-membership tripwire (fz-kdt.135, fz-kdt.144).
@@ -1943,7 +1949,7 @@ pub(crate) mod surface_membership {
             RuntimeAnyValue::EmptyList => "[]".to_string(),
             RuntimeAnyValue::HeapRef(_) => match list_shape_of(value) {
                 Some(_) => render_spine(reader, value, depth),
-                None => match super::struct_schema_of(value).and_then(|schema| reader.tuple_arity_of(schema)) {
+                None => match super::struct_read(value).and_then(|(schema, _)| reader.tuple_arity_of(schema)) {
                     Some(arity) => render_tuple(reader, value, arity, depth),
                     None => format!("<{:?}>", value.kind()),
                 },
