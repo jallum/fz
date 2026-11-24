@@ -9,9 +9,15 @@
   "id": "fz-9x7.37.4",
   "labels": [],
   "parent": "fz-9x7.37",
+  "comments": [
+    {
+      "text": "Builder: GC (assigned 2026-11-24). The per-fixture list goes to the user after .37.3.",
+      "timestamp": "2026-11-24T22:22:06Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "The remaining stats fixtures pin named sites",
   "type": "task",
-  "updated_at": "2026-11-24T22:22:03Z"
+  "updated_at": "2026-11-24T22:22:06Z"
 }
