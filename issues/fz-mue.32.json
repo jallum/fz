@@ -2,7 +2,8 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [
-    "fz-mue.12"
+    "fz-mue.12",
+    "fz-mue.57"
   ],
   "created": "2026-11-19T03:09:43Z",
   "description": "User directed 2026-11-19: \"add the elixir parity issues as tickets to the epic we gave to Elixir Parity\". Owner: Elixir Parity. Found by Elixir Parity. Elixir's ~w(a, b) warns about the trailing comma via IO.warn at expansion; fz has no way for a macro to warn, so the port drops it. Done: a macro's IO.warn surfaces as a compile diagnostic warning, and sigil_w uses it.",
@@ -23,5 +24,5 @@
   "status": "open",
   "title": "A macro can emit a compile-time warning",
   "type": "feature",
-  "updated_at": "2026-11-20T21:11:59Z"
+  "updated_at": "2026-11-24T21:02:23Z"
 }
