@@ -429,8 +429,11 @@ with the body's other names and applies `def __struct__(), do: %__MODULE__{}`
 `resolve/duplicate-function` (fixture `00881`). `Kernel.struct/1`,
 `struct/2` and `struct!/2` (`lib/kernel.fz`) start from `module.__struct__()`,
 a call on a module value, and replace the fields they are given with
-`Map.replace/3` and `Map.replace!/3`. Fixture `00880` agrees with Elixir on
-interp, run and build.
+`Map.replace/3` and `Map.replace!/3`. `struct!/2` on a module also takes the last
+`:__struct__` pair of its fields: another module than the one named raises
+`ArgumentError`, after any `KeyError` for an undeclared key; `struct/2` ignores
+the pair. Fixtures `00880` and `01903` agree with Elixir on interp, run and
+build.
 
 A non-private function or macro becomes a `ModuleInterfaceCallable`; `defp`
 functions stay callable in-module but out of the interface. A qualified call
