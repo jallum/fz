@@ -3,7 +3,7 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-19T03:09:40Z",
-  "description": "User directed 2026-11-19: \"add the elixir parity issues as tickets to the epic we gave to Elixir Parity\". Owner: Elixir Parity. Found by JSON walking the json.erl port (/Users/j5n/Workspace/fz-752-walk/walk.md, fz2 from #786 head). It exhausts the 50,000-request budget ('waiting on transport_shape' / abi_executable) on all paths, with no source location. No small repro yet: repro_25.fz is the whole port. Same family as fz-mue.2. Done: a reduced reproducer, the cause traced from the job trace, and the port's decode_continue path compiles within budget.",
+  "description": "User directed 2026-11-19: \"add the elixir parity issues as tickets to the epic we gave to Elixir Parity\". Owner: Elixir Parity. Found by JSON walking the json.erl port (/Users/j5n/Workspace/fz-752-walk/walk.md, fz2 from #786 head). It exhausts the 50,000-request budget ('waiting on transport_shape' / abi_executable) on all paths, with no source location. No small repro yet: repro_25.fz is the whole port. Same family as fz-mue.2. Done: a reduced reproducer, the cause traced from the job trace, and the port's decode_continue path compiles within budget.\n\nRe-test on develop de4ef6a3b (Elixir Parity, 2026-11-24; user-approved update): reproducer /Users/j5n/Workspace/fz-752-walk/repro_25.fz still exhausts 50,000 requests waiting on transport_shape on all paths. (punch/02, an older budget repro on no ticket, now passes on all three paths.) Evidence: Elixir Parity's fresh/report.md.",
   "id": "fz-mue.25",
   "labels": [],
   "parent": "fz-mue",
@@ -17,5 +17,5 @@
   "status": "open",
   "title": "A program that reaches OtpJSON.decode_continue/2 compiles within the request budget",
   "type": "bug",
-  "updated_at": "2026-11-19T04:55:48Z"
+  "updated_at": "2026-11-24T21:36:43Z"
 }
