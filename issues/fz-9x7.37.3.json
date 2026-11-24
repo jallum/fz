@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "GC",
   "blocked_by": [
     "fz-9x7.37.2"
   ],
@@ -30,5 +30,5 @@
   "status": "open",
   "title": "heap_alloc_stats is a sum over sites",
   "type": "task",
-  "updated_at": "2026-11-24T22:21:30Z"
+  "updated_at": "2026-11-24T22:22:03Z"
 }
