@@ -448,8 +448,11 @@ fn a_key_that_changes_no_slot_returns_before_it_rebuilds_the_arrow() {
     assert_eq!(erase_closures(&mut t, arrow, &[DispatchDemand::Whole]), arrow);
     assert_eq!(
         t.interning_work_stats(),
-        before,
-        "a key whose every slot is already its own key interns nothing"
+        InterningWorkStats {
+            identity_shortcuts: before.identity_shortcuts + 1,
+            ..before
+        },
+        "a key whose every slot is already its own key interns nothing; the closure-surface read shortcuts once"
     );
 
     let literal = t.closure_lit(ClosureTarget(7), vec![], 0);
@@ -1500,6 +1503,10 @@ fn the_forwarder_erasure_anonymises_only_the_slots_no_test_reads() {
     let arrow = t.arrow(&[branded, branded], int);
 
     let erased = erase_closures(&mut t, arrow, &[DispatchDemand::Ignore, DispatchDemand::Whole]);
+    let own_param = t.type_var(closure_var_id(crate::fz_ir::FnId(3), 0));
+    let own_view = t.arrow(&[own_param], int);
+    let own_surface = t.closure_lit(ClosureTarget(3), vec![int], 1);
+    let own_surface = t.intersect(own_surface, own_view);
     let params = t.arrow_params(&erased);
     assert_eq!(params.len(), 2);
     assert_ne!(
@@ -1512,9 +1519,9 @@ fn the_forwarder_erasure_anonymises_only_the_slots_no_test_reads() {
         t.display(&params[0])
     );
     assert_eq!(
-        params[1], branded,
-        "a slot the body dispatches on is untouched -- that is why an anonymous literal never \
-         reaches a runtime test"
+        params[1], own_surface,
+        "a slot the body dispatches on keeps its brand, read at the lambda's own parameter variable -- \
+         that is why an anonymous literal never reaches a runtime test"
     );
 
     let capturing = CallableShape {

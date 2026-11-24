@@ -756,10 +756,12 @@ fn compiler2_an_evidence_row_folds_a_self_nested_closure_the_way_its_key_does() 
     let nested = world.types_mut().closure_lit(lambda, vec![once], 2);
     let folded = world.types_mut().fold_self_nested_closures(&nested);
     assert_ne!(folded, nested, "the nesting is something to fold");
+    let folded_closure = folded;
     let mut folded = [folded];
     world.types_mut().address_inputs(&mut folded);
     let key = world.activation_key(root, function, &[nested]);
-    assert_eq!(key.inputs(world.types()), folded, "the key folds the nesting");
+    let folded_key = world.activation_key(root, function, &[folded_closure]);
+    assert_eq!(key, folded_key, "the key folds the nesting");
 
     world.complete_job(
         Job::SeedRoot(root),

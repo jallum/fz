@@ -194,6 +194,17 @@ repetition into a recursive type. The key collapse is a bounded-specialization
 control, and it is one whole-arrow operation on the interned arrow — not a
 per-input pre-pass.
 
+After brand erasure, a slot whose closure literal names a function is read at
+that function's own parameter variables (`closure_var_id`), captures included: a
+known closure is keyed by its literal. The surface the closure was viewed
+through -- the contract instantiation `intersect_pos` folds into the literal's
+signature and the parameter types a wrapper ABI key is built from -- stays in the
+activation's evidence arrow. Two arrows that differ only in that surface are
+mutually subtype but intern as two ids; keyed by literal they are one activation
+with one executable. The reset runs last because an erased closure carries
+per-lambda variables, and resetting before erasure would key two erased lambdas
+apart.
+
 ## Matching is subsumption — the trichotomy calculator
 
 Every address in a signature is its own interned `Ty`; the arrow sits on top.
