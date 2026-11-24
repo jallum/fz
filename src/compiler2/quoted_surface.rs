@@ -257,7 +257,12 @@ fn read_surface(source: &QuotedSourceRoot, sources: &SourceMap) -> Result<ScopeS
         if head_name.starts_with('@') {
             match head_name.as_str() {
                 "@doc" | "@spec" => pending_function_attrs.push(quoted_item.root()),
-                "@moduledoc" | "@type" | "@typep" | "@opaque" => attrs.push(parse_scope_attr(&quoted_item, sources)?),
+                "@type" | "@typep" | "@opaque" => attrs.push(parse_scope_attr(&quoted_item, sources)?),
+                "@moduledoc" | "@typedoc" => forms.push(ScopeForm::Attribute(parse_value_attribute(
+                    source,
+                    &quoted_item,
+                    sources,
+                )?)),
                 _ => {
                     flush_function_groups(source, &mut forms, &mut group_order, &mut groups, sources)?;
                     forms.push(ScopeForm::Attribute(parse_value_attribute(
@@ -554,12 +559,41 @@ pub(crate) fn is_written_literal(
     Ok(LiteralTerm::of(&expr.node).is_some())
 }
 
-/// The text of `@doc` or `@moduledoc`; `false` documents nothing.
-pub(crate) fn doc_text(value: &QuotedSourceCursor) -> Result<Option<String>, QuotedSourceError> {
-    if value.root().tag() == fz_runtime::any_value::ValueKind::ATOM && value.atom_name()? == "false" {
-        return Ok(None);
+/// Whether `name` is an attribute that documents.
+pub(crate) fn is_documentation_attribute(name: &str) -> bool {
+    matches!(name, "doc" | "moduledoc" | "typedoc")
+}
+
+/// The `@doc` attributes written above a grouped function's clauses, each as
+/// the attribute form it is.
+pub(crate) fn function_doc_attributes(
+    function_source: &QuotedSourceRoot,
+    sources: &SourceMap,
+) -> Result<Vec<AttributeForm>, QuotedSourceError> {
+    if function_source.cursor().ast_node(sources)?.is_some() {
+        return Ok(Vec::new());
     }
-    value.utf8_binary_text().map(Some)
+    let mut docs = Vec::new();
+    for item in function_source.cursor().list_iter() {
+        let item = item?;
+        let node = expect_ast_cursor_node(&item, "grouped function item", sources)?;
+        if node.head.atom_name()? == "@doc" {
+            docs.push(parse_value_attribute(function_source, &item, sources)?);
+        }
+    }
+    Ok(docs)
+}
+
+/// Whether `value` is what documentation holds, as Elixir's
+/// `Module.put_attribute/3` requires: a binary, `false`, `nil` or a keyword
+/// list.
+pub(crate) fn is_documentation_value(value: &QuotedSourceCursor) -> Result<bool, QuotedSourceError> {
+    use fz_runtime::any_value::ValueKind;
+    Ok(match value.root().tag() {
+        ValueKind::BITSTRING | ValueKind::BINVIEW | ValueKind::LIST => true,
+        ValueKind::ATOM => matches!(value.atom_name()?.as_str(), "false" | "nil"),
+        _ => false,
+    })
 }
 
 fn parse_scope_attr(cursor: &QuotedSourceCursor, sources: &SourceMap) -> Result<Attribute, QuotedSourceError> {
@@ -572,7 +606,6 @@ fn parse_scope_attr(cursor: &QuotedSourceCursor, sources: &SourceMap) -> Result<
     };
     let span = node.span.unwrap_or(Span::DUMMY);
     match head.as_str() {
-        "@moduledoc" => Ok(Attribute::ModuleDoc(doc_text(&value)?)),
         "@type" | "@typep" | "@opaque" => decode_type_alias_attr(&value, span, sources),
         other => Err(QuotedSourceError::new(format!(
             "unsupported quoted scope attribute `{other}`"

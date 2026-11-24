@@ -85,6 +85,11 @@ pub(crate) fn derive_function_surface(
         let item = item?;
         let node = expect_ast_node(&item, "grouped function item", sources)?;
         let head = node.head.atom_name()?;
+        if head == "@doc" {
+            // The publisher evaluates a function's documentation; it is not
+            // part of the surface.
+            continue;
+        }
         if head.starts_with('@') {
             attr_spans.push(node.span.unwrap_or(Span::DUMMY));
             attrs.push(decode_attribute(&item, sources)?);
@@ -190,7 +195,6 @@ fn decode_attribute(cursor: &QuotedSourceCursor, sources: &SourceMap) -> Result<
         )));
     };
     match head.as_str() {
-        "@doc" => Ok(Attribute::Doc(super::quoted_surface::doc_text(&value)?)),
         "@spec" => decode_spec_attribute(&value, sources),
         other => Err(QuotedSourceError::new(format!(
             "unsupported quoted function attribute `{other}`"

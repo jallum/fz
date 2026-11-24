@@ -34,8 +34,9 @@ use super::quoted_expander::{
 use super::quoted_surface::{
     AttributeForm, CompilerService, CompilerServiceForm, FunctionForm, MacroCallForm, OverridableForm,
     ProtocolImplForm, ReservedSourceDefinition, ScopeForm, ScopeSurface, StatementForm, StructFields, StructForm,
-    attribute_symbol, defines_a_function, is_written_literal, read_module_body_surface, read_protocol_body_surface,
-    read_protocol_impl_body_surface, read_struct_fields, reserved_source_definition,
+    attribute_symbol, defines_a_function, function_doc_attributes, is_documentation_attribute, is_documentation_value,
+    is_written_literal, read_module_body_surface, read_protocol_body_surface, read_protocol_impl_body_surface,
+    read_struct_fields, reserved_source_definition,
 };
 use super::scope::ScopeSnapshot;
 use super::source::{QuotedSourceError, QuotedSourceHeap, QuotedSourceMetadata, QuotedSourceRoot};
@@ -1134,12 +1135,58 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
             Evaluated::Value(value) => value,
             Evaluated::Blocked(effects) => return Ok(Some(*effects)),
         };
+        self.require_documentation_value(attribute, &value)?;
         self.namespace = self.world.bind_namespace(
             self.namespace,
             attribute_symbol(&attribute.name),
             NamespaceSymbol::Splice(value),
         );
         Ok(None)
+    }
+
+    /// Runs the `@doc` expressions written above a function, in the module as
+    /// the walk has defined it so far, and refuses a value that documents
+    /// nothing.
+    fn evaluate_function_docs(&mut self, function: &FunctionForm) -> Result<Option<JobEffects>, FatalError> {
+        let source_map = self.world.source_map();
+        let docs = function_doc_attributes(&function.source, &source_map.borrow())
+            .map_err(|error| emit_surface_read_error(self.telemetry, "function documentation read failed", &error))?;
+        for doc in &docs {
+            let value = match self.attribute_value(doc)? {
+                Evaluated::Value(value) => value,
+                Evaluated::Blocked(effects) => return Ok(Some(*effects)),
+            };
+            self.require_documentation_value(doc, &value)?;
+        }
+        Ok(None)
+    }
+
+    /// A documentation attribute holds a binary, `false`, `nil` or a keyword
+    /// list; any other value is the author's error, reported as Elixir does.
+    fn require_documentation_value(
+        &self,
+        attribute: &AttributeForm,
+        value: &QuotedSourceRoot,
+    ) -> Result<(), FatalError> {
+        if !is_documentation_attribute(&attribute.name) {
+            return Ok(());
+        }
+        let valid = is_documentation_value(&value.cursor())
+            .map_err(|error| emit_surface_read_error(self.telemetry, "documentation attribute read failed", &error))?;
+        if valid {
+            return Ok(());
+        }
+        Err(emit_job_diagnostic(
+            self.telemetry,
+            Diagnostic::error(
+                codes::LOWER_INVALID_DOCUMENTATION,
+                format!(
+                    "@{} is a built-in module attribute for documentation. It should be either false, nil, a string, or a keyword list",
+                    attribute.name
+                ),
+                attribute.span,
+            ),
+        ))
     }
 
     /// The quoted code that rebuilds an attribute's value. A written literal
@@ -1225,6 +1272,9 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
         function: &FunctionForm,
         context: &FragmentPublicationContext,
     ) -> Result<Option<JobEffects>, FatalError> {
+        if let Some(effects) = self.evaluate_function_docs(function)? {
+            return Ok(Some(effects));
+        }
         let Some(namespace) = self.reach_definition(function, context)? else {
             return Ok(None);
         };
