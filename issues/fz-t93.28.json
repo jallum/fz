@@ -5,13 +5,13 @@
   ],
   "blocks": [],
   "created": "2026-11-23T19:59:37Z",
-  "description": "From fz-t93.26's paper (M5). Construction wrappers are numbered w1/w2 in the order they are created, so 01574's plan prints differently under fifo and lifo (print order only). Same rule as fz-t93.26's M1: anything printed or numbered comes from a fixed order of the data. Done when 01574's plan is identical under fifo and lifo. Evidence: /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/t93_26/.",
+  "description": "From fz-t93.26's paper (M5). Re-scoped 2026-11-24 (page ../fz-t93.28.html, user accepted all three decisions).\n\nCause: ties in the compiler's fixed executable order are broken by raw FunctionId (mint order, which follows job order): ActivationKey::semantic_cmp (semantic.rs:968), FunctionId::semantic_cmp (:974-977), ExecutableSymbol::semantic_cmp (transport.rs:240). That decides printed w{n}/xN numbers and the published wrapper order (TransportPosition::semantic_cmp transport.rs:376, backend_program.rs:97) that the runtime indexes (jobs/native.rs:158, ir_interp/backend.rs:2882).\n\nBuild A2 (scratch t93_28/variantA.patch, A2_full.diff): Types::cmp_function orders two functions by their registered typed origin (loud assert on distinct functions with equal origins), used by the three semantic_cmps. Tests that mint stand-in FunctionIds register a real origin via cfg(test) Types::test_function (define_test_callable); no fallback in cmp_function. drive_test.rs:14220 gains a PopOrder::Lifo pass for its perturbation precondition; backend/output/facts compared across all passes, work multiset only across root orders.\nDone when: 01574 in ORDER_FREE_PLANS, identical fifo/lifo; census 14-\u003e13 none new; pins only fall (work_start_reason 2484-\u003e2482 and 418/420-\u003e416/418, public_trace 00420 cold walks 476-\u003e474, fz2_cli 00420 runtime_demand_walks 631-\u003e629; distiller requests fall).",
   "id": "fz-t93.28",
   "labels": [],
   "parent": "fz-t93",
   "priority": 2,
   "status": "in_progress",
-  "title": "Wrapper numbers come from a fixed order, not creation order",
+  "title": "Functions are ordered by their typed origin, not by when their ids were minted",
   "type": "bug",
-  "updated_at": "2026-11-24T14:27:24Z"
+  "updated_at": "2026-11-24T21:56:44Z"
 }
