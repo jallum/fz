@@ -3,13 +3,13 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-19T03:09:43Z",
-  "description": "User directed 2026-11-19: \"add the elixir parity issues as tickets to the epic we gave to Elixir Parity\". Owner: Elixir Parity. Found by Elixir Parity building fz-nhb.5. runtime/src/escape.rs:130 accepts \\\\x with one hex digit and \\\\x{H...}; Elixir (elixir_interpolation.erl:221-226) accepts only \\\\xHH and raises 'invalid hex escape character, expected \\\\xHH' otherwise, so fz accepts programs Elixir rejects. Predates nhb.5 (moved, not written). Done: \\\\x accepts exactly Elixir's forms; a self-check fixture covers the rejected ones.",
+  "description": "User directed 2026-11-19: \"add the elixir parity issues as tickets to the epic we gave to Elixir Parity\". Owner: Elixir Parity. Found by Elixir Parity building fz-nhb.5. runtime/src/escape.rs:130 accepts \\\\x with one hex digit and \\\\x{H...}; Elixir (elixir_interpolation.erl:221-226) accepts only \\\\xHH and raises 'invalid hex escape character, expected \\\\xHH' otherwise, so fz accepts programs Elixir rejects. Predates nhb.5 (moved, not written). Done: \\\\x accepts exactly Elixir's forms; a self-check fixture covers the rejected ones.\n\nRe-test on develop de4ef6a3b (Elixir Parity, 2026-11-24; user-approved update): the old premise was wrong. Elixir 1.19.4 accepts \"\\x4\" and \"\\x{41}\" with a deprecation warning; only \"\\xg\" is an error, and fz's message there already matches. Done when: the same deprecation warning goes through the compiler's warning path (emit_warning_once), with a fixture carrying a .expected.diagnostics golden. Evidence: Elixir Parity's fresh/report.md.",
   "id": "fz-mue.30",
   "labels": [],
   "parent": "fz-mue",
   "priority": 3,
   "status": "open",
-  "title": "A string escape reads only what Elixir's does",
+  "title": "Deprecated \\xH and \\x{H} escapes warn, as in Elixir",
   "type": "bug",
-  "updated_at": "2026-11-19T03:09:43Z"
+  "updated_at": "2026-11-24T21:36:31Z"
 }
