@@ -11,9 +11,15 @@
   "id": "fz-t93.28",
   "labels": [],
   "parent": "fz-t93",
+  "comments": [
+    {
+      "text": "PR #868 (6ddedefe6) HOLD, from fz-engine: JSON's ten-order sweep shows 01353 under seed 5 overflows the stack or hangs on #868's head; develop and #869 exit 0 on the same seed. CI misses it because 01353 is not in ORDER_FREE_PLANS. Diagnosis in ../fz-edge (A/B: cut change vs ordering change). t93.7.2 stays blocked.",
+      "timestamp": "2026-11-24T23:01:32Z"
+    }
+  ],
   "priority": 2,
   "status": "in_progress",
   "title": "Functions are ordered by their typed origin, not by when their ids were minted",
   "type": "bug",
-  "updated_at": "2026-11-24T22:18:47Z"
+  "updated_at": "2026-11-24T23:01:32Z"
 }
