@@ -1716,6 +1716,7 @@ fn bitstring_field(field: &BitstringFieldShape) -> String {
         Some(BitstringFieldSize::Binding(subject)) => format!("s{}", subject.0),
         Some(BitstringFieldSize::Pinned(pinned)) => format!("p{}", pinned.0),
         Some(BitstringFieldSize::PinnedByteSize(pinned)) => format!("bytes(p{})", pinned.0),
+        Some(BitstringFieldSize::Guard(guard)) => format!("g{}", guard.0),
     };
     let proven = if field.rest_proven_whole { "/whole" } else { "" };
     format!(

@@ -2200,6 +2200,13 @@ fn decode_bit_size(
             context: decode_var_context(&node)?,
         }));
     }
+    if cursor.ast_node(sources)?.is_some() {
+        return Ok(BitSize::Expr(Box::new(decode_standalone_expr(
+            cursor,
+            Some(error_span),
+            sources,
+        )?)));
+    }
     match cursor.root().tag() {
         // A bare atom, unlike the `Var`-shaped node above, has no tail and no
         // meta to carry a macro's or sugar's context in — it is structurally
@@ -2210,7 +2217,10 @@ fn decode_bit_size(
         other => Err(QuotedSourceError::user(
             crate::diag::codes::PARSE_BITSTRING_BAD_SIZE,
             Some(error_span),
-            format!("bitstring size expects int or variable, got {:?}", other),
+            format!(
+                "bitstring size expects an int, a variable or an expression, got {:?}",
+                other
+            ),
         )),
     }
 }

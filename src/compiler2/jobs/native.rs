@@ -4184,7 +4184,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             let spec = &extraction.spec;
             let field = BitMatchField {
                 ty: dispatch_bit_type(spec.runtime_kind()),
-                size: self.lower_dispatch_bit_size(ctx, plan, state, spec)?,
+                size: self.lower_dispatch_bit_size(ctx, plan, state, spec, fail_b)?,
                 endian: dispatch_endian(spec.endian),
                 signed: spec.signed,
                 unit: spec.unit,
@@ -4415,6 +4415,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         plan: &PatternDispatchPlan<Ty>,
         state: &mut DispatchState,
         field: &crate::dispatch_matrix::BitstringFieldShape,
+        miss: BlockId,
     ) -> Result<Option<BitSizeIr>, FatalError> {
         use crate::dispatch_matrix::BitstringFieldSize;
         Ok(match &field.size {
@@ -4428,6 +4429,21 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             Some(BitstringFieldSize::Pinned(pinned)) => Some(BitSizeIr::Var(self.dispatch_pinned_var(state, *pinned)?)),
             Some(BitstringFieldSize::PinnedByteSize(pinned)) => {
                 Some(BitSizeIr::ByteSizeOf(self.dispatch_pinned_var(state, *pinned)?))
+            }
+            // A size written as an expression is a guard's value; a guard that
+            // fails leaves through the bitstring's own miss block.
+            Some(BitstringFieldSize::Guard(guard)) => {
+                let expr = plan.guards.get(guard.0 as usize).ok_or_else(|| {
+                    incomplete_native_program(
+                        self.telemetry,
+                        self.root_id,
+                        format!("bitstring size guard {:?} is out of bounds", guard),
+                    )
+                })?;
+                let mut fail = Some(miss);
+                Some(BitSizeIr::Var(
+                    self.lower_guard_expr(ctx, plan, state, expr, &mut fail)?,
+                ))
             }
         })
     }

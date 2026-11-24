@@ -1244,7 +1244,7 @@ fn emit_bitstring_test<M: cranelift_module::Module>(
     for field_subject in &shape.fields {
         let extraction = ctx.dispatch.bitstring_extraction(*field_subject);
         let field = &extraction.spec;
-        let (size_present, size_value) = emit_dispatch_bit_size(body, ctx, field, state)?;
+        let (size_present, size_value) = emit_dispatch_bit_size(body, ctx, field, false_b, state)?;
         let field_spec = fz_bs_field_spec(
             field.runtime_kind().runtime_tag(),
             size_present,
@@ -1340,7 +1340,8 @@ fn emit_dispatch_bit_size<M: cranelift_module::Module>(
     body: &mut DispatchBody<'_, '_, M>,
     ctx: &DispatchCtx<'_>,
     field: &crate::dispatch_matrix::BitstringFieldShape,
-    state: &DispatchEmitState,
+    miss: ir::Block,
+    state: &mut DispatchEmitState,
 ) -> Result<(u32, ir::Value), CodegenError> {
     match &field.size {
         None => Ok((0, body.b.ins().iconst(types::I32, 0))),
@@ -1364,6 +1365,15 @@ fn emit_dispatch_bit_size<M: cranelift_module::Module>(
                 return Ok((1, body.b.ins().iconst(types::I32, i64::from(u32::MAX))));
             };
             Ok((1, runtime_call1!(body, fz_pinned_binary_segment_size, [binary])))
+        }
+        Some(BitstringFieldSize::Guard(guard)) => {
+            let expr = ctx
+                .dispatch
+                .guards
+                .get(guard.0 as usize)
+                .ok_or_else(|| CodegenError::new(format!("bitstring size guard {:?} out of bounds", guard)))?;
+            let value = emit_dispatch_guard_expr(body, ctx, expr, miss, state)?;
+            Ok((1, strict_int_i32(body, value)?))
         }
     }
 }

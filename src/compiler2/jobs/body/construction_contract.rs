@@ -20,23 +20,25 @@ pub(super) struct ConstructionCheck {
     pub(super) failure: Spanned<Expr>,
 }
 
-/// The check of `fields`, whose values `values` name in order; `None` when the
-/// program text settles every term.
+/// The names a construction's check gives each segment: its value, and the
+/// value of a size the program writes as an expression.
+pub(super) struct SegmentNames<'n> {
+    pub(super) values: &'n [Var],
+    pub(super) sizes: &'n [Var],
+}
+
+/// The check of `fields`; `None` when the program text settles every term.
 pub(super) fn construction_check(
     fields: &[BitField<Spanned<Expr>>],
-    values: &[Var],
+    names: SegmentNames<'_>,
     span: Span,
 ) -> Option<ConstructionCheck> {
     let build = Build { span };
-    let test = fields
-        .iter()
-        .zip(values)
-        .flat_map(|(field, value)| build.terms(field, value))
+    let segments_of = || fields.iter().zip(names.values).zip(names.sizes);
+    let test = segments_of()
+        .flat_map(|((field, value), size)| build.terms(field, value, size))
         .reduce(|left, right| build.op(BinOp::And, left, right))?;
-    let segments = fields
-        .iter()
-        .zip(values)
-        .map(|(field, value)| build.segment(field, value));
+    let segments = segments_of().map(|((field, value), size)| build.segment(field, value, size));
     let failure = build.kernel(
         "__construction_failed__",
         vec![build.expr(Expr::List(segments.collect(), None))],
@@ -76,10 +78,11 @@ impl Build {
 
     /// `{type, value, size, unit}`, as `Kernel.__construction_failed__/1`
     /// takes a segment.
-    fn segment(&self, field: &BitField<Spanned<Expr>>, value: &Var) -> Spanned<Expr> {
+    fn segment(&self, field: &BitField<Spanned<Expr>>, value: &Var, size_value: &Var) -> Spanned<Expr> {
         let size = match &field.spec.size {
             Some(BitSize::Literal(size)) => self.int(i64::from(*size)),
             Some(BitSize::Var(size) | BitSize::ByteSizeOf(size)) => self.expr(Expr::Var(size.clone())),
+            Some(BitSize::Expr(_)) => self.expr(Expr::Var(size_value.clone())),
             None => self.expr(Expr::Nil),
         };
         self.expr(Expr::Tuple(vec![
@@ -92,9 +95,10 @@ impl Build {
 
     /// The terms of `field`'s contract the program text leaves open: its size's,
     /// then its value's.
-    fn terms(&self, field: &BitField<Spanned<Expr>>, value: &Var) -> Vec<Spanned<Expr>> {
+    fn terms(&self, field: &BitField<Spanned<Expr>>, value: &Var, size_value: &Var) -> Vec<Spanned<Expr>> {
         let size = match &field.spec.size {
             Some(BitSize::Var(size)) => Some(self.expr(Expr::Var(size.clone()))),
+            Some(BitSize::Expr(_)) => Some(self.expr(Expr::Var(size_value.clone()))),
             _ => None,
         };
         let value_expr = self.expr(Expr::Var(value.clone()));

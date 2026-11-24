@@ -1,0 +1,76 @@
+#---
+# purpose: "a bitstring pattern's segment size may be an expression over earlier segments and bound names, in a function head, a case, a body match and a receive; an expression that fails, goes negative or exceeds the binary is a miss"
+# oracle: self
+# oracle.stamp: 3682530152c54909
+#---
+#
+# `binary-size(n * 2 - 1)` reads `n` from the segment the pattern already
+# matched, and `size(byte_size(p) + 1)` reads a name bound before the pattern
+# began. The size is a guard expression: when it cannot be computed, or
+# the segment does not fit, the pattern does not match.
+defmodule Main do
+  def doubled(<<n, body::binary-size(n * 2 - 1), rest::binary>>), do: {n, body, rest}
+  def doubled(_), do: :no_match
+
+  def halved(<<n, body::binary-size(div(n, 2)), rest::binary>>), do: {n, body, rest}
+  def halved(_), do: :no_match
+
+  def remainder(<<n, body::binary-size(rem(n, 3)), rest::binary>>), do: {n, body, rest}
+  def remainder(_), do: :no_match
+
+  def bits(<<n, field::size(n * 8 - 8), rest::bits>>), do: {n, field, rest}
+  def bits(_), do: :no_match
+
+  def inverse(<<n, body::binary-size(div(4, n)), rest::binary>>), do: {n, body, rest}
+  def inverse(_), do: :no_match
+
+  def after_prefix(prefix, data) do
+    <<head::binary-size(byte_size(prefix) + 1), tail::binary>> = data
+    {head, tail}
+  end
+
+  def before_last(position, data) do
+    <<head::binary-size(position - 1), _, tail::binary>> = data
+    {head, tail}
+  end
+
+  def classify(width, data) do
+    case data do
+      <<value::size(width * 2), _::bits>> -> {:wide, value}
+      _ -> :narrow
+    end
+  end
+
+  def received(width) do
+    send(self(), <<3, 7, 8, 9>>)
+
+    receive do
+      <<n, field::binary-size(n - 1 + width), rest::binary>> -> {n, field, rest}
+    after
+      0 -> :timeout
+    end
+  end
+
+  def main() do
+    IO.inspect(doubled(<<2, 1, 2, 3, 4>>))
+    IO.inspect(doubled(<<2, 1>>))
+    IO.inspect(doubled(<<0, 1>>))
+    IO.inspect(halved(<<4, 1, 2, 3>>))
+    IO.inspect(remainder(<<5, 1, 2, 3>>))
+    IO.inspect(bits(<<2, 255, 7>>))
+    IO.inspect(after_prefix("ab", "abcd"))
+    IO.inspect(before_last(2, "abcd"))
+    IO.inspect(try do before_last(9, "abcd") rescue e -> e.__struct__ end)
+    IO.inspect(try do before_last(0, "abcd") rescue e -> e.__struct__ end)
+    IO.inspect(classify(4, <<171, 205>>))
+    IO.inspect(classify(9, <<171, 205>>))
+    IO.inspect(received(0))
+    IO.inspect(inverse(<<2, 1, 2, 3>>))
+    IO.inspect(inverse(<<0, 1, 2, 3>>))
+    captured = 2
+    take = fn <<n, body::binary-size(n + captured), rest::binary>> -> {body, rest} end
+    IO.inspect(take.(<<1, 1, 2, 3, 4>>))
+  end
+end
+
+Main.main()

@@ -1,0 +1,31 @@
+#---
+# purpose: "a bitstring construction's segment size may be an expression over bound names; a negative size raises the construction ArgumentError"
+# oracle: self
+# oracle.stamp: 1f7aef7e31dca0ff
+#---
+#
+# `size(n * 8)` is computed once, from the names in scope, and the segment is
+# checked against it before the bitstring is built.
+defmodule Main do
+  def wide(value, bytes), do: <<value::size(bytes * 8)>>
+  def padded(value, total, used), do: <<value::binary-size(used), 0::size((total - used) * 8)>>
+  def sized_by_binary(value, data), do: <<value::size(byte_size(data) * 8)>>
+
+  def raised(fun) do
+    try do
+      fun.()
+    rescue
+      e -> Exception.message(e)
+    end
+  end
+
+  def main() do
+    IO.inspect(wide(258, 2))
+    IO.inspect(wide(1, 0))
+    IO.inspect(padded("ab", 4, 2))
+    IO.inspect(sized_by_binary(258, "xy"))
+    IO.puts(raised(fn -> wide(1, -1) end))
+  end
+end
+
+Main.main()
