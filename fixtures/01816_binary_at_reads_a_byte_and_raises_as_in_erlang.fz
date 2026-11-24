@@ -1,0 +1,30 @@
+#---
+# purpose: ":binary.at reads the byte at a position and raises ArgumentError as Erlang does"
+# oracle: self
+# oracle.stamp: f5e7498db0dcd125
+#---
+defmodule Main do
+  def attempt(f) do
+    try do
+      IO.inspect(f.())
+    rescue
+      e in ArgumentError -> IO.inspect(e.message)
+    end
+  end
+
+  def at(b, i), do: :binary.at(b, i)
+
+  def main() do
+    IO.inspect(Enum.map([0, 1, 2], &:binary.at("abc", &1)))
+    IO.inspect(:binary.at(<<255, 0>>, 0))
+    b = "hello world"
+    <<_::binary-size(6), world::binary>> = b
+    IO.inspect(:binary.at(world, 0))
+    attempt(fn -> at("abc", 3) end)
+    attempt(fn -> at("", 0) end)
+    attempt(fn -> at("abc", 100) end)
+    attempt(fn -> at("abc", -1) end)
+  end
+end
+
+Main.main()
