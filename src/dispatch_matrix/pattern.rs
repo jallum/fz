@@ -18,9 +18,11 @@ use std::sync::Arc;
 pub(crate) mod last_resort;
 pub(crate) mod roots;
 pub(crate) mod source;
+pub(crate) mod unfold;
 pub(crate) use last_resort::{FieldTerm, LastResort, RaisedField, atom_name};
 pub(crate) use roots::OutcomeRoots;
 pub(crate) use source::{PatternBodyId, PatternRow, SourcePatternError, SourcePatternRows};
+use unfold::{ClauseFacts, Conjunction, GuardFacts};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PatternDispatchPlan<TypeHandle> {
@@ -276,6 +278,10 @@ pub(crate) trait PatternResolver<TypeHandle> {
     /// Whether a type test over this type can tell one literal from another.
     /// It cannot when the type names no specific atom anywhere inside it.
     fn is_literal_blind(&self, ty: &TypeHandle) -> bool;
+
+    /// Whether a literal has the type, or `None` when the literal's type is
+    /// not one the resolver can name.
+    fn ground_has_type(&mut self, value: &GroundValue, ty: &TypeHandle) -> Option<bool>;
 }
 
 /// What a call in a guard reaches: a helper whose clauses are reified into
@@ -416,6 +422,10 @@ where
     fn is_literal_blind(&self, _ty: &TypeHandle) -> bool {
         false
     }
+
+    fn ground_has_type(&mut self, _value: &GroundValue, _ty: &TypeHandle) -> Option<bool> {
+        None
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -529,13 +539,10 @@ impl<TypeHandle> PatternGuardExpr<TypeHandle> {
 pub(crate) struct PatternGuardDispatch<TypeHandle> {
     pub(crate) plan: Box<PatternDispatchPlan<TypeHandle>>,
     pub(crate) bodies: Vec<PatternGuardExpr<TypeHandle>>,
-    /// Set when the helper only asks of each listed argument whether it has a
-    /// type: a call to it holds exactly when every listed argument has its type.
-    pub(crate) type_predicate: Option<Vec<(u32, TypeHandle)>>,
-    /// The arguments every clause that answers asks one type of: a call to
-    /// the helper answers only when each listed argument has its type, and
-    /// fails the guard that makes it otherwise.
-    pub(crate) answers_only_for: Vec<(u32, TypeHandle)>,
+    /// The clauses as facts, when a call can be unfolded into its caller's
+    /// matrix: the helper has no bitstring pattern, whose extraction names
+    /// subjects of its own.
+    pub(crate) facts: Option<GuardFacts<TypeHandle>>,
 }
 
 /// The subjects the bodies of a guard helper read when an outcome wins.
@@ -558,15 +565,7 @@ impl<TypeHandle> PatternGuardDispatch<TypeHandle> {
         PatternGuardDispatch {
             plan: Box::new(self.plan.map_type_handle(map)),
             bodies: self.bodies.iter().map(|body| body.map_type_handle(map)).collect(),
-            type_predicate: self
-                .type_predicate
-                .as_ref()
-                .map(|asked| asked.iter().map(|(argument, ty)| (*argument, map(ty))).collect()),
-            answers_only_for: self
-                .answers_only_for
-                .iter()
-                .map(|(argument, ty)| (*argument, map(ty)))
-                .collect(),
+            facts: self.facts.as_ref().map(|facts| facts.map_type_handle(map)),
         }
     }
 }
@@ -612,16 +611,16 @@ where
         return Err(SourcePatternError::UnsupportedGuardExpr);
     }
 
-    let type_predicate = type_predicate_of(surface, &rows);
-
     // A helper is an ordinary function, entered with nothing bound before its
     // patterns, so a pin in one of its heads names a binding that never
     // existed and its own plan is where that is found.
     let source_patterns = SourcePatternRows::entry(arity, rows, Vec::new());
-    let mut plan = pattern_dispatch_from_source_with_resolver(&source_patterns, resolver).map_err(|err| match err {
-        PatternDispatchError::SourcePattern(err) => err,
-        other => SourcePatternError::DispatchMatrix(format!("{other:?}")),
-    })?;
+    let clause_bodies = surface.clauses().iter().map(|clause| &clause.body).collect::<Vec<_>>();
+    let (mut plan, facts) =
+        pattern_dispatch_with_facts(&source_patterns, &clause_bodies, resolver).map_err(|err| match err {
+            PatternDispatchError::SourcePattern(err) => err,
+            other => SourcePatternError::DispatchMatrix(format!("{other:?}")),
+        })?;
 
     // The plan above carries no pin, because a helper's rows have nothing
     // bound before them. So a name in a helper body is either one its own head
@@ -650,125 +649,15 @@ where
         )?);
     }
 
-    let answers_only_for = answers_only_for(surface, &source_patterns.rows, &bodies, resolver)?;
-
     Ok(PatternGuardDispatch {
         plan: Box::new(plan),
         bodies,
-        type_predicate,
-        answers_only_for,
+        facts,
     })
 }
 
-/// The types a helper's arguments must have for a call to it to answer. A
-/// clause whose body fails answers nothing, so only the others are read: an
-/// argument is listed when each of them asks the same type of it, through an
-/// annotation, a type predicate in its guard, or a call that itself answers
-/// only for that type.
-fn answers_only_for<F, TypeHandle>(
-    surface: &impl CallableSurface,
-    rows: &[PatternRow<TypeHandle>],
-    bodies: &[PatternGuardExpr<TypeHandle>],
-    resolver: &mut F,
-) -> Result<Vec<(u32, TypeHandle)>, SourcePatternError>
-where
-    F: PatternResolver<TypeHandle>,
-    TypeHandle: Clone + PartialEq,
-{
-    let mut common: Option<Vec<(u32, TypeHandle)>> = None;
-    for ((clause, row), body) in surface.clauses().iter().zip(rows).zip(bodies) {
-        if matches!(body, PatternGuardExpr::Fails) {
-            continue;
-        }
-        let asked = types_a_clause_asks(clause, row, resolver)?;
-        common = Some(match common {
-            None => asked,
-            Some(common) => common.into_iter().filter(|entry| asked.contains(entry)).collect(),
-        });
-    }
-    Ok(common.unwrap_or_default())
-}
-
-/// The types one clause of a helper asks of its arguments before it answers.
-fn types_a_clause_asks<F, TypeHandle>(
-    clause: &crate::ast::FnClause,
-    row: &PatternRow<TypeHandle>,
-    resolver: &mut F,
-) -> Result<Vec<(u32, TypeHandle)>, SourcePatternError>
-where
-    F: PatternResolver<TypeHandle>,
-    TypeHandle: Clone + PartialEq,
-{
-    let mut asked: Vec<(u32, TypeHandle)> = row
-        .preconditions
-        .iter()
-        .filter_map(|(subject, ty)| match subject {
-            PatternSubjectRef::Input(argument) => Some((*argument, ty.clone())),
-            _ => None,
-        })
-        .collect();
-    let arguments: HashMap<Var, u32> = clause
-        .params
-        .iter()
-        .enumerate()
-        .filter_map(|(argument, param)| match &param.node {
-            Pattern::Var(name) => Some((name.clone(), argument as u32)),
-            _ => None,
-        })
-        .collect();
-    let mut ask = |entry: (u32, TypeHandle)| {
-        if !asked.contains(&entry) {
-            asked.push(entry);
-        }
-    };
-    for conjunct in clause.guard.iter().flat_map(and_chain) {
-        match type_test_of(conjunct, &arguments, resolver)? {
-            Some(tested) => tested.into_iter().for_each(&mut ask),
-            None => types_its_calls_need(conjunct, &arguments, resolver)?
-                .into_iter()
-                .for_each(&mut ask),
-        }
-    }
-    types_its_calls_need(&clause.body, &arguments, resolver)?
-        .into_iter()
-        .for_each(&mut ask);
-    Ok(asked)
-}
-
-/// What a helper asks when it is only a type test: exactly two clauses, the
-/// first answering `true` for annotated parameters and the second `false` for
-/// anything, with every parameter a plain variable or `_` and no guard.
-fn type_predicate_of<TypeHandle: Clone>(
-    surface: &impl CallableSurface,
-    rows: &[PatternRow<TypeHandle>],
-) -> Option<Vec<(u32, TypeHandle)>> {
-    let ([yes, no], [yes_row, no_row]) = (surface.clauses(), rows) else {
-        return None;
-    };
-    let plain = |clause: &crate::ast::FnClause| {
-        clause.guard.is_none()
-            && clause
-                .params
-                .iter()
-                .all(|param| matches!(param.node, Pattern::Var(_) | Pattern::Wildcard))
-    };
-    let answers = matches!(yes.body.node, Expr::Bool(true)) && matches!(no.body.node, Expr::Bool(false));
-    if !(answers && plain(yes) && plain(no) && no_row.preconditions.is_empty()) {
-        return None;
-    }
-    let asked = yes_row
-        .preconditions
-        .iter()
-        .map(|(subject, ty)| match subject {
-            PatternSubjectRef::Input(argument) => Some((*argument, ty.clone())),
-            _ => None,
-        })
-        .collect::<Option<Vec<_>>>()?;
-    (!asked.is_empty()).then_some(asked)
-}
-
 /// Builds one guard expression from its source form.
-fn guard_expr_from_ast<F, TypeHandle>(
+pub(super) fn guard_expr_from_ast<F, TypeHandle>(
     expr: &Expr,
     bindings: &HashMap<Var, SubjectId>,
     pinned_by_name: &HashMap<Var, PinnedValueId>,
@@ -961,11 +850,41 @@ where
     F: PatternResolver<TypeHandle>,
     TypeHandle: Clone + PartialEq + Eq + 'a,
 {
-    let mut producer = PatternDispatchProducer::new(input_count, prematch, last_resort, rows.clone())
+    let mut producer = PatternDispatchProducer::new(input_count, prematch, last_resort, rows.clone(), false)
         .map_err(PatternDispatchError::SourcePattern)?;
-    producer
-        .add_rows(rows, resolver)
-        .map_err(PatternDispatchError::SourcePattern)?;
+    for row in rows {
+        producer
+            .add_row(row, None, resolver)
+            .map_err(PatternDispatchError::SourcePattern)?;
+    }
+    producer.finish(&*resolver).map(|(plan, _)| plan)
+}
+
+/// A guard helper's plan, and its clauses as facts a caller can unfold. The
+/// clause bodies are read beside the rows, in clause order.
+fn pattern_dispatch_with_facts<F, TypeHandle>(
+    patterns: &SourcePatternRows<TypeHandle>,
+    bodies: &[&Spanned<Expr>],
+    resolver: &mut F,
+) -> Result<(PatternDispatchPlan<TypeHandle>, Option<GuardFacts<TypeHandle>>), PatternDispatchError>
+where
+    F: PatternResolver<TypeHandle>,
+    TypeHandle: Clone + PartialEq + Eq,
+{
+    let rows = patterns.rows.iter();
+    let mut producer = PatternDispatchProducer::new(
+        patterns.input_count,
+        &patterns.prematch,
+        patterns.last_resort.as_ref(),
+        rows.clone(),
+        true,
+    )
+    .map_err(PatternDispatchError::SourcePattern)?;
+    for (row, body) in rows.zip(bodies) {
+        producer
+            .add_row(row, Some(body), resolver)
+            .map_err(PatternDispatchError::SourcePattern)?;
+    }
     producer.finish(&*resolver)
 }
 
@@ -982,6 +901,8 @@ struct PatternDispatchProducer<TypeHandle> {
     guards: Vec<PatternGuardExpr<TypeHandle>>,
     projections: HashMap<(SubjectId, ProjectionKind), SubjectId>,
     last_resort: Option<LastResort>,
+    /// Each row's facts, kept when the rows are a guard helper's clauses.
+    clause_facts: Option<Vec<ClauseFacts<TypeHandle>>>,
 }
 
 impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
@@ -990,6 +911,7 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
         prematch: &source::Prematch,
         last_resort: Option<&LastResort>,
         rows: impl Iterator<Item = &'a PatternRow<TypeHandle>> + Clone,
+        keep_clause_facts: bool,
     ) -> Result<Self, SourcePatternError>
     where
         TypeHandle: 'a,
@@ -1025,25 +947,16 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
             guards: Vec::new(),
             projections: HashMap::default(),
             last_resort: last_resort.cloned(),
+            clause_facts: keep_clause_facts.then(Vec::new),
         })
     }
 
-    fn add_rows<'a, F>(
+    fn add_row<F>(
         &mut self,
-        rows: impl Iterator<Item = &'a PatternRow<TypeHandle>>,
+        row: &PatternRow<TypeHandle>,
+        body: Option<&Spanned<Expr>>,
         resolver: &mut F,
     ) -> Result<(), SourcePatternError>
-    where
-        F: PatternResolver<TypeHandle>,
-        TypeHandle: 'a,
-    {
-        for row in rows {
-            self.add_row(row, resolver)?;
-        }
-        Ok(())
-    }
-
-    fn add_row<F>(&mut self, row: &PatternRow<TypeHandle>, resolver: &mut F) -> Result<(), SourcePatternError>
     where
         F: PatternResolver<TypeHandle>,
     {
@@ -1064,56 +977,38 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
             let subject = self.subject_id(subject_ref)?;
             questions.push(RegionQuestion::type_region(subject, ty.clone()));
         }
-        if let Some(guard) = &row.guard {
-            let mut bound: HashMap<Var, SubjectId> = HashMap::default();
-            for binding in &bindings {
-                bound.insert(binding.name.clone(), binding.source);
+        let mut bound: HashMap<Var, SubjectId> = HashMap::default();
+        for binding in &bindings {
+            bound.insert(binding.name.clone(), binding.source);
+        }
+        let admitted = match &row.guard {
+            Some(guard) => self.admit_guard(guard, &bound, resolver)?,
+            None => Conjunction::default(),
+        };
+        for question in admitted.questions.iter().cloned() {
+            if !questions.contains(&question) {
+                questions.push(question);
             }
-            let mut remaining = Vec::new();
-            for conjunct in and_chain(guard) {
-                match type_test_of(conjunct, &bound, resolver)? {
-                    Some(asked) => {
-                        for (subject, ty) in asked {
-                            let question = RegionQuestion::type_region(subject, ty);
-                            if !questions.contains(&question) {
-                                questions.push(question);
-                            }
-                        }
-                    }
-                    None => {
-                        for (subject, ty) in types_its_calls_need(conjunct, &bound, resolver)? {
-                            let question = RegionQuestion::type_region(subject, ty);
-                            if !questions.contains(&question) {
-                                questions.push(question);
-                            }
-                        }
-                        remaining.push(conjunct);
-                    }
-                }
+        }
+        if self.clause_facts.is_some() {
+            let body = body.ok_or(SourcePatternError::UnsupportedGuardExpr)?;
+            let answer = self.admit_body(body, &bound, resolver)?;
+            let matches = Conjunction {
+                questions: questions.clone(),
+                residual: admitted.residual.clone(),
+                refused: admitted.refused,
+            };
+            if let Some(facts) = self.clause_facts.as_mut() {
+                facts.push(ClauseFacts { matches, answer });
             }
-            let mut guard_exprs = Vec::with_capacity(remaining.len());
-            for conjunct in remaining {
-                guard_exprs.push(guard_expr_from_ast(
-                    &conjunct.node,
-                    &bound,
-                    &self.pinned_by_name,
-                    &mut self.prepared_keys,
-                    resolver,
-                )?);
-            }
-            let guard_expr = guard_exprs.into_iter().reduce(|lhs, rhs| PatternGuardExpr::Binary {
-                op: PatternGuardBinOp::And,
-                lhs: Box::new(lhs),
-                rhs: Box::new(rhs),
-            });
-            if let Some(guard_expr) = guard_expr {
-                let guard_id = GuardId(self.guards.len() as u32);
-                self.guards.push(guard_expr);
-                questions.push(RegionQuestion::new(RegionPredicate::new(
-                    self.guard_subject,
-                    Region::Guard(guard_id),
-                )));
-            }
+        }
+        if let Some(guard_expr) = admitted.guard_expr() {
+            let guard_id = GuardId(self.guards.len() as u32);
+            self.guards.push(guard_expr);
+            questions.push(RegionQuestion::new(RegionPredicate::new(
+                self.guard_subject,
+                Region::Guard(guard_id),
+            )));
         }
         let outcome = self.builder.add_outcome(OutcomeMultiplicity::Unique);
         self.builder
@@ -1135,7 +1030,7 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
     fn finish(
         self,
         resolver: &impl PatternResolver<TypeHandle>,
-    ) -> Result<PatternDispatchPlan<TypeHandle>, PatternDispatchError> {
+    ) -> Result<(PatternDispatchPlan<TypeHandle>, Option<GuardFacts<TypeHandle>>), PatternDispatchError> {
         let undefined = self.prematch.undefined_pins(&self.pinned);
         if !undefined.is_empty() {
             return Err(PatternDispatchError::SourcePattern(SourcePatternError::UndefinedPins(
@@ -1168,6 +1063,10 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
             guard_leaves: &guard_leaves,
             literal_blind: &|ty| resolver.is_literal_blind(ty),
         };
+        let facts = self.clause_facts.map(|clauses| GuardFacts {
+            subjects: matrix.subjects.clone(),
+            clauses,
+        });
         #[cfg(test)]
         let source_matrix = matrix.clone();
         let mut graph = compile_dispatch_matrix(matrix, inputs)
@@ -1182,7 +1081,7 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
         let proven_tuple_arities = (0..self.input_count)
             .map(|ordinal| graph.proven_input_arity(ordinal as u32))
             .collect();
-        Ok(PatternDispatchPlan {
+        let plan = PatternDispatchPlan {
             graph,
             #[cfg(test)]
             source_matrix,
@@ -1193,7 +1092,8 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
             prepared_keys: self.prepared_keys,
             last_resort: self.last_resort,
             proven_tuple_arities,
-        })
+        };
+        Ok((plan, facts.filter(GuardFacts::is_portable)))
     }
 
     fn append_pattern(
@@ -1482,33 +1382,23 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
             PatternSubjectRef::Input(_) => return Err(SourcePatternError::UnknownSubject(subject.clone())),
             PatternSubjectRef::TupleField { tuple, index } => {
                 let source = self.subject_id(tuple)?;
-                self.builder
-                    .add_projected_subject(source, ProjectionKind::TupleField(*index))
-                    .map_err(|err| SourcePatternError::DispatchMatrix(format!("{err:?}")))?
+                self.project(source, ProjectionKind::TupleField(*index))?
             }
             PatternSubjectRef::StructField { record, field } => {
                 let source = self.subject_id(record)?;
-                self.builder
-                    .add_projected_subject(source, ProjectionKind::StructField(field.clone()))
-                    .map_err(|err| SourcePatternError::DispatchMatrix(format!("{err:?}")))?
+                self.project(source, ProjectionKind::StructField(field.clone()))?
             }
             PatternSubjectRef::ListHead(list) => {
                 let source = self.subject_id(list)?;
-                self.builder
-                    .add_projected_subject(source, ProjectionKind::ListHead)
-                    .map_err(|err| SourcePatternError::DispatchMatrix(format!("{err:?}")))?
+                self.project(source, ProjectionKind::ListHead)?
             }
             PatternSubjectRef::ListTail(list) => {
                 let source = self.subject_id(list)?;
-                self.builder
-                    .add_projected_subject(source, ProjectionKind::ListTail)
-                    .map_err(|err| SourcePatternError::DispatchMatrix(format!("{err:?}")))?
+                self.project(source, ProjectionKind::ListTail)?
             }
             PatternSubjectRef::MapValue { map, key } => {
                 let source = self.subject_id(map)?;
-                self.builder
-                    .add_projected_subject(source, ProjectionKind::MapValue { key: key.clone() })
-                    .map_err(|err| SourcePatternError::DispatchMatrix(format!("{err:?}")))?
+                self.project(source, ProjectionKind::MapValue { key: key.clone() })?
             }
             PatternSubjectRef::Subject(id) => *id,
         };
@@ -1565,7 +1455,7 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
 
 /// The conjuncts of a guard, left to right. Only a top-level `and` splits:
 /// under `or` or `not` a conjunct cannot be asked on its own.
-fn and_chain(guard: &Spanned<Expr>) -> Vec<&Spanned<Expr>> {
+pub(super) fn and_chain(guard: &Spanned<Expr>) -> Vec<&Spanned<Expr>> {
     match &guard.node {
         Expr::BinOp(crate::ast::BinOp::And, lhs, rhs) => {
             let mut chain = and_chain(lhs);
@@ -1576,90 +1466,7 @@ fn and_chain(guard: &Spanned<Expr>) -> Vec<&Spanned<Expr>> {
     }
 }
 
-/// The type questions a conjunct amounts to: it calls a type predicate and
-/// hands it only variables its row binds. Anything else stays a guard.
-fn type_test_of<F, TypeHandle, Subject: Copy>(
-    conjunct: &Spanned<Expr>,
-    bound: &HashMap<Var, Subject>,
-    resolver: &mut F,
-) -> Result<Option<Vec<(Subject, TypeHandle)>>, SourcePatternError>
-where
-    F: PatternResolver<TypeHandle>,
-    TypeHandle: Clone,
-{
-    let Expr::Call(target, args) = &conjunct.node else {
-        return Ok(None);
-    };
-    let Some(callee) = crate::ast::Callee::for_call(&target.node, args.len()) else {
-        return Ok(None);
-    };
-    let subjects = args
-        .iter()
-        .map(|arg| match &arg.node {
-            Expr::Var(name) => bound.get(name).copied(),
-            _ => None,
-        })
-        .collect::<Option<Vec<_>>>();
-    let Some(subjects) = subjects else {
-        return Ok(None);
-    };
-    let Some(GuardCallee::Helper(helper)) = resolver.guard_call(&callee, args.len())? else {
-        return Ok(None);
-    };
-    Ok(helper.type_predicate.as_ref().map(|asked| {
-        asked
-            .iter()
-            .map(|(argument, ty)| (subjects[*argument as usize], ty.clone()))
-            .collect()
-    }))
-}
-
-/// The types `expr` can only hold a value for: each call it is sure to make to
-/// a helper that answers only for some argument types, where the argument is a
-/// variable `bound` knows. A helper called with anything else fails the guard,
-/// so the guard holds only when every one of these types does.
-///
-/// A call is sure to be made unless it sits under `and` or `or`, which may
-/// decide without their right-hand side.
-fn types_its_calls_need<F, TypeHandle, Subject: Copy>(
-    expr: &Spanned<Expr>,
-    bound: &HashMap<Var, Subject>,
-    resolver: &mut F,
-) -> Result<Vec<(Subject, TypeHandle)>, SourcePatternError>
-where
-    F: PatternResolver<TypeHandle>,
-    TypeHandle: Clone,
-{
-    let mut needed = Vec::new();
-    let mut pending = vec![expr];
-    while let Some(expr) = pending.pop() {
-        match &expr.node {
-            Expr::BinOp(crate::ast::BinOp::And | crate::ast::BinOp::Or, _, _) => {}
-            Expr::BinOp(_, lhs, rhs) => pending.extend([&**lhs, &**rhs]),
-            Expr::UnOp(_, arg) | Expr::Ascribe(arg, _) => pending.push(arg),
-            Expr::Call(target, args) => {
-                pending.extend(args);
-                let Some(callee) = crate::ast::Callee::for_call(&target.node, args.len()) else {
-                    continue;
-                };
-                let Some(GuardCallee::Helper(helper)) = resolver.guard_call(&callee, args.len())? else {
-                    continue;
-                };
-                for (argument, ty) in &helper.answers_only_for {
-                    if let Expr::Var(name) = &args[*argument as usize].node
-                        && let Some(subject) = bound.get(name)
-                    {
-                        needed.push((*subject, ty.clone()));
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    Ok(needed)
-}
-
-fn intern_prepared_key(keys: &mut Vec<GroundValue>, key: &GroundValue) -> PreparedKeyId {
+pub(super) fn intern_prepared_key(keys: &mut Vec<GroundValue>, key: &GroundValue) -> PreparedKeyId {
     let index = keys.iter().position(|prepared| prepared == key).unwrap_or_else(|| {
         keys.push(key.clone());
         keys.len() - 1

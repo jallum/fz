@@ -480,6 +480,50 @@ fn backend_construction_identity_survives_sibling_wrapper_insertion_and_withdraw
     }
 }
 
+/// How many first-class constructions the backend program of `text`'s `main/0` holds.
+fn construction_wrappers_of(text: &str) -> usize {
+    let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
+    compiler.submit_code(CodeSubmission {
+        name: Some("guard_helper_construction.fz".into()),
+        text: text.into(),
+    });
+    let root = compiler.submit_root(super::RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: super::ExecutableNeed::Value,
+    });
+    compiler.run_root_interp(root).expect("the program runs");
+    compiler.retained_backend_program(root).construction_wrappers().len()
+}
+
+#[test]
+fn a_guard_helper_that_tests_a_callable_is_read_as_questions_so_the_callable_is_never_constructed() {
+    let through_a_helper = "\
+def small?(f) when is_function(f), do: true
+def small?(_), do: false
+def run(g, x) when small?(g), do: g.(x, x)
+def run(_, _), do: :other
+def main() do
+  run(fn a, b -> a + b end, 3)
+end
+";
+    let through_a_guard_clause = "\
+def run(g, x) when is_function(g), do: g.(x, x)
+def run(_, _), do: :other
+def main() do
+  run(fn a, b -> a + b end, 3)
+end
+";
+
+    assert_eq!(construction_wrappers_of(through_a_guard_clause), 0);
+    assert_eq!(
+        construction_wrappers_of(through_a_helper),
+        0,
+        "a helper's clauses are the caller's questions, so the helper is not called with a first-class callable"
+    );
+}
+
 #[test]
 fn compiler2_contract_harness_keeps_code_ingest_isolated_from_production_compiler() {
     for case in [

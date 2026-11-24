@@ -1,9 +1,9 @@
 #---
-# purpose: "A recursion that wraps its argument in a struct on every call compiles: the repeated struct folds where it grew"
+# purpose: "A recursion that wraps its argument in a struct until a guard accepts it compiles: type decides the guard, so the struct never grows"
 # root: main/0
-# assert.metric.type.clash_folded: 1
+# assert.metric.type.clash_folded: 0
 # oracle: self
-# oracle.stamp: aafa817400ce7bfc
+# oracle.stamp: 791d616c4fdd0493
 #---
 defmodule W do
   defexception [:original]

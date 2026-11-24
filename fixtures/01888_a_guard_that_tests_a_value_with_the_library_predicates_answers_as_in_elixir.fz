@@ -1,0 +1,37 @@
+#---
+# purpose: "A guard built from the library's own predicates (type tests, arity tests, struct tests, `and`, `or`, `not`) selects the clause Elixir selects, on a callable, a struct, a map, a tuple and a literal"
+# kind: run
+# oracle: self
+# oracle.stamp: 2b622f6904c798ae
+#---
+defmodule Point do
+  defstruct x: 0, y: 0
+end
+
+defmodule Main do
+  def shape(v) when is_struct(v), do: :struct
+  def shape(v) when is_map(v), do: :map
+  def shape(v) when is_function(v, 2), do: :fun2
+  def shape(v) when is_function(v), do: :fun
+  def shape(v) when is_tuple(v) and tuple_size(v) == 2, do: :pair
+  def shape(v) when is_integer(v) and v > 0, do: :positive
+  def shape(v) when is_integer(v) or is_float(v), do: :number
+  def shape(v) when is_atom(v) and not is_nil(v), do: :atom
+  def shape(_), do: :other
+
+  def main() do
+    IO.inspect(shape(%Point{}))
+    IO.inspect(shape(%{a: 1}))
+    IO.inspect(shape(fn a, b -> a + b end))
+    IO.inspect(shape(fn a -> a end))
+    IO.inspect(shape({1, 2}))
+    IO.inspect(shape(5))
+    IO.inspect(shape(-5))
+    IO.inspect(shape(2.5))
+    IO.inspect(shape(:ok))
+    IO.inspect(shape(nil))
+    IO.inspect(shape("text"))
+  end
+end
+
+Main.main()

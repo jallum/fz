@@ -1,6 +1,7 @@
 use super::*;
 use crate::ast::{BinOp, Callee, FnClause, Spanned, TypeExprBody, UnOp};
 use crate::compiler2::{Ty, Types};
+use crate::dispatch_matrix::demand::DispatchDemand;
 use crate::dispatch_matrix::{DispatchNode, SubjectSource};
 
 fn sp<T>(node: T) -> Spanned<T> {
@@ -94,16 +95,79 @@ fn predicate_helper(arity: usize, annotated: &[(u32, Ty)]) -> PatternGuardDispat
     guard_dispatch_from_rows(&surface, rows, &mut no_calls()).expect("a predicate-shaped helper reifies")
 }
 
-/// `def opaque(_, ..), do: true`: a helper that answers no type question.
-fn opaque_helper(arity: usize) -> PatternGuardDispatch<Ty> {
+/// `def always(_, ..), do: true`: a helper that ignores its arguments.
+fn always_helper(arity: usize) -> PatternGuardDispatch<Ty> {
     let surface = Surface(vec![clause(arity, None, Expr::Bool(true))]);
-    guard_dispatch_from_rows(&surface, vec![row(arity, &[], 0)], &mut no_calls()).expect("opaque helper reifies")
+    guard_dispatch_from_rows(&surface, vec![row(arity, &[], 0)], &mut no_calls()).expect("always helper reifies")
+}
+
+/// `def ambiguous(_ :: T, ..), do: true; def ambiguous(_, ..), do: true`: two
+/// clauses that both answer true, which no one set of facts states.
+fn ambiguous_helper(arity: usize, ty: Ty) -> PatternGuardDispatch<Ty> {
+    let surface = Surface(vec![
+        clause(arity, None, Expr::Bool(true)),
+        clause(arity, None, Expr::Bool(true)),
+    ]);
+    let rows = vec![row(arity, &[(0, ty)], 0), row(arity, &[], 1)];
+    guard_dispatch_from_rows(&surface, rows, &mut no_calls()).expect("ambiguous helper reifies")
+}
+
+fn n() -> Pattern {
+    Pattern::Var(Var::user("n"))
+}
+
+fn row_over_n(guard: Expr, body_id: PatternBodyId) -> PatternRow<Ty> {
+    PatternRow {
+        patterns: vec![sp(n())],
+        preconditions: Vec::new(),
+        guard: Some(sp(guard)),
+        body_id,
+    }
+}
+
+fn compare(op: BinOp, lhs: Expr, rhs: Expr) -> Expr {
+    Expr::BinOp(op, Box::new(sp(lhs)), Box::new(sp(rhs)))
+}
+
+/// `def positive(n) when n > 0, do: true; def positive(_), do: false`
+fn positive_helper() -> PatternGuardDispatch<Ty> {
+    let surface = Surface(vec![
+        clause(1, Some(Expr::Bool(true)), Expr::Bool(true)),
+        clause(1, None, Expr::Bool(false)),
+    ]);
+    let rows = vec![
+        row_over_n(compare(BinOp::Gt, var("n"), Expr::Int(0)), 0),
+        row(1, &[], 1),
+    ];
+    guard_dispatch_from_rows(&surface, rows, &mut no_calls()).expect("positive helper reifies")
+}
+
+/// `def checked(n) when n < 0, do: abort(1); def checked(_), do: true`
+fn checked_helper() -> PatternGuardDispatch<Ty> {
+    let surface = Surface(vec![
+        clause(1, Some(Expr::Bool(true)), call("abort", vec![Expr::Int(1)])),
+        clause(1, None, Expr::Bool(true)),
+    ]);
+    let rows = vec![
+        row_over_n(compare(BinOp::Lt, var("n"), Expr::Int(0)), 0),
+        row(1, &[], 1),
+    ];
+    let mut resolver = |callee: &Callee, _arity: usize| -> Result<Option<GuardCallee<Ty>>, SourcePatternError> {
+        let Callee::Name(name) = callee else { return Ok(None) };
+        Ok((name.name == "abort").then(|| GuardCallee::Extern(aborting_extern())))
+    };
+    guard_dispatch_from_rows(&surface, rows, &mut resolver).expect("checked helper reifies")
 }
 
 struct Helpers {
+    int: Ty,
     is_int: Arc<PatternGuardDispatch<Ty>>,
     is_float: Arc<PatternGuardDispatch<Ty>>,
-    opaque: Arc<PatternGuardDispatch<Ty>>,
+    pair: Arc<PatternGuardDispatch<Ty>>,
+    always: Arc<PatternGuardDispatch<Ty>>,
+    ambiguous: Arc<PatternGuardDispatch<Ty>>,
+    positive: Arc<PatternGuardDispatch<Ty>>,
+    checked: Arc<PatternGuardDispatch<Ty>>,
     /// What the operator `+` resolves to in a guard: a call like any other.
     plus: Arc<PatternGuardDispatch<Ty>>,
 }
@@ -114,21 +178,31 @@ impl Helpers {
         let int = types.int();
         let float = types.float();
         Self {
+            int,
             is_int: Arc::new(predicate_helper(1, &[(0, int)])),
             is_float: Arc::new(predicate_helper(1, &[(0, float)])),
-            opaque: Arc::new(opaque_helper(1)),
-            plus: Arc::new(opaque_helper(2)),
+            pair: Arc::new(predicate_helper(2, &[(0, int), (1, float)])),
+            always: Arc::new(always_helper(1)),
+            ambiguous: Arc::new(ambiguous_helper(1, int)),
+            positive: Arc::new(positive_helper()),
+            checked: Arc::new(checked_helper()),
+            plus: Arc::new(ambiguous_helper(2, int)),
         }
     }
 
     fn resolver(&self) -> impl FnMut(&Callee, usize) -> Result<Option<GuardCallee<Ty>>, SourcePatternError> + '_ {
         |callee, _arity| {
             let Callee::Name(name) = callee else { return Ok(None) };
+            let helper = |helper: &Arc<PatternGuardDispatch<Ty>>| Some(GuardCallee::Helper(Arc::clone(helper)));
             Ok(match name.name.as_str() {
-                "is_int" => Some(GuardCallee::Helper(Arc::clone(&self.is_int))),
-                "is_float" => Some(GuardCallee::Helper(Arc::clone(&self.is_float))),
-                "opaque" => Some(GuardCallee::Helper(Arc::clone(&self.opaque))),
-                "+" => Some(GuardCallee::Helper(Arc::clone(&self.plus))),
+                "is_int" => helper(&self.is_int),
+                "is_float" => helper(&self.is_float),
+                "pair" => helper(&self.pair),
+                "always" => helper(&self.always),
+                "ambiguous" => helper(&self.ambiguous),
+                "positive" => helper(&self.positive),
+                "checked" => helper(&self.checked),
+                "+" => helper(&self.plus),
                 _ => None,
             })
         }
@@ -188,113 +262,87 @@ fn guard_questions(plan: &Plan) -> usize {
         .count()
 }
 
+fn guard_over_x(helpers: &Helpers, guard: Expr) -> Plan {
+    helpers.plan(vec![x()], Vec::new(), guard)
+}
+
 #[test]
 fn a_guard_that_is_a_type_predicate_builds_the_row_a_typed_parameter_builds() {
     let helpers = Helpers::new();
-    let int = helpers.is_int.type_predicate.as_ref().unwrap()[0].1;
-    let guarded = helpers.plan(vec![x()], Vec::new(), call("is_int", vec![var("x")]));
+    let guarded = guard_over_x(&helpers, call("is_int", vec![var("x")]));
     let typed = helpers.plan_of_row(PatternRow {
         patterns: vec![sp(x())],
-        preconditions: vec![(PatternSubjectRef::Input(0), int)],
+        preconditions: vec![(PatternSubjectRef::Input(0), helpers.int)],
         guard: None,
         body_id: 0,
     });
 
-    assert_eq!(guarded.graph, typed.graph, "the guard is read as a type question");
+    assert_eq!(guarded.graph, typed.graph, "the call unfolds into the type question");
     assert!(guarded.guards.is_empty(), "nothing is left of the guard");
 }
 
 #[test]
-fn a_helper_with_two_guardless_clauses_true_then_false_over_annotated_params_is_a_type_predicate() {
-    let mut types = Types::new();
-    let int = types.int();
-    let float = types.float();
-    let pair = predicate_helper(2, &[(0, int), (1, float)]);
-    assert_eq!(pair.type_predicate, Some(vec![(0, int), (1, float)]));
-}
-
-#[test]
-fn a_helper_that_does_not_have_the_predicate_shape_is_not_one() {
-    let mut types = Types::new();
-    let int = types.int();
-    let reify = |clauses: Vec<FnClause>, rows: Vec<PatternRow<Ty>>| {
-        guard_dispatch_from_rows(&Surface(clauses), rows, &mut no_calls())
-            .expect("the helper reifies")
-            .type_predicate
-    };
-
-    let both_true = reify(
-        vec![clause(1, None, Expr::Bool(true)), clause(1, None, Expr::Bool(true))],
-        vec![row(1, &[(0, int)], 0), row(1, &[], 1)],
-    );
-    let nothing_annotated = reify(
-        vec![clause(1, None, Expr::Bool(true)), clause(1, None, Expr::Bool(false))],
-        vec![row(1, &[], 0), row(1, &[], 1)],
-    );
-    let second_annotated = reify(
-        vec![clause(1, None, Expr::Bool(true)), clause(1, None, Expr::Bool(false))],
-        vec![row(1, &[(0, int)], 0), row(1, &[(0, int)], 1)],
-    );
-    let guarded = reify(
-        vec![
-            clause(1, Some(Expr::Bool(true)), Expr::Bool(true)),
-            clause(1, None, Expr::Bool(false)),
-        ],
-        vec![row(1, &[(0, int)], 0), row(1, &[], 1)],
-    );
-    let one_clause = reify(vec![clause(1, None, Expr::Bool(true))], vec![row(1, &[(0, int)], 0)]);
-    let mut literal_head = clause(1, None, Expr::Bool(true));
-    literal_head.params = vec![sp(Pattern::Nil)];
-    let literal_pattern = reify(
-        vec![literal_head, clause(1, None, Expr::Bool(false))],
-        vec![
-            PatternRow {
-                patterns: vec![sp(Pattern::Nil)],
-                preconditions: vec![(PatternSubjectRef::Input(0), int)],
-                guard: None,
-                body_id: 0,
-            },
-            row(1, &[], 1),
-        ],
-    );
-
-    for (shape, found) in [
-        ("two true clauses", both_true),
-        ("no annotation", nothing_annotated),
-        ("second clause annotated", second_annotated),
-        ("guarded first clause", guarded),
-        ("one clause", one_clause),
-        ("a literal pattern in the head", literal_pattern),
-    ] {
-        assert_eq!(found, None, "{shape} is not a type predicate");
-    }
-}
-
-#[test]
-fn a_conjunct_that_is_not_a_type_predicate_stays_the_guard_after_the_type_question() {
+fn a_predicate_over_two_arguments_unfolds_into_a_type_question_for_each() {
     let helpers = Helpers::new();
     let plan = helpers.plan(
-        vec![x()],
+        vec![x(), Pattern::Var(Var::user("y"))],
         Vec::new(),
-        and(call("is_int", vec![var("x")]), call("opaque", vec![var("x")])),
+        call("pair", vec![var("x"), var("y")]),
+    );
+
+    assert_eq!(type_questions(&plan).len(), 2);
+    assert!(plan.guards.is_empty());
+}
+
+#[test]
+fn a_helper_that_answers_true_in_two_clauses_stays_the_guard_it_is() {
+    let helpers = Helpers::new();
+    let plan = guard_over_x(&helpers, call("ambiguous", vec![var("x")]));
+
+    assert_eq!(
+        type_questions(&plan).len(),
+        0,
+        "no one clause states what the call asks"
+    );
+    assert!(
+        matches!(plan.guards.as_slice(), [PatternGuardExpr::Dispatch { .. }]),
+        "the guard is exactly ambiguous(x): {:?}",
+        plan.guards
+    );
+}
+
+#[test]
+fn a_helper_that_ignores_its_argument_asks_nothing_of_it() {
+    let helpers = Helpers::new();
+    let plan = guard_over_x(&helpers, call("always", vec![var("x")]));
+
+    assert!(type_questions(&plan).is_empty());
+    assert!(plan.guards.is_empty(), "the argument is read by no guard");
+    assert_eq!(plan.graph.input_demand, vec![DispatchDemand::Ignore]);
+}
+
+#[test]
+fn a_conjunct_that_cannot_unfold_stays_the_guard_after_the_type_question() {
+    let helpers = Helpers::new();
+    let plan = guard_over_x(
+        &helpers,
+        and(call("is_int", vec![var("x")]), call("ambiguous", vec![var("x")])),
     );
 
     assert_eq!(type_questions(&plan).len(), 1, "is_int(x) is a type question");
-    assert_eq!(plan.guards.len(), 1, "only the other conjunct is left as a guard");
     assert!(
-        matches!(plan.guards[0], PatternGuardExpr::Dispatch { .. }),
-        "the remaining guard is exactly opaque(x): {:?}",
-        plan.guards[0]
+        matches!(plan.guards.as_slice(), [PatternGuardExpr::Dispatch { .. }]),
+        "only the other conjunct is left, exactly ambiguous(x): {:?}",
+        plan.guards
     );
 }
 
 #[test]
-fn a_type_conjunct_written_after_another_conjunct_folds_as_well() {
+fn a_type_conjunct_written_after_another_conjunct_unfolds_as_well() {
     let helpers = Helpers::new();
-    let plan = helpers.plan(
-        vec![x()],
-        Vec::new(),
-        and(call("opaque", vec![var("x")]), call("is_int", vec![var("x")])),
+    let plan = guard_over_x(
+        &helpers,
+        and(call("ambiguous", vec![var("x")]), call("is_int", vec![var("x")])),
     );
     let question_kinds = tests(&plan)
         .into_iter()
@@ -310,7 +358,7 @@ fn a_type_conjunct_written_after_another_conjunct_folds_as_well() {
 }
 
 #[test]
-fn several_type_conjuncts_fold_in_written_order_and_the_guard_disappears() {
+fn several_type_conjuncts_unfold_in_written_order_and_the_guard_disappears() {
     let helpers = Helpers::new();
     let plan = helpers.plan(
         vec![x(), Pattern::Var(Var::user("y"))],
@@ -324,7 +372,7 @@ fn several_type_conjuncts_fold_in_written_order_and_the_guard_disappears() {
 }
 
 #[test]
-fn a_guard_that_is_not_a_top_level_and_chain_of_type_predicates_is_unchanged() {
+fn a_guard_that_is_not_a_top_level_and_chain_of_calls_is_unchanged() {
     let helpers = Helpers::new();
     let cases = [
         (
@@ -336,7 +384,7 @@ fn a_guard_that_is_not_a_top_level_and_chain_of_type_predicates_is_unchanged() {
         ("a name no pattern in the row binds", call("is_int", vec![var("outer")])),
     ];
     for (shape, guard) in cases {
-        let plan = helpers.plan(vec![x()], Vec::new(), guard);
+        let plan = guard_over_x(&helpers, guard);
         assert_eq!(type_questions(&plan).len(), 0, "{shape}: no type question is lifted");
         assert_eq!(guard_questions(&plan), 1, "{shape}: the guard is kept whole");
     }
@@ -360,15 +408,78 @@ fn a_type_question_on_a_value_inside_a_tuple_is_asked_of_that_field() {
 #[test]
 fn a_type_question_the_parameter_already_asks_is_asked_once() {
     let helpers = Helpers::new();
-    let int = helpers.is_int.type_predicate.as_ref().unwrap()[0].1;
     let plan = helpers.plan(
         vec![x()],
-        vec![(PatternSubjectRef::Input(0), int)],
+        vec![(PatternSubjectRef::Input(0), helpers.int)],
         call("is_int", vec![var("x")]),
     );
 
     assert_eq!(type_questions(&plan).len(), 1);
     assert!(plan.guards.is_empty());
+}
+
+#[test]
+fn a_conjunct_the_helper_states_over_its_argument_is_a_guard_over_the_callers_subject() {
+    let helpers = Helpers::new();
+    let plan = guard_over_x(&helpers, call("positive", vec![var("x")]));
+
+    assert!(
+        matches!(
+            plan.guards.as_slice(),
+            [PatternGuardExpr::Binary {
+                op: PatternGuardBinOp::Gt,
+                ..
+            }]
+        ),
+        "the call is replaced by what the helper's clause says, not kept as a call: {:?}",
+        plan.guards
+    );
+}
+
+#[test]
+fn a_literal_argument_is_substituted_and_a_conjunct_of_constants_is_decided_on_the_spot() {
+    let helpers = Helpers::new();
+    let holds = guard_over_x(&helpers, call("positive", vec![Expr::Int(3)]));
+    let fails = guard_over_x(&helpers, call("positive", vec![Expr::Int(0)]));
+
+    assert!(holds.guards.is_empty(), "3 > 0 asks nothing at run time");
+    assert_eq!(
+        fails.guards,
+        vec![PatternGuardExpr::Const(GroundValue::Bool(false))],
+        "0 > 0 can never hold"
+    );
+}
+
+#[test]
+fn a_clause_that_raises_contributes_false_so_the_guard_fails() {
+    let helpers = Helpers::new();
+    let raising = guard_over_x(
+        &helpers,
+        call("checked", vec![Expr::UnOp(UnOp::Neg, Box::new(sp(Expr::Int(5))))]),
+    );
+    let answering = guard_over_x(&helpers, call("checked", vec![Expr::Int(5)]));
+
+    assert_eq!(
+        raising.guards,
+        vec![PatternGuardExpr::Const(GroundValue::Bool(false))],
+        "the argument selects the clause that raises, which fails the guard"
+    );
+    assert!(
+        answering.guards.is_empty(),
+        "the argument selects the clause that answers true"
+    );
+}
+
+#[test]
+fn a_clause_that_raises_beside_one_that_answers_stays_a_call_when_the_argument_is_unknown() {
+    let helpers = Helpers::new();
+    let plan = guard_over_x(&helpers, call("checked", vec![var("x")]));
+
+    assert!(
+        matches!(plan.guards.as_slice(), [PatternGuardExpr::Dispatch { .. }]),
+        "only a negation could say the answering clause is the rest: {:?}",
+        plan.guards
+    );
 }
 
 #[test]

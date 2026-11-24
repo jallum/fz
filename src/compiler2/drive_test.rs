@@ -18755,8 +18755,48 @@ fn compiler2_entry_dispatch_requires_only_its_own_inputs_when_a_helper_is_wider(
     let plan = entry_dispatch(&entry_defs, band_id);
     assert_eq!(plan.input_count, 1, "band/1 has one semantic input");
     assert!(
+        !plan_has_nested_guard_dispatch(&plan),
+        "the helper's one clause is read as facts over the caller's subjects",
+    );
+    assert_eq!(
+        plan.input_demand(),
+        [crate::dispatch_matrix::demand::DispatchDemand::Whole],
+        "the helper's own ordinals must not become demands on the caller",
+    );
+}
+
+#[test]
+fn compiler2_entry_dispatch_requires_only_its_own_inputs_when_an_embedded_helper_is_wider() {
+    // A helper whose two clauses can both answer true stays a nested plan with
+    // its own input space; the caller still requires only its own input.
+    let tel = ConfiguredTelemetry::new();
+    let functions = FunctionCapture::new();
+    functions.install(&tel);
+    let entry_defs = EntryDispatchCapture::new();
+    entry_defs.install(&tel);
+
+    let mut compiler = Compiler2::new(tel);
+    let source_owner = compiler.submit_code(CodeSubmission {
+        name: Some("guard_embedded_helper_wider_than_caller.fz".to_string()),
+        text: "def ordered?(a, b, c) when a <= b, do: b <= c\ndef ordered?(_, _, _), do: true\ndef band(v) when ordered?(0, v, 10), do: :low\ndef band(_v), do: :high\n".to_string(),
+    });
+
+    assert_resolved(compiler.drive(), "first drive should index the helper and its caller");
+    assert!(compiler.demand(Job::ScopeCode(source_owner)));
+    assert_resolved(compiler.drive(), "second drive should define the wider helper");
+
+    let band_id = function_id(&functions, "band", 1);
+    assert!(compiler.demand(Job::PlanEntryDispatch(band_id)));
+    assert_resolved(
+        compiler.drive(),
+        "entry-dispatch planning should reify the wider helper",
+    );
+
+    let plan = entry_dispatch(&entry_defs, band_id);
+    assert_eq!(plan.input_count, 1, "band/1 has one semantic input");
+    assert!(
         plan_has_nested_guard_dispatch(&plan),
-        "the guard should have been reified as a nested helper plan",
+        "two clauses that can both answer true stay a nested helper plan",
     );
     assert_eq!(
         plan.input_demand(),
@@ -18857,7 +18897,7 @@ fn compiler2_nested_guard_bindings_preserve_owner_ids_and_reject_missing_operand
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("guard_binding_owner.fz".into()),
-        text: "def wanted(%{\"key\" => value}), do: value == 42\ndef wanted(_), do: false\ndef relayed(value), do: wanted(value)\ndef main() do\n send(self(), %{\"outer\" => %{\"key\" => 42}})\n receive do\n %{\"outer\" => value} when relayed(value) -> 42\n after\n 1000 -> 0\n end\nend\n".into(),
+        text: "def wanted(%{\"key\" => value}), do: value == 42\ndef wanted(_), do: true\ndef relayed(value) when value != nil, do: wanted(value)\ndef relayed(_), do: true\ndef main() do\n send(self(), %{\"outer\" => %{\"key\" => 42}})\n receive do\n %{\"outer\" => value} when relayed(value) -> 42\n after\n 1000 -> 0\n end\nend\n".into(),
     });
     let root = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -19104,8 +19144,19 @@ fn compiler2_entry_dispatch_plans_clause_heads_with_preconditions_and_helper_gua
         "entry dispatch should preserve clause outcomes in source order",
     );
     assert!(
-        plan_has_nested_guard_dispatch(&plan),
-        "entry guards that call helpers should inline the helper dispatch artifact",
+        !plan_has_nested_guard_dispatch(&plan),
+        "a helper with one clause that can answer true is read as that clause's facts, not called",
+    );
+    assert!(
+        matches!(
+            plan.guards.as_slice(),
+            [PatternGuardExpr::Binary {
+                op: crate::dispatch_matrix::pattern::PatternGuardBinOp::Gt,
+                ..
+            }]
+        ),
+        "the call to positive/1 is replaced by its body, n > 0: {:?}",
+        plan.guards
     );
     assert!(
         plan_body_has_type_question(&plan, 0),
