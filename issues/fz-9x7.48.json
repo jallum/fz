@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-9x7.11",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Runtime events carry their facts as they are; the handler computes",
   "type": "task",
-  "updated_at": "2026-11-24T18:24:28Z"
+  "updated_at": "2026-11-24T18:26:02Z"
 }
