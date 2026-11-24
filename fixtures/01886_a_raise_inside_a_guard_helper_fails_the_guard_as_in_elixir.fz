@@ -1,0 +1,47 @@
+#---
+# purpose: "a guard whose builtin would raise on its arguments (a negative arity, a non-tuple, a non-list, a non-map, an empty list, an out-of-range index) fails the guard and falls to the next clause"
+# kind: run
+# oracle: self
+# oracle.stamp: b222fbdfebfe2c2b
+#---
+#
+# Each `probe` clause is guarded by a call that raises when run as an
+# ordinary expression. In a guard the raise is the guard failing, so every
+# subject reaches its fallback clause and nothing aborts.
+defmodule Main do
+  def negative_arity(f) when is_function(f, -1), do: :arity
+  def negative_arity(_), do: :fell
+
+  def tuple_of_two(x) when tuple_size(x) == 2, do: :pair
+  def tuple_of_two(_), do: :fell
+
+  def list_of_two(x) when length(x) == 2, do: :two
+  def list_of_two(_), do: :fell
+
+  def map_of_one(x) when map_size(x) == 1, do: :one
+  def map_of_one(_), do: :fell
+
+  def head_is_one(x) when hd(x) == 1, do: :one
+  def head_is_one(_), do: :fell
+
+  def second_is_b(x) when elem(x, 1) == :b, do: :b
+  def second_is_b(_), do: :fell
+
+  def main do
+    IO.inspect(negative_arity(fn a -> a end))
+    IO.inspect(tuple_of_two(:not_a_tuple))
+    IO.inspect(tuple_of_two({1, 2}))
+    IO.inspect(tuple_of_two({1, 2, 3}))
+    IO.inspect(list_of_two(:not_a_list))
+    IO.inspect(list_of_two([1, 2]))
+    IO.inspect(map_of_one(7))
+    IO.inspect(map_of_one(%{a: 1}))
+    IO.inspect(head_is_one([]))
+    IO.inspect(head_is_one([1]))
+    IO.inspect(second_is_b({:a}))
+    IO.inspect(second_is_b({:a, :b}))
+    IO.inspect(second_is_b(:atom))
+  end
+end
+
+Main.main()
