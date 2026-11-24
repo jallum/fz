@@ -19,11 +19,15 @@
     {
       "text": "PAUSED on the user's word (2026-11-18, via Binary Handling). Waiting on GC's answer to the user's question, verbatim: \"should we change the distribution of responsibility for allocation between the generated code and the runtime? it might make sense to inline the portions that are fast and commonly succeed, and leave the less common, bulkier portion (allocating a new heap block, etc.) to the runtime.\" It gates this ticket because an allocation made in the runtime has no source site, so the pin halves (.37.2, .37.4) cannot be expressed. Inline fast paths would give every allocation a site. Nothing is built for .37.1-.37.4. JSON's current-site-word proposal is on hold with it.",
       "timestamp": "2026-11-18T23:47:21Z"
+    },
+    {
+      "text": "Pause lifted (user, 2026-11-24, via Make Distiller Fast: \"send them to the coordinator to be assigned, after checking to make sure that they cover all of what we've discovered\"). The pause's condition is met: fz-9x7.41.1-.41.3 merged and place every kind these counters cover inline, so every allocation has a site. Correction to the 2026-11-18 note: .37.1 (#776) and .37.2 are built and closed; .37.3 and .37.4 are unbuilt.",
+      "timestamp": "2026-11-24T22:21:28Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "Allocation statistics leave the inline allocation path",
   "type": "task",
-  "updated_at": "2026-11-18T23:47:21Z"
+  "updated_at": "2026-11-24T22:21:28Z"
 }
