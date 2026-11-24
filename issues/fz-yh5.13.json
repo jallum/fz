@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-24T17:54:26Z",
+  "description": "Option C, step C3 (approved page https://claude.ai/artifact/HJ4StaQ4ggt6yt2Fus6pX7).\n\n- lib/ marks the externs that project a value (an extern mark).\n- Arity, MapSize and ByteSize become matrix questions.\n- fz_tuple_size lowers onto TupleArity.\n- Narrowing happens on the match edge.\n\nis_struct/1 and is_exception/1 become type tests by this route (Make Distiller Fast finding 4).\n\nRemoves: option A's guard_domain table (fz-yh5.8, #842, the holding position).",
+  "id": "fz-yh5.13",
+  "labels": [],
+  "parent": "fz-yh5",
+  "priority": 1,
+  "status": "open",
+  "title": "A projecting extern compared with a constant is a matrix question",
+  "type": "bug",
+  "updated_at": "2026-11-24T17:54:26Z"
+}
