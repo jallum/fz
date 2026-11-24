@@ -4,14 +4,15 @@
     "fz-9e2.5.3"
   ],
   "blocks": [],
+  "closed_at": "2026-11-24T20:59:23Z",
   "created": "2026-11-23T19:58:38Z",
   "description": "Heap::slice(source, start, len): the whole source is the source; an aligned window over 64 bytes is a view; anything else is a copy. Replaces fz_bs_read_binary_ref's three branches and alloc_bitstring_slice.\n\nAcceptance: runtime tests for each outcome, asserted through StubSite::WindowOfBuffer allocation-site telemetry.\n\nPage: https://claude.ai/artifact/7oEdkmwEoL8RVcfbYXPZzg (From: Binary Handling), approved by the user 2026-11-23 (relayed by Binary Handling). Owner: Binary Handling.",
   "id": "fz-9e2.5.4",
   "labels": [],
   "parent": "fz-9e2.5",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "One slice: Heap::slice",
   "type": "task",
-  "updated_at": "2026-11-24T18:58:42Z"
+  "updated_at": "2026-11-24T20:59:23Z"
 }
