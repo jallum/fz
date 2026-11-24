@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-24T21:26:51Z",
+  "description": "From: Binary Handling. Approved by the user 2026-11-24 (\"proceed.\" on the fz-9e2.7 page https://claude.ai/artifact/3XypMCDmqCGuatQXAb5Ci9, relayed by Binary Handling).\n\nAn allocation row places an aligned slice of 64 bytes or less inline; any other slice goes to Heap::slice without a re-check. fz_bs_read_binary_ref's field_end check becomes a debug_assert once every caller on all three paths is shown to prove the field first.\n\nAcceptance: bench 08a ~85 instructions per iteration.",
+  "id": "fz-9e2.7.3",
+  "labels": [],
+  "parent": "fz-9e2.7",
+  "priority": 1,
+  "status": "open",
+  "title": "A proven field is sliced without re-proving it",
+  "type": "task",
+  "updated_at": "2026-11-24T21:26:51Z"
+}
