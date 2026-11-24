@@ -1,6 +1,7 @@
 {
   "assignee": "fz-engine",
   "blocked_by": [
+    "fz-t93.28",
     "fz-t93.7.1"
   ],
   "blocks": [
@@ -18,5 +19,5 @@
   "status": "open",
   "title": "A transport position is read from its executable's interface fact",
   "type": "task",
-  "updated_at": "2026-11-24T22:04:46Z"
+  "updated_at": "2026-11-24T22:18:47Z"
 }
