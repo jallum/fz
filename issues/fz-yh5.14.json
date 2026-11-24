@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-24T17:54:26Z",
+  "description": "Make Distiller Fast finding 2: `:erlang.is_function(f, 2)` is refused in a guard (\"entry guards are not dispatch-pure\"); Elixir accepts it.\n\nCallables (by reading the code, not by running it): CallableName::from_expr (src/ast/mod.rs:75-118) has no arm for an atom module, so `:erlang.f` resolves to nothing; lib/erlang.fz has no is_function. Scope: call resolution plus the library clause. Not absorbed by option C (https://claude.ai/artifact/HJ4StaQ4ggt6yt2Fus6pX7).\n\nCheck against fz-mue.5 (#833, :erlang exports the BIFs json.erl calls), which already routes :erlang calls in bodies.",
+  "id": "fz-yh5.14",
+  "labels": [],
+  "parent": "fz-yh5",
+  "priority": 3,
+  "status": "open",
+  "title": ":erlang.f resolves to the Erlang module, and lib/erlang.fz gains is_function/1,2",
+  "type": "bug",
+  "updated_at": "2026-11-24T17:54:26Z"
+}
