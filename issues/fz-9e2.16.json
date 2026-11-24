@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-24T21:11:16Z",
+  "description": "From: Binary Handling. Filed with user approval (relayed by Binary Handling, 2026-11-24), as the residue of fz-9e2.6.\n\nToday (develop de4ef6a3b): no Share sits on a self-tail-call back edge (fz-9e2.6's acceptance holds). Shares remain in front of in-body calls whose continuation retains the value (==, byte_size), placed by construct_call_ownership's retained_overlap. From the second iteration on, each is an already-marked check (and, ldr, tbnz) that skips the store.\n\nEvidence (bench):\n- byte_size loop: 6 of 56.3 instructions per iteration.\n- == loop: 7 of 351.2 instructions per iteration.\nProbes: Binary Handling scratchpad p96/.\n\nFix direction: carry an \"already marked\" fact on the loop lane, or hoist the share to loop entry, so the check is not repeated each iteration.\n\nDone when: the probe loops show no per-iteration already-marked check, outputs are identical on all three paths, and no pin rises.",
+  "id": "fz-9e2.16",
+  "labels": [],
+  "parent": "fz-9e2",
+  "priority": 3,
+  "status": "open",
+  "title": "A loop parameter already marked shared is not checked again",
+  "type": "task",
+  "updated_at": "2026-11-24T21:11:16Z"
+}
