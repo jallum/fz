@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Binary Handling",
   "blocked_by": [],
   "blocks": [
     "fz-9e2.7.2"
@@ -13,5 +13,5 @@
   "status": "open",
   "title": "byte_size and bit_size are inline rows",
   "type": "task",
-  "updated_at": "2026-11-24T21:26:52Z"
+  "updated_at": "2026-11-24T21:26:54Z"
 }
