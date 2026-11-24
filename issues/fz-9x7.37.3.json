@@ -20,11 +20,15 @@
     {
       "text": "From GC (#787): the five old counters now live in one helper, count_statistics, in src/compiler2/native_codegen/place.rs; .37.3 deletes them there.",
       "timestamp": "2026-11-19T02:40:13Z"
+    },
+    {
+      "text": "Coverage check and measurement (Make Distiller Fast, 2026-11-24, develop de4ef6a3b, bench, 3 alternated rounds, outputs identical). Deleting the one count_statistics(body, kind, size) call at src/compiler2/native_codegen/place.rs:64: parse-only JSON decode 40.47G -\u003e 39.20G instructions (-3.15%), whole distiller 54.18G -\u003e 52.63G (-2.87%); cycles within noise. Prediction to judge against: about -3% distiller instructions, no cycle change. Patch: Make Distiller Fast's scratchpad ctr/ctr.patch; results ~/Workspace/fz/distill-hunt/gap/ctr.r/.\nSites the builder must also cover (not named above):\n1. The alloc_count decrement emitted each time a continuation frame is given back (src/compiler2/native_codegen/closure.rs:324).\n2. The runtime path: Heap::alloc_at (runtime/src/heap/imp.rs:220) updates alloc_stats.record and alloc_count in bump.\n3. alloc_count's readers need a new source: Heap::live_count (runtime/src/heap/imp.rs:1541), used by the process telemetry line (runtime/src/telemetry.rs:340), src/exec/runtime.rs:429, tests, and gift accounting (runtime/src/heap/gift.rs:195). State what live_count becomes.\n4. Site tables are per program while Process.heap_alloc_stats() is per process today; the settled design is one table per program. State what a process sees when a program runs several processes before building.\n74 fixture files mention these stats; their list goes to the user under .37.4.",
+      "timestamp": "2026-11-24T22:21:30Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "heap_alloc_stats is a sum over sites",
   "type": "task",
-  "updated_at": "2026-11-19T02:40:13Z"
+  "updated_at": "2026-11-24T22:21:30Z"
 }
