@@ -9,9 +9,15 @@
   "id": "fz-t93.29",
   "labels": [],
   "parent": "fz-t93",
+  "comments": [
+    {
+      "text": "Its PR adds 01353 to ORDER_FREE_PLANS as its failing-first test; once fz-t93.32 lands, the order test also runs seeds, and 01353 splits only under seeds 3 and 5.",
+      "timestamp": "2026-11-24T22:35:31Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "The remaining order-dependent plans are traced",
   "type": "bug",
-  "updated_at": "2026-11-24T21:57:24Z"
+  "updated_at": "2026-11-24T22:35:31Z"
 }
