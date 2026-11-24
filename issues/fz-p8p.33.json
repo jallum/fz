@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Bugs and Cleanup",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-24T18:25:15Z",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "Fixture number blocks record ownership only; a test guards the numbers",
   "type": "task",
-  "updated_at": "2026-11-24T18:25:15Z"
+  "updated_at": "2026-11-24T18:25:18Z"
 }
