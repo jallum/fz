@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-24T22:16:30Z",
+  "description": "From: Optimize. Approved by the user 2026-11-24 (\"Enablers first\" for fz-mue.7, relayed by Optimize). A page comes before building.\n\nToday: parse_extern_item accepts only `extern \"\u003cabi\u003e\" defp`, and the extern map hard-codes private: true (src/compiler2/frontdoor.rs:509-515 and :586). So :erts_internal.map_next/3 needs an fz wrapper, which costs fixture 00567 +18 evaluations, +1 executable, zero-change 5-\u003e7 and SOURCE_ORDER +4 plans in fz-mue.7.\n\nFix: an extern may be declared public (`extern \"\u003cabi\u003e\" def`); map_next is then the runtime call itself, with no wrapper.\n\nDone when: a public extern is callable from another module on run, interp and build (fixture); fz-mue.7's map_next needs no wrapper; no pin rises.",
+  "id": "fz-mue.58",
+  "labels": [],
+  "parent": "fz-mue",
+  "priority": 2,
+  "status": "open",
+  "title": "An extern can be a public function",
+  "type": "feature",
+  "updated_at": "2026-11-24T22:16:30Z"
+}
