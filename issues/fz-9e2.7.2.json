@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Binary Handling",
   "blocked_by": [
     "fz-9e2.7.1"
   ],
@@ -15,5 +15,5 @@
   "status": "open",
   "title": "Binary == is a row that calls only to compare bytes",
   "type": "task",
-  "updated_at": "2026-11-24T21:26:53Z"
+  "updated_at": "2026-11-24T21:26:55Z"
 }
