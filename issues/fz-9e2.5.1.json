@@ -4,14 +4,15 @@
   "blocks": [
     "fz-9e2.5.2"
   ],
+  "closed_at": "2026-11-24T14:26:01Z",
   "created": "2026-11-23T19:58:37Z",
   "description": "Rule: a runtime function that reads a binary is handed a proven binary. The proof is the extern's declared parameter type (binary/bitstring) plus .fz guards shaped like Elixir's function heads.\n\nChanges:\n- fz_binary_upcase, fz_binary_downcase, fz_grapheme_size and fz_binary_to_atom declare `binary` (today `any`).\n- String.length gets an is_binary head.\n- String.to_atom and String.to_float raise ArgumentError, for a non-binary and for bad content, before the extern.\n- Delete the runtime's not-a-binary panics, aborts and sentinels (extern_binary.rs abort; about 25 paths).\n\nEvidence: today String.length(1) and String.to_atom(1) SIGABRT on interp, JIT and AOT (Rust panic in extern \"C\"). String.to_float(1) raises FunctionClauseError in Float.fz_float_parse/1, where Elixir raises ArgumentError.\n\nAcceptance: an oracle fixture runs each binary function on 1 and \u003c\u003c1::3\u003e\u003e inside rescue and matches Elixir on all three paths.\n\nPage: https://claude.ai/artifact/7oEdkmwEoL8RVcfbYXPZzg (From: Binary Handling), approved by the user 2026-11-23 (relayed by Binary Handling). Owner: Binary Handling.",
   "id": "fz-9e2.5.1",
   "labels": [],
   "parent": "fz-9e2.5",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "A binary function given a non-binary raises what Elixir raises",
   "type": "bug",
-  "updated_at": "2026-11-23T19:58:42Z"
+  "updated_at": "2026-11-24T14:26:01Z"
 }
