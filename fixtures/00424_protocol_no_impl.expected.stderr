@@ -1,0 +1,5 @@
+** (Protocol.UndefinedError) protocol P not implemented for Integer
+
+Got value:
+
+    42

@@ -1238,7 +1238,10 @@ receiver unions that the implementations cover. A protocol callsite whose
 receiver type reaches beyond every implementation carries a `LastResort`
 (`Protocol.UndefinedError`, whose message names the kind of the receiver), so
 the plan tests the receiver even where one implementation is left, and a miss
-raises it on every path. A callsite plan with no last resort belongs to a
+raises it on every path. A receiver that overlaps no implementation has no arm
+at all: its plan is the fail node alone, and the plan charges the inputs its
+last resort shows to the input demand as `Whole`, so the receiver reaches the
+raise. A callsite plan with no last resort belongs to a
 closure callsite or to a protocol call whose implementations cover the receiver;
 its `Fail` node lowers to `Term::Unreachable` in native code and is an internal
 error in the interpreter. There is no residual protocol-stub outcome in the

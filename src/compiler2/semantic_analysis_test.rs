@@ -640,14 +640,12 @@ fn compiler2_semantic_callsite_retains_reduce_and_count_specializations() {
     );
 }
 
-/// fz-kdt.69.2, on the production path: `P.each(42)` finds no `P` impl for an
-/// integer receiver, so the walk REACHES the callsite and never names a
-/// target. The edge is published all the same. Its value is the unresolved
-/// answer -- distinct from a provider boundary (a resolved edge naming no
-/// compiler2 activation) and distinct from a callsite the walk never reached,
-/// which has no fact at all.
+/// On the production path, `P.each(42)` finds no `P` impl for an integer
+/// receiver, so the walk reaches the callsite and names no target. The edge is
+/// published as a call that only raises: no targets, and the last resort that
+/// raises `Protocol.UndefinedError` for the receiver.
 #[test]
-fn a_reached_callsite_that_names_no_target_publishes_an_unresolved_edge() {
+fn a_reached_callsite_no_implementation_takes_publishes_a_raise_only_summary() {
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new();
     world.submit_code(
@@ -678,24 +676,15 @@ fn a_reached_callsite_that_names_no_target_publishes_an_unresolved_edge() {
 
     assert!(
         world.has_fact(&FactKey::CallSiteSummary(key.clone())),
-        "a reached callsite publishes its edge even when it resolves nothing"
+        "a reached callsite publishes its edge even when no implementation takes its receiver"
     );
+    let summary = world
+        .callsite_summary(&key)
+        .expect("a callsite whose receiver no implementation takes resolves to a raise");
+    assert!(summary.targets.is_empty(), "no implementation is called: {summary:?}");
     assert!(
-        world
-            .callsite_resolution(&key)
-            .is_some_and(super::semantic::CallSiteResolution::is_unresolved),
-        "and the published value says so: {:?}",
-        world.callsite_resolution(&key)
-    );
-    assert!(
-        world.callsite_summary(&key).is_none(),
-        "an unresolved edge names no targets, so nothing downstream can read one"
-    );
-    assert!(
-        world
-            .callsite_target_resolution(&key)
-            .is_some_and(super::semantic::CallSiteResolution::is_unresolved),
-        "the membership fact carries the same answer -- they are two answers of one derivation"
+        summary.last_resort.is_some(),
+        "the call raises for the receiver instead: {summary:?}"
     );
 }
 

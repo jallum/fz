@@ -1,0 +1,18 @@
+protocol Enumerable not implemented for Float
+
+Got value:
+
+    2.5
+
+protocol Enumerable not implemented for Atom
+
+Got value:
+
+    :ok
+
+protocol Enumerable not implemented for Tuple
+
+Got value:
+
+    {1, 2}
+
