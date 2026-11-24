@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Callables",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-24T17:54:26Z",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "A projecting extern compared with a constant is a matrix question",
   "type": "bug",
-  "updated_at": "2026-11-24T17:54:26Z"
+  "updated_at": "2026-11-24T17:54:28Z"
 }
