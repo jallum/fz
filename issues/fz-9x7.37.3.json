@@ -32,11 +32,15 @@
     {
       "text": "Evidence moved somewhere lasting: /Users/j5n/Workspace/fz-distill-hunt/ctr/ (README.md with the annotated allocation sequence and the six-counter emit/read table, ctr.patch, ctr.sh).",
       "timestamp": "2026-11-24T22:22:10Z"
+    },
+    {
+      "text": "Approved by the user 2026-11-24 (\"proceed\" on GC's page https://claude.ai/artifact/XoD6WX6HBf8kFV9nnfCJ9t, relayed by GC), with its three recommended decisions: (1) live_count is deleted; the exit line keeps bytes_used and GcStats keeps the kept-object count. (2) The figure is per program and renamed: Process.heap_alloc_stats() becomes System.alloc_stats(); reset_alloc_stats and its six calls go. (3) Off-heap buffers become RuntimeAllocSite::SharedBin, outside total. Building in ../fz-9x7-37-3 off develop 6ef88d2bd, in parallel with fz-9x7.47's re-bench; whichever lands second rebases. No fixture is re-blessed here; any fixture whose figure moves is listed for the user under .37.4.",
+      "timestamp": "2026-11-24T22:33:05Z"
     }
   ],
   "priority": 1,
   "status": "in_progress",
   "title": "heap_alloc_stats is a sum over sites",
   "type": "task",
-  "updated_at": "2026-11-24T22:33:04Z"
+  "updated_at": "2026-11-24T22:33:05Z"
 }
