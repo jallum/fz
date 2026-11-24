@@ -55,21 +55,24 @@ use cranelift_codegen::ir::{
     types,
 };
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
-use cranelift_module::{DataDescription, DataId, FuncId, Linkage};
+use cranelift_module::{FuncId, Linkage};
 use fz_runtime::any_value::{AnyValueRef, FALSE_ATOM_ID, NIL_ATOM_ID, TRUE_ATOM_ID, ValueKind};
 use fz_runtime::ir_runtime::{
-    fz_box_float_for_any, fz_box_int_for_any, fz_box_opaque_for_any, fz_bs_field_end, fz_bs_field_spec,
-    fz_bs_read_binary_ref, fz_bs_read_int_ref, fz_function_arity, fz_list_head_ref, fz_list_is_cons, fz_list_tail_ref,
-    fz_map_is_map, fz_map_named_schema_ref, fz_matcher_eq_bytes, fz_matcher_map_get_ref, fz_pinned_binary_segment_size,
+    fz_binary_equals_literal, fz_box_float_for_any, fz_box_int_for_any, fz_box_opaque_for_any, fz_bs_field_end,
+    fz_bs_field_spec, fz_bs_read_binary_ref, fz_bs_read_int_ref, fz_function_arity, fz_list_head_ref, fz_list_is_cons,
+    fz_list_tail_ref, fz_map_is_map, fz_map_named_schema_ref, fz_matcher_map_get_ref, fz_pinned_binary_segment_size,
     fz_receive_pinned_ref, fz_struct_get_field_ref, fz_struct_get_named_field_ref, fz_struct_schema_id_ref,
     fz_truthy_ref, fz_type_of, fz_unbox_atom, fz_unbox_float, fz_unbox_int, fz_unbox_opaque, fz_value_cmp_ref,
     fz_value_eq_ref, fz_value_eq_widening_ref,
 };
 use fz_runtime::process::AtomName;
+use std::cell::RefCell;
 
+use super::BitstringLiterals;
 use super::prim::{c_pair_return_types, emit_proven_binary_bit_len};
 use super::repr::ExternLane;
 use super::runtime_call::{RuntimeCaller, RuntimeFn, runtime_call, runtime_call_ref, runtime_call1, runtime_condition};
+use super::static_object::data_addr;
 use super::{CodegenError, SLOT_BYTES, WordKeyFind, address_field, emit_fn_body, immediate_ref_word, import_call_ref};
 
 type ReceiveDispatchPlan = PatternDispatchPlan<RuntimeTypePredicate>;
@@ -197,6 +200,7 @@ pub(crate) fn emit_receive_dispatch_body<M: cranelift_module::Module>(
     module: &mut M,
     fbctx: &mut FunctionBuilderContext,
     dispatch_id: FuncId,
+    bitstring_literals: &RefCell<BitstringLiterals>,
     fz_module: &Module,
     tuple_schema_ids: &HashMap<usize, u32>,
     named_schema_ids: &HashMap<fz_runtime::module_name::ModuleName, u32>,
@@ -217,26 +221,6 @@ pub(crate) fn emit_receive_dispatch_body<M: cranelift_module::Module>(
         ));
     }
 
-    let mut unique_bytes = Vec::new();
-    collect_binary_literals_in_dispatch(dispatch, &mut unique_bytes);
-    let mut binary_data_ids: HashMap<Vec<u8>, DataId> = HashMap::default();
-    for (idx, bytes) in unique_bytes.into_iter().enumerate() {
-        if binary_data_ids.contains_key(&bytes) {
-            continue;
-        }
-        let name = format!(".fz_dispatch_bin_{}_{}", dispatch_id.as_u32(), idx);
-        let did = module
-            .declare_data(&name, Linkage::Local, false, false)
-            .map_err(|e| CodegenError::new(format!("declare {}: {}", name, e)))?;
-        let mut desc = DataDescription::new();
-        desc.define(bytes.clone().into_boxed_slice());
-        desc.set_align(1);
-        module
-            .define_data(did, &desc)
-            .map_err(|e| CodegenError::new(format!("define {}: {}", name, e)))?;
-        binary_data_ids.insert(bytes, did);
-    }
-
     let mut compile_err: Option<CodegenError> = None;
     let sig = receive_dispatch_signature(module);
     let defined = emit_fn_body(module, fbctx, sig, dispatch_id, |m, b| {
@@ -251,10 +235,6 @@ pub(crate) fn emit_receive_dispatch_body<M: cranelift_module::Module>(
         let msg = receive_value_from_ref_word(b, msg_ref);
 
         let miss_block = b.create_block();
-        let binary_data_gvs: HashMap<Vec<u8>, ir::GlobalValue> = binary_data_ids
-            .iter()
-            .map(|(bytes, did)| (bytes.clone(), m.declare_data_in_func(*did, b.func)))
-            .collect();
         let mut body = DispatchBody::new(b, m);
 
         let ctx = DispatchCtx {
@@ -281,7 +261,7 @@ pub(crate) fn emit_receive_dispatch_body<M: cranelift_module::Module>(
                 .collect(),
             dispatch,
             inputs: vec![msg],
-            binary_data_gvs: &binary_data_gvs,
+            bitstring_literals,
         };
 
         let mut state = DispatchEmitState::default();
@@ -323,6 +303,7 @@ pub(crate) fn emit_receive_projector_body<M: cranelift_module::Module>(
     module: &mut M,
     fbctx: &mut FunctionBuilderContext,
     projector_id: FuncId,
+    bitstring_literals: &RefCell<BitstringLiterals>,
     fz_module: &Module,
     tuple_schema_ids: &HashMap<usize, u32>,
     named_schema_ids: &HashMap<fz_runtime::module_name::ModuleName, u32>,
@@ -341,7 +322,6 @@ pub(crate) fn emit_receive_projector_body<M: cranelift_module::Module>(
         let process = b.block_params(entry)[0];
         let roots_ptr = b.block_params(entry)[1];
         let out_ptr = b.block_params(entry)[2];
-        let binary_data_gvs = HashMap::default();
         let mut body = DispatchBody::new(b, m);
         let ctx = DispatchCtx {
             process,
@@ -357,7 +337,7 @@ pub(crate) fn emit_receive_projector_body<M: cranelift_module::Module>(
             out_ptr,
             dispatch,
             inputs: Vec::new(),
-            binary_data_gvs: &binary_data_gvs,
+            bitstring_literals,
         };
         let mut state = DispatchEmitState::default();
         for (index, root) in roots.roots.iter().enumerate() {
@@ -409,7 +389,8 @@ struct DispatchCtx<'a> {
     out_ptr: ir::Value,
     dispatch: &'a ReceiveDispatchPlan,
     inputs: Vec<ReceiveValue>,
-    binary_data_gvs: &'a HashMap<Vec<u8>, ir::GlobalValue>,
+    /// The module's literal table, where a binary literal's bytes are read in place.
+    bitstring_literals: &'a RefCell<BitstringLiterals>,
 }
 
 #[derive(Default, Clone)]
@@ -1190,7 +1171,7 @@ fn emit_dispatch_const_test<M: cranelift_module::Module>(
         }
         DispatchShape::Utf8Binary(bytes) => {
             let bits = emit_receive_value_ref(body, ctx, val)?;
-            emit_binary_literal_test(body, ctx.binary_data_gvs, bits, bytes, match_b, next_b)
+            emit_binary_literal_test(body, ctx, bits, bytes, match_b, next_b)
         }
     }
 }
@@ -1666,7 +1647,7 @@ fn emit_guard_dispatch<M: cranelift_module::Module>(
         out_ptr: parent.out_ptr,
         dispatch: &dispatch.plan,
         inputs,
-        binary_data_gvs: parent.binary_data_gvs,
+        bitstring_literals: parent.bitstring_literals,
     };
     let mut state = DispatchEmitState::default();
     let mut arrivals = Vec::new();
@@ -2025,93 +2006,27 @@ fn emit_map_kind_test<M: cranelift_module::Module>(
     Ok(())
 }
 
-fn collect_binary_literals_in_dispatch(dispatch: &ReceiveDispatchPlan, out: &mut Vec<Vec<u8>>) {
-    for key in &dispatch.prepared_keys {
-        collect_binary_literals_in_const(key, out);
-    }
-    for node in &dispatch.graph.nodes {
-        if let DispatchNode::Test { predicate, .. } = node {
-            collect_binary_literals_in_region(&predicate.region, out);
-        }
-    }
-    for guard in &dispatch.guards {
-        collect_binary_literals_in_guard(guard, out);
-    }
-}
-
-fn collect_binary_literals_in_region(region: &ReceiveRegion, out: &mut Vec<Vec<u8>>) {
-    match region {
-        Region::Equal(ComparisonValue::Const(value))
-        | Region::MapKeyPresent {
-            key: ComparisonValue::Const(value),
-        } => {
-            collect_binary_literals_in_const(value, out);
-        }
-        Region::Type(_)
-        | Region::Equal(ComparisonValue::Pinned(_))
-        | Region::MapKeyPresent {
-            key: ComparisonValue::Pinned(_),
-        }
-        | Region::TupleArity(_)
-        | Region::List(_)
-        | Region::MapKind
-        | Region::Bitstring(_)
-        | Region::Guard(_) => {}
-    }
-}
-
-fn collect_binary_literals_in_guard(expr: &ReceiveGuardExpr, out: &mut Vec<Vec<u8>>) {
-    match expr {
-        PatternGuardExpr::Const(value) => collect_binary_literals_in_const(value, out),
-        PatternGuardExpr::Unary { expr, .. } => collect_binary_literals_in_guard(expr, out),
-        PatternGuardExpr::Binary { lhs, rhs, .. } => {
-            collect_binary_literals_in_guard(lhs, out);
-            collect_binary_literals_in_guard(rhs, out);
-        }
-        PatternGuardExpr::Dispatch { inputs, dispatch, .. } => {
-            for input in inputs {
-                collect_binary_literals_in_guard(input, out);
-            }
-            collect_binary_literals_in_dispatch(&dispatch.plan, out);
-            for body in &dispatch.bodies {
-                collect_binary_literals_in_guard(body, out);
-            }
-        }
-        PatternGuardExpr::Extern { args, .. } => {
-            for arg in args {
-                collect_binary_literals_in_guard(arg, out);
-            }
-        }
-        PatternGuardExpr::Subject(_) | PatternGuardExpr::Pinned(_) | PatternGuardExpr::Fails => {}
-    }
-}
-
-fn collect_binary_literals_in_const(value: &GroundValue, out: &mut Vec<Vec<u8>>) {
-    if let GroundValue::Utf8Binary(bytes) = value {
-        out.push(bytes.clone());
-    }
-}
-
 /// Emit the call sequence that compares `val` against a constant byte
-/// literal via `fz_matcher_eq_bytes`. Branches to `match_b` when the
+/// literal via `fz_binary_equals_literal`, reading the literal's bytes where
+/// the module's literal table keeps them. Branches to `match_b` when the
 /// helper returns 1, `next_b` when it returns 0.
 fn emit_binary_literal_test<M: cranelift_module::Module>(
     body: &mut DispatchBody<'_, '_, M>,
-    binary_data_gvs: &HashMap<Vec<u8>, ir::GlobalValue>,
+    ctx: &DispatchCtx<'_>,
     val: ir::Value,
     bytes: &[u8],
     match_b: ir::Block,
     next_b: ir::Block,
 ) -> Result<(), CodegenError> {
-    let gv = binary_data_gvs.get(bytes).ok_or_else(|| {
-        CodegenError::new(format!(
-            "Binary literal of {} bytes missing pre-declared .data symbol",
-            bytes.len()
-        ))
-    })?;
-    let bytes_ptr = body.b.ins().symbol_value(types::I64, *gv);
-    let byte_len = body.b.ins().iconst(types::I64, bytes.len() as i64);
-    let res = runtime_call1!(body, fz_matcher_eq_bytes, [val, bytes_ptr, byte_len]);
+    let bit_len = bytes.len() as u64 * 8;
+    let at = ctx
+        .bitstring_literals
+        .borrow_mut()
+        .bytes_at(body.module, bytes, bit_len)?;
+    let object = data_addr(body.module, at.data, body.b);
+    let bytes_ptr = body.b.ins().iadd_imm_s(object, at.offset);
+    let bit_len = body.b.ins().iconst(types::I64, bit_len as i64);
+    let res = runtime_call1!(body, fz_binary_equals_literal, [val, bytes_ptr, bit_len]);
     let zero = body.b.ins().iconst(types::I32, 0);
     let cmp = body.b.ins().icmp(IntCC::NotEqual, res, zero);
     body.b.ins().brif(cmp, match_b, &[], next_b, &[]);

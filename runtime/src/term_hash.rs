@@ -36,7 +36,6 @@ use crate::resource::ResourceStub;
 use crate::term::{Category, MapTerm, TermComparator, address, field_value};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::slice::from_raw_parts;
 
 /// Containers one hash may walk before it starts remembering them.
 const SHARED_WALK_BUDGET: u32 = 256;
@@ -261,15 +260,8 @@ impl<'a> TermHasher<'a> {
 /// are not content.
 fn hash_bitstring(word: u64) -> u64 {
     let binary = unsafe { Bin::of_binary(word) };
-    let bits = binary.bit_len() as usize;
-    let bytes = unsafe { from_raw_parts(binary.ptr(), bits.div_ceil(8)) };
-    let whole = bits / 8;
-    let hash = bytes_hash(&bytes[..whole], bits as u64);
-    if bits.is_multiple_of(8) {
-        return hash;
-    }
-    let kept = u8::MAX << (8 - bits % 8);
-    combine(hash, u64::from(bytes[whole] & kept))
+    let hash = bytes_hash(binary.bytes(), binary.bit_len());
+    binary.tail().map_or(hash, |tail| combine(hash, u64::from(tail)))
 }
 
 #[cfg(test)]

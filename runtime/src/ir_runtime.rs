@@ -2612,33 +2612,17 @@ pub extern "C" fn fz_matcher_map_get_ref(
         .raw_word()
 }
 
-/// Selective-receive matcher comparison against a
-/// constant byte literal. Returns 1 if `val_bits` points at a
-/// bitstring-like heap value (Bitstring or BinView) whose bit-length is
-/// `byte_len * 8` and whose bytes equal the slice
-/// `bytes_ptr[..byte_len]`. Returns 0 otherwise (including non-bitstring
-/// inputs).
-///
-/// Used by the receive matcher to discharge `Pattern::Binary(utf8)` /
-/// `SwitchKey::Utf8Binary` without first materialising the literal as a
-/// heap object. `bytes_ptr` references a module-baked `.data` segment
-/// emitted by codegen and outlives the call.
+/// Whether `subject` is a binary equal to the literal of `bit_len` bits at
+/// `bytes`: the receive matcher's test for a binary literal pattern. Any
+/// bitstring-like subject is compared by `Bin` equality; a non-binary is not
+/// equal.
 ///
 /// # Safety
-/// `bytes_ptr` must be a readable address with at least `byte_len`
-/// initialized bytes. `val_bits` is treated as an opaque AnyValue.
+/// `bytes` must be readable for `bit_len` bits. `subject` is treated as an
+/// opaque AnyValue.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_matcher_eq_bytes(val_bits: u64, bytes_ptr: u64, byte_len: u64) -> u32 {
-    if !is_bitstring_like(val_bits) {
-        return 0;
-    }
-    let val = unsafe { Bin::of_binary(val_bits) };
-    if val.bit_len() != byte_len * 8 {
-        return 0;
-    }
-    let val_slice = val.bytes();
-    let want_slice = unsafe { from_raw_parts(bytes_ptr as *const u8, byte_len as usize) };
-    if val_slice == want_slice { 1 } else { 0 }
+pub extern "C" fn fz_binary_equals_literal(subject: u64, bytes: *const u8, bit_len: u64) -> u32 {
+    (is_bitstring_like(subject) && unsafe { Bin::of_binary(subject) } == Bin::new(bytes, bit_len)) as u32
 }
 
 /// Identity at the bits level — the brand is a type-system label, not

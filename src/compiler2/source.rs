@@ -2,7 +2,6 @@ use crate::fast_hash::HashMap;
 use std::cell::{Ref, RefCell, RefMut};
 use std::fmt;
 use std::rc::Rc;
-use std::slice;
 use std::sync::OnceLock;
 
 use smallvec::SmallVec;
@@ -1229,15 +1228,12 @@ fn is_atom_named(proc: &Process, value: AnyValueRef, name: &str) -> Result<bool,
 }
 
 fn bitstring_eq(a: AnyValueRef, b: AnyValueRef) -> Result<bool, QuotedSourceError> {
-    Ok(bitstring_payload(a)? == bitstring_payload(b)?)
+    Ok(binary_of(a)? == binary_of(b)?)
 }
 
-fn bitstring_payload(value: AnyValueRef) -> Result<(usize, Vec<u8>), QuotedSourceError> {
+fn binary_of(value: AnyValueRef) -> Result<Bin, QuotedSourceError> {
     let heap_word = value.heap_object_word().map_err(QuotedSourceError::from)?;
-    let binary = unsafe { Bin::of_binary(heap_word) };
-    let bit_len = binary.bit_len() as usize;
-    let bytes = unsafe { slice::from_raw_parts(binary.ptr(), bit_len.div_ceil(8)) }.to_vec();
-    Ok((bit_len, bytes))
+    Ok(unsafe { Bin::of_binary(heap_word) })
 }
 
 fn render_atom_name(proc: &Process, atom_id: u32) -> Result<AtomName, QuotedSourceError> {

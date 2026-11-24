@@ -484,6 +484,24 @@ fn semantic_walk_compares_bitstring_payloads_in_long_lists() {
     );
 }
 
+/// Intent: two quoted binaries that differ only in the padding bits past their
+/// last bit are the same bits, so they compare equal; a differing bit does not.
+#[test]
+fn semantic_walk_ignores_padding_bits_of_a_partial_last_byte() {
+    let root = |bytes: &[u8]| {
+        let heap = Rc::new(QuotedSourceHeap::new());
+        let builder = heap.builder();
+        builder
+            .root(builder.bitstring(bytes, 11).expect("11-bit binary"))
+            .expect("bitstring root")
+    };
+    let clean = root(&[0xff, 0b1010_0000]);
+    let padded = root(&[0xff, 0b1011_1111]);
+    let different = root(&[0xff, 0b1000_0000]);
+    assert!(clean.semantically_eq(&padded, Horizon::Full));
+    assert!(!clean.semantically_eq(&different, Horizon::Full));
+}
+
 fn parse_src(name: &str, text: &str) -> QuotedSourceRoot {
     let mut sources = crate::source::SourceMap::default();
     let version = sources.add_code(Some(name), text);

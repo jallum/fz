@@ -1330,8 +1330,8 @@ fn dispatch_const_eq(proc: *mut Process, module: &Module, val: AnyValue, value: 
                 val.heap_object_word()
                     .filter(|word| is_bitstring_like(*word))
                     .is_some_and(|word| {
-                        let binary = unsafe { Bin::of_binary(word) };
-                        binary.bit_len() == (bytes.len() as u64) * 8 && binary.bytes() == bytes
+                        let literal = Bin::new(bytes.as_ptr(), bytes.len() as u64 * 8);
+                        unsafe { Bin::of_binary(word) == literal }
                     })
             }),
         },

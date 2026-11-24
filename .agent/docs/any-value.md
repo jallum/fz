@@ -202,7 +202,7 @@ A runtime function that reads a binary is handed a proven one -- its extern's
 `binary`, `bitstring`, `binary_cursor` or `c_string` parameter, checked at the
 call, or a match read the compiler emits after a kind test -- and decodes it
 there. A function whose question is whether a value is a binary
-(`fz_pinned_binary_segment_size`, `fz_matcher_eq_bytes`, the interpreter's
+(`fz_pinned_binary_segment_size`, `fz_binary_equals_literal`, the interpreter's
 `read_bitstring`, the debug renderer, failure text) makes one `is_bitstring_like`
 test and then calls `Bin::of_binary`. A binary's ref word is its heap object word
 (`AnyValueRef::from_heap_object` packs the kind and address, and `heap_object_word`
