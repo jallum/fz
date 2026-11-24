@@ -436,7 +436,10 @@ has its own prefix and size function.</p>
 — live on the process heap and grow into bigger blocks as needed. Bitstrings
 above <code>SHARED_BIN_THRESHOLD_BYTES</code> (64 bytes) <em>don't</em>
 live on the process heap. Instead the heap carries a 32-byte <strong>BinView</strong>
-view that names a 16-byte <strong>BinRef</strong>, which points into the <a href="#shared-zone">shared zone</a>.</p>
+view that names a 16-byte <strong>BinRef</strong>, which points into the <a href="#shared-zone">shared zone</a>.
+Taking a field out of a binary follows one rule (<code>Heap::slice</code>): a field that is the
+whole binary is that binary, a byte-aligned field over 64 bytes is another BinView on the same
+BinRef, and any other field is a copy.</p>
 
 <h3>Block pool and block capacities</h3>
 

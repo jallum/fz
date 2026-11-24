@@ -156,7 +156,7 @@ repetitions land in one inline bitstring or one `SharedBin` of exactly
 `n * byte_size` bytes.
 
 Two questions still read the threshold, and they are different questions:
-`alloc_bitstring_slice` asks whether a VIEW is worth a stub, and native
+`Heap::slice` asks whether a VIEW is worth a stub, and native
 codegen asks what to EMIT for a constant bitstring — a static `SharedBin`
 symbol or a call to the inline allocator — which it must decide at compile time
 with no heap to ask.
@@ -228,10 +228,12 @@ cursor stands for a bitstring that may end between bytes. A rest that spans its 
 source, so a binary that was only measured, a cursor at position 0, comes
 back as itself and builds nothing. Past position 0, any byte-aligned binary field of a shared source, whether
 `<<_c, rest :: binary>>` or `<<_ :: binary-size(n), field :: binary, _ :: binary>>`,
-asks `Heap::alloc_bitstring_slice` for a view: another view over the same bytes
-at its own offset and length instead of a copy. It decides whether the view is
-worth a view object, copying slices at or below `SHARED_BIN_THRESHOLD_BYTES` so a short
-slice cannot pin a long buffer. A walk that only matches and measures allocates
+asks `Heap::slice` for a view: another view over the same bytes
+at its own offset and length instead of a copy. `Heap::slice` is the one place a binary
+field is decided: the whole source is the source itself, a byte-aligned window over
+`SHARED_BIN_THRESHOLD_BYTES` is a view on the source's buffer (a source that large is
+always a view), and anything else is a copy, so a short slice cannot pin a long buffer.
+A walk that only matches and measures allocates
 no binary at all; one that makes each rest whole copies at most that short tail
 per step, where a copy per step would cost n + (n-1) + … bytes.
 

@@ -480,7 +480,7 @@ fn a_minor_collection_counts_the_views_and_binrefs_each_site_made_and_the_binref
     let grown = unsafe { heap.alloc_concatenation(&big, None, &[2]) };
     let (grown_stub, grown_bytes) = bytes_of(grown);
     let appended = unsafe { heap.alloc_concatenation(&grown_bytes, Some(grown_stub), &[3]) };
-    let window = unsafe { heap.alloc_bitstring_slice(grown_stub, 1, big.len() as u64) };
+    let window = unsafe { heap.slice(word_of(grown_stub), 8, big.len() as u64 * 8) };
 
     let mut roots = [filled, appended, window].map(AnyValue::ref_word);
     let stats = heap.collect_stats(&mut roots);
@@ -560,6 +560,13 @@ fn witnessed_buffer(heap: &mut Heap, bytes: &[u8]) -> (AnyValue, SharedBinHandle
     (value, witness)
 }
 
+/// The tagged word that names `view`.
+fn word_of(view: BinView) -> u64 {
+    AnyValue::heap_ptr(view.as_raw(), ValueKind::BINVIEW)
+        .ref_word()
+        .raw_word()
+}
+
 fn view_of(value: AnyValue) -> BinView {
     unsafe { BinView::from_raw(value.heap_addr().expect("a view")) }
 }
@@ -581,7 +588,7 @@ fn view_bytes(view: BinView) -> Vec<u8> {
 fn a_binref_outlives_its_buffers_own_view_and_dies_with_its_last_window() {
     let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
     let (whole, witness) = witnessed_buffer(&mut heap, &[9u8; 200]);
-    let window = unsafe { heap.alloc_bitstring_slice(view_of(whole), 10, 100) };
+    let window = unsafe { heap.slice(word_of(view_of(whole)), 80, 800) };
     assert_eq!(window.kind(), ValueKind::BINVIEW);
     assert_eq!(
         shared_refs(&witness),
@@ -629,7 +636,7 @@ fn a_young_view_of_an_old_binref_survives_a_minor_and_a_major_collection() {
     let old_binref = old_whole.binref().as_raw();
     assert!(!heap.is_young(old_binref), "the buffer's BinRef is old");
 
-    let window = unsafe { heap.alloc_bitstring_slice(old_whole, 70, 100) };
+    let window = unsafe { heap.slice(word_of(old_whole), 560, 800) };
     assert!(heap.is_young(view_of(window).as_raw()));
     assert_eq!(
         view_of(window).binref().as_raw(),
@@ -784,7 +791,7 @@ fn a_slice_is_born_shared_and_marks_its_source() {
     let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
     let bytes: Vec<u8> = (0..200u8).collect();
     let (whole, _witness) = witnessed_buffer(&mut heap, &bytes);
-    let window = unsafe { heap.alloc_bitstring_slice(view_of(whole), 70, 100) };
+    let window = unsafe { heap.slice(word_of(view_of(whole)), 560, 800) };
     assert!(view_of(window).is_shared());
     assert!(view_of(whole).is_shared());
     assert_eq!(
