@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-mue.32"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-mue.51"
+  ],
   "created": "2026-11-24T21:02:21Z",
   "description": "From: Elixir Parity. Approved by the user 2026-11-24 (relayed by Elixir Parity). Page: ../fz-module-atom-identity.html. Research notes: Elixir Parity's scratchpad rmod/notes.md, with Elixir probes p1.exs and p4.exs.\n\nToday (Elixir 1.19.4 probed vs fz):\n- `defimpl A, for: B.C`: in Elixir its module is Module.concat(A, B.C), the atom A.B.C. In fz it is a separate ProtocolImpl{A, B.C} identity whose atom is also A.B.C.\n- That impl, plus `defimpl A.B, for: C`, plus a real `defmodule A.B.C`: Elixir has one module, redefined twice (\"redefining module A.B.C\"). fz has three distinct modules, a boundary documented in protocols.md:43-58.\n- Calling the atom A.B.C, or apply(A.B.C, ...): in fz this always reaches the real A.B.C, and no atom reaches the impl.\n- __MODULE__ inside an impl is the display atom, which as a call target decodes to the real A.B.C, while __CALLER__.module in the same spot means the impl (env_projection.rs:62-76).\n- env.module is an alias node that carries the identity in hidden metadata (__fz_module__). Atoms already resolve without aliases (quoted_function.rs:1914).\n\nFix:\n- An impl module is Named(Module.concat(protocol, target)), so a module's identity is its name and its name is its atom. Protocol dispatch keys on module ids and does not change.\n- env.module and __MODULE__ are the plain atom; __MODULE__ and __CALLER__.module become one value.\n- A second definition of a module name warns \"redefining module X\" through fz-mue.32's warning channel and keeps the later one in source order (the user's decision).\n- protocols.md's three-owner boundary is retired in favour of Elixir's single atom.\n\nRemoval ledger (this ticket; about 28 files):\n- The ProtocolImpl denotation, so ModuleDenotation collapses into ModuleName.\n- The __fz_module__ alias metadata, quoted_parts and display_segments.\n- Expr::Module, and the Exact / Unresolved module-target split for atoms.\n- The alias branch of project_module_value.\n- AOT carrier tag 2 (function_denotation.rs:161, 268).\n- env.module as an alias node dies in fz-mue.51 commit 1.\n\nDone when:\n- An oracle fixture covers `defimpl A, for: B.C`: calling through the atom and through apply/3; __MODULE__ == __CALLER__.module inside an impl's macro use; Atom.to_string and inspect of an impl module; the Decoy alias case. It matches Elixir on run, interp and build.\n- A redefinition fixture shows the warning.\n- Fixture 01574 is rewritten: it keeps the Decoy alias case, and drops the three-owner collision and its self_val_after_display_edit macro (which would raise MatchError in Elixir).\n- The three-owner unit tests (source_publish_test, scope_test, source_test, quoted_function_test, semantic_analysis_test, drive_test:2793) are rewritten to claim one atom, one module.\n- Work pins fall or stay flat; any rise comes to the user with its probe.",
   "id": "fz-mue.57",
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "A module's atom is its identity: defimpl P, for: T is the module P.T, as in Elixir",
   "type": "feature",
-  "updated_at": "2026-11-24T21:02:23Z"
+  "updated_at": "2026-11-24T21:02:24Z"
 }
