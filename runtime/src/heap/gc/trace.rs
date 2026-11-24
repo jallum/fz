@@ -1,152 +1,93 @@
 //! Cheney tracing: scan each copied object and forward its child edges.
 
-use super::super::Heap;
-use super::super::schema::SchemaRegistry;
-use super::super::stats::GcStats;
-use super::forward::forward_heap_value;
-use super::{CopiedObject, FromSpace};
+use super::forward::Tracer;
 use crate::any_value::{
-    AnyValue, ListCons, ValueKind, closure_capture_set, closure_capture_value, closure_captured_count, map_key_kind,
+    ListCons, ValueKind, closure_capture_raw_kind, closure_capture_raw_slot, closure_captured_count, map_key_kind,
     map_keys_ptr, map_node_child_count, map_node_children_ptr, map_node_entry_count, map_tag_ptr, map_value_kind,
     map_values_ptr, share_struct, struct_field_kind_slot, struct_field_raw_slot, struct_schema_id,
 };
 use crate::bits::BinView;
-use std::ptr::{read, write};
+use std::ptr::read;
 
-#[inline]
-pub fn cheney_trace_list(
-    obj: *mut ListCons,
-    from_space: &FromSpace,
-    heap: &mut Heap,
-    schemas: &SchemaRegistry,
-    copied_objects: &mut Vec<CopiedObject>,
-    stats: &mut GcStats,
-) {
-    let cons = unsafe { &mut *obj };
-    cons.keep_across_collection();
-    if cons.head_kind().is_heap() {
-        let head = forward_heap_value(cons.head_value(), from_space, heap, schemas, copied_objects, stats);
-        cons.head = head.raw();
-    }
-
-    let tail_addr = cons.tail_addr();
-    if tail_addr != 0 {
-        let tail = forward_heap_value(
-            AnyValue::heap_ptr(tail_addr as *mut u8, ValueKind::LIST),
-            from_space,
-            heap,
-            schemas,
-            copied_objects,
-            stats,
-        );
-        cons.relocate_tail_for_gc(tail.heap_object_word().expect("forwarded list tail"));
-    }
-}
-
-#[inline]
-pub fn cheney_trace_struct(
-    obj: *mut u8,
-    from_space: &FromSpace,
-    heap: &mut Heap,
-    schemas: &SchemaRegistry,
-    copied_objects: &mut Vec<CopiedObject>,
-    stats: &mut GcStats,
-) {
-    // A struct a collection keeps is shared from then on, as a kept list
-    // cell is: it is older than everything allocated after the collection.
-    unsafe { share_struct(obj) };
-    let schema_id = unsafe { struct_schema_id(obj as *const u8) };
-    let schema = schemas.get(schema_id);
-    for (field, kind_offset) in schema.any_value_fields_with_kind_offsets() {
-        let kind_slot = unsafe { struct_field_kind_slot(obj as *const u8, kind_offset) };
-        let raw_slot = unsafe { struct_field_raw_slot(obj as *const u8, field.offset) };
-        let kind = ValueKind::new(unsafe { read(kind_slot) }).expect("struct field kind");
-        // A field that is not a heap reference is skipped from its kind byte
-        // alone; an empty list is a LIST-kind field whose payload is zero.
-        let raw = unsafe { read(raw_slot) };
-        if !kind.is_heap() || raw == 0 {
-            continue;
-        }
-        let value = AnyValue::heap_ptr(raw as *mut u8, kind);
-        let forwarded = forward_heap_value(value, from_space, heap, schemas, copied_objects, stats);
-        unsafe {
-            write(raw_slot, forwarded.raw());
-            write(kind_slot, forwarded.kind().tag());
+impl Tracer<'_> {
+    /// Scan every object the collection has copied, in copy order, forwarding
+    /// what each one references, until the scan catches up with the copy
+    /// frontier. The roots are forwarded first, so this runs once.
+    pub(in super::super) fn scan(&mut self) {
+        let mut scanned = 0;
+        while let Some(&copied) = self.worklist.get(scanned) {
+            scanned += 1;
+            match copied.kind {
+                ValueKind::LIST => self.trace_list(copied.ptr as *mut ListCons),
+                ValueKind::MAP => self.trace_map(copied.ptr),
+                ValueKind::CLOSURE => self.trace_closure(copied.ptr),
+                ValueKind::STRUCT => self.trace_struct(copied.ptr),
+                ValueKind::BINVIEW => self.trace_binview(copied.ptr),
+                // These hold no heap edge for the scan to forward.
+                ValueKind::BITSTRING | ValueKind::BINREF | ValueKind::RESOURCE => {}
+                kind => panic!("Cheney scan: invalid copied object kind {kind:?}"),
+            }
         }
     }
-}
 
-/// A view's one child edge is its BinRef. Forwarding it copies the BinRef the
-/// first time any view reaches it, and every later view of that buffer in the
-/// same heap finds it already forwarded, so each live BinRef is copied once.
-/// A BinRef an earlier collection kept is not in from-space and stays where it
-/// is.
-#[inline]
-pub fn cheney_trace_binview(
-    obj: *mut u8,
-    from_space: &FromSpace,
-    heap: &mut Heap,
-    schemas: &SchemaRegistry,
-    copied_objects: &mut Vec<CopiedObject>,
-    stats: &mut GcStats,
-) {
-    let view = unsafe { BinView::from_raw(obj) };
-    let binref = AnyValue::decode_tagged_heap_bits(view.binref_word()).expect("a view names its BinRef");
-    let forwarded = forward_heap_value(binref, from_space, heap, schemas, copied_objects, stats);
-    view.binref_word_set(forwarded.heap_object_word().expect("a forwarded BinRef"));
-}
+    #[inline]
+    fn trace_list(&mut self, obj: *mut ListCons) {
+        let cons = unsafe { &mut *obj };
+        cons.keep_across_collection();
+        unsafe { self.forward_slot(&raw mut cons.head, cons.head_kind()) };
+        let tail = self.forward(cons.tail_addr(), ValueKind::LIST);
+        cons.relocate_tail_for_gc(tail);
+    }
 
-#[inline]
-pub fn cheney_trace_map(
-    obj: *mut u8,
-    from_space: &FromSpace,
-    heap: &mut Heap,
-    schemas: &SchemaRegistry,
-    copied_objects: &mut Vec<CopiedObject>,
-    stats: &mut GcStats,
-) {
-    let count = unsafe { map_node_entry_count(obj as *const u8) };
-    let tags = unsafe { map_tag_ptr(obj as *const u8) };
-    let keys = unsafe { map_keys_ptr(obj as *const u8, count) };
-    let values = unsafe { map_values_ptr(obj as *const u8, count) };
-    for i in 0..count {
-        let tag = unsafe { read(tags.add(i)) };
-        let key_kind = map_key_kind(tag);
-        if key_kind.is_heap() {
-            let key = AnyValue::heap_ptr(unsafe { read(keys.add(i)) } as *mut u8, key_kind);
-            let forwarded = forward_heap_value(key, from_space, heap, schemas, copied_objects, stats);
-            unsafe { write(keys.add(i), forwarded.raw()) };
-        }
-        let value_kind = map_value_kind(tag);
-        if value_kind.is_heap() {
-            let value = AnyValue::heap_ptr(unsafe { read(values.add(i)) } as *mut u8, value_kind);
-            let forwarded = forward_heap_value(value, from_space, heap, schemas, copied_objects, stats);
-            unsafe { write(values.add(i), forwarded.raw()) };
+    #[inline]
+    fn trace_struct(&mut self, obj: *mut u8) {
+        // A struct a collection keeps is shared from then on, as a kept list
+        // cell is: it is older than everything allocated after the collection.
+        unsafe { share_struct(obj) };
+        let schema_id = unsafe { struct_schema_id(obj as *const u8) };
+        let schemas = self.schemas;
+        for (field, kind_offset) in schemas.get(schema_id).any_value_fields_with_kind_offsets() {
+            let kind_slot = unsafe { struct_field_kind_slot(obj as *const u8, kind_offset) };
+            let kind = ValueKind::new(unsafe { read(kind_slot) }).expect("struct field kind");
+            unsafe { self.forward_slot(struct_field_raw_slot(obj as *const u8, field.offset), kind) };
         }
     }
-    let children = unsafe { map_node_children_ptr(obj as *const u8) };
-    for i in 0..unsafe { map_node_child_count(obj as *const u8) } {
-        let child = AnyValue::heap_ptr(unsafe { read(children.add(i)) } as *mut u8, ValueKind::MAP);
-        let forwarded = forward_heap_value(child, from_space, heap, schemas, copied_objects, stats);
-        unsafe { write(children.add(i), forwarded.raw()) };
-    }
-}
 
-#[inline]
-pub fn cheney_trace_closure(
-    obj: *mut u8,
-    from_space: &FromSpace,
-    heap: &mut Heap,
-    schemas: &SchemaRegistry,
-    copied_objects: &mut Vec<CopiedObject>,
-    stats: &mut GcStats,
-) {
-    let captured_count = unsafe { closure_captured_count(obj as *const u8) };
-    for idx in 0..captured_count {
-        let value = unsafe { closure_capture_value(obj as *const u8, idx) };
-        if value.kind().is_heap() {
-            let forwarded = forward_heap_value(value, from_space, heap, schemas, copied_objects, stats);
-            unsafe { closure_capture_set(obj as *const u8, idx, forwarded) };
+    /// A view's one child edge is its BinRef. Forwarding it copies the BinRef
+    /// the first time any view reaches it, and every later view of that buffer
+    /// in the same heap finds it already forwarded, so each live BinRef is
+    /// copied once. A BinRef an earlier collection kept is not in from-space
+    /// and stays where it is.
+    #[inline]
+    fn trace_binview(&mut self, obj: *mut u8) {
+        let view = unsafe { BinView::from_raw(obj) };
+        view.binref_word_set(self.forward(view.binref_word(), ValueKind::BINREF));
+    }
+
+    #[inline]
+    fn trace_map(&mut self, obj: *mut u8) {
+        let count = unsafe { map_node_entry_count(obj as *const u8) };
+        let tags = unsafe { map_tag_ptr(obj as *const u8) };
+        let keys = unsafe { map_keys_ptr(obj as *const u8, count) };
+        let values = unsafe { map_values_ptr(obj as *const u8, count) };
+        for i in 0..count {
+            let tag = unsafe { read(tags.add(i)) };
+            unsafe {
+                self.forward_slot(keys.add(i), map_key_kind(tag));
+                self.forward_slot(values.add(i), map_value_kind(tag));
+            }
+        }
+        let children = unsafe { map_node_children_ptr(obj as *const u8) };
+        for i in 0..unsafe { map_node_child_count(obj as *const u8) } {
+            unsafe { self.forward_slot(children.add(i), ValueKind::MAP) };
+        }
+    }
+
+    #[inline]
+    fn trace_closure(&mut self, obj: *mut u8) {
+        for idx in 0..unsafe { closure_captured_count(obj as *const u8) } {
+            let (_, kind) = unsafe { closure_capture_raw_kind(obj as *const u8, idx) };
+            unsafe { self.forward_slot(closure_capture_raw_slot(obj as *const u8, idx), kind) };
         }
     }
 }
