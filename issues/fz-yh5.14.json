@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Callables",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-24T17:54:26Z",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": ":erlang.f resolves to the Erlang module, and lib/erlang.fz gains is_function/1,2",
   "type": "bug",
-  "updated_at": "2026-11-24T17:54:26Z"
+  "updated_at": "2026-11-24T17:54:28Z"
 }
