@@ -17,7 +17,7 @@ pub(in super::super) struct Tracer<'a> {
     pub(super) heap: &'a mut Heap,
     pub(super) schemas: &'a SchemaRegistry,
     pub(super) worklist: Vec<CopiedObject>,
-    pub(super) stats: GcStats,
+    pub(super) stats: &'a mut GcStats,
 }
 
 impl<'a> Tracer<'a> {
@@ -25,20 +25,26 @@ impl<'a> Tracer<'a> {
         from_space: FromSpace,
         heap: &'a mut Heap,
         schemas: &'a SchemaRegistry,
-        stats: GcStats,
+        stats: &'a mut GcStats,
     ) -> Self {
+        let worklist = std::mem::take(&mut heap.worklist);
         Self {
             from_space,
             heap,
             schemas,
-            worklist: Vec::new(),
+            worklist,
             stats,
         }
     }
 
-    /// The collection's stats and how many objects it kept.
-    pub(in super::super) fn finish(self) -> (GcStats, u64) {
-        (self.stats, self.worklist.len() as u64)
+    /// How many objects the collection kept. The worklist goes back to the heap
+    /// emptied, with the capacity it grew to.
+    pub(in super::super) fn finish(self) -> u64 {
+        let Self { heap, mut worklist, .. } = self;
+        let kept = worklist.len() as u64;
+        worklist.clear();
+        heap.worklist = worklist;
+        kept
     }
 
     /// Forward a root. A boxed scalar root is the one place a scalar box is

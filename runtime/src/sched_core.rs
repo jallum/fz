@@ -21,7 +21,7 @@
 
 use crate::any_value::AnyValue;
 use crate::clock::Clock;
-use crate::heap::{GcStats, pool_footprint};
+use crate::heap::Collected;
 use crate::process::{Collection, CollectionBoundary, Disposition, PidId, Process, ProcessState};
 use crate::scheduler_hooks::{HaltHook, TimerCancelHook, TimerScheduleHook};
 use crate::telemetry::{RuntimeEvent, TimerArmed, TimerCancelled, TimerFired};
@@ -153,10 +153,10 @@ pub trait Scheduler {
     fn run_destructor(&mut self, process: &mut Process, closure: u64, payload: u64);
 
     /// Collect `process`'s heap. A driver that holds heap values of `process`
-    /// outside it, across the boundary, gathers them as the `transient` roots
-    /// of [`Process::collect`] and writes the forwarded values back. The
+    /// outside it, across the boundary, passes them as the `transient` roots
+    /// of [`Process::collect`], which forwards them where they are held. The
     /// default holds none.
-    fn collect_heap(&mut self, process: &mut Process) -> GcStats {
+    fn collect_heap<'p>(&mut self, process: &'p mut Process) -> Collected<'p> {
         process.collect(&mut [])
     }
 }
@@ -181,10 +181,9 @@ pub fn end_quantum<S: Scheduler + ?Sized>(scheduler: &mut S, process: &mut Proce
         let collection = Collection {
             pid: process.pid,
             boundary,
-            stats: scheduler.collect_heap(process),
-            footprint: pool_footprint(),
         };
-        scheduler.observe(RuntimeEvent::Gc(&collection));
+        let collected = scheduler.collect_heap(process);
+        scheduler.observe(RuntimeEvent::Gc(collection, collected.stats(), collected.heap()));
     }
     process.clear_yield_reasons();
     if disposition == Disposition::Exited {

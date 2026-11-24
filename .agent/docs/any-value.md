@@ -451,7 +451,7 @@ the from-space range walk as a cross-check (`FromSpace::assert_classified`,
 an old block a minor collection leaves, a tagged one must lie in no heap block,
 and none may lie in to-space. No allocation or mutator path tests an address.
 
-One `Tracer` (from-space, heap, schemas, worklist of copied objects, stats) is
+One `Tracer` (from-space, heap, schemas, the heap's worklist of copied objects, the caller's stats slot) is
 the collection's context, and `Tracer::forward(word, kind)` is its one
 forwarding primitive. The pair is a stored word (address and literal bit) and
 its kind. A non-heap kind, a null address and an object `moves` rejects come

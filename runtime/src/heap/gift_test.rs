@@ -399,7 +399,7 @@ fn thousands_of_small_unread_gifts_do_not_grow_the_receivers_tip_after_gc() {
         "the 128000 young bytes are far past the budget floor"
     );
     let mut roots = [heap_ref(list)];
-    let stats = receiver.collect(&mut roots);
+    let stats = receiver.collect_stats(&mut roots);
 
     assert_eq!(stats.generation, Generation::Minor, "the gifts raised no old bytes");
     assert_eq!(stats.received_bytes, adopted_fill as u64);
@@ -523,7 +523,7 @@ fn a_grafted_list_is_readable_and_survives_the_receivers_gc() {
     receiver.graft(segment);
     assert!(receiver.contains_heap_addr(list_addr_from_tagged(bits).expect("addr")));
     let mut roots = [heap_ref(bits)];
-    let stats = receiver.collect(&mut roots);
+    let stats = receiver.collect_stats(&mut roots);
     let kept = roots[0].heap_object_word().expect("kept list");
     assert_eq!(stats.generation, Generation::Minor);
     assert_ne!(kept, bits, "a gift is young: the minor collection copied the live cell");
@@ -560,7 +560,7 @@ fn receiver_with_live_allocation_since_a_small_collection(reg: &Rc<RefCell<Schem
         live = alloc_int_list_cons(&mut receiver, i, live);
     }
     let mut roots = [heap_ref(live)];
-    receiver.collect(&mut roots);
+    receiver.collect_stats(&mut roots);
     let mut live = roots[0].heap_object_word().expect("live list");
     for i in 0..5000 {
         live = alloc_int_list_cons(&mut receiver, i, live);
@@ -596,7 +596,7 @@ fn gifts_leave_the_baseline_alone_and_the_heaps_blocks_hold_every_live_byte() {
         "the gifts' 15360 bytes join the 80000 allocated bytes past the baseline"
     );
     let mut roots = [heap_ref(live)];
-    let stats = receiver.collect(&mut roots);
+    let stats = receiver.collect_stats(&mut roots);
 
     assert_eq!(
         receiver.bytes_used() as u64,
@@ -612,7 +612,7 @@ fn a_direct_collection_after_a_small_one_holds_every_live_byte_without_gifts() {
     let reg = fresh_registry();
     let (mut receiver, live) = receiver_with_live_allocation_since_a_small_collection(&reg);
     let mut roots = [heap_ref(live)];
-    let stats = receiver.collect(&mut roots);
+    let stats = receiver.collect_stats(&mut roots);
 
     assert_eq!(receiver.bytes_used() as u64, stats.copied_bytes);
     assert_eq!(stats.live_bytes, 2000 + 5000 * 16, "every own live byte survived");
@@ -690,7 +690,7 @@ fn a_dead_gift_is_reclaimed_by_a_minor_collection() {
     let gift_addr = list_addr_from_tagged(bits).expect("addr");
     assert!(receiver.contains_heap_addr(gift_addr));
 
-    let stats = receiver.collect(&mut []);
+    let stats = receiver.collect_stats(&mut []);
 
     assert_eq!(stats.generation, Generation::Minor);
     assert_eq!(stats.received_bytes, 16);
@@ -716,14 +716,14 @@ fn a_live_gift_is_copied_once_and_then_stays_in_place() {
     receiver.graft(segment);
     let mut roots = [heap_ref(bits)];
 
-    let first = receiver.collect(&mut roots);
+    let first = receiver.collect_stats(&mut roots);
     let after_first = roots[0].heap_object_word().expect("kept list");
 
     assert_eq!(first.generation, Generation::Minor);
     assert_eq!(first.copied_bytes, 16, "the cell was copied once");
     assert_ne!(after_first, bits);
 
-    let second = receiver.collect(&mut roots);
+    let second = receiver.collect_stats(&mut roots);
 
     assert_eq!(second.generation, Generation::Minor);
     assert_eq!(second.copied_bytes, 0, "an old cell is not copied again");
@@ -741,11 +741,11 @@ fn a_collection_reports_the_bytes_grafted_since_the_previous_one() {
     receiver.graft(gift_of_cons_cells(&mut sender, 5));
     let _ = alloc_int_list_cons(&mut receiver, 1, EMPTY_LIST);
 
-    let first = receiver.collect(&mut []);
+    let first = receiver.collect_stats(&mut []);
     assert_eq!(first.received_bytes, 15 * 16);
     assert_eq!(first.young_bytes, 15 * 16 + 16);
 
-    let second = receiver.collect(&mut []);
+    let second = receiver.collect_stats(&mut []);
     assert_eq!(second.received_bytes, 0);
 }
 
@@ -778,4 +778,66 @@ fn a_gift_carries_binary_and_resource_stubs_on_one_chain() {
     receiver.graft(segment);
     assert_eq!(chain_from(receiver.off_heap_head), vec![resource, binary]);
     assert_eq!(receiver.off_heap_old_head, 0);
+}
+
+/// The collection budget as the formula states it, from the heap's facts.
+fn due_by_the_budget_formula(heap: &Heap) -> bool {
+    let budget = heap
+        .live_baseline
+        .min(SIZE_TABLE[SIZE_TABLE.len() - 1])
+        .max(BUDGET_FLOOR);
+    heap.young_bytes() >= budget || heap.binary_budget.is_due()
+}
+
+/// The one compare at a park answers what the budget formula answers, after
+/// each thing that changes its inputs: allocation that climbs to a new tip, a
+/// graft, a shared binary that makes the binary budget due, and a collection.
+#[test]
+fn the_park_check_is_one_compare_that_agrees_with_the_budget_across_a_park_a_graft_and_a_binary() {
+    let mut sender = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let mut checked = 0;
+    let mut check = |heap: &Heap, what: &str| {
+        assert_eq!(heap.should_gc(), due_by_the_budget_formula(heap), "{what}");
+        checked += 1;
+    };
+    check(&heap, "a new heap");
+
+    while heap.young_blocks.is_empty() {
+        let _ = heap.alloc(16);
+        check(&heap, "allocation that has not climbed");
+    }
+    check(&heap, "after the tip climbed and parked a block");
+    assert!(!heap.should_gc(), "a parked block under the floor is not due");
+
+    for i in 0..300 {
+        let (segment, _) = gift_one_cons(&mut sender, i);
+        heap.graft(segment);
+        check(&heap, "after a graft");
+    }
+    assert!(heap.should_gc(), "the grafts took the young bytes past the floor");
+
+    let mut roots: [AnyValueRef; 0] = [];
+    heap.collect_stats(&mut roots);
+    check(&heap, "after a collection");
+    assert!(!heap.should_gc(), "nothing was live, so nothing is due");
+    assert!(heap.collect_room > 0, "a collection gives the tip its budget back");
+
+    for _ in 0..3 {
+        let _ = heap.alloc_bitstring_with(100_000, 800_000, |dest| dest.fill(std::mem::MaybeUninit::new(7)));
+        check(&heap, "after a shared binary");
+    }
+    assert!(heap.binary_budget.is_due());
+    assert_eq!(
+        heap.collect_room, 0,
+        "a due binary budget leaves the tip no room, so the next check collects"
+    );
+    assert!(heap.should_gc());
+
+    let _ = heap.alloc(16);
+    check(&heap, "an allocation while the binary budget is due");
+    heap.collect_stats(&mut roots);
+    check(&heap, "after the collection the binary budget asked for");
+    assert!(!heap.should_gc());
+    assert!(checked > 300);
 }

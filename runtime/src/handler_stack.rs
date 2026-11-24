@@ -111,24 +111,16 @@ impl HandlerStack {
         self.records().count()
     }
 
-    /// Every heap value a compiled record captures, innermost first, for the
-    /// collector to forward. [`Self::set_captures`] writes the forwarded values
-    /// back in the same order.
-    pub fn captures(&self) -> Vec<AnyValueRef> {
-        let mut values = Vec::new();
+    /// Hand every heap value a compiled record captures, innermost first, to
+    /// `forward`, which a collection uses to move it: each capture holds the
+    /// value `forward` leaves in it.
+    pub fn forward_captures(&mut self, mut forward: impl FnMut(&mut AnyValueRef)) {
         self.for_each_heap_capture(|image, idx| {
             // SAFETY: `image` is a live closure image and `idx` one of its captures.
             let word = unsafe { closure_capture_ref_word(image, idx) };
-            values.push(AnyValueRef::from_raw_word(word).expect("a heap capture is a value ref"));
-        });
-        values
-    }
-
-    /// Write back the values [`Self::captures`] gathered, once forwarded.
-    pub fn set_captures(&mut self, forwarded: &mut impl Iterator<Item = AnyValueRef>) {
-        self.for_each_heap_capture(|image, idx| {
-            let value = forwarded.next().expect("one forwarded value per capture");
-            // SAFETY: `image` is a live closure image the stack owns and `idx` one of its captures.
+            let mut value = AnyValueRef::from_raw_word(word).expect("a heap capture is a value ref");
+            forward(&mut value);
+            // SAFETY: `image` is a live closure image the stack owns.
             unsafe { closure_capture_set_ref_word(image, idx, value.raw_word()) };
         });
     }

@@ -353,16 +353,23 @@ fixtures have the same probes on all three paths.
 ## `fz.runtime.gc`
 
 `sched_core::end_quantum` (`runtime/src/sched_core.rs`) collects the process's
-heap when `Heap::should_gc` holds and observes the `Collection` it performed as
-`RuntimeEvent::Gc`, right after collecting and before any destructor runs. How the quantum ended is read off the process
+heap when `Heap::should_gc` holds and observes the collection it performed as
+`RuntimeEvent::Gc`, right after collecting and before any destructor runs. The
+collection's `Collected` is alive for the observation and dropped after it, so the
+event reads the from-space blocks as they were. How the quantum ended is read off the process
 (`Process::quantum_end`, a `Disposition`):
 
 ```text
 raw event:    fz.runtime.gc
-signature:    (&Collection)
+signature:    (&Collection, &GcStats, &Heap)
 ```
 
-`Collection` is `{ pid, boundary: CollectionBoundary, stats: GcStats, footprint }`; a halting
+`Collection` is `{ pid, boundary: CollectionBoundary }`. The `GcStats` is the
+slot `Process::gc_stats`, which `Heap::collect` writes once; the `Heap` is the
+one whose blocks the collection left (`Heap::collected_blocks`). The runtime
+computes nothing only to report it: the writer (`write_collection` in
+`runtime/src/telemetry.rs`) computes the block counts and capacities from those
+blocks, and reads the pool itself. A halting
 process is not collected, so the boundary of a collection is `Yield` or `Park`.
 `write_line` renders `pid`, the `boundary` as `"yield"` or `"park"` and the
 `generation` as `"minor"` or `"major"`, then these `GcStats` fields as numbers.
@@ -397,13 +404,16 @@ major collection's from-space is every block (`Heap::next_generation`):
   `young_bytes >= young_budget`, or by both;
 - `from_space_capacity_bytes`: capacity of every block the pass collected: the
   young blocks (the tip and every young parked block) for a minor pass, every
-  block for a major pass;
-- `blocks_released`: from-space blocks the pass released;
+  block for a major pass. The writer sums it over `Heap::from_blocks`, which the
+  `Collected` holds until it is dropped (`CollectedBlocks::from_space_capacity_bytes`);
+- `blocks_released`: from-space blocks the pass releases when its `Collected`
+  is dropped (`CollectedBlocks::blocks_released`);
 - `to_space_guess_bytes`: capacity of the to-space block the pass started with,
   its guess at how many bytes it would copy;
 - `to_space_capacity_bytes`: capacity of every block the copy filled, the guess
-  block and its overflow blocks. Less `copied_bytes`, the room the pass left
-  unused in old blocks;
+  block and its overflow blocks: the old blocks from `Heap::retired_from` on,
+  summed by the writer (`CollectedBlocks::to_space_capacity_bytes`). Less
+  `copied_bytes`, the room the pass left unused in old blocks;
 - `blocks_after`: old blocks the heap holds once the pass finished, every block
   holding data a collection kept or a gift brought; the fresh empty tip is not
   counted.
@@ -411,8 +421,11 @@ major collection's from-space is every block (`Heap::next_generation`):
   stub on a chain the pass examines is visited once by the sweep (a view is not on a chain): the young chain for
   a minor pass, the young and old chains for a major pass. Summed by `generation`, it
   says whether the sweep's cost lies in minors or in majors.
-- `in_use_bytes` and `idle_bytes`: the thread's memory when the pass finished
-  (`Collection.footprint`, from `heap::pool_footprint`), across every process.
+- `in_use_bytes` and `idle_bytes`: the thread's memory when the pass finished,
+  across every process. The writer reads `heap::pool_footprint` while the
+  from-space is still held and reports the footprint once it is released
+  (`CollectedBlocks::footprint_once_released`): the from-space's capacity is
+  not in use, and the pooled share of it is idle.
   In-use bytes are the capacity of every block the pool has handed out and not
   had returned (pooled and exact blocks, heaps and gift segments) plus the bytes
   of every off-heap binary block not yet freed (`bits::shared_bin_alloc_with`
@@ -470,7 +483,7 @@ the park after the receive that took it; `run`: thirteen collections, the parent
 yields while it builds the list, each park that follows a ball taken, and the
 parent's later yields). The
 run-ended equality is pinned for both fixtures on `run`, `interp` and `build`.
-`sched_core_test.rs` pins the `Collection` that `end_quantum` observes, that a
+`sched_core_test.rs` pins the collection that `end_quantum` observes, that a
 halting process is not collected, and the exit it observes and the destructors it dispatches.
 
 ## Built binaries
@@ -500,8 +513,12 @@ sequence, collections and per-process `dtors_dispatched` equal `run`'s.
 The raise route (`fz_panic`, `fz_throw`, `fz_exit`, `fz_reraise`, `fz_raise_undefined_function`) reports every raise before deciding
 where it goes, through the
 `ExecCtx.raise` hook; the JIT runtime and the interpreter's scheduler adapter
-emit `RuntimeEvent::Raise` with a `Raise { kind, exception, handler_depth,
-stack_bytes }` (`runtime/src/telemetry.rs`): the kind's name (`error`, `throw`
+emit `RuntimeEvent::Raise` with a `Raise<'a> { kind, exception, handler_depth,
+stack_bytes }` (`runtime/src/telemetry.rs`), whose `kind` and `exception` borrow
+the hook's bytes as `&[u8]`; the writer decodes them as UTF-8, lossily. The typed
+raw event hosts attach to carries a `RaiseRecord`, the same four fields with the
+text owned, made only when `Telemetry::is_raw_event_enabled` says a handler listens,
+so a raise nobody listens to allocates nothing. The kind's name (`error`, `throw`
 or `exit`), the exception's module name (empty when the raised value is not an
 exception, as it never is for a throw or an exit), and how many handlers could
 take it. Depth zero is an uncaught raise. `stack_bytes` is the bytes of machine

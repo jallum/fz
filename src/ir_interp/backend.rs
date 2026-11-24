@@ -32,7 +32,7 @@ use fz_runtime::any_value::{
 use fz_runtime::delivery::Delivery;
 use fz_runtime::exec_ctx::{Argv, ExecCtx, NO_ARGV, timer_cancel, timer_schedule};
 use fz_runtime::heap::deep_copy_any_value_ref;
-use fz_runtime::heap::{GcStats, Schema};
+use fz_runtime::heap::{Collected, Schema};
 use fz_runtime::ir_runtime::{
     fz_bs_begin, fz_bs_finalize, fz_bs_write_field_ref, fz_bs_write_word, fz_list_reuse_or_cons_parts,
     fz_map_dest_begin, fz_map_dest_begin_update, fz_map_dest_freeze, fz_map_dest_publish, fz_map_dest_put,
@@ -538,22 +538,16 @@ impl<T: Telemetry + ?Sized> Scheduler for BackendSchedulerAdapter<T> {
     /// interpreter-held value of a process is consumed before its quantum
     /// ends, so a process that is not parked holds nothing across the
     /// boundary.
-    fn collect_heap(&mut self, process: &mut Process) -> GcStats {
+    fn collect_heap<'p>(&mut self, process: &'p mut Process) -> Collected<'p> {
         let runtime = unsafe { &mut *self.runtime };
         assert!(
             !runtime.backend_resume.contains_key(&process.pid),
             "an interpreted quantum ends with its resume consumed"
         );
-        let Some(park) = runtime.backend_parked.get_mut(&process.pid) else {
-            return process.collect(&mut []);
-        };
-        let mut held = park.heap_refs_mut();
-        let mut roots: Vec<AnyValueRef> = held.iter().map(|held| **held).collect();
-        let stats = process.collect(&mut roots);
-        for (held, forwarded) in held.iter_mut().zip(roots) {
-            **held = forwarded;
+        match runtime.backend_parked.get_mut(&process.pid) {
+            Some(park) => process.collect(park),
+            None => process.collect(&mut []),
         }
-        stats
     }
 
     /// Interpret the destructor closure on `process`. A failure is recorded

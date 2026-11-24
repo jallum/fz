@@ -342,7 +342,7 @@ fn gc_preserves_a_suffixs_offset() {
     let tail = window_of_new_buffer(&mut h, handle, 70, (200 - 70) * 8, StubSite::FilledBuffer);
     let mut roots =
         [crate::any_value::AnyValueRef::from_heap_object(ValueKind::BINVIEW, tail.as_raw()).expect("binview ref")];
-    h.collect(&mut roots);
+    h.collect_stats(&mut roots);
     let moved = unsafe { BinView::from_raw(roots[0].binview_addr().expect("survivor")) };
     assert_eq!(moved.byte_offset(), 70);
     assert_eq!(moved.bit_len(), (200 - 70) * 8);
@@ -525,7 +525,7 @@ fn gc_preserves_a_middle_slices_length() {
     let middle = window_of_new_buffer(&mut h, handle, 70, 100 * 8, StubSite::FilledBuffer);
     let mut roots =
         [crate::any_value::AnyValueRef::from_heap_object(ValueKind::BINVIEW, middle.as_raw()).expect("binview ref")];
-    h.collect(&mut roots);
+    h.collect_stats(&mut roots);
     let moved = unsafe { BinView::from_raw(roots[0].binview_addr().expect("survivor")) };
     assert_eq!((moved.byte_offset(), moved.bytes_len()), (70, 100));
     assert_eq!(unsafe { from_raw_parts(moved.bytes_ptr(), 100) }, &bytes[70..170]);

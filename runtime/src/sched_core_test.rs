@@ -4,8 +4,9 @@ use crate::any_value::{
     list_addr_from_tagged,
 };
 use crate::clock::Clock;
+use crate::heap::GcStats;
 use crate::heap::{Heap, SchemaRegistry};
-use crate::process::{Collection, CollectionBoundary, Disposition, ProcessState};
+use crate::process::{CollectionBoundary, Disposition, ProcessState};
 use crate::resource::{ResourceHandle, alloc_resource};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -19,6 +20,14 @@ enum TimerEvent {
     Cancelled(TimerCancelled),
 }
 
+/// A collection as a scheduler observed it: who, at which boundary, and what
+/// it measured.
+#[derive(Clone, Copy, Debug)]
+struct ObservedCollection {
+    boundary: CollectionBoundary,
+    stats: GcStats,
+}
+
 /// A scheduler whose only behaviour is to record what the shared loop asks of
 /// it. It keeps a state word per pid so the core has something to transition.
 struct Recording {
@@ -28,7 +37,7 @@ struct Recording {
     woken: Vec<(PidId, TimerId)>,
     slept: Vec<Duration>,
     timer_events: Vec<TimerEvent>,
-    collections: Vec<Collection>,
+    collections: Vec<ObservedCollection>,
     /// The pid and `dtors_dispatched` of each process at the moment its exit
     /// was observed.
     exits: Vec<(PidId, u64)>,
@@ -77,7 +86,10 @@ impl Scheduler for Recording {
     fn observe(&mut self, event: RuntimeEvent<'_>) {
         match event {
             RuntimeEvent::SchedulerSlept(wait) => self.slept.push(wait),
-            RuntimeEvent::Gc(collection) => self.collections.push(*collection),
+            RuntimeEvent::Gc(collection, stats, _) => self.collections.push(ObservedCollection {
+                boundary: collection.boundary,
+                stats: *stats,
+            }),
             RuntimeEvent::ProcessExited(process) => self.exits.push((process.pid, process.dtors_dispatched)),
             RuntimeEvent::TimerArmed(armed) => self.timer_events.push(TimerEvent::Armed(armed)),
             RuntimeEvent::TimerFired(fired) => self.timer_events.push(TimerEvent::Fired(fired)),
@@ -928,7 +940,7 @@ fn the_binary_budget_follows_the_binary_bytes_the_heap_holds() {
     });
     let mut roots = [kept.ref_word()];
 
-    process.heap.collect(&mut roots);
+    process.heap.collect_stats(&mut roots);
 
     assert_eq!(process.heap.binary_budget.held_binary_bytes(), 2 * 1024 * 1024);
     assert_eq!(process.heap.binary_budget.budget(), 2 * 1024 * 1024);

@@ -5,8 +5,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::compiler2::transport::BoundValue;
-use fz_runtime::any_value::AnyValueRef;
-use fz_runtime::heap::{Schema, SchemaRegistry};
+use fz_runtime::heap::{RootForwarder, Roots, Schema, SchemaRegistry};
 use fz_runtime::process::{AtomName, DEFAULT_REDUCTIONS_PER_QUANTUM, Node, Process, ProcessState};
 use fz_runtime::sched_core::SchedulingCore;
 use fz_runtime::timer::TimerId;
@@ -113,22 +112,25 @@ struct BackendParkRecord {
     after_timer: Option<TimerId>,
 }
 
-impl BackendParkRecord {
-    /// Every heap ref this parked receive holds: its environment and each
-    /// continuation's. They are the roots a collection of the parked process
-    /// forwards in place.
-    fn heap_refs_mut(&mut self) -> Vec<&mut AnyValueRef> {
+/// A parked receive's heap refs are the roots a collection of the parked
+/// process forwards in place: its environment's and each continuation's.
+impl Roots for BackendParkRecord {
+    fn forward_into(&mut self, forwarder: &mut RootForwarder<'_, '_>) {
+        let mut forward = |word: &mut AnyValue| {
+            if let Some(heap_ref) = word.heap_ref_mut() {
+                forwarder.forward(heap_ref);
+            }
+        };
         let continuation_envs = self.continuations.iter_mut().map(|frame| &mut frame.env);
-        std::iter::once(&mut self.env)
-            .chain(continuation_envs)
-            .flat_map(|env| env.values_mut())
-            .flat_map(|value| match value {
-                BoundValue::Absent => Vec::new(),
-                BoundValue::Runtime(word) => vec![word],
-                BoundValue::Transport { lanes, .. } => lanes.iter_mut().collect(),
-            })
-            .filter_map(AnyValue::heap_ref_mut)
-            .collect()
+        for env in std::iter::once(&mut self.env).chain(continuation_envs) {
+            for value in env.values_mut() {
+                match value {
+                    BoundValue::Absent => {}
+                    BoundValue::Runtime(word) => forward(word),
+                    BoundValue::Transport { lanes, .. } => lanes.iter_mut().for_each(&mut forward),
+                }
+            }
+        }
     }
 }
 

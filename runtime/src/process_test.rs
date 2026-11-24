@@ -5,7 +5,7 @@ use crate::any_value::{
 };
 use crate::handler_stack::Innermost;
 use crate::handler_stack::handler_stack_test::push_template;
-use crate::heap::{Heap, SchemaRegistry};
+use crate::heap::{GcStats, Heap, Roots, SchemaRegistry};
 use crate::park::park_test::{frame_of, leaked_site};
 use crate::park::{ParkRecord, ReceiveClause};
 use std::cell::RefCell;
@@ -166,7 +166,7 @@ fn collect_forwards_every_root_a_parked_process_holds() {
         transient[0].list_addr().unwrap(),
     );
 
-    let stats = process.collect(&mut transient);
+    let stats = process.collect_stats(&mut transient);
 
     let delivery = process.delivery.lock();
     let park = delivery.park().expect("still parked");
@@ -237,7 +237,7 @@ fn collect_forwards_what_every_compiled_handler_captures() {
     let image = push_template(&mut process.handlers, template.closure_addr().unwrap());
     process.push_interpreter_handler();
 
-    let stats = process.collect(&mut []);
+    let stats = process.collect_stats(&mut []);
 
     assert_eq!(process.handlers.depth(), 2, "both records keep their places");
     let moved = AnyValueRef::from_heap_object(ValueKind::CLOSURE, image).unwrap();
@@ -258,7 +258,7 @@ fn collect_roots_only_what_the_process_holds() {
     let runnable = closure_capturing(&mut process, capture);
     process.set_runnable_closure(runnable);
 
-    let running = process.collect(&mut []);
+    let running = process.collect_stats(&mut []);
     assert_eq!(
         running.copied_objects, 2,
         "the runnable closure and its capture are everything the collection moves"
@@ -271,7 +271,7 @@ fn collect_roots_only_what_the_process_holds() {
     let pinned = int_list(&mut process.heap, 8);
     let body_capture = int_list(&mut process.heap, 9);
     park_on(&mut process, body_capture, pinned);
-    let parked = process.collect(&mut []);
+    let parked = process.collect_stats(&mut []);
     assert_eq!(
         parked.copied_objects, 3,
         "the frame, its capture and its pinned value move; the runnable closure is already kept"
@@ -412,7 +412,7 @@ fn collect_forwards_a_delivered_handler() {
     let handler = closure_capturing(&mut process, capture);
     process.deliver_handler(handler);
 
-    let stats = process.collect(&mut []);
+    let stats = process.collect_stats(&mut []);
 
     let moved = process.delivered.expect("the handler stays delivered").as_ref();
     assert_ne!(moved, handler);
@@ -488,7 +488,7 @@ fn a_collection_leaves_a_static_closure_in_place_and_a_deep_copy_shares_it() {
     let mut process = Process::with_node(Rc::clone(&node), Rc::new(RefCell::new(SchemaRegistry::new())), 1, 1000);
 
     let mut roots = [word];
-    process.heap.collect(&mut roots);
+    process.heap.collect_stats(&mut roots);
     assert_eq!(roots[0].raw_word(), word.raw_word(), "a collection does not move it");
 
     let mut receiver = Process::with_node(node, Rc::new(RefCell::new(SchemaRegistry::new())), 2, 1000);
@@ -524,5 +524,13 @@ fn atoms_order_by_name_within_and_beyond_their_first_eight_bytes() {
                 "{left} vs {right}"
             );
         }
+    }
+}
+
+impl Process {
+    /// Collect and keep what the collection measured, releasing its from-space.
+    pub(crate) fn collect_stats(&mut self, transient: &mut (impl Roots + ?Sized)) -> GcStats {
+        let collected = self.collect(transient);
+        *collected.stats()
     }
 }

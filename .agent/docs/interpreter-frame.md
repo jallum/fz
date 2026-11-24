@@ -54,7 +54,7 @@ captures. `Frame` is not `Clone`; no path copies a whole frame. A raise pops con
 and enters the handler entry in that frame with the raise's kind, value and
 exception name as its parameters.
 
-The trim is load-bearing for collection. `BackendParkRecord::heap_refs_mut` roots
+The trim is load-bearing for collection. `BackendParkRecord`, as a `Roots`, forwards
 every value in a parked process's frame and in each of its continuation frames,
 so a dead slot left in a frame keeps its heap value alive across a park. The
 trimmed frame roots exactly the target entries' captures.

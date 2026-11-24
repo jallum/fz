@@ -45,7 +45,7 @@ quanta through a self tail call beside a second process.
 - **`Process`** (`runtime/src/process.rs`) owns the budget cell, cumulative
   reduction counters, and transient per-quantum yield reason bits. Its budget
   accounting methods are `reset_reduction_budget` and `finish_yield_report`.
-  `Process::collect` is the one place a process's roots are assembled (see
+  `Process::collect` is the one place a process's roots are named (see
   "Accounting at the boundary").
 - **`Heap`** (`runtime/src/heap`) owns allocation, block growth, and
   `should_gc`, a pure function of the heap's state: the young bytes, those
@@ -61,10 +61,20 @@ quanta through a self tail call beside a second process.
   (`Heap::graft`); `parked_fill` is the running sum of the fill of the parked
   ones, so `young_bytes` is the tip's fill plus `parked_fill`. Blocks a
   collection filled with survivors are old (`old_blocks`). Every block counts by
-  fill. `should_gc` is also due when the shared
-  binary bytes made since the last collection (`binary_budget.young_binary_bytes()`)
-  reach the bytes of binary buffers the heap still holds, at least 256 KiB
-  (`BinaryBudget` in `runtime/src/heap/binary_budget.rs`). A process allocating a
+  fill. `should_gc` is one compare, `bump_top >= collect_at`: `collect_at` is
+  the bump pointer at which the young bytes reach the budget: the tip's start
+  plus `collect_room`, the bytes the tip may still take. A collection sets
+  `collect_room` from the budget (`reset_collect_room`, in `install_fresh_tip`),
+  each `park` (which also serves a graft) lowers it by the parked fill, and
+  `install_block` (which also serves a gift window) only adds it to the new
+  tip's start; compiled code never touches either and moves only `bump_top`.
+  `collect_room` is zero while the shared binary bytes made since the last
+  collection (`binary_budget.young_binary_bytes()`) have reached the bytes of
+  binary buffers the heap still holds, at least 256 KiB (`BinaryBudget` in
+  `runtime/src/heap/binary_budget.rs`), so the same compare answers the binary
+  rule: `Heap::record_binary_made` zeroes it as the budget is reached. In debug
+  builds `should_gc` asserts that the compare equals the formula it replaces,
+  `young_bytes() >= collection_budget() || binary_budget.is_due()`. A process allocating a
   shared binary through `Process::alloc_bitstring`, `alloc_bitstring_with` or
   `alloc_concatenation` that reaches that budget sets `reductions_remaining` to
   zero, so its quantum ends at the allocation and the boundary collects; an
@@ -120,7 +130,8 @@ allocation        bump_top += size
                     allocate a larger block
                     move old current block to young_blocks
 
-boundary          if heap.should_gc():   (young_bytes >= max(live_baseline, BUDGET_FLOOR)
+boundary          if heap.should_gc():   (bump_top >= collect_at, which is
+                                          young_bytes >= max(live_baseline, BUDGET_FLOOR)
                                           or young_binary_bytes >= binary_budget)
                     Process::collect
                   clear yield_reasons
@@ -237,10 +248,12 @@ records the signed remaining budget reported by the yielding back edge, derives
 how far past budget the process ran before reaching a back edge.
 
 `needs_boundary_gc()` is true when `heap.should_gc()` holds. When it fires,
-`Process::collect` runs `Heap::collect` over one root slice that it builds from
-the process: the runnable continuation closure; the park record's frame; a delivered handler; the handler captures; and any transient values the
-caller passes. Each slot holds its forwarded value afterwards and is written
-back to where it came from. The decision is made at scheduler-quantum
+`Process::collect` runs `Heap::collect` over the process's roots, forwarded where
+they live (`ProcessRoots`, a `Roots`): the runnable continuation closure; the park
+record's frame; a delivered handler; the handler captures; and any transient
+values the caller passes as a `Roots`. No list of roots is built; each slot holds
+its forwarded value when the collection returns, and the statistics are in
+`Process::gc_stats`. The decision is made at scheduler-quantum
 boundaries, never per back edge. Gifts waiting in the delivery in-queue and
 messages waiting in the mailbox are not roots: their blocks join the heap only
 when grafted, and every reference in a gift points into its own segment.

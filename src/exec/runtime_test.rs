@@ -13,11 +13,11 @@ enum Door {
 }
 
 use super::{ExitRecord, ProcessExitCapture};
-use fz_runtime::telemetry::{RAISE, Raise};
+use fz_runtime::telemetry::{RAISE, RaiseRecord};
 
 /// Runs `source` through `door` and returns every raise the runtime reported
 /// with the main process's exit record.
-fn raises_while_running(source: &str, door: Door) -> (Vec<Raise>, ExitRecord) {
+fn raises_while_running(source: &str, door: Door) -> (Vec<RaiseRecord>, ExitRecord) {
     let (raises, exit, ran) = observe_run(source, door);
     ran.unwrap_or_else(|error| panic!("raise fixture should run: {error}"));
     (raises, exit)
@@ -25,11 +25,11 @@ fn raises_while_running(source: &str, door: Door) -> (Vec<Raise>, ExitRecord) {
 
 /// Runs `source` through `door` and returns how the run ended, with every raise
 /// reported and the main process's exit record.
-fn observe_run(source: &str, door: Door) -> (Vec<Raise>, ExitRecord, Result<(), RunFailure>) {
+fn observe_run(source: &str, door: Door) -> (Vec<RaiseRecord>, ExitRecord, Result<(), RunFailure>) {
     let tel = ConfiguredTelemetry::new();
     let raises = Rc::new(RefCell::new(Vec::new()));
     let sink = Rc::clone(&raises);
-    tel.attach_raw_event1::<Raise, _>(&RAISE, move |_, _, _, raise| sink.borrow_mut().push(raise.clone()));
+    tel.attach_raw_event1::<RaiseRecord, _>(&RAISE, move |_, _, _, raise| sink.borrow_mut().push(raise.clone()));
     let exits = ProcessExitCapture::new();
     exits.install(&tel);
 
@@ -67,7 +67,7 @@ fn assert_one_raise_under_two_handlers(door: Door) {
     let (raises, exit) = raises_while_running(NESTED_RESCUE, door);
     assert_eq!(
         without_stack_depth(raises),
-        vec![Raise {
+        vec![RaiseRecord {
             kind: "error".to_string(),
             exception: "Elixir.ArgumentError".to_string(),
             handler_depth: 2,
@@ -93,7 +93,7 @@ fn the_interpreter_reports_a_raise_with_its_handler_depth_and_counts_the_deliver
 /// the same exception, under the rescue alone. Both are delivered.
 fn assert_after_re_raises_the_original(door: Door) {
     let (raises, exit) = raises_while_running(AFTER_THEN_RESCUE, door);
-    let raise_at = |handler_depth| Raise {
+    let raise_at = |handler_depth| RaiseRecord {
         kind: "error".to_string(),
         exception: "Elixir.ArgumentError".to_string(),
         handler_depth,
@@ -188,8 +188,8 @@ fn the_jit_keeps_a_handler_across_the_yields_and_collections_of_its_try_body() {
 
 // Kinds and exit statuses.
 
-fn raise_of(kind: &str, depth: usize) -> Raise {
-    Raise {
+fn raise_of(kind: &str, depth: usize) -> RaiseRecord {
+    RaiseRecord {
         kind: kind.to_string(),
         exception: String::new(),
         handler_depth: depth,
@@ -199,17 +199,17 @@ fn raise_of(kind: &str, depth: usize) -> Raise {
 
 /// The records with their machine-stack depth zeroed, for tests that compare
 /// what was raised and not where the machine stack stood.
-fn without_stack_depth(raises: Vec<Raise>) -> Vec<Raise> {
+fn without_stack_depth(raises: Vec<RaiseRecord>) -> Vec<RaiseRecord> {
     raises
         .into_iter()
-        .map(|raise| Raise {
+        .map(|raise| RaiseRecord {
             stack_bytes: 0,
             ..raise
         })
         .collect()
 }
 
-fn depths_seen(raises: &[Raise]) -> Vec<usize> {
+fn depths_seen(raises: &[RaiseRecord]) -> Vec<usize> {
     let mut seen: Vec<usize> = raises.iter().map(|raise| raise.stack_bytes).collect();
     seen.sort_unstable();
     seen.dedup();
@@ -222,7 +222,7 @@ fn depths_seen(raises: &[Raise]) -> Vec<usize> {
 const MOST_DEPTHS_OF_A_RAISING_LOOP: usize = 4;
 
 /// How many different machine-stack depths a run's raises were delivered at.
-fn distinct_depths(raises: &[Raise]) -> usize {
+fn distinct_depths(raises: &[RaiseRecord]) -> usize {
     raises
         .iter()
         .map(|raise| raise.stack_bytes)
@@ -231,8 +231,8 @@ fn distinct_depths(raises: &[Raise]) -> usize {
 }
 
 /// A raise whose depth is `stack_bytes`, for exercising the depth counting.
-fn raise_at_depth(stack_bytes: usize) -> Raise {
-    Raise {
+fn raise_at_depth(stack_bytes: usize) -> RaiseRecord {
+    RaiseRecord {
         stack_bytes,
         ..raise_of("error", 1)
     }

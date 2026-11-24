@@ -1031,7 +1031,7 @@ fn a_struct_becomes_shared_wherever_a_second_holder_can_appear() {
 
     let kept = tuple_ref(&mut process, point, &[AnyValue::int(1), AnyValue::int(2)]);
     let mut roots = [kept];
-    process.collect(&mut roots);
+    process.collect_stats(&mut roots);
     assert!(
         is_shared(roots[0]),
         "a struct a collection keeps is old, and old data is never written"
@@ -1632,7 +1632,7 @@ fn a_body_frame_a_collection_kept_is_copied_to_the_tip_before_a_write() {
     with_process(|process| {
         let frame = body_frame_holding(process, 4, 7);
         let mut roots = [AnyValueRef::from_raw_word(frame).expect("frame root")];
-        process.heap.collect(&mut roots);
+        process.heap.collect_stats(&mut roots);
         let kept = roots[0].raw_word();
         let kept_address = closure_addr_from_ref_word(kept, "kept frame");
         assert!(
@@ -1694,7 +1694,7 @@ fn a_static_literal_counts_as_its_own_stub_site() {
     with_process(|process| {
         let word = fz_alloc_binview_from_static(process, &mut sb as *mut SharedBin as u64, 32);
         let mut roots = [AnyValueRef::from_raw_word(word).expect("binview ref")];
-        let stats = process.heap.collect(&mut roots);
+        let stats = process.heap.collect_stats(&mut roots);
         let mut expected = StubCounts::default();
         expected.record(StubSite::StaticLiteral);
         assert_eq!(stats.stubs_made, expected);

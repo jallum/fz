@@ -21,7 +21,7 @@ fn registry() -> Rc<RefCell<SchemaRegistry>> {
 
 fn collect_one(heap: &mut Heap, kind: ValueKind, addr: *mut u8) -> AnyValueRef {
     let mut roots = [AnyValueRef::from_heap_object(kind, addr).expect("heap root")];
-    heap.collect(&mut roots);
+    heap.collect_stats(&mut roots);
     roots[0]
 }
 
@@ -193,7 +193,7 @@ fn a_struct_whose_schema_id_ends_in_8_and_first_field_is_8_survives_a_collection
         .iter()
         .map(|r| unsafe { struct_schema_id(r.struct_addr().unwrap()) })
         .collect();
-    heap.collect(&mut roots);
+    heap.collect_stats(&mut roots);
     for (root, schema_id) in roots.iter().zip(schema_ids) {
         let moved = struct_addr_from_tagged(root.heap_object_word().unwrap()).unwrap();
         assert_eq!(unsafe { struct_schema_id(moved) }, schema_id);

@@ -42,6 +42,7 @@
 
 mod binary_budget;
 mod block_pool;
+mod collected;
 mod deep_copy;
 mod gc;
 mod gift;
@@ -67,6 +68,7 @@ mod schema_test;
 
 pub use self::binary_budget::{BinaryBudget, MIN_BINARY_BUDGET};
 use self::block_pool::Block;
+use self::gc::CopiedObject;
 use self::gift::GiftWindow;
 use crate::process::Node;
 use std::cell::RefCell;
@@ -80,8 +82,10 @@ pub use self::block_pool::pool_drain_for_test;
 pub use self::block_pool::{Footprint, pool_footprint, pool_outstanding_blocks, pool_total_cached_blocks};
 pub use self::block_pool::{SIZE_TABLE, next_block_capacity, pick_block_capacity, pick_tip_capacity};
 pub(crate) use self::block_pool::{binary_buffer_allocated, binary_buffer_freed, poisoned};
+pub use self::collected::{Collected, CollectedBlocks};
 pub use self::deep_copy::{HeapView, deep_copy_any_value, deep_copy_any_value_ref, deep_copy_slot, measure_deep_copy};
 pub(crate) use self::gc::forwarding::forwarded_target;
+pub use self::gc::roots::{RootForwarder, Roots};
 pub use self::gift::GiftSegment;
 pub use self::imp::{closure_capture_ref, list_head_ref, list_tail_ref};
 pub use self::map_view::MapLayout;
@@ -166,7 +170,7 @@ pub struct Heap {
     /// copied, raised by a minor collection by the bytes it copied, left alone
     /// by allocation and by a graft. Zero until the first collection. `should_gc` counts the young bytes against
     /// it, and a major collection's to-space guess is sized to it.
-    pub live_baseline: usize,
+    pub(crate) live_baseline: usize,
     /// The old bytes the last major collection left: what the next one is
     /// measured against. Zero until the first major collection.
     old_after_last_major: usize,
@@ -184,6 +188,24 @@ pub struct Heap {
     /// are the young blocks. Each records its fill and capacity, so a
     /// collection counts it by fill and releases it.
     young_blocks: Vec<Block>,
+    /// The blocks the latest collection copied out of, held until its
+    /// `Collected` is dropped and empty otherwise. It and `young_blocks` swap
+    /// roles at every collection, so neither is ever freed.
+    from_blocks: Vec<Block>,
+    /// Where in `old_blocks` the blocks the latest collection filled begin.
+    retired_from: usize,
+    /// The worklist a collection's trace scans, emptied when the collection
+    /// ends and kept for the next one.
+    worklist: Vec<CopiedObject>,
+    /// The bump pointer at which the young bytes reach the collection budget:
+    /// `should_gc` is `bump_top >= collect_at`. It is the tip's start plus
+    /// `collect_room`, moved when a tip is installed, and never by compiled
+    /// code, which moves only `bump_top`.
+    collect_at: *mut u8,
+    /// The bytes the tip may take before a collection is due: the budget less
+    /// the parked bytes, set from the budget after a collection, lowered by
+    /// each park, and zero once the binary budget is due.
+    collect_room: usize,
     /// The sum of the fill of `young_blocks`, kept as blocks are parked so
     /// `young_bytes` is asked in constant time at every scheduling boundary.
     parked_fill: usize,

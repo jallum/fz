@@ -3,6 +3,8 @@
 use super::block_pool::{
     Block, SIZE_TABLE, next_block_capacity, pick_block_capacity, pick_tip_capacity, pool_alloc, round_up_16,
 };
+use super::collected::{Collected, CollectedBlocks};
+use super::gc::roots::{RootForwarder, Roots};
 use super::gc::{FromSpace, Tracer};
 use super::map_view::destination_layout;
 use super::ref_io::{
@@ -103,7 +105,7 @@ impl Heap {
         let block_size = pick_block_capacity(capacity.max(SIZE_TABLE[0]));
         let block_start = pool_alloc(block_size);
         let block_end = unsafe { block_start.add(block_size) };
-        Self {
+        let mut heap = Self {
             block_start,
             bump_top: block_start,
             block_end,
@@ -113,6 +115,11 @@ impl Heap {
             last_minor_copied_bytes: 0,
             overflow_step: SIZE_TABLE[0],
             young_blocks: Vec::new(),
+            from_blocks: Vec::new(),
+            retired_from: 0,
+            worklist: Vec::new(),
+            collect_at: std::ptr::null_mut(),
+            collect_room: 0,
             parked_fill: 0,
             received_bytes: 0,
             old_blocks: Vec::new(),
@@ -131,7 +138,9 @@ impl Heap {
             stubs_made: StubCounts::default(),
             binrefs_made: StubCounts::default(),
             pending_dtors: VecDeque::new(),
-        }
+        };
+        heap.reset_collect_room();
+        heap
     }
 
     /// Whether a collection is due: the young bytes, those allocated or
@@ -140,8 +149,45 @@ impl Heap {
     /// keeps, so a heap that holds N live bytes collects after taking in N
     /// more. A pure function of the heap's state, so a collection that
     /// reclaims the bytes answers the question by itself.
+    ///
+    /// One compare: `collect_at` is the bump pointer at which the young bytes
+    /// reach the budget, and the tip's start while the binary budget is due.
+    #[inline]
     pub fn should_gc(&self) -> bool {
-        self.young_bytes() >= self.collection_budget() || self.binary_budget.is_due()
+        let due = self.bump_top >= self.collect_at;
+        debug_assert_eq!(
+            due,
+            self.young_bytes() >= self.collection_budget() || self.binary_budget.is_due(),
+            "collect_at answers the budget formula"
+        );
+        due
+    }
+
+    /// Set the room the tip has before a collection is due from the budget:
+    /// the collection budget less the bytes parked blocks hold, and none while
+    /// the binary budget is due.
+    fn reset_collect_room(&mut self) {
+        let room = if self.binary_budget.is_due() {
+            0
+        } else {
+            self.collection_budget().saturating_sub(self.parked_fill)
+        };
+        self.set_collect_room(room);
+    }
+
+    /// The tip may take `room` more bytes before a collection is due.
+    fn set_collect_room(&mut self, room: usize) {
+        self.collect_room = room;
+        self.collect_at = self.block_start.wrapping_add(room);
+    }
+
+    /// Count `capacity` bytes of shared binary buffer made. The collection that
+    /// answers the binary budget is due as soon as it is reached.
+    fn record_binary_made(&mut self, capacity: usize) {
+        self.binary_budget.record_made(capacity);
+        if self.binary_budget.is_due() {
+            self.set_collect_room(0);
+        }
     }
 
     /// The young bytes at which a collection is due: the young budget, and at
@@ -305,6 +351,7 @@ impl Heap {
     /// object's block, or a received message's.
     pub(super) fn park(&mut self, block: Block) {
         self.parked_fill += block.fill();
+        self.set_collect_room(self.collect_room.saturating_sub(block.fill()));
         self.young_blocks.push(block);
     }
 
@@ -322,6 +369,7 @@ impl Heap {
         self.bump_top = block.top;
         self.block_end = block.end();
         self.block_size = block.capacity;
+        self.collect_at = self.block_start.wrapping_add(self.collect_room);
     }
 
     pub fn alloc_stats_snapshot(&self) -> HeapAllocStats {
@@ -1024,7 +1072,7 @@ impl Heap {
         if byte_len > SHARED_BIN_THRESHOLD_BYTES {
             let handle = SharedBinHandle::from_filled(byte_len, fill);
             self.alloc_stats.record_shared_bin(byte_len as u64);
-            self.binary_budget.record_made(byte_len);
+            self.record_binary_made(byte_len);
             return AnyValue::heap_ptr(
                 alloc_buffer_view(self, handle, bit_len, StubSite::FilledBuffer).as_raw(),
                 ValueKind::BINVIEW,
@@ -1108,7 +1156,7 @@ impl Heap {
             shared_bin_append(shared, right);
         }
         self.alloc_stats.record_shared_bin((total * 2) as u64);
-        self.binary_budget.record_made(total * 2);
+        self.record_binary_made(total * 2);
         AnyValue::heap_ptr(
             alloc_buffer_view(self, handle, total as u64 * 8, StubSite::GrownBuffer).as_raw(),
             ValueKind::BINVIEW,
@@ -1533,9 +1581,9 @@ impl Heap {
     }
 
     /// The one collection entry: a Cheney copy of everything `roots` reaches
-    /// in the from-space into fresh blocks, which become old, after which the
-    /// from-space is released. A minor collection's from-space is the young
-    /// blocks; a major collection's is every block (`next_generation`).
+    /// in the from-space into fresh blocks, which become old. A minor
+    /// collection's from-space is the young blocks; a major collection's is
+    /// every block (`next_generation`).
     ///
     /// The to-space block's capacity is a guess, at least the smallest tip: the
     /// old bytes for a major collection, the bytes the last minor collection
@@ -1547,24 +1595,32 @@ impl Heap {
     /// correctness. The scan reads a worklist of copied objects, not an
     /// address, so to-space needs no contiguity.
     ///
-    /// Every slot of `roots` holds its forwarded value on return. A slot
-    /// that is not a pointer into the from-space (a scalar immediate, the empty
-    /// list, a static closure or halt continuation, a pointer into an old block
-    /// a minor collection leaves) is left as it was; a scalar box in the
-    /// from-space is copied without tracing its payload.
+    /// The collection writes its statistics once, into `stats`. Every root
+    /// holds its forwarded value on return. A root that is not a pointer into
+    /// the from-space (a scalar immediate, the empty list, a static closure or
+    /// halt continuation, a pointer into an old block a minor collection
+    /// leaves) is left as it was; a scalar box in the from-space is copied
+    /// without tracing its payload.
     ///
     /// The caller passes every reference it holds into this heap. For a
-    /// `Process` that is `Process::collect`, which assembles the runnable
-    /// closure, the park record, the mailbox and the caller's transient
-    /// values into one slice. Gifts still waiting in a delivery in-queue are
-    /// not roots: their blocks join the heap, old, only when grafted, and
-    /// every reference inside a gift points into its own segment.
+    /// `Process` that is `Process::collect`, which hands over the runnable
+    /// closure, the park record, a delivered handler, the captures of the
+    /// handlers the process is inside and the caller's transient values. Gifts
+    /// still waiting in a delivery in-queue are not roots: their blocks join the
+    /// heap, old, only when grafted, and every reference inside a gift points
+    /// into its own segment.
     ///
-    /// The heap must not have a gift window open.
-    pub fn collect(&mut self, roots: &mut [AnyValueRef]) -> GcStats {
+    /// The from-space is released when the returned [`Collected`] is dropped,
+    /// after the fresh tip is installed. The heap must not have a gift window
+    /// open.
+    pub fn collect<'h>(&'h mut self, roots: &mut (impl Roots + ?Sized), stats: &'h mut GcStats) -> Collected<'h> {
         assert!(
             self.gift.is_none(),
             "a gift window is open; the heap collects only between end_gift and the next begin_gift"
+        );
+        debug_assert!(
+            self.from_blocks.is_empty(),
+            "the previous collection's from-space is released"
         );
         debug_assert_eq!(
             self.live_baseline,
@@ -1572,17 +1628,23 @@ impl Heap {
             "the old bytes are the fill of the old blocks"
         );
         let generation = self.next_generation();
-        let (young_bytes, young_budget) = (self.young_bytes() as u64, self.collection_budget() as u64);
-        let (young_binary_bytes, binary_budget) = (
-            self.binary_budget.young_binary_bytes() as u64,
-            self.binary_budget.budget() as u64,
-        );
         let from_space = FromSpace::of(self, generation);
         let to_capacity_guess = match generation {
             Generation::Major => self.live_baseline,
             Generation::Minor => self.last_minor_copied_bytes,
         };
-        let from_blocks = self.take_from_space(generation);
+        *stats = GcStats {
+            generation,
+            young_bytes: self.young_bytes() as u64,
+            young_budget: self.collection_budget() as u64,
+            young_binary_bytes: self.binary_budget.young_binary_bytes() as u64,
+            binary_budget: self.binary_budget.budget() as u64,
+            received_bytes: std::mem::take(&mut self.received_bytes) as u64,
+            stubs_made: std::mem::take(&mut self.stubs_made),
+            binrefs_made: std::mem::take(&mut self.binrefs_made),
+            ..GcStats::default()
+        };
+        self.take_from_space(generation);
         let to_capacity = pick_tip_capacity(to_capacity_guess.max(SIZE_TABLE[0]));
         self.overflow_step = if to_capacity_guess >= SIZE_TABLE[SIZE_TABLE.len() - 1] {
             SIZE_TABLE[SIZE_TABLE.len() - 1]
@@ -1595,29 +1657,14 @@ impl Heap {
             top: to_start,
             capacity: to_capacity,
         });
-        let stats = GcStats {
-            generation,
-            young_bytes,
-            young_budget,
-            young_binary_bytes,
-            binary_budget,
-            received_bytes: std::mem::take(&mut self.received_bytes) as u64,
-            from_space_capacity_bytes: from_blocks.iter().map(|block| block.capacity as u64).sum(),
-            blocks_released: from_blocks.len() as u64,
-            to_space_guess_bytes: to_capacity as u64,
-            stubs_made: std::mem::take(&mut self.stubs_made),
-            binrefs_made: std::mem::take(&mut self.binrefs_made),
-            ..GcStats::default()
-        };
+        stats.to_space_guess_bytes = to_capacity as u64;
         let schemas_handle = self.schemas.clone();
 
         let schemas = schemas_handle.borrow();
         let mut tracer = Tracer::new(from_space, self, &schemas, stats);
-        for root in roots.iter_mut() {
-            tracer.forward_root(root);
-        }
+        roots.forward_into(&mut RootForwarder::new(&mut tracer));
         tracer.scan();
-        let (mut stats, kept_objects) = tracer.finish();
+        let kept_objects = tracer.finish();
         drop(schemas);
 
         // The off-heap sweep walks the intrusive chain of the from-space: survivors
@@ -1629,7 +1676,7 @@ impl Heap {
             off_heap::sweep(self, generation, &mut stats.stub_visits, &mut stats.stubs_survived);
         self.binary_budget.after_collection(generation, survivor_binary_bytes);
 
-        stats.to_space_capacity_bytes = self.retire_to_space_as_old() as u64;
+        self.retire_to_space_as_old();
         match generation {
             Generation::Major => {
                 self.live_baseline = stats.copied_bytes as usize;
@@ -1647,43 +1694,49 @@ impl Heap {
         stats.live_objects = self.old_objects;
         stats.live_bytes = self.live_baseline as u64;
         stats.blocks_after = self.old_blocks.len() as u64;
-
-        // Release the from-space: pooled capacities return to the pool (§6.6),
-        // exact blocks to the system allocator. The fresh tip is installed
-        // first, so it never lands on an address the from-space is about to
-        // give up.
-        for block in from_blocks {
-            block.release();
-        }
-        stats
+        Collected::new(self, stats)
     }
 
-    /// Detach the blocks a collection of `generation` copies out of: the tip and
-    /// the young parked blocks, and for a major collection the old blocks too.
-    fn take_from_space(&mut self, generation: Generation) -> Vec<Block> {
-        let mut blocks = std::mem::take(&mut self.young_blocks);
+    /// Detach the blocks a collection of `generation` copies out of, onto
+    /// `from_blocks`: the tip and the young parked blocks, and for a major
+    /// collection the old blocks too. `young_blocks` and `from_blocks` trade
+    /// places, so the copy's overflow blocks park on the list the previous
+    /// collection emptied.
+    fn take_from_space(&mut self, generation: Generation) {
+        std::mem::swap(&mut self.young_blocks, &mut self.from_blocks);
         self.parked_fill = 0;
-        blocks.push(self.current_block());
+        self.from_blocks.push(self.current_block());
         if generation == Generation::Major {
-            blocks.append(&mut self.old_blocks);
+            self.from_blocks.append(&mut self.old_blocks);
         }
-        blocks
+    }
+
+    /// Release the from-space of the latest collection: pooled capacities
+    /// return to the pool, exact blocks to the system allocator.
+    pub(super) fn release_from_space(&mut self) {
+        for block in self.from_blocks.drain(..) {
+            block.release();
+        }
+    }
+
+    /// The blocks of the latest collection: its from-space, until it is
+    /// released, and the old blocks it filled.
+    pub fn collected_blocks(&self) -> CollectedBlocks<'_> {
+        CollectedBlocks::new(&self.from_blocks, &self.old_blocks[self.retired_from..])
     }
 
     /// Make the blocks a collection copied into old: its tip, unless it holds
-    /// nothing, and the blocks the copy parked. Returns their capacity.
-    fn retire_to_space_as_old(&mut self) -> usize {
+    /// nothing, and the blocks the copy parked.
+    fn retire_to_space_as_old(&mut self) {
+        self.retired_from = self.old_blocks.len();
         let tip = self.current_block();
-        let mut capacity = self.young_blocks.iter().map(|block| block.capacity).sum::<usize>();
         if tip.fill() == 0 {
             tip.release();
         } else {
-            capacity += tip.capacity;
             self.old_blocks.push(tip);
         }
         self.old_blocks.append(&mut self.young_blocks);
         self.parked_fill = 0;
-        capacity
     }
 
     /// Install the empty tip allocation continues in after a collection,
@@ -1696,6 +1749,7 @@ impl Heap {
             top: start,
             capacity,
         });
+        self.reset_collect_room();
         self.alloc_count = 0;
     }
 
@@ -1729,7 +1783,12 @@ impl Drop for Heap {
         if let Some(window) = self.gift.take() {
             window.saved_tip.release();
         }
-        for block in self.young_blocks.drain(..).chain(self.old_blocks.drain(..)) {
+        for block in self
+            .from_blocks
+            .drain(..)
+            .chain(self.young_blocks.drain(..))
+            .chain(self.old_blocks.drain(..))
+        {
             block.release();
         }
     }

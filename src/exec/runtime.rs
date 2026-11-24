@@ -44,8 +44,8 @@ use fz_runtime::sched_core::{
     Scheduler, SchedulingCore, end_quantum, halt_hook, next_runnable, timer_cancel_hook, timer_schedule_hook,
 };
 use fz_runtime::telemetry::{
-    ALLOC_SITE, EXECUTION_READY, GC, PROCESS_EXITED, RAISE, RUN_ENDED, Raise, RunEnded, RuntimeEvent, SCHEDULER_SLEPT,
-    SEND_PROBE, TIMER_ARMED, TIMER_CANCELLED, TIMER_FIRED, report_alloc_sites,
+    ALLOC_SITE, EXECUTION_READY, GC, PROCESS_EXITED, RAISE, RUN_ENDED, Raise, RaiseRecord, RunEnded, RuntimeEvent,
+    SCHEDULER_SLEPT, SEND_PROBE, TIMER_ARMED, TIMER_CANCELLED, TIMER_FIRED, report_alloc_sites,
 };
 use fz_runtime::timer::TimerId;
 #[cfg(test)]
@@ -100,8 +100,12 @@ pub fn emit_runtime_event<T: Telemetry + ?Sized>(tel: &T, event: RuntimeEvent<'_
         RuntimeEvent::TimerFired(fired) => tel.raw_event1(&TIMER_FIRED, &fired),
         RuntimeEvent::TimerCancelled(cancelled) => tel.raw_event1(&TIMER_CANCELLED, &cancelled),
         RuntimeEvent::SendProbe(probe) => tel.raw_event1(&SEND_PROBE, probe),
-        RuntimeEvent::Raise(raise) => tel.raw_event1(&RAISE, raise),
-        RuntimeEvent::Gc(collection) => tel.raw_event1(&GC, collection),
+        RuntimeEvent::Raise(raise) => {
+            if tel.is_raw_event_enabled(&RAISE) {
+                tel.raw_event1(&RAISE, &RaiseRecord::of(raise));
+            }
+        }
+        RuntimeEvent::Gc(collection, stats, heap) => tel.raw_event3(&GC, &collection, stats, heap),
         RuntimeEvent::AllocSite(site) => tel.raw_event1(&ALLOC_SITE, site),
         RuntimeEvent::RunEnded(ended) => tel.raw_event1(&RUN_ENDED, &ended),
     }
