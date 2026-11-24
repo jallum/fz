@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Callables",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-24T17:54:25Z",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "A guard helper call unfolds into the caller's dispatch matrix as its clauses' facts",
   "type": "bug",
-  "updated_at": "2026-11-24T17:54:25Z"
+  "updated_at": "2026-11-24T17:54:27Z"
 }
