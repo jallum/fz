@@ -3,7 +3,7 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-24T18:24:11Z",
-  "description": "User approved 2026-11-24 for the end of the fz-9x7 epic (relayed by GC).\n\nRule (user): the runtime never constructs, allocates or computes anything only to report it. An event passes its data through as-is; the receiver copies or computes what it wants.\n\nFirst case: GcStats.from_space_capacity_bytes is a sum over every from-space block (runtime/src/heap/imp.rs:1609), computed on every collection. Only telemetry.rs:243 reads it, along with blocks_released.\n\nPlanned shape:\n- collect returns the from-space blocks unreleased;\n- RuntimeEvent::Gc carries \u0026[Block];\n- end_quantum releases the blocks after observe;\n- the handler computes len and the capacity sum only when a log is attached.\n\nScope also covers auditing every GcStats field and every other RuntimeEvent for the same pattern.\n\nRelated: fz-9x7.11.7, a collection writing its statistics into a caller-owned slot instead of returning GcStats by value. Reconcile with it: fields this ticket removes shrink what .11.7 moves.",
+  "description": "User approved 2026-11-24 for the end of the fz-9x7 epic (relayed by GC).\n\nRule (user): the runtime never constructs, allocates or computes anything only to report it. An event passes its data through as-is; the receiver copies or computes what it wants.\n\nFirst case: GcStats.from_space_capacity_bytes is a sum over every from-space block (runtime/src/heap/imp.rs:1609), computed on every collection. Only telemetry.rs:243 reads it, along with blocks_released.\n\nPlanned shape:\n- collect returns the from-space blocks unreleased;\n- RuntimeEvent::Gc carries \u0026[Block];\n- end_quantum releases the blocks after observe;\n- the handler computes len and the capacity sum only when a log is attached.\n\nScope also covers auditing every GcStats field and every other RuntimeEvent for the same pattern.\n\nRelated: fz-9x7.11.7, a collection writing its statistics into a caller-owned slot instead of returning GcStats by value. Reconcile with it: fields this ticket removes shrink what .11.7 moves.\n\nThe builder (GC) may fold this ticket into fz-9x7.11.7 once the code shows the overlap: both reshape the same GcStats hand-off.",
   "id": "fz-9x7.48",
   "labels": [],
   "parent": "fz-9x7.11",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "Runtime events carry their facts as they are; the handler computes",
   "type": "task",
-  "updated_at": "2026-11-24T18:24:21Z"
+  "updated_at": "2026-11-24T18:24:27Z"
 }
