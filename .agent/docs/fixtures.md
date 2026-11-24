@@ -100,40 +100,53 @@ Fixtures already live in that comment-frontmatter form:
 
 Fixture numbers are allocated in blocks of 100 per stack. A new fixture takes
 the next free number inside its own block, and nobody takes a number outside
-their block. A new epic claims the next free block and adds a row here.
+their block. A new epic claims the next free block and adds a row here; the
+table changes only then. Fixtures numbered before `00600` predate blocks.
+`fixtures_lie_in_claimed_blocks` in `tests/fixture_matrix.rs` reads the rows
+and fails for a fixture whose number lies in no claimed block, and
+`fixtures_describe_themselves` fails when two fixtures share a number.
 
-| Block         | Owner                             | State                  |
-| ------------- | --------------------------------- | ---------------------- |
-| `00600-00799` | fz-sc8                            | full                   |
-| `00800-00899` | fz-3ul                            | in use through `00898` |
-| `00900-00999` | fz-a9y                            | reserved               |
-| `01000-01039` | fz-sc8 (stack #274)               | in use through `01039` |
-| `01040-01059` | fz-sc8 (session fz-38: .77, .105) | in use through `01042` |
-| `01060-01079` | fz-sc8 (stack #274)               | in use through `01078` |
-| `01080-01099` | fz-348 / fz-rs7                   | full                   |
-| `01100-01119` | fz-rs7                            | in use through `01115` |
-| `01120-01199` | fz-sc8                            | in use through `01199` |
-| `01200-01229` | fz-iqp                            | in use through `01229` |
-| `01230-01249` | fz-rba                            | in use through `01232` |
-| `01250-01259` | fz-75e / fz-d7w / fz-9x7          | full                   |
-| `01260-01279` | fz-xxd                            | in use through `01264` |
-| `01280-01289` | fz-968                            | in use through `01280` |
-| `01290-01299` | fz-t93                            | in use through `01298`; 01293-01296 are fz-9x7.1's |
-| `01300-01319` | fz-3sy                            | in use through `01319` |
-| `01320-01339` | fz-nml                            | in use through `01339` |
-| `01340-01359` | fz-9zq                            | full                   |
-| `01360-01379` | fz-sc8                            | full                   |
-| `01380-01399` | fz-nhb                            | in use through `01386` |
-| `01400-01699` | fz-p8p                            | in use through `01656` |
-| `01700-01719` | fz-nml                            | in use through `01712` |
-| `01720-01739` | fz-3sy                            | in use through `01721` |
-| `01740-01759` | fz-9x7                            | in use through `01745` |
-| `01760-01779` | fz-sc8                            | in use through `01779` |
-| `01780-01819` | fz-mue                            | in use through `01816` |
-| `01820-01859` | fz-9e2                            | in use through `01824` |
-| `01880-01899` | fz-yh5                            | in use through `01884` |
-| `01900-01959` | fz-mue                            | in use through `01920` |
-| `01960-01979` | fz-9zq                            | in use through `01960` |
+The next free number in a block is one past the highest existing
+`fixtures/<number>_*` file in it, skipping numbers that open PRs have taken:
+
+```sh
+ls fixtures | grep -o '^[0-9]\{5\}' | sort -u | awk '$1 >= 1780 && $1 <= 1819' | tail -1
+gh pr list --state open --limit 200 --json files --jq '.[].files[].path' | grep -o '^fixtures/[0-9]\{5\}' | sort -u
+```
+
+| Block | Owner |
+| ----- | ----- |
+| `00001-00599` | none; they predate blocks |
+| `00600-00799` | fz-sc8 |
+| `00800-00899` | fz-3ul |
+| `00900-00999` | fz-a9y |
+| `01000-01039` | fz-sc8 (stack #274) |
+| `01040-01059` | fz-sc8 (session fz-38: .77, .105) |
+| `01060-01079` | fz-sc8 (stack #274) |
+| `01080-01099` | fz-348 / fz-rs7 |
+| `01100-01119` | fz-rs7 |
+| `01120-01199` | fz-sc8 |
+| `01200-01229` | fz-iqp |
+| `01230-01249` | fz-rba |
+| `01250-01259` | fz-75e / fz-d7w / fz-9x7 |
+| `01260-01279` | fz-xxd |
+| `01280-01289` | fz-968 |
+| `01290-01299` | fz-t93 (`01293-01296`: fz-9x7.1) |
+| `01300-01319` | fz-3sy |
+| `01320-01339` | fz-nml |
+| `01340-01359` | fz-9zq |
+| `01360-01379` | fz-sc8 |
+| `01380-01399` | fz-nhb |
+| `01400-01699` | fz-p8p |
+| `01700-01719` | fz-nml |
+| `01720-01739` | fz-3sy |
+| `01740-01759` | fz-9x7 |
+| `01760-01779` | fz-sc8 |
+| `01780-01819` | fz-mue |
+| `01820-01859` | fz-9e2 |
+| `01880-01899` | fz-yh5 |
+| `01900-01959` | fz-mue |
+| `01960-01979` | fz-9zq |
 
 A fixture orders its processes with messages and never by a timing margin: an
 `after` timeout is `0` when mail is already in the mailbox or nothing is
