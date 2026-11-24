@@ -15,7 +15,7 @@
     "fz-mue.37"
   ],
   "created": "2026-11-18T20:44:03Z",
-  "description": "'compiler2 quoted front door does not yet parse Upper(\"Record\") at item position'. json.erl's decode record. Reproducer: /Users/j5n/Workspace/fz-otp-json/punch/22_record_defrecordp.fz\n\nPart of fz-mue (fz runs OTP's json.erl unchanged). Port and harness: /Users/j5n/Workspace/fz-otp-json/.",
+  "description": "'compiler2 quoted front door does not yet parse Upper(\"Record\") at item position'. json.erl's decode record. Reproducer: /Users/j5n/Workspace/fz-otp-json/punch/22_record_defrecordp.fz\n\nPart of fz-mue (fz runs OTP's json.erl unchanged). Port and harness: /Users/j5n/Workspace/fz-otp-json/.\n\nRe-test on develop de4ef6a3b (Elixir Parity, 2026-11-24; user-approved update): punch/22 now fails with `module Record is not defined` at `require Record`, not a parse error. All blockers still hold: List.to_tuple is absent, sc8.256 still fails, and so does Macro.to_string. Evidence: Elixir Parity's fresh/report.md.",
   "id": "fz-mue.12",
   "labels": [],
   "parent": "fz-mue",
@@ -29,5 +29,5 @@
   "status": "in_progress",
   "title": "Record.defrecordp defines a record, and a record pattern matches in a function head",
   "type": "feature",
-  "updated_at": "2026-11-20T21:12:08Z"
+  "updated_at": "2026-11-24T21:36:40Z"
 }
