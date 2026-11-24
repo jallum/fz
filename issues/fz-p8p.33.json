@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-24T18:25:15Z",
+  "description": "User approved 2026-11-24: \"fixtures changes approved; keep it simple.\"\n\nWhy: the block table in .agent/docs/fixtures.md (lines ~105-136) has an \"in use through NNNNN\" column. Every PR that adds a fixture edits it, so PRs in one epic conflict on the same line, and PRs in neighbouring epics conflict on adjacent lines. On 2026-11-24 this was the only conflict shared by all seven rebased Elixir Parity PRs (#830-834, #845, #846), and it also hit #843. The column is also derivable from fixtures/, and it cannot see numbers taken by open PRs.\n\nChange:\n1. The table keeps only Block and Owner. Drop the State column. The table changes only when an epic claims a new block.\n2. The fixtures doc says how to find the next free number in a block: the highest existing fixtures/\u003cblock-prefix\u003e* file, plus open PRs.\n3. A test fails if two fixtures share a number, or if a fixture's number lies in no claimed block. It reads the claims from the table.\n\nKeep it simple: no per-block files and no helper tool.\n\nRemoval: the State column and the habit of editing it. Note for fz-nhb.19, which adds another per-fixture list to fixtures.md: the same conflict concern applies.",
+  "id": "fz-p8p.33",
+  "labels": [],
+  "parent": "fz-p8p",
+  "priority": 2,
+  "status": "open",
+  "title": "Fixture number blocks record ownership only; a test guards the numbers",
+  "type": "task",
+  "updated_at": "2026-11-24T18:25:15Z"
+}
