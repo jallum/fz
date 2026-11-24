@@ -1,0 +1,11 @@
+:struct
+:map
+:fun2
+:fun
+:pair
+:positive
+:number
+:number
+:atom
+:other
+:other

@@ -541,9 +541,8 @@ impl<TypeHandle> RegionQuestion<TypeHandle> {
     }
 }
 
-#[cfg(test)]
 impl<TypeHandle> RegionQuestion<TypeHandle> {
-    fn map_type_handle<MappedHandle>(
+    pub(crate) fn map_type_handle<MappedHandle>(
         &self,
         map: &mut impl FnMut(&TypeHandle) -> MappedHandle,
     ) -> RegionQuestion<MappedHandle> {

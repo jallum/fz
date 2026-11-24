@@ -1,0 +1,12 @@
+6
+30
+:other
+:pos
+:nonpos
+:pos
+{:three, 1}
+{:not, 1}
+:any
+:big
+:small
+:big

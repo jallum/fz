@@ -1,0 +1,55 @@
+#---
+# purpose: "A guard that calls a helper answers as the helper's clauses do, whether the helper tests a type, tests an arity, compares a value, ignores its argument, or has two clauses that can both answer true"
+# kind: run
+# oracle: 01887_a_guard_helper_call_unfolds_into_the_questions_its_clauses_ask.oracle.exs
+# oracle.stamp: 8bd96e5943cd15c9
+#---
+defmodule Main do
+  def callable?(f) when is_function(f), do: true
+  def callable?(_), do: false
+
+  defp binary_fn?(f) when is_function(f, 2), do: true
+  defp binary_fn?(_), do: false
+
+  def positive?(n) when n > 0, do: true
+  def positive?(_), do: false
+
+  def anything?(_), do: true
+
+  def either?(x) when is_integer(x), do: true
+  def either?(_), do: true
+
+  def run(g, x) when callable?(g) and binary_fn?(g), do: g.(x, x)
+  def run(g, x) when callable?(g), do: g.(x)
+  def run(_, _), do: :other
+
+  def sign(n) when positive?(n), do: :pos
+  def sign(_), do: :nonpos
+
+  def literal(x) when positive?(3), do: {:three, x}
+
+  def literal_false(x) when positive?(-3), do: {:neg, x}
+  def literal_false(x), do: {:not, x}
+
+  def ignored(_x) when anything?(_x), do: :any
+
+  def ambiguous(x) when either?(x) and x > 0, do: :big
+  def ambiguous(_), do: :small
+
+  def main() do
+    IO.inspect(run(fn a, b -> a + b end, 3))
+    IO.inspect(run(fn a -> a * 10 end, 3))
+    IO.inspect(run(:atom, 3))
+    IO.inspect(sign(5))
+    IO.inspect(sign(-5))
+    IO.inspect(sign(:nope))
+    IO.inspect(literal(1))
+    IO.inspect(literal_false(1))
+    IO.inspect(ignored(1))
+    IO.inspect(ambiguous(7))
+    IO.inspect(ambiguous(-7))
+    IO.inspect(ambiguous(:a))
+  end
+end
+
+Main.main()

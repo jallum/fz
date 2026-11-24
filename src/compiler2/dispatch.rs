@@ -15,6 +15,7 @@ use crate::dispatch_matrix::pattern::{
     GuardCallee, PatternBodyId, PatternDispatchPlan, PatternResolver, PatternRow, PatternSubjectRef, SourcePatternError,
 };
 use crate::function_surface::FunctionSurface;
+use crate::ground_value::GroundValue;
 use crate::source::Span;
 
 use super::identity::FunctionId;
@@ -154,5 +155,18 @@ where
 
     fn is_literal_blind(&self, ty: &Ty) -> bool {
         self.world.types().is_literal_blind(ty)
+    }
+
+    fn ground_has_type(&mut self, value: &GroundValue, ty: &Ty) -> Option<bool> {
+        let types = self.world.types_mut();
+        let literal = match value {
+            GroundValue::Int(_) => types.int(),
+            GroundValue::Float(_) => types.float(),
+            GroundValue::Atom(name) => types.atom_lit(name),
+            GroundValue::Bool(value) => types.bool_lit(*value),
+            GroundValue::Nil => types.nil(),
+            GroundValue::Binary(_) | GroundValue::Utf8Binary(_) => return None,
+        };
+        Some(types.is_subtype(&literal, ty))
     }
 }

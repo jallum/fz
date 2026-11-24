@@ -210,41 +210,52 @@ argument that fails one raises the same `FunctionClauseError`. The test for a
 `pid`, `ref` or `c_pointer` parameter admits every value, as it does for an
 annotated parameter of an ordinary function.
 
-A helper is a type predicate when it has exactly two guardless clauses over
-plain variable or `_` parameters: the first answers `true` with at least one
-parameter annotated, the second answers `false` with none annotated.
-`guard_dispatch_from_rows` records which arguments it asks about and their types
-in `PatternGuardDispatch::type_predicate`; no name is matched, so `is_integer`,
-`is_boolean`, `is_nil` and a user's own helper qualify alike. In
-`PatternDispatchProducer::add_row` the guard's top-level `and` chain is read
-left to right, and a conjunct that calls a type predicate with every argument a
-variable the row binds becomes a type question on that variable's subject,
-placed after the pattern and precondition questions and before the guard (a
-question already asked of that subject is not asked twice). The other conjuncts
-stay the guard in their order, and a guard with none left disappears. Names
-resolve through the same `bound` map the guard uses, so the fold cannot
-disagree with the guard about which value a name means. A call under `or` or
-`not`, one with an expression argument, and one naming an unbound (pinned)
-variable stays a guard. Every row source passes through `add_row`, so entry
-clauses, `case` arms, `receive` arms and lambda clauses fold alike, and the
-analysis reads the folded question like a typed parameter's: the body narrows by
-it and an activation whose type decides the clause skips the test.
+A guard helper's clauses are kept as facts over the helper's own parameters
+(`PatternGuardDispatch::facts`, built in `PatternDispatchProducer::finish` and
+defined in `dispatch_matrix/pattern/unfold.rs`). A clause's facts are the
+questions its patterns and preconditions ask, the residual guard expressions
+that are not questions, and what it answers: `Holds` with the facts of its body,
+or a refusal (`False` for a body that answers false, `Fails` for a body that
+raises, `Either` when the cause is not kept). No name is matched, so `is_integer`, `is_function/2`,
+`is_struct` and a user's own helper unfold alike.
 
-A helper that fails for some arguments narrows too. `answers_only_for` reads
-the clauses of a helper whose body is not a failing node and lists each
-argument they all ask the same type of, through an annotation, a type predicate
-in the clause's guard, or a call that itself answers only for that type
-(`PatternGuardDispatch::answers_only_for`). `byte_size/1` answers in its
-`when is_bitstring(bits)` clause and raises in the other, so it answers only
-for a bitstring. A guard that is sure to call such a helper with a variable its
-row binds holds only when the variable has that type, because the call would
-otherwise fail the guard. `add_row` therefore asks that type of the variable's
-subject before the guard (`types_its_calls_need`), and the conjunct stays in
-the guard: in `def kind(b) when byte_size(b) > 1, do: byte_size(b)` the body is
-typed with `b` a bitstring, and `kind(:a)` never reaches it. A call is sure to
-be made at any depth of a conjunct, under `not` and inside a comparison or
-another call's arguments, but not under `and` or `or` within the conjunct,
-which may decide without their right-hand side.
+In `PatternDispatchProducer::add_row` the guard's top-level `and` chain is read
+left to right (`admit_guard`). A conjunct that calls a helper with every
+argument a variable the row binds or a literal is replaced by the helper's
+facts rebased onto the caller's subjects (`unfold_call`): its questions are
+asked of the argument's subject, placed after the pattern and precondition
+questions and before the guard, and a question already asked of that subject is
+not asked twice. Its residual expressions stay the guard, with the helper's
+parameters replaced by the arguments. A literal argument is substituted, a
+conjunct made only of constants is evaluated on the spot (`evaluate`), and a
+question about a literal is decided at once (`decide_at_constant`). A helper
+that ignores an argument asks nothing of it. A clause whose body raises answers
+false, as it does in the guard evaluator, where any failure fails the guard.
+
+The call unfolds only when one clause can answer true for the arguments
+(`resolve`). Two clauses that can both answer true, or a live clause that
+follows a clause that conditionally matches and answers false or raises (only a
+negation separates them), leave the call as the guard it is, with the helper's
+own plan embedded. A conjunct that is not a call, a call under `or` or `not`, a
+call with an expression argument, and one naming an unbound (pinned) variable
+also stay guards. Names resolve through the same `bound` map the guard uses, so
+the unfolded questions cannot disagree with the guard about which value a name
+means. Every row source passes through `add_row`, so entry clauses, `case` arms,
+`receive` arms and lambda clauses unfold alike, and the analysis reads an
+unfolded question like a typed parameter's: the body narrows by it and an
+activation whose type decides the clause skips the test.
+
+A call that stays a guard inside a larger expression still makes its call, so
+what it needs to answer at all is asked first (`ask_what_its_calls_need`): the
+questions every clause that can answer asks, of a variable argument. `byte_size/1`
+answers in its `when is_bitstring(bits)` clause and raises in the other, so
+`def kind(b) when byte_size(b) > 1` asks `b` a bitstring before the guard, and
+`kind(:a)` never reaches the body. A call is sure to be made at any depth of a
+conjunct, under `not` and inside a comparison or another call's arguments, but
+not under `and` or `or` within the conjunct, which may decide without their
+right-hand side. A residual that is an extern call on a callable
+(`is_function(f, 2)` leaves `fz_function_arity(f) == 2`) still reads the
+callable whole, so the callable is constructed first-class.
 
 A reified guard helper is an ordinary function, so `guard_dispatch_from_rows`
 builds its plan with an empty `Inputs` list and a pin in the helper's head is

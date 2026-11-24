@@ -1,0 +1,23 @@
+#---
+# purpose: "A counted recursion that wraps its argument in a struct on every call compiles: the repeated struct folds where it grew"
+# root: main/0
+# assert.metric.type.clash_folded: 1
+# oracle: self
+# oracle.stamp: 4e20613f934df2cc
+#---
+defmodule W do
+  defexception [:original]
+end
+
+defmodule Wrapper do
+  def wrap(x, 0), do: x
+  def wrap(x, n), do: wrap(%W{original: x}, n - 1)
+end
+
+defmodule Main do
+  def main() do
+    IO.inspect(Wrapper.wrap(:a, 3))
+  end
+end
+
+Main.main()
