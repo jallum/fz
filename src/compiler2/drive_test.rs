@@ -9144,12 +9144,10 @@ fn a_byte_walk_resolves_its_binary_inline_and_loads_each_byte() {
         "end\n",
         "def main(), do: P.go(\"abc\")\n",
     ));
-    for runtime_call in ["fz_bs_bit_len_ref", "fz_bs_read_int_ref"] {
-        assert!(
-            !clif.contains(runtime_call),
-            "a whole-byte field is a load, not a call to {runtime_call}:\n{clif}"
-        );
-    }
+    assert!(
+        !clif.contains("fz_bs_read_int_ref"),
+        "a whole-byte field is a load, not a call to fz_bs_read_int_ref:\n{clif}"
+    );
     assert!(
         clif.contains("uload8"),
         "the byte is loaded from the resolved address:\n{clif}"
@@ -9245,10 +9243,6 @@ fn an_integer_field_off_a_byte_boundary_is_still_read_by_the_runtime() {
     assert!(
         clif.contains("fz_bs_read_int_ref"),
         "a field at bit 3 is read through the runtime:\n{clif}"
-    );
-    assert!(
-        !clif.contains("fz_bs_bit_len_ref"),
-        "the length of the binary is still read inline:\n{clif}"
     );
 }
 

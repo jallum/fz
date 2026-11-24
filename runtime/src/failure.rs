@@ -36,11 +36,11 @@
 
 use crate::any_value::debug::render_value;
 use crate::any_value::{AnyValue, AnyValueRef, ValueKind};
-use crate::bits::{bitstring_bit_len, bitstring_byte_ptr};
+use crate::bits::{Bin, is_bitstring_like};
 use crate::exec_ctx::ExecCtx;
 use crate::handler_stack::Innermost;
 use crate::heap::{list_head_ref, list_tail_ref};
-use crate::ir_runtime::{bitstring_like_word, fz_tuple_elem, fz_tuple_size};
+use crate::ir_runtime::{fz_tuple_elem, fz_tuple_size};
 use crate::module_name::ModuleName;
 use crate::park::materialize_outcome_closure;
 use crate::process::{Process, Raised};
@@ -173,12 +173,14 @@ fn binary_text(value: AnyValue) -> Option<String> {
     let AnyValue::HeapRef(value) = value else {
         return None;
     };
-    let p = bitstring_like_word(value.raw_word())?;
-    let bit_len = unsafe { bitstring_bit_len(p) } as usize;
-    if !bit_len.is_multiple_of(8) {
+    if !is_bitstring_like(value.raw_word()) {
         return None;
     }
-    let bytes = unsafe { slice::from_raw_parts(bitstring_byte_ptr(p), bit_len / 8) };
+    let binary = unsafe { Bin::of_binary(value.raw_word()) };
+    if !binary.bit_len().is_multiple_of(8) {
+        return None;
+    }
+    let bytes = binary.bytes();
     Some(String::from_utf8_lossy(bytes).into_owned())
 }
 

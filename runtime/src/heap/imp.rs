@@ -1057,8 +1057,8 @@ impl Heap {
     /// Payloads larger than `SHARED_BIN_THRESHOLD_BYTES` route
     /// through the shared zone: a SharedBin is allocated off-heap and the
     /// per-process heap gets a BinRef holding it and a tagged
-    /// view of it. Render and bit-match dispatch via
-    /// `bitstring_bit_len` / `bitstring_byte_ptr`.
+    /// view of it. Render and bit-match dispatch decode either form with
+    /// `Bin::of_binary`.
     ///
     /// Returns the VALUE, kind included. The storage choice is
     /// made here and only here: a caller that re-derived it from the length

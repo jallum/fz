@@ -1405,7 +1405,7 @@ fn is_admitted_bitstring(admitted: BitstringAlignment, value: RuntimeAnyValue) -
     if !admitted.asks_length() {
         return !admitted.is_none();
     }
-    let bit_len = unsafe { fz_runtime::bits::bitstring_bit_len(value_ref.raw_word()) };
+    let bit_len = unsafe { fz_runtime::bits::Bin::of_binary(value_ref.raw_word()) }.bit_len();
     admitted.admits(bit_len)
 }
 

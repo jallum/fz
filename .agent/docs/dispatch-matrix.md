@@ -512,7 +512,7 @@ both reads only the tag. The interpreter reads the length off the value; a
 cursor answers with its source's bit length less its position. The native doors
 read it through the `bitstring_bit_len` method of the shared emitter, which the
 compiled-body door answers with `emit_binary_bit_len` and the receive door with
-`fz_bs_bit_len_ref`. A `bitstring` pattern region tests the tag alone, because
+`emit_proven_binary_bit_len`, after its own kind guard. A `bitstring` pattern region tests the tag alone, because
 it tests a pattern and not the type.
 
 Each axis carries an `AxisPrecision`, which is what a SEAT may read from

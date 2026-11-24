@@ -31,9 +31,9 @@
 
 use crate::alloc_site::RuntimeAllocSite;
 use crate::any_value::{
-    BINARY_MAX_BIT_LEN, BINARY_SHARED_MASK, ValueKind, bitstring_bit_len as header_bit_len, bitstring_bytes_ptr,
-    bitstring_header_word, bitstring_is_shared, heap_kind_from_tagged, heap_object_word, heap_word_addr,
-    share_bitstring,
+    AnyValueRefPacking, BINARY_MAX_BIT_LEN, BINARY_SHARED_MASK, ValueKind, bitstring_bit_len as header_bit_len,
+    bitstring_bytes_ptr, bitstring_header_word, bitstring_is_shared, heap_kind_from_tagged, heap_object_word,
+    heap_word_addr, share_bitstring,
 };
 use crate::heap::{binary_buffer_allocated, binary_buffer_freed, poisoned};
 use crate::sync::{AtomicUsize, Ordering, fence};
@@ -626,24 +626,19 @@ pub fn is_bitstring_like(word: u64) -> bool {
     heap_kind_from_tagged(word).is_some_and(ValueKind::is_binary_repr)
 }
 
-/// Bit length of a bitstring-like heap value: its header, in either form.
-///
-/// # Safety
-/// `word` must be the heap object word of a live Bitstring or BinView.
-pub unsafe fn bitstring_bit_len(word: u64) -> u64 {
-    unsafe { header_bit_len(heap_word_addr(word)) }
-}
+/// The tag bit a view's kind has and an inline bitstring's lacks. Between the
+/// two binary forms it alone decides, so a proven binary's form is one bit test.
+const VIEW_TAG_BIT: u64 = (ValueKind::BINVIEW.tag() & !ValueKind::BITSTRING.tag()) as u64;
+const _: () = assert!(
+    VIEW_TAG_BIT.is_power_of_two(),
+    "the binary forms differ in a view-only tag bit"
+);
 
-/// Byte pointer to the underlying bitstring payload.
-///
-/// # Safety
-/// `word` must be the heap object word of a live Bitstring or BinView.
-pub unsafe fn bitstring_byte_ptr(word: u64) -> *const u8 {
-    let addr = heap_word_addr(word);
-    if heap_kind_from_tagged(word) == Some(ValueKind::BINVIEW) {
-        return unsafe { BinView::from_raw(addr) }.bytes_ptr();
-    }
-    unsafe { bitstring_bytes_ptr(addr) }
+/// Whether a proven binary's tagged word names a view rather than an inline
+/// bitstring.
+#[inline]
+fn names_a_view(word: u64) -> bool {
+    (word >> AnyValueRefPacking::current().tag_shift()) & VIEW_TAG_BIT != 0
 }
 
 /// A binary as its bits: where they start and how many there are. Every
@@ -675,6 +670,43 @@ impl Bin {
             unsafe { bitstring_bytes_ptr(addr) }
         };
         Self::new(ptr, bit_len)
+    }
+
+    /// The binary a proven binary's tagged word names: the one decoder every
+    /// runtime function that reads a binary goes through. The header holds the
+    /// length in either form; only where the bytes start depends on the form.
+    ///
+    /// # Safety
+    /// `word` must be the tagged word of a live Bitstring or BinView. The
+    /// caller's declared parameter type or its own kind test proves it.
+    #[inline]
+    pub unsafe fn of_binary(word: u64) -> Self {
+        debug_assert!(is_bitstring_like(word), "Bin::of_binary given {word:#x}, not a binary");
+        let kind = if names_a_view(word) {
+            ValueKind::BINVIEW
+        } else {
+            ValueKind::BITSTRING
+        };
+        unsafe { Self::of_stored(word, kind) }
+    }
+
+    /// How many bits the binary holds.
+    #[inline]
+    pub fn bit_len(self) -> u64 {
+        self.bit_len
+    }
+
+    /// Where its first byte is.
+    #[inline]
+    pub fn ptr(self) -> *const u8 {
+        self.ptr
+    }
+
+    /// Its bytes, for a binary of whole bytes. A partial last byte is
+    /// excluded; a caller that reads one uses `bit_len` and `ptr`.
+    #[inline]
+    pub fn bytes<'a>(self) -> &'a [u8] {
+        unsafe { from_raw_parts(self.ptr, (self.bit_len / 8) as usize) }
     }
 
     fn is(self, other: Bin) -> bool {

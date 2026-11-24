@@ -3,7 +3,7 @@ use crate::any_value::{
     AnyValue, AnyValueRef, EMPTY_LIST_BITS, SlotLayout, ValueKind, binview_addr_from_tagged, closure_size_for_count,
     heap_object_word, list_addr_from_tagged, map_count, map_entry, struct_is_shared,
 };
-use crate::bits::{BINVIEW_BYTES, BinView, bitstring_bit_len, bitstring_byte_ptr};
+use crate::bits::{BINVIEW_BYTES, Bin, BinView};
 use crate::exec_ctx::Argv;
 use crate::heap::{Schema, SchemaRegistry};
 use crate::process::{DEFAULT_REDUCTIONS_PER_QUANTUM, Process, YIELD_REASON_REDUCTIONS};
@@ -779,8 +779,8 @@ fn alloc_bitstring_const_small_payload_is_inline() {
                 ValueKind::BITSTRING,
                 "small payload should pick the inline Bitstring kind"
             );
-            assert_eq!(bitstring_bit_len(bits), 24);
-            let bp = bitstring_byte_ptr(bits);
+            assert_eq!(Bin::of_binary(bits).bit_len(), 24);
+            let bp = Bin::of_binary(bits).ptr();
             assert_eq!(from_raw_parts(bp, 3), &bytes);
         }
     });
@@ -815,8 +815,8 @@ fn alloc_binview_from_static_preserves_anchor() {
         unsafe {
             assert_eq!(binview_ref.tag(), ValueKind::BINVIEW);
             assert_eq!(object_size(bits), BINVIEW_BYTES);
-            assert_eq!(bitstring_bit_len(bits), 64);
-            let bp = bitstring_byte_ptr(bits);
+            assert_eq!(Bin::of_binary(bits).bit_len(), 64);
+            let bp = Bin::of_binary(bits).ptr();
             assert_eq!(from_raw_parts(bp, 8), &PAYLOAD[..]);
             // retain climbed anchor 1 -> 2.
             assert_eq!(sb.refcount.load(Ordering::Relaxed), 2);
@@ -840,8 +840,8 @@ fn alloc_bitstring_const_large_payload_is_binview() {
         unsafe {
             assert_eq!(binview_ref.tag(), ValueKind::BINVIEW);
             assert_eq!(object_size(bits), BINVIEW_BYTES);
-            assert_eq!(bitstring_bit_len(bits), 70 * 8);
-            let bp = bitstring_byte_ptr(bits);
+            assert_eq!(Bin::of_binary(bits).bit_len(), 70 * 8);
+            let bp = Bin::of_binary(bits).ptr();
             assert_eq!(from_raw_parts(bp, payload.len()), payload.as_slice());
         }
     });
@@ -1141,8 +1141,7 @@ fn list_length_counts_a_proper_list_and_refuses_every_other_value() {
 }
 
 fn binary_bytes(word: u64) -> Vec<u8> {
-    let p = bitstring_like_word(word).expect("a binary");
-    unsafe { std::slice::from_raw_parts(bitstring_byte_ptr(p), (bitstring_bit_len(p) / 8) as usize).to_vec() }
+    unsafe { Bin::of_binary(word) }.bytes().to_vec()
 }
 
 fn alloc_binary(process: &mut Process, bytes: &[u8]) -> u64 {
@@ -1396,8 +1395,7 @@ fn read_rest_entry_allocates_the_bytes_as_one_binary() {
     assert!(!stream.is_null(), "fopen {path:?}");
     with_process(|process| {
         let binary = fz_file_read_rest(process, stream as u64);
-        let (ptr, len) = byte_aligned_binary_slice(binary, "test");
-        assert_eq!(unsafe { from_raw_parts(ptr, len) }, contents.as_slice());
+        assert_eq!(unsafe { Bin::of_binary(binary) }.bytes(), contents.as_slice());
     });
     unsafe { fclose(stream) };
     std::fs::remove_file(&path).expect("remove temp file");
@@ -1664,8 +1662,8 @@ fn reading_a_middle_binary_field_of_a_shared_source_builds_a_view() {
         let after = process.heap.alloc_stats_snapshot();
         let word = AnyValueRef::from_raw_word(field).unwrap().heap_object_word().unwrap();
         unsafe {
-            assert_eq!(bitstring_bit_len(word), 100 * 8);
-            assert_eq!(from_raw_parts(bitstring_byte_ptr(word), 100), &bytes[50..150]);
+            assert_eq!(Bin::of_binary(word).bit_len(), 100 * 8);
+            assert_eq!(from_raw_parts(Bin::of_binary(word).ptr(), 100), &bytes[50..150]);
         }
         assert_eq!(
             after.shared_bin.allocs, before.shared_bin.allocs,

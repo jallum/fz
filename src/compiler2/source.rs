@@ -8,8 +8,7 @@ use std::sync::OnceLock;
 use smallvec::SmallVec;
 
 use fz_runtime::any_value::{AnyValue, AnyValueRef, AnyValueRefError, ValueKind, map_count, struct_schema_id};
-use fz_runtime::bits::bitstring_bit_len as tagged_bitstring_bit_len;
-use fz_runtime::bits::bitstring_byte_ptr as binview_byte_ptr;
+use fz_runtime::bits::Bin;
 use fz_runtime::heap::{Schema, SchemaRegistry, map_entries_refs, map_entry_refs};
 use fz_runtime::process::{AtomName, DEFAULT_REDUCTIONS_PER_QUANTUM, Node, Process};
 
@@ -761,16 +760,14 @@ impl QuotedSourceCursor {
                 )));
             }
         };
-        let byte_ptr = unsafe { binview_byte_ptr(heap_word) };
-        let bit_len = unsafe { tagged_bitstring_bit_len(heap_word) } as usize;
-        if !bit_len.is_multiple_of(8) {
+        let binary = unsafe { Bin::of_binary(heap_word) };
+        if !binary.bit_len().is_multiple_of(8) {
             return Err(QuotedSourceError::new(format!(
-                "expected whole-byte UTF-8 bitstring, got {bit_len} bits"
+                "expected whole-byte UTF-8 bitstring, got {} bits",
+                binary.bit_len()
             )));
         }
-        let byte_len = bit_len / 8;
-        let bytes = unsafe { slice::from_raw_parts(byte_ptr, byte_len) };
-        Ok(bytes.to_vec())
+        Ok(binary.bytes().to_vec())
     }
 
     pub fn list_items(&self) -> Result<Vec<Self>, QuotedSourceError> {
@@ -1237,10 +1234,9 @@ fn bitstring_eq(a: AnyValueRef, b: AnyValueRef) -> Result<bool, QuotedSourceErro
 
 fn bitstring_payload(value: AnyValueRef) -> Result<(usize, Vec<u8>), QuotedSourceError> {
     let heap_word = value.heap_object_word().map_err(QuotedSourceError::from)?;
-    let byte_ptr = unsafe { binview_byte_ptr(heap_word) };
-    let bit_len = unsafe { tagged_bitstring_bit_len(heap_word) } as usize;
-    let byte_len = bit_len.div_ceil(8);
-    let bytes = unsafe { slice::from_raw_parts(byte_ptr, byte_len) }.to_vec();
+    let binary = unsafe { Bin::of_binary(heap_word) };
+    let bit_len = binary.bit_len() as usize;
+    let bytes = unsafe { slice::from_raw_parts(binary.ptr(), bit_len.div_ceil(8)) }.to_vec();
     Ok((bit_len, bytes))
 }
 

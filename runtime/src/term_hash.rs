@@ -29,7 +29,7 @@ use crate::any_value::{
     AnyValue, ListCons, ValueKind, closure_capture_value, closure_captured_count, closure_denotation,
     map_for_each_entry, struct_schema_id,
 };
-use crate::bits::{bitstring_bit_len, bitstring_byte_ptr};
+use crate::bits::Bin;
 use crate::heap::{SchemaIdentity, SchemaRegistry};
 use crate::process::Node;
 use crate::resource::ResourceStub;
@@ -260,8 +260,9 @@ impl<'a> TermHasher<'a> {
 /// By bit length and content; the bits of a last partial byte past the length
 /// are not content.
 fn hash_bitstring(word: u64) -> u64 {
-    let bits = unsafe { bitstring_bit_len(word) } as usize;
-    let bytes = unsafe { from_raw_parts(bitstring_byte_ptr(word), bits.div_ceil(8)) };
+    let binary = unsafe { Bin::of_binary(word) };
+    let bits = binary.bit_len() as usize;
+    let bytes = unsafe { from_raw_parts(binary.ptr(), bits.div_ceil(8)) };
     let whole = bits / 8;
     let hash = bytes_hash(&bytes[..whole], bits as u64);
     if bits.is_multiple_of(8) {

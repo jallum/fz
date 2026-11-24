@@ -195,6 +195,22 @@ binary it has proven one (`Prim::BinaryBitLen`, a cursor's source) with one load
 word 0, masked and shifted. `Prim::BitstringBitLen` first tests that the kind is
 a bitstring or a view, and answers -1 otherwise.
 
+`Bin::of_binary(word)` (`bits.rs`) is the one decoder of a binary's tagged word in
+the runtime: it reads the length from word 0 and, from one tag bit, where the bytes
+start (inline at +8, or the view's `bytes_ptr`), and only `debug_assert`s the kind.
+A runtime function that reads a binary is handed a proven one -- its extern's
+`binary`, `bitstring`, `binary_cursor` or `c_string` parameter, checked at the
+call, or a match read the compiler emits after a kind test -- and decodes it
+there. A function whose question is whether a value is a binary
+(`fz_pinned_binary_segment_size`, `fz_matcher_eq_bytes`, the interpreter's
+`read_bitstring`, the debug renderer, failure text) makes one `is_bitstring_like`
+test and then calls `Bin::of_binary`. A binary's ref word is its heap object word
+(`AnyValueRef::from_heap_object` packs the kind and address, and `heap_object_word`
+returns that word), so a ref-word argument is decoded as it arrives. Map keys, which
+store a kind beside the word, decode through `Bin::of_stored`. `bit_len`, `ptr` and
+`bytes` (whole bytes only) are `Bin`'s accessors; the receive dispatch reads a
+guarded binary's length with the same inline `emit_proven_binary_bit_len` body code uses.
+
 A match that takes a binary apart does not ask for a slice at all when the
 rest stays inside the compiler's own code. Its demand is `Matched` (see
 `pipeline.md`), and the rest travels as a cursor: `ShapeDescr::Cursor`, two
