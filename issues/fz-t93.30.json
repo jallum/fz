@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-24T21:00:12Z",
+  "description": "Approved by the user 2026-11-24; assignment via the Coordinator.\n\nA call on a module value (`mod.f(args)`) resolves every module that may hold f/n. resolve_module_value_call (src/compiler2/jobs/semantic.rs:1450) plans every DIRECT callee (plan_direct_call :1954) before it prepares any (prepare_keyed_call :2030), so a call that finds one callee unready prepares none and no wait stands without a row of the caller's behind it. That rule removed a job-order dependence (the backend plan differed by which callee's facts were ready first).\n\nA protocol callback among the callees is outside the rule: resolve_protocol_call (:2116) runs after the direct callees are prepared, and is all-or-none only among its own targets, not with the module-value call's other callees (.agent/docs/modules.md, paragraph after the nameable-module callees). So a module-value call can mint direct callees' activations and stand waits while its protocol callee is unready, or the reverse: the same partial-preparation shape the rule exists to prevent.\n\nEvidence: a known gap in the rule, documented in modules.md; no fixture in the 1333-fixture fifo/lifo census (canon_test order knob, `fz_engine::pop_order::with(PopOrder::Lifo, ..)`) currently differs by it.\n\nDone when: protocol callees are planned with the direct callees and prepared only if every callee is ready; a fixture with a module-value call whose callees include a protocol callback is added to ORDER_FREE_PLANS in src/compiler2/canon_test.rs and is identical under fifo and lifo; modules.md states the single rule (the gap paragraph goes); no pin rises without approval.",
+  "id": "fz-t93.30",
+  "labels": [],
+  "parent": "fz-t93",
+  "priority": 2,
+  "status": "open",
+  "title": "A module-value call plans its protocol callees before it prepares any",
+  "type": "bug",
+  "updated_at": "2026-11-24T21:00:12Z"
+}
