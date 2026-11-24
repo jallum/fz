@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "fz-engine",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-24T21:00:12Z",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "A module-value call plans its protocol callees before it prepares any",
   "type": "bug",
-  "updated_at": "2026-11-24T21:00:12Z"
+  "updated_at": "2026-11-24T21:00:22Z"
 }
