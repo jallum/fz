@@ -58,16 +58,16 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage};
 use fz_runtime::any_value::{AnyValueRef, FALSE_ATOM_ID, NIL_ATOM_ID, TRUE_ATOM_ID, ValueKind};
 use fz_runtime::ir_runtime::{
-    fz_box_float_for_any, fz_box_int_for_any, fz_box_opaque_for_any, fz_bs_bit_len_ref, fz_bs_field_end,
-    fz_bs_field_spec, fz_bs_read_binary_ref, fz_bs_read_int_ref, fz_function_arity, fz_list_head_ref, fz_list_is_cons,
-    fz_list_tail_ref, fz_map_is_map, fz_map_named_schema_ref, fz_matcher_eq_bytes, fz_matcher_map_get_ref,
-    fz_pinned_binary_segment_size, fz_receive_pinned_ref, fz_struct_get_field_ref, fz_struct_get_named_field_ref,
-    fz_struct_schema_id_ref, fz_truthy_ref, fz_type_of, fz_unbox_atom, fz_unbox_float, fz_unbox_int, fz_unbox_opaque,
-    fz_value_cmp_ref, fz_value_eq_ref, fz_value_eq_widening_ref,
+    fz_box_float_for_any, fz_box_int_for_any, fz_box_opaque_for_any, fz_bs_field_end, fz_bs_field_spec,
+    fz_bs_read_binary_ref, fz_bs_read_int_ref, fz_function_arity, fz_list_head_ref, fz_list_is_cons, fz_list_tail_ref,
+    fz_map_is_map, fz_map_named_schema_ref, fz_matcher_eq_bytes, fz_matcher_map_get_ref, fz_pinned_binary_segment_size,
+    fz_receive_pinned_ref, fz_struct_get_field_ref, fz_struct_get_named_field_ref, fz_struct_schema_id_ref,
+    fz_truthy_ref, fz_type_of, fz_unbox_atom, fz_unbox_float, fz_unbox_int, fz_unbox_opaque, fz_value_cmp_ref,
+    fz_value_eq_ref, fz_value_eq_widening_ref,
 };
 use fz_runtime::process::AtomName;
 
-use super::prim::c_pair_return_types;
+use super::prim::{c_pair_return_types, emit_proven_binary_bit_len};
 use super::repr::ExternLane;
 use super::runtime_call::{RuntimeCaller, RuntimeFn, runtime_call, runtime_call_ref, runtime_call1, runtime_condition};
 use super::{CodegenError, SLOT_BYTES, WordKeyFind, address_field, emit_fn_body, immediate_ref_word, import_call_ref};
@@ -872,7 +872,7 @@ impl<'f, M: cranelift_module::Module> RuntimeTestEmitter<'f> for ReceiveTestEmit
 
     fn bitstring_bit_len(&mut self, value: ReceiveValue) -> Result<ir::Value, CodegenError> {
         let value_ref = emit_receive_value_ref(self.body, self.ctx, value)?;
-        Ok(runtime_call1!(self.body, fz_bs_bit_len_ref, [value_ref]))
+        Ok(emit_proven_binary_bit_len(self.body.b, value_ref))
     }
 
     fn raw_int(&mut self, value: ReceiveValue) -> Result<ir::Value, CodegenError> {
@@ -1257,7 +1257,7 @@ fn emit_bitstring_test<M: cranelift_module::Module>(
     let value = resolve_dispatch_subject(body, ctx, subject, state)?;
     emit_bitstring_like_guard(body, value, false_b)?;
     let value_ref = emit_receive_value_ref(body, ctx, value)?;
-    let bit_len = runtime_call1!(body, fz_bs_bit_len_ref, [value_ref]);
+    let bit_len = emit_proven_binary_bit_len(body.b, value_ref);
     let mut pos = body.b.ins().iconst(types::I64, 0);
 
     for field_subject in &shape.fields {

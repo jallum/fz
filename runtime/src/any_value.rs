@@ -1686,11 +1686,10 @@ pub mod debug {
 
     use super::{
         AnyValue, AnyValueRef, EMPTY_LIST, FALSE_ATOM_ID, ListCons, NIL_ATOM_ID, TRUE_ATOM_ID, ValueKind,
-        binview_addr_from_tagged, bitstring_addr_from_tagged, closure_addr_from_tagged, closure_arity,
-        closure_denotation, list_addr_from_tagged, map_addr_from_tagged, map_entries, struct_addr_from_tagged,
-        struct_schema_id,
+        closure_addr_from_tagged, closure_arity, closure_denotation, list_addr_from_tagged, map_addr_from_tagged,
+        map_entries, struct_addr_from_tagged, struct_schema_id,
     };
-    use crate::bits::{bitstring_bit_len, bitstring_byte_ptr};
+    use crate::bits::{Bin, is_bitstring_like};
     use crate::heap::{FieldKind, SchemaIdentity};
     use crate::module_name::{alias_spelling, is_alias_namespace_atom};
     use crate::process::Process;
@@ -1919,7 +1918,7 @@ pub mod debug {
             if struct_addr_from_tagged(bits).is_some() {
                 return self.struct_value(bits);
             }
-            if bitstring_addr_from_tagged(bits).is_some() || binview_addr_from_tagged(bits).is_some() {
+            if is_bitstring_like(bits) {
                 return self.bitstring(bits);
             }
             // An empty list reaches here two ways: as the `EMPTY_LIST` sentinel,
@@ -2073,14 +2072,9 @@ pub mod debug {
         }
 
         fn bitstring(&mut self, bits: u64) -> String {
-            assert!(
-                binview_addr_from_tagged(bits).is_some() || bitstring_addr_from_tagged(bits).is_some(),
-                "bitstring expects a bitstring-like heap word"
-            );
-            let bit_len = unsafe { bitstring_bit_len(bits) } as usize;
-            let total_bytes = bit_len.div_ceil(8);
-            let byte_ptr = unsafe { bitstring_byte_ptr(bits) };
-            let bytes = unsafe { slice::from_raw_parts(byte_ptr, total_bytes) };
+            let source = unsafe { Bin::of_binary(bits) };
+            let bit_len = source.bit_len() as usize;
+            let bytes = unsafe { slice::from_raw_parts(source.ptr(), bit_len.div_ceil(8)) };
             let full_bytes = bit_len / 8;
             let trailing_bits = bit_len % 8;
 

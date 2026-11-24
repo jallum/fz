@@ -1,5 +1,4 @@
 use std::cell::OnceCell;
-use std::slice::from_raw_parts;
 
 use super::backend::{
     backend_callable_identity, decode_field, env_get, field_spans_for, materialize_cursor, materialize_transport_value,
@@ -23,9 +22,9 @@ use crate::runtime_type_predicate::{
     RuntimeTypePredicate, RuntimeValueReader, TuplePositions, matches_runtime_type_predicate, surface_membership,
 };
 use fz_runtime::any_value::{AnyValue as RuntimeAnyValue, Stored, TRUE_ATOM_ID, ValueKind, struct_schema_id};
-use fz_runtime::bits::{bitstring_bit_len, bitstring_byte_ptr, is_bitstring_like};
+use fz_runtime::bits::{Bin, is_bitstring_like};
 use fz_runtime::ir_runtime::{
-    bs_field_end, fz_bs_bit_len_ref, fz_bs_field_spec, fz_list_head_ref, fz_list_tail_ref, fz_matcher_map_get_ref,
+    bs_field_end, fz_bs_field_spec, fz_list_head_ref, fz_list_tail_ref, fz_matcher_map_get_ref,
     fz_pinned_binary_segment_size, fz_struct_get_field_ref,
 };
 use fz_runtime::process::Process;
@@ -944,7 +943,7 @@ impl<'a> Dispatch<'a> {
         let plan = self.plan;
         let proc = self.proc();
         let source_ref = value.ref_word().raw_word();
-        let bit_len = fz_bs_bit_len_ref(source_ref);
+        let bit_len = unsafe { Bin::of_binary(value_bits) }.bit_len();
         let mut pos = start;
         for field_subject in &shape.fields {
             let extraction = plan.bitstring_extraction(*field_subject);
@@ -1079,7 +1078,7 @@ impl TypeTest<'_> {
                 .ok()
                 .and_then(RuntimeAnyValue::heap_object_word)
                 .ok_or_else(|| DispatchStop::broken("a cursor source must be a bitstring".to_string()))?;
-            let source_bits = unsafe { bitstring_bit_len(source_word) };
+            let source_bits = unsafe { Bin::of_binary(source_word) }.bit_len();
             return Ok(admitted.admits(source_bits - position as u64));
         }
         let Some(arity) = transport.interners().tuple_arity(shape) else {
@@ -1330,14 +1329,9 @@ fn dispatch_const_eq(proc: *mut Process, module: &Module, val: AnyValue, value: 
             other => other.value(proc).ok().is_some_and(|val| {
                 val.heap_object_word()
                     .filter(|word| is_bitstring_like(*word))
-                    .is_some_and(|p| {
-                        let bit_len = unsafe { bitstring_bit_len(p) };
-                        if bit_len != (bytes.len() as u64) * 8 {
-                            return false;
-                        }
-                        let ptr = unsafe { bitstring_byte_ptr(p) };
-                        let slice = unsafe { from_raw_parts(ptr, bytes.len()) };
-                        slice == bytes
+                    .is_some_and(|word| {
+                        let binary = unsafe { Bin::of_binary(word) };
+                        binary.bit_len() == (bytes.len() as u64) * 8 && binary.bytes() == bytes
                     })
             }),
         },

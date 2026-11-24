@@ -761,10 +761,7 @@ fn a_sender_appending_to_a_binary_it_sent_leaves_the_receivers_bytes_intact() {
 
     let received_bytes = unsafe {
         let word = received.heap_object_word().unwrap();
-        std::slice::from_raw_parts(
-            crate::bits::bitstring_byte_ptr(word),
-            crate::bits::bitstring_bit_len(word) as usize / 8,
-        )
+        crate::bits::Bin::of_binary(word).bytes()
     };
     let mut expected = vec![b'a'; 100];
     expected.push(b'b');

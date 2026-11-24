@@ -1,13 +1,11 @@
 use super::*;
-use crate::any_value::ValueKind;
+use crate::any_value::{AnyValueRef, ValueKind};
 use crate::bits::{BinView, SharedBinHandle, alloc_binref, alloc_view};
 use crate::heap::Heap;
 use crate::heap::SchemaRegistry;
 use crate::heap::StubSite;
 use crate::process::Process;
 use std::cell::RefCell;
-use std::env::{current_exe, var};
-use std::process::{Command, exit};
 use std::rc::Rc;
 use std::slice::from_raw_parts;
 
@@ -123,46 +121,4 @@ fn cstring_of_a_middle_view_is_a_nul_terminated_copy_of_the_slice() {
         assert_ne!(cs, fz_binary_as_ptr(v), "a middle view has no NUL after it");
         assert_eq!(from_raw_parts(cs, 101), &[&bytes[50..150], &[0u8][..]].concat()[..]);
     }
-}
-
-/// Non-binary AnyValues abort. We can't easily assert abort in a unit
-/// test (it would tear down the test process), so we drive these
-/// cases through a child process via `std::process::Command` only when
-/// requested — under normal `cargo test` we just verify that valid
-/// inputs work. The arg-exception path is exercised end-to-end by the
-/// integration fixtures.
-///
-/// However we can still confirm one negative shape statically: a raw
-/// integer payload is not a binary heap pointer, which causes
-/// `coerce_binary_ptr` to take the panic branch. We test by dispatching
-/// the call in a forked subprocess so the abort doesn't kill us.
-#[test]
-fn non_binary_aborts_in_subprocess() {
-    // Re-invoke the same test binary with an env flag so a child
-    // process performs the call and aborts.
-    if var("FZ_EB_ABORT_NON_BIN").is_ok() {
-        unsafe {
-            let _ = fz_binary_as_ptr(42);
-        }
-        // Unreachable; coerce_binary_ptr should abort.
-        exit(0);
-    }
-    let exe = current_exe().expect("current_exe");
-    // Locate this test by its own module path so a module rename can't
-    // silently desync the child's --exact filter. The stale "tests" path
-    // left over from splitting tests into their own module matched no
-    // tests, so the child ran nothing and exited 0 instead of aborting.
-    let self_path = format!("{}::non_binary_aborts_in_subprocess", module_path!());
-    // libtest's --exact names omit the crate; module_path! includes it.
-    let filter = self_path.split_once("::").map_or(self_path.as_str(), |(_, rest)| rest);
-    let out = Command::new(exe)
-        .env("FZ_EB_ABORT_NON_BIN", "1")
-        .args(["--exact", filter])
-        .output()
-        .expect("spawn child");
-    // The child should not exit cleanly — coerce_binary_ptr aborts.
-    // cargo's libtest harness captures stderr unless --nocapture, so
-    // we only assert the non-zero status here. The integration fixture
-    // exercises the arg-exception message end-to-end.
-    assert!(!out.status.success(), "child must abort, got {:?}", out.status);
 }

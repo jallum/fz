@@ -12,10 +12,10 @@
 
 use crate::any_value::debug::render_value;
 use crate::any_value::{AnyValue, AnyValueRef};
-use crate::bits::bitstring_bit_len;
+use crate::bits::{Bin, is_bitstring_like};
 use crate::bitstr::BitType;
 use crate::heap::{list_head_ref, list_tail_ref};
-use crate::ir_runtime::{bitstring_like_word, decode_bit_type, fz_tuple_elem, fz_tuple_size};
+use crate::ir_runtime::{decode_bit_type, fz_tuple_elem, fz_tuple_size};
 use crate::process::Process;
 
 /// The type Elixir's message names: `bits` is reported as `binary`.
@@ -169,11 +169,8 @@ fn shape(value: AnyValue) -> Shape {
     match value {
         AnyValue::Int(int) => Shape::Int(int),
         AnyValue::Float(_) => Shape::Float,
-        AnyValue::HeapRef(heap) => match bitstring_like_word(heap.raw_word()) {
-            Some(bits) => Shape::Bitstring {
-                bits: unsafe { bitstring_bit_len(bits) },
-            },
-            None => Shape::Other,
+        AnyValue::HeapRef(heap) if is_bitstring_like(heap.raw_word()) => Shape::Bitstring {
+            bits: unsafe { Bin::of_binary(heap.raw_word()) }.bit_len(),
         },
         _ => Shape::Other,
     }

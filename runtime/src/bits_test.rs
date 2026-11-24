@@ -491,9 +491,9 @@ fn a_slice_above_the_threshold_is_a_view_and_below_it_a_copy() {
     assert_eq!(big.kind(), ValueKind::BINVIEW);
     assert_eq!(small.kind(), ValueKind::BITSTRING);
     let word = big.heap_object_word().unwrap();
-    assert_eq!(unsafe { bitstring_bit_len(word) }, 100 * 8);
+    assert_eq!(unsafe { Bin::of_binary(word).bit_len() }, 100 * 8);
     assert_eq!(
-        unsafe { from_raw_parts(bitstring_byte_ptr(word), 100) },
+        unsafe { from_raw_parts(Bin::of_binary(word).ptr(), 100) },
         &bytes[10..110]
     );
 }
@@ -537,7 +537,7 @@ fn concat(heap: &mut Heap, left: AnyValue, right: &[u8]) -> BinView {
     let view = left.heap_addr().map(|addr| unsafe { BinView::from_raw(addr) });
     let left_bytes = unsafe {
         let word = left.heap_object_word().unwrap();
-        from_raw_parts(bitstring_byte_ptr(word), bitstring_bit_len(word) as usize / 8)
+        from_raw_parts(Bin::of_binary(word).ptr(), Bin::of_binary(word).bit_len() as usize / 8)
     };
     let joined = unsafe { heap.alloc_concatenation(left_bytes, view, right) };
     unsafe {
@@ -735,6 +735,42 @@ fn a_bin_reads_the_same_bits_from_an_inline_bitstring_and_a_view() {
     let view = AnyValue::heap_ptr(view.as_raw(), ValueKind::BINVIEW);
     assert!(bin_of(inline) == bin_of(view));
     assert_eq!(bin_of(inline).cmp(&bin_of(view)), std::cmp::Ordering::Equal);
+}
+
+/// Intent: a binary's tagged word alone decodes it, in either form and
+/// whether or not it names read-only program data: the length comes from the
+/// header both forms share, and only a view's bytes are found through it.
+#[test]
+fn a_binary_decodes_from_its_tagged_word_alone() {
+    let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let inline = heap.alloc_bitstring(&[0xab, 0b1010_0000], 11);
+    let view = AnyValue::heap_ptr(
+        alloc_buffer_view(
+            &mut heap,
+            SharedBinHandle::from_bytes(&[7; 100]),
+            100 * 8,
+            StubSite::FilledBuffer,
+        )
+        .as_raw(),
+        ValueKind::BINVIEW,
+    );
+    let literal_bit = crate::any_value::AnyValueRefPacking::current().literal_bit();
+    for value in [inline, view] {
+        let word = value.heap_object_word().expect("a binary is a heap object");
+        let stored = bin_of(value);
+        for word in [word, word | literal_bit] {
+            let decoded = unsafe { Bin::of_binary(word) };
+            assert_eq!((decoded.ptr(), decoded.bit_len()), (stored.ptr(), stored.bit_len()));
+        }
+    }
+    assert_eq!(
+        unsafe { Bin::of_binary(view.heap_object_word().unwrap()) }.bytes(),
+        &[7; 100][..]
+    );
+    assert_eq!(
+        unsafe { Bin::of_binary(inline.heap_object_word().unwrap()) }.bytes(),
+        &[0xab][..]
+    );
 }
 
 /// Intent: bits past the last one are padding, not value.

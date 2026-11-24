@@ -648,27 +648,19 @@ fn match_field_extent<M: cranelift_module::Module>(
 /// no binary has a negative length.
 const NOT_A_BINARY: i64 = -1;
 
-fn load_word<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, M>,
-    address: ir::Value,
-    offset: usize,
-) -> ir::Value {
-    body.b
-        .ins()
+fn load_word(b: &mut FunctionBuilder<'_>, address: ir::Value, offset: usize) -> ir::Value {
+    b.ins()
         .load(types::I64, MemFlagsData::trusted(), address, offset as i32)
 }
 
 /// The bit length of a reference the lowering has proven a binary. An inline
 /// bitstring and a binary view both lead with the same header word, whose
 /// length field sits below the shared mark.
-fn emit_proven_binary_bit_len<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, M>,
-    source_ref: ir::Value,
-) -> ir::Value {
-    let addr = address_field(body.b, source_ref);
-    let header = load_word(body, addr, 0);
-    let length_field = body.b.ins().band_imm_u(header, BITSTRING_HEADER_LEN_MASK as i64);
-    body.b.ins().ushr_imm_u(length_field, BITSTRING_BIT_LEN_SHIFT as i64)
+pub(crate) fn emit_proven_binary_bit_len(b: &mut FunctionBuilder<'_>, source_ref: ir::Value) -> ir::Value {
+    let addr = address_field(b, source_ref);
+    let header = load_word(b, addr, 0);
+    let length_field = b.ins().band_imm_u(header, BITSTRING_HEADER_LEN_MASK as i64);
+    b.ins().ushr_imm_u(length_field, BITSTRING_BIT_LEN_SHIFT as i64)
 }
 
 /// The bit length of a binary; `NOT_A_BINARY` for any other value. One test of
@@ -696,7 +688,7 @@ fn emit_binary_bit_len<M: cranelift_module::Module>(
 
     body.b.switch_to_block(read_b);
     body.b.seal_block(read_b);
-    let length = emit_proven_binary_bit_len(body, source_ref);
+    let length = emit_proven_binary_bit_len(body.b, source_ref);
     body.b.ins().jump(join_b, &[BlockArg::Value(length)]);
 
     body.b.switch_to_block(miss_b);
@@ -726,7 +718,7 @@ fn emit_binary_base<M: cranelift_module::Module>(body: &mut CodegenFn<'_, '_, M>
 
     body.b.switch_to_block(view_b);
     body.b.seal_block(view_b);
-    let from_view = load_word(body, addr, BINVIEW_BYTES_PTR_OFFSET);
+    let from_view = load_word(body.b, addr, BINVIEW_BYTES_PTR_OFFSET);
     body.b.ins().jump(join_b, &[BlockArg::Value(from_view)]);
 
     body.b.switch_to_block(inline_b);
@@ -788,7 +780,7 @@ fn lower_bit_match_prim<M: cranelift_module::Module>(
         }
         Prim::BinaryBitLen(source) => {
             let source_ref = body.tagged_var(var_env, source.0);
-            LowerOut::RawI64(emit_proven_binary_bit_len(body, source_ref))
+            LowerOut::RawI64(emit_proven_binary_bit_len(body.b, source_ref))
         }
         Prim::BitstringBase(source) => {
             let source_ref = body.tagged_var(var_env, source.0);
@@ -1513,7 +1505,7 @@ impl<'fb, M: cranelift_module::Module> RuntimeTestEmitter<'fb> for PrimTestEmitt
 
     fn bitstring_bit_len(&mut self, value: CodegenValue) -> Result<ir::Value, CodegenError> {
         let source_ref = self.body.value_as_any_ref(value);
-        Ok(emit_binary_bit_len(self.body, source_ref))
+        Ok(emit_proven_binary_bit_len(self.body.b, source_ref))
     }
 
     fn raw_int(&mut self, value: CodegenValue) -> Result<ir::Value, CodegenError> {

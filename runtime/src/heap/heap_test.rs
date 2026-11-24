@@ -2242,8 +2242,7 @@ fn gc_handles_cycle_via_forwarding() {
 // ===== BinView + intrusive off-heap chain + post-Cheney sweep =================
 
 use crate::bits::{
-    BINREF_BYTES, BINVIEW_BYTES, BinRef, BinView, SHARED_BIN_BYTES, SharedBinHandle, alloc_buffer_view,
-    bitstring_bit_len, bitstring_byte_ptr,
+    BINREF_BYTES, BINVIEW_BYTES, Bin, BinRef, BinView, SHARED_BIN_BYTES, SharedBinHandle, alloc_buffer_view,
 };
 use crate::heap::StubSite;
 
@@ -2551,8 +2550,8 @@ fn alloc_bitstring_small_stays_inline() {
     let tagged = heap_object_word(p, ValueKind::BITSTRING);
     unsafe {
         assert_eq!(heap_kind_from_tagged(tagged), Some(ValueKind::BITSTRING));
-        assert_eq!(bitstring_bit_len(tagged), 256);
-        let pay = bitstring_byte_ptr(tagged);
+        assert_eq!(Bin::of_binary(tagged).bit_len(), 256);
+        let pay = Bin::of_binary(tagged).ptr();
         for (i, expected) in bytes.iter().enumerate().take(32) {
             assert_eq!(*pay.add(i), *expected);
         }
@@ -2570,8 +2569,8 @@ fn alloc_bitstring_large_routes_to_shared_zone() {
     unsafe {
         assert_eq!(heap_kind_from_tagged(tagged), Some(ValueKind::BINVIEW));
         assert_eq!(object_size(tagged), BINVIEW_BYTES);
-        assert_eq!(bitstring_bit_len(tagged), 1024);
-        let pay = bitstring_byte_ptr(tagged);
+        assert_eq!(Bin::of_binary(tagged).bit_len(), 1024);
+        let pay = Bin::of_binary(tagged).ptr();
         for (i, expected) in bytes.iter().enumerate().take(128) {
             assert_eq!(*pay.add(i), *expected);
         }
@@ -2588,7 +2587,7 @@ fn alloc_bitstring_with_fills_an_inline_payload_in_place() {
     let value = h.alloc_bitstring_with(32, 256, |dest| dest.fill(MaybeUninit::new(7)));
     assert_eq!(value.kind(), ValueKind::BITSTRING);
     let tagged = heap_object_word(value.heap_addr().expect("bitstring"), ValueKind::BITSTRING);
-    let payload = unsafe { std::slice::from_raw_parts(bitstring_byte_ptr(tagged), 33) };
+    let payload = unsafe { std::slice::from_raw_parts(Bin::of_binary(tagged).ptr(), 33) };
     assert_eq!(&payload[..32], &[7u8; 32][..]);
     assert_eq!(payload[32], 0, "the invisible trailing NUL stays zero");
     assert_eq!(h.alloc_stats.shared_bin.bytes, 0);
@@ -2601,7 +2600,7 @@ fn alloc_bitstring_with_fills_a_shared_buffer_in_place_and_counts_it_once() {
     let value = h.alloc_bitstring_with(len, (len * 8) as u64, |dest| dest.fill(MaybeUninit::new(9)));
     assert_eq!(value.kind(), ValueKind::BINVIEW);
     let tagged = heap_object_word(value.heap_addr().expect("binview"), ValueKind::BINVIEW);
-    let payload = unsafe { std::slice::from_raw_parts(bitstring_byte_ptr(tagged), len + 1) };
+    let payload = unsafe { std::slice::from_raw_parts(Bin::of_binary(tagged).ptr(), len + 1) };
     assert!(payload[..len].iter().all(|&b| b == 9));
     assert_eq!(payload[len], 0, "the invisible trailing NUL stays zero");
     assert_eq!(h.alloc_stats.shared_bin.bytes, len as u64);
@@ -2644,8 +2643,8 @@ fn shared_heap_acceptance_spawn_and_share() {
 
     for root_ptr in &receiver_roots {
         unsafe {
-            assert_eq!(bitstring_bit_len(*root_ptr), 1024);
-            let bp = bitstring_byte_ptr(*root_ptr);
+            assert_eq!(Bin::of_binary(*root_ptr).bit_len(), 1024);
+            let bp = Bin::of_binary(*root_ptr).ptr();
             for (i, expected) in payload.iter().enumerate() {
                 assert_eq!(*bp.add(i), *expected);
             }
@@ -2925,8 +2924,8 @@ fn binview_round_trips_through_bitstring_dispatchers() {
     let bytes: Vec<u8> = (0..100u8).collect();
     let p = h.alloc_bitstring(&bytes, 800).heap_addr().expect("binview");
     let tagged = heap_object_word(p, ValueKind::BINVIEW);
-    let bl = unsafe { bitstring_bit_len(tagged) };
-    let bp = unsafe { bitstring_byte_ptr(tagged) };
+    let bl = unsafe { Bin::of_binary(tagged).bit_len() };
+    let bp = unsafe { Bin::of_binary(tagged).ptr() };
     assert_eq!(bl, 800);
     let recovered: Vec<u8> = (0..100).map(|i| unsafe { *bp.add(i) }).collect();
     assert_eq!(recovered, bytes);
