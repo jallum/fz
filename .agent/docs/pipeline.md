@@ -112,7 +112,7 @@ value or a second producer.
 A binary has a demand of its own, `Matched`, above `Whole` (`Ignore` <
 `TupleFields` < `Whole` < `Matched`, `Matched` absorbing). It says the binary is
 taken apart by a match, or measured through a `binary_cursor` extern parameter
-(`byte_size` is `fz_bitstring_byte_extent`, declared with it), and lowers to `ShapeDescr::Cursor`: a source lane and a raw
+(`byte_size` is `fz_bitstring_byte_extent`, declared with it, and computed in place by its row of `RECIPES`), and lowers to `ShapeDescr::Cursor`: a source lane and a raw
 bit-position lane. A value that is not a proven binary, and any consumer with no
 cursor to offer, reads `Matched` as `Whole`. A bit read at a runtime position
 that is a whole number of bytes past the cursor is the inline
