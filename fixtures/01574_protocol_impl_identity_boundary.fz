@@ -1,14 +1,12 @@
 #---
-# purpose: Protocol/target boundaries distinguish implementations whose display paths coincide
+# purpose: A module's atom is its identity: an impl is called through its own atom, and a lexical alias never retargets an unquoted atom
 #---
 defmacro self_val(x) do
   quote do: unquote(__CALLER__.module).val(unquote(x))
 end
 
-defmacro self_val_after_display_edit(x) do
-  {head, meta, _} = __CALLER__.module
-  changed = {head, meta, [:Wrong, :Display]}
-  quote do: unquote(changed).val(unquote(x))
+defmacro same_module() do
+  quote do: unquote(__CALLER__.module) == __MODULE__
 end
 
 defmacro self_struct(x) do
@@ -31,79 +29,30 @@ defmodule Original do
   end
 end
 
-defmodule B do
-  defmodule C do
-    defstruct [:x]
-  end
-end
-
-alias B.C, as: TargetOne
-
-defmodule C do
-  defstruct [:x]
-end
-
-alias C, as: TargetTwo
-
-defprotocol A do
-  @spec val(t) :: integer
-  def val(x)
-  @spec key(t) :: any
-  def key(x)
-  @spec relay(t) :: integer
-  def relay(x)
-end
-
-defprotocol A.B do
-  @spec val(t) :: integer
-  def val(x)
-  @spec key(t) :: any
-  def key(x)
-  @spec relay(t) :: integer
-  def relay(x)
-end
-
-defmodule A.B.C do
-  def val(_x), do: 3
-end
-
-defimpl A, for: TargetOne do
-  def val(_x), do: 1
-  def key(_x), do: &val/1
-  def relay(x) do
-    case x do
-      value when self_val(value) > 0 -> self_val_after_display_edit(value)
-    end
-  end
-end
-
-defimpl A.B, for: TargetTwo do
-  def val(_x), do: 2
-  def key(_x), do: &val/1
-  def relay(x), do: self_val(x)
-end
-
 defprotocol Solo do
   @spec val(t) :: integer
   def val(x)
   @spec relay(t) :: integer
   def relay(x)
+  @spec same(t) :: boolean
+  def same(x)
 end
 
 defimpl Solo, for: List do
   def val(_x), do: 4
   def relay(x), do: self_val(x)
+  def same(_x), do: same_module()
+end
+
+defimpl Solo, for: Map do
+  def val(_x), do: 5
+  def relay(x), do: self_val(x)
+  def same(_x), do: same_module()
 end
 
 def main() do
-  left = %TargetOne{x: 0}
-  right = %TargetTwo{x: 0}
-  dbg({A.val(left), A.B.val(right), A.B.C.val(0)})
-  left_key = A.key(left)
-  right_key = A.B.key(right)
-  named_key = &A.B.C.val/1
-  keys = %{left_key => 1, right_key => 2, named_key => 3}
-  dbg({left_key == right_key, Map.get(keys, left_key), Map.get(keys, right_key), Map.get(keys, named_key)})
-  dbg({A.relay(left), A.B.relay(right), Solo.relay([])})
+  dbg({Solo.val([]), Solo.val(%{}), Solo.List.val(0), Solo.Map.val(0)})
+  dbg({Solo.relay([]), Solo.relay(%{})})
+  dbg({Solo.same([]), Solo.same(%{})})
   dbg({Original.make(5) == %Original{x: 5}, Original.matches(%Original{x: 5})})
 end

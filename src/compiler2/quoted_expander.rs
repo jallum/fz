@@ -263,19 +263,6 @@ pub(crate) trait QuotedExpansionCtx {
         if let Some(node) = cursor.ast_node(&source_map.borrow()).map_err(|error| {
             emit_internal_surface_error(self.telemetry(), format!("quoted expansion read failed: {error}"))
         })? {
-            if node
-                .meta
-                .module_denotation()
-                .map_err(|error| {
-                    emit_internal_surface_error(
-                        self.telemetry(),
-                        format!("quoted module reference read failed: {error}"),
-                    )
-                })?
-                .is_some()
-            {
-                return Ok(ExpandedValue::Complete(cursor.root()));
-            }
             if let Some(name) = attribute_read_name(&node, &source_map.borrow()).map_err(|error| {
                 emit_internal_surface_error(self.telemetry(), format!("module attribute read failed: {error}"))
             })? {
@@ -784,18 +771,9 @@ pub(crate) trait QuotedExpansionCtx {
             return Ok(None);
         };
         let (module_cursor, function_cursor) = (&module_cursor, &function_cursor);
-        let denotation = module_cursor
-            .ast_node(&source_map.borrow())
-            .and_then(|node| node.map(|node| node.meta.module_denotation()).transpose())
-            .map_err(|error| {
-                emit_internal_surface_error(
-                    self.telemetry(),
-                    format!("quoted module reference read failed: {error}"),
-                )
-            })?
-            .flatten();
-        let module_path = match &denotation {
-            Some(module) => module.display_segments().cloned().collect(),
+        let atom_module = super::quoted_function::module_atom(module_cursor);
+        let module_path = match &atom_module {
+            Some(name) => name.segments().to_vec(),
             None => match alias_path(module_cursor, &source_map.borrow()).map_err(|error| {
                 emit_internal_surface_error(self.telemetry(), format!("quoted remote module read failed: {error}"))
             })? {
@@ -811,8 +789,8 @@ pub(crate) trait QuotedExpansionCtx {
         })?;
         let module = {
             let world = self.world();
-            match denotation {
-                Some(module) => world.reference_module_denotation(module),
+            match atom_module {
+                Some(name) => world.reference_module(name),
                 None => world.resolve_module_name(scope.namespace(), &ModuleName::from_segments(module_path.clone())),
             }
         };

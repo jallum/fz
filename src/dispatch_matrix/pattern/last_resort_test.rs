@@ -109,9 +109,7 @@ fn a_failure_that_sets_a_field_its_exception_lacks_has_no_struct_to_raise() {
 fn an_exception_whose_default_is_a_function_has_no_struct_a_backend_can_build() {
     let declared = ["term".to_string(), "format".to_string()];
     let function = LiteralTerm::Function {
-        module: fz_runtime::module_name::ModuleDenotation::Named(fz_runtime::module_name::ModuleName::from_segments(
-            vec!["String".to_string()],
-        )),
+        module: fz_runtime::module_name::ModuleName::from_segments(vec!["String".to_string()]),
         name: "length".to_string(),
         arity: 1,
     };

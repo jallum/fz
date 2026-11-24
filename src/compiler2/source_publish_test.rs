@@ -767,7 +767,7 @@ mod identity_tests {
     use super::super::*;
 
     #[test]
-    fn protocol_impl_identity_preserves_the_protocol_target_boundary() {
+    fn a_protocol_impl_is_the_module_its_concatenated_name_is() {
         let mut world = World::new();
         let a = world.reference_module(ModuleName::parse_dotted("A").unwrap());
         let bc = world.reference_module(ModuleName::parse_dotted("B.C").unwrap());
@@ -776,30 +776,12 @@ mod identity_tests {
         let named = world.reference_module(ModuleName::parse_dotted("A.B.C").unwrap());
         let left = world.reference_protocol_impl_module(a, bc);
         let right = world.reference_protocol_impl_module(ab, c);
-        assert_ne!(left, right, "the protocol/target boundary is part of module identity");
-        assert_ne!(left, named, "a named module cannot own an implementation's source");
-        assert_ne!(right, named);
-        assert_eq!(left, world.reference_protocol_impl_module(a, bc));
-        assert!(
-            world.module_name(left).is_none(),
-            "an implementation has no named lookup path"
-        );
-        assert!(world.module_name(right).is_none());
-        let left_function = world.reference_function(left, "val", 1);
-        let right_function = world.reference_function(right, "val", 1);
-        let left = &world.function_ref(left_function).denotation;
-        let right = &world.function_ref(right_function).denotation;
-        assert_eq!(left.label(), right.label(), "display labels may collide");
-        assert_ne!(left.semantic_cmp(right), std::cmp::Ordering::Equal);
-        let table = vec![
-            (fz_runtime::any_value::ClosureDenotationId::user(0), left.clone()),
-            (fz_runtime::any_value::ClosureDenotationId::user(1), right.clone()),
-        ];
-        let bytes = fz_runtime::function_denotation::encode_closure_denotations(&table).unwrap();
+        assert_eq!(left, named, "`defimpl A, for: B.C` is the module `A.B.C`, as in Elixir");
         assert_eq!(
-            fz_runtime::function_denotation::decode_closure_denotations(&bytes).unwrap(),
-            table
+            right, named,
+            "`defimpl A.B, for: C` is the same module: one atom, one module"
         );
+        assert_eq!(world.module_name(left).unwrap().atom_name(), "Elixir.A.B.C");
     }
 
     #[test]
@@ -827,7 +809,7 @@ mod identity_tests {
     }
 
     #[test]
-    fn declared_and_protocol_impl_modules_preserve_full_typed_paths() {
+    fn declared_and_protocol_impl_modules_keep_their_full_paths() {
         let mut world = World::new();
         let parent = world.reference_module(ModuleName::from_segments(vec!["Parent".into()]));
         let flat = ModuleName::from_segments(vec!["A.B".into()]);
@@ -847,21 +829,15 @@ mod identity_tests {
         let right_impl = world.reference_protocol_impl_module(protocol, right);
         assert_ne!(
             left_impl, right_impl,
-            "targets sharing a local name cannot alias an impl module"
+            "targets with distinct paths name distinct impl modules"
         );
         assert_eq!(
-            world.module_denotation(left_impl).unwrap(),
-            &crate::modules::identity::ModuleDenotation::ProtocolImpl {
-                protocol: world.module_name(protocol).unwrap().clone(),
-                target: world.module_name(left).unwrap().clone()
-            }
+            world.module_name(left_impl).unwrap(),
+            &ModuleName::from_segments(vec!["Protocol".into(), "Left".into(), "Box".into()])
         );
         assert_eq!(
-            world.module_denotation(right_impl).unwrap(),
-            &crate::modules::identity::ModuleDenotation::ProtocolImpl {
-                protocol: world.module_name(protocol).unwrap().clone(),
-                target: world.module_name(right).unwrap().clone()
-            }
+            world.module_name(right_impl).unwrap(),
+            &ModuleName::from_segments(vec!["Protocol".into(), "Right".into(), "Box".into()])
         );
     }
 

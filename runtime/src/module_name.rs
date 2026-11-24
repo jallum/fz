@@ -16,66 +16,6 @@ enum Root {
     Bare,
 }
 
-/// A module's source denotation. Implementation ownership includes the boundary
-/// between protocol and target; its display path is not a named module lookup.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum ModuleDenotation {
-    Named(ModuleName),
-    ProtocolImpl { protocol: ModuleName, target: ModuleName },
-}
-
-impl ModuleDenotation {
-    /// Structural term encoding shared by compiler reflection and quote
-    /// reification. Each path remains a separate ordered field.
-    pub fn quoted_parts(&self) -> (&'static str, impl Iterator<Item = &ModuleName>) {
-        let (tag, first, second) = match self {
-            Self::Named(name) => ("named", name, None),
-            Self::ProtocolImpl { protocol, target } => ("protocol_impl", protocol, Some(target)),
-        };
-        (tag, std::iter::once(first).chain(second))
-    }
-
-    pub fn named_path(&self) -> Option<&ModuleName> {
-        match self {
-            Self::Named(name) => Some(name),
-            Self::ProtocolImpl { .. } => None,
-        }
-    }
-
-    /// The atom the module is in value position. An implementation's atom is
-    /// that of its display path.
-    pub fn atom_name(&self) -> String {
-        match self {
-            Self::Named(name) => name.atom_name(),
-            Self::ProtocolImpl { .. } => {
-                ModuleName::from_segments(self.display_segments().cloned().collect()).atom_name()
-            }
-        }
-    }
-
-    /// Source-visible alias spelling for quoted environment and diagnostic data.
-    /// Never use this projection to recover a module's identity.
-    pub fn display_segments(&self) -> impl Iterator<Item = &String> {
-        let (first, second) = match self {
-            Self::Named(name) => (name, None),
-            Self::ProtocolImpl { protocol, target } => (protocol, Some(target)),
-        };
-        first
-            .segments()
-            .iter()
-            .chain(second.into_iter().flat_map(ModuleName::segments))
-    }
-}
-
-impl fmt::Display for ModuleDenotation {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Named(name) => name.fmt(f),
-            Self::ProtocolImpl { protocol, target } => write!(f, "{protocol}.{target}"),
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModuleNameParseError {
     text: String,

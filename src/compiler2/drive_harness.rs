@@ -46,7 +46,7 @@ use super::{
 use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardDispatch};
 use crate::exec::runtime::DbgCapture;
 use crate::fast_hash::{HashMap, HashSet};
-use crate::modules::identity::{ModuleDenotation, ModuleName};
+use crate::modules::identity::ModuleName;
 use crate::telemetry::{ConfiguredTelemetry, Value};
 use fz_engine::{AppliedStep, DriveOutcome};
 use std::cell::RefCell;
@@ -418,7 +418,7 @@ type GuardDispatchMap = Rc<RefCell<HashMap<FunctionId, Vec<Arc<PatternGuardDispa
 type LoweredBodyDefs = Rc<RefCell<HashMap<FunctionId, Vec<LoweredBody>>>>;
 type FunctionDefs = Rc<RefCell<HashMap<FunctionId, FunctionDefinedRecord>>>;
 type SourceNotes = Rc<RefCell<Vec<FunctionRef>>>;
-type ModuleDefs = Rc<RefCell<HashMap<ModuleId, Vec<ModuleDenotation>>>>;
+type ModuleDefs = Rc<RefCell<HashMap<ModuleId, Vec<ModuleName>>>>;
 type CallsiteDefs = Rc<RefCell<Vec<CallsiteDefinedRecord>>>;
 type BackendProgramDefs = Rc<RefCell<Vec<BackendProgramRecord>>>;
 type NativeProgramDefs = Rc<RefCell<Vec<NativeProgramRecord>>>;
@@ -725,7 +725,7 @@ impl FunctionCapture {
                     && matches!(
                         &record.function_ref.denotation.origin,
                         FunctionOrigin::Named {
-                            module: Some(ModuleDenotation::Named(owner)),
+                            module: Some(owner),
                             ..
                         } if owner.last_segment() == module
                     )
@@ -775,12 +775,10 @@ impl ModuleCapture {
         telemetry.attach_raw_event2::<crate::compiler2::World, ModuleId, _>(
             &["fz", "compiler2", "module", "defined"],
             move |_, _, _, world, module| {
-                defs.borrow_mut().entry(*module).or_default().push(
-                    world
-                        .module_denotation(*module)
-                        .expect("defined module denotation")
-                        .clone(),
-                );
+                defs.borrow_mut()
+                    .entry(*module)
+                    .or_default()
+                    .push(world.module_name(*module).expect("defined module denotation").clone());
             },
         );
     }

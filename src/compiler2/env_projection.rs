@@ -13,7 +13,7 @@ use super::identity::DeclaredCallableKind;
 use super::namespace::NamespaceSymbol;
 use super::quoted_expander::ExpansionContext;
 use super::scope::ScopeSnapshot;
-use super::source::{QuotedSourceBuilder, QuotedSourceError, QuotedSourceMetadata};
+use super::source::{QuotedSourceBuilder, QuotedSourceError};
 use super::world::World;
 
 /// The file `%Macro.Env{}` names when the call has no source position.
@@ -50,32 +50,6 @@ impl CallSite {
 type ImportsByModule = BTreeMap<String, BTreeSet<(String, usize)>>;
 
 impl World {
-    /// The module a scope stands in, as the alias that names it: its exact
-    /// denotation rides in the alias's metadata, so a macro that unquotes it
-    /// as a call target reaches that module and no other of the same display
-    /// path. A bare-atom module is its atom, and no module is `nil`.
-    pub(crate) fn project_module_value(
-        &self,
-        builder: &QuotedSourceBuilder,
-        scope: ScopeSnapshot,
-    ) -> Result<AnyValueRef, QuotedSourceError> {
-        let Some(denotation) = self.module_denotation(scope.module_id()) else {
-            return Ok(builder.nil());
-        };
-        if denotation.named_path().is_some_and(ModuleName::is_bare_atom) {
-            return Ok(builder.atom(&denotation.atom_name()));
-        }
-        let metadata = QuotedSourceMetadata {
-            module: Some(denotation.clone()),
-            bound_callable: None,
-            from_brackets: false,
-            span: None,
-            counter: None,
-        };
-        let segments = denotation.display_segments().map(String::as_str).collect::<Vec<_>>();
-        builder.alias(&metadata, &segments)
-    }
-
     pub(crate) fn project_env_value(
         &self,
         builder: &QuotedSourceBuilder,
@@ -93,7 +67,7 @@ impl World {
             }
             None => builder.nil(),
         };
-        let module = self.project_module_value(builder, scope)?;
+        let module = self.module_atom_value(builder, scope.module_id());
         let context_modules = match scope.module_id() {
             id if id.is_global() => builder.empty_list(),
             id => builder.list(&[self.module_atom_value(builder, id)])?,
@@ -145,10 +119,10 @@ impl World {
             let NamespaceSymbol::Module(module) = symbol else {
                 continue;
             };
-            let Some(denotation) = self.module_denotation(*module) else {
+            let Some(module_name) = self.module_name(*module) else {
                 continue;
             };
-            let full = denotation.atom_name();
+            let full = module_name.atom_name();
             if full == short_atom_name(name) {
                 continue;
             }
@@ -175,8 +149,8 @@ impl World {
     ) -> Result<AnyValueRef, QuotedSourceError> {
         let required = self
             .required_modules(scope.namespace())
-            .filter_map(|module| self.module_denotation(module))
-            .map(|denotation| denotation.atom_name());
+            .filter_map(|module| self.module_name(module))
+            .map(ModuleName::atom_name);
         let modules: BTreeSet<String> = required
             .chain(functions.keys().cloned())
             .chain(macros.keys().cloned())
@@ -198,7 +172,7 @@ impl World {
                 continue;
             };
             let owner = self.function_module(*function);
-            let Some(denotation) = self.module_denotation(owner).filter(|_| owner != scope.module_id()) else {
+            let Some(owner_name) = self.module_name(owner).filter(|_| owner != scope.module_id()) else {
                 continue;
             };
             let imports = match (symbol, self.declared_callable_kind(*function)) {
@@ -208,7 +182,7 @@ impl World {
             };
             let reference = self.function_ref(*function);
             imports
-                .entry(denotation.atom_name())
+                .entry(owner_name.atom_name())
                 .or_default()
                 .insert((reference.name().to_string(), reference.arity));
         }

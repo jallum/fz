@@ -72,7 +72,6 @@ fn meta(_source_name: &str, line: u32) -> QuotedSourceMetadata {
     let mut sources = crate::source::SourceMap::new();
     let version = sources.add_code(Some("quoted-structural-test.fz"), " ".repeat(256));
     QuotedSourceMetadata {
-        module: None,
         bound_callable: None,
         from_brackets: false,
         span: Some(Span::new(
@@ -81,84 +80,6 @@ fn meta(_source_name: &str, line: u32) -> QuotedSourceMetadata {
             line.checked_add(3).expect("test span end fits in u32"),
         )),
         counter: None,
-    }
-}
-
-#[test]
-fn module_reference_metadata_keeps_portable_identity_in_semantic_equality() {
-    use crate::modules::identity::{ModuleDenotation, ModuleName};
-    fn projected(module: ModuleDenotation) -> QuotedSourceRoot {
-        let heap = Rc::new(QuotedSourceHeap::new());
-        let builder = heap.builder();
-        let meta = QuotedSourceMetadata {
-            module: Some(module),
-            ..Default::default()
-        };
-        builder.root(builder.alias(&meta, &["A", "B", "C"]).unwrap()).unwrap()
-    }
-    let name = |path| ModuleName::parse_dotted(path).unwrap();
-    let left = ModuleDenotation::ProtocolImpl {
-        protocol: name("A"),
-        target: name("B.C"),
-    };
-    let right = ModuleDenotation::ProtocolImpl {
-        protocol: name("A.B"),
-        target: name("C"),
-    };
-    let first = projected(left.clone());
-    let equal = projected(left.clone());
-    let other_impl = projected(right.clone());
-    let named = projected(ModuleDenotation::Named(name("A.B.C")));
-    assert!(
-        first.semantically_eq(&equal, Horizon::Full),
-        "identity is portable across quoted heaps"
-    );
-    assert!(
-        !first.semantically_eq(&other_impl, Horizon::Full),
-        "the protocol/target boundary is semantic"
-    );
-    assert!(
-        !first.semantically_eq(&named, Horizon::Full),
-        "display equality cannot collapse an implementation into a named module"
-    );
-    for (root, expected) in [(first, left), (other_impl, right)] {
-        assert_eq!(
-            root.cursor()
-                .ast_node(&crate::source::SourceMap::new())
-                .unwrap()
-                .unwrap()
-                .meta
-                .module_denotation()
-                .unwrap(),
-            Some(expected)
-        );
-    }
-}
-
-#[test]
-fn malformed_module_reference_metadata_is_rejected_without_interning() {
-    let heap = Rc::new(QuotedSourceHeap::new());
-    let builder = heap.builder();
-    let empty = builder.list(&[]).unwrap();
-    let path = builder.list(&[builder.atom("A")]).unwrap();
-    let wrong = [
-        builder.int(1),
-        builder.tuple(&[]).unwrap(),
-        builder.tuple(&[builder.atom("unknown"), path]).unwrap(),
-        builder.tuple(&[builder.atom("named"), empty]).unwrap(),
-        builder.tuple(&[builder.atom("named"), path, path]).unwrap(),
-        builder.tuple(&[builder.atom("protocol_impl"), path]).unwrap(),
-        builder.tuple(&[builder.atom("protocol_impl"), path, empty]).unwrap(),
-    ];
-    for value in wrong {
-        let meta = builder
-            .root(
-                builder
-                    .keyword_list(&[(builder.atom(super::source::META_MODULE_KEY), value)])
-                    .unwrap(),
-            )
-            .unwrap();
-        assert!(meta.cursor().module_denotation().is_err());
     }
 }
 

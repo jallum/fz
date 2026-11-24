@@ -7,13 +7,12 @@ use super::{Job, ModuleId, NamespaceSymbol, QuotedSourceHeap, ScopeSnapshot, Wor
 use crate::telemetry::ConfiguredTelemetry;
 
 #[test]
-fn compiler2_impl_environment_projects_alias_without_rekeying_its_owner() {
+fn compiler2_impl_environment_projects_the_impl_modules_atom() {
     use crate::modules::identity::ModuleName;
     let mut world = World::new();
     let protocol = world.reference_module(ModuleName::parse_dotted("A").unwrap());
     let target = world.reference_module(ModuleName::parse_dotted("B.C").unwrap());
     let owner = world.reference_protocol_impl_module(protocol, target);
-    let named = world.reference_module(ModuleName::parse_dotted("A.B.C").unwrap());
     let scope = ScopeSnapshot::module(owner, world.prelude_head());
     let heap = Rc::new(QuotedSourceHeap::new());
     let builder = heap.builder();
@@ -25,26 +24,17 @@ fn compiler2_impl_environment_projects_alias_without_rekeying_its_owner() {
                 .unwrap(),
         )
         .unwrap();
-    let projected = env
-        .cursor()
-        .map_value("module")
-        .unwrap()
-        .unwrap()
-        .ast_node(&world.source_map().borrow())
-        .unwrap()
-        .unwrap();
-    assert_eq!(projected.tail.list_atom_names().unwrap(), ["A", "B", "C"]);
-    assert_eq!(scope.module_id(), owner);
-    assert_ne!(
-        scope.module_id(),
-        named,
-        "projecting an alias cannot change the implementation's owner"
+    let module = env.cursor().map_value("module").unwrap().unwrap();
+    assert_eq!(module.atom_name().unwrap().to_string(), "Elixir.A.B.C");
+    assert_eq!(
+        world.reference_module(ModuleName::parse_dotted("A.B.C").unwrap()),
+        owner,
+        "the atom `A.B.C` names the impl module: one atom, one module"
     );
-    assert_eq!(world.reference_protocol_impl_module(protocol, target), owner);
 }
 
 #[test]
-fn compiler2_scope_snapshot_projects_module_alias_and_env_from_one_authority() {
+fn compiler2_scope_snapshot_projects_module_atom_and_env_from_one_authority() {
     let _tel = ConfiguredTelemetry::new();
     let mut world = World::new();
     let module = world.reference_module(crate::modules::identity::ModuleName::parse_dotted("App.Tools").unwrap());
@@ -55,18 +45,12 @@ fn compiler2_scope_snapshot_projects_module_alias_and_env_from_one_authority() {
     let heap = Rc::new(QuotedSourceHeap::new());
     let builder = heap.builder();
 
-    let module_root = builder
-        .root(world.project_module_value(&builder, scope).expect("project __MODULE__"))
+    let module_atom = builder
+        .root(world.module_atom_value(&builder, scope.module_id()))
         .expect("module root");
-    let module_alias = module_root
-        .cursor()
-        .trusted_ast_node()
-        .expect("module alias cursor")
-        .expect("module alias node");
-    assert_eq!(module_alias.head.atom_name().expect("module alias head"), "__aliases__");
     assert_eq!(
-        module_alias.tail.list_atom_names().expect("module alias segments"),
-        vec!["App".to_string(), "Tools".to_string()],
+        module_atom.cursor().atom_name().expect("module atom").to_string(),
+        "Elixir.App.Tools",
         "__MODULE__ should project from the current module identity, not from bare namespace state",
     );
 
@@ -82,15 +66,11 @@ fn compiler2_scope_snapshot_projects_module_alias_and_env_from_one_authority() {
     let env_module = env
         .map_value("module")
         .expect("env module lookup")
-        .expect("env module value")
-        .trusted_ast_node()
-        .expect("env module cursor")
-        .expect("env module node");
-    assert_eq!(env_module.head.atom_name().expect("env module head"), "__aliases__");
+        .expect("env module value");
     assert_eq!(
-        env_module.tail.list_atom_names().expect("env module alias segments"),
-        vec!["App".to_string(), "Tools".to_string()],
-        "__ENV__.module should reuse the same authoritative module projection",
+        env_module.atom_name().expect("env module atom").to_string(),
+        "Elixir.App.Tools",
+        "__ENV__.module is the same atom as __MODULE__",
     );
 
     let env_function = env
@@ -124,6 +104,7 @@ fn compiler2_module_scope_returns_a_scope_snapshot_not_just_a_namespace() {
         code,
         ModuleId::GLOBAL,
         super::QuotedSourceRoot::empty(),
+        crate::source::Span::DUMMY,
         ScopeSurface {
             attrs: Vec::new(),
             forms: Vec::new(),

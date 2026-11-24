@@ -1,0 +1,56 @@
+#---
+# purpose: "defimpl A, for: B.C is the module A.B.C: its atom reaches it by call and apply/3, __MODULE__ equals __ENV__.module, and an alias never retargets an unquoted module atom"
+# oracle: self
+# oracle.stamp: b5eb8e722a192e56
+#---
+defmodule Macros do
+  defmacro self_struct(x) do
+    {:%, [], [__CALLER__.module, {:%{}, [], [{:x, x}]}]}
+  end
+end
+
+defmodule Decoy do
+  defstruct [:x]
+end
+
+defmodule Original do
+  require Macros
+  defstruct [:x]
+  alias Decoy, as: Original
+  def make(x), do: Macros.self_struct(x)
+end
+
+defmodule B do
+  defmodule C do
+    defstruct [:x]
+  end
+end
+
+defprotocol A do
+  def area(x)
+  def same(x)
+  def self_name(x)
+end
+
+defimpl A, for: B.C do
+  def area(%B.C{x: x}), do: x * 2
+  def same(_x), do: __MODULE__ == __ENV__.module
+  def self_name(_x), do: __MODULE__
+end
+
+defmodule Main do
+  def main() do
+    shape = %B.C{x: 3}
+    IO.inspect(A.area(shape))
+    IO.inspect(A.B.C.area(shape))
+    IO.inspect(apply(A.B.C, :area, [shape]))
+    IO.inspect(apply(:"Elixir.A.B.C", :area, [shape]))
+    IO.inspect(A.same(shape))
+    IO.inspect(A.self_name(shape) == A.B.C)
+    IO.inspect(Atom.to_string(A.B.C))
+    IO.inspect(inspect(A.self_name(shape)))
+    IO.inspect(Original.make(5) == %Original{x: 5})
+  end
+end
+
+Main.main()

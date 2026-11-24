@@ -626,7 +626,6 @@ fn walk_guard_calls<E>(
             walk_guard_call(Some(callee), expr.span, args, visit)
         }
         Expr::FnRef { .. }
-        | Expr::Module(_)
         | Expr::BoundFunction(_)
         | Expr::Capture(_)
         | Expr::CaptureArg(_)

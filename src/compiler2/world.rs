@@ -19,7 +19,7 @@ use crate::diag::diagnostic::Severity;
 use crate::diag::driver::emit_through;
 use crate::diag::{Diagnostic, codes};
 use crate::dispatch_matrix::pattern::{GuardCallee, PatternDispatchPlan};
-use crate::modules::identity::{Mfa, ModuleDenotation, ModuleName};
+use crate::modules::identity::{Mfa, ModuleName};
 use crate::modules::runtime_library;
 use crate::source::{SourceMap, Span};
 use crate::telemetry::{Telemetry, TelemetryExt as _};
@@ -1236,23 +1236,26 @@ impl World {
     }
 
     pub fn reference_module(&mut self, name: ModuleName) -> ModuleId {
-        self.modules.reference_named(name)
+        self.modules.reference(name)
     }
 
+    /// The module `defimpl protocol, for: target` defines: the module named
+    /// `Protocol.Target`, as Elixir names it.
     pub(crate) fn reference_protocol_impl_module(&mut self, protocol: ModuleId, target: ModuleId) -> ModuleId {
-        self.modules.reference(ModuleDenotation::ProtocolImpl {
-            protocol: self.module_name(protocol).expect("named protocol").clone(),
-            target: self.module_name(target).expect("named implementation target").clone(),
-        })
+        let impl_name = self.protocol_impl_name(protocol, target);
+        self.modules.reference(impl_name)
     }
 
-    pub(crate) fn reference_module_denotation(&mut self, denotation: ModuleDenotation) -> ModuleId {
-        self.modules.reference(denotation)
+    /// `Module.concat(protocol, target)`.
+    pub(crate) fn protocol_impl_name(&self, protocol: ModuleId, target: ModuleId) -> ModuleName {
+        let protocol = self.module_name(protocol).expect("named protocol");
+        let target = self.module_name(target).expect("named implementation target");
+        ModuleName::from_segments(protocol.segments().iter().chain(target.segments()).cloned().collect())
     }
 
     pub fn reference_child_module(&mut self, parent: ModuleId, local_name: &str) -> ModuleId {
         let name = self.qualified_module_name(parent, local_name);
-        self.modules.reference_named(name)
+        self.modules.reference(name)
     }
 
     pub fn define_module_interface(&mut self, id: ModuleId, interface: ModuleInterface) -> bool {
@@ -1276,10 +1279,14 @@ impl World {
         owner: SourceOwner,
         parent: ModuleId,
         source: QuotedSourceRoot,
+        span: Span,
         surface: super::quoted_surface::ScopeSurface,
     ) -> bool {
+        if !self.keeps_definition(id, span) {
+            return false;
+        }
         self.source_declarations.note_module(owner, id);
-        self.modules.index_body(id, owner, parent, source, surface)
+        self.modules.index_body(id, owner, parent, source, span, surface)
     }
 
     pub fn index_protocol_module(
@@ -1288,10 +1295,14 @@ impl World {
         owner: SourceOwner,
         parent: ModuleId,
         source: QuotedSourceRoot,
+        span: Span,
         surface: super::quoted_surface::ScopeSurface,
     ) -> bool {
+        if !self.keeps_definition(id, span) {
+            return false;
+        }
         self.source_declarations.note_module(owner, id);
-        self.modules.index_protocol(id, owner, parent, source, surface)
+        self.modules.index_protocol(id, owner, parent, source, span, surface)
     }
 
     pub fn index_protocol_impl_module(
@@ -1300,10 +1311,34 @@ impl World {
         owner: SourceOwner,
         parent: ModuleId,
         source: QuotedSourceRoot,
+        span: Span,
         impl_source: super::identity::ProtocolImplSource,
     ) -> bool {
+        if !self.keeps_definition(id, span) {
+            return false;
+        }
         self.source_declarations.note_module(owner, id);
-        self.modules.index_protocol_impl(id, owner, parent, source, impl_source)
+        self.modules
+            .index_protocol_impl(id, owner, parent, source, span, impl_source)
+    }
+
+    /// Whether the definition written at `span` is the one module `id` keeps.
+    /// A module name is its atom, so a second definition of it replaces the
+    /// first, as Elixir's does: the later one in source order is kept, and
+    /// the compile warns where it is written.
+    fn keeps_definition(&mut self, id: ModuleId, span: Span) -> bool {
+        let Some(kept) = self.modules.get(id).source().map(|source| source.span) else {
+            return true;
+        };
+        if kept == span || kept.is_dummy() || span.is_dummy() {
+            return true;
+        }
+        let name = self.module_name(id).expect("an indexed module has a name").to_string();
+        self.note_warning_once(super::source_diagnostics::redefined_module_diagnostic(
+            kept.max(span),
+            &name,
+        ));
+        span > kept
     }
 
     pub fn scope_module(&mut self, id: ModuleId, base_namespace: Namespace) {
@@ -1316,9 +1351,7 @@ impl World {
         name: impl AsRef<str> + Into<String>,
         arity: usize,
     ) -> FunctionId {
-        let id = self
-            .functions
-            .reference(module, self.modules.denotation(module), name, arity);
+        let id = self.functions.reference(module, self.modules.name(module), name, arity);
         self.share_callable_origin(id);
         id
     }
@@ -1576,14 +1609,14 @@ impl World {
     /// Records that a value can name `module`: its source is indexed, or a
     /// lowered body writes its name as a value. Returns whether that is news.
     pub(crate) fn note_nameable_module(&mut self, module: ModuleId) -> bool {
-        let denotation = self
-            .module_denotation(module)
+        let name = self
+            .module_name(module)
             .cloned()
-            .expect("a module a value can name has a denotation");
-        self.nameable_modules.note(denotation, module)
+            .expect("a module a value can name has a name");
+        self.nameable_modules.note(name, module)
     }
 
-    /// Every module a value can name, ordered by denotation.
+    /// Every module a value can name, ordered by name.
     pub(crate) fn nameable_modules(&self) -> impl Iterator<Item = ModuleId> + '_ {
         self.nameable_modules.modules()
     }
@@ -2264,10 +2297,6 @@ impl World {
         self.modules.name(module)
     }
 
-    pub(crate) fn module_denotation(&self, module: ModuleId) -> Option<&ModuleDenotation> {
-        self.modules.denotation(module)
-    }
-
     pub fn finish_code_index(&mut self, id: SourceOwner, source: QuotedCodeSource) -> bool {
         self.code.index(id, source)
     }
@@ -2508,8 +2537,8 @@ impl World {
     /// module's atom, and `Elixir` outside any module, as Elixir's `quote`
     /// writes them.
     pub(crate) fn quote_context(&self, module: ModuleId) -> crate::ast::AtomName {
-        match self.module_denotation(module) {
-            Some(denotation) => crate::ast::AtomName::from(denotation.atom_name().as_str()),
+        match self.module_name(module) {
+            Some(name) => crate::ast::AtomName::from(name.atom_name().as_str()),
             None => crate::ast::AtomName::from("Elixir"),
         }
     }
@@ -2517,8 +2546,8 @@ impl World {
     /// `__MODULE__` where `module` is the enclosing module: the atom the
     /// module is in value position, and nil outside any module.
     pub(crate) fn module_atom_value(&self, builder: &QuotedSourceBuilder, module: ModuleId) -> AnyValueRef {
-        match self.module_denotation(module) {
-            Some(denotation) => builder.atom(&denotation.atom_name()),
+        match self.module_name(module) {
+            Some(name) => builder.atom(&name.atom_name()),
             None => builder.nil(),
         }
     }
@@ -3032,7 +3061,7 @@ impl World {
     pub(crate) fn resolve_module_target(&mut self, head: Namespace, target: &crate::ast::ModuleTarget) -> ModuleId {
         match target {
             crate::ast::ModuleTarget::Unresolved(name) => self.resolve_module_name(head, name),
-            crate::ast::ModuleTarget::Exact(module) => self.reference_module_denotation(module.clone()),
+            crate::ast::ModuleTarget::Exact(module) => self.reference_module(module.clone()),
         }
     }
 
@@ -3205,7 +3234,7 @@ impl World {
     /// available yet.
     fn definition_cycle_issue(&self, cycle: &DefinitionCycle) -> UnresolvedIssue {
         let module_name = self
-            .module_denotation(cycle.module)
+            .module_name(cycle.module)
             .expect("a module being defined has a name")
             .to_string();
         let diagnostic = match self.call_into_the_definition(cycle) {
@@ -3227,7 +3256,7 @@ impl World {
             Some(function) => {
                 let function_ref = self.function_ref(function);
                 let macro_module = self
-                    .module_denotation(function_ref.module)
+                    .module_name(function_ref.module)
                     .expect("a macro's module has a name");
                 diagnostic.with_note(format!(
                     "expanding macro: `{macro_module}.{}/{}`",
@@ -3430,7 +3459,7 @@ impl World {
                 codes::RESOLVE_UNKNOWN_MODULE,
                 format!(
                     "module `{}` is not defined",
-                    self.module_denotation(module)
+                    self.module_name(module)
                         .expect("referenced modules should have reverse names")
                 ),
                 span,
@@ -3478,7 +3507,7 @@ impl World {
         }
 
         let module_name = self
-            .module_denotation(function_ref.module)
+            .module_name(function_ref.module)
             .expect("referenced function modules should have reverse names");
         // A qualified call is checked against a defined module's interface
         // where it is lowered, and one lowered earlier is checked when the
@@ -4112,7 +4141,7 @@ impl World {
     /// site that asked.
     fn unexported_diagnostic(&self, id: ModuleId, expectation: &InterfaceExpectation) -> Diagnostic {
         let module_name = self
-            .module_denotation(id)
+            .module_name(id)
             .map(ToString::to_string)
             .unwrap_or_else(|| format!("<unnamed module {}>", id.as_u32()));
         let message = match expectation.kind {

@@ -29,7 +29,6 @@ use crate::fz_ir::{ExternAbi, ExternReturn, ExternTy, FnId, Prim as IrPrim, Stmt
 use crate::ir_interp::{
     tests_support_dtor_fired, tests_support_dtor_last_payload, tests_support_dtor_reset, tests_support_lock,
 };
-use crate::modules::identity::ModuleDenotation;
 use crate::source::Span;
 use crate::telemetry::handler::{Event, EventKind};
 use crate::telemetry::sink::NullTelemetry;
@@ -23949,7 +23948,7 @@ fn a_quoted_macro_keeps_its_provider() {
                     && matches!(
                         &record.function_ref.denotation.origin,
                         FunctionOrigin::Named {
-                            module: Some(ModuleDenotation::Named(owner)),
+                            module: Some(owner),
                             ..
                         } if owner.last_segment() == module
                     )

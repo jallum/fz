@@ -42,21 +42,15 @@ functions.
 `defprotocol Enumerable` publishes a first-class namespace at its lexical path
 (a root declaration publishes `Enumerable`, not `Enumerable.Enumerable`). It owns
 the required callback names/arities and their public specs. `defimpl` declares
-the protocol, the target, and the callback bodies; the callbacks lower into a
-**protocol-owned** module identified by `ModuleDenotation::ProtocolImpl { protocol,
-target }` in the ordinary `ModuleMap`. `defimpl Enumerable, for: List` displays
-`Enumerable.List.reduce/3`, so the body can delegate to ordinary target helpers
-like `List.reduce/3` without colliding. The protocol/target boundary is retained:
-`(A, B.C)`, `(A.B, C)`, and the named module `A.B.C` are three distinct owners
-even though all display `A.B.C`. Function denotations and their AOT carrier keep
-this same typed module identity; no callback or closure comparison uses the
-display projection.
-
-Projected `__CALLER__.module` aliases retain this portable denotation in quoted
-metadata. A macro that emits `unquote(__CALLER__.module).val(x)` therefore calls
-the implementation's own callback, even when an ordinary named module shares
-its display path. Both source projection and quote reification consume the one
-`ModuleDenotation::quoted_parts` encoding shape.
+the protocol, the target, and the callback bodies; the callbacks lower into the module
+named `Module.concat(protocol, target)`, as in Elixir. `defimpl Enumerable, for: List`
+is the module `Enumerable.List`, and `defimpl A, for: B.C` is `A.B.C`, whose atom
+is `Elixir.A.B.C`. A module's name is its identity and its atom: calling the atom,
+`apply/3`, `__MODULE__` and `__CALLER__.module` all reach this one module. Defining
+a module name twice (an impl whose concatenated name equals a `defmodule`, or two
+impls that concatenate alike) is a redefinition: the compiler warns `redefining
+module A.B.C` (`resolve/module-redefined`) and keeps the later definition in source
+order, as Elixir does.
 
 The runtime library follows Elixir's split: `Enumerable` is the protocol; `Enum`
 is the convenience module users call. Low-level control tuples
@@ -258,7 +252,7 @@ not revised by `defimpl`.
 jobs/source.rs       indexes defprotocol (define_protocol_surface ->
                      define_protocol_callback)
 source_publish.rs    register_protocol_impl (scope tier) hoists each defimpl to a
-                     ModuleSourceKind::ProtocolImpl source owned by the typed pair
+                     ModuleSourceKind::ProtocolImpl source for the module named Protocol.Target
                      (World::reference_protocol_impl_module), records the impl in
                      the provider index, and warns on a missing callback
                      (warn_missing_protocol_callbacks, reading

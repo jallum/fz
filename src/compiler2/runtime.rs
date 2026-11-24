@@ -24,7 +24,7 @@ pub(crate) fn bootstrap(modules: &mut ModuleMap, code: &mut CodeMap) -> HashMap<
     let mut runtime_modules = HashMap::default();
 
     for (name, source) in runtime_library::module_sources() {
-        let module = modules.reference_named(ModuleName::parse_dotted(name).expect("runtime module name"));
+        let module = modules.reference(ModuleName::parse_dotted(name).expect("runtime module name"));
         runtime_modules.insert(
             module,
             RuntimeModuleCode {

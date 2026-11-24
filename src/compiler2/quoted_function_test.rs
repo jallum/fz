@@ -19,29 +19,15 @@ fn grouped_function_root(source_name: &str, text: &str) -> (QuotedSourceRoot, cr
 }
 
 #[test]
-fn projected_module_identity_survives_call_and_function_reference_decoding() {
+fn a_module_atom_is_an_exact_target_for_calls_and_function_references() {
     use super::{QuotedSourceHeap, QuotedSourceMetadata};
-    use crate::modules::identity::{ModuleDenotation, ModuleName};
+    use crate::modules::identity::ModuleName;
     let heap = std::rc::Rc::new(QuotedSourceHeap::new());
     let builder = heap.builder();
-    let mut sources = crate::source::SourceMap::new();
-    let version = sources.add_code(Some("projected-module.fz"), "A.B.C");
-    let span = crate::source::Span::new(version, 0, 5);
-    let module = ModuleDenotation::ProtocolImpl {
-        protocol: ModuleName::parse_dotted("A").unwrap(),
-        target: ModuleName::parse_dotted("B.C").unwrap(),
-    };
+    let module = ModuleName::parse_dotted("A.B.C").unwrap();
     let empty = QuotedSourceMetadata::default();
-    let meta = QuotedSourceMetadata {
-        module: Some(module.clone()),
-        span: Some(span),
-        ..Default::default()
-    };
-    // Even a non-alias display head/tail is inert once the module is resolved.
-    let alias = builder
-        .ast_node(builder.int(99), &meta, builder.atom("display"))
-        .unwrap();
-    let target = builder.call(".", &empty, &[alias, builder.atom("val")]).unwrap();
+    let atom = builder.atom(&module.atom_name());
+    let target = builder.call(".", &empty, &[atom, builder.atom("val")]).unwrap();
     let call = builder.call_callee(target, &empty, &[builder.int(1)]).unwrap();
     let quotient = builder.call("/", &empty, &[target, builder.int(1)]).unwrap();
     let reference = builder.call("&", &empty, &[quotient]).unwrap();
@@ -50,24 +36,13 @@ fn projected_module_identity_survives_call_and_function_reference_decoding() {
     let keyword = builder.list(&[builder.keyword("do", body).unwrap()]).unwrap();
     let function = builder.call("def", &empty, &[head, keyword]).unwrap();
     let source = builder.root(builder.list(&[function]).unwrap()).unwrap();
-    assert!(
-        derive_function_surface(&source, &crate::source::SourceMap::new()).is_err(),
-        "a resolved module identity cannot bypass validation of its exact source version"
-    );
-    let decoded = derive_function_surface(&source, &sources).unwrap();
+    let decoded = derive_function_surface(&source, &crate::source::SourceMap::new()).unwrap();
     let Expr::Tuple(items) = &decoded.clauses[0].body.node else {
         panic!("tuple body")
     };
     let Expr::Call(target, _) = &items[0].node else {
         panic!("qualified call")
     };
-    let Expr::Index(module_expr, _) = &target.node else {
-        panic!("qualified target")
-    };
-    assert_eq!(
-        module_expr.span, span,
-        "typed module decoding retains exact node provenance"
-    );
     let crate::ast::Callee::Name(call) = crate::ast::Callee::for_call(&target.node, 1).unwrap() else {
         panic!("a qualified source call names its callee")
     };

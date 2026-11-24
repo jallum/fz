@@ -1,7 +1,7 @@
 #---
 # purpose: "a module's own get/2 is called, and bracket access still indexes"
 # oracle: self
-# oracle.stamp: 67dfd4c6e6c16e32
+# oracle.stamp: 4d5569a049cb6422
 #---
 #
 # # module_get_is_not_index
@@ -48,13 +48,6 @@ defmodule Main do
 
     IO.inspect(Store.describe(m))
   end
-end
-
-defmodule Aliased do
-  alias Store, as: Access
-
-  @spec through_alias(any) :: any
-  def through_alias(m), do: {Access.get(m, :a), Access.tag(1)}
 end
 
 defmodule Aliased do

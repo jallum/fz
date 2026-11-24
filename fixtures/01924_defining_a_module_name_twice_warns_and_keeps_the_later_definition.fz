@@ -1,0 +1,32 @@
+#---
+# purpose: A module name defined twice, by two defmodules or by a defmodule and a defimpl whose names concatenate alike, warns "redefining module" and the later definition in source order is the module
+#---
+defmodule Greeter do
+  def greet(), do: "first"
+end
+
+defmodule Greeter do
+  def greet(), do: "second"
+end
+
+defprotocol P do
+  def label(x)
+end
+
+defmodule Q do
+  defstruct [:v]
+end
+
+defmodule P.Q do
+  def label(_x), do: "named"
+end
+
+defimpl P, for: Q do
+  def label(_x), do: "impl"
+end
+
+def main() do
+  dbg(Greeter.greet())
+  dbg(P.Q.label(%Q{v: 1}))
+  dbg(P.label(%Q{v: 1}))
+end
