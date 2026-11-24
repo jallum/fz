@@ -1,8 +1,6 @@
 {
   "assignee": "Elixir Parity",
-  "blocked_by": [
-    "fz-mue.32"
-  ],
+  "blocked_by": [],
   "blocks": [
     "fz-mue.51"
   ],
@@ -15,5 +13,5 @@
   "status": "open",
   "title": "A module's atom is its identity: defimpl P, for: T is the module P.T, as in Elixir",
   "type": "feature",
-  "updated_at": "2026-11-24T21:02:24Z"
+  "updated_at": "2026-11-24T22:04:59Z"
 }
