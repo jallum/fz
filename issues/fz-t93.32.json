@@ -3,7 +3,7 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-24T22:33:40Z",
-  "description": "The order test (canon_test ORDER_FREE_PLANS) compares each listed fixture's backend plan under fifo and lifo job order only. Some splits show only under other orders: under JSON's seeded pop order, 01353 gives 2 plans under seeds 3 and 5, while fifo and lifo agree (recorded on fz-t93.29). t3 splits under lifo and seed 3.\n\nChange (test-only, nothing in shipped builds, no environment variable):\n- fz_engine::pop_order gains PopOrder::Seeded(u64), backed by a small xorshift generator. JSON's ready diff: /private/tmp/claude-501/-Users-j5n-Workspace-fz/ebbfffd8-2561-4da7-bcda-f9a316d00a1e/scratchpad/mue25/probes/p9/seeded_only.diff\n- The order test runs each listed fixture under fifo, lifo and a fixed set of seeds, and requires one plan.\n\nVerification: a fixture that splits only under a seed fails the extended test on base (01353 is the candidate once fz-t93.29 has fixed it, or a test with a known seeded split).",
+  "description": "The order test (canon_test ORDER_FREE_PLANS) compares each listed fixture's backend plan under fifo and lifo job order only. Some splits show only under other orders: under JSON's seeded pop order, 01353 gives 2 plans under seeds 3 and 5, while fifo and lifo agree (recorded on fz-t93.29). t3 splits under lifo and seed 3.\n\nChange (test-only, nothing in shipped builds, no environment variable):\n- fz_engine::pop_order gains PopOrder::Seeded(u64), backed by a small xorshift generator. JSON's diff: /Users/j5n/Workspace/fz-otp-json/punch/mue25/order/seeded_only.diff (passes cargo check, never run; the env-var variant that was run is seeded_knob_develop.diff there, with 01353_plan.diff, t3_plan.diff, t3.fz and run.sh, the 10-order sweep). The first step confirms seeded_only.diff reproduces 01353's split at seeds 3 and 5\n- The order test runs each listed fixture under fifo, lifo and a fixed set of seeds, and requires one plan.\n\nVerification: a fixture that splits only under a seed fails the extended test on base (01353 is the candidate once fz-t93.29 has fixed it, or a test with a known seeded split).",
   "id": "fz-t93.32",
   "labels": [],
   "parent": "fz-t93",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "The order test runs every plan under fifo, lifo and seeded orders",
   "type": "task",
-  "updated_at": "2026-11-24T22:33:40Z"
+  "updated_at": "2026-11-24T22:34:02Z"
 }
