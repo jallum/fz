@@ -8,7 +8,8 @@
     "fz-9x7.11.3",
     "fz-9x7.11.4",
     "fz-9x7.11.7",
-    "fz-9x7.11.9"
+    "fz-9x7.11.9",
+    "fz-9x7.47"
   ],
   "created": "2026-11-18T23:59:16Z",
   "description": "User approved 2026-11-18, verbatim via GC: \"agreed; proceed\". Step C1 of fz-9x7.11 page v4 (https://claude.ai/artifact/BB1FpQ1Cf7Jd5spZeLEWtg). One commit, judged on bench. Builder: GC. One forwarding primitive on a collector context. It adopts the (stored word, kind) type of fz-sc8.192.8, so cheney_scan stops calling decode_parts, storage_raw, heap_object_word and from_ref. Supersedes the collector half of decision 86.",
@@ -25,5 +26,5 @@
   "status": "in_progress",
   "title": "The collector forwards every value through one forward(word, kind)",
   "type": "task",
-  "updated_at": "2026-11-23T20:02:26Z"
+  "updated_at": "2026-11-24T18:24:28Z"
 }
