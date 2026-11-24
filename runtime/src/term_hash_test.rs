@@ -278,6 +278,33 @@ fn equal_terms_hash_equal_in_every_representation() {
     assert_eq!(collisions, 0, "no two unequal terms of the pool share all 64 bits");
 }
 
+/// Intent: bits past a binary's last bit are padding, so binaries differing
+/// only there are one key and hash alike.
+#[test]
+fn two_binaries_that_differ_only_in_padding_bits_compare_and_hash_equal() {
+    let mut w = world();
+    let clean = w.heap.alloc_bitstring(&[0xff, 0b1010_0000], 11);
+    let padded = w.heap.alloc_bitstring(&[0xff, 0b1011_1111], 11);
+    let other = w.heap.alloc_bitstring(&[0xff, 0b1000_0000], 11);
+    assert_eq!(w.compare(clean, padded), Ordering::Equal);
+    assert_eq!(w.hash(clean), w.hash(padded));
+    assert_ne!(w.compare(clean, other), Ordering::Equal);
+    assert_ne!(w.hash(clean), w.hash(other));
+}
+
+/// Intent: a binary's hash is read through `Bin`, so it agrees with `Bin`'s
+/// equality and the padding rule is written only there.
+#[test]
+fn a_bin_hashes_by_the_bits_its_equality_reads() {
+    let mut w = world();
+    let clean = w.heap.alloc_bitstring(&[0xff, 0b1010_0000], 11);
+    let padded = w.heap.alloc_bitstring(&[0xff, 0b1011_1111], 11);
+    let bin = |v: AnyValue| unsafe { crate::bits::Bin::of_binary(v.heap_object_word().unwrap()) };
+    assert!(bin(clean) == bin(padded));
+    assert_eq!(bin(clean).tail(), bin(padded).tail());
+    assert_eq!(bin(clean).tail(), Some(0b1010_0000));
+}
+
 #[test]
 fn an_integer_and_the_float_of_the_same_value_are_different_keys_and_hash_apart() {
     let w = world();

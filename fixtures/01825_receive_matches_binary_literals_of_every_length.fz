@@ -1,0 +1,43 @@
+#---
+# purpose: "a receive clause whose pattern is a binary literal takes exactly the messages that are that binary, of three bytes, of exactly 64 bytes and of 100 bytes, and passes over a different binary of equal length, a shorter prefix and a non-binary"
+# oracle: self
+# oracle.stamp: 61b16a23922e3b46
+# args: 0
+#---
+defmodule Main do
+  # The process takes one message per call and names the clause that took it.
+  def take() do
+    receive do
+      "abc" -> :three_bytes
+      "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" -> :sixty_four_bytes
+      "0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789" -> :hundred_bytes
+      _other -> :no_literal
+    end
+  end
+
+  def classify(message) do
+    send(self(), message)
+    take()
+  end
+
+  def main() do
+    messages = [
+      {:three_equal, "abc"},
+      {:sixty_four_equal, "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},
+      {:hundred_equal, "0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789"},
+      {:three_different, "abd"},
+      {:sixty_four_different, "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdeX"},
+      {:hundred_different, "012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678X"},
+      {:two_prefix, "ab"},
+      {:sixty_three_prefix, "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde"},
+      {:ninety_nine_prefix, "012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678"},
+      {:integer, 42},
+      {:atom, :abc},
+      {:three_bits, <<1::3>>}
+    ]
+
+    Enum.each(messages, fn {label, message} -> IO.inspect({label, classify(message)}) end)
+  end
+end
+
+Main.main()

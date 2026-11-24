@@ -12,7 +12,7 @@ use super::static_object::define_read_only_object;
 use super::{CodegenError, define_static_sharedbin};
 use crate::fast_hash::HashMap;
 use cranelift_module::{DataDescription, DataId, Linkage, Module};
-use fz_runtime::any_value::bitstring_object_image;
+use fz_runtime::any_value::{BITSTRING_BYTES_OFFSET, bitstring_object_image};
 use fz_runtime::heap::SHARED_BIN_THRESHOLD_BYTES;
 
 /// The object a bitstring literal's code names.
@@ -24,11 +24,25 @@ pub(crate) enum BitstringLiteral {
     Shared(DataId),
 }
 
+/// Where a literal's bytes sit: a data object and the offset into it.
+#[derive(Clone, Copy)]
+pub(crate) struct LiteralBytes {
+    pub(crate) data: DataId,
+    pub(crate) offset: i64,
+}
+
+/// A long literal's two objects: its bytes, and the `SharedBin` over them.
+#[derive(Clone, Copy)]
+struct SharedLiteral {
+    bytes: DataId,
+    shared: DataId,
+}
+
 /// The literals a module has emitted so far.
 #[derive(Default)]
 pub(crate) struct BitstringLiterals {
     objects: HashMap<(Vec<u8>, u64), DataId>,
-    shared: HashMap<Vec<u8>, DataId>,
+    shared: HashMap<Vec<u8>, SharedLiteral>,
 }
 
 impl BitstringLiterals {
@@ -40,7 +54,9 @@ impl BitstringLiterals {
         bit_len: u64,
     ) -> Result<BitstringLiteral, CodegenError> {
         if bytes.len() > SHARED_BIN_THRESHOLD_BYTES {
-            return self.shared(jmod, bytes).map(BitstringLiteral::Shared);
+            return self
+                .shared(jmod, bytes)
+                .map(|literal| BitstringLiteral::Shared(literal.shared));
         }
         if let Some(object) = self.objects.get(&(bytes.to_vec(), bit_len)) {
             return Ok(BitstringLiteral::Object(*object));
@@ -51,7 +67,27 @@ impl BitstringLiterals {
         Ok(BitstringLiteral::Object(object))
     }
 
-    fn shared<M: Module>(&mut self, jmod: &mut M, bytes: &[u8]) -> Result<DataId, CodegenError> {
+    /// Where the bytes of the literal `bytes` of `bit_len` bits are, read in
+    /// place: nothing is allocated at run time.
+    pub(crate) fn bytes_at<M: Module>(
+        &mut self,
+        jmod: &mut M,
+        bytes: &[u8],
+        bit_len: u64,
+    ) -> Result<LiteralBytes, CodegenError> {
+        Ok(match self.literal(jmod, bytes, bit_len)? {
+            BitstringLiteral::Object(object) => LiteralBytes {
+                data: object,
+                offset: BITSTRING_BYTES_OFFSET as i64,
+            },
+            BitstringLiteral::Shared(_) => LiteralBytes {
+                data: self.shared[bytes].bytes,
+                offset: 0,
+            },
+        })
+    }
+
+    fn shared<M: Module>(&mut self, jmod: &mut M, bytes: &[u8]) -> Result<SharedLiteral, CodegenError> {
         if let Some(shared) = self.shared.get(bytes) {
             return Ok(*shared);
         }
@@ -65,7 +101,10 @@ impl BitstringLiterals {
         desc.set_align(1);
         jmod.define_data(bytes_id, &desc)
             .map_err(|e| CodegenError::new(format!("define {name}: {e}")))?;
-        let shared = define_static_sharedbin(jmod, bytes_id, bytes, index)?;
+        let shared = SharedLiteral {
+            bytes: bytes_id,
+            shared: define_static_sharedbin(jmod, bytes_id, bytes, index)?,
+        };
         self.shared.insert(bytes.to_vec(), shared);
         Ok(shared)
     }

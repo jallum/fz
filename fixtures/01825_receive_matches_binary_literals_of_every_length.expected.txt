@@ -1,0 +1,12 @@
+{:three_equal, :three_bytes}
+{:sixty_four_equal, :sixty_four_bytes}
+{:hundred_equal, :hundred_bytes}
+{:three_different, :no_literal}
+{:sixty_four_different, :no_literal}
+{:hundred_different, :no_literal}
+{:two_prefix, :no_literal}
+{:sixty_three_prefix, :no_literal}
+{:ninety_nine_prefix, :no_literal}
+{:integer, :no_literal}
+{:atom, :no_literal}
+{:three_bits, :no_literal}

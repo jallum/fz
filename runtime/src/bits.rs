@@ -709,6 +709,15 @@ impl Bin {
         unsafe { from_raw_parts(self.ptr, (self.bit_len / 8) as usize) }
     }
 
+    /// The bits of the partial byte that ends the binary, padding cleared;
+    /// none when the binary ends on a byte boundary. With `bytes` and
+    /// `bit_len` these are all that equality reads, so a hash of the three
+    /// agrees with `==`.
+    #[inline]
+    pub fn tail(self) -> Option<u8> {
+        (!self.bit_len.is_multiple_of(8)).then(|| self.partial_byte(self.bit_len))
+    }
+
     fn is(self, other: Bin) -> bool {
         self.ptr == other.ptr && self.bit_len == other.bit_len
     }

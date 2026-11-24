@@ -673,6 +673,7 @@ fn declare_receive_dispatch_fns<M: cranelift_module::Module>(
 fn emit_receive_dispatch_bodies<M: cranelift_module::Module>(
     m: &mut M,
     fbctx: &mut FunctionBuilderContext,
+    bitstring_literals: &RefCell<BitstringLiterals>,
     module: &Module,
     tuple_schema_ids: &HashMap<usize, u32>,
     named_schema_ids: &HashMap<fz_runtime::module_name::ModuleName, u32>,
@@ -701,6 +702,7 @@ fn emit_receive_dispatch_bodies<M: cranelift_module::Module>(
                         m,
                         fbctx,
                         *projector,
+                        bitstring_literals,
                         module,
                         tuple_schema_ids,
                         named_schema_ids,
@@ -713,6 +715,7 @@ fn emit_receive_dispatch_bodies<M: cranelift_module::Module>(
                 m,
                 fbctx,
                 fns.matcher,
+                bitstring_literals,
                 module,
                 tuple_schema_ids,
                 named_schema_ids,
@@ -1112,6 +1115,7 @@ pub(crate) fn compile_with_backend_surface<
     emit_receive_dispatch_bodies(
         backend.module_mut(),
         &mut fbctx,
+        &bitstring_literals,
         module,
         &tuple_schema_ids,
         &named_schema_ids,
