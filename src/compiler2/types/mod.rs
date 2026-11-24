@@ -2365,6 +2365,11 @@ impl Types {
     }
 
     fn derive_activation_key_arrow(&mut self, arrow: Ty, recursive: bool, demand: &KeyDemand<'_>) -> Ty {
+        let keyed = self.derive_activation_key_arrow_uncanonical(arrow, recursive, demand);
+        self.canonical_closure_surface_params(keyed)
+    }
+
+    fn derive_activation_key_arrow_uncanonical(&mut self, arrow: Ty, recursive: bool, demand: &KeyDemand<'_>) -> Ty {
         // The fold reads each closure's lambda, so it runs before anything
         // below erases brands, and on every slot: a callable that is only
         // called is read whole, and still must not nest without bound.
@@ -2396,6 +2401,25 @@ impl Types {
             return collapsed;
         }
         self.arrow(&erased, ret)
+    }
+
+    /// A closure whose function is known is keyed by that literal: the
+    /// parameter types it was viewed through stay in the activation's
+    /// evidence, so one activation reached through two surfaces has one key.
+    fn canonical_closure_surface_params(&mut self, arrow: Ty) -> Ty {
+        let Some(sig) = self.descr(&arrow).pure_arrow() else {
+            return arrow;
+        };
+        let params = sig.args.clone();
+        let ret = sig.ret;
+        let canon = params
+            .iter()
+            .map(|param| canonical_closure_surface(self, *param))
+            .collect::<Vec<_>>();
+        if canon == params {
+            return arrow;
+        }
+        self.arrow(&canon, ret)
     }
 
     fn fold_arrow_params(&mut self, arrow: Ty) -> Ty {
@@ -5183,6 +5207,39 @@ fn erase_closure_identity(t: &mut Types, a: Ty) -> Ty {
         |t| erase_closure_identity_of(t, a),
     )
     .0
+}
+
+/// Every closure literal naming a function read at that function's own
+/// parameter variables; its captures are read the same way.
+fn canonical_closure_surface(t: &mut Types, a: Ty) -> Ty {
+    if !t.ctx().attrs(&a).mentions_closure_literal() {
+        return t.unchanged(a);
+    }
+    t.map_type(
+        || recursive::Mapper::CanonicalClosureSurface,
+        a,
+        |t| canonical_closure_surface_of(t, a),
+    )
+    .0
+}
+
+fn canonical_closure_surface_of(t: &mut Types, a: Ty) -> Ty {
+    let base = t.descr(&a).clone();
+    let mut canon = map_recursive_inputs_with(t, base, &mut canonical_closure_surface);
+    for conj in &mut canon.funcs {
+        for sig in conj.pos.iter_mut().chain(conj.neg.iter_mut()) {
+            let Some(lit) = sig.lit.as_mut() else {
+                continue;
+            };
+            lit.captures = lit.captures.iter().map(|c| canonical_closure_surface(t, *c)).collect();
+            if let Some(fn_id) = lit.fn_id {
+                sig.args = (0..sig.args.len())
+                    .map(|pos| t.intern(Descr::var(closure_var_id(fn_id, pos))))
+                    .collect();
+            }
+        }
+    }
+    t.intern(canon)
 }
 
 fn erase_closure_identity_of(t: &mut Types, a: Ty) -> Ty {

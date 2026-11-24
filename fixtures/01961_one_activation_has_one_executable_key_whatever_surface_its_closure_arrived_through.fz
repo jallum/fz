@@ -1,0 +1,24 @@
+#---
+# purpose: "One activation reached with the same closure through two parameter surfaces compiles once and carries one executable key"
+#---
+defmodule Bag do
+  defstruct items: []
+
+  @spec pairs(any) :: [{any, any}]
+  def pairs(%Bag{items: items}), do: elem({items}, 0)
+
+  @spec reduce(any, {:cont, b} | {:halt, b} | {:suspend, b}, (any, b -> {:cont, b} | {:halt, b} | {:suspend, b})) :: {:done, b} | {:halted, b} | {:suspended, b, (-> any)} when b: var
+  def reduce(bag, acc, reducer), do: List.reduce(pairs(bag), acc, reducer)
+end
+
+defimpl Enumerable, for: Bag do
+  def count(_bag), do: {:error, __MODULE__}
+  def reduce(bag, acc, reducer), do: Bag.reduce(bag, acc, reducer)
+  def reduce_while(bag, acc, reducer), do: List.reduce_while(Bag.pairs(bag), acc, reducer)
+  def member?(_bag, _pair), do: {:error, __MODULE__}
+  def slice(_bag), do: {:error, __MODULE__}
+end
+
+def main() do
+  dbg(Enum.to_list(%Bag{items: [{1, :a}]}))
+end

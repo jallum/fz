@@ -128,6 +128,7 @@ pub(super) enum Mapper {
     RuntimeReading,
     WidenLiterals,
     EraseClosureIdentity,
+    CanonicalClosureSurface,
     /// Under the lambdas whose captures the type sits inside.
     FoldSelfNestedClosures(Vec<crate::fz_ir::FnId>),
     Instantiate(super::Sigma<Ty>),

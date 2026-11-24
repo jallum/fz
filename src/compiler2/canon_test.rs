@@ -210,11 +210,11 @@ fn duplicate_ceiling(number: u32) -> usize {
         // The Enum `*_while`, `*_every` and `*_positive` wrappers have key arrows beside their evidence
         // arrows, and each holds a closure literal whose surface views are separate ids; a view whose
         // accumulator is still a type variable is interned once per call site that names it.
-        420 => 197,
+        420 => 313,
         // The widened key type `%{1: atom}` stands beside `%{1: :a}` and holds a closure literal whose
         // surface views are separate ids; a view whose accumulator is still a type variable is
         // interned once per call site that names it.
-        567 => 19,
+        567 => 28,
         other => panic!("no pinned ceiling for fixture {other:05}"),
     }
 }
@@ -444,6 +444,10 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
         (
             420, // enum_take_drop_split, over both a list and a range
             188,
+        ),
+        (
+            1961, // one activation reached through two closure surfaces
+            31,
         ),
     ] {
         let settled = Drive::fixture(number).dump_stage(DumpStage::Backend);
