@@ -1,6 +1,8 @@
 {
   "assignee": "Callables",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-yh5.10"
+  ],
   "blocks": [],
   "created": "2026-11-24T17:54:25Z",
   "description": "Option C, step C1 (approved page https://claude.ai/artifact/HJ4StaQ4ggt6yt2Fus6pX7).\n\nA guard helper call unfolds into the caller's dispatch matrix as the facts of the helper's clauses. A raising clause counts as false. Constant conjuncts are evaluated. The embedded plan remains only for helpers that do not unfold.\n\nRemoves: type_predicate_of, answers_only_for / types_its_calls_need, and the guard leaf's Whole read of a callable (executable_facts.rs:656). That read is also the source of the construction wrapper a case over a callable builds under is_function(h, 1) (Make Distiller Fast finding 1, absorbed here).\n\nRelated open tickets to reconcile on the page or at build: fz-sc8.54 (A guard helper that is only ever folded builds no plan of its own), fz-sc8.215 (guard helper selected by argument types), fz-ep5.4 (type predicate recognised from guards).",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "A guard helper call unfolds into the caller's dispatch matrix as its clauses' facts",
   "type": "bug",
-  "updated_at": "2026-11-24T17:54:27Z"
+  "updated_at": "2026-11-24T17:54:29Z"
 }
