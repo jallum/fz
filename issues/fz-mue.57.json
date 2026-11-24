@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-mue",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "A module's atom is its identity: defimpl P, for: T is the module P.T, as in Elixir",
   "type": "feature",
-  "updated_at": "2026-11-24T22:05:01Z"
+  "updated_at": "2026-11-24T22:18:27Z"
 }
