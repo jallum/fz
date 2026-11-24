@@ -9,9 +9,15 @@
   "id": "fz-sc8.122",
   "labels": [],
   "parent": "fz-sc8",
+  "comments": [
+    {
+      "text": "Survey done (Optimize): 17 of 20 Map functions raise BadMapError correctly; the 3 aborts are fixed by fz-mue.59. Close this when fz-mue.59 merges.",
+      "timestamp": "2026-11-24T22:54:50Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Map functions raise BadMapError for a non-map, as Elixir's do",
   "type": "bug",
-  "updated_at": "2026-11-24T22:16:42Z"
+  "updated_at": "2026-11-24T22:54:50Z"
 }
