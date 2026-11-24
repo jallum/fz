@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "GC",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-24T18:24:10Z",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "A map build reads its entries' words and kinds directly",
   "type": "task",
-  "updated_at": "2026-11-24T18:24:10Z"
+  "updated_at": "2026-11-24T18:24:11Z"
 }
