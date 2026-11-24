@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "fz-engine",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-24T22:04:37Z",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "Loop copies whose settled results are identical are emitted once",
   "type": "task",
-  "updated_at": "2026-11-24T22:04:37Z"
+  "updated_at": "2026-11-24T22:04:41Z"
 }
