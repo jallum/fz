@@ -1631,7 +1631,7 @@ fn executable_effects_reads_only_its_local_projection_and_direct_callee_products
     record_effect_product(&mut driver.session_mut(), &caller, &[&callee], false);
     record_effect_product(&mut driver.session_mut(), &callee, &[&leaf], false);
     record_effect_product(&mut driver.session_mut(), &leaf, &[], true);
-    let mut world = World::new();
+    let mut world = fake_world();
     let caller_effects = ProductKey::ExecutableEffects(caller.clone());
     let callee_effects = ProductKey::ExecutableEffects(callee);
     let caller_materialized = ProductKey::MaterializedExecutable(caller);
@@ -1663,7 +1663,7 @@ fn executable_effects_product_settles_symbolic_mutual_recursion_without_root_loo
     record_effect_product(&mut driver.session_mut(), &first, &[&second], false);
     record_effect_product(&mut driver.session_mut(), &second, &[&first, &leaf], false);
     record_effect_product(&mut driver.session_mut(), &leaf, &[], true);
-    let mut world = World::new();
+    let mut world = fake_world();
     let effects = pull_effects_until_produced(&mut driver, &mut world, &second);
     assert!(effects.allocates, "effects should propagate through mutual recursion");
     assert!(memo_effects(&driver.session(), &first).is_some_and(|effects| effects.allocates));
@@ -1708,7 +1708,7 @@ fn executable_effects_selects_the_group_after_all_direct_reads() {
     record_effect_product(&mut driver.session_mut(), &anchor, &[&first, &second], false);
     record_effect_product(&mut driver.session_mut(), &first, &[&anchor], false);
     record_effect_product(&mut driver.session_mut(), &second, &[&anchor], true);
-    let mut world = World::new();
+    let mut world = fake_world();
     for member in [&first, &second] {
         let outcome = {
             let mut producers = WorldProductProducers::new(&mut world, &tel);
@@ -1755,7 +1755,7 @@ fn executable_effects_self_cycle_uses_the_generic_recursive_group() {
     let executable = fake_executable_with_function(root, 890);
     let mut driver = ProductDriver::new(&tel, root);
     record_effect_product(&mut driver.session_mut(), &executable, &[&executable], true);
-    let mut world = World::new();
+    let mut world = fake_world();
 
     assert_eq!(
         pull_effects_until_produced(&mut driver, &mut world, &executable),
@@ -1791,7 +1791,7 @@ fn unchanged_local_effect_reproduces_once_without_waking_its_caller() {
     record_effect_product(&mut driver.session_mut(), &caller, &[&callee], false);
     let callee_materialized = fake_effect_materialized(&callee, &[], false);
     record_materialized_product(&mut driver.session_mut(), callee.clone(), callee_materialized.clone());
-    let mut world = World::new();
+    let mut world = fake_world();
     assert_eq!(
         pull_effects_until_produced(&mut driver, &mut world, &caller),
         EffectSummary::default()
@@ -1850,7 +1850,7 @@ fn effect_dependencies_follow_edge_add_remove_and_changed_leaf_exactly() {
     record_effect_product(&mut driver.session_mut(), &caller, &[], false);
     record_effect_product(&mut driver.session_mut(), &callee, &[], false);
     record_effect_product(&mut driver.session_mut(), &unreachable, &[], false);
-    let mut world = World::new();
+    let mut world = fake_world();
     for executable in [&grand, &callee, &unreachable] {
         assert_eq!(
             pull_effects_until_produced(&mut driver, &mut world, executable),
@@ -1932,7 +1932,7 @@ fn displaced_effect_dependencies_cannot_close_a_reversed_edge_cycle() {
     let mut driver = ProductDriver::new(&tel, root);
     record_effect_product(&mut driver.session_mut(), &first, &[], true);
     record_effect_product(&mut driver.session_mut(), &second, &[&first], false);
-    let mut world = World::new();
+    let mut world = fake_world();
     assert!(pull_effects_until_produced(&mut driver, &mut world, &second).allocates);
 
     record_effect_product(&mut driver.session_mut(), &first, &[&second], true);
@@ -1984,7 +1984,7 @@ fn dirty_external_chain_retracts_a_pending_effect_group_snapshot() {
     record_effect_product(&mut driver.session_mut(), &external, &[&leaf], false);
     record_effect_product(&mut driver.session_mut(), &anchor, &[&peer], false);
     record_effect_product(&mut driver.session_mut(), &peer, &[&external, &anchor], false);
-    let mut world = World::new();
+    let mut world = fake_world();
     assert!(pull_effects_until_produced(&mut driver, &mut world, &external).allocates);
     let pending = {
         let mut producers = WorldProductProducers::new(&mut world, &tel);
@@ -2171,7 +2171,7 @@ fn fake_executable_with_function(root: RootId, function: u32) -> ExecutableKey {
 }
 
 fn fake_executable_in(types: &mut super::super::Types, root: RootId, function: u32) -> ExecutableKey {
-    let function = super::super::FunctionId::from_coordinate(function);
+    let function = types.test_function(function);
     let activation = super::super::ActivationKey::from_inputs(root, function, &[], types);
     ExecutableKey {
         activation,
@@ -2185,7 +2185,7 @@ fn fake_executable_with_inputs(
     function: u32,
     arity: usize,
 ) -> ExecutableKey {
-    let function = super::super::FunctionId::from_coordinate(function);
+    let function = types.test_function(function);
     let any = types.any();
     let activation = super::super::ActivationKey::from_inputs(root, function, &vec![any; arity], types);
     ExecutableKey {
@@ -2194,14 +2194,28 @@ fn fake_executable_with_inputs(
     }
 }
 
+const FAKE_FUNCTION_COORDINATES: u32 = 4096;
+
+/// A `World` whose types judge fake keys: see `fake_types`.
+fn fake_world() -> World {
+    let mut world = World::new();
+    register_fake_functions(world.types_mut());
+    world
+}
+
+/// Fake keys are minted in throwaway `Types` and judged in another, so every
+/// coordinate they draw on names a function with a typed origin in the judge.
+fn register_fake_functions(types: &mut super::super::Types) {
+    for coordinate in 0..FAKE_FUNCTION_COORDINATES {
+        types.test_function(coordinate);
+    }
+}
+
 fn fake_types() -> super::super::Types {
     let mut types = super::super::Types::new();
-    let _ = super::super::ActivationKey::from_inputs(
-        RootId::for_test(0),
-        super::super::FunctionId::from_coordinate(0),
-        &[],
-        &mut types,
-    );
+    register_fake_functions(&mut types);
+    let function = super::super::FunctionId::from_coordinate(0);
+    let _ = super::super::ActivationKey::from_inputs(RootId::for_test(0), function, &[], &mut types);
     types
 }
 
@@ -2525,7 +2539,7 @@ fn callable_owner_products_aggregate_order_free_and_retract_independently() {
     let left_resolution = executable_symbol_for_test(&fake_executable_with_function(root, 352));
     let right_resolution = executable_symbol_for_test(&fake_executable_with_function(root, 353));
     let replacement_resolution = executable_symbol_for_test(&fake_executable_with_function(root, 354));
-    let mut world = World::new();
+    let mut world = fake_world();
     let callable = world.intern_callable(super::super::transport::CallableDescr {
         function: Some(FunctionId::from_coordinate(355)),
         arity: 0,
@@ -3511,7 +3525,7 @@ fn callable_owner_scc_is_finite_order_free_and_contains_only_pass_through_owners
     assert_eq!(ring_forward.0, ring_reverse.0);
     assert!(ring_forward.1 <= 5 && ring_reverse.1 <= 5);
 
-    let mut world = World::new();
+    let mut world = fake_world();
     let callable = world.intern_callable(super::super::transport::CallableDescr {
         function: None,
         arity: 0,
@@ -3554,7 +3568,7 @@ fn callable_owner_group_is_atomic_replacement_safe_and_frontier_relative() {
         value: ValueId::from_u32(0),
     });
     let unrelated_parent = ProductKey::AbiExecutable(fake_executable_with_function(root, 372));
-    let mut world = World::new();
+    let mut world = fake_world();
     let callable = world.intern_callable(super::super::transport::CallableDescr {
         function: None,
         arity: 0,
