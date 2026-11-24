@@ -3782,3 +3782,97 @@ fn the_worklist_and_the_block_lists_keep_their_capacity_across_collections() {
         "neither list is freed"
     );
 }
+
+/// A source of `len` distinct-ish bytes sliced at `start_bit` for `bit_len`
+/// bits. Returns the slice's bits, kind, and the views the slice made, read
+/// from the collection that follows it, which counts each view under the site
+/// that made it.
+fn slice_of_fresh_source(len: usize, start_bit: u64, bit_len: u64) -> (Vec<u8>, ValueKind, StubCounts) {
+    let bytes: Vec<u8> = (0..len).map(|i| (i * 7 + 3) as u8).collect();
+    let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let source = heap.alloc_bitstring(&bytes, len as u64 * 8);
+    let mut roots = [source.ref_word()];
+    heap.collect_stats(&mut roots);
+    let slice = unsafe { heap.slice(roots[0].raw_word(), start_bit, bit_len) };
+    let mut roots = [roots[0], slice.ref_word()];
+    let stats = heap.collect_stats(&mut roots);
+    let slice = roots[1];
+    let bits = unsafe { crate::bits::Bin::of_binary(slice.raw_word()) };
+    assert_eq!(bits.bit_len(), bit_len);
+    let bits_bytes = unsafe { std::slice::from_raw_parts(bits.ptr(), bit_len.div_ceil(8) as usize) }.to_vec();
+    (bits_bytes, slice.tag(), stats.stubs_made)
+}
+
+fn window_made() -> StubCounts {
+    let mut counts = StubCounts::default();
+    counts.record(StubSite::WindowOfBuffer);
+    counts
+}
+
+/// A field that is the whole source is the source itself, under the same word.
+#[test]
+fn slicing_the_whole_binary_answers_the_binary() {
+    let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
+    for len in [10usize, 200] {
+        let source = heap.alloc_bitstring(&vec![5u8; len], len as u64 * 8);
+        let word = source.ref_word().raw_word();
+        let whole = unsafe { heap.slice(word, 0, len as u64 * 8) };
+        assert_eq!(
+            whole.ref_word().raw_word(),
+            word,
+            "a {len}-byte source is its own whole"
+        );
+    }
+}
+
+/// A byte-aligned window over the threshold shares the source's buffer: it is
+/// a view, and the bytes are the source's bytes.
+#[test]
+fn an_aligned_window_over_the_threshold_is_a_view_of_the_source() {
+    let source: Vec<u8> = (0..200).map(|i| (i * 7 + 3) as u8).collect();
+    let (bytes, kind, made) = slice_of_fresh_source(200, 10 * 8, 100 * 8);
+    assert_eq!(kind, ValueKind::BINVIEW);
+    assert_eq!(made, window_made());
+    assert_eq!(bytes, &source[10..110]);
+}
+
+/// A window of exactly the threshold is cheaper copied than viewed, and does
+/// not keep the source's buffer alive.
+#[test]
+fn an_aligned_window_of_the_threshold_is_a_copy() {
+    let source: Vec<u8> = (0..200).map(|i| (i * 7 + 3) as u8).collect();
+    let (bytes, kind, made) = slice_of_fresh_source(200, 10 * 8, SHARED_BIN_THRESHOLD_BYTES as u64 * 8);
+    assert_eq!(kind, ValueKind::BITSTRING);
+    assert_eq!(made, StubCounts::default(), "a copy makes no view");
+    assert_eq!(bytes, &source[10..10 + SHARED_BIN_THRESHOLD_BYTES]);
+}
+
+/// A window that does not start and end on byte boundaries cannot be a view,
+/// whatever its size: it is a copy of exactly its bits.
+#[test]
+fn an_unaligned_window_is_a_copy_of_its_bits() {
+    let source: Vec<u8> = (0..200).map(|i| (i * 7 + 3) as u8).collect();
+    let (bytes, kind, made) = slice_of_fresh_source(200, 3, 100 * 8);
+    assert_eq!(
+        kind,
+        ValueKind::BINVIEW,
+        "a copy over the threshold lands in a shared buffer"
+    );
+    assert_eq!(made, {
+        let mut counts = StubCounts::default();
+        counts.record(StubSite::FilledBuffer);
+        counts
+    });
+    let expected: Vec<u8> = (0..100).map(|i| (source[i] << 3) | (source[i + 1] >> 5)).collect();
+    assert_eq!(bytes, expected);
+}
+
+/// A slice of a small inline source is a copy, however it is aligned.
+#[test]
+fn a_slice_of_a_small_source_is_a_copy() {
+    let source: Vec<u8> = (0..20).map(|i| (i * 7 + 3) as u8).collect();
+    let (bytes, kind, made) = slice_of_fresh_source(20, 4 * 8, 10 * 8);
+    assert_eq!(kind, ValueKind::BITSTRING);
+    assert_eq!(made, StubCounts::default());
+    assert_eq!(bytes, &source[4..14]);
+}

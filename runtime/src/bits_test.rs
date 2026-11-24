@@ -474,7 +474,7 @@ fn a_middle_slice_is_a_view_with_its_own_length() {
     assert!(!middle.ends_at_buffer_end());
 }
 
-/// `Heap::alloc_bitstring_slice` shares the bytes of a slice above the
+/// `Heap::slice` shares the bytes of a slice above the
 /// threshold and copies one at or below it, wherever in the buffer it sits.
 #[test]
 fn a_slice_above_the_threshold_is_a_view_and_below_it_a_copy() {
@@ -482,10 +482,13 @@ fn a_slice_above_the_threshold_is_a_view_and_below_it_a_copy() {
     let handle = SharedBinHandle::from_bytes(&bytes);
     let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
     let whole = alloc_buffer_view(&mut h, handle, 200 * 8, StubSite::FilledBuffer);
+    let whole = AnyValue::heap_ptr(whole.as_raw(), ValueKind::BINVIEW)
+        .ref_word()
+        .raw_word();
     let (big, small) = unsafe {
         (
-            h.alloc_bitstring_slice(whole, 10, 100),
-            h.alloc_bitstring_slice(whole, 10, SHARED_BIN_THRESHOLD_BYTES as u64),
+            h.slice(whole, 80, 800),
+            h.slice(whole, 80, SHARED_BIN_THRESHOLD_BYTES as u64 * 8),
         )
     };
     assert_eq!(big.kind(), ValueKind::BINVIEW);

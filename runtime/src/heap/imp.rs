@@ -25,7 +25,8 @@ use crate::any_value::{
     map_size_for_count, map_tag_bytes_len, map_tag_ptr, map_value_kind, map_values_ptr, share_bitstring, share_struct,
     struct_field_kind_slot, struct_field_raw_slot, struct_header_word, struct_schema_id, struct_size_for_payload,
 };
-use crate::bits::{BinView, SharedBinHandle, alloc_buffer_view, alloc_view, shared_bin_append};
+use crate::bits::{Bin, BinView, SharedBinHandle, alloc_buffer_view, alloc_view, shared_bin_append};
+use crate::bitstr::{BitReader, BitWriter};
 use crate::off_heap;
 use crate::process::Node;
 use crate::term::TermComparator;
@@ -1042,7 +1043,7 @@ impl Heap {
     /// heap copy.
     ///
     /// This always COPIES `bytes`. To view an existing shared buffer
-    /// without copying it, use `alloc_bitstring_slice`.
+    /// without copying it, use `slice`.
     pub fn alloc_bitstring(&mut self, bytes: &[u8], bit_len: u64) -> AnyValue {
         self.alloc_bitstring_with(bytes.len(), bit_len, |dest| {
             dest.write_copy_of_slice(bytes);
@@ -1163,40 +1164,69 @@ impl Heap {
         )
     }
 
-    /// Allocate the whole-byte slice `[byte_offset, byte_offset + byte_len)` of
-    /// the window `parent` views, returning it as a value. `byte_offset` counts from
-    /// the window's first byte.
+    /// The `bit_len` bits of the binary `source` that start at bit `start_bit`.
+    /// This is the one place a slice chooses between the source itself, a view
+    /// of its buffer, and a copy:
     ///
-    /// Above `SHARED_BIN_THRESHOLD_BYTES` the slice SHARES the parent's
-    /// bytes: a new view names the parent's BinRef at its own first byte and
-    /// length, and nothing is copied or retained. That is what stops a byte
-    /// scanner being quadratic, and what makes taking a field out of a large
-    /// binary cost a view rather than the field.
-    ///
-    /// At or below the threshold the bytes are copied into an inline
-    /// bitstring. Copying is cheaper than a view at that size, and it keeps
-    /// a small slice from pinning a large buffer alive.
-    ///
-    /// This is the one place the inline/shared choice is made for a slice,
-    /// so it returns the value rather than a bare pointer the caller has to
-    /// re-classify.
+    /// * a field that is the whole source is the source, marked shared;
+    /// * a byte-aligned window over `SHARED_BIN_THRESHOLD_BYTES` is a view on
+    ///   the source's buffer. Nothing is copied, which is what stops a byte
+    ///   scanner being quadratic and makes a field of a large binary cost a
+    ///   view rather than the field;
+    /// * anything else is a copy, which also keeps a small slice from pinning
+    ///   a large buffer alive. A byte-aligned window copies its bytes, an
+    ///   unaligned one its bits.
     ///
     /// # Safety
-    ///
-    /// `parent` must be a live view on this heap.
-    pub unsafe fn alloc_bitstring_slice(&mut self, parent: BinView, byte_offset: u64, byte_len: u64) -> AnyValue {
+    /// `source` must be the tagged word of a live binary on this heap, and the
+    /// window must lie inside it.
+    pub unsafe fn slice(&mut self, source: u64, start_bit: u64, bit_len: u64) -> AnyValue {
+        let bin = unsafe { Bin::of_binary(source) };
         assert!(
-            (byte_offset + byte_len) as usize <= parent.bytes_len(),
-            "bitstring slice [{byte_offset}, +{byte_len}) runs past the window it slices"
+            start_bit + bit_len <= bin.bit_len(),
+            "binary slice [{start_bit}, +{bit_len}) runs past the {} bits it slices",
+            bin.bit_len()
         );
-        let first = unsafe { parent.bytes_ptr().add(byte_offset as usize) };
-        if byte_len as usize > SHARED_BIN_THRESHOLD_BYTES {
+        let source_ref = AnyValueRef::from_raw_word(source).expect("a binary's tagged word is a ref");
+        if start_bit == 0 && bit_len == bin.bit_len() {
+            self.share(source_ref).expect("a binary can be shared");
+            return AnyValue::from_ref(source_ref).expect("a binary is a value");
+        }
+        let aligned = start_bit.is_multiple_of(8) && bit_len.is_multiple_of(8);
+        let (first_byte, byte_len) = ((start_bit / 8) as usize, (bit_len / 8) as usize);
+        if aligned && byte_len > SHARED_BIN_THRESHOLD_BYTES {
+            // A binary over the threshold is always a view: every allocator
+            // puts more than the threshold in a shared buffer, and an inline
+            // bitstring holds at most the threshold.
+            debug_assert!(
+                source_ref.tag() == ValueKind::BINVIEW,
+                "a slice over the threshold has a source over the threshold, which is a view"
+            );
+            let parent = unsafe { BinView::from_raw(source_ref.binview_addr().expect("a view source")) };
             self.count_binary_shared(parent.share());
-            let window = alloc_view(self, parent.binref(), first, byte_len * 8, StubSite::WindowOfBuffer);
+            let window = alloc_view(
+                self,
+                parent.binref(),
+                unsafe { bin.ptr().add(first_byte) },
+                bit_len,
+                StubSite::WindowOfBuffer,
+            );
             return AnyValue::heap_ptr(window.as_raw(), ValueKind::BINVIEW);
         }
-        let slice = unsafe { from_raw_parts(first, byte_len as usize) };
-        self.alloc_bitstring(slice, byte_len * 8)
+        if aligned {
+            return self.alloc_bitstring(unsafe { from_raw_parts(bin.ptr().add(first_byte), byte_len) }, bit_len);
+        }
+        let bytes = unsafe { from_raw_parts(bin.ptr(), (bin.bit_len() as usize).div_ceil(8)) };
+        let mut reader = BitReader {
+            bytes,
+            bit_len: bin.bit_len() as usize,
+            pos: start_bit as usize,
+        };
+        let mut writer = BitWriter::new();
+        for _ in 0..bit_len {
+            writer.append_bit(reader.read_bit().expect("a window inside the source is readable"));
+        }
+        self.alloc_bitstring(&writer.bytes, bit_len)
     }
 
     /// Denotation, layout header, code pointer, then captures and their kind bytes.

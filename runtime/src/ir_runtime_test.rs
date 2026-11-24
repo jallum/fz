@@ -1,9 +1,9 @@
 use super::*;
 use crate::any_value::{
-    AnyValue, AnyValueRef, EMPTY_LIST_BITS, SlotLayout, ValueKind, binview_addr_from_tagged, closure_size_for_count,
-    heap_object_word, list_addr_from_tagged, map_count, map_entry, struct_is_shared,
+    AnyValue, AnyValueRef, EMPTY_LIST_BITS, SlotLayout, ValueKind, closure_size_for_count, heap_object_word,
+    list_addr_from_tagged, map_count, map_entry, struct_is_shared,
 };
-use crate::bits::{BINVIEW_BYTES, Bin, BinView};
+use crate::bits::{BINVIEW_BYTES, Bin};
 use crate::exec_ctx::Argv;
 use crate::heap::{Schema, SchemaRegistry};
 use crate::process::{DEFAULT_REDUCTIONS_PER_QUANTUM, Process, YIELD_REASON_REDUCTIONS};
@@ -1195,9 +1195,7 @@ fn referenced_size_of_an_inline_binary_is_its_own_size() {
 fn referenced_size_of_a_view_is_the_whole_buffer() {
     with_process(|process| {
         let whole = alloc_binary(process, &[1u8; 200]);
-        let binview =
-            unsafe { BinView::from_raw(binview_addr_from_tagged(whole).expect("a large binary is a BinView")) };
-        let view = unsafe { process.heap.alloc_bitstring_slice(binview, 50, 150) };
+        let view = unsafe { process.heap.slice(whole, 400, 1200) };
         let view = view.ref_word().raw_word();
         assert_eq!(binary_bytes(view).len(), 150);
         assert_eq!(fz_binary_referenced_size(view), 200);

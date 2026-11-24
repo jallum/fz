@@ -939,6 +939,16 @@ impl Process {
         value
     }
 
+    /// A window of the binary `source`; see [`Heap::slice`].
+    ///
+    /// # Safety
+    /// As [`Heap::slice`].
+    pub unsafe fn slice(&mut self, source: u64, start_bit: u64, bit_len: u64) -> AnyValue {
+        let value = unsafe { self.heap.slice(source, start_bit, bit_len) };
+        self.end_quantum_when_binaries_due();
+        value
+    }
+
     /// The binary `left <> right`; see [`Heap::alloc_concatenation`].
     ///
     /// # Safety

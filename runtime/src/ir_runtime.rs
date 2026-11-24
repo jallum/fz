@@ -1571,38 +1571,8 @@ pub extern "C" fn fz_bs_read_binary_ref(
     let (bytes, bit_len) = bit_source(source_ref);
     let end = field_end(field_spec, size_value, pos, bytes, bit_len)
         .unwrap_or_else(|| panic!("fz_bs_read_binary_ref: the field at bit {pos} does not fit"));
-    let (pos, end, bit_len) = (pos as usize, end as usize, bit_len as usize);
-    // A field that spans the whole source is the source, under a second name.
-    if pos == 0 && end == bit_len {
-        return fz_mark_published_ref_aliased(process, source_ref);
-    }
-    let needed_bits = end - pos;
     let process = unsafe { &mut *process };
-    // A byte-aligned field of a shared binary is another view of the same
-    // bytes, not a copy. Byte scanners and field extractors take one per step,
-    // and copying them is what made scanning quadratic;
-    // `Heap::alloc_bitstring_slice` decides whether the view is worth a view object.
-    let byte_aligned = pos.is_multiple_of(8) && needed_bits.is_multiple_of(8);
-    let shared_source = binview_addr_from_tagged(source_ref).filter(|_| byte_aligned);
-    let value = if let Some(addr) = shared_source {
-        let src = unsafe { BinView::from_raw(addr) };
-        unsafe {
-            process
-                .heap
-                .alloc_bitstring_slice(src, (pos / 8) as u64, (needed_bits / 8) as u64)
-        }
-    } else if byte_aligned {
-        // Byte-aligned is the overwhelmingly common case and is a slice copy
-        // rather than a walk over individual bits.
-        process.alloc_bitstring(&bytes[pos / 8..pos / 8 + needed_bits / 8], needed_bits as u64)
-    } else {
-        let mut reader = BitReader { bytes, bit_len, pos };
-        let mut writer = BitWriter::new();
-        for _ in 0..needed_bits {
-            writer.append_bit(reader.read_bit().expect("a field that fits is readable"));
-        }
-        process.alloc_bitstring(&writer.bytes, needed_bits as u64)
-    };
+    let value = unsafe { process.slice(source_ref, pos, end - pos) };
     value.ref_word().raw_word()
 }
 
