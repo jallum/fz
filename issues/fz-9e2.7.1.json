@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-9e2.7",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "byte_size and bit_size are inline rows",
   "type": "task",
-  "updated_at": "2026-11-24T21:26:54Z"
+  "updated_at": "2026-11-24T21:26:57Z"
 }
