@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-24T22:16:32Z",
+  "description": "From: Optimize. Approved by the user 2026-11-24 (\"Enablers first\" for fz-mue.7, relayed by Optimize). A page comes before building.\n\nToday: an extern's raises: option requires the C ABI, an integer or float result, and a fixed message: field (checked_return in src/compiler2/jobs/contract.rs). So fz_map_put and fz_map_next_list panic on a non-map, and BadMapError{term} has to come from fz-level is_map guards. On 00567 those guards cost 14 evaluations; on fixtures 01032, 01125, 01130, 01135 they cost +10/+9/+3/+3 run-time is_map checks.\n\nFix: an \"fz\"-ABI extern may raise a term-carrying exception. The runtime raises at the kind check it already makes, as a BEAM BIF raises badmap (runtime side exists: raise_exception in runtime/src/failure.rs). Missing: the extern option, the contract's term field, and a failure channel on the fz-ABI return across interp, run and build. The is_map guards go; Map.put on a non-map raises BadMapError instead of panicking. Kernel's map_size guard is a candidate to fold the same way.\n\nRelated: fz-sc8.122 (Map functions raise BadMapError for a non-map) needs this mechanism; this ticket blocks it.\n\nDone when: Map.put(1, :a, 2) raises BadMapError in Elixir's shape on all three paths (fixture); the is_map guards are deleted; the four fixtures' run-time checks fall; no pin rises.",
+  "id": "fz-mue.59",
+  "labels": [],
+  "parent": "fz-mue",
+  "priority": 2,
+  "status": "open",
+  "title": "An fz-ABI extern raises a term-carrying exception",
+  "type": "feature",
+  "updated_at": "2026-11-24T22:16:32Z"
+}
