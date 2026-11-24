@@ -1,0 +1,67 @@
+#---
+# purpose: "a String or Float function handed a value that is not a binary, or a binary it cannot read, raises what Elixir raises, which try can rescue; the runtime underneath is only ever handed a proven binary"
+# oracle: self
+# oracle.stamp: 2af3e796eb6383f4
+# args: 0
+#---
+defmodule Main do
+  # A value read from a list at a position known only at run time, so the
+  # compiler cannot prove its type and every check runs.
+  def v(k) do
+    base = String.to_integer(hd(System.argv()))
+    Enum.at([1, <<1::3>>, <<255>>, "héllo"], base + k)
+  end
+
+  def call(:length_integer), do: String.length(v(0))
+  def call(:length_bits), do: String.length(v(1))
+  def call(:graphemes_integer), do: String.graphemes(v(0))
+  def call(:next_grapheme_integer), do: String.next_grapheme(v(0))
+  def call(:next_grapheme_size_integer), do: String.next_grapheme_size(v(0))
+  def call(:upcase_integer), do: String.upcase(v(0))
+  def call(:downcase_bits), do: String.downcase(v(1))
+  def call(:to_atom_integer), do: String.to_atom(v(0))
+  def call(:to_atom_bits), do: String.to_atom(v(1))
+  def call(:to_atom_invalid_utf8), do: String.to_atom(v(2))
+  def call(:to_atom_valid), do: String.to_atom(v(3))
+  def call(:to_float_integer), do: String.to_float(v(0))
+  def call(:float_parse_integer), do: Float.parse(v(0))
+  def call(:valid_integer), do: String.valid?(v(0))
+  def call(:valid_bits), do: String.valid?(v(1))
+  def call(:length_valid), do: String.length(v(3))
+
+  # A FunctionClauseError names the clause that did not match; Elixir's names
+  # its own private helpers, so only the exception's module is compared.
+  def attempt(row) do
+    try do
+      {row, :ok, call(row)}
+    rescue
+      e in FunctionClauseError -> {row, e.__struct__}
+      e -> {row, e.__struct__, Exception.message(e)}
+    end
+  end
+
+  def main() do
+    rows = [
+      :length_integer,
+      :length_bits,
+      :graphemes_integer,
+      :next_grapheme_integer,
+      :next_grapheme_size_integer,
+      :upcase_integer,
+      :downcase_bits,
+      :to_atom_integer,
+      :to_atom_bits,
+      :to_atom_invalid_utf8,
+      :to_atom_valid,
+      :to_float_integer,
+      :float_parse_integer,
+      :valid_integer,
+      :valid_bits,
+      :length_valid
+    ]
+
+    Enum.each(rows, fn row -> IO.puts(inspect(attempt(row))) end)
+  end
+end
+
+Main.main()

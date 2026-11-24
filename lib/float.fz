@@ -55,7 +55,7 @@ defmodule Float do
 
   """
   @spec parse(binary) :: {float, binary} | :error
-  def parse(s), do: parsed(fz_float_parse(s))
+  def parse(s) when is_binary(s), do: parsed(fz_float_parse(s))
 
   @spec parsed(any) :: {float, binary} | :error
   defp parsed([float, rest]), do: {float, rest}

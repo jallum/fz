@@ -99,7 +99,7 @@ defmodule String do
 
   """
   @spec length(binary) :: integer
-  def length(s), do: grapheme_count(s, 0)
+  def length(s) when is_binary(s), do: grapheme_count(s, 0)
 
   @spec grapheme_count(binary, integer) :: integer
   defp grapheme_count(s, acc), do: grapheme_count_step(next_grapheme(s), acc)
@@ -619,7 +619,7 @@ defmodule String do
   @spec upcase(binary) :: binary
   def upcase(s :: binary), do: fz_binary_upcase(s)
 
-  extern "fz" defp fz_binary_upcase(any) :: binary
+  extern "fz" defp fz_binary_upcase(binary) :: binary
 
   @doc """
   Converts every codepoint in `s` to lowercase.
@@ -639,7 +639,7 @@ defmodule String do
   @spec downcase(binary) :: binary
   def downcase(s :: binary), do: fz_binary_downcase(s)
 
-  extern "fz" defp fz_binary_downcase(any) :: binary
+  extern "fz" defp fz_binary_downcase(binary) :: binary
 
   @doc """
   Returns `s` repeated `n` times.
@@ -914,12 +914,12 @@ defmodule String do
   @spec next_grapheme_size(binary) :: {integer, binary} | nil
   def next_grapheme_size(""), do: nil
 
-  def next_grapheme_size(s) do
+  def next_grapheme_size(s) when is_binary(s) do
     size = fz_grapheme_size(s)
     {size, drop_bytes(s, size)}
   end
 
-  extern "fz" defp fz_grapheme_size(any) :: integer
+  extern "fz" defp fz_grapheme_size(binary) :: integer
 
   @doc """
   Returns the first grapheme of `s` and the rest, or `nil` when `s` is empty.
@@ -935,7 +935,7 @@ defmodule String do
   """
   @spec next_grapheme(binary) :: {binary, binary} | nil
   def next_grapheme(""), do: nil
-  def next_grapheme(s), do: split_codepoint(s, fz_grapheme_size(s))
+  def next_grapheme(s) when is_binary(s), do: split_codepoint(s, fz_grapheme_size(s))
 
   @doc """
   Returns every grapheme of `s` as its own binary.
@@ -953,7 +953,7 @@ defmodule String do
 
   """
   @spec graphemes(binary) :: [binary]
-  def graphemes(s), do: graphemes_step(next_grapheme(s))
+  def graphemes(s) when is_binary(s), do: graphemes_step(next_grapheme(s))
 
   @spec graphemes_step({binary, binary} | nil) :: [binary]
   defp graphemes_step(nil), do: []
@@ -988,7 +988,7 @@ defmodule String do
 
   """
   @spec valid?(binary) :: boolean
-  def valid?(s), do: Utf8.valid?(s)
+  def valid?(s) when is_binary(s), do: Utf8.valid?(s)
 
   @doc """
   Returns every byte of `s` as an integer.
@@ -1046,9 +1046,17 @@ defmodule String do
 
   """
   @spec to_atom(binary) :: atom
-  def to_atom(s), do: fz_binary_to_atom(s)
+  def to_atom(s) when is_binary(s) do
+    if valid?(s), do: fz_binary_to_atom(s), else: to_atom_refused("invalid UTF8 encoding")
+  end
 
-  extern "fz" defp fz_binary_to_atom(any) :: any
+  def to_atom(_s), do: to_atom_refused("not a binary")
+
+  @spec to_atom_refused(binary) :: no_return()
+  defp to_atom_refused(reason),
+    do: raise(ArgumentError, "errors were found at the given arguments:\n\n  * 1st argument: " <> reason <> "\n")
+
+  extern "fz" defp fz_binary_to_atom(binary) :: atom
 
   @doc """
   Reverses the codepoints of `s`.
@@ -1174,7 +1182,10 @@ defmodule String do
 
   """
   @spec to_float(binary) :: float
-  def to_float(s), do: whole_float(Float.parse(s), s)
+  def to_float(s) when is_binary(s), do: whole_float(Float.parse(s), s)
+
+  def to_float(_s),
+    do: raise(ArgumentError, "errors were found at the given arguments:\n\n  * 1st argument: not a binary\n")
 
   # `Float.parse` takes a `.` only when a digit follows it, so once it has
   # consumed the whole text, any `.` in that text is its decimal point.

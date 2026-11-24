@@ -689,6 +689,15 @@ Which arguments the compiler refuses outright and which it tests at run time is
 unchanged: an argument whose type is narrower than `any` and outside the
 parameter's type is `spec/violation`; an `any` argument is tested.
 
+So a runtime function that reads a binary declares its parameter `binary` or
+`bitstring`, and its body is handed a proven binary. Where Elixir raises
+something else for a non-binary, or names the public function in its
+`FunctionClauseError`, the library function carries the guard Elixir's own
+function head does: `String.length/1` and the grapheme functions test
+`is_binary`, and `String.to_atom/1` and `String.to_float/1` raise
+`ArgumentError` naming the first argument, as the BEAM does
+(`01824_a_binary_function_given_a_non_binary_raises_what_elixir_raises.fz`).
+
 The entry test for `pid` and `ref` reads the value's kind: a pid passes
 `pid` and a reference passes `ref`, and no integer, float, atom, binary or list
 passes either. The test for `c_pointer` admits every value, because the
