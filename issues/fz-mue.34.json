@@ -3,13 +3,13 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-19T03:09:44Z",
-  "description": "User directed 2026-11-19: \"add the elixir parity issues as tickets to the epic we gave to Elixir Parity\". Owner: Elixir Parity. Found by Elixir Parity during fz-mue.15. Elixir's tokenizer drops the line end before -\u003e, so catch\\n v -\u003e v\\n -\u003e 0\\nend is a syntax error in Elixir; fz reads '-\u003e 0' as a zero-head clause, pinned by frontdoor_test compiler2_frontdoor_catch_clauses_take_one_or_more_heads_and_a_trailing_guard. Open decision for the user, before building: match Elixir, or record the zero-head form as an intended fz extension.",
+  "description": "User directed 2026-11-19: \"add the elixir parity issues as tickets to the epic we gave to Elixir Parity\". Owner: Elixir Parity. Found by Elixir Parity during fz-mue.15. Elixir's tokenizer drops the line end before -\u003e, so catch\\n v -\u003e v\\n -\u003e 0\\nend is a syntax error in Elixir; fz reads '-\u003e 0' as a zero-head clause, pinned by frontdoor_test compiler2_frontdoor_catch_clauses_take_one_or_more_heads_and_a_trailing_guard. Open decision for the user, before building: match Elixir, or record the zero-head form as an intended fz extension.\n\nRe-test on develop de4ef6a3b (Elixir Parity, 2026-11-24; user-approved update): fz now rejects the program at lowering (parse/invalid-try), so the \"keep as an extension\" decision is moot. Done when: the parser gives the syntax error, and the zero-head pin at src/compiler2/frontdoor_test.rs:821 is deleted. Evidence: Elixir Parity's fresh/report.md.",
   "id": "fz-mue.34",
   "labels": [],
   "parent": "fz-mue",
   "priority": 3,
   "status": "open",
-  "title": "A line that begins with -\u003e continues the line before, as in Elixir",
+  "title": "The parser rejects a clause that begins with -\u003e, as Elixir's tokenizer does",
   "type": "bug",
-  "updated_at": "2026-11-19T03:09:44Z"
+  "updated_at": "2026-11-24T21:36:34Z"
 }
