@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-9e2.7.2"
+  ],
   "created": "2026-11-24T21:26:49Z",
   "description": "From: Binary Handling. Approved by the user 2026-11-24 (\"proceed.\" on the fz-9e2.7 page https://claude.ai/artifact/3XypMCDmqCGuatQXAb5Ci9, relayed by Binary Handling).\n\nMake fz_bitstring_byte_extent and fz_bitstring_bit_extent RECIPES rows, so byte_size and bit_size of a proven binary are read inline instead of called.\n\nAcceptance: bench 02a ~31 instructions per iteration; a native dump test shows no call.",
   "id": "fz-9e2.7.1",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "byte_size and bit_size are inline rows",
   "type": "task",
-  "updated_at": "2026-11-24T21:26:49Z"
+  "updated_at": "2026-11-24T21:26:52Z"
 }
