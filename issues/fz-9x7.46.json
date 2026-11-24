@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-24T18:24:10Z",
+  "description": "User approved 2026-11-24 for the end of the fz-9x7 epic (relayed by GC).\n\nHeap::publish_entries_in_place (runtime/src/heap/imp.rs:822) decodes each entry into an AnyValue only to call .raw()/.kind(). Read them instead with map_locate + map_slot_raw_kinds (any_value/map_node.rs:258) and pass the four values to publish_contained_parts.\n\nEvidence: on PR #852 (fz-9x7.11.2), LLVM compiled the unchanged map_slot's kind match with 4 compares instead of 2. That took it from 65 to 70 instructions per call, at 2 calls per map, and gave gc-maps-short +1.04% instructions, which the user waived.\n\nExpected: at least 10 fewer instructions per map built. Not yet measured; judged on bench.",
+  "id": "fz-9x7.46",
+  "labels": [],
+  "parent": "fz-9x7",
+  "priority": 2,
+  "status": "open",
+  "title": "A map build reads its entries' words and kinds directly",
+  "type": "task",
+  "updated_at": "2026-11-24T18:24:10Z"
+}
