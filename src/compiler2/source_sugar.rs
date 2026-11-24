@@ -161,6 +161,166 @@ fn rewrite_operator(
     Ok(Some(rewritten))
 }
 
+/// `left in right` and `left not in right` in a guard, expanded as Elixir's
+/// `in` macro does there: a literal list becomes an `or` chain of `===`
+/// comparisons and an integer range becomes a bounds test, so dispatch
+/// evaluates the membership itself. `None` when `right` is no literal list
+/// or integer range, which a guard cannot test.
+///
+/// `left` appears once per comparison, which is sound because a guard is pure.
+pub(crate) fn rewrite_guard_membership(
+    owner: &QuotedSourceRoot,
+    node: &QuotedAstNode,
+    op: &str,
+    left: &QuotedSourceCursor,
+    right: &QuotedSourceCursor,
+    sources: &SourceMap,
+) -> Result<Option<AnyValueRef>, QuotedSourceError> {
+    let builder = owner.builder();
+    let meta = node.meta.root();
+    let left = left.root();
+    let member = if is_list_like(right) {
+        let Some(items) = literal_list_items(right, sources)? else {
+            return Ok(None);
+        };
+        let mut comparisons = Vec::with_capacity(items.len());
+        for item in items {
+            comparisons.push(named_call(&builder, "===", meta, &[left, item])?);
+        }
+        match comparisons.into_iter().reduce(|chain, next| {
+            named_call(&builder, "or", meta, &[chain, next]).expect("a quoted call with two arguments builds")
+        }) {
+            Some(chain) => chain,
+            None => builder.bool(false),
+        }
+    } else {
+        let Some((first, last, step)) = literal_range(right, sources)? else {
+            return Ok(None);
+        };
+        integer_range_membership(&builder, meta, left, first, last, step)?
+    };
+    Ok(Some(match op {
+        "not in" => named_call(&builder, "not", meta, &[member])?,
+        _ => member,
+    }))
+}
+
+/// The elements of a literal list, with a trailing `| tail` that is itself a
+/// literal list spliced in; `None` when the list has a tail that is not.
+fn literal_list_items(
+    list: &QuotedSourceCursor,
+    sources: &SourceMap,
+) -> Result<Option<Vec<AnyValueRef>>, QuotedSourceError> {
+    let mut items = Vec::new();
+    for item in list.list_items()? {
+        let Some(node) = item.ast_node(sources)? else {
+            items.push(item.root());
+            continue;
+        };
+        let is_cons = node.head.root().tag() == ValueKind::ATOM && node.head.atom_name()? == "|";
+        let parts = if is_cons { node.tail.list_items()? } else { Vec::new() };
+        let [head, tail] = parts.as_slice() else {
+            items.push(item.root());
+            continue;
+        };
+        if !is_list_like(tail) {
+            return Ok(None);
+        }
+        items.push(head.root());
+        match literal_list_items(tail, sources)? {
+            Some(rest) => items.extend(rest),
+            None => return Ok(None),
+        }
+    }
+    Ok(Some(items))
+}
+
+/// The bounds and step of `first..last` or `first..last//step` when all are
+/// integer literals. A bare `first..last` steps down when `first > last`.
+fn literal_range(
+    cursor: &QuotedSourceCursor,
+    sources: &SourceMap,
+) -> Result<Option<(i64, i64, i64)>, QuotedSourceError> {
+    let Some(node) = cursor.ast_node(sources)? else {
+        return Ok(None);
+    };
+    if node.head.root().tag() != ValueKind::ATOM || !is_list_like(&node.tail) {
+        return Ok(None);
+    }
+    let args = node.tail.list_items()?;
+    match (node.head.atom_name()?.as_str(), args.as_slice()) {
+        ("..", [first, last]) => {
+            let (Some(first), Some(last)) = (literal_int(first, sources)?, literal_int(last, sources)?) else {
+                return Ok(None);
+            };
+            Ok(Some((first, last, if first <= last { 1 } else { -1 })))
+        }
+        ("//", [range, step]) => {
+            let Some(step) = literal_int(step, sources)? else {
+                return Ok(None);
+            };
+            let Some(inner) = range.ast_node(sources)? else {
+                return Ok(None);
+            };
+            let inner_args = inner.tail.list_items()?;
+            match (inner.head.atom_name()?.as_str(), inner_args.as_slice()) {
+                ("..", [first, last]) => {
+                    let (Some(first), Some(last)) = (literal_int(first, sources)?, literal_int(last, sources)?) else {
+                        return Ok(None);
+                    };
+                    Ok(Some((first, last, step)))
+                }
+                _ => Ok(None),
+            }
+        }
+        _ => Ok(None),
+    }
+}
+
+/// An integer literal, written plainly or under a unary minus.
+fn literal_int(cursor: &QuotedSourceCursor, sources: &SourceMap) -> Result<Option<i64>, QuotedSourceError> {
+    if cursor.root().tag() == ValueKind::INT {
+        return Ok(Some(cursor.int_value()?));
+    }
+    let Some(node) = cursor.ast_node(sources)? else {
+        return Ok(None);
+    };
+    if node.head.root().tag() != ValueKind::ATOM || node.head.atom_name()? != "-" || !is_list_like(&node.tail) {
+        return Ok(None);
+    }
+    match node.tail.list_items()?.as_slice() {
+        [operand] if operand.root().tag() == ValueKind::INT => Ok(operand.int_value()?.checked_neg()),
+        _ => Ok(None),
+    }
+}
+
+/// `left` is an integer in the range `first..last//step`.
+fn integer_range_membership(
+    builder: &QuotedSourceBuilder,
+    meta: AnyValueRef,
+    left: AnyValueRef,
+    first: i64,
+    last: i64,
+    step: i64,
+) -> Result<AnyValueRef, QuotedSourceError> {
+    if first == last {
+        return named_call(builder, "===", meta, &[left, builder.int(first)]);
+    }
+    let (low, high) = if step > 0 { (first, last) } else { (last, first) };
+    let is_integer = named_call(builder, "is_integer", meta, &[left])?;
+    let at_least = named_call(builder, ">=", meta, &[left, builder.int(low)])?;
+    let at_most = named_call(builder, "<=", meta, &[left, builder.int(high)])?;
+    let bounded = named_call(builder, "and", meta, &[at_least, at_most])?;
+    let within = named_call(builder, "and", meta, &[is_integer, bounded])?;
+    if step == 1 || step == -1 {
+        return Ok(within);
+    }
+    let offset = named_call(builder, "-", meta, &[left, builder.int(first)])?;
+    let remainder = named_call(builder, "rem", meta, &[offset, builder.int(step)])?;
+    let on_step = named_call(builder, "===", meta, &[remainder, builder.int(0)])?;
+    named_call(builder, "and", meta, &[within, on_step])
+}
+
 /// The operator call's metadata with the operator stamped on it, so a pattern
 /// can tell this call from one the user spelled out.
 fn operator_meta(

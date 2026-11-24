@@ -128,7 +128,7 @@ their block. A new epic claims the next free block and adds a row here.
 | `01700-01719` | fz-nml                            | in use through `01712` |
 | `01720-01739` | fz-3sy                            | in use through `01721` |
 | `01740-01759` | fz-9x7                            | in use through `01745` |
-| `01760-01779` | fz-sc8                            | in use through `01778` |
+| `01760-01779` | fz-sc8                            | in use through `01779` |
 | `01780-01819` | fz-mue                            | in use through `01812` |
 | `01820-01859` | fz-9e2                            | in use through `01824` |
 | `01880-01899` | fz-yh5                            | in use through `01884` |

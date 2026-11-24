@@ -458,6 +458,14 @@ publication rules live in [AnyValue's shared lists and structs section](any-valu
 Guards compile into `PatternGuardExpr`. A call in a guard resolves, through
 `PatternResolver::guard_call`, to a `GuardCallee`: either a helper or an extern.
 
+`left in right` and `left not in right` in a guard are expanded by the quoted
+expander (`expand_guard_membership`, rules in `source_sugar::rewrite_guard_membership`)
+before decoding, as Elixir's `in` macro does: a literal list becomes an `or`
+chain of `===` comparisons (`1 in [1.0]` is false), an empty list becomes
+`false`, and an integer-literal range, with or without a step, becomes
+`is_integer(left)` with bounds and, for a step other than 1 or -1, a `rem` test.
+A right side that is neither stays `in` and fails as not dispatch-pure.
+
 A helper call lowers to a nested `PatternGuardExpr::Dispatch` whose
 `PatternGuardDispatch` contains a full `PatternDispatchPlan` for the helper
 clauses plus one expression per helper body. That helper is shared, not copied:

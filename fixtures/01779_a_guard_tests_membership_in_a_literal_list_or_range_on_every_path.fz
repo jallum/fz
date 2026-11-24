@@ -1,0 +1,83 @@
+#---
+# purpose: a guard's `in` over a literal list or an integer range, and its `not in`, decides function clauses, case arms and receive clauses, while `in` outside a guard stays Enumerable membership, on the interpreter, the JIT and a built program
+# kind: run
+# oracle: self
+# oracle.stamp: 7c9f42d39c2fc93d
+#---
+#
+# In a guard `x in [a, b]` means `x === a or x === b`, so `1 in [1.0]` is
+# false, and `x in first..last` means an integer within the range, stepped when
+# the range has a step. `kind` takes the head's own pattern into the test,
+# `small` and `evens` take ranges, `outside` negates, `mixed` holds an atom, an
+# integer and a binary, `routed` is a case arm and `received` a receive clause,
+# `hex?` joins two `in` tests with `or`, `member` and `dynamic` use `in` in a
+# body, where it stays Enumerable membership, over literals and a run-time list.
+defmodule Main do
+  def kind([h | _]) when h in [:ok, :err], do: 2
+  def kind(_), do: 0
+
+  def listed(x) when x in [1, 2, 3], do: true
+  def listed(_), do: false
+
+  def small(x) when x in 1..3, do: true
+  def small(_), do: false
+
+  def counting_down(x) when x in 3..1//-1, do: true
+  def counting_down(_), do: false
+
+  def evens(x) when x in 0..10//2, do: true
+  def evens(_), do: false
+
+  def negative(x) when x in -2..-1, do: true
+  def negative(_), do: false
+
+  def outside(x) when x not in [1, 2], do: true
+  def outside(_), do: false
+
+  def nobody(x) when x in [], do: x
+  def nobody(_), do: :none
+
+  def mixed(x) when x in [:a, 1, "s"], do: true
+  def mixed(_), do: false
+
+  def routed(x) do
+    case x do
+      y when y in [:a, :b] -> 1
+      y when y not in [:c] and is_atom(y) -> 2
+      _ -> 3
+    end
+  end
+
+  def hex?(c) when c in 48..57 or c in 65..70, do: true
+  def hex?(_c), do: false
+
+  def member(x), do: {x in [1, 2], x in 1..3}
+
+  def dynamic(x) do
+    list = [3, 4]
+    x in list
+  end
+
+  def received() do
+    send(self(), {:m, :z})
+    send(self(), {:m, :b})
+
+    receive do
+      {:m, k} when k in [:a, :b] -> {:got, k}
+    end
+  end
+end
+
+IO.inspect({Main.kind([:ok]), Main.kind([:err, 1]), Main.kind([:x]), Main.kind([])})
+IO.inspect({Main.listed(2), Main.listed(4), Main.listed(1.0), Main.listed(:a)})
+IO.inspect({Main.small(1), Main.small(3), Main.small(4), Main.small(0), Main.small(2.0)})
+IO.inspect({Main.counting_down(2), Main.counting_down(0)})
+IO.inspect({Main.evens(4), Main.evens(5), Main.evens(12)})
+IO.inspect({Main.negative(-2), Main.negative(0)})
+IO.inspect({Main.outside(2), Main.outside(4), Main.outside(1.0)})
+IO.inspect(Main.nobody(1))
+IO.inspect({Main.mixed(:a), Main.mixed(1), Main.mixed("s"), Main.mixed(1.0), Main.mixed("t")})
+IO.inspect({Main.routed(:a), Main.routed(:b), Main.routed(:c), Main.routed(:d), Main.routed(1)})
+IO.inspect(Main.received())
+IO.inspect({Main.hex?(50), Main.hex?(66), Main.hex?(1)})
+IO.inspect({Main.member(2), Main.member(3), Main.member(5), Main.dynamic(4), Main.dynamic(1)})
