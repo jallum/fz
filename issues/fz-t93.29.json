@@ -5,7 +5,7 @@
   ],
   "blocks": [],
   "created": "2026-11-23T19:59:38Z",
-  "description": "From fz-t93.26's paper. After M1+S1+P, these still differ between fifo and lifo and are not traced: 00761, 00763, 00765 (an atom-union column is wider in one order), 01174, 00569, 01793 (list(A) | list(B) in one order, list(A|B) in the other), 01800 (a recursive list folded or unfolded); and the distiller's dump still differs in 2 places (an Enum.reduce closure-union row split differently, one callable(...) line). They look like the row-dominance and fold family; unproven. Paper first. Done when the plan is byte-identical under every order on the distiller and the matrix (fz-t93.26's original criterion). Evidence: /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/t93_26/r3/.",
+  "description": "From fz-t93.26's paper. After M1+S1+P, these still differ between fifo and lifo and are not traced: 00761, 00763, 00765 (an atom-union column is wider in one order), 01174, 00569, 01793 (list(A) | list(B) in one order, list(A|B) in the other), 01800 (a recursive list folded or unfolded); and the distiller's dump still differs in 2 places (an Enum.reduce closure-union row split differently, one callable(...) line). They look like the row-dominance and fold family; unproven. Paper first. Done when the plan is byte-identical under every order on the distiller and the matrix (fz-t93.26's original criterion). Evidence: /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/t93_26/r3/.\n\nCensus 2026-11-24 on develop fd3bfb964 (after fz-t93.26), every fixture under fifo and lifo (fz-t93.28's paper, scratch t93_28/census_base): 14 differ. 01574 is fz-t93.28 and 00795/00796 are fz-t93.27. The other 11 differ in type structure (union width, recursive list unfolding, atom sets): 00569, 00761, 00763, 00765, 01174, 01793, 01800 (already above), and also 00758, 00760, 00762, 01160, which this ticket did not list before. About 107 fixtures panic when compiled in-process by the census harness and are not covered.",
   "id": "fz-t93.29",
   "labels": [],
   "parent": "fz-t93",
@@ -13,5 +13,5 @@
   "status": "open",
   "title": "The remaining order-dependent plans are traced",
   "type": "bug",
-  "updated_at": "2026-11-23T19:59:39Z"
+  "updated_at": "2026-11-24T15:00:01Z"
 }
