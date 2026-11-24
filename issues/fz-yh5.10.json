@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Callables",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-24T17:54:24Z",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "A raise inside a guard helper fails the guard, as in Elixir",
   "type": "bug",
-  "updated_at": "2026-11-24T17:54:24Z"
+  "updated_at": "2026-11-24T17:54:27Z"
 }
