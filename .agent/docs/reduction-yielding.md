@@ -214,12 +214,13 @@ young at the moment it is taken. A message nobody takes costs the heap nothing
 and is no collection root.
 
 A collection is minor or major (`Heap::next_generation`). A minor collection's
-from-space is the young blocks, so old blocks stay where they are and a
+from-space is the young blocks (the granules the age table reads young, see
+`runtime/src/heap/arena.rs`), so old blocks stay where they are and a
 pointer into one is left as it is. A major collection's from-space is every
 block, and it runs once `live_baseline` exceeds `MAJOR_GROWTH_FACTOR` (2) times
 the larger of the old bytes the last major collection left and half the smallest
 tip; a heap with nothing old is always minor. Either way the survivors are
-copied by `Heap::bump_to_space` into a to-space block whose capacity is a guess
+copied by `Heap::bump_to_space` into a to-space block, made old, whose capacity is a guess
 (the old bytes for a major collection; the bytes the last minor collection
 copied for a minor one; at least the smallest tip): a copy that fills the block
 parks it and installs an overflow block, the smallest class first (the last table

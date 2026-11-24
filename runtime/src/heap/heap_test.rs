@@ -3094,7 +3094,13 @@ fn a_map_holding_a_literal_closure_and_a_literal_struct_survives_a_collection_wi
     let registry = fresh_registry();
     let pair = registry.borrow_mut().register(Schema::tuple_of_arity(2));
     let mut elsewhere = Heap::new(SIZE_TABLE[0], registry.clone());
-    let static_struct = elsewhere.alloc_struct(pair);
+    let built = elsewhere.alloc_struct(pair);
+    // A literal sits outside every heap block, as a compiled program's static
+    // does: the struct is copied out of the heap that built it.
+    let struct_bytes = struct_size_for_payload(Schema::tuple_of_arity(2).allocation_payload_size());
+    let mut static_storage = vec![0u128; struct_bytes / 16];
+    let static_struct = static_storage.as_mut_ptr() as *mut u8;
+    unsafe { std::ptr::copy_nonoverlapping(built, static_struct, struct_bytes) };
     let literal_struct = AnyValue::HeapRef(
         AnyValueRef::from_heap_object(ValueKind::STRUCT, static_struct)
             .expect("struct ref")

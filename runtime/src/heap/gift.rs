@@ -20,6 +20,7 @@
 //! pointers.
 
 use super::Heap;
+use super::arena::Age;
 use super::block_pool::{Block, pick_block_capacity, pool_alloc};
 use crate::off_heap;
 
@@ -155,7 +156,7 @@ impl Heap {
         assert!(self.gift.is_none(), "begin_gift while a gift window is already open");
         let saved_tip = self.current_block();
         let capacity = pick_block_capacity(measured_bytes);
-        let start = pool_alloc(capacity);
+        let start = pool_alloc(capacity, Age::Young);
         self.gift = Some(GiftWindow {
             saved_tip,
             block_start: start,

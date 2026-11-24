@@ -1,5 +1,6 @@
 //! impl Heap — the giant impl block + Drop.
 
+use super::arena::{Age, is_young};
 use super::block_pool::{
     Block, SIZE_TABLE, next_block_capacity, pick_block_capacity, pick_tip_capacity, pool_alloc, round_up_16,
 };
@@ -7,9 +8,9 @@ use super::collected::{Collected, CollectedBlocks};
 use super::gc::roots::{RootForwarder, Roots};
 use super::gc::{FromSpace, Tracer};
 use super::map_view::destination_layout;
+use super::ref_io::ptr_in_ranges;
 use super::ref_io::{
-    any_value_ref_from_storage, list_tail_bits_from_ref, ptr_in_ranges, reject_scalar_ref_write,
-    write_any_value_to_storage,
+    any_value_ref_from_storage, list_tail_bits_from_ref, reject_scalar_ref_write, write_any_value_to_storage,
 };
 use super::schema::{Schema, SchemaRegistry};
 use super::stats::{GcStats, Generation, StubCounts, StubSite};
@@ -104,7 +105,7 @@ impl Heap {
             "capacity must be 16-aligned"
         );
         let block_size = pick_block_capacity(capacity.max(SIZE_TABLE[0]));
-        let block_start = pool_alloc(block_size);
+        let block_start = pool_alloc(block_size, Age::Young);
         let block_end = unsafe { block_start.add(block_size) };
         let mut heap = Self {
             block_start,
@@ -289,7 +290,7 @@ impl Heap {
             "room is asked for only when the tip is full"
         );
         if self.parks_alone(size) {
-            return self.alloc_parked(size);
+            return self.alloc_parked(size, Age::Young);
         }
         self.climb_tip();
         self.take_from_tip(size)
@@ -310,19 +311,19 @@ impl Heap {
         size > next_block_capacity(self.block_size)
     }
 
-    /// Place a huge object at the start of a block sized for it and park the
-    /// block on `young_blocks`, full. The tip is untouched, so the allocations after
+    /// Place a huge object at the start of a block sized for it, made `age`,
+    /// and park the block on `young_blocks`, full. The tip is untouched, so the allocations after
     /// it keep filling the block they were filling.
     ///
     /// A gift window never reaches this: its copy allocates exactly the
     /// measured bytes into a block of that size, and the object is part of them.
-    fn alloc_parked(&mut self, size: usize) -> *mut u8 {
+    fn alloc_parked(&mut self, size: usize, age: Age) -> *mut u8 {
         assert!(
             self.gift.is_none(),
             "a huge object was allocated inside a gift window: the measure and the copy disagree"
         );
         let capacity = pick_block_capacity(size);
-        let start = pool_alloc(capacity);
+        let start = pool_alloc(capacity, age);
         self.park(Block {
             start,
             top: unsafe { start.add(size) },
@@ -333,7 +334,7 @@ impl Heap {
 
     /// Park the tip and install a fresh tip one capacity step above it.
     fn climb_tip(&mut self) {
-        self.park_tip_and_install(next_block_capacity(self.block_size));
+        self.park_tip_and_install(next_block_capacity(self.block_size), Age::Young);
     }
 
     /// Place `size` bytes (already a multiple of 16) for the collector's copy.
@@ -353,18 +354,18 @@ impl Heap {
         if new_top <= self.block_end {
             self.take_from_tip(size)
         } else if size > self.overflow_step {
-            self.alloc_parked(size)
+            self.alloc_parked(size, Age::Old)
         } else {
-            self.park_tip_and_install(self.overflow_step);
+            self.park_tip_and_install(self.overflow_step, Age::Old);
             self.overflow_step = next_block_capacity(self.overflow_step);
             self.take_from_tip(size)
         }
     }
 
-    /// Park the tip and install an empty tip of `capacity`.
-    fn park_tip_and_install(&mut self, capacity: usize) {
+    /// Park the tip and install an empty tip of `capacity` and `age`.
+    fn park_tip_and_install(&mut self, capacity: usize, age: Age) {
         self.park(self.current_block());
-        let start = pool_alloc(capacity);
+        let start = pool_alloc(capacity, age);
         self.install_block(Block {
             start,
             top: start,
@@ -1560,9 +1561,10 @@ impl Heap {
 
     /// Whether `object` lies in a young block: the tip, the tip a gift window
     /// set aside, or a parked block. A minor collection looks inside every
-    /// young object and inside no old one.
+    /// young object and inside no old one. The answer is the age table's, so an
+    /// address outside the heap range, a literal's, is not young.
     pub fn is_young(&self, object: *mut u8) -> bool {
-        super::ref_io::ptr_in_ranges(object, self.young_ranges())
+        is_young(object)
     }
 
     /// A write into an object that already exists is sound only while the
@@ -1584,7 +1586,8 @@ impl Heap {
     }
 
     /// The address range of the tip, of the tip set aside by an open gift
-    /// window, and of every young parked block.
+    /// window, and of every young parked block. During a collection the tip and
+    /// the parked blocks are to-space.
     pub(super) fn young_ranges(&self) -> impl Iterator<Item = (*mut u8, *mut u8)> + '_ {
         let saved_tip = self.gift.as_ref().map(|window| window.saved_tip);
         std::iter::once((self.block_start, self.block_end))
@@ -1592,14 +1595,10 @@ impl Heap {
             .chain(self.young_blocks.iter().map(|block| (block.start, block.end())))
     }
 
-    /// The address range of every old block.
-    pub(super) fn old_ranges(&self) -> impl Iterator<Item = (*mut u8, *mut u8)> + '_ {
-        self.old_blocks.iter().map(|block| (block.start, block.end()))
-    }
-
     /// The address range of every block the heap owns.
     pub(super) fn block_ranges(&self) -> impl Iterator<Item = (*mut u8, *mut u8)> + '_ {
-        self.young_ranges().chain(self.old_ranges())
+        self.young_ranges()
+            .chain(self.old_blocks.iter().map(|block| (block.start, block.end())))
     }
 
     pub fn bytes_remaining_in_block(&self) -> usize {
@@ -1690,7 +1689,7 @@ impl Heap {
         } else {
             SIZE_TABLE[0]
         };
-        let to_start = pool_alloc(to_capacity);
+        let to_start = pool_alloc(to_capacity, Age::Old);
         self.install_block(Block {
             start: to_start,
             top: to_start,
@@ -1751,7 +1750,7 @@ impl Heap {
     }
 
     /// Release the from-space of the latest collection: pooled capacities
-    /// return to the pool, exact blocks to the system allocator.
+    /// return to the pool, exact blocks to the span list.
     pub(super) fn release_from_space(&mut self) {
         for block in self.from_blocks.drain(..) {
             block.release();
@@ -1782,7 +1781,7 @@ impl Heap {
     /// sized to the old bytes: the heap collects again after allocating as many.
     fn install_fresh_tip(&mut self) {
         let capacity = pick_tip_capacity(self.collection_budget().max(SIZE_TABLE[0]));
-        let start = pool_alloc(capacity);
+        let start = pool_alloc(capacity, Age::Young);
         self.install_block(Block {
             start,
             top: start,
@@ -1815,7 +1814,7 @@ impl Drop for Heap {
         off_heap::drop_all(self);
         // Release blocks: pooled capacities go back to the pool (§6.6) so the
         // next spawn pulls from it with no per-spawn malloc; exact blocks go
-        // to the system allocator. A tip set aside by an unfinished gift
+        // to the span list. A tip set aside by an unfinished gift
         // window goes back too.
         self.current_block().release();
         if let Some(window) = self.gift.take() {
