@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Binary Handling",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-24T21:11:16Z",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "A loop parameter already marked shared is not checked again",
   "type": "task",
-  "updated_at": "2026-11-24T21:11:16Z"
+  "updated_at": "2026-11-24T21:11:17Z"
 }
