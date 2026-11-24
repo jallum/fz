@@ -1,6 +1,8 @@
 {
   "assignee": "fz-engine",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-t93.7.2"
+  ],
   "blocks": [],
   "created": "2026-11-24T22:04:37Z",
   "description": "From: JSON. Filed with user approval (\"proceed\" on /Users/j5n/Workspace/fz-mue.25.html, section 5, 2026-11-24). Reviewed by fz-engine.\n\nToday: a loop entered at k functions is copied once per entry point. The json decoder loop (36 functions entered at 12) yields about 431 function instances; 12 copies fall into at most 4 classes by settled results. Copies spend 4,128 of 9,858 analysis runs (42%).\n\nMechanism: when a loop's work group closes (crates/fz-engine/src/groups.rs; scheduler.rs:836, :1004-1048), copies whose settled results are equivalent are merged. Rules:\n- The merge is recomputed at every close from that close's settled results; a close means settled until the group reopens.\n- Downstream reads only the merged result, never a copy, so a reopen that splits copies again wakes their readers.\n- A merge that later splits is a withdrawal; this rests on fz-t93.27's withdrawal rule and adds none of its own.\n- Equivalence is type equivalence per column, as the store already compares rows, not equal Ty handles.\n\nSaves emission and downstream work (json: 12 copies to at most 4); not the copies' analysis.\n\nGate: build only after fz-t93.7.2 is measured (the remaining saving may be small), and re-count group reopens after fz-t93.27 (json reopened 27 times, 24 from the root-wide Raisable fact).\n\nEvidence: JSON's scratch mue25/probes p1, p3, p4; summary /Users/j5n/Workspace/fz-otp-json/punch/mue25/fable_review.md.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Loop copies whose settled results are identical are emitted once",
   "type": "task",
-  "updated_at": "2026-11-24T22:04:41Z"
+  "updated_at": "2026-11-24T22:04:46Z"
 }
