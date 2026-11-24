@@ -4,14 +4,15 @@
   "blocks": [
     "fz-yh5.11"
   ],
+  "closed_at": "2026-11-24T20:56:15Z",
   "created": "2026-11-24T17:54:24Z",
   "description": "Option C, step C0 (approved page https://claude.ai/artifact/HJ4StaQ4ggt6yt2Fus6pX7; user: \"approved; build C as a draft for review, close B\", relayed by Callables 2026-11-24).\n\nParity fixture: is_function(f, -1) and tuple_size on a non-tuple, used in a guard, make that clause false and fall through to the next clause, on interp, run and build. A fix only if the fixture finds a bug.\n\nAcceptance: the fixture passes on all three paths.",
   "id": "fz-yh5.10",
   "labels": [],
   "parent": "fz-yh5",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "A raise inside a guard helper fails the guard, as in Elixir",
   "type": "bug",
-  "updated_at": "2026-11-24T17:54:38Z"
+  "updated_at": "2026-11-24T20:56:15Z"
 }
