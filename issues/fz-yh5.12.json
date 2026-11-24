@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Callables",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-24T17:54:25Z",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "or and not in a guard are matrix rows and miss edges",
   "type": "bug",
-  "updated_at": "2026-11-24T17:54:25Z"
+  "updated_at": "2026-11-24T17:54:27Z"
 }
