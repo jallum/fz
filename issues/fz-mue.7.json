@@ -1,7 +1,6 @@
 {
   "assignee": "Optimize",
   "blocked_by": [
-    "fz-mue.58",
     "fz-mue.59",
     "fz-sc8.192.3"
   ],
@@ -17,5 +16,5 @@
   "status": "in_progress",
   "title": ":maps is defined with to_list, keys, values, put, merge and from_list",
   "type": "feature",
-  "updated_at": "2026-11-24T22:16:40Z"
+  "updated_at": "2026-11-24T22:54:48Z"
 }
