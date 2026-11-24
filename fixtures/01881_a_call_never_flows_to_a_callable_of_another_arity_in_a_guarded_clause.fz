@@ -1,0 +1,16 @@
+#---
+# purpose: "a clause that calls a closure with one argument beside a clause that calls it with three, each guarded by is_function/2, compiles and runs the clause whose arity the closure has"
+# kind: run
+#---
+#
+# `slicer` is an arity-3 closure carrying `k`. The first clause's call
+# `slicer.(e)` names one argument, so it can never run that closure: it
+# contributes no flow to the closure's construction, and the guard
+# `is_function(slicer, 1)` is false at run time, so the second clause runs.
+defmodule Main do
+  def pick({:ok, _count, slicer}, e) when is_function(slicer, 1), do: slicer.(e)
+  def pick({:ok, _count, slicer}, _e) when is_function(slicer, 3), do: slicer.(1, 2, 1)
+  def make(k), do: {:ok, 3, fn a, b, c -> [k, a, b, c] end}
+  def main(), do: IO.inspect(pick(make(7), 1))
+end
+Main.main()

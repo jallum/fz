@@ -432,7 +432,11 @@ fact. It waits for `ExecutableFacts(E)` to appear settled and thereafter reads
 its Current content, the Current exact `RuntimeDemandInput(E)`, and Current
 `RuntimeDemandInputs(target)` sub-facts for direct and first-class callable
 targets. First-class surfaces name exact
-`CallableConstructionTarget(owner, value, surface)` facts. A loaded target
+`CallableConstructionTarget(owner, value, surface)` facts, one per surface
+whose input count is the producing lambda's own arity: a call of n arguments
+raises at the call when the callable takes another number, so a surface of
+another arity is no flow to that producer, is never requested and never
+settles to an activation. A loaded target
 input vector can expose another captured local callable, so the formula follows
 only those newly named target keys to a finite local closure; it does not
 inventory functions or executables. A self sub-fact is read only when an exact

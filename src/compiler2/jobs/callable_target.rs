@@ -42,6 +42,11 @@ pub(super) fn derive(world: &mut World, key: &CallableConstructionTargetKey) -> 
     };
     let mut inputs = capture_types;
     inputs.extend(key.surface.inputs.iter().copied());
+    assert_eq!(
+        inputs.len(),
+        world.function_arity(producer.function) + producer.captures.len(),
+        "a construction target is requested only for a surface of the lambda's own arity: {key:?}"
+    );
     let keying_facts = world
         .activation_key_prerequisites(key.owner.activation.root, producer.function, &inputs)
         .into_iter()

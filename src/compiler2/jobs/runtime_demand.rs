@@ -1015,8 +1015,12 @@ fn plan_callable_flows(
         let producer_surfaces = callable_value_type_demand(facts, value)
             .map(|demand| demand.callable.unnamed)
             .unwrap_or_default();
-        let first_class_surfaces =
+        let producer_arity = world.function_arity(producer.function);
+        let mut first_class_surfaces =
             ground_dispatch_surfaces(types, &named_surfaces, producer_surfaces.iter().chain(&direct_surfaces));
+        // A call of n arguments raises at the call when the callable takes another
+        // number, so such a surface never reaches this producer.
+        first_class_surfaces.retain(|surface| surface.inputs.len() == producer_arity);
         let mut ordered = first_class_surfaces.iter().collect::<Vec<_>>();
         ordered.sort_by(|a, b| types.cmp_activation_tys(&a.inputs, &b.inputs));
         let first_class_edges = ordered

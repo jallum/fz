@@ -520,6 +520,15 @@ impl LoweredBody {
         }
     }
 
+    /// The value the closure call at `callsite` calls, or `None` when that
+    /// callsite is not a closure call of this body.
+    pub(crate) fn closure_call_callee(&self, callsite: CallSiteId) -> Option<ValueId> {
+        match self.callsite_tail(callsite)? {
+            LoweredTail::ClosureCall { callee, .. } => Some(*callee),
+            _ => None,
+        }
+    }
+
     /// The module value the call at `callsite` reads to choose its target,
     /// when it is a call on a module value.
     pub(crate) fn call_module_value(&self, callsite: CallSiteId) -> Option<ValueId> {

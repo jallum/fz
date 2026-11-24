@@ -1,0 +1,20 @@
+#---
+# purpose: "a branch that calls a closure with one argument beside a branch that calls it with three, chosen by is_function/2, compiles and runs the branch whose arity the closure has, for a closure of either arity"
+# kind: run
+#---
+#
+# The same closure value reaches a one-argument call and a three-argument
+# call. Only the call whose argument count equals the closure's arity can run
+# it; the other is never reached because `is_function/2` is false for it.
+defmodule Main do
+  def apply_either(f, x) do
+    if is_function(f, 1), do: f.(x), else: f.(1, 2, 1)
+  end
+
+  def main() do
+    k = 7
+    IO.inspect(apply_either(fn a, b, c -> [k, a, b, c] end, 1))
+    IO.inspect(apply_either(fn a -> [k, a] end, 1))
+  end
+end
+Main.main()
