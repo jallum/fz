@@ -5,13 +5,13 @@
   ],
   "blocks": [],
   "created": "2026-11-23T19:59:37Z",
-  "description": "From fz-t93.26's paper (M4). The rescue handler reads Raisable through uses.read (jobs/semantic.rs ~1219, raisable_ty) instead of waiting on it. Raisable only grows, so the handler is analysed at each step of the exception union and every step leaves a contribution row behind; the final plan depends on job order. Shows on 00795 and 00796 (Enum.into(list, %{})). Done when the handler waits on the finished Raisable and 00795/00796 plans are identical under fifo and lifo (fz-t93.26's cfg(test) order knob). Evidence: /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/t93_26/.",
+  "description": "Re-scoped by the user 2026-11-24 (page ../fz-t93.27.html): paper first.\n\nFound by the fz-t93.27 paper (scratch /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/t93_27, /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/t93_27/r2). The original fix (the rescue handler waits on the finished Raisable) cannot work: the root analysis publishes Raisable and waits on the handler's function, so the wait never resolves (internal/unresolved-wait).\n\nCause: Enum.into/2's catch handler (lib/enum.fz:1684) is re-analysed at each step of the growing Raisable union, and each step calls :erlang.raise/3 with that step's union, minting a raise/3 activation per step. The plan is rooted (jobs/backend.rs:153-273), so stale activations stay out of it, but under lifo a single-exception step (BadMapError) keys a stale, unreachable raise/3 that calls the LIVE shared Kernel.panic/1[map]; its open row %BadMapError{__exception__} dominates the live row with :term, so fz_panic/1[map] differs between fifo and lifo on 00795/00796. Contributions never withdraw by design (conclude_preserving_frontier semantic.rs:1518, preserved_analysis_claims world.rs:3569; the cumulative rule prevents edge oscillation, world.rs:696-703).\n\nRejected variants (measured): W (wait) never compiles; V1 (reason = any) breaks the uncaught banner and 18 matrix fixtures; V2 (one walk per exception module) misses dispatch on 01062-01064 and costs 66 jobs per exception type; R1 (reach-only plan) is already the case.\n\nPaper: (1) a termination argument for retirement: a re-analysis that stops calling an activation key withdraws its row from that callee's ActivationInputs, cascading when a callee is left with no rows; candidate argument: only a superseded key is withdrawn and its replacement is strictly above it in the same climbing fact, so withdrawals follow the climb and cannot repeat. (2) a prototype measured on the suites, exception_cost_test, the distiller, and the full 1333-fixture fifo/lifo census. Done when 00795/00796 are identical under both orders (added to the order test) and nothing else moves without approval.",
   "id": "fz-t93.27",
   "labels": [],
   "parent": "fz-t93",
   "priority": 2,
   "status": "in_progress",
-  "title": "A rescue handler waits for the exception type it rescues",
+  "title": "An activation a re-analysis stops calling withdraws its contribution",
   "type": "bug",
-  "updated_at": "2026-11-24T14:27:24Z"
+  "updated_at": "2026-11-24T15:14:05Z"
 }
