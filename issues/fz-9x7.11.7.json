@@ -6,14 +6,15 @@
   "blocks": [
     "fz-9x7.11.10"
   ],
+  "closed_at": "2026-11-24T20:53:32Z",
   "created": "2026-11-18T23:59:19Z",
   "description": "User approved 2026-11-18, verbatim via GC: \"agreed; proceed\". Step C5 of fz-9x7.11 page v4 (https://claude.ai/artifact/BB1FpQ1Cf7Jd5spZeLEWtg). One commit, judged on bench. Builder: GC.\n\nFolded in by the user (relayed by GC, 2026-11-19; plan page v9 row C5): a collection writes its statistics into a slot its caller owns, rather than returning GcStats by value. At 264 bytes, LLVM moves GcStats with a memcpy call, about 54 instructions per collection. That is about 0.3 points of ring's +0.53% under fz-9x7.8; the ringres probe reproduced it on develop with two dummy fields added. Removal: the by-value GcStats return and its memcpy moves.\n\nUser approved the C5 page https://claude.ai/artifact/PDrPFkgEcVo44L64tP4CXW (relayed by GC 2026-11-24). It folds in fz-9x7.48; fz-9x7.47 stays separate.",
   "id": "fz-9x7.11.7",
   "labels": [],
   "parent": "fz-9x7.11",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "A collection allocates nothing, and the park check is five instructions",
   "type": "task",
-  "updated_at": "2026-11-24T18:30:34Z"
+  "updated_at": "2026-11-24T20:53:32Z"
 }
