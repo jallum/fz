@@ -35,8 +35,8 @@
     }
   ],
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "heap_alloc_stats is a sum over sites",
   "type": "task",
-  "updated_at": "2026-11-24T22:22:10Z"
+  "updated_at": "2026-11-24T22:33:04Z"
 }
