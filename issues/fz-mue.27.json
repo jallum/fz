@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-24T20:56:57Z",
   "created": "2026-11-19T03:09:41Z",
   "description": "User directed 2026-11-19: \"add the elixir parity issues as tickets to the epic we gave to Elixir Parity\". Owner: Elixir Parity. Found by JSON walking the json.erl port (/Users/j5n/Workspace/fz-752-walk/walk.md, fz2 from #786 head). inspect(\u003c\u003c127\u003e\u003e) prints \u003c\u003c127\u003e\u003e, Elixir prints \"\\\\d\" (the only difference in the every-prefix groups); inspect(\u0026String.upcase/1) prints #fn\u003c207/1\u003e, Elixir prints \u0026String.upcase/1. Done: both match Elixir on three paths.",
   "id": "fz-mue.27",
   "labels": [],
   "parent": "fz-mue",
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "inspect prints \u003c\u003c127\u003e\u003e and a function capture as Elixir does",
   "type": "bug",
-  "updated_at": "2026-11-19T03:09:41Z"
+  "updated_at": "2026-11-24T20:56:57Z"
 }
