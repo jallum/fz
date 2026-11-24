@@ -5,7 +5,7 @@
   ],
   "blocks": [],
   "created": "2026-11-20T19:13:48Z",
-  "description": "Follow-up promised by the fz-mue.29 page (/Users/j5n/Workspace/fz-mue.29.html), which the user approved 2026-11-20 with the recommended answer to every decision (relayed by Elixir Parity). In Elixir typespecs a map type is closed: it admits only the listed pairs (a bare key means a required pair). Start with a census of what closing map types breaks in fz today (fixtures, specs, std), then propose. Owner: Elixir Parity.",
+  "description": "Follow-up promised by the fz-mue.29 page (/Users/j5n/Workspace/fz-mue.29.html), which the user approved 2026-11-20 with the recommended answer to every decision (relayed by Elixir Parity). In Elixir typespecs a map type is closed: it admits only the listed pairs (a bare key means a required pair). Start with a census of what closing map types breaks in fz today (fixtures, specs, std), then propose. Owner: Elixir Parity.\n\nRe-test on develop de4ef6a3b (Elixir Parity, 2026-11-24; user-approved update): kept by the user as a type-precision ticket. Elixir 1.19.4 compiles a @spec returning %{a: integer()} on a function returning %{a: 1, b: 2} with no warning, and fz behaves the same, so the gain is fz's type precision, not observable parity. Evidence: Elixir Parity's fresh/report.md.",
   "id": "fz-mue.42",
   "labels": [],
   "parent": "fz-mue",
@@ -13,5 +13,5 @@
   "status": "open",
   "title": "Map types are closed, as in Elixir typespecs",
   "type": "feature",
-  "updated_at": "2026-11-20T19:13:48Z"
+  "updated_at": "2026-11-24T21:36:51Z"
 }
