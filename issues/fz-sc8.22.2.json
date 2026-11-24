@@ -14,9 +14,15 @@
   "id": "fz-sc8.22.2",
   "labels": [],
   "parent": "fz-sc8.22",
+  "comments": [
+    {
+      "text": "Sweep input: PR #863 (fz-sc8.192.3) adds ListCons::to_addr(head_raw, head_kind, tail_addr) and ListLink::to_addr(tail_addr, head_kind) in runtime/src/any_value.rs (ListLink::new delegates to it); Heap::map_list in runtime/src/heap/map_view.rs links contiguous cells back to front with it. Every link-word writer, including these, goes through the terminator-flag design.",
+      "timestamp": "2026-11-24T21:10:32Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "An improper tail is a terminator box behind a link flag",
   "type": "task",
-  "updated_at": "2026-11-24T18:45:15Z"
+  "updated_at": "2026-11-24T21:10:32Z"
 }
