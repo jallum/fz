@@ -1812,6 +1812,23 @@ pub mod debug {
         }
     }
 
+    /// A fun by its source function's identity and its arity: the spelling of
+    /// a fun that no capture names, and of any fun rendered without a process.
+    pub fn closure_identity(denotation: super::ClosureDenotationId, arity: u16) -> String {
+        format!("#fn<{}/{arity}>", denotation.user_index())
+    }
+
+    /// An atom as the name after a remote call's dot writes it:
+    /// `Macro.inspect_atom(:remote_call, atom)`. A name that starts with an
+    /// uppercase letter is quoted, since a bare `Foo` would read as a module.
+    fn remote_call_name(name: &str) -> String {
+        let reads_as_module = name.chars().next().is_some_and(char::is_uppercase);
+        match classify_atom(name) {
+            AtomClass::Unquoted if !reads_as_module => name.to_string(),
+            _ => format!("\"{}\"", escape_for_display(name)),
+        }
+    }
+
     /// An atom as a keyword key writes it: `Macro.inspect_atom(:key, atom)`.
     fn atom_key(name: &str) -> String {
         match classify_atom(name) {
@@ -1862,6 +1879,24 @@ pub mod debug {
             }
         }
 
+        /// A fun as Elixir's `inspect` writes it: a named function in a module
+        /// is the capture that names it, `&Mod.fun/arity`. Any other fun has
+        /// no spelling in source, so it is `#fn<denotation/arity>`: the source
+        /// function's identity followed by the arity, independent of code and
+        /// capture storage.
+        fn closure(&self, bits: u64) -> String {
+            let p = closure_addr_from_tagged(bits).unwrap();
+            let denotation = unsafe { closure_denotation(p) };
+            let arity = unsafe { closure_arity(p) };
+            let named = (!self.proc.is_null())
+                .then(|| unsafe { &*self.proc }.node.closure_module_and_name(denotation))
+                .flatten();
+            match named {
+                Some((module, name)) => format!("&{}.{}/{arity}", atom_literal(&module), remote_call_name(&name)),
+                None => closure_identity(denotation, arity),
+            }
+        }
+
         /// A list or map the renderer walks: a non-null address that is not a
         /// literal. No program ships a list or a map as read-only data, so the
         /// literal bit is clear on every one.
@@ -1879,7 +1914,7 @@ pub mod debug {
                 return self.map(bits);
             }
             if closure_addr_from_tagged(bits).is_some() {
-                return render_closure(bits);
+                return self.closure(bits);
             }
             if struct_addr_from_tagged(bits).is_some() {
                 return self.struct_value(bits);
@@ -2300,10 +2335,10 @@ pub mod debug {
         for c in s.chars() {
             let cp = c as u32;
             // Whitelisted control codepoints (Elixir-compatible).
-            if matches!(cp, 0x07 | 0x08 | 0x09 | 0x0A | 0x0B | 0x0C | 0x0D | 0x1B) {
+            if matches!(cp, 0x07 | 0x08 | 0x09 | 0x0A | 0x0B | 0x0C | 0x0D | 0x1B | 0x7F) {
                 continue;
             }
-            if cp < 0x20 || (0x7F..=0x9F).contains(&cp) {
+            if cp < 0x20 || (0x80..=0x9F).contains(&cp) {
                 return false;
             }
         }
@@ -2382,16 +2417,6 @@ pub mod debug {
                 | 0x2000..=0x200A
                 | 0x205F
         )
-    }
-
-    /// Elixir renders a fun as `#Function<index.uniq/arity>`: an opaque
-    /// identity followed by the arity. `#fn<denotation/arity>` reports the
-    /// source function identity independently of code and capture storage.
-    fn render_closure(bits: u64) -> String {
-        let p = closure_addr_from_tagged(bits).unwrap();
-        let denotation = unsafe { closure_denotation(p) }.user_index();
-        let arity = unsafe { closure_arity(p) };
-        format!("#fn<{denotation}/{arity}>")
     }
 
     #[cfg(test)]

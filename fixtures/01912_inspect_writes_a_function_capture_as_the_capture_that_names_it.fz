@@ -1,0 +1,17 @@
+#---
+# purpose: "inspect writes a capture of a named function in a module as &Mod.fun/arity"
+# oracle: self
+# oracle.stamp: afdfebb8bf952b02
+#---
+defmodule Main do
+  def double(x), do: x * 2
+
+  def main() do
+    IO.inspect(&String.upcase/1)
+    IO.inspect(&Enum.map/2)
+    IO.inspect(&Main.double/1)
+    IO.inspect([&String.upcase/1, &String.downcase/1])
+  end
+end
+
+Main.main()

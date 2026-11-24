@@ -18,14 +18,25 @@ fn whitelisted_controls_pass() {
     assert!(is_printable_utf8("line\nbreak"));
     assert!(is_printable_utf8("tab\tseparated"));
     assert!(is_printable_utf8("\r\n"));
+    assert!(is_printable_utf8("\x7f"), "the delete byte prints as \\d");
 }
 
 #[test]
 fn other_controls_fail() {
     assert!(!is_printable_utf8("\x01"));
     assert!(!is_printable_utf8("\x00"));
-    assert!(!is_printable_utf8("\x7f"));
+    assert!(!is_printable_utf8("\u{80}"));
+    assert!(!is_printable_utf8("\u{9f}"));
     assert!(!is_printable_utf8("hello\x01world"));
+}
+
+#[test]
+fn a_function_name_after_the_dot_is_quoted_unless_it_is_an_identifier_or_operator() {
+    assert_eq!(remote_call_name("upcase"), "upcase");
+    assert_eq!(remote_call_name("empty?"), "empty?");
+    assert_eq!(remote_call_name("+"), "+");
+    assert_eq!(remote_call_name("a b"), "\"a b\"");
+    assert_eq!(remote_call_name("Foo"), "\"Foo\"");
 }
 
 #[test]

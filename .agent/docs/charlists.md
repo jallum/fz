@@ -71,8 +71,11 @@ codepoints.
 
 ## Difference from Elixir
 
-Floats, ranges, closures (`#fn<n/a>`) and struct bodies (`{...}`) keep their
-own forms; closures are an opaque identity no other runtime reproduces. Map
+Floats, ranges and struct bodies (`{...}`) keep their own forms. A capture of
+a named function in a module is `&Mod.fun/arity`, as in Elixir; the runtime
+cannot tell `&fun/arity` from `&Mod.fun/arity`, so a local capture prints the
+latter where Elixir prints `#Function<...>`. Any other closure is `#fn<n/a>`,
+an opaque identity no other runtime reproduces. Map
 order is the map's own: Erlang orders atom keys by atom index, and fz by name,
 so a multi-key atom-keyed map is not comparable with Elixir's output.
 
