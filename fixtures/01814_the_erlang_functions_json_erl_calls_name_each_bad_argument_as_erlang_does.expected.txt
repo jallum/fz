@@ -1,0 +1,46 @@
+ArgumentError: errors were found at the given arguments:||  * 1st argument: out of range|
+ArgumentError: errors were found at the given arguments:||  * 1st argument: out of range|
+ArgumentError: errors were found at the given arguments:||  * 1st argument: not an integer|
+ArgumentError: errors were found at the given arguments:||  * 2nd argument: not a tuple|
+ArgumentError: errors were found at the given arguments:||  * 1st argument: out of range|  * 2nd argument: not a tuple|
+ArgumentError: errors were found at the given arguments:||  * 1st argument: not an integer|  * 2nd argument: not a tuple|
+ArgumentError: errors were found at the given arguments:||  * 3rd argument: out of range|
+ArgumentError: errors were found at the given arguments:||  * 3rd argument: out of range|
+ArgumentError: errors were found at the given arguments:||  * 2nd argument: out of range|
+ArgumentError: errors were found at the given arguments:||  * 2nd argument: out of range|
+ArgumentError: errors were found at the given arguments:||  * 2nd argument: out of range|
+ArgumentError: errors were found at the given arguments:||  * 3rd argument: not an integer|
+ArgumentError: errors were found at the given arguments:||  * 2nd argument: out of range|  * 3rd argument: not an integer|
+ArgumentError: errors were found at the given arguments:||  * 1st argument: not a binary|
+ArgumentError: errors were found at the given arguments:||  * 1st argument: not a binary|  * 2nd argument: not an integer|  * 3rd argument: not an integer|
+ArgumentError: errors were found at the given arguments:||  * 1st argument: not a binary|
+ArgumentError: errors were found at the given arguments:||  * 1st argument: not an iodata term|
+ArgumentError: errors were found at the given arguments:||  * 1st argument: not an iodata term|
+ArgumentError: errors were found at the given arguments:||  * 1st argument: not an iodata term|
+ArgumentError: errors were found at the given arguments:||  * 1st argument: not an iodata term|
+ArgumentError: errors were found at the given arguments:||  * 1st argument: not an iodata term|
+ArgumentError: errors were found at the given arguments:||  * 1st argument: not an iodata term|
+ArgumentError: errors were found at the given arguments:||  * 2nd argument: not an integer in the range 2 through 36|
+ArgumentError: errors were found at the given arguments:||  * 2nd argument: not an integer in the range 2 through 36|
+ArgumentError: errors were found at the given arguments:||  * 1st argument: not an integer|
+ArgumentError: errors were found at the given arguments:||  * 2nd argument: not an integer in the range 2 through 36|
+ArgumentError: errors were found at the given arguments:||  * 1st argument: not an integer|  * 2nd argument: not an integer in the range 2 through 36|
+ArgumentError: errors were found at the given arguments:||  * 2nd argument: is an invalid encoding option|
+ArgumentError: errors were found at the given arguments:||  * 1st argument: contains a character not expressible in latin1|
+ArgumentError: errors were found at the given arguments:||  * 1st argument: not an atom|
+ArgumentError: errors were found at the given arguments:||  * 1st argument: not an atom|  * 2nd argument: is an invalid encoding option|
+ArgumentError: errors were found at the given arguments:||  * 1st argument: not an atom|
+BadMapError: expected a map, got:||    1|
+BadMapError: expected a map, got:||    [1]|
+ArgumentError: errors were found at the given arguments:||  * 1st argument: not a textual representation of a float|
+ArgumentError: errors were found at the given arguments:||  * 1st argument: not a textual representation of a float|
+ArgumentError: errors were found at the given arguments:||  * 1st argument: not a textual representation of a float|
+ArgumentError: errors were found at the given arguments:||  * 1st argument: not a textual representation of a float|
+ArgumentError: errors were found at the given arguments:||  * 1st argument: not a binary|
+ArgumentError: errors were found at the given arguments:||  * 1st argument: not a textual representation of an integer|
+ArgumentError: errors were found at the given arguments:||  * 1st argument: not a textual representation of an integer|
+ArgumentError: errors were found at the given arguments:||  * 1st argument: not a textual representation of an integer|
+ArgumentError: errors were found at the given arguments:||  * 1st argument: not a binary|
+ErlangError: Erlang error: :a
+ErlangError: Erlang error: :a
+RuntimeError: x
