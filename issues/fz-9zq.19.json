@@ -4,14 +4,15 @@
   "blocks": [
     "fz-sc8.192.3"
   ],
+  "closed_at": "2026-11-24T20:56:14Z",
   "created": "2026-11-21T04:49:58Z",
   "description": "List.reduce/3 gets two executable keys that differ only in the reducer's parameter type ({any, any} vs any). Both carry the same closure (#383) and the same captures. The two arrows are mutual subtypes (is_subtype both ways; canon_test.rs:44), yet ActivationKey::from_inputs (identity.rs:135) -\u003e World::canonical_activation_key (world.rs:2833, 2846) / Types::activation_key_arrow keep the arrow's parameter, so one activation is compiled twice.\n\nReproducer (Optimize's scratch, on develop 56c37331e): repro/09999_dupkey_probe.fz and canon_test_probe.diff.\n\nBlocks fz-sc8.192.3: its reds come from this duplicate. fz-engine measured that fz-9zq.17 does not clear them (independent). fz-engine suspects a shared root with fz-9zq.17 (both distinguish closure arrows differing only in a parameter, any vs {any, any}), and will measure one closure-arrow keying rule for both before building either.\n\nRelated, not identical: fz-t93.12 (same canonical text, distinct type ids).\n\nUser approved filing 2026-11-20 (\"Proceed\", relayed by Optimize). Owner: fz-engine.\n\nSignal (from Optimize): the duplicate key on fixture 00567, and the Bag repro on plain develop (Optimize scratchpad walk/dev_probe.fz). Fixture 01068's List.reduce_cont/3 count going from 2 to 3 is NOT a symptom: the third key ([{any, any}], [], a2 -\u003e r0) is a genuinely new input type, because Map.reduce now goes through List.reduce (rise approved by the user). A correct fix removes the 00567 duplicate and leaves 01068 at 3; 3 -\u003e 2 is not success.\n\nUser decision (relayed by fz-engine, 2026-11-24): the larger F1b rise is accepted. Measured at 2fe51dd99 onward: +96 requests, +19 derivations, +829 reads; 3 more precise executables (1111-\u003e1114); 00549/00550 rendering pins re-set. The rise comes from F1b's merged closure keys meeting fz-9zq.17's removal of the widest-only rule. Ceilings are set to the values measured after rebasing on develop; a delta move of more than ~10% stops the build.",
   "id": "fz-9zq.19",
   "labels": [],
   "parent": "fz-9zq",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "One activation has one executable key: equivalent closure arrows key alike",
   "type": "bug",
-  "updated_at": "2026-11-24T14:29:44Z"
+  "updated_at": "2026-11-24T20:56:14Z"
 }
