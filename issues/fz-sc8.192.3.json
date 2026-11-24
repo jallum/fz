@@ -7,6 +7,7 @@
   "blocks": [
     "fz-mue.7"
   ],
+  "closed_at": "2026-11-24T21:53:35Z",
   "created": "2026-11-14T13:11:15Z",
   "description": "Step 3 of fz-sc8.192 (page v2). lib/map.fz iterates by entry index. User approved the fz-sc8.192.3 page (https://claude.ai/artifact/F9TAVAGpsR1YNK5nGbVYTC, From: Optimize; relayed 2026-11-20): instead of a cursor, a walk is a one-pass list, as in Elixir (Enumerable.reduce for a map is List.reduce(:maps.to_list(map)); member? is a single match). Three one-pass runtime entries, fz_map_to_list, fz_map_keys and fz_map_values, copy the stored (word, kind) pairs straight into list cells and tuples; lib/map.fz follows Elixir's shape. Removes fz_map_entry_key, fz_map_entry_value, map_entry_refs_at, map_view_entry_refs and the index loops. Baseline (bench, develop ec0ca8a8a, instructions per entry over 100,000 keys, fz vs BEAM): Map.to_list 2,417/141, Map.keys 1,138/88, Enum.reduce over the map 2,011/185, over a list of the same pairs 757/44. Owner: Optimize.",
   "id": "fz-sc8.192.3",
@@ -19,8 +20,8 @@
     }
   ],
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "A walk over a large map does not pay per entry to find its place",
   "type": "task",
-  "updated_at": "2026-11-24T21:05:54Z"
+  "updated_at": "2026-11-24T21:53:35Z"
 }
