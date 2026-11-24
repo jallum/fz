@@ -229,6 +229,10 @@ const RUNTIME_MODULE_SOURCES: &[RuntimeModuleSource] = &[
         source: include_str!("../../lib/lists.fz"),
     },
     RuntimeModuleSource {
+        name: ":maps",
+        source: include_str!("../../lib/maps.fz"),
+    },
+    RuntimeModuleSource {
         name: "Utf8",
         source: include_str!("../../lib/utf8.fz"),
     },

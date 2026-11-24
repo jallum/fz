@@ -225,6 +225,39 @@ impl Heap {
         self.bump(size)
     }
 
+    /// Room for up to `wanted` records side by side, each made of `parts` (a
+    /// site and that part's size, a multiple of 16) in order: as many records
+    /// as the tip holds, or, when it holds none, as many as a fresh tip one
+    /// step up holds. Answers where the first record starts and how many fit.
+    /// Each part is counted at its site once per record, as if each had been
+    /// placed alone.
+    pub(super) fn alloc_run_at(&mut self, parts: &[(RuntimeAllocSite, usize)], wanted: usize) -> (*mut u8, usize) {
+        let size: usize = parts.iter().map(|&(_, part)| part).sum();
+        debug_assert!(wanted > 0, "a run places at least one record");
+        debug_assert!(
+            parts.iter().all(|&(_, part)| part >= 16 && part.is_multiple_of(16)),
+            "placements are whole 16-byte slots"
+        );
+        let mut fits = self.tip_room() / size;
+        if fits == 0 {
+            assert!(!self.parks_alone(size), "a record of a run fits a fresh tip");
+            self.climb_tip();
+            fits = self.tip_room() / size;
+        }
+        let count = fits.min(wanted);
+        for &(site, part) in parts {
+            self.alloc_stats.record_run(site.kind(), count as u64, part as u64);
+            self.node.runtime_allocs.record_run(site, count as u64, part as u64);
+        }
+        self.alloc_count += (count * parts.len()) as u64;
+        (self.take_from_tip(count * size), count)
+    }
+
+    /// The bytes left in the tip.
+    fn tip_room(&self) -> usize {
+        self.block_end as usize - self.bump_top as usize
+    }
+
     /// Place `size` bytes (already a multiple of 16) in the tip, or beyond it
     /// when the tip is full. The collector's copies place through
     /// `bump_to_space` instead.

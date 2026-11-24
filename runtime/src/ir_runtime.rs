@@ -37,7 +37,7 @@ use crate::bitstr::{
     encode_utf32, sign_extend,
 };
 use crate::exec_ctx::ExecCtx;
-use crate::heap::{AllocStat, StubSite, closure_capture_ref, list_head_ref, list_tail_ref};
+use crate::heap::{AllocStat, MapPart, StubSite, closure_capture_ref, list_head_ref, list_tail_ref};
 use crate::module_name::STRUCT_MODULE_FIELD;
 use crate::park::{ParkRecord, ReceiveSite};
 use crate::process::Process;
@@ -1827,31 +1827,27 @@ pub extern "C" fn fz_list_length(list_ref_word: u64) -> i64 {
     if cursor.is_empty_list() { length } else { -1 }
 }
 
+/// `Map.to_list/1`: the map's `{key, value}` pairs, in the map's own order.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_map_entry_key(process: *mut Process, map_ref_word: u64, index: i64) -> u64 {
-    map_entry_refs_at(process, map_ref_word, index, "fz_map_entry_key")
-        .0
-        .raw_word()
+pub extern "C" fn fz_map_to_list(process: *mut Process, map_ref_word: u64) -> u64 {
+    map_list(process, map_ref_word, MapPart::Pairs, "fz_map_to_list")
 }
 
+/// `Map.keys/1`: the map's keys, in the map's own order.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_map_entry_value(process: *mut Process, map_ref_word: u64, index: i64) -> u64 {
-    map_entry_refs_at(process, map_ref_word, index, "fz_map_entry_value")
-        .1
-        .raw_word()
+pub extern "C" fn fz_map_keys(process: *mut Process, map_ref_word: u64) -> u64 {
+    map_list(process, map_ref_word, MapPart::Keys, "fz_map_keys")
 }
 
-fn map_entry_refs_at(
-    process: *mut Process,
-    map_ref_word: u64,
-    index: i64,
-    context: &str,
-) -> (AnyValueRef, AnyValueRef) {
+/// `Map.values/1`: the map's values, in the map's own order.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_map_values(process: *mut Process, map_ref_word: u64) -> u64 {
+    map_list(process, map_ref_word, MapPart::Values, "fz_map_values")
+}
+
+fn map_list(process: *mut Process, map_ref_word: u64, part: MapPart, context: &str) -> u64 {
     let map = any_value_ref_from_word(map_ref_word, context);
-    let heap = &mut (unsafe { &mut *process }).heap;
-    let layout = heap.expect_map_layout(map, context);
-    let index = usize::try_from(index).unwrap_or_else(|_| panic!("{context}: index must be non-negative"));
-    heap.map_view_entry_refs(layout, index)
+    (unsafe { &mut *process }).heap.map_list(map, part).raw_word()
 }
 
 fn map_put_slot_value(process: *mut Process, map_ref_word: u64, key: AnyValue, value: AnyValue) -> u64 {

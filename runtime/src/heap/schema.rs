@@ -2,8 +2,9 @@
 
 use crate::module_name::{ModuleName, STRUCT_MODULE_FIELD};
 use std::borrow::Cow;
+use std::collections::HashMap;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum SchemaIdentity {
     Tuple(usize),
     Named(ModuleName),
@@ -196,6 +197,7 @@ impl Schema {
 pub struct SchemaRegistry {
     schemas: Vec<Schema>,
     map_keys: Vec<Option<Vec<StructKey>>>,
+    ids: HashMap<SchemaIdentity, u32>,
 }
 
 impl SchemaRegistry {
@@ -203,31 +205,33 @@ impl SchemaRegistry {
         Self {
             schemas: Vec::new(),
             map_keys: Vec::new(),
+            ids: HashMap::new(),
         }
     }
 
     pub fn register(&mut self, schema: Schema) -> u32 {
-        if let Some((id, existing)) = self
-            .schemas
-            .iter()
-            .enumerate()
-            .find(|(_, existing)| existing.identity == schema.identity)
-        {
-            assert_eq!(existing, &schema, "one schema identity must have one layout");
-            return id as u32;
+        if let Some(&id) = self.ids.get(&schema.identity) {
+            assert_eq!(self.get(id), &schema, "one schema identity must have one layout");
+            return id;
         }
         let id = self.schemas.len() as u32;
+        self.ids.insert(schema.identity.clone(), id);
         self.map_keys.push(schema.map_keys());
         self.schemas.push(schema);
         id
     }
 
+    /// The schema of tuples of `arity` elements.
+    pub fn tuple(&mut self, arity: usize) -> u32 {
+        match self.ids.get(&SchemaIdentity::Tuple(arity)) {
+            Some(&id) => id,
+            None => self.register(Schema::tuple_of_arity(arity)),
+        }
+    }
+
     /// The schema of the struct `module` declares.
     pub fn named(&self, module: &ModuleName) -> Option<u32> {
-        self.schemas
-            .iter()
-            .position(|schema| matches!(&schema.identity, SchemaIdentity::Named(name) if name == module))
-            .map(|id| id as u32)
+        self.ids.get(&SchemaIdentity::Named(module.clone())).copied()
     }
 
     pub fn range(&mut self) -> u32 {

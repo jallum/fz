@@ -25,10 +25,16 @@ Instructions retired per iteration, taken as a slope between a run of N iteratio
 | `case_K` | six calls of a function that matches `%{^key => value}` on a K-key map and adds what it finds |
 | `replace_12` | six puts of present keys into a 12-key map |
 | `delete_12` | three deletes, then three puts of the same keys |
+| `to_list_i_K` | `Map.to_list/1` of a K-key map, and the length of the result |
+| `keys_i_K` | `Map.keys/1` of a K-key map, and the length of the result |
+| `reduce_i_K` | `Enum.reduce/3` over a K-key map, summing its values |
 
 `_a_` probes use atom keys and `_b_` probes use binary keys. A 40-key map is past the flat
 limit of 32 entries, so those probes run on the trie; `get_a_40` and `case_a_40` have the trie
 walk as their floor, and the binary-key and build probes on 40 keys have none.
+
+The walk probes (`_i_`, integer keys) run on 40 and 100,000 keys, and their figures are per
+entry: the slope divided by K. `reduce` has no floor.
 
 The `case` twin matches `#{K := V}` in a function of its own. The other Erlang twins call
 `Mod:put`, `Mod:get` and `Mod:remove` with `Mod` read from the environment
@@ -54,6 +60,11 @@ below; it does not predict it.
 - `fz_flat_find_bin` finds a binary key, or its slot, by bytes then length.
 - `fz_flat_write` writes the new map with an entry inserted, replaced or left out.
 
+- `fz_map_keys`, `fz_map_values` and `fz_map_pairs` (`floor/walk.s`) turn a flat map or a trie
+  into the list of its keys, its values or its `{key, value}` pairs in one pass, placing each cell
+  and linking it to the one before, so the list is built front to back and never reversed. They
+  are the floor of the walk probes.
+
 - `fz_trie_get` finds a one-word key in a trie by its hash, with a popcount at each node, and
   `fz_trie_get_atom` reads an atom's key hash through the process first. They are the sequence
   the compiler emits for such a pattern on a trie, and the floor of `get_a_40` and `case_a_40`.
@@ -67,23 +78,32 @@ Bench host (Apple M5 Pro), OTP 28.3 with the JIT, fz at the commit that last cha
 
 | Probe | fz | BEAM | floor | ordered |
 |---|---:|---:|---:|---:|
-| build_a_6 | 3,989 | 2,624 | 1,133 | 988 |
-| build_b_6 | 5,254 | 6,421 | 1,176 |  |
-| build_a_12 | 8,812 | 6,856 | 2,914 | 2,424 |
-| build_b_12 | 11,477 | 19,887 | 3,049 |  |
-| build_a_24 | 19,138 | 18,148 | 8,139 | 6,330 |
-| build_b_24 | 24,748 | 88,196 | 8,057 |  |
-| build_a_40 | 67,995 | 46,969 |  |  |
-| build_b_40 | 100,135 | 190,627 |  |  |
-| get_a_12 | 2,633 | 1,554 | 522 | 563 |
-| get_b_12 | 5,214 | 6,696 | 924 |  |
-| get_a_40 | 2,574 | 1,653 | 384 |  |
-| get_b_40 | 6,593 | 4,033 |  |  |
-| case_a_12 | 2,633 | 511 | 455 | 472 |
-| case_b_12 | 5,214 | 5,538 | 949 |  |
-| case_a_40 | 2,574 | 606 | 384 |  |
-| case_b_40 | 6,593 | 2,874 |  |  |
-| replace_a_12 | 3,393 | 2,970 | 1,531 | 1,615 |
-| replace_b_12 | 4,713 | 7,980 | 1,873 |  |
-| delete_a_12 | 4,024 | 3,843 | 1,682 | 1,484 |
-| delete_b_12 | 5,522 | 13,794 | 2,062 |  |
+| build_a_6 | 3,989 | 2,651 | 1,134 | 989 |
+| build_b_6 | 5,255 | 6,430 | 1,177 |  |
+| build_a_12 | 8,812 | 6,752 | 2,915 | 2,425 |
+| build_b_12 | 11,476 | 20,062 | 3,051 |  |
+| build_a_24 | 19,141 | 18,256 | 8,140 | 6,332 |
+| build_b_24 | 24,746 | 88,290 | 8,058 |  |
+| build_a_40 | 67,807 | 45,521 |  |  |
+| build_b_40 | 100,073 | 193,719 |  |  |
+| get_a_12 | 2,525 | 1,555 | 522 | 565 |
+| get_b_12 | 5,106 | 6,701 | 925 |  |
+| get_a_40 | 2,465 | 1,623 | 383 |  |
+| get_b_40 | 6,485 | 4,031 |  |  |
+| case_a_12 | 2,525 | 490 | 455 | 456 |
+| case_b_12 | 5,106 | 5,548 | 950 |  |
+| case_a_40 | 2,466 | 587 | 383 |  |
+| case_b_40 | 6,484 | 2,875 |  |  |
+| replace_a_12 | 3,393 | 2,891 | 1,532 | 1,616 |
+| replace_b_12 | 4,713 | 7,909 | 1,874 |  |
+| delete_a_12 | 4,023 | 3,907 | 1,683 | 1,486 |
+| delete_b_12 | 5,522 | 13,787 | 2,063 |  |
+
+| Walk | fz | BEAM | floor |
+|---|---:|---:|---:|
+| to_list_i_40 | 101 | 112 | 31 |
+| keys_i_40 | 71 | 113 | 26 |
+| reduce_i_40 | 893 | 156 |  |
+| to_list_i_100000 | 116 | 154 | 33 |
+| keys_i_100000 | 78 | 97 | 27 |
+| reduce_i_100000 | 1,549 | 198 |  |

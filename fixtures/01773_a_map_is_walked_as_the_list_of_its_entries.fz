@@ -1,0 +1,54 @@
+#---
+# purpose: Map.to_list, keys and values list a map once, and Enum walks, halts, suspends and asks membership over it, on flat maps, tries and a struct, on the interpreter, the JIT and a built program
+# oracle: self
+# oracle.stamp: 6fb1193dfbcb777b
+#---
+#
+# A map of up to 32 entries lists its entries in key order, as Elixir does,
+# except that the order of atom keys is not printed, since the BEAM orders
+# them by when each atom was made. A larger map is a hash trie, whose order is
+# its own, so for those maps only what holds in every order is printed: keys
+# and values line up with the pairs, and sums, counts and sorted lists agree.
+# Enum.take halts a walk, Enum.zip suspends one, and membership is a lookup of
+# the pair. A struct is no Enumerable, so it is listed through Map alone.
+defmodule Shape do
+  defstruct side: 2, name: "square"
+end
+
+defmodule Main do
+  def lined_up(m) do
+    pairs = Map.to_list(m)
+    {Map.keys(m) == Enum.map(pairs, &elem(&1, 0)), Map.values(m) == Enum.map(pairs, &elem(&1, 1)),
+     Enum.to_list(m) == pairs, length(pairs) == map_size(m)}
+  end
+
+  def summed(m) do
+    {Enum.reduce(m, 0, fn {k, v}, s -> s + k + v end), Enum.sum(Map.values(m)), Enum.count(m)}
+  end
+
+  def main() do
+    small = %{20 => 2, 10 => 1, 30 => 3}
+    atoms = %{b: 2, a: 1, c: 3}
+    mixed = %{"b" => [1], 1 => :one, 1.5 => :t, :atom => "s", [3] => nil, {:k} => %{in: 1}}
+    forty = Map.new(1..40, fn i -> {i * 7919, i} end)
+    big = Map.new(1..2000, fn i -> {i, i * i} end)
+
+    IO.inspect({Map.to_list(small), Map.keys(small), Map.values(small)})
+    IO.inspect(Map.to_list(mixed))
+    IO.inspect({Map.keys(mixed), Map.values(mixed)})
+    IO.inspect({Enum.sort(Map.to_list(%Shape{})), Enum.sort(Map.to_list(atoms))})
+    IO.inspect({Enum.sort(Map.keys(%Shape{})), Enum.sort(Map.values(%Shape{})), lined_up(atoms)})
+    IO.inspect({Map.to_list(%{}), Map.keys(%{}), Map.values(%{}), Enum.to_list(%{})})
+    IO.inspect({lined_up(small), lined_up(mixed)})
+    IO.inspect({lined_up(forty), lined_up(big)})
+    IO.inspect({summed(forty), summed(big)})
+    IO.inspect({Enum.sort(Map.keys(forty)) == Enum.map(1..40, &(&1 * 7919)), Enum.sort(Map.to_list(big)) == Enum.map(1..2000, &{&1, &1 * &1})})
+    IO.inspect({Enum.take(small, 2), length(Enum.take(big, 5)), Enum.zip(small, [:x, :y])})
+    IO.inspect(Enum.reduce_while(small, 0, fn {_k, v}, s -> if v == 3, do: {:halt, s}, else: {:cont, s + v} end))
+    IO.inspect({Enum.member?(small, {10, 1}), Enum.member?(small, {10, 2}), Enum.member?(atoms, {:a, 1})})
+    IO.inspect({Enum.member?(big, {1999, 1999 * 1999}), Enum.member?(big, {1999, 0}), Enum.member?(forty, {7919, 1.0})})
+    IO.inspect({Enum.at(small, 2), Enum.at(mixed, 0), Enum.at(big, 2000)})
+  end
+end
+
+Main.main()

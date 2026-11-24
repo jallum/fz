@@ -1063,7 +1063,12 @@ pub struct ListLink(u64);
 
 impl ListLink {
     pub fn new(tail_bits: u64, head_kind: ValueKind) -> Self {
-        Self(list_tail_addr_from_bits(tail_bits) | ((head_kind.tag() as u64) << LIST_LINK_KIND_SHIFT))
+        Self::to_addr(list_tail_addr_from_bits(tail_bits), head_kind)
+    }
+
+    /// The link to the cell at `tail_addr`, or to the empty list when it is 0.
+    pub fn to_addr(tail_addr: u64, head_kind: ValueKind) -> Self {
+        Self(tail_addr | ((head_kind.tag() as u64) << LIST_LINK_KIND_SHIFT))
     }
 
     pub fn from_raw(raw: u64) -> Self {
@@ -1122,9 +1127,19 @@ impl ListLink {
 
 impl ListCons {
     pub fn new(head_raw: u64, head_kind: ValueKind, tail_bits: u64) -> Self {
+        Self::linked(head_raw, ListLink::new(tail_bits, head_kind))
+    }
+
+    /// A cell whose tail is the cell at `tail_addr`, or the empty list when it
+    /// is 0.
+    pub fn to_addr(head_raw: u64, head_kind: ValueKind, tail_addr: u64) -> Self {
+        Self::linked(head_raw, ListLink::to_addr(tail_addr, head_kind))
+    }
+
+    fn linked(head_raw: u64, link: ListLink) -> Self {
         Self {
             head: head_raw,
-            link: ListLink::new(tail_bits, head_kind).raw(),
+            link: link.raw(),
         }
     }
 

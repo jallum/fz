@@ -415,7 +415,7 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
         ),
         (
             567, // fz_f98_range_map_converges
-            55,
+            48,
         ),
         (
             569, // enum_map_family

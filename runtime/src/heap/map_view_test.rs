@@ -1,4 +1,5 @@
 use super::*;
+use crate::any_value::{heap_word_addr, struct_field_kind_slot, struct_field_raw_slot};
 use crate::heap::{NamedSchema, Schema, SchemaRegistry};
 use crate::module_name::ModuleName;
 use crate::process::Node;
@@ -536,4 +537,191 @@ fn deleting_a_present_key_from_a_flat_map_allocates_only_the_new_map() {
     assert_eq!(f.heap.alloc_stats_snapshot().total.allocs, before + 1);
     let expected = f.plain(&[("a", 1), ("c", 3)]);
     assert_eq!(stored_bytes(smaller), stored_bytes(expected));
+}
+
+impl Fixture {
+    /// Each element of `list` as the word and kind its cell holds, front to back.
+    fn elements(&self, list: AnyValueRef) -> Vec<(u64, ValueKind)> {
+        let mut elements = Vec::new();
+        let mut bits = list.raw_word();
+        if list.is_empty_list() {
+            return elements;
+        }
+        while bits != crate::any_value::EMPTY_LIST {
+            let cell = unsafe { &*(heap_word_addr(bits) as *const crate::any_value::ListCons) };
+            elements.push((cell.head, cell.head_kind()));
+            bits = cell.link().tail_bits();
+        }
+        elements
+    }
+
+    /// The two fields of the `{key, value}` tuple at `word`, each as a word and a kind.
+    fn pair_fields(&self, word: u64) -> [(u64, ValueKind); 2] {
+        let object = word as *const u8;
+        let schema = self.heap.schemas.borrow();
+        let tuple = schema.get(unsafe { struct_schema_id(object) });
+        assert_eq!(
+            tuple.identity,
+            crate::heap::schema::SchemaIdentity::Tuple(2),
+            "each pair is a 2-tuple"
+        );
+        [0, 8].map(|offset| unsafe {
+            let kind = *struct_field_kind_slot(object, tuple.value_field_kind_offset(offset));
+            (
+                *struct_field_raw_slot(object, offset),
+                ValueKind::new(kind).expect("field kind"),
+            )
+        })
+    }
+
+    /// The map listed by each part, held to the entries the map numbers: the
+    /// same words and kinds in the same order, nothing decoded and nothing
+    /// boxed.
+    fn assert_lists_its_entries(&mut self, map: AnyValueRef) {
+        let entries: Vec<_> = self.entries(map);
+        let word_kind = |value: AnyValue| (value.raw(), value.kind());
+        let keys = self.heap.map_list(map, MapPart::Keys);
+        assert_eq!(
+            self.elements(keys),
+            entries.iter().map(|e| word_kind(e.0)).collect::<Vec<_>>()
+        );
+        let values = self.heap.map_list(map, MapPart::Values);
+        assert_eq!(
+            self.elements(values),
+            entries.iter().map(|e| word_kind(e.1)).collect::<Vec<_>>()
+        );
+        let pairs = self.heap.map_list(map, MapPart::Pairs);
+        let pairs = self.elements(pairs);
+        assert!(
+            pairs.iter().all(|&(_, kind)| kind == ValueKind::STRUCT),
+            "each pair is a tuple"
+        );
+        let fields: Vec<_> = pairs.iter().map(|&(word, _)| self.pair_fields(word)).collect();
+        assert_eq!(
+            fields,
+            entries
+                .iter()
+                .map(|e| [word_kind(e.0), word_kind(e.1)])
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
+/// `Map.keys`, `Map.values` and `Map.to_list` read a map once, front to back,
+/// in the order the map numbers its entries: an empty map, a flat map, the
+/// flat limit, and tries one and several levels deep.
+#[test]
+fn a_map_is_listed_by_its_keys_values_or_pairs_in_the_order_it_numbers_its_entries() {
+    let mut f = fixture();
+    for count in [0i64, 3, 32, 33, 1000, 40_000] {
+        let entries: Vec<_> = (0..count)
+            .map(|i| (i * 7919) % count.max(1))
+            .map(|i| (AnyValue::int(i), AnyValue::int(i * 10)))
+            .collect();
+        let map = f.entries_map(&entries);
+        f.assert_lists_its_entries(map);
+    }
+}
+
+/// Keys whose hashes are equal sit together in a collision node, and the
+/// walk lists them where the map numbers them.
+#[test]
+fn a_trie_with_collision_nodes_is_listed_in_the_order_it_numbers_its_entries() {
+    let mut f = fixture();
+    let mut hashed: Vec<(u64, (AnyValue, AnyValue))> = (0..200i64)
+        .map(|i| {
+            (
+                ((i % 4) as u64) << 62 | (i % 20) as u64,
+                (AnyValue::int(i), AnyValue::int(i * 10)),
+            )
+        })
+        .collect();
+    let bits = f.heap.alloc_trie_hashed(&mut hashed);
+    let map =
+        AnyValueRef::from_heap_object(ValueKind::MAP, map_addr_from_tagged(bits).expect("trie")).expect("map ref");
+    f.assert_lists_its_entries(map);
+}
+
+/// A struct is listed as the map it is: `__struct__` and its fields.
+#[test]
+fn a_struct_is_listed_with_its_module_and_its_fields() {
+    let mut f = fixture();
+    let point = f.point(1, 2);
+    f.assert_lists_its_entries(point);
+}
+
+/// A map's mixed keys and its heap values cross into the list as the words
+/// the map stores: an atom as its id, and a list value as the same list,
+/// shared rather than copied.
+#[test]
+fn a_heap_value_is_listed_as_the_same_object_the_map_holds() {
+    let mut f = fixture();
+    let inner = f
+        .heap
+        .alloc_list_cons_any(AnyValue::int(7), AnyValueRef::empty_list())
+        .expect("list");
+    let entries = vec![
+        (f.atom("held"), AnyValue::from_ref(inner).expect("list value")),
+        (AnyValue::int(-1), f.atom("ok")),
+        (AnyValue::float(1.5), AnyValue::int(3)),
+    ];
+    let map = f.entries_map(&entries);
+    f.assert_lists_its_entries(map);
+    let values = f.heap.map_list(map, MapPart::Values);
+    let held = f
+        .elements(values)
+        .into_iter()
+        .find(|&(_, kind)| kind == ValueKind::LIST)
+        .expect("the list value is listed");
+    assert_eq!(
+        held.0,
+        inner.storage_raw().expect("list word"),
+        "the same list, not a copy"
+    );
+}
+
+/// A list is placed in runs of cells side by side, and each run is counted
+/// as the cells and pairs it holds: listing a map of 40,000 entries counts
+/// 40,000 cells, and for its pairs 40,000 tuples as well, as if each had been
+/// placed alone.
+#[test]
+fn a_listed_map_counts_each_cell_and_pair_it_places() {
+    let mut f = fixture();
+    let entries: Vec<_> = (0..40_000i64).map(|i| (AnyValue::int(i), AnyValue::int(i))).collect();
+    let map = f.entries_map(&entries);
+
+    let before = f.heap.alloc_stats_snapshot();
+    f.heap.map_list(map, MapPart::Keys);
+    let after = f.heap.alloc_stats_snapshot();
+    assert_eq!(
+        (
+            after.list_cons.allocs - before.list_cons.allocs,
+            after.list_cons.bytes - before.list_cons.bytes
+        ),
+        (40_000, 40_000 * 16),
+        "one 16-byte cell per key"
+    );
+    assert_eq!(after.struct_, before.struct_, "a list of keys places no tuple");
+
+    let before = after;
+    f.heap.map_list(map, MapPart::Pairs);
+    let after = f.heap.alloc_stats_snapshot();
+    assert_eq!(
+        after.list_cons.allocs - before.list_cons.allocs,
+        40_000,
+        "one cell per pair"
+    );
+    assert_eq!(
+        (
+            after.struct_.allocs - before.struct_.allocs,
+            after.struct_.bytes - before.struct_.bytes
+        ),
+        (40_000, 40_000 * 32),
+        "one 32-byte tuple per pair"
+    );
+    assert_eq!(
+        after.total.allocs - before.total.allocs,
+        80_000,
+        "the total counts both"
+    );
 }

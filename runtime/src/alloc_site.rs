@@ -144,10 +144,16 @@ pub struct RuntimeAllocCounts([Cell<AllocStat>; RuntimeAllocSite::ALL.len()]);
 impl RuntimeAllocCounts {
     #[inline]
     pub fn record(&self, site: RuntimeAllocSite, bytes: u64) {
-        let count = &self.0[site as usize];
-        let mut stat = count.get();
-        stat.record(bytes);
-        count.set(stat);
+        self.record_run(site, 1, bytes);
+    }
+
+    /// `count` placements of `bytes` each at `site`.
+    #[inline]
+    pub fn record_run(&self, site: RuntimeAllocSite, count: u64, bytes: u64) {
+        let cell = &self.0[site as usize];
+        let mut stat = cell.get();
+        stat.record_run(count, bytes);
+        cell.set(stat);
     }
 
     pub fn counted(&self) -> impl Iterator<Item = (RuntimeAllocSite, AllocStat)> {

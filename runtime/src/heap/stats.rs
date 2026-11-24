@@ -8,8 +8,13 @@ pub struct AllocStat {
 
 impl AllocStat {
     pub fn record(&mut self, bytes: u64) {
-        self.allocs += 1;
-        self.bytes += bytes;
+        self.record_run(1, bytes);
+    }
+
+    /// `count` placements of `bytes` each.
+    pub fn record_run(&mut self, count: u64, bytes: u64) {
+        self.allocs += count;
+        self.bytes += count * bytes;
     }
 }
 
@@ -107,20 +112,26 @@ impl HeapAllocStats {
     }
 
     pub fn record(&mut self, kind: HeapAllocKind, bytes: u64) {
-        self.total.record(bytes);
-        match kind {
-            HeapAllocKind::ListCons => self.list_cons.record(bytes),
-            HeapAllocKind::Struct => self.struct_.record(bytes),
-            HeapAllocKind::Closure => self.closure.record(bytes),
-            HeapAllocKind::Continuation => self.continuation.record(bytes),
-            HeapAllocKind::Map => self.map.record(bytes),
-            HeapAllocKind::Bitstring => self.bitstring.record(bytes),
-            HeapAllocKind::BinView => self.binview.record(bytes),
-            HeapAllocKind::BinRef => self.binref.record(bytes),
-            HeapAllocKind::ScalarBox => self.scalar_box.record(bytes),
-            HeapAllocKind::Resource => self.resource.record(bytes),
-            HeapAllocKind::Other => self.other.record(bytes),
-        }
+        self.record_run(kind, 1, bytes);
+    }
+
+    /// `count` placements of `bytes` each, all of `kind`.
+    pub fn record_run(&mut self, kind: HeapAllocKind, count: u64, bytes: u64) {
+        self.total.record_run(count, bytes);
+        let stat = match kind {
+            HeapAllocKind::ListCons => &mut self.list_cons,
+            HeapAllocKind::Struct => &mut self.struct_,
+            HeapAllocKind::Closure => &mut self.closure,
+            HeapAllocKind::Continuation => &mut self.continuation,
+            HeapAllocKind::Map => &mut self.map,
+            HeapAllocKind::Bitstring => &mut self.bitstring,
+            HeapAllocKind::BinView => &mut self.binview,
+            HeapAllocKind::BinRef => &mut self.binref,
+            HeapAllocKind::ScalarBox => &mut self.scalar_box,
+            HeapAllocKind::Resource => &mut self.resource,
+            HeapAllocKind::Other => &mut self.other,
+        };
+        stat.record_run(count, bytes);
     }
 }
 

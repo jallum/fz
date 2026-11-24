@@ -1,4 +1,4 @@
-// Checks the hand-written sequences in flat.s and trie.s against a reference, and runs them as the
+// Checks the hand-written sequences in flat.s, trie.s and walk.s against a reference, and runs them as the
 // floor for the map probes. `harness test` checks; `harness <probe> <iterations> <keys>` runs a probe.
 #include <stdint.h>
 #include <stdio.h>
@@ -18,6 +18,9 @@ uint8_t *fz_flat_write(Bump *b, const uint8_t *map, uint64_t slot, uint64_t acti
 Got fz_trie_get(const uint8_t *root, uint64_t hash, uint64_t key, uint64_t kind);
 typedef struct { uint64_t **atom_key_hashes; } Process;
 Got fz_trie_get_atom(const uint8_t *root, uint64_t atom, const Process *process);
+uint64_t fz_map_keys(const uint8_t *map, Bump *b);
+uint64_t fz_map_values(const uint8_t *map, Bump *b);
+uint64_t fz_map_pairs(const uint8_t *map, Bump *b, uint64_t pair_header);
 
 enum { BITSTRING = 5, INT = 0xD, ATOM = 0xF };
 enum { INSERT, REPLACE, SKIP };
@@ -156,13 +159,14 @@ static uint8_t *node_of(Bump *b, uint64_t header, const H *e, int ne, uint8_t *c
 }
 static uint8_t *trie_level(Bump *b, const H *e, int n, int level) {
     if (level == 16) return node_of(b, TRIE_FLAG | COLLISION_FLAG | (uint64_t)n << 36, e, n, 0, 0);
-    H own[16], group[n]; uint8_t *child[16]; int ne = 0, nc = 0; uint64_t data = 0, kids = 0;
+    H own[16], *group = malloc(n * sizeof(H)); uint8_t *child[16]; int ne = 0, nc = 0; uint64_t data = 0, kids = 0;
     for (int s = 0; s < 16; s++) {
         int g = 0;
         for (int i = 0; i < n; i++) if ((e[i].hash >> (60 - 4 * level) & 15) == (uint64_t)s) group[g++] = e[i];
         if (g == 1) { own[ne++] = group[0]; data |= 1u << s; }
         if (g > 1) { child[nc++] = trie_level(b, group, g, level + 1); kids |= 1u << s; }
     }
+    free(group);
     return node_of(b, TRIE_FLAG | (uint64_t)n << 36 | kids << 20 | data << 4, own, ne, child, nc);
 }
 
@@ -173,8 +177,55 @@ static Got trie_get(const uint8_t *root, uint64_t kind, uint64_t key) {
     return kind == ATOM ? fz_trie_get_atom(root, key, &process) : fz_trie_get(root, int_key_hash(key), key, kind);
 }
 static uint64_t key_hash(uint64_t kind, uint64_t key) { return kind == ATOM ? atom_hashes[key] : int_key_hash(key); }
+
+// The entries of a map in the runtime's order: a node's own entries, then each child's in turn.
+typedef struct { uint64_t kkind, key, vkind, value; } Entry;
+static int entries_of(const uint8_t *m, Entry *out) {
+    uint64_t h = *(const uint64_t *)m;
+    int ne = !(h & TRIE_FLAG) ? (int)(h >> 4) : h & COLLISION_FLAG ? (int)(h >> 36 & 0x1ffffff) : __builtin_popcountll(h >> 4 & 0xffff);
+    int nc = (h & TRIE_FLAG) && !(h & COLLISION_FLAG) ? __builtin_popcountll(h >> 20 & 0xffff) : 0;
+    const uint64_t *k = (const uint64_t *)(m + 8 + pad8(ne)), *v = k + ne, *c = v + ne;
+    int n = 0;
+    for (int i = 0; i < ne; i++) out[n++] = (Entry){m[8 + i] >> 4, k[i], m[8 + i] & 15, v[i]};
+    for (int i = 0; i < nc; i++) n += entries_of((const uint8_t *)c[i], out + n);
+    return n;
+}
+#define LIST_KIND 1ull
+#define STRUCT_KIND 3ull
+#define PAIR_HEADER 0x0000002a00000000ull
+static const uint64_t *cell_at(uint64_t word) { return (const uint64_t *)(word & 0x00fffffffffffff0ull); }
+static void check_list(uint64_t list, const Entry *e, int n, int mode) {
+    if (n == 0) { if (list != 8) fail("empty walk"); return; }
+    if (list >> 56 != LIST_KIND) fail("list word");
+    const uint64_t *cell = cell_at(list);
+    for (int i = 0; i < n; i++) {
+        uint64_t head = cell[0];
+        if (mode == 0 && head != e[i].key) fail("key word");
+        if (mode == 1 && head != e[i].value) fail("value word");
+        if (mode == 2) {
+            const uint64_t *pair = (const uint64_t *)head;
+            if (pair[0] != PAIR_HEADER || pair[1] != e[i].key || pair[2] != e[i].value || pair[3] != (e[i].kkind | e[i].vkind << 8)) fail("pair");
+        }
+        uint64_t kind = mode == 0 ? e[i].kkind : mode == 1 ? e[i].vkind : STRUCT_KIND;
+        uint64_t link = cell[1];
+        if (link >> 56 != kind) fail("tail kind");
+        if (i == n - 1) { if ((link & 0x00ffffffffffffffull) != 0) fail("last tail"); }
+        else cell = cell_at(link);
+    }
+}
+static void check_walks(const uint8_t *m, uint8_t *arena, size_t size) {
+    static Entry e[400];
+    int n = entries_of(m, e);
+    for (int mode = 0; mode < 3; mode++) {
+        Bump b = {arena, arena + size};
+        uint64_t list = mode == 0 ? fz_map_keys(m, &b) : mode == 1 ? fz_map_values(m, &b) : fz_map_pairs(m, &b, PAIR_HEADER);
+        check_list(list, e, n, mode);
+        Bump tight = {arena, arena + (n ? 8 : 0)};
+        if (n && (mode == 0 ? fz_map_keys(m, &tight) : mode == 1 ? fz_map_values(m, &tight) : fz_map_pairs(m, &tight, PAIR_HEADER)) != 0) fail("walk past the bump");
+    }
+}
 static int test_trie(void) {
-    static uint8_t arena[1 << 22];
+    static uint8_t arena[1 << 22], walk_arena[1 << 16];
     static H e[400];
     for (int round = 0; round < 4000; round++) {
         for (int i = 0; i < 512; i++) atom_hashes[i] = (uint64_t)rand() << 42 ^ (uint64_t)rand() << 21 ^ (uint64_t)rand();
@@ -206,11 +257,12 @@ static int test_trie(void) {
             Got got = trie_get(root, kind, key);
             if (!present && got.kind != (same_hash > 1 ? -2 : -1)) fail("trie get of an absent key");
         }
+        check_walks(root, walk_arena, sizeof walk_arena);
     }
     return 0;
 }
 static int test(void) {
-    static uint8_t arena[1 << 20];
+    static uint8_t arena[1 << 20], walk_arena[1 << 12];
     static uint64_t empty[2];
     uint64_t *bins[40]; char text[8];
     srand(7);
@@ -243,10 +295,31 @@ static int test(void) {
                 else { memmove(e + at + 1, e + at, (n - at) * sizeof(E)); e[at] = (E){kind, key, value}; n++; }
             }
             m = r; check(m, e, n);
+            check_walks(m, walk_arena, sizeof walk_arena);
         }
     }
     test_trie();
     printf("ok\n");
+    return 0;
+}
+
+// Turns a trie of k integer keys into a list n times; the answer is the number of cells placed.
+static int walk_probe(const char *probe, long n, int k) {
+    H *e = malloc(k * sizeof(H));
+    for (int j = 0; j < k; j++) e[j] = (H){int_key_hash((uint64_t)(j + 1) * 7919), INT, (uint64_t)(j + 1) * 7919, (uint64_t)j};
+    size_t size = (size_t)k * 64 + (1 << 20);
+    uint8_t *nodes = malloc(size), *cells = malloc(size);
+    Bump b = {nodes, nodes + size};
+    const uint8_t *root = trie_level(&b, e, k, 0);
+    int mode = probe[0] == 'k' ? 0 : probe[0] == 'v' ? 1 : 2;
+    uint64_t answer = 0;
+    for (long i = 0; i < n; i++) {
+        Bump c = {cells, cells + size};
+        uint64_t list = mode == 0 ? fz_map_keys(root, &c) : mode == 1 ? fz_map_values(root, &c) : fz_map_pairs(root, &c, PAIR_HEADER);
+        if (!list) fail("bump");
+        answer += (uint64_t)(c.top - cells) / (mode == 2 ? 48 : 16);
+    }
+    printf("%llu\n", (unsigned long long)answer);
     return 0;
 }
 
@@ -268,6 +341,7 @@ int main(int argc, char **argv) {
     Bump b = {arenas[0], arenas[0] + sizeof arenas[0]};
     const uint8_t *m = (const uint8_t *)empty;
     uint64_t answer = 0;
+    if (!strncmp(probe, "keys", 4) || !strncmp(probe, "values", 6) || !strncmp(probe, "to_list", 7)) return walk_probe(probe, n, k);
     if (k > 32) {
         if (binary_keys || (strncmp(probe, "case", 4) && strncmp(probe, "get", 3))) {
             fprintf(stderr, "no trie floor for %s\n", probe); return 2;
