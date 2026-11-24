@@ -5,7 +5,7 @@
   ],
   "blocks": [],
   "created": "2026-11-24T17:54:26Z",
-  "description": "Option C, step C3 (approved page https://claude.ai/artifact/HJ4StaQ4ggt6yt2Fus6pX7).\n\n- lib/ marks the externs that project a value (an extern mark).\n- Arity, MapSize and ByteSize become matrix questions.\n- fz_tuple_size lowers onto TupleArity.\n- Narrowing happens on the match edge.\n\nis_struct/1 and is_exception/1 become type tests by this route (Make Distiller Fast finding 4).\n\nRemoves: option A's guard_domain table (fz-yh5.8, #842, the holding position).",
+  "description": "Option C, step C3 (approved page https://claude.ai/artifact/HJ4StaQ4ggt6yt2Fus6pX7).\n\n- lib/ marks the externs that project a value (an extern mark).\n- Arity, MapSize and ByteSize become matrix questions.\n- fz_tuple_size lowers onto TupleArity.\n- Narrowing happens on the match edge.\n\nis_struct/1 and is_exception/1 become type tests by this route (Make Distiller Fast finding 4).\n\nRemoves: option A's guard_domain table (fz-yh5.8, #842, the holding position).\n\nMoved here from fz-yh5.11 (Callables, 2026-11-24): removing the guard leaf's Whole read of a callable (executable_facts.rs:656). Once fz_function_arity becomes the Arity question, is_function(g, 2) (probe u6) and p15 lose their wrapper.",
   "id": "fz-yh5.13",
   "labels": [],
   "parent": "fz-yh5",
@@ -13,5 +13,5 @@
   "status": "open",
   "title": "A projecting extern compared with a constant is a matrix question",
   "type": "bug",
-  "updated_at": "2026-11-24T17:54:30Z"
+  "updated_at": "2026-11-24T18:45:01Z"
 }
