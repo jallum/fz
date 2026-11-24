@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-24T21:56:46Z",
+  "description": "Approved by the user 2026-11-24 (page ../fz-t93.28.html, decision 3).\nFound by fz-t93.28's paper: drive_test.rs:14220 (runtime_demand_facts_converge_across_independent_self_and_mutual_schedule_orders) run with a fz_engine::pop_order::with(PopOrder::Lifo, ..) pass shows the multiset of jobs run differs from fifo on develop fd3bfb964, with identical backend, output and facts. Results are order-free there; the work it takes to reach them is not. Scratch: t93_28/base_drive_lifo.log.\nDone when: the cause is named (which jobs re-run under lifo and why), and either the work multiset is the same across orders (with the drive_test asserting it across the lifo pass too), or a measured page explains why it cannot be and the user decides.",
+  "id": "fz-t93.31",
+  "labels": [],
+  "parent": "fz-t93",
+  "priority": 3,
+  "status": "open",
+  "title": "The work a program costs does not depend on job order",
+  "type": "bug",
+  "updated_at": "2026-11-24T21:56:46Z"
+}
