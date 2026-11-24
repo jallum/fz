@@ -820,6 +820,13 @@ impl QuotedSourceCursor {
         self.tuple_iter()?.collect()
     }
 
+    /// `inspect/1` of this value.
+    pub(crate) fn inspect(&self) -> Result<String, QuotedSourceError> {
+        let value = any_value_from_ref(self.root)?;
+        let mut process = self.heap.process_mut();
+        Ok(fz_runtime::any_value::debug::render_value(&mut *process, value))
+    }
+
     /// The fields of a quoted tuple in order, each read when the iterator
     /// reaches it.
     pub fn tuple_iter(&self) -> Result<impl Iterator<Item = Result<Self, QuotedSourceError>> + '_, QuotedSourceError> {

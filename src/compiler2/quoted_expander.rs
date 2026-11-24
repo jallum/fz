@@ -5,6 +5,7 @@ use crate::modules::identity::ModuleName;
 use crate::source::{SourceMap, Span};
 use crate::telemetry::TelemetryExt as _;
 
+use super::canon::function_label;
 use super::drive::{FactKey, JobEffects, ProductAddress, emit_job_diagnostic};
 use super::env_projection::CallSite;
 use super::identity::{FunctionId, ModuleId};
@@ -17,6 +18,7 @@ use super::quoted_surface::{MacroCallForm, ScopeSurface, is_scope_definition_hea
 use super::scope::ScopeSnapshot;
 use super::source::{ListItems, QuotedAstNode, QuotedSourceCursor, QuotedSourceError, QuotedSourceRoot};
 use super::source_sugar::{rewrite_guard_membership, rewrite_source_sugar};
+use super::token_payload::decode_token;
 use super::world::World;
 
 pub(crate) const MAX_MACRO_EXPANSION_DEPTH: usize = 64;
@@ -1086,6 +1088,19 @@ pub(crate) trait QuotedExpansionCtx {
                 emit_job_diagnostic(tel, Diagnostic::error(codes::LOWER_UNSUPPORTED, error, span))
             })?;
         let source_map = world.source_map();
+        if let Some(invalid) = first_invalid_quoted_expr(&expanded.cursor(), &source_map.borrow())
+            .map_err(|error| emit_internal_surface_error(tel, format!("macro result validation failed: {error}")))?
+        {
+            let value = invalid.inspect().map_err(|error| {
+                emit_internal_surface_error(tel, format!("macro result inspection failed: {error}"))
+            })?;
+            return Err(invalid_quoted_expr(
+                tel,
+                &function_label(world, function),
+                &value,
+                macro_call_span.unwrap_or(Span::DUMMY),
+            ));
+        }
         let expanded = if let Some(macro_call_span) = macro_call_span {
             let filled = stamp_span_fallback(&expanded, &expanded.cursor(), macro_call_span, &source_map.borrow())
                 .map_err(|error| emit_internal_surface_error(tel, format!("span fallback stamping failed: {error}")))?;
@@ -1762,6 +1777,115 @@ pub(crate) fn emit_internal_surface_error(
     )
 }
 
+/// The outermost part of `cursor` that is not valid quoted syntax, by
+/// Elixir's grammar: an atom, number, binary, list or two-tuple of valid
+/// parts, or a call node `{head, meta, args}` (a variable node carries an atom
+/// where the arguments go). Maps, functions, pids and tuples of any other size
+/// are values that must be escaped to enter the syntax. The one exception is
+/// the environment argument of `Fz.Compiler.define`, the details of an
+/// `extern` form and the lexer tokens a type expression carries: values the
+/// compiler's own forms embed.
+fn first_invalid_quoted_expr(
+    cursor: &QuotedSourceCursor,
+    sources: &SourceMap,
+) -> Result<Option<QuotedSourceCursor>, QuotedSourceError> {
+    let tag = cursor.root().tag();
+    if [
+        ValueKind::ATOM,
+        ValueKind::INT,
+        ValueKind::FLOAT,
+        ValueKind::BITSTRING,
+        ValueKind::BINVIEW,
+        ValueKind::BINREF,
+    ]
+    .contains(&tag)
+    {
+        return Ok(None);
+    }
+    let invalid_unless_readable = |items: Result<Vec<QuotedSourceCursor>, QuotedSourceError>| match items {
+        Ok(items) => first_invalid_among(&items, sources),
+        Err(_) => Ok(Some(cursor.clone())),
+    };
+    if tag == ValueKind::LIST {
+        return invalid_unless_readable(cursor.list_iter().collect());
+    }
+    if tag != ValueKind::STRUCT {
+        return Ok(Some(cursor.clone()));
+    }
+    match cursor.tuple_arity()? {
+        2 => invalid_unless_readable(cursor.tuple_items()),
+        3 => first_invalid_call_node(cursor, sources),
+        _ if decode_token(cursor, sources).is_ok() => Ok(None),
+        _ => Ok(Some(cursor.clone())),
+    }
+}
+
+fn first_invalid_among(
+    items: &[QuotedSourceCursor],
+    sources: &SourceMap,
+) -> Result<Option<QuotedSourceCursor>, QuotedSourceError> {
+    for item in items {
+        if let Some(invalid) = first_invalid_quoted_expr(item, sources)? {
+            return Ok(Some(invalid));
+        }
+    }
+    Ok(None)
+}
+
+fn first_invalid_call_node(
+    cursor: &QuotedSourceCursor,
+    sources: &SourceMap,
+) -> Result<Option<QuotedSourceCursor>, QuotedSourceError> {
+    let Ok(Some(node)) = cursor.ast_node(sources) else {
+        return Ok(Some(cursor.clone()));
+    };
+    let head_tag = node.head.root().tag();
+    let tail_tag = node.tail.root().tag();
+    if (head_tag != ValueKind::ATOM && head_tag != ValueKind::STRUCT)
+        || (tail_tag != ValueKind::ATOM && tail_tag != ValueKind::LIST)
+    {
+        return Ok(Some(cursor.clone()));
+    }
+    if let Some(invalid) = first_invalid_quoted_expr(&node.head, sources)? {
+        return Ok(Some(invalid));
+    }
+    if tail_tag == ValueKind::ATOM {
+        return Ok(None);
+    }
+    let args = match node.tail.list_iter().collect::<Result<Vec<_>, _>>() {
+        Ok(args) => args,
+        Err(_) => return Ok(Some(node.tail)),
+    };
+    if is_compiler_define_call(&node, args.len(), sources).unwrap_or(false) || is_extern_form(&node, args.len()) {
+        return first_invalid_among(&args[..1], sources);
+    }
+    first_invalid_among(&args, sources)
+}
+
+/// A macro returned something that is not quoted syntax: Elixir's
+/// `invalid quoted expression` error, naming the macro it came from.
+fn invalid_quoted_expr(
+    tel: &impl crate::telemetry::Telemetry,
+    macro_label: &str,
+    value: &str,
+    span: Span,
+) -> fz_engine::FatalError {
+    emit_job_diagnostic(
+        tel,
+        Diagnostic::error(
+            codes::MACRO_INVALID_QUOTED_EXPR,
+            format!(
+                "invalid quoted expression: {value}\n\n\
+                 Please make sure your quoted expressions are made of valid AST nodes. \
+                 If you would like to introduce a value into the AST, such as a four-element \
+                 tuple or a map, make sure to call Macro.escape/1 before"
+            ),
+            span,
+        )
+        .with_note(format!("expanding macro: {macro_label}")),
+    )
+}
+
 fn remote_macro_not_required(
     tel: &impl crate::telemetry::Telemetry,
     function_name: &str,
@@ -1906,6 +2030,12 @@ fn is_compiler_define_call(node: &QuotedAstNode, arity: usize, sources: &SourceM
         return Ok(false);
     }
     Ok(function_cursor.atom_name()? == "define")
+}
+
+/// The front door's `extern(abi, details)` form: its details are a map the
+/// compiler reads back, not syntax.
+fn is_extern_form(node: &QuotedAstNode, arity: usize) -> bool {
+    arity == 2 && node.head.root().tag() == ValueKind::ATOM && node.head.atom_name().is_ok_and(|name| name == "extern")
 }
 
 fn is_remote_dot_callee(node: &QuotedAstNode) -> Result<bool, QuotedSourceError> {

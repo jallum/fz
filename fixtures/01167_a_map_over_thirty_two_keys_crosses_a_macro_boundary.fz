@@ -5,7 +5,7 @@
 #---
 defmacro held() do
   m = Map.new(Enum.map(1..40, fn i -> {i, i * i} end))
-  quote do: unquote(m)
+  quote do: unquote(Macro.escape(m))
 end
 
 defmacro big() do

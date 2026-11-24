@@ -2,7 +2,7 @@ use std::rc::Rc;
 
 use fz_runtime::any_value::AnyValueRef;
 
-use super::{ExpansionClaim, is_remote_dot_callee, stamp_expansion_counter};
+use super::{ExpansionClaim, first_invalid_quoted_expr, is_remote_dot_callee, stamp_expansion_counter};
 use crate::compiler2::{QuotedSourceHeap, QuotedSourceMetadata};
 use crate::source::SourceMap;
 
@@ -150,5 +150,46 @@ fn a_macro_sees_the_context_of_the_position_it_is_expanded_in() {
             need: ExecutableNeed::Value,
         });
         assert_eq!(compiler.run_root_interp(root), Ok(1), "in {position}");
+    }
+}
+
+#[test]
+fn a_value_that_is_not_quoted_syntax_is_found_where_it_sits_in_the_expression() {
+    let heap = Rc::new(QuotedSourceHeap::new());
+    let builder = heap.builder();
+    let sources = SourceMap::new();
+    let meta = QuotedSourceMetadata::default();
+    let map = builder.map(&[(builder.atom("a"), builder.int(1))]).unwrap();
+    let four = builder
+        .tuple(&[builder.int(1), builder.int(2), builder.int(3), builder.int(4)])
+        .unwrap();
+    let not_a_node = builder
+        .tuple(&[builder.int(1), builder.int(2), builder.int(3)])
+        .unwrap();
+    let pair = builder.tuple(&[builder.atom("ok"), builder.int(1)]).unwrap();
+    let call = |args: &[AnyValueRef]| {
+        builder
+            .ast_node(builder.atom("f"), &meta, builder.list(args).unwrap())
+            .unwrap()
+    };
+
+    for valid in [
+        call(&[pair, builder.int(2)]),
+        builder.list(&[pair]).unwrap(),
+        builder.nil(),
+    ] {
+        let root = builder.root(valid).unwrap();
+        assert!(first_invalid_quoted_expr(&root.cursor(), &sources).unwrap().is_none());
+    }
+    for invalid in [map, four, not_a_node] {
+        let root = builder.root(call(&[builder.int(0), pair, invalid])).unwrap();
+        let found = first_invalid_quoted_expr(&root.cursor(), &sources)
+            .unwrap()
+            .expect("the invalid argument is found");
+        assert_eq!(
+            found.root(),
+            invalid,
+            "the report names the offending value, not the call around it"
+        );
     }
 }

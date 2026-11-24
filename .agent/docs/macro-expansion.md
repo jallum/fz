@@ -523,6 +523,20 @@ module, so it escapes the same way. A PID, a reference or an anonymous
 function, at any depth, raises `ArgumentError`: it names nothing in the
 compiled program.
 
+### A macro's result must be quoted syntax
+
+Before anything is stamped, `first_invalid_quoted_expr`
+(`src/compiler2/quoted_expander.rs`) checks the macro's result against
+Elixir's grammar: atoms, numbers, binaries, lists, two-tuples and call nodes
+`{head, meta, args}`. The first part that is not one (a map, a function, a
+PID, a tuple of another size, a three-tuple whose metadata is not a list) is
+refused as `macro/invalid-quoted-expr` at the call, with Elixir's text
+`invalid quoted expression: <inspect>` and a note `expanding macro: M.f/N`.
+Three compiler-embedded values are exempt: the environment argument of
+`Fz.Compiler.define`, the details map of an `extern` form and lexer tokens
+(`decode_token`). Elixir warns for a PID
+instead of refusing; fz refuses it with the rest.
+
 ### Where expanded code is reported
 
 A `quote` writes no span on the nodes it builds (`meta`,
