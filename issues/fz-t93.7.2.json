@@ -4,6 +4,7 @@
     "fz-t93.7.1"
   ],
   "blocks": [
+    "fz-mue.25",
     "fz-t93.7.3",
     "fz-t93.7.7"
   ],
@@ -16,5 +17,5 @@
   "status": "open",
   "title": "A transport position is read from its executable's interface fact",
   "type": "task",
-  "updated_at": "2026-11-15T15:52:33Z"
+  "updated_at": "2026-11-24T22:04:32Z"
 }
