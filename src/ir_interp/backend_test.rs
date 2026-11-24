@@ -455,7 +455,11 @@ fn parked_receive_copies_only_winning_subjects_into_receiver_heap() {
         "the receiver allocates nothing for a delivery"
     );
     let mut roots = [copied];
-    unsafe { &mut *receiver }.heap.collect(&mut roots);
+    drop(
+        unsafe { &mut *receiver }
+            .heap
+            .collect(&mut roots, &mut Default::default()),
+    );
     let source = roots[0].raw_word();
     let head = fz_runtime::any_value::AnyValueRef::from_raw_word(fz_list_head_ref(source)).unwrap();
     let retained = fz_runtime::ir_runtime::fz_list_reuse_or_cons_parts(
@@ -1701,7 +1705,7 @@ fn a_function_reference_materializes_to_one_literal_closure() {
     );
 
     let mut roots = [first];
-    sender.heap.collect(&mut roots);
+    drop(sender.heap.collect(&mut roots, &mut Default::default()));
     assert_eq!(roots[0].raw_word(), first.raw_word(), "a collection leaves it in place");
 
     let mut receiver = Process::with_node(

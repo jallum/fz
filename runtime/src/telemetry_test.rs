@@ -1,5 +1,6 @@
 use super::*;
-use crate::heap::{Footprint, GcStats, SchemaRegistry, StubCounts, StubSite};
+use crate::any_value::AnyValueRef;
+use crate::heap::{Footprint, GcStats, Heap, SchemaRegistry, StubCounts, StubSite, pool_footprint};
 use crate::process::CollectionBoundary;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -68,6 +69,14 @@ fn a_probe_writes_its_outcome_and_what_the_gift_cost() {
     );
 }
 
+/// A heap whose tip holds one live list cell, so a collection leaves a
+/// from-space of one 4096-byte block and one old block.
+fn heap_with_one_live_cell() -> (Heap, Vec<AnyValueRef>) {
+    let mut heap = Heap::new(4096, crate::bits::bits_test::fresh_registry());
+    let cell = heap.alloc_list_cons_int(1, AnyValueRef::empty_list()).unwrap();
+    (heap, vec![cell])
+}
+
 #[test]
 fn a_collection_writes_its_boundary_its_stats_and_the_bytes_in_use_and_idle_when_it_ended() {
     let mut stubs_made = StubCounts::default();
@@ -79,39 +88,117 @@ fn a_collection_writes_its_boundary_its_stats_and_the_bytes_in_use_and_idle_when
     }
     stubs_made.record(StubSite::MessageCopy);
     stubs_survived.record(StubSite::AppendedInPlace);
+    let stats = GcStats {
+        copied_objects: 6,
+        copied_bytes: 288,
+        live_bytes: 288,
+        young_bytes: 3072,
+        young_budget: 2048,
+        received_bytes: 1024,
+        young_binary_bytes: 300000,
+        binary_budget: 262144,
+        to_space_guess_bytes: 1024,
+        blocks_after: 2,
+        stub_visits: 7,
+        stubs_made,
+        binrefs_made,
+        stubs_survived,
+        ..GcStats::default()
+    };
+    let (mut heap, mut roots) = heap_with_one_live_cell();
+    let mut collected_stats = GcStats::default();
+    let collected = heap.collect(&mut roots, &mut collected_stats);
     let collection = Collection {
         pid: 5,
         boundary: CollectionBoundary::Park,
-        stats: GcStats {
-            copied_objects: 6,
-            copied_bytes: 288,
-            live_bytes: 288,
-            young_bytes: 3072,
-            young_budget: 2048,
-            received_bytes: 1024,
-            young_binary_bytes: 300000,
-            binary_budget: 262144,
-            from_space_capacity_bytes: 4096,
-            blocks_released: 1,
-            to_space_guess_bytes: 1024,
-            to_space_capacity_bytes: 1024,
-            blocks_after: 2,
-            stub_visits: 7,
-            stubs_made,
-            binrefs_made,
-            stubs_survived,
-            ..GcStats::default()
-        },
-        footprint: Footprint {
-            in_use_bytes: 9216,
-            idle_bytes: 4096,
-            peak_in_use_bytes: 20480,
-        },
     };
+
+    let written = line(RuntimeEvent::Gc(collection, &stats, collected.heap()));
+
+    drop(collected);
+    let Footprint {
+        in_use_bytes,
+        idle_bytes,
+        ..
+    } = pool_footprint();
     assert_eq!(
-        line(RuntimeEvent::Gc(&collection)),
-        r#"{"name":["fz","runtime","gc"],"time_ns":12,"kind":"event","span_id":3,"parent_span_id":4,"measurements":{},"metadata":{"pid":5,"boundary":"park","generation":"minor","copied_objects":6,"copied_bytes":288,"live_bytes":288,"young_bytes":3072,"young_budget":2048,"received_bytes":1024,"young_binary_bytes":300000,"binary_budget":262144,"from_space_capacity_bytes":4096,"blocks_released":1,"to_space_guess_bytes":1024,"to_space_capacity_bytes":1024,"blocks_after":2,"stub_visits":7,"in_use_bytes":9216,"idle_bytes":4096,"stubs_made":{"appended_in_place":3,"window_of_buffer":0,"grown_buffer":0,"filled_buffer":0,"message_copy":1,"static_literal":0},"binrefs_made":{"appended_in_place":0,"window_of_buffer":0,"grown_buffer":0,"filled_buffer":0,"message_copy":1,"static_literal":0},"stubs_survived":{"appended_in_place":1,"window_of_buffer":0,"grown_buffer":0,"filled_buffer":0,"message_copy":0,"static_literal":0}}}"#
+        written,
+        format!(
+            r#"{{"name":["fz","runtime","gc"],"time_ns":12,"kind":"event","span_id":3,"parent_span_id":4,"measurements":{{}},"metadata":{{"pid":5,"boundary":"park","generation":"minor","copied_objects":6,"copied_bytes":288,"live_bytes":288,"young_bytes":3072,"young_budget":2048,"received_bytes":1024,"young_binary_bytes":300000,"binary_budget":262144,"from_space_capacity_bytes":4096,"blocks_released":1,"to_space_guess_bytes":1024,"to_space_capacity_bytes":1024,"blocks_after":2,"stub_visits":7,"in_use_bytes":{in_use_bytes},"idle_bytes":{idle_bytes},"stubs_made":{{"appended_in_place":3,"window_of_buffer":0,"grown_buffer":0,"filled_buffer":0,"message_copy":1,"static_literal":0}},"binrefs_made":{{"appended_in_place":0,"window_of_buffer":0,"grown_buffer":0,"filled_buffer":0,"message_copy":1,"static_literal":0}},"stubs_survived":{{"appended_in_place":1,"window_of_buffer":0,"grown_buffer":0,"filled_buffer":0,"message_copy":0,"static_literal":0}}}}}}"#
+        )
     );
+}
+
+/// The writer reads the pool while the collection still holds its from-space,
+/// and reports the bytes as they stand once it is released: the from-space is
+/// no longer in use and rests idle in the pool.
+#[test]
+fn the_bytes_in_use_and_idle_are_those_of_the_pool_once_the_from_space_is_released() {
+    let (mut heap, mut roots) = heap_with_one_live_cell();
+    let mut stats = GcStats::default();
+    let collected = heap.collect(&mut roots, &mut stats);
+    let held = pool_footprint();
+
+    let reported = collected.heap().collected_blocks().footprint_once_released(held);
+
+    drop(collected);
+    let released = pool_footprint();
+    assert_eq!(reported.in_use_bytes, released.in_use_bytes);
+    assert_eq!(reported.idle_bytes, released.idle_bytes);
+    assert_eq!(reported.peak_in_use_bytes, released.peak_in_use_bytes);
+    assert_eq!(held.in_use_bytes - released.in_use_bytes, 4096, "the from-space block");
+}
+
+/// The capacities a collection reports are sums over its blocks, taken when
+/// the writer asks: one 4096-byte tip was copied out of, and the copy filled
+/// one block of the to-space guess's size.
+#[test]
+fn the_writer_computes_the_capacities_and_the_block_count_from_the_blocks() {
+    let (mut heap, mut roots) = heap_with_one_live_cell();
+    let mut stats = GcStats::default();
+    let collected = heap.collect(&mut roots, &mut stats);
+
+    let blocks = collected.heap().collected_blocks();
+
+    assert_eq!(blocks.blocks_released(), 1);
+    assert_eq!(blocks.from_space_capacity_bytes(), 4096);
+    assert_eq!(blocks.to_space_capacity_bytes(), 1024);
+    assert_eq!(collected.stats().to_space_guess_bytes, 1024);
+    drop(collected);
+    assert_eq!(
+        heap.collected_blocks().blocks_released(),
+        0,
+        "the from-space is released with the collection"
+    );
+}
+
+/// A raise's text is the hook's bytes, read as UTF-8 lossily by the writer: no
+/// text is made to carry it, and bytes that are not UTF-8 are replaced.
+#[test]
+fn a_raise_borrows_the_hooks_bytes_and_the_writer_decodes_them() {
+    let kind = b"error";
+    let name = b"Elixir.Bad\xFFName";
+    let raise = unsafe { Raise::from_hook_args(kind.as_ptr(), kind.len(), name.as_ptr(), name.len(), 2, 96) };
+    assert_eq!(
+        raise.kind.as_ptr(),
+        kind.as_ptr(),
+        "the record points at the hook's bytes"
+    );
+    assert_eq!(
+        line(RuntimeEvent::Raise(&raise)),
+        "{\"name\":[\"fz\",\"runtime\",\"raise\"],\"time_ns\":12,\"kind\":\"event\",\"span_id\":3,\"parent_span_id\":4,\"measurements\":{},\"metadata\":{\"kind\":\"error\",\"exception\":\"Elixir.Bad\u{FFFD}Name\",\"handler_depth\":2,\"stack_bytes\":96}}"
+    );
+}
+
+#[test]
+fn a_raise_record_made_for_a_listener_reads_back_as_the_raise_it_came_from() {
+    let raise = Raise {
+        kind: b"error",
+        exception: b"Elixir.ArgumentError",
+        handler_depth: 1,
+        stack_bytes: 8,
+    };
+    assert_eq!(RaiseRecord::of(&raise).as_raise(), raise);
 }
 
 #[test]

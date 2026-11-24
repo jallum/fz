@@ -75,7 +75,7 @@ fn growing_the_stack_keeps_every_record_intact() {
 }
 
 #[test]
-fn only_heap_captures_are_handed_to_the_collector_and_written_back_in_order() {
+fn only_heap_captures_are_handed_to_the_collector_and_hold_what_it_leaves_in_order() {
     let mut heap = Heap::new(SIZE_TABLE[0], crate::bits::bits_test::fresh_registry());
     let list = |heap: &mut Heap, n| heap.alloc_list_cons_int(n, AnyValueRef::empty_list()).unwrap();
     let outer = list(&mut heap, 1);
@@ -85,16 +85,21 @@ fn only_heap_captures_are_handed_to_the_collector_and_written_back_in_order() {
     stack.push_interpreter();
     push_compiled(&mut stack, 0x2, &[(inner.raw_word(), inner.tag())]);
 
+    let mut handed = Vec::new();
+    stack.forward_captures(|capture| handed.push(*capture));
     assert_eq!(
-        stack.captures(),
+        handed,
         vec![inner, outer],
         "innermost first, and the raw int is no root"
     );
 
     let moved_inner = list(&mut heap, 20);
     let moved_outer = list(&mut heap, 10);
-    stack.set_captures(&mut [moved_inner, moved_outer].into_iter());
-    assert_eq!(stack.captures(), vec![moved_inner, moved_outer]);
+    let mut leaves = [moved_inner, moved_outer].into_iter();
+    stack.forward_captures(|capture| *capture = leaves.next().unwrap());
+    let mut held = Vec::new();
+    stack.forward_captures(|capture| held.push(*capture));
+    assert_eq!(held, vec![moved_inner, moved_outer]);
 }
 
 /// Push a compiled record copied from the heap closure `template`: the record

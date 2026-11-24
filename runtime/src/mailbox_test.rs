@@ -111,7 +111,7 @@ fn the_mailbox_is_never_a_collection_root() {
     receiver.mailbox.push(message, segment);
     let addrs: Vec<_> = receiver.mailbox.messages().map(|m| m.list_addr()).collect();
 
-    let stats = receiver.collect(&mut []);
+    let stats = receiver.collect_stats(&mut []);
 
     assert_eq!(stats.copied_bytes, 0, "no message was reached");
     let after: Vec<_> = receiver.mailbox.messages().map(|m| m.list_addr()).collect();
@@ -125,10 +125,10 @@ fn a_message_taken_after_a_collection_is_collected_by_the_next_one() {
     let mut receiver = process();
     let (message, segment) = gifted_list(&mut sender.heap, 2);
     receiver.mailbox.push(message, segment);
-    receiver.collect(&mut []);
+    receiver.collect_stats(&mut []);
 
     receiver.mailbox.take(0, &mut receiver.heap);
-    let stats = receiver.collect(&mut []);
+    let stats = receiver.collect_stats(&mut []);
 
     assert_eq!(stats.received_bytes, 16);
     assert_eq!(stats.copied_bytes, 0, "the taken message was dead at the collection");

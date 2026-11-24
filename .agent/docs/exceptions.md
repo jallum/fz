@@ -106,7 +106,7 @@ found from the stack's `top` alone.
 The stack is a GC root beside `runnable` and the mailbox: a boundary
 collection forwards every heap value a compiled record captures and writes it
 back into the record in place (`Process::collect` through
-`HandlerStack::captures` and `set_captures`), and the `delivered` slot below.
+`HandlerStack::forward_captures`), and the `delivered` slot below.
 
 Every handler receives the same three values: the kind atom (`:error`,
 `:throw` or `:exit`), the raised value, and the exception's name atom (`nil`

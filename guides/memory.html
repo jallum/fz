@@ -562,7 +562,18 @@ the object gets a parked block of its own and the tip stays.</p>
 
   should_gc = young_bytes >= max(live_baseline, BUDGET_FLOOR)
               || young_binary_bytes >= max(held_binary_bytes, 256 KiB)
+
+  // as the heap answers it, in one compare:
+  should_gc = bump_top >= collect_at
 </pre>
+
+<p><code>collect_at</code> is the bump pointer at which the young bytes reach
+the budget: the tip's start plus the budget less the bytes of the parked blocks.
+The heap recomputes it where an input changes (a block is parked or grafted, a
+tip is installed, a collection ends) and never in the compiled bump path, which
+moves only <code>bump_top</code>. When the binary budget is reached it is set
+to null, so the same compare collects. Debug builds check the compare against
+the formula above at every question.</p>
 
 <p>Compiled yield telemetry still samples the margin before and after the
 reduction-yield slow path, so
@@ -671,10 +682,18 @@ about what the young generation keeps. Both are no smaller than the smallest tip
 A guess that is too small costs overflow blocks sized for the overflow, not for the
 whole guess, so the room the pass leaves unused in old blocks is bounded by the
 overflow (<code>to_space_capacity_bytes</code> less <code>copied_bytes</code> in
-the gc event). The blocks the pass
+the gc event; the telemetry writer sums the capacity over the old blocks the
+pass filled). The blocks the pass
 filled become old; an empty to-space tip is released. The heap then installs a
 fresh young tip sized for <code>live_baseline</code> before the from-space
-blocks go back to the pool, or to the system allocator when exact.</p>
+blocks go back to the pool, or to the system allocator when exact. The
+from-space blocks belong to the collection's <code>Collected</code> until it is
+dropped, so the telemetry writer reads them as they were:
+<code>from_space_capacity_bytes</code> and <code>blocks_released</code> in the
+gc event are computed there from those blocks, not stored by the collector.
+The worklist and the two block lists a collection uses (the young blocks and
+the from-space, which swap roles at each collection) are kept by the heap and
+never freed between collections.</p>
 
 <p>After a major scan, <code>live_baseline</code> is the sum of the sizes of the
 objects copied; after a minor it is the old bytes kept plus the bytes copied.
@@ -1229,7 +1248,9 @@ own bytes instead, on the thread that runs the program:</p>
 </ul>
 
 <p>Every <code>fz.runtime.gc</code> event carries <code>in_use_bytes</code> and
-<code>idle_bytes</code> as they stand when that collection finished, and
+<code>idle_bytes</code> as they stand when that collection finished (the writer
+reads the pool while the from-space is held and subtracts it, so the figures are
+those of the pool once the from-space is released), and
 <code>fz.runtime.run_ended</code> carries <code>in_use_bytes</code>,
 <code>idle_bytes</code> and <code>peak_in_use_bytes</code>. A binary's bytes
 stay in use until the collection that sweeps its last BinRef frees the buffer.</p>

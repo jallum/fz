@@ -283,17 +283,9 @@ pub struct GcStats {
     pub young_binary_bytes: u64,
     /// The young binary bytes at which this collection was due.
     pub binary_budget: u64,
-    /// Capacity of the from-space blocks.
-    pub from_space_capacity_bytes: u64,
-    /// Blocks of the from-space the collection released.
-    pub blocks_released: u64,
     /// Capacity of the to-space block the collection started with: the guess
     /// at how many bytes it would copy.
     pub to_space_guess_bytes: u64,
-    /// Capacity of the blocks the collection's copy filled, the guess block
-    /// and any overflow blocks. Less `copied_bytes`, the room the copy left
-    /// unused in old blocks.
-    pub to_space_capacity_bytes: u64,
     /// Old blocks the heap holds once the collection finishes: every block
     /// that holds data a collection kept or a gift brought. The fresh tip is
     /// empty and is not counted.

@@ -26,7 +26,7 @@ use crate::bitstr::BitWriter;
 use crate::delivery::DeliveryLock;
 use crate::exec_ctx::ExecCtx;
 use crate::handler_stack::HandlerStack;
-use crate::heap::{Footprint, GcStats, Heap, SIZE_TABLE, SchemaRegistry};
+use crate::heap::{Collected, GcStats, Heap, RootForwarder, Roots, SIZE_TABLE, SchemaRegistry};
 use crate::mailbox::Mailbox;
 use crate::park::ParkRecord;
 
@@ -66,15 +66,14 @@ impl CollectionBoundary {
     }
 }
 
-/// One heap collection a scheduler boundary performed.
+/// Which heap collection a scheduler boundary performed: the process it
+/// collected and the boundary that asked. The collection's own facts are the
+/// statistics it wrote to the process's `gc_stats` and the blocks it left on
+/// the heap.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Collection {
     pub pid: PidId,
     pub boundary: CollectionBoundary,
-    pub stats: GcStats,
-    /// The thread's memory once the collection finished: every block handed
-    /// out and every live off-heap binary buffer, and the blocks resting idle.
-    pub footprint: Footprint,
 }
 
 /// Per-task runtime state. One Process per fz-level task; the scheduler hands
@@ -143,6 +142,9 @@ pub struct Process {
     pub delivered: Option<ClosureRef>,
     /// The handlers a raise can reach, innermost on top. See [`HandlerStack`].
     pub handlers: HandlerStack,
+    /// What the latest collection of this process's heap measured and counted:
+    /// the slot `collect` writes its statistics to.
+    pub gc_stats: GcStats,
     /// A raise waiting for the interpreter's handler frame. Set by `fz_panic`
     /// when the innermost handler is the interpreter's; the interpreter takes
     /// it when the panicking extern returns.
@@ -255,6 +257,39 @@ impl ClosureRef {
 
     pub fn as_ref(self) -> AnyValueRef {
         AnyValueRef::from_raw_word(self.0.get()).expect("a ClosureRef holds a valid ref word")
+    }
+
+    /// Forward the closure a collection moves, in place.
+    fn forward(&mut self, forwarder: &mut RootForwarder<'_, '_>) {
+        let mut closure = self.as_ref();
+        forwarder.forward(&mut closure);
+        *self = Self::new(closure);
+    }
+}
+
+/// The references a process holds into its heap, in the order a collection
+/// forwards them.
+struct ProcessRoots<'a, T: Roots + ?Sized> {
+    runnable: &'a mut Option<ClosureRef>,
+    park_frame: Option<&'a mut AnyValueRef>,
+    delivered: &'a mut Option<ClosureRef>,
+    handlers: &'a mut HandlerStack,
+    transient: &'a mut T,
+}
+
+impl<T: Roots + ?Sized> Roots for ProcessRoots<'_, T> {
+    fn forward_into(&mut self, forwarder: &mut RootForwarder<'_, '_>) {
+        if let Some(closure) = self.runnable {
+            closure.forward(forwarder);
+        }
+        if let Some(frame) = &mut self.park_frame {
+            forwarder.forward(frame);
+        }
+        if let Some(closure) = self.delivered {
+            closure.forward(forwarder);
+        }
+        self.handlers.forward_captures(|capture| forwarder.forward(capture));
+        self.transient.forward_into(forwarder);
     }
 }
 
@@ -716,6 +751,7 @@ impl Process {
             runnable: None,
             delivered: None,
             handlers: HandlerStack::default(),
+            gc_stats: GcStats::default(),
             raised: None,
             raises_delivered: 0,
             stack_base: 0,
@@ -856,44 +892,26 @@ impl Process {
     }
 
     /// Collect this process's heap. The roots are everything the process
-    /// holds into its heap, in one flat slice: the runnable closure, the park
-    /// record's frame, a delivered handler,
-    /// the values the compiled handlers of the `try` bodies the process is inside capture and the caller's `transient` values. The mailbox is not a root: its messages wait
-    /// in gift segments outside the heap. Each holds its forwarded value on return.
+    /// holds into its heap, forwarded where they live: the runnable closure, the
+    /// park record's frame, a delivered handler, the values the compiled
+    /// handlers of the `try` bodies the process is inside capture and the
+    /// caller's `transient` values. The mailbox is not a root: its messages wait
+    /// in gift segments outside the heap. Each holds its forwarded value on
+    /// return, and the statistics are in `gc_stats`.
     ///
     /// The delivery lock is held throughout, so a sender cannot probe the
     /// park record while its closures and pinned values move. Gifts waiting in
     /// the in-queue are not roots (see `Heap::collect`).
-    pub fn collect(&mut self, transient: &mut [AnyValueRef]) -> GcStats {
+    pub fn collect(&mut self, transient: &mut (impl Roots + ?Sized)) -> Collected<'_> {
         let mut delivery = self.delivery.lock();
-        let park = delivery.park_mut();
-        let mut roots: Vec<AnyValueRef> = Vec::new();
-        roots.extend(self.runnable_closure());
-        if let Some(park) = park.as_deref() {
-            roots.push(park.frame);
-        }
-        roots.extend(self.delivered.map(ClosureRef::as_ref));
-        roots.extend(self.handlers.captures());
-        roots.extend_from_slice(transient);
-
-        let stats = self.heap.collect(&mut roots);
-
-        let mut forwarded = roots.into_iter();
-        let mut next = || forwarded.next().expect("one forwarded root per gathered root");
-        if self.runnable.is_some() {
-            self.runnable = Some(ClosureRef::new(next()));
-        }
-        if let Some(park) = park {
-            park.frame = next();
-        }
-        if self.delivered.is_some() {
-            self.delivered = Some(ClosureRef::new(next()));
-        }
-        self.handlers.set_captures(&mut std::iter::from_fn(|| Some(next())));
-        for value in transient.iter_mut() {
-            *value = next();
-        }
-        stats
+        let mut roots = ProcessRoots {
+            runnable: &mut self.runnable,
+            park_frame: delivery.park_mut().map(|park| &mut park.frame),
+            delivered: &mut self.delivered,
+            handlers: &mut self.handlers,
+            transient,
+        };
+        self.heap.collect(&mut roots, &mut self.gc_stats)
     }
 
     pub fn needs_boundary_gc(&self) -> bool {

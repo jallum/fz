@@ -243,7 +243,7 @@ fn a_young_trie_collects_with_its_entries_under_minor_and_major_collections() {
         .collect();
     let map = map_ref(heap.alloc_map_slots(&entries));
     let mut roots = [map];
-    let minor = heap.collect(&mut roots);
+    let minor = heap.collect_stats(&mut roots);
     assert_eq!(minor.generation, Generation::Minor);
     let map = roots[0];
     assert_eq!(check_trie(&heap, map), 300);
@@ -268,7 +268,7 @@ fn a_young_trie_collects_with_its_entries_under_minor_and_major_collections() {
 /// Collect `roots` until a major collection has run, allocating garbage between.
 fn collect_until_major(heap: &mut Heap, roots: &mut [AnyValueRef]) {
     loop {
-        if heap.collect(roots).generation == Generation::Major {
+        if heap.collect_stats(roots).generation == Generation::Major {
             return;
         }
         for i in 0..4096 {
@@ -297,7 +297,7 @@ fn a_young_node_over_old_children_collects_without_moving_the_old_ones() {
     let header = map_trie_header_word(0, 1, 100);
     let young = heap.alloc_map_node(header, &[], &[old_addr as *mut u8]);
     let mut roots = [map_ref(heap_object_word(young, ValueKind::MAP))];
-    let stats = heap.collect(&mut roots);
+    let stats = heap.collect_stats(&mut roots);
     assert_eq!(stats.generation, Generation::Minor);
     let moved = root_addr(roots[0]);
     assert_ne!(moved, young as *const u8, "the young node was copied");

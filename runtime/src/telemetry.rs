@@ -7,7 +7,7 @@
 //! that writes the line calls the same function.
 
 use crate::alloc_site::AllocSiteCount;
-use crate::heap::{Footprint, pool_footprint, pool_outstanding_blocks, pool_total_cached_blocks};
+use crate::heap::{Footprint, GcStats, Heap, pool_footprint, pool_outstanding_blocks, pool_total_cached_blocks};
 use crate::process::{Collection, PidId, Process};
 use crate::sched::{ProbeOutcome, SendProbe};
 use crate::timer::TimerId;
@@ -30,7 +30,8 @@ pub const TIMER_CANCELLED: [&str; 4] = ["fz", "runtime", "timer", "cancelled"];
 /// One per cross-process send; carries the `SendProbe` the sender's probe made.
 pub const SEND_PROBE: [&str; 4] = ["fz", "runtime", "send", "probe"];
 /// One per heap collection a scheduler boundary performs; carries the
-/// `Collection`.
+/// `Collection`, the `GcStats` the collection wrote and the `Heap` whose
+/// blocks it left (see `Heap::collected_blocks`).
 pub const GC: [&str; 3] = ["fz", "runtime", "gc"];
 /// One per run, after every process has been torn down; carries the `RunEnded`
 /// pool census.
@@ -43,20 +44,23 @@ pub const RAISE: [&str; 3] = ["fz", "runtime", "raise"];
 /// One raise as the runtime saw it: its kind (`error` for `raise`/`panic`),
 /// the exception's name (empty for a value that is not an exception), and how
 /// many handlers were on the stack. Depth zero is an uncaught raise. The stack
-/// bytes are the machine stack between the quantum's entry and the raise.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Raise {
-    pub kind: String,
-    pub exception: String,
+/// bytes are the machine stack between the quantum's entry and the raise. The
+/// kind and the name borrow the hook's bytes, which the writer reads as UTF-8,
+/// lossily.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Raise<'a> {
+    pub kind: &'a [u8],
+    pub exception: &'a [u8],
     pub handler_depth: usize,
     pub stack_bytes: usize,
 }
 
-impl Raise {
+impl<'a> Raise<'a> {
     /// Build the record from the raise hook's borrowed arguments.
     ///
     /// # Safety
-    /// `kind`/`name` must point at `kind_len`/`name_len` readable bytes.
+    /// `kind`/`name` must point at `kind_len`/`name_len` readable bytes that
+    /// outlive `'a`.
     pub unsafe fn from_hook_args(
         kind: *const u8,
         kind_len: usize,
@@ -65,12 +69,43 @@ impl Raise {
         depth: usize,
         stack_bytes: usize,
     ) -> Self {
-        let text = |ptr, len| String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(ptr, len) }).into_owned();
         Self {
-            kind: text(kind, kind_len),
-            exception: text(name, name_len),
+            kind: unsafe { std::slice::from_raw_parts(kind, kind_len) },
+            exception: unsafe { std::slice::from_raw_parts(name, name_len) },
             handler_depth: depth,
             stack_bytes,
+        }
+    }
+}
+
+/// A [`Raise`] kept past the hook that reported it, as the typed raw event
+/// hosts attach to: the kind and the exception decoded as text. It is made only
+/// when a host listens.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RaiseRecord {
+    pub kind: String,
+    pub exception: String,
+    pub handler_depth: usize,
+    pub stack_bytes: usize,
+}
+
+impl RaiseRecord {
+    pub fn of(raise: &Raise<'_>) -> Self {
+        Self {
+            kind: String::from_utf8_lossy(raise.kind).into_owned(),
+            exception: String::from_utf8_lossy(raise.exception).into_owned(),
+            handler_depth: raise.handler_depth,
+            stack_bytes: raise.stack_bytes,
+        }
+    }
+
+    /// The raise this record was made from, borrowing its text.
+    pub fn as_raise(&self) -> Raise<'_> {
+        Raise {
+            kind: self.kind.as_bytes(),
+            exception: self.exception.as_bytes(),
+            handler_depth: self.handler_depth,
+            stack_bytes: self.stack_bytes,
         }
     }
 }
@@ -138,8 +173,8 @@ pub enum RuntimeEvent<'a> {
     TimerFired(TimerFired),
     TimerCancelled(TimerCancelled),
     SendProbe(&'a SendProbe),
-    Raise(&'a Raise),
-    Gc(&'a Collection),
+    Raise(&'a Raise<'a>),
+    Gc(Collection, &'a GcStats, &'a Heap),
     /// What one allocation site placed during the run.
     AllocSite(&'a AllocSiteCount),
     RunEnded(RunEnded),
@@ -156,7 +191,7 @@ impl RuntimeEvent<'_> {
             RuntimeEvent::TimerCancelled(_) => &TIMER_CANCELLED,
             RuntimeEvent::SendProbe(_) => &SEND_PROBE,
             RuntimeEvent::Raise(_) => &RAISE,
-            RuntimeEvent::Gc(_) => &GC,
+            RuntimeEvent::Gc(..) => &GC,
             RuntimeEvent::AllocSite(..) => &ALLOC_SITE,
             RuntimeEvent::RunEnded(_) => &RUN_ENDED,
         }
@@ -220,43 +255,14 @@ fn write_metadata(out: &mut String, event: &RuntimeEvent<'_>) {
             write!(
                 out,
                 "\"kind\":\"{}\",\"exception\":\"{}\",\"handler_depth\":{},\"stack_bytes\":{}",
-                raise.kind, raise.exception, raise.handler_depth, raise.stack_bytes
+                String::from_utf8_lossy(raise.kind),
+                String::from_utf8_lossy(raise.exception),
+                raise.handler_depth,
+                raise.stack_bytes
             )
             .unwrap();
         }
-        RuntimeEvent::Gc(collection) => {
-            let stats = &collection.stats;
-            write!(
-                out,
-                "\"pid\":{},\"boundary\":\"{}\",\"generation\":\"{}\",\"copied_objects\":{},\"copied_bytes\":{},\"live_bytes\":{},\"young_bytes\":{},\"young_budget\":{},\"received_bytes\":{},\"young_binary_bytes\":{},\"binary_budget\":{},\"from_space_capacity_bytes\":{},\"blocks_released\":{},\"to_space_guess_bytes\":{},\"to_space_capacity_bytes\":{},\"blocks_after\":{},\"stub_visits\":{},\"in_use_bytes\":{},\"idle_bytes\":{}",
-                collection.pid,
-                collection.boundary.as_str(),
-                stats.generation.as_str(),
-                stats.copied_objects,
-                stats.copied_bytes,
-                stats.live_bytes,
-                stats.young_bytes,
-                stats.young_budget,
-                stats.received_bytes,
-                stats.young_binary_bytes,
-                stats.binary_budget,
-                stats.from_space_capacity_bytes,
-                stats.blocks_released,
-                stats.to_space_guess_bytes,
-                stats.to_space_capacity_bytes,
-                stats.blocks_after,
-                stats.stub_visits,
-                collection.footprint.in_use_bytes,
-                collection.footprint.idle_bytes
-            )
-            .unwrap();
-            out.push_str(",\"stubs_made\":");
-            stats.stubs_made.write_json(out);
-            out.push_str(",\"binrefs_made\":");
-            stats.binrefs_made.write_json(out);
-            out.push_str(",\"stubs_survived\":");
-            stats.stubs_survived.write_json(out);
-        }
+        RuntimeEvent::Gc(collection, stats, heap) => write_collection(out, *collection, stats, heap),
         RuntimeEvent::AllocSite(site) => {
             out.push_str("\"function\":");
             write_json_string(out, &site.function);
@@ -283,6 +289,44 @@ fn write_metadata(out: &mut String, event: &RuntimeEvent<'_>) {
             .unwrap();
         }
     }
+}
+
+/// A collection's fields: what it measured and counted, then what the writer
+/// computes from the blocks it left and from the thread's pool, as it stands
+/// once the from-space is released.
+fn write_collection(out: &mut String, collection: Collection, stats: &GcStats, heap: &Heap) {
+    let blocks = heap.collected_blocks();
+    let footprint = blocks.footprint_once_released(pool_footprint());
+    write!(
+        out,
+        "\"pid\":{},\"boundary\":\"{}\",\"generation\":\"{}\",\"copied_objects\":{},\"copied_bytes\":{},\"live_bytes\":{},\"young_bytes\":{},\"young_budget\":{},\"received_bytes\":{},\"young_binary_bytes\":{},\"binary_budget\":{},\"from_space_capacity_bytes\":{},\"blocks_released\":{},\"to_space_guess_bytes\":{},\"to_space_capacity_bytes\":{},\"blocks_after\":{},\"stub_visits\":{},\"in_use_bytes\":{},\"idle_bytes\":{}",
+        collection.pid,
+        collection.boundary.as_str(),
+        stats.generation.as_str(),
+        stats.copied_objects,
+        stats.copied_bytes,
+        stats.live_bytes,
+        stats.young_bytes,
+        stats.young_budget,
+        stats.received_bytes,
+        stats.young_binary_bytes,
+        stats.binary_budget,
+        blocks.from_space_capacity_bytes(),
+        blocks.blocks_released(),
+        stats.to_space_guess_bytes,
+        blocks.to_space_capacity_bytes(),
+        stats.blocks_after,
+        stats.stub_visits,
+        footprint.in_use_bytes,
+        footprint.idle_bytes
+    )
+    .unwrap();
+    out.push_str(",\"stubs_made\":");
+    stats.stubs_made.write_json(out);
+    out.push_str(",\"binrefs_made\":");
+    stats.binrefs_made.write_json(out);
+    out.push_str(",\"stubs_survived\":");
+    stats.stubs_survived.write_json(out);
 }
 
 /// The process is nested as an opaque value, the shape every host sink gives a

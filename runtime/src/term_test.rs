@@ -299,7 +299,7 @@ fn typed_closure_and_resource_identity_survive_transport_without_comparison_allo
     assert_eq!(unsafe { map_count(map_addr_from_tagged(map).unwrap()) }, 2);
     let copied = deep_copy_slot(heap_value(map), &source.view(), &mut destination);
     let mut roots = [copied.ref_word()];
-    destination.collect(&mut roots);
+    destination.collect_stats(&mut roots);
     let moved = AnyValue::decode_tagged_heap_bits(roots[0].heap_object_word().unwrap()).unwrap();
     let before = destination.alloc_stats_snapshot();
     let registry = schemas.borrow();

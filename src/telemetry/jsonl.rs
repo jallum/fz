@@ -38,8 +38,8 @@ use super::handler::{Event, EventKind, Handler};
 use super::value::Value;
 use fz_engine::SemanticOrd;
 use fz_runtime::telemetry::{
-    ALLOC_SITE, EXECUTION_READY, GC, PROCESS_EXITED, RAISE, RUN_ENDED, Raise, RunEnded, RuntimeEvent, SCHEDULER_SLEPT,
-    SEND_PROBE, TIMER_ARMED, TIMER_CANCELLED, TIMER_FIRED, TimerArmed, TimerCancelled, TimerFired,
+    ALLOC_SITE, EXECUTION_READY, GC, PROCESS_EXITED, RAISE, RUN_ENDED, RaiseRecord, RunEnded, RuntimeEvent,
+    SCHEDULER_SLEPT, SEND_PROBE, TIMER_ARMED, TIMER_CANCELLED, TIMER_FIRED, TimerArmed, TimerCancelled, TimerFired,
     write_line as write_runtime_line,
 };
 
@@ -807,8 +807,8 @@ impl JsonlBackend {
             move |_, _, _, _, process| exit_backend.append_runtime_event(&RuntimeEvent::ProcessExited(process)),
         );
         let raise_backend = Rc::clone(backend);
-        telemetry.attach_raw_event1::<Raise, _>(&RAISE, move |_, _, _, raise| {
-            raise_backend.append_runtime_event(&RuntimeEvent::Raise(raise));
+        telemetry.attach_raw_event1::<RaiseRecord, _>(&RAISE, move |_, _, _, raise| {
+            raise_backend.append_runtime_event(&RuntimeEvent::Raise(&raise.as_raise()));
         });
         let slept_backend = Rc::clone(backend);
         telemetry.attach_raw_event1::<std::time::Duration, _>(&SCHEDULER_SLEPT, move |_, _, _, wait| {
@@ -847,9 +847,13 @@ impl JsonlBackend {
             },
         );
         let gc_backend = Rc::clone(backend);
-        telemetry.attach_raw_event1::<fz_runtime::process::Collection, _>(&GC, move |_, _, _, collection| {
-            gc_backend.append_runtime_event(&RuntimeEvent::Gc(collection));
-        });
+        telemetry
+            .attach_raw_event3::<fz_runtime::process::Collection, fz_runtime::heap::GcStats, fz_runtime::heap::Heap, _>(
+                &GC,
+                move |_, _, _, collection, stats, heap| {
+                    gc_backend.append_runtime_event(&RuntimeEvent::Gc(*collection, stats, heap));
+                },
+            );
         let probe_backend = Rc::clone(backend);
         telemetry.attach_raw_event1::<fz_runtime::sched::SendProbe, _>(&SEND_PROBE, move |_, _, _, probe| {
             probe_backend.append_runtime_event(&RuntimeEvent::SendProbe(probe));

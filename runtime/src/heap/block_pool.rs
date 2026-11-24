@@ -91,6 +91,12 @@ fn pooled_class(capacity: usize) -> Option<usize> {
         .map(|entry| SMALL_CLASSES + entry)
 }
 
+/// Whether a block of `capacity` bytes returns to the pool when released,
+/// rather than to the system allocator.
+pub(super) fn is_pooled_capacity(capacity: usize) -> bool {
+    pooled_class(capacity).is_some()
+}
+
 /// The capacity of the blocks on free list `class`.
 fn class_capacity(class: usize) -> usize {
     match class.checked_sub(SMALL_CLASSES) {

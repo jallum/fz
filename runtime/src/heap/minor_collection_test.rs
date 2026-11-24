@@ -35,7 +35,7 @@ fn root_of(bits: u64) -> AnyValueRef {
 /// Collect with `bits` as the only root and return the forwarded bits.
 fn collect_list(heap: &mut Heap, bits: u64) -> (u64, GcStats) {
     let mut roots = [root_of(bits)];
-    let stats = heap.collect(&mut roots);
+    let stats = heap.collect_stats(&mut roots);
     (roots[0].heap_object_word().expect("forwarded list"), stats)
 }
 
@@ -176,7 +176,7 @@ fn an_old_binref_that_died_is_released_by_a_major_collection_and_a_young_one_by_
         StubSite::FilledBuffer,
     );
     let mut roots = [root_of(heap_object_word(old.as_raw(), ValueKind::BINVIEW))];
-    assert_eq!(heap.collect(&mut roots).generation, Generation::Minor);
+    assert_eq!(heap.collect_stats(&mut roots).generation, Generation::Minor);
     assert_ne!(heap.off_heap_old_head, 0, "the survivor is on the old chain");
     assert_eq!(heap.off_heap_head, 0);
 
@@ -187,7 +187,7 @@ fn an_old_binref_that_died_is_released_by_a_major_collection_and_a_young_one_by_
         StubSite::FilledBuffer,
     );
     assert_eq!(shared_refs(&young_witness), 2);
-    let stats = heap.collect(&mut []);
+    let stats = heap.collect_stats(&mut []);
     assert_eq!(stats.generation, Generation::Minor);
     assert_eq!(
         shared_refs(&young_witness),
@@ -224,7 +224,7 @@ fn dropping_a_heap_releases_its_young_and_its_old_stubs() {
             StubSite::FilledBuffer,
         );
         let mut roots = [root_of(heap_object_word(old.as_raw(), ValueKind::BINVIEW))];
-        heap.collect(&mut roots);
+        heap.collect_stats(&mut roots);
         alloc_buffer_view(
             &mut heap,
             witnesses[1].clone(),
@@ -309,7 +309,7 @@ fn alloc_unrooted_stubs(heap: &mut Heap, binaries: usize, resources: usize) {
 fn a_collection_follows_one_link_per_binary_stub() {
     let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
     alloc_unrooted_stubs(&mut heap, 5, 0);
-    assert_eq!(heap.collect(&mut []).stub_visits, 5, "dead stubs");
+    assert_eq!(heap.collect_stats(&mut []).stub_visits, 5, "dead stubs");
 
     let survivors: Vec<AnyValueRef> = (0..5)
         .map(|_| {
@@ -323,7 +323,7 @@ fn a_collection_follows_one_link_per_binary_stub() {
         })
         .collect();
     let mut roots = survivors;
-    assert_eq!(heap.collect(&mut roots).stub_visits, 5, "surviving stubs");
+    assert_eq!(heap.collect_stats(&mut roots).stub_visits, 5, "surviving stubs");
 }
 
 /// A collection decides every stub, binary or resource, in one walk, so a
@@ -350,7 +350,7 @@ fn a_collection_walks_the_binary_and_resource_stubs_once_each() {
     );
 
     alloc_unrooted_stubs(&mut heap, binaries, resources);
-    assert_eq!(heap.collect(&mut []).stub_visits, (binaries + resources) as u64);
+    assert_eq!(heap.collect_stats(&mut []).stub_visits, (binaries + resources) as u64);
 }
 
 /// One chain holds both kinds, interleaved as they were allocated, and one
@@ -376,7 +376,7 @@ fn one_sweep_decides_interleaved_binrefs_and_resources() {
         root_of(heap_object_word(resources[1].as_raw(), ValueKind::RESOURCE)),
     ];
 
-    let stats = heap.collect(&mut roots);
+    let stats = heap.collect_stats(&mut roots);
 
     assert_eq!(stats.generation, Generation::Minor);
     assert_eq!(stats.stub_visits, 6, "one visit per off-heap object");
@@ -422,13 +422,13 @@ fn a_major_collection_follows_the_old_chain_and_a_minor_does_not() {
         root_of(heap_object_word(rs.as_raw(), ValueKind::RESOURCE)),
         root_of(ballast),
     ];
-    let first = heap.collect(&mut roots);
+    let first = heap.collect_stats(&mut roots);
     assert_eq!(first.generation, Generation::Minor);
     assert_eq!(first.stub_visits, 2, "one sweep link per stub");
     assert_ne!(heap.off_heap_old_head, 0, "both survivors are on the one old chain");
     assert_eq!(heap.off_heap_head, 0);
 
-    let second = heap.collect(&mut roots);
+    let second = heap.collect_stats(&mut roots);
     assert_eq!(second.generation, Generation::Major);
     assert_eq!(second.stub_visits, 2, "the major collection follows the old chain");
     assert_ne!(heap.off_heap_old_head, 0);
@@ -483,7 +483,7 @@ fn a_minor_collection_counts_the_views_and_binrefs_each_site_made_and_the_binref
     let window = unsafe { heap.alloc_bitstring_slice(grown_stub, 1, big.len() as u64) };
 
     let mut roots = [filled, appended, window].map(AnyValue::ref_word);
-    let stats = heap.collect(&mut roots);
+    let stats = heap.collect_stats(&mut roots);
 
     assert_eq!(
         stats.stubs_made,
@@ -507,7 +507,7 @@ fn a_minor_collection_counts_the_views_and_binrefs_each_site_made_and_the_binref
     );
     assert_eq!(stats.stub_visits, 2, "one visit per BinRef, however many views name it");
 
-    let again = heap.collect(&mut roots);
+    let again = heap.collect_stats(&mut roots);
     assert_eq!(
         (again.stubs_made, again.binrefs_made),
         (StubCounts::default(), StubCounts::default()),
@@ -529,9 +529,9 @@ fn a_major_collection_counts_old_survivors_under_their_original_site() {
     let filled = heap.alloc_bitstring(&big, big.len() as u64 * 8);
     let ballast = list_of(&mut heap, 0, 400, EMPTY_LIST);
     let mut roots = [filled.ref_word(), root_of(ballast)];
-    assert_eq!(heap.collect(&mut roots).generation, Generation::Minor);
+    assert_eq!(heap.collect_stats(&mut roots).generation, Generation::Minor);
 
-    let major = heap.collect(&mut roots);
+    let major = heap.collect_stats(&mut roots);
     assert_eq!(major.generation, Generation::Major);
     assert_eq!(major.stubs_made, StubCounts::default());
     assert_eq!(major.stubs_survived, counts(&[(StubSite::FilledBuffer, 1)]));
@@ -546,7 +546,7 @@ fn a_message_copy_counts_as_its_own_site_on_the_receiving_heap() {
     let filled = sender.alloc_bitstring(&big, big.len() as u64 * 8);
     let copy = deep_copy_slot(filled, &sender.view(), &mut receiver);
 
-    let stats = receiver.collect(&mut [copy.ref_word()]);
+    let stats = receiver.collect_stats(&mut [copy.ref_word()]);
     assert_eq!(stats.stubs_made, counts(&[(StubSite::MessageCopy, 1)]));
     assert_eq!(stats.binrefs_made, counts(&[(StubSite::MessageCopy, 1)]));
     assert_eq!(stats.stubs_survived, counts(&[(StubSite::MessageCopy, 1)]));
@@ -591,7 +591,7 @@ fn a_binref_outlives_its_buffers_own_view_and_dies_with_its_last_window() {
     let retained = list_of(&mut heap, 0, 100, EMPTY_LIST);
 
     let mut roots = [window.ref_word(), root_of(retained)];
-    let first = heap.collect(&mut roots);
+    let first = heap.collect_stats(&mut roots);
     assert_eq!(first.generation, Generation::Minor);
     assert_eq!(first.stub_visits, 1, "one BinRef visited for two views");
     assert_eq!(first.stubs_survived, counts(&[(StubSite::FilledBuffer, 1)]));
@@ -602,7 +602,7 @@ fn a_binref_outlives_its_buffers_own_view_and_dies_with_its_last_window() {
     );
 
     roots[0] = AnyValueRef::empty_list();
-    let second = heap.collect(&mut roots);
+    let second = heap.collect_stats(&mut roots);
     assert_eq!(second.generation, Generation::Major);
     assert_eq!(second.stub_visits, 1);
     assert_eq!(second.stubs_survived, StubCounts::default());
@@ -624,7 +624,7 @@ fn a_young_view_of_an_old_binref_survives_a_minor_and_a_major_collection() {
     let bytes: Vec<u8> = (0..200u8).collect();
     let (whole, witness) = witnessed_buffer(&mut heap, &bytes);
     let mut roots = [whole.ref_word()];
-    assert_eq!(heap.collect(&mut roots).generation, Generation::Minor);
+    assert_eq!(heap.collect_stats(&mut roots).generation, Generation::Minor);
     let old_whole = view_in(roots[0]);
     let old_binref = old_whole.binref().as_raw();
     assert!(!heap.is_young(old_binref), "the buffer's BinRef is old");
@@ -637,7 +637,7 @@ fn a_young_view_of_an_old_binref_survives_a_minor_and_a_major_collection() {
         "the window names the old BinRef"
     );
     roots = [window.ref_word()];
-    let minor = heap.collect(&mut roots);
+    let minor = heap.collect_stats(&mut roots);
     assert_eq!(minor.generation, Generation::Minor);
     assert_eq!(minor.stub_visits, 0, "a minor collection does not visit an old BinRef");
     let kept = view_in(roots[0]);
@@ -647,8 +647,8 @@ fn a_young_view_of_an_old_binref_survives_a_minor_and_a_major_collection() {
 
     let retained = list_of(&mut heap, 0, 100, EMPTY_LIST);
     let mut roots = [roots[0], root_of(retained)];
-    assert_eq!(heap.collect(&mut roots).generation, Generation::Minor);
-    let major = heap.collect(&mut roots);
+    assert_eq!(heap.collect_stats(&mut roots).generation, Generation::Minor);
+    let major = heap.collect_stats(&mut roots);
     assert_eq!(major.generation, Generation::Major);
     assert_eq!(major.stub_visits, 1);
     assert_eq!(major.stubs_survived, counts(&[(StubSite::FilledBuffer, 1)]));
@@ -702,11 +702,14 @@ fn a_send_gives_the_receiver_its_own_binref_and_both_heaps_release() {
 /// Collect `root` with a minor collection, then with a major one: the minor
 /// promotes a retained list beside it, and the next collection is major.
 fn collect_through_a_major(heap: &mut Heap, root: &mut AnyValueRef) {
-    assert_eq!(heap.collect(std::slice::from_mut(root)).generation, Generation::Minor);
+    assert_eq!(
+        heap.collect_stats(std::slice::from_mut(root)).generation,
+        Generation::Minor
+    );
     let retained = list_of(heap, 0, 100, EMPTY_LIST);
     let mut roots = [*root, root_of(retained)];
-    assert_eq!(heap.collect(&mut roots).generation, Generation::Minor);
-    assert_eq!(heap.collect(&mut roots).generation, Generation::Major);
+    assert_eq!(heap.collect_stats(&mut roots).generation, Generation::Minor);
+    assert_eq!(heap.collect_stats(&mut roots).generation, Generation::Major);
     *root = roots[0];
 }
 

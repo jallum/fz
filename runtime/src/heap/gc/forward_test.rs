@@ -12,7 +12,8 @@ fn with_tracer(check: impl FnOnce(&mut Tracer)) {
     let mut heap = Heap::new(SIZE_TABLE[0], schemas.clone());
     let from_space = FromSpace::of(&heap, Generation::Major);
     let schemas = schemas.borrow();
-    check(&mut Tracer::new(from_space, &mut heap, &schemas, GcStats::default()));
+    let mut stats = GcStats::default();
+    check(&mut Tracer::new(from_space, &mut heap, &schemas, &mut stats));
 }
 
 #[test]

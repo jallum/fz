@@ -200,11 +200,11 @@ fn a_dead_old_resource_queues_its_destructor_at_the_next_major_collection_and_a_
     let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
     let old = alloc_resource(&mut heap, ResourceHandle::new(1, DESTRUCTOR));
     let mut roots = [AnyValueRef::from_raw_word(heap_object_word(old.as_raw(), ValueKind::RESOURCE)).expect("root")];
-    assert_eq!(heap.collect(&mut roots).generation, Generation::Minor);
+    assert_eq!(heap.collect_stats(&mut roots).generation, Generation::Minor);
     assert!(heap.pending_dtors.is_empty());
 
     alloc_resource(&mut heap, ResourceHandle::new(2, DESTRUCTOR));
-    let stats = heap.collect(&mut []);
+    let stats = heap.collect_stats(&mut []);
     assert_eq!(stats.generation, Generation::Minor);
     assert_eq!(
         heap.pending_dtors,
@@ -217,14 +217,14 @@ fn a_dead_old_resource_queues_its_destructor_at_the_next_major_collection_and_a_
         cell = heap.alloc_list_cons_slot(AnyValue::int(head), cell);
     }
     let mut roots = [AnyValueRef::from_raw_word(cell).expect("list root")];
-    assert_eq!(heap.collect(&mut roots).generation, Generation::Minor);
+    assert_eq!(heap.collect_stats(&mut roots).generation, Generation::Minor);
     assert_eq!(
         heap.pending_dtors.len(),
         1,
         "a minor collection does not look at the old resource"
     );
 
-    let stats = heap.collect(&mut roots);
+    let stats = heap.collect_stats(&mut roots);
     assert_eq!(stats.generation, Generation::Major);
     assert_eq!(
         heap.pending_dtors,
