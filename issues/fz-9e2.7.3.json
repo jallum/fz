@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Binary Handling",
   "blocked_by": [
     "fz-9e2.7.2"
   ],
@@ -13,5 +13,5 @@
   "status": "open",
   "title": "A proven field is sliced without re-proving it",
   "type": "task",
-  "updated_at": "2026-11-24T21:26:53Z"
+  "updated_at": "2026-11-24T21:26:56Z"
 }
