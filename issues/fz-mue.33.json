@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-24T18:25:38Z",
   "created": "2026-11-19T03:09:44Z",
   "description": "User directed 2026-11-19: \"add the elixir parity issues as tickets to the epic we gave to Elixir Parity\". Owner: Elixir Parity. Found by Elixir Parity. A macro returning a 3-tuple that is not AST fails 'span fallback stamping failed: quoted metadata must be a keyword list', naming neither the macro nor the node. Done: the diagnostic names the macro and the invalid node.",
   "id": "fz-mue.33",
   "labels": [],
   "parent": "fz-mue",
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "A macro that returns invalid AST gets an error naming the macro and the node",
   "type": "bug",
-  "updated_at": "2026-11-19T03:09:44Z"
+  "updated_at": "2026-11-24T18:25:38Z"
 }
