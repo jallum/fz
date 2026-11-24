@@ -1,0 +1,41 @@
+#---
+# purpose: ten calls whose rows pass the input-row budget produce the same plan in every job order
+#---
+# Ten `IO.inspect/1` calls hand one activation ten different input rows, which is more than the
+# budget of eight, so they widen into one joined row. The plan is the same whichever order the
+# agenda delivers the rows in.
+defmodule Main do
+  def f0(x) when is_integer(x), do: {:t0, x}
+  def f0(_), do: :o0
+  def f1(x) when is_integer(x), do: {:t1, x}
+  def f1(_), do: :o1
+  def f2(x) when is_integer(x), do: {:t2, x}
+  def f2(_), do: :o2
+  def f3(x) when is_integer(x), do: {:t3, x}
+  def f3(_), do: :o3
+  def f4(x) when is_integer(x), do: {:t4, x}
+  def f4(_), do: :o4
+  def f5(x) when is_integer(x), do: {:t5, x}
+  def f5(_), do: :o5
+  def f6(x) when is_integer(x), do: {:t6, x}
+  def f6(_), do: :o6
+  def f7(x) when is_integer(x), do: {:t7, x}
+  def f7(_), do: :o7
+  def f8(x) when is_integer(x), do: {:t8, x}
+  def f8(_), do: :o8
+  def f9(x) when is_integer(x), do: {:t9, x}
+  def f9(_), do: :o9
+  def main() do
+    IO.inspect([f0(1), f0(:a)])
+    IO.inspect([f1(1), f1(:a)])
+    IO.inspect([f2(1), f2(:a)])
+    IO.inspect([f3(1), f3(:a)])
+    IO.inspect([f4(1), f4(:a)])
+    IO.inspect([f5(1), f5(:a)])
+    IO.inspect([f6(1), f6(:a)])
+    IO.inspect([f7(1), f7(:a)])
+    IO.inspect([f8(1), f8(:a)])
+    IO.inspect([f9(1), f9(:a)])
+  end
+end
+Main.main()

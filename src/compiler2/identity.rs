@@ -996,19 +996,19 @@ trait Reconcile: Sized {
     fn reconcile(current: Option<&Self>, incoming: Self) -> (Self, bool);
 }
 
-/// The modules a value can name, in the order each was first noted. The set
-/// only grows.
+/// The modules a value can name, ordered by denotation. The set only grows, and its
+/// order is a function of its members, never of when each was noted.
 #[derive(Debug, Default)]
-pub(crate) struct NameableModules(indexmap::IndexSet<ModuleId>);
+pub(crate) struct NameableModules(std::collections::BTreeMap<ModuleDenotation, ModuleId>);
 
 impl NameableModules {
     /// Returns whether `module` is new to the set.
-    pub(crate) fn note(&mut self, module: ModuleId) -> bool {
-        self.0.insert(module)
+    pub(crate) fn note(&mut self, denotation: ModuleDenotation, module: ModuleId) -> bool {
+        self.0.insert(denotation, module).is_none()
     }
 
     pub(crate) fn modules(&self) -> impl Iterator<Item = ModuleId> + '_ {
-        self.0.iter().copied()
+        self.0.values().copied()
     }
 }
 

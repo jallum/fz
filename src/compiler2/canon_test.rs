@@ -594,14 +594,12 @@ const LENSES: [u32; 4] = [571, 420, 183, 567];
 /// `enum_predicate_search` 28 and `00420_enum_take_drop_split` 30 either way —
 /// because the collapses all happen in the analysis both doors share; the
 /// choice is a matter of matching the gate, not of coverage. RED at base on
-/// two of the four at those counts. The byte-for-byte half is verified by
-/// hand, per the fz-kdt.93/.104 precedent: change `Agenda::pop` (crates/fz-engine/src/agenda.rs) to
-/// `self.queue.pop_back()`, rebuild, and `fz2 interp <fixture> --dump
-/// backend=<path>` must produce the same bytes as the FIFO build on all four.
-/// `enum_predicate_search` was the exception until fz-kdt.129 -- ONE dispatch
-/// whose two distinguishable arms swapped with the schedule that settled them,
-/// 28 lines apart -- and it is closed by seating the arm whose surface COVERS
-/// its sibling's ahead of it, whichever order the two arrived in
+/// two of the four at those counts. The byte-for-byte half is
+/// `the_backend_plan_is_the_same_whichever_order_the_agenda_pops_jobs`, which
+/// compiles each lens under both orders.
+/// `enum_predicate_search` has ONE dispatch whose two distinguishable arms could swap
+/// with the schedule that settled them, 28 lines apart; it is closed by seating the arm
+/// whose surface COVERS its sibling's ahead of it, whichever order the two arrived in
 /// (`callsite_dispatch::specificity_order`). Its executable COUNT is
 /// schedule-independent too (204 under both), which is what this gate pins.
 ///
@@ -638,6 +636,33 @@ fn correlated_input_rows_never_reach_the_widening_budget_on_the_lenses() {
              specializes is a function of the agenda and not of the program",
         );
     }
+}
+
+/// Fixtures whose backend plan once moved with the agenda's order, and the
+/// four lenses above: the smallest module-value call whose callees are
+/// prepared together, ten calls past the input-row budget, the unnameable
+/// module list of an undefined `message/1`, and the schedule-stable programs.
+const ORDER_FREE_PLANS: [u32; 6] = [1297, 1298, 571, 420, 183, 567];
+
+/// The compiled plan is a function of the program, not of the order the agenda
+/// pops jobs: every fixture's backend plan is byte-identical when jobs run
+/// first-in-first-out and last-in-first-out. The program is rooted at the
+/// entry the CLI runs, so the plan is the one `--dump backend` prints.
+#[test]
+fn the_backend_plan_is_the_same_whichever_order_the_agenda_pops_jobs() {
+    use fz_engine::pop_order::{PopOrder, with};
+    let plan = |number: u32| {
+        let settled = Drive::fixture(number).program_entry().dump_stage(DumpStage::Backend);
+        canon_backend_program(settled.world(), &settled.backend_program())
+    };
+    let differing = ORDER_FREE_PLANS
+        .into_iter()
+        .filter(|&number| with(PopOrder::Fifo, || plan(number)) != with(PopOrder::Lifo, || plan(number)))
+        .collect::<Vec<_>>();
+    assert!(
+        differing.is_empty(),
+        "fixtures {differing:?} compile to a different backend plan under fifo and lifo job order",
+    );
 }
 
 #[cfg(test)]

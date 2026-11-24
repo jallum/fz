@@ -1,0 +1,6 @@
+#---
+# purpose: the plan for the smallest module-value call does not depend on the order jobs run in
+#---
+# `Map.keys/1` reaches its callee through a module value, and the exception `message` call
+# shares that machinery. The compiled plan is the same whichever order the agenda pops jobs.
+def main(), do: Map.keys(Map.put(%{}, :a, 1))

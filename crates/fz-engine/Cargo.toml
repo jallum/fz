@@ -9,5 +9,10 @@ name = "fz_engine"
 [lints]
 workspace = true
 
+[features]
+# Test builds only: the root crate's dev-dependency enables it, so a test can
+# pop agendas last-in-first-out. See `agenda::pop_order`.
+pop_order = []
+
 [dependencies]
 foldhash = "0.2"

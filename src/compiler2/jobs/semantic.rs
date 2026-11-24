@@ -1500,12 +1500,41 @@ fn resolve_module_value_call(
             CallReturn::awaited(uses),
         ));
     }
+    // Every callee is keyed before any is prepared: preparing one waits on
+    // its return, and a call that then turns out unready would leave that
+    // wait standing with no row of the caller's behind it.
+    let mut planned = Vec::new();
+    for (selector, callee) in receiver.callees {
+        let plan = if world.protocol_callback(callee).is_some() {
+            None
+        } else {
+            Some(plan_direct_call(
+                world,
+                tel,
+                caller,
+                callee,
+                arg_types.clone(),
+                callsite.span(),
+                uses,
+            )?)
+        };
+        planned.push((selector, callee, plan));
+    }
+    if let Some(unready) = planned.iter().find_map(|(_, _, plan)| match plan {
+        Some(DirectCallPlan::Done((CallSiteResolution::Unresolved, _, awaited))) => Some(*awaited),
+        _ => None,
+    }) {
+        return Ok((Some(emission(CallSiteResolution::Unresolved, Vec::new())), unready));
+    }
     let mut targets = Vec::new();
     let mut activations = Vec::new();
     let mut call_return = CallReturn::Bottom;
-    for (selector, callee) in receiver.callees {
-        let (resolution, callee_activations, callee_return) =
-            resolve_function_call(world, tel, caller, callee, arg_types.clone(), callsite.span(), uses)?;
+    for (selector, callee, plan) in planned {
+        let (resolution, callee_activations, callee_return) = match plan {
+            None => resolve_function_call(world, tel, caller, callee, arg_types.clone(), callsite.span(), uses)?,
+            Some(DirectCallPlan::Done(resolved)) => resolved,
+            Some(DirectCallPlan::Keyed(keyed)) => prepare_keyed_call(world, uses, caller, keyed),
+        };
         let CallSiteResolution::Resolved(summary) = resolution else {
             return Ok((
                 Some(emission(CallSiteResolution::Unresolved, Vec::new())),
@@ -1899,12 +1928,48 @@ fn resolve_function_call(
             uses,
         );
     }
+    match plan_direct_call(world, tel, caller, function, input_types, call_span, uses)? {
+        DirectCallPlan::Done(resolved) => Ok(resolved),
+        DirectCallPlan::Keyed(keyed) => Ok(prepare_keyed_call(world, uses, caller, keyed)),
+    }
+}
+
+/// A direct call whose callee's keying facts are all present: preparing it
+/// mints the activation and waits on its return, which cannot block.
+struct KeyedCall {
+    function: FunctionId,
+    input_types: Vec<Ty>,
+    contract_return_ty: Option<Ty>,
+}
+
+enum DirectCallPlan {
+    /// The call answered without minting an activation.
+    Done(ResolvedCall),
+    Keyed(KeyedCall),
+}
+
+/// Everything a direct call needs before its activation is minted. Minting
+/// registers a wait on the callee's return, so a caller of several callees
+/// plans every one before it prepares any.
+fn plan_direct_call(
+    world: &mut World,
+    tel: &impl crate::telemetry::Telemetry,
+    caller: &ActivationKey,
+    function: FunctionId,
+    input_types: Vec<Ty>,
+    call_span: Span,
+    uses: &mut UseCollector,
+) -> Result<DirectCallPlan, FatalError> {
     let origin = CallOrigin {
         caller: caller.function,
         span: call_span,
     };
     if wait_for_unresolved_function_module(world, function, origin, uses) {
-        return Ok((CallSiteResolution::Unresolved, Vec::new(), CallReturn::awaited(uses)));
+        return Ok(DirectCallPlan::Done((
+            CallSiteResolution::Unresolved,
+            Vec::new(),
+            CallReturn::awaited(uses),
+        )));
     }
     let Some(shape) = require_direct_call_prerequisites(world, function, uses) else {
         // The callee's contract or body is not ready yet, but its keying
@@ -1917,7 +1982,11 @@ fn resolve_function_call(
         if !world.function_is_provider_boundary(function) {
             let _ = world.require_call_key_facts(caller.root, function, &input_types, uses);
         }
-        return Ok((CallSiteResolution::Unresolved, Vec::new(), CallReturn::awaited(uses)));
+        return Ok(DirectCallPlan::Done((
+            CallSiteResolution::Unresolved,
+            Vec::new(),
+            CallReturn::awaited(uses),
+        )));
     };
     let caller_owner = world.function_definition(caller.function).0.owner;
     let (input_types, applied_contract) =
@@ -1927,7 +1996,7 @@ fn resolve_function_call(
         // The provider boundary is the public dynamic edge: `any` is earned
         // here (and only here and at unresolvable callable values).
         let return_ty = contract_return_ty.unwrap_or_else(|| any_ty(world));
-        return Ok((
+        return Ok(DirectCallPlan::Done((
             CallSiteResolution::Resolved(CallSiteSummary {
                 targets: vec![call_target_summary(
                     world,
@@ -1942,15 +2011,37 @@ fn resolve_function_call(
             }),
             Vec::new(),
             CallReturn::Known(return_ty),
-        ));
+        )));
     }
     if !world.require_call_key_facts(caller.root, function, &input_types, uses) {
-        return Ok((CallSiteResolution::Unresolved, Vec::new(), CallReturn::awaited(uses)));
+        return Ok(DirectCallPlan::Done((
+            CallSiteResolution::Unresolved,
+            Vec::new(),
+            CallReturn::awaited(uses),
+        )));
     }
+    Ok(DirectCallPlan::Keyed(KeyedCall {
+        function,
+        input_types,
+        contract_return_ty,
+    }))
+}
+
+fn prepare_keyed_call(
+    world: &mut World,
+    uses: &mut UseCollector,
+    caller: &ActivationKey,
+    keyed: KeyedCall,
+) -> ResolvedCall {
+    let KeyedCall {
+        function,
+        input_types,
+        contract_return_ty,
+    } = keyed;
     let (activation, observed_return) = prepare_function_call(world, uses, caller, function, &input_types);
     let call_return = refine_call_return(world, observed_return, contract_return_ty);
     let return_ty = call_return.evidence();
-    Ok((
+    (
         CallSiteResolution::Resolved(CallSiteSummary {
             targets: vec![CallTargetSummary {
                 selector: None,
@@ -1969,7 +2060,7 @@ fn resolve_function_call(
             inputs: input_types.clone(),
         }],
         call_return,
-    ))
+    )
 }
 
 /// Demands every `defimpl` whose target overlaps the receiver, so the arm set

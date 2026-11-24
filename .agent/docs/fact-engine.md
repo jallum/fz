@@ -220,7 +220,7 @@ about one root's program, rather than about one function. Any activation's
 analysis adds to them (`World::note_nameable_module`, `World::note_raisable`
 into the activation's own root), and the analysis lists the fact as changed when
 it added something, so every reader runs again. `World` holds each as a set
-that only grows; nothing removes an entry. `Raisable` is described in
+that only grows (`NameableModules` is ordered by denotation); nothing removes an entry. `Raisable` is described in
 [exceptions](exceptions.md).
 
 ### Absence is bottom
@@ -289,8 +289,8 @@ nothing is compared, because the aggregate is a function of the contributors.
 An `EXACT` join widens the aggregate in place and uses the same answer. A fold
 that does run goes through `JoinContribution::join_all`, which
 `ActivationInputAlternatives` overrides to rebuild its rows once instead of
-after every contributor, checking `ACTIVATION_INPUT_ROW_BUDGET` after each so
-a fold collapses at the same contributor it would one join at a time.
+after every contributor; the budget is applied to the whole antichain by that
+one rebuild, so a fold collapses the same rows however it is batched.
 `ContributionReplace::refolds` counts the keys a conclusion folded again; the
 activation-input count is `activation_input_refolds` on `JobCompletion`.
 

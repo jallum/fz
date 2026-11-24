@@ -73,14 +73,25 @@ arrow from `fn_id` and captures alone and would otherwise let a template row
 absorb its own ground instances. The relation's own doc records that its
 termination argument is empirical, not proven.
 
-Past `ACTIVATION_INPUT_ROW_BUDGET` rows the set still widens to its single
-column-wise joined row, so termination stays a theorem. A fire now means
+`ActivationInputAlternatives` stores the whole antichain as `members`; the rows
+analysis reads are derived from it: the members, or their single column-wise
+joined row once there are more than `ACTIVATION_INPUT_ROW_BUDGET`. Nothing is
+truncated in place, so whether a set collapses is a function of the rows
+contributed, not of how they were batched. Past the budget termination stays a
+theorem. A fire now means
 genuine correlation width, and `ExecutionContext::complete_job` reports each
 one as `fz.compiler2.activation_inputs.budget_collapsed` carrying the count.
 `correlated_input_rows_never_reach_the_widening_budget_on_the_lenses` GATES
 four fixtures at zero collapses; a sweep of all 577 `fixtures2` fixtures at
 fz-kdt.106 also found zero, but that number is a point-in-time measurement, not
 something the suite holds.
+
+`the_backend_plan_is_the_same_whichever_order_the_agenda_pops_jobs` compiles
+fixtures to their backend plan with the agenda popping first-in-first-out and
+last-in-first-out and asserts the plans are byte-identical. Test builds select
+the order through `fz_engine::pop_order::with`, behind the `pop_order` feature
+that the root crate's dev-dependency enables; production builds always pop
+first-in-first-out.
 
 `world.activation_input_alternatives(key)` reads the rows once the fact is
 live; `world.activation_inputs_joined(key)` reads the column-wise joined
