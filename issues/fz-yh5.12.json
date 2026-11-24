@@ -1,6 +1,8 @@
 {
   "assignee": "Callables",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-yh5.11"
+  ],
   "blocks": [],
   "created": "2026-11-24T17:54:25Z",
   "description": "Option C, step C2 (approved page https://claude.ai/artifact/HJ4StaQ4ggt6yt2Fus6pX7).\n\nis_function(f, 1) or is_function(f, 2), and not is_function(f, 2), stay opaque today (Make Distiller Fast finding 3). In C, or becomes matrix rows and not becomes a miss edge, so both decide and narrow like a single test.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "or and not in a guard are matrix rows and miss edges",
   "type": "bug",
-  "updated_at": "2026-11-24T17:54:27Z"
+  "updated_at": "2026-11-24T17:54:29Z"
 }
