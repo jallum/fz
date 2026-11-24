@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Elixir Parity",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-24T21:02:21Z",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "A module's atom is its identity: defimpl P, for: T is the module P.T, as in Elixir",
   "type": "feature",
-  "updated_at": "2026-11-24T21:02:21Z"
+  "updated_at": "2026-11-24T21:02:22Z"
 }
