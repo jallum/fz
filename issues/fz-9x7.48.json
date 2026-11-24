@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "GC",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-24T18:24:11Z",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "Runtime events carry their facts as they are; the handler computes",
   "type": "task",
-  "updated_at": "2026-11-24T18:24:11Z"
+  "updated_at": "2026-11-24T18:24:12Z"
 }
