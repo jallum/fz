@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-9x7.11",
   "priority": 2,
-  "status": "in_progress",
+  "status": "open",
   "title": "A minor collection tells a young pointer from an old one without a sorted range table",
   "type": "task",
-  "updated_at": "2026-11-24T18:26:01Z"
+  "updated_at": "2026-11-24T18:30:35Z"
 }
