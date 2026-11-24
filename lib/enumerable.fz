@@ -83,6 +83,6 @@ defimpl Enumerable, for: Range do
   def member?(%Range{first: first, last: last, step: step}, value), do: {:ok, Range.member?(first, last, step, value)}
 
   def slice(%Range{first: first, last: last, step: step}) do
-    {:ok, Range.count(first, last, step), (fn (start, amount, stride) -> Range.slice(first, last, step, start, amount, stride) end)}
+    {:ok, Range.count(first, last, step), (fn (start, amount, stride) -> Range.slice(first, step, start, amount, stride) end)}
   end
 end

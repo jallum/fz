@@ -1,0 +1,79 @@
+#---
+# purpose: "Enum.slice/2 and Enum.slice/3 pick the same elements as Elixir from lists, ranges, maps, sets and streams, for in-range, negative, stepped and out-of-range indices"
+# oracle: self
+# oracle.stamp: 7a1cafa51a7e05da
+#---
+defmodule Main do
+  def ranges(label, enumerable) do
+    IO.inspect(label)
+    IO.inspect(Enum.slice(enumerable, 1..3))
+    IO.inspect(Enum.slice(enumerable, 3..10))
+    IO.inspect(Enum.slice(enumerable, -3..-1))
+    IO.inspect(Enum.slice(enumerable, 1..-2//1))
+    IO.inspect(Enum.slice(enumerable, -10..2))
+    IO.inspect(Enum.slice(enumerable, 2..-10))
+    IO.inspect(Enum.slice(enumerable, 6..10))
+    IO.inspect(Enum.slice(enumerable, 6..5//1))
+    IO.inspect(Enum.slice(enumerable, 4..1//-1))
+    IO.inspect(Enum.slice(enumerable, 3..1//1))
+    IO.inspect(Enum.slice(enumerable, -1..-3//1))
+  end
+
+  def strided(label, enumerable) do
+    IO.inspect(label)
+    IO.inspect(Enum.slice(enumerable, 0..-1//2))
+    IO.inspect(Enum.slice(enumerable, 1..-1//3))
+    IO.inspect(Enum.slice(enumerable, 0..4//2))
+    IO.inspect(Enum.slice(enumerable, -4..3//2))
+  end
+
+  def amounts(label, enumerable) do
+    IO.inspect(label)
+    IO.inspect(Enum.slice(enumerable, 1, 3))
+    IO.inspect(Enum.slice(enumerable, 3, 100))
+    IO.inspect(Enum.slice(enumerable, 2, 0))
+    IO.inspect(Enum.slice(enumerable, 0, 5))
+    IO.inspect(Enum.slice(enumerable, -2, 5))
+    IO.inspect(Enum.slice(enumerable, -4, 2))
+    IO.inspect(Enum.slice(enumerable, -9, 3))
+    IO.inspect(Enum.slice(enumerable, -9, 20))
+    IO.inspect(Enum.slice(enumerable, 5, 2))
+    IO.inspect(Enum.slice(enumerable, 9, 2))
+  end
+
+  def main() do
+    list = [1, 2, 3, 4, 5]
+    ranges("list", list)
+    ranges("range", 1..5)
+    ranges("stepped range", 1..9//2)
+    ranges("descending range", 5..1//-1)
+    ranges("set", MapSet.new(list))
+    ranges("stream", Stream.map(list, fn x -> x end))
+    strided("list", list)
+    strided("range", 1..5)
+    strided("set", MapSet.new(list))
+    strided("stream", Stream.map(list, fn x -> x end))
+    amounts("list", list)
+    amounts("range", 1..5)
+    amounts("stepped range", 2..10//2)
+    amounts("set", MapSet.new(list))
+    amounts("stream", Stream.map(list, fn x -> x end))
+
+    IO.inspect(Enum.slice(%{1 => :a, 2 => :b, 3 => :c}, 1..2))
+    IO.inspect(Enum.slice(%{1 => :a, 2 => :b, 3 => :c}, -2, 1))
+    IO.inspect(Enum.slice([], 0..2))
+    IO.inspect(Enum.slice([], -1, 3))
+    IO.inspect(Enum.slice(1..100, 5, 10))
+    IO.inspect(Enum.slice(1..100, 0..99//33))
+
+    IO.inspect(
+      try do
+        Enum.slice(list, 3..1//-2)
+      rescue
+        error in ArgumentError -> error.message
+      end
+    )
+  end
+end
+
+Main.main()

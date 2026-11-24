@@ -136,23 +136,23 @@ defmodule Range do
 
   @doc """
   Implements the slicing half of the `Enumerable.slice/1` callback for
-  ranges: `Enumerable.slice/1` closes over `first`, `last`, and `step`
-  and returns this function to be called with `start`, `amount`, and
-  `stride`.
+  ranges: `Enumerable.slice/1` closes over `first` and `step` and returns
+  this function to be called with `start`, `amount`, and `stride`.
 
-  This is protocol plumbing, not a function to call directly, and
-  fz's `Enum` module does not yet have a function that reaches it.
+  It lists `amount` elements beginning at the `start`th element, taking every
+  `stride`th one. `amount` is at least `1` and stays within the range.
 
   ## Examples
 
-      Range.slice(1, 10, 1, 0, 3, 1)
+      Range.slice(1, 1, 0, 3, 1)
       #=> [1, 2, 3]
 
+      Range.slice(1, 2, 1, 3, 2)
+      #=> [3, 7, 11]
+
   """
-  @spec slice(integer, integer, integer, integer, integer, integer) :: [integer]
-  def slice(first, last, step, start, amount, stride) do
-    slice_from(last, step + stride - 1, first + (start * step), amount, [])
-  end
+  @spec slice(integer, integer, integer, integer, integer) :: [integer]
+  def slice(first, step, start, amount, stride), do: slice_from(first + (start * step), step * stride, amount)
 
   @spec reduce_start(integer, integer, integer, integer, b, (integer, b -> {:cont, b} | {:halt, b} | {:suspend, b})) :: {:done, b} | {:halted, b} | {:suspended, b, (-> any)} when b: var
   defp reduce_start(first, last, step, current, acc, reducer) do
@@ -192,19 +192,9 @@ defmodule Range do
   defp reduce_while_step(first, last, step, current, {:cont, acc}, reducer), do: reduce_while_cont(first, last, step, current + step, acc, reducer)
   defp reduce_while_step(_first, _last, _step, _current, {:halt, acc}, _reducer), do: acc
 
-  @spec slice_from(integer, integer, integer, integer, [integer]) :: [integer]
-  defp slice_from(_last, _step, _current, 0, acc), do: reverse(acc, [])
-  defp slice_from(last, step, current, amount, acc) do
-    if done?(last, step, current) do
-      reverse(acc, [])
-    else
-      slice_from(last, step, current + step, amount - 1, [current | acc])
-    end
-  end
-
-  @spec reverse([a], [b]) :: [a | b] when a: var, b: var
-  defp reverse([], acc), do: acc
-  defp reverse([head | tail], acc), do: reverse(tail, [head | acc])
+  @spec slice_from(integer, integer, integer) :: [integer]
+  defp slice_from(current, _step, 1), do: [current]
+  defp slice_from(current, step, remaining) when remaining > 1, do: [current | slice_from(current + step, step, remaining - 1)]
 
   @spec done?(integer, integer, integer) :: boolean
   defp done?(last, step, current) when step > 0, do: current > last
