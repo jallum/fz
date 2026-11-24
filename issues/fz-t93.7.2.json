@@ -9,7 +9,7 @@
     "fz-t93.7.7"
   ],
   "created": "2026-11-15T15:52:26Z",
-  "description": "Step 2 of fz-t93.7. Iface(root,E)/Body(root,E) facts; deletes the TransportShape product family (30,289 requests, 60% of pull cost), the cut_in_component_returns product path and the local callable-construction round-trip. Predicted -0.5% (-3.1..+1.3); jobs +3..5k; requests -30.3k. Risks: the interface acyclicity claim (36 executable SCCs, 0 interface edges, spike-verified on an older base); Body reads per position; a same-root product wait until step 3. Bar: distiller instructions within the stated prediction; stdout byte-identical; fixture_matrix green; every pin that rises is listed with its mechanism and reported for approval before it is raised. Measured base e81f9ed52 and the per-step model: scratch t93_7/m/report.md; decision page /Users/j5n/Workspace/fz-t93.7-measured.html.",
+  "description": "Step 2 of fz-t93.7. Iface(root,E)/Body(root,E) facts; deletes the TransportShape product family (30,289 requests, 60% of pull cost), the cut_in_component_returns product path and the local callable-construction round-trip. Predicted -0.5% (-3.1..+1.3); jobs +3..5k; requests -30.3k. Risks: the interface acyclicity claim (36 executable SCCs, 0 interface edges, spike-verified on an older base); Body reads per position; a same-root product wait until step 3. Bar: distiller instructions within the stated prediction; stdout byte-identical; fixture_matrix green; every pin that rises is listed with its mechanism and reported for approval before it is raised. Measured base e81f9ed52 and the per-step model: scratch t93_7/m/report.md; decision page /Users/j5n/Workspace/fz-t93.7-measured.html.\n\nPulled forward (user, 2026-11-24, \"proceed\" on JSON's fz-mue.25 page /Users/j5n/Workspace/fz-mue.25.html): this ticket fixes fz-mue.25. fz-engine builds it ahead of fz-t93.28's build and fz-t93.30. First step: re-run the interface-acyclicity census on current develop, on the distiller and on fz-mue.25's json repro (/Users/j5n/Workspace/fz-752-walk/repro_25.fz), because 9zq.2's cycle entries, .12/.16, .17, #851 and t93.26 changed which executables exist since e81f9ed52. If interface edges now cycle, a cut rule and a new page come first. json repro today: 55,555 requests, 47,215 (85%) on TransportShape over 37,557 keys; one product drive hits the 50,000 cap (product_drive.rs:31). Re-measure the -30.3k requests / -0.5% instructions prediction.",
   "id": "fz-t93.7.2",
   "labels": [],
   "parent": "fz-t93.7",
@@ -17,5 +17,5 @@
   "status": "open",
   "title": "A transport position is read from its executable's interface fact",
   "type": "task",
-  "updated_at": "2026-11-24T22:04:34Z"
+  "updated_at": "2026-11-24T22:04:36Z"
 }
