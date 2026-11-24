@@ -223,6 +223,11 @@ fn static_tests() -> Vec<(&'static str, fn())> {
         ),
         ("fixtures2_single_file_matrix_smoke", fixtures2_single_file_matrix_smoke),
         ("fixtures_describe_themselves", fixtures_describe_themselves),
+        ("fixtures_lie_in_claimed_blocks", fixtures_lie_in_claimed_blocks),
+        (
+            "fixture_block_check_names_unclaimed_fixtures",
+            fixture_block_check_names_unclaimed_fixtures,
+        ),
         (
             "fixture_self_description_check_fails_on_violations",
             fixture_self_description_check_fails_on_violations,
@@ -520,7 +525,7 @@ fn record_fixture_number(
     let number = &stem[..5];
     if let Some(first) = numbers.get(number) {
         violations.push(format!(
-            "{}: number `{number}` reused (already used by {})",
+            "{}: number `{number}` reused (already used by {}); renumber one of them to the next free number in its block",
             path.display(),
             first.display()
         ));
@@ -597,6 +602,84 @@ fn fixtures_describe_themselves() {
         "fixtures/*.fz must describe themselves (purpose, NNNNN_name stem, unique number):\n{}",
         violations.join("\n")
     );
+}
+
+/// The inclusive number ranges claimed by the rows of the block table in
+/// `.agent/docs/fixtures.md`: lines shaped `| `NNNNN-NNNNN` | owner |`.
+fn claimed_fixture_blocks(doc: &str) -> Vec<(u32, u32)> {
+    doc.lines()
+        .filter_map(|line| {
+            let cell = line.strip_prefix("| `")?.split_once("` |")?.0;
+            let (first, last) = cell.split_once('-')?;
+            let digits = |s: &str| (s.len() == 5 && s.bytes().all(|b| b.is_ascii_digit())).then(|| s.parse().ok())?;
+            Some((digits(first)?, digits(last)?))
+        })
+        .collect()
+}
+
+/// One violation per numbered `fixtures/*.fz` file whose number lies in no
+/// claimed block.
+fn unclaimed_fixture_violations(dir: &Path, claims: &[(u32, u32)]) -> Vec<String> {
+    let mut paths: Vec<PathBuf> = fs::read_dir(dir)
+        .unwrap_or_else(|e| panic!("read {}: {e}", dir.display()))
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "fz"))
+        .collect();
+    paths.sort();
+    paths
+        .iter()
+        .filter_map(|path| {
+            let stem = path.file_stem().unwrap().to_string_lossy().into_owned();
+            if !fixture_stem_is_numbered(&stem) {
+                return None;
+            }
+            let number: u32 = stem[..5].parse().unwrap();
+            let claimed = claims.iter().any(|&(first, last)| (first..=last).contains(&number));
+            (!claimed).then(|| {
+                format!(
+                    "{}: number {number:05} lies in no claimed block; claim a block in the table in \
+                     .agent/docs/fixtures.md (Reserved ranges), or renumber the fixture into its epic's block",
+                    path.display()
+                )
+            })
+        })
+        .collect()
+}
+
+fn fixtures_lie_in_claimed_blocks() {
+    let doc = fs::read_to_string(".agent/docs/fixtures.md").expect("read .agent/docs/fixtures.md");
+    let claims = claimed_fixture_blocks(&doc);
+    assert!(
+        !claims.is_empty(),
+        "no `| `NNNNN-NNNNN` | owner |` rows found in .agent/docs/fixtures.md"
+    );
+    let violations = unclaimed_fixture_violations(Path::new("fixtures"), &claims);
+    assert!(
+        violations.is_empty(),
+        "every fixture number must lie in a block claimed in .agent/docs/fixtures.md:\n{}",
+        violations.join("\n")
+    );
+}
+
+fn fixture_block_check_names_unclaimed_fixtures() {
+    let nonce = AOT_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let dir = temp_dir().join(format!("fz_fixture_blocks_{}_{}", id(), nonce));
+    fs::create_dir_all(&dir).expect("create block smoke dir");
+    for name in ["00010_inside.fz", "00500_outside.fz"] {
+        fs::write(dir.join(name), "").expect("write block smoke fixture");
+    }
+    let claims = claimed_fixture_blocks("| Block | Owner |\n| `00001-00099` | fz-x |\n| `00100-00199` | fz-y |\n");
+    let violations = unclaimed_fixture_violations(&dir, &claims);
+    let _ = fs::remove_dir_all(&dir);
+
+    assert_eq!(claims, vec![(1, 99), (100, 199)], "table rows parse into ranges");
+    assert_eq!(
+        violations.len(),
+        1,
+        "only the unclaimed fixture is named: {violations:?}"
+    );
+    assert!(violations[0].contains("00500_outside.fz") && violations[0].contains("00500"));
 }
 
 fn fixture_self_description_check_fails_on_violations() {
