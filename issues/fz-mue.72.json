@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Elixir Parity",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-25T12:09:22Z",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "A capture of an :erlang function prints as \u0026:erlang.f/n on build",
   "type": "bug",
-  "updated_at": "2026-11-25T12:09:22Z"
+  "updated_at": "2026-11-25T12:09:27Z"
 }
