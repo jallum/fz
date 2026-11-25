@@ -1,7 +1,7 @@
 #---
 # purpose: "OTP 28.3's json.erl, ported line for line, decodes and encodes exactly as it does on the BEAM"
 # oracle: self
-# oracle.stamp: 387ae792734257cb
+# oracle.stamp: 78e514553ba4e867
 #---
 #
 # A line-for-line port of OTP 28.3 stdlib-7.2 json.erl (lib/stdlib/src/json.erl)
@@ -1767,9 +1767,12 @@ end
 # large groups print a count and a digest of their outcomes' inspected text.
 # Run with the argument `full` to print every outcome of every group.
 #
-# Terms whose printed form changes from run to run (pids, refs, funs) and maps
-# of more than 32 keys (whose iteration order is the BEAM's hash order) are
-# left out: their outcomes cannot be compared as text.
+# Terms whose printed form changes from run to run (pids, refs, funs) are left
+# out: their outcomes cannot be compared as text. The iteration order of a map
+# is not defined and differs between the BEAM and fz, so an outcome that
+# depends on it is printed in an order-free form (see Corpus.show and
+# Corpus.order_free). Outcomes that use a map's documented order, the ordered
+# iterator of format/1,2,3, keep their exact bytes.
 defmodule Corpus do
   def outcome(f) do
     try do
@@ -1779,7 +1782,136 @@ defmodule Corpus do
     end
   end
 
-  def show(o), do: inspect(o, limit: :infinity, printable_limit: :infinity)
+  # Plain iteration order of a map is not defined, and the BEAM's differs from
+  # fz's. A term that holds a map of two or more keys therefore prints with
+  # every map's pairs sorted by the printed text of their keys; any other term
+  # prints exactly as inspect prints it.
+  def show(term) do
+    if multi_key_map?(term) do
+      canonical(term)
+    else
+      inspect(term, limit: :infinity, printable_limit: :infinity)
+    end
+  end
+
+  def multi_key_map?(term) when is_map(term) do
+    pairs = fields(term)
+
+    (not struct?(term) and length(pairs) >= 2) or
+      Enum.any?(pairs, fn {k, v} -> multi_key_map?(k) or multi_key_map?(v) end)
+  end
+
+  def multi_key_map?(term) when is_list(term), do: any_multi_key_map?(term)
+  def multi_key_map?(term) when is_tuple(term), do: any_multi_key_map?(Tuple.to_list(term))
+  def multi_key_map?(_), do: false
+
+  defp any_multi_key_map?([head | tail]), do: multi_key_map?(head) or any_multi_key_map?(tail)
+  defp any_multi_key_map?([]), do: false
+  defp any_multi_key_map?(improper_tail), do: multi_key_map?(improper_tail)
+
+  defp struct?(map), do: :erlang.is_map_key(:__struct__, map)
+
+  defp fields(map), do: Enum.reject(Map.to_list(map), fn {k, _} -> k == :__struct__ end)
+
+  defp canonical(map) when is_map(map) do
+    pairs = Enum.sort_by(Enum.map(fields(map), fn {k, v} -> {show(k), k, v} end), fn {text, _, _} -> text end)
+    keyword = Enum.all?(pairs, fn {_, k, _} -> keyword_key?(k) end)
+    name = if struct?(map), do: inspect(Map.get(map, :__struct__)), else: ""
+    body = Enum.map_join(pairs, ", ", fn {text, k, v} -> map_key(text, k, keyword) <> show(v) end)
+    "%" <> name <> "{" <> body <> "}"
+  end
+
+  defp canonical(list) when is_list(list) do
+    if keyword_list?(list) do
+      "[" <> Enum.map_join(list, ", ", fn {k, v} -> keyword_prefix(k) <> show(v) end) <> "]"
+    else
+      "[" <> items(list) <> "]"
+    end
+  end
+
+  defp canonical(tuple) when is_tuple(tuple) do
+    "{" <> Enum.map_join(Tuple.to_list(tuple), ", ", &show/1) <> "}"
+  end
+
+  defp items([last]), do: show(last)
+  defp items([head | tail]) when is_list(tail), do: show(head) <> ", " <> items(tail)
+  defp items([head | tail]), do: show(head) <> " | " <> show(tail)
+
+  defp keyword_key?(key) when is_atom(key), do: not String.starts_with?(Atom.to_string(key), "Elixir.")
+  defp keyword_key?(_), do: false
+
+  defp keyword_list?([{key, _} | rest]) when is_atom(key), do: keyword_key?(key) and keyword_list?(rest)
+  defp keyword_list?([]), do: true
+  defp keyword_list?(_), do: false
+
+  # The key and its separator exactly as inspect writes them, taken from
+  # inspect of a one-pair map or list.
+  defp map_key(_text, key, true) do
+    printed = inspect(%{key => 0})
+    binary_part(printed, 2, byte_size(printed) - 4)
+  end
+
+  defp map_key(text, _key, false), do: text <> " => "
+
+  defp keyword_prefix(key) do
+    printed = inspect([{key, 0}])
+    binary_part(printed, 1, byte_size(printed) - 3)
+  end
+
+  # JSON text that an encoder produced from `term`. When the term holds a map
+  # of two or more keys, the order of its members is not defined, so the
+  # result is the text with the members of every object in byte order.
+  def order_free(term, encode) do
+    if multi_key_map?(term) do
+      {:members_sorted, sort_members(:erlang.iolist_to_binary(encode.()))}
+    else
+      encode.()
+    end
+  end
+
+  defp sort_members(json) do
+    case json_value(json, json) do
+      {text, <<>>} -> text
+      _ -> :erlang.error({:malformed_json, json})
+    end
+  end
+
+  defp json_value(<<?{, ?}, rest::binary>>, _json), do: {"{}", rest}
+  defp json_value(<<?{, rest::binary>>, json), do: json_members(rest, json, [])
+  defp json_value(<<?[, ?], rest::binary>>, _json), do: {"[]", rest}
+  defp json_value(<<?[, rest::binary>>, json), do: json_elements(rest, json, [])
+  defp json_value(<<?", rest::binary>>, json), do: json_string(rest, json, "\"")
+  defp json_value(<<c, _::binary>> = scalar, json) when c != ?, and c != ?] and c != ?}, do: json_scalar(scalar, json, "")
+  defp json_value(_, json), do: :erlang.error({:malformed_json, json})
+
+  defp json_members(bin, json, acc) do
+    {key, <<?:, rest::binary>>} = json_value(bin, json)
+    {value, rest} = json_value(rest, json)
+    members = [key <> ":" <> value | acc]
+
+    case rest do
+      <<?,, more::binary>> -> json_members(more, json, members)
+      <<?}, more::binary>> -> {"{" <> Enum.join(Enum.sort(members), ",") <> "}", more}
+    end
+  end
+
+  defp json_elements(bin, json, acc) do
+    {value, rest} = json_value(bin, json)
+
+    case rest do
+      <<?,, more::binary>> -> json_elements(more, json, [value | acc])
+      <<?], more::binary>> -> {"[" <> Enum.join(:lists.reverse([value | acc]), ",") <> "]", more}
+    end
+  end
+
+  defp json_string(<<?", rest::binary>>, _json, acc), do: {acc <> "\"", rest}
+  defp json_string(<<?\\, c, rest::binary>>, json, acc), do: json_string(rest, json, <<acc::binary, ?\\, c>>)
+  defp json_string(<<c, rest::binary>>, json, acc), do: json_string(rest, json, <<acc::binary, c>>)
+  defp json_string(<<>>, json, _acc), do: :erlang.error({:malformed_json, json})
+
+  defp json_scalar(<<c, _::binary>> = rest, _json, acc) when c == ?, or c == ?] or c == ?}, do: {acc, rest}
+  defp json_scalar(<<c, rest::binary>>, json, acc), do: json_scalar(rest, json, <<acc::binary, c>>)
+  defp json_scalar(<<>>, _json, acc), do: {acc, <<>>}
 
   def report(name, cases, full) do
     outcomes = Enum.map(cases, fn {label, f} -> {label, outcome(f)} end)
@@ -1957,22 +2089,27 @@ defmodule Main do
     value_cases(t) ++ list_map_atom_cases(t) ++ integer_cases(t) ++ float_cases(t) ++ binary_cases(t) ++ key_value_cases(t)
   end
 
+  # A case whose encoder iterates a map in plain order (:maps.iterator/1,
+  # :maps.next/1 or :maps.to_list/1); the format family iterates in the
+  # documented :ordered order and is not wrapped.
+  def unordered(label, term, f), do: {label, fn -> Corpus.order_free(term, f) end}
+
   def value_cases(t) do
     [
-      {{:encode, t}, fn -> OtpJSON.encode(t) end},
+      unordered({:encode, t}, t, fn -> OtpJSON.encode(t) end),
       {{:format1, t}, fn -> OtpJSON.format(t) end},
       {{:format2, t}, fn -> OtpJSON.format(t, %{indent: 4}) end},
       {{:format2b, t}, fn -> OtpJSON.format(t, %{max: 10, indent: 3}) end},
       {{:format3, t}, fn -> OtpJSON.format(t, &OtpJSON.format_value/3, %{indent: 1}) end},
-      {{:encode_value, t}, fn -> OtpJSON.encode_value(t, &OtpJSON.encode_value/2) end}
+      unordered({:encode_value, t}, t, fn -> OtpJSON.encode_value(t, &OtpJSON.encode_value/2) end)
     ]
   end
 
   def list_map_atom_cases(t) do
     [
-      {{:encode_list, t}, fn -> OtpJSON.encode_list(t, &OtpJSON.encode_value/2) end},
-      {{:encode_map, t}, fn -> OtpJSON.encode_map(t, &OtpJSON.encode_value/2) end},
-      {{:encode_map_checked, t}, fn -> OtpJSON.encode_map_checked(t, &OtpJSON.encode_value/2) end},
+      unordered({:encode_list, t}, t, fn -> OtpJSON.encode_list(t, &OtpJSON.encode_value/2) end),
+      unordered({:encode_map, t}, t, fn -> OtpJSON.encode_map(t, &OtpJSON.encode_value/2) end),
+      unordered({:encode_map_checked, t}, t, fn -> OtpJSON.encode_map_checked(t, &OtpJSON.encode_value/2) end),
       {{:encode_atom, t}, fn -> OtpJSON.encode_atom(t, &OtpJSON.encode_value/2) end}
     ]
   end
@@ -1992,11 +2129,16 @@ defmodule Main do
     lvl = %{level: 0, col: 0, indent: 2, max: 100}
 
     [
-      {{:kv, t}, fn -> OtpJSON.encode_key_value_list(t, &OtpJSON.encode_value/2) end},
-      {{:kv_checked, t}, fn -> OtpJSON.encode_key_value_list_checked(t, &OtpJSON.encode_value/2) end},
+      unordered({:kv, t}, t, fn -> OtpJSON.encode_key_value_list(t, &OtpJSON.encode_value/2) end),
+      unordered({:kv_checked, t}, t, fn -> OtpJSON.encode_key_value_list_checked(t, &OtpJSON.encode_value/2) end),
       {{:fmt_kv, t}, fn -> OtpJSON.format_key_value_list(t, &OtpJSON.format_value/3, lvl) end},
       {{:fmt_kv_checked, t}, fn -> OtpJSON.format_key_value_list_checked(t, &OtpJSON.format_value/3, lvl) end}
     ]
+  end
+
+  def round_trip(doc) do
+    term = OtpJSON.decode(doc)
+    Corpus.order_free(term, fn -> OtpJSON.encode(term) end)
   end
 
   def custom(t) do
@@ -2032,7 +2174,7 @@ defmodule Main do
     r.("decode/1 deep and long inputs", for(i <- deep, do: {byte_size(i), fn -> OtpJSON.decode(i) end}))
 
     r.("decode with bad decoders",
-      for(dec <- [%{array_start: fn -> 1 end}, %{bogus: 1}, %{float: :notfun}], do: {Map.keys(dec), fn -> OtpJSON.decode("[1]", 0, dec) end})
+      for(dec <- [%{array_start: fn -> 1 end}, %{bogus: 1}, %{float: :notfun}], do: {Enum.sort(Map.keys(dec)), fn -> OtpJSON.decode("[1]", 0, dec) end})
     )
 
     {docs, _} = Gen.repeat(1, 300, fn s -> Gen.doc(s, 4) end)
@@ -2065,10 +2207,10 @@ defmodule Main do
     )
 
     r.("encode with a custom encoder",
-      for(t <- [{:ts, 5}, [{:a, {:ts, 1}}, {:b, 2}], [[{:a, 1}], [{:b, 2}]], %{"x" => {:ts, 9}}], do: {t, fn -> custom(t) end})
+      for(t <- [{:ts, 5}, [{:a, {:ts, 1}}, {:b, 2}], [[{:a, 1}], [{:b, 2}]], %{"x" => {:ts, 9}}], do: unordered(t, t, fn -> custom(t) end))
     )
 
-    r.("decode then encode and format", for(d <- docs, do: {d, fn -> d |> OtpJSON.decode() |> OtpJSON.encode() end}) ++ for(d <- docs, do: {{:fmt, d}, fn -> d |> OtpJSON.decode() |> OtpJSON.format() end}))
+    r.("decode then encode and format", for(d <- docs, do: {d, fn -> round_trip(d) end}) ++ for(d <- docs, do: {{:fmt, d}, fn -> d |> OtpJSON.decode() |> OtpJSON.format() end}))
   end
 
   def mutate(s) do
