@@ -141,11 +141,9 @@ pub(crate) const FALSE_BITS: i64 = FALSE_BITS_RAW as i64;
 
 // ----- Bitstring runtime fns -----
 //
-// Construction fills the process's BitWriter across a sequence of
-// `fz_bs_write_word` and `fz_bs_write_field_ref` calls between `fz_bs_begin`
-// and `fz_bs_finalize`. The codegen for a single Prim::MakeBitstring emits
-// this whole sequence within one block, so the process cannot suspend between
-// begin and finalize.
+// A construction stores one `FzBsField` descriptor per segment in a stack
+// slot and makes one `fz_bs_build` call, which sizes the result, allocates it
+// and writes every segment.
 //
 // A match reads the binary it is matching at a bit position the compiled code
 // carries as an integer: `BitFieldFits` and `BitFieldNext` are arithmetic on

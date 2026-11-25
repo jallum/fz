@@ -1,0 +1,166 @@
+#---
+# purpose: "a binary construction is sized from its segments, allocated once and written once, and spells what Elixir spells for every segment kind and size class: integers of 8, 16, 32, 64 and odd widths in each byte order, floats of 16, 32 and 64 bits (half precision rounds to nearest even and overflows to infinity), utf8, utf16 and utf32 across their one to four byte ranges, binary and bits segments aligned and mid-byte, sizes read at run time, results of 64 and 65 bytes, and a segment after an unaligned one"
+# oracle: self
+# oracle.stamp: e6c7221d8d2e7382
+# args: 0
+#---
+defmodule Main do
+  # Values the compiler cannot see through: each is read from a list at a
+  # position that is known only at run time.
+  def v(list, k), do: Enum.at(list, String.to_integer(hd(System.argv())) + k)
+
+  def integers() do
+    xs = [0xA5, 0x1234, 0x89ABCDEF, 0x0123456789ABCDEF, -2, 5, 0x1ABC, 3, 13]
+    a = v(xs, 0)
+    b = v(xs, 1)
+    c = v(xs, 2)
+    d = v(xs, 3)
+    neg = v(xs, 4)
+    odd3 = v(xs, 5)
+    odd13 = v(xs, 6)
+    [
+      <<a::8, b::16, c::32, d::64>>,
+      <<a::8-little, b::16-little, c::32-little, d::64-little>>,
+      <<a::8-native, b::16-native, c::32-native>>,
+      <<a::signed-8, neg::signed-16, neg::signed-little-32, neg::signed-64>>,
+      <<neg::unsigned-8, neg::integer-size(24), neg::big-unsigned-size(40)>>,
+      <<odd3::3, odd13::13, a::8>>,
+      <<odd3::3, odd13::13, odd3::3>>,
+      <<odd13::size(7), odd13::size(9), odd3::size(1)>>,
+      <<a::size(2)-unit(4), b::size(1)-unit(16)>>,
+      <<a>>,
+      <<a, b>>
+    ]
+  end
+
+  def floats() do
+    xs = [1.0, -2.5, 0.1, 65504.0, 65520.0, 1.0e10, 6.0e-8, 6.1e-5, 1.0e-8, 3.0e38, 1.5, 16, 0.0]
+    one = v(xs, 0)
+    neg = v(xs, 1)
+    tenth = v(xs, 2)
+    half_max = v(xs, 3)
+    half_over = v(xs, 4)
+    huge = v(xs, 5)
+    sub_min = v(xs, 6)
+    sub_max = v(xs, 7)
+    tiny = v(xs, 8)
+    single_over = v(xs, 9)
+    n16 = v([16, 32, 64], 0)
+    n32 = v([16, 32, 64], 1)
+    n64 = v([16, 32, 64], 2)
+    [
+      <<one::float-16, neg::float-16, tenth::float-16>>,
+      <<half_max::float-16, half_over::float-16, huge::float-16>>,
+      <<sub_min::float-16, sub_max::float-16, tiny::float-16>>,
+      <<one::float-size(n16), tenth::float-size(n16)>>,
+      <<one::float-16-little, neg::float-16-little>>,
+      <<one::float-32, neg::float-32, tenth::float-32>>,
+      <<single_over::float-32, huge::float-32-little>>,
+      <<one::float-size(n32), tenth::float-size(n32)>>,
+      <<one::float, neg::float-64>>,
+      <<tenth::float-little-64>>,
+      <<one::float-size(n64), neg::float-native-size(n64)>>,
+      <<v(xs, 11)::float-16, v(xs, 11)::float-32, v(xs, 11)::float-64>>,
+      <<1::3, one::float-16, 1::5>>,
+      <<1::3, tenth::float-32, 1::5>>,
+      <<1.0::float-16, 1.0::float-32, 1.0::float>>
+    ]
+  end
+
+  def utfs() do
+    cps = [0x41, 0x7F, 0x80, 0x7FF, 0x800, 0xFFFF, 0x10000, 0x10FFFF, 0xD7FF, 0xE000]
+    ascii = v(cps, 0)
+    top1 = v(cps, 1)
+    low2 = v(cps, 2)
+    top2 = v(cps, 3)
+    low3 = v(cps, 4)
+    top3 = v(cps, 5)
+    low4 = v(cps, 6)
+    top4 = v(cps, 7)
+    [
+      <<ascii::utf8, top1::utf8, low2::utf8, top2::utf8>>,
+      <<low3::utf8, top3::utf8, low4::utf8, top4::utf8>>,
+      <<ascii::utf16, top3::utf16, low4::utf16, top4::utf16>>,
+      <<ascii::utf16-little, top3::utf16-little, low4::utf16-little, top4::utf16-little>>,
+      <<ascii::utf32, top3::utf32, top4::utf32>>,
+      <<ascii::utf32-little, low4::utf32-little>>,
+      <<1::3, low3::utf8, 1::5>>,
+      <<1::3, low4::utf16, 1::5>>,
+      <<1::1, top4::utf32, 1::7>>,
+      <<v(cps, 8)::utf8, v(cps, 9)::utf8>>
+    ]
+  end
+
+  def binaries() do
+    xs = ["", "a", "hello", <<1, 2, 3, 4, 5, 6, 7, 8, 9, 10>>, <<0b10110::5>>, <<0b1011011101::10>>]
+    empty = v(xs, 0)
+    one = v(xs, 1)
+    five = v(xs, 2)
+    ten = v(xs, 3)
+    five_bits = v(xs, 4)
+    ten_bits = v(xs, 5)
+    n = v([2, 3, 7], 0)
+    [
+      <<empty::binary, one::binary, five::binary>>,
+      <<ten::binary-size(4), five::binary-size(n)>>,
+      <<one::bits, five::bits>>,
+      <<five_bits::bits, ten_bits::bits>>,
+      <<five_bits::bits, ten::binary, 1::1>>,
+      <<1::3, five::binary, 1::5>>,
+      <<1::3, ten::binary-size(n), 1::5>>,
+      <<1::1, ten_bits::bits, five_bits::bits, 1::1>>,
+      <<five_bits::bitstring>>,
+      <<ten::bitstring-size(n)-unit(1)>>,
+      <<one::binary, "xyz", five::binary>>
+    ]
+  end
+
+  def sizes() do
+    s = [0, 1, 7, 8, 9, 16, 24, 32, 63, 64]
+    big = 0x0123456789ABCDEF
+    for k <- 0..9 do
+      n = v(s, k)
+      {n, <<big::size(n)>>, <<1::3, big::size(n), 1::5>>}
+    end
+  end
+
+  def lengths() do
+    for len <- [0, 1, 7, 8, 9, 62, 63, 64, 65, 66, 127, 128, 200] do
+      bytes = :binary.copy("ab", div(len, 2) + 1)
+      payload = binary_part(bytes, 0, len)
+      tail = v([payload], 0)
+      lead = v([0xA5], 0)
+      whole = <<lead::8, tail::binary>>
+      shifted = <<1::3, tail::binary>>
+      grown = <<lead::8, tail::binary, 0xFF::8>>
+      <<0xA5, whole_tail::binary>> = whole
+      <<1::3, shifted_tail::bits>> = shifted
+      {len, byte_size(whole), whole == <<lead>> <> tail, whole_tail == tail, bit_size(shifted), shifted_tail == tail,
+       byte_size(grown), binary_part(grown, byte_size(grown) - 1, 1)}
+    end
+  end
+
+  def after_unaligned() do
+    x = v([0b101, 0x12345678, "tail", <<0b11001::5>>], 0)
+    w = v([0b101, 0x12345678, "tail", <<0b11001::5>>], 1)
+    t = v([0b101, 0x12345678, "tail", <<0b11001::5>>], 2)
+    b = v([0b101, 0x12345678, "tail", <<0b11001::5>>], 3)
+    [
+      <<x::3, w::32, t::binary>>,
+      <<x::3, t::binary, w::32>>,
+      <<x::3, b::bits, w::16, t::binary-size(2)>>,
+      <<x::3, 0x41::utf8, b::bits, 1.5::float-16, t::binary>>
+    ]
+  end
+
+  def main() do
+    for group <- [integers(), floats(), utfs(), binaries(), sizes(), lengths(), after_unaligned()] do
+      Enum.each(group, fn
+        row when is_tuple(row) -> Enum.each(Tuple.to_list(row), &IO.inspect/1)
+        row -> IO.inspect(row)
+      end)
+    end
+  end
+end
+
+Main.main()

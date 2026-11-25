@@ -28,7 +28,7 @@ use crate::any_value::{
     struct_size_for_payload,
 };
 use crate::bits::{Bin, BinView, SharedBinHandle, alloc_buffer_view, alloc_view, shared_bin_append};
-use crate::bitstr::{BitReader, BitWriter};
+use crate::bitstr::BitSink;
 use crate::off_heap;
 use crate::process::Node;
 use crate::term::TermComparator;
@@ -1288,16 +1288,9 @@ impl Heap {
             return self.alloc_bitstring(unsafe { from_raw_parts(bin.ptr().add(first_byte), byte_len) }, bit_len);
         }
         let bytes = unsafe { from_raw_parts(bin.ptr(), (bin.bit_len() as usize).div_ceil(8)) };
-        let mut reader = BitReader {
-            bytes,
-            bit_len: bin.bit_len() as usize,
-            pos: start_bit as usize,
-        };
-        let mut writer = BitWriter::new();
-        for _ in 0..bit_len {
-            writer.append_bit(reader.read_bit().expect("a window inside the source is readable"));
-        }
-        self.alloc_bitstring(&writer.bytes, bit_len)
+        self.alloc_bitstring_with(bit_len.div_ceil(8) as usize, bit_len, |dest| {
+            BitSink::new(dest).write_bit_range(bytes, start_bit, bit_len)
+        })
     }
 
     /// Denotation, layout header, code pointer, then captures and their kind bytes.

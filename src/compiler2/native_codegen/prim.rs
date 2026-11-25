@@ -14,7 +14,7 @@ use crate::fz_ir::{
 };
 use crate::runtime_type_predicate::{CallableShapes, RuntimeTypePredicate};
 use cranelift_codegen::ir::{
-    self, BlockArg, InstBuilder, MemFlagsData, TrapCode,
+    self, BlockArg, InstBuilder, MemFlagsData, StackSlotData, StackSlotKind, TrapCode,
     condcodes::{FloatCC, IntCC},
     types,
 };
@@ -25,19 +25,21 @@ use fz_runtime::any_value::{
     StructName, TRUE_ATOM_ID, ValueKind, shared_struct_header_word,
 };
 use fz_runtime::bits::BINVIEW_BYTES_PTR_OFFSET;
+use fz_runtime::construction::FzBsField;
 use fz_runtime::extern_binary::{fz_binary_as_cstring, fz_binary_as_ptr};
 use fz_runtime::ir_runtime::fz_unbox_opaque;
 use fz_runtime::ir_runtime::{
-    fz_alloc_binview_from_static, fz_bs_begin, fz_bs_field_end, fz_bs_field_spec, fz_bs_finalize, fz_bs_read_int_ref,
-    fz_bs_write_field_ref, fz_bs_write_word, fz_function_arity, fz_int_float_cmp, fz_list_cons_any, fz_list_cons_atom,
-    fz_list_cons_float, fz_list_cons_int, fz_map_dest_begin, fz_map_dest_begin_update, fz_map_dest_freeze,
-    fz_map_dest_publish, fz_map_dest_put, fz_map_get_ref, fz_map_named_schema_ref, fz_matcher_map_get_ref,
-    fz_pinned_binary_segment_size, fz_ref_load_atom, fz_ref_load_float, fz_ref_load_int, fz_struct_get_field_ref,
-    fz_struct_get_named_field_ref, fz_struct_is_named_ref, fz_struct_module, fz_struct_schema_id_ref,
-    fz_value_cmp_raw_const, fz_value_cmp_ref, fz_value_eq_raw_const, fz_value_eq_ref, fz_value_eq_widening_ref,
+    fz_alloc_binview_from_static, fz_bs_build, fz_bs_field_end, fz_bs_field_spec, fz_bs_read_int_ref,
+    fz_function_arity, fz_int_float_cmp, fz_list_cons_any, fz_list_cons_atom, fz_list_cons_float, fz_list_cons_int,
+    fz_map_dest_begin, fz_map_dest_begin_update, fz_map_dest_freeze, fz_map_dest_publish, fz_map_dest_put,
+    fz_map_get_ref, fz_map_named_schema_ref, fz_matcher_map_get_ref, fz_pinned_binary_segment_size, fz_ref_load_atom,
+    fz_ref_load_float, fz_ref_load_int, fz_struct_get_field_ref, fz_struct_get_named_field_ref, fz_struct_is_named_ref,
+    fz_struct_module, fz_struct_schema_id_ref, fz_value_cmp_raw_const, fz_value_cmp_ref, fz_value_eq_raw_const,
+    fz_value_eq_ref, fz_value_eq_widening_ref,
 };
 use fz_runtime::process::AtomName;
 use fz_runtime::process_abi::{PROCESS_DELIVERED_OFFSET, PROCESS_FAILED_OFFSET};
+use std::mem::{align_of, offset_of, size_of};
 use target_lexicon::{Architecture, OperatingSystem, Triple};
 
 pub(crate) fn emit_map_get_value_ref_for_key<M: cranelift_module::Module, T: Types<Ty = Ty>>(
@@ -407,51 +409,48 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
         }
         Prim::MakeBitstring(fields) => {
             let process = body.process_arg();
-            runtime_call!(body, fz_bs_begin, [process]);
-            for f in fields {
-                let ty_tag = body.b.ins().iconst(types::I32, f.ty.runtime_tag() as i64);
-                let unit = body
-                    .b
-                    .ins()
-                    .iconst(types::I32, f.unit.unwrap_or(f.ty.default_unit()) as i64);
-                let endian = body.b.ins().iconst(types::I32, encode_endian(f.endian) as i64);
+            let slot = body.b.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                (fields.len() * size_of::<FzBsField>()) as u32,
+                align_of::<FzBsField>().trailing_zeros() as u8,
+            ));
+            for (index, f) in fields.iter().enumerate() {
                 let (size_present, size_value) = match &f.size {
-                    None => (body.b.ins().iconst(types::I32, 0), body.b.ins().iconst(types::I32, 0)),
-                    Some(BitSizeIr::Literal(n)) => (
-                        body.b.ins().iconst(types::I32, 1),
-                        body.b.ins().iconst(types::I32, *n as i64),
-                    ),
-                    Some(BitSizeIr::Var(v)) => {
-                        let unb = body.as_raw_i64(var_env, v.0);
-                        let truncated = body.b.ins().ireduce(types::I32, unb);
-                        (body.b.ins().iconst(types::I32, 1), truncated)
-                    }
+                    None => (0, body.b.ins().iconst(types::I64, 0)),
+                    Some(BitSizeIr::Literal(n)) => (1, body.b.ins().iconst(types::I64, *n as i64)),
+                    Some(BitSizeIr::Var(v)) => (1, body.as_raw_i64(var_env, v.0)),
                     Some(BitSizeIr::ByteSizeOf(_)) => {
                         unreachable!("only a pattern sizes a segment by a pinned binary, never a construction")
                     }
                 };
-                if f.ty.writes_scalar_word() {
-                    let raw = if f.ty == BitType::Float {
-                        body.as_float_word(var_env, f.value.0)
-                    } else {
-                        body.as_raw_i64(var_env, f.value.0)
-                    };
-                    runtime_call!(
-                        body,
-                        fz_bs_write_word,
-                        [process, raw, ty_tag, size_present, size_value, unit, endian]
-                    );
+                let spec = fz_bs_field_spec(
+                    f.ty.runtime_tag(),
+                    size_present,
+                    f.unit.unwrap_or(f.ty.default_unit()),
+                    encode_endian(f.endian),
+                    0,
+                    0,
+                );
+                let value = if f.ty == BitType::Float {
+                    body.as_float_word(var_env, f.value.0)
+                } else if f.ty.writes_scalar_word() {
+                    body.as_raw_i64(var_env, f.value.0)
                 } else {
-                    let value_ref = body.tagged_var(var_env, f.value.0);
-                    runtime_call!(
-                        body,
-                        fz_bs_write_field_ref,
-                        [process, value_ref, ty_tag, size_present, size_value, unit]
-                    );
+                    body.tagged_var(var_env, f.value.0)
+                };
+                let spec = body.b.ins().iconst(types::I64, spec as i64);
+                let base = index * size_of::<FzBsField>();
+                for (offset, word) in [
+                    (offset_of!(FzBsField, spec), spec),
+                    (offset_of!(FzBsField, size), size_value),
+                    (offset_of!(FzBsField, value), value),
+                ] {
+                    body.b.ins().stack_store(types::I64, word, slot, (base + offset) as i32);
                 }
             }
-            let process = body.process_arg();
-            LowerOut::ValueRef(runtime_call1!(body, fz_bs_finalize, [process]))
+            let descriptors = body.b.ins().stack_addr(types::I64, slot, 0);
+            let count = body.b.ins().iconst(types::I64, fields.len() as i64);
+            LowerOut::ValueRef(runtime_call1!(body, fz_bs_build, [process, descriptors, count]))
         }
         Prim::ConstBitstring(bytes, bit_len) => {
             let literal = env

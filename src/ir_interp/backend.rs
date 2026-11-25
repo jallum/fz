@@ -29,15 +29,15 @@ use crate::types::ClosureTarget;
 use fz_runtime::any_value::{
     AnyValue as RuntimeAnyValue, AnyValueRef, SlotLayout, Stored, ValueKind, closure_addr_from_tagged,
 };
+use fz_runtime::construction::FzBsField;
 use fz_runtime::delivery::Delivery;
 use fz_runtime::exec_ctx::{Argv, ExecCtx, NO_ARGV, timer_cancel, timer_schedule};
 use fz_runtime::heap::deep_copy_any_value_ref;
 use fz_runtime::heap::{Collected, Schema};
 use fz_runtime::ir_runtime::{
-    fz_bs_begin, fz_bs_finalize, fz_bs_write_field_ref, fz_bs_write_word, fz_list_reuse_or_cons_parts,
-    fz_map_dest_begin, fz_map_dest_begin_update, fz_map_dest_freeze, fz_map_dest_publish, fz_map_dest_put,
-    fz_mark_published_ref_aliased, fz_struct_get_field_ref, fz_struct_module, fz_struct_reuse_or_copy,
-    fz_struct_store_ref,
+    fz_bs_build, fz_bs_field_spec, fz_list_reuse_or_cons_parts, fz_map_dest_begin, fz_map_dest_begin_update,
+    fz_map_dest_freeze, fz_map_dest_publish, fz_map_dest_put, fz_mark_published_ref_aliased, fz_struct_get_field_ref,
+    fz_struct_module, fz_struct_reuse_or_copy, fz_struct_store_ref,
 };
 use fz_runtime::module_name::{ModuleName, STRUCT_MODULE_FIELD};
 use fz_runtime::output::{EXPAND_HOOK, OUTPUT_HOOK, OutputContext, OutputSink, WARN_HOOK};
@@ -1940,38 +1940,36 @@ fn eval_steps<T: Telemetry + ?Sized>(
                 );
             }
             ProgramStep::Bitstring { value, fields } => {
-                fz_bs_begin(runtime.cur_proc());
+                let mut descriptors = Vec::with_capacity(fields.len());
                 for field in fields {
                     let item = env_get(transport, runtime.cur_proc(), env, field.value)?;
-                    let (size_present, size_value) =
+                    let (size_present, size) =
                         backend_bit_size_value(transport, runtime.cur_proc(), env, &field.spec.size)?;
-                    let ty = field.spec.ty.runtime_tag();
-                    let unit = field.spec.unit.unwrap_or(backend_default_bit_unit(field.spec.ty));
-                    let endian = backend_endian_tag(field.spec.endian);
-                    if field.spec.ty.writes_scalar_word() {
-                        let raw = if field.spec.ty == crate::ast::BitType::Float {
-                            item.as_float_word()
-                                .expect("a construction's check passes only a number to a float segment")
-                        } else {
-                            item.as_i64()
-                                .expect("a construction's check passes only an integer to a scalar segment")
-                        };
-                        fz_bs_write_word(runtime.cur_proc(), raw, ty, size_present, size_value, unit, endian);
+                    let spec = fz_bs_field_spec(
+                        field.spec.ty.runtime_tag(),
+                        size_present,
+                        field.spec.unit.unwrap_or(backend_default_bit_unit(field.spec.ty)),
+                        backend_endian_tag(field.spec.endian),
+                        0,
+                        0,
+                    );
+                    let value = if field.spec.ty == crate::ast::BitType::Float {
+                        item.as_float_word()
+                            .expect("a construction's check passes only a number to a float segment")
+                            as u64
+                    } else if field.spec.ty.writes_scalar_word() {
+                        item.as_i64()
+                            .expect("a construction's check passes only an integer to a scalar segment")
+                            as u64
                     } else {
-                        fz_bs_write_field_ref(
-                            runtime.cur_proc(),
-                            item.as_ref_word(runtime.cur_proc())?,
-                            ty,
-                            size_present,
-                            size_value,
-                            unit,
-                        );
-                    }
+                        item.as_ref_word(runtime.cur_proc())?
+                    };
+                    descriptors.push(FzBsField { spec, size, value });
                 }
                 env.insert(
                     *value,
                     BackendBoundValue::Runtime(interp_value_from_ref_word(
-                        fz_bs_finalize(runtime.cur_proc()),
+                        fz_bs_build(runtime.cur_proc(), descriptors.as_ptr(), descriptors.len() as u64),
                         "backend bitstring",
                     )?),
                 );
@@ -3965,19 +3963,19 @@ fn backend_bit_size_value(
     proc: *mut Process,
     env: &Frame,
     size: &Option<crate::compiler2::LoweredBitSize>,
-) -> Result<(u32, u32), String> {
+) -> Result<(u32, u64), String> {
     Ok(match size {
         None => (0, 0),
-        Some(crate::compiler2::LoweredBitSize::Literal(value)) => (1, *value),
+        Some(crate::compiler2::LoweredBitSize::Literal(value)) => (1, *value as u64),
         Some(crate::compiler2::LoweredBitSize::Value(value)) => {
             let size = env_get(transport, proc, env, *value)?
                 .as_i64()
                 .ok_or_else(|| "bit size value must be an integer".to_string())?;
-            (1, size as u32)
+            (1, size as u32 as u64)
         }
         Some(crate::compiler2::LoweredBitSize::ByteSizeOf(value)) => {
             let pinned = env_get(transport, proc, env, *value)?.as_ref_word(proc)?;
-            (1, fz_runtime::ir_runtime::fz_pinned_binary_segment_size(pinned))
+            (1, fz_runtime::ir_runtime::fz_pinned_binary_segment_size(pinned) as u64)
         }
     })
 }

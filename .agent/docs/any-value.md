@@ -140,15 +140,21 @@ as many bytes again, each side written once. A loop of `acc <> x` therefore
 allocates a buffer per doubling, not one per step. `Heap::alloc_bitstring`
 remains the storage choice for every other value the runtime builds; the one
 other place that splits on the threshold is `Prim::ConstBitstring` lowering,
-which emits a static `SharedBin` above it. `<<a :: binary, b :: binary>>` built
-through `fz_bs_begin`/`fz_bs_write_field_ref`/`fz_bs_finalize` does not append: it copies
-the whole result into a new buffer each time.
+which emits a static `SharedBin` above it. `<<a :: binary, b :: binary>>`
+built through `fz_bs_build` does not append: it copies the whole result into a
+new buffer each time.
 
-A construction writes each field between `fz_bs_begin` and `fz_bs_finalize` through one of two
-runtime functions. `fz_bs_write_word` writes every scalar field (integer, float, utf8, utf16,
-utf32) from the raw word the field already is: an integer's bits, or an f64's bits for a float.
-Nothing is boxed to write it. `fz_bs_write_field_ref` writes the fields that name a heap bitstring
-(binary, bits) from the value's ref.
+A construction is one `fz_bs_build(process, fields, count)` call over an array
+of `FzBsField { spec, size, value }` descriptors (`runtime/src/construction.rs`).
+`spec` is the segment's `fz_bs_field_spec`, the same word a match uses; `value`
+is the raw word the segment already is (an integer's bits, an f64's bits for a
+float, a code point) or the tagged word of the bitstring a binary or bits
+segment names, so nothing is boxed. The runtime resolves each descriptor to a
+`Segment`, adds the segments' bits up, allocates the result once through
+`alloc_bitstring_with`, and writes each segment once into the destination
+through a `BitSink`. A whole-byte segment at a byte boundary is a byte copy; a
+segment that starts mid-byte writes bits into the destination. A `float` of 16
+bits is IEEE half precision, rounded to nearest even and infinite past 65504.
 
 Before a construction writes anything, it tests every segment's contract
 (`src/compiler2/jobs/body/construction_contract.rs`): an `integer` takes an
