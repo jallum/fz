@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-25T12:09:24Z",
+  "description": "From: Elixir Parity. User-approved 2026-11-25. Not on #791's path.\n%{v | a: 1} on a non-map panics at map_view.rs:217. On a definite binary it is a compile-time spec/violation on fz_map_has_key, since #896. Elixir raises BadMapError. Related: fz-sc8.122 (closed, map functions on a non-map).\nDone when: the update raises BadMapError as Elixir does, on all three paths, with an oracle fixture.",
+  "id": "fz-mue.75",
+  "labels": [],
+  "parent": "fz-mue",
+  "priority": 2,
+  "status": "open",
+  "title": "%{v | a: 1} on a non-map raises BadMapError",
+  "type": "bug",
+  "updated_at": "2026-11-25T12:09:24Z"
+}
