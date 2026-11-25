@@ -30,6 +30,20 @@ defmodule :lists do
   def reverse([head | rest], tail), do: reverse(rest, [head | tail])
 
   @doc """
+  Returns `true` when `elem` matches (`===`) an element of `list`, otherwise
+  `false`. OTP implements it as a BIF; here it is written in fz.
+
+  ## Examples
+
+      :lists.member(2, [1, 2, 3])
+      #=> true
+
+  """
+  @spec member(t, [t]) :: boolean when t: var
+  def member(_, []), do: false
+  def member(elem, [head | rest]), do: if(elem === head, do: true, else: member(elem, rest))
+
+  @doc """
   Returns a list of `n` copies of `elem`. `n` is a non-negative integer.
 
   ## Examples

@@ -224,8 +224,8 @@ the tuple, so compiling saves no work. A bad subject, pattern or option list
 raises `ArgumentError` worded per argument as Elixir words it (`02050`).
 
 `lib/lists.fz` defines `:lists` with `reverse/1`, `reverse/2`, `duplicate/2`,
-`map/2` and `foldl/3`, clause for clause as OTP's `lists.erl` writes them.
-`reverse/2` is a BIF in OTP and is written in fz here. `map/2` and `foldl/3`
+`map/2`, `foldl/3` and `member/2`, clause for clause as OTP's `lists.erl` writes them.
+`reverse/2` and `member/2` are BIFs in OTP and are written in fz here. `map/2` and `foldl/3`
 guard `is_function(f, 1)` and `is_function(f, 2)`; `duplicate/2` guards
 `is_integer(n) and n >= 0`. The specs are OTP's, so a call whose arguments are
 proven outside them is refused at compile time.
@@ -236,6 +236,17 @@ of codepoints, binaries and chardata, improper tails included). Both answer `[]`
 for empty chardata and `{:error, rest}` when `rest` begins with a binary that is
 not UTF-8; `gc/1` decides cluster ends by the same rules as
 `String.next_grapheme/1`. Fixture 01944 compares every case against Elixir.
+
+`lib/erlang_string.fz` defines `:string` with `take/2,3,4` and `next_codepoint/1`,
+clause for clause as OTP's `string.erl` writes them, with the helpers they reach
+(`take_l`, `take_lc`, `take_t`, `take_tc`, the `bin_search*` family, `cp_prefix`,
+`equal`, `is_empty`). `next_codepoint/1` is `:unicode_util.cp/1`; the takes use
+`:unicode_util.gc/1`, `:binary.match/2` over `:binary.compile_pattern/1`,
+`:unicode.characters_to_binary/1` and `:lists.member/2`. OTP's `?ASCII_LIST`
+macro is written out in each guard that uses it, and its `is_integer(x, 0, 255)`
+is `is_integer(x) and x >= 0 and x <= 255`, which Elixir 1.19 on OTP 28 also has
+to write. `:lists.member/2` (a BIF in OTP) is written in fz in `lib/lists.fz`.
+Fixture 02060 compares every mode of `take` and `next_codepoint` against Elixir.
 
 `lib/unicode.fz` defines `:unicode` with `characters_to_binary/1`, which OTP
 implements as a BIF (`erl_unicode.c`) and fz writes as source. A first pass

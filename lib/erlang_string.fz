@@ -1,0 +1,613 @@
+defmodule :string do
+  @moduledoc """
+  The Erlang `:string` functions that take the leading or trailing run of a
+  set of grapheme clusters out of chardata, and that give the next codepoint.
+
+  Chardata is a binary, or a list of codepoints, binaries and chardata. A
+  grapheme cluster is a codepoint or a list of codepoints.
+  """
+
+  @doc """
+  Splits `string` into the leading run of grapheme clusters that are members of
+  `characters` and the rest.
+
+  Equivalent to `take(string, characters, false, :leading)`.
+
+  ## Examples
+
+      :string.take("abc0z123", Enum.to_list(?a..?z))
+      #=> {"abc", "0z123"}
+
+  """
+  @spec take(any, [any]) :: {any, any}
+  def take(str, sep), do: take(str, sep, false, :leading)
+
+  @doc """
+  Splits `string` into the leading run of grapheme clusters that are members of
+  `characters` (or, when `complement` is `true`, are not) and the rest.
+
+  Equivalent to `take(string, characters, complement, :leading)`.
+
+  ## Examples
+
+      :string.take(<<"abc0z123">>, Enum.to_list(?0..?9), true)
+      #=> {"abc", "0z123"}
+
+  """
+  @spec take(any, [any], boolean) :: {any, any}
+  def take(str, sep, complement), do: take(str, sep, complement, :leading)
+
+  @doc """
+  Splits `string` into the run of grapheme clusters that are members of
+  `characters` (or, when `complement` is `true`, are not) taken from the
+  `dir` end, `:leading` or `:trailing`, and the rest.
+
+  ## Examples
+
+      :string.take("abc0z123", Enum.to_list(?0..?9), false, :trailing)
+      #=> {"abc0z", "123"}
+
+      :string.take(<<"abc0z123">>, Enum.to_list(?a..?z), true, :trailing)
+      #=> {"abc0z", "123"}
+
+  """
+  @spec take(any, [any], boolean, :leading | :trailing) :: {any, any}
+  def take(str, [], complement, dir) do
+    empty = if is_binary(str), do: <<>>, else: []
+
+    case {complement, dir} do
+      {false, :leading} -> {empty, str}
+      {false, :trailing} -> {str, empty}
+      {true, :leading} -> {str, empty}
+      {true, :trailing} -> {empty, str}
+    end
+  end
+
+  def take(str, sep, false, :leading), do: take_l(str, sep, [])
+
+  def take(str, sep0, true, :leading) do
+    sep = search_pattern(sep0)
+    take_lc(str, sep, [])
+  end
+
+  def take(str, sep0, false, :trailing) do
+    sep = search_pattern(sep0)
+    take_t(str, 0, sep)
+  end
+
+  def take(str, sep0, true, :trailing) do
+    sep = search_pattern(sep0)
+    take_tc(str, 0, sep)
+  end
+
+  @doc """
+  Returns the first codepoint of `string` and the rest, `[]` when it is empty,
+  or `{:error, rest}` when it begins with a binary that is not UTF-8.
+
+  ## Examples
+
+      :string.next_codepoint("é!")
+      #=> [233 | "!"]
+
+  """
+  @spec next_codepoint(any) :: any
+  def next_codepoint(cd), do: :unicode_util.cp(cd)
+
+  @spec is_empty(any) :: boolean
+  defp is_empty([]), do: true
+  defp is_empty(<<>>), do: true
+  defp is_empty([l | r]), do: is_empty(l) and is_empty(r)
+  defp is_empty(_), do: false
+
+  @spec equal(any, any) :: boolean
+  defp equal(a, b) when is_binary(a) and is_binary(b), do: a == b
+  defp equal(a, b), do: equal_1(a, b)
+
+  @spec equal_1(any, any) :: boolean
+  defp equal_1([a | ar], [b | br]) when is_integer(a) and is_integer(b), do: a == b and equal_1(ar, br)
+  defp equal_1([], br), do: is_empty(br)
+
+  defp equal_1(a0, b0) do
+    case {:unicode_util.cp(a0), :unicode_util.cp(b0)} do
+      {[cp | a], [cp | b]} -> equal_1(a, b)
+      {[], []} -> true
+      {l1, l2} when is_list(l1) and is_list(l2) -> false
+    end
+  end
+
+  @spec take_l(any, any, any) :: {any, any}
+  defp take_l([cp1 | [cp2 | _] = cont] = str, seps, acc) when is_integer(cp1) and cp1 >= 0 and cp1 <= 255 and is_integer(cp2) and cp2 >= 0 and cp2 <= 255 and cp1 != 13 do
+    case :lists.member(cp1, seps) do
+      true -> take_l(cont, seps, [cp1 | acc])
+      false -> {rev(acc), str}
+    end
+  end
+
+  defp take_l([bin | cont0], seps, acc) when is_binary(bin) do
+    case bin_search_inv(bin, cont0, seps) do
+      {:nomatch, cont} ->
+        used = cp_prefix(cont0, cont)
+        take_l(cont, seps, [:unicode.characters_to_binary([bin | used]) | acc])
+
+      [bin1 | _] = after_ when is_binary(bin1) ->
+        first = byte_size(bin) - byte_size(bin1)
+        <<keep :: binary-size(first), _ :: binary>> = bin
+        {btoken(keep, acc), after_}
+    end
+  end
+
+  defp take_l(str, seps, acc) when is_list(str) do
+    case :unicode_util.gc(str) do
+      [c | cs] ->
+        case :lists.member(c, seps) do
+          true -> take_l(cs, seps, append(rev(c), acc))
+          false -> {rev(acc), str}
+        end
+
+      [] ->
+        {rev(acc), []}
+    end
+  end
+
+  defp take_l(bin, seps, acc) when is_binary(bin) do
+    case bin_search_inv(bin, [], seps) do
+      {:nomatch, _} ->
+        {btoken(bin, acc), <<>>}
+
+      [after_] ->
+        first = byte_size(bin) - byte_size(after_)
+        <<keep :: binary-size(first), _ :: binary>> = bin
+        {btoken(keep, acc), after_}
+    end
+  end
+
+  @spec take_lc(any, any, any) :: {any, any}
+  defp take_lc([cp1 | cont] = str0, {gcs, cps, _} = seps, acc) when is_integer(cp1) do
+    case :lists.member(cp1, cps) do
+      true ->
+        [gc | str] = :unicode_util.gc(str0)
+
+        case :lists.member(gc, gcs) do
+          false -> take_lc(str, seps, append(rev(gc), acc))
+          true -> {rev(acc), str0}
+        end
+
+      false ->
+        take_lc(cont, seps, append(cp1, acc))
+    end
+  end
+
+  defp take_lc([bin | cont0], seps0, acc) when is_binary(bin) do
+    seps = search_compile(seps0)
+
+    case bin_search(bin, cont0, seps) do
+      {:nomatch, cont} ->
+        used = cp_prefix(cont0, cont)
+        take_lc(cont, seps, [:unicode.characters_to_binary([bin | used]) | acc])
+
+      [bin1 | _] = after_ when is_binary(bin1) ->
+        first = byte_size(bin) - byte_size(bin1)
+        <<keep :: binary-size(first), _ :: binary>> = bin
+        {btoken(keep, acc), after_}
+    end
+  end
+
+  defp take_lc(str, {gcs, _, _} = seps, acc) when is_list(str) do
+    case :unicode_util.gc(str) do
+      [c | cs] ->
+        case :lists.member(c, gcs) do
+          false -> take_lc(cs, seps, append(rev(c), acc))
+          true -> {rev(acc), str}
+        end
+
+      [] ->
+        {rev(acc), []}
+    end
+  end
+
+  defp take_lc(bin, seps0, acc) when is_binary(bin) do
+    seps = search_compile(seps0)
+
+    case bin_search(bin, [], seps) do
+      {:nomatch, _} ->
+        {btoken(bin, acc), <<>>}
+
+      [after_] ->
+        first = byte_size(bin) - byte_size(after_)
+        <<keep :: binary-size(first), _ :: binary>> = bin
+        {btoken(keep, acc), after_}
+    end
+  end
+
+  @spec take_t(any, integer, any) :: {any, any}
+  defp take_t([cp1 | cont] = str0, _, {gcs, cps, _} = seps) when is_integer(cp1) do
+    case :lists.member(cp1, cps) do
+      true ->
+        [gc | str] = :unicode_util.gc(str0)
+
+        case :lists.member(gc, gcs) do
+          true ->
+            {head, tail} = take_t(str, 0, seps)
+
+            case is_empty(head) do
+              true -> {head, append(gc, tail)}
+              false -> {append(gc, head), tail}
+            end
+
+          false ->
+            {head, tail} = take_t(str, 0, seps)
+            {append(gc, head), tail}
+        end
+
+      false ->
+        {head, tail} = take_t(cont, 0, seps)
+        {[cp1 | head], tail}
+    end
+  end
+
+  defp take_t([bin | cont0], n, {gcs, _, _} = seps0) when is_binary(bin) do
+    <<_ :: binary-size(n), rest :: binary>> = bin
+    seps = search_compile(seps0)
+
+    case bin_search(rest, cont0, seps) do
+      {:nomatch, cont} ->
+        used = cp_prefix(cont0, cont)
+        {head, tail} = take_t(cont, 0, seps)
+        {stack(:unicode.characters_to_binary([bin | used]), head), tail}
+
+      [sep_start | cont1] ->
+        case bin_search_inv(sep_start, cont1, gcs) do
+          {:nomatch, cont} ->
+            {head, tail} = take_t(cont, 0, seps)
+            used = cp_prefix(cont0, cont)
+
+            case is_empty(head) do
+              true ->
+                keep_sz = byte_size(bin) - byte_size(sep_start)
+                <<keep :: binary-size(keep_sz), end_ :: binary>> = bin
+                {keep, stack(stack(end_, used), tail)}
+
+              false ->
+                {stack(:unicode.characters_to_binary([bin | used]), head), tail}
+            end
+
+          [non_sep | cont] when is_binary(non_sep) ->
+            keep_sz = byte_size(bin) - byte_size(non_sep)
+            take_t([bin | cont], keep_sz, seps)
+        end
+    end
+  end
+
+  defp take_t(str, 0, {gcs, _, _} = seps) when is_list(str) do
+    case :unicode_util.gc(str) do
+      [gc | cs1] ->
+        case :lists.member(gc, gcs) do
+          true ->
+            {head, tail} = take_t(cs1, 0, seps)
+
+            case is_empty(head) do
+              true -> {head, append(gc, tail)}
+              false -> {append(gc, head), tail}
+            end
+
+          false ->
+            {head, tail} = take_t(cs1, 0, seps)
+            {append(gc, head), tail}
+        end
+
+      [] ->
+        {[], []}
+    end
+  end
+
+  defp take_t(bin, n, {gcs, _, _} = seps0) when is_binary(bin) do
+    <<_ :: binary-size(n), rest :: binary>> = bin
+    seps = search_compile(seps0)
+
+    case bin_search(rest, [], seps) do
+      {:nomatch, _} ->
+        {bin, <<>>}
+
+      [sep_start] ->
+        case bin_search_inv(sep_start, [], gcs) do
+          {:nomatch, _} ->
+            keep_sz = byte_size(bin) - byte_size(sep_start)
+            <<before :: binary-size(keep_sz), end_ :: binary>> = bin
+            {before, end_}
+
+          [non_sep] ->
+            keep_sz = byte_size(bin) - byte_size(non_sep)
+            take_t(bin, keep_sz, seps)
+        end
+    end
+  end
+
+  @spec take_tc(any, integer, any) :: {any, any}
+  defp take_tc([cp1 | [cp2 | _] = cont], _, {gcs, _, _} = seps) when is_integer(cp1) and cp1 >= 0 and cp1 <= 255 and is_integer(cp2) and cp2 >= 0 and cp2 <= 255 and cp1 != 13 do
+    case :lists.member(cp1, gcs) do
+      false ->
+        {head, tail} = take_tc(cont, 0, seps)
+
+        case is_empty(head) do
+          true -> {head, append(cp1, tail)}
+          false -> {append(cp1, head), tail}
+        end
+
+      true ->
+        {head, tail} = take_tc(cont, 0, seps)
+        {append(cp1, head), tail}
+    end
+  end
+
+  defp take_tc([bin | cont0], n, {gcs, _, _} = seps0) when is_binary(bin) do
+    <<_ :: binary-size(n), rest :: binary>> = bin
+
+    case bin_search_inv(rest, cont0, gcs) do
+      {:nomatch, cont} ->
+        used = cp_prefix(cont0, cont)
+        {head, tail} = take_tc(cont, 0, seps0)
+        {stack(:unicode.characters_to_binary([bin | used]), head), tail}
+
+      [sep_start | cont1] ->
+        seps = search_compile(seps0)
+
+        case bin_search(sep_start, cont1, seps) do
+          {:nomatch, cont} ->
+            {head, tail} = take_tc(cont, 0, seps)
+            used = cp_prefix(cont0, cont)
+
+            case is_empty(head) do
+              true ->
+                keep_sz = byte_size(bin) - byte_size(sep_start)
+                <<keep :: binary-size(keep_sz), end_ :: binary>> = bin
+                {keep, stack(stack(end_, used), tail)}
+
+              false ->
+                {stack(:unicode.characters_to_binary([bin | used]), head), tail}
+            end
+
+          [non_sep | cont] when is_binary(non_sep) ->
+            keep_sz = byte_size(bin) - byte_size(non_sep)
+            take_tc([bin | cont], keep_sz, seps)
+        end
+    end
+  end
+
+  defp take_tc(str, 0, {gcs, _, _} = seps) when is_list(str) do
+    case :unicode_util.gc(str) do
+      [gc | cs1] ->
+        case :lists.member(gc, gcs) do
+          false ->
+            {head, tail} = take_tc(cs1, 0, seps)
+
+            case is_empty(head) do
+              true -> {head, append(gc, tail)}
+              false -> {append(gc, head), tail}
+            end
+
+          true ->
+            {head, tail} = take_tc(cs1, 0, seps)
+            {append(gc, head), tail}
+        end
+
+      [] ->
+        {[], []}
+    end
+  end
+
+  defp take_tc(bin, n, {gcs, _, _} = seps0) when is_binary(bin) do
+    <<_ :: binary-size(n), rest :: binary>> = bin
+
+    case bin_search_inv(rest, [], gcs) do
+      {:nomatch, _} ->
+        {bin, <<>>}
+
+      [sep_start] ->
+        seps = search_compile(seps0)
+
+        case bin_search(sep_start, [], seps) do
+          {:nomatch, _} ->
+            keep_sz = byte_size(bin) - byte_size(sep_start)
+            <<before :: binary-size(keep_sz), end_ :: binary>> = bin
+            {before, end_}
+
+          [non_sep] ->
+            keep_sz = byte_size(bin) - byte_size(non_sep)
+            take_tc(bin, keep_sz, seps)
+        end
+    end
+  end
+
+  @spec btoken(any, any) :: any
+  defp btoken(token, []), do: token
+  defp btoken(bin_part, [c]) when is_integer(c), do: <<c :: utf8, bin_part :: binary>>
+  defp btoken(<<>>, tkn), do: :lists.reverse(tkn)
+  defp btoken(bin_part, cs), do: [:lists.reverse(cs), bin_part]
+
+  @spec rev(any) :: any
+  defp rev([b]) when is_binary(b), do: b
+  defp rev(l) when is_list(l), do: :lists.reverse(l)
+  defp rev(c) when is_integer(c), do: c
+
+  @spec append(any, any) :: any
+  defp append(char, <<>>) when is_integer(char), do: [char]
+  defp append(char, <<>>) when is_list(char), do: char
+  defp append(char, bin) when is_binary(bin), do: [char, bin]
+  defp append(char, str) when is_integer(char), do: [char | str]
+  defp append(gc, str) when is_list(gc), do: gc ++ str
+
+  @spec stack(any, any) :: any
+  defp stack(bin, []), do: bin
+  defp stack(<<>>, st), do: st
+  defp stack([], st), do: st
+  defp stack(bin, st), do: [bin | st]
+
+  @spec cp_prefix(any, any) :: any
+  defp cp_prefix(orig, cont) do
+    case :unicode_util.cp(cont) do
+      [] -> orig
+      [cp | rest] -> cp_prefix_1(orig, cp, rest)
+    end
+  end
+
+  @spec cp_prefix_1(any, any, any) :: any
+  defp cp_prefix_1(orig, until, cont) do
+    case :unicode_util.cp(orig) do
+      [^until | rest] ->
+        case equal(rest, cont) do
+          true -> []
+          false -> [until | cp_prefix_1(rest, until, cont)]
+        end
+
+      [cp | rest] ->
+        [cp | cp_prefix_1(rest, until, cont)]
+    end
+  end
+
+  @spec bin_search(any, any, any) :: any
+  defp bin_search(bin, cont, {seps, _, bp}), do: bin_search_loop(bin, 0, bp, cont, seps)
+
+  @spec search_pattern(any) :: {any, any, any}
+  defp search_pattern({_, _, _} = p), do: p
+
+  defp search_pattern(seps) do
+    cps = search_cp(seps)
+    {seps, cps, :undefined}
+  end
+
+  @spec search_compile(any) :: {any, any, any}
+  defp search_compile({sep, cps, :undefined}), do: {sep, cps, :binary.compile_pattern(bin_pattern(cps))}
+  defp search_compile({_, _, _} = compiled), do: compiled
+
+  @spec search_cp(any) :: [integer]
+  defp search_cp([cp | seps]) when is_integer(cp), do: [cp | search_cp(seps)]
+
+  defp search_cp([pattern | seps]) do
+    [cp | _] = :unicode_util.cp(pattern)
+    [cp | search_cp(seps)]
+  end
+
+  defp search_cp([]), do: []
+
+  @spec bin_pattern([integer]) :: [binary]
+  defp bin_pattern([cp | seps]), do: [<<cp :: utf8>> | bin_pattern(seps)]
+  defp bin_pattern([]), do: []
+
+  @spec bin_search_loop(binary, integer, any, any, any) :: any
+  defp bin_search_loop(bin0, start, _, cont, _seps) when byte_size(bin0) <= start or start < 0, do: {:nomatch, cont}
+
+  defp bin_search_loop(bin0, start, bin_seps, cont, seps) do
+    <<_ :: binary-size(start), bin :: binary>> = bin0
+
+    case :binary.match(bin, bin_seps) do
+      :nomatch ->
+        {:nomatch, cont}
+
+      {where, _cl} when cont == [] ->
+        <<_ :: binary-size(where), cont1 :: binary>> = bin
+        [gc | cont2] = :unicode_util.gc(cont1)
+
+        case :lists.member(gc, seps) do
+          false when cont2 == [] ->
+            {:nomatch, []}
+
+          false ->
+            next = byte_size(bin0) - byte_size(cont2)
+            bin_search_loop(bin0, next, bin_seps, cont, seps)
+
+          true ->
+            [cont1]
+        end
+
+      {where, _cl} ->
+        <<_ :: binary-size(where), cont0 :: binary>> = bin
+        cont1 = [cont0 | cont]
+        [gc | cont2] = :unicode_util.gc(cont1)
+
+        case :lists.member(gc, seps) do
+          false ->
+            case cont2 do
+              [bin_r | ^cont] when is_binary(bin_r) ->
+                next = byte_size(bin0) - byte_size(bin_r)
+                bin_search_loop(bin0, next, bin_seps, cont, seps)
+
+              _ ->
+                {:nomatch, cont2}
+            end
+
+          true ->
+            cont1
+        end
+    end
+  end
+
+  @spec bin_search_inv(any, any, any) :: any
+  defp bin_search_inv(<<>>, cont, _), do: {:nomatch, cont}
+  defp bin_search_inv(bin, cont, [sep]), do: bin_search_inv_1(bin, cont, sep)
+  defp bin_search_inv(bin, cont, seps), do: bin_search_inv_n(bin, cont, seps)
+
+  @spec bin_search_inv_1(any, any, any) :: any
+  defp bin_search_inv_1(<<cp1 :: utf8, bin_rest :: binary>> = bin0, cont, sep) do
+    case bin_rest do
+      <<cp2 :: utf8, _ :: binary>> when is_integer(cp1) and cp1 >= 0 and cp1 <= 255 and is_integer(cp2) and cp2 >= 0 and cp2 <= 255 and cp1 != 13 ->
+        case cp1 do
+          ^sep -> bin_search_inv_1(bin_rest, cont, sep)
+          _ -> [bin0 | cont]
+        end
+
+      _ when cont == [] ->
+        case :unicode_util.gc(bin0) do
+          [^sep | bin] -> bin_search_inv_1(bin, cont, sep)
+          _ -> [bin0 | cont]
+        end
+
+      _ ->
+        case :unicode_util.gc([bin0 | cont]) do
+          [^sep | [bin | ^cont]] when is_binary(bin) -> bin_search_inv_1(bin, cont, sep)
+          [^sep | cs] -> {:nomatch, cs}
+          _ -> [bin0 | cont]
+        end
+    end
+  end
+
+  defp bin_search_inv_1(<<>>, cont, _sep), do: {:nomatch, cont}
+  defp bin_search_inv_1([], cont, _sep), do: {:nomatch, cont}
+  defp bin_search_inv_1(bin, _, _), do: :erlang.error({:badarg, bin})
+
+  @spec bin_search_inv_n(any, any, any) :: any
+  defp bin_search_inv_n(<<cp1 :: utf8, bin_rest :: binary>> = bin0, cont, seps) do
+    case bin_rest do
+      <<cp2 :: utf8, _ :: binary>> when is_integer(cp1) and cp1 >= 0 and cp1 <= 255 and is_integer(cp2) and cp2 >= 0 and cp2 <= 255 and cp1 != 13 ->
+        case :lists.member(cp1, seps) do
+          true -> bin_search_inv_n(bin_rest, cont, seps)
+          false -> [bin0 | cont]
+        end
+
+      _ when cont == [] ->
+        [gc | bin] = :unicode_util.gc(bin0)
+
+        case :lists.member(gc, seps) do
+          true -> bin_search_inv_n(bin, cont, seps)
+          false -> [bin0 | cont]
+        end
+
+      _ ->
+        [gc | cs0] = :unicode_util.gc([bin0 | cont])
+
+        case :lists.member(gc, seps) do
+          false ->
+            [bin0 | cont]
+
+          true ->
+            case cs0 do
+              [bin | ^cont] when is_binary(bin) -> bin_search_inv_n(bin, cont, seps)
+              _ -> {:nomatch, cs0}
+            end
+        end
+    end
+  end
+
+  defp bin_search_inv_n(<<>>, cont, _sep), do: {:nomatch, cont}
+  defp bin_search_inv_n([], cont, _sep), do: {:nomatch, cont}
+  defp bin_search_inv_n(bin, _, _), do: :erlang.error({:badarg, bin})
+end

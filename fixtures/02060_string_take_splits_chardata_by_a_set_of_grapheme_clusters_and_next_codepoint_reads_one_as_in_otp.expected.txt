@@ -1,0 +1,63 @@
+list: {~c"  ", ~c"{x"}
+binary: {"  ", "ab c"}
+empty binary: {"", ""}
+empty list: {[], []}
+no set, leading: {"", "abc"}
+no set, complement: {~c"a", []}
+no set, trailing: {"abc", ""}
+no set, both: {"", "abc"}
+doc 1: {"abc", "0z123"}
+doc 2: {"abc", "0z123"}
+doc 3: {"abc0z", "123"}
+doc 4: {"abc0z", "123"}
+doc 3 list: {~c"abc0z", ~c"123"}
+complement list: {~c"abc", ~c"0z123"}
+all taken: {"abc", ""}
+none taken: {"", "abc"}
+all taken, complement: {"abc", ""}
+all, trailing: {"", "abc"}
+none, trailing: {"abc", ""}
+none, c trailing: {"abc", ""}
+multibyte: {"aé", "b"}
+multibyte run: {"éé", "1"}
+multibyte tail: {"1", "éé"}
+multibyte comp: {"1", "éé"}
+crlf cluster: {"ab\r\n", "cd"}
+crlf split set: {"ab", "\r\ncd"}
+crlf list: {~c"ab\r\n", ~c"c"}
+ring bin: {["aé"], ["x"]}
+ring list: {[97, 101, 769], ~c"x"}
+ring not in set: {~c"a", [101, 769, 120]}
+ring comp: {[], [97, 101, 769, 120]}
+ring trailing: {"x", "aé"}
+trailing ae: {"x", "ae"}
+ring comp trailing: {"x", "aé"}
+string element: {"", "  ab"}
+binary elements: {"", "a b"}
+nested leading: {["ab", 99, "de"], []}
+nested stops: {["ab", 99], ["1de"]}
+nested comp: {["ab", 99], ["1", "de"]}
+nested trailing: {["ab", 99 | "de"], "1"}
+nested comp trailing: {["1ab", 99, "de1"], []}
+nested empties: {["", "  ", 32], "x"}
+improper tail: {[["a"], "b"], ""}
+nested multibyte: {[["aé"], "é"], ["1"]}
+nested comp leading: {["x"], ["aaa", "b"]}
+nested a trailing: {["xaa", "aa" | "b"], []}
+nested all trailing: {"", ["ab" | "aab"]}
+nested all comp trailing: {"", ["ab" | "aab"]}
+comp trailing none: {"aaa", ""}
+comp leading end: {"", "a b c"}
+cp ascii: [97 | "bc"]
+cp ascii list: ~c"abc"
+cp multibyte: [233 | "!"]
+cp three bytes: [8364 | ""]
+cp four bytes: [128512 | "x"]
+cp nested: ~c"abc"
+cp after empty: [122 | ""]
+cp invalid: {:error, <<255, 1>>}
+cp invalid in list: {:error, [<<255>>, "a"]}
+cp empty binary: []
+cp empty list: []
+cp empties: []
+cp ring: [101 | "́"]

@@ -236,13 +236,13 @@ fn read_compile_spend(trace: &Path) -> CompileSpend {
 const CEILINGS: [(&str, u64); 5] = [
     // The drive `PRODUCT_DRIVE_BUDGET` (50,000) bounds: its headroom is the margin
     // before the compile stops with a budget error.
-    ("largest drive requests", 11_461),
-    ("total requests", 11_582),
+    ("largest drive requests", 11_438),
+    ("total requests", 11_559),
     ("drives", 25),
-    ("derivations", 18_902),
+    ("derivations", 18_934),
     // A reach job reads the edge fact of every node in its cone, so each of its
     // runs hands one read per node.
-    ("reads handed", 136_238),
+    ("reads handed", 136_345),
 ];
 
 /// Compiling the distiller spends no more of the product stack and of the
