@@ -1,0 +1,30 @@
+#---
+# purpose: "An atom given to OtpJSON.decode/1, whose spec says binary(), is refused at compile time"
+# expect: diagnostic
+# diagnostic.code: spec/violation
+#---
+# OTP's json.erl treats the spec as advisory: on the BEAM the call compiles and
+# fails with function_clause at run time. fz refuses the call at compile time.
+# The module holds the port's decode/1 with its types, spec, guard and clause
+# head, and a trimmed body; fixtures/01860 holds the whole port.
+defmodule OtpJSON do
+  @type decode_value() ::
+          integer()
+          | float()
+          | boolean()
+          | :null
+          | binary()
+          | list(decode_value())
+          | %{optional(binary()) => decode_value()}
+
+  @spec decode(binary()) :: decode_value()
+  def decode(binary) when is_binary(binary), do: byte_size(binary)
+end
+
+defmodule Main do
+  def main() do
+    IO.inspect(OtpJSON.decode(:null))
+  end
+end
+
+Main.main()

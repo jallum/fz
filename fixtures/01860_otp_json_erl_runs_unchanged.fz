@@ -1,7 +1,7 @@
 #---
 # purpose: "OTP 28.3's json.erl, ported line for line, decodes and encodes exactly as it does on the BEAM"
 # oracle: self
-# oracle.stamp: ed96b51965261385
+# oracle.stamp: 387ae792734257cb
 #---
 #
 # A line-for-line port of OTP 28.3 stdlib-7.2 json.erl (lib/stdlib/src/json.erl)
@@ -1948,24 +1948,50 @@ defmodule Main do
     end
   end
 
+  # Each list holds the calls whose @spec admits a kind of term, so that no
+  # call here is one fz refuses at compile time for lying outside its spec.
+  # The calls that leave a spec's domain are checked against :json by
+  # tools/otp_json/difftest.exs, and fz's refusal of them is pinned by
+  # fixtures 01861-01866.
   def encode_cases(t) do
-    lvl = %{level: 0, col: 0, indent: 2, max: 100}
+    value_cases(t) ++ list_map_atom_cases(t) ++ integer_cases(t) ++ float_cases(t) ++ binary_cases(t) ++ key_value_cases(t)
+  end
 
+  def value_cases(t) do
     [
       {{:encode, t}, fn -> OtpJSON.encode(t) end},
       {{:format1, t}, fn -> OtpJSON.format(t) end},
       {{:format2, t}, fn -> OtpJSON.format(t, %{indent: 4}) end},
       {{:format2b, t}, fn -> OtpJSON.format(t, %{max: 10, indent: 3}) end},
       {{:format3, t}, fn -> OtpJSON.format(t, &OtpJSON.format_value/3, %{indent: 1}) end},
-      {{:encode_value, t}, fn -> OtpJSON.encode_value(t, &OtpJSON.encode_value/2) end},
+      {{:encode_value, t}, fn -> OtpJSON.encode_value(t, &OtpJSON.encode_value/2) end}
+    ]
+  end
+
+  def list_map_atom_cases(t) do
+    [
       {{:encode_list, t}, fn -> OtpJSON.encode_list(t, &OtpJSON.encode_value/2) end},
       {{:encode_map, t}, fn -> OtpJSON.encode_map(t, &OtpJSON.encode_value/2) end},
       {{:encode_map_checked, t}, fn -> OtpJSON.encode_map_checked(t, &OtpJSON.encode_value/2) end},
-      {{:encode_atom, t}, fn -> OtpJSON.encode_atom(t, &OtpJSON.encode_value/2) end},
-      {{:encode_integer, t}, fn -> OtpJSON.encode_integer(t) end},
-      {{:encode_float, t}, fn -> OtpJSON.encode_float(t) end},
+      {{:encode_atom, t}, fn -> OtpJSON.encode_atom(t, &OtpJSON.encode_value/2) end}
+    ]
+  end
+
+  def integer_cases(t), do: [{{:encode_integer, t}, fn -> OtpJSON.encode_integer(t) end}]
+
+  def float_cases(t), do: [{{:encode_float, t}, fn -> OtpJSON.encode_float(t) end}]
+
+  def binary_cases(t) do
+    [
       {{:encode_binary, t}, fn -> OtpJSON.encode_binary(t) end},
-      {{:encode_binary_all, t}, fn -> OtpJSON.encode_binary_escape_all(t) end},
+      {{:encode_binary_all, t}, fn -> OtpJSON.encode_binary_escape_all(t) end}
+    ]
+  end
+
+  def key_value_cases(t) do
+    lvl = %{level: 0, col: 0, indent: 2, max: 100}
+
+    [
       {{:kv, t}, fn -> OtpJSON.encode_key_value_list(t, &OtpJSON.encode_value/2) end},
       {{:kv_checked, t}, fn -> OtpJSON.encode_key_value_list_checked(t, &OtpJSON.encode_value/2) end},
       {{:fmt_kv, t}, fn -> OtpJSON.format_key_value_list(t, &OtpJSON.format_value/3, lvl) end},
@@ -2005,10 +2031,8 @@ defmodule Main do
 
     r.("decode/1 deep and long inputs", for(i <- deep, do: {byte_size(i), fn -> OtpJSON.decode(i) end}))
 
-    r.("decode of non-binaries and bad decoders",
-      for(bad <- [nil, :a, 1, ~c"abc", [1]], do: {bad, fn -> OtpJSON.decode(bad) end}) ++
-        for(bad <- [nil, :a, 1, ~c"abc", [1]], do: {{:d3, bad}, fn -> OtpJSON.decode(bad, 0, %{}) end}) ++
-        for(dec <- [%{array_start: fn -> 1 end}, %{bogus: 1}, %{float: :notfun}], do: {Map.keys(dec), fn -> OtpJSON.decode("[1]", 0, dec) end})
+    r.("decode with bad decoders",
+      for(dec <- [%{array_start: fn -> 1 end}, %{bogus: 1}, %{float: :notfun}], do: {Map.keys(dec), fn -> OtpJSON.decode("[1]", 0, dec) end})
     )
 
     {docs, _} = Gen.repeat(1, 300, fn s -> Gen.doc(s, 4) end)
@@ -2028,8 +2052,8 @@ defmodule Main do
         for(st <- [:bogus, {1, 2}, nil], do: {{:eoi, st}, fn -> OtpJSON.decode_continue(:end_of_input, st) end})
     )
 
-    r.("encode and format of binaries", Enum.flat_map(@enc_bins, &encode_cases/1))
-    r.("encode and format of fixed terms", Enum.flat_map(@enc_terms, &encode_cases/1))
+    r.("encode and format of binaries", Enum.flat_map(@enc_bins, fn t -> value_cases(t) ++ binary_cases(t) end))
+    r.("encode and format of fixed terms", Enum.flat_map(@enc_terms, fn t -> value_cases(t) ++ list_map_atom_cases(t) ++ float_cases(t) ++ key_value_cases(t) end))
     {terms, _} = Gen.repeat(3, 300, fn s -> Gen.term(s, 3) end)
     r.("encode and format of generated terms", Enum.flat_map(terms, &encode_cases/1))
 
@@ -2041,9 +2065,7 @@ defmodule Main do
     )
 
     r.("encode with a custom encoder",
-      for(t <- [{:ts, 5}, [{:a, {:ts, 1}}, {:b, 2}], [[{:a, 1}], [{:b, 2}]], %{"x" => {:ts, 9}}], do: {t, fn -> custom(t) end}) ++
-        for(bad <- [nil, :a, 1], do: {{:enc, bad}, fn -> OtpJSON.encode(1, bad) end}) ++
-        for(bad <- [nil, :a, 1], do: {{:fmt, bad}, fn -> OtpJSON.format(1, bad) end})
+      for(t <- [{:ts, 5}, [{:a, {:ts, 1}}, {:b, 2}], [[{:a, 1}], [{:b, 2}]], %{"x" => {:ts, 9}}], do: {t, fn -> custom(t) end})
     )
 
     r.("decode then encode and format", for(d <- docs, do: {d, fn -> d |> OtpJSON.decode() |> OtpJSON.encode() end}) ++ for(d <- docs, do: {{:fmt, d}, fn -> d |> OtpJSON.decode() |> OtpJSON.format() end}))

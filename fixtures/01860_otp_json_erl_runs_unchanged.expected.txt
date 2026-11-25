@@ -629,17 +629,7 @@
 1002 -> {:ok, "éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé"}
 20 -> {:ok, "aaaaaaa\nbbbbbbbbb"}
 36 -> {:ok, "aaaaaaaaébbbbbbbb😀"}
-== decode of non-binaries and bad decoders
-nil -> {:raised, :error, :function_clause}
-:a -> {:raised, :error, :function_clause}
-1 -> {:raised, :error, :function_clause}
-~c"abc" -> {:raised, :error, :function_clause}
-[1] -> {:raised, :error, :function_clause}
-{:d3, nil} -> {:raised, :error, :function_clause}
-{:d3, :a} -> {:raised, :error, :function_clause}
-{:d3, 1} -> {:raised, :error, :function_clause}
-{:d3, ~c"abc"} -> {:raised, :error, :function_clause}
-{:d3, [1]} -> {:raised, :error, :function_clause}
+== decode with bad decoders
 [:array_start] -> {:raised, :error, :function_clause}
 [:bogus] -> {:raised, :error, :function_clause}
 [:float] -> {:raised, :error, :function_clause}
@@ -753,8 +743,8 @@ nil -> {:raised, :error, :function_clause}
 {:eoi, :bogus} -> {:raised, :error, :unexpected_end}
 {:eoi, {1, 2}} -> {:raised, :error, :unexpected_end}
 {:eoi, nil} -> {:raised, :error, :unexpected_end}
-== encode and format of binaries: 576 cases, digest 1702129483
-== encode and format of fixed terms: 522 cases, digest 3473607484
+== encode and format of binaries: 256 cases, digest 3905695980
+== encode and format of fixed terms: 435 cases, digest 4284154089
 == encode and format of generated terms: 5400 cases, digest 3952373709
 == encode_binary_escape_all per code point
 255 -> {:ok, [[~c"\"", ~c"\\u00" | "FF"], 34]}
@@ -788,10 +778,4 @@ nil -> {:raised, :error, :function_clause}
 [a: {:ts, 1}, b: 2] -> {:ok, [123, [[34, "a", 34], 58, "\"t", "1", "\""], [[44, [34, "b", 34], 58 | "2"]], 125]}
 [[a: 1], [b: 2]] -> {:ok, [91, [123, [[34, "a", 34], 58 | "1"], [], 125], 44, [123, [[34, "b", 34], 58 | "2"], [], 125], 93]}
 %{"x" => {:ts, 9}} -> {:ok, [123, [[34, "x", 34], 58, "\"t", "9", "\""], [], 125]}
-{:enc, nil} -> {:raised, :error, :function_clause}
-{:enc, :a} -> {:raised, :error, :function_clause}
-{:enc, 1} -> {:raised, :error, :function_clause}
-{:fmt, nil} -> {:raised, :error, :function_clause}
-{:fmt, :a} -> {:raised, :error, :function_clause}
-{:fmt, 1} -> {:raised, :error, :function_clause}
 == decode then encode and format: 600 cases, digest 1457246006

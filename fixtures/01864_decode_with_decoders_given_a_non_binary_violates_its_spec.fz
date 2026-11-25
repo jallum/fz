@@ -1,0 +1,42 @@
+#---
+# purpose: "An atom given to OtpJSON.decode/3, whose spec says binary(), is refused at compile time"
+# expect: diagnostic
+# diagnostic.code: spec/violation
+#---
+# OTP's json.erl treats the spec as advisory: on the BEAM the call compiles and
+# fails with function_clause at run time. fz refuses the call at compile time.
+# The module holds the port's decode/3 with its types, spec, guard and clause
+# head, and a trimmed body; fixtures/01860 holds the whole port.
+defmodule OtpJSON do
+  @type from_binary_fun() :: (binary() -> dynamic())
+  @type array_start_fun() :: (dynamic() -> dynamic())
+  @type array_push_fun() :: (dynamic(), dynamic() -> dynamic())
+  @type array_finish_fun() :: (dynamic(), dynamic() -> {dynamic(), dynamic()})
+  @type object_start_fun() :: (dynamic() -> dynamic())
+  @type object_push_fun() :: (dynamic(), dynamic(), dynamic() -> dynamic())
+  @type object_finish_fun() :: (dynamic(), dynamic() -> {dynamic(), dynamic()})
+
+  @type decoders() :: %{
+          optional(:array_start) => array_start_fun(),
+          optional(:array_push) => array_push_fun(),
+          optional(:array_finish) => array_finish_fun(),
+          optional(:object_start) => object_start_fun(),
+          optional(:object_push) => object_push_fun(),
+          optional(:object_finish) => object_finish_fun(),
+          optional(:float) => from_binary_fun(),
+          optional(:integer) => from_binary_fun(),
+          optional(:string) => from_binary_fun(),
+          optional(:null) => term()
+        }
+
+  @spec decode(binary(), dynamic(), decoders()) :: {dynamic(), dynamic(), binary()}
+  def decode(binary, acc0, _decoders) when is_binary(binary), do: {byte_size(binary), acc0, <<>>}
+end
+
+defmodule Main do
+  def main() do
+    IO.inspect(OtpJSON.decode(:null, 0, %{}))
+  end
+end
+
+Main.main()

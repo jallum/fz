@@ -8,3 +8,5 @@ The port keeps every function, clause, argument and variable name of `json.erl`.
 - `gen_guards.py` prints the `defguardp` block of `json.hrl` in Elixir form. The long `===` chains in the port are its output.
 
 The corpus prints every outcome for small groups, and a count plus a digest for large ones. To see every outcome, run `elixir <fixture> full` or `fz2 run <fixture> full`, then diff the two outputs.
+
+The corpus holds no call whose argument lies outside the callee's `@spec`. fz refuses such a call at compile time (`error[spec/violation]`), where the BEAM compiles it and raises at run time, so a corpus that made those calls could not compile on fz. The misuse cases live in two places: `difftest.exs` still runs them against `:json` on the BEAM, and fixtures `01861` to `01866` each hold small copies of the specced port functions and one out-of-spec call, and pin the `spec/violation` diagnostic on interp, run and build. The kinds are a binary to `encode_integer/1`, a list to `encode_binary/1`, an atom to `decode/1` and to `decode/3`, and an atom as the encoder of `encode/2` and `format/2`.
