@@ -4,14 +4,15 @@
     "fz-t93.26"
   ],
   "blocks": [],
+  "closed_at": "2026-11-25T02:05:18Z",
   "created": "2026-11-23T19:59:37Z",
   "description": "Re-scoped by the user 2026-11-24 (page ../fz-t93.27.html): paper first.\n\nFound by the fz-t93.27 paper (scratch /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/t93_27, /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/t93_27/r2). The original fix (the rescue handler waits on the finished Raisable) cannot work: the root analysis publishes Raisable and waits on the handler's function, so the wait never resolves (internal/unresolved-wait).\n\nCause: Enum.into/2's catch handler (lib/enum.fz:1684) is re-analysed at each step of the growing Raisable union, and each step calls :erlang.raise/3 with that step's union, minting a raise/3 activation per step. The plan is rooted (jobs/backend.rs:153-273), so stale activations stay out of it, but under lifo a single-exception step (BadMapError) keys a stale, unreachable raise/3 that calls the LIVE shared Kernel.panic/1[map]; its open row %BadMapError{__exception__} dominates the live row with :term, so fz_panic/1[map] differs between fifo and lifo on 00795/00796. Contributions never withdraw by design (conclude_preserving_frontier semantic.rs:1518, preserved_analysis_claims world.rs:3569; the cumulative rule prevents edge oscillation, world.rs:696-703).\n\nRejected variants (measured): W (wait) never compiles; V1 (reason = any) breaks the uncaught banner and 18 matrix fixtures; V2 (one walk per exception module) misses dispatch on 01062-01064 and costs 66 jobs per exception type; R1 (reach-only plan) is already the case.\n\nPaper: (1) a termination argument for retirement: a re-analysis that stops calling an activation key withdraws its row from that callee's ActivationInputs, cascading when a callee is left with no rows; candidate argument: only a superseded key is withdrawn and its replacement is strictly above it in the same climbing fact, so withdrawals follow the climb and cannot repeat. (2) a prototype measured on the suites, exception_cost_test, the distiller, and the full 1333-fixture fifo/lifo census. Done when 00795/00796 are identical under both orders (added to the order test) and nothing else moves without approval.\n\nDECIDED 2026-11-24 (page ../fz-t93.27.html, paper scratch t93_27/r3): build A + B + G.\nA: a re-analysis whose callsite is still reached and resolves to a different key withdraws its row from the old key; an activation nothing calls any more withdraws its own rows (cascade, via the !has_fact(Activation) return in analyze_activation). Unresolved/unreached callsites withdraw nothing.\nB: a rebased AnalyzeActivation conclusion replaces its ActivationInputs contributions (join = !rebased), like ContributionMap::conclude for every other publisher.\nG: a (publisher, callee) pair withdrawn and later re-added is never withdrawn again; World state, with a telemetry event per guard hit.\nAccepted plan moves: 00797, 00798, 00799, 00835, 01008, 01032, 01171 (stale exception rows leave panic/fz_panic inputs). Done: 00795/00796 in ORDER_FREE_PLANS; fifo/lifo census 14 -\u003e 12 differing, none new; docs restate the rule.",
   "id": "fz-t93.27",
   "labels": [],
   "parent": "fz-t93",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "An activation a re-analysis stops calling withdraws its contribution",
   "type": "bug",
-  "updated_at": "2026-11-24T21:41:19Z"
+  "updated_at": "2026-11-25T02:05:18Z"
 }
