@@ -1609,7 +1609,10 @@ fn fz_heap_room_places_beyond_a_full_tip() {
         let placed = fz_heap_room(process_ptr, 48);
 
         let process = unsafe { &mut *process_ptr };
-        assert!(process.heap.is_young(placed), "the object is in the young generation");
+        assert!(
+            crate::heap::arena::range().is_young(placed),
+            "the object is in the young generation"
+        );
         let next = process.heap.alloc(16);
         assert_eq!(
             next,
@@ -1631,7 +1634,7 @@ fn fz_heap_room_parks_a_huge_object_alone() {
         let placed = fz_heap_room(process_ptr, huge);
 
         let process = unsafe { &mut *process_ptr };
-        assert!(process.heap.is_young(placed));
+        assert!(crate::heap::arena::range().is_young(placed));
         assert!(
             process.heap.bytes_used() >= huge,
             "the heap holds the huge object's block"
@@ -1683,7 +1686,7 @@ fn a_body_frame_a_collection_kept_is_copied_to_the_tip_before_a_write() {
         let kept = roots[0].raw_word();
         let kept_address = closure_addr_from_ref_word(kept, "kept frame");
         assert!(
-            !process.heap.is_young(kept_address),
+            !crate::heap::arena::range().is_young(kept_address),
             "the collection kept the frame old"
         );
 
@@ -1691,7 +1694,10 @@ fn a_body_frame_a_collection_kept_is_copied_to_the_tip_before_a_write() {
 
         let written_address = closure_addr_from_ref_word(written, "written frame");
         assert_ne!(written, kept);
-        assert!(process.heap.is_young(written_address), "the copy is at the tip");
+        assert!(
+            crate::heap::arena::range().is_young(written_address),
+            "the copy is at the tip"
+        );
         assert_eq!(first_capture(written), 7, "the copy holds what the frame held");
         assert_eq!(process.frame_copies, 1);
     });

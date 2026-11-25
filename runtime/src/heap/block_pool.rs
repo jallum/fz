@@ -188,8 +188,8 @@ impl Block {
 
 /// Per-thread block pool (§6.6). One free list per pooled capacity. Spawn /
 /// grow / gc pull from here; Heap::drop and gc()'s old-block release
-/// return blocks here. Avoids per-spawn `malloc`/`free` churn under
-/// heavy spawn pressure. The lists are the thread's own; fresh space and the
+/// return blocks here. Keeps a spawn from claiming and
+/// returning address space under heavy spawn pressure. The lists are the thread's own; fresh space and the
 /// spill list are the process's.
 struct BlockPool {
     free_lists: [Vec<*mut u8>; CLASSES],
@@ -325,10 +325,8 @@ impl BlockPool {
         };
         self.outstanding -= 1;
         self.idle_bytes += capacity;
-        // Free lists grow unbounded in v1. A real-world deployment would
-        // cap each list (e.g., 4 entries) and spill the overflow.
-        // For now we accept the worst-case memory footprint to keep the
-        // pool deterministic.
+        // The list keeps every block released to it; the epoch trim returns the
+        // pages of the idle large ones.
         self.free_lists[idx].push(p);
     }
 

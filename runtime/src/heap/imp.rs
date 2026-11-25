@@ -1,6 +1,6 @@
 //! impl Heap — the giant impl block + Drop.
 
-use super::arena::{Age, is_young};
+use super::arena::{Age, range};
 use super::block_pool::{
     Block, SIZE_TABLE, next_block_capacity, pick_block_capacity, pick_tip_capacity, pool_alloc, round_up_16,
 };
@@ -227,8 +227,8 @@ impl Heap {
 
     /// The young bytes the heap allocates before a collection is due: as many
     /// as it holds old, and never more than the largest pooled block. A larger
-    /// young generation would be a block the system allocator makes and frees
-    /// at every collection, and it keeps nothing more from being copied: what
+    /// young generation would be a block made and released at every collection,
+    /// and it keeps nothing more from being copied: what
     /// dies young is already dead well inside that many bytes.
     fn young_budget(&self) -> usize {
         self.live_baseline.min(SIZE_TABLE[SIZE_TABLE.len() - 1])
@@ -1613,14 +1613,6 @@ impl Heap {
         self.live_baseline + self.young_bytes()
     }
 
-    /// Whether `object` lies in a young block: the tip, the tip a gift window
-    /// set aside, or a parked block. A minor collection looks inside every
-    /// young object and inside no old one. The answer is the age table's, so an
-    /// address outside the heap range, a literal's, is not young.
-    pub fn is_young(&self, object: *mut u8) -> bool {
-        is_young(object)
-    }
-
     /// A write into an object that already exists is sound only while the
     /// object is young. A minor collection does not look inside old objects, so
     /// an old object must never come to hold a pointer to a young one. Checked
@@ -1628,7 +1620,7 @@ impl Heap {
     #[inline]
     pub(crate) fn assert_written_object_is_young(&self, object: *mut u8) {
         debug_assert!(
-            self.is_young(object),
+            range().is_young(object),
             "a write into an object a collection has already kept"
         );
     }
@@ -1720,7 +1712,7 @@ impl Heap {
             "the old bytes are the fill of the old blocks"
         );
         let generation = self.next_generation();
-        let from_space = FromSpace::of(self, generation);
+        let from_space = FromSpace::of(generation);
         let to_capacity_guess = match generation {
             Generation::Major => self.live_baseline,
             Generation::Minor => self.last_minor_copied_bytes,
@@ -1871,7 +1863,7 @@ impl Drop for Heap {
         // off_heap_drop_all walks BinRef payloads in the heap's blocks.
         off_heap::drop_all(self);
         // Release blocks: pooled capacities go back to the pool (§6.6) so the
-        // next spawn pulls from it with no per-spawn malloc; exact blocks go
+        // next spawn pulls from it; exact blocks go
         // to the span list. A tip set aside by an unfinished gift
         // window goes back too.
         self.current_block().release();

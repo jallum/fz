@@ -10,7 +10,7 @@ use std::rc::Rc;
 fn with_tracer(check: impl FnOnce(&mut Tracer)) {
     let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
     let mut heap = Heap::new(SIZE_TABLE[0], schemas.clone());
-    let from_space = FromSpace::of(&heap, Generation::Major);
+    let from_space = FromSpace::of(Generation::Major);
     let schemas = schemas.borrow();
     check(&mut Tracer::new(from_space, &mut heap, &schemas));
 }

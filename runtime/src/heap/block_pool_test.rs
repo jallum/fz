@@ -1,5 +1,5 @@
 use super::*;
-use crate::heap::arena::{GRANULE, is_young, young_mark_bytes};
+use crate::heap::arena::{GRANULE, range, young_mark_bytes};
 
 fn start() -> Footprint {
     pool_drain_for_test();
@@ -157,13 +157,13 @@ fn a_block_handed_out_reads_as_unwritten_in_debug_builds() {
 fn every_granule_is_young(p: *mut u8, capacity: usize) -> bool {
     (0..span_len(capacity))
         .step_by(GRANULE)
-        .all(|offset| is_young(unsafe { p.add(offset) }))
+        .all(|offset| range().is_young(unsafe { p.add(offset) }))
 }
 
 fn no_granule_is_young(p: *mut u8, capacity: usize) -> bool {
     (0..span_len(capacity))
         .step_by(GRANULE)
-        .all(|offset| !is_young(unsafe { p.add(offset) }))
+        .all(|offset| !range().is_young(unsafe { p.add(offset) }))
 }
 
 #[test]
@@ -179,7 +179,10 @@ fn a_young_block_reads_young_and_an_old_block_never_does() {
     for capacity in capacities {
         let young = pool_alloc(capacity, Age::Young);
         assert!(every_granule_is_young(young, capacity), "a {capacity}-byte young block");
-        assert!(is_young(unsafe { young.add(capacity - 1) }), "the block's last byte");
+        assert!(
+            range().is_young(unsafe { young.add(capacity - 1) }),
+            "the block's last byte"
+        );
         pool_free(young, capacity);
         if !is_pooled_capacity(capacity) {
             assert!(
@@ -287,7 +290,7 @@ fn a_block_off_the_table_lives_in_the_range_like_any_other() {
     let above_table = round_up_16(SIZE_TABLE[SIZE_TABLE.len() - 1] * 3);
     let big = pool_alloc(above_table, Age::Young);
     assert!(range().contains(big));
-    assert!(is_young(big));
+    assert!(range().is_young(big));
     pool_free(big, above_table);
 }
 

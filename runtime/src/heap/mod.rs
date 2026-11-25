@@ -18,7 +18,7 @@
 //! by reserving the next chunk at its exact end, and a table that cannot
 //! follow stops the program loudly.
 //! Whether an object is young
-//! is a read of that table at its address (`Heap::is_young`), and a minor
+//! is a read of that table at its address (`Reservation::is_young`), and a minor
 //! collection's from-space is the granules that read young (`FromSpace`), so
 //! nothing is collected or sorted per collection. Off-heap binaries, resources
 //! and static literals are the system allocator's and lie outside the range,
@@ -60,7 +60,7 @@
 //! marker word of its kind (`gc::forwarding`) overwritten with the to-space
 //! address plus a set low nibble; nothing else uses the low bits.
 
-mod arena;
+pub(crate) mod arena;
 mod binary_budget;
 mod block_pool;
 mod collected;

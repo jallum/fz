@@ -58,7 +58,7 @@ fn the_age_table_calls_young_exactly_the_addresses_the_young_blocks_cover() {
         let mut p = start;
         while p < end {
             assert_eq!(
-                heap.is_young(p),
+                range().is_young(p),
                 ptr_in_ranges(p, young.iter().copied()),
                 "{p:p} is young by the table and by the ranges alike"
             );
@@ -72,8 +72,8 @@ fn the_age_table_calls_young_exactly_the_addresses_the_young_blocks_cover() {
 #[test]
 fn a_minor_collection_leaves_every_old_address_and_a_major_one_moves_it() {
     let heap = heap_with_old_and_many_young_blocks();
-    let minor = FromSpace::of(&heap, Generation::Minor);
-    let major = FromSpace::of(&heap, Generation::Major);
+    let minor = FromSpace::of(Generation::Minor);
+    let major = FromSpace::of(Generation::Major);
     let mut old_slots = 0;
     for block in &heap.old_blocks {
         let mut p = block.start;
@@ -98,6 +98,6 @@ fn a_literal_moves_in_no_collection() {
     let heap = heap_with_old_and_many_young_blocks();
     let literal = Box::new([0u64; 2]);
     let p = literal.as_ptr() as *mut u8;
-    assert!(!FromSpace::of(&heap, Generation::Minor).moves(&heap, p, true));
-    assert!(!FromSpace::of(&heap, Generation::Major).moves(&heap, p, true));
+    assert!(!FromSpace::of(Generation::Minor).moves(&heap, p, true));
+    assert!(!FromSpace::of(Generation::Major).moves(&heap, p, true));
 }

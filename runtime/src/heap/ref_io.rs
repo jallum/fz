@@ -106,9 +106,9 @@ pub(super) fn list_tail_bits_from_ref(value: AnyValueRef) -> Result<u64, AnyValu
     }
 }
 
-/// `p` lies in one of the half-open ranges. Debug builds use it to check that a
-/// pointer is in the heap it is read from, to-space or not; `Heap::contains_heap_addr`
-/// asks it of a heap's own blocks.
+/// `p` lies in one of the half-open ranges. Deep copy's and the collector's debug checks
+/// ask it of the source heap's blocks and of to-space, `Heap::contains_heap_addr`
+/// of a heap's own, and a test of the young ranges.
 pub(super) fn ptr_in_ranges(p: *mut u8, ranges: impl IntoIterator<Item = (*mut u8, *mut u8)>) -> bool {
     ranges.into_iter().any(|(start, end)| p >= start && p < end)
 }
