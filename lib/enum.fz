@@ -1659,6 +1659,10 @@ defmodule Enum do
     end
   end
 
+  @spec zip(Enumerable.t(Enumerable.t(any))) :: [tuple]
+  def zip([]), do: []
+  def zip(enumerables), do: zip_with(enumerables, &List.to_tuple/1)
+
   @doc """
   Applies `fun` to the list of the n-th elements of each of `enumerables`,
   for each position n, and returns the results.
