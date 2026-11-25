@@ -46,7 +46,8 @@ use crate::dispatch_matrix::{
 };
 use crate::fz_ir::{ExternReturn, ExternTy, Module, ReceiveClause, Var};
 
-use super::runtime_test::{KindEvidence, RuntimeTestEmitter, TypeTestAnswer, emit_runtime_type_test};
+use super::clif::{kind_field, kind_is_one_of};
+use super::runtime_test::{KindEvidence, RuntimeTestEmitter, emit_runtime_type_branch, settled_by_lane};
 use crate::fast_hash::HashMap;
 use crate::runtime_type_predicate::{CallableShapes, RuntimeTypePredicate};
 use cranelift_codegen::ir::{
@@ -61,9 +62,9 @@ use fz_runtime::ir_runtime::{
     fz_binary_equals_literal, fz_box_float_for_any, fz_box_int_for_any, fz_box_opaque_for_any, fz_bs_field_end,
     fz_bs_field_spec, fz_bs_read_binary_ref, fz_bs_read_int_ref, fz_function_arity, fz_list_head_ref, fz_list_is_cons,
     fz_list_tail_ref, fz_map_is_map, fz_map_named_schema_ref, fz_matcher_map_get_ref, fz_pinned_binary_segment_size,
-    fz_receive_pinned_ref, fz_struct_get_field_ref, fz_struct_get_named_field_ref, fz_struct_schema_id_ref,
-    fz_truthy_ref, fz_type_of, fz_unbox_atom, fz_unbox_float, fz_unbox_int, fz_unbox_opaque, fz_value_cmp_ref,
-    fz_value_eq_ref, fz_value_eq_widening_ref,
+    fz_receive_pinned_ref, fz_struct_get_field_ref, fz_struct_get_named_field_ref, fz_struct_is_named_ref,
+    fz_struct_schema_id_ref, fz_truthy_ref, fz_type_of, fz_unbox_atom, fz_unbox_float, fz_unbox_int, fz_unbox_opaque,
+    fz_value_cmp_ref, fz_value_eq_ref, fz_value_eq_widening_ref,
 };
 use fz_runtime::process::AtomName;
 use std::cell::RefCell;
@@ -800,18 +801,12 @@ fn emit_runtime_type_predicate_region_test<M: cranelift_module::Module>(
     match_b: ir::Block,
     next_b: ir::Block,
 ) -> Result<Option<bool>, CodegenError> {
-    let answer = {
-        let mut emitter = ReceiveTestEmitter { body: &mut *body, ctx };
-        emit_runtime_type_test(&mut emitter, value, predicate)?
-    };
-    match answer {
-        TypeTestAnswer::Always => Ok(Some(true)),
-        TypeTestAnswer::Never => Ok(Some(false)),
-        TypeTestAnswer::Flag(flag) => {
-            body.b.ins().brif(flag, match_b, &[], next_b, &[]);
-            Ok(None)
-        }
+    let mut emitter = ReceiveTestEmitter { body: &mut *body, ctx };
+    if let Some(admitted) = settled_by_lane(&emitter, value, predicate) {
+        return Ok(Some(admitted));
     }
+    emit_runtime_type_branch(&mut emitter, value, predicate, match_b, next_b)?;
+    Ok(None)
 }
 
 /// The receive-plan door onto the shared runtime-test emitter.
@@ -852,6 +847,13 @@ impl<'f, M: cranelift_module::Module> RuntimeTestEmitter<'f> for ReceiveTestEmit
         emit_receive_value_kind_flag(self.body, value, kind)
     }
 
+    fn kind_in(&mut self, value: ReceiveValue, kinds: &[ValueKind]) -> Result<ir::Value, CodegenError> {
+        let tag = receive_value_tag(self.body, value)?;
+        let tag = self.body.b.ins().uextend(types::I64, tag);
+        let member = kind_is_one_of(self.body.b, tag, |kind| kinds.contains(&kind));
+        Ok(self.body.b.ins().ireduce(types::I8, member))
+    }
+
     fn bitstring_bit_len(&mut self, value: ReceiveValue) -> Result<ir::Value, CodegenError> {
         let value_ref = emit_receive_value_ref(self.body, self.ctx, value)?;
         Ok(emit_proven_binary_bit_len(self.body.b, value_ref))
@@ -882,6 +884,11 @@ impl<'f, M: cranelift_module::Module> RuntimeTestEmitter<'f> for ReceiveTestEmit
         let struct_ref = emit_receive_value_ref(self.body, self.ctx, value)?;
         let raw = runtime_call1!(self.body, fz_struct_schema_id_ref, [struct_ref]);
         Ok(self.body.b.ins().uextend(types::I64, raw))
+    }
+
+    fn struct_is_named(&mut self, value: ReceiveValue) -> Result<ir::Value, CodegenError> {
+        let struct_ref = emit_receive_value_ref(self.body, self.ctx, value)?;
+        Ok(runtime_condition!(self.body, fz_struct_is_named_ref, [struct_ref]))
     }
 
     fn map_named_schema(&mut self, value: ReceiveValue) -> Result<ir::Value, CodegenError> {
@@ -933,9 +940,14 @@ fn emit_receive_value_kind_flag<M: cranelift_module::Module>(
     value: ReceiveValue,
     kind: ValueKind,
 ) -> Result<ir::Value, CodegenError> {
-    let tag = receive_value_tag(body, value)?;
-    let tag64 = body.b.ins().uextend(types::I64, tag);
-    Ok(body.b.ins().icmp_imm_s(IntCC::Equal, tag64, kind.tag() as i64))
+    let kind_word = match value {
+        ReceiveValue::AnyRef(value_ref) => kind_field(body.b, value_ref),
+        ReceiveValue::Int(_) | ReceiveValue::Float(_) | ReceiveValue::Atom(_) => {
+            let tag = receive_value_tag(body, value)?;
+            body.b.ins().uextend(types::I64, tag)
+        }
+    };
+    Ok(body.b.ins().icmp_imm_s(IntCC::Equal, kind_word, kind.tag() as i64))
 }
 
 fn emit_receive_is_empty_list_flag<M: cranelift_module::Module>(

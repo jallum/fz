@@ -557,9 +557,9 @@ and boolean operators; `PatternGuardUnaryOp` is `Not`.
 
 A helper's dispatch graph tests the clauses of every operand type, so a value
 held unboxed in one scalar lane meets tests of other lanes. A test the lane
-decides is answered without a branch: `emit_runtime_type_test` returns a
-`TypeTestAnswer` (`Always`, `Never` or a flag), `RuntimeTypePredicate::
-settled_for_scalar_lane` supplies the answer, entry dispatch
+decides is answered without a branch: `settled_by_lane` asks `RuntimeTypePredicate::
+settled_for_scalar_lane` and `emit_runtime_type_branch` turns the answer into a
+plain jump, entry dispatch
 (`lower_dispatch_test`, through `scalar_lane_answer`) and the receive matcher
 (`emit_test_edges`) lower only the live successor, and the readers of a wrong
 lane (`as_raw_i64`, `as_raw_f64`, `receive_value_int`, `receive_value_float`)

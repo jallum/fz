@@ -1,5 +1,6 @@
 //! Strict struct layout descriptors + per-process registry.
 
+use crate::any_value::{StructName, struct_header_word};
 use crate::module_name::{ModuleName, STRUCT_MODULE_FIELD};
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -95,6 +96,14 @@ impl Schema {
             ModuleName::from_segments(vec![Self::RANGE_NAME.into()]),
             ["first".to_string(), "last".to_string(), "step".to_string()],
         )
+    }
+
+    /// Whether values of this schema are named structs, and so maps.
+    pub fn struct_name(&self) -> StructName {
+        match self.identity {
+            SchemaIdentity::Named(_) => StructName::Named,
+            SchemaIdentity::Tuple(_) | SchemaIdentity::Internal(_) => StructName::Anonymous,
+        }
     }
 
     pub fn value_field_count(&self) -> usize {
@@ -236,6 +245,11 @@ impl SchemaRegistry {
 
     pub fn range(&mut self) -> u32 {
         self.register(Schema::range())
+    }
+
+    /// The first word of a struct of schema `id`.
+    pub fn struct_header(&self, id: u32) -> u64 {
+        struct_header_word(id, self.get(id).struct_name())
     }
 
     pub fn get(&self, id: u32) -> &Schema {

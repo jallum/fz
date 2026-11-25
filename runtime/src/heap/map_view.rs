@@ -26,8 +26,7 @@ use crate::any_value::{
     AnyValue, AnyValueRef, ListCons, STRUCT_PAYLOAD_OFFSET, SlotLayout, ValueKind, heap_object_word,
     map_addr_from_tagged, map_count, map_entries, map_entry, map_header_is_trie, map_key_kind, map_keys_ptr,
     map_node_child, map_node_child_count, map_node_entry_count, map_slot, map_tag_ptr, map_value_kind, map_values_ptr,
-    struct_addr_from_tagged, struct_field_kind_slot, struct_field_raw_slot, struct_header_word, struct_schema_id,
-    struct_size_for_payload,
+    struct_addr_from_tagged, struct_field_kind_slot, struct_field_raw_slot, struct_schema_id, struct_size_for_payload,
 };
 use crate::heap::map_slot_refs;
 use crate::module_name::{ModuleName, STRUCT_MODULE_FIELD};
@@ -44,11 +43,11 @@ pub enum MapPart {
 
 const LIST_CELL_SIZE: usize = size_of::<ListCons>();
 
-/// Where a `{key, value}` tuple's parts go: its schema, its size in bytes, and
+/// Where a `{key, value}` tuple's parts go: its header word, its size in bytes, and
 /// the payload offset of its kind bytes.
 #[derive(Clone, Copy)]
 struct PairShape {
-    schema: u32,
+    header: u64,
     size: usize,
     kinds: u32,
 }
@@ -211,10 +210,24 @@ impl Heap {
         Some((module.clone(), fields.into_iter().collect::<Option<_>>()?))
     }
 
-    /// `map_layout`, for a caller whose value the types promise is a map.
+    /// The layout of a value the compiled program has proven is a map: a map
+    /// extern declares `map` for it, so the runtime reads the layout and does
+    /// not ask again. A debug build checks the promise.
     pub fn expect_map_layout(&self, value: AnyValueRef, context: &str) -> MapLayout {
-        self.map_layout(value)
-            .unwrap_or_else(|| panic!("{context}: expected a map, found {:?}", value.tag()))
+        debug_assert!(
+            self.map_layout(value).is_some(),
+            "{context}: expected a map, found {:?}",
+            value.tag()
+        );
+        let addr = value.cleared_addr();
+        match value.tag() {
+            ValueKind::MAP if unsafe { map_header_is_trie(addr as *const u8) } => MapLayout::Trie(addr),
+            ValueKind::MAP => MapLayout::Entries(addr),
+            _ => MapLayout::Struct {
+                object: value,
+                schema_id: unsafe { struct_schema_id(addr as *const u8) },
+            },
+        }
     }
 
     /// The entries of `layout`. Constant time in every layout: a trie keeps its
@@ -364,7 +377,7 @@ impl Heap {
             "a pair's two kind bytes fill one word, last in the tuple"
         );
         PairShape {
-            schema,
+            header: schemas.struct_header(schema),
             size,
             kinds: tuple.size,
         }
@@ -384,7 +397,7 @@ impl Heap {
         self.publish_contained_parts(value.0, value.1);
         let kinds = u64::from(key.1.tag()) | u64::from(value.1.tag()) << 8;
         unsafe {
-            write(object as *mut u64, struct_header_word(pair.schema));
+            write(object as *mut u64, pair.header);
             write(struct_field_raw_slot(object, 0), key.0);
             write(struct_field_raw_slot(object, 8), value.0);
             write(struct_field_kind_slot(object, pair.kinds) as *mut u64, kinds);

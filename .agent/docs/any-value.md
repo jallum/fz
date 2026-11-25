@@ -119,6 +119,16 @@ a new `{k, v}` tuple, so nothing is decoded or boxed. `Enumerable.Map`'s
 slices `size` bytes from byte `from` through `Process::slice`, so a part over
 `SHARED_BIN_THRESHOLD_BYTES` is a view on the source buffer.
 
+The map externs declare `map`, so the heap's map entry points trust that their
+argument is one: `Heap::expect_map_layout`, `Heap::read_map_value` and
+`Heap::map_put_slot` read the flat, trie or struct layout without testing the
+tag, and a debug build asserts it. The test that a value is a map is the
+language's `is_map` guard in the `lib/map.fz` and `lib/maps.fz` wrappers, which
+the compiler drops where the argument is proven. `Heap::map_layout` stays the
+question "is this a map?" for `fz_map_is_map`, `named_schema` and the failure
+renderer. `map_put_slot` takes a map; a map literal is built through a map
+destination.
+
 `fz_binary_concat` validates byte-aligned binary inputs and builds `left <> right`
 through `Heap::alloc_concatenation`, which returns the VALUE. When `left` is a
 binary view that ends where its buffer's written bytes end and the buffer has spare
@@ -546,7 +556,7 @@ Every header word keeps its low nibble clear, because the low nibble belongs to
 the Cheney forwarding marker (see "GC: Roots, Edges, And Lifetime" below). Little-endian:
 
 ```text
-Struct:    schema_id << 32
+Struct:    (schema_id << 32) | named bit (bit 5) | shared mark (bit 4)
 Closure:   (denotation << 32) | (flags << 4) | (arity << 20)   arity < 4096
 Bitstring: bit_len << 4 | shared mark (BINARY_SHARED_MASK)
 Map:       count << 4                                  (published)
@@ -611,14 +621,31 @@ maps that name no module. `named_structs` is the set of modules a map may
 name. The test for every map (`RuntimeTypePredicate::map_kind`) sets `maps`
 and admits every module.
 
-A value of kind `STRUCT` is asked by its schema id. A value of kind `MAP` is
-asked by `Heap::named_schema`: it passes the `maps` axis where it names no
+A value of kind `STRUCT` is asked by its header. Its named bit (bit 5 of the
+header word, `STRUCT_HEADER_NAMED_MASK`) says its schema is a named struct's, so
+"any named struct" is one test of the word, and "a tuple" is its absence. The
+bit repeats `Schema::struct_name`, is written by every constructor
+(`struct_header_word` takes a `StructName` beside the schema id, and
+`SchemaRegistry::struct_header` answers the runtime's own) and never changes,
+so a copy or a collection keeps it; the collector asserts it agrees with the
+schema table. Only a question about particular names or arities compares
+schema ids. A value of kind `MAP` is asked by `Heap::named_schema`: it passes the `maps` axis where it names no
 module and the `named_structs` axis where the module it names is admitted, so
 a struct grown by a put of a new key still passes its struct's test. The
 interpreter reads through `RuntimeValueReader::map_module`; native code calls
 `fz_map_named_schema_ref` under a `MAP` kind guard and compares the word
 against the admitted schema ids. Where a test admits every map or no map the
 kind alone answers and nothing is read.
+
+The emitter (`native_codegen/runtime_test.rs`) asks the axes that cost one kind
+comparison first and reads further only where they have not admitted the
+value, so `is_map` of a map decides on its kind: `emit_runtime_type_branch`
+jumps to the caller's admit block from the first axis that admits, and a map is
+admitted by the MAP comparison (`value_is_tag` compares the kind word as read,
+with no byte cut out of it). A caller that needs a value takes
+`emit_runtime_type_flag`, the same branch with its outcomes joined. A named struct is admitted by the
+STRUCT comparison and the named bit, and no schema id is read or compared. The interpreter reads the same bit
+(`struct_read` in `runtime_type_predicate.rs`).
 
 A tuple is a `STRUCT` with an unnamed schema, so it is no map:
 `Heap::map_layout` answers `None` for it, and `is_map`, a map pattern and
@@ -673,9 +700,10 @@ place a field by it.
 Compiled code builds one in `build_struct`. When every field is a constant
 the object is read-only program data. Otherwise `CodegenFn::alloc_struct`
 places the object with `emit_place` (the one inline bump) and writes its header
-word itself, the schema id in the high half (`emit_struct`,
+word itself, the schema id in the high half and the named bit (`emit_struct`,
 `native_codegen/inline_object.rs`; the row is `Heap::alloc_struct_unwritten`
-in the recipe table). The size is the layout's, a constant. The runtime is
+in the recipe table, which takes the header word and the size as constants).
+The size is the layout's, a constant. The runtime is
 asked only for room, when the tip is full. `CodegenFn::store_field` then
 stores each field:
 
@@ -992,7 +1020,8 @@ mailbox (`sched::self_send`), so the mailbox holds no reference to anything the
 sender holds. The alias bit remains one-way within a heap.
 
 A struct's shared mark is bit 4 of its header word
-(`STRUCT_HEADER_SHARED_MASK`). The schema id sits in the high 32 bits
+(`STRUCT_HEADER_SHARED_MASK`) and its named bit is bit 5
+(`STRUCT_HEADER_NAMED_MASK`). The schema id sits in the high 32 bits
 (`STRUCT_HEADER_SCHEMA_SHIFT`) and the low nibble is the forwarding marker, so
 neither a schema read nor the collector notices the mark. `Heap::share` is the
 one setter for both kinds: a list marks its spine, a struct its header. Native

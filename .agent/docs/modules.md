@@ -222,8 +222,11 @@ guard `is_function(f, 1)` and `is_function(f, 2)`; `duplicate/2` guards
 proven outside them is refused at compile time.
 
 `lib/maps.fz` defines `:maps` with `to_list/1`, `keys/1` and `values/1`, each a
-single runtime walk of the map's entries; `Map.to_list/1`, `Map.keys/1` and
-`Map.values/1` delegate to them.
+single runtime walk of the map's entries behind an `is_map` guard that raises
+`BadMapError` for a non-map; `Map.to_list/1`, `Map.keys/1` and `Map.values/1`
+delegate to them. `Map.put/3`, `Map.delete/2` and `Map.get/2` raise
+`%BadMapError{}` for a non-map, and every `Map` function that
+returns a map says `:: map` in its spec.
 
 ## A call by name
 

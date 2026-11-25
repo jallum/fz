@@ -4,7 +4,7 @@ use super::binary_compare::{BinaryCompare, emit_binary_compare};
 use super::bitstring_literal::BitstringLiteral;
 use super::recipe::{Emitted, emit_box, emit_cell, emit_in_body, emit_inline};
 use super::repr::ExternLane;
-use super::runtime_test::{KindEvidence, RuntimeTestEmitter, emit_runtime_type_test};
+use super::runtime_test::{KindEvidence, RuntimeTestEmitter, emit_runtime_type_branch, emit_runtime_type_flag};
 use super::*;
 use crate::ast::BitType;
 use crate::fast_hash::HashMap;
@@ -22,7 +22,7 @@ use cranelift_frontend::FunctionBuilder;
 use cranelift_module::{DataId, FuncId, Linkage, Module};
 use fz_runtime::any_value::{
     AnyValue, BITSTRING_BIT_LEN_SHIFT, BITSTRING_BYTES_OFFSET, BITSTRING_HEADER_LEN_MASK, FALSE_ATOM_ID, SlotLayout,
-    TRUE_ATOM_ID, ValueKind, shared_struct_header_word,
+    StructName, TRUE_ATOM_ID, ValueKind, shared_struct_header_word,
 };
 use fz_runtime::bits::BINVIEW_BYTES_PTR_OFFSET;
 use fz_runtime::extern_binary::{fz_binary_as_cstring, fz_binary_as_ptr};
@@ -33,9 +33,9 @@ use fz_runtime::ir_runtime::{
     fz_int_float_cmp, fz_list_cons_any, fz_list_cons_atom, fz_list_cons_float, fz_list_cons_int, fz_map_dest_begin,
     fz_map_dest_begin_update, fz_map_dest_freeze, fz_map_dest_publish, fz_map_dest_put, fz_map_get_ref,
     fz_map_named_schema_ref, fz_matcher_map_get_ref, fz_pinned_binary_segment_size, fz_ref_load_atom,
-    fz_ref_load_float, fz_ref_load_int, fz_struct_get_field_ref, fz_struct_get_named_field_ref, fz_struct_module,
-    fz_struct_schema_id_ref, fz_value_cmp_raw_const, fz_value_cmp_ref, fz_value_eq_raw_const, fz_value_eq_ref,
-    fz_value_eq_widening_ref,
+    fz_ref_load_float, fz_ref_load_int, fz_struct_get_field_ref, fz_struct_get_named_field_ref, fz_struct_is_named_ref,
+    fz_struct_module, fz_struct_schema_id_ref, fz_value_cmp_raw_const, fz_value_cmp_ref, fz_value_eq_raw_const,
+    fz_value_eq_ref, fz_value_eq_widening_ref,
 };
 use fz_runtime::process::AtomName;
 use fz_runtime::process_abi::{PROCESS_DELIVERED_OFFSET, PROCESS_FAILED_OFFSET};
@@ -201,6 +201,7 @@ fn try_static_struct_literal<M: cranelift_module::Module>(
     var_env: &HashMap<u32, CodegenValue>,
     dest_var: Var,
     schema_id: u32,
+    name: StructName,
     fields: &[Var],
 ) -> Result<Option<ir::Value>, CodegenError> {
     let Some(static_fields) = fields
@@ -211,7 +212,7 @@ fn try_static_struct_literal<M: cranelift_module::Module>(
         return Ok(None);
     };
 
-    let data_id = define_static_struct_literal(body, env, dest_var, schema_id, &static_fields)?;
+    let data_id = define_static_struct_literal(body, env, dest_var, schema_id, name, &static_fields)?;
     Ok(Some(static_struct_ref_word(body, dest_var, data_id)))
 }
 
@@ -220,11 +221,12 @@ fn define_static_struct_literal<M: cranelift_module::Module>(
     env: &CodegenEnv<'_>,
     dest_var: Var,
     schema_id: u32,
+    name: StructName,
     fields: &[StaticLiteralField],
 ) -> Result<DataId, CodegenError> {
     let layout = SlotLayout::of(fields.len());
     let mut buf = vec![0u8; layout.size()];
-    buf[0..8].copy_from_slice(&shared_struct_header_word(schema_id).to_le_bytes());
+    buf[0..8].copy_from_slice(&shared_struct_header_word(schema_id, name).to_le_bytes());
 
     let mut child_relocs = Vec::new();
     for (idx, field) in fields.iter().enumerate() {
@@ -276,12 +278,13 @@ fn build_struct<M: cranelift_module::Module, T: Types<Ty = Ty>>(
     var_env: &HashMap<u32, CodegenValue>,
     dest_var: Var,
     schema_id: u32,
+    name: StructName,
     fields: &[Var],
 ) -> Result<LowerOut, CodegenError> {
-    if let Some(static_ref) = try_static_struct_literal(body, env, var_env, dest_var, schema_id, fields)? {
+    if let Some(static_ref) = try_static_struct_literal(body, env, var_env, dest_var, schema_id, name, fields)? {
         return Ok(LowerOut::ValueRefWord(static_ref));
     }
-    let object = body.alloc_struct(schema_id, fields.len());
+    let object = body.alloc_struct(schema_id, name, fields.len());
     for (index, field) in fields.iter().enumerate() {
         let addressed = addressed_object_share(t, env.active_value_types(), *field);
         body.store_field(&object, index, binding_for_var(var_env, field.0), addressed);
@@ -346,7 +349,7 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
                     arity
                 ))
             })?;
-            build_struct(body, t, env, var_env, dest_var, schema_id, elems)?
+            build_struct(body, t, env, var_env, dest_var, schema_id, StructName::Anonymous, elems)?
         }
         Prim::MakeStruct { module, fields } => {
             let schema_id = *env.named_schema_ids.get(module).ok_or_else(|| {
@@ -356,7 +359,16 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
                 ))
             })?;
             let field_vars = fields.iter().map(|(_, field_var)| *field_var).collect::<Vec<_>>();
-            build_struct(body, t, env, var_env, dest_var, schema_id, &field_vars)?
+            build_struct(
+                body,
+                t,
+                env,
+                var_env,
+                dest_var,
+                schema_id,
+                StructName::Named,
+                &field_vars,
+            )?
         }
         Prim::TupleField(c, idx) => {
             // Every TupleField is gated by a preceding runtime type-test predicate
@@ -1487,12 +1499,24 @@ fn lower_runtime_type_predicate<M: cranelift_module::Module>(
 ) -> Result<LowerOut, CodegenError> {
     let value = *var_env.get(&v.0).expect("type-test subject");
     let mut emitter = PrimTestEmitter { body, env };
-    let answer = emit_runtime_type_test(&mut emitter, value, predicate)?;
-    let flag = answer.into_flag(body.b);
+    let flag = emit_runtime_type_flag(&mut emitter, value, predicate)?;
     if body.cache.if_only_conds.contains(&dest_var.0) {
         return Ok(LowerOut::Condition(flag));
     }
     Ok(LowerOut::Strict(strict_bool(body.b, flag)))
+}
+
+/// Lower a type test that only feeds its block's `if`: the shared emitter
+/// branches straight to the `if`'s successors.
+pub(super) fn lower_runtime_type_branch<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, M>,
+    env: &CodegenEnv<'_>,
+    var_env: &HashMap<u32, CodegenValue>,
+    test: BranchingTypeTest<'_>,
+) -> Result<(), CodegenError> {
+    let value = *var_env.get(&test.subject.0).expect("type-test subject");
+    let mut emitter = PrimTestEmitter { body, env };
+    emit_runtime_type_branch(&mut emitter, value, test.predicate, test.admit, test.reject)
 }
 
 /// The compiled-body door onto the shared runtime-test emitter.
@@ -1543,6 +1567,13 @@ impl<'fb, M: cranelift_module::Module> RuntimeTestEmitter<'fb> for PrimTestEmitt
         Ok(self.body.value_is_tag(value, kind))
     }
 
+    fn kind_in(&mut self, value: CodegenValue, kinds: &[ValueKind]) -> Result<ir::Value, CodegenError> {
+        let tag = self.body.value_type_tag(value);
+        let tag = self.body.b.ins().uextend(types::I64, tag);
+        let member = kind_is_one_of(self.body.b, tag, |kind| kinds.contains(&kind));
+        Ok(self.body.b.ins().ireduce(types::I8, member))
+    }
+
     fn bitstring_bit_len(&mut self, value: CodegenValue) -> Result<ir::Value, CodegenError> {
         let source_ref = self.body.value_as_any_ref(value);
         Ok(emit_proven_binary_bit_len(self.body.b, source_ref))
@@ -1573,6 +1604,11 @@ impl<'fb, M: cranelift_module::Module> RuntimeTestEmitter<'fb> for PrimTestEmitt
         let struct_ref = self.body.value_as_any_ref(value);
         let raw = runtime_call1!(self.body, fz_struct_schema_id_ref, [struct_ref]);
         Ok(self.body.b.ins().uextend(types::I64, raw))
+    }
+
+    fn struct_is_named(&mut self, value: CodegenValue) -> Result<ir::Value, CodegenError> {
+        let struct_ref = self.body.value_as_any_ref(value);
+        Ok(runtime_condition!(self.body, fz_struct_is_named_ref, [struct_ref]))
     }
 
     fn map_named_schema(&mut self, value: CodegenValue) -> Result<ir::Value, CodegenError> {

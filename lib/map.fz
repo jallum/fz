@@ -40,7 +40,7 @@ defmodule Map do
       #=> %{:a => 2}
 
   """
-  @spec new([{any, any}]) :: any
+  @spec new([{any, any}]) :: map
   def new(pairs), do: build(pairs, [], [])
 
   @doc """
@@ -53,7 +53,7 @@ defmodule Map do
       #=> %{1 => 1, 2 => 4, 3 => 9}
 
   """
-  @spec new(any, (any -> {any, any})) :: any
+  @spec new(any, (any -> {any, any})) :: map
   def new(enumerable, fun), do: new(Enum.map(enumerable, fun))
 
   @doc """
@@ -67,7 +67,7 @@ defmodule Map do
       #=> %{:a => 1, :b => 3, :c => 4}
 
   """
-  @spec merge(any, any) :: any
+  @spec merge(any, any) :: map
   def merge(a, b), do: build(to_list(a) ++ to_list(b), [], [])
 
   @doc """
@@ -84,7 +84,7 @@ defmodule Map do
       #=> %{:a => 1}
 
   """
-  @spec take(any, [any]) :: any
+  @spec take(any, [any]) :: map
   def take(map, keys), do: build(taken(map, keys, []), [], [])
 
   @doc """
@@ -98,7 +98,7 @@ defmodule Map do
       #=> %{:a => 1, :c => 3}
 
   """
-  @spec drop(any, [any]) :: any
+  @spec drop(any, [any]) :: map
   def drop(map, keys), do: build(dropped(to_list(map), keys, []), [], [])
 
   @doc """
@@ -113,7 +113,7 @@ defmodule Map do
       #=> %{:a => 1, :c => 3}
 
   """
-  @spec filter(any, ({any, any} -> boolean)) :: any
+  @spec filter(any, ({any, any} -> boolean)) :: map
   def filter(map, fun), do: build(kept(to_list(map), fun, []), [], [])
 
   @doc """
@@ -128,16 +128,16 @@ defmodule Map do
       #=> {%{:a => 1, :c => 3}, %{:b => 2}}
 
   """
-  @spec split(any, [any]) :: {any, any}
+  @spec split(any, [any]) :: {map, map}
   def split(map, keys), do: {take(map, keys), drop(map, keys)}
 
   # Splits the pair list into parallel key and value lists, which is what the
   # one-allocation builder takes.
-  @spec build([{a, b}], [a], [b]) :: any when a: var, b: var
+  @spec build([{a, b}], [a], [b]) :: map when a: var, b: var
   defp build([], ks, vs), do: fz_map_from_kv(reverse(ks, []), reverse(vs, []))
   defp build([{k, v} | t], ks, vs), do: build(t, [k | ks], [v | vs])
 
-  extern "fz" defp fz_map_from_kv(any, any) :: any
+  extern "fz" defp fz_map_from_kv(any, any) :: map
 
   @spec taken(any, [any], [{any, any}]) :: [{any, any}]
   defp taken(_map, [], acc), do: reverse(acc, [])
@@ -188,10 +188,11 @@ defmodule Map do
       #=> %{:a => 99}
 
   """
-  @spec put(any, any, any) :: any
-  def put(map, key, value), do: fz_map_put(map, key, value)
+  @spec put(any, any, any) :: map
+  def put(map, key, value) when is_map(map), do: fz_map_put(map, key, value)
+  def put(map, _key, _value), do: raise(%BadMapError{term: map})
 
-  extern "fz" defp fz_map_put(any, stored_value, stored_value) :: any
+  extern "fz" defp fz_map_put(map, stored_value, stored_value) :: map
 
   @doc """
   Returns the value for `key`, or `nil` when the key is absent.
@@ -206,7 +207,13 @@ defmodule Map do
 
   """
   @spec get(any, any) :: any
-  def get(map, key), do: map[key]
+  def get(map, key) do
+    case map do
+      %{^key => value} -> value
+      %{} -> nil
+      other -> raise(%BadMapError{term: other})
+    end
+  end
 
   @doc """
   Returns the value for `key`, or `default` when the key is absent.
@@ -303,10 +310,10 @@ defmodule Map do
   def update_key_error(map, keys),
     do: raise(%KeyError{key: first_missing_key(map, keys)})
 
-  @spec first_missing_key(any, [any]) :: any
+  @spec first_missing_key(map, [any]) :: any
   defp first_missing_key(map, [key | keys]), do: first_missing_key(map, key, keys, fz_map_has_key(map, key))
 
-  @spec first_missing_key(any, any, [any], boolean) :: any
+  @spec first_missing_key(map, any, [any], boolean) :: any
   defp first_missing_key(map, _key, keys, true), do: first_missing_key(map, keys)
   defp first_missing_key(_map, key, _keys, false), do: key
 
@@ -322,7 +329,7 @@ defmodule Map do
       #=> %{:a => 2}
 
   """
-  @spec update!(any, any, (any -> any)) :: any
+  @spec update!(any, any, (any -> any)) :: map
   def update!(map, key, fun) do
     case map do
       %{^key => value} -> put(map, key, fun.(value))
@@ -344,7 +351,7 @@ defmodule Map do
       #=> %{a: 1}
 
   """
-  @spec replace(any, any, any) :: any
+  @spec replace(any, any, any) :: map
   def replace(map, key, value) do
     case map do
       %{^key => _} -> put(map, key, value)
@@ -368,7 +375,7 @@ defmodule Map do
       #     %{a: 1}
 
   """
-  @spec replace!(any, any, any) :: any
+  @spec replace!(any, any, any) :: map
   def replace!(map, key, value) do
     case map do
       %{^key => _} -> put(map, key, value)
@@ -392,7 +399,7 @@ defmodule Map do
       #=> %{:a => 1, :b => 0}
 
   """
-  @spec update(map, any, any, (any -> any)) :: map
+  @spec update(any, any, any, (any -> any)) :: map
   def update(map, key, default, fun) do
     case map do
       %{^key => value} -> put(map, key, fun.(value))
@@ -415,10 +422,11 @@ defmodule Map do
       #=> %{:a => 1}
 
   """
-  @spec delete(any, any) :: any
-  def delete(map, key), do: fz_map_delete(map, key)
+  @spec delete(any, any) :: map
+  def delete(map, key) when is_map(map), do: fz_map_delete(map, key)
+  def delete(map, _key), do: raise(%BadMapError{term: map})
 
-  extern "fz" defp fz_map_delete(any, stored_value) :: any
+  extern "fz" defp fz_map_delete(map, stored_value) :: map
 
   @doc """
   Returns the entries as a `{key, value}` list, in the map's iteration order.
@@ -474,7 +482,7 @@ defmodule Map do
   def has_key?(map, key) when is_map(map), do: fz_map_has_key(map, key)
   def has_key?(map, _key), do: raise(%BadMapError{term: map})
 
-  extern "fz" defp fz_map_has_key(any, stored_value) :: boolean
+  extern "fz" defp fz_map_has_key(map, stored_value) :: boolean
 
   @doc """
   The `Enumerable.reduce/3` callback body for maps.

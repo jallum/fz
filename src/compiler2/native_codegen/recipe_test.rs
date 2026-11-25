@@ -256,12 +256,16 @@ fn words() -> Words {
     let mut heap = Heap::new(4096, Rc::new(RefCell::new(SchemaRegistry::new())));
     let pair = heap.register_schema(Schema::tuple_of_arity(2));
     let triple = heap.register_schema(Schema::tuple_of_arity(3));
+    let record = heap.register_schema(Schema::named_struct(
+        fz_runtime::module_name::ModuleName::from_segments(vec!["Point".into()]),
+        ["x".to_string()],
+    ));
     let ints: Vec<AnyValueRef> = INTEGERS.iter().map(|value| int_ref(&mut heap, *value)).collect();
     let atoms: Vec<AnyValueRef> = [TRUE_ATOM_ID, FALSE_ATOM_ID, NIL_ATOM_ID, OTHER_ATOM_ID]
         .iter()
         .map(|id| AnyValueRef::atom(*id))
         .collect();
-    let structs: Vec<AnyValueRef> = [pair, triple]
+    let structs: Vec<AnyValueRef> = [pair, triple, record]
         .iter()
         .map(|schema| {
             let address = heap.alloc_struct(*schema);
@@ -442,6 +446,13 @@ fn proofs() -> Vec<Parity> {
             &[Lane::Word],
             singles(&w.structs),
             |a| value(u64::from(fz_struct_schema_id_ref(a[0]))),
+        ),
+        parity(
+            "fz_struct_is_named_ref",
+            Shape::Condition,
+            &[Lane::Word],
+            singles(&w.structs),
+            |a| value(u64::from(fz_struct_is_named_ref(a[0]))),
         ),
         parity(
             "fz_bitstring_byte_extent",
@@ -1099,7 +1110,8 @@ fn compile_object(case: &ObjectCase, schemas: &Rc<RefCell<SchemaRegistry>>) -> C
         let reference = match case.object {
             Object::Struct { schema } => {
                 let fields = schemas.borrow().get(schema).value_field_count();
-                body.alloc_struct(schema, fields).reference
+                let name = schemas.borrow().get(schema).struct_name();
+                body.alloc_struct(schema, name, fields).reference
             }
             Object::Closure {
                 denotation,
@@ -1208,7 +1220,7 @@ fn place_in_runtime(object: Object, schemas: &SchemaRegistry, process: *mut Proc
     match object {
         Object::Struct { schema } => {
             let size = struct_size_for_payload(schemas.get(schema).allocation_payload_size());
-            let address = heap.alloc_struct_unwritten(schema, size);
+            let address = heap.alloc_struct_unwritten(schemas.struct_header(schema), size);
             AnyValueRef::from_heap_object(ValueKind::STRUCT, address)
                 .expect("a struct ref")
                 .raw_word()

@@ -326,7 +326,7 @@ impl AnyValueRef {
             .expect("AnyValueRef contains a valid tag")
     }
 
-    fn cleared_addr(self) -> *mut u8 {
+    pub(crate) fn cleared_addr(self) -> *mut u8 {
         AnyValueRefPacking::current().address(self) as *mut u8
     }
 
@@ -1400,11 +1400,28 @@ pub fn struct_addr_from_tagged(bits: u64) -> Option<*mut u8> {
     addr_of_kind(bits, ValueKind::STRUCT)
 }
 
-/// A struct's first word: the schema id in the high 32 bits, the low 32 bits
-/// clear. A live struct's low nibble is clear; only a forwarding marker sets it.
+/// Whether a struct's schema is a named struct, an Elixir `%Mod{}` record, as
+/// opposed to a tuple or an internal layout. Only a named struct is a map.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StructName {
+    Named,
+    Anonymous,
+}
+
+/// A struct's first word: the schema id in the high 32 bits, the named bit,
+/// the shared bit and the forwarding nibble below. A live struct's low nibble
+/// is clear; only a forwarding marker sets it. Bits 6 to 31 are clear.
+///
+/// The named bit repeats a fact of the schema, so that "is this struct a map"
+/// is one test of the word a type test already loads. The constructor takes
+/// both, so a writer cannot place a schema id without deciding it.
 #[inline]
-pub const fn struct_header_word(schema_id: u32) -> u64 {
-    (schema_id as u64) << STRUCT_HEADER_SCHEMA_SHIFT
+pub const fn struct_header_word(schema_id: u32, name: StructName) -> u64 {
+    let named = match name {
+        StructName::Named => STRUCT_HEADER_NAMED_MASK,
+        StructName::Anonymous => 0,
+    };
+    ((schema_id as u64) << STRUCT_HEADER_SCHEMA_SHIFT) | named
 }
 
 /// Where a struct's first word keeps its schema id.
@@ -1412,14 +1429,29 @@ pub const STRUCT_HEADER_SCHEMA_SHIFT: i64 = 32;
 
 /// The bit of a struct's first word that says a second holder may exist, so
 /// the struct is never written again. It means what a list cell's alias bit
-/// means, sits above the forwarding nibble, and below the schema id.
+/// means, sits above the forwarding nibble, and below the named bit.
 pub const STRUCT_HEADER_SHARED_MASK: u64 = 1 << 4;
+
+/// The bit of a struct's first word that says its schema is a named struct.
+/// It is set at birth and never changes, so a copy keeps it.
+pub const STRUCT_HEADER_NAMED_MASK: u64 = 1 << 5;
 
 /// The first word of a struct that is shared from birth: one in read-only
 /// program data, which must never be written.
 #[inline]
-pub const fn shared_struct_header_word(schema_id: u32) -> u64 {
-    struct_header_word(schema_id) | STRUCT_HEADER_SHARED_MASK
+pub const fn shared_struct_header_word(schema_id: u32, name: StructName) -> u64 {
+    struct_header_word(schema_id, name) | STRUCT_HEADER_SHARED_MASK
+}
+
+/// Whether the struct at `addr` belongs to a named struct schema.
+///
+/// # Safety
+///
+/// `addr` must point to the start of an initialized strict Struct object.
+#[inline]
+pub unsafe fn struct_is_named(addr: *const u8) -> bool {
+    let header = unsafe { ptr::read(addr as *const u64) };
+    header & STRUCT_HEADER_NAMED_MASK != 0
 }
 
 /// Whether the struct at `addr` may have a second holder.

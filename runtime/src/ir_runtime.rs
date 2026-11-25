@@ -27,7 +27,7 @@ use crate::any_value::{
     AnyValue, AnyValueRef, FALSE_ATOM_ID, ListCons, NIL_ATOM_ID, SlotLayout, Stored, ValueKind,
     binview_addr_from_tagged, closure_addr_from_tagged, closure_arity, closure_capture_ref_word,
     closure_captured_count, closure_denotation, closure_fn_ptr, closure_halt_kind, map_addr_from_tagged, object_size,
-    struct_is_shared, struct_schema_id,
+    struct_is_named, struct_is_shared, struct_schema_id,
 };
 use crate::bits::{
     Bin, BinView, SharedBin, SharedBinHandle, alloc_buffer_view, is_bitstring_like, referenced_byte_len,
@@ -262,6 +262,15 @@ pub extern "C" fn fz_struct_schema_id_ref(ref_word: u64) -> u32 {
         .struct_addr()
         .expect("fz_struct_schema_id_ref");
     unsafe { struct_schema_id(addr.cast_const()) }
+}
+
+/// Whether the struct `ref_word` names is a named struct, and so a map.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_struct_is_named_ref(ref_word: u64) -> u8 {
+    let addr = any_value_ref_from_word(ref_word, "fz_struct_is_named_ref")
+        .struct_addr()
+        .expect("fz_struct_is_named_ref");
+    u8::from(unsafe { struct_is_named(addr.cast_const()) })
 }
 
 #[unsafe(no_mangle)]
@@ -1709,7 +1718,6 @@ fn map_get(process: *mut Process, map: AnyValueRef, key: AnyValue) -> u64 {
     (unsafe { &mut *process })
         .heap
         .read_map_value(map, key)
-        .expect("fz_map_get_ref")
         .unwrap_or_else(nil_atom_ref)
         .raw_word()
 }
@@ -2630,7 +2638,6 @@ pub extern "C" fn fz_matcher_map_get_ref(
     (unsafe { &mut *process })
         .heap
         .read_map_value(map, key)
-        .expect("fz_matcher_map_get_ref")
         .unwrap_or_else(AnyValueRef::null)
         .raw_word()
 }

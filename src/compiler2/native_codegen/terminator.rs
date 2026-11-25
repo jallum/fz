@@ -6,9 +6,10 @@ use super::*;
 use crate::compiler2::artifact::{BodyFrame, FrameRole};
 use crate::compiler2::{NativeBody, NativeEntryAbi};
 use crate::dispatch_matrix::pattern::PatternDispatchPlan;
-use crate::fast_hash::HashMap;
+use crate::fast_hash::{HashMap, HashSet};
 use crate::fz_ir::{
-    self as fz_ir, BlockId, Cont, DirectCallTarget, EmitSlot, FnId, FnIr, ReceiveAfter, ReceiveClause, Term, Var,
+    self as fz_ir, Block, BlockId, Cont, DirectCallTarget, EmitSlot, FnId, FnIr, Prim, ReceiveAfter, ReceiveClause,
+    Stmt, Term, Var,
 };
 use crate::runtime_type_predicate::RuntimeTypePredicate;
 use cranelift_codegen::ir::TrapCode;
@@ -403,6 +404,40 @@ impl GotoEdges<'_> {
         body.b.ins().jump(successor, &arg_vals);
         Ok(())
     }
+}
+
+/// A runtime type test that ends its block by branching.
+pub(super) struct BranchingTypeTest<'a> {
+    pub(super) subject: Var,
+    pub(super) predicate: &'a RuntimeTypePredicate,
+    pub(super) admit: ir::Block,
+    pub(super) reject: ir::Block,
+}
+
+/// The type test a block's `if` is the only reader of, when it is the block's
+/// last statement and both successors are reachable. Such a test branches
+/// straight to the successors; its answer is never held as a value.
+pub(super) fn type_test_that_only_branches<'a>(
+    blk: &'a Block,
+    if_only_conds: &HashSet<u32>,
+    block_map: &HashMap<u32, ir::Block>,
+) -> Option<BranchingTypeTest<'a>> {
+    let Term::If {
+        cond, then_b, else_b, ..
+    } = &blk.terminator
+    else {
+        return None;
+    };
+    let Some(Stmt::Let(tested, Prim::RuntimeTypeTest(subject, predicate))) = blk.stmts.last() else {
+        return None;
+    };
+    (tested == cond && if_only_conds.contains(&cond.0)).then_some(())?;
+    Some(BranchingTypeTest {
+        subject: *subject,
+        predicate,
+        admit: *block_map.get(&then_b.0)?,
+        reject: *block_map.get(&else_b.0)?,
+    })
 }
 
 fn emit_if<M: cranelift_module::Module>(

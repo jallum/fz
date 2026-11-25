@@ -186,15 +186,3 @@ fn payload_of(b: &mut FunctionBuilder<'_>, word: ir::Value, kind: ir::Value) -> 
     b.seal_block(joined);
     b.block_params(joined)[0]
 }
-
-/// An `I8` condition: whether the kind value `kind` is one `member` admits.
-/// One bit of a constant mask is read by shifting it down by the kind.
-fn kind_is_one_of(b: &mut FunctionBuilder<'_>, kind: ir::Value, member: impl Fn(ValueKind) -> bool) -> ir::Value {
-    let mask: u64 = (0..=u8::MAX)
-        .filter_map(ValueKind::new)
-        .filter(|kind| member(*kind))
-        .fold(0, |mask, kind| mask | 1 << kind.tag());
-    let mask = b.ins().iconst(types::I64, mask as i64);
-    let bit = b.ins().ushr(mask, kind);
-    b.ins().band_imm_u(bit, 1)
-}

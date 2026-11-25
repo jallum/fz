@@ -9026,6 +9026,136 @@ fn compiler2_native_map_put_passes_an_integer_as_its_word_and_kind() {
     );
 }
 
+/// A map the compiler has proven stays proven across `Map.put`: its spec says
+/// it returns a map, the extern it calls declares a map, and the runtime trusts
+/// both. So `map_size` of a put loop's result asks no question of the value's
+/// kind, where a put that returned `any` made `map_size` test the kind set of a
+/// struct or a map at every use.
+#[test]
+fn compiler2_native_put_loop_over_a_proven_map_asks_no_kind_question() {
+    let kind_set_test = "0x6400";
+    let source = "defmodule P do\n\
+         \x20 def pick([h | _]), do: h\n\
+         \x20 def fill(m, []), do: m\n\
+         \x20 def fill(m, [k | rest]), do: fill(Map.put(m, k, k), rest)\n\
+         \x20 def size_after(m, keys), do: map_size(fill(m, keys))\n\
+         end\n\
+         def main(), do: P.size_after(P.pick([%{a: 1}]), [1, 2, 3])\n";
+
+    let size = lowered_clif_by_function(source)
+        .into_iter()
+        .filter(|(name, _)| name.starts_with("size_after__e") || name.starts_with("map_size__e"))
+        .map(|(_, text)| text)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        size.contains("map_size__e"),
+        "the size is read through map_size:\n{size}"
+    );
+    assert!(
+        !size.contains(kind_set_test),
+        "map_size tests the kind of a value the compiler has proven is a map:\n{size}"
+    );
+
+    let fill = lowered_clif_of(source, "fill");
+    let before_put = fill
+        .split_once(" = call fn")
+        .map(|(head, _)| head)
+        .unwrap_or_else(|| panic!("the loop calls the runtime's put:\n{fill}"));
+    assert!(
+        fill.contains("= fz_map_put\n") && !before_put.contains(kind_set_test),
+        "the loop tests the kind of its map before the put:\n{fill}"
+    );
+}
+
+/// The guard of `Map.put` on a value the compiler knows nothing about decides
+/// a map on its kind alone: the kind is compared with MAP before the struct
+/// axis reads a header, and "any named struct" is the named bit of the header
+/// word, so no schema id is read or compared on the way to the put. A value of
+/// kind MAP branches from the one compare straight to the put: the answer is
+/// never joined into a flag that the consumer would test again.
+#[test]
+fn compiler2_native_is_map_guard_of_an_unknown_value_reads_no_schema_id() {
+    let source = "defmodule P do\n\
+         \x20 def pick([h | _]), do: h\n\
+         \x20 def loop(m, 0), do: m\n\
+         \x20 def loop(m, n), do: loop(Map.put(m, n, n), n - 1)\n\
+         end\n\
+         def main(), do: P.loop(P.pick([%{a: 1}, 7, :x]), 10)\n";
+    let clif = lowered_clif_of(source, "loop");
+    let map_kind = "iconst.i64 2\n";
+    let struct_kind = "iconst.i64 3\n";
+    let (Some(map_test), Some(struct_test)) = (clif.find(map_kind), clif.find(struct_kind)) else {
+        panic!("the guard compares the kind with MAP and STRUCT:\n{clif}");
+    };
+    assert!(
+        map_test < struct_test,
+        "the guard asks MAP, the common case, before STRUCT:\n{clif}"
+    );
+    let lines: Vec<&str> = clif.lines().collect();
+    let map_compare = lines
+        .iter()
+        .position(|line| line.contains(" = icmp eq ") && line.ends_with("= 2"))
+        .expect("the guard compares the kind with MAP");
+    let branch = lines[map_compare + 1].trim_start();
+    assert!(
+        branch.starts_with("brif ") && !branch.contains('('),
+        "a map is admitted by the branch on its kind compare, with no joined flag: {branch}\n{clif}"
+    );
+    let schema_id_reads: Vec<&str> = clif
+        .lines()
+        .filter(|line| {
+            line.contains(" = ushr ")
+                && line.ends_with(&format!("= {}", fz_runtime::any_value::STRUCT_HEADER_SCHEMA_SHIFT))
+        })
+        .collect();
+    assert!(
+        schema_id_reads.is_empty(),
+        "the guard of an unknown value reads no schema id: {schema_id_reads:?}\n{clif}"
+    );
+    let named_bit = format!("= {}", fz_runtime::any_value::STRUCT_HEADER_NAMED_MASK);
+    assert!(
+        clif.lines()
+            .any(|line| line.contains(" = band ") && line.ends_with(&named_bit)),
+        "a struct is a map by the named bit of its header:\n{clif}"
+    );
+}
+
+/// A test that admits a value on its kind alone across several kinds reads the
+/// kind once and tests it against one mask: `is_binary` of an unknown value
+/// admits a bitstring and a view of one, and asks no compare apiece. A hit goes
+/// on to the whole-bytes test, and both tests branch to admit or reject.
+#[test]
+fn compiler2_native_is_binary_of_an_unknown_value_tests_one_kind_mask() {
+    let source = "defmodule P do\n\
+         \x20 def pick([h | _]), do: h\n\
+         \x20 def tag(x) when is_binary(x), do: 1\n\
+         \x20 def tag(_), do: 0\n\
+         end\n\
+         def main(), do: P.tag(P.pick([\"ab\", 7]))\n";
+    let clif = lowered_clif_of(source, "tag");
+    let kind_shift = format!("= {}", fz_runtime::any_value::AnyValueRefPacking::current().tag_shift());
+    let kind_reads = clif
+        .lines()
+        .filter(|line| line.contains(" = ushr ") && line.ends_with(&kind_shift))
+        .count();
+    let mask: u64 = fz_runtime::any_value::ValueKind::BINARY_REPRS
+        .iter()
+        .fold(0, |mask, kind| mask | 1 << kind.tag());
+    let mask_word = format!("iconst.i64 {mask}");
+    assert_eq!(kind_reads, 1, "the kind is read once:\n{clif}");
+    assert!(
+        clif.lines()
+            .filter(|line| line.trim_start().starts_with("brif "))
+            .all(|line| !line.contains('(')),
+        "the kind mask and the whole-bytes test branch to admit or reject; no flag is joined and re-tested:\n{clif}"
+    );
+    assert!(
+        clif.contains(&mask_word),
+        "the kinds a binary is held in are one mask, {mask_word}:\n{clif}"
+    );
+}
+
 /// A share is written where it stands, from what the value's type says. In
 /// each program below `retained` passes its argument to `keep` and still
 /// holds it, so the argument is shared before the call. Sharing a binary
@@ -13749,23 +13879,23 @@ const SURFACE_MEMBERSHIP_CENSUS: [(&str, &str, usize, usize); 13] = [
         0,
     ),
     ("fixtures/00613_enum_over_runtime_typed_values.fz", "", 5, 0),
-    ("fixtures/01032_mapset_collects_and_answers_in.fz", "", 15, 0),
+    ("fixtures/01032_mapset_collects_and_answers_in.fz", "", 11, 0),
     (
         "fixtures/01125_a_never_returning_closure_call_over_decoded_records_asks_nothing_of_the_boxed_return.fz",
         "",
-        6,
+        5,
         0,
     ),
     (
         "fixtures/01130_a_reducer_wrapped_in_a_new_closure_on_each_lap_compiles_and_reduces.fz",
         "",
-        5,
+        6,
         0,
     ),
     (
         "fixtures/01135_two_reduces_over_one_value_through_a_user_enumerable_each_keep_their_own_accumulator_type.fz",
         "",
-        5,
+        6,
         0,
     ),
     ("fixtures/01425_callable_union_capture_containment.fz", "", 6, 0),
@@ -25124,7 +25254,7 @@ fn compiler2_a_stream_over_any_enumerable_keeps_its_activations_finite() {
     }
     assert_eq!(
         activations.values().map(BTreeSet::len).sum::<usize>(),
-        125,
+        122,
         "activations of the whole program"
     );
 }

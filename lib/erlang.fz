@@ -327,7 +327,7 @@ defmodule :erlang do
       #=> true
 
   """
-  @spec is_map_key(any, map) :: boolean
+  @spec is_map_key(any, any) :: boolean
   def is_map_key(key, map), do: Map.has_key?(map, key)
 
   @doc """

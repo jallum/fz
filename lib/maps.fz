@@ -11,9 +11,10 @@ defmodule :maps do
 
   """
   @spec to_list(any) :: [{any, any}]
-  def to_list(map), do: fz_map_to_list(map)
+  def to_list(map) when is_map(map), do: fz_map_to_list(map)
+  def to_list(map), do: raise(%BadMapError{term: map})
 
-  extern "fz" defp fz_map_to_list(any) :: any
+  extern "fz" defp fz_map_to_list(map) :: any
 
   @doc """
   Returns the map's keys, in the map's iteration order.
@@ -25,9 +26,10 @@ defmodule :maps do
 
   """
   @spec keys(any) :: [any]
-  def keys(map), do: fz_map_keys(map)
+  def keys(map) when is_map(map), do: fz_map_keys(map)
+  def keys(map), do: raise(%BadMapError{term: map})
 
-  extern "fz" defp fz_map_keys(any) :: any
+  extern "fz" defp fz_map_keys(map) :: any
 
   @doc """
   Returns the map's values, in the map's iteration order.
@@ -39,7 +41,8 @@ defmodule :maps do
 
   """
   @spec values(any) :: [any]
-  def values(map), do: fz_map_values(map)
+  def values(map) when is_map(map), do: fz_map_values(map)
+  def values(map), do: raise(%BadMapError{term: map})
 
-  extern "fz" defp fz_map_values(any) :: any
+  extern "fz" defp fz_map_values(map) :: any
 end

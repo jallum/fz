@@ -14,6 +14,14 @@
 //! axis added to the lattice stops both doors compiling until it is decided
 //! here.
 //!
+//! The OR is evaluated early and cheaply, as a branch: [`emit_runtime_type_branch`]
+//! jumps to the caller's admit block from the first axis that admits and falls
+//! to its reject block from the last that does not. An axis that costs one kind
+//! comparison ([`is_kind_only`]) is asked first, so `is_map` of a map decides on
+//! the kind alone and a value in a scalar lane is a plain jump. A caller that
+//! wants the answer as a value takes [`emit_runtime_type_flag`], the same branch
+//! with its two outcomes joined.
+//!
 //! The three struct axes share one schema read and divide the STRUCT values
 //! between them. Which arities the other-structs axis takes is the predicate's
 //! own answer -- exactly the ones the tuple axis does not name, through
@@ -31,10 +39,12 @@
 //! axis and the named-structs axis share that one read: the first admits the
 //! maps naming no module, the second the maps naming an admitted one.
 //!
-//! A named struct and a tuple are both `ValueKind::STRUCT` at runtime, and only
-//! their schema ids tell them apart, so the named-struct and arity readings
-//! stay separate functions. Folding them into one schema-id question would lose
-//! the distinction
+//! A named struct and a tuple are both `ValueKind::STRUCT` at runtime. The
+//! struct header's named bit says which, so "any named struct" and "no named
+//! struct" are one test of the header word, and only a question about
+//! particular names or arities compares schema ids. The named-struct and arity
+//! readings stay separate functions. Folding them into one schema-id question
+//! would lose the distinction
 //! [`crate::runtime_type_predicate::RuntimeTypePredicate::tuple_positions`]
 //! depends on: a named struct never answers a tuple's position questions.
 
@@ -82,6 +92,9 @@ pub(super) trait RuntimeTestEmitter<'f> {
 
     fn kind_evidence(&self, value: Self::Value) -> KindEvidence;
     fn kind_flag(&mut self, value: Self::Value, kind: ValueKind) -> Result<ir::Value, CodegenError>;
+    /// Whether the value's kind is one of `kinds`, as an `I8` flag: the kind is
+    /// read once and tested against a constant mask.
+    fn kind_in(&mut self, value: Self::Value, kinds: &[ValueKind]) -> Result<ir::Value, CodegenError>;
 
     /// The bit length of a bitstring value. Only asked under a guard that has
     /// established the value IS a bitstring.
@@ -97,6 +110,9 @@ pub(super) trait RuntimeTestEmitter<'f> {
     /// The value's schema id, widened to `I64`. Only asked under a STRUCT
     /// guard.
     fn schema_id(&mut self, value: Self::Value) -> Result<ir::Value, CodegenError>;
+    /// Whether the struct is a named struct, as an `I8` flag. Only asked under
+    /// a STRUCT guard.
+    fn struct_is_named(&mut self, value: Self::Value) -> Result<ir::Value, CodegenError>;
     /// The `NamedSchema` word of the module a map names, widened to `I64`.
     /// Only asked under a MAP guard.
     fn map_named_schema(&mut self, value: Self::Value) -> Result<ir::Value, CodegenError>;
@@ -120,69 +136,109 @@ pub(super) trait RuntimeTestEmitter<'f> {
     fn callable_addresses(&mut self, callables: &CallableShapes) -> Result<Vec<ir::Value>, CodegenError>;
 }
 
-/// `predicate` asked of `value` as an `I8` flag, for a question nested inside
-/// another test's own flag.
-fn emit_runtime_type_flag<'f, E: RuntimeTestEmitter<'f>>(
+/// `predicate` asked of `value` as an `I8` flag, for a caller that wants the
+/// answer as a value. It is the branch form with its two outcomes joined.
+pub(super) fn emit_runtime_type_flag<'f, E: RuntimeTestEmitter<'f>>(
     e: &mut E,
     value: E::Value,
     predicate: &RuntimeTypePredicate,
 ) -> Result<ir::Value, CodegenError> {
-    let answer = emit_runtime_type_test(e, value, predicate)?;
-    Ok(answer.into_flag(e.builder()))
+    joined(e, |e, admit, reject| {
+        emit_runtime_type_branch(e, value, predicate, admit, reject)
+    })
 }
 
-/// What asking a predicate of a value comes to.
-///
-/// A value held unboxed in a scalar lane is of one kind, so a predicate that
-/// admits all of that kind or none of it is answered without emitting a test.
-/// A caller that branches on the answer then lowers only the successor that
-/// can be reached.
-#[derive(Debug, Clone, Copy)]
-pub(super) enum TypeTestAnswer {
-    Always,
-    Never,
-    /// An `I8` flag, 1 where the predicate admits the value.
-    Flag(ir::Value),
+/// The answer of a branching `build` as an `I8` flag: `build` ends the current
+/// block by branching to the `admit` or `reject` block it is given, and the two
+/// outcomes are joined into 1 and 0.
+fn joined<'f, E: RuntimeTestEmitter<'f>>(
+    e: &mut E,
+    build: impl FnOnce(&mut E, ir::Block, ir::Block) -> Result<(), CodegenError>,
+) -> Result<ir::Value, CodegenError> {
+    let (admit, reject, join) = {
+        let b = e.builder();
+        let join = b.create_block();
+        b.append_block_param(join, types::I8);
+        (b.create_block(), b.create_block(), join)
+    };
+    build(e, admit, reject)?;
+    let b = e.builder();
+    for (outcome, answer) in [(admit, 1), (reject, 0)] {
+        b.switch_to_block(outcome);
+        b.seal_block(outcome);
+        let answer = b.ins().iconst(types::I8, answer);
+        b.ins().jump(join, &[BlockArg::Value(answer)]);
+    }
+    b.switch_to_block(join);
+    b.seal_block(join);
+    Ok(b.block_params(join)[0])
 }
 
-impl TypeTestAnswer {
-    /// The answer as an `I8` flag, for a caller that wants a value.
-    pub(super) fn into_flag(self, b: &mut FunctionBuilder<'_>) -> ir::Value {
-        match self {
-            Self::Always => b.ins().iconst(types::I8, 1),
-            Self::Never => b.ins().iconst(types::I8, 0),
-            Self::Flag(flag) => flag,
-        }
+/// Whether a value held unboxed in a scalar lane settles `predicate` without
+/// a test: such a value is of one kind, so a predicate that admits all of that
+/// kind or none of it has one answer. A caller that branches on the answer
+/// then lowers only the successor that can be reached.
+pub(super) fn settled_by_lane<'f, E: RuntimeTestEmitter<'f>>(
+    e: &E,
+    value: E::Value,
+    predicate: &RuntimeTypePredicate,
+) -> Option<bool> {
+    match e.kind_evidence(value) {
+        KindEvidence::Unboxed(kind) => predicate.settled_for_scalar_lane(kind),
+        KindEvidence::Tagged | KindEvidence::Opaque => None,
     }
 }
 
-/// Ask `predicate` of `value`.
-pub(super) fn emit_runtime_type_test<'f, E: RuntimeTestEmitter<'f>>(
+/// Ask `predicate` of `value`, ending the current block by branching to
+/// `admit` where the value is admitted and to `reject` where it is not.
+///
+/// Each axis that admits jumps straight to `admit`; the last to fail falls to
+/// `reject`. A question the value's lane settles is a plain jump. Axes are
+/// asked in turn, so the code of an axis runs only for a value the axes before
+/// it did not admit.
+pub(super) fn emit_runtime_type_branch<'f, E: RuntimeTestEmitter<'f>>(
     e: &mut E,
     value: E::Value,
     predicate: &RuntimeTypePredicate,
-) -> Result<TypeTestAnswer, CodegenError> {
-    if let KindEvidence::Unboxed(kind) = e.kind_evidence(value)
-        && let Some(admitted) = predicate.settled_for_scalar_lane(kind)
-    {
-        return Ok(if admitted {
-            TypeTestAnswer::Always
-        } else {
-            TypeTestAnswer::Never
-        });
+    admit: ir::Block,
+    reject: ir::Block,
+) -> Result<(), CodegenError> {
+    if let Some(admitted) = settled_by_lane(e, value, predicate) {
+        e.builder().ins().jump(if admitted { admit } else { reject }, &[]);
+        return Ok(());
     }
-    let mut flag: Option<ir::Value> = None;
+    let mut axes: Vec<RuntimeTestAxis> = predicate.axes().collect();
+    axes.sort_by_key(|axis| !is_kind_only(*axis, predicate));
     let mut asked = SharedReads::default();
-    for axis in predicate.axes() {
-        let Some(next) = emit_axis(e, value, predicate, axis, &mut asked)? else {
-            continue;
-        };
-        flag = Some(match flag {
-            None => next,
-            Some(prev) => e.builder().ins().bor(prev, next),
-        });
+    for axis in axes {
+        let next = e.builder().create_block();
+        if emit_axis(e, value, predicate, axis, &mut asked, admit, next)? {
+            let b = e.builder();
+            b.switch_to_block(next);
+            b.seal_block(next);
+        }
     }
-    Ok(flag.map_or(TypeTestAnswer::Never, TypeTestAnswer::Flag))
+    e.builder().ins().jump(reject, &[]);
+    Ok(())
+}
+
+/// Whether asking `axis` costs one comparison of the value's kind and reads
+/// nothing else off it. Such axes are asked first, and an axis that reads the
+/// value further is asked only of a value they have not admitted.
+fn is_kind_only(axis: RuntimeTestAxis, predicate: &RuntimeTypePredicate) -> bool {
+    match axis {
+        RuntimeTestAxis::Resources | RuntimeTestAxis::Opaques => true,
+        RuntimeTestAxis::Binaries => !predicate.bitstrings.asks_length(),
+        RuntimeTestAxis::Maps => predicate.maps && predicate.named_structs.is_any(),
+        RuntimeTestAxis::Ints
+        | RuntimeTestAxis::Floats
+        | RuntimeTestAxis::Atoms
+        | RuntimeTestAxis::Lists
+        | RuntimeTestAxis::Tuples
+        | RuntimeTestAxis::NamedStructs
+        | RuntimeTestAxis::OtherStructs
+        | RuntimeTestAxis::Callables => false,
+    }
 }
 
 /// The reads several axes share, each emitted once per test.
@@ -197,32 +253,43 @@ struct SharedReads {
 }
 
 impl SharedReads {
+    /// Ask the struct axes unless an earlier axis already did.
     fn structs_once<'f, E: RuntimeTestEmitter<'f>>(
         &mut self,
         e: &mut E,
         value: E::Value,
         predicate: &RuntimeTypePredicate,
-    ) -> Result<Option<ir::Value>, CodegenError> {
+        admit: ir::Block,
+        miss: ir::Block,
+    ) -> Result<bool, CodegenError> {
         if std::mem::replace(&mut self.structs, true) {
-            return Ok(None);
+            return Ok(false);
         }
-        emit_struct_axes(e, value, predicate).map(Some)
+        emit_struct_axes(e, value, predicate, admit, miss)?;
+        Ok(true)
     }
 
+    /// Ask the entries-layout map axes unless an earlier axis already did.
     fn entries_maps_once<'f, E: RuntimeTestEmitter<'f>>(
         &mut self,
         e: &mut E,
         value: E::Value,
         predicate: &RuntimeTypePredicate,
-    ) -> Result<Option<ir::Value>, CodegenError> {
+        admit: ir::Block,
+        miss: ir::Block,
+    ) -> Result<bool, CodegenError> {
         if std::mem::replace(&mut self.entries_maps, true) {
-            return Ok(None);
+            return Ok(false);
         }
-        emit_entries_map_axes(e, value, predicate).map(Some)
+        emit_entries_map_axes(e, value, predicate, admit, miss)?;
+        Ok(true)
     }
 }
 
-/// One axis' answer.
+/// One axis' answer, as a branch: the current block ends by branching to
+/// `admit` where the axis admits the value and to `miss` where it does not.
+/// Whether it did: an axis whose question an earlier axis already answered
+/// emits nothing and leaves the block open.
 ///
 /// Exhaustive over the axis table on purpose: this match is what makes "every
 /// axis the seat may treat as separation is decided by every lowering" true by
@@ -233,130 +300,148 @@ fn emit_axis<'f, E: RuntimeTestEmitter<'f>>(
     predicate: &RuntimeTypePredicate,
     axis: RuntimeTestAxis,
     asked: &mut SharedReads,
-) -> Result<Option<ir::Value>, CodegenError> {
-    let answer = match axis {
+    admit: ir::Block,
+    miss: ir::Block,
+) -> Result<bool, CodegenError> {
+    let flag = match axis {
         RuntimeTestAxis::Ints => {
             let ints = predicate.ints.clone();
-            kind_guarded(e, value, ValueKind::INT, move |e, value| {
+            kind_guarded(e, value, ValueKind::INT, admit, miss, move |e, value| {
                 let raw = e.raw_int(value)?;
                 Ok(emit_i64_membership(e.builder(), raw, &ints))
-            })
+            })?;
+            return Ok(true);
         }
         RuntimeTestAxis::Floats => {
             let floats = predicate.floats.clone();
-            kind_guarded(e, value, ValueKind::FLOAT, move |e, value| {
+            kind_guarded(e, value, ValueKind::FLOAT, admit, miss, move |e, value| {
                 let bits = e.raw_float_bits(value)?;
                 Ok(emit_u64_membership(e.builder(), bits, &floats))
-            })
+            })?;
+            return Ok(true);
         }
         RuntimeTestAxis::Atoms => {
             let atom_ids = atom_id_membership(e, &predicate.atoms);
-            kind_guarded(e, value, ValueKind::ATOM, move |e, value| {
+            kind_guarded(e, value, ValueKind::ATOM, admit, miss, move |e, value| {
                 let raw = e.raw_atom(value)?;
                 Ok(emit_i64_membership(e.builder(), raw, &atom_ids))
-            })
+            })?;
+            return Ok(true);
         }
-        RuntimeTestAxis::Lists => emit_list_axis(e, value, &predicate.lists),
-        RuntimeTestAxis::Maps => return asked.entries_maps_once(e, value, predicate),
+        RuntimeTestAxis::Lists => emit_list_axis(e, value, &predicate.lists)?,
+        RuntimeTestAxis::Maps => return asked.entries_maps_once(e, value, predicate, admit, miss),
         RuntimeTestAxis::Binaries => {
             // Every representation a binary is held in, so a shared-buffer
             // binary answers the same as an inline one.
-            let mut flag: Option<ir::Value> = None;
-            for kind in ValueKind::BINARY_REPRS {
-                let next = e.kind_flag(value, kind)?;
-                flag = Some(match flag {
-                    None => next,
-                    Some(prev) => e.builder().ins().bor(prev, next),
-                });
-            }
-            let is_bitstring = flag.expect("BINARY_REPRS is never empty");
+            let is_bitstring = e.kind_in(value, &ValueKind::BINARY_REPRS)?;
             let admitted = predicate.bitstrings;
             if !admitted.asks_length() {
-                return Ok(Some(is_bitstring));
+                is_bitstring
+            } else {
+                let whole_bytes = admitted.whole_bytes;
+                guarded_branch(e, is_bitstring, admit, miss, move |e| {
+                    let bit_len = e.bitstring_bit_len(value)?;
+                    let partial_bits = e.builder().ins().band_imm_u(bit_len, 7);
+                    let cc = if whole_bytes { IntCC::Equal } else { IntCC::NotEqual };
+                    Ok(e.builder().ins().icmp_imm_s(cc, partial_bits, 0))
+                })?;
+                return Ok(true);
             }
-            let whole_bytes = admitted.whole_bytes;
-            guarded(e, is_bitstring, move |e| {
-                let bit_len = e.bitstring_bit_len(value)?;
-                let partial_bits = e.builder().ins().band_imm_u(bit_len, 7);
-                let cc = if whole_bytes { IntCC::Equal } else { IntCC::NotEqual };
-                Ok(e.builder().ins().icmp_imm_s(cc, partial_bits, 0))
-            })
         }
-        RuntimeTestAxis::Resources => e.kind_flag(value, ValueKind::RESOURCE),
+        RuntimeTestAxis::Resources => e.kind_flag(value, ValueKind::RESOURCE)?,
         RuntimeTestAxis::Opaques => {
-            let mut flag: Option<ir::Value> = None;
-            for opaque in [crate::types::BuiltinOpaque::Pid, crate::types::BuiltinOpaque::Ref] {
-                if !predicate.opaques.contains(&opaque) {
-                    continue;
-                }
-                let kind = crate::runtime_type_predicate::kind_of_opaque(opaque).expect("a pid or reference kind");
-                let next = e.kind_flag(value, kind)?;
-                flag = Some(match flag {
-                    None => next,
-                    Some(prev) => e.builder().ins().bor(prev, next),
-                });
+            let kinds: Vec<ValueKind> = [crate::types::BuiltinOpaque::Pid, crate::types::BuiltinOpaque::Ref]
+                .into_iter()
+                .filter(|opaque| predicate.opaques.contains(opaque))
+                .map(|opaque| crate::runtime_type_predicate::kind_of_opaque(opaque).expect("a pid or reference kind"))
+                .collect();
+            if kinds.is_empty() {
+                return Ok(false);
             }
-            match flag {
-                Some(flag) => Ok(flag),
-                None => return Ok(None),
-            }
+            e.kind_in(value, &kinds)?
         }
-        RuntimeTestAxis::Callables => emit_callable_axis(e, value, &predicate.callables),
-        RuntimeTestAxis::Tuples | RuntimeTestAxis::OtherStructs => return asked.structs_once(e, value, predicate),
+        RuntimeTestAxis::Callables => {
+            emit_callable_axis(e, value, &predicate.callables, admit, miss)?;
+            return Ok(true);
+        }
+        RuntimeTestAxis::Tuples | RuntimeTestAxis::OtherStructs => {
+            return asked.structs_once(e, value, predicate, admit, miss);
+        }
         RuntimeTestAxis::NamedStructs => {
-            let of_struct = asked.structs_once(e, value, predicate)?;
-            let of_map = asked.entries_maps_once(e, value, predicate)?;
-            return Ok(match (of_struct, of_map) {
-                (Some(of_struct), Some(of_map)) => Some(e.builder().ins().bor(of_struct, of_map)),
-                (of_struct, of_map) => of_struct.or(of_map),
-            });
+            let after_structs = e.builder().create_block();
+            let structs = asked.structs_once(e, value, predicate, admit, after_structs)?;
+            if structs {
+                let b = e.builder();
+                b.switch_to_block(after_structs);
+                b.seal_block(after_structs);
+            }
+            let maps = asked.entries_maps_once(e, value, predicate, admit, miss)?;
+            if structs && !maps {
+                e.builder().ins().jump(miss, &[]);
+            }
+            return Ok(structs || maps);
         }
     };
-    answer.map(Some)
+    e.builder().ins().brif(flag, admit, &[], miss, &[]);
+    Ok(true)
 }
 
-/// Run `build` only where the value is of `kind`, and answer no elsewhere.
+/// Run `build` only where the value is of `kind`, and branch on its flag; the
+/// value of another kind goes to `miss`.
 fn kind_guarded<'f, E: RuntimeTestEmitter<'f>>(
     e: &mut E,
     value: E::Value,
     kind: ValueKind,
+    admit: ir::Block,
+    miss: ir::Block,
     build: impl FnOnce(&mut E, E::Value) -> Result<ir::Value, CodegenError>,
-) -> Result<ir::Value, CodegenError> {
+) -> Result<(), CodegenError> {
     match e.kind_evidence(value) {
-        KindEvidence::Unboxed(known) if known == kind => return build(e, value),
-        KindEvidence::Unboxed(_) | KindEvidence::Opaque => {
-            return Ok(e.builder().ins().iconst(types::I8, 0));
+        KindEvidence::Unboxed(known) if known == kind => {
+            let flag = build(e, value)?;
+            e.builder().ins().brif(flag, admit, &[], miss, &[]);
+            Ok(())
         }
-        KindEvidence::Tagged => {}
+        KindEvidence::Unboxed(_) | KindEvidence::Opaque => {
+            e.builder().ins().jump(miss, &[]);
+            Ok(())
+        }
+        KindEvidence::Tagged => {
+            let is_kind = e.kind_flag(value, kind)?;
+            guarded_branch(e, is_kind, admit, miss, |e| build(e, value))
+        }
     }
-    let is_kind = e.kind_flag(value, kind)?;
-    guarded(e, is_kind, |e| build(e, value))
 }
 
-/// Emit `build` in a block reached only when `condition` holds, answering no
-/// otherwise, and join the two answers.
+/// Emit `build` in a block reached only when `condition` holds, and branch on
+/// its flag; where `condition` does not hold the value goes to `miss`.
+fn guarded_branch<'f, E: RuntimeTestEmitter<'f>>(
+    e: &mut E,
+    condition: ir::Value,
+    admit: ir::Block,
+    miss: ir::Block,
+    build: impl FnOnce(&mut E) -> Result<ir::Value, CodegenError>,
+) -> Result<(), CodegenError> {
+    {
+        let b = e.builder();
+        let taken = b.create_block();
+        b.ins().brif(condition, taken, &[], miss, &[]);
+        b.switch_to_block(taken);
+        b.seal_block(taken);
+    }
+    let flag = build(e)?;
+    e.builder().ins().brif(flag, admit, &[], miss, &[]);
+    Ok(())
+}
+
+/// The flag of `build`, asked only where `condition` holds and no elsewhere:
+/// for a question nested inside another test's own flag.
 fn guarded<'f, E: RuntimeTestEmitter<'f>>(
     e: &mut E,
     condition: ir::Value,
     build: impl FnOnce(&mut E) -> Result<ir::Value, CodegenError>,
 ) -> Result<ir::Value, CodegenError> {
-    let join = {
-        let b = e.builder();
-        let taken = b.create_block();
-        let join = b.create_block();
-        b.append_block_param(join, types::I8);
-        let false8 = b.ins().iconst(types::I8, 0);
-        b.ins().brif(condition, taken, &[], join, &[BlockArg::Value(false8)]);
-        b.switch_to_block(taken);
-        b.seal_block(taken);
-        join
-    };
-    let answer = build(e)?;
-    let b = e.builder();
-    b.ins().jump(join, &[BlockArg::Value(answer)]);
-    b.switch_to_block(join);
-    b.seal_block(join);
-    Ok(b.block_params(join)[0])
+    joined(e, |e, admit, miss| guarded_branch(e, condition, admit, miss, build))
 }
 
 /// The atom axis in the runtime's own numbering.
@@ -445,9 +530,13 @@ fn emit_callable_axis<'f, E: RuntimeTestEmitter<'f>>(
     e: &mut E,
     value: E::Value,
     callables: &CallableShapes,
-) -> Result<ir::Value, CodegenError> {
+    admit: ir::Block,
+    miss: ir::Block,
+) -> Result<(), CodegenError> {
     if callables.is_any() {
-        return e.kind_flag(value, ValueKind::CLOSURE);
+        let flag = e.kind_flag(value, ValueKind::CLOSURE)?;
+        e.builder().ins().brif(flag, admit, &[], miss, &[]);
+        return Ok(());
     }
     let addresses = if callables.targets().is_any() {
         None
@@ -455,7 +544,7 @@ fn emit_callable_axis<'f, E: RuntimeTestEmitter<'f>>(
         Some(e.callable_addresses(callables)?)
     };
     let cofinite = callables.targets().cofinite;
-    kind_guarded(e, value, ValueKind::CLOSURE, move |e, value| {
+    kind_guarded(e, value, ValueKind::CLOSURE, admit, miss, move |e, value| {
         let of_arity = emit_closure_arity_flag(e, value, callables.arities())?;
         let Some(addresses) = addresses else {
             return Ok(of_arity);
@@ -502,23 +591,65 @@ fn emit_struct_axes<'f, E: RuntimeTestEmitter<'f>>(
     e: &mut E,
     value: E::Value,
     predicate: &RuntimeTypePredicate,
-) -> Result<ir::Value, CodegenError> {
+    admit: ir::Block,
+    miss: ir::Block,
+) -> Result<(), CodegenError> {
     // Where the other-structs axis takes every arity and the named-structs axis
     // every name, the three axes between them admit every struct, so the kind
     // is the whole answer and no schema need be read.
     if predicate.other_struct_arities().is_any() && predicate.named_structs.is_any() {
-        return e.kind_flag(value, ValueKind::STRUCT);
+        let flag = e.kind_flag(value, ValueKind::STRUCT)?;
+        e.builder().ins().brif(flag, admit, &[], miss, &[]);
+        return Ok(());
     }
     let is_struct = e.kind_flag(value, ValueKind::STRUCT)?;
-    guarded(e, is_struct, |e| {
-        let schema = e.schema_id(value)?;
-        let tuple_flag = emit_tuple_axis(e, value, predicate, schema)?;
-        let named_flag = emit_named_struct_axis(e, schema, &predicate.named_structs);
-        let other_flag = emit_arity_set_membership(e, schema, &predicate.other_struct_arities());
+    guarded_branch(e, is_struct, admit, miss, |e| {
+        let mut reads = StructReads::of(value);
+        let tuple_flag = emit_tuple_axis(e, value, predicate, &mut reads)?;
+        let named_flag = emit_named_struct_axis(e, &predicate.named_structs, &mut reads)?;
+        let other_flag = emit_arity_set_membership(e, &predicate.other_struct_arities(), &mut reads)?;
         let b = e.builder();
         let tuple_or_named = b.ins().bor(tuple_flag, named_flag);
         Ok(b.ins().bor(tuple_or_named, other_flag))
     })
+}
+
+/// What the struct axes read off a struct, each read emitted at most once per
+/// test and only by an axis that asks it.
+struct StructReads<V> {
+    value: V,
+    schema: Option<ir::Value>,
+    named: Option<ir::Value>,
+}
+
+impl<V: Copy> StructReads<V> {
+    fn of(value: V) -> Self {
+        Self {
+            value,
+            schema: None,
+            named: None,
+        }
+    }
+
+    /// The schema id, widened to `I64`.
+    fn schema<'f, E: RuntimeTestEmitter<'f, Value = V>>(&mut self, e: &mut E) -> Result<ir::Value, CodegenError> {
+        if let Some(schema) = self.schema {
+            return Ok(schema);
+        }
+        let schema = e.schema_id(self.value)?;
+        self.schema = Some(schema);
+        Ok(schema)
+    }
+
+    /// The `I8` flag that says the struct is a named struct.
+    fn named<'f, E: RuntimeTestEmitter<'f, Value = V>>(&mut self, e: &mut E) -> Result<ir::Value, CodegenError> {
+        if let Some(named) = self.named {
+            return Ok(named);
+        }
+        let named = e.struct_is_named(self.value)?;
+        self.named = Some(named);
+        Ok(named)
+    }
 }
 
 /// A map in the entries layout: the maps axis admits it where it names no
@@ -527,13 +658,18 @@ fn emit_entries_map_axes<'f, E: RuntimeTestEmitter<'f>>(
     e: &mut E,
     value: E::Value,
     predicate: &RuntimeTypePredicate,
-) -> Result<ir::Value, CodegenError> {
+    admit: ir::Block,
+    miss: ir::Block,
+) -> Result<(), CodegenError> {
     let (plain, names) = (predicate.maps, &predicate.named_structs);
     if plain && names.is_any() {
-        return e.kind_flag(value, ValueKind::MAP);
+        let flag = e.kind_flag(value, ValueKind::MAP)?;
+        e.builder().ins().brif(flag, admit, &[], miss, &[]);
+        return Ok(());
     }
     if !plain && names.is_none() {
-        return Ok(e.builder().ins().iconst(types::I8, 0));
+        e.builder().ins().jump(miss, &[]);
+        return Ok(());
     }
     let listed: Vec<u32> = names
         .values
@@ -541,7 +677,7 @@ fn emit_entries_map_axes<'f, E: RuntimeTestEmitter<'f>>(
         .filter_map(|name| e.named_schema_ids().get(name).copied())
         .collect();
     let names_cofinite = names.cofinite;
-    kind_guarded(e, value, ValueKind::MAP, move |e, value| {
+    kind_guarded(e, value, ValueKind::MAP, admit, miss, move |e, value| {
         let named = e.map_named_schema(value)?;
         let b = e.builder();
         let names_none = b
@@ -569,17 +705,18 @@ fn emit_tuple_axis<'f, E: RuntimeTestEmitter<'f>>(
     e: &mut E,
     value: E::Value,
     predicate: &RuntimeTypePredicate,
-    schema: ir::Value,
+    reads: &mut StructReads<E::Value>,
 ) -> Result<ir::Value, CodegenError> {
     let arities = predicate.tuples.arities();
     if arities.is_none() {
         return Ok(e.builder().ins().iconst(types::I8, 0));
     }
     if !predicate.tuples.is_exact() {
-        return Ok(emit_arity_set_membership(e, schema, arities));
+        return emit_arity_set_membership(e, arities, reads);
     }
     // An exact axis derives its arities from its shapes' lengths, so shape
     // membership IS arity membership and the two are asked as one question.
+    let schema = reads.schema(e)?;
     let arities_in_order: Vec<usize> = arities.values.iter().copied().collect();
     let mut hit = e.builder().ins().iconst(types::I8, 0);
     for arity in arities_in_order {
@@ -657,55 +794,61 @@ fn emit_shapes_of_arity<'f, E: RuntimeTestEmitter<'f>>(
 /// own schema id.
 fn emit_arity_set_membership<'f, E: RuntimeTestEmitter<'f>>(
     e: &mut E,
-    schema: ir::Value,
     arities: &FiniteSet<usize>,
-) -> ir::Value {
+    reads: &mut StructReads<E::Value>,
+) -> Result<ir::Value, CodegenError> {
     let of_arities: Vec<u32> = arities
         .values
         .iter()
         .filter_map(|arity| e.tuple_schema_ids().get(arity).copied())
         .collect();
     if !arities.cofinite {
-        return emit_any_schema_id_match(e.builder(), schema, of_arities);
+        if of_arities.is_empty() {
+            return Ok(e.builder().ins().iconst(types::I8, 0));
+        }
+        let schema = reads.schema(e)?;
+        return Ok(emit_any_schema_id_match(e.builder(), schema, of_arities));
     }
-    let named: Vec<u32> = e.named_schema_ids().values().copied().collect();
-    let known_named = emit_any_schema_id_match(e.builder(), schema, named);
+    let is_named = reads.named(e)?;
+    let not_named = e.builder().ins().bxor_imm_u(is_named, 1);
     if arities.is_any() {
-        return e.builder().ins().icmp_imm_s(IntCC::Equal, known_named, 0);
+        return Ok(not_named);
     }
-    let excluded = emit_any_schema_id_match(e.builder(), schema, of_arities);
+    let schema = reads.schema(e)?;
     let b = e.builder();
-    let is_named = b.ins().icmp_imm_s(IntCC::NotEqual, known_named, 0);
+    let excluded = emit_any_schema_id_match(b, schema, of_arities);
     let excluded_ok = b.ins().icmp_imm_s(IntCC::Equal, excluded, 0);
-    let not_named = b.ins().bxor_imm_u(is_named, 1);
-    b.ins().band(not_named, excluded_ok)
+    Ok(b.ins().band(not_named, excluded_ok))
 }
 
+/// Whether the struct is one of the named structs `names` admits. Every named
+/// struct is one question of its header's named bit; particular names are
+/// questions of its schema id.
 fn emit_named_struct_axis<'f, E: RuntimeTestEmitter<'f>>(
     e: &mut E,
-    schema: ir::Value,
     names: &FiniteSet<fz_runtime::module_name::ModuleName>,
-) -> ir::Value {
+    reads: &mut StructReads<E::Value>,
+) -> Result<ir::Value, CodegenError> {
     if names.is_none() {
-        return e.builder().ins().iconst(types::I8, 0);
+        return Ok(e.builder().ins().iconst(types::I8, 0));
     }
-    let all_named: Vec<u32> = e.named_schema_ids().values().copied().collect();
     if names.is_any() {
-        return emit_any_schema_id_match(e.builder(), schema, all_named);
+        return reads.named(e);
     }
     let relevant: Vec<u32> = names
         .values
         .iter()
         .filter_map(|name| e.named_schema_ids().get(name).copied())
         .collect();
+    let schema = reads.schema(e)?;
     let matched = emit_any_schema_id_match(e.builder(), schema, relevant);
     if !names.cofinite {
-        return matched;
+        return Ok(matched);
     }
-    let any_named = emit_any_schema_id_match(e.builder(), schema, all_named);
+    let is_named = reads.named(e)?;
     let b = e.builder();
     let not_excluded = b.ins().icmp_imm_s(IntCC::Equal, matched, 0);
-    b.ins().band(any_named, not_excluded)
+    Ok(b.ins().band(is_named, not_excluded))
 }
 
 pub(super) fn emit_any_schema_id_match(
