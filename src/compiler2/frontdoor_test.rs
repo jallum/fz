@@ -2282,3 +2282,15 @@ fn compiler2_frontdoor_reads_the_options_alias_import_and_require_take() {
         "each option is a keyword entry of the one options list",
     );
 }
+
+#[test]
+fn compiler2_frontdoor_defmacro_is_an_expression_in_a_body() {
+    assert_eq!(
+        only_shape(
+            "body_defmacro.fz",
+            "probe fn ->\n  defmacro f(x) when is_integer(x), do: x\n  defmacro g(y) do\n    y\n  end\nend\n"
+        ),
+        "probe(fn(->([], __block__(defmacro(when(f($x), is_integer($x)), [{:do, $x}]), defmacro(g($y), [{:do, $y}])))))",
+        "defmacro reads in a body as the call it is at module level",
+    );
+}
