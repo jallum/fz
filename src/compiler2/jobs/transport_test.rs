@@ -638,20 +638,34 @@ fn a_callable_naming_no_function_is_carried_at_every_position_it_appears() {
 }
 
 /// A tuple return whose three fields are calls to three not-yet-settled
-/// functions names all three as waits in its first pull, so the position costs
-/// its owner two pulls: one to discover its waits, one to resume.
+/// functions stands on all three interfaces, and its job does not start until
+/// they have settled: the reaches its cuts ask and the interfaces they clear
+/// are gates, so the interface is derived in one run that stops for nothing.
 #[test]
-fn a_recipe_with_three_unready_children_costs_its_owner_two_pulls() {
-    use crate::compiler2::pull::{ProductKey, ProductRequestId, PullOutcome, PullWait};
-    use crate::compiler2::{CodeSubmission, Compiler2, RootSubmission};
+fn a_recipe_with_three_unready_children_starts_once_all_three_have_settled() {
+    use crate::compiler2::world::{JobCompletion, World};
+    use crate::compiler2::{CodeSubmission, Compiler2, FactKey, Job, RootSubmission};
     use crate::telemetry::ConfiguredTelemetry;
 
     let tel = ConfiguredTelemetry::new();
-    let evaluations = std::rc::Rc::new(std::cell::RefCell::new(Vec::<(ProductKey, PullOutcome)>::new()));
-    let observed = std::rc::Rc::clone(&evaluations);
-    tel.attach_raw_event3::<ProductKey, ProductRequestId, PullOutcome, _>(
-        &["fz", "compiler2", "pull", "product", "evaluated"],
-        move |_, _, _, key, _, outcome| observed.borrow_mut().push((key.clone(), outcome.clone())),
+    let runs = std::rc::Rc::new(std::cell::RefCell::new(Vec::<(Job, Vec<FactKey>, Vec<FactKey>)>::new()));
+    let observed = std::rc::Rc::clone(&runs);
+    tel.attach_raw_event2::<World, JobCompletion, _>(
+        &["fz", "compiler2", "work_graph", "applied"],
+        move |_, _, _, world, completion| {
+            let blocked = completion
+                .step
+                .blocked
+                .iter()
+                .filter_map(|use_| use_.fact().fact().cloned())
+                .collect();
+            let reads = world
+                .job_reads(&completion.job)
+                .iter()
+                .map(|read| read.fact().clone())
+                .collect();
+            observed.borrow_mut().push((completion.job.clone(), blocked, reads));
+        },
     );
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
@@ -668,24 +682,35 @@ fn a_recipe_with_three_unready_children_costs_its_owner_two_pulls() {
     let main = compiler.root_function(root);
     compiler.compile_root_jit(root).expect("compiles");
 
-    let evaluations = evaluations.borrow();
-    let three_wait_owners: Vec<&ProductKey> = evaluations
+    let runs = runs.borrow();
+    let main_interface_runs: Vec<_> = runs
         .iter()
-        .filter(|(key, outcome)| {
-            matches!(key, ProductKey::TransportShape(position) if position.executable().activation.function == main)
-                && matches!(outcome, PullOutcome::Waiting(waits)
-                    if waits.len() == 3 && waits.iter().all(|wait| matches!(wait, PullWait::Product(ProductKey::TransportShape(_)))))
-        })
-        .map(|(key, _)| key)
+        .filter(|(job, _, _)| matches!(job, Job::DeriveTransportInterface(executable) if executable.activation.function == main))
         .collect();
-    assert!(
-        !three_wait_owners.is_empty(),
-        "a tuple of three unready calls names its three waits in one evaluation"
+    assert_eq!(
+        main_interface_runs.len(),
+        1,
+        "the interface is derived in one run: {:?}",
+        main_interface_runs
+            .iter()
+            .map(|(_, blocked, _)| blocked)
+            .collect::<Vec<_>>()
     );
-    for owner in three_wait_owners {
-        let pulls = evaluations.iter().filter(|(key, _)| key == owner).count();
-        assert_eq!(pulls, 2, "{owner:?} is pulled to discover its waits and once to resume");
-    }
+    let (_, blocked, reads) = main_interface_runs[0];
+    assert!(
+        blocked.is_empty(),
+        "nothing it stands on is missing when it starts: {blocked:?}"
+    );
+    let interface_reads = reads
+        .iter()
+        .filter(
+            |fact| matches!(fact, FactKey::TransportInterface(executable) if executable.activation.function != main),
+        )
+        .count();
+    assert_eq!(
+        interface_reads, 3,
+        "a tuple of three calls stands on their three interfaces"
+    );
 }
 
 /// A cycle's cut edge is chosen by the functions' typed origins, not by the

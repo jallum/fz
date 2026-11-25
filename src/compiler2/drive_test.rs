@@ -1630,8 +1630,7 @@ fn retained_closure_source_replacement_does_not_request_obsolete_products() {
             | ProductKey::ExecutableEffects(executable)
             | ProductKey::AbiExecutable(executable)
             | ProductKey::BackendExecutable(executable) => executable.activation.function == generated,
-            ProductKey::TransportShape(position) | ProductKey::CallableConstruction(position) =>
-                position.executable().activation.function == generated,
+            ProductKey::CallableConstruction(position) => position.executable().activation.function == generated,
             ProductKey::RootBackendProduct(_) | ProductKey::NativeProgram(_) | ProductKey::StructSchema(_) => false,
         }),
         "the replaced owner's membership must not request its obsolete generated child"

@@ -543,11 +543,11 @@ The third line is a real answer with four consumers, and it is why the empty
 claim cannot simply be withheld until evidence arrives: `Settled(ReturnType(a))`
 with no stored return is how a non-returning function is reported.
 `produce_materialized_executable_product` (`jobs/artifact.rs`) waits on the
-settled fact and unwraps the missing return to `none`; the transport pull reads
-the same settled fact at three positions and, finding no return, takes the
-bottom layout (`jobs/transport.rs`: `ExecutableReturn`/`ReturnPayload` in the
-callable-owner path treat it as unreachable, the two `bottom_transport_shape`
-arms take it as the shape). An absent fact could never carry that: nothing
+settled fact and unwraps the missing return to `none`; the transport jobs read
+the same settled fact at three positions and, finding no return, take the
+bottom layout (`jobs/transport_layouts.rs`: `ExecutableReturn` and
+`ReturnPayload` take `bottom_transport_layout`; the callable-owner path in
+`jobs/transport.rs` treats them as unreachable). An absent fact could never carry that: nothing
 claims it, so it can never settle.
 
 ## How recursive convergence works right now

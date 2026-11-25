@@ -30,6 +30,7 @@ mod native_body_frame;
 pub(crate) mod native_codegen;
 mod product_drive;
 mod protocol;
+mod pruned_body;
 pub(crate) mod pull;
 mod quoted_concat_pattern;
 mod quoted_expander;

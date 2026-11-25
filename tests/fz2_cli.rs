@@ -2362,17 +2362,17 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
     assert_eq!(
         formula_totals,
         FormulaWork {
-            evaluations: 547,
+            evaluations: 608,
             runtime_demand_evaluations: 60,
-            initial: 406,
-            content_caused: 141,
+            initial: 466,
+            content_caused: 142,
             readiness_caused: 0,
             concluded_caused: 0,
             uncaused: 0,
-            changed_outputs: 492,
-            unchanged_outputs: 55,
+            changed_outputs: 552,
+            unchanged_outputs: 56,
             already_pending: 8,
-            blocked_completions: 132,
+            blocked_completions: 133,
         },
         "{fixture}: the reactive RuntimeDemand formula work or its causal classification moved"
     );
@@ -2390,9 +2390,9 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
     assert_eq!(
         by_reason(ledger.ran),
         BTreeMap::from([
-            ("blocked_waiter_expansion", 95),
-            ("changed_revision_wake", 322),
-            ("gate_expansion", 129),
+            ("blocked_waiter_expansion", 93),
+            ("changed_revision_wake", 347),
+            ("gate_expansion", 167),
             ("ignition", 1),
         ]),
         "{fixture}: the jobs run, by the reason that queued each"
@@ -2403,13 +2403,13 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             ("activation_published", 24),
             ("blocked_waiter_expansion", 1),
             ("changed_revision_wake", 8),
-            ("gate_expansion", 36),
+            ("gate_expansion", 38),
         ]),
         "{fixture}: requests that found their job already queued"
     );
     assert_eq!(
         by_reason(ledger.reparked),
-        BTreeMap::from([("changed_revision_wake", 32)]),
+        BTreeMap::from([("changed_revision_wake", 50)]),
         "{fixture}: started jobs the pop gate parked again without running"
     );
     for reason in fz::compiler2::WorkStartReason::TELEMETRY_ORDER {
@@ -2433,12 +2433,12 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             wake_records("applied", &["completion"]),
             wake_records("dependencies_moved", &["step"])
         ),
-        (356, 5),
+        (399, 5),
         "{fixture}: wake records of the completions, and of the external changes between them"
     );
     assert_eq!(
         ledger.requested(fz_engine::WorkStart::ChangedRevisionWake),
-        362,
+        405,
         "{fixture}: every wake record is one request at the door"
     );
     let products = report.product_totals();
@@ -2464,7 +2464,7 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
         BTreeMap::from([
             (
                 effect_identity("List.reduce_cont/3", "fp[F] (list(int), int, a2) -> r0"),
-                1,
+                2,
             ),
             // `reduce_step` is a member of the cycle `reduce_cont` enters: its accumulator slot
             // is keyed `any` and its identity names the entering activation.
@@ -2498,7 +2498,7 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
         // Every settled product here is a fresh, changed generation. The
         // generic result/status boundary and each node's reach (one product per
         // function or executable a reach question touches) are among them.
-        (519, 519, 519, 0, 5, 0),
+        (163, 163, 163, 0, 6, 0),
         "{fixture}: reactive product settlement work includes ordinary helper products"
     );
     assert!(

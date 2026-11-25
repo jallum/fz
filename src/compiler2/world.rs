@@ -25,7 +25,7 @@ use crate::source::{SourceMap, Span};
 use crate::telemetry::{Telemetry, TelemetryExt as _};
 
 use super::SourceOwner;
-use super::artifact::BackendProgram;
+use super::artifact::{BackendProgram, TransportLayouts};
 use super::body::{LoweredBody, LoweredBodyMap, LoweredExtern};
 use super::code::{CodeMap, CodeState, QuotedCodeSource};
 use super::contract::{FunctionContract, FunctionContractMap};
@@ -199,6 +199,8 @@ pub struct World {
     static_callees: StaticCalleeMap,
     static_reach: StaticReachMap,
     executable_reach: HashMap<(ExecutableKey, CallChain), std::rc::Rc<ReachSet>>,
+    transport_interfaces: HashMap<ExecutableKey, std::rc::Rc<TransportLayouts>>,
+    transport_bodies: HashMap<ExecutableKey, std::rc::Rc<TransportLayouts>>,
     protocol_callbacks: ProtocolCallbackMap,
     protocol_impls: ProtocolImplMap,
     protocol_dispatches: ProtocolDispatchMap,
@@ -419,6 +421,8 @@ impl World {
             static_callees: StaticCalleeMap::new(),
             static_reach: StaticReachMap::new(),
             executable_reach: HashMap::default(),
+            transport_interfaces: HashMap::default(),
+            transport_bodies: HashMap::default(),
             protocol_callbacks: ProtocolCallbackMap::new(),
             protocol_impls: ProtocolImplMap::new(),
             protocol_dispatches: ProtocolDispatchMap::new(),
@@ -1957,12 +1961,7 @@ impl World {
         chain: CallChain,
         reach: std::rc::Rc<ReachSet>,
     ) -> bool {
-        let key = (executable, chain);
-        if self.executable_reach.get(&key) == Some(&reach) {
-            return false;
-        }
-        self.executable_reach.insert(key, reach);
-        true
+        define_changed(&mut self.executable_reach, (executable, chain), reach)
     }
 
     pub(crate) fn executable_reach(
@@ -1979,6 +1978,34 @@ impl World {
             .iter()
             .map(|(key, reach)| (key.clone(), std::rc::Rc::clone(reach)))
             .collect()
+    }
+
+    /// Publishes an executable's interface layouts; true when they differ from
+    /// what was published before.
+    pub(crate) fn define_transport_interface(
+        &mut self,
+        executable: ExecutableKey,
+        layouts: std::rc::Rc<TransportLayouts>,
+    ) -> bool {
+        define_changed(&mut self.transport_interfaces, executable, layouts)
+    }
+
+    pub(crate) fn transport_interface(&self, executable: &ExecutableKey) -> Option<&std::rc::Rc<TransportLayouts>> {
+        self.transport_interfaces.get(executable)
+    }
+
+    /// Publishes an executable's body layouts; true when they differ from what
+    /// was published before.
+    pub(crate) fn define_transport_body(
+        &mut self,
+        executable: ExecutableKey,
+        layouts: std::rc::Rc<TransportLayouts>,
+    ) -> bool {
+        define_changed(&mut self.transport_bodies, executable, layouts)
+    }
+
+    pub(crate) fn transport_body(&self, executable: &ExecutableKey) -> Option<&std::rc::Rc<TransportLayouts>> {
+        self.transport_bodies.get(executable)
     }
 
     pub(crate) fn body_keying(&self, function: FunctionId) -> Option<BodyKeying> {
@@ -2543,6 +2570,10 @@ impl World {
         self.work_graph.unresolved(&self.types)
     }
 
+    /// The executable a root's entry runs. A root is defined once and never
+    /// changes, and its inputs are ground, so keying them asks no fact: the
+    /// answer cannot go stale, and a root whose inputs needed a fact would
+    /// panic in `canonical_activation_key_inner` rather than answer early.
     pub(crate) fn root_entry_executable(&mut self, root: RootId) -> ExecutableKey {
         let entry = self.root_entry(root);
         ExecutableKey {
@@ -3384,6 +3415,8 @@ impl World {
             | FactKey::RuntimeDemandInput(_)
             | FactKey::RuntimeDemand(_)
             | FactKey::RuntimeDemandInputs(_)
+            | FactKey::TransportInterface(_)
+            | FactKey::TransportBody(_)
             | FactKey::IncomingInputSlot(_) => Some(Self::unresolved_internal_issue(fact)),
         }
     }
@@ -3577,6 +3610,15 @@ impl World {
             ),
         })
     }
+}
+
+/// Stores `value` under `key`; true when it differs from what was there.
+fn define_changed<K: Eq + std::hash::Hash, V: PartialEq>(map: &mut HashMap<K, V>, key: K, value: V) -> bool {
+    if map.get(&key) == Some(&value) {
+        return false;
+    }
+    map.insert(key, value);
+    true
 }
 
 /// The claims a NON-rebased `AnalyzeActivation` conclusion keeps standing
@@ -4046,11 +4088,7 @@ impl World {
         key: ExecutableKey,
         facts: std::rc::Rc<super::executable_facts::ExecutableFacts>,
     ) -> bool {
-        if self.executable_facts.get(&key) == Some(&facts) {
-            return false;
-        }
-        self.executable_facts.insert(key, facts);
-        true
+        define_changed(&mut self.executable_facts, key, facts)
     }
 
     pub(crate) fn define_callable_construction_target(
@@ -4058,11 +4096,7 @@ impl World {
         key: CallableConstructionTargetKey,
         target: ExecutableKey,
     ) -> bool {
-        if self.callable_construction_targets.get(&key) == Some(&target) {
-            return false;
-        }
-        self.callable_construction_targets.insert(key, target);
-        true
+        define_changed(&mut self.callable_construction_targets, key, target)
     }
 
     /// Records an executable's runtime demand; whether it changed.
@@ -4071,21 +4105,13 @@ impl World {
         key: ExecutableKey,
         demand: std::rc::Rc<ExecutableRuntimeDemand>,
     ) -> bool {
-        if self.runtime_demands.get(&key) == Some(&demand) {
-            return false;
-        }
-        self.runtime_demands.insert(key, demand);
-        true
+        define_changed(&mut self.runtime_demands, key, demand)
     }
 
     /// Records a concluded answer to how much of each input an executable
     /// needs, replacing the one standing; whether it changed.
     pub(crate) fn conclude_runtime_demand_inputs(&mut self, key: ExecutableKey, inputs: Vec<RuntimeDemand>) -> bool {
-        if self.runtime_demand_inputs.get(&key) == Some(&inputs) {
-            return false;
-        }
-        self.runtime_demand_inputs.insert(key, inputs);
-        true
+        define_changed(&mut self.runtime_demand_inputs, key, inputs)
     }
 
     /// Joins a waiting run's answer into the one standing; whether it changed.

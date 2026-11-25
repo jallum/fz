@@ -2842,43 +2842,42 @@ fn finish_owner_group(
 }
 
 #[test]
-fn transport_shape_group_retains_external_dependencies_on_their_owning_member() {
+fn product_group_retains_external_dependencies_on_their_owning_member() {
     let types = fake_types();
     let root = RootId::for_test(38);
     let symbol = executable_symbol_for_test(&fake_executable_with_function(root, 380));
-    let left = ProductKey::TransportShape(TransportPosition::Value {
+    let left = ProductKey::CallableConstruction(TransportPosition::Value {
         executable: symbol.clone(),
         value: ValueId::from_u32(1),
     });
-    let right = ProductKey::TransportShape(TransportPosition::Value {
+    let right = ProductKey::CallableConstruction(TransportPosition::Value {
         executable: symbol,
         value: ValueId::from_u32(2),
     });
-    let external = ProductKey::TransportShape(TransportPosition::ExecutableReturn {
-        executable: executable_symbol_for_test(&fake_executable_with_function(root, 381)),
-    });
+    let external = ProductKey::ExecutableEffects(fake_executable_with_function(root, 381));
     let left_reader = ProductKey::AbiExecutable(fake_executable_with_function(root, 382));
     let right_reader = ProductKey::AbiExecutable(fake_executable_with_function(root, 383));
     let unrelated = ProductKey::AbiExecutable(fake_executable_with_function(root, 384));
     let first_layout = TransportLayout::structural(ShapeId::for_test(110));
     let second_layout = TransportLayout::structural(ShapeId::for_test(111));
-    let external_value = |shape| {
-        ProductValue::TransportShape(TransportShapeFact::Layout(TransportLayout::structural(
-            ShapeId::for_test(shape),
-        )))
+    let external_value = |allocates| {
+        ProductValue::ExecutableEffects(EffectSummary {
+            allocates,
+            ..EffectSummary::default()
+        })
     };
 
     for reverse in [false, true] {
         let mut memo = ProductMemo::default();
         let tel = ConfiguredTelemetry::new();
-        finish_test_product(&mut memo, &external, external_value(385), []);
+        finish_test_product(&mut memo, &external, external_value(false), []);
         for key in [&left, &right] {
             assert!(memo.begin(key.clone()));
         }
         let mut entries = vec![
             (
                 left.clone(),
-                ProductValue::TransportShape(TransportShapeFact::Layout(first_layout)),
+                withdrawn_callable_owner_answer(first_layout),
                 ProductDependencies {
                     rooted_read: None,
                     products: IndexMap::from_iter([
@@ -2890,7 +2889,7 @@ fn transport_shape_group_retains_external_dependencies_on_their_owning_member() 
             ),
             (
                 right.clone(),
-                ProductValue::TransportShape(TransportShapeFact::Layout(first_layout)),
+                withdrawn_callable_owner_answer(first_layout),
                 ProductDependencies {
                     rooted_read: None,
                     products: IndexMap::from_iter([(left.clone(), None)]),
@@ -2920,7 +2919,7 @@ fn transport_shape_group_retains_external_dependencies_on_their_owning_member() 
         let unrelated_generation = memo.generation(&unrelated);
 
         memo.remove(&tel, &external, &types);
-        finish_test_product(&mut memo, &external, external_value(386), []);
+        finish_test_product(&mut memo, &external, external_value(true), []);
         assert!(memo.get(&left).is_none());
         assert!(memo.get(&right).is_some());
         assert!(
@@ -2942,7 +2941,7 @@ fn transport_shape_group_retains_external_dependencies_on_their_owning_member() 
             vec![
                 (
                     left.clone(),
-                    ProductValue::TransportShape(TransportShapeFact::Layout(second_layout)),
+                    withdrawn_callable_owner_answer(second_layout),
                     ProductDependencies {
                         rooted_read: None,
                         products: IndexMap::from_iter([
@@ -2954,7 +2953,7 @@ fn transport_shape_group_retains_external_dependencies_on_their_owning_member() 
                 ),
                 (
                     right.clone(),
-                    ProductValue::TransportShape(TransportShapeFact::Layout(second_layout)),
+                    withdrawn_callable_owner_answer(second_layout),
                     ProductDependencies {
                         rooted_read: None,
                         products: IndexMap::from_iter([(left.clone(), left_generation)]),
@@ -3092,7 +3091,7 @@ fn publication_moves_observation_and_membership_storage_into_the_entry() {
     let left = ProductKey::AbiExecutable(fake_executable_with_function(root, 610));
     let wide = fake_executable_with_inputs(&mut types, root, 612, 32);
     let executable = super::super::transport::ExecutableSymbol::new(&wide);
-    let external = ProductKey::TransportShape(TransportPosition::ExecutableReturn { executable });
+    let external = ProductKey::CallableConstruction(TransportPosition::ExecutableReturn { executable });
     let membership = HashSet::from_iter([external.clone()]);
     let dependencies = ProductDependencies {
         rooted_read: None,
@@ -3561,7 +3560,7 @@ fn callable_owner_group_is_atomic_replacement_safe_and_frontier_relative() {
     let x = ProductKey::CallableConstruction(x_position.clone());
     let y = ProductKey::CallableConstruction(y_position);
     let terminal = ProductKey::CallableConstruction(terminal_position.clone());
-    let slot = ProductKey::TransportShape(x_position.clone());
+    let slot = ProductKey::ExecutableEffects(fake_executable_with_function(root, 375));
     let parent = ProductKey::AbiExecutable(fake_executable_with_function(root, 370));
     let unrelated = ProductKey::CallableConstruction(TransportPosition::Value {
         executable: executable_symbol_for_test(&fake_executable_with_function(root, 372)),
@@ -3601,7 +3600,7 @@ fn callable_owner_group_is_atomic_replacement_safe_and_frontier_relative() {
         settle_owner_equations(&equations(first_resolution.clone(), terminal_position.clone()), false).0;
     let keys = [x.clone(), y.clone()];
     let external = [terminal.clone(), slot.clone()];
-    let slot_value = ProductValue::TransportShape(TransportShapeFact::Layout(layout));
+    let slot_value = ProductValue::ExecutableEffects(EffectSummary::default());
 
     let mut memos = Vec::new();
     for reverse in [false, true] {
@@ -3718,10 +3717,10 @@ fn callable_owner_group_is_atomic_replacement_safe_and_frontier_relative() {
     finish_test_product(
         &mut memo,
         &slot,
-        ProductValue::TransportShape(TransportShapeFact::Layout(TransportLayout {
-            structural: ShapeId::for_test(102),
-            ..layout
-        })),
+        ProductValue::ExecutableEffects(EffectSummary {
+            allocates: true,
+            ..EffectSummary::default()
+        }),
         [],
     );
     assert!(keys.iter().all(|key| memo.get(key).is_none()));

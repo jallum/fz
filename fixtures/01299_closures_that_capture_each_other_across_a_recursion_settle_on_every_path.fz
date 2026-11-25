@@ -1,0 +1,19 @@
+#---
+# purpose: closures built in a recursion that capture one another, and a closure that captures its own earlier self, compile and run on every path
+#---
+# Each round of `swap` builds two closures, each capturing the other round's
+# closure, so the captured callable of one lambda can be a call of the other
+# and back: the layout of one lambda's capture asks for the layout of the
+# other's. `thread` builds one lambda that captures an earlier instance of
+# itself. Both finish compiling, and the closures run.
+def swap(0, a, _b), do: a
+def swap(n, a, b), do: swap(n - 1, fn x -> b.(x) end, fn y -> a.(y) end)
+
+def thread(0, prev), do: prev
+def thread(n, prev), do: thread(n - 1, fn x -> prev.(x) end)
+
+def main() do
+  IO.inspect(swap(3, fn x -> x end, fn y -> y + 1 end).(1))
+  IO.inspect(swap(4, fn x -> x end, fn y -> y + 1 end).(1))
+  IO.inspect(thread(5, fn x -> x * 2 end).(21))
+end

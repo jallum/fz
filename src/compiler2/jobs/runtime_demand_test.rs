@@ -122,6 +122,7 @@ fn propagate_tuple_step_demand(
         return_origins: Box::new([]),
         demand_types: RuntimeDemandTypeInputs::new(any),
         callable_activation_inputs: Vec::new(),
+        pruned: Default::default(),
     };
     let projections = HashMap::default();
     let facts = facts.runtime_demand_facts(&projections);
@@ -268,6 +269,7 @@ fn a_call_between_destinations_asks_for_exactly_the_arguments_its_choice_reads()
         return_origins: Box::new([]),
         demand_types: RuntimeDemandTypeInputs::new(any),
         callable_activation_inputs: Vec::new(),
+        pruned: Default::default(),
     };
     let facts = facts.runtime_demand_facts(&projections);
     let snapshot = RuntimeDemandFormulaSnapshot::new(executable.clone(), RuntimeDemand::ignore(), HashMap::default());
@@ -335,6 +337,7 @@ mod tests {
             return_origins: Box::new([]),
             demand_types: RuntimeDemandTypeInputs::new(any),
             callable_activation_inputs: Vec::new(),
+            pruned: Default::default(),
         };
         let projections = HashMap::default();
         let facts = facts.runtime_demand_facts(&projections);

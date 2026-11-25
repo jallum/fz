@@ -35,6 +35,7 @@ mod source;
 #[cfg(test)]
 mod source_test;
 pub(crate) mod transport;
+pub(crate) mod transport_layouts;
 mod types;
 
 pub(crate) fn run<T: crate::telemetry::RawSpanTelemetry>(
@@ -69,6 +70,8 @@ pub(crate) fn run<T: crate::telemetry::RawSpanTelemetry>(
         Job::DeriveRecursive(function_id) => keying::derive_recursive(world, *function_id),
         Job::DeriveStaticReach(function_id) => reach::derive_static_reach(world, *function_id),
         Job::DeriveExecutableReach(executable, chain) => reach::derive_executable_reach(world, executable, *chain),
+        Job::DeriveTransportInterface(executable) => transport_layouts::derive_transport_interface(world, executable),
+        Job::DeriveTransportBody(executable) => transport_layouts::derive_transport_body(world, executable),
         Job::DeriveInputDemand(function_id) => keying::derive_input_demand(world, tel, *function_id),
         Job::SeedRoot(root_id) => root::seed_root(world, tel, *root_id),
         Job::SeedActivation(activation) => root::seed_activation(world, tel, activation),
@@ -141,6 +144,8 @@ impl Job {
             Job::SeedActivation(activation) | Job::AnalyzeActivation(activation) => Some(activation.function),
             Job::DeriveExecutableReach(executable, _)
             | Job::DeriveExecutableFacts(executable)
+            | Job::DeriveTransportInterface(executable)
+            | Job::DeriveTransportBody(executable)
             | Job::DeriveRuntimeDemand(executable) => Some(executable.activation.function),
             _ => None,
         }
@@ -211,6 +216,12 @@ impl Job {
             | Job::DeriveCallableConstructionTarget(_) => Vec::new(),
             Job::DeriveExecutableFacts(executable) => {
                 settled_uses(executable_facts::derive_executable_facts_gates(world, executable))
+            }
+            Job::DeriveTransportInterface(executable) => {
+                settled_uses(transport_layouts::derive_transport_interface_gates(world, executable))
+            }
+            Job::DeriveTransportBody(executable) => {
+                settled_uses(transport_layouts::derive_transport_body_gates(world, executable))
             }
         }
     }

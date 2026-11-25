@@ -22,7 +22,7 @@ use super::super::artifact::{
 };
 use super::super::body::{
     CallArg, CallSiteId, CaptureOwner, ControlDestination, ControlEntryId, ControlEntryOrigin, DirectCallee,
-    LoweredBody, LoweredEntry, LoweredStep, LoweredTail, ValueId, ValueRole,
+    LoweredBody, LoweredStep, LoweredTail, ValueId, ValueRole,
 };
 use super::super::callsite_dispatch::{CallDestinations, call_destinations};
 use super::super::drive::{FactKey, emit_job_diagnostic};
@@ -33,6 +33,7 @@ use super::super::pull::{
 };
 #[cfg(test)]
 use super::super::semantic::CallSiteKey;
+use super::super::semantic::ExecutableRuntimeDemand;
 use super::super::semantic::{ActivationAnalysis, CallSiteSummary, CallTargetSummary, SelectedCallee};
 #[cfg(test)]
 use super::super::transport::ShapeDescr;
@@ -76,30 +77,9 @@ pub(crate) fn produce_materialized_executable_product(
     let return_ty = world
         .activation_return(&executable.activation)
         .unwrap_or_else(|| world.types_mut().none());
-    let lowered = executable_facts.body();
     let extern_wire = executable_facts.extern_wire().cloned();
-    let (dispatch_outcomes, retained_entries) = if extern_wire.is_some() {
-        // An extern has no clauses or entries to prune: `analysis` may still
-        // carry reachability evidence keyed to a body this executable does
-        // not have, and clause/entry ids from that evidence do not index
-        // into an empty body.
-        (Vec::new(), Vec::new())
-    } else {
-        let LoweredBody::Clauses { clauses, .. } = lowered;
-        let mut entries = analysis.reachable_entries.clone();
-        entries.extend(
-            analysis
-                .entry_reachability
-                .clauses()
-                .iter()
-                .map(|clause| clauses[*clause as usize].entry),
-        );
-        entries.sort_by_key(|entry| entry.as_u32());
-        entries.dedup();
-        (analysis.entry_reachability.clauses().to_vec(), entries)
-    };
-    let pruned = prune_lowered_body(lowered, &dispatch_outcomes, &retained_entries);
-    let body = pruned.body;
+    let pruned = executable_facts.pruned_body();
+    let body = pruned.body.clone();
     let mut transport_positions = vec![TransportPosition::ExecutableReturn {
         executable: ExecutableSymbol::new(executable),
     }];
@@ -108,7 +88,7 @@ pub(crate) fn produce_materialized_executable_product(
         &executable_facts,
         &body,
     ));
-    let position_layouts = match read_transport_layouts(tel, context, world.types(), transport_positions) {
+    let position_layouts = match read_transport_layouts(world, context, transport_positions) {
         Ok(position_layouts) => position_layouts,
         Err(transport_waits) => {
             waits.extend(transport_waits);
@@ -151,7 +131,7 @@ pub(crate) fn produce_materialized_executable_product(
         return_ty,
         runtime_demand: runtime_demand.expect("runtime-demand fact wait should have been satisfied"),
         transport,
-        original_entry_ids: pruned.original_entry_ids,
+        original_entry_ids: pruned.original_entry_ids.clone(),
         value_types,
         effects,
         struct_modules,
@@ -308,7 +288,7 @@ pub(crate) fn produce_abi_executable_product(
         .cloned()
         .collect::<Vec<_>>();
     transport_positions.extend(required_executable_transport_positions(executable, &materialized));
-    let position_layouts = match read_transport_layouts(tel, context, world.types(), transport_positions) {
+    let position_layouts = match read_transport_layouts(world, context, transport_positions) {
         Ok(position_layouts) => position_layouts,
         Err(transport_waits) => {
             waits.extend(transport_waits);
@@ -371,11 +351,76 @@ struct ExecutableAbiPlan {
     value_layouts: ValueMap<BackendValueLayout>,
 }
 
-struct PrunedLoweredBody {
-    body: LoweredBody,
-    original_entry_ids: Vec<ControlEntryId>,
+/// The pruned body an executable's positions are read from, with what names
+/// them: the executable, the ids its entries had before pruning, and the
+/// demand on its inputs.
+struct LocalPositions<'a> {
+    executable: &'a ExecutableKey,
+    body: &'a LoweredBody,
+    original_entry_ids: &'a [ControlEntryId],
+    runtime_demand: &'a ExecutableRuntimeDemand,
 }
 
+impl<'a> LocalPositions<'a> {
+    fn of_materialized(executable: &'a ExecutableKey, materialized: &'a MaterializedExecutable) -> Self {
+        Self {
+            executable,
+            body: &materialized.body,
+            original_entry_ids: &materialized.original_entry_ids,
+            runtime_demand: &materialized.runtime_demand,
+        }
+    }
+
+    /// The id transport positions use for the body's entry `entry`.
+    fn original_entry_id(&self, entry: ControlEntryId) -> ControlEntryId {
+        self.original_entry_ids
+            .get(entry.as_u32() as usize)
+            .copied()
+            .unwrap_or(entry)
+    }
+}
+
+/// Every position of `executable` read beside its inputs and its return: what
+/// its call edges, entry captures, resumes and local backend need, and every
+/// value its body retains -- the callable-construction owners of other
+/// executables read the values their sources name. An executable's body fact
+/// holds the layout at each.
+pub(super) fn body_transport_positions(
+    executable: &ExecutableKey,
+    facts: &ExecutableFacts,
+    runtime_demand: &ExecutableRuntimeDemand,
+) -> Vec<TransportPosition> {
+    let pruned = facts.pruned_body();
+    let local = LocalPositions {
+        executable,
+        body: &pruned.body,
+        original_entry_ids: &pruned.original_entry_ids,
+        runtime_demand,
+    };
+    let symbol = ExecutableSymbol::new(executable);
+    let mut positions = required_call_edge_transport_positions(executable, facts, &pruned.body);
+    positions.extend(required_entry_capture_transport_positions(&local));
+    positions.extend(required_resume_transport_positions(&local));
+    positions.extend(required_local_backend_transport_positions(&local));
+    positions.extend(
+        super::body::retained_value_ids(&pruned.body)
+            .iter()
+            .map(|value| TransportPosition::Value {
+                executable: symbol.clone(),
+                value,
+            }),
+    );
+    positions.retain(|position| {
+        position.executable() == &symbol
+            && !matches!(
+                position,
+                TransportPosition::ExecutableInput { .. } | TransportPosition::ExecutableReturn { .. }
+            )
+    });
+    let mut seen = HashSet::default();
+    positions.retain(|position| seen.insert(position.clone()));
+    positions
+}
 fn materialized_executable_transport(
     position_layouts: TransportLayouts,
     executable: &ExecutableKey,
@@ -417,12 +462,9 @@ fn materialized_executable_transport(
     }
 }
 
-fn required_entry_capture_transport_positions(
-    executable: &ExecutableKey,
-    materialized: &MaterializedExecutable,
-) -> Vec<TransportPosition> {
-    let LoweredBody::Clauses { entries, .. } = &materialized.body;
-    let symbol = ExecutableSymbol::new(executable);
+fn required_entry_capture_transport_positions(local: &LocalPositions<'_>) -> Vec<TransportPosition> {
+    let LoweredBody::Clauses { entries, .. } = local.body;
+    let symbol = ExecutableSymbol::new(local.executable);
     let mut positions = Vec::new();
     for (entry_index, entry) in entries.iter().enumerate() {
         let entry_id = ControlEntryId::from_u32(entry_index as u32);
@@ -440,7 +482,7 @@ fn required_entry_capture_transport_positions(
         for (capture_index, _) in owned {
             positions.push(TransportPosition::EntryCapture {
                 executable: symbol.clone(),
-                entry: materialized.original_entry_id(entry_id),
+                entry: local.original_entry_id(entry_id),
                 capture_index,
             });
         }
@@ -448,30 +490,27 @@ fn required_entry_capture_transport_positions(
     positions
 }
 
-/// Every transport-shape product an executable's ABI must have settled before it
-/// can be lowered: its input, entry-capture, resume, and local-backend positions
-/// (its return position is already driven by the materialized product). Pulling
-/// these `TransportShape` products supplies the exact positioned answers embedded
-/// in the executable's ABI. The ABI product drives them before building the ABI
-/// value.
+/// Every transport position an executable's ABI must have the layout of before
+/// it can be lowered: its input, entry-capture, resume, and local-backend
+/// positions (its return position is already read by the materialized
+/// product). Their layouts are the exact positioned answers embedded in the
+/// executable's ABI.
 fn required_executable_transport_positions(
     executable: &ExecutableKey,
     materialized: &MaterializedExecutable,
 ) -> Vec<TransportPosition> {
+    let local = LocalPositions::of_materialized(executable, materialized);
     let mut positions = Vec::new();
-    positions.extend(required_executable_input_transport_positions(executable, materialized));
-    positions.extend(required_entry_capture_transport_positions(executable, materialized));
-    positions.extend(required_resume_transport_positions(executable, materialized));
-    positions.extend(required_local_backend_transport_positions(executable, materialized));
+    positions.extend(required_executable_input_transport_positions(&local));
+    positions.extend(required_entry_capture_transport_positions(&local));
+    positions.extend(required_resume_transport_positions(&local));
+    positions.extend(required_local_backend_transport_positions(&local));
     positions
 }
 
-fn required_executable_input_transport_positions(
-    executable: &ExecutableKey,
-    materialized: &MaterializedExecutable,
-) -> Vec<TransportPosition> {
-    let symbol = ExecutableSymbol::new(executable);
-    materialized
+fn required_executable_input_transport_positions(local: &LocalPositions<'_>) -> Vec<TransportPosition> {
+    let symbol = ExecutableSymbol::new(local.executable);
+    local
         .runtime_demand
         .input_demands
         .iter()
@@ -492,12 +531,9 @@ fn required_executable_input_transport_positions(
 /// Each delivered resume an executable can reach has one payload position.
 /// Its layout is the payload value's own: whoever delivers there -- one call,
 /// several calls, local values, or a mix -- the value is their join.
-fn required_resume_transport_positions(
-    executable: &ExecutableKey,
-    materialized: &MaterializedExecutable,
-) -> Vec<TransportPosition> {
-    let LoweredBody::Clauses { entries, .. } = &materialized.body;
-    let symbol = ExecutableSymbol::new(executable);
+fn required_resume_transport_positions(local: &LocalPositions<'_>) -> Vec<TransportPosition> {
+    let LoweredBody::Clauses { entries, .. } = local.body;
+    let symbol = ExecutableSymbol::new(local.executable);
     entries
         .iter()
         .enumerate()
@@ -507,25 +543,22 @@ fn required_resume_transport_positions(
         .filter(|(_, entry)| !matches!(&entry.tail, LoweredTail::Unreachable))
         .map(|(entry_index, _)| TransportPosition::ResumePayload {
             executable: symbol.clone(),
-            entry: materialized.original_entry_id(ControlEntryId::from_u32(entry_index as u32)),
+            entry: local.original_entry_id(ControlEntryId::from_u32(entry_index as u32)),
         })
         .collect()
 }
 
-fn required_local_backend_transport_positions(
-    executable: &ExecutableKey,
-    materialized: &MaterializedExecutable,
-) -> Vec<TransportPosition> {
-    let LoweredBody::Clauses { clauses, entries, .. } = &materialized.body;
-    let symbol = ExecutableSymbol::new(executable);
+fn required_local_backend_transport_positions(local: &LocalPositions<'_>) -> Vec<TransportPosition> {
+    let LoweredBody::Clauses { clauses, entries, .. } = local.body;
+    let symbol = ExecutableSymbol::new(local.executable);
     let mut positions = Vec::new();
     positions.extend(
-        materialized
+        local
             .runtime_demand
             .callable_flows
             .keys()
             .chain(
-                materialized
+                local
                     .runtime_demand
                     .callable_flows
                     .values()
@@ -596,29 +629,41 @@ fn required_local_backend_transport_positions(
     positions
 }
 
+/// The layout at each of `positions`, read from the transport facts that hold
+/// them, or the facts still to wait for.
 fn read_transport_layouts(
-    tel: &impl crate::telemetry::Telemetry,
+    world: &World,
     context: &mut ProductReadContext<'_>,
-    types: &Types,
     positions: impl IntoIterator<Item = TransportPosition>,
 ) -> Result<TransportLayouts, Vec<PullWait>> {
+    let root = context.session().root().expect("transport reads are root-scoped");
     let mut positions = positions
         .into_iter()
         .collect::<HashSet<_>>()
         .into_iter()
         .collect::<Vec<_>>();
-    positions.sort_by(|left, right| left.semantic_cmp(right, types));
+    positions.sort_by(|left, right| left.semantic_cmp(right, world.types()));
     let mut layouts = Vec::with_capacity(positions.len());
-    let mut waits = Vec::new();
+    let mut waits: Vec<PullWait> = Vec::new();
+    let mut settled: HashMap<FactKey, bool> = HashMap::default();
     for position in positions {
-        let key = ProductKey::TransportShape(position.clone());
-        match context.read_product(tel, &key, types) {
-            Some(ProductValue::TransportShape(super::super::pull::TransportShapeFact::Layout(layout))) => {
-                layouts.push((position, *layout));
+        let owner = super::transport::executable_key_for_transport_position(root, &position);
+        let fact = super::transport_layouts::layout_fact(&owner, &position);
+        let ready = *settled.entry(fact.clone()).or_insert_with_key(|fact| {
+            let fact = FactUse::settled(fact.clone());
+            let ready = context.read_fact(world, fact.clone());
+            if !ready {
+                waits.push(PullWait::Fact(fact));
             }
-            Some(value) => panic!("transport shape produced unexpected value {value:?}"),
-            None => waits.push(PullWait::Product(key)),
+            ready
+        });
+        if !ready {
+            continue;
         }
+        let layout = super::transport_layouts::fact_layouts(world, &fact)
+            .and_then(|held| held.layout_at(&position))
+            .unwrap_or_else(|| panic!("the transport fact of {owner:?} publishes {position:?}"));
+        layouts.push((position, layout));
     }
     if waits.is_empty() {
         Ok(layouts.into_iter().collect())
@@ -1263,170 +1308,6 @@ fn require_transport_layout(
             format!("missing transport layout for position {position:?}"),
         )
     })
-}
-
-fn prune_lowered_body(
-    body: &LoweredBody,
-    reachable_clauses: &[u32],
-    reachable_entries: &[ControlEntryId],
-) -> PrunedLoweredBody {
-    let value_count = body.value_count();
-    let LoweredBody::Clauses {
-        clauses,
-        entries,
-        generated,
-        entry_plan,
-        ..
-    } = body;
-    let reachable_entries = reachable_entries.iter().copied().collect::<HashSet<_>>();
-    let mut clauses = reachable_clauses
-        .iter()
-        .map(|clause_id| clauses[*clause_id as usize].clone())
-        .collect::<Vec<_>>();
-    let mut needed = HashMap::default();
-    let mut kept_ids = Vec::new();
-    for clause in &clauses {
-        collect_reachable_entries(entries, clause.entry, &reachable_entries, &mut kept_ids, &mut needed);
-    }
-    let mut kept = kept_ids
-        .iter()
-        .map(|entry_id| {
-            specialize_entry(
-                &entries[entry_id.as_u32() as usize],
-                reachable_entries.contains(entry_id),
-            )
-        })
-        .collect::<Vec<_>>();
-    reindex_entries(&mut clauses, &mut kept, &needed);
-    PrunedLoweredBody {
-        body: LoweredBody::clauses(clauses, kept, generated.clone())
-            .with_entry_plan_of(entry_plan)
-            .with_value_count(value_count),
-        original_entry_ids: kept_ids,
-    }
-}
-
-fn collect_reachable_entries(
-    entries: &[LoweredEntry],
-    entry_id: super::super::body::ControlEntryId,
-    reachable_entries: &HashSet<super::super::body::ControlEntryId>,
-    order: &mut Vec<super::super::body::ControlEntryId>,
-    out: &mut HashMap<super::super::body::ControlEntryId, super::super::body::ControlEntryId>,
-) {
-    if out.contains_key(&entry_id) {
-        return;
-    }
-    let next_id = super::super::body::ControlEntryId::from_u32(order.len() as u32);
-    order.push(entry_id);
-    out.insert(entry_id, next_id);
-    if !reachable_entries.contains(&entry_id) {
-        return;
-    }
-    let entry = &entries[entry_id.as_u32() as usize];
-    match &entry.tail {
-        LoweredTail::Value { dest, .. }
-        | LoweredTail::DirectCall { dest, .. }
-        | LoweredTail::ClosureCall { dest, .. } => {
-            if let super::super::body::ControlDestination::Deliver(target) = dest {
-                collect_reachable_entries(entries, *target, reachable_entries, order, out);
-            }
-        }
-        LoweredTail::If {
-            then_entry, else_entry, ..
-        } => {
-            collect_reachable_entries(entries, *then_entry, reachable_entries, order, out);
-            collect_reachable_entries(entries, *else_entry, reachable_entries, order, out);
-        }
-        LoweredTail::Dispatch { dispatch, .. } => {
-            for target in dispatch.successors() {
-                collect_reachable_entries(entries, target, reachable_entries, order, out);
-            }
-        }
-        LoweredTail::Receive(receive) => {
-            if let super::super::body::ControlDestination::Deliver(target) = &receive.dest {
-                collect_reachable_entries(entries, *target, reachable_entries, order, out);
-            }
-            for clause in &receive.outcomes {
-                collect_reachable_entries(entries, clause.target, reachable_entries, order, out);
-            }
-            if let Some(after) = &receive.after {
-                collect_reachable_entries(entries, after.entry, reachable_entries, order, out);
-            }
-        }
-        LoweredTail::Try { body, handler } => {
-            collect_reachable_entries(entries, *body, reachable_entries, order, out);
-            collect_reachable_entries(entries, *handler, reachable_entries, order, out);
-        }
-        LoweredTail::Unreachable => {}
-    }
-}
-
-fn specialize_entry(entry: &LoweredEntry, is_reachable: bool) -> LoweredEntry {
-    if is_reachable {
-        return entry.clone();
-    }
-    LoweredEntry {
-        span: entry.span,
-        origin: entry.origin.clone(),
-        params: entry.params.clone(),
-        captures: entry.captures.clone(),
-        capture_owners: entry.capture_owners.clone(),
-        physical_captures: entry.physical_captures.clone(),
-        physical_params: entry.physical_params.clone(),
-        steps: Vec::new(),
-        tail: LoweredTail::Unreachable,
-    }
-}
-
-fn reindex_entries(
-    clauses: &mut [super::super::body::LoweredClause],
-    entries: &mut [LoweredEntry],
-    ids: &HashMap<super::super::body::ControlEntryId, super::super::body::ControlEntryId>,
-) {
-    for clause in clauses {
-        clause.entry = ids[&clause.entry];
-    }
-    for entry in entries {
-        for owner in &mut entry.capture_owners {
-            owner.entry = ids[&owner.entry];
-        }
-        match &mut entry.tail {
-            LoweredTail::Value { dest, .. }
-            | LoweredTail::DirectCall { dest, .. }
-            | LoweredTail::ClosureCall { dest, .. } => {
-                if let super::super::body::ControlDestination::Deliver(target) = dest {
-                    *target = ids[target];
-                }
-            }
-            LoweredTail::If {
-                then_entry, else_entry, ..
-            } => {
-                *then_entry = ids[then_entry];
-                *else_entry = ids[else_entry];
-            }
-            LoweredTail::Dispatch { dispatch, .. } => {
-                for target in dispatch.successors_mut() {
-                    *target = ids[target];
-                }
-            }
-            LoweredTail::Receive(receive) => {
-                if let super::super::body::ControlDestination::Deliver(target) = &mut receive.dest {
-                    *target = ids[target];
-                }
-                for clause in &mut receive.outcomes {
-                    clause.target = ids[&clause.target];
-                }
-                if let Some(after) = &mut receive.after {
-                    after.entry = ids[&after.entry];
-                }
-            }
-            LoweredTail::Try { body, handler } => {
-                *body = ids[body];
-                *handler = ids[handler];
-            }
-            LoweredTail::Unreachable => {}
-        }
-    }
 }
 
 fn resolve_extern_marshals(

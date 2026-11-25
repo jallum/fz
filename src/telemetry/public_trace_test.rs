@@ -459,7 +459,7 @@ fn raw_product_rows_remain_distinct_while_canonical_multisets_fold_them() {
     }
     events.session("started", 1);
     for arrow in 1..=2 {
-        events.request(&serde_json::json!({"kind": "transport_shape", "arrow": arrow}));
+        events.request(&serde_json::json!({"kind": "synthetic", "arrow": arrow}));
     }
     events.session("finished", 1);
     let report = CausalReport::derive(&events.0);
@@ -1119,7 +1119,7 @@ fn backend_executable_product_settled_carries_identity_beyond_kind() {
 }
 
 /// Public settlement payloads and their sibling cache-hit registration both render.
-/// Multiple independent positioned products exercise distinct settlement keys;
+/// Multiple independent executable products exercise distinct settlement keys;
 /// an explicit unchanged request exercises retained reuse without incidental work.
 #[test]
 fn public_settled_and_retained_cache_hit_events_keep_their_typed_payloads() {
@@ -1165,16 +1165,16 @@ fn public_settled_and_retained_cache_hit_events_keep_their_typed_payloads() {
         );
     }
 
-    // Independent positioned products each report their own settlement.
-    let transport_shape_keys: crate::fast_hash::HashSet<String> = settled
+    // Independent executable products each report their own settlement.
+    let backend_executable_keys: crate::fast_hash::HashSet<String> = settled
         .iter()
         .filter_map(|ev| ev.metadata_key("product"))
-        .filter(|product| product.get("kind").and_then(|v| v.as_str()) == Some("transport_shape"))
+        .filter(|product| product.get("kind").and_then(|v| v.as_str()) == Some("backend_executable"))
         .map(|product| product.to_string())
         .collect();
     assert!(
-        transport_shape_keys.len() > 1,
-        "expected more than one distinct settled transport_shape product key, got {transport_shape_keys:?}"
+        backend_executable_keys.len() > 1,
+        "expected more than one distinct settled backend_executable product key, got {backend_executable_keys:?}"
     );
 
     // (c) the allowlist addition is observable: cache_hit is public.
@@ -1832,7 +1832,7 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         analyze_evaluations: 159,
         analyze_zero_change: 5,
         // Macro readiness is a retained content dependency.
-        total_evaluations: 725,
+        total_evaluations: 739,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures/00571_enum_predicate_search.fz",
@@ -1841,7 +1841,7 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         shifts: shifts(25, 75),
         analyze_evaluations: 597,
         analyze_zero_change: 25,
-        total_evaluations: 1211,
+        total_evaluations: 1225,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures/00420_enum_take_drop_split.fz",
@@ -1850,7 +1850,7 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         shifts: shifts(44, 91),
         analyze_evaluations: 668,
         analyze_zero_change: 23,
-        total_evaluations: 1678,
+        total_evaluations: 1692,
     },
 ];
 

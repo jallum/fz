@@ -18,6 +18,7 @@ use super::body::{
 };
 use super::callsite_dispatch::{CallDestinations, call_destinations};
 use super::identity::{ExecutableKey, ExecutableNeed, FunctionId};
+use super::pruned_body::{PrunedBodyMemo, PrunedLoweredBody};
 use super::semantic::{
     ActivationAnalysis, CallSiteKey, CallSiteSummary, CallableActivationInput, CallableDemand, CallableSurface,
     RuntimeDemand, RuntimeDemandTypeInputs, RuntimeDemandTypeProjection, ShapeDemand, TUPLE_LANE_BUDGET,
@@ -46,6 +47,16 @@ pub(crate) struct ExecutableFacts {
     pub(super) return_origins: Box<[TransportOrigin]>,
     pub(crate) demand_types: RuntimeDemandTypeInputs,
     pub(crate) callable_activation_inputs: Vec<CallableActivationInput>,
+    pub(super) pruned: PrunedBodyMemo,
+}
+
+impl ExecutableFacts {
+    /// The body with every clause and entry the analysis proved unreachable
+    /// removed. Every transport position an artifact asks for is a position
+    /// of this body.
+    pub(crate) fn pruned_body(&self) -> &PrunedLoweredBody {
+        self.pruned.of(self)
+    }
 }
 
 /// Settled semantic facts visible to RuntimeDemand; transport metadata is absent.
@@ -409,6 +420,7 @@ pub(crate) fn project_executable_facts(
         return_origins,
         demand_types,
         callable_activation_inputs,
+        pruned: PrunedBodyMemo::default(),
     })
 }
 

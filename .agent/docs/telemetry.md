@@ -275,7 +275,7 @@ the value is owned by `World` and its lifecycle is visible through the normal
 `pull.product` event whose kind is `executable_facts`.
 `ExecutableKey` and `TransportPosition`'s
 `ExecutableSymbol` render the same way nested inside a `ProductKey`
-(`BackendExecutable`, `TransportShape`, ...): activation identity plus
+(`BackendExecutable`, `CallableConstruction`, ...): activation identity plus
 `need` (`"value"` or `"tuple_fields"` with a count). The blocked-wait lists
 on `AppliedStep` and `JobCompletion` render each waited-on `DependencyKey` as its
 own identity object in the typed order established by the scheduler owner.
@@ -579,7 +579,7 @@ longer discarded after computation), and `group` is `Some(id)` for every
 member of one group settle (a monotone id, distinct per settle, `None`
 outside a group).
 
-Transport uses the same product events. A settled `TransportShape(position)` or
+Callable construction uses the product events. A settled
 `CallableConstruction(position)` event carries the raw `ProductKey`,
 `ProductValue`, and `ProductSettlement`; handlers inspect the borrowed
 position-owned answer directly. There is no parallel projection, component, or

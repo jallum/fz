@@ -269,6 +269,8 @@ pub enum Job {
     DeriveExecutableFacts(ExecutableKey),
     DeriveCallableConstructionTarget(CallableConstructionTargetKey),
     DeriveRuntimeDemand(ExecutableKey),
+    DeriveTransportInterface(ExecutableKey),
+    DeriveTransportBody(ExecutableKey),
 }
 
 impl SemanticOrd<Types> for Job {
@@ -299,7 +301,9 @@ impl SemanticOrd<Types> for Job {
                 (Job::SeedActivation(left), Job::SeedActivation(right))
                 | (Job::AnalyzeActivation(left), Job::AnalyzeActivation(right)) => left.semantic_cmp(right, types),
                 (Job::DeriveExecutableFacts(left), Job::DeriveExecutableFacts(right))
-                | (Job::DeriveRuntimeDemand(left), Job::DeriveRuntimeDemand(right)) => left.semantic_cmp(right, types),
+                | (Job::DeriveRuntimeDemand(left), Job::DeriveRuntimeDemand(right))
+                | (Job::DeriveTransportInterface(left), Job::DeriveTransportInterface(right))
+                | (Job::DeriveTransportBody(left), Job::DeriveTransportBody(right)) => left.semantic_cmp(right, types),
                 (Job::DeriveCallableConstructionTarget(left), Job::DeriveCallableConstructionTarget(right)) => {
                     left.semantic_cmp(right, types)
                 }
@@ -333,6 +337,8 @@ fn job_order_rank(job: &Job) -> u8 {
         Job::DeriveStaticReach(_) => 23,
         Job::DeriveExecutableReach(..) => 24,
         Job::CheckDeclarations(_) => 25,
+        Job::DeriveTransportInterface(_) => 26,
+        Job::DeriveTransportBody(_) => 27,
     }
 }
 
@@ -387,6 +393,12 @@ pub enum FactKey {
     RuntimeDemandInput(ExecutableKey),
     RuntimeDemand(ExecutableKey),
     RuntimeDemandInputs(ExecutableKey),
+    /// The layouts of an executable's inputs and its return: every position
+    /// another executable can read.
+    TransportInterface(ExecutableKey),
+    /// The layouts of every other position an executable owns, which nothing
+    /// outside it reads.
+    TransportBody(ExecutableKey),
     IncomingInputSlot(super::incoming_inputs::InputSlot),
 }
 
@@ -443,6 +455,8 @@ impl FactKey {
             FactKey::RuntimeDemandInput(_) => "an executable's runtime-demand input",
             FactKey::RuntimeDemand(_) => "an executable's runtime demand",
             FactKey::RuntimeDemandInputs(_) => "an executable's runtime-demand inputs",
+            FactKey::TransportInterface(_) => "an executable's transport interface",
+            FactKey::TransportBody(_) => "an executable's transport body",
             FactKey::IncomingInputSlot(_) => "an incoming input slot",
         }
     }
@@ -488,9 +502,9 @@ impl FactKey {
             | (FactKey::ExecutableFacts(left), FactKey::ExecutableFacts(right))
             | (FactKey::RuntimeDemandInput(left), FactKey::RuntimeDemandInput(right))
             | (FactKey::RuntimeDemand(left), FactKey::RuntimeDemand(right))
-            | (FactKey::RuntimeDemandInputs(left), FactKey::RuntimeDemandInputs(right)) => {
-                left.semantic_cmp(right, types)
-            }
+            | (FactKey::RuntimeDemandInputs(left), FactKey::RuntimeDemandInputs(right))
+            | (FactKey::TransportInterface(left), FactKey::TransportInterface(right))
+            | (FactKey::TransportBody(left), FactKey::TransportBody(right)) => left.semantic_cmp(right, types),
             _ => std::cmp::Ordering::Equal,
         }
     }
@@ -536,6 +550,8 @@ fn fact_diagnostic_rank(fact: &FactKey) -> u8 {
         FactKey::Raisable(_) => 39,
         FactKey::StaticReach(_) => 40,
         FactKey::ExecutableReach(..) => 41,
+        FactKey::TransportInterface(_) => 42,
+        FactKey::TransportBody(_) => 43,
     }
 }
 
@@ -1146,6 +1162,8 @@ impl World {
             FactKey::Recursive(function) => Some(Job::DeriveRecursive(*function)),
             FactKey::StaticReach(function) => Some(Job::DeriveStaticReach(*function)),
             FactKey::ExecutableReach(executable, chain) => Some(Job::DeriveExecutableReach(executable.clone(), *chain)),
+            FactKey::TransportInterface(executable) => Some(Job::DeriveTransportInterface(executable.clone())),
+            FactKey::TransportBody(executable) => Some(Job::DeriveTransportBody(executable.clone())),
             FactKey::InputDemand(function) => Some(Job::DeriveInputDemand(*function)),
             FactKey::EntryDispatch(function) => Some(Job::PlanEntryDispatch(*function)),
             FactKey::ExpandedFunctionSource(function) => match self.generated_owner(*function) {

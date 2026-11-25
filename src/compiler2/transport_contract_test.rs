@@ -7,7 +7,7 @@ use super::artifact::{AbiValueRepr, BackendTail};
 use super::body::{DeliveredValueSource, delivered_value_joins};
 use super::pull::{
     ProductDriver, ProductKey, ProductValue, PullOutcome, PullSession, PullWait, TransportCarrier, TransportLayout,
-    TransportShapeFact, WorldProductProducers,
+    WorldProductProducers,
 };
 use super::semantic::{CallableFlowFact, CallableSurface};
 use super::transport::ExecutableSymbol;
@@ -45,10 +45,6 @@ impl PullTelemetryCapture {
 
     fn produced_count(&self) -> usize {
         self.produced.borrow().len()
-    }
-
-    fn produced_kind(&self, kind: &str) -> bool {
-        self.produced.borrow().iter().any(|product| product.kind() == kind)
     }
 }
 
@@ -142,7 +138,7 @@ const SEAM_FACTS: &[(&str, &str)] = &[];
 // A job gated on a fact its subject already carries never starts to
 // discover that fact missing, then wake once the fact lands
 // (`Job::missing_gates`).
-const EXPECTED_00181_NO_DUMP_JOB_STARTS: usize = 267;
+const EXPECTED_00181_NO_DUMP_JOB_STARTS: usize = 299;
 const ENUM_REDUCE_OPERATOR_REF_SOURCE: &str = r#"
 def main() do
   {
@@ -432,33 +428,46 @@ fn compiler2_transport_tuple_fields_root_keeps_its_unboxed_lanes() {
     );
 }
 
+/// A composed return stands on the interface of each callee it names, and its
+/// job does not start until those interfaces have settled: the callee
+/// interfaces are gates, so no run of it stops to wait on one.
 #[test]
-fn compiler2_transport_shapes_retain_named_child_product_dependencies() {
+fn compiler2_a_composed_return_stands_on_the_interface_of_each_callee_it_names() {
     let tel = ConfiguredTelemetry::new();
-    let pull_events = PullTelemetryCapture::install(&tel);
+    let reads = std::rc::Rc::new(std::cell::RefCell::new(Vec::<(FactKey, FactKey)>::new()));
+    let waits = std::rc::Rc::new(std::cell::RefCell::new(Vec::<(FactKey, FactKey)>::new()));
+    let (observed_reads, observed_waits) = (std::rc::Rc::clone(&reads), std::rc::Rc::clone(&waits));
+    tel.attach_raw_event2::<World, super::world::JobCompletion, _>(
+        &["fz", "compiler2", "work_graph", "applied"],
+        move |_, _, _, world, completion| {
+            if let super::Job::DeriveTransportInterface(executable) = &completion.job {
+                let owner = FactKey::TransportInterface(executable.clone());
+                for fact in world.job_reads(&completion.job) {
+                    observed_reads.borrow_mut().push((owner.clone(), fact.fact().clone()));
+                }
+                for fact in completion.step.blocked.iter().filter_map(|use_| use_.fact().fact()) {
+                    observed_waits.borrow_mut().push((owner.clone(), fact.clone()));
+                }
+            }
+        },
+    );
     let mut world = World::new();
     world.submit_code(
-        Some("direct_transport_shape_products.fz".to_string()),
+        Some("composed_return_interfaces.fz".to_string()),
         "def main() do\n  xs = [1, 2, 3, 4, 5]\n  dbg(Enum.drop_while(xs, fn (x) -> x < 4 end))\n  dbg(Enum.drop_while(xs, fn (x) -> x < 0 end))\nend\n".to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
-    let (driver, program) = pull_backend_for_test(&tel, &mut world, root);
+    let _ = pull_backend_for_test(&tel, &mut world, root);
 
-    assert!(pull_events.produced_kind("transport_shape"));
-    let session = driver.session();
-    let _ = retained_layouts(&program)
-        .map(|(position, _)| position)
-        .filter_map(|position| {
-            session
-                .memo()
-                .product_dependencies(&ProductKey::TransportShape(position.clone()))
-        })
-        .find(|dependencies| {
-            dependencies
-                .keys()
-                .any(|dependency| matches!(dependency, ProductKey::TransportShape(_)))
-        })
-        .expect("a composed transport shape should retain its named child shape dependency");
+    let foreign_interface = |(owner, fact): &(FactKey, FactKey)| matches!(fact, FactKey::TransportInterface(callee) if owner != &FactKey::TransportInterface(callee.clone()));
+    assert!(
+        reads.borrow().iter().any(foreign_interface),
+        "a composed return stands on the interface of a callee it names"
+    );
+    assert!(
+        !waits.borrow().iter().any(foreign_interface),
+        "the callee interfaces gate the job, so no run stops to wait on one"
+    );
 }
 
 #[test]
@@ -3442,7 +3451,7 @@ fn compiler2_pull_transport_keeps_enum_reduce_operator_refs_direct_callable() {
 
 #[test]
 #[serial_test::serial]
-fn compiler2_pull_transport_shape_is_stable_across_product_request_order() {
+fn compiler2_packaged_return_layout_is_the_one_the_interface_fact_holds() {
     let tel = ConfiguredTelemetry::new();
     let mut world = World::new();
     let root = submit_enum_reduce_operator_ref_root(
@@ -3454,28 +3463,18 @@ fn compiler2_pull_transport_shape_is_stable_across_product_request_order() {
     let main_return = TransportPosition::ExecutableReturn {
         executable: ExecutableSymbol::new(plan.entry()),
     };
-    let root_first_shape =
+    let packaged =
         retained_shape_at(&plan, &main_return).expect("packaged root product should publish main return shape");
-    let mut shape_first_driver = ProductDriver::new(&tel, root);
-    let shape_first = pull_product_until_produced_with_fact_waits(
-        &mut shape_first_driver,
-        &mut world,
-        root,
-        ProductKey::TransportShape(main_return),
-        "main return transport shape should be product-derivable without legacy plan pre-settle",
-    );
-    let ProductValue::TransportShape(TransportShapeFact::Layout(TransportLayout {
-        structural: shape_first_shape,
-        ..
-    })) = shape_first
-    else {
-        panic!("transport product should contain a concrete shape, got {shape_first:?}");
-    };
+    let held = world
+        .transport_interface(plan.entry())
+        .expect("the entry's interface fact settles before the root product is packaged")
+        .layout_at(&main_return)
+        .expect("the interface holds the entry's return");
 
     assert_eq!(
-        shape_descr(&world, root_first_shape),
-        shape_descr(&world, shape_first_shape),
-        "product transport shape must not depend on whether root package or shape product is requested first"
+        shape_descr(&world, packaged),
+        shape_descr(&world, held.structural),
+        "the packaged return shape is the one the interface fact holds"
     );
 }
 
@@ -4924,10 +4923,7 @@ fn ignored_forwarded_input_requests_no_positioned_products() {
         executable: ExecutableSymbol::new(executable),
         semantic_index: 0,
     };
-    let forbidden = [
-        ProductKey::TransportShape(position.clone()),
-        ProductKey::CallableConstruction(position.clone()),
-    ];
+    let forbidden = [ProductKey::CallableConstruction(position.clone())];
     assert_eq!(
         evaluated
             .borrow()
@@ -5828,60 +5824,6 @@ impl super::product_drive::ProductDriveError for PanicProductDriveError {
     ) -> Self {
         panic!("{scope} product exhausted its budget of {budget} requests; last wait: {last_wait:?}");
     }
-}
-
-/// Pulls an arbitrary `ProductKey` to a settled `ProductValue`, expanding any
-/// `PullWait::Fact` through the shared `product_drive::drive_product_fact_wait`.
-/// These tests also request transport shapes, runtime demands, and
-/// materialized executables, so only the inner fact-wait loop is shared.
-fn pull_product_until_produced_with_fact_waits(
-    driver: &mut ProductDriver<'_, ConfiguredTelemetry>,
-    world: &mut World,
-    root: super::RootId,
-    key: ProductKey,
-    message: &str,
-) -> ProductValue {
-    let mut stack = vec![key.clone()];
-    let mut last_wait = None;
-    for _ in 0..50_000 {
-        let Some(current) = stack.pop() else {
-            stack.push(key.clone());
-            continue;
-        };
-        let outcome = {
-            let mut producers = WorldProductProducers::new(world, driver.telemetry());
-            driver.pull(&mut producers, current.clone())
-        };
-        match outcome {
-            PullOutcome::Produced(value) if current == key => return value,
-            PullOutcome::Produced(_) => {}
-            PullOutcome::Waiting(waits) => {
-                last_wait = Some((current.clone(), waits.clone()));
-                stack.push(current);
-                for wait in waits.into_iter().rev() {
-                    match wait {
-                        PullWait::Product(product) => stack.push(product),
-                        PullWait::Fact(fact) => {
-                            let tel = driver.telemetry();
-                            let producer_pokes =
-                                super::product_drive::drive_product_fact_wait::<_, PanicProductDriveError>(
-                                    world,
-                                    tel,
-                                    root,
-                                    driver,
-                                    fact,
-                                    super::product_drive::PRODUCT_DRIVE_BUDGET,
-                                )
-                                .expect("panic-based ProductDriveError never returns Err");
-                            driver.session_mut().record_producer_pokes(producer_pokes);
-                        }
-                    }
-                }
-            }
-            PullOutcome::Failed => panic!("{message}: product {current:?} failed"),
-        }
-    }
-    panic!("{message}: product {key:?} did not settle; last wait: {last_wait:?}");
 }
 
 fn materialized_call_edge_callees(edge: &super::artifact::MaterializedCallEdge) -> Vec<&ExecutableKey> {
