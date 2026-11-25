@@ -8,10 +8,12 @@
 //! register, the interpreter threads it as a parameter — so there is no
 //! ambient current-process and two schedulers can be live at once.
 
-use crate::alloc_site::{AllocSiteCount, AllocSites, RuntimeAllocCounts};
+use crate::alloc_site::{AllocSiteCount, RuntimeAllocCounts};
 use crate::any_value::{ClosureDenotationId, ValueKind, bitstring_object_image, closure_header_word};
 use crate::function_denotation::FunctionDenotation;
 use crate::heap::{AllocStat, HeapAllocStats};
+use crate::reuse_site::{Retention, ReuseKind, ReuseSiteCount, ReuseStat, RuntimeReuseCounts};
+use crate::site_table::SiteTable;
 use crate::term_hash::atom_key_hash;
 use std::cell::RefCell;
 use std::cmp::Ordering;
@@ -175,14 +177,6 @@ pub struct Process {
     pub reduction_yields: u64,
     /// Cumulative quanta that ended with the process parked on a receive.
     pub parks: u64,
-    /// Cumulative construction-owned list-retention attempts.
-    pub list_retention_attempts: u64,
-    /// Attempts that returned the source cell, unchanged or after guarded rewrite.
-    pub list_retention_hits: u64,
-    /// Cumulative updates of a struct in its own layout.
-    pub struct_retention_attempts: u64,
-    /// Updates that stored into the base itself, rewriting it in place.
-    pub struct_retention_hits: u64,
     /// Cumulative resource destructors the scheduler dispatched for this
     /// process, after collections and at exit.
     pub dtors_dispatched: u64,
@@ -470,10 +464,13 @@ pub struct Node {
     closure_denotations: RefCell<HashMap<ClosureDenotationId, ClosureOrigin>>,
     static_closures: RefCell<HashMap<StaticClosureKey, Box<StaticClosure>>>,
     static_bitstrings: RefCell<HashMap<StaticBitstringKey, Box<[StaticObjectChunk]>>>,
-    /// The allocation sites of the module the node runs, once it is loaded.
-    alloc_sites: RefCell<Option<AllocSites>>,
+    /// The allocation and reuse sites of the module the node runs, once it
+    /// is loaded.
+    sites: RefCell<Option<SiteTable>>,
     /// What the runtime's own allocation sites have placed for the program.
     pub runtime_allocs: RuntimeAllocCounts,
+    /// What the runtime's own reuse sites have done for the program.
+    pub runtime_reuses: RuntimeReuseCounts,
 }
 
 /// A bitstring literal's bytes and bit length; one object exists per key.
@@ -509,24 +506,25 @@ impl Node {
             closure_denotations: RefCell::new(HashMap::new()),
             static_closures: RefCell::new(HashMap::new()),
             static_bitstrings: RefCell::new(HashMap::new()),
-            alloc_sites: RefCell::new(None),
+            sites: RefCell::new(None),
             runtime_allocs: RuntimeAllocCounts::default(),
+            runtime_reuses: RuntimeReuseCounts::default(),
         }
     }
 
-    /// Name the loaded module's allocation sites. A module is loaded once.
-    pub fn register_alloc_sites(&self, sites: AllocSites) {
-        let previous = self.alloc_sites.borrow_mut().replace(sites);
-        assert!(previous.is_none(), "a node's allocation sites are registered once");
+    /// Name the loaded module's sites. A module is loaded once.
+    pub fn register_sites(&self, sites: SiteTable) {
+        let previous = self.sites.borrow_mut().replace(sites);
+        assert!(previous.is_none(), "a node's sites are registered once");
     }
 
     /// Every site that has placed an object, compiled and runtime, with what
     /// it placed.
     pub fn alloc_site_counts(&self) -> Vec<AllocSiteCount> {
-        let sites = self.alloc_sites.borrow();
+        let sites = self.sites.borrow();
         let compiled = sites
             .iter()
-            .flat_map(AllocSites::counted)
+            .flat_map(SiteTable::allocations)
             .map(|(site, allocs)| AllocSiteCount {
                 function: site.function.clone(),
                 kind: site.kind,
@@ -554,6 +552,45 @@ impl Node {
             stats.add(site.kind, site.placed);
         }
         stats
+    }
+
+    /// Every site that has reused or replaced an object, compiled and
+    /// runtime, with what it did.
+    pub fn reuse_site_counts(&self) -> Vec<ReuseSiteCount> {
+        let sites = self.sites.borrow();
+        let compiled = sites
+            .iter()
+            .flat_map(SiteTable::reuses)
+            .map(|(site, reused)| ReuseSiteCount {
+                function: site.function.clone(),
+                kind: site.kind,
+                reused,
+            });
+        let runtime = self.runtime_reuses.counted().map(|(site, reused)| ReuseSiteCount {
+            function: site.function().to_owned(),
+            kind: site.kind(),
+            reused,
+        });
+        compiled
+            .chain(runtime)
+            .filter(|count| count.reused.attempts() > 0)
+            .collect()
+    }
+
+    /// What every process of the program has reused or replaced at the sites
+    /// of `kind`.
+    pub fn reuse_stats(&self, kind: ReuseKind) -> ReuseStat {
+        let mut stat = ReuseStat::default();
+        for site in self.reuse_site_counts().iter().filter(|site| site.kind == kind) {
+            stat.add(site.reused);
+        }
+        stat
+    }
+
+    /// What every process of the program has reused or replaced, for lists
+    /// and for structs. Tuple copies count with the structs.
+    pub fn retention_stats(&self) -> Retention {
+        Retention::sum(&self.reuse_site_counts())
     }
 
     /// No node-global tables: the shape a bare `Process::new` carries.
@@ -772,10 +809,6 @@ impl Process {
             reductions_executed: 0,
             reduction_yields: 0,
             parks: 0,
-            list_retention_attempts: 0,
-            list_retention_hits: 0,
-            struct_retention_attempts: 0,
-            struct_retention_hits: 0,
             dtors_dispatched: 0,
             frame_copies: 0,
             yield_reasons: 0,

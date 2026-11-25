@@ -16,6 +16,8 @@ use fz_runtime::heap::{Heap, HeapAllocKind, INLINE_ALLOC_LAYOUT, Schema, SchemaR
 use fz_runtime::ir_runtime::*;
 use fz_runtime::pinned_abi;
 use fz_runtime::process::Process;
+use fz_runtime::reuse_site::ReuseKind;
+use fz_runtime::site_table::Site;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -812,6 +814,14 @@ fn cell_proofs() -> Vec<CellProof> {
 /// The kind a list tail travels with.
 const LIST_KIND_WORD: u64 = ValueKind::LIST.tag() as u64;
 
+/// The allocation site a table's entry is.
+fn allocation_site(site: &Site) -> &fz_runtime::alloc_site::AllocSite {
+    match site {
+        Site::Alloc(site) => site,
+        Site::Reuse(site) => panic!("expected an allocation site, found {site:?}"),
+    }
+}
+
 /// A row compiled to a function of two words: the head's and the tail's.
 struct CompiledCell {
     code: *const u8,
@@ -829,7 +839,7 @@ fn compile_cell(proof: &CellProof) -> CompiledCell {
     sig.params = vec![ir::AbiParam::new(types::I64); 2];
     sig.returns = vec![ir::AbiParam::new(types::I64)];
     ctx.func.signature = sig.clone();
-    let sites = RefCell::new(AllocSites::declare(module).expect("declare the site counters"));
+    let sites = RefCell::new(SiteTable::declare(module).expect("declare the site counters"));
     {
         let mut b = FunctionBuilder::new(&mut ctx.func, &mut fbctx);
         let entry = b.create_block();
@@ -859,8 +869,8 @@ fn compile_cell(proof: &CellProof) -> CompiledCell {
     module.define_function(id, &mut ctx).expect("define the cell function");
     let (counts_id, registered) = sites.into_inner().define(module).expect("define the site counters");
     assert_eq!(registered.len(), 1, "one placement is one site");
-    assert_eq!(registered[0].kind, HeapAllocKind::ListCons);
-    assert_eq!(registered[0].bytes, 16);
+    assert_eq!(allocation_site(&registered[0]).kind, HeapAllocKind::ListCons);
+    assert_eq!(allocation_site(&registered[0]).bytes, 16);
     module.finalize_definitions().expect("finalize the cell function");
     let code = module.get_finalized_function(id);
     let (counts, _) = module.get_finalized_data(counts_id);
@@ -1127,7 +1137,7 @@ fn compile_object(case: &ObjectCase, schemas: &Rc<RefCell<SchemaRegistry>>) -> C
     sig.params = vec![ir::AbiParam::new(types::I64)];
     sig.returns = vec![ir::AbiParam::new(types::I64)];
     ctx.func.signature = sig.clone();
-    let sites = RefCell::new(AllocSites::declare(module).expect("declare the site counters"));
+    let sites = RefCell::new(SiteTable::declare(module).expect("declare the site counters"));
     {
         let mut b = FunctionBuilder::new(&mut ctx.func, &mut fbctx);
         let entry = b.create_block();
@@ -1174,9 +1184,9 @@ fn compile_object(case: &ObjectCase, schemas: &Rc<RefCell<SchemaRegistry>>) -> C
         Object::Struct { .. } => HeapAllocKind::Struct,
         Object::Closure { .. } => HeapAllocKind::Closure,
     };
-    assert_eq!(registered[0].kind, expected_kind);
+    assert_eq!(allocation_site(&registered[0]).kind, expected_kind);
     assert_eq!(
-        registered[0].bytes as usize,
+        allocation_site(&registered[0]).bytes as usize,
         compiled_size(case.object, &schemas.borrow())
     );
     module.finalize_definitions().expect("finalize the object function");
@@ -1428,7 +1438,7 @@ fn compile_box(proof: &BoxProof) -> CompiledBox {
     sig.params = vec![ir::AbiParam::new(types::I64)];
     sig.returns = vec![ir::AbiParam::new(types::I64)];
     ctx.func.signature = sig.clone();
-    let sites = RefCell::new(AllocSites::declare(module).expect("declare the site counters"));
+    let sites = RefCell::new(SiteTable::declare(module).expect("declare the site counters"));
     {
         let mut b = FunctionBuilder::new(&mut ctx.func, &mut fbctx);
         let entry = b.create_block();
@@ -1463,8 +1473,8 @@ fn compile_box(proof: &BoxProof) -> CompiledBox {
     module.define_function(id, &mut ctx).expect("define the box function");
     let (counts_id, registered) = sites.into_inner().define(module).expect("define the site counters");
     assert_eq!(registered.len(), 1, "one placement is one site");
-    assert_eq!(registered[0].kind, HeapAllocKind::ScalarBox);
-    assert_eq!(registered[0].bytes, 16);
+    assert_eq!(allocation_site(&registered[0]).kind, HeapAllocKind::ScalarBox);
+    assert_eq!(allocation_site(&registered[0]).bytes, 16);
     let imports = module
         .declarations()
         .get_functions()
@@ -1705,11 +1715,30 @@ struct ReuseLeft {
     binaries_shared: u64,
 }
 
+/// The program's list reuses as `(attempts, hits)`.
+fn list_reuses(process: &Process) -> (u64, u64) {
+    let list = process.node.retention_stats().list;
+    (list.attempts(), list.hits)
+}
+
+/// The compiled row's reuse site, which owns the table's first two words:
+/// `(hits, misses)`.
+fn site_reuses(compiled: &CompiledCell) -> (u64, u64) {
+    unsafe { (*compiled.counts, *compiled.counts.add(1)) }
+}
+
+/// What the compiled row's site counted since `before`, as `(attempts, hits)`.
+fn reuses_since(compiled: &CompiledCell, before: (u64, u64)) -> (u64, u64) {
+    let (hits, misses) = site_reuses(compiled);
+    (hits + misses - before.0 - before.1, hits - before.0)
+}
+
 fn run_reuse(
     tip: Tip,
     schemas: &Rc<RefCell<SchemaRegistry>>,
     build: impl FnOnce(&mut Heap) -> ReuseInputs,
     run: impl FnOnce(*mut Process, &ReuseInputs) -> u64,
+    retention: impl FnOnce(&Process) -> (u64, u64),
 ) -> ReuseLeft {
     let mut process = Box::new(Process::new(schemas.clone()));
     let inputs = build(&mut process.heap);
@@ -1735,7 +1764,7 @@ fn run_reuse(
         tip_used: heap_field(&process, INLINE_ALLOC_LAYOUT.bump_top) - after.0,
         tip_capacity: after.1,
         tip_changed: before != after,
-        retention: (process.list_retention_attempts, process.list_retention_hits),
+        retention: retention(&process),
         binaries_shared: process.heap.binaries_shared(),
     }
 }
@@ -1751,7 +1780,7 @@ fn compile_reuse(lane: ReuseLane, kind: ValueKind, rewrite: bool) -> CompiledCel
     sig.params = vec![ir::AbiParam::new(types::I64); 3];
     sig.returns = vec![ir::AbiParam::new(types::I64)];
     ctx.func.signature = sig.clone();
-    let sites = RefCell::new(AllocSites::declare(module).expect("declare the site counters"));
+    let sites = RefCell::new(SiteTable::declare(module).expect("declare the site counters"));
     {
         let mut b = FunctionBuilder::new(&mut ctx.func, &mut fbctx);
         let entry = b.create_block();
@@ -1791,9 +1820,17 @@ fn compile_reuse(lane: ReuseLane, kind: ValueKind, rewrite: bool) -> CompiledCel
         .expect("declare the reuse function");
     module.define_function(id, &mut ctx).expect("define the reuse function");
     let (counts_id, registered) = sites.into_inner().define(module).expect("define the site counters");
-    assert_eq!(registered.len(), 1, "one placement is one site");
-    assert_eq!(registered[0].kind, HeapAllocKind::ListCons);
-    assert_eq!(registered[0].bytes, 16);
+    assert_eq!(registered.len(), 2, "one reuse site, and the placement of a new cell");
+    assert!(
+        matches!(&registered[0], Site::Reuse(site) if site.kind == ReuseKind::List),
+        "{:?}",
+        registered[0]
+    );
+    assert!(
+        matches!(&registered[1], Site::Alloc(site) if site.kind == HeapAllocKind::ListCons && site.bytes == 16),
+        "{:?}",
+        registered[1]
+    );
     module.finalize_definitions().expect("finalize the reuse function");
     let code = module.get_finalized_function(id);
     let (counts, _) = module.get_finalized_data(counts_id);
@@ -1835,6 +1872,7 @@ fn every_list_reuse_row_leaves_the_heap_its_runtime_function_leaves() {
             for rewrite in [false, true] {
                 let compiled = compile_reuse(lane, kind, rewrite);
                 let mut fresh_runs = 0;
+                let mut runs = 0;
                 for tail in [ReuseTail::Same, ReuseTail::Other, ReuseTail::Empty] {
                     for shared in [false, true] {
                         for tip in [Tip::Roomy, Tip::Full] {
@@ -1862,11 +1900,18 @@ fn every_list_reuse_row_leaves_the_heap_its_runtime_function_leaves() {
                                     rewrite as u64,
                                 ),
                             };
-                            let expected = run_reuse(tip, &schemas, build, reference);
-                            let inline = run_reuse(tip, &schemas, build, |process, inputs| unsafe {
-                                pinned_abi::call3(compiled.code, process, inputs.source, inputs.head, inputs.tail)
-                                    as u64
-                            });
+                            let expected = run_reuse(tip, &schemas, build, reference, list_reuses);
+                            let before = site_reuses(&compiled);
+                            let inline = run_reuse(
+                                tip,
+                                &schemas,
+                                build,
+                                |process, inputs| unsafe {
+                                    pinned_abi::call3(compiled.code, process, inputs.source, inputs.head, inputs.tail)
+                                        as u64
+                                },
+                                |_| reuses_since(&compiled, before),
+                            );
                             let name = format!(
                                 "{lane:?} on {} over {tail:?}, shared {shared}, rewrite {rewrite}, {tip:?} tip",
                                 head.name
@@ -1878,6 +1923,7 @@ fn every_list_reuse_row_leaves_the_heap_its_runtime_function_leaves() {
                                 "{name}: the tip moves only for a new cell with no room"
                             );
                             fresh_runs += u64::from(inline.fresh);
+                            runs += 1;
                             let (attempts, hits) = inline.retention;
                             assert_eq!(attempts, 1, "{name}: one attempt");
                             assert_eq!(hits, u64::from(!inline.fresh), "{name}: a hit is a reused cell");
@@ -1885,8 +1931,14 @@ fn every_list_reuse_row_leaves_the_heap_its_runtime_function_leaves() {
                         }
                     }
                 }
-                let counted = unsafe { *compiled.counts };
-                assert_eq!(counted, fresh_runs, "{lane:?} counts its site once per new cell");
+                let (hits, misses) = site_reuses(&compiled);
+                assert_eq!(misses, fresh_runs, "{lane:?} counts a miss once per new cell");
+                let placed = unsafe { *compiled.counts.add(2) };
+                assert_eq!(
+                    placed, fresh_runs,
+                    "{lane:?} counts its allocation site once per new cell"
+                );
+                assert_eq!(hits + misses, runs, "{lane:?} counts every run once, at one counter");
             }
         }
     }
@@ -1938,6 +1990,46 @@ impl ReuseCoverage {
     }
 }
 
+/// One reuse bumps exactly one counter of its own site: a cell that is kept as
+/// it is raises the site's hits, and a new cell raises its misses.
+#[test]
+fn one_inline_reuse_raises_exactly_its_sites_hit_or_miss() {
+    let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
+    let compiled = compile_reuse(ReuseLane::Ref, ValueKind::INT, true);
+    let heads = reuse_heads();
+    let own_int = heads
+        .iter()
+        .find(|head| head.name == "the source's own int")
+        .expect("a head");
+    let other_int = heads.iter().find(|head| head.name == "another int").expect("a head");
+    let reuse = |head: &ReuseHead, tail: ReuseTail, shared: bool| {
+        let before = site_reuses(&compiled);
+        let left = run_reuse(
+            Tip::Roomy,
+            &schemas,
+            |heap| reuse_inputs(heap, head, tail, shared, false),
+            |process, inputs| unsafe {
+                pinned_abi::call3(compiled.code, process, inputs.source, inputs.head, inputs.tail) as u64
+            },
+            |_| (0, 0),
+        );
+        let after = site_reuses(&compiled);
+        (left.fresh, (after.0 - before.0, after.1 - before.1))
+    };
+
+    assert_eq!(reuse(own_int, ReuseTail::Same, false), (false, (1, 0)), "kept: one hit");
+    assert_eq!(
+        reuse(other_int, ReuseTail::Same, false),
+        (false, (1, 0)),
+        "rewritten in place: one hit"
+    );
+    assert_eq!(
+        reuse(other_int, ReuseTail::Same, true),
+        (true, (0, 1)),
+        "a shared source is replaced: one miss"
+    );
+}
+
 /// A head that is the source cell itself is shared before the alias bit is
 /// read, so an unshared source cannot be rewritten to hold itself.
 #[test]
@@ -1956,6 +2048,7 @@ fn a_source_that_is_its_own_new_head_is_replaced_not_rewritten() {
         |process, inputs| unsafe {
             pinned_abi::call3(compiled.code, process, inputs.source, inputs.head, inputs.tail) as u64
         },
+        |_| reuses_since(&compiled, (0, 0)),
     );
     assert!(left.fresh, "the source became shared, so a new cell holds it");
     assert_eq!(left.retention, (1, 0));
@@ -1995,7 +2088,7 @@ fn compile_comparison(symbol: &str) -> CompiledComparison {
     sig.params = vec![ir::AbiParam::new(types::I64); 3];
     sig.returns = vec![ir::AbiParam::new(types::I64)];
     ctx.func.signature = sig.clone();
-    let sites = RefCell::new(AllocSites::declare(module).expect("declare the site counters"));
+    let sites = RefCell::new(SiteTable::declare(module).expect("declare the site counters"));
     {
         let mut b = FunctionBuilder::new(&mut ctx.func, &mut fbctx);
         let entry = b.create_block();

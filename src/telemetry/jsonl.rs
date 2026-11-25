@@ -38,7 +38,7 @@ use super::handler::{Event, EventKind, Handler};
 use super::value::Value;
 use fz_engine::SemanticOrd;
 use fz_runtime::telemetry::{
-    ALLOC_SITE, EXECUTION_READY, GC, PROCESS_EXITED, RAISE, RUN_ENDED, RaiseRecord, RunEnded, RuntimeEvent,
+    ALLOC_SITE, EXECUTION_READY, GC, PROCESS_EXITED, RAISE, REUSE_SITE, RUN_ENDED, RaiseRecord, RunEnded, RuntimeEvent,
     SCHEDULER_SLEPT, SEND_PROBE, TIMER_ARMED, TIMER_CANCELLED, TIMER_FIRED, TimerArmed, TimerCancelled, TimerFired,
     write_line as write_runtime_line,
 };
@@ -850,6 +850,10 @@ impl JsonlBackend {
         let site_backend = Rc::clone(backend);
         telemetry.attach_raw_event1::<fz_runtime::alloc_site::AllocSiteCount, _>(&ALLOC_SITE, move |_, _, _, site| {
             site_backend.append_runtime_event(&RuntimeEvent::AllocSite(site));
+        });
+        let reuse_backend = Rc::clone(backend);
+        telemetry.attach_raw_event1::<fz_runtime::reuse_site::ReuseSiteCount, _>(&REUSE_SITE, move |_, _, _, site| {
+            reuse_backend.append_runtime_event(&RuntimeEvent::ReuseSite(site));
         });
         let ended_backend = Rc::clone(backend);
         telemetry.attach_raw_event1::<RunEnded, _>(&RUN_ENDED, move |_, _, _, ended| {

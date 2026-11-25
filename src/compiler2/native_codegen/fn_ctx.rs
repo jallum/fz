@@ -27,9 +27,8 @@ use fz_runtime::ir_runtime::{
     fz_number_ref_float_bits, fz_share_list_spine, fz_struct_copy, fz_struct_store_ref, fz_truthy_ref, fz_type_of,
     fz_unbox_atom, fz_unbox_float, fz_unbox_int,
 };
-use fz_runtime::process_abi::{
-    PROCESS_BINARIES_SHARED_OFFSET, PROCESS_STRUCT_RETENTION_ATTEMPTS_OFFSET, PROCESS_STRUCT_RETENTION_HITS_OFFSET,
-};
+use fz_runtime::process_abi::PROCESS_BINARIES_SHARED_OFFSET;
+use fz_runtime::reuse_site::ReuseKind;
 
 /// A struct or tuple that is allocated and whose fields are being stored.
 pub(crate) struct NewStruct {
@@ -151,7 +150,8 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
     }
 
     /// `base_ref` when its header's shared bit is clear, counted as a
-    /// retention hit; otherwise `fz_struct_copy`'s copy.
+    /// hit at a reuse site; otherwise `fz_struct_copy`'s copy, which the
+    /// runtime counts as a miss.
     fn rewrite_unshared_struct(&mut self, base_ref: ir::Value, fields: usize) -> ir::Value {
         let reuse_blk = self.b.create_block();
         let copy_blk = self.b.create_block();
@@ -164,8 +164,8 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
 
         self.b.switch_to_block(reuse_blk);
         self.b.seal_block(reuse_blk);
-        self.bump_process_counter(PROCESS_STRUCT_RETENTION_ATTEMPTS_OFFSET);
-        self.bump_process_counter(PROCESS_STRUCT_RETENTION_HITS_OFFSET);
+        let counters = self.reuse_site(ReuseKind::Struct);
+        self.count_reuse(counters.hits);
         self.b.ins().jump(done_blk, &[BlockArg::Value(base_ref)]);
 
         self.b.switch_to_block(copy_blk);
@@ -176,6 +176,18 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
         self.b.switch_to_block(done_blk);
         self.b.seal_block(done_blk);
         target
+    }
+
+    /// Register a reuse site of `kind` in the function being lowered.
+    pub(super) fn reuse_site(&mut self, kind: ReuseKind) -> ReuseCounters {
+        let scope = self.scope;
+        scope.sites.borrow_mut().register_reuse(kind, scope.function)
+    }
+
+    /// Count one reuse outcome at the counter at `offset` of its site.
+    pub(super) fn count_reuse(&mut self, offset: i32) {
+        let scope = self.scope;
+        scope.sites.borrow().bump(self, offset);
     }
 
     pub(super) fn bump_process_counter(&mut self, offset: i32) {

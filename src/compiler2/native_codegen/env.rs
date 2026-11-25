@@ -34,7 +34,7 @@ pub(crate) struct CodegenEnv<'a> {
     /// The bitstring literals this module has emitted.
     pub(super) bitstring_literals: &'a RefCell<BitstringLiterals>,
     /// The allocation sites this module's code has registered.
-    pub(super) alloc_sites: &'a RefCell<AllocSites>,
+    pub(super) site_table: &'a RefCell<SiteTable>,
     pub(super) param_reprs: &'a [Vec<ArgRepr>],
     pub(super) return_diverges: &'a [bool],
     pub(super) cont_fns: &'a HashSet<FnId>,
@@ -47,9 +47,9 @@ pub(crate) struct CodegenEnv<'a> {
 
 impl CodegenEnv<'_> {
     /// Where the allocation sites of the active body register.
-    pub(super) fn site_scope(&self) -> super::alloc_site::SiteScope<'_> {
-        super::alloc_site::SiteScope {
-            sites: self.alloc_sites,
+    pub(super) fn site_scope(&self) -> super::site_table::SiteScope<'_> {
+        super::site_table::SiteScope {
+            sites: self.site_table,
             function: self.active_body_name,
         }
     }

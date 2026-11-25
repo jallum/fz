@@ -62,7 +62,7 @@ pub(super) fn emit_place<M: cranelift_module::Module>(
     body.b.switch_to_block(placed);
     body.b.seal_block(placed);
     let scope = body.scope;
-    scope.sites.borrow_mut().count(
+    scope.sites.borrow_mut().count_alloc(
         body,
         AllocSite {
             kind,

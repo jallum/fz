@@ -19,7 +19,7 @@ fn runtime_call_is_near<M: Module>(mut module: M) -> bool {
     let entry = b.create_block();
     b.switch_to_block(entry);
     let mut cache = CodegenCache::default();
-    let sites = std::cell::RefCell::new(AllocSites::declare(&mut module).expect("declare the site counters"));
+    let sites = std::cell::RefCell::new(SiteTable::declare(&mut module).expect("declare the site counters"));
     let scope = SiteScope {
         sites: &sites,
         function: "test",

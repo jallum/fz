@@ -72,7 +72,7 @@ fn read_var_as(
     b.seal_block(entry);
     let value = value(&mut b);
     let mut cache = CodegenCache::default();
-    let sites = std::cell::RefCell::new(AllocSites::declare(&mut module).expect("declare the site counters"));
+    let sites = std::cell::RefCell::new(SiteTable::declare(&mut module).expect("declare the site counters"));
     let scope = SiteScope {
         sites: &sites,
         function: "test",
@@ -122,7 +122,7 @@ fn an_extern_called_and_addressed_in_one_function_is_called_near_and_addressed_f
     let entry = b.create_block();
     b.switch_to_block(entry);
     let mut cache = CodegenCache::default();
-    let sites = std::cell::RefCell::new(AllocSites::declare(&mut module).expect("declare the site counters"));
+    let sites = std::cell::RefCell::new(SiteTable::declare(&mut module).expect("declare the site counters"));
     let scope = SiteScope {
         sites: &sites,
         function: "test",

@@ -722,9 +722,10 @@ stored artifacts.
 The JSON projection of `native_program.list_retention` reports
 `construction_count` (List instructions with a retained source) and
 `physical_capture_count` (actual physical source capture lanes). Destructuring
-alone counts as neither. Runtime process-exit fields are
-`list_retention_attempts` and `list_retention_hits`; a hit includes unchanged
-identity retention as well as guarded rewriting.
+alone counts as neither. What ran is reported by the `fz.runtime.reuse_site`
+events (see [runtime-telemetry](runtime-telemetry.md#fzruntimereuse_site)):
+a site's hits include unchanged identity retention as well as guarded
+rewriting.
 
 `work_graph.applied` carries raw `World` and `JobCompletion`; its handlers read
 the job and applied step, including changed facts, movements, wakes, and waits.

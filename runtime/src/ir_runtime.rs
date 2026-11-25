@@ -42,6 +42,7 @@ use crate::module_name::STRUCT_MODULE_FIELD;
 use crate::park::{ParkRecord, ReceiveSite};
 use crate::process::Process;
 use crate::resource::{ResourceHandle, ResourceStub, alloc_resource};
+use crate::reuse_site::RuntimeReuseSite;
 use crate::sched::{ReceiveStep, reach_receive};
 use crate::scheduler_hooks::YIELD_PTR;
 use crate::term::{NumericMode, TermComparator};
@@ -1965,7 +1966,7 @@ pub extern "C" fn fz_tuple_put(process: *mut Process, tuple_ref_word: u64, index
         return nil_atom_ref().raw_word();
     };
     let layout = SlotLayout::of(arity);
-    let copy_word = fz_struct_copy(process, tuple_ref_word, arity as u32);
+    let copy_word = copy_struct_counted(process, tuple_ref_word, arity as u32, RuntimeReuseSite::TupleCopy);
     let stored = Stored::of(AnyValue::from_ref(value).expect("fz_tuple_put value"));
     fz_struct_store_ref(
         process,
@@ -2211,13 +2212,14 @@ pub extern "C" fn fz_list_reuse_or_cons_parts(
     }
     .value("fz_list_reuse_or_cons_parts tail");
     let process = unsafe { &mut *process };
-    process.list_retention_attempts = process.list_retention_attempts.saturating_add(1);
     let result = process
         .heap
         .reuse_or_alloc_list_cons_raw_kind(list, head_raw, head_kind, tail, may_rewrite != 0)
         .expect("fz_list_reuse_or_cons_parts");
     if result == list {
-        process.list_retention_hits = process.list_retention_hits.saturating_add(1);
+        process.node.runtime_reuses.hit(RuntimeReuseSite::ListReuse);
+    } else {
+        process.node.runtime_reuses.miss(RuntimeReuseSite::ListReuse);
     }
     result.raw_word()
 }
@@ -2227,11 +2229,16 @@ pub extern "C" fn fz_list_reuse_or_cons_parts(
 /// replaces next, in place, before anything can read it.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_struct_copy(process: *mut Process, struct_ref_word: u64, fields: u32) -> u64 {
+    copy_struct_counted(process, struct_ref_word, fields, RuntimeReuseSite::StructCopy)
+}
+
+/// The copy `site` is the miss of.
+fn copy_struct_counted(process: *mut Process, struct_ref_word: u64, fields: u32, site: RuntimeReuseSite) -> u64 {
     let object = any_value_ref_from_word(struct_ref_word, "fz_struct_copy")
         .struct_addr()
         .expect("fz_struct_copy");
     let process = unsafe { &mut *process };
-    process.struct_retention_attempts = process.struct_retention_attempts.saturating_add(1);
+    process.node.runtime_reuses.miss(site);
     let copy = unsafe {
         process
             .heap
@@ -2255,13 +2262,12 @@ pub extern "C" fn fz_struct_reuse_or_copy(
         .struct_addr()
         .expect("fz_struct_reuse_or_copy");
     if may_rewrite == 0 || unsafe { struct_is_shared(object) } {
-        return fz_struct_copy(process, struct_ref_word, fields);
+        return copy_struct_counted(process, struct_ref_word, fields, RuntimeReuseSite::StructReuse);
     }
     let process = unsafe { &mut *process };
     // A collection shares every struct it keeps, so an unshared one is young.
     process.heap.assert_written_object_is_young(object);
-    process.struct_retention_attempts = process.struct_retention_attempts.saturating_add(1);
-    process.struct_retention_hits = process.struct_retention_hits.saturating_add(1);
+    process.node.runtime_reuses.hit(RuntimeReuseSite::StructReuse);
     struct_ref_word
 }
 

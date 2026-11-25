@@ -6,10 +6,10 @@ use super::*;
 use crate::ir_codegen::backend::{Backend, JitBackend};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::{Linkage, Module};
-use fz_runtime::alloc_site::AllocSites as RuntimeAllocSites;
 use fz_runtime::heap::{AllocStat, HeapAllocStats, INLINE_ALLOC_LAYOUT, SchemaRegistry};
 use fz_runtime::pinned_abi;
 use fz_runtime::process::{DEFAULT_REDUCTIONS_PER_QUANTUM, Node, Process};
+use fz_runtime::site_table::SiteTable as RuntimeSiteTable;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -44,7 +44,7 @@ fn one_placement(kind: HeapAllocKind, size: usize) -> (Process, *const u8, JitBa
     sig.params = vec![ir::AbiParam::new(types::I64)];
     sig.returns = vec![ir::AbiParam::new(types::I64)];
     ctx.func.signature = sig.clone();
-    let sites = RefCell::new(AllocSites::declare(module).expect("declare the site counters"));
+    let sites = RefCell::new(SiteTable::declare(module).expect("declare the site counters"));
     {
         let mut b = FunctionBuilder::new(&mut ctx.func, &mut fbctx);
         let entry = b.create_block();
@@ -71,7 +71,7 @@ fn one_placement(kind: HeapAllocKind, size: usize) -> (Process, *const u8, JitBa
     let code = module.get_finalized_function(id);
     let (counts, _) = module.get_finalized_data(counts_id);
     let node = Rc::new(Node::empty());
-    node.register_alloc_sites(unsafe { RuntimeAllocSites::new(registered, counts.cast_mut().cast()) });
+    node.register_sites(unsafe { RuntimeSiteTable::new(registered, counts.cast_mut().cast()) });
     let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
     let process = Process::with_node(node, schemas, 0, DEFAULT_REDUCTIONS_PER_QUANTUM);
     (process, code, backend)
