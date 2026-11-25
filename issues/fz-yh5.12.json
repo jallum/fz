@@ -10,6 +10,12 @@
   "id": "fz-yh5.12",
   "labels": [],
   "parent": "fz-yh5",
+  "comments": [
+    {
+      "text": "Reopened, 2026-11-25. #901 (cd18bf4ab) combined with #903 (aae3f942b) breaks develop: fixtures 01199, 01366 and 01373 fail on interp, run and build with type/return-did-not-converge for Macro.escape_list/1 (seen on #907's CI and reproduced by BH on a clean cd18bf4ab). #901's CI ran without #903 beneath it. The user decided to revert #901 now. C2 re-lands on top of #903 with convergence fixed.",
+      "timestamp": "2026-11-25T12:08:59Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "or and not in a guard are matrix rows and miss edges",
