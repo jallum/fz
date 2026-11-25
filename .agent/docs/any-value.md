@@ -473,7 +473,7 @@ the from-space range walk as a cross-check (`FromSpace::assert_classified`,
 an old block a minor collection leaves, a tagged one must lie in no heap block,
 and none may lie in to-space. No allocation or mutator path tests an address.
 
-One `Tracer` (from-space, heap, schemas, the heap's worklist of copied objects, the caller's stats slot) is
+One `Tracer` (from-space, heap, schemas, the heap's worklist of copied objects) is
 the collection's context, and `Tracer::forward(word, kind)` is its one
 forwarding primitive. The pair is a stored word (address and literal bit) and
 its kind. A non-heap kind, a null address and an object `moves` rejects come
@@ -1014,7 +1014,10 @@ counts each binary it marks in `binaries_shared`, reported on
 ## GC: Roots, Edges, And Lifetime
 
 The process heap is a moving, generational Cheney collector
-(`runtime/src/heap/gc/`). Blocks have an age: the tip and the blocks allocation
+(`runtime/src/heap/gc/`). The copy keeps no per-object counter: once the scan
+finishes, `copied_bytes` is the fill of to-space (the fresh tip plus the blocks the
+copy parked, `Heap::young_bytes`) and `copied_objects` is the worklist length plus
+the scalar boxes the roots copied. Blocks have an age: the tip and the blocks allocation
 has parked since the last collection, and the blocks a graft brought, are young;
 blocks a collection filled with survivors are old. A minor collection copies the
 reachable objects of the young blocks into fresh blocks, which become old, and
