@@ -630,7 +630,7 @@ fn declare_spec_fns<M: cranelift_module::Module>(
 /// symbol; the bodies are emitted in a post-fn-loop pass.
 type ReceiveDispatchFnIds = HashMap<(u32, u32), ReceiveFns>;
 type ReceiveMatchedSites = Vec<(FnId, BlockId)>;
-type MidFlightContFnIds = HashMap<(u32, Vec<MidFlightArgShape>), FuncId>;
+type MidFlightContFnIds = HashMap<(u32, Vec<MidFlightArgShape>), MidFlightFns>;
 
 fn declare_receive_dispatch_fns<M: cranelift_module::Module>(
     m: &mut M,
@@ -736,9 +736,10 @@ fn emit_mid_flight_cont_bodies<M: cranelift_module::Module>(
     fbctx: &mut FunctionBuilderContext,
     sites: &RefCell<AllocSites>,
     fn_ids: &HashMap<u32, FuncId>,
-    mid_flight_cont_tail_fn_ids: &HashMap<(u32, Vec<MidFlightArgShape>), FuncId>,
+    mid_flight_cont_tail_fn_ids: &MidFlightContFnIds,
 ) -> Result<(), CodegenError> {
-    for ((callee_sid, arg_shapes), tail_id) in mid_flight_cont_tail_fn_ids {
+    for ((callee_sid, arg_shapes), fns) in mid_flight_cont_tail_fn_ids {
+        let (tail_id, yield_stub) = (&fns.resume, &fns.yield_stub);
         let callee_fid = *fn_ids
             .get(callee_sid)
             .ok_or_else(|| CodegenError::new(format!("missing callee FuncId {callee_sid}")))?;
@@ -788,19 +789,21 @@ fn emit_mid_flight_cont_bodies<M: cranelift_module::Module>(
             cg.b.ins().return_call_indirect(sig_ref, fn_ptr, &args);
         })
         .map_err(|e| CodegenError::new(format!("define {}: {}", tail_name, e)))?;
+        define_back_edge_yield_stub(m, fbctx, sites, *callee_sid, arg_shapes, *yield_stub, *tail_id)
+            .map_err(|e| CodegenError::new(format!("define yield stub for {callee_sid}: {e}")))?;
     }
     Ok(())
 }
 
-/// Declare the Tail-CC continuation for every back-edge TailCall to a
-/// native callee. The native codegen surface precomputes the unique
+/// Declare the Tail-CC continuation and the yield stub for every back-edge
+/// TailCall to a native callee. The native codegen surface precomputes the unique
 /// `(callee_sid, arg_shapes)` keys; compiler2 native codegen only declares the
 /// actual functions.
 fn declare_mid_flight_conts<M: cranelift_module::Module>(
     m: &mut M,
     surface: &NativeCodegenSurface<'_>,
 ) -> Result<MidFlightContFnIds, CodegenError> {
-    let mut mid_flight_cont_tail_fn_ids: HashMap<(u32, Vec<MidFlightArgShape>), FuncId> = HashMap::default();
+    let mut mid_flight_cont_tail_fn_ids: MidFlightContFnIds = HashMap::default();
     for key in &surface.mid_flight_cont_keys {
         let callee_sid = key.0;
         let cont_name = format!(
@@ -814,7 +817,21 @@ fn declare_mid_flight_conts<M: cranelift_module::Module>(
         let cont_id = m
             .declare_function(&cont_name, Linkage::Local, &cont_sig)
             .map_err(|e| CodegenError::new(format!("declare {}: {}", cont_name, e)))?;
-        mid_flight_cont_tail_fn_ids.insert(key.clone(), cont_id);
+        let stub_name = format!(
+            "fz_back_edge_yield_{}_{}",
+            callee_sid,
+            mid_flight_cont_tail_fn_ids.len()
+        );
+        let stub_id = m
+            .declare_function(&stub_name, Linkage::Local, &back_edge_yield_stub_signature(&key.1))
+            .map_err(|e| CodegenError::new(format!("declare {}: {}", stub_name, e)))?;
+        mid_flight_cont_tail_fn_ids.insert(
+            key.clone(),
+            MidFlightFns {
+                resume: cont_id,
+                yield_stub: stub_id,
+            },
+        );
     }
     Ok(mid_flight_cont_tail_fn_ids)
 }
