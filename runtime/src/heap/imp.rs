@@ -1563,32 +1563,6 @@ impl Heap {
         )
     }
 
-    pub fn read_struct_named_field_ref(
-        &self,
-        obj: AnyValueRef,
-        field_name: &str,
-    ) -> Result<AnyValueRef, AnyValueRefError> {
-        let addr = obj.struct_addr()?;
-        let schema_id = unsafe { struct_schema_id(addr as *const u8) };
-        let field_offset = {
-            let schemas = self.schemas.borrow();
-            let schema = schemas.get(schema_id);
-            schema
-                .fields
-                .iter()
-                .find(|field| field.name.as_deref() == Some(field_name))
-                .unwrap_or_else(|| {
-                    panic!(
-                        "schema {} has no field named {}",
-                        schema.identity.display_name(),
-                        field_name
-                    )
-                })
-                .offset
-        };
-        self.read_struct_field_ref(obj, field_offset)
-    }
-
     pub fn read_closure_capture_ref(&self, closure: AnyValueRef, idx: usize) -> Result<AnyValueRef, AnyValueRefError> {
         closure_capture_ref(closure, idx)
     }
