@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-mue.66"
+  ],
   "created": "2026-11-25T04:15:34Z",
   "description": "From: Elixir Parity (proposal); wording by Coordinator. User-approved 2026-11-24.\n\nEvidence: .agent/docs/exceptions.md:90 says reraise(exception, stacktrace) is panic(exception), because fz carries no stacktraces and the second argument is accepted and ignored. exceptions.md:394 says __STACKTRACE__ binds to the empty list in rescue and catch clauses, where Elixir's holds the stacktrace.\n\nDone when: an oracle fixture rescues inside a call chain and reads {module, function, arity, location} entries that match Elixir on interp, run and build.",
   "id": "fz-mue.65",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "A raised exception carries a stacktrace, and __STACKTRACE__ reads it, as in Elixir",
   "type": "feature",
-  "updated_at": "2026-11-25T04:15:34Z"
+  "updated_at": "2026-11-25T04:15:35Z"
 }
