@@ -39,7 +39,7 @@ fn heap_value(bits: u64) -> AnyValue {
 }
 
 #[test]
-fn mixed_numbers_order_exactly_before_strict_kind_ties() {
+fn widening_orders_an_integer_and_a_float_by_value_exactly() {
     let schemas = SchemaRegistry::new();
     let node = Node::empty();
     let comparator = TermComparator::new(&node, &schemas);
@@ -51,26 +51,40 @@ fn mixed_numbers_order_exactly_before_strict_kind_ties() {
         (0, -0.5, Ordering::Greater),
         (i64::MAX, 9_223_372_036_854_775_808.0, Ordering::Less),
         (i64::MIN, -9_223_372_036_854_777_856.0, Ordering::Greater),
+        (1, 1.0, Ordering::Equal),
     ] {
-        for mode in [NumericMode::Strict, NumericMode::Widening] {
+        assert_eq!(
+            comparator.compare(AnyValue::int(integer), AnyValue::float(float), NumericMode::Widening),
+            expected
+        );
+        assert_eq!(
+            comparator.compare(AnyValue::float(float), AnyValue::int(integer), NumericMode::Widening),
+            expected.reverse()
+        );
+    }
+}
+
+/// Intent: map key order puts every integer before every float, as OTP
+/// documents, however the values compare: `10` sorts below `-1.0`.
+#[test]
+fn strict_orders_every_integer_before_every_float() {
+    let schemas = SchemaRegistry::new();
+    let node = Node::empty();
+    let comparator = TermComparator::new(&node, &schemas);
+    for integer in [i64::MIN, -7, 0, 1, 10_000_000_000, i64::MAX] {
+        for float in [-1.5e300, -1.5, -0.0, 0.0, 1.0, 2.5, 9_223_372_036_854_775_808.0] {
             assert_eq!(
-                comparator.compare(AnyValue::int(integer), AnyValue::float(float), mode),
-                expected
+                comparator.compare(AnyValue::int(integer), AnyValue::float(float), NumericMode::Strict),
+                Ordering::Less,
+                "{integer} vs {float}"
             );
             assert_eq!(
-                comparator.compare(AnyValue::float(float), AnyValue::int(integer), mode),
-                expected.reverse()
+                comparator.compare(AnyValue::float(float), AnyValue::int(integer), NumericMode::Strict),
+                Ordering::Greater,
+                "{float} vs {integer}"
             );
         }
     }
-    assert_eq!(
-        comparator.compare(AnyValue::int(1), AnyValue::float(1.0), NumericMode::Strict),
-        Ordering::Less
-    );
-    assert_eq!(
-        comparator.compare(AnyValue::int(1), AnyValue::float(1.0), NumericMode::Widening),
-        Ordering::Equal
-    );
 }
 
 fn tuple(heap: &mut Heap, schema: u32, value: AnyValue) -> AnyValue {
@@ -109,7 +123,7 @@ fn lookup_by_the_retained_dag_key_does_no_structural_walk() {
 }
 
 #[test]
-fn nested_map_keys_keep_exact_numeric_order_above_float_integer_precision() {
+fn nested_map_keys_put_an_integer_before_a_float_even_above_float_integer_precision() {
     let mut registry = SchemaRegistry::new();
     let schema = registry.register(Schema::tuple_of_arity(1));
     let registry = Rc::new(RefCell::new(registry));
@@ -121,8 +135,8 @@ fn nested_map_keys_keep_exact_numeric_order_above_float_integer_precision() {
     assert_eq!(unsafe { map_count(addr) }, 2);
     assert_eq!(
         unsafe { map_entry(addr, 0).1 },
-        AnyValue::int(2),
-        "nested keys use exact numeric order"
+        AnyValue::int(1),
+        "nested keys put the integer before the float"
     );
 }
 
@@ -375,8 +389,8 @@ fn a_reference_and_a_pid_sort_between_atoms_and_tuples() {
     let registry = schemas.borrow();
     let cmp = TermComparator::new(&node, &registry);
     let ascending = [
-        AnyValue::float(1.5),
         AnyValue::int(i64::MAX),
+        AnyValue::float(1.5),
         AnyValue::atom(0),
         AnyValue::Opaque(ValueKind::REF, 1),
         AnyValue::Opaque(ValueKind::REF, 2),
@@ -725,7 +739,8 @@ fn key_order_of(cmp: &TermComparator, a: AnyValue, b: AnyValue) -> Ordering {
 }
 
 /// Intent: a map orders its keys from the words and kinds it stores, and that
-/// order is the strict term order, for every pair of kinds.
+/// order is the strict term order, for every pair of kinds: every integer
+/// before every float.
 #[test]
 fn key_order_on_stored_words_is_the_strict_term_order() {
     let mut pool = Pool::mixed();
@@ -754,6 +769,14 @@ fn key_order_on_stored_words_is_the_strict_term_order() {
             );
         }
     }
+    assert_eq!(
+        key_order_of(&cmp, AnyValue::int(10_000_000_000), AnyValue::float(-1.5)),
+        Ordering::Less
+    );
+    assert_eq!(
+        key_order_of(&cmp, AnyValue::float(-1.5), AnyValue::int(-7)),
+        Ordering::Greater
+    );
 }
 
 /// Intent: a key met again as the very word a map stores is equal without

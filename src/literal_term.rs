@@ -1,7 +1,7 @@
 //! A value written out in full.
 
 use crate::ast::{CallableName, Expr, ModuleTarget, Spanned};
-use crate::ground_value::GroundValue;
+use crate::ground_value::{GroundValue, entries_in_atom_key_order};
 use crate::source::Span;
 use fz_runtime::module_name::ModuleName;
 
@@ -38,17 +38,12 @@ impl LiteralTerm {
     }
 
     /// A map literal's entries in the runtime's key order with no key
-    /// repeated, when every key is an atom. Atoms order by name, and of two
-    /// entries with one key the later one written is the one the map holds.
+    /// repeated, when every key is an atom.
     pub fn entries_in_key_order(entries: &[(LiteralTerm, LiteralTerm)]) -> Option<Vec<&(LiteralTerm, LiteralTerm)>> {
-        let mut by_name = std::collections::BTreeMap::new();
-        for entry in entries {
-            let Self::Ground(GroundValue::Atom(name)) = &entry.0 else {
-                return None;
-            };
-            by_name.insert(name.as_str(), entry);
-        }
-        Some(by_name.into_values().collect())
+        entries_in_atom_key_order(entries.iter().map(|entry| match &entry.0 {
+            Self::Ground(key) => (Some(key), entry),
+            _ => (None, entry),
+        }))
     }
 
     /// `expr` as a literal term, or `None` when it computes or names anything.

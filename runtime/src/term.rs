@@ -461,20 +461,17 @@ pub(crate) fn field_value(schema: &Schema, object: *const u8, index: usize) -> A
     .expect("published field")
 }
 
+/// Two numbers in `mode`. `Widening` orders an integer and a float by value.
+/// `Strict` is the order of map keys, which tells `1` from `1.0`: every
+/// integer sorts before every float.
 fn number_cmp(a: AnyValue, b: AnyValue, mode: NumericMode) -> Ordering {
     match (a, b) {
         (AnyValue::Int(a), AnyValue::Int(b)) => a.cmp(&b),
         (AnyValue::Float(a), AnyValue::Float(b)) => float_cmp(f64::from_bits(a), f64::from_bits(b), mode),
-        (AnyValue::Int(a), AnyValue::Float(b)) => match mode {
-            NumericMode::Strict => compare_int_float(a, f64::from_bits(b)).then(Ordering::Less),
-            NumericMode::Widening => compare_int_float(a, f64::from_bits(b)),
-        },
-        (AnyValue::Float(a), AnyValue::Int(b)) => match mode {
-            NumericMode::Strict => compare_int_float(b, f64::from_bits(a))
-                .reverse()
-                .then(Ordering::Greater),
-            NumericMode::Widening => compare_int_float(b, f64::from_bits(a)).reverse(),
-        },
+        (AnyValue::Int(_), AnyValue::Float(_)) if mode == NumericMode::Strict => Ordering::Less,
+        (AnyValue::Float(_), AnyValue::Int(_)) if mode == NumericMode::Strict => Ordering::Greater,
+        (AnyValue::Int(a), AnyValue::Float(b)) => compare_int_float(a, f64::from_bits(b)),
+        (AnyValue::Float(a), AnyValue::Int(b)) => compare_int_float(b, f64::from_bits(a)).reverse(),
         _ => unreachable!("a number is an integer or a float"),
     }
 }
