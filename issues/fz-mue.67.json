@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-25T12:04:39Z",
+  "description": "From: Elixir Parity. User decision on fz-nhb.15 (defguard): \"Faithful, as 3 tickets\" (relayed 2026-11-25).\n\nEvidence: `quote do defmacro f(x), do: x end` gives \"unsupported expression prefix … Defmacro\". It is the same gap that fz-mue.43 commit 1 (#893) closed for import, alias and require. Kernel.Utils.defguard emits a defmacro from a macro.\n\nDone when: defmacro and defmacrop parse in expression position, a macro can emit one, and an oracle fixture matches Elixir on interp, run and build.",
+  "id": "fz-mue.67",
+  "labels": [],
+  "parent": "fz-mue",
+  "priority": 2,
+  "status": "open",
+  "title": "defmacro and defmacrop parse in expression position, so a macro can emit one, as in Elixir",
+  "type": "feature",
+  "updated_at": "2026-11-25T12:04:39Z"
+}
