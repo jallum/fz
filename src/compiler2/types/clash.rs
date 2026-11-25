@@ -1,12 +1,14 @@
 //! Clash folding: a type that repeats itself folds at the point it grew.
 //!
 //! Van Hentenryck, Cortesi and Le Charlier (PLDI'94): compare a slot's previous
-//! iterate with `old ∪ new` node by node, in correspondence. A node CLASHES when
-//! its set of principal functors grew; when an ancestor's principal functors
-//! already cover it, the type has repeated itself and the clash becomes a back
-//! edge to that ancestor, which takes the node's values in. A node whose values
-//! were already the ancestor's is a cycle; otherwise it is a replacement, and
-//! the ancestor grows by the node. The result is a recursive type.
+//! iterate with `old ∪ new` node by node, in correspondence. A slot whose new
+//! value holds a constructor an ancestor's previous iterate already holds, and
+//! whose whole value (old and new) lies inside that ancestor's joined members,
+//! has repeated the ancestor: it becomes a back edge to it, which takes the
+//! slot's values in. A slot value that does not lie wholly inside the ancestor
+//! is ordinary growth, and so is a slot that gains only the empty list. A node whose values were already the ancestor's is a
+//! cycle; otherwise it is a replacement, and the ancestor grows by the node.
+//! The result is a recursive type.
 //!
 //! Detection is a read-only walk over interned descriptors. It builds a `Plan`
 //! (paths to fold) and interns nothing; only a non-empty plan interns, and then
@@ -15,7 +17,7 @@
 //!
 //! A recursive type met on the walk is already its own fixpoint, so the walk
 //! enters only the other members of a node. Growth is judged on those members
-//! too, and a recursive member does not count as covering a neighbour: tuple
+//! too, and a recursive member does not absorb a neighbour: tuple
 //! slots gather the members of every rectangle, so a finite tree lying within
 //! a recursive tree from another rectangle has still grown in its own.
 
@@ -24,14 +26,14 @@ use std::rc::Rc;
 use super::MapKey;
 use super::descr::Descr;
 use super::{Ty, TypeVarId, Types, is_struct_module_key};
-use crate::fast_hash::HashMap;
+use crate::fast_hash::{HashMap, HashSet};
 
 /// Whether the folded node's values lie inside the ancestor's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ClashKind {
     /// The node's values are among the ancestor's: the type came back to it.
     Cycle,
-    /// The ancestor covers the node's functors but not all of its values.
+    /// The node's values reach beyond the ancestor's, and the ancestor takes them in.
     Replace,
 }
 
@@ -45,7 +47,7 @@ impl ClashKind {
 }
 
 /// One fold that fired: the slot path from the root, and how far up the
-/// covering ancestor sits.
+/// ancestor the slot returns to sits.
 #[derive(Clone, Debug)]
 pub(crate) struct ClashFold {
     pub path: Vec<u16>,
@@ -75,23 +77,14 @@ enum Head {
 /// A node's principal-functor view: the non-constructor part, and per head the
 /// children of each slot across every clause with that head.
 struct Pf {
-    leaf: Descr,
     heads: Vec<(Head, Vec<Vec<Ty>>)>,
 }
 
 impl Pf {
     fn of(types: &Types, set: &[Ty]) -> Pf {
-        let cx = types.ctx();
-        let mut leaf = Descr::none();
         let mut heads: Vec<(Head, Vec<Vec<Ty>>)> = Vec::new();
         for ty in set {
             let d = types.descr(ty);
-            let mut l = d.clone();
-            l.tuples.clear();
-            l.lists.clear();
-            l.resources.clear();
-            l.maps.clear();
-            leaf = leaf.union(cx, &l);
             for conj in &d.tuples {
                 for sig in &conj.pos {
                     for head in tuple_heads(types, &sig.elems) {
@@ -124,27 +117,12 @@ impl Pf {
                 }
             }
         }
-        Pf { leaf, heads }
+        Pf { heads }
     }
 
     fn slots(&self, head: &Head) -> Option<&Vec<Vec<Ty>>> {
         self.heads.iter().find(|(h, _)| h == head).map(|(_, s)| s)
     }
-
-    /// `other`'s principal functors are all among ours. A tagged tuple head is
-    /// among ours when we hold it or the untagged head of its arity.
-    fn covers(&self, types: &Types, other: &Pf) -> bool {
-        let holds = |h: &Head| {
-            self.slots(h).is_some()
-                || matches!(h, Head::Tuple(arity, _) if self.slots(&Head::Tuple(*arity, None)).is_some())
-        };
-        other.leaf.is_subtype(types.ctx(), &self.leaf) && other.heads.iter().all(|(h, _)| holds(h))
-    }
-}
-
-/// The node's principal functors grew past the previous iterate's.
-fn grew(types: &Types, old: &Pf, new: &Pf) -> bool {
-    !new.leaf.is_subtype(types.ctx(), &old.leaf) || new.heads.iter().any(|(h, _)| old.slots(h).is_none())
 }
 
 fn add(heads: &mut Vec<(Head, Vec<Vec<Ty>>)>, head: Head, kids: Vec<Option<Ty>>) {
@@ -187,7 +165,10 @@ fn atom_only(types: &Types, ty: &Ty) -> Option<Ty> {
 /// What to do at one slot: fold it, or look further down.
 #[derive(Clone)]
 enum Cut {
-    Fold(ClashKind, usize),
+    Fold(ClashKind, usize, Rc<[Ty]>),
+    /// The slot holds a flat closed member that its own equation has outgrown:
+    /// the slot becomes an equation of its own, taking the member's body in.
+    Reopen(Rc<[Ty]>),
     Below(Rc<Plan>),
 }
 
@@ -201,7 +182,6 @@ struct Plan {
 struct Frame {
     members: Vec<Ty>,
     olds: Vec<Ty>,
-    pf: Pf,
 }
 
 struct Walk<'a> {
@@ -210,16 +190,15 @@ struct Walk<'a> {
     seen: HashMap<(Vec<Ty>, Vec<Ty>, usize), Option<Cut>>,
     path: Vec<u16>,
     folds: Vec<ClashFold>,
+    empty: Ty,
 }
 
 impl Walk<'_> {
     fn descend(&mut self, olds: &[Ty], news: &[Ty], po: &Pf, pn: &Pf) -> Rc<Plan> {
         let members: Vec<Ty> = olds.iter().chain(news).copied().collect();
-        let joined = Pf::of(self.types, &members);
         self.frames.push(Frame {
             members,
             olds: olds.to_vec(),
-            pf: joined,
         });
         let mut plan = Plan::default();
         for (head, new_slots) in &pn.heads {
@@ -245,7 +224,7 @@ impl Walk<'_> {
                 !types.is_empty(n)
                     && !os
                         .iter()
-                        .any(|o| !types.is_recursive_member(o) && types.is_subtype(n, o))
+                        .any(|o| !types.is_recursive_member(o) && self.holds_but_for_empty(n, o))
             })
             .collect();
         let olds: Vec<Ty> = os.iter().copied().filter(|o| !types.is_empty(o)).collect();
@@ -254,7 +233,7 @@ impl Walk<'_> {
         }
         let key = (olds, live, self.frames.len());
         if let Some(cut) = self.seen.get(&key).cloned() {
-            if let Some(Cut::Fold(kind, depth)) = &cut {
+            if let Some(Cut::Fold(kind, depth, _)) = &cut {
                 self.folds.push(ClashFold {
                     path: self.path.clone(),
                     kind: *kind,
@@ -268,48 +247,74 @@ impl Walk<'_> {
         cut
     }
 
+    /// `new` lies inside `old`, or inside `old` together with the empty list.
+    fn holds_but_for_empty(&self, new: &Ty, old: &Ty) -> bool {
+        let types = self.types;
+        let cx = types.ctx();
+        let with_empty = types.descr(old).union(cx, types.descr(&self.empty));
+        types.is_subtype(new, old) || types.descr(new).is_subtype(cx, &with_empty)
+    }
+
+    /// The innermost ancestor frame whose old members hold a live child of
+    /// the slot, and whose joined members hold the whole slot value.
+    fn returned_ancestor(&self, olds: &[Ty], live: &[Ty]) -> Option<usize> {
+        let types = self.types;
+        self.frames.iter().rposition(|f| {
+            let returned = live
+                .iter()
+                .any(|n| types.descr(n).has_constructors() && f.olds.iter().any(|o| types.is_subtype(n, o)));
+            returned
+                && olds
+                    .iter()
+                    .chain(live)
+                    .all(|n| f.members.iter().any(|m| types.is_subtype(n, m)))
+        })
+    }
+
     fn judge(&mut self, olds: &[Ty], live: &[Ty]) -> Option<Cut> {
         let types = self.types;
+        if let Some(depth) = self.returned_ancestor(olds, live) {
+            let members: Vec<Ty> = olds.iter().chain(live).copied().collect();
+            let kind = self.kind(&members, &self.frames[depth].members);
+            self.folds.push(ClashFold {
+                path: self.path.clone(),
+                kind,
+                ancestor_depth: depth,
+            });
+            return Some(Cut::Fold(kind, depth, self.frames[depth].olds.as_slice().into()));
+        }
+        let reopened: Vec<Ty> = olds
+            .iter()
+            .copied()
+            .filter(|o| types.is_recursive_member(o) && live.iter().any(|n| n != o && types.mentions(n, o)))
+            .filter(|o| !types.has_nested_member(o) && self.no_new_head(o, live))
+            .collect();
+        if !reopened.is_empty() {
+            self.folds.push(ClashFold {
+                path: self.path.clone(),
+                kind: ClashKind::Replace,
+                ancestor_depth: self.frames.len(),
+            });
+            return Some(Cut::Reopen(reopened.as_slice().into()));
+        }
         let walked = |set: &[Ty]| -> Vec<Ty> {
             set.iter()
                 .copied()
                 .filter(|ty| !types.is_recursive_member(ty))
                 .collect()
         };
-        let (walked_olds, walked_live) = (walked(olds), walked(live));
-        let repeated = self.repeated_ancestor(live);
-        if walked_live.is_empty() && repeated.is_none() {
-            return None;
-        }
-        let (po, pn) = (Pf::of(types, &walked_olds), Pf::of(types, &walked_live));
-        if repeated.is_none() && !grew(types, &po, &pn) {
-            let sub = self.descend(olds, live, &po, &pn);
-            return (!sub.cuts.is_empty()).then_some(Cut::Below(sub));
-        }
-        let members: Vec<Ty> = olds.iter().chain(live).copied().collect();
-        let here = Pf::of(types, &members);
-        let depth = match repeated {
-            Some(depth) => depth,
-            None => self.frames.iter().rposition(|f| f.pf.covers(types, &here))?,
-        };
-        let kind = self.kind(&members, &self.frames[depth].members);
-        self.folds.push(ClashFold {
-            path: self.path.clone(),
-            kind,
-            ancestor_depth: depth,
-        });
-        Some(Cut::Fold(kind, depth))
+        let (po, pn) = (Pf::of(types, &walked(olds)), Pf::of(types, &walked(live)));
+        let sub = self.descend(olds, live, &po, &pn);
+        (!sub.cuts.is_empty()).then_some(Cut::Below(sub))
     }
 
-    /// The innermost ancestor whose previous iterate already holds a recursive
-    /// member the slot gains: the slot's type has come back to that ancestor,
-    /// whatever its heads say.
-    fn repeated_ancestor(&self, live: &[Ty]) -> Option<usize> {
+    /// Every principal functor `live` holds besides `member` is one `member`'s own equation has.
+    fn no_new_head(&self, member: &Ty, live: &[Ty]) -> bool {
         let types = self.types;
-        self.frames.iter().rposition(|f| {
-            live.iter()
-                .any(|n| types.is_recursive_member(n) && f.olds.iter().any(|o| types.is_subtype(n, o)))
-        })
+        let own = Pf::of(types, &[*member]);
+        let others: Vec<Ty> = live.iter().copied().filter(|n| n != member).collect();
+        let theirs = Pf::of(types, &others);
+        theirs.heads.iter().all(|(h, _)| own.slots(h).is_some())
     }
 
     fn kind(&self, node: &[Ty], ancestor: &[Ty]) -> ClashKind {
@@ -323,6 +328,51 @@ impl Walk<'_> {
         } else {
             ClashKind::Replace
         }
+    }
+}
+
+impl Types {
+    /// Some recursive member lies inside `ty` other than `ty` itself.
+    pub(super) fn has_nested_member(&self, ty: &Ty) -> bool {
+        let children = self.descr(ty).children().map(|(c, _)| c).collect();
+        self.reaches(children, |t| t != *ty && self.is_recursive_member(&t), |t| t != *ty)
+    }
+
+    /// `ty` reaches `member` without passing through another recursive member.
+    pub(super) fn mentions(&self, ty: &Ty, member: &Ty) -> bool {
+        self.reaches(
+            vec![*ty],
+            |t| t == *member,
+            |t| t == *ty || !self.is_recursive_member(&t),
+        )
+    }
+
+    /// Some type reachable from `start` satisfies `hit`, walking only through types that satisfy `enter`.
+    fn reaches(&self, start: Vec<Ty>, hit: impl Fn(Ty) -> bool, enter: impl Fn(Ty) -> bool) -> bool {
+        let mut seen = HashSet::default();
+        let mut stack = start;
+        while let Some(t) = stack.pop() {
+            if hit(t) {
+                return true;
+            }
+            if seen.insert(t) && enter(t) {
+                stack.extend(self.descr(&t).children().map(|(c, _)| c));
+            }
+        }
+        false
+    }
+
+    /// `ty` with every occurrence of `members` replaced by `var`; `open` keeps `ty`'s own top node.
+    pub(super) fn replace_members(&mut self, ty: Ty, members: &[Ty], var: Ty, open: bool) -> Ty {
+        if !open && members.contains(&ty) {
+            return var;
+        }
+        if !open && self.is_recursive_member(&ty) {
+            return ty;
+        }
+        let mut d = self.descr(&ty).clone();
+        d.map_children(&mut |child, _| self.replace_members(child, members, var, false));
+        self.intern(d)
     }
 }
 
@@ -352,7 +402,7 @@ impl Types {
     }
 
     /// Fold `new` where it clashes with the previous iterate `old` under an
-    /// ancestor that already covers it. `None` (and nothing interned) when no
+    /// ancestor that already holds its whole value. `None` (and nothing interned) when no
     /// slot clashes. Each fold that fires is noted for
     /// [`Types::take_clash_folds`].
     pub(crate) fn clash_fold(&mut self, old: Ty, new: Ty) -> Option<Ty> {
@@ -362,17 +412,16 @@ impl Types {
         if self.is_empty(&old) || self.is_empty(&new) || self.is_subtype(&new, &old) {
             return None;
         }
+        let empty = self.empty_list();
         let mut walk = Walk {
             types: self,
             frames: Vec::new(),
             seen: HashMap::default(),
             path: Vec::new(),
             folds: Vec::new(),
+            empty,
         };
         let (po, pn) = (Pf::of(walk.types, &[old]), Pf::of(walk.types, &[new]));
-        if grew(walk.types, &po, &pn) {
-            return None;
-        }
         let plan = walk.descend(&[old], &[new], &po, &pn);
         let folds = std::mem::take(&mut walk.folds);
         if plan.cuts.is_empty() {
@@ -387,7 +436,7 @@ impl Types {
     }
 
     /// `ty` with every fold in `plan` made a back edge. Each node the plan
-    /// rebuilds is an equation; a fold at a slot names the covering
+    /// rebuilds is an equation; a fold at a slot names the returned-to
     /// ancestor's equation there and adds the slot's node to it, so the
     /// ancestor holds every value it held and the node's too. Where the node's
     /// values were already the ancestor's (a cycle) that adds nothing.
@@ -422,10 +471,31 @@ impl Types {
                 return child;
             };
             match cut {
-                Cut::Fold(_, depth) => {
+                Cut::Fold(_, depth, olds) => {
+                    let inside =
+                        types.descr(&child).has_constructors() && olds.iter().any(|o| types.is_subtype(&child, o));
                     let ancestor = ancestors[*depth];
+                    let var = types.type_var(equations.binders[ancestor]);
+                    if !inside {
+                        return types.union(child, var);
+                    }
                     equations.joined[ancestor] = types.union(equations.joined[ancestor], child);
-                    types.type_var(equations.binders[ancestor])
+                    var
+                }
+                Cut::Reopen(members) => {
+                    let me = equations.binders.len();
+                    let binder = types.mint_binder();
+                    equations.binders.push(binder);
+                    equations.bodies.push(None);
+                    equations.joined.push(types.none());
+                    let var = types.type_var(binder);
+                    let mut body = types.replace_members(child, members, var, false);
+                    for member in members.iter() {
+                        let opened = types.replace_members(*member, members, var, true);
+                        body = types.union(body, opened);
+                    }
+                    equations.bodies[me] = Some(body);
+                    var
                 }
                 Cut::Below(sub) => types.rebuild(child, sub, ancestors, equations),
             }

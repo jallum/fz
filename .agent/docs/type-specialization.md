@@ -521,31 +521,34 @@ and a tree insert keyed on `μT. nil | {int, T, T}` returns `{int, T, T}`.
   most one atom tag: a clause whose first slot is a finite set of atoms yields one
   head per atom, any other first slot yields the untagged head of that arity. A
   map's head is its key set (a struct's module key is not a slot).
-- A head COVERS another when it is the same head, or when it is the untagged head
-  of a tagged head's arity. So `{:l, x}` and `{:r, x}` both lie under an ancestor
-  holding `{y, z}`, and a recursion that changes its tag, or nests its accumulator
-  in the first slot, finds its covering frame and folds.
-- A node CLASHES when its set of heads grew. It folds only when an ancestor's
-  heads already cover it. A new head under a head that does not cover it is
-  ordinary growth, as is the first rung out of a bare leaf: a clash at the root
-  has no ancestor and never folds.
-- The fold's `kind` is `cycle` when the node's values lie inside the covering
-  ancestor's and `replace` when the ancestor covers its heads but not all its
-  values. Both rebuild the same way: every node on a folded path becomes an
-  equation, the cut child becomes the ancestor's binder and joins the
-  ancestor's body, and `Types::solve_equations` commits the result. A fold
+- A slot CLASHES when its new value holds a constructor its previous value did
+  not hold. It folds when a live child of the slot lies inside an ancestor's
+  previous iterate AND the slot's whole value, old and new together, lies inside
+  that ancestor's joined members. A value that sticks out of the ancestor (an
+  `int` beside the list the ancestor is) is ordinary growth: folding it would
+  leak the sticking part into the ancestor's closure, so a decoder's proper
+  list `μt. int | [t]` stays proper. A clash at the root has no ancestor and
+  never folds. A slot that gains only the empty list (a non-empty list that
+  becomes possibly empty) has grown by `[]` alone, which is not a rung.
+- The fold's `kind` is `cycle` when the slot's values lie inside the ancestor's
+  and `replace` otherwise. Both rebuild the same way: every node on a folded
+  path becomes an equation, the cut child becomes the ancestor's binder and
+  joins the ancestor's body, a part of the child that is not inside stays
+  beside the back edge, and `Types::solve_equations` commits the result. A fold
   that changes nothing answers `None`.
+- A slot that holds a flat recursive member its own equation has outgrown
+  REOPENS: the live value mentions the member, adds no head the member lacks,
+  and no recursive type is nested inside the member. The slot becomes an
+  equation of its own that takes the member's body in, so a return whose rungs
+  wrap the previous closed type settles instead of copying it each round.
 - A recursive type met on the walk is its own fixpoint: the walk enters only a
   node's other members and judges growth on them. A recursive member never
-  counts as covering a neighbour, because a tuple slot gathers members from
-  every rectangle (`types/clash.rs`).
-- A recursive member the walk would pass over is still judged against the
-  ancestors, in one case: the slot gains a recursive type that an ancestor's
-  previous iterate already holds. The slot's type has come back beneath itself,
-  so it folds to a back edge to the innermost such ancestor, whatever the heads
-  say. This is how a return whose every round wraps the previous recursive
-  return (`escape` of a nested tuple and list) ends at one recursive type
-  instead of one rung per round. It applies to recursive members only.
+  absorbs a neighbour, because a tuple slot gathers members from every
+  rectangle (`types/clash.rs`).
+- A recursive member in a slot is still judged against the ancestors by the
+  containment rule above: a return whose every round wraps the previous
+  recursive return (`escape` of a nested tuple and list) ends at one recursive
+  type instead of one rung per round.
 
 Detection is a read-only walk over `&Types` that builds a plan of cut points and
 interns nothing; only a non-empty plan takes `&mut Types` to rebuild the nodes on
