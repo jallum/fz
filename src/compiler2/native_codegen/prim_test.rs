@@ -142,3 +142,45 @@ fn an_extern_called_and_addressed_in_one_function_is_called_near_and_addressed_f
     assert!(ext_funcs[called].colocated);
     assert!(!ext_funcs[addressed].colocated);
 }
+
+/// Headers a binary can hold: every length bit set and clear, the clear
+/// nibble, and the shared mark above the field.
+fn binary_headers() -> Vec<u64> {
+    let mut headers = vec![0, BITSTRING_HEADER_LEN_MASK, u64::MAX, !BITSTRING_HEADER_LEN_MASK];
+    headers.extend((0..64).map(|bit| 1u64 << bit));
+    headers.extend((0..64).map(|bit| (0x5a5a_5a5a_5a5a_5a50u64).rotate_left(bit)));
+    headers
+}
+
+/// The length is the header's mask-then-shift; the emitted shift pair names
+/// the same bits, whichever bits sit around the field.
+#[test]
+fn the_bit_len_shift_pair_extracts_the_field_the_mask_and_shift_names() {
+    for header in binary_headers() {
+        let by_mask = (header & BITSTRING_HEADER_LEN_MASK) >> BITSTRING_BIT_LEN_SHIFT;
+        let by_shifts = (header << HEADER_BITS_ABOVE_LEN) >> HEADER_LEN_RIGHT_SHIFT;
+        assert_eq!(by_shifts, by_mask, "header {header:#x}");
+    }
+}
+
+/// A length read is two shifts and no mask, which the target lowers to one
+/// bit-field extract.
+#[test]
+fn a_binary_length_read_is_a_shift_left_and_a_shift_right() {
+    let mut ctx = cranelift_codegen::Context::new();
+    let mut fbctx = cranelift_frontend::FunctionBuilderContext::new();
+    let mut b = FunctionBuilder::new(&mut ctx.func, &mut fbctx);
+    let entry = b.create_block();
+    b.append_block_param(entry, types::I64);
+    b.switch_to_block(entry);
+    let header = b.block_params(entry)[0];
+    bit_len_of_header(&mut b, header);
+    let opcodes: Vec<_> = b
+        .func
+        .layout
+        .block_insts(entry)
+        .map(|inst| b.func.dfg.insts[inst].opcode())
+        .filter(|opcode| !matches!(opcode, ir::Opcode::Iconst))
+        .collect();
+    assert_eq!(opcodes, [ir::Opcode::Ishl, ir::Opcode::Ushr]);
+}

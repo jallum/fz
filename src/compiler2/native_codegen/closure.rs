@@ -1,10 +1,10 @@
-use super::inline_object::emit_closure;
+use super::inline_object::{Placed, emit_closure};
 use super::*;
 use cranelift_codegen::ir::{self, InstBuilder, MemFlagsData, condcodes::IntCC, types};
 use cranelift_module::FuncId;
 use fz_runtime::any_value::{
-    CLOSURE_CAPTURES_OFFSET, CLOSURE_CODE_OFFSET, CLOSURE_FLAGS_CAPTURED_MASK, CLOSURE_LAYOUT_FLAGS_SHIFT,
-    ClosureDenotationId, NIL_ATOM_ID, ValueKind, closure_header_word, closure_size_for_count,
+    CLOSURE_CAPTURES_OFFSET, CLOSURE_CODE_OFFSET, ClosureDenotationId, NIL_ATOM_ID, ValueKind, closure_header_word,
+    closure_size_for_count,
 };
 use fz_runtime::heap::{HeapAllocKind, INLINE_ALLOC_LAYOUT};
 use fz_runtime::ir_runtime::fz_handler_reserve;
@@ -25,10 +25,9 @@ pub(crate) fn build_cont_closure<M: cranelift_module::Module>(
 ) -> ir::Value {
     let count = cap_bindings.len() + empty_slots + 1;
     let code_addr = fn_addr(body.jmod, cont_fid, body.b);
-    let closure_ref = place_cont_closure(body, count, code_addr);
-    let address = address_field(body.b, closure_ref);
-    fill_cont_captures(body, address, outer_cont, cap_bindings, empty_slots);
-    closure_ref
+    let placed = place_cont_closure(body, count, code_addr);
+    fill_cont_captures(body, placed.address, outer_cont, cap_bindings, empty_slots);
+    placed.reference
 }
 
 /// Push a `try`'s handler record onto the process's handler stack: the image
@@ -148,9 +147,9 @@ pub(super) fn place_cont_closure<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
     count: usize,
     code_addr: ir::Value,
-) -> ir::Value {
+) -> Placed {
     let header = closure_header_word(ClosureDenotationId::INTERNAL, count as u16, 0, CONT_ARITY as u16);
-    emit_closure(body, HeapAllocKind::Continuation, header, count, code_addr).reference
+    emit_closure(body, HeapAllocKind::Continuation, header, count, code_addr)
 }
 
 /// What codegen knows, where a ref word is stored, of the kind it names.
@@ -283,11 +282,7 @@ pub(crate) fn release_resumed_frame<M: cranelift_module::Module>(
 ) {
     let flags = MemFlagsData::trusted();
     let address = address_field(body.b, frame);
-    let layout = body.b.ins().uload32(flags, address, 0);
-    let count = body.b.ins().ushr_imm_u(layout, CLOSURE_LAYOUT_FLAGS_SHIFT as i64);
-    let count = body.b.ins().band_imm_u(count, i64::from(CLOSURE_FLAGS_CAPTURED_MASK));
-    let kinds_offset = body.b.ins().ishl_imm_u(count, 3);
-    let kinds = body.b.ins().iadd(address, kinds_offset);
+    let kinds = body.closure_kind_bytes(address, CaptureCount::Compiled(slot_count));
     let mut pinned = body.b.ins().iconst(types::I8, 0);
     for &slot in ref_slots {
         let kind = body
@@ -297,8 +292,10 @@ pub(crate) fn release_resumed_frame<M: cranelift_module::Module>(
         let names_slot = body.kind_names_its_slot(kind);
         pinned = body.b.ins().bor(pinned, names_slot);
     }
-    let size = frame_size(body, count);
-    let end = body.b.ins().iadd(address, size);
+    let end = body
+        .b
+        .ins()
+        .iadd_imm_s(address, closure_size_for_count(slot_count) as i64);
     let heap = PROCESS_HEAP_OFFSET + INLINE_ALLOC_LAYOUT.bump_top as i32;
     let process = body.process_arg();
     let top = body.b.ins().load(types::I64, flags, process, heap);
@@ -311,17 +308,6 @@ pub(crate) fn release_resumed_frame<M: cranelift_module::Module>(
         let new_top = body.b.ins().select(pop, address, top);
         body.b.ins().store(flags, new_top, process, heap);
     }
-}
-
-/// `closure_size_for_count` over a runtime count.
-fn frame_size<M: cranelift_module::Module>(body: &mut CodegenFn<'_, '_, M>, count: ir::Value) -> ir::Value {
-    let raw_words = body.b.ins().iadd_imm_s(count, 1);
-    let raw_bytes = body.b.ins().ishl_imm_u(raw_words, 3);
-    let kind_bytes = body.b.ins().iadd_imm_s(count, 7);
-    let kind_bytes = body.b.ins().band_imm_u(kind_bytes, !7);
-    let size = body.b.ins().iadd(raw_bytes, kind_bytes);
-    let size = body.b.ins().iadd_imm_s(size, 8 + 15);
-    body.b.ins().band_imm_u(size, !15)
 }
 
 /// The `poison_dead_frames` test feature builds a compiler whose released

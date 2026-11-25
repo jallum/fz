@@ -799,7 +799,7 @@ pub(super) fn define_back_edge_yield_stub<M: cranelift_module::Module>(
         let process = body.process_arg();
         runtime_call!(body, fz_yield_slow_path_begin, [process]);
         let resume_addr = body.func_addr(resume_id);
-        let cont_closure = place_cont_closure(&mut body, roots.len(), resume_addr);
+        let cont_closure = place_cont_closure(&mut body, roots.len(), resume_addr).reference;
         for (i, root) in roots.iter().copied().enumerate() {
             match root {
                 CodegenValue::RawInt(word) => body.store_closure_capture_i64(cont_closure, i, word),

@@ -42,7 +42,7 @@ impl<M: Module> CodegenFn<'_, '_, M> {
 
     /// The value in `slot` of the frame.
     pub(super) fn frame_load(&mut self, frame: ir::Value, slot: u32, lane: FrameLane) -> CodegenValue {
-        self.closure_capture_as_binding(frame, slot as usize, lane_to_repr(lane))
+        self.closure_capture_as_binding(frame, slot as usize, lane_to_repr(lane), CaptureCount::InHeader)
     }
 
     /// Writes `capture` into the empty `slot` of a frame `width` slots wide and
