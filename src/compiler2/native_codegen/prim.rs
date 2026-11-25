@@ -659,8 +659,26 @@ fn load_word(b: &mut FunctionBuilder<'_>, address: ir::Value, offset: usize) -> 
 pub(crate) fn emit_proven_binary_bit_len(b: &mut FunctionBuilder<'_>, source_ref: ir::Value) -> ir::Value {
     let addr = address_field(b, source_ref);
     let header = load_word(b, addr, 0);
-    let length_field = b.ins().band_imm_u(header, BITSTRING_HEADER_LEN_MASK as i64);
-    b.ins().ushr_imm_u(length_field, BITSTRING_BIT_LEN_SHIFT as i64)
+    bit_len_of_header(b, header)
+}
+
+/// Bits of a binary's header word above the length field.
+const HEADER_BITS_ABOVE_LEN: u32 = BITSTRING_HEADER_LEN_MASK.leading_zeros();
+
+/// How far the length field sits from the low end once those bits are gone.
+const HEADER_LEN_RIGHT_SHIFT: u32 = HEADER_BITS_ABOVE_LEN + BITSTRING_BIT_LEN_SHIFT;
+
+const _: () = assert!(
+    BITSTRING_HEADER_LEN_MASK & (BITSTRING_HEADER_LEN_MASK + 1) == 0,
+    "the length mask is a run of low bits, so shifting out the bits above it isolates the field"
+);
+
+/// The bit length a binary's header word holds: `(header & LEN_MASK) >> SHIFT`
+/// as a shift left that drops the bits above the field and a shift right that
+/// drops the clear nibble below it, which the target does in one instruction.
+pub(crate) fn bit_len_of_header(b: &mut FunctionBuilder<'_>, header: ir::Value) -> ir::Value {
+    let field_at_top = b.ins().ishl_imm_u(header, i64::from(HEADER_BITS_ABOVE_LEN));
+    b.ins().ushr_imm_u(field_at_top, i64::from(HEADER_LEN_RIGHT_SHIFT))
 }
 
 /// The bit length of a binary; `NOT_A_BINARY` for any other value. One test of
@@ -1427,9 +1445,11 @@ fn lower_closure_capture<M: cranelift_module::Module>(
 ) -> Result<LowerOut, CodegenError> {
     let value = *var_env.get(&closure.0).expect("closure capture subject");
     let closure_ref = body.value_as_any_ref(value);
-    Ok(LowerOut::ValueRef(
-        body.closure_capture_ref_at(closure_ref, index as usize),
-    ))
+    Ok(LowerOut::ValueRef(body.closure_capture_ref_at(
+        closure_ref,
+        index as usize,
+        CaptureCount::InHeader,
+    )))
 }
 
 /// Lower a `RuntimeTypeTest` prim.

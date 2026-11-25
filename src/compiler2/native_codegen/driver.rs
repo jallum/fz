@@ -191,7 +191,7 @@ fn emit_callable_boundary_bodies<M: cranelift_module::Module>(
             let mut direct_args: Vec<ir::Value> =
                 Vec::with_capacity(boundary.capture_reprs.len() + arg_reprs.len() + 1);
             for (index, repr) in boundary.capture_reprs.iter().copied().enumerate() {
-                let binding = cg.closure_capture_as_binding(self_value, index, repr);
+                let binding = cg.closure_capture_as_binding(self_value, index, repr, CaptureCount::InHeader);
                 cg.push_binding_as_abi_arg(&mut direct_args, binding, repr);
             }
             for (idx, repr) in arg_reprs.iter().copied().enumerate() {
@@ -462,9 +462,10 @@ fn emit_entry_thunk<M: cranelift_module::Module>(
                 function: "fz_entry_thunk",
             },
         );
-        // capture[0] is the inner closure to launch.
+        // capture[0] is the inner closure to launch; the runtime mints a thunk
+        // with that one capture.
         let zero_idx = cg.b.ins().iconst(types::I64, 0);
-        let closure = cg.closure_capture_ref(self_cl, zero_idx);
+        let closure = cg.closure_capture_ref(self_cl, zero_idx, CaptureCount::Compiled(1));
         let kind = cg.closure_halt_kind_ref(closure);
         // Select the halt continuation by kind. Branchless via four
         // addresses + a tiny dispatch — keeps the thunk a leaf.
@@ -764,15 +765,16 @@ fn emit_mid_flight_cont_bodies<M: cranelift_module::Module>(
                     function: &tail_name,
                 },
             );
+            let count = CaptureCount::Compiled(arg_shapes.len());
             let mut ref_slots: Vec<usize> = Vec::new();
             for (i, arg_shape) in arg_shapes.iter().enumerate() {
                 match arg_shape {
                     MidFlightArgShape::Value(repr @ (ArgRepr::RawInt | ArgRepr::RawF64 | ArgRepr::RawAtom)) => {
-                        let binding = cg.closure_capture_as_binding(self_bits, i, *repr);
+                        let binding = cg.closure_capture_as_binding(self_bits, i, *repr, count);
                         arg_shape.replay_from_capture(&mut cg, binding, &mut args);
                     }
                     MidFlightArgShape::Value(_) | MidFlightArgShape::HeapRef => {
-                        let value_ref = cg.closure_capture_ref_at(self_bits, i);
+                        let value_ref = cg.closure_capture_ref_at(self_bits, i, count);
                         ref_slots.push(i);
                         arg_shape.replay_from_capture(&mut cg, CodegenValue::AnyRef(value_ref), &mut args);
                     }

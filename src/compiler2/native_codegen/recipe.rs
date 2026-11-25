@@ -61,6 +61,7 @@
 use super::inline_object::{Placed, emit_closure, emit_struct};
 use super::list_cell::{HeadLane, emit_list_cell};
 use super::list_reuse::{ReuseLane, emit_list_reuse};
+use super::prim::bit_len_of_header;
 use super::scalar_box::{BoxLane, emit_scalar_box};
 use super::*;
 use cranelift_codegen::ir::{
@@ -70,8 +71,7 @@ use cranelift_codegen::ir::{
 };
 use cranelift_frontend::FunctionBuilder;
 use fz_runtime::any_value::{
-    BITSTRING_BIT_LEN_SHIFT, BITSTRING_HEADER_LEN_MASK, ClosureDenotationId, FALSE_ATOM_ID, NIL_ATOM_ID,
-    STRUCT_HEADER_SCHEMA_SHIFT, ValueKind, closure_header_word,
+    ClosureDenotationId, FALSE_ATOM_ID, NIL_ATOM_ID, STRUCT_HEADER_SCHEMA_SHIFT, ValueKind, closure_header_word,
 };
 use fz_runtime::heap::{Heap, HeapAllocKind};
 use fz_runtime::ir_runtime::{
@@ -496,8 +496,7 @@ pub(crate) fn emit_object<M: cranelift_module::Module>(
 fn bits_from(b: &mut FunctionBuilder<'_>, word: ir::Value, bit_pos: ir::Value) -> ir::Value {
     let address = address_field(b, word);
     let header = b.ins().load(types::I64, MemFlagsData::trusted(), address, 0);
-    let length_field = b.ins().band_imm_u(header, BITSTRING_HEADER_LEN_MASK as i64);
-    let bit_len = b.ins().ushr_imm_u(length_field, i64::from(BITSTRING_BIT_LEN_SHIFT));
+    let bit_len = bit_len_of_header(b, header);
     b.ins().isub(bit_len, bit_pos)
 }
 

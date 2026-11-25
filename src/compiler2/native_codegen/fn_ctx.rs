@@ -38,6 +38,17 @@ pub(crate) struct NewStruct {
     layout: SlotLayout,
 }
 
+/// How many captures the frame being read holds. A frame stores its raw slots
+/// first and one kind byte per capture after them, so the count places the
+/// kind bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CaptureCount {
+    /// The code is compiled for one frame shape, and this is its count.
+    Compiled(usize),
+    /// The code reads frames of any shape: the count is in each frame's header.
+    InHeader,
+}
+
 /// Per-function semantic codegen machine: the function-local import table
 /// plus the `FunctionBuilder`, module, and cache bound for the body
 /// currently being emitted. Every runtime-BIF operation is an inherent
@@ -545,23 +556,39 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
         self.closure_capture_i64(closure_ref, index)
     }
 
+    /// The address of the first kind byte, less `CLOSURE_CAPTURES_OFFSET`: the
+    /// kind bytes follow the raw slots, one per capture.
+    pub(crate) fn closure_kind_bytes(&mut self, address: ir::Value, count: CaptureCount) -> ir::Value {
+        let offset = match count {
+            CaptureCount::Compiled(count) => self.b.ins().iconst(types::I64, (count * 8) as i64),
+            CaptureCount::InHeader => {
+                let layout = self.b.ins().uload32(MemFlagsData::trusted(), address, 0);
+                let flags_field = self.b.ins().ushr_imm_u(layout, CLOSURE_LAYOUT_FLAGS_SHIFT as i64);
+                let count = self
+                    .b
+                    .ins()
+                    .band_imm_u(flags_field, i64::from(CLOSURE_FLAGS_CAPTURED_MASK));
+                self.b.ins().ishl_imm_u(count, 3)
+            }
+        };
+        self.b.ins().iadd(address, offset)
+    }
+
     /// A capture as a ref word: its kind byte over its raw slot. An int,
     /// float, pid or reference names the slot that holds its raw word; every
     /// other kind carries its raw word as the payload.
-    pub(crate) fn closure_capture_ref(&mut self, closure_ref: ir::Value, index: ir::Value) -> ir::Value {
+    pub(crate) fn closure_capture_ref(
+        &mut self,
+        closure_ref: ir::Value,
+        index: ir::Value,
+        count: CaptureCount,
+    ) -> ir::Value {
         let packing = AnyValueRefPacking::current();
         let flags = MemFlagsData::trusted();
         let address = address_field(self.b, closure_ref);
-        let layout = self.b.ins().uload32(flags, address, 0);
-        let flags_field = self.b.ins().ushr_imm_u(layout, CLOSURE_LAYOUT_FLAGS_SHIFT as i64);
-        let count = self
-            .b
-            .ins()
-            .band_imm_u(flags_field, i64::from(CLOSURE_FLAGS_CAPTURED_MASK));
         let raw_slot = self.closure_capture_slot(closure_ref, index);
         let raw = self.b.ins().load(types::I64, flags, raw_slot, 0);
-        let kinds_offset = self.b.ins().ishl_imm_u(count, 3);
-        let kinds = self.b.ins().iadd(address, kinds_offset);
+        let kinds = self.closure_kind_bytes(address, count);
         let kind_at = self.b.ins().iadd(kinds, index);
         let kind = self.b.ins().uload8(types::I64, flags, kind_at, CLOSURE_CAPTURES_OFFSET);
         let names_slot = self.kind_names_its_slot(kind);
@@ -908,9 +935,14 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
         self.closure_capture_atom(closure_ref, index)
     }
 
-    pub(crate) fn closure_capture_ref_at(&mut self, closure_ref: ir::Value, idx: usize) -> ir::Value {
+    pub(crate) fn closure_capture_ref_at(
+        &mut self,
+        closure_ref: ir::Value,
+        idx: usize,
+        count: CaptureCount,
+    ) -> ir::Value {
         let index = self.index_const(idx);
-        self.closure_capture_ref(closure_ref, index)
+        self.closure_capture_ref(closure_ref, index, count)
     }
 
     pub(crate) fn closure_capture_as_binding(
@@ -918,12 +950,13 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
         closure_ref: ir::Value,
         idx: usize,
         repr: ArgRepr,
+        count: CaptureCount,
     ) -> CodegenValue {
         match repr {
             ArgRepr::RawInt => CodegenValue::from_abi_value(self.closure_capture_i64_at(closure_ref, idx), repr),
             ArgRepr::RawF64 => CodegenValue::from_abi_value(self.closure_capture_f64_at(closure_ref, idx), repr),
             ArgRepr::RawAtom => CodegenValue::from_abi_value(self.closure_capture_atom_at(closure_ref, idx), repr),
-            ArgRepr::ValueRef => CodegenValue::any_ref(self.closure_capture_ref_at(closure_ref, idx)),
+            ArgRepr::ValueRef => CodegenValue::any_ref(self.closure_capture_ref_at(closure_ref, idx, count)),
             ArgRepr::Condition => unreachable!("closure captures are never condition-only"),
         }
     }

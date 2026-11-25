@@ -94,16 +94,21 @@ fn harness_cont_fn<M: ClModule>(
         var_env.insert(p.0, take_param_binding(body.b, params, &mut param_cursor, repr));
     }
     let self_val = params[param_cursor];
+    let slot_count = 1 + entry_blk.params.len() - extras_count;
+    let count = if in_frame {
+        CaptureCount::InHeader
+    } else {
+        CaptureCount::Compiled(slot_count)
+    };
     for (i, p) in entry_blk.params.iter().enumerate().skip(extras_count) {
         let capture_idx = 1 + i - extras_count;
         let repr_idx = i;
-        let binding = body.closure_capture_as_binding(self_val, capture_idx, my_param_reprs[repr_idx]);
+        let binding = body.closure_capture_as_binding(self_val, capture_idx, my_param_reprs[repr_idx], count);
         var_env.insert(p.0, binding);
     }
     if in_frame {
         return (body.outer_cont_ref(self_val), self_val);
     }
-    let slot_count = 1 + entry_blk.params.len() - extras_count;
     let ref_slots: Vec<usize> = (extras_count..entry_blk.params.len())
         .filter(|&i| my_param_reprs[i] == ArgRepr::ValueRef)
         .map(|i| 1 + i - extras_count)
@@ -138,3 +143,7 @@ fn harness_plain_native(
     let cont_idx = param_cursor;
     params[cont_idx]
 }
+
+#[cfg(test)]
+#[path = "entry_test.rs"]
+mod entry_test;

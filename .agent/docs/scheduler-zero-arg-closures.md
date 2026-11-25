@@ -406,6 +406,16 @@ Captures are read by inline loads (`closure_capture_ref`, `closure_capture_i64`,
 continuation is delivered with `return_call` / `return_call_indirect`, so a chain
 of pending continuations lives on the heap rather than the native stack.
 
+A frame holds its raw capture slots, then one kind byte per capture, so a read
+needs the capture count to find a kind byte, and the release needs it for the
+frame's end. A continuation function is compiled for one frame shape: its
+capture reads and `release_resumed_frame` use the compile-time count
+(`CaptureCount::Compiled`), and the frame's end is its address plus the constant
+`closure_size_for_count(count)`. A read that does not know the shape (a closure
+body reading its own captures, a body-frame slot, a callable-boundary shim)
+takes the count from the frame's header (`CaptureCount::InHeader`); so does a
+continuation that runs in a shared body frame, whose width is the chain's.
+
 A continuation is resumed at most once (the rule is written on
 `fz_ir::Cont`). At entry a continuation function reads every capture and its
 outer continuation into registers, then `release_resumed_frame` gives the frame
