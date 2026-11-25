@@ -37,6 +37,7 @@ fn all_codes_follow_stage_slash_kind_format() {
         LOWER_UNBOUND,
         LOWER_TRY_ELSE_ONLY,
         LOWER_UNDEFINED_ATTRIBUTE,
+        LOWER_REPEATED_UNDERSCORED_VARIABLE,
         TYPE_REDUNDANT_CLAUSE,
         MODULE_VALUE_CALL,
         TYPE_NUMERIC_LITERAL_WIDENED,

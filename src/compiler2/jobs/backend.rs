@@ -1451,9 +1451,9 @@ fn collect_region_atoms(world: &mut World, region: &Region<Ty>, names: &mut Exec
                 push_atom(names, &atom);
             }
         }
-        Region::Equal(ComparisonValue::Pinned(_))
+        Region::Equal(ComparisonValue::Pinned(_) | ComparisonValue::Subject(_))
         | Region::MapKeyPresent {
-            key: ComparisonValue::Pinned(_),
+            key: ComparisonValue::Pinned(_) | ComparisonValue::Subject(_),
         }
         | Region::TupleArity(_)
         | Region::List(_)

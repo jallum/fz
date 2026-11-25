@@ -419,7 +419,7 @@ pub(super) fn lower_function(
         });
     }
 
-    for diagnostic in super::scope::unused_variable_diagnostics(&surface.clauses) {
+    for diagnostic in super::scope::variable_diagnostics(&surface.clauses) {
         super::super::drive::ExecutionContext::new(world, tel).emit_warning_once(diagnostic);
     }
     let entry_plan = world.entry_dispatch(function);

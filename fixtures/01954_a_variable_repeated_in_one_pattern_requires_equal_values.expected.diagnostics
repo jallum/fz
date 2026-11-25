@@ -1,0 +1,7 @@
+warning[lower/repeated-underscored-variable]: the underscored variable "_x" appears more than once in a match. This means the pattern will only match if all "_x" bind to the same value. If this is the intended behaviour, please remove the leading underscore from the variable name, otherwise give the variables different names
+  --> fixtures/01954_a_variable_repeated_in_one_pattern_requires_equal_values.fz:11:18
+   |
+11 |   def under({_x, _x}), do: :same
+   |                  ^^
+   |
+

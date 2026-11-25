@@ -195,6 +195,32 @@ in `quoted_function.rs`). A bare name stays `BitSize::Var`, and a pinned
   in the lowered `LoweredBitSize::Value`, so a negative size raises Elixir's
   construction `ArgumentError` through the same check a named size meets.
 
+## A Repeated Variable Is An Equality Question
+
+A name written twice in one row's patterns (`{x, x}`, `def f(x, x)`,
+`[x | x]`, `%{a: x, b: x}`, `<<x, x>>`) is bound by its first occurrence and
+compared by every later one, as in Elixir. `PatternDispatchProducer::bind`
+keeps one `PatternDispatchBinding` per name, so a guard's view of the row and
+the arm's bound arguments both see the first occurrence. Each later
+occurrence adds `RegionQuestion::equality(this_subject,
+ComparisonValue::Subject(first))`. A row's questions are asked in pattern
+order, so the first occurrence's subject is already reached when the
+comparison is asked.
+
+`ComparisonValue::Subject` is the third operand of an equality, beside
+`Const` and `Pinned`, and every evaluator compares it as strictly as a pin
+(`1` is not `1.0`): `interp_value_eq` in the interpreter, `IrBinOp::Identical`
+in native code, and `emit_typed_eq_branch` in the native receive matcher. The
+question narrows no type, is not rebased into a caller by guard unfolding
+(the helper stays a call), and charges the earlier subject's input as read in
+full. A map-key question never holds a `Subject`.
+
+The same repeat of an underscored name warns `lower/repeated-underscored-variable`
+once per later occurrence, in Elixir's words ("the underscored variable
+\"_x\" appears more than once in a match ..."); `ScopeWalk::bind` in
+`compiler2/jobs/scope.rs` sees it. `fixtures/01954_*` checks every pattern
+site against Elixir on all three paths.
+
 ## Pins Resolve Against The Prematch
 
 A pin names a binding that existed BEFORE the pattern began. Three spellings
@@ -697,7 +723,8 @@ it is made (a rebinding match, a `case` clause over an outer name) carries
 Elixir's other advice: "there is a variable with the same name in the context,
 use the pin operator (^) to match on it or prefix this variable with
 underscore if it is not meant to be used". A name that starts with `_`, and a
-name a macro or the compiler wrote (any context but `nil`), never warns.
+name a macro or the compiler wrote (any context but `nil`), never warns
+unused.
 
 The question is one of scope, not of matching, and
 `src/compiler2/jobs/scope.rs` answers it. `ScopeWalk` holds the function's

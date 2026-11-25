@@ -3769,6 +3769,12 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 let (var, _) = ctx.emit_let(Prim::BinOp(IrBinOp::Identical, subject, pinned));
                 var
             }
+            Region::Equal(ComparisonValue::Subject(earlier)) => {
+                let subject = self.dispatch_subject_var(ctx, plan, state, subject)?;
+                let earlier = self.dispatch_subject_var(ctx, plan, state, *earlier)?;
+                let (var, _) = ctx.emit_let(Prim::BinOp(IrBinOp::Identical, subject, earlier));
+                var
+            }
             Region::Bitstring(shape) => return self.lower_bitstring_region(ctx, plan, subject, shape, state),
         })))
     }
@@ -4694,6 +4700,13 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         let key = match key {
             ComparisonValue::Pinned(pinned) => return self.dispatch_pinned_var(state, *pinned),
             ComparisonValue::Const(key) => key,
+            ComparisonValue::Subject(_) => {
+                return Err(incomplete_native_program(
+                    self.telemetry,
+                    self.root_id,
+                    "a map key question compares against an earlier subject".to_string(),
+                ));
+            }
         };
         if let Some(id) = plan.prepared_key_id(key) {
             return state.bindings.prepared.get(id.0 as usize).copied().ok_or_else(|| {

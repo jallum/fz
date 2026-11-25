@@ -218,15 +218,18 @@ impl<TypeHandle> Region<TypeHandle> {
 pub(crate) enum ComparisonValue {
     Const(GroundValue),
     Pinned(PinnedValueId),
+    /// A part of the value being matched that an earlier occurrence of the
+    /// same variable already reached.
+    Subject(SubjectId),
 }
 
 impl ComparisonValue {
     /// The value itself when the source wrote it, and nothing when it is
-    /// whatever a pinned variable holds at run time.
+    /// whatever a pinned variable or an earlier subject holds at run time.
     pub(crate) fn as_const(&self) -> Option<&GroundValue> {
         match self {
             Self::Const(value) => Some(value),
-            Self::Pinned(_) => None,
+            Self::Pinned(_) | Self::Subject(_) => None,
         }
     }
 }
@@ -1287,6 +1290,10 @@ impl<'a, TypeHandle: Clone + Eq> DispatchGraphBuilder<'a, TypeHandle> {
             | Region::MapKeyPresent {
                 key: ComparisonValue::Pinned(pinned),
             } => self.charge_pin(*pinned),
+            Region::Equal(ComparisonValue::Subject(earlier)) => {
+                self.charge_subject(*earlier, DispatchDemand::Whole);
+                self.ask(*earlier);
+            }
             Region::Bitstring(shape) => self.charge_bitstring_sizes(shape),
             _ => {}
         }

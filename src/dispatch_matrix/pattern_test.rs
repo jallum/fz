@@ -709,3 +709,48 @@ fn a_string_pattern_never_compares_the_whole_value() {
         "a string pattern is a size test and byte comparisons, never a whole-value comparison"
     );
 }
+
+fn equal_to_earlier_subject(plan: &Plan) -> Vec<(SubjectId, SubjectId)> {
+    tests(plan)
+        .into_iter()
+        .filter_map(|predicate| match &predicate.region {
+            Region::Equal(ComparisonValue::Subject(earlier)) => Some((predicate.subject, *earlier)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_variable_repeated_in_a_tuple_binds_once_and_asks_equality_with_its_first_occurrence() {
+    let helpers = Helpers::new();
+    let plan = helpers.plan_of_row(PatternRow {
+        patterns: vec![sp(Pattern::Tuple(vec![sp(x()), sp(x())]))],
+        preconditions: Vec::new(),
+        guard: None,
+        body_id: 0,
+    });
+
+    let bindings = &plan.outcomes[0].bindings;
+    assert_eq!(bindings.len(), 1, "one binding per name");
+    let equalities = equal_to_earlier_subject(&plan);
+    assert_eq!(equalities.len(), 1, "the repeat is one equality question");
+    assert_eq!(
+        equalities[0].1, bindings[0].source,
+        "it compares with the first occurrence"
+    );
+    assert_ne!(equalities[0].0, bindings[0].source, "it asks the second occurrence");
+}
+
+#[test]
+fn a_variable_repeated_across_parameters_asks_equality_with_the_earlier_parameter() {
+    let helpers = Helpers::new();
+    let plan = helpers.plan_of_row(PatternRow {
+        patterns: vec![sp(x()), sp(x())],
+        preconditions: Vec::new(),
+        guard: None,
+        body_id: 0,
+    });
+
+    assert_eq!(plan.outcomes[0].bindings.len(), 1);
+    assert_eq!(equal_to_earlier_subject(&plan).len(), 1);
+}
