@@ -16,25 +16,21 @@
 //! the threshold can have, and copies in a loop. Every other window is the call,
 //! on a cold path.
 
-use super::place::emit_place;
+use super::place::place_inline_bitstring;
 use super::prim::bit_len_of_header;
 use super::recipe::{constant_of, header_word};
 use super::*;
 use cranelift_codegen::ir::{self, BlockArg, InstBuilder, MemFlagsData, condcodes::IntCC, types};
 use cranelift_frontend::FunctionBuilder;
-use fz_runtime::any_value::{BITSTRING_BIT_LEN_SHIFT, BITSTRING_BYTES_OFFSET, ValueKind, bitstring_size_for_bit_len};
+use fz_runtime::any_value::{BITSTRING_BYTES_OFFSET, ValueKind};
 use fz_runtime::bits::BINVIEW_BYTES_PTR_OFFSET;
-use fz_runtime::heap::{HeapAllocKind, SHARED_BIN_THRESHOLD_BYTES};
+use fz_runtime::heap::SHARED_BIN_THRESHOLD_BYTES;
 use fz_runtime::ir_runtime::fz_bs_slice_ref;
 
 const WORD: usize = 8;
 
 /// The bits of the longest window that is copied.
 const MAX_COPY_BITS: u64 = SHARED_BIN_THRESHOLD_BYTES as u64 * 8;
-
-/// The sizes of an inline bitstring of 0 to `SHARED_BIN_THRESHOLD_BYTES`
-/// bytes, in 16-byte units.
-const SIZE_CLASSES: usize = bitstring_size_for_bit_len(MAX_COPY_BITS) / 16;
 
 /// The binary `args[1]` windowed from bit `args[2]` for `args[3]` bits. The
 /// process is `args[0]`, which `emit_place` reads from the pinned register.
@@ -131,7 +127,7 @@ fn whole_bytes_from_a_boundary(
 /// follow an inline bitstring's header, or the pointer a view holds in its
 /// second word. Both words are read, so no branch picks one; the second word
 /// of an inline bitstring is its first bytes or padding, inside the object.
-fn bytes_address(b: &mut FunctionBuilder<'_>, source: ir::Value) -> ir::Value {
+pub(super) fn bytes_address(b: &mut FunctionBuilder<'_>, source: ir::Value) -> ir::Value {
     const _: () = assert!(BITSTRING_BYTES_OFFSET == BINVIEW_BYTES_PTR_OFFSET);
     let object = address_field(b, source);
     let kind = kind_field(b, source);
@@ -149,33 +145,28 @@ fn bytes_address(b: &mut FunctionBuilder<'_>, source: ir::Value) -> ir::Value {
 }
 
 /// Place a copy of the `byte_len` bytes at `from`, a length known now: the
-/// object's words are built and stored straight.
+/// payload is written a word at a time, the last word holding the tail bytes.
 fn place_known<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
     from: ir::Value,
     byte_len: usize,
 ) -> ir::Value {
-    let size = bitstring_size_for_bit_len(byte_len as u64 * 8);
-    let address = emit_place(body, HeapAllocKind::Bitstring, size);
-    let flags = MemFlagsData::trusted();
-    let header = body
-        .b
-        .ins()
-        .iconst(types::I64, ((byte_len as u64 * 8) << BITSTRING_BIT_LEN_SHIFT) as i64);
-    body.b.ins().store(flags, header, address, 0);
+    let length = body.b.ins().iconst(types::I64, byte_len as i64);
     let (whole_words, tail_bytes) = (byte_len / WORD, byte_len % WORD);
-    let zero = body.b.ins().iconst(types::I64, 0);
-    for word in 0..size / WORD - 1 {
-        let value = if word < whole_words {
-            body.b
-                .ins()
-                .load(types::I64, MemFlagsData::new(), from, (word * WORD) as i32)
-        } else if word == whole_words && tail_bytes > 0 {
-            tail_word(body.b, from, word * WORD, tail_bytes)
-        } else {
-            zero
-        };
+    let address = place_inline_bitstring(body, length, whole_words + usize::from(tail_bytes > 0));
+    let flags = MemFlagsData::trusted();
+    for word in 0..whole_words {
+        let value = body
+            .b
+            .ins()
+            .load(types::I64, MemFlagsData::new(), from, (word * WORD) as i32);
         body.b.ins().store(flags, value, address, ((word + 1) * WORD) as i32);
+    }
+    if tail_bytes > 0 {
+        let value = tail_word(body.b, from, whole_words * WORD, tail_bytes);
+        body.b
+            .ins()
+            .store(flags, value, address, ((whole_words + 1) * WORD) as i32);
     }
     body.heap_ref_word_from_addr(address, ValueKind::BITSTRING)
 }
@@ -206,53 +197,14 @@ fn tail_word(b: &mut FunctionBuilder<'_>, from: ir::Value, offset: usize, bytes:
 }
 
 /// Place a copy of the `bit_len / 8` bytes at `from`, a length known only when
-/// the code runs, no more than the threshold. The size of the object is one of
-/// `SIZE_CLASSES`; each class places its own object and the bytes are copied
-/// after the join.
+/// the code runs, no more than the threshold.
 fn place_unknown<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
     from: ir::Value,
     bit_len: ir::Value,
 ) -> ir::Value {
     let byte_len = body.b.ins().ushr_imm_u(bit_len, 3);
-    let filled = body.b.create_block();
-    body.b.append_block_param(filled, types::I64);
-    let class_blocks: Vec<ir::Block> = (0..SIZE_CLASSES).map(|_| body.b.create_block()).collect();
-    for (index, &class) in class_blocks.iter().enumerate() {
-        let next = if index + 1 < SIZE_CLASSES {
-            body.b.create_block()
-        } else {
-            class
-        };
-        if index + 1 < SIZE_CLASSES {
-            let largest_bytes = (index + 1) * 16 - BITSTRING_BYTES_OFFSET - 1;
-            let fits = body
-                .b
-                .ins()
-                .icmp_imm_u(IntCC::UnsignedLessThanOrEqual, byte_len, largest_bytes as i64);
-            body.b.ins().brif(fits, class, &[], next, &[]);
-        } else {
-            body.b.ins().jump(class, &[]);
-        }
-        body.b.switch_to_block(class);
-        body.b.seal_block(class);
-        let size = (index + 1) * 16;
-        let address = emit_place(body, HeapAllocKind::Bitstring, size);
-        let zero = body.b.ins().iconst(types::I64, 0);
-        let flags = MemFlagsData::trusted();
-        body.b.ins().store(flags, zero, address, (size - 2 * WORD) as i32);
-        body.b.ins().store(flags, zero, address, (size - WORD) as i32);
-        body.b.ins().jump(filled, &[BlockArg::Value(address)]);
-        if next != class {
-            body.b.switch_to_block(next);
-            body.b.seal_block(next);
-        }
-    }
-    body.b.switch_to_block(filled);
-    body.b.seal_block(filled);
-    let address = body.b.block_params(filled)[0];
-    let header = body.b.ins().ishl_imm_u(bit_len, i64::from(BITSTRING_BIT_LEN_SHIFT));
-    body.b.ins().store(MemFlagsData::trusted(), header, address, 0);
+    let address = place_inline_bitstring(body, byte_len, 0);
     let to = body.b.ins().iadd_imm_s(address, BITSTRING_BYTES_OFFSET as i64);
     copy_bytes(body.b, to, from, byte_len);
     body.heap_ref_word_from_addr(address, ValueKind::BITSTRING)

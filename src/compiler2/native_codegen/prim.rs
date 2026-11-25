@@ -2,6 +2,7 @@
 
 use super::binary_compare::{BinaryCompare, emit_binary_compare};
 use super::bitstring_literal::BitstringLiteral;
+use super::construction::{AlignedSegment, aligned_segments, descriptor_spec, emit_aligned_construction};
 use super::recipe::{Emitted, emit_box, emit_cell, emit_in_body, emit_inline, emit_slice};
 use super::repr::ExternLane;
 use super::runtime_test::{KindEvidence, RuntimeTestEmitter, emit_runtime_type_branch, emit_runtime_type_flag};
@@ -9,8 +10,8 @@ use super::*;
 use crate::ast::BitType;
 use crate::fast_hash::HashMap;
 use crate::fz_ir::{
-    BinOp, BitMatchField, BitSizeIr, BlockId, Const, DestMapSeed, ExternArg, ExternDecl, ExternId, ExternMarshalSite,
-    ExternTy, FnId, FrameLane, Prim, UnOp, Var,
+    BinOp, BitFieldIr, BitMatchField, BitSizeIr, BlockId, Const, DestMapSeed, ExternArg, ExternDecl, ExternId,
+    ExternMarshalSite, ExternTy, FnId, FrameLane, Prim, UnOp, Var,
 };
 use crate::runtime_type_predicate::{CallableShapes, RuntimeTypePredicate};
 use cranelift_codegen::ir::{
@@ -293,6 +294,66 @@ fn build_struct<M: cranelift_module::Module, T: Types<Ty = Ty>>(
     Ok(LowerOut::ValueRef(object.reference))
 }
 
+/// The binary a construction spells: built in place when every segment is a
+/// whole number of bytes of a kind compiled code writes, else by one call to
+/// `fz_bs_build` over a descriptor per segment.
+fn lower_make_bitstring<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, M>,
+    var_env: &HashMap<u32, CodegenValue>,
+    fields: &[BitFieldIr],
+) -> LowerOut {
+    if let Some(segments) = aligned_segments(fields) {
+        let values: Vec<_> = segments
+            .into_iter()
+            .zip(fields)
+            .map(|(segment, f)| {
+                let value = match segment {
+                    AlignedSegment::Integer { .. } => body.as_raw_i64(var_env, f.value.0),
+                    AlignedSegment::Binary { .. } => body.tagged_var(var_env, f.value.0),
+                };
+                (segment, value)
+            })
+            .collect();
+        return LowerOut::ValueRef(emit_aligned_construction(body, &values));
+    }
+    let process = body.process_arg();
+    let slot = body.b.create_sized_stack_slot(StackSlotData::new(
+        StackSlotKind::ExplicitSlot,
+        (fields.len() * size_of::<FzBsField>()) as u32,
+        align_of::<FzBsField>().trailing_zeros() as u8,
+    ));
+    for (index, f) in fields.iter().enumerate() {
+        let (size_present, size_value) = match &f.size {
+            None => (0, body.b.ins().iconst(types::I64, 0)),
+            Some(BitSizeIr::Literal(n)) => (1, body.b.ins().iconst(types::I64, *n as i64)),
+            Some(BitSizeIr::Var(v)) => (1, body.as_raw_i64(var_env, v.0)),
+            Some(BitSizeIr::ByteSizeOf(_)) => {
+                unreachable!("only a pattern sizes a segment by a pinned binary, never a construction")
+            }
+        };
+        let spec = descriptor_spec(f, size_present);
+        let value = if f.ty == BitType::Float {
+            body.as_float_word(var_env, f.value.0)
+        } else if f.ty.writes_scalar_word() {
+            body.as_raw_i64(var_env, f.value.0)
+        } else {
+            body.tagged_var(var_env, f.value.0)
+        };
+        let spec = body.b.ins().iconst(types::I64, spec as i64);
+        let base = index * size_of::<FzBsField>();
+        for (offset, word) in [
+            (offset_of!(FzBsField, spec), spec),
+            (offset_of!(FzBsField, size), size_value),
+            (offset_of!(FzBsField, value), value),
+        ] {
+            body.b.ins().stack_store(types::I64, word, slot, (base + offset) as i32);
+        }
+    }
+    let descriptors = body.b.ins().stack_addr(types::I64, slot, 0);
+    let count = body.b.ins().iconst(types::I64, fields.len() as i64);
+    LowerOut::ValueRef(runtime_call1!(body, fz_bs_build, [process, descriptors, count]))
+}
+
 /// Lower collection-typed Prim variants (List, Tuple, AllocStruct, Bitstring,
 /// Map, Vec) to a tagged `ir::Value`. Called by `lower_prim` for these arms.
 pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = Ty>>(
@@ -407,51 +468,7 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
             let process = body.process_arg();
             LowerOut::ValueRefWord(runtime_call1!(body, fz_struct_module, [process, struct_ref]))
         }
-        Prim::MakeBitstring(fields) => {
-            let process = body.process_arg();
-            let slot = body.b.create_sized_stack_slot(StackSlotData::new(
-                StackSlotKind::ExplicitSlot,
-                (fields.len() * size_of::<FzBsField>()) as u32,
-                align_of::<FzBsField>().trailing_zeros() as u8,
-            ));
-            for (index, f) in fields.iter().enumerate() {
-                let (size_present, size_value) = match &f.size {
-                    None => (0, body.b.ins().iconst(types::I64, 0)),
-                    Some(BitSizeIr::Literal(n)) => (1, body.b.ins().iconst(types::I64, *n as i64)),
-                    Some(BitSizeIr::Var(v)) => (1, body.as_raw_i64(var_env, v.0)),
-                    Some(BitSizeIr::ByteSizeOf(_)) => {
-                        unreachable!("only a pattern sizes a segment by a pinned binary, never a construction")
-                    }
-                };
-                let spec = fz_bs_field_spec(
-                    f.ty.runtime_tag(),
-                    size_present,
-                    f.unit.unwrap_or(f.ty.default_unit()),
-                    encode_endian(f.endian),
-                    0,
-                    0,
-                );
-                let value = if f.ty == BitType::Float {
-                    body.as_float_word(var_env, f.value.0)
-                } else if f.ty.writes_scalar_word() {
-                    body.as_raw_i64(var_env, f.value.0)
-                } else {
-                    body.tagged_var(var_env, f.value.0)
-                };
-                let spec = body.b.ins().iconst(types::I64, spec as i64);
-                let base = index * size_of::<FzBsField>();
-                for (offset, word) in [
-                    (offset_of!(FzBsField, spec), spec),
-                    (offset_of!(FzBsField, size), size_value),
-                    (offset_of!(FzBsField, value), value),
-                ] {
-                    body.b.ins().stack_store(types::I64, word, slot, (base + offset) as i32);
-                }
-            }
-            let descriptors = body.b.ins().stack_addr(types::I64, slot, 0);
-            let count = body.b.ins().iconst(types::I64, fields.len() as i64);
-            LowerOut::ValueRef(runtime_call1!(body, fz_bs_build, [process, descriptors, count]))
-        }
+        Prim::MakeBitstring(fields) => lower_make_bitstring(body, var_env, fields),
         Prim::ConstBitstring(bytes, bit_len) => {
             let literal = env
                 .bitstring_literals

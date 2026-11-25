@@ -411,6 +411,12 @@ address is read from both possible words and chosen by the source's kind, so the
 branch. The receive dispatch bodies and the interpreter call `fz_bs_read_binary_ref`, which reads the
 field's width from its spec and calls `fz_bs_slice_ref`.
 
+A construction of whole-byte integers and binaries is not a row: `fz_bs_build` takes a variable number
+of segments, and the table's rows have fixed arguments. `native_codegen/construction.rs` is its own
+emitter, proved against `construction::build` by `construction_test.rs` as the rows are proved against
+their functions; `place_inline_bitstring` is the one placement of an inline bitstring that it and the
+slice row share.
+
 The rows are the typed `fz_op_*_ii` arithmetic and comparison externs, the
 bit operations `fz_op_band_ii`, `fz_op_bor_ii`, `fz_op_bxor_ii`, `fz_op_bnot_i`,
 `fz_op_bsl_ii` and `fz_op_bsr_ii` (the two shifts are checked: a shift whose

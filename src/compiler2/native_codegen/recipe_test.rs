@@ -815,7 +815,7 @@ fn cell_proofs() -> Vec<CellProof> {
 const LIST_KIND_WORD: u64 = ValueKind::LIST.tag() as u64;
 
 /// The allocation site a table's entry is.
-fn allocation_site(site: &Site) -> &fz_runtime::alloc_site::AllocSite {
+pub(in crate::compiler2::native_codegen) fn allocation_site(site: &Site) -> &fz_runtime::alloc_site::AllocSite {
     match site {
         Site::Alloc(site) => site,
         Site::Reuse(site) => panic!("expected an allocation site, found {site:?}"),
@@ -883,7 +883,7 @@ fn compile_cell(proof: &CellProof) -> CompiledCell {
 
 /// How full a tip is when the row runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Tip {
+pub(in crate::compiler2::native_codegen) enum Tip {
     /// Room for the cell.
     Roomy,
     /// No room: the runtime must find some.
@@ -902,11 +902,11 @@ struct Left {
     tip_changed: bool,
 }
 
-fn heap_field(process: &Process, offset: usize) -> usize {
+pub(in crate::compiler2::native_codegen) fn heap_field(process: &Process, offset: usize) -> usize {
     unsafe { *(((&process.heap as *const Heap).cast::<u8>()).add(offset) as *const usize) }
 }
 
-fn tip_of(process: &Process) -> (usize, usize) {
+pub(in crate::compiler2::native_codegen) fn tip_of(process: &Process) -> (usize, usize) {
     let start = heap_field(process, INLINE_ALLOC_LAYOUT.block_start);
     (start, heap_field(process, INLINE_ALLOC_LAYOUT.block_end) - start)
 }
@@ -1212,7 +1212,7 @@ struct ObjectLeft {
     tip_changed: bool,
 }
 
-fn words_of(address: *const u8, count: usize) -> Vec<u64> {
+pub(in crate::compiler2::native_codegen) fn words_of(address: *const u8, count: usize) -> Vec<u64> {
     (0..count)
         .map(|index| unsafe { *address.cast::<u64>().add(index) })
         .collect()
