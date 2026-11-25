@@ -14,6 +14,8 @@ defmodule Map do
   Keys use strict structural identity: independently built equal tuples,
   lists, maps, and binaries are the same key, and the last input value wins.
   Integer and float keys stay distinct, including inside composite keys.
+  Map key order puts every integer before every float, as in Elixir and OTP,
+  though `1 < 1.5` and `1 == 1.0` still compare by value.
   Closures use their source function and complete captured values; resources
   keep their identity across copying and garbage collection.
 

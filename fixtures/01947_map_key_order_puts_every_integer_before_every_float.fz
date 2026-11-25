@@ -1,0 +1,28 @@
+#---
+# purpose: map key order puts every integer before every float, as OTP documents, though terms compare by value; 1 and 1.0 are distinct keys, and a map built key by key reads in the same order as a literal
+# oracle: self
+# oracle.stamp: b36dce6a4948ac6e
+#---
+defmodule Main do
+  def main() do
+    literal = %{-1.5 => :a, 3 => :b, -7 => :c, 10_000_000_000 => :d, 2.5 => :e}
+    IO.inspect(literal)
+    IO.inspect(Map.keys(literal))
+
+    IO.inspect(%{1.0 => :float, 1 => :integer})
+    IO.inspect(Map.get(%{1.0 => :float, 1 => :integer}, 1))
+    IO.inspect(Map.get(%{1.0 => :float, 1 => :integer}, 1.0))
+
+    built = Enum.reduce([2.0, 5, -0.5, 1, 22, 1.5], %{}, fn key, map -> Map.put(map, key, key) end)
+    IO.inspect(Map.to_list(built))
+    IO.inspect(Enum.map(built, fn {key, _} -> key end))
+
+    IO.inspect(%{{1.5, 2} => :tuple_float, {3, 2} => :tuple_integer})
+    IO.inspect(%{"s" => 1, 1.5 => 2, 22 => 4, x: 3})
+
+    IO.inspect({1 < 1.5, 2 < 1.5, 1 == 1.0, 1 === 1.0})
+    IO.inspect(Enum.sort([2.5, 3, -1.5, 10, -7]))
+  end
+end
+
+Main.main()

@@ -14,7 +14,7 @@ use crate::dispatch_matrix::pattern::{
 };
 use crate::dispatch_matrix::{ComparisonValue, DispatchNode, ProjectionKind, Region, SubjectSource};
 use crate::fz_ir::SlotStore;
-use crate::ground_value::GroundValue;
+use crate::ground_value::{GroundValue, entries_in_atom_key_order};
 use crate::literal_term::LiteralTerm;
 use crate::source::Span;
 use fz_runtime::module_name::{ModuleName, STRUCT_MODULE_FIELD};
@@ -1302,17 +1302,13 @@ fn collect_executable_atoms(world: &mut World, executable: &BackendExecutable, n
 }
 
 /// A map literal's entries in the runtime's key order with no key repeated,
-/// when every key is a literal atom. Atoms order by name, and of two entries
-/// with one key the later one in the source is the one the map holds.
+/// when every key is a literal atom.
 fn entries_in_key_order(entries: &[(LoweredMapKey, ValueId)]) -> Option<Vec<(ValueId, ValueId)>> {
-    let mut by_name = std::collections::BTreeMap::new();
-    for (key, value) in entries {
-        let GroundValue::Atom(name) = key.literal.as_ref()? else {
-            return None;
-        };
-        by_name.insert(name.as_str(), (key.value, *value));
-    }
-    Some(by_name.into_values().collect())
+    entries_in_atom_key_order(
+        entries
+            .iter()
+            .map(|(key, value)| (key.literal.as_ref(), (key.value, *value))),
+    )
 }
 
 fn slot_of(fields: &[String], field: &str) -> Option<u32> {
