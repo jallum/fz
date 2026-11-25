@@ -1,0 +1,230 @@
+#---
+# purpose: "a binary or bits field read from a source whose bounds the pattern has proved is the bytes Elixir reads, in a function head, in a case body and in a receive, for fields of 0, 4, 63, 64 and 65 bytes whose lengths are constants and for fields whose lengths are run-time values, at a byte boundary and off one, from an inline source (a literal and one built at run time) and from a view (a whole buffer and a window in the middle of one), for a field that is the whole source, a field of a partial last byte, and the rest of a source from a byte boundary and from a bit offset; a source too short for the field is passed over"
+# oracle: self
+# oracle.stamp: 95788e653002dd5e
+#---
+defmodule Main do
+  # Fields at byte 3, of constant length, in a function head.
+  def head0(<<_::binary-size(3), p::binary-size(0), _::binary>>), do: p
+  def head0(_), do: :short
+  def head4(<<_::binary-size(3), p::binary-size(4), _::binary>>), do: p
+  def head4(_), do: :short
+  def head63(<<_::binary-size(3), p::binary-size(63), _::binary>>), do: p
+  def head63(_), do: :short
+  def head64(<<_::binary-size(3), p::binary-size(64), _::binary>>), do: p
+  def head64(_), do: :short
+  def head65(<<_::binary-size(3), p::binary-size(65), _::binary>>), do: p
+  def head65(_), do: :short
+
+  # The same fields in a case body.
+  def body4(src) do
+    case src do
+      <<_::binary-size(3), p::binary-size(4), _::binary>> -> p
+      _ -> :short
+    end
+  end
+
+  def body64(src) do
+    case src do
+      <<_::binary-size(3), p::binary-size(64), _::binary>> -> p
+      _ -> :short
+    end
+  end
+
+  def body65(src) do
+    case src do
+      <<_::binary-size(3), p::binary-size(65), _::binary>> -> p
+      _ -> :short
+    end
+  end
+
+  # Fields whose position and length are run-time values.
+  def sized(src, skip, take) do
+    case src do
+      <<_::binary-size(skip), p::binary-size(take), _::binary>> -> p
+      _ -> :short
+    end
+  end
+
+  # Fields that start between bytes.
+  def off4(src) do
+    case src do
+      <<_::3, p::binary-size(4), _::bitstring>> -> p
+      _ -> :short
+    end
+  end
+
+  def off64(src) do
+    case src do
+      <<_::3, p::binary-size(64), _::bitstring>> -> p
+      _ -> :short
+    end
+  end
+
+  def off65(src) do
+    case src do
+      <<_::5, p::binary-size(65), _::bitstring>> -> p
+      _ -> :short
+    end
+  end
+
+  # A field of bits, ending inside a byte.
+  def bits11(src) do
+    case src do
+      <<_::binary-size(2), p::bits-size(11), _::bitstring>> -> p
+      _ -> :short
+    end
+  end
+
+  def bits35(src) do
+    case src do
+      <<_::3, p::bits-size(35), _::bitstring>> -> p
+      _ -> :short
+    end
+  end
+
+  # The rest of the source, from a byte boundary and from a bit offset, and
+  # the source as a whole.
+  def rest3(src) do
+    case src do
+      <<_::binary-size(3), r::binary>> -> r
+      _ -> :short
+    end
+  end
+
+  def rest_bits3(src) do
+    case src do
+      <<_::3, r::bitstring>> -> r
+      _ -> :short
+    end
+  end
+
+  def whole(src) do
+    case src do
+      <<p::binary>> -> p
+      _ -> :short
+    end
+  end
+
+  def whole_sized(src, n) do
+    case src do
+      <<p::binary-size(n)>> -> p
+      _ -> :short
+    end
+  end
+
+  # Fields taken in a receive.
+  def recv4(src) do
+    send(self(), src)
+
+    receive do
+      <<_::binary-size(3), p::binary-size(4), _::binary>> -> p
+      _other -> :short
+    end
+  end
+
+  def recv64(src) do
+    send(self(), src)
+
+    receive do
+      <<_::binary-size(3), p::binary-size(64), _::binary>> -> p
+      _other -> :short
+    end
+  end
+
+  def recv65(src) do
+    send(self(), src)
+
+    receive do
+      <<_::binary-size(3), p::binary-size(65), _::binary>> -> p
+      _other -> :short
+    end
+  end
+
+  def recv_off4(src) do
+    send(self(), src)
+
+    receive do
+      <<_::3, p::binary-size(4), _::bitstring>> -> p
+      _other -> :short
+    end
+  end
+
+  def recv_rest3(src) do
+    send(self(), src)
+
+    receive do
+      <<_::binary-size(3), r::binary>> -> r
+      _other -> :short
+    end
+  end
+
+  def recv_sized(src) do
+    send(self(), {src, 5, 7})
+
+    receive do
+      {<<_::binary-size(5), p::binary-size(7), _::binary>>, _, _} -> p
+      _other -> :short
+    end
+  end
+
+  # An inline source built at run time, a view over a whole buffer, and a view
+  # of a window that starts in the middle of one.
+  def sources() do
+    buffer = :binary.copy("0123456789", 20)
+
+    [
+      {"literal, 20 bytes", "0123456789ABCDEFGHIJ"},
+      {"built, 20 bytes", "0123456789" <> "ABCDEFGHIJ"},
+      {"built, 64 bytes", :binary.copy("abcdefgh", 8)},
+      {"view, 70 bytes", :binary.copy("abcdefghij", 7)},
+      {"view, 200 bytes", buffer},
+      {"window, 100 bytes", :erlang.binary_part(buffer, 10, 100)},
+      {"window, 75 bytes", :erlang.binary_part(buffer, 33, 75)}
+    ]
+  end
+
+  def operations() do
+    [
+      {"head0", &head0/1},
+      {"head4", &head4/1},
+      {"head63", &head63/1},
+      {"head64", &head64/1},
+      {"head65", &head65/1},
+      {"body4", &body4/1},
+      {"body64", &body64/1},
+      {"body65", &body65/1},
+      {"sized 3 0", &sized(&1, 3, 0)},
+      {"sized 3 4", &sized(&1, 3, 4)},
+      {"sized 3 64", &sized(&1, 3, 64)},
+      {"sized 3 65", &sized(&1, 3, 65)},
+      {"sized 0 8", &sized(&1, 0, 8)},
+      {"sized 8 9", &sized(&1, 8, 9)},
+      {"off4", &off4/1},
+      {"off64", &off64/1},
+      {"off65", &off65/1},
+      {"bits11", &bits11/1},
+      {"bits35", &bits35/1},
+      {"rest3", &rest3/1},
+      {"rest_bits3", &rest_bits3/1},
+      {"whole", &whole/1},
+      {"whole_sized 20", &whole_sized(&1, 20)},
+      {"whole_sized 64", &whole_sized(&1, 64)},
+      {"whole_sized 70", &whole_sized(&1, 70)},
+      {"recv4", &recv4/1},
+      {"recv64", &recv64/1},
+      {"recv65", &recv65/1},
+      {"recv_off4", &recv_off4/1},
+      {"recv_rest3", &recv_rest3/1},
+      {"recv_sized", &recv_sized/1}
+    ]
+  end
+
+  def main() do
+    for {label, src} <- sources(), {name, op} <- operations() do
+      IO.puts("#{label} #{name}: #{inspect(op.(src))}")
+    end
+  end
+end
+
+Main.main()

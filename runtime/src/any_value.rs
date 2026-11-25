@@ -1508,7 +1508,7 @@ pub unsafe fn struct_field_kind_slot(addr: *const u8, kind_offset: u32) -> *mut 
 }
 
 #[inline]
-pub fn bitstring_size_for_bit_len(bit_len: u64) -> usize {
+pub const fn bitstring_size_for_bit_len(bit_len: u64) -> usize {
     let bytes_len = (bit_len as usize).div_ceil(8);
     (8 + bytes_len + 1 + 15) & !15
 }

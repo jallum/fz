@@ -1,4 +1,5 @@
 use super::*;
+use crate::fast_hash::HashMap;
 use crate::fast_hash::HashSet;
 use crate::ir_codegen::backend::{Backend, JitBackend};
 use cranelift_codegen::ir::{self, InstBuilder, MemFlagsData, types};
@@ -567,6 +568,7 @@ fn every_row_is_proved_against_its_runtime_function() {
         .chain(cell_proofs().iter().map(|proof| proof.symbol))
         .chain(box_proofs().iter().map(|proof| proof.symbol))
         .chain(BINARY_COMPARISONS.iter().map(|(symbol, ..)| *symbol))
+        .chain([SLICE_SYMBOL])
         .chain(REUSE_SYMBOLS)
         .collect();
     let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
@@ -2161,4 +2163,333 @@ fn a_binary_comparison_row_imports_only_its_bytes_comparison() {
         let compiled = compile_comparison(symbol);
         assert_eq!(compiled.imports, [symbol], "`{symbol}` imports");
     }
+}
+
+// The binary slice row is proved on windows of every length class and
+// alignment, over sources of every form. Each case is built twice in fresh
+// processes, once for the runtime function and once for the instructions, and
+// what the two leave must agree: the binary made (its form, bytes, bit length
+// and whether it is the source), the source's header, the tip, and the
+// registered placements.
+
+const SLICE_SYMBOL: &str = "fz_bs_slice_ref";
+
+/// A source binary the case builds on a heap: its bytes, its bit length, and
+/// how it is held.
+#[derive(Clone, Copy, Debug)]
+enum SliceSource {
+    /// An inline bitstring of `bytes` bytes holding `bits` bits.
+    Inline { bytes: usize, bits: u64 },
+    /// A view of a buffer of `bytes` bytes (over the sharing threshold).
+    Buffer { bytes: usize },
+    /// A view of a window of a larger buffer, which starts mid-buffer.
+    Window { start: usize, bytes: usize },
+}
+
+fn slice_pattern(len: usize) -> Vec<u8> {
+    (0..len).map(|i| (i * 7 + 3) as u8).collect()
+}
+
+impl SliceSource {
+    fn bit_len(self) -> u64 {
+        match self {
+            SliceSource::Inline { bits, .. } => bits,
+            SliceSource::Buffer { bytes } | SliceSource::Window { bytes, .. } => bytes as u64 * 8,
+        }
+    }
+
+    fn build(self, heap: &mut Heap) -> u64 {
+        match self {
+            SliceSource::Inline { bytes, bits } => {
+                let mut pattern = slice_pattern(bytes);
+                if bits % 8 != 0 {
+                    *pattern.last_mut().expect("a partial byte") &= !(0xff >> (bits % 8));
+                }
+                heap.alloc_bitstring(&pattern, bits).ref_word().raw_word()
+            }
+            SliceSource::Buffer { bytes } => heap
+                .alloc_bitstring(&slice_pattern(bytes), bytes as u64 * 8)
+                .ref_word()
+                .raw_word(),
+            SliceSource::Window { start, bytes } => {
+                let whole = heap
+                    .alloc_bitstring(&slice_pattern(start + bytes + 10), (start + bytes + 10) as u64 * 8)
+                    .ref_word()
+                    .raw_word();
+                unsafe { heap.slice(whole, start as u64 * 8, bytes as u64 * 8) }
+                    .ref_word()
+                    .raw_word()
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SliceCase {
+    source: SliceSource,
+    pos: u64,
+    bit_len: u64,
+}
+
+/// Every window of every source whose bytes the source holds: whole-byte
+/// windows of 0, 1, 4, 8, 63, 64 and 65 bytes, a window of 3 and of 35 bits,
+/// at a byte boundary, off it, and at the source's end.
+fn slice_cases() -> Vec<SliceCase> {
+    let sources = [
+        SliceSource::Inline { bytes: 0, bits: 0 },
+        SliceSource::Inline { bytes: 1, bits: 8 },
+        SliceSource::Inline { bytes: 4, bits: 32 },
+        SliceSource::Inline { bytes: 8, bits: 64 },
+        SliceSource::Inline { bytes: 20, bits: 160 },
+        SliceSource::Inline { bytes: 20, bits: 155 },
+        SliceSource::Inline { bytes: 63, bits: 504 },
+        SliceSource::Inline { bytes: 64, bits: 512 },
+        SliceSource::Buffer { bytes: 65 },
+        SliceSource::Buffer { bytes: 200 },
+        SliceSource::Window { start: 10, bytes: 150 },
+    ];
+    let lengths = [0u64, 8, 32, 64, 504, 512, 520, 3, 35];
+    let positions = [0u64, 8, 24, 3, 11, 8 * 64];
+    let mut cases = Vec::new();
+    for source in sources {
+        let total = source.bit_len();
+        for &pos in &positions {
+            for &bit_len in lengths.iter().chain(&[total.saturating_sub(pos)]) {
+                if pos + bit_len <= total {
+                    cases.push(SliceCase { source, pos, bit_len });
+                }
+            }
+        }
+    }
+    cases
+}
+
+/// What a slice run leaves, addresses replaced by what they say.
+#[derive(Debug, PartialEq, Eq)]
+struct SliceLeft {
+    kind: u8,
+    is_source: bool,
+    bit_len: u64,
+    /// The bytes the binary holds, padding included for an inline object.
+    bytes: Vec<u8>,
+    /// The words of an inline object, which a view has none of.
+    object: Vec<u64>,
+    source_shared: bool,
+    tip_used: usize,
+    tip_changed: bool,
+}
+
+fn run_slice(tip: Tip, case: SliceCase, run: impl FnOnce(*mut Process, u64) -> u64) -> SliceLeft {
+    let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
+    let mut process = Box::new(Process::new(schemas));
+    let source = case.source.build(&mut process.heap);
+    if tip == Tip::Full {
+        while tip_of(&process).1 - (heap_field(&process, INLINE_ALLOC_LAYOUT.bump_top) - tip_of(&process).0) >= 16 {
+            process.heap.alloc(16);
+        }
+    }
+    let before = tip_of(&process);
+    let result = run(&mut *process, source);
+    let after = tip_of(&process);
+    let used = heap_field(&process, INLINE_ALLOC_LAYOUT.bump_top) - after.0;
+    let packing = AnyValueRefPacking::current();
+    let bin = unsafe { Bin::of_binary(result) };
+    let kind = AnyValueRef::from_raw_word(result).expect("a binary ref").tag();
+    let size = fz_runtime::any_value::bitstring_size_for_bit_len(bin.bit_len());
+    let inline = kind == ValueKind::BITSTRING;
+    let held = if inline {
+        size - 8
+    } else {
+        (bin.bit_len() as usize).div_ceil(8)
+    };
+    SliceLeft {
+        kind: kind.tag(),
+        is_source: result == source,
+        bit_len: bin.bit_len(),
+        bytes: unsafe { std::slice::from_raw_parts(bin.ptr(), held) }.to_vec(),
+        object: if inline {
+            words_of(packing.raw_address(result) as *const u8, size / 8)
+        } else {
+            Vec::new()
+        },
+        source_shared: AnyValueRef::from_raw_word(source).expect("a ref").tag() == ValueKind::BITSTRING
+            && unsafe { fz_runtime::any_value::bitstring_is_shared(packing.raw_address(source) as *const u8) },
+        tip_used: used,
+        tip_changed: before != after,
+    }
+}
+
+/// A slice row compiled to a function of the source and the position, and of
+/// the length when it is not a constant, and the placements it registered.
+struct CompiledSlice {
+    code: *const u8,
+    counts: *const u64,
+    sizes: Vec<u32>,
+    imports: Vec<String>,
+    _backend: JitBackend,
+}
+
+fn compile_slice(constant_len: Option<u64>) -> CompiledSlice {
+    let mut backend = JitBackend::new();
+    let module = backend.module_mut();
+    let mut ctx = module.make_context();
+    let mut fbctx = FunctionBuilderContext::new();
+    let mut sig = module.make_signature();
+    let params = if constant_len.is_some() { 2 } else { 3 };
+    sig.params = vec![ir::AbiParam::new(types::I64); params];
+    sig.returns = vec![ir::AbiParam::new(types::I64)];
+    ctx.func.signature = sig.clone();
+    let sites = RefCell::new(AllocSites::declare(module).expect("declare the site counters"));
+    {
+        let mut b = FunctionBuilder::new(&mut ctx.func, &mut fbctx);
+        let entry = b.create_block();
+        b.append_block_params_for_function_params(entry);
+        b.switch_to_block(entry);
+        b.seal_block(entry);
+        let given = b.block_params(entry).to_vec();
+        let mut cache = CodegenCache::default();
+        let scope = SiteScope {
+            sites: &sites,
+            function: "recipe_parity",
+        };
+        let mut body = CodegenFn::new(&mut b, module, &mut cache, scope);
+        let process = body.process_arg();
+        let bit_len = match constant_len {
+            Some(bits) => body.b.ins().iconst(types::I64, bits as i64),
+            None => given[2],
+        };
+        let sliced = emit_slice(&mut body, SLICE_SYMBOL, &[process, given[0], given[1], bit_len]);
+        body.b.ins().return_(&[sliced]);
+        b.finalize(module.target_config());
+    }
+    let id = module
+        .declare_function("recipe_parity_slice", Linkage::Export, &sig)
+        .expect("declare the slice function");
+    module.define_function(id, &mut ctx).expect("define the slice function");
+    let (counts_id, registered) = sites.into_inner().define(module).expect("define the site counters");
+    let imports = module
+        .declarations()
+        .get_functions()
+        .filter(|(_, declaration)| declaration.linkage == Linkage::Import)
+        .filter_map(|(_, declaration)| declaration.name.clone())
+        .collect();
+    module.finalize_definitions().expect("finalize the slice function");
+    let code = module.get_finalized_function(id);
+    let (counts, _) = module.get_finalized_data(counts_id);
+    assert!(registered.iter().all(|site| site.kind == HeapAllocKind::Bitstring));
+    CompiledSlice {
+        code,
+        counts: counts.cast(),
+        sizes: registered.iter().map(|site| site.bytes).collect(),
+        imports,
+        _backend: backend,
+    }
+}
+
+fn call_slice(compiled: &CompiledSlice, constant: bool, process: *mut Process, source: u64, case: SliceCase) -> u64 {
+    unsafe {
+        if constant {
+            pinned_abi::call2(compiled.code, process, source, case.pos) as u64
+        } else {
+            pinned_abi::call3(compiled.code, process, source, case.pos, case.bit_len) as u64
+        }
+    }
+}
+
+/// Whether the row copies the window in place: it begins and ends on a byte
+/// boundary, is at most the threshold long and is not the whole source.
+fn row_copies(case: &SliceCase) -> bool {
+    case.pos.is_multiple_of(8)
+        && case.bit_len.is_multiple_of(8)
+        && case.bit_len <= 512
+        && !(case.pos == 0 && case.bit_len == case.source.bit_len())
+}
+
+fn counts_of(compiled: &CompiledSlice) -> u64 {
+    (0..compiled.sizes.len())
+        .map(|site| unsafe { *compiled.counts.add(site) })
+        .sum()
+}
+
+/// The row places what `Heap::slice` makes, for every window, with a length
+/// the code knows and one it does not, and with a tip that has room and one
+/// that has none. Each copy it places is counted once at its site.
+#[test]
+fn the_slice_row_makes_what_the_runtime_function_makes() {
+    let dynamic = compile_slice(None);
+    let mut constants: HashMap<u64, CompiledSlice> = HashMap::default();
+    let mut copies = 0u64;
+    for case in &slice_cases() {
+        let constant = constants
+            .entry(case.bit_len)
+            .or_insert_with(|| compile_slice(Some(case.bit_len)));
+        for tip in [Tip::Roomy, Tip::Full] {
+            let expected = run_slice(tip, *case, |process, source| {
+                fz_bs_slice_ref(process, source, case.pos, case.bit_len)
+            });
+            for (compiled, is_constant) in [(&*constant, true), (&dynamic, false)] {
+                let inline = run_slice(tip, *case, |process, source| {
+                    call_slice(compiled, is_constant, process, source, *case)
+                });
+                assert_eq!(
+                    inline,
+                    expected,
+                    "{case:?} with a {tip:?} tip, length {}: inline against the runtime function",
+                    if is_constant { "known" } else { "unknown" }
+                );
+            }
+            copies += u64::from(row_copies(case));
+        }
+    }
+    assert!(copies > 0, "the cases must hold windows the row copies");
+    let constant_counts: u64 = constants.values().map(counts_of).sum();
+    assert_eq!(
+        constant_counts, copies,
+        "the rows of a constant length count each copy once"
+    );
+    assert_eq!(
+        counts_of(&dynamic),
+        copies,
+        "the row of any length counts each copy once"
+    );
+}
+
+/// A row of a constant length places one object of the size that length needs
+/// and imports the runtime function for a window it does not copy; a row of any
+/// length places one of five sizes. A length that is never copied places none.
+#[test]
+fn the_slice_row_places_the_sizes_a_copy_can_have() {
+    let imports = |compiled: &CompiledSlice| {
+        let mut names = compiled.imports.clone();
+        names.sort();
+        names
+    };
+    for (bits, size) in [
+        (0u64, 16u32),
+        (8, 16),
+        (56, 16),
+        (64, 32),
+        (256, 48),
+        (504, 80),
+        (512, 80),
+    ] {
+        let compiled = compile_slice(Some(bits));
+        assert_eq!(
+            compiled.sizes,
+            [size],
+            "a copy of {bits} bits is placed as one object of {size} bytes"
+        );
+        assert_eq!(imports(&compiled), ["fz_bs_slice_ref", "fz_heap_room"]);
+    }
+    for bits in [520u64, 3, 35] {
+        let compiled = compile_slice(Some(bits));
+        assert!(
+            compiled.sizes.is_empty(),
+            "a window of {bits} bits is never copied in place"
+        );
+        assert_eq!(imports(&compiled), ["fz_bs_slice_ref"]);
+    }
+    let compiled = compile_slice(None);
+    assert_eq!(compiled.sizes, [16, 32, 48, 64, 80]);
+    assert_eq!(imports(&compiled), ["fz_bs_slice_ref", "fz_heap_room"]);
 }

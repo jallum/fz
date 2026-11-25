@@ -1,0 +1,217 @@
+literal, 20 bytes head0: ""
+literal, 20 bytes head4: "3456"
+literal, 20 bytes head63: :short
+literal, 20 bytes head64: :short
+literal, 20 bytes head65: :short
+literal, 20 bytes body4: "3456"
+literal, 20 bytes body64: :short
+literal, 20 bytes body65: :short
+literal, 20 bytes sized 3 0: ""
+literal, 20 bytes sized 3 4: "3456"
+literal, 20 bytes sized 3 64: :short
+literal, 20 bytes sized 3 65: :short
+literal, 20 bytes sized 0 8: "01234567"
+literal, 20 bytes sized 8 9: "89ABCDEFG"
+literal, 20 bytes off4: <<129, 137, 145, 153>>
+literal, 20 bytes off64: :short
+literal, 20 bytes off65: :short
+literal, 20 bytes bits11: <<50, 1::size(3)>>
+literal, 20 bytes bits35: <<129, 137, 145, 153, 5::size(3)>>
+literal, 20 bytes rest3: "3456789ABCDEFGHIJ"
+literal, 20 bytes rest_bits3: <<129, 137, 145, 153, 161, 169, 177, 185, 193, 202, 10, 18, 26, 34, 42, 50, 58, 66, 74, 10::size(5)>>
+literal, 20 bytes whole: "0123456789ABCDEFGHIJ"
+literal, 20 bytes whole_sized 20: "0123456789ABCDEFGHIJ"
+literal, 20 bytes whole_sized 64: :short
+literal, 20 bytes whole_sized 70: :short
+literal, 20 bytes recv4: "3456"
+literal, 20 bytes recv64: :short
+literal, 20 bytes recv65: :short
+literal, 20 bytes recv_off4: <<129, 137, 145, 153>>
+literal, 20 bytes recv_rest3: "3456789ABCDEFGHIJ"
+literal, 20 bytes recv_sized: "56789AB"
+built, 20 bytes head0: ""
+built, 20 bytes head4: "3456"
+built, 20 bytes head63: :short
+built, 20 bytes head64: :short
+built, 20 bytes head65: :short
+built, 20 bytes body4: "3456"
+built, 20 bytes body64: :short
+built, 20 bytes body65: :short
+built, 20 bytes sized 3 0: ""
+built, 20 bytes sized 3 4: "3456"
+built, 20 bytes sized 3 64: :short
+built, 20 bytes sized 3 65: :short
+built, 20 bytes sized 0 8: "01234567"
+built, 20 bytes sized 8 9: "89ABCDEFG"
+built, 20 bytes off4: <<129, 137, 145, 153>>
+built, 20 bytes off64: :short
+built, 20 bytes off65: :short
+built, 20 bytes bits11: <<50, 1::size(3)>>
+built, 20 bytes bits35: <<129, 137, 145, 153, 5::size(3)>>
+built, 20 bytes rest3: "3456789ABCDEFGHIJ"
+built, 20 bytes rest_bits3: <<129, 137, 145, 153, 161, 169, 177, 185, 193, 202, 10, 18, 26, 34, 42, 50, 58, 66, 74, 10::size(5)>>
+built, 20 bytes whole: "0123456789ABCDEFGHIJ"
+built, 20 bytes whole_sized 20: "0123456789ABCDEFGHIJ"
+built, 20 bytes whole_sized 64: :short
+built, 20 bytes whole_sized 70: :short
+built, 20 bytes recv4: "3456"
+built, 20 bytes recv64: :short
+built, 20 bytes recv65: :short
+built, 20 bytes recv_off4: <<129, 137, 145, 153>>
+built, 20 bytes recv_rest3: "3456789ABCDEFGHIJ"
+built, 20 bytes recv_sized: "56789AB"
+built, 64 bytes head0: ""
+built, 64 bytes head4: "defg"
+built, 64 bytes head63: :short
+built, 64 bytes head64: :short
+built, 64 bytes head65: :short
+built, 64 bytes body4: "defg"
+built, 64 bytes body64: :short
+built, 64 bytes body65: :short
+built, 64 bytes sized 3 0: ""
+built, 64 bytes sized 3 4: "defg"
+built, 64 bytes sized 3 64: :short
+built, 64 bytes sized 3 65: :short
+built, 64 bytes sized 0 8: "abcdefgh"
+built, 64 bytes sized 8 9: "abcdefgha"
+built, 64 bytes off4: <<11, 19, 27, 35>>
+built, 64 bytes off64: :short
+built, 64 bytes off65: :short
+built, 64 bytes bits11: <<99, 3::size(3)>>
+built, 64 bytes bits35: <<11, 19, 27, 35, 1::size(3)>>
+built, 64 bytes rest3: "defghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefgh"
+built, 64 bytes rest_bits3: <<11, 19, 27, 35, 43, 51, 59, 67, 11, 19, 27, 35, 43, 51, 59, 67, 11, 19, 27, 35, 43, 51, 59, 67, 11, 19, 27, 35, 43, 51, 59, 67, 11, 19, 27, 35, 43, 51, 59, 67, 11, 19, 27, 35, 43, 51, 59, 67, 11, 19, 27, 35, 43, 51, 59, 67, 11, 19, 27, 35, 43, 51, 59, 8::size(5)>>
+built, 64 bytes whole: "abcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefgh"
+built, 64 bytes whole_sized 20: :short
+built, 64 bytes whole_sized 64: "abcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefgh"
+built, 64 bytes whole_sized 70: :short
+built, 64 bytes recv4: "defg"
+built, 64 bytes recv64: :short
+built, 64 bytes recv65: :short
+built, 64 bytes recv_off4: <<11, 19, 27, 35>>
+built, 64 bytes recv_rest3: "defghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefghabcdefgh"
+built, 64 bytes recv_sized: "fghabcd"
+view, 70 bytes head0: ""
+view, 70 bytes head4: "defg"
+view, 70 bytes head63: "defghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdef"
+view, 70 bytes head64: "defghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefg"
+view, 70 bytes head65: "defghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefgh"
+view, 70 bytes body4: "defg"
+view, 70 bytes body64: "defghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefg"
+view, 70 bytes body65: "defghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefgh"
+view, 70 bytes sized 3 0: ""
+view, 70 bytes sized 3 4: "defg"
+view, 70 bytes sized 3 64: "defghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefg"
+view, 70 bytes sized 3 65: "defghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefgh"
+view, 70 bytes sized 0 8: "abcdefgh"
+view, 70 bytes sized 8 9: "ijabcdefg"
+view, 70 bytes off4: <<11, 19, 27, 35>>
+view, 70 bytes off64: <<11, 19, 27, 35, 43, 51, 59, 67, 75, 83, 11, 19, 27, 35, 43, 51, 59, 67, 75, 83, 11, 19, 27, 35, 43, 51, 59, 67, 75, 83, 11, 19, 27, 35, 43, 51, 59, 67, 75, 83, 11, 19, 27, 35, 43, 51, 59, 67, 75, 83, 11, 19, 27, 35, 43, 51, 59, 67, 75, 83, 11, 19, 27, 35>>
+view, 70 bytes off65: <<44, 76, 108, 140, 172, 204, 237, 13, 45, 76, 44, 76, 108, 140, 172, 204, 237, 13, 45, 76, 44, 76, 108, 140, 172, 204, 237, 13, 45, 76, 44, 76, 108, 140, 172, 204, 237, 13, 45, 76, 44, 76, 108, 140, 172, 204, 237, 13, 45, 76, 44, 76, 108, 140, 172, 204, 237, 13, 45, 76, 44, 76, 108, 140, 172>>
+view, 70 bytes bits11: <<99, 3::size(3)>>
+view, 70 bytes bits35: <<11, 19, 27, 35, 1::size(3)>>
+view, 70 bytes rest3: "defghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij"
+view, 70 bytes rest_bits3: <<11, 19, 27, 35, 43, 51, 59, 67, 75, 83, 11, 19, 27, 35, 43, 51, 59, 67, 75, 83, 11, 19, 27, 35, 43, 51, 59, 67, 75, 83, 11, 19, 27, 35, 43, 51, 59, 67, 75, 83, 11, 19, 27, 35, 43, 51, 59, 67, 75, 83, 11, 19, 27, 35, 43, 51, 59, 67, 75, 83, 11, 19, 27, 35, 43, 51, 59, 67, 75, 10::size(5)>>
+view, 70 bytes whole: "abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij"
+view, 70 bytes whole_sized 20: :short
+view, 70 bytes whole_sized 64: :short
+view, 70 bytes whole_sized 70: "abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij"
+view, 70 bytes recv4: "defg"
+view, 70 bytes recv64: "defghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefg"
+view, 70 bytes recv65: "defghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefgh"
+view, 70 bytes recv_off4: <<11, 19, 27, 35>>
+view, 70 bytes recv_rest3: "defghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij"
+view, 70 bytes recv_sized: "fghijab"
+view, 200 bytes head0: ""
+view, 200 bytes head4: "3456"
+view, 200 bytes head63: "345678901234567890123456789012345678901234567890123456789012345"
+view, 200 bytes head64: "3456789012345678901234567890123456789012345678901234567890123456"
+view, 200 bytes head65: "34567890123456789012345678901234567890123456789012345678901234567"
+view, 200 bytes body4: "3456"
+view, 200 bytes body64: "3456789012345678901234567890123456789012345678901234567890123456"
+view, 200 bytes body65: "34567890123456789012345678901234567890123456789012345678901234567"
+view, 200 bytes sized 3 0: ""
+view, 200 bytes sized 3 4: "3456"
+view, 200 bytes sized 3 64: "3456789012345678901234567890123456789012345678901234567890123456"
+view, 200 bytes sized 3 65: "34567890123456789012345678901234567890123456789012345678901234567"
+view, 200 bytes sized 0 8: "01234567"
+view, 200 bytes sized 8 9: "890123456"
+view, 200 bytes off4: <<129, 137, 145, 153>>
+view, 200 bytes off64: <<129, 137, 145, 153, 161, 169, 177, 185, 193, 201, 129, 137, 145, 153, 161, 169, 177, 185, 193, 201, 129, 137, 145, 153, 161, 169, 177, 185, 193, 201, 129, 137, 145, 153, 161, 169, 177, 185, 193, 201, 129, 137, 145, 153, 161, 169, 177, 185, 193, 201, 129, 137, 145, 153, 161, 169, 177, 185, 193, 201, 129, 137, 145, 153>>
+view, 200 bytes off65: <<6, 38, 70, 102, 134, 166, 198, 231, 7, 38, 6, 38, 70, 102, 134, 166, 198, 231, 7, 38, 6, 38, 70, 102, 134, 166, 198, 231, 7, 38, 6, 38, 70, 102, 134, 166, 198, 231, 7, 38, 6, 38, 70, 102, 134, 166, 198, 231, 7, 38, 6, 38, 70, 102, 134, 166, 198, 231, 7, 38, 6, 38, 70, 102, 134>>
+view, 200 bytes bits11: <<50, 1::size(3)>>
+view, 200 bytes bits35: <<129, 137, 145, 153, 5::size(3)>>
+view, 200 bytes rest3: "34567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789"
+view, 200 bytes rest_bits3: <<129, 137, 145, 153, 161, 169, 177, 185, 193, 201, 129, 137, 145, 153, 161, 169, 177, 185, 193, 201, 129, 137, 145, 153, 161, 169, 177, 185, 193, 201, 129, 137, 145, 153, 161, 169, 177, 185, 193, 201, 129, 137, 145, 153, 161, 169, 177, 185, 193, 201, 129, 137, 145, 153, 161, 169, 177, 185, 193, 201, 129, 137, 145, 153, 161, 169, 177, 185, 193, 201, 129, 137, 145, 153, 161, 169, 177, 185, 193, 201, 129, 137, 145, 153, 161, 169, 177, 185, 193, 201, 129, 137, 145, 153, 161, 169, 177, 185, 193, 201, ...>>
+view, 200 bytes whole: "01234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789"
+view, 200 bytes whole_sized 20: :short
+view, 200 bytes whole_sized 64: :short
+view, 200 bytes whole_sized 70: :short
+view, 200 bytes recv4: "3456"
+view, 200 bytes recv64: "3456789012345678901234567890123456789012345678901234567890123456"
+view, 200 bytes recv65: "34567890123456789012345678901234567890123456789012345678901234567"
+view, 200 bytes recv_off4: <<129, 137, 145, 153>>
+view, 200 bytes recv_rest3: "34567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789"
+view, 200 bytes recv_sized: "5678901"
+window, 100 bytes head0: ""
+window, 100 bytes head4: "3456"
+window, 100 bytes head63: "345678901234567890123456789012345678901234567890123456789012345"
+window, 100 bytes head64: "3456789012345678901234567890123456789012345678901234567890123456"
+window, 100 bytes head65: "34567890123456789012345678901234567890123456789012345678901234567"
+window, 100 bytes body4: "3456"
+window, 100 bytes body64: "3456789012345678901234567890123456789012345678901234567890123456"
+window, 100 bytes body65: "34567890123456789012345678901234567890123456789012345678901234567"
+window, 100 bytes sized 3 0: ""
+window, 100 bytes sized 3 4: "3456"
+window, 100 bytes sized 3 64: "3456789012345678901234567890123456789012345678901234567890123456"
+window, 100 bytes sized 3 65: "34567890123456789012345678901234567890123456789012345678901234567"
+window, 100 bytes sized 0 8: "01234567"
+window, 100 bytes sized 8 9: "890123456"
+window, 100 bytes off4: <<129, 137, 145, 153>>
+window, 100 bytes off64: <<129, 137, 145, 153, 161, 169, 177, 185, 193, 201, 129, 137, 145, 153, 161, 169, 177, 185, 193, 201, 129, 137, 145, 153, 161, 169, 177, 185, 193, 201, 129, 137, 145, 153, 161, 169, 177, 185, 193, 201, 129, 137, 145, 153, 161, 169, 177, 185, 193, 201, 129, 137, 145, 153, 161, 169, 177, 185, 193, 201, 129, 137, 145, 153>>
+window, 100 bytes off65: <<6, 38, 70, 102, 134, 166, 198, 231, 7, 38, 6, 38, 70, 102, 134, 166, 198, 231, 7, 38, 6, 38, 70, 102, 134, 166, 198, 231, 7, 38, 6, 38, 70, 102, 134, 166, 198, 231, 7, 38, 6, 38, 70, 102, 134, 166, 198, 231, 7, 38, 6, 38, 70, 102, 134, 166, 198, 231, 7, 38, 6, 38, 70, 102, 134>>
+window, 100 bytes bits11: <<50, 1::size(3)>>
+window, 100 bytes bits35: <<129, 137, 145, 153, 5::size(3)>>
+window, 100 bytes rest3: "3456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789"
+window, 100 bytes rest_bits3: <<129, 137, 145, 153, 161, 169, 177, 185, 193, 201, 129, 137, 145, 153, 161, 169, 177, 185, 193, 201, 129, 137, 145, 153, 161, 169, 177, 185, 193, 201, 129, 137, 145, 153, 161, 169, 177, 185, 193, 201, 129, 137, 145, 153, 161, 169, 177, 185, 193, 201, 129, 137, 145, 153, 161, 169, 177, 185, 193, 201, 129, 137, 145, 153, 161, 169, 177, 185, 193, 201, 129, 137, 145, 153, 161, 169, 177, 185, 193, 201, 129, 137, 145, 153, 161, 169, 177, 185, 193, 201, 129, 137, 145, 153, 161, 169, 177, 185, 193, 25::size(5)>>
+window, 100 bytes whole: "0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789"
+window, 100 bytes whole_sized 20: :short
+window, 100 bytes whole_sized 64: :short
+window, 100 bytes whole_sized 70: :short
+window, 100 bytes recv4: "3456"
+window, 100 bytes recv64: "3456789012345678901234567890123456789012345678901234567890123456"
+window, 100 bytes recv65: "34567890123456789012345678901234567890123456789012345678901234567"
+window, 100 bytes recv_off4: <<129, 137, 145, 153>>
+window, 100 bytes recv_rest3: "3456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789"
+window, 100 bytes recv_sized: "5678901"
+window, 75 bytes head0: ""
+window, 75 bytes head4: "6789"
+window, 75 bytes head63: "678901234567890123456789012345678901234567890123456789012345678"
+window, 75 bytes head64: "6789012345678901234567890123456789012345678901234567890123456789"
+window, 75 bytes head65: "67890123456789012345678901234567890123456789012345678901234567890"
+window, 75 bytes body4: "6789"
+window, 75 bytes body64: "6789012345678901234567890123456789012345678901234567890123456789"
+window, 75 bytes body65: "67890123456789012345678901234567890123456789012345678901234567890"
+window, 75 bytes sized 3 0: ""
+window, 75 bytes sized 3 4: "6789"
+window, 75 bytes sized 3 64: "6789012345678901234567890123456789012345678901234567890123456789"
+window, 75 bytes sized 3 65: "67890123456789012345678901234567890123456789012345678901234567890"
+window, 75 bytes sized 0 8: "34567890"
+window, 75 bytes sized 8 9: "123456789"
+window, 75 bytes off4: <<153, 161, 169, 177>>
+window, 75 bytes off64: <<153, 161, 169, 177, 185, 193, 201, 129, 137, 145, 153, 161, 169, 177, 185, 193, 201, 129, 137, 145, 153, 161, 169, 177, 185, 193, 201, 129, 137, 145, 153, 161, 169, 177, 185, 193, 201, 129, 137, 145, 153, 161, 169, 177, 185, 193, 201, 129, 137, 145, 153, 161, 169, 177, 185, 193, 201, 129, 137, 145, 153, 161, 169, 177>>
+window, 75 bytes off65: <<102, 134, 166, 198, 231, 7, 38, 6, 38, 70, 102, 134, 166, 198, 231, 7, 38, 6, 38, 70, 102, 134, 166, 198, 231, 7, 38, 6, 38, 70, 102, 134, 166, 198, 231, 7, 38, 6, 38, 70, 102, 134, 166, 198, 231, 7, 38, 6, 38, 70, 102, 134, 166, 198, 231, 7, 38, 6, 38, 70, 102, 134, 166, 198, 231>>
+window, 75 bytes bits11: <<53, 1::size(3)>>
+window, 75 bytes bits35: <<153, 161, 169, 177, 5::size(3)>>
+window, 75 bytes rest3: "678901234567890123456789012345678901234567890123456789012345678901234567"
+window, 75 bytes rest_bits3: <<153, 161, 169, 177, 185, 193, 201, 129, 137, 145, 153, 161, 169, 177, 185, 193, 201, 129, 137, 145, 153, 161, 169, 177, 185, 193, 201, 129, 137, 145, 153, 161, 169, 177, 185, 193, 201, 129, 137, 145, 153, 161, 169, 177, 185, 193, 201, 129, 137, 145, 153, 161, 169, 177, 185, 193, 201, 129, 137, 145, 153, 161, 169, 177, 185, 193, 201, 129, 137, 145, 153, 161, 169, 177, 23::size(5)>>
+window, 75 bytes whole: "345678901234567890123456789012345678901234567890123456789012345678901234567"
+window, 75 bytes whole_sized 20: :short
+window, 75 bytes whole_sized 64: :short
+window, 75 bytes whole_sized 70: :short
+window, 75 bytes recv4: "6789"
+window, 75 bytes recv64: "6789012345678901234567890123456789012345678901234567890123456789"
+window, 75 bytes recv65: "67890123456789012345678901234567890123456789012345678901234567890"
+window, 75 bytes recv_off4: <<153, 161, 169, 177>>
+window, 75 bytes recv_rest3: "678901234567890123456789012345678901234567890123456789012345678901234567"
+window, 75 bytes recv_sized: "8901234"
