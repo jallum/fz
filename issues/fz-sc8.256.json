@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Bugs and Cleanup",
   "blocked_by": [],
   "blocks": [
     "fz-mue.12"
@@ -13,5 +13,5 @@
   "status": "open",
   "title": "A closure that captures a union-valued variable and cases on it fails",
   "type": "bug",
-  "updated_at": "2026-11-20T21:11:59Z"
+  "updated_at": "2026-11-25T11:32:11Z"
 }
