@@ -813,6 +813,71 @@ pub extern "C" fn fz_op_neg_i(value: i64) -> FzIntegerArithmeticResult {
     }
 }
 
+/// Bitwise AND of two integers, as two's complement bits.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_op_band_ii(left: i64, right: i64) -> i64 {
+    left & right
+}
+
+/// Bitwise OR of two integers, as two's complement bits.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_op_bor_ii(left: i64, right: i64) -> i64 {
+    left | right
+}
+
+/// Bitwise exclusive OR of two integers, as two's complement bits.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_op_bxor_ii(left: i64, right: i64) -> i64 {
+    left ^ right
+}
+
+/// Bitwise complement: `-value - 1`, which every 64-bit integer has.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_op_bnot_i(value: i64) -> i64 {
+    !value
+}
+
+/// `value` shifted right by `count` bits, which keeps the sign. A count past
+/// the width shifts out every bit but the sign.
+fn shifted_right(value: i64, count: u64) -> FzIntegerArithmeticResult {
+    successful_integer(value >> count.min(u64::from(i64::BITS - 1)))
+}
+
+/// `value` shifted left by `count` bits. The shift fails when the shifted bits
+/// no longer fit a 64-bit integer, where Elixir would grow a bignum. The
+/// wrapped bits stay observable beside the failure, as in `fz_op_neg_i`.
+fn shifted_left(value: i64, count: i64) -> FzIntegerArithmeticResult {
+    let wrapped = value.wrapping_shl(count as u32);
+    let in_range = (count as u64) < u64::from(i64::BITS);
+    let fits = value == 0 || (in_range && wrapped.wrapping_shr(count as u32) == value);
+    FzIntegerArithmeticResult {
+        result: wrapped,
+        failed: u64::from(!fits),
+    }
+}
+
+/// `bsl`: a negative `count` shifts right. Fails when the result needs more
+/// than 64 bits.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_op_bsl_ii(value: i64, count: i64) -> FzIntegerArithmeticResult {
+    if count < 0 {
+        shifted_right(value, count.unsigned_abs())
+    } else {
+        shifted_left(value, count)
+    }
+}
+
+/// `bsr`: an arithmetic shift right, which keeps the sign. A negative `count`
+/// shifts left and fails when the result needs more than 64 bits.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_op_bsr_ii(value: i64, count: i64) -> FzIntegerArithmeticResult {
+    if count >= 0 {
+        shifted_right(value, count as u64)
+    } else {
+        shifted_left(value, count.wrapping_neg())
+    }
+}
+
 /// `fneg` flips the sign bit, so `-0.0` stays `-0.0`.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_op_neg_f(value: f64) -> f64 {

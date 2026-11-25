@@ -1,0 +1,74 @@
+#---
+# purpose: "Bitwise defines band, bor, bxor, bnot, bsl and bsr on two's complement integers, and a guard may call them"
+# oracle: self
+# oracle.stamp: 93ae503eb34eaf11
+#---
+defmodule Main do
+  import Bitwise
+
+  def odd?(n) when band(n, 1) == 1, do: true
+  def odd?(_), do: false
+
+  def classify(n) when bsr(n, 4) == 0, do: :nibble
+  def classify(n) when bor(n, 0xFF) == 0xFF, do: :byte
+  def classify(n) when bxor(n, -1) == bnot(n), do: :wide
+
+  def erlang_odd?(n) when :erlang.band(n, 1) == 1, do: true
+  def erlang_odd?(_), do: false
+
+  def masked(n) when (n &&& 0xF0) == 0x50, do: :fifty
+  def masked(n) when n >>> 8 > 0, do: :above
+  def masked(_), do: :other
+
+  def high(n) when bsl(1, n) > 100, do: :high
+  def high(_), do: :low
+
+  def refuses(fun) do
+    fun.()
+  rescue
+    e in ArithmeticError -> e.message
+  end
+
+  def main() do
+    IO.inspect({band(1000, 0x3FF), bor(1, 2), bxor(9, 3), bnot(2), bsl(1, 3), bsr(1000, 2)})
+    IO.inspect({band(-1, 0xFF), band(-8, 12), bor(-4, 1), bxor(-1, 5), bnot(-1), bnot(0)})
+    IO.inspect({bsl(1, 2), bsl(1, -2), bsl(-1, 2), bsl(-1, -2), bsl(0, 40), bsl(-8, -1)})
+    IO.inspect({bsr(1, 2), bsr(1, -2), bsr(-1, 2), bsr(-1, -2), bsr(-8, 1), bsr(5, 200), bsr(-5, 200)})
+    IO.inspect({1000 &&& 0x3FF, 1 ||| 2, 1 <<< 3, 1000 >>> 2, -1 <<< -2, -8 >>> 1})
+    IO.inspect({1 ||| 2 &&& 3, 1 <<< 2 + 1, 1000 >>> 2 >>> 1, (6 &&& 3) == 2})
+    IO.inspect({:erlang.band(1000, 0x3FF), :erlang.bor(1, 2), :erlang.bxor(9, 3), :erlang.bnot(2)})
+    IO.inspect({:erlang.bsl(1, 3), :erlang.bsl(1, -2), :erlang.bsr(1000, 2), :erlang.bsr(1, -2)})
+    IO.inspect(Enum.map([1, 2, 3], &erlang_odd?/1))
+    IO.inspect({Bitwise.band(6, 3), Bitwise.bor(6, 3), Bitwise.bxor(6, 3)})
+    IO.inspect(Enum.map([1, 2, 3, 4, 7], &odd?/1))
+    IO.inspect(Enum.map([3, 200, -5], &classify/1))
+    IO.inspect({high(3), high(10)})
+    IO.inspect(Enum.map([0x5A, 0x1FF, 3], &masked/1))
+    IO.inspect(Enum.map([1, 2, 3, 4], &band(&1, 1)))
+    IO.inspect(Enum.reduce([1, 2, 4, 8], 0, &bor/2))
+
+    IO.inspect(
+      case 12 do
+        n when band(n, 4) != 0 -> :bit_two_set
+        _ -> :clear
+      end
+    )
+
+    mixed = [1, 1.5, :a, nil]
+    IO.inspect(Enum.uniq(Enum.map(mixed, fn x -> refuses(fn -> band(x, 1) end) end)))
+    IO.inspect(Enum.uniq(Enum.map(mixed, fn x -> refuses(fn -> bor(1, x) end) end)))
+    IO.inspect(Enum.uniq(Enum.map(mixed, fn x -> refuses(fn -> bxor(x, x) end) end)))
+    IO.inspect(Enum.uniq(Enum.map(mixed, fn x -> refuses(fn -> bnot(x) end) end)))
+    IO.inspect(Enum.uniq(Enum.map(mixed, fn x -> refuses(fn -> bsl(x, 1) end) end)))
+    IO.inspect(Enum.uniq(Enum.map(mixed, fn x -> refuses(fn -> bsr(1, x) end) end)))
+    IO.inspect(Enum.uniq(Enum.map(mixed, fn x -> refuses(fn -> :erlang.band(x, 1) end) end)))
+    IO.inspect(Enum.uniq(Enum.map(mixed, fn x -> refuses(fn -> :erlang.bsl(1, x) end) end)))
+    IO.inspect(Enum.uniq(Enum.map(mixed, fn x -> refuses(fn -> x &&& 1 end) end)))
+    IO.inspect(Enum.uniq(Enum.map(mixed, fn x -> refuses(fn -> 1 ||| x end) end)))
+    IO.inspect(Enum.uniq(Enum.map(mixed, fn x -> refuses(fn -> x <<< 1 end) end)))
+    IO.inspect(Enum.uniq(Enum.map(mixed, fn x -> refuses(fn -> 1 >>> x end) end)))
+    IO.inspect(Enum.map(mixed, &odd?/1))
+  end
+end
+
+Main.main()

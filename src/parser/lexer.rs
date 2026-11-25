@@ -94,6 +94,14 @@ pub enum Tok {
     AndAnd,
     /// `||` — `or` for any value, answering the value that decided.
     OrOr,
+    /// `&&&` — `Bitwise.band/2`.
+    AndAndAnd,
+    /// `|||` — `Bitwise.bor/2`.
+    OrOrOr,
+    /// `<<<` — `Bitwise.bsl/2`.
+    LtLtLt,
+    /// `>>>` — `Bitwise.bsr/2`.
+    GtGtGt,
     /// `!` — `not` for any value.
     Bang,
     Lt,
@@ -186,6 +194,10 @@ pub(crate) fn is_infix_only_continuation(tok: &Tok) -> bool {
             | Tok::And
             | Tok::AndAnd
             | Tok::OrOr
+            | Tok::AndAndAnd
+            | Tok::OrOrOr
+            | Tok::LtLtLt
+            | Tok::GtGtGt
             | Tok::EqEq
             | Tok::NotEq
             | Tok::EqEqEq
@@ -1341,6 +1353,12 @@ impl<'a> Lexer<'a> {
             b'~' if self.peek(1).is_some_and(|c| c.is_ascii_alphabetic()) => self.read_sigil(start)?,
 
             b'<' => match self.peek(1) {
+                Some(b'<') if self.peek(2) == Some(b'<') => {
+                    self.bump();
+                    self.bump();
+                    self.bump();
+                    Tok::LtLtLt
+                }
                 Some(b'<') => {
                     self.bump();
                     self.bump();
@@ -1367,6 +1385,12 @@ impl<'a> Lexer<'a> {
                 }
             },
             b'>' => match self.peek(1) {
+                Some(b'>') if self.peek(2) == Some(b'>') => {
+                    self.bump();
+                    self.bump();
+                    self.bump();
+                    Tok::GtGtGt
+                }
                 Some(b'>') => {
                     self.bump();
                     self.bump();
@@ -1404,6 +1428,12 @@ impl<'a> Lexer<'a> {
                     self.bump();
                     Tok::Pipe
                 }
+                Some(b'|') if self.peek(2) == Some(b'|') => {
+                    self.bump();
+                    self.bump();
+                    self.bump();
+                    Tok::OrOrOr
+                }
                 Some(b'|') => {
                     self.bump();
                     self.bump();
@@ -1419,6 +1449,12 @@ impl<'a> Lexer<'a> {
                 Tok::Caret
             }
             b'&' => match self.peek(1) {
+                Some(b'&') if self.peek(2) == Some(b'&') => {
+                    self.bump();
+                    self.bump();
+                    self.bump();
+                    Tok::AndAndAnd
+                }
                 Some(b'&') => {
                     self.bump();
                     self.bump();

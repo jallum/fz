@@ -1907,3 +1907,32 @@ fn a_named_function_reports_its_module_name_and_arity_and_a_lambda_reports_nothi
         }
     });
 }
+
+/// Intent: the bit operations answer as Erlang's do on two's complement
+/// integers, and a shift fails exactly where its answer needs a bignum.
+#[test]
+fn bit_operations_follow_twos_complement_and_fail_only_when_a_shift_overflows() {
+    let ok = |result| FzIntegerArithmeticResult { result, failed: 0 };
+    let failed_with = |result| FzIntegerArithmeticResult { result, failed: 1 };
+    assert_eq!(fz_op_band_ii(-1, 0x3FF), 0x3FF);
+    assert_eq!(fz_op_bor_ii(1, -4), -3);
+    assert_eq!(fz_op_bxor_ii(-1, 5), -6);
+    assert_eq!(fz_op_bnot_i(2), -3);
+    assert_eq!(fz_op_bnot_i(i64::MIN), i64::MAX);
+    assert_eq!(fz_op_bsl_ii(1, 3), ok(8));
+    assert_eq!(fz_op_bsl_ii(-1, 63), ok(i64::MIN));
+    assert_eq!(fz_op_bsl_ii(1, 62), ok(1 << 62));
+    assert_eq!(fz_op_bsl_ii(1, 63), failed_with(i64::MIN));
+    assert_eq!(fz_op_bsl_ii(1, 64), failed_with(1));
+    assert_eq!(fz_op_bsl_ii(0, i64::MAX), ok(0));
+    assert_eq!(fz_op_bsl_ii(-8, -1), ok(-4));
+    assert_eq!(fz_op_bsl_ii(5, i64::MIN), ok(0));
+    assert_eq!(fz_op_bsl_ii(-5, i64::MIN), ok(-1));
+    assert_eq!(fz_op_bsr_ii(-8, 1), ok(-4));
+    assert_eq!(fz_op_bsr_ii(8, 2), ok(2));
+    assert_eq!(fz_op_bsr_ii(i64::MAX, 200), ok(0));
+    assert_eq!(fz_op_bsr_ii(-1, 200), ok(-1));
+    assert_eq!(fz_op_bsr_ii(1, -3), ok(8));
+    assert_eq!(fz_op_bsr_ii(1, -63), failed_with(i64::MIN));
+    assert_eq!(fz_op_bsr_ii(0, i64::MIN), ok(0));
+}

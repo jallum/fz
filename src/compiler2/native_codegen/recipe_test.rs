@@ -395,6 +395,30 @@ fn integer_arithmetic(symbol: &'static str, reference: extern "C" fn(i64, i64) -
     )
 }
 
+/// A total integer row over every pair of integers.
+fn integer_pair_value(symbol: &'static str, reference: extern "C" fn(i64, i64) -> i64) -> Parity {
+    let ints = integer_words();
+    parity(symbol, Shape::Value, &[Lane::Word; 2], pairs(&ints, &ints), move |a| {
+        value(reference(a[0] as i64, a[1] as i64) as u64)
+    })
+}
+
+/// A shift row over every integer and the counts around each boundary: zero,
+/// the widest left shift, the first count past it, and their negatives.
+fn integer_shift(symbol: &'static str, reference: extern "C" fn(i64, i64) -> FzIntegerArithmeticResult) -> Parity {
+    let counts: Vec<u64> = [0, 1, 2, 62, 63, 64, 65, -1, -2, -62, -63, -64, -65, i64::MIN, i64::MAX]
+        .iter()
+        .map(|count: &i64| *count as u64)
+        .collect();
+    parity(
+        symbol,
+        Shape::Checked,
+        &[Lane::Word; 2],
+        pairs(&integer_words(), &counts),
+        move |a| checked(reference(a[0] as i64, a[1] as i64)),
+    )
+}
+
 /// `fz_value_eq_raw_const` for a call site that knows the constant kind.
 fn eq_raw_const(kind: ValueKind, words: &Words, raws: Vec<u64>) -> Parity {
     Parity {
@@ -476,6 +500,14 @@ fn proofs() -> Vec<Parity> {
         parity("fz_op_neg_i", Shape::Checked, &[Lane::Word], singles(&ints), |a| {
             checked(fz_op_neg_i(a[0] as i64))
         }),
+        integer_pair_value("fz_op_band_ii", fz_op_band_ii),
+        integer_pair_value("fz_op_bor_ii", fz_op_bor_ii),
+        integer_pair_value("fz_op_bxor_ii", fz_op_bxor_ii),
+        parity("fz_op_bnot_i", Shape::Value, &[Lane::Word], singles(&ints), |a| {
+            value(fz_op_bnot_i(a[0] as i64) as u64)
+        }),
+        integer_shift("fz_op_bsl_ii", fz_op_bsl_ii),
+        integer_shift("fz_op_bsr_ii", fz_op_bsr_ii),
         integer_compare("fz_op_lt_ii", fz_op_lt_ii),
         integer_compare("fz_op_lte_ii", fz_op_lte_ii),
         integer_compare("fz_op_gt_ii", fz_op_gt_ii),

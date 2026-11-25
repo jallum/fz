@@ -397,4 +397,119 @@ defmodule :erlang do
   @spec bad_arguments(binary) :: no_return()
   defp bad_arguments(complaints),
     do: raise(%ArgumentError{message: "errors were found at the given arguments:\n\n" <> complaints})
+
+  @spec arithmetic_error() :: no_return()
+  defp arithmetic_error(), do: raise(%ArithmeticError{message: "bad argument in arithmetic expression"})
+
+  @doc """
+  Returns the bitwise NOT of `expr`.
+
+  Raises `ArithmeticError` when an operand is not an integer. A guard may call it.
+
+  ## Examples
+
+      :erlang.bnot(2)
+      #=> -3
+
+  """
+  @spec bnot(integer) :: integer
+  def bnot(expr) when is_integer(expr), do: fz_op_bnot_i(expr)
+  def bnot(_), do: arithmetic_error()
+
+  extern "C" defp fz_op_bnot_i(integer) :: integer
+
+  @doc """
+  Returns the bitwise AND of `left` and `right`.
+
+  Raises `ArithmeticError` when an operand is not an integer. A guard may call it.
+
+  ## Examples
+
+      :erlang.band(9, 3)
+      #=> 1
+
+  """
+  @spec band(integer, integer) :: integer
+  def band(left, right) when is_integer(left) and is_integer(right), do: fz_op_band_ii(left, right)
+  def band(_, _), do: arithmetic_error()
+
+  extern "C" defp fz_op_band_ii(integer, integer) :: integer
+
+  @doc """
+  Returns the bitwise OR of `left` and `right`.
+
+  Raises `ArithmeticError` when an operand is not an integer. A guard may call it.
+
+  ## Examples
+
+      :erlang.bor(9, 3)
+      #=> 11
+
+  """
+  @spec bor(integer, integer) :: integer
+  def bor(left, right) when is_integer(left) and is_integer(right), do: fz_op_bor_ii(left, right)
+  def bor(_, _), do: arithmetic_error()
+
+  extern "C" defp fz_op_bor_ii(integer, integer) :: integer
+
+  @doc """
+  Returns the bitwise XOR of `left` and `right`.
+
+  Raises `ArithmeticError` when an operand is not an integer. A guard may call it.
+
+  ## Examples
+
+      :erlang.bxor(9, 3)
+      #=> 10
+
+  """
+  @spec bxor(integer, integer) :: integer
+  def bxor(left, right) when is_integer(left) and is_integer(right), do: fz_op_bxor_ii(left, right)
+  def bxor(_, _), do: arithmetic_error()
+
+  extern "C" defp fz_op_bxor_ii(integer, integer) :: integer
+
+  @doc """
+  Returns `left` shifted left by `right` bits; a negative `right` shifts right.
+
+  Raises `ArithmeticError` when an operand is not an integer. A guard may call it.
+
+  ## Examples
+
+      :erlang.bsl(1, 2)
+      #=> 4
+
+      :erlang.bsl(1, -2)
+      #=> 0
+
+  """
+  @spec bsl(integer, integer) :: integer
+  def bsl(left, right) when is_integer(left) and is_integer(right), do: fz_op_bsl_ii(left, right)
+  def bsl(_, _), do: arithmetic_error()
+
+  extern "C" defp fz_op_bsl_ii(integer, integer) :: integer,
+    raises: ArithmeticError,
+    message: "bad argument in arithmetic expression"
+
+  @doc """
+  Returns `left` shifted right by `right` bits, keeping the sign; a negative `right` shifts left.
+
+  Raises `ArithmeticError` when an operand is not an integer. A guard may call it.
+
+  ## Examples
+
+      :erlang.bsr(1, 2)
+      #=> 0
+
+      :erlang.bsr(1, -2)
+      #=> 4
+
+  """
+  @spec bsr(integer, integer) :: integer
+  def bsr(left, right) when is_integer(left) and is_integer(right), do: fz_op_bsr_ii(left, right)
+  def bsr(_, _), do: arithmetic_error()
+
+  extern "C" defp fz_op_bsr_ii(integer, integer) :: integer,
+    raises: ArithmeticError,
+    message: "bad argument in arithmetic expression"
 end

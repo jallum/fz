@@ -25,6 +25,10 @@ const RUNTIME_MODULE_SOURCES: &[RuntimeModuleSource] = &[
         source: include_str!("../../lib/collectable.fz"),
     },
     RuntimeModuleSource {
+        name: "Bitwise",
+        source: include_str!("../../lib/bitwise.fz"),
+    },
+    RuntimeModuleSource {
         name: "Enumerable",
         source: include_str!("../../lib/enumerable.fz"),
     },

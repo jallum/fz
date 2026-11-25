@@ -1,0 +1,30 @@
+{1000, 3, 10, -3, 8, 250}
+{255, 8, -3, -6, 0, -1}
+{4, 0, -4, -1, 0, -4}
+{0, 4, -1, -4, -4, 0, -1}
+{1000, 3, 8, 250, -1, -4}
+{3, 8, 125, true}
+{1000, 3, 10, -3}
+{8, 0, 250, 4}
+[true, false, true]
+{2, 7, 5}
+[true, false, true, false, true]
+[:nibble, :byte, :wide]
+{:low, :high}
+[:fifty, :above, :other]
+[1, 0, 1, 0]
+15
+:bit_two_set
+[1, "bad argument in arithmetic expression"]
+[1, "bad argument in arithmetic expression"]
+[0, "bad argument in arithmetic expression"]
+[-2, "bad argument in arithmetic expression"]
+[2, "bad argument in arithmetic expression"]
+[0, "bad argument in arithmetic expression"]
+[1, "bad argument in arithmetic expression"]
+[2, "bad argument in arithmetic expression"]
+[1, "bad argument in arithmetic expression"]
+[1, "bad argument in arithmetic expression"]
+[2, "bad argument in arithmetic expression"]
+[0, "bad argument in arithmetic expression"]
+[true, false, false, false]
