@@ -1,0 +1,25 @@
+#---
+# purpose: Kernel.binary_part/3 returns a part of a binary in a body, a negative length counts back, and an out-of-range part raises ArgumentError naming the argument.
+# oracle: self
+# oracle.stamp: a067ef42877ffe98
+#---
+defmodule Main do
+  def part(b), do: binary_part(b, 1, 2)
+  def back(b), do: binary_part(b, 3, -2)
+
+  def out_of_range(b, start, length) do
+    binary_part(b, start, length)
+  rescue
+    e in ArgumentError -> Exception.message(e)
+  end
+
+  def main() do
+    IO.inspect(part("abcd"))
+    IO.inspect(back("abcd"))
+    IO.puts(out_of_range("abcd", 3, 4))
+    IO.puts(out_of_range("abcd", 9, 1))
+    IO.puts(out_of_range("abcd", 1, -2))
+  end
+end
+
+Main.main()
