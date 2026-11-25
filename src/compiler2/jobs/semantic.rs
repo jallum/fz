@@ -19,7 +19,7 @@ use crate::source::Span;
 use super::super::SourceOwner;
 use super::super::body::{
     CallArg, CallSiteId, ControlDestination, DirectCallee, LoweredBody, LoweredEntry, LoweredMapKey, LoweredStep,
-    LoweredTail, MapUpdateSite, ValueId,
+    LoweredTail, MapBaseSite, ValueId,
 };
 use super::super::contract::AppliedFunctionContract;
 use super::super::dispatch_reachability::{ReachedEdges, calculate_dispatch_reachability};
@@ -1188,7 +1188,7 @@ fn analyze_tail(
             }
             let pins = pinned_tys(values, &bindings.pinned);
             let reachability = calculate_dispatch_reachability(world.types_mut(), &dispatch.plan, &input_tys, &pins);
-            if let Some(site) = &dispatch.map_update
+            if let Some(site) = &dispatch.map_base
                 && reachability.outcome_inputs.is_empty()
                 && !world.types().is_empty(&input_tys[0])
             {
@@ -2812,7 +2812,7 @@ fn activation_contract_return(
 fn emit_not_a_map(
     tel: &impl crate::telemetry::Telemetry,
     world: &World,
-    site: &MapUpdateSite,
+    site: &MapBaseSite,
     base_ty: &Ty,
 ) -> FatalError {
     let observed = world.types().display_for_diag(base_ty);

@@ -1,0 +1,18 @@
+#---
+# purpose: "a field read on a value the compiler knows is no map still compiles, and raises BadMapError when it runs, as in Elixir"
+# oracle: self
+# oracle.stamp: 2283420798522acb
+#---
+#
+# The binary is known at the read, so the read can never find a map. That is
+# no compile error: the read takes its miss arm and raises when it is reached.
+defmodule Main do
+  def main() do
+    v = "bin"
+    v.a
+  rescue
+    e in BadMapError -> IO.puts(Exception.message(e))
+  end
+end
+
+Main.main()

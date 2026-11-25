@@ -840,7 +840,7 @@ defmodule Kernel do
   now owns cleanup of the returned raw payload.
   """
   @spec claim_resource(resource(t)) :: {:ok, t} | {:error, :closed} when t: integer | c_pointer
-  def claim_resource(resource) do
+  def claim_resource(resource :: resource(integer | c_pointer)) do
     value = resource.value
     claim_resource_result(fz_resource_claim(resource), value)
   end

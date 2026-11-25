@@ -73,8 +73,8 @@ impl Callee {
         match expr {
             Expr::BoundFunction(function) => Some(Self::Bound(*function)),
             Expr::FnRef { name, arity: declared } => (*declared == arity).then(|| Self::Name(name.clone())),
-            Expr::Index(module, function) => match (&module.node, &function.node) {
-                (Expr::Atom(module), Expr::Atom(name)) if !fz_runtime::module_name::is_alias_namespace_atom(module) => {
+            Expr::Field(module, name) => match &module.node {
+                Expr::Atom(module) if !fz_runtime::module_name::is_alias_namespace_atom(module) => {
                     Some(Self::Name(CallableName {
                         module: Some(ModuleTarget::Exact(ModuleName::from_atom_name(module)?)),
                         name: name.clone(),
@@ -141,8 +141,7 @@ impl CallableName {
                         name,
                     });
                 }
-                Expr::Index(target, field) => {
-                    let Expr::Atom(name) = &field.node else { return None };
+                Expr::Field(target, name) => {
                     path.push(name.clone());
                     current = &target.node;
                 }
@@ -331,7 +330,11 @@ pub enum Expr {
         module: ModuleTarget,
         fields: Vec<(String, Spanned<Expr>)>,
     },
-    /// m[k] — bracket access; returns nil if key absent.
+    /// `target.name`: selects `name` of `target`. Read as a value it is a field
+    /// read, and as a call target it names a function of a module.
+    Field(Box<Spanned<Expr>>, String),
+    /// `m[k]` — bracket access, which `Access.get/3` answers: the value `k`
+    /// holds, or nil when `m` has none.
     Index(Box<Spanned<Expr>>, Box<Spanned<Expr>>),
 
     // named call: target(args...) — target is an expr, usually Var. This is

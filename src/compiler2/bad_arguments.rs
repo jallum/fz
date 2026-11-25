@@ -403,7 +403,6 @@ fn text(span: Span, words: &str) -> Spanned<Expr> {
 
 fn remote(span: Span, module: &str, function: &str, args: Vec<Spanned<Expr>>) -> Spanned<Expr> {
     let module = Spanned::new(Expr::Alias(ModuleName::from_segments(vec![module.to_string()])), span);
-    let function = Spanned::new(Expr::Atom(function.to_string()), span);
-    let callee = Spanned::new(Expr::Index(Box::new(module), Box::new(function)), span);
+    let callee = Spanned::new(Expr::Field(Box::new(module), function.to_string()), span);
     Spanned::new(Expr::Call(Box::new(callee), args), span)
 }

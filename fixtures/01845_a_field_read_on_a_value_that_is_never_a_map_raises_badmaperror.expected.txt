@@ -1,0 +1,4 @@
+expected a map, got:
+
+    "bin"
+

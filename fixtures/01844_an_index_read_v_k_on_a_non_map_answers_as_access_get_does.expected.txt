@@ -1,0 +1,15 @@
+map: 1
+map without the key: nil
+nil: nil
+keyword list: 5
+list without the key: nil
+empty list: nil
+keyword list, string key: ArgumentError the Access module supports only keyword lists (with atom keys), got: "x"
+
+If you want to search lists of tuples, use List.keyfind/3
+keyword list, integer key: ArgumentError the Access module does not support accessing lists by index, got: 0
+
+Accessing a list by index is typically discouraged in Elixir, instead we prefer to use the Enum module to manipulate lists as a whole. If you really must access a list element by index, you can use Enum.at/2 or the functions in the List module
+int: FunctionClauseError Access :get 3 no function clause matching in Access.get/3
+binary: FunctionClauseError Access :get 3 no function clause matching in Access.get/3
+tuple: FunctionClauseError Access :get 3 no function clause matching in Access.get/3

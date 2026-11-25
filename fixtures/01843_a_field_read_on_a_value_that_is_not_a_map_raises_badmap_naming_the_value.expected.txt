@@ -1,0 +1,26 @@
+map: 1
+struct: 2
+int: BadMapError 1 expected a map, got:
+
+    1
+
+nil: BadMapError nil expected a map, got:
+
+    nil
+
+list: BadMapError [1, 2] expected a map, got:
+
+    [1, 2]
+
+keyword list: BadMapError [a: 5] expected a map, got:
+
+    [a: 5]
+
+binary: BadMapError "bin" expected a map, got:
+
+    "bin"
+
+tuple: BadMapError {1, 2} expected a map, got:
+
+    {1, 2}
+

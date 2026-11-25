@@ -1,0 +1,6 @@
+# Unproven field and index reads reach live BadMapError / Access.get arms, as in Elixir; accepted by the user 2026-11-25
+largest drive requests +60
+total requests +73
+drives +1
+derivations +175
+reads handed +1414

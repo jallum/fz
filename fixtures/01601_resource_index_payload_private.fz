@@ -1,5 +1,5 @@
 #---
-# purpose: resource payloads do not leak through non-atom map indexing outside the owning module
+# purpose: resource payloads do not leak through non-atom map indexing outside the owning module: indexing a resource is refused as Access.get/3 refuses any value it has no clause for
 #---
 defmodule R do
   @type t :: opaque resource(integer)
@@ -10,5 +10,13 @@ end
 
 def main() do
   h = R.make()
-  dbg(h[0])
+
+  refused =
+    try do
+      h[0]
+    rescue
+      FunctionClauseError -> :refused
+    end
+
+  dbg(refused)
 end

@@ -62,7 +62,7 @@ use conj::Conj;
 use descr::Descr;
 use descr::OpaqueTag;
 use dnf::dnf_intersect_with;
-use fz_runtime::module_name::STRUCT_MODULE_FIELD;
+use fz_runtime::module_name::{RESOURCE_PAYLOAD_FIELD, STRUCT_MODULE_FIELD};
 pub use sigs::MapDomain;
 use sigs::{
     ArrowSig, ClosureLit, ConsSig, ListSig, MapField, MapSig, MergeSig, PosMeet, ResourceSig, TupleSig,
@@ -4828,7 +4828,7 @@ fn can_miss_exact(cx: TyCtx<'_>, d: &Descr, key: &MapKey) -> bool {
 }
 
 fn reads_resource_payload(key: &MapKey) -> bool {
-    matches!(key, MapKey::Atom(name) if name == "value")
+    matches!(key, MapKey::Atom(name) if name == RESOURCE_PAYLOAD_FIELD)
 }
 
 /// What the maps of `d` hold in one slot, as the signature's own type and

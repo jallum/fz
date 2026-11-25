@@ -125,6 +125,9 @@ impl ModuleName {
 /// The field a struct answers with its own module: `p.__struct__`.
 pub const STRUCT_MODULE_FIELD: &str = "__struct__";
 
+/// The one field a resource answers: its payload, `r.value`.
+pub const RESOURCE_PAYLOAD_FIELD: &str = "value";
+
 /// The root every module-name atom hangs from.
 const ALIAS_ATOM_ROOT: &str = "Elixir";
 

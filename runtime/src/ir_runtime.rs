@@ -34,7 +34,7 @@ use crate::bitstr::{BitReader, BitType, Endian, apply_endian_for_read, sign_exte
 use crate::construction::{self, FzBsField};
 use crate::exec_ctx::ExecCtx;
 use crate::heap::{AllocStat, MapPart, StubSite, closure_capture_ref, list_head_ref, list_tail_ref};
-use crate::module_name::STRUCT_MODULE_FIELD;
+use crate::module_name::{RESOURCE_PAYLOAD_FIELD, STRUCT_MODULE_FIELD};
 use crate::park::{ParkRecord, ReceiveSite};
 use crate::process::Process;
 use crate::resource::{ResourceHandle, ResourceStub, alloc_resource};
@@ -2256,7 +2256,11 @@ pub extern "C" fn fz_struct_get_named_field_ref(process: *mut Process, value_ref
     let value_ref = any_value_ref_from_word(value_ref_word, "fz_struct_get_named_field_ref");
     if value_ref.tag() == ValueKind::RESOURCE {
         let field_name = (unsafe { &*process }).node.atom_name(field_atom_id as u32);
-        assert_eq!(field_name.as_deref(), Some("value"), "a resource's one field is value");
+        assert_eq!(
+            field_name.as_deref(),
+            Some(RESOURCE_PAYLOAD_FIELD),
+            "a resource's one field is its payload"
+        );
         return resource_payload_ref(value_ref).raw_word();
     }
     map_get(process, value_ref, AnyValue::atom(field_atom_id as u32))

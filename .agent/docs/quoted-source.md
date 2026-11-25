@@ -137,7 +137,10 @@ authority. See [`canonical-form`](canonical-form.md#canonbackendprogram).
   real `Access` would, and matching on segments silently turned every
   user-defined `get/2` into a map index. Elixir draws the same line, with a
   resolved module atom plus `from_brackets: true` in meta. The marker is not
-  writable from source.
+  writable from source. The decoder gives a bracket access `Expr::Index` and
+  a `target.name` `Expr::Field`: the two read differently (`v.a` raises
+  `BadMapError` for a non-map, `v[k]` asks `Access.get/3`), so no later stage
+  has to tell them apart.
 - In an expression the expander rewrites a chain of `<>` to one `<<>>`
   construction of every operand, each `::binary` unless it is a literal binary,
   as Elixir does, so a failing operand is named by its place in the chain.

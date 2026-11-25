@@ -641,6 +641,7 @@ fn walk_guard_calls<E>(
         | Expr::Map(_)
         | Expr::MapUpdate(_, _)
         | Expr::Struct { .. }
+        | Expr::Field(_, _)
         | Expr::Index(_, _)
         | Expr::ClosureCall(_, _)
         | Expr::If(_, _, _)

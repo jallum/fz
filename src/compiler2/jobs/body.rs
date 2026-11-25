@@ -17,10 +17,11 @@ use crate::ast::{
 use crate::diag::Diagnostic;
 use crate::diag::codes;
 use crate::dispatch_matrix::pattern::{
-    LastResort, PatternBodyId, PatternDispatchError, PatternRow, SourcePatternError, SourcePatternRows,
-    pattern_dispatch_from_source, pattern_dispatch_from_source_with_resolver,
+    LastResort, PatternBodyId, PatternDispatchError, PatternRow, PatternSubjectRef, SourcePatternError,
+    SourcePatternRows, pattern_dispatch_from_source, pattern_dispatch_from_source_with_resolver,
 };
 use fz_runtime::any_value::ValueKind;
+use fz_runtime::module_name::RESOURCE_PAYLOAD_FIELD;
 
 use crate::function_surface::FunctionSurface;
 use crate::ground_value::GroundValue;
@@ -31,7 +32,7 @@ use crate::source::{SourceMap, Span};
 use super::super::body::{
     BodyTables, CallArg, CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, ControlEntryOrigin,
     DirectCallee, DispatchBindings, LoweredBitField, LoweredBitFieldSpec, LoweredBitSize, LoweredBody, LoweredClause,
-    LoweredEntry, LoweredMapKey, LoweredStep, LoweredTail, MapUpdateSite, OutcomeArgument, ReceiveAfter,
+    LoweredEntry, LoweredMapKey, LoweredStep, LoweredTail, MapBaseSite, OutcomeArgument, ReceiveAfter,
     SubjectOriginRoot, SubjectOwner, SubjectPath, ValueId, step_used_values,
 };
 use super::super::code::SourceOwner;
@@ -157,7 +158,7 @@ struct ExprDispatch {
     /// its last resort instead.
     miss_block: Option<ExprBlock>,
     /// Set when this dispatch is a map update's test that its base is a map.
-    map_update: Option<MapUpdateSite>,
+    map_base: Option<MapBaseSite>,
 }
 
 #[derive(Debug)]
@@ -757,6 +758,9 @@ fn collect_local_dispatch_requirements(
             for expr in splices {
                 collect_local_dispatch_requirements(world, tel, namespace, owner_module, owner, expr, reads, waits)?;
             }
+        }
+        Expr::Field(base, _) => {
+            collect_local_dispatch_requirements(world, tel, namespace, owner_module, owner, base, reads, waits)?;
         }
         Expr::BinOp(_, left, right) | Expr::Index(left, right) => {
             collect_local_dispatch_requirements(world, tel, namespace, owner_module, owner, left, reads, waits)?;
@@ -1429,14 +1433,7 @@ impl<'a, 'w, 'tel, 'f, 'env, 'steps, 'q, T: crate::telemetry::Telemetry>
             value,
             callsite,
             callee: DirectCallee::Function(function),
-            args: args
-                .into_iter()
-                .map(|value| CallArg {
-                    value,
-                    ascription: None,
-                    ownership: crate::fz_ir::OwnershipMode::Share,
-                })
-                .collect(),
+            args: args.into_iter().map(shared_arg).collect(),
         });
         Ok(value)
     }
@@ -1875,38 +1872,25 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                     };
                     lowered.push((lowered_key, self.lower_expr(value, env, steps)?));
                 }
-                let site = MapUpdateSite {
+                let site = MapBaseSite {
                     span: expr.span,
-                    base: match &base_expr.node {
-                        Expr::Var(var) => Some(var.name.clone()),
-                        _ => None,
-                    },
+                    base: written_base(base_expr),
                 };
                 self.lower_map_update(site, base, lowered, steps)
             }
             Expr::Struct { module, fields } => self.lower_struct_expr(expr.span, module, fields, env, steps),
             Expr::Bitstring(fields) => self.lower_bitstring_expr(expr.span, fields, env, steps),
-            Expr::Index(base, key) => {
-                let base = self.lower_expr(base, env, steps)?;
-                let value = self.fresh_value();
-                if let Expr::Atom(field) = &key.node {
-                    steps.push(ExprStep::FieldAccess {
-                        value,
-                        base,
-                        field: field.clone(),
-                    });
-                } else {
-                    let lowered_key = LoweredMapKey {
-                        value: self.lower_expr(key, env, steps)?,
-                        literal: expr_literal(&key.node),
-                    };
-                    steps.push(ExprStep::MapIndex {
-                        value,
-                        base,
-                        key: lowered_key,
-                    });
-                }
-                Ok(value)
+            Expr::Field(base_expr, field) => {
+                let base = self.lower_expr(base_expr, env, steps)?;
+                self.lower_field_read(expr.span, base, field, steps)
+            }
+            Expr::Index(base_expr, key) => {
+                let base = self.lower_expr(base_expr, env, steps)?;
+                let key = LoweredMapKey {
+                    value: self.lower_expr(key, env, steps)?,
+                    literal: expr_literal(&key.node),
+                };
+                self.lower_index_read(expr.span, base, key, steps)
             }
             Expr::Call(target, args) => {
                 let form =
@@ -2512,7 +2496,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                 plan: Rc::new(plan),
                 arm_blocks: vec![build],
                 miss_block: Some(miss_block),
-                map_update: None,
+                map_base: None,
             }),
         });
         Ok(value)
@@ -2720,7 +2704,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                 plan: Rc::new(plan),
                 arm_blocks,
                 miss_block: None,
-                map_update: None,
+                map_base: None,
             }),
         });
         Ok(value)
@@ -2792,7 +2776,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                     block: arm_block,
                 }],
                 miss_block,
-                map_update: None,
+                map_base: None,
             }),
         });
         Ok(ExprBlock {
@@ -2809,7 +2793,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
     /// can never be one is an error where the update is written.
     fn lower_map_update(
         &mut self,
-        site: MapUpdateSite,
+        site: MapBaseSite,
         base: ValueId,
         entries: Vec<(LoweredMapKey, ValueId)>,
         steps: &mut Vec<ExprStep>,
@@ -2826,8 +2810,121 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         }];
         self.lower_update_key_check(span, ok, base, keys.clone(), &mut arm_steps)?;
         let miss_block = self.lower_update_failure_block(span, base, keys)?;
-        let any_map = Spanned::new(Pattern::Map(Vec::new()), span);
-        let plan = self.compile_single_pattern_dispatch("map update", &any_map, span, None)?;
+        self.push_map_base_dispatch(
+            site,
+            MapBaseAccepts::Maps,
+            base,
+            ExprBlock {
+                span,
+                steps: arm_steps,
+                result: updated,
+            },
+            miss_block,
+            steps,
+        )
+    }
+
+    /// `base.field` is a dispatch on whether `base` is a map, as `%{base | ...}`
+    /// is: the map arm reads the field, and any other base goes to
+    /// `Map.field_failure/1`, which raises `BadMapError`. A base whose type is
+    /// a map takes the arm with no test, and a base that can never be one
+    /// takes the miss arm and raises when the read runs, as in Elixir.
+    ///
+    /// A resource has one field, `value`, which is its payload; the arm for
+    /// that field takes a resource as well, so a resource handle's payload is
+    /// read without a raise.
+    fn lower_field_read(
+        &mut self,
+        span: Span,
+        base: ValueId,
+        field: &str,
+        steps: &mut Vec<ExprStep>,
+    ) -> Result<ValueId, FatalError> {
+        let read = self.fresh_value();
+        let raised = self.fresh_value();
+        let mut miss_steps = Vec::new();
+        self.push_library_call(&mut miss_steps, raised, FIELD_FAILURE, span, vec![base]);
+        let miss_block = ExprBlock {
+            span,
+            steps: miss_steps,
+            result: raised,
+        };
+        let accepts = if field == RESOURCE_PAYLOAD_FIELD {
+            MapBaseAccepts::MapsAndResources
+        } else {
+            MapBaseAccepts::Maps
+        };
+        let arm = ExprBlock {
+            span,
+            steps: vec![ExprStep::FieldAccess {
+                value: read,
+                base,
+                field: field.to_string(),
+            }],
+            result: read,
+        };
+        let plan = self.compile_map_base_dispatch("field read", accepts, span)?;
+        Ok(self.push_dispatch_on_base(plan, base, arm, miss_block, None, steps))
+    }
+
+    /// `base[key]` is `Access.get(base, key, nil)`: a dispatch on whether
+    /// `base` is a map, whose arm reads the key inline and whose miss arm
+    /// calls `Access.get/3`, which answers for the bases that are no map. No
+    /// base makes this an error, so the dispatch carries no site.
+    fn lower_index_read(
+        &mut self,
+        span: Span,
+        base: ValueId,
+        key: LoweredMapKey,
+        steps: &mut Vec<ExprStep>,
+    ) -> Result<ValueId, FatalError> {
+        let read = self.fresh_value();
+        let answered = self.fresh_value();
+        let mut miss_steps = Vec::new();
+        let default = self.push_const(&mut miss_steps, GroundValue::Nil);
+        self.push_library_call(
+            &mut miss_steps,
+            answered,
+            ACCESS_GET,
+            span,
+            vec![base, key.value, default],
+        );
+        let miss_block = ExprBlock {
+            span,
+            steps: miss_steps,
+            result: answered,
+        };
+        let arm = ExprBlock {
+            span,
+            steps: vec![ExprStep::MapIndex { value: read, base, key }],
+            result: read,
+        };
+        let plan = self.compile_map_base_dispatch("index read", MapBaseAccepts::Maps, span)?;
+        Ok(self.push_dispatch_on_base(plan, base, arm, miss_block, None, steps))
+    }
+
+    fn push_map_base_dispatch(
+        &mut self,
+        site: MapBaseSite,
+        accepts: MapBaseAccepts,
+        base: ValueId,
+        arm: ExprBlock,
+        miss_block: ExprBlock,
+        steps: &mut Vec<ExprStep>,
+    ) -> Result<ValueId, FatalError> {
+        let plan = self.compile_map_base_dispatch("map update", accepts, site.span)?;
+        Ok(self.push_dispatch_on_base(plan, base, arm, miss_block, Some(site), steps))
+    }
+
+    fn push_dispatch_on_base(
+        &mut self,
+        plan: crate::dispatch_matrix::pattern::PatternDispatchPlan<super::super::types::Ty>,
+        base: ValueId,
+        arm: ExprBlock,
+        miss_block: ExprBlock,
+        site: Option<MapBaseSite>,
+        steps: &mut Vec<ExprStep>,
+    ) -> ValueId {
         let value = self.fresh_value();
         steps.push(ExprStep::Dispatch {
             value,
@@ -2837,17 +2934,47 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                 plan: Rc::new(plan),
                 arm_blocks: vec![ExprOutcome {
                     arguments: Box::default(),
-                    block: ExprBlock {
-                        span,
-                        steps: arm_steps,
-                        result: updated,
-                    },
+                    block: arm,
                 }],
                 miss_block: Some(miss_block),
-                map_update: Some(site),
+                map_base: site,
             }),
         });
-        Ok(value)
+        value
+    }
+
+    /// The decision that sends a map (and, where `accepts` says, a resource) to
+    /// the one arm, and everything else to the miss.
+    fn compile_map_base_dispatch(
+        &mut self,
+        label: &str,
+        accepts: MapBaseAccepts,
+        span: Span,
+    ) -> Result<crate::dispatch_matrix::pattern::PatternDispatchPlan<super::super::types::Ty>, FatalError> {
+        let (pattern, preconditions) = match accepts {
+            MapBaseAccepts::Maps => (Pattern::Map(Vec::new()), Vec::new()),
+            MapBaseAccepts::MapsAndResources => {
+                let types = self.world.types_mut();
+                let any = types.any();
+                let resource = types.resource(any);
+                let map = types.map_top();
+                let either = types.union(map, resource);
+                let envelope = types.runtime_type_test_envelope(either);
+                (Pattern::Wildcard, vec![(PatternSubjectRef::Input(0), envelope)])
+            }
+        };
+        self.compile_match_dispatch(
+            label,
+            span,
+            1,
+            vec![PatternRow {
+                patterns: vec![Spanned::new(pattern, span)],
+                preconditions,
+                guard: None,
+                body_id: 0,
+            }],
+            None,
+        )
     }
 
     /// The update of a map answers the updated map when `base` has every key,
@@ -2886,7 +3013,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                     },
                 }],
                 miss_block: Some(miss_block),
-                map_update: None,
+                map_base: None,
             }),
         });
         Ok(())
@@ -2959,7 +3086,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                             block: success_block,
                         }],
                         miss_block,
-                        map_update: None,
+                        map_base: None,
                     }),
                 });
                 Ok(ExprBlock {
@@ -3018,7 +3145,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                 plan: Rc::new(plan),
                 arm_blocks,
                 miss_block: None,
-                map_update: None,
+                map_base: None,
             }),
         });
         Ok(ExprBlock {
@@ -3138,7 +3265,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                 plan: Rc::new(reraise),
                 arm_blocks: Vec::new(),
                 miss_block: None,
-                map_update: None,
+                map_base: None,
             }),
         });
         let handler = ExprBlock {
@@ -3215,7 +3342,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                 plan: Rc::new(plan),
                 arm_blocks: Vec::new(),
                 miss_block: None,
-                map_update: None,
+                map_base: None,
             }),
         });
         Ok(value)
@@ -3275,7 +3402,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                 plan: Rc::new(plan),
                 arm_blocks,
                 miss_block: None,
-                map_update: None,
+                map_base: None,
             }),
         });
         let handler = ExprBlock {
@@ -4011,7 +4138,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                         plan,
                         arm_blocks,
                         miss_block,
-                        map_update,
+                        map_base,
                     } = *dispatch;
                     unplaced.place_all(&mut lowered);
                     let branch_dest = self.plan_continuation(block, value, dest, Unplaced::default(), entries);
@@ -4049,7 +4176,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                             inputs,
                             bindings,
                             dispatch: Box::new(
-                                ControlDispatch::new(plan, outcomes, miss_entry).updating_a_map(map_update),
+                                ControlDispatch::new(plan, outcomes, miss_entry).testing_a_map_base(map_base),
                             ),
                         },
                     );
@@ -4214,7 +4341,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                 plan: Rc::new(plan),
                 arm_blocks: vec![ExprOutcome { arguments, block }],
                 miss_block: None,
-                map_update: None,
+                map_base: None,
             }),
         });
         Ok(decided)
@@ -4240,14 +4367,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                 module,
                 function: function.function.to_string(),
             },
-            args: args
-                .into_iter()
-                .map(|value| CallArg {
-                    value,
-                    ascription: None,
-                    ownership: crate::fz_ir::OwnershipMode::Share,
-                })
-                .collect(),
+            args: args.into_iter().map(shared_arg).collect(),
         });
     }
 
@@ -5411,6 +5531,7 @@ fn expr_name(expr: &Expr) -> &'static str {
         Expr::Map(_) => "Map",
         Expr::MapUpdate(_, _) => "MapUpdate",
         Expr::Struct { .. } => "Struct",
+        Expr::Field(_, _) => "Field",
         Expr::Index(_, _) => "Index",
         Expr::Call(_, _) => "Call",
         Expr::ClosureCall(_, _) => "ClosureCall",
@@ -5444,13 +5565,47 @@ const UPDATE_FAILURE: LibraryFunction = LibraryFunction {
     function: "update_failure",
 };
 
+/// `Map.field_failure/1`.
+const FIELD_FAILURE: LibraryFunction = LibraryFunction {
+    module_atom: "Elixir.Map",
+    function: "field_failure",
+};
+
+/// `Access.get/3`.
+const ACCESS_GET: LibraryFunction = LibraryFunction {
+    module_atom: "Elixir.Access",
+    function: "get",
+};
+
+/// What a map-base dispatch sends to its one arm: maps alone, or a resource
+/// as well.
+#[derive(Clone, Copy)]
+enum MapBaseAccepts {
+    Maps,
+    MapsAndResources,
+}
+
+/// The name of the variable a map update or field read is written over, when
+/// it is written over one.
+fn written_base(base: &Spanned<Expr>) -> Option<String> {
+    match &base.node {
+        Expr::Var(var) => Some(var.name.clone()),
+        _ => None,
+    }
+}
+
+fn shared_arg(value: ValueId) -> CallArg {
+    CallArg {
+        value,
+        ascription: None,
+        ownership: crate::fz_ir::OwnershipMode::Share,
+    }
+}
+
 /// The module expression and function name of a call on a module value:
 /// `m.f(a)`, where `m` is any expression that is not a module name.
 fn module_value_callee(target: &Spanned<Expr>) -> Option<(&Spanned<Expr>, &str)> {
-    let Expr::Index(module, function) = &target.node else {
-        return None;
-    };
-    let Expr::Atom(function) = &function.node else {
+    let Expr::Field(module, function) = &target.node else {
         return None;
     };
     Some((module, function))
@@ -5471,7 +5626,7 @@ fn direct_callee(expr: &Spanned<Expr>, arity: usize, env: &HashMap<Var, ValueId>
             }
             Expr::Alias(_) | Expr::BoundFunction(_) => break,
             Expr::Atom(atom) if fz_runtime::module_name::is_alias_namespace_atom(atom) => break,
-            Expr::Index(target, _) => {
+            Expr::Field(target, _) => {
                 current = &target.node;
             }
             _ => return None,

@@ -87,10 +87,10 @@ defmodule System do
   The interpreter builds no continuation frames, so its `continuation_allocs`
   is 0.
   """
-  @spec alloc_stats() :: any
+  @spec alloc_stats() :: map
   def alloc_stats(), do: fz_system_alloc_stats()
 
-  extern "fz" defp fz_system_alloc_stats() :: any
+  extern "fz" defp fz_system_alloc_stats() :: map
   extern "fz" defp fz_system_argv() :: any
   extern "fz" defp fz_system_halt(integer) :: none
 end
