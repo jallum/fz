@@ -7,14 +7,15 @@
   "blocks": [
     "fz-9x7.11.6"
   ],
+  "closed_at": "2026-11-25T02:28:17Z",
   "created": "2026-11-18T23:59:17Z",
   "description": "User approved 2026-11-18, verbatim via GC: \"agreed; proceed\". Step C2 of fz-9x7.11 page v4 (https://claude.ai/artifact/BB1FpQ1Cf7Jd5spZeLEWtg). One commit, judged on bench. Builder: GC.",
   "id": "fz-9x7.11.3",
   "labels": [],
   "parent": "fz-9x7.11",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "The collector's per-object stats are derived, not counted",
   "type": "task",
-  "updated_at": "2026-11-25T01:09:48Z"
+  "updated_at": "2026-11-25T02:28:17Z"
 }
