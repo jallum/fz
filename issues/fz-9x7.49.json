@@ -9,9 +9,15 @@
   "id": "fz-9x7.49",
   "labels": [],
   "parent": "fz-9x7",
+  "comments": [
+    {
+      "text": "From: GC. Page approved by the user 2026-11-24, verbatim \"approved;\": https://claude.ai/artifact/9yNjH7q4xZFuFVwNnRpYhr. Decisions: (1) reuse sites join the existing per-program site table, reuse_site event per site at run end; (2) one counter per outcome, hits and misses, attempts = sum; (3) tuple copy is its own site kind (List|Struct|Tuple), program struct figure sums Struct+Tuple so no pin moves. Builder: GC.",
+      "timestamp": "2026-11-25T01:08:46Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Retention statistics are counts per reuse site",
   "type": "task",
-  "updated_at": "2026-11-25T00:00:29Z"
+  "updated_at": "2026-11-25T01:08:46Z"
 }
