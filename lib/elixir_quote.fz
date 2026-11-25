@@ -1,0 +1,78 @@
+defmodule :elixir_quote do
+  @moduledoc "The runtime half of `quote`, as Elixir's `elixir_quote.erl` writes it: the functions a quote calls to splice an `unquote_splicing` list into the quoted code around it."
+
+  @doc """
+  Returns `left` followed by `right`, after checking that `left` is a list of
+  quoted expressions. `[a, unquote_splicing(left), b]` quotes to
+  `[a | list(left, [b])]`.
+
+  ## Examples
+
+      :elixir_quote.list([1, 2], [3])
+      #=> [1, 2, 3]
+
+      :elixir_quote.list(:a, [3])
+      # ** (ArgumentError) expected a list with quoted expressions in unquote_splicing/1, got: :a
+
+  """
+  @spec list(any, [any]) :: [any]
+  def list(left, right) when is_list(right) do
+    validate_list(left)
+    left ++ right
+  end
+
+  @doc """
+  Returns the quoted list `[prefix..., left... | right]`, for
+  `[prefix..., unquote_splicing(left) | right]`. A list `right` is appended; any
+  other `right` is the tail of the quoted improper list. An empty splice before
+  a tail that is not a list leaves nothing to carry the tail and raises.
+
+  ## Examples
+
+      :elixir_quote.tail_list([2], [3], [1])
+      #=> [1, 2, 3]
+
+      :elixir_quote.tail_list([2], :t, [1])
+      #=> [1, {:|, [], [2, :t]}]
+
+  """
+  @spec tail_list(any, any, [any]) :: [any]
+  def tail_list(left, right, tail) when is_list(right) and is_list(tail) do
+    validate_list(left)
+    tail ++ left ++ right
+  end
+
+  def tail_list(left, right, tail) when is_list(left) do
+    validate_list(left)
+
+    case :lists.reverse(tail ++ left) do
+      [head | rest] -> :lists.reverse([{:|, [], [head, right]} | rest])
+      [] -> raise(ArgumentError, "unquote_splicing/1 failed because it attempted to splice an empty list before tail position")
+    end
+  end
+
+  @spec validate_list(any) :: :ok
+  defp validate_list(list) do
+    if shallow_valid_list(list) do
+      :ok
+    else
+      raise(ArgumentError, "expected a list with quoted expressions in unquote_splicing/1, got: " <> inspect(list))
+    end
+  end
+
+  @spec shallow_valid_list(any) :: boolean
+  defp shallow_valid_list([]), do: true
+  defp shallow_valid_list([head | tail]), do: shallow_valid_elem(head) and shallow_valid_list(tail)
+  defp shallow_valid_list(_improper), do: false
+
+  @spec shallow_valid_elem(any) :: boolean
+  defp shallow_valid_elem(expr) when is_list(expr) or is_atom(expr) or is_binary(expr) or is_number(expr) or is_pid(expr) or is_function(expr), do: true
+  defp shallow_valid_elem({left, right}), do: shallow_valid_elem(left) and shallow_valid_elem(right)
+  defp shallow_valid_elem({atom, meta, args}) when is_atom(atom) and is_list(meta) and (is_atom(args) or is_list(args)), do: true
+  defp shallow_valid_elem({call, meta, args}) when is_list(meta) and is_list(args), do: shallow_valid_ast(call)
+  defp shallow_valid_elem(_term), do: false
+
+  @spec shallow_valid_ast(any) :: boolean
+  defp shallow_valid_ast(expr) when is_list(expr), do: shallow_valid_list(expr)
+  defp shallow_valid_ast(expr), do: shallow_valid_elem(expr)
+end

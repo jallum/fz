@@ -509,7 +509,8 @@ A runtime module is registered in one place: its `RuntimeModuleSource` entry in
 `src/modules/runtime_library.rs`, which names the file under `lib/`. The
 prelude binds no name for it: `OptionParser.parse/2` in user code names the
 root module `OptionParser` as any unbound name does, and the first call pulls
-the source. A module named by a bare atom (`:erlang`, `lib/erlang.fz`) has the
+the source. `lib/elixir_quote.fz` defines `:elixir_quote`, the functions a spliced `quote` calls
+(`list/2`, `tail_list/3`). A module named by a bare atom (`:erlang`, `lib/erlang.fz`) has the
 registry name `":erlang"`: `:erlang.f(x)` names its module by the atom, and
 the first call pulls the source like any other runtime module.
 

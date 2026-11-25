@@ -1,0 +1,77 @@
+#---
+# purpose: "unquote_splicing(list) inside a quote puts the list's elements where it stands: among a call's arguments, a list's elements (before another element or before a tail), a tuple's elements, a block's statements and a definition's head. A value that is not a list of quoted expressions raises ArgumentError."
+# oracle: self
+# oracle.stamp: 55f9889529a49b53
+#---
+defmodule Maker do
+  defmacro define(name, args) do
+    quote do
+      def unquote(name)(unquote_splicing(args)), do: {unquote(name), unquote_splicing(args)}
+    end
+  end
+end
+
+defmodule Main do
+  require Maker
+
+  Maker.define(:pair, [a, b])
+  Maker.define(:none, [])
+
+  def call_args(args), do: bare(quote(do: foo(0, unquote_splicing(args), 9)))
+  def list_elements(items), do: quote(do: [0, unquote_splicing(items), 9])
+  def list_leading(items), do: quote(do: [unquote_splicing(items), 9])
+  def two_splices(left, right), do: quote(do: [unquote_splicing(left), :mid, unquote_splicing(right)])
+  def before_tail(items, tail), do: bare(quote(do: [0, unquote_splicing(items) | unquote(tail)]))
+  def triple(items), do: bare(quote(do: {0, unquote_splicing(items)}))
+  def pair_with_splice(items), do: bare(quote(do: {unquote_splicing(items)}))
+  def block(statements) do
+    bare(
+      quote do
+        unquote_splicing(statements)
+        :done
+      end
+    )
+  end
+
+  def only_tail(items, tail), do: quote(do: [unquote_splicing(items) | unquote(tail)])
+  def head(name, args), do: bare(quote(do: def(unquote(name)(unquote_splicing(args)), do: 1)))
+
+  def main() do
+    xs = [quote(do: x), quote(do: y)]
+
+    IO.inspect(call_args(xs))
+    IO.inspect(call_args([]))
+    IO.inspect(list_elements([1, 2]))
+    IO.inspect(list_elements([]))
+    IO.inspect(list_leading([1, 2]))
+    IO.inspect(two_splices([1], [2, 3]))
+    IO.inspect(before_tail([1, 2], [3]))
+    IO.inspect(before_tail([1, 2], :t))
+    IO.inspect(triple([1, 2]))
+    IO.inspect(pair_with_splice([1, 2]))
+    IO.inspect(block([1, 2]))
+    IO.inspect(head(:f, xs))
+    IO.inspect({pair(1, 2), none()})
+
+    IO.puts(attempt(fn -> call_args(:not_a_list) end))
+    IO.puts(attempt(fn -> call_args([1 | 2]) end))
+    IO.inspect(before_tail([], :t))
+    IO.inspect(only_tail([1], :t))
+  end
+
+  defp attempt(fun) do
+    try do
+      fun.()
+    rescue
+      error in ArgumentError -> error.message
+    end
+  end
+
+  defp bare({form, _meta, args}) when is_list(args), do: {bare(form), [], Enum.map(args, &bare/1)}
+  defp bare({form, _meta, context}) when is_atom(context), do: {form, [], nil}
+  defp bare({left, right}), do: {bare(left), bare(right)}
+  defp bare(list) when is_list(list), do: Enum.map(list, &bare/1)
+  defp bare(other), do: other
+end
+
+Main.main()

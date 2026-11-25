@@ -1,0 +1,17 @@
+{:foo, [], [0, {:x, [], nil}, {:y, [], nil}, 9]}
+{:foo, [], [0, 9]}
+[0, 1, 2, 9]
+[0, 9]
+[1, 2, 9]
+[1, :mid, 2, 3]
+[0, 1, 2, 3]
+[0, 1, {:|, [], [2, :t]}]
+{:{}, [], [0, 1, 2]}
+{:{}, [], [1, 2]}
+{:__block__, [], [1, 2, :done]}
+{:def, [], [{:f, [], [{:x, [], nil}, {:y, [], nil}]}, [do: 1]]}
+{{:pair, 1, 2}, {:none}}
+expected a list with quoted expressions in unquote_splicing/1, got: :not_a_list
+expected a list with quoted expressions in unquote_splicing/1, got: [1 | 2]
+[{:|, [], [0, :t]}]
+[{:|, [], [1, :t]}]
