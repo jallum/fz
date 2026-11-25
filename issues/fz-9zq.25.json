@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-25T02:45:09Z",
+  "description": "User-approved via the fz-9zq.21 page Round 3 (relayed by fz-engine, 2026-11-24).\n\n16-line JSON-style parser /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/esc_mu/B/q/q10b.fz hangs inside one clash_fold_join: solve_equations -\u003e settle -\u003e absorb_axis -\u003e is_subtype -\u003e map_clause_empty -\u003e dnf_diff. Needs maps plus two frame kinds. Placed at the end of fz-9zq; parser shape, so JSON / Elixir Parity may care.",
+  "id": "fz-9zq.25",
+  "labels": [],
+  "parent": "fz-9zq",
+  "priority": 2,
+  "status": "open",
+  "title": "Absorbing a fold on nested recursive map types costs time proportional to the types",
+  "type": "bug",
+  "updated_at": "2026-11-25T02:45:09Z"
+}
