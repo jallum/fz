@@ -21,6 +21,7 @@ use std::sync::Arc;
 use crate::ast::BitType;
 use crate::diag::Diagnostic;
 use crate::diag::codes;
+use crate::dispatch_matrix::joins::{ArrivalState, DispatchJoins, DispatchLeaf};
 use crate::dispatch_matrix::pattern::{
     GuardExtern, LastResort, PatternDispatchPlan, PatternGuardBinOp, PatternGuardExpr, PatternGuardUnaryOp,
     RaisedField, guard_body_subjects,
@@ -394,14 +395,40 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 let word_args = args.iter().copied().map(NativeBoundValue::Runtime).collect::<Vec<_>>();
                 let bindings = self.lower_argument_bindings(&mut ctx, selection, &word_args)?;
                 let mut state = DispatchState::new(word_args, Vec::new(), bindings);
-                self.lower_callable_construction_wrapper_dispatch_node(
+                self.lower_dispatch_graph(
                     &mut ctx,
-                    boundary,
                     selection,
-                    selection.graph.root,
-                    captures,
-                    args,
+                    BranchOrigin::ClauseDispatch,
                     &mut state,
+                    &mut |lowerer, ctx, leaf, _state| match leaf {
+                        DispatchLeaf::Fail => {
+                            ctx.set_term(Term::Unreachable);
+                            Ok(())
+                        }
+                        DispatchLeaf::Outcome(outcome) => {
+                            let body_id = selection
+                                .outcome(outcome)
+                                .ok_or_else(|| {
+                                    incomplete_native_program(
+                                        lowerer.telemetry,
+                                        lowerer.root_id,
+                                        format!(
+                                            "callable construction {} dispatch outcome {:?} is out of bounds",
+                                            boundary.id.as_u32(),
+                                            outcome,
+                                        ),
+                                    )
+                                })?
+                                .body_id;
+                            lowerer.lower_callable_construction_wrapper_member(
+                                ctx,
+                                boundary,
+                                body_id as usize,
+                                captures,
+                                args,
+                            )
+                        }
+                    },
                 )?;
             }
             None if boundary.members.len() == 1 => {
@@ -424,70 +451,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         }
         self.finish_native_fn(ctx);
         Ok(())
-    }
-
-    fn lower_callable_construction_wrapper_dispatch_node(
-        &mut self,
-        ctx: &mut NativeFnCtx,
-        boundary: &NativeCallableBoundary,
-        plan: &PatternDispatchPlan<Ty>,
-        node_id: GraphNodeId,
-        captures: &[Var],
-        args: &[Var],
-        state: &mut DispatchState,
-    ) -> Result<(), FatalError> {
-        let Some(node) = plan.graph.node(node_id) else {
-            return Err(incomplete_native_program(
-                self.telemetry,
-                self.root_id,
-                format!(
-                    "callable construction {} dispatch graph node {:?} is out of bounds",
-                    boundary.id.as_u32(),
-                    node_id,
-                ),
-            ));
-        };
-        match node {
-            DispatchNode::Fail => {
-                ctx.set_term(Term::Unreachable);
-                Ok(())
-            }
-            DispatchNode::Outcome { outcome, .. } => {
-                let body_id = plan
-                    .outcome(*outcome)
-                    .ok_or_else(|| {
-                        incomplete_native_program(
-                            self.telemetry,
-                            self.root_id,
-                            format!(
-                                "callable construction {} dispatch outcome {:?} is out of bounds",
-                                boundary.id.as_u32(),
-                                outcome,
-                            ),
-                        )
-                    })?
-                    .body_id;
-                self.lower_callable_construction_wrapper_member(ctx, boundary, body_id as usize, captures, args)
-            }
-            DispatchNode::Test {
-                predicate,
-                on_match,
-                on_miss,
-            } => self.lower_dispatch_test(
-                ctx,
-                plan,
-                predicate,
-                on_match,
-                on_miss,
-                BranchOrigin::ClauseDispatch,
-                state,
-                &mut |lowerer, ctx, target, state| {
-                    lowerer.lower_callable_construction_wrapper_dispatch_node(
-                        ctx, boundary, plan, target, captures, args, state,
-                    )
-                },
-            ),
-        }
     }
 
     fn lower_callable_construction_wrapper_member(
@@ -960,7 +923,22 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             .collect::<Result<Vec<_>, _>>()?;
         let bindings = self.lower_argument_bindings(ctx, dispatch.plan(), &inputs)?;
         let mut state = DispatchState::new(inputs, entry_vars.to_vec(), bindings).reading(handed);
-        self.lower_dispatch_node(ctx, dispatch, dispatch.plan().graph.root, enter_clause, &mut state)
+        self.lower_dispatch_graph(
+            ctx,
+            dispatch.plan(),
+            BranchOrigin::ClauseDispatch,
+            &mut state,
+            &mut |lowerer, ctx, leaf, state| match leaf {
+                DispatchLeaf::Fail => lowerer.raise_last_resort(ctx, dispatch.plan(), state),
+                DispatchLeaf::Outcome(outcome) => {
+                    let Some(clause_index) = dispatch.clause_index(outcome) else {
+                        ctx.set_term(Term::Unreachable);
+                        return Ok(());
+                    };
+                    enter_clause(lowerer, ctx, clause_index, state)
+                }
+            },
+        )
     }
 
     /// Enters the block of the clause an outcome selected. The block receives
@@ -1912,17 +1890,25 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     },
                 )
                 .reading(dispatch.argument_subjects());
-                self.lower_control_dispatch_node(
+                self.lower_dispatch_graph(
                     ctx,
-                    executable,
-                    entries,
-                    entry_fns,
-                    env,
                     &dispatch.plan,
-                    &dispatch.outcomes,
-                    dispatch.miss_entry,
-                    dispatch.plan.graph.root,
+                    BranchOrigin::User,
                     &mut state,
+                    &mut |lowerer, ctx, leaf, state| {
+                        lowerer.lower_control_dispatch_leaf(
+                            ctx,
+                            executable,
+                            entries,
+                            entry_fns,
+                            env,
+                            &dispatch.plan,
+                            &dispatch.outcomes,
+                            dispatch.miss_entry,
+                            leaf,
+                            state,
+                        )
+                    },
                 )
             }
             BackendTail::Try { body, handler } => {
@@ -2220,24 +2206,22 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             .collect::<Vec<_>>();
         let bindings = self.lower_argument_bindings(ctx, &dispatch.plan, &word_inputs)?;
         let mut state = DispatchState::new(word_inputs, Vec::new(), bindings);
-        self.lower_dispatch_call_node(
+        let origin = BranchOrigin::User;
+        self.lower_dispatch_graph(
             ctx,
-            executable,
-            entries,
-            entry_fns,
-            env,
-            dispatch,
-            selector,
-            args,
-            dest,
-            in_place,
-            dispatch.plan.graph.root,
+            &dispatch.plan,
+            origin,
             &mut state,
+            &mut |lowerer, ctx, leaf, state| {
+                lowerer.lower_dispatch_call_leaf(
+                    ctx, executable, entries, entry_fns, env, dispatch, selector, args, dest, in_place, leaf, state,
+                )
+            },
         )
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn lower_dispatch_call_node(
+    fn lower_dispatch_call_leaf(
         &mut self,
         ctx: &mut NativeFnCtx,
         executable: &BackendExecutable,
@@ -2249,26 +2233,19 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         args: &[super::super::artifact::BackendCallArg],
         dest: &ControlDestination,
         in_place: bool,
-        node_id: GraphNodeId,
+        leaf: DispatchLeaf,
         state: &mut DispatchState,
     ) -> Result<(), FatalError> {
-        let Some(node) = dispatch.plan.graph.node(node_id) else {
-            return Err(incomplete_native_program(
-                self.telemetry,
-                self.root_id,
-                format!("call dispatch graph node {:?} is out of bounds", node_id),
-            ));
-        };
-        match node {
-            DispatchNode::Fail if dispatch.plan.last_resort.is_some() => {
+        match leaf {
+            DispatchLeaf::Fail if dispatch.plan.last_resort.is_some() => {
                 self.raise_last_resort(ctx, &dispatch.plan, state)
             }
-            DispatchNode::Fail => {
+            DispatchLeaf::Fail => {
                 ctx.set_term(Term::Unreachable);
                 Ok(())
             }
-            DispatchNode::Outcome { outcome, .. } => {
-                let Some(arm) = dispatch.arm(*outcome) else {
+            DispatchLeaf::Outcome(outcome) => {
+                let Some(arm) = dispatch.arm(outcome) else {
                     ctx.set_term(Term::Unreachable);
                     return Ok(());
                 };
@@ -2286,25 +2263,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     in_place,
                 )
             }
-            DispatchNode::Test {
-                predicate,
-                on_match,
-                on_miss,
-            } => self.lower_dispatch_test(
-                ctx,
-                &dispatch.plan,
-                predicate,
-                on_match,
-                on_miss,
-                BranchOrigin::User,
-                state,
-                &mut |lowerer, ctx, target, state| {
-                    lowerer.lower_dispatch_call_node(
-                        ctx, executable, entries, entry_fns, env, dispatch, selector, args, dest, in_place, target,
-                        state,
-                    )
-                },
-            ),
         }
     }
 
@@ -3380,51 +3338,8 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         var
     }
 
-    fn lower_dispatch_node(
-        &mut self,
-        ctx: &mut NativeFnCtx,
-        dispatch: &crate::compiler2::ExecutableDispatch,
-        node_id: GraphNodeId,
-        enter_clause: &mut EnterClause<'_, 'a, 'tel, T>,
-        state: &mut DispatchState,
-    ) -> Result<(), FatalError> {
-        let Some(node) = dispatch.plan().graph.node(node_id) else {
-            return Err(incomplete_native_program(
-                self.telemetry,
-                self.root_id,
-                format!("dispatch graph node {:?} is out of bounds", node_id),
-            ));
-        };
-        match node {
-            DispatchNode::Fail => self.raise_last_resort(ctx, dispatch.plan(), state),
-            DispatchNode::Outcome { outcome, .. } => {
-                let Some(clause_index) = dispatch.clause_index(*outcome) else {
-                    ctx.set_term(Term::Unreachable);
-                    return Ok(());
-                };
-                enter_clause(self, ctx, clause_index, state)
-            }
-            DispatchNode::Test {
-                predicate,
-                on_match,
-                on_miss,
-            } => self.lower_dispatch_test(
-                ctx,
-                dispatch.plan(),
-                predicate,
-                on_match,
-                on_miss,
-                BranchOrigin::ClauseDispatch,
-                state,
-                &mut |lowerer, ctx, target, state| {
-                    lowerer.lower_dispatch_node(ctx, dispatch, target, &mut *enter_clause, state)
-                },
-            ),
-        }
-    }
-
     #[allow(clippy::too_many_arguments)]
-    fn lower_control_dispatch_node(
+    fn lower_control_dispatch_leaf(
         &mut self,
         ctx: &mut NativeFnCtx,
         executable: &BackendExecutable,
@@ -3434,18 +3349,11 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         plan: &PatternDispatchPlan<Ty>,
         outcomes: &[super::super::body::OutcomeEdge],
         miss_entry: Option<ControlEntryId>,
-        node_id: GraphNodeId,
+        leaf: DispatchLeaf,
         state: &mut DispatchState,
     ) -> Result<(), FatalError> {
-        let Some(node) = plan.graph.node(node_id) else {
-            return Err(incomplete_native_program(
-                self.telemetry,
-                self.root_id,
-                format!("local dispatch graph node {:?} is out of bounds", node_id),
-            ));
-        };
-        match node {
-            DispatchNode::Fail => {
+        match leaf {
+            DispatchLeaf::Fail => {
                 let Some(miss_entry) = miss_entry else {
                     return self.raise_last_resort(ctx, plan, state);
                 };
@@ -3453,7 +3361,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 self.transfer_to_entry(ctx, executable, entries, entry_fns, miss_entry, args);
                 Ok(())
             }
-            DispatchNode::Outcome { outcome, .. } => {
+            DispatchLeaf::Outcome(outcome) => {
                 let edge = outcomes
                     .get(outcome.0 as usize)
                     .expect("every native dispatch outcome has an edge");
@@ -3464,47 +3372,114 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 self.transfer_to_entry(ctx, executable, entries, entry_fns, arm_entry, args);
                 Ok(())
             }
+        }
+    }
+
+    /// Lowers a dispatch graph, each node once.
+    ///
+    /// The root is lowered from the current block. An edge into a join records
+    /// what it holds and jumps to the join's block; after the root, each
+    /// join is lowered in its block, from the largest id down, holding what
+    /// every arrival holds. A fail or an outcome is lowered by `lower_leaf`.
+    fn lower_dispatch_graph<L>(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        plan: &PatternDispatchPlan<Ty>,
+        origin: BranchOrigin,
+        state: &mut DispatchState,
+        lower_leaf: &mut L,
+    ) -> Result<(), FatalError>
+    where
+        L: FnMut(&mut Self, &mut NativeFnCtx, DispatchLeaf, &mut DispatchState) -> Result<(), FatalError>,
+    {
+        let mut walk = DispatchWalk {
+            plan,
+            origin,
+            lower_leaf,
+            joins: DispatchJoins::default(),
+        };
+        self.lower_dispatch_node(ctx, &mut walk, plan.graph.root, state)?;
+        while let Some(join) = walk.joins.next() {
+            ctx.current_block = join.block;
+            let mut state = join.state;
+            self.lower_dispatch_node(ctx, &mut walk, join.node, &mut state)?;
+        }
+        Ok(())
+    }
+
+    fn lower_dispatch_node<L>(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        walk: &mut DispatchWalk<'_, L>,
+        node_id: GraphNodeId,
+        state: &mut DispatchState,
+    ) -> Result<(), FatalError>
+    where
+        L: FnMut(&mut Self, &mut NativeFnCtx, DispatchLeaf, &mut DispatchState) -> Result<(), FatalError>,
+    {
+        let Some(node) = walk.plan.graph.node(node_id) else {
+            return Err(incomplete_native_program(
+                self.telemetry,
+                self.root_id,
+                format!("dispatch graph node {:?} is out of bounds", node_id),
+            ));
+        };
+        match node {
+            DispatchNode::Fail => (walk.lower_leaf)(self, ctx, DispatchLeaf::Fail, state),
+            DispatchNode::Outcome { outcome, .. } => {
+                (walk.lower_leaf)(self, ctx, DispatchLeaf::Outcome(*outcome), state)
+            }
             DispatchNode::Test {
                 predicate,
                 on_match,
                 on_miss,
-            } => self.lower_dispatch_test(
-                ctx,
-                plan,
-                predicate,
-                on_match,
-                on_miss,
-                BranchOrigin::User,
-                state,
-                &mut |lowerer, ctx, target, state| {
-                    lowerer.lower_control_dispatch_node(
-                        ctx, executable, entries, entry_fns, env, plan, outcomes, miss_entry, target, state,
-                    )
-                },
-            ),
+            } => self.lower_dispatch_test(ctx, walk, predicate, on_match, on_miss, state),
         }
     }
 
-    /// Lower one dispatch test: ask its question, then lower the child the
+    /// Follows an edge: into a join it jumps, otherwise the target is lowered
+    /// where the edge stands.
+    fn lower_dispatch_edge<L>(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        walk: &mut DispatchWalk<'_, L>,
+        target: GraphNodeId,
+        state: &mut DispatchState,
+    ) -> Result<(), FatalError>
+    where
+        L: FnMut(&mut Self, &mut NativeFnCtx, DispatchLeaf, &mut DispatchState) -> Result<(), FatalError>,
+    {
+        let joined = walk
+            .joins
+            .arrive(&walk.plan.graph, target, state, || ctx.builder.block(vec![]));
+        match joined {
+            Some(block) => {
+                ctx.set_term(Term::Goto(block, vec![]));
+                Ok(())
+            }
+            None => self.lower_dispatch_node(ctx, walk, target, state),
+        }
+    }
+
+    /// Lower one dispatch test: ask its question, then follow the edge the
     /// answer selects.
     ///
     /// A question settled statically produces no branch at all -- the surviving
-    /// child is lowered straight into the block the test would have branched
+    /// edge is followed straight from the block the test would have branched
     /// from -- so the five dispatch graphs share this one shape.
-    fn lower_dispatch_test<F>(
+    fn lower_dispatch_test<L>(
         &mut self,
         ctx: &mut NativeFnCtx,
-        plan: &PatternDispatchPlan<Ty>,
+        walk: &mut DispatchWalk<'_, L>,
         predicate: &crate::dispatch_matrix::RegionPredicate<Ty>,
         on_match: &crate::dispatch_matrix::DispatchEdge<Ty>,
         on_miss: &crate::dispatch_matrix::DispatchEdge<Ty>,
-        origin: BranchOrigin,
         state: &mut DispatchState,
-        lower_child: &mut F,
     ) -> Result<(), FatalError>
     where
-        F: FnMut(&mut Self, &mut NativeFnCtx, GraphNodeId, &mut DispatchState) -> Result<(), FatalError>,
+        L: FnMut(&mut Self, &mut NativeFnCtx, DispatchLeaf, &mut DispatchState) -> Result<(), FatalError>,
     {
+        let plan = walk.plan;
         if let Region::Bitstring(shape) = &predicate.region {
             let reads_bytes = self.reads_bytes_by_address(plan, state, shape);
             self.read_bitstring_subject(ctx, plan, state, predicate.subject, reads_bytes)?;
@@ -3520,9 +3495,11 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         )?;
         match outcome {
             RegionOutcome::Answer(DispatchAnswer::Static(true)) => {
-                lower_child(self, ctx, on_match.target, &mut match_state)
+                self.lower_dispatch_edge(ctx, walk, on_match.target, &mut match_state)
             }
-            RegionOutcome::Answer(DispatchAnswer::Static(false)) => lower_child(self, ctx, on_miss.target, state),
+            RegionOutcome::Answer(DispatchAnswer::Static(false)) => {
+                self.lower_dispatch_edge(ctx, walk, on_miss.target, state)
+            }
             RegionOutcome::Answer(DispatchAnswer::Runtime(cond)) => {
                 let then_b = ctx.builder.block(vec![]);
                 let else_b = ctx.builder.block(vec![]);
@@ -3530,17 +3507,17 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     cond,
                     then_b,
                     else_b,
-                    origin,
+                    origin: walk.origin,
                 });
                 ctx.current_block = then_b;
-                lower_child(self, ctx, on_match.target, &mut match_state)?;
+                self.lower_dispatch_edge(ctx, walk, on_match.target, &mut match_state)?;
                 ctx.current_block = else_b;
-                lower_child(self, ctx, on_miss.target, state)
+                self.lower_dispatch_edge(ctx, walk, on_miss.target, state)
             }
             RegionOutcome::Matched { missed } => {
-                lower_child(self, ctx, on_match.target, &mut match_state)?;
+                self.lower_dispatch_edge(ctx, walk, on_match.target, &mut match_state)?;
                 ctx.current_block = missed;
-                lower_child(self, ctx, on_miss.target, state)
+                self.lower_dispatch_edge(ctx, walk, on_miss.target, state)
             }
         }
     }
@@ -4134,15 +4111,23 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         )
         .reading(guard_body_subjects(&dispatch.bodies));
         let mut answers = Vec::new();
-        self.lower_guard_dispatch_node(
+        self.lower_dispatch_graph(
             ctx,
             &dispatch.plan,
-            &dispatch.bodies,
-            dispatch.plan.graph.root,
-            done_b,
-            &mut answers,
-            fail,
+            BranchOrigin::ClauseDispatch,
             &mut dispatch_state,
+            &mut |lowerer, ctx, leaf, state| {
+                lowerer.lower_guard_dispatch_leaf(
+                    ctx,
+                    &dispatch.plan,
+                    &dispatch.bodies,
+                    leaf,
+                    done_b,
+                    &mut answers,
+                    fail,
+                    state,
+                )
+            },
         )?;
         if let Some(ty) = self.join_type(ctx, &answers) {
             ctx.value_types.insert(done_value, ty);
@@ -4162,31 +4147,24 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn lower_guard_dispatch_node(
+    fn lower_guard_dispatch_leaf(
         &mut self,
         ctx: &mut NativeFnCtx,
         plan: &PatternDispatchPlan<Ty>,
         bodies: &[PatternGuardExpr<Ty>],
-        node_id: GraphNodeId,
+        leaf: DispatchLeaf,
         done_b: BlockId,
         answers: &mut Vec<Var>,
         fail: &mut Option<BlockId>,
         state: &mut DispatchState,
     ) -> Result<(), FatalError> {
-        let Some(node) = plan.graph.node(node_id) else {
-            return Err(incomplete_native_program(
-                self.telemetry,
-                self.root_id,
-                format!("guard dispatch graph node {:?} is out of bounds", node_id),
-            ));
-        };
-        match node {
-            DispatchNode::Fail => {
+        match leaf {
+            DispatchLeaf::Fail => {
                 Self::leave_guard_dispatch(ctx, fail);
                 Ok(())
             }
-            DispatchNode::Outcome { outcome, .. } => {
-                let outcome = plan.outcome(*outcome).ok_or_else(|| {
+            DispatchLeaf::Outcome(outcome) => {
+                let outcome = plan.outcome(outcome).ok_or_else(|| {
                     incomplete_native_program(
                         self.telemetry,
                         self.root_id,
@@ -4210,22 +4188,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 ctx.set_term(Term::Goto(done_b, vec![value]));
                 Ok(())
             }
-            DispatchNode::Test {
-                predicate,
-                on_match,
-                on_miss,
-            } => self.lower_dispatch_test(
-                ctx,
-                plan,
-                predicate,
-                on_match,
-                on_miss,
-                BranchOrigin::ClauseDispatch,
-                state,
-                &mut |lowerer, ctx, target, state| {
-                    lowerer.lower_guard_dispatch_node(ctx, plan, bodies, target, done_b, answers, fail, state)
-                },
-            ),
         }
     }
 
@@ -5816,6 +5778,15 @@ fn annotate_back_edges(module: &mut crate::fz_ir::Module) {
 
 type NativeBoundValue = BoundValue<Var>;
 
+/// One lowering of a dispatch graph: the plan, how a leaf is lowered, and the
+/// joins reached and not yet lowered.
+struct DispatchWalk<'w, L> {
+    plan: &'w PatternDispatchPlan<Ty>,
+    origin: BranchOrigin,
+    lower_leaf: &'w mut L,
+    joins: DispatchJoins<BlockId, DispatchState>,
+}
+
 /// Share the variables that carry `values`, each once: a value passed or
 /// stored in more than one place gains its second holder once, and a mark,
 /// once set, is never cleared.
@@ -5941,10 +5912,28 @@ struct DispatchState {
 /// collects at the end of a quantum. A dispatch is `Goto` and `If` blocks with
 /// no call, so the address is good for every clause of one dispatch, whatever
 /// its guards and field reads allocate.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 struct BinaryFacts {
     bit_len: Var,
     base: Option<Var>,
+}
+
+/// A join keeps the cached values and binary facts every arrival holds. A
+/// cached variable was made in a block that dominates the arrival it was
+/// cached on, so one every arrival holds dominates the join. Nothing else in
+/// a state varies between arrivals.
+impl ArrivalState for DispatchState {
+    fn meet(arrivals: Vec<Self>) -> Self {
+        let mut arrivals = arrivals.into_iter();
+        let mut met = arrivals.next().expect("a join is reached by an arrival");
+        for other in arrivals {
+            met.values
+                .retain(|subject, value| other.values.get(subject) == Some(value));
+            met.binary_facts
+                .retain(|binary, facts| other.binary_facts.get(binary) == Some(facts));
+        }
+        met
+    }
 }
 
 impl DispatchState {

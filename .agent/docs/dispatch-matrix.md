@@ -20,6 +20,30 @@ subsystem-specific cascades:
   stay outside the region model.
 - `DispatchGraph` is the executable decision shape: tests route to nodes, and
   successful edges carry branch-local proofs and projections.
+  Nodes are shared: every question of a clause leads its miss edge to the one
+  node that tries the next clause. `DispatchGraphBuilder::build` records the
+  graph's join set (`DispatchGraph::is_join`): the nodes two or more edges of
+  reachable tests lead to. It also requires each test's targets to have
+  smaller ids than the test (`DispatchGraphError::TargetNotBeforeTest`), so
+  ascending ids order the graph from its leaves to its root. `trimmed` rebuilds
+  through `build`, so a trimmed graph names its own joins.
+
+  Every walker of a graph visits a node once. The native lowerings and the
+  receive emitters share `dispatch_matrix::joins::DispatchJoins`: an edge into
+  a join records the arrival's state and jumps to the join's block, made on
+  the first arrival; after the root, joins are emitted from the largest id
+  down, each in its block with the meet of its arrivals' states. The meet
+  keeps a cached value (`DispatchState::values` and `bit_lens` in native,
+  `DispatchEmitState::values` in receive) only when every arrival holds the
+  same one, which makes it dominate the join. Native's walkers
+  (`lower_dispatch_graph`: entry dispatch, control dispatch, call dispatch,
+  callable-construction wrapper, guard dispatch) supply only how a `Fail` or
+  an `Outcome` is lowered; `lower_dispatch_test` is the one test lowering. The
+  receive matcher and its guard dispatch go through `emit_dispatch_graph` the
+  same way. The code of a dispatch is therefore linear in its node count:
+  `compiler2_native_a_guarded_clause_chain_is_lowered_linearly` holds it. The
+  atom collector of the backend and the reachable-bodies collector of
+  redundant-row analysis iterate `DispatchGraph::reachable`.
 
 A plan is syntactic and lane-blind. `Pattern::Tuple` always pushes
 `tuple_arity`, and reachability prunes outcomes rather than questions, so the
