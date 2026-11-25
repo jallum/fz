@@ -1,6 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [
+    "fz-yh5.16",
     "fz-yh5.2"
   ],
   "blocks": [],
@@ -47,5 +48,5 @@
   "status": "in_progress",
   "title": "Integer arithmetic on known integers is an instruction, not a flag dance or a call",
   "type": "task",
-  "updated_at": "2026-11-25T04:22:22Z"
+  "updated_at": "2026-11-25T11:31:14Z"
 }
