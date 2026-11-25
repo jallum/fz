@@ -1,0 +1,5 @@
+{:boxed, 1}
+{:sym, :a}
+{:boxed, "s"}
+{:sym, nil}
+{:sym, true}

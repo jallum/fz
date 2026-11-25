@@ -142,6 +142,29 @@ fn positive_helper() -> PatternGuardDispatch<Ty> {
     guard_dispatch_from_rows(&surface, rows, &mut no_calls()).expect("positive helper reifies")
 }
 
+/// `def number(n), do: is_int(n) or is_float(n)`
+fn number_helper(int: Ty, float: Ty) -> PatternGuardDispatch<Ty> {
+    let is_int = Arc::new(predicate_helper(1, &[(0, int)]));
+    let is_float = Arc::new(predicate_helper(1, &[(0, float)]));
+    let body = or(call("is_int", vec![var("n")]), call("is_float", vec![var("n")]));
+    let surface = Surface(vec![clause(1, None, body)]);
+    let row = PatternRow {
+        patterns: vec![sp(n())],
+        preconditions: Vec::new(),
+        guard: None,
+        body_id: 0,
+    };
+    let mut resolver = |callee: &Callee, _arity: usize| -> Result<Option<GuardCallee<Ty>>, SourcePatternError> {
+        let Callee::Name(name) = callee else { return Ok(None) };
+        Ok(match name.name.as_str() {
+            "is_int" => Some(GuardCallee::Helper(Arc::clone(&is_int))),
+            "is_float" => Some(GuardCallee::Helper(Arc::clone(&is_float))),
+            _ => None,
+        })
+    };
+    guard_dispatch_from_rows(&surface, vec![row], &mut resolver).expect("number helper reifies")
+}
+
 /// `def checked(n) when n < 0, do: abort(1); def checked(_), do: true`
 fn checked_helper() -> PatternGuardDispatch<Ty> {
     let surface = Surface(vec![
@@ -159,10 +182,19 @@ fn checked_helper() -> PatternGuardDispatch<Ty> {
     guard_dispatch_from_rows(&surface, rows, &mut resolver).expect("checked helper reifies")
 }
 
+/// `def only_int(_ :: int), do: true`: no clause for any other argument, so a
+/// call with another argument raises.
+fn partial_helper(ty: Ty) -> PatternGuardDispatch<Ty> {
+    let surface = Surface(vec![clause(1, None, Expr::Bool(true))]);
+    guard_dispatch_from_rows(&surface, vec![row(1, &[(0, ty)], 0)], &mut no_calls()).expect("partial helper reifies")
+}
+
 struct Helpers {
     int: Ty,
     is_int: Arc<PatternGuardDispatch<Ty>>,
     is_float: Arc<PatternGuardDispatch<Ty>>,
+    only_int: Arc<PatternGuardDispatch<Ty>>,
+    number: Arc<PatternGuardDispatch<Ty>>,
     pair: Arc<PatternGuardDispatch<Ty>>,
     always: Arc<PatternGuardDispatch<Ty>>,
     ambiguous: Arc<PatternGuardDispatch<Ty>>,
@@ -181,6 +213,8 @@ impl Helpers {
             int,
             is_int: Arc::new(predicate_helper(1, &[(0, int)])),
             is_float: Arc::new(predicate_helper(1, &[(0, float)])),
+            only_int: Arc::new(partial_helper(int)),
+            number: Arc::new(number_helper(int, float)),
             pair: Arc::new(predicate_helper(2, &[(0, int), (1, float)])),
             always: Arc::new(always_helper(1)),
             ambiguous: Arc::new(ambiguous_helper(1, int)),
@@ -197,6 +231,8 @@ impl Helpers {
             Ok(match name.name.as_str() {
                 "is_int" => helper(&self.is_int),
                 "is_float" => helper(&self.is_float),
+                "only_int" => helper(&self.only_int),
+                "number" => helper(&self.number),
                 "pair" => helper(&self.pair),
                 "always" => helper(&self.always),
                 "ambiguous" => helper(&self.ambiguous),
@@ -372,14 +408,13 @@ fn several_type_conjuncts_unfold_in_written_order_and_the_guard_disappears() {
 }
 
 #[test]
-fn a_guard_that_is_not_a_top_level_and_chain_of_calls_is_unchanged() {
+fn a_guard_that_is_not_an_and_or_chain_of_calls_is_unchanged() {
     let helpers = Helpers::new();
     let cases = [
         (
-            "or",
-            or(call("is_int", vec![var("x")]), call("is_float", vec![var("x")])),
+            "not, which a resolver without complements cannot read",
+            not(call("is_int", vec![var("x")])),
         ),
-        ("not", not(call("is_int", vec![var("x")]))),
         ("an expression argument", call("is_int", vec![plus_one("x")])),
         ("a name no pattern in the row binds", call("is_int", vec![var("outer")])),
     ];
@@ -388,6 +423,155 @@ fn a_guard_that_is_not_a_top_level_and_chain_of_calls_is_unchanged() {
         assert_eq!(type_questions(&plan).len(), 0, "{shape}: no type question is lifted");
         assert_eq!(guard_questions(&plan), 1, "{shape}: the guard is kept whole");
     }
+}
+
+/// The arms of a plan's matrix: how many ways its clauses can match, and how
+/// many clauses there are.
+fn arms_and_outcomes(plan: &Plan) -> (usize, usize) {
+    (plan.source_matrix.arms.len(), plan.source_matrix.outcomes.len())
+}
+
+/// The questions each arm asks, in the order the arms are tried.
+fn arm_questions(plan: &Plan) -> Vec<Vec<&Region<Ty>>> {
+    plan.source_matrix
+        .arms
+        .iter()
+        .map(|arm| {
+            arm.questions
+                .iter()
+                .map(|question| &question.predicate.region)
+                .collect()
+        })
+        .collect()
+}
+
+fn is_type_region(region: &&Region<Ty>) -> bool {
+    matches!(region, Region::Type(_))
+}
+
+#[test]
+fn an_or_of_type_tests_is_a_row_for_each_test_leading_to_the_one_clause() {
+    let helpers = Helpers::new();
+    let plan = guard_over_x(
+        &helpers,
+        or(call("is_int", vec![var("x")]), call("is_float", vec![var("x")])),
+    );
+
+    assert_eq!(arms_and_outcomes(&plan), (2, 1), "two ways to match one clause");
+    assert!(plan.guards.is_empty(), "nothing is left to run");
+    let asked = arm_questions(&plan);
+    assert!(asked.iter().all(|arm| arm.len() == 1 && arm.iter().all(is_type_region)));
+    assert_ne!(asked[0], asked[1], "the sides ask different types");
+    assert_eq!(plan.outcomes.len(), 1);
+}
+
+#[test]
+fn an_or_nests_to_the_left_and_the_right_the_same_way() {
+    let helpers = Helpers::new();
+    let (a, b, c) = (
+        call("is_int", vec![var("x")]),
+        call("is_float", vec![var("x")]),
+        call("positive", vec![var("x")]),
+    );
+    let left = guard_over_x(&helpers, or(or(a.clone(), b.clone()), c.clone()));
+    let right = guard_over_x(&helpers, or(a, or(b, c)));
+
+    assert_eq!(arms_and_outcomes(&left), (3, 1));
+    assert_eq!(left.source_matrix.arms, right.source_matrix.arms);
+}
+
+#[test]
+fn an_or_whose_last_side_runs_keeps_it_as_the_guard_of_its_own_row() {
+    let helpers = Helpers::new();
+    let plan = guard_over_x(
+        &helpers,
+        or(call("is_int", vec![var("x")]), call("positive", vec![var("x")])),
+    );
+
+    assert_eq!(arms_and_outcomes(&plan), (2, 1));
+    assert_eq!(plan.guards.len(), 1, "only the last side runs");
+    assert_eq!(guard_questions(&plan), 0, "the first row asks only the type");
+}
+
+#[test]
+fn an_or_whose_earlier_side_may_raise_stays_one_guard() {
+    let helpers = Helpers::new();
+    let cases = [
+        (
+            "a side that runs",
+            or(call("positive", vec![var("x")]), call("is_int", vec![var("x")])),
+        ),
+        (
+            "a helper with no clause for some arguments",
+            or(call("only_int", vec![var("x")]), call("is_float", vec![var("x")])),
+        ),
+    ];
+    for (shape, guard) in cases {
+        let plan = guard_over_x(&helpers, guard);
+        assert_eq!(arms_and_outcomes(&plan), (1, 1), "{shape}: a single row");
+        assert_eq!(plan.guards.len(), 1, "{shape}: the guard is kept whole");
+    }
+}
+
+#[test]
+fn a_helper_that_is_an_or_unfolds_into_a_row_for_each_side() {
+    let helpers = Helpers::new();
+    let plan = guard_over_x(&helpers, call("number", vec![var("x")]));
+
+    assert_eq!(arms_and_outcomes(&plan), (2, 1));
+    assert!(plan.guards.is_empty());
+    assert!(arm_questions(&plan).iter().all(|arm| arm.iter().all(is_type_region)));
+}
+
+#[test]
+fn an_or_of_helpers_that_are_ors_is_every_side_of_both() {
+    let helpers = Helpers::new();
+    let plan = guard_over_x(
+        &helpers,
+        or(call("number", vec![var("x")]), call("is_int", vec![var("x")])),
+    );
+
+    assert_eq!(
+        arms_and_outcomes(&plan),
+        (2, 1),
+        "the int row the second side asks is the one the first side already has"
+    );
+}
+
+#[test]
+fn an_and_of_ors_distributes_into_a_row_for_each_pair() {
+    let helpers = Helpers::new();
+    let plan = helpers.plan(
+        vec![x(), Pattern::Var(Var::user("y"))],
+        Vec::new(),
+        and(
+            or(call("is_int", vec![var("x")]), call("is_float", vec![var("x")])),
+            or(call("is_int", vec![var("y")]), call("is_float", vec![var("y")])),
+        ),
+    );
+
+    assert_eq!(arms_and_outcomes(&plan), (4, 1));
+    assert!(arm_questions(&plan).iter().all(|arm| arm.len() == 2));
+}
+
+#[test]
+fn a_product_of_ors_longer_than_a_plan_keeps_stays_the_guard_it_was_written_as() {
+    let helpers = Helpers::new();
+    let names = ["a", "b", "c", "d", "e"];
+    let either = |name: &str| or(call("is_int", vec![var(name)]), call("is_float", vec![var(name)]));
+    let guard = names[1..]
+        .iter()
+        .fold(either(names[0]), |chain, name| and(chain, either(name)));
+    let plan = helpers.plan(
+        names.iter().map(|name| Pattern::Var(Var::user(*name))).collect(),
+        Vec::new(),
+        guard,
+    );
+
+    let (arms, outcomes) = arms_and_outcomes(&plan);
+    assert_eq!(outcomes, 1);
+    assert_eq!(arms, 16, "four ors multiply out; the fifth is kept whole in every row");
+    assert_eq!(plan.guards.len(), 16);
 }
 
 #[test]

@@ -1,0 +1,28 @@
+#---
+# purpose: "A guard `not is_atom(x)` takes its clause for every value that is not an atom, as in Elixir, and the clause reads the complement type: the atom is never routed to it"
+# kind: run
+# root: main/0
+# assert.metric.semantic.activations: 12
+# assert.metric.semantic.executables: 12
+# assert.metric.semantic.callsites: 16
+# assert.metric.call_edges.count: 16
+# oracle: self
+# oracle.stamp: ceeb70f2a4881064
+#---
+defmodule Main do
+  def boxed(x), do: {:boxed, x}
+  def sym(x), do: {:sym, x}
+
+  def tag(x) when not is_atom(x), do: boxed(x)
+  def tag(x), do: sym(x)
+
+  def main() do
+    IO.inspect(tag(1))
+    IO.inspect(tag(:a))
+    IO.inspect(tag("s"))
+    IO.inspect(tag(nil))
+    IO.inspect(tag(true))
+  end
+end
+
+Main.main()

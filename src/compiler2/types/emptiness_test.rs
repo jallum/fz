@@ -403,3 +403,45 @@ fn an_arrow_no_call_can_reach_is_written_as_every_function_of_its_arity() {
     assert_ne!(every_binary_function, fun, "it is not every function");
     assert!(t.is_subtype(&every_binary_function, &fun) && !t.is_subtype(&fun, &every_binary_function));
 }
+
+/// The complement of a kind is a test that refuses exactly that kind and
+/// holds for every other kind of value, rather than the widened test every
+/// value passes that `any` minus the kind would give.
+#[test]
+fn a_runtime_test_for_the_complement_of_a_kind_refuses_exactly_that_kind() {
+    let mut t = Types::new();
+    let int = t.int();
+    let not_int = t.runtime_complement(int).expect("an integer has an exact complement");
+    let test = t.runtime_type_predicate(&not_int);
+
+    assert!(test.ints.is_none(), "no integer passes");
+    let (float, atom, nil, bits) = (t.float(), t.atom(), t.nil(), t.bitstring());
+    let (tuple, list, map, fun) = (t.tuple(&[int]), t.list(int), t.map_top(), t.fun_top());
+    let (pid, reference) = (t.pid(), t.reference());
+    for (kind, ty) in [
+        ("float", float),
+        ("atom", atom),
+        ("nil", nil),
+        ("bitstring", bits),
+        ("tuple", tuple),
+        ("list", list),
+        ("map", map),
+        ("function", fun),
+        ("pid", pid),
+        ("reference", reference),
+    ] {
+        assert!(
+            t.runtime_type_predicate(&ty).contained_in(&test),
+            "a {kind} passes the complement of integer"
+        );
+    }
+}
+
+/// A type variable names no kind of value, so a test over its complement
+/// would pass what it holds: there is no complement a run-time test can ask.
+#[test]
+fn a_type_with_a_variable_has_no_complement_a_runtime_test_can_ask() {
+    let mut t = Types::new();
+    let var = t.type_var(crate::compiler2::types::TypeVarId(0));
+    assert_eq!(t.runtime_complement(var), None);
+}
