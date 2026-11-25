@@ -1,8 +1,0 @@
-{:both, 1, :a}
-{:one_missed, 1, 2}
-{:one_missed, :a, :a}
-{:scalar, 1}
-{:container, [1]}
-{:container, %{}}
-{:scalar, :a}
-{:scalar, {1, 2}}

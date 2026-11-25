@@ -22,7 +22,7 @@ pub(crate) mod unfold;
 pub(crate) use last_resort::{FieldTerm, LastResort, RaisedField, atom_name};
 pub(crate) use roots::OutcomeRoots;
 pub(crate) use source::{PatternBodyId, PatternRow, SourcePatternError, SourcePatternRows};
-use unfold::{Alternatives, ClauseFacts, Conjunction, GuardFacts};
+use unfold::{ClauseFacts, Conjunction, GuardFacts};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PatternDispatchPlan<TypeHandle> {
@@ -282,10 +282,6 @@ pub(crate) trait PatternResolver<TypeHandle> {
     /// Whether a literal has the type, or `None` when the literal's type is
     /// not one the resolver can name.
     fn ground_has_type(&mut self, value: &GroundValue, ty: &TypeHandle) -> Option<bool>;
-
-    /// The region that holds exactly where `region` does not, when one can be
-    /// written: a type test over everything the tested type leaves out.
-    fn complement(&mut self, region: &Region<TypeHandle>) -> Option<Region<TypeHandle>>;
 }
 
 /// What a call in a guard reaches: a helper whose clauses are reified into
@@ -426,12 +422,6 @@ where
     /// nothing: every type test is read as telling literals apart.
     fn is_literal_blind(&self, _ty: &TypeHandle) -> bool {
         false
-    }
-
-    /// A bare closure resolver has no types to subtract, so no region has a
-    /// complement.
-    fn complement(&mut self, _region: &Region<TypeHandle>) -> Option<Region<TypeHandle>> {
-        None
     }
 
     fn ground_has_type(&mut self, _value: &GroundValue, _ty: &TypeHandle) -> Option<bool> {
@@ -992,22 +982,39 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
         for binding in &bindings {
             bound.insert(binding.name.clone(), binding.source);
         }
-        let ways = match &row.guard {
+        let admitted = match &row.guard {
             Some(guard) => self.admit_guard(guard, &bound, resolver)?,
-            None => Alternatives::single(Conjunction::default()),
+            None => Conjunction::default(),
+        };
+        for question in admitted.questions.iter().cloned() {
+            if !questions.contains(&question) {
+                questions.push(question);
+            }
         }
-        .after(&questions);
         if self.clause_facts.is_some() {
             let body = body.ok_or(SourcePatternError::UnsupportedGuardExpr)?;
             let answer = self.admit_body(body, &bound, resolver)?;
+            let matches = Conjunction {
+                questions: questions.clone(),
+                residual: admitted.residual.clone(),
+                refused: admitted.refused,
+            };
             if let Some(facts) = self.clause_facts.as_mut() {
-                facts.push(ClauseFacts {
-                    matches: ways.clone(),
-                    answer,
-                });
+                facts.push(ClauseFacts { matches, answer });
             }
         }
-        self.add_arms(ways)?;
+        if let Some(guard_expr) = admitted.guard_expr() {
+            let guard_id = GuardId(self.guards.len() as u32);
+            self.guards.push(guard_expr);
+            questions.push(RegionQuestion::new(RegionPredicate::new(
+                self.guard_subject,
+                Region::Guard(guard_id),
+            )));
+        }
+        let outcome = self.builder.add_outcome(OutcomeMultiplicity::Unique);
+        self.builder
+            .add_arm_questions(questions, EdgeEvidence::empty(), outcome)
+            .map_err(|err| SourcePatternError::DispatchMatrix(format!("{err:?}")))?;
         self.outcomes.push(PatternDispatchOutcome {
             body_id: row.body_id,
             bindings,
@@ -1018,31 +1025,6 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
                 .or_else(|| row.guard.as_ref().map(|guard| guard.span))
                 .unwrap_or(Span::DUMMY),
         });
-        Ok(())
-    }
-
-    /// One arm for each way the clause can match, all to the clause's one
-    /// outcome, in the order the ways are tried.
-    fn add_arms(&mut self, ways: Alternatives<TypeHandle>) -> Result<(), SourcePatternError> {
-        let multiplicity = match ways.ways() {
-            [_] => OutcomeMultiplicity::Unique,
-            _ => OutcomeMultiplicity::Shared,
-        };
-        let outcome = self.builder.add_outcome(multiplicity);
-        for way in ways.ways().iter().cloned() {
-            let mut questions = way.questions.clone();
-            if let Some(guard_expr) = way.guard_expr() {
-                let guard_id = GuardId(self.guards.len() as u32);
-                self.guards.push(guard_expr);
-                questions.push(RegionQuestion::new(RegionPredicate::new(
-                    self.guard_subject,
-                    Region::Guard(guard_id),
-                )));
-            }
-            self.builder
-                .add_arm_questions(questions, EdgeEvidence::empty(), outcome)
-                .map_err(|err| SourcePatternError::DispatchMatrix(format!("{err:?}")))?;
-        }
         Ok(())
     }
 
@@ -1500,8 +1482,8 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
     }
 }
 
-/// The conjuncts of a guard, left to right. Only a top-level `and` splits;
-/// an `or` is read as the sides it is made of, and `not` is not read at all.
+/// The conjuncts of a guard, left to right. Only a top-level `and` splits:
+/// under `or` or `not` a conjunct cannot be asked on its own.
 pub(super) fn and_chain(guard: &Spanned<Expr>) -> Vec<&Spanned<Expr>> {
     match &guard.node {
         Expr::BinOp(crate::ast::BinOp::And, lhs, rhs) => {
@@ -1510,18 +1492,6 @@ pub(super) fn and_chain(guard: &Spanned<Expr>) -> Vec<&Spanned<Expr>> {
             chain
         }
         _ => vec![guard],
-    }
-}
-
-/// The sides of an `or`, left to right, however it nests.
-pub(super) fn or_chain(expr: &Spanned<Expr>) -> Vec<&Spanned<Expr>> {
-    match &expr.node {
-        Expr::BinOp(crate::ast::BinOp::Or, lhs, rhs) => {
-            let mut chain = or_chain(lhs);
-            chain.extend(or_chain(rhs));
-            chain
-        }
-        _ => vec![expr],
     }
 }
 

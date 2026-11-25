@@ -1,6 +1,0 @@
-{:positive, 1}
-{:not_positive, 0}
-{:not_positive, -5}
-{:not_positive, :a}
-{:not_positive, "s"}
-{:not_positive, 2.5}

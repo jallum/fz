@@ -85,30 +85,6 @@ fn unique_outcome_cannot_be_routed_from_multiple_arms() {
 }
 
 #[test]
-fn shared_outcome_is_the_one_outcome_every_arm_that_routes_to_it_reaches() {
-    let mut builder = DispatchMatrixBuilder::<Ty>::typed();
-    let subject = builder.add_input_subject();
-    let shared = builder.add_outcome(OutcomeMultiplicity::Shared);
-    for constant in [GroundValue::Nil, GroundValue::Bool(true)] {
-        builder
-            .add_arm_questions(
-                vec![RegionQuestion::new(RegionPredicate::new(
-                    subject,
-                    Region::Equal(ComparisonValue::Const(constant)),
-                ))],
-                EdgeEvidence::empty(),
-                shared,
-            )
-            .expect("a shared outcome takes every arm that routes to it");
-    }
-
-    let matrix = builder.build().expect("the matrix builds");
-    assert_eq!(matrix.arms.len(), 2);
-    assert_eq!(matrix.outcomes.len(), 1);
-    assert!(matrix.arms.iter().all(|arm| arm.outcome == shared));
-}
-
-#[test]
 fn edge_evidence_reveals_only_existing_projected_subjects() {
     let mut builder = DispatchMatrixBuilder::<Ty>::typed();
     let source = builder.add_input_subject();

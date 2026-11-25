@@ -1,5 +1,0 @@
-:an_integer
-:not_an_integer
-:an_integer
-:not_an_integer
-:not_an_integer
