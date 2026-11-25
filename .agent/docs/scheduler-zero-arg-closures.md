@@ -420,7 +420,7 @@ A continuation is resumed at most once (the rule is written on
 `fz_ir::Cont`). At entry a continuation function reads every capture and its
 outer continuation into registers, then `release_resumed_frame` gives the frame
 back: when the frame ends at `heap.bump_top` and no `ValueRef` capture is
-scalar-kinded (kinds 9..=0xE name their raw slot inside the frame), `bump_top`
+scalar-kinded (kinds 0xA..=0xE name their raw slot inside the frame), `bump_top`
 returns to the frame's start. The site's count keeps
 the allocation; a frame under a newer object, or a pinned one, stays until the
 next collection. The mid-flight yield continuation body releases its frame the

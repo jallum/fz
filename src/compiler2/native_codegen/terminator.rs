@@ -805,7 +805,7 @@ pub(super) fn back_edge_yield_stub_signature(arg_shapes: &[MidFlightArgShape]) -
 pub(super) fn define_back_edge_yield_stub<M: cranelift_module::Module>(
     m: &mut M,
     fbctx: &mut cranelift_frontend::FunctionBuilderContext,
-    sites: &std::cell::RefCell<AllocSites>,
+    sites: &std::cell::RefCell<SiteTable>,
     callee_sid: u32,
     arg_shapes: &[MidFlightArgShape],
     stub_id: FuncId,

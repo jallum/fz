@@ -44,8 +44,8 @@ use fz_runtime::sched_core::{
     Scheduler, SchedulingCore, end_quantum, halt_hook, next_runnable, timer_cancel_hook, timer_schedule_hook,
 };
 use fz_runtime::telemetry::{
-    ALLOC_SITE, EXECUTION_READY, GC, PROCESS_EXITED, RAISE, RUN_ENDED, Raise, RaiseRecord, RunEnded, RuntimeEvent,
-    SCHEDULER_SLEPT, SEND_PROBE, TIMER_ARMED, TIMER_CANCELLED, TIMER_FIRED, report_alloc_sites,
+    ALLOC_SITE, EXECUTION_READY, GC, PROCESS_EXITED, RAISE, REUSE_SITE, RUN_ENDED, Raise, RaiseRecord, RunEnded,
+    RuntimeEvent, SCHEDULER_SLEPT, SEND_PROBE, TIMER_ARMED, TIMER_CANCELLED, TIMER_FIRED, report_sites,
 };
 use fz_runtime::timer::TimerId;
 #[cfg(test)]
@@ -80,8 +80,6 @@ pub struct ExitRecord {
     pub pid: PidId,
     pub halt_value: i64,
     pub bytes_used: usize,
-    pub list_retention_attempts: u64,
-    pub list_retention_hits: u64,
     pub raises_delivered: u64,
     pub reduction_yields: u64,
     pub failed: bool,
@@ -106,6 +104,7 @@ pub fn emit_runtime_event<T: Telemetry + ?Sized>(tel: &T, event: RuntimeEvent<'_
         }
         RuntimeEvent::Gc(collection, stats, heap) => tel.raw_event3(&GC, &collection, stats, heap),
         RuntimeEvent::AllocSite(site) => tel.raw_event1(&ALLOC_SITE, site),
+        RuntimeEvent::ReuseSite(site) => tel.raw_event1(&REUSE_SITE, site),
         RuntimeEvent::RunEnded(ended) => tel.raw_event1(&RUN_ENDED, &ended),
     }
 }
@@ -362,7 +361,7 @@ impl<T: Telemetry + ?Sized> Drop for Runtime<'_, T> {
     /// away; drop them all, then report what the pool still holds.
     fn drop(&mut self) {
         self.tasks.clear();
-        report_alloc_sites(&self.compiled.node, |event| emit_runtime_event(self.tel, event));
+        report_sites(&self.compiled.node, |event| emit_runtime_event(self.tel, event));
         emit_runtime_event(
             self.tel,
             RuntimeEvent::RunEnded(RunEnded::sample(self.pool_outstanding_before_run)),
@@ -419,8 +418,6 @@ impl ProcessExitCapture {
                     pid: *pid,
                     halt_value: process.halt_value,
                     bytes_used: process.heap.bytes_used(),
-                    list_retention_attempts: process.list_retention_attempts,
-                    list_retention_hits: process.list_retention_hits,
                     raises_delivered: process.raises_delivered,
                     reduction_yields: process.reduction_yields,
                     failed: process.ended_in_failure(),
@@ -437,6 +434,33 @@ impl ProcessExitCapture {
 
     pub fn last(&self) -> Option<ExitRecord> {
         self.records.borrow().last().copied()
+    }
+}
+
+/// Collects what the program's reuse sites report at the end of its run.
+#[cfg(test)]
+pub struct ReuseSiteCapture {
+    sites: Rc<RefCell<Vec<fz_runtime::reuse_site::ReuseSiteCount>>>,
+}
+
+#[cfg(test)]
+impl ReuseSiteCapture {
+    pub fn new() -> Self {
+        Self {
+            sites: Rc::new(RefCell::new(Vec::new())),
+        }
+    }
+
+    pub fn install(&self, telemetry: &crate::telemetry::ConfiguredTelemetry) {
+        let sites = Rc::clone(&self.sites);
+        telemetry.attach_raw_event1::<fz_runtime::reuse_site::ReuseSiteCount, _>(&REUSE_SITE, move |_, _, _, site| {
+            sites.borrow_mut().push(site.clone())
+        });
+    }
+
+    /// What the program's reuses came to.
+    pub fn retention(&self) -> fz_runtime::reuse_site::Retention {
+        fz_runtime::reuse_site::Retention::sum(self.sites.borrow().iter())
     }
 }
 

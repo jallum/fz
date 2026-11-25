@@ -7,6 +7,7 @@ use crate::bits::{BINVIEW_BYTES, Bin};
 use crate::exec_ctx::Argv;
 use crate::heap::{Schema, SchemaRegistry};
 use crate::process::{DEFAULT_REDUCTIONS_PER_QUANTUM, Process, YIELD_REASON_REDUCTIONS};
+use crate::reuse_site::{ReuseKind, ReuseStat};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -900,6 +901,12 @@ fn list_tail_word(bits: u64) -> u64 {
     list_addr_from_tagged(bits).expect("list addr") as u64
 }
 
+/// The program's list reuses as `(attempts, hits)`.
+fn list_reuses(process: &Process) -> (u64, u64) {
+    let list = process.node.retention_stats().list;
+    (list.attempts(), list.hits)
+}
+
 #[test]
 fn list_retention_decodes_a_dynamic_head_ref_once() {
     let reuse = |process: &mut Process, source: u64, head_ref: u64, tail: u64, permission: u64| {
@@ -930,12 +937,12 @@ fn list_retention_decodes_a_dynamic_head_ref_once() {
             source_ref.raw_word(),
             "unchanged shared cell survives a dynamic head"
         );
-        assert_eq!((process.list_retention_attempts, process.list_retention_hits), (1, 1));
+        assert_eq!(list_reuses(process), (1, 1));
         let other = process.heap.alloc_list_cons_slot(AnyValue::int(7), EMPTY_LIST_BITS);
         let changed_head = fz_list_head_ref(list_ref_from_bits(other).raw_word());
         let result = reuse(process, source_ref.raw_word(), changed_head, tail_ref, 1);
         assert_ne!(result, source_ref.raw_word(), "shared changed source allocates");
-        assert_eq!((process.list_retention_attempts, process.list_retention_hits), (2, 1));
+        assert_eq!(list_reuses(process), (2, 1));
         for permission in [0, 1] {
             let source = process.heap.alloc_list_cons_slot(AnyValue::int(42), EMPTY_LIST_BITS);
             let source = list_ref_from_bits(source).raw_word();
@@ -946,12 +953,12 @@ fn list_retention_decodes_a_dynamic_head_ref_once() {
                 "only explicit permission rewrites an unshared changed cell"
             );
         }
-        assert_eq!((process.list_retention_attempts, process.list_retention_hits), (4, 2));
+        assert_eq!(list_reuses(process), (4, 2));
     });
 }
 
 #[test]
-fn list_reuse_or_cons_parts_updates_process_counters() {
+fn list_reuse_or_cons_parts_counts_at_its_runtime_site() {
     with_process(|process| {
         let old_tail = process.heap.alloc_list_cons_slot(AnyValue::int(1), EMPTY_LIST_BITS);
         let new_tail = process.heap.alloc_list_cons_slot(AnyValue::int(2), EMPTY_LIST_BITS);
@@ -967,8 +974,7 @@ fn list_reuse_or_cons_parts_updates_process_counters() {
         );
 
         assert_eq!(reused_word, list_ref_from_bits(source).raw_word());
-        assert_eq!(process.list_retention_attempts, 1);
-        assert_eq!(process.list_retention_hits, 1);
+        assert_eq!(list_reuses(process), (1, 1));
 
         let old_tail = process.heap.alloc_list_cons_slot(AnyValue::int(3), EMPTY_LIST_BITS);
         let new_tail = process.heap.alloc_list_cons_slot(AnyValue::int(4), EMPTY_LIST_BITS);
@@ -989,8 +995,7 @@ fn list_reuse_or_cons_parts_updates_process_counters() {
         );
 
         assert_ne!(fallback_word, source_ref.raw_word());
-        assert_eq!(process.list_retention_attempts, 2);
-        assert_eq!(process.list_retention_hits, 1);
+        assert_eq!(list_reuses(process), (2, 1));
     });
 }
 
@@ -1041,10 +1046,8 @@ fn a_struct_update_rewrites_its_base_only_when_permitted_and_unshared() {
         Ok(4),
         "the copy keeps the fields the update does not replace"
     );
-    assert_eq!(
-        (process.struct_retention_attempts, process.struct_retention_hits),
-        (3, 1)
-    );
+    let structs = process.node.retention_stats().struct_;
+    assert_eq!((structs.attempts(), structs.hits), (3, 1));
 }
 
 #[test]
@@ -1132,6 +1135,33 @@ fn tuple_primitives_answer_for_every_value_they_are_handed() {
             "outside the tuple the answer is nil"
         );
     }
+}
+
+/// A tuple copy is a miss at the `TupleCopy` site, and the program's struct
+/// figure includes it. A struct copy is a miss at `StructCopy`, which the
+/// tuple's site is not.
+#[test]
+fn a_tuple_copy_counts_at_a_tuple_site_and_in_the_struct_figure() {
+    let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
+    let pair = schemas.borrow_mut().register(Schema::tuple_of_arity(2));
+    let mut process = Box::new(Process::new(schemas));
+    let process_ptr: *mut Process = &mut *process;
+    let tuple = tuple_ref(&mut process, pair, &[AnyValue::int(7), AnyValue::int(8)]);
+    let value = process.heap.box_any_value_ref(AnyValue::int(5));
+
+    fz_tuple_put(process_ptr, tuple.raw_word(), 0, value.raw_word());
+
+    let node = &process.node;
+    assert_eq!(node.reuse_stats(ReuseKind::Tuple), ReuseStat { hits: 0, misses: 1 });
+    assert_eq!(node.reuse_stats(ReuseKind::Struct), ReuseStat::default());
+    assert_eq!(node.retention_stats().struct_, ReuseStat { hits: 0, misses: 1 });
+    assert_eq!(node.retention_stats().list, ReuseStat::default());
+    let sites: Vec<_> = node
+        .reuse_site_counts()
+        .into_iter()
+        .map(|site| (site.function, site.kind))
+        .collect();
+    assert_eq!(sites, [("runtime::fz_tuple_put".to_owned(), ReuseKind::Tuple)]);
 }
 
 #[test]

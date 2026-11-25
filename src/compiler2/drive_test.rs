@@ -23,7 +23,7 @@ use crate::compiler2::{
 use crate::diag::{Diagnostic, codes};
 use crate::dispatch_matrix::pattern::{LastResort, PatternDispatchPlan, PatternGuardDispatch, PatternGuardExpr};
 use crate::dispatch_matrix::{Region, SubjectId};
-use crate::exec::runtime::{DbgCapture, ProcessExitCapture};
+use crate::exec::runtime::{DbgCapture, ProcessExitCapture, ReuseSiteCapture};
 use crate::fast_hash::{HashMap, HashSet};
 use crate::fz_ir::{ExternAbi, ExternReturn, ExternTy, FnId, Prim as IrPrim, Stmt as IrStmt, Term as IrTerm};
 use crate::ir_interp::{
@@ -16786,6 +16786,8 @@ fn compiler2_list_retention_crosses_continuations_as_a_traced_construction_opera
     let tel = ConfiguredTelemetry::new();
     let exits = ProcessExitCapture::new();
     exits.install(&tel);
+    let reuses = ReuseSiteCapture::new();
+    reuses.install(&tel);
     let native = NativeProgramCapture::new();
     native.install(&tel);
     let list_retention = ListRetentionTelemetryCapture::new();
@@ -16852,10 +16854,10 @@ def main(), do: rebuild([1, 2])
         "the exact construction consumes its traced physical source"
     );
 
-    let exit = exits.last().expect("runtime process exit telemetry");
-    assert_eq!(exit.list_retention_attempts, 1);
+    let list = reuses.retention().list;
+    assert_eq!(list.attempts(), 1);
     assert_eq!(
-        exit.list_retention_hits, 1,
+        list.hits, 1,
         "unchanged `[h | t]` retains its source across the continuation without allocating",
     );
 }
@@ -16898,8 +16900,8 @@ def main(), do: ignore([1, 2])
 #[test]
 fn compiler2_list_retention_runtime_telemetry_reports_source_identity_hits() {
     let tel = ConfiguredTelemetry::new();
-    let exits = ProcessExitCapture::new();
-    exits.install(&tel);
+    let reuses = ReuseSiteCapture::new();
+    reuses.install(&tel);
     let list_retention = ListRetentionTelemetryCapture::new();
     list_retention.install(&tel);
     let mut compiler = Compiler2::new(tel);
@@ -16929,9 +16931,9 @@ def main(), do: rebuild([1, 2])
     // The `=` arm never reads `xs`, so it captures the decision's input physically.
     assert_eq!(list_retention.last(), Some((root_id, 1, 1)));
 
-    let exit = exits.last().expect("runtime process exit telemetry");
-    assert_eq!(exit.list_retention_attempts, 1);
-    assert_eq!(exit.list_retention_hits, 1);
+    let list = reuses.retention().list;
+    assert_eq!(list.attempts(), 1);
+    assert_eq!(list.hits, 1);
 }
 
 #[test]
@@ -17233,6 +17235,8 @@ fn list_retention_run(name: &str, source: &str) -> ListRetentionRun {
     capture.install(&tel, &[]);
     let exits = ProcessExitCapture::new();
     exits.install(&tel);
+    let reuses = ReuseSiteCapture::new();
+    reuses.install(&tel);
     let list_retention = ListRetentionTelemetryCapture::new();
     list_retention.install(&tel);
     let native = NativeProgramCapture::new();
@@ -17259,13 +17263,14 @@ fn list_retention_run(name: &str, source: &str) -> ListRetentionRun {
     });
 
     let exit = exits.last().expect("runtime process exit telemetry");
+    let list = reuses.retention().list;
     let (_, constructions, physical_captures) = list_retention.last().expect("list-retention compilation telemetry");
     let source_and_rebuild_share_return = list_retention_source_and_rebuild_share_return(&native.last(root_id).program);
     ListRetentionRun {
         constructions,
         physical_captures,
-        attempts: exit.list_retention_attempts,
-        reused: exit.list_retention_hits,
+        attempts: list.attempts(),
+        reused: list.hits,
         bytes_used: exit.bytes_used,
         source_and_rebuild_share_return,
         output: dbg.lines(),
@@ -17655,6 +17660,8 @@ end
     let jit_tel = ConfiguredTelemetry::new();
     let jit_exits = ProcessExitCapture::new();
     jit_exits.install(&jit_tel);
+    let jit_reuses = ReuseSiteCapture::new();
+    jit_reuses.install(&jit_tel);
     let mut jit_compiler = Compiler2::new(jit_tel);
     let jit_root = jit_compiler.submit_root(RootSubmission {
         module_name: None,
@@ -17674,6 +17681,8 @@ end
     let interp_tel = ConfiguredTelemetry::new();
     let interp_exits = ProcessExitCapture::new();
     interp_exits.install(&interp_tel);
+    let interp_reuses = ReuseSiteCapture::new();
+    interp_reuses.install(&interp_tel);
     let mut interp_compiler = Compiler2::new(interp_tel);
     let interp_root = interp_compiler.submit_root(RootSubmission {
         module_name: None,
@@ -17693,14 +17702,17 @@ end
 
     assert_eq!(jit_exit.halt_value, 0);
     assert_eq!(jit_exit.halt_value, interp_exit.halt_value);
-    assert_eq!(jit_exit.list_retention_attempts, 2);
-    assert_eq!(jit_exit.list_retention_hits, 1);
+    let jit_list = jit_reuses.retention().list;
+    let interp_list = interp_reuses.retention().list;
+    assert_eq!(jit_list.attempts(), 2);
+    assert_eq!(jit_list.hits, 1);
     assert_eq!(
-        jit_exit.list_retention_attempts, interp_exit.list_retention_attempts,
+        jit_list.attempts(),
+        interp_list.attempts(),
         "jit and backend interpreter should agree on list-retention attempts",
     );
     assert_eq!(
-        jit_exit.list_retention_hits, interp_exit.list_retention_hits,
+        jit_list.hits, interp_list.hits,
         "jit and backend interpreter should agree on in-place list-retention reuse",
     );
 }

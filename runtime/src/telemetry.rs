@@ -9,6 +9,7 @@
 use crate::alloc_site::AllocSiteCount;
 use crate::heap::{Footprint, GcStats, Heap, pool_footprint, pool_outstanding_blocks, pool_total_cached_blocks};
 use crate::process::{Collection, PidId, Process};
+use crate::reuse_site::ReuseSiteCount;
 use crate::sched::{ProbeOutcome, SendProbe};
 use crate::timer::TimerId;
 use std::fmt::Write as _;
@@ -37,6 +38,7 @@ pub const GC: [&str; 3] = ["fz", "runtime", "gc"];
 /// pool census.
 pub const RUN_ENDED: [&str; 3] = ["fz", "runtime", "run_ended"];
 pub const ALLOC_SITE: [&str; 3] = ["fz", "runtime", "alloc_site"];
+pub const REUSE_SITE: [&str; 3] = ["fz", "runtime", "reuse_site"];
 
 /// One per raise, before the runtime decides where it goes; carries the `Raise`.
 pub const RAISE: [&str; 3] = ["fz", "runtime", "raise"];
@@ -177,6 +179,8 @@ pub enum RuntimeEvent<'a> {
     Gc(Collection, &'a GcStats, &'a Heap),
     /// What one allocation site placed during the run.
     AllocSite(&'a AllocSiteCount),
+    /// What one reuse site did during the run.
+    ReuseSite(&'a ReuseSiteCount),
     RunEnded(RunEnded),
 }
 
@@ -193,6 +197,7 @@ impl RuntimeEvent<'_> {
             RuntimeEvent::Raise(_) => &RAISE,
             RuntimeEvent::Gc(..) => &GC,
             RuntimeEvent::AllocSite(..) => &ALLOC_SITE,
+            RuntimeEvent::ReuseSite(..) => &REUSE_SITE,
             RuntimeEvent::RunEnded(_) => &RUN_ENDED,
         }
     }
@@ -275,6 +280,18 @@ fn write_metadata(out: &mut String, event: &RuntimeEvent<'_>) {
             )
             .unwrap();
         }
+        RuntimeEvent::ReuseSite(site) => {
+            out.push_str("\"function\":");
+            write_json_string(out, &site.function);
+            write!(
+                out,
+                ",\"object\":\"{}\",\"hits\":{},\"misses\":{}",
+                site.kind.as_str(),
+                site.reused.hits,
+                site.reused.misses
+            )
+            .unwrap();
+        }
         RuntimeEvent::RunEnded(ended) => {
             write!(
                 out,
@@ -336,14 +353,10 @@ fn write_collection(out: &mut String, collection: Collection, stats: &GcStats, h
 fn write_process_exited(out: &mut String, process: &Process) {
     write!(
         out,
-        "\"pid\":{},\"process\":{{\"opaque_type\":\"{}\",\"bytes_used\":{},\"list_retention_attempts\":{},\"list_retention_hits\":{},\"struct_retention_attempts\":{},\"struct_retention_hits\":{},\"binaries_shared\":{},\"raises_delivered\":{},\"reduction_yields\":{},\"parks\":{},\"dtors_dispatched\":{},\"frame_copies\":{},\"halt_value\":{},\"failed\":{}}}",
+        "\"pid\":{},\"process\":{{\"opaque_type\":\"{}\",\"bytes_used\":{},\"binaries_shared\":{},\"raises_delivered\":{},\"reduction_yields\":{},\"parks\":{},\"dtors_dispatched\":{},\"frame_copies\":{},\"halt_value\":{},\"failed\":{}}}",
         process.pid,
         std::any::type_name::<Process>(),
         process.heap.bytes_used(),
-        process.list_retention_attempts,
-        process.list_retention_hits,
-        process.struct_retention_attempts,
-        process.struct_retention_hits,
         process.heap.binaries_shared(),
         process.raises_delivered,
         process.reduction_yields,
@@ -374,10 +387,13 @@ fn write_json_string(out: &mut String, text: &str) {
     out.push('"');
 }
 
-/// Report every site of `node`'s program that placed an object during the
-/// run.
-pub fn report_alloc_sites(node: &crate::process::Node, mut report: impl FnMut(RuntimeEvent<'_>)) {
+/// Report every site of `node`'s program that placed an object, and every
+/// site that reused or replaced one, during the run.
+pub fn report_sites(node: &crate::process::Node, mut report: impl FnMut(RuntimeEvent<'_>)) {
     for site in node.alloc_site_counts() {
         report(RuntimeEvent::AllocSite(&site));
+    }
+    for site in node.reuse_site_counts() {
+        report(RuntimeEvent::ReuseSite(&site));
     }
 }

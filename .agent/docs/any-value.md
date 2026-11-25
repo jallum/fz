@@ -1050,11 +1050,10 @@ A struct literal native code places in read-only program data
 (`define_static_struct_literal`) carries the mark from birth, so it is only
 ever read. Marking the struct alone is enough: everything it holds was marked
 when it was stored. An unshared struct is therefore young, which
-`fz_struct_reuse_or_copy` asserts. The process counts struct updates in
-`struct_retention_attempts` and the ones that stored into their base in
-`struct_retention_hits`, both reported on `process_exited`; native code bumps
-them inline, at `PROCESS_STRUCT_RETENTION_ATTEMPTS_OFFSET` and
-`PROCESS_STRUCT_RETENTION_HITS_OFFSET`.
+`fz_struct_reuse_or_copy` asserts. A struct update that stores into its
+base is a hit at its reuse site and one that copies is a miss, reported by
+`fz.runtime.reuse_site` (see [runtime-telemetry](runtime-telemetry.md#fzruntimereuse_site)).
+Native code bumps the hit inline, at the site's own counter.
 
 A binary's shared mark is `BINARY_SHARED_MASK`, the list link's alias bit,
 in word 0 of both forms: a small bitstring's header and a view's header, whose

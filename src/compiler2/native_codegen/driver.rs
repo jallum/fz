@@ -151,7 +151,7 @@ fn declare_callable_boundary_fns<M: cranelift_module::Module>(
 fn emit_callable_boundary_bodies<M: cranelift_module::Module>(
     m: &mut M,
     fbctx: &mut FunctionBuilderContext,
-    sites: &RefCell<AllocSites>,
+    sites: &RefCell<SiteTable>,
     fn_ids: &HashMap<u32, FuncId>,
     callable_boundary_fn_ids: &HashMap<u32, FuncId>,
     surface: &NativeCodegenSurface<'_>,
@@ -324,7 +324,7 @@ fn define_halt_conts<M: cranelift_module::Module>(
 fn emit_main_trampoline<M: cranelift_module::Module>(
     m: &mut M,
     fbctx: &mut FunctionBuilderContext,
-    sites: &RefCell<AllocSites>,
+    sites: &RefCell<SiteTable>,
     locals: &LocalBodies,
 ) -> Result<(), CodegenError> {
     let mut sig = Signature::new(CallConv::Tail);
@@ -381,7 +381,7 @@ fn drain_dtor_entry_signature<M: cranelift_module::Module>(m: &mut M) -> Signatu
 fn emit_drain_dtor_entry<M: cranelift_module::Module>(
     m: &mut M,
     fbctx: &mut FunctionBuilderContext,
-    sites: &RefCell<AllocSites>,
+    sites: &RefCell<SiteTable>,
     locals: &LocalBodies,
 ) -> Result<(), CodegenError> {
     let sig = drain_dtor_entry_signature(m);
@@ -440,7 +440,7 @@ fn emit_drain_dtor_entry<M: cranelift_module::Module>(
 fn emit_entry_thunk<M: cranelift_module::Module>(
     m: &mut M,
     fbctx: &mut FunctionBuilderContext,
-    sites: &RefCell<AllocSites>,
+    sites: &RefCell<SiteTable>,
     locals: &LocalBodies,
 ) -> Result<(), CodegenError> {
     let mut sig = Signature::new(CallConv::Tail);
@@ -502,7 +502,7 @@ fn emit_entry_thunk<M: cranelift_module::Module>(
 fn emit_halt_cont_bodies<M: cranelift_module::Module>(
     m: &mut M,
     fbctx: &mut FunctionBuilderContext,
-    sites: &RefCell<AllocSites>,
+    sites: &RefCell<SiteTable>,
     locals: &LocalBodies,
 ) -> Result<(), CodegenError> {
     for repr in [ArgRepr::ValueRef, ArgRepr::RawInt, ArgRepr::RawF64, ArgRepr::RawAtom] {
@@ -553,7 +553,7 @@ fn resume_signature<M: cranelift_module::Module>(m: &mut M) -> Signature {
 fn emit_resume<M: cranelift_module::Module>(
     m: &mut M,
     fbctx: &mut FunctionBuilderContext,
-    sites: &RefCell<AllocSites>,
+    sites: &RefCell<SiteTable>,
 ) -> Result<FuncId, CodegenError> {
     let sig = resume_signature(m);
     let id = m
@@ -735,7 +735,7 @@ fn emit_receive_dispatch_bodies<M: cranelift_module::Module>(
 fn emit_mid_flight_cont_bodies<M: cranelift_module::Module>(
     m: &mut M,
     fbctx: &mut FunctionBuilderContext,
-    sites: &RefCell<AllocSites>,
+    sites: &RefCell<SiteTable>,
     fn_ids: &HashMap<u32, FuncId>,
     mid_flight_cont_tail_fn_ids: &MidFlightContFnIds,
 ) -> Result<(), CodegenError> {
@@ -1022,12 +1022,12 @@ pub(crate) fn compile_with_backend_surface<
     let locals = declare_local_bodies(backend.module_mut())?;
 
     let mut fbctx = FunctionBuilderContext::new();
-    let alloc_sites = RefCell::new(AllocSites::declare(backend.module_mut())?);
+    let site_table = RefCell::new(SiteTable::declare(backend.module_mut())?);
 
-    emit_main_trampoline(backend.module_mut(), &mut fbctx, &alloc_sites, &locals)?;
-    emit_drain_dtor_entry(backend.module_mut(), &mut fbctx, &alloc_sites, &locals)?;
-    emit_entry_thunk(backend.module_mut(), &mut fbctx, &alloc_sites, &locals)?;
-    emit_halt_cont_bodies(backend.module_mut(), &mut fbctx, &alloc_sites, &locals)?;
+    emit_main_trampoline(backend.module_mut(), &mut fbctx, &site_table, &locals)?;
+    emit_drain_dtor_entry(backend.module_mut(), &mut fbctx, &site_table, &locals)?;
+    emit_entry_thunk(backend.module_mut(), &mut fbctx, &site_table, &locals)?;
+    emit_halt_cont_bodies(backend.module_mut(), &mut fbctx, &site_table, &locals)?;
 
     let user_schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
     let (tuple_arities, tuple_schema_ids) = collect_tuple_arities_and_register_schemas(surface.module, &user_schemas);
@@ -1084,7 +1084,7 @@ pub(crate) fn compile_with_backend_surface<
             tuple_schema_ids: &tuple_schema_ids,
             named_schema_ids: &named_schema_ids,
             bitstring_literals: &bitstring_literals,
-            alloc_sites: &alloc_sites,
+            site_table: &site_table,
             param_reprs: &surface.param_reprs,
             return_diverges: &surface.return_diverges,
             cont_fns: &surface.cont_fns,
@@ -1146,25 +1146,25 @@ pub(crate) fn compile_with_backend_surface<
     emit_mid_flight_cont_bodies(
         backend.module_mut(),
         &mut fbctx,
-        &alloc_sites,
+        &site_table,
         &fn_ids,
         &mid_flight_cont_tail_fn_ids,
     )?;
     emit_callable_boundary_bodies(
         backend.module_mut(),
         &mut fbctx,
-        &alloc_sites,
+        &site_table,
         &fn_ids,
         &callable_boundary_fn_ids,
         surface,
     )?;
-    let resume_id = emit_resume(backend.module_mut(), &mut fbctx, &alloc_sites)?;
+    let resume_id = emit_resume(backend.module_mut(), &mut fbctx, &site_table)?;
     drop(emit_runtime_span);
 
-    let (alloc_site_counts, alloc_sites) = alloc_sites.into_inner().define(backend.module_mut())?;
+    let (site_counts, sites) = site_table.into_inner().define(backend.module_mut())?;
     let metadata = CompiledMetadata {
-        alloc_site_counts,
-        alloc_sites,
+        site_counts,
+        sites,
         closure_denotations: surface
             .callable_boundaries
             .values()

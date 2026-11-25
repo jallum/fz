@@ -359,12 +359,12 @@ the tail's word and kind)
 and the same function applied to a head given as a ref word (decoded by
 `storage_raw` and `tag`; `REUSE_REF_HEAD`) are rows, and a call site asks `emit_reuse(body, symbol, args)`;
 `native_codegen/list_reuse.rs` writes them in the runtime function's order. The
-attempt is counted in `Process::list_retention_attempts`. A cell whose head
+row owns one reuse site, and each outcome bumps one of its two counters. A cell whose head
 word, head kind and tail already are the new ones is the answer and counts a
 hit, with nothing written. Otherwise the head is shared, then a cell the
 construction may rewrite (a constant the call site passes) whose alias bit is
 clear is rewritten in place and counts a hit, and any other is replaced by a
-new cell placed through `emit_place` and written by `list_cell.rs`. The alias
+new cell placed through `emit_place` and written by `list_cell.rs`, and counts a miss. The alias
 bit is read after the head is shared, because a head that is the source cell
 itself marks it. The interpreter calls `fz_list_reuse_or_cons_parts`.
 

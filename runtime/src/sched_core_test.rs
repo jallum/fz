@@ -98,6 +98,7 @@ impl Scheduler for Recording {
             | RuntimeEvent::SendProbe(_)
             | RuntimeEvent::Raise(_)
             | RuntimeEvent::AllocSite(_)
+            | RuntimeEvent::ReuseSite(_)
             | RuntimeEvent::RunEnded(_) => {}
         }
     }

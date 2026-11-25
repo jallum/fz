@@ -32,7 +32,7 @@ fn resume_entry(in_frame: bool) -> ir::Function {
     b.seal_block(entry);
     let params = b.block_params(entry).to_vec();
     let mut cache = CodegenCache::default();
-    let sites = std::cell::RefCell::new(AllocSites::declare(&mut module).expect("declare the site counters"));
+    let sites = std::cell::RefCell::new(SiteTable::declare(&mut module).expect("declare the site counters"));
     let scope = SiteScope {
         sites: &sites,
         function: "entry_test",

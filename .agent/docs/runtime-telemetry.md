@@ -43,6 +43,8 @@ Ten events matter:
   carrying the collection's stats.
 - `fz.runtime.alloc_site` — one per allocation site that placed an object,
   after every process has been torn down; see [`fz.runtime.alloc_site`](#fzruntimealloc_site).
+- `fz.runtime.reuse_site` — one per reuse site that reused or replaced an
+  object, next to the allocation sites; see [`fz.runtime.reuse_site`](#fzruntimereuse_site).
 - `fz.runtime.run_ended` — one per run, after every process has been torn down,
   carrying the block pool's census.
 
@@ -74,8 +76,7 @@ signature:    (&PidId, &Process)
 ```
 
 `ExitRecord` is the test-side projection: `{ pid, halt_value: i64,
-bytes_used: usize, list_retention_attempts: u64,
-list_retention_hits: u64, raises_delivered: u64, reduction_yields: u64,
+bytes_used: usize, raises_delivered: u64, reduction_yields: u64,
 failed: bool, dtors_dispatched: u64, frame_copies: u64 }`. `failed` is
 `Process::ended_in_failure`: whether the process ended through an uncaught raise
 with a non-zero exit status (see [exceptions](exceptions.md)); an exit with a
@@ -86,7 +87,7 @@ reduction budget ran out and it yielded to the scheduler. `write_line` also
 renders `parks` after `reduction_yields`: the quanta that ended with the
 process parked on a receive (`sched_core::end_quantum` counts them), so
 `reduction_yields + parks` is the boundaries at which a collection could run.
-It renders `binaries_shared` after `struct_retention_hits`: the binaries the
+It renders `binaries_shared` after `bytes_used`: the binaries the
 process marked shared (see [any-value](any-value.md), "Shared Lists, Structs
 And Binaries").
 `frame_copies` counts the
@@ -97,21 +98,16 @@ same fields when it renders the event, nested under
 `"process":{"opaque_type":"fz_runtime::process::Process",...}` with `failed` as
 a JSON boolean. The emitter does not traverse the process for telemetry.
 
-List-retention fallbacks are derived, not emitted separately:
-`fallback_count = list_retention_attempts - list_retention_hits`. Each attempt
-adds one to `attempts`, and each answer that is the original source cell,
-unchanged or after guarded rewrite, adds one to `hits`. The interpreter's call
-to `fz_list_reuse_or_cons_parts` and the instructions compiled code emits for
-the same row (`native_codegen/list_reuse.rs`) update the same two process
-fields, so the telemetry seam stays at one boundary event instead of a
-per-attempt side channel.
+Retention is not a per-process figure. What a program reused in place or
+replaced is counted at its reuse sites and reported by
+[`fz.runtime.reuse_site`](#fzruntimereuse_site).
 
 `dtors_dispatched` is `Process::dtors_dispatched`: the resource destructors the
 scheduling core ran for the process over its whole life, whether a collection
 freed the resource at a yield or park or the exit swept it (see
 [scheduler](scheduler-zero-arg-closures.md#the-step-after-a-quantum)).
 `write_line` renders it on `process_exited` as a number beside
-`list_retention_hits`. There is no separate destructor event; a destructor
+`parks`. There is no separate destructor event; a destructor
 dispatched mid-life is visible on the exit record of the process that ran it,
 and the `fz.runtime.gc` event of the collection that freed it precedes it. A
 minor collection examines only the young off-heap chain, so a resource stub that
@@ -193,7 +189,7 @@ An allocation site is one place that puts an object on a heap
 (`runtime/src/alloc_site.rs`). There are two kinds:
 
 - A **compiled site** is a place in a compiled function that allocates
-  inline. `AllocSites::count` (`src/compiler2/native_codegen/alloc_site.rs`)
+  inline. `SiteTable::count_alloc` (`src/compiler2/native_codegen/site_table.rs`)
   registers it while the function is lowered and emits one increment of the
   site's own counter, placed where the fast and slow paths of the allocation
   join, so one placement is one count. The counters are one zeroed, writable
@@ -211,16 +207,18 @@ An allocation site is one place that puts an object on a heap
   and records the allocation and its bytes in `Node::runtime_allocs`.
 
 Both tables belong to the program's `Node`, so a process carries no site
-state and spawning one costs nothing for it. The compiled table is registered
+state and spawning one costs nothing for it. The compiled table
+(`runtime/src/site_table.rs`) holds the program's allocation sites and its
+reuse sites together, each with the counter words it owns. It is registered
 once: `JitBackend::finalize` hands the node the module's sites and the address
 of its counters, and a built program's `main` calls
-`fz_aot_register_alloc_sites` with the same two things before any compiled code
+`fz_aot_register_sites` with the same two things before any compiled code
 runs. An interpreted program has no compiled sites.
 
-`report_alloc_sites` (`runtime/src/telemetry.rs`) raises one event per site
-that placed at least one object, compiled sites first in registration order,
-then runtime sites. Each path raises them at the end of the run, just before
-`run_ended`.
+`report_sites` (`runtime/src/telemetry.rs`) raises one `alloc_site` event per
+site that placed at least one object, compiled sites first in registration
+order, then runtime sites, and then the `reuse_site` events. Each path raises
+them at the end of the run, just before `run_ended`.
 
 ```text
 raw event:    fz.runtime.alloc_site
@@ -247,6 +245,47 @@ process and the closures the scheduler builds to enter each one. The figure
 so the two always agree. An off-heap binary buffer is the runtime site
 `runtime::alloc_shared_bin`, reported with kind `shared_bin`; it is not in the
 figure's total.
+
+## `fz.runtime.reuse_site`
+
+A reuse site is one place that rebuilds a list cell or a struct from the object
+it took apart (`runtime/src/reuse_site.rs`). The object is written in place, a
+**hit**, or a new one is placed, a **miss**. Each reuse bumps exactly one of its
+site's two counters; the attempts at a site are its hits plus its misses. A
+site's kind is `list`, `struct` or `tuple`.
+
+- A **compiled site** is a place in a compiled function that decides a reuse
+  inline. It owns two counter words, hits then misses, in the same zeroed data
+  object as the allocation sites' counters (`SiteTable::register_reuse`,
+  `src/compiler2/native_codegen/site_table.rs`). The list-cell row
+  (`native_codegen/list_reuse.rs`) is one site: a cell kept as it is and a cell
+  rewritten in place count hits, and the new cell it places counts a miss. An
+  unshared struct an update stores into (`CodegenFn::rewrite_unshared_struct`)
+  counts a hit at its own site; the copy it makes instead is `fz_struct_copy`,
+  which counts at its runtime site.
+- A **runtime site** is a runtime function that reuses or replaces, a
+  `RuntimeReuseSite`, counted on the node in `Node::runtime_reuses`:
+  `fz_list_reuse_or_cons_parts` (`ListReuse`, a hit when the answer is the
+  source cell), `fz_struct_copy` (`StructCopy`, a miss), `fz_struct_reuse_or_copy`
+  (`StructReuse`, a hit when it answers the base and a miss when it copies) and
+  `fz_tuple_put` (`TupleCopy`, a miss of kind `tuple`). The interpreter has only
+  these.
+
+```text
+raw event:    fz.runtime.reuse_site
+signature:    (&ReuseSiteCount)
+```
+
+`ReuseSiteCount` is `{ function, kind, reused }`; `write_line` renders it as
+`function`, `object` (`list`, `struct` or `tuple`), `hits` and `misses`. One
+event is raised per site that reused or replaced at least one object, after the
+`alloc_site` events.
+
+The program's figure is the sum of these sites: `Node::retention_stats` is the
+list figure and the struct figure, where the struct figure includes tuple
+copies, and `Node::reuse_stats(kind)` asks for one kind alone. A fixture that
+pins a retention figure sums the events of one run, not the exit lines of its
+processes.
 
 ## `fz.runtime.run_ended`
 
@@ -586,8 +625,10 @@ There is one run path — the production scheduler — and tests watch its exit 
 instead of poking task internals:
 
 - `ProcessExitCapture` reconstructs a typed `ExitRecord` (result + heap stats +
-  cumulative list-retention counters) from each `process_exited` event's
+  per-process counters) from each `process_exited` event's
   live process during dispatch, queryable by `last()` or `by_pid(pid)`.
+- `ReuseSiteCapture` collects the run's `reuse_site` events; `retention()` is
+  their sum, the figure `Node::retention_stats` reads.
 - `DbgCapture` is a retaining `OutputSink` that copies each callback-scoped line,
   read back with `lines()`.
 

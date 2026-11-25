@@ -11,7 +11,6 @@ pub(crate) use crate::compiler2::Ty;
 use crate::telemetry::RawSpanTelemetry;
 pub(crate) use crate::types::{ClosureTypes, LiteralTypes, RenderTypes, Types};
 
-mod alloc_site;
 mod binary_compare;
 mod bitstring_literal;
 mod clif;
@@ -34,6 +33,7 @@ pub(crate) mod repr;
 pub(crate) mod runtime_call;
 mod runtime_test;
 mod scalar_box;
+mod site_table;
 mod static_object;
 mod support;
 pub(crate) mod surface;
@@ -44,7 +44,6 @@ pub(crate) mod variadic;
 
 // Glob re-exports keep cross-module references resolvable through
 // `use super::*;` in each submodule.
-pub(crate) use alloc_site::{AllocSites, SiteScope};
 pub(crate) use bitstring_literal::BitstringLiterals;
 pub(crate) use clif::*;
 pub(crate) use closure::*;
@@ -57,6 +56,7 @@ pub(crate) use function::*;
 pub(crate) use prim::*;
 pub(crate) use repr::*;
 pub(crate) use runtime_call::*;
+pub(crate) use site_table::{ReuseCounters, SiteScope, SiteTable};
 pub(crate) use static_object::*;
 pub(crate) use support::*;
 pub(crate) use surface::*;

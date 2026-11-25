@@ -3488,13 +3488,11 @@ fn list_retention_telemetry_stats_for_fixture(fixture: &FixtureCase) -> ListRete
                     fixture.display_path().display()
                 )
             });
-            continue;
         }
-        if line.contains("\"name\":[\"fz\",\"runtime\",\"process_exited\"]") {
-            let fixture = fixture.display_path().display().to_string();
-            stats.runtime_attempted_count += required_json_u64_field(line, "list_retention_attempts", &fixture);
-            stats.runtime_reused_count += required_json_u64_field(line, "list_retention_hits", &fixture);
-        }
+    }
+    for site in reuse_sites_in(&log).iter().filter(|site| site.object == "list") {
+        stats.runtime_attempted_count += site.hits + site.misses;
+        stats.runtime_reused_count += site.hits;
     }
     assert!(
         saw_native_event,
@@ -3872,30 +3870,17 @@ fn a_list_a_continuation_captures_stays_rewritable_in_place() {
     assert_eq!(stats.runtime_fallback_count(), 1);
 }
 
-/// The struct updates every process of `fixture` made on `path`, and how many
-/// of them stored into their base: `(attempts, hits)` summed over the
-/// processes' exit events.
+/// The struct updates the program made on `path`, and how many of them stored
+/// into their base: `(attempts, hits)` summed over the reuse sites of structs
+/// and of tuples.
 fn struct_retention_for_fixture(fixture: &FixtureCase, path: FixtureMatrixPath) -> (usize, usize) {
-    let header = parse_header(fixture).unwrap_or_else(|error| panic!("parse fixture header: {error}"));
-    let (out, log) = run_path_logged(fixture, &header, path)
-        .unwrap_or_else(|error| panic!("{path:?} {} with telemetry: {error}", fixture.display_path().display()));
-    assert!(
-        out.status.success(),
-        "{path:?} {} exited {}: {}",
-        fixture.display_path().display(),
-        out.status,
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let context = fixture.display_path().display().to_string();
-    log.lines()
-        .filter(|line| line.contains("\"name\":[\"fz\",\"runtime\",\"process_exited\"]"))
-        .map(|line| {
-            (
-                required_json_u64_field(line, "struct_retention_attempts", &context),
-                required_json_u64_field(line, "struct_retention_hits", &context),
-            )
+    let label = format!("{path:?}");
+    reuse_sites_in(&telemetry_log_for_fixture(fixture, path, &label))
+        .iter()
+        .filter(|site| site.object == "struct" || site.object == "tuple")
+        .fold((0, 0), |(attempts, hits), site| {
+            (attempts + site.hits + site.misses, hits + site.hits)
         })
-        .fold((0, 0), |(attempts, hits), (a, h)| (attempts + a, hits + h))
 }
 
 /// The binaries each process of `fixture` marked shared on `path`, in pid
@@ -4097,6 +4082,28 @@ fn alloc_sites_for_fixture(fixture: &FixtureCase, path: FixtureMatrixPath, label
             object: json_str_field(line, "object").unwrap_or_else(|| panic!("alloc_site event missing object")),
             allocs: required_json_u64_field(line, "allocs", "alloc_site event"),
             bytes: required_json_u64_field(line, "bytes", "alloc_site event"),
+        })
+        .collect()
+}
+
+/// One `fz.runtime.reuse_site` event as the jsonl log renders it.
+#[derive(Debug, PartialEq, Eq)]
+struct ReuseSiteEvent {
+    function: String,
+    object: String,
+    hits: usize,
+    misses: usize,
+}
+
+/// Every reuse site a run's log reports, in emission order.
+fn reuse_sites_in(log: &str) -> Vec<ReuseSiteEvent> {
+    log.lines()
+        .filter(|line| line.contains("\"name\":[\"fz\",\"runtime\",\"reuse_site\"]"))
+        .map(|line| ReuseSiteEvent {
+            function: json_str_field(line, "function").unwrap_or_else(|| panic!("reuse_site event missing function")),
+            object: json_str_field(line, "object").unwrap_or_else(|| panic!("reuse_site event missing object")),
+            hits: required_json_u64_field(line, "hits", "reuse_site event"),
+            misses: required_json_u64_field(line, "misses", "reuse_site event"),
         })
         .collect()
 }
