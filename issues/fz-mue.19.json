@@ -1,5 +1,5 @@
 {
-  "assignee": "Jason Allum",
+  "assignee": "Elixir Parity",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-18T20:44:05Z",
@@ -25,5 +25,5 @@
   "status": "in_progress",
   "title": "def unquote(:true)(...) defines a function named true",
   "type": "bug",
-  "updated_at": "2026-11-25T00:43:45Z"
+  "updated_at": "2026-11-25T00:44:39Z"
 }
