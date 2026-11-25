@@ -363,6 +363,9 @@ fn body_only_aborts(
     let Some(callee) = Callee::for_call(&target.node, args.len()) else {
         return Some(false);
     };
+    if callee.raising_form(args.len()).is_some() {
+        return Some(true);
+    }
     match world.lookup_callee(namespace, &callee, args.len()) {
         Some(NamespaceSymbol::Function(function)) | Some(NamespaceSymbol::Callable(function)) => {
             only_aborts(world, function, visiting)
@@ -621,6 +624,11 @@ fn walk_guard_calls<E>(
             let Some(callee) = Callee::for_call(&target.node, args.len()) else {
                 return Err(GuardWalkError::NotAGuardExpr(expr.span));
             };
+            if callee.raising_form(args.len()).is_some() {
+                // A raise only aborts: the guard fails there, and what it
+                // raises is not evaluated.
+                return Ok(());
+            }
             walk_guard_call(Some(callee), expr.span, args, visit)
         }
         Expr::FnRef { .. }

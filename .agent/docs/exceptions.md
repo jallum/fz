@@ -361,49 +361,109 @@ section is `duplicate "catch" clauses given for "try"`.
 
 ## What a catch binds
 
-`:erlang.error(term)` and `:erlang.raise(:error, term, stacktrace)` raise
-`Exception.__normalize__(term)` (`lib/exception.fz`), Elixir's
+`:erlang.error(term)` and `:erlang.raise(:error, term, stacktrace)` raise the
+exception `Exception.__normalize__(term)` (`lib/exception.fz`) makes, Elixir's
 `ErlangError.normalize/2`: an exception is itself, an Erlang reason that names
 an exception (`:badarg`, `{:badmatch, term}`, `:badarith`, `:cond_clause`,
 `{:badmap, term}`, `{:badbool, op, term}`, `{:badkey, key}`,
 `{:badkey, key, term}`, `{:case_clause, term}`, `{:else_clause, term}`,
 `{:try_clause, term}`, `:undef`, `:function_clause`) is that exception, and any
-other term is `%ErlangError{original: term}`. `Kernel.panic/1` raises its value
-as given. The runtime and the library keep raising exception structs, so a
-`rescue` clause never converts anything.
+other term is `%ErlangError{original: term}`. A `rescue` clause converts
+nothing: it receives the exception the raise made.
 
-A `catch` clause that reads the reason of an error sees what Elixir binds, one
-table for the whole language in `Exception.__reason__/2`: the inverse of the
-table above for the exceptions fz's runtime raises (`%FunctionClauseError{}`
-reads as `:function_clause`, `%MatchError{term: t}` as `{:badmatch, t}`, and so
-on), `%ErlangError{original: o}` reads as `o`, and any other value reads as
-itself. The handler gets that extra subject only when a clause needs it
-(`handler_subjects::reads_reason`, `src/compiler2/jobs/body/handler_subjects.rs`):
-its kind pattern can match `:error` and its value pattern binds or tests
-something. `catch _, _`, `catch :throw, x`, `catch :error, _reason` and a clause
-whose only use of the reason is `Exception.__rethrow__(kind, reason)` read
-nothing, so they compile no call. `Exception.__rethrow__/2` raises again the
-value it is handed, with its kind and without normalising; `Enum.into` and the
-`for ... into:` desugaring (`halting_on_a_raise`) use it, so the library
-re-raises reach no normalisation.
+A raise has a kind, a value, an exception name for `rescue`, and a reason for
+`catch`. The reason is the Erlang reason the raise carries beside its
+exception, and the value itself for a raise that carries none. The handler
+receives them as four params, kind, value, reason and name, in
+`DELIVERED_SUBJECTS` order (`src/compiler2/jobs/body.rs`). A `rescue` row
+matches the value and the name; a `catch kind, reason` row matches the kind and
+the reason. A `catch` therefore reads what Elixir binds, and calls nothing to
+get it.
+
+Who attaches a reason:
+
+- A last resort that fails for a reason Erlang names declares it
+  (`LastResort::Exception { reason }`, `ReasonTerm` in
+  `src/dispatch_matrix/pattern/last_resort.rs`): `:function_clause`,
+  `{:badmatch, subject}`, `{:case_clause, subject}`, `{:else_clause, subject}`,
+  `{:try_clause, subject}`, `:cond_clause`, `{:badbool, operator, subject}`,
+  `:badarg`, `:undef` for an undefined function. `Term::Raise { reason }`
+  carries it to the runtime's `fz_panic_reason`, and the interpreter builds it
+  in `raise_last_resort`.
+- An extern declares it with `raises: Exception, reason: :badarith,
+  message: "..."` (`ExternRaises::reason`); every arithmetic extern in `Kernel`
+  and `:erlang` does.
+- A definition declares it with `raises: Exception, reason: :badarg` on the
+  clause that states its domain (see "A built-in function's bad argument").
+- Library code that raises an exception struct for an Erlang reason writes
+  `__raise__(exception, reason)`, a form the compiler lowers where it stands
+  (`RaisingForm::Raise`, `lower_raising_form` in `src/compiler2/jobs/body.rs`).
+  It names no function and has no definition: it is a dispatch with no clause
+  whose last resort is `LastResort::Raise`, which raises input 0 as the value
+  and input 1, any term, as the reason. Neither the exception nor the reason
+  keys a specialisation. `Map` and `Maps` use it for `{:badmap, term}` and
+  `{:badkey, key}`, `:erlang.error/1` and `:erlang.raise/3` for the term they
+  were given, and a declared failure's last clause for its reason. In a guard
+  helper the form is the guard failing (`GuardCallee::Raise`).
+- `__reraise__()` is the second form. Inside a `catch` or `rescue` clause it
+  continues the raise the clause was delivered, with its kind, value and reason
+  as they arrived, through `LastResort::Reraise` over the handler's delivered
+  subjects; nothing is normalised. Anywhere else it is a compile error.
+  `Enum.into/2,3` and the `for ... into:` desugar tell the collector `:halt`
+  and then `__reraise__()`.
+- `raise`, `reraise` and `Kernel.panic/1` carry none: a program's own
+  `raise ArgumentError` reaches `catch` as the struct, as in Elixir.
+
+A re-raise from a handler's last resort (`LastResort::Reraise`) continues with
+the kind, the value and the reason it was delivered.
 
 Known deviations from Elixir, shown in fixture `01914`:
 
-- A catch that reads the reason cannot tell a struct the runtime raised from
-  one the program raised: after `raise %MatchError{term: 1}` it sees
-  `{:badmatch, 1}`, where Elixir sees the struct.
-- After `:erlang.error(:badarg)` it sees `%ArgumentError{}`, not `:badarg`:
-  library code raises `%ArgumentError{}` for its own failures, so the table
-  cannot read that struct back as `:badarg`.
-- `%KeyError{}` reads as `{:badkey, key}` when its `term` is `nil` or a map;
-  Elixir's `map.key` gives `{:badkey, key, map}`.
+- `%KeyError{}` raised by `Map.fetch!` carries `{:badkey, key}`; Elixir's
+  `map.key` gives `{:badkey, key, map}`.
 - `:badfun`, `:badarity` and `:system_limit` normalise to `ErlangError`: the
   library has no `BadFunctionError`, `BadArityError` or `SystemLimitError`.
-- A user re-raise `:erlang.raise(kind, reason, __STACKTRACE__)` in a clause
-  that reads the reason raises the normalised reason. fz carries no
-  stacktrace, so `FunctionClauseError` loses its `module`, `function` and
-  `arity` and `KeyError` its `term`, which Elixir restores from the
-  stacktrace.
+- A user re-raise `:erlang.raise(kind, reason, __STACKTRACE__)` raises the
+  normalised reason. fz carries no stacktrace, so `FunctionClauseError` loses
+  its `module`, `function` and `arity` and `KeyError` its `term`, which Elixir
+  restores from the stacktrace.
+
+## A built-in function's bad argument
+
+A built-in function is an fz `def` whose head states the arguments it accepts
+as guard tests, and a call outside the head raises as OTP's does: `catch` sees
+`:badarg` and `rescue` an `ArgumentError` whose message lists each argument that
+failed. The definition says so in its keyword tail:
+
+```elixir
+def atom_to_binary(atom, encoding) when is_atom(atom) and is_encoding(encoding),
+  raises: ArgumentError, reason: :badarg,
+  do: encoded_name(atom, encoding)
+```
+
+`decode_declared_failure` (`src/compiler2/quoted_function.rs`) reads the tail,
+and `failure_clause` (`src/compiler2/bad_arguments.rs`) adds a last clause to
+the function that raises `Exception` with `reason` through `__raise__/2`. A
+function declares `raises:` on one clause, the one whose guard states its
+domain; a `message:` is refused, since the message is derived. The guard's
+conjuncts are the failure's wording: a call to a test of one argument gives
+that argument the wording of the one table `WORDINGS`, and any other conjunct
+is a range, judged once the tests of the arguments it names have passed. The
+first range to fail names the first argument it mentions, which reads "out of
+range". `Exception.__bad_arguments_message__/2` renders the heading and one
+line per failed argument.
+
+A declared definition's failure is a synthesized final clause, not a dispatch
+last resort: the clause builds the message from the call's arguments, and a
+last resort (`LastResort::declared`) carries only fixed text, which cannot say
+which argument failed which test. The `@spec` alone fixes the domain, so the
+clause widens nothing: a call the `@spec` refuses is refused when compiled.
+`send/2` tests `is_destination`, its own test, because "invalid destination"
+is true of no other test.
+
+A failure that is no test of the head, such as `binary_to_integer("zz")`
+(`not a textual representation of an integer`), raises through the same
+mechanism with `Kernel.__badarg__(wording)`, which blames the 1st argument.
 
 ## The rescue head
 
@@ -808,11 +868,10 @@ union replacing the last.
   `fz_reraise`, `raise_exception`, `raise_undefined_function`,
   `fz_raise_undefined_function`, `STDERR_FAULT_HOOK`.
 - `lib/exception.fz` — `Exception.message/1`, `__uncaught__/1`,
-  `__normalize__/1`, `__reason__/2`, `__rethrow__/2`,
-  `__format_message_with_term__/2`; `lib/exceptions/` — the built-in exception
+  `__normalize__/1`, `__format_message_with_term__/2`; `lib/exceptions/` — the built-in exception
   modules.
 - `src/compiler2/source_publish.rs` — `PROGRAM_ENTRY`, `build_program_entry`.
-- `src/compiler2/jobs/body/handler_subjects.rs` — `reads_reason`, the reason subject.
+- `src/compiler2/bad_arguments.rs` — `failure_clause`, the wording table.
 - `src/compiler2/identity.rs` — `Raisable`, `Raised`; `src/compiler2/world.rs`
   — `note_raisable`, `raisable_ty`, `raised_by`;
   `src/compiler2/jobs/semantic.rs` — `raises_of` and the `LoweredTail::Try`

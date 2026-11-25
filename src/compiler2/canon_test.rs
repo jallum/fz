@@ -411,7 +411,7 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
     for (number, executables) in [
         (
             568, // enum_count_member_reduce
-            37,
+            34,
         ),
         (
             567, // fz_f98_range_map_converges
@@ -423,13 +423,13 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
         ),
         (
             562, // mailbox_closure_each
-            42,
+            40,
         ),
         (
             563, // mailbox_closure_reduce
             // `send` returns the exact closure type, so two zero-capture lambdas no
             // longer share one `Kernel.send/2` specialization.
-            52,
+            50,
         ),
         (
             570, // actor_ring
@@ -445,11 +445,11 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
         ),
         (
             420, // enum_take_drop_split, over both a list and a range
-            186,
+            183,
         ),
         (
             1961, // one activation reached through two closure surfaces
-            29,
+            27,
         ),
     ] {
         let settled = Drive::fixture(number).dump_stage(DumpStage::Backend);

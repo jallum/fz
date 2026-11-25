@@ -13,7 +13,7 @@ use std::borrow::Cow;
 use crate::ground_value::GroundValue;
 use crate::literal_term::LiteralTerm;
 
-/// What one field of a raised exception holds.
+/// What one field of a raised exception, or one element of its reason, holds.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum FieldTerm {
     /// The plan's subject, its first input.
@@ -42,6 +42,28 @@ pub enum RaisedField<'a> {
     Literal(&'a LiteralTerm),
 }
 
+/// The Erlang reason a failure raises beside its exception, which a `catch`
+/// binds where a `rescue` binds the exception: an atom, or a tuple whose
+/// elements are written out or are the plan's subject.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ReasonTerm {
+    /// An atom such as `:badarg`.
+    Atom(Cow<'static, str>),
+    /// A tuple such as `{:badmatch, subject}`.
+    Tuple(Vec<FieldTerm>),
+}
+
+impl ReasonTerm {
+    /// The reason `{tag, subject}`: an atom tagging the plan's subject.
+    fn tagged_subject(tag: &'static str) -> Self {
+        Self::Tuple(vec![FieldTerm::atom(tag), FieldTerm::Subject])
+    }
+
+    fn uses_subject(&self) -> bool {
+        matches!(self, Self::Tuple(elements) if elements.contains(&FieldTerm::Subject))
+    }
+}
+
 /// What a plan does at a `Fail`: raise a struct of an exception's module, or
 /// continue a raise that arrived. The exception's module words its message
 /// from its fields when one is asked for.
@@ -54,10 +76,16 @@ pub enum LastResort {
         /// The fields this failure sets, with what each holds. Every other
         /// field of the exception's struct holds its default.
         fields: Vec<(Cow<'static, str>, FieldTerm)>,
+        /// The Erlang reason a `catch` binds, when the failure has one. A
+        /// raise without one has the exception itself for its reason.
+        reason: Option<ReasonTerm>,
     },
-    /// Continue the raise a handler was delivered, with the plan's first two
-    /// inputs as its kind and value.
+    /// Continue the raise a handler was delivered, with the plan's first
+    /// three inputs as its kind, value and reason.
     Reraise,
+    /// Raise an error whose value and Erlang reason are the plan's first two
+    /// inputs.
+    Raise,
 }
 
 impl LastResort {
@@ -77,12 +105,13 @@ impl LastResort {
             .into_iter()
             .chain(module.map(|module| ("module", FieldTerm::atom(module))))
             .collect(),
+            Some(ReasonTerm::Atom(Cow::Borrowed("function_clause"))),
         )
     }
 
     /// The left side of `=` does not match the right.
     pub(crate) fn match_error() -> Self {
-        Self::about_the_subject("Elixir.MatchError")
+        Self::about_the_subject("Elixir.MatchError", "badmatch")
     }
 
     /// No implementation of the protocol whose atom is `protocol` takes the
@@ -91,27 +120,32 @@ impl LastResort {
         Self::raising(
             "Elixir.Protocol.UndefinedError",
             vec![("protocol", FieldTerm::atom(protocol)), ("value", FieldTerm::Subject)],
+            None,
         )
     }
 
     /// No clause of a `case` matches.
     pub(crate) fn case_clause() -> Self {
-        Self::about_the_subject("Elixir.CaseClauseError")
+        Self::about_the_subject("Elixir.CaseClauseError", "case_clause")
     }
 
     /// No condition of a `cond` is truthy.
     pub(crate) fn cond_clause() -> Self {
-        Self::raising("Elixir.CondClauseError", Vec::new())
+        Self::raising(
+            "Elixir.CondClauseError",
+            Vec::new(),
+            Some(ReasonTerm::Atom(Cow::Borrowed("cond_clause"))),
+        )
     }
 
     /// A `with` clause failed and no `else` clause matches what it returned.
     pub(crate) fn with_clause() -> Self {
-        Self::about_the_subject("Elixir.WithClauseError")
+        Self::about_the_subject("Elixir.WithClauseError", "else_clause")
     }
 
     /// No `else` clause of a `try` matches the value its body produced.
     pub(crate) fn try_clause() -> Self {
-        Self::about_the_subject("Elixir.TryClauseError")
+        Self::about_the_subject("Elixir.TryClauseError", "try_clause")
     }
 
     /// The left side of `and` or `or` is not a boolean.
@@ -119,12 +153,21 @@ impl LastResort {
         Self::raising(
             "Elixir.BadBooleanError",
             vec![("term", FieldTerm::Subject), ("operator", FieldTerm::atom(operator))],
+            Some(ReasonTerm::Tuple(vec![
+                FieldTerm::atom("badbool"),
+                FieldTerm::atom(operator),
+                FieldTerm::Subject,
+            ])),
         )
     }
 
     /// `not` was given something other than a boolean.
     pub(crate) fn argument_error() -> Self {
-        Self::raising("Elixir.ArgumentError", Vec::new())
+        Self::raising(
+            "Elixir.ArgumentError",
+            Vec::new(),
+            Some(ReasonTerm::Atom(Cow::Borrowed("badarg"))),
+        )
     }
 
     /// Nothing in a handler's clauses takes the raise it was delivered, so it
@@ -133,21 +176,40 @@ impl LastResort {
         Self::Reraise
     }
 
+    /// A raise whose value and Erlang reason are both written where it is
+    /// raised: the plan's first two inputs.
+    pub(crate) fn raise() -> Self {
+        Self::Raise
+    }
+
     /// The exception module's atom, for a last resort that raises one.
     pub(crate) fn exception(&self) -> Option<&str> {
         match self {
             Self::Exception { exception, .. } => Some(exception),
-            Self::Reraise => None,
+            Self::Reraise | Self::Raise => None,
         }
     }
 
-    /// Every atom the fields this failure sets write.
-    pub(crate) fn atoms(&self) -> impl Iterator<Item = &str> {
+    /// The reason a `catch` binds for this failure, when it declares one.
+    pub(crate) fn reason(&self) -> Option<&ReasonTerm> {
+        match self {
+            Self::Exception { reason, .. } => reason.as_ref(),
+            Self::Reraise | Self::Raise => None,
+        }
+    }
+
+    /// Every atom the fields this failure sets, and its reason, write.
+    pub(crate) fn atoms(&self) -> impl Iterator<Item = String> {
         let mut atoms = Vec::new();
-        if let Self::Exception { fields, .. } = self {
-            for (_, term) in fields {
+        if let Self::Exception { fields, reason, .. } = self {
+            let reasons = match reason {
+                Some(ReasonTerm::Atom(name)) => vec![FieldTerm::atom(name.to_string())],
+                Some(ReasonTerm::Tuple(elements)) => elements.clone(),
+                None => Vec::new(),
+            };
+            for term in fields.iter().map(|(_, term)| term).chain(&reasons) {
                 if let FieldTerm::Literal(literal) = term {
-                    literal.each_ground(&mut |value| atoms.extend(atom_name(value)));
+                    literal.each_ground(&mut |value| atoms.extend(atom_name(value).map(str::to_owned)));
                 }
             }
         }
@@ -166,8 +228,8 @@ impl LastResort {
         declared: &'a [String],
         defaults: &'a [LiteralTerm],
     ) -> Result<Vec<(&'a str, RaisedField<'a>)>, String> {
-        let Self::Exception { exception, fields } = self else {
-            return Err("a re-raise builds no struct".to_string());
+        let Self::Exception { exception, fields, .. } = self else {
+            return Err("a raise of written values builds no struct".to_string());
         };
         if let Some((stray, _)) = fields
             .iter()
@@ -196,36 +258,47 @@ impl LastResort {
     }
 
     /// How many of the plan's leading inputs the last resort reads: the
-    /// subject an exception carries, or the kind and value a re-raise
-    /// continues with.
+    /// subject an exception or its reason carries, the value and reason a
+    /// raise writes, or the kind, value and reason a re-raise continues with.
     pub(crate) fn consumed_inputs(&self) -> usize {
         match self {
-            Self::Exception { fields, .. } => usize::from(fields.iter().any(|(_, term)| *term == FieldTerm::Subject)),
-            Self::Reraise => 2,
+            Self::Exception { fields, reason, .. } => usize::from(
+                fields.iter().any(|(_, term)| *term == FieldTerm::Subject)
+                    || reason.as_ref().is_some_and(ReasonTerm::uses_subject),
+            ),
+            Self::Reraise => 3,
+            Self::Raise => 2,
         }
     }
 
     /// The failure an extern declares with `raises:`: a struct of the
-    /// exception it names, whose `message` is the declaration's text.
-    pub fn declared(exception: String, message: &str) -> Self {
+    /// exception it names, whose `message` is the declaration's text, and the
+    /// Erlang reason the declaration names, when it names one.
+    pub fn declared(exception: String, message: &str, reason: Option<&str>) -> Self {
         Self::Exception {
             exception: Cow::Owned(exception),
             fields: vec![(Cow::Borrowed("message"), FieldTerm::text(message))],
+            reason: reason.map(|reason| ReasonTerm::Atom(Cow::Owned(reason.to_string()))),
         }
     }
 
-    fn raising(exception: &'static str, fields: Vec<(&'static str, FieldTerm)>) -> Self {
+    fn raising(exception: &'static str, fields: Vec<(&'static str, FieldTerm)>, reason: Option<ReasonTerm>) -> Self {
         Self::Exception {
             exception: Cow::Borrowed(exception),
             fields: fields
                 .into_iter()
                 .map(|(name, term)| (Cow::Borrowed(name), term))
                 .collect(),
+            reason,
         }
     }
 
-    fn about_the_subject(exception: &'static str) -> Self {
-        Self::raising(exception, vec![("term", FieldTerm::Subject)])
+    fn about_the_subject(exception: &'static str, reason_tag: &'static str) -> Self {
+        Self::raising(
+            exception,
+            vec![("term", FieldTerm::Subject)],
+            Some(ReasonTerm::tagged_subject(reason_tag)),
+        )
     }
 }
 

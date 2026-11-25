@@ -1218,7 +1218,8 @@ fn clause_group_key(
 }
 
 /// Whether a definition's body is a keyword list of `do` and, beside it, only
-/// the sections that make it an implicit `try`. Repeated sections pass here
+/// the sections that make it an implicit `try`. A tail of `raises:` and
+/// `reason:` alone states the function's domain and has no body. Repeated sections pass here
 /// and are refused where the `try` is decoded, in Elixir's words.
 fn is_function_body_keyword(cursor: &QuotedSourceCursor) -> bool {
     let mut has_do = false;
@@ -1226,10 +1227,10 @@ fn is_function_body_keyword(cursor: &QuotedSourceCursor) -> bool {
         let Some(key) = keyword_entry_key(entry) else {
             return false;
         };
-        if !is_function_body_section(key.as_str()) {
+        if !is_function_body_section(key.as_str()) && !matches!(key.as_str(), "raises" | "reason" | "message") {
             return false;
         }
-        has_do |= key == "do";
+        has_do |= matches!(key.as_str(), "do" | "raises");
     }
     has_do
 }

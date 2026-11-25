@@ -1,7 +1,7 @@
 #---
 # purpose: ":lists.keyfind/3 returns the first tuple whose Nth element equals the key and false otherwise, skipping elements that are not wide enough tuples, :lists.keydelete/3 drops only the first such tuple, and :lists.unzip/1 splits a list of pairs, with the same bad-argument failures as OTP, and List.wrap/1 leaves a list alone, turns nil into [] and wraps anything else, on all three paths"
 # oracle: self
-# oracle.stamp: 8199cc1f6c6165de
+# oracle.stamp: 5df72da241c3f4db
 #---
 defmodule Main do
   # `x`, typed as one of the kinds of value a call may be given, so the call
@@ -16,6 +16,14 @@ defmodule Main do
       IO.inspect(fun.(), label: label)
     rescue
       e -> IO.puts(label <> ": " <> inspect(e.__struct__) <> ": " <> Exception.message(e))
+    end
+  end
+
+  def caught(label, fun) do
+    try do
+      IO.inspect(fun.(), label: label)
+    catch
+      kind, reason -> IO.inspect({kind, reason}, label: label)
     end
   end
 
@@ -36,6 +44,10 @@ defmodule Main do
     rescued("non-list", fn -> :lists.keyfind(:a, 1, v(:x)) end)
     rescued("bad position and non-list", fn -> :lists.keyfind(:a, v(:x), v(:y)) end)
     rescued("improper tail reached", fn -> :lists.keyfind(:z, 1, [{:a, 1} | v(:tail)]) end)
+    caught("caught zero position", fn -> :lists.keyfind(:a, v(0), pairs) end)
+    caught("caught non-integer position", fn -> :lists.keyfind(:a, v(:x), pairs) end)
+    caught("caught non-list", fn -> :lists.keyfind(:a, 1, v(:x)) end)
+    caught("caught improper tail reached", fn -> :lists.keyfind(:z, 1, [{:a, 1} | v(:tail)]) end)
 
     IO.inspect(:lists.keydelete(:b, 1, pairs), label: "first match only")
     IO.inspect(:lists.keydelete(:z, 1, pairs), label: "no match")

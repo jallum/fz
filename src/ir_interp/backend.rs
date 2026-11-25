@@ -20,7 +20,7 @@ use crate::compiler2::{
     ControlDestination, ExecutableDispatch, UndefinedFunction, ValueId,
 };
 use crate::compiler2::{ExecutableKey, FunctionId, RunFailure};
-use crate::dispatch_matrix::pattern::{LastResort, RaisedField};
+use crate::dispatch_matrix::pattern::{FieldTerm, LastResort, RaisedField, ReasonTerm};
 use crate::exec::runtime::emit_runtime_event;
 use crate::fz_ir::{BinOp as IrBinOp, FnId, Module, ModuleAtoms, UnOp as IrUnOp};
 use crate::runtime_type_predicate::CallableShape;
@@ -2453,8 +2453,8 @@ fn continue_after_extern(
 /// a handler was delivered, through the one raise route, as compiled code does
 /// at the same point, and carry on as after any raise: into the nearest
 /// handler, or the process has failed. A message that shows the subject reads
-/// the plan's first input; a re-raise reads its first two, the kind and the
-/// value.
+/// the plan's first input; a raise of written values reads its first two, and a re-raise its
+/// first three, the kind, the value and the reason.
 fn raise_last_resort(
     runtime: &mut IrInterpRuntime,
     transport: &TransportStore,
@@ -2468,14 +2468,26 @@ fn raise_last_resort(
         let input = inputs
             .get(index)
             .ok_or_else(|| format!("internal error: a last resort reads input {index}, which the plan lacks"))?;
-        materialize_backend_value(transport, proc, input)?.value(proc)
+        materialize_backend_value(transport, proc, input)
     };
     match last_resort {
         LastResort::Reraise => {
-            let (kind, value) = (input(0)?, input(1)?);
-            fz_runtime::failure::reraise(proc, kind, fz_runtime::any_value::Stored::of(value));
+            let (kind, value, reason) = (input(0)?.value(proc)?, input(1)?.value(proc)?, input(2)?.value(proc)?);
+            fz_runtime::failure::reraise(
+                proc,
+                kind,
+                fz_runtime::any_value::Stored::of(value),
+                fz_runtime::any_value::Stored::of(reason),
+            );
         }
-        LastResort::Exception { exception, .. } => {
+        LastResort::Raise => {
+            let (value, reason) = (
+                fz_runtime::any_value::Stored::of(input(0)?.value(proc)?),
+                fz_runtime::any_value::Stored::of(input(1)?.value(proc)?),
+            );
+            fz_runtime::failure::fz_panic_reason(proc, value.word, value.kind, reason.word, reason.kind);
+        }
+        LastResort::Exception { exception, reason, .. } => {
             let module = ModuleName::from_atom_name(exception)
                 .ok_or_else(|| format!("internal error: `{exception}` names no exception module"))?;
             let declared = exception_fields(program, &module)?;
@@ -2488,7 +2500,7 @@ fn raise_last_resort(
                     continue;
                 }
                 let value = match held {
-                    RaisedField::Subject => input(0)?,
+                    RaisedField::Subject => input(0)?.value(proc)?,
                     RaisedField::Literal(term) => literal_term_value(runtime, term)?
                         .value(proc)
                         .map_err(|err| format!("exception field `{name}`: {err}"))?,
@@ -2496,12 +2508,40 @@ fn raise_last_resort(
                 values.push((name, value));
             }
             let exception = fz_runtime::any_value::AnyValue::atom(runtime.node.intern_atom(exception));
-            fz_runtime::failure::raise_exception(proc, exception, &values);
+            let reason = reason
+                .as_ref()
+                .map(|reason| reason_value(runtime, reason, &input))
+                .transpose()?;
+            fz_runtime::failure::raise_exception(proc, exception, &values, reason);
         }
     }
     match runtime.take_callback_error() {
         Some(error) => Err(error),
         None => after_panic(runtime, transport, program, continuations),
+    }
+}
+
+/// The Erlang reason a failure declares, as the value a `catch` binds: an
+/// atom, or a tuple whose elements are written out or the plan's subject,
+/// which `input(0)` supplies.
+fn reason_value(
+    runtime: &mut IrInterpRuntime,
+    reason: &ReasonTerm,
+    input: &dyn Fn(usize) -> Result<AnyValue, String>,
+) -> Result<fz_runtime::any_value::AnyValue, String> {
+    let proc = runtime.cur_proc();
+    match reason {
+        ReasonTerm::Atom(name) => Ok(fz_runtime::any_value::AnyValue::atom(runtime.node.intern_atom(name))),
+        ReasonTerm::Tuple(elements) => {
+            let items = elements
+                .iter()
+                .map(|element| match element {
+                    FieldTerm::Subject => input(0),
+                    FieldTerm::Literal(term) => literal_term_value(runtime, term),
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            make_tuple_on_proc(proc, items)?.value(proc)
+        }
     }
 }
 
@@ -2516,7 +2556,7 @@ fn exception_fields<'a>(program: &'a BackendProgram, module: &ModuleName) -> Res
 /// What follows `fz_panic` in the interpreter. A raise that found a handler
 /// left itself on the process; the frames above the handler frame are the
 /// calls the raise unwound, and the handler entry runs with the raise's kind,
-/// value and exception name as its params. With no handler the process has
+/// value, reason and exception name as its params. With no handler the process has
 /// failed and nothing after it runs.
 fn after_panic(
     runtime: &mut IrInterpRuntime,
@@ -2543,7 +2583,7 @@ fn after_panic(
         ));
     };
     let entry = &entries[frame.entry.as_u32() as usize];
-    let values = [raised.kind, raised.value, raised.name]
+    let values = [raised.kind, raised.value, raised.reason, raised.name]
         .into_iter()
         .map(|raised| interp_value_from_stored(raised, "a raise delivered to a handler"))
         .collect::<Result<Vec<_>, _>>()?;

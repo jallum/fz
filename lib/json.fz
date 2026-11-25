@@ -209,7 +209,7 @@ defmodule JSON do
   defp encode_into(v, acc) when is_integer(v), do: acc <> Integer.to_string(v)
   defp encode_into(v, acc) when is_float(v), do: acc <> Float.to_string(v)
   defp encode_into(v, acc) when is_binary(v), do: walk(v, v, acc <> "\"") <> "\""
-  defp encode_into(v, _acc) when is_bitstring(v), do: raise(%FunctionClauseError{module: :elixir_json, function: :encode_binary, arity: 1})
+  defp encode_into(v, _acc) when is_bitstring(v), do: __raise__(%FunctionClauseError{module: :elixir_json, function: :encode_binary, arity: 1}, :function_clause)
   defp encode_into(v, acc) when is_atom(v), do: encode_into(Atom.to_string(v), acc)
   defp encode_into(v, acc) when is_list(v), do: elements(v, acc <> "[") <> "]"
   defp encode_into(v, acc) when is_map(v), do: pairs(Map.to_list(v), acc <> "{") <> "}"
@@ -261,10 +261,10 @@ defmodule JSON do
 
   @spec invalid_utf8_at({:error, binary} | nil | {:ok, utf8, binary}) :: no_return()
   defp invalid_utf8_at({:error, <<byte, _rest :: binary>>}), do: invalid_byte(byte)
-  defp invalid_utf8_at(_truncated), do: Kernel.panic(%ErlangError{original: :unexpected_end})
+  defp invalid_utf8_at(_truncated), do: __raise__(%ErlangError{original: :unexpected_end}, :unexpected_end)
 
   @spec invalid_byte(integer) :: no_return()
-  defp invalid_byte(byte), do: Kernel.panic(%ErlangError{original: {:invalid_byte, byte}})
+  defp invalid_byte(byte), do: __raise__(%ErlangError{original: {:invalid_byte, byte}}, {:invalid_byte, byte})
 
   @spec escape(integer) :: binary
   defp escape(34), do: "\\\""

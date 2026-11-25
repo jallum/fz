@@ -23,8 +23,8 @@ use crate::diag::Diagnostic;
 use crate::diag::codes;
 use crate::dispatch_matrix::joins::{ArrivalState, DispatchJoins, DispatchLeaf};
 use crate::dispatch_matrix::pattern::{
-    GuardExtern, LastResort, PatternDispatchPlan, PatternGuardBinOp, PatternGuardExpr, PatternGuardUnaryOp,
-    RaisedField, guard_body_subjects,
+    FieldTerm, GuardExtern, LastResort, PatternDispatchPlan, PatternGuardBinOp, PatternGuardExpr, PatternGuardUnaryOp,
+    RaisedField, ReasonTerm, guard_body_subjects,
 };
 use crate::dispatch_matrix::{ComparisonValue, DispatchNode, GraphNodeId, ListRegion, Region, SubjectId};
 use crate::fz_ir::{
@@ -3197,7 +3197,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
     /// A decision's last resort: the plan's exception, raised through the one
     /// panic route, or the raise a handler was delivered, continued. A message
     /// that shows the subject reads the plan's first input; a re-raise reads
-    /// its first two, the kind and the value.
+    /// its first three, the kind, the value and the reason.
     fn raise_last_resort(
         &mut self,
         ctx: &mut NativeFnCtx,
@@ -3216,7 +3216,20 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             let kind = self.materialize_native_value(ctx, None, kind)?;
             let value = state.dispatch_inputs.get(1).ok_or(FatalError)?;
             let value = self.materialize_native_value(ctx, None, value)?;
-            ctx.set_term(Term::Reraise { kind, value });
+            let reason = state.dispatch_inputs.get(2).ok_or(FatalError)?;
+            let reason = self.materialize_native_value(ctx, None, reason)?;
+            ctx.set_term(Term::Reraise { kind, value, reason });
+            return Ok(());
+        }
+        if matches!(last_resort, LastResort::Raise) {
+            let value = state.dispatch_inputs.first().ok_or(FatalError)?;
+            let value = self.materialize_native_value(ctx, None, value)?;
+            let reason = state.dispatch_inputs.get(1).ok_or(FatalError)?;
+            let reason = self.materialize_native_value(ctx, None, reason)?;
+            ctx.set_term(Term::Raise {
+                value,
+                reason: Some(reason),
+            });
             return Ok(());
         }
         let subject = match last_resort.consumed_inputs() {
@@ -3268,8 +3281,27 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             })
             .collect();
         let (value, _) = ctx.emit_let(Prim::MakeStruct { module, fields });
-        ctx.set_term(Term::Raise { value });
+        let reason = failure.reason().map(|reason| self.reason_var(ctx, reason, subject));
+        ctx.set_term(Term::Raise { value, reason });
         Ok(())
+    }
+
+    /// The Erlang reason a failure declares, built as the value a `catch`
+    /// binds, with `subject` where the reason holds the plan's subject.
+    fn reason_var(&mut self, ctx: &mut NativeFnCtx, reason: &ReasonTerm, subject: Option<Var>) -> Var {
+        match reason {
+            ReasonTerm::Atom(name) => self.ground_var(ctx, &GroundValue::Atom(name.to_string())),
+            ReasonTerm::Tuple(elements) => {
+                let elements = elements
+                    .iter()
+                    .map(|element| match element {
+                        FieldTerm::Subject => subject.expect("a reason that carries the subject has one to carry"),
+                        FieldTerm::Literal(term) => self.literal_var(ctx, term),
+                    })
+                    .collect();
+                ctx.emit_let(Prim::MakeTuple(elements)).0
+            }
+        }
     }
 
     /// `term` as `layout` carries it. A tuple whose layout spreads its fields

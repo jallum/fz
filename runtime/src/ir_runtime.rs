@@ -1926,17 +1926,21 @@ pub extern "C" fn fz_list_to_tuple(process: *mut Process, list_ref_word: u64, ar
     heap_ref_word(ValueKind::STRUCT, object)
 }
 
-/// The length of a proper list; -1 where the chain ends in anything but the
-/// empty list, so an improper list or a non-list is told apart from `[]`.
+/// The length of a proper list, and `failed` 1 where the chain ends in
+/// anything but the empty list, so an improper list or a non-list is told
+/// apart from `[]`.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_list_length(list_ref_word: u64) -> i64 {
+pub extern "C" fn fz_list_length(list_ref_word: u64) -> FzIntegerArithmeticResult {
     let mut cursor = any_value_ref_from_word(list_ref_word, "fz_list_length list");
     let mut length = 0i64;
     while cursor.tag() == ValueKind::LIST && !cursor.is_empty_list() {
         length += 1;
         cursor = list_tail_ref(cursor).expect("fz_list_length tail");
     }
-    if cursor.is_empty_list() { length } else { -1 }
+    FzIntegerArithmeticResult {
+        result: length,
+        failed: u64::from(!cursor.is_empty_list()),
+    }
 }
 
 /// `Map.to_list/1`: the map's `{key, value}` pairs, in the map's own order.

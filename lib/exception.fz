@@ -14,30 +14,6 @@ defmodule Exception do
   def message(exception), do: exception.__struct__.message(exception)
 
   @doc """
-  Raises again, with its own kind, the value a `catch kind, value` clause was
-  handed. The value is already what the first raise made it, so it is not
-  normalised again, and a clause that only passes its value here reads no
-  reason: it is handed the value as delivered.
-
-  ## Examples
-
-      try do
-        throw(:ball)
-      catch
-        kind, value -> Exception.__rethrow__(kind, value)
-      end
-      # ** (throw) :ball
-
-  """
-  def __rethrow__(kind, value) do
-    case kind do
-      :error -> Kernel.panic(value)
-      :throw -> throw(value)
-      :exit -> exit(value)
-    end
-  end
-
-  @doc """
   Returns the exception `:erlang.error/1` raises for `term`, as Elixir's
   `ErlangError.normalize/2` does. An exception is itself, an Erlang reason that
   names an exception (`:badarg`, `{:badmatch, term}`, ...) is that exception,
@@ -81,44 +57,6 @@ defmodule Exception do
   def __normalize__(:undef), do: %UndefinedFunctionError{}
   def __normalize__(:function_clause), do: %FunctionClauseError{}
   def __normalize__(other), do: %ErlangError{original: other}
-
-  @doc """
-  Returns the reason a `catch kind, reason` clause binds for a raise: the
-  Erlang reason Elixir binds for an error fz's runtime raised as an exception
-  struct, and the raised value itself for anything else. This is the inverse of
-  `__normalize__/1` for the failures the runtime raises: a clause that matches
-  no function, a match, case, cond, with or try that matches no clause, an
-  arithmetic or boolean operation on a bad operand, a map operation on a
-  non-map, and a missing map key.
-
-  A struct the program raised with `raise` is not told from one the runtime
-  raised, so it reads as the reason too. An `ErlangError` reads as the term it
-  holds, which is what `:erlang.error/1` raised it for; `:badarg` reads as
-  `%ArgumentError{}`, since library code raises that struct for its own
-  failures.
-
-  ## Examples
-
-      Exception.__reason__(:error, %MatchError{term: 1})
-      #=> {:badmatch, 1}
-
-      Exception.__reason__(:throw, %MatchError{term: 1})
-      #=> %MatchError{term: 1}
-
-  """
-  def __reason__(:error, %{__struct__: :"Elixir.FunctionClauseError"}), do: :function_clause
-  def __reason__(:error, %{__struct__: :"Elixir.UndefinedFunctionError"}), do: :undef
-  def __reason__(:error, %{__struct__: :"Elixir.ArithmeticError"}), do: :badarith
-  def __reason__(:error, %{__struct__: :"Elixir.CondClauseError"}), do: :cond_clause
-  def __reason__(:error, %{__struct__: :"Elixir.MatchError", term: term}), do: {:badmatch, term}
-  def __reason__(:error, %{__struct__: :"Elixir.CaseClauseError", term: term}), do: {:case_clause, term}
-  def __reason__(:error, %{__struct__: :"Elixir.WithClauseError", term: term}), do: {:else_clause, term}
-  def __reason__(:error, %{__struct__: :"Elixir.TryClauseError", term: term}), do: {:try_clause, term}
-  def __reason__(:error, %{__struct__: :"Elixir.BadBooleanError", operator: operator, term: term}), do: {:badbool, operator, term}
-  def __reason__(:error, %{__struct__: :"Elixir.BadMapError", term: term}), do: {:badmap, term}
-  def __reason__(:error, %{__struct__: :"Elixir.KeyError", key: key, term: term}) when term == nil or is_map(term), do: {:badkey, key}
-  def __reason__(:error, %{__struct__: :"Elixir.ErlangError", original: original}), do: original
-  def __reason__(_kind, raised), do: raised
 
   @doc """
   Ends the current process the way an error nothing rescued ends it, printing

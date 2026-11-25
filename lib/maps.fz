@@ -12,7 +12,7 @@ defmodule :maps do
   """
   @spec to_list(any) :: [{any, any}]
   def to_list(map) when is_map(map), do: fz_map_to_list(map)
-  def to_list(map), do: raise(%BadMapError{term: map})
+  def to_list(map), do: __raise__(%BadMapError{term: map}, {:badmap, map})
 
   extern "fz" defp fz_map_to_list(map) :: any
 
@@ -27,7 +27,7 @@ defmodule :maps do
   """
   @spec keys(any) :: [any]
   def keys(map) when is_map(map), do: fz_map_keys(map)
-  def keys(map), do: raise(%BadMapError{term: map})
+  def keys(map), do: __raise__(%BadMapError{term: map}, {:badmap, map})
 
   extern "fz" defp fz_map_keys(map) :: any
 
@@ -42,7 +42,7 @@ defmodule :maps do
   """
   @spec values(any) :: [any]
   def values(map) when is_map(map), do: fz_map_values(map)
-  def values(map), do: raise(%BadMapError{term: map})
+  def values(map), do: __raise__(%BadMapError{term: map}, {:badmap, map})
 
   extern "fz" defp fz_map_values(map) :: any
 
@@ -58,7 +58,7 @@ defmodule :maps do
   """
   @spec put(any, any, any) :: map
   def put(key, value, map) when is_map(map), do: fz_map_put(map, key, value)
-  def put(_key, _value, map), do: raise(%BadMapError{term: map})
+  def put(_key, _value, map), do: __raise__(%BadMapError{term: map}, {:badmap, map})
 
   extern "fz" defp fz_map_put(map, stored_value, stored_value) :: map
 
@@ -74,8 +74,8 @@ defmodule :maps do
   """
   @spec merge(any, any) :: map
   def merge(a, b) when is_map(a) and is_map(b), do: from_list(to_list(a) ++ to_list(b))
-  def merge(a, _b) when not is_map(a), do: raise(%BadMapError{term: a})
-  def merge(_a, b), do: raise(%BadMapError{term: b})
+  def merge(a, _b) when not is_map(a), do: __raise__(%BadMapError{term: a}, {:badmap, a})
+  def merge(_a, b), do: __raise__(%BadMapError{term: b}, {:badmap, b})
 
   @doc """
   Builds a map from a list of `{key, value}` pairs. When a key repeats, the

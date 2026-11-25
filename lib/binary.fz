@@ -15,15 +15,18 @@ defmodule :binary do
 
   """
   @spec at(binary, integer) :: integer
-  def at(subject, pos) when is_binary(subject) and is_integer(pos) and pos >= 0 and pos < byte_size(subject) do
+  def at(subject, pos)
+      when is_bitstring_subject(subject) and is_binary_subject(subject) and is_integer(pos) and pos >= 0,
+      raises: ArgumentError, reason: :badarg,
+      do: byte_at(subject, pos)
+
+  @spec byte_at(binary, integer) :: integer
+  defp byte_at(subject, pos) when pos < byte_size(subject) do
     <<_::binary-size(pos), byte, _::binary>> = subject
     byte
   end
 
-  def at(subject, pos) when is_binary(subject) and is_integer(pos) and pos >= 0, do: raise(%ArgumentError{message: "argument error"})
-
-  def at(subject, pos),
-    do: raise(%ArgumentError{message: "errors were found at the given arguments:\n\n" <> subject_complaint(subject) <> count_complaint(pos)})
+  defp byte_at(_subject, _pos), do: __raise__(%ArgumentError{message: "argument error"}, :badarg)
 
   @doc """
   Returns the search pattern `pattern` in a form `match/2,3` accepts.
@@ -46,7 +49,7 @@ defmodule :binary do
     case patterns(pattern) do
       [one] -> {:bm, [one]}
       [_ | _] = many -> {:ac, many}
-      :invalid -> raise(%ArgumentError{message: "errors were found at the given arguments:\n\n" <> "  * 1st argument: not a valid pattern\n"})
+      :invalid -> __raise__(%ArgumentError{message: "errors were found at the given arguments:\n\n" <> "  * 1st argument: not a valid pattern\n"}, :badarg)
     end
   end
 
@@ -146,7 +149,7 @@ defmodule :binary do
         {complaint, _} -> complaint
       end
 
-    raise(%ArgumentError{message: "errors were found at the given arguments:\n\n" <> complaints})
+    __raise__(%ArgumentError{message: "errors were found at the given arguments:\n\n" <> complaints}, :badarg)
   end
 
   @doc """
@@ -181,10 +184,10 @@ defmodule :binary do
 
   """
   @spec copy(binary, integer) :: binary
-  def copy(subject, n) when is_binary(subject) and is_integer(n) and n >= 0, do: fz_binary_copy(subject, n)
-
-  def copy(subject, n),
-    do: raise(%ArgumentError{message: "errors were found at the given arguments:\n\n" <> subject_complaint(subject) <> count_complaint(n)})
+  def copy(subject, n)
+      when is_bitstring_subject(subject) and is_binary_subject(subject) and is_integer(n) and n >= 0,
+      raises: ArgumentError, reason: :badarg,
+      do: fz_binary_copy(subject, n)
 
   @doc """
   Returns the byte size of the buffer `binary` references.
@@ -201,20 +204,22 @@ defmodule :binary do
 
   """
   @spec referenced_byte_size(bitstring) :: integer
-  def referenced_byte_size(bitstring) when is_bitstring(bitstring), do: fz_binary_referenced_size(bitstring)
-
-  def referenced_byte_size(subject),
-    do: raise(%ArgumentError{message: "errors were found at the given arguments:\n\n" <> subject_complaint(subject)})
+  def referenced_byte_size(bitstring) when is_bitstring_subject(bitstring), raises: ArgumentError, reason: :badarg,
+    do: fz_binary_referenced_size(bitstring)
 
   @spec subject_complaint(any) :: binary
   defp subject_complaint(subject) when is_binary(subject), do: ""
   defp subject_complaint(subject) when is_bitstring(subject), do: "  * 1st argument: is a bitstring (expected a binary)\n"
   defp subject_complaint(_), do: "  * 1st argument: not a binary\n"
 
-  @spec count_complaint(any) :: binary
-  defp count_complaint(n) when is_integer(n) and n >= 0, do: ""
-  defp count_complaint(n) when is_integer(n), do: "  * 2nd argument: out of range\n"
-  defp count_complaint(_), do: "  * 2nd argument: not an integer\n"
+  # Erlang words a subject that is no bitstring "not a binary", and a bitstring
+  # that is no binary "is a bitstring (expected a binary)": the two tests,
+  # one after the other, give the failing argument the wording that fits.
+  @spec is_bitstring_subject(any) :: boolean
+  defp is_bitstring_subject(subject), do: is_bitstring(subject)
+
+  @spec is_binary_subject(any) :: boolean
+  defp is_binary_subject(subject), do: is_binary(subject)
 
   extern "fz" defp fz_binary_copy(binary, integer) :: binary
 

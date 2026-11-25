@@ -151,6 +151,9 @@ where
     }
 
     fn guard_call(&mut self, callee: &Callee, arity: usize) -> Result<Option<GuardCallee<Ty>>, SourcePatternError> {
+        if callee.raising_form(arity).is_some() {
+            return Ok(Some(GuardCallee::Raise));
+        }
         (self.guard)(self.world, callee, arity)
     }
 

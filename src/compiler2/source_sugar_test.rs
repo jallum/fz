@@ -297,7 +297,7 @@ fn into_collects_under_a_try_that_finishes_with_done_and_halts_on_a_raise() {
          fn(->([x, __fz_for_acc#0], (__fz_for_fun#0.)(__fz_for_acc#0, {:cont, x}))))}, \
          {:catch, [->([__fz_for_kind#0, __fz_for_reason#0], \
          __block__((__fz_for_fun#0.)(__fz_for_init#0, :halt), \
-         Exception.__rethrow__(__fz_for_kind#0, __fz_for_reason#0)))]}, \
+         __reraise__()))]}, \
          {:else, [->([__fz_for_acc#0], (__fz_for_fun#0.)(__fz_for_acc#0, :done))]}]))"
     );
 }

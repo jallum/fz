@@ -9,6 +9,7 @@ fn fields(raised: &LastResort) -> Vec<(&str, FieldTerm)> {
             .map(|(name, term)| (name.as_ref(), term.clone()))
             .collect(),
         LastResort::Reraise => panic!("a re-raise builds no exception"),
+        LastResort::Raise => panic!("a raise of written values builds no exception"),
     }
 }
 
@@ -117,6 +118,7 @@ fn an_exception_whose_default_is_a_function_has_no_struct_a_backend_can_build() 
     let raised = LastResort::Exception {
         exception: "Elixir.Odd".into(),
         fields: vec![("term".into(), FieldTerm::Subject)],
+        reason: None,
     };
     assert_eq!(
         raised.struct_fields(&declared, &defaults),
@@ -202,8 +204,8 @@ fn a_handlers_last_resort_continues_the_raise_it_was_delivered() {
     assert_eq!(reraise.exception(), None);
     assert_eq!(
         reraise.consumed_inputs(),
-        2,
-        "the kind and the value are what it continues with"
+        3,
+        "the kind, the value and the reason are what it continues with"
     );
 }
 
@@ -223,8 +225,28 @@ fn the_atoms_of_a_last_resort_are_the_atoms_its_fields_write() {
     let raised = LastResort::bad_boolean("or");
     assert_eq!(
         raised.atoms().collect::<Vec<_>>(),
-        ["or"],
-        "the struct's module and field names are its schema's, not atoms the code writes"
+        ["or", "badbool", "or"],
+        "the struct's module and field names are its schema's, not atoms the code writes; its reason `{{:badbool, op, subject}}` writes two"
     );
     assert_eq!(LastResort::reraise().atoms().count(), 0);
+}
+
+#[test]
+fn a_raise_of_written_values_continues_with_its_value_and_its_reason() {
+    let raised = LastResort::raise();
+    assert_eq!(
+        raised.exception(),
+        None,
+        "the exception is a value, not a module the plan names"
+    );
+    assert_eq!(
+        raised.reason(),
+        None,
+        "the reason is a value, not a term the plan builds"
+    );
+    assert_eq!(
+        raised.consumed_inputs(),
+        2,
+        "the value and the reason are its first two inputs"
+    );
 }

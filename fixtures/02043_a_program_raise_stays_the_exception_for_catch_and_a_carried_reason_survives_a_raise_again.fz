@@ -1,0 +1,52 @@
+#---
+# purpose: "A `raise` a program writes reaches `catch` as the exception it raised, a failure that carries an Erlang reason reaches `catch` as that reason after `:erlang.raise` raises it again, and an arithmetic failure is `:badarith`, as Elixir does on all three paths"
+# oracle: self
+# oracle.stamp: fa213708a0b10f39
+#---
+defmodule Main do
+  # `x`, typed as one of the kinds of value a call may be given, so the call
+  # is made and fails at run time rather than being refused when compiled.
+  def v(x), do: Enum.at([x, 1, 1.5, "s", <<1::3>>, [1], {1}, %{}, self(), :utf8, :latin1, :a, 36], 0)
+
+  def caught(fun) do
+    try do
+      fun.()
+    catch
+      kind, reason -> {kind, reason}
+    end
+  end
+
+  def rescued(fun) do
+    try do
+      fun.()
+    rescue
+      e -> inspect(e.__struct__) <> ": " <> Exception.message(e)
+    end
+  end
+
+  def show(label, fun) do
+    IO.puts(label)
+    IO.inspect(caught(fun))
+    IO.puts(rescued(fun))
+  end
+
+  def main() do
+    show("raise of a module", fn -> raise ArgumentError end)
+    show("raise of a module and a message", fn -> raise ArgumentError, "x" end)
+    show("raise of a message", fn -> raise "boom" end)
+    show("raise of an exception", fn -> raise %KeyError{key: :k} end)
+    show(":erlang.error of :badarg", fn -> :erlang.error(:badarg) end)
+    show(":erlang.error of a tuple", fn -> :erlang.error({:badmatch, 1}) end)
+    show(":erlang.error of a term that names no exception", fn -> :erlang.error({:my, 1}) end)
+    show(":erlang.error with arguments", fn -> :erlang.error(:badarg, [1], []) end)
+    show(":erlang.raise of a term that names no exception", fn -> :erlang.raise(:error, {:my, 1}, []) end)
+    show("a built-in failure raised again by :erlang.raise", fn -> try do abs(v(:a)) catch kind, reason -> :erlang.raise(kind, reason, []) end end)
+    show("a map operation on a non-map", fn -> Map.get(v(1), :a) end)
+    show("add of a non-number", fn -> 1 + v(:a) end)
+    show("divide by zero", fn -> div(1, 0) end)
+    show("bnot of a non-number", fn -> :erlang.bnot(v(:a)) end)
+    show("bsr of non-numbers", fn -> :erlang.bsr(v(:a), v(:b)) end)
+  end
+end
+
+Main.main()

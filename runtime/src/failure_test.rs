@@ -267,7 +267,12 @@ fn a_panic_under_a_compiled_handler_delivers_the_handler_with_kind_value_and_nam
         );
         assert_eq!(capture(handler, 1), atom(process, "error"));
         assert_eq!(capture(handler, 2), value);
-        assert_eq!(capture(handler, 3), atom(process, "Elixir.RuntimeError"));
+        assert_eq!(
+            capture(handler, 3),
+            value,
+            "a raise with no reason of its own carries the raised value"
+        );
+        assert_eq!(capture(handler, 4), atom(process, "Elixir.RuntimeError"));
         assert_eq!(
             observed.raises,
             [("error".to_string(), "Elixir.RuntimeError".to_string(), 1)]
@@ -473,7 +478,7 @@ fn a_reraise_continues_with_the_kind_it_was_delivered() {
             let value = atom(process, "v");
             let kind_ref = process.heap.box_any_value_ref(atom(process, kind));
             let (delivered_kind, delivered_value) = delivered_by(process, value, |process, word, kind| {
-                fz_reraise(process, kind_ref.raw_word(), word, kind)
+                fz_reraise(process, kind_ref.raw_word(), word, kind, word, kind)
             });
             assert_eq!((delivered_kind, delivered_value), (atom(process, kind), value));
         }
@@ -496,7 +501,7 @@ fn a_reraise_nothing_handles_fails_the_process_like_the_original_raise() {
         let Stored { word, kind } = Stored::of(ball);
         let kind_ref = process.heap.box_any_value_ref(atom(process, "throw"));
 
-        fz_reraise(process, kind_ref.raw_word(), word, kind);
+        fz_reraise(process, kind_ref.raw_word(), word, kind, word, kind);
 
         assert!(process.failed);
         assert_eq!(observed.lines, ["** (throw) {:ball, 1}"]);
@@ -509,7 +514,7 @@ fn a_reraise_of_a_kind_the_runtime_never_delivered_is_an_invariant_violation() {
     with_observed_process(|process, _| {
         let value = Stored::of(atom(process, "v"));
         let bogus = atom(process, "bogus");
-        reraise(process, bogus, value);
+        reraise(process, bogus, value, value);
     });
 }
 
@@ -610,7 +615,7 @@ fn a_raise_with_no_handler_prints_the_message_the_exception_carries() {
         declare(process, "Elixir.ArgumentError", &["message"]);
         let name = atom(process, "Elixir.ArgumentError");
         let message = binary(process, "argument error");
-        raise_exception(process, name, &[("message", message)]);
+        raise_exception(process, name, &[("message", message)], None);
     });
     assert!(failed, "a raise fails the process through the panic route");
     assert_eq!(
@@ -625,7 +630,7 @@ fn a_raise_with_no_handler_and_no_message_prints_the_exception_as_a_value() {
     let (lines, failed) = recording(|process| {
         declare(process, "Elixir.MatchError", &["term"]);
         let name = atom(process, "Elixir.MatchError");
-        raise_exception(process, name, &[("term", AnyValue::Int(7))]);
+        raise_exception(process, name, &[("term", AnyValue::Int(7))], None);
     });
     assert!(failed);
     assert_eq!(
@@ -649,7 +654,7 @@ fn a_raised_exception_is_a_struct_of_its_module_holding_the_fields_it_was_given(
         declare(process, "Elixir.CaseClauseError", &["term"]);
         let name = atom(process, "Elixir.CaseClauseError");
         let exception = delivered_exception(process, |process| {
-            raise_exception(process, name, &[("term", AnyValue::Int(3))]);
+            raise_exception(process, name, &[("term", AnyValue::Int(3))], None);
         });
         let module = crate::module_name::ModuleName::from_atom_name("Elixir.CaseClauseError").expect("a module");
         let raised = process.heap.box_any_value_ref(exception);
@@ -676,7 +681,7 @@ fn a_raised_exception_is_a_struct_of_its_module_holding_the_fields_it_was_given(
 fn an_exception_whose_struct_nothing_registered_cannot_be_raised() {
     with_observed_process(|process, _| {
         let name = atom(process, "Elixir.CaseClauseError");
-        raise_exception(process, name, &[("term", AnyValue::Int(3))]);
+        raise_exception(process, name, &[("term", AnyValue::Int(3))], None);
     });
 }
 
@@ -687,7 +692,7 @@ fn an_exception_is_raised_with_every_field_its_module_declares() {
         declare(process, "Elixir.BadBooleanError", &["term", "operator"]);
         let name = atom(process, "Elixir.BadBooleanError");
         let or = atom(process, "or");
-        raise_exception(process, name, &[("operator", or), ("left", AnyValue::Int(1))]);
+        raise_exception(process, name, &[("operator", or), ("left", AnyValue::Int(1))], None);
     });
 }
 

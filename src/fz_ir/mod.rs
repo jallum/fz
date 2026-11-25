@@ -1041,16 +1041,20 @@ pub enum Term {
     /// Native/codegen-facing return whose payload is already split into the
     /// transport lanes required by the current function's return seam.
     ReturnLanes(Vec<Var>),
-    /// The process raises `value` as an error. The process ends.
+    /// The process raises `value` as an error. `reason` is the Erlang reason
+    /// the failure declares, which a `catch` binds in place of `value`; a
+    /// raise without one has `value` for its reason. The process ends.
     Raise {
         value: Var,
+        reason: Option<Var>,
     },
     /// The process continues the raise a handler was delivered: `kind` is the
-    /// atom the handler received for its kind, `value` the raised value. The
-    /// process ends here, as at `Raise`.
+    /// atom the handler received for its kind, `value` the raised value and
+    /// `reason` the reason it received. The process ends here, as at `Raise`.
     Reraise {
         kind: Var,
         value: Var,
+        reason: Var,
     },
     /// The process raises what a call `receiver.function(..)` of `arity`
     /// arguments raises when it finds nothing to call. `modules_without` is
@@ -1786,8 +1790,12 @@ impl fmt::Display for Term {
             }
             Term::Return(v) => write!(f, "return {}", v),
             Term::ReturnLanes(lanes) => write!(f, "return_lanes [{}]", fmt_var_list(lanes)),
-            Term::Raise { value } => write!(f, "raise {value}"),
-            Term::Reraise { kind, value } => write!(f, "reraise {kind} {value}"),
+            Term::Raise { value, reason: None } => write!(f, "raise {value}"),
+            Term::Raise {
+                value,
+                reason: Some(reason),
+            } => write!(f, "raise {value} for {reason}"),
+            Term::Reraise { kind, value, reason } => write!(f, "reraise {kind} {value} {reason}"),
             Term::RaiseUndefined {
                 receiver,
                 function,

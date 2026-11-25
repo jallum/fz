@@ -1,0 +1,126 @@
+abs
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 1st argument: not a number
+
+round
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 1st argument: not a number
+
+trunc
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 1st argument: not a number
+
+floor
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 1st argument: not a number
+
+ceil
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 1st argument: not a number
+
+hd of a non-list
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 1st argument: not a nonempty list
+
+hd of []
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 1st argument: not a nonempty list
+
+tl of a non-list
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 1st argument: not a nonempty list
+
+tl of []
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 1st argument: not a nonempty list
+
+byte_size
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 1st argument: not a bitstring
+
+bit_size
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 1st argument: not a bitstring
+
+tuple_size
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 1st argument: not a tuple
+
+elem past the end
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 1st argument: out of range
+
+elem of a non-tuple
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 2nd argument: not a tuple
+
+elem at a non-integer
+{:error, :badarith}
+ArithmeticError: bad argument in arithmetic expression
+elem of a non-tuple at a non-integer
+{:error, :badarith}
+ArithmeticError: bad argument in arithmetic expression
+length of a non-list
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 1st argument: not a list
+
+length of an improper list
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 1st argument: not a list
+
+is_function with a non-integer arity
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 2nd argument: not an integer
+
+is_function with a negative arity
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 2nd argument: out of range
+
+send to a non-pid
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 1st argument: invalid destination
+
+map_size of a non-map
+{:error, {:badmap, 1}}
+BadMapError: expected a map, got:
+
+    1
+

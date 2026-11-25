@@ -1,9 +1,11 @@
 //! A process raising: the one route every failure takes.
 //!
 //! `fz_panic`, `fz_throw` and `fz_exit` are the one route with a fixed kind,
-//! behind `Kernel.panic/1`, `throw/1` and `exit/1`; `fz_reraise` continues a
-//! raise a handler was delivered, with the kind it arrived with. A raise
-//! reports itself, then goes to
+//! behind `Kernel.panic/1`, `throw/1` and `exit/1`; `fz_panic_reason` is
+//! `fz_panic` for a failure that has an Erlang reason beside its exception, the
+//! one a `Term::Raise` with a reason compiles to, and
+//! `fz_reraise` continues a raise a handler was delivered, with the kind and
+//! reason it arrived with. A raise reports itself, then goes to
 //! the innermost handler on the process's handler stack: a compiled handler is
 //! a continuation template that becomes the process's delivered handler closure
 //! applied to the raise, the way a receive outcome is materialized; an
@@ -52,7 +54,7 @@ use std::slice;
 pub const EXCEPTION_FIELD: &str = "__exception__";
 
 /// The three kinds of raise. They share one route: a handler receives the kind
-/// as the atom named by `name`, beside the raised value.
+/// as the atom named by `name`, beside the raised value and its reason.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RaiseKind {
     /// `raise`, `panic` and the runtime's own traps.
@@ -208,6 +210,34 @@ pub extern "C" fn fz_panic(process: *mut Process, value_word: u64, value_kind: u
             word: value_word,
             kind: value_kind,
         },
+        None,
+    );
+}
+
+/// Raise `value` in the current process as an error that has an Erlang
+/// reason: the primitive a `Term::Raise` with a reason compiles to, and the one
+/// the interpreter raises a `LastResort::Raise` through. A `catch :error, reason`
+/// clause binds the reason; a `rescue` binds `value`.
+#[unsafe(no_mangle)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_panic_reason(
+    process: *mut Process,
+    value_word: u64,
+    value_kind: u64,
+    reason_word: u64,
+    reason_kind: u64,
+) {
+    raise(
+        process,
+        RaiseKind::Error,
+        Stored {
+            word: value_word,
+            kind: value_kind,
+        },
+        Some(Stored {
+            word: reason_word,
+            kind: reason_kind,
+        }),
     );
 }
 
@@ -223,6 +253,7 @@ pub extern "C" fn fz_throw(process: *mut Process, value_word: u64, value_kind: u
             word: value_word,
             kind: value_kind,
         },
+        None,
     );
 }
 
@@ -238,6 +269,7 @@ pub extern "C" fn fz_exit(process: *mut Process, reason_word: u64, reason_kind: 
             word: reason_word,
             kind: reason_kind,
         },
+        None,
     );
 }
 
@@ -281,11 +313,11 @@ pub extern "C" fn fz_system_halt(process: *mut Process, status: i64) {
 }
 
 /// Continue the raise a handler was delivered: raise `value` with the kind
-/// the handler received, as the atom `kind`. The compiler re-raises only what a
-/// handler was delivered, so a kind the runtime never delivers is a fault in
-/// the compiler, not a program's error.
+/// the handler received, as the atom `kind`, and the reason it received. The
+/// compiler re-raises only what a handler was delivered, so a kind the runtime
+/// never delivers is a fault in the compiler, not a program's error.
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub fn reraise(process: *mut Process, kind: AnyValue, value: Stored) {
+pub fn reraise(process: *mut Process, kind: AnyValue, value: Stored, reason: Stored) {
     assert!(!process.is_null(), "reraise: no current process");
     let node = unsafe { &*process }.node.clone();
     let name = match kind {
@@ -296,13 +328,20 @@ pub fn reraise(process: *mut Process, kind: AnyValue, value: Stored) {
         .as_deref()
         .and_then(RaiseKind::from_name)
         .unwrap_or_else(|| panic!("fz_reraise: the kind {name:?} is not one the runtime delivers"));
-    raise(process, kind, value);
+    raise(process, kind, value, Some(reason));
 }
 
 /// [`reraise`] for compiled code: `kind_ref` is the atom the handler received.
 #[unsafe(no_mangle)]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn fz_reraise(process: *mut Process, kind_ref: u64, value_word: u64, value_kind: u64) {
+pub extern "C" fn fz_reraise(
+    process: *mut Process,
+    kind_ref: u64,
+    value_word: u64,
+    value_kind: u64,
+    reason_word: u64,
+    reason_kind: u64,
+) {
     reraise(
         process,
         value_from_word(kind_ref, "fz_reraise kind"),
@@ -310,24 +349,30 @@ pub extern "C" fn fz_reraise(process: *mut Process, kind_ref: u64, value_word: u
             word: value_word,
             kind: value_kind,
         },
+        Stored {
+            word: reason_word,
+            kind: reason_kind,
+        },
     );
 }
 
 /// Report the raise to the context's raise observer, then deliver it to the
 /// innermost handler: a compiled handler becomes the delivered closure applied
-/// to `(kind, value, name)`, an interpreter handler receives the same three
-/// values through `Process::raised`. With no handler the process ends: its
+/// to `(kind, value, reason, name)`, an interpreter handler receives the same
+/// four values through `Process::raised`. The reason is the one the raise
+/// carries, or the raised value when it carries none. With no handler the process ends: its
 /// status is recorded, its failure line, when it has one, goes to the context's
 /// fault sink, and `failed` is set. The physical export returns, so each caller
 /// unwinds itself: compiled code returns to its quantum entry, the interpreter
 /// takes its raised or failed transition.
-fn raise(process: *mut Process, kind: RaiseKind, raised: Stored) {
+fn raise(process: *mut Process, kind: RaiseKind, raised: Stored, reason: Option<Stored>) {
     assert!(!process.is_null(), "raise: no current process");
     let process_ptr = process;
     let process = unsafe { &mut *process };
     assert!(!process.ctx.is_null(), "raise: process has no execution context");
     let ctx = unsafe { &*process.ctx };
     let value = raised.value("raise");
+    let reason = reason.unwrap_or(raised);
     let name = exception_name(process_ptr, value);
     let stack_marker = 0u8;
     let stack_bytes = match process.stack_base {
@@ -350,7 +395,8 @@ fn raise(process: *mut Process, kind: RaiseKind, raised: Stored) {
     match handler {
         Innermost::Compiled(image) => {
             // SAFETY: a compiled record is a closure image the collector keeps current.
-            let handler = unsafe { materialize_outcome_closure(&mut process.heap, image, &[kind, raised, name]) };
+            let handler =
+                unsafe { materialize_outcome_closure(&mut process.heap, image, &[kind, raised, reason, name]) };
             process.pop_handler();
             process.deliver_handler(
                 AnyValueRef::from_heap_object(ValueKind::CLOSURE, handler).expect("handler closure ref"),
@@ -362,6 +408,7 @@ fn raise(process: *mut Process, kind: RaiseKind, raised: Stored) {
                 kind,
                 value: raised,
                 name,
+                reason,
             });
         }
     }
@@ -402,10 +449,11 @@ fn report_raise(
 }
 
 /// Raise the exception `name` with `fields` in the current process, as an
-/// error, through the one route.
-pub fn raise_exception(process: *mut Process, name: AnyValue, fields: &[(&str, AnyValue)]) {
+/// error, through the one route. `reason` is the Erlang reason the failure
+/// declares, when it declares one.
+pub fn raise_exception(process: *mut Process, name: AnyValue, fields: &[(&str, AnyValue)], reason: Option<AnyValue>) {
     let exception = exception(process, name, fields);
-    raise(process, RaiseKind::Error, Stored::of(exception));
+    raise(process, RaiseKind::Error, Stored::of(exception), reason.map(Stored::of));
 }
 
 /// Raise what Elixir raises when `receiver.function(..)` with `arity`
@@ -424,7 +472,12 @@ pub fn raise_undefined_function(
     if !matches!(receiver, AnyValue::Atom(_)) {
         let message = not_a_module_message(&shown, &render_value(process, function), arity);
         let message = text(process, &message);
-        return raise_exception(process, atom(process, "Elixir.ArgumentError"), &[("message", message)]);
+        return raise_exception(
+            process,
+            atom(process, "Elixir.ArgumentError"),
+            &[("message", message)],
+            None,
+        );
     }
     let called = format!("{shown}.{}/{arity}", atom_text(process, function));
     let message = if module_is_defined {
@@ -445,6 +498,7 @@ pub fn raise_undefined_function(
             ("reason", atom(process, "nil")),
             ("message", message),
         ],
+        Some(atom(process, "undef")),
     );
 }
 

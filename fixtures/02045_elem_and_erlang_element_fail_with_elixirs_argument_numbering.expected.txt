@@ -1,0 +1,36 @@
+elem past the end
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 1st argument: out of range
+
+elem of a negative index
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 1st argument: out of range
+
+elem of a non-tuple
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 2nd argument: not a tuple
+
+:erlang.element of index 0
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 1st argument: out of range
+
+:erlang.element past the end
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 1st argument: out of range
+
+:erlang.element of a non-tuple
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 2nd argument: not a tuple
+

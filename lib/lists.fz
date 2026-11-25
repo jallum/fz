@@ -119,10 +119,8 @@ defmodule :lists do
   """
   @spec keyfind(any, pos_integer, [any]) :: tuple | false
   def keyfind(key, n, tuple_list) when is_integer(n) and n > 0 and is_list(tuple_list),
+    raises: ArgumentError, reason: :badarg,
     do: keyfind_walk(key, n, tuple_list)
-
-  def keyfind(_key, n, tuple_list),
-    do: raise(%ArgumentError{message: "errors were found at the given arguments:\n\n" <> keyfind_position_complaint(n) <> keyfind_list_complaint(tuple_list)})
 
   @spec keyfind_walk(any, pos_integer, [any]) :: tuple | false
   defp keyfind_walk(key, n, [head | tail]) do
@@ -132,16 +130,8 @@ defmodule :lists do
   end
 
   defp keyfind_walk(_key, _n, []), do: false
-  defp keyfind_walk(_key, _n, _improper), do: raise(%ArgumentError{message: "errors were found at the given arguments:\n\n  * 3rd argument: not a proper list\n"})
-
-  @spec keyfind_position_complaint(any) :: binary
-  defp keyfind_position_complaint(n) when is_integer(n) and n > 0, do: ""
-  defp keyfind_position_complaint(n) when is_integer(n), do: "  * 2nd argument: out of range\n"
-  defp keyfind_position_complaint(_n), do: "  * 2nd argument: not an integer\n"
-
-  @spec keyfind_list_complaint(any) :: binary
-  defp keyfind_list_complaint(tuple_list) when is_list(tuple_list), do: ""
-  defp keyfind_list_complaint(_tuple_list), do: "  * 3rd argument: not a list\n"
+  defp keyfind_walk(_key, _n, _improper),
+    do: __raise__(%ArgumentError{message: "errors were found at the given arguments:\n\n  * 3rd argument: not a proper list\n"}, :badarg)
 
   @doc """
   Returns a copy of `tuple_list1` without its first tuple whose `n`th element

@@ -1324,7 +1324,7 @@ const SCENARIOS: [&str; 5] = [
 
 // (reachable executables, construction wrappers) per target fixture.
 // is unchanged.
-const POPULATION_BASELINES: [(u64, u64); 3] = [(48, 0), (190, 32), (188, 38)];
+const POPULATION_BASELINES: [(u64, u64); 3] = [(48, 0), (190, 32), (185, 38)];
 
 fn target_edit_sequence(fixture: &str) -> (String, [&'static str; 3]) {
     let fixture = std::fs::read_to_string(fixture).unwrap_or_else(|error| panic!("read fixture {fixture}: {error}"));
@@ -1536,7 +1536,7 @@ fn target_fixture_reports_exercise_all_five_request_scenarios() {
                 runtime_demand.runtime_demand_evaluations,
                 // Executable facts are a pure function of their declared reads, so a reached leaf
                 // edit re-derives nothing it did not change and walks exactly the edited body.
-                [[109, 0, 0, 1, 4], [442, 0, 0, 1, 4], [472, 0, 0, 1, 4]][fixture_index][scenario],
+                [[109, 0, 0, 1, 4], [442, 0, 0, 1, 4], [466, 0, 0, 1, 4]][fixture_index][scenario],
                 "{fixture} {name}: count actual body walks, not scheduler completions; all scenarios: {:?}",
                 reports
                     .iter()
@@ -1645,9 +1645,9 @@ const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64, u64); 7] = [
     // The ordering operators end in an `any`/`any` clause through `compare/2`; this
     // fixture's operands stay numeric, so no `compare/2` activation is minted and the
     // StaticCallees count covers only the numeric families' callee layers.
-    ("fixtures/00567_fz_f98_range_map_converges.fz", 21, 0, 65, 0, 36),
-    ("fixtures/00571_enum_predicate_search.fz", 34, 0, 49, 0, 66),
-    ("fixtures/00420_enum_take_drop_split.fz", 57, 0, 114, 0, 104),
+    ("fixtures/00567_fz_f98_range_map_converges.fz", 21, 0, 65, 0, 35),
+    ("fixtures/00571_enum_predicate_search.fz", 34, 0, 49, 0, 64),
+    ("fixtures/00420_enum_take_drop_split.fz", 55, 0, 113, 0, 97),
     // 00607-00610 pin the shared-reach shape directly. Four callers (p1-p4)
     // share one call chain of depth eight. Each caller's reach walks the chain's
     // edge facts itself and reads no other reach, so the work is the same
@@ -1657,33 +1657,33 @@ const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64, u64); 7] = [
         "fixtures/00607_static_reach_shared_chain_callees_first.fz",
         13,
         0,
-        20,
+        18,
         0,
-        29,
+        21,
     ),
     (
         "fixtures/00608_static_reach_shared_chain_callers_first.fz",
         13,
         0,
-        20,
+        18,
         0,
-        29,
+        21,
     ),
     (
         "fixtures/00609_static_reach_chain_into_recursion_callees_first.fz",
         15,
         0,
-        27,
+        25,
         0,
-        31,
+        23,
     ),
     (
         "fixtures/00610_static_reach_chain_into_recursion_callers_first.fz",
         15,
         0,
-        27,
+        25,
         0,
-        31,
+        23,
     ),
 ];
 
@@ -1832,25 +1832,25 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         analyze_evaluations: 153,
         analyze_zero_change: 5,
         // Macro readiness is a retained content dependency.
-        total_evaluations: 723,
+        total_evaluations: 721,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures/00571_enum_predicate_search.fz",
         activations: lifecycle(195, 195, 0),
         callsites: lifecycle(248, 248, 0),
         shifts: shifts(25, 75),
-        analyze_evaluations: 591,
+        analyze_evaluations: 593,
         analyze_zero_change: 25,
-        total_evaluations: 1208,
+        total_evaluations: 1212,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures/00420_enum_take_drop_split.fz",
-        activations: lifecycle(226, 226, 0),
-        callsites: lifecycle(387, 387, 0),
+        activations: lifecycle(223, 223, 0),
+        callsites: lifecycle(384, 384, 0),
         shifts: shifts(44, 91),
-        analyze_evaluations: 662,
+        analyze_evaluations: 663,
         analyze_zero_change: 23,
-        total_evaluations: 1675,
+        total_evaluations: 1660,
     },
 ];
 

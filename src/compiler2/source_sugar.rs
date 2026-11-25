@@ -902,16 +902,7 @@ impl ComprehensionBuild<'_> {
         let reason = self.generated("__fz_for_reason", 0)?;
         let acc = self.generated("__fz_for_acc", 0)?;
         let halt = self.closure_call(fun, &[init, builder.atom("halt")])?;
-        let rethrow = ast_call(
-            builder,
-            builder.atom("."),
-            self.meta,
-            &[
-                builder.alias(&QuotedSourceMetadata::default(), &["Exception"])?,
-                builder.atom("__rethrow__"),
-            ],
-        )?;
-        let raise_again = ast_call(builder, rethrow, self.meta, &[kind, reason])?;
+        let raise_again = named_call(builder, "__reraise__", self.meta, &[])?;
         let halted = named_call(builder, "__block__", self.meta, &[halt, raise_again])?;
         let caught = named_call(builder, "->", self.meta, &[builder.list(&[kind, reason])?, halted])?;
         let done = self.closure_call(fun, &[acc, builder.atom("done")])?;

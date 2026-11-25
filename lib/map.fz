@@ -139,7 +139,7 @@ defmodule Map do
     case map do
       %{^k => v} -> taken(map, t, [{k, v} | acc])
       %{} -> taken(map, t, acc)
-      other -> raise(%BadMapError{term: other})
+      other -> __raise__(%BadMapError{term: other}, {:badmap, other})
     end
   end
 
@@ -202,7 +202,7 @@ defmodule Map do
     case map do
       %{^key => value} -> value
       %{} -> nil
-      other -> raise(%BadMapError{term: other})
+      other -> __raise__(%BadMapError{term: other}, {:badmap, other})
     end
   end
 
@@ -223,7 +223,7 @@ defmodule Map do
     case map do
       %{^key => value} -> value
       %{} -> default
-      other -> raise(%BadMapError{term: other})
+      other -> __raise__(%BadMapError{term: other}, {:badmap, other})
     end
   end
 
@@ -249,7 +249,7 @@ defmodule Map do
     case map do
       %{^key => value} -> {:ok, value}
       %{} -> :error
-      other -> raise(%BadMapError{term: other})
+      other -> __raise__(%BadMapError{term: other}, {:badmap, other})
     end
   end
 
@@ -268,7 +268,7 @@ defmodule Map do
     case map do
       %{^key => value} -> value
       %{} -> key_error(map, key)
-      other -> raise(%BadMapError{term: other})
+      other -> __raise__(%BadMapError{term: other}, {:badmap, other})
     end
   end
 
@@ -285,7 +285,7 @@ defmodule Map do
   """
   @spec key_error(any, any) :: no_return()
   def key_error(container, key),
-    do: raise(%KeyError{key: key, term: container})
+    do: __raise__(%KeyError{key: key, term: container}, {:badkey, key})
 
   @doc """
   Aborts with what `%{map | ...}` raises when it cannot update `map`: the
@@ -302,8 +302,11 @@ defmodule Map do
       # ** (BadMapError) expected a map, got: 7
   """
   @spec update_failure(any, [any]) :: no_return()
-  def update_failure(map, keys) when is_map(map), do: raise(%KeyError{key: first_missing_key(map, keys)})
-  def update_failure(map, _keys), do: raise(%BadMapError{term: map})
+  def update_failure(map, keys) when is_map(map) do
+    key = first_missing_key(map, keys)
+    __raise__(%KeyError{key: key}, {:badkey, key})
+  end
+  def update_failure(map, _keys), do: __raise__(%BadMapError{term: map}, {:badmap, map})
 
   @spec first_missing_key(map, [any]) :: any
   defp first_missing_key(map, [key | keys]), do: first_missing_key(map, key, keys, fz_map_has_key(map, key))
@@ -329,7 +332,7 @@ defmodule Map do
     case map do
       %{^key => value} -> put(map, key, fun.(value))
       %{} -> key_error(map, key)
-      other -> raise(%BadMapError{term: other})
+      other -> __raise__(%BadMapError{term: other}, {:badmap, other})
     end
   end
 
@@ -351,7 +354,7 @@ defmodule Map do
     case map do
       %{^key => _} -> put(map, key, value)
       %{} -> map
-      other -> raise(%BadMapError{term: other})
+      other -> __raise__(%BadMapError{term: other}, {:badmap, other})
     end
   end
 
@@ -375,7 +378,7 @@ defmodule Map do
     case map do
       %{^key => _} -> put(map, key, value)
       %{} -> key_error(map, key)
-      other -> raise(%BadMapError{term: other})
+      other -> __raise__(%BadMapError{term: other}, {:badmap, other})
     end
   end
 
@@ -399,7 +402,7 @@ defmodule Map do
     case map do
       %{^key => value} -> put(map, key, fun.(value))
       %{} -> put(map, key, default)
-      other -> raise(%BadMapError{term: other})
+      other -> __raise__(%BadMapError{term: other}, {:badmap, other})
     end
   end
 
@@ -419,7 +422,7 @@ defmodule Map do
   """
   @spec delete(any, any) :: map
   def delete(map, key) when is_map(map), do: fz_map_delete(map, key)
-  def delete(map, _key), do: raise(%BadMapError{term: map})
+  def delete(map, _key), do: __raise__(%BadMapError{term: map}, {:badmap, map})
 
   extern "fz" defp fz_map_delete(map, stored_value) :: map
 
@@ -475,7 +478,7 @@ defmodule Map do
   """
   @spec has_key?(any, any) :: boolean
   def has_key?(map, key) when is_map(map), do: fz_map_has_key(map, key)
-  def has_key?(map, _key), do: raise(%BadMapError{term: map})
+  def has_key?(map, _key), do: __raise__(%BadMapError{term: map}, {:badmap, map})
 
   extern "fz" defp fz_map_has_key(map, stored_value) :: boolean
 

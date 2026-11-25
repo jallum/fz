@@ -1584,7 +1584,7 @@ fn a_decision_that_fails_builds_the_struct_it_raises_with_no_list_of_its_fields(
         .iter()
         .flat_map(|function| &function.blocks)
         .filter_map(|block| match &block.terminator {
-            crate::fz_ir::Term::Raise { value } => Some((block, *value)),
+            crate::fz_ir::Term::Raise { value, .. } => Some((block, *value)),
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -13869,7 +13869,7 @@ const SOURCE_ORDER_BLIND_ESCAPES: &[&str] = &[];
 /// walk only reports the kinds it saw; a row appearing or leaving is the
 /// census fixtures changing shape, which wants looking at either way.
 const SOURCE_ORDER_PLANS_ON_THE_CENSUS: &[(&str, usize, usize)] =
-    &[("case", 43, 21), ("entry", 113, 107), ("receive", 2, 0)];
+    &[("case", 45, 21), ("entry", 111, 105), ("receive", 2, 0)];
 
 /// The subjects at which seating `early` before `late` lets a value reach a
 /// body that never named it: the two arms put one and the same question there,
@@ -24780,33 +24780,15 @@ fn called_after_settling(name: &str, source: &str) -> Vec<String> {
     called_function_names(&Drive::source(name, source).settle())
 }
 
-/// A `catch` clause that reads no reason is handed what the raise delivered
-/// and asks the library for nothing: `catch _, _`, a clause on a kind other than
-/// `:error`, a reason it never uses, and a re-raise of its own kind and value.
+/// A `catch` clause is handed the reason the raise carries, whatever the
+/// clause reads of it, so no clause calls the library to translate one.
 #[test]
-fn a_catch_that_reads_no_reason_calls_no_reason_translation() {
+fn a_catch_is_handed_the_reason_and_calls_no_translation() {
     let called = called_after_settling(
-        "catch_reads_no_reason.fz",
-        "def main() do\n  try do\n    throw(1)\n  catch\n    :throw, value -> value\n    _, _ -> 0\n    :error, _reason -> 2\n  end\nend\n",
+        "catch_is_handed_the_reason.fz",
+        "def main() do\n  try do\n    throw(1)\n  catch\n    :error, reason -> reason\n    :throw, value -> value\n  end\nend\n",
     );
     assert!(!called.contains(&"__reason__".to_string()), "called: {called:?}");
-
-    let called = called_after_settling(
-        "catch_rethrows.fz",
-        "def main() do\n  try do\n    throw(1)\n  catch\n    kind, reason -> Exception.__rethrow__(kind, reason)\n  end\nend\n",
-    );
-    assert!(!called.contains(&"__reason__".to_string()), "called: {called:?}");
-}
-
-/// A `catch` clause that uses the reason of an error is handed the Erlang
-/// reason, so the library's translation is called.
-#[test]
-fn a_catch_that_reads_the_reason_calls_the_reason_translation() {
-    let called = called_after_settling(
-        "catch_reads_reason.fz",
-        "def main() do\n  try do\n    throw(1)\n  catch\n    :error, reason -> reason\n  end\nend\n",
-    );
-    assert!(called.contains(&"__reason__".to_string()), "called: {called:?}");
 }
 
 /// A raise makes the exception where it is raised: `:erlang.error` calls the
@@ -26195,6 +26177,7 @@ fn arithmetic_error() -> LastResort {
     LastResort::declared(
         "Elixir.ArithmeticError".to_string(),
         "bad argument in arithmetic expression",
+        Some("badarith"),
     )
 }
 

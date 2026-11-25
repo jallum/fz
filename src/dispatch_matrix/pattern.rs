@@ -18,7 +18,7 @@ pub(crate) mod last_resort;
 pub(crate) mod roots;
 pub(crate) mod source;
 pub(crate) mod unfold;
-pub(crate) use last_resort::{FieldTerm, LastResort, RaisedField, atom_name};
+pub(crate) use last_resort::{FieldTerm, LastResort, RaisedField, ReasonTerm, atom_name};
 pub(crate) use roots::OutcomeRoots;
 pub(crate) use source::{PatternBodyId, PatternRow, SourcePatternError, SourcePatternRows};
 use unfold::{Alternatives, ClauseFacts, Conjunction, GuardFacts};
@@ -291,11 +291,13 @@ pub(crate) trait PatternResolver<TypeHandle> {
 }
 
 /// What a call in a guard reaches: a helper whose clauses are reified into
-/// their own plan, or an extern, which has no clauses and is called as it is.
+/// their own plan, an extern, which has no clauses and is called as it is, or
+/// a raise, which names no function and only aborts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum GuardCallee<TypeHandle> {
     Helper(Arc<PatternGuardDispatch<TypeHandle>>),
     Extern(Arc<GuardExtern>),
+    Raise,
 }
 
 impl<TypeHandle> GuardCallee<TypeHandle> {
@@ -303,6 +305,7 @@ impl<TypeHandle> GuardCallee<TypeHandle> {
     /// helper has bodies and every one of them is a failing node.
     fn always_fails(&self) -> bool {
         match self {
+            GuardCallee::Raise => true,
             GuardCallee::Extern(extern_fn) => extern_fn.fails_the_guard(),
             GuardCallee::Helper(dispatch) => {
                 !dispatch.bodies.is_empty()
@@ -834,6 +837,7 @@ where
             }
         }
         GuardCallee::Extern(extern_fn) => PatternGuardExpr::Extern { extern_fn, args },
+        GuardCallee::Raise => PatternGuardExpr::Fails,
     })
 }
 
@@ -1109,6 +1113,11 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
         // Raising the last resort reads the inputs it shows, whether or not
         // any test did.
         let raised = self.last_resort.as_ref().map_or(0, LastResort::consumed_inputs);
+        debug_assert!(
+            raised <= self.input_count,
+            "a last resort that consumes {raised} inputs was given a plan of {} inputs",
+            self.input_count
+        );
         for demand in graph.input_demand.iter_mut().take(raised) {
             demand.join_assign(DispatchDemand::Whole);
         }

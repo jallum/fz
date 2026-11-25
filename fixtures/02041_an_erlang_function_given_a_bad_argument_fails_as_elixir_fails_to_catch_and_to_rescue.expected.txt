@@ -1,0 +1,164 @@
+atom_to_binary of a non-atom
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 1st argument: not an atom
+
+atom_to_binary with a bad encoding
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 2nd argument: is an invalid encoding option
+
+atom_to_binary with both bad
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 1st argument: not an atom
+  * 2nd argument: is an invalid encoding option
+
+atom_to_binary latin1 of a wide atom
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 1st argument: contains a character not expressible in latin1
+
+binary_to_integer of text
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 1st argument: not a textual representation of an integer
+
+binary_to_integer of a non-binary
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 1st argument: not a binary
+
+binary_to_float of text
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 1st argument: not a textual representation of a float
+
+binary_to_float of a non-binary
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 1st argument: not a binary
+
+integer_to_binary of a non-integer
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 1st argument: not an integer
+
+integer_to_binary with both bad
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 1st argument: not an integer
+  * 2nd argument: not an integer in the range 2 through 36
+
+integer_to_binary with a bad base
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 2nd argument: not an integer in the range 2 through 36
+
+integer_to_binary with a non-integer base
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 2nd argument: not an integer in the range 2 through 36
+
+element at zero
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 1st argument: out of range
+
+element of a non-tuple at a non-integer
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 1st argument: not an integer
+  * 2nd argument: not a tuple
+
+element of a non-tuple
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 2nd argument: not a tuple
+
+element of a non-tuple at zero
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 1st argument: out of range
+  * 2nd argument: not a tuple
+
+element past the end
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 1st argument: out of range
+
+setelement at zero of a non-tuple
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 1st argument: out of range
+  * 2nd argument: not a tuple
+
+setelement at a non-integer
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 1st argument: not an integer
+
+setelement past the end
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 1st argument: out of range
+
+iolist_to_binary of an atom
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 1st argument: not an iodata term
+
+iolist_to_binary of a list holding an atom
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 1st argument: not an iodata term
+
+float_to_binary of a non-float
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 1st argument: not a float
+
+float_to_binary with a bad option
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 2nd argument: invalid option in list
+
+float_to_binary with decimals out of range
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 2nd argument: invalid option in list
+
+band of non-numbers
+{:error, :badarith}
+ArithmeticError: bad argument in arithmetic expression
+bsl of non-numbers
+{:error, :badarith}
+ArithmeticError: bad argument in arithmetic expression
+bnot of a non-number
+{:error, :badarith}
+ArithmeticError: bad argument in arithmetic expression

@@ -782,13 +782,20 @@ defmodule Kernel do
 
   """
   @spec send(pid, t) :: t when t: any
-  def send(pid, msg) when is_pid(pid) do
+  def send(pid, msg) when is_destination(pid), raises: ArgumentError, reason: :badarg
+
+  def send(pid, msg) when is_destination(pid) do
     fz_send(pid, msg)
     msg
   end
-  def send(_pid, _msg), do: raise(%ArgumentError{message: "errors were found at the given arguments:\n\n  * 1st argument: invalid destination\n"})
 
   extern "fz" defp fz_send(pid, stored_value) :: unit
+
+  # What `send/2` accepts as a destination; its own test, so the failure's
+  # wording names `send/2`'s argument and no other test's.
+  @spec is_destination(any) :: boolean
+  defp is_destination(_ :: pid), do: true
+  defp is_destination(_), do: false
 
   @doc """
   Returns a fresh, opaque reference; no two calls in a process return the
@@ -868,7 +875,7 @@ defmodule Kernel do
   # be missed. The default clause returns `never`, so it adds nothing to the
   # result type.
   @spec arithmetic_error() :: no_return()
-  defp arithmetic_error(), do: raise(%ArithmeticError{message: "bad argument in arithmetic expression"})
+  defp arithmetic_error(), do: __raise__(%ArithmeticError{message: "bad argument in arithmetic expression"}, :badarith)
 
   @doc """
   Concatenates `left` and `right`; this is the `++` operator.
@@ -984,6 +991,7 @@ defmodule Kernel do
 
   extern "C" defp fz_op_neg_i(integer) :: integer,
     raises: ArithmeticError,
+    reason: :badarith,
     message: "bad argument in arithmetic expression"
   extern "C" defp fz_op_neg_f(float) :: float
 
@@ -1004,12 +1012,13 @@ defmodule Kernel do
   """
   @spec abs(integer) :: integer
   @spec abs(float) :: float
+  def abs(x) when is_number(x), raises: ArgumentError, reason: :badarg
   def abs(x) when is_integer(x), do: fz_op_abs_i(x)
   def abs(x) when is_float(x), do: fz_op_abs_f(x)
-  def abs(_), do: raise(%ArgumentError{message: "errors were found at the given arguments:\n\n  * 1st argument: not a number\n"})
 
   extern "C" defp fz_op_abs_i(integer) :: integer,
     raises: ArithmeticError,
+    reason: :badarith,
     message: "bad argument in arithmetic expression"
   extern "C" defp fz_op_abs_f(float) :: float
 
@@ -1071,12 +1080,13 @@ defmodule Kernel do
   """
   @spec round(integer) :: integer
   @spec round(float) :: integer
+  def round(x) when is_number(x), raises: ArgumentError, reason: :badarg
   def round(x) when is_integer(x), do: x
   def round(x) when is_float(x), do: fz_op_round_f(x)
-  def round(_), do: raise(%ArgumentError{message: "errors were found at the given arguments:\n\n  * 1st argument: not a number\n"})
 
   extern "C" defp fz_op_round_f(float) :: integer,
     raises: ArithmeticError,
+    reason: :badarith,
     message: "bad argument in arithmetic expression"
 
   @doc """
@@ -1093,12 +1103,13 @@ defmodule Kernel do
   """
   @spec trunc(integer) :: integer
   @spec trunc(float) :: integer
+  def trunc(x) when is_number(x), raises: ArgumentError, reason: :badarg
   def trunc(x) when is_integer(x), do: x
   def trunc(x) when is_float(x), do: fz_op_trunc_f(x)
-  def trunc(_), do: raise(%ArgumentError{message: "errors were found at the given arguments:\n\n  * 1st argument: not a number\n"})
 
   extern "C" defp fz_op_trunc_f(float) :: integer,
     raises: ArithmeticError,
+    reason: :badarith,
     message: "bad argument in arithmetic expression"
 
   @doc """
@@ -1115,12 +1126,13 @@ defmodule Kernel do
   """
   @spec floor(integer) :: integer
   @spec floor(float) :: integer
+  def floor(x) when is_number(x), raises: ArgumentError, reason: :badarg
   def floor(x) when is_integer(x), do: x
   def floor(x) when is_float(x), do: fz_op_floor_f(x)
-  def floor(_), do: raise(%ArgumentError{message: "errors were found at the given arguments:\n\n  * 1st argument: not a number\n"})
 
   extern "C" defp fz_op_floor_f(float) :: integer,
     raises: ArithmeticError,
+    reason: :badarith,
     message: "bad argument in arithmetic expression"
 
   @doc """
@@ -1137,12 +1149,13 @@ defmodule Kernel do
   """
   @spec ceil(integer) :: integer
   @spec ceil(float) :: integer
+  def ceil(x) when is_number(x), raises: ArgumentError, reason: :badarg
   def ceil(x) when is_integer(x), do: x
   def ceil(x) when is_float(x), do: fz_op_ceil_f(x)
-  def ceil(_), do: raise(%ArgumentError{message: "errors were found at the given arguments:\n\n  * 1st argument: not a number\n"})
 
   extern "C" defp fz_op_ceil_f(float) :: integer,
     raises: ArithmeticError,
+    reason: :badarith,
     message: "bad argument in arithmetic expression"
 
   @doc """
@@ -1158,8 +1171,7 @@ defmodule Kernel do
 
   """
   @spec hd(any) :: any
-  def hd(list) when is_list(list) and fz_list_is_cons(list), do: fz_list_head_ref(list)
-  def hd(_), do: raise(%ArgumentError{message: "errors were found at the given arguments:\n\n  * 1st argument: not a nonempty list\n"})
+  def hd(list) when fz_list_is_cons(list), raises: ArgumentError, reason: :badarg, do: fz_list_head_ref(list)
 
   @doc """
   Returns `list` without its first element.
@@ -1174,8 +1186,7 @@ defmodule Kernel do
 
   """
   @spec tl(any) :: any
-  def tl(list) when is_list(list) and fz_list_is_cons(list), do: fz_list_tail_ref(list)
-  def tl(_), do: raise(%ArgumentError{message: "errors were found at the given arguments:\n\n  * 1st argument: not a nonempty list\n"})
+  def tl(list) when fz_list_is_cons(list), raises: ArgumentError, reason: :badarg, do: fz_list_tail_ref(list)
 
   extern "C" defp fz_list_is_cons(any) :: boolean
   extern "C" defp fz_list_head_ref(any) :: any
@@ -1231,12 +1242,15 @@ defmodule Kernel do
 
   extern "C" defp fz_op_add_ii(integer, integer) :: integer,
     raises: ArithmeticError,
+    reason: :badarith,
     message: "bad argument in arithmetic expression"
   extern "C" defp fz_op_add_if(integer, float) :: float,
     raises: ArithmeticError,
+    reason: :badarith,
     message: "bad argument in arithmetic expression"
   extern "C" defp fz_op_add_ff(float, float) :: float,
     raises: ArithmeticError,
+    reason: :badarith,
     message: "bad argument in arithmetic expression"
 
   @doc """
@@ -1267,15 +1281,19 @@ defmodule Kernel do
 
   extern "C" defp fz_op_sub_ii(integer, integer) :: integer,
     raises: ArithmeticError,
+    reason: :badarith,
     message: "bad argument in arithmetic expression"
   extern "C" defp fz_op_sub_if(integer, float) :: float,
     raises: ArithmeticError,
+    reason: :badarith,
     message: "bad argument in arithmetic expression"
   extern "C" defp fz_op_sub_fi(float, integer) :: float,
     raises: ArithmeticError,
+    reason: :badarith,
     message: "bad argument in arithmetic expression"
   extern "C" defp fz_op_sub_ff(float, float) :: float,
     raises: ArithmeticError,
+    reason: :badarith,
     message: "bad argument in arithmetic expression"
 
   @doc """
@@ -1306,12 +1324,15 @@ defmodule Kernel do
 
   extern "C" defp fz_op_mul_ii(integer, integer) :: integer,
     raises: ArithmeticError,
+    reason: :badarith,
     message: "bad argument in arithmetic expression"
   extern "C" defp fz_op_mul_if(integer, float) :: float,
     raises: ArithmeticError,
+    reason: :badarith,
     message: "bad argument in arithmetic expression"
   extern "C" defp fz_op_mul_ff(float, float) :: float,
     raises: ArithmeticError,
+    reason: :badarith,
     message: "bad argument in arithmetic expression"
 
   # `/` always returns a float, as in Elixir: `1 / 2` is `0.5`, not `0`. The
@@ -1346,15 +1367,19 @@ defmodule Kernel do
 
   extern "C" defp fz_op_div_ii_to_float(integer, integer) :: float,
     raises: ArithmeticError,
+    reason: :badarith,
     message: "bad argument in arithmetic expression"
   extern "C" defp fz_op_div_if(integer, float) :: float,
     raises: ArithmeticError,
+    reason: :badarith,
     message: "bad argument in arithmetic expression"
   extern "C" defp fz_op_div_fi(float, integer) :: float,
     raises: ArithmeticError,
+    reason: :badarith,
     message: "bad argument in arithmetic expression"
   extern "C" defp fz_op_div_ff(float, float) :: float,
     raises: ArithmeticError,
+    reason: :badarith,
     message: "bad argument in arithmetic expression"
 
   @doc """
@@ -1376,6 +1401,7 @@ defmodule Kernel do
 
   extern "C" defp fz_op_div_ii(integer, integer) :: integer,
     raises: ArithmeticError,
+    reason: :badarith,
     message: "bad argument in arithmetic expression"
 
   @doc """
@@ -1424,15 +1450,19 @@ defmodule Kernel do
 
   extern "C" defp fz_op_rem_ii(integer, integer) :: integer,
     raises: ArithmeticError,
+    reason: :badarith,
     message: "bad argument in arithmetic expression"
   extern "C" defp fz_op_rem_if(integer, float) :: float,
     raises: ArithmeticError,
+    reason: :badarith,
     message: "bad argument in arithmetic expression"
   extern "C" defp fz_op_rem_fi(float, integer) :: float,
     raises: ArithmeticError,
+    reason: :badarith,
     message: "bad argument in arithmetic expression"
   extern "C" defp fz_op_rem_ff(float, float) :: float,
     raises: ArithmeticError,
+    reason: :badarith,
     message: "bad argument in arithmetic expression"
 
   # Comparing an integer against a float is a comparison of two floats, and
@@ -1608,8 +1638,7 @@ defmodule Kernel do
 
   """
   @spec byte_size(bitstring) :: integer
-  def byte_size(bits) when is_bitstring(bits), do: fz_bitstring_byte_extent(bits)
-  def byte_size(_), do: raise(%ArgumentError{message: "errors were found at the given arguments:\n\n  * 1st argument: not a bitstring\n"})
+  def byte_size(bits) when is_bitstring(bits), raises: ArgumentError, reason: :badarg, do: fz_bitstring_byte_extent(bits)
 
   extern "C" defp fz_bitstring_byte_extent(binary_cursor) :: integer, projects: :byte_size
 
@@ -1645,8 +1674,7 @@ defmodule Kernel do
 
   """
   @spec bit_size(bitstring) :: integer
-  def bit_size(bits) when is_bitstring(bits), do: fz_bitstring_bit_extent(bits)
-  def bit_size(_), do: raise(%ArgumentError{message: "errors were found at the given arguments:\n\n  * 1st argument: not a bitstring\n"})
+  def bit_size(bits) when is_bitstring(bits), raises: ArgumentError, reason: :badarg, do: fz_bitstring_bit_extent(bits)
 
   extern "C" defp fz_bitstring_bit_extent(binary_cursor) :: integer
 
@@ -1667,7 +1695,7 @@ defmodule Kernel do
   """
   @spec map_size(any) :: integer
   def map_size(map) when is_map(map), do: fz_map_count(map)
-  def map_size(map), do: raise(%BadMapError{term: map})
+  def map_size(map), do: __raise__(%BadMapError{term: map}, {:badmap, map})
 
   extern "fz" defp fz_map_count(map) :: integer, projects: :map_size
 
@@ -1687,8 +1715,7 @@ defmodule Kernel do
 
   """
   @spec tuple_size(any) :: integer
-  def tuple_size(tuple) when is_tuple(tuple), do: fz_tuple_size(tuple)
-  def tuple_size(_), do: raise(%ArgumentError{message: "errors were found at the given arguments:\n\n  * 1st argument: not a tuple\n"})
+  def tuple_size(tuple) when is_tuple(tuple), raises: ArgumentError, reason: :badarg, do: fz_tuple_size(tuple)
 
   extern "fz" defp fz_tuple_size(any) :: integer, projects: :tuple_size
 
@@ -1709,8 +1736,12 @@ defmodule Kernel do
   def elem(tuple, index) when is_tuple(tuple) and is_integer(index) and index >= 0 and index < tuple_size(tuple),
     do: fz_tuple_elem(tuple, index)
 
-  def elem(tuple, index) when is_tuple(tuple) and is_integer(index), do: raise(%ArgumentError{message: "errors were found at the given arguments:\n\n  * 1st argument: out of range\n"})
-  def elem(_, index) when is_integer(index), do: raise(%ArgumentError{message: "errors were found at the given arguments:\n\n  * 2nd argument: not a tuple\n"})
+  def elem(tuple, index) when is_tuple(tuple) and is_integer(index),
+    do: __raise__(%ArgumentError{message: "errors were found at the given arguments:\n\n  * 1st argument: out of range\n"}, :badarg)
+
+  def elem(_, index) when is_integer(index),
+    do: __raise__(%ArgumentError{message: "errors were found at the given arguments:\n\n  * 2nd argument: not a tuple\n"}, :badarg)
+
   def elem(_, _), do: arithmetic_error()
 
   extern "fz" defp fz_tuple_elem(any, integer) :: any
@@ -1748,14 +1779,36 @@ defmodule Kernel do
 
   """
   @spec length(any) :: integer
-  def length(list) when is_list(list), do: proper_length(fz_list_length(list))
-  def length(_), do: raise(%ArgumentError{message: "errors were found at the given arguments:\n\n  * 1st argument: not a list\n"})
+  def length(list) when is_list(list), raises: ArgumentError, reason: :badarg, do: fz_list_length(list)
 
-  @spec proper_length(integer) :: integer
-  defp proper_length(count) when count >= 0, do: count
-  defp proper_length(_), do: raise(%ArgumentError{message: "errors were found at the given arguments:\n\n  * 1st argument: not a list\n"})
+  @doc """
+  Fails the way a built-in function fails for a first argument that no test of
+  its head catches: `rescue` sees an `ArgumentError` whose message words the
+  argument as `wording` says, and `catch` sees `:badarg`.
 
-  extern "C" defp fz_list_length(any) :: integer
+  ## Examples
+
+      try do
+        Kernel.__badarg__("not a textual representation of an integer")
+      catch
+        :error, reason -> reason
+      end
+      #=> :badarg
+
+  """
+  @spec __badarg__(binary) :: no_return()
+  def __badarg__(wording),
+    do:
+      __raise__(
+        %ArgumentError{message: "errors were found at the given arguments:\n\n  * 1st argument: " <> wording <> "\n"},
+        :badarg
+      )
+
+  # An improper list is not a list to `length/1`: the count fails the call.
+  extern "C" defp fz_list_length(any) :: integer,
+    raises: ArgumentError,
+    reason: :badarg,
+    message: "errors were found at the given arguments:\n\n  * 1st argument: not a list\n"
 
   @doc """
   Returns `true` when `term` is a tuple of any arity.
@@ -1972,10 +2025,9 @@ defmodule Kernel do
 
   """
   @spec is_function(any, any) :: boolean
-  def is_function(_, arity) when not is_integer(arity), do: raise(ArgumentError, "errors were found at the given arguments:\n\n  * 2nd argument: not an integer\n")
-  def is_function(_, arity) when arity < 0, do: raise(ArgumentError, "errors were found at the given arguments:\n\n  * 2nd argument: out of range\n")
-  def is_function(term :: fun, arity), do: fz_function_arity(term) == arity
-  def is_function(_, _), do: false
+  def is_function(term :: fun, arity) when is_integer(arity) and arity >= 0, do: fz_function_arity(term) == arity
+  def is_function(_, arity) when is_integer(arity) and arity >= 0, do: false
+  def is_function(_, arity) when is_integer(arity) and arity >= 0, raises: ArgumentError, reason: :badarg
 
   extern "fz" defp fz_function_arity(fun) :: integer, projects: :arity
 

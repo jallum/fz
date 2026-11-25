@@ -277,7 +277,11 @@ fn entry_dispatch_decides_a_lane_form_tuple_from_its_lanes() {
         .as_ref()
         .and_then(|dispatch| dispatch.plan().last_resort.as_ref())
         .expect("the clause head raises when nothing matches");
-    executable.atom_names = raised.atoms().chain(["nil", "true"]).map(AtomName::from).collect();
+    executable.atom_names = raised
+        .atoms()
+        .chain(["nil", "true"].map(str::to_string))
+        .map(|name| AtomName::from(name.as_str()))
+        .collect();
     let raised = raised.exception().expect("the clause head raises an exception");
     let raised = fz_runtime::module_name::ModuleName::from_atom_name(raised).expect("an exception's module");
     let executable = Rc::new(executable);

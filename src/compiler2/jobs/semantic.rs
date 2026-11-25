@@ -99,6 +99,9 @@ struct EntryWalkTable {
     entries_walked: u64,
     /// The edges of each `case` this walk reached that some scope could take.
     cases: BTreeMap<super::super::body::ControlEntryId, ReachedEdges>,
+    /// What each raise that writes its value where it is raised can hand a
+    /// handler: that value's type.
+    raised: Vec<Ty>,
 }
 
 impl EntryWalkTable {
@@ -444,7 +447,16 @@ pub(super) fn analyze_activation(
     emit_semantic_walk(tel, function, walks.entries_walked);
     let trimmed = TrimmedPlans::of(world.types(), entry_edges, std::mem::take(&mut walks.cases));
     outputs.extend([FactKey::NameableModules, FactKey::Raisable(activation.root)]);
-    for (kind, raised) in raises_of(world, function, &trimmed, &analysis_calls, &input_rows) {
+    let written = std::mem::take(&mut walks.raised);
+    let written = written
+        .iter()
+        .flat_map(|ty| world.raised_by(ty))
+        .map(|raised| (RaiseKind::Error, raised))
+        .collect::<Vec<_>>();
+    for (kind, raised) in written
+        .into_iter()
+        .chain(raises_of(world, function, &trimmed, &analysis_calls, &input_rows))
+    {
         world.note_raisable(activation.root, kind, raised, &mut changed);
     }
     let analysis_changed = super::super::drive::ExecutionContext::new(world, tel).define_activation_analysis(
@@ -1188,6 +1200,9 @@ fn analyze_tail(
                 .or_insert_with(|| ReachedEdges::of(dispatch.plan.clone()))
                 .absorb(&reachability);
             let fail_reachable = reachability.fail_reachable;
+            if fail_reachable && dispatch.plan.last_resort == Some(LastResort::Raise) {
+                walks.raised.push(input_tys[0]);
+            }
             let mut merged = None;
             for (outcome, refined_inputs) in reachability.outcome_inputs {
                 let edge = dispatch.outcome(outcome);
@@ -1317,8 +1332,9 @@ fn analyze_tail(
                 walk,
             )?;
             // The handler runs once for each kind of raise its program can
-            // make, on what that kind hands over. The exception name beside
-            // it is `any`.
+            // make, on what that kind hands over. The reason of an error and
+            // the exception name beside it are `any`; the reason of a throw or
+            // an exit is its value.
             let any = world.types_mut().any();
             walk.uses.read(FactKey::Raisable(activation.root));
             let mut joined = body_ty;
@@ -1326,6 +1342,7 @@ fn analyze_tail(
                 let Some(raised) = world.raisable_ty(activation.root, kind) else {
                     continue;
                 };
+                let kind_is_error = kind == RaiseKind::Error;
                 let kind = world.types_mut().atom_lit(kind.name());
                 let params = entries[handler.as_u32() as usize]
                     .params
@@ -1337,6 +1354,8 @@ fn analyze_tail(
                             match index {
                                 0 => kind,
                                 1 => raised,
+                                2 if kind_is_error => any,
+                                2 => raised,
                                 _ => any,
                             },
                         )

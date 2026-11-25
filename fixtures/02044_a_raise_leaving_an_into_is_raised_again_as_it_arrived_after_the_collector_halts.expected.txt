@@ -1,0 +1,37 @@
+a throw
+collector halted
+{:throw, {:ball, 1}}
+an exit
+collector halted
+{:exit, {:bye, 1}}
+a raise
+collector halted
+{:error, %RuntimeError{message: "boom 1"}}
+collector halted
+RuntimeError: boom 1
+a bare reason
+collector halted
+{:error, :badarg}
+collector halted
+ArgumentError: argument error
+a tuple reason
+collector halted
+{:error, {:my, 1}}
+collector halted
+ErlangError: Erlang error: {:my, 1}
+a built-in
+collector halted
+{:error, :badarg}
+collector halted
+ArgumentError: errors were found at the given arguments:
+
+  * 1st argument: not an atom
+
+a for
+collector halted
+{:throw, {:for, 1}}
+a for raise
+collector halted
+{:error, {:my, 1}}
+collector halted
+ErlangError: Erlang error: {:my, 1}
