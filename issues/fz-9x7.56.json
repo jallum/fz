@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-25T02:55:13Z",
+  "description": "From: GC. Approved by the user 2026-11-25 (AskUserQuestion on fz-9x7.49's miss: \"Ticket one-CGU runtime first\").\n\nEvidence (fz-9x7.49 builder, local, develop 4e13457c8, median of 3, instructions; notes GC scratchpad c49/): the release fz-runtime built with CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1 retires 7-13% fewer instructions than today's default on both arms (ring 789.9M -\u003e 733.0M, msg 1589.4M -\u003e 1504.8M, gc-empty 787.9M -\u003e 733.2M, enum 791.1M -\u003e 763.4M, gc-cells 1901.1M -\u003e 1659.3M). Under the default partition, adding runtime items reshuffles codegen units and thin-LTO inlining on unrelated paths: fz-9x7.49 (no message-path code touched) moved msg/ring/gc-empty +1.4-2.0%; with one codegen unit the same pair agrees within 0.14% (gc-cells +0.33%). Earlier case: a new runtime module flipped forward_heap_value's inlining (+1.9% distiller).\n\nChange: the runtime's release profile is one codegen unit for every artifact the runtime ships in: fz2's linked runtime (JIT/interp) and the AOT runtime staticlib that fz2 build links. Find every place the archive is built (build.rs, FZ_AOT_RUNTIME_STATICLIB) so no path keeps the old partition.\n\nSignal (ssh bench, via the Coordinator's queue): instructions and cycles on every workload, the distiller and p2c; runtime and fz2 release build time before/after. Rule: no workload's instructions or cycles rise more than 0.35%; outputs and in-use identical; build time reported.\n\nDone when: every shipped runtime artifact is one codegen unit; the bench table is in the commit.",
+  "id": "fz-9x7.56",
+  "labels": [],
+  "parent": "fz-9x7",
+  "priority": 1,
+  "status": "open",
+  "title": "The runtime is built as one codegen unit",
+  "type": "task",
+  "updated_at": "2026-11-25T02:55:13Z"
+}
