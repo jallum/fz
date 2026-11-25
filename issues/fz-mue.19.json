@@ -15,11 +15,15 @@
     {
       "text": "Proposal page /Users/j5n/Workspace/fz-mue.19.html awaits the user. (1) Build fragments over the definition-time evaluator, as quote do \u003cclause\u003e end run in the module body. (2) A function's clauses join across items, republished the way defoverridable already republishes. Correction: gap (A) is already fixed; written clauses with an attribute or def between them group today. Only clauses from separate items fail to join.",
       "timestamp": "2026-11-20T13:23:07Z"
+    },
+    {
+      "text": "User approved the page's recommended answers 2026-11-24 (asked directly by Elixir Parity): (1) fragments over the definition-time evaluator; (2) clauses join across items, republished as defoverridable does. Building.",
+      "timestamp": "2026-11-25T00:43:45Z"
     }
   ],
   "priority": 3,
   "status": "in_progress",
   "title": "def unquote(:true)(...) defines a function named true",
   "type": "bug",
-  "updated_at": "2026-11-20T13:23:07Z"
+  "updated_at": "2026-11-25T00:43:45Z"
 }
