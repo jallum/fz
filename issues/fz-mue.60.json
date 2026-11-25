@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-mue",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "quote of x.field gives Elixir's call node {{:., meta, [x, :field]}, [no_parens: true], []}",
   "type": "bug",
-  "updated_at": "2026-11-25T00:39:39Z"
+  "updated_at": "2026-11-25T00:40:21Z"
 }
