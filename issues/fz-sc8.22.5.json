@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Bugs and Cleanup",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-25T03:51:32Z",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "A runtime quote(do: unquote([1 | 2])) raises ArgumentError, as in Elixir",
   "type": "bug",
-  "updated_at": "2026-11-25T03:51:32Z"
+  "updated_at": "2026-11-25T03:51:33Z"
 }
