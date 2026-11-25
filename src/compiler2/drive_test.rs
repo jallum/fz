@@ -1475,6 +1475,50 @@ fn three_literal_clauses_on_one_argument_ask_its_kind_length_and_base_once() {
     assert_eq!(asked.bases, 1, "the argument's base is selected once for all clauses");
 }
 
+/// `"false"` is one byte longer than `"true"` and `"null"`, but its first four
+/// bytes are the field they read: the three clauses read bytes 0..4 once and
+/// `"false"` reads its fifth byte on its own. A path that reaches a clause by
+/// more than one edge is lowered once per edge, so the fifth byte may be read
+/// in more than one copy of that clause.
+#[test]
+fn sibling_literal_clauses_of_unequal_length_read_their_common_bytes_once() {
+    let program = native_program_of(
+        "sibling_literal_read.fz",
+        concat!(
+            "defp val(<<\"true\", _r :: binary>>), do: 1\n",
+            "defp val(<<\"null\", _r :: binary>>), do: 2\n",
+            "defp val(<<\"false\", _r :: binary>>), do: 3\n",
+            "defp val(_), do: 0\n",
+            "def main(), do: val(:binary.copy(\"t\", 1) <> \"rue\")\n",
+        ),
+    );
+    let function = program
+        .module
+        .fns
+        .iter()
+        .find(|function| function.name.starts_with("val"))
+        .expect("the matcher is a native function");
+    let reads: Vec<_> = function
+        .blocks
+        .iter()
+        .flat_map(|block| &block.stmts)
+        .filter_map(|stmt| match stmt.prim() {
+            IrPrim::BitReadByteInt { byte_offset, bytes, .. } => Some((*byte_offset, *bytes)),
+            IrPrim::BitReadByteIntAt { .. } => panic!("a literal at bit 0 is read at a static offset"),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        reads.iter().filter(|read| **read == (0, 4)).count(),
+        1,
+        "one 4-byte read at byte 0 serves all three clauses: {reads:?}"
+    );
+    assert!(
+        reads.iter().all(|read| matches!(read, (0, 4) | (4, 1))),
+        "the only other read is the fifth byte, which only \"false\" needs: {reads:?}"
+    );
+}
+
 /// A tuple parameter delivered in lane form is decided from those lanes.
 ///
 /// `unwrap/1` receives the pair `pair/1` returns as one lane per field and both
@@ -9613,11 +9657,10 @@ fn compiler2_native_static_literals_stored_in_containers_read_back_whole() {
 }
 
 /// Three binary literal clauses and a catch-all: `"true"` and `"null"` read the
-/// first four bytes and `"false"` reads the first five. The miss of `"true"`
-/// and of `"null"` both lead to the `"false"` clause, so that clause's read is
-/// one block two edges jump to. Each (offset, length) the clauses read is read
-/// once: four bytes at offset 0 as one 32-bit load, five bytes at offset 0 as a
-/// 32-bit load and an 8-bit load.
+/// first four bytes and `"false"` reads the first five. The first four bytes
+/// are one question every clause shares, and the fifth byte is the question
+/// only `"false"` adds. Each (offset, length) the clauses read is read once:
+/// four bytes at offset 0 as one 32-bit load, the fifth byte as an 8-bit load.
 #[test]
 fn compiler2_native_literal_binary_clauses_read_each_offset_and_length_once() {
     let source = "defmodule P do\n\
@@ -9637,8 +9680,8 @@ fn compiler2_native_literal_binary_clauses_read_each_offset_and_length_once() {
     assert_eq!(loads("i8"), 1, "the fifth byte of \"false\" is read once:\n{clif}");
     assert_eq!(
         loads("i32"),
-        2,
-        "four bytes are read once for \"true\" and \"null\", and once more under \"false\":\n{clif}"
+        1,
+        "the first four bytes are read once for every clause:\n{clif}"
     );
 }
 

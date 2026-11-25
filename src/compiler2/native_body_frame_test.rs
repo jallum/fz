@@ -217,3 +217,42 @@ fn compiler2_a_frame_wider_than_the_closure_header_counts_is_refused_with_its_me
     assert_eq!(layout.joins[0].member, fitting_member);
     assert_eq!(layout.root_slots.keys().copied().collect::<Vec<_>>(), [fits]);
 }
+
+/// `clauses` clauses of one function, each a distinct four-byte literal then a
+/// byte and the rest of the binary, and a catch-all.
+fn literal_clauses_then_a_byte(clauses: usize) -> String {
+    let mut source = String::from("defmodule P do\n");
+    for clause in 0..clauses {
+        let literal = [b'a' + clause as u8, b'b', b'c', b'd'];
+        source.push_str(&format!(
+            "  def w(<<\"{}\", x, r::binary>>), do: x + {clause} + byte_size(r)\n",
+            String::from_utf8_lossy(&literal)
+        ));
+    }
+    source.push_str("  def w(_), do: 0\nend\n\ndef main(), do: P.w(\"abcdZ!\")\n");
+    source
+}
+
+/// Sibling binary clauses each ask for their own byte after the literal they
+/// share the read of, so each clause adds about a fixed amount of code. Then
+/// going from eight to sixteen clauses adds about twice what going from four to
+/// eight added, where growth quadratic in the clauses (a shared node copied
+/// once per edge into it) would add four times as much. The bound sits between
+/// the two, and compares sizes from one target with each other, so it holds
+/// whatever that target's instruction widths are.
+#[test]
+fn compiler2_sibling_binary_clauses_compile_to_code_proportional_to_their_count() {
+    let [four, eight, sixteen] = [4, 8, 16].map(|clauses| {
+        let run = compile_and_run("literal_clauses_then_a_byte.fz", &literal_clauses_then_a_byte(clauses));
+        assert_eq!(
+            run.exit.halt_value, 91,
+            "the first clause adds 'Z' (90), its index 0 and the one byte that remains"
+        );
+        run.code_bytes
+    });
+    let (first_doubling, second_doubling) = (eight - four, sixteen - eight);
+    assert!(
+        second_doubling <= 3 * first_doubling,
+        "eight more clauses add {second_doubling} bytes, four more added {first_doubling}"
+    );
+}

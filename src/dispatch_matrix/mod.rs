@@ -296,6 +296,9 @@ pub(crate) enum ListRegion {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BitstringShape {
+    /// The field whose end is where `fields` begin; none at the start of the
+    /// bitstring.
+    pub(crate) start: Option<SubjectId>,
     pub(crate) fields: Vec<SubjectId>,
     pub(crate) require_done: bool,
 }

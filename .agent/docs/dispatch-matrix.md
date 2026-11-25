@@ -157,6 +157,41 @@ A receiver whose type lists no module adds the miss, a target selected by
 every value no module claims; it is a row of the plan like the others, and
 reaching it raises (see `modules.md`, "A call on a module value").
 
+### A bitstring pattern is a chain of field questions
+
+A bitstring pattern asks one `Region::Bitstring` question per field, in field
+order. A question's `BitstringShape` names the one field it asks (`fields`, empty
+only for the pattern `<<>>`) and `start`, the field before it, whose recorded end
+position is where this field begins; the first field has none. Only the last
+question has `require_done`: the bits that remain are the field's own and no
+more. Every consumer keeps a map from field subject to end position beside its
+field values -- `DispatchState::field_ends` (native, with what the text says of
+the position, for static byte offsets), `DispatchExecState::field_ends`
+(interpreter, undone with the branch that wrote it), and
+`DispatchEmitState::field_ends` (receive). A question that follows another asks
+nothing again of the subject being a bitstring. A row's question for a field
+exists only after the matrix has specialized the row on the field before it, so
+the earlier question's match edge dominates every later question and its end is
+always recorded; a consumer that finds it missing panics. A join keeps a field
+end only if every arrival holds the same one.
+
+Two clauses whose leading fields are the same subjects therefore ask equal
+leading questions, and `compile_arm_sequence` shares them as it shares any equal
+first question (`shared_prefix_tests`). A field subject is its extraction (the
+field before it, its spec, whether it is last), so equal subjects are the same
+bits read the same way. Order is untouched: a question is a conjunct of its
+arm, and only consecutive arms are grouped. A size taken from an earlier field
+reads that field's value from the state the earlier question wrote; the matrix
+charges it as it charges any asked subject.
+
+What makes sibling literals share is where their fields are cut. A literal is
+one unsigned big-endian integer field, and a literal is cut at every position
+where a field of a sibling row for the same subject ends, while every field
+before that position has a stated size (`LiteralCuts`). `"true"` and `"null"`
+end at bit 32, so `"false"` is the field they ask and one more byte, and the
+three clauses ask `<<_::32>>` once. Rows are known before any is added, which is
+why the cut needs no pass over finished shapes.
+
 ### Which inputs the plan asks, and in what order
 
 `dispatch_columns` decides both, once, from the same runtime questions the drop

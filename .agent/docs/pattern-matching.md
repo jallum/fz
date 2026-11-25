@@ -175,7 +175,7 @@ into patterns the matrix already knows; no new row kind exists.
 in `quoted_function.rs`). A bare name stays a `Var`, and a pinned
 `binary` operand stays `PatternBitSize::ByteSizeOf`.
 
-- In a pattern, `bitstring_question` (`dispatch_matrix/pattern.rs`) compiles the
+- In a pattern, `bitstring_field` (`dispatch_matrix/pattern.rs`) compiles the
   expression with the same `guard_expr_from_ast` a `when` clause uses and
   stores it in the plan's `guards`; the field's size is
   `BitstringFieldSize::Guard(GuardId)`. Names an earlier field of the same
@@ -442,9 +442,12 @@ branch read what it learned and nothing a failed branch produced outlives it.
 `undo` drains only the writes the branch it closes made, so what an earlier
 branch learned still stands. Reading a bitstring is why it has work to do: it
 binds field by field and can still fail on a later field, and a bitstring field
-is written only inside the branch of the shape test that reads it -- nothing
-else produces one, since `resolve_subject` answers no such subject -- so the
-fields a failed shape bound go with it. Every other slot the drain clears is
+(and the position it ended at, `DispatchExecState::field_end`) is written only
+inside the branch of the question that reads it -- nothing else produces one,
+since `resolve_subject` answers no such subject -- so what a failed question
+bound goes with it. A bitstring pattern is one question per field (see "A
+bitstring pattern is a chain of field questions" in `dispatch-matrix.md`), and
+each question starts from the end its predecessor recorded. Every other slot the drain clears is
 produced again from the operands when a later question asks for it.
 
 `Dispatch::run` is the only entry. It consumes the run and answers `Ok(None)`
@@ -853,6 +856,10 @@ pattern: the pattern with no segments, which `<<>>` is. `"abc"` is the pattern
 `<<"abc">>` is. `append_pattern` in `src/dispatch_matrix/pattern.rs` asks a
 literal the questions of that bitstring (an exact size and the bytes at the
 cursor, through `ast::binary_literal_fields`), so a subject that is a rest
-stays a cursor and no constant is compared. A map-pattern key stays a literal
+stays a cursor and no constant is compared. Each literal field is then cut at
+every position where a sibling row's integer field ends (`LiteralCuts` in
+`dispatch_matrix/pattern/literal_cuts.rs`), so `"true"`, `"null"` and `"false"`
+are the 32-bit field and, for `"false"`, one more byte: the clauses ask the same
+first field and the matrix shares it. A map-pattern key stays a literal
 compared by value. Fixture `01707` walks a binary with each pair of spellings
 and prints equal allocation counts.

@@ -4317,15 +4317,17 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         let fail_b = ctx.builder.block(vec![]);
         let int = self.world.types_mut().int();
 
-        let (mut pos, mut start) = match cursor_position {
-            Some(position) => (position, FieldStart::PastCursor(Some(0))),
-            None => {
+        let (mut pos, mut start) = match (shape.start, cursor_position) {
+            (Some(previous), _) => *state.field_ends.get(&previous).expect(
+                "a field question is reached only through its predecessor's match, which records the predecessor's end",
+            ),
+            (None, Some(position)) => (position, FieldStart::PastCursor(Some(0))),
+            (None, None) => {
                 let (zero, _) = ctx.emit_let(Prim::Const(Const::Int(0)));
                 ctx.value_types.insert(zero, int);
                 (zero, FieldStart::Fixed(0))
             }
         };
-        let field_count = shape.fields.len();
         let mut unfit = None;
         for (index, field_subject) in shape.fields.iter().enumerate() {
             let extraction = plan.bitstring_extraction(*field_subject);
@@ -4338,11 +4340,11 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 unit: spec.unit,
                 is_last: extraction.is_last,
             };
-            if cursor_position.is_none() && index == 0 && Self::fit_ignores_length(&field) {
+            if cursor_position.is_none() && shape.start.is_none() && index == 0 && Self::fit_ignores_length(&field) {
                 self.require_binary(ctx, pos, bit_len, fail_b);
             }
-            let question = match (index, cursor_position) {
-                (0, Some(position)) => FitQuestion::of(subject_var, position, &extraction.spec),
+            let question = match (index, shape.start, cursor_position) {
+                (0, None, Some(position)) => FitQuestion::of(subject_var, position, &extraction.spec),
                 _ => None,
             };
             let utf8_end = if question.is_some_and(|question| state.fit_answers.get(&question) == Some(&true)) {
@@ -4391,8 +4393,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 };
                 Some(NativeBoundValue::Runtime(read))
             };
-            // The last field has no successor unless the pattern must also end
-            // there; a field that reads to the end of the binary ends at its end.
+            // A field that reads to the end of the binary ends at its end.
             let reads_to_end = field.size.is_none() && matches!(field.ty, BitType::Binary | BitType::Bits);
             if reads_to_end {
                 pos = bit_len;
@@ -4400,10 +4401,11 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             } else if let Some(end) = utf8_end {
                 pos = end;
                 start = start.advanced_by(None);
-            } else if index + 1 < field_count || shape.require_done {
+            } else {
                 pos = self.emit_bit_next(ctx, subject_var, pos, field.clone());
                 start = start.advanced_by(field.static_bits());
             }
+            state.field_ends.insert(*field_subject, (pos, start));
             // A later field's `size(len)` reads this one, and the read happens
             // in this block, so it is available for the rest of the loop.
             if let Some(value) = value {
@@ -6059,6 +6061,10 @@ struct DispatchState {
     /// What the plan's inputs are proven to be; an input without one is `any`.
     roots: Vec<Ty>,
     values: HashMap<SubjectId, NativeBoundValue>,
+    /// Where each bitstring field ended, by field subject, and what the text
+    /// says of that position: the start of the next question of the same
+    /// bitstring. A path sees only the fields it passed.
+    field_ends: HashMap<SubjectId, (Var, FieldStart)>,
     /// The subjects the winning outcome reads, beyond what the decision asks.
     /// A bitstring field outside both is checked for fit and never built.
     outcome_reads: Vec<SubjectId>,
@@ -6162,10 +6168,10 @@ struct BinaryFacts {
     base: Option<Var>,
 }
 
-/// A join keeps the cached values and binary facts every arrival holds. A
-/// cached variable was made in a block that dominates the arrival it was
-/// cached on, so one every arrival holds dominates the join. Nothing else in
-/// a state varies between arrivals.
+/// A join keeps the cached values, field ends and binary facts every arrival
+/// holds. A cached variable was made in a block that dominates the arrival it
+/// was cached on, so one every arrival holds dominates the join. Nothing else
+/// in a state varies between arrivals.
 impl ArrivalState for DispatchState {
     fn meet(arrivals: Vec<Self>) -> Self {
         let mut arrivals = arrivals.into_iter();
@@ -6173,6 +6179,8 @@ impl ArrivalState for DispatchState {
         for other in arrivals {
             met.values
                 .retain(|subject, value| other.values.get(subject) == Some(value));
+            met.field_ends
+                .retain(|subject, end| other.field_ends.get(subject) == Some(end));
             met.binary_facts
                 .retain(|binary, facts| other.binary_facts.get(binary) == Some(facts));
             met.fit_answers
@@ -6191,6 +6199,7 @@ impl DispatchState {
             bindings,
             roots: Vec::new(),
             values: HashMap::default(),
+            field_ends: HashMap::default(),
             outcome_reads: Vec::new(),
             binary_facts: HashMap::default(),
             fit_answers: HashMap::default(),
@@ -6476,7 +6485,7 @@ fn executable_input_tys(executable: &BackendExecutable) -> Vec<Ty> {
 }
 
 /// What the program text says of where a bitstring field starts.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 enum FieldStart {
     /// This many bits from the first bit of the binary.
     Fixed(u64),

@@ -1,3 +1,4 @@
+use self::literal_cuts::LiteralCuts;
 use self::source::{collect_pinned_names, direct_bitfield_bindings};
 #[cfg(test)]
 use super::DispatchMatrix;
@@ -15,6 +16,7 @@ use crate::source::Span;
 use std::sync::Arc;
 
 pub(crate) mod last_resort;
+mod literal_cuts;
 pub(crate) mod roots;
 pub(crate) mod source;
 pub(crate) mod unfold;
@@ -799,6 +801,32 @@ where
     })
 }
 
+/// The question whether `field`, which starts where `after` ended, fits the
+/// bitstring `subject`; `None` for the empty pattern, which asks only for a
+/// bitstring. A question that ends the pattern also asks that nothing follows.
+fn bitstring_question<TypeHandle: Clone>(
+    subject: SubjectId,
+    after: Option<SubjectId>,
+    field: Option<SubjectId>,
+    require_done: bool,
+) -> RegionQuestion<TypeHandle> {
+    let predicate = RegionPredicate::new(
+        subject,
+        Region::Bitstring(BitstringShape {
+            start: after,
+            fields: field.into_iter().collect(),
+            require_done,
+        }),
+    );
+    let mut match_evidence = EdgeEvidence::from_proof(predicate.clone(), super::ProofSense::Holds);
+    match_evidence.projections = field.into_iter().collect();
+    RegionQuestion {
+        predicate: predicate.clone(),
+        match_evidence,
+        miss_evidence: EdgeEvidence::from_proof(predicate, super::ProofSense::DoesNotHold),
+    }
+}
+
 /// A guard's call: an operator or a named function, resolved through the same
 /// namespace a body's call is.
 fn guard_call_expr<'e, F, TypeHandle>(
@@ -930,6 +958,8 @@ struct PatternDispatchProducer<TypeHandle> {
     outcomes: Vec<PatternDispatchOutcome>,
     guards: Vec<PatternGuardExpr<TypeHandle>>,
     projections: HashMap<(SubjectId, ProjectionKind), SubjectId>,
+    /// Where sibling rows' literal fields are cut so they share their reads.
+    literal_cuts: LiteralCuts,
     last_resort: Option<LastResort>,
     /// Each row's facts, kept when the rows are a guard helper's clauses.
     clause_facts: Option<Vec<ClauseFacts<TypeHandle>>>,
@@ -958,6 +988,7 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
             .get(&PatternSubjectRef::Input(0))
             .copied()
             .unwrap_or_else(|| builder.add_input_subject());
+        let literal_cuts = LiteralCuts::of_rows(rows.clone());
         let pinned = collect_pinned_names(prematch, rows);
         let pinned_by_name = pinned
             .iter()
@@ -976,6 +1007,7 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
             outcomes: Vec::new(),
             guards: Vec::new(),
             projections: HashMap::default(),
+            literal_cuts,
             last_resort: last_resort.cloned(),
             clause_facts: keep_clause_facts.then(Vec::new),
         })
@@ -1242,6 +1274,10 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
         Ok(())
     }
 
+    /// A bitstring pattern is one question per field, each starting where the
+    /// one before it ended, so that two clauses whose leading fields are the
+    /// same subjects ask the same leading questions and share them. Only the
+    /// last asks that no bits remain.
     fn append_bitstring_pattern(
         &mut self,
         fields: &[crate::ast::PatternField],
@@ -1250,21 +1286,41 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
         bindings: &mut Vec<PatternDispatchBinding>,
         resolver: &mut impl PatternResolver<TypeHandle>,
     ) -> Result<(), SourcePatternError> {
-        let question = self.bitstring_question(subject, fields, resolver)?;
-        let Region::Bitstring(shape) = &question.predicate.region else {
-            unreachable!();
-        };
-        let field_subjects = shape.fields.clone();
-        questions.push(question);
-        for (field_subject, field) in field_subjects.into_iter().zip(fields) {
+        let fields = &self.literal_cuts.cut(subject, fields);
+        let subject_id = self.subject_id(subject)?;
+        if fields.is_empty() {
+            questions.push(bitstring_question(subject_id, None, None, true));
+            return Ok(());
+        }
+        let mut binding_subjects: HashMap<Var, SubjectId> = HashMap::default();
+        let mut previous = None;
+        for (index, field) in fields.iter().enumerate() {
+            let field_id = self.bitstring_field(
+                subject_id,
+                previous,
+                index + 1 == fields.len(),
+                field,
+                &binding_subjects,
+                resolver,
+            )?;
+            questions.push(bitstring_question(
+                subject_id,
+                previous,
+                Some(field_id),
+                index + 1 == fields.len(),
+            ));
+            for name in direct_bitfield_bindings(&field.value.node) {
+                binding_subjects.insert(name, field_id);
+            }
             self.append_pattern(
                 &field.value.node,
                 field.value.span,
-                &PatternSubjectRef::Subject(field_subject),
+                &PatternSubjectRef::Subject(field_id),
                 questions,
                 bindings,
                 resolver,
             )?;
+            previous = Some(field_id);
         }
         Ok(())
     }
@@ -1312,67 +1368,45 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
         }
     }
 
-    fn bitstring_question(
+    /// The subject of one field of the bitstring `subject`, which follows
+    /// `previous`.
+    fn bitstring_field(
         &mut self,
-        subject: &PatternSubjectRef,
-        fields: &[crate::ast::PatternField],
+        subject: SubjectId,
+        previous: Option<SubjectId>,
+        is_last: bool,
+        field: &crate::ast::PatternField,
+        binding_subjects: &HashMap<Var, SubjectId>,
         resolver: &mut impl PatternResolver<TypeHandle>,
-    ) -> Result<RegionQuestion<TypeHandle>, SourcePatternError> {
-        let subject_id = self.subject_id(subject)?;
-        let mut binding_subjects: HashMap<Var, SubjectId> = HashMap::default();
-        let mut projections = Vec::new();
-        let mut shapes = Vec::new();
-        for (index, field) in fields.iter().enumerate() {
-            let size = match &field.spec.size {
-                None => None,
-                Some(PatternBitSize::Literal(value)) => Some(BitstringFieldSize::Literal(*value)),
-                Some(PatternBitSize::Var(name)) => Some(match binding_subjects.get(name).copied() {
-                    Some(subject) => BitstringFieldSize::Binding(subject),
-                    // A size name no earlier field of this bitstring binds is a
-                    // pin: it names a binding that existed before the pattern
-                    // began.
-                    None => BitstringFieldSize::Pinned(self.pin_for_name(name, field.value.span)),
-                }),
-                Some(PatternBitSize::ByteSizeOf(name)) => Some(BitstringFieldSize::PinnedByteSize(
-                    self.pin_for_name(name, field.value.span),
-                )),
-                Some(PatternBitSize::Expr(expr)) => Some(self.size_guard(expr, &binding_subjects, resolver)?),
-            };
-            let extraction = super::BitstringExtraction {
-                previous: shapes.last().copied(),
-                spec: BitstringFieldShape {
-                    kind: field.spec.ty,
-                    size,
-                    endian: field.spec.endian,
-                    signed: field.spec.signed,
-                    unit: field.spec.unit,
-                    rest_proven_whole: false,
-                },
-                is_last: index + 1 == fields.len(),
-            };
-            let kind = ProjectionKind::BitstringField(extraction);
-            let field_id = self.project(subject_id, kind)?;
-            projections.push(field_id);
-            let direct_bindings = direct_bitfield_bindings(&field.value.node);
-            for name in &direct_bindings {
-                binding_subjects.insert(name.clone(), field_id);
-            }
-            shapes.push(field_id);
-        }
-        let predicate = RegionPredicate::new(
-            subject_id,
-            Region::Bitstring(BitstringShape {
-                fields: shapes,
-                require_done: true,
+    ) -> Result<SubjectId, SourcePatternError> {
+        let size = match &field.spec.size {
+            None => None,
+            Some(PatternBitSize::Literal(value)) => Some(BitstringFieldSize::Literal(*value)),
+            Some(PatternBitSize::Var(name)) => Some(match binding_subjects.get(name).copied() {
+                Some(subject) => BitstringFieldSize::Binding(subject),
+                // A size name no earlier field of this bitstring binds is a
+                // pin: it names a binding that existed before the pattern
+                // began.
+                None => BitstringFieldSize::Pinned(self.pin_for_name(name, field.value.span)),
             }),
-        );
-        let mut match_evidence = EdgeEvidence::from_proof(predicate.clone(), super::ProofSense::Holds);
-        match_evidence.projections = projections;
-        Ok(RegionQuestion {
-            predicate: predicate.clone(),
-            match_evidence,
-            miss_evidence: EdgeEvidence::from_proof(predicate, super::ProofSense::DoesNotHold),
-        })
+            Some(PatternBitSize::ByteSizeOf(name)) => Some(BitstringFieldSize::PinnedByteSize(
+                self.pin_for_name(name, field.value.span),
+            )),
+            Some(PatternBitSize::Expr(expr)) => Some(self.size_guard(expr, binding_subjects, resolver)?),
+        };
+        let extraction = super::BitstringExtraction {
+            previous,
+            spec: BitstringFieldShape {
+                kind: field.spec.ty,
+                size,
+                endian: field.spec.endian,
+                signed: field.spec.signed,
+                unit: field.spec.unit,
+                rest_proven_whole: false,
+            },
+            is_last,
+        };
+        self.project(subject, ProjectionKind::BitstringField(extraction))
     }
 
     fn const_question(

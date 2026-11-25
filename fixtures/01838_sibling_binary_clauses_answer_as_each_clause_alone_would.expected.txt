@@ -1,0 +1,142 @@
+{1, ""}
+{1, "x"}
+{2, ""}
+{0, ""}
+{3, ""}
+{0, ""}
+{3, "y"}
+{0, ""}
+{0, ""}
+{0, ""}
+{0, ""}
+{0, ""}
+{0, ""}
+{0, ""}
+{1, ""}
+{0, ""}
+{0, ""}
+{0, ""}
+{0, ""}
+{0, ""}
+:none
+:none
+:none
+:none
+:none
+:none
+:none
+:none
+:a
+:a
+:a
+:a
+:a
+:none
+:none
+:none
+:none
+:none
+:none
+:none
+:none
+:none
+:none
+:none
+:none
+:none
+:none
+:empty
+:a
+:a
+:abc
+:a
+:abc
+:none
+:none
+:none
+:none
+:none
+:none
+:none
+:true_exactly
+:true_then_more
+:other
+:other
+:other
+:other
+:other
+:empty
+:other
+:other
+:other
+:other
+:other
+:other
+:true_exactly
+:other
+:other
+:other
+:other
+:other
+:none
+{:ok, 65, "!"}
+{:error, 65, ""}
+{:e, 65, "rr"}
+{:e, 65, "ok"}
+:none
+{:ok, 66, "ay"}
+:true_word
+:null_word_by_guard
+:null_word_by_guard
+{:four, 1717660787, ""}
+:short_fa
+:none
+{:four, 2021161080, "!"}
+:none
+:none
+:none
+:none
+:none
+:none
+:none
+:none
+:empty
+:none
+:none
+:none
+:none
+:none
+:none
+:none
+:one_two
+:one_two_three
+:one_three
+{:one, 9}
+:none
+{:bang, 4, 5}
+{:question, 8, 7}
+{:plain, 8, 7}
+:none
+{:bang, 0, 0}
+{:question, 4, 5}
+{:z, 2, 5}
+{:any, 2, 5}
+{:z, 1, 1}
+:none
+:empty
+{:e_acute, ""}
+{:e_acute, "a"}
+{:x_after, 120}
+{:x_after, 97}
+{:char, 97, ""}
+:invalid
+{:char, 26085, "本"}
+{:t, ""}
+{:t, "x"}
+{:n, ""}
+{:f, ""}
+{:other, "falsy"}
+:empty
+{:bang, 97}
+{:other, "zz"}
+{:other, "nul"}

@@ -1,0 +1,113 @@
+#---
+# purpose: "binary clauses that share leading fields answer exactly as each would alone, in clause order: literals of equal and unequal length, literals after a sized field and beside a variable field, integer-literal segments, a size taken from an earlier field or from a guard, empty and utf8 patterns, and the same patterns in a receive"
+# oracle: self
+# oracle.stamp: d92f4fc1612ac47a
+# args: 0
+#---
+defmodule Main do
+  # Literals of equal and unequal length: "true" and "null" are four bytes,
+  # "false" is five, so it shares its first four with its siblings.
+  def word(<<"true", r::binary>>), do: {1, r}
+  def word(<<"null", r::binary>>), do: {2, r}
+  def word(<<"false", r::binary>>), do: {3, r}
+  def word(_), do: {0, ""}
+
+  # A prefix of a later sibling comes first, so it must win.
+  def prefix(<<"a", _::binary>>), do: :a
+  def prefix(<<"abc", _::binary>>), do: :abc
+  def prefix(<<"abd", _::binary>>), do: :abd
+  def prefix(<<"ab", _::binary>>), do: :ab
+  def prefix(_), do: :none
+
+  # The longer sibling comes first, the prefix after it.
+  def longer(<<"abc", _::binary>>), do: :abc
+  def longer(<<"a", _::binary>>), do: :a
+  def longer(<<>>), do: :empty
+  def longer(_), do: :none
+
+  # Exact literals end the binary; a rest does not.
+  def exact(<<"true">>), do: :true_exactly
+  def exact(<<"true", _::binary>>), do: :true_then_more
+  def exact(<<"">>), do: :empty
+  def exact(_), do: :other
+
+  # Literals after a sized field, and beside a variable field of the same size.
+  def tagged(<<t::8, "ok", r::binary>>), do: {:ok, t, r}
+  def tagged(<<t::8, "error", r::binary>>), do: {:error, t, r}
+  def tagged(<<t::8, "e", r::binary>>), do: {:e, t, r}
+  def tagged(_), do: :none
+
+  def beside(<<"true", _::binary>>), do: :true_word
+  def beside(<<x::32, _::binary>>) when x == 0x6E756C6C, do: :null_word_by_guard
+  def beside(<<x::32, rest::binary>>), do: {:four, x, rest}
+  def beside(<<"fa", _::binary>>), do: :short_fa
+  def beside(_), do: :none
+
+  # Integer-literal segments.
+  def bytes(<<1, 2>>), do: :one_two
+  def bytes(<<1, 2, 3>>), do: :one_two_three
+  def bytes(<<1, 3, _::binary>>), do: :one_three
+  def bytes(<<1, b, _::binary>>), do: {:one, b}
+  def bytes(<<>>), do: :empty
+  def bytes(_), do: :none
+
+  # A size taken from an earlier field, then a literal.
+  def sized(<<n::8, x::size(n), "!", _::binary>>), do: {:bang, n, x}
+  def sized(<<n::8, x::size(n), "?", _::binary>>), do: {:question, n, x}
+  def sized(<<n::8, x::size(n), _::binary>>), do: {:plain, n, x}
+  def sized(_), do: :none
+
+  # A size computed from an earlier field by a guard-style expression.
+  def guarded(<<n::8, x::size(n * 2), "z", _::binary>>), do: {:z, n, x}
+  def guarded(<<n::8, x::size(n * 2), _::binary>>), do: {:any, n, x}
+  def guarded(_), do: :none
+
+  # Empty and utf8.
+  def text(<<>>), do: :empty
+  def text(<<"é", r::binary>>), do: {:e_acute, r}
+  def text(<<c::utf8, "x", _::binary>>), do: {:x_after, c}
+  def text(<<c::utf8, r::binary>>), do: {:char, c, r}
+  def text(_), do: :invalid
+
+  # The same literals through a receive.
+  def inbox(0, acc), do: acc
+
+  def inbox(n, acc) do
+    receive do
+      <<"true", r::binary>> -> inbox(n - 1, [{:t, r} | acc])
+      <<"null", r::binary>> -> inbox(n - 1, [{:n, r} | acc])
+      <<"false", r::binary>> -> inbox(n - 1, [{:f, r} | acc])
+      <<c::8, "!", _::binary>> -> inbox(n - 1, [{:bang, c} | acc])
+      <<>> -> inbox(n - 1, [:empty | acc])
+      other when is_binary(other) -> inbox(n - 1, [{:other, other} | acc])
+    end
+  end
+
+  def deliver(messages) do
+    me = self()
+    Enum.each(messages, fn m -> send(me, m) end)
+    Enum.reverse(inbox(length(messages), []))
+  end
+
+  def subjects(), do: ["true", "truex", "null", "nul", "false", "fals", "falsey", "", "a", "ab", "abc", "abd", "abcd", "x"]
+
+  def show(results), do: Enum.each(results, &IO.inspect/1)
+
+  def main() do
+    _ = String.to_integer(hd(System.argv()))
+    subs = subjects() ++ [:binary.copy("t", 1) <> "rue", <<1, 2>>, <<1, 2, 3>>, <<1, 3>>, <<1, 9, 9>>, <<1>>]
+    show(Enum.map(subs, &word/1))
+    show(Enum.map(subs, &prefix/1))
+    show(Enum.map(subs, &longer/1))
+    show(Enum.map(subs, &exact/1))
+    show(Enum.map(["", "Aok!", "Aerror", "Aerr", "Aeok", "A", "Bokay"], &tagged/1))
+    show(Enum.map(["true", "null", "nullx", "fals", "fa", "nul", "xxxx!", "fz"], &beside/1))
+    show(Enum.map(subs, &bytes/1))
+    show(Enum.map([<<4, 5::4, "!">>, <<8, 7, "?">>, <<8, 7, "x">>, <<8>>, <<0, "!">>, <<4, 5::4, "?">>], &sized/1))
+    show(Enum.map([<<2, 5::4, "z">>, <<2, 5::4, "y">>, <<1, 1::2, "zz">>, <<3>>], &guarded/1))
+    show(Enum.map(["", "é", "éa", "xx", "ax", "a", <<255>>, "日本"], &text/1))
+    show(deliver(["true", "truex", "null", "false", "falsy", "", "a!", "zz", "nul"]))
+  end
+end
+
+Main.main()

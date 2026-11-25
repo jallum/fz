@@ -1398,39 +1398,17 @@ fn pattern_dispatch_matrix_preserves_bitstring_shape_and_dynamic_size_binding() 
     );
 
     let plan = pattern_plan(source_patterns);
-    let bitstring = plan
-        .graph
-        .nodes
-        .iter()
-        .find_map(|node| match node {
-            DispatchNode::Test {
-                predicate:
-                    RegionPredicate {
-                        region: Region::Bitstring(shape),
-                        ..
-                    },
-                ..
-            } => Some(shape),
-            _ => None,
-        })
-        .expect("bitstring region");
+    let fields = bitstring_fields(&plan);
 
+    assert_eq!(plan.bitstring_extraction(fields[0]).spec.kind, BitType::Integer);
     assert_eq!(
-        plan.bitstring_extraction(bitstring.fields[0]).spec.kind,
-        BitType::Integer
-    );
-    assert_eq!(
-        plan.bitstring_extraction(bitstring.fields[0]).spec.size,
+        plan.bitstring_extraction(fields[0]).spec.size,
         Some(BitstringFieldSize::Literal(8))
     );
-    assert_eq!(
-        plan.bitstring_extraction(bitstring.fields[0]).spec.endian,
-        Endian::Little
-    );
-    assert!(plan.bitstring_extraction(bitstring.fields[0]).spec.signed);
-    assert_eq!(plan.bitstring_extraction(bitstring.fields[0]).spec.unit, Some(1));
-    let Some(BitstringFieldSize::Binding(size_subject)) = plan.bitstring_extraction(bitstring.fields[1]).spec.size
-    else {
+    assert_eq!(plan.bitstring_extraction(fields[0]).spec.endian, Endian::Little);
+    assert!(plan.bitstring_extraction(fields[0]).spec.signed);
+    assert_eq!(plan.bitstring_extraction(fields[0]).spec.unit, Some(1));
+    let Some(BitstringFieldSize::Binding(size_subject)) = plan.bitstring_extraction(fields[1]).spec.size else {
         panic!("expected dynamic size binding");
     };
 
@@ -1479,26 +1457,11 @@ fn a_bitstring_field_is_asked_only_when_a_question_reads_its_value() {
             0,
         )],
     ));
-    let shape = plan
-        .graph
-        .nodes
-        .iter()
-        .find_map(|node| match node {
-            DispatchNode::Test {
-                predicate:
-                    RegionPredicate {
-                        region: Region::Bitstring(shape),
-                        ..
-                    },
-                ..
-            } => Some(shape),
-            _ => None,
-        })
-        .expect("bitstring region");
+    let fields = bitstring_fields(&plan);
 
-    assert!(plan.graph.asks(shape.fields[0]), "the literal comparison reads the tag");
-    assert!(plan.graph.asks(shape.fields[1]), "the size of the payload reads n");
-    assert!(!plan.graph.asks(shape.fields[2]), "no question reads the payload");
+    assert!(plan.graph.asks(fields[0]), "the literal comparison reads the tag");
+    assert!(plan.graph.asks(fields[1]), "the size of the payload reads n");
+    assert!(!plan.graph.asks(fields[2]), "no question reads the payload");
 }
 
 #[test]
@@ -1558,25 +1521,10 @@ fn pattern_dispatch_plan_carries_executable_payloads_directly() {
         Region::Equal(ComparisonValue::Pinned(PinnedValueId(0)))
     )));
     assert!(has_region(&plan, |region| matches!(region, Region::Guard(_))));
-    let bitstring = plan
-        .graph
-        .nodes
-        .iter()
-        .find_map(|node| match node {
-            DispatchNode::Test {
-                predicate:
-                    RegionPredicate {
-                        region: Region::Bitstring(shape),
-                        ..
-                    },
-                ..
-            } => Some(shape),
-            _ => None,
-        })
-        .expect("bitstring region");
-    assert_eq!(bitstring.fields.len(), 2);
+    let fields = bitstring_fields(&plan);
+    assert_eq!(fields.len(), 2);
     assert_eq!(
-        plan.bitstring_extraction(bitstring.fields[0]).spec.size,
+        plan.bitstring_extraction(fields[0]).spec.size,
         Some(BitstringFieldSize::Literal(8))
     );
     let direct_names = plan
@@ -1588,7 +1536,7 @@ fn pattern_dispatch_plan_carries_executable_payloads_directly() {
     assert!(direct_names.contains(&Var::user("n")));
     assert!(direct_names.contains(&Var::user("payload")));
     assert!(matches!(
-        plan.bitstring_extraction(bitstring.fields[1]).spec.size,
+        plan.bitstring_extraction(fields[1]).spec.size,
         Some(BitstringFieldSize::Binding(_))
     ));
 }
@@ -1857,4 +1805,29 @@ fn a_question_that_cannot_tell_literals_apart_reads_its_value_at_class() {
     for (what, region, expected) in cases {
         assert_eq!(demand(region), expected, "{what}");
     }
+}
+
+/// The fields the plan's bitstring questions ask, in the order the pattern
+/// spells them: a bitstring pattern is one question per field.
+fn bitstring_fields(plan: &super::pattern::PatternDispatchPlan<Ty>) -> Vec<SubjectId> {
+    let mut fields: Vec<SubjectId> = plan
+        .graph
+        .nodes
+        .iter()
+        .filter_map(|node| match node {
+            DispatchNode::Test {
+                predicate:
+                    RegionPredicate {
+                        region: Region::Bitstring(shape),
+                        ..
+                    },
+                ..
+            } => Some(shape.fields.iter().copied()),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    fields.sort();
+    fields.dedup();
+    fields
 }
