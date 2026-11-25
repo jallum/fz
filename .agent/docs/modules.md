@@ -224,8 +224,11 @@ the tuple, so compiling saves no work. A bad subject, pattern or option list
 raises `ArgumentError` worded per argument as Elixir words it (`02050`).
 
 `lib/lists.fz` defines `:lists` with `reverse/1`, `reverse/2`, `duplicate/2`,
-`map/2`, `foldl/3` and `member/2`, clause for clause as OTP's `lists.erl` writes them.
-`reverse/2` and `member/2` are BIFs in OTP and are written in fz here. `map/2` and `foldl/3`
+`map/2`, `foldl/3`, `member/2`, `keyfind/3`, `keydelete/3` and `unzip/1`, clause for clause as OTP's `lists.erl` writes them.
+`reverse/2`, `member/2` and `keyfind/3` are BIFs in OTP and are written in fz here;
+`keyfind/3` raises the `ArgumentError` Elixir words per bad argument (`02061`), while
+`keydelete/3` and `unzip/1` fail with `FunctionClauseError` naming `keydelete3/3` and
+`unzip/3`, as OTP's private helpers do. `List.wrap/1` in `lib/list.fz` is Elixir's. `map/2` and `foldl/3`
 guard `is_function(f, 1)` and `is_function(f, 2)`; `duplicate/2` guards
 `is_integer(n) and n >= 0`. The specs are OTP's, so a call whose arguments are
 proven outside them is refused at compile time.

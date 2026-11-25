@@ -1,0 +1,49 @@
+found: {:b, 20}
+found by the second element: {:c, 30}
+not found: false
+empty list: false
+position beyond the tuple size: false
+non-tuples and short tuples skipped: {:a, 1}
+equal, not identical: {1.0, :float}
+found before an improper tail: {:a, 1}
+zero position: ArgumentError: errors were found at the given arguments:
+
+  * 2nd argument: out of range
+
+negative position: ArgumentError: errors were found at the given arguments:
+
+  * 2nd argument: out of range
+
+non-integer position: ArgumentError: errors were found at the given arguments:
+
+  * 2nd argument: not an integer
+
+non-list: ArgumentError: errors were found at the given arguments:
+
+  * 3rd argument: not a list
+
+bad position and non-list: ArgumentError: errors were found at the given arguments:
+
+  * 2nd argument: not an integer
+  * 3rd argument: not a list
+
+improper tail reached: ArgumentError: errors were found at the given arguments:
+
+  * 3rd argument: not a proper list
+
+first match only: [a: 10, c: 30, b: 40]
+no match: [a: 10, b: 20, c: 30, b: 40]
+empty list: []
+position beyond the tuple size: [a: 10, b: 20, c: 30, b: 40]
+non-tuples skipped: [1, {:a, 1}, {:a, 2}]
+delete zero position: FunctionClauseError: no function clause matching in :lists.keydelete/3
+delete non-list: FunctionClauseError: no function clause matching in :lists.keydelete3/3
+unzip empty: {[], []}
+unzip pairs: {[1, 2, 3], [:a, :b, :c]}
+unzip non-pair: FunctionClauseError: no function clause matching in :lists.unzip/3
+wrap nil: []
+wrap a list: [1, 2]
+wrap an empty list: []
+wrap an atom: [:ok]
+wrap a tuple: [{1, 2}]
+wrap a binary: ["s"]
