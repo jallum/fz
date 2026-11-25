@@ -1,0 +1,39 @@
+#---
+# purpose: "Enum.min_max/1,2 reduce to a pair or call the empty fallback, and Enum.count_until/2,3 stop at their limit with or without a predicate, as in Elixir"
+# oracle: self
+# oracle.stamp: c95ebe93af4e6231
+#---
+defmodule Main do
+  def rescued(thunk) do
+    try do
+      thunk.()
+    rescue
+      e -> inspect(e.__struct__)
+    end
+  end
+
+  def main() do
+    IO.inspect(Enum.min_max([3, 1, 2]))
+    IO.inspect(Enum.min_max(1..4))
+    IO.inspect(Enum.min_max(%{a: 1, b: 2}))
+    IO.inspect(Enum.min_max([], fn -> {0, 0} end))
+    IO.inspect(Enum.min_max([2, 1, 3], fn -> {0, 0} end))
+    IO.inspect(Enum.min_max(1..0//1, fn -> :empty end))
+    IO.inspect(rescued(fn -> Enum.min_max([]) end))
+
+    IO.inspect(Enum.count_until([1, 2, 3, 4, 5], 3))
+    IO.inspect(Enum.count_until([1, 2], 3))
+    IO.inspect(Enum.count_until([], 3))
+    IO.inspect(Enum.count_until(1..10, 10))
+    IO.inspect(Enum.count_until(1..10, 11))
+    IO.inspect(Enum.count_until(%{a: 1, b: 2, c: 3}, 2))
+    IO.inspect(Enum.count_until(1..20, fn x -> rem(x, 2) == 0 end, 7))
+    IO.inspect(Enum.count_until(1..20, fn x -> rem(x, 2) == 0 end, 11))
+    IO.inspect(Enum.count_until([nil, 1, false, 2], fn x -> x end, 5))
+    IO.inspect(Enum.count_until([], fn x -> x end, 5))
+    IO.inspect(rescued(fn -> Enum.count_until([1], 0) end))
+    IO.inspect(rescued(fn -> Enum.count_until([1], fn x -> x end, -1) end))
+  end
+end
+
+Main.main()
