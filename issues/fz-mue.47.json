@@ -4,14 +4,15 @@
     "fz-yh5.7"
   ],
   "blocks": [],
+  "closed_at": "2026-11-25T00:31:51Z",
   "created": "2026-11-20T20:43:55Z",
   "description": "Parity gap found by Optimize (fz-sc8.192.3), relayed by Elixir Parity 2026-11-20; filed under the user's standing direction to put Elixir parity gaps on fz-mue. fz has neither Enum.slice/2 (index range, including negative and stepped ranges) nor Enum.slice/3 (start, amount). Port faithfully from Elixir's enum.ex, with an oracle fixture on interp, run and build. Not blocking: Optimize used Enum.at in its fixture. Owner: Elixir Parity; send Optimize a fixed notice when it lands.",
   "id": "fz-mue.47",
   "labels": [],
   "parent": "fz-mue",
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Enum.slice/2 and Enum.slice/3, as in Elixir",
   "type": "feature",
-  "updated_at": "2026-11-24T22:22:16Z"
+  "updated_at": "2026-11-25T00:31:51Z"
 }
