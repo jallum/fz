@@ -27,11 +27,15 @@
     {
       "text": "Cranelift carried by option A (user approved 2026-11-24): upstream PR plus a pinned fork via [patch.crates-io], with an fz test that b.vs is emitted. Waits until the fork and upstream PR exist; Callables is asking the user who creates them.",
       "timestamp": "2026-11-25T01:18:36Z"
+    },
+    {
+      "text": "Waits on GitHub issue #874 (https://github.com/jallum/fz/issues/874), filed by Callables at the user's request: 'Consider carrying Cranelift rules so signed overflow checks branch on flags (subs; b.vs)'. It holds the 57-line patch, measurements, options A/B/C and open questions (fork/upstream ownership, immediate form, x86-64).",
+      "timestamp": "2026-11-25T01:20:08Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "Integer arithmetic on known integers is an instruction, not a flag dance or a call",
   "type": "task",
-  "updated_at": "2026-11-25T01:18:36Z"
+  "updated_at": "2026-11-25T01:20:08Z"
 }
