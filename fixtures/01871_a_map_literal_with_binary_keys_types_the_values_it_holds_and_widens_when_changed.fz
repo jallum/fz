@@ -1,0 +1,50 @@
+#---
+# purpose: "A map literal with binary keys, alone or mixed with atom keys, types the values its keys hold; reads through a pattern, m[k] and Map.get agree, and Map.put, a map update and Map.merge widen the type to what they write"
+# oracle: self
+# oracle.stamp: d3d8d4185ea013d8
+#---
+defmodule Main do
+  def table(), do: %{"a" => 1, "b" => 2}
+  def floats(), do: %{"a" => 1, "b" => 2.5}
+  def mixed(), do: %{:a => 1, "b" => 2}
+
+  def by_pattern(m) do
+    case m do
+      %{"a" => v} -> v
+    end
+  end
+
+  def by_b(m) do
+    case m do
+      %{"b" => v} -> v
+    end
+  end
+
+  def by_access(m), do: m["a"]
+  def by_get(m), do: Map.get(m, "a", :none)
+
+  def pattern_of_table(), do: by_pattern(table())
+  def access_of_table(), do: by_access(table())
+  def get_of_table(), do: by_get(table())
+  def pattern_of_floats(), do: by_pattern(floats())
+  def pattern_of_mixed(), do: by_b(mixed())
+  def atom_of_mixed(), do: mixed().a
+
+  def after_put(), do: by_pattern(Map.put(table(), "a", "text"))
+
+  def after_update() do
+    m = table()
+    by_pattern(%{m | "a" => "text"})
+  end
+
+  def after_merge(), do: by_pattern(Map.merge(table(), %{"a" => :atom}))
+
+  def main() do
+    IO.inspect({pattern_of_table(), access_of_table(), get_of_table()})
+    IO.inspect({pattern_of_floats(), pattern_of_mixed(), atom_of_mixed()})
+    IO.inspect({after_put(), after_update(), after_merge()})
+    IO.inspect({by_get(table()), by_get(%{"z" => 1}), by_access(%{"z" => 1})})
+  end
+end
+
+Main.main()

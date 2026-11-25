@@ -14131,7 +14131,7 @@ const SURFACE_MEMBERSHIP_CENSUS: [(&str, &str, usize, usize); 13] = [
         0,
     ),
     ("fixtures/01425_callable_union_capture_containment.fz", "", 6, 0),
-    ("fixtures/00626_map_fetch_and_update_agree_with_elixir.fz", "", 17, 0),
+    ("fixtures/00626_map_fetch_and_update_agree_with_elixir.fz", "", 15, 0),
     ("fixtures/01450_dispatch_list_head_separates.fz", "", 2, 0),
 ];
 

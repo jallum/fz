@@ -128,6 +128,8 @@ pub(crate) mod allocation_probe;
 #[cfg(test)]
 mod artifact_test;
 #[cfg(test)]
+mod binary_key_literal_test;
+#[cfg(test)]
 mod closure_denotation_test;
 #[cfg(test)]
 mod code_test;

@@ -816,10 +816,24 @@ its keys when none of them `can_miss`. `Types::map_slot_ty` answers a different
 question, the slot a contract names, and is unchanged.
 
 A plain map is a map that names no module: `Types::plain_map` is
-`map_top \ %{__struct__: atom}`. `Types::map_literal` intersects it into the
-type of every map literal that writes no `__struct__` key, so a literal map is
-known not to be a struct. A literal that writes the key is typed by the record
-alone.
+`map_top \ %{__struct__: atom}`. `Types::map_literal_of_entries` intersects it
+into the type of every map literal that writes no `__struct__` key, so a
+literal map is known not to be a struct. A literal that writes the key is typed
+by the record alone.
+
+A map literal's type says each key the literal writes. An atom or integer
+literal key is a required field. Any other key whose type is known (a binary,
+a float, a tuple, a variable of known type; `unnamed_key_entries`) writes its
+value's type into the domain of each kind its type reaches, and the values of
+every such key of one kind join. The kinds no key writes stay `any`, as
+`%{a: 1}` leaves every domain. So `%{"a" => 1, "b" => 2.0}` is
+`%{binary => int | float}`, `%{:a => 1, "b" => 2}` is `%{:a: int, binary => int}`,
+and `value_at` of either at a binary key answers the joined value type. One
+function types a literal with a constant key and a literal built from
+variables. A key that is no kind of key leaves the literal bare `map`. A
+domain says every key of that kind the map holds is of that type, so
+`Map.put`, `Map.merge`, `Map.update` and the like, which settle to the bare
+`map`, drop it, and a map update `%{m | k => v}` joins `v` into the kind of `k`.
 
 Runtime test envelopes derive the observable question by clearing positive
 field constraints other than `__struct__`; positional tuple storage is derived
