@@ -51,17 +51,17 @@ end
 
 dbg(P.tuple_loop(0, 1, false))
 
-a = Process.heap_alloc_stats()
+a = System.alloc_stats()
 _ = P.send_loop(0, 1000)
-b = Process.heap_alloc_stats()
+b = System.alloc_stats()
 dbg({:send_self, P.boxed(a, b)})
 
-a = Process.heap_alloc_stats()
+a = System.alloc_stats()
 r = P.eq_loop(0, 1000, false)
-b = Process.heap_alloc_stats()
+b = System.alloc_stats()
 dbg({:self_eq_self, r, P.boxed(a, b)})
 
-a = Process.heap_alloc_stats()
+a = System.alloc_stats()
 r = P.tuple_loop(0, 1000, false)
-b = Process.heap_alloc_stats()
+b = System.alloc_stats()
 dbg({:pid_in_tuple, r, P.boxed(a, b)})

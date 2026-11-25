@@ -7,6 +7,11 @@ pub struct AllocStat {
 }
 
 impl AllocStat {
+    pub fn add(&mut self, other: AllocStat) {
+        self.allocs += other.allocs;
+        self.bytes += other.bytes;
+    }
+
     pub fn record(&mut self, bytes: u64) {
         self.record_run(1, bytes);
     }
@@ -18,6 +23,8 @@ impl AllocStat {
     }
 }
 
+/// A program's allocation figures: the sum of what its allocation sites have
+/// placed, in total and by kind.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct HeapAllocStats {
     pub total: AllocStat,
@@ -37,7 +44,7 @@ pub struct HeapAllocStats {
     pub scalar_box: AllocStat,
     pub resource: AllocStat,
     pub other: AllocStat,
-    /// Off-heap binary buffers allocated by this process.
+    /// Off-heap binary buffers allocated by the program.
     /// Deliberately NOT part of `total`: these bytes do not live on the
     /// process heap, do not move under Cheney and are not what `bytes`
     /// measures. They are counted because they are otherwise invisible --
@@ -61,10 +68,12 @@ pub enum HeapAllocKind {
     ScalarBox,
     Resource,
     Other,
+    /// An off-heap binary buffer: its bytes are not on any heap.
+    SharedBin,
 }
 
 impl HeapAllocKind {
-    const ALL: [Self; 11] = [
+    const ALL: [Self; 12] = [
         Self::ListCons,
         Self::Struct,
         Self::Closure,
@@ -76,9 +85,10 @@ impl HeapAllocKind {
         Self::ScalarBox,
         Self::Resource,
         Self::Other,
+        Self::SharedBin,
     ];
 
-    /// The kind as `Process.heap_alloc_stats()` names it.
+    /// The kind as `System.alloc_stats()` names it.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::ListCons => "list_cons",
@@ -92,6 +102,7 @@ impl HeapAllocKind {
             Self::ScalarBox => "scalar_box",
             Self::Resource => "resource",
             Self::Other => "other",
+            Self::SharedBin => "shared_bin",
         }
     }
 
@@ -105,19 +116,12 @@ impl HeapAllocKind {
 }
 
 impl HeapAllocStats {
-    /// Record an off-heap binary buffer. Separate from `record` because
-    /// these bytes are not heap bytes; see the `shared_bin` field.
-    pub fn record_shared_bin(&mut self, bytes: u64) {
-        self.shared_bin.record(bytes);
-    }
-
-    pub fn record(&mut self, kind: HeapAllocKind, bytes: u64) {
-        self.record_run(kind, 1, bytes);
-    }
-
-    /// `count` placements of `bytes` each, all of `kind`.
-    pub fn record_run(&mut self, kind: HeapAllocKind, count: u64, bytes: u64) {
-        self.total.record_run(count, bytes);
+    /// Add what the sites of `kind` placed. Off-heap buffers are not heap
+    /// bytes, so they stay out of `total`; see `shared_bin`.
+    pub fn add(&mut self, kind: HeapAllocKind, placed: AllocStat) {
+        if kind != HeapAllocKind::SharedBin {
+            self.total.add(placed);
+        }
         let stat = match kind {
             HeapAllocKind::ListCons => &mut self.list_cons,
             HeapAllocKind::Struct => &mut self.struct_,
@@ -130,8 +134,9 @@ impl HeapAllocStats {
             HeapAllocKind::ScalarBox => &mut self.scalar_box,
             HeapAllocKind::Resource => &mut self.resource,
             HeapAllocKind::Other => &mut self.other,
+            HeapAllocKind::SharedBin => &mut self.shared_bin,
         };
-        stat.record_run(count, bytes);
+        stat.add(placed);
     }
 }
 

@@ -54,14 +54,12 @@ impl CompiledModule {
 
     /// Construct a fresh Process bound to this module's compile-time data.
     pub fn make_process(&self) -> Process {
-        let mut p = Process::with_node(
+        Process::with_node(
             Rc::clone(&self.node),
             Rc::clone(&self.user_schemas),
             0,
             DEFAULT_REDUCTIONS_PER_QUANTUM,
-        );
-        p.heap.reset_alloc_stats();
-        p
+        )
     }
 
     /// Run one quantum for a Process.

@@ -166,14 +166,14 @@ fn aot_send_to_exited_or_unknown_pid_does_not_copy_or_schedule() {
         .get_mut(&1)
         .map(|p| p.as_mut() as *mut Process)
         .expect("sender task");
-    let before_heap = sched.tasks[&2].heap.alloc_stats_snapshot();
+    let before_heap = sched.tasks[&2].heap.node.alloc_stats();
     let before_mailbox: Vec<_> = sched.tasks[&2].mailbox.messages().collect();
     let before_queue = sched.core.queued().clone();
 
     aot_send_hook(sender_ptr, sched_handle(&mut sched), 2, msg.raw_word());
     aot_send_hook(sender_ptr, sched_handle(&mut sched), u32::MAX, msg.raw_word());
 
-    assert_eq!(sched.tasks[&2].heap.alloc_stats_snapshot(), before_heap);
+    assert_eq!(sched.tasks[&2].heap.node.alloc_stats(), before_heap);
     assert_eq!(sched.tasks[&2].mailbox.messages().collect::<Vec<_>>(), before_mailbox);
     assert_eq!(sched.tasks[&2].state, ProcessState::Exited);
     assert_eq!(sched.core.queued(), &before_queue);

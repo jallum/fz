@@ -32,7 +32,7 @@ defmodule Main do
     end
   end
 
-  def structs(), do: Process.heap_alloc_stats()[:struct_allocs]
+  def structs(), do: System.alloc_stats()[:struct_allocs]
 
   def main() do
     l = [{1, 2}, {3, 4}, {5, 6}]

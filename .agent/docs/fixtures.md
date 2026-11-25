@@ -418,7 +418,7 @@ A fixture pins its claim in the most direct medium for what it tests.
    closure's process-local numeric denotation to `id` (`#fn<id/arity>`), so a
    golden can pin its stable form and declared arity without depending on
    unrelated function allocation order.
-3. **Memory-floor stats** — `Process.heap_alloc_stats()` + a per-path golden.
+3. **Memory-floor stats** — `System.alloc_stats()` + a per-path golden.
    Allocation counts are cross-run and path-variant: native reuses cons cells,
    `interp` is the direct-IR baseline, and `run` equals `build`. No single in-program
    assertion expresses a cross-run relationship, so these stay golden. The

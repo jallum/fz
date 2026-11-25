@@ -33,12 +33,12 @@ defp tag({:cont, n}) when is_integer(n), do: 1
 defp tag({:halt, n}) when is_integer(n), do: 2
 
 def main() do
-  before = Process.heap_alloc_stats()
+  before = System.alloc_stats()
   a = unwrap(pair(5))
   b = unwrap(pair(-5))
   c = tag(pick(1))
   d = tag(pick(-1))
-  later = Process.heap_alloc_stats()
+  later = System.alloc_stats()
   dbg({a, b})
   dbg({c, d})
   dbg({before[:struct_allocs], before[:struct_bytes]})

@@ -36,7 +36,7 @@ defmodule Main do
 
   def main() do
     values = [7, 2.5, :a, 7.0]
-    before = Process.heap_alloc_stats()[:scalar_box_allocs]
+    before = System.alloc_stats()[:scalar_box_allocs]
 
     answers =
       Enum.map(values, fn a ->
@@ -44,7 +44,7 @@ defmodule Main do
       end)
 
     shown = Enum.map(values, fn a -> shows(a) end)
-    boxes = Process.heap_alloc_stats()[:scalar_box_allocs] - before
+    boxes = System.alloc_stats()[:scalar_box_allocs] - before
     Enum.each(answers, fn row -> dbg(row) end)
     dbg(shown)
     dbg(boxes)

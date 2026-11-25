@@ -64,17 +64,17 @@ defmodule Main do
   end
 
   def main() do
-    s0 = Process.heap_alloc_stats()
+    s0 = System.alloc_stats()
     r1 = Loop.frame_free(1000, 0)
-    s1 = Process.heap_alloc_stats()
+    s1 = System.alloc_stats()
     r2 = Loop.cycle(1000, 0)
-    s2 = Process.heap_alloc_stats()
+    s2 = System.alloc_stats()
     r3 = Loop.tried(1000, 0)
-    s3 = Process.heap_alloc_stats()
+    s3 = System.alloc_stats()
     r4 = Loop.received(1000, 0)
-    s4 = Process.heap_alloc_stats()
+    s4 = System.alloc_stats()
     r5 = Loop.closure(1000, fn n -> n * 2 end, 0)
-    s5 = Process.heap_alloc_stats()
+    s5 = System.alloc_stats()
     IO.inspect({r1, r2, r3, r4, r5})
     IO.inspect({built(s0, s1), built(s1, s2), built(s2, s3), built(s3, s4), built(s4, s5)})
   end

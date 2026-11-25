@@ -22,7 +22,9 @@
 # - the two list literals allocate five cons cells;
 # - exact source retention and strict-tail Transfer avoid an append prefix copy;
 # - no tuple/struct or map objects are needed for the value path;
-# - `heap_bytes = 80`.
+# - `heap_bytes = 80`;
+# - no closures beyond the two closures the scheduler builds to start the program: `closure_allocs = 2`,
+#   `closure_bytes = 64` on the native paths, 0 on the interpreter.
 #
 # This fixture is deliberately not an append BIF test. The accompanying dump
 # assertion proves that `append` remains a source function in the typed specs and
@@ -34,7 +36,7 @@ def main() do
   out = append([1, 2, 3], [4, 5])
   dbg(out)
 
-  stats = Process.heap_alloc_stats()
+  stats = System.alloc_stats()
   dbg(%{list_cons_allocs: stats[:list_cons_allocs], list_cons_bytes: stats[:list_cons_bytes], struct_allocs: stats[:struct_allocs], struct_bytes: stats[:struct_bytes], closure_allocs: stats[:closure_allocs], closure_bytes: stats[:closure_bytes], map_allocs: stats[:map_allocs], map_bytes: stats[:map_bytes]})
   heap_bytes = stats[:list_cons_bytes] + stats[:struct_bytes] + stats[:map_bytes]
   dbg(heap_bytes)

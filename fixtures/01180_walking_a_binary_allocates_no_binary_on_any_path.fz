@@ -22,17 +22,17 @@ end
 
 line = String.duplicate("x", 10000)
 
-a = Process.heap_alloc_stats()
+a = System.alloc_stats()
 n = Walk.count(line, 0)
-b = Process.heap_alloc_stats()
+b = System.alloc_stats()
 dbg({n, Walk.binaries(b) - Walk.binaries(a)})
 
-a = Process.heap_alloc_stats()
+a = System.alloc_stats()
 n = Walk.sum(line, 0)
-b = Process.heap_alloc_stats()
+b = System.alloc_stats()
 dbg({n, Walk.binaries(b) - Walk.binaries(a)})
 
-a = Process.heap_alloc_stats()
+a = System.alloc_stats()
 n = Walk.remaining(line, 0)
-b = Process.heap_alloc_stats()
+b = System.alloc_stats()
 dbg({n, Walk.binaries(b) - Walk.binaries(a)})

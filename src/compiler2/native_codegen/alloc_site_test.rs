@@ -10,11 +10,11 @@ use fz_runtime::telemetry::{ALLOC_SITE, PROCESS_EXITED};
 use std::cell::RefCell;
 use std::rc::Rc;
 
-/// What one run reported: the sites that allocated, and what its only
-/// process counted for itself.
+/// What one run reported: the sites that allocated, and the program's figure
+/// as `System.alloc_stats()` reads it.
 struct SiteRun {
     sites: Vec<AllocSiteCount>,
-    process: HeapAllocStats,
+    figure: HeapAllocStats,
 }
 
 fn run(source: &str) -> SiteRun {
@@ -27,7 +27,7 @@ fn run(source: &str) -> SiteRun {
     let processes = Rc::new(RefCell::new(Vec::new()));
     let process_sink = Rc::clone(&processes);
     tel.attach_raw_event2::<PidId, Process, _>(&PROCESS_EXITED, move |_, _, _, _, process| {
-        process_sink.borrow_mut().push(process.heap.alloc_stats_snapshot());
+        process_sink.borrow_mut().push(process.node.alloc_stats());
     });
     let mut compiler = Compiler2::new(tel);
     let root = compiler.submit_root(RootSubmission {
@@ -47,7 +47,7 @@ fn run(source: &str) -> SiteRun {
     assert_eq!(processes.len(), 1, "the program runs one process");
     SiteRun {
         sites: sites.take(),
-        process: processes[0],
+        figure: processes[0],
     }
 }
 
@@ -74,18 +74,18 @@ fn placed(sites: &[AllocSiteCount], kind: HeapAllocKind) -> AllocStat {
         })
 }
 
-/// The sites are a breakdown of what the process counts for itself: nothing
-/// is counted twice and nothing is missed, whether compiled code placed the
-/// object or a runtime function did.
+/// The program's figure is the sum of its sites: nothing is counted twice and
+/// nothing is missed, whether compiled code placed the object or a runtime
+/// function did.
 #[test]
-fn the_sites_of_a_one_process_program_sum_to_what_its_process_counted() {
+fn the_programs_figure_is_the_sum_of_what_its_sites_placed() {
     let run = run(COUNTING_LOOP);
-    let process = run.process;
+    let process = run.figure;
     assert!(
         process.continuation.allocs >= 1000,
         "the loop places a frame per iteration"
     );
-    let counted_by_process = [
+    let counted_by_figure = [
         (HeapAllocKind::ListCons, process.list_cons),
         (HeapAllocKind::Struct, process.struct_),
         (HeapAllocKind::Continuation, process.continuation),
@@ -97,21 +97,9 @@ fn the_sites_of_a_one_process_program_sum_to_what_its_process_counted() {
         (HeapAllocKind::Resource, process.resource),
         (HeapAllocKind::Other, process.other),
     ];
-    for (kind, counted) in counted_by_process {
+    for (kind, counted) in counted_by_figure {
         assert_eq!(placed(&run.sites, kind), counted, "{kind:?}");
     }
-}
-
-/// A process starts counting once the scheduler has built the two closures
-/// that enter it; the program's sites count those as well, because the
-/// program placed them.
-#[test]
-fn the_sites_also_count_the_closures_that_enter_the_process() {
-    let run = run(COUNTING_LOOP);
-    assert_eq!(
-        placed(&run.sites, HeapAllocKind::Closure).allocs,
-        run.process.closure.allocs + 2
-    );
 }
 
 /// A site names the function whose code allocates, so a count can be read

@@ -13,7 +13,7 @@ use super::ref_io::{
 };
 use super::schema::{Schema, SchemaRegistry};
 use super::stats::{GcStats, Generation, StubCounts, StubSite};
-use super::{BinaryBudget, Heap, HeapAllocKind, HeapAllocStats, MapLayout, SHARED_BIN_THRESHOLD_BYTES};
+use super::{BinaryBudget, Heap, MapLayout, SHARED_BIN_THRESHOLD_BYTES};
 use crate::alloc_site::RuntimeAllocSite;
 use crate::any_value::{
     AnyValue, AnyValueRef, AnyValueRefError, CLOSURE_FLAGS_CAPTURED_MASK, ListCons, MAP_FLAT_MAX, MapDestinationKind,
@@ -129,9 +129,7 @@ impl Heap {
             schemas,
             struct_maps: Default::default(),
             gc_run_count: 0,
-            alloc_count: 0,
             old_objects: 0,
-            alloc_stats: HeapAllocStats::default(),
             binaries_shared: 0,
             off_heap_head: 0,
             off_heap_old_head: 0,
@@ -220,7 +218,6 @@ impl Heap {
     pub fn alloc_at(&mut self, site: RuntimeAllocSite, size: usize) -> *mut u8 {
         let size = round_up_16(size);
         assert!(size >= 16, "alloc must reserve at least one 16-byte object slot");
-        self.alloc_stats.record(site.kind(), size as u64);
         self.node.runtime_allocs.record(site, size as u64);
         self.bump(size)
     }
@@ -246,10 +243,8 @@ impl Heap {
         }
         let count = fits.min(wanted);
         for &(site, part) in parts {
-            self.alloc_stats.record_run(site.kind(), count as u64, part as u64);
             self.node.runtime_allocs.record_run(site, count as u64, part as u64);
         }
-        self.alloc_count += (count * parts.len()) as u64;
         (self.take_from_tip(count * size), count)
     }
 
@@ -268,13 +263,11 @@ impl Heap {
             "placements are whole 16-byte slots"
         );
         let new_top = unsafe { self.bump_top.add(size) };
-        let p = if new_top > self.block_end {
+        if new_top > self.block_end {
             self.room(size)
         } else {
             self.take_from_tip(size)
-        };
-        self.alloc_count += 1;
-        p
+        }
     }
 
     /// The slow half of `bump`, which compiled code calls when its inline bump
@@ -357,7 +350,7 @@ impl Heap {
             "placements are whole 16-byte slots"
         );
         let new_top = unsafe { self.bump_top.add(size) };
-        let p = if new_top <= self.block_end {
+        if new_top <= self.block_end {
             self.take_from_tip(size)
         } else if size > self.overflow_step {
             self.alloc_parked(size)
@@ -365,9 +358,7 @@ impl Heap {
             self.park_tip_and_install(self.overflow_step);
             self.overflow_step = next_block_capacity(self.overflow_step);
             self.take_from_tip(size)
-        };
-        self.alloc_count += 1;
-        p
+        }
     }
 
     /// Park the tip and install an empty tip of `capacity`.
@@ -404,19 +395,6 @@ impl Heap {
         self.block_end = block.end();
         self.block_size = block.capacity;
         self.collect_at = self.block_start.wrapping_add(self.collect_room);
-    }
-
-    pub fn alloc_stats_snapshot(&self) -> HeapAllocStats {
-        self.alloc_stats
-    }
-
-    pub fn reset_alloc_stats(&mut self) {
-        self.alloc_stats = HeapAllocStats::default();
-    }
-
-    pub fn record_external_alloc(&mut self, kind: HeapAllocKind, bytes: usize) {
-        let bytes = round_up_16(bytes) as u64;
-        self.alloc_stats.record(kind, bytes);
     }
 
     pub fn alloc_struct(&mut self, schema_id: u32) -> *mut u8 {
@@ -1105,7 +1083,9 @@ impl Heap {
     ) -> AnyValue {
         if byte_len > SHARED_BIN_THRESHOLD_BYTES {
             let handle = SharedBinHandle::from_filled(byte_len, fill);
-            self.alloc_stats.record_shared_bin(byte_len as u64);
+            self.node
+                .runtime_allocs
+                .record(RuntimeAllocSite::SharedBin, byte_len as u64);
             self.record_binary_made(byte_len);
             return AnyValue::heap_ptr(
                 alloc_buffer_view(self, handle, bit_len, StubSite::FilledBuffer).as_raw(),
@@ -1189,7 +1169,9 @@ impl Heap {
             shared_bin_append(shared, left_bytes);
             shared_bin_append(shared, right);
         }
-        self.alloc_stats.record_shared_bin((total * 2) as u64);
+        self.node
+            .runtime_allocs
+            .record(RuntimeAllocSite::SharedBin, (total * 2) as u64);
         self.record_binary_made(total * 2);
         AnyValue::heap_ptr(
             alloc_buffer_view(self, handle, total as u64 * 8, StubSite::GrownBuffer).as_raw(),
@@ -1569,12 +1551,6 @@ impl Heap {
         self.schemas.clone()
     }
 
-    /// Objects on this heap: those a collection kept or a gift brought, and
-    /// those allocated since. A collection counts what it copied.
-    pub fn live_count(&self) -> usize {
-        (self.old_objects + self.alloc_count) as usize
-    }
-
     /// Bytes written into the heap, old and young. Blocks count by fill, never
     /// by capacity: a gift's block is mostly empty, and an abandoned block's
     /// tail was never written.
@@ -1813,7 +1789,6 @@ impl Heap {
             capacity,
         });
         self.reset_collect_room();
-        self.alloc_count = 0;
     }
 
     /// Release every object on the off-heap chain as a process exit does: nothing is

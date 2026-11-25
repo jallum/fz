@@ -29,9 +29,9 @@ defmodule M do
 
   def row(width, digits) do
     input = doc(1000, digits, "")
-    a = Process.heap_alloc_stats()
+    a = System.alloc_stats()
     {:ok, ints} = JSON.decode(input)
-    b = Process.heap_alloc_stats()
+    b = System.alloc_stats()
     dbg({:width, width, length(ints), checksum(ints, 0), boxed(a, b)})
   end
 end

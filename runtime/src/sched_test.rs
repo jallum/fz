@@ -419,14 +419,8 @@ fn a_dropped_receiver_returns_its_pending_gifts_to_the_pool_and_releases_their_b
 fn self_send_copies_the_message_into_the_mailbox_and_leaves_the_senders_heap_as_it_was() {
     let mut task = running_task();
     let msg = sender_list(&mut task, 7);
-    let live_before = task.heap.live_count();
     let young_before = task.heap.young_bytes();
     self_send(&mut task, msg);
-    assert_eq!(
-        task.heap.live_count(),
-        live_before,
-        "the copy is a gift outside the sender's heap"
-    );
     assert_eq!(task.heap.young_bytes(), young_before);
     assert_eq!(task.mailbox.len(), 1);
     let queued = task.mailbox.messages().last().expect("pushed");

@@ -16,9 +16,9 @@ defmodule Main do
 
   def main() do
     start = %Point{}
-    before = Process.heap_alloc_stats()[:scalar_box_allocs]
+    before = System.alloc_stats()[:scalar_box_allocs]
     moved = move(start, length([:a, :b]), 1.25)
-    boxes = Process.heap_alloc_stats()[:scalar_box_allocs] - before
+    boxes = System.alloc_stats()[:scalar_box_allocs] - before
     dbg(moved)
     dbg(boxes)
   end

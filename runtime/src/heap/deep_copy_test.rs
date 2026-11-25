@@ -298,12 +298,12 @@ fn an_atom_ref_measures_nothing_and_crosses_as_it_is() {
 fn deep_copying_an_atom_ref_to_another_heap_allocates_nothing() {
     let source = Heap::new(SIZE_TABLE[0], fresh_registry());
     let mut destination = Heap::new(SIZE_TABLE[0], fresh_registry());
-    let before = destination.alloc_stats_snapshot();
+    let before = destination.node.alloc_stats();
 
     let copy = deep_copy_any_value_ref(AnyValueRef::atom(7), &source.view(), &mut destination);
 
     assert_eq!(copy, AnyValueRef::atom(7));
-    assert_eq!(destination.alloc_stats_snapshot().total.allocs, before.total.allocs);
+    assert_eq!(destination.node.alloc_stats().total.allocs, before.total.allocs);
 }
 
 #[test]
@@ -324,10 +324,10 @@ fn deep_copying_a_pid_ref_to_another_heap_allocates_nothing() {
     let mut source = Heap::new(SIZE_TABLE[0], fresh_registry());
     let mut destination = Heap::new(SIZE_TABLE[0], fresh_registry());
     let pid = source.box_any_value_ref(AnyValue::Opaque(ValueKind::PID, 7));
-    let before = destination.alloc_stats_snapshot();
+    let before = destination.node.alloc_stats();
 
     let copy = deep_copy_any_value_ref(pid, &source.view(), &mut destination);
 
     assert_eq!(copy, pid);
-    assert_eq!(destination.alloc_stats_snapshot().total.allocs, before.total.allocs);
+    assert_eq!(destination.node.alloc_stats().total.allocs, before.total.allocs);
 }

@@ -14,9 +14,9 @@ defmodule Slice do
 
   # The off-heap bytes a function copied while it ran.
   def shared_bytes_copied(f) do
-    before = Process.heap_alloc_stats()
+    before = System.alloc_stats()
     result = f.()
-    after_ = Process.heap_alloc_stats()
+    after_ = System.alloc_stats()
     {result, after_[:shared_bin_bytes] - before[:shared_bin_bytes]}
   end
 end

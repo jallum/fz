@@ -16,7 +16,7 @@ def stop_b(_), do: :bad + 2
 def invoke(f), do: f.(1)
 
 def main() do
-  f = case Process.heap_alloc_stats()[:allocs] == 0 do
+  f = case System.alloc_stats()[:allocs] == 0 do
     true -> stop_a
     _ -> stop_b
   end

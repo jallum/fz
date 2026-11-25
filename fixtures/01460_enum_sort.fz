@@ -30,7 +30,8 @@
 # Interpreter/JIT/AOT floor:
 #
 # - `list_cons_allocs = 22`
-# - `closure_allocs = 0`
+# - `closure_allocs = 0` on the interpreter and 2 on the native paths: the only
+#   closures are the two closures the scheduler builds to start the program (`closure_bytes` 0 and 64)
 # - `scalar_box_allocs = 0`
 # - `heap_bytes = 352`
 #
@@ -56,7 +57,7 @@ def main() do
   sorted = Enum.sort([3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5])
   dbg(sorted)
 
-  stats = Process.heap_alloc_stats()
+  stats = System.alloc_stats()
   dbg({
     stats[:list_cons_allocs],
     stats[:list_cons_bytes],

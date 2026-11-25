@@ -1,0 +1,3 @@
+{:node, {:node, :empty, 2, :empty}, 3, {:node, :empty, 4, :empty}}
+%{closure_allocs: 0, closure_bytes: 0, list_cons_allocs: 0, list_cons_bytes: 0, map_allocs: 0, map_bytes: 0, struct_allocs: 3, struct_bytes: 144}
+144

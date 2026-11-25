@@ -74,10 +74,12 @@ pub enum RuntimeAllocSite {
     ScalarBoxCopy,
     Resource,
     Other,
+    /// An off-heap binary buffer, counted with the bytes of the buffer.
+    SharedBin,
 }
 
 impl RuntimeAllocSite {
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 18] = [
         Self::ListConsValue,
         Self::ListConsStorage,
         Self::ListConsCopy,
@@ -95,6 +97,7 @@ impl RuntimeAllocSite {
         Self::ScalarBoxCopy,
         Self::Resource,
         Self::Other,
+        Self::SharedBin,
     ];
 
     pub fn kind(self) -> HeapAllocKind {
@@ -110,6 +113,7 @@ impl RuntimeAllocSite {
             Self::ScalarBox | Self::ScalarBoxCopy => HeapAllocKind::ScalarBox,
             Self::Resource => HeapAllocKind::Resource,
             Self::Other => HeapAllocKind::Other,
+            Self::SharedBin => HeapAllocKind::SharedBin,
         }
     }
 
@@ -133,6 +137,7 @@ impl RuntimeAllocSite {
             Self::ScalarBoxCopy => "runtime::deep_copy_any_value_ref",
             Self::Resource => "runtime::alloc_resource",
             Self::Other => "runtime::alloc",
+            Self::SharedBin => "runtime::alloc_shared_bin",
         }
     }
 }

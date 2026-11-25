@@ -378,7 +378,6 @@ if top + closure_size_for_count(n) <= end:        inline
 else:                                              tip block full (cold)
   top = fz_heap_room(process, size)                the runtime climbs or parks; writes nothing
 placed:                                            both paths join
-  heap.alloc_count, alloc_stats.total, alloc_stats.continuation += 1 object, size bytes
   the allocation site's counter += 1
 [top+0] = header; [top+8] = code address
 [top+16+8*i]        = raw word of capture i        (capture 0 is the outer cont)
@@ -392,7 +391,7 @@ which also writes them for a program's closures with captures, counted under
 
 `heap::INLINE_ALLOC_LAYOUT` and `process_abi::PROCESS_HEAP_OFFSET` give the field
 offsets, and a heap test pins them against the real fields. Because the placement
-counts its own allocation after the join, `Process.heap_alloc_stats()` reports every
+counts its own allocation after the join, `System.alloc_stats()` reports every
 continuation in its own `continuation_allocs` / `continuation_bytes` row (the
 total includes it); the `closure` rows count only closures a program makes. The
 stats map holds 34 entries, past `MAP_FLAT_MAX` (32). A ref capture's raw word is the payload of
@@ -412,7 +411,7 @@ A continuation is resumed at most once (the rule is written on
 outer continuation into registers, then `release_resumed_frame` gives the frame
 back: when the frame ends at `heap.bump_top` and no `ValueRef` capture is
 scalar-kinded (kinds 9..=0xE name their raw slot inside the frame), `bump_top`
-returns to the frame's start and `alloc_count` falls by one. The statistics keep
+returns to the frame's start. The site's count keeps
 the allocation; a frame under a newer object, or a pinned one, stays until the
 next collection. The mid-flight yield continuation body releases its frame the
 same way before it calls the callee. The back-edge yield stores a raw int, float

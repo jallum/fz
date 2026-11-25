@@ -29,12 +29,12 @@ line = String.duplicate("x", 10000)
 one = "ab" <> line
 two = "ac" <> line
 
-a = Process.heap_alloc_stats()
+a = System.alloc_stats()
 r = {Nested.kind(one), Nested.kind(two), Nested.kind(line)}
-b = Process.heap_alloc_stats()
+b = System.alloc_stats()
 dbg({r, Nested.binaries(b) - Nested.binaries(a)})
 
-a = Process.heap_alloc_stats()
+a = System.alloc_stats()
 r = {Nested.tag(one), Nested.tag(two), Nested.tag(line)}
-b = Process.heap_alloc_stats()
+b = System.alloc_stats()
 dbg({r, Nested.binaries(b) - Nested.binaries(a)})

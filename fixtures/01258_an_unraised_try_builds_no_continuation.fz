@@ -62,9 +62,9 @@ end
 # A scheduler yield suspends the loop into a continuation of its own, so the
 # count leaves out one continuation per yield the loop takes.
 def continuations(f) do
-  before = Process.heap_alloc_stats()
+  before = System.alloc_stats()
   result = f.()
-  after_run = Process.heap_alloc_stats()
+  after_run = System.alloc_stats()
   built = after_run[:continuation_allocs] - before[:continuation_allocs]
   yields = after_run[:scheduler_yields] - before[:scheduler_yields]
   {result, built - yields}

@@ -301,7 +301,7 @@ fn typed_closure_and_resource_identity_survive_transport_without_comparison_allo
     let mut roots = [copied.ref_word()];
     destination.collect_stats(&mut roots);
     let moved = AnyValue::decode_tagged_heap_bits(roots[0].heap_object_word().unwrap()).unwrap();
-    let before = destination.alloc_stats_snapshot();
+    let before = destination.node.alloc_stats();
     let registry = schemas.borrow();
     let cmp = TermComparator::new(&node, &registry);
     assert_eq!(
@@ -323,7 +323,7 @@ fn typed_closure_and_resource_identity_survive_transport_without_comparison_allo
         Ok(2)
     );
     assert_eq!(
-        destination.alloc_stats_snapshot(),
+        destination.node.alloc_stats(),
         before,
         "comparison and lookup borrow their terms"
     );

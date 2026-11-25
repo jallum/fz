@@ -7,9 +7,9 @@ defmodule Grow do
 
   # The off-heap buffers and bytes allocated while growing a binary from "" by `n` bytes.
   def buffers_allocated(n) do
-    before = Process.heap_alloc_stats()
+    before = System.alloc_stats()
     grown = append("", n)
-    after_ = Process.heap_alloc_stats()
+    after_ = System.alloc_stats()
     {byte_size(grown), after_[:shared_bin_allocs] - before[:shared_bin_allocs], after_[:shared_bin_bytes] - before[:shared_bin_bytes]}
   end
 

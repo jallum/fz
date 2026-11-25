@@ -321,11 +321,6 @@ pub(crate) fn release_resumed_frame<M: cranelift_module::Module>(
         let pop = body.b.ins().band(at_tip, released);
         let new_top = body.b.ins().select(pop, address, top);
         body.b.ins().store(flags, new_top, process, heap);
-        let objects_at = PROCESS_HEAP_OFFSET + INLINE_ALLOC_LAYOUT.alloc_count as i32;
-        let objects = body.b.ins().load(types::I64, flags, process, objects_at);
-        let given_back = body.b.ins().uextend(types::I64, pop);
-        let objects = body.b.ins().isub(objects, given_back);
-        body.b.ins().store(flags, objects, process, objects_at);
     }
     body.b.ins().jump(done, &[]);
 

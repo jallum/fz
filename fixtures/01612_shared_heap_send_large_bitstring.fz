@@ -28,8 +28,7 @@
 #
 # The refcount invariant — at most one heap-allocated SharedBin across
 # the whole run; the static SharedBin's anchor stays ≥ 1 — is verified
-# in `runtime/src/bits.rs` and `runtime/src/heap.rs` unit tests via
-# `Heap::live_count()`.
+# in the `runtime/src/bits.rs` and `runtime/src/heap/` unit tests.
 def child(parent, bs) do
   send(parent, bs)
 end

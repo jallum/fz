@@ -26,10 +26,10 @@ def main() do
   send(self(), {1, 2})
   send(self(), {3, 4})
   send(self(), {5, 6})
-  before = Process.heap_alloc_stats().bitstring_allocs
+  before = System.alloc_stats().bitstring_allocs
   describe(relay()) == 3 || raise("expected describe(relay()) == 3")
   describe(relay()) == 7 || raise("expected describe(relay()) == 7")
   describe(relay()) == 11 || raise("expected describe(relay()) == 11")
-  count_after = Process.heap_alloc_stats().bitstring_allocs
+  count_after = System.alloc_stats().bitstring_allocs
   dbg(count_after - before)
 end

@@ -7,9 +7,9 @@
 # that built its result by doubling or by concatenation would allocate the
 # intermediate buffers too, and the delta would exceed the result's size.
 def shared_bytes(fun) do
-  before = Process.heap_alloc_stats()
+  before = System.alloc_stats()
   result = fun.()
-  after_ = Process.heap_alloc_stats()
+  after_ = System.alloc_stats()
   {byte_size(result), after_[:shared_bin_bytes] - before[:shared_bin_bytes], after_[:shared_bin_allocs] - before[:shared_bin_allocs]}
 end
 

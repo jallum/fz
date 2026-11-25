@@ -5,7 +5,7 @@ def main() do
   xs = [1, 2, 3]
   out = Enumerable.reduce(xs, {:suspend, 0}, fn (x, acc) -> {:cont, acc + x} end)
 
-  stats = Process.heap_alloc_stats()
+  stats = System.alloc_stats()
   dbg(case out do
     {:suspended, acc, _resume} -> {:suspended, acc}
     _ -> :unexpected

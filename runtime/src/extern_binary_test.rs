@@ -99,13 +99,13 @@ fn cstring_of_a_tail_view_points_into_the_shared_buffer() {
     let mut process = Process::new(fresh_registry());
     let bytes: Vec<u8> = (1..=200u8).collect();
     let v = view_word(&mut process, &bytes, 150, 50);
-    let before = process.heap.alloc_stats_snapshot().binview.allocs;
+    let before = process.heap.node.alloc_stats().binview.allocs;
     unsafe {
         let cs = fz_binary_as_cstring(&mut process, v);
         assert_eq!(cs, fz_binary_as_ptr(v), "a tail needs no copy");
         assert_eq!(from_raw_parts(cs, 51), &[&bytes[150..], &[0u8][..]].concat()[..]);
     }
-    assert_eq!(process.heap.alloc_stats_snapshot().binview.allocs, before);
+    assert_eq!(process.heap.node.alloc_stats().binview.allocs, before);
 }
 
 /// A view that ends before its buffer does has the next byte of the parent

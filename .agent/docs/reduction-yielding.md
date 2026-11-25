@@ -33,7 +33,7 @@ call nor a continuation, and a frame-free function is in no call cycle, so it
 has no back edge; it spends no reduction and builds no continuation closure.
 The closures a loop builds are those of its calls to functions that need a
 frame and one per yield. Fixture 01177 pins both through
-`Process.heap_alloc_stats()`: its loop's calls are all frame-free, so
+`System.alloc_stats()`: its loop's calls are all frame-free, so
 `continuation_allocs` minus `reduction_yields` is 1, for `main`'s call into the
 loop, and `reductions_executed` is the reductions the loop's back edges spent,
 one per iteration. Fixture 01880 counts the continuations of calls to callees
@@ -184,9 +184,8 @@ exact block above it. The copy allocates through
 `alloc_kind` into that block and cannot overflow it. `Heap::end_gift` asserts
 the block's fill is exactly the measured bytes, turns the block and the off-heap
 objects produced since the window opened (one chain of BinRefs and resource stubs)
-into a `GiftSegment` of exactly one block, restores the saved tip, and puts
-`live_count` back. Allocation statistics stay with the heap that did the
-copying. `Heap::graft` on another heap adopts the segment; dropping an
+into a `GiftSegment` of exactly one block, and restores the saved tip. The copy's allocations are counted at their
+sites. `Heap::graft` on another heap adopts the segment; dropping an
 un-grafted segment releases its block and its objects' off-heap references. A
 collection asserts that no window is open. Cross-process send is the window's user: `sched::gift_copy` measures a
 message, or a match's roots, and copies it inside one, and the segment travels to the

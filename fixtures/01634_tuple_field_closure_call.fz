@@ -102,7 +102,7 @@ defp call_and_keep(t) do
 end
 
 def main() do
-  before = Process.heap_alloc_stats()
+  before = System.alloc_stats()
 
   dbg(call_pair(pair_adder(5)))
   dbg(tag_call({:a, make_adder(1)}, 10))
@@ -115,7 +115,7 @@ def main() do
   dbg(call_pair(pair_capture_free()))
   dbg(call_pair(pair_widened(5)))
 
-  after_direct = Process.heap_alloc_stats()
+  after_direct = System.alloc_stats()
   after_direct[:closure_allocs] - before[:closure_allocs] == 0 || raise("a tuple field that names one target is called directly, so no closure is built")
   after_direct[:struct_allocs] - before[:struct_allocs] == 1 || raise("only the printed tuple is materialized; the destructured ones travel as field lanes")
 
@@ -125,7 +125,7 @@ def main() do
   {_f, kept_n} = kept
   dbg(kept_n)
 
-  after_whole = Process.heap_alloc_stats()
+  after_whole = System.alloc_stats()
   whole_closures = after_whole[:closure_allocs] - after_direct[:closure_allocs]
   whole_closures > 0 || raise("a tuple handed on whole carries its lambda as a value, so a closure is built to hold it")
   whole_closures <= 8 || raise("two escaping tuples cost a handful of closures on any path, not an unbounded number")

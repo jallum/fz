@@ -17,9 +17,9 @@ defmodule P do
 end
 
 line = String.duplicate("世", 3000)
-a = Process.heap_alloc_stats()
+a = System.alloc_stats()
 n = P.go(line)
-b = Process.heap_alloc_stats()
+b = System.alloc_stats()
 dbg(n)
 dbg(div(b[:allocs] - a[:allocs], 3000))
 dbg(b[:binview_allocs] - a[:binview_allocs])

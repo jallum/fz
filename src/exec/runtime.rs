@@ -79,7 +79,6 @@ pub struct Runtime<'a, T: Telemetry + ?Sized> {
 pub struct ExitRecord {
     pub pid: PidId,
     pub halt_value: i64,
-    pub live_count: usize,
     pub bytes_used: usize,
     pub list_retention_attempts: u64,
     pub list_retention_hits: u64,
@@ -264,10 +263,6 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
         let inner = mint_main_inner(&mut process.heap, self.compiled.main_trampoline_addr, fp, halt_kind);
         let thunk = mint_entry_thunk(&mut process.heap, self.compiled.entry_thunk_addr, inner);
         process.set_runnable_closure(thunk);
-        // The entry thunk + inner are scheduler scaffolding prepared before
-        // the task's own code runs; reset so alloc telemetry measures only the
-        // task's execution (and matches the raw-fp entry's zero-alloc start).
-        process.heap.reset_alloc_stats();
         self.queue_task(pid, Box::new(process));
         pid
     }
@@ -308,10 +303,6 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
         process.next_frame = null_mut();
         let thunk = mint_entry_thunk(&mut process.heap, self.compiled.entry_thunk_addr, copied);
         process.set_runnable_closure(thunk);
-        // Scheduler scaffolding (entry thunk + copied entry closure) is
-        // prepared before the child runs; reset so its alloc telemetry
-        // measures only the child's own execution.
-        process.heap.reset_alloc_stats();
         self.queue_task(pid, Box::new(process));
         pid
     }
@@ -427,7 +418,6 @@ impl ProcessExitCapture {
                 records.borrow_mut().push(ExitRecord {
                     pid: *pid,
                     halt_value: process.halt_value,
-                    live_count: process.heap.live_count(),
                     bytes_used: process.heap.bytes_used(),
                     list_retention_attempts: process.list_retention_attempts,
                     list_retention_hits: process.list_retention_hits,

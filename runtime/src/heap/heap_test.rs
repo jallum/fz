@@ -77,7 +77,7 @@ fn map_freeze_keeps_one_allocation_and_gc_preserves_structural_lookup() {
     let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
     let a = heap.alloc_list_cons_slot(AnyValue::int(7), EMPTY_LIST);
     let b = heap.alloc_list_cons_slot(AnyValue::int(7), EMPTY_LIST);
-    heap.reset_alloc_stats();
+    let setup = heap.node.alloc_stats();
     let dest = heap.alloc_map_destination(3);
     unsafe {
         heap.map_destination_put(dest, heap_root(a), AnyValue::int(1));
@@ -91,14 +91,18 @@ fn map_freeze_keeps_one_allocation_and_gc_preserves_structural_lookup() {
             .raw_word(),
         "freezing compacts the unpublished allocation in place"
     );
-    let allocation = heap.alloc_stats_snapshot();
-    assert_eq!(allocation.total.allocs, 1);
-    assert_eq!(allocation.total.bytes, 64);
+    let allocation = heap.node.alloc_stats();
+    assert_eq!(allocation.total.allocs - setup.total.allocs, 1);
+    assert_eq!(allocation.total.bytes - setup.total.bytes, 64);
     assert_eq!(
-        allocation.map, allocation.total,
+        (
+            allocation.map.allocs - setup.map.allocs,
+            allocation.map.bytes - setup.map.bytes
+        ),
+        (1, 64),
         "the one destination allocation belongs to Map"
     );
-    assert_eq!(allocation.other.allocs, 0);
+    assert_eq!(allocation.other.allocs, setup.other.allocs);
     let mut roots = [heap_ref(dest)];
     heap.collect_stats(&mut roots);
     let fresh = heap.alloc_list_cons_slot(AnyValue::int(7), EMPTY_LIST);
@@ -108,10 +112,10 @@ fn map_freeze_keeps_one_allocation_and_gc_preserves_structural_lookup() {
         heap.read_map_value(map, heap_root(fresh)).unwrap().unwrap().load_int(),
         Ok(3)
     );
-    let before = heap.alloc_stats_snapshot();
+    let before = heap.node.alloc_stats();
     assert_eq!(heap.map_view_delete(map, AnyValue::int(99)), map);
     assert_eq!(
-        heap.alloc_stats_snapshot(),
+        heap.node.alloc_stats(),
         before,
         "an absent deletion neither allocates nor copies"
     );
@@ -316,7 +320,6 @@ fn alloc_stats_record_heap_allocations_by_kind() {
         schemas.register(Schema::tuple_of_arity(2))
     };
     let mut h = Heap::new(SIZE_TABLE[0], registry);
-    h.reset_alloc_stats();
 
     let _ = h.alloc_struct(pair_schema);
     let _ = h.alloc_list_cons_slot(AnyValue::int(1), EMPTY_LIST_BITS);
@@ -327,7 +330,7 @@ fn alloc_stats_record_heap_allocations_by_kind() {
     let _ = h.box_any_value_ref(AnyValue::int(42));
     let _ = h.alloc(16);
 
-    let stats = h.alloc_stats_snapshot();
+    let stats = h.node.alloc_stats();
     assert_eq!(stats.struct_.allocs, 1);
     assert_eq!(stats.list_cons.allocs, 1);
     assert_eq!(stats.map.allocs, 1);
@@ -742,7 +745,7 @@ fn alloc_bumps_and_tracks() {
     let mut h = Heap::new(1024, fresh_registry());
     let p = h.alloc_list_cons_slot(AnyValue::int(1), EMPTY_LIST);
     assert!(list_addr_from_tagged(p).is_some());
-    assert_eq!(h.live_count(), 1);
+    assert_eq!(h.node.alloc_stats().total.allocs, 1);
     assert_eq!(h.bytes_used(), 16);
 }
 
@@ -773,7 +776,7 @@ fn alloc_grows_to_next_capacity_on_overflow() {
     assert!(h.block_size > initial_capacity, "grow must raise the capacity");
     assert_eq!(h.block_size, next_block_capacity(initial_capacity));
     assert!(!h.young_blocks.is_empty());
-    assert_eq!(h.live_count(), 80);
+    assert_eq!(h.node.alloc_stats().total.allocs, 80);
 }
 
 /// `should_gc` is a function of the heap's state: it turns true once the
@@ -805,17 +808,17 @@ fn should_gc_follows_bytes_in_use_against_the_budget_floor_and_a_collection_answ
 }
 
 /// With a null root, Cheney recycles the arena: from-space is freed,
-/// to-space is a fresh empty block, live_count goes to zero.
+/// to-space is a fresh empty block, no object is kept.
 #[test]
 fn gc_with_null_root_recycles_arena() {
     let mut h = Heap::new(1024, fresh_registry());
     let _ = h.alloc_list_cons_slot(AnyValue::nil_atom(), EMPTY_LIST);
     let _ = h.alloc_list_cons_slot(AnyValue::nil_atom(), EMPTY_LIST);
-    assert_eq!(h.live_count(), 2);
+    assert_eq!(h.node.alloc_stats().total.allocs, 2);
     let mut root: *mut u8 = null_mut();
     h.collect_tagged(&mut root);
     assert_eq!(h.gc_run_count, 1);
-    assert_eq!(h.live_count(), 0, "no root → nothing copied");
+    assert_eq!(h.old_objects, 0, "no root → nothing copied");
     assert_eq!(h.bytes_used(), 0, "to-space is empty");
     assert!(root.is_null());
 }
@@ -835,7 +838,7 @@ fn gc_copies_rooted_list_and_rewrites_root() {
     h.collect_stats(&mut roots);
     let root_ptr = list_addr_from_tagged(ref_bits(roots[0])).unwrap();
     assert_ne!(root_ptr as usize, old_n1, "root should be rewritten to to-space");
-    assert_eq!(h.live_count(), 3, "all three cells copied");
+    assert_eq!(h.old_objects, 3, "all three cells copied");
     // Walk the new list and verify integers match.
     let mut cur = root_ptr as *mut ListCons;
     let mut sum = 0i64;
@@ -883,14 +886,14 @@ fn a_list_cell_a_collection_kept_is_not_rewritten_in_place() {
     let mut roots = [heap_ref(source)];
     h.collect_stats(&mut roots);
     let kept = roots[0];
-    h.reset_alloc_stats();
+    let before = h.node.alloc_stats().list_cons.allocs;
 
     let rebuilt = h
         .reuse_or_alloc_list_cons_raw_kind(kept, 1, ValueKind::INT, AnyValueRef::empty_list(), true)
         .expect("rebuild");
 
     assert_ne!(rebuilt, kept);
-    assert_eq!(h.alloc_stats_snapshot().list_cons.allocs, 1);
+    assert_eq!(h.node.alloc_stats().list_cons.allocs, before + 1);
     let kept_cell = unsafe { &*(kept.list_addr().unwrap() as *const ListCons) };
     assert_ne!(kept_cell.tail_addr(), 0, "the kept cell still has its tail");
 }
@@ -951,12 +954,12 @@ fn unchanged_list_retention_needs_no_rewrite_permission_even_when_published() {
     let source = alloc_int_list_cons(&mut heap, 1, tail);
     let source_ref = list_ref_from_bits(source);
     heap.mark_published_ref_aliased(source_ref).unwrap();
-    heap.reset_alloc_stats();
+    let before = heap.node.alloc_stats().list_cons.allocs;
     let retained = heap
         .reuse_or_alloc_list_cons_raw_kind(source_ref, 1, ValueKind::INT, list_ref_from_bits(tail), false)
         .unwrap();
     assert_eq!(retained, source_ref);
-    assert_eq!(heap.alloc_stats_snapshot().list_cons.allocs, 0);
+    assert_eq!(heap.node.alloc_stats().list_cons.allocs, before);
 }
 
 #[test]
@@ -964,12 +967,12 @@ fn retained_unaliased_source_without_permission_allocates_for_changed_contents()
     let mut heap = Heap::new(1024, fresh_registry());
     let source = alloc_int_list_cons(&mut heap, 1, EMPTY_LIST);
     let source_ref = list_ref_from_bits(source);
-    heap.reset_alloc_stats();
+    let before = heap.node.alloc_stats().list_cons.allocs;
     let rebuilt = heap
         .reuse_or_alloc_list_cons_raw_kind(source_ref, 9, ValueKind::INT, AnyValueRef::empty_list(), false)
         .unwrap();
     assert_ne!(rebuilt, source_ref);
-    assert_eq!(heap.alloc_stats_snapshot().list_cons.allocs, 1);
+    assert_eq!(heap.node.alloc_stats().list_cons.allocs, before + 1);
     let original = unsafe { &*(source_ref.list_addr().unwrap() as *const ListCons) };
     assert_eq!(original.head, 1);
 }
@@ -977,11 +980,11 @@ fn retained_unaliased_source_without_permission_allocates_for_changed_contents()
 #[test]
 fn unaliased_reuse_or_alloc_rewrites_cons_in_place() {
     let mut h = Heap::new(1024, fresh_registry());
-    h.reset_alloc_stats();
+
     let old_tail = alloc_int_list_cons(&mut h, 1, EMPTY_LIST);
     let new_tail = alloc_int_list_cons(&mut h, 2, EMPTY_LIST);
     let head = alloc_int_list_cons(&mut h, 0, old_tail);
-    let before = h.alloc_stats_snapshot().list_cons.allocs;
+    let before = h.node.alloc_stats().list_cons.allocs;
 
     let out = h
         .reuse_or_alloc_list_cons_raw_kind(
@@ -994,7 +997,7 @@ fn unaliased_reuse_or_alloc_rewrites_cons_in_place() {
         .expect("reuse");
 
     assert_eq!(out, list_ref_from_bits(head));
-    assert_eq!(h.alloc_stats_snapshot().list_cons.allocs, before);
+    assert_eq!(h.node.alloc_stats().list_cons.allocs, before);
     let cons = unsafe { &*(list_addr_from_tagged(head).unwrap() as *const ListCons) };
     assert_eq!(cons.head as i64, 7);
     assert_eq!(cons.head_kind(), ValueKind::ATOM);
@@ -1010,14 +1013,14 @@ fn aliased_reuse_or_alloc_allocates_fresh_cons_without_mutating_original() {
     let head = alloc_int_list_cons(&mut h, 0, old_tail);
     let head_ref = list_ref_from_bits(head);
     h.mark_published_ref_aliased(head_ref).expect("mark aliased");
-    h.reset_alloc_stats();
+    let before = h.node.alloc_stats().list_cons.allocs;
 
     let out = h
         .reuse_or_alloc_list_cons_raw_kind(head_ref, 9, ValueKind::FLOAT, list_ref_from_bits(new_tail), true)
         .expect("fallback allocation");
 
     assert_ne!(out, head_ref);
-    assert_eq!(h.alloc_stats_snapshot().list_cons.allocs, 1);
+    assert_eq!(h.node.alloc_stats().list_cons.allocs, before + 1);
     let original = unsafe { &*(list_addr_from_tagged(head).unwrap() as *const ListCons) };
     assert_eq!(original.head as i64, 0);
     assert_eq!(original.head_kind(), ValueKind::INT);
@@ -1038,14 +1041,14 @@ fn published_reuse_or_alloc_allocates_fresh_cons_without_mutating_original() {
     let head = alloc_int_list_cons(&mut h, 0, old_tail);
     let head_ref = list_ref_from_bits(head);
     h.mark_published_ref_aliased(head_ref).expect("publish");
-    h.reset_alloc_stats();
+    let before = h.node.alloc_stats().list_cons.allocs;
 
     let out = h
         .reuse_or_alloc_list_cons_raw_kind(head_ref, 42, ValueKind::INT, list_ref_from_bits(new_tail), true)
         .expect("fallback allocation");
 
     assert_ne!(out, head_ref);
-    assert_eq!(h.alloc_stats_snapshot().list_cons.allocs, 1);
+    assert_eq!(h.node.alloc_stats().list_cons.allocs, before + 1);
     let original = unsafe { &*(list_addr_from_tagged(head).unwrap() as *const ListCons) };
     assert_eq!(original.head as i64, 0);
     assert_eq!(original.tail_bits(), old_tail);
@@ -1145,7 +1148,7 @@ fn a_struct_collection_moves_heap_fields_and_leaves_scalar_fields() {
     let stats = h.collect_tagged(&mut root);
 
     assert_eq!(stats.copied_objects, 2);
-    assert_eq!(h.live_count(), 2);
+    assert_eq!(h.old_objects, 2);
     let moved = struct_addr_from_tagged(root as u64).expect("moved struct");
     assert_eq!(h.read_field_slot(moved, 0).raw(), decoy_addr as u64);
     assert_ne!(h.read_field_slot(moved, 8).raw() as *mut u8, child_addr);
@@ -1217,17 +1220,17 @@ fn collect_forwards_a_closure_root_and_a_mailbox_root_together() {
 }
 
 /// Cheney drops unreachable objects: a cell allocated alongside the
-/// root chain but not pointed to by it is discarded. live_count
-/// shrinks to the chain length.
+/// root chain but not pointed to by it is discarded. Only the
+/// chain is kept.
 #[test]
 fn gc_drops_unreachable_objects() {
     let mut h = Heap::new(1024, fresh_registry());
     let _orphan = alloc_int_list_cons(&mut h, 99, EMPTY_LIST);
     let kept = alloc_int_list_cons(&mut h, 7, EMPTY_LIST);
-    assert_eq!(h.live_count(), 2);
+    assert_eq!(h.node.alloc_stats().total.allocs, 2);
     let mut roots = [heap_ref(kept)];
     h.collect_stats(&mut roots);
-    assert_eq!(h.live_count(), 1, "orphan dropped, kept survives");
+    assert_eq!(h.old_objects, 1, "orphan dropped, kept survives");
     let new_cons = list_addr_from_tagged(ref_bits(roots[0])).unwrap() as *mut ListCons;
     let head = unsafe { (*new_cons).head };
     assert_eq!(head as i64, 7);
@@ -1740,7 +1743,7 @@ fn a_copy_larger_than_the_guessed_tip_parks_to_space_blocks() {
         len * 16,
         "tip and parked to-blocks hold every copied byte"
     );
-    assert_eq!(h.live_count(), len);
+    assert_eq!(h.old_objects as usize, len);
     let mut cursor = roots[0];
     let mut seen = 0;
     while !cursor.is_empty_list() {
@@ -1904,7 +1907,7 @@ fn alloc_large_map_round_trips_through_gc() {
     let bits = h.alloc_map_slots(&entries);
     let mut roots = [heap_ref(bits)];
     h.collect_stats(&mut roots);
-    assert_eq!(h.live_count(), 1, "map survives GC");
+    assert_eq!(h.old_objects, 1, "map survives GC");
     let new_p = map_addr_from_tagged(ref_bits(roots[0])).unwrap();
     unsafe {
         let count = map_count(new_p as *const u8);
@@ -2119,7 +2122,11 @@ fn map_float_value_is_unboxed_raw_bits() {
     let (_, value) = unsafe { map_entry(p, 0) };
     assert_eq!(value.kind(), ValueKind::FLOAT);
     assert_eq!(value.raw(), f.to_bits());
-    assert_eq!(h.live_count(), 1, "map allocation should not box the float");
+    assert_eq!(
+        h.node.alloc_stats().total.allocs,
+        1,
+        "map allocation should not box the float"
+    );
 }
 
 #[test]
@@ -2176,7 +2183,7 @@ fn gc_map_count_twelve_does_not_collide_with_forwarding_tag() {
 /// Acceptance: ≥10 GC cycles with the same small live working set
 /// keep the arena bounded. Block size may grow once to fit per-cycle
 /// garbage but does not increase without bound; no abandoned blocks
-/// remain post-GC; live_count stays at the rooted chain length.
+/// remain post-GC; the kept objects stay at the rooted chain length.
 /// (§6.4 acceptance.)
 #[test]
 fn gc_keeps_arena_bounded_across_many_cycles() {
@@ -2194,7 +2201,7 @@ fn gc_keeps_arena_bounded_across_many_cycles() {
         }
         h.collect_stats(&mut roots);
         // Post-gc invariants.
-        assert_eq!(h.live_count(), 3, "rooted chain survives");
+        assert_eq!(h.old_objects, 3, "rooted chain survives");
         assert_eq!(h.young_blocks.len(), 0, "abandoned blocks reclaimed");
     }
     // After the working-set-fits-in-block point, block_size stays put.
@@ -2236,7 +2243,7 @@ fn gc_handles_cycle_via_forwarding() {
     unsafe { h.write_field_slot(b, 8, AnyValue::nil_atom()) };
     let mut root = heap_object_word(a as *const u8, ValueKind::STRUCT) as *mut u8;
     h.collect_tagged(&mut root);
-    assert_eq!(h.live_count(), 2);
+    assert_eq!(h.old_objects, 2);
 }
 
 // ===== BinView + intrusive off-heap chain + post-Cheney sweep =================
@@ -2590,7 +2597,7 @@ fn alloc_bitstring_with_fills_an_inline_payload_in_place() {
     let payload = unsafe { std::slice::from_raw_parts(Bin::of_binary(tagged).ptr(), 33) };
     assert_eq!(&payload[..32], &[7u8; 32][..]);
     assert_eq!(payload[32], 0, "the invisible trailing NUL stays zero");
-    assert_eq!(h.alloc_stats.shared_bin.bytes, 0);
+    assert_eq!(h.node.alloc_stats().shared_bin.bytes, 0);
 }
 
 #[test]
@@ -2603,8 +2610,61 @@ fn alloc_bitstring_with_fills_a_shared_buffer_in_place_and_counts_it_once() {
     let payload = unsafe { std::slice::from_raw_parts(Bin::of_binary(tagged).ptr(), len + 1) };
     assert!(payload[..len].iter().all(|&b| b == 9));
     assert_eq!(payload[len], 0, "the invisible trailing NUL stays zero");
-    assert_eq!(h.alloc_stats.shared_bin.bytes, len as u64);
-    assert_eq!(h.alloc_stats.shared_bin.allocs, 1);
+    let stats = h.node.alloc_stats();
+    assert_eq!(stats.shared_bin.bytes, len as u64);
+    assert_eq!(stats.shared_bin.allocs, 1);
+    assert_eq!(
+        stats.total.allocs, 2,
+        "the buffer is no heap object: the view and its BinRef are"
+    );
+}
+
+/// An off-heap buffer is one count at the `SharedBin` site, whether it is
+/// filled or made by a concatenation, and is no part of the total: its bytes
+/// are on no heap. The view and BinRef that name it are heap objects and
+/// count there.
+#[test]
+fn an_off_heap_buffer_counts_once_at_the_shared_bin_site_and_not_in_the_total() {
+    let shared_bin_sites = |h: &Heap| {
+        h.node
+            .alloc_site_counts()
+            .into_iter()
+            .filter(|site| site.kind == HeapAllocKind::SharedBin)
+            .map(|site| (site.function, site.placed))
+            .collect::<Vec<_>>()
+    };
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let len = SHARED_BIN_THRESHOLD_BYTES + 1;
+    let _ = h.alloc_bitstring_with(len, (len * 8) as u64, |dest| dest.fill(MaybeUninit::new(1)));
+    assert_eq!(
+        shared_bin_sites(&h),
+        [(
+            "runtime::alloc_shared_bin".to_owned(),
+            AllocStat {
+                allocs: 1,
+                bytes: len as u64
+            }
+        )]
+    );
+    let filled = h.node.alloc_stats();
+    assert_eq!(filled.total.allocs, filled.binview.allocs + filled.binref.allocs);
+
+    let (left, right) = ([2u8; SHARED_BIN_THRESHOLD_BYTES], [3u8; 8]);
+    let _ = unsafe { h.alloc_concatenation(&left, None, &right) };
+    let total_bytes = left.len() + right.len();
+    assert_eq!(
+        shared_bin_sites(&h),
+        [(
+            "runtime::alloc_shared_bin".to_owned(),
+            AllocStat {
+                allocs: 2,
+                bytes: (len + total_bytes * 2) as u64
+            }
+        )]
+    );
+    let stats = h.node.alloc_stats();
+    assert_eq!(stats.shared_bin.allocs, 2);
+    assert_eq!(stats.total.allocs, stats.binview.allocs + stats.binref.allocs);
 }
 
 /// Full spawn-and-share scenario at the heap layer.
@@ -2739,7 +2799,7 @@ fn a_huge_object_parks_and_the_next_small_allocation_lands_in_the_unmoved_tip() 
     assert_eq!(h.young_blocks.len(), 1);
     assert_eq!(h.young_blocks[0].start, big);
     assert_eq!(h.young_blocks[0].capacity, pick_block_capacity(huge));
-    assert_eq!(h.live_count(), 2);
+    assert_eq!(h.node.alloc_stats().total.allocs, 2);
 }
 
 /// An allocation that exactly fills the capacity one step up is not huge: the
@@ -3266,11 +3326,11 @@ fn map_publication_orders_keys_and_keeps_the_last_value_of_a_repeated_key_at_eve
 #[test]
 fn boxing_an_atom_allocates_nothing_and_the_ref_carries_its_id() {
     let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
-    let before = h.alloc_stats_snapshot();
+    let before = h.node.alloc_stats();
 
     let atom = h.box_any_value_ref(AnyValue::atom(1234));
 
-    let after = h.alloc_stats_snapshot();
+    let after = h.node.alloc_stats();
     assert_eq!(after.scalar_box.allocs, before.scalar_box.allocs);
     assert_eq!(after.total.allocs, before.total.allocs);
     assert_eq!(atom, AnyValueRef::atom(1234));
@@ -3384,11 +3444,11 @@ fn an_atom_read_from_a_literal_struct_names_no_literal() {
 #[test]
 fn boxing_a_pid_allocates_nothing_and_the_ref_round_trips_its_word() {
     let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
-    let before = h.alloc_stats_snapshot();
+    let before = h.node.alloc_stats();
 
     let pid = h.box_any_value_ref(AnyValue::Opaque(ValueKind::PID, 0x1_0007));
 
-    let after = h.alloc_stats_snapshot();
+    let after = h.node.alloc_stats();
     assert_eq!(after.scalar_box.allocs, before.scalar_box.allocs);
     assert_eq!(after.total.allocs, before.total.allocs);
     assert_eq!(pid.tag(), ValueKind::PID);
@@ -3404,11 +3464,11 @@ fn boxing_a_pid_allocates_nothing_and_the_ref_round_trips_its_word() {
 #[test]
 fn boxing_a_reference_still_allocates_one_scalar_box() {
     let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
-    let before = h.alloc_stats_snapshot();
+    let before = h.node.alloc_stats();
 
     let reference = h.box_any_value_ref(AnyValue::Opaque(ValueKind::REF, (3 << 32) | 9));
 
-    assert_eq!(h.alloc_stats_snapshot().scalar_box.allocs, before.scalar_box.allocs + 1);
+    assert_eq!(h.node.alloc_stats().scalar_box.allocs, before.scalar_box.allocs + 1);
     assert_eq!(reference.load_opaque_word(ValueKind::REF), Ok((3 << 32) | 9));
 }
 
@@ -3509,57 +3569,9 @@ fn inline_alloc_layout_names_the_fields_a_placement_updates() {
     let base = (&heap as *const Heap).addr();
     let at = |field: usize| field - base;
     let layout = INLINE_ALLOC_LAYOUT;
+    assert_eq!(layout.block_start, at((&heap.block_start as *const *mut u8).addr()));
     assert_eq!(layout.bump_top, at((&heap.bump_top as *const *mut u8).addr()));
     assert_eq!(layout.block_end, at((&heap.block_end as *const *mut u8).addr()));
-    assert_eq!(layout.alloc_count, at((&heap.alloc_count as *const u64).addr()));
-    assert_eq!(
-        layout.total_allocs,
-        at((&heap.alloc_stats.total.allocs as *const u64).addr())
-    );
-    assert_eq!(
-        layout.total_bytes,
-        at((&heap.alloc_stats.total.bytes as *const u64).addr())
-    );
-    assert_eq!(
-        layout.continuation_allocs,
-        at((&heap.alloc_stats.continuation.allocs as *const u64).addr())
-    );
-    assert_eq!(
-        layout.continuation_bytes,
-        at((&heap.alloc_stats.continuation.bytes as *const u64).addr())
-    );
-    assert_eq!(
-        layout.list_cons_allocs,
-        at((&heap.alloc_stats.list_cons.allocs as *const u64).addr())
-    );
-    assert_eq!(
-        layout.list_cons_bytes,
-        at((&heap.alloc_stats.list_cons.bytes as *const u64).addr())
-    );
-    assert_eq!(
-        layout.struct_allocs,
-        at((&heap.alloc_stats.struct_.allocs as *const u64).addr())
-    );
-    assert_eq!(
-        layout.struct_bytes,
-        at((&heap.alloc_stats.struct_.bytes as *const u64).addr())
-    );
-    assert_eq!(
-        layout.closure_allocs,
-        at((&heap.alloc_stats.closure.allocs as *const u64).addr())
-    );
-    assert_eq!(
-        layout.closure_bytes,
-        at((&heap.alloc_stats.closure.bytes as *const u64).addr())
-    );
-    assert_eq!(
-        layout.scalar_box_allocs,
-        at((&heap.alloc_stats.scalar_box.allocs as *const u64).addr())
-    );
-    assert_eq!(
-        layout.scalar_box_bytes,
-        at((&heap.alloc_stats.scalar_box.bytes as *const u64).addr())
-    );
 }
 
 /// Prepend `cells` fresh cells to `tail`, collect with the list as the only
@@ -3664,7 +3676,7 @@ fn room_beyond_a_full_tip_answers_the_start_of_a_fresh_tip() {
     let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
     let (tip_start, tip_capacity) = (h.block_start, h.block_size);
     h.alloc(tip_capacity);
-    let counted = h.alloc_count;
+    let counted = h.node.alloc_stats();
 
     let p = h.room(32);
 
@@ -3677,7 +3689,7 @@ fn room_beyond_a_full_tip_answers_the_start_of_a_fresh_tip() {
     assert_eq!(h.bump_top, unsafe { p.add(32) }, "the tip is advanced past the object");
     assert_eq!(h.young_blocks.len(), 1);
     assert_eq!(h.young_blocks[0].start, tip_start, "the full tip is what was parked");
-    assert_eq!(h.alloc_count, counted, "room does not count the allocation");
+    assert_eq!(h.node.alloc_stats(), counted, "room does not count the allocation");
 }
 
 /// An object too large for any tip one step up is parked alone, and the tip
@@ -3687,7 +3699,7 @@ fn room_for_a_huge_object_parks_it_alone_and_leaves_the_tip() {
     let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
     let (tip_start, tip_capacity) = (h.block_start, h.block_size);
     h.alloc(tip_capacity);
-    let (top, counted) = (h.bump_top, h.alloc_count);
+    let (top, counted) = (h.bump_top, h.node.alloc_stats());
     let huge = next_block_capacity(tip_capacity) + 16;
 
     let p = h.room(huge);
@@ -3697,7 +3709,7 @@ fn room_for_a_huge_object_parks_it_alone_and_leaves_the_tip() {
     assert_eq!(h.young_blocks.len(), 1);
     assert_eq!(h.young_blocks[0].start, p, "the parked block starts with the object");
     assert_eq!(h.young_blocks[0].capacity, pick_block_capacity(huge));
-    assert_eq!(h.alloc_count, counted, "room does not count the allocation");
+    assert_eq!(h.node.alloc_stats(), counted, "room does not count the allocation");
 }
 
 /// Two references a holder keeps in its own fields, which it hands to the

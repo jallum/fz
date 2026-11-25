@@ -481,8 +481,8 @@ asserts the block's fill is exactly the measured bytes, turns the block into a
 <code>GiftSegment</code> and puts
 the saved tip back with its free space intact. The segment carries that one
 block (with its fill), the prefix of the off-heap chain that the window produced (BinRefs and Resources together),
-and the number of objects allocated. The heap's allocation statistics stay with
-it, its <code>live_count</code> goes back to what it was. A collection cannot
+and the number of objects allocated. The program's allocation statistics count
+what the copy allocated. A collection cannot
 run while a window is open.</p>
 
 <p>The receiving heap calls <code>Heap::graft</code>: the segment's block is
@@ -1163,9 +1163,9 @@ mutated after publication.</p>
 
 <p>The important boundary is observability. Return-context motion may not cross
 an extern call, a receive, scheduler-visible process operation, halt, unknown
-closure call, or <code>Process.heap_alloc_stats()</code>. Allocation alone is not
+closure call, or <code>System.alloc_stats()</code>. Allocation alone is not
 source-visible, but allocation timing becomes visible when a program reads the
-current process allocation counters.</p>
+allocation counters.</p>
 
 <p>Each list construction may retain an exact, traced source cell. Unchanged
 contents return that source even when shared. Changing the cell requires both
@@ -1195,14 +1195,17 @@ observer may still hold.</p>
 <!-- ─────────────────────────────── 11. ALLOC STATS ─────────────────────────────── -->
 <h2 id="alloc-stats">11. Heap allocation stats</h2>
 
-<p>Each process heap records allocation requests by kind. The counters are
-runtime process facts, separate from compiler2 telemetry, which reports
-compiler decisions. They are reset after process setup, so bootstrap wiring
-does not pollute fixture baselines. Static closures and halt continuations
-are read-only data in the compiled program, not heap allocations, so they never
-appear in the counters.</p>
+<p>A program counts its allocations by site. Each place compiled code puts an
+object on a heap increments the counter of its own site, and each runtime
+function that places an object has a counter of its own on the program's node.
+Every figure is a sum over those sites, grouped by kind, so the counters are
+per program: they include every process, and the two closures the scheduler
+builds to enter each process. They are runtime facts, separate from compiler2
+telemetry, which reports compiler decisions. Static closures and halt
+continuations are read-only data in the compiled program, not heap allocations,
+so they never appear in the counters.</p>
 
-<p><code>Process.heap_alloc_stats()</code> exposes the current process snapshot
+<p><code>System.alloc_stats()</code> exposes the program's snapshot
 as a map. The runtime reads the counters first and then allocates the map, so
 the returned value does not count itself. A later stats call can include the
 map allocated by an earlier stats call.</p>
@@ -1220,15 +1223,16 @@ interpreter builds none. The counts are allocations: a continuation frame that
 resumes as the newest heap object is given back and stays counted.</p>
 
 <p><code>:shared_bin_allocs</code> and <code>:shared_bin_bytes</code> count the
-off-heap byte buffers behind large binaries, and are deliberately NOT part of
+off-heap byte buffers behind large binaries, the sum of the runtime's
+<code>SharedBin</code> site, and are deliberately NOT part of
 <code>:allocs</code> / <code>:bytes</code> — those bytes never live on the
 process heap. They are the counters that tell copying from sharing: a BinView
 view costs the same either way, so without them a binary copied byte for byte
 looks identical to one that shares an existing buffer.</p>
 
 <div class="aside">
-The stats answer "how much memory did this process request from the runtime
-allocation paths?" They do not answer "how many bytes survived GC" or "what
+The stats answer "how much memory did this program request from its allocation
+sites?" They do not answer "how many bytes survived GC" or "what
 did the compiler decide to lower." Use GC stats for live-set facts and compiler
 stats for lowering facts.
 </div>

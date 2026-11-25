@@ -65,9 +65,9 @@ defmodule P do
 end
 
 line = String.duplicate("x", 10000)
-a = Process.heap_alloc_stats()
+a = System.alloc_stats()
 n = P.go(line)
-b = Process.heap_alloc_stats()
+b = System.alloc_stats()
 dbg(n)
 dbg(div(b[:allocs] - a[:allocs], 10000))
 dbg(div(b[:struct_allocs] - a[:struct_allocs], 10000))

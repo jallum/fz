@@ -265,14 +265,13 @@ fn range_equality_comes_from_struct_fields() {
 }
 
 #[test]
-fn process_heap_alloc_stats_returns_pre_materialization_snapshot() {
+fn system_alloc_stats_returns_pre_materialization_snapshot() {
     let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
     let mut proc_owned = Process::new(schemas);
     let process = &mut proc_owned;
-    process.heap.reset_alloc_stats();
     let _ = process.heap.alloc_list_cons_slot(AnyValue::int(1), EMPTY_LIST_BITS);
 
-    let stats_ref = fz_process_heap_alloc_stats(process);
+    let stats_ref = fz_system_alloc_stats(process);
     assert_eq!(map_int_value_by_atom_name(process, stats_ref, "allocs"), 1);
     assert_eq!(map_int_value_by_atom_name(process, stats_ref, "list_cons_allocs"), 1);
     assert_eq!(map_int_value_by_atom_name(process, stats_ref, "map_allocs"), 0);
@@ -306,7 +305,7 @@ fn process_heap_alloc_stats_returns_pre_materialization_snapshot() {
     // counts the map's own objects, which the returned `map_allocs` and
     // `allocs` did not. How many objects the map takes depends on its size, so
     // the test states the relation, not a count.
-    let after = process.heap.alloc_stats_snapshot();
+    let after = process.heap.node.alloc_stats();
     assert_eq!(after.list_cons.allocs, 1);
     assert!(
         after.map.allocs >= 1,
@@ -538,10 +537,10 @@ fn a_put_of_an_integer_or_a_float_allocates_only_the_map() {
         let [key_word, key_kind] = stored(key);
         let empty = fz_map_empty(process);
         for value in [AnyValue::int(i64::MAX), AnyValue::float(2.5)] {
-            let before = process.heap.alloc_stats_snapshot();
+            let before = process.heap.node.alloc_stats();
             let [value_word, value_kind] = stored(value);
             let _ = fz_map_put(process, empty, key_word, key_kind, value_word, value_kind);
-            let after = process.heap.alloc_stats_snapshot();
+            let after = process.heap.node.alloc_stats();
             assert_eq!(
                 after.total.allocs - before.total.allocs,
                 1,
@@ -575,7 +574,7 @@ fn a_comparison_takes_each_operand_as_word_and_kind_and_boxes_nothing() {
         for (left, right, loose, strict, ordering) in cases {
             let [lw, lk] = stored(left);
             let [rw, rk] = stored(right);
-            let before = process.heap.alloc_stats_snapshot();
+            let before = process.heap.node.alloc_stats();
             let answers = [
                 fz_value_eq_widening_ref(process, lw, lk, rw, rk),
                 fz_value_eq_ref(process, lw, lk, rw, rk),
@@ -585,7 +584,7 @@ fn a_comparison_takes_each_operand_as_word_and_kind_and_boxes_nothing() {
                 fz_op_not_identical(process, lw, lk, rw, rk),
             ];
             let compared = fz_value_cmp_ref(process, lw, lk, rw, rk);
-            let after = process.heap.alloc_stats_snapshot();
+            let after = process.heap.node.alloc_stats();
             assert_eq!(
                 answers,
                 [
@@ -617,10 +616,10 @@ fn inspect_takes_its_value_as_word_and_kind_and_boxes_nothing() {
             (AnyValue::atom(NIL_ATOM_ID), "nil"),
         ] {
             let [word, kind] = stored(value);
-            let before = process.heap.alloc_stats_snapshot();
+            let before = process.heap.node.alloc_stats();
             let plain = fz_inspect(process, word, kind);
             let limited = fz_inspect_with(process, word, kind, options);
-            let after = process.heap.alloc_stats_snapshot();
+            let after = process.heap.node.alloc_stats();
             for rendered in [plain, limited] {
                 let rendered = any_value_from_ref_word(rendered, "inspect");
                 assert_eq!(
@@ -665,7 +664,7 @@ fn a_struct_field_and_a_closure_capture_take_their_value_as_word_and_kind_and_bo
     for (index, value) in values.into_iter().enumerate() {
         let [word, kind] = stored(value);
         let slot = index % 2;
-        let before = process.heap.alloc_stats_snapshot();
+        let before = process.heap.node.alloc_stats();
         fz_struct_store_ref(
             process,
             object_ref.raw_word(),
@@ -675,7 +674,7 @@ fn a_struct_field_and_a_closure_capture_take_their_value_as_word_and_kind_and_bo
             kind,
         );
         fz_closure_set_capture_ref(process, closure_ref.raw_word(), index as u64, word, kind);
-        let after = process.heap.alloc_stats_snapshot();
+        let after = process.heap.node.alloc_stats();
         assert_eq!(
             after.total.allocs, before.total.allocs,
             "{value:?} is stored as its word and kind, boxed nowhere"
@@ -709,7 +708,7 @@ fn a_lookup_takes_its_key_as_word_and_kind_and_boxes_nothing() {
         });
         for key in keys {
             let [key_word, key_kind] = stored(key);
-            let before = process.heap.alloc_stats_snapshot();
+            let before = process.heap.node.alloc_stats();
             let got = fz_map_get_ref(process, map, key_word, key_kind);
             assert_eq!(any_value_from_ref_word(got, "got"), found, "Map.get finds {key:?}");
             assert_eq!(
@@ -725,7 +724,7 @@ fn a_lookup_takes_its_key_as_word_and_kind_and_boxes_nothing() {
             );
             let without = fz_map_delete(process, map, key_word, key_kind);
             assert_eq!(fz_map_count(process, without), 2, "Map.delete drops {key:?}");
-            let after = process.heap.alloc_stats_snapshot();
+            let after = process.heap.node.alloc_stats();
             assert_eq!(
                 after.total.allocs - before.total.allocs,
                 1,
@@ -1158,7 +1157,7 @@ fn binary_copy_writes_the_repetitions_into_one_inline_binary() {
         let subject = alloc_binary(process, b"ab");
         let copy = fz_binary_copy(process, subject, 3);
         assert_eq!(binary_bytes(copy), b"ababab");
-        assert_eq!(process.heap.alloc_stats_snapshot().shared_bin.allocs, 0);
+        assert_eq!(process.heap.node.alloc_stats().shared_bin.allocs, 0);
     });
 }
 
@@ -1166,10 +1165,10 @@ fn binary_copy_writes_the_repetitions_into_one_inline_binary() {
 fn binary_copy_of_a_large_result_is_one_shared_buffer_of_the_exact_size() {
     with_process(|process| {
         let subject = alloc_binary(process, &[5u8; 100]);
-        let before = process.heap.alloc_stats_snapshot().shared_bin.bytes;
+        let before = process.heap.node.alloc_stats().shared_bin.bytes;
         let copy = fz_binary_copy(process, subject, 7);
         assert_eq!(binary_bytes(copy), vec![5u8; 700]);
-        assert_eq!(process.heap.alloc_stats_snapshot().shared_bin.bytes - before, 700);
+        assert_eq!(process.heap.node.alloc_stats().shared_bin.bytes - before, 700);
     });
 }
 
@@ -1654,10 +1653,10 @@ fn reading_a_middle_binary_field_of_a_shared_source_builds_a_view() {
         let bytes: Vec<u8> = (0..200u8).collect();
         let source = process.heap.alloc_bitstring(&bytes, 200 * 8);
         let source_ref = source.ref_word().raw_word();
-        let before = process.heap.alloc_stats_snapshot();
+        let before = process.heap.node.alloc_stats();
         let spec = fz_bs_field_spec(2, 1, 8, 0, 0, 0);
         let field = fz_bs_read_binary_ref(process, source_ref, 50 * 8, spec, 100);
-        let after = process.heap.alloc_stats_snapshot();
+        let after = process.heap.node.alloc_stats();
         let word = AnyValueRef::from_raw_word(field).unwrap().heap_object_word().unwrap();
         unsafe {
             assert_eq!(Bin::of_binary(word).bit_len(), 100 * 8);
