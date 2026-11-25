@@ -1069,3 +1069,243 @@ fn a_hole_link_keeps_its_flag_through_a_minor_and_a_major_collection() {
     assert_eq!(cell_of(major).tail(), ListTail::Hole);
     assert_eq!(cell_of(major).head_value(), AnyValue::int(5));
 }
+
+// An open field is written down by the collection that sees its destination
+// open, so the next minor collection can read it before it reads anything
+// else.
+
+use super::destination::{FieldDestination, Layout};
+use crate::any_value::{
+    AnyValueRefPacking, ClosureDenotationId, closure_addr_from_tagged, closure_capture_raw_kind,
+    closure_capture_set_raw_kind,
+};
+
+/// A closure holding `dest` as its one capture: the way a yielded builder
+/// keeps its destination across a collection.
+fn holding(heap: &mut Heap, dest: FieldDestination) -> AnyValueRef {
+    let bits = heap.alloc_closure_slots(ClosureDenotationId::user(0), 0, 1, 0);
+    let closure = closure_addr_from_tagged(bits).expect("closure");
+    unsafe { closure_capture_set_raw_kind(closure, 0, dest.word(), ValueKind::DESTINATION) };
+    root_of(bits)
+}
+
+/// The destination a closure from `holding` holds now.
+fn held(holder: AnyValueRef) -> FieldDestination {
+    let (raw, kind) = unsafe { closure_capture_raw_kind(holder.closure_addr().unwrap(), 0) };
+    assert_eq!(kind, ValueKind::DESTINATION);
+    FieldDestination::from_word(raw)
+}
+
+fn young_list(heap: &mut Heap, first: i64, len: i64) -> AnyValue {
+    AnyValue::heap_ptr(
+        list_addr_from_tagged(list_of(heap, first, len, EMPTY_LIST)).expect("list"),
+        ValueKind::LIST,
+    )
+}
+
+fn heads(mut list: AnyValueRef) -> Vec<i64> {
+    let mut heads = Vec::new();
+    while !list.is_empty_list() {
+        heads.push(list_head_ref(list).unwrap().load_int().unwrap());
+        list = list_tail_ref(list).unwrap();
+    }
+    heads
+}
+
+/// A container with one open field and a root for it: the container, the
+/// holder of the destination, and how to read the field once it is filled.
+struct OpenField {
+    container: AnyValueRef,
+    holder: AnyValueRef,
+    layout: Layout,
+}
+
+impl OpenField {
+    fn made(heap: &mut Heap, layout: Layout) -> Self {
+        let (container, dest) = match layout {
+            Layout::ListTail => {
+                let (cell, dest) = heap.alloc_open_list_cell(AnyValue::int(7));
+                (cell, dest)
+            }
+            Layout::StructField(_) => {
+                let pair = heap.schemas.borrow_mut().tuple(2);
+                let object = heap.alloc_struct(pair);
+                let dest = unsafe {
+                    heap.store_struct_field(object, 8, 24, AnyValue::int(7)).unwrap();
+                    heap.open_struct_field(object, 1)
+                };
+                (AnyValueRef::from_heap_object(ValueKind::STRUCT, object).unwrap(), dest)
+            }
+            Layout::MapValue(_) => {
+                let bits = heap.alloc_map_slots(&[(AnyValue::int(1), AnyValue::int(0))]);
+                let node = crate::any_value::map_addr_from_tagged(bits).unwrap();
+                let dest = unsafe { heap.open_map_value(node, 0) };
+                (AnyValueRef::from_heap_object(ValueKind::MAP, node).unwrap(), dest)
+            }
+        };
+        let holder = holding(heap, dest);
+        Self {
+            container,
+            holder,
+            layout,
+        }
+    }
+
+    /// The value the field holds once filled.
+    fn value(&self, heap: &mut Heap, container: AnyValueRef) -> AnyValueRef {
+        match self.layout {
+            Layout::ListTail => list_tail_ref(container).unwrap(),
+            Layout::StructField(_) => heap.read_struct_field_ref(container, 8).unwrap(),
+            Layout::MapValue(_) => heap.read_map_value(container, AnyValue::int(1)).unwrap(),
+        }
+    }
+}
+
+const EVERY_LAYOUT: [Layout; 3] = [Layout::ListTail, Layout::StructField(1), Layout::MapValue(0)];
+
+#[test]
+fn a_hole_open_across_a_minor_is_filled_young_and_survives_the_next_minor() {
+    for layout in EVERY_LAYOUT {
+        let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
+        let open = OpenField::made(&mut heap, layout);
+        let mut roots = [open.container, open.holder];
+        let first = heap.collect_stats(&mut roots);
+        assert_eq!(first.generation, Generation::Minor);
+        assert_eq!(
+            first.open_holes, 1,
+            "{layout:?}: the collection wrote the open hole down"
+        );
+
+        let filled = young_list(&mut heap, 100, 3);
+        heap.fill_destination(held(roots[1]), filled);
+
+        // The destination is dead now: only the container is a root, so the
+        // listed hole alone keeps the young list.
+        let mut roots = [roots[0]];
+        let second = heap.collect_stats(&mut roots);
+        assert_eq!(second.generation, Generation::Minor, "{layout:?}");
+        assert_eq!(second.copied_objects, 3, "{layout:?}: the young list was copied");
+        assert_eq!(second.open_holes, 0, "{layout:?}: the hole is closed");
+        let value = open.value(&mut heap, roots[0]);
+        assert_eq!(heads(value), [102, 101, 100], "{layout:?}");
+        let cell = value.list_addr().unwrap();
+        assert!(!range().is_young(cell), "{layout:?}: the filled list is old now");
+    }
+}
+
+#[test]
+fn a_hole_still_open_at_the_next_minor_stays_listed_and_keeps_its_place() {
+    let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let open = OpenField::made(&mut heap, Layout::ListTail);
+    let mut roots = [open.container, open.holder];
+    assert_eq!(heap.collect_stats(&mut roots).open_holes, 1);
+    let second = heap.collect_stats(&mut roots);
+    assert_eq!(second.generation, Generation::Minor);
+    assert_eq!(second.open_holes, 1);
+    assert_eq!(
+        held(roots[1]).cell_addr(),
+        roots[0].list_addr().unwrap(),
+        "the destination names the cell the collection left"
+    );
+    assert_eq!(cell_of(roots[0].heap_object_word().unwrap()).tail(), ListTail::Hole);
+}
+
+/// Collect minor, minor, then the major the second minor makes due, keeping
+/// `roots` and a ballast list that tips the heap into a major collection.
+fn through_a_major(heap: &mut Heap, roots: &mut Vec<AnyValueRef>) -> GcStats {
+    let ballast = root_of(list_of(heap, 0, 200, EMPTY_LIST));
+    roots.push(ballast);
+    assert_eq!(heap.collect_stats(roots).generation, Generation::Minor);
+    let stats = heap.collect_stats(roots);
+    assert_eq!(stats.generation, Generation::Major);
+    roots.pop();
+    stats
+}
+
+#[test]
+fn a_major_collection_forwards_an_open_destination_and_lists_its_hole_again() {
+    for layout in EVERY_LAYOUT {
+        let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
+        let open = OpenField::made(&mut heap, layout);
+        let mut roots = vec![open.container, open.holder];
+        let major = through_a_major(&mut heap, &mut roots);
+        assert_eq!(major.open_holes, 1, "{layout:?}");
+        assert!(heap.destination_is_open(held(roots[1])), "{layout:?}");
+        assert_eq!(
+            held(roots[1]).cell_addr() as u64,
+            roots[0].raw_word() & AnyValueRefPacking::current().address_mask(),
+            "{layout:?}: the destination was rebased onto the moved cell"
+        );
+        let filled = young_list(&mut heap, 5, 1);
+        heap.fill_destination(held(roots[1]), filled);
+        assert_eq!(heads(open.value(&mut heap, roots[0])), [5], "{layout:?}");
+    }
+}
+
+#[test]
+fn a_hole_open_across_a_major_and_filled_young_survives_the_minor_that_reads_the_rebuilt_list() {
+    for layout in EVERY_LAYOUT {
+        let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
+        let open = OpenField::made(&mut heap, layout);
+        let mut roots = vec![open.container, open.holder];
+        assert_eq!(through_a_major(&mut heap, &mut roots).open_holes, 1);
+
+        let filled = young_list(&mut heap, 40, 2);
+        heap.fill_destination(held(roots[1]), filled);
+        let mut roots = [roots[0]];
+        let minor = heap.collect_stats(&mut roots);
+        assert_eq!(minor.generation, Generation::Minor, "{layout:?}");
+        assert_eq!(minor.copied_objects, 2, "{layout:?}");
+        assert_eq!(heads(open.value(&mut heap, roots[0])), [41, 40], "{layout:?}");
+    }
+}
+
+#[test]
+fn a_dead_destinations_hole_keeps_its_value_until_the_next_major_and_no_longer() {
+    let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let (cell, dest) = heap.alloc_open_list_cell(AnyValue::int(7));
+    let mut roots = [cell, holding(&mut heap, dest)];
+    assert_eq!(heap.collect_stats(&mut roots).open_holes, 1);
+    let dest = held(roots[1]);
+
+    // Nothing roots the cell or its destination, yet the listed hole is read.
+    let filled = young_list(&mut heap, 10, 3);
+    heap.fill_destination(dest, filled);
+    let mut roots = [root_of(list_of(&mut heap, 0, 200, EMPTY_LIST))];
+    let minor = heap.collect_stats(&mut roots);
+    assert_eq!(minor.generation, Generation::Minor);
+    assert_eq!(minor.copied_objects, 203, "the ballast and the floating three cells");
+    assert_eq!(minor.open_holes, 0);
+
+    let major = heap.collect_stats(&mut []);
+    assert_eq!(major.generation, Generation::Major);
+    assert_eq!(
+        major.copied_objects, 0,
+        "the major collection ignored the list and freed it all"
+    );
+    assert_eq!(major.live_bytes, 0);
+}
+
+#[test]
+fn a_collection_leaves_a_destination_cell_shared_so_reuse_never_rewrites_it() {
+    let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let (cell, dest) = heap.alloc_open_list_cell(AnyValue::int(7));
+    let mut roots = [cell, holding(&mut heap, dest)];
+    heap.collect_stats(&mut roots);
+    let (cell, dest) = (roots[0], held(roots[1]));
+    assert!(cell_of(cell.heap_object_word().unwrap()).aliased());
+
+    let rest = young_list(&mut heap, 1, 1);
+    heap.fill_destination(dest, rest);
+    assert!(
+        cell_of(cell.heap_object_word().unwrap()).aliased(),
+        "filling keeps the shared mark"
+    );
+
+    let reused = heap
+        .reuse_or_alloc_list_cons_raw_kind(cell, 9, ValueKind::INT, AnyValue::empty_list(), true)
+        .unwrap();
+    assert_ne!(reused, cell, "an old destination is never rewritten in place");
+    assert_eq!(heads(cell), [7, 1], "the destination cell still reads as it did");
+    assert_eq!(heads(reused), [9]);
+}

@@ -149,6 +149,7 @@ impl Heap {
             from_blocks: Vec::new(),
             retired_from: 0,
             worklist: Vec::new(),
+            open_holes: Vec::new(),
             collect_at: std::ptr::null_mut(),
             collect_room: 0,
             parked_fill: 0,
@@ -526,7 +527,7 @@ impl Heap {
         )
     }
 
-    fn place_list_cons(&mut self, site: RuntimeAllocSite, head_raw: u64, link: ListLink) -> u64 {
+    pub(super) fn place_list_cons(&mut self, site: RuntimeAllocSite, head_raw: u64, link: ListLink) -> u64 {
         let p = self.alloc_at(site, 16);
         unsafe {
             write(p as *mut ListCons, ListCons::with_link(head_raw, link));
@@ -538,7 +539,7 @@ impl Heap {
     /// list is linked as it is; any other value is placed in a terminator
     /// cell, an ordinary cell holding it as a head with `[]` for a tail, and
     /// the link names that cell behind the terminator flag.
-    fn link_to_tail(&mut self, head_kind: ValueKind, tail: AnyValue) -> ListLink {
+    pub(super) fn link_to_tail(&mut self, head_kind: ValueKind, tail: AnyValue) -> ListLink {
         if tail.kind() == ValueKind::LIST {
             return ListLink::to_addr(tail.raw(), head_kind);
         }
@@ -1714,12 +1715,14 @@ impl Heap {
 
         let schemas = schemas_handle.borrow();
         let mut tracer = Tracer::new(from_space, self, &schemas);
+        tracer.read_open_holes(generation);
         roots.forward_into(&mut RootForwarder::new(&mut tracer));
         tracer.scan();
         let (kept_objects, scalar_boxes) = tracer.finish();
         // To-space is the heap's young area now: the fresh tip and the blocks
         // the copy parked, so its fill is what the collection copied.
         stats.copied_objects = kept_objects + scalar_boxes;
+        stats.open_holes = self.open_holes.len() as u64;
         stats.copied_bytes = self.young_bytes() as u64;
         drop(schemas);
 

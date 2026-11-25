@@ -65,6 +65,7 @@ mod binary_budget;
 mod block_pool;
 mod collected;
 mod deep_copy;
+mod destination;
 mod gc;
 mod gift;
 mod imp;
@@ -107,6 +108,7 @@ pub use self::collected::{Collected, CollectedBlocks};
 pub use self::deep_copy::{
     HeapView, deep_copy_any_value, deep_copy_any_value_ref, deep_copy_slot, deep_copy_stored, measure_deep_copy,
 };
+pub use self::destination::{FieldDestination, Layout};
 pub(crate) use self::gc::forwarding::forwarded_target;
 pub use self::gc::roots::{RootForwarder, Roots};
 pub use self::gift::GiftSegment;
@@ -176,6 +178,12 @@ pub struct Heap {
     /// The worklist a collection's trace scans, emptied when the collection
     /// ends and kept for the next one.
     worklist: Vec<CopiedObject>,
+    /// The destinations whose fields were still open when the latest
+    /// collection met them, one per running builder. The next minor
+    /// collection reads each as a root before anything else, since the field
+    /// may hold a young value by then; a major collection ignores the list. The
+    /// collector rebuilds it and the program never touches it.
+    open_holes: Vec<FieldDestination>,
     /// The bump pointer at which the young bytes reach the collection budget:
     /// `should_gc` is `bump_top >= collect_at`. It is the tip's start plus
     /// `collect_room`, moved when a tip is installed, and never by compiled

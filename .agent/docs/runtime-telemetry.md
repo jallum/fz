@@ -459,6 +459,8 @@ major collection's from-space is every block (`Heap::next_generation`):
 - `blocks_after`: old blocks the heap holds once the pass finished, every block
   holding data a collection kept or a gift brought; the fresh empty tip is not
   counted.
+- `open_holes`: destinations whose field was still open when the pass finished,
+  the length of the list the next minor pass reads first (`Heap::open_holes`);
 - `stub_visits`: off-heap chain links the pass followed. Every BinRef and resource
   stub on a chain the pass examines is visited once by the sweep (a view is not on a chain): the young chain for
   a minor pass, the young and old chains for a major pass. Summed by `generation`, it

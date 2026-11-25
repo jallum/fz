@@ -19,10 +19,7 @@
 //! handler from it the way it would from a heap template. The interpreter
 //! keeps its handler frame itself, so its record is the trailer alone.
 
-use crate::any_value::{
-    AnyValueRef, closure_capture_raw_kind, closure_capture_ref_word, closure_capture_set_ref_word,
-    closure_captured_count,
-};
+use crate::any_value::{ValueKind, closure_capture_raw_kind, closure_capture_raw_slot, closure_captured_count};
 
 const WORD: usize = size_of::<u64>();
 const INTERPRETER_RECORD_BYTES: u64 = WORD as u64;
@@ -118,21 +115,11 @@ impl HandlerStack {
         self.records().count()
     }
 
-    /// Hand every heap value a compiled record captures, innermost first, to
-    /// `forward`, which a collection uses to move it: each capture holds the
-    /// value `forward` leaves in it.
-    pub fn forward_captures(&mut self, mut forward: impl FnMut(&mut AnyValueRef)) {
-        self.for_each_heap_capture(|image, idx| {
-            // SAFETY: `image` is a live closure image and `idx` one of its captures.
-            let word = unsafe { closure_capture_ref_word(image, idx) };
-            let mut value = AnyValueRef::from_raw_word(word).expect("a heap capture is a value ref");
-            forward(&mut value);
-            // SAFETY: `image` is a live closure image the stack owns.
-            unsafe { closure_capture_set_ref_word(image, idx, value.raw_word()) };
-        });
-    }
-
-    fn for_each_heap_capture(&self, mut each: impl FnMut(*const u8, usize)) {
+    /// Hand every capture of every compiled record, innermost first, to
+    /// `each` as the address of its word and its kind. A collection forwards
+    /// each by that kind, as it does the captures of a heap closure, so the
+    /// kinds that name a cell move with it and the rest are left alone.
+    pub fn for_each_capture(&mut self, mut each: impl FnMut(*mut u64, ValueKind)) {
         for (record, _) in self.records() {
             let Innermost::Compiled(image) = record else {
                 continue;
@@ -142,9 +129,8 @@ impl HandlerStack {
             let count = unsafe { closure_captured_count(image) };
             for idx in 0..count {
                 // SAFETY: `idx` is one of the image's captures.
-                if unsafe { closure_capture_raw_kind(image, idx) }.1.is_heap() {
-                    each(image, idx);
-                }
+                let (_, kind) = unsafe { closure_capture_raw_kind(image, idx) };
+                each(unsafe { closure_capture_raw_slot(image, idx) }, kind);
             }
         }
     }

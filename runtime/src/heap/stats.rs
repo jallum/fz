@@ -306,4 +306,7 @@ pub struct GcStats {
     /// that holds data a collection kept or a gift brought. The fresh tip is
     /// empty and is not counted.
     pub blocks_after: u64,
+    /// Destinations whose fields were still open when this collection met
+    /// them: the length of the list the next minor collection reads first.
+    pub open_holes: u64,
 }

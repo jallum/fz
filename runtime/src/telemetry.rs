@@ -318,7 +318,7 @@ fn write_collection(out: &mut String, collection: Collection, stats: &GcStats, h
     let footprint = blocks.footprint_once_released(pool_footprint());
     write!(
         out,
-        "\"pid\":{},\"boundary\":\"{}\",\"generation\":\"{}\",\"copied_objects\":{},\"copied_bytes\":{},\"live_bytes\":{},\"young_bytes\":{},\"young_budget\":{},\"received_bytes\":{},\"young_binary_bytes\":{},\"binary_budget\":{},\"from_space_capacity_bytes\":{},\"blocks_released\":{},\"to_space_guess_bytes\":{},\"to_space_capacity_bytes\":{},\"blocks_after\":{},\"stub_visits\":{},\"in_use_bytes\":{},\"idle_bytes\":{}",
+        "\"pid\":{},\"boundary\":\"{}\",\"generation\":\"{}\",\"copied_objects\":{},\"copied_bytes\":{},\"live_bytes\":{},\"young_bytes\":{},\"young_budget\":{},\"received_bytes\":{},\"young_binary_bytes\":{},\"binary_budget\":{},\"from_space_capacity_bytes\":{},\"blocks_released\":{},\"to_space_guess_bytes\":{},\"to_space_capacity_bytes\":{},\"blocks_after\":{},\"open_holes\":{},\"stub_visits\":{},\"in_use_bytes\":{},\"idle_bytes\":{}",
         collection.pid,
         collection.boundary.as_str(),
         stats.generation.as_str(),
@@ -335,6 +335,7 @@ fn write_collection(out: &mut String, collection: Collection, stats: &GcStats, h
         stats.to_space_guess_bytes,
         blocks.to_space_capacity_bytes(),
         stats.blocks_after,
+        stats.open_holes,
         stats.stub_visits,
         footprint.in_use_bytes,
         footprint.idle_bytes

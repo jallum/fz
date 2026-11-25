@@ -99,6 +99,7 @@ fn a_collection_writes_its_boundary_its_stats_and_the_bytes_in_use_and_idle_when
         binary_budget: 262144,
         to_space_guess_bytes: 1024,
         blocks_after: 2,
+        open_holes: 3,
         stub_visits: 7,
         stubs_made,
         binrefs_made,
@@ -124,7 +125,7 @@ fn a_collection_writes_its_boundary_its_stats_and_the_bytes_in_use_and_idle_when
     assert_eq!(
         written,
         format!(
-            r#"{{"name":["fz","runtime","gc"],"time_ns":12,"kind":"event","span_id":3,"parent_span_id":4,"measurements":{{}},"metadata":{{"pid":5,"boundary":"park","generation":"minor","copied_objects":6,"copied_bytes":288,"live_bytes":288,"young_bytes":3072,"young_budget":2048,"received_bytes":1024,"young_binary_bytes":300000,"binary_budget":262144,"from_space_capacity_bytes":4096,"blocks_released":1,"to_space_guess_bytes":1024,"to_space_capacity_bytes":1024,"blocks_after":2,"stub_visits":7,"in_use_bytes":{in_use_bytes},"idle_bytes":{idle_bytes},"stubs_made":{{"appended_in_place":3,"window_of_buffer":0,"grown_buffer":0,"filled_buffer":0,"message_copy":1,"static_literal":0}},"binrefs_made":{{"appended_in_place":0,"window_of_buffer":0,"grown_buffer":0,"filled_buffer":0,"message_copy":1,"static_literal":0}},"stubs_survived":{{"appended_in_place":1,"window_of_buffer":0,"grown_buffer":0,"filled_buffer":0,"message_copy":0,"static_literal":0}}}}}}"#
+            r#"{{"name":["fz","runtime","gc"],"time_ns":12,"kind":"event","span_id":3,"parent_span_id":4,"measurements":{{}},"metadata":{{"pid":5,"boundary":"park","generation":"minor","copied_objects":6,"copied_bytes":288,"live_bytes":288,"young_bytes":3072,"young_budget":2048,"received_bytes":1024,"young_binary_bytes":300000,"binary_budget":262144,"from_space_capacity_bytes":4096,"blocks_released":1,"to_space_guess_bytes":1024,"to_space_capacity_bytes":1024,"blocks_after":2,"open_holes":3,"stub_visits":7,"in_use_bytes":{in_use_bytes},"idle_bytes":{idle_bytes},"stubs_made":{{"appended_in_place":3,"window_of_buffer":0,"grown_buffer":0,"filled_buffer":0,"message_copy":1,"static_literal":0}},"binrefs_made":{{"appended_in_place":0,"window_of_buffer":0,"grown_buffer":0,"filled_buffer":0,"message_copy":1,"static_literal":0}},"stubs_survived":{{"appended_in_place":1,"window_of_buffer":0,"grown_buffer":0,"filled_buffer":0,"message_copy":0,"static_literal":0}}}}}}"#
         )
     );
 }

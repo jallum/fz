@@ -54,6 +54,10 @@ impl<'a> Tracer<'a> {
     /// forwards as the word it is.
     pub(in super::super) fn forward_root(&mut self, root: &mut AnyValueRef) {
         let kind = root.tag();
+        debug_assert!(
+            !kind.is_destination(),
+            "a root is a value; a destination names only a slot"
+        );
         if kind.is_boxed_scalar() {
             let p = root.storage_addr();
             if self.from_space.moves(self.heap, p, root.is_literal()) {
@@ -73,8 +77,15 @@ impl<'a> Tracer<'a> {
     /// `slot` must be a readable, writable word in a to-space object.
     #[inline(always)]
     pub(super) unsafe fn forward_slot(&mut self, slot: *mut u64, kind: ValueKind) {
-        if kind.is_heap() {
-            unsafe { write(slot, self.forward(slot.read(), kind)) };
+        // One range test sorts out the scalar kinds a slot mostly holds; only a
+        // kind inside the range (the heap kinds, pid, reference, destination)
+        // looks further.
+        if kind.may_need_forwarding() {
+            if kind.is_heap() {
+                unsafe { write(slot, self.forward(slot.read(), kind)) };
+            } else if kind.is_destination() {
+                unsafe { write(slot, self.forward_destination(slot.read())) };
+            }
         }
     }
 

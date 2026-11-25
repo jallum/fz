@@ -149,9 +149,72 @@ fn heap_object_word_carries_kind_above_the_address() {
 }
 
 #[test]
-fn value_kind_rejects_non_value_tags() {
-    assert_eq!(ValueKind::new(11), None);
-    assert_eq!(ValueKind::new(12), None);
+fn value_kind_rejects_tags_no_kind_owns() {
+    for tag in 0..=15 {
+        assert!(ValueKind::new(tag).is_some(), "tag {tag} is a kind");
+    }
+    assert_eq!(ValueKind::new(16), None);
+}
+
+#[test]
+fn a_destination_is_a_kind_of_slots_and_never_of_a_ref_word() {
+    let kind = ValueKind::DESTINATION;
+    assert_eq!(ValueKind::new(TAG_KIND_DESTINATION as u8), Some(kind));
+    assert!(
+        !kind.is_heap() && !kind.is_scalar(),
+        "{kind:?} names no object and holds no scalar"
+    );
+    let word = (kind.tag() as u64) << AnyValueRefPacking::current().tag_shift();
+    let carried = AnyValueRef::from_raw_word(word).expect("the tag field is a kind");
+    assert!(
+        std::panic::catch_unwind(|| AnyValue::from_ref(carried)).is_err(),
+        "no ref word decodes to a value of kind {kind:?}"
+    );
+    assert!(kind.is_destination() && !ValueKind::STRUCT.is_destination());
+}
+
+/// Intent: an open struct field or map value is a null reference of a struct,
+/// which no decode turns into a value.
+#[test]
+#[should_panic(expected = "heap value ref: NullAddress")]
+fn a_null_reference_of_a_struct_is_not_a_value() {
+    let _ = AnyValue::decode_parts(0, ValueKind::STRUCT.tag());
+}
+
+/// Intent: the one tag no kind owns survives the infallible kind read and is
+/// refused by every decode, so a corrupt word never becomes a value.
+#[test]
+fn a_ref_word_carrying_the_unassigned_tag_is_refused_as_a_corrupt_word() {
+    let word = (TAG_UNASSIGNED << AnyValueRefPacking::current().tag_shift()) | 0x1000;
+    let carried = AnyValueRef::from_raw_word(word).expect("the tag field is a nibble");
+    for (what, outcome) in [
+        (
+            "from_ref",
+            std::panic::catch_unwind(|| AnyValue::from_ref(carried)).map(|_| ()),
+        ),
+        (
+            "storage_raw",
+            std::panic::catch_unwind(|| carried.storage_raw()).map(|_| ()),
+        ),
+        (
+            "decode_parts",
+            std::panic::catch_unwind(|| AnyValue::decode_parts(0x1000, TAG_UNASSIGNED as u8)).map(|_| ()),
+        ),
+    ] {
+        let payload = outcome.expect_err(&format!("{what} of tag 0xC must panic"));
+        let text = payload
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| payload.downcast_ref::<&str>().copied())
+            .unwrap_or_default();
+        assert!(text.contains("tag 0xC names no kind: a corrupt word"), "{what}: {text}");
+    }
+}
+
+#[test]
+#[should_panic(expected = "a destination is not a value")]
+fn a_destination_is_not_a_value() {
+    let _ = AnyValue::decode_parts(0x1000, ValueKind::DESTINATION.tag());
 }
 
 #[test]
@@ -218,7 +281,6 @@ fn any_value_round_trip_without_packed_scalar_tags() {
 
 #[test]
 fn any_value_decode_parts_rejects_unknown_kind_bytes() {
-    assert_eq!(AnyValue::decode_parts(0, 11), None);
     assert_eq!(AnyValue::decode_parts(0, 0x10), None);
 }
 
@@ -1407,10 +1469,6 @@ fn any_value_refs_use_value_kind_tags_directly() {
 
     assert_eq!(packing.tag(value), Ok(ValueKind::ATOM));
     assert_eq!(value.raw_word() >> packing.tag_shift(), ValueKind::ATOM.tag() as u64);
-    assert_eq!(
-        AnyValueRef::from_raw_word(11_u64 << packing.tag_shift()),
-        Err(AnyValueRefError::UnknownTag(11))
-    );
 }
 
 #[test]
@@ -1686,9 +1744,9 @@ fn a_stored_value_is_two_words_so_it_returns_in_two_registers() {
 }
 
 #[test]
-#[should_panic(expected = "a test: kind 11 with word 0x0 spells no value")]
+#[should_panic(expected = "a test: kind 16 with word 0x0 spells no value")]
 fn a_stored_kind_that_names_no_kind_is_refused_loudly() {
-    let _ = Stored { word: 0, kind: 11 }.value("a test");
+    let _ = Stored { word: 0, kind: 0x10 }.value("a test");
 }
 
 #[test]
@@ -1762,4 +1820,23 @@ fn closure_capture_counts_past_the_header_field_are_refused_in_every_build() {
 
     let packed = std::panic::catch_unwind(|| closure_flags_pack(CLOSURE_FLAGS_CAPTURED_MASK + 1, 0));
     assert!(packed.is_err(), "packing an oversize count must stop, not mask it");
+}
+
+/// Intent: a ref word whose tag is a destination is no value. Decoding it as a
+/// value, or asking for its storage word, fails loudly instead of being read as
+/// a scalar or a heap object.
+#[test]
+fn a_ref_word_carrying_a_destination_is_refused_wherever_a_value_is_read() {
+    let word = AnyValueRefPacking::current().pack(ValueKind::DESTINATION, 0x1000);
+    let decode = std::panic::catch_unwind(|| AnyValue::from_ref(word));
+    let storage = std::panic::catch_unwind(|| word.storage_raw());
+    for (what, outcome) in [("from_ref", decode.map(|_| ())), ("storage_raw", storage.map(|_| ()))] {
+        let payload = outcome.expect_err(&format!("{what} of a destination ref word must panic"));
+        let text = payload
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| payload.downcast_ref::<&str>().copied())
+            .unwrap_or_default();
+        assert!(text.contains("destination"), "{what}: {text}");
+    }
 }
