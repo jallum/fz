@@ -1,0 +1,50 @@
+#---
+# purpose: :unicode_util.cp/1 and gc/1 take the next codepoint and grapheme cluster of lists, binaries, nested chardata and improper tails, and answer {:error, rest} at a malformed binary
+# oracle: self
+# oracle.stamp: d343bcac27381425
+#---
+defmodule Main do
+  def show(label, value), do: IO.inspect({label, value})
+
+  def main() do
+    show("cp empty list", :unicode_util.cp([]))
+    show("cp empty binary", :unicode_util.cp(""))
+    show("cp list", :unicode_util.cp([97, 98]))
+    show("cp binary", :unicode_util.cp("é!"))
+    show("cp nested", :unicode_util.cp([[[], "bc"], 100]))
+    show("cp nested ints", :unicode_util.cp([[97, 98], 99]))
+    show("cp improper", :unicode_util.cp([97 | "bc"]))
+    show("cp improper after head", :unicode_util.cp([[] | "bc"]))
+    show("cp malformed", :unicode_util.cp(<<255, 97>>))
+    show("cp malformed in list", :unicode_util.cp([<<255>>, 97]))
+    show("cp malformed after empty", :unicode_util.cp([[], <<255, 97>>, "z"]))
+
+    show("gc empty list", :unicode_util.gc([]))
+    show("gc empty binary", :unicode_util.gc(""))
+    show("gc one", :unicode_util.gc([97]))
+    show("gc ascii list", :unicode_util.gc([97, 98]))
+    show("gc ascii binary", :unicode_util.gc("ab"))
+    show("gc crlf list", :unicode_util.gc([13, 10, 97]))
+    show("gc crlf binary", :unicode_util.gc("\r\na"))
+    show("gc cr alone", :unicode_util.gc([13, 97]))
+    show("gc combining list", :unicode_util.gc([101, 769, 120]))
+    show("gc combining binary", :unicode_util.gc("éx"))
+    show("gc combining nested", :unicode_util.gc([[101], [<<204, 129>>, 120]]))
+    show("gc combining improper", :unicode_util.gc([101 | <<204, 129, 120>>]))
+    show("gc latin1 then wide", :unicode_util.gc([233, 8364]))
+    show("gc hangul", :unicode_util.gc([4352, 4449, 4520, 97]))
+    show("gc regional pair", :unicode_util.gc("🇸🇪🇳🇴"))
+    show("gc emoji zwj", :unicode_util.gc("👩‍👩‍👧x"))
+    show("gc emoji modifier", :unicode_util.gc([128077, 127995, 97]))
+    show("gc malformed", :unicode_util.gc(<<255, 97>>))
+    show("gc malformed after cp", :unicode_util.gc([97, <<255>>]))
+    show("gc malformed wide", :unicode_util.gc([8364, <<255>>]))
+    show("gc malformed nested", :unicode_util.gc([97, [<<255>>], "z"]))
+    show("gc malformed after cluster", :unicode_util.gc([101, 769, <<255>>]))
+    show("gc malformed inside binary", :unicode_util.gc("e" <> <<255>>))
+    show("gc malformed after combining", :unicode_util.gc([101, <<204, 129, 255>>]))
+    show("gc malformed after nested cluster", :unicode_util.gc([101, 769, [<<255>>], "z"]))
+    show("gc malformed after improper cluster", :unicode_util.gc([101 | <<204, 129, 255>>]))
+  end
+end
+Main.main()

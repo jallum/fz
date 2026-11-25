@@ -1,0 +1,37 @@
+{"cp empty list", []}
+{"cp empty binary", []}
+{"cp list", ~c"ab"}
+{"cp binary", [233 | "!"]}
+{"cp nested", [98, "c", 100]}
+{"cp nested ints", ~c"abc"}
+{"cp improper", [97 | "bc"]}
+{"cp improper after head", [98 | "c"]}
+{"cp malformed", {:error, <<255, 97>>}}
+{"cp malformed in list", {:error, [<<255>>, 97]}}
+{"cp malformed after empty", {:error, [<<255, 97>>, "z"]}}
+{"gc empty list", []}
+{"gc empty binary", []}
+{"gc one", ~c"a"}
+{"gc ascii list", ~c"ab"}
+{"gc ascii binary", [97 | "b"]}
+{"gc crlf list", [~c"\r\n", 97]}
+{"gc crlf binary", [~c"\r\n" | "a"]}
+{"gc cr alone", ~c"\ra"}
+{"gc combining list", [[101, 769], 120]}
+{"gc combining binary", [[101, 769] | "x"]}
+{"gc combining nested", [[101, 769], "", 120]}
+{"gc combining improper", [[101, 769] | "x"]}
+{"gc latin1 then wide", [233, 8364]}
+{"gc hangul", [[4352, 4449, 4520], 97]}
+{"gc regional pair", [[127480, 127466] | "🇳🇴"]}
+{"gc emoji zwj", [[128105, 8205, 128105, 8205, 128103] | "x"]}
+{"gc emoji modifier", [[128077, 127995], 97]}
+{"gc malformed", {:error, <<255, 97>>}}
+{"gc malformed after cp", [97 | <<255>>]}
+{"gc malformed wide", [8364 | <<255>>]}
+{"gc malformed nested", [97, <<255>>, "z"]}
+{"gc malformed after cluster", [[101, 769], <<255>>]}
+{"gc malformed inside binary", [101 | <<255>>]}
+{"gc malformed after combining", [[101, 769], <<255>>]}
+{"gc malformed after nested cluster", [[101, 769], [<<255>>, "z"]]}
+{"gc malformed after improper cluster", [[101, 769], <<255>>]}
