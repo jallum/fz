@@ -5,7 +5,7 @@
 //! private to the relevant job family.
 
 use super::drive::{ExecutionContext, FactKey, Job, JobEffects, current_uses, settled_uses};
-use super::world::{FunctionRetirement, World};
+use super::world::{JobRetirement, RetirementGround, World};
 use fz_engine::FactUse;
 use fz_engine::FatalError;
 
@@ -41,7 +41,7 @@ pub(crate) fn run<T: crate::telemetry::RawSpanTelemetry>(
     context: &mut ExecutionContext<'_, T>,
     job: &Job,
 ) -> Result<JobEffects, FatalError> {
-    if let Some(retired) = retire_orphan(context, job) {
+    if let Some(retired) = retire_ungrounded(context, job) {
         return Ok(retired);
     }
     let ExecutionContext {
@@ -79,29 +79,49 @@ pub(crate) fn run<T: crate::telemetry::RawSpanTelemetry>(
     }
 }
 
-/// A job on an orphaned generated function concludes empty: whatever it
-/// published is withdrawn, and the read of the owner's lowering wakes it should
-/// the owner mint the lambda again.
-fn retire_orphan<T: crate::telemetry::RawSpanTelemetry>(
+/// A job whose ground is gone concludes without running its body: whatever it
+/// published is withdrawn, and the reads it keeps wake it should the ground
+/// return. It is retired, not run: no derivation and no read is charged to it.
+fn retire_ungrounded<T: crate::telemetry::RawSpanTelemetry>(
     context: &mut ExecutionContext<'_, T>,
     job: &Job,
 ) -> Option<JobEffects> {
-    let function = job
-        .subject_function()
-        .filter(|function| context.world.is_orphaned(*function))?;
-    let owner = context.world.generated_owner(function)?;
-    if let Job::AnalyzeActivation(activation) = job {
-        context.world.clear_activation(activation);
-    }
-    context.emit_function_retired(&FunctionRetirement {
+    let (ground, effects) = retire_orphan(context.world, job).or_else(|| retire_unclaimed(context.world, job))?;
+    context.emit_job_retired(&JobRetirement {
         job: job.clone(),
-        function,
-        owner,
+        ground,
     });
     Some(JobEffects {
-        reads: current_uses([FactKey::LoweredBody(owner)]),
-        ..JobEffects::default()
+        retired: true,
+        ..effects
     })
+}
+
+/// A job on an orphaned generated function: the read of the owner's lowering
+/// wakes it should the owner mint the lambda again.
+fn retire_orphan(world: &mut World, job: &Job) -> Option<(RetirementGround, JobEffects)> {
+    let function = job.subject_function().filter(|function| world.is_orphaned(*function))?;
+    let owner = world.generated_owner(function)?;
+    if let Job::AnalyzeActivation(activation) = job {
+        world.clear_activation(activation);
+    }
+    Some((
+        RetirementGround::OrphanedLambda { function, owner },
+        JobEffects {
+            reads: current_uses([FactKey::LoweredBody(owner)]),
+            ..JobEffects::default()
+        },
+    ))
+}
+
+/// An activation analysis no caller claims: the read of its `Activation`
+/// wakes it on a first or later claim.
+fn retire_unclaimed(world: &World, job: &Job) -> Option<(RetirementGround, JobEffects)> {
+    let Job::AnalyzeActivation(activation) = job else {
+        return None;
+    };
+    let effects = semantic::retire_unclaimed(world, activation)?;
+    Some((RetirementGround::UnclaimedActivation, effects))
 }
 
 impl Job {

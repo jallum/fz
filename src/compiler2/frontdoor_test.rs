@@ -45,6 +45,29 @@ fn head_name(node: &super::QuotedAstNode) -> String {
     node.head.atom_name().expect("ast head atom").to_string()
 }
 
+/// The bare `{:., meta, [target, :name]}` head under the no-parens call node
+/// `target.name` quotes as.
+fn no_parens_remote_head(node: &super::QuotedAstNode) -> super::QuotedAstNode {
+    assert_eq!(
+        node.tail.list_items().expect("call args").len(),
+        0,
+        "a no-parens remote call has no arguments"
+    );
+    assert_eq!(
+        node.meta
+            .meta_value(super::source::META_NO_PARENS_KEY)
+            .expect("meta read")
+            .expect("no_parens entry")
+            .atom_name()
+            .expect("no_parens value"),
+        "true"
+    );
+    node.head
+        .trusted_ast_node()
+        .expect("head read")
+        .expect("the head is the dot node")
+}
+
 fn map_value<'a>(
     entries: &'a [(super::QuotedSourceCursor, super::QuotedSourceCursor)],
     key: &str,
@@ -822,7 +845,7 @@ fn compiler2_frontdoor_catch_clauses_take_one_or_more_heads_and_a_trailing_guard
     let tel = ConfiguredTelemetry::new();
     let root = parse_quoted_program(
         "catch_heads.fz",
-        "probe(try do\n  x\ncatch\n  v -> v\n  :exit, r -> r\n  k, v when k == :throw -> v\n  -> 0\nend)\nprobe(try do\n  x\ncatch\n  :exit, r -> r\n  v -> v\nend)\n",
+        "probe(try do\n  x\ncatch\n  v -> v\n  :exit, r -> r\n  k, v when k == :throw -> v\nend)\nprobe(try do\n  x\ncatch\n  :exit, r -> r\n  v -> v\nend)\n",
         &tel,
     )
     .expect("quoted parse");
@@ -830,11 +853,34 @@ fn compiler2_frontdoor_catch_clauses_take_one_or_more_heads_and_a_trailing_guard
     assert_eq!(
         quoted_shapes(&root),
         [
-            "probe(try([{:do, $x}, {:catch, [->([$v], $v), ->([:exit, $r], $r), ->([when($k, $v, ==($k, :throw))], $v), ->([], 0)]}]))",
+            "probe(try([{:do, $x}, {:catch, [->([$v], $v), ->([:exit, $r], $r), ->([when($k, $v, ==($k, :throw))], $v)]}]))",
             "probe(try([{:do, $x}, {:catch, [->([:exit, $r], $r), ->([$v], $v)]}]))",
         ],
         "a catch clause reads its heads like a fn clause: comma-separated, with `when` last",
     );
+}
+
+#[test]
+fn compiler2_frontdoor_a_clause_line_beginning_with_an_arrow_is_a_syntax_error() {
+    let tel = ConfiguredTelemetry::new();
+    for (section, text) in [
+        ("catch", "try do\n  x\ncatch\n  v -> v\n  -> 0\nend\n"),
+        ("rescue", "try do\n  x\nrescue\n  e -> e\n  -> 0\nend\n"),
+        ("fn", "f = fn\n  a -> a\n  -> 0\nend\n"),
+        ("case", "case x do\n  1 -> 1\n  -> 0\nend\n"),
+        ("cond", "cond do\n  x -> 1\n  -> 0\nend\n"),
+        ("receive", "receive do\n  1 -> 1\n  -> 0\nend\n"),
+        ("else", "with {:ok, a} <- x do\n  a\nelse\n  1 -> 1\n  -> 0\nend\n"),
+    ] {
+        let (error, version) = parse_quoted_error("arrow_first.fz", text, &tel);
+        let arrow = text.rfind("->").expect("the arrow") as u32;
+        assert_eq!(error.msg, "syntax error before: `->`", "{section}");
+        assert_eq!(
+            error.span,
+            crate::source::Span::new(version, arrow, arrow + 2),
+            "{section}"
+        );
+    }
 }
 
 #[test]
@@ -1217,6 +1263,7 @@ fn compiler2_frontdoor_continues_expr_across_newline_after_dot() {
         .trusted_ast_node()
         .expect("body cursor")
         .expect("body node");
+    let body = no_parens_remote_head(&body);
     assert_eq!(
         head_name(&body),
         ".",
@@ -1286,6 +1333,7 @@ fn compiler2_frontdoor_lowercase_field_after_dotted_newline_is_remote_access_not
         .trusted_ast_node()
         .expect("body cursor")
         .expect("body node");
+    let body = no_parens_remote_head(&body);
     assert_eq!(
         head_name(&body),
         ".",
@@ -1346,7 +1394,11 @@ fn compiler2_frontdoor_continues_capture_target_across_newline_after_dot() {
     assert_eq!(head_name(&slash), "/");
     let slash_args = slash.tail.list_items().expect("/ args");
     assert_eq!(slash_args.len(), 2);
-    let dot = slash_args[0].trusted_ast_node().expect("dot cursor").expect("dot node");
+    let call = slash_args[0]
+        .trusted_ast_node()
+        .expect("call cursor")
+        .expect("call node");
+    let dot = no_parens_remote_head(&call);
     assert_eq!(
         head_name(&dot),
         ".",

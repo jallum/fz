@@ -134,9 +134,11 @@ newline to guess intent.
   that dual role is fz-specific). `|`, `=>` and `<-` are infix-only, as they
   are in Elixir, so a list's `| tail` and a map update's `| key: value` may
   begin a line. Inside the brackets, a line end after the `|` and one before the
-  closing `]` or `}` are skipped. `->` is not: a line that begins with `->` starts a zero-head
-  clause, as `catch` clauses do, where Elixir's tokenizer would continue the line
-  before. `Tok::Plus` stays infix-only at a line start
+  closing `]` or `}` are skipped. `->` is not: a line that begins with `->` after a
+  section's first clause is the syntax error `syntax error before: `->``, raised by
+  `parse_clause_line` for every clause list, as in Elixir, whose tokenizer
+  continues the line before. Only a section's first clause may have no head
+  (`fn -> 0 end`). `Tok::Plus` stays infix-only at a line start
   (a leading `+` continues the previous expression), yet the front door's
   prefix parser accepts a `+` inside an expression as unary plus, the call
   `+(n)`, as it does `-`.
@@ -379,8 +381,13 @@ code-point and byte forms:
 
 A surrogate or a value above `10FFFF` in either braced form reports `invalid or
 reserved Unicode code point`; every escape error underlines the escape from its
-backslash. Elixir warns about the one-digit and braced `\x` forms; the lexer has
-no channel for a warning, so both are accepted silently. Any other escaped
+backslash. The one-digit `\xH` and the braced `\x{H...}` forms are read and
+warned about, with Elixir's text, under `parse/deprecated-hex-escape`: the lexer
+keeps each one's span while it reads and `tokenize` emits the warnings when the
+source is lexed, so an escape inside a `#{...}` is warned about too.
+`Macro.unescape_string/1` warns through `IO.warn`'s hook, which is how a `~s`
+or `~c` sigil's escapes are reported at its call. `~S` keeps `\x4` as written,
+so it warns of nothing. Any other escaped
 character is an `unknown escape` error, where Elixir would take it literally. A
 combining character can be written as an escape (`"e\u0301"`) instead of as
 bytes.

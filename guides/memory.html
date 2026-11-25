@@ -685,7 +685,8 @@ about what the young generation keeps. Both are no smaller than the smallest tip
 A guess that is too small costs overflow blocks sized for the overflow, not for the
 whole guess, so the room the pass leaves unused in old blocks is bounded by the
 overflow (<code>to_space_capacity_bytes</code> less <code>copied_bytes</code> in
-the gc event; the telemetry writer sums the capacity over the old blocks the
+the gc event; the collector reads <code>copied_bytes</code> once, as the fill of
+to-space, and counts no object as it copies it; the telemetry writer sums the capacity over the old blocks the
 pass filled). The blocks the pass
 filled become old; an empty to-space tip is released. The heap then installs a
 fresh young tip sized for <code>live_baseline</code> before the from-space

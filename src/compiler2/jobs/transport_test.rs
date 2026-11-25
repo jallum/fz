@@ -687,3 +687,30 @@ fn a_recipe_with_three_unready_children_costs_its_owner_two_pulls() {
         assert_eq!(pulls, 2, "{owner:?} is pulled to discover its waits and once to resume");
     }
 }
+
+/// A cycle's cut edge is chosen by the functions' typed origins, not by the
+/// order their ids were minted: the same two functions minted in either order
+/// cut the same edge, and a function's copies are cut in both directions.
+#[test]
+fn the_cut_return_edge_follows_typed_origin_not_mint_order() {
+    use super::return_edge_is_cut;
+    use crate::compiler2::types::{ClosureTarget, Types};
+
+    // `alpha` orders before `beta`; each `Types` mints them in the other order.
+    let mut alpha_first = Types::new();
+    alpha_first.define_test_callable(ClosureTarget(1), "alpha", 0);
+    alpha_first.define_test_callable(ClosureTarget(2), "beta", 0);
+    let mut beta_first = Types::new();
+    beta_first.define_test_callable(ClosureTarget(1), "beta", 0);
+    beta_first.define_test_callable(ClosureTarget(2), "alpha", 0);
+    let (one, two) = (FunctionId::from_coordinate(1), FunctionId::from_coordinate(2));
+
+    // owner beta calling callee alpha: alpha does not rise, so the edge is cut.
+    assert!(return_edge_is_cut(&alpha_first, one, two));
+    assert!(return_edge_is_cut(&beta_first, two, one));
+    // owner alpha calling callee beta rises, so the edge survives.
+    assert!(!return_edge_is_cut(&alpha_first, two, one));
+    assert!(!return_edge_is_cut(&beta_first, one, two));
+    // a function's own copies are cut both ways.
+    assert!(return_edge_is_cut(&alpha_first, one, one));
+}

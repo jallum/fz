@@ -39,7 +39,7 @@ const TARGET_FIXTURES: [TargetFixture; 3] = [
     TargetFixture {
         source: "fixtures/00420_enum_take_drop_split.fz",
         golden: "fixtures/00420_enum_take_drop_split.fz",
-        runtime_demand_walks: 635,
+        runtime_demand_walks: 633,
         mainline_runtime_demand_walks: 6252,
         mainline_runtime_demand_door: ObservationDoor::Interp,
     },
@@ -2239,17 +2239,17 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             // What a program can raise is final only once every body of that program has been
             // analysed, so the bottom handler and the banner it calls settle here, with the
             // facts they read: the modules a value can name, and what each program raises.
-            ("Activation", 30),
-            ("ActivationAnalyzed", 33),
-            ("ActivationInputs", 31),
-            ("CallSiteSummary", 39),
-            ("CallSiteTargets", 39),
+            ("Activation", 27),
+            ("ActivationAnalyzed", 31),
+            ("ActivationInputs", 28),
+            ("CallSiteSummary", 38),
+            ("CallSiteTargets", 38),
             ("IncomingInputSlot", 46),
             ("NameableModules", 1),
             // Each program settles what it can raise: the fixture's program, and the program of a
             // macro that raises.
             ("Raisable", 2),
-            ("ReturnType", 33),
+            ("ReturnType", 31),
             ("RuntimeDemand", 28),
             ("RuntimeDemandInput", 22),
             ("RuntimeDemandInputs", 28),
@@ -2362,16 +2362,16 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
     assert_eq!(
         formula_totals,
         FormulaWork {
-            evaluations: 544,
+            evaluations: 547,
             runtime_demand_evaluations: 60,
             initial: 406,
-            content_caused: 138,
+            content_caused: 141,
             readiness_caused: 0,
             concluded_caused: 0,
             uncaused: 0,
-            changed_outputs: 489,
+            changed_outputs: 492,
             unchanged_outputs: 55,
-            already_pending: 5,
+            already_pending: 8,
             blocked_completions: 132,
         },
         "{fixture}: the reactive RuntimeDemand formula work or its causal classification moved"
@@ -2391,7 +2391,7 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
         by_reason(ledger.ran),
         BTreeMap::from([
             ("blocked_waiter_expansion", 95),
-            ("changed_revision_wake", 319),
+            ("changed_revision_wake", 322),
             ("gate_expansion", 129),
             ("ignition", 1),
         ]),
@@ -2402,7 +2402,7 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
         BTreeMap::from([
             ("activation_published", 24),
             ("blocked_waiter_expansion", 1),
-            ("changed_revision_wake", 5),
+            ("changed_revision_wake", 8),
             ("gate_expansion", 36),
         ]),
         "{fixture}: requests that found their job already queued"
@@ -2433,12 +2433,12 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             wake_records("applied", &["completion"]),
             wake_records("dependencies_moved", &["step"])
         ),
-        (350, 5),
+        (356, 5),
         "{fixture}: wake records of the completions, and of the external changes between them"
     );
     assert_eq!(
         ledger.requested(fz_engine::WorkStart::ChangedRevisionWake),
-        356,
+        362,
         "{fixture}: every wake record is one request at the door"
     );
     let products = report.product_totals();

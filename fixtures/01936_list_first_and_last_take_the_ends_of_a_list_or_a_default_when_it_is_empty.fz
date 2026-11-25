@@ -1,0 +1,21 @@
+#---
+# purpose: "List.first/1,2 and List.last/1,2 return the first and last element of a list, and nil or the default when the list is empty"
+# oracle: self
+# oracle.stamp: fde51694f3eaa31c
+#---
+defmodule Main do
+  def main() do
+    IO.inspect(List.first([]))
+    IO.inspect(List.first([], :default))
+    IO.inspect(List.first([5, 6]))
+    IO.inspect(List.first([5, 6], :default))
+    IO.inspect(List.first([nil], :default))
+    IO.inspect(List.last([]))
+    IO.inspect(List.last([], :default))
+    IO.inspect(List.last([5]))
+    IO.inspect(List.last([5, 6, 7]))
+    IO.inspect(List.last([5, 6, nil], :default))
+  end
+end
+
+Main.main()

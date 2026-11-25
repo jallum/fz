@@ -3062,12 +3062,12 @@ mod wait_frame_tests {
         types.arrow(&[any], any)
     }
 
-    fn positioned_key(arrow: crate::compiler2::Ty, id: u32) -> ProductKey {
+    fn positioned_key(types: &mut crate::compiler2::Types, arrow: crate::compiler2::Ty, id: u32) -> ProductKey {
         use crate::compiler2::transport::{ActivationSymbol, ExecutableSymbol, TransportPosition};
         ProductKey::TransportShape(TransportPosition::ExecutableReturn {
             executable: ExecutableSymbol {
                 activation: ActivationSymbol {
-                    function: crate::compiler2::FunctionId::from_coordinate(id),
+                    function: types.test_function(id),
                     arrow,
                     entry: None,
                 },
@@ -3092,7 +3092,7 @@ mod wait_frame_tests {
             let root_key = ProductKey::RootBackendProduct(root);
             let arrow = any_arrow(world.types_mut());
             let mut waits = (100..100 + product_count)
-                .map(|id| PullWait::Product(positioned_key(arrow, id)))
+                .map(|id| PullWait::Product(positioned_key(world.types_mut(), arrow, id)))
                 .collect::<Vec<_>>();
             sort_product_waits(world.types(), &mut waits);
             let buffer = waits.as_ptr();
@@ -3155,11 +3155,11 @@ mod wait_frame_tests {
             let root = RootId::for_test(95);
             let root_key = ProductKey::RootBackendProduct(root);
             let arrow = any_arrow(world.types_mut());
-            let child = positioned_key(arrow, 100);
+            let child = positioned_key(world.types_mut(), arrow, 100);
             let mut waits = vec![
-                PullWait::Product(positioned_key(arrow, 102)),
+                PullWait::Product(positioned_key(world.types_mut(), arrow, 102)),
                 PullWait::Fact(FactUse::current(FactKey::CodeIndexed(code))),
-                PullWait::Product(positioned_key(arrow, 101)),
+                PullWait::Product(positioned_key(world.types_mut(), arrow, 101)),
             ];
             sort_product_waits(world.types(), &mut waits);
             let buffer = waits.as_ptr();
@@ -3259,7 +3259,7 @@ mod wait_frame_tests {
         let root_key = ProductKey::RootBackendProduct(root);
         let child = {
             let arrow = any_arrow(world.types_mut());
-            positioned_key(arrow, 100)
+            positioned_key(world.types_mut(), arrow, 100)
         };
         let function = positioned_function(&child);
         let mut waits = Some(vec![PullWait::Product(child)]);
@@ -3346,7 +3346,7 @@ mod wait_frame_tests {
         let root_key = ProductKey::RootBackendProduct(root);
         let child = {
             let arrow = any_arrow(world.types_mut());
-            positioned_key(arrow, 101)
+            positioned_key(world.types_mut(), arrow, 101)
         };
         let function = positioned_function(&child);
         let mut waits = Some(vec![PullWait::Product(child)]);
@@ -3384,9 +3384,9 @@ mod wait_frame_tests {
         let mut world = World::new();
         let arrow = any_arrow(world.types_mut());
         let root = RootId::for_test(93);
-        let owner = positioned_key(arrow, 100);
+        let owner = positioned_key(world.types_mut(), arrow, 100);
         let owner_function = positioned_function(&owner);
-        let child = positioned_key(arrow, 101);
+        let child = positioned_key(world.types_mut(), arrow, 101);
         let child_function = positioned_function(&child);
         let mut current = Some(SelectedProduct::Owned(owner));
         let first = ProductWaitFrame::take_selection(&mut current, None, vec![PullWait::Product(child)], 0);
@@ -3438,7 +3438,7 @@ mod wait_frame_tests {
             Vec::new(),
             vec![PullWait::Fact(FactUse::current(FactKey::RootEntry(root)))],
         ] {
-            let owner = positioned_key(arrow, 100);
+            let owner = positioned_key(world.types_mut(), arrow, 100);
             let function = positioned_function(&owner);
             let mut current = Some(SelectedProduct::Owned(owner));
             let fact_count = waits.len();
@@ -3499,7 +3499,7 @@ mod wait_frame_tests {
         let key = ProductKey::TransportShape(TransportPosition::ExecutableReturn {
             executable: ExecutableSymbol {
                 activation: ActivationSymbol {
-                    function: crate::compiler2::FunctionId::from_coordinate(91),
+                    function: types.test_function(91),
                     arrow,
                     entry: None,
                 },

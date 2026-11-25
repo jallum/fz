@@ -7,8 +7,10 @@ use unicode_normalization::{UnicodeNormalization, is_nfc};
 use unicode_security::GeneralSecurityProfile;
 use unicode_security::mixed_script::AugmentedScriptSet;
 
-use fz_runtime::escape::{Escape, EscapeError, read_escape};
+use fz_runtime::escape::{DeprecatedHex, Escape, EscapeError, read_escape};
 
+use crate::diag::driver::emit_through;
+use crate::diag::{Diagnostic, codes};
 use crate::source::{SourceVersion, Span};
 use crate::telemetry::{RawSpanTelemetry, Telemetry};
 
@@ -272,6 +274,9 @@ pub struct Lexer<'a> {
     /// fz-5xp.5 — one interpolated string literal lexes to SEVERAL tokens.
     /// `next_token` drains this before reading more source.
     pending: VecDeque<Token>,
+    /// The escapes Elixir reads and warns about, in source order. `tokenize`
+    /// reports them once the whole source is read.
+    deprecated_escapes: Vec<(DeprecatedHex, Span)>,
 }
 
 /// What a complete source word is: a keyword (or `_`), a capitalised name, or
@@ -462,6 +467,7 @@ impl<'a> Lexer<'a> {
             source_version,
             source_name: Some(Rc::from(source_name.as_ref())),
             pending: VecDeque::new(),
+            deprecated_escapes: Vec::new(),
         }
     }
 
@@ -911,9 +917,12 @@ impl<'a> Lexer<'a> {
     fn read_escape(&mut self) -> Result<Escape, LexError> {
         let start = self.pos - 1;
         match read_escape(&self.src[self.pos..]) {
-            Ok((escape, consumed)) => {
-                self.pos += consumed;
-                Ok(escape)
+            Ok(read) => {
+                self.pos += read.consumed;
+                if let Some(deprecated) = read.deprecated {
+                    self.deprecated_escapes.push((deprecated, self.span_from(start)));
+                }
+                Ok(read.escape)
             }
             Err(EscapeError::Unterminated) => Err(self.err("unterminated escape".into())),
             Err(EscapeError::Unknown(byte)) => {
@@ -1036,7 +1045,7 @@ impl<'a> Lexer<'a> {
 
     /// A sigil body's parts as the token's pieces. A body with no text is one
     /// empty piece, and empty text between two interpolations is dropped.
-    fn sigil_pieces(&self, parts: Vec<StringPart>, span: Span) -> Result<Vec<SigilPiece>, LexError> {
+    fn sigil_pieces(&mut self, parts: Vec<StringPart>, span: Span) -> Result<Vec<SigilPiece>, LexError> {
         let mut pieces = Vec::new();
         for part in parts {
             match part {
@@ -1044,7 +1053,7 @@ impl<'a> Lexer<'a> {
                 StringPart::Bytes(bytes) => pieces.push(SigilPiece::Text(bytes)),
                 StringPart::Interpolation(range) => {
                     let mut tokens: Vec<Token> = self
-                        .to_string_call(range)?
+                        .interpolation_to_string_call(range)?
                         .into_iter()
                         .map(|tok| Token {
                             tok,
@@ -1069,13 +1078,22 @@ impl<'a> Lexer<'a> {
 
     /// The tokens of `Kernel.to_string(expr)` for the `#{expr}` whose source
     /// text is `range`, which is lexed on its own.
-    fn to_string_call(&self, range: std::ops::Range<usize>) -> Result<Vec<Tok>, LexError> {
+    fn interpolation_to_string_call(&mut self, range: std::ops::Range<usize>) -> Result<Vec<Tok>, LexError> {
+        let offset = range.start as u32;
         let source =
             from_utf8(&self.src[range]).map_err(|e| self.err(format!("invalid UTF-8 in interpolation: {}", e)))?;
-        let inner =
-            Lexer::with_source_version_and_name(source, self.source_version, self.source_name.as_deref().unwrap_or(""))
-                .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
-                .map_err(|e| self.err(format!("in interpolation: {}", e.msg)))?;
+        let mut lexer =
+            Lexer::with_source_version_and_name(source, self.source_version, self.source_name.as_deref().unwrap_or(""));
+        let inner = lexer
+            .read_all(&crate::telemetry::ConfiguredTelemetry::new())
+            .map_err(|e| self.err(format!("in interpolation: {}", e.msg)))?;
+        self.deprecated_escapes
+            .extend(lexer.deprecated_escapes.into_iter().map(|(deprecated, span)| {
+                (
+                    deprecated,
+                    Span::new(span.source_version, span.start + offset, span.end + offset),
+                )
+            }));
         let mut toks: Vec<Tok> = inner
             .into_iter()
             .map(|token| token.tok)
@@ -1119,7 +1137,7 @@ impl<'a> Lexer<'a> {
             match part {
                 StringPart::Bytes(bytes) if bytes.is_empty() => {}
                 StringPart::Bytes(bytes) => pieces.push(vec![Tok::Binary(bytes)]),
-                StringPart::Interpolation(range) => pieces.push(self.to_string_call(range)?),
+                StringPart::Interpolation(range) => pieces.push(self.interpolation_to_string_call(range)?),
             }
         }
         if pieces.is_empty() {
@@ -1576,6 +1594,19 @@ impl<'a> Lexer<'a> {
     /// Pratt loop stop at a bare `Newline` by construction, with no
     /// lookahead heuristic required downstream.
     pub fn tokenize<T: RawSpanTelemetry + ?Sized>(mut self, tel: &T) -> Result<Vec<Token>, LexError> {
+        let tokens = self.read_all(tel)?;
+        let warnings: Vec<Diagnostic> = self
+            .deprecated_escapes
+            .iter()
+            .map(|(deprecated, span)| {
+                Diagnostic::warning(codes::PARSE_DEPRECATED_HEX_ESCAPE, deprecated.warning(), *span)
+            })
+            .collect();
+        emit_through(tel, &warnings);
+        Ok(tokens)
+    }
+
+    fn read_all<T: RawSpanTelemetry + ?Sized>(&mut self, tel: &T) -> Result<Vec<Token>, LexError> {
         let _span = start_lexer_pass(tel, &self.source_version, &self.source_name);
         let mut out: Vec<Token> = Vec::new();
         loop {

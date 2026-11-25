@@ -6,8 +6,8 @@ defmodule List do
   the functions the `++` and `--` operators desugar to, along with the
   `Enumerable` callbacks (`reduce/3`, `reduce_while/3`, `member?/2`) that
   let `Enum` walk a list. `reverse/2` is the one general-purpose helper
-  beyond that. For everything else — mapping,
-  filtering, folding, searching — use `Enum`.
+  beyond that, with `first/1,2` and `last/1,2` for the ends of a list. For
+  everything else — mapping, filtering, folding, searching — use `Enum`.
   """
 
   @doc """
@@ -161,6 +161,69 @@ defmodule List do
   @spec reverse([a], [a]) :: [a] when a: var
   def reverse([], tail), do: tail
   def reverse([head | tail], acc), do: reverse(tail, [head | acc])
+
+  @doc """
+  Returns the first element in `list`, or `nil` if `list` is empty.
+
+  ## Examples
+
+      List.first([])
+      #=> nil
+
+      List.first([1, 2, 3])
+      #=> 1
+
+  """
+  @spec first([a]) :: a | nil when a: var
+  def first(list), do: first(list, nil)
+
+  @doc """
+  Returns the first element in `list`, or `default` if `list` is empty.
+
+  ## Examples
+
+      List.first([], 1)
+      #=> 1
+
+      List.first([1, 2, 3], 0)
+      #=> 1
+
+  """
+  @spec first([a], b) :: a | b when a: var, b: var
+  def first([], default), do: default
+  def first([head | _], _default), do: head
+
+  @doc """
+  Returns the last element in `list`, or `nil` if `list` is empty.
+
+  ## Examples
+
+      List.last([])
+      #=> nil
+
+      List.last([1, 2, 3])
+      #=> 3
+
+  """
+  @spec last([a]) :: a | nil when a: var
+  def last(list), do: last(list, nil)
+
+  @doc """
+  Returns the last element in `list`, or `default` if `list` is empty.
+
+  ## Examples
+
+      List.last([], 1)
+      #=> 1
+
+      List.last([1, 2, 3], 0)
+      #=> 3
+
+  """
+  @spec last([a], b) :: a | b when a: var, b: var
+  def last([], default), do: default
+  def last([head], _default), do: head
+  def last([_ | tail], default), do: last(tail, default)
 
   @spec reduce_cont([a], b, (a, b -> {:cont, b} | {:halt, b} | {:suspend, b})) :: {:done, b} | {:halted, b} | {:suspended, b, (-> any)} when a: var, b: var
   defp reduce_cont([], acc, _reducer), do: {:done, acc}

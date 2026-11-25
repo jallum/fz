@@ -1171,7 +1171,12 @@ impl<'a, 'w, 'tel, 'f, 'env, 'steps, 'q, T: crate::telemetry::Telemetry>
         let head = self.quoted(&node.head, sources)?;
         let values = self.each_quoted(&args, sources)?;
         let tail = self.list(values);
-        Ok(self.ast_node_of(head, tail))
+        let no_parens = node
+            .meta
+            .meta_value(super::super::source::META_NO_PARENS_KEY)
+            .map_err(|error| self.surface_error(error))?
+            .is_some();
+        Ok(self.tuple(vec![head, Quoted::Constant(meta(None, no_parens)), tail]))
     }
 
     /// `unquote(e)` splices `e`'s runtime value in place: `e` was already
@@ -1224,11 +1229,11 @@ impl<'a, 'w, 'tel, 'f, 'env, 'steps, 'q, T: crate::telemetry::Telemetry>
     fn lower_call_node(&mut self, spelling: &str, bound: Option<FunctionId>, args: Vec<Quoted>) -> Quoted {
         let head = Quoted::Constant(GroundValue::Atom(spelling.to_string()).into());
         let tail = self.list(args);
-        self.tuple(vec![head, Quoted::Constant(meta(bound)), tail])
+        self.tuple(vec![head, Quoted::Constant(meta(bound, false)), tail])
     }
 
     fn ast_node_of(&mut self, head: Quoted, tail: Quoted) -> Quoted {
-        self.tuple(vec![head, Quoted::Constant(meta(None)), tail])
+        self.tuple(vec![head, Quoted::Constant(meta(None, false)), tail])
     }
 
     /// The step value that holds `quoted`.
@@ -1293,14 +1298,20 @@ fn all_constant(items: Vec<Quoted>) -> Result<Vec<LiteralTerm>, Vec<Quoted>> {
 /// A node's metadata keyword list, in the order `QuotedSourceBuilder::meta`
 /// writes it. A quoted node carries no span: it takes the span of the macro
 /// call that expands it.
-fn meta(bound: Option<FunctionId>) -> LiteralTerm {
+fn meta(bound: Option<FunctionId>, no_parens: bool) -> LiteralTerm {
     let bound = bound.map(|function| {
         LiteralTerm::Tuple(vec![
             GroundValue::Atom(super::super::source::META_BOUND_CALLABLE_KEY.to_string()).into(),
             GroundValue::Int(i64::from(function.as_u32())).into(),
         ])
     });
-    LiteralTerm::List(bound.into_iter().collect())
+    let no_parens = no_parens.then(|| {
+        LiteralTerm::Tuple(vec![
+            GroundValue::Atom(super::super::source::META_NO_PARENS_KEY.to_string()).into(),
+            GroundValue::Bool(true).into(),
+        ])
+    });
+    LiteralTerm::List(bound.into_iter().chain(no_parens).collect())
 }
 
 impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {

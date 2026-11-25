@@ -1655,12 +1655,12 @@ impl RevisionWatch {
             move |_, _, _, _, completion| seen.borrow_mut().push(completion.job.clone()),
         );
         let reported = Rc::clone(&retired);
-        telemetry.attach_raw_event2::<crate::compiler2::World, crate::compiler2::FunctionRetirement, _>(
-            &["fz", "compiler2", "function", "retired"],
+        telemetry.attach_raw_event2::<crate::compiler2::World, crate::compiler2::JobRetirement, _>(
+            &["fz", "compiler2", "job", "retired"],
             move |_, _, _, _, retirement| {
-                reported
-                    .borrow_mut()
-                    .push((retirement.job.clone(), retirement.function, retirement.owner))
+                if let crate::compiler2::RetirementGround::OrphanedLambda { function, owner } = retirement.ground {
+                    reported.borrow_mut().push((retirement.job.clone(), function, owner))
+                }
             },
         );
         Self { applied, retired }
@@ -14048,6 +14048,13 @@ fn backend_canon(fixture: &str) -> String {
     crate::compiler2::canon::canon_backend_program(world, &compiler.retained_backend_program(root))
 }
 
+/// The settled program and its RuntimeDemand facts are a function of the
+/// program, not of the schedule. Independent self- and mutual-recursive roots
+/// are settled under three root orders and once under last-in-first-out agenda
+/// popping, and the last-in-first-out pass must really perturb reactive
+/// arrival. The backend, runtime output and every RuntimeDemand fact must be
+/// equal across all passes. The exact work multiset is compared only across
+/// the root orders: it differs under last-in-first-out popping.
 #[test]
 fn runtime_demand_facts_converge_across_independent_self_and_mutual_schedule_orders() {
     const FUNCTIONS: [(&str, &str); 5] = [
@@ -14207,26 +14214,29 @@ fn runtime_demand_facts_converge_across_independent_self_and_mutual_schedule_ord
     }
 
     let baseline = settle(0);
+    let lifo = fz_engine::pop_order::with(fz_engine::pop_order::PopOrder::Lifo, || settle(0));
     let alternatives = [settle(1), settle(2)];
     assert_eq!(
         baseline.1,
         vec!["{4, 8, 1, 1}"],
         "the settled artifact must execute correctly"
     );
-    for alternative in alternatives {
-        assert_ne!(
-            baseline.2, alternative.2,
-            "each registration order must perturb reactive arrival"
+    assert_ne!(
+        baseline.2, lifo.2,
+        "popping the agenda last-in-first-out must perturb reactive arrival"
+    );
+    for alternative in &alternatives {
+        assert_eq!(
+            baseline.3, alternative.3,
+            "arrival order must not move the exact executable RuntimeDemand work multiset",
         );
+    }
+    for alternative in alternatives.into_iter().chain([lifo]) {
         assert_eq!(
             baseline.0, alternative.0,
             "arrival order must not move the canonical backend"
         );
         assert_eq!(baseline.1, alternative.1, "arrival order must not move runtime output");
-        assert_eq!(
-            baseline.3, alternative.3,
-            "arrival order must not move the exact executable RuntimeDemand work multiset",
-        );
         assert_eq!(
             baseline.4, alternative.4,
             "arrival order must not move any settled RuntimeDemand semantic fact",

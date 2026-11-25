@@ -95,11 +95,29 @@ authority. See [`canonical-form`](canonical-form.md#canonbackendprogram).
   head is a local name whatever it spells, so `{:"Foo.bar", meta, args}` calls
   a local function literally named `Foo.bar` and is never split into a module
   and a name. Elixir reads the same shape the same way.
+- A remote call written without parentheses, `x.field` or `Mod.fun`, quotes as
+  `{{:., meta, [x, :field]}, [no_parens: true], []}`, Elixir's call node. The
+  front door builds it in `finish_remote_target`, a quote keeps the
+  `no_parens` entry (`QuotedSourceMetadata::no_parens`, placed before the
+  span as Elixir places it), and decoding reads that node, with no arguments
+  and the marker, as the field or zero-argument function the head names. A
+  bare `{:., meta, [x, :field]}` is only ever a call's head, never an
+  expression of its own; applying the head to arguments (`x.f(1)`,
+  `x.f 1`) gives an ordinary call whose meta has no `no_parens`.
 - A variable's `tail` is its context: `nil`, a macro's `FunctionId`, or the
   atom `generated`.
 - Module aliases use `{:__aliases__, meta, [:Foo, :Bar]}`. Decoding reads one
   as `Expr::Alias` carrying its segments as a `ModuleName`; in value position
   it is the module's atom (see [modules](modules.md)).
+- `__MODULE__.Inner` quotes as Elixir does,
+  `{:__aliases__, meta, [{:__MODULE__, meta, nil}, :Inner]}`: an alias whose
+  first segment is the `__MODULE__` variable (the front door builds it in
+  `finish_enclosing_module_alias`, and `%__MODULE__.Inner{}` names its struct
+  the same way). Expansion splices `__MODULE__` into the module's atom and
+  folds the alias into the atom of the module it names
+  (`fold_module_atom_alias`, `quoted_expander.rs`); outside any module the
+  `nil` segment drops out. A remote call on such an alias expands the alias
+  first, so decoding and the call's module lookup only ever see the atom.
 - Keyword items are ordinary 2-tuples inside lists.
 - FZ `extern` items are quoted as `{:extern, meta, [abi_binary, options_map]}`.
   `options_map` carries the symbol `name`, `variadic`, and token payloads for

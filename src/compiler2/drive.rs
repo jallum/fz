@@ -60,6 +60,7 @@ impl<'a, T: crate::telemetry::Telemetry> ExecutionContext<'a, T> {
         self.emit_activation_input_budget_collapses();
         self.emit_literal_widenings();
         self.emit_clash_folds();
+        self.emit_refused_withdrawals();
         completion
     }
 
@@ -190,6 +191,21 @@ impl<'a, T: crate::telemetry::Telemetry> ExecutionContext<'a, T> {
                     path: report.fold.path_label(),
                     function_id: u64::from(report.function.as_u32()),
                 },
+            );
+        }
+    }
+
+    /// Report each withdrawal the guard refused: a publisher's row for a callee
+    /// that was withdrawn once and added back stands from then on. A refusal
+    /// is the compiler's admission that a callsite's targets moved back and
+    /// forth, so the same pair is reported each time it is proposed again.
+    fn emit_refused_withdrawals(&mut self) {
+        for refused in self.world.take_refused_withdrawals() {
+            self.telemetry.raw_event3(
+                &["fz", "compiler2", "activation_inputs", "withdrawal_refused"],
+                &*self.world,
+                &refused.publisher,
+                &refused.callee,
             );
         }
     }
@@ -805,6 +821,12 @@ pub(crate) struct JobEffects {
     pub(crate) outputs: Vec<FactKey>,
     pub(crate) changed: Vec<FactKey>,
     pub(crate) activation_input_contributions: Vec<(ActivationKey, Vec<super::types::Ty>)>,
+    /// Callees this publisher's rows are stale for: a resolved callsite now
+    /// names another activation, or nothing calls the publisher any more.
+    pub(crate) withdrawn_activations: Vec<ActivationKey>,
+    /// The job's ground is gone, so it concluded without running its body:
+    /// not a derivation, and no read was served to it.
+    pub(crate) retired: bool,
     pub(crate) runtime_demand_input_contributions: Vec<(ExecutableKey, super::semantic::TargetDemandContribution)>,
     pub(crate) incoming_input_contributions:
         crate::fast_hash::HashMap<super::incoming_inputs::InputSlot, super::incoming_inputs::IncomingInputSources>,

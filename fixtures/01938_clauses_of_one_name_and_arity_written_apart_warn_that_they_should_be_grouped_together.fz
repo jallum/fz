@@ -1,0 +1,24 @@
+#---
+# purpose: "A clause of a name and arity written after another function's clause warns 'should be grouped together' and names the first clause's line; when the clause before it has the same name and another arity, the wording leaves out the arity"
+# oracle: self
+# oracle.stamp: bef33aeefeb0d8c6
+#---
+defmodule Main do
+  def h(1), do: 1
+  def g(), do: 0
+  def h(2), do: 2
+
+  defp p(1), do: 1
+  def q(), do: p(1) + p(2)
+  defp p(2), do: 2
+
+  def a(1), do: 1
+  def a(1, 2), do: 3
+  def a(2), do: 2
+
+  def main() do
+    IO.inspect([h(1), h(2), g(), q(), a(1), a(2), a(1, 2)])
+  end
+end
+
+Main.main()

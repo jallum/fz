@@ -241,7 +241,7 @@ fn ownership_pull(
     producers: &mut OwnershipProducers,
     root: &ProductKey,
 ) -> PullOutcome {
-    let mut world = World::new();
+    let mut world = fake_world();
     let session_root = driver
         .session()
         .root()

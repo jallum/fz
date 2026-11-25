@@ -399,6 +399,9 @@ fn decode_expr(
                     let call_args = decode_exprs(occurrences, &args, Some(span), sources)?;
                     return Ok(Spanned::new(Expr::ClosureCall(Box::new(callee), call_args), span));
                 }
+                if callee_arity == 2 && args.is_empty() && is_no_parens_call(&node)? {
+                    return decode_remote_target(occurrences, &head_node, sources);
+                }
                 if callee_arity == 2 && is_bracket_access_callee(&head_node)? && args.len() == 2 {
                     let base = decode_expr(occurrences, &args[0], Some(span), sources)?;
                     let key = decode_expr(occurrences, &args[1], Some(span), sources)?;
@@ -412,7 +415,12 @@ fn decode_expr(
             let call_args = decode_exprs(occurrences, &args, Some(span), sources)?;
             let callee = match node.meta.bound_callable()? {
                 Some(function) => Spanned::new(Expr::BoundFunction(function), span),
-                None => decode_expr(occurrences, &node.head, Some(span), sources)?,
+                None => match node.head.ast_node(sources)? {
+                    Some(head_node) if is_remote_target(&head_node)? => {
+                        decode_remote_target(occurrences, &head_node, sources)?
+                    }
+                    _ => decode_expr(occurrences, &node.head, Some(span), sources)?,
+                },
             };
             return Ok(Spanned::new(Expr::Call(Box::new(callee), call_args), span));
         }
@@ -521,11 +529,6 @@ fn decode_named_expr(
             Ok(Spanned::new(Expr::Ascribe(Box::new(value), ty), span))
         }
         ("__aliases__", _) => Ok(Spanned::new(Expr::Alias(alias_from_args(args)?), span)),
-        (".", 2) => {
-            let base = decode_expr(occurrences, &args[0], Some(span), sources)?;
-            let field = Spanned::new(Expr::Atom(args[1].atom_name()?.to_string()), span);
-            Ok(Spanned::new(Expr::Index(Box::new(base), Box::new(field)), span))
-        }
         ("__block__", _) => Ok(Spanned::new(
             Expr::Block(decode_exprs(occurrences, args, Some(span), sources)?),
             span,
@@ -1446,9 +1449,12 @@ fn decode_fn_ref_target(
     let Some(node) = cursor.ast_node(sources)? else {
         return read_as_expr(cursor);
     };
-    let dot = match node.head.ast_node(sources)? {
-        Some(head) if node.tail.list_len()? == 0 => head,
-        _ => node,
+    let Some(dot) = node
+        .head
+        .ast_node(sources)?
+        .filter(|_| node.tail.list_len().is_ok_and(|len| len == 0))
+    else {
+        return read_as_expr(cursor);
     };
     if dot.head.root().tag() != fz_runtime::any_value::ValueKind::ATOM || dot.head.atom_name()? != "." {
         return read_as_expr(cursor);
@@ -2247,7 +2253,7 @@ fn apply_bit_modifier_name(spec: &mut BitFieldSpec, name: &str, error_span: Span
     match name {
         "integer" => spec.ty = BitType::Integer,
         "float" => spec.ty = BitType::Float,
-        "binary" => spec.ty = BitType::Binary,
+        "binary" | "bytes" => spec.ty = BitType::Binary,
         "bits" | "bitstring" => spec.ty = BitType::Bits,
         "utf8" => spec.ty = BitType::Utf8,
         "utf16" => spec.ty = BitType::Utf16,
@@ -2598,6 +2604,36 @@ pub(super) fn is_bracket_access_callee(head_node: &QuotedAstNode) -> Result<bool
         .meta
         .meta_value(crate::compiler2::source::META_FROM_BRACKETS_KEY)?
     else {
+        return Ok(false);
+    };
+    Ok(value.atom_name()? == "true")
+}
+
+fn is_remote_target(head_node: &QuotedAstNode) -> Result<bool, QuotedSourceError> {
+    Ok(head_node.head.root().tag() == fz_runtime::any_value::ValueKind::ATOM
+        && head_node.head.atom_name()? == "."
+        && head_node.tail.list_len()? == 2)
+}
+
+/// The `target.name` a `{:., meta, [target, :name]}` head names, read as the
+/// field or function of `target` it selects.
+fn decode_remote_target(
+    occurrences: &mut LambdaOccurrences,
+    head_node: &QuotedAstNode,
+    sources: &SourceMap,
+) -> Result<Spanned<Expr>, QuotedSourceError> {
+    let span = head_node.span.unwrap_or(Span::DUMMY);
+    let parts = head_node.tail.list_items()?;
+    let base = decode_expr(occurrences, &parts[0], Some(span), sources)?;
+    let field = Spanned::new(Expr::Atom(parts[1].atom_name()?.to_string()), span);
+    Ok(Spanned::new(Expr::Index(Box::new(base), Box::new(field)), span))
+}
+
+/// True for a call written without parentheses, `target.name`, which Elixir
+/// marks `no_parens: true` and which reads as the field or zero-argument
+/// function it names.
+pub(super) fn is_no_parens_call(node: &QuotedAstNode) -> Result<bool, QuotedSourceError> {
+    let Some(value) = node.meta.meta_value(crate::compiler2::source::META_NO_PARENS_KEY)? else {
         return Ok(false);
     };
     Ok(value.atom_name()? == "true")

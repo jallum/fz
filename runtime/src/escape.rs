@@ -22,6 +22,48 @@ impl Escape {
     }
 }
 
+/// An escape Elixir still reads but warns about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeprecatedHex {
+    /// `\xH`: one digit, where `\xHH` is the byte.
+    OneDigit,
+    /// `\x{H*}`: braces, where `\uHHHH` is the code point.
+    Braced,
+}
+
+impl DeprecatedHex {
+    /// Elixir's warning, word for word.
+    pub fn warning(self) -> &'static str {
+        match self {
+            DeprecatedHex::OneDigit => {
+                "\\xH inside strings/sigils/chars is deprecated, please use \\xHH (byte) or \\uHHHH (code point) instead"
+            }
+            DeprecatedHex::Braced => {
+                "\\x{H*} inside strings/sigils/chars is deprecated, please use \\xHH (byte) or \\uHHHH (code point) instead"
+            }
+        }
+    }
+}
+
+/// An escape that was read: what it denotes, how many bytes after the
+/// backslash it took, and the deprecation it carries, if any.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReadEscape {
+    pub escape: Escape,
+    pub consumed: usize,
+    pub deprecated: Option<DeprecatedHex>,
+}
+
+impl ReadEscape {
+    fn current(escape: Escape, consumed: usize) -> Self {
+        Self {
+            escape,
+            consumed,
+            deprecated: None,
+        }
+    }
+}
+
 /// Why an escape was not read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EscapeError {
@@ -40,7 +82,7 @@ pub const UNICODE_ESCAPE_SHAPE: &str =
 
 /// The escape that starts right after a backslash, and how many bytes after
 /// the backslash it takes.
-pub fn read_escape(rest: &[u8]) -> Result<(Escape, usize), EscapeError> {
+pub fn read_escape(rest: &[u8]) -> Result<ReadEscape, EscapeError> {
     let Some(&first) = rest.first() else {
         return Err(EscapeError::Unterminated);
     };
@@ -60,18 +102,23 @@ pub fn read_escape(rest: &[u8]) -> Result<(Escape, usize), EscapeError> {
         b'e' => '\u{1b}',
         b'f' => '\u{c}',
         b'v' => '\u{b}',
-        b'u' => return after_letter(read_unicode_escape(&rest[1..]).map(|(c, n)| (Escape::Char(c), n))),
+        b'u' => {
+            return after_letter(read_unicode_escape(&rest[1..]).map(|(c, n)| ReadEscape::current(Escape::Char(c), n)));
+        }
         b'x' => return after_letter(read_hex_escape(&rest[1..])),
         other => return Err(EscapeError::Unknown(other)),
     };
-    Ok((Escape::Char(named), 1))
+    Ok(ReadEscape::current(Escape::Char(named), 1))
 }
 
 /// What a `\u` or `\x` reader read, counted from the backslash's next byte
 /// rather than from the byte after the letter.
-fn after_letter(read: Result<(Escape, usize), EscapeError>) -> Result<(Escape, usize), EscapeError> {
+fn after_letter(read: Result<ReadEscape, EscapeError>) -> Result<ReadEscape, EscapeError> {
     match read {
-        Ok((escape, consumed)) => Ok((escape, consumed + 1)),
+        Ok(read) => Ok(ReadEscape {
+            consumed: read.consumed + 1,
+            ..read
+        }),
         Err(EscapeError::Malformed { message, consumed }) => Err(EscapeError::Malformed {
             message,
             consumed: consumed + 1,
@@ -83,8 +130,10 @@ fn after_letter(read: Result<(Escape, usize), EscapeError>) -> Result<(Escape, u
 /// Elixir's rule for text that is already in a program: a backslash and a
 /// newline are removed, a backslash before a byte that names no escape leaves
 /// the byte, and a lone final backslash stays. A `\u` or `\x` of the wrong form
-/// is the error's message.
-pub fn unescape(text: &[u8]) -> Result<Vec<u8>, String> {
+/// is the error's message. Each deprecated escape read is in the second part, in
+/// text order.
+pub fn unescape(text: &[u8]) -> Result<(Vec<u8>, Vec<DeprecatedHex>), String> {
+    let mut deprecated = Vec::new();
     let mut out = Vec::with_capacity(text.len());
     let mut at = 0;
     while at < text.len() {
@@ -95,9 +144,10 @@ pub fn unescape(text: &[u8]) -> Result<Vec<u8>, String> {
         }
         let rest = &text[at + 1..];
         at += 1 + match read_escape(rest) {
-            Ok((escape, consumed)) => {
-                escape.push_onto(&mut out);
-                consumed
+            Ok(read) => {
+                read.escape.push_onto(&mut out);
+                deprecated.extend(read.deprecated);
+                read.consumed
             }
             Err(EscapeError::Unterminated) => {
                 out.push(b'\\');
@@ -112,7 +162,7 @@ pub fn unescape(text: &[u8]) -> Result<Vec<u8>, String> {
             Err(EscapeError::Malformed { message, .. }) => return Err(message),
         };
     }
-    Ok(out)
+    Ok((out, deprecated))
 }
 
 /// `\uHHHH` or `\u{H...}` with one to six digits, after the `u`.
@@ -128,19 +178,27 @@ fn read_unicode_escape(rest: &[u8]) -> Result<(char, usize), EscapeError> {
 }
 
 /// `\xHH` is the byte of one or two hex digits, whatever it is; `\x{H...}`
-/// is a code point, stored as its UTF-8 encoding. Elixir deprecates the
-/// one-digit and braced forms with a warning; neither lexer nor `unescape`
-/// has a channel for a warning, so both are accepted.
-fn read_hex_escape(rest: &[u8]) -> Result<(Escape, usize), EscapeError> {
+/// is a code point, stored as its UTF-8 encoding. Elixir reads the one-digit
+/// and braced forms too, and warns that they are deprecated; the result says
+/// which form was read.
+fn read_hex_escape(rest: &[u8]) -> Result<ReadEscape, EscapeError> {
     if rest.first() == Some(&b'{') {
-        return read_braced_code_point(rest, 'x', HEX_ESCAPE_SHAPE).map(|(c, n)| (Escape::Char(c), n));
+        return read_braced_code_point(rest, 'x', HEX_ESCAPE_SHAPE).map(|(c, consumed)| ReadEscape {
+            escape: Escape::Char(c),
+            consumed,
+            deprecated: Some(DeprecatedHex::Braced),
+        });
     }
     let digits = hex_digits(rest, 2);
     if digits.is_empty() {
         return Err(malformed(HEX_ESCAPE_SHAPE, 0));
     }
     let byte = u8::from_str_radix(digits, 16).expect("one or two hexadecimal digits fit a byte");
-    Ok((Escape::Byte(byte), digits.len()))
+    Ok(ReadEscape {
+        escape: Escape::Byte(byte),
+        consumed: digits.len(),
+        deprecated: (digits.len() == 1).then_some(DeprecatedHex::OneDigit),
+    })
 }
 
 /// The one to six digits of a braced escape and its closing brace, from the

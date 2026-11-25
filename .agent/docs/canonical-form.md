@@ -36,6 +36,16 @@ one process, where the code path is identical and renumbering therefore implies
 nondeterminism. `PartialEq` on `BackendProgram` also carries the incremental
 system's invalidation check, so the canonical form never replaces it.
 
+Where the compiler's fixed order of executables, activations and published
+wrappers must break a tie between two source functions, it orders them by their
+registered typed origin (`Types::cmp_function`), never by `FunctionId`, which
+records only the order the interner minted ids in. The same program therefore
+orders the same functions whichever order jobs run, and the printed `w{n}` and
+`x{n}` numbers and the runtime's wrapper indexes follow the program. Two
+distinct functions with equal origins fail an assert.
+The same order picks which return edge on a call cycle is cut, so which returns
+publish the contract follows the program too.
+
 ## canon(Ty)
 
 `TyCanon` renders a type so that

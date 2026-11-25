@@ -1,0 +1,15 @@
+#---
+# purpose: "a clause line that begins with -> after another clause is a syntax error, as in Elixir, whose tokenizer drops the line end before ->"
+# expect: diagnostic
+# diagnostic.code: parse/expected-token
+#---
+defmodule Main do
+  def main() do
+    try do
+      raise "boom"
+    catch
+      v -> v
+      -> 0
+    end
+  end
+end

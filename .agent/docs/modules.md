@@ -396,6 +396,18 @@ the form, the namespace it was reached in and its owner module.
 | not defined, or overridable | `defoverridable` | `resolve/overridable` |
 | overridable function | a macro, or the reverse | `resolve/overridable` |
 
+`read_surface` also records, in `ScopeSurface::ungrouped`, each clause written
+after another function's clause although an earlier clause of its own name and
+arity exists. Only another function's clause separates clauses: a statement, a
+macro call or an attribute between them does not, as in Elixir, where only a
+stored definition moves the "last definition". `discover_modules` emits each
+one as `resolve/ungrouped-clauses` through `emit_warning_once`, in Elixir's
+words: "clauses with the same name and arity (number of arguments) should be
+grouped together", or "clauses with the same name should be grouped together"
+when the clause before it has the same name and another arity, followed by
+`"def h/1" was previously defined (file:line)` for the first clause. Fixture
+`01938` carries the warning text.
+
 A definition with another of the same function still to come is recorded and
 not published: its source is never noted, so nothing expands or compiles it.
 The definition that stands is published once, and the interface is that
