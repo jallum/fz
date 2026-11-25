@@ -48,6 +48,7 @@ use super::dispatch::{
 use fz_engine::{FactUse, FatalError};
 
 mod construction_contract;
+mod handler_subjects;
 mod storage_roots;
 use storage_roots::{LaterUses, StorageRootIndex, entries_reached_from};
 
@@ -193,11 +194,10 @@ struct ExprTry {
     captures: Vec<ValueId>,
 }
 
-/// The clause of a `try` whose body a handler row runs: a rescue clause, which
-/// may wrap the raised value in an `ErlangError` first, or a catch clause.
+/// The clause of a `try` whose body a handler row runs.
 #[derive(Debug, Clone, Copy)]
 enum HandlerClause {
-    Rescue { clause: usize, wraps: bool },
+    Rescue { clause: usize },
     Catch { clause: usize },
 }
 
@@ -209,10 +209,10 @@ struct HandlerArm {
 }
 
 impl HandlerArm {
-    fn rescue(row: PatternRow<super::super::types::Ty>, clause: usize, wraps: bool) -> Self {
+    fn rescue(row: PatternRow<super::super::types::Ty>, clause: usize) -> Self {
         Self {
             row,
-            clause: HandlerClause::Rescue { clause, wraps },
+            clause: HandlerClause::Rescue { clause },
         }
     }
 
@@ -235,7 +235,8 @@ struct TrySections<'a> {
 }
 
 const ERROR_KIND: &str = "error";
-const ERLANG_ERROR: &str = "Elixir.ErlangError";
+/// The kind, the value and the exception name a raise delivers.
+const DELIVERED_SUBJECTS: usize = 3;
 const STACKTRACE_OUTSIDE_A_HANDLER_CLAUSE: &str =
     "__STACKTRACE__ is available only inside catch and rescue clauses of try expressions";
 
@@ -2805,23 +2806,25 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
             return self.push_try_else(span, body.result, else_clauses, env, steps);
         }
         let params = vec![self.fresh_value(), self.fresh_value(), self.fresh_value()];
-        let raised = params[1];
         body.steps.push(ExprStep::PopHandler);
         body.result = self.push_try_else(span, body.result, else_clauses, env, &mut body.steps)?;
 
+        let reads_reason = catch.iter().any(handler_subjects::reads_reason);
+        let subjects = DELIVERED_SUBJECTS + usize::from(reads_reason);
         let (rows, clauses): (Vec<_>, Vec<_>) = self
-            .handler_arms(rescue, catch)
+            .handler_arms(rescue, catch, reads_reason)
             .into_iter()
             .map(|arm| (arm.row, arm.clause))
             .unzip();
         let plan = self.compile_match_dispatch(
             if catch.is_empty() { "rescue" } else { "catch" },
             span,
-            params.len(),
+            subjects,
             rows,
             Some(LastResort::reraise()),
         )?;
         let mut handler_steps = Vec::new();
+        let inputs = self.lower_handler_inputs(span, reads_reason, &params, &mut handler_steps)?;
         let bindings = self.lower_dispatch_bindings(&plan, env, &mut handler_steps)?;
         let free = super::scope::handler_free_names(rescue, catch);
         let captures = self.capture_values(free, env);
@@ -2830,13 +2833,13 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
             .iter()
             .map(|outcome| {
                 let clause = clauses[outcome.body_id as usize];
-                self.lower_handler_arm(outcome, clause, (rescue, catch), raised, env.clone())
+                self.lower_handler_arm(outcome, clause, (rescue, catch), env.clone())
             })
             .collect::<Result<Vec<_>, _>>()?;
         let dispatch_value = self.fresh_value();
         handler_steps.push(ExprStep::Dispatch {
             value: dispatch_value,
-            inputs: params.clone(),
+            inputs,
             bindings,
             dispatch: Box::new(ExprDispatch {
                 plan: Rc::new(plan),
@@ -2881,19 +2884,46 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         Ok(block.result)
     }
 
-    /// The handler's dispatch rows over the subjects (kind, value, exception
-    /// name): the rescue rows, then one row per catch clause, as Elixir orders
-    /// them.
-    fn handler_arms(&mut self, rescue: &[RescueClause], catch: &[CatchClause]) -> Vec<HandlerArm> {
-        let mut arms = self.rescue_arms(rescue);
+    /// The handler's dispatch inputs: what the raise delivers, and the reason a
+    /// `catch` clause reads when one does. A handler that reads no reason
+    /// dispatches on the delivered values alone.
+    fn lower_handler_inputs(
+        &mut self,
+        span: Span,
+        reads_reason: bool,
+        params: &[ValueId],
+        steps: &mut Vec<ExprStep>,
+    ) -> Result<Vec<ValueId>, FatalError> {
+        let mut inputs = params.to_vec();
+        if reads_reason {
+            let names = handler_subjects::SubjectNames::new();
+            let library = self.push_const(steps, GroundValue::Atom(handler_subjects::SubjectNames::library_atom()));
+            let mut env: HashMap<Var, ValueId> = HashMap::default();
+            env.extend([
+                (names.kind.clone(), params[0]),
+                (names.raised.clone(), params[1]),
+                (names.library.clone(), library),
+            ]);
+            let reason = handler_subjects::Build::new(span).reason(&names);
+            inputs.push(self.lower_expr(&reason, &mut env, steps)?);
+        }
+        Ok(inputs)
+    }
+
+    /// The handler's dispatch rows over its subjects: the rescue rows, then
+    /// one row per catch clause, as Elixir orders them.
+    fn handler_arms(&mut self, rescue: &[RescueClause], catch: &[CatchClause], reads_reason: bool) -> Vec<HandlerArm> {
+        let mut arms = self.rescue_arms(rescue, reads_reason);
         arms.extend(catch.iter().enumerate().map(|(clause, catch)| {
+            let ignored = || Spanned::new(Pattern::Wildcard, catch.span);
+            let patterns = if reads_reason {
+                vec![catch.kind.clone(), ignored(), ignored(), catch.value.clone()]
+            } else {
+                vec![catch.kind.clone(), catch.value.clone(), ignored()]
+            };
             HandlerArm::catch(
                 PatternRow {
-                    patterns: vec![
-                        catch.kind.clone(),
-                        catch.value.clone(),
-                        Spanned::new(Pattern::Wildcard, catch.span),
-                    ],
+                    patterns,
                     preconditions: Vec::new(),
                     guard: catch.guard.clone(),
                     body_id: 0,
@@ -2909,57 +2939,37 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
 
     /// One dispatch row per exception a rescue clause names. Rescue rows match
     /// kind `error` only, so a throw or an exit never reaches a rescue clause.
-    /// A clause that admits a non-exception value (`ErlangError`, or a bare
-    /// variable) gets a wrap row matching a nil exception name; its arm wraps
-    /// the value in an `%ErlangError{}` before the clause body runs.
-    fn rescue_arms(&mut self, rescue: &[RescueClause]) -> Vec<HandlerArm> {
+    fn rescue_arms(&mut self, rescue: &[RescueClause], reads_reason: bool) -> Vec<HandlerArm> {
         let mut arms = Vec::new();
         for (clause, rescue) in rescue.iter().enumerate() {
             let span = rescue.span;
             let pattern = |pattern: Pattern| Spanned::new(pattern, span);
-            let error = pattern(Pattern::Atom(ERROR_KIND.to_string()));
             let bound = rescue
                 .binding
                 .as_ref()
                 .map_or(Pattern::Wildcard, |binding| Pattern::Var(binding.node.clone()));
-            let wrap_row = PatternRow {
-                patterns: vec![error.clone(), pattern(Pattern::Wildcard), pattern(Pattern::Nil)],
-                preconditions: Vec::new(),
-                guard: None,
-                body_id: 0,
+            let row = |name: Pattern| {
+                let mut patterns = vec![
+                    pattern(Pattern::Atom(ERROR_KIND.to_string())),
+                    pattern(bound.clone()),
+                    pattern(name),
+                ];
+                if reads_reason {
+                    patterns.push(pattern(Pattern::Wildcard));
+                }
+                PatternRow {
+                    patterns,
+                    preconditions: Vec::new(),
+                    guard: None,
+                    body_id: 0,
+                }
             };
             if rescue.exceptions.is_empty() {
-                if rescue.binding.is_some() {
-                    arms.push(HandlerArm::rescue(wrap_row, clause, true));
-                }
-                arms.push(HandlerArm::rescue(
-                    PatternRow {
-                        patterns: vec![error, pattern(bound), pattern(Pattern::Wildcard)],
-                        preconditions: Vec::new(),
-                        guard: None,
-                        body_id: 0,
-                    },
-                    clause,
-                    false,
-                ));
-                continue;
+                arms.push(HandlerArm::rescue(row(Pattern::Wildcard), clause));
             }
             for exception in &rescue.exceptions {
                 let atom = self.world.module_alias_atom(self.namespace, &exception.node);
-                let wraps = atom == ERLANG_ERROR;
-                arms.push(HandlerArm::rescue(
-                    PatternRow {
-                        patterns: vec![error.clone(), pattern(bound.clone()), pattern(Pattern::Atom(atom))],
-                        preconditions: Vec::new(),
-                        guard: None,
-                        body_id: 0,
-                    },
-                    clause,
-                    false,
-                ));
-                if wraps {
-                    arms.push(HandlerArm::rescue(wrap_row.clone(), clause, true));
-                }
+                arms.push(HandlerArm::rescue(row(Pattern::Atom(atom)), clause));
             }
         }
         arms
@@ -2970,20 +2980,12 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         outcome: &crate::dispatch_matrix::pattern::PatternDispatchOutcome,
         arm: HandlerClause,
         (rescue, catch): (&[RescueClause], &[CatchClause]),
-        raised: ValueId,
         mut env: HashMap<Var, ValueId>,
     ) -> Result<ExprOutcome, FatalError> {
         let arguments = self.bind_outcome_arguments(outcome, |_| None, &mut env);
         let mut steps = Vec::new();
         let body = match arm {
-            HandlerClause::Rescue { clause, wraps } => {
-                let clause = &rescue[clause];
-                if let (true, Some(binding)) = (wraps, &clause.binding) {
-                    let wrapped = self.push_erlang_error(raised, &mut steps);
-                    env.insert(binding.node.clone(), wrapped);
-                }
-                &clause.body
-            }
+            HandlerClause::Rescue { clause } => &rescue[clause].body,
             HandlerClause::Catch { clause } => &catch[clause].body,
         };
         self.bind_stacktrace_where_read(body, &mut env, &mut steps);
@@ -2996,36 +2998,6 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                 result,
             },
         })
-    }
-
-    /// `%ErlangError{original: raised}`, every field of the struct present:
-    /// how a raised non-exception value presents itself to a rescue clause.
-    fn push_erlang_error(&mut self, raised: ValueId, steps: &mut Vec<ExprStep>) -> ValueId {
-        let module = self.push_const(steps, GroundValue::Atom(ERLANG_ERROR.to_string()));
-        let flag = self.push_const(steps, GroundValue::Bool(true));
-        let no_reason = self.push_const(steps, GroundValue::Nil);
-        let entries = [
-            ("__struct__", module),
-            (fz_runtime::failure::EXCEPTION_FIELD, flag),
-            ("original", raised),
-            ("reason", no_reason),
-        ]
-        .into_iter()
-        .map(|(key, value)| {
-            let literal = GroundValue::Atom(key.to_string());
-            let key = self.push_const(steps, literal.clone());
-            (
-                LoweredMapKey {
-                    value: key,
-                    literal: Some(literal),
-                },
-                value,
-            )
-        })
-        .collect();
-        let value = self.fresh_value();
-        steps.push(ExprStep::Map { value, entries });
-        value
     }
 
     /// `__STACKTRACE__` is a variable a rescue or catch clause binds. fz keeps

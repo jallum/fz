@@ -32,10 +32,12 @@ defmodule :erlang do
   extern "fz" defp fz_float_to_fixed_binary(float, integer) :: binary
 
   @doc """
-  Raises `reason` with the kind `:error`, as `panic/1` does. A `rescue`
-  sees an exception unchanged and any other value as an `ErlangError`
-  whose `original` is that value; `catch :error, value` sees the value
-  itself.
+  Raises `reason` with the kind `:error`, as `panic/1` does, after
+  `Exception.__normalize__/1` has made an exception of it: an Erlang reason
+  such as `:badarg` or `{:badmatch, term}` is the exception that names it,
+  and any other value is an `ErlangError` whose `original` is that value. A
+  `rescue` sees that exception; a `catch :error, value` sees `reason` for an
+  `ErlangError`, and the exception for the others.
 
   ## Examples
 
@@ -48,7 +50,7 @@ defmodule :erlang do
 
   """
   @spec error(any) :: no_return()
-  def error(reason), do: panic(reason)
+  def error(reason), do: panic(Exception.__normalize__(reason))
 
   @doc """
   Raises `reason` as `error/1` does. `args` is the argument list of the
@@ -67,7 +69,7 @@ defmodule :erlang do
 
   """
   @spec error(any, :none | [any], [any]) :: no_return()
-  def error(reason, _args, _options), do: panic(reason)
+  def error(reason, _args, _options), do: error(reason)
 
   @doc """
   Raises again what a `catch kind, reason` clause caught, with the same
@@ -85,7 +87,7 @@ defmodule :erlang do
 
   """
   @spec raise(:error | :throw | :exit, any, any) :: no_return()
-  def raise(:error, reason, _stacktrace), do: panic(reason)
+  def raise(:error, reason, _stacktrace), do: panic(Exception.__normalize__(reason))
   def raise(:throw, value, _stacktrace), do: throw(value)
   def raise(:exit, reason, _stacktrace), do: exit(reason)
 

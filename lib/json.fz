@@ -261,10 +261,10 @@ defmodule JSON do
 
   @spec invalid_utf8_at({:error, binary} | nil | {:ok, utf8, binary}) :: no_return()
   defp invalid_utf8_at({:error, <<byte, _rest :: binary>>}), do: invalid_byte(byte)
-  defp invalid_utf8_at(_truncated), do: Kernel.panic(:unexpected_end)
+  defp invalid_utf8_at(_truncated), do: Kernel.panic(%ErlangError{original: :unexpected_end})
 
   @spec invalid_byte(integer) :: no_return()
-  defp invalid_byte(byte), do: Kernel.panic({:invalid_byte, byte})
+  defp invalid_byte(byte), do: Kernel.panic(%ErlangError{original: {:invalid_byte, byte}})
 
   @spec escape(integer) :: binary
   defp escape(34), do: "\\\""

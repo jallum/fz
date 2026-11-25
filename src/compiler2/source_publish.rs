@@ -2382,8 +2382,8 @@ pub(crate) const PROGRAM_ENTRY: &str = "__entry__";
 /// def __entry__() do
 ///   try do
 ///     main()
-///   catch
-///     :error, reason -> Exception.__uncaught__(reason)
+///   rescue
+///     exception -> Exception.__uncaught__(exception)
 ///   end
 /// end
 /// ```
@@ -2391,18 +2391,14 @@ fn build_program_entry() -> Result<FunctionForm, QuotedSourceError> {
     let heap = Rc::new(QuotedSourceHeap::new());
     let builder = heap.builder();
     let meta = QuotedSourceMetadata::default();
-    let reason = builder.variable(&Var::user("reason"), &meta)?;
+    let bound = builder.variable(&Var::user("exception"), &meta)?;
     let exception = builder.alias(&meta, &["Exception"])?;
     let uncaught = builder.call(".", &meta, &[exception, builder.atom("__uncaught__")])?;
-    let rendered = builder.call_callee(uncaught, &meta, &[reason])?;
-    let caught = builder.call(
-        "->",
-        &meta,
-        &[builder.list(&[builder.atom("error"), reason])?, rendered],
-    )?;
+    let rendered = builder.call_callee(uncaught, &meta, &[bound])?;
+    let rescued = builder.call("->", &meta, &[builder.list(&[bound])?, rendered])?;
     let clauses = builder.list(&[
         builder.keyword("do", builder.call("main", &meta, &[])?)?,
-        builder.keyword("catch", builder.list(&[caught])?)?,
+        builder.keyword("rescue", builder.list(&[rescued])?)?,
     ])?;
     let body = builder.call("try", &meta, &[clauses])?;
     let clause = def_clause(&builder, &meta, PROGRAM_ENTRY, &[], body)?;
