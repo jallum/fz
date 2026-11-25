@@ -539,6 +539,13 @@ and a tree insert keyed on `μT. nil | {int, T, T}` returns `{int, T, T}`.
   node's other members and judges growth on them. A recursive member never
   counts as covering a neighbour, because a tuple slot gathers members from
   every rectangle (`types/clash.rs`).
+- A recursive member the walk would pass over is still judged against the
+  ancestors, in one case: the slot gains a recursive type that an ancestor's
+  previous iterate already holds. The slot's type has come back beneath itself,
+  so it folds to a back edge to the innermost such ancestor, whatever the heads
+  say. This is how a return whose every round wraps the previous recursive
+  return (`escape` of a nested tuple and list) ends at one recursive type
+  instead of one rung per round. It applies to recursive members only.
 
 Detection is a read-only walk over `&Types` that builds a plan of cut points and
 interns nothing; only a non-empty plan takes `&mut Types` to rebuild the nodes on
