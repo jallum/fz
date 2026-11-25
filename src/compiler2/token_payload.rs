@@ -36,6 +36,7 @@ fn encode_tok(builder: &QuotedSourceBuilder, tok: &Tok) -> Result<(&'static str,
     let nil = || builder.nil();
     Ok(match tok {
         Tok::Int(value) => ("int", builder.int(*value)),
+        Tok::MinIntMagnitude => ("min_int_magnitude", nil()),
         Tok::Float(value) => ("float", builder.float(*value)),
         Tok::Atom(value) => ("atom", builder.utf8_binary(value)?),
         Tok::Ident(value) => ("ident", builder.utf8_binary(value)?),
@@ -158,6 +159,7 @@ pub(crate) fn decode_token(cursor: &QuotedSourceCursor, sources: &SourceMap) -> 
 fn decode_tok(kind: &str, payload: &QuotedSourceCursor) -> Result<Tok, QuotedSourceError> {
     Ok(match kind {
         "int" => Tok::Int(payload.int_value()?),
+        "min_int_magnitude" => Tok::MinIntMagnitude,
         "float" => Tok::Float(payload.root().load_float().map_err(QuotedSourceError::from)?),
         "atom" => Tok::Atom(payload.utf8_binary_text()?),
         "ident" => Tok::Ident(payload.utf8_binary_text()?),
