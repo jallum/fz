@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-25T01:17:17Z",
+  "description": "From: Elixir Parity. Approved by the user 2026-11-24 (\"Land body now, guards as ticket\", relayed by Elixir Parity). Split from fz-j8z, which lands Kernel.binary_part/3 for bodies only.\n\nToday: def f(b) when binary_part(b, 1, 2) == \"bc\" fails with lower/unsupported 'helper binary_part/3 is not dispatch-pure and cannot be reified into guard dispatch'. Guard evaluation carries a binary only as its byte count, and GuardExtern returns only int/float/ref/bool (src/dispatch_matrix/pattern.rs:312).\n\nChange: binary-valued guard results on interp, run and build. A design page comes before building.\n\nP3: json.erl uses binary_part only in bodies.\n\nDone when: the guard above selects its clause as in Elixir on all three paths (oracle fixture).",
+  "id": "fz-mue.63",
+  "labels": [],
+  "parent": "fz-mue",
+  "priority": 3,
+  "status": "open",
+  "title": "binary_part/3 is usable in guards, as in Elixir",
+  "type": "feature",
+  "updated_at": "2026-11-25T01:17:17Z"
+}
