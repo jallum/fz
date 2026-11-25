@@ -73,6 +73,7 @@ pub const TYPE_REDUNDANT_CLAUSE: DiagCode = DiagCode("type/redundant-clause");
 pub const MODULE_VALUE_CALL: DiagCode = DiagCode("type/module-value-call");
 pub const TYPE_NUMERIC_LITERAL_WIDENED: DiagCode = DiagCode("type/numeric-literal-widened");
 pub const SPEC_VIOLATION: DiagCode = DiagCode("spec/violation");
+pub const TYPE_NOT_A_MAP: DiagCode = DiagCode("type/not-a-map");
 pub const TYPE_RETURN_DID_NOT_CONVERGE: DiagCode = DiagCode("type/return-did-not-converge");
 
 // ----- codegen -----

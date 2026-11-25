@@ -288,18 +288,22 @@ defmodule Map do
     do: raise(%KeyError{key: key, term: container})
 
   @doc """
-  Aborts with the `KeyError` for `%{map | ...}` naming a key `map` lacks:
-  the first of `keys` absent from `map`. The update has already found one
-  missing, so it raises without making a map.
+  Aborts with what `%{map | ...}` raises when it cannot update `map`: the
+  `BadMapError` of a `map` that is no map, or else the `KeyError` for the
+  first of `keys` absent from `map`. The update has already failed, so this
+  raises without making a map.
 
   ## Examples
 
-      Map.update_key_error(%{a: 1}, [:a, :b])
+      Map.update_failure(%{a: 1}, [:a, :b])
       # ** (KeyError) key :b not found
+
+      Map.update_failure(7, [:a])
+      # ** (BadMapError) expected a map, got: 7
   """
-  @spec update_key_error(any, [any]) :: no_return()
-  def update_key_error(map, keys),
-    do: raise(%KeyError{key: first_missing_key(map, keys)})
+  @spec update_failure(any, [any]) :: no_return()
+  def update_failure(map, keys) when is_map(map), do: raise(%KeyError{key: first_missing_key(map, keys)})
+  def update_failure(map, _keys), do: raise(%BadMapError{term: map})
 
   @spec first_missing_key(map, [any]) :: any
   defp first_missing_key(map, [key | keys]), do: first_missing_key(map, key, keys, fz_map_has_key(map, key))

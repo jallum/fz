@@ -1,0 +1,9 @@
+map: %{1 => :new, 2 => :kept}
+missing key: KeyError key 1 not found
+unknown base: BadMapError 7 expected a map, got:
+
+    7
+
+unknown map: %{1 => :new}
+%Main{a: 10, b: 2}
+%Main{a: 1, b: 20}

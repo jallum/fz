@@ -578,6 +578,7 @@ clause that cannot match is left to the decision's own `FunctionClauseError`.
 | `struct!/2` on a module, naming a key its struct does not declare | `** (KeyError) key <key> not found` |
 | `struct!/2` on a module, given another module as `:__struct__` | `** (ArgumentError) expected struct name returned by <module>.__struct__/1 to be <module>, got: <other>` |
 | `%{map \| k: v}` naming a key `map` lacks | `** (KeyError) key <key> not found`, the first such key in the order written |
+| `%{map \| k: v}` of a `map` that is no map | `** (BadMapError) expected a map, got:` then the value |
 | `Enum.max/1` and the other empty reductions | `** (Enum.EmptyError) empty error` |
 | `Enum.fetch!/2` | `** (Enum.OutOfBoundsError) out of bounds error at position <n> when traversing enumerable <enumerable>` |
 | `Enum.map_every/3`, `take_every/2`, `drop_every/2` with a negative step | `** (FunctionClauseError) no function clause matching in Enum.map_every/3` |
@@ -589,11 +590,20 @@ clause that cannot match is left to the decision's own `FunctionClauseError`.
 | `to_string/1` of a bitstring that is not a binary | `** (Protocol.UndefinedError) protocol String.Chars not implemented for BitString, cannot convert a bitstring to a string` |
 | `File` bang functions | `** (File.Error)`, `File.CopyError`, `File.RenameError` or `File.LinkError`, with reason `I/O error` |
 
-An update is Elixir's `put_map_exact`: it may only replace keys the map has.
+An update is Elixir's `put_map_exact`. It lowers to a dispatch on the pattern
+`%{}` over the base, the same plan `case base do %{} -> ... end` makes: the map
+arm is the update and its key check, and any other base goes to
+`Map.update_failure/2`, which raises `BadMapError` for it. A base whose type is a
+map folds the dispatch away and pays no kind test. A base whose type is no map
+at all leaves the map arm unreachable, and that is the compile error
+`type/not-a-map` at the update (`emit_not_a_map`, raised where the semantic walk
+finds the dispatch's `map_update` site with no reachable outcome).
+
+The update may only replace keys the map has.
 A put naming a key its base lacks leaves the update with no destination, and
 its freeze then answers the miss sentinel instead of a map; the lowering tests that answer
 (`ok`, as a `cond`-shaped decision on `true`) and its miss arm calls
-`Map.update_key_error/2`, which finds the missing key and raises. When the
+`Map.update_failure/2`, which finds the missing key and raises. When the
 base's type proves every updated key is present (`Types::map_surely_has_keys`),
 `ok` is typed `true`, the decision's miss arm is trimmed, and the program
 compiles no KeyError path. Otherwise a program whose keys are all present pays

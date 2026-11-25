@@ -9156,6 +9156,52 @@ fn compiler2_native_is_binary_of_an_unknown_value_tests_one_kind_mask() {
     );
 }
 
+/// A map update asks its base for a map only when the type does not already
+/// say so. A base proven a map is updated with no branch on it. A base the
+/// compiler knows nothing about is asked its kind once, compared with MAP, on
+/// the way to the update, as an `is_map` guard asks it; only a base that is
+/// not a MAP goes on to ask whether it is a struct.
+#[test]
+fn compiler2_native_map_update_reads_the_kind_only_of_an_unproven_base() {
+    let kind_shift = format!("= {}", fz_runtime::any_value::AnyValueRefPacking::current().tag_shift());
+    let proven = lowered_clif_of(
+        "defmodule P do\n\
+         \x20 def upd(v), do: %{v | a: 1}\n\
+         end\n\
+         def main(), do: P.upd(%{a: 0, b: 2})\n",
+        "upd",
+    );
+    assert!(
+        !proven.contains("brif "),
+        "a base proven a map is not branched on:\n{proven}"
+    );
+    let unproven = lowered_clif_of(
+        "defmodule P do\n\
+         \x20 def pick([h | _]), do: h\n\
+         \x20 def upd(v), do: %{v | a: 1}\n\
+         end\n\
+         def main(), do: P.upd(P.pick([%{a: 0}, 7]))\n",
+        "upd",
+    );
+    let lines: Vec<&str> = unproven.lines().collect();
+    let first_branch = lines
+        .iter()
+        .position(|line| line.trim_start().starts_with("brif "))
+        .unwrap_or_else(|| panic!("an unproven base is branched on:\n{unproven}"));
+    let kind_reads_before_branch = lines[..first_branch]
+        .iter()
+        .filter(|line| line.contains(" = ushr ") && line.ends_with(&kind_shift))
+        .count();
+    assert_eq!(
+        kind_reads_before_branch, 1,
+        "an unproven base is asked its kind once before the first branch:\n{unproven}"
+    );
+    assert!(
+        lines[first_branch - 1].contains(" = icmp eq ") && lines[first_branch - 1].ends_with("= 2"),
+        "that one read is compared with MAP:\n{unproven}"
+    );
+}
+
 /// A share is written where it stands, from what the value's type says. In
 /// each program below `retained` passes its argument to `keep` and still
 /// holds it, so the argument is shared before the call. Sharing a binary
@@ -24346,8 +24392,9 @@ fn only_erlang_error_normalises_and_a_rescue_converts_nothing() {
 /// The built-in exceptions are library modules, defined when something names
 /// them. An uncaught exception is asked for its message through its module, so
 /// a program defines the exceptions it can raise: here the `KeyError` it
-/// writes and the four the library code it reaches can raise, and none of the
-/// other seventeen. `Exception.message` is called on the `KeyError` alone, so
+/// writes and the five the library code it reaches can raise (the update
+/// that raises it can raise `BadMapError` too), and none of the other
+/// sixteen. `Exception.message` is called on the `KeyError` alone, so
 /// no module without `message/1` is a target of its call.
 #[test]
 fn a_program_defines_only_the_exception_modules_it_can_raise() {
@@ -24357,6 +24404,7 @@ fn a_program_defines_only_the_exception_modules_it_can_raise() {
         [
             "ArgumentError",
             "ArithmeticError",
+            "BadMapError",
             "FunctionClauseError",
             "KeyError",
             "Protocol.UndefinedError"

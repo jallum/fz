@@ -774,6 +774,19 @@ pub struct ControlDispatch {
     /// raises its last resort instead, or has no decision that ends with no
     /// outcome.
     pub(crate) miss_entry: Option<ControlEntryId>,
+    /// Present when this dispatch asks whether a map update's base is a map:
+    /// the update it belongs to, for the error when no base of the dispatch's
+    /// input type is.
+    pub(crate) map_update: Option<MapUpdateSite>,
+}
+
+/// The `%{base | ...}` expression whose base a dispatch tests for a map.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MapUpdateSite {
+    pub(crate) span: Span,
+    /// The base's variable, when the base is one; otherwise the error names
+    /// only the base's type.
+    pub(crate) base: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -830,7 +843,13 @@ impl ControlDispatch {
             plan,
             outcomes,
             miss_entry,
+            map_update: None,
         }
+    }
+
+    pub(crate) fn updating_a_map(mut self, map_update: Option<MapUpdateSite>) -> Self {
+        self.map_update = map_update;
+        self
     }
 
     /// Every entry this dispatch can hand control to: the entry of each
