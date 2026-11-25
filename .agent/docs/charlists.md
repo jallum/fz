@@ -20,7 +20,8 @@ the printed form. Every print path shares it: `IO.inspect/1` and `dbg/1` (which
 is `IO.inspect/1`) through `Kernel.inspect/1`, the IR interpreter, and the REPL
 all call `render_value`, which means `Limits::DEFAULT` (`limit` 100 and
 `printable_limit` 4096, Elixir's `%Inspect.Opts{}` defaults); `Kernel.inspect/2` reaches `render_with_limits`
-through `fz_inspect_with`. The decision is purely payload-driven, reading only the
+through `fz_inspect_with`; `IO.inspect/2` strips its `label:` and hands the rest
+to `Kernel.inspect/2`. The decision is purely payload-driven, reading only the
 tagged bits and heap layout, never the type system's brand slot, so the
 interpreter, JIT, and AOT paths agree on output without sharing type
 information at runtime.

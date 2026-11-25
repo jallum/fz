@@ -1,0 +1,12 @@
+list: [1, 2]
+map: %{1 => "one", 2 => :two}
+string: "text"
+tag: :atom
+3: {1, :two}
+short: [1, 2, ...]
+[1, 2, 3, ...]
+:plain
+:nil_label
+:false_label
+kept: [1, 2]
+returned: true

@@ -1,0 +1,23 @@
+#---
+# purpose: IO.inspect/2 prints its value after an optional label and returns the value unchanged; label: takes a string, an atom or an integer and combines with limit:, and a nil or false label prints none
+# oracle: self
+# oracle.stamp: 3e26358bae0f718d
+#---
+defmodule Main do
+  def main() do
+    IO.inspect([1, 2], label: "list")
+    IO.inspect(%{1 => "one", 2 => :two}, label: "map")
+    IO.inspect("text", label: "string")
+    IO.inspect(:atom, label: :tag)
+    IO.inspect({1, :two}, label: 3)
+    IO.inspect([1, 2, 3, 4], label: "short", limit: 2)
+    IO.inspect([1, 2, 3, 4], limit: 3)
+    IO.inspect(:plain, [])
+    IO.inspect(:nil_label, label: nil)
+    IO.inspect(:false_label, label: false)
+    kept = IO.inspect([1, 2], label: "kept")
+    IO.inspect(kept == [1, 2], label: "returned")
+  end
+end
+
+Main.main()
