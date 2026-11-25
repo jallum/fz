@@ -270,4 +270,25 @@ defmodule List do
 
   @spec to_tuple(list) :: tuple
   def to_tuple(list), do: :erlang.list_to_tuple(list)
+
+  @doc """
+  Wraps `term` in a list if it is not one already. `nil` becomes `[]` and a
+  list is returned unchanged.
+
+  ## Examples
+
+      List.wrap(nil)
+      #=> []
+
+      List.wrap([1, 2, 3])
+      #=> [1, 2, 3]
+
+      List.wrap(:ok)
+      #=> [:ok]
+
+  """
+  @spec wrap(any) :: list
+  def wrap(list) when is_list(list), do: list
+  def wrap(nil), do: []
+  def wrap(other), do: [other]
 end

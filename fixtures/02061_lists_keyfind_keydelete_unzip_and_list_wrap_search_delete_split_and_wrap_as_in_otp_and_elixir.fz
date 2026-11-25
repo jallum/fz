@@ -1,0 +1,61 @@
+#---
+# purpose: ":lists.keyfind/3 returns the first tuple whose Nth element equals the key and false otherwise, skipping elements that are not wide enough tuples, :lists.keydelete/3 drops only the first such tuple, and :lists.unzip/1 splits a list of pairs, with the same bad-argument failures as OTP, and List.wrap/1 leaves a list alone, turns nil into [] and wraps anything else, on all three paths"
+# oracle: self
+# oracle.stamp: 8199cc1f6c6165de
+#---
+defmodule Main do
+  # `x`, typed as one of the kinds of value a call may be given, so the call
+  # is made and fails at run time rather than being refused when compiled.
+  def v(x), do: Enum.at([x, 1, 1.5, "s", [1], {1}, %{}, :a], 0)
+
+  # `x`, typed so that a list of pairs could be it.
+  def pairs(x), do: Enum.at([x, [{1, 2}]], 0)
+
+  def rescued(label, fun) do
+    try do
+      IO.inspect(fun.(), label: label)
+    rescue
+      e -> IO.puts(label <> ": " <> inspect(e.__struct__) <> ": " <> Exception.message(e))
+    end
+  end
+
+  def main() do
+    pairs = [{:a, 10}, {:b, 20}, {:c, 30}, {:b, 40}]
+    IO.inspect(:lists.keyfind(:b, 1, pairs), label: "found")
+    IO.inspect(:lists.keyfind(30, 2, pairs), label: "found by the second element")
+    IO.inspect(:lists.keyfind(:z, 1, pairs), label: "not found")
+    IO.inspect(:lists.keyfind(:a, 1, []), label: "empty list")
+    IO.inspect(:lists.keyfind(:a, 3, pairs), label: "position beyond the tuple size")
+    IO.inspect(:lists.keyfind(:a, 1, [1, :a, [:a], {}, {:a, 1}]), label: "non-tuples and short tuples skipped")
+    IO.inspect(:lists.keyfind(1, 1, [{1.0, :float}, {1, :int}]), label: "equal, not identical")
+    IO.inspect(:lists.keyfind(:a, 1, [{:a, 1} | v(:tail)]), label: "found before an improper tail")
+
+    rescued("zero position", fn -> :lists.keyfind(:a, v(0), pairs) end)
+    rescued("negative position", fn -> :lists.keyfind(:a, v(-1), pairs) end)
+    rescued("non-integer position", fn -> :lists.keyfind(:a, v(:x), pairs) end)
+    rescued("non-list", fn -> :lists.keyfind(:a, 1, v(:x)) end)
+    rescued("bad position and non-list", fn -> :lists.keyfind(:a, v(:x), v(:y)) end)
+    rescued("improper tail reached", fn -> :lists.keyfind(:z, 1, [{:a, 1} | v(:tail)]) end)
+
+    IO.inspect(:lists.keydelete(:b, 1, pairs), label: "first match only")
+    IO.inspect(:lists.keydelete(:z, 1, pairs), label: "no match")
+    IO.inspect(:lists.keydelete(:a, 1, []), label: "empty list")
+    IO.inspect(:lists.keydelete(:a, 3, pairs), label: "position beyond the tuple size")
+    IO.inspect(:lists.keydelete(:a, 1, [1, {:a}, {:a, 1}, {:a, 2}]), label: "non-tuples skipped")
+    rescued("delete zero position", fn -> :lists.keydelete(:a, v(0), pairs) end)
+    rescued("delete non-list", fn -> :lists.keydelete(:a, 1, pairs(:x)) end)
+
+    IO.inspect(:lists.unzip([]), label: "unzip empty")
+    IO.inspect(:lists.unzip([{1, :a}, {2, :b}, {3, :c}]), label: "unzip pairs")
+    rescued("unzip non-pair", fn -> :lists.unzip(pairs([1])) end)
+
+    IO.inspect(List.wrap(nil), label: "wrap nil")
+    IO.inspect(List.wrap([1, 2]), label: "wrap a list")
+    IO.inspect(List.wrap([]), label: "wrap an empty list")
+    IO.inspect(List.wrap(:ok), label: "wrap an atom")
+    IO.inspect(List.wrap({1, 2}), label: "wrap a tuple")
+    IO.inspect(List.wrap("s"), label: "wrap a binary")
+  end
+end
+
+Main.main()
