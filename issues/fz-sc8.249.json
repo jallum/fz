@@ -4,6 +4,7 @@
     "fz-yh5.2"
   ],
   "blocks": [],
+  "closed_at": "2026-11-25T02:53:04Z",
   "created": "2026-11-18T04:08:44Z",
   "description": "Approved by the user 2026-11-17 (relayed by JSON) from the JSON machine-code study (fz vs BEAM JIT, lldb single-step traces). Study files: /private/tmp/claude-501/-Users-j5n-Workspace-fz/ebbfffd8-2561-4da7-bcda-f9a316d00a1e/scratchpad/jsonasm/ (listings/, listings/beam/, CLIF dumps).\n\nEvidence: 6-8 stp/ldp pairs plus moves into callee-saved registers, even in a 23-instruction leaf: 12-16 instructions per call. BEAM never saves them in the callee. Concordant: Make Distiller Fast's byte-walk hunt (develop 1438c8bfa) found each byte crossing dispatch and __clause_0, each pushing and popping five register pairs in series (~10 cycles per function), the saved registers used only on the yield path; Cranelift 0.137 (#711) left the saves unchanged (292 stp on g-spin).\n\nHypothesis (unconfirmed): the inlined yield slow path uses many registers and Cranelift does not shrink-wrap.\n\nDone when: a probe moves the yield slow path to a cold out-of-line stub and counts prologue instructions before and after on the JSON leaves; reports a confirmed or refuted cause; proposes a fix only if confirmed. Re-measure on fz-sc8.247 (clause bodies become blocks).",
   "id": "fz-sc8.249",
@@ -28,8 +29,8 @@
     }
   ],
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Measure why a native leaf called once per item saves x19-x28",
   "type": "task",
-  "updated_at": "2026-11-25T01:18:34Z"
+  "updated_at": "2026-11-25T02:53:04Z"
 }
