@@ -2129,6 +2129,7 @@ impl Types {
 
     /// The map a literal with these entries builds. One that writes no
     /// `__struct__` entry names no module.
+    #[cfg(test)]
     pub(crate) fn map_literal(&mut self, fields: &[(MapKey, Ty)]) -> Ty {
         let entries: Vec<MapTypeEntry> = fields
             .iter()

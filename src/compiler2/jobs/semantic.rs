@@ -3214,18 +3214,29 @@ fn literal_term_ty(world: &mut World, term: &LiteralTerm) -> Ty {
             world.types_mut().non_empty_list(elem_ty)
         }
         LiteralTerm::Map(entries) => {
-            let mut fields = BTreeMap::new();
+            let mut written = Vec::with_capacity(entries.len());
             for (key, value) in entries {
-                let key = match key {
+                let value = literal_term_ty(world, value);
+                let named = match key {
                     LiteralTerm::Ground(key) => literal_map_key(key),
                     _ => None,
                 };
-                let Some(key) = key else {
-                    return world.types_mut().map_top();
-                };
-                fields.insert(key, literal_term_ty(world, value));
+                match named {
+                    Some(key) => written.push(MapTypeEntry {
+                        key: MapTypeKey::Literal(key),
+                        optional: false,
+                        value,
+                    }),
+                    None => {
+                        let key_ty = literal_term_ty(world, key);
+                        match unnamed_key_entries(world, key_ty, value) {
+                            Some(entries) => written.extend(entries),
+                            None => return world.types_mut().map_top(),
+                        }
+                    }
+                }
             }
-            world.types_mut().map_literal(&fields.into_iter().collect::<Vec<_>>())
+            world.types_mut().map_literal_of_entries(&written)
         }
     }
 }
@@ -3262,6 +3273,25 @@ fn list_ty(world: &mut World, values: &SemanticValues, items: &[ValueId], tail: 
     Some(world.types_mut().cons(elem_ty, tail_ty))
 }
 
+/// What a map literal's entry says when its key is not an atom or integer
+/// literal: the entry's value types every key of each kind the key's type
+/// reaches. `None` when a part of the key's type is no kind of key.
+fn unnamed_key_entries(world: &World, key_ty: Ty, value: Ty) -> Option<Vec<MapTypeEntry>> {
+    let kinds = world.types().map_key_kinds(&key_ty)?;
+    let atoms = kinds.atoms.into_iter().map(MapTypeKey::Literal);
+    let domains = kinds.domains.into_iter().map(MapTypeKey::Domain);
+    Some(
+        atoms
+            .chain(domains)
+            .map(|key| MapTypeEntry {
+                key,
+                optional: true,
+                value,
+            })
+            .collect(),
+    )
+}
+
 fn map_ty(world: &mut World, values: &SemanticValues, entries: &[(LoweredMapKey, ValueId)]) -> Option<Ty> {
     let mut written = Vec::with_capacity(entries.len());
     for (key, value) in entries {
@@ -3274,16 +3304,10 @@ fn map_ty(world: &mut World, values: &SemanticValues, entries: &[(LoweredMapKey,
             }),
             None => {
                 let key_ty = value_ty(values, key.value)?;
-                let Some(kinds) = world.types().map_key_kinds(&key_ty) else {
-                    return Some(world.types_mut().map_top());
-                };
-                let atoms = kinds.atoms.into_iter().map(MapTypeKey::Literal);
-                let domains = kinds.domains.into_iter().map(MapTypeKey::Domain);
-                written.extend(atoms.chain(domains).map(|key| MapTypeEntry {
-                    key,
-                    optional: true,
-                    value,
-                }));
+                match unnamed_key_entries(world, key_ty, value) {
+                    Some(entries) => written.extend(entries),
+                    None => return Some(world.types_mut().map_top()),
+                }
             }
         }
     }
