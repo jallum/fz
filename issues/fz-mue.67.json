@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Elixir Parity",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-25T12:04:39Z",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "defmacro and defmacrop parse in expression position, so a macro can emit one, as in Elixir",
   "type": "feature",
-  "updated_at": "2026-11-25T12:04:39Z"
+  "updated_at": "2026-11-25T12:04:41Z"
 }
