@@ -3,7 +3,7 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-25T12:09:22Z",
-  "description": "From: Elixir Parity. User-approved 2026-11-25. Blocks #791. Port lines 659/681: encode_atom passes a 2-arity wrapper into format_value's formatter() parameter, and fz refuses it as a spec violation, while Elixir prints [34, \"foo\", 34]. Repro: Elixir Parity's scratchpad walk791/r581.fz.\nDone when: the closure is typed by its own arity, the repro matches Elixir on all three paths, and a fixture covers it.",
+  "description": "From: Elixir Parity. Finding (2026-11-25): not an fz bug. OTP's json.erl breaks its own types. At json.erl:660, format_value passes fun(Value, Enc) -\u003e UserEnc(Value, Enc, State) end to encode_atom; encode_atom calls it with itself as Enc, and the wrapper passes that 2-arity encoder() as formatter()'s Encoder argument, which json.erl:569 declares as a 3-arity formatter(). BEAM runs it only because format_value's binary clause ignores _Enc; dialyzer does not check calls through fun variables (probes fz-otp-json/probes/mue73/m.erl, o.erl pass; n.erl, a direct contract break, is flagged). fz resolves user_enc to \u0026format_value/3 and refuses the call as a provable spec violation; the closure's arity is carried correctly (p2.fz: a 1-arity closure to a spec'd 2-arity callback is refused). User decision: fix the type in the port: formatter()'s Encoder :: formatter() | encoder(), listed as a known deviation from OTP; the code is unchanged (JSON owns the port). No fz change.",
   "id": "fz-mue.73",
   "labels": [],
   "parent": "fz-mue",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "A closure passed where a 3-arity callback spec is declared is typed by its own arity",
   "type": "bug",
-  "updated_at": "2026-11-25T12:09:28Z"
+  "updated_at": "2026-11-25T12:21:51Z"
 }
