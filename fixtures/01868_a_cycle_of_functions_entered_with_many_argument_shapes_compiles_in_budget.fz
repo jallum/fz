@@ -1,0 +1,148 @@
+#---
+# purpose: "A cycle of 33 functions entered from 33 call sites with 8 argument shapes compiles within the request budget and prints what Elixir prints"
+# root: main/0
+# assert.metric.pull.product.requested: 11016
+# oracle: self
+# oracle.stamp: dc2538f5a5fe5beb
+#---
+defmodule StepCycle do
+  def step0(<<>>, sum, stack), do: {sum, stack}
+  def step0(<<c, rest::binary>>, sum, [top | stack]), do: step1(rest, sum + c, [top | stack])
+  def step0(<<c, rest::binary>>, sum, []), do: step1(rest, sum + c, [c])
+  def step1(<<>>, sum, stack), do: {sum, stack}
+  def step1(<<c, rest::binary>>, sum, [top | stack]), do: step2(rest, sum + c, [top | stack])
+  def step1(<<c, rest::binary>>, sum, []), do: step2(rest, sum + c, [c])
+  def step2(<<>>, sum, stack), do: {sum, stack}
+  def step2(<<c, rest::binary>>, sum, [top | stack]), do: step3(rest, sum + c, [top | stack])
+  def step2(<<c, rest::binary>>, sum, []), do: step3(rest, sum + c, [c])
+  def step3(<<>>, sum, stack), do: {sum, stack}
+  def step3(<<c, rest::binary>>, sum, [top | stack]), do: step4(rest, sum + c, [top | stack])
+  def step3(<<c, rest::binary>>, sum, []), do: step4(rest, sum + c, [c])
+  def step4(<<>>, sum, stack), do: {sum, stack}
+  def step4(<<c, rest::binary>>, sum, [top | stack]), do: step5(rest, sum + c, [top | stack])
+  def step4(<<c, rest::binary>>, sum, []), do: step5(rest, sum + c, [c])
+  def step5(<<>>, sum, stack), do: {sum, stack}
+  def step5(<<c, rest::binary>>, sum, [top | stack]), do: step6(rest, sum + c, [top | stack])
+  def step5(<<c, rest::binary>>, sum, []), do: step6(rest, sum + c, [c])
+  def step6(<<>>, sum, stack), do: {sum, stack}
+  def step6(<<c, rest::binary>>, sum, [top | stack]), do: step7(rest, sum + c, [top | stack])
+  def step6(<<c, rest::binary>>, sum, []), do: step7(rest, sum + c, [c])
+  def step7(<<>>, sum, stack), do: {sum, stack}
+  def step7(<<c, rest::binary>>, sum, [top | stack]), do: step8(rest, sum + c, [top | stack])
+  def step7(<<c, rest::binary>>, sum, []), do: step8(rest, sum + c, [c])
+  def step8(<<>>, sum, stack), do: {sum, stack}
+  def step8(<<c, rest::binary>>, sum, [top | stack]), do: step9(rest, sum + c, [top | stack])
+  def step8(<<c, rest::binary>>, sum, []), do: step9(rest, sum + c, [c])
+  def step9(<<>>, sum, stack), do: {sum, stack}
+  def step9(<<c, rest::binary>>, sum, [top | stack]), do: step10(rest, sum + c, [top | stack])
+  def step9(<<c, rest::binary>>, sum, []), do: step10(rest, sum + c, [c])
+  def step10(<<>>, sum, stack), do: {sum, stack}
+  def step10(<<c, rest::binary>>, sum, [top | stack]), do: step11(rest, sum + c, [top | stack])
+  def step10(<<c, rest::binary>>, sum, []), do: step11(rest, sum + c, [c])
+  def step11(<<>>, sum, stack), do: {sum, stack}
+  def step11(<<c, rest::binary>>, sum, [top | stack]), do: step12(rest, sum + c, [top | stack])
+  def step11(<<c, rest::binary>>, sum, []), do: step12(rest, sum + c, [c])
+  def step12(<<>>, sum, stack), do: {sum, stack}
+  def step12(<<c, rest::binary>>, sum, [top | stack]), do: step13(rest, sum + c, [top | stack])
+  def step12(<<c, rest::binary>>, sum, []), do: step13(rest, sum + c, [c])
+  def step13(<<>>, sum, stack), do: {sum, stack}
+  def step13(<<c, rest::binary>>, sum, [top | stack]), do: step14(rest, sum + c, [top | stack])
+  def step13(<<c, rest::binary>>, sum, []), do: step14(rest, sum + c, [c])
+  def step14(<<>>, sum, stack), do: {sum, stack}
+  def step14(<<c, rest::binary>>, sum, [top | stack]), do: step15(rest, sum + c, [top | stack])
+  def step14(<<c, rest::binary>>, sum, []), do: step15(rest, sum + c, [c])
+  def step15(<<>>, sum, stack), do: {sum, stack}
+  def step15(<<c, rest::binary>>, sum, [top | stack]), do: step16(rest, sum + c, [top | stack])
+  def step15(<<c, rest::binary>>, sum, []), do: step16(rest, sum + c, [c])
+  def step16(<<>>, sum, stack), do: {sum, stack}
+  def step16(<<c, rest::binary>>, sum, [top | stack]), do: step17(rest, sum + c, [top | stack])
+  def step16(<<c, rest::binary>>, sum, []), do: step17(rest, sum + c, [c])
+  def step17(<<>>, sum, stack), do: {sum, stack}
+  def step17(<<c, rest::binary>>, sum, [top | stack]), do: step18(rest, sum + c, [top | stack])
+  def step17(<<c, rest::binary>>, sum, []), do: step18(rest, sum + c, [c])
+  def step18(<<>>, sum, stack), do: {sum, stack}
+  def step18(<<c, rest::binary>>, sum, [top | stack]), do: step19(rest, sum + c, [top | stack])
+  def step18(<<c, rest::binary>>, sum, []), do: step19(rest, sum + c, [c])
+  def step19(<<>>, sum, stack), do: {sum, stack}
+  def step19(<<c, rest::binary>>, sum, [top | stack]), do: step20(rest, sum + c, [top | stack])
+  def step19(<<c, rest::binary>>, sum, []), do: step20(rest, sum + c, [c])
+  def step20(<<>>, sum, stack), do: {sum, stack}
+  def step20(<<c, rest::binary>>, sum, [top | stack]), do: step21(rest, sum + c, [top | stack])
+  def step20(<<c, rest::binary>>, sum, []), do: step21(rest, sum + c, [c])
+  def step21(<<>>, sum, stack), do: {sum, stack}
+  def step21(<<c, rest::binary>>, sum, [top | stack]), do: step22(rest, sum + c, [top | stack])
+  def step21(<<c, rest::binary>>, sum, []), do: step22(rest, sum + c, [c])
+  def step22(<<>>, sum, stack), do: {sum, stack}
+  def step22(<<c, rest::binary>>, sum, [top | stack]), do: step23(rest, sum + c, [top | stack])
+  def step22(<<c, rest::binary>>, sum, []), do: step23(rest, sum + c, [c])
+  def step23(<<>>, sum, stack), do: {sum, stack}
+  def step23(<<c, rest::binary>>, sum, [top | stack]), do: step24(rest, sum + c, [top | stack])
+  def step23(<<c, rest::binary>>, sum, []), do: step24(rest, sum + c, [c])
+  def step24(<<>>, sum, stack), do: {sum, stack}
+  def step24(<<c, rest::binary>>, sum, [top | stack]), do: step25(rest, sum + c, [top | stack])
+  def step24(<<c, rest::binary>>, sum, []), do: step25(rest, sum + c, [c])
+  def step25(<<>>, sum, stack), do: {sum, stack}
+  def step25(<<c, rest::binary>>, sum, [top | stack]), do: step26(rest, sum + c, [top | stack])
+  def step25(<<c, rest::binary>>, sum, []), do: step26(rest, sum + c, [c])
+  def step26(<<>>, sum, stack), do: {sum, stack}
+  def step26(<<c, rest::binary>>, sum, [top | stack]), do: step27(rest, sum + c, [top | stack])
+  def step26(<<c, rest::binary>>, sum, []), do: step27(rest, sum + c, [c])
+  def step27(<<>>, sum, stack), do: {sum, stack}
+  def step27(<<c, rest::binary>>, sum, [top | stack]), do: step28(rest, sum + c, [top | stack])
+  def step27(<<c, rest::binary>>, sum, []), do: step28(rest, sum + c, [c])
+  def step28(<<>>, sum, stack), do: {sum, stack}
+  def step28(<<c, rest::binary>>, sum, [top | stack]), do: step29(rest, sum + c, [top | stack])
+  def step28(<<c, rest::binary>>, sum, []), do: step29(rest, sum + c, [c])
+  def step29(<<>>, sum, stack), do: {sum, stack}
+  def step29(<<c, rest::binary>>, sum, [top | stack]), do: step30(rest, sum + c, [top | stack])
+  def step29(<<c, rest::binary>>, sum, []), do: step30(rest, sum + c, [c])
+  def step30(<<>>, sum, stack), do: {sum, stack}
+  def step30(<<c, rest::binary>>, sum, [top | stack]), do: step31(rest, sum + c, [top | stack])
+  def step30(<<c, rest::binary>>, sum, []), do: step31(rest, sum + c, [c])
+  def step31(<<>>, sum, stack), do: {sum, stack}
+  def step31(<<c, rest::binary>>, sum, [top | stack]), do: step32(rest, sum + c, [top | stack])
+  def step31(<<c, rest::binary>>, sum, []), do: step32(rest, sum + c, [c])
+  def step32(<<>>, sum, stack), do: {sum, stack}
+  def step32(<<c, rest::binary>>, sum, [top | stack]), do: step0(rest, sum + c, [top | stack])
+  def step32(<<c, rest::binary>>, sum, []), do: step0(rest, sum + c, [c])
+end
+
+defmodule Main do
+  def main() do
+    IO.inspect(StepCycle.step0("abc", 0, []))
+    IO.inspect(StepCycle.step1("abc", 0, [1]))
+    IO.inspect(StepCycle.step2("abc", 0, [:a]))
+    IO.inspect(StepCycle.step3("abc", 0, ["s"]))
+    IO.inspect(StepCycle.step4("abc", 0, [1.0]))
+    IO.inspect(StepCycle.step5("abc", 0, [[1]]))
+    IO.inspect(StepCycle.step6("abc", 0, [{1}]))
+    IO.inspect(StepCycle.step7("abc", 0, [%{}]))
+    IO.inspect(StepCycle.step8("abc", 0, []))
+    IO.inspect(StepCycle.step9("abc", 0, [1]))
+    IO.inspect(StepCycle.step10("abc", 0, [:a]))
+    IO.inspect(StepCycle.step11("abc", 0, ["s"]))
+    IO.inspect(StepCycle.step12("abc", 0, [1.0]))
+    IO.inspect(StepCycle.step13("abc", 0, [[1]]))
+    IO.inspect(StepCycle.step14("abc", 0, [{1}]))
+    IO.inspect(StepCycle.step15("abc", 0, [%{}]))
+    IO.inspect(StepCycle.step16("abc", 0, []))
+    IO.inspect(StepCycle.step17("abc", 0, [1]))
+    IO.inspect(StepCycle.step18("abc", 0, [:a]))
+    IO.inspect(StepCycle.step19("abc", 0, ["s"]))
+    IO.inspect(StepCycle.step20("abc", 0, [1.0]))
+    IO.inspect(StepCycle.step21("abc", 0, [[1]]))
+    IO.inspect(StepCycle.step22("abc", 0, [{1}]))
+    IO.inspect(StepCycle.step23("abc", 0, [%{}]))
+    IO.inspect(StepCycle.step24("abc", 0, []))
+    IO.inspect(StepCycle.step25("abc", 0, [1]))
+    IO.inspect(StepCycle.step26("abc", 0, [:a]))
+    IO.inspect(StepCycle.step27("abc", 0, ["s"]))
+    IO.inspect(StepCycle.step28("abc", 0, [1.0]))
+    IO.inspect(StepCycle.step29("abc", 0, [[1]]))
+    IO.inspect(StepCycle.step30("abc", 0, [{1}]))
+    IO.inspect(StepCycle.step31("abc", 0, [%{}]))
+    IO.inspect(StepCycle.step32("abc", 0, []))
+  end
+end
+
+Main.main()

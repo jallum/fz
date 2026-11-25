@@ -118,6 +118,12 @@ where it is; ceilings are lowered to develop's measured values now and then. A
 rise past a ceiling fails, naming the part and the overshoot, and is investigated
 before the ceiling moves.
 
+Fixture `01868_a_cycle_of_functions_entered_with_many_argument_shapes_compiles_in_budget`
+pins the request count of a 33-function cycle entered from 33 call sites with
+`# assert.metric.pull.product.requested`, so a rise in the cost per
+(function, entry) pair fails there before any program reaches the budget. The pin is exact:
+a change that lowers the count lowers the pin with it.
+
 **Deferred drives** — `pull.drive.deferred` fires when a drive that has another
 drive beneath it runs dry with its product still waiting and unwinds, its
 request standing, instead of settling facts as unknown (only the outermost

@@ -1,13 +1,16 @@
 use super::fixture_facts::{canonical_call_edge_facts, render_canonical_call_edge_snapshot};
+use super::pull::{ProductKey, ProductRequestId};
 use super::{CodeSubmission, Compiler2, ExecutableNeed, RootSubmission};
 use crate::telemetry::ConfiguredTelemetry;
 use crate::telemetry::handler::{Event, Handler};
 use fz_fixture_metadata::{
     EdgeAssertion, FixtureMetadata, MetricAssertion, fixture_frontmatter_prefix_bytes, parse_fixture_metadata,
 };
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 #[derive(Debug)]
@@ -55,6 +58,7 @@ impl EventCounter {
 }
 
 const CLASH_FOLDED: &[&str] = &["fz", "compiler2", "type", "clash_folded"];
+const PRODUCT_REQUESTED: &[&str] = &["fz", "compiler2", "pull", "product", "requested"];
 
 fn discover_contract_fixtures() -> Vec<ContractFixture> {
     let filter = std::env::var("FIXTURE2_CONTRACT_FILTER").ok();
@@ -105,6 +109,11 @@ fn evaluate_fixture(fixture: &ContractFixture) -> EvaluatedFixture {
     let tel = ConfiguredTelemetry::new();
     let clash_folded = EventCounter::new(CLASH_FOLDED);
     tel.attach(clash_folded.name, clash_folded.handler());
+    let product_requested = Rc::new(Cell::new(0u64));
+    let counted_requests = Rc::clone(&product_requested);
+    tel.attach_raw_event2::<ProductKey, ProductRequestId, _>(PRODUCT_REQUESTED, move |_, _, _, _, _| {
+        counted_requests.set(counted_requests.get() + 1);
+    });
 
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
@@ -152,6 +161,7 @@ fn evaluate_fixture(fixture: &ContractFixture) -> EvaluatedFixture {
     metrics.insert("semantic.callsites".to_string(), facts.len() as u64);
     metrics.insert("call_edges.count".to_string(), facts.len() as u64);
     metrics.insert("type.clash_folded".to_string(), clash_folded.get());
+    metrics.insert("pull.product.requested".to_string(), product_requested.get());
 
     EvaluatedFixture {
         facts,
