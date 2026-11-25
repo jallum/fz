@@ -739,3 +739,55 @@ fn the_cut_return_edge_follows_typed_origin_not_mint_order() {
     // a function's own copies are cut both ways.
     assert!(return_edge_is_cut(&alpha_first, one, one));
 }
+
+/// A call site's result is the value its call tail binds, and the call is in
+/// tail position exactly when it returns to its caller; an id no call tail
+/// names, or one that names no call site of the body, has no result.
+#[test]
+fn a_call_sites_result_is_the_value_its_call_tail_binds() {
+    use super::callsite_result;
+    use crate::compiler2::body::{
+        CallSiteId, ControlDestination, ControlEntryId, ControlEntryOrigin, DirectCallee, LoweredBody, LoweredEntry,
+        LoweredTail, ValueId,
+    };
+    use crate::source::Span;
+
+    let entry = |tail| LoweredEntry {
+        span: Span::DUMMY,
+        origin: ControlEntryOrigin::Clause,
+        params: Vec::new(),
+        captures: Vec::new(),
+        capture_owners: Vec::new(),
+        physical_captures: Vec::new(),
+        physical_params: Vec::new(),
+        steps: Vec::new(),
+        tail,
+    };
+    let value = ValueId::from_u32;
+    let callsite = CallSiteId::from_u32;
+    let body = LoweredBody::clauses(
+        Vec::new(),
+        vec![
+            entry(LoweredTail::ClosureCall {
+                value: value(10),
+                callsite: callsite(1),
+                callee: value(7),
+                args: Vec::new(),
+                dest: ControlDestination::Deliver(ControlEntryId::from_u32(2)),
+            }),
+            entry(LoweredTail::Unreachable),
+            entry(LoweredTail::DirectCall {
+                value: value(20),
+                callsite: callsite(0),
+                callee: DirectCallee::Function(FunctionId::from_coordinate(0)),
+                args: Vec::new(),
+                dest: ControlDestination::Return,
+            }),
+        ],
+        Vec::new(),
+    );
+
+    assert_eq!(callsite_result(&body, callsite(0)), Some((value(20), true)));
+    assert_eq!(callsite_result(&body, callsite(1)), Some((value(10), false)));
+    assert_eq!(callsite_result(&body, callsite(2)), None);
+}
