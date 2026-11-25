@@ -1,0 +1,54 @@
+#---
+# purpose: "defmacro and defmacrop are expressions, so quote can hold them and a macro can return them: a macro returning defmacro unquote(name)(unquote_splicing(args)) defines a working macro in the module that calls it, a returned defmacrop is private to that module, and quote of either gives Elixir's AST."
+# oracle: self
+# oracle.stamp: af4982e8731068f2
+#---
+defmodule Gen do
+  defmacro define_sum(name, args) do
+    quote do
+      defmacro unquote(name)(unquote_splicing(args)) do
+        {:+, [], [unquote_splicing(args)]}
+      end
+    end
+  end
+
+  defmacro define_hidden(name) do
+    quote do
+      defmacrop unquote(name)(x) do
+        {:+, [], [x, 1]}
+      end
+
+      def go(v), do: unquote(name)(v)
+    end
+  end
+end
+
+defmodule Sums do
+  require Gen
+  Gen.define_sum(:add, [a, b])
+  Gen.define_sum(:single, [a])
+  Gen.define_hidden(:inc)
+end
+
+defmodule Main do
+  require Sums
+
+  def main() do
+    IO.inspect(Sums.add(20, 22))
+    IO.inspect(Sums.single(7))
+    IO.inspect(Sums.go(1))
+
+    {public, _, [{name, _, [{param, _, _}]}, [do: {body, _, _}]]} = quote do defmacro f(x), do: x end
+    IO.inspect({public, name, param, body})
+
+    {private, _, [{name, _, _}, [do: _]]} = quote do defmacrop g(x) do x end end
+    IO.inspect({private, name})
+
+    {guarded, _, [{:when, _, [{name, _, _}, {guard, _, _}]}, [do: _]]} =
+      quote do defmacro h(x) when is_integer(x), do: x end
+
+    IO.inspect({guarded, name, guard})
+  end
+end
+
+Main.main()

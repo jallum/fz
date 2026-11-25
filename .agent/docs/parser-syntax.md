@@ -39,10 +39,12 @@ accepts any other expression as an item, so `Distill.main(argv)`, `x = 1`, `42`
 and `if ... do ... end` parse there, and the same line inside a `defmodule`
 fails with `does not yet parse ... at item position`.
 
-`alias`, `import` and `require` are also expressions: `parse_prefix` sends
-the three keywords to `parse_scope_directive_expr`, which reads them with the
-item parsers, so a function body or a `quote` holds the same call node a module
-body does (`quote do import M; require N end` in a `__using__`). `alias A.{B, C}`
+`alias`, `import`, `require` and `defmacro` are also expressions: `parse_prefix`
+sends the four keywords to `parse_scope_directive_expr`, which reads them with
+the item parsers, so a function body or a `quote` holds the same call node a
+module body does (`quote do import M; require N end` in a `__using__`, or
+`quote do defmacro unquote(name)(unquote_splicing(args)) do ... end end`).
+`defmacrop` is an ordinary call in either position. `alias A.{B, C}`
 (`parse_alias_group`) reads as a call of `A.{}`; the options are keyword
 entries of one list: `alias` takes `as:` and `warn:`, `import` takes `only:`,
 `except:` and `warn:`, `require` takes `as:`, `only:`, `except:` and `warn:`

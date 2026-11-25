@@ -328,9 +328,9 @@ impl<'t> FrontDoorParser<'t> {
         Ok(expr.root)
     }
 
-    /// `alias`, `import` and `require` where an expression stands, as in a
-    /// function body or a `quote`: the same call node a module's item list
-    /// holds, read by the same item parsers.
+    /// `alias`, `import`, `require` and `defmacro` where an expression stands,
+    /// as in a function body or a `quote`: the same call node a module's item
+    /// list holds, read by the same item parsers.
     fn parse_scope_directive_expr(&mut self, start: Span) -> Result<ParsedExpr<'t>, FrontDoorError> {
         let root = self.parse_item(&[])?;
         Ok(ParsedExpr::plain(root, start.merge(self.prev_span())))
@@ -1016,7 +1016,7 @@ impl<'t> FrontDoorParser<'t> {
 
     fn parse_prefix(&mut self, module_path: &[String], scope: &[String]) -> Result<ParsedExpr<'t>, FrontDoorError> {
         let start = self.cur_span();
-        if matches!(self.peek(), Tok::Alias | Tok::Import | Tok::Require) {
+        if matches!(self.peek(), Tok::Alias | Tok::Import | Tok::Require | Tok::Defmacro) {
             return self.parse_scope_directive_expr(start);
         }
         match self.bump() {
