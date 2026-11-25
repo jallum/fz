@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Elixir Parity",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-25T02:28:43Z",
@@ -10,5 +10,5 @@
   "status": "open",
   "title": "The distiller ceilings hold the sum of #881's and #882's accepted rises",
   "type": "bug",
-  "updated_at": "2026-11-25T02:28:43Z"
+  "updated_at": "2026-11-25T02:28:45Z"
 }
