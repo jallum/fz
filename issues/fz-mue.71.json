@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Elixir Parity",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-25T12:09:21Z",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "inspect and String.printable? agree with Elixir on noncharacters and bytes ≥ 0x80",
   "type": "bug",
-  "updated_at": "2026-11-25T12:09:21Z"
+  "updated_at": "2026-11-25T12:09:26Z"
 }
