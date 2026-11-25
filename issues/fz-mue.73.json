@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Elixir Parity",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-25T12:09:22Z",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "A closure passed where a 3-arity callback spec is declared is typed by its own arity",
   "type": "bug",
-  "updated_at": "2026-11-25T12:09:22Z"
+  "updated_at": "2026-11-25T12:09:28Z"
 }
