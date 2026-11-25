@@ -1,0 +1,81 @@
+#---
+# purpose: ":binary.match/2,3 and :binary.compile_pattern/1 find the leftmost and then longest match of a binary, a list of binaries or a compiled pattern, within an optional scope, answer :nomatch otherwise, and raise the same ArgumentError for a bad subject, pattern or option as Elixir, on all three paths"
+# oracle: self
+# oracle.stamp: 5509ed578cc5c459
+#---
+defmodule Main do
+  # `x`, typed as one of the kinds of value a call may be given, so the call
+  # is made and fails at run time rather than being refused when compiled.
+  def v(x), do: Enum.at([x, 1, 1.5, "s", <<1::3>>, [1], {1}, %{}, self()], 0)
+
+  # `x`, typed so that some option list the spec declares could be it.
+  def opts(x), do: Enum.at([x, [{:scope, {0, 1}}]], 0)
+
+  def rescued(label, fun) do
+    try do
+      IO.inspect(fun.(), label: label)
+    rescue
+      e -> IO.puts(label <> ": " <> inspect(e.__struct__) <> ": " <> Exception.message(e))
+    end
+  end
+
+  def main() do
+    IO.inspect(:binary.match("abcde", "cd"), label: "one binary")
+    IO.inspect(:binary.match("abcabc", "bc"), label: "first of two")
+    IO.inspect(:binary.match("abc", "abcd"), label: "longer than the subject")
+    IO.inspect(:binary.match("", "a"), label: "empty subject")
+    IO.inspect(:binary.match("abc", "x"), label: "absent")
+    IO.inspect(:binary.match("abcde", ["cd", "bc"]), label: "leftmost of a list")
+    IO.inspect(:binary.match("abcde", ["bcde", "cd", "b"]), label: "longest at the leftmost")
+    IO.inspect(:binary.match("abcde", ["b", "bcd", "bc"]), label: "longest, any order")
+    IO.inspect(:binary.match("xaby", ["b", "ab", "x"]), label: "leftmost wins over longer")
+
+    one = :binary.compile_pattern("cd")
+    many = :binary.compile_pattern(["bc", "cd", "bcd"])
+    IO.inspect(elem(one, 0), label: "one compiles to")
+    IO.inspect(elem(many, 0), label: "many compile to")
+    IO.inspect(is_tuple(:binary.compile_pattern(["x"])), label: "compiled is a tuple")
+    IO.inspect(:binary.match("abcde", one), label: "compiled one")
+    IO.inspect(:binary.match("abcde", many), label: "compiled many")
+    IO.inspect(:binary.match("abcde", many, scope: {2, 3}), label: "compiled in scope")
+    IO.inspect(:binary.match("abcde", :binary.compile_pattern(["x", "y"])), label: "compiled absent")
+
+    IO.inspect(:binary.match("abcde", "cd", [{:scope, {0, 5}}]), label: "whole scope")
+    IO.inspect(:binary.match("abcde", "cd", [{:scope, {0, 4}}]), label: "scope holds it")
+    IO.inspect(:binary.match("abcde", "cd", [{:scope, {0, 3}}]), label: "scope cuts it")
+    IO.inspect(:binary.match("abcde", "cd", [{:scope, {3, 2}}]), label: "scope starts inside it")
+    IO.inspect(:binary.match("abcde", "a", [{:scope, {0, 0}}]), label: "empty scope")
+    IO.inspect(:binary.match("abcde", "a", [{:scope, {5, 0}}]), label: "empty scope at the end")
+    IO.inspect(:binary.match("abcde", "cd", [{:scope, {5, -3}}]), label: "negative length")
+    IO.inspect(:binary.match("abcde", "cd", [{:scope, {5, -2}}]), label: "negative length cuts it")
+    IO.inspect(:binary.match("abcde", "cd", [{:scope, {4, -4}}]), label: "negative length, whole prefix")
+    IO.inspect(:binary.match("abcde", "abcde", [{:scope, {5, -5}}]), label: "negative length, whole subject")
+    IO.inspect(:binary.match("abcde", ["a", "ab"], [{:scope, {2, -2}}]), label: "negative length, list")
+    IO.inspect(:binary.match("abcde", "cd", opts([{:scope, {0, 5}} | :tail])), label: "improper options")
+
+    rescued("empty pattern", fn -> :binary.match("abc", v("")) end)
+    rescued("empty list", fn -> :binary.match("abc", v([])) end)
+    rescued("empty member", fn -> :binary.match("abc", v(["a", ""])) end)
+    rescued("improper list", fn -> :binary.match("abc", v(["a" | "b"])) end)
+    rescued("atom pattern", fn -> :binary.match("abc", v(:foo)) end)
+    rescued("bitstring pattern", fn -> :binary.match("abc", v([<<1::3>>])) end)
+    rescued("bad compiled", fn -> :binary.match("abc", v({:bm, 1})) end)
+    rescued("non-binary subject", fn -> :binary.match(v(:foo), "a") end)
+    rescued("bitstring subject", fn -> :binary.match(v(<<1::3>>), "a") end)
+    rescued("bad subject and pattern", fn -> :binary.match(v(:foo), v(:bar)) end)
+    rescued("scope past the end", fn -> :binary.match("abc", "a", [{:scope, {0, v(5)}}]) end)
+    rescued("scope before the start", fn -> :binary.match("abc", "a", [{:scope, {v(-1), 1}}]) end)
+    rescued("negative length before the start", fn -> :binary.match("abc", "a", [{:scope, {1, v(-2)}}]) end)
+    rescued("scope float", fn -> :binary.match("abc", "a", [{:scope, {1, v(1.0)}}]) end)
+    rescued("unknown option", fn -> :binary.match("abc", "a", opts([:foo])) end)
+    IO.inspect(:binary.match("abc", "c", [{:scope, {0, 1}}, {:scope, {0, 3}}]), label: "last scope wins")
+    rescued("an outside scope among two", fn -> :binary.match("abc", "a", [{:scope, {0, 1}}, {:scope, {0, v(9)}}]) end)
+    rescued("options not a list", fn -> :binary.match("abc", "a", opts(:foo)) end)
+    rescued("compile empty", fn -> :binary.compile_pattern(v("")) end)
+    rescued("compile empty list", fn -> :binary.compile_pattern(v([])) end)
+    rescued("compile atom", fn -> :binary.compile_pattern(v(:a)) end)
+    rescued("compile bad member", fn -> :binary.compile_pattern(v([:a])) end)
+  end
+end
+
+Main.main()

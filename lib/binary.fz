@@ -1,5 +1,5 @@
 defmodule :binary do
-  @moduledoc "The Erlang `:binary` functions that read a byte of a binary, make a copy of it, or report what it references."
+  @moduledoc "The Erlang `:binary` functions that read a byte of a binary, search it, make a copy of it, or report what it references."
 
   @doc """
   Returns the byte of `subject` at the zero-based position `pos`.
@@ -24,6 +24,130 @@ defmodule :binary do
 
   def at(subject, pos),
     do: raise(%ArgumentError{message: "errors were found at the given arguments:\n\n" <> subject_complaint(subject) <> count_complaint(pos)})
+
+  @doc """
+  Returns the search pattern `pattern` in a form `match/2,3` accepts.
+
+  `pattern` is a non-empty binary or a non-empty proper list of non-empty
+  binaries. The result is a tuple, so it can be told apart from a pattern
+  given as it is. Raises `ArgumentError` when `pattern` is neither.
+
+  ## Examples
+
+      :binary.compile_pattern("b") |> elem(0)
+      #=> :bm
+
+      :binary.compile_pattern(["a", "b"]) |> elem(0)
+      #=> :ac
+
+  """
+  @spec compile_pattern(binary | [binary]) :: {:bm | :ac, [binary]}
+  def compile_pattern(pattern) do
+    case patterns(pattern) do
+      [one] -> {:bm, [one]}
+      [_ | _] = many -> {:ac, many}
+      :invalid -> raise(%ArgumentError{message: "errors were found at the given arguments:\n\n" <> "  * 1st argument: not a valid pattern\n"})
+    end
+  end
+
+  @doc """
+  Returns the position and length of the first match of `pattern` in `subject`.
+
+  Equivalent to `match(subject, pattern, [])`.
+  """
+  @spec match(binary, binary | [binary] | tuple) :: {non_neg_integer, pos_integer} | :nomatch
+  def match(subject, pattern), do: match(subject, pattern, [])
+
+  @doc """
+  Returns the `{position, length}` of the leftmost match of `pattern` in
+  `subject`, or `:nomatch`.
+
+  `pattern` is a non-empty binary, a non-empty list of non-empty binaries, or
+  the result of `compile_pattern/1`. Among the patterns that match at the
+  leftmost position, the longest wins.
+
+  `options` may hold one `{:scope, {start, length}}` that limits the search to
+  that part of `subject`. A negative `length` counts back from `start`.
+
+  Raises `ArgumentError` when `subject` is not a binary, `pattern` is not a
+  valid pattern, or `options` is not valid or names a part that is not wholly
+  inside `subject`.
+
+  ## Examples
+
+      :binary.match("abcde", ["bc", "bcd"])
+      #=> {1, 3}
+
+      :binary.match("abcde", "cd", [{:scope, {5, -3}}])
+      #=> {2, 2}
+
+      :binary.match("abc", "x")
+      #=> :nomatch
+
+  """
+  @spec match(binary, binary | [binary] | tuple, [{:scope, {integer, integer}}]) :: {non_neg_integer, pos_integer} | :nomatch
+  def match(subject, pattern, options) when is_binary(subject) and is_list(options) do
+    case {patterns(pattern), scope(options, byte_size(subject), :whole)} do
+      {[_ | _] = found, {first, last}} -> leftmost(subject, found, first, last)
+      {found, window} -> raise_match(subject, found, window)
+    end
+  end
+
+  def match(subject, pattern, _options), do: raise_match(subject, patterns(pattern), :invalid_options)
+
+  @spec leftmost(binary, [binary], integer, integer) :: {non_neg_integer, pos_integer} | :nomatch
+  defp leftmost(subject, patterns, at, last) when at < last do
+    longest =
+      Enum.reduce(patterns, 0, fn pattern, best ->
+        size = byte_size(pattern)
+        if size > best and at + size <= last and binary_part(subject, at, size) == pattern, do: size, else: best
+      end)
+
+    if longest == 0, do: leftmost(subject, patterns, at + 1, last), else: {at, longest}
+  end
+
+  defp leftmost(_subject, _patterns, _at, _last), do: :nomatch
+
+  @spec patterns(any) :: [binary] | :invalid
+  defp patterns(pattern) when is_binary(pattern) and byte_size(pattern) > 0, do: [pattern]
+  defp patterns({tag, [_ | _] = list}) when tag == :bm or tag == :ac, do: patterns(list)
+  defp patterns([_ | _] = list), do: if(nonempty_binaries?(list), do: list, else: :invalid)
+  defp patterns(_), do: :invalid
+
+  @spec nonempty_binaries?(any) :: boolean
+  defp nonempty_binaries?([]), do: true
+  defp nonempty_binaries?([pattern | rest]) when is_binary(pattern) and byte_size(pattern) > 0, do: nonempty_binaries?(rest)
+  defp nonempty_binaries?(_), do: false
+
+  @spec scope(any, integer, :whole | {integer, integer} | :outside | :invalid_options) :: {integer, integer} | :outside | :invalid_options
+  defp scope([{:scope, {start, length}} | rest], size, :whole) when is_integer(start) and is_integer(length),
+    do: scope(rest, size, window(start, length, size, :outside))
+
+  defp scope([{:scope, {start, length}} | rest], size, {_, _}) when is_integer(start) and is_integer(length),
+    do: scope(rest, size, window(start, length, size, :invalid_options))
+
+  defp scope([_ | _], _size, _window), do: :invalid_options
+  defp scope(_end, size, :whole), do: {0, size}
+  defp scope(_end, _size, window), do: window
+
+  @spec window(integer, integer, integer, :outside | :invalid_options) :: {integer, integer} | :outside | :invalid_options
+  defp window(start, length, size, _outside) when start >= 0 and length >= 0 and start + length <= size, do: {start, start + length}
+  defp window(start, length, size, _outside) when length < 0 and start <= size and start + length >= 0, do: {start + length, start}
+  defp window(_start, _length, _size, outside), do: outside
+
+  @spec raise_match(any, [binary] | :invalid, any) :: no_return
+  defp raise_match(subject, found, window) do
+    complaints =
+      case {subject_complaint(subject), found} do
+        {"", :invalid} -> "  * 2nd argument: not a valid pattern\n"
+        {"", _} when window == :outside -> "  * 3rd argument: specified part is not wholly inside binary\n"
+        {"", _} -> "  * 3rd argument: invalid options\n"
+        {complaint, :invalid} -> complaint <> "  * 2nd argument: not a valid pattern\n"
+        {complaint, _} -> complaint
+      end
+
+    raise(%ArgumentError{message: "errors were found at the given arguments:\n\n" <> complaints})
+  end
 
   @doc """
   Returns a new binary with the bytes of `subject`.
