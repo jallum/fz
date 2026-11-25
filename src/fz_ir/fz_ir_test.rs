@@ -297,3 +297,30 @@ fn builder_appends_land_in_the_block_named_by_id_across_many_blocks() {
         assert_eq!(stmt_vars, owned);
     }
 }
+
+#[test]
+fn a_block_read_through_the_function_is_the_block_with_that_id() {
+    let mut b = FnBuilder::new(FnId(7), "many_blocks");
+    let ids: Vec<BlockId> = (0..64)
+        .map(|_| {
+            let param = b.fresh_var();
+            let block = b.block(vec![param]);
+            b.set_terminator(block, Term::Return(param));
+            block
+        })
+        .collect();
+    let mut fn_ir = b.build();
+
+    for id in &ids {
+        let block = fn_ir.block(*id);
+        assert_eq!(block.id, *id);
+        assert_eq!(block.terminator, Term::Return(block.params[0]));
+    }
+    let last = *ids.last().unwrap();
+    fn_ir
+        .block_mut(last)
+        .stmts
+        .push(Stmt::Let(Var(99), Prim::Const(Const::True)));
+    assert_eq!(fn_ir.block(last).stmts.len(), 1);
+    assert!(fn_ir.block(ids[0]).stmts.is_empty());
+}

@@ -25,7 +25,7 @@ pub(crate) fn build_entry_harness<M: ClModule>(
     entry_cl: ir::Block,
 ) -> EntryHarnessOut {
     let param_reprs = env.param_reprs;
-    let entry_blk = f.blocks.iter().find(|blk| blk.id == f.entry).unwrap();
+    let entry_blk = f.block(f.entry);
     let mut var_env: HashMap<u32, CodegenValue> = HashMap::default();
     let params: Vec<ir::Value> = body.b.block_params(entry_cl).to_vec();
     let my_param_reprs = &param_reprs[this_spec_id as usize];

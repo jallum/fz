@@ -108,9 +108,7 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
     }
     // Walk blocks in declared order with entry first.
     let mut order: Vec<&Block> = Vec::with_capacity(f.blocks.len());
-    if let Some(eb) = f.blocks.iter().find(|b| b.id == f.entry) {
-        order.push(eb);
-    }
+    order.push(f.block(f.entry));
     for blk in &f.blocks {
         if blk.id != f.entry {
             order.push(blk);

@@ -561,12 +561,7 @@ impl<'p> Rewrite<'p> {
 }
 
 fn entry_block_mut(function: &mut FnIr) -> &mut Block {
-    let entry = function.entry;
-    function
-        .blocks
-        .iter_mut()
-        .find(|block| block.id == entry)
-        .expect("a function has its entry block")
+    function.block_mut(function.entry)
 }
 
 fn first_unused_var(function: &FnIr) -> u32 {
