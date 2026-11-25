@@ -1,0 +1,26 @@
+#---
+# purpose: "A closure that passes itself through a wrapper closure compiles and returns Elixir's iodata"
+# kind: run
+# oracle: self
+# oracle.stamp: 8d412e84582b7f20
+#---
+defmodule M do
+  def atom_enc(a, enc), do: enc.(Atom.to_string(a), enc)
+
+  def fv(a, user_enc, state) when is_atom(a) do
+    atom_enc(a, fn value, enc -> user_enc.(value, enc, state) end)
+  end
+
+  def fv(b, _enc, _state) when is_binary(b), do: [?", b, ?"]
+
+  def fv(i, _enc, _state) when is_integer(i), do: Integer.to_string(i)
+
+  def fv(m, user_enc, state) when is_map(m), do: kv(Map.to_list(m), user_enc, state)
+
+  def kv(list, user_enc, state) do
+    key_fun = fn k, _f -> user_enc.(k, user_enc, state) end
+    Enum.map(list, fn {k, v} -> [key_fun.(k, key_fun), ?: | user_enc.(v, user_enc, state)] end)
+  end
+end
+
+IO.inspect(M.fv(%{"a" => 1}, &M.fv/3, %{}))

@@ -381,3 +381,88 @@ fn the_canonical_form_names_a_list_that_holds_itself() {
     let text = crate::compiler2::types::canon::TyCanon::new(&labels).render(&t, nested);
     assert!(text.ends_with("μt. int | list(t)"), "{text}");
 }
+
+/// Every type reachable from `member` without passing through it, in the
+/// order found: the types a walk that stops at members would still visit.
+fn reachable_outside(t: &Types, member: Ty) -> Vec<Ty> {
+    let mut seen: Vec<Ty> = Vec::new();
+    let mut stack: Vec<Ty> = t.descr(&member).children().map(|(child, _)| child).collect();
+    while let Some(ty) = stack.pop() {
+        if ty == member || seen.contains(&ty) {
+            continue;
+        }
+        seen.push(ty);
+        stack.extend(t.descr(&ty).children().map(|(child, _)| child));
+    }
+    seen
+}
+
+/// A type that is `member` or names it, counting the member itself.
+fn names(t: &Types, ty: Ty, member: Ty) -> bool {
+    ty == member || t.descr(&ty).children().any(|(child, _)| child == member)
+}
+
+/// `M = :x | {M, :g} | {:x | {:x, :f}, :f}`: the `{M, :g}` rectangle and the
+/// `{_, :f}` rectangle share a shape, and `:x | {:x, :f}` lies inside `M`, so
+/// carving them builds a coordinate that names `M` while `M` is committing.
+fn a_member_beside_a_rectangle_it_contains(t: &mut Types) -> Ty {
+    t.recursive(1, |t, me| {
+        let (x, f, g) = (t.atom_lit("x"), t.atom_lit("f"), t.atom_lit("g"));
+        let inner = t.tuple(&[x, f]);
+        let held = t.union(x, inner);
+        let beside = t.tuple(&[held, f]);
+        let wrapped = t.tuple(&[me[0], g]);
+        let leaf = t.union(x, beside);
+        vec![t.union(leaf, wrapped)]
+    })[0]
+}
+
+#[test]
+fn a_member_carved_against_a_rectangle_it_contains_is_one_type() {
+    let mut t = Types::new();
+    let member = a_member_beside_a_rectangle_it_contains(&mut t);
+    let (x, f, g) = (t.atom_lit("x"), t.atom_lit("f"), t.atom_lit("g"));
+    let xf = t.tuple(&[x, f]);
+    let unfolded = {
+        let held = t.union(x, xf);
+        let beside = t.tuple(&[held, f]);
+        let wrapped = t.tuple(&[member, g]);
+        let leaf = t.union(x, beside);
+        t.union(leaf, wrapped)
+    };
+    assert!(
+        t.is_subtype(&unfolded, &member) && t.is_subtype(&member, &unfolded),
+        "a recursive type is its own one-step unfolding"
+    );
+    let deep = {
+        let once = t.tuple(&[xf, f]);
+        let twice = t.tuple(&[once, g]);
+        t.tuple(&[twice, g])
+    };
+    assert!(
+        t.is_subtype(&deep, &member),
+        "{{{{{{{{:x, :f}}, :f}}, :g}}, :g}} is built by the equation"
+    );
+    let stranger = t.atom_lit("y");
+    let wrong = t.tuple(&[stranger, g]);
+    assert!(
+        !t.is_subtype(&wrong, &member),
+        "{{:y, :g}} is not built by the equation"
+    );
+}
+
+#[test]
+fn no_type_built_beside_a_committed_member_reaches_back_to_it() {
+    let mut t = Types::new();
+    let member = a_member_beside_a_rectangle_it_contains(&mut t);
+    let outside = reachable_outside(&t, member);
+    let offenders: Vec<Ty> = outside
+        .into_iter()
+        .filter(|ty| !t.interner.recursion.is_member(*ty) && names(&t, *ty, member))
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "a cycle through the member runs through members only: {:?}",
+        offenders.iter().map(|ty| t.display(ty)).collect::<Vec<_>>()
+    );
+}

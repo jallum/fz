@@ -1,0 +1,22 @@
+#---
+# purpose: "Two functions that swap a projected accumulator through each other compile, and the result matches Elixir"
+# oracle: self
+# oracle.stamp: 2d61b4e821287832
+#---
+defmodule M do
+  def f(0, {a, b}), do: {a, b}
+  def f(n, {a, b}), do: g(n - 1, {b, {:s, a}})
+  def g(0, {a, b}), do: {b, a}
+  def g(n, {a, b}) do
+    {x, y} = f(n - 1, {{:t, b}, a})
+    {y, x}
+  end
+end
+
+defmodule Main do
+  def main() do
+    IO.inspect(M.f(5, {:p, :q}))
+  end
+end
+
+Main.main()

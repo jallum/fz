@@ -848,6 +848,18 @@ has to stop where it started.
   members renamed to canonical binders in an order computed from the bodies.
   Members are indexed like any other descriptor, so one written-out unfolding
   (`:nil | {int, T, T}`) interns to `T`.
+- **Commit window.** `add_cluster` hands every member an id, puts each
+  member's descriptor in normal form, then indexes the members. Until they are
+  indexed the interner cannot see a member behind a second id, so while the
+  members normalise (`Recursion::committing`) a rewrite that would intern a
+  type naming one of them is not applied: tuple fusion keeps the clauses it
+  was given (`normalize_tuple_axis`), a list clause keeps its spelling
+  (`normalize_list_clauses` via `denotation_names_committing`), and a
+  terminator that is or names a member is not split
+  (`terminator_names_committing`). Before indexing, `add_cluster` asserts that
+  no member reaches itself through a type that is not a member
+  (`assert_cycles_stay_in_cluster`), because walkers stop at members and a
+  cycle through any other type is never guarded.
 - **Questions.** `Descr::is_empty`, `is_subtype` and `is_disjoint` keep the
   questions in flight (`Recursion::assume`) once any recursive type exists and
   only for descriptors whose children reach one (`TyAttrs::recursive`). A
@@ -882,4 +894,9 @@ has to stop where it started.
   canonical form (`types/canon.rs`) alike.
 - **Residual.** Tuple fusion and list arithmetic treat a member as an opaque
   coordinate, so a spelling only those steps would recognise can get a second
-  id for one meaning.
+  id for one meaning. The commit window avoids the second id by not applying
+  the rewrite, so a member's descriptor can stay less fused than the same
+  type spelled outside a commit. Two shapes stay open: a cluster of
+  mutually recursive parser types can still fail `assert_cycles_stay_in_cluster`,
+  and a list-terminator fold that interns through `fold_tail`, `intern` and
+  `normal_form` again, level after level, does not end for some programs.

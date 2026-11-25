@@ -1054,15 +1054,55 @@ impl Types {
         if Self::needs_element_arithmetic(&c) && self.clause_has_vars(&c) {
             return c;
         }
-        let c = self.fold_terminators(c);
+        let c = if self.terminator_names_committing(&c) {
+            c
+        } else {
+            self.fold_terminators(c)
+        };
         let denotation = {
             let cx = self.ctx();
             emptiness::list_denotation(cx, &c)
         };
         match denotation {
-            None => c,
-            Some(denotation) => axis::list_clause_of(denotation, &mut |d| self.intern(d)),
+            Some(denotation) if !self.denotation_names_committing(&denotation) => {
+                axis::list_clause_of(denotation, &mut |d| self.intern(d))
+            }
+            _ => c,
         }
+    }
+
+    /// Whether a sig's terminator is, or names, a member of the cluster being
+    /// committed: splitting it would union the member with its own elements.
+    fn terminator_names_committing(&self, c: &Conj<ListSig>) -> bool {
+        c.pos
+            .iter()
+            .chain(&c.neg)
+            .filter_map(|sig| sig.cons)
+            .any(|cons| self.is_committing(cons.last) || self.names_committing(self.descr(&cons.last)))
+    }
+
+    /// Whether interning what `denotation` spells would build a type that
+    /// names a member of the cluster being committed.
+    fn denotation_names_committing(&self, denotation: &emptiness::ListDenotation) -> bool {
+        let Some(lists) = &denotation.non_empty else {
+            return false;
+        };
+        let cuts = lists.minus.iter().flat_map(|cut| [&cut.elem, &cut.last]);
+        [&lists.elem, &lists.last]
+            .into_iter()
+            .chain(cuts)
+            .any(|built| self.names_committing(built))
+    }
+
+    /// Whether `d` has a member of the cluster being committed as a child.
+    /// Such a type is not interned while its member is: until the member is
+    /// indexed, the interner could give the member a second id.
+    fn names_committing(&self, d: &Descr) -> bool {
+        d.children().any(|(child, _)| self.is_committing(child))
+    }
+
+    fn is_committing(&self, ty: Ty) -> bool {
+        self.interner.recursion.committing.contains(&ty)
     }
 
     /// Whether reading a list clause's denotation has to MEET or SUBTRACT
@@ -1252,19 +1292,32 @@ impl Types {
     /// here, so a coordinate is a `Ty` by the time the descriptor reaches the
     /// index. Below an ordinary type that recursion descends and ends; below a
     /// recursive type `Types::intern` answers a re-entry.
+    ///
+    /// While a recursive cluster commits, a carving that built a coordinate
+    /// naming one of its members is not applied: the clauses keep the form
+    /// they arrived in.
     fn normalize_tuple_axis(&mut self, d: &mut Descr) {
         let clauses = std::mem::take(&mut d.tuples);
         let mut complex = Vec::with_capacity(clauses.len());
-        let mut rects: Vec<axis::Rect> = Vec::with_capacity(clauses.len());
+        let mut plain: Vec<Vec<Ty>> = Vec::with_capacity(clauses.len());
         for clause in clauses {
             let clause = self.normalize_tuple_coordinate_difference(clause);
-            match (clause.pos.as_slice(), clause.neg.as_slice()) {
-                ([sig], []) => rects.push(sig.elems.iter().map(|ty| axis::Coord::Interned(*ty)).collect()),
-                _ => complex.push(clause),
+            match clause {
+                Conj { mut pos, neg } if pos.len() == 1 && neg.is_empty() => plain.push(pos.remove(0).elems),
+                clause => complex.push(clause),
             }
         }
+        let rects = plain
+            .iter()
+            .map(|elems| elems.iter().map(|ty| axis::Coord::Interned(*ty)).collect())
+            .collect();
         let rects = axis::fuse_tuple_rects(self.ctx(), rects);
         d.tuples = complex;
+        if self.carving_names_committing(&rects) {
+            d.tuples
+                .extend(plain.into_iter().map(|elems| Conj::pos_of(TupleSig { elems })));
+            return;
+        }
         for rect in rects {
             let elems = rect
                 .into_iter()
@@ -1275,6 +1328,15 @@ impl Types {
                 .collect();
             d.tuples.push(Conj::pos_of(TupleSig { elems }));
         }
+    }
+
+    /// Whether interning the coordinates a carving built would build a type
+    /// that names a member of the cluster being committed.
+    fn carving_names_committing(&self, rects: &[axis::Rect]) -> bool {
+        rects.iter().flatten().any(|coord| match coord {
+            axis::Coord::Built(descr) => self.names_committing(descr),
+            axis::Coord::Interned(_) => false,
+        })
     }
 
     /// `P₀ × … × Pₖ × … × Pₙ \ N₀ × … × Nₖ × … × Nₙ` is one rectangle

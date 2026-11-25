@@ -1,0 +1,218 @@
+#---
+# purpose: "A grapheme-cluster reader over chardata that ends in a binary compiles and returns Elixir's cluster and tail"
+# kind: run
+# oracle: self
+# oracle.stamp: a3b37f11bb965c2a
+#---
+defmodule UU do
+  @moduledoc """
+  The Erlang `:unicode_util` functions that take the next codepoint and the
+  next grapheme cluster of chardata, as OTP's unicode_util.erl defines them.
+
+  Chardata is a binary, or a list of codepoints, binaries and chardata. Both
+  functions return `[]` for empty chardata, `{:error, rest}` when `rest`
+  begins with a binary that is not UTF-8, and otherwise a list whose head is
+  the first codepoint (`cp/1`) or cluster (`gc/1`) and whose tail is the rest
+  of the chardata.
+  """
+
+  @doc """
+  Returns the first codepoint of `chardata` and the rest, `[]` when it is
+  empty, or `{:error, rest}` when it begins with an invalid binary.
+
+  ## Examples
+
+      :unicode_util.cp([[97, 98], 99])
+      #=> [97, 98, 99]
+
+      :unicode_util.cp("é!")
+      #=> [233 | "!"]
+
+      :unicode_util.cp([])
+      #=> []
+
+      :unicode_util.cp(<<255>>)
+      #=> {:error, <<255>>}
+
+  """
+  @spec cp(any) :: any
+  def cp([c | _] = l) when is_integer(c) and c >= 0 and c <= 1_114_111, do: l
+  def cp([list]), do: cp(list)
+  def cp([list | r]), do: cpl(list, r)
+  def cp([]), do: []
+  def cp(<<c :: utf8, r :: binary>>), do: [c | r]
+  def cp(<<>>), do: []
+  def cp(r) when is_binary(r), do: {:error, r}
+
+  @spec cpl(any, any) :: any
+  defp cpl([c], r) when is_integer(c) and c >= 0 and c <= 1_114_111, do: [c | cpl_1_cont(r)]
+  defp cpl([c | t], r) when is_integer(c) and c >= 0 and c <= 1_114_111, do: [c | cpl_cont(t, r)]
+  defp cpl([list], r), do: cpl(list, r)
+  defp cpl([list | t], r), do: cpl(list, [t | r])
+  defp cpl([], r), do: cp(r)
+  defp cpl(<<c :: utf8, t :: binary>>, r), do: [c, t | r]
+  defp cpl(<<>>, r), do: cp(r)
+  defp cpl(b, r) when is_binary(b), do: {:error, [b | r]}
+
+  @spec cpl_cont(any, any) :: any
+  defp cpl_cont([c | t], r) when is_integer(c), do: [c | cpl_cont2(t, r)]
+  defp cpl_cont([l], r), do: cpl_cont(l, r)
+  defp cpl_cont([l | t], r), do: cpl_cont(l, [t | r])
+  defp cpl_cont([], r), do: cpl_1_cont(r)
+  defp cpl_cont(t, r), do: [t | r]
+
+  @spec cpl_cont2(any, any) :: any
+  defp cpl_cont2([c | t], r) when is_integer(c), do: [c | cpl_cont3(t, r)]
+  defp cpl_cont2([l], r), do: cpl_cont2(l, r)
+  defp cpl_cont2([l | t], r), do: cpl_cont2(l, [t | r])
+  defp cpl_cont2([], r), do: cpl_1_cont2(r)
+  defp cpl_cont2(t, r), do: [t | r]
+
+  @spec cpl_cont3(any, any) :: any
+  defp cpl_cont3([c], r) when is_integer(c), do: [c | r]
+  defp cpl_cont3([c | t], r) when is_integer(c), do: [c, t | r]
+  defp cpl_cont3([l], r), do: cpl_cont3(l, r)
+  defp cpl_cont3([l | t], r), do: cpl_cont3(l, [t | r])
+  defp cpl_cont3([], r), do: cpl_1_cont3(r)
+  defp cpl_cont3(t, r), do: [t | r]
+
+  @spec cpl_1_cont(any) :: any
+  defp cpl_1_cont([c | t]) when is_integer(c), do: [c | cpl_1_cont2(t)]
+  defp cpl_1_cont([l]), do: cpl_1_cont(l)
+  defp cpl_1_cont([l | t]), do: cpl_cont(l, t)
+  defp cpl_1_cont(t), do: t
+
+  @spec cpl_1_cont2(any) :: any
+  defp cpl_1_cont2([c | t]) when is_integer(c), do: [c | cpl_1_cont3(t)]
+  defp cpl_1_cont2([l]), do: cpl_1_cont2(l)
+  defp cpl_1_cont2([l | t]), do: cpl_cont2(l, t)
+  defp cpl_1_cont2(t), do: t
+
+  @spec cpl_1_cont3(any) :: any
+  defp cpl_1_cont3([c | _] = t) when is_integer(c), do: t
+  defp cpl_1_cont3([l]), do: cpl_1_cont3(l)
+  defp cpl_1_cont3([l | t]), do: cpl_cont3(l, t)
+  defp cpl_1_cont3(t), do: t
+
+  @spec cp_no_bin(any) :: any
+  defp cp_no_bin([c | _] = l) when is_integer(c), do: l
+  defp cp_no_bin([list]), do: cp_no_bin(list)
+  defp cp_no_bin([list | r]), do: cp_no_binl(list, r)
+  defp cp_no_bin([]), do: []
+  defp cp_no_bin(_), do: :binary_found
+
+  @spec cp_no_binl(any, any) :: any
+  defp cp_no_binl([c], r) when is_integer(c), do: [c | cpl_1_cont(r)]
+  defp cp_no_binl([c | t], r) when is_integer(c), do: [c | cpl_cont(t, r)]
+  defp cp_no_binl([list], r), do: cp_no_binl(list, r)
+  defp cp_no_binl([list | t], r), do: cp_no_binl(list, [t | r])
+  defp cp_no_binl([], r), do: cp_no_bin(r)
+  defp cp_no_binl(_, _), do: :binary_found
+
+  @doc """
+  Returns the first extended grapheme cluster of `chardata` and the rest, `[]`
+  when it is empty, or `{:error, rest}` when it begins with an invalid binary.
+
+  The cluster is an integer when it is one codepoint and a list of its
+  codepoints otherwise. Where the cluster ends is decided by the same rules
+  as `String.next_grapheme/1`.
+
+  ## Examples
+
+      :unicode_util.gc([101, 769, 120])
+      #=> [[101, 769], 120]
+
+      :unicode_util.gc("éx")
+      #=> [[101, 769] | "x"]
+
+      :unicode_util.gc([13, 10, 97])
+      #=> [[13, 10], 97]
+
+      :unicode_util.gc([])
+      #=> []
+
+  """
+  @spec gc(any) :: any
+  def gc([] = r), do: r
+  def gc([c] = r) when is_integer(c) and c >= 0 and c <= 1_114_111, do: r
+
+  def gc([13 | r0] = str) do
+    case cp(r0) do
+      [10 | r1] -> [[13, 10] | r1]
+      _ -> str
+    end
+  end
+
+  def gc([c1 | t1] = t) when is_integer(c1) and c1 >= 0 and c1 < 256 do
+    case t1 do
+      [c2 | _] when is_integer(c2) and c2 >= 0 and c2 < 256 -> t
+      _ -> gc_latin1(c1, t1)
+    end
+  end
+
+  def gc(<<>>), do: []
+
+  def gc(<<c1 :: utf8, rest :: binary>>) do
+    if c1 < 256 and c1 != 13 do
+      case rest do
+        <<c2 :: utf8, _ :: binary>> when c2 < 256 -> [c1 | rest]
+        _ -> gc_1(rest, c1)
+      end
+    else
+      gc_1(rest, c1)
+    end
+  end
+
+  def gc([c | t]) when is_integer(c) and c >= 0 and c <= 1_114_111, do: gc_1(t, c)
+
+  def gc(str) do
+    case cp(str) do
+      {:error, _} = error -> error
+      cps -> gc(cps)
+    end
+  end
+
+  # A Latin-1 codepoint keeps its tail untouched when the tail holds a binary.
+  @spec gc_latin1(integer, any) :: any
+  defp gc_latin1(c1, t1) do
+    case cp_no_bin(t1) do
+      [c2 | _] = t3 when is_integer(c2) and c2 >= 0 and c2 < 256 -> [c1 | t3]
+      :binary_found -> gc_1(t1, c1)
+      t4 -> gc_1(t4, c1)
+    end
+  end
+
+  # The cluster that starts with codepoint `c` and continues into `rest`.
+  # The text grows by one codepoint at a time until the break rules end the
+  # cluster before the newest one; the tail handed back is the chardata
+  # before that lookahead codepoint, so a binary tail stays a binary.
+  @spec gc_1(any, integer) :: any
+  defp gc_1(rest, c), do: gc_grow(cp(rest), rest, <<c :: utf8>>, [c])
+
+  @spec gc_grow(any, any, binary, [integer]) :: any
+  defp gc_grow([c | t], rest, text, cps) do
+    grown = <<text :: binary, c :: utf8>>
+
+    if fz_grapheme_size(grown) < byte_size(grown) do
+      gc_cluster(cps, rest)
+    else
+      gc_grow(cp(t), t, grown, [c | cps])
+    end
+  end
+
+  # A malformed binary after the cluster is handed back as the error reports it:
+  # bare after a single codepoint, as the one element after a longer cluster.
+  defp gc_grow({:error, bad}, _rest, _text, [c]), do: [c | bad]
+  defp gc_grow({:error, bad}, _rest, _text, cps), do: gc_cluster(cps, [bad])
+  defp gc_grow([], rest, _text, cps), do: gc_cluster(cps, rest)
+
+  @spec gc_cluster([integer], any) :: any
+  defp gc_cluster([c], rest), do: [c | rest]
+  defp gc_cluster(cps, rest), do: [:lists.reverse(cps) | rest]
+
+  defp fz_grapheme_size(b), do: elem(String.next_grapheme_size(b), 0)
+end
+
+IO.inspect(UU.gc([101, 769, <<255>>]))
+IO.inspect(UU.gc([97, <<255>>]))
+IO.inspect(UU.gc([101, 769, <<255>>, "z"]))

@@ -93,6 +93,9 @@ pub(super) struct Recursion {
     /// What each operation binder stands for, once its operation finished but
     /// its result still mentioned an operation further out.
     pending: HashMap<TypeVarId, Ty>,
+    /// The members of the cluster whose descriptors are being put in normal
+    /// form: ids already handed out and not yet indexed.
+    pub(super) committing: Vec<Ty>,
 }
 
 #[derive(Clone, Copy)]
@@ -668,16 +671,63 @@ impl Types {
             self.interner
                 .push_unindexed(d, TyAttrs::default().with_recursion(false));
         }
-        for id in &ids {
-            let d = self.descr(id).clone();
-            let d = self.normal_form(d);
-            self.interner.arena[id.0 as usize] = d;
-        }
+        self.normalize_members(&ids);
+        self.assert_cycles_stay_in_cluster(&ids, base);
         self.settle_member_attrs(&ids);
         for id in &ids {
             self.interner.index_existing(*id);
         }
         ids
+    }
+
+    /// Puts each member's descriptor in normal form while the members count as
+    /// committing: normalising must not intern a type that names one of them.
+    fn normalize_members(&mut self, ids: &[Ty]) {
+        let outer = std::mem::replace(&mut self.interner.recursion.committing, ids.to_vec());
+        for id in ids {
+            let d = self.descr(id).clone();
+            let d = self.normal_form(d);
+            self.interner.arena[id.0 as usize] = d;
+        }
+        self.interner.recursion.committing = outer;
+    }
+
+    /// No type built while the members were normalised may sit on a cycle
+    /// through them: walkers stop at members, so a cycle through any other
+    /// type is never guarded. Types below `base` predate the members and
+    /// cannot reach them.
+    fn assert_cycles_stay_in_cluster(&self, ids: &[Ty], base: u32) {
+        for member in ids {
+            let mut seen = HashSet::default();
+            let mut stack: Vec<Ty> = self.outside_children(member, ids);
+            while let Some(ty) = stack.pop() {
+                if ty.0 < base || ty.0 >= NODE_BASE || !seen.insert(ty) {
+                    continue;
+                }
+                if let Some(back) = self
+                    .descr(&ty)
+                    .children()
+                    .map(|(child, _)| child)
+                    .find(|c| ids.contains(c))
+                {
+                    panic!(
+                        "a recursive type's member {} reaches itself through {}, which is not a member and names {}",
+                        self.display(member),
+                        self.display(&ty),
+                        self.display(&back),
+                    );
+                }
+                stack.extend(self.outside_children(&ty, ids));
+            }
+        }
+    }
+
+    fn outside_children(&self, ty: &Ty, members: &[Ty]) -> Vec<Ty> {
+        self.descr(ty)
+            .children()
+            .map(|(child, _)| child)
+            .filter(|child| !members.contains(child))
+            .collect()
     }
 
     /// Members name each other, so their attributes are the least fixpoint of
