@@ -11,11 +11,15 @@
     {
       "text": "Done-when also (Binary Handling, develop 9c9a39e8a): a receive guard comparing against a binary literal compiles natively. send(self(), {:m, \"ab\"}); receive do {:m, b} when b == \"ab\" -\u003e IO.inspect(:eq); _ -\u003e IO.inspect(:ne) end prints :eq on interp but fails on run and build with 'codegen: guard const Utf8Binary([97, 98]) cannot be materialized in receive dispatch' (native_codegen/receive.rs:1411; dispatch_const_value has no binary arm), at any length. One guard lowering removes it; the repro joins this ticket's oracle fixture on all three paths.",
       "timestamp": "2026-11-20T21:08:33Z"
+    },
+    {
+      "text": "Done-when also (Elixir Parity, user decision 2026-11-24): a receive guard using binary_part compiles natively. Reproducer /Users/j5n/Workspace/fz-otp-json/probes/mue63/receive_binary_part_guard.fz prints :eq on interp; on run/build it fails with 'codegen: guard const Utf8Binary(...) cannot be materialized in receive dispatch' (the same missing binary arm as the comment above). fz-mue.63 lands binary_part in head and case guards without its receive row; that row joins this ticket's oracle fixture on all three paths.",
+      "timestamp": "2026-11-25T03:35:51Z"
     }
   ],
   "priority": 3,
   "status": "open",
   "title": "A guard is lowered once: receive dispatch reuses native guard lowering",
   "type": "task",
-  "updated_at": "2026-11-20T21:08:34Z"
+  "updated_at": "2026-11-25T03:35:51Z"
 }
