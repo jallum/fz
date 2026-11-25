@@ -1653,6 +1653,7 @@ pub fn map_value_kind(tag_byte: u8) -> ValueKind {
 ///
 /// `addr` must point to the start of an initialized strict Map object, and
 /// `index` must be in bounds for that map's entry count.
+#[inline]
 pub unsafe fn map_entry(addr: *const u8, index: usize) -> (AnyValue, AnyValue) {
     let (node, slot) = unsafe { map_locate(addr, index) };
     unsafe { map_slot(node, slot) }

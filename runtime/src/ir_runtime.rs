@@ -177,6 +177,7 @@ pub extern "C" fn fz_system_alloc_stats(process: *mut Process) -> u64 {
 
 /// The heap bits of the unpublished destination a reference names. The null
 /// reference is `0`: an update that has missed a key has no destination.
+#[inline]
 fn destination_bits_from_ref_word(word: u64, context: &str) -> u64 {
     let dest = any_value_ref_from_word(word, context);
     match dest.tag() {
@@ -1688,6 +1689,7 @@ pub extern "C" fn fz_map_get_ref(process: *mut Process, map_ref_word: u64, key_w
     )
 }
 
+#[inline(always)]
 fn map_get(process: *mut Process, map: AnyValueRef, key: AnyValue) -> u64 {
     if map.tag() == ValueKind::RESOURCE {
         return nil_atom_ref().raw_word();

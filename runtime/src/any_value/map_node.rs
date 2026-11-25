@@ -272,6 +272,7 @@ pub unsafe fn map_slot_raw_kinds(addr: *const u8, slot: usize) -> (u64, ValueKin
 /// # Safety
 ///
 /// As `map_slot_raw_kinds`.
+#[inline(always)]
 pub unsafe fn map_slot(addr: *const u8, slot: usize) -> (AnyValue, AnyValue) {
     let (key, key_kind, value, value_kind) = unsafe { map_slot_raw_kinds(addr, slot) };
     (
