@@ -428,13 +428,13 @@ first user ScopeCode(source)
           </tr>
           <tr>
             <td>Executable</td>
-            <td><code>ExecutableFacts</code>, <code>RuntimeDemand</code>, <code>RuntimeDemandInput</code>, <code>RuntimeDemandInputs</code>, <code>IncomingInputSlot</code>, <code>CallableConstructionTarget</code></td>
-            <td>Per-executable facts derived from settled analysis. Runtime demand is one replacing fact per executable; its input vector and incoming slots are exact sub-facts that callers contribute to.</td>
+            <td><code>ExecutableFacts</code>, <code>RuntimeDemand</code>, <code>TransportInterface</code>, <code>TransportBody</code>, <code>RuntimeDemandInput</code>, <code>RuntimeDemandInputs</code>, <code>IncomingInputSlot</code>, <code>CallableConstructionTarget</code></td>
+            <td>Per-executable facts derived from settled analysis. Runtime demand is one replacing fact per executable; its input vector and incoming slots are exact sub-facts that callers contribute to. Transport layouts are two facts per executable: the interface (inputs and return, which other executables read) and the body (every other position).</td>
           </tr>
           <tr>
             <td>Products</td>
-            <td><code>RootBackendProduct</code>, <code>NativeProgram</code>, <code>BackendExecutable</code>, <code>AbiExecutable</code>, <code>MaterializedExecutable</code>, <code>ExecutableEffects</code>, <code>TransportShape</code>, <code>CallableConstruction</code>, <code>StructSchema</code></td>
-            <td>Pulled by key, not scheduled. Each producer waits on exact local facts or product keys and never schedules unrelated work. Recursive position products publish cyclic groups atomically, so no mid-ascent layout is observable.</td>
+            <td><code>RootBackendProduct</code>, <code>NativeProgram</code>, <code>BackendExecutable</code>, <code>AbiExecutable</code>, <code>MaterializedExecutable</code>, <code>ExecutableEffects</code>, <code>CallableConstruction</code>, <code>StructSchema</code></td>
+            <td>Pulled by key, not scheduled. Each producer waits on exact local facts or product keys and never schedules unrelated work. Recursive products publish cyclic groups atomically, so no mid-ascent value is observable.</td>
           </tr>
         </tbody>
       </table>
@@ -594,12 +594,11 @@ BackendExecutable(E)
 AbiExecutable(E)
   pulls MaterializedExecutable(E)
   pulls ExecutableEffects(E)
-  pulls TransportShape(entry capture / input / return / resume / value positions)
+  reads TransportInterface(E) and TransportBody(E) for every position it lays out
   pulls CallableConstruction(callable positions)
 
 MaterializedExecutable(E)
-  waits on settled ExecutableFacts(E), ReturnType(E.activation), RuntimeDemand(E)
-  pulls TransportShape(ExecutableReturn(E))</code></pre>
+  waits on settled ExecutableFacts(E), ReturnType(E.activation), RuntimeDemand(E), TransportInterface(E)</code></pre>
       <p>
         Materialization takes the shared lowered body, enters a sole reachable clause directly
         only when failure is unreachable, prunes unreachable clauses, rewrites semantically cold

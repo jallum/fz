@@ -109,7 +109,6 @@ pub enum ProductKey {
     AbiExecutable(ExecutableKey),
     MaterializedExecutable(ExecutableKey),
     ExecutableEffects(ExecutableKey),
-    TransportShape(TransportPosition),
     CallableConstruction(TransportPosition),
     StructSchema(ModuleId),
 }
@@ -126,8 +125,7 @@ impl SemanticOrd<super::types::Types> for ProductKey {
                 (Self::RootBackendProduct(left), Self::RootBackendProduct(right))
                 | (Self::NativeProgram(left), Self::NativeProgram(right)) => left.cmp(right),
                 (Self::StructSchema(left), Self::StructSchema(right)) => left.cmp(right),
-                (Self::TransportShape(left), Self::TransportShape(right))
-                | (Self::CallableConstruction(left), Self::CallableConstruction(right)) => {
+                (Self::CallableConstruction(left), Self::CallableConstruction(right)) => {
                     left.semantic_cmp(right, types)
                 }
                 _ => std::cmp::Ordering::Equal,
@@ -144,7 +142,6 @@ fn product_rank(product: &ProductKey) -> u8 {
         ProductKey::MaterializedExecutable(_) => 6,
         ProductKey::RootBackendProduct(_) => 9,
         ProductKey::NativeProgram(_) => 11,
-        ProductKey::TransportShape(_) => 12,
         ProductKey::StructSchema(_) => 13,
     }
 }
@@ -200,7 +197,6 @@ impl ProductKey {
             Self::AbiExecutable(_) => "abi_executable",
             Self::MaterializedExecutable(_) => "materialized_executable",
             Self::ExecutableEffects(_) => "executable_effects",
-            Self::TransportShape(_) => "transport_shape",
             Self::CallableConstruction(_) => "callable_construction",
             Self::StructSchema(_) => "struct_schema",
         }
@@ -212,18 +208,10 @@ impl ProductKey {
             | Self::AbiExecutable(executable)
             | Self::MaterializedExecutable(executable)
             | Self::ExecutableEffects(executable) => Some(executable),
-            Self::RootBackendProduct(_)
-            | Self::NativeProgram(_)
-            | Self::TransportShape(_)
-            | Self::CallableConstruction(_) => None,
+            Self::RootBackendProduct(_) | Self::NativeProgram(_) | Self::CallableConstruction(_) => None,
             Self::StructSchema(_) => None,
         }
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TransportShapeFact {
-    Layout(TransportLayout),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -236,7 +224,6 @@ pub enum ProductValue {
     AbiExecutable(Rc<AbiReadyExecutable>),
     MaterializedExecutable(Rc<MaterializedExecutable>),
     ExecutableEffects(EffectSummary),
-    TransportShape(TransportShapeFact),
     CallableConstruction(Rc<CallableConstructionOwner>),
     StructSchema(Rc<super::backend_program::BackendSchema>),
 }
@@ -2282,16 +2269,6 @@ impl<'s> ProductReadContext<'s> {
             .collect()
     }
 
-    pub(crate) fn callable_group_layout(&self, member: &ProductKey) -> Option<TransportLayout> {
-        let ProductKey::CallableConstruction(position) = member else {
-            return None;
-        };
-        match self.session.memo.get(&ProductKey::TransportShape(position.clone())) {
-            Some(ProductValue::TransportShape(TransportShapeFact::Layout(layout))) => Some(*layout),
-            _ => None,
-        }
-    }
-
     pub(crate) fn recorded_recursive_group_inputs(
         &self,
         current: &ProductKey,
@@ -2518,9 +2495,6 @@ impl<T: crate::telemetry::Telemetry> ProductProducers for WorldProductProducers<
                 executable,
                 self.world.types(),
             ),
-            ProductKey::TransportShape(position) => {
-                super::jobs::transport::produce_transport_shape_product(self.world, self.telemetry, context, position)
-            }
             ProductKey::CallableConstruction(position) => {
                 super::jobs::transport::produce_callable_construction_product(
                     self.world,

@@ -299,6 +299,20 @@ again only after that input grows. Scheduler completions and body walks are
 different measures, carried by the same completion record and grouped by the
 same typed executable identity. The count is not part of that identity.
 
+**Transport-layout facts** — `work_graph.applied` names each
+`DeriveTransportInterface(E)` and `DeriveTransportBody(E)` completion with its
+exact reads; each completion is one derivation. Every other layout read is a
+read of another executable's interface fact. Measured by kind over a
+`--log-telemetry` stream:
+
+| program | TransportInterface completions / reads | TransportBody completions / reads | ExecutableFacts completions |
+| --- | ---: | ---: | ---: |
+| `00420_enum_take_drop_split` | 273 / 1,533 | 242 / 1,825 | 273 |
+| `tools/distill-telemetry.exs` | 1,147 / 6,688 | 1,010 / 7,883 | 1,140 |
+
+The layout jobs' gates (`derive_transport_interface_gates`,
+`derive_transport_body_gates`) are re-evaluated at every scheduler pop.
+
 The fresh peer-input map belongs to that one formula snapshot. Its immutable
 input vectors move into the snapshot once rather than being cloned to make a
 second working view; a formula read may grow the map with a newly available
@@ -339,11 +353,11 @@ Cold interpreter requests, including nested definition-macro roots, report the
 following positioned work. Each cell is requests / evaluations / settlements /
 cache hits; a settlement is not necessarily a distinct final owner.
 
-| fixture | TransportShape | CallableConstruction |
-| --- | ---: | ---: |
-| `fz_f98_range_map_converges` | 1219 / 1201 / 873 / 18 | 181 / 156 / 116 / 25 |
-| `enum_predicate_search` | 2811 / 2780 / 2051 / 31 | 566 / 481 / 315 / 85 |
-| `00420_enum_take_drop_split` | 7110 / 7015 / 5309 / 95 | 795 / 716 / 516 / 79 |
+| fixture | CallableConstruction |
+| --- | ---: |
+| `fz_f98_range_map_converges` | 181 / 156 / 116 / 25 |
+| `enum_predicate_search` | 566 / 481 / 315 / 85 |
+| `00420_enum_take_drop_split` | 795 / 716 / 516 / 79 |
 
 The take/drop final ABI inventory contains 38 construction owners and 427
 metadata-only owners: 125 without physical lanes and 302 with lanes. It contains

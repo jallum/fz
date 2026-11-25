@@ -328,7 +328,7 @@ fn native_root_product_is_lowered_once_and_reused_by_exact_identity() {
             // checked; `main/0` declares nothing, so that check is one
             // `CheckDeclarations` run, woken once the source is indexed.
             (WorkStartReason::GateExpansion.into(), 7),
-            (WorkStartReason::BlockedWaiterExpansion.into(), 2),
+            (WorkStartReason::BlockedWaiterExpansion.into(), 6),
         ]),
         "cold native production must preserve its exact sanctioned work-start census without an artifact bridge job",
     );
@@ -340,8 +340,8 @@ fn native_root_product_is_lowered_once_and_reused_by_exact_identity() {
     assert_eq!(lowerings.get(), 1);
     assert_eq!(
         evaluations.borrow().len(),
-        39,
-        "main and its definition macro consume backend products directly, and the macro's quote is constants, so only six values are asked for a transport shape",
+        28,
+        "main and its definition macro consume backend products directly, and the macro's quote is constants, and transport layouts are read from facts, so only 28 products are evaluated",
     );
     let materialized_roots = evaluations
         .borrow()
@@ -431,7 +431,7 @@ fn native_root_product_is_lowered_once_and_reused_by_exact_identity() {
             // pays for the same eventual run twice. `main/0` is self-keyed
             // (R1), so this re-run never wakes its `StaticCallees`,
             // `Recursive` or `InputDemand` either.
-            (WorkStart::ChangedRevisionWake, 10),
+            (WorkStart::ChangedRevisionWake, 12),
             // The re-evaluated product waits until every submitted source's
             // declarations are checked: the edited source's, and the
             // unreachable source's, which nothing asked for while the retained
@@ -2437,8 +2437,8 @@ fn fatal_error_end_to_end_request_budget_exhausted_on_a_real_drive() {
 /// `true`, waiting on a dependency that is waiting back.
 ///
 /// A closure passed through a runtime-library reducer is the shape that builds
-/// the widest graph: callable constructions, transport shapes, runtime demand
-/// and executable facts all take part, and the two recursive kinds both appear.
+/// the widest graph: callable constructions, runtime demand and executable
+/// facts all take part, and the recursive kind appears.
 #[test]
 fn settled_products_depend_only_on_settled_products() {
     let tel = ConfiguredTelemetry::new();
@@ -2467,20 +2467,19 @@ fn settled_products_depend_only_on_settled_products() {
          or a wait cycle could route through one: {unsettled:?}"
     );
 
-    // Guard against the assertion above passing vacuously: the two kinds whose
-    // recursive groups the walk serves must both be present and both self-loop,
-    // so this drive really did exercise the graph the walk is pruning.
+    // Guard against the assertion above passing vacuously: the kind whose
+    // recursive groups the walk serves must be present and self-loop, so this
+    // drive really did exercise the graph the walk is pruning.
     let kinds = memo
         .dependency_edges()
         .map(|(reader, dependency)| (reader.kind(), dependency.kind()))
         .collect::<std::collections::BTreeSet<_>>();
-    for kind in ["transport_shape", "callable_construction"] {
-        assert!(
-            kinds.contains(&(kind, kind)),
-            "{kind} should depend on its own kind here, or this drive is not exercising \
-             the recursive groups the walk serves (edges: {kinds:?})"
-        );
-    }
+    let kind = "callable_construction";
+    assert!(
+        kinds.contains(&(kind, kind)),
+        "{kind} should depend on its own kind here, or this drive is not exercising \
+         the recursive groups the walk serves (edges: {kinds:?})"
+    );
 }
 
 #[test]
@@ -2515,10 +2514,7 @@ fn executable_scoped_products_record_the_shared_executable_fact_as_an_ordinary_d
 
     let mut observed = std::collections::BTreeSet::new();
     for key in memo.produced_keys() {
-        if !matches!(
-            key.kind(),
-            "materialized_executable" | "transport_shape" | "callable_construction"
-        ) {
+        if !matches!(key.kind(), "materialized_executable" | "callable_construction") {
             continue;
         }
         observed.insert(key.kind());
@@ -2533,7 +2529,7 @@ fn executable_scoped_products_record_the_shared_executable_fact_as_an_ordinary_d
             key.kind(),
         );
     }
-    for expected in ["materialized_executable", "transport_shape", "callable_construction"] {
+    for expected in ["materialized_executable", "callable_construction"] {
         assert!(
             observed.contains(expected),
             "fixture did not exercise {expected}; observed {observed:?}"
@@ -3064,7 +3060,7 @@ mod wait_frame_tests {
 
     fn positioned_key(types: &mut crate::compiler2::Types, arrow: crate::compiler2::Ty, id: u32) -> ProductKey {
         use crate::compiler2::transport::{ActivationSymbol, ExecutableSymbol, TransportPosition};
-        ProductKey::TransportShape(TransportPosition::ExecutableReturn {
+        ProductKey::CallableConstruction(TransportPosition::ExecutableReturn {
             executable: ExecutableSymbol {
                 activation: ActivationSymbol {
                     function: types.test_function(id),
@@ -3077,7 +3073,7 @@ mod wait_frame_tests {
     }
 
     fn positioned_function(key: &ProductKey) -> crate::compiler2::FunctionId {
-        let ProductKey::TransportShape(position) = key else {
+        let ProductKey::CallableConstruction(position) = key else {
             panic!("expected a positioned product")
         };
         position.executable().activation.function
@@ -3496,7 +3492,7 @@ mod wait_frame_tests {
         use crate::compiler2::transport::{ActivationSymbol, ExecutableSymbol, TransportPosition};
         let mut types = crate::compiler2::Types::new();
         let arrow = any_arrow(&mut types);
-        let key = ProductKey::TransportShape(TransportPosition::ExecutableReturn {
+        let key = ProductKey::CallableConstruction(TransportPosition::ExecutableReturn {
             executable: ExecutableSymbol {
                 activation: ActivationSymbol {
                     function: types.test_function(91),

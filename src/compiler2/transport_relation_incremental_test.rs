@@ -367,11 +367,9 @@ fn generic_callable_owner_appears_and_withdraws_with_its_positioned_obligation()
         value,
     };
     let owner = ProductKey::CallableConstruction(position.clone());
-    let shape = ProductKey::TransportShape(position.clone());
     assert!(!abi.callable_owners.iter().any(|owner| owner.position == position));
     assert!(!relations.borrow().requested.contains(&(root, owner.clone())));
     assert_eq!(compiler.retained_product_generation(root, &owner), None);
-    let initial_shape_generation = compiler.retained_product_generation(root, &shape).unwrap();
     *relations.borrow_mut() = Relations::default();
     compiler.submit_code(CodeSubmission {
         name: Some("introduce_generic_callable.fz".into()),
@@ -395,8 +393,15 @@ fn generic_callable_owner_appears_and_withdraws_with_its_positioned_obligation()
     assert!(!positioned.owner.callable_facts.is_empty());
     assert!(!positioned.owner.boundary_facts.is_empty());
     assert!(observed.evaluated.contains(&(root, owner.clone())));
-    assert!(observed.evaluated.contains(&(root, shape.clone())));
-    assert!(compiler.retained_product_generation(root, &shape).unwrap() > initial_shape_generation);
+    let layout = abi
+        .transport
+        .position_layouts
+        .layout_at(&position)
+        .expect("the call-result position keeps a layout");
+    assert!(
+        compiler.world().shape_contains_callable(layout.structural),
+        "the call-result position is laid out as a callable"
+    );
     drop(observed);
     *relations.borrow_mut() = Relations::default();
     compiler.submit_code(CodeSubmission {
@@ -416,10 +421,12 @@ fn generic_callable_owner_appears_and_withdraws_with_its_positioned_obligation()
         !observed.evaluated.contains(&(root, owner)),
         "withdrawn callable obligation causes no producer work"
     );
-    assert!(
-        observed.evaluated.contains(&(root, shape)),
-        "the physical scalar layout still belongs to its position"
-    );
+    let layout = abi
+        .transport
+        .position_layouts
+        .layout_at(&position)
+        .expect("the physical scalar layout still belongs to its position");
+    assert!(!compiler.world().shape_contains_callable(layout.structural));
 }
 
 #[test]
@@ -450,7 +457,6 @@ fn retained_transport_obligations_follow_the_exact_input_demand_edit() {
     let ProductKey::CallableConstruction(position) = owner(&slot) else {
         unreachable!()
     };
-    let shape = ProductKey::TransportShape(position.clone());
     let construction = ProductKey::CallableConstruction(position.clone());
     let assert_absent = |compiler: &Compiler2<ConfiguredTelemetry>, observed: &Relations| {
         assert!(compiler.world().runtime_demand(&forward).unwrap().input_demands[0].is_ignore());
@@ -461,14 +467,14 @@ fn retained_transport_obligations_follow_the_exact_input_demand_edit() {
             !observed
                 .requested
                 .iter()
-                .any(|(owner, key)| *owner == root && (key == &shape || key == &construction)),
+                .any(|(owner, key)| *owner == root && key == &construction),
             "ignored positioned products are never requested, not merely served from cache"
         );
         assert!(
             !observed
                 .evaluated
                 .iter()
-                .any(|(owner, key)| *owner == root && (key == &shape || key == &construction)),
+                .any(|(owner, key)| *owner == root && key == &construction),
             "the ignored input has no exact positioned producer evaluations"
         );
     };
@@ -487,8 +493,6 @@ fn retained_transport_obligations_follow_the_exact_input_demand_edit() {
         .clone();
     let retained_key = ProductKey::CallableConstruction(retained_owner.position.clone());
     let retained_generation = compiler.retained_product_generation(root, &retained_key).unwrap();
-    let retained_shape = ProductKey::TransportShape(retained_owner.position.clone());
-    let retained_shape_generation = compiler.retained_product_generation(root, &retained_shape).unwrap();
     for edit in [None, Some("def unrelated(), do: 99\n")] {
         *relations.borrow_mut() = Relations::default();
         if let Some(text) = edit {
@@ -516,8 +520,17 @@ fn retained_transport_obligations_follow_the_exact_input_demand_edit() {
     assert_eq!(compiler.run_root_interp(root), Ok(84));
     assert!(!compiler.world().runtime_demand(&forward).unwrap().input_demands[0].is_ignore());
     assert!(
-        relations.borrow().evaluated.contains(&(root, shape.clone())),
-        "changed input demand creates its exact shape consumer"
+        compiler
+            .world()
+            .transport_interface(&forward)
+            .and_then(|interface| interface.layout_at(&position))
+            .is_some_and(|layout| {
+                !matches!(
+                    compiler.world().shape(layout.structural),
+                    crate::compiler2::transport::ShapeDescr::Nothing
+                )
+            }),
+        "changed input demand gives its input position a physical layout in the interface"
     );
     assert!(
         !relations.borrow().evaluated.contains(&(root, construction.clone())),
@@ -543,14 +556,6 @@ fn retained_transport_obligations_follow_the_exact_input_demand_edit() {
     assert_eq!(
         compiler.retained_product_generation(root, &retained_key),
         Some(retained_generation)
-    );
-    assert_eq!(
-        compiler.retained_product_generation(root, &retained_shape),
-        Some(retained_shape_generation)
-    );
-    assert!(
-        !observed.evaluated.contains(&(root, retained_shape)),
-        "the independent positioned shape does no work"
     );
     assert!(
         !observed.evaluated.contains(&(root, retained_key)),

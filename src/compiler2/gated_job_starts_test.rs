@@ -41,6 +41,10 @@
 //! declares nothing, so the check gates on the source's scope and concludes
 //! in its one run: 23 starts over 21 pairs.
 //!
+//! `main/0` and the `def/1` macro root each own a `TransportInterface` and a
+//! `TransportBody` fact, one job each, so four more starts over four more
+//! pairs: 27 starts over 25 pairs.
+//!
 //! Every other kind, and every other subject of a gated kind -- including
 //! every `SeedRoot` -- runs exactly once.
 
@@ -78,10 +82,12 @@ fn job_kind(job: &Job) -> &'static str {
         Job::DeriveExecutableFacts(_) => "DeriveExecutableFacts",
         Job::DeriveCallableConstructionTarget(_) => "DeriveCallableConstructionTarget",
         Job::DeriveRuntimeDemand(_) => "DeriveRuntimeDemand",
+        Job::DeriveTransportInterface(_) => "DeriveTransportInterface",
+        Job::DeriveTransportBody(_) => "DeriveTransportBody",
     }
 }
 
-/// The 10 job kinds given a static gate (`.agent/docs/fact-engine.md`,
+/// The 12 job kinds given a static gate (`.agent/docs/fact-engine.md`,
 /// "A job's gates"). A blocked-only run of any other kind means a job started
 /// before its declared inputs existed.
 const GATED_KINDS: &[&str] = &[
@@ -95,6 +101,8 @@ const GATED_KINDS: &[&str] = &[
     "DeriveRuntimeDemand",
     "LowerFunction",
     "DeriveStaticCallees",
+    "DeriveTransportInterface",
+    "DeriveTransportBody",
 ];
 
 struct RunRecord {
@@ -151,8 +159,8 @@ fn def_main_do_1_starts_each_job_once_per_subject() {
     };
     assert_eq!(
         runs.len(),
-        23,
-        "expected 23 job starts, saw {}:\n{:#?}",
+        27,
+        "expected 27 job starts, saw {}:\n{:#?}",
         runs.len(),
         subjects_and_kinds(),
     );
@@ -163,8 +171,8 @@ fn def_main_do_1_starts_each_job_once_per_subject() {
     }
     assert_eq!(
         per_subject.len(),
-        21,
-        "expected 21 distinct (kind, subject) pairs, saw {}",
+        25,
+        "expected 25 distinct (kind, subject) pairs, saw {}",
         per_subject.len(),
     );
 
@@ -211,4 +219,57 @@ fn def_main_do_1_starts_each_job_once_per_subject() {
             );
         }
     }
+}
+
+/// The gates a layout job declares name every foreign fact its walk needs: a
+/// transport job that starts concludes something rather than discovering a
+/// missing input and stopping. Recursion, closure calls and captured callables
+/// are the shapes whose reads cross executables.
+#[test]
+fn a_transport_job_is_never_started_before_the_facts_it_reads_exist() {
+    const SOURCE: &str = "\
+def swap(0, a, _b), do: a
+def swap(n, a, b), do: swap(n - 1, fn x -> b.(x) end, fn y -> a.(y) end)
+def thread(0, prev), do: prev
+def thread(n, prev), do: thread(n - 1, fn x -> prev.(x) end)
+def even(0), do: true
+def even(n), do: odd(n - 1)
+def odd(0), do: false
+def odd(n), do: even(n - 1)
+def main() do
+  {swap(3, fn x -> x end, fn y -> y + 1 end).(1), thread(3, fn x -> x end).(2), even(4)}
+end
+";
+    let tel = ConfiguredTelemetry::new();
+    let early: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    let observed = Rc::clone(&early);
+    tel.attach_raw_event2::<World, JobCompletion, _>(
+        &["fz", "compiler2", "work_graph", "applied"],
+        move |_, _, _, _world, completion| {
+            let transport = matches!(
+                completion.job,
+                Job::DeriveTransportInterface(_) | Job::DeriveTransportBody(_)
+            );
+            if transport && completion.step.changed.is_empty() && !completion.step.blocked.is_empty() {
+                observed.borrow_mut().push(format!("{:?}", completion.job));
+            }
+        },
+    );
+    let mut compiler = super::Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("transport_gates.fz".to_string()),
+        text: SOURCE.to_string(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler.run_root_interp(root).expect("the program compiles and runs");
+    assert!(
+        early.borrow().is_empty(),
+        "transport jobs that started and only blocked: {:#?}",
+        early.borrow()
+    );
 }

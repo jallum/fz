@@ -77,9 +77,13 @@ product   RootBackendProduct(root)
             transport positions
           ExecutableEffects(E)
             local materialized effects joined with exact callee effect products
-          TransportShape(position), CallableConstruction(position)
-            position-owned transport layouts and callable construction facts
+          CallableConstruction(position)
+            position-owned callable construction facts
 ```
+
+Transport layouts are facts, not products: `TransportInterface(E)` holds the
+layout of each of `E`'s inputs and of its return, and `TransportBody(E)` holds
+the layout of every other position `E` owns.
 
 The product inventory is not a root projection stack. A demanded executable forms
 the product chain below, and each product can name only its exact product/fact
@@ -90,7 +94,8 @@ BackendExecutable(E)
   <- AbiExecutable(E)
      <- MaterializedExecutable(E)
      <- ExecutableEffects(E)
-     <- TransportShape/CallableConstruction positions named by E
+     <- Settled(TransportInterface(E)), Settled(TransportBody(E)), TransportInterface of each callee named by E
+     <- CallableConstruction positions named by E
      <- Settled(RuntimeDemand(E)), Settled(IncomingInputSlot(slot))
 ```
 
@@ -128,7 +133,7 @@ Tuple-field demand may stop at its highest observed index. Transport applies
 that prefix to the exact tuple type and emits `Nothing` for omitted trailing
 positions, so a partial four-tuple remains a four-field structural layout
 instead of being mistaken for a different tuple shape and boxed.
-`TransportShape(...)`, `CallableConstruction(...)`,
+`TransportInterface(E)`, `TransportBody(E)`, `CallableConstruction(...)`,
 and `MaterializedExecutable(E)` read `Settled(ExecutableFacts(E))` directly.
 World fact values are not copied into `ProductMemo` and therefore have no
 product settlement, displacement, cache-hit, or re-entry lifecycle.
@@ -269,7 +274,7 @@ submit_root(main/0)
       pulls AbiExecutable(E)
         pulls MaterializedExecutable(E)
           waits on settled ExecutableFacts(E) and ReturnType(E.activation)
-          waits on settled RuntimeDemand(E), then pulls local TransportShape products
+          waits on settled RuntimeDemand(E), TransportInterface(E) and TransportBody(E)
         pulls ExecutableEffects(E)
         pulls EntryCapture (one per owned capture), resume, input, return, and callable-boundary transport products
       reads exact ABI prerequisites for return endpoints and construction members/captures
@@ -573,7 +578,7 @@ resumes cannot silently reclassify the join seam.
 
 `MaterializedExecutable(E)` is the first backend-owned product. It waits on
 settled local semantic facts for `E.activation`, `RuntimeDemand(E)`, and
-the transport shapes required by that local body.
+the transport layouts required by that local body.
 It clones and prunes one body, freezes that executable's live callsites to
 selected call edges, and records symbolic callee edges for later product pulls.
 It cannot ask a new type question or discover a callee except through the
@@ -613,12 +618,13 @@ no local body to inspect. Final raw IR represents the choice directly with
 import-edge metadata is derived from those term targets rather than from a
 parallel side table or synthetic stub body.
 
-Backend-required transport positions wait for an actual produced
-`TransportShape(position)`. Backend and ABI products consume layouts, so their
-waits test the exact position product.
+Backend-required transport positions wait for the settled transport fact that
+holds them: `TransportInterface(E)` for an input or the return, `TransportBody(E)`
+for every other position. Backend and ABI products consume layouts, so their
+waits test the exact owner's fact.
 The input inventory comes from `RuntimeDemand::is_ignore()`: an input with
 neither physical nor callable demand has no ABI position. An ignored transport
-recipe produces its zero-lane contract without requesting origin products.
+recipe produces its zero-lane contract without reading its origins.
 Lexical captures are a different obligation. A first-class closure demands each
 lexical capture's complete value, including fields unused by its executable
 body and the complete environments of captured callables. The local callable
@@ -637,25 +643,39 @@ its own empty input slots, so an input with no sources has a settled answer.
 The scheduler owns the publisher frontier: waiting preserves unrefuted
 contributions; concluding replacement withdraws only that publisher's obsolete
 edges. Callable construction reads the exact settled slot fact directly,
-alongside its named shape prerequisite, and consumes the fact's typed-sorted
+alongside its position's layout fact, and consumes the fact's typed-sorted
 source allocation. Equal publication preserves allocation and revision;
 unrelated edges cannot invalidate the slot. There is no relation product or
 root-wide relation inventory.
 
-Each `TransportShape(position)` producer owns one exact answer. It reads the
-position owner's `ExecutableFacts`, settled `RuntimeDemand`, and only the
-upstream position products named by the normalized origin. `ExecutableFacts`
-distinguishes direct call returns from public callable returns before transport:
-direct returns refine from the selected target position, while public returns
-project every nonempty result to `ValueRef`. Recursion is cut out of the recipe
-before it is evaluated, from settled facts alone: an edge naming the return of
-a direct callee that reaches the position's owner (the callee's
-`ExecutableReach(callee, Direct)` fact, which skips call sites whose return
-arrives through a closure call) and whose function id does not rise is replaced by a cut, so
-what remains strictly climbs and is acyclic. A GROUNDED CLOSURE-CALL edge
+Each executable owns two transport facts, both scoped to its root. The
+interface, `TransportInterface(E)`, holds the layouts at `ExecutableInput` and
+`ExecutableReturn`: the only positions another executable reads. The body,
+`TransportBody(E)`, holds every other position `E` owns, its member set derived
+from `E`'s facts (call edges, entry captures, resumes, local backend positions
+and every value its pruned body retains). A job computes the positions it owns
+inline, each from the owner's `ExecutableFacts`, settled `RuntimeDemand`, and
+the positions the normalized origin names, memoized for the run; a position of
+another executable is one read of that executable's interface, and a read of an
+interface that has not settled waits for it. A fact reports `changed` only when
+its layouts differ. `ExecutableFacts` distinguishes direct call returns from
+public callable returns before transport: direct returns refine from the
+selected target position, while public returns project every nonempty result to
+`ValueRef`. Recursion is cut out of the recipe before it is evaluated, from
+settled facts alone: an edge naming the return of a direct callee that reaches
+the position's owner (the callee's `ExecutableReach(callee, Direct)` fact, which
+skips call sites whose return arrives through a closure call) and whose function
+orders at or below the owner's by typed origin (`return_edge_is_cut`) is
+replaced by a cut, so what remains strictly climbs and is acyclic. A capture
+input reads the interfaces of the captures of a directly called closure
+(`direct_callable_descr`), so interfaces also wait on one another along capture
+inputs; a closure standing among its own capture surface is cut at that one
+position (`&capture == position`), and a longer chain cannot close a cycle
+because a closure's captures exist before the closure does. Lambdas that
+capture one another's calls settle (fixture `01299`). A GROUNDED CLOSURE-CALL edge
 reaches its callee through a value, so a closure built outside a recursion
 and threaded back through it leaves caller and lambda statically unrelated
-while their products still cycle. That edge is cut exactly when its target
+while their interfaces still cycle. That edge is cut exactly when its target
 reaches the owner in the `ExecutableReach(callee, All)` fact, which follows every
 settled `ExecutableFacts` call target; when it does not, the edge adds no
 reachability the graph did not already have, and keeping it is what preserves
@@ -673,16 +693,17 @@ demand is the same on every view of one calling convention. That is what makes a
 recursive call a TAIL call, since `CallReturnFlow` asks the callee return, the
 caller return and the caller's `ReturnPayload` to name one layout; deriving them
 apart cost about a quarter of the runtime of a 30,000-element
-`Enum.split_while` (fz-kdt.97). Evaluation therefore reads no scheduler state
-and no product group, and the published layouts do not move under a re-ordered
-pull.
+`Enum.split_while`. Evaluation therefore reads no scheduler state and no
+product group, and the published layouts do not move under a re-ordered pull.
 Evaluating a recipe reports every unready child it can name in that round: a
 tuple or alternatives recipe collects all of its unready children into one
-wait list, and a direct callable collects all of its unready captures, so the
-owner is pulled once to discover its waits and once to resume. A tuple stops at its first cut, so a field beyond a cut is never read,
-while an unready field before it is waited on first. A closure-call return
-reads its callee's layout before it can name the target's recipe, so that
-callee stays a separate, earlier wait.
+wait set, and a direct callable collects all of its unready captures, so a fact
+job runs once to discover its waits and once to resume. The reach facts the cut
+asks for are waited on together, before any interface is read, so one
+interface job takes up to three runs. A tuple stops at its first cut, so a
+field beyond a cut is never read, while an unready field before it is waited on
+first. A closure-call return reads its callee's layout before it can name the
+target's recipe, so that callee stays a separate, earlier wait.
 `CallableConstruction(position)` uses the same position-owned
 layout and carries direct callable and boundary facts independently of wrapper
 authority. A direct-only local producer owns `construction: None`; a first-class
@@ -692,10 +713,10 @@ The ABI uses the same local-producer selector as callable construction. These
 local flow owners retain lexical metadata independently of their physical
 layout. The ABI requests a generic owner only when the settled structural layout
 contains a callable node: a scalar or callable-free tuple cannot publish
-callable or boundary facts. The positioned shape remains the ABI's exact
+callable or boundary facts. The position's layout fact remains the ABI's exact
 dependency; equal layouts do not combine owners or dependencies.
 
-Unlike transport shapes, callable construction still settles a recursive product
+Unlike the transport facts, callable construction still settles a recursive product
 GROUP: a callable threaded through a mutual recursion reaches its own owner, and
 the group is how the cycle closes. What the group shares is EVIDENCE -- the
 members' own facts plus the facts of every product they read from outside the
@@ -883,7 +904,7 @@ First-class local resolution is a pure projection of the formula's settled
 executable facts and already-keyed callable surface. Recursive
 transport (nested captures, tuple fields, direct-callable producers) is not
 stored on the callsite witness; it is derived downstream from settled demand
-into `TransportShape(position)` and related callable/boundary products.
+into the transport facts and the related callable/boundary products.
 Actual call-argument values also inherit the selected callee input demand during
 transport projection, so recursive calls do not omit a local argument value just
 because the caller's own `call_arg_demands` are temporarily bottom.
@@ -1237,12 +1258,11 @@ Backend-facing product work has one hard rule after
 requested product.
 
 - `MaterializedExecutable(E)` may consume only settled local semantic facts for
-  `E`, `RuntimeDemand(E)`, and local transport shape
-  products.
+  `E`, `RuntimeDemand(E)`, and the transport facts of `E`.
 - `ExecutableEffects(E)` may consume only `MaterializedExecutable(E)` and the
   exact `ExecutableEffects(callee)` products its local symbolic call edges name.
 - `AbiExecutable(E)` may consume only `MaterializedExecutable(E)`,
-  `ExecutableEffects(E)`, exact transport products, and the world-owned type
+  `ExecutableEffects(E)`, exact transport facts, and the world-owned type
   store.
 - `BackendExecutable(E)` consumes its own `AbiExecutable(E)`, its embedded
   positioned transport answers, and exact ABI prerequisites for return

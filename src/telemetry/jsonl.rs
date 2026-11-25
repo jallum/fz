@@ -1953,11 +1953,6 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
         push_u64(out, owner.callable_facts.len() as u64);
         out.push_str(",\"boundary_facts\":");
         push_u64(out, owner.boundary_facts.len() as u64);
-    } else if let Some(crate::compiler2::pull::ProductValue::TransportShape(
-        crate::compiler2::pull::TransportShapeFact::Layout(layout),
-    )) = opaque.downcast_ref::<crate::compiler2::pull::ProductValue>()
-    {
-        write_transport_layout_fields(out, *layout);
     } else if let Some(crate::compiler2::pull::ProductValue::RootBackendProduct(answer)) =
         opaque.downcast_ref::<crate::compiler2::pull::ProductValue>()
     {
@@ -2377,7 +2372,7 @@ fn write_transport_position(out: &mut String, position: &crate::compiler2::trans
 }
 
 /// Nested rendering for a `TransportPosition` carried inside a `ProductKey`
-/// (`TransportShape`/`CallableConstruction`), whose own `"kind"` field
+/// (`CallableConstruction`), whose own `"kind"` field
 /// already names the product — the position's identity goes under
 /// `"position"` so the two `kind`s never collide.
 fn write_transport_position_field(out: &mut String, position: &crate::compiler2::transport::TransportPosition) {
@@ -2420,7 +2415,10 @@ fn write_job_identity(out: &mut String, job: &crate::compiler2::Job) {
         Job::DeriveTypeDef(type_name) => write_type_name(out, type_name),
         Job::SeedRoot(root) => write_root_id(out, *root),
         Job::SeedActivation(key) | Job::AnalyzeActivation(key) => write_activation_key(out, key),
-        Job::DeriveExecutableFacts(key) | Job::DeriveRuntimeDemand(key) => write_executable_key(out, key),
+        Job::DeriveExecutableFacts(key)
+        | Job::DeriveRuntimeDemand(key)
+        | Job::DeriveTransportInterface(key)
+        | Job::DeriveTransportBody(key) => write_executable_key(out, key),
         Job::DeriveExecutableReach(key, chain) => write_executable_reach_identity(out, key, *chain),
         Job::DeriveCallableConstructionTarget(key) => write_callable_construction_target_key(out, key),
     }
@@ -2465,6 +2463,8 @@ fn write_fact_identity(out: &mut String, fact: &crate::compiler2::FactKey) {
         | FactKey::ExecutableFacts(key)
         | FactKey::RuntimeDemandInput(key)
         | FactKey::RuntimeDemand(key)
+        | FactKey::TransportInterface(key)
+        | FactKey::TransportBody(key)
         | FactKey::RuntimeDemandInputs(key) => write_executable_key(out, key),
         FactKey::ExecutableReach(key, chain) => write_executable_reach_identity(out, key, *chain),
         FactKey::IncomingInputSlot(slot) => {
@@ -2659,7 +2659,7 @@ fn write_product_key_identity(out: &mut String, key: &crate::compiler2::ProductK
         | ProductKey::AbiExecutable(executable)
         | ProductKey::MaterializedExecutable(executable)
         | ProductKey::ExecutableEffects(executable) => write_executable_key(out, executable),
-        ProductKey::TransportShape(position) | ProductKey::CallableConstruction(position) => {
+        ProductKey::CallableConstruction(position) => {
             write_transport_position_field(out, position);
         }
         ProductKey::StructSchema(module) => {
@@ -2696,6 +2696,8 @@ fn fact_kind(fact: &crate::compiler2::FactKey) -> &'static str {
         FactKey::Recursive(_) => "Recursive",
         FactKey::StaticReach(_) => "StaticReach",
         FactKey::ExecutableReach(..) => "ExecutableReach",
+        FactKey::TransportInterface(_) => "TransportInterface",
+        FactKey::TransportBody(_) => "TransportBody",
         FactKey::InputDemand(_) => "InputDemand",
         FactKey::RootEntry(_) => "RootEntry",
         FactKey::Activation(_) => "Activation",
@@ -2734,6 +2736,8 @@ fn job_kind(job: &crate::compiler2::Job) -> &'static str {
         Job::DeriveRecursive(_) => "DeriveRecursive",
         Job::DeriveStaticReach(_) => "DeriveStaticReach",
         Job::DeriveExecutableReach(..) => "DeriveExecutableReach",
+        Job::DeriveTransportInterface(_) => "DeriveTransportInterface",
+        Job::DeriveTransportBody(_) => "DeriveTransportBody",
         Job::DeriveInputDemand(_) => "DeriveInputDemand",
         Job::SeedRoot(_) => "SeedRoot",
         Job::SeedActivation(_) => "SeedActivation",

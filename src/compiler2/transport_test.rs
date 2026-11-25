@@ -92,8 +92,8 @@ fn transport_consumers_share_one_typed_semantic_order() {
     assert_eq!(symbols[0].semantic_cmp(&symbols[1], &types), key_order);
     assert_eq!(positions[0].semantic_cmp(&positions[1], &types), key_order);
     assert_eq!(
-        ProductKey::TransportShape(positions[0].clone())
-            .semantic_cmp(&ProductKey::TransportShape(positions[1].clone()), &types),
+        ProductKey::CallableConstruction(positions[0].clone())
+            .semantic_cmp(&ProductKey::CallableConstruction(positions[1].clone()), &types),
         key_order,
         "product publication and transport packaging must delegate to the same position order",
     );

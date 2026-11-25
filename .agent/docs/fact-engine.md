@@ -906,12 +906,13 @@ under `GateExpansion` rather than the calling demand's own reason. Both call
 sites consult the one `missing_gates` answer; neither keeps its own notion of
 readiness.
 
-Sixteen job kinds declare gates — `SeedRoot`, `DefineFunction`,
+Eighteen job kinds declare gates — `SeedRoot`, `DefineFunction`,
 `ExpandFunctionSource`, `ScopeCode`, `DefineModule`, `CheckDeclarations`,
 `DeriveInputDemand`, `DeriveRecursive`, `DeriveStaticReach`,
 `DeriveExecutableReach`,
 `DeriveRuntimeDemand`, `LowerFunction`, `DeriveFunctionContract`,
-`DeriveStaticCallees`, `AnalyzeActivation`, and `DeriveExecutableFacts` —
+`DeriveStaticCallees`, `AnalyzeActivation`, `DeriveExecutableFacts`,
+`DeriveTransportInterface`, and `DeriveTransportBody` —
 each in the `jobs/*.rs` module that owns the kind's body, named
 `<job>_gates` beside it (`DeriveFunctionContract`'s one gate, its function's
 definition, is written in the match itself). Every other
@@ -1013,7 +1014,6 @@ ProductKey =
   AbiExecutable(E)
   MaterializedExecutable(E)
   ExecutableEffects(E)
-  TransportShape(position)
   CallableConstruction(position)
   StructSchema(module)
 
@@ -1162,7 +1162,17 @@ return arrives through a closure call; `CallChain::All` follows every one).
 Its job (`jobs/reach.rs`) walks the edge facts of everything the node reaches
 and reads each of them, so a change to any edge in the cone reopens the answer.
 No reach fact reads another: nodes that reach each other each walk the same
-cycle and conclude the same set, so no group is needed. A walk that meets an
+cycle and conclude the same set, so no group is needed.
+
+The transport layouts are facts of the same shape. `TransportInterface(E)` is
+the layouts at `E`'s inputs and return and `TransportBody(E)` the layouts at
+every other position `E` owns (`jobs/transport_layouts.rs`). Both jobs gate on
+`ExecutableFacts(E)` and `RuntimeDemand(E)`, compute the positions they own
+inline, and read another executable's position as one read of its interface
+fact, waiting when that has not settled. Interfaces wait on each other along return edges that survive the cut and
+along the capture inputs of directly called closures; a closure among its own
+capture surface is cut at that position, and the drain names the interface
+fact of any wait that never settles. A re-entrant read of a position inside one job is a loud panic. A walk that meets an
 edge fact not yet answered waits on it and runs again when it lands. The
 input-demand solver's cycle test is a different question and not a reach
 fact: `forwarding_reach` (`jobs/keying.rs`) follows only the calls that
@@ -1172,11 +1182,11 @@ is a static cycle but not a forwarding one. A
 function is recursive exactly when its own `StaticReach` holds it;
 `DeriveRecursive` starts once that fact exists. Recursive
 `CallableConstruction(position)` products settle their position groups from
-external anchors. `TransportShape(position)` has no
-group: it cuts its own recursion at recipe construction by asking settled
+external anchors. The transport facts have no
+group: they cut their own recursion at recipe construction by asking settled
 `ExecutableFacts` call targets through `ExecutableReach` facts (the candidate
-return's reach, asked whether it holds the position's own owner), so its
-evaluation is a function of settled facts and of products that can settle
+return's reach, asked whether it holds the position's own owner), so their
+evaluation is a function of settled facts and of interfaces that can settle
 without it. An
 edge whose callee reaches the owner this way, and whose function id does not
 rise, is cut; a grounded closure-call edge has no static edge of its own, so
@@ -1273,9 +1283,9 @@ attempts, rather than attributing only validation-triggered refreshes.
 A `PullSession` owns one scope's retained product memo and scheduling
 relations. Most sessions are root sessions, living for that root's lifetime
 in `Compiler2`; `ProductSessions` additionally keeps one program session,
-whose `PullSession` has no root and lives for the compiler's lifetime. A
-`TransportShape(position)` answer remains in its
-memo entry until an exact consumer reads it. `MaterializedExecutable` embeds the
+whose `PullSession` has no root and lives for the compiler's lifetime. The
+transport facts `TransportInterface(E)` and `TransportBody(E)` live in the
+World, not the memo. `MaterializedExecutable` embeds the
 positioned layout answers it consumed. A closure callee's carrier selects its
 physical invocation: `ValueRef` uses the public wrapper, while `Absent` permits
 one exact semantic target to refine directly. `AbiReadyExecutable` refines that

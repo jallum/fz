@@ -942,29 +942,6 @@ fn compare_product_waits(types: &super::types::Types, left: &PullWait, right: &P
     }
 }
 
-/// The single-fact test seam over the exact prerequisite-set loop below.
-/// Production passes every fact named by one product evaluation together.
-#[cfg(test)]
-pub(super) fn drive_product_fact_wait<T: crate::telemetry::RawSpanTelemetry, E: ProductDriveError>(
-    world: &mut World,
-    tel: &T,
-    root: RootId,
-    driver: &mut ProductDriver<'_, T>,
-    fact: FactUse<FactKey>,
-    fact_wait_budget: u64,
-) -> Result<u64, E> {
-    drive_product_fact_waits_with_sessions(
-        world,
-        tel,
-        ProductScope::Root(root),
-        driver,
-        None,
-        std::iter::once(&fact),
-        fact_wait_budget,
-    )
-    .map(Driven::finished)
-}
-
 #[cfg(test)]
 pub(super) fn drive_product_fact_waits<T: crate::telemetry::RawSpanTelemetry, E: ProductDriveError>(
     world: &mut World,
