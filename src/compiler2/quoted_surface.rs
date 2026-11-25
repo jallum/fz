@@ -1200,12 +1200,12 @@ fn parse_function_head_key_inner(
     )))
 }
 
-/// The parameter counts an operator may be defined with. `+` is both the
-/// binary sum and the unary identity.
+/// The parameter counts an operator may be defined with. `+` and `-` are both
+/// the binary operator and the unary one.
 fn definable_operator_arities(name: &str) -> Option<&'static [usize]> {
     match name {
-        "+" => Some(&[1, 2]),
-        "-" | "*" | "/" | "%" | "<>" | "==" | "!=" | "===" | "!==" | "<" | "<=" | ">" | ">=" | "|>" | "&&" | "||" => {
+        "+" | "-" => Some(&[1, 2]),
+        "*" | "/" | "%" | "<>" | "==" | "!=" | "===" | "!==" | "<" | "<=" | ">" | ">=" | "|>" | "&&" | "||" => {
             Some(&[2])
         }
         "!" => Some(&[1]),

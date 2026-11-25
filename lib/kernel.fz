@@ -893,18 +893,18 @@ defmodule Kernel do
 
   ## Examples
 
-      Kernel.negate(5)
+      Kernel.-(5)
       #=> -5
 
-      Kernel.negate(0.0)
+      Kernel.-(0.0)
       #=> -0.0
 
   """
-  @spec negate(integer) :: integer
-  @spec negate(float) :: float
-  def negate(x) when is_integer(x), do: fz_op_neg_i(x)
-  def negate(x) when is_float(x), do: fz_op_neg_f(x)
-  def negate(_), do: arithmetic_error()
+  @spec -(integer) :: integer
+  @spec -(float) :: float
+  def -(x) when is_integer(x), do: fz_op_neg_i(x)
+  def -(x) when is_float(x), do: fz_op_neg_f(x)
+  def -(_), do: arithmetic_error()
 
   extern "C" defp fz_op_neg_i(integer) :: integer,
     raises: ArithmeticError,

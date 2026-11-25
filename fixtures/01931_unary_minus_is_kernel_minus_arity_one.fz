@@ -1,0 +1,28 @@
+#---
+# purpose: "Unary minus is Kernel.-/1: written, qualified, captured, in a guard, and listed among Kernel's imported functions"
+# oracle: self
+# oracle.stamp: 774ec9ac739bccf6
+#---
+defmodule Main do
+  def sign(x) when -x > 0, do: :negative
+  def sign(_), do: :non_negative
+
+  def negate(x), do: -x
+
+  def main() do
+    IO.inspect(negate(5))
+    IO.inspect(negate(2.5))
+    IO.inspect(negate(0.0))
+    IO.inspect(negate(negate(7)))
+    IO.inspect(-(-2.5))
+    IO.inspect(Enum.map([1, -2, 3], &-/1))
+    IO.inspect(Enum.map([1.5, -2.5], &Kernel.-/1))
+    IO.inspect(Kernel.-(3))
+    IO.inspect(sign(-4))
+    IO.inspect(sign(4))
+    {_, kernel} = Enum.find(__ENV__.functions, fn {module, _} -> module == Kernel end)
+    IO.inspect(Enum.filter(kernel, fn {name, _} -> name in [:+, :-] end))
+  end
+end
+
+Main.main()

@@ -498,7 +498,7 @@ fn decode_named_expr(
             let inner = decode_expr(occurrences, &args[0], Some(span), sources)?;
             // A negative LITERAL is a literal, exactly as in patterns
             // (`decode_negative_pattern`). Folding it keeps `-3` a constant
-            // instead of a call to `Kernel.negate/1`, which is what
+            // instead of a call to `Kernel.-/1`, which is what
             // `source_sugar` rewrites every other unary minus into.
             match inner.node {
                 Expr::Int(value) => Ok(Spanned::new(Expr::Int(-value), span)),

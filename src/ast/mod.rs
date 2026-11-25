@@ -62,13 +62,13 @@ impl CallableName {
         }
     }
 
-    /// `Kernel.negate`, the function unary minus is.
+    /// `Kernel.-/1`, the function unary minus is.
     pub fn negation() -> Self {
         Self {
             module: Some(ModuleTarget::Unresolved(ModuleName::from_segments(vec![
                 "Kernel".to_string(),
             ]))),
-            name: "negate".to_string(),
+            name: "-".to_string(),
         }
     }
 

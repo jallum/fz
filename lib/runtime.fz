@@ -11,6 +11,7 @@ alias String.Chars
 import Kernel, only: [
   +: 1,
   +: 2,
+  -: 1,
   -: 2,
   *: 2,
   /: 2,
