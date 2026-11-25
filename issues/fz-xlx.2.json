@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-xlx.1"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-xlx.3"
+  ],
   "created": "2026-11-25T11:31:20Z",
   "description": "Child of fz-xlx, in the order listed there. Faithful port: 1:1 with Elixir's source; gaps become tickets.",
   "id": "fz-xlx.2",
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "Code.Identifier and Macro.classify_atom are ported from Elixir",
   "type": "feature",
-  "updated_at": "2026-11-25T11:31:22Z"
+  "updated_at": "2026-11-25T11:31:24Z"
 }

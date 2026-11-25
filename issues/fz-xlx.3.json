@@ -1,6 +1,8 @@
 {
   "assignee": "Elixir Parity",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-xlx.2"
+  ],
   "blocks": [],
   "created": "2026-11-25T11:31:22Z",
   "description": "Child of fz-xlx, in the order listed there. Faithful port: 1:1 with Elixir's source; gaps become tickets.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Code.Normalizer is ported from Elixir",
   "type": "feature",
-  "updated_at": "2026-11-25T11:31:23Z"
+  "updated_at": "2026-11-25T11:31:24Z"
 }
