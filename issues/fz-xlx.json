@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-25T11:31:17Z",
+  "description": "From: Elixir Parity. The user approved \"port later\" (relayed 2026-11-25). fz-mue.52 (#902) makes Macro.to_string/1 raise a named not-supported RuntimeError for now.\n\nGoal: Macro.to_string/1 renders quoted code exactly as Elixir's formatter does. It is a faithful port of about 4,800 lines across Inspect.Algebra, Code.Normalizer and Code.Formatter, none of which exists in fz.\n\nChildren, in order: Inspect.Algebra, then Code.Identifier with Macro.classify_atom, then Code.Normalizer, then Code.Formatter, then Macro.to_string/1.\n\nParked until #791 (fz-mue) lands. Overlaps fz-9un (Inspect options) and the 80-column wrap tickets fz-mue.49 and fz-sc8.162, which Inspect.Algebra underlies.",
+  "id": "fz-xlx",
+  "labels": [],
+  "priority": 3,
+  "status": "open",
+  "title": "Macro.to_string/1 renders as Elixir's formatter does",
+  "type": "epic",
+  "updated_at": "2026-11-25T11:31:17Z"
+}
