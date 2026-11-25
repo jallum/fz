@@ -44,8 +44,8 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Integer arithmetic on known integers is an instruction, not a flag dance or a call",
   "type": "task",
-  "updated_at": "2026-11-25T03:03:52Z"
+  "updated_at": "2026-11-25T03:03:54Z"
 }
