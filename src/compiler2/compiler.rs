@@ -456,6 +456,13 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
         context.complete_job(job, effects)
     }
 
+    /// Reports the warnings recorded since the last drive ended, as a drive's
+    /// end does.
+    #[cfg(test)]
+    pub(crate) fn flush_reported_warnings_for_test(&mut self) {
+        ExecutionContext::new(&mut self.world, &self.telemetry).flush_reported_warnings();
+    }
+
     /// Drives one root to `NativeProgram` and JIT-compiles it through the
     /// shared native backend. The returned `FnId` is the root entry the
     /// runtime should spawn.
@@ -490,14 +497,16 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
     }
 
     /// Runs an executable macro over a quoted source heap and returns the
-    /// macro-produced root in that same heap.
-    pub fn run_macro_on_source(
+    /// macro-produced root in that same heap, with the warnings the run
+    /// emitted.
+    #[cfg(test)]
+    pub(crate) fn run_macro_on_source(
         &mut self,
         function: super::FunctionId,
         source: &super::QuotedSourceRoot,
         caller: fz_runtime::any_value::AnyValueRef,
         args: &[fz_runtime::any_value::AnyValueRef],
-    ) -> Result<super::QuotedSourceRoot, String> {
+    ) -> Result<super::macro_warning::MacroExpansion, String> {
         // A never-run gated job's demand redirects to its one missing gate's
         // producer rather than starting the job itself
         // (`World::demand_producer_if_needed`); the chain from here to

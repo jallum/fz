@@ -10,6 +10,7 @@ use super::drive::{FactKey, JobEffects, ProductAddress, emit_job_diagnostic};
 use super::env_projection::CallSite;
 use super::identity::{FunctionId, ModuleId};
 use super::jobs::is_guard_expr;
+use super::macro_warning::{MacroExpansion, MacroWarning};
 use super::module_interface::{InterfaceRequester, ReferencingCall};
 use super::namespace::NamespaceSymbol;
 use super::pull::{ProductKey, ProductSessions, ProductValue};
@@ -1062,11 +1063,12 @@ pub(crate) trait QuotedExpansionCtx {
         let expansion_number = self.next_expansion_number();
         let context = *self.expansion_context();
         let call_site = CallSite::locate(macro_call_span, &self.world().source_map().borrow());
-        if let Some(expanded) =
+        if let Some(memoized) =
             self.world()
                 .memoized_macro_expansion(function, &invocation, caller_scope, context, &call_site, &program)
         {
-            return match self.expand_root(expanded, scope, depth + 1)? {
+            self.emit_macro_warnings(&memoized.warnings, macro_call_span);
+            return match self.expand_root(memoized.root, scope, depth + 1)? {
                 ExpandedRoot::Complete(root) => Ok(ExpandedValue::Complete(root.root())),
                 ExpandedRoot::Blocked(effects) => Ok(ExpandedValue::Blocked(effects)),
             };
@@ -1081,7 +1083,10 @@ pub(crate) trait QuotedExpansionCtx {
             })?;
         let arg_roots = args.iter().map(QuotedSourceCursor::root).collect::<Vec<_>>();
         let (world, tel) = self.split();
-        let expanded = super::drive::ExecutionContext::new(world, tel)
+        let MacroExpansion {
+            root: expanded,
+            warnings,
+        } = super::drive::ExecutionContext::new(world, tel)
             .run_macro_on_source(&program, owner, caller, &arg_roots)
             .map_err(|error| {
                 let span = macro_call_span.unwrap_or(Span::DUMMY);
@@ -1126,11 +1131,25 @@ pub(crate) trait QuotedExpansionCtx {
             context,
             call_site,
             &program,
-            expanded.clone(),
+            MacroExpansion {
+                root: expanded.clone(),
+                warnings: warnings.clone(),
+            },
         );
+        self.emit_macro_warnings(&warnings, macro_call_span);
         match self.expand_root(expanded, scope, depth + 1)? {
             ExpandedRoot::Complete(root) => Ok(ExpandedValue::Complete(root.root())),
             ExpandedRoot::Blocked(effects) => Ok(ExpandedValue::Blocked(effects)),
+        }
+    }
+
+    /// Reports what a macro's run warned, as it does for a run and for a memo
+    /// hit alike; a warning already reported this drive is not reported twice.
+    fn emit_macro_warnings(&mut self, warnings: &[MacroWarning], macro_call_span: Option<Span>) {
+        let (world, telemetry) = self.split();
+        for warning in warnings {
+            let diagnostic = warning.diagnostic(macro_call_span, &world.source_map().borrow());
+            super::drive::ExecutionContext::new(world, telemetry).emit_warning_once(diagnostic);
         }
     }
 

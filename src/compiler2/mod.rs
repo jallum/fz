@@ -23,6 +23,7 @@ mod identity;
 pub(crate) mod incoming_inputs;
 mod jobs;
 mod keying;
+mod macro_warning;
 mod module_interface;
 mod namespace;
 mod native_body_frame;

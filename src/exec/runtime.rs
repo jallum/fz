@@ -34,7 +34,7 @@ use crate::telemetry::{Telemetry, TelemetryExt as _};
 use fz_runtime::any_value::AnyValueRef;
 use fz_runtime::exec_ctx::{Argv, ExecCtx, NO_ARGV};
 use fz_runtime::heap::deep_copy_any_value_ref;
-use fz_runtime::output::{OUTPUT_HOOK, OutputContext, OutputSink, STDOUT_OUTPUT};
+use fz_runtime::output::{OUTPUT_HOOK, OutputContext, OutputSink, STDOUT_OUTPUT, WARN_HOOK};
 use fz_runtime::pinned_abi::call2;
 use fz_runtime::process::Disposition;
 use fz_runtime::sched::{
@@ -333,6 +333,7 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
             halt: Some(halt_hook::<Self>()),
             raise: Some(raise_hook_thunk::<T>),
             output: Some(OUTPUT_HOOK),
+            warn: Some(WARN_HOOK),
             timer_schedule: Some(timer_schedule_hook::<Self>()),
             timer_cancel: Some(timer_cancel_hook::<Self>()),
             argv: self.argv,

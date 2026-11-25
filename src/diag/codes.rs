@@ -49,6 +49,7 @@ pub const MACRO_NOT_A_DEFMACRO: DiagCode = DiagCode("macro/not-a-defmacro");
 pub const MACRO_NOT_REQUIRED: DiagCode = DiagCode("macro/not-required");
 pub const MACRO_OWN_MODULE_ITEM_CALL: DiagCode = DiagCode("macro/own-module-item-call");
 pub const MACRO_INVALID_QUOTED_EXPR: DiagCode = DiagCode("macro/invalid-quoted-expr");
+pub const MACRO_WARNING: DiagCode = DiagCode("macro/warning");
 
 // ----- ir_lower -----
 

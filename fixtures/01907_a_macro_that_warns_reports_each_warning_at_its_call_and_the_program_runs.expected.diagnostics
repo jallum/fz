@@ -1,0 +1,42 @@
+warning[macro/warning]: the bare form
+  --> fixtures/01907_a_macro_that_warns_reports_each_warning_at_its_call_and_the_program_runs.fz:13:22
+   |
+13 |   def double(n), do: Warns.warn(n * 2)
+   |                      ^^^^^^^^^^^^^^^^^
+   |
+
+warning[macro/warning]: the caller form
+  --> fixtures/01907_a_macro_that_warns_reports_each_warning_at_its_call_and_the_program_runs.fz:13:22
+   |
+13 |   def double(n), do: Warns.warn(n * 2)
+   |                      ^^^^^^^^^^^^^^^^^
+   |
+
+warning[macro/warning]: the keyword form
+  --> fixtures/01907_a_macro_that_warns_reports_each_warning_at_its_call_and_the_program_runs.fz:14:3
+   |
+14 |   def triple(n), do: Warns.warn(n * 3)
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+
+warning[macro/warning]: the bare form
+  --> fixtures/01907_a_macro_that_warns_reports_each_warning_at_its_call_and_the_program_runs.fz:14:22
+   |
+14 |   def triple(n), do: Warns.warn(n * 3)
+   |                      ^^^^^^^^^^^^^^^^^
+   |
+
+warning[macro/warning]: the caller form
+  --> fixtures/01907_a_macro_that_warns_reports_each_warning_at_its_call_and_the_program_runs.fz:14:22
+   |
+14 |   def triple(n), do: Warns.warn(n * 3)
+   |                      ^^^^^^^^^^^^^^^^^
+   |
+
+warning[macro/warning]: the keyword form
+  --> fixtures/01907_a_macro_that_warns_reports_each_warning_at_its_call_and_the_program_runs.fz:15:3
+   |
+15 |   def main() do
+   |   ^^^^^^^^^^^^^
+   |
+
