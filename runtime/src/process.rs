@@ -203,10 +203,21 @@ pub struct Process {
     pub min_yield_continuation_margin_after_bytes: u64,
 }
 
-/// Stable per-Process identifier assigned at spawn time. v1: simple u32
-/// counter; .19.5 may add a (node_id, generation) tuple. Pid is exposed
-/// to fz code via the Pid struct schema (.19.2 — separate ticket).
+/// The identifier a process table hands out at spawn: a slot and the
+/// generation of that slot's occupant, packed in a `u32` (see
+/// [`crate::proc_table`]). A pid names one process, never a later occupant of
+/// its slot.
 pub type PidId = u32;
+
+/// The buffers of a process shell that outlive the process in it: the gift
+/// queue, the mailbox and the handler stack. An exited process's shell keeps
+/// them, emptied, so the next process on it grows none of them again.
+#[derive(Default)]
+struct ShellBuffers {
+    delivery: DeliveryLock,
+    mailbox: Mailbox,
+    handlers: HandlerStack,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProcessState {
@@ -769,20 +780,70 @@ impl Node {
 }
 
 impl Process {
-    /// The single Process construction site. Builds the heap and field
-    /// defaults. Per-spawn scheduler state (run state, mailbox, pending
-    /// entries) stays at defaults for the spawner to set.
+    /// A process on a fresh shell. Builds the heap and field defaults.
+    /// Per-spawn scheduler state (run state, mailbox, pending entries) stays
+    /// at defaults for the spawner to set.
     pub fn with_node(
         node: Rc<Node>,
         schemas: Rc<RefCell<SchemaRegistry>>,
         pid: PidId,
         reductions_per_quantum: i32,
     ) -> Self {
+        Self::on_shell(ShellBuffers::default(), node, schemas, pid, reductions_per_quantum)
+    }
+
+    /// Begin a new life on this shell: every field is what a fresh process
+    /// has, and the shell's buffers keep the capacity they grew. Construction
+    /// and reuse are the one function `on_shell`, so a field added
+    /// to the process is set the same way by both.
+    pub fn reuse(
+        &mut self,
+        node: Rc<Node>,
+        schemas: Rc<RefCell<SchemaRegistry>>,
+        pid: PidId,
+        reductions_per_quantum: i32,
+    ) {
+        let buffers = self.take_buffers();
+        *self = Self::on_shell(buffers, node, schemas, pid, reductions_per_quantum);
+    }
+
+    /// End this life while its heap is hot: every heap block returns to the
+    /// pool, the off-heap chain is released, and the queued gifts, the
+    /// mailbox and the handlers are dropped. The buffers that held them keep
+    /// their capacity for the next life. Nothing of the process is read after
+    /// this but what [`Process::reuse`] overwrites.
+    pub fn vacate(&mut self) {
+        self.delivery.get_mut().clear();
+        self.mailbox.clear();
+        self.handlers.clear();
+        self.heap.release_all();
+    }
+
+    fn take_buffers(&mut self) -> ShellBuffers {
+        ShellBuffers {
+            delivery: std::mem::take(&mut self.delivery),
+            mailbox: std::mem::take(&mut self.mailbox),
+            handlers: std::mem::take(&mut self.handlers),
+        }
+    }
+
+    fn on_shell(
+        buffers: ShellBuffers,
+        node: Rc<Node>,
+        schemas: Rc<RefCell<SchemaRegistry>>,
+        pid: PidId,
+        reductions_per_quantum: i32,
+    ) -> Self {
+        let ShellBuffers {
+            delivery,
+            mailbox,
+            handlers,
+        } = buffers;
         Self {
             // A new process's tip is the smallest pooled block (1 KiB). Each
             // collection installs a tip sized to the young budget, which
             // follows the bytes the heap holds, up or down (`Heap::should_gc`).
-            delivery: DeliveryLock::default(),
+            delivery,
             heap: Heap::with_node(SIZE_TABLE[0], schemas, Rc::clone(&node)),
             ctx: null_mut(),
             halt_value: 0,
@@ -793,10 +854,10 @@ impl Process {
             pid,
             state: ProcessState::New,
             next_frame: null_mut(),
-            mailbox: Mailbox::default(),
+            mailbox,
             runnable: None,
             delivered: None,
-            handlers: HandlerStack::default(),
+            handlers,
             gc_stats: GcStats::default(),
             raised: None,
             raises_delivered: 0,

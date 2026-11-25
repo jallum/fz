@@ -40,6 +40,7 @@ pub struct SchedulingCore {
     timers: TimerWheel,
     clock: Clock,
     halted: Option<i32>,
+    main_value: Option<i64>,
 }
 
 impl SchedulingCore {
@@ -78,12 +79,20 @@ impl SchedulingCore {
         self.halted.get_or_insert(status);
     }
 
-    /// Note that process `pid` ended with `status`: when it is the main
-    /// process, that is the program's end.
-    pub fn process_ended(&mut self, pid: PidId, status: i32) {
+    /// Note that process `pid` ended with `status` and left `value`: when it
+    /// is the main process, that is the program's end, and its value is kept
+    /// here, since the process itself is cleaned away.
+    pub fn process_ended(&mut self, pid: PidId, status: i32, value: i64) {
         if pid == MAIN_PID {
             self.halt(status);
+            self.main_value = Some(value);
         }
+    }
+
+    /// The value the main process ended with, or `None` while it has not
+    /// ended.
+    pub fn main_value(&self) -> Option<i64> {
+        self.main_value
     }
 
     /// The status the program ended with, or `None` while it has not ended.
@@ -145,6 +154,11 @@ pub trait Scheduler {
     /// runtime event, even if that is nothing.
     fn observe(&mut self, event: RuntimeEvent<'_>);
 
+    /// The process `process` has exited, its destructors have run and its
+    /// exit has been observed: the scheduler frees what it holds for it. The
+    /// process is not read after this call.
+    fn retire(&mut self, process: &mut Process);
+
     /// Run the destructor closure `closure` of a freed resource on `process`
     /// with the boxed `payload`, both value-ref words. Only a driver can run
     /// fz code: compiled drivers enter the drain shim through the pinned
@@ -166,7 +180,8 @@ pub trait Scheduler {
 /// clears the quantum's yield reasons. A halted process is not collected: it
 /// is marked Exited and releases every stub on its off-heap chain, since nothing is
 /// live. Every destructor the collection or the exit queued then runs through `scheduler`,
-/// `process.dtors_dispatched` counts them, and an exit is observed last.
+/// `process.dtors_dispatched` counts them, the exit is observed, and the scheduler
+/// retires the process last.
 pub fn end_quantum<S: Scheduler + ?Sized>(scheduler: &mut S, process: &mut Process) -> Disposition {
     let disposition = process.quantum_end();
     if disposition == Disposition::Parked {
@@ -192,8 +207,11 @@ pub fn end_quantum<S: Scheduler + ?Sized>(scheduler: &mut S, process: &mut Proce
     }
     drain_destructors(scheduler, process);
     if disposition == Disposition::Exited {
-        scheduler.core().process_ended(process.pid, process.exit_status);
+        scheduler
+            .core()
+            .process_ended(process.pid, process.exit_status, process.halt_value);
         scheduler.observe(RuntimeEvent::ProcessExited(process));
+        scheduler.retire(process);
     }
     disposition
 }

@@ -264,7 +264,8 @@ reason bits, run the queued destructors) and returns the `Disposition` (`Requeue
 [runtime telemetry](runtime-telemetry.md)). The JIT, the AOT shim and the
 interpreter call it after every quantum, whatever state the process is in. A
 halted process whose heap is not due is not collected; its resource stubs are
-swept without a to-space. The interpreter keeps a parked receive's environment
+swept without a to-space, and the scheduler retires it (its heap blocks return to
+the pool and its shell is kept for the next spawn). The interpreter keeps a parked receive's environment
 and continuations in its own structures; its `Scheduler::collect_heap` passes
 their heap refs to `Process::collect` as transient roots and writes the
 forwarded refs back. It never yields, so no resume entry of a process outlives

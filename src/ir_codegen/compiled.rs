@@ -7,6 +7,7 @@ use cranelift_jit::JITModule;
 use cranelift_module::FuncId;
 use fz_runtime::heap::SchemaRegistry;
 use fz_runtime::pinned_abi::call1;
+use fz_runtime::proc_table::ProcTable;
 use fz_runtime::process::{AtomName, DEFAULT_REDUCTIONS_PER_QUANTUM, Node, Process};
 use std::cell::RefCell;
 use std::ptr::null_mut;
@@ -60,6 +61,17 @@ impl CompiledModule {
             0,
             DEFAULT_REDUCTIONS_PER_QUANTUM,
         )
+    }
+
+    /// Start a process bound to this module's compile-time data in `table`.
+    pub fn spawn_process(&self, table: &mut ProcTable) -> *mut Process {
+        table
+            .spawn(
+                Rc::clone(&self.node),
+                Rc::clone(&self.user_schemas),
+                DEFAULT_REDUCTIONS_PER_QUANTUM,
+            )
+            .unwrap_or_else(|full| panic!("{full}"))
     }
 
     /// Run one quantum for a Process.

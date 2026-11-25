@@ -1830,10 +1830,17 @@ fn nonempty_list_addr(list: AnyValueRef) -> Result<*mut u8, AnyValueRefError> {
     Ok(addr)
 }
 
-impl Drop for Heap {
-    fn drop(&mut self) {
+impl Heap {
+    /// Hand every block the heap holds back to the pool and release the
+    /// off-heap chain, leaving the heap empty of storage. A process that ended
+    /// calls this while its blocks are still hot; a heap dropped later finds
+    /// nothing left to release.
+    pub fn release_all(&mut self) {
+        if self.block_start.is_null() {
+            return;
+        }
         // release every SharedBin held via the intrusive off-heap
-        // chain. Order matters: must run before pool_free below, since
+        // chain. Order matters: must run before the block release below, since
         // off_heap_drop_all walks BinRef payloads in the heap's blocks.
         off_heap::drop_all(self);
         // Release blocks: pooled capacities go back to the pool (§6.6) so the
@@ -1852,6 +1859,16 @@ impl Drop for Heap {
         {
             block.release();
         }
+        self.block_start = std::ptr::null_mut();
+        self.bump_top = std::ptr::null_mut();
+        self.block_end = std::ptr::null_mut();
+        self.block_size = 0;
+    }
+}
+
+impl Drop for Heap {
+    fn drop(&mut self) {
+        self.release_all();
     }
 }
 

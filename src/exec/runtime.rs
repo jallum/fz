@@ -7,7 +7,7 @@
 //! change, not an architectural rewrite.
 //!
 //! A Process (defined in ir_codegen.rs by fz-ul4.11.32) is the task; the
-//! Runtime owns each Process via `Box<Process>` in a registry. spawn()
+//! Runtime owns each Process in a `ProcTable`. spawn()
 //! creates a fresh Process bound to a CompiledModule and enqueues its
 //! pid. `run_until_idle()` drains the ready queue.
 //!
@@ -22,12 +22,9 @@
 //! runs on the calling thread. When pool size > 1 lands:
 //!   - the core's run queue becomes contended (currently a plain VecDeque; will
 //!     wrap in Mutex when threads matter).
-//!   - tasks registry: `HashMap` becomes `RwLock<HashMap>` or per-worker
-//!     local + global registry.
 //!   - Process needs Send (currently `Heap` holds Rc — will switch to
 //!     Arc when threading lands).
 
-use crate::fast_hash::HashMap;
 use crate::fz_ir::FnId;
 use crate::ir_codegen::{CompiledModule, PidId, Process, ProcessState};
 use crate::telemetry::{Telemetry, TelemetryExt as _};
@@ -36,6 +33,7 @@ use fz_runtime::exec_ctx::{Argv, ExecCtx, NO_ARGV};
 use fz_runtime::heap::deep_copy_any_value_ref;
 use fz_runtime::output::{OUTPUT_HOOK, OutputContext, OutputSink, STDOUT_OUTPUT, WARN_HOOK};
 use fz_runtime::pinned_abi::call2;
+use fz_runtime::proc_table::ProcTable;
 use fz_runtime::process::Disposition;
 use fz_runtime::sched::{
     ProbeOutcome, deliver_in_queue, fire_after_timer, mint_entry_thunk, mint_main_inner, probe_sender, self_send,
@@ -59,11 +57,11 @@ use std::rc::Rc;
 /// completion on the calling thread.
 pub struct Runtime<'a, T: Telemetry + ?Sized> {
     compiled: &'a CompiledModule,
-    tasks: HashMap<PidId, Box<Process>>,
+    /// Every live process by pid, and the shells of the exited ones.
+    tasks: ProcTable,
     /// The run queue and timer wheel. `next_runnable` decides what runs next
     /// and when the runtime is idle.
     core: SchedulingCore,
-    next_pid: u32,
     pool_outstanding_before_run: usize,
 
     /// Observability sink. The run loop emits `fz.runtime.process_exited`
@@ -187,12 +185,9 @@ pub fn send_via<T: Telemetry + ?Sized>(sender: *mut Process, scheduler: *mut (),
         self_send(sender, msg);
         return;
     }
-    let Some(receiver) = rt.tasks.get_mut(&receiver_pid) else {
+    let Some(receiver) = rt.tasks.get_mut(receiver_pid) else {
         return;
     };
-    if receiver.state == ProcessState::Exited {
-        return;
-    }
     let probe = probe_sender(sender, receiver, msg);
     emit_runtime_event(rt.tel, RuntimeEvent::SendProbe(&probe));
     if probe.outcome == ProbeOutcome::Hit {
@@ -211,9 +206,8 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
         );
         Self {
             compiled,
-            tasks: HashMap::default(),
+            tasks: ProcTable::new(),
             core: SchedulingCore::new(),
-            next_pid: 1,
             pool_outstanding_before_run: fz_runtime::heap::pool_outstanding_blocks(),
             tel,
             output: &STDOUT_OUTPUT,
@@ -249,10 +243,7 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
         // `fz_main_trampoline`), wrap it in an entry thunk, and queue that as
         // `runnable`. The scheduler resumes it through the one `fz_resume`
         // verb — the same path a spawned user closure takes.
-        let pid = self.next_pid;
-        self.next_pid += 1;
-        let mut process = self.compiled.make_process();
-        process.pid = pid;
+        let process = unsafe { &mut *self.start_process() };
         let fp = self
             .compiled
             .fn_ptr(fn_id)
@@ -261,15 +252,20 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
         let inner = mint_main_inner(&mut process.heap, self.compiled.main_trampoline_addr, fp, halt_kind);
         let thunk = mint_entry_thunk(&mut process.heap, self.compiled.entry_thunk_addr, inner);
         process.set_runnable_closure(thunk);
-        self.queue_task(pid, Box::new(process));
-        pid
+        self.queue_task(process)
     }
 
-    /// Queue `task` to run and keep it in the registry under `pid`; the
-    /// scheduling core performs its transition to Ready.
-    fn queue_task(&mut self, pid: PidId, mut task: Box<Process>) {
-        self.core.make_runnable(pid, &mut task.state);
-        self.tasks.insert(pid, task);
+    /// A process in the registry under a fresh pid, not yet queued. It keeps
+    /// its address until it exits.
+    fn start_process(&mut self) -> *mut Process {
+        self.compiled.spawn_process(&mut self.tasks)
+    }
+
+    /// Queue `task`, which the registry holds, to run; the scheduling core
+    /// performs its transition to Ready. Returns its pid.
+    fn queue_task(&mut self, task: &mut Process) -> PidId {
+        self.core.make_runnable(task.pid, &mut task.state);
+        task.pid
     }
 
     /// fz-ul4.29.5: spawn a task from a closure value owned by the
@@ -277,10 +273,7 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
     /// task's heap, then stores it as a pending entry. The scheduler later
     /// dispatches that closure via fz_spawn_entry in the child task's quantum.
     pub fn spawn_closure(&mut self, sender: *mut Process, closure_ref_word: u64) -> PidId {
-        let pid = self.next_pid;
-        self.next_pid += 1;
-        let mut process = self.compiled.make_process();
-        process.pid = pid;
+        let process = unsafe { &mut *self.start_process() };
 
         // Deep-copy the closure from sender's heap into the new task's heap.
         assert!(!sender.is_null(), "spawn_closure: no sender process");
@@ -301,8 +294,7 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
         process.next_frame = null_mut();
         let thunk = mint_entry_thunk(&mut process.heap, self.compiled.entry_thunk_addr, copied);
         process.set_runnable_closure(thunk);
-        self.queue_task(pid, Box::new(process));
-        pid
+        self.queue_task(process)
     }
 
     /// Drive ready tasks until every task has halted or blocked.
@@ -330,37 +322,36 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
         };
         let ctx_ptr: *mut ExecCtx = &mut exec_ctx;
         while let Some(pid) = next_runnable(self) {
-            let mut task = self.tasks.remove(&pid).expect("task in run_queue not in registry");
+            let task = self.tasks.get_ptr(pid).expect("task in run_queue not in registry");
+            // SAFETY: the registry keeps the process at its address until `end_quantum` retires it.
+            let task = unsafe { &mut *task };
             task.state = ProcessState::Running;
             task.reset_reduction_budget();
             task.ctx = ctx_ptr;
             debug_assert!(!task.ctx.is_null(), "task.ctx installed before dispatch");
             // Gifts queued by senders become this heap's before any code
             // runs; a matched receive becomes the runnable closure here.
-            deliver_in_queue(&mut task);
-            self.compiled.run_quantum(&mut task);
-            match end_quantum(self, &mut task) {
+            deliver_in_queue(task);
+            self.compiled.run_quantum(task);
+            match end_quantum(self, task) {
                 Disposition::Requeue => {
-                    self.queue_task(pid, task);
-                    continue;
+                    self.queue_task(task);
                 }
-                // Parked on a receive: keep in registry, no re-enqueue. A send
-                // or the after-timer wakes it.
-                Disposition::Parked | Disposition::Exited => {}
+                // Parked on a receive: stays in the registry, not queued. A
+                // send or the after-timer wakes it.
+                Disposition::Parked => {}
+                // Exited: the registry has already cleaned and freed it.
+                Disposition::Exited => {}
             }
-            // Keep Exited / Blocked tasks in the registry so callers can
-            // inspect halt_value / mailbox after the runtime drains, and
-            // so send() can find a Blocked receiver.
-            self.tasks.insert(pid, task);
         }
     }
 }
 
 impl<T: Telemetry + ?Sized> Drop for Runtime<'_, T> {
-    /// The registry keeps exited and parked tasks until the runtime goes
-    /// away; drop them all, then report what the pool still holds.
+    /// The registry keeps parked tasks until the runtime goes away; drop
+    /// them and the waiting shells, then report what the pool still holds.
     fn drop(&mut self) {
-        self.tasks.clear();
+        drop(std::mem::take(&mut self.tasks));
         report_sites(&self.compiled.node, |event| emit_runtime_event(self.tel, event));
         emit_runtime_event(
             self.tel,
@@ -375,7 +366,7 @@ impl<T: Telemetry + ?Sized> Scheduler for Runtime<'_, T> {
     }
 
     fn wake_expired(&mut self, pid: PidId, timer: TimerId) {
-        if let Some(task) = self.tasks.get_mut(&pid)
+        if let Some(task) = self.tasks.get_mut(pid)
             && fire_after_timer(task, timer)
         {
             self.core.make_runnable(pid, &mut task.state);
@@ -384,6 +375,10 @@ impl<T: Telemetry + ?Sized> Scheduler for Runtime<'_, T> {
 
     fn observe(&mut self, event: RuntimeEvent<'_>) {
         emit_runtime_event(self.tel, event);
+    }
+
+    fn retire(&mut self, process: &mut Process) {
+        self.tasks.retire(process.pid);
     }
 
     /// Enter the destructor through `pinned_abi` so the pinned register holds

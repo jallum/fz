@@ -321,12 +321,11 @@ fn scheduler_adapter_copies_spawn_inputs_and_dead_send_is_observation_free() {
             .contains_heap_addr(copied_addr)
     );
 
-    runtime.set_process_state(receiver_pid, ProcessState::Exited);
+    runtime.backend_resume.remove(&receiver_pid);
+    runtime.tasks.retire(receiver_pid);
     let message = interp_list_cons(sender, AnyValue::Int(2), AnyValue::EmptyList, "send message").unwrap();
     let message_ref = Stored::of(message.value(sender).unwrap());
-    let receiver = runtime.process_ref(receiver_pid).unwrap();
-    let before_heap = receiver.node.alloc_stats();
-    let before_mailbox: Vec<_> = receiver.mailbox.messages().collect();
+    let before_heap = unsafe { &*sender }.node.alloc_stats();
     let before_queue = runtime.core.queued().clone();
     let before_resume_len = runtime.backend_resume.len();
     let before_parked_len = runtime.backend_parked.len();
@@ -345,10 +344,8 @@ fn scheduler_adapter_copies_spawn_inputs_and_dead_send_is_observation_free() {
             .unwrap();
     }
 
-    let receiver = runtime.process_ref(receiver_pid).unwrap();
-    assert_eq!(receiver.node.alloc_stats(), before_heap);
-    assert_eq!(receiver.mailbox.messages().collect::<Vec<_>>(), before_mailbox);
-    assert_eq!(receiver.state, ProcessState::Exited);
+    assert!(runtime.process_ref(receiver_pid).is_none(), "an exited process is gone");
+    assert_eq!(unsafe { &*sender }.node.alloc_stats(), before_heap);
     assert_eq!(runtime.core.queued(), &before_queue);
     assert_eq!(runtime.backend_resume.len(), before_resume_len);
     assert_eq!(runtime.backend_parked.len(), before_parked_len);

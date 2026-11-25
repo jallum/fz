@@ -1,0 +1,31 @@
+#---
+# purpose: "100,000 processes, each spawned, sending its number to its parent and exiting before the next is spawned, all come back and sum as in Elixir"
+# oracle: self
+# oracle.stamp: b15e18f08715a851
+#---
+#
+# Every process is gone before the next begins, so a runtime that frees an
+# exited process's slot and reuses its storage runs this in a table of a few
+# slots, and one that keeps every exited process holds a hundred thousand.
+defmodule Main do
+  def child(parent, n) do
+    send(parent, {:done, n})
+  end
+
+  def loop(0, acc), do: acc
+
+  def loop(n, acc) do
+    me = self()
+    spawn(fn -> child(me, n) end)
+
+    receive do
+      {:done, k} -> loop(n - 1, acc + k)
+    end
+  end
+
+  def main() do
+    IO.inspect(loop(100_000, 0))
+  end
+end
+
+Main.main()

@@ -41,6 +41,8 @@ struct Recording {
     /// The pid and `dtors_dispatched` of each process at the moment its exit
     /// was observed.
     exits: Vec<(PidId, u64)>,
+    /// The pids the scheduler was asked to retire, in order.
+    retired: Vec<PidId>,
     destructors: Vec<(u64, u64)>,
 }
 
@@ -55,6 +57,7 @@ impl Recording {
             timer_events: Vec::new(),
             collections: Vec::new(),
             exits: Vec::new(),
+            retired: Vec::new(),
             destructors: Vec::new(),
         }
     }
@@ -101,6 +104,10 @@ impl Scheduler for Recording {
             | RuntimeEvent::ReuseSite(_)
             | RuntimeEvent::RunEnded(_) => {}
         }
+    }
+
+    fn retire(&mut self, process: &mut Process) {
+        self.retired.push(process.pid);
     }
 
     fn run_destructor(&mut self, _process: &mut Process, closure: u64, payload: u64) {
@@ -487,10 +494,12 @@ fn the_first_halt_is_the_programs_end() {
 #[test]
 fn only_the_main_process_ending_is_the_programs_end() {
     let mut core = SchedulingCore::new();
-    core.process_ended(MAIN_PID + 1, 7);
+    core.process_ended(MAIN_PID + 1, 7, 70);
     assert_eq!(core.halted(), None, "a child ending leaves the program running");
-    core.process_ended(MAIN_PID, 3);
+    assert_eq!(core.main_value(), None);
+    core.process_ended(MAIN_PID, 3, 30);
     assert_eq!(core.halted(), Some(3));
+    assert_eq!(core.main_value(), Some(30), "the core keeps what main ended with");
 }
 
 #[test]
@@ -781,6 +790,26 @@ fn an_exit_is_observed_after_its_destructors_have_run() {
     assert_eq!(scheduler.exits, vec![(6, 2)]);
 }
 
+/// Intent: an exit ends with the scheduler retiring the process, after its
+/// exit was observed and never for a process that only parked or yielded.
+#[test]
+fn an_exit_retires_the_process_and_a_park_does_not() {
+    let mut scheduler = Recording::new();
+    let mut parked = new_process();
+    parked.pid = 5;
+    parked.state = ProcessState::Blocked;
+    let mut exiting = new_process();
+    exiting.pid = 6;
+    exiting.state = ProcessState::Running;
+
+    end_quantum(&mut scheduler, &mut parked);
+    assert!(scheduler.retired.is_empty());
+    end_quantum(&mut scheduler, &mut exiting);
+
+    assert_eq!(scheduler.retired, vec![6]);
+    assert_eq!(scheduler.exits, vec![(6, 0)], "the exit was observed before the retire");
+}
+
 /// A halting process is not collected, even when its heap is due: its
 /// resources are still released by the exit sweep and each destructor runs
 /// exactly once.
@@ -855,6 +884,9 @@ fn a_destructor_that_yields_is_a_fault() {
         }
         fn observe(&mut self, event: RuntimeEvent<'_>) {
             self.0.observe(event);
+        }
+        fn retire(&mut self, process: &mut Process) {
+            self.0.retire(process);
         }
         fn run_destructor(&mut self, process: &mut Process, _closure: u64, _payload: u64) {
             let continuation = closure_ref_capturing(process, AnyValue::int(1));

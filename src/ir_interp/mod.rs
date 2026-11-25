@@ -6,8 +6,9 @@ use std::rc::Rc;
 
 use crate::compiler2::transport::BoundValue;
 use fz_runtime::heap::{RootForwarder, Roots, Schema, SchemaRegistry};
+use fz_runtime::proc_table::ProcTable;
 use fz_runtime::process::{AtomName, DEFAULT_REDUCTIONS_PER_QUANTUM, Node, Process, ProcessState};
-use fz_runtime::sched_core::SchedulingCore;
+use fz_runtime::sched_core::{MAIN_PID, SchedulingCore};
 use fz_runtime::timer::TimerId;
 
 mod backend;
@@ -150,8 +151,8 @@ pub(crate) struct InterpRan {
 }
 
 pub(crate) struct IrInterpRuntime {
-    tasks: HashMap<u32, Box<Process>>,
-    next_pid: u32,
+    /// Every live process by pid, and the shells of the exited ones.
+    tasks: ProcTable,
     schemas: Rc<RefCell<SchemaRegistry>>,
     tuple_schema_ids: HashMap<usize, u32>,
     /// The schema id of each struct the program declares, registered at load.
@@ -173,8 +174,7 @@ pub(crate) struct IrInterpRuntime {
 impl IrInterpRuntime {
     pub(crate) fn fresh() -> Self {
         Self {
-            tasks: HashMap::default(),
-            next_pid: 2,
+            tasks: ProcTable::new(),
             schemas: Rc::new(RefCell::new(SchemaRegistry::new())),
             tuple_schema_ids: HashMap::default(),
             named_schema_ids: HashMap::default(),
@@ -193,13 +193,11 @@ impl IrInterpRuntime {
         let mut runtime = Self::fresh();
         runtime.node = Rc::new(Node::new(atom_names));
         let user_schemas = runtime.schemas();
-        let process = Box::new(Process::with_node(
-            Rc::clone(&runtime.node),
-            user_schemas,
-            1,
-            DEFAULT_REDUCTIONS_PER_QUANTUM,
-        ));
-        runtime.insert_task(1, process);
+        let main = runtime
+            .tasks
+            .spawn(Rc::clone(&runtime.node), user_schemas, DEFAULT_REDUCTIONS_PER_QUANTUM)
+            .unwrap_or_else(|full| panic!("{full}"));
+        assert_eq!(unsafe { (*main).pid }, MAIN_PID, "the first process of a table is main");
         runtime
     }
 
@@ -210,15 +208,18 @@ impl IrInterpRuntime {
         let mut runtime = Self::fresh();
         runtime.node = Rc::clone(&process.node);
         runtime.schemas = process.heap.schemas_registry();
-        process.pid = 1;
         process.state = ProcessState::New;
         process.detach_runtime_state();
-        runtime.insert_task(1, Box::new(process));
+        let lent = runtime
+            .tasks
+            .lend(Box::new(process))
+            .unwrap_or_else(|full| panic!("{full}"));
+        assert_eq!(lent, MAIN_PID, "the first process of a table is main");
         runtime
     }
 
     pub(crate) fn take_process(&mut self, pid: u32) -> Option<Process> {
-        self.tasks.remove(&pid).map(|process| {
+        self.tasks.take(pid).map(|process| {
             let proc_ptr: *mut Process = (&*process) as *const Process as *mut Process;
             if self.current_proc == proc_ptr {
                 self.current_proc = std::ptr::null_mut();
@@ -278,35 +279,25 @@ impl IrInterpRuntime {
         id
     }
 
-    fn insert_task(&mut self, pid: u32, process: Box<Process>) {
-        self.tasks.insert(pid, process);
-    }
-
-    fn next_pid(&mut self) -> u32 {
-        let pid = self.next_pid;
-        self.next_pid += 1;
-        pid
-    }
-
     fn process_ptr(&mut self, pid: u32) -> Option<*mut Process> {
-        self.tasks.get_mut(&pid).map(|p| p.as_mut() as *mut Process)
+        self.tasks.get_ptr(pid)
     }
 
     fn set_process_state(&mut self, pid: u32, state: ProcessState) {
-        if let Some(process) = self.tasks.get_mut(&pid) {
+        if let Some(process) = self.tasks.get_mut(pid) {
             process.state = state;
         }
     }
 
     /// Queue `pid` to run; the scheduling core performs its transition to Ready.
     fn make_runnable(&mut self, pid: u32) {
-        if let Some(process) = self.tasks.get_mut(&pid) {
+        if let Some(process) = self.tasks.get_mut(pid) {
             self.core.make_runnable(pid, &mut process.state);
         }
     }
 
     fn process_ref(&self, pid: u32) -> Option<&Process> {
-        self.tasks.get(&pid).map(Box::as_ref)
+        self.tasks.get(pid)
     }
 
     fn record_callback_error(&mut self, error: String) {

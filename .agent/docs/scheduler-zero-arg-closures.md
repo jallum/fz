@@ -257,7 +257,9 @@ path's process (`fire_after_timer` for JIT and AOT; the interpreter queues the
 parked receive's `after` entry), `observe(event)` receives every runtime event the core reports (see
 [runtime telemetry](runtime-telemetry.md)), and
 `run_destructor(process, closure, payload)` runs one resource destructor closure
-as fz code (see [`end_quantum`](#the-step-after-a-quantum)).
+as fz code (see [`end_quantum`](#the-step-after-a-quantum)), and
+`retire(process)` frees what the scheduler holds for a process that has exited
+(see [The process table](#the-process-table)).
 
 `SchedulingCore::make_runnable(pid, &mut state)` is the one way a process
 becomes Ready. It takes the process's state word, moves New, Running or Blocked
@@ -287,7 +289,8 @@ A program is idle only when nothing is runnable and no timer is pending. The
 JIT's `run_until_idle`, `aot_run_queue_loop` and the interpreter's
 `drive_backend_until_idle` all loop on it. The core also records the program's
 end (`halt`, `process_ended`), after which `next_runnable` returns `None`
-whatever is still runnable. `halt_hook::<S>()` is the `ExecCtx::halt` hook. `timer_schedule_hook::<S>()` and
+whatever is still runnable. `process_ended` keeps the main process's final
+value (`main_value`), because the process itself is cleaned away at its exit. `halt_hook::<S>()` is the `ExecCtx::halt` hook. `timer_schedule_hook::<S>()` and
 `timer_cancel_hook::<S>()` give the one pair of `ExecCtx` timer hooks,
 instantiated per scheduler type.
 
@@ -331,13 +334,57 @@ closure. It returns the `Disposition` (`Requeue`, `Parked`, `Exited`) the driver
 and reports what it did through `Scheduler::observe`: the `Collection` it
 performed, right after collecting and before any destructor runs, and the
 exited process, after its destructors have run so `dtors_dispatched` counts the
-ones the exit dispatched. The interpreter calls it too, after a park or an exit; it
+ones the exit dispatched. An exit ends with `Scheduler::retire(process)`; the
+process is not read after it. The interpreter calls it too, after a park or an exit; it
 never yields. A parked receive's environment and continuations live in the
 interpreter, so `Scheduler::collect_heap` (default: `Process::collect` with no
 transient roots) is overridden to pass their heap refs as the transient roots
 and write the forwarded refs back. A process a caller lends the interpreter
-(`run_backend_entry_on_process`) ends without `end_quantum`: its caller holds
-refs into its heap, so it is neither collected nor swept.
+(`run_backend_entry_on_process`) is not cleaned at its exit: its caller holds
+refs into its heap, so it is returned whole.
+
+### The process table
+
+`ProcTable` (`runtime/src/proc_table.rs`) holds the live processes of one
+scheduler. The JIT `Runtime`, the AOT `AotScheduler` and the interpreter's
+`IrInterpRuntime` each own one, and each `Scheduler::retire` is
+`ProcTable::retire`. It is an array of pointers to `Process` indexed by slot, as
+Erlang's process table is: every process is allocated on its own, so none moves
+when the array doubles, and the `*mut Process` that compiled code holds stays
+valid for the process's whole life. The array starts with 8 slots and doubles
+when every slot is in use, up to 2^20.
+
+A pid packs `generation << 20 | slot` into the `u32` a pid ref carries. Twenty
+bits of slot allow 2^20 live processes, Erlang's default limit; the twelve bits
+of generation count the exits from a slot, and the free slots are reused oldest
+first so a slot's generation advances only after every other free slot has
+been used. Slot 0 is never used, so no process has pid 0 and the first process of
+a table is `MAIN_PID` (1). A generation wraps from 4095 to 0; a pid 4096 exits
+old names the slot's occupant again. `#PID<0.N.S>` prints the slot as `N` and
+the generation as `S`.
+
+`get_ptr(pid)` is a mask, a load and a compare of the whole pid with the pid the
+occupant carries, so a pid whose process has exited, or that never named one,
+finds nothing. A send to it returns without touching anything, and a timer
+that fires for it is dropped, even when a later process holds the slot.
+
+An exit is cleaned while its heap is hot. `end_quantum` observes the exit and
+calls `retire`, which runs `Process::vacate` (every heap block returns to the
+pool, the off-heap chain is released, the queued gifts, the mailbox and the
+handlers are dropped), frees the slot with the next generation, and puts the
+shell on a free list. The shell keeps the buffers it grew, emptied: the gift
+queue, the mailbox, the handler stack and the delivery lock. `spawn` takes the
+oldest free slot and the newest free shell, and allocates a shell only when none
+waits, so a process spawned after warm-up makes no allocation of its own.
+`Process::with_node` and `Process::reuse` are the one constructor, `Process::on_shell`,
+so a new field is set the same way for both. The program's end drops only the live
+processes, the table and the waiting shells.
+
+Nothing reads an exited process: what the program needs from the main process
+at its end is the core's `halted` status and `main_value`, and an observer of
+`process_exited` reads the process before it is retired. A process a caller
+lends the table (`lend`) is not cleaned and keeps its slot until `take` hands it
+back.
 
 ## Mid-flight Reduction Yield
 

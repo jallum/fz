@@ -84,6 +84,13 @@ impl HandlerStack {
         record as *mut u8
     }
 
+    /// Leave every `try`, keeping the storage for the next records.
+    pub fn clear(&mut self) {
+        if !self.storage.is_empty() {
+            self.top = self.storage.as_mut_ptr();
+        }
+    }
+
     /// Enter an interpreted `try`.
     pub fn push_interpreter(&mut self) {
         let record = self.reserve(WORD) as *mut u64;

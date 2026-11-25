@@ -11,8 +11,7 @@ fn test_scheduler() -> AotScheduler {
     AotScheduler {
         pool_outstanding_before_run: 0,
         log: None,
-        next_pid: 2,
-        tasks: HashMap::new(),
+        tasks: ProcTable::new(),
         entry_thunk: null(),
         core: SchedulingCore::new(),
         drain_dtor_entry: null(),
@@ -20,6 +19,18 @@ fn test_scheduler() -> AotScheduler {
         argv: Argv::default(),
         ctx: ExecCtx::empty(),
     }
+}
+
+/// A process in the scheduler's table, as a spawn leaves one.
+fn spawn_task(sched: &mut AotScheduler) -> &'static mut Process {
+    let node = Rc::new(Node::empty());
+    let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
+    let process = sched
+        .tasks
+        .spawn(node, schemas, DEFAULT_REDUCTIONS_PER_QUANTUM)
+        .expect("a test table has room");
+    // SAFETY: the table keeps the process at its address until it exits or the table drops.
+    unsafe { &mut *process }
 }
 
 fn sched_handle(sched: &mut AotScheduler) -> *mut () {
@@ -92,32 +103,22 @@ fn named_schema_blob_preserves_module_segment_boundaries() {
 fn aot_send_gifts_the_message_and_the_receiver_grafts_it_at_its_next_dispatch() {
     let mut sched = test_scheduler();
 
-    let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
-    let mut sender = Box::new(Process::new(schemas.clone()));
-    sender.pid = 1;
+    let sender = spawn_task(&mut sched);
     let msg = sender
         .heap
         .alloc_list_cons_int(42, AnyValueRef::empty_list())
         .expect("sender list ref");
     let sender_addr = msg.list_addr().expect("sender list addr");
 
-    let mut receiver = Box::new(Process::new(schemas));
-    receiver.pid = 2;
+    let receiver = spawn_task(&mut sched);
     receiver.state = ProcessState::Blocked;
+    let receiver_pid = receiver.pid;
 
-    sched.tasks.insert(1, sender);
-    sched.tasks.insert(2, receiver);
-    let sender_ptr = sched
-        .tasks
-        .get_mut(&1)
-        .map(|p| p.as_mut() as *mut Process)
-        .expect("sender task");
-
-    let receiver_bytes = sched.tasks[&2].heap.bytes_used();
+    let receiver_bytes = receiver.heap.bytes_used();
     let sent = Stored::of_ref(msg);
-    aot_send_hook(sender_ptr, sched_handle(&mut sched), 2, sent.word, sent.kind);
+    aot_send_hook(sender, sched_handle(&mut sched), receiver_pid, sent.word, sent.kind);
 
-    let receiver = sched.tasks.get_mut(&2).expect("receiver");
+    let receiver = sched.tasks.get_mut(receiver_pid).expect("receiver");
     assert_eq!(
         receiver.delivery.lock().queued_gifts().count(),
         1,
@@ -137,8 +138,6 @@ fn aot_send_gifts_the_message_and_the_receiver_grafts_it_at_its_next_dispatch() 
         "the message waits outside the receiver's heap until a receive takes it"
     );
     receiver.mailbox.take(0, &mut receiver.heap);
-    let sender = sched.tasks.get(&1).expect("sender");
-    let receiver = sched.tasks.get(&2).expect("receiver");
     assert_ne!(copied_addr, sender_addr);
     assert!(sender.heap.contains_heap_addr(sender_addr));
     assert!(
@@ -147,38 +146,37 @@ fn aot_send_gifts_the_message_and_the_receiver_grafts_it_at_its_next_dispatch() 
     );
 }
 
+/// Intent: a send to a pid that never named a process, or whose process has
+/// exited, goes nowhere, even when a later process has taken the slot.
 #[test]
 fn aot_send_to_exited_or_unknown_pid_does_not_copy_or_schedule() {
     let mut sched = test_scheduler();
 
-    let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
-    let mut sender = Box::new(Process::new(schemas.clone()));
-    sender.pid = 1;
+    let sender = spawn_task(&mut sched);
     let msg = sender
         .heap
         .alloc_list_cons_int(42, AnyValueRef::empty_list())
         .expect("sender list ref");
-    let mut receiver = Box::new(Process::new(schemas));
-    receiver.pid = 2;
-    receiver.state = ProcessState::Exited;
-    sched.tasks.insert(1, sender);
-    sched.tasks.insert(2, receiver);
-    let sender_ptr = sched
-        .tasks
-        .get_mut(&1)
-        .map(|p| p.as_mut() as *mut Process)
-        .expect("sender task");
-    let before_heap = sched.tasks[&2].heap.node.alloc_stats();
-    let before_mailbox: Vec<_> = sched.tasks[&2].mailbox.messages().collect();
+    let receiver = spawn_task(&mut sched);
+    let dead_pid = receiver.pid;
+    sched.tasks.retire(dead_pid);
+    let successor_pid = loop {
+        let successor = spawn_task(&mut sched);
+        if crate::proc_table::pid_slot(successor.pid) == crate::proc_table::pid_slot(dead_pid) {
+            break successor.pid;
+        }
+    };
+    let before_heap = sched.tasks.get(successor_pid).unwrap().heap.node.alloc_stats();
     let before_queue = sched.core.queued().clone();
 
     let sent = Stored::of_ref(msg);
-    aot_send_hook(sender_ptr, sched_handle(&mut sched), 2, sent.word, sent.kind);
-    aot_send_hook(sender_ptr, sched_handle(&mut sched), u32::MAX, sent.word, sent.kind);
+    aot_send_hook(sender, sched_handle(&mut sched), dead_pid, sent.word, sent.kind);
+    aot_send_hook(sender, sched_handle(&mut sched), u32::MAX, sent.word, sent.kind);
 
-    assert_eq!(sched.tasks[&2].heap.node.alloc_stats(), before_heap);
-    assert_eq!(sched.tasks[&2].mailbox.messages().collect::<Vec<_>>(), before_mailbox);
-    assert_eq!(sched.tasks[&2].state, ProcessState::Exited);
+    let successor = sched.tasks.get(successor_pid).unwrap();
+    assert_eq!(successor.heap.node.alloc_stats(), before_heap);
+    assert!(successor.mailbox.is_empty());
+    assert_eq!(successor.delivery.lock().queued_gifts().count(), 0);
     assert_eq!(sched.core.queued(), &before_queue);
 }
 
@@ -200,9 +198,7 @@ fn timer_drain_wakes_after_cont() {
     extern "C" fn never_match(_process: *mut Process, _word: u64, _kind: u64, _frame: u64, _out: *mut Stored) -> u32 {
         0
     }
-    let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
-    let mut p = Box::new(Process::new(schemas));
-    p.pid = 7;
+    let p = spawn_task(&mut sched);
     let timer_id = timer_schedule_hook::<AotScheduler>()(sched_handle(&mut sched), p.pid, 1);
     let after_code: usize = 0xCAFE_BABE;
     let frame = frame_of(&mut p.heap, &[]);
@@ -213,13 +209,13 @@ fn timer_drain_wakes_after_cont() {
         after_timer_id: Some(timer_id),
     });
     p.state = ProcessState::Blocked;
-    sched.tasks.insert(7, p);
+    let pid = p.pid;
 
     // The scheduling core waits out the deadline, wakes the task through
     // `fire_after_timer`, and hands its pid back as runnable.
-    assert_eq!(next_runnable(&mut sched), Some(7));
+    assert_eq!(next_runnable(&mut sched), Some(pid));
 
-    let task = sched.tasks.get(&7).unwrap();
+    let task = sched.tasks.get(pid).unwrap();
     assert_eq!(task.state, ProcessState::Ready);
     assert!(task.delivery.lock().park().is_none());
     assert_eq!(task.runnable_closure().map(code_of), Some(after_code));
@@ -320,4 +316,96 @@ fn an_observed_event_without_a_log_is_dropped() {
     let mut sched = test_scheduler();
     sched.observe(RuntimeEvent::SchedulerSlept(Duration::from_nanos(7)));
     assert!(sched.log.is_none());
+}
+
+/// A matcher that takes every message as the receive's one clause, which binds
+/// nothing.
+extern "C" fn take_anything(_process: *mut Process, _word: u64, _kind: u64, _frame: u64, _out: *mut Stored) -> u32 {
+    1
+}
+
+/// One process's whole life through the scheduler's hooks: spawned by `parent`,
+/// parked in a receive, sent the message that matches, woken, and exited.
+fn one_life(
+    sched: &mut AotScheduler,
+    parent: &mut Process,
+    site: &'static crate::park::ReceiveSite,
+    closure: AnyValueRef,
+    msg: AnyValueRef,
+) {
+    use crate::park::ParkRecord;
+    let pid = aot_spawn_hook(parent, sched_handle(sched), closure.raw_word());
+    assert_eq!(next_runnable(sched), Some(pid), "a spawn queues the child");
+    // SAFETY: the table keeps the child at its address until it exits.
+    let child = unsafe { &mut *sched.tasks.get_ptr(pid).expect("the child") };
+    child.state = ProcessState::Running;
+    child.take_runnable_closure().expect("a spawned process has an entry");
+    child.handlers.push_interpreter();
+    child.handlers.pop();
+    let frame = frame_of(&mut child.heap, &[]);
+    child.delivery.lock().install_park(ParkRecord {
+        site,
+        frame,
+        after_deadline_ms: None,
+        after_timer_id: None,
+    });
+    child.state = ProcessState::Blocked;
+    assert_eq!(end_quantum(sched, child), Disposition::Parked);
+
+    let sent = Stored::of_ref(msg);
+    aot_send_hook(parent, sched_handle(sched), pid, sent.word, sent.kind);
+    assert_eq!(next_runnable(sched), Some(pid), "the matching message wakes the child");
+    // SAFETY: as above.
+    let child = unsafe { &mut *sched.tasks.get_ptr(pid).expect("the child") };
+    child.state = ProcessState::Running;
+    deliver_in_queue(child);
+    child.take_runnable_closure().expect("a woken receive resumes");
+    assert_eq!(end_quantum(sched, child), Disposition::Exited);
+    assert!(sched.tasks.get(pid).is_none(), "an exited process leaves the table");
+}
+
+/// The allocations a life makes that belong to no shell: a debug build's heap
+/// view snapshots the heap's address ranges for its ownership assertion, once
+/// for the closure a spawn copies and once for the message a send copies.
+const DEBUG_VIEW_RANGES: usize = if cfg!(debug_assertions) { 2 } else { 0 };
+
+/// Intent: after the first process has grown the buffers a process needs, a
+/// spawn, park, send, wake and exit allocates only what no shell owns (the
+/// debug heap views above): the exited process's shell, with its gift queue,
+/// mailbox, handler stack and lock, serves the next. Allocation calls are
+/// counted on this thread over the whole cycle, through the scheduler's own
+/// hooks.
+#[test]
+fn a_spawn_park_send_wake_exit_cycle_allocates_nothing_but_debug_views_after_the_first() {
+    let mut sched = test_scheduler();
+    sched.entry_thunk = 0x1000 as *const u8;
+    let parent = spawn_task(&mut sched);
+    let closure = frame_of(&mut parent.heap, &[]);
+    let msg = closure;
+    let site = leaked_site(
+        take_anything,
+        None,
+        0,
+        &[crate::park::ReceiveClause {
+            code: 0x10,
+            projector: None,
+            root_count: 0,
+            argument_count: 0,
+            empty_slots: 0,
+        }],
+    );
+
+    let ((), first) = crate::alloc_probe::allocations_during(|| one_life(&mut sched, parent, site, closure, msg));
+    let rounds: Vec<usize> = (0..4)
+        .map(|_| crate::alloc_probe::allocations_during(|| one_life(&mut sched, parent, site, closure, msg)).1)
+        .collect();
+
+    assert!(
+        first > DEBUG_VIEW_RANGES,
+        "the first life builds the shell and grows its buffers"
+    );
+    assert_eq!(
+        rounds, [DEBUG_VIEW_RANGES; 4],
+        "a reused shell allocates nothing; the first life made {first}"
+    );
 }

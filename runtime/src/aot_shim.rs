@@ -30,6 +30,7 @@ use crate::function_denotation::decode_closure_denotations;
 use crate::heap::{Schema, SchemaRegistry, deep_copy_any_value_ref, pool_outstanding_blocks};
 use crate::output::{OutputSink as _, STDOUT_OUTPUT};
 use crate::pinned_abi::{call1, call2};
+use crate::proc_table::ProcTable;
 use crate::process::{AtomName, DEFAULT_REDUCTIONS_PER_QUANTUM, Disposition, Node, Process, ProcessState};
 use crate::sched::{
     ProbeOutcome, deliver_in_queue, fire_after_timer, mint_entry_thunk, mint_main_inner, probe_sender, self_send,
@@ -41,7 +42,6 @@ use crate::site_table::{SiteTable, decode_sites};
 use crate::telemetry::{RunEnded, RuntimeEvent, report_sites, write_line};
 use crate::timer::TimerId;
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::ffi::{CStr, c_char};
 use std::fs::{File, OpenOptions};
 use std::io::Write as _;
@@ -76,13 +76,11 @@ struct AotScheduler {
     pool_outstanding_before_run: usize,
     /// Where runtime events are written, when `FZ_LOG_TELEMETRY` names a file.
     log: Option<TelemetryLog>,
-    /// Next pid to hand out. pid 1 is main; children start at 2.
-    next_pid: u32,
-    /// All live processes, keyed by pid. `Box` keeps each `Process` at a
-    /// stable address across rehashes so raw `*mut Process` stay valid. The
-    /// shared `SchemaRegistry` stays alive through these heaps' `Rc` clones —
-    /// no separate scheduler-level anchor is needed.
-    tasks: HashMap<u32, Box<Process>>,
+    /// All live processes, by pid, and the shells of the exited ones. Each
+    /// `Process` keeps its address for its whole life, so raw `*mut Process`
+    /// stay valid. The shared `SchemaRegistry` stays alive through these
+    /// heaps' `Rc` clones — no separate scheduler-level anchor is needed.
+    tasks: ProcTable,
     /// `fz_entry_thunk` body address captured at setup. Used to mint a fresh
     /// task's entry thunk (spawn / main) on its heap; the scheduler resumes
     /// every task through the one `fz_resume` verb.
@@ -109,6 +107,12 @@ struct AotScheduler {
     /// task points its `Process.ctx` here; the spawn/send/timer
     /// BIFs dispatch through it.
     ctx: ExecCtx,
+}
+
+/// End the program on a condition it cannot continue from.
+fn fatal(message: &str) -> ! {
+    eprintln!("fz: {message}");
+    abort();
 }
 
 /// The environment variable naming the file a built binary appends its
@@ -323,19 +327,20 @@ pub extern "C" fn fz_aot_setup(
     // The AOT run's node-global atom table, seeded from the program's atom
     // blob and shared (Rc) by every spawned process.
     let node = Rc::new(Node::new(parse_atom_blob(atom_blob, atom_blob_len)));
-    let proc_box = Box::new(Process::with_node(node, schemas, 1, DEFAULT_REDUCTIONS_PER_QUANTUM));
+    let mut tasks = ProcTable::new();
+    let main = tasks
+        .spawn(node, schemas, DEFAULT_REDUCTIONS_PER_QUANTUM)
+        .unwrap_or_else(|full| fatal(&full.to_string()));
+    assert_eq!(unsafe { (*main).pid }, MAIN_PID, "the first process of a table is main");
 
     // Box and leak the scheduler so it outlives this call's stack frame and
     // stays reachable from `proc.ctx.scheduler` through the AOT C-main entry
     // sequence. `fz_aot_run_main` reclaims and drops it at teardown.
     //
     // Timer schedule/cancel hooks for `receive ... after N`.
-    let mut tasks = HashMap::new();
-    tasks.insert(MAIN_PID, proc_box);
     let sched = Box::into_raw(Box::new(AotScheduler {
         pool_outstanding_before_run,
         log,
-        next_pid: 2,
         tasks,
         entry_thunk: entry_thunk_addr,
         core: SchedulingCore::new(),
@@ -362,9 +367,8 @@ pub extern "C" fn fz_aot_setup(
     unsafe {
         (*sched).ctx.scheduler = sched as *mut ();
         (*sched).ctx.argv = &(*sched).argv;
-        let proc_ptr = (*sched).tasks.get_mut(&1).map(|b| b.as_mut() as *mut Process).unwrap();
-        (*proc_ptr).ctx = &mut (*sched).ctx;
-        proc_ptr
+        (*main).ctx = &mut (*sched).ctx;
+        main
     }
 }
 
@@ -476,11 +480,6 @@ extern "C" fn aot_spawn_hook(sender: *mut Process, scheduler: *mut (), closure_b
     // lives inside `sched.tasks`, so a long-lived `&mut *sched` would alias
     // the `&*parent` view below.
     let sched = scheduler as *mut AotScheduler;
-    let pid = unsafe {
-        let p = (*sched).next_pid;
-        (*sched).next_pid = p + 1;
-        p
-    };
     let entry_thunk_addr = unsafe { (*sched).entry_thunk };
 
     let parent = unsafe { &*sender };
@@ -489,7 +488,10 @@ extern "C" fn aot_spawn_hook(sender: *mut Process, scheduler: *mut (), closure_b
     // pointer copy, not a table copy.
     let node = Rc::clone(&parent.node);
 
-    let mut child = Box::new(Process::with_node(node, schemas, pid, DEFAULT_REDUCTIONS_PER_QUANTUM));
+    let child = unsafe { (*sched).tasks.spawn(node, schemas, DEFAULT_REDUCTIONS_PER_QUANTUM) }
+        .unwrap_or_else(|full| fatal(&full.to_string()));
+    let child = unsafe { &mut *child };
+    let pid = child.pid;
 
     // Deep-copy the closure into the child's heap.
     let closure_ref = AnyValueRef::from_raw_word(closure_bits).expect("aot_spawn_hook: closure ref");
@@ -499,15 +501,10 @@ extern "C" fn aot_spawn_hook(sender: *mut Process, scheduler: *mut (), closure_b
         .expect("aot_spawn_hook: copied closure must be a closure");
 
     // Wrap the copied closure in an entry thunk queued as `runnable`; the
-    // run-queue loop resumes it via `fz_resume`. `parent`/`sender` are no
-    // longer read past this point, so mutating `sched.tasks` is safe.
+    // run-queue loop resumes it via `fz_resume`.
     let thunk = mint_entry_thunk(&mut child.heap, entry_thunk_addr, copied);
     child.set_runnable_closure(thunk);
-
-    unsafe {
-        (*sched).core.make_runnable(pid, &mut child.state);
-        (*sched).tasks.insert(pid, child);
-    }
+    unsafe { (*sched).core.make_runnable(pid, &mut child.state) };
 
     pid
 }
@@ -529,13 +526,9 @@ extern "C" fn aot_send_hook(
     };
     assert!(!sender_ptr.is_null(), "aot_send_hook: no sender process");
     let sched = scheduler as *mut AotScheduler;
-    let tasks = unsafe { &mut (*sched).tasks };
-    let Some(task) = tasks.get_mut(&receiver_pid) else {
+    let Some(task) = (unsafe { (*sched).tasks.get_mut(receiver_pid) }) else {
         return;
     };
-    if task.state == ProcessState::Exited {
-        return;
-    }
     if task.pid == unsafe { (*sender_ptr).pid } {
         self_send(task, msg);
         return;
@@ -599,9 +592,9 @@ pub extern "C" fn fz_aot_run_main(
     // on stderr. A run that went idle without halting ends with 0.
     let status = unsafe { (*sched).core.halted() }.unwrap_or(0);
 
-    // Teardown: reclaim the leaked scheduler box. Its drop frees the task
-    // table (and every process heap), the timer wheel, and the run-queue in
-    // one shot — replacing the per-thread-local clears the old code ran here.
+    // Teardown: reclaim the leaked scheduler box. Its drop frees the live
+    // processes, the table and the waiting shells, the timer wheel, and the
+    // run-queue in one shot — replacing the per-thread-local clears the old code ran here.
     // The log outlives the scheduler so the pool census can follow the drop.
     let mut scheduler = unsafe { Box::from_raw(sched) };
     let log = scheduler.log.take();
@@ -653,13 +646,7 @@ struct ShimAddrs {
 /// scheduling core end the quantum and requeue the process if it yielded.
 /// Returns nothing; scheduler state is mutated in place.
 fn dispatch_quantum(sched: *mut AotScheduler, pid: u32, addrs: &ShimAddrs) {
-    let proc_ptr = unsafe {
-        (*sched)
-            .tasks
-            .get(&pid)
-            .map(|b| b.as_ref() as *const Process as *mut Process)
-    }
-    .unwrap_or_else(|| {
+    let proc_ptr = unsafe { (*sched).tasks.get_ptr(pid) }.unwrap_or_else(|| {
         eprintln!("aot_run_queue_loop: pid {} not in tasks", pid);
         abort();
     });
@@ -695,7 +682,7 @@ impl Scheduler for AotScheduler {
     }
 
     fn wake_expired(&mut self, pid: u32, timer: TimerId) {
-        if let Some(task) = self.tasks.get_mut(&pid)
+        if let Some(task) = self.tasks.get_mut(pid)
             && fire_after_timer(task, timer)
         {
             self.core.make_runnable(pid, &mut task.state);
@@ -706,6 +693,10 @@ impl Scheduler for AotScheduler {
         if let Some(log) = &mut self.log {
             log.write(&event);
         }
+    }
+
+    fn retire(&mut self, process: &mut Process) {
+        self.tasks.retire(process.pid);
     }
 
     fn run_destructor(&mut self, process: &mut Process, closure: u64, payload: u64) {

@@ -1,0 +1,43 @@
+#---
+# purpose: "a send to the pid of an exited process goes nowhere, even after later processes have been spawned in numbers that fill every slot the process table had, and none of them sees the message"
+# oracle: self
+# oracle.stamp: 87764a0adde9ed31
+#---
+#
+# Forty processes are alive at once, so the table has been through every slot
+# the first, exited process could have been reused in. Each reports the first
+# message it receives: the stale send came before the real one, so a process
+# that saw it would report it.
+defmodule Main do
+  def report(parent, i) do
+    receive do
+      message -> send(parent, {i, message})
+    end
+  end
+
+  def collect(0, seen), do: seen
+
+  def collect(n, seen) do
+    receive do
+      {i, message} -> collect(n - 1, [{i, message} | seen])
+    end
+  end
+
+  def main() do
+    me = self()
+    dead = spawn(fn -> send(me, :dead_exiting) end)
+
+    receive do
+      :dead_exiting -> :ok
+    end
+
+    pids = for i <- 1..40, do: spawn(fn -> report(me, i) end)
+    send(dead, :stale)
+    for {pid, i} <- Enum.with_index(pids, 1), do: send(pid, {:real, i})
+    seen = Enum.sort(collect(40, []))
+    IO.inspect(Enum.all?(seen, fn {i, message} -> message == {:real, i} end))
+    IO.inspect(length(seen))
+  end
+end
+
+Main.main()

@@ -32,6 +32,11 @@ impl Mailbox {
         self.queue.is_empty()
     }
 
+    /// Give back every message's block, keeping the queue's storage.
+    pub fn clear(&mut self) {
+        self.queue.clear();
+    }
+
     /// Append `message`, which waits in `segment` until a receive takes it.
     pub fn push(&mut self, message: Stored, segment: GiftSegment) {
         self.queue.push_back(Waiting { message, segment });
