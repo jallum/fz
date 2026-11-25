@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Elixir Parity",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-25T11:31:17Z",
@@ -10,5 +10,5 @@
   "status": "open",
   "title": "Macro.to_string/1 renders as Elixir's formatter does",
   "type": "epic",
-  "updated_at": "2026-11-25T11:31:17Z"
+  "updated_at": "2026-11-25T11:31:18Z"
 }
