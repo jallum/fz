@@ -41,7 +41,7 @@ pub(crate) struct ExecutableFacts {
     pub(super) callsite_dispatch_demand: HashMap<CallSiteId, CallsiteDispatchDemand>,
     pub(super) callsites: HashMap<CallSiteId, CallSiteSummary>,
     pub(super) callsite_needs: HashMap<CallSiteId, ExecutableNeed>,
-    pub(super) delivered_value_joins: HashMap<ControlEntryId, DeliveredValueJoin>,
+    pub(super) delivered_value_joins: ValueMap<DeliveredValueJoin>,
     pub(super) value_origins: ValueMap<TransportOrigin>,
     pub(super) callable_origins: ValueMap<LocalCallableProducer>,
     pub(super) return_origins: Box<[TransportOrigin]>,
@@ -72,7 +72,7 @@ pub(crate) struct RuntimeDemandFacts<'a> {
     pub(crate) callsite_dispatch_demand: &'a HashMap<CallSiteId, CallsiteDispatchDemand>,
     pub(crate) callsites: &'a HashMap<CallSiteId, CallSiteSummary>,
     pub(crate) callsite_needs: &'a HashMap<CallSiteId, ExecutableNeed>,
-    pub(crate) delivered_value_joins: &'a HashMap<ControlEntryId, DeliveredValueJoin>,
+    pub(crate) delivered_value_joins: &'a ValueMap<DeliveredValueJoin>,
     pub(crate) callable_origins: &'a ValueMap<LocalCallableProducer>,
     pub(crate) demand_types: &'a RuntimeDemandTypeInputs,
     type_projections: &'a HashMap<Ty, Rc<RuntimeDemandTypeProjection>>,
@@ -347,7 +347,7 @@ pub(crate) fn project_executable_facts(
     let (delivered_value_joins, value_origins, callable_origins, return_origins, callsite_needs) =
         if extern_wire.is_some() {
             (
-                HashMap::default(),
+                ValueMap::new(),
                 ValueMap::new(),
                 ValueMap::new(),
                 Box::default(),
@@ -1064,7 +1064,7 @@ pub(crate) fn collect_value_origins(body: &LoweredBody) -> ValueMap<TransportOri
             );
         }
     }
-    for join in delivered_value_joins(body).into_values() {
+    for (delivered, join) in delivered_value_joins(body) {
         let mut sources =
             join.sources
                 .into_iter()
@@ -1085,7 +1085,7 @@ pub(crate) fn collect_value_origins(body: &LoweredBody) -> ValueMap<TransportOri
             [source] => source.clone(),
             _ => TransportOrigin::Join(sources.into_boxed_slice()),
         };
-        origins.insert(join.value, origin);
+        origins.insert(delivered, origin);
     }
     origins
 }

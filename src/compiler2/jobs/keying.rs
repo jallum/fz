@@ -1,14 +1,14 @@
 //! Jobs that derive the stable facts used for activation keying.
 
 use crate::compiler2::{ValueMap, ValueSet};
-use crate::fast_hash::{HashMap, HashSet};
+use crate::fast_hash::HashSet;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::dispatch_matrix::demand::{DemandPathStep, DispatchDemand, demand_at_path, demand_within_path};
 
 use super::super::body::{
-    CallInputMode, ControlDestination, DirectCallee, LoweredBody, LoweredStep, LoweredTail, SubjectPath, ValueId,
-    delivered_value_joins,
+    CallInputMode, ControlDestination, DirectCallee, LoweredBody, LoweredEntry, LoweredStep, LoweredTail, SubjectPath,
+    ValueId,
 };
 use super::super::drive::{AnswerUse, FactKey, Job, JobEffects, UseCollector, current_uses};
 use super::super::identity::{FunctionId, ModuleId};
@@ -837,14 +837,13 @@ fn collect_demands(
 
 fn value_uses(world: &World, body: &LoweredBody) -> ValueMap<Vec<ValueUse>> {
     let LoweredBody::Clauses { entries, .. } = body;
-    let joins = delivered_value_joins(body);
     let mut uses = ValueMap::<Vec<ValueUse>>::with_capacity(body.value_count());
     let mut add = |value: ValueId, usage: ValueUse| uses.entry(value).or_default().push(usage);
     for step in entries.iter().flat_map(|entry| entry.steps.iter()) {
         step_value_uses(step, &mut add);
     }
     for entry in entries {
-        tail_value_uses(world, &entry.tail, &joins, &mut add);
+        tail_value_uses(world, entries, &entry.tail, &mut add);
     }
     uses
 }
@@ -929,16 +928,16 @@ fn step_value_uses(step: &LoweredStep, add: &mut impl FnMut(ValueId, ValueUse)) 
 
 fn tail_value_uses(
     world: &World,
+    entries: &[LoweredEntry],
     tail: &LoweredTail,
-    joins: &HashMap<super::super::body::ControlEntryId, super::super::body::DeliveredValueJoin>,
     add: &mut impl FnMut(ValueId, ValueUse),
 ) {
     let whole = || ValueUse::Asks(DispatchDemand::Whole);
     match tail {
         LoweredTail::Value { value, dest } => match dest {
             ControlDestination::Return => {}
-            ControlDestination::Deliver(entry) => match joins.get(entry) {
-                Some(join) => add(*value, ValueUse::Alias(join.value)),
+            ControlDestination::Deliver(entry) => match entries[entry.as_u32() as usize].origin.input_value() {
+                Some(delivered) => add(*value, ValueUse::Alias(delivered)),
                 None => add(*value, whole()),
             },
         },
@@ -1365,7 +1364,7 @@ fn returned_values(body: &LoweredBody, entries: &[super::super::body::LoweredEnt
             _ => {}
         }
     }
-    for join in super::super::body::delivered_value_joins(body).into_values() {
+    for (delivered, join) in super::super::body::delivered_value_joins(body) {
         let sources = join
             .sources
             .iter()
@@ -1374,7 +1373,7 @@ fn returned_values(body: &LoweredBody, entries: &[super::super::body::LoweredEnt
                 super::super::body::DeliveredValueSource::CallsiteReturn(_) => None,
             })
             .collect::<Vec<_>>();
-        built.entry(join.value).or_default().extend(sources);
+        built.entry(delivered).or_default().extend(sources);
     }
     while let Some(value) = frontier.pop() {
         for source in built.get(&value).into_iter().flatten().copied() {

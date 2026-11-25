@@ -754,8 +754,8 @@ fn record_for_delivered_callables<T: Clone + Ord>(
         }
         let joined_sources = facts
             .delivered_value_joins
-            .values()
-            .filter(|join| join.value == value)
+            .get(&value)
+            .into_iter()
             .flat_map(|join| &join.sources);
         pending.extend(joined_sources.filter_map(|source| match source {
             DeliveredValueSource::LocalValue(source) => Some(*source),
@@ -1286,8 +1286,8 @@ fn collect_entry_external_demands(
         .input_value()
         .and_then(|value| live.remove(&value).map(|demand| (value, demand)))
         .map(|(value, demand)| {
-            let demand = upgrade_joined_delivered_callable_value_demand(facts, callable_flows, entry_id, value, demand);
-            record_delivered_call_return_demands(facts, call_return_demands, entry_id, value, &demand);
+            let demand = upgrade_joined_delivered_callable_value_demand(facts, callable_flows, value, demand);
+            record_delivered_call_return_demands(facts, call_return_demands, value, &demand);
             join_map_demand(&mut out.value_demands, value, demand.clone());
             (value, demand)
         });
@@ -1691,11 +1691,10 @@ fn destination_demands(
 fn upgrade_joined_delivered_callable_value_demand(
     facts: &RuntimeDemandFacts<'_>,
     callable_flows: &mut CallableFlowBuilder,
-    entry: ControlEntryId,
     value: ValueId,
     mut demand: RuntimeDemand,
 ) -> RuntimeDemand {
-    if demand.is_callable() && delivered_join_has_distinct_callable_producers(facts, entry, value) {
+    if demand.is_callable() && delivered_join_has_distinct_callable_producers(facts, value) {
         callable_flows.record_direct_demand(facts, value, &demand);
         demand.callable.escape = true;
     }
@@ -1754,7 +1753,7 @@ fn callsite_returns_feeding(facts: &RuntimeDemandFacts<'_>, value: ValueId) -> H
         if !seen.mark(value) {
             continue;
         }
-        for join in facts.delivered_value_joins.values().filter(|join| join.value == value) {
+        if let Some(join) = facts.delivered_value_joins.get(&value) {
             for source in &join.sources {
                 match source {
                     DeliveredValueSource::CallsiteReturn(callsite) => {
@@ -1866,16 +1865,12 @@ fn push_step_sources(step: &LoweredStep, value: ValueId, out: &mut PendingValues
 fn record_delivered_call_return_demands(
     facts: &RuntimeDemandFacts<'_>,
     call_return_demands: &mut HashMap<CallSiteId, RuntimeDemand>,
-    entry: ControlEntryId,
     value: ValueId,
     demand: &RuntimeDemand,
 ) {
-    let Some(join) = facts.delivered_value_joins.get(&entry) else {
+    let Some(join) = facts.delivered_value_joins.get(&value) else {
         return;
     };
-    if join.value != value {
-        return;
-    }
     for source in &join.sources {
         let DeliveredValueSource::CallsiteReturn(callsite) = source else {
             continue;
@@ -1884,17 +1879,10 @@ fn record_delivered_call_return_demands(
     }
 }
 
-fn delivered_join_has_distinct_callable_producers(
-    facts: &RuntimeDemandFacts<'_>,
-    entry: ControlEntryId,
-    delivered: ValueId,
-) -> bool {
-    let Some(join) = facts.delivered_value_joins.get(&entry) else {
+fn delivered_join_has_distinct_callable_producers(facts: &RuntimeDemandFacts<'_>, delivered: ValueId) -> bool {
+    let Some(join) = facts.delivered_value_joins.get(&delivered) else {
         return false;
     };
-    if join.value != delivered {
-        return false;
-    }
     let mut producers = join.sources.iter().filter_map(|join_source| match join_source {
         DeliveredValueSource::LocalValue(value) => facts.callable_origin(*value),
         DeliveredValueSource::CallsiteReturn(_) => None,
