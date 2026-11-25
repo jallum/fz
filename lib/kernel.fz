@@ -932,6 +932,22 @@ defmodule Kernel do
 
   extern "fz" defp fz_construction_failure_message(list) :: binary
 
+  # `unquote(value)` inside a quote evaluates to this call, as Elixir's
+  # `quote` builds a call of `:elixir_quote.unquote/1`: `value` becomes part of
+  # the quoted code, so it must be quoted code.
+  @spec __unquoted__(t) :: t when t: any
+  def __unquoted__(value) do
+    if fz_shallow_valid_ast(value) do
+      value
+    else
+      raise(%ArgumentError{message: fz_unquote_failure_message(value)})
+    end
+  end
+
+  extern "fz" defp fz_shallow_valid_ast(any) :: boolean
+
+  extern "fz" defp fz_unquote_failure_message(any) :: binary
+
   # Unary minus. Every binary operator is a typed clause family, so a
   # dynamically-typed operand dispatches; unary minus was lowered straight to
   # one machine instruction and read one lane, so `-x` aborted natively where

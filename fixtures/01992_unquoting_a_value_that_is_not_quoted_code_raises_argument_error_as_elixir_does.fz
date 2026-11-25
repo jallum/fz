@@ -1,0 +1,43 @@
+#---
+# purpose: Unquoting a value that is not quoted code raises ArgumentError with Elixir's message, while a list, a pair, a call node, a pid and a function are accepted, on all three paths
+# root: main/0
+# oracle: self
+# oracle.stamp: 0144c6768f541721
+#---
+#
+# `unquote(x)` puts the value of `x` into the quoted code, so the value must be
+# quoted code: Elixir checks it one level deep. An improper list, a reference, a
+# map, a struct, a 3-tuple that is not a call node and a 4-tuple are refused. A
+# list nested in a list is not read, so `[[1 | 2]]` passes.
+defmodule Pair do
+  defstruct [:a, :b]
+end
+
+defmodule Main do
+  def attempt(fun) do
+    try do
+      fun.()
+    rescue
+      error in ArgumentError -> error.message
+    end
+  end
+  def un(x), do: quote(do: unquote(x))
+  def in_call(x), do: quote(do: foo(unquote(x)))
+  def main() do
+    IO.inspect(attempt(fn -> un([1 | 2]) end))
+    IO.inspect(attempt(fn -> un([[1 | 2]]) end))
+    IO.inspect(attempt(fn -> un(self()) end) |> is_pid())
+    IO.inspect(attempt(fn -> un(make_ref()) end) |> is_binary())
+    IO.inspect(attempt(fn -> un(fn -> 1 end) end) |> is_function())
+    IO.inspect(attempt(fn -> un(%{a: 1}) end))
+    IO.inspect(attempt(fn -> un(%Pair{a: 1, b: 2}) end))
+    IO.inspect(attempt(fn -> un({1, 2, 3}) end))
+    IO.inspect(attempt(fn -> un({1, 2, 3, 4}) end))
+    IO.inspect(attempt(fn -> in_call([1 | 2]) end))
+    IO.inspect(attempt(fn -> in_call({1, 2, 3, 4}) end))
+    IO.inspect(attempt(fn -> un({:ok, 1}) end))
+    IO.inspect(attempt(fn -> un([1, 2, 3]) end))
+    IO.inspect(attempt(fn -> un({:f, [], [1]}) end))
+  end
+end
+Main.main()

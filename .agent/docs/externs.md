@@ -70,6 +70,11 @@ running macro belongs to to expand a macro call one step. It answers `[code]` or
 only the interpreter's macro runs install. See "A macro body asks the compiler"
 in [`macro-expansion`](macro-expansion.md).
 
+`fz_shallow_valid_ast(any)` answers whether a value may be spliced into quoted
+code, and `fz_unquote_failure_message(any)` words the error when it may not.
+Both sit behind `Kernel.__unquoted__/1`, which raises the `ArgumentError` in fz
+source. See `QuoteLowerer` in [`macro-expansion`](macro-expansion.md).
+
 Both doors read the same property from the same declaration
 (`prim.rs::lower_extern_generic` and `ir_interp/extern_call.rs`), so adding an
 allocating primitive is a Rust function and a declaration. There is no lowering

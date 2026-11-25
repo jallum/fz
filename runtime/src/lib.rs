@@ -32,6 +32,7 @@ pub mod park;
 pub mod pinned_abi;
 pub mod process;
 pub mod process_abi;
+pub mod quoted_ast;
 pub mod resource;
 pub mod reuse_site;
 pub mod sched;
