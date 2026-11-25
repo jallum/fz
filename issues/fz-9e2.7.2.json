@@ -6,14 +6,15 @@
   "blocks": [
     "fz-9e2.7.3"
   ],
+  "closed_at": "2026-11-25T03:45:13Z",
   "created": "2026-11-24T21:26:50Z",
   "description": "From: Binary Handling. Approved by the user 2026-11-24 (\"proceed.\" on the fz-9e2.7 page https://claude.ai/artifact/3XypMCDmqCGuatQXAb5Ci9, relayed by Binary Handling).\n\nA Kernel.== binary clause whose row (fz_op_eq_bb / fz_op_neq_bb) decides same-object and different-length inline and sends only the byte comparison to a cold call. Guard == (lower_eq_binop, receive, binop.rs) gets the same binary arm.\n\nAcceptance: bench 07a ~90, 07c ~40, 07e ~30, 07f ~85 instructions per iteration; a fixture matching Elixir on run, interp and build.",
   "id": "fz-9e2.7.2",
   "labels": [],
   "parent": "fz-9e2.7",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "Binary == is a row that calls only to compare bytes",
   "type": "task",
-  "updated_at": "2026-11-24T21:26:55Z"
+  "updated_at": "2026-11-25T03:45:13Z"
 }
