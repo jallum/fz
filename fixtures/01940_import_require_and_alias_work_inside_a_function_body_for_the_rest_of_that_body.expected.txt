@@ -1,0 +1,30 @@
+6
+4
+{4, 4}
+6
+4
+{6, 4}
+4
+6
+{:deep, 2}
+{:deep, 2}
+{:deep, 2}
+{:deep, 2}
+{{:deep, 2}, {:other, 2}}
+{:none, {:other, 2}}
+2
+6
+{6, 4}
+6
+6
+{:deep, 2}
+{4, {:deep, 2}}
+2
+Tools
+[6]
+[deep: 2]
+%Point{x: 1}
+Tools
+Deep.Name
+Tools
+{false, true}

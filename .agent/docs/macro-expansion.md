@@ -139,7 +139,7 @@ It does four macro-relevant jobs:
    scope can resolve.
 
 2. Process `require`.
-   `ScopeSession::apply_require` selects macro exports from the provider's
+   `ScopeDirective::apply_require` (shared by `ScopeSession` and the function-body expander) selects macro exports from the provider's
    `ModuleInterface`, or reserves exact macro identities from `only:` while
    that interface is pending. It binds each one into the namespace as a
    required-macro entry (`NamespaceStore::bind_required_macro`). An invocation
@@ -227,24 +227,21 @@ no more eligible macro calls.
 Both are compile-time environment reflections, but they enter expansion
 differently because one is constant and one varies per call.
 
-`__ENV__` is the definition env — constant for a given definition. Just before a
-body is expanded, `FunctionSourceExpander::expand` projects it from the
-definition's own scope (`project_env_value(def_scope, Definition)`, so
-`__ENV__.function` is the definition itself, by construction) and binds it into
-the namespace as `NamespaceSymbol::Splice`. The expander resolves a reserved
-`__`-prefixed variable against the namespace and splices a `Splice` binding in
-place — generically: it knows about splice bindings, not about `__ENV__`. The
-binding is transient; it is never recorded on the function. The env is a `%Macro.Env{}`
-(below). (`decode_expr` decodes a raw map value as a map literal, alongside
-lists and tuples, so the spliced env map decodes as source.)
+`__ENV__` is projected where it is read. `FunctionSourceExpander` answers
+`QuotedExpansionCtx::environment_splice` for `__ENV__` with the env of the
+scope at that position (`project_env_value(scope, Definition)`, cached per
+`Namespace`), so an `alias` earlier in the body shows in `__ENV__.aliases` and
+`__ENV__.function` is the definition itself. `__MODULE__` is the module's atom
+the same way. The env is a `%Macro.Env{}` (below). (`decode_expr` decodes a raw
+map value as a map literal, so the spliced env map decodes as source.) Neither
+is bound in the namespace.
 
 A module attribute is a splice too, bound as `"@name"` when the module sets it
 (modules.md, "A module attribute"). The read `@name` is not a `__` variable,
 so the expander recognizes its `{:@, _, [{name, _, nil}]}` shape and splices
 the binding in force, or warns and reads `nil` when there is none.
 
-`__MODULE__` is bound beside `__ENV__` as a second splice: the atom the
-definition's module is in value position (`World::module_atom_value`), and nil
+`__MODULE__` is the atom the definition's module is in value position (`World::module_atom_value`), and nil
 in a definition outside any module. Code a macro quotes is expanded in the
 function it lands in, so a quoted `__MODULE__` names the module that called the
 macro. The atom stands wherever a module can:
@@ -335,9 +332,39 @@ is compiled once and executed many times, and the caller is unknown when the
 macro body is expanded. So it stays a runtime parameter — `lower_clause`
 prepends it, and `expand_macro_invocation` projects it from the call-site scope
 (`project_env_value(scope, context, call_site)`) and passes it as the macro's first
-argument. Function-body expansion strips its transient `__ENV__` splice from
-that source-visible scope, so retries cannot invent a new macro-cache identity. The def-head macros capture `__CALLER__` as
+argument. The def-head macros capture `__CALLER__` as
 `Fz.Compiler.define(source, __CALLER__)`, the Elixir-aligned def-site env seam.
+
+## Directives Inside A Body
+
+`alias`, `import` and `require` are expressions. In a function body the
+expander owns the scope (`ScopeSnapshot::in_body`): `expand_body_block` walks a
+`__block__` statement by statement and rebinds the namespace after each
+directive (`advance_scope`, the same `ScopeDirective` the module-level
+`ScopeSession` applies), so the directive covers the rest of its block. A nested
+block (an `if` branch, a `case` clause, an `fn`) inherits the namespace and does
+not export its own. A directive as the last statement of a block is the module
+atom; `alias A.{B, C}` is the last module's atom. The clause head, guard
+included, expands in the scope the def was written in, so a body import never
+reaches it.
+
+- A call resolved through a body `import` is stamped `__fz_bound__`
+  (`stamp_bound_callable`), which the decoder reads as `Expr::BoundFunction`;
+  lowering reads only the definition's scope, so the stamp carries the binding.
+  `&name/arity` and `&Alias.name/arity` captures are rewritten to the module
+  (`expand_rebound_capture`).
+- A body `alias` is applied by rewriting `__aliases__` to the module atom
+  (`rebound_alias`).
+- `import M` replaces the bindings an earlier `import M` made in the same scope
+  (`Entry::ImportsReplaced`), at module level too; `import M, only: ...` and
+  `except:` replace likewise.
+- The options read are `only:` (a list, `:macros`, `:functions`, `:sigils`),
+  `except:`, `warn:`, `alias A.{B, C}` and `require M, as:`.
+- A macro call standing as a statement of a body block expands its result as
+  statements of that block (`expand_macro_result`) and hands the scope they end
+  in back through `ScopeHandoff`, so an `import`, `alias` or `require` the
+  macro quotes (a bare directive, a block, or `use`) covers the statements after
+  the call. A macro nested in an argument or a branch hands nothing back.
 
 ## How Remote Macros Stay Honest
 

@@ -1,0 +1,262 @@
+#---
+# purpose: "import, require and alias in a function body hold for the rest of that body and no further: a branch, clause or fn keeps its own, imported macros expand, __ENV__ reports the scope where it is read, importing a module again replaces its earlier import, a directive that ends a block is the module atom, and an import or alias a macro quotes covers the statements after its call."
+# oracle: self
+# oracle.stamp: 2f76e88c9ffc0e13
+#---
+defmodule Tools do
+  def triple(x), do: x * 3
+  def double(x), do: x * 2
+  defmacro twice(x), do: quote(do: unquote(x) * 2)
+  defmacro thrice(x), do: quote(do: unquote(x) * 3)
+end
+
+defmodule Injects do
+  defmacro import_triple() do
+    quote do
+      import Tools, only: [triple: 1]
+    end
+  end
+
+  defmacro import_triple_then_ok() do
+    quote do
+      import Tools, only: [triple: 1]
+      :ok
+    end
+  end
+
+  defmacro alias_deep() do
+    quote do
+      alias Deep.Name, as: N
+    end
+  end
+
+  defmacro __using__(_opts) do
+    quote do
+      import Tools, only: [double: 1]
+      alias Deep.Name, as: N
+    end
+  end
+end
+
+defmodule Deep.Name do
+  def id(x), do: {:deep, x}
+end
+
+defmodule Point do
+  defstruct x: 0
+end
+
+defmodule Other do
+  def id(x), do: {:other, x}
+end
+
+defmodule Main do
+  alias Other, as: T
+
+  def imports_a_function(x) do
+    import Tools, only: [triple: 1]
+    triple(x)
+  end
+
+  def imports_a_macro(x) do
+    import Tools, only: [twice: 1]
+    twice(x)
+  end
+
+  def imports_everything(x) do
+    import Tools
+    {double(x), twice(x)}
+  end
+
+  def imports_only_macros(x) do
+    import Tools, only: :macros
+    thrice(x)
+  end
+
+  def import_warn_false(x) do
+    import Tools, only: [double: 1], warn: false
+    double(x)
+  end
+
+  def imports_except(x) do
+    import Tools, except: [double: 1]
+    {triple(x), twice(x)}
+  end
+
+  def requires(x) do
+    require Tools
+    Tools.twice(x)
+  end
+
+  def requires_as(x) do
+    require Tools, as: Tl
+    Tl.thrice(x)
+  end
+
+  def aliases_with_as(x) do
+    alias Deep.Name, as: N
+    N.id(x)
+  end
+
+  def aliases_the_last_segment(x) do
+    alias Deep.Name
+    Name.id(x)
+  end
+
+  def aliases_a_group(x) do
+    alias Deep.{Name}
+    Name.id(x)
+  end
+
+  def alias_shadows_the_module_alias(x) do
+    alias Deep.Name, as: T
+    T.id(x)
+  end
+
+  def a_branch_keeps_its_own_alias(flag, x) do
+    inside =
+      if flag do
+        alias Deep.Name, as: T
+        T.id(x)
+      else
+        :none
+      end
+
+    {inside, T.id(x)}
+  end
+
+  def a_case_clause_keeps_its_own_import(x) do
+    case x do
+      1 ->
+        import Tools, only: [double: 1]
+        double(x)
+
+      _ ->
+        x
+    end
+  end
+
+  def a_fn_keeps_its_own_import(x) do
+    f = fn y ->
+      import Tools, only: [triple: 1]
+      triple(y)
+    end
+
+    f.(x)
+  end
+
+  def a_later_import_replaces_an_earlier_one(x) do
+    import Tools, only: [triple: 1]
+    a = triple(x)
+    import Tools, only: [double: 1]
+    {a, double(x)}
+  end
+
+  def a_macro_bare_import_covers_the_rest(x) do
+    require Injects
+    Injects.import_triple()
+    triple(x)
+  end
+
+  def a_macro_block_import_covers_the_rest(x) do
+    require Injects
+    Injects.import_triple_then_ok()
+    triple(x)
+  end
+
+  def a_macro_alias_covers_the_rest(x) do
+    require Injects
+    Injects.alias_deep()
+    N.id(x)
+  end
+
+  def a_using_macro_brings_import_and_alias(x) do
+    require Injects
+    Injects.__using__([])
+    {double(x), N.id(x)}
+  end
+
+  def a_macro_import_in_a_branch_ends_with_it(x) do
+    require Injects
+
+    if x > 0 do
+      Injects.import_triple()
+    end
+
+    x
+  end
+
+  def a_macro_import_as_the_last_statement_is_the_module() do
+    require Injects
+    Injects.import_triple()
+  end
+
+  def captures_an_imported_function(x) do
+    import Tools, only: [triple: 1]
+    Enum.map([x], &triple/1)
+  end
+
+  def captures_through_an_alias(x) do
+    alias Deep.Name, as: N
+    Enum.map([x], &N.id/1)
+  end
+
+  def builds_a_struct_through_an_alias() do
+    alias Point, as: P
+    %P{x: 1}
+  end
+
+  def a_directive_ending_a_block_is_the_module() do
+    import Tools, warn: false
+  end
+
+  def alias_ends_a_block_with_its_module() do
+    alias Deep.Name, as: N
+  end
+
+  def require_ends_a_block_with_its_module() do
+    require Tools, warn: false
+  end
+
+  def env_reports_the_scope_where_it_is_read() do
+    names = fn env -> Enum.any?(env.aliases, fn {_short, full} -> full == Deep.Name end) end
+    before = names.(__ENV__)
+    alias Deep.Name, as: N
+    {before, names.(__ENV__)}
+  end
+
+  def main() do
+    IO.inspect(imports_a_function(2))
+    IO.inspect(imports_a_macro(2))
+    IO.inspect(imports_everything(2))
+    IO.inspect(imports_only_macros(2))
+    IO.inspect(import_warn_false(2))
+    IO.inspect(imports_except(2))
+    IO.inspect(requires(2))
+    IO.inspect(requires_as(2))
+    IO.inspect(aliases_with_as(2))
+    IO.inspect(aliases_the_last_segment(2))
+    IO.inspect(aliases_a_group(2))
+    IO.inspect(alias_shadows_the_module_alias(2))
+    IO.inspect(a_branch_keeps_its_own_alias(true, 2))
+    IO.inspect(a_branch_keeps_its_own_alias(false, 2))
+    IO.inspect(a_case_clause_keeps_its_own_import(1))
+    IO.inspect(a_fn_keeps_its_own_import(2))
+    IO.inspect(a_later_import_replaces_an_earlier_one(2))
+    IO.inspect(a_macro_bare_import_covers_the_rest(2))
+    IO.inspect(a_macro_block_import_covers_the_rest(2))
+    IO.inspect(a_macro_alias_covers_the_rest(2))
+    IO.inspect(a_using_macro_brings_import_and_alias(2))
+    IO.inspect(a_macro_import_in_a_branch_ends_with_it(2))
+    IO.inspect(a_macro_import_as_the_last_statement_is_the_module())
+    IO.inspect(captures_an_imported_function(2))
+    IO.inspect(captures_through_an_alias(2))
+    IO.inspect(builds_a_struct_through_an_alias())
+    IO.inspect(a_directive_ending_a_block_is_the_module())
+    IO.inspect(alias_ends_a_block_with_its_module())
+    IO.inspect(require_ends_a_block_with_its_module())
+    IO.inspect(env_reports_the_scope_where_it_is_read())
+  end
+end
+
+Main.main()

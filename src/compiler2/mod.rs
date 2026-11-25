@@ -39,6 +39,7 @@ mod reach;
 mod resolve;
 mod runtime;
 mod scope;
+mod scope_directives;
 mod semantic;
 mod shared_order;
 mod source;

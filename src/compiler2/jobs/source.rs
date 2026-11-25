@@ -6,13 +6,15 @@ use super::super::env_projection::CallSite;
 use super::super::identity::{FunctionBody, FunctionId, FunctionSource, ModuleId, ModuleSourceKind};
 use super::super::namespace::{Namespace, NamespaceSymbol};
 use super::super::quoted_expander::{
-    ExpandedRoot, ExpandedValue, ExpansionContext, QuotedExpansionCtx, emit_internal_surface_error,
-    emit_surface_read_error,
+    DirectedScope, ExpandedRoot, ExpandedValue, ExpansionContext, QuotedExpansionCtx, ScopeHandoff,
+    emit_internal_surface_error, emit_surface_read_error,
 };
 use super::super::quoted_surface::{
-    is_function_body_section, is_function_definition_head, read_compiler_fragment_surface, read_scope_surface,
+    ScopeForm, is_function_body_section, is_function_definition_head, read_compiler_fragment_surface,
+    read_scope_surface,
 };
 use super::super::scope::ScopeSnapshot;
+use super::super::scope_directives::{ScopeDirective, advance_scope};
 use super::super::source::{QuotedAstNode, QuotedSourceCursor, QuotedSourceRoot};
 use super::super::source_publish::{self, ScopePublication};
 use super::super::world::World;
@@ -466,6 +468,14 @@ struct FunctionSourceExpander<'world, 'tel, T: crate::telemetry::Telemetry> {
     /// Where the expansion in progress stands; see
     /// `QuotedExpansionCtx::expansion_context`.
     expansion_context: ExpansionContext,
+    /// See `QuotedExpansionCtx::scope_handoff`.
+    scope_handoff: ScopeHandoff,
+    /// The function's own source, whose heap holds what the expansion builds.
+    declared: QuotedSourceRoot,
+    /// Where the definition stands, which is the line `__ENV__` reports.
+    definition_site: CallSite,
+    /// The `__ENV__` of each scope this body has read it in.
+    envs: crate::fast_hash::HashMap<Namespace, QuotedSourceRoot>,
 }
 
 impl<'world, 'tel, T: crate::telemetry::Telemetry> QuotedExpansionCtx for FunctionSourceExpander<'world, 'tel, T> {
@@ -501,8 +511,44 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> QuotedExpansionCtx for Functi
         self.product_reads.push(product);
     }
 
-    fn macro_caller_scope(&self, scope: ScopeSnapshot) -> ScopeSnapshot {
-        scope.with_namespace(self.namespace)
+    /// `__ENV__` is the env at the position the name is read, so it is
+    /// projected from the scope the expansion has reached, and `__MODULE__`
+    /// is the module's atom.
+    fn environment_splice(&mut self, name: &str, scope: ScopeSnapshot) -> Result<Option<QuotedSourceRoot>, FatalError> {
+        match name {
+            "__ENV__" => self.env_at(scope).map(Some),
+            "__MODULE__" => Ok(Some(
+                self.declared.subroot(
+                    self.world
+                        .module_atom_value(&self.declared.builder(), self.current_module),
+                ),
+            )),
+            _ => Ok(None),
+        }
+    }
+
+    fn apply_scope_directive(
+        &mut self,
+        scope: ScopeSnapshot,
+        directive: &ScopeForm,
+    ) -> Result<DirectedScope, FatalError> {
+        let source_owner = self
+            .world
+            .function_source(self.function)
+            .expect("a function being expanded has its source")
+            .owner;
+        advance_scope(
+            ScopeDirective {
+                world: &mut *self.world,
+                telemetry: self.telemetry,
+                current_module: self.current_module,
+                source_owner,
+                reads: &mut self.reads,
+                namespace: scope.namespace(),
+            },
+            scope,
+            directive,
+        )
     }
 
     fn lookup_current_module_macro(&mut self, scope: ScopeSnapshot, name: &str, arity: usize) -> Option<FunctionId> {
@@ -516,6 +562,10 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> QuotedExpansionCtx for Functi
 
     fn expansion_context(&mut self) -> &mut ExpansionContext {
         &mut self.expansion_context
+    }
+
+    fn scope_handoff(&mut self) -> &mut ScopeHandoff {
+        &mut self.scope_handoff
     }
 
     fn next_expansion_number(&mut self) -> i64 {
@@ -536,7 +586,21 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> FunctionSourceExpander<'world
         source: &FunctionSource,
     ) -> Self {
         let current_module = world.function_module(function);
+        let declared = source
+            .declared_root()
+            .expect("only declared functions are expanded")
+            .clone();
+        let definition_span = declared
+            .cursor()
+            .ast_node(&world.source_map().borrow())
+            .ok()
+            .flatten()
+            .and_then(|node| node.span);
+        let definition_site = CallSite::locate(definition_span, &world.source_map().borrow());
         Self {
+            declared,
+            definition_site,
+            envs: Default::default(),
             world,
             telemetry,
             products,
@@ -547,41 +611,32 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> FunctionSourceExpander<'world
             reads: Vec::new(),
             expansions_visited: 0,
             expansion_context: ExpansionContext::Expression,
+            scope_handoff: ScopeHandoff::default(),
         }
     }
 
-    fn expand(mut self, source: &FunctionSource) -> Result<FunctionSourceExpansion, FatalError> {
-        // Bind __ENV__ for this body: the definition env, projected from the def
-        // scope (so its `function` is this definition) and added to the
-        // namespace as a splice. The expander resolves it where the body names
-        // __ENV__; it is transient — it is never recorded on the function.
-        let def_scope = ScopeSnapshot::function(self.current_module, self.namespace, self.function);
-        let root = source.declared_root().expect("only declared functions are expanded");
-        let builder = root.builder();
-        let definition_span = root
-            .cursor()
-            .ast_node(&self.world.source_map().borrow())
-            .map_err(|error| {
-                emit_internal_surface_error(self.telemetry, format!("definition span read failed: {error}"))
-            })?
-            .and_then(|node| node.span);
-        let definition_site = CallSite::locate(definition_span, &self.world.source_map().borrow());
+    /// The env of the scope a body has reached, as a splice: the definition's
+    /// env, with the aliases, imports and requires in force at that point.
+    fn env_at(&mut self, scope: ScopeSnapshot) -> Result<QuotedSourceRoot, FatalError> {
+        if let Some(env) = self.envs.get(&scope.namespace()) {
+            return Ok(env.clone());
+        }
+        let builder = self.declared.builder();
         let env = self
             .world
-            .project_env_value(&builder, def_scope, ExpansionContext::Expression, &definition_site)
+            .project_env_value(&builder, scope, ExpansionContext::Expression, &self.definition_site)
             .map_err(|error| {
                 emit_internal_surface_error(self.telemetry, format!("__ENV__ projection failed: {error}"))
             })?;
-        let env = root.subroot(env);
-        let namespace = self
-            .world
-            .bind_namespace(self.namespace, "__ENV__", NamespaceSymbol::Splice(env));
-        let module = root.subroot(self.world.module_atom_value(&builder, self.current_module));
-        let namespace = self
-            .world
-            .bind_namespace(namespace, "__MODULE__", NamespaceSymbol::Splice(module));
-        let scope = ScopeSnapshot::function(self.current_module, namespace, self.function);
-        let expanded = match self.expand_function_root(root.clone(), scope, 0)? {
+        let env = self.declared.subroot(env);
+        self.envs.insert(scope.namespace(), env.clone());
+        Ok(env)
+    }
+
+    fn expand(mut self, source: &FunctionSource) -> Result<FunctionSourceExpansion, FatalError> {
+        let root = self.declared.clone();
+        let scope = ScopeSnapshot::function(self.current_module, self.namespace, self.function);
+        let expanded = match self.expand_function_root(root, scope, 0)? {
             ExpandedRoot::Complete(expanded) => expanded,
             ExpandedRoot::Blocked(effects) => {
                 return Ok(FunctionSourceExpansion::Blocked(Box::new(
@@ -735,7 +790,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> FunctionSourceExpander<'world
                 continue;
             }
 
-            match self.expand_cursor(owner, &tuple[1], scope, depth)? {
+            match self.expand_cursor(owner, &tuple[1], scope.in_body(), depth)? {
                 ExpandedValue::Complete(body) => {
                     if body == tuple[1].root() {
                         expanded_kw.push(kw.root());

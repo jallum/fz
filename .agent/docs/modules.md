@@ -74,8 +74,8 @@ not-yet-pulled runtime module waits on its `CodeIndexed` after
 publishes `FactKey::ModuleInterface(module)` for source-defined modules.
 
 `require` and `import` refuse a module defined inside the requiring scope's own
-body (`World::module_defined_within`, checked in `apply_require` and
-`apply_import`), as Elixir does: that module is not loaded until the scope that
+body (`World::module_defined_within`, checked in
+`ScopeDirective::apply_require` and `apply_import`), as Elixir does: that module is not loaded until the scope that
 defines it has finished. The diagnostic is `resolve/module-not-loaded` at the
 `require`/`import` span. A module defined earlier outside the requiring
 `defmodule` is required normally.
@@ -93,8 +93,7 @@ savepoint into `NamespaceStore.bindings`. Binding a name pushes a
 backward and the first matching symbol wins. A `NamespaceSymbol` is a `Module`,
 `Function`, `Callable`, `Macro`, `Type`, or `Splice`. A `Splice` binds a name to
 a quoted AST snippet that the macro expander substitutes in place when the name
-is referenced — a generic primitive that binds `__ENV__` and `__MODULE__` (see
-macro-expansion.md) and a module's attributes (see "A module attribute" below).
+is referenced — a generic primitive that binds a module's attributes (see "A module attribute" below).
 A splice binding is interned by what its value says (`semantically_eq` at
 `Horizon::Full`), not by the heap that holds it: binding a name to a rebuilt but
 equal value on the same head returns the namespace bound before.
