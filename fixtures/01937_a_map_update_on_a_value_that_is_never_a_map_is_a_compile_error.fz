@@ -1,0 +1,9 @@
+#---
+# purpose: a map update whose base is known to be a binary is a compile error at the update
+# expect: diagnostic
+# diagnostic.code: type/not-a-map
+#---
+def main() do
+  v = "bin"
+  %{v | a: 1}
+end

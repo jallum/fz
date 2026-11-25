@@ -31,8 +31,8 @@ use crate::source::{SourceMap, Span};
 use super::super::body::{
     BodyTables, CallArg, CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, ControlEntryOrigin,
     DirectCallee, DispatchBindings, LoweredBitField, LoweredBitFieldSpec, LoweredBitSize, LoweredBody, LoweredClause,
-    LoweredEntry, LoweredMapKey, LoweredStep, LoweredTail, OutcomeArgument, ReceiveAfter, SubjectOriginRoot,
-    SubjectOwner, SubjectPath, ValueId, step_used_values,
+    LoweredEntry, LoweredMapKey, LoweredStep, LoweredTail, MapUpdateSite, OutcomeArgument, ReceiveAfter,
+    SubjectOriginRoot, SubjectOwner, SubjectPath, ValueId, step_used_values,
 };
 use super::super::code::SourceOwner;
 use super::super::drive::{FactKey, JobEffects, current_uses, emit_job_diagnostic};
@@ -156,6 +156,8 @@ struct ExprDispatch {
     /// Where a subject no arm claims goes, or `None` when the plan raises
     /// its last resort instead.
     miss_block: Option<ExprBlock>,
+    /// Set when this dispatch is a map update's test that its base is a map.
+    map_update: Option<MapUpdateSite>,
 }
 
 #[derive(Debug)]
@@ -1792,8 +1794,8 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                 });
                 Ok(value)
             }
-            Expr::MapUpdate(base, entries) => {
-                let base = self.lower_expr(base, env, steps)?;
+            Expr::MapUpdate(base_expr, entries) => {
+                let base = self.lower_expr(base_expr, env, steps)?;
                 let mut lowered = Vec::with_capacity(entries.len());
                 for (key, value) in entries {
                     let lowered_key = LoweredMapKey {
@@ -1802,17 +1804,14 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                     };
                     lowered.push((lowered_key, self.lower_expr(value, env, steps)?));
                 }
-                let keys = lowered.iter().map(|(key, _)| key.value).collect();
-                let updated = self.fresh_value();
-                let ok = self.fresh_value();
-                steps.push(ExprStep::MapUpdate {
-                    value: updated,
-                    ok,
-                    base,
-                    entries: lowered,
-                });
-                self.lower_update_key_check(expr.span, ok, base, keys, steps)?;
-                Ok(updated)
+                let site = MapUpdateSite {
+                    span: expr.span,
+                    base: match &base_expr.node {
+                        Expr::Var(var) => Some(var.name.clone()),
+                        _ => None,
+                    },
+                };
+                self.lower_map_update(site, base, lowered, steps)
             }
             Expr::Struct { module, fields } => self.lower_struct_expr(expr.span, module, fields, env, steps),
             Expr::Bitstring(fields) => self.lower_bitstring_expr(expr.span, fields, env, steps),
@@ -2404,6 +2403,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                 plan: Rc::new(plan),
                 arm_blocks: vec![build],
                 miss_block: Some(miss_block),
+                map_update: None,
             }),
         });
         Ok(value)
@@ -2583,6 +2583,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                 plan: Rc::new(plan),
                 arm_blocks,
                 miss_block: None,
+                map_update: None,
             }),
         });
         Ok(value)
@@ -2654,6 +2655,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                     block: arm_block,
                 }],
                 miss_block,
+                map_update: None,
             }),
         });
         Ok(ExprBlock {
@@ -2663,7 +2665,55 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         })
     }
 
-    /// `%{base | k: v}` answers the updated map when `base` has every key,
+    /// `%{base | k: v}` is a dispatch on the pattern `%{}` over `base`, as
+    /// `case base do %{} -> ... end` is: the map arm updates and checks the
+    /// keys, and any other base goes to [`Self::lower_update_failure_block`].
+    /// A base whose type is a map takes the arm with no test, and a base that
+    /// can never be one is an error where the update is written.
+    fn lower_map_update(
+        &mut self,
+        site: MapUpdateSite,
+        base: ValueId,
+        entries: Vec<(LoweredMapKey, ValueId)>,
+        steps: &mut Vec<ExprStep>,
+    ) -> Result<ValueId, FatalError> {
+        let span = site.span;
+        let keys: Vec<ValueId> = entries.iter().map(|(key, _)| key.value).collect();
+        let updated = self.fresh_value();
+        let ok = self.fresh_value();
+        let mut arm_steps = vec![ExprStep::MapUpdate {
+            value: updated,
+            ok,
+            base,
+            entries,
+        }];
+        self.lower_update_key_check(span, ok, base, keys.clone(), &mut arm_steps)?;
+        let miss_block = self.lower_update_failure_block(span, base, keys)?;
+        let any_map = Spanned::new(Pattern::Map(Vec::new()), span);
+        let plan = self.compile_single_pattern_dispatch("map update", &any_map, span, None)?;
+        let value = self.fresh_value();
+        steps.push(ExprStep::Dispatch {
+            value,
+            inputs: vec![base],
+            bindings: DispatchBindings::default(),
+            dispatch: Box::new(ExprDispatch {
+                plan: Rc::new(plan),
+                arm_blocks: vec![ExprOutcome {
+                    arguments: Box::default(),
+                    block: ExprBlock {
+                        span,
+                        steps: arm_steps,
+                        result: updated,
+                    },
+                }],
+                miss_block: Some(miss_block),
+                map_update: Some(site),
+            }),
+        });
+        Ok(value)
+    }
+
+    /// The update of a map answers the updated map when `base` has every key,
     /// and raises `KeyError` naming a missing one otherwise, as Elixir's
     /// `put_map_exact` does. The update itself reports the miss, so the check
     /// is one test of `ok`; only a miss pays for finding which key it was.
@@ -2679,10 +2729,44 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         keys: Vec<ValueId>,
         steps: &mut Vec<ExprStep>,
     ) -> Result<(), FatalError> {
+        let miss_block = self.lower_update_failure_block(span, base, keys)?;
+        let value = self.fresh_value();
+        steps.push(ExprStep::Dispatch {
+            value,
+            inputs: vec![ok],
+            bindings: DispatchBindings {
+                pinned: Vec::new(),
+                prepared: Vec::new(),
+            },
+            dispatch: Box::new(ExprDispatch {
+                plan: Rc::new(self.compile_bool_true_dispatch(span, None)?),
+                arm_blocks: vec![ExprOutcome {
+                    arguments: Box::default(),
+                    block: ExprBlock {
+                        span,
+                        steps: Vec::new(),
+                        result: ok,
+                    },
+                }],
+                miss_block: Some(miss_block),
+                map_update: None,
+            }),
+        });
+        Ok(())
+    }
+
+    /// The block that raises what a failed update raises: `Map.update_failure`
+    /// of the base and the keys the update names.
+    fn lower_update_failure_block(
+        &mut self,
+        span: Span,
+        base: ValueId,
+        keys: Vec<ValueId>,
+    ) -> Result<ExprBlock, FatalError> {
         let key_list = self.fresh_value();
         let raised = self.fresh_value();
-        let callee = self.resolve_callee(&update_key_error_callee(), 2, span, "map update key check")?;
-        let miss_block = ExprBlock {
+        let callee = self.resolve_callee(&update_failure_callee(), 2, span, "map update failure")?;
+        Ok(ExprBlock {
             span,
             steps: vec![
                 ExprStep::List {
@@ -2705,29 +2789,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                 },
             ],
             result: raised,
-        };
-        let value = self.fresh_value();
-        steps.push(ExprStep::Dispatch {
-            value,
-            inputs: vec![ok],
-            bindings: DispatchBindings {
-                pinned: Vec::new(),
-                prepared: Vec::new(),
-            },
-            dispatch: Box::new(ExprDispatch {
-                plan: Rc::new(self.compile_bool_true_dispatch(span, None)?),
-                arm_blocks: vec![ExprOutcome {
-                    arguments: Box::default(),
-                    block: ExprBlock {
-                        span,
-                        steps: Vec::new(),
-                        result: ok,
-                    },
-                }],
-                miss_block: Some(miss_block),
-            }),
-        });
-        Ok(())
+        })
     }
 
     fn lower_with_block(
@@ -2774,6 +2836,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                             block: success_block,
                         }],
                         miss_block,
+                        map_update: None,
                     }),
                 });
                 Ok(ExprBlock {
@@ -2832,6 +2895,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                 plan: Rc::new(plan),
                 arm_blocks,
                 miss_block: None,
+                map_update: None,
             }),
         });
         Ok(ExprBlock {
@@ -2951,6 +3015,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                 plan: Rc::new(reraise),
                 arm_blocks: Vec::new(),
                 miss_block: None,
+                map_update: None,
             }),
         });
         let handler = ExprBlock {
@@ -3041,6 +3106,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                 plan: Rc::new(plan),
                 arm_blocks,
                 miss_block: None,
+                map_update: None,
             }),
         });
         let handler = ExprBlock {
@@ -3805,6 +3871,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                         plan,
                         arm_blocks,
                         miss_block,
+                        map_update,
                     } = *dispatch;
                     unplaced.place_all(&mut lowered);
                     let branch_dest = self.plan_continuation(block, value, dest, Unplaced::default(), entries);
@@ -3841,7 +3908,9 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                         LoweredTail::Dispatch {
                             inputs,
                             bindings,
-                            dispatch: Box::new(ControlDispatch::new(plan, outcomes, miss_entry)),
+                            dispatch: Box::new(
+                                ControlDispatch::new(plan, outcomes, miss_entry).updating_a_map(map_update),
+                            ),
                         },
                     );
                 }
@@ -4005,6 +4074,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                 plan: Rc::new(plan),
                 arm_blocks: vec![ExprOutcome { arguments, block }],
                 miss_block: None,
+                map_update: None,
             }),
         });
         Ok(decided)
@@ -5194,14 +5264,14 @@ fn expr_name(expr: &Expr) -> &'static str {
 ///
 /// Which shapes name a callable is [`Callee`]'s question; the only thing added
 /// here is that a bound local wins over a same-spelled definition.
-/// `Map.update_key_error/2`, named exactly so no alias in scope can
+/// `Map.update_failure/2`, named exactly so no alias in scope can
 /// redirect it.
-fn update_key_error_callee() -> Callee {
+fn update_failure_callee() -> Callee {
     Callee::Name(CallableName {
         module: Some(crate::ast::ModuleTarget::Exact(ModuleName::from_segments(vec![
             "Map".to_string(),
         ]))),
-        name: "update_key_error".to_string(),
+        name: "update_failure".to_string(),
     })
 }
 

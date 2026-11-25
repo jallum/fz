@@ -3675,7 +3675,7 @@ fn an_update_that_cannot_miss_compiles_no_key_error_path() {
                 compiler
                     .world()
                     .function_ref(executable.activation.function)
-                    .is_named("update_key_error")
+                    .is_named("update_failure")
             })
     }
 

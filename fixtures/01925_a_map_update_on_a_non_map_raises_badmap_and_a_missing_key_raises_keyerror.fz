@@ -1,0 +1,36 @@
+#---
+# purpose: "a map update %{base | key: value} on a map answers the updated map, on a map missing the key raises KeyError, on a base that is not a map raises BadMapError carrying the term, and on a struct updates it"
+# oracle: self
+# oracle.stamp: f92d8d045369e001
+#---
+#
+# The compiler proves nothing about a base picked from a list head, so the
+# update asks at run time whether it holds a map.
+defmodule Main do
+  defstruct [:a, :b]
+
+  def pick([head | _]), do: head
+
+  def update(base), do: %{base | 1 => :new}
+
+  def show(label, base) do
+    try do
+      IO.puts("#{label}: #{inspect(update(base))}")
+    rescue
+      e in KeyError -> IO.puts("#{label}: KeyError #{Exception.message(e)}")
+      e in BadMapError -> IO.puts("#{label}: BadMapError #{inspect(e.term)} #{Exception.message(e)}")
+    end
+  end
+
+  def main do
+    show("map", %{1 => :old, 2 => :kept})
+    show("missing key", %{2 => :kept})
+    show("unknown base", pick([7, %{1 => :old}]))
+    show("unknown map", pick([%{1 => :old}, 7]))
+    s = %Main{a: 1, b: 2}
+    IO.inspect(%{s | a: 10})
+    IO.inspect(%{pick([s, 7]) | b: 20})
+  end
+end
+
+Main.main()
