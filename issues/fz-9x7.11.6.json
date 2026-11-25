@@ -5,7 +5,8 @@
     "fz-9x7.11.4"
   ],
   "blocks": [
-    "fz-9x7.11.8"
+    "fz-9x7.11.8",
+    "fz-9x7.53"
   ],
   "created": "2026-11-18T23:59:19Z",
   "description": "User approved 2026-11-18, verbatim via GC: \"agreed; proceed\". Step C4 of fz-9x7.11 page v4 (https://claude.ai/artifact/BB1FpQ1Cf7Jd5spZeLEWtg). One commit, judged on bench. Builder: GC.",
@@ -16,5 +17,5 @@
   "status": "open",
   "title": "Cells are scanned by address in their own to-space region",
   "type": "task",
-  "updated_at": "2026-11-18T23:59:27Z"
+  "updated_at": "2026-11-25T02:00:28Z"
 }
