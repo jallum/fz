@@ -688,9 +688,13 @@ typed `ExecutionContext::emit_*` helper runs only when that mutation reports a
 change. The raw callback receives `World` plus the stable
 key that addresses the result: `FunctionId`, `ModuleId`, `RootId`, `TypeName`,
 `ActivationKey`, or `CallSiteKey`. Generated-function publication adds its typed owning
-`FunctionId`. `[fz,compiler2,function,retired]` carries a `FunctionRetirement`
-(the retired job, the orphaned generated function and its owner), once for each
-job on an orphan that concludes empty. A
+`FunctionId`. `[fz,compiler2,job,retired]` carries a `JobRetirement` (the
+retired job and its ground: an orphaned generated function with its owner, or
+an unclaimed activation), once for each job that concludes without running its
+body; the `reason` metadata is `orphaned_lambda` or `unclaimed_activation`. The
+completion of a retired job reports `derivations` 0, `reads_handed` 0 and
+`retired` true. `[fz,compiler2,activation_inputs,withdrawal_refused]` carries
+the publisher job and the callee whose withdrawal the guard refused. A
 handler reads the stored function source, contract, lowered body, dispatch,
 type, protocol wiring, activation analysis, or callsite summary from those
 authorities during the callback.

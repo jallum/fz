@@ -1010,6 +1010,8 @@ mod tests {
             publisher,
             HashSet::from_iter([key.clone()]),
             HashMap::default(),
+            &HashSet::default(),
+            true,
         );
 
         assert_eq!(
@@ -1022,6 +1024,90 @@ mod tests {
             "preserving an unchanged frontier should not mark the activation input dirty"
         );
         assert_eq!(map.get(&key), Some(&ActivationInputAlternatives::from_row(vec![input])));
+    }
+
+    /// Silence is not knowledge: a publisher that says nothing about a key it
+    /// fed keeps feeding it. Only a key the publisher is told it no longer
+    /// feeds leaves, and only that publisher's contribution goes.
+    #[test]
+    fn a_withdrawn_key_loses_the_publishers_contribution_and_a_silent_key_keeps_it() {
+        let mut world = World::new();
+        let key = test_key(&mut world, &ConfiguredTelemetry::new());
+        let seen = world.types_mut().atom_lit("seen");
+        let publisher = Job::AnalyzeActivation(key.clone());
+        let mut map = ActivationInputMap::new();
+        let row = || HashMap::from_iter([(key.clone(), ActivationInputAlternatives::from_row(vec![seen]))]);
+        map.conclude(world.types_mut(), publisher.clone(), HashSet::default(), row(), false);
+        let standing = HashSet::from_iter([key.clone()]);
+
+        let silent = map.conclude_preserving_frontier(
+            world.types_mut(),
+            publisher.clone(),
+            standing.clone(),
+            HashMap::default(),
+            &HashSet::default(),
+            false,
+        );
+        assert_eq!(silent.output_keys, standing, "silence withdraws nothing");
+        assert!(map.get(&key).is_some());
+
+        let withdrawn = map.conclude_preserving_frontier(
+            world.types_mut(),
+            publisher,
+            standing,
+            HashMap::default(),
+            &HashSet::from_iter([key.clone()]),
+            false,
+        );
+        assert!(
+            withdrawn.output_keys.is_empty(),
+            "the withdrawn key leaves the frontier"
+        );
+        assert_eq!(withdrawn.changed_keys, HashSet::from_iter([key.clone()]));
+        assert_eq!(map.get(&key), None, "the sole publisher's row is gone");
+    }
+
+    /// A conclusion whose ground shifted replaces the publisher's entry, as
+    /// every other publisher's does; one whose ground held joins it with the
+    /// entry it already made.
+    #[test]
+    fn a_rebased_activation_input_conclusion_replaces_where_a_standing_one_joins() {
+        let first = |rebased: bool| {
+            let mut world = World::new();
+            let key = test_key(&mut world, &ConfiguredTelemetry::new());
+            let a = world.types_mut().atom_lit("a");
+            let b = world.types_mut().atom_lit("b");
+            let publisher = Job::AnalyzeActivation(key.clone());
+            let mut map = ActivationInputMap::new();
+            let entry = |ty| HashMap::from_iter([(key.clone(), ActivationInputAlternatives::from_row(vec![ty]))]);
+            map.conclude(
+                world.types_mut(),
+                publisher.clone(),
+                HashSet::default(),
+                entry(a),
+                false,
+            );
+            map.conclude_preserving_frontier(
+                world.types_mut(),
+                publisher,
+                HashSet::from_iter([key.clone()]),
+                entry(b),
+                &HashSet::default(),
+                rebased,
+            );
+            let joined = map.get(&key).expect("the entry stands").joined()[0];
+            let either = world.types_mut().union(a, b);
+            (
+                world.types().is_equivalent(&joined, &b),
+                world.types().is_equivalent(&joined, &either),
+            )
+        };
+        assert_eq!(
+            first(true),
+            (true, false),
+            "a rebased conclusion keeps only its new row"
+        );
+        assert_eq!(first(false), (false, true), "a standing conclusion joins old and new");
     }
 
     #[test]

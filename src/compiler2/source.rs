@@ -64,6 +64,9 @@ pub(crate) const META_BOUND_CALLABLE_KEY: &str = "__fz_bound__";
 /// `Macro.unique_var/2`. A variable without one is named by its context.
 pub(crate) const META_COUNTER_KEY: &str = "counter";
 
+/// Elixir's marker on a remote call written without parentheses.
+pub(crate) const META_NO_PARENS_KEY: &str = "no_parens";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QuotedSourceError {
     message: String,
@@ -141,6 +144,9 @@ pub struct QuotedSourceMetadata {
     /// True only on the callee this front door synthesises for `lhs[key]`.
     /// See `META_FROM_BRACKETS_KEY`.
     pub from_brackets: bool,
+    /// True on a remote call written without parentheses, `target.name`, as
+    /// Elixir's `no_parens: true`.
+    pub no_parens: bool,
     /// The byte-offset source span, carried verbatim from the lexer. Positions
     /// are stored as an exact source version plus byte range — never
     /// line/column. Quoting and reading a span are free copies; line/column is
@@ -344,6 +350,9 @@ impl QuotedSourceBuilder {
 
     pub fn meta(&self, meta: &QuotedSourceMetadata) -> Result<AnyValueRef, QuotedSourceError> {
         let mut entries: SmallVec<[(AnyValueRef, AnyValueRef); META_ENTRY_CAPACITY]> = SmallVec::new();
+        if meta.no_parens {
+            entries.push((self.atom(META_NO_PARENS_KEY), self.bool(true)));
+        }
         if let Some(span) = meta.span.filter(|span| !span.is_dummy()) {
             entries.push((self.atom(META_SPAN_KEY), self.span(&span)?));
         }

@@ -1,7 +1,11 @@
 use super::*;
 
 fn read(text: &str) -> Result<(Escape, usize), EscapeError> {
-    read_escape(text.as_bytes())
+    read_escape(text.as_bytes()).map(|read| (read.escape, read.consumed))
+}
+
+fn deprecation(text: &str) -> Option<DeprecatedHex> {
+    read_escape(text.as_bytes()).expect("a well-formed escape").deprecated
 }
 
 #[test]
@@ -42,6 +46,21 @@ fn a_hex_escape_is_one_byte_of_one_or_two_digits() {
 }
 
 #[test]
+fn a_one_digit_or_braced_hex_escape_is_read_and_flagged_deprecated() {
+    assert_eq!(read("x4"), Ok((Escape::Byte(4), 2)));
+    assert_eq!(read("x{41}"), Ok((Escape::Char('A'), 5)));
+    assert_eq!(deprecation("x4"), Some(DeprecatedHex::OneDigit));
+    assert_eq!(deprecation("x{41}"), Some(DeprecatedHex::Braced));
+}
+
+#[test]
+fn the_current_escape_forms_are_not_deprecated() {
+    for text in ["x41", "u00e9", "u{e9}", "n"] {
+        assert_eq!(deprecation(text), None, "\\{text}");
+    }
+}
+
+#[test]
 fn a_malformed_escape_reports_what_it_read() {
     assert_eq!(
         read("u00"),
@@ -73,7 +92,7 @@ fn an_unknown_escape_and_a_missing_one_are_told_apart() {
 }
 
 fn unescaped(text: &str) -> Result<String, String> {
-    unescape(text.as_bytes()).map(|bytes| String::from_utf8(bytes).expect("UTF-8"))
+    unescape(text.as_bytes()).map(|(bytes, _)| String::from_utf8(bytes).expect("UTF-8"))
 }
 
 #[test]
@@ -101,5 +120,16 @@ fn unescape_refuses_a_malformed_escape_with_its_message() {
 
 #[test]
 fn unescape_keeps_a_hex_escape_that_is_not_utf8_as_its_byte() {
-    assert_eq!(unescape(br"\xff"), Ok(vec![0xff]));
+    assert_eq!(unescape(br"\xff"), Ok((vec![0xff], vec![])));
+}
+
+#[test]
+fn unescape_lists_the_deprecated_escapes_in_text_order() {
+    assert_eq!(
+        unescape(br"\x4\x41\x{42}"),
+        Ok((
+            vec![4, b'A', b'B'],
+            vec![DeprecatedHex::OneDigit, DeprecatedHex::Braced]
+        ))
+    );
 }

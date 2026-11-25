@@ -392,6 +392,27 @@ fn publish_module_indexed(
     }
 }
 
+/// Warns at each clause the surface wrote apart from the clauses of its own
+/// name and arity, as Elixir does when it stores the definition.
+fn warn_ungrouped_clauses(world: &mut World, tel: &impl crate::telemetry::Telemetry, surface: &ScopeSurface) {
+    let source_map = world.source_map();
+    let diagnostics: Vec<_> = {
+        let source_map = source_map.borrow();
+        surface
+            .ungrouped
+            .iter()
+            .map(|clause| {
+                let first = source_map.locate(clause.first_span);
+                let file = source_map.name(first.source_version).unwrap_or("<unnamed>");
+                super::source_diagnostics::ungrouped_clause_diagnostic(clause, file, first.line)
+            })
+            .collect()
+    };
+    for diagnostic in diagnostics {
+        super::drive::ExecutionContext::new(world, tel).emit_warning_once(diagnostic);
+    }
+}
+
 pub(crate) fn discover_modules(
     world: &mut World,
     tel: &impl crate::telemetry::Telemetry,
@@ -401,6 +422,7 @@ pub(crate) fn discover_modules(
     outputs: &mut Outputs,
     changed: &mut Changed,
 ) -> Result<(), FatalError> {
+    warn_ungrouped_clauses(world, tel, surface);
     for form in &surface.forms {
         match form {
             ScopeForm::Module(module) => {

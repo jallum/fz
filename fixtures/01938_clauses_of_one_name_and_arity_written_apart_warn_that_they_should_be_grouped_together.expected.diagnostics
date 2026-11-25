@@ -1,0 +1,21 @@
+warning[resolve/ungrouped-clauses]: clauses with the same name and arity (number of arguments) should be grouped together, "def h/1" was previously defined (fixtures/01938_clauses_of_one_name_and_arity_written_apart_warn_that_they_should_be_grouped_together.fz:7)
+  --> fixtures/01938_clauses_of_one_name_and_arity_written_apart_warn_that_they_should_be_grouped_together.fz:4:3
+   |
+4 |   def h(2), do: 2
+   |   ^^^^^^^^^^^^^^^
+   |
+
+warning[resolve/ungrouped-clauses]: clauses with the same name and arity (number of arguments) should be grouped together, "defp p/1" was previously defined (fixtures/01938_clauses_of_one_name_and_arity_written_apart_warn_that_they_should_be_grouped_together.fz:11)
+  --> fixtures/01938_clauses_of_one_name_and_arity_written_apart_warn_that_they_should_be_grouped_together.fz:8:3
+   |
+8 |   defp p(2), do: 2
+   |   ^^^^^^^^^^^^^^^^
+   |
+
+warning[resolve/ungrouped-clauses]: clauses with the same name should be grouped together, "def a/1" was previously defined (fixtures/01938_clauses_of_one_name_and_arity_written_apart_warn_that_they_should_be_grouped_together.fz:15)
+  --> fixtures/01938_clauses_of_one_name_and_arity_written_apart_warn_that_they_should_be_grouped_together.fz:12:3
+   |
+12 |   def a(2), do: 2
+   |   ^^^^^^^^^^^^^^^
+   |
+

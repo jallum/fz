@@ -29,7 +29,12 @@ fn a_module_atom_is_an_exact_target_for_calls_and_function_references() {
     let atom = builder.atom(&module.atom_name());
     let target = builder.call(".", &empty, &[atom, builder.atom("val")]).unwrap();
     let call = builder.call_callee(target, &empty, &[builder.int(1)]).unwrap();
-    let quotient = builder.call("/", &empty, &[target, builder.int(1)]).unwrap();
+    let no_parens = QuotedSourceMetadata {
+        no_parens: true,
+        ..QuotedSourceMetadata::default()
+    };
+    let named = builder.call_callee(target, &no_parens, &[]).unwrap();
+    let quotient = builder.call("/", &empty, &[named, builder.int(1)]).unwrap();
     let reference = builder.call("&", &empty, &[quotient]).unwrap();
     let body = builder.call("{}", &empty, &[call, reference]).unwrap();
     let head = builder.call("probe", &empty, &[]).unwrap();

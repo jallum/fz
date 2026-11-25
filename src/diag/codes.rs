@@ -18,6 +18,8 @@ pub const PARSE_BITSTRING_BAD_MODIFIER: DiagCode = DiagCode("parse/bitstring-bad
 pub const PARSE_BITSTRING_BAD_SIZE: DiagCode = DiagCode("parse/bitstring-bad-size");
 pub const PARSE_CONCAT_PATTERN_OPERAND: DiagCode = DiagCode("parse/concat-pattern-operand");
 pub const PARSE_COMPREHENSION: DiagCode = DiagCode("parse/comprehension");
+/// A `\xH` or `\x{H*}` escape, which Elixir reads and warns about.
+pub const PARSE_DEPRECATED_HEX_ESCAPE: DiagCode = DiagCode("parse/deprecated-hex-escape");
 /// A `try` whose sections or rescue heads Elixir would reject, with Elixir's text.
 pub const PARSE_INVALID_TRY: DiagCode = DiagCode("parse/invalid-try");
 /// `__STACKTRACE__` written where a pattern binds a name, with Elixir's text.
@@ -31,6 +33,8 @@ pub const RESOLVE_UNKNOWN_IMPORT: DiagCode = DiagCode("resolve/unknown-import");
 pub const RESOLVE_MODULE_NOT_LOADED: DiagCode = DiagCode("resolve/module-not-loaded");
 /// A module name defined twice; the later definition in source order is kept.
 pub const RESOLVE_MODULE_REDEFINED: DiagCode = DiagCode("resolve/module-redefined");
+/// A clause written apart from the other clauses of its name and arity.
+pub const RESOLVE_UNGROUPED_CLAUSES: DiagCode = DiagCode("resolve/ungrouped-clauses");
 pub const RESOLVE_TYPE_ALIAS: DiagCode = DiagCode("resolve/type-alias");
 pub const RESOLVE_UNKNOWN_STRUCT_FIELD: DiagCode = DiagCode("resolve/unknown-struct-field");
 pub const RESOLVE_NOT_A_STRUCT: DiagCode = DiagCode("resolve/not-a-struct");

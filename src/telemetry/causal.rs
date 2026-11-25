@@ -206,6 +206,7 @@ const STATE_FIELDS: &[&str] = &[
     "activation_input_refolds",
     "derivations",
     "reads_handed",
+    "retired",
     "changed",
     "wakes",
     "movements",

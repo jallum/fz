@@ -1157,13 +1157,20 @@ pub extern "C" fn fz_float_parse(process: *mut Process, binary_ref: u64) -> u64 
 
 /// `Macro.unescape_string/1`: `[1, text]` with the escapes of the binary read
 /// as Elixir's `unescape_string` reads them, or `[0, message]` when an escape
-/// is malformed. The reading lives in `escape::unescape`, which the lexer's
-/// escape reader serves too.
+/// is malformed. Each deprecated escape read is warned about, as `IO.warn`
+/// warns. The reading lives in `escape::unescape`, which the lexer's escape
+/// reader serves too.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_unescape_string(process: *mut Process, binary_ref: u64) -> u64 {
     let bytes = unsafe { Bin::of_binary(binary_ref) }.bytes();
     let (status, answer) = match crate::escape::unescape(bytes) {
-        Ok(text) => (1, text),
+        Ok((text, deprecated)) => {
+            for escape in deprecated {
+                let message = escape.warning();
+                write_warning(process, message.as_ptr(), message.len(), b"".as_ptr(), 0, 0);
+            }
+            (1, text)
+        }
         Err(message) => (0, message.into_bytes()),
     };
     let process = unsafe { &mut *process };

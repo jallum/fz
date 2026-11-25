@@ -119,7 +119,7 @@ pub use types::{
 };
 pub use work_start::{WorkLedger, WorkStartReason, WorkStartTally};
 pub use world::World;
-pub(crate) use world::{FunctionRetirement, JobCompletion};
+pub(crate) use world::{JobCompletion, JobRetirement, RetirementGround};
 
 #[cfg(test)]
 pub(crate) mod allocation_probe;

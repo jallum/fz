@@ -442,6 +442,12 @@ pub(crate) trait QuotedExpansionCtx {
             return Ok(Some(ExpandedValue::Complete(cursor.root())));
         }
 
+        if is_remote_function_capture(node, &source_map.borrow()).map_err(|error| {
+            emit_internal_surface_error(self.telemetry(), format!("quoted capture detection failed: {error}"))
+        })? {
+            return Ok(Some(ExpandedValue::Complete(cursor.root())));
+        }
+
         let invocation = owner.subroot(cursor.root());
         if let Some(result) = self.expand_remote_ast_call(owner, &invocation, node, scope, depth, arity)? {
             return Ok(Some(result));
@@ -2033,6 +2039,32 @@ fn is_compiler_define_call(node: &QuotedAstNode, arity: usize, sources: &SourceM
 /// compiler reads back, not syntax.
 fn is_extern_form(node: &QuotedAstNode, arity: usize) -> bool {
     arity == 2 && node.head.root().tag() == ValueKind::ATOM && node.head.atom_name().is_ok_and(|name| name == "extern")
+}
+
+/// `&Mod.fun/1`: the target names a function and calls nothing, so it is not a
+/// remote call to expand.
+fn is_remote_function_capture(node: &QuotedAstNode, sources: &SourceMap) -> Result<bool, QuotedSourceError> {
+    if node.head.root().tag() != ValueKind::ATOM || node.head.atom_name()? != "&" {
+        return Ok(false);
+    }
+    let operands = node.tail.list_items()?;
+    let [operand] = operands.as_slice() else {
+        return Ok(false);
+    };
+    let Some(slash) = operand.ast_node(sources)? else {
+        return Ok(false);
+    };
+    if slash.head.root().tag() != ValueKind::ATOM || slash.head.atom_name()? != "/" {
+        return Ok(false);
+    }
+    let parts = slash.tail.list_items()?;
+    let [target, arity] = parts.as_slice() else {
+        return Ok(false);
+    };
+    let Some(target) = target.ast_node(sources)? else {
+        return Ok(false);
+    };
+    Ok(arity.root().tag() == ValueKind::INT && super::quoted_function::is_no_parens_call(&target)?)
 }
 
 fn is_remote_dot_callee(node: &QuotedAstNode) -> Result<bool, QuotedSourceError> {

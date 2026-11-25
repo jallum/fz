@@ -131,6 +131,10 @@ struct ParsedExpr<'t> {
     span: Span,
     call_head: Option<Cow<'t, str>>,
     callable_head: bool,
+    /// The bare `{:., meta, [target, :name]}` head of a remote `target.name`.
+    /// `root` is Elixir's no-parens call node around it; applying the head to
+    /// arguments uses this instead.
+    remote_head: Option<AnyValueRef>,
 }
 
 impl<'t> ParsedExpr<'t> {
@@ -140,6 +144,7 @@ impl<'t> ParsedExpr<'t> {
             span,
             call_head: None,
             callable_head: false,
+            remote_head: None,
         }
     }
 
@@ -149,16 +154,23 @@ impl<'t> ParsedExpr<'t> {
             span,
             call_head: Some(name),
             callable_head: true,
+            remote_head: None,
         }
     }
 
-    fn callable_callee(root: AnyValueRef, span: Span) -> Self {
+    fn remote_target(head: AnyValueRef, no_parens_call: AnyValueRef, span: Span) -> Self {
         Self {
-            root,
+            root: no_parens_call,
             span,
             call_head: None,
             callable_head: true,
+            remote_head: Some(head),
         }
+    }
+
+    /// The callee a call written after this expression applies its arguments to.
+    fn callee_root(&self) -> AnyValueRef {
+        self.remote_head.unwrap_or(self.root)
     }
 }
 
@@ -845,7 +857,7 @@ impl<'t> FrontDoorParser<'t> {
                 let root = if let Some(name) = lhs.call_head {
                     self.builder.call(&name, &meta, &args)?
                 } else {
-                    self.builder.call_callee(lhs.root, &meta, &args)?
+                    self.builder.call_callee(lhs.callee_root(), &meta, &args)?
                 };
                 lhs = ParsedExpr::plain(root, span);
                 self.saw_no_parens_call = true;
@@ -859,7 +871,7 @@ impl<'t> FrontDoorParser<'t> {
                 let root = if let Some(name) = lhs.call_head {
                     self.builder.call(&name, &meta, &args)?
                 } else {
-                    self.builder.call_callee(lhs.root, &meta, &args)?
+                    self.builder.call_callee(lhs.callee_root(), &meta, &args)?
                 };
                 lhs = ParsedExpr::plain(root, span);
                 self.saw_no_parens_call = true;
@@ -1080,7 +1092,7 @@ impl<'t> FrontDoorParser<'t> {
         let root = if let Some(name) = lhs.call_head {
             self.builder.call(&name, &meta, &args)?
         } else {
-            self.builder.call_callee(lhs.root, &meta, &args)?
+            self.builder.call_callee(lhs.callee_root(), &meta, &args)?
         };
         Ok(ParsedExpr::plain(root, span))
     }
@@ -1121,8 +1133,13 @@ impl<'t> FrontDoorParser<'t> {
         let span = lhs.span.merge(self.prev_span());
         let meta = self.meta(span)?;
         let tail = self.builder.list(&[lhs.root, self.builder.atom(&field)])?;
-        let root = self.builder.ast_node(self.builder.atom("."), &meta, tail)?;
-        Ok(ParsedExpr::callable_callee(root, span))
+        let head = self.builder.ast_node(self.builder.atom("."), &meta, tail)?;
+        let no_parens = QuotedSourceMetadata {
+            no_parens: true,
+            ..self.meta(span)?
+        };
+        let root = self.builder.call_callee(head, &no_parens, &[])?;
+        Ok(ParsedExpr::remote_target(head, root, span))
     }
 
     fn finish_bracket_access(
@@ -2219,6 +2236,7 @@ impl<'t> FrontDoorParser<'t> {
         Ok(QuotedSourceMetadata {
             bound_callable: None,
             from_brackets: false,
+            no_parens: false,
             // The lexer's byte-offset span travels verbatim into the quoted
             // heap; no line/column is computed here (fz-hyj).
             span: Some(span),
