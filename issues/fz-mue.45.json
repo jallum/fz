@@ -9,9 +9,15 @@
   "id": "fz-mue.45",
   "labels": [],
   "parent": "fz-mue",
+  "comments": [
+    {
+      "text": "User approved page /Users/j5n/Workspace/fz-mue.45.html (2026-11-24) with all recommendations: exact versions (one counter per function, as Elixir); = expands its right side first (any pin that moves goes to the user with its cause); build after the epic's blockers (mue.28, .10, nhb.15, .51 commit 2), as the last parity piece of %Macro.Env{}. Probes: scratchpad mue45 p1-p3.exs, copied to ../fz-otp-json/probes/mue45/.",
+      "timestamp": "2026-11-25T03:24:13Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "The macro expander knows the caller's variables, so Macro.Env.versioned_vars, vars/1 and has_var?/2 are as in Elixir",
   "type": "feature",
-  "updated_at": "2026-11-24T21:36:46Z"
+  "updated_at": "2026-11-25T03:24:13Z"
 }
