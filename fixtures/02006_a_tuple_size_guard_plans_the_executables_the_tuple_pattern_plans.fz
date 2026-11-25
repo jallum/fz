@@ -1,0 +1,21 @@
+#---
+# purpose: "`tuple_size(t) == 2` in a guard compiles to the same number of executables as the pattern `{_, _}`: the guard is the tuple-arity question, not a call"
+# kind: run
+# root: main/0
+# assert.metric.semantic.executables: 5
+# assert.metric.semantic.activations: 5
+# assert.metric.semantic.callsites: 5
+# assert.metric.call_edges.count: 5
+# oracle: self
+# oracle.stamp: aad8c9f977b4a191
+#---
+defmodule Main do
+  def shape(t) when tuple_size(t) == 2, do: :pair
+  def shape(_), do: :other
+
+  def main() do
+    IO.inspect([shape({1, 2}), shape({1}), shape(:a)])
+  end
+end
+
+Main.main()

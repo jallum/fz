@@ -59,12 +59,13 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::{FuncId, Linkage};
 use fz_runtime::any_value::{AnyValueRef, FALSE_ATOM_ID, NIL_ATOM_ID, TRUE_ATOM_ID, ValueKind};
 use fz_runtime::ir_runtime::{
-    fz_binary_equals_literal, fz_box_float_for_any, fz_box_int_for_any, fz_box_opaque_for_any, fz_bs_field_end,
-    fz_bs_field_spec, fz_bs_read_binary_ref, fz_bs_read_int_ref, fz_function_arity, fz_list_head_ref, fz_list_is_cons,
-    fz_list_tail_ref, fz_map_is_map, fz_map_named_schema_ref, fz_matcher_map_get_ref, fz_pinned_binary_segment_size,
-    fz_receive_pinned_ref, fz_struct_get_field_ref, fz_struct_get_named_field_ref, fz_struct_is_named_ref,
-    fz_struct_schema_id_ref, fz_truthy_ref, fz_type_of, fz_unbox_atom, fz_unbox_float, fz_unbox_int, fz_unbox_opaque,
-    fz_value_cmp_ref, fz_value_eq_ref, fz_value_eq_widening_ref,
+    fz_binary_equals_literal, fz_bitstring_byte_size_of, fz_box_float_for_any, fz_box_int_for_any,
+    fz_box_opaque_for_any, fz_bs_field_end, fz_bs_field_spec, fz_bs_read_binary_ref, fz_bs_read_int_ref,
+    fz_function_arity, fz_list_head_ref, fz_list_is_cons, fz_list_tail_ref, fz_map_is_map, fz_map_named_schema_ref,
+    fz_map_size_of, fz_matcher_map_get_ref, fz_pinned_binary_segment_size, fz_receive_pinned_ref,
+    fz_struct_get_field_ref, fz_struct_get_named_field_ref, fz_struct_is_named_ref, fz_struct_schema_id_ref,
+    fz_truthy_ref, fz_type_of, fz_unbox_atom, fz_unbox_float, fz_unbox_int, fz_unbox_opaque, fz_value_cmp_ref,
+    fz_value_eq_ref, fz_value_eq_widening_ref,
 };
 use fz_runtime::process::AtomName;
 use std::cell::RefCell;
@@ -685,6 +686,23 @@ fn emit_region_test<M: cranelift_module::Module>(
             let val = resolve_dispatch_subject(body, ctx, subject, state)?;
             let predicate = RuntimeTypePredicate::tuple_arity(*arity as usize);
             settled = emit_runtime_type_predicate_region_test(body, ctx, val, &predicate, true_b, false_b)?;
+        }
+        Region::Arity(arity) => {
+            let val = resolve_dispatch_subject(body, ctx, subject, state)?;
+            let predicate = RuntimeTypePredicate::callable_arity(*arity as usize);
+            settled = emit_runtime_type_predicate_region_test(body, ctx, val, &predicate, true_b, false_b)?;
+        }
+        Region::MapSize(size) => {
+            let val = resolve_dispatch_subject(body, ctx, subject, state)?;
+            let value_ref = emit_receive_value_ref(body, ctx, val)?;
+            let entries = runtime_call1!(body, fz_map_size_of, [ctx.process, value_ref]);
+            emit_branch_on_size(body, entries, *size, true_b, false_b);
+        }
+        Region::ByteSize(size) => {
+            let val = resolve_dispatch_subject(body, ctx, subject, state)?;
+            let value_ref = emit_receive_value_ref(body, ctx, val)?;
+            let bytes = runtime_call1!(body, fz_bitstring_byte_size_of, [ctx.process, value_ref]);
+            emit_branch_on_size(body, bytes, *size, true_b, false_b);
         }
         Region::List(ListRegion::Empty) => {
             let val = resolve_dispatch_subject(body, ctx, subject, state)?;
@@ -2073,6 +2091,19 @@ fn emit_not_dispatch_map_miss<M: cranelift_module::Module>(
         }
         ReceiveValue::Int(_) | ReceiveValue::Float(_) | ReceiveValue::Atom(_) => Ok(body.b.ins().iconst(types::I8, 1)),
     }
+}
+
+/// Branch on a property a total runtime reader answered, which is -1 for a
+/// value that has no such property, so no size matches it.
+fn emit_branch_on_size<M: cranelift_module::Module>(
+    body: &mut DispatchBody<'_, '_, M>,
+    property: ir::Value,
+    size: u32,
+    match_b: ir::Block,
+    next_b: ir::Block,
+) {
+    let is_size = body.b.ins().icmp_imm_s(IntCC::Equal, property, i64::from(size));
+    body.b.ins().brif(is_size, match_b, &[], next_b, &[]);
 }
 
 fn emit_map_kind_test<M: cranelift_module::Module>(

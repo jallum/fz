@@ -1,0 +1,21 @@
+#---
+# purpose: "The pattern `{_, _}` compiles to the same number of executables as `tuple_size(t) == 2` in a guard"
+# kind: run
+# root: main/0
+# assert.metric.semantic.executables: 5
+# assert.metric.semantic.activations: 5
+# assert.metric.semantic.callsites: 5
+# assert.metric.call_edges.count: 5
+# oracle: self
+# oracle.stamp: dc4fb0cb1ac792b3
+#---
+defmodule Main do
+  def shape({_, _}), do: :pair
+  def shape(_), do: :other
+
+  def main() do
+    IO.inspect([shape({1, 2}), shape({1}), shape(:a)])
+  end
+end
+
+Main.main()

@@ -3722,6 +3722,16 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 let (var, _) = ctx.emit_let(Prim::RuntimeTypeTest(subject, Box::new(tuple_ty)));
                 var
             }
+            Region::Arity(arity) => {
+                let subject = self.dispatch_subject_var(ctx, plan, state, subject)?;
+                let callable = RuntimeTypePredicate::callable_arity(*arity as usize);
+                let (var, _) = ctx.emit_let(Prim::RuntimeTypeTest(subject, Box::new(callable)));
+                var
+            }
+            Region::MapSize(size) => self.lower_property_is(ctx, plan, state, subject, "fz_map_size_of", *size)?,
+            Region::ByteSize(size) => {
+                self.lower_property_is(ctx, plan, state, subject, "fz_bitstring_byte_size_of", *size)?
+            }
             Region::MapKind => {
                 let subject = self.dispatch_subject_var(ctx, plan, state, subject)?;
                 let (var, _) = ctx.emit_let(Prim::RuntimeTypeTest(
@@ -3777,6 +3787,41 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             }
             Region::Bitstring(shape) => return self.lower_bitstring_region(ctx, plan, subject, shape, state),
         })))
+    }
+
+    /// Whether the property `reader` answers for the subject is `size`. The
+    /// reader is a runtime function that answers -1 for a value with no such
+    /// property, so it is asked of any value, and no size matches that answer.
+    fn lower_property_is(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        plan: &PatternDispatchPlan<Ty>,
+        state: &mut DispatchState,
+        subject: SubjectId,
+        reader: &str,
+        size: u32,
+    ) -> Result<Var, FatalError> {
+        let subject = self.dispatch_subject_var(ctx, plan, state, subject)?;
+        let reader = GuardExtern::new(
+            ExternAbi::Fz,
+            reader,
+            &[ExternTy::Any],
+            ExternReturn::Scalar(ExternTy::I64),
+            false,
+        )
+        .expect("a property reader takes one reference word and answers an integer");
+        let extern_id = self.guard_extern_id(&reader);
+        let callsite = ctx.fresh_callsite();
+        let (property, _) = ctx.emit_let(Prim::Extern(
+            callsite,
+            extern_id,
+            vec![ExternArg::fixed(subject, ExternTy::Any)],
+        ));
+        let int = self.world.types_mut().int();
+        ctx.value_types.insert(property, int);
+        let (expected, _) = ctx.emit_let(Prim::Const(Const::Int(i64::from(size))));
+        let (is_size, _) = ctx.emit_let(Prim::BinOp(IrBinOp::Identical, property, expected));
+        Ok(is_size)
     }
 
     /// A guard's truth. A call inside it that fails the guard (a helper that

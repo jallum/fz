@@ -1,0 +1,29 @@
+#---
+# purpose: "A guard `map_size(m) == n` asks the value whether it is a map of n entries: a struct counts its fields, and a value that is no map falls to the next clause"
+# kind: run
+# root: main/0
+# assert.metric.semantic.executables: 3
+# assert.metric.semantic.activations: 3
+# assert.metric.semantic.callsites: 3
+# assert.metric.call_edges.count: 3
+# oracle: self
+# oracle.stamp: 0025b3bb3ff53881
+#---
+defmodule Main do
+  defmodule Point do
+    defstruct [:x, :y]
+  end
+
+  def count(m) when map_size(m) == 0, do: :empty
+  def count(m) when 1 == map_size(m), do: :one
+  def count(m) when map_size(m) == 3, do: :three
+  def count(m) when is_map(m), do: :some
+  def count(_), do: :no_map
+
+  def main() do
+    values = [%{}, %{a: 1}, %{a: 1, b: 2, c: 3}, %{a: 1, b: 2}, %Point{x: 1, y: 2}, :atom, {1}, [a: 1], "a"]
+    IO.inspect(Enum.map(values, &count/1))
+  end
+end
+
+Main.main()

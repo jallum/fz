@@ -1,0 +1,33 @@
+#---
+# purpose: "A projection comparison under `or` and `not` decides as Elixir's guard does: `or` takes either size, `not` over a tuple size is the complement, and a value of another kind makes the whole guard fail rather than raise"
+# kind: run
+# root: main/0
+# assert.metric.semantic.executables: 8
+# assert.metric.semantic.activations: 8
+# assert.metric.semantic.callsites: 10
+# assert.metric.call_edges.count: 10
+# oracle: self
+# oracle.stamp: b8d0cd971f10d946
+#---
+defmodule Main do
+  def short(t) when tuple_size(t) == 1 or tuple_size(t) == 2, do: :short
+  def short(_), do: :long
+
+  def not_pair(t) when is_tuple(t) and not (tuple_size(t) == 2), do: :not_pair
+  def not_pair(_), do: :pair_or_no_tuple
+
+  def not_one(m) when not (map_size(m) == 1), do: :not_one
+  def not_one(_), do: :one_or_no_map
+
+  def not_fun2(f) when not is_function(f, 2), do: :not_fun2
+  def not_fun2(_), do: :fun2
+
+  def main() do
+    IO.inspect(Enum.map([{1}, {1, 2}, {1, 2, 3}, :z], &short/1))
+    IO.inspect(Enum.map([{1}, {1, 2}, {1, 2, 3}, :z], &not_pair/1))
+    IO.inspect(Enum.map([%{a: 1}, %{}, %{a: 1, b: 2}, :z, {1}], &not_one/1))
+    IO.inspect(Enum.map([fn a, b -> a + b end, fn a -> a end, :z], &not_fun2/1))
+  end
+end
+
+Main.main()

@@ -1,0 +1,24 @@
+#---
+# purpose: "A closure held in a list and asked `is_function(f, n)` by a clause whose call has another argument count compiles and runs the clause whose arity the closure has"
+# kind: run
+# root: main/0
+# assert.metric.semantic.executables: 13
+# assert.metric.semantic.activations: 13
+# assert.metric.semantic.callsites: 12
+# assert.metric.call_edges.count: 12
+# oracle: self
+# oracle.stamp: 3c03b07389b3271a
+#---
+defmodule Main do
+  def pick(slicer, e) when is_function(slicer, 1), do: slicer.(e)
+  def pick(slicer, _e) when is_function(slicer, 3), do: slicer.(1, 2, 1)
+  def pick(_, e), do: {:neither, e}
+
+  def main() do
+    IO.inspect(Enum.map([fn a, b, c -> [a, b, c] end], &pick(&1, 1)))
+    IO.inspect(Enum.map([fn a -> {a} end], &pick(&1, 5)))
+    IO.inspect(Enum.map([fn -> :zero end, :not_callable], &pick(&1, 9)))
+  end
+end
+
+Main.main()

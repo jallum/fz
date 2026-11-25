@@ -191,9 +191,58 @@ pub(crate) enum Region<TypeHandle> {
     TupleArity(u32),
     List(ListRegion),
     MapKind,
-    MapKeyPresent { key: ComparisonValue },
+    MapKeyPresent {
+        key: ComparisonValue,
+    },
+    /// The value is a function that takes this many arguments.
+    Arity(u32),
+    /// The value is a map or struct with this many entries.
+    MapSize(u32),
+    /// The value is a bitstring that this many bytes hold, a partial last byte
+    /// counted.
+    ByteSize(u32),
     Bitstring(BitstringShape),
     Guard(GuardId),
+}
+
+/// The one property an extern reads of its argument and nothing else. A
+/// library extern that declares `projects:` one of these is a projection: its
+/// result compared with a constant is the matrix question of that property.
+/// The set is closed, and each member says what the question is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum ProjectedProperty {
+    /// The number of arguments a function takes.
+    FunctionArity,
+    /// The number of fields of a tuple.
+    TupleSize,
+    /// The number of entries of a map.
+    MapSize,
+    /// The number of bytes that hold a bitstring.
+    ByteSize,
+}
+
+impl ProjectedProperty {
+    /// The name a declaration writes after `projects:`.
+    pub(crate) fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "arity" => Self::FunctionArity,
+            "tuple_size" => Self::TupleSize,
+            "map_size" => Self::MapSize,
+            "byte_size" => Self::ByteSize,
+            _ => return None,
+        })
+    }
+
+    /// The question that the property of `subject` equals `size`.
+    pub(crate) fn question<TypeHandle: Clone>(self, subject: SubjectId, size: u32) -> RegionQuestion<TypeHandle> {
+        let region = match self {
+            Self::FunctionArity => Region::Arity(size),
+            Self::TupleSize => return RegionQuestion::tuple_arity(subject, size, []),
+            Self::MapSize => Region::MapSize(size),
+            Self::ByteSize => Region::ByteSize(size),
+        };
+        RegionQuestion::new(RegionPredicate::new(subject, region))
+    }
 }
 
 impl<TypeHandle> Region<TypeHandle> {
@@ -208,6 +257,9 @@ impl<TypeHandle> Region<TypeHandle> {
             Region::List(region) => Region::List(*region),
             Region::MapKind => Region::MapKind,
             Region::MapKeyPresent { key } => Region::MapKeyPresent { key: key.clone() },
+            Region::Arity(size) => Region::Arity(*size),
+            Region::MapSize(size) => Region::MapSize(*size),
+            Region::ByteSize(size) => Region::ByteSize(*size),
             Region::Bitstring(shape) => Region::Bitstring(shape.clone()),
             Region::Guard(guard) => Region::Guard(*guard),
         }
@@ -1410,6 +1462,9 @@ fn demand_for_region<TypeHandle>(
         | Region::Type(_)
         | Region::MapKind
         | Region::MapKeyPresent { .. }
+        | Region::Arity(_)
+        | Region::MapSize(_)
+        | Region::ByteSize(_)
         | Region::Bitstring(_)
         | Region::Guard(_) => DispatchDemand::Whole,
     }

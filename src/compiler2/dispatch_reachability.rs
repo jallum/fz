@@ -267,11 +267,22 @@ impl ReachabilityCalculator<'_> {
                 missed = join_optional(self.types, missed, alternative);
                 continue;
             }
+            if target.kind == TargetKind::Narrows {
+                let narrowed = if exact_projection_path(self.plan, subject) {
+                    lift_projection_constraint(self.types, self.plan, &row, subject, target.ty)
+                        .map(|(_, lifted)| self.types.intersect(alternative, lifted))
+                } else {
+                    None
+                };
+                matched = join_optional(self.types, matched, narrowed.unwrap_or(alternative));
+                missed = join_optional(self.types, missed, alternative);
+                continue;
+            }
             if self.types.is_subtype(&projected, &target.ty) {
                 matched = join_optional(self.types, matched, alternative);
                 continue;
             }
-            if target.exact
+            if target.kind == TargetKind::Exact
                 && exact_projection_path(self.plan, subject)
                 && let Some((lifted_ordinal, lifted)) =
                     lift_projection_constraint(self.types, self.plan, &row, subject, target.ty)
@@ -337,14 +348,37 @@ impl ReachabilityCalculator<'_> {
     }
 }
 
+/// The type a question tests a subject against, and how well that type says
+/// what the question asks.
 #[derive(Clone, Copy)]
 struct PredicateTarget {
     ty: Ty,
-    exact: bool,
+    kind: TargetKind,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TargetKind {
+    /// The question holds of exactly the values of the type.
+    Exact,
+    /// Every value that holds the question is of the type, and a value of the
+    /// type may or may not hold it: a type whose values have no map of the
+    /// asked size in them is refused, one that does is left open.
+    Narrows,
+    /// Every value of the type holds the question, and a value outside the
+    /// type may hold it too, so the type cannot be taken away on the miss edge.
+    Stated,
+}
+
+impl PredicateTarget {
+    fn exact(ty: Ty) -> Self {
+        Self {
+            ty,
+            kind: TargetKind::Exact,
+        }
+    }
 }
 
 fn predicate_target(types: &mut Types, region: &Region<Ty>) -> Option<PredicateTarget> {
-    let exact = true;
     let ty = match region {
         Region::Type(ty) => *ty,
         Region::Equal(ComparisonValue::Const(value)) => match value.as_dispatch_shape()? {
@@ -382,11 +416,24 @@ fn predicate_target(types: &mut Types, region: &Region<Ty>) -> Option<PredicateT
             let any = types.any();
             return Some(PredicateTarget {
                 ty: types.map(&[(map_key, any)]),
-                exact: false,
+                kind: TargetKind::Stated,
+            });
+        }
+        Region::Arity(arity) => types.fun_of_arity(*arity as usize),
+        Region::MapSize(_) => {
+            return Some(PredicateTarget {
+                ty: types.map_top(),
+                kind: TargetKind::Narrows,
+            });
+        }
+        Region::ByteSize(_) => {
+            return Some(PredicateTarget {
+                ty: types.bitstring(),
+                kind: TargetKind::Narrows,
             });
         }
     };
-    Some(PredicateTarget { ty, exact })
+    Some(PredicateTarget::exact(ty))
 }
 
 fn subject_input(plan: &PatternDispatchPlan<Ty>, subject: SubjectId) -> Option<usize> {

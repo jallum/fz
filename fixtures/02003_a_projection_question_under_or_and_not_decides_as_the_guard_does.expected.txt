@@ -1,0 +1,4 @@
+[:short, :short, :long, :long]
+[:not_pair, :pair_or_no_tuple, :not_pair, :pair_or_no_tuple]
+[:one_or_no_map, :not_one, :not_one, :one_or_no_map, :one_or_no_map]
+[:fun2, :not_fun2, :not_fun2]

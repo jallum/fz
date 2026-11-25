@@ -639,11 +639,15 @@ fn compiler2_frontdoor_extern_takes_one_well_formed_option() {
         ),
         (
             "extern \"C\" defp f(integer) :: integer, throws: ArithmeticError\n",
-            "expected `raises:` or `delivers:` after the extern return type, got `throws:`; an extern takes one of them",
+            "expected `raises:`, `delivers:` or `projects:` after the extern return type, got `throws:`; an extern takes one of them",
         ),
         (
             "extern \"fz\" defp f(any) :: none, delivers: :panic\n",
             "`delivers:` names the kind a handler receives, `:error`, `:throw` or `:exit`, got the atom `:panic`",
+        ),
+        (
+            "extern \"fz\" defp f(any) :: integer, projects: :length\n",
+            "`projects:` names the property the extern reads, `:arity`, `:tuple_size`, `:map_size` or `:byte_size`, got the atom `:length`",
         ),
         (
             "extern \"fz\" defp f(any) :: none, delivers: Throw\n",

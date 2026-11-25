@@ -1535,7 +1535,7 @@ defmodule Kernel do
   def byte_size(bits) when is_bitstring(bits), do: fz_bitstring_byte_extent(bits)
   def byte_size(_), do: raise(%ArgumentError{message: "errors were found at the given arguments:\n\n  * 1st argument: not a bitstring\n"})
 
-  extern "C" defp fz_bitstring_byte_extent(binary_cursor) :: integer
+  extern "C" defp fz_bitstring_byte_extent(binary_cursor) :: integer, projects: :byte_size
 
   @doc """
   Returns the `length` bytes of `binary` that start at byte `start`. A
@@ -1593,7 +1593,7 @@ defmodule Kernel do
   def map_size(map) when is_map(map), do: fz_map_count(map)
   def map_size(map), do: raise(%BadMapError{term: map})
 
-  extern "fz" defp fz_map_count(map) :: integer
+  extern "fz" defp fz_map_count(map) :: integer, projects: :map_size
 
   @doc """
   Returns the number of elements in `tuple`.
@@ -1614,7 +1614,7 @@ defmodule Kernel do
   def tuple_size(tuple) when is_tuple(tuple), do: fz_tuple_size(tuple)
   def tuple_size(_), do: raise(%ArgumentError{message: "errors were found at the given arguments:\n\n  * 1st argument: not a tuple\n"})
 
-  extern "fz" defp fz_tuple_size(any) :: integer
+  extern "fz" defp fz_tuple_size(any) :: integer, projects: :tuple_size
 
   @doc """
   Returns the element of `tuple` at the zero-based `index`.
@@ -1901,7 +1901,7 @@ defmodule Kernel do
   def is_function(term :: fun, arity), do: fz_function_arity(term) == arity
   def is_function(_, _), do: false
 
-  extern "fz" defp fz_function_arity(fun) :: integer
+  extern "fz" defp fz_function_arity(fun) :: integer, projects: :arity
 
   @doc """
   Returns `true` when `term` is `true` or `false`.

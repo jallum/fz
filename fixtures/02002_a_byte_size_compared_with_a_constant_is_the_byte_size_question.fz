@@ -1,0 +1,24 @@
+#---
+# purpose: "A guard `byte_size(b) == n` asks the value whether n bytes hold it: a partial last byte counts, and a value that is no bitstring falls to the next clause"
+# kind: run
+# root: main/0
+# assert.metric.semantic.executables: 3
+# assert.metric.semantic.activations: 3
+# assert.metric.semantic.callsites: 3
+# assert.metric.call_edges.count: 3
+# oracle: self
+# oracle.stamp: c120c841756d051b
+#---
+defmodule Main do
+  def size(b) when byte_size(b) == 0, do: :empty
+  def size(b) when byte_size(b) == 3, do: :three
+  def size(b) when 2 == byte_size(b), do: :two
+  def size(_), do: :other
+
+  def main() do
+    values = ["", "abc", "ab", "abcd", <<1, 2, 3>>, <<1::3>>, <<1, 2, 3::5>>, :atom, {1}, [1]]
+    IO.inspect(Enum.map(values, &size/1))
+  end
+end
+
+Main.main()

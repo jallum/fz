@@ -393,13 +393,10 @@ fn build_guard_dispatch(
         let wire = world
             .extern_wire(function)
             .expect("an extern's wire is settled before its guard callee is built");
-        let callee = GuardCallee::Extern(Arc::new(GuardExtern::new(
-            wire.abi,
-            &wire.symbol,
-            &wire.params,
-            wire.ret,
-            wire.variadic,
-        )?));
+        let callee = GuardCallee::Extern(Arc::new(
+            GuardExtern::new(wire.abi, &wire.symbol, &wire.params, wire.ret, wire.variadic)?
+                .projecting(surface.extern_projects),
+        ));
         cache.insert(function, callee.clone());
         return Ok(callee);
     }

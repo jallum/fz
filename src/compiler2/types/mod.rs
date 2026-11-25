@@ -1980,6 +1980,15 @@ impl Types {
         self.intern(Descr::fun_top())
     }
 
+    /// Every function that takes `arity` arguments, whatever it returns. A
+    /// function is an arrow whatever its parameters are, so the arrow that
+    /// takes nothing and returns anything holds them all.
+    pub fn fun_of_arity(&mut self, arity: usize) -> Ty {
+        let none = self.core.none;
+        let any = self.core.any;
+        self.arrow_owned(vec![none; arity], any)
+    }
+
     /// Whether every value of `a` is a tuple, of any arity (including `{}`). A
     /// type that merely contains tuples, such as `any`, is not one.
     pub fn is_tuple_type(&self, a: &Ty) -> bool {

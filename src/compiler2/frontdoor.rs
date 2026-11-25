@@ -4,6 +4,7 @@ use std::mem::discriminant;
 use std::rc::Rc;
 
 use crate::diag::{Diagnostic, codes::PARSE_EXPECTED_TOKEN};
+use crate::dispatch_matrix::ProjectedProperty;
 use crate::parser::lexer::{Lexer, Sigil, SigilPiece, Tok, Token, is_infix_only_continuation};
 use crate::source::{SourceVersion, Span};
 use crate::telemetry::RawSpanTelemetry;
@@ -111,6 +112,7 @@ enum ExternOption {
         message: AnyValueRef,
     },
     Delivers(AnyValueRef),
+    Projects(AnyValueRef),
 }
 
 enum StructName {
@@ -717,6 +719,7 @@ impl<'t> FrontDoorParser<'t> {
                 entries.push((self.builder.atom("message"), message));
             }
             Some(ExternOption::Delivers(kind)) => entries.push((self.builder.atom("delivers"), kind)),
+            Some(ExternOption::Projects(property)) => entries.push((self.builder.atom("projects"), property)),
             None => {}
         }
         self.builder
@@ -729,15 +732,17 @@ impl<'t> FrontDoorParser<'t> {
     }
 
     /// The one option an extern may carry after its return type: `raises:`
-    /// for a result that can fail, or `delivers:` for a call that hands its
-    /// argument to the nearest handler.
+    /// for a result that can fail, `delivers:` for a call that hands its
+    /// argument to the nearest handler, or `projects:` for a call that reads
+    /// one property of its argument and nothing else.
     fn parse_extern_option(&mut self) -> Result<ExternOption, FrontDoorError> {
         self.skip_newlines();
         match self.bump() {
             Tok::KwKey(key) if key == "raises" => self.parse_extern_raises(),
             Tok::KwKey(key) if key == "delivers" => self.parse_extern_delivers(),
+            Tok::KwKey(key) if key == "projects" => self.parse_extern_projects(),
             other => Err(self.error(format!(
-                "expected `raises:` or `delivers:` after the extern return type, got {}; an extern takes one of them",
+                "expected `raises:`, `delivers:` or `projects:` after the extern return type, got {}; an extern takes one of them",
                 describe_token(other)
             ))),
         }
@@ -751,6 +756,20 @@ impl<'t> FrontDoorParser<'t> {
             }
             other => Err(self.error(format!(
                 "`delivers:` names the kind a handler receives, `:error`, `:throw` or `:exit`, got {}",
+                describe_token(other)
+            ))),
+        }
+    }
+
+    /// The property a `projects:` extern reads: `:arity`, `:tuple_size`,
+    /// `:map_size` or `:byte_size`.
+    fn parse_extern_projects(&mut self) -> Result<ExternOption, FrontDoorError> {
+        match self.bump() {
+            Tok::Atom(name) if ProjectedProperty::from_name(name).is_some() => {
+                Ok(ExternOption::Projects(self.builder.atom(name)))
+            }
+            other => Err(self.error(format!(
+                "`projects:` names the property the extern reads, `:arity`, `:tuple_size`, `:map_size` or `:byte_size`, got {}",
                 describe_token(other)
             ))),
         }

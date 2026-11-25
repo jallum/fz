@@ -1,0 +1,8 @@
+3
+40
+:thunk
+{:not_callable, 4, 5}
+{:not_callable, 4, 5}
+6
+:wrong_arity
+:wrong_arity

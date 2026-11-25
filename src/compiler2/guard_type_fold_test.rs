@@ -5,7 +5,7 @@
 
 use super::drive_harness::{Drive, EntryDispatchCapture, Settled, latest_entry_dispatch};
 use super::{FunctionId, Ty};
-use crate::dispatch_matrix::pattern::{PatternDispatchPlan, PatternGuardExpr};
+use crate::dispatch_matrix::pattern::PatternDispatchPlan;
 use crate::dispatch_matrix::{DispatchNode, Region};
 use std::rc::Rc;
 
@@ -38,6 +38,15 @@ impl Planned {
     fn function(&self, name: &str, arity: u64) -> FunctionId {
         self.settled.function(name, arity)
     }
+}
+
+fn has_region(plan: &PatternDispatchPlan<Ty>, wanted: impl Fn(&Region<Ty>) -> bool) -> bool {
+    plan.graph.nodes.iter().any(|node| {
+        matches!(
+            node,
+            DispatchNode::Test { predicate, .. } if wanted(&predicate.region)
+        )
+    })
 }
 
 fn type_question_count(plan: &PatternDispatchPlan<Ty>) -> usize {
@@ -92,16 +101,15 @@ fn is_boolean_and_is_nil_build_the_row_their_typed_parameter_builds() {
 }
 
 #[test]
-fn a_conjunct_that_is_not_a_type_test_stays_the_guard() {
+fn a_size_comparison_beside_a_type_test_is_one_more_question_and_no_guard() {
     let plan = planned().plan("partial", 1);
 
     assert_eq!(type_question_count(&plan), 1, "is_map(m) is a type question");
-    assert_eq!(plan.guards.len(), 1, "map_size(m) == 0 is the whole guard");
     assert!(
-        matches!(plan.guards[0], PatternGuardExpr::Binary { .. }),
-        "the guard left is the comparison, not the type test: {:?}",
-        plan.guards[0]
+        has_region(&plan, |region| matches!(region, Region::MapSize(0))),
+        "map_size(m) == 0 asks the map whether it has no entries"
     );
+    assert!(plan.guards.is_empty(), "nothing is left of the guard");
 }
 
 #[test]

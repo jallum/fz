@@ -579,7 +579,7 @@ the pair is physical only: no fz tuple is built, and no declaration spells it.
 - `parse_extern_raises` (`src/compiler2/frontdoor.rs`) reads the tail. `message:`
   is required, because an exception carries no default message, and it is a
   literal string: an interpolated one is refused. The exception is a module
-  alias. The tail takes one option, `raises:` or `delivers:` (below)
+  alias. The tail takes one option, `raises:`, `delivers:` or `projects:` (below)
   (`parse_extern_option`). The parts ride the
   quoted extern map as `raises` and `message`, and `decode_extern_fn` carries
   them on `FunctionSurface::extern_raises` as `ExternRaises`, with the span of
@@ -631,6 +631,24 @@ zero divisor, raises `ArithmeticError` with Elixir's message. A user declaration
 names any exception: `raises: MyApp.DivisionByZero` raises that module's
 struct from a declaration of the same symbol, so with `defexception [:message,
 code: 7]` a handler reads `e.code` as `7`.
+
+### A call that reads one property of its argument
+
+An extern that reads one property of its one argument, and nothing else, says
+which property:
+
+```fz
+extern "fz" defp fz_function_arity(fun) :: integer, projects: :arity
+```
+
+`parse_extern_projects` accepts `:arity`, `:tuple_size`, `:map_size` and
+`:byte_size`, the closed set `ProjectedProperty` names. The property rides the
+quoted extern map as `projects`, and `decode_extern_fn` carries it on
+`FunctionSurface::extern_projects` and then on `GuardExtern::projects`.
+`lib/kernel.fz` marks `fz_function_arity`, `fz_tuple_size`, `fz_map_count` and
+`fz_bitstring_byte_extent`. The declaration changes no code: it lets a guard
+that compares the extern's result with an integer constant ask the property as
+a dispatch question (see [pattern matching](pattern-matching.md#projection-questions)).
 
 ### A call that delivers its argument
 

@@ -24,8 +24,8 @@ use crate::runtime_type_predicate::{
 use fz_runtime::any_value::{AnyValue as RuntimeAnyValue, Stored, TRUE_ATOM_ID, ValueKind, struct_schema_id};
 use fz_runtime::bits::{Bin, is_bitstring_like};
 use fz_runtime::ir_runtime::{
-    bs_field_end, fz_bs_field_spec, fz_list_head_ref, fz_list_tail_ref, fz_matcher_map_get_ref,
-    fz_pinned_binary_segment_size, fz_struct_get_field_ref,
+    bs_field_end, fz_bitstring_byte_size_of, fz_bs_field_spec, fz_list_head_ref, fz_list_tail_ref, fz_map_size_of,
+    fz_matcher_map_get_ref, fz_pinned_binary_segment_size, fz_struct_get_field_ref,
 };
 use fz_runtime::process::Process;
 
@@ -673,8 +673,20 @@ impl<'a> Dispatch<'a> {
                 };
                 return Ok(unsafe { struct_schema_id(heap) } == interp_tuple_schema_id(self.runtime, *arity as usize));
             }
+            Region::Arity(arity) => {
+                if !self.resolved(subject)? {
+                    return Ok(false);
+                }
+                let predicate = RuntimeTypePredicate::callable_arity(*arity as usize);
+                return self.subject_type_matches(subject, &predicate);
+            }
             Region::Bitstring(shape) => return self.bitstring_region_hit(subject, shape),
-            Region::Equal(_) | Region::List(_) | Region::MapKind | Region::MapKeyPresent { .. } => {}
+            Region::Equal(_)
+            | Region::List(_)
+            | Region::MapKind
+            | Region::MapKeyPresent { .. }
+            | Region::MapSize(_)
+            | Region::ByteSize(_) => {}
         }
         // What is left wants the whole value, so it is built once here and the
         // region says what to ask of it.
@@ -715,10 +727,29 @@ impl<'a> Dispatch<'a> {
                 }
                 Ok(true)
             }
-            Region::Type(_) | Region::TupleArity(_) | Region::Guard(_) | Region::Bitstring(_) => {
+            Region::MapSize(size) => {
+                self.value_property_is(word, *size, |process, ref_word| fz_map_size_of(process, ref_word))
+            }
+            Region::ByteSize(size) => self.value_property_is(word, *size, |process, ref_word| {
+                fz_bitstring_byte_size_of(process, ref_word)
+            }),
+            Region::Type(_) | Region::TupleArity(_) | Region::Arity(_) | Region::Guard(_) | Region::Bitstring(_) => {
                 unreachable!("a type, arity, guard or bitstring question fetches for itself and answers above")
             }
         }
+    }
+
+    /// Whether the property `read` answers for `word` is `size`. The reads
+    /// answer -1 for a value that has no such property, so no size matches it.
+    fn value_property_is(
+        &mut self,
+        word: AnyValue,
+        size: u32,
+        read: impl FnOnce(*mut Process, u64) -> i64,
+    ) -> Result<bool, DispatchStop> {
+        let proc = self.proc();
+        let property = required(with_value_ref(proc, word, "dispatch property", |ref_word| read(proc, ref_word)).ok())?;
+        Ok(property == i64::from(size))
     }
 
     /// A bitstring question reads the subject where it is: a cursor is read
