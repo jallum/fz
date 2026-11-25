@@ -156,6 +156,23 @@ through a `BitSink`. A whole-byte segment at a byte boundary is a byte copy; a
 segment that starts mid-byte writes bits into the destination. A `float` of 16
 bits is IEEE half precision, rounded to nearest even and infinite past 65504.
 
+Native code builds a construction in place, with no call to `fz_bs_build`, when every segment
+is a whole number of bytes of a kind it writes: an `integer` of 8, 16, 32 or 64 bits in any
+signedness and byte order, and a `binary` that is unsized or has a literal size in whole bytes
+(`native_codegen/construction.rs`). It adds the fixed bytes to the length each unsized binary's
+header word gives. A total of at most `SHARED_BIN_THRESHOLD_BYTES` is placed through
+`place_inline_bitstring` (`native_codegen/place.rs`), which writes the header and zeroes the words
+after the payload as `Heap::alloc_inline_bitstring` does, as one object size when the total is a
+constant and one of five when it is not, each counted as a `Bitstring` site. A larger total calls
+`fz_bs_alloc_unfilled(process, byte_len)`, which allocates the shared buffer and view
+`alloc_bitstring_with` allocates and leaves the payload to the caller, who reads its address from the
+view. The result is placed before any binary's address is read; placing only finds room, and a collection runs only at a reduction boundary, so a binary's
+address does not move. Each integer is a store at its offset
+(byte-swapped when its byte order is not the machine's) and each binary is one `memcpy`. A
+`float`, `utf`, `bits`, a mid-byte segment or a size read at run time calls `fz_bs_build`.
+`construction_test.rs` runs the instructions against `construction::build` over integers of each
+width and order and binaries of every form and length class.
+
 Before a construction writes anything, it tests every segment's contract
 (`src/compiler2/jobs/body/construction_contract.rs`): an `integer` takes an
 integer, a `float` a number, an unsized `binary` a binary (or a bitstring of

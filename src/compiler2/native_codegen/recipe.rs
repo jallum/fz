@@ -762,4 +762,4 @@ pub(super) fn constant_of(b: &FunctionBuilder<'_>, value: ir::Value) -> Option<i
 
 #[cfg(test)]
 #[path = "recipe_test.rs"]
-mod recipe_test;
+pub(super) mod recipe_test;

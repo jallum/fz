@@ -2674,6 +2674,48 @@ fn a_proven_four_byte_aligned_field_calls_no_field_reader() {
     }
 }
 
+/// A construction whose every field is a whole number of bytes (`<<a::8, b::16,
+/// c::binary>>`) is built in place: the compiled code adds up the length, places
+/// the result, stores the integers and copies the binary, and never calls the
+/// runtime's builder. The room function is the call for a heap that is out of
+/// room, and the unfilled-binary function is the call for a result too large to
+/// place inline.
+#[test]
+fn a_byte_aligned_construction_calls_no_builder() {
+    let source_path = unique_temp_path("fz2_construction_row", ".fz");
+    let clif_path = unique_temp_path("fz2_construction_row", ".clif");
+    write(
+        &source_path,
+        "def build(a, b, c) when is_integer(a) and is_integer(b) and is_binary(c),\n\
+         \x20 do: <<a::8, b::16, c::binary>>\n\
+         def main() do\n  dbg(build(1, 2, \"abc\"))\n  dbg(build(3, 4, <<5, 6>>))\n  nil\nend\n",
+    )
+    .expect("write construction fixture");
+    let spec = format!("clif={}", clif_path.display());
+    let out = run_fz2(&[
+        OsStr::new("run"),
+        OsStr::new("--dump"),
+        OsStr::new(&spec),
+        source_path.as_os_str(),
+    ]);
+    assert!(
+        out.status.success(),
+        "the program must run; stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let clif = std::fs::read_to_string(&clif_path).expect("read the clif dump");
+    let _ = remove_file(&source_path);
+    let _ = remove_file(&clif_path);
+    assert!(!clif.contains("= fz_bs_build\n"), "compiled code imports `fz_bs_build`");
+    for symbol in ["fz_heap_room", "fz_bs_alloc_unfilled", "memcpy"] {
+        let import = format!("= {symbol}\n");
+        assert!(
+            clif.contains(&import),
+            "the dump must import `{symbol}`, or this test observes nothing"
+        );
+    }
+}
+
 /// The eight comparisons of two proven binaries decide in place unless the
 /// bytes must be read: the compiled code imports each row's own `fz_op_*_bb`
 /// function for that one cold call, and neither the generic comparator nor a

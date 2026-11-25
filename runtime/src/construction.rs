@@ -140,6 +140,14 @@ pub fn build(process: &mut Process, fields: &[FzBsField]) -> u64 {
     value.ref_word().raw_word()
 }
 
+/// A whole-byte binary of `byte_len` bytes whose payload the caller writes,
+/// allocated exactly as `build` allocates its result. Compiled code builds a
+/// result too large to place inline this way and fills the buffer itself.
+pub fn alloc_unfilled(process: &mut Process, byte_len: usize) -> u64 {
+    let value = process.alloc_bitstring_with(byte_len, byte_len as u64 * 8, |_| {});
+    value.ref_word().raw_word()
+}
+
 /// The IEEE 754 binary16 bits nearest `value`, ties to even; a value past the
 /// largest finite half is infinite, as the BEAM encodes it.
 pub fn f64_to_half_bits(value: f64) -> u16 {

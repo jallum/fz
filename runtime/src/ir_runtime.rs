@@ -659,6 +659,14 @@ pub extern "C" fn fz_bs_build(process: *mut Process, fields: *const FzBsField, c
     construction::build(unsafe { &mut *process }, fields)
 }
 
+/// A binary of `byte_len` whole bytes whose payload the caller writes, on the
+/// path of a construction the compiled code fills itself. See
+/// [`crate::construction::alloc_unfilled`].
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_bs_alloc_unfilled(process: *mut Process, byte_len: u64) -> u64 {
+    construction::alloc_unfilled(unsafe { &mut *process }, byte_len as usize)
+}
+
 /// A total integer arithmetic result returned by value at the C boundary.
 /// `failed` is a canonical `u64` 0 or 1, deliberately not Rust `bool`.
 #[repr(C)]

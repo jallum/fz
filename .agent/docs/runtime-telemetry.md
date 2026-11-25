@@ -199,8 +199,8 @@ An allocation site is one place that puts an object on a heap
   through `emit_place` (`native_codegen/place.rs`), the one emitter of the
   bump: a non-tail call's frame, the frame a budget yield leaves, each cell a
   list literal or a cons builds, each struct or tuple that is not a constant,
-  each closure with captures and each int, float or reference boxed for an `any`
-  slot are compiled sites. The runtime's own continuation site is the
+  each closure with captures, each int, float or reference boxed for an `any`
+  slot, and each inline bitstring a slice copy or a whole-byte construction places are compiled sites. The runtime's own continuation site is the
   copy `fz_frame_for_write` makes of an old frame.
 - A **runtime site** is a runtime function that allocates:
   `Heap::alloc_at` takes a `RuntimeAllocSite`, which fixes the object's kind,
