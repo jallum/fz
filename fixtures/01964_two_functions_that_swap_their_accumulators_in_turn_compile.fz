@@ -1,0 +1,20 @@
+#---
+# purpose: "Two functions that hand their accumulators to each other, wrapping one in a tag, compile and match Elixir"
+# oracle: self
+# oracle.stamp: b4a9aeba2c4df865
+#---
+defmodule M do
+  def f(0, a, b), do: {a, b}
+  def f(n, a, b), do: g(n - 1, b, {a, :f})
+  def g(0, a, b), do: [a, b]
+  def g(n, a, b), do: f(n - 1, {b, :g}, a)
+end
+
+defmodule Main do
+  def main() do
+    IO.inspect(M.f(5, :x, :y))
+    IO.inspect(M.g(4, 1, 2))
+  end
+end
+
+Main.main()
