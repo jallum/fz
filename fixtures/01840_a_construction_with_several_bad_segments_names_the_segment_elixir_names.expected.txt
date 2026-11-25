@@ -1,0 +1,37 @@
+{:append_then_unsized, ArgumentError, "construction of binary failed: segment 2 of type 'binary': expected a binary but got: :b"}
+{:three_integers, ArgumentError, "construction of binary failed: segment 1 of type 'integer': expected an integer but got: :a"}
+{:first_ok_then_two_bad, ArgumentError, "construction of binary failed: segment 2 of type 'integer': expected an integer but got: :b"}
+{:last_of_three_bad, ArgumentError, "construction of binary failed: segment 3 of type 'integer': expected an integer but got: :c"}
+{:append_then_integer, ArgumentError, "construction of binary failed: segment 1 of type 'binary': expected a binary but got: :a"}
+{:integer_then_unsized, ArgumentError, "construction of binary failed: segment 2 of type 'binary': expected a binary but got: :b"}
+{:integer_then_negative_size, ArgumentError, "construction of binary failed: segment 2 of type 'integer': expected a non-negative integer as size but got: -1"}
+{:negative_size_then_integer, ArgumentError, "construction of binary failed: segment 1 of type 'integer': expected a non-negative integer as size but got: -1"}
+{:integer_then_size_not_integer, ArgumentError, "construction of binary failed: segment 2 of type 'integer': expected a non-negative integer as size but got: :x"}
+{:integer_then_code_point, ArgumentError, "construction of binary failed: segment 2 of type 'utf8': expected a non-negative integer encodable as utf8 but got: 1114112"}
+{:code_point_then_integer, ArgumentError, "construction of binary failed: segment 1 of type 'utf8': expected a non-negative integer encodable as utf8 but got: 1114112"}
+{:integer_then_utf16_code_point, ArgumentError, "construction of binary failed: segment 1 of type 'integer': expected an integer but got: :a"}
+{:integer_then_utf32_code_point, ArgumentError, "construction of binary failed: segment 2 of type 'utf32': expected a non-negative integer encodable as utf32 but got: 1114112"}
+{:utf16_code_point_then_integer, ArgumentError, "construction of binary failed: segment 1 of type 'utf16': expected a non-negative integer encodable as utf16 but got: 1114112"}
+{:two_code_points, ArgumentError, "construction of binary failed: segment 1 of type 'utf32': expected a non-negative integer encodable as utf32 but got: 1114112"}
+{:integer_then_float_size, ArgumentError, "construction of binary failed: segment 1 of type 'integer': expected an integer but got: :a"}
+{:float_size_then_integer, ArgumentError, "construction of binary failed: segment 1 of type 'float': expected one of the supported sizes 16, 32, or 64 but got: 17"}
+{:float_size_before_float_value, ArgumentError, "construction of binary failed: segment 1 of type 'float': expected one of the supported sizes 16, 32, or 64 but got: 17"}
+{:float_then_integer, ArgumentError, "construction of binary failed: segment 1 of type 'float': expected a float or an integer but got: :a"}
+{:integer_then_float, ArgumentError, "construction of binary failed: segment 1 of type 'integer': expected an integer but got: :a"}
+{:append_float_integer, ArgumentError, "construction of binary failed: segment 1 of type 'binary': expected a binary but got: :a"}
+{:float_integer_unsized, ArgumentError, "construction of binary failed: segment 3 of type 'binary': expected a binary but got: :c"}
+{:bits_append_then_two_unsized, ArgumentError, "construction of binary failed: segment 3 of type 'binary': expected a binary but got: :b"}
+{:short_then_unsized, ArgumentError, "construction of binary failed: segment 2 of type 'binary': expected a binary but got: :a"}
+{:unsized_then_short, ArgumentError, "construction of binary failed: segment 1 of type 'binary': expected a binary but got: :a"}
+{:short_then_integer, ArgumentError, "construction of binary failed: segment 1 of type 'binary': the value <<1, 2, 3, 4, 5>> is shorter than the size of the segment"}
+{:integer_then_short, ArgumentError, "construction of binary failed: segment 1 of type 'integer': expected an integer but got: :a"}
+{:negative_size_then_unsized, ArgumentError, "construction of binary failed: segment 1 of type 'integer': expected a non-negative integer as size but got: -1"}
+{:append_then_negative_size, ArgumentError, "construction of binary failed: segment 2 of type 'integer': expected a non-negative integer as size but got: -1"}
+{:append_then_size_not_integer, ArgumentError, "construction of binary failed: segment 2 of type 'integer': expected a non-negative integer as size but got: :x"}
+{:append_then_code_point, ArgumentError, "construction of binary failed: segment 2 of type 'utf8': expected a non-negative integer encodable as utf8 but got: 1114112"}
+{:ragged_append_then_code_point, ArgumentError, "construction of binary failed: segment 2 of type 'utf8': expected a non-negative integer encodable as utf8 but got: 1114112"}
+{:ragged_append_then_integer, ArgumentError, "construction of binary failed: segment 1 of type 'binary': the size of the value <<1::size(3)>> is not a multiple of the unit for the segment"}
+{:integer_then_ragged_unsized, ArgumentError, "construction of binary failed: segment 1 of type 'integer': expected an integer but got: :a"}
+{:two_ragged_appends, ArgumentError, "construction of binary failed: segment 1 of type 'binary': the size of the value <<1::size(3)>> is not a multiple of the unit for the segment"}
+{:sized_lead_then_unsized, ArgumentError, "construction of binary failed: segment 2 of type 'binary': expected a binary but got: :b"}
+{:append_then_append_to_bits, ArgumentError, "construction of binary failed: segment 1 of type 'binary': expected a binary but got: :a"}

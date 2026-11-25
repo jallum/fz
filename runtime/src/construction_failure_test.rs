@@ -39,6 +39,11 @@ fn every_segment_keeping_its_contract_breaks_nothing() {
 fn a_size_an_unsized_binary_and_a_code_point_are_checked_before_any_value_is_written() {
     let unsized_atom = [segment(BitType::Integer, ATOM), segment(BitType::Binary, ATOM)];
     assert_eq!(first_breach(&unsized_atom), Some((1, Breach::NotABinary)));
+    let utf32_surrogate = [
+        segment(BitType::Integer, ATOM),
+        segment(BitType::Utf32, Shape::Int(0xDC00)),
+    ];
+    assert_eq!(first_breach(&utf32_surrogate), Some((1, Breach::NotACodePoint)));
     let surrogate = [
         segment(BitType::Integer, ATOM),
         segment(BitType::Utf8, Shape::Int(0xDC00)),
@@ -49,6 +54,47 @@ fn a_size_an_unsized_binary_and_a_code_point_are_checked_before_any_value_is_wri
         sized(BitType::Integer, Shape::Int(5), ATOM),
     ];
     assert_eq!(first_breach(&bad_size), Some((1, Breach::Size)));
+}
+
+#[test]
+fn a_leading_unsized_binary_is_an_append_checked_after_sizing_and_before_writing() {
+    let two_unsized = [segment(BitType::Binary, ATOM), segment(BitType::Binary, ATOM)];
+    assert_eq!(first_breach(&two_unsized), Some((1, Breach::NotABinary)));
+    let append_then_bad_size = [
+        segment(BitType::Bits, ATOM),
+        sized(BitType::Integer, Shape::Int(5), ATOM),
+    ];
+    assert_eq!(first_breach(&append_then_bad_size), Some((1, Breach::Size)));
+    let append_then_bad_value = [segment(BitType::Binary, ATOM), segment(BitType::Integer, ATOM)];
+    assert_eq!(first_breach(&append_then_bad_value), Some((0, Breach::NotABinary)));
+    let ragged_append = [
+        segment(BitType::Binary, bits(3)),
+        segment(BitType::Utf8, Shape::Int(-1)),
+    ];
+    assert_eq!(first_breach(&ragged_append), Some((1, Breach::NotACodePoint)));
+    let sized_lead = [
+        sized(BitType::Binary, ATOM, Shape::Int(2)),
+        segment(BitType::Binary, ATOM),
+    ];
+    assert_eq!(first_breach(&sized_lead), Some((1, Breach::NotABinary)));
+}
+
+#[test]
+fn a_utf16_code_point_and_a_float_size_are_checked_while_writing() {
+    let utf16 = [
+        segment(BitType::Integer, ATOM),
+        segment(BitType::Utf16, Shape::Int(0x110000)),
+    ];
+    assert_eq!(first_breach(&utf16), Some((0, Breach::NotAnInteger)));
+    let float_size = [
+        segment(BitType::Integer, ATOM),
+        sized(BitType::Float, Shape::Float, Shape::Int(17)),
+    ];
+    assert_eq!(first_breach(&float_size), Some((0, Breach::NotAnInteger)));
+    assert_eq!(
+        first_breach(&[sized(BitType::Float, ATOM, Shape::Int(17))]),
+        Some((0, Breach::FloatSize))
+    );
 }
 
 #[test]

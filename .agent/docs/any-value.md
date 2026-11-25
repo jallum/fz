@@ -225,9 +225,11 @@ The miss calls `Kernel.__construction_failed__/1` with each segment's
 `{type tag, value, size, unit}`. It raises `%ArgumentError{}` with the message
 `fz_construction_failure_message` words (`runtime/src/construction_failure.rs`),
 so the Raisable analysis sees an exact `ArgumentError`. The runtime picks the
-segment the BEAM reports by the BEAM's two passes: sizes, unsized binaries and
-code points first, then values, lengths and units in segment order. The write functions therefore panic on a
-value outside its segment's contract as a broken invariant, not as a user error.
+segment the BEAM reports by the BEAM's three steps: sizes, unsized binaries
+(but a leading one) and `utf8`/`utf32` code points of every segment first; then
+the leading unsized binary or `bits`, which is an append; then float sizes,
+values, `utf16` code points, lengths and units in segment order (fixture
+`01840`). The write functions therefore panic on a value outside its segment's contract as a broken invariant, not as a user error.
 
 `Heap::alloc_bitstring_with(byte_len, bit_len, fill)` is the allocator under
 `alloc_bitstring`: it picks the storage and hands `fill` the destination bytes,
