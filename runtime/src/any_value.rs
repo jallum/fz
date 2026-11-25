@@ -2495,18 +2495,15 @@ pub mod debug {
         format!("{whole}.{fraction}")
     }
 
-    fn is_printable_utf8(s: &str) -> bool {
-        for c in s.chars() {
-            let cp = c as u32;
-            // Whitelisted control codepoints (Elixir-compatible).
-            if matches!(cp, 0x07 | 0x08 | 0x09 | 0x0A | 0x0B | 0x0C | 0x0D | 0x1B | 0x7F) {
-                continue;
-            }
-            if cp < 0x20 || (0x80..=0x9F).contains(&cp) {
-                return false;
-            }
-        }
-        true
+    /// Elixir's `String.printable?/1` on a string: every codepoint is a
+    /// printable one. Printable are the ASCII graphic range with DEL, the
+    /// controls `\a` through `\r` and `\e`, and every codepoint from U+00A0
+    /// except the noncharacters U+FFFE and U+FFFF.
+    pub fn is_printable_utf8(s: &str) -> bool {
+        s.chars().all(|c| {
+            matches!(c as u32, 0x20..=0x7F | 0x07..=0x0D | 0x1B)
+                || (c as u32 >= 0xA0 && !matches!(c as u32, 0xFFFE | 0xFFFF))
+        })
     }
 
     /// Elixir's string escaper (`Code.Identifier.escape/2` with `"` as the

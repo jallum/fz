@@ -1067,6 +1067,15 @@ pub extern "C" fn fz_grapheme_size(_process: *mut Process, ref_word: u64) -> i64
     boundary.expect("non-empty text has a boundary") as i64
 }
 
+/// Whether a binary is a valid UTF-8 string of printable codepoints: the
+/// answer `String.printable?/1` gives, and the one `inspect` uses to choose a
+/// quoted string over `<<...>>`.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_binary_printable(_process: *mut Process, ref_word: u64) -> u64 {
+    let bytes = unsafe { Bin::of_binary(ref_word) }.bytes();
+    u64::from(std::str::from_utf8(bytes).is_ok_and(crate::any_value::debug::is_printable_utf8))
+}
+
 /// Intern a binary as an atom, the way `String.to_atom/1` does.
 ///
 /// Atoms are node-global and never collected, which is why Elixir warns about

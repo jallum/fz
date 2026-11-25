@@ -1532,6 +1532,31 @@ fn first_grapheme_size(bytes: &[u8]) -> i64 {
     })
 }
 
+/// Whether `bytes` is printable, asked through the extern.
+fn binary_is_printable(bytes: &[u8]) -> bool {
+    with_process(|process| {
+        let bits = fz_alloc_bitstring_const(
+            process,
+            bytes.as_ptr() as u64,
+            bytes.len() as u64,
+            bytes.len() as u64 * 8,
+        );
+        fz_binary_printable(process, bits) == 1
+    })
+}
+
+/// Intent: a binary is printable when it is valid UTF-8 whose codepoints all
+/// print, so bytes that are not UTF-8 never are.
+#[test]
+fn a_binary_is_printable_when_it_is_valid_utf8_of_printable_codepoints() {
+    assert!(binary_is_printable(b""));
+    assert!(binary_is_printable("a\n\u{7F}\u{E9}".as_bytes()));
+    assert!(!binary_is_printable(&[0xEF, 0xBF, 0xBF]));
+    assert!(!binary_is_printable(&[0xC2, 0x80]));
+    assert!(!binary_is_printable(&[0xE9]));
+    assert!(!binary_is_printable(&[0x00]));
+}
+
 /// A grapheme is an extended grapheme cluster, so the first one of each
 /// string below spans every codepoint a reader sees as one character.
 #[test]

@@ -1,0 +1,36 @@
+#---
+# purpose: inspect and String.printable?/1 agree with Elixir on what prints: U+FFFE and U+FFFF, the C1 controls and bytes that are not UTF-8 stay as bytes, while DEL, U+00A0, U+FDD0, U+E000, U+FFFD and U+10FFFF are printable
+# oracle: self
+# oracle.stamp: 52038a1c4628046b
+#---
+defmodule Main do
+  def main() do
+    Enum.each(
+      [
+        <<0xEF, 0xBF, 0xBF>>,
+        <<0xEF, 0xBF, 0xBE>>,
+        <<0xC2, 0x80>>,
+        <<0xC2, 0x9F>>,
+        <<0xC2, 0xA0>>,
+        <<0x7F>>,
+        "é",
+        <<0xFF>>,
+        <<0xE9>>,
+        <<0xED, 0xA0, 0x80>>,
+        <<0xC0, 0x80>>,
+        "\u{10FFFF}",
+        "\u{FDD0}",
+        "\u{E000}",
+        "\u{FFFD}",
+        <<0x1B>>,
+        <<0x1F>>,
+        <<0>>,
+        "a\n",
+        ""
+      ],
+      fn text -> IO.inspect({text, String.printable?(text)}) end
+    )
+  end
+end
+
+Main.main()

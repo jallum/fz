@@ -455,3 +455,15 @@ mod budget {
         assert_eq!(Limit::from_options(proc, unbounded), Infinity);
     }
 }
+
+/// Intent: the printable set is Elixir's: from U+00A0 up everything prints
+/// but the noncharacters U+FFFE and U+FFFF, which stay as bytes.
+#[test]
+fn noncharacters_fail_and_the_rest_above_the_c1_controls_pass() {
+    assert!(!is_printable_utf8("\u{FFFE}"));
+    assert!(!is_printable_utf8("\u{FFFF}"));
+    assert!(!is_printable_utf8("ok\u{FFFF}"));
+    for printable in ["\u{A0}", "\u{FDD0}", "\u{E000}", "\u{FFFD}", "\u{10000}", "\u{10FFFF}"] {
+        assert!(is_printable_utf8(printable), "{printable:?}");
+    }
+}
