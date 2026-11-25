@@ -94,7 +94,7 @@ fz_map_get_ref(process, map, key_word, key_kind)    -> ref
 fz_map_count(process, map) / fz_map_to_list(process, map) / fz_map_keys(process, map) / fz_map_values(process, map)
 fz_map_has_key(process, map, key_word, key_kind)    -> 0 or 1
 fz_map_delete(process, map, key_word, key_kind)     -> map ref
-fz_list_head_ref(list) / fz_list_tail_ref(list)
+fz_list_head_ref(list) / fz_list_tail_ref(list)   -- the interpreter and `hd/1`, `tl/1`; compiled patterns load the cell inline
 fz_struct_get_field_ref(process, struct, field_offset)
 fz_value_eq_ref / fz_value_eq_widening_ref(process, a_word, a_kind, b_word, b_kind) -> 0 or 1
 fz_value_cmp_ref(process, a_word, a_kind, b_word, b_kind)  -> -1, 0 or 1
@@ -105,8 +105,8 @@ fz_binary_part(process, binary, from, size)
 ```
 
 **Dynamic reads return refs into existing storage, not copies.**
-`fz_map_get_ref`, `fz_list_head_ref`, and
-`fz_struct_get_field_ref` build a ref over the slot already living in the
+`fz_map_get_ref`, `fz_list_head_ref` (and the compiled cell read that mirrors it,
+below), and `fz_struct_get_field_ref` build a ref over the slot already living in the
 container. For an int or float slot the returned ref points straight at that
 payload word (`any_value_ref_from_storage`); for a heap slot it carries the
 slot's heap pointer; for an atom slot it is the atom ref of the id the slot
@@ -120,6 +120,18 @@ a new `{k, v}` tuple, so nothing is decoded or boxed. `Enumerable.Map`'s
 `reduce` and `reduce_while` are `List.reduce` and `List.reduce_while` over
 `Map.to_list`, as Elixir's are over `:maps.to_list`, and `member?` is the match
 `%{^key => ^value}`.
+
+**Compiled code reads a list cell with loads.** `native_codegen/list_cell.rs`
+is the one home of the cell layout: the head word at `LIST_CONS_HEAD_OFFSET`,
+the link word at `LIST_CONS_LINK_OFFSET`, and the writer, cons reuse, the share
+barrier and every reader go through it. An integer or float head is the word at
++0; any other head is that word with the kind the link holds, built as
+`list_head_ref` builds it (a boxed scalar's ref names the head word in the
+cell). A tail is the link's address under the list kind when the type proves a
+proper list; otherwise the link's terminator flag (bit 63) is tested and only a
+terminated link calls `fz_list_tail_ref` for the value the list ends in. The
+inline reads carry no kind check: the type, or the cons edge of the dispatch
+plan that projects the head, is the authority.
 
 `fz_binary_part` is `:erlang.binary_part/3` once the bounds are checked: it
 slices `size` bytes from byte `from` through `Process::slice`, so a part over

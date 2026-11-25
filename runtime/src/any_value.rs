@@ -1067,6 +1067,9 @@ const _: () = {
     assert!(mem::align_of::<ListCons>() == 8);
 };
 
+/// Where a list cell keeps its head's payload word.
+pub const LIST_CONS_HEAD_OFFSET: usize = mem::offset_of!(ListCons, head);
+
 /// Where a list cell keeps its link word, which holds the cell's alias bit.
 pub const LIST_CONS_LINK_OFFSET: usize = mem::offset_of!(ListCons, link);
 

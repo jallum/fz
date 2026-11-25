@@ -164,8 +164,8 @@ fn routable_alternatives(
 /// erases whatever its own sub-test erases. So a value can satisfy every
 /// question an arm asks and still lie outside that arm's surface. Seat such an
 /// arm first and the value lands in a body whose representation never named it
-/// -- `fz_list_head_int_ref` reads a list of atoms as a list of ints and aborts
-/// on the JIT and native doors, while the interpreter's dynamic tags hide it.
+/// -- the integer head read takes a list of atoms for a list of ints on the JIT
+/// and native doors, while the interpreter's dynamic tags hide it.
 ///
 /// Call that a BLIND ESCAPE: `early` is seated before `late`, and at some
 /// position the two ask the runtime a question that cannot separate them,

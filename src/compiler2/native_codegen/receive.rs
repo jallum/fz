@@ -65,16 +65,17 @@ use fz_runtime::any_value::{AnyValueRef, FALSE_ATOM_ID, NIL_ATOM_ID, Stored, TRU
 use fz_runtime::ir_runtime::{
     fz_binary_equals_literal, fz_bitstring_byte_size_of, fz_box_float_for_any, fz_box_int_for_any,
     fz_box_opaque_for_any, fz_bs_field_end, fz_bs_field_spec, fz_bs_read_binary_ref, fz_bs_read_int_ref,
-    fz_function_arity, fz_list_head_ref, fz_list_is_cons, fz_list_tail_ref, fz_map_is_map, fz_map_named_schema_ref,
-    fz_map_size_of, fz_matcher_map_get_ref, fz_pinned_binary_segment_size, fz_receive_pinned_ref, fz_stored_ref,
-    fz_struct_get_field_ref, fz_struct_get_named_field_ref, fz_struct_is_named_ref, fz_struct_schema_id_ref,
-    fz_truthy_ref, fz_type_of, fz_unbox_atom, fz_unbox_float, fz_unbox_int, fz_unbox_opaque, fz_value_cmp_ref,
-    fz_value_eq_ref, fz_value_eq_widening_ref,
+    fz_function_arity, fz_list_is_cons, fz_map_is_map, fz_map_named_schema_ref, fz_map_size_of, fz_matcher_map_get_ref,
+    fz_pinned_binary_segment_size, fz_receive_pinned_ref, fz_stored_ref, fz_struct_get_field_ref,
+    fz_struct_get_named_field_ref, fz_struct_is_named_ref, fz_struct_schema_id_ref, fz_truthy_ref, fz_type_of,
+    fz_unbox_atom, fz_unbox_float, fz_unbox_int, fz_unbox_opaque, fz_value_cmp_ref, fz_value_eq_ref,
+    fz_value_eq_widening_ref,
 };
 use std::cell::RefCell;
 
 use super::BitstringLiterals;
 use super::binary_compare::{BinaryCompare, emit_comparison_of_refs};
+use super::list_cell::{ListShape, emit_head_ref, emit_tail_ref};
 use super::prim::{c_pair_return_types, emit_proven_binary_bit_len};
 use super::repr::ExternLane;
 use super::runtime_call::{RuntimeCaller, RuntimeFn, runtime_call, runtime_call_ref, runtime_call1, runtime_condition};
@@ -722,13 +723,13 @@ fn resolve_dispatch_subject<M: cranelift_module::Module>(
             ProjectionKind::ListHead => {
                 let parent = resolve_dispatch_subject(body, ctx, projection.source, state)?;
                 let parent_ref = emit_receive_value_ref(body, ctx, parent)?;
-                let out_ref = runtime_call1!(body, fz_list_head_ref, [parent_ref]);
+                let out_ref = emit_head_ref(body, parent_ref);
                 receive_value_from_ref_word(body.b, out_ref)
             }
             ProjectionKind::ListTail => {
                 let parent = resolve_dispatch_subject(body, ctx, projection.source, state)?;
                 let parent_ref = emit_receive_value_ref(body, ctx, parent)?;
-                let out_ref = runtime_call1!(body, fz_list_tail_ref, [parent_ref]);
+                let out_ref = emit_tail_ref(body, parent_ref, ListShape::MayEndInAValue);
                 receive_value_from_ref_word(body.b, out_ref)
             }
             ProjectionKind::MapValue { key } => {
@@ -1030,7 +1031,7 @@ impl<'f, M: cranelift_module::Module> RuntimeTestEmitter<'f> for ReceiveTestEmit
 
     fn list_head(&mut self, value: ReceiveValue) -> Result<ReceiveValue, CodegenError> {
         let list_ref = emit_receive_value_ref(self.body, self.ctx, value)?;
-        let head_ref = runtime_call1!(self.body, fz_list_head_ref, [list_ref]);
+        let head_ref = emit_head_ref(self.body, list_ref);
         Ok(receive_value_from_ref_word(self.body.b, head_ref))
     }
 

@@ -1,0 +1,30 @@
+#---
+# purpose: "The head of a list cell reads back as the value stored, whether it is an integer, a float, an atom, a tuple, a binary, a list or a map, as in Elixir"
+# kind: run
+# root: main/0
+# oracle: self
+# oracle.stamp: 47a916d08d01b5d4
+#---
+defmodule Main do
+  def first([h | _]), do: h
+
+  def sum_floats([], acc), do: acc
+  def sum_floats([h | t], acc), do: sum_floats(t, acc + h)
+
+  def atoms([], acc), do: Enum.reverse(acc)
+  def atoms([h | t], acc), do: atoms(t, [{h, h == :b} | acc])
+
+  def main() do
+    IO.inspect(first([7, 8]))
+    IO.inspect(first([-2.5, 1.0]))
+    IO.inspect(first([:a, :b]))
+    IO.inspect(first([{1, :two, 3.0}]))
+    IO.inspect(first(["bytes", 1]))
+    IO.inspect(first([[1, 2], 3]))
+    IO.inspect(first([%{k: :v}]))
+    IO.inspect(sum_floats([0.5, 1.25, 2.0], 0.0))
+    IO.inspect(atoms([:a, :b, :c], []))
+  end
+end
+
+Main.main()

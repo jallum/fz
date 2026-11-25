@@ -6,6 +6,7 @@
 //! semantic lowering code should ask this context for operations, while
 //! runtime helper calls remain an implementation detail behind those methods.
 
+use super::list_cell::{self, ListShape};
 use super::recipe::{emit_box, emit_object};
 use super::type_pred::ShareClass;
 use super::*;
@@ -16,16 +17,14 @@ use cranelift_frontend::FunctionBuilder;
 use cranelift_module::{DataId, FuncId, Module};
 use fz_runtime::any_value::{
     AnyValueRef, AnyValueRefPacking, BINARY_SHARED_MASK, CLOSURE_CAPTURES_OFFSET, CLOSURE_CODE_OFFSET,
-    CLOSURE_FLAGS_CAPTURED_MASK, CLOSURE_LAYOUT_FLAGS_SHIFT, FALSE_ATOM_ID, LIST_CONS_LINK_OFFSET,
-    LIST_LINK_ALIAS_MASK, NIL_ATOM_ID, STRUCT_HEADER_SCHEMA_SHIFT, STRUCT_HEADER_SHARED_MASK, SlotLayout, StructName,
-    TaggedRefArch, ValueKind, struct_header_word,
+    CLOSURE_FLAGS_CAPTURED_MASK, CLOSURE_LAYOUT_FLAGS_SHIFT, FALSE_ATOM_ID, NIL_ATOM_ID, STRUCT_HEADER_SCHEMA_SHIFT,
+    STRUCT_HEADER_SHARED_MASK, SlotLayout, StructName, TaggedRefArch, ValueKind, struct_header_word,
 };
 use fz_runtime::ir_runtime::{
     fz_closure_halt_kind_ref, fz_closure_set_capture_atom, fz_closure_set_capture_f64, fz_closure_set_capture_i64,
     fz_closure_set_capture_ref, fz_halt_implicit_atom, fz_halt_implicit_f64, fz_halt_implicit_i64,
-    fz_halt_implicit_ref, fz_list_head_float_ref, fz_list_head_int_ref, fz_list_head_ref, fz_list_tail_ref,
-    fz_number_ref_float_bits, fz_share_list_spine, fz_struct_copy, fz_struct_store_ref, fz_truthy_ref, fz_type_of,
-    fz_unbox_atom, fz_unbox_float, fz_unbox_int,
+    fz_halt_implicit_ref, fz_number_ref_float_bits, fz_share_list_spine, fz_struct_copy, fz_struct_store_ref,
+    fz_truthy_ref, fz_type_of, fz_unbox_atom, fz_unbox_float, fz_unbox_int,
 };
 use fz_runtime::process_abi::PROCESS_BINARIES_SHARED_OFFSET;
 use fz_runtime::reuse_site::ReuseKind;
@@ -316,16 +315,13 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
         let check = self.b.create_block();
         let walk = self.b.create_block();
         let done = self.b.create_block();
-        let cell = address_field(self.b, reference);
+        let cell = list_cell::cell_address(self.b, reference);
         self.b.ins().brif(cell, check, &[], done, &[]);
 
         self.b.switch_to_block(check);
         self.b.seal_block(check);
-        let link = self
-            .b
-            .ins()
-            .load(types::I64, MemFlagsData::trusted(), cell, LIST_CONS_LINK_OFFSET as i32);
-        let shared = self.b.ins().band_imm_u(link, LIST_LINK_ALIAS_MASK as i64);
+        let link = list_cell::load_link(self.b, cell);
+        let shared = list_cell::link_is_shared(self.b, link);
         self.b.ins().brif(shared, done, &[], walk, &[]);
 
         self.b.switch_to_block(walk);
@@ -537,20 +533,24 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
         emit_object(self, "Heap::alloc_closure", &args).reference
     }
 
+    /// The ref word of the head of the cell `list_ref` names.
     pub(crate) fn list_head(&mut self, list_ref: ir::Value) -> ir::Value {
-        runtime_call1!(self, fz_list_head_ref, [list_ref])
+        list_cell::emit_head_ref(self, list_ref)
     }
 
     pub(crate) fn list_head_int(&mut self, list_ref: ir::Value) -> ir::Value {
-        runtime_call1!(self, fz_list_head_int_ref, [list_ref])
+        let cell = list_cell::cell_address(self.b, list_ref);
+        list_cell::load_head(self.b, cell, types::I64)
     }
 
     pub(crate) fn list_head_float(&mut self, list_ref: ir::Value) -> ir::Value {
-        runtime_call1!(self, fz_list_head_float_ref, [list_ref])
+        let cell = list_cell::cell_address(self.b, list_ref);
+        list_cell::load_head(self.b, cell, types::F64)
     }
 
-    pub(crate) fn list_tail(&mut self, list_ref: ir::Value) -> ir::Value {
-        runtime_call1!(self, fz_list_tail_ref, [list_ref])
+    /// The ref word of what follows the cell `list_ref` names.
+    pub(crate) fn list_tail(&mut self, list_ref: ir::Value, shape: ListShape) -> ir::Value {
+        list_cell::emit_tail_ref(self, list_ref, shape)
     }
 
     /// The address of capture `index`'s raw slot.

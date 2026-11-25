@@ -1,0 +1,9 @@
+7
+-2.5
+:a
+{1, :two, 3.0}
+"bytes"
+[1, 2]
+%{k: :v}
+3.75
+[a: false, b: true, c: false]

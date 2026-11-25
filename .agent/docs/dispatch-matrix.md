@@ -733,9 +733,9 @@ compiled for: a list head says nothing about the tail, and a tuple position
 erases whatever its own sub-test erases.
 So a value can satisfy every question an arm asks and still lie outside that
 arm's surface, and seating that arm first routes the value into a body whose
-representation never named it — `fz_list_head_int_ref` reads a list of atoms as
-a list of ints and aborts on the JIT and native doors, while the interpreter's
-dynamic tags hide it.
+representation never named it — the integer head read takes a list of atoms for
+a list of ints on the JIT and native doors, while the interpreter's dynamic tags
+hide it.
 
 Call that a BLIND ESCAPE: `early` is seated before `late`, and at some position
 the two tests both admit some value on an axis whose projection erases what the

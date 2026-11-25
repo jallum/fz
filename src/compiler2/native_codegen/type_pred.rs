@@ -2,6 +2,7 @@
 
 use crate::fast_hash::HashMap;
 
+use super::list_cell::ListShape;
 use crate::compiler2::Ty;
 use crate::fz_ir::Var;
 use crate::types::Types;
@@ -70,6 +71,16 @@ pub(crate) fn ty_is_non_empty_list<T: Types<Ty = Ty>>(t: &mut T, value_types: &H
 
 pub(crate) fn list_projection_is_safe<T: Types<Ty = Ty>>(t: &mut T, value_types: &HashMap<Var, Ty>, v: Var) -> bool {
     ty_is_non_empty_list(t, value_types, v)
+}
+
+/// Where the list `v` names ends, as its type proves it: a list type with no
+/// improper member ends in `[]`.
+pub(crate) fn list_shape<T: Types<Ty = Ty>>(t: &mut T, value_types: &HashMap<Var, Ty>, v: Var) -> ListShape {
+    if ty_is_non_empty_list(t, value_types, v) {
+        ListShape::Proper
+    } else {
+        ListShape::MayEndInAValue
+    }
 }
 
 pub(crate) fn ty_is_map<T: Types<Ty = Ty>>(t: &mut T, value_types: &HashMap<Var, Ty>, v: Var) -> bool {

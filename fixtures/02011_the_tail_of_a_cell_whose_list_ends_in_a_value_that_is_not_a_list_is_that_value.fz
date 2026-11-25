@@ -1,0 +1,29 @@
+#---
+# purpose: "Taking the tail of a cell whose list ends in a value that is not a list answers that value, and the tail of a proper list's cell answers the rest of the list, as in Elixir"
+# kind: run
+# root: main/0
+# oracle: self
+# oracle.stamp: 0a6c56bb48553497
+#---
+defmodule Main do
+  def rest([_ | t]), do: t
+
+  def last_tail([_ | t]) when is_list(t), do: last_tail(t)
+  def last_tail([_ | t]), do: t
+
+  def walk([h | t], acc), do: walk(t, [h | acc])
+  def walk(ending, acc), do: {Enum.reverse(acc), ending}
+
+  def main() do
+    IO.inspect(rest([1 | 2]))
+    IO.inspect(rest([1, 2 | :done]))
+    IO.inspect(rest([1, 2, 3]))
+    IO.inspect(rest([:a]))
+    IO.inspect(last_tail([1, 2, 3 | "end"]))
+    IO.inspect(last_tail([1 | {:pair, 2}]))
+    IO.inspect(walk([1, 2, 3 | 4.5], []))
+    IO.inspect(walk([1, 2, 3], []))
+  end
+end
+
+Main.main()
