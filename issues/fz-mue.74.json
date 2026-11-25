@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-25T12:09:23Z",
+  "description": "From: Elixir Parity. User-approved 2026-11-25. Not on #791's current path. A correctness bug.\nMinimal repro (Elixir Parity's scratchpad walk791/p1.fz): for v \u003c- [1,2] do try do if v == 1, do: v, else: raise(\"x\") catch k, r -\u003e {k, r} end end. interp reports \"missed an exhaustive dispatch\", and native gets SIGILL. It works inside a named function.\nDone when: the repro matches Elixir on all three paths, as an oracle fixture.",
+  "id": "fz-mue.74",
+  "labels": [],
+  "parent": "fz-mue",
+  "priority": 2,
+  "status": "open",
+  "title": "try … catch k, r over a union value whose arm raises dispatches the catch",
+  "type": "bug",
+  "updated_at": "2026-11-25T12:09:23Z"
+}
