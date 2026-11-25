@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Elixir Parity",
   "blocked_by": [],
   "blocks": [
     "fz-mue.66"
@@ -13,5 +13,5 @@
   "status": "open",
   "title": "A raised exception carries a stacktrace, and __STACKTRACE__ reads it, as in Elixir",
   "type": "feature",
-  "updated_at": "2026-11-25T04:15:35Z"
+  "updated_at": "2026-11-25T04:15:36Z"
 }
