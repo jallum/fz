@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-25T11:31:26Z",
+  "description": "Child of fz-xlx, in the order listed there. Faithful port: 1:1 with Elixir's source; gaps become tickets.",
+  "id": "fz-xlx.5",
+  "labels": [],
+  "parent": "fz-xlx",
+  "priority": 3,
+  "status": "open",
+  "title": "Macro.to_string/1 renders through Code.Formatter, as in Elixir",
+  "type": "feature",
+  "updated_at": "2026-11-25T11:31:26Z"
+}
