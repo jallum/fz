@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Make Distiller Fast",
   "blocked_by": [
     "fz-9x7.50"
   ],
@@ -13,5 +13,5 @@
   "status": "open",
   "title": "A call step computes nothing the compiler already knows and moves no value twice",
   "type": "task",
-  "updated_at": "2026-11-25T01:10:50Z"
+  "updated_at": "2026-11-25T01:10:52Z"
 }
