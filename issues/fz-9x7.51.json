@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-25T01:08:50Z",
+  "description": "",
+  "id": "fz-9x7.51",
+  "labels": [],
+  "parent": "fz-9x7",
+  "priority": 2,
+  "status": "open",
+  "title": "binaries_shared is a site count",
+  "type": "task",
+  "updated_at": "2026-11-25T01:08:50Z"
+}
