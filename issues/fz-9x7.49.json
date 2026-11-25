@@ -1,7 +1,8 @@
 {
   "assignee": "GC",
   "blocked_by": [
-    "fz-9x7.37.3"
+    "fz-9x7.37.3",
+    "fz-9x7.56"
   ],
   "blocks": [
     "fz-9x7.51"
@@ -21,5 +22,5 @@
   "status": "in_progress",
   "title": "Retention statistics are counts per reuse site",
   "type": "task",
-  "updated_at": "2026-11-25T01:09:46Z"
+  "updated_at": "2026-11-25T02:55:41Z"
 }
