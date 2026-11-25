@@ -1947,34 +1947,6 @@ impl Types {
         self.core.tuple_top
     }
 
-    /// Every value a run-time test can tell apart from another: `any` without
-    /// the type variables and the generic opaques, which name no kind of
-    /// value, and without the C pointer, which is held as the integer it is.
-    /// What `any` keeps is a test that cannot refuse a kind, so the type left
-    /// when a kind is taken out of `any` is not one a run-time test can ask.
-    pub fn runtime_value_top(&mut self) -> Ty {
-        let pid_and_ref = [BuiltinOpaque::Pid, BuiltinOpaque::Ref].map(OpaqueTag::Builtin);
-        self.intern(Descr {
-            opaques: FiniteSet::finite(pid_and_ref),
-            vars: FiniteSet::none(),
-            ..Descr::any()
-        })
-    }
-
-    /// The type of every value `a` leaves out, when a run-time test can ask
-    /// it exactly; `None` when `a` names something the test cannot tell
-    /// apart, such as a type variable, and the complement would pass what `a`
-    /// holds.
-    pub fn runtime_complement(&mut self, a: Ty) -> Option<Ty> {
-        if runtime_type_predicate_widens_non_structs(self.descr(&a)) {
-            return None;
-        }
-        let top = self.runtime_value_top();
-        let complement = self.difference(top, a);
-        let widens = runtime_type_predicate_widens_non_structs(self.descr(&complement));
-        (!widens).then_some(complement)
-    }
-
     /// Every function, of every arity.
     pub fn fun_top(&mut self) -> Ty {
         self.intern(Descr::fun_top())

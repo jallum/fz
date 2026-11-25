@@ -13,19 +13,10 @@
 //! (two clauses that can answer true, a clause that only a negation could
 //! separate from an earlier one, an argument that is not a variable or a
 //! literal) stays the embedded plan it has always been.
-//!
-//! Facts that can hold in more than one way are `Alternatives`: an `or` in a
-//! guard or in a helper's body, and the `and` of two such, which distributes.
-//! Each alternative becomes a row of the caller's matrix that leads to the one
-//! clause, so each side of an `or` decides and narrows like a test of its own.
-//! The sides are tried in order and an exception in a guard fails the whole
-//! guard, so every side but the last must be unable to raise, or its row could
-//! be skipped where Elixir stops; an `or` that cannot promise that stays one
-//! run-time guard expression.
 
 use super::{
     GuardCallee, PatternDispatchProducer, PatternGuardBinOp, PatternGuardExpr, PatternGuardUnaryOp, PatternResolver,
-    SourcePatternError, and_chain, guard_expr_from_ast, intern_prepared_key, or_chain,
+    SourcePatternError, and_chain, guard_expr_from_ast, intern_prepared_key,
 };
 use crate::ast::{BinOp, Callee, Expr, Spanned, UnOp, Var};
 use crate::dispatch_matrix::{
@@ -54,10 +45,6 @@ pub(crate) struct Conjunction<TypeHandle> {
     pub(crate) questions: Vec<RegionQuestion<TypeHandle>>,
     pub(crate) residual: Vec<PatternGuardExpr<TypeHandle>>,
     pub(crate) refused: Option<Refusal>,
-    /// A helper call these facts came from has no clause for some arguments,
-    /// and a call with no clause raises: the facts fail there instead of
-    /// answering false.
-    pub(crate) partial: bool,
 }
 
 impl<TypeHandle> Default for Conjunction<TypeHandle> {
@@ -66,7 +53,6 @@ impl<TypeHandle> Default for Conjunction<TypeHandle> {
             questions: Vec::new(),
             residual: Vec::new(),
             refused: None,
-            partial: false,
         }
     }
 }
@@ -90,65 +76,11 @@ impl<TypeHandle: Clone + PartialEq> Conjunction<TypeHandle> {
         if let Some(why) = other.refused {
             self.refuse(why);
         }
-        self.partial |= other.partial;
     }
 
     /// Whether it asks nothing and can fail nothing: it holds for any subject.
     fn holds_always(&self) -> bool {
-        self.refused.is_none() && self.questions.is_empty() && self.residual.is_empty() && !self.partial
-    }
-
-    /// Whether evaluating it can only answer true or false. Questions are
-    /// patterns and annotations, which mismatch and never raise, so what can
-    /// raise is a residual expression, a helper call with no clause for some
-    /// arguments, and a refusal that is not a plain false.
-    pub(crate) fn cannot_raise(&self) -> bool {
-        self.residual.is_empty() && !self.partial && matches!(self.refused, None | Some(Refusal::False))
-    }
-
-    /// The facts that hold where these do not: one way for each question, which
-    /// that question's complement asks (`not (a and b)` is `not a or not b`).
-    fn negated(
-        &self,
-        complement: &mut impl FnMut(&Region<TypeHandle>) -> Option<Region<TypeHandle>>,
-    ) -> Option<Alternatives<TypeHandle>> {
-        if !self.cannot_raise() {
-            return None;
-        }
-        if self.refused.is_some() {
-            return Some(Alternatives::single(Self::default()));
-        }
-        if self.questions.is_empty() {
-            return Some(Alternatives::refused(Refusal::False));
-        }
-        let ways = self
-            .questions
-            .iter()
-            .map(|question| {
-                let region = complement(&question.predicate.region)?;
-                let mut way = Self::default();
-                way.ask(RegionQuestion::new(RegionPredicate::new(
-                    question.predicate.subject,
-                    region,
-                )));
-                Some(way)
-            })
-            .collect::<Option<Vec<_>>>()?;
-        Some(Alternatives::normalized(ways))
-    }
-
-    /// These facts asked after `prefix`, the questions it already asks left out.
-    pub(crate) fn after(&self, prefix: &[RegionQuestion<TypeHandle>]) -> Self {
-        let mut questions = prefix.to_vec();
-        for question in &self.questions {
-            if !questions.contains(question) {
-                questions.push(question.clone());
-            }
-        }
-        Self {
-            questions,
-            ..self.clone()
-        }
+        self.refused.is_none() && self.questions.is_empty() && self.residual.is_empty()
     }
 
     /// The guard expression the residual amounts to, `false` for a refusal.
@@ -164,166 +96,11 @@ impl<TypeHandle: Clone + PartialEq> Conjunction<TypeHandle> {
     }
 }
 
-/// Most ways facts may hold at once. A guard written as a few `or`s of a few
-/// tests stays well under it; a longer product is kept as the guard it was
-/// written as, so a row count never outgrows the source.
-const MAX_ALTERNATIVES: usize = 16;
-
-/// Facts that hold when any one of several conjunctions does, tried in order.
-/// There is always at least one. A refused alternative is never beside another
-/// one: a refusal beside a way to hold says nothing, so only an all-refused
-/// set keeps one, with the reason every alternative shared.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Alternatives<TypeHandle> {
-    ways: Vec<Conjunction<TypeHandle>>,
-}
-
-impl<TypeHandle: Clone + PartialEq> Alternatives<TypeHandle> {
-    pub(crate) fn single(way: Conjunction<TypeHandle>) -> Self {
-        Self { ways: vec![way] }
-    }
-
-    pub(crate) fn refused(why: Refusal) -> Self {
-        let mut way = Conjunction::default();
-        way.refuse(why);
-        Self::single(way)
-    }
-
-    /// The alternatives, in the order they are tried.
-    pub(crate) fn ways(&self) -> &[Conjunction<TypeHandle>] {
-        &self.ways
-    }
-
-    fn normalized(ways: Vec<Conjunction<TypeHandle>>) -> Self {
-        let mut live: Vec<Conjunction<TypeHandle>> = Vec::new();
-        for way in ways.iter().filter(|way| way.refused.is_none()) {
-            if !live.contains(way) {
-                live.push(way.clone());
-            }
-        }
-        if !live.is_empty() {
-            return Self { ways: live };
-        }
-        let mut reasons = ways.iter().filter_map(|way| way.refused);
-        let first = reasons.next().expect("an alternative set is never empty");
-        Self::refused(if reasons.all(|why| why == first) {
-            first
-        } else {
-            Refusal::Either
-        })
-    }
-
-    /// Why none of them can hold, when none can.
-    pub(crate) fn refusal(&self) -> Option<Refusal> {
-        match self.ways.as_slice() {
-            [only] => only.refused,
-            _ => None,
-        }
-    }
-
-    fn holds_always(&self) -> bool {
-        self.ways.iter().any(Conjunction::holds_always)
-    }
-
-    fn cannot_raise(&self) -> bool {
-        self.ways.iter().all(Conjunction::cannot_raise)
-    }
-
-    fn made_partial(mut self) -> Self {
-        for way in &mut self.ways {
-            way.partial = true;
-        }
-        self
-    }
-
-    /// The questions each way asks, which any answer needs asked.
-    fn questions_every_way_asks(&self) -> Vec<RegionQuestion<TypeHandle>> {
-        let mut ways = self.ways.iter().filter(|way| way.refused.is_none());
-        let Some(first) = ways.next() else {
-            return Vec::new();
-        };
-        first
-            .questions
-            .iter()
-            .filter(|question| ways.clone().all(|way| way.questions.contains(question)))
-            .cloned()
-            .collect()
-    }
-
-    pub(crate) fn after(&self, prefix: &[RegionQuestion<TypeHandle>]) -> Self {
-        Self {
-            ways: self.ways.iter().map(|way| way.after(prefix)).collect(),
-        }
-    }
-
-    /// Both hold: each way of this one with each way of the other. A way that
-    /// is refused already is not added to, as `and` stops at the first false.
-    /// `None` when the product is longer than a plan keeps.
-    fn and(&self, other: &Self) -> Option<Self> {
-        let mut ways = Vec::new();
-        for left in &self.ways {
-            if left.refused.is_some() {
-                ways.push(left.clone());
-                continue;
-            }
-            for right in &other.ways {
-                let mut both = left.clone();
-                both.absorb(right.clone());
-                ways.push(both);
-            }
-        }
-        (ways.len() <= MAX_ALTERNATIVES).then(|| Self::normalized(ways))
-    }
-
-    /// None of them hold: the ways, each negated and all of those holding together.
-    /// Every way has to be questions that each have a complement, and none may
-    /// raise, because `not` of an exception is the exception. `None` otherwise,
-    /// or when the product is longer than a plan keeps.
-    fn negated(&self, complement: &mut impl FnMut(&Region<TypeHandle>) -> Option<Region<TypeHandle>>) -> Option<Self> {
-        let mut none_hold = Self::single(Conjunction::default());
-        for way in &self.ways {
-            none_hold = none_hold.and(&way.negated(complement)?)?;
-        }
-        Some(none_hold)
-    }
-
-    /// Either holds, the sides tried in order. `None` when an earlier side may
-    /// raise, because a row cannot tell an exception that ends the guard from
-    /// a false that goes on to the next side, or when the sum is longer than a
-    /// plan keeps.
-    fn or(sides: Vec<Self>) -> Option<Self> {
-        let (last, earlier) = sides.split_last()?;
-        if !earlier.iter().all(Self::cannot_raise) {
-            return None;
-        }
-        let ways: Vec<_> = sides.iter().flat_map(|side| side.ways.iter().cloned()).collect();
-        let live = ways.iter().filter(|way| way.refused.is_none()).count();
-        if live > MAX_ALTERNATIVES {
-            return None;
-        }
-        if live == 0 {
-            return Some(last.clone());
-        }
-        Some(Self::normalized(ways))
-    }
-}
-
-impl<TypeHandle> Alternatives<TypeHandle> {
-    fn map_type_handle<MappedHandle>(
-        &self,
-        map: &mut impl FnMut(&TypeHandle) -> MappedHandle,
-    ) -> Alternatives<MappedHandle> {
-        Alternatives {
-            ways: self.ways.iter().map(|way| way.map_type_handle(map)).collect(),
-        }
-    }
-}
-
 /// What a clause answers once its patterns and guard matched.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Answer<TypeHandle> {
     /// The body is true when these facts hold.
-    Holds(Alternatives<TypeHandle>),
+    Holds(Conjunction<TypeHandle>),
     /// The body is never true.
     Refused(Refusal),
 }
@@ -331,7 +108,7 @@ pub(crate) enum Answer<TypeHandle> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ClauseFacts<TypeHandle> {
     /// The patterns, annotations and guard of the clause.
-    pub(crate) matches: Alternatives<TypeHandle>,
+    pub(crate) matches: Conjunction<TypeHandle>,
     pub(crate) answer: Answer<TypeHandle>,
 }
 
@@ -384,7 +161,6 @@ impl<TypeHandle> Conjunction<TypeHandle> {
             questions: self.questions.iter().map(|q| q.map_type_handle(map)).collect(),
             residual: self.residual.iter().map(|e| e.map_type_handle(map)).collect(),
             refused: self.refused,
-            partial: self.partial,
         }
     }
 }
@@ -425,15 +201,15 @@ enum Literals {
 enum Resolved<TypeHandle> {
     /// No clause can answer true.
     Never,
-    /// Exactly one clause can, when one of these ways holds.
-    Live(Alternatives<TypeHandle>),
+    /// Exactly one clause can, when these facts hold.
+    Live(Conjunction<TypeHandle>),
 }
 
 enum Rebased<TypeHandle> {
     /// The clause cannot match these arguments.
     Never,
     Matches {
-        matches: Alternatives<TypeHandle>,
+        matches: Conjunction<TypeHandle>,
         answer: Answer<TypeHandle>,
     },
 }
@@ -453,14 +229,13 @@ enum Evaluated {
 type Bound = HashMap<Var, SubjectId>;
 
 impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
-    /// The facts of a guard: each conjunct unfolded, split at an `or`, asked,
-    /// or kept as a run-time expression.
+    /// The facts of a guard: each conjunct unfolded, asked, or kept as a run-time expression.
     pub(super) fn admit_guard<F: PatternResolver<TypeHandle>>(
         &mut self,
         guard: &Spanned<Expr>,
         bound: &Bound,
         resolver: &mut F,
-    ) -> Result<Alternatives<TypeHandle>, SourcePatternError> {
+    ) -> Result<Conjunction<TypeHandle>, SourcePatternError> {
         self.admit(guard, bound, resolver, Literals::Kept)
     }
 
@@ -470,20 +245,11 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
         bound: &Bound,
         resolver: &mut F,
         literals: Literals,
-    ) -> Result<Alternatives<TypeHandle>, SourcePatternError> {
-        let mut admitted = Alternatives::single(Conjunction::default());
+    ) -> Result<Conjunction<TypeHandle>, SourcePatternError> {
+        let mut admitted = Conjunction::default();
         for conjunct in and_chain(guard) {
-            let ways = self.admit_conjunct(conjunct, bound, resolver, literals)?;
-            admitted = match admitted.and(&ways) {
-                Some(both) => both,
-                None => {
-                    let kept_whole = self.admit_opaque(conjunct, bound, resolver, literals)?;
-                    admitted
-                        .and(&kept_whole)
-                        .expect("a conjunct kept whole is one way, which no product outgrows")
-                }
-            };
-            if admitted.refusal().is_some() {
+            self.admit_conjunct(conjunct, bound, resolver, literals, &mut admitted)?;
+            if admitted.refused.is_some() {
                 break;
             }
         }
@@ -496,81 +262,23 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
         bound: &Bound,
         resolver: &mut F,
         literals: Literals,
-    ) -> Result<Alternatives<TypeHandle>, SourcePatternError> {
+        admitted: &mut Conjunction<TypeHandle>,
+    ) -> Result<(), SourcePatternError> {
         if literals == Literals::Decided {
             match &conjunct.node {
-                Expr::Bool(true) => return Ok(Alternatives::single(Conjunction::default())),
-                Expr::Bool(false) => return Ok(Alternatives::refused(Refusal::False)),
+                Expr::Bool(true) => return Ok(()),
+                Expr::Bool(false) => {
+                    admitted.refuse(Refusal::False);
+                    return Ok(());
+                }
                 _ => {}
             }
         }
-        if let Some(split) = self.admit_or(conjunct, bound, resolver, literals)? {
-            return Ok(split);
-        }
-        if let Some(negated) = self.admit_not(conjunct, bound, resolver, literals)? {
-            return Ok(negated);
-        }
         if let Some(unfolded) = self.unfold_call(conjunct, bound, resolver)? {
-            return Ok(unfolded);
+            admitted.absorb(unfolded);
+            return Ok(());
         }
-        self.admit_opaque(conjunct, bound, resolver, literals)
-    }
-
-    /// A conjunct that is `not` of facts whose every question has a
-    /// complement, as the facts of those complements. `None` when it is not a
-    /// `not` or the operand cannot be negated, and it stays a guard.
-    fn admit_not<F: PatternResolver<TypeHandle>>(
-        &mut self,
-        conjunct: &Spanned<Expr>,
-        bound: &Bound,
-        resolver: &mut F,
-        literals: Literals,
-    ) -> Result<Option<Alternatives<TypeHandle>>, SourcePatternError> {
-        let Expr::UnOp(UnOp::Not, operand) = &conjunct.node else {
-            return Ok(None);
-        };
-        let admitted = self.admit(operand, bound, resolver, literals)?;
-        Ok(admitted.negated(&mut |region| resolver.complement(region)))
-    }
-
-    /// A conjunct that is an `or`, as one way for each of its sides: a side
-    /// is admitted as a guard of its own, so it unfolds, asks and splits as one
-    /// does. `None` when it is not an `or` or its sides cannot be rows.
-    fn admit_or<F: PatternResolver<TypeHandle>>(
-        &mut self,
-        conjunct: &Spanned<Expr>,
-        bound: &Bound,
-        resolver: &mut F,
-        literals: Literals,
-    ) -> Result<Option<Alternatives<TypeHandle>>, SourcePatternError> {
-        if !matches!(conjunct.node, Expr::BinOp(BinOp::Or, _, _)) {
-            return Ok(None);
-        }
-        let sides = or_chain(conjunct);
-        let mut admitted = Vec::with_capacity(sides.len());
-        for (index, side) in sides.iter().enumerate() {
-            let ways = self.admit(side, bound, resolver, literals)?;
-            let is_last = index + 1 == sides.len();
-            if !is_last && !ways.cannot_raise() {
-                return Ok(None);
-            }
-            admitted.push(ways);
-        }
-        Ok(Alternatives::or(admitted))
-    }
-
-    /// A conjunct as the one way it can be read when nothing in it unfolds:
-    /// what its calls need asked, and the expression itself kept to run, or
-    /// evaluated on the spot when it is made of constants.
-    fn admit_opaque<F: PatternResolver<TypeHandle>>(
-        &mut self,
-        conjunct: &Spanned<Expr>,
-        bound: &Bound,
-        resolver: &mut F,
-        literals: Literals,
-    ) -> Result<Alternatives<TypeHandle>, SourcePatternError> {
-        let mut admitted = Conjunction::default();
-        self.ask_what_its_calls_need(conjunct, bound, resolver, &mut admitted)?;
+        self.ask_what_its_calls_need(conjunct, bound, resolver, admitted)?;
         let expr = guard_expr_from_ast(
             &conjunct.node,
             bound,
@@ -580,7 +288,7 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
         )?;
         if literals == Literals::Kept {
             admitted.residual.push(expr);
-            return Ok(Alternatives::single(admitted));
+            return Ok(());
         }
         match self.evaluate(&expr, resolver) {
             Some(Evaluated::Value(GroundValue::Bool(true))) => {}
@@ -588,7 +296,7 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
             Some(Evaluated::Fails) => admitted.refuse(Refusal::Fails),
             None => admitted.residual.push(expr),
         }
-        Ok(Alternatives::single(admitted))
+        Ok(())
     }
 
     /// What a clause body adds, as the answer of its clause.
@@ -599,7 +307,7 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
         resolver: &mut F,
     ) -> Result<Answer<TypeHandle>, SourcePatternError> {
         let admitted = self.admit(body, bound, resolver, Literals::Decided)?;
-        Ok(match admitted.refusal() {
+        Ok(match admitted.refused {
             Some(why) => Answer::Refused(why),
             None => Answer::Holds(admitted),
         })
@@ -612,12 +320,14 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
         call: &Spanned<Expr>,
         bound: &Bound,
         resolver: &mut F,
-    ) -> Result<Option<Alternatives<TypeHandle>>, SourcePatternError> {
+    ) -> Result<Option<Conjunction<TypeHandle>>, SourcePatternError> {
         let Some((callee, call_args)) = guard_callee_of(call, resolver)? else {
             return Ok(None);
         };
         if callee.always_fails() {
-            return Ok(Some(Alternatives::refused(Refusal::Fails)));
+            let mut failing = Conjunction::default();
+            failing.refuse(Refusal::Fails);
+            return Ok(Some(failing));
         }
         let GuardCallee::Helper(helper) = callee else {
             return Ok(None);
@@ -631,7 +341,11 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
         };
         Ok(match self.resolve(facts, &args, resolver)? {
             None => None,
-            Some(Resolved::Never) => Some(Alternatives::refused(Refusal::Either)),
+            Some(Resolved::Never) => {
+                let mut refused = Conjunction::default();
+                refused.refuse(Refusal::Either);
+                Some(refused)
+            }
             Some(Resolved::Live(live)) => Some(live),
         })
     }
@@ -663,14 +377,8 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
             let certain = matches.holds_always();
             let asked = match answer {
                 Answer::Refused(Refusal::Fails) => None,
-                Answer::Refused(_) => Some(matches.questions_every_way_asks()),
-                Answer::Holds(body) => Some(
-                    matches
-                        .questions_every_way_asks()
-                        .into_iter()
-                        .chain(body.questions_every_way_asks())
-                        .collect(),
-                ),
+                Answer::Refused(_) => Some(matches.questions),
+                Answer::Holds(body) => Some(matches.questions.into_iter().chain(body.questions).collect()),
             };
             if let Some(asked) = asked {
                 asked_by_each = Some(match asked_by_each {
@@ -727,9 +435,8 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
         args: &[Arg],
         resolver: &mut F,
     ) -> Result<Option<Resolved<TypeHandle>>, SourcePatternError> {
-        let mut live: Option<Alternatives<TypeHandle>> = None;
+        let mut live: Option<Conjunction<TypeHandle>> = None;
         let mut an_earlier_may_refuse = false;
-        let mut has_a_clause_for_any_arguments = false;
         for clause in &facts.clauses {
             let Some(rebased) = self.rebase_clause(facts, clause, args, Reading::Replace, resolver)? else {
                 return Ok(None);
@@ -743,25 +450,17 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
                     if live.is_some() || an_earlier_may_refuse {
                         return Ok(None);
                     }
-                    let Some(whole) = matches.and(&body) else {
-                        return Ok(None);
-                    };
+                    let mut whole = matches;
+                    whole.absorb(body);
                     live = Some(whole);
                 }
                 Answer::Refused(_) => an_earlier_may_refuse |= !certain,
             }
             if certain {
-                has_a_clause_for_any_arguments = true;
                 break;
             }
         }
-        Ok(Some(live.map_or(Resolved::Never, |live| {
-            Resolved::Live(if has_a_clause_for_any_arguments {
-                live
-            } else {
-                live.made_partial()
-            })
-        })))
+        Ok(Some(live.map_or(Resolved::Never, Resolved::Live)))
     }
 
     fn rebase_clause<F: PatternResolver<TypeHandle>>(
@@ -772,10 +471,10 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
         reading: Reading,
         resolver: &mut F,
     ) -> Result<Option<Rebased<TypeHandle>>, SourcePatternError> {
-        if clause.matches.refusal().is_some() {
+        if clause.matches.refused.is_some() {
             return Ok(Some(Rebased::Never));
         }
-        let Some(matches) = self.rebase_alternatives(facts, &clause.matches, args, reading, resolver)? else {
+        let Some(matches) = self.rebase_conjunction(facts, &clause.matches, args, reading, resolver)? else {
             return Ok(None);
         };
         let matches = match matches {
@@ -784,43 +483,13 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
         };
         let answer = match &clause.answer {
             Answer::Refused(why) => Answer::Refused(*why),
-            Answer::Holds(body) => match self.rebase_alternatives(facts, body, args, reading, resolver)? {
+            Answer::Holds(body) => match self.rebase_conjunction(facts, body, args, reading, resolver)? {
                 None => return Ok(None),
                 Some(Ok(body)) => Answer::Holds(body),
                 Some(Err(why)) => Answer::Refused(why),
             },
         };
         Ok(Some(Rebased::Matches { matches, answer }))
-    }
-
-    /// The alternatives of a helper, over the call's arguments: the ones that
-    /// can still hold there. `Err` is the reason none can.
-    fn rebase_alternatives<F: PatternResolver<TypeHandle>>(
-        &mut self,
-        facts: &GuardFacts<TypeHandle>,
-        alternatives: &Alternatives<TypeHandle>,
-        args: &[Arg],
-        reading: Reading,
-        resolver: &mut F,
-    ) -> Result<Option<Result<Alternatives<TypeHandle>, Refusal>>, SourcePatternError> {
-        let mut ways = Vec::with_capacity(alternatives.ways().len());
-        let mut refusals = Vec::new();
-        for way in alternatives.ways() {
-            match self.rebase_conjunction(facts, way, args, reading, resolver)? {
-                None => return Ok(None),
-                Some(Ok(way)) => ways.push(way),
-                Some(Err(why)) => refusals.push(why),
-            }
-        }
-        if ways.is_empty() {
-            let first = refusals[0];
-            return Ok(Some(Err(if refusals.iter().all(|why| *why == first) {
-                first
-            } else {
-                Refusal::Either
-            })));
-        }
-        Ok(Some(Ok(Alternatives::normalized(ways))))
     }
 
     /// One conjunction of a helper, over the call's arguments. `Err` is the
@@ -833,10 +502,7 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
         reading: Reading,
         resolver: &mut F,
     ) -> Result<Option<Result<Conjunction<TypeHandle>, Refusal>>, SourcePatternError> {
-        let mut rebased = Conjunction {
-            partial: conjunction.partial,
-            ..Conjunction::default()
-        };
+        let mut rebased = Conjunction::default();
         for question in &conjunction.questions {
             match self.rebase_question(facts, args, question, reading, resolver)? {
                 None => return Ok(None),

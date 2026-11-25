@@ -17,11 +17,7 @@ struct Planned {
 }
 
 fn planned() -> Planned {
-    planned_from(FIXTURE)
-}
-
-fn planned_from(fixture: u32) -> Planned {
-    let drive = Drive::fixture(fixture);
+    let drive = Drive::fixture(FIXTURE);
     let plans = EntryDispatchCapture::new();
     plans.install(drive.telemetry());
     Planned {
@@ -105,23 +101,13 @@ fn a_conjunct_that_is_not_a_type_test_stays_the_guard() {
 }
 
 #[test]
-fn a_negated_type_test_is_the_question_for_the_complement_type_and_no_guard() {
-    let plan = planned().plan("negated", 1);
-
-    assert!(plan.guards.is_empty(), "not is_integer(x) keeps no guard");
-    assert_eq!(type_question_count(&plan), 1, "the complement of integer is asked");
-}
-
-#[test]
-fn an_or_of_type_tests_is_a_row_for_each_test_and_no_guard() {
-    let plan = planned().plan("either", 1);
-
-    assert!(plan.guards.is_empty(), "either keeps no guard");
-    assert_eq!(
-        type_question_count(&plan),
-        2,
-        "is_integer(x) and is_binary(x) are each asked"
-    );
+fn guards_that_are_not_an_and_chain_of_type_tests_stay_guards() {
+    let planned = planned();
+    for name in ["either", "negated"] {
+        let plan = planned.plan(name, 1);
+        assert_eq!(plan.guards.len(), 1, "{name} keeps its guard whole");
+        assert_eq!(type_question_count(&plan), 0, "{name} lifts no type question");
+    }
 }
 
 /// `elem/2` answers only for a tuple and fails the guard for anything else,
@@ -155,49 +141,4 @@ fn a_type_test_guard_narrows_the_body_as_a_typed_parameter_does() {
         settled.compiler().display_ty_for_test(typed_ty),
         settled.compiler().display_ty_for_test(guarded_ty),
     );
-}
-
-#[test]
-fn a_negated_or_is_one_row_asking_both_complements() {
-    let plan = planned_from(1897).plan("shape", 1);
-
-    assert!(plan.guards.is_empty(), "not (is_list(x) or is_map(x)) keeps no guard");
-    assert_eq!(
-        plan.source_matrix.arms.len(),
-        2,
-        "one arm for the first clause and one for the fallback"
-    );
-    assert_eq!(
-        plan.source_matrix.arms[0].questions.len(),
-        2,
-        "not a list and not a map"
-    );
-}
-
-#[test]
-fn a_negated_and_is_a_row_for_each_complement_leading_to_the_one_clause() {
-    let plan = planned_from(1897).plan("unless_both", 2);
-
-    assert!(
-        plan.guards.is_empty(),
-        "not (is_integer(x) and is_atom(y)) keeps no guard"
-    );
-    assert_eq!(
-        plan.source_matrix.arms.len(),
-        3,
-        "two ways for the first clause and one for the fallback"
-    );
-    assert_eq!(plan.source_matrix.outcomes.len(), 2);
-}
-
-#[test]
-fn a_negated_conjunction_with_a_comparison_stays_the_one_guard() {
-    let plan = planned_from(1896).plan("check", 1);
-
-    assert_eq!(
-        plan.guards.len(),
-        1,
-        "the comparison has no complement, so not (..) stays whole"
-    );
-    assert_eq!(type_question_count(&plan), 0, "no type question is lifted");
 }

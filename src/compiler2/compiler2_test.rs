@@ -525,49 +525,6 @@ end
 }
 
 #[test]
-fn a_guard_or_of_callable_tests_is_read_as_questions_so_the_callable_is_never_constructed() {
-    let program = |guard: &str| {
-        format!(
-            "\
-def callable?(f) when is_function(f), do: true
-def callable?(_), do: false
-def run(g, x) when {guard}, do: x
-def run(_, _), do: :other
-def main() do
-  run(fn a, b -> a + b end, 3)
-end
-"
-        )
-    };
-
-    assert_eq!(construction_wrappers_of(&program("is_function(g)")), 0);
-    for guard in ["is_function(g) or is_atom(g)", "callable?(g) or is_atom(g)"] {
-        assert_eq!(
-            construction_wrappers_of(&program(guard)),
-            0,
-            "`{guard}`: each side is a row of the dispatch, so the guard never reads the callable whole"
-        );
-    }
-}
-
-#[test]
-fn a_guard_or_whose_left_side_may_raise_is_still_one_guard_that_reads_the_callable() {
-    let program = "\
-def run(g, x) when hd(x) == 1 or is_function(g), do: x
-def run(_, _), do: :other
-def main() do
-  run(fn a, b -> a + b end, [1])
-end
-";
-
-    assert_eq!(
-        construction_wrappers_of(program),
-        1,
-        "an exception on the left ends the guard, so the sides cannot be rows and the guard runs whole"
-    );
-}
-
-#[test]
 fn compiler2_contract_harness_keeps_code_ingest_isolated_from_production_compiler() {
     for case in [
         ContractCase {
