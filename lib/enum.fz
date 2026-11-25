@@ -1293,7 +1293,38 @@ defmodule Enum do
 
   """
   @spec min_max(Enumerable.t(a)) :: {a, a} when a: var
-  def min_max(enumerable), do: {min(enumerable), max(enumerable)}
+  def min_max(enumerable), do: min_max(enumerable, &empty_error/0)
+
+  @doc """
+  Returns a `{minimum, maximum}` pair for `enumerable`, by term order, or the
+  result of calling `empty_fallback` if `enumerable` is empty.
+
+  ## Examples
+
+      Enum.min_max([3, 1, 2], fn -> {0, 0} end)
+      #=> {1, 3}
+
+      Enum.min_max([], fn -> {0, 0} end)
+      #=> {0, 0}
+
+  """
+  @spec min_max(Enumerable.t(a), (-> b)) :: {a, a} | b when a: var, b: var
+  def min_max(enumerable, empty_fallback) when is_function(empty_fallback, 0) do
+    case to_list(enumerable) do
+      [] -> empty_fallback.()
+      [head | tail] -> min_max_fold(tail, head, head)
+    end
+  end
+
+  @spec min_max_fold([a], a, a) :: {a, a} when a: var
+  defp min_max_fold([], min, max), do: {min, max}
+  defp min_max_fold([head | tail], min, max) do
+    cond do
+      Kernel.compare(head, min) < 0 -> min_max_fold(tail, head, max)
+      Kernel.compare(max, head) < 0 -> min_max_fold(tail, min, head)
+      true -> min_max_fold(tail, min, max)
+    end
+  end
 
   @spec empty_error() :: no_return()
   defp empty_error(), do: raise(%Enum.EmptyError{message: "empty error"})
@@ -1622,19 +1653,46 @@ defmodule Enum do
   Stops walking `enumerable` as soon as `limit` is reached, so this is
   cheaper than `count/1` when only the count relative to `limit` matters.
 
+  `limit` must be greater than 0.
+
   ## Examples
 
       Enum.count_until([1, 2, 3, 4, 5], 3)
       #=> 3
 
   """
-  @spec count_until(Enumerable.t(a), integer) :: integer when a: term()
-  def count_until(enumerable, limit), do: count_until_list(to_list(enumerable), limit, 0)
+  @spec count_until(Enumerable.t(a), pos_integer) :: non_neg_integer when a: term()
+  def count_until(enumerable, limit), do: count_until(enumerable, fn (_entry) -> true end, limit)
 
-  @spec count_until_list([a], integer, integer) :: integer when a: term()
-  defp count_until_list([], _limit, seen), do: seen
-  defp count_until_list(_list, limit, seen) when seen >= limit, do: seen
-  defp count_until_list([_head | tail], limit, seen), do: count_until_list(tail, limit, seen + 1)
+  @doc """
+  Returns the number of elements of `enumerable` for which `fun` returns a
+  truthy value, without counting past `limit`.
+
+  `limit` must be greater than 0.
+
+  ## Examples
+
+      Enum.count_until(1..20, fn x -> rem(x, 2) == 0 end, 7)
+      #=> 7
+
+      Enum.count_until(1..20, fn x -> rem(x, 2) == 0 end, 11)
+      #=> 10
+
+  """
+  @spec count_until(Enumerable.t(a), (a -> any), pos_integer) :: non_neg_integer when a: term()
+  def count_until(enumerable, fun, limit) when is_integer(limit) and limit > 0 do
+    count_until_list(to_list(enumerable), fun, limit, 0)
+  end
+
+  @spec count_until_list([a], (a -> any), pos_integer, non_neg_integer) :: non_neg_integer when a: term()
+  defp count_until_list([], _fun, _limit, counted), do: counted
+  defp count_until_list([head | tail], fun, limit, counted) do
+    if fun.(head) do
+      if counted + 1 == limit, do: limit, else: count_until_list(tail, fun, limit, counted + 1)
+    else
+      count_until_list(tail, fun, limit, counted)
+    end
+  end
 
   @doc """
   Returns a list of `{left_element, right_element}` tuples, pairing
@@ -1748,12 +1806,62 @@ defmodule Enum do
       #=> [[1, 2], [3, 4], [5]]
 
   """
-  @spec chunk_every(Enumerable.t(a), integer) :: [[a]] when a: var
-  def chunk_every(enumerable, n), do: chunk_every_list(to_list(enumerable), n)
+  @spec chunk_every(Enumerable.t(a), pos_integer) :: [[a]] when a: var
+  def chunk_every(enumerable, count), do: chunk_every(enumerable, count, count, [])
 
-  @spec chunk_every_list([a], integer) :: [[a]] when a: var
-  defp chunk_every_list([], _n), do: []
-  defp chunk_every_list(list, n), do: [take(list, n) | chunk_every_list(drop(list, n), n)]
+  @doc """
+  Shortcut to `chunk_every(enumerable, count, step, [])`.
+  """
+  @spec chunk_every(Enumerable.t(a), pos_integer, pos_integer) :: [[a]] when a: var
+  def chunk_every(enumerable, count, step), do: chunk_every(enumerable, count, step, [])
+
+  @doc """
+  Returns a list of lists of `count` elements each, where each new chunk
+  starts `step` elements into `enumerable`.
+
+  Chunks overlap when `step` is smaller than `count` and skip elements when
+  it is larger. `leftover` supplies the elements that fill the last chunk
+  out to `count`; if it runs out first, the last chunk is partial. With
+  `:discard`, a last chunk with fewer than `count` elements is dropped.
+
+  ## Examples
+
+      Enum.chunk_every([1, 2, 3, 4, 5, 6], 3, 2, :discard)
+      #=> [[1, 2, 3], [3, 4, 5]]
+
+      Enum.chunk_every([1, 2, 3, 4, 5, 6], 3, 2, [7])
+      #=> [[1, 2, 3], [3, 4, 5], [5, 6, 7]]
+
+      Enum.chunk_every([1, 2, 3, 4, 5], 2, 3, [])
+      #=> [[1, 2], [4, 5]]
+
+  """
+  @spec chunk_every(Enumerable.t(a), pos_integer, pos_integer, Enumerable.t(a) | :discard) :: [[a]] when a: var
+  def chunk_every(enumerable, count, step, leftover) when is_integer(count) and count > 0 and is_integer(step) and step > 0 do
+    chunk_every_fold(to_list(enumerable), count, step, Kernel.max(count, step), leftover, [], 0)
+  end
+
+  @spec chunk_every_fold([a], pos_integer, pos_integer, pos_integer, Enumerable.t(a) | :discard, [a], non_neg_integer) :: [[a]] when a: var
+  defp chunk_every_fold([], count, _step, _limit, leftover, buffer, buffered) do
+    if leftover == :discard or buffered == 0 or buffered >= count do
+      []
+    else
+      [reverse_list(buffer, take(leftover, count - buffered))]
+    end
+  end
+  defp chunk_every_fold([entry | tail], count, step, limit, leftover, buffer, buffered) do
+    buffer = [entry | buffer]
+    buffered = buffered + 1
+
+    rest =
+      if buffered >= limit do
+        chunk_every_fold(tail, count, step, limit, leftover, take(buffer, buffered - step), buffered - step)
+      else
+        chunk_every_fold(tail, count, step, limit, leftover, buffer, buffered)
+      end
+
+    if buffered == count, do: [reverse_list(buffer) | rest], else: rest
+  end
 
   @doc """
   Returns a list of consecutive, non-overlapping chunks of `enumerable`,

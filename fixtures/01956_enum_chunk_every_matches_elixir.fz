@@ -1,0 +1,47 @@
+#---
+# purpose: "Enum.chunk_every/2,3,4 chunks as in Elixir: overlapping and gapped steps, :discard, leftover enumerables, ranges and maps, and refuses a non-positive count or step"
+# oracle: self
+# oracle.stamp: cc005db40953dda8
+#---
+defmodule Main do
+  def rescued(thunk) do
+    try do
+      thunk.()
+    rescue
+      e -> inspect(e.__struct__)
+    end
+  end
+
+  def main() do
+    IO.inspect(Enum.chunk_every([1, 2, 3, 4, 5, 6], 2))
+    IO.inspect(Enum.chunk_every([1, 2, 3, 4, 5], 2))
+    IO.inspect(Enum.chunk_every([1, 2, 3, 4], 10))
+    IO.inspect(Enum.chunk_every([], 3))
+
+    IO.inspect(Enum.chunk_every([1, 2, 3, 4, 5, 6], 3, 2))
+    IO.inspect(Enum.chunk_every([1, 2, 3, 4, 5, 6], 3, 2, :discard))
+    IO.inspect(Enum.chunk_every([1, 2, 3, 4, 5, 6], 3, 2, [7]))
+    IO.inspect(Enum.chunk_every([1, 2, 3, 4, 5, 6], 3, 2, [7, 8, 9]))
+    IO.inspect(Enum.chunk_every([1, 2, 3, 4], 3, 3, []))
+    IO.inspect(Enum.chunk_every([1, 2, 3, 4, 5], 2, 3, []))
+    IO.inspect(Enum.chunk_every([1, 2, 3, 4, 5], 2, 3, :discard))
+    IO.inspect(Enum.chunk_every([1, 2, 3, 4, 5, 6], 2, 1))
+    IO.inspect(Enum.chunk_every([1, 2, 3, 4, 5, 6], 2, 1, :discard))
+    IO.inspect(Enum.chunk_every([1, 2, 3, 4, 5, 6], 2, 5, []))
+    IO.inspect(Enum.chunk_every([1, 2, 3, 4, 5, 6], 1, 4))
+    IO.inspect(Enum.chunk_every([1, 2, 3], 4, 1, :discard))
+
+    IO.inspect(Enum.chunk_every(1..5, 3))
+    IO.inspect(Enum.chunk_every(1..7, 3, 2, :discard))
+    IO.inspect(Enum.chunk_every(6..1//-2, 2))
+    IO.inspect(Enum.map(Enum.chunk_every(%{a: 1, b: 2, c: 3}, 2), fn chunk -> length(chunk) end))
+    IO.inspect(Enum.chunk_every(%{a: 1}, 1))
+    IO.inspect(Enum.map(Enum.chunk_every(%{a: 1, b: 2, c: 3}, 2, 1, :discard), fn chunk -> length(chunk) end))
+
+    IO.inspect(rescued(fn -> Enum.chunk_every([1, 2], 0) end))
+    IO.inspect(rescued(fn -> Enum.chunk_every([1, 2], 2, 0) end))
+    IO.inspect(rescued(fn -> Enum.chunk_every([1, 2], -1, 1, []) end))
+  end
+end
+
+Main.main()
