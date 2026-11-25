@@ -457,7 +457,10 @@ fn atom_id_membership<'f, E: RuntimeTestEmitter<'f>>(e: &E, atoms: &FiniteSet<St
         values: atoms
             .values
             .iter()
-            .filter_map(|name| name_to_id.get(name.as_str()).copied().map(i64::from))
+            .map(|name| match name_to_id.get(name.as_str()) {
+                Some(id) => i64::from(*id),
+                None => panic!("the atom table lacks :{name}, which a type test names"),
+            })
             .collect(),
     }
 }

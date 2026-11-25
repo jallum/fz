@@ -1324,7 +1324,7 @@ fn collect_step_atoms(_world: &mut World, steps: &[BackendStep], names: &mut Exe
     for step in steps {
         match step {
             BackendStep::Const { literal, .. } => {
-                literal.each_ground(&mut |ground| collect_literal_atoms(ground, names));
+                literal.each_ground(&mut |ground| collect_dispatch_const_atoms(ground, names));
             }
             BackendStep::FieldAccess { field, .. } | BackendStep::StructSlot { field, .. } => {
                 push_atom(names, field);
@@ -1377,12 +1377,6 @@ fn collect_undefined_function_atoms(callee: &CallTarget<ExecutableKey>, names: &
     push_atom(names, &undefined.function);
     for module in &undefined.modules_without {
         push_atom(names, module);
-    }
-}
-
-fn collect_literal_atoms(literal: &GroundValue, names: &mut ExecutableNames) {
-    if let GroundValue::Atom(name) = literal {
-        push_atom(names, name);
     }
 }
 
@@ -1447,9 +1441,10 @@ fn collect_region_atoms(world: &mut World, region: &Region<Ty>, names: &mut Exec
             collect_dispatch_const_atoms(value, names);
         }
         Region::Type(ty) => {
-            for atom in world.types().atom_literals(ty) {
-                push_atom(names, &atom);
-            }
+            world
+                .types()
+                .runtime_type_predicate(ty)
+                .each_atom_name(&mut |atom| push_atom(names, atom));
         }
         Region::Equal(ComparisonValue::Pinned(_) | ComparisonValue::Subject(_))
         | Region::MapKeyPresent {

@@ -87,6 +87,39 @@ fn a_predicate_admits_a_list_only_when_its_list_axis_names_a_shape() {
     assert!(RuntimeTypePredicate::any().admits_a_list());
 }
 
+fn atom_names_of(predicate: &RuntimeTypePredicate) -> Vec<String> {
+    let mut names = Vec::new();
+    predicate.each_atom_name(&mut |name| names.push(name.to_string()));
+    names.sort();
+    names
+}
+
+/// A test that compares an atom's id has to have the atom in the table, at
+/// whatever depth the comparison happens: the predicate's own atoms, a list's
+/// head, a tuple's position (under a list too), and a closure's capture.
+#[test]
+fn each_atom_name_reaches_every_atom_the_test_compares() {
+    let mut cofinite = RuntimeTypePredicate::none();
+    cofinite.atoms = FiniteSet::cofinite(["excluded".to_string()]);
+    let mut capture = RuntimeTypePredicate::none();
+    capture.callables = CallableShapes::exact(vec![CallableShape {
+        target: ClosureTarget(1),
+        captures: vec![atom("captured")],
+    }]);
+    let mut under_a_list = RuntimeTypePredicate::none();
+    under_a_list.lists = ListShapes::exact(
+        FiniteSet::finite([ListShape::NonEmpty]),
+        vec![tuple_of(vec![vec![ints(), atom("under_a_list")]])],
+    );
+    let mut predicate = tuple_of(vec![vec![atom("shallow"), cofinite, capture, under_a_list]]);
+    predicate.atoms = FiniteSet::lit("own".to_string());
+
+    assert_eq!(
+        atom_names_of(&predicate),
+        ["captured", "excluded", "own", "shallow", "under_a_list"],
+    );
+}
+
 #[cfg(test)]
 mod value_membership_tests {
     use super::super::surface_membership::SurfaceMembershipCensus;

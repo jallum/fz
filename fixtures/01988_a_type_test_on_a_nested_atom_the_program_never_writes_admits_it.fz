@@ -1,0 +1,54 @@
+#---
+# purpose: "An atom a run-time type test names only inside a tuple, a list element or a closure capture is still in the atom table, so the test admits it"
+# kind: run
+# oracle: self
+# oracle.stamp: 1163d1064dc100a2
+#---
+# The kind a `catch` binds, :error, is interned by the runtime
+# when the exception is raised, and the source never writes it. The only place
+# the program names it is the type test the call to IO.inspect/1 splits on.
+
+# The atom is one position inside a tuple.
+for v <- [1, 2] do
+  IO.inspect(
+    try do
+      if v == 1, do: v, else: raise("x")
+    catch
+      k, r -> {k, r}
+    end
+  )
+end
+
+# The atom is the head of a list.
+for v <- [1, 2] do
+  IO.inspect(
+    try do
+      if v == 1, do: v, else: raise("w")
+    catch
+      k, _ -> [k]
+    end
+  )
+end
+
+# The atom is a position of a tuple that is itself a list element.
+for v <- [1, 2] do
+  IO.inspect(
+    try do
+      if v == 1, do: v, else: raise("y")
+    catch
+      k, r -> [{k, r}]
+    end
+  )
+end
+
+# The atom is a closure's capture.
+for v <- [1, 2] do
+  f =
+    try do
+      if v == 1, do: fn -> v end, else: raise("z")
+    catch
+      k, _ -> fn -> k end
+    end
+
+  IO.inspect(Enum.map([f], fn g -> g.() end))
+end
