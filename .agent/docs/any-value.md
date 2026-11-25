@@ -167,6 +167,23 @@ in `lower_bitfields`, so it survives however the value is passed on to the block
 construction. The leading binary of an append stays a binary, because its form decides how the
 append grows.
 
+Constant fields are written out where the construction is lowered
+(`src/compiler2/jobs/body/constant_fields.rs`). A field is constant when its value is a literal
+(an integer, a float, a literal binary), its size is absent or a literal, and the runtime
+accepts it. Its bytes come from `construction::encode_constants`, which resolves each field to the
+same `Segment` a running construction writes, so there is one encoder. A construction whose fields
+are all constant and add up to whole bytes is the literal binary they spell, the same code as
+`"A"` for `<<65>>`; `"a" <> "b"` is `"ab"`. Otherwise each run of adjacent constants becomes one
+literal binary field, written by the immediate stores above. A run is merged only where it starts
+on a byte boundary and its bytes end on one: the offset before a field is the sum of the bits the
+fields before it add beyond whole bytes, a field read at run time whose extent is not whole bytes
+leaves the offset unknown for every field after it, a run that starts mid-byte begins at its first
+field that starts on a boundary, and the last fields of a run that stop mid-byte stay as written.
+A constant the runtime refuses (a surrogate in a `utf` field, a float of 8 bits) is not
+constant: the construction runs and raises. Where a construction keeps a check, the check and the
+report of a failure read every field as written, so a segment is numbered as the program numbers
+it.
+
 A construction is one `fz_bs_build(process, fields, count)` call over an array
 of `FzBsField { spec, size, value }` descriptors (`runtime/src/construction.rs`).
 `spec` is the segment's `fz_bs_field_spec`, the same word a match uses; `value`

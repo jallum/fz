@@ -41,67 +41,90 @@ enum Segment<'a> {
     Bits { bytes: &'a [u8], bits: u64 },
 }
 
-impl Segment<'_> {
+/// What a segment's value is, once the caller has read it: the raw word of an
+/// integer, a utf code point or the IEEE 754 bits of a float, or the bytes and
+/// bit length of a bitstring.
+enum Operand<'a> {
+    Word(u64),
+    Bits { bytes: &'a [u8], bit_len: u64 },
+}
+
+impl<'a> Segment<'a> {
+    /// The segment a field of a running construction describes.
     fn of(field: &FzBsField) -> Self {
-        let (ty_tag, size_present, unit, endian_tag, _, _) = decode_bs_field_spec(field.spec);
+        let (ty_tag, ..) = decode_bs_field_spec(field.spec);
+        let operand = match BitType::from_tag(ty_tag) {
+            BitType::Binary | BitType::Bits => {
+                let source = unsafe { Bin::of_binary(field.value) };
+                let bit_len = source.bit_len();
+                // SAFETY: the source is a live bitstring and these are the bytes that hold its bits.
+                let bytes = unsafe { from_raw_parts(source.ptr(), bit_len.div_ceil(8) as usize) };
+                Operand::Bits { bytes, bit_len }
+            }
+            _ => Operand::Word(field.value),
+        };
+        Self::resolve(field.spec, field.size, operand).unwrap_or_else(|refusal| panic!("{refusal}"))
+    }
+
+    /// The segment `spec` describes over `operand`, or why the runtime refuses
+    /// it. `size` is meaningful when the spec says one is present. This is the
+    /// one definition of how a field is encoded: a running construction and the
+    /// compiler's folding of constants both read it.
+    fn resolve(spec: u64, size: u64, operand: Operand<'a>) -> Result<Self, String> {
+        let (ty_tag, size_present, unit, endian_tag, _, _) = decode_bs_field_spec(spec);
         let ty = BitType::from_tag(ty_tag);
-        let size = (size_present != 0).then_some(field.size);
+        let size = (size_present != 0).then_some(size);
         let unit = unit as u64;
         let endian = Endian::from_tag(endian_tag);
-        match ty {
-            BitType::Integer => {
+        match (ty, operand) {
+            (BitType::Integer, Operand::Word(value)) => {
                 let bits = size.unwrap_or(8) * unit;
-                assert!(bits <= 64, "integer field too wide: {bits}");
-                let masked = if bits < 64 {
-                    field.value & ((1u64 << bits) - 1)
-                } else {
-                    field.value
-                };
-                Segment::Word {
+                if bits > 64 {
+                    return Err(format!("integer field too wide: {bits}"));
+                }
+                let masked = if bits < 64 { value & ((1u64 << bits) - 1) } else { value };
+                Ok(Segment::Word {
                     word: apply_endian_for_write(masked, bits as u32, endian),
                     bits: bits as u32,
-                }
+                })
             }
-            BitType::Float => {
+            (BitType::Float, Operand::Word(value)) => {
                 let bits = size.unwrap_or(64) * unit;
-                let value = f64::from_bits(field.value);
+                let value = f64::from_bits(value);
                 let word = match bits {
                     16 => f64_to_half_bits(value) as u64,
                     32 => (value as f32).to_bits() as u64,
                     64 => value.to_bits(),
-                    _ => panic!("float bit field size must be 16, 32 or 64, got {bits}"),
+                    _ => return Err(format!("float bit field size must be 16, 32 or 64, got {bits}")),
                 };
-                Segment::Word {
+                Ok(Segment::Word {
                     word: apply_endian_for_write(word, bits as u32, endian),
                     bits: bits as u32,
-                }
+                })
             }
-            BitType::Utf8 | BitType::Utf16 | BitType::Utf32 => {
-                let scalar = field.value as u32;
+            (BitType::Utf8 | BitType::Utf16 | BitType::Utf32, Operand::Word(value)) => {
+                let scalar = value as u32;
                 let encoded = match ty {
                     BitType::Utf8 => encode_utf8(scalar),
                     BitType::Utf16 => encode_utf16(scalar, endian),
                     _ => encode_utf32(scalar, endian),
                 };
-                let encoded =
-                    encoded.expect("a construction's check passes only a Unicode scalar value to a utf segment");
-                Segment::Encoded {
+                let encoded = encoded.ok_or_else(|| format!("{scalar:#x} is not a Unicode scalar value"))?;
+                Ok(Segment::Encoded {
                     bytes: encoded.bytes,
                     len: encoded.len,
+                })
+            }
+            (BitType::Binary | BitType::Bits, Operand::Bits { bytes, bit_len }) => {
+                let bits = size.map_or(bit_len, |n| n * unit);
+                if bits > bit_len {
+                    return Err(format!(
+                        "a segment of {bits} bits is longer than its {bit_len}-bit source"
+                    ));
                 }
+                Ok(Segment::Bits { bytes, bits })
             }
-            BitType::Binary | BitType::Bits => {
-                let source = unsafe { Bin::of_binary(field.value) };
-                let source_bits = source.bit_len();
-                let bits = size.map_or(source_bits, |n| n * unit);
-                assert!(
-                    bits <= source_bits,
-                    "a construction's check passes only a bitstring as long as its segment"
-                );
-                // SAFETY: the source is a live bitstring and these are the bytes that hold its bits.
-                let bytes = unsafe { from_raw_parts(source.ptr(), source_bits.div_ceil(8) as usize) };
-                Segment::Bits { bytes, bits }
-            }
+            _ => Err("a segment's operand does not suit its type".to_string()),
         }
     }
 
@@ -149,6 +172,59 @@ pub fn size_in_bits(fields: &[FzBsField]) -> u64 {
 #[cfg(test)]
 fn fill(fields: &[FzBsField], sink: &mut BitSink<'_>) {
     write_all(&resolve(fields), sink);
+}
+
+/// A segment's value as the compiler knows it before the program runs.
+#[derive(Clone, Copy, Debug)]
+pub enum ConstantValue<'a> {
+    /// An integer, or a utf segment's code point.
+    Word(u64),
+    Float(f64),
+    /// The bytes of a binary or bits segment.
+    Bytes(&'a [u8]),
+}
+
+/// A segment of a construction whose value and size are known when the
+/// program is compiled. `spec` and `size` are what `FzBsField` carries.
+#[derive(Clone, Copy, Debug)]
+pub struct ConstantField<'a> {
+    pub spec: u64,
+    pub size: u64,
+    pub value: ConstantValue<'a>,
+}
+
+/// The bits constant segments spell: whole bytes, the last of which holds the
+/// final bits from its high end and is zero after them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EncodedConstants {
+    pub bytes: Vec<u8>,
+    pub bit_len: u64,
+}
+
+/// The bits `fields` spell, written by the same segments a running
+/// construction writes. A field the runtime would refuse is an error, so a
+/// caller that folds constants leaves it to the construction to raise.
+pub fn encode_constants(fields: &[ConstantField<'_>]) -> Result<EncodedConstants, String> {
+    let segments = fields
+        .iter()
+        .map(|field| {
+            let operand = match field.value {
+                ConstantValue::Word(word) => Operand::Word(word),
+                ConstantValue::Float(value) => Operand::Word(value.to_bits()),
+                ConstantValue::Bytes(bytes) => Operand::Bits {
+                    bytes,
+                    bit_len: bytes.len() as u64 * 8,
+                },
+            };
+            Segment::resolve(field.spec, field.size, operand)
+        })
+        .collect::<Result<Segments<'_>, _>>()?;
+    let bit_len = bits_of(&segments);
+    let mut buffer = vec![MaybeUninit::new(0u8); bit_len.div_ceil(8) as usize];
+    write_all(&segments, &mut BitSink::new(&mut buffer));
+    // SAFETY: every byte was initialised to zero before the sink wrote into it.
+    let bytes = buffer.into_iter().map(|byte| unsafe { byte.assume_init() }).collect();
+    Ok(EncodedConstants { bytes, bit_len })
 }
 
 /// The binary the segments spell, on `process`'s heap: sized from the

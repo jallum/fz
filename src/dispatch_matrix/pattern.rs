@@ -7,7 +7,7 @@ use super::{
     OutcomeId, OutcomeMultiplicity, PinnedValueId, PlanInputs, PreparedKeyId, ProjectedProperty, ProjectionKind,
     Region, RegionPredicate, RegionQuestion, SubjectId, compile_dispatch_matrix, demand::DispatchDemand,
 };
-use crate::ast::{BitSize, Expr, Pattern, Spanned, Var};
+use crate::ast::{Expr, Pattern, PatternBitSize, Spanned, Var};
 use crate::fast_hash::HashMap;
 use crate::function_surface::CallableSurface;
 use crate::fz_ir::{ExternAbi, ExternReturn, ExternTy};
@@ -1235,7 +1235,7 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
 
     fn append_bitstring_pattern(
         &mut self,
-        fields: &[crate::ast::BitField<Spanned<Pattern>>],
+        fields: &[crate::ast::PatternField],
         subject: &PatternSubjectRef,
         questions: &mut Vec<RegionQuestion<TypeHandle>>,
         bindings: &mut Vec<PatternDispatchBinding>,
@@ -1306,7 +1306,7 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
     fn bitstring_question(
         &mut self,
         subject: &PatternSubjectRef,
-        fields: &[crate::ast::BitField<Spanned<Pattern>>],
+        fields: &[crate::ast::PatternField],
         resolver: &mut impl PatternResolver<TypeHandle>,
     ) -> Result<RegionQuestion<TypeHandle>, SourcePatternError> {
         let subject_id = self.subject_id(subject)?;
@@ -1316,18 +1316,18 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
         for (index, field) in fields.iter().enumerate() {
             let size = match &field.spec.size {
                 None => None,
-                Some(BitSize::Literal(value)) => Some(BitstringFieldSize::Literal(*value)),
-                Some(BitSize::Var(name)) => Some(match binding_subjects.get(name).copied() {
+                Some(PatternBitSize::Literal(value)) => Some(BitstringFieldSize::Literal(*value)),
+                Some(PatternBitSize::Var(name)) => Some(match binding_subjects.get(name).copied() {
                     Some(subject) => BitstringFieldSize::Binding(subject),
                     // A size name no earlier field of this bitstring binds is a
                     // pin: it names a binding that existed before the pattern
                     // began.
                     None => BitstringFieldSize::Pinned(self.pin_for_name(name, field.value.span)),
                 }),
-                Some(BitSize::ByteSizeOf(name)) => Some(BitstringFieldSize::PinnedByteSize(
+                Some(PatternBitSize::ByteSizeOf(name)) => Some(BitstringFieldSize::PinnedByteSize(
                     self.pin_for_name(name, field.value.span),
                 )),
-                Some(BitSize::Expr(expr)) => Some(self.size_guard(expr, &binding_subjects, resolver)?),
+                Some(PatternBitSize::Expr(expr)) => Some(self.size_guard(expr, &binding_subjects, resolver)?),
             };
             let extraction = super::BitstringExtraction {
                 previous: shapes.last().copied(),

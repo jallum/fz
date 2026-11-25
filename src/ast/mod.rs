@@ -531,18 +531,23 @@ pub enum Pattern {
     /// Bitstring pattern: `<< field, field, ... >>`. Each field's `value` is a
     /// Pattern (binds variables or matches a literal); the spec governs how
     /// many bits to consume and how to interpret them.
-    Bitstring(Vec<BitField<Spanned<Pattern>>>),
+    Bitstring(Vec<PatternField>),
 }
 
 // ----------------------------------------------------------------------
 // Bitstring fields (shared between expressions and patterns)
 // ----------------------------------------------------------------------
 
+/// One field of a bitstring, as an expression constructs it or a pattern reads
+/// it: `V` is its value, `S` the sizes its spec may name.
 #[derive(Debug, Clone)]
-pub struct BitField<V> {
+pub struct BitField<V, S = BitSize> {
     pub value: V,
-    pub spec: BitFieldSpec,
+    pub spec: BitFieldSpec<S>,
 }
+
+/// A field of a bitstring pattern.
+pub type PatternField = BitField<Spanned<Pattern>, PatternBitSize>;
 
 /// The most bytes one integer field of a literal holds. Seven bytes is the
 /// widest big-endian unsigned value that is always a small integer.
@@ -552,7 +557,7 @@ const LITERAL_FIELD_BYTES: usize = 7;
 /// per run of up to `LITERAL_FIELD_BYTES` bytes, none for the empty literal.
 /// A bitstring pattern over these fields tests `<<"ab">>` exactly as it tests
 /// `<<0x6162 :: 16>>`.
-pub fn binary_literal_fields(bytes: &[u8], span: crate::source::Span) -> Vec<BitField<Spanned<Pattern>>> {
+pub fn binary_literal_fields(bytes: &[u8], span: crate::source::Span) -> Vec<PatternField> {
     bytes
         .chunks(LITERAL_FIELD_BYTES)
         .map(|run| BitField {
@@ -561,7 +566,7 @@ pub fn binary_literal_fields(bytes: &[u8], span: crate::source::Span) -> Vec<Bit
                 span,
             ),
             spec: BitFieldSpec {
-                size: Some(BitSize::Literal(8 * run.len() as u32)),
+                size: Some(PatternBitSize::Literal(8 * run.len() as u32)),
                 ..BitFieldSpec::default()
             },
         })
@@ -569,15 +574,15 @@ pub fn binary_literal_fields(bytes: &[u8], span: crate::source::Span) -> Vec<Bit
 }
 
 #[derive(Debug, Clone)]
-pub struct BitFieldSpec {
+pub struct BitFieldSpec<S = BitSize> {
     pub ty: BitType,
-    pub size: Option<BitSize>,
+    pub size: Option<S>,
     pub endian: Endian,
     pub signed: bool,
     pub unit: Option<u32>,
 }
 
-impl Default for BitFieldSpec {
+impl<S> Default for BitFieldSpec<S> {
     fn default() -> Self {
         Self {
             ty: BitType::Integer,
@@ -639,21 +644,55 @@ fn bit_remainder_of_binary(size: BitSizeKnowledge, unit: u64) -> Option<u64> {
     }
 }
 
+/// The size a construction names for a field.
 #[derive(Debug, Clone)]
 pub enum BitSize {
     /// `::8`, `::16`, `::size(42)` with a literal
     Literal(u32),
-    /// `::size(n)` where n is an in-scope variable name (or, in patterns, a previously-bound variable)
+    /// `::size(n)` where n is an in-scope variable name
     Var(Var),
-    /// `::size(n * 2 - 1)`: any other expression over names in scope. In a
-    /// pattern its names are earlier fields of the same bitstring or names
-    /// bound before the pattern began, and an expression that errors fails the
-    /// match.
+    /// `::size(n * 2 - 1)`: any other expression over names in scope.
+    Expr(Box<Spanned<Expr>>),
+}
+
+/// The size a pattern names for a field.
+#[derive(Debug, Clone)]
+pub enum PatternBitSize {
+    /// `::8`, `::16`, `::size(42)` with a literal
+    Literal(u32),
+    /// `::size(n)` where n is a name bound before the pattern began or by an
+    /// earlier field of it
+    Var(Var),
+    /// `::size(n * 2 - 1)`: any other expression over names in scope. Its names
+    /// are earlier fields of the same bitstring or names bound before the
+    /// pattern began, and an expression that errors fails the match.
     Expr(Box<Spanned<Expr>>),
     /// A pinned `binary` segment with no size of its own: it is exactly as long
     /// as the binary the pinned variable holds, so `<<^p::binary, rest::binary>>`
-    /// is `p` followed by the remainder.
+    /// is `p` followed by the remainder. Only a pattern has one.
     ByteSizeOf(Var),
+}
+
+impl From<BitSize> for PatternBitSize {
+    fn from(size: BitSize) -> Self {
+        match size {
+            BitSize::Literal(bits) => PatternBitSize::Literal(bits),
+            BitSize::Var(name) => PatternBitSize::Var(name),
+            BitSize::Expr(expr) => PatternBitSize::Expr(expr),
+        }
+    }
+}
+
+impl From<BitFieldSpec> for BitFieldSpec<PatternBitSize> {
+    fn from(spec: BitFieldSpec) -> Self {
+        BitFieldSpec {
+            ty: spec.ty,
+            size: spec.size.map(PatternBitSize::from),
+            endian: spec.endian,
+            signed: spec.signed,
+            unit: spec.unit,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

@@ -81,7 +81,7 @@ impl Build {
     fn segment(&self, field: &BitField<Spanned<Expr>>, value: &Var, size_value: &Var) -> Spanned<Expr> {
         let size = match &field.spec.size {
             Some(BitSize::Literal(size)) => self.int(i64::from(*size)),
-            Some(BitSize::Var(size) | BitSize::ByteSizeOf(size)) => self.expr(Expr::Var(size.clone())),
+            Some(BitSize::Var(size)) => self.expr(Expr::Var(size.clone())),
             Some(BitSize::Expr(_)) => self.expr(Expr::Var(size_value.clone())),
             None => self.expr(Expr::Nil),
         };
@@ -170,7 +170,7 @@ impl Build {
 }
 
 /// A literal value whose contract the program text already keeps.
-fn settled_by_literal(field: &BitField<Spanned<Expr>>) -> bool {
+pub(super) fn settled_by_literal(field: &BitField<Spanned<Expr>>) -> bool {
     match (&field.value.node, field.spec.ty) {
         (Expr::Int(_), BitType::Integer | BitType::Float) | (Expr::Float(_), BitType::Float) => true,
         (Expr::Int(cp), BitType::Utf8 | BitType::Utf16 | BitType::Utf32) => {

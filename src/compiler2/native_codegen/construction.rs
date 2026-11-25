@@ -42,7 +42,7 @@ use super::recipe::constant_of;
 use super::recipe::header_word;
 use super::*;
 use crate::ast::BitType;
-use crate::fz_ir::{BitFieldIr, BitSizeIr};
+use crate::fz_ir::{BitFieldIr, FieldSizeIr};
 use cranelift_codegen::ir::{self, InstBuilder, MemFlagsData, types};
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::Linkage;
@@ -125,8 +125,8 @@ pub(super) fn aligned_segment(field: &BitFieldIr) -> Option<AlignedSegment> {
     let unit = u64::from(field.unit.unwrap_or(field.ty.default_unit()));
     let literal = match &field.size {
         None => None,
-        Some(BitSizeIr::Literal(n)) => Some(u64::from(*n)),
-        Some(BitSizeIr::Var(_) | BitSizeIr::ByteSizeOf(_)) => return None,
+        Some(FieldSizeIr::Literal(n)) => Some(u64::from(*n)),
+        Some(FieldSizeIr::Var(_)) => return None,
     };
     match field.ty {
         BitType::Integer => {

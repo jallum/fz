@@ -16,7 +16,7 @@ use crate::ast::BitType;
 use crate::fast_hash::HashMap;
 use crate::fz_ir::{
     BinOp, BitFieldIr, BitMatchField, BitSizeIr, BlockId, Const, DestMapSeed, ExternArg, ExternDecl, ExternId,
-    ExternMarshalSite, ExternTy, FnId, FrameLane, ModuleAtoms, Prim, UnOp, Var,
+    ExternMarshalSite, ExternTy, FieldSizeIr, FnId, FrameLane, ModuleAtoms, Prim, UnOp, Var,
 };
 use crate::runtime_type_predicate::{CallableShapes, Listing, RuntimeTypePredicate};
 use cranelift_codegen::ir::{
@@ -345,11 +345,8 @@ fn build_by_runtime<M: cranelift_module::Module>(
     for (index, f) in fields.iter().enumerate() {
         let (size_present, size_value) = match &f.size {
             None => (0, body.b.ins().iconst(types::I64, 0)),
-            Some(BitSizeIr::Literal(n)) => (1, body.b.ins().iconst(types::I64, *n as i64)),
-            Some(BitSizeIr::Var(v)) => (1, body.as_raw_i64(var_env, v.0)),
-            Some(BitSizeIr::ByteSizeOf(_)) => {
-                unreachable!("only a pattern sizes a segment by a pinned binary, never a construction")
-            }
+            Some(FieldSizeIr::Literal(n)) => (1, body.b.ins().iconst(types::I64, *n as i64)),
+            Some(FieldSizeIr::Var(v)) => (1, body.as_raw_i64(var_env, v.0)),
         };
         let spec = descriptor_spec(f, size_present);
         let value = if f.ty == BitType::Float {

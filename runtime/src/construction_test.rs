@@ -288,3 +288,86 @@ fn a_leading_bitstring_or_a_rest_that_is_not_whole_bytes_is_built_whole() {
         assert_eq!((bytes, bit_len), (vec![b'a', b'b', 0xF0], 20));
     });
 }
+
+fn constant(ty: u32, size: Option<u64>, unit: u32, endian: u32, value: ConstantValue<'_>) -> ConstantField<'_> {
+    ConstantField {
+        spec: fz_bs_field_spec(ty, size.is_some() as u32, unit, endian, 0, 0),
+        size: size.unwrap_or(0),
+        value,
+    }
+}
+
+#[test]
+fn constants_encode_to_what_a_running_construction_builds() {
+    let word = |ty, size, endian, value| constant(ty, size, 1, endian, ConstantValue::Word(value));
+    let float = |size, endian, value| constant(FLOAT, Some(size), 1, endian, ConstantValue::Float(value));
+    let bytes = |ty, size| {
+        constant(
+            ty,
+            size,
+            8 * (ty == BINARY) as u32 + (ty == BITS) as u32,
+            BIG,
+            ConstantValue::Bytes(b"hello"),
+        )
+    };
+    let cases: Vec<Vec<ConstantField<'_>>> = vec![
+        vec![],
+        vec![
+            word(INTEGER, Some(3), BIG, 0b101),
+            word(INTEGER, Some(13), LITTLE, 0x1abc),
+        ],
+        vec![word(INTEGER, None, BIG, 65)],
+        vec![
+            word(INTEGER, Some(64), BIG, u64::MAX - 1),
+            word(INTEGER, Some(5), BIG, 9),
+        ],
+        vec![float(16, BIG, 0.1), float(32, LITTLE, -2.5), float(64, BIG, 1.0e300)],
+        vec![
+            word(UTF8, None, BIG, 0x1f600),
+            word(UTF16, None, LITTLE, 0x20ac),
+            word(UTF32, None, BIG, 0x41),
+        ],
+        vec![
+            bytes(BINARY, None),
+            word(INTEGER, Some(1), BIG, 1),
+            bytes(BITS, Some(12)),
+        ],
+    ];
+    with_process(|process| {
+        for fields in cases {
+            let runtime: Vec<FzBsField> = fields
+                .iter()
+                .map(|f| FzBsField {
+                    spec: f.spec,
+                    size: f.size,
+                    value: match f.value {
+                        ConstantValue::Word(word) => word,
+                        ConstantValue::Float(value) => value.to_bits(),
+                        ConstantValue::Bytes(b) => binary_word(process, b, b.len() as u64 * 8),
+                    },
+                })
+                .collect();
+            let (bytes, bit_len) = built(process, &runtime);
+            assert_eq!(
+                encode_constants(&fields),
+                Ok(EncodedConstants { bytes, bit_len }),
+                "{fields:?}"
+            );
+        }
+    });
+}
+
+#[test]
+fn a_constant_the_runtime_refuses_does_not_encode() {
+    let word = |ty, size, value| constant(ty, size, 1, BIG, ConstantValue::Word(value));
+    for refused in [
+        word(UTF8, None, 0xd800),
+        word(UTF16, None, 0x11_0000),
+        word(UTF32, None, u64::MAX),
+        word(INTEGER, Some(65), 1),
+        constant(FLOAT, Some(8), 1, BIG, ConstantValue::Float(1.0)),
+        constant(BINARY, Some(6), 8, BIG, ConstantValue::Bytes(b"hello")),
+    ] {
+        assert!(encode_constants(&[refused]).is_err(), "{refused:?}");
+    }
+}

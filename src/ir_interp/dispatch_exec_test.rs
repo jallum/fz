@@ -146,11 +146,11 @@ fn bitstring_field_subjects(plan: &PatternDispatchPlan<Ty>) -> Vec<SubjectId> {
 }
 
 /// One byte of a bitstring pattern, bound to a name.
-fn byte_field(name: &str) -> crate::ast::BitField<Spanned<Pattern>> {
+fn byte_field(name: &str) -> crate::ast::PatternField {
     crate::ast::BitField {
         value: Spanned::dummy(Pattern::Var(Var::user(name))),
         spec: crate::ast::BitFieldSpec {
-            size: Some(crate::ast::BitSize::Literal(8)),
+            size: Some(crate::ast::PatternBitSize::Literal(8)),
             ..Default::default()
         },
     }
@@ -445,7 +445,7 @@ fn a_bitstring_field_a_failed_shape_extracted_is_not_visible_to_the_next_arm() {
 }
 
 /// The rest of a binary, bound to a name.
-fn rest_field(name: &str) -> crate::ast::BitField<Spanned<Pattern>> {
+fn rest_field(name: &str) -> crate::ast::PatternField {
     crate::ast::BitField {
         value: Spanned::dummy(Pattern::Var(Var::user(name))),
         spec: crate::ast::BitFieldSpec {

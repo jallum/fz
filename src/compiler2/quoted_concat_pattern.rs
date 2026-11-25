@@ -13,7 +13,7 @@ use fz_runtime::any_value::ValueKind;
 
 use super::quoted_function::{bitstring_pattern, decode_bitstring_pattern, decode_pattern, sized_for_known_binary};
 use super::source::{META_FROM_OPERATOR_KEY, QuotedAstNode, QuotedSourceCursor, QuotedSourceError};
-use crate::ast::{BitField, BitFieldSpec, BitType, Pattern, Spanned};
+use crate::ast::{BitField, BitFieldSpec, BitType, Pattern, PatternField, Spanned};
 use crate::diag::codes::PARSE_CONCAT_PATTERN_OPERAND;
 use crate::source::{SourceMap, Span};
 
@@ -139,7 +139,7 @@ fn push_binary_operand(
     is_last: bool,
     call_span: Span,
     sources: &SourceMap,
-    fields: &mut Vec<BitField<Spanned<Pattern>>>,
+    fields: &mut Vec<PatternField>,
 ) -> Result<(), QuotedSourceError> {
     let Some(node) = operand.ast_node(sources)? else {
         return push_binary_literal(operand, call_span, sources, fields);
@@ -192,7 +192,7 @@ fn push_binary_literal(
     operand: &QuotedSourceCursor,
     call_span: Span,
     sources: &SourceMap,
-    fields: &mut Vec<BitField<Spanned<Pattern>>>,
+    fields: &mut Vec<PatternField>,
 ) -> Result<(), QuotedSourceError> {
     match operand.root().tag() {
         ValueKind::BITSTRING | ValueKind::BINVIEW => {
@@ -206,7 +206,7 @@ fn push_binary_literal(
 
 /// A segment that is a `binary`: a literal is as long as its bytes, a pinned
 /// variable as long as the binary it holds, and a name takes the rest.
-fn binary_segment(value: Spanned<Pattern>) -> BitField<Spanned<Pattern>> {
+fn binary_segment(value: Spanned<Pattern>) -> PatternField {
     let spec = BitFieldSpec {
         ty: BitType::Binary,
         ..BitFieldSpec::default()

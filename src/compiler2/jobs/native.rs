@@ -28,9 +28,9 @@ use crate::dispatch_matrix::pattern::{
 use crate::dispatch_matrix::{ComparisonValue, DispatchNode, GraphNodeId, ListRegion, Region, SubjectId};
 use crate::fz_ir::{
     BinOp as IrBinOp, BitMatchField, BitSizeIr, BlockId, BranchOrigin, CallsiteIdent, Const, Cont, DestMapSeed,
-    DirectCallTarget, ExternAbi, ExternArg, ExternDecl, ExternId, ExternMarshalSite, ExternReturn, ExternTy, FnBuilder,
-    FnCategory, FnId, ModuleAtoms, ModuleBuilder, Prim, ReceiveAfter, ReceiveClause, SlotStore, Term, UnOp as IrUnOp,
-    Var,
+    DirectCallTarget, ExternAbi, ExternArg, ExternDecl, ExternId, ExternMarshalSite, ExternReturn, ExternTy,
+    FieldSizeIr, FnBuilder, FnCategory, FnId, ModuleAtoms, ModuleBuilder, Prim, ReceiveAfter, ReceiveClause, SlotStore,
+    Term, UnOp as IrUnOp, Var,
 };
 use crate::ground_value::GroundValue;
 use crate::runtime_type_predicate::{CallableShape, RuntimeTypePredicate, TuplePositions};
@@ -1449,7 +1449,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                             literal: field.literal.clone(),
                             value: self.env_runtime_var(ctx, executable, env, field.value),
                             ty: field.spec.ty,
-                            size: lower_bit_size_ir(self.world, &field.spec.size, env)?,
+                            size: lower_field_size_ir(&field.spec.size, env)?,
                             endian: field.spec.endian,
                             signed: field.spec.signed,
                             unit: field.spec.unit,
@@ -6469,19 +6469,15 @@ fn lower_unop(op: crate::ast::UnOp) -> IrUnOp {
     }
 }
 
-fn lower_bit_size_ir(
-    _world: &World,
+fn lower_field_size_ir(
     size: &Option<super::super::body::LoweredBitSize>,
     env: &ValueEnv,
-) -> Result<Option<BitSizeIr>, FatalError> {
+) -> Result<Option<FieldSizeIr>, FatalError> {
     Ok(match size {
         None => None,
-        Some(super::super::body::LoweredBitSize::Literal(value)) => Some(BitSizeIr::Literal(*value)),
+        Some(super::super::body::LoweredBitSize::Literal(value)) => Some(FieldSizeIr::Literal(*value)),
         Some(super::super::body::LoweredBitSize::Value(value)) => {
-            Some(BitSizeIr::Var(env.runtime_var(*value).ok_or(FatalError)?))
-        }
-        Some(super::super::body::LoweredBitSize::ByteSizeOf(value)) => {
-            Some(BitSizeIr::ByteSizeOf(env.runtime_var(*value).ok_or(FatalError)?))
+            Some(FieldSizeIr::Var(env.runtime_var(*value).ok_or(FatalError)?))
         }
     })
 }

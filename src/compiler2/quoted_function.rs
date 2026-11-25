@@ -1,7 +1,7 @@
 use crate::ast::{
     AfterClause, Attribute, BinOp, BitField, BitFieldSpec, BitSize, BitType, CallableName, CatchClause, Endian, Expr,
-    FnClause, LambdaClause, MatchClause, Pattern, RescueClause, Spanned, SpecDecl, TryForm, TypeExprBody, UnOp, Var,
-    VarContext, WithBinding,
+    FnClause, LambdaClause, MatchClause, Pattern, PatternBitSize, PatternField, RescueClause, Spanned, SpecDecl,
+    TryForm, TypeExprBody, UnOp, Var, VarContext, WithBinding,
 };
 use crate::dispatch_matrix::ProjectedProperty;
 use crate::function_surface::FunctionSurface;
@@ -1679,14 +1679,15 @@ fn binary_literal_bit_spec(mut spec: BitFieldSpec, byte_len: usize, size_when_mi
 /// A `binary` segment whose value is already known has the length of that
 /// value: a literal is as long as its bytes, and a pinned variable as long as
 /// the binary it holds. An authored size stays authoritative.
-pub(super) fn sized_for_known_binary(value: &Pattern, mut spec: BitFieldSpec) -> BitFieldSpec {
+pub(super) fn sized_for_known_binary(value: &Pattern, spec: BitFieldSpec) -> BitFieldSpec<PatternBitSize> {
     match value {
-        Pattern::Binary(bytes) => binary_literal_bit_spec(spec, bytes.len(), true),
+        Pattern::Binary(bytes) => binary_literal_bit_spec(spec, bytes.len(), true).into(),
         Pattern::Pinned(name) if spec.ty == BitType::Binary && spec.size.is_none() => {
-            spec.size = Some(BitSize::ByteSizeOf(name.clone()));
+            let mut spec = BitFieldSpec::<PatternBitSize>::from(spec);
+            spec.size = Some(PatternBitSize::ByteSizeOf(name.clone()));
             spec
         }
-        _ => spec,
+        _ => spec.into(),
     }
 }
 
@@ -1695,7 +1696,7 @@ pub(super) fn sized_for_known_binary(value: &Pattern, mut spec: BitFieldSpec) ->
 /// fields its bytes spell: the pattern tests `<<"ab">>` exactly as it tests
 /// `<<0x6162 :: 16>>`, so everything downstream sees only integer and binary
 /// fields.
-pub(super) fn bitstring_pattern(fields: Vec<BitField<Spanned<Pattern>>>, span: Span) -> Spanned<Pattern> {
+pub(super) fn bitstring_pattern(fields: Vec<PatternField>, span: Span) -> Spanned<Pattern> {
     let fields = fields.into_iter().flat_map(literal_as_integer_fields).collect();
     Spanned::new(Pattern::Bitstring(fields), span)
 }
@@ -1703,14 +1704,14 @@ pub(super) fn bitstring_pattern(fields: Vec<BitField<Spanned<Pattern>>>, span: S
 /// The integer fields of a `binary` field whose value is a literal exactly as
 /// long as the field's size, as `binary_literal_fields`; any other field is
 /// returned as it is.
-fn literal_as_integer_fields(field: BitField<Spanned<Pattern>>) -> Vec<BitField<Spanned<Pattern>>> {
+fn literal_as_integer_fields(field: PatternField) -> Vec<PatternField> {
     let Pattern::Binary(bytes) = &field.value.node else {
         return vec![field];
     };
     let spec = &field.spec;
     let whole_literal = spec.ty == BitType::Binary
         && spec.unit.is_none()
-        && matches!(spec.size, Some(BitSize::Literal(len)) if len as usize == bytes.len());
+        && matches!(spec.size, Some(PatternBitSize::Literal(len)) if len as usize == bytes.len());
     if !whole_literal {
         return vec![field];
     }

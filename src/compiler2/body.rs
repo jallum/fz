@@ -113,12 +113,12 @@ pub struct LoweredExtern {
     pub ret: ExternReturn,
 }
 
+/// The size a construction field writes. Only a pattern sizes a field by the
+/// binary a pinned name holds, so a construction has no such size.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LoweredBitSize {
     Literal(u32),
     Value(ValueId),
-    /// As long as the binary this value holds.
-    ByteSizeOf(ValueId),
 }
 
 impl LoweredBitSize {
@@ -126,7 +126,7 @@ impl LoweredBitSize {
     pub fn read_value(&self) -> Option<ValueId> {
         match self {
             LoweredBitSize::Literal(_) => None,
-            LoweredBitSize::Value(value) | LoweredBitSize::ByteSizeOf(value) => Some(*value),
+            LoweredBitSize::Value(value) => Some(*value),
         }
     }
 }
@@ -149,7 +149,6 @@ impl LoweredBitFieldSpec {
             None => BitSizeKnowledge::Absent,
             Some(LoweredBitSize::Literal(size)) => BitSizeKnowledge::Literal(*size),
             Some(LoweredBitSize::Value(_)) => BitSizeKnowledge::Runtime,
-            Some(LoweredBitSize::ByteSizeOf(_)) => BitSizeKnowledge::ByteSizeOf,
         };
         crate::ast::bit_remainder(self.ty, size, self.unit, source_is_binary)
     }
