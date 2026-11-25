@@ -344,7 +344,13 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         );
         program.deduplicate_equivalent_sibling_graphs();
         let any = self.world.types_mut().any();
-        super::super::native_body_frame::frame_bodies(&mut program, any);
+        for refused in super::super::native_body_frame::frame_bodies(&mut program, any) {
+            self.telemetry.raw_event2(
+                &["fz", "compiler2", "native_program", "frame_refused"],
+                &self.root_id,
+                &refused,
+            );
+        }
         Ok(program)
     }
 

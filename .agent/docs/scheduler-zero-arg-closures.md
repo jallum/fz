@@ -448,6 +448,23 @@ frame itself: its builder writes the values new at the site with
 (`Prim::FrameClear`), points the frame's code at the member
 (`frame_resume_at`), and the member reads what it uses with `Prim::FrameLoad`.
 
+One value has one slot. The IR names a value by whichever block parameter holds
+it: the clause-body block that makes a call receives the chain's values under
+different variables than the continuation's entry block does. A site's capture
+resolves through `carried_values` to the value every jump into its block passes
+it before the frame looks for the slot, so a value the frame holds is never
+stored again and a root's slots grow with the values the body makes, not with
+the square of its calls (two hundred closures called in one body take 370
+slots).
+
+A frame's slot count is the capture count of its root's closure header, which
+holds 14 bits (`CLOSURE_FLAGS_CAPTURED_MASK`). A root placed wider than that is
+refused after placement: it and its members get no frame, the chain keeps a
+continuation per call, and `[fz, compiler2, native_program, frame_refused]`
+reports the root and its slot count. Every closure header takes its count
+through `closure_captured_field`, which refuses a count past the field in every
+build, so a header never states a count other than the one it was given.
+
 A body frame is never released at a resume: later members still read it, so the
 entry harness skips `release_resumed_frame` (the pop, and the poison under
 `poison_dead_frames`) for every continuation that runs in one. A collection

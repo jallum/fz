@@ -80,7 +80,7 @@ use cranelift_codegen::ir::{
 use cranelift_frontend::FunctionBuilder;
 use fz_runtime::any_value::{
     ClosureDenotationId, FALSE_ATOM_ID, NIL_ATOM_ID, STRUCT_HEADER_NAMED_MASK, STRUCT_HEADER_SCHEMA_SHIFT, ValueKind,
-    closure_header_word,
+    closure_captured_field, closure_header_word,
 };
 use fz_runtime::heap::{Heap, HeapAllocKind};
 use fz_runtime::ir_runtime::{
@@ -661,7 +661,7 @@ pub(crate) fn emit_object<M: cranelift_module::Module>(
             let count = constant(3) as usize;
             let header = closure_header_word(
                 ClosureDenotationId::from_runtime_word(constant(1)),
-                u16::try_from(count).expect("a capture count fits the closure header"),
+                closure_captured_field(count).unwrap_or_else(|overflow| panic!("{overflow}")),
                 u16::try_from(constant(4)).expect("a halt kind fits the closure header"),
                 u16::try_from(constant(2)).expect("an arity fits the closure header"),
             );
