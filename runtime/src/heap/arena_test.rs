@@ -297,30 +297,14 @@ fn the_smallest_freed_span_that_fits_is_the_one_reused() {
     assert_eq!(range.take_span(snug), b);
 }
 
-/// The bytes of memory held for `[p, p + bytes)`. Linux counts the range's own
-/// resident pages. macOS reports pages given back with `MADV_FREE_REUSABLE`
-/// only in the process's physical footprint, so it answers with that.
-#[cfg(target_os = "linux")]
+/// The bytes of `[p, p + bytes)` that are resident, by `mincore` over exactly
+/// those pages, so that other threads' allocation elsewhere cannot move it.
 fn held_bytes(p: *mut u8, bytes: usize) -> usize {
     let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize;
-    let mut flags = vec![0u8; bytes / page];
-    let result = unsafe { libc::mincore(p as *mut libc::c_void, bytes, flags.as_mut_ptr()) };
+    let mut flags = vec![0 as libc::c_char; bytes / page];
+    let result = unsafe { libc::mincore(p as *mut libc::c_void, bytes, flags.as_mut_ptr() as _) };
     assert_eq!(result, 0, "mincore: {}", std::io::Error::last_os_error());
     flags.iter().filter(|&&flag| flag & 1 != 0).count() * page
-}
-
-#[cfg(not(target_os = "linux"))]
-fn held_bytes(_p: *mut u8, _bytes: usize) -> usize {
-    let mut usage = std::mem::MaybeUninit::<libc::rusage_info_v2>::zeroed();
-    let result = unsafe {
-        libc::proc_pid_rusage(
-            libc::getpid(),
-            libc::RUSAGE_INFO_V2,
-            usage.as_mut_ptr() as *mut libc::rusage_info_t,
-        )
-    };
-    assert_eq!(result, 0, "proc_pid_rusage: {}", std::io::Error::last_os_error());
-    unsafe { usage.assume_init() }.ri_phys_footprint as usize
 }
 
 #[test]
