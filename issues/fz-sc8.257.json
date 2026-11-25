@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Bugs and Cleanup",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-25T11:31:15Z",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "A call chooses the @spec overload its argument types match",
   "type": "bug",
-  "updated_at": "2026-11-25T11:31:15Z"
+  "updated_at": "2026-11-25T11:31:16Z"
 }
