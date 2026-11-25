@@ -1004,7 +1004,9 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
                 base,
                 entries,
                 rewrite,
-            } => self.update(*value, *ok, *base, entries, *rewrite),
+            } => {
+                self.step_or_omitted_when_all_absent(*value, &[*ok], self.update(*value, *ok, *base, entries, *rewrite))
+            }
             LoweredStep::Struct { value, module, fields } => self.step_or_omitted_when_absent(
                 *value,
                 BackendStep::Struct {
@@ -1185,7 +1187,17 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
     /// allocates; fz-kdt.111: a predicate closure a shared `Enum` body proves
     /// it never invokes, whose ignored capture the eager interp still read).
     fn step_or_omitted_when_absent(&self, value: ValueId, step: BackendStep) -> BackendStep {
-        if self.value_is_proven_semantically_absent(value) {
+        self.step_or_omitted_when_all_absent(value, &[], step)
+    }
+
+    /// A step nothing reads is not emitted: `value` and every `also` output
+    /// are proven absent. An output not proven absent, such as an update's
+    /// miss flag, keeps the step, so the failure it reports still happens.
+    fn step_or_omitted_when_all_absent(&self, value: ValueId, also: &[ValueId], step: BackendStep) -> BackendStep {
+        let all_absent = std::iter::once(&value)
+            .chain(also)
+            .all(|output| self.value_is_proven_semantically_absent(*output));
+        if all_absent {
             BackendStep::Omitted { value }
         } else {
             step

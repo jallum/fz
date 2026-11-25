@@ -232,3 +232,72 @@ fn the_seam_tripwire_refuses_a_lane_mismatch_and_passes_agreement() {
         "agreement at one lane must pass"
     );
 }
+
+/// Lowers `%{base | :a => item}` whose `value` is settled absent and whose
+/// `ok` is settled absent exactly when `ok_absent`.
+fn lower_update_whose_value_is_absent(ok_absent: bool) -> BackendStep {
+    let mut world = World::new();
+    let function = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "update_probe", 0);
+    let key = ExecutableKey {
+        activation: ActivationKey::from_inputs(RootId::for_test(0), function, &[], world.types_mut()),
+        need: ExecutableNeed::Value,
+    };
+    let nothing = world.intern_shape(ShapeDescr::Nothing);
+    let ty = world.types_mut().int();
+    let [base, value, ok, field, item] = [0, 1, 2, 3, 4].map(ValueId::from_u32);
+    let mut executable = BackendExecutable::for_test(key, ty, nothing);
+    let abi = Rc::make_mut(&mut executable.abi);
+    let absent = || BackendValueLayout {
+        structural: nothing,
+        carrier: TransportCarrier::Absent,
+        tys: Box::default(),
+        reprs: Box::default(),
+    };
+    abi.value_layouts.insert(value, absent());
+    if ok_absent {
+        abi.value_layouts.insert(ok, absent());
+    }
+    let tel = crate::telemetry::ConfiguredTelemetry::new();
+    let mut lowerer = BackendLowerer::new(
+        &mut world,
+        &tel,
+        RootId::for_test(0),
+        &abi.value_layouts,
+        &abi.materialized.value_types,
+        HashMap::default(),
+        ValueMap::new(),
+    );
+    lowerer
+        .lower_step(&LoweredStep::MapUpdate {
+            value,
+            ok,
+            base,
+            entries: vec![(
+                LoweredMapKey {
+                    value: field,
+                    literal: None,
+                },
+                item,
+            )],
+            rewrite: crate::fz_ir::RewritePermission::RetainOnly,
+        })
+        .unwrap()
+}
+
+#[test]
+fn an_update_whose_result_and_miss_flag_are_absent_is_not_emitted() {
+    let lowered = lower_update_whose_value_is_absent(true);
+    assert!(
+        matches!(lowered, BackendStep::Omitted { .. }),
+        "nothing reads the update and it cannot miss, so its base is never needed: {lowered:?}"
+    );
+}
+
+#[test]
+fn an_update_that_may_miss_is_emitted_though_its_result_is_absent() {
+    let lowered = lower_update_whose_value_is_absent(false);
+    assert!(
+        matches!(lowered, BackendStep::MapUpdate { .. }),
+        "an update whose miss flag is not proven absent must still raise: {lowered:?}"
+    );
+}
