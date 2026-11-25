@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "GC",
   "blocked_by": [
     "fz-9x7.37.3"
   ],
@@ -13,5 +13,5 @@
   "status": "open",
   "title": "Retention statistics are counts per reuse site",
   "type": "task",
-  "updated_at": "2026-11-25T00:00:28Z"
+  "updated_at": "2026-11-25T00:00:29Z"
 }
