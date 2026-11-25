@@ -1829,23 +1829,39 @@ impl Types {
 
     /// `tail` split into what it adds to a list's elements and what it ends
     /// the list in: the elements and terminators of its lists, and its own
-    /// non-list part.
+    /// non-list part, closed over every tail the terminators lead to. A tail
+    /// already in this form leads nowhere further; one that is a node of an
+    /// equation graph can lead back to itself, and the walk visits each tail
+    /// once.
     fn fold_tail(&mut self, elem: Ty, tail: Ty) -> (Ty, Ty) {
-        if self.descr(&tail).lists.is_empty() {
-            return (elem, tail);
+        let mut elems = vec![elem];
+        let mut ends = Vec::new();
+        let mut seen: Vec<Ty> = Vec::new();
+        let mut todo = vec![tail];
+        while let Some(t) = todo.pop() {
+            if seen.contains(&t) {
+                continue;
+            }
+            seen.push(t);
+            let (tail_elem, tail_last) = {
+                let cx = self.ctx();
+                let d = cx.descr(&t);
+                (list_element_type(cx, d), list_terminator_type(cx, d))
+            };
+            let (Some(tail_elem), Some(tail_last)) = (tail_elem, tail_last) else {
+                ends.push(t);
+                continue;
+            };
+            elems.push(self.intern(tail_elem));
+            ends.push(self.terminator(t));
+            todo.push(self.intern(tail_last));
         }
-        let (tail_elem, tail_last) = {
-            let cx = self.ctx();
-            let d = cx.descr(&tail);
-            (
-                list_element_type(cx, d).unwrap_or_else(Descr::none),
-                list_terminator_type(cx, d).unwrap_or_else(Descr::none),
-            )
+        let join = |types: &mut Self, mut tys: Vec<Ty>| {
+            tys.sort_unstable();
+            tys.dedup();
+            tys.into_iter().fold(types.core.none, |acc, ty| types.union(acc, ty))
         };
-        let tail_elem = self.intern(tail_elem);
-        let tail_last = self.intern(tail_last);
-        let own = self.terminator(tail);
-        (self.union(elem, tail_elem), self.union(own, tail_last))
+        (join(self, elems), join(self, ends))
     }
 
     /// Every value that can end a list: everything but a non-empty list.

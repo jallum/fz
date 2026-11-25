@@ -1,0 +1,12 @@
+#---
+# purpose: "A list tail that comes back beneath itself compiles, and the result matches Elixir"
+# oracle: self
+# oracle.stamp: 84f9ce2b84cb7998
+#---
+defmodule M do
+  def go(<<_, rest::bits>>, acc), do: go(rest, [acc, "q" | "e"])
+  def go(<<>>, acc), do: acc
+  def main(), do: IO.inspect(go(<<1, 2>>, [34]))
+end
+
+M.main()

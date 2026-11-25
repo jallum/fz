@@ -5938,6 +5938,28 @@ mod terminators {
         assert_eq!(outer, t.cons(int_or_atom, end), "{}", t.display(&outer));
     }
 
+    /// A list type whose tail is the type being defined or a binary ends in
+    /// `[]` or the binary however deep the lists go: the fold follows the
+    /// terminators through the definition in one application, so the
+    /// definition and its hand-folded spelling are one type, and folding that
+    /// type again changes nothing.
+    #[test]
+    fn a_tail_that_leads_back_through_its_own_definition_folds_in_one_application() {
+        let mut t = Types::new();
+        let (int, nil, bin) = (t.int(), t.empty_list(), t.str_t());
+        let defined = t.recursive(1, |t, me| {
+            let tail = t.union(me[0], bin);
+            let non_empty = t.cons(int, tail);
+            vec![t.union(nil, non_empty)]
+        })[0];
+        let ends = t.union(bin, nil);
+        let non_empty = t.cons(int, ends);
+        let spelled = t.union(nil, non_empty);
+        assert_eq!(defined, spelled, "{} vs {}", t.display(&defined), t.display(&spelled));
+        let d = t.descr(&defined).clone();
+        assert_eq!(t.normal_form(d.clone()), d, "{}", t.display(&defined));
+    }
+
     /// A tail that may or may not be a list ends the list in either way.
     #[test]
     fn a_tail_that_may_be_a_list_or_not_splits_into_elements_and_terminator() {

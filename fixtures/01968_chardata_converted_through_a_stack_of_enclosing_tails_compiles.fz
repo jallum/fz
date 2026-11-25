@@ -1,0 +1,119 @@
+#---
+# purpose: "Chardata converted through a stack of enclosing tails compiles, and the result matches Elixir"
+# oracle: self
+# oracle.stamp: d7f5e6b71d55b53b
+#---
+defmodule Uni do
+
+  @spec characters_to_binary(binary | maybe_improper_list(any, binary | [])) :: binary | {:error, binary, any} | {:incomplete, binary, binary}
+  def characters_to_binary(data) do
+    if chardata?(data) do
+      convert(subject(data), [], "", "")
+    else
+      raise %ArgumentError{message: "errors were found at the given arguments:\n\n  * 1st argument: not valid character data (an iodata term)\n"}
+    end
+  end
+
+  @spec subject(any) :: any
+  defp subject([bin]) when is_binary(bin), do: bin
+  defp subject(data), do: data
+
+  @spec chardata?(any) :: boolean
+  defp chardata?(data) when is_binary(data), do: true
+  defp chardata?([]), do: true
+  defp chardata?([head | tail]), do: (is_integer(head) or chardata?(head)) and chardata?(tail)
+  defp chardata?(_), do: false
+
+  @spec convert(any, [any], binary, binary) :: binary | {:error | :incomplete, binary, any}
+  defp convert([], [tail | stack], out, left), do: convert(tail, stack, out, left)
+  defp convert([], [], out, left), do: finish(out, left)
+
+  defp convert(bin, stack, out, left) when is_binary(bin) do
+    case feed(bin, out, left) do
+      {:ok, out, left} -> convert([], stack, out, left)
+      {:error, out, left, rest} -> fail(out, left, rest, stack)
+    end
+  end
+
+  defp convert([code | tail] = list, stack, out, left) when is_integer(code) do
+    if left == "" and ((code >= 0 and code < 0xD800) or (code > 0xDFFF and code < 0x110000)) do
+      convert(tail, stack, <<out :: binary, code :: utf8>>, left)
+    else
+      fail(out, left, list, stack)
+    end
+  end
+
+  defp convert([head | tail], stack, out, left) when is_list(head), do: convert(head, [tail | stack], out, left)
+
+  defp convert([head | tail], stack, out, left) do
+    case feed(head, out, left) do
+      {:ok, out, left} -> convert(tail, stack, out, left)
+      {:error, out, left, rest} -> fail(out, left, [rest | tail], stack)
+    end
+  end
+
+  @spec finish(binary, binary) :: binary | {:error | :incomplete, binary, binary}
+  defp finish(out, ""), do: out
+  defp finish(out, left), do: {if(truncated?(left), do: :incomplete, else: :error), out, left}
+
+  @spec truncated?(binary) :: boolean
+  defp truncated?(<<_>>), do: true
+  defp truncated?(<<_, second>>), do: continuation?(second)
+  defp truncated?(<<_, second, third>>), do: continuation?(second) and continuation?(third)
+
+  @spec continuation?(integer) :: boolean
+  defp continuation?(byte), do: byte >= 0x80 and byte < 0xC0
+
+  @spec fail(binary, binary, any, [any]) :: {:error, binary, any}
+  defp fail(out, "", rest, stack), do: {:error, out, enclose(rest, stack)}
+  defp fail(out, left, rest, stack), do: {:error, out, [left, enclose(rest, stack)]}
+
+  @spec enclose(any, [any]) :: any
+  defp enclose(rest, []), do: rest
+  defp enclose(rest, [tail | stack]), do: enclose([rest | tail], stack)
+
+  @spec feed(binary, binary, binary) :: {:ok, binary, binary} | {:error, binary, binary, binary}
+  defp feed(bin, out, ""), do: scan(bin, out)
+
+  defp feed(bin, out, <<lead, _ :: binary>> = left) do
+    missing = lead_length(lead) - byte_size(left)
+
+    case bin do
+      <<completion :: binary-size(missing), after_character :: binary>> ->
+        case scan(left <> completion, out) do
+          {:ok, out, ""} -> scan(after_character, out)
+          _ -> {:error, out, left, bin}
+        end
+
+      _ ->
+        {:ok, out, left <> bin}
+    end
+  end
+
+  @spec scan(binary, binary) :: {:ok, binary, binary} | {:error, binary, binary, binary}
+  defp scan("", out), do: {:ok, out, ""}
+  defp scan(<<char :: utf8, rest :: binary>>, out), do: scan(rest, <<out :: binary, char :: utf8>>)
+
+  defp scan(<<lead, _ :: binary>> = bin, out) do
+    if lead_length(lead) > byte_size(bin), do: {:ok, out, bin}, else: {:error, out, "", bin}
+  end
+
+  @spec lead_length(integer) :: integer
+  defp lead_length(byte) when byte < 0x80, do: 1
+  defp lead_length(byte) when byte >= 0xC0 and byte < 0xE0, do: 2
+  defp lead_length(byte) when byte >= 0xE0 and byte < 0xF0, do: 3
+  defp lead_length(byte) when byte >= 0xF0 and byte < 0xF8, do: 4
+  defp lead_length(_), do: -1
+end
+
+defmodule Main do
+  @spec t(any) :: any
+  def t(v), do: IO.inspect(Uni.characters_to_binary(v))
+
+  def main() do
+    t([0, 233, 97 | <<0xED, 0xA0, 0x80>>])
+    t([[[], [55296, 97, 233], <<0xC3, 0xA9>>, <<0x82>> | "hé"]])
+    t([[<<0xF0>>, 97, <<97>>, "hé" | <<255>>], <<0xC0>>])
+  end
+end
+Main.main()
