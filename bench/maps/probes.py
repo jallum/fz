@@ -5,8 +5,9 @@
   probes.py measure --out DIR                           run everything in DIR, print instructions per iteration
 
 A figure is a slope: (instructions at 2N iterations - instructions at N) / N, so start-up cancels.
-A walk row (`to_list`, `keys`, `reduce`) turns a map of integer keys into a list once per iteration,
-and its figure is per entry: the slope divided by the map's size.
+A walk row (`to_list`, `keys`, `reduce`) turns a map of integer keys into a list once per iteration;
+`next` and `fold` sum its values through `:maps.next/1` and `:maps.fold/3`. Its figure is per entry:
+the slope divided by the map's size.
 `measure` needs only python3, /usr/bin/time and, for the BEAM column, erlc and erl; DIR can be
 built on one host and measured on another.
 """
@@ -27,7 +28,13 @@ SHAPES = [("build", 6, 200_000, 2_000_000), ("build", 12, 200_000, 1_000_000), (
 PROBES = [(op, kind, k, fz_n, beam_n) for (op, k, fz_n, beam_n) in SHAPES for kind in "ab"]
 # (walk, keys in the map, fz iterations, BEAM iterations); the map's keys are (j + 1) * 7919 with value j.
 WALK_SHAPES = [("to_list", 40, 50_000, 200_000), ("keys", 40, 50_000, 200_000), ("reduce", 40, 50_000, 200_000),
-               ("to_list", 100_000, 20, 40), ("keys", 100_000, 20, 40), ("reduce", 100_000, 20, 40)]
+               ("next", 40, 50_000, 200_000), ("fold", 40, 50_000, 200_000),
+               ("to_list", 100_000, 20, 40), ("keys", 100_000, 20, 40), ("reduce", 100_000, 20, 40),
+               ("next", 100_000, 20, 40), ("fold", 100_000, 20, 40)]
+# The walks that sum the values: the answer is the sum of j - 1 for j in 1..K, once per iteration.
+SUMMING_WALKS = ("reduce", "next", "fold")
+# The walks with no hand-written floor.
+NO_FLOOR_WALKS = SUMMING_WALKS
 WALKS = [(op, "i", k, fz_n, beam_n) for (op, k, fz_n, beam_n) in WALK_SHAPES]
 
 
@@ -36,7 +43,7 @@ def name(op, kind, k):
 
 
 def expected(op, k, n):
-    if op == "reduce":
+    if op in SUMMING_WALKS:
         return n * (k * (k - 1) // 2)
     if op in ("to_list", "keys"):
         return n * k
@@ -78,13 +85,19 @@ def fz_source(op, kind, k, n):
 
 
 WALK_FZ = {"to_list": "length(Map.to_list(m))", "keys": "length(Map.keys(m))",
-           "reduce": "Enum.reduce(m, 0, fn ({_k, v}, s) -> s + v end)"}
+           "reduce": "Enum.reduce(m, 0, fn ({_k, v}, s) -> s + v end)",
+           "next": "sum(:maps.next(:maps.iterator(m)), 0)",
+           "fold": ":maps.fold(fn (_k, v, s) -> s + v end, 0, m)"}
+WALK_FZ_HELPERS = {"next": "  def sum(:none, acc), do: acc\n  def sum({_k, v, i}, acc), do: sum(:maps.next(i), acc + v)\n"}
 WALK_ERL = {"to_list": "length(maps:to_list(M))", "keys": "length(maps:keys(M))",
-            "reduce": "lists:foldl(fun({_K, V}, S) -> S + V end, 0, maps:to_list(M))"}
+            "reduce": "lists:foldl(fun({_K, V}, S) -> S + V end, 0, maps:to_list(M))",
+            "next": "sum(maps:next(maps:iterator(M)), 0)",
+            "fold": "maps:fold(fun(_K, V, S) -> S + V end, 0, M)"}
+WALK_ERL_HELPERS = {"next": "sum(none, Acc) -> Acc;\nsum({_K, V, I}, Acc) -> sum(maps:next(I), Acc + V).\n"}
 
 
 def walk_fz_source(op, k, n):
-    return (f"defmodule P do\n  def loop(0, _m, acc), do: acc\n"
+    return (f"defmodule P do\n{WALK_FZ_HELPERS.get(op, '')}  def loop(0, _m, acc), do: acc\n"
             f"  def loop(n, m, acc), do: loop(n - 1, m, acc + {WALK_FZ[op]})\nend\n"
             f"m = Map.new(1..{k}, fn (j) -> {{j * 7919, j - 1}} end)\ndbg(P.loop({n}, m, 0))\n")
 
@@ -92,6 +105,7 @@ def walk_fz_source(op, k, n):
 def walk_erl_source(module, op, k):
     # Elixir's Enum.reduce over a map is :lists.foldl over :maps.to_list.
     return (f"-module({module}).\n-export([main/1]).\n"
+            f"{WALK_ERL_HELPERS.get(op, '')}"
             f"loop(0, _M, Acc) -> Acc;\nloop(N, M, Acc) -> loop(N - 1, M, Acc + {WALK_ERL[op]}).\n"
             f"main(N) -> M = maps:from_list([{{J * 7919, J - 1}} || J <- lists:seq(1, {k})]),\n"
             f'    io:format("~p~n", [loop(N, M, 0)]).\n')
@@ -209,7 +223,7 @@ def measure(args):
             row.append(slope(erl, want, beam_n) // k)
         else:
             row.append("-")
-        if op == "reduce":
+        if op in NO_FLOOR_WALKS:
             row.append("-")
         else:
             floor_n = max(1, 40_000_000 // k)

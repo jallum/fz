@@ -298,6 +298,59 @@ pub unsafe fn map_for_each_entry(addr: *const u8, visit: &mut impl FnMut(AnyValu
     }
 }
 
+/// Visit up to `limit` entries of the map at `addr`, in node order, from entry
+/// `start`, each as its key's and its value's words and kinds. The descent
+/// skips whole children by their totals, so it reads one header per child
+/// passed, and every entry after the first costs one visit.
+///
+/// # Safety
+///
+/// `addr` must point to the start of an initialized strict published Map
+/// object.
+pub unsafe fn map_for_each_entry_from(
+    addr: *const u8,
+    start: usize,
+    limit: usize,
+    visit: &mut impl FnMut(u64, ValueKind, u64, ValueKind),
+) {
+    let mut window = Window {
+        skip: start,
+        left: limit,
+    };
+    unsafe { visit_window(addr, &mut window, visit) };
+}
+
+/// The entries a walk still passes over before it visits, and the entries it
+/// still visits.
+struct Window {
+    skip: usize,
+    left: usize,
+}
+
+unsafe fn visit_window(addr: *const u8, window: &mut Window, visit: &mut impl FnMut(u64, ValueKind, u64, ValueKind)) {
+    let own = unsafe { map_node_entry_count(addr) };
+    let first = window.skip.min(own);
+    let taken = (own - first).min(window.left);
+    window.skip -= first;
+    window.left -= taken;
+    for slot in first..first + taken {
+        let (key, key_kind, value, value_kind) = unsafe { map_slot_raw_kinds(addr, slot) };
+        visit(key, key_kind, value, value_kind);
+    }
+    for child in 0..unsafe { map_node_child_count(addr) } {
+        if window.left == 0 {
+            return;
+        }
+        let below = unsafe { map_node_child(addr, child) } as *const u8;
+        let count = unsafe { map_count(below) };
+        if window.skip >= count {
+            window.skip -= count;
+        } else {
+            unsafe { visit_window(below, window, visit) };
+        }
+    }
+}
+
 /// The entries of the map at `addr` in node order.
 ///
 /// # Safety

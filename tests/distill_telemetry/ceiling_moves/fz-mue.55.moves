@@ -1,0 +1,3 @@
+# :maps.iterator, next and fold and Map.reject and split_with are compiled; Map.kept and keep_one are gone; rise accepted by the user 2026-11-25
+derivations +8
+reads handed +36

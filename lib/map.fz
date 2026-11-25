@@ -107,7 +107,7 @@ defmodule Map do
   Returns a new map keeping only the `{key, value}` pairs for which `fun`
   returns true.
 
-  One pass, one allocation.
+  The map is walked with `:maps.iterator/1` and `:maps.next/1`.
 
   ## Examples
 
@@ -115,8 +115,51 @@ defmodule Map do
       #=> %{:a => 1, :c => 3}
 
   """
-  @spec filter(any, ({any, any} -> boolean)) :: map
-  def filter(map, fun), do: :maps.from_list(kept(to_list(map), fun, []))
+  @spec filter(map, ({any, any} -> boolean)) :: map
+  def filter(map, fun) when is_map(map) and is_function(fun, 1) do
+    iter = :maps.iterator(map)
+    next = :maps.next(iter)
+    :maps.from_list(do_filter(next, fun))
+  end
+
+  @spec do_filter(:none | {a, b, any}, ({a, b} -> any)) :: [{a, b}] when a: var, b: var
+  defp do_filter(:none, _fun), do: []
+
+  defp do_filter({key, value, iter}, fun) do
+    if fun.({key, value}) do
+      [{key, value} | do_filter(:maps.next(iter), fun)]
+    else
+      do_filter(:maps.next(iter), fun)
+    end
+  end
+
+  @doc """
+  Returns a new map without the `{key, value}` pairs for which `fun` returns
+  true. The map is walked with `:maps.iterator/1` and `:maps.next/1`.
+
+  ## Examples
+
+      Map.reject(%{a: 1, b: 2, c: 3}, fn ({_k, v}) -> rem(v, 2) == 1 end)
+      #=> %{:b => 2}
+
+  """
+  @spec reject(map, ({any, any} -> boolean)) :: map
+  def reject(map, fun) when is_map(map) and is_function(fun, 1) do
+    iter = :maps.iterator(map)
+    next = :maps.next(iter)
+    :maps.from_list(do_reject(next, fun))
+  end
+
+  @spec do_reject(:none | {a, b, any}, ({a, b} -> any)) :: [{a, b}] when a: var, b: var
+  defp do_reject(:none, _fun), do: []
+
+  defp do_reject({key, value, iter}, fun) do
+    if fun.({key, value}) do
+      do_reject(:maps.next(iter), fun)
+    else
+      [{key, value} | do_reject(:maps.next(iter), fun)]
+    end
+  end
 
   @doc """
   Returns `{taken, dropped}`: the given `keys` and everything else, as two
@@ -132,6 +175,38 @@ defmodule Map do
   """
   @spec split(any, [any]) :: {map, map}
   def split(map, keys), do: {take(map, keys), drop(map, keys)}
+
+  @doc """
+  Returns `{while_true, while_false}`: the `{key, value}` pairs of `map` for
+  which `fun` returns true, and the pairs for which it returns false, as two
+  maps. The map is walked once, with `:maps.iterator/1` and `:maps.next/1`.
+
+  ## Examples
+
+      Map.split_with(%{a: 1, b: 2, c: 3}, fn ({_k, v}) -> rem(v, 2) == 1 end)
+      #=> {%{:a => 1, :c => 3}, %{:b => 2}}
+
+  """
+  @spec split_with(map, ({any, any} -> boolean)) :: {map, map}
+  def split_with(map, fun) when is_map(map) and is_function(fun, 1) do
+    iter = :maps.iterator(map)
+    next = :maps.next(iter)
+
+    do_split_with(next, [], [], fun)
+  end
+
+  @spec do_split_with(:none | {a, b, any}, [{a, b}], [{a, b}], ({a, b} -> any)) :: {map, map} when a: var, b: var
+  defp do_split_with(:none, while_true, while_false, _fun) do
+    {:maps.from_list(while_true), :maps.from_list(while_false)}
+  end
+
+  defp do_split_with({key, value, iter}, while_true, while_false, fun) do
+    if fun.({key, value}) do
+      do_split_with(:maps.next(iter), [{key, value} | while_true], while_false, fun)
+    else
+      do_split_with(:maps.next(iter), while_true, [{key, value} | while_false], fun)
+    end
+  end
 
   @spec taken(any, [any], [{any, any}]) :: [{any, any}]
   defp taken(_map, [], acc), do: reverse(acc, [])
@@ -149,13 +224,6 @@ defmodule Map do
   @spec drop_one({a, b}, [any], [{a, b}], boolean) :: [{a, b}] when a: var, b: var
   defp drop_one(_pair, _keys, acc, true), do: acc
   defp drop_one(pair, _keys, acc, false), do: [pair | acc]
-
-  @spec kept([{a, b}], ({a, b} -> boolean), [{a, b}]) :: [{a, b}] when a: var, b: var
-  defp kept([], _fun, acc), do: reverse(acc, [])
-  defp kept([pair | t], fun, acc), do: kept(t, fun, keep_one(pair, acc, fun.(pair)))
-  @spec keep_one({a, b}, [{a, b}], boolean) :: [{a, b}] when a: var, b: var
-  defp keep_one(pair, acc, true), do: [pair | acc]
-  defp keep_one(_pair, acc, false), do: acc
 
   @spec key_listed?([any], any) :: boolean
   defp key_listed?([], _v), do: false

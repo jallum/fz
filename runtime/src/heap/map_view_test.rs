@@ -723,3 +723,191 @@ fn a_listed_map_counts_each_cell_and_pair_it_places() {
         "the total counts both"
     );
 }
+
+/// What a batch ends in, once its tuples are read.
+#[derive(Debug, PartialEq)]
+enum BatchEnd {
+    None,
+    /// The head of the continuation list and its tail map's stored word.
+    Continues(i64, u64),
+}
+
+impl Fixture {
+    /// The three fields of the `{key, value, next}` tuple at `word`, each as a word and a kind.
+    fn triple_fields(&self, word: u64) -> [(u64, ValueKind); 3] {
+        let object = word as *const u8;
+        let schema = self.heap.schemas.borrow();
+        let tuple = schema.get(unsafe { struct_schema_id(object) });
+        assert_eq!(
+            tuple.identity,
+            crate::heap::schema::SchemaIdentity::Tuple(3),
+            "each batch element is a 3-tuple"
+        );
+        [0, 8, 16].map(|offset| unsafe {
+            let kind = *struct_field_kind_slot(object, tuple.value_field_kind_offset(offset));
+            (
+                *struct_field_raw_slot(object, offset),
+                ValueKind::new(kind).expect("field kind"),
+            )
+        })
+    }
+
+    /// The `(key, value)` words each tuple of the batch at `batch` holds, front
+    /// to back, and what the last tuple's `next` is.
+    fn read_batch(&self, batch: AnyValueRef) -> (Vec<[(u64, ValueKind); 2]>, BatchEnd) {
+        let mut entries = Vec::new();
+        let mut word = batch.storage_raw().expect("batch word");
+        loop {
+            let [key, value, next] = self.triple_fields(word);
+            entries.push([key, value]);
+            match next.1 {
+                ValueKind::STRUCT => word = next.0,
+                ValueKind::ATOM => {
+                    assert_eq!(
+                        next.0,
+                        u64::from(self.node.intern_atom("none")),
+                        "a batch ends in :none"
+                    );
+                    return (entries, BatchEnd::None);
+                }
+                ValueKind::LIST => return (entries, self.read_continuation(next.0)),
+                other => panic!("a batch ends in a tuple, :none or a continuation, not {other:?}"),
+            }
+        }
+    }
+
+    fn read_continuation(&self, word: u64) -> BatchEnd {
+        let list = AnyValueRef::from_heap_object(ValueKind::LIST, word as *const u8).expect("continuation list");
+        let head = crate::heap::list_head_ref(list).expect("continuation head");
+        let tail = crate::heap::list_tail_ref(list).expect("continuation tail");
+        BatchEnd::Continues(
+            head.load_int().expect("an entry index"),
+            tail.storage_raw().expect("map word"),
+        )
+    }
+
+    /// The map's entries as the words and kinds the batches hold, walking from
+    /// entry 0 by each continuation, and how many entries each batch held.
+    fn walk_batches(&mut self, map: AnyValueRef) -> (Vec<[(u64, ValueKind); 2]>, Vec<usize>) {
+        let (mut entries, mut sizes, mut index) = (Vec::new(), Vec::new(), 0);
+        loop {
+            let batch = self.heap.map_batch(map, index);
+            let (batch_entries, end) = self.read_batch(batch);
+            sizes.push(batch_entries.len());
+            entries.extend(batch_entries);
+            match end {
+                BatchEnd::None => return (entries, sizes),
+                BatchEnd::Continues(next, tail) => {
+                    assert_eq!(
+                        tail,
+                        map.storage_raw().expect("map word"),
+                        "the continuation's tail is the map"
+                    );
+                    assert_eq!(
+                        next as usize,
+                        index + sizes.last().copied().unwrap(),
+                        "it resumes where the batch left off"
+                    );
+                    index = next as usize;
+                }
+            }
+        }
+    }
+
+    fn assert_batches_walk_as_the_map_lists(&mut self, map: AnyValueRef, batch_sizes: &[usize]) {
+        let (entries, sizes) = self.walk_batches(map);
+        let listed: Vec<_> = self
+            .entries(map)
+            .iter()
+            .map(|&(key, value)| [(key.raw(), key.kind()), (value.raw(), value.kind())])
+            .collect();
+        assert_eq!(entries, listed, "the batches hold the map's entries in the map's order");
+        assert_eq!(sizes, batch_sizes);
+    }
+}
+
+/// A flat map is one batch ending in `:none`, however many entries it has up
+/// to the flat limit.
+#[test]
+fn a_flat_map_is_one_batch() {
+    let mut f = fixture();
+    for count in [1i64, 3, 32] {
+        let entries: Vec<_> = (0..count).map(|i| (AnyValue::int(i), AnyValue::int(i * 10))).collect();
+        let map = f.entries_map(&entries);
+        f.assert_batches_walk_as_the_map_lists(map, &[count as usize]);
+    }
+}
+
+/// A trie is walked 32 entries at a time, across every level, and the batches
+/// together are the map's entries in order.
+#[test]
+fn a_trie_is_walked_in_batches_of_thirty_two_that_are_the_map_in_order() {
+    let mut f = fixture();
+    let entries: Vec<_> = (0..100i64).map(|i| (AnyValue::int(i), AnyValue::int(i * 10))).collect();
+    let map = f.entries_map(&entries);
+    f.assert_batches_walk_as_the_map_lists(map, &[32, 32, 32, 4]);
+    let entries: Vec<_> = (0..40_000i64).map(|i| (AnyValue::int(i), AnyValue::int(i))).collect();
+    let map = f.entries_map(&entries);
+    let (walked, sizes) = f.walk_batches(map);
+    assert_eq!(walked.len(), 40_000);
+    assert!(
+        sizes[..sizes.len() - 1].iter().all(|&size| size == 32),
+        "every batch but the last is full"
+    );
+}
+
+/// A trie whose size is a multiple of the batch size ends in `:none` with its
+/// last batch full, not in an empty continuation.
+#[test]
+fn a_trie_of_whole_batches_ends_in_none() {
+    let mut f = fixture();
+    let entries: Vec<_> = (0..64i64).map(|i| (AnyValue::int(i), AnyValue::int(i))).collect();
+    let map = f.entries_map(&entries);
+    f.assert_batches_walk_as_the_map_lists(map, &[32, 32]);
+}
+
+/// Keys that share a hash sit in a collision node, which a batch may start
+/// inside and end inside.
+#[test]
+fn a_batch_may_start_and_end_inside_a_collision_node() {
+    let mut f = fixture();
+    let mut hashed: Vec<(u64, (AnyValue, AnyValue))> = (0..200i64)
+        .map(|i| {
+            (
+                ((i % 4) as u64) << 62 | (i % 20) as u64,
+                (AnyValue::int(i), AnyValue::int(i * 10)),
+            )
+        })
+        .collect();
+    let bits = f.heap.alloc_trie_hashed(&mut hashed);
+    let map =
+        AnyValueRef::from_heap_object(ValueKind::MAP, map_addr_from_tagged(bits).expect("trie")).expect("map ref");
+    f.assert_batches_walk_as_the_map_lists(map, &[32, 32, 32, 32, 32, 32, 8]);
+}
+
+/// A struct is one batch of its module and its fields, as it is listed.
+#[test]
+fn a_struct_is_one_batch_of_its_module_and_its_fields() {
+    let mut f = fixture();
+    let point = f.point(1, 2);
+    f.assert_batches_walk_as_the_map_lists(point, &[3]);
+}
+
+/// A batch resumes at any entry: starting at `index` holds the entries from
+/// `index` on, at most one batch of them.
+#[test]
+fn a_batch_starts_at_the_entry_it_is_asked_for() {
+    let mut f = fixture();
+    let entries: Vec<_> = (0..100i64).map(|i| (AnyValue::int(i), AnyValue::int(i))).collect();
+    let map = f.entries_map(&entries);
+    let listed = f.entries(map);
+    for index in [0usize, 1, 31, 32, 33, 95, 99] {
+        let batch = f.heap.map_batch(map, index);
+        let (held, _) = f.read_batch(batch);
+        let expected: Vec<_> = listed[index..(index + 32).min(100)]
+            .iter()
+            .map(|&(k, v)| [(k.raw(), k.kind()), (v.raw(), v.kind())])
+            .collect();
+        assert_eq!(held, expected, "batch at {index}");
+    }
+}

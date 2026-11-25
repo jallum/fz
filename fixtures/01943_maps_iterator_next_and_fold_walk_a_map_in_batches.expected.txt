@@ -1,0 +1,28 @@
+empty: walk []
+empty: walk is to_list true
+empty: fold []
+flat: walk [{"a", 1}, {"b", 2}]
+flat: walk is to_list true
+flat: fold [{"a", 1}, {"b", 2}]
+struct: walk [__struct__: Pt, x: 1, y: 2]
+struct: walk is to_list true
+struct: fold [__struct__: Pt, x: 1, y: 2]
+iterator: [0 | %{"a" => 1}]
+none: :none
+big: sum 50500 count 100
+big: keys true
+boundary: sum 528 count 32
+bigger: sum 561 count 33
+filter: %{1 => 1, 3 => 3}
+reject: %{2 => 2, 4 => 4}
+split_with: {%{1 => 1, 3 => 3}, %{2 => 2, 4 => 4}}
+filter empty: %{}
+reject empty: %{}
+split_with empty: {%{}, %{}}
+filter big: 33
+reject big: 67
+split_with big: 40 60 8200 42300
+iterator(1): BadMapError 1
+next(:bad): ArgumentError
+fold non-map: BadMapError :nope
+fold arity-2 fun: ArgumentError

@@ -116,7 +116,15 @@ and each is an atom, so each comes back as an atom ref. `:maps.to_list`, `keys` 
 `values` (`lib/maps.fz`) are the externs `fz_map_to_list`, `fz_map_keys` and
 `fz_map_values`, which list the map in one walk (`Heap::map_list`): each entry's
 stored word and kind are copied into a new list cell, or into the two fields of
-a new `{k, v}` tuple, so nothing is decoded or boxed. `Enumerable.Map`'s
+a new `{k, v}` tuple, so nothing is decoded or boxed. `:erts_internal.map_next/3`
+(`lib/erts_internal.fz`) reads the map a batch at a time through the extern
+`fz_map_next_batch` (`Heap::map_batch`): it starts at an entry index, finds it
+by skipping whole trie children by their totals (`map_for_each_entry_from`),
+and links up to 32 `{k, v, next}` tuples front to back, each holding the stored
+word and kind of its key and value. The batch ends in the atom `none` or in the
+continuation `[index | map]`, an improper list whose tail is the map in a
+terminator cell. `:maps.iterator/1`, `next/1` and `fold/3` walk through it.
+`Enumerable.Map`'s
 `reduce` and `reduce_while` are `List.reduce` and `List.reduce_while` over
 `Map.to_list`, as Elixir's are over `:maps.to_list`, and `member?` is the match
 `%{^key => ^value}`.

@@ -28,13 +28,15 @@ Instructions retired per iteration, taken as a slope between a run of N iteratio
 | `to_list_i_K` | `Map.to_list/1` of a K-key map, and the length of the result |
 | `keys_i_K` | `Map.keys/1` of a K-key map, and the length of the result |
 | `reduce_i_K` | `Enum.reduce/3` over a K-key map, summing its values |
+| `next_i_K` | `:maps.next/1` down a K-key map's iterator, summing its values |
+| `fold_i_K` | `:maps.fold/3` over a K-key map, summing its values |
 
 `_a_` probes use atom keys and `_b_` probes use binary keys. A 40-key map is past the flat
 limit of 32 entries, so those probes run on the trie; `get_a_40` and `case_a_40` have the trie
 walk as their floor, and the binary-key and build probes on 40 keys have none.
 
 The walk probes (`_i_`, integer keys) run on 40 and 100,000 keys, and their figures are per
-entry: the slope divided by K. `reduce` has no floor.
+entry: the slope divided by K. `reduce`, `next` and `fold` have no floor.
 
 The `case` twin matches `#{K := V}` in a function of its own. The other Erlang twins call
 `Mod:put`, `Mod:get` and `Mod:remove` with `Mod` read from the environment
@@ -64,6 +66,12 @@ below; it does not predict it.
   into the list of its keys, its values or its `{key, value}` pairs in one pass, placing each cell
   and linking it to the one before, so the list is built front to back and never reversed. They
   are the floor of the walk probes.
+- `fz_map_next_batch` (`floor/walk.s`) places one batch of an iterator's walk: from entry `index`,
+  up to 32 `{key, value, next}` tuples, each linked to the one after it, the last linked to the
+  continuation `[index + 32 | map]` or to `none`. It reaches the start by skipping whole trie
+  children by their totals, then places each entry in one step. The harness checks the batch from
+  every start of every map it builds, and that a bump with a byte too few places nothing. It has
+  no probe row: `next_i_K` and `fold_i_K` run the language's own walk.
 
 - `fz_trie_get` finds a one-word key in a trie by its hash, with a popcount at each node, and
   `fz_trie_get_atom` reads an atom's key hash through the process first. They are the sequence
@@ -107,3 +115,7 @@ Bench host (Apple M5 Pro), OTP 28.3 with the JIT, fz at the commit that last cha
 | to_list_i_100000 | 116 | 154 | 33 |
 | keys_i_100000 | 78 | 97 | 27 |
 | reduce_i_100000 | 1,549 | 198 |  |
+| next_i_40 | pending bench | pending bench |  |
+| fold_i_40 | pending bench | pending bench |  |
+| next_i_100000 | pending bench | pending bench |  |
+| fold_i_100000 | pending bench | pending bench |  |

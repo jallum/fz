@@ -24,9 +24,10 @@ use super::schema::{NamedSchema, StructKey};
 use crate::alloc_site::RuntimeAllocSite;
 use crate::any_value::{
     AnyValue, AnyValueRef, ListCons, STRUCT_PAYLOAD_OFFSET, SlotLayout, ValueKind, heap_object_word,
-    map_addr_from_tagged, map_count, map_entries, map_entry, map_header_is_trie, map_key_kind, map_keys_ptr,
-    map_node_child, map_node_child_count, map_node_entry_count, map_slot, map_tag_ptr, map_value_kind, map_values_ptr,
-    struct_addr_from_tagged, struct_field_kind_slot, struct_field_raw_slot, struct_schema_id, struct_size_for_payload,
+    map_addr_from_tagged, map_count, map_entries, map_entry, map_for_each_entry_from, map_header_is_trie, map_key_kind,
+    map_keys_ptr, map_node_child, map_node_child_count, map_node_entry_count, map_slot, map_tag_ptr, map_value_kind,
+    map_values_ptr, struct_addr_from_tagged, struct_field_kind_slot, struct_field_raw_slot, struct_schema_id,
+    struct_size_for_payload,
 };
 use crate::heap::map_slot_refs;
 use crate::module_name::{ModuleName, STRUCT_MODULE_FIELD};
@@ -43,13 +44,26 @@ pub enum MapPart {
 
 const LIST_CELL_SIZE: usize = size_of::<ListCons>();
 
-/// Where a `{key, value}` tuple's parts go: its header word, its size in bytes, and
-/// the payload offset of its kind bytes.
+/// Where a tuple's parts go: its header word, its size in bytes, and the
+/// payload offset of its kind bytes.
 #[derive(Clone, Copy)]
-struct PairShape {
+struct TupleShape {
     header: u64,
     size: usize,
     kinds: u32,
+}
+
+impl TupleShape {
+    /// Zeroes the bytes after the word of kind bytes, which an odd number of
+    /// fields leaves to round the tuple up to whole 16-byte slots.
+    ///
+    /// # Safety
+    ///
+    /// `object` is a tuple of this shape, under construction.
+    unsafe fn clear_slack(&self, object: *mut u8) {
+        let used = STRUCT_PAYLOAD_OFFSET + self.kinds as usize + 8;
+        unsafe { std::ptr::write_bytes(object.add(used), 0, self.size - used) };
+    }
 }
 
 /// A map's list as it is built, last entry first: the address of its first
@@ -58,7 +72,7 @@ struct PairShape {
 /// list cell, or a pair followed by its cell.
 struct Listing {
     part: MapPart,
-    pair: Option<PairShape>,
+    pair: Option<TupleShape>,
     first: u64,
     unlisted: usize,
     next: *mut u8,
@@ -66,7 +80,7 @@ struct Listing {
 }
 
 impl Listing {
-    fn new(part: MapPart, pair: Option<PairShape>, entries: usize) -> Self {
+    fn new(part: MapPart, pair: Option<TupleShape>, entries: usize) -> Self {
         Listing {
             part,
             pair,
@@ -79,6 +93,46 @@ impl Listing {
 
     fn record_size(&self) -> usize {
         self.pair.map_or(0, |pair| pair.size) + LIST_CELL_SIZE
+    }
+}
+
+/// The entries one batch of `Heap::map_batch` holds, at most.
+pub const MAP_BATCH_LEN: usize = 32;
+
+/// One batch of `{key, value, next}` tuples as it is written, front to back,
+/// in runs of tuples side by side. A tuple's `next` is the tuple placed after
+/// it, written when that tuple is placed; the last tuple's is written when the
+/// batch ends.
+struct Batch {
+    shape: TupleShape,
+    first: u64,
+    last: *mut u8,
+    next: *mut u8,
+    room: usize,
+    unwritten: usize,
+}
+
+impl Batch {
+    fn new(shape: TupleShape, entries: usize) -> Self {
+        Batch {
+            shape,
+            first: 0,
+            last: std::ptr::null_mut(),
+            next: std::ptr::null_mut(),
+            room: 0,
+            unwritten: entries,
+        }
+    }
+
+    /// Makes the last tuple written lead to `next`, a word and its kind.
+    fn link_last(&self, next: (u64, ValueKind)) {
+        if self.last.is_null() {
+            return;
+        }
+        unsafe {
+            write(struct_field_raw_slot(self.last, 16), next.0);
+            write(struct_field_kind_slot(self.last, self.shape.kinds).add(2), next.1.tag());
+        }
     }
 }
 
@@ -274,7 +328,7 @@ impl Heap {
     /// before its own entries, last to first.
     pub fn map_list(&mut self, map: AnyValueRef, part: MapPart) -> AnyValueRef {
         let layout = self.expect_map_layout(map, "map list");
-        let pair = (part == MapPart::Pairs).then(|| self.pair_shape());
+        let pair = (part == MapPart::Pairs).then(|| self.tuple_shape(2));
         let mut listing = Listing::new(part, pair, self.map_view_count(layout));
         match layout {
             MapLayout::Entries(addr) | MapLayout::Trie(addr) => unsafe { self.list_node(addr, &mut listing) },
@@ -366,17 +420,88 @@ impl Heap {
         listing.first = cell as u64;
     }
 
-    /// The 2-tuple's schema and the bytes one takes.
-    fn pair_shape(&mut self) -> PairShape {
-        let schema = self.schemas.borrow_mut().tuple(2);
+    /// The next batch of the map from entry `index` on, as a `{key, value, next}`
+    /// tuple holding the first of at most `MAP_BATCH_LEN` entries, in the map's
+    /// own order. A `next` is the following tuple of the batch; the last one's
+    /// is the continuation `[end | map]`, a list whose head is the index of the
+    /// first entry the batch leaves and whose tail is the map, when entries
+    /// remain, and the atom `none` when none do. Each key and value is the word
+    /// and kind the map stores.
+    pub fn map_batch(&mut self, map: AnyValueRef, index: usize) -> AnyValueRef {
+        let layout = self.expect_map_layout(map, "map batch");
+        let count = self.map_view_count(layout);
+        assert!(index < count, "a batch starts at an entry of the map");
+        let end = count.min(index + MAP_BATCH_LEN);
+        let mut batch = Batch::new(self.tuple_shape(3), end - index);
+        match layout {
+            MapLayout::Entries(addr) | MapLayout::Trie(addr) => unsafe {
+                map_for_each_entry_from(addr, index, end - index, &mut |key, key_kind, value, value_kind| {
+                    self.write_triple(&mut batch, (key, key_kind), (value, value_kind))
+                })
+            },
+            MapLayout::Struct { .. } => {
+                for slot in index..end {
+                    let (key, value) = self.map_view_entry(layout, slot);
+                    self.write_triple(&mut batch, (key.raw(), key.kind()), (value.raw(), value.kind()));
+                }
+            }
+        }
+        debug_assert_eq!(batch.unwritten, 0, "every entry of the batch is written");
+        let rest = self.batch_rest(map, end, count);
+        batch.link_last(rest);
+        AnyValueRef::from_heap_object(ValueKind::STRUCT, batch.first as *const u8).expect("a batch is a tuple")
+    }
+
+    /// What follows a batch that ends before entry `end` of `count`.
+    fn batch_rest(&mut self, map: AnyValueRef, end: usize, count: usize) -> (u64, ValueKind) {
+        if end == count {
+            let none = self.node.intern_atom("none");
+            return (u64::from(none), ValueKind::ATOM);
+        }
+        let map = AnyValue::from_ref(map).expect("a map is a value");
+        let rest = self.alloc_list_cons_any(AnyValue::int(end as i64), map);
+        (rest.storage_raw().expect("list word"), ValueKind::LIST)
+    }
+
+    /// Places the next tuple of `batch`: `key` and `value` are held by it as
+    /// well as by the map, so each is published.
+    fn write_triple(&mut self, batch: &mut Batch, key: (u64, ValueKind), value: (u64, ValueKind)) {
+        if batch.room == 0 {
+            let tuple = (RuntimeAllocSite::Struct, batch.shape.size);
+            (batch.next, batch.room) = self.alloc_run_at(&[tuple], batch.unwritten);
+        }
+        let tuple = batch.next;
+        batch.next = unsafe { tuple.add(batch.shape.size) };
+        batch.room -= 1;
+        batch.unwritten -= 1;
+        self.publish_contained_parts(key.0, key.1);
+        self.publish_contained_parts(value.0, value.1);
+        let kinds = u64::from(key.1.tag()) | u64::from(value.1.tag()) << 8 | u64::from(ValueKind::STRUCT.tag()) << 16;
+        unsafe {
+            batch.shape.clear_slack(tuple);
+            write(tuple as *mut u64, batch.shape.header);
+            write(struct_field_raw_slot(tuple, 0), key.0);
+            write(struct_field_raw_slot(tuple, 8), value.0);
+            write(struct_field_kind_slot(tuple, batch.shape.kinds) as *mut u64, kinds);
+        }
+        batch.link_last((tuple as u64, ValueKind::STRUCT));
+        if batch.first == 0 {
+            batch.first = tuple as u64;
+        }
+        batch.last = tuple;
+    }
+
+    /// The `arity`-tuple's schema and the bytes one takes.
+    fn tuple_shape(&mut self, arity: usize) -> TupleShape {
+        let schema = self.schemas.borrow_mut().tuple(arity);
         let schemas = self.schemas.borrow();
         let tuple = schemas.get(schema);
         let size = struct_size_for_payload(tuple.allocation_payload_size());
         assert!(
-            tuple.size.is_multiple_of(8) && size == STRUCT_PAYLOAD_OFFSET + tuple.size as usize + 8,
-            "a pair's two kind bytes fill one word, last in the tuple"
+            tuple.size.is_multiple_of(8) && size >= STRUCT_PAYLOAD_OFFSET + tuple.size as usize + 8,
+            "a tuple's kind bytes fill one word, right after its fields"
         );
-        PairShape {
+        TupleShape {
             header: schemas.struct_header(schema),
             size,
             kinds: tuple.size,
@@ -389,7 +514,7 @@ impl Heap {
     fn write_pair(
         &mut self,
         object: *mut u8,
-        pair: PairShape,
+        pair: TupleShape,
         key: (u64, ValueKind),
         value: (u64, ValueKind),
     ) -> (u64, ValueKind) {
