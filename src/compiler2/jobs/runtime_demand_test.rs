@@ -618,3 +618,49 @@ mod binary_demand {
         assert_eq!(demand, ShapeDemand::Matched);
     }
 }
+
+/// A closure called by name whose callee has two member targets is called
+/// through the boxed apply seam, so it is reached first-class.
+mod closure_call_through_the_seam {
+    use crate::compiler2::drive_harness::locate_fixture;
+    use crate::compiler2::{ExecutableNeed, World};
+    use crate::telemetry::ConfiguredTelemetry;
+
+    #[test]
+    fn a_closure_call_naming_two_member_targets_records_a_first_class_edge() {
+        let (path, name) = locate_fixture(1986);
+        let tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        world.submit_code(
+            Some(name),
+            std::fs::read_to_string(path).expect("the fixture is readable"),
+        );
+        let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+        let mut sessions = crate::compiler2::pull::ProductSessions::default();
+        crate::compiler2::product_drive::drive_retained_root_backend_product(
+            &mut world,
+            &tel,
+            &mut sessions,
+            root,
+            None,
+        )
+        .expect("the fixture should settle its backend product");
+        let flows: Vec<_> = world
+            .runtime_demand_facts()
+            .filter(|(key, _)| world.function_surface(key.activation.function).name == "tuple_capture")
+            .flat_map(|(_, demand)| {
+                demand
+                    .callable_flows
+                    .iter()
+                    .map(|(_, flow)| flow.clone())
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        assert!(
+            flows
+                .iter()
+                .any(|flow| flow.opaque && !flow.first_class_edges.is_empty()),
+            "the opaque closure carries first-class edges for its member targets: {flows:?}"
+        );
+    }
+}

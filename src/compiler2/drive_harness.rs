@@ -63,7 +63,7 @@ type OutputFacts = Vec<(FactKey, bool)>;
 /// matches in whichever directory answers. `fixtures/` is the purpose-bearing
 /// home every fixture is meant to reach; `fixtures2/` holds the numbered
 /// fixtures that have not moved there yet.
-fn locate_fixture(number: u32) -> (PathBuf, String) {
+pub(crate) fn locate_fixture(number: u32) -> (PathBuf, String) {
     let prefix = format!("{number:05}_");
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     for dir in ["fixtures", "fixtures2"] {

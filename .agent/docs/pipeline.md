@@ -838,6 +838,13 @@ follow, and they are two halves of one convention:
   demand is not consulted for this: a discarded result keeps its `ignore`
   demand, and the room for the word is made where the call form is decided.
 
+  What the demand pass does decide is whether the call names one owned
+  target (`CallSiteSummary::single_owned_target`, the predicate transport
+  reads too). A closure call that does not -- a callee value of two types
+  splits into two member targets -- is opaque, and it asks for the callee's
+  first-class demand like every other consumer of an opaque callable, so the
+  construction wrapper and the capture layout the seam needs exist.
+
 A callee the caller can supply needs no rule at all: its result
 aliases the named target executable's own return fact, so caller and callee
 read one shape by construction. So a callable **no** seam ever boxes builds no

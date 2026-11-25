@@ -869,6 +869,12 @@ fn callee_supplies_target_captures(world: &mut World, callee: TransportLayout, t
 /// through `callee_supplies_target_captures` instead of reading this answer,
 /// because it runs first: the recipe produces the callee's return layout, and
 /// the edge this mints is made from the layouts the recipe settled.
+///
+/// A callsite that names one owned target can still take the seam, when the
+/// callee's layout is one public word that does not carry the target's
+/// captures. The demand pass does not mark that call opaque, so the call asks
+/// for no first-class demand; the closure's wrapper comes from the demand of
+/// whatever put the closure in a public word, which is an escape.
 pub(super) fn closure_call_form(
     world: &mut World,
     callee_layout: TransportLayout,

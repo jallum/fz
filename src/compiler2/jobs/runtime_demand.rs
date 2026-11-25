@@ -1460,6 +1460,7 @@ fn collect_entry_live_demands(
             );
             let callee_demand = RuntimeDemand::callable(callee_callable);
             callable_flows.record_direct_demand(facts, *callee, &callee_demand);
+            record_first_class_boundary_demand(facts, callable_flows, *callee, &callee_demand, None);
             note_live_demand(facts, out, &mut live, *callee, callee_demand);
             let arg_demands = closure_call_arg_demands(
                 types,
@@ -2664,14 +2665,7 @@ fn closure_callee_demand(
     if !every_target_named {
         demand.unnamed.insert(facts.demand_types.surface(&actual_inputs));
     }
-    let exact_local_target = matches!(
-        summary.targets.as_slice(),
-        [target]
-            if matches!(target.callee, super::super::semantic::SelectedCallee::Function(_))
-                && target.activation.is_some()
-                && target.activation_inputs.is_some()
-    );
-    if !exact_local_target {
+    if summary.single_owned_target().is_none() {
         demand.opaque = true;
     }
     demand
