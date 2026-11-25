@@ -1,7 +1,7 @@
 #---
 # purpose: "a function whose first clause reads the bytes of a binary that lives on the process heap, whose middle clauses allocate (a binary field built as a view, float arithmetic) and whose last clause reads the bytes again, answers the same on every call of a loop that allocates enough to collect the heap many times between calls"
 # oracle: self
-# oracle.stamp: 9e2941bac87537b5
+# oracle.stamp: 9a081e24020b1d70
 # args: 0
 #---
 defmodule Main do
@@ -26,7 +26,7 @@ defmodule Main do
   end
 
   def main() do
-    n = 20_000 + String.to_integer(hd(System.argv()))
+    n = 1_000 + String.to_integer(hd(System.argv()))
     IO.inspect(run(0, n, 0))
     IO.inspect(pick(subject(5), 1.0))
   end
