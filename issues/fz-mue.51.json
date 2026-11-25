@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-mue.57"
+    "fz-mue.57",
+    "fz-mue.60"
   ],
   "blocks": [
     "fz-mue.12",
@@ -16,5 +17,5 @@
   "status": "open",
   "title": "Macro.expand/2 expands a quoted macro call in the caller's environment, as in Elixir",
   "type": "feature",
-  "updated_at": "2026-11-24T21:02:24Z"
+  "updated_at": "2026-11-25T00:39:39Z"
 }

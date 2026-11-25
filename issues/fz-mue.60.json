@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-mue.51"
+  ],
   "created": "2026-11-25T00:39:36Z",
   "description": "From: Elixir Parity. Approved by the user 2026-11-24 as part of the fz-mue.51 commit-1 decisions (relayed by Elixir Parity). Blocks fz-mue.51.\n\nToday: quote of x.field gives a bare {:., meta, [x, :field]}. Elixir gives the call node {{:., meta, [x, :field]}, [no_parens: true], []}. So a written __ENV__.line cannot match Macro.expand's clauses.\n\nDone when: quote(do: x.field) prints Elixir's shape on interp, run and build (oracle fixture), and Macro.expand's clauses match a written __ENV__.line.",
   "id": "fz-mue.60",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "quote of x.field gives Elixir's call node {{:., meta, [x, :field]}, [no_parens: true], []}",
   "type": "bug",
-  "updated_at": "2026-11-25T00:39:36Z"
+  "updated_at": "2026-11-25T00:39:39Z"
 }
