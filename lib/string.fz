@@ -1097,7 +1097,10 @@ defmodule String do
   defp first_step({cp, _rest}), do: cp
 
   @doc """
-  Returns whether every codepoint in `s` is printable.
+  Returns whether `s` is valid UTF-8 and every codepoint in it is printable,
+  as in Elixir: the ASCII graphic range and DEL, the controls from bell to
+  carriage return and escape, and every codepoint from U+00A0 except U+FFFE
+  and U+FFFF.
 
   ## Examples
 
@@ -1109,30 +1112,9 @@ defmodule String do
 
   """
   @spec printable?(binary) :: boolean
-  def printable?(s), do: valid?(s) and printable_bytes?(s)
+  def printable?(s) when is_binary(s), do: fz_binary_printable(s)
 
-  @spec printable_bytes?(binary) :: boolean
-  defp printable_bytes?(<<c, rest :: binary>>) do
-    if printable_byte?(c), do: printable_bytes?(rest), else: false
-  end
-  defp printable_bytes?(_s), do: true
-
-  # The printable set is the ASCII graphic range plus the usual escapes, and
-  # everything at or above 128 -- a multi-byte codepoint's bytes are all >=
-  # 128, so a valid string's non-ASCII content passes by construction and
-  # only the C0 controls are rejected.
-  @spec printable_byte?(integer) :: boolean
-  defp printable_byte?(c) when c >= 32 and c < 127, do: true
-  defp printable_byte?(c) when c >= 128, do: true
-  defp printable_byte?(7), do: true
-  defp printable_byte?(8), do: true
-  defp printable_byte?(9), do: true
-  defp printable_byte?(10), do: true
-  defp printable_byte?(11), do: true
-  defp printable_byte?(12), do: true
-  defp printable_byte?(13), do: true
-  defp printable_byte?(27), do: true
-  defp printable_byte?(_c), do: false
+  extern "fz" defp fz_binary_printable(binary) :: boolean
 
   @doc """
   Returns the integer that `s` names, in base 10.

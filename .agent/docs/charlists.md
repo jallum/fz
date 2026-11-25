@@ -63,7 +63,9 @@ prints as a list of tuples, as in Elixir.
 A binary takes the other shape. `Renderer::bitstring` prints a byte-aligned,
 valid, printable (`is_printable_utf8`) UTF-8 binary as a quoted string `"..."`,
 which ignores the limit, and anything else as `<<...>>`: one element per byte,
-trailing bits as `n::size(k)`. One escaper, `escape_for_display`, writes
+trailing bits as `n::size(k)`. `is_printable_utf8` is Elixir's `String.printable?/1`
+set, and `String.printable?/1` asks it through `fz_binary_printable`: U+FFFE,
+U+FFFF and the C1 controls print as bytes, DEL prints as `\d`. One escaper, `escape_for_display`, writes
 strings, quoted atoms and charlists with Elixir's escapes: `\a \b \t \n \v \f
 \r \e \d \\ \"`, `\#{`, and `\uXXXX` for the invisible and lookalike
 codepoints.
