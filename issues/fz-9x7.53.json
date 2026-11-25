@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-25T02:00:21Z",
+  "description": "From: GC. Approved by the user 2026-11-24 (AskUserQuestion: \"Waive; worklist ticket\").\n\nEvidence (fz-9x7.47 round 5, ssh bench, notes in GC scratchpad b47f/): enum peak RSS +7.96 MB under .47 (87.38 -\u003e 95.34 MB) is 5.8 MB collector scan worklist + 2.1-2.4 MB age table (inherent) + ~0.2 MB unattributed. The worklist is a Vec\u003cCopiedObject\u003e that reaches 16 MB capacity (collect 8 fills 10.3 MB) and keeps its pages across collections in both arms; base's libmalloc realloc leaves ~4 MB of it lazily mapped, the arm keeps all 10.3 MB resident (vmmap-based hypothesis, mechanism not isolated). Dropping or shrinking the Vec raises RSS (realloc growth recreates the pages); mmap MAP_FIXED over its pages fixes it but writes over malloc-owned memory and re-faults (gc-cells +1.0%), so it was rejected.\n\nChange: the worklist's storage comes from pooled blocks in the reserved range, so the existing per-epoch trim of idle pooled blocks returns its idle pages, with no malloc in the collector.\n\nSequencing: after fz-9x7.11.6 (cells scanned by address put no worklist entries), which shrinks the worklist; measure what remains first and close this if enum's worklist residency is gone.\n\nDone when: enum peak RSS under .47 is within 5% of develop before .47 (age table excepted); no workload's instructions rise more than 0.35%; outputs and in-use identical.",
+  "id": "fz-9x7.53",
+  "labels": [],
+  "parent": "fz-9x7",
+  "priority": 2,
+  "status": "open",
+  "title": "The collector's worklist lives in pooled blocks in the reserved range",
+  "type": "task",
+  "updated_at": "2026-11-25T02:00:21Z"
+}
