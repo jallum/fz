@@ -11,11 +11,15 @@
     {
       "text": "MDF's proposal 85 ('a self tail call keeps the reduction count in a register') is folded in here as input. MDF ceded the back-edge sequence to Callables on 2026-11-18 and will not touch terminator.rs. MDF offers to bench before/after binaries on the distiller. MDF's profile evidence: the self tail call's reduction counter lives in memory (ldr/sub/str through the process pointer).",
       "timestamp": "2026-11-18T21:53:34Z"
+    },
+    {
+      "text": "User approved page https://claude.ai/artifact/PWBvXiLKNAcMfK28q4Jwj3 ('approved', relayed by Callables 2026-11-24). Scope now includes: (1) fz-sc8.249 folded in: the back-edge yield path moves out of line (return_call to a stub declared once per mid-flight continuation key), so prologue/epilogue saves in f and the resume fall 20 -\u003e 4; one commit closes both. (2) The 4 x21 copies outside the reduction check (get_pinned_reg -\u003e mov_from_preg, same mechanism). MDF measured the stub c3 -6, c4 -22 per step, p2c -4.7%. Building in ../fz-yh5.2 (branch fz-yh5.2/yield-stub off 23b51ffcb).",
+      "timestamp": "2026-11-25T01:18:25Z"
     }
   ],
   "priority": 2,
   "status": "in_progress",
   "title": "The back-edge reduction check is the minimum sequence",
   "type": "task",
-  "updated_at": "2026-11-25T01:18:22Z"
+  "updated_at": "2026-11-25T01:18:25Z"
 }
