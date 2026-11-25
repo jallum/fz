@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-sc8.22.2"
+  ],
   "blocks": [],
   "created": "2026-11-20T19:54:48Z",
   "description": "User approved page \"Scalars without addresses\" (https://claude.ai/artifact/6jYdi5cw1d27CZC85xkJih, From: Callables) on 2026-11-20, relayed by Callables. Owner: Callables. PARAMETERS ONLY (results wait for fz-9x7.44.1).\n\nS1.2, narrowed by the census. List heads never box: typed recipes carry them natively and the interpreter passes AnyValue. fz_list_reuse_or_cons_parts already takes (word, kind); there is no fz_list_reuse_or_cons_ref. Only an improper list's scalar tail boxes: 1 site certain, 3 unclear. Done when those cons-tail sites pass (word, kind) on the native and interpreter paths and box nothing; the census settles the 3 unclear sites first.\n\nCensus of origin/develop fb9ea0ec5 by Callables, 2026-11-20: /private/tmp/claude-501/-Users-j5n-Workspace-fz/98909c07-a0ca-4f82-8202-cb03fb090a79/scratchpad/census-44.3-7.md.",
@@ -17,5 +19,5 @@
   "status": "open",
   "title": "An improper list's scalar tail is passed as a stored word and its kind",
   "type": "task",
-  "updated_at": "2026-11-25T00:35:26Z"
+  "updated_at": "2026-11-25T00:35:27Z"
 }
