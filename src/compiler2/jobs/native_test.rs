@@ -1001,3 +1001,44 @@ fn a_cursor_answers_a_length_question_from_its_lanes_without_being_built() {
         );
     }
 }
+
+fn arrival_with_facts(facts: &[(Var, BinaryFacts)]) -> DispatchState {
+    let mut state = DispatchState::new(
+        Vec::new(),
+        Vec::new(),
+        DispatchBindings {
+            pinned: Vec::new(),
+            prepared: Vec::new(),
+        },
+    );
+    state.binary_facts.extend(facts.iter().copied());
+    state
+}
+
+/// What a bitstring test learned of a binary is a fact about the block it was
+/// learned in. A join keeps a binary's facts only when every arrival learned
+/// the same ones; otherwise the join asks again, so it never reads a variable
+/// that one arrival defined and another did not.
+#[test]
+fn a_dispatch_join_keeps_a_binarys_facts_only_when_every_arrival_holds_the_same() {
+    let (kept, len_differs, base_differs, absent) = (Var(1), Var(2), Var(3), Var(4));
+    let facts = |bit_len: u32, base: Option<u32>| BinaryFacts {
+        bit_len: Var(bit_len),
+        base: base.map(Var),
+    };
+    let left = arrival_with_facts(&[
+        (kept, facts(10, Some(11))),
+        (len_differs, facts(20, None)),
+        (base_differs, facts(30, None)),
+        (absent, facts(40, None)),
+    ]);
+    let right = arrival_with_facts(&[
+        (kept, facts(10, Some(11))),
+        (len_differs, facts(21, None)),
+        (base_differs, facts(30, Some(31))),
+    ]);
+
+    let met = DispatchState::meet(vec![left, right]);
+
+    assert_eq!(met.binary_facts.keys().copied().collect::<Vec<_>>(), vec![kept]);
+}

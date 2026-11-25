@@ -1418,28 +1418,9 @@ fn collect_dispatch_atoms(world: &mut World, plan: &PatternDispatchPlan<Ty>, nam
     for guard in &plan.guards {
         collect_guard_atoms(world, guard, names);
     }
-    collect_dispatch_graph_atoms(world, plan, plan.graph.root, names);
-}
-
-fn collect_dispatch_graph_atoms(
-    world: &mut World,
-    plan: &PatternDispatchPlan<Ty>,
-    node_id: crate::dispatch_matrix::GraphNodeId,
-    names: &mut ExecutableNames,
-) {
-    let Some(node) = plan.graph.node(node_id) else {
-        return;
-    };
-    match node {
-        DispatchNode::Fail | DispatchNode::Outcome { .. } => {}
-        DispatchNode::Test {
-            predicate,
-            on_match,
-            on_miss,
-        } => {
+    for node_id in plan.graph.reachable() {
+        if let Some(DispatchNode::Test { predicate, .. }) = plan.graph.node(node_id) {
             collect_region_atoms(world, &predicate.region, names);
-            collect_dispatch_graph_atoms(world, plan, on_match.target, names);
-            collect_dispatch_graph_atoms(world, plan, on_miss.target, names);
         }
     }
 }

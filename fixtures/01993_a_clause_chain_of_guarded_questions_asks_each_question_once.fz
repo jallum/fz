@@ -1,0 +1,43 @@
+#---
+# purpose: "Eleven clauses that each ask an atom, then that the argument is a closure, then its arity are each hit once, and a closure of the wrong arity, a non-closure and an unknown atom each raise FunctionClauseError; binary literal clauses sharing a prefix answer each literal and the fall-through"
+# kind: run
+# oracle: self
+# oracle.stamp: 97b42fe43db161c5
+#---
+defmodule Main do
+  def pd(:c0, fun, _d) when is_function(fun, 1), do: {:c0, fun.(0)}
+  def pd(:c1, fun, _d) when is_function(fun, 1), do: {:c1, fun.(1)}
+  def pd(:c2, fun, _d) when is_function(fun, 1), do: {:c2, fun.(2)}
+  def pd(:c3, fun, _d) when is_function(fun, 1), do: {:c3, fun.(3)}
+  def pd(:c4, fun, _d) when is_function(fun, 1), do: {:c4, fun.(4)}
+  def pd(:c5, fun, _d) when is_function(fun, 1), do: {:c5, fun.(5)}
+  def pd(:c6, fun, _d) when is_function(fun, 1), do: {:c6, fun.(6)}
+  def pd(:c7, fun, _d) when is_function(fun, 1), do: {:c7, fun.(7)}
+  def pd(:c8, fun, _d) when is_function(fun, 1), do: {:c8, fun.(8)}
+  def pd(:c9, fun, _d) when is_function(fun, 1), do: {:c9, fun.(9)}
+  def pd(:c10, fun, _d) when is_function(fun, 1), do: {:c10, fun.(10)}
+
+  def pick([h | _]), do: h
+
+  def val(<<"true", _::binary>>), do: 1
+  def val(<<"null", _::binary>>), do: 2
+  def val(<<"false", _::binary>>), do: 3
+  def val(_), do: 4
+
+  def miss(atom, fun) do
+    pd(atom, fun, 0)
+  rescue
+    e -> e.__struct__
+  end
+
+  def main() do
+    id = fn x -> x end
+    Enum.each(0..10, fn k -> IO.inspect(pd(String.to_atom("c" <> Integer.to_string(k)), id, 0)) end)
+    IO.inspect(miss(:c3, fn a, b -> a + b end))
+    IO.inspect(miss(:c3, pick([:not_a_function])))
+    IO.inspect(miss(String.to_atom("c11"), id))
+    IO.inspect(Enum.map(["true!", "null", "false and more", "fals", "", "nul"], &val/1))
+  end
+end
+
+Main.main()

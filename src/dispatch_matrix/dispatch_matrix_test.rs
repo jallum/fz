@@ -628,6 +628,100 @@ fn graph_builder_rejects_unknown_root_or_edge_node() {
     );
 }
 
+fn asks_nil(builder: &mut DispatchGraphBuilder<'_, Ty>, on_match: GraphNodeId, on_miss: GraphNodeId) -> GraphNodeId {
+    builder.add_node(DispatchNode::Test {
+        predicate: RegionPredicate::new(SubjectId(0), Region::Equal(ComparisonValue::Const(GroundValue::Nil))),
+        on_match: DispatchEdge::new(on_match),
+        on_miss: DispatchEdge::new(on_miss),
+    })
+}
+
+#[test]
+fn a_node_two_reachable_edges_lead_to_is_a_join() {
+    let mut builder = DispatchGraphBuilder::<Ty>::typed(vec![input_subject()], one_input());
+    let fail = builder.add_node(DispatchNode::Fail);
+    let out = builder.add_node(DispatchNode::Outcome {
+        outcome: OutcomeId(0),
+        evidence: EdgeEvidence::empty(),
+    });
+    let inner = asks_nil(&mut builder, out, fail);
+    let outer = asks_nil(&mut builder, inner, fail);
+    // Unreachable from the root: its edge into `out` must not make `out` a join.
+    asks_nil(&mut builder, out, fail);
+    let graph = builder.build(outer).expect("all node edges are valid");
+
+    assert!(graph.is_join(fail), "both tests miss to the one fail");
+    assert!(!graph.is_join(out), "only a reachable test leads to the outcome");
+    assert!(!graph.is_join(inner) && !graph.is_join(outer));
+}
+
+#[test]
+fn a_test_leading_to_one_node_by_both_edges_makes_it_a_join() {
+    let mut builder = DispatchGraphBuilder::<Ty>::typed(vec![input_subject()], one_input());
+    let fail = builder.add_node(DispatchNode::Fail);
+    let root = asks_nil(&mut builder, fail, fail);
+    let graph = builder.build(root).expect("all node edges are valid");
+
+    assert!(graph.is_join(fail));
+}
+
+#[test]
+fn a_trimmed_graph_names_the_joins_of_the_trimmed_nodes() {
+    let (graph, [asks_nil, _]) = two_tests_sharing_a_fail();
+    let trimmed = graph
+        .trimmed(
+            one_input(),
+            &|node| {
+                if node == asks_nil {
+                    LiveEdges::Miss
+                } else {
+                    LiveEdges::Both
+                }
+            },
+            &|_| false,
+        )
+        .expect("one test is narrowed");
+
+    assert!(
+        trimmed
+            .nodes
+            .iter()
+            .enumerate()
+            .all(|(index, _)| !trimmed.is_join(GraphNodeId(index as u32))),
+        "the trimmed chain has no node with two edges in"
+    );
+}
+
+#[test]
+fn a_graph_whose_test_leads_to_a_node_added_after_it_is_rejected() {
+    let mut builder = DispatchGraphBuilder::<Ty>::typed(vec![input_subject()], one_input());
+    let test = asks_nil(&mut builder, GraphNodeId(1), GraphNodeId(1));
+    let fail = builder.add_node(DispatchNode::Fail);
+    assert_eq!(fail, GraphNodeId(1));
+
+    assert_eq!(
+        builder
+            .build(test)
+            .expect_err("a target must have a smaller id than its test"),
+        DispatchGraphError::TargetNotBeforeTest {
+            test,
+            target: GraphNodeId(1)
+        }
+    );
+}
+
+#[test]
+fn a_test_leading_to_itself_is_rejected() {
+    let mut builder = DispatchGraphBuilder::<Ty>::typed(vec![input_subject()], one_input());
+    let fail = builder.add_node(DispatchNode::Fail);
+    let test = asks_nil(&mut builder, fail, GraphNodeId(1));
+
+    assert_eq!(
+        builder.build(test).expect_err("a test cannot lead to itself"),
+        DispatchGraphError::TargetNotBeforeTest { test, target: test }
+    );
+}
+
 /// Two tests ask `nil` of one input and then `true`, both missing to the one
 /// shared fail: `nil -> o0`, `true -> o1`, anything else fails.
 fn two_tests_sharing_a_fail() -> (DispatchGraph<Ty>, [GraphNodeId; 2]) {

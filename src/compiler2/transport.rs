@@ -450,7 +450,7 @@ fn transport_position_rank(position: &TransportPosition) -> u8 {
 /// environment miss: missing lane-free inputs can authorize an exact direct
 /// closure target, while `Absent` cannot be called. A `Transport` tuple or
 /// callable retains its structure even when `lanes` is empty.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum BoundValue<W> {
     Absent,
     Runtime(W),

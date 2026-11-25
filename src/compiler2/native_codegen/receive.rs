@@ -37,6 +37,7 @@
 //! Production codegen consumes the cached AST-free `PatternDispatchPlan`
 //! attached to `Term::ReceiveMatched`; it does not rebuild source clauses.
 
+use crate::dispatch_matrix::joins::{ArrivalState, DispatchJoins, DispatchLeaf};
 use crate::dispatch_matrix::pattern::{
     GuardExtern, OutcomeRoots, PatternDispatchPlan, PatternGuardBinOp, PatternGuardDispatch, PatternGuardExpr,
     PatternGuardUnaryOp, guard_body_subjects,
@@ -273,7 +274,9 @@ pub(crate) fn emit_receive_dispatch_body<M: cranelift_module::Module>(
         };
 
         let mut state = DispatchEmitState::default();
-        if let Err(e) = emit_dispatch_node(&mut body, &ctx, dispatch.graph.root, miss_block, &mut state) {
+        if let Err(e) = emit_dispatch_graph(&mut body, &ctx, &mut state, &mut |body, leaf, state| {
+            emit_dispatch_leaf(body, &ctx, miss_block, leaf, state)
+        }) {
             compile_err = Some(e);
             finish_failed_dispatch_body(body.b, miss_block);
             return;
@@ -370,7 +373,7 @@ pub(crate) fn emit_receive_projector_body<M: cranelift_module::Module>(
     defined
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 enum ReceiveValue {
     AnyRef(ir::Value),
     /// A value of any kind as the word and kind a container stores for it,
@@ -411,6 +414,20 @@ struct DispatchCtx<'a> {
 #[derive(Default, Clone)]
 struct DispatchEmitState {
     values: HashMap<SubjectId, ReceiveValue>,
+}
+
+/// A join keeps the values every arrival holds. A value held on every arrival
+/// was made in a block that dominates each of them, so it dominates the join.
+impl ArrivalState for DispatchEmitState {
+    fn meet(arrivals: Vec<Self>) -> Self {
+        let mut arrivals = arrivals.into_iter();
+        let mut met = arrivals.next().expect("a join is reached by an arrival");
+        for other in arrivals {
+            met.values
+                .retain(|subject, value| other.values.get(subject) == Some(value));
+        }
+        met
+    }
 }
 
 fn emit_receive_value_ref<M: cranelift_module::Module>(
@@ -535,11 +552,54 @@ fn finish_failed_dispatch_body(b: &mut FunctionBuilder<'_>, miss_block: ir::Bloc
     b.ins().return_(&[zero2]);
 }
 
+/// How a decision's end is emitted: a fail or the outcome it selected.
+trait LeafEmitter<M: cranelift_module::Module>:
+    FnMut(&mut DispatchBody<'_, '_, M>, DispatchLeaf, &mut DispatchEmitState) -> Result<(), CodegenError>
+{
+}
+
+impl<M, F> LeafEmitter<M> for F
+where
+    M: cranelift_module::Module,
+    F: FnMut(&mut DispatchBody<'_, '_, M>, DispatchLeaf, &mut DispatchEmitState) -> Result<(), CodegenError>,
+{
+}
+
+/// One emission of a dispatch graph: how its leaves are emitted and the joins
+/// reached and not yet emitted.
+struct EmitWalk<'l, M: cranelift_module::Module> {
+    emit_leaf: &'l mut dyn LeafEmitter<M>,
+    joins: DispatchJoins<ir::Block, DispatchEmitState>,
+}
+
+/// Emits a dispatch graph, each node once: the root first, then each join its
+/// arrivals reached, from the largest id down, holding what every arrival
+/// holds.
+fn emit_dispatch_graph<M: cranelift_module::Module>(
+    body: &mut DispatchBody<'_, '_, M>,
+    ctx: &DispatchCtx<'_>,
+    state: &mut DispatchEmitState,
+    emit_leaf: &mut dyn LeafEmitter<M>,
+) -> Result<(), CodegenError> {
+    let mut walk = EmitWalk {
+        emit_leaf,
+        joins: DispatchJoins::default(),
+    };
+    emit_dispatch_node(body, ctx, &mut walk, ctx.dispatch.graph.root, state)?;
+    while let Some(join) = walk.joins.next() {
+        body.b.switch_to_block(join.block);
+        body.b.seal_block(join.block);
+        let mut state = join.state;
+        emit_dispatch_node(body, ctx, &mut walk, join.node, &mut state)?;
+    }
+    Ok(())
+}
+
 fn emit_dispatch_node<M: cranelift_module::Module>(
     body: &mut DispatchBody<'_, '_, M>,
     ctx: &DispatchCtx<'_>,
+    walk: &mut EmitWalk<'_, M>,
     node_id: GraphNodeId,
-    miss: ir::Block,
     state: &mut DispatchEmitState,
 ) -> Result<(), CodegenError> {
     let node = ctx
@@ -548,14 +608,61 @@ fn emit_dispatch_node<M: cranelift_module::Module>(
         .node(node_id)
         .ok_or_else(|| CodegenError::new(format!("dispatch node {:?} out of bounds", node_id)))?;
     match node {
-        DispatchNode::Fail => {
+        DispatchNode::Fail => (walk.emit_leaf)(body, DispatchLeaf::Fail, state),
+        DispatchNode::Outcome { outcome, .. } => (walk.emit_leaf)(body, DispatchLeaf::Outcome(*outcome), state),
+        DispatchNode::Test {
+            predicate,
+            on_match,
+            on_miss,
+        } => match emit_test_edges(body, ctx, predicate, on_match, state)? {
+            TestEdges::Settled(Successor::Miss) => emit_dispatch_edge(body, ctx, walk, on_miss.target, state),
+            TestEdges::Settled(Successor::Match(mut matched)) => {
+                emit_dispatch_edge(body, ctx, walk, on_match.target, &mut matched)
+            }
+            TestEdges::Branched { mut matched, miss_b } => {
+                emit_dispatch_edge(body, ctx, walk, on_match.target, &mut matched)?;
+                body.b.switch_to_block(miss_b);
+                body.b.seal_block(miss_b);
+                emit_dispatch_edge(body, ctx, walk, on_miss.target, state)
+            }
+        },
+    }
+}
+
+/// Follows an edge: into a join it jumps, otherwise the target is emitted
+/// where the edge stands.
+fn emit_dispatch_edge<M: cranelift_module::Module>(
+    body: &mut DispatchBody<'_, '_, M>,
+    ctx: &DispatchCtx<'_>,
+    walk: &mut EmitWalk<'_, M>,
+    target: GraphNodeId,
+    state: &mut DispatchEmitState,
+) -> Result<(), CodegenError> {
+    let joined = walk
+        .joins
+        .arrive(&ctx.dispatch.graph, target, state, || body.b.create_block());
+    let Some(block) = joined else {
+        return emit_dispatch_node(body, ctx, walk, target, state);
+    };
+    body.b.ins().jump(block, &[]);
+    let dead = body.b.create_block();
+    body.b.switch_to_block(dead);
+    body.b.seal_block(dead);
+    Ok(())
+}
+
+fn emit_dispatch_leaf<M: cranelift_module::Module>(
+    body: &mut DispatchBody<'_, '_, M>,
+    ctx: &DispatchCtx<'_>,
+    miss: ir::Block,
+    leaf: DispatchLeaf,
+    state: &mut DispatchEmitState,
+) -> Result<(), CodegenError> {
+    match leaf {
+        DispatchLeaf::Fail => {
             body.b.ins().jump(miss, &[]);
-            let dead = body.b.create_block();
-            body.b.switch_to_block(dead);
-            body.b.seal_block(dead);
-            Ok(())
         }
-        DispatchNode::Outcome { outcome, .. } => {
+        DispatchLeaf::Outcome(outcome) => {
             let clause_index = outcome.0 as usize;
             let roots = ctx
                 .roots
@@ -567,28 +674,12 @@ fn emit_dispatch_node<M: cranelift_module::Module>(
             }
             let k = body.b.ins().iconst(types::I32, (clause_index + 1) as i64);
             body.b.ins().return_(&[k]);
-            let dead = body.b.create_block();
-            body.b.switch_to_block(dead);
-            body.b.seal_block(dead);
-            Ok(())
         }
-        DispatchNode::Test {
-            predicate,
-            on_match,
-            on_miss,
-        } => match emit_test_edges(body, ctx, predicate, on_match, state)? {
-            TestEdges::Settled(Successor::Miss) => emit_dispatch_node(body, ctx, on_miss.target, miss, state),
-            TestEdges::Settled(Successor::Match(mut matched)) => {
-                emit_dispatch_node(body, ctx, on_match.target, miss, &mut matched)
-            }
-            TestEdges::Branched { mut matched, miss_b } => {
-                emit_dispatch_node(body, ctx, on_match.target, miss, &mut matched)?;
-                body.b.switch_to_block(miss_b);
-                body.b.seal_block(miss_b);
-                emit_dispatch_node(body, ctx, on_miss.target, miss, state)
-            }
-        },
     }
+    let dead = body.b.create_block();
+    body.b.switch_to_block(dead);
+    body.b.seal_block(dead);
+    Ok(())
 }
 
 fn resolve_dispatch_subject<M: cranelift_module::Module>(
@@ -1727,15 +1818,9 @@ fn emit_guard_dispatch<M: cranelift_module::Module>(
     };
     let mut state = DispatchEmitState::default();
     let mut arrivals = Vec::new();
-    emit_guard_dispatch_node(
-        body,
-        &ctx,
-        &dispatch.bodies,
-        dispatch.plan.graph.root,
-        &mut arrivals,
-        fail,
-        &mut state,
-    )?;
+    emit_dispatch_graph(body, &ctx, &mut state, &mut |body, leaf, state| {
+        emit_guard_dispatch_leaf(body, &ctx, &dispatch.bodies, &mut arrivals, fail, leaf, state)
+    })?;
     join_guard_arrivals(body, &ctx, arrivals)
 }
 
@@ -1800,66 +1885,39 @@ fn shared_raw_lane(arrivals: &[GuardArrival]) -> Option<ReceiveValue> {
     (raw && same).then_some(first)
 }
 
-fn emit_guard_dispatch_node<M: cranelift_module::Module>(
+fn emit_guard_dispatch_leaf<M: cranelift_module::Module>(
     body: &mut DispatchBody<'_, '_, M>,
     ctx: &DispatchCtx<'_>,
     bodies: &[ReceiveGuardExpr],
-    node_id: GraphNodeId,
     arrivals: &mut Vec<GuardArrival>,
     fail: ir::Block,
+    leaf: DispatchLeaf,
     state: &mut DispatchEmitState,
 ) -> Result<(), CodegenError> {
-    let node = ctx
+    let DispatchLeaf::Outcome(outcome) = leaf else {
+        leave_guard(body, fail);
+        return Ok(());
+    };
+    let outcome = ctx
         .dispatch
-        .graph
-        .node(node_id)
-        .ok_or_else(|| CodegenError::new(format!("guard dispatch node {:?} out of bounds", node_id)))?;
-    match node {
-        DispatchNode::Fail => {
-            leave_guard(body, fail);
-            Ok(())
-        }
-        DispatchNode::Outcome { outcome, .. } => {
-            let outcome = ctx
-                .dispatch
-                .outcome(*outcome)
-                .ok_or_else(|| CodegenError::new(format!("guard dispatch outcome {:?} out of bounds", outcome)))?;
-            let guard_body = bodies
-                .get(outcome.body_id as usize)
-                .ok_or_else(|| CodegenError::new(format!("guard dispatch body {} out of bounds", outcome.body_id)))?;
-            if matches!(guard_body, PatternGuardExpr::Fails) {
-                // A body that fails the guard answers nothing to the join.
-                leave_guard(body, fail);
-                return Ok(());
-            }
-            let value = emit_dispatch_guard_expr(body, ctx, guard_body, fail, state)?;
-            let stub = body.b.create_block();
-            body.b.ins().jump(stub, &[]);
-            arrivals.push(GuardArrival { stub, value });
-            let dead = body.b.create_block();
-            body.b.switch_to_block(dead);
-            body.b.seal_block(dead);
-            Ok(())
-        }
-        DispatchNode::Test {
-            predicate,
-            on_match,
-            on_miss,
-        } => match emit_test_edges(body, ctx, predicate, on_match, state)? {
-            TestEdges::Settled(Successor::Miss) => {
-                emit_guard_dispatch_node(body, ctx, bodies, on_miss.target, arrivals, fail, state)
-            }
-            TestEdges::Settled(Successor::Match(mut matched)) => {
-                emit_guard_dispatch_node(body, ctx, bodies, on_match.target, arrivals, fail, &mut matched)
-            }
-            TestEdges::Branched { mut matched, miss_b } => {
-                emit_guard_dispatch_node(body, ctx, bodies, on_match.target, arrivals, fail, &mut matched)?;
-                body.b.switch_to_block(miss_b);
-                body.b.seal_block(miss_b);
-                emit_guard_dispatch_node(body, ctx, bodies, on_miss.target, arrivals, fail, state)
-            }
-        },
+        .outcome(outcome)
+        .ok_or_else(|| CodegenError::new(format!("guard dispatch outcome {:?} out of bounds", outcome)))?;
+    let guard_body = bodies
+        .get(outcome.body_id as usize)
+        .ok_or_else(|| CodegenError::new(format!("guard dispatch body {} out of bounds", outcome.body_id)))?;
+    if matches!(guard_body, PatternGuardExpr::Fails) {
+        // A body that fails the guard answers nothing to the join.
+        leave_guard(body, fail);
+        return Ok(());
     }
+    let value = emit_dispatch_guard_expr(body, ctx, guard_body, fail, state)?;
+    let stub = body.b.create_block();
+    body.b.ins().jump(stub, &[]);
+    arrivals.push(GuardArrival { stub, value });
+    let dead = body.b.create_block();
+    body.b.switch_to_block(dead);
+    body.b.seal_block(dead);
+    Ok(())
 }
 
 fn emit_short_circuit_guard<M: cranelift_module::Module>(

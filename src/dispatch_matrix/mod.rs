@@ -55,6 +55,7 @@ use crate::ast::{BitType, Endian};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(crate) mod demand;
+pub(crate) mod joins;
 pub(crate) mod pattern;
 
 use demand::{DemandPathStep, DispatchDemand, demand_at_step};
@@ -586,6 +587,9 @@ pub(crate) struct DispatchGraph<TypeHandle> {
     test_count: usize,
     /// Whether some decision ends with no outcome, found when the graph is built.
     can_fail: bool,
+    /// The nodes two or more edges of reachable tests lead to: where decisions
+    /// that took different paths meet again. Found when the graph is built.
+    joins: BTreeSet<GraphNodeId>,
 }
 
 /// Visits the nodes a decision can pass through, root first, each once; a
@@ -622,7 +626,6 @@ impl<TypeHandle> DispatchGraph<TypeHandle> {
     }
 
     /// The nodes a decision can pass through, root first, each once.
-    #[cfg(test)]
     pub(crate) fn reachable(&self) -> Vec<GraphNodeId> {
         let mut order = Vec::new();
         visit_reachable(&self.nodes, self.root, |id, _| order.push(id));
@@ -642,6 +645,11 @@ impl<TypeHandle> DispatchGraph<TypeHandle> {
     /// Whether some decision ends with no outcome.
     pub(crate) fn can_fail(&self) -> bool {
         self.can_fail
+    }
+
+    /// Whether two or more edges of reachable tests lead to `id`.
+    pub(crate) fn is_join(&self, id: GraphNodeId) -> bool {
+        self.joins.contains(&id)
     }
 
     /// The tuple arity every winning decision proves input `ordinal` to have:
@@ -761,6 +769,7 @@ impl<TypeHandle> DispatchGraph<TypeHandle> {
             asked: self.asked.clone(),
             test_count: self.test_count,
             can_fail: self.can_fail,
+            joins: self.joins.clone(),
         }
     }
 }
@@ -1203,6 +1212,13 @@ impl<TypeHandle: Clone + Eq> DispatchMatrixBuilder<TypeHandle> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum DispatchGraphError {
     UnknownNode(GraphNodeId),
+    /// A test leads to a node added no earlier than itself. Nodes are added
+    /// after the nodes they lead to, so ascending ids order a graph from its
+    /// leaves to its root.
+    TargetNotBeforeTest {
+        test: GraphNodeId,
+        target: GraphNodeId,
+    },
 }
 
 pub(crate) struct DispatchGraphBuilder<'a, TypeHandle> {
@@ -1240,19 +1256,33 @@ impl<'a, TypeHandle: Clone + Eq> DispatchGraphBuilder<'a, TypeHandle> {
 
     pub(crate) fn build(self, root: GraphNodeId) -> Result<DispatchGraph<TypeHandle>, DispatchGraphError> {
         self.ensure_node(root)?;
-        for node in &self.nodes {
+        for (index, node) in self.nodes.iter().enumerate() {
             if let DispatchNode::Test { on_match, on_miss, .. } = node {
-                self.ensure_node(on_match.target)?;
-                self.ensure_node(on_miss.target)?;
+                let test = GraphNodeId(index as u32);
+                for target in [on_match.target, on_miss.target] {
+                    self.ensure_node(target)?;
+                    if target >= test {
+                        return Err(DispatchGraphError::TargetNotBeforeTest { test, target });
+                    }
+                }
             }
         }
         let mut test_count = 0;
         let mut can_fail = false;
+        let mut in_degree = vec![0u32; self.nodes.len()];
         visit_reachable(&self.nodes, root, |_, node| match node {
-            DispatchNode::Test { .. } => test_count += 1,
+            DispatchNode::Test { on_match, on_miss, .. } => {
+                test_count += 1;
+                in_degree[on_match.target.0 as usize] += 1;
+                in_degree[on_miss.target.0 as usize] += 1;
+            }
             DispatchNode::Fail => can_fail = true,
             DispatchNode::Outcome { .. } => {}
         });
+        let joins = (0..self.nodes.len())
+            .filter(|&index| in_degree[index] >= 2)
+            .map(|index| GraphNodeId(index as u32))
+            .collect();
         Ok(DispatchGraph {
             subjects: self.subjects,
             nodes: self.nodes,
@@ -1261,6 +1291,7 @@ impl<'a, TypeHandle: Clone + Eq> DispatchGraphBuilder<'a, TypeHandle> {
             asked: self.asked,
             test_count,
             can_fail,
+            joins,
         })
     }
 

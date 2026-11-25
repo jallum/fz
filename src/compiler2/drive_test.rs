@@ -9319,6 +9319,98 @@ fn compiler2_native_map_update_reads_the_kind_only_of_an_unproven_base() {
     );
 }
 
+/// `clauses` clauses `pd(:cK, fun, d) when is_function(fun, 1)`, called with
+/// values the compiler cannot see, so the dispatch is lowered whole.
+fn guarded_closure_clauses(clauses: usize) -> String {
+    let heads: String = (0..clauses)
+        .map(|k| format!("  def pd(:c{k}, fun, d) when is_function(fun, 1), do: :c{k}\n"))
+        .collect();
+    format!(
+        "defmodule P do\n  def pick([h | _]), do: h\n{heads}end\n\
+         def main(), do: P.pd(String.to_atom(P.pick([\"c0\"])), P.pick([7, &String.length/1]), 0)\n"
+    )
+}
+
+fn branches_in(clif: &str) -> usize {
+    clif.lines()
+        .filter(|line| line.trim_start().starts_with("brif "))
+        .count()
+}
+
+/// A clause that asks three questions -- the atom, that the argument is a
+/// closure, that its arity is one -- is lowered as three tests, however many
+/// clauses precede it. Every failed question leads to the same next clause, so
+/// that clause is one block that three edges jump to, and lowering it once per
+/// edge would multiply the code by three with every clause added.
+#[test]
+fn compiler2_native_a_guarded_clause_chain_is_lowered_linearly() {
+    let clif_of = |clauses| lowered_clif_of(&guarded_closure_clauses(clauses), "pd");
+    let one = clif_of(1);
+    let eleven = clif_of(11);
+
+    assert_eq!(
+        branches_in(&eleven),
+        11 * branches_in(&one),
+        "each clause's questions are asked once, not once per way of failing the clauses before it:\n{eleven}"
+    );
+    assert!(
+        eleven.lines().count() < 11 * one.lines().count() * 2,
+        "eleven clauses are about eleven times one clause: {} lines against {} for one",
+        eleven.lines().count(),
+        one.lines().count()
+    );
+}
+
+/// Three binary literal clauses and a catch-all: `"true"` and `"null"` read the
+/// first four bytes and `"false"` reads the first five. The miss of `"true"`
+/// and of `"null"` both lead to the `"false"` clause, so that clause's read is
+/// one block two edges jump to. Each (offset, length) the clauses read is read
+/// once: four bytes at offset 0 as one 32-bit load, five bytes at offset 0 as a
+/// 32-bit load and an 8-bit load.
+#[test]
+fn compiler2_native_literal_binary_clauses_read_each_offset_and_length_once() {
+    let source = "defmodule P do\n\
+         \x20 def pick([h | _]), do: h\n\
+         \x20 def val(<<\"true\", _::binary>>), do: 1\n\
+         \x20 def val(<<\"null\", _::binary>>), do: 2\n\
+         \x20 def val(<<\"false\", _::binary>>), do: 3\n\
+         \x20 def val(_), do: 4\n\
+         end\n\
+         def main(), do: P.val(P.pick([\"false\", 7]))\n";
+    let clif = lowered_clif_of(source, "val");
+    let loads = |width: &str| {
+        let load = format!(" = load.{width} ");
+        clif.lines().filter(|line| line.contains(&load)).count()
+    };
+
+    assert_eq!(loads("i8"), 1, "the fifth byte of \"false\" is read once:\n{clif}");
+    assert_eq!(
+        loads("i32"),
+        2,
+        "four bytes are read once for \"true\" and \"null\", and once more under \"false\":\n{clif}"
+    );
+}
+
+/// Clauses that test one binary at different lengths and by different means
+/// reach shared nodes holding different facts about it. Each such join asks
+/// again for what its arrivals disagree on, and the lowering is verified.
+#[test]
+fn compiler2_native_binary_clauses_joining_with_different_facts_lower_verified() {
+    let source = "defmodule P do\n\
+         \x20 def pick([h | _]), do: h\n\
+         \x20 def val(<<\"true\", _::binary>>), do: 1\n\
+         \x20 def val(<<a, b, _::binary>>) when a == b, do: 2\n\
+         \x20 def val(<<\"null\", _::binary>>), do: 3\n\
+         \x20 def val(<<a, _::binary>>) when a == 102, do: 4\n\
+         \x20 def val(<<\"false\", _::binary>>), do: 5\n\
+         \x20 def val(<<_, _, _, _::binary>>), do: 6\n\
+         \x20 def val(_), do: 7\n\
+         end\n\
+         def main(), do: P.val(P.pick([\"false\", 7]))\n";
+    let clif = lowered_clif_of(source, "val");
+    assert!(clif.contains("brif "), "the dispatch is lowered whole:\n{clif}");
+}
+
 /// A share is written where it stands, from what the value's type says. In
 /// each program below `retained` passes its argument to `keep` and still
 /// holds it, so the argument is shared before the call. Sharing a binary
