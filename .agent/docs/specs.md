@@ -192,7 +192,12 @@ Compiler2 owns the active contract path:
   element as `none`, the bottom lower bound, which the join absorbs — so
   `([a], [a])` at `([int], [])` is `[int]` — and at a bare variable it is the
   whole argument, which is a fact: `@spec dbg(t) :: t when t: any` applied to
-  `[]` publishes `[]`, not the declared `any`. The fz-f98.16 cleaner that used
+  `[]` publishes `[]`, not the declared `any`. Under a structured element
+  (`[{a, b}]`, `[[{a, b}]]`, `[%{k: a}]`) the element `none` is read the same
+  way: `Types::collect_uninhabited_match` gives every covariant variable
+  beneath the pattern the bottom lower bound, so `three([])` against
+  `@spec three([{a, a}]) :: [a]` is admitted and answers `[]`
+  (`fixtures/01819_*`). The fz-f98.16 cleaner that used
   to drop `[]`-pinned bindings per position is gone (fz-kdt.120); it split those
   two shapes apart and it masked the partial join above, since dropping a
   `{:done, []}` rung's binding suppressed the claim without saying why it was
