@@ -1,0 +1,20 @@
+#---
+# purpose: "Macro.to_string/1 raises RuntimeError 'Macro.to_string of quoted code is not supported yet' for any quoted code; Elixir renders it, so this fixture is self-checked"
+#---
+defmodule Main do
+  def main() do
+    refuse(1)
+    refuse({:+, [], [1, 2]})
+    refuse({:foo, [], nil})
+  end
+
+  defp refuse(ast) do
+    try do
+      IO.puts(Macro.to_string(ast))
+    rescue
+      error in RuntimeError -> IO.puts(error.message)
+    end
+  end
+end
+
+Main.main()

@@ -286,6 +286,15 @@ The macro-expansion memo key holds the call site (`file` and `line`) and the
 expansion context beside the macro, the call and the scope, since the env a
 macro reads differs by each.
 
+### `Macro.to_string/1`
+
+`lib/macro.fz` defines `Macro.to_string/1`, and it raises `RuntimeError`
+"Macro.to_string of quoted code is not supported yet" for every argument.
+Elixir renders through `Code.quoted_to_algebra/2` and `Inspect.Algebra`
+(`Code.Formatter`, `Code.Normalizer`, `Code.Identifier`), none of which fz
+defines, so this is a documented gap against Elixir. `Record.__access__/5`
+reaches it only to word its `ArgumentError` for a bad argument.
+
 ### `Macro.expand/2` and `Macro.expand_once/2`
 
 `lib/macro.fz` defines both over the `%Macro.Env{}` map, clause for clause from

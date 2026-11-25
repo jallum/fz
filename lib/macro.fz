@@ -3,9 +3,9 @@ defmodule Macro do
   Works with quoted code, as Elixir's `Macro` does.
 
   `escape/1`, `unescape_string/1`, `var/2`, `unique_var/2`,
-  `quoted_literal?/1`, `expand_once/2` and `expand/2` are the only functions
-  defined. The rest of Elixir's `Macro` (`to_string/1`, `prewalk/2` and the
-  others), the options of `escape/2` and the escape map of `unescape_string/2`
+  `quoted_literal?/1`, `expand_once/2`, `expand/2` and `to_string/1` are the
+  only functions defined, and `to_string/1` only raises. The rest of Elixir's
+  `Macro` (`prewalk/2` and the others), the options of `escape/2` and the escape map of `unescape_string/2`
   are not defined.
   """
 
@@ -108,6 +108,20 @@ defmodule Macro do
     do: modifier in [:big, :little, :native, :integer, :float, :binary, :bytes, :bitstring, :bits, :utf8, :utf16, :utf32, :signed, :unsigned]
 
   defp quoted_bitstring_modifier?(_other), do: false
+
+  @doc """
+  Renders quoted code as text. Elixir does so through `Code.quoted_to_algebra/2`
+  and `Inspect.Algebra`, which are not defined here, so every call raises
+  `RuntimeError`.
+
+  ## Examples
+
+      Macro.to_string(quote(do: 1 + 2))
+      #=> ** (RuntimeError) Macro.to_string of quoted code is not supported yet
+
+  """
+  @spec to_string(any) :: no_return()
+  def to_string(_tree), do: raise(RuntimeError, "Macro.to_string of quoted code is not supported yet")
 
   @doc """
   Expands the root node of `ast` once in `env`, without traversing it.
@@ -247,7 +261,7 @@ defmodule Macro do
   defp alias_receiver(list, _env), do: list
 
   @spec short_atom(atom) :: atom
-  defp short_atom(name), do: String.to_atom("Elixir." <> to_string(name))
+  defp short_atom(name), do: String.to_atom("Elixir." <> Kernel.to_string(name))
 
   @spec concat([any]) :: atom
   defp concat(parts) do
@@ -255,7 +269,7 @@ defmodule Macro do
   end
 
   @spec segment(any) :: binary
-  defp segment(part) when is_atom(part), do: String.replace_prefix(to_string(part), "Elixir.", "")
+  defp segment(part) when is_atom(part), do: String.replace_prefix(Kernel.to_string(part), "Elixir.", "")
   defp segment(part), do: raise(ArgumentError, "expected an alias segment to be an atom, got: #{inspect(part)}")
 
   @spec dirname(binary) :: binary
