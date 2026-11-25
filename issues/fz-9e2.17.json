@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-25T11:42:08Z",
+  "description": "From: JSON (walk row 14). User-approved 2026-11-25; owner Binary Handling.\n\nEvidence: OtpJSON.decode_start(binary_part(d, 0, c), …) runs on interp, but on run and build fails with: error[artifact/incomplete-semantic-plan]: compiler2 native lowering for root 0: native type test cannot read lane-form ShapeId(65) in Executable(…). Passing :binary.copy(...) instead makes it pass. Repro (not minimal: the whole OtpJSON module plus one line, 1,665 lines): /Users/j5n/Workspace/fz-752-walk/repro-2026-11-25/05_decode_start_binary_view_arg.fz. Walk: /Users/j5n/Workspace/fz-752-walk/walk-2026-11-25.md.\n\nBinary Handling cannot reproduce it on develop 870157500 or on fz-9e2.7.3. The failing fz2 commit is still to be confirmed with JSON.\n\nLikely cause (BH, not yet confirmed): native.rs:3611 lane_form_type_test reads only Tuple shapes. The one non-tuple lane form a binary takes is ShapeDescr::Cursor { source, position } (transport.rs:169), so ShapeId(65) is probably a Cursor reaching an is_binary/is_bitstring guard. To confirm, dump --dump native= on the failing build.\n\nFix direction: a Cursor answers is_bitstring statically true and every other kind statically false. is_binary is read off its lanes as (source bit_len - position) % 8 == 0. This is near fz-9e2.8 (a cursor is a shape only where it is taken apart), but this ticket blocks #791 on the native paths, so it may go first.\n\nDone when: a minimal fixture passes binary_part's result to a function whose guard type-tests it, and matches Elixir on interp, run and build.",
+  "id": "fz-9e2.17",
+  "labels": [],
+  "parent": "fz-9e2",
+  "priority": 2,
+  "status": "open",
+  "title": "A type test on a binary slice passed to a function lowers on the native paths",
+  "type": "bug",
+  "updated_at": "2026-11-25T11:42:08Z"
+}
