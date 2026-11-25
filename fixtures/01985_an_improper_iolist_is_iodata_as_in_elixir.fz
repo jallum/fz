@@ -1,7 +1,7 @@
 #---
 # purpose: "An iolist may end in a binary, as in Elixir: a typed improper iolist is iodata, and an untyped one ending in anything else raises ArgumentError"
 # oracle: self
-# oracle.stamp: ae4a6dabfc8fcef9
+# oracle.stamp: ad828ac00dc90aee
 #---
 defmodule Main do
   @spec join(iodata()) :: binary()
@@ -31,9 +31,12 @@ defmodule Main do
     IO.inspect(IO.iodata_to_binary([?a | "b"]))
     IO.inspect(:erlang.iolist_to_binary(["a", ["b" | "c"] | "d"]))
     IO.inspect(:erlang.iolist_size(["a", ["b" | "c"] | "d"]))
+    IO.inspect(IO.iodata_length([1, 2 | <<3, 4>>]))
+    IO.inspect(IO.iodata_length("abc"))
     IO.inspect(join(["ab", [?c | "de"] | "f"]))
     IO.puts(rescued(fn -> IO.iodata_to_binary(["a" | unknown(1)]) end))
     IO.puts(rescued(fn -> :erlang.iolist_size(["a", ["b" | unknown(:c)]]) end))
+    IO.puts(rescued(fn -> IO.iodata_length(["a" | unknown(2)]) end))
   end
 end
 

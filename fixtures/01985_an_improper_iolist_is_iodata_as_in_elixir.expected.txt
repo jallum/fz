@@ -3,6 +3,9 @@
 "ab"
 "abcd"
 4
+4
+3
 "abcdef"
+ArgumentError: errors were found at the given arguments:||  * 1st argument: not an iodata term|
 ArgumentError: errors were found at the given arguments:||  * 1st argument: not an iodata term|
 ArgumentError: errors were found at the given arguments:||  * 1st argument: not an iodata term|
