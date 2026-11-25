@@ -1,9 +1,7 @@
 {
   "assignee": "Binary Handling",
   "blocked_by": [],
-  "blocks": [
-    "fz-4hl"
-  ],
+  "blocks": [],
   "created": "2026-11-25T11:43:10Z",
   "description": "User-approved 2026-11-25: raise the ceilings to develop's measured counts now and explain the unattributed part afterwards.\n\nEvidence (Binary Handling, clean develop checkout at b1661a742): distill_telemetry_test::the_distiller_compiles_inside_its_ceilings fails. Measured against the ceilings: largest drive 35816 vs 35200 (+616), total requests 36112 vs 35496 (+616), derivations 16743 vs 16383 (+360), reads 122439 vs 118770 (+3669), drives 25 vs 25.\n\nCause: #903 (fz-sc8.22.3, aae3f942b) merged before #897 (fz-mue.28, a3dd6e8c7). #897 lowered the ceilings to counts measured without #903's user-accepted cost (+412 largest drive, +219 derivations, +2,732 reads). The remainder (+204 / +141 / +937) comes from another merge in aae3f942b..cd18bf4ab; the follow-up ticket attributes it.\n\nDone when: tests/distill_telemetry_test.rs ceilings equal develop's measured counts at the tip this lands on (re-measure on that tip), and develop CI is green.",
   "id": "fz-94a",
@@ -12,5 +10,5 @@
   "status": "open",
   "title": "Develop's distiller ceilings equal its measured counts after the #897-#904 merges",
   "type": "bug",
-  "updated_at": "2026-11-25T11:43:12Z"
+  "updated_at": "2026-11-25T11:44:30Z"
 }
