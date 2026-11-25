@@ -1,7 +1,9 @@
 {
   "assignee": "Elixir Parity",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-nhb.15"
+  ],
   "created": "2026-11-25T12:04:40Z",
   "description": "From: Elixir Parity. User decision on fz-nhb.15 (defguard): \"Faithful, as 3 tickets\" (relayed 2026-11-25).\n\nKernel.Utils.defguard walks the guard's quoted body with Macro.prewalk/postwalk, and fz has neither. Port them faithfully from Elixir's macro.ex.\n\nDone when: Macro.prewalk/2, prewalk/3, postwalk/2 and postwalk/3 (and traverse/4 if the port needs it) match Elixir in an oracle fixture on interp, run and build.",
   "id": "fz-mue.68",
