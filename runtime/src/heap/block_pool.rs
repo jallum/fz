@@ -9,13 +9,18 @@
 //!
 //! A free list keeps blocks warm (their pages resident) for as long as they are
 //! wanted. A block of a trimmed class (`TRIM_FROM_CAPACITY` and up) that no
-//! allocation of its class has needed for a whole epoch, an epoch being as many
-//! bytes handed out as `EPOCH_FACTOR` times what the pool holds in use (and at
-//! least `EPOCH_FLOOR`), gives
+//! allocation of its class has needed for a whole epoch gives
 //! its pages back to the operating system and stays on the list as a cold block:
 //! it is handed out again as any other and its pages come back as they are
-//! touched. The bytes a pool keeps resident for idle blocks are therefore those
-//! its recent allocations used, not those of every size the heap once needed.
+//! touched. An epoch is as many bytes handed out as `EPOCH_FACTOR` times
+//! everything the pool holds, in use and idle (and at least `EPOCH_FLOOR`), so
+//! a block is judged against the whole of the pool's working set: a program
+//! that holds little and retakes the same large blocks over and over never has
+//! them trimmed, and a block nothing retakes goes cold once the pool has
+//! handed out several times its holding. The bytes a pool keeps resident for
+//! idle blocks are therefore those its recent allocations used, not those of
+//! every size the heap once needed. `Footprint` counts the epochs ended and
+//! the pages given back.
 //!
 //! A pooled block marks the age table (`arena::is_young`) when it is made, and
 //! only when the span's mark is not already the one it wants: a released pooled
@@ -139,7 +144,7 @@ const fn trim_entry() -> usize {
     entry
 }
 
-/// How many times the in-use bytes an epoch hands out. A shorter epoch trims
+/// How many times the pool's holding (in use plus idle) an epoch hands out. A shorter epoch trims
 /// blocks a program is about to want again and pays to fault their pages back;
 /// a longer one holds idle pages resident longer.
 const EPOCH_FACTOR: usize = 4;
@@ -211,6 +216,10 @@ struct BlockPool {
     idle_bytes: usize,
     /// The largest in-use total any grow has reached.
     peak_in_use_bytes: usize,
+    /// How many epochs have ended.
+    trims: usize,
+    /// How many operating-system pages the trims have given back.
+    pages_given_back: usize,
     /// Bytes of off-heap binary buffers allocated on this thread less those
     /// freed on it. A buffer freed on another thread leaves this thread's net
     /// below zero, so the net is signed; the in-use total carries only its
@@ -228,6 +237,10 @@ pub struct Footprint {
     pub idle_bytes: usize,
     /// The largest `in_use_bytes` any grow has reached.
     pub peak_in_use_bytes: usize,
+    /// How many epochs have ended, each one a trim.
+    pub trims: usize,
+    /// How many operating-system pages the trims have given back.
+    pub pages_given_back: usize,
 }
 
 impl BlockPool {
@@ -244,6 +257,8 @@ impl BlockPool {
             block_bytes: 0,
             idle_bytes: 0,
             peak_in_use_bytes: 0,
+            trims: 0,
+            pages_given_back: 0,
             binary_bytes: 0,
         }
     }
@@ -289,10 +304,11 @@ impl BlockPool {
     }
 
     /// Count `capacity` bytes toward the epoch, and when the pool has handed
-    /// out `EPOCH_FACTOR` times the bytes it holds in use, trim.
+    /// out `EPOCH_FACTOR` times the bytes it holds, in use and idle, trim.
     fn end_epoch_if_over(&mut self, capacity: usize) {
         self.epoch_bytes += capacity;
-        if self.epoch_bytes >= (self.in_use_bytes() * EPOCH_FACTOR).max(EPOCH_FLOOR) {
+        let holding = self.in_use_bytes() + self.idle_bytes;
+        if self.epoch_bytes >= (holding * EPOCH_FACTOR).max(EPOCH_FLOOR) {
             self.trim();
         }
     }
@@ -301,11 +317,12 @@ impl BlockPool {
     /// epoch, and begin the next one.
     fn trim(&mut self) {
         self.epoch_bytes = 0;
+        self.trims += 1;
         for idx in TRIM_FROM_CLASS..CLASSES {
             let capacity = class_capacity(idx);
             let span = span_len(capacity);
             while self.cold[idx] < self.low_water[idx] {
-                range().drop_pages(self.free_lists[idx][self.cold[idx]], span);
+                self.pages_given_back += range().drop_pages(self.free_lists[idx][self.cold[idx]], span);
                 self.cold[idx] += 1;
             }
             self.low_water[idx] = self.free_lists[idx].len();
@@ -340,6 +357,7 @@ impl BlockPool {
         self.spill.receive(&mut self.free_lists);
         self.cold = [0; CLASSES];
         self.low_water = [0; CLASSES];
+        self.idle_bytes = 0;
     }
 }
 
@@ -466,9 +484,7 @@ pub(super) fn pool_free(p: *mut u8, capacity: usize) {
 #[cfg(test)]
 pub fn pool_drain_for_test() {
     BLOCK_POOL.with(|pool| {
-        let mut pool = pool.borrow_mut();
-        pool.spill_all();
-        pool.idle_bytes = 0;
+        pool.borrow_mut().spill_all();
     });
 }
 
@@ -492,6 +508,8 @@ pub fn pool_footprint() -> Footprint {
             in_use_bytes: pool.in_use_bytes(),
             idle_bytes: pool.idle_bytes,
             peak_in_use_bytes: pool.peak_in_use_bytes,
+            trims: pool.trims,
+            pages_given_back: pool.pages_given_back,
         }
     })
 }

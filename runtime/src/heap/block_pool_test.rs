@@ -413,10 +413,23 @@ fn the_footprint_counts_logical_capacities_through_a_scripted_sequence() {
 const TRIMMED: usize = SIZE_TABLE[10];
 const DRIVER: usize = SIZE_TABLE[0];
 
-/// Allocations and frees of the driver capacity until `epochs` epochs of at
-/// least `EPOCH_FLOOR` bytes have passed.
-fn pass_epochs(epochs: usize) {
-    for _ in 0..epochs * (EPOCH_FLOOR / DRIVER + 2) {
+/// Allocations and frees of the driver capacity until `epochs` more epochs
+/// have ended, and the bytes handed out meanwhile.
+fn pass_epochs(epochs: usize) -> usize {
+    let target = pool_footprint().trims + epochs;
+    let mut handed_out = 0;
+    while pool_footprint().trims < target {
+        let p = pool_alloc(DRIVER, Age::Old);
+        pool_free(p, DRIVER);
+        handed_out += DRIVER;
+    }
+    handed_out
+}
+
+/// Allocations and frees of the driver capacity totalling `bytes`, which are
+/// other processes' work while a decode's own blocks rest.
+fn churn(bytes: usize) {
+    for _ in 0..bytes / DRIVER {
         let p = pool_alloc(DRIVER, Age::Old);
         pool_free(p, DRIVER);
     }
@@ -524,5 +537,65 @@ fn a_small_idle_block_is_never_trimmed() {
             .iter()
             .all(|&b| b == 0xAB)
     );
+    pool_drain_for_test();
+}
+
+/// A trimmed class whose one block is bigger than an epoch's floor, so that an
+/// epoch of the pool's holding is longer than the floor.
+const LARGE: usize = SIZE_TABLE[24];
+
+#[test]
+fn a_block_retaken_every_epoch_is_never_trimmed() {
+    // A decode holds a few KB and takes the same large block each time; other
+    // work hands out bytes in the gaps between decodes. The pool's holding is
+    // that block, so an epoch is longer than a gap.
+    const { assert!(LARGE >= TRIM_FROM_CAPACITY && LARGE > EPOCH_FLOOR) };
+    start();
+    let _small = pool_alloc(DRIVER, Age::Old);
+    let block = pool_alloc(LARGE, Age::Old);
+    unsafe { block.write_bytes(0xAB, LARGE) };
+    pool_free(block, LARGE);
+    let trims_before = pool_footprint().trims;
+
+    for _ in 0..8 {
+        let taken = pool_alloc(LARGE, Age::Old);
+        assert_eq!(taken, block, "the one block is the one retaken");
+        pool_free(taken, LARGE);
+        churn(3 * EPOCH_FLOOR);
+    }
+
+    let footprint = pool_footprint();
+    assert!(footprint.trims > trims_before, "the decodes spanned epochs");
+    assert_eq!(cold_blocks(), 0, "a block retaken every epoch is not cold");
+    assert_eq!(footprint.pages_given_back, 0);
+    assert!(!is_zeroed(block, LARGE), "its pages were never given back");
+    pool_drain_for_test();
+}
+
+#[test]
+fn an_idle_block_is_trimmed_once_it_has_outlasted_an_epoch_of_everything_the_pool_holds() {
+    const { assert!(LARGE >= TRIM_FROM_CAPACITY && LARGE > EPOCH_FLOOR) };
+    start();
+    let block = pool_alloc(LARGE, Age::Old);
+    unsafe { block.write_bytes(0xAB, LARGE) };
+    pool_free(block, LARGE);
+    let holding = pool_footprint().in_use_bytes + pool_footprint().idle_bytes;
+
+    pass_epochs(1);
+    assert_eq!(
+        cold_blocks(),
+        0,
+        "an epoch that began with it idle has not shown it unwanted"
+    );
+    assert_eq!(pool_footprint().pages_given_back, 0);
+
+    let handed_out = pass_epochs(1);
+    assert!(
+        handed_out >= EPOCH_FACTOR * holding - EPOCH_FACTOR * DRIVER,
+        "the epoch lasted {handed_out} bytes, short of {EPOCH_FACTOR} times the {holding} the pool holds"
+    );
+    assert_eq!(cold_blocks(), 1, "it went the whole epoch unwanted");
+    assert!(is_zeroed(block, LARGE), "its pages went back");
+    assert!(pool_footprint().pages_given_back > 0);
     pool_drain_for_test();
 }
