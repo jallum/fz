@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-25T02:28:22Z",
+  "description": "From: GC. Approved by the user 2026-11-24 (verbatim \"ignore it then; proceed.\", answering the fz-9x7.47 obsolescence audit).\n\nEvidence: Heap::contains_heap_addr (runtime/src/heap/imp.rs:581 at #880's 4b56bb8e8) has no production caller. Callers: aot_shim_test, gift_test, heap_test, mailbox_test, sched_test (runtime crate) and src/ir_interp/backend_test.rs:315 (fz crate), so it cannot simply be cfg(test). It answers 'does this heap own the address', which the age table cannot.\n\nChange: move it, and the debug range helpers it uses where test-only, behind a test-support feature the fz crate's tests enable (or move the fz-crate test's check onto a runtime-side test), so release builds carry no test-only heap API.\n\nDone when: no test-only heap API compiles into a release runtime; the tests keep their assertions.",
+  "id": "fz-9x7.55",
+  "labels": [],
+  "parent": "fz-9x7",
+  "priority": 3,
+  "status": "open",
+  "title": "contains_heap_addr is test support",
+  "type": "task",
+  "updated_at": "2026-11-25T02:28:22Z"
+}
