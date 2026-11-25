@@ -845,7 +845,7 @@ fn compiler2_frontdoor_catch_clauses_take_one_or_more_heads_and_a_trailing_guard
     let tel = ConfiguredTelemetry::new();
     let root = parse_quoted_program(
         "catch_heads.fz",
-        "probe(try do\n  x\ncatch\n  v -> v\n  :exit, r -> r\n  k, v when k == :throw -> v\n  -> 0\nend)\nprobe(try do\n  x\ncatch\n  :exit, r -> r\n  v -> v\nend)\n",
+        "probe(try do\n  x\ncatch\n  v -> v\n  :exit, r -> r\n  k, v when k == :throw -> v\nend)\nprobe(try do\n  x\ncatch\n  :exit, r -> r\n  v -> v\nend)\n",
         &tel,
     )
     .expect("quoted parse");
@@ -853,11 +853,34 @@ fn compiler2_frontdoor_catch_clauses_take_one_or_more_heads_and_a_trailing_guard
     assert_eq!(
         quoted_shapes(&root),
         [
-            "probe(try([{:do, $x}, {:catch, [->([$v], $v), ->([:exit, $r], $r), ->([when($k, $v, ==($k, :throw))], $v), ->([], 0)]}]))",
+            "probe(try([{:do, $x}, {:catch, [->([$v], $v), ->([:exit, $r], $r), ->([when($k, $v, ==($k, :throw))], $v)]}]))",
             "probe(try([{:do, $x}, {:catch, [->([:exit, $r], $r), ->([$v], $v)]}]))",
         ],
         "a catch clause reads its heads like a fn clause: comma-separated, with `when` last",
     );
+}
+
+#[test]
+fn compiler2_frontdoor_a_clause_line_beginning_with_an_arrow_is_a_syntax_error() {
+    let tel = ConfiguredTelemetry::new();
+    for (section, text) in [
+        ("catch", "try do\n  x\ncatch\n  v -> v\n  -> 0\nend\n"),
+        ("rescue", "try do\n  x\nrescue\n  e -> e\n  -> 0\nend\n"),
+        ("fn", "f = fn\n  a -> a\n  -> 0\nend\n"),
+        ("case", "case x do\n  1 -> 1\n  -> 0\nend\n"),
+        ("cond", "cond do\n  x -> 1\n  -> 0\nend\n"),
+        ("receive", "receive do\n  1 -> 1\n  -> 0\nend\n"),
+        ("else", "with {:ok, a} <- x do\n  a\nelse\n  1 -> 1\n  -> 0\nend\n"),
+    ] {
+        let (error, version) = parse_quoted_error("arrow_first.fz", text, &tel);
+        let arrow = text.rfind("->").expect("the arrow") as u32;
+        assert_eq!(error.msg, "syntax error before: `->`", "{section}");
+        assert_eq!(
+            error.span,
+            crate::source::Span::new(version, arrow, arrow + 2),
+            "{section}"
+        );
+    }
 }
 
 #[test]

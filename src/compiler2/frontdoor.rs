@@ -1833,35 +1833,42 @@ impl<'t> FrontDoorParser<'t> {
     /// `->` follows it. A parameter line is a head when `,`, `when` or `->`
     /// follows its first expression, since no body line can continue that
     /// way; a line opening with a parenthesis group is a head when the group
-    /// is followed by `when` or `->`.
+    /// is followed by `when` or `->`. A line that opens with `->` is a syntax
+    /// error, as in Elixir, whose tokenizer drops the line end before `->`:
+    /// only a section's first clause may have no head.
     fn parse_clause_line(
         &mut self,
         kind: ClauseKind,
         module_path: &[String],
         scope: &[String],
     ) -> Result<ClauseLine<'t>, FrontDoorError> {
-        self.with_comma_unbound(|parser| match kind {
-            ClauseKind::Pattern => {
-                let line = parser.parse_expr(module_path, scope)?;
-                if parser.peek_is(&Tok::Arrow) {
-                    Ok(ClauseLine::Head(parser.pattern_head(line)?))
-                } else {
-                    Ok(ClauseLine::Body(line))
-                }
+        self.with_comma_unbound(|parser| {
+            if parser.peek_is(&Tok::Arrow) {
+                return parser.err("syntax error before: `->`");
             }
-            ClauseKind::Params => {
-                if parser.peek_is(&Tok::Arrow) || parser.paren_group_heads_clause() {
-                    return Ok(ClauseLine::Head(parser.parse_param_head(None, module_path, scope)?));
+            match kind {
+                ClauseKind::Pattern => {
+                    let line = parser.parse_expr(module_path, scope)?;
+                    if parser.peek_is(&Tok::Arrow) {
+                        Ok(ClauseLine::Head(parser.pattern_head(line)?))
+                    } else {
+                        Ok(ClauseLine::Body(line))
+                    }
                 }
-                let first = parser.parse_bp(PARAM_BP, module_path, scope)?;
-                if parser.peek_is(&Tok::Comma) || parser.peek_is(&Tok::When) || parser.peek_is(&Tok::Arrow) {
-                    return Ok(ClauseLine::Head(parser.parse_param_head(
-                        Some(first),
-                        module_path,
-                        scope,
-                    )?));
+                ClauseKind::Params => {
+                    if parser.paren_group_heads_clause() {
+                        return Ok(ClauseLine::Head(parser.parse_param_head(None, module_path, scope)?));
+                    }
+                    let first = parser.parse_bp(PARAM_BP, module_path, scope)?;
+                    if parser.peek_is(&Tok::Comma) || parser.peek_is(&Tok::When) || parser.peek_is(&Tok::Arrow) {
+                        return Ok(ClauseLine::Head(parser.parse_param_head(
+                            Some(first),
+                            module_path,
+                            scope,
+                        )?));
+                    }
+                    Ok(ClauseLine::Body(parser.parse_bp_tail(first, 0, module_path, scope)?))
                 }
-                Ok(ClauseLine::Body(parser.parse_bp_tail(first, 0, module_path, scope)?))
             }
         })
     }
