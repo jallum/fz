@@ -19,11 +19,15 @@
     {
       "text": "Commit 2 scope (EP): a dynamic M.__info__(:macros) call inside a macro body fails with internal/unresolved-wait and no source line. Repro: ../fz-otp-json/probes/mue51/r1.fz. Commit 1 (user decision): undecidable macro-ness raises the named 'not supported yet' error; calls env proves are not macros return unchanged; commit 2's replay removes the error.",
       "timestamp": "2026-11-25T00:39:43Z"
+    },
+    {
+      "text": "Commit 1 merged as #889 at 6a246c182 (2026-11-24). Ticket stays open for commit 2 (dynamic __info__(:macros) replay), per the user's two-commit decision.",
+      "timestamp": "2026-11-25T02:53:05Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "Macro.expand/2 expands a quoted macro call in the caller's environment, as in Elixir",
   "type": "feature",
-  "updated_at": "2026-11-25T00:39:43Z"
+  "updated_at": "2026-11-25T02:53:05Z"
 }
