@@ -188,12 +188,7 @@ defmodule :erlang do
   def binary_part(binary, start, length)
       when is_binary(binary) and is_integer(start) and is_integer(length) and start >= 0 and start <= byte_size(binary) and
              start + length >= 0 and start + length <= byte_size(binary) do
-    from = min(start, start + length)
-    size = abs(length)
-
-    case binary do
-      <<_skipped :: binary-size(from), part :: binary-size(size), _rest :: binary>> -> part
-    end
+    fz_binary_part(binary, min(start, start + length), abs(length))
   end
 
   def binary_part(binary, start, length),
@@ -208,6 +203,8 @@ defmodule :erlang do
 
   defp part_complaints(_binary, start, length),
     do: complaint("2nd", natural_reason(start)) <> complaint("3rd", integer_reason(length))
+
+  extern "fz" defp fz_binary_part(bitstring, integer, integer) :: bitstring
 
   @doc """
   Returns the bytes of `iolist` as one binary. An `iolist` is a list whose

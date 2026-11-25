@@ -1,0 +1,5 @@
+{:hit, :miss, :miss, :miss}
+{:hit, :miss, :miss, :miss}
+{:hit, :miss, :miss, :miss}
+{:a, :other, :other, :other}
+{"bc", "bc"}

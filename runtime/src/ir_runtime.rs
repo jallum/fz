@@ -1333,6 +1333,17 @@ pub extern "C" fn fz_binary_concat(process: *mut Process, left_ref: u64, right_r
     value.ref_word().raw_word()
 }
 
+/// `:erlang.binary_part/3` once the part is known to lie inside the binary:
+/// the `size` bytes that start at byte `from`.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_binary_part(process: *mut Process, binary_ref: u64, from: i64, size: i64) -> u64 {
+    let from = u64::try_from(from).expect("from is checked by :erlang.binary_part/3");
+    let size = u64::try_from(size).expect("size is checked by :erlang.binary_part/3");
+    unsafe { (&mut *process).slice(binary_ref, from * 8, size * 8) }
+        .ref_word()
+        .raw_word()
+}
+
 /// `:binary.copy/2`: `count` repetitions of the binary, written straight into
 /// the one buffer the result lives in. The caller has checked `count >= 0`.
 #[unsafe(no_mangle)]

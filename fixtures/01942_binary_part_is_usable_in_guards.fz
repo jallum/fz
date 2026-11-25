@@ -1,0 +1,34 @@
+#---
+# purpose: binary_part/3 is usable in a guard of a function head and a case clause; `:erlang.binary_part` is guard-callable directly, a part that is out of range or taken from a non-binary leaves the clause unmatched, and a negative length counts back from the start
+# oracle: self
+# oracle.stamp: 7eab6da12011218d
+#---
+defmodule Main do
+  def forward(b) when binary_part(b, 1, 2) == "bc", do: :hit
+  def forward(_), do: :miss
+
+  def backward(b) when binary_part(b, 3, -2) == "bc", do: :hit
+  def backward(_), do: :miss
+
+  def direct(b) when :erlang.binary_part(b, 0, 1) == "a", do: :hit
+  def direct(_), do: :miss
+
+  def in_case(b) do
+    case b do
+      b when binary_part(b, 0, 1) == "a" -> :a
+      _ -> :other
+    end
+  end
+
+  def in_body(b), do: {binary_part(b, 1, 2), :erlang.binary_part(b, 3, -2)}
+
+  def main() do
+    IO.inspect({forward("abcd"), forward("axyz"), forward("a"), forward(:abcd)})
+    IO.inspect({backward("abcd"), backward("abxd"), backward("ab"), backward(7)})
+    IO.inspect({direct("abc"), direct("xbc"), direct(""), direct(:abc)})
+    IO.inspect({in_case("abc"), in_case("xbc"), in_case(""), in_case([97])})
+    IO.inspect(in_body("abcd"))
+  end
+end
+
+Main.main()
