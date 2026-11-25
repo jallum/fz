@@ -1,6 +1,6 @@
 use std::rc::Rc;
 
-use super::super::source_sugar::rewrite_source_sugar;
+use super::super::source_sugar::{rewrite_guard_source_sugar, rewrite_source_sugar};
 use super::super::{QuotedSourceHeap, QuotedSourceMetadata};
 
 #[test]
@@ -298,4 +298,44 @@ fn a_comprehension_that_cannot_be_built_is_refused_naming_the_form() {
     ] {
         assert_eq!(rewrite_for(text).unwrap_err(), message, "{text}");
     }
+}
+
+fn rewritten_call_shape(text: &str, in_guard: bool) -> Option<(String, usize)> {
+    let tel = crate::telemetry::ConfiguredTelemetry::new();
+    let mut sources = crate::source::SourceMap::default();
+    let version = sources.add_code(Some("pipe.fz"), text);
+    let root = super::super::parse_quoted_program(&sources, version, &tel).expect("quoted parse");
+    let form = root.cursor().list_items().expect("items").remove(0);
+    let node = form.ast_node(&sources).expect("node").expect("form node");
+    let rewrite = if in_guard {
+        rewrite_guard_source_sugar
+    } else {
+        rewrite_source_sugar
+    };
+    let rewritten = rewrite(&root, form.root(), &node, &sources).expect("rewrite")?;
+    let call = root.builder().root(rewritten).expect("rewritten root");
+    let call = call.cursor().ast_node(&sources).expect("node").expect("call");
+    Some((
+        call.head.atom_name().expect("call head").to_string(),
+        call.tail.list_len().expect("call arguments"),
+    ))
+}
+
+/// A bare name on the right of `|>` is a call whose only argument is the piped
+/// value, as `Macro.pipe/3` reads `{call, line, atom}`.
+#[test]
+fn a_pipe_into_a_bare_name_is_a_call_with_the_piped_value_alone() {
+    assert_eq!(rewritten_call_shape("1 |> hd", false), Some(("hd".to_string(), 1)));
+    assert_eq!(rewritten_call_shape("1 |> hd()", false), Some(("hd".to_string(), 1)));
+}
+
+/// A guard desugars `|>` and nothing else: the other sugars build calls a guard
+/// may not make.
+#[test]
+fn a_guard_desugars_a_pipe_and_leaves_the_other_sugar() {
+    assert_eq!(
+        rewritten_call_shape("x |> is_integer", true),
+        Some(("is_integer".to_string(), 1))
+    );
+    assert_eq!(rewritten_call_shape("a ++ b", true), None);
 }

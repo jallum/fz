@@ -3262,13 +3262,9 @@ fn constructed_bitstring_ty(
 fn lowered_binop_ty(world: &mut World, op: BinOp, _left: Ty, _right: Ty) -> Ty {
     match op {
         BinOp::In | BinOp::NotIn => world.types_mut().bool(),
-        BinOp::Pipe
-        | BinOp::Cons
-        | BinOp::ListConcat
-        | BinOp::ListSubtract
-        | BinOp::BinConcat
-        | BinOp::Range
-        | BinOp::RangeStep => any_ty(world),
+        BinOp::Cons | BinOp::ListConcat | BinOp::ListSubtract | BinOp::BinConcat | BinOp::Range | BinOp::RangeStep => {
+            any_ty(world)
+        }
         BinOp::Add
         | BinOp::Sub
         | BinOp::Mul

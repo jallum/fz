@@ -154,6 +154,8 @@ authority. See [`canonical-form`](canonical-form.md#canonbackendprogram).
   staged function expansion, on the same quoted heap, before
   `DefineFunction` decodes a demanded body.
 - Source-sugar rewrites emit ordinary quoted forms: `|>` becomes a normal call
+  (a bare name on its right, `x |> hd`, is a call with the piped value alone,
+  whether or not a variable of that name is bound, as `Macro.pipe/3` reads it)
   or a subject-bearing `case`, capture placeholders become direct lambdas,
   multi/guarded lambdas become one lambda whose body is a `case`, and operators
   become ordinary helper calls such as `List.concat`, `Enum.member?`,

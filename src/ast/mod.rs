@@ -398,10 +398,9 @@ pub enum BinOp {
     GtEq,
     And,
     Or,
-    Pipe, // |>
     Cons, // |  (head | tail)
 
-    // Elixir-aligned operators. Like Pipe and Cons, these never reach IR
+    // Elixir-aligned operators. Like Cons, these never reach IR
     // lowering: the frontend desugar pass (src/frontend/macros.rs) rewrites
     // them into ordinary calls or constructions first.
     ListConcat,   // ++   list concatenation

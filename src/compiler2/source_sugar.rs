@@ -18,6 +18,27 @@ pub(crate) fn rewrite_source_sugar(
     node: &QuotedAstNode,
     sources: &SourceMap,
 ) -> Result<Option<AnyValueRef>, QuotedSourceError> {
+    rewrite_sugar(owner, source, node, sources, false)
+}
+
+/// The sugar a guard admits: `|>` alone. The other rewrites build calls a
+/// guard may not make, and `in` has its own guard expansion.
+pub(crate) fn rewrite_guard_source_sugar(
+    owner: &QuotedSourceRoot,
+    source: AnyValueRef,
+    node: &QuotedAstNode,
+    sources: &SourceMap,
+) -> Result<Option<AnyValueRef>, QuotedSourceError> {
+    rewrite_sugar(owner, source, node, sources, true)
+}
+
+fn rewrite_sugar(
+    owner: &QuotedSourceRoot,
+    source: AnyValueRef,
+    node: &QuotedAstNode,
+    sources: &SourceMap,
+    pipe_only: bool,
+) -> Result<Option<AnyValueRef>, QuotedSourceError> {
     if let Some(rewritten) = owner.source_sugar_rewrite(source) {
         return Ok(Some(rewritten));
     }
@@ -31,6 +52,7 @@ pub(crate) fn rewrite_source_sugar(
     let arity = node.tail.list_len()?;
     let rewritten = match head.as_str() {
         "|>" if arity == 2 => rewrite_pipe(owner, node, &node.tail.list_items()?, sources),
+        _ if pipe_only => Ok(None),
         "&" if arity == 1 => rewrite_capture(owner, node, &node.tail.list_items()?[0], sources),
         "-" if arity == 1 => rewrite_unary_minus(owner, node, &node.tail.list_items()?[0]),
         "fn" => rewrite_lambda(owner, node, &node.tail.list_items()?, sources),
@@ -57,11 +79,16 @@ fn rewrite_pipe(
     let Some(rhs_node) = rhs.ast_node(sources)? else {
         return Ok(None);
     };
-    if !is_list_like(&rhs_node.tail) {
+    let rhs_args = if is_list_like(&rhs_node.tail) {
+        roots(&rhs_node.tail.list_items()?)
+    } else if rhs_node.tail.root().tag() == ValueKind::ATOM {
+        // A bare name is a variable-shaped node, `{name, meta, context}`;
+        // piping into it calls `name` with the piped value alone, as
+        // `Macro.pipe/3` does, whether or not a variable of that name is bound.
+        Vec::new()
+    } else {
         return Ok(None);
-    }
-
-    let rhs_args = roots(&rhs_node.tail.list_items()?);
+    };
     let is_case = rhs_node.head.root().tag() == ValueKind::ATOM && rhs_node.head.atom_name()? == "case";
     if is_case {
         if rhs_args.len() != 1 {
