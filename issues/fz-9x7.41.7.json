@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-9x7.37.3"
+  ],
   "blocks": [],
   "created": "2026-11-25T00:00:27Z",
   "description": "From: Coordinator, proposed with GC's and Make Distiller Fast's evidence. Approved by the user 2026-11-24 (\"proceed\", relayed by GC).\n\nEvidence: /Users/j5n/Workspace/fz-distill-hunt/ctr/mc-report.md, Area 8. A 0x30-byte frame allocation takes 82 instructions on fz, 10 on the BEAM and 11 hand-written.\n\nScope:\n- The bump goes from 9 instructions to 5: tip and limit load with one ldp, and the tip is computed once.\n- The site table address is built once per function.\n- First, investigate the captures' run-time kind test (46 instructions for three captures). If it belongs to the scalar lane (fz-9x7.44) or needs a frame-format change, it goes to its own proposal rather than into this ticket.\n\nDone when: the frame allocation's disassembly matches the hand-written sequence for the bump; instructions are measured before and after on the distiller; no pin rises.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "The inline bump is the hand-written sequence",
   "type": "task",
-  "updated_at": "2026-11-25T00:00:27Z"
+  "updated_at": "2026-11-25T00:00:29Z"
 }
