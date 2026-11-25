@@ -1,7 +1,9 @@
 {
   "assignee": "fz-engine",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-9zq.23"
+  ],
   "created": "2026-11-25T02:45:05Z",
   "description": "User-approved via the fz-9zq.21 page Round 3 (relayed by fz-engine, 2026-11-24). Owner: fz-engine.\n\nDevelop panics at types/mod.rs:589 ('a recursive type's member has the descriptor of another type') on probes B/r/r05_swap_projected_acc.fz, r01, and the parser p10. Cause: add_cluster decides which members are cyclic before normal_form; normalising absorbs a member's self-reference (its descriptor then equals an existing ordinary type) and interns intermediates that name cluster members, so a cycle runs through a non-member. Partial repair commit_resplit2.diff (+56, recursive.rs) fixes r05/r01 with suites green; p10 then recurses 1,049 commits. Full repair: fuse on the equation graph, or keep normalisation from interning member-naming types.\n\nEvidence: /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/esc_mu/ (rabbits_A.md, rabbits_A2.md, rabbits_A3.md, B/defects.md).",
   "id": "fz-9zq.22",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "A recursive type's commit is closed under normalisation",
   "type": "bug",
-  "updated_at": "2026-11-25T02:45:12Z"
+  "updated_at": "2026-11-25T02:45:14Z"
 }
