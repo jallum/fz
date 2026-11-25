@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Binary Handling",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-25T11:42:08Z",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "A type test on a binary slice passed to a function lowers on the native paths",
   "type": "bug",
-  "updated_at": "2026-11-25T11:42:08Z"
+  "updated_at": "2026-11-25T11:42:09Z"
 }
