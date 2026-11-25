@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-25T01:12:55Z",
+  "description": "From: GC. Approved by the user 2026-11-24 (verbatim \"yes, file it.\").\n\nEvidence (scratch measurement, develop 807cf8e1d, AOT p2c.exs over in20k.jsonl; notes in GC's scratchpad gccost/notes.md): one gc event line costs about 20k instructions warm (18.7k net), 2,984 events per run.\n- The three StubCounts::write_json calls (runtime/src/heap/stats.rs:242), six write! each: about 3k each, about 9k total, half the line.\n- The main 21-field write! in write_collection (runtime/src/telemetry.rs:297) plus the envelope (src/telemetry/jsonl.rs:1248 append_runtime_event).\n- About 4 String reallocs: the line starts at capacity 128 and grows to about 1.2 KB.\n- collected_blocks / footprint_once_released / pool_footprint: about 0.2k net, not wasteful.\n\nChange: write the stub-count objects and the event's fields with push_str of static keys and one integer formatter (no write!/format machinery); presize or reuse the line buffer. The handler still receives the event's facts as they are (the receiver computes; nothing is constructed to emit).\n\nPrediction: the event falls from about 20k to 8-9k instructions, about 36M (0.9%) on a traced p2c decode run; untraced runs unchanged.\n\nDone when: output lines are byte-identical; per-event instructions measured before/after; no workload rises.",
+  "id": "fz-9x7.52",
+  "labels": [],
+  "parent": "fz-9x7",
+  "priority": 3,
+  "status": "open",
+  "title": "The gc event line is written without format machinery",
+  "type": "task",
+  "updated_at": "2026-11-25T01:12:55Z"
+}
