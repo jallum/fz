@@ -627,3 +627,39 @@ fn compiler2_quoted_surface_attaches_stacked_doc_and_spec_through_scope_attrs() 
         "the moduledoc is one form and one logical function form carries the attached attrs",
     );
 }
+
+fn ungrouped_of(source: &str) -> Vec<(String, String, usize, bool)> {
+    let tel = ConfiguredTelemetry::new();
+    let mut code = CodeMap::new();
+    let owner = code.define(Some("ungrouped.fz".to_string()), source.to_string());
+    let root = parse_code(&code, owner, &tel);
+    let source_map = code.source_map();
+    let surface = read_scope_surface(&root, &source_map.borrow()).expect("source surface");
+    surface
+        .ungrouped
+        .into_iter()
+        .map(|clause| (clause.head, clause.name, clause.arity, clause.follows_same_name))
+        .collect()
+}
+
+#[test]
+fn a_clause_written_after_another_functions_clause_is_ungrouped() {
+    let ungrouped = ungrouped_of("def h(1), do: 1\ndef g(), do: 0\ndef h(2), do: 2\n");
+    assert_eq!(ungrouped, [("def".to_string(), "h".to_string(), 1, false)]);
+}
+
+#[test]
+fn a_clause_after_another_arity_of_its_own_name_is_ungrouped_by_name() {
+    let ungrouped = ungrouped_of("defp a(1), do: 1\ndefp a(1, 2), do: 3\ndefp a(2), do: 2\n");
+    assert_eq!(ungrouped, [("defp".to_string(), "a".to_string(), 1, true)]);
+}
+
+#[test]
+fn adjacent_clauses_and_a_new_function_after_another_are_grouped() {
+    assert!(ungrouped_of("def h(1), do: 1\ndef h(2), do: 2\ndef g(), do: 0\n").is_empty());
+}
+
+#[test]
+fn a_statement_between_clauses_separates_nothing() {
+    assert!(ungrouped_of("def h(1), do: 1\nIO.puts(\"x\")\ndef h(2), do: 2\n").is_empty());
+}

@@ -119,6 +119,7 @@ fn empty_scope_surface() -> ScopeSurface {
     ScopeSurface {
         attrs: Vec::new(),
         forms: Vec::new(),
+        ungrouped: Vec::new(),
     }
 }
 

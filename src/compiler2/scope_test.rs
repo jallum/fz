@@ -108,6 +108,7 @@ fn compiler2_module_scope_returns_a_scope_snapshot_not_just_a_namespace() {
         ScopeSurface {
             attrs: Vec::new(),
             forms: Vec::new(),
+            ungrouped: Vec::new(),
         },
     );
     world.scope_module(module, namespace);
