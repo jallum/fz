@@ -144,6 +144,7 @@ gh pr list --state open --limit 200 --json files --jq '.[].files[].path' | grep 
 | `01760-01779` | fz-sc8 |
 | `01780-01819` | fz-mue |
 | `01820-01859` | fz-9e2 |
+| `01860-01879` | fz-mue integration (OTP json.erl) |
 | `01880-01899` | fz-yh5 |
 | `01900-01959` | fz-mue |
 | `01960-01979` | fz-9zq |
@@ -501,8 +502,12 @@ The shared grammar is intentionally small:
 - `root:` — compiler2 root to drive, written as `name/arity`.
 - `assert.metric.<name>:` — a numeric invariant. The current built-in names are
   `semantic.activations`, `semantic.executables`, `semantic.callsites`,
-  `call_edges.count`, and `type.clash_folded` (how many
-  `fz.compiler2.type.clash_folded` events the compile dispatched).
+  `call_edges.count`, `type.clash_folded` (how many
+  `fz.compiler2.type.clash_folded` events the compile dispatched), and
+  `pull.product.requested` (how many `fz.compiler2.pull.product.requested`
+  events the compile emitted, the count a drive's request budget is charged
+  against; the harness counts one `product_executable_inventory` drive of the
+  fixture's root).
 - `assert.edge:` — one semantic edge claim, written
   `caller | callsite | dispatch | target`. `target` matches the canonical target
   label, while the optional snapshot carries full input/return type detail.
