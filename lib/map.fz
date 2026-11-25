@@ -376,6 +376,18 @@ defmodule Map do
   end
   def update_failure(map, _keys), do: __raise__(%BadMapError{term: map}, {:badmap, map})
 
+  @doc """
+  Aborts with what `map.field` raises when `map` is no map: its `BadMapError`.
+  The read has already failed, so this raises without reading.
+
+  ## Examples
+
+      Map.field_failure(7)
+      # ** (BadMapError) expected a map, got: 7
+  """
+  @spec field_failure(any) :: no_return()
+  def field_failure(term), do: raise(%BadMapError{term: term})
+
   @spec first_missing_key(map, [any]) :: any
   defp first_missing_key(map, [key | keys]), do: first_missing_key(map, key, keys, fz_map_has_key(map, key))
 

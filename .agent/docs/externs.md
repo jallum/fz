@@ -1118,7 +1118,9 @@ module's `t` are two different `@spec` positions, even though every `t` value is
 structurally a `resource(integer)`.
 
 `.value` on a resource handle projects the payload from any module that holds
-one; lowering keeps this as ordinary field access, and both backend interpreter
+one; lowering keeps this as ordinary field access behind the test every field
+read makes of its base, which for `value` admits a resource as well as a map
+(`exceptions.md`), and both backend interpreter
 and native/JIT/AOT paths read it through the shared named-field runtime ABI. An
 opaque type's structure is not hidden from code outside its declaring
 module — routing every read through an accessor the declaring module defines

@@ -1576,10 +1576,7 @@ fn decode_fn_ref_target(
         }),
         None => {
             let module = decode_expr(&mut LambdaOccurrences::default(), module, Some(span), sources)?;
-            let target = Spanned::new(
-                Expr::Index(Box::new(module), Box::new(Spanned::new(Expr::Atom(name), span))),
-                span,
-            );
+            let target = Spanned::new(Expr::Field(Box::new(module), name), span);
             CallableName::from_expr(&target.node).ok_or_else(unsupported)
         }
     }
@@ -2735,8 +2732,8 @@ fn decode_remote_target(
     let span = head_node.span.unwrap_or(Span::DUMMY);
     let parts = head_node.tail.list_items()?;
     let base = decode_expr(occurrences, &parts[0], Some(span), sources)?;
-    let field = Spanned::new(Expr::Atom(parts[1].atom_name()?.to_string()), span);
-    Ok(Spanned::new(Expr::Index(Box::new(base), Box::new(field)), span))
+    let field = parts[1].atom_name()?.to_string();
+    Ok(Spanned::new(Expr::Field(Box::new(base), field), span))
 }
 
 /// True for a call written without parentheses, `target.name`, which Elixir

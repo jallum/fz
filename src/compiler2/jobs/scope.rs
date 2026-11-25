@@ -318,6 +318,7 @@ impl ScopeWalk {
                 self.exprs(entries.iter().flat_map(|(key, value)| [key, value]));
             }
             Expr::Struct { fields, .. } => self.exprs(fields.iter().map(|(_, value)| value)),
+            Expr::Field(base, _) => self.expr(&base.node),
             Expr::Index(base, key) => self.exprs([&**base, &**key]),
             Expr::Call(callee, args) => {
                 if !matches!(callee.node, Expr::Var(_)) {

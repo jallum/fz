@@ -644,6 +644,9 @@ clause that cannot match is left to the decision's own `FunctionClauseError`.
 | `struct!/2` on a module, given another module as `:__struct__` | `** (ArgumentError) expected struct name returned by <module>.__struct__/1 to be <module>, got: <other>` |
 | `%{map \| k: v}` naming a key `map` lacks | `** (KeyError) key <key> not found`, the first such key in the order written |
 | `%{map \| k: v}` of a `map` that is no map | `** (BadMapError) expected a map, got:` then the value |
+| `v.a` of a `v` that is no map | `** (BadMapError) expected a map, got:` then the value |
+| `v[k]` of a `v` that is a list and a non-atom `k` | `** (ArgumentError) the Access module supports only keyword lists (with atom keys), got: <k>`, or for an integer `k` `the Access module does not support accessing lists by index, got: <k>` |
+| `v[k]` of a `v` that is no map, no list and not `nil` | `** (FunctionClauseError) no function clause matching in Access.get/3` |
 | `Enum.max/1` and the other empty reductions | `** (Enum.EmptyError) empty error` |
 | `Enum.fetch!/2` | `** (Enum.OutOfBoundsError) out of bounds error at position <n> when traversing enumerable <enumerable>` |
 | `Enum.map_every/3`, `take_every/2`, `drop_every/2` with a negative step | `** (FunctionClauseError) no function clause matching in Enum.map_every/3` |
@@ -670,6 +673,34 @@ updates maps it knows are maps never loads `Map`. A base whose type is no map
 at all leaves the map arm unreachable, and that is the compile error
 `type/not-a-map` at the update (`emit_not_a_map`, raised where the semantic walk
 finds the dispatch's `map_update` site with no reachable outcome).
+
+A field read `v.a` and an index read `v[k]` are two expressions from the front
+door on (`Expr::Field` and `Expr::Index`), and each lowers to the same dispatch
+on `%{}` over its base. The arm of a field read is the read by name, and the
+miss calls `Map.field_failure/1`, which raises `BadMapError`; a base whose type
+is a map folds the dispatch away, and a base whose type is no map takes the miss
+arm and raises when the read runs: a read is never a compile error, as in Elixir,
+which only warns. Only a map update carries the `map_base` site that reports
+`type/not-a-map`. The one field of a resource, `value`, reads without a raise: its
+arm takes a resource as well as a map (the decision tests the runtime kinds map
+and resource together), so `r.value` reads the payload of a resource and a base
+that is neither still raises. The arm of an index read is the inline map read,
+and the miss calls `Access.get/3` (`lib/access.fz`) with `nil` as the default:
+`nil` answers `nil`, a list is searched for an atom key and refuses any other
+key with `ArgumentError`, and any other value finds no clause of `Access.get/3`
+and raises `FunctionClauseError`. Each miss arm names its callee through
+`push_library_call`, so a read of a base the types prove a map loads neither
+`Map` nor `Access`; a read of an unproven base loads them, and `Access.get/3`'s
+messages `inspect` a key of unproven type, which brings `Enum`, `Range` and
+`Enumerable` with it. `:lists.keyfind/3`'s `elem(tuple, n - 1)` is a checked
+subtraction, so the read can also raise `ArithmeticError`. Both reads share the backends' contract
+that the arm's base is a map (or, for `.value`, a resource): the interpreter's
+`MapGet` of a value that is no map is an internal error, as native code's is an
+assertion. Fixtures `01843`, `01844` and `01845` show each path; they differ
+from Elixir where `m.b` of a map without `:b` answers `nil` (Elixir raises
+`KeyError`), where `s[:a]` of a struct reads the field (Elixir raises
+`UndefinedFunctionError`) and where `:foo.a` reads a field (Elixir calls
+`:foo.a()`).
 
 The update may only replace keys the map has.
 A put naming a key its base lacks leaves the update with no destination, and

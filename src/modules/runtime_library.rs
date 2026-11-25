@@ -21,6 +21,10 @@ const RUNTIME_MODULE_SOURCES: &[RuntimeModuleSource] = &[
         source: include_str!("../../lib/kernel.fz"),
     },
     RuntimeModuleSource {
+        name: "Access",
+        source: include_str!("../../lib/access.fz"),
+    },
+    RuntimeModuleSource {
         name: "Collectable",
         source: include_str!("../../lib/collectable.fz"),
     },

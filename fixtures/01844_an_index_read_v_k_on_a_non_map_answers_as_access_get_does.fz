@@ -1,0 +1,41 @@
+#---
+# purpose: "an index read v[k] on a map answers the key's value or nil, on nil answers nil, on a keyword list looks the atom key up, and on anything else raises as Access.get/3 does"
+# oracle: self
+# oracle.stamp: 524761b4cf82c788
+#---
+#
+# Each value is picked from a list head beside a map, so the compiler knows only
+# that it may be a map, and every read asks at run time whether it holds one.
+defmodule Main do
+  def pick([head | _]), do: head
+
+  def read(v, key), do: v[key]
+
+  def show(label, v, key) do
+    try do
+      IO.puts("#{label}: #{inspect(read(v, key))}")
+    rescue
+      e in FunctionClauseError ->
+        IO.puts("#{label}: FunctionClauseError #{inspect(e.module)} #{inspect(e.function)} #{e.arity} #{Exception.message(e)}")
+
+      e ->
+        IO.puts("#{label}: #{inspect(e.__struct__)} #{Exception.message(e)}")
+    end
+  end
+
+  def main do
+    show("map", pick([%{a: 1}, %{}]), :a)
+    show("map without the key", pick([%{b: 1}, %{}]), :a)
+    show("nil", pick([nil, %{}]), :a)
+    show("keyword list", pick([[a: 5], %{}]), :a)
+    show("list without the key", pick([[b: 5], %{}]), :a)
+    show("empty list", pick([[], %{}]), :a)
+    show("keyword list, string key", pick([[a: 5], %{}]), "x")
+    show("keyword list, integer key", pick([[a: 5], %{}]), 0)
+    show("int", pick([1, %{}]), :a)
+    show("binary", pick(["bin", %{}]), :a)
+    show("tuple", pick([{1, 2}, %{}]), :a)
+  end
+end
+
+Main.main()

@@ -1,0 +1,55 @@
+defmodule Access do
+  @moduledoc """
+  What `container[key]` answers when `container` is no map.
+
+  Elixir's `Access.get/3`, clause for clause as it answers a list and `nil`.
+  A map is read inline where the `[]` is written, so the clauses for a map and
+  for a struct, which only a map reaches, are not built. Calling `get/3`
+  directly on one raises `FunctionClauseError`.
+  """
+
+  @doc """
+  Gets the value for `key` in `container`, or `default` when it has none.
+
+  `nil` holds no key, a keyword list is searched for an atom key, and any other
+  list raises `ArgumentError`. A value of any other kind raises
+  `FunctionClauseError`.
+
+  ## Examples
+
+      Access.get(nil, :a, 0)
+      #=> 0
+
+      Access.get([a: 1], :a, 0)
+      #=> 1
+
+      Access.get([a: 1], :b, 0)
+      #=> 0
+  """
+  @spec get(any, any, any) :: any
+  def get(list, key, default) when is_list(list) and is_atom(key) do
+    case :lists.keyfind(key, 1, list) do
+      {_, value} -> value
+      false -> default
+    end
+  end
+
+  def get(list, key, _default) when is_list(list) and is_integer(key) do
+    raise ArgumentError,
+          "the Access module does not support accessing lists by index, got: #{inspect(key)}\n\n" <>
+            "Accessing a list by index is typically discouraged in Elixir, " <>
+            "instead we prefer to use the Enum module to manipulate lists " <>
+            "as a whole. If you really must access a list element by index, " <>
+            "you can use Enum.at/2 or the functions in the List module"
+  end
+
+  def get(list, key, _default) when is_list(list) do
+    raise ArgumentError,
+          "the Access module supports only keyword lists (with atom keys), got: #{inspect(key)}\n\n" <>
+            "If you want to search lists of tuples, use List.keyfind/3"
+  end
+
+  def get(nil, _key, default) do
+    default
+  end
+end

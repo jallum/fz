@@ -69,9 +69,9 @@ impl Build {
 
     fn kernel(&self, function: &str, args: Vec<Spanned<Expr>>) -> Spanned<Expr> {
         let kernel = ModuleName::from_segments(vec!["Kernel".to_string()]);
-        let callee = Expr::Index(
+        let callee = Expr::Field(
             Box::new(self.expr(Expr::Atom(kernel.atom_name()))),
-            Box::new(self.expr(Expr::Atom(function.to_string()))),
+            function.to_string(),
         );
         self.expr(Expr::Call(Box::new(self.expr(callee)), args))
     }

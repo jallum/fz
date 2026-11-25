@@ -9698,6 +9698,97 @@ fn compiler2_native_a_byte_scanner_reads_its_byte_once() {
     assert_eq!(reads, 1, "the first byte at the cursor is read once:\n{clif}");
 }
 
+/// The shifts that extract a kind from a packed word before the first branch,
+/// and whether that branch compares the kind with MAP. A base that travels as
+/// a word and a kind word needs no shift.
+fn kind_tests_before_first_branch(clif: &str) -> (usize, bool) {
+    let kind_shift = format!("= {}", fz_runtime::any_value::AnyValueRefPacking::current().tag_shift());
+    let lines: Vec<&str> = clif.lines().collect();
+    let first_branch = lines
+        .iter()
+        .position(|line| line.trim_start().starts_with("brif "))
+        .unwrap_or_else(|| panic!("an unproven base is branched on:\n{clif}"));
+    let kind_reads = lines[..first_branch]
+        .iter()
+        .filter(|line| line.contains(" = ushr ") && line.ends_with(&kind_shift))
+        .count();
+    let against_map = lines[first_branch - 1].contains(" = icmp eq ") && lines[first_branch - 1].ends_with("= 2");
+    (kind_reads, against_map)
+}
+
+/// A field read `v.a` asks its base for a map only when the type does not
+/// already say so. A base proven a map is read with no branch on it. A base the
+/// compiler knows nothing about has its kind word compared with MAP before the
+/// read.
+#[test]
+fn compiler2_native_field_read_asks_the_kind_only_of_an_unproven_base() {
+    let proven = lowered_clif_of(
+        "defmodule P do\n\
+         \x20 def read(v), do: v.a\n\
+         end\n\
+         def main(), do: P.read(%{a: 0, b: 2})\n",
+        "read",
+    );
+    assert!(
+        !proven.contains("brif "),
+        "a base proven a map is not branched on:\n{proven}"
+    );
+    let unproven = lowered_clif_of(
+        "defmodule P do\n\
+         \x20 def pick([h | _]), do: h\n\
+         \x20 def read(v), do: v.a\n\
+         end\n\
+         def main(), do: P.read(P.pick([%{a: 0}, 7]))\n",
+        "read",
+    );
+    assert_eq!(
+        kind_tests_before_first_branch(&unproven),
+        (0, true),
+        "an unproven base's kind word is compared with MAP, with no shift to extract it:\n{unproven}"
+    );
+}
+
+/// An index read `v[k]` asks its base for a map the same way: no branch for a
+/// base proven a map, one comparison of the kind word with MAP for any other.
+#[test]
+fn compiler2_native_index_read_asks_the_kind_only_of_an_unproven_base() {
+    let proven = lowered_clif_of(
+        "defmodule P do\n\
+         \x20 def read(v), do: v[:a]\n\
+         end\n\
+         def main(), do: P.read(%{a: 0, b: 2})\n",
+        "read",
+    );
+    assert!(
+        !proven.contains("brif "),
+        "a base proven a map is not branched on:\n{proven}"
+    );
+    let unproven = lowered_clif_of(
+        "defmodule P do\n\
+         \x20 def pick([h | _]), do: h\n\
+         \x20 def read(v), do: v[:a]\n\
+         end\n\
+         def main(), do: P.read(P.pick([%{a: 0}, 7]))\n",
+        "read",
+    );
+    assert_eq!(
+        kind_tests_before_first_branch(&unproven),
+        (0, true),
+        "an unproven base's kind word is compared with MAP, with no shift to extract it:\n{unproven}"
+    );
+}
+
+/// A read whose base the types prove is no map is not a compile error: it
+/// compiles, and its miss arm, which raises `BadMapError` for a field read and
+/// asks `Access.get/3` for an index read, is the whole of the read.
+#[test]
+fn a_read_of_a_value_that_is_never_a_map_compiles_and_raises_when_it_runs() {
+    let program = |read: &str| format!("def main() do\n  v = \"bin\"\n  {read}\nend\n");
+    let defined = |read: &str| defined_exceptions(&Drive::source("never_a_map.fz", &program(read)).settle());
+    assert_eq!(defined("v.a"), ["BadMapError"]);
+    assert_eq!(defined("v[:a]"), ["ArgumentError", "ArithmeticError"]);
+}
+
 /// A share is written where it stands, from what the value's type says. In
 /// each program below `retained` passes its argument to `keep` and still
 /// holds it, so the argument is shared before the call. Sharing a binary
@@ -10222,33 +10313,34 @@ fn compiler2_backend_program_keeps_heap_stats_resume_values_as_runtime_lanes() {
         panic!("expected clause body for alloc_stats main/0");
     };
 
-    let resume_entry = entries
+    // The stats are a map, so the read of one key is the branch of the read's
+    // base test: the entry holding the read takes the stats as a whole-value
+    // capture, one runtime lane.
+    let reading_entry = entries
         .iter()
-        .find(|entry| match &entry.origin {
-            BackendEntryOrigin::DeliveredResume { value, layout } => {
-                let _shape = layout.layout.structural;
-                entry.steps.iter().any(|step| {
-                    matches!(
-                        step,
-                        BackendStep::FieldAccess { base, .. } if base == value
-                    )
-                })
-            }
-            _ => false,
+        .find(|entry| {
+            entry.steps.iter().any(|step| {
+                matches!(
+                    step,
+                    BackendStep::MapIndex { base, .. }
+                        if entry.captures.iter().any(|capture| {
+                            capture.value == *base && capture.layout.reprs.as_ref() == [AbiValueRepr::ValueRef]
+                        })
+                )
+            })
         })
         .unwrap_or_else(|| {
             panic!(
-                "expected a delivered-resume entry whose resumed heap-stats value feeds FieldAccess through one runtime lane: {:?}",
+                "expected an entry that reads a key of the resumed heap-stats value, captured as one runtime lane: {:?}",
                 entries
             )
         });
-
-    match &resume_entry.origin {
-        BackendEntryOrigin::DeliveredResume { layout, .. } => {
-            let _shape = layout.layout.structural;
-        }
-        other => panic!("expected delivered-resume position for alloc_stats continuation, got {other:?}"),
-    }
+    assert!(
+        entries
+            .iter()
+            .any(|entry| matches!(entry.origin, BackendEntryOrigin::DeliveredResume { .. })),
+        "the stats arrive through a delivered resume: {reading_entry:?}"
+    );
 }
 
 #[test]
@@ -10286,8 +10378,8 @@ fn compiler2_backend_program_keeps_dbg_resumed_heap_stats_as_runtime_lanes() {
     let (_, dbg_exec) = backend_executable(&program, dbg_id);
     assert_eq!(
         dbg_exec.abi.param_reprs,
-        vec![AbiValueRepr::Stored],
-        "Kernel.dbg/1 should still require its input as one runtime lane (a stored word and its kind) even when callers ignore the returned value",
+        vec![AbiValueRepr::ValueRef],
+        "Kernel.dbg/1 should still require its map input as one runtime lane (a pointer to the map) even when callers ignore the returned value",
     );
     assert!(
         dbg_exec
@@ -10311,17 +10403,25 @@ fn compiler2_backend_program_keeps_dbg_resumed_heap_stats_as_runtime_lanes() {
     // whether the value is used is a separate fact carried by the demand.
     let resume_entry = entries
         .iter()
+        .find(|entry| matches!(&entry.origin, BackendEntryOrigin::DeliveredResume { .. }) && !entry.captures.is_empty())
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a delivered-resume entry whose captured heap-stats value survives dbg/1: {:?}",
+                entries
+            )
+        });
+    let reading_entry = entries
+        .iter()
         .find(|entry| {
-            matches!(&entry.origin, BackendEntryOrigin::DeliveredResume { .. })
-                && !entry.captures.is_empty()
+            !entry.captures.is_empty()
                 && entry
                     .steps
                     .iter()
-                    .any(|step| matches!(step, BackendStep::FieldAccess { .. }))
+                    .any(|step| matches!(step, BackendStep::MapIndex { .. }))
         })
         .unwrap_or_else(|| {
             panic!(
-                "expected a delivered-resume entry whose captured heap-stats value survives dbg/1 and feeds FieldAccess through one runtime lane: {:?}",
+                "expected an entry that reads a key of the captured heap stats through one runtime lane: {:?}",
                 entries
             )
         });
@@ -10343,21 +10443,21 @@ fn compiler2_backend_program_keeps_dbg_resumed_heap_stats_as_runtime_lanes() {
         }
         other => panic!("expected delivered-resume origin for dbg-resumed heap-stats continuation, got {other:?}"),
     }
-    let field_base = resume_entry
+    let field_base = reading_entry
         .steps
         .iter()
         .find_map(|step| match step {
-            BackendStep::FieldAccess { base, .. } => Some(*base),
+            BackendStep::MapIndex { base, .. } => Some(*base),
             _ => None,
         })
         .expect("the selected continuation should project from its captured heap stats");
     assert!(
-        resume_entry
+        reading_entry
             .captures
             .iter()
-            .any(|capture| capture.value == field_base && capture.layout.reprs.as_ref() == [AbiValueRepr::Stored]),
+            .any(|capture| capture.value == field_base && capture.layout.reprs.as_ref() == [AbiValueRepr::ValueRef]),
         "the continuation after dbg(stats) must preserve captured stats as a whole runtime value before atom-key projection: {:?}",
-        resume_entry
+        reading_entry
     );
 }
 
@@ -14038,7 +14138,7 @@ const SOURCE_ORDER_BLIND_ESCAPES: &[&str] = &[];
 /// walk only reports the kinds it saw; a row appearing or leaving is the
 /// census fixtures changing shape, which wants looking at either way.
 const SOURCE_ORDER_PLANS_ON_THE_CENSUS: &[(&str, usize, usize)] =
-    &[("case", 45, 21), ("entry", 111, 105), ("receive", 2, 0)];
+    &[("case", 47, 23), ("entry", 111, 105), ("receive", 2, 0)];
 
 /// The subjects at which seating `early` before `late` lets a value reach a
 /// body that never named it: the two arms put one and the same question there,
@@ -25021,6 +25121,55 @@ fn a_map_update_of_a_proven_map_loads_no_module_for_its_dead_failure_arm() {
         unproven.modules().defined_names().contains(&"Map".to_string()),
         "a live failure arm must still load Map"
     );
+}
+
+/// What a read of an unproven base defines. A field read can raise
+/// `BadMapError` and nothing else; an index read can raise what `Access.get/3`
+/// does: `ArgumentError` for a list, `ArithmeticError` from the checked `n - 1`
+/// of `:lists.keyfind/3`'s tuple index, and `FunctionClauseError` for any other
+/// value. A failed clause head is only a raise the walk records: the module is
+/// defined when the entry's handler words the raise, so `FunctionClauseError`
+/// shows beside the others only under `program_entry`, which also defines the
+/// handler's own exceptions for either read.
+#[test]
+fn a_field_read_and_an_index_read_define_the_exceptions_they_can_raise() {
+    let program = |read: &str| {
+        format!(
+            "defmodule P do\n  def pick([h | _]), do: h\n  def read(v), do: {read}\nend\n\
+             def main(), do: P.read(P.pick([%{{a: 1}}, 7]))\n"
+        )
+    };
+    let defined = |read: &str| defined_exceptions(&Drive::source("read_exceptions.fz", &program(read)).settle());
+    let entered = |read: &str| {
+        defined_exceptions(
+            &Drive::source("read_exceptions.fz", &program(read))
+                .program_entry()
+                .settle(),
+        )
+    };
+    assert_eq!(defined("v"), Vec::<String>::new());
+    assert_eq!(defined("v.a"), ["BadMapError"]);
+    assert_eq!(defined("v[:a]"), ["ArgumentError", "ArithmeticError"]);
+    let handled = [
+        "ArgumentError",
+        "ArithmeticError",
+        "ErlangError",
+        "FunctionClauseError",
+        "Protocol.UndefinedError",
+    ];
+    assert_eq!(entered("v"), Vec::<String>::new());
+    assert_eq!(
+        entered("v.a"),
+        [
+            "ArgumentError",
+            "ArithmeticError",
+            "BadMapError",
+            "ErlangError",
+            "FunctionClauseError",
+            "Protocol.UndefinedError"
+        ]
+    );
+    assert_eq!(entered("v[:a]"), handled);
 }
 
 /// A program that raises nothing has no handler to compile: the `try` its

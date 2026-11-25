@@ -19,7 +19,7 @@ fn assert_returns(
     expected: impl FnOnce(&mut Types) -> Ty,
     intent: &str,
 ) {
-    let function = settled.function(name, arity);
+    let function = settled.functions().id_in_module("Main", name, arity);
     let actual = settled
         .return_types()
         .last_for_function(settled.root(), function)

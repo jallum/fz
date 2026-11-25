@@ -1,0 +1,36 @@
+#---
+# purpose: "a field read v.a on a map or a struct answers the field, and on any other value raises BadMapError carrying the value"
+# oracle: self
+# oracle.stamp: 5a2c8197f9818b9e
+#---
+#
+# Each value is picked from a list head beside a map, so the compiler knows only
+# that it may be a map, and every read asks at run time whether it holds one.
+defmodule Main do
+  defstruct [:a]
+
+  def pick([head | _]), do: head
+
+  def read(v), do: v.a
+
+  def show(label, v) do
+    try do
+      IO.puts("#{label}: #{inspect(read(v))}")
+    rescue
+      e in BadMapError -> IO.puts("#{label}: #{inspect(e.__struct__)} #{inspect(e.term)} #{Exception.message(e)}")
+    end
+  end
+
+  def main do
+    show("map", pick([%{a: 1}, %{}]))
+    show("struct", pick([%Main{a: 2}, %{}]))
+    show("int", pick([1, %{}]))
+    show("nil", pick([nil, %{}]))
+    show("list", pick([[1, 2], %{}]))
+    show("keyword list", pick([[a: 5], %{}]))
+    show("binary", pick(["bin", %{}]))
+    show("tuple", pick([{1, 2}, %{}]))
+  end
+end
+
+Main.main()
