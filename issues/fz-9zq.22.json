@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "fz-engine",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-25T02:45:05Z",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "A recursive type's commit is closed under normalisation",
   "type": "bug",
-  "updated_at": "2026-11-25T02:45:05Z"
+  "updated_at": "2026-11-25T02:45:12Z"
 }
