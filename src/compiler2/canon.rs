@@ -1147,7 +1147,6 @@ impl ProgramCanon<'_> {
             None => "-".to_string(),
             Some(LoweredBitSize::Literal(bits)) => bits.to_string(),
             Some(LoweredBitSize::Value(value)) => self.names.value(*value),
-            Some(LoweredBitSize::ByteSizeOf(value)) => format!("bytes({})", self.names.value(*value)),
         };
         format!(
             "::{:?}/size={size}/{:?}/signed={}/unit={:?}",

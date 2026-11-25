@@ -725,7 +725,7 @@ fn nil_predicates_use_the_atom_type_and_map_key() {
 fn trimmed_bitstring_plan(
     types: &mut Types,
     input: Ty,
-    fields: Vec<crate::ast::BitField<Spanned<Pattern>>>,
+    fields: Vec<crate::ast::PatternField>,
 ) -> Rc<PatternDispatchPlan<Ty>> {
     let plan = pattern_dispatch_from_source(SourcePatternRows::lexical(
         1,
@@ -738,8 +738,8 @@ fn trimmed_bitstring_plan(
     reached.trimmed(types)
 }
 
-fn bit_field(name: &str, ty: crate::ast::BitType, bits: Option<u32>) -> crate::ast::BitField<Spanned<Pattern>> {
-    use crate::ast::{BitFieldSpec, BitSize};
+fn bit_field(name: &str, ty: crate::ast::BitType, bits: Option<u32>) -> crate::ast::PatternField {
+    use crate::ast::{BitFieldSpec, PatternBitSize};
     let value = if name == "_" {
         Pattern::Wildcard
     } else {
@@ -749,7 +749,7 @@ fn bit_field(name: &str, ty: crate::ast::BitType, bits: Option<u32>) -> crate::a
         value: Spanned::dummy(value),
         spec: BitFieldSpec {
             ty,
-            size: bits.map(BitSize::Literal),
+            size: bits.map(PatternBitSize::Literal),
             ..BitFieldSpec::default()
         },
     }

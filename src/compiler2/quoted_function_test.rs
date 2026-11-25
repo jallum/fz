@@ -1,4 +1,4 @@
-use crate::ast::{Attribute, BinOp, BitSize, BitType, Expr, Pattern, Var, WithBinding};
+use crate::ast::{Attribute, BinOp, BitSize, BitType, Expr, Pattern, PatternBitSize, Var, WithBinding};
 use crate::parser::lexer::Tok;
 use crate::telemetry::ConfiguredTelemetry;
 
@@ -165,7 +165,7 @@ fn compiler2_bitstring_size_written_as_an_expression_decodes_to_that_expression(
     };
     assert!(matches!(
         fields[1].spec.size,
-        Some(BitSize::Expr(ref size)) if matches!(size.node, Expr::BinOp(BinOp::Sub, _, _))
+        Some(PatternBitSize::Expr(ref size)) if matches!(size.node, Expr::BinOp(BinOp::Sub, _, _))
     ));
 }
 

@@ -2810,6 +2810,63 @@ fn a_short_literal_in_an_append_is_stored_not_copied() {
     assert!(stored < memcpy_calls("a <> a"), "a runtime binary is copied");
 }
 
+/// The code of `function` in `program`'s clif dump, without the line that
+/// names it.
+fn clif_body_of(program: &str, function: &str) -> String {
+    let source_path = unique_temp_path("fz2_constant_construction", ".fz");
+    let clif_path = unique_temp_path("fz2_constant_construction", ".clif");
+    write(&source_path, program).expect("write constant construction program");
+    let spec = format!("clif={}", clif_path.display());
+    let out = run_fz2(&[
+        OsStr::new("run"),
+        OsStr::new("--dump"),
+        OsStr::new(&spec),
+        source_path.as_os_str(),
+    ]);
+    assert!(out.status.success(), "{program}: {}", output_text(&out));
+    let clif = std::fs::read_to_string(&clif_path).expect("read the clif dump");
+    let _ = remove_file(&source_path);
+    let _ = remove_file(&clif_path);
+    let code = clif
+        .split("\n; fn ")
+        .find(|code| code.starts_with(&format!("{function}__")))
+        .unwrap_or_else(|| panic!("the dump has `{function}`'s own code"));
+    code.split_once('\n').expect("a function header").1.to_string()
+}
+
+/// A construction whose fields are all constants is the literal binary it
+/// spells: `<<65>>` and `"A"` compile to the same code, and so do the
+/// concatenation of two literals and the literal of both. The code calls no
+/// `fz_bs_*` function and places nothing.
+#[test]
+fn a_construction_of_constants_compiles_to_the_code_of_its_literal() {
+    let program = |built: &str, literal: &str| {
+        format!(
+            "def built(), do: {built}\ndef lit(), do: {literal}\n\
+             def main() do\n  dbg(built())\n  dbg(lit())\n  nil\nend\n"
+        )
+    };
+    for (built, literal) in [
+        ("<<65>>", "\"A\""),
+        ("\"a\" <> \"b\"", "\"ab\""),
+        ("<<1::3, 2::5>>", "<<34>>"),
+        (
+            "<<0x20ac::utf8, 1.5::float-32, \"x\", 7::16-little>>",
+            "<<226, 130, 172, 63, 192, 0, 0, 120, 7, 0>>",
+        ),
+    ] {
+        let source = program(built, literal);
+        let built_code = clif_body_of(&source, "built");
+        assert_eq!(built_code, clif_body_of(&source, "lit"), "{built} is {literal}");
+        for forbidden in ["fz_bs_", "fz_heap_room", "memcpy"] {
+            assert!(
+                !built_code.contains(forbidden),
+                "{built} calls `{forbidden}`:\n{built_code}"
+            );
+        }
+    }
+}
+
 /// The eight comparisons of two proven binaries decide in place unless the
 /// bytes must be read: the compiled code imports each row's own `fz_op_*_bb`
 /// function for that one cold call, and neither the generic comparator nor a

@@ -89,6 +89,24 @@ impl CallsiteIdent {
     }
 }
 
+/// The size a construction field writes: a literal, or an integer the program
+/// computed. A construction never sizes a field by a pinned binary.
+#[derive(Debug, Clone, PartialEq)]
+pub enum FieldSizeIr {
+    Literal(u32),
+    Var(Var),
+}
+
+impl FieldSizeIr {
+    pub fn var(&self) -> Option<Var> {
+        match self {
+            FieldSizeIr::Literal(_) => None,
+            FieldSizeIr::Var(var) => Some(*var),
+        }
+    }
+}
+
+/// The size a pattern field reads.
 #[derive(Debug, Clone, PartialEq)]
 pub enum BitSizeIr {
     Literal(u32),
@@ -113,7 +131,7 @@ pub struct BitFieldIr {
     /// holds the same binary.
     pub literal: Option<Vec<u8>>,
     pub ty: BitType,
-    pub size: Option<BitSizeIr>,
+    pub size: Option<FieldSizeIr>,
     pub endian: Endian,
     pub signed: bool,
     pub unit: Option<u32>,
@@ -852,7 +870,7 @@ impl Prim {
             Prim::MakeBitstring(fields) => {
                 for f in fields {
                     used.insert(f.value);
-                    used.extend(f.size.as_ref().and_then(BitSizeIr::var));
+                    used.extend(f.size.as_ref().and_then(FieldSizeIr::var));
                 }
             }
             Prim::BitstringBitLen(a) | Prim::BinaryBitLen(a) => {

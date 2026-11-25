@@ -5,7 +5,8 @@
 //! unused-variable warning), and which underscored names a match repeats.
 
 use crate::ast::{
-    BitSize, CatchClause, Expr, FnClause, LambdaClause, MatchClause, Pattern, RescueClause, Spanned, Var, WithBinding,
+    BitSize, CatchClause, Expr, FnClause, LambdaClause, MatchClause, Pattern, PatternBitSize, RescueClause, Spanned,
+    Var, WithBinding,
 };
 use crate::diag::{Diagnostic, codes};
 use crate::fast_hash::{HashMap, HashSet};
@@ -201,11 +202,11 @@ impl ScopeWalk {
             Pattern::Bitstring(fields) => {
                 for field in fields {
                     match &field.spec.size {
-                        Some(BitSize::Var(var)) => match head.get(var) {
+                        Some(PatternBitSize::Var(var)) => match head.get(var) {
                             Some(&binding) => self.bindings[binding].used = true,
                             None => self.reference(var),
                         },
-                        Some(BitSize::Expr(expr)) => {
+                        Some(PatternBitSize::Expr(expr)) => {
                             for var in free_names(&expr.node) {
                                 match head.get(&var) {
                                     Some(&binding) => self.bindings[binding].used = true,
@@ -213,8 +214,8 @@ impl ScopeWalk {
                                 }
                             }
                         }
-                        Some(BitSize::ByteSizeOf(var)) => self.reference(var),
-                        Some(BitSize::Literal(_)) | None => {}
+                        Some(PatternBitSize::ByteSizeOf(var)) => self.reference(var),
+                        Some(PatternBitSize::Literal(_)) | None => {}
                     }
                     self.pattern(&field.value, head);
                 }
@@ -305,7 +306,7 @@ impl ScopeWalk {
                 for field in fields {
                     self.expr(&field.value.node);
                     match &field.spec.size {
-                        Some(BitSize::Var(var) | BitSize::ByteSizeOf(var)) => self.reference(var),
+                        Some(BitSize::Var(var)) => self.reference(var),
                         Some(BitSize::Expr(expr)) => self.expr(&expr.node),
                         Some(BitSize::Literal(_)) | None => {}
                     }

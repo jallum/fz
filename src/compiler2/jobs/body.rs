@@ -12,7 +12,7 @@ use std::rc::Rc;
 
 use crate::ast::{
     AfterClause, BinOp, BitField, BitSize, CallableName, Callee, CatchClause, Expr, FnClause, LambdaClause,
-    MatchClause, Pattern, RescueClause, Spanned, TryForm, UnOp, Var, WithBinding,
+    MatchClause, Pattern, PatternBitSize, RescueClause, Spanned, TryForm, UnOp, Var, WithBinding,
 };
 use crate::diag::Diagnostic;
 use crate::diag::codes;
@@ -47,6 +47,7 @@ use super::dispatch::{
 };
 use fz_engine::{FactUse, FatalError};
 
+mod constant_fields;
 mod construction_contract;
 mod handler_subjects;
 mod storage_roots;
@@ -930,7 +931,7 @@ pub(super) fn collect_local_pattern_requirements(
         }
         Pattern::Bitstring(fields) => {
             for field in fields {
-                if let Some(BitSize::Expr(size)) = &field.spec.size {
+                if let Some(PatternBitSize::Expr(size)) = &field.spec.size {
                     collect_local_guard_requirements(world, tel, namespace, size, reads, waits)?;
                 }
                 collect_local_pattern_requirements(
@@ -2335,6 +2336,12 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
     /// values' types prove is decided by the plan and costs nothing. The row's
     /// arm builds; the miss calls `Kernel.__construction_failed__/1`, which
     /// raises Elixir's `ArgumentError`.
+    ///
+    /// Constant fields are written out where the program is compiled: a
+    /// construction of constants is a literal, and a run of them among other
+    /// fields is one literal field (see `constant_fields`). The test and the
+    /// report of a failure still read every field as written, so a segment is
+    /// numbered as the program numbers it.
     fn lower_bitstring_expr(
         &mut self,
         span: Span,
@@ -2342,8 +2349,29 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         env: &mut HashMap<Var, ValueId>,
         steps: &mut Vec<ExprStep>,
     ) -> Result<ValueId, FatalError> {
-        let mut lowered = Vec::with_capacity(fields.len());
+        let pieces = match constant_fields::fold(fields) {
+            constant_fields::Folded::Literal(bytes) => return Ok(self.push_const(steps, GroundValue::Binary(bytes))),
+            constant_fields::Folded::Pieces(pieces) => pieces,
+        };
+        let segment_values: Vec<Var> = (0..fields.len()).map(segment_value).collect();
+        let segment_sizes: Vec<Var> = (0..fields.len()).map(segment_size).collect();
+        let names = construction_contract::SegmentNames {
+            values: &segment_values,
+            sizes: &segment_sizes,
+        };
+        let check = construction_contract::construction_check(fields, names, span);
+        let mut written = vec![true; fields.len()];
+        for piece in &pieces {
+            if let constant_fields::Piece::Literal { first, len, .. } = piece {
+                written[*first..first + len].fill(check.is_some());
+            }
+        }
+        let mut lowered: Vec<Option<LoweredBitField>> = Vec::with_capacity(fields.len());
         for (index, field) in fields.iter().enumerate() {
+            if !written[index] {
+                lowered.push(None);
+                continue;
+            }
             if let Some(BitSize::Expr(size)) = &field.spec.size {
                 let size_value = self.lower_expr(size, env, steps)?;
                 env.insert(segment_size(index), size_value);
@@ -2352,7 +2380,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                 Expr::Binary(bytes) => Some(bytes.clone()),
                 _ => None,
             };
-            lowered.push(LoweredBitField {
+            lowered.push(Some(LoweredBitField {
                 literal,
                 value: self.lower_expr(&field.value, env, steps)?,
                 spec: self.lower_bitfield_spec(
@@ -2365,18 +2393,13 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                     field.value.span,
                     env,
                 )?,
-            });
+            }));
         }
-        let segment_values: Vec<Var> = (0..fields.len()).map(segment_value).collect();
-        let segment_sizes: Vec<Var> = (0..fields.len()).map(segment_size).collect();
-        let names = construction_contract::SegmentNames {
-            values: &segment_values,
-            sizes: &segment_sizes,
+        let Some(check) = check else {
+            let built = self.build_pieces(&pieces, &lowered, steps);
+            return Ok(self.push_bitstring(built, steps));
         };
-        let Some(check) = construction_contract::construction_check(fields, names, span) else {
-            return Ok(self.push_bitstring(lowered, steps));
-        };
-        let inputs: Vec<ValueId> = lowered.iter().map(|field| field.value).collect();
+        let inputs: Vec<ValueId> = lowered.iter().flatten().map(|field| field.value).collect();
         let row = PatternRow {
             patterns: segment_values
                 .iter()
@@ -2389,7 +2412,8 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         let plan = self.compile_match_dispatch("construction", span, inputs.len(), vec![row], None)?;
         let bindings = self.lower_dispatch_bindings(&plan, env, steps)?;
         let mut build_steps = Vec::new();
-        let built = self.push_bitstring(lowered, &mut build_steps);
+        let built_fields = self.build_pieces(&pieces, &lowered, &mut build_steps);
+        let built = self.push_bitstring(built_fields, &mut build_steps);
         let build = ExprOutcome {
             arguments: self.bind_outcome_arguments(&plan.outcomes[0], |_| None, &mut env.clone()),
             block: ExprBlock {
@@ -2414,6 +2438,35 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
             }),
         });
         Ok(value)
+    }
+
+    /// The fields a construction builds: each field as lowered, and each run of
+    /// constants as one literal binary field.
+    fn build_pieces(
+        &mut self,
+        pieces: &[constant_fields::Piece],
+        lowered: &[Option<LoweredBitField>],
+        steps: &mut Vec<ExprStep>,
+    ) -> Vec<LoweredBitField> {
+        pieces
+            .iter()
+            .map(|piece| match piece {
+                constant_fields::Piece::Field(index) => lowered[*index]
+                    .clone()
+                    .expect("a field the construction builds as written is lowered"),
+                constant_fields::Piece::Literal { bytes, .. } => LoweredBitField {
+                    value: self.push_const(steps, GroundValue::Binary(bytes.clone())),
+                    spec: LoweredBitFieldSpec {
+                        ty: crate::ast::BitType::Binary,
+                        size: None,
+                        endian: crate::ast::Endian::Big,
+                        signed: false,
+                        unit: None,
+                    },
+                    literal: Some(bytes.clone()),
+                },
+            })
+            .collect()
     }
 
     fn push_bitstring(&mut self, fields: Vec<LoweredBitField>, steps: &mut Vec<ExprStep>) -> ValueId {
@@ -2453,7 +2506,6 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
             None => None,
             Some(BitSize::Literal(value)) => Some(LoweredBitSize::Literal(*value)),
             Some(BitSize::Var(name)) => Some(LoweredBitSize::Value(self.bit_size_value(name, span, env)?)),
-            Some(BitSize::ByteSizeOf(name)) => Some(LoweredBitSize::ByteSizeOf(self.bit_size_value(name, span, env)?)),
             Some(BitSize::Expr(_)) => Some(LoweredBitSize::Value(self.bit_size_value(
                 &segment_size(index),
                 span,

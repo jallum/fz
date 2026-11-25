@@ -1,0 +1,487 @@
+#---
+# purpose: "a construction whose fields are all constants is the literal binary Elixir spells, and a run of constant fields inside a construction is written as one literal: every field kind (integers of every width from 1 to 64 in each byte order, signed, floats of 16, 32 and 64 bits, utf8, utf16 and utf32, binary and bits literals), totals that end mid-byte, constant runs that start or end mid-byte, runs beside runtime sizes and binaries, chains of <> over literals, and constants Elixir refuses, which still raise when the construction runs"
+# oracle: self
+# oracle.stamp: e1474964def9b498
+# args: 0
+#---
+defmodule Main do
+  # Values the compiler cannot see through: each is read from a list at a
+  # position that is known only at run time.
+  def v(list, k), do: Enum.at(list, String.to_integer(hd(System.argv())) + k)
+
+  def show(value), do: IO.puts(inspect(value, limit: :infinity))
+
+  def failure(thunk) do
+    try do
+      {:ok, thunk.()}
+    rescue
+      e -> {e.__struct__, Exception.message(e)}
+    end
+  end
+
+  def big_integers() do
+    [
+      <<0x0123456789ABCDEF::size(1)>>,
+      <<0x0123456789ABCDEF::size(2)>>,
+      <<0x0123456789ABCDEF::size(3)>>,
+      <<0x0123456789ABCDEF::size(4)>>,
+      <<0x0123456789ABCDEF::size(5)>>,
+      <<0x0123456789ABCDEF::size(6)>>,
+      <<0x0123456789ABCDEF::size(7)>>,
+      <<0x0123456789ABCDEF::size(8)>>,
+      <<0x0123456789ABCDEF::size(9)>>,
+      <<0x0123456789ABCDEF::size(10)>>,
+      <<0x0123456789ABCDEF::size(11)>>,
+      <<0x0123456789ABCDEF::size(12)>>,
+      <<0x0123456789ABCDEF::size(13)>>,
+      <<0x0123456789ABCDEF::size(14)>>,
+      <<0x0123456789ABCDEF::size(15)>>,
+      <<0x0123456789ABCDEF::size(16)>>,
+      <<0x0123456789ABCDEF::size(17)>>,
+      <<0x0123456789ABCDEF::size(18)>>,
+      <<0x0123456789ABCDEF::size(19)>>,
+      <<0x0123456789ABCDEF::size(20)>>,
+      <<0x0123456789ABCDEF::size(21)>>,
+      <<0x0123456789ABCDEF::size(22)>>,
+      <<0x0123456789ABCDEF::size(23)>>,
+      <<0x0123456789ABCDEF::size(24)>>,
+      <<0x0123456789ABCDEF::size(25)>>,
+      <<0x0123456789ABCDEF::size(26)>>,
+      <<0x0123456789ABCDEF::size(27)>>,
+      <<0x0123456789ABCDEF::size(28)>>,
+      <<0x0123456789ABCDEF::size(29)>>,
+      <<0x0123456789ABCDEF::size(30)>>,
+      <<0x0123456789ABCDEF::size(31)>>,
+      <<0x0123456789ABCDEF::size(32)>>,
+      <<0x0123456789ABCDEF::size(33)>>,
+      <<0x0123456789ABCDEF::size(34)>>,
+      <<0x0123456789ABCDEF::size(35)>>,
+      <<0x0123456789ABCDEF::size(36)>>,
+      <<0x0123456789ABCDEF::size(37)>>,
+      <<0x0123456789ABCDEF::size(38)>>,
+      <<0x0123456789ABCDEF::size(39)>>,
+      <<0x0123456789ABCDEF::size(40)>>,
+      <<0x0123456789ABCDEF::size(41)>>,
+      <<0x0123456789ABCDEF::size(42)>>,
+      <<0x0123456789ABCDEF::size(43)>>,
+      <<0x0123456789ABCDEF::size(44)>>,
+      <<0x0123456789ABCDEF::size(45)>>,
+      <<0x0123456789ABCDEF::size(46)>>,
+      <<0x0123456789ABCDEF::size(47)>>,
+      <<0x0123456789ABCDEF::size(48)>>,
+      <<0x0123456789ABCDEF::size(49)>>,
+      <<0x0123456789ABCDEF::size(50)>>,
+      <<0x0123456789ABCDEF::size(51)>>,
+      <<0x0123456789ABCDEF::size(52)>>,
+      <<0x0123456789ABCDEF::size(53)>>,
+      <<0x0123456789ABCDEF::size(54)>>,
+      <<0x0123456789ABCDEF::size(55)>>,
+      <<0x0123456789ABCDEF::size(56)>>,
+      <<0x0123456789ABCDEF::size(57)>>,
+      <<0x0123456789ABCDEF::size(58)>>,
+      <<0x0123456789ABCDEF::size(59)>>,
+      <<0x0123456789ABCDEF::size(60)>>,
+      <<0x0123456789ABCDEF::size(61)>>,
+      <<0x0123456789ABCDEF::size(62)>>,
+      <<0x0123456789ABCDEF::size(63)>>,
+      <<0x0123456789ABCDEF::size(64)>>
+    ]
+  end
+
+  def little_integers() do
+    [
+      <<0x0123456789ABCDEF::size(1)-little>>,
+      <<0x0123456789ABCDEF::size(2)-little>>,
+      <<0x0123456789ABCDEF::size(3)-little>>,
+      <<0x0123456789ABCDEF::size(4)-little>>,
+      <<0x0123456789ABCDEF::size(5)-little>>,
+      <<0x0123456789ABCDEF::size(6)-little>>,
+      <<0x0123456789ABCDEF::size(7)-little>>,
+      <<0x0123456789ABCDEF::size(8)-little>>,
+      <<0x0123456789ABCDEF::size(9)-little>>,
+      <<0x0123456789ABCDEF::size(10)-little>>,
+      <<0x0123456789ABCDEF::size(11)-little>>,
+      <<0x0123456789ABCDEF::size(12)-little>>,
+      <<0x0123456789ABCDEF::size(13)-little>>,
+      <<0x0123456789ABCDEF::size(14)-little>>,
+      <<0x0123456789ABCDEF::size(15)-little>>,
+      <<0x0123456789ABCDEF::size(16)-little>>,
+      <<0x0123456789ABCDEF::size(17)-little>>,
+      <<0x0123456789ABCDEF::size(18)-little>>,
+      <<0x0123456789ABCDEF::size(19)-little>>,
+      <<0x0123456789ABCDEF::size(20)-little>>,
+      <<0x0123456789ABCDEF::size(21)-little>>,
+      <<0x0123456789ABCDEF::size(22)-little>>,
+      <<0x0123456789ABCDEF::size(23)-little>>,
+      <<0x0123456789ABCDEF::size(24)-little>>,
+      <<0x0123456789ABCDEF::size(25)-little>>,
+      <<0x0123456789ABCDEF::size(26)-little>>,
+      <<0x0123456789ABCDEF::size(27)-little>>,
+      <<0x0123456789ABCDEF::size(28)-little>>,
+      <<0x0123456789ABCDEF::size(29)-little>>,
+      <<0x0123456789ABCDEF::size(30)-little>>,
+      <<0x0123456789ABCDEF::size(31)-little>>,
+      <<0x0123456789ABCDEF::size(32)-little>>,
+      <<0x0123456789ABCDEF::size(33)-little>>,
+      <<0x0123456789ABCDEF::size(34)-little>>,
+      <<0x0123456789ABCDEF::size(35)-little>>,
+      <<0x0123456789ABCDEF::size(36)-little>>,
+      <<0x0123456789ABCDEF::size(37)-little>>,
+      <<0x0123456789ABCDEF::size(38)-little>>,
+      <<0x0123456789ABCDEF::size(39)-little>>,
+      <<0x0123456789ABCDEF::size(40)-little>>,
+      <<0x0123456789ABCDEF::size(41)-little>>,
+      <<0x0123456789ABCDEF::size(42)-little>>,
+      <<0x0123456789ABCDEF::size(43)-little>>,
+      <<0x0123456789ABCDEF::size(44)-little>>,
+      <<0x0123456789ABCDEF::size(45)-little>>,
+      <<0x0123456789ABCDEF::size(46)-little>>,
+      <<0x0123456789ABCDEF::size(47)-little>>,
+      <<0x0123456789ABCDEF::size(48)-little>>,
+      <<0x0123456789ABCDEF::size(49)-little>>,
+      <<0x0123456789ABCDEF::size(50)-little>>,
+      <<0x0123456789ABCDEF::size(51)-little>>,
+      <<0x0123456789ABCDEF::size(52)-little>>,
+      <<0x0123456789ABCDEF::size(53)-little>>,
+      <<0x0123456789ABCDEF::size(54)-little>>,
+      <<0x0123456789ABCDEF::size(55)-little>>,
+      <<0x0123456789ABCDEF::size(56)-little>>,
+      <<0x0123456789ABCDEF::size(57)-little>>,
+      <<0x0123456789ABCDEF::size(58)-little>>,
+      <<0x0123456789ABCDEF::size(59)-little>>,
+      <<0x0123456789ABCDEF::size(60)-little>>,
+      <<0x0123456789ABCDEF::size(61)-little>>,
+      <<0x0123456789ABCDEF::size(62)-little>>,
+      <<0x0123456789ABCDEF::size(63)-little>>,
+      <<0x0123456789ABCDEF::size(64)-little>>
+    ]
+  end
+
+  def native_integers() do
+    [
+      <<0x0123456789ABCDEF::size(1)-native>>,
+      <<0x0123456789ABCDEF::size(2)-native>>,
+      <<0x0123456789ABCDEF::size(3)-native>>,
+      <<0x0123456789ABCDEF::size(4)-native>>,
+      <<0x0123456789ABCDEF::size(5)-native>>,
+      <<0x0123456789ABCDEF::size(6)-native>>,
+      <<0x0123456789ABCDEF::size(7)-native>>,
+      <<0x0123456789ABCDEF::size(8)-native>>,
+      <<0x0123456789ABCDEF::size(9)-native>>,
+      <<0x0123456789ABCDEF::size(10)-native>>,
+      <<0x0123456789ABCDEF::size(11)-native>>,
+      <<0x0123456789ABCDEF::size(12)-native>>,
+      <<0x0123456789ABCDEF::size(13)-native>>,
+      <<0x0123456789ABCDEF::size(14)-native>>,
+      <<0x0123456789ABCDEF::size(15)-native>>,
+      <<0x0123456789ABCDEF::size(16)-native>>,
+      <<0x0123456789ABCDEF::size(17)-native>>,
+      <<0x0123456789ABCDEF::size(18)-native>>,
+      <<0x0123456789ABCDEF::size(19)-native>>,
+      <<0x0123456789ABCDEF::size(20)-native>>,
+      <<0x0123456789ABCDEF::size(21)-native>>,
+      <<0x0123456789ABCDEF::size(22)-native>>,
+      <<0x0123456789ABCDEF::size(23)-native>>,
+      <<0x0123456789ABCDEF::size(24)-native>>,
+      <<0x0123456789ABCDEF::size(25)-native>>,
+      <<0x0123456789ABCDEF::size(26)-native>>,
+      <<0x0123456789ABCDEF::size(27)-native>>,
+      <<0x0123456789ABCDEF::size(28)-native>>,
+      <<0x0123456789ABCDEF::size(29)-native>>,
+      <<0x0123456789ABCDEF::size(30)-native>>,
+      <<0x0123456789ABCDEF::size(31)-native>>,
+      <<0x0123456789ABCDEF::size(32)-native>>,
+      <<0x0123456789ABCDEF::size(33)-native>>,
+      <<0x0123456789ABCDEF::size(34)-native>>,
+      <<0x0123456789ABCDEF::size(35)-native>>,
+      <<0x0123456789ABCDEF::size(36)-native>>,
+      <<0x0123456789ABCDEF::size(37)-native>>,
+      <<0x0123456789ABCDEF::size(38)-native>>,
+      <<0x0123456789ABCDEF::size(39)-native>>,
+      <<0x0123456789ABCDEF::size(40)-native>>,
+      <<0x0123456789ABCDEF::size(41)-native>>,
+      <<0x0123456789ABCDEF::size(42)-native>>,
+      <<0x0123456789ABCDEF::size(43)-native>>,
+      <<0x0123456789ABCDEF::size(44)-native>>,
+      <<0x0123456789ABCDEF::size(45)-native>>,
+      <<0x0123456789ABCDEF::size(46)-native>>,
+      <<0x0123456789ABCDEF::size(47)-native>>,
+      <<0x0123456789ABCDEF::size(48)-native>>,
+      <<0x0123456789ABCDEF::size(49)-native>>,
+      <<0x0123456789ABCDEF::size(50)-native>>,
+      <<0x0123456789ABCDEF::size(51)-native>>,
+      <<0x0123456789ABCDEF::size(52)-native>>,
+      <<0x0123456789ABCDEF::size(53)-native>>,
+      <<0x0123456789ABCDEF::size(54)-native>>,
+      <<0x0123456789ABCDEF::size(55)-native>>,
+      <<0x0123456789ABCDEF::size(56)-native>>,
+      <<0x0123456789ABCDEF::size(57)-native>>,
+      <<0x0123456789ABCDEF::size(58)-native>>,
+      <<0x0123456789ABCDEF::size(59)-native>>,
+      <<0x0123456789ABCDEF::size(60)-native>>,
+      <<0x0123456789ABCDEF::size(61)-native>>,
+      <<0x0123456789ABCDEF::size(62)-native>>,
+      <<0x0123456789ABCDEF::size(63)-native>>,
+      <<0x0123456789ABCDEF::size(64)-native>>
+    ]
+  end
+
+  def signed_integers() do
+    [
+      <<-3::signed-size(1)-little>>,
+      <<-3::signed-size(2)>>,
+      <<-3::signed-size(3)-little>>,
+      <<-3::signed-size(4)>>,
+      <<-3::signed-size(5)-little>>,
+      <<-3::signed-size(6)>>,
+      <<-3::signed-size(7)-little>>,
+      <<-3::signed-size(8)>>,
+      <<-3::signed-size(9)-little>>,
+      <<-3::signed-size(10)>>,
+      <<-3::signed-size(11)-little>>,
+      <<-3::signed-size(12)>>,
+      <<-3::signed-size(13)-little>>,
+      <<-3::signed-size(14)>>,
+      <<-3::signed-size(15)-little>>,
+      <<-3::signed-size(16)>>,
+      <<-3::signed-size(17)-little>>,
+      <<-3::signed-size(18)>>,
+      <<-3::signed-size(19)-little>>,
+      <<-3::signed-size(20)>>,
+      <<-3::signed-size(21)-little>>,
+      <<-3::signed-size(22)>>,
+      <<-3::signed-size(23)-little>>,
+      <<-3::signed-size(24)>>,
+      <<-3::signed-size(25)-little>>,
+      <<-3::signed-size(26)>>,
+      <<-3::signed-size(27)-little>>,
+      <<-3::signed-size(28)>>,
+      <<-3::signed-size(29)-little>>,
+      <<-3::signed-size(30)>>,
+      <<-3::signed-size(31)-little>>,
+      <<-3::signed-size(32)>>,
+      <<-3::signed-size(33)-little>>,
+      <<-3::signed-size(34)>>,
+      <<-3::signed-size(35)-little>>,
+      <<-3::signed-size(36)>>,
+      <<-3::signed-size(37)-little>>,
+      <<-3::signed-size(38)>>,
+      <<-3::signed-size(39)-little>>,
+      <<-3::signed-size(40)>>,
+      <<-3::signed-size(41)-little>>,
+      <<-3::signed-size(42)>>,
+      <<-3::signed-size(43)-little>>,
+      <<-3::signed-size(44)>>,
+      <<-3::signed-size(45)-little>>,
+      <<-3::signed-size(46)>>,
+      <<-3::signed-size(47)-little>>,
+      <<-3::signed-size(48)>>,
+      <<-3::signed-size(49)-little>>,
+      <<-3::signed-size(50)>>,
+      <<-3::signed-size(51)-little>>,
+      <<-3::signed-size(52)>>,
+      <<-3::signed-size(53)-little>>,
+      <<-3::signed-size(54)>>,
+      <<-3::signed-size(55)-little>>,
+      <<-3::signed-size(56)>>,
+      <<-3::signed-size(57)-little>>,
+      <<-3::signed-size(58)>>,
+      <<-3::signed-size(59)-little>>,
+      <<-3::signed-size(60)>>,
+      <<-3::signed-size(61)-little>>,
+      <<-3::signed-size(62)>>,
+      <<-3::signed-size(63)-little>>,
+      <<-3::signed-size(64)>>
+    ]
+  end
+
+  def wide_values() do
+    [
+      <<-1::64>>,
+      <<-1::signed-64>>,
+      <<255::8>>,
+      <<256::8>>,
+      <<-129::signed-8>>,
+      <<0::64>>,
+      <<9223372036854775807::64>>,
+      <<-9223372036854775807::signed-64>>,
+      <<1::size(2)-unit(4)>>,
+      <<1::size(1)-unit(16)>>,
+      <<65>>,
+      <<65, 66, 67>>,
+      <<>>
+    ]
+  end
+
+  def floats() do
+    [
+      <<1.0::float-16, -2.5::float-16, 0.1::float-16, 65504.0::float-16>>,
+      <<65520.0::float-16, 1.0e10::float-16, 6.0e-8::float-16, 6.1e-5::float-16, 1.0e-8::float-16>>,
+      <<1.0::float-16-little, -2.5::float-16-native>>,
+      <<1.0::float-32, -2.5::float-32, 0.1::float-32, 3.0e38::float-32, 1.0e300::float-32>>,
+      <<1.5::float-32-little, 0.1::float-32-native>>,
+      <<1.0::float, -2.5::float-64, 0.1::float-64, 1.0e300::float-64>>,
+      <<1.5::float-64-little, 0.1::float-native>>,
+      <<3::float-16, 3::float-32, 3::float-64, -7::float>>
+    ]
+  end
+
+  def utfs() do
+    [
+      <<0::utf8, 0x41::utf8, 0x7F::utf8, 0x80::utf8, 0xE9::utf8, 0x7FF::utf8, 0x800::utf8>>,
+      <<0x20AC::utf8, 0xD7FF::utf8, 0xE000::utf8, 0xFFFF::utf8, 0x10000::utf8, 0x1F600::utf8, 0x10FFFF::utf8>>,
+      <<0::utf16, 0x41::utf16, 0xD7FF::utf16, 0xE000::utf16, 0xFFFF::utf16, 0x10000::utf16, 0x10FFFF::utf16>>,
+      <<0x41::utf16-little, 0x20AC::utf16-little, 0x1F600::utf16-little, 0x10FFFF::utf16-native>>,
+      <<0::utf32, 0x41::utf32, 0xD7FF::utf32, 0xE000::utf32, 0x1F600::utf32, 0x10FFFF::utf32>>,
+      <<0x41::utf32-little, 0x1F600::utf32-little, 0x10FFFF::utf32-native>>,
+      <<?a::utf8, ?b>>
+    ]
+  end
+
+  def binaries() do
+    [
+      <<"hello">>,
+      <<"hello"::binary>>,
+      <<"hello"::bytes>>,
+      <<"hello"::bitstring>>,
+      <<"hello"::bits>>,
+      <<"">>,
+      <<"a", "b", "c">>,
+      <<"a"::binary, "bc"::binary, "def">>,
+      <<"x", 0, "y", 255, "z">>,
+      "a" <> "b",
+      "a" <> "b" <> "c" <> "d",
+      "" <> "",
+      "" <> "a" <> "",
+      <<"0123456789abcdef", "ghijklmnopqrstuv", "wxyz">>,
+      <<"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "!", 0x20AC::utf8>>
+    ]
+  end
+
+  # Totals that are not whole bytes keep their last bits mid-byte.
+  def unaligned_totals() do
+    [
+      <<1::3, 2::5>>,
+      <<1::3>>,
+      <<1::1, 1::1>>,
+      <<1::1, 0::1, 1::1, 1::1, 0::1, 0::1, 1::1, 1::1>>,
+      <<65, 1::3>>,
+      <<1::3, 65>>,
+      <<1::3, 65, 66>>,
+      <<65, 66, 67, 5::5>>,
+      <<7::3, 0x20AC::utf8>>,
+      <<7::3, 1.5::float-32>>,
+      <<7::3, "ab">>,
+      <<1::3, 2::3>>,
+      <<1::13>>,
+      <<0xFFFF::16, 1::1>>,
+      <<1::7, 1::7, 1::7, 1::7>>
+    ]
+  end
+
+  # A run of constants between runtime fields, with every alignment at which
+  # it can start and stop.
+  def runs() do
+    xs = [0xA5, 0x5A, 0xFF, 3, 5, 9, 1, 2, 0]
+    a = v(xs, 0)
+    b = v(xs, 1)
+    c = v(xs, 2)
+    s3 = v(xs, 3)
+    s5 = v(xs, 4)
+    s9 = v(xs, 5)
+    [
+      <<a::8, 1, 2, 3, b::8>>,
+      <<a::8, 1, 2, 3>>,
+      <<1, 2, 3, b::8>>,
+      <<a::3, 1::5, 7, 8>>,
+      <<1, 2, 3::3, b::5>>,
+      <<a::4, 1::4, 2::4, b::4>>,
+      <<1::4, 2::4, a, 3::4, 4::4>>,
+      <<a::3, 1::5, 2::3, b::5>>,
+      <<1::3, 2::3, a::2, 7, 8>>,
+      <<a::1, 1::7, 2::7, 3::1, b::8>>,
+      <<a::8, 1::3, 2::3, 3::2, 4::6, 5::2, b::8>>,
+      <<a::8, "xy", b::16, "z", 0x20AC::utf8, c::8>>,
+      <<a::8, 1.5::float-32, 0x1F600::utf8, 7::5, 3::3, b::8>>,
+      <<a::16-little, 1::16-little, 2::16, b::32-big>>,
+      <<1::signed-8, a::signed-8, -1::signed-16, b::signed-little-16>>,
+      <<a::size(s3), 1, 2>>,
+      <<a::size(s5), 1, 2, b::size(s9), 3>>,
+      <<a::size(s3), 1::5, 7, 8>>,
+      <<a::size(s9), 1::7, 2::7, 3::2>>
+    ]
+  end
+
+  def with_binaries() do
+    x = v(["xy", "zw"], 0)
+    y = v(["", "q"], 0)
+    big = v([String.duplicate("ab", 40), String.duplicate("cd", 40)], 0)
+    [
+      <<1, 2, x::binary, 3, 4>>,
+      <<1, 2, x::binary>>,
+      <<x::binary, 1, 2>>,
+      <<x::binary, 1, 2, 3, 4, y::binary, 5, 6>>,
+      <<1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, x::binary>>,
+      <<x::binary, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17>>,
+      <<big::binary, "tail", 0x20AC::utf8>>,
+      <<"head", 0x20AC::utf8, big::binary>>,
+      <<"head"::binary, "-", big::binary, "-", "tail">>,
+      "a" <> "b" <> x,
+      x <> "a" <> "b",
+      "a" <> x <> "b" <> "c",
+      "a" <> "b" <> x <> "c" <> "d" <> y <> "e",
+      y <> "" <> "z",
+      "#{x}-" <> "ab" <> "cd",
+      "ab" <> "#{x}" <> "cd"
+    ]
+  end
+
+  def refused() do
+    bad = [0xD800, 0xDFFF, 0x110000, -1]
+    [
+      failure(fn -> <<0xD800::utf8>> end),
+      failure(fn -> <<0xDFFF::utf16>> end),
+      failure(fn -> <<0x110000::utf32>> end),
+      failure(fn -> <<-1::utf8>> end),
+      failure(fn -> <<65, 0xD800::utf8, 66>> end),
+      failure(fn -> <<65, -1::utf16-little, 66>> end),
+      failure(fn -> <<1::8, 0x110000::utf8, "ok">> end),
+      failure(fn -> <<Enum.at(bad, 0)::utf8>> end),
+      failure(fn -> <<65, Enum.at(bad, 1)::utf8, 66>> end),
+      failure(fn -> <<65, Enum.at(bad, 3)::utf32, 66>> end),
+      failure(fn -> <<1, 2, 3, 4, Enum.at(bad, 0)::utf8, 5, 6>> end),
+      failure(fn -> <<1, 2, 3, 4, 5, 6, Enum.at(bad, 2)::utf16, 7>> end),
+      failure(fn -> <<1, 2, 3, Enum.at(bad, 0)::utf8, 4, 0xD800::utf8>> end)
+    ]
+  end
+
+  def repeated(0, acc), do: acc
+  def repeated(n, acc), do: repeated(n - 1, <<acc::binary, 1, 2, 3>>)
+
+  def in_a_loop() do
+    [repeated(0, ""), repeated(1, ""), repeated(30, "x"), byte_size(repeated(100, ""))]
+  end
+
+  def show_all(name, items) do
+    IO.puts(name)
+    Enum.each(items, &show/1)
+  end
+
+  def main() do
+    show_all("big", big_integers())
+    show_all("little", little_integers())
+    show_all("native", native_integers())
+    show_all("signed", signed_integers())
+    show_all("wide", wide_values())
+    show_all("floats", floats())
+    show_all("utf", utfs())
+    show_all("binaries", binaries())
+    show_all("unaligned", unaligned_totals())
+    show_all("runs", runs())
+    show_all("with_binaries", with_binaries())
+    show_all("refused", refused())
+    show_all("loop", in_a_loop())
+  end
+end
+
+Main.main()

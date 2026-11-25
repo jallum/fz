@@ -1,5 +1,5 @@
 use super::*;
-use crate::ast::{BitField, BitFieldSpec, BitSize, BitType, Endian, Expr, Pattern, Spanned, Var};
+use crate::ast::{BitField, BitFieldSpec, BitType, Endian, Expr, Pattern, PatternBitSize, Spanned, Var};
 use crate::compiler2::{Ty, Types};
 use crate::dispatch_matrix::demand::DispatchDemand;
 use crate::dispatch_matrix::pattern::{PatternBodyId, PatternRow, PatternSubjectRef, SourcePatternRows};
@@ -1284,7 +1284,7 @@ fn pattern_dispatch_matrix_preserves_bitstring_shape_and_dynamic_size_binding() 
                     value: sp(Pattern::Var(Var::user("n"))),
                     spec: BitFieldSpec {
                         ty: BitType::Integer,
-                        size: Some(BitSize::Literal(8)),
+                        size: Some(PatternBitSize::Literal(8)),
                         endian: Endian::Little,
                         signed: true,
                         unit: Some(1),
@@ -1294,7 +1294,7 @@ fn pattern_dispatch_matrix_preserves_bitstring_shape_and_dynamic_size_binding() 
                     value: sp(Pattern::Var(Var::user("payload"))),
                     spec: BitFieldSpec {
                         ty: BitType::Binary,
-                        size: Some(BitSize::Var(Var::user("n"))),
+                        size: Some(PatternBitSize::Var(Var::user("n"))),
                         ..Default::default()
                     },
                 },
@@ -1362,7 +1362,7 @@ fn pattern_dispatch_matrix_preserves_bitstring_shape_and_dynamic_size_binding() 
 /// reads the payload, so a decision never has to build it.
 #[test]
 fn a_bitstring_field_is_asked_only_when_a_question_reads_its_value() {
-    let field = |value: Pattern, ty: BitType, size: Option<BitSize>| BitField {
+    let field = |value: Pattern, ty: BitType, size: Option<PatternBitSize>| BitField {
         value: sp(value),
         spec: BitFieldSpec {
             ty,
@@ -1379,7 +1379,7 @@ fn a_bitstring_field_is_asked_only_when_a_question_reads_its_value() {
                 field(
                     Pattern::Var(Var::user("payload")),
                     BitType::Binary,
-                    Some(BitSize::Var(Var::user("n"))),
+                    Some(PatternBitSize::Var(Var::user("n"))),
                 ),
             ])],
             0,
@@ -1418,7 +1418,7 @@ fn pattern_dispatch_plan_carries_executable_payloads_directly() {
                         value: sp(Pattern::Var(Var::user("n"))),
                         spec: BitFieldSpec {
                             ty: BitType::Integer,
-                            size: Some(BitSize::Literal(8)),
+                            size: Some(PatternBitSize::Literal(8)),
                             ..Default::default()
                         },
                     },
@@ -1426,7 +1426,7 @@ fn pattern_dispatch_plan_carries_executable_payloads_directly() {
                         value: sp(Pattern::Var(Var::user("payload"))),
                         spec: BitFieldSpec {
                             ty: BitType::Binary,
-                            size: Some(BitSize::Var(Var::user("n"))),
+                            size: Some(PatternBitSize::Var(Var::user("n"))),
                             ..Default::default()
                         },
                     },
@@ -1620,7 +1620,7 @@ fn a_bitstring_head_demands_the_input_that_delivers_a_pinned_size() {
                     value: sp(Pattern::Var(Var::user("payload"))),
                     spec: BitFieldSpec {
                         ty: BitType::Binary,
-                        size: Some(BitSize::Var(Var::user("n"))),
+                        size: Some(PatternBitSize::Var(Var::user("n"))),
                         ..Default::default()
                     },
                 }])),

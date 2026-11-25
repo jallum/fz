@@ -80,7 +80,7 @@ fn field(ty: BitType, size: Option<u32>, unit: Option<u32>, endian: Endian, inde
         value: Var(index as u32),
         literal: None,
         ty,
-        size: size.map(BitSizeIr::Literal),
+        size: size.map(FieldSizeIr::Literal),
         endian,
         signed: false,
         unit,
@@ -227,7 +227,7 @@ fn descriptors(case: &Case, heap: &mut Heap) -> Vec<FzBsField> {
         .map(|(index, (f, input))| {
             let size_present = u32::from(f.size.is_some());
             let size = match f.size {
-                Some(BitSizeIr::Literal(n)) => u64::from(n),
+                Some(FieldSizeIr::Literal(n)) => u64::from(n),
                 _ => 0,
             };
             let value = match input {
@@ -434,7 +434,7 @@ fn the_inline_construction_imports_what_its_shape_reaches() {
             .fields
             .iter()
             .filter(read)
-            .any(|(f, _)| f.ty == BitType::Binary && f.size != Some(BitSizeIr::Literal(0)));
+            .any(|(f, _)| f.ty == BitType::Binary && f.size != Some(FieldSizeIr::Literal(0)));
         let mut expected = Vec::new();
         if unsized_binary || total <= 64 {
             expected.push("fz_heap_room");
@@ -527,7 +527,7 @@ fn only_whole_byte_integers_and_binaries_are_aligned() {
         assert_eq!(aligned(field(ty, None, None, Endian::Big, 0)), None, "{ty:?}");
     }
     let mut named = field(BitType::Integer, None, None, Endian::Big, 0);
-    named.size = Some(BitSizeIr::Var(Var(1)));
+    named.size = Some(FieldSizeIr::Var(Var(1)));
     assert_eq!(aligned(named), None);
 }
 
