@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Elixir Parity",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-25T12:09:19Z",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "Map key order puts every integer before every float, as OTP documents",
   "type": "bug",
-  "updated_at": "2026-11-25T12:09:19Z"
+  "updated_at": "2026-11-25T12:09:25Z"
 }
