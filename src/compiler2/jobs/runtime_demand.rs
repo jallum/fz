@@ -10,7 +10,9 @@ use super::super::body::{
 };
 use super::super::callsite_dispatch::dispatch_stress;
 use super::super::drive::{AnswerUse, FactKey, Job, JobEffects, UseCollector, settled_uses};
-use super::super::executable_facts::{ExecutableFacts, LocalCallableProducer, RuntimeDemandFacts};
+use super::super::executable_facts::{
+    ExecutableFacts, LocalCallableProducer, RuntimeDemandFacts, project_missing_runtime_demand_types,
+};
 #[cfg(test)]
 use super::super::executable_facts::{TransportOrigin, collect_value_origins};
 use super::super::identity::{ExecutableKey, ExecutableNeed, FunctionId};
@@ -87,6 +89,7 @@ struct RuntimeDemandFormulaInput<'a> {
     member: &'a ExecutableKey,
     facts: RuntimeDemandFacts<'a>,
     current: RuntimeDemandFormulaSnapshot,
+    joined_inputs: &'a [Ty],
 }
 
 struct DerivedExecutableDemand {
@@ -199,6 +202,8 @@ pub(super) fn derive_runtime_demand_fact<T: Telemetry>(
             ..JobEffects::default()
         });
     }
+    let missing = world.types_missing_runtime_demand_projection(world.activation_input_types(&executable.activation));
+    project_missing_runtime_demand_types(world, missing);
     let executable_fact = FactKey::ExecutableFacts(executable.clone());
     let facts = Rc::clone(
         world
@@ -226,6 +231,8 @@ pub(super) fn derive_runtime_demand_fact<T: Telemetry>(
         }
     }
     let own_return_demand = own_return_demand(world, executable);
+    uses.read(FactKey::ActivationInputs(executable.activation.clone()));
+    let joined_inputs = world.activation_input_types(&executable.activation);
     let mut calls_itself = ordered_peers.contains(executable);
     let mut input = RuntimeDemandFormulaInput::new(
         executable,
@@ -233,6 +240,7 @@ pub(super) fn derive_runtime_demand_fact<T: Telemetry>(
         world.runtime_demand_type_projections(),
         own_return_demand,
         peers,
+        joined_inputs,
     );
     let mut loaded_target_demands = ordered_peers.into_iter().collect::<HashSet<_>>();
     let mut callable_target_reads = HashSet::default();
@@ -771,8 +779,10 @@ impl<'a> RuntimeDemandFormulaInput<'a> {
         type_projections: &'a HashMap<Ty, Rc<super::super::semantic::RuntimeDemandTypeProjection>>,
         own_return_demand: RuntimeDemand,
         target_inputs: HashMap<ExecutableKey, Vec<RuntimeDemand>>,
+        joined_inputs: &'a [Ty],
     ) -> Self {
         Self {
+            joined_inputs,
             current: RuntimeDemandFormulaSnapshot::new(member.clone(), own_return_demand, target_inputs),
             member,
             facts: facts.runtime_demand_facts(type_projections),
@@ -1110,10 +1120,11 @@ fn local_call_targets(summary: &CallSiteSummary, need: ExecutableNeed) -> impl I
         .filter_map(move |target| target.runtime_executable(need))
 }
 
-/// Reads every input's demand against the activation's own input type. A
+/// Reads every input's demand against the type that input position carries: a
 /// clause narrows its parameter, so the input position is the one place an
-/// input's whole type is seen.
-fn settle_input_demands(facts: &RuntimeDemandFacts<'_>, input_demands: &mut [RuntimeDemand], input_tys: &[Ty]) {
+/// input's whole type is seen. A body reads the activation's joined input
+/// types; an extern reads its key columns, which its wire signature fixes.
+fn read_input_demands_against(facts: &RuntimeDemandFacts<'_>, input_demands: &mut [RuntimeDemand], input_tys: &[Ty]) {
     for (slot, &ty) in input_demands.iter_mut().zip(input_tys) {
         facts.read_against_type(slot, ty);
     }
@@ -1163,7 +1174,7 @@ fn derive_executable_runtime_demand(
                     .unwrap_or_else(|| facts.boundary_demand(*ty))
             })
             .collect();
-        settle_input_demands(facts, &mut out.input_demands, executable.activation.inputs(types));
+        read_input_demands_against(facts, &mut out.input_demands, executable.activation.inputs(types));
         emit_runtime_demand_walk(tel, executable.activation.function, 0);
         return DerivedExecutableDemand {
             demand: out,
@@ -1226,7 +1237,7 @@ fn derive_executable_runtime_demand(
         out.input_demands[semantic_index].join_assign(&demand);
     }
 
-    settle_input_demands(facts, &mut out.input_demands, activation_inputs);
+    read_input_demands_against(facts, &mut out.input_demands, input.joined_inputs);
     emit_runtime_demand_walk(tel, executable.activation.function, walks.entries_walked);
 
     DerivedExecutableDemand {

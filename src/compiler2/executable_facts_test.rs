@@ -245,3 +245,23 @@ fn a_recursive_tuple_type_is_projected_field_by_field() {
     assert_eq!(builder.projections[&rose].field_tys, vec![int, children]);
     assert!(builder.projections[&children].field_tys.is_empty());
 }
+
+/// A projection is made once per type: asking for a type that has none makes
+/// it, and asking again leaves the memo as it is.
+#[test]
+fn ensuring_a_projection_makes_it_once() {
+    let mut world = World::new();
+    let int = world.types_mut().int();
+    let pair = world.types_mut().tuple(&[int, int]);
+    assert!(world.runtime_demand_type_projection(pair).is_none());
+
+    let missing = world.types_missing_runtime_demand_projection(&[pair]);
+    assert_eq!(missing, vec![pair]);
+    project_missing_runtime_demand_types(&mut world, missing);
+    assert!(world.runtime_demand_type_projection(pair).is_some());
+    let size = world.runtime_demand_type_projections().len();
+
+    assert!(world.types_missing_runtime_demand_projection(&[pair, int]).is_empty());
+    project_missing_runtime_demand_types(&mut world, Vec::new());
+    assert_eq!(world.runtime_demand_type_projections().len(), size);
+}

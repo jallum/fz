@@ -1,0 +1,25 @@
+#---
+# purpose: a walk whose steps hand a {byte, rest} tuple to a helper that calls the walk back allocates no binary view per step
+# kind: run
+#---
+#
+# `v` returns a tuple of a byte and the rest of the binary; `item` takes it
+# apart and calls `walk` again, so walk and item are one call cycle. The tuple
+# crosses the cycle as its two fields and the rest stays a cursor into the
+# input: across 10,000 steps no binary view is made, and the program prints that
+# count (the delta in `binview_allocs`) beside the sum of the bytes.
+defmodule Walk do
+  def v(<<c, rest :: binary>>), do: {c, rest}
+
+  def item({x, rest}, acc), do: walk(rest, acc + x)
+
+  def walk(<<>>, acc), do: acc
+  def walk(b, acc), do: item(v(b), acc)
+end
+
+line = String.duplicate("x", 10000)
+
+a = System.alloc_stats()
+n = Walk.walk(line, 0)
+b = System.alloc_stats()
+dbg({n, b[:binview_allocs] - a[:binview_allocs]})

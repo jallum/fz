@@ -815,11 +815,17 @@ the position the demand is recorded at, and it is applied in two places,
 because two kinds of position exist. A value's demand is read against the
 value's own type as the backward walk records it (`note_live_demand`), which
 also carries the escape back to the callable's construction. An executable
-input's demand is read against the activation's input type once callers'
-contributions are joined (`settle_input_demands`): a clause narrows its
-parameter value, so the input is the only place the input's whole type is
-seen. Every value type, every activation input type and `any` therefore has a
-runtime-demand type projection.
+input's demand is read against the activation's joined input types
+(`read_input_demands_against`, with `World::activation_input_types`): the types
+its callers pass, not the key's columns, which a cyclic call widens to `any`.
+An extern reads its key's columns, which its wire signature fixes. A clause
+narrows its parameter value, so the input is the only place the input's whole
+type is seen. Every value type, every executable key column and `any` has a
+runtime-demand type projection made with the executable's facts; the demand job
+makes the projection of any joined input type that still lacks one
+(`project_missing_runtime_demand_types`), because the joined inputs can move
+without the facts being derived again. A projection is a function of its type
+alone, so the memo never goes stale.
 
 A dispatch is the other reader that holds a callable without calling it. When
 a pattern or guard reads a callable input at run time -- a guard residual that

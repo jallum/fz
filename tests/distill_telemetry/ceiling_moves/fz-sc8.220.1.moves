@@ -1,0 +1,3 @@
+# A demand is read against the joined inputs, so the callee re-derives once per new caller evidence; accepted by the user 2026-11-25
+derivations +132
+reads handed +5448

@@ -503,6 +503,19 @@ fn argument_type(value_types: &ValueMap<Ty>, any: Ty, value: ValueId) -> Ty {
     value_types.get(&value).copied().unwrap_or(any)
 }
 
+/// Memoizes the runtime-demand projection of each of `missing`, the types
+/// [`World::types_missing_runtime_demand_projection`] named.
+pub(crate) fn project_missing_runtime_demand_types(world: &mut World, missing: Vec<Ty>) {
+    if missing.is_empty() {
+        return;
+    }
+    let any = world.types_mut().any();
+    let mut builder = RuntimeDemandTypeBuilder::new(any);
+    for ty in missing {
+        prepare_type_projection(world, &mut builder, ty);
+    }
+}
+
 fn prepare_runtime_demand_type_inputs(
     world: &mut World,
     executable: &ExecutableKey,
