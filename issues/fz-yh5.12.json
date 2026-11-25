@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Callables",
   "blocked_by": [
     "fz-9zq.21",
     "fz-yh5.11"
@@ -20,5 +20,5 @@
   "status": "open",
   "title": "or and not in a guard are matrix rows and miss edges",
   "type": "bug",
-  "updated_at": "2026-11-25T12:08:59Z"
+  "updated_at": "2026-11-25T12:09:00Z"
 }
