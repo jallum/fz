@@ -517,7 +517,17 @@ one `Const` step each. A quote with no `unquote` is a single `Const` step, and
 a node's metadata is always part of a constant.
 
 - a literal (int, float, atom, bitstring) lowers to the matching constant
-- a list recurses over its items
+- a list recurses over its items; an `unquote_splicing(e)` item puts the
+  elements of `e`'s value in its place, and a last item `unquote_splicing(e) | t`
+  does so before the tail `t`. Every list of items is read by
+  `QuoteLowerer::items`: call arguments, list elements, a block's statements
+  and a tuple's elements (a pair holding a splice is quoted as the `{}` call).
+  The pieces join through `:elixir_quote.list/2` and `tail_list/3`
+  (`lib/elixir_quote.fz`, after `elixir_quote.erl`), which raise
+  `ArgumentError` when `e` is not a list of quoted expressions. An
+  `unquote_splicing` that is not an item of a list is refused with
+  `macro/invalid-quoted-expr`, as Elixir refuses it. `collect_quoted_splices`
+  decodes `unquote_splicing(e)` beside `unquote(e)`, in the same walk order.
 - a two-element tuple recurses over its two items and lowers to a two-element
   tuple directly, matching Elixir's quoted representation; every other tuple
   arity is never a bare tuple at this layer — it already arrived as the

@@ -1322,7 +1322,7 @@ fn collect_quoted_splices(
         if name == "quote" {
             return Ok(());
         }
-        if name == "unquote" && args.len() == 1 {
+        if (name == "unquote" || name == "unquote_splicing") && args.len() == 1 {
             out.push(decode_expr(occurrences, &args[0], node.span, sources)?);
             return Ok(());
         }

@@ -1138,11 +1138,13 @@ impl<'a, 'w, 'tel, 'f, 'env, 'steps, 'q, T: crate::telemetry::Telemetry>
             }
             ValueKind::LIST => {
                 let items = cursor.list_items().map_err(|error| self.surface_error(error))?;
-                let items = self.each_quoted(&items, sources)?;
-                return Ok(self.list(items));
+                return self.items(&items, sources);
             }
             ValueKind::STRUCT => {
                 let items = cursor.tuple_items().map_err(|error| self.surface_error(error))?;
+                if self.any_splice(&items, sources)? {
+                    return self.splicing_pair(&items, sources);
+                }
                 let items = self.each_quoted(&items, sources)?;
                 return Ok(self.tuple(items));
             }
@@ -1168,24 +1170,205 @@ impl<'a, 'w, 'tel, 'f, 'env, 'steps, 'q, T: crate::telemetry::Telemetry>
             if name == "unquote" && args.len() == 1 && self.nested_quotes == 0 {
                 return self.lower_unquote().map(Quoted::Built);
             }
+            if name == "unquote_splicing" && args.len() == 1 && self.nested_quotes == 0 {
+                return Err(self.splice_outside_arguments(node));
+            }
             let nested = name == "quote";
             self.nested_quotes += usize::from(nested);
-            let values = self.each_quoted(&args, sources);
+            let values = self.items(&args, sources);
             self.nested_quotes -= usize::from(nested);
             let values = values?;
-            let bound = self.resolve_quoted_callable(&name, values.len());
+            let bound = self.resolve_quoted_callable(&name, args.len());
             return Ok(self.lower_call_node(&name, bound, values));
         }
 
         let head = self.quoted(&node.head, sources)?;
-        let values = self.each_quoted(&args, sources)?;
-        let tail = self.list(values);
+        let tail = self.items(&args, sources)?;
         let no_parens = node
             .meta
             .meta_value(super::super::source::META_NO_PARENS_KEY)
             .map_err(|error| self.surface_error(error))?
             .is_some();
         Ok(self.tuple(vec![head, Quoted::Constant(meta(None, no_parens)), tail]))
+    }
+
+    /// The quoted list of `cursors`, in which each `unquote_splicing(e)` puts
+    /// the elements of `e`'s list in its place, as in Elixir: a call's
+    /// arguments, a list's elements, a block's statements and a tuple's
+    /// elements are all such lists. `[a, unquote_splicing(x) | t]` splices
+    /// before the tail `t`. A list with no splice is one constant or one
+    /// built list; with one, the pieces join through `:elixir_quote`.
+    fn items(&mut self, cursors: &[QuotedSourceCursor], sources: &SourceMap) -> Result<Quoted, FatalError> {
+        let mut chunks = Vec::with_capacity(cursors.len());
+        for (index, cursor) in cursors.iter().enumerate() {
+            chunks.push(self.chunk(cursor, index + 1 == cursors.len(), sources)?);
+        }
+        let tail = match chunks.last() {
+            Some(Chunk::TailSplice { .. }) => chunks.pop(),
+            _ => None,
+        };
+        let prefix = self.join_chunks(chunks)?;
+        let Some(Chunk::TailSplice { spliced, tail, span }) = tail else {
+            return Ok(prefix);
+        };
+        let tail = self.value(tail);
+        let prefix = self.value(prefix);
+        self.call_quote_runtime("tail_list", vec![spliced, tail, prefix], span)
+            .map(Quoted::Built)
+    }
+
+    fn chunk(&mut self, cursor: &QuotedSourceCursor, last: bool, sources: &SourceMap) -> Result<Chunk, FatalError> {
+        if self.splice_node(cursor, sources)?.is_some() {
+            let span = self.next_splice_span();
+            return Ok(Chunk::Splice {
+                spliced: self.lower_unquote()?,
+                span,
+            });
+        }
+        if last && let Some(tail) = self.tail_splice(cursor, sources)? {
+            let span = self.next_splice_span();
+            let spliced = self.lower_unquote()?;
+            let tail = self.quoted(&tail, sources)?;
+            return Ok(Chunk::TailSplice { spliced, tail, span });
+        }
+        self.quoted(cursor, sources).map(Chunk::Item)
+    }
+
+    /// The chunks as one list, built from the right: each splice is
+    /// prepended to everything after it by `:elixir_quote.list/2`.
+    fn join_chunks(&mut self, chunks: Vec<Chunk>) -> Result<Quoted, FatalError> {
+        let mut rest: Option<Quoted> = None;
+        let mut pending: Vec<Quoted> = Vec::new();
+        for chunk in chunks.into_iter().rev() {
+            match chunk {
+                Chunk::Item(item) => pending.push(item),
+                Chunk::Splice { spliced, span } => {
+                    pending.reverse();
+                    let after = self.list_before(std::mem::take(&mut pending), rest.take());
+                    let after = self.value(after);
+                    let joined = self.call_quote_runtime("list", vec![spliced, after], span)?;
+                    rest = Some(Quoted::Built(joined));
+                }
+                Chunk::TailSplice { .. } => unreachable!("only the last element of a list splices before a tail"),
+            }
+        }
+        pending.reverse();
+        Ok(self.list_before(pending, rest))
+    }
+
+    /// `items` followed by the list `rest`, when there is one.
+    fn list_before(&mut self, items: Vec<Quoted>, rest: Option<Quoted>) -> Quoted {
+        let Some(rest) = rest else {
+            return self.list(items);
+        };
+        if items.is_empty() {
+            return rest;
+        }
+        let items = items.into_iter().map(|item| self.value(item)).collect();
+        let tail = Some(self.value(rest));
+        let value = self.lowerer.fresh_value();
+        self.steps.push(ExprStep::List { value, items, tail });
+        Quoted::Built(value)
+    }
+
+    /// A pair with an `unquote_splicing` in it is quoted as the `{}` call
+    /// Elixir makes of it, so the splice can supply any number of elements.
+    fn splicing_pair(&mut self, items: &[QuotedSourceCursor], sources: &SourceMap) -> Result<Quoted, FatalError> {
+        let args = self.items(items, sources)?;
+        Ok(self.lower_call_node("{}", None, args))
+    }
+
+    fn any_splice(&self, cursors: &[QuotedSourceCursor], sources: &SourceMap) -> Result<bool, FatalError> {
+        for cursor in cursors {
+            if self.splice_node(cursor, sources)?.is_some() {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// The `unquote_splicing(e)` node `cursor` holds, when it belongs to the
+    /// quote being lowered.
+    fn splice_node(
+        &self,
+        cursor: &QuotedSourceCursor,
+        sources: &SourceMap,
+    ) -> Result<Option<QuotedAstNode>, FatalError> {
+        if self.nested_quotes > 0 {
+            return Ok(None);
+        }
+        Ok(self
+            .ast_node(cursor, sources)?
+            .filter(|node| self.is_call_named(node, "unquote_splicing", 1)))
+    }
+
+    /// The tail `t` of the last element `unquote_splicing(e) | t`.
+    fn tail_splice(
+        &self,
+        cursor: &QuotedSourceCursor,
+        sources: &SourceMap,
+    ) -> Result<Option<QuotedSourceCursor>, FatalError> {
+        if self.nested_quotes > 0 {
+            return Ok(None);
+        }
+        let Some(node) = self.ast_node(cursor, sources)? else {
+            return Ok(None);
+        };
+        if !self.is_call_named(&node, "|", 2) {
+            return Ok(None);
+        }
+        let parts = node.tail.list_items().map_err(|error| self.surface_error(error))?;
+        Ok(self.splice_node(&parts[0], sources)?.map(|_| parts[1].clone()))
+    }
+
+    fn is_call_named(&self, node: &QuotedAstNode, name: &str, arity: usize) -> bool {
+        node.head.root().tag() == ValueKind::ATOM
+            && node.head.atom_name().is_ok_and(|head| head == name)
+            && node.tail.root().tag() == ValueKind::LIST
+            && node.tail.list_len().is_ok_and(|len| len == arity)
+    }
+
+    fn splice_outside_arguments(&self, node: &QuotedAstNode) -> FatalError {
+        emit_job_diagnostic(
+            self.lowerer.telemetry,
+            Diagnostic::error(
+                codes::MACRO_INVALID_QUOTED_EXPR,
+                "unquote_splicing only works inside arguments and block contexts, wrap it in parens if you want it to work with one-liners",
+                node.span.unwrap_or(Span::DUMMY),
+            ),
+        )
+    }
+
+    fn next_splice_span(&self) -> Span {
+        self.splices[self.next_splice].span
+    }
+
+    /// A call of one of `:elixir_quote`'s functions, the runtime half of the
+    /// splice.
+    fn call_quote_runtime(&mut self, name: &str, args: Vec<ValueId>, span: Span) -> Result<ValueId, FatalError> {
+        let callee = Callee::Name(CallableName {
+            module: Some(crate::ast::ModuleTarget::Exact(ModuleName::bare_atom("elixir_quote"))),
+            name: name.to_string(),
+        });
+        let function = self
+            .lowerer
+            .resolve_callee(&callee, args.len(), span, "unquote_splicing")?;
+        let value = self.lowerer.fresh_value();
+        let callsite = self.lowerer.fresh_callsite(span);
+        self.steps.push(ExprStep::DirectCall {
+            value,
+            callsite,
+            callee: DirectCallee::Function(function),
+            args: args
+                .into_iter()
+                .map(|value| CallArg {
+                    value,
+                    ascription: None,
+                    ownership: crate::fz_ir::OwnershipMode::Share,
+                })
+                .collect(),
+        });
+        Ok(value)
     }
 
     /// `unquote(e)` splices `e`'s runtime value in place: `e` was already
@@ -1235,10 +1418,9 @@ impl<'a, 'w, 'tel, 'f, 'env, 'steps, 'q, T: crate::telemetry::Telemetry>
 
     /// A call node whose head is display spelling and whose metadata retains
     /// the callable, when the call was classified here.
-    fn lower_call_node(&mut self, spelling: &str, bound: Option<FunctionId>, args: Vec<Quoted>) -> Quoted {
+    fn lower_call_node(&mut self, spelling: &str, bound: Option<FunctionId>, args: Quoted) -> Quoted {
         let head = Quoted::Constant(GroundValue::Atom(spelling.to_string()).into());
-        let tail = self.list(args);
-        self.tuple(vec![head, Quoted::Constant(meta(bound, false)), tail])
+        self.tuple(vec![head, Quoted::Constant(meta(bound, false)), args])
     }
 
     fn ast_node_of(&mut self, head: Quoted, tail: Quoted) -> Quoted {
@@ -1280,6 +1462,14 @@ impl<'a, 'w, 'tel, 'f, 'env, 'steps, 'q, T: crate::telemetry::Telemetry>
             }
         }
     }
+}
+
+/// One element of a quoted list: a quoted item, an `unquote_splicing(e)`
+/// holding the value of `e`, or the last element `unquote_splicing(e) | tail`.
+enum Chunk {
+    Item(Quoted),
+    Splice { spliced: ValueId, span: Span },
+    TailSplice { spliced: ValueId, tail: Quoted, span: Span },
 }
 
 /// A quoted subtree: a constant when nothing in it is unquoted, and otherwise
