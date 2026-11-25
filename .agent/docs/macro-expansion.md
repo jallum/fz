@@ -507,6 +507,11 @@ It:
 The returned root is therefore still rooted in the same quoted-source heap as
 the input carrier root.
 
+A macro argument written `x.field` or `__ENV__.line` arrives as Elixir's call
+node `{{:., meta, [x, :field]}, [no_parens: true | _], []}` (see
+[quoted source](quoted-source.md)), so a macro matches it the way an Elixir
+macro does.
+
 A value the macro computes enters the returned code through `Macro.escape/1`
 (`lib/macro.fz`), an ordinary lib function the macro body calls. It answers the
 quoted code that rebuilds the value, in Elixir's shapes: a tuple that is not a

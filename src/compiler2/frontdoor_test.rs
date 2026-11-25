@@ -45,6 +45,29 @@ fn head_name(node: &super::QuotedAstNode) -> String {
     node.head.atom_name().expect("ast head atom").to_string()
 }
 
+/// The bare `{:., meta, [target, :name]}` head under the no-parens call node
+/// `target.name` quotes as.
+fn no_parens_remote_head(node: &super::QuotedAstNode) -> super::QuotedAstNode {
+    assert_eq!(
+        node.tail.list_items().expect("call args").len(),
+        0,
+        "a no-parens remote call has no arguments"
+    );
+    assert_eq!(
+        node.meta
+            .meta_value(super::source::META_NO_PARENS_KEY)
+            .expect("meta read")
+            .expect("no_parens entry")
+            .atom_name()
+            .expect("no_parens value"),
+        "true"
+    );
+    node.head
+        .trusted_ast_node()
+        .expect("head read")
+        .expect("the head is the dot node")
+}
+
 fn map_value<'a>(
     entries: &'a [(super::QuotedSourceCursor, super::QuotedSourceCursor)],
     key: &str,
@@ -1217,6 +1240,7 @@ fn compiler2_frontdoor_continues_expr_across_newline_after_dot() {
         .trusted_ast_node()
         .expect("body cursor")
         .expect("body node");
+    let body = no_parens_remote_head(&body);
     assert_eq!(
         head_name(&body),
         ".",
@@ -1286,6 +1310,7 @@ fn compiler2_frontdoor_lowercase_field_after_dotted_newline_is_remote_access_not
         .trusted_ast_node()
         .expect("body cursor")
         .expect("body node");
+    let body = no_parens_remote_head(&body);
     assert_eq!(
         head_name(&body),
         ".",
@@ -1346,7 +1371,11 @@ fn compiler2_frontdoor_continues_capture_target_across_newline_after_dot() {
     assert_eq!(head_name(&slash), "/");
     let slash_args = slash.tail.list_items().expect("/ args");
     assert_eq!(slash_args.len(), 2);
-    let dot = slash_args[0].trusted_ast_node().expect("dot cursor").expect("dot node");
+    let call = slash_args[0]
+        .trusted_ast_node()
+        .expect("call cursor")
+        .expect("call node");
+    let dot = no_parens_remote_head(&call);
     assert_eq!(
         head_name(&dot),
         ".",
