@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-25T12:09:19Z",
+  "description": "From: Elixir Parity. User-approved 2026-11-25. Blocks #791. Evidence: JSON's #791 walk, /Users/j5n/Workspace/fz-752-walk/walk-2026-11-25.md and repro-2026-11-25/ (repro 22).\nOTP documents map key order (expressions.md:850): integers sort before floats, and atoms by their string value. It holds for maps:iterator(M, ordered) and for term comparison. runtime/src/term.rs number_cmp's Strict arms interleave integers and floats by value. Touches fz-mue.56 (ordered iterators).\nDone when: an oracle fixture shows every integer key before every float key, matching OTP on interp, run and build.",
+  "id": "fz-mue.69",
+  "labels": [],
+  "parent": "fz-mue",
+  "priority": 2,
+  "status": "open",
+  "title": "Map key order puts every integer before every float, as OTP documents",
+  "type": "bug",
+  "updated_at": "2026-11-25T12:09:19Z"
+}
