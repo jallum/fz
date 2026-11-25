@@ -230,7 +230,7 @@ fn impossible_map_returns_before_the_type_boundary() {
         "the last value for a duplicate map key remains the required field"
     );
     assert_eq!(
-        t.field_lookup(&overwritten, &shadowed),
+        t.value_at(&overwritten, &KeyAt::Exact(shadowed)),
         Some(int),
         "the last value for a duplicate map key remains its field type"
     );
@@ -271,7 +271,7 @@ fn impossible_struct_returns_before_the_type_boundary() {
         "the last value for a duplicate struct field remains required"
     );
     assert_eq!(
-        t.field_lookup(&overwritten, &shadowed),
+        t.value_at(&overwritten, &KeyAt::Exact(shadowed)),
         Some(int),
         "the last value for a duplicate struct field remains its field type"
     );
@@ -1200,7 +1200,11 @@ fn replacing_the_module_of_a_struct_names_the_new_module() {
         Some(size),
         "a map names whichever module its `__struct__` field holds"
     );
-    assert_eq!(t.field_lookup(&renamed, &key("x")), Some(int), "and keeps its fields");
+    assert_eq!(
+        t.value_at(&renamed, &KeyAt::Exact(key("x"))),
+        Some(int),
+        "and keeps its fields"
+    );
 
     let atom = t.atom();
     let unnamed = t.refine_map_field(&a_point, &key("__struct__"), &atom);
@@ -1293,11 +1297,11 @@ fn a_struct_is_a_map_and_a_map_literal_is_not_a_struct() {
     let joined = t.union(foo, literal);
     let without_literal = t.difference(joined, literal);
     assert!(t.is_equivalent(&without_literal, &foo));
-    assert_eq!(t.field_lookup(&foo, &key), Some(int));
+    assert_eq!(t.value_at(&foo, &KeyAt::Exact(key)), Some(int));
 
     let extra = MapKey::Atom("extra".to_string());
     let refined = t.refine_map_field(&foo, &extra, &int);
-    assert_eq!(t.field_lookup(&refined, &extra), Some(int));
+    assert_eq!(t.value_at(&refined, &KeyAt::Exact(extra.clone())), Some(int));
     assert_eq!(
         t.struct_modules([refined]),
         [module_name("Pkg.Foo")].into_iter().collect(),
@@ -1330,7 +1334,7 @@ fn semantic_struct_envelopes_keep_projectable_fields_and_predicate_envelopes_kee
     let nested = t.tuple(&[record]);
     let semantic = t.runtime_envelope(nested);
     let semantic_record = t.tuple_field_type(&semantic, 0);
-    let semantic_fields = t.field_lookup(&semantic_record, &key).unwrap();
+    let semantic_fields = t.value_at(&semantic_record, &KeyAt::Exact(key.clone())).unwrap();
     assert_eq!(t.tuple_field_type(&semantic_fields, 0), hit);
     let any = t.any();
     assert_eq!(
@@ -1340,7 +1344,7 @@ fn semantic_struct_envelopes_keep_projectable_fields_and_predicate_envelopes_kee
     );
     let predicate = t.runtime_type_test_envelope(nested);
     let predicate_record = t.tuple_field_type(&predicate, 0);
-    assert_eq!(t.field_lookup(&predicate_record, &key), Some(any));
+    assert_eq!(t.value_at(&predicate_record, &KeyAt::Exact(key.clone())), Some(any));
     assert_eq!(
         t.runtime_type_predicate(&semantic),
         t.runtime_type_predicate(&predicate),
@@ -1892,18 +1896,18 @@ macro_rules! seam_helper_conformance_tests {
             }
 
             #[test]
-            fn field_lookup_returns_known_field_type() {
+            fn value_at_returns_known_field_type() {
                 let mut t = $ctor;
                 let forty_two = t.int_lit(42);
                 let map = t.map(&[(MapKey::Atom("ok".to_string()), forty_two.clone())]);
                 let field = t
-                    .field_lookup(&map, &MapKey::Atom("ok".to_string()))
+                    .value_at(&map, &KeyAt::Exact(MapKey::Atom("ok".to_string())))
                     .expect("known field");
                 assert!(t.is_equivalent(&field, &forty_two));
             }
 
             #[test]
-            fn an_update_cannot_miss_a_key_every_map_surely_has() {
+            fn a_key_every_map_requires_cannot_be_missed() {
                 let mut t = $ctor;
                 let key = |name: &str| MapKey::Atom(name.to_string());
                 let int = t.int();
@@ -1912,12 +1916,13 @@ macro_rules! seam_helper_conformance_tests {
                 let either = t.union(ab, a);
                 let any_map = t.map_top();
 
-                assert!(t.map_surely_has_keys(&ab, &[key("a"), key("b")]));
-                assert!(!t.map_surely_has_keys(&ab, &[key("a"), key("c")]), "c may be missing");
-                assert!(t.map_surely_has_keys(&either, &[key("a")]), "both shapes have a");
-                assert!(!t.map_surely_has_keys(&either, &[key("b")]), "one shape lacks b");
-                assert!(!t.map_surely_has_keys(&any_map, &[key("a")]), "an arbitrary map proves nothing");
-                assert!(!t.map_surely_has_keys(&int, &[key("a")]), "a non-map has no keys");
+                let miss = |t: &mut Types, map, name: &str| t.can_miss(&map, &KeyAt::Exact(key(name)));
+                assert!(!miss(&mut t, ab, "a") && !miss(&mut t, ab, "b"));
+                assert!(miss(&mut t, ab, "c"), "c may be missing");
+                assert!(!miss(&mut t, either, "a"), "both shapes have a");
+                assert!(miss(&mut t, either, "b"), "one shape lacks b");
+                assert!(miss(&mut t, any_map, "a"), "an arbitrary map proves nothing");
+                assert!(miss(&mut t, int, "a"), "a non-map has no keys");
             }
 
             #[test]
@@ -1927,7 +1932,7 @@ macro_rules! seam_helper_conformance_tests {
                 let value = t.int_lit(7);
                 let refined = t.refine_map_field(&map, &MapKey::Atom("n".to_string()), &value);
                 let field = t
-                    .field_lookup(&refined, &MapKey::Atom("n".to_string()))
+                    .value_at(&refined, &KeyAt::Exact(MapKey::Atom("n".to_string())))
                     .expect("refined field");
                 assert!(t.is_subtype(&value, &field));
                 assert!(!t.is_empty(&field));
@@ -5223,7 +5228,7 @@ fn a_struct_type_answers_its_module_atom_for_the_struct_key() {
 
     let module_atom = t.atom_lit("Elixir.Geo.Pt");
     assert_eq!(
-        t.field_lookup(&point, &module_key),
+        t.value_at(&point, &KeyAt::Exact(module_key.clone())),
         Some(module_atom),
         "the struct's module is the singleton atom an alias in value position has"
     );
@@ -5233,7 +5238,7 @@ fn a_struct_type_answers_its_module_atom_for_the_struct_key() {
         t.union(any, nil)
     };
     assert_eq!(
-        t.field_lookup(&plain, &module_key),
+        t.value_at(&plain, &KeyAt::Exact(module_key)),
         Some(any_or_nil),
         "a plain map's absent key stays unconstrained"
     );

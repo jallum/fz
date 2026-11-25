@@ -1,6 +1,6 @@
 use super::*;
 use crate::ast::{Expr, Pattern, Spanned, Var};
-use crate::compiler2::types::{MapKey, Sigma, TypeVarId};
+use crate::compiler2::types::{MapDomain, MapKey, MapTypeEntry, MapTypeKey, Sigma, TypeVarId};
 use crate::dispatch_matrix::demand::DispatchDemand;
 use crate::dispatch_matrix::pattern::{PatternRow, PatternSubjectRef, SourcePatternRows, pattern_dispatch_from_source};
 
@@ -826,4 +826,63 @@ fn a_binary_rest_is_tested_unless_subject_and_prefix_are_both_whole_bytes() {
             "{why}: the rest keeps its whole-byte test"
         );
     }
+}
+
+/// The type the first reachable outcome of a one-input map pattern gives its
+/// first binding.
+fn value_a_map_pattern_binds(types: &mut Types, plan: &PatternDispatchPlan<Ty>, input: Ty) -> Ty {
+    let reachability = calculate_dispatch_reachability(types, plan, &[input]);
+    let (outcome, inputs) = reachability.outcome_inputs.first().expect("the pattern can match");
+    let binding = &plan.outcome(*outcome).expect("a reachable outcome").bindings[0];
+    project_subject(types, plan, inputs, binding.source)
+}
+
+fn map_pattern(key: Pattern) -> PatternDispatchPlan<Ty> {
+    let entry = (Spanned::dummy(key), Spanned::dummy(Pattern::Var(Var::user("value"))));
+    pattern_dispatch_from_source(SourcePatternRows::lexical(1, vec![row(Pattern::Map(vec![entry]), 0)]))
+        .expect("a one-entry map pattern compiles")
+}
+
+/// A match proves the key was there, so what the pattern binds is what the
+/// map holds under it, never `nil` for absence.
+#[test]
+fn a_pattern_on_an_optional_field_binds_the_field_without_nil() {
+    let mut types = Types::new();
+    let binary = types.str_t();
+    let optional = MapTypeEntry {
+        key: MapTypeKey::Literal(MapKey::Atom("b".to_string())),
+        optional: true,
+        value: binary,
+    };
+    let input = types.map_of_entries(&[optional]);
+    let plan = map_pattern(Pattern::Atom("b".to_string()));
+
+    let bound = value_a_map_pattern_binds(&mut types, &plan, input);
+
+    assert!(
+        types.is_equivalent(&bound, &binary),
+        "bound `{}`, expected `binary`",
+        types.display(&bound)
+    );
+}
+
+#[test]
+fn a_pattern_on_an_atom_domain_binds_the_domain_without_nil() {
+    let mut types = Types::new();
+    let int = types.int();
+    let by_atom = MapTypeEntry {
+        key: MapTypeKey::Domain(MapDomain::Atom),
+        optional: true,
+        value: int,
+    };
+    let input = types.map_of_entries(&[by_atom]);
+    let plan = map_pattern(Pattern::Atom("a".to_string()));
+
+    let bound = value_a_map_pattern_binds(&mut types, &plan, input);
+
+    assert!(
+        types.is_equivalent(&bound, &int),
+        "bound `{}`, expected `int`",
+        types.display(&bound)
+    );
 }

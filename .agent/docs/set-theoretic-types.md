@@ -798,6 +798,23 @@ literal atom `Elixir.<Name>` beside the declared fields, so
   leaves the `__struct__` field alone, since widening its atom would change
   which struct the type names.
 
+`Types::value_at(map, key)` is the one answer to "what does this map type hold
+at this key". The key is a `KeyAt`: `Exact(MapKey)` for an atom or integer the
+source wrote, `OfType(ty)` for a key known only by its type (a binary, a float,
+a pinned variable's type). It answers the value's type WHEN PRESENT and never
+adds `nil`: an exact key reads the field that names it, else the domain of its
+kind; a type key joins the named fields it can equal with the domains of the
+kinds it reaches. A union joins over its members, a map that leaves the key
+unconstrained holds `any` (maps are open), a resource answers its payload for
+the atom `value`, and `None` means no member can hold the key (or the key type
+is no kind of key: `any`, a type variable). `Types::can_miss(map, key)` says
+whether some map of the type does not require the key; an `OfType` key can
+always miss. The reader composes `nil`: a pattern and a function head take
+`value_at`; `m[k]` and `m.k` take `value_at` plus `nil` when `can_miss`
+(`map_read_ty`, the semantic step both share); a map update is certain to find
+its keys when none of them `can_miss`. `Types::map_slot_ty` answers a different
+question, the slot a contract names, and is unchanged.
+
 A plain map is a map that names no module: `Types::plain_map` is
 `map_top \ %{__struct__: atom}`. `Types::map_literal` intersects it into the
 type of every map literal that writes no `__struct__` key, so a literal map is
