@@ -9158,6 +9158,53 @@ fn compiler2_native_partition_step_reads_its_cells_without_a_runtime_call() {
     );
 }
 
+/// A head that may be an integer or an atom is asked its kind where the
+/// compare stands: an integer is compared in place, and the runtime's compare
+/// is reached only when that test fails.
+#[test]
+fn compiler2_native_compare_of_an_unproven_head_reaches_the_runtime_only_after_a_failed_integer_test() {
+    let source = "defmodule P do\n\
+         \x20 def below([], _, n), do: n\n\
+         \x20 def below([h | t], p, n) when h < p, do: below(t, p, n + 1)\n\
+         \x20 def below([_ | t], p, n), do: below(t, p, n)\n\
+         end\n\
+         def main(), do: IO.inspect(P.below([1, :a, 3], 2, 0))\n";
+    let clif = lowered_clif_of(source, "below");
+    assert!(
+        declared_functions(&clif).contains(&"fz_value_cmp_raw_const"),
+        "a head that may be an atom keeps the runtime compare:\n{clif}"
+    );
+    let entered_by = condition_guarding_call(&clif, "fz_value_cmp_raw_const");
+    let integer_kind = format!("= {}", fz_runtime::any_value::ValueKind::INT.tag());
+    assert!(
+        entered_by.contains(" = icmp") && entered_by.ends_with(&integer_kind),
+        "the runtime compare is entered from the failed integer test, not from the entry: {entered_by}\n{clif}"
+    );
+    assert!(
+        clif.contains(" = icmp slt ") || clif.contains(" = icmp sge "),
+        "an integer head is compared in place:\n{clif}"
+    );
+}
+
+/// A partition step over a list the plan proves holds integers calls no
+/// runtime function to read a cell or to compare a head with the pivot: the
+/// head is the integer word at the cell, and `h < p` is one `icmp`.
+#[test]
+fn compiler2_native_partition_step_over_proven_integers_calls_no_runtime_function() {
+    let source = "defmodule P do\n\
+         \x20 def partition(_p, [], lo, hi), do: {lo, hi}\n\
+         \x20 def partition(p, [h | t], lo, hi) when h < p, do: partition(p, t, [h | lo], hi)\n\
+         \x20 def partition(p, [h | t], lo, hi), do: partition(p, t, lo, [h | hi])\n\
+         end\n\
+         def main(), do: IO.inspect(P.partition(5, [3, 8, 1, 9, 4], [], []))\n";
+    let clif = lowered_clif_of(source, "partition");
+    let declared = declared_functions(&clif);
+    for runtime in ["fz_list_head_ref", "fz_value_cmp_raw_const", "fz_value_cmp_ref"] {
+        assert!(!declared.contains(&runtime), "{runtime} is not called:\n{clif}");
+    }
+    assert!(clif.contains(" = icmp slt "), "the head is compared in place:\n{clif}");
+}
+
 /// A list that ends in a value that is not a list is read through the
 /// runtime's tail only when the link says so: the terminator flag is tested
 /// where the tail is read, and a proper list never reaches the call.

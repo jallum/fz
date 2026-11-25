@@ -131,7 +131,11 @@ cell). A tail is the link's address under the list kind when the type proves a
 proper list; otherwise the link's terminator flag (bit 63) is tested and only a
 terminated link calls `fz_list_tail_ref` for the value the list ends in. The
 inline reads carry no kind check: the type, or the cons edge of the dispatch
-plan that projects the head, is the authority.
+plan that projects the head, is the authority. A head the dispatch
+projects carries the element type of the plan's input list, so an integer head
+is compared with an integer in one `icmp`; a head not proven an integer is
+compared after an inline kind test, and only a head of another kind reaches
+`fz_value_cmp_raw_const`.
 
 `fz_binary_part` is `:erlang.binary_part/3` once the bounds are checked: it
 slices `size` bytes from byte `from` through `Process::slice`, so a part over
