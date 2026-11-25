@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Elixir Parity",
   "blocked_by": [],
   "blocks": [
     "fz-mue",
@@ -28,5 +28,5 @@
   "status": "open",
   "title": "defguard and defguardp define guards, as in Elixir",
   "type": "task",
-  "updated_at": "2026-11-19T03:15:31Z"
+  "updated_at": "2026-11-25T00:59:38Z"
 }
