@@ -588,6 +588,9 @@ clause that cannot match is left to the decision's own `FunctionClauseError`.
 | `JSON.encode!/1` of an invalid UTF-8 binary | `** (ErlangError) Erlang error: {:invalid_byte, <byte>}` or `:unexpected_end` |
 | `JSON.encode!/1` of a bitstring that is not a binary | `** (FunctionClauseError) no function clause matching in :elixir_json.encode_binary/1` |
 | `to_string/1` of a bitstring that is not a binary | `** (Protocol.UndefinedError) protocol String.Chars not implemented for BitString, cannot convert a bitstring to a string` |
+| `List.to_string/1` of a list that is not chardata | `** (ArgumentError) cannot convert the given list to a string.` (fz: `inspect/2 does not support option :charlists` while the message's `inspect(list, charlists: :as_lists)` is unsupported) |
+| `List.to_string/1` of a list with an invalid code point or UTF-8 sequence, or one that ends inside a character | `** (UnicodeConversionError) invalid code point <n>`, `invalid encoding starting at <bytes>` or `incomplete encoding starting at <bytes>` |
+| `:unicode.characters_to_binary/1` of data that is not chardata | `** (ArgumentError) errors were found at the given arguments:` then `1st argument: not valid character data (an iodata term)` |
 | `File` bang functions | `** (File.Error)`, `File.CopyError`, `File.RenameError` or `File.LinkError`, with reason `I/O error` |
 
 An update is Elixir's `put_map_exact`. It lowers to a dispatch on the pattern

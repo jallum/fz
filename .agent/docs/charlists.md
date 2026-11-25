@@ -12,6 +12,18 @@ A charlist is written with a sigil. `~c"hi"` expands to the list `[104, 105]`
 and `List.to_charlist/1` build the same list from text and from chardata. See
 "Sigils are expressions" in `parser-syntax.md`.
 
+A charlist converts back to text through `List.to_string/1`, which is
+`:unicode.characters_to_binary/1` with its failures raised: an invalid code
+point or UTF-8 sequence and a list that ends inside a character raise
+`UnicodeConversionError` (`kind: :invalid` and `:incomplete`), and a list that
+is not chardata raises `ArgumentError`. Nested chardata such as
+`[~c"ab", "cd", ?e]` is `"abcde"` (`01959`). `String.Chars` has no
+implementation for `List`, so `to_string/1` and interpolation of a charlist
+are refused. The `ArgumentError` message ends in
+`inspect(list, charlists: :as_lists)`, an option `inspect/2` does not accept,
+so a list that is not chardata raises `inspect/2 does not support option
+:charlists` instead.
+
 ## Rendering
 
 The value renderer is `any_value::debug` in the runtime crate. `render_value`

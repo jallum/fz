@@ -1,0 +1,30 @@
+"abc"
+""
+"abcde"
+"λ😀"
+"ab"
+"ab"
+"deep"
+UnicodeConversionError: invalid code point -1
+UnicodeConversionError: invalid code point 55296
+UnicodeConversionError: invalid code point 1114112
+UnicodeConversionError: invalid encoding starting at <<255>>
+UnicodeConversionError: incomplete encoding starting at <<226, 130>>
+ArgumentError: errors were found at the given arguments:
+
+  * 1st argument: not valid character data (an iodata term)
+
+"abcd"
+"a€"
+"€"
+{:error, "a", [55296, 98]}
+{:error, "ab", [[-1, 99], 100]}
+{:error, "a", [<<255>>, "b"]}
+{:error, "a", [[<<255>>, 98]]}
+{:incomplete, "a", <<226, 130>>}
+{:error, "", [<<226, 130>>, ["b"]]}
+{:error, "a", [<<226, 130>>, ["bc"]]}
+{:error, "", [<<226, 130>>, ~c"a"]}
+{:error, "", <<226, 40>>}
+{:error, "", <<240, 159, 120>>}
+{:error, "", <<192, 128>>}

@@ -98,6 +98,63 @@ defmodule List do
   end
 
   @doc """
+  Converts a list of integers representing code points, lists or strings into
+  a string.
+
+  To be converted to a string, a list must either be empty or only contain
+  strings, integers representing Unicode code points, or a list containing
+  one of these three elements. A list that is none of these raises
+  `ArgumentError`; a code point or UTF-8 sequence that is invalid raises
+  `UnicodeConversionError`, as does a list that ends inside a character.
+
+  ## Examples
+
+      List.to_string([0x00E6, 0x00DF])
+      #=> "æß"
+
+      List.to_string([0x0061, "bc"])
+      #=> "abc"
+
+      List.to_string([0x0064, "ee", [~c"p"]])
+      #=> "deep"
+
+      List.to_string([])
+      #=> ""
+
+  """
+  @spec to_string(maybe_improper_list(integer | binary | list, binary | [])) :: binary
+  def to_string(list) when is_list(list) do
+    try do
+      :unicode.characters_to_binary(list)
+    rescue
+      ArgumentError ->
+        raise ArgumentError, """
+        cannot convert the given list to a string.
+
+        To be converted to a string, a list must either be empty or only
+        contain the following elements:
+
+          * strings
+          * integers representing Unicode code points
+          * a list containing one of these three elements
+
+        Please check the given list or call inspect/1 to get the list representation, got:
+
+        #{inspect(list, charlists: :as_lists)}
+        """
+    else
+      result when is_binary(result) ->
+        result
+
+      {:error, encoded, rest} ->
+        raise UnicodeConversionError, encoded: encoded, rest: rest, kind: :invalid
+
+      {:incomplete, encoded, rest} ->
+        raise UnicodeConversionError, encoded: encoded, rest: rest, kind: :incomplete
+    end
+  end
+
+  @doc """
   Converts chardata to a charlist: a list of integers that are code points.
 
   `list` holds integers that are code points, strings, and lists of these.
