@@ -88,6 +88,21 @@ defmodule IO do
   def iodata_to_binary(iodata), do: :erlang.iolist_to_binary(iodata)
 
   @doc """
+  Returns the number of bytes in `iodata`: the size of the binary
+  `iodata_to_binary/1` would return.
+
+  Raises `ArgumentError` for anything that is not iodata.
+
+  ## Examples
+
+      IO.iodata_length([1, 2 | <<3, 4>>])
+      #=> 4
+
+  """
+  @spec iodata_length(iodata) :: non_neg_integer
+  def iodata_length(iodata), do: :erlang.iolist_size(iodata)
+
+  @doc """
   Reports a warning with `message` and no location.
 
   A warning raised by a macro points at the macro's call. A warning raised by a
