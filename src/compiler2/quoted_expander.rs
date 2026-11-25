@@ -25,7 +25,7 @@ use super::source::{
     ListItems, META_BOUND_CALLABLE_KEY, QuotedAstNode, QuotedSourceCursor, QuotedSourceError, QuotedSourceMetadata,
     QuotedSourceRoot,
 };
-use super::source_sugar::{rewrite_guard_membership, rewrite_guard_source_sugar, rewrite_source_sugar};
+use super::source_sugar::{rewrite_guard_membership, rewrite_source_sugar};
 use super::token_payload::decode_token;
 use super::world::World;
 
@@ -391,14 +391,12 @@ pub(crate) trait QuotedExpansionCtx {
             {
                 return Ok(ExpandedValue::Complete(module_atom));
             }
-            let sugar = if *self.expansion_context() == ExpansionContext::Guard {
-                rewrite_guard_source_sugar
-            } else {
-                rewrite_source_sugar
-            };
+            let context = *self.expansion_context();
             if allow_root_sugar
-                && let Some(rewritten) = sugar(owner, cursor.root(), &node, &source_map.borrow())
-                    .map_err(|error| emit_surface_read_error(self.telemetry(), "source sugar rewrite failed", &error))?
+                && let Some(rewritten) =
+                    rewrite_source_sugar(owner, cursor.root(), &node, &source_map.borrow(), context).map_err(
+                        |error| emit_surface_read_error(self.telemetry(), "source sugar rewrite failed", &error),
+                    )?
             {
                 return match self.expand_root(owner.subroot(rewritten), scope, depth)? {
                     ExpandedRoot::Complete(root) => Ok(ExpandedValue::Complete(root.root())),

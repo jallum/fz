@@ -1,0 +1,134 @@
+#---
+# purpose: "<> and an interpolated string are a binary construction and spell what Elixir spells: every operand form (literal or variable on either side, empty operands, results below, at and above 64 bytes), non-binary and non-byte bitstring operands raising Elixir's ArgumentError, interpolation of one, two and five pieces with integers, atoms, floats, binaries and empty pieces, a growing accumulator, and an older accumulator that stays what it was"
+# oracle: self
+# oracle.stamp: 2eedf174243385c9
+# args: 0
+#---
+defmodule Main do
+  # Values the compiler cannot see through: each is read from a list at a
+  # position that is known only at run time.
+  def v(list, k), do: Enum.at(list, String.to_integer(hd(System.argv())) + k)
+
+  def show(value), do: IO.puts(inspect(value, limit: :infinity))
+
+  # A binary of `n` bytes cycling through the lowercase letters.
+  def letters(n), do: letters(n, 0, "")
+  def letters(n, i, acc) when i == n, do: acc
+  def letters(n, i, acc), do: letters(n, i + 1, acc <> <<?a + rem(i, 26)>>)
+
+  def operand_forms() do
+    left = v(["ab", "cd"], 0)
+    right = v(["xy", "zw"], 0)
+    empty = v(["", "q"], 0)
+    show(left <> right)
+    show(left <> "lit")
+    show("lit" <> right)
+    show("lit" <> "eral")
+    show(empty <> right)
+    show(left <> empty)
+    show(empty <> empty)
+    show(empty <> "")
+    show("" <> empty)
+    show(left <> right <> left <> right)
+    show(left <> "-" <> right <> "-" <> empty <> "!")
+  end
+
+  def sizes() do
+    for n <- [0, 1, 31, 32, 33, 62, 63, 64, 65, 66, 127, 128, 200] do
+      a = letters(n)
+      b = letters(v([2, 3], 0))
+      show({n, byte_size(a <> b), a <> b})
+      show({n, byte_size(b <> a), b <> a})
+      show({n, byte_size(a <> a), a <> a})
+      show({n, a <> "!"})
+      show({n, "!" <> a})
+    end
+  end
+
+  def failure(thunk) do
+    try do
+      {:ok, thunk.()}
+    rescue
+      e -> {e.__struct__, Exception.message(e)}
+    end
+  end
+
+  def operand_failures() do
+    bad = v([1, :atom, 2.5, nil, [1, 2], {1}, <<1::3>>, <<255, 1::1>>, %{}], 0)
+    bits = v([<<1::3>>, <<255, 1::1>>], 0)
+    good = v(["ok", "fine"], 0)
+    show(failure(fn -> bad <> good end))
+    show(failure(fn -> good <> bad end))
+    show(failure(fn -> bad <> "lit" end))
+    show(failure(fn -> "lit" <> bad end))
+    show(failure(fn -> bits <> good end))
+    show(failure(fn -> good <> bits end))
+    show(failure(fn -> good <> good <> bad end))
+    show(failure(fn -> bad <> good <> good end))
+    show(failure(fn -> "#{good}-#{good}" end))
+  end
+
+  def interpolation() do
+    int = v([42, -7], 0)
+    atom = v([:ok, :"with space"], 0)
+    float = v([1.5, -0.25], 0)
+    text = v(["text", "more"], 0)
+    empty = v(["", "e"], 0)
+    big = letters(v([70, 71], 0))
+    show("#{text}")
+    show("#{int}")
+    show("#{atom}")
+    show("#{float}")
+    show("#{empty}")
+    show("<#{text}>")
+    show("#{text}-#{text}")
+    show("#{int}#{atom}")
+    show("#{empty}#{empty}")
+    show("a#{int}b#{atom}c#{float}d#{text}e")
+    show("#{int}, #{atom}, #{float}, #{text}")
+    show("#{empty}x#{empty}y#{empty}")
+    show("#{big}#{big}")
+    show("[#{big}|#{text}|#{big}]")
+    show(byte_size("#{big}#{big}#{big}"))
+    show("héllo #{text} ✓ #{atom} wörld")
+  end
+
+  def grow(0, acc, _x), do: acc
+  def grow(n, acc, x), do: grow(n - 1, acc <> x, x)
+
+  def kept() do
+    x = v(["xy", "zw"], 0)
+    base = grow(70, "", x)
+    first = base <> "1"
+    second = base <> "2"
+    third = first <> "3"
+    show(base)
+    show(first)
+    show(second)
+    show(third)
+    show([byte_size(base), byte_size(first), byte_size(second), byte_size(third)])
+    show(first == base <> "1")
+    show(second == base <> "2")
+  end
+
+  def kept_trail(0, acc, seen), do: [acc | seen]
+  def kept_trail(n, acc, seen), do: kept_trail(n - 1, acc <> "ab", [acc | seen])
+
+  def trail() do
+    seen = kept_trail(40, "", [])
+    show(Enum.map(seen, &byte_size/1))
+    show(hd(seen))
+    show(Enum.at(seen, 20))
+  end
+
+  def main() do
+    operand_forms()
+    sizes()
+    operand_failures()
+    interpolation()
+    kept()
+    trail()
+  end
+end
+
+Main.main()

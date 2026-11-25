@@ -2347,7 +2347,12 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                 let size_value = self.lower_expr(size, env, steps)?;
                 env.insert(segment_size(index), size_value);
             }
+            let literal = match &field.value.node {
+                Expr::Binary(bytes) => Some(bytes.clone()),
+                _ => None,
+            };
             lowered.push(LoweredBitField {
+                literal,
                 value: self.lower_expr(&field.value, env, steps)?,
                 spec: self.lower_bitfield_spec(
                     index,

@@ -39,21 +39,21 @@ const TARGET_FIXTURES: [TargetFixture; 3] = [
     TargetFixture {
         source: "fixtures/00420_enum_take_drop_split.fz",
         golden: "fixtures/00420_enum_take_drop_split.fz",
-        runtime_demand_walks: 633,
+        runtime_demand_walks: 626,
         mainline_runtime_demand_walks: 6252,
         mainline_runtime_demand_door: ObservationDoor::Interp,
     },
     TargetFixture {
         source: "fixtures/00571_enum_predicate_search.fz",
         golden: "fixtures/00571_enum_predicate_search.fz",
-        runtime_demand_walks: 602,
+        runtime_demand_walks: 595,
         mainline_runtime_demand_walks: 6378,
         mainline_runtime_demand_door: ObservationDoor::Interp,
     },
     TargetFixture {
         source: "fixtures/00567_fz_f98_range_map_converges.fz",
         golden: "fixtures/00567_fz_f98_range_map_converges.fz",
-        runtime_demand_walks: 136,
+        runtime_demand_walks: 129,
         mainline_runtime_demand_walks: 2971,
         mainline_runtime_demand_door: ObservationDoor::Run,
     },
@@ -2239,20 +2239,20 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             // What a program can raise is final only once every body of that program has been
             // analysed, so the bottom handler and the banner it calls settle here, with the
             // facts they read: the modules a value can name, and what each program raises.
-            ("Activation", 27),
-            ("ActivationAnalyzed", 31),
-            ("ActivationInputs", 28),
-            ("CallSiteSummary", 38),
-            ("CallSiteTargets", 38),
-            ("IncomingInputSlot", 46),
+            ("Activation", 24),
+            ("ActivationAnalyzed", 28),
+            ("ActivationInputs", 25),
+            ("CallSiteSummary", 31),
+            ("CallSiteTargets", 31),
+            ("IncomingInputSlot", 28),
             ("NameableModules", 1),
             // Each program settles what it can raise: the fixture's program, and the program of a
             // macro that raises.
             ("Raisable", 2),
-            ("ReturnType", 31),
-            ("RuntimeDemand", 28),
-            ("RuntimeDemandInput", 22),
-            ("RuntimeDemandInputs", 28),
+            ("ReturnType", 28),
+            ("RuntimeDemand", 14),
+            ("RuntimeDemandInput", 10),
+            ("RuntimeDemandInputs", 14),
         ]),
         "ordinary generic helper co-outputs publish every exact readiness transition without changing values"
     );
@@ -2362,17 +2362,17 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
     assert_eq!(
         formula_totals,
         FormulaWork {
-            evaluations: 608,
-            runtime_demand_evaluations: 60,
-            initial: 466,
-            content_caused: 142,
+            evaluations: 569,
+            runtime_demand_evaluations: 54,
+            initial: 436,
+            content_caused: 133,
             readiness_caused: 0,
             concluded_caused: 0,
             uncaused: 0,
-            changed_outputs: 552,
-            unchanged_outputs: 56,
+            changed_outputs: 514,
+            unchanged_outputs: 55,
             already_pending: 8,
-            blocked_completions: 133,
+            blocked_completions: 124,
         },
         "{fixture}: the reactive RuntimeDemand formula work or its causal classification moved"
     );
@@ -2390,9 +2390,9 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
     assert_eq!(
         by_reason(ledger.ran),
         BTreeMap::from([
-            ("blocked_waiter_expansion", 93),
-            ("changed_revision_wake", 347),
-            ("gate_expansion", 167),
+            ("blocked_waiter_expansion", 87),
+            ("changed_revision_wake", 326),
+            ("gate_expansion", 155),
             ("ignition", 1),
         ]),
         "{fixture}: the jobs run, by the reason that queued each"
@@ -2400,16 +2400,16 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
     assert_eq!(
         by_reason(ledger.already_pending),
         BTreeMap::from([
-            ("activation_published", 24),
+            ("activation_published", 22),
             ("blocked_waiter_expansion", 1),
             ("changed_revision_wake", 8),
-            ("gate_expansion", 38),
+            ("gate_expansion", 36),
         ]),
         "{fixture}: requests that found their job already queued"
     );
     assert_eq!(
         by_reason(ledger.reparked),
-        BTreeMap::from([("changed_revision_wake", 50)]),
+        BTreeMap::from([("changed_revision_wake", 47)]),
         "{fixture}: started jobs the pop gate parked again without running"
     );
     for reason in fz::compiler2::WorkStartReason::TELEMETRY_ORDER {
@@ -2433,12 +2433,12 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             wake_records("applied", &["completion"]),
             wake_records("dependencies_moved", &["step"])
         ),
-        (399, 5),
+        (375, 5),
         "{fixture}: wake records of the completions, and of the external changes between them"
     );
     assert_eq!(
         ledger.requested(fz_engine::WorkStart::ChangedRevisionWake),
-        405,
+        381,
         "{fixture}: every wake record is one request at the door"
     );
     let products = report.product_totals();
@@ -2498,7 +2498,7 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
         // Every settled product here is a fresh, changed generation. The
         // generic result/status boundary and each node's reach (one product per
         // function or executable a reach question touches) are among them.
-        (163, 163, 163, 0, 6, 0),
+        (151, 151, 151, 0, 6, 0),
         "{fixture}: reactive product settlement work includes ordinary helper products"
     );
     assert!(
@@ -2582,10 +2582,10 @@ fn tail_recursion_plans_one_entry_dispatch_per_compiled_function() {
             .unwrap_or_else(|| panic!("the stats summary must count {name}; got:\n{stats}"))
     };
     let functions = counter("fz.compiler2.function.defined");
-    assert_eq!(functions, 35, "the fixture compiles its known function population");
+    assert_eq!(functions, 33, "the fixture compiles its known function population");
     assert_eq!(
         counter("fz.compiler2.entry_dispatch.defined"),
-        31,
+        29,
         "every called function plans its own entry dispatch",
     );
 }
@@ -2746,7 +2746,11 @@ fn a_construction_that_starts_with_an_unsized_binary_asks_the_runtime_to_extend_
         let clif = std::fs::read_to_string(&clif_path).expect("read the clif dump");
         let _ = remove_file(&source_path);
         let _ = remove_file(&clif_path);
-        let imports = |symbol: &str| clif.contains(&format!("= {symbol}\n"));
+        let build = clif
+            .split("\n; fn ")
+            .find(|function| function.starts_with("build__"))
+            .expect("the dump has `build`'s own code");
+        let imports = |symbol: &str| build.contains(&format!("= {symbol}\n"));
         (imports("fz_bs_append_unfilled"), imports("fz_heap_room"))
     };
     assert_eq!(
@@ -2759,6 +2763,51 @@ fn a_construction_that_starts_with_an_unsized_binary_asks_the_runtime_to_extend_
         (false, true),
         "an inline construction is only inline"
     );
+}
+
+/// A short literal in a construction is written by immediate stores, so an
+/// append of 16 literal bytes calls `memcpy` for the leading binary alone,
+/// where one of 17 bytes, or of a runtime binary, calls it for the right side
+/// as well on each path that writes it.
+#[test]
+fn a_short_literal_in_an_append_is_stored_not_copied() {
+    let memcpy_calls = |body: &str| {
+        let source_path = unique_temp_path("fz2_literal_row", ".fz");
+        let clif_path = unique_temp_path("fz2_literal_row", ".clif");
+        write(
+            &source_path,
+            format!(
+                "def build(a) when is_binary(a),\n  do: {body}\n\
+                 def main() do\n  dbg(build(\"abc\"))\n  nil\nend\n"
+            ),
+        )
+        .expect("write construction program");
+        let spec = format!("clif={}", clif_path.display());
+        let out = run_fz2(&[
+            OsStr::new("run"),
+            OsStr::new("--dump"),
+            OsStr::new(&spec),
+            source_path.as_os_str(),
+        ]);
+        assert!(out.status.success(), "{body}: {}", output_text(&out));
+        let clif = std::fs::read_to_string(&clif_path).expect("read the clif dump");
+        let _ = remove_file(&source_path);
+        let _ = remove_file(&clif_path);
+        // Each function numbers its own imports: `; fn4 = memcpy`.
+        clif.split("\nfunction ")
+            .filter_map(|function| {
+                let import = function.lines().find_map(|line| line.strip_suffix(" = memcpy"))?;
+                let callee = import.trim_start_matches(';').trim();
+                Some(function.matches(&format!("call {callee}(")).count())
+            })
+            .sum::<usize>()
+    };
+    let stored = memcpy_calls("a <> \"0123456789abcdef\"");
+    assert!(
+        stored < memcpy_calls("a <> \"0123456789abcdefg\""),
+        "17 bytes are copied"
+    );
+    assert!(stored < memcpy_calls("a <> a"), "a runtime binary is copied");
 }
 
 /// The eight comparisons of two proven binaries decide in place unless the
@@ -2882,5 +2931,51 @@ fn a_growing_leading_binary_construction_allocates_what_concatenation_allocates(
                 "{command}: `{construction}` places what `{concatenation}` places"
             );
         }
+    }
+}
+
+/// Binary storage placed per step of a loop over `n` steps that builds `body`,
+/// found by running it for two lengths so that the program's own set-up
+/// cancels.
+fn binary_allocations_per_step(body: &str, command: &str) -> u64 {
+    let allocs = |steps: u64| {
+        let source = format!(
+            "defmodule Main do\n\
+             \x20 def loop(0, _a, _b, _c, total), do: total\n\
+             \x20 def loop(n, a, b, c, total) do\n\
+             \x20   built = {body}\n\
+             \x20   loop(n - 1, a, b, c, total + byte_size(built))\n\
+             \x20 end\n\
+             \x20 def main() do\n\
+             \x20   a = :binary.copy(\"x\", 10)\n\
+             \x20   IO.inspect(loop({steps}, a, a, a, 0))\n\
+             \x20 end\n\
+             end\n\
+             Main.main()\n"
+        );
+        binary_allocations(&source, command)
+            .values()
+            .map(|(allocs, _bytes)| allocs)
+            .sum::<u64>()
+    };
+    (allocs(2000) - allocs(1000)) / 1000
+}
+
+/// An interpolated string is one construction of all its pieces, so it
+/// places one binary however many holes it has, where a chain of `<>` over
+/// its five pieces placed four.
+#[test]
+fn an_interpolation_places_one_binary() {
+    for command in ["run", "interp"] {
+        assert_eq!(
+            binary_allocations_per_step("\"#{a}-#{b}-#{c}\"", command),
+            1,
+            "{command}: three holes and two separators are one construction"
+        );
+        assert_eq!(
+            binary_allocations_per_step("a <> \"-\" <> b <> \"-\" <> c", command),
+            1,
+            "{command}: a chain of `<>` is one construction"
+        );
     }
 }

@@ -1,6 +1,7 @@
 use std::rc::Rc;
 
-use super::super::source_sugar::{rewrite_guard_source_sugar, rewrite_source_sugar};
+use super::super::quoted_expander::ExpansionContext;
+use super::super::source_sugar::rewrite_source_sugar;
 use super::super::{QuotedSourceHeap, QuotedSourceMetadata};
 
 #[test]
@@ -28,10 +29,10 @@ fn successful_source_sugar_rewrites_are_stable_within_the_quoted_heap() {
             .expect("quoted AST read")
             .expect("source sugar AST");
 
-        let first = rewrite_source_sugar(&root, root.root(), &node, &sources)
+        let first = rewrite_source_sugar(&root, root.root(), &node, &sources, ExpansionContext::Expression)
             .expect("first rewrite")
             .expect("recognized source sugar");
-        let second = rewrite_source_sugar(&root, root.root(), &node, &sources)
+        let second = rewrite_source_sugar(&root, root.root(), &node, &sources, ExpansionContext::Expression)
             .expect("second rewrite")
             .expect("memoized source sugar");
 
@@ -75,14 +76,14 @@ mod tests {
     }
 }
 
-fn stamp_after_rewriting(text: &str) -> Option<String> {
+fn stamp_after_rewriting(text: &str, context: ExpansionContext) -> Option<String> {
     let tel = crate::telemetry::ConfiguredTelemetry::new();
     let mut sources = crate::source::SourceMap::default();
     let version = sources.add_code(Some("operator.fz"), text);
     let root = super::super::parse_quoted_program(&sources, version, &tel).expect("quoted parse");
     let operator = root.cursor().list_items().expect("items").remove(0);
     let node = operator.ast_node(&sources).expect("node").expect("operator node");
-    let rewritten = rewrite_source_sugar(&root, operator.root(), &node, &sources)
+    let rewritten = rewrite_source_sugar(&root, operator.root(), &node, &sources, context)
         .expect("rewrite")
         .expect("operator sugar");
     let call = root.builder().root(rewritten).expect("rewritten root");
@@ -98,14 +99,56 @@ fn stamp_after_rewriting(text: &str) -> Option<String> {
 /// the concatenations read as patterns, and `in`, read as a rescue head.
 #[test]
 fn a_rewritten_operator_a_decoder_recognizes_carries_the_operator_it_came_from() {
-    assert_eq!(stamp_after_rewriting("a <> b\n").as_deref(), Some("<>"));
-    assert_eq!(stamp_after_rewriting("a ++ b\n").as_deref(), Some("++"));
-    assert_eq!(stamp_after_rewriting("a in b\n").as_deref(), Some("in"));
+    let stamp = |text| stamp_after_rewriting(text, ExpansionContext::Match);
+    assert_eq!(stamp("a <> b\n").as_deref(), Some("<>"));
+    assert_eq!(stamp("a ++ b\n").as_deref(), Some("++"));
+    assert_eq!(stamp("a in b\n").as_deref(), Some("in"));
 }
 
 #[test]
 fn the_other_rewritten_operators_carry_no_stamp() {
-    assert_eq!(stamp_after_rewriting("a -- b\n"), None);
+    assert_eq!(stamp_after_rewriting("a -- b\n", ExpansionContext::Match), None);
+}
+
+fn rewritten_shape(text: &str, context: ExpansionContext) -> String {
+    let tel = crate::telemetry::ConfiguredTelemetry::new();
+    let mut sources = crate::source::SourceMap::default();
+    let version = sources.add_code(Some("operator.fz"), text);
+    let root = super::super::parse_quoted_program(&sources, version, &tel).expect("quoted parse");
+    let operator = root.cursor().list_items().expect("items").remove(0);
+    let node = operator.ast_node(&sources).expect("node").expect("operator node");
+    let rewritten = rewrite_source_sugar(&root, operator.root(), &node, &sources, context)
+        .expect("rewrite")
+        .expect("operator sugar");
+    let rewritten = root.builder().root(rewritten).expect("rewritten root");
+    show(&rewritten.cursor(), &sources)
+}
+
+/// In an expression a chain of `<>` is one construction of all its operands, as
+/// Elixir expands it, so a failing operand is reported by its place in the
+/// chain; a literal operand is a literal field.
+#[test]
+fn a_chain_of_concatenation_in_an_expression_is_one_construction() {
+    let shape = |text| rewritten_shape(text, ExpansionContext::Expression);
+    assert_eq!(shape("a <> b\n"), "<<>>(::(a, :binary), ::(b, :binary))");
+    assert_eq!(
+        shape("a <> \"-\" <> b <> c\n"),
+        "<<>>(::(a, :binary), \"-\", ::(b, :binary), ::(c, :binary))"
+    );
+    assert_eq!(
+        shape("(a <> b) <> (c <> \"!\")\n"),
+        "<<>>(::(a, :binary), ::(b, :binary), ::(c, :binary), \"!\")"
+    );
+}
+
+/// A pattern keeps the operator: it reads the call as the bitstring pattern it
+/// stands for.
+#[test]
+fn concatenation_in_a_pattern_stays_the_operator_call() {
+    assert_eq!(
+        rewritten_shape("a <> b <> c\n", ExpansionContext::Match),
+        "Kernel.<>(a, <>(b, c))"
+    );
 }
 
 /// The quoted form as one line: calls as `head(args)`, remote calls as
@@ -117,6 +160,9 @@ fn show(cursor: &crate::compiler2::QuotedSourceCursor, sources: &crate::source::
         return match cursor.root().tag() {
             ValueKind::INT => cursor.int_value().expect("int").to_string(),
             ValueKind::ATOM => format!(":{}", cursor.atom_name().expect("atom")),
+            ValueKind::BITSTRING | ValueKind::BINVIEW => {
+                format!("{:?}", cursor.utf8_binary_text().expect("binary text"))
+            }
             ValueKind::LIST => format!(
                 "[{}]",
                 cursor
@@ -183,7 +229,8 @@ fn rewrite_for(text: &str) -> Result<String, String> {
     let root = super::super::parse_quoted_program(&sources, version, &tel).expect("quoted parse");
     let form = root.cursor().list_items().expect("items").remove(0);
     let node = form.ast_node(&sources).expect("node").expect("for node");
-    let rewritten = rewrite_source_sugar(&root, form.root(), &node, &sources).map_err(|error| error.to_string())?;
+    let rewritten = rewrite_source_sugar(&root, form.root(), &node, &sources, ExpansionContext::Expression)
+        .map_err(|error| error.to_string())?;
     let rewritten = rewritten.expect("a for is source sugar");
     let rewritten = root.builder().root(rewritten).expect("rewritten root");
     Ok(show(&rewritten.cursor(), &sources))
@@ -307,12 +354,12 @@ fn rewritten_call_shape(text: &str, in_guard: bool) -> Option<(String, usize)> {
     let root = super::super::parse_quoted_program(&sources, version, &tel).expect("quoted parse");
     let form = root.cursor().list_items().expect("items").remove(0);
     let node = form.ast_node(&sources).expect("node").expect("form node");
-    let rewrite = if in_guard {
-        rewrite_guard_source_sugar
+    let context = if in_guard {
+        ExpansionContext::Guard
     } else {
-        rewrite_source_sugar
+        ExpansionContext::Expression
     };
-    let rewritten = rewrite(&root, form.root(), &node, &sources).expect("rewrite")?;
+    let rewritten = rewrite_source_sugar(&root, form.root(), &node, &sources, context).expect("rewrite")?;
     let call = root.builder().root(rewritten).expect("rewritten root");
     let call = call.cursor().ast_node(&sources).expect("node").expect("call");
     Some((

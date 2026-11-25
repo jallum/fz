@@ -2,7 +2,8 @@
 # `String.Chars`. String interpolation lexes to a call to `Kernel.to_string/1`,
 # which dispatches here: `"a#{x}b"` becomes `"a" <> Kernel.to_string(x) <> "b"`
 # before the rest of the compiler ever sees the literal, so an interpolated
-# value converts the same way any other call to `to_string/1` does.
+# value converts the same way any other call to `to_string/1` does. A chain of
+# `<>` in an expression is one binary construction, so the string is built once.
 #
 # A receiver with no implementation at all -- a map, a tuple -- is refused at
 # compile time, naming this protocol, because fz knows the receiver's type

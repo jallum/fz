@@ -877,10 +877,7 @@ defmodule Kernel do
 
   """
   @spec binary <> binary :: binary
-  def left <> right when is_binary(left) and is_binary(right), do: fz_binary_concat(left, right)
-  def left <> right, do: __construction_failed__([{2, left, nil, 8}, {2, right, nil, 8}])
-
-  extern "fz" defp fz_binary_concat(binary, binary) :: binary
+  def left <> right, do: <<left::binary, right::binary>>
 
   # A binary construction tests every segment's contract before it writes a
   # byte, and calls this when the test fails. Each segment is

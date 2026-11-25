@@ -488,6 +488,16 @@ impl BinRef {
 pub struct BinView(NonNull<u8>);
 
 impl BinView {
+    /// The view a proven binary's tagged word names, or `None` when it is an
+    /// inline bitstring.
+    ///
+    /// # Safety
+    /// `word` must be the tagged word of a live Bitstring or BinView.
+    #[inline]
+    pub unsafe fn of_binary(word: u64) -> Option<Self> {
+        names_a_view(word).then(|| unsafe { Self::from_raw(heap_word_addr(word)) })
+    }
+
     /// # Safety
     /// `p` must point at a live strict BinView object.
     pub unsafe fn from_raw(p: *mut u8) -> Self {
@@ -629,11 +639,17 @@ const _: () = assert!(
     "the binary forms differ in a view-only tag bit"
 );
 
+/// The bit of a proven binary's tagged word that is set when it names a view
+/// rather than an inline bitstring.
+pub fn view_word_bit() -> u64 {
+    VIEW_TAG_BIT << AnyValueRefPacking::current().tag_shift()
+}
+
 /// Whether a proven binary's tagged word names a view rather than an inline
 /// bitstring.
 #[inline]
 fn names_a_view(word: u64) -> bool {
-    (word >> AnyValueRefPacking::current().tag_shift()) & VIEW_TAG_BIT != 0
+    word & view_word_bit() != 0
 }
 
 /// A binary as its bits: where they start and how many there are. Every

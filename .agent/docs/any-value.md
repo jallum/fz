@@ -94,7 +94,6 @@ fz_value_cmp_ref(process, a_word, a_kind, b_word, b_kind)  -> -1, 0 or 1
 fz_inspect(process, word, kind) / fz_inspect_with(process, word, kind, options)  -> binary
 fz_struct_store_ref(process, struct, slot_offset, kind_offset, value_word, value_kind)
 fz_closure_set_capture_ref(process, closure, index, value_word, value_kind)
-fz_binary_concat(process, left, right)
 fz_binary_part(process, binary, from, size)
 ```
 
@@ -129,10 +128,9 @@ question "is this a map?" for `fz_map_is_map`, `named_schema` and the failure
 renderer. `map_put_slot` takes a map; a map literal is built through a map
 destination.
 
-`fz_binary_concat` validates byte-aligned binary inputs and builds `left <> right`
-through `Heap::alloc_concatenation`, which returns the VALUE. Its right side is a byte count and a
-fill that writes exactly that many bytes after `left`; `fz_binary_concat` passes a fill that copies
-`right`. When `left` is a
+`left <> right` is the construction `<<left::binary, right::binary>>`: a leading unsized binary
+is an append, and the append is `Heap::alloc_concatenation`, which returns the VALUE. Its right
+side is a byte count and a fill that writes exactly that many bytes after `left`. When `left` is a
 binary view that ends where its buffer's written bytes end and the buffer has spare
 room for `right`, `right` is written into that room and the result is a new
 view over the same buffer, longer than `left`; `left` is not copied and keeps
@@ -153,11 +151,21 @@ end on a byte boundary, and a rest that is not whole bytes are built whole. `bui
 descriptor to a `Segment` once and sizes and fills from that list.
 
 Compiled code appends a construction whose segments are all whole-byte integers and binaries
-itself (`emit_append` in `native_codegen/construction.rs`). A leading inline binary whose total
-fits `SHARED_BIN_THRESHOLD_BYTES` is built inline like any other construction. A leading view, or a
-larger total, calls `fz_bs_append_unfilled(process, leading, right_len)`, which is the same append
-with nothing written: it extends the view in place or makes the buffer with room, and compiled
-code writes the rest after the leading bytes.
+itself (`emit_append` in `native_codegen/construction.rs`). It reads the leading binary's length
+and the rest's once, and a single bit test of the leading word says whether it is a view. A leading
+inline binary whose total fits `SHARED_BIN_THRESHOLD_BYTES` is built inline like any other
+construction. A leading view, or a larger total, calls `fz_bs_append_unfilled(process, leading,
+right_len)`, which is the same append with nothing written: it extends the view in place or makes
+the buffer with room, and answers the longer binary together with the address of the first byte
+left for the rest (`construction::Appended`, two words returned in registers), which compiled code
+writes without reading the result back.
+
+A binary field whose source is a literal (`LoweredBitField::literal`, carried to `BitFieldIr::literal`)
+of at most 16 bytes is written by immediate stores of 8, 4, 2 and 1 bytes, as an integer is: no
+read of the binary and no `memcpy` (`aligned_segments`). The literal is taken from the expression
+in `lower_bitfields`, so it survives however the value is passed on to the block that builds the
+construction. The leading binary of an append stays a binary, because its form decides how the
+append grows.
 
 A construction is one `fz_bs_build(process, fields, count)` call over an array
 of `FzBsField { spec, size, value }` descriptors (`runtime/src/construction.rs`).
@@ -201,8 +209,7 @@ The miss calls `Kernel.__construction_failed__/1` with each segment's
 `fz_construction_failure_message` words (`runtime/src/construction_failure.rs`),
 so the Raisable analysis sees an exact `ArgumentError`. The runtime picks the
 segment the BEAM reports by the BEAM's two passes: sizes, unsized binaries and
-code points first, then values, lengths and units in segment order. `<>`'s
-fallback clause makes the same call. The write functions therefore panic on a
+code points first, then values, lengths and units in segment order. The write functions therefore panic on a
 value outside its segment's contract as a broken invariant, not as a user error.
 
 `Heap::alloc_bitstring_with(byte_len, bit_len, fill)` is the allocator under

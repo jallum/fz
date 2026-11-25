@@ -356,7 +356,8 @@ readings of the threshold remain and are different questions:
 asks what to EMIT for a constant bitstring, which it must answer at compile time
 with no heap to ask.
 
-**Appending to a binary** — owner `Heap::alloc_concatenation`: a `<>`, or a
+**Appending to a binary** — owner `Heap::alloc_concatenation`: a `<>` (which is
+the construction `<<left::binary, right::binary>>`), or a
 construction whose first segment is an unsized binary, whose left
 side ends where its buffer's written bytes end writes into the buffer's spare
 room, and only the owning process may (`shared_bin_freeze` closes the buffer

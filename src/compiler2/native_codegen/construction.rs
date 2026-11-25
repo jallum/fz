@@ -22,18 +22,20 @@
 //! A construction that starts with an unsized binary is an append. The runtime
 //! writes into a view's own buffer when it has room, where an inline copy would
 //! copy a growing accumulator whole at every step, so a leading view asks the
-//! runtime for the longer binary (`fz_bs_append_unfilled`) and this code writes
-//! the rest after the leading bytes. A leading inline binary is copied by
-//! whichever side builds the result, so it is built here while the total fits
-//! inline; a larger total asks the runtime, which gives the result room to grow
-//! and so makes the next step an append in place.
+//! runtime for the longer binary and the address of its first unwritten byte
+//! (`fz_bs_append_unfilled`) and this code writes the rest there. A leading
+//! inline binary is copied by whichever side builds the result, so it is built
+//! here while the total fits inline; a larger total asks the runtime, which
+//! gives the result room to grow and so makes the next step an append in place.
+//!
+//! A binary that is a short literal on every path to it is not read: its bytes
+//! are stored as immediates.
 //!
 //! The segments a construction's contract check admits make the reads safe: an
 //! unsized `binary` is a bitstring of whole bytes and a sized one is at least as
 //! long as its size, so a header word gives the bytes to copy.
 
 use super::binary_slice::bytes_address;
-use super::clif::kind_field;
 use super::place::place_inline_bitstring;
 use super::prim::bit_len_of_header;
 use super::recipe::constant_of;
@@ -45,7 +47,7 @@ use cranelift_codegen::ir::{self, InstBuilder, MemFlagsData, types};
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::Linkage;
 use fz_runtime::any_value::{BITSTRING_BYTES_OFFSET, ValueKind};
-use fz_runtime::bits::BINVIEW_BYTES_PTR_OFFSET;
+use fz_runtime::bits::{BINVIEW_BYTES_PTR_OFFSET, view_word_bit};
 use fz_runtime::heap::SHARED_BIN_THRESHOLD_BYTES;
 use fz_runtime::ir_runtime::{fz_bs_alloc_unfilled, fz_bs_append_unfilled, fz_bs_field_spec};
 
@@ -58,6 +60,62 @@ pub(super) enum AlignedSegment {
     /// The first `bytes` bytes of a binary, or all of it when `bytes` is
     /// `None`.
     Binary { bytes: Option<u64> },
+    /// A binary known at compile time, at most `LITERAL_STORE_BYTES` long,
+    /// written by immediate stores: no read of the binary, no copy.
+    Literal(InlineLiteral),
+}
+
+/// The most bytes of a literal that are written by immediate stores: two
+/// 8-byte stores.
+pub(super) const LITERAL_STORE_BYTES: usize = 16;
+
+/// The bytes of a short literal binary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct InlineLiteral {
+    len: u8,
+    bytes: [u8; LITERAL_STORE_BYTES],
+}
+
+impl InlineLiteral {
+    /// The literal spelling `bytes`, or `None` when it is too long to store.
+    pub(super) fn new(bytes: &[u8]) -> Option<Self> {
+        let mut stored = [0; LITERAL_STORE_BYTES];
+        stored.get_mut(..bytes.len())?.copy_from_slice(bytes);
+        Some(Self {
+            len: bytes.len() as u8,
+            bytes: stored,
+        })
+    }
+
+    fn len(self) -> u64 {
+        u64::from(self.len)
+    }
+
+    /// The stores that write it: each a whole power-of-two number of bytes,
+    /// largest first, as the integer those bytes spell in memory.
+    fn stores(self) -> impl Iterator<Item = (u64, ir::Type, i64)> {
+        let mut at = 0usize;
+        std::iter::from_fn(move || {
+            let left = usize::from(self.len) - at;
+            let width = [8usize, 4, 2, 1].into_iter().find(|&w| w <= left)?;
+            let chunk = &self.bytes[at..at + width];
+            let word = match width {
+                8 => u64::from_ne_bytes(chunk.try_into().ok()?),
+                4 => u64::from(u32::from_ne_bytes(chunk.try_into().ok()?)),
+                2 => u64::from(u16::from_ne_bytes(chunk.try_into().ok()?)),
+                _ => u64::from(chunk[0]),
+            };
+            let ty = match width {
+                8 => types::I64,
+                4 => types::I32,
+                2 => types::I16,
+                _ => types::I8,
+            };
+            let offset = at as u64;
+            at += width;
+            Some((offset, ty, word as i64))
+        })
+    }
 }
 
 /// The segment `field` writes, or `None` when it is not whole bytes of a kind
@@ -89,9 +147,23 @@ pub(super) fn aligned_segment(field: &BitFieldIr) -> Option<AlignedSegment> {
     }
 }
 
-/// Every field of a construction as a segment, or `None` when one is not.
+/// Every field of a construction as a segment, or `None` when one is not. An
+/// unsized binary that is a short literal in the source is stored, not read;
+/// the leading one stays a binary, because its form decides how an append
+/// grows.
 pub(super) fn aligned_segments(fields: &[BitFieldIr]) -> Option<Vec<AlignedSegment>> {
-    fields.iter().map(aligned_segment).collect()
+    fields
+        .iter()
+        .enumerate()
+        .map(|(at, field)| {
+            let segment = aligned_segment(field)?;
+            let literal = field.literal.as_deref().and_then(InlineLiteral::new);
+            Some(match (segment, literal) {
+                (AlignedSegment::Binary { bytes: None }, Some(literal)) if at > 0 => AlignedSegment::Literal(literal),
+                _ => segment,
+            })
+        })
+        .collect()
 }
 
 /// Whether the first segment is a binary with no size, which makes the
@@ -119,19 +191,23 @@ pub(super) fn emit_aligned_construction<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
     segments: &[(AlignedSegment, ir::Value)],
 ) -> ir::Value {
-    let total = total_bytes(body, segments);
+    let lengths = unsized_lengths(body, segments);
+    let total = total_bytes(body, segments, &lengths);
     let (result, destination) = place_result(body, total);
-    write_segments(body, Cursor::at(destination), segments);
+    write_segments(body, Cursor::at(destination), segments, &lengths);
     result
 }
 
-/// Write each segment at the cursor, one after another.
+/// Write each segment at the cursor, one after another. `lengths` are the
+/// byte lengths of the segments' unsized binaries, read once by
+/// `unsized_lengths`.
 fn write_segments<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
     mut cursor: Cursor,
     segments: &[(AlignedSegment, ir::Value)],
+    lengths: &[Option<ir::Value>],
 ) {
-    for &(segment, value) in segments {
+    for (&(segment, value), length) in segments.iter().zip(lengths) {
         match segment {
             AlignedSegment::Integer { bytes, big_endian } => {
                 store_integer(body, &cursor, value, bytes, big_endian);
@@ -143,56 +219,91 @@ fn write_segments<M: cranelift_module::Module>(
                 cursor.advance_fixed(bytes);
             }
             AlignedSegment::Binary { bytes: None } => {
-                let length = binary_byte_len(body.b, value);
+                let length = length.expect("an unsized binary has its length read");
                 copy_binary(body, &cursor, value, length);
                 cursor.advance_dynamic(body.b, length);
             }
+            AlignedSegment::Literal(literal) => {
+                store_literal(body, &cursor, literal);
+                cursor.advance_fixed(literal.len());
+            }
         }
+    }
+}
+
+/// Write a short literal at the cursor with one immediate store per
+/// power-of-two chunk.
+fn store_literal<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, M>,
+    cursor: &Cursor,
+    literal: InlineLiteral,
+) {
+    for (offset, ty, word) in literal.stores() {
+        let immediate = body.b.ins().iconst(ty, word);
+        body.b.ins().store(
+            MemFlagsData::new(),
+            immediate,
+            cursor.base,
+            (cursor.offset + offset) as i32,
+        );
     }
 }
 
 /// The ref word of the binary that starts with the unsized binary `segments[0]`
 /// followed by the other segments: an append. Only the runtime extends a view in
 /// place, so a leading view, and a total too large for an inline result, ask it
-/// for the longer binary (`fz_bs_append_unfilled`) and write the rest after the
-/// leading bytes. A leading inline binary with an inline total is copied as in
-/// any other construction: it is at most `SHARED_BIN_THRESHOLD_BYTES`, and the
-/// runtime would copy it too.
+/// for the longer binary and where the rest goes (`fz_bs_append_unfilled`), and
+/// this code writes the rest there. A leading inline binary with an inline
+/// total is copied as in any other construction: it is at most
+/// `SHARED_BIN_THRESHOLD_BYTES`, and the runtime would copy it too.
 pub(super) fn emit_append<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
     segments: &[(AlignedSegment, ir::Value)],
 ) -> ir::Value {
-    let leading = segments[0].1;
-    let kind = kind_field(body.b, leading);
-    let is_view = body
-        .b
-        .ins()
-        .icmp_imm_s(ir::condcodes::IntCC::Equal, kind, i64::from(ValueKind::BINVIEW.tag()));
-    let total = total_bytes(body, segments);
+    let (&(_, leading), rest) = segments.split_first().expect("an append has a leading binary");
+    let lengths = unsized_lengths(body, segments);
+    let (left_len, rest_lengths) = lengths.split_first().expect("an append has a leading length");
+    let left_len = left_len.expect("the leading binary is unsized");
+    let rest_len = total_bytes(body, rest, rest_lengths);
+    let total = body.b.ins().iadd(left_len, rest_len);
+    let (extend, size_check, inline, done) = (
+        body.b.create_block(),
+        body.b.create_block(),
+        body.b.create_block(),
+        body.b.create_block(),
+    );
+    body.b.append_block_param(done, types::I64);
+    let is_view = body.b.ins().band_imm_u(leading, view_word_bit() as i64);
+    body.b.ins().brif(is_view, extend, &[], size_check, &[]);
+
+    body.b.switch_to_block(size_check);
+    body.b.seal_block(size_check);
     let large = body.b.ins().icmp_imm_u(
         ir::condcodes::IntCC::UnsignedGreaterThan,
         total,
         SHARED_BIN_THRESHOLD_BYTES as i64,
     );
-    let by_runtime = body.b.ins().bor(is_view, large);
-    let (extend, inline, done) = (body.b.create_block(), body.b.create_block(), body.b.create_block());
-    body.b.append_block_param(done, types::I64);
-    body.b.ins().brif(by_runtime, extend, &[], inline, &[]);
+    body.b.ins().brif(large, extend, &[], inline, &[]);
 
     body.b.switch_to_block(extend);
     body.b.seal_block(extend);
-    let left_len = binary_byte_len(body.b, leading);
-    let right_len = body.b.ins().isub(total, left_len);
     let process = body.process_arg();
-    let result = runtime_call1!(body, fz_bs_append_unfilled, [process, leading, right_len]);
-    let payload = bytes_address(body.b, result);
-    let rest_at = body.b.ins().iadd(payload, left_len);
-    write_segments(body, Cursor::at(rest_at), &segments[1..]);
+    let appended = runtime_call!(body, fz_bs_append_unfilled, [process, leading, rest_len]);
+    let &[result, rest_at] = body.b.inst_results(appended) else {
+        unreachable!("an append answers the binary and where its rest goes");
+    };
+    write_segments(body, Cursor::at(rest_at), rest, rest_lengths);
     body.b.ins().jump(done, &[result.into()]);
 
     body.b.switch_to_block(inline);
     body.b.seal_block(inline);
-    let built = emit_aligned_construction(body, segments);
+    let (built, payload) = place_inline(body, total);
+    let mut cursor = Cursor::at(payload);
+    let leading_object = address_field(body.b, leading);
+    let leading_bytes = body.b.ins().iadd_imm_s(leading_object, BITSTRING_BYTES_OFFSET as i64);
+    copy_bytes(body, &cursor, leading_bytes, left_len);
+    cursor.advance_dynamic(body.b, left_len);
+    write_segments(body, cursor, rest, rest_lengths);
     body.b.ins().jump(done, &[built.into()]);
 
     body.b.switch_to_block(done);
@@ -200,27 +311,41 @@ pub(super) fn emit_append<M: cranelift_module::Module>(
     body.b.block_params(done)[0]
 }
 
+/// The byte length of each segment's unsized binary, read from its header
+/// once, in segment order; `None` for any other segment.
+fn unsized_lengths<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, M>,
+    segments: &[(AlignedSegment, ir::Value)],
+) -> Vec<Option<ir::Value>> {
+    segments
+        .iter()
+        .map(|&(segment, value)| match segment {
+            AlignedSegment::Binary { bytes: None } => Some(binary_byte_len(body.b, value)),
+            _ => None,
+        })
+        .collect()
+}
+
 /// The bytes the segments add up to: a constant when no binary is unsized.
 fn total_bytes<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
     segments: &[(AlignedSegment, ir::Value)],
+    lengths: &[Option<ir::Value>],
 ) -> ir::Value {
     let mut fixed = 0u64;
-    let mut unsized_lengths = Vec::new();
-    for &(segment, value) in segments {
+    for &(segment, _) in segments {
         match segment {
             AlignedSegment::Integer { bytes, .. } => fixed += u64::from(bytes),
             AlignedSegment::Binary { bytes: Some(bytes) } => fixed += bytes,
-            AlignedSegment::Binary { bytes: None } => unsized_lengths.push(binary_byte_len(body.b, value)),
+            AlignedSegment::Literal(literal) => fixed += literal.len(),
+            AlignedSegment::Binary { bytes: None } => {}
         }
     }
-    let Some((&first, rest)) = unsized_lengths.split_first() else {
+    let mut unsized_lengths = lengths.iter().flatten().copied();
+    let Some(first) = unsized_lengths.next() else {
         return body.b.ins().iconst(types::I64, fixed as i64);
     };
-    let mut total = first;
-    for &length in rest {
-        total = body.b.ins().iadd(total, length);
-    }
+    let total = unsized_lengths.fold(first, |sum, length| body.b.ins().iadd(sum, length));
     if fixed == 0 {
         total
     } else {
@@ -360,7 +485,7 @@ fn store_integer<M: cranelift_module::Module>(
         .store(MemFlagsData::new(), word, cursor.base, cursor.offset as i32);
 }
 
-/// Copy `length` bytes of the binary `source` to the cursor, with one `memcpy`.
+/// Copy `length` bytes of the binary `source` to the cursor.
 fn copy_binary<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
     cursor: &Cursor,
@@ -371,6 +496,16 @@ fn copy_binary<M: cranelift_module::Module>(
         return;
     }
     let from = bytes_address(body.b, source);
+    copy_bytes(body, cursor, from, length);
+}
+
+/// Copy `length` bytes from `from` to the cursor, with one `memcpy`.
+fn copy_bytes<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, M>,
+    cursor: &Cursor,
+    from: ir::Value,
+    length: ir::Value,
+) {
     let to = cursor.address(body);
     let mut signature = body.jmod.make_signature();
     signature.params = vec![ir::AbiParam::new(types::I64); 3];

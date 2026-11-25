@@ -66,6 +66,8 @@ impl Source {
 enum Input {
     Int(u64),
     Binary(Source),
+    /// An unsized binary known when the code is compiled, of this many bytes.
+    Literal(usize),
 }
 
 #[derive(Clone, Debug)]
@@ -76,6 +78,7 @@ struct Case {
 fn field(ty: BitType, size: Option<u32>, unit: Option<u32>, endian: Endian, index: usize) -> BitFieldIr {
     BitFieldIr {
         value: Var(index as u32),
+        literal: None,
         ty,
         size: size.map(BitSizeIr::Literal),
         endian,
@@ -91,6 +94,12 @@ fn int(bits: u32, endian: Endian, index: usize, value: u64) -> (BitFieldIr, Inpu
         field(BitType::Integer, Some(bits), None, endian, index),
         Input::Int(value),
     )
+}
+
+fn literal(index: usize, bytes: usize) -> (BitFieldIr, Input) {
+    let mut written = field(BitType::Binary, None, None, Endian::Big, index);
+    written.literal = Some(pattern(bytes, index));
+    (written, Input::Literal(bytes))
 }
 
 fn binary(size: Option<u32>, index: usize, source: Source) -> (BitFieldIr, Input) {
@@ -193,6 +202,20 @@ fn cases() -> Vec<Case> {
         int(64, Endian::Big, 0, WORD),
         binary(Some(56), 1, Source::Buffer(65)),
     ]));
+    // A literal is written by immediate stores of 8, 4, 2 and 1 bytes: every
+    // length up to 16 after an integer, and between binaries whose total
+    // crosses the sharing threshold.
+    for bytes in 0..=16 {
+        cases.push(case(vec![int(8, Endian::Big, 0, 5), literal(1, bytes)]));
+    }
+    for source in [Source::Inline(20), Source::Inline(50), Source::Buffer(65)] {
+        cases.push(case(vec![
+            int(16, Endian::Little, 0, WORD),
+            literal(1, 15),
+            binary(None, 2, source),
+            literal(3, 3),
+        ]));
+    }
     cases
 }
 
@@ -210,6 +233,7 @@ fn descriptors(case: &Case, heap: &mut Heap) -> Vec<FzBsField> {
             let value = match input {
                 Input::Int(word) => *word,
                 Input::Binary(source) => source.build(heap, index),
+                Input::Literal(bytes) => Source::Inline(*bytes).build(heap, index),
             };
             FzBsField {
                 spec: descriptor_spec(f, size_present),
@@ -400,13 +424,16 @@ fn the_inline_construction_imports_what_its_shape_reaches() {
     for case in &cases() {
         let compiled = compile(case);
         let total = total_bytes_of(case);
+        let read = |(_, input): &&(BitFieldIr, Input)| !matches!(input, Input::Literal(_));
         let unsized_binary = case
             .fields
             .iter()
+            .filter(read)
             .any(|(f, _)| f.ty == BitType::Binary && f.size.is_none());
         let copies = case
             .fields
             .iter()
+            .filter(read)
             .any(|(f, _)| f.ty == BitType::Binary && f.size != Some(BitSizeIr::Literal(0)));
         let mut expected = Vec::new();
         if unsized_binary || total <= 64 {

@@ -317,7 +317,7 @@ fn lower_make_bitstring<M: cranelift_module::Module>(
             .map(|(segment, f)| {
                 let value = match segment {
                     AlignedSegment::Integer { .. } => body.as_raw_i64(var_env, f.value.0),
-                    AlignedSegment::Binary { .. } => body.tagged_var(var_env, f.value.0),
+                    AlignedSegment::Binary { .. } | AlignedSegment::Literal(_) => body.tagged_var(var_env, f.value.0),
                 };
                 (segment, value)
             })

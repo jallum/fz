@@ -138,8 +138,12 @@ authority. See [`canonical-form`](canonical-form.md#canonbackendprogram).
   user-defined `get/2` into a map index. Elixir draws the same line, with a
   resolved module atom plus `from_brackets: true` in meta. The marker is not
   writable from source.
-- The expander rewrites `<>` and `++` to `Kernel.<>` and `List.concat` calls and
-  stamps each with `__fz_from_operator__`, whose value is the operator's atom.
+- In an expression the expander rewrites a chain of `<>` to one `<<>>`
+  construction of every operand, each `::binary` unless it is a literal binary,
+  as Elixir does, so a failing operand is named by its place in the chain.
+  Elsewhere (a pattern) it rewrites `<>`, and everywhere `++`, to `Kernel.<>` and
+  `List.concat` calls and stamps each with `__fz_from_operator__`, whose value is
+  the operator's atom.
   Pattern decoding reads concatenation by that stamp, or by the bare operator
   head a `def` head still carries (heads are not sugared), and by nothing
   else: a user-written `Kernel.<>(a, b)` or `List.concat(a, b)` in a pattern is
@@ -159,7 +163,7 @@ authority. See [`canonical-form`](canonical-form.md#canonbackendprogram).
   or a subject-bearing `case`, capture placeholders become direct lambdas,
   multi/guarded lambdas become one lambda whose body is a `case`, and operators
   become ordinary helper calls such as `List.concat`, `Enum.member?`,
-  `Kernel.<>`, and `Range.new`.
+  and `Range.new` (and `Kernel.<>` in a pattern).
 - `for` is rewritten by `rewrite_comprehension` into nested `Enum.reduce`
   calls, one per generator, each lambda threading a generated accumulator
   (`__fz_for_acc`, ordinal = generator depth) inward. The trailing keyword
@@ -287,7 +291,7 @@ old entry goes and the new one is put first).
 - `counter`: a variable's counter, as Elixir writes it: `{module, n}` from an
   expansion, or an integer from `Macro.unique_var/2` or a minted name (see
   [macro-expansion.md](macro-expansion.md#variable-hygiene)).
-- `__fz_from_operator__`: the operator atom on a `<>` or `++` call the
+- `__fz_from_operator__`: the operator atom on a pattern's `<>` or a `++` call the
   expander made from that operator (see Source Shape).
 - `__fz_bound__`: the exact callable a quoted call was resolved to, as that
   function's coordinate in the world that stamped it; semantic content,

@@ -1449,6 +1449,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     let mut lowered = Vec::with_capacity(fields.len());
                     for field in fields {
                         lowered.push(crate::fz_ir::BitFieldIr {
+                            literal: field.literal.clone(),
                             value: self.env_runtime_var(ctx, executable, env, field.value),
                             ty: field.spec.ty,
                             size: lower_bit_size_ir(self.world, &field.spec.size, env)?,
