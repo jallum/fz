@@ -1,0 +1,66 @@
+#---
+# purpose: comparing two atoms with `<`, whether they are literals, arguments or list elements, answers as Elixir orders atoms and boxes no integer
+# kind: run
+#---
+#
+# Atoms order by their text. Each loop takes 1,000 steps and the program prints
+# the heap scalars boxed per step: a comparison of two literals, of two
+# arguments, and of the head and the second element of a list.
+#
+# Before the loops it prints the answers, so the unboxed path is shown to be
+# the one that orders atoms.
+defmodule P do
+  def literal_pair(), do: {:z < :a, :a < :z, :a < :a}
+
+  def args(a, b), do: a < b
+
+  def elements([a, b]), do: a < b
+
+  def literal_loop(i, n) do
+    if i == n do
+      :done
+    else
+      _ = :z < :a
+      literal_loop(i + 1, n)
+    end
+  end
+
+  def args_loop(a, b, i, n) do
+    if i == n do
+      :done
+    else
+      _ = args(a, b)
+      args_loop(a, b, i + 1, n)
+    end
+  end
+
+  def elements_loop(list, i, n) do
+    if i == n do
+      :done
+    else
+      _ = elements(list)
+      elements_loop(list, i + 1, n)
+    end
+  end
+
+  def boxed(a, b), do: div(b[:scalar_box_allocs] - a[:scalar_box_allocs], 1000)
+end
+
+dbg(P.literal_pair())
+dbg({P.args(:a, :b), P.args(:b, :a), P.args(:m, :m)})
+dbg({P.elements([:a, :b]), P.elements([:b, :a])})
+
+a = System.alloc_stats()
+_ = P.literal_loop(0, 1000)
+b = System.alloc_stats()
+dbg({:literals, P.boxed(a, b)})
+
+a = System.alloc_stats()
+_ = P.args_loop(:z, :a, 0, 1000)
+b = System.alloc_stats()
+dbg({:arguments, P.boxed(a, b)})
+
+a = System.alloc_stats()
+_ = P.elements_loop([:z, :a], 0, 1000)
+b = System.alloc_stats()
+dbg({:elements, P.boxed(a, b)})
