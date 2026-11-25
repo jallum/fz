@@ -95,6 +95,7 @@ fz_inspect(process, word, kind) / fz_inspect_with(process, word, kind, options) 
 fz_struct_store_ref(process, struct, slot_offset, kind_offset, value_word, value_kind)
 fz_closure_set_capture_ref(process, closure, index, value_word, value_kind)
 fz_binary_concat(process, left, right)
+fz_binary_part(process, binary, from, size)
 ```
 
 **Dynamic reads return refs into existing storage, not copies.**
@@ -113,6 +114,10 @@ a new `{k, v}` tuple, so nothing is decoded or boxed. `Enumerable.Map`'s
 `reduce` and `reduce_while` are `List.reduce` and `List.reduce_while` over
 `Map.to_list`, as Elixir's are over `:maps.to_list`, and `member?` is the match
 `%{^key => ^value}`.
+
+`fz_binary_part` is `:erlang.binary_part/3` once the bounds are checked: it
+slices `size` bytes from byte `from` through `Process::slice`, so a part over
+`SHARED_BIN_THRESHOLD_BYTES` is a view on the source buffer.
 
 `fz_binary_concat` validates byte-aligned binary inputs and builds `left <> right`
 through `Heap::alloc_concatenation`, which returns the VALUE. When `left` is a

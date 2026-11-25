@@ -49,6 +49,15 @@ impl Callee {
         match expr {
             Expr::BoundFunction(function) => Some(Self::Bound(*function)),
             Expr::FnRef { name, arity: declared } => (*declared == arity).then(|| Self::Name(name.clone())),
+            Expr::Index(module, function) => match (&module.node, &function.node) {
+                (Expr::Atom(module), Expr::Atom(name)) if !fz_runtime::module_name::is_alias_namespace_atom(module) => {
+                    Some(Self::Name(CallableName {
+                        module: Some(ModuleTarget::Exact(ModuleName::from_atom_name(module)?)),
+                        name: name.clone(),
+                    }))
+                }
+                _ => CallableName::from_expr(expr).map(Self::Name),
+            },
             _ => CallableName::from_expr(expr).map(Self::Name),
         }
     }

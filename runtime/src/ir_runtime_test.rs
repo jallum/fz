@@ -1235,6 +1235,25 @@ fn binary_copy_by_zero_or_of_nothing_is_the_empty_binary() {
 }
 
 #[test]
+fn binary_part_is_the_bytes_from_the_start_for_the_size() {
+    with_process(|process| {
+        let subject = alloc_binary(process, b"abcd");
+        assert_eq!(binary_bytes(fz_binary_part(process, subject, 1, 2)), b"bc");
+        assert_eq!(binary_bytes(fz_binary_part(process, subject, 4, 0)), b"");
+    });
+}
+
+#[test]
+fn binary_part_of_a_large_window_is_a_view_on_the_source_buffer() {
+    with_process(|process| {
+        let subject = alloc_binary(process, &[3u8; 200]);
+        let part = fz_binary_part(process, subject, 10, 100);
+        assert_eq!(binary_bytes(part), vec![3u8; 100]);
+        assert_eq!(fz_binary_referenced_size(part), 200);
+    });
+}
+
+#[test]
 fn referenced_size_of_an_inline_binary_is_its_own_size() {
     with_process(|process| {
         let subject = alloc_binary(process, b"hello");

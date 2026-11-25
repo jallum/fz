@@ -500,6 +500,11 @@ publication rules live in [AnyValue's shared lists and structs section](any-valu
 
 Guards compile into `PatternGuardExpr`. A call in a guard resolves, through
 `PatternResolver::guard_call`, to a `GuardCallee`: either a helper or an extern.
+The callee may be named on a module alias (`Kernel.f(x)`) or on an Erlang-style
+bare-atom module (`:erlang.binary_part(b, 0, 1)`): `Callee::for_call` resolves
+both to the same exact callable. `binary_part/3` is guard-callable because
+`:erlang.binary_part/3` clause 1 is one extern call, `fz_binary_part`, over
+normalized bounds, and its other clause only raises.
 
 `left in right` and `left not in right` in a guard are expanded by the quoted
 expander (`expand_guard_membership`, rules in `source_sugar::rewrite_guard_membership`)
