@@ -5,14 +5,15 @@
     "fz-9zq.23",
     "fz-yh5.12"
   ],
+  "closed_at": "2026-11-25T03:51:44Z",
   "created": "2026-11-24T22:04:40Z",
   "description": "From: JSON and Callables; diagnosis confirmed by fz-engine. Filed with user approval (\"proceed\" on /Users/j5n/Workspace/fz-mue.25.html, section 6, 2026-11-24).\n\nToday (develop de4ef6a3b): Esc.escape/1 (clauses is_atom / is_integer / is_float / is_binary, {a, b} -\u003e {escape(a), escape(b)}, is_tuple/is_list -\u003e Enum.map(values, \u0026escape/1)) fails type/return-did-not-converge after 16 rounds. Each round wraps the previous recursive type whole inside {:{}, [], [μu…]} and [μu…] instead of folding to a back edge.\n\nCause: ClashWalk::slot treats a new type as covered only by a non-recursive old (!types.is_recursive_member(o), types/clash.rs ~:242), and judge's walked filters recursive members out on both sides (~:267); Types::union never merges two recursive types. A ladder whose rungs are themselves μ is never seen as repeating. The per-row fold restoration (JSON arms B/B2) does not fix it. The same limit hit fz-mue.25's fold experiments (stack overflow, index_existing panic).\n\nExpected fixpoint: μt. int|float|binary|atom|{t,t}|{:{}, [], list(t)}|list(t).\n\nReproducer: /Users/j5n/Workspace/fz-probes/esc_return_converge.fz; converged it prints {1, [2, {:{}, [], [3, 4, 5]}]} as Elixir does. Fixture number 01962 (fz-9zq block).\n\nBlocks fz-yh5.12 (C2): its or-narrowing gives Kernel's Macro.escape this shape; fixtures 01139, 01167, 01199, 01366, 01368, 01373, 01785 fail on all three paths.\n\nDone when: the probe converges and prints the Elixir output on run, interp and build; the 7 fixtures pass under C2; 01353-01359 keep one plan across job orders; no distiller pin rises without approval.",
   "id": "fz-9zq.21",
   "labels": [],
   "parent": "fz-9zq",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "A return whose growth nests a recursive type inside itself folds to one recursive type",
   "type": "bug",
-  "updated_at": "2026-11-25T02:45:15Z"
+  "updated_at": "2026-11-25T03:51:44Z"
 }
