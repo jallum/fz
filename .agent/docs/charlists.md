@@ -15,25 +15,27 @@ and `List.to_charlist/1` build the same list from text and from chardata. See
 ## Rendering
 
 The value renderer is `any_value::debug` in the runtime crate. `render_value`
-and `render_with_limit` dispatch on a value's `ValueKind`/heap tag and produce
+and `render_with_limits` dispatch on a value's `ValueKind`/heap tag and produce
 the printed form. Every print path shares it: `IO.inspect/1` and `dbg/1` (which
 is `IO.inspect/1`) through `Kernel.inspect/1`, the IR interpreter, and the REPL
-all call `render_value`, which means `Limit::DEFAULT` (100, Elixir's
-`%Inspect.Opts{}.limit`); `Kernel.inspect/2` reaches `render_with_limit`
-through `fz_inspect/2`. The decision is purely payload-driven, reading only the
+all call `render_value`, which means `Limits::DEFAULT` (`limit` 100 and
+`printable_limit` 4096, Elixir's `%Inspect.Opts{}` defaults); `Kernel.inspect/2` reaches `render_with_limits`
+through `fz_inspect_with`. The decision is purely payload-driven, reading only the
 tagged bits and heap layout, never the type system's brand slot, so the
 interpreter, JIT, and AOT paths agree on output without sharing type
 information at runtime.
 
-A `Renderer` carries the process and the remaining `Limit`. Each element of a
+A `Renderer` carries the process, the remaining `Limit` and the `printable_limit`. Each element of a
 list, tuple, map entry, keyword entry or bitstring byte costs one before it is
 rendered, and what it renders inside spends from the same budget; once the
 budget is spent, `...` replaces the elements left. Numbers, atoms, strings,
 charlists, ranges and closures cost nothing of their own.
 
 A list renders in one of three shapes, decided from its cells. A non-empty list
-whose every element is an integer in 7..=13, 27 or 32..=126
-(`List.ascii_printable?/1`) renders as `~c"..."` with the string escapes:
+whose first `printable_limit` elements are integers in 7..=13, 27 or 32..=126
+(`List.ascii_printable?/2`) and that is whole chardata (every element a Unicode
+codepoint) renders as `~c"..."` with the string escapes, cut after
+`printable_limit` escaper steps and followed by ` ++ ...` when text is left:
 `[104, 105]` is `~c"hi"`, `[7, 104]` is `~c"\ah"`. Any other integer list, such
 as `[0]`, `[128]` or `[126, 127]`, stays a list. A list whose every element is a
 two-tuple with a non-alias atom key renders as a keyword list, `[a: 1]`.
@@ -61,14 +63,18 @@ order. A two-tuple keyed by an alias is never a keyword entry, so `[{Foo, 1}]`
 prints as a list of tuples, as in Elixir.
 
 A binary takes the other shape. `Renderer::bitstring` prints a byte-aligned,
-valid, printable (`is_printable_utf8`) UTF-8 binary as a quoted string `"..."`,
-which ignores the limit, and anything else as `<<...>>`: one element per byte,
+binary whose first `printable_limit` codepoints are printable
+(`is_printable_within`) as a quoted string `"..."`, cut after `printable_limit` characters, followed by ` <> ...` when text is left
+(`inspect("abcdef", printable_limit: 3)` is `"abc" <> ...`), and anything else as `<<...>>`: one element per byte,
 trailing bits as `n::size(k)`. `is_printable_utf8` is Elixir's `String.printable?/1`
 set, and `String.printable?/1` asks it through `fz_binary_printable`: U+FFFE,
-U+FFFF and the C1 controls print as bytes, DEL prints as `\d`. One escaper, `escape_for_display`, writes
+U+FFFF and the C1 controls print as bytes, DEL prints as `\d`. One escaper, `escape_within`
+(`Code.Identifier.escape/3`; `escape_for_display` is it without a limit), writes
 strings, quoted atoms and charlists with Elixir's escapes: `\a \b \t \n \v \f
 \r \e \d \\ \"`, `\#{`, and `\uXXXX` for the invisible and lookalike
-codepoints.
+codepoints. A step of the escaper is one codepoint, one byte that is not part of
+one (`\xFF`), or the pair `#{`, so `printable_limit: 2` keeps `\#{` and the
+character after it.
 
 ## Difference from Elixir
 
@@ -84,3 +90,8 @@ so a multi-key atom-keyed map is not comparable with Elixir's output.
 
 A fixture whose golden comes from Elixir (see [fixtures](fixtures.md)) matches
 it on charlists: an all-printable integer list prints `~c"..."` on both sides.
+
+A list whose first `printable_limit` elements are ASCII printable but that is
+not chardata (`[104, 105, :a]` with `printable_limit: 2`, or an improper list)
+prints as its elements; Elixir 1.19.4 raises `ArgumentError` from
+`IO.chardata_to_string/1` there.

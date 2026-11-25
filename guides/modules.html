@@ -536,12 +536,14 @@ with <code>defp</code>.</p>
 <p><code>inspect/1</code> and <code>inspect/2</code> are imported everywhere and
 return Elixir's text for a value as a binary: <code>%{a: 1}</code>,
 <code>~c"hi"</code> for <code>[104, 105]</code>, <code>:"foo bar"</code>. The
-one option is <code>limit:</code>, a non-negative integer or
-<code>:infinity</code>, counting the elements of lists, tuples, maps and
-bitstrings shown before <code>...</code>; it defaults to 100, as in Elixir, and
-<code>dbg/1</code> uses the default. Any other <code>Inspect.Opts</code> key
-(<code>pretty</code>, <code>width</code>, <code>printable_limit</code>, and the
-rest) is not built and raises <code>ArgumentError</code>, as does a bad
+two options are built. <code>limit:</code> counts the elements of lists, tuples,
+maps and bitstrings shown before <code>...</code>; it defaults to 100.
+<code>printable_limit:</code> counts the characters of a string or charlist
+shown, and a longer one ends <code>" &lt;&gt; ..."</code> or
+<code>" ++ ..."</code>; it defaults to 4096. Both take a non-negative integer or
+<code>:infinity</code>, as in Elixir, and <code>dbg/1</code> uses the defaults.
+Any other <code>Inspect.Opts</code> key (<code>pretty</code>, <code>width</code>,
+and the rest) is not built and raises <code>ArgumentError</code>, as does a bad
 limit.</p>
 
 <p><code>MapSet</code> (<code>lib/map_set.fz</code>) is a set of unique values

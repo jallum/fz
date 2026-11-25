@@ -64,29 +64,48 @@ defmodule Kernel do
   @doc """
   Returns `value` as the text Elixir's `inspect/2` gives it.
 
-  `limit:` is the only option: a non-negative integer, or `:infinity`, for
-  how many elements of a list, tuple, map or bitstring show before `...`.
-  Each element costs one and whatever it prints inside spends from the same
-  budget. It defaults to 100, as in Elixir.
+  Two options are built:
+
+    * `limit:` how many elements of a list, tuple, map or bitstring show
+      before `...`. Each element costs one and whatever it prints inside
+      spends from the same budget. It defaults to 100, as in Elixir.
+    * `printable_limit:` how many characters of a string or charlist show. A
+      longer one ends `" <> ..."` after a string and `" ++ ..."` after a
+      charlist. It does not spend from `limit:`, and defaults to 4096, as
+      in Elixir.
+
+  Both take a non-negative integer or `:infinity`.
 
       inspect([1, 2, 3], limit: 2)
       #=> "[1, 2, ...]"
 
-  Any other key, and a limit that is neither, raises `ArgumentError`, where
-  Elixir ignores the key and fails only later on a bad limit.
+      inspect("abcdef", printable_limit: 3)
+      #=> "\"abc\" <> ..."
+
+  Any other key, and a limit that is neither a count nor `:infinity`, raises
+  `ArgumentError`, where Elixir ignores the key and fails only later on a bad
+  limit.
   """
   @spec inspect(any, keyword) :: binary
   def inspect(value, opts), do: fz_inspect_with(value, checked_inspect_options(opts, opts))
 
   @spec checked_inspect_options(any, any) :: any
   defp checked_inspect_options([], opts), do: opts
+
   defp checked_inspect_options([{:limit, :infinity} | rest], opts), do: checked_inspect_options(rest, opts)
+  defp checked_inspect_options([{:printable_limit, :infinity} | rest], opts), do: checked_inspect_options(rest, opts)
 
   defp checked_inspect_options([{:limit, limit} | rest], opts) when is_integer(limit) and limit >= 0,
     do: checked_inspect_options(rest, opts)
 
+  defp checked_inspect_options([{:printable_limit, limit} | rest], opts) when is_integer(limit) and limit >= 0,
+    do: checked_inspect_options(rest, opts)
+
   defp checked_inspect_options([{:limit, _} | _], _),
     do: raise(%ArgumentError{message: "inspect/2 limit: must be a non-negative integer or :infinity"})
+
+  defp checked_inspect_options([{:printable_limit, _} | _], _),
+    do: raise(%ArgumentError{message: "inspect/2 printable_limit: must be a non-negative integer or :infinity"})
 
   defp checked_inspect_options([{key, _} | _], _),
     do: raise(%ArgumentError{message: "inspect/2 does not support option " <> inspect(key)})
