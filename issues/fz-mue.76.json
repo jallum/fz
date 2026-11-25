@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-25T12:20:55Z",
+  "description": "From: Elixir Parity, found first by Binary Handling. User-approved 2026-11-25 as its own ticket, after #791.\n\nfz_binary_part's only caller is :erlang.binary_part's first clause. That clause's guard proves is_binary(binary) and a byte window, and the runtime call copies or shares whole bytes. So extern \"fz\" defp fz_binary_part(binary, integer, integer) :: binary is the truthful declaration. It is strictly more precise than :: bitstring and matches binary_part/3's own @spec. It is not needed for correctness: #910 (fz-9e2.17) makes cursors answer type tests.\n\nDone when: lib/erlang.fz declares :: binary, and a test shows binary_part's result is proven binary.",
+  "id": "fz-mue.76",
+  "labels": [],
+  "parent": "fz-mue",
+  "priority": 3,
+  "status": "open",
+  "title": "fz_binary_part declares binary, not bitstring",
+  "type": "task",
+  "updated_at": "2026-11-25T12:20:55Z"
+}
