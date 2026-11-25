@@ -1,6 +1,8 @@
 {
   "assignee": "Make Distiller Fast",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-9x7.41.7"
+  ],
   "blocks": [],
   "created": "2026-11-25T11:31:12Z",
   "description": "From: Make Distiller Fast. User-approved 2026-11-25.\n\nA rarely taken runtime call (a raise arm, fz_heap_room, fz_panic and similar) moves into one shared out-of-line stub per cold call kind. The cold arm tail-calls the stub with its live values as arguments, as #887 did for the yield path. PreserveAll cannot be used, because the Cranelift verifier forbids return values with it. For a raise arm the stub never returns; that is the simplest instance and the first step.\n\nCases, in order:\n1. The overflow raise arm of integer `+` (blocks fz-yh5.1's fz-side part, which the user held behind this ticket). Evidence (Callables, fz-yh5.1 \"State 2026-11-24\", scratch yh51/why/): the inlined `+` carries the whole raise path, about 236 bytes of fz_heap_room, fz_struct_store_ref and fz_panic. Two values live across those calls force x19/x20 saves on every path, including the path that never overflows. The same is paid inside fz_op_add_ii and at every in-place delivered call.\n2. fz_heap_room: 48 of 84 JSON functions save registers for it after #887.\n3. fz_panic: 18 functions. fz_binary_concat: 7. fz_share_list_spine: 6. fz_alloc_binview_from_static: 5.\n4. The call-step move ledger: a call step moves no value twice.\n\nPage: 4JyVHKjbDBw1bzRDu17PZd, section 8.\n\nAcceptance:\n- A function whose only calls are on a raise arm has no callee-saved register saves in its prologue. Shown for `+` on known integers (fz_op_add_ii and one in-place site) in the prologue table.\n- Overflow still raises ArithmeticError on all three paths.\n- The bench is judged on the instruction-count pass rule.\n\nOrder: after GC's fz-9x7.41.7, as agreed. fz-yh5.1 depends on this ticket.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "A rarely taken runtime call costs the function nothing, and a call step moves no value twice",
   "type": "feature",
-  "updated_at": "2026-11-25T11:31:13Z"
+  "updated_at": "2026-11-25T11:31:14Z"
 }
