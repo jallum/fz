@@ -4,14 +4,15 @@
     "fz-9x7.50"
   ],
   "blocks": [],
+  "closed_at": "2026-11-25T03:29:48Z",
   "created": "2026-11-25T01:10:47Z",
   "description": "From: Make Distiller Fast. Approved by the user 2026-11-24 (\"clean these three up under one ticket\", relayed by Make Distiller Fast). Supersedes MDF's const-size proposal (item 1 here).\n\nEvidence: probe c4 step, 225 instructions; ledger /Users/j5n/Workspace/fz-distill-hunt/trim/; page https://claude.ai/artifact/REdzotwtihuF57Q2GKvQ6M section 9.\n1. Capture count and frame size read from the header at resume: 11 instructions (rows 154, 156-158, 169-175). 7 proven: constants in release_resumed_frame give c4 -7.4/step, parse-only decode 40.53G -\u003e 39.98G (-1.3%), fixture_matrix 4105 passed 0 failed (trim/const-size.patch). The other 4 share the header load with the capture-kind read at the entry harness and need a constant offset there too.\n2. Register shuffles: 19 (rows 6, 14, 20, 25, 27, 66, 73, 82, 94, 98, 112, 113, 117, 126, 128, 131, 133, 135, 216). Known causes for some: values parked in callee-saved registers across cold calls (falls with fz-sc8.249's fix); argument positions (continuation in x4 at a function, x3 at a resume). Not yet split by cause.\n3. Recomputed values: 4 (rows 10, 19, 35, 69: mask-then-shift that is one ubfx; same untag twice; same add twice; re-untag of a just-tagged pointer). Cause not found; Cranelift mid-end is on (opt_level speed).\n\nGoal: in the c4 step, every row above is gone or carries a named reason in the ledger.\nSignal: ledger re-taken by lldb single-step; instructions retired on c3, c4, parse-only and full decode with a prediction written before each measurement; bench A/B for the judged result.\nStrategy, in order:\n(a) frame constants: compile-time count and size in release_resumed_frame; constant kind-byte offsets at the resume entry.\n(b) recomputes: dump optimized CLIF for walk, find why each duplicate survives, fix at the emitter (one untag per value, one add).\n(c) shuffles: re-take the ledger on a build with the yield path out of line, split what remains by cause, fix argument-position ones at the ABI assignment; any shuffle only Cranelift can remove is listed with its reason, not hidden.\nRemoves: the run-time frame_size computation and the header load at resume if nothing else reads them.\nAcceptance: ledger rows gone or justified; parse-only decode instructions fall \u003e= 1.3% on the bench with cycles not rising; fixture_matrix and full gate green on interp, run and build; docs describing release_resumed_frame updated.\nOrder: after fz-9x7.50 (same function); (c) after the fz-sc8.249 fix exists to measure against (proposed fold into fz-yh5.2, awaiting the user). fz-9x7.43 later deletes the give-back tests; (a) pays only until then.\nNot included (owned elsewhere): flag dance and reduction check (fz-yh5.1/.2), x21 copies (Callables' yh5.2 fold), closure test (fz-9x7.50), counters (fz-9x7.37.3), kind tests (fz-9x7.39/.44/.43), register saves (fz-sc8.249).",
   "id": "fz-yh5.15",
   "labels": [],
   "parent": "fz-yh5",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "A call step computes nothing the compiler already knows and moves no value twice",
   "type": "task",
-  "updated_at": "2026-11-25T01:10:52Z"
+  "updated_at": "2026-11-25T03:29:48Z"
 }
