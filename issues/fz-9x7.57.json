@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-25T02:55:17Z",
+  "description": "From: GC. Approved by the user 2026-11-24: asked \"Shall I amend #880 with the five removals ... and file the two tickets?\", the user answered verbatim \"ignore it then; proceed.\" #880 merged (b206e60bc) before the amend was pushed, so the removals land as their own commit.\n\nBuilt and checked locally as 750379b58 (worktree fz-9x7-47, on 6108d91b1; draft message GC scratchpad b47g/msg.new):\n1. FZ_GRANULE_SHIFT build knob, parse_shift and its test deleted; GRANULE_SHIFT is const 5 (32 B), the profiled choice.\n2. One young test: Reservation::is_young (unbounded, the literal bit is its guard) is the only implementation; is_young_in_range, arena::is_young and Heap::is_young deleted. Minor moves = !literal \u0026\u0026 is_young; fz_frame_for_write tests !is_literal before it.\n3. FromSpace::of loses its dead heap parameter.\n4. Stale text fixed: reduction-yielding.md (exact blocks go to the span list), imp.rs, block_pool.rs (two comments), guides/memory.html (debug cross-check; 'any worker'), ref_io.rs.\nNot done: gating young_ranges/block_ranges/ptr_in_ranges behind cfg(any(test, debug_assertions)) - contains_heap_addr needs them in release for its cross-crate test caller; covered by fz-9x7.55.\n\nb47g bench (ssh bench, 5 rounds, 3 compiles/arm): the bounded variant of the young test cost gc-cells +1.04% (consistent across compiles), others within 0.2%, so the unbounded test was kept; with it, Tracer::scan is instruction-identical to the base (453 vs 453 lines). Checks: fmt, clippy -D warnings, fz-runtime lib (808), poison_dead_frames (2).\n\nDone when: rebased onto develop, one commit, CI green.",
+  "id": "fz-9x7.57",
+  "labels": [],
+  "parent": "fz-9x7",
+  "priority": 2,
+  "status": "open",
+  "title": "The young test is one function, and the granule is a constant",
+  "type": "task",
+  "updated_at": "2026-11-25T02:55:17Z"
+}
