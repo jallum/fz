@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Elixir Parity",
   "blocked_by": [],
   "blocks": [
     "fz-mue.51"
@@ -13,5 +13,5 @@
   "status": "open",
   "title": "quote of __MODULE__.Inner gives {:__aliases__, meta, [{:__MODULE__, meta, nil}, :Inner]}, as in Elixir",
   "type": "bug",
-  "updated_at": "2026-11-25T00:39:40Z"
+  "updated_at": "2026-11-25T00:39:41Z"
 }
