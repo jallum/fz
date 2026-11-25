@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-25T12:09:22Z",
+  "description": "From: Elixir Parity. User-approved 2026-11-25. Blocks #791. Port lines 659/681: encode_atom passes a 2-arity wrapper into format_value's formatter() parameter, and fz refuses it as a spec violation, while Elixir prints [34, \"foo\", 34]. Repro: Elixir Parity's scratchpad walk791/r581.fz.\nDone when: the closure is typed by its own arity, the repro matches Elixir on all three paths, and a fixture covers it.",
+  "id": "fz-mue.73",
+  "labels": [],
+  "parent": "fz-mue",
+  "priority": 2,
+  "status": "open",
+  "title": "A closure passed where a 3-arity callback spec is declared is typed by its own arity",
+  "type": "bug",
+  "updated_at": "2026-11-25T12:09:22Z"
+}
