@@ -2716,6 +2716,51 @@ fn a_byte_aligned_construction_calls_no_builder() {
     }
 }
 
+/// A construction that starts with an unsized binary is an append. Only the
+/// runtime extends a view in place, so the compiled code tests the leading
+/// binary's kind: a view, or a total too large to place inline, calls the
+/// runtime to extend it (`fz_bs_append_unfilled`), and a small inline binary is
+/// copied inline, as in any other construction. The same segments in another
+/// order never ask the runtime.
+#[test]
+fn a_construction_that_starts_with_an_unsized_binary_asks_the_runtime_to_extend_a_view() {
+    let imports = |body: &str| {
+        let source_path = unique_temp_path("fz2_append_row", ".fz");
+        let clif_path = unique_temp_path("fz2_append_row", ".clif");
+        write(
+            &source_path,
+            format!(
+                "def build(a, b, c) when is_integer(a) and is_integer(b) and is_binary(c),\n  do: {body}\n\
+                 def main() do\n  dbg(build(1, 2, \"abc\"))\n  nil\nend\n"
+            ),
+        )
+        .expect("write construction program");
+        let spec = format!("clif={}", clif_path.display());
+        let out = run_fz2(&[
+            OsStr::new("run"),
+            OsStr::new("--dump"),
+            OsStr::new(&spec),
+            source_path.as_os_str(),
+        ]);
+        assert!(out.status.success(), "{body}: {}", output_text(&out));
+        let clif = std::fs::read_to_string(&clif_path).expect("read the clif dump");
+        let _ = remove_file(&source_path);
+        let _ = remove_file(&clif_path);
+        let imports = |symbol: &str| clif.contains(&format!("= {symbol}\n"));
+        (imports("fz_bs_append_unfilled"), imports("fz_heap_room"))
+    };
+    assert_eq!(
+        imports("<<c::binary, a::8, b::16>>"),
+        (true, true),
+        "an append is inline or extended"
+    );
+    assert_eq!(
+        imports("<<a::8, b::16, c::binary>>"),
+        (false, true),
+        "an inline construction is only inline"
+    );
+}
+
 /// The eight comparisons of two proven binaries decide in place unless the
 /// bytes must be read: the compiled code imports each row's own `fz_op_*_bb`
 /// function for that one cold call, and neither the generic comparator nor a
@@ -2770,5 +2815,72 @@ fn comparison_of_two_proven_binaries_calls_only_to_read_bytes() {
     ] {
         let import = format!("= {symbol}\n");
         assert!(!clif.contains(&import), "compiled code imports `{symbol}`");
+    }
+}
+
+/// What one run of `source` on `command` places for binaries, as
+/// `(object, allocs, bytes)` summed over the sites that place that object. An
+/// inline bitstring is placed by compiled code or by the runtime, which is not
+/// what a construction and `<>` are compared on, so its sites are summed; a
+/// shared buffer and the views and refs on it are only the runtime's.
+fn binary_allocations(source: &str, command: &str) -> BTreeMap<String, (u64, u64)> {
+    let source_path = unique_temp_path("fz2_append_sites", ".fz");
+    let telemetry_path = unique_temp_path("fz2_append_sites", ".jsonl");
+    write(&source_path, source).expect("write growing-loop program");
+    let out = run_fz2(&[
+        OsStr::new("--log-telemetry"),
+        telemetry_path.as_os_str(),
+        OsStr::new(command),
+        source_path.as_os_str(),
+    ]);
+    assert!(out.status.success(), "{command}: {}", output_text(&out));
+    let log = read(&telemetry_path).expect("read telemetry log");
+    let _ = remove_file(&source_path);
+    let _ = remove_file(&telemetry_path);
+    let mut placed = BTreeMap::new();
+    for event in parse_public_trace(&log)
+        .iter()
+        .filter(|event| event.name.join(".") == "fz.runtime.alloc_site")
+    {
+        let object = event.metadata["object"].as_str().expect("object").to_owned();
+        if matches!(object.as_str(), "bitstring" | "binview" | "binref" | "shared_bin") {
+            let total: &mut (u64, u64) = placed.entry(object).or_default();
+            total.0 += event.metadata["allocs"].as_u64().expect("allocs");
+            total.1 += event.metadata["bytes"].as_u64().expect("bytes");
+        }
+    }
+    placed
+}
+
+/// A loop of 3000 steps that grows `acc` by the bytes `step` builds, where `x`
+/// is a binary of `x_len` bytes.
+fn growing_loop(step: &str, x_len: usize) -> String {
+    format!(
+        "defmodule Main do\n\
+         \x20 def loop(0, acc, _x), do: acc\n\
+         \x20 def loop(n, acc, x), do: loop(n - 1, {step}, x)\n\
+         \x20 def main(), do: IO.inspect(byte_size(loop(3000, \"\", :binary.copy(\"y\", {x_len}))))\n\
+         end\n\
+         Main.main()\n"
+    )
+}
+
+/// A construction whose first field is an unsized binary is an append to it:
+/// a loop that grows `<<acc::binary, x::binary>>` or `<<acc::binary, byte>>`
+/// places exactly the storage the same loop written with `<>` places, on every
+/// path, instead of a new buffer holding the whole accumulator every step.
+#[test]
+fn a_growing_leading_binary_construction_allocates_what_concatenation_allocates() {
+    for (construction, concatenation, x_len) in [
+        ("<<acc::binary, x::binary>>", "acc <> x", 2),
+        ("<<acc::binary, 121>>", "acc <> x", 1),
+    ] {
+        for command in ["run", "interp"] {
+            assert_eq!(
+                binary_allocations(&growing_loop(construction, x_len), command),
+                binary_allocations(&growing_loop(concatenation, x_len), command),
+                "{command}: `{construction}` places what `{concatenation}` places"
+            );
+        }
     }
 }

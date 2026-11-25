@@ -738,7 +738,9 @@ fn a_sender_appending_to_a_binary_it_sent_leaves_the_receivers_bytes_intact() {
         // A concatenation gives a buffer room; the first call allocates it.
         sender
             .heap
-            .alloc_concatenation(std::slice::from_raw_parts(ptr, 100), Some(sent_view), b"b")
+            .alloc_concatenation(std::slice::from_raw_parts(ptr, 100), Some(sent_view), 1, |dest| {
+                dest.write_copy_of_slice(b"b");
+            })
     };
     let grown_ref = grown.ref_word();
     let (segment, delivered) = gift_copy(&mut sender.heap, &[grown_ref]);
@@ -747,9 +749,14 @@ fn a_sender_appending_to_a_binary_it_sent_leaves_the_receivers_bytes_intact() {
 
     let appended = unsafe {
         let view = crate::bits::BinView::from_raw(grown.heap_addr().unwrap());
-        sender
-            .heap
-            .alloc_concatenation(std::slice::from_raw_parts(view.bytes_ptr(), 101), Some(view), b"XYZ")
+        sender.heap.alloc_concatenation(
+            std::slice::from_raw_parts(view.bytes_ptr(), 101),
+            Some(view),
+            3,
+            |dest| {
+                dest.write_copy_of_slice(b"XYZ");
+            },
+        )
     };
 
     let received_bytes = unsafe {

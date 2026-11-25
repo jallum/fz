@@ -39,7 +39,7 @@ use crate::heap::{binary_buffer_allocated, binary_buffer_freed, poisoned};
 use crate::sync::{AtomicUsize, Ordering, fence};
 use std::alloc::{Layout, alloc, dealloc};
 use std::mem::{MaybeUninit, align_of, forget, size_of};
-use std::ptr::{NonNull, copy_nonoverlapping, read, write};
+use std::ptr::{NonNull, read, write};
 use std::slice::{from_raw_parts, from_raw_parts_mut};
 
 // ===== SharedBin layout =====================================================
@@ -251,22 +251,17 @@ pub unsafe fn shared_bin_freeze(p: *mut SharedBin) {
     }
 }
 
-/// Write `bytes` after `p`'s written bytes, widening them. The caller has
-/// checked `bytes.len() <= (*p).spare()`.
+/// Widen `p`'s written bytes by `len` bytes, which `fill` writes. `fill` gets
+/// exactly those `len` bytes, unwritten, and must write every one. The caller
+/// has checked `len <= (*p).spare()`.
 ///
 /// # Safety
 /// `p` must point at a live SharedBin the caller owns (see `SharedBin`).
-pub unsafe fn shared_bin_append(p: *mut SharedBin, bytes: &[u8]) {
+pub unsafe fn shared_bin_append(p: *mut SharedBin, len: usize, fill: impl FnOnce(&mut [MaybeUninit<u8>])) {
     let bin = unsafe { &mut *p };
-    assert!(bytes.len() <= bin.spare(), "append past the buffer's spare room");
-    unsafe {
-        copy_nonoverlapping(
-            bytes.as_ptr(),
-            (bin.bytes_ptr as *mut u8).add(bin.bytes_len),
-            bytes.len(),
-        );
-    }
-    bin.bytes_len += bytes.len();
+    assert!(len <= bin.spare(), "append past the buffer's spare room");
+    fill(unsafe { from_raw_parts_mut((bin.bytes_ptr as *mut MaybeUninit<u8>).add(bin.bytes_len), len) });
+    bin.bytes_len += len;
     unsafe { write((bin.bytes_ptr as *mut u8).add(bin.bytes_len), 0) };
 }
 

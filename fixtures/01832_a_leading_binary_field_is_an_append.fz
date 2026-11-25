@@ -1,0 +1,112 @@
+#---
+# purpose: "a construction whose first field is an unsized binary appends to it and spells what Elixir spells, for a rest of integers of 8, 16 and 32 bits in each byte order, a binary, a utf8 code point, floats of 32 and 64 bits, mid-byte fields that add up to whole bytes and an empty rest, for accumulators below, at and above 64 bytes, for an accumulator that is kept and read after later appends to it (a sibling append never changes it or another sibling), and for a leading bitstring that does not end on a byte boundary or a rest that does not, which are built whole"
+# oracle: self
+# oracle.stamp: 75f7e56ea6f7eefa
+# args: 0
+#---
+defmodule Main do
+  # Values the compiler cannot see through: each is read from a list at a
+  # position that is known only at run time.
+  def v(list, k), do: Enum.at(list, String.to_integer(hd(System.argv())) + k)
+
+  def show(value), do: IO.puts(inspect(value, limit: :infinity))
+
+  # A binary of `n` bytes whose bytes are 1, 2, 3, ... modulo 251.
+  def counted(n), do: counted(n, 0, <<>>)
+  def counted(n, i, acc) when i == n, do: acc
+  def counted(n, i, acc), do: counted(n, i + 1, <<acc::binary, rem(i, 251) + 1>>)
+
+  def rest_kinds(acc) do
+    ints = [0xA5, 0x1234, 0x89ABCDEF, 0x41, -2, 0x1F600, 5]
+    small = v(ints, 0)
+    word = v(ints, 1)
+    long = v(ints, 2)
+    scalar = v(ints, 3)
+    neg = v(ints, 4)
+    emoji = v(ints, 5)
+    nibble = v(ints, 6)
+    half = v([1.5, -2.25], 0)
+    quarter = v([1.5, -2.25], 1)
+    tail = v(["", "xyz", <<0, 255>>], 1)
+    empty = v(["", "xyz"], 0)
+    [
+      <<acc::binary, small>>,
+      <<acc::binary, small::8, word::16>>,
+      <<acc::binary, long::32>>,
+      <<acc::binary, word::16-little, long::32-little>>,
+      <<acc::binary, neg::signed-16, neg::signed-little-32>>,
+      <<acc::binary, tail::binary>>,
+      <<acc::binary, small::8, tail::binary, small::8>>,
+      <<acc::binary, scalar::utf8, emoji::utf8>>,
+      <<acc::binary, half::float-32, half::float-64>>,
+      <<acc::binary, quarter::float-little-64>>,
+      <<acc::binary, nibble::4, nibble::4>>,
+      <<acc::binary, nibble::4, small::8, nibble::4>>,
+      <<acc::binary, empty::binary>>,
+      <<acc::binary>>,
+      <<acc::binary, "">>
+    ]
+  end
+
+  # Accumulators of every length class around the inline limit of 64 bytes.
+  def lengths() do
+    for n <- [0, 1, 7, 8, 9, 62, 63, 64, 65, 66, 100, 130] do
+      for built <- rest_kinds(counted(n)), do: show(built)
+    end
+  end
+
+  # An accumulator kept and read after later appends: appending twice to the
+  # same value gives two results that agree on the shared prefix and differ
+  # after it, and neither changes the value appended to.
+  def kept() do
+    base = counted(70)
+    first = <<base::binary, 1, 2, 3>>
+    second = <<base::binary, 9, 8>>
+    third = <<first::binary, 4>>
+    fourth = <<first::binary, 5, 6>>
+    show(base)
+    show(first)
+    show(second)
+    show(third)
+    show(fourth)
+    show([byte_size(base), byte_size(first), byte_size(second), byte_size(third), byte_size(fourth)])
+    show(first == <<base::binary, 1, 2, 3>>)
+    show(second == <<base::binary, 9, 8>>)
+  end
+
+  # A loop that keeps every intermediate accumulator, so each is read after
+  # every later append.
+  def trail(0, acc, seen), do: [acc | seen]
+  def trail(n, acc, seen), do: trail(n - 1, <<acc::binary, rem(n, 200)::8, "ab"::binary>>, [acc | seen])
+
+  def kept_trail() do
+    seen = trail(40, "", [])
+    show(Enum.map(seen, &byte_size/1))
+    show(hd(seen))
+    show(Enum.at(seen, 20))
+  end
+
+  # A leading bitstring that is not whole bytes is built whole, as is a rest
+  # that is not whole bytes.
+  def whole() do
+    bits = v([<<5::3>>, <<255::5>>], 0)
+    more = v([<<5::3>>, <<255::5>>], 1)
+    byte = v([7, 8], 0)
+    nibble = v([7, 8], 1)
+    show(<<bits::bitstring, byte>>)
+    show(<<bits::bitstring, more::bitstring>>)
+    show(<<bits::bits, bits::bits, bits::bits>>)
+    show(<<counted(3)::binary, nibble::4>>)
+    show(<<counted(70)::binary, nibble::4, bits::bitstring>>)
+    show(<<counted(70)::binary, nibble::5, bits::bitstring>>)
+  end
+
+  def main() do
+    lengths()
+    kept()
+    kept_trail()
+    whole()
+  end
+end
+
+Main.main()

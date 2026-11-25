@@ -191,10 +191,14 @@ fn a_heap_binary_keeps_its_bytes_right_after_its_header() {
 fn an_append_writes_the_trailing_nul_at_the_new_end() {
     let p = shared_bin_alloc_with_room(b"ab", 8);
     unsafe {
-        shared_bin_append(p, b"cde");
+        shared_bin_append(p, 3, |dest| {
+            dest.write_copy_of_slice(b"cde");
+        });
         let bytes = from_raw_parts((*p).bytes_ptr, (*p).bytes_len + 1);
         assert_eq!(bytes, b"abcde\0");
-        shared_bin_append(p, b"f");
+        shared_bin_append(p, 1, |dest| {
+            dest.write_copy_of_slice(b"f");
+        });
         assert_eq!(*(*p).bytes_ptr.add(6), 0);
         shared_bin_release(p);
     }
@@ -542,7 +546,11 @@ fn concat(heap: &mut Heap, left: AnyValue, right: &[u8]) -> BinView {
         let word = left.heap_object_word().unwrap();
         from_raw_parts(Bin::of_binary(word).ptr(), Bin::of_binary(word).bit_len() as usize / 8)
     };
-    let joined = unsafe { heap.alloc_concatenation(left_bytes, view, right) };
+    let joined = unsafe {
+        heap.alloc_concatenation(left_bytes, view, right.len(), |dest| {
+            dest.write_copy_of_slice(right);
+        })
+    };
     unsafe {
         BinView::from_raw(
             joined

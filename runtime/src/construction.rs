@@ -3,14 +3,18 @@
 //!
 //! A construction hands the runtime one array of [`FzBsField`] and gets the
 //! binary back. `Segment` is what a field means once its value and size are
-//! known; [`size_in_bits`] adds the segments up and [`fill`] writes them from
-//! a [`BitSink`]'s position onward, so a result that continues an existing
-//! buffer needs only a sink that starts after what the buffer holds.
+//! known. Each field is resolved to its segment once; [`size_in_bits`] adds the
+//! segments up, and a [`BitSink`] writes each one in order. A construction that
+//! starts with an unsized binary continues that binary: [`build`] appends the
+//! rest to it.
 
-use crate::bits::Bin;
+use crate::any_value::binview_addr_from_tagged;
+use crate::bits::{Bin, BinView};
 use crate::bitstr::{BitSink, BitType, apply_endian_for_write, encode_utf8, encode_utf16, encode_utf32};
 use crate::ir_runtime::{decode_bit_type, decode_bs_field_spec, decode_endian};
 use crate::process::Process;
+use smallvec::SmallVec;
+use std::mem::MaybeUninit;
 use std::slice::from_raw_parts;
 
 /// One segment of a construction as the compiled code or the interpreter
@@ -119,25 +123,102 @@ impl Segment<'_> {
     }
 }
 
-/// The bits the segments add up to.
-pub fn size_in_bits(fields: &[FzBsField]) -> u64 {
-    fields.iter().map(|field| Segment::of(field).bit_len()).sum()
+/// A construction's segments, each resolved once. Most constructions have a
+/// handful of segments, which stay on the stack.
+type Segments<'a> = SmallVec<[Segment<'a>; 8]>;
+
+fn resolve(fields: &[FzBsField]) -> Segments<'_> {
+    fields.iter().map(Segment::of).collect()
 }
 
-/// Write every segment, in order, from the sink's position.
-pub fn fill(fields: &[FzBsField], sink: &mut BitSink<'_>) {
-    for field in fields {
-        Segment::of(field).write(sink);
+fn bits_of(segments: &[Segment<'_>]) -> u64 {
+    segments.iter().map(Segment::bit_len).sum()
+}
+
+fn write_all(segments: &[Segment<'_>], sink: &mut BitSink<'_>) {
+    for segment in segments {
+        segment.write(sink);
     }
 }
 
+/// The bits the segments add up to.
+pub fn size_in_bits(fields: &[FzBsField]) -> u64 {
+    bits_of(&resolve(fields))
+}
+
+/// Write every segment, in order, from the sink's position.
+#[cfg(test)]
+fn fill(fields: &[FzBsField], sink: &mut BitSink<'_>) {
+    write_all(&resolve(fields), sink);
+}
+
 /// The binary the segments spell, on `process`'s heap: sized from the
-/// segments, allocated once, written once.
+/// segments, allocated once, written once. A construction that starts with an
+/// unsized binary of whole bytes is an append to it, through the heap's one
+/// append.
 pub fn build(process: &mut Process, fields: &[FzBsField]) -> u64 {
-    let bit_len = size_in_bits(fields);
+    let segments = resolve(fields);
+    if let Some(append) = Append::of(fields, &segments) {
+        return append.build(process);
+    }
+    let bit_len = bits_of(&segments);
     let byte_len = bit_len.div_ceil(8) as usize;
-    let value = process.alloc_bitstring_with(byte_len, bit_len, |dest| fill(fields, &mut BitSink::new(dest)));
+    let value = process.alloc_bitstring_with(byte_len, bit_len, |dest| write_all(&segments, &mut BitSink::new(dest)));
     value.ref_word().raw_word()
+}
+
+/// A construction that continues its first segment: an unsized binary of
+/// whole bytes, which is byte-aligned because it is first, followed by
+/// segments that add up to whole bytes, so the result is a whole-byte binary.
+struct Append<'s, 'a> {
+    leading: u64,
+    rest: &'s [Segment<'a>],
+    rest_bytes: usize,
+}
+
+impl<'s, 'a> Append<'s, 'a> {
+    /// The append `segments` make, or `None` for a construction built whole.
+    fn of(fields: &[FzBsField], segments: &'s [Segment<'a>]) -> Option<Self> {
+        let (leading, first) = fields.first().zip(segments.first())?;
+        let rest = &segments[1..];
+        let (ty_tag, size_present, unit, ..) = decode_bs_field_spec(leading.spec);
+        let unsized_binary = decode_bit_type(ty_tag) == BitType::Binary && size_present == 0 && unit.is_multiple_of(8);
+        let Segment::Bits { bits, .. } = first else {
+            return None;
+        };
+        let rest_bits = bits_of(rest);
+        (unsized_binary && bits.is_multiple_of(8) && rest_bits.is_multiple_of(8)).then_some(Append {
+            leading: leading.value,
+            rest,
+            rest_bytes: (rest_bits / 8) as usize,
+        })
+    }
+
+    fn build(&self, process: &mut Process) -> u64 {
+        extend(process, self.leading, self.rest_bytes, |dest| {
+            write_all(self.rest, &mut BitSink::new(dest))
+        })
+    }
+}
+
+/// The binary `leading`, a live whole-byte binary, followed by `right_len`
+/// bytes that `fill` writes, through the heap's one append: the leading bytes
+/// stay where they are when their buffer can take the right side, and are
+/// copied once otherwise.
+fn extend(process: &mut Process, leading: u64, right_len: usize, fill: impl FnOnce(&mut [MaybeUninit<u8>])) -> u64 {
+    let left = unsafe { Bin::of_binary(leading) }.bytes();
+    let left_view = binview_addr_from_tagged(leading).map(|addr| unsafe { BinView::from_raw(addr) });
+    // SAFETY: `left` is the bytes of a live whole-byte binary, and a heap allocation does not move it.
+    let value = unsafe { process.alloc_concatenation(left, left_view, right_len, fill) };
+    value.ref_word().raw_word()
+}
+
+/// The binary `leading` followed by `right_len` bytes the caller writes, which
+/// is `extend` with nothing written. Compiled code appends a construction whose
+/// rest it can write itself this way, and writes the rest after the leading
+/// bytes.
+pub fn append_unfilled(process: &mut Process, leading: u64, right_len: usize) -> u64 {
+    extend(process, leading, right_len, |_| {})
 }
 
 /// A whole-byte binary of `byte_len` bytes whose payload the caller writes,

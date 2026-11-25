@@ -989,7 +989,8 @@ impl Process {
         value
     }
 
-    /// The binary `left <> right`; see [`Heap::alloc_concatenation`].
+    /// `left` followed by `right_len` bytes `fill` writes; see
+    /// [`Heap::alloc_concatenation`].
     ///
     /// # Safety
     /// As [`Heap::alloc_concatenation`].
@@ -997,9 +998,10 @@ impl Process {
         &mut self,
         left_bytes: &[u8],
         left_view: Option<crate::bits::BinView>,
-        right: &[u8],
+        right_len: usize,
+        fill: impl FnOnce(&mut [std::mem::MaybeUninit<u8>]),
     ) -> AnyValue {
-        let value = unsafe { self.heap.alloc_concatenation(left_bytes, left_view, right) };
+        let value = unsafe { self.heap.alloc_concatenation(left_bytes, left_view, right_len, fill) };
         self.end_quantum_when_binaries_due();
         value
     }

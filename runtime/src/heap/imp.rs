@@ -1175,33 +1175,38 @@ impl Heap {
         AnyValue::heap_ptr(p, ValueKind::BITSTRING)
     }
 
-    /// The binary `left <> right`, where `left` is the whole-byte value
-    /// `left_bytes`, viewed through `left_view` when it is a BinView.
+    /// The binary that is `left_bytes`, a whole-byte value viewed through
+    /// `left_view` when it is a BinView, followed by `right_len` bytes that
+    /// `fill` writes. `fill` gets exactly those bytes, unwritten, and must
+    /// write every one; it runs after `left` is placed, and may read any live
+    /// binary, `left` included.
     ///
     /// When `left` ends where its buffer's written bytes end and the buffer has
-    /// room for `right` (only a buffer a concatenation allocated, and not yet
-    /// frozen, has any), `right` is written into that room and the result is a
-    /// longer view of the same buffer: `left` is not copied, and keeps its own
-    /// length. Otherwise a result of at most `SHARED_BIN_THRESHOLD_BYTES` is
-    /// built inline, and a larger one gets a new buffer with as much room as
-    /// it holds bytes, so a run of appends allocates a buffer per doubling.
-    /// Each side is written once.
+    /// room for the right side (only a buffer a concatenation allocated, and
+    /// not yet frozen, has any), it is written into that room and the result is
+    /// a longer view of the same buffer: `left` is not copied, and keeps its
+    /// own length. Otherwise a result of at most `SHARED_BIN_THRESHOLD_BYTES` is
+    /// built inline, and a larger one gets a new buffer with as much room as it
+    /// holds bytes, so a run of appends allocates a buffer per doubling. Each
+    /// side is written once. This is the one append: `<>` and a construction
+    /// that starts with an unsized binary both end here.
     ///
     /// # Safety
-    /// `left_bytes` and `right` must be live byte slices that stay valid for
-    /// the call, and `left_view`, if present, the BinView `left_bytes` views.
+    /// `left_bytes` must be a live byte slice that stays valid for the call,
+    /// and `left_view`, if present, the BinView it views.
     pub unsafe fn alloc_concatenation(
         &mut self,
         left_bytes: &[u8],
         left_view: Option<BinView>,
-        right: &[u8],
+        right_len: usize,
+        fill: impl FnOnce(&mut [MaybeUninit<u8>]),
     ) -> AnyValue {
         if let Some(view) = left_view.filter(BinView::ends_at_buffer_end) {
             let shared = view.shared_raw();
-            if right.len() <= unsafe { &*shared }.spare() {
-                unsafe { shared_bin_append(shared, right) };
+            if right_len <= unsafe { &*shared }.spare() {
+                unsafe { shared_bin_append(shared, right_len, fill) };
                 self.count_binary_shared(view.share());
-                let bit_len = (left_bytes.len() + right.len()) as u64 * 8;
+                let bit_len = (left_bytes.len() + right_len) as u64 * 8;
                 let longer = alloc_view(
                     self,
                     view.binref(),
@@ -1212,18 +1217,21 @@ impl Heap {
                 return AnyValue::heap_ptr(longer.as_raw(), ValueKind::BINVIEW);
             }
         }
-        let total = left_bytes.len() + right.len();
+        let total = left_bytes.len() + right_len;
         if total <= SHARED_BIN_THRESHOLD_BYTES {
             return self.alloc_inline_bitstring(total, total as u64 * 8, |dest| {
-                dest[..left_bytes.len()].write_copy_of_slice(left_bytes);
-                dest[left_bytes.len()..].write_copy_of_slice(right);
+                let (left, right) = dest.split_at_mut(left_bytes.len());
+                left.write_copy_of_slice(left_bytes);
+                fill(right);
             });
         }
         let handle = SharedBinHandle::from_bytes_with_room(&[], total * 2);
         let shared = handle.as_raw();
         unsafe {
-            shared_bin_append(shared, left_bytes);
-            shared_bin_append(shared, right);
+            shared_bin_append(shared, left_bytes.len(), |dest| {
+                dest.write_copy_of_slice(left_bytes);
+            });
+            shared_bin_append(shared, right_len, fill);
         }
         self.node
             .runtime_allocs
