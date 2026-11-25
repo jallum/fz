@@ -4,14 +4,15 @@
   "blocks": [
     "fz-mue"
   ],
+  "closed_at": "2026-11-25T02:03:07Z",
   "created": "2026-11-18T20:44:05Z",
   "description": "'unknown bitstring modifier: bytes' (alias of binary). Reproducer: /Users/j5n/Workspace/fz-otp-json/punch/33_bs_rest_bytes.fz\n\nPart of fz-mue (fz runs OTP's json.erl unchanged). Port and harness: /Users/j5n/Workspace/fz-otp-json/.",
   "id": "fz-mue.18",
   "labels": [],
   "parent": "fz-9e2.13",
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "The ::bytes bitstring modifier is accepted",
   "type": "feature",
-  "updated_at": "2026-11-25T01:00:26Z"
+  "updated_at": "2026-11-25T02:03:07Z"
 }
