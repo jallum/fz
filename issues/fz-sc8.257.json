@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-25T11:31:15Z",
+  "description": "From: Bugs and Cleanup. User-approved 2026-11-25 (\"Land, ticket overload choice\").\n\nEvidence: lib declares two specs for concat, `@spec concat([a], [b]) :: [a | b]` and `@spec concat([a], b) :: maybe_improper_list(a, b) | b`. fz gives every call the union of both results instead of the result of the overload its argument types select. So `list ++ list` loses its proper-list result. After fz-sc8.22.3 (#903), the distiller's ++ sites pay for this: largest drive +412, derivations +219, reads +2,732. Measured in sc8.22.3's probes (B\u0026C scratchpad s22/b3/table*.txt).\n\nRelated but different: fz-i89 (a caller trusts only a @spec result that something proved).\n\nDone when: a call whose argument types match exactly one overload gets that overload's result. A test shows `list ++ list` is proper again, and the distiller's numbers fall back by the cost above. The ceilings are lowered to match.",
+  "id": "fz-sc8.257",
+  "labels": [],
+  "parent": "fz-sc8",
+  "priority": 3,
+  "status": "open",
+  "title": "A call chooses the @spec overload its argument types match",
+  "type": "bug",
+  "updated_at": "2026-11-25T11:31:15Z"
+}
