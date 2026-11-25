@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Elixir Parity",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-25T11:31:18Z",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "Inspect.Algebra is ported from Elixir",
   "type": "feature",
-  "updated_at": "2026-11-25T11:31:18Z"
+  "updated_at": "2026-11-25T11:31:19Z"
 }
