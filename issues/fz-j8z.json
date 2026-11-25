@@ -23,7 +23,7 @@
   ],
   "priority": 3,
   "status": "in_progress",
-  "title": "Kernel has binary_part/3, in bodies and guards, as in Elixir",
+  "title": "Kernel has binary_part/3 in bodies, as in Elixir",
   "type": "feature",
-  "updated_at": "2026-11-25T01:00:34Z"
+  "updated_at": "2026-11-25T01:17:30Z"
 }
