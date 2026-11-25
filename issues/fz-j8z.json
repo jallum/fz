@@ -19,11 +19,15 @@
     {
       "text": "Board cleanup approved by the user, verbatim \"fz-9e2 cleanup approved\" (in Binary Handling's session, 2026-11-19). Folded with fz-mue.5's binary_part: one implementation of binary_part/3, owned by whichever ticket lands first; the other closes against it. Landing it also unblocks tools/floor's 08b_binary_part program.",
       "timestamp": "2026-11-19T01:32:14Z"
+    },
+    {
+      "text": "Narrowed to bodies (user: 'Land body now, guards as ticket', relayed by Elixir Parity 2026-11-24). Guards: fz-mue.63.",
+      "timestamp": "2026-11-25T01:17:35Z"
     }
   ],
   "priority": 3,
   "status": "in_progress",
   "title": "Kernel has binary_part/3 in bodies, as in Elixir",
   "type": "feature",
-  "updated_at": "2026-11-25T01:17:30Z"
+  "updated_at": "2026-11-25T01:17:35Z"
 }
