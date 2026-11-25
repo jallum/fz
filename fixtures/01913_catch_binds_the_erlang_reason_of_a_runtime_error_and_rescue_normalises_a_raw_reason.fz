@@ -1,0 +1,91 @@
+#---
+# purpose: "catch :error, reason binds the Erlang reason of an error the runtime raised, rescue turns a raw Erlang reason into its exception, and catch _, _ binds nothing"
+# oracle: self
+# oracle.stamp: 29d483bc30957f7b
+#---
+defmodule Main do
+  def one(1), do: :one
+
+  def quotient(a, b), do: div(a, b)
+
+  def match(a), do: {:ok, _} = a
+
+  def pick(a) do
+    case a do
+      :yes -> 1
+    end
+  end
+
+  def conditions(a) do
+    cond do
+      a == 1 -> :one
+    end
+  end
+
+  def bad_map(a), do: Map.fetch!(a, :key)
+
+  def missing_key(map), do: Map.fetch!(map, :absent)
+
+  def reason(fun) do
+    try do
+      fun.()
+    catch
+      kind, reason -> {kind, reason}
+    end
+  end
+
+  def kind_only(fun) do
+    try do
+      fun.()
+    catch
+      :error, _reason -> :an_error
+      :throw, value -> {:thrown, value}
+    end
+  end
+
+  def anything(fun) do
+    try do
+      fun.()
+    catch
+      _, _ -> :caught
+    end
+  end
+
+  def exception(fun) do
+    try do
+      fun.()
+    rescue
+      e in ArgumentError -> {:argument_error, e.message}
+      e in MatchError -> {:match_error, e.term}
+      e in ArithmeticError -> {:arithmetic_error, e.message}
+      e in KeyError -> {:key_error, e.key}
+      e in ErlangError -> {:erlang_error, e.original}
+    end
+  end
+
+  def main() do
+    IO.inspect(reason(fn -> one(2) end))
+    IO.inspect(reason(fn -> quotient(1, 0) end))
+    IO.inspect(reason(fn -> match(:b) end))
+    IO.inspect(reason(fn -> pick(:no) end))
+    IO.inspect(reason(fn -> conditions(2) end))
+    IO.inspect(reason(fn -> bad_map(1) end))
+    IO.inspect(reason(fn -> missing_key(%{a: 1}) end))
+    IO.inspect(reason(fn -> :erlang.error(:boom) end))
+    IO.inspect(reason(fn -> :erlang.error({:badmatch, 1}) end))
+    IO.inspect(reason(fn -> throw(:ball) end))
+    IO.inspect(reason(fn -> exit(:gone) end))
+    IO.inspect(kind_only(fn -> one(2) end))
+    IO.inspect(kind_only(fn -> throw(:ball) end))
+    IO.inspect(anything(fn -> one(2) end))
+    IO.inspect(anything(fn -> throw(:ball) end))
+    IO.inspect(exception(fn -> :erlang.error(:badarg) end))
+    IO.inspect(exception(fn -> :erlang.error({:badmatch, 1}) end))
+    IO.inspect(exception(fn -> :erlang.error(:badarith) end))
+    IO.inspect(exception(fn -> :erlang.error({:badkey, :k}) end))
+    IO.inspect(exception(fn -> :erlang.error(:boom) end))
+    IO.inspect(exception(fn -> match(:b) end))
+  end
+end
+
+Main.main()

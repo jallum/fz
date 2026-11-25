@@ -731,8 +731,8 @@ defmodule Kernel do
     fz_spawn(fn ->
       try do
         fun.()
-      catch
-        :error, reason -> Exception.__uncaught__(reason)
+      rescue
+        exception -> Exception.__uncaught__(exception)
       end
     end)
   end

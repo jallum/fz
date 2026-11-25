@@ -24215,6 +24215,73 @@ fn called_modules(settled: &Settled) -> Vec<String> {
     modules
 }
 
+/// The names of the functions the settled program's call sites select.
+fn called_function_names(settled: &Settled) -> Vec<String> {
+    use fz_runtime::function_denotation::FunctionOrigin;
+    let mut names = Vec::new();
+    for record in settled.callsites().all() {
+        for target in record.summary.targets {
+            let SelectedCallee::Function(function) = target.callee else {
+                continue;
+            };
+            if let FunctionOrigin::Named { name, .. } = &settled.world().function_ref(function).origin {
+                names.push(name.clone());
+            }
+        }
+    }
+    names
+}
+
+fn called_after_settling(name: &str, source: &str) -> Vec<String> {
+    called_function_names(&Drive::source(name, source).settle())
+}
+
+/// A `catch` clause that reads no reason is handed what the raise delivered
+/// and asks the library for nothing: `catch _, _`, a clause on a kind other than
+/// `:error`, a reason it never uses, and a re-raise of its own kind and value.
+#[test]
+fn a_catch_that_reads_no_reason_calls_no_reason_translation() {
+    let called = called_after_settling(
+        "catch_reads_no_reason.fz",
+        "def main() do\n  try do\n    throw(1)\n  catch\n    :throw, value -> value\n    _, _ -> 0\n    :error, _reason -> 2\n  end\nend\n",
+    );
+    assert!(!called.contains(&"__reason__".to_string()), "called: {called:?}");
+
+    let called = called_after_settling(
+        "catch_rethrows.fz",
+        "def main() do\n  try do\n    throw(1)\n  catch\n    kind, reason -> Exception.__rethrow__(kind, reason)\n  end\nend\n",
+    );
+    assert!(!called.contains(&"__reason__".to_string()), "called: {called:?}");
+}
+
+/// A `catch` clause that uses the reason of an error is handed the Erlang
+/// reason, so the library's translation is called.
+#[test]
+fn a_catch_that_reads_the_reason_calls_the_reason_translation() {
+    let called = called_after_settling(
+        "catch_reads_reason.fz",
+        "def main() do\n  try do\n    throw(1)\n  catch\n    :error, reason -> reason\n  end\nend\n",
+    );
+    assert!(called.contains(&"__reason__".to_string()), "called: {called:?}");
+}
+
+/// A raise makes the exception where it is raised: `:erlang.error` calls the
+/// normalisation, and a `rescue` calls nothing to convert what it receives.
+#[test]
+fn only_erlang_error_normalises_and_a_rescue_converts_nothing() {
+    let rescued = called_after_settling(
+        "rescue_converts_nothing.fz",
+        "def main() do\n  try do\n    raise ArgumentError, \"x\"\n  rescue\n    e in ArgumentError -> e\n  end\nend\n",
+    );
+    assert!(!rescued.contains(&"__normalize__".to_string()), "called: {rescued:?}");
+
+    let raised = called_after_settling(
+        "erlang_error_normalises.fz",
+        "def main() do\n  :erlang.error(:boom)\nend\n",
+    );
+    assert!(raised.contains(&"__normalize__".to_string()), "called: {raised:?}");
+}
+
 /// The built-in exceptions are library modules, defined when something names
 /// them. An uncaught exception is asked for its message through its module, so
 /// a program defines the exceptions it can raise: here the `KeyError` it

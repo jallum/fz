@@ -1,0 +1,6 @@
+:function_clause
+{:badmatch, 1}
+%ArgumentError{message: "text"}
+%MatchError{term: 1}
+%MatchError{term: 1}
+%ArgumentError{message: "argument error"}

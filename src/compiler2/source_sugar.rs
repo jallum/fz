@@ -724,7 +724,8 @@ impl ComprehensionBuild<'_> {
 
     /// The reduction under a `try`: a finished accumulator goes to the
     /// collector with `:done`; a raise, throw or exit tells the collector
-    /// `:halt` with the initial accumulator and then goes on with its own kind.
+    /// `:halt` with the initial accumulator and then goes on with its own kind and
+    /// the value it was handed.
     fn halting_on_a_raise(
         &self,
         reduced: AnyValueRef,
@@ -736,13 +737,16 @@ impl ComprehensionBuild<'_> {
         let reason = self.generated("__fz_for_reason", 0)?;
         let acc = self.generated("__fz_for_acc", 0)?;
         let halt = self.closure_call(fun, &[init, builder.atom("halt")])?;
-        let raise = ast_call(
+        let rethrow = ast_call(
             builder,
             builder.atom("."),
             self.meta,
-            &[builder.atom("erlang"), builder.atom("raise")],
+            &[
+                builder.alias(&QuotedSourceMetadata::default(), &["Exception"])?,
+                builder.atom("__rethrow__"),
+            ],
         )?;
-        let raise_again = ast_call(builder, raise, self.meta, &[kind, reason, builder.empty_list()])?;
+        let raise_again = ast_call(builder, rethrow, self.meta, &[kind, reason])?;
         let halted = named_call(builder, "__block__", self.meta, &[halt, raise_again])?;
         let caught = named_call(builder, "->", self.meta, &[builder.list(&[kind, reason])?, halted])?;
         let done = self.closure_call(fun, &[acc, builder.atom("done")])?;

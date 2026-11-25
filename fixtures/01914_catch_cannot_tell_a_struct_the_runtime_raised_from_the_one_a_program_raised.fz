@@ -1,0 +1,39 @@
+#---
+# purpose: "a catch clause that reads the reason cannot tell a struct the runtime raised from one the program raised, and reads :badarg raised by :erlang.error as an ArgumentError"
+#---
+# Elixir binds the raw reason for the runtime's error and the struct for the
+# program's raise; fz binds the raw reason for both. Elixir also binds :badarg
+# after :erlang.error(:badarg); fz binds the %ArgumentError{} that call raised.
+# The expected output is written by hand, not taken from Elixir.
+defmodule Main do
+  def one(1), do: :one
+
+  def reason(fun) do
+    try do
+      fun.()
+    catch
+      :error, reason -> reason
+    end
+  end
+
+  def rescued(fun) do
+    try do
+      fun.()
+    rescue
+      e -> e
+    end
+  end
+
+  def main() do
+    IO.inspect(reason(fn -> one(2) end))
+    IO.inspect(reason(fn -> raise %MatchError{term: 1} end))
+    IO.inspect(reason(fn -> raise ArgumentError, "text" end))
+    IO.inspect(rescued(fn -> raise %MatchError{term: 1} end))
+    IO.inspect(rescued(fn -> match(1) end))
+    IO.inspect(reason(fn -> :erlang.error(:badarg) end))
+  end
+
+  def match(a), do: {:ok, _} = a
+end
+
+Main.main()

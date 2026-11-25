@@ -12,7 +12,7 @@ failed process, and the exit status that follows.
 ## The primitive
 
 `Kernel.panic/1`, `Kernel.throw/1` and `Kernel.exit/1` are the raise
-primitives, one per kind; `:erlang.error/1` is `panic/1` under Elixir's name. Each wraps an `extern "fz" defp ... :: none` whose
+primitives, one per kind; `:erlang.error/1` is `panic/1` after `Exception.__normalize__/1` (below). Each wraps an `extern "fz" defp ... :: none` whose
 physical export is `fz_runtime::failure::fz_panic(process, value_ref)`,
 `fz_throw(process, value_ref)` or `fz_exit(process, value_ref)`; each is `raise`
 with its fixed kind (`error`, `throw`, `exit`). Nothing in Kernel takes a kind
@@ -214,16 +214,17 @@ and from the dispatch step, below. A `try` with `rescue` or `catch` has:
 - the body block, which pops its handler (`ExprStep::PopHandler`) as soon as the
   body completes and delivers the body's value to the join;
 - the handler block: a pattern dispatch over the three params `(kind, value,
-  name)`: first the rescue rows, one row per exception a clause names, then one
+  name)`, and a fourth subject, the reason, when a catch clause reads it
+  (below): first the rescue rows, one row per exception a clause names, then one
   row per catch clause, in source order within each (`handler_arms`, as Elixir
   orders `Rescue ++ Catch`). Rescue rows match kind `error` only, so a throw or
-  an exit never matches one. A rescue clause that admits a non-exception value
-  (`ErlangError`, or a bare variable) gets a wrap row matching a `nil` name; its
-  arm wraps the value in `%ErlangError{original: value}` before the clause body
-  runs. A catch row is `[kind pattern, value pattern, _]` with the clause's guard
-  as the row's guard; a clause written with one head is a clause for throws, so
-  its kind pattern is the atom `:throw`, and `catch :error, r` binds the raised
-  value as it is, with no `ErlangError` wrap. The dispatch has no miss row:
+  an exit never matches one. A rescue row is `[:error, binding, name]` and does no conversion: the
+  value it receives was made an exception where it was raised. A catch row is
+  `[kind pattern, _, _, value pattern]` (the value pattern sits on the reason
+  subject) when some catch clause reads the reason, and `[kind pattern, value
+  pattern, _]` otherwise, with the clause's guard as the row's guard; a clause
+  written with one head is a clause for throws, so its kind pattern is the atom
+  `:throw`. The dispatch has no miss row:
   its last resort is `LastResort::Reraise`, which continues the delivered kind
   and value (the plan's first two inputs) to the next handler out by the route
   it arrived by, so a throw stays a throw;
@@ -353,6 +354,52 @@ The first is a clause with no head or three or more, the second a `catch`
 section that is not `->` clauses (an empty `catch` included). A repeated `catch`
 section is `duplicate "catch" clauses given for "try"`.
 
+## What a catch binds
+
+`:erlang.error(term)` and `:erlang.raise(:error, term, stacktrace)` raise
+`Exception.__normalize__(term)` (`lib/exception.fz`), Elixir's
+`ErlangError.normalize/2`: an exception is itself, an Erlang reason that names
+an exception (`:badarg`, `{:badmatch, term}`, `:badarith`, `:cond_clause`,
+`{:badmap, term}`, `{:badbool, op, term}`, `{:badkey, key}`,
+`{:badkey, key, term}`, `{:case_clause, term}`, `{:else_clause, term}`,
+`{:try_clause, term}`, `:undef`, `:function_clause`) is that exception, and any
+other term is `%ErlangError{original: term}`. `Kernel.panic/1` raises its value
+as given. The runtime and the library keep raising exception structs, so a
+`rescue` clause never converts anything.
+
+A `catch` clause that reads the reason of an error sees what Elixir binds, one
+table for the whole language in `Exception.__reason__/2`: the inverse of the
+table above for the exceptions fz's runtime raises (`%FunctionClauseError{}`
+reads as `:function_clause`, `%MatchError{term: t}` as `{:badmatch, t}`, and so
+on), `%ErlangError{original: o}` reads as `o`, and any other value reads as
+itself. The handler gets that extra subject only when a clause needs it
+(`handler_subjects::reads_reason`, `src/compiler2/jobs/body/handler_subjects.rs`):
+its kind pattern can match `:error` and its value pattern binds or tests
+something. `catch _, _`, `catch :throw, x`, `catch :error, _reason` and a clause
+whose only use of the reason is `Exception.__rethrow__(kind, reason)` read
+nothing, so they compile no call. `Exception.__rethrow__/2` raises again the
+value it is handed, with its kind and without normalising; `Enum.into` and the
+`for ... into:` desugaring (`halting_on_a_raise`) use it, so the library
+re-raises reach no normalisation.
+
+Known deviations from Elixir, shown in fixture `01914`:
+
+- A catch that reads the reason cannot tell a struct the runtime raised from
+  one the program raised: after `raise %MatchError{term: 1}` it sees
+  `{:badmatch, 1}`, where Elixir sees the struct.
+- After `:erlang.error(:badarg)` it sees `%ArgumentError{}`, not `:badarg`:
+  library code raises `%ArgumentError{}` for its own failures, so the table
+  cannot read that struct back as `:badarg`.
+- `%KeyError{}` reads as `{:badkey, key}` when its `term` is `nil` or a map;
+  Elixir's `map.key` gives `{:badkey, key, map}`.
+- `:badfun`, `:badarity` and `:system_limit` normalise to `ErlangError`: the
+  library has no `BadFunctionError`, `BadArityError` or `SystemLimitError`.
+- A user re-raise `:erlang.raise(kind, reason, __STACKTRACE__)` in a clause
+  that reads the reason raises the normalised reason. fz carries no
+  stacktrace, so `FunctionClauseError` loses its `module`, `function` and
+  `arity` and `KeyError` its `term`, which Elixir restores from the
+  stacktrace.
+
 ## The rescue head
 
 `decode_rescue_head` (`src/compiler2/quoted_function.rs`) accepts exactly
@@ -437,15 +484,15 @@ function the same way:
 def __entry__() do
   try do
     main()
-  catch
-    :error, reason -> Exception.__uncaught__(reason)
+  rescue
+    exception -> Exception.__uncaught__(exception)
   end
 end
 ```
 
 `Exception.__uncaught__/1` (`lib/exception.fz`) words the line in fz. An
 exception is asked for its message through its own module, a value that is no
-exception is wrapped in `%ErlangError{original: value}` first, and the line
+exception (only `Kernel.panic/1` raises one) is shown as an `ErlangError`, and the line
 `** (Name) message` goes to `fz_fail`, which fails the process with status 1
 and hands the line to the fault sink. A throw and an exit pass the clause, reach
 no handler, and are worded by the runtime.
@@ -467,10 +514,10 @@ expansion, which the interpreter runs directly.
 list them in another order than Elixir, which orders atom keys by the atom
 table; the fixtures avoid such maps. A reason atom such as
 `:badarg` prints as `** (ErlangError) Erlang error: :badarg`, as
-`:erlang.error(:badarg)` would in Elixir. Elixir normalizes a few reason atoms
-into named exceptions (`:badarith` becomes `ArithmeticError`); fz does not, so
-the library raises the named exception itself, and `rescue e in ErlangError`
-takes a raw reason and `e.original` is the reason.
+`:erlang.error(:badarg)` would in Elixir. `:erlang.error/1`
+normalizes the reasons Elixir normalizes (see "What a catch binds"), so
+`:erlang.error(:badarith)` is an `ArithmeticError`; `Kernel.panic/1` does not,
+and a bare `rescue e` binds what `panic(:reason)` raised, the raw `:reason`.
 
 An exception that shows a value (a decision's miss, below) carries the value
 in `term`, and its module's `message/1` renders it.
@@ -743,9 +790,11 @@ union replacing the last.
   `fz_reraise`, `raise_exception`, `raise_undefined_function`,
   `fz_raise_undefined_function`, `STDERR_FAULT_HOOK`.
 - `lib/exception.fz` — `Exception.message/1`, `__uncaught__/1`,
+  `__normalize__/1`, `__reason__/2`, `__rethrow__/2`,
   `__format_message_with_term__/2`; `lib/exceptions/` — the built-in exception
   modules.
 - `src/compiler2/source_publish.rs` — `PROGRAM_ENTRY`, `build_program_entry`.
+- `src/compiler2/jobs/body/handler_subjects.rs` — `reads_reason`, the reason subject.
 - `src/compiler2/identity.rs` — `Raisable`, `Raised`; `src/compiler2/world.rs`
   — `note_raisable`, `raisable_ty`, `raised_by`;
   `src/compiler2/jobs/semantic.rs` — `raises_of` and the `LoweredTail::Try`

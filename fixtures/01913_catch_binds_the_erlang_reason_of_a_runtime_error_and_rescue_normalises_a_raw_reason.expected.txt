@@ -1,0 +1,21 @@
+{:error, :function_clause}
+{:error, :badarith}
+{:error, {:badmatch, :b}}
+{:error, {:case_clause, :no}}
+{:error, :cond_clause}
+{:error, {:badmap, 1}}
+{:error, {:badkey, :absent}}
+{:error, :boom}
+{:error, {:badmatch, 1}}
+{:throw, :ball}
+{:exit, :gone}
+:an_error
+{:thrown, :ball}
+:caught
+:caught
+{:argument_error, "argument error"}
+{:match_error, 1}
+{:arithmetic_error, "bad argument in arithmetic expression"}
+{:key_error, :k}
+{:erlang_error, :boom}
+{:match_error, :b}
