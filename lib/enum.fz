@@ -1033,7 +1033,7 @@ defmodule Enum do
   @spec flat_map_list([a], (a -> Enumerable.t(b))) :: [b] when a: var, b: var
   defp flat_map_list([], _fun), do: []
   defp flat_map_list([head | tail], fun) do
-    List.concat(to_list(fun.(head)), flat_map_list(tail, fun))
+    to_list(fun.(head)) ++ flat_map_list(tail, fun)
   end
 
   @spec map_reduce_list([a], b, (a, b -> {c, b})) :: {[c], b} when a: var, b: var, c: var
@@ -1583,7 +1583,7 @@ defmodule Enum do
 
   @spec concat_list([[a]]) :: [a] when a: var
   defp concat_list([]), do: []
-  defp concat_list([head | tail]), do: List.concat(to_list(head), concat_list(tail))
+  defp concat_list([head | tail]), do: to_list(head) ++ concat_list(tail)
 
   @doc """
   Concatenates `left` and `right` into a single list.
@@ -1595,7 +1595,7 @@ defmodule Enum do
 
   """
   @spec concat(Enumerable.t(a), Enumerable.t(b)) :: [a | b] when a: var, b: var
-  def concat(left, right), do: List.concat(to_list(left), to_list(right))
+  def concat(left, right), do: to_list(left) ++ to_list(right)
 
   @doc """
   Returns a list of the elements of `enumerable`, with each run of

@@ -1,0 +1,60 @@
+#---
+# purpose: "A name after a dot may be any word or operator, as in Elixir: Kernel.not/1, Kernel.and/2, Kernel.or/2, Kernel.in/2, Kernel.++/2 and Kernel.--/2 call as the operators do, through a pipe and as captures, and :erlang.not/1, :erlang.and/2 and :erlang.or/2 are strict"
+# oracle: self
+# oracle.stamp: b1f1bb6c27349d7b
+#---
+defmodule Main do
+  def unknown(term) do
+    send(self(), term)
+
+    receive do
+      received -> received
+    end
+  end
+
+  def boom(), do: raise("never")
+
+  def rescued(thunk) do
+    try do
+      thunk.()
+    rescue
+      e -> inspect(e.__struct__)
+    end
+  end
+
+  def main() do
+    IO.inspect(Kernel.not(false))
+    IO.inspect(Kernel.not(true))
+    IO.inspect(true |> Kernel.not())
+    IO.inspect(Enum.map([true, false], &Kernel.not/1))
+
+    IO.inspect(Kernel.and(true, false))
+    IO.inspect(Kernel.and(true, 1))
+    IO.inspect(true |> Kernel.and(false))
+    IO.inspect(Enum.reduce([true, false], true, &Kernel.and/2))
+
+    IO.inspect(Kernel.or(false, true))
+    IO.inspect(false |> Kernel.or(true))
+    IO.inspect(Enum.reduce([false, false], false, &Kernel.or/2))
+
+    IO.inspect(Kernel.in(1, [1]))
+    IO.inspect(2 |> Kernel.in([1]))
+
+    IO.inspect(Kernel.++([1], [2]))
+    IO.inspect([1] |> Kernel.++([2]))
+    IO.inspect(Kernel.--([1, 2, 1], [1]))
+
+    IO.inspect(:erlang.not(true))
+    IO.inspect(:erlang.and(true, false))
+    IO.inspect(:erlang.or(false, true))
+
+    # `and` stops at a false left operand; the function has already evaluated both.
+    IO.inspect(Kernel.and(false, boom()))
+    IO.puts(rescued(fn -> Kernel.not(unknown(1)) end))
+    IO.puts(rescued(fn -> :erlang.not(unknown(1)) end))
+    IO.puts(rescued(fn -> :erlang.and(true, unknown(1)) end))
+    IO.puts(rescued(fn -> :erlang.or(unknown(1), true) end))
+  end
+end
+
+Main.main()

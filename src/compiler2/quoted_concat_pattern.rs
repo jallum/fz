@@ -92,7 +92,7 @@ pub(super) fn refuse_concat_call(
         return Ok(());
     }
     let parts = callee.tail.list_items()?;
-    let [module, function] = parts.as_slice() else {
+    let [_module, function] = parts.as_slice() else {
         return Ok(());
     };
     let op = match (function.root().tag() == ValueKind::ATOM)
@@ -101,7 +101,7 @@ pub(super) fn refuse_concat_call(
         .as_deref()
     {
         Some("<>") => ConcatOp::Binary,
-        Some("concat") if module_is_list(module, sources)? => ConcatOp::List,
+        Some("++") => ConcatOp::List,
         _ => return Ok(()),
     };
     let written = callee_text(&callee, sources).unwrap_or_else(|| "the call".to_string());
@@ -112,17 +112,6 @@ pub(super) fn refuse_concat_call(
             op.spelling()
         ),
     ))
-}
-
-fn module_is_list(module: &QuotedSourceCursor, sources: &SourceMap) -> Result<bool, QuotedSourceError> {
-    let Some(node) = module.ast_node(sources)? else {
-        return Ok(false);
-    };
-    if node.head.root().tag() != ValueKind::ATOM || node.head.atom_name()? != "__aliases__" {
-        return Ok(false);
-    }
-    let segments = node.tail.list_items()?;
-    Ok(matches!(segments.as_slice(), [only] if only.atom_name().is_ok_and(|name| name == "List")))
 }
 
 fn callee_text(callee: &QuotedAstNode, sources: &SourceMap) -> Option<String> {

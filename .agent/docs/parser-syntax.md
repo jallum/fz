@@ -60,6 +60,20 @@ a `ScopeForm::MacroCall` and a non-call item (a literal) is a
 `ScopeForm::Statement`. Expansion decides, per `pipeline.md` "A file's
 top-level expressions are its `main/0`".
 
+## A name after a dot is any word or operator
+
+As in Elixir (which turns keyword lexing off right after a `.`), the name in
+`target.name` may be any reserved word or any operator token, so
+`Kernel.not(x)`, `Kernel.and(a, b)` and `Kernel.++(a, b)` parse as remote
+calls. `FrontDoorParser::name_after_dot` reads it for `finish_remote_target`:
+an identifier or alias, else a reserved word (`parser::lexer::keyword_spelling`,
+the reverse reading of the one `KEYWORDS` table that `classify_source_word`
+reads forward), else an infix operator, else `@ & = | ^`. `operator_name`, the
+narrower table behind captures (`&+/2`) and import filter lists, is unchanged.
+A name Kernel does not define (`Kernel.when`, `Kernel.@`) parses and fails at
+resolve with "does not export". A field access spelled with a reserved word
+(`x.fn`) takes the same path.
+
 ## Identifiers and atoms are read by Unicode class
 
 The lexer reads characters, not bytes, for names. A name, atom or keyword key

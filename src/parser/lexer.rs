@@ -301,41 +301,54 @@ pub(crate) enum SourceWord {
     Ident,
 }
 
-/// Classifies a source word. This is the one keyword table.
+/// The one keyword table: each reserved word and the token it lexes to.
+const KEYWORDS: [(&str, Tok); 25] = [
+    ("fn", Tok::Fn),
+    ("extern", Tok::Extern),
+    ("defmacro", Tok::Defmacro),
+    ("defmodule", Tok::Defmodule),
+    ("defstruct", Tok::Defstruct),
+    ("defprotocol", Tok::Defprotocol),
+    ("defimpl", Tok::Defimpl),
+    ("alias", Tok::Alias),
+    ("import", Tok::Import),
+    ("require", Tok::Require),
+    ("do", Tok::Do),
+    ("end", Tok::End),
+    ("else", Tok::Else),
+    ("when", Tok::When),
+    ("after", Tok::After),
+    ("rescue", Tok::Rescue),
+    ("catch", Tok::Catch),
+    ("in", Tok::In),
+    ("not", Tok::Not),
+    ("and", Tok::And),
+    ("or", Tok::Or),
+    ("true", Tok::True),
+    ("false", Tok::False),
+    ("nil", Tok::Nil),
+    ("_", Tok::Underscore),
+];
+
+/// The word a keyword token was written as; `None` for any other token.
+/// After a `.` every word is a name, as in Elixir, so `Kernel.not(x)` and
+/// `Kernel.and(a, b)` call the functions those words name.
+pub(crate) fn keyword_spelling(tok: &Tok) -> Option<&'static str> {
+    KEYWORDS
+        .iter()
+        .find(|(_, keyword)| keyword == tok)
+        .map(|(word, _)| *word)
+}
+
+/// Classifies a source word through the keyword table.
 fn classify_source_word(name: &str) -> SourceWord {
-    match name {
-        "fn" => SourceWord::Keyword(Tok::Fn),
-        "extern" => SourceWord::Keyword(Tok::Extern),
-        "defmacro" => SourceWord::Keyword(Tok::Defmacro),
-        "defmodule" => SourceWord::Keyword(Tok::Defmodule),
-        "defstruct" => SourceWord::Keyword(Tok::Defstruct),
-        "defprotocol" => SourceWord::Keyword(Tok::Defprotocol),
-        "defimpl" => SourceWord::Keyword(Tok::Defimpl),
-        "alias" => SourceWord::Keyword(Tok::Alias),
-        "import" => SourceWord::Keyword(Tok::Import),
-        "require" => SourceWord::Keyword(Tok::Require),
-        "do" => SourceWord::Keyword(Tok::Do),
-        "end" => SourceWord::Keyword(Tok::End),
-        "else" => SourceWord::Keyword(Tok::Else),
-        "when" => SourceWord::Keyword(Tok::When),
-        "after" => SourceWord::Keyword(Tok::After),
-        "rescue" => SourceWord::Keyword(Tok::Rescue),
-        "catch" => SourceWord::Keyword(Tok::Catch),
-        "in" => SourceWord::Keyword(Tok::In),
-        "not" => SourceWord::Keyword(Tok::Not),
-        "and" => SourceWord::Keyword(Tok::And),
-        "or" => SourceWord::Keyword(Tok::Or),
-        "true" => SourceWord::Keyword(Tok::True),
-        "false" => SourceWord::Keyword(Tok::False),
-        "nil" => SourceWord::Keyword(Tok::Nil),
-        "_" => SourceWord::Keyword(Tok::Underscore),
-        _ => {
-            if name.as_bytes()[0].is_ascii_uppercase() {
-                SourceWord::Upper
-            } else {
-                SourceWord::Ident
-            }
-        }
+    if let Some((_, keyword)) = KEYWORDS.iter().find(|(word, _)| *word == name) {
+        return SourceWord::Keyword(keyword.clone());
+    }
+    if name.as_bytes()[0].is_ascii_uppercase() {
+        SourceWord::Upper
+    } else {
+        SourceWord::Ident
     }
 }
 

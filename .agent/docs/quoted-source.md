@@ -142,11 +142,11 @@ authority. See [`canonical-form`](canonical-form.md#canonbackendprogram).
   construction of every operand, each `::binary` unless it is a literal binary,
   as Elixir does, so a failing operand is named by its place in the chain.
   Elsewhere (a pattern) it rewrites `<>`, and everywhere `++`, to `Kernel.<>` and
-  `List.concat` calls and stamps each with `__fz_from_operator__`, whose value is
+  `Kernel.++` calls and stamps each with `__fz_from_operator__`, whose value is
   the operator's atom.
   Pattern decoding reads concatenation by that stamp, or by the bare operator
   head a `def` head still carries (heads are not sugared), and by nothing
-  else: a user-written `Kernel.<>(a, b)` or `List.concat(a, b)` in a pattern is
+  else: a user-written `Kernel.<>(a, b)` or `Kernel.++(a, b)` in a pattern is
   refused. The stamp is the second use of the rule above and is not writable
   from source.
 - `cond do` quotes through ordinary
@@ -162,8 +162,18 @@ authority. See [`canonical-form`](canonical-form.md#canonbackendprogram).
   whether or not a variable of that name is bound, as `Macro.pipe/3` reads it)
   or a subject-bearing `case`, capture placeholders become direct lambdas,
   multi/guarded lambdas become one lambda whose body is a `case`, and operators
-  become ordinary helper calls such as `List.concat`, `Enum.member?`,
+  become ordinary helper calls such as `Kernel.++`, `Kernel.--`, `Enum.member?`,
   and `Range.new` (and `Kernel.<>` in a pattern).
+- `Kernel.not/1`, `Kernel.and/2`, `Kernel.or/2` and `Kernel.in/2`, called,
+  piped or captured (`&Kernel.not/1`), are the primitive operators
+  themselves: `rewrite_remote_primitive` and `rewrite_primitive_capture`
+  rewrite the remote call or capture into the local operator call (a capture
+  becomes a lambda over it), so each has one implementation and `and`/`or`
+  still short-circuit. `Kernel` defines no function by those names: a
+  definition named like a primitive would call itself. The rewrite matches
+  the unexpanded alias `Kernel`. `:erlang.not/1`, `:erlang.and/2` and
+  `:erlang.or/2` are ordinary strict functions in `lib/erlang.fz` (both
+  operands evaluated, a non-boolean raises `ArgumentError`).
 - `for` is rewritten by `rewrite_comprehension` into nested `Enum.reduce`
   calls, one per generator, each lambda threading a generated accumulator
   (`__fz_for_acc`, ordinal = generator depth) inward. The trailing keyword

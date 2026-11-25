@@ -561,8 +561,8 @@ fn a_user_written_kernel_concat_call_is_not_the_operator() {
 }
 
 #[test]
-fn a_user_written_list_concat_call_is_not_the_operator() {
-    let (error, _) = refusal_of("def f(s) do\n  case s do\n    List.concat([1], r) -> r\n  end\nend\n");
+fn a_user_written_kernel_list_concat_call_is_not_the_operator() {
+    let (error, _) = refusal_of("def f(s) do\n  case s do\n    Kernel.++([1], r) -> r\n  end\nend\n");
     assert_eq!(
         error.user_code(),
         Some(crate::diag::codes::PARSE_CONCAT_PATTERN_OPERAND),

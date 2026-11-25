@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 use crate::diag::{Diagnostic, codes::PARSE_EXPECTED_TOKEN};
 use crate::dispatch_matrix::ProjectedProperty;
-use crate::parser::lexer::{Lexer, Sigil, SigilPiece, Tok, Token, is_infix_only_continuation};
+use crate::parser::lexer::{Lexer, Sigil, SigilPiece, Tok, Token, is_infix_only_continuation, keyword_spelling};
 use crate::source::{SourceVersion, Span};
 use crate::telemetry::RawSpanTelemetry;
 use fz_runtime::any_value::AnyValueRef;
@@ -1250,8 +1250,8 @@ impl<'t> FrontDoorParser<'t> {
         self.skip_newlines();
         let field = match self.bump() {
             Tok::Ident(name) | Tok::Upper(name) => name.clone(),
-            other => match self.operator_name(other) {
-                Some(operator) => operator.to_string(),
+            other => match self.name_after_dot(other) {
+                Some(name) => name.to_string(),
                 None => return Err(self.error(format!("expected name after `.`, got {:?}", other))),
             },
         };
@@ -2703,6 +2703,23 @@ impl<'t> FrontDoorParser<'t> {
             Tok::Percent => (110, 111, "%"),
             _ => return None,
         })
+    }
+
+    /// What a token after `.` names, as in Elixir: any reserved word, and any
+    /// operator, because `Kernel.not(x)` and `Kernel.++(a, b)` call the
+    /// functions those spellings name.
+    fn name_after_dot(&self, tok: &Tok) -> Option<&'static str> {
+        keyword_spelling(tok)
+            .or_else(|| self.infix_bp(tok).map(|(_, _, name)| name))
+            .or_else(|| self.operator_name(tok))
+            .or(match tok {
+                Tok::At => Some("@"),
+                Tok::Amp => Some("&"),
+                Tok::Eq => Some("="),
+                Tok::Bar => Some("|"),
+                Tok::Caret => Some("^"),
+                _ => None,
+            })
     }
 
     fn operator_name(&self, tok: &Tok) -> Option<&'static str> {

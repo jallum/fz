@@ -30,7 +30,11 @@ pub(crate) fn rewrite_source_sugar(
         return Ok(None);
     }
     if node.head.root().tag() != ValueKind::ATOM {
-        return Ok(None);
+        let rewritten = rewrite_remote_primitive(owner, node, sources)?;
+        if let Some(rewritten) = rewritten {
+            owner.memoize_source_sugar_rewrite(source, rewritten);
+        }
+        return Ok(rewritten);
     }
     let head = node.head.atom_name()?;
     let arity = node.tail.list_len()?;
@@ -50,6 +54,106 @@ pub(crate) fn rewrite_source_sugar(
         owner.memoize_source_sugar_rewrite(source, rewritten);
     }
     Ok(rewritten)
+}
+
+/// `Kernel.not(x)`, `Kernel.and(a, b)`, `Kernel.or(a, b)` and `Kernel.in(x, xs)`
+/// become the local call each spelling already is, so the remote call and the
+/// operator are one implementation: Elixir's `Kernel` names these four too.
+fn rewrite_remote_primitive(
+    owner: &QuotedSourceRoot,
+    node: &QuotedAstNode,
+    sources: &SourceMap,
+) -> Result<Option<AnyValueRef>, QuotedSourceError> {
+    let Some(head) = node.head.ast_node(sources)? else {
+        return Ok(None);
+    };
+    let args = node.tail.list_items()?;
+    let Some(name) = kernel_primitive_name(&head, sources)? else {
+        return Ok(None);
+    };
+    if primitive_arity(&name) != args.len() {
+        return Ok(None);
+    }
+    Ok(Some(named_call(
+        &owner.builder(),
+        &name,
+        node.meta.root(),
+        &roots(&args),
+    )?))
+}
+
+/// `&Kernel.not/1` and its kin capture the operator as a lambda over the
+/// primitive, since the primitive is no function to point at.
+fn rewrite_primitive_capture(
+    owner: &QuotedSourceRoot,
+    node: &QuotedAstNode,
+    body: &QuotedSourceCursor,
+    sources: &SourceMap,
+) -> Result<Option<AnyValueRef>, QuotedSourceError> {
+    let Some(reference) = body.ast_node(sources)? else {
+        return Ok(None);
+    };
+    if reference.head.root().tag() != ValueKind::ATOM || reference.head.atom_name()? != "/" {
+        return Ok(None);
+    }
+    let parts = reference.tail.list_items()?;
+    if parts.len() != 2 || parts[1].root().tag() != ValueKind::INT {
+        return Ok(None);
+    }
+    // `Kernel.not` written without parens is a call with no arguments.
+    let Some(target) = parts[0].ast_node(sources)? else {
+        return Ok(None);
+    };
+    let Some(dot) = target.head.ast_node(sources)? else {
+        return Ok(None);
+    };
+    let Some(name) = kernel_primitive_name(&dot, sources)? else {
+        return Ok(None);
+    };
+    let arity = parts[1].int_value()?;
+    if usize::try_from(arity).ok() != Some(primitive_arity(&name)) {
+        return Ok(None);
+    }
+    let builder = owner.builder();
+    let params = (1..=primitive_arity(&name))
+        .map(|index| generated_variable(&builder, "__fz_capture_arg", index, node.span))
+        .collect::<Result<Vec<_>, _>>()?;
+    let call = named_call(&builder, &name, node.meta.root(), &params)?;
+    Ok(Some(capture_lambda(
+        &builder,
+        params.len(),
+        call,
+        node.meta.root(),
+        node.span,
+    )?))
+}
+
+fn primitive_arity(name: &str) -> usize {
+    if name == "not" { 1 } else { 2 }
+}
+
+/// `not`, `and`, `or` or `in` when `dot` is `{:., _, [Kernel, name]}`.
+fn kernel_primitive_name(dot: &QuotedAstNode, sources: &SourceMap) -> Result<Option<String>, QuotedSourceError> {
+    if dot.head.root().tag() != ValueKind::ATOM || dot.head.atom_name()? != "." || dot.tail.list_len()? != 2 {
+        return Ok(None);
+    }
+    let parts = dot.tail.list_items()?;
+    let name = parts[1].atom_name()?;
+    if !matches!(name.as_str(), "not" | "and" | "or" | "in") || !names_kernel(&parts[0], sources)? {
+        return Ok(None);
+    }
+    Ok(Some(name.to_string()))
+}
+
+fn names_kernel(target: &QuotedSourceCursor, sources: &SourceMap) -> Result<bool, QuotedSourceError> {
+    let Some(alias) = target.ast_node(sources)? else {
+        return Ok(false);
+    };
+    if alias.head.root().tag() != ValueKind::ATOM || alias.head.atom_name()? != "__aliases__" {
+        return Ok(false);
+    }
+    let segments = alias.tail.list_items()?;
+    Ok(segments.len() == 1 && segments[0].root().tag() == ValueKind::ATOM && segments[0].atom_name()? == "Kernel")
 }
 
 fn rewrite_pipe(
@@ -140,11 +244,11 @@ fn rewrite_operator(
     let rewritten = match op {
         "++" => remote_call(
             &builder,
-            "List.concat",
+            "Kernel.++",
             operator_meta(&builder, node, op)?,
             &[left, right],
         )?,
-        "--" => remote_call(&builder, "List.subtract", meta, &[left, right])?,
+        "--" => remote_call(&builder, "Kernel.--", meta, &[left, right])?,
         "<>" if context == ExpansionContext::Expression => binary_construction(owner, node, sources)?,
         "<>" => remote_call(
             &builder,
@@ -420,7 +524,7 @@ fn rewrite_capture(
     sources: &SourceMap,
 ) -> Result<Option<AnyValueRef>, QuotedSourceError> {
     if is_function_ref_payload(body, sources)? {
-        return Ok(None);
+        return rewrite_primitive_capture(owner, node, body, sources);
     }
 
     let builder = owner.builder();
