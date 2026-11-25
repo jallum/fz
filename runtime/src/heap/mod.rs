@@ -5,7 +5,24 @@
 //! `block_end`, we allocate a fresh (larger) block and park the old one in
 //! `young_blocks`. Block capacities are `SIZE_TABLE` entries, which the pool
 //! recycles, or for an object larger than the whole table exactly that
-//! object's size, which the system allocator provides and takes back.
+//! object's size, a span of its own that is reused once it is released.
+//!
+//! Every block is a span of one reserved range of address space (`arena`),
+//! and a table beside it holds a byte per granule saying whether the block
+//! that owns the granule is young. A young block (the tip, the blocks
+//! allocation parks and a gift's block) marks the table when it is made; a
+//! pooled block's mark stays under its span through release and reuse, so
+//! the table is written only when a span's youth changes. An old block (a
+//! collection's to-space, its overflow blocks and the huge objects it copies)
+//! writes the table only to clear a mark a young block left. The range grows
+//! by reserving the next chunk at its exact end, and a table that cannot
+//! follow stops the program loudly.
+//! Whether an object is young
+//! is a read of that table at its address (`Heap::is_young`), and a minor
+//! collection's from-space is the granules that read young (`FromSpace`), so
+//! nothing is collected or sorted per collection. Off-heap binaries, resources
+//! and static literals are the system allocator's and lie outside the range,
+//! so a literal's address reads as no block.
 //!
 //! A block has an age. Young blocks are the tip and the blocks allocation has
 //! parked since the last collection. A collection copies the survivors of its
@@ -43,6 +60,7 @@
 //! marker word of its kind (`gc::forwarding`) overwritten with the to-space
 //! address plus a set low nibble; nothing else uses the low bits.
 
+mod arena;
 mod binary_budget;
 mod block_pool;
 mod collected;

@@ -466,12 +466,22 @@ reference is left in place (collector) or shared (deep copy), an untagged one is
 a heap pointer in from-space or, for a minor collection, in an old block it
 leaves as it is. The collector asks `FromSpace::moves`: untagged, and inside the
 from-space. A major collection's from-space is every block, so that is the
-literal bit alone; a minor collection's is the young blocks, tested against
-their few sorted ranges (`YoungRanges`, last hit first). Debug builds also keep
-the from-space range walk as a cross-check (`FromSpace::assert_classified`,
-`HeapView::assert_classified`): an untagged pointer must lie in from-space or in
-an old block a minor collection leaves, a tagged one must lie in no heap block,
-and none may lie in to-space. No allocation or mutator path tests an address.
+literal bit alone; a minor collection's is the young blocks, read off the age
+table: one byte per granule of the reserved heap range (`heap/arena.rs`), set
+for a block allocation made and clear for every other block. A pooled span
+keeps one capacity at one address for good, so its table bytes are all equal and
+the first decides; a block made reads that byte and writes the span only when
+the byte differs from the wanted mark. A released pooled block keeps its mark,
+which is why no reader may ask the table about a freed address (the debug
+classifier cannot tell a stale pointer into a free pooled block from a live
+one). Exact and huge spans come from the splitting span list and write on make
+and clear on release. The range and the table grow by hinted mmap at their
+exact ends; an extension that lands elsewhere panics. Debug builds also record old blocks and
+cross-check (`FromSpace::assert_classified`, `HeapView::assert_classified`): an
+untagged pointer must lie in a young or old block (`HeapView` also asks that it
+lie in the source heap's blocks), a tagged one in none, and none may lie in
+to-space. `fz_frame_for_write` reads the same table through `Heap::is_young`,
+bounds-checked because a frame can be a literal outside the range.
 
 One `Tracer` (from-space, heap, schemas, the heap's worklist of copied objects) is
 the collection's context, and `Tracer::forward(word, kind)` is its one

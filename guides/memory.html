@@ -134,8 +134,8 @@ kind field and at the same position in a ref word, a field or capture payload, a
 map entry, a list head and a list link. The collector and deep copy read that
 bit: a tagged reference is left in place or shared, an untagged one is a heap
 pointer and is copied. Nothing walks the heap's block list to decide. Debug
-builds cross-check the bit against the block ranges and assert that an untagged
-pointer lies in from-space and a tagged one does not.</p>
+builds cross-check the bit against the age table and assert that an untagged
+pointer lies in a young or old block and a tagged one lies in none.</p>
 
 <div class="aside">
 Old per-float heap objects are retired. Floats in typed code travel as native
@@ -452,12 +452,43 @@ tip: it gets a block sized for it, parked on <code>blocks</code> straight away,
 and the tip keeps filling. All parked blocks are reclaimed at the next
 GC.</p>
 
+<p>Every block is a span of one range of address space the process reserves
+once, with no access and no swap reserved (<code>mmap</code> with
+<code>PROT_NONE</code> and <code>MAP_NORESERVE</code>): a first chunk of 16 GiB,
+halved down to 4 GiB if the system refuses. The kernel's work to set up and tear down a mapping
+grows with its size even when no page is touched, so the first chunk is small
+enough to be cheap. The range is made read-write in 64 MiB chunks as
+allocation reaches them, so only the blocks in use hold memory. When allocation
+reaches the end of the range, the next chunk is reserved at exactly that end
+(and the table grows the same way); an extension that lands elsewhere stops the
+program with a message that names the reserved size and the bytes in use; there
+is no fallback to the system allocator. Pools stay per
+thread; the pool of a thread that exits hands its free blocks to a list any
+thread's pool draws on. Off-heap binaries, resources and the program's static
+data are the system allocator's and lie outside the range.</p>
+
+<p>A table beside the range holds one byte per granule (32 bytes unless the
+runtime is built with <code>FZ_GRANULE_SHIFT</code>): young or not. A span
+is whole granules, aligned to one, so no two blocks share a table byte, while a
+block's capacity, and every byte count the runtime reports, stay the logical
+size. A pooled span is one capacity at one address for good, so its table bytes
+are all equal: a block made reads the byte under its first granule and writes
+the span only when it differs from the mark it wants, and a released block keeps
+its mark. Reusing a block at the age it had writes nothing. Whether an object is young, which a minor collection and
+every frame write ask, is a subtract, a shift and a byte load.</p>
+
 <p>The table has neither a floor nor a ceiling on what a block may be. A
 request below the first entry gets a block of exactly its size (rounded up to
 16 bytes), and the pool keeps a free list for each such multiple of 16, so small
 blocks are recycled like any other. A request above the last entry also gets a
-block of exactly its size; that block comes from the system allocator, not the
-pool, and goes back to it when it is released. An object larger than the last
+block of exactly its size; that block is a span from a list of freed spans, not
+the pool, and goes back to it when it is released: the list reuses a span that
+fits, splits it, and joins neighbours, and a freed span's pages are returned to
+the system (<code>MADV_DONTNEED</code> on Linux, a fresh anonymous mapping over
+the pages on macOS). A pooled block of 64 KiB or more that no allocation of its
+class has wanted for a whole epoch (four times the bytes in use handed out, at
+least 1 MiB) gives its pages back the same way and stays on its free list; it
+faults them in again when it is next used. An object larger than the last
 entry is copied like any other when the collection that reaches it releases the
 block.</p>
 
@@ -475,7 +506,7 @@ copies without preserving sharing, as BEAM's does: a subterm the message
 reaches twice is copied twice and counted twice. <code>Heap::begin_gift</code> takes that figure, sets the
 current tip aside and installs one block of the smallest capacity that holds it
 (a pooled block of exactly that size when it is below the table, so a 16-byte
-message occupies a 16-byte block, and an exact block from the system allocator above it). The copy runs through the ordinary
+message occupies a 16-byte block, and an exact block from the span list above it). The copy runs through the ordinary
 bump path and fills the block without overflowing it. <code>Heap::end_gift</code>
 asserts the block's fill is exactly the measured bytes, turns the block into a
 <code>GiftSegment</code> and puts
@@ -690,7 +721,7 @@ to-space, and counts no object as it copies it; the telemetry writer sums the ca
 pass filled). The blocks the pass
 filled become old; an empty to-space tip is released. The heap then installs a
 fresh young tip sized for <code>live_baseline</code> before the from-space
-blocks go back to the pool, or to the system allocator when exact. The
+blocks go back to the pool, or to the span list when exact. The
 from-space blocks belong to the collection's <code>Collected</code> until it is
 dropped, so the telemetry writer reads them as they were:
 <code>from_space_capacity_bytes</code> and <code>blocks_released</code> in the
@@ -1247,7 +1278,7 @@ own bytes instead, on the thread that runs the program:</p>
 <ul>
   <li><strong>in-use bytes</strong>: the capacity of every block the pool has
   handed out and not had returned (heaps, gift segments, pooled blocks and
-  exact-size blocks alike) plus the bytes of every off-heap binary block not
+  exact-size blocks alike; a capacity, never the granule-rounded span) plus the bytes of every off-heap binary block not
   yet freed: header, bytes and trailing NUL;</li>
   <li><strong>idle bytes</strong>: the capacity of the blocks resting in the
   pool's free lists;</li>
@@ -1297,7 +1328,7 @@ reference that points into an old block, and copies the young objects it
 reaches. Its survivors fill new old blocks. A major collection runs when old
 bytes pass twice what the last major left, and is the only pass that reclaims
 old data. A debug assertion classifies every reference the collector meets as a
-literal, a from-space object or an old object, and fails on anything else.</p>
+literal, a from-space object or an old object, by the age table, and fails on anything else.</p>
 
 </body>
 </html>

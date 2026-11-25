@@ -7,6 +7,8 @@ use crate::any_value::{
     list_addr_from_tagged,
 };
 use crate::bits::{BinView, SharedBinHandle, alloc_buffer_view};
+use crate::heap::arena::{Age, GRANULE, is_young, span_len};
+use crate::heap::block_pool::{is_pooled_capacity, pool_alloc, pool_free};
 use crate::heap::{StubCounts, StubSite};
 use crate::off_heap;
 use crate::resource::{ResourceHandle, alloc_resource};
@@ -837,4 +839,150 @@ fn a_copied_view_is_shared_and_a_copied_small_bitstring_is_not() {
     assert!(view_of(view_copy).is_shared());
     assert!(!small_bitstring_is_shared(small_copy.ref_word()));
     assert_eq!(small_bitstring_bytes(small_copy.ref_word()), b"abc");
+}
+
+fn young_granules(block: &Block) -> Vec<bool> {
+    (0..span_len(block.capacity))
+        .step_by(GRANULE)
+        .map(|offset| is_young(unsafe { block.start.add(offset) }))
+        .collect()
+}
+
+fn every_granule_is_young(blocks: &[Block]) -> bool {
+    blocks
+        .iter()
+        .all(|block| young_granules(block).iter().all(|&young| young))
+}
+
+fn no_granule_is_young(blocks: &[Block]) -> bool {
+    blocks
+        .iter()
+        .all(|block| young_granules(block).iter().all(|&young| !young))
+}
+
+#[test]
+fn allocation_makes_blocks_young_and_a_collection_makes_what_it_keeps_old() {
+    let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let list = list_of(&mut heap, 0, 400, EMPTY_LIST);
+    let young: Vec<Block> = std::iter::once(heap.current_block())
+        .chain(heap.young_blocks.iter().copied())
+        .collect();
+    assert!(young.len() > 1, "the tip climbed, so there are parked blocks too");
+    assert!(
+        every_granule_is_young(&young),
+        "the tip and every parked block are young"
+    );
+
+    collect_list(&mut heap, list);
+    assert!(heap.old_blocks.len() > 1, "the copy overflowed its first block");
+    assert!(
+        no_granule_is_young(&heap.old_blocks),
+        "to-space and its overflow are old from birth, and never marked young"
+    );
+    assert!(
+        every_granule_is_young(&[heap.current_block()]),
+        "allocation continues in a young tip"
+    );
+}
+
+#[test]
+fn a_huge_object_a_collection_copies_is_old_and_one_allocation_makes_is_young() {
+    let reg = fresh_registry();
+    let tuple = reg.borrow_mut().register(Schema::tuple_of_arity(200));
+    let mut heap = Heap::new(SIZE_TABLE[0], reg);
+    let big = heap.alloc_struct(tuple);
+    assert!(heap.is_young(big), "a huge object is parked young");
+    assert!(is_young(big));
+
+    let mut roots = [AnyValueRef::from_heap_object(ValueKind::STRUCT, big).expect("struct ref")];
+    heap.collect_stats(&mut roots);
+    let moved = roots[0].struct_addr().expect("struct");
+    assert_ne!(moved, big);
+    assert!(!is_young(moved), "the collector's copy of a huge object is parked old");
+    assert!(!heap.is_young(moved));
+}
+
+#[test]
+fn a_grafted_gift_block_is_young_and_a_collection_that_copies_it_releases_it() {
+    let reg = fresh_registry();
+    let mut sender = Heap::new(SIZE_TABLE[0], reg.clone());
+    let mut receiver = Heap::new(SIZE_TABLE[0], reg);
+    let (segment, gift) = gift_of_list(&mut sender, 1, 3);
+    assert!(
+        is_young(list_addr_from_tagged(gift).unwrap()),
+        "a gift's block is young while it is a segment"
+    );
+    receiver.graft(segment);
+    let grafted = *receiver.young_blocks.last().expect("grafted block");
+    assert!(every_granule_is_young(&[grafted]), "and when it is grafted");
+
+    let root = cons(&mut receiver, 0, gift);
+    collect_list(&mut receiver, root);
+    let released_to_the_pool_and_taken_as_the_new_tip = receiver.current_block().start == grafted.start;
+    if released_to_the_pool_and_taken_as_the_new_tip {
+        assert!(every_granule_is_young(&[receiver.current_block()]));
+    } else {
+        let held = receiver
+            .old_blocks
+            .iter()
+            .chain(receiver.young_blocks.iter())
+            .any(|block| block.start == grafted.start);
+        assert!(!held, "the collection released the grafted block");
+    }
+}
+
+#[test]
+fn dropping_a_heap_leaves_none_of_its_blocks_young() {
+    let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let list = list_of(&mut heap, 0, 300, EMPTY_LIST);
+    collect_list(&mut heap, list);
+    list_of(&mut heap, 0, 300, EMPTY_LIST);
+    let blocks: Vec<Block> = heap
+        .old_blocks
+        .iter()
+        .chain(heap.young_blocks.iter())
+        .copied()
+        .chain(std::iter::once(heap.current_block()))
+        .collect();
+    assert!(
+        !heap.old_blocks.is_empty(),
+        "the heap holds old blocks before it is dropped"
+    );
+    assert!(
+        blocks.iter().any(|block| young_granules(block).contains(&true)),
+        "and young ones"
+    );
+    drop(heap);
+    assert_released_blocks_read_clean_when_made_old(&blocks);
+}
+
+/// Every block of a dropped heap is back in the pool, and made old again it
+/// reads not young whatever its last life left under it. A pooled block keeps
+/// its table bytes when it is released; nothing asks the age of a free block.
+fn assert_released_blocks_read_clean_when_made_old(blocks: &[Block]) {
+    for block in blocks {
+        if !is_pooled_capacity(block.capacity) {
+            assert!(
+                no_granule_is_young(&[*block]),
+                "an exact block's release clears its span"
+            );
+            continue;
+        }
+        let mut taken = Vec::new();
+        loop {
+            let q = pool_alloc(block.capacity, Age::Old);
+            taken.push(q);
+            if q == block.start {
+                break;
+            }
+            assert!(taken.len() <= blocks.len() + 64, "the block was not found in the pool");
+        }
+        assert!(
+            no_granule_is_young(&[*block]),
+            "made old, the released block is not young"
+        );
+        for q in taken {
+            pool_free(q, block.capacity);
+        }
+    }
 }

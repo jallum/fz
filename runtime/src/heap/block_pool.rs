@@ -1,9 +1,36 @@
 //! Block size table + per-thread block pool.
+//!
+//! Every block is a span of the process's reserved range (`arena`). A pooled
+//! capacity (a table entry, or a multiple of 16 below the first) recycles
+//! through the thread's free list; a thread that exits hands its free blocks to
+//! a process-wide spill list, which any thread's pool draws on before it claims
+//! fresh space. A block off the table is a span of its own: its pages return to
+//! the operating system when it is released, and the span is reused.
+//!
+//! A free list keeps blocks warm (their pages resident) for as long as they are
+//! wanted. A block of a trimmed class (`TRIM_FROM_CAPACITY` and up) that no
+//! allocation of its class has needed for a whole epoch, an epoch being as many
+//! bytes handed out as `EPOCH_FACTOR` times what the pool holds in use (and at
+//! least `EPOCH_FLOOR`), gives
+//! its pages back to the operating system and stays on the list as a cold block:
+//! it is handed out again as any other and its pages come back as they are
+//! touched. The bytes a pool keeps resident for idle blocks are therefore those
+//! its recent allocations used, not those of every size the heap once needed.
+//!
+//! A pooled block marks the age table (`arena::is_young`) when it is made, and
+//! only when the span's mark is not already the one it wants: a released pooled
+//! block keeps its bytes, and a span is one capacity at one address for good, so
+//! a block reused at the same age writes nothing, and one made old over a young
+//! block's leftover mark clears it. A block off the table marks the table when
+//! it is made young and clears it when it is released, because its span may be
+//! split or joined to another.
 
-use std::alloc::{Layout, alloc, dealloc};
+use super::arena::{Age, range, span_len};
 use std::cell::RefCell;
 #[cfg(debug_assertions)]
 use std::ptr::write_bytes;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Preset block capacities (bytes). Fibonacci-shape at the low end (§6.3) then
 /// geometric tail (~×1.2, ceiling-rounded to 16 alignment). A tip starts at the
@@ -12,7 +39,7 @@ use std::ptr::write_bytes;
 /// The 32 entries reach ~7 MiB and are capacities the pool recycles, and so is
 /// every multiple of 16 below the first entry (`SMALL_CLASSES` of them). A
 /// block needing more than the last entry is allocated at exactly the size
-/// asked for (rounded to 16) and returned to the system allocator when it is
+/// asked for (rounded to 16), a span of its own that is given back when it is
 /// released.
 pub const SIZE_TABLE: [usize; 32] = build_size_table();
 
@@ -92,10 +119,34 @@ fn pooled_class(capacity: usize) -> Option<usize> {
 }
 
 /// Whether a block of `capacity` bytes returns to the pool when released,
-/// rather than to the system allocator.
+/// rather than to the span list.
 pub(super) fn is_pooled_capacity(capacity: usize) -> bool {
     pooled_class(capacity).is_some()
 }
+
+/// The smallest capacity whose idle blocks are trimmed: below it a block is
+/// fewer than a few pages, and returning them costs more than they hold.
+const TRIM_FROM_CAPACITY: usize = 64 << 10;
+
+/// The first free list that is trimmed.
+const TRIM_FROM_CLASS: usize = SMALL_CLASSES + trim_entry();
+
+const fn trim_entry() -> usize {
+    let mut entry = 0;
+    while SIZE_TABLE[entry] < TRIM_FROM_CAPACITY {
+        entry += 1;
+    }
+    entry
+}
+
+/// How many times the in-use bytes an epoch hands out. A shorter epoch trims
+/// blocks a program is about to want again and pays to fault their pages back;
+/// a longer one holds idle pages resident longer.
+const EPOCH_FACTOR: usize = 4;
+
+/// The fewest bytes an epoch lasts, so a small heap does not trim at every
+/// allocation.
+const EPOCH_FLOOR: usize = 1 << 20;
 
 /// The capacity of the blocks on free list `class`.
 fn class_capacity(class: usize) -> usize {
@@ -103,10 +154,6 @@ fn class_capacity(class: usize) -> usize {
         None => (class + 1) * 16,
         Some(entry) => SIZE_TABLE[entry],
     }
-}
-
-fn block_layout(capacity: usize) -> Layout {
-    Layout::from_size_align(capacity, 16).expect("bad block layout")
 }
 
 /// A block the heap has stopped bumping into: `start` is the block, `top` is
@@ -132,7 +179,7 @@ impl Block {
     }
 
     /// Hand the block back: to the pool when its capacity is pooled (a table
-    /// entry or a multiple of 16 below the first), to the system allocator
+    /// entry or a multiple of 16 below the first), to the span list
     /// otherwise.
     pub(super) fn release(self) {
         pool_free(self.start, self.capacity);
@@ -142,10 +189,17 @@ impl Block {
 /// Per-thread block pool (§6.6). One free list per pooled capacity. Spawn /
 /// grow / gc pull from here; Heap::drop and gc()'s old-block release
 /// return blocks here. Avoids per-spawn `malloc`/`free` churn under
-/// heavy spawn pressure. Single-threaded for v1 (worker pool = 1); the multi-worker follow-up will switch to either
-/// per-worker pools or a Mutex-guarded shared pool.
+/// heavy spawn pressure. The lists are the thread's own; fresh space and the
+/// spill list are the process's.
 struct BlockPool {
     free_lists: [Vec<*mut u8>; CLASSES],
+    /// Per trimmed list, how many blocks at the bottom of the list are cold.
+    cold: [usize; CLASSES],
+    /// Per trimmed list, the fewest blocks it has held since the epoch began:
+    /// those below it have gone the whole epoch unwanted.
+    low_water: [usize; CLASSES],
+    /// Bytes handed out since the epoch began.
+    epoch_bytes: usize,
     /// Blocks handed out by `alloc` and not yet returned through `free`.
     outstanding: usize,
     /// Capacity of the blocks handed out and not returned.
@@ -179,6 +233,9 @@ impl BlockPool {
         // because Vec is not Copy; use a manual array build.
         Self {
             free_lists: [const { Vec::new() }; CLASSES],
+            cold: [0; CLASSES],
+            low_water: [0; CLASSES],
+            epoch_bytes: 0,
             outstanding: 0,
             block_bytes: 0,
             idle_bytes: 0,
@@ -187,21 +244,68 @@ impl BlockPool {
         }
     }
 
-    /// A block of `capacity` bytes whose contents are unspecified: recycled from the free list when
-    /// the capacity is pooled, otherwise fresh from the system
-    /// allocator and not counted as outstanding. Either way its bytes are in use.
-    fn alloc(&mut self, capacity: usize) -> *mut u8 {
+    /// A block of `capacity` bytes of age `age` whose contents are unspecified:
+    /// recycled from the free list or the spill list when the capacity is
+    /// pooled, otherwise a span of the range. Either way its bytes are in use.
+    /// Only pooled blocks count as outstanding.
+    fn alloc(&mut self, capacity: usize, age: Age) -> *mut u8 {
         self.block_bytes += capacity;
         self.record_peak();
-        let Some(idx) = pooled_class(capacity) else {
-            return alloc_exact(capacity);
+        let span = span_len(capacity);
+        let p = match pooled_class(capacity) {
+            None => {
+                let p = range().take_span(span);
+                range().made_exact(p, span, age);
+                p
+            }
+            Some(idx) => {
+                self.outstanding += 1;
+                let p = match self.take_idle(idx, capacity) {
+                    Some(p) => p,
+                    None => spilled(idx).unwrap_or_else(|| range().claim(span)),
+                };
+                range().made_pooled(p, span, age);
+                self.end_epoch_if_over(capacity);
+                p
+            }
         };
-        self.outstanding += 1;
-        if let Some(p) = self.free_lists[idx].pop() {
-            self.idle_bytes -= capacity;
-            return poisoned(p, capacity);
+        poisoned(p, capacity)
+    }
+
+    /// The block most recently freed to list `idx`, if any.
+    fn take_idle(&mut self, idx: usize, capacity: usize) -> Option<*mut u8> {
+        let list = &mut self.free_lists[idx];
+        let p = list.pop()?;
+        self.idle_bytes -= capacity;
+        if idx >= TRIM_FROM_CLASS {
+            self.low_water[idx] = self.low_water[idx].min(list.len());
+            self.cold[idx] = self.cold[idx].min(list.len());
         }
-        alloc_exact(capacity)
+        Some(p)
+    }
+
+    /// Count `capacity` bytes toward the epoch, and when the pool has handed
+    /// out `EPOCH_FACTOR` times the bytes it holds in use, trim.
+    fn end_epoch_if_over(&mut self, capacity: usize) {
+        self.epoch_bytes += capacity;
+        if self.epoch_bytes >= (self.in_use_bytes() * EPOCH_FACTOR).max(EPOCH_FLOOR) {
+            self.trim();
+        }
+    }
+
+    /// Give back the pages of every block that went unwanted for the whole
+    /// epoch, and begin the next one.
+    fn trim(&mut self) {
+        self.epoch_bytes = 0;
+        for idx in TRIM_FROM_CLASS..CLASSES {
+            let capacity = class_capacity(idx);
+            let span = span_len(capacity);
+            while self.cold[idx] < self.low_water[idx] {
+                range().drop_pages(self.free_lists[idx][self.cold[idx]], span);
+                self.cold[idx] += 1;
+            }
+            self.low_water[idx] = self.free_lists[idx].len();
+        }
     }
 
     fn in_use_bytes(&self) -> usize {
@@ -216,23 +320,82 @@ impl BlockPool {
     fn free(&mut self, p: *mut u8, capacity: usize) {
         self.block_bytes -= capacity;
         let Some(idx) = pooled_class(capacity) else {
-            unsafe { dealloc(p, block_layout(capacity)) };
+            give_back(p, capacity);
             return;
         };
         self.outstanding -= 1;
         self.idle_bytes += capacity;
         // Free lists grow unbounded in v1. A real-world deployment would
-        // cap each list (e.g., 4 entries) and `dealloc` the overflow.
+        // cap each list (e.g., 4 entries) and spill the overflow.
         // For now we accept the worst-case memory footprint to keep the
         // pool deterministic.
         self.free_lists[idx].push(p);
     }
+
+    /// Hand every resting block to the spill list: each free list's storage
+    /// moves whole, so no pointer is copied and no capacity stays behind.
+    fn spill_all(&mut self) {
+        let mut spill = SPILL.lock().unwrap();
+        for (idx, list) in self.free_lists.iter_mut().enumerate() {
+            if list.is_empty() {
+                continue;
+            }
+            SPILLED.fetch_add(list.len(), Ordering::Relaxed);
+            spill.0[idx].push(std::mem::take(list));
+        }
+        self.cold = [0; CLASSES];
+        self.low_water = [0; CLASSES];
+    }
 }
 
-fn alloc_exact(capacity: usize) -> *mut u8 {
-    let p = unsafe { alloc(block_layout(capacity)) };
-    assert!(!p.is_null(), "block pool: malloc failed");
-    poisoned(p, capacity)
+/// The pooled blocks of exited threads, by class: per class, the free lists
+/// the threads exited with (and blocks released after) in the order they came.
+struct Spilled([Vec<Vec<*mut u8>>; CLASSES]);
+
+// The blocks are spans of the process's range, owned by no thread.
+unsafe impl Send for Spilled {}
+
+static SPILL: Mutex<Spilled> = Mutex::new(Spilled([const { Vec::new() }; CLASSES]));
+
+/// How many blocks `SPILL` holds, so a pool with nothing spilled to take never
+/// locks.
+static SPILLED: AtomicUsize = AtomicUsize::new(0);
+
+fn spilled(class: usize) -> Option<*mut u8> {
+    if SPILLED.load(Ordering::Relaxed) == 0 {
+        return None;
+    }
+    let lists = &mut SPILL.lock().unwrap().0[class];
+    let list = lists.last_mut()?;
+    let p = list.pop();
+    if list.is_empty() {
+        lists.pop();
+    }
+    SPILLED.fetch_sub(1, Ordering::Relaxed);
+    p
+}
+
+fn spill(class: usize, p: *mut u8) {
+    let lists = &mut SPILL.lock().unwrap().0[class];
+    match lists.last_mut() {
+        Some(list) => list.push(p),
+        None => lists.push(vec![p]),
+    }
+    SPILLED.fetch_add(1, Ordering::Relaxed);
+}
+
+/// A block released with no pool to take it: a pooled one goes to the spill
+/// list with its mark as it is, any other one's span to the span list with its
+/// mark cleared.
+fn give_back(p: *mut u8, capacity: usize) {
+    match pooled_class(capacity) {
+        Some(class) => spill(class, p),
+        None => {
+            let span = span_len(capacity);
+            range().released_exact(p, span);
+            range().give_span(p, span);
+        }
+    }
 }
 
 /// The byte a handed-out block is filled with in debug builds, so a read of
@@ -255,15 +418,8 @@ pub(crate) fn poisoned(p: *mut u8, _capacity: usize) -> *mut u8 {
 
 impl Drop for BlockPool {
     fn drop(&mut self) {
-        // At thread exit (or test teardown), free any cached blocks.
-        for (idx, list) in self.free_lists.iter_mut().enumerate() {
-            let layout = block_layout(class_capacity(idx));
-            for p in list.drain(..) {
-                unsafe {
-                    dealloc(p, layout);
-                }
-            }
-        }
+        // At thread exit (or test teardown), the cached blocks go to the spill list.
+        self.spill_all();
     }
 }
 
@@ -271,44 +427,36 @@ thread_local! {
     static BLOCK_POOL: RefCell<BlockPool> = const { RefCell::new(BlockPool::new()) };
 }
 
-pub(super) fn pool_alloc(capacity: usize) -> *mut u8 {
-    BLOCK_POOL.with(|p| p.borrow_mut().alloc(capacity))
+/// A block of `capacity` bytes that is `age` from the moment it exists.
+pub(super) fn pool_alloc(capacity: usize, age: Age) -> *mut u8 {
+    BLOCK_POOL.with(|p| p.borrow_mut().alloc(capacity, age))
 }
 
-/// Returns a block to the pool. If the TLS pool has already been dropped
-/// (thread teardown ordering), falls back to a direct `dealloc` — the
-/// block leaks nothing, just bypasses the cache.
+/// Returns a block to the pool. If the TLS pool has
+/// already been dropped (thread teardown ordering), the block goes straight to
+/// the spill list or span list: it leaks nothing, just bypasses the cache.
 pub(super) fn pool_free(p: *mut u8, capacity: usize) {
     let result = BLOCK_POOL.try_with(|pool| pool.borrow_mut().free(p, capacity));
     if result.is_err() {
-        unsafe {
-            dealloc(p, block_layout(capacity));
-        }
+        give_back(p, capacity);
     }
 }
 
-/// Test-only: drains every cached block in the per-thread pool back to
-/// `dealloc`. Used to assert pool occupancy in acceptance tests; not
-/// called from the runtime hot path.
+/// Test-only: hands every cached block in the per-thread pool to the spill
+/// list. Used to assert pool occupancy in acceptance tests; not called from
+/// the runtime hot path.
 #[cfg(test)]
 pub fn pool_drain_for_test() {
     BLOCK_POOL.with(|pool| {
         let mut pool = pool.borrow_mut();
-        for (idx, list) in pool.free_lists.iter_mut().enumerate() {
-            let layout = block_layout(class_capacity(idx));
-            for p in list.drain(..) {
-                unsafe {
-                    dealloc(p, layout);
-                }
-            }
-        }
+        pool.spill_all();
         pool.idle_bytes = 0;
     });
 }
 
 /// Pooled blocks this thread's pool has handed out and not had returned. Zero
 /// once every heap and gift segment the thread created has been dropped. Exact
-/// blocks, above the table, are the system allocator's and are not counted.
+/// blocks, above the table, are spans of their own and are not counted.
 pub fn pool_outstanding_blocks() -> usize {
     BLOCK_POOL.with(|pool| pool.borrow().outstanding)
 }
