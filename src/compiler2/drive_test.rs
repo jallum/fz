@@ -1281,9 +1281,99 @@ fn compiler2_inline_bitstring_outcomes_reuse_typed_dispatch_reads() {
     assert_eq!(compiled.run(compiler.telemetry(), program.entry), 2);
 }
 
-/// The native program of `text`, run from `main`, and the number of times each
-/// function of it asks whether a value is a binary and reads a binary's length.
-fn binary_question_counts(file: &str, text: &str) -> Vec<(String, usize, usize)> {
+/// A binary's base is a raw address into the process heap, good until the heap
+/// moves. The heap moves only when the scheduler collects at the end of a
+/// quantum, so the address is good wherever control reaches by `Goto` and `If`
+/// alone, which is where a dispatch's clauses, guards and field reads are
+/// joined. A call, a closure call or a tail call ends the straight-line run.
+/// Here the middle clauses do what a dispatch can do between two clauses of
+/// one subject: float arithmetic in a guard, and a `binary` field built as a
+/// view, which allocates. The last clause reads bytes; every read of the base
+/// is reached from its selection with no call between. A guard that builds a
+/// tuple, a list or a map is not dispatch-pure and is not planned at all.
+#[test]
+fn a_base_is_read_only_where_no_call_separates_it_from_its_selection() {
+    let program = native_program_of(
+        "base_across_clauses.fz",
+        concat!(
+            "defp pick(<<255, _r :: binary>>, _f), do: 0\n",
+            "defp pick(<<_c, _r :: binary>>, f) when f * 1.5 > 500.0, do: 1\n",
+            "defp pick(<<x :: binary-size(2), _r :: binary>>, _f) when byte_size(x) > 5, do: 2\n",
+            "defp pick(<<a, b, _r :: binary>>, _f), do: a + b\n",
+            "def main(), do: pick(:binary.copy(<<7>>, 1) <> <<8, 9>>, 1.0)\n",
+        ),
+    );
+    let function = program
+        .module
+        .fns
+        .iter()
+        .find(|function| function.name.starts_with("pick"))
+        .expect("the matcher is a native function");
+    let selects: Vec<_> = function
+        .blocks
+        .iter()
+        .filter(|block| {
+            block
+                .stmts
+                .iter()
+                .any(|stmt| matches!(stmt.prim(), IrPrim::BitstringBase(..)))
+        })
+        .collect();
+    assert_eq!(selects.len(), 1, "one block selects the base");
+    let mut reached = HashSet::default();
+    let mut pending = vec![selects[0].id];
+    while let Some(id) = pending.pop() {
+        if !reached.insert(id) {
+            continue;
+        }
+        let block = function.blocks.iter().find(|block| block.id == id).expect("a block");
+        match &block.terminator {
+            crate::fz_ir::Term::Goto(target, _) => pending.push(*target),
+            crate::fz_ir::Term::If { then_b, else_b, .. } => pending.extend([*then_b, *else_b]),
+            _ => {}
+        }
+    }
+    let reads: Vec<_> = function
+        .blocks
+        .iter()
+        .filter(|block| {
+            block.stmts.iter().any(|stmt| {
+                matches!(
+                    stmt.prim(),
+                    IrPrim::BitReadByteInt { .. } | IrPrim::BitReadByteIntAt { .. }
+                )
+            })
+        })
+        .collect();
+    assert!(!reads.is_empty(), "the clauses read bytes by address");
+    assert!(
+        function
+            .blocks
+            .iter()
+            .flat_map(|block| &block.stmts)
+            .any(|stmt| matches!(stmt.prim(), IrPrim::BitReadField { .. })),
+        "a clause between the selection and the reads builds a view, which allocates"
+    );
+    for block in reads {
+        assert!(
+            reached.contains(&block.id),
+            "{:?} reads the base but is reached from its selection only through a call",
+            block.id
+        );
+    }
+}
+
+/// How often a native function asks of a binary's region: how long it is,
+/// which for a value of unknown kind includes asking whether it is a binary,
+/// and where its bytes start.
+struct BinaryQuestions {
+    function: String,
+    lengths: usize,
+    bases: usize,
+}
+
+/// The native program of `text`, run from `main`.
+fn native_program_of(file: &str, text: &str) -> Rc<crate::compiler2::artifact::NativeProgram> {
     let tel = ConfiguredTelemetry::new();
     let native = NativeProgramCapture::new();
     native.install(&tel);
@@ -1301,7 +1391,13 @@ fn binary_question_counts(file: &str, text: &str) -> Vec<(String, usize, usize)>
     compiler.run_root_interp(root).expect("the program runs");
     settle_native_product(&mut compiler, root);
     assert_resolved(compiler.drive(), "the binary matcher should lower natively");
-    let program = native.last(root).program;
+    native.last(root).program
+}
+
+/// The questions each function of the native program of `text` asks of a
+/// binary's region.
+fn binary_question_counts(file: &str, text: &str) -> Vec<BinaryQuestions> {
+    let program = native_program_of(file, text);
     let count = |function: &crate::fz_ir::FnIr, wanted: fn(&IrPrim) -> bool| {
         function
             .blocks
@@ -1314,16 +1410,21 @@ fn binary_question_counts(file: &str, text: &str) -> Vec<(String, usize, usize)>
         .module
         .fns
         .iter()
-        .map(|function| {
-            (
-                function.name.clone(),
-                count(function, |prim| matches!(prim, IrPrim::IsNotBinary(..))),
-                count(function, |prim| {
-                    matches!(prim, IrPrim::BitstringBitLen(..) | IrPrim::BinaryBitLen(..))
-                }),
-            )
+        .map(|function| BinaryQuestions {
+            function: function.name.clone(),
+            lengths: count(function, |prim| {
+                matches!(prim, IrPrim::BitstringBitLen(..) | IrPrim::BinaryBitLen(..))
+            }),
+            bases: count(function, |prim| matches!(prim, IrPrim::BitstringBase(..))),
         })
         .collect()
+}
+
+fn questions_of<'a>(counts: &'a [BinaryQuestions], function: &str) -> &'a BinaryQuestions {
+    counts
+        .iter()
+        .find(|asked| asked.function.starts_with(function))
+        .unwrap_or_else(|| panic!("{function} is a native function"))
 }
 
 #[test]
@@ -1336,12 +1437,8 @@ fn a_loop_over_a_binary_cursor_never_asks_whether_the_cursor_is_a_binary() {
             "def main(), do: eat(<<1, 2, 3, 4>>)\n",
         ),
     );
-    let (_, asks, reads) = counts
-        .iter()
-        .find(|(name, ..)| name.starts_with("eat"))
-        .expect("the loop is a native function");
-    assert_eq!(*asks, 0, "a cursor is a binary by construction: {counts:?}");
-    assert_eq!(*reads, 1, "the loop reads its cursor's length once: {counts:?}");
+    let asked = questions_of(&counts, "eat");
+    assert_eq!(asked.lengths, 1, "the loop reads its cursor's length once");
 }
 
 #[test]
@@ -1354,15 +1451,28 @@ fn two_binary_clauses_on_one_argument_read_its_length_once() {
             "def main(), do: tell(<<>>) + tell(<<3, 4>>) - 1\n",
         ),
     );
-    let (_, asks, reads) = counts
-        .iter()
-        .find(|(name, ..)| name.starts_with("tell"))
-        .expect("the matcher is a native function");
-    assert_eq!(
-        *asks, 2,
-        "each clause still asks whether its argument is a binary: {counts:?}"
+    let asked = questions_of(&counts, "tell");
+    assert_eq!(asked.lengths, 1, "the argument's length is read once for both");
+}
+
+/// Sibling clauses on one binary ask three things of it once: that it is a
+/// binary, how long it is, and where its bytes start. Each clause keeps its
+/// own bounds compare and its own load.
+#[test]
+fn three_literal_clauses_on_one_argument_ask_its_kind_length_and_base_once() {
+    let counts = binary_question_counts(
+        "three_literal_clauses.fz",
+        concat!(
+            "defp val(<<\"true\", _r :: binary>>), do: 1\n",
+            "defp val(<<\"null\", _r :: binary>>), do: 2\n",
+            "defp val(<<\"false\", _r :: binary>>), do: 3\n",
+            "defp val(_), do: 0\n",
+            "def main(), do: val(:binary.copy(\"t\", 1) <> \"rue\")\n",
+        ),
     );
-    assert_eq!(*reads, 1, "the argument's length is read once for both: {counts:?}");
+    let asked = questions_of(&counts, "val");
+    assert_eq!(asked.lengths, 1, "the argument's header is read once for all clauses");
+    assert_eq!(asked.bases, 1, "the argument's base is selected once for all clauses");
 }
 
 /// A tuple parameter delivered in lane form is decided from those lanes.
@@ -26049,5 +26159,45 @@ fn compiler2_a_macro_call_hands_back_the_scope_its_expansion_ends_in_only_as_a_s
             "{macros}defmodule App do\n  require Injects\n  def run() do\n    if true do\n      Injects.import_triple()\n    end\n    triple(1)\n  end\nend\n"
         ),
         "a macro in a branch hands nothing back to the block around the branch",
+    );
+}
+
+/// The clauses of one binary subject share what is asked of it. Its kind is
+/// tested against the one mask of the kinds a binary is held in and its header
+/// is loaded once. Every clause keeps its own bounds compare and its own load,
+/// and none asks again whether the subject is a binary.
+#[test]
+fn three_literal_clauses_on_one_argument_share_one_kind_test_and_header_load() {
+    let clif = lowered_clif_of(
+        concat!(
+            "defmodule P do\n",
+            "  def val(<<\"true\", _r :: binary>>), do: 1\n",
+            "  def val(<<\"null\", _r :: binary>>), do: 2\n",
+            "  def val(<<\"false\", _r :: binary>>), do: 3\n",
+            "  def val(_), do: 0\n",
+            "end\n",
+            "def main(), do: P.val(:binary.copy(\"t\", 1) <> \"rue\")\n",
+        ),
+        "val",
+    );
+    let lines: Vec<&str> = clif.lines().map(str::trim).collect();
+    let kind_mask: u64 = fz_runtime::any_value::ValueKind::BINARY_REPRS
+        .iter()
+        .fold(0, |mask, kind| mask | 1 << kind.tag());
+    let kind_mask_word = format!("= iconst.i64 {kind_mask}");
+    let kind_mask_words = lines.iter().filter(|line| line.ends_with(&kind_mask_word)).count();
+    assert_eq!(kind_mask_words, 1, "one kind-set test for all clauses:\n{clif}");
+    let header_loads = lines
+        .iter()
+        .filter(|line| line.contains("= load.i64 notrap aligned") && !line.contains('+'))
+        .count();
+    assert_eq!(header_loads, 1, "one header load for all clauses:\n{clif}");
+    let not_binary_tests = lines
+        .iter()
+        .filter(|line| line.contains(" icmp") && line.contains("= -1"))
+        .count();
+    assert_eq!(
+        not_binary_tests, 0,
+        "no clause asks again whether the subject is a binary:\n{clif}"
     );
 }

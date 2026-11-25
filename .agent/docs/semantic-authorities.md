@@ -203,11 +203,17 @@ whole), and `fz_bs_read_binary_ref` and `Heap::slice` check the claim with a
 `debug_assert!`. Native code reads a whole-byte field
 without the runtime. `BitstringBitLen` and `BitstringBase` branch inline on the
 two binary representations (inline bitstring, a view through a `BinRef` over a `SharedBin`;
-layout constants in `runtime/src/bits.rs` and `any_value.rs`) through
-`emit_by_binary_representation`, which reads the reference's own kind bits. That
-is also the region's "is this a binary" test: `BitstringBitLen` answers
-`NOT_A_BINARY` (-1) for any other kind and `IsNotBinary` turns that into a raw
-condition for the branch, so a region makes no `fz_type_of` call. A bitstring
+layout constants in `runtime/src/bits.rs` and `any_value.rs`). `BitstringBitLen`
+is also the region's "is this a binary" test: one read of the reference's kind
+against the one mask of the kinds a binary is held in (`kind_is_one_of`), and
+`NOT_A_BINARY` (-1) for any other kind, so a region makes no `fz_type_of` call
+and asks no sentinel question. `BitFieldFits` compares signed, so -1 fits no
+sized field and a clause keeps only its own bounds compare; a first field whose
+fit asks nothing of the length (a bare `bits` rest, a utf8 field the runtime
+reads) is guarded by one `pos <= bit_len` compare (`require_binary`). The kind,
+the length and the base are asked once per subject per dispatch: the first test
+of a binary stores them in `DispatchState::binary_facts`, in the block that
+dominates every later clause. A bitstring
 region does not answer yes or no: `lower_bitstring_region` returns
 `RegionOutcome::Matched`, ending in the block where every field matched with
 every miss edge leading to one `missed` block, so no boxed result crosses a join
@@ -215,11 +221,12 @@ and no `fz_truthy_ref` decodes it. An
 unsigned big-endian integer field of one to seven whole bytes at a position
 known statically to be a whole byte (`BitMatchField::whole_byte_integer_width`,
 `static_bits`) lowers to `BitReadByteInt`, a load from the base plus a byte
-swap. A dispatch region resolves the base once, at its first such field, once
-per source binary (`BitstringBases`); a position is known when it is a literal or follows known
+swap. The first test of a source binary resolves the base once for the whole
+dispatch when some field of the test is such an integer
+(`reads_bytes_by_address`); a position is known when it is a literal or follows known
 positions by statically sized fields. The base is a raw address, safe only
 because the heap moves objects only at a quantum boundary, which compiled code
-reaches at a call or a back edge, and neither occurs inside a dispatch region.
+reaches at a call or a back edge, and neither occurs inside a dispatch.
 Every other field (rest, signed, little-endian, unaligned
 or dynamically sized position, float, utf) keeps its runtime call, as does the
 receive matcher. A little-endian integer field of any width (and `native` on a little-endian host) has one
