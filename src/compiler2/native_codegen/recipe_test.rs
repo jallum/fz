@@ -2432,7 +2432,7 @@ fn compile_slice(constant_len: Option<u64>) -> CompiledSlice {
     sig.params = vec![ir::AbiParam::new(types::I64); params];
     sig.returns = vec![ir::AbiParam::new(types::I64)];
     ctx.func.signature = sig.clone();
-    let sites = RefCell::new(AllocSites::declare(module).expect("declare the site counters"));
+    let sites = RefCell::new(SiteTable::declare(module).expect("declare the site counters"));
     {
         let mut b = FunctionBuilder::new(&mut ctx.func, &mut fbctx);
         let entry = b.create_block();
@@ -2469,11 +2469,15 @@ fn compile_slice(constant_len: Option<u64>) -> CompiledSlice {
     module.finalize_definitions().expect("finalize the slice function");
     let code = module.get_finalized_function(id);
     let (counts, _) = module.get_finalized_data(counts_id);
-    assert!(registered.iter().all(|site| site.kind == HeapAllocKind::Bitstring));
+    assert!(
+        registered
+            .iter()
+            .all(|site| allocation_site(site).kind == HeapAllocKind::Bitstring)
+    );
     CompiledSlice {
         code,
         counts: counts.cast(),
-        sizes: registered.iter().map(|site| site.bytes).collect(),
+        sizes: registered.iter().map(|site| allocation_site(site).bytes).collect(),
         imports,
         _backend: backend,
     }
