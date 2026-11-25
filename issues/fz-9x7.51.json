@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "GC",
   "blocked_by": [
     "fz-9x7.49"
   ],
@@ -13,5 +13,5 @@
   "status": "open",
   "title": "binaries_shared is a site count",
   "type": "task",
-  "updated_at": "2026-11-25T01:09:02Z"
+  "updated_at": "2026-11-25T01:09:52Z"
 }
