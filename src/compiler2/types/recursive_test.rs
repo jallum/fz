@@ -466,3 +466,54 @@ fn no_type_built_beside_a_committed_member_reaches_back_to_it() {
         offenders.iter().map(|ty| t.display(ty)).collect::<Vec<_>>()
     );
 }
+
+/// `F = (label, F) -> result`: a callable that is handed itself.
+fn self_applying(t: &mut Types, label: Ty, result: Ty) -> Ty {
+    t.recursive(1, |t, me| vec![t.arrow(&[label, me[0]], result)])[0]
+}
+
+#[test]
+fn a_substitution_walk_over_a_type_that_names_itself_ends_and_binds_what_one_unfolding_binds() {
+    let mut t = Types::new();
+    let (alpha, beta) = (t.type_var(TypeVarId(1)), t.type_var(TypeVarId(2)));
+    let pattern = self_applying(&mut t, alpha, beta);
+    let (int, bool_t) = (t.int(), t.bool());
+    let witness = self_applying(&mut t, int, bool_t);
+    let mut sigma = Sigma::default();
+    t.collect_instantiation_subst(&pattern, &witness, &mut sigma);
+    assert_eq!(sigma.len(), 2);
+    assert_eq!(sigma[&TypeVarId(1)], int);
+    assert_eq!(sigma[&TypeVarId(2)], bool_t);
+}
+
+#[test]
+fn the_runtime_envelope_of_a_callable_that_is_handed_itself_ends() {
+    let mut t = Types::new();
+    let (alpha, beta) = (t.type_var(TypeVarId(1)), t.type_var(TypeVarId(2)));
+    let generic = self_applying(&mut t, alpha, beta);
+    let envelope = t.runtime_envelope(generic);
+    assert!(
+        t.is_subtype(&generic, &envelope),
+        "the envelope holds what it was read from"
+    );
+    let (int, bool_t) = (t.int(), t.bool());
+    let ground = self_applying(&mut t, int, bool_t);
+    let test = t.runtime_type_test_envelope(ground);
+    assert!(t.is_subtype(&ground, &test), "and so does the type test's reading");
+}
+
+#[test]
+fn erasing_closure_identity_of_a_closure_that_captures_its_own_type_ends() {
+    let mut t = Types::new();
+    let chain = t.recursive(1, |t, me| {
+        let nil = t.nil();
+        let link = t.closure_lit(crate::compiler2::types::ClosureTarget(1), vec![me[0]], 1);
+        vec![t.union(nil, link)]
+    })[0];
+    let erased = t.erase_closure_identity(&chain);
+    assert_eq!(
+        t.erase_closure_identity(&erased),
+        erased,
+        "erasing is idempotent on the recursive result"
+    );
+}
