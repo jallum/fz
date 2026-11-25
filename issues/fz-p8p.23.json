@@ -9,9 +9,15 @@
   "id": "fz-p8p.23",
   "labels": [],
   "parent": "fz-p8p",
+  "comments": [
+    {
+      "text": "fz-i89 (widened 2026-11-24) now carries a native SIGSEGV from a false return spec (List.concat). Checking each body against its own @spec is one way to make a trusted spec result a proven one.",
+      "timestamp": "2026-11-25T03:51:31Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "A function's body is checked against its own @spec",
   "type": "feature",
-  "updated_at": "2026-09-27T20:14:03Z"
+  "updated_at": "2026-11-25T03:51:31Z"
 }
