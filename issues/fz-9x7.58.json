@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-25T03:47:54Z",
+  "description": "Approved by the user, 2026-11-24, verbatim: \"yes.\" (in reply to the proposal: a P1 ticket for the flaky spill-list test; fix (a) the spill list becomes a value the pool is handed, so the test owns its own list).\n\nProblem\n`every_block_a_thread_exits_with_is_handed_over_whole_and_found_again` (runtime/src/heap/block_pool_test.rs:352, from #880) fails under parallel load: 2 failures in about 10 runs of `cargo test -p fz-runtime --lib heap` (passes alone). Failure: \"the exited thread's whole free list comes back, block for block\" — 39 of 40 blocks match; one is a foreign block of the same class (992 B) from another test. Saved output: scratchpad b47g/flake-5.txt (session d1d265b3).\n\nMechanism\n`SPILL`/`SPILLED` in block_pool.rs are process-wide statics. Exiting threads and `pool_drain_for_test` (called by other pool tests via `start()`) spill into the same list; `spilled(class)` pops from it. The test's comment claims its class is used by no other test, but nothing enforces that, so a parallel test's block of that class can join or leave the list between the spawned thread's exit and the test's takes. The pool logic is sound; the test asserts isolation the shared state cannot give.\n\nFix\nThe spill list becomes a value the pool is handed (the process-wide one in production), so the test runs the production hand-over path against a list no other test can reach. No serialising lock, no test-only shim; the test asserts exact block-for-block equality as today.\n\nAcceptance\n- The test passes 50 consecutive runs of `cargo test -p fz-runtime --lib heap` under parallel load.\n- Production behaviour unchanged: exiting threads still hand their lists to the one process-wide spill list.\n- Related: fz-9x7.54 decides the pool's shape; if it lands first and removes the spill list, this ticket closes with it.",
+  "id": "fz-9x7.58",
+  "labels": [],
+  "parent": "fz-9x7",
+  "priority": 1,
+  "status": "open",
+  "title": "The spill-list test does not depend on other tests' pool traffic",
+  "type": "bug",
+  "updated_at": "2026-11-25T03:47:54Z"
+}
