@@ -379,8 +379,13 @@ code-point and byte forms:
 
 A surrogate or a value above `10FFFF` in either braced form reports `invalid or
 reserved Unicode code point`; every escape error underlines the escape from its
-backslash. Elixir warns about the one-digit and braced `\x` forms; the lexer has
-no channel for a warning, so both are accepted silently. Any other escaped
+backslash. The one-digit `\xH` and the braced `\x{H...}` forms are read and
+warned about, with Elixir's text, under `parse/deprecated-hex-escape`: the lexer
+keeps each one's span while it reads and `tokenize` emits the warnings when the
+source is lexed, so an escape inside a `#{...}` is warned about too.
+`Macro.unescape_string/1` warns through `IO.warn`'s hook, which is how a `~s`
+or `~c` sigil's escapes are reported at its call. `~S` keeps `\x4` as written,
+so it warns of nothing. Any other escaped
 character is an `unknown escape` error, where Elixir would take it literally. A
 combining character can be written as an escape (`"e\u0301"`) instead of as
 bytes.
