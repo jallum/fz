@@ -46,11 +46,14 @@
 //! roots are traced.
 //!
 //! One `gc::forward::Tracer` carries a collection: the from-space, the heap,
-//! the schemas, the queue of copied objects and the stats. Its `forward(word,
+//! the schemas and the queue of copied objects. Its `forward(word,
 //! kind)` is the only way a collection moves a value: the word a container
 //! stores, with its kind, comes back unchanged unless the kind is a heap kind
 //! and the object is in from-space, in which case it comes back naming the
-//! to-space copy. Roots and every trace method go through it.
+//! to-space copy. Roots and every trace method go through it. The collection
+//! counts nothing per object: `copied_bytes` is the fill of to-space, read once
+//! at the end, and `copied_objects` is the length of the queue of copied
+//! objects plus the scalar boxes the roots copied.
 //!
 //! Forwarding marker: every heap object is 16-byte aligned, so a live
 //! pointer's low nibble is clear. A copied from-space object has the one

@@ -12,8 +12,7 @@ fn with_tracer(check: impl FnOnce(&mut Tracer)) {
     let mut heap = Heap::new(SIZE_TABLE[0], schemas.clone());
     let from_space = FromSpace::of(&heap, Generation::Major);
     let schemas = schemas.borrow();
-    let mut stats = GcStats::default();
-    check(&mut Tracer::new(from_space, &mut heap, &schemas, &mut stats));
+    check(&mut Tracer::new(from_space, &mut heap, &schemas));
 }
 
 #[test]
@@ -34,7 +33,7 @@ fn a_literal_object_stays_where_it_is_and_the_collection_copies_nothing() {
     let literal_cell = Box::leak(Box::new([0u64; 2])) as *mut _ as u64 | AnyValueRefPacking::current().literal_bit();
     with_tracer(|tracer| {
         assert_eq!(tracer.forward(literal_cell, ValueKind::LIST), literal_cell);
-        assert_eq!(tracer.stats.copied_objects, 0);
+        assert_eq!(tracer.heap.young_bytes(), 0);
         assert!(tracer.worklist.is_empty());
     });
 }

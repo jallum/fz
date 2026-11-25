@@ -231,6 +231,10 @@ macro. The atom stands wherever a module can:
 - as the name of `%__MODULE__{}`, in a literal or a pattern. The front door
   reads `%__MODULE__{...}` with the variable in the name position, and
   `decode_module_target` reads a module atom there as that exact module.
+- as the first segment of an alias, `__MODULE__.Inner` or `%__MODULE__.Inner{}`:
+  the alias expands to the atom of the nested module
+  (`fold_module_atom_alias`). `alias __MODULE__.Inner` as a directive is not
+  read yet.
 
 A clause head's parameters are patterns and expand as the patterns of a `case`
 clause do (`FunctionSourceExpander::expand_signature`), so a splice in a head

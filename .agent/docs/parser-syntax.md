@@ -134,9 +134,11 @@ newline to guess intent.
   that dual role is fz-specific). `|`, `=>` and `<-` are infix-only, as they
   are in Elixir, so a list's `| tail` and a map update's `| key: value` may
   begin a line. Inside the brackets, a line end after the `|` and one before the
-  closing `]` or `}` are skipped. `->` is not: a line that begins with `->` starts a zero-head
-  clause, as `catch` clauses do, where Elixir's tokenizer would continue the line
-  before. `Tok::Plus` stays infix-only at a line start
+  closing `]` or `}` are skipped. `->` is not: a line that begins with `->` after a
+  section's first clause is the syntax error `syntax error before: `->``, raised by
+  `parse_clause_line` for every clause list, as in Elixir, whose tokenizer
+  continues the line before. Only a section's first clause may have no head
+  (`fn -> 0 end`). `Tok::Plus` stays infix-only at a line start
   (a leading `+` continues the previous expression), yet the front door's
   prefix parser accepts a `+` inside an expression as unary plus, the call
   `+(n)`, as it does `-`.

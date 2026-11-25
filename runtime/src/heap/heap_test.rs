@@ -3894,3 +3894,32 @@ fn a_slice_of_a_small_source_is_a_copy() {
     assert_eq!(made, StubCounts::default());
     assert_eq!(bytes, &source[4..14]);
 }
+
+/// The collection counts nothing per object: what it reports as copied is read
+/// from the blocks it filled, and those blocks hold exactly the survivors.
+#[test]
+fn the_reported_copy_is_the_fill_of_the_blocks_the_collection_filled() {
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let mut list = EMPTY_LIST;
+    let mut collections = 0;
+    let mut overflowed = false;
+    while collections < 12 {
+        let (next, stats) = grow_list_and_collect(&mut h, list, 300);
+        list = next;
+        collections += 1;
+        let filled = &h.old_blocks[h.retired_from..];
+        overflowed |= filled.len() > 1;
+        assert_eq!(
+            stats.copied_bytes as usize,
+            filled.iter().map(Block::fill).sum::<usize>(),
+            "{:?} collection {collections}: copied bytes are the fill of the blocks it filled",
+            stats.generation
+        );
+        assert_eq!(
+            stats.copied_bytes,
+            stats.copied_objects * 16,
+            "a list cell is one 16-byte object"
+        );
+    }
+    assert!(overflowed, "some collection copied into more than one block");
+}

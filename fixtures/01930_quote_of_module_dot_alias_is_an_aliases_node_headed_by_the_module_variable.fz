@@ -1,0 +1,30 @@
+#---
+# purpose: quote of __MODULE__.Inner is {:__aliases__, meta, [{:__MODULE__, meta, ctx}, :Inner]}, and the written form names the enclosing module's nested module.
+# oracle: self
+# oracle.stamp: a7b67dc9714ba7f7
+#---
+defmodule Main do
+  defmodule Inner do
+    defstruct a: 1
+
+    def f(), do: :inner_f
+  end
+
+  def shapes() do
+    IO.inspect(quote do: __MODULE__.Inner)
+    IO.inspect(quote do: __MODULE__.Inner.f())
+  end
+
+  def resolved() do
+    IO.inspect(__MODULE__.Inner)
+    IO.inspect(__MODULE__.Inner.f())
+    IO.inspect(%__MODULE__.Inner{})
+    IO.inspect(%__MODULE__.Inner{a: 2}.a)
+  end
+
+  def main() do
+    shapes()
+    resolved()
+  end
+end
+Main.main()

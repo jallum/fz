@@ -4,7 +4,6 @@
 use super::super::Heap;
 use super::super::ref_io::strict_object_size;
 use super::super::schema::SchemaRegistry;
-use super::super::stats::GcStats;
 use super::forwarding::{forwarded_target, write_forwarding_marker};
 use super::{CopiedObject, FromSpace};
 use crate::any_value::{AnyValueRef, AnyValueRefPacking, ValueKind};
@@ -17,34 +16,37 @@ pub(in super::super) struct Tracer<'a> {
     pub(super) heap: &'a mut Heap,
     pub(super) schemas: &'a SchemaRegistry,
     pub(super) worklist: Vec<CopiedObject>,
-    pub(super) stats: &'a mut GcStats,
+    scalar_boxes: u64,
 }
 
 impl<'a> Tracer<'a> {
-    pub(in super::super) fn new(
-        from_space: FromSpace,
-        heap: &'a mut Heap,
-        schemas: &'a SchemaRegistry,
-        stats: &'a mut GcStats,
-    ) -> Self {
+    pub(in super::super) fn new(from_space: FromSpace, heap: &'a mut Heap, schemas: &'a SchemaRegistry) -> Self {
         let worklist = std::mem::take(&mut heap.worklist);
         Self {
             from_space,
             heap,
             schemas,
             worklist,
-            stats,
+            scalar_boxes: 0,
         }
     }
 
-    /// How many objects the collection kept. The worklist goes back to the heap
-    /// emptied, with the capacity it grew to.
-    pub(in super::super) fn finish(self) -> u64 {
-        let Self { heap, mut worklist, .. } = self;
+    /// How many objects the collection kept, and how many scalar boxes its
+    /// roots copied besides. Every kept object went through the worklist, so
+    /// its length is the count; a scalar box is copied without being queued.
+    /// The worklist goes back to the heap emptied, with the capacity it grew
+    /// to.
+    pub(in super::super) fn finish(self) -> (u64, u64) {
+        let Self {
+            heap,
+            mut worklist,
+            scalar_boxes,
+            ..
+        } = self;
         let kept = worklist.len() as u64;
         worklist.clear();
         heap.worklist = worklist;
-        kept
+        (kept, scalar_boxes)
     }
 
     /// Forward a root. A boxed scalar root is the one place a scalar box is
@@ -106,8 +108,6 @@ impl<'a> Tracer<'a> {
         }
         let size = strict_object_size(kind, p, self.schemas);
         let copy = self.copy_to_space(p, size);
-        self.stats.copied_objects += 1;
-        self.stats.copied_bytes += size as u64;
         write_forwarding_marker(p, kind, copy);
         self.worklist.push(CopiedObject { ptr: copy, kind });
         copy
@@ -115,8 +115,7 @@ impl<'a> Tracer<'a> {
 
     fn copy_scalar_box(&mut self, p: *mut u8) -> *mut u8 {
         let copy = self.copy_to_space(p, 16);
-        self.stats.copied_objects += 1;
-        self.stats.copied_bytes += 16;
+        self.scalar_boxes += 1;
         copy
     }
 

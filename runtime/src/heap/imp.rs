@@ -1699,10 +1699,14 @@ impl Heap {
         let schemas_handle = self.schemas.clone();
 
         let schemas = schemas_handle.borrow();
-        let mut tracer = Tracer::new(from_space, self, &schemas, stats);
+        let mut tracer = Tracer::new(from_space, self, &schemas);
         roots.forward_into(&mut RootForwarder::new(&mut tracer));
         tracer.scan();
-        let kept_objects = tracer.finish();
+        let (kept_objects, scalar_boxes) = tracer.finish();
+        // To-space is the heap's young area now: the fresh tip and the blocks
+        // the copy parked, so its fill is what the collection copied.
+        stats.copied_objects = kept_objects + scalar_boxes;
+        stats.copied_bytes = self.young_bytes() as u64;
         drop(schemas);
 
         // The off-heap sweep walks the intrusive chain of the from-space: survivors
