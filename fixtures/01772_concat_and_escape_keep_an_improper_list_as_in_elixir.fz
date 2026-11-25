@@ -1,0 +1,49 @@
+#---
+# purpose: "++ onto a non-list and Macro.escape of an improper list keep the improper tail, and an improper left side of ++ raises ArgumentError, as in Elixir"
+# oracle: self
+# oracle.stamp: 7627e74d19ffc539
+#---
+defmodule Main do
+  @t [1, 2 | 3]
+
+  def opaque(x) do
+    send(self(), x)
+
+    receive do
+      value -> value
+    end
+  end
+
+  def attribute(), do: @t
+
+  def raised(fun) do
+    try do
+      fun.()
+    rescue
+      error -> {error.__struct__, Exception.message(error)}
+    end
+  end
+
+  def main() do
+    IO.inspect(opaque([1]) ++ opaque(2))
+    IO.inspect(opaque([]) ++ opaque(2))
+    IO.inspect(opaque([1]) ++ opaque([2 | 3]))
+    IO.inspect(opaque([1, 2]) ++ opaque([3]))
+    IO.inspect([1] ++ 2)
+    IO.inspect([] ++ 2)
+    IO.inspect(hd(opaque([1]) ++ opaque(2)))
+    IO.inspect(raised(fn -> opaque([1 | 2]) ++ [3] end))
+    IO.inspect(raised(fn -> opaque([1, 2 | 3]) ++ [3] end))
+    IO.inspect(raised(fn -> opaque(:a) ++ [3] end))
+    IO.inspect(Macro.escape([1 | 2]))
+    IO.inspect(Macro.escape([1, 2 | 3]))
+    IO.inspect(Macro.escape([1, [2 | 3]]))
+    IO.inspect(Macro.escape([[1 | 2], 3]))
+    IO.inspect(Macro.escape(%{a: [1 | 2]}))
+    IO.inspect(Macro.escape([1 | %{a: 1}]))
+    IO.inspect(Macro.escape([1, 2]))
+    IO.inspect(attribute())
+  end
+end
+
+Main.main()

@@ -566,7 +566,9 @@ A value the macro computes enters the returned code through `Macro.escape/1`
 (`lib/macro.fz`), an ordinary lib function the macro body calls. It answers the
 quoted code that rebuilds the value, in Elixir's shapes: a tuple that is not a
 pair is `{:{}, [], elements}`, a map is `{:%{}, [], pairs}` in `Map.to_list`
-order, and a bitstring that is not a binary is a `<<>>` of its leading
+order, a list whose last tail is not a list ends in `{:|, [], [last, tail]}` in
+place of its last element (`[1, 2 | 3]` is `[1, {:|, [], [2, 3]}]`), and a
+bitstring that is not a binary is a `<<>>` of its leading
 `rem(bit_size, 8)` bits and its binary rest. A function a module defines by
 name is the capture that names it,
 `{:&, [], [{:/, [], [{{:., [], [Mod, :fun]}, [no_parens: true], []}, arity]}]}`,

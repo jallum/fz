@@ -299,6 +299,9 @@ defmodule Macro do
       Macro.escape([ok: {1, 2}])
       #=> [ok: {1, 2}]
 
+      Macro.escape([1, 2 | 3])
+      #=> [1, {:|, [], [2, 3]}]
+
       Macro.escape(&String.length/1)
       #=> {:&, [], [{:/, [], [{{:., [], [String, :length]}, [no_parens: true], []}, 1]}]}
 
@@ -308,7 +311,7 @@ defmodule Macro do
   def escape(value) when is_bitstring(value), do: escape_bits(value, rem(bit_size(value), 8))
   def escape({first, second}), do: {escape(first), escape(second)}
   def escape(value) when is_tuple(value), do: {:{}, [], escape_each(Tuple.to_list(value))}
-  def escape(value) when is_list(value), do: escape_each(value)
+  def escape(value) when is_list(value), do: escape_list(value)
   def escape(value) when is_map(value), do: {:%{}, [], escape_each(Map.to_list(value))}
 
   def escape(value) when is_function(value), do: escape_function(value, fz_function_name(value))
@@ -354,6 +357,11 @@ defmodule Macro do
   end
 
   extern "fz" defp fz_function_name(fun) :: any
+
+  @spec escape_list(maybe_improper_list(any, any)) :: [any]
+  defp escape_list([]), do: []
+  defp escape_list([head | tail]) when is_list(tail), do: [escape(head) | escape_list(tail)]
+  defp escape_list([head | tail]), do: [{:|, [], [escape(head), escape(tail)]}]
 
   @spec escape_each([any]) :: [any]
   defp escape_each(values), do: Enum.map(values, fn value -> escape(value) end)
