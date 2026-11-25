@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Elixir Parity",
   "blocked_by": [
     "fz-mue.57",
     "fz-mue.60",
@@ -28,5 +28,5 @@
   "status": "open",
   "title": "Macro.expand/2 expands a quoted macro call in the caller's environment, as in Elixir",
   "type": "feature",
-  "updated_at": "2026-11-25T11:31:27Z"
+  "updated_at": "2026-11-25T12:04:44Z"
 }
