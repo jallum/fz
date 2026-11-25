@@ -241,6 +241,26 @@ pub extern "C" fn fz_panic_reason(
     );
 }
 
+/// Raise the `ArgumentError` `unquote(value)` raises when `value` is not
+/// quoted code, worded as Elixir's `elixir_quote:unquote/1` words it.
+#[unsafe(no_mangle)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_unquote_raise(process: *mut Process, value_ref: u64) {
+    let value = AnyValue::from_ref(AnyValueRef::from_raw_word(value_ref).expect("unquote: a value ref"))
+        .expect("unquote: a value");
+    let message = format!(
+        "tried to unquote invalid AST: {}\nDid you forget to escape term using Macro.escape/1?",
+        render_value(process, value)
+    );
+    let message = text(process, &message);
+    raise_exception(
+        process,
+        atom(process, "Elixir.ArgumentError"),
+        &[("message", message)],
+        None,
+    );
+}
+
 /// Raise `value` in the current process as a throw: the primitive behind
 /// `Kernel.throw/1`.
 #[unsafe(no_mangle)]

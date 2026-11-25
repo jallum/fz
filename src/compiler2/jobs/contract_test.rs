@@ -1,4 +1,4 @@
-use super::checked_return;
+use super::{checked_return, worded_failure};
 use crate::dispatch_matrix::pattern::LastResort;
 use crate::fz_ir::{ExternAbi, ExternReturn, ExternTy};
 
@@ -34,5 +34,28 @@ fn a_declared_failure_refuses_every_result_that_is_not_an_integer_or_a_float() {
         let refusal = checked_return(wire.clone(), ExternAbi::C, failure())
             .expect_err("only an integer or a float can be the value of a checked return");
         assert!(refusal.contains("declared `integer` or `float`"), "{wire:?}: {refusal}");
+    }
+}
+
+#[test]
+fn an_unworded_failure_is_an_fz_extern_that_never_returns() {
+    assert_eq!(
+        worded_failure(&ExternReturn::Scalar(ExternTy::Never), ExternAbi::Fz),
+        Ok(())
+    );
+}
+
+#[test]
+fn an_unworded_failure_refuses_a_c_extern_because_only_the_runtime_words_a_message() {
+    let refusal = worded_failure(&ExternReturn::Scalar(ExternTy::Never), ExternAbi::C)
+        .expect_err("a C extern declares its message");
+    assert!(refusal.contains("needs the `fz` ABI"), "{refusal}");
+}
+
+#[test]
+fn an_unworded_failure_refuses_a_result_because_a_returning_extern_leaves_its_caller_to_unwind() {
+    for wire in [ExternReturn::Scalar(ExternTy::Any), ExternReturn::Scalar(ExternTy::I64)] {
+        let refusal = worded_failure(&wire, ExternAbi::Fz).expect_err("only a `none` extern never returns");
+        assert!(refusal.contains("declared `none`"), "{wire:?}: {refusal}");
     }
 }

@@ -1369,22 +1369,46 @@ impl<'a, 'w, 'tel, 'f, 'env, 'steps, 'q, T: crate::telemetry::Telemetry>
     }
 
     /// `unquote(e)` as Elixir's `quote` builds it: the value of `e` is spliced
-    /// in through `Kernel.__unquoted__`, which raises `ArgumentError` unless it
-    /// is quoted code. A bootstrap quote and an unquote fragment's quote are
-    /// built without the check.
+    /// in only if it is quoted code, and `unquote` raises `ArgumentError` on
+    /// anything else. The test and the raise are the runtime's externs, called
+    /// directly, so a macro that unquotes analyses two externs and no wrapper.
+    /// A bootstrap quote and an unquote fragment's quote are built without the
+    /// check.
     fn lower_checked_unquote(&mut self) -> Result<ValueId, FatalError> {
         let span = self.next_splice_span();
         let value = self.lower_unquote()?;
         if self.quotes_bootstrap_code() || self.quotes_unquote_fragment() {
             return Ok(value);
         }
-        let kernel = ModuleName::from_segments(vec!["Kernel".to_string()]);
-        self.call_module(kernel, "__unquoted__", vec![value], span)
+        let kernel = self
+            .lowerer
+            .world
+            .reference_module(ModuleName::from_segments(vec!["Kernel".to_string()]));
+        let valid = self.lowerer.world.reference_function(kernel, "fz_shallow_valid_ast", 1);
+        let raise = self.lowerer.world.reference_function(kernel, "fz_unquote_raise", 1);
+        let (ok, check) = self.direct_call(valid, vec![value], span);
+        self.steps.push(check);
+        let (raised, raise) = self.direct_call(raise, vec![value], span);
+        let checked = self.lowerer.fresh_value();
+        self.steps.push(ExprStep::If {
+            value: checked,
+            cond: ok,
+            then_block: ExprBlock {
+                span,
+                steps: Vec::new(),
+                result: value,
+            },
+            else_block: ExprBlock {
+                span,
+                steps: vec![raise],
+                result: raised,
+            },
+        });
+        Ok(checked)
     }
 
     /// Whether the quote is written in the prelude or the runtime library.
-    /// Their `def` quotes are what `Kernel.__unquoted__` is itself defined
-    /// with, and Elixir builds its own bootstrap quotes without the check too.
+    /// Elixir builds its own bootstrap quotes without the check too.
     fn quotes_bootstrap_code(&self) -> bool {
         self.lowerer.world.is_bootstrap(self.lowerer.source.owner)
     }
@@ -1410,32 +1434,29 @@ impl<'a, 'w, 'tel, 'f, 'env, 'steps, 'q, T: crate::telemetry::Telemetry>
     /// A call of one of `:elixir_quote`'s functions, the runtime half of the
     /// splice.
     fn call_quote_runtime(&mut self, name: &str, args: Vec<ValueId>, span: Span) -> Result<ValueId, FatalError> {
-        self.call_module(ModuleName::bare_atom("elixir_quote"), name, args, span)
-    }
-
-    fn call_module(
-        &mut self,
-        module: ModuleName,
-        name: &str,
-        args: Vec<ValueId>,
-        span: Span,
-    ) -> Result<ValueId, FatalError> {
         let callee = Callee::Name(CallableName {
-            module: Some(crate::ast::ModuleTarget::Exact(module)),
+            module: Some(crate::ast::ModuleTarget::Exact(ModuleName::bare_atom("elixir_quote"))),
             name: name.to_string(),
         });
         let function = self
             .lowerer
             .resolve_callee(&callee, args.len(), span, "unquote_splicing")?;
+        let (value, call) = self.direct_call(function, args, span);
+        self.steps.push(call);
+        Ok(value)
+    }
+
+    /// A call of `function` on `args`, and the value it produces.
+    fn direct_call(&mut self, function: FunctionId, args: Vec<ValueId>, span: Span) -> (ValueId, ExprStep) {
         let value = self.lowerer.fresh_value();
         let callsite = self.lowerer.fresh_callsite(span);
-        self.steps.push(ExprStep::DirectCall {
+        let call = ExprStep::DirectCall {
             value,
             callsite,
             callee: DirectCallee::Function(function),
             args: args.into_iter().map(shared_arg).collect(),
-        });
-        Ok(value)
+        };
+        (value, call)
     }
 
     /// `unquote(e)` splices `e`'s runtime value in place: `e` was already

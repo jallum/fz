@@ -876,6 +876,9 @@ impl ProgramCanon<'_> {
             signature.params, signature.variadic
         ));
         out.put(&format!("ret {:?}", signature.ret));
+        if let Some(exception) = &signature.raises {
+            out.put(&format!("raises {exception}"));
+        }
         // An extern's declared types and bounds are not carried on
         // `LoweredExtern` -- they live on its `FunctionContract`, the one
         // resolver of a function's declared surface (`jobs/contract.rs`).

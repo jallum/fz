@@ -1335,6 +1335,7 @@ fn one_integer_wire() -> crate::compiler2::body::LoweredExtern {
         params: vec![crate::fz_ir::ExternTy::I64],
         variadic: false,
         ret: crate::fz_ir::ExternReturn::scalar(crate::fz_ir::ExternTy::I64),
+        raises: None,
     }
 }
 
@@ -1393,6 +1394,7 @@ fn make_resource_contract(types: &mut Types) -> FunctionContract {
         params: vec![crate::fz_ir::ExternTy::I64, crate::fz_ir::ExternTy::Any],
         variadic: false,
         ret: crate::fz_ir::ExternReturn::scalar(crate::fz_ir::ExternTy::Any),
+        raises: None,
     };
     FunctionContract::from_resolved(types, vec![resolved]).with_extern_wire(wire)
 }

@@ -111,6 +111,10 @@ pub struct LoweredExtern {
     pub params: Vec<ExternTy>,
     pub variadic: bool,
     pub ret: ExternReturn,
+    /// The atom of the exception module an `fz` extern raises from the
+    /// runtime, which words the message itself. A `C` extern's failure is in
+    /// `ret` instead.
+    pub raises: Option<String>,
 }
 
 /// The size a construction field writes. Only a pattern sizes a field by the

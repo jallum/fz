@@ -684,6 +684,33 @@ fn compiler2_frontdoor_extern_raises_keeps_the_exception_and_message_with_the_de
 }
 
 #[test]
+fn compiler2_frontdoor_fz_extern_raises_needs_no_message_because_it_words_its_own() {
+    let tel = ConfiguredTelemetry::new();
+    let root = parse_quoted_program(
+        "extern_raises_unworded.fz",
+        "extern \"fz\" defp f(any) :: none, raises: ArgumentError\n",
+        &tel,
+    )
+    .expect("an fz extern that raises an exception it words itself parses");
+    let form = root.cursor().list_items().unwrap()[0]
+        .ast_node(&root.sources)
+        .unwrap()
+        .unwrap();
+    let details = form.tail.list_items().unwrap()[1].map_entries().unwrap();
+    let exception = map_value(&details, "raises")
+        .ast_node(&root.sources)
+        .unwrap()
+        .expect("the exception is an alias node");
+    assert_eq!(exception.tail.list_atom_names().unwrap(), ["ArgumentError"]);
+    assert!(
+        !details
+            .iter()
+            .any(|(key, _)| key.atom_name().ok().as_deref() == Some("message")),
+        "no message is declared: the runtime words it"
+    );
+}
+
+#[test]
 fn compiler2_frontdoor_extern_delivers_keeps_the_kind_with_the_declaration() {
     let tel = ConfiguredTelemetry::new();
     for kind in ["error", "throw", "exit"] {

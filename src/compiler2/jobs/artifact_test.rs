@@ -15,6 +15,7 @@ fn generic_extern_effects_do_not_depend_on_privileged_symbol_spellings() {
         params: Vec::new(),
         variadic: false,
         ret: crate::fz_ir::ExternReturn::Scalar(ExternTy::Unit),
+        raises: None,
     };
     let empty_body = LoweredBody::clauses(Vec::new(), Vec::new(), Vec::new());
     let expected_local = EffectSummary {

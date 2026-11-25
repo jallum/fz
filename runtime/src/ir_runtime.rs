@@ -388,21 +388,6 @@ pub extern "C" fn fz_shallow_valid_ast(process: *mut Process, value_ref_word: u6
     ))
 }
 
-/// The message of the `ArgumentError` `unquote(value)` raises when `value` is
-/// not quoted code, as Elixir's `elixir_quote:unquote/1` words it.
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_unquote_failure_message(process: *mut Process, value_ref_word: u64) -> u64 {
-    let value = any_value_from_ref_word(value_ref_word, "fz_unquote_failure_message value");
-    let message = format!(
-        "tried to unquote invalid AST: {}\nDid you forget to escape term using Macro.escape/1?",
-        render_value(process, value)
-    );
-    (unsafe { &mut *process })
-        .alloc_bitstring(message.as_bytes(), (message.len() * 8) as u64)
-        .ref_word()
-        .raw_word()
-}
-
 /// Typed halt for narrow-int seams. The cont chain
 /// carries a raw i64 all the way to halt-cont's RawInt body; no
 /// unboxing — value is already a machine int.

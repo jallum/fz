@@ -1295,6 +1295,7 @@ fn collect_executable_atoms(world: &mut World, executable: &BackendExecutable, n
             if let crate::fz_ir::ExternReturn::Checked(_, failure) = &signature.ret {
                 names.raise(failure);
             }
+            names.raises(signature.raises.as_deref());
         }
         BackendBody::Clauses { entries, .. } => {
             for entry in entries {
