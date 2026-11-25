@@ -19,11 +19,15 @@
     {
       "text": "User decision 2026-11-24: go with the cheaper shape. fz's runtime keeps raising exception structs. rescue converts only raw terms the program itself raises (:erlang.error(term)), and only when the raised type contains any. A catch clause that binds or tests the reason translates the struct back to Elixir's Erlang reason; a catch written _, _ costs nothing. Known deviation: a catch that reads the reason can't tell a struct fz's runtime raised (Elixir would show a raw reason) from the same struct raised explicitly by the program. The earlier approach (raise Erlang reasons, normalize on every rescue: +212 derivations / +1880 reads / +272 requests at 15936097f) is attached as fz-mue.28-raise-reasons-normalize-on-rescue.patch (4 WIP commits, base merge-base of 35b26559c), kept at the user's request.",
       "timestamp": "2026-11-25T02:51:10Z"
+    },
+    {
+      "text": "HOLD LIFTED (2026-11-24, user decision relayed by Elixir Parity): cheaper shape. fz keeps raising structs; rescue converts only program-raised raw terms (only when the raised type has any); a catch converts the struct back to the Erlang reason only where its clause reads the reason. Target ~0 rise; builder ../fz-mue28 on 4e13457c8. Accepted, documented deviation (guides + fixture): a reason-reading catch cannot tell a runtime-raised struct from the same struct raised explicitly. Page fz-mue.28.html is superseded; old WIP branch fz-mue.28/reason-raise-wip is local only.",
+      "timestamp": "2026-11-25T02:51:41Z"
     }
   ],
   "priority": 3,
   "status": "open",
   "title": "catch kind, reason normalises a FunctionClauseError as Elixir does",
   "type": "bug",
-  "updated_at": "2026-11-25T02:51:10Z"
+  "updated_at": "2026-11-25T02:51:41Z"
 }
