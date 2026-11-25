@@ -504,11 +504,13 @@ The shared grammar is intentionally small:
 - `assert.metric.<name>:` — a numeric invariant. The current built-in names are
   `semantic.activations`, `semantic.executables`, `semantic.callsites`,
   `call_edges.count`, `type.clash_folded` (how many
-  `fz.compiler2.type.clash_folded` events the compile dispatched), and
+  `fz.compiler2.type.clash_folded` events the compile dispatched),
   `pull.product.requested` (how many `fz.compiler2.pull.product.requested`
   events the compile emitted, the count a drive's request budget is charged
   against; the harness counts one `product_executable_inventory` drive of the
-  fixture's root).
+  fixture's root), and
+  `backend.construction_wrappers` (how many first-class callable constructions
+  the root's backend program holds; a callable that is only applied builds none).
 - `assert.edge:` — one semantic edge claim, written
   `caller | callsite | dispatch | target`. `target` matches the canonical target
   label, while the optional snapshot carries full input/return type detail.

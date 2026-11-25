@@ -1,0 +1,21 @@
+#---
+# purpose: "A callable that a case clause binds to a name is applied as the scrutinee itself, as a function head's parameter is, and no first-class construction is built for it"
+# kind: run
+# root: main/0
+# assert.metric.backend.construction_wrappers: 0
+# oracle: self
+# oracle.stamp: 35a2fbe23019cd6d
+#---
+defmodule Main do
+  def apply_bound(g, x) do
+    case g do
+      h -> h.(x, x) + h.(x, 1)
+    end
+  end
+
+  def main() do
+    IO.inspect(apply_bound(fn a, b -> a + b end, 3))
+  end
+end
+
+Main.main()

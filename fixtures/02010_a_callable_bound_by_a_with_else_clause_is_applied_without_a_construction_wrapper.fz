@@ -1,0 +1,23 @@
+#---
+# purpose: "A callable that a `with` else clause binds to a name is applied as the value the `with` was asked about, and no first-class construction is built for it"
+# kind: run
+# root: main/0
+# assert.metric.backend.construction_wrappers: 0
+# oracle: self
+# oracle.stamp: 1d6c089896cc16f3
+#---
+defmodule Main do
+  def apply_else(g, x) do
+    with {:ok, _} <- g do
+      1
+    else
+      h -> h.(x, x)
+    end
+  end
+
+  def main() do
+    IO.inspect(apply_else(fn a, b -> a + b end, 3))
+  end
+end
+
+Main.main()

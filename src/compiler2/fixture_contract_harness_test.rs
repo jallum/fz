@@ -162,6 +162,10 @@ fn evaluate_fixture(fixture: &ContractFixture) -> EvaluatedFixture {
     metrics.insert("call_edges.count".to_string(), facts.len() as u64);
     metrics.insert("type.clash_folded".to_string(), clash_folded.get());
     metrics.insert("pull.product.requested".to_string(), product_requested.get());
+    metrics.insert(
+        "backend.construction_wrappers".to_string(),
+        compiler.retained_backend_program(root_id).construction_wrappers().len() as u64,
+    );
 
     EvaluatedFixture {
         facts,
