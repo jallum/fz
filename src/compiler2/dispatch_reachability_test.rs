@@ -756,7 +756,7 @@ fn bit_field(name: &str, ty: crate::ast::BitType, bits: Option<u32>) -> crate::a
 }
 
 /// What the plan's one bitstring test asks of its last field's end.
-fn last_field_kind(plan: &PatternDispatchPlan<Ty>) -> BitstringFieldKind {
+fn last_field_kind(plan: &PatternDispatchPlan<Ty>) -> BitType {
     let shape = plan
         .graph
         .nodes
@@ -797,7 +797,7 @@ fn a_binary_rest_after_whole_bytes_of_a_binary_subject_is_not_tested() {
         let plan = trimmed_bitstring_plan(&mut types, binary, fields);
         assert_eq!(
             last_field_kind(&plan),
-            BitstringFieldKind::Bits,
+            BitType::Bits,
             "after {why} of a binary the rest is whole bytes"
         );
     }
@@ -822,7 +822,7 @@ fn a_binary_rest_is_tested_unless_subject_and_prefix_are_both_whole_bytes() {
         let plan = trimmed_bitstring_plan(&mut types, input, fields);
         assert_eq!(
             last_field_kind(&plan),
-            BitstringFieldKind::Binary,
+            BitType::Binary,
             "{why}: the rest keeps its whole-byte test"
         );
     }

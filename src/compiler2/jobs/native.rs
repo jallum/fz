@@ -4290,9 +4290,9 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             let extraction = plan.bitstring_extraction(*field_subject);
             let spec = &extraction.spec;
             let field = BitMatchField {
-                ty: dispatch_bit_type(spec.runtime_kind()),
+                ty: spec.runtime_kind(),
                 size: self.lower_dispatch_bit_size(ctx, plan, state, spec, fail_b)?,
-                endian: dispatch_endian(spec.endian),
+                endian: spec.endian,
                 signed: spec.signed,
                 unit: spec.unit,
                 is_last: extraction.is_last,
@@ -6565,30 +6565,6 @@ fn incomplete_native_program(
         Span::DUMMY,
     );
     emit_job_diagnostic(tel, diagnostic)
-}
-
-fn dispatch_bit_type(kind: crate::dispatch_matrix::BitstringFieldKind) -> crate::ast::BitType {
-    use crate::ast::BitType;
-    use crate::dispatch_matrix::BitstringFieldKind;
-    match kind {
-        BitstringFieldKind::Integer => BitType::Integer,
-        BitstringFieldKind::Float => BitType::Float,
-        BitstringFieldKind::Binary => BitType::Binary,
-        BitstringFieldKind::Bits => BitType::Bits,
-        BitstringFieldKind::Utf8 => BitType::Utf8,
-        BitstringFieldKind::Utf16 => BitType::Utf16,
-        BitstringFieldKind::Utf32 => BitType::Utf32,
-    }
-}
-
-fn dispatch_endian(endian: crate::dispatch_matrix::BitstringEndian) -> crate::ast::Endian {
-    use crate::ast::Endian;
-    use crate::dispatch_matrix::BitstringEndian;
-    match endian {
-        BitstringEndian::Big => Endian::Big,
-        BitstringEndian::Little => Endian::Little,
-        BitstringEndian::Native => Endian::Native,
-    }
 }
 
 #[cfg(test)]

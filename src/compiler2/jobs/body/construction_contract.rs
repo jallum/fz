@@ -86,7 +86,7 @@ impl Build {
             None => self.expr(Expr::Nil),
         };
         self.expr(Expr::Tuple(vec![
-            self.int(i64::from(field.spec.ty.runtime_tag())),
+            self.int(i64::from(field.spec.ty.tag())),
             self.expr(Expr::Var(value.clone())),
             size,
             self.int(i64::from(unit(field))),

@@ -1946,10 +1946,10 @@ fn eval_steps<T: Telemetry + ?Sized>(
                     let (size_present, size) =
                         backend_bit_size_value(transport, runtime.cur_proc(), env, &field.spec.size)?;
                     let spec = fz_bs_field_spec(
-                        field.spec.ty.runtime_tag(),
+                        field.spec.ty.tag(),
                         size_present,
-                        field.spec.unit.unwrap_or(backend_default_bit_unit(field.spec.ty)),
-                        backend_endian_tag(field.spec.endian),
+                        field.spec.unit.unwrap_or(field.spec.ty.default_unit()),
+                        field.spec.endian.tag(),
                         0,
                         0,
                     );
@@ -3183,10 +3183,10 @@ pub(super) fn materialize_cursor(proc: *mut Process, source: AnyValue, position:
         .ok_or_else(|| "a cursor position must be an integer".to_string())? as u64;
     let source_ref = source.as_ref_word(proc)?;
     let rest = fz_runtime::ir_runtime::fz_bs_field_spec(
-        crate::ast::BitType::Bits.runtime_tag(),
+        crate::ast::BitType::Bits.tag(),
         0,
-        backend_default_bit_unit(crate::ast::BitType::Bits),
-        backend_endian_tag(crate::ast::Endian::Big),
+        crate::ast::BitType::Bits.default_unit(),
+        crate::ast::Endian::Big.tag(),
         0,
         1,
     );
@@ -3940,22 +3940,6 @@ fn run_pending_dtor<T: Telemetry + ?Sized>(
 
 fn unpack_pending_dtor_closure(closure: RuntimeAnyValue) -> Result<(FnId, Vec<AnyValue>), String> {
     unpack_closure(closure).map_err(|error| format!("backend dtor drain: invalid closure: {error}"))
-}
-
-fn backend_default_bit_unit(ty: crate::ast::BitType) -> u32 {
-    match ty {
-        crate::ast::BitType::Integer | crate::ast::BitType::Float | crate::ast::BitType::Bits => 1,
-        crate::ast::BitType::Binary => 8,
-        crate::ast::BitType::Utf8 | crate::ast::BitType::Utf16 | crate::ast::BitType::Utf32 => 1,
-    }
-}
-
-fn backend_endian_tag(endian: crate::ast::Endian) -> u32 {
-    match endian {
-        crate::ast::Endian::Big => 0,
-        crate::ast::Endian::Little => 1,
-        crate::ast::Endian::Native => 2,
-    }
 }
 
 fn backend_bit_size_value(

@@ -590,34 +590,7 @@ impl Default for BitFieldSpec {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BitType {
-    Integer,
-    Float,
-    Binary,
-    Bits,
-    Utf8,
-    Utf16,
-    Utf32,
-}
-
-impl BitType {
-    /// A match binds this field's value as an integer: an `integer`'s bits, or
-    /// the scalar value a `utf8` field decodes.
-    pub fn reads_as_integer(self) -> bool {
-        matches!(self, BitType::Integer | BitType::Utf8)
-    }
-
-    /// A construction writes this field from the scalar it holds, as the raw
-    /// word it is: an `integer`'s bits, a `float`'s IEEE 754 bits, or the
-    /// scalar value a utf field encodes.
-    pub fn writes_scalar_word(self) -> bool {
-        matches!(
-            self,
-            BitType::Integer | BitType::Float | BitType::Utf8 | BitType::Utf16 | BitType::Utf32
-        )
-    }
-}
+pub use fz_runtime::bitstr::{BitType, Endian};
 
 /// What the program text says about a segment's size, without the value a
 /// run-time size reads.
@@ -630,29 +603,6 @@ pub enum BitSizeKnowledge {
     Runtime,
     /// As long as a pinned binary: whole bytes.
     ByteSizeOf,
-}
-
-impl BitType {
-    /// The number the runtime reads a segment's type from.
-    pub fn runtime_tag(self) -> u32 {
-        match self {
-            BitType::Integer => 0,
-            BitType::Float => 1,
-            BitType::Binary => 2,
-            BitType::Bits => 3,
-            BitType::Utf8 => 4,
-            BitType::Utf16 => 5,
-            BitType::Utf32 => 6,
-        }
-    }
-
-    /// Default bitstring unit per source type.
-    pub fn default_unit(self) -> u32 {
-        match self {
-            BitType::Binary => 8,
-            _ => 1,
-        }
-    }
 }
 
 /// The bits a segment spans beyond the whole bytes it spans, as far as the
@@ -705,13 +655,6 @@ pub enum BitSize {
     /// as the binary the pinned variable holds, so `<<^p::binary, rest::binary>>`
     /// is `p` followed by the remainder.
     ByteSizeOf(Var),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Endian {
-    Big,
-    Little,
-    Native,
 }
 
 #[derive(Debug, Clone)]

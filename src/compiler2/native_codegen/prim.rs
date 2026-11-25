@@ -673,10 +673,10 @@ fn emit_runtime_field_operands<M: cranelift_module::Module>(
         None => body.b.ins().iconst(types::I32, 0),
     };
     let field_spec = fz_bs_field_spec(
-        field.ty.runtime_tag(),
+        field.ty.tag(),
         field.size.is_some() as u32,
         field.unit.unwrap_or(field.ty.default_unit()),
-        encode_endian(field.endian),
+        field.endian.tag(),
         field.signed as u32,
         field.is_last as u32,
     );

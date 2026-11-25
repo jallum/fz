@@ -40,9 +40,8 @@ use crate::dispatch_matrix::pattern::{
     PatternGuardUnaryOp, guard_body_subjects,
 };
 use crate::dispatch_matrix::{
-    BitstringEndian, BitstringFieldKind, BitstringFieldSize, BitstringShape, ComparisonValue, DispatchNode,
-    EdgeEvidence, GraphNodeId, GroundValue, ListRegion, PinnedValueId, ProjectionKind, Region, SubjectId,
-    SubjectSource,
+    BitstringFieldSize, BitstringShape, ComparisonValue, DispatchNode, EdgeEvidence, GraphNodeId, GroundValue,
+    ListRegion, PinnedValueId, ProjectionKind, Region, SubjectId, SubjectSource,
 };
 use crate::fz_ir::{ExternReturn, ExternTy, Module, ReceiveClause, Var};
 
@@ -1293,10 +1292,10 @@ fn emit_bitstring_test<M: cranelift_module::Module>(
         let field = &extraction.spec;
         let (size_present, size_value) = emit_dispatch_bit_size(body, ctx, field, false_b, state)?;
         let field_spec = fz_bs_field_spec(
-            field.runtime_kind().runtime_tag(),
+            field.runtime_kind().tag(),
             size_present,
-            field.unit.unwrap_or(default_dispatch_bit_unit(field.kind)),
-            dispatch_endian_tag(field.endian),
+            field.unit.unwrap_or(field.kind.default_unit()),
+            field.endian.tag(),
             field.signed as u32,
             extraction.is_last as u32,
         );
@@ -1431,22 +1430,6 @@ fn strict_int_i32<M: cranelift_module::Module>(
 ) -> Result<ir::Value, CodegenError> {
     let raw = receive_value_int(body, v)?;
     Ok(body.b.ins().ireduce(types::I32, raw))
-}
-
-fn dispatch_endian_tag(endian: BitstringEndian) -> u32 {
-    match endian {
-        BitstringEndian::Big => 0,
-        BitstringEndian::Little => 1,
-        BitstringEndian::Native => 2,
-    }
-}
-
-fn default_dispatch_bit_unit(ty: BitstringFieldKind) -> u32 {
-    match ty {
-        BitstringFieldKind::Integer | BitstringFieldKind::Float | BitstringFieldKind::Bits => 1,
-        BitstringFieldKind::Binary => 8,
-        BitstringFieldKind::Utf8 | BitstringFieldKind::Utf16 | BitstringFieldKind::Utf32 => 1,
-    }
 }
 
 fn emit_dispatch_guard_expr<M: cranelift_module::Module>(

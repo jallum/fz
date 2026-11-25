@@ -1420,28 +1420,6 @@ pub extern "C" fn fz_alloc_binview_from_static(process: *mut Process, static_sha
     heap_ref_word(ValueKind::BINVIEW, pb.as_raw() as *const u8)
 }
 
-pub(crate) fn decode_bit_type(t: u32) -> BitType {
-    match t {
-        0 => BitType::Integer,
-        1 => BitType::Float,
-        2 => BitType::Binary,
-        3 => BitType::Bits,
-        4 => BitType::Utf8,
-        5 => BitType::Utf16,
-        6 => BitType::Utf32,
-        _ => panic!("unknown bit type tag {}", t),
-    }
-}
-
-pub(crate) fn decode_endian(e: u32) -> Endian {
-    match e {
-        0 => Endian::Big,
-        1 => Endian::Little,
-        2 => Endian::Native,
-        _ => panic!("unknown endian tag {}", e),
-    }
-}
-
 const BS_FIELD_TY_SHIFT: u32 = 0;
 const BS_FIELD_SIZE_PRESENT_SHIFT: u32 = 3;
 const BS_FIELD_UNIT_SHIFT: u32 = 4;
@@ -1509,7 +1487,7 @@ fn field_width(field_spec: u64, size_value: u32, pos: u64, bytes: &[u8], bit_len
     let (ty_tag, size_present, unit, _, _, is_last) = decode_bs_field_spec(field_spec);
     let size = (size_present != 0).then_some(size_value as u64);
     let unit = unit as u64;
-    match (decode_bit_type(ty_tag), size) {
+    match (BitType::from_tag(ty_tag), size) {
         (BitType::Integer, size) => Some(size.unwrap_or(8) * unit).filter(|total| *total <= 64),
         (BitType::Float, size) => Some(size.unwrap_or(64) * unit).filter(|total| *total == 32 || *total == 64),
         (BitType::Binary | BitType::Bits, Some(size)) => Some(size * unit),
@@ -1584,7 +1562,7 @@ fn bit_source<'a>(source_ref: u64) -> (&'a [u8], u64) {
 pub extern "C" fn fz_bs_read_int_ref(source_ref: u64, pos: u64, field_spec: u64, size_value: u32) -> i64 {
     let (ty_tag, _, _, endian_tag, signed, _) = decode_bs_field_spec(field_spec);
     let (bytes, bit_len) = bit_source(source_ref);
-    if decode_bit_type(ty_tag) == BitType::Utf8 {
+    if BitType::from_tag(ty_tag) == BitType::Utf8 {
         let (scalar, _) = utf8_scalar_at(bytes, pos, bit_len)
             .unwrap_or_else(|| panic!("fz_bs_read_int_ref: the utf8 field at bit {pos} does not fit"));
         return i64::from(scalar);
@@ -1598,7 +1576,7 @@ pub extern "C" fn fz_bs_read_int_ref(source_ref: u64, pos: u64, field_spec: u64,
         pos: pos as usize,
     };
     let raw = reader.read_bits(total as usize).expect("a field that fits is readable");
-    let raw = apply_endian_for_read(raw, total, decode_endian(endian_tag));
+    let raw = apply_endian_for_read(raw, total, Endian::from_tag(endian_tag));
     if signed != 0 {
         sign_extend(raw, total)
     } else {
@@ -1619,7 +1597,7 @@ pub extern "C" fn fz_bs_read_binary_ref(
     size_value: u32,
 ) -> u64 {
     let (ty_tag, ..) = decode_bs_field_spec(field_spec);
-    match decode_bit_type(ty_tag) {
+    match BitType::from_tag(ty_tag) {
         BitType::Binary | BitType::Bits => {}
         BitType::Float => panic!("a float field cannot be materialized as a one-word value"),
         BitType::Utf8 => panic!("a utf8 field is read as an integer"),

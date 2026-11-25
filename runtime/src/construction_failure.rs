@@ -15,7 +15,7 @@ use crate::any_value::{AnyValue, AnyValueRef};
 use crate::bits::{Bin, is_bitstring_like};
 use crate::bitstr::BitType;
 use crate::heap::{list_head_ref, list_tail_ref};
-use crate::ir_runtime::{decode_bit_type, fz_tuple_elem, fz_tuple_size};
+use crate::ir_runtime::{fz_tuple_elem, fz_tuple_size};
 use crate::process::Process;
 
 /// The type Elixir's message names: `bits` is reported as `binary`.
@@ -191,7 +191,7 @@ fn passed(process: *mut Process, word: u64) -> Passed {
     let AnyValue::Int(tag) = field(0) else {
         panic!("fz_construction_failure_message: a segment type tag")
     };
-    let ty = decode_bit_type(tag as u32);
+    let ty = BitType::from_tag(tag as u32);
     let (value, size) = (field(1), field(2));
     let AnyValue::Int(unit) = field(3) else {
         panic!("fz_construction_failure_message: an integer unit")

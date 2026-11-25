@@ -2,13 +2,12 @@ use self::source::{collect_pinned_names, direct_bitfield_bindings};
 #[cfg(test)]
 use super::DispatchMatrix;
 use super::{
-    BitstringEndian, BitstringFieldKind, BitstringFieldShape, BitstringFieldSize, BitstringShape, ComparisonValue,
-    DispatchCompileError, DispatchGraph, DispatchMatrixBuilder, DispatchMatrixError, EdgeEvidence, GraphNodeId,
-    GroundValue, GuardId, GuardLeaf, LiveEdges, OutcomeId, OutcomeMultiplicity, PinnedValueId, PlanInputs,
-    PreparedKeyId, ProjectedProperty, ProjectionKind, Region, RegionPredicate, RegionQuestion, SubjectId,
-    compile_dispatch_matrix, demand::DispatchDemand,
+    BitstringFieldShape, BitstringFieldSize, BitstringShape, ComparisonValue, DispatchCompileError, DispatchGraph,
+    DispatchMatrixBuilder, DispatchMatrixError, EdgeEvidence, GraphNodeId, GroundValue, GuardId, GuardLeaf, LiveEdges,
+    OutcomeId, OutcomeMultiplicity, PinnedValueId, PlanInputs, PreparedKeyId, ProjectedProperty, ProjectionKind,
+    Region, RegionPredicate, RegionQuestion, SubjectId, compile_dispatch_matrix, demand::DispatchDemand,
 };
-use crate::ast::{BitSize, BitType, Endian, Expr, Pattern, Spanned, Var};
+use crate::ast::{BitSize, Expr, Pattern, Spanned, Var};
 use crate::fast_hash::HashMap;
 use crate::function_surface::CallableSurface;
 use crate::fz_ir::{ExternAbi, ExternReturn, ExternTy};
@@ -1333,9 +1332,9 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
             let extraction = super::BitstringExtraction {
                 previous: shapes.last().copied(),
                 spec: BitstringFieldShape {
-                    kind: bitstring_field_kind(field.spec.ty),
+                    kind: field.spec.ty,
                     size,
-                    endian: bitstring_endian(field.spec.endian),
+                    endian: field.spec.endian,
                     signed: field.spec.signed,
                     unit: field.spec.unit,
                     rest_proven_whole: false,
@@ -1574,26 +1573,6 @@ fn validate_source_rows<'a, TypeHandle: 'a>(
         }
     }
     Ok(())
-}
-
-fn bitstring_field_kind(kind: BitType) -> BitstringFieldKind {
-    match kind {
-        BitType::Integer => BitstringFieldKind::Integer,
-        BitType::Float => BitstringFieldKind::Float,
-        BitType::Binary => BitstringFieldKind::Binary,
-        BitType::Bits => BitstringFieldKind::Bits,
-        BitType::Utf8 => BitstringFieldKind::Utf8,
-        BitType::Utf16 => BitstringFieldKind::Utf16,
-        BitType::Utf32 => BitstringFieldKind::Utf32,
-    }
-}
-
-fn bitstring_endian(endian: Endian) -> BitstringEndian {
-    match endian {
-        Endian::Big => BitstringEndian::Big,
-        Endian::Little => BitstringEndian::Little,
-        Endian::Native => BitstringEndian::Native,
-    }
 }
 
 #[cfg(test)]

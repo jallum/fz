@@ -10,8 +10,8 @@
 
 use crate::any_value::binview_addr_from_tagged;
 use crate::bits::{Bin, BinView};
-use crate::bitstr::{BitSink, BitType, apply_endian_for_write, encode_utf8, encode_utf16, encode_utf32};
-use crate::ir_runtime::{decode_bit_type, decode_bs_field_spec, decode_endian};
+use crate::bitstr::{BitSink, BitType, Endian, apply_endian_for_write, encode_utf8, encode_utf16, encode_utf32};
+use crate::ir_runtime::decode_bs_field_spec;
 use crate::process::Process;
 use smallvec::SmallVec;
 use std::mem::MaybeUninit;
@@ -45,10 +45,10 @@ enum Segment<'a> {
 impl Segment<'_> {
     fn of(field: &FzBsField) -> Self {
         let (ty_tag, size_present, unit, endian_tag, _, _) = decode_bs_field_spec(field.spec);
-        let ty = decode_bit_type(ty_tag);
+        let ty = BitType::from_tag(ty_tag);
         let size = (size_present != 0).then_some(field.size);
         let unit = unit as u64;
-        let endian = decode_endian(endian_tag);
+        let endian = Endian::from_tag(endian_tag);
         match ty {
             BitType::Integer => {
                 let bits = size.unwrap_or(8) * unit;
@@ -182,7 +182,8 @@ impl<'s, 'a> Append<'s, 'a> {
         let (leading, first) = fields.first().zip(segments.first())?;
         let rest = &segments[1..];
         let (ty_tag, size_present, unit, ..) = decode_bs_field_spec(leading.spec);
-        let unsized_binary = decode_bit_type(ty_tag) == BitType::Binary && size_present == 0 && unit.is_multiple_of(8);
+        let unsized_binary =
+            BitType::from_tag(ty_tag) == BitType::Binary && size_present == 0 && unit.is_multiple_of(8);
         let Segment::Bits { bits, .. } = first else {
             return None;
         };
