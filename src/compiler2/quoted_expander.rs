@@ -11,7 +11,7 @@ use super::drive::{FactKey, JobEffects, ProductAddress, emit_job_diagnostic};
 use super::env_projection::CallSite;
 use super::identity::{FunctionId, ModuleId};
 use super::jobs::is_guard_expr;
-use super::macro_warning::{MacroExpansion, MacroWarning};
+use super::macro_run::{ExpansionAnswer, ExpansionRequest, MacroExpansion, MacroRun, MacroWarning};
 use super::module_interface::{InterfaceRequester, ReferencingCall};
 use super::namespace::NamespaceSymbol;
 use super::pull::{ProductKey, ProductSessions, ProductValue};
@@ -51,6 +51,17 @@ impl ExpansionContext {
             ExpansionContext::Expression => None,
             ExpansionContext::Match => Some("match"),
             ExpansionContext::Guard => Some("guard"),
+        }
+    }
+
+    /// The context a macro body names when it asks the compiler to expand a
+    /// call: 0 an expression, 1 a pattern, 2 a guard.
+    pub(crate) fn from_code(code: i64) -> Self {
+        match code {
+            0 => ExpansionContext::Expression,
+            1 => ExpansionContext::Match,
+            2 => ExpansionContext::Guard,
+            other => panic!("`Macro.expand` names context {other}, and `lib/macro.fz` names only 0, 1 and 2"),
         }
     }
 }
@@ -117,6 +128,45 @@ pub(crate) struct ScopeHandoff {
     scope: Option<ScopeSnapshot>,
 }
 
+/// What a call names, as far as macros go.
+pub(crate) enum MacroCall {
+    Macro(FunctionId),
+    /// The answer waits on a fact.
+    Blocked(Box<JobEffects>),
+    /// A qualified call of a module's macro that the scope does not `require`.
+    NotRequired(NotRequired),
+    NotAMacro,
+}
+
+/// The macro `name/arity` of `module_path`, called by a scope that does not
+/// `require` the module.
+pub(crate) struct NotRequired {
+    name: String,
+    arity: usize,
+    module_path: Vec<String>,
+    span: Span,
+}
+
+impl NotRequired {
+    /// Written code that calls it is refused.
+    fn error(&self, telemetry: &impl crate::telemetry::Telemetry) -> fz_engine::FatalError {
+        remote_macro_not_required(telemetry, &self.name, self.arity, &self.module_path, self.span)
+    }
+}
+
+/// What a macro body's question came to.
+pub(crate) enum Answered {
+    Ready(ExpansionAnswer),
+    Blocked(Box<JobEffects>),
+}
+
+/// What one step of a macro call came to.
+pub(crate) enum MacroStep {
+    NotAMacro,
+    Expanded(AnyValueRef),
+    Blocked(Box<JobEffects>),
+}
+
 pub(crate) trait QuotedExpansionCtx {
     type Telemetry: crate::telemetry::Telemetry;
     fn world(&mut self) -> &mut World;
@@ -140,6 +190,9 @@ pub(crate) trait QuotedExpansionCtx {
     /// defined it as well as from its own, so the two never share a number:
     /// a scope's expansions count up from 0 and a body's count down from -1.
     fn next_expansion_number(&mut self) -> i64;
+
+    /// How many expansion numbers `next_expansion_number` has handed out.
+    fn expansions_visited(&self) -> i64;
 
     /// Where the expansion in progress stands. A guard expands macros but
     /// applies no source sugar: dispatch evaluates its operators itself, so
@@ -564,8 +617,15 @@ pub(crate) trait QuotedExpansionCtx {
         }
 
         let invocation = owner.subroot(cursor.root());
-        if let Some(result) = self.expand_remote_ast_call(owner, &invocation, node, scope, depth, arity)? {
-            return Ok(Some(result));
+        match self.resolve_remote_macro_call(owner, node, scope, depth, arity)? {
+            MacroCall::Macro(function) => {
+                return self
+                    .expand_macro_invocation(owner, invocation, function, scope, depth, &self.call_args(&node.tail)?)
+                    .map(Some);
+            }
+            MacroCall::Blocked(effects) => return Ok(Some(ExpandedValue::Blocked(effects))),
+            MacroCall::NotRequired(refusal) => return Err(refusal.error(self.telemetry())),
+            MacroCall::NotAMacro => {}
         }
 
         if node.head.root().tag() != ValueKind::ATOM {
@@ -621,16 +681,7 @@ pub(crate) trait QuotedExpansionCtx {
                 })?;
             return Ok(Some(ExpandedValue::Complete(rebuilt)));
         }
-        let bound = read_bound_callable(node).map_err(|error| {
-            emit_internal_surface_error(
-                self.telemetry(),
-                format!("quoted call classification read failed: {error}"),
-            )
-        })?;
-        let symbol = {
-            let world = self.world();
-            call_node_symbol(world, bound, scope, &head, arity)
-        };
+        let (bound, symbol) = self.local_call_symbol(node, scope, &head, arity)?;
         let Some(symbol) = symbol else {
             return Ok(None);
         };
@@ -651,6 +702,104 @@ pub(crate) trait QuotedExpansionCtx {
         };
         self.expand_macro_invocation(owner, invocation, function, scope, depth, &self.call_args(&node.tail)?)
             .map(Some)
+    }
+
+    /// What the scope binds the unqualified call `head/arity` to: the function
+    /// the call was already stamped with, and its symbol.
+    fn local_call_symbol(
+        &mut self,
+        node: &QuotedAstNode,
+        scope: ScopeSnapshot,
+        head: &str,
+        arity: usize,
+    ) -> Result<(Option<FunctionId>, Option<NamespaceSymbol>), fz_engine::FatalError> {
+        let bound = read_bound_callable(node).map_err(|error| {
+            emit_internal_surface_error(
+                self.telemetry(),
+                format!("quoted call classification read failed: {error}"),
+            )
+        })?;
+        let symbol = call_node_symbol(self.world(), bound, scope, head, arity);
+        Ok((bound, symbol))
+    }
+
+    /// The macro an unqualified call names, when it names one.
+    fn resolve_local_macro_call(
+        &mut self,
+        node: &QuotedAstNode,
+        scope: ScopeSnapshot,
+        arity: usize,
+    ) -> Result<MacroCall, fz_engine::FatalError> {
+        if node.head.root().tag() != ValueKind::ATOM {
+            return Ok(MacroCall::NotAMacro);
+        }
+        let head = node.head.atom_name().map_err(|error| {
+            emit_internal_surface_error(self.telemetry(), format!("quoted call head read failed: {error}"))
+        })?;
+        Ok(match self.local_call_symbol(node, scope, &head, arity)?.1 {
+            Some(NamespaceSymbol::Macro(function)) => MacroCall::Macro(function),
+            Some(NamespaceSymbol::Callable(function)) => {
+                MacroCall::Blocked(Box::new(self.wait_for_callable_module_interface(function)))
+            }
+            _ => MacroCall::NotAMacro,
+        })
+    }
+
+    /// What `call` becomes after one step in `context`: the macro's result
+    /// as the macro wrote it, nothing in it expanded. A call that is no macro
+    /// stays as written, as does a qualified call of a module the scope does
+    /// not `require`.
+    fn expand_macro_call_once(
+        &mut self,
+        owner: &QuotedSourceRoot,
+        call: &QuotedSourceCursor,
+        context: ExpansionContext,
+        scope: ScopeSnapshot,
+        depth: usize,
+    ) -> Result<MacroStep, fz_engine::FatalError> {
+        let source_map = self.world().source_map();
+        let node = call.ast_node(&source_map.borrow()).map_err(|error| {
+            emit_internal_surface_error(self.telemetry(), format!("quoted expansion read failed: {error}"))
+        })?;
+        let Some(node) = node.filter(|node| is_list_like(&node.tail)) else {
+            return Ok(MacroStep::NotAMacro);
+        };
+        let arity = node.tail.list_len().map_err(|error| {
+            emit_internal_surface_error(self.telemetry(), format!("quoted call arg read failed: {error}"))
+        })?;
+        let enclosing = std::mem::replace(self.expansion_context(), context);
+        let stepped = self.step_resolved_macro_call(owner, call, &node, scope, depth, arity);
+        *self.expansion_context() = enclosing;
+        stepped
+    }
+
+    fn step_resolved_macro_call(
+        &mut self,
+        owner: &QuotedSourceRoot,
+        call: &QuotedSourceCursor,
+        node: &QuotedAstNode,
+        scope: ScopeSnapshot,
+        depth: usize,
+        arity: usize,
+    ) -> Result<MacroStep, fz_engine::FatalError> {
+        let resolved = match self.resolve_remote_macro_call(owner, node, scope, depth, arity)? {
+            MacroCall::NotAMacro => self.resolve_local_macro_call(node, scope, arity)?,
+            resolved => resolved,
+        };
+        match resolved {
+            MacroCall::Macro(function) => {
+                let invocation = owner.subroot(call.root());
+                let args = self.call_args(&node.tail)?;
+                Ok(
+                    match self.macro_step(owner, &invocation, function, scope, depth, &args)? {
+                        ExpandedValue::Complete(root) => MacroStep::Expanded(root),
+                        ExpandedValue::Blocked(effects) => MacroStep::Blocked(effects),
+                    },
+                )
+            }
+            MacroCall::Blocked(effects) => Ok(MacroStep::Blocked(effects)),
+            MacroCall::NotRequired(_) | MacroCall::NotAMacro => Ok(MacroStep::NotAMacro),
+        }
     }
 
     /// Whether the call `name/arity` reaches `function` only through what the
@@ -1365,45 +1514,46 @@ pub(crate) trait QuotedExpansionCtx {
         self.rebuild_call(owner, cursor, node, args, &expanded)
     }
 
-    fn expand_remote_ast_call(
+    /// The macro a qualified call `Module.name(args)` names, when it names one:
+    /// in the module being defined, one the scope imports, or one `require`d.
+    fn resolve_remote_macro_call(
         &mut self,
         owner: &QuotedSourceRoot,
-        invocation: &QuotedSourceRoot,
         node: &QuotedAstNode,
         scope: ScopeSnapshot,
         depth: usize,
         arity: usize,
-    ) -> Result<Option<ExpandedValue>, fz_engine::FatalError> {
+    ) -> Result<MacroCall, fz_engine::FatalError> {
         let source_map = self.world().source_map();
         let Some(head_node) = node.head.ast_node(&source_map.borrow()).map_err(|error| {
             emit_internal_surface_error(self.telemetry(), format!("quoted remote call read failed: {error}"))
         })?
         else {
-            return Ok(None);
+            return Ok(MacroCall::NotAMacro);
         };
         let call_span = node.span.unwrap_or(Span::DUMMY);
         if !is_remote_dot_callee(&head_node).map_err(|error| {
             emit_internal_surface_error(self.telemetry(), format!("quoted remote callee read failed: {error}"))
         })? {
-            return Ok(None);
+            return Ok(MacroCall::NotAMacro);
         }
         // `lhs[key]` is an index the decoder reads off its callee's stamp; it
         // calls into no module, whatever name the callee spells.
         if super::quoted_function::is_bracket_access_callee(&head_node).map_err(|error| {
             emit_internal_surface_error(self.telemetry(), format!("quoted bracket access read failed: {error}"))
         })? {
-            return Ok(None);
+            return Ok(MacroCall::NotAMacro);
         }
         let Some((module_cursor, function_cursor)) = head_node.tail.list_pair().map_err(|error| {
             emit_internal_surface_error(self.telemetry(), format!("quoted remote target read failed: {error}"))
         })?
         else {
-            return Ok(None);
+            return Ok(MacroCall::NotAMacro);
         };
         let module_cursor = if self.is_alias_of_a_node(&module_cursor)? {
             match self.expand_cursor(owner, &module_cursor, scope, depth)? {
                 ExpandedValue::Complete(root) => owner.subroot(root).cursor(),
-                blocked @ ExpandedValue::Blocked(_) => return Ok(Some(blocked)),
+                ExpandedValue::Blocked(effects) => return Ok(MacroCall::Blocked(effects)),
             }
         } else {
             module_cursor
@@ -1416,7 +1566,7 @@ pub(crate) trait QuotedExpansionCtx {
                 emit_internal_surface_error(self.telemetry(), format!("quoted remote module read failed: {error}"))
             })? {
                 Some(path) => path,
-                None => return Ok(None),
+                None => return Ok(MacroCall::NotAMacro),
             },
         };
         let function_name = function_cursor.atom_name().map_err(|error| {
@@ -1433,12 +1583,8 @@ pub(crate) trait QuotedExpansionCtx {
             }
         };
         if module == self.current_module() {
-            return self.expand_current_module_remote_ast_call(
-                owner,
-                invocation,
+            return self.resolve_current_module_remote_macro_call(
                 scope,
-                depth,
-                &node.tail,
                 arity,
                 &function_name,
                 &module_path,
@@ -1447,29 +1593,20 @@ pub(crate) trait QuotedExpansionCtx {
         }
         if let Some(symbol) = self.imported_symbol_of(module, &function_name, arity, &scope) {
             return match symbol {
-                NamespaceSymbol::Macro(function) => self
-                    .expand_macro_invocation(
-                        owner,
-                        invocation.clone(),
-                        function,
-                        scope,
-                        depth,
-                        &self.call_args(&node.tail)?,
-                    )
-                    .map(Some),
+                NamespaceSymbol::Macro(function) => Ok(MacroCall::Macro(function)),
                 NamespaceSymbol::Callable(function) => {
                     self.note_call_into(module, &function_name, arity, call_span);
-                    Ok(Some(ExpandedValue::Blocked(Box::new(
+                    Ok(MacroCall::Blocked(Box::new(
                         self.wait_for_callable_module_interface(function),
-                    ))))
+                    )))
                 }
-                _ => Ok(None),
+                _ => Ok(MacroCall::NotAMacro),
             };
         }
         let module_defined = self.world().module_defined_revision(module);
         if module_defined.is_none() {
             if self.world().is_runtime_module(module) {
-                return Ok(None);
+                return Ok(MacroCall::NotAMacro);
             }
             self.note_call_into(module, &function_name, arity, call_span);
             // `FactKey::ModuleDefined`'s sole producer arm is `Job::DefineModule`
@@ -1478,9 +1615,9 @@ pub(crate) trait QuotedExpansionCtx {
             // not reachable in practice -- `ModuleId::GLOBAL` is defined before
             // any expansion runs, so `module_defined.is_none()` is never true for
             // it here.
-            return Ok(Some(ExpandedValue::Blocked(Box::new(JobEffects::wait_on_current(
+            return Ok(MacroCall::Blocked(Box::new(JobEffects::wait_on_current(
                 FactKey::ModuleDefined(module),
-            )))));
+            ))));
         }
         self.note_read(FactKey::ModuleDefined(module));
         let function = {
@@ -1489,34 +1626,25 @@ pub(crate) trait QuotedExpansionCtx {
                 Some(NamespaceSymbol::Macro(function)) => Some(function),
                 Some(NamespaceSymbol::Callable(function)) => {
                     self.note_call_into(module, &function_name, arity, call_span);
-                    return Ok(Some(ExpandedValue::Blocked(Box::new(
+                    return Ok(MacroCall::Blocked(Box::new(
                         self.wait_for_callable_module_interface(function),
-                    ))));
+                    )));
                 }
                 _ => None,
             }
         };
         let Some(function) = function else {
-            return Ok(None);
+            return Ok(MacroCall::NotAMacro);
         };
         if !self.world().macro_callable_remotely(scope.namespace(), function) {
-            return Err(remote_macro_not_required(
-                self.telemetry(),
-                &function_name,
+            return Ok(MacroCall::NotRequired(NotRequired {
+                name: function_name.to_string(),
                 arity,
-                &module_path,
-                call_span,
-            ));
+                module_path,
+                span: call_span,
+            }));
         }
-        self.expand_macro_invocation(
-            owner,
-            invocation.clone(),
-            function,
-            scope,
-            depth,
-            &self.call_args(&node.tail)?,
-        )
-        .map(Some)
+        Ok(MacroCall::Macro(function))
     }
 
     /// What the scope's namespace binds `name/arity` to when that binding is
@@ -1543,39 +1671,26 @@ pub(crate) trait QuotedExpansionCtx {
         }
     }
 
-    fn expand_current_module_remote_ast_call(
+    fn resolve_current_module_remote_macro_call(
         &mut self,
-        owner: &QuotedSourceRoot,
-        invocation: &QuotedSourceRoot,
         scope: ScopeSnapshot,
-        depth: usize,
-        tail: &QuotedSourceCursor,
         arity: usize,
         function_name: &str,
         module_path: &[String],
         call_span: Span,
-    ) -> Result<Option<ExpandedValue>, fz_engine::FatalError> {
+    ) -> Result<MacroCall, fz_engine::FatalError> {
         let Some(function) = self.lookup_current_module_macro(scope, function_name, arity) else {
-            return Ok(None);
+            return Ok(MacroCall::NotAMacro);
         };
         if !self.world().macro_callable_remotely(scope.namespace(), function) {
-            return Err(remote_macro_not_required(
-                self.telemetry(),
-                function_name,
+            return Ok(MacroCall::NotRequired(NotRequired {
+                name: function_name.to_string(),
                 arity,
-                module_path,
-                call_span,
-            ));
+                module_path: module_path.to_vec(),
+                span: call_span,
+            }));
         }
-        self.expand_macro_invocation(
-            owner,
-            invocation.clone(),
-            function,
-            scope,
-            depth,
-            &self.call_args(tail)?,
-        )
-        .map(Some)
+        Ok(MacroCall::Macro(function))
     }
 
     fn expand_macro_invocation(
@@ -1588,7 +1703,11 @@ pub(crate) trait QuotedExpansionCtx {
         args: &[QuotedSourceCursor],
     ) -> Result<ExpandedValue, fz_engine::FatalError> {
         let call_span = self.invocation_span(&invocation)?;
-        let expanded = self.run_macro_invocation(owner, invocation, function, scope, depth, args)?;
+        let result = match self.macro_step(owner, &invocation, function, scope, depth, args)? {
+            ExpandedValue::Complete(result) => owner.subroot(result),
+            blocked @ ExpandedValue::Blocked(_) => return Ok(blocked),
+        };
+        let expanded = self.expand_macro_result(&invocation, result, scope, depth + 1)?;
         if *self.expansion_context() == ExpansionContext::Guard
             && let ExpandedValue::Complete(root) = &expanded
         {
@@ -1637,10 +1756,13 @@ pub(crate) trait QuotedExpansionCtx {
         ))
     }
 
-    fn run_macro_invocation(
+    /// What the macro `function` answers for `invocation`: its result, as the
+    /// macro wrote it, with the hygiene stamped and nothing in it expanded.
+    /// The run is memoized by what the macro can see.
+    fn macro_step(
         &mut self,
         owner: &QuotedSourceRoot,
-        invocation: QuotedSourceRoot,
+        invocation: &QuotedSourceRoot,
         function: FunctionId,
         scope: ScopeSnapshot,
         depth: usize,
@@ -1671,7 +1793,7 @@ pub(crate) trait QuotedExpansionCtx {
         // which is always either the user's own source (real span from the
         // parser) or an earlier macro's already-stamped result (real span
         // from that expansion, by the same rule, one level up).
-        let macro_call_span = self.invocation_span(&invocation)?;
+        let macro_call_span = self.invocation_span(invocation)?;
         // Drawn once this invocation is committed to (past both blocking
         // checks above), whether it turns out to hit the memoization cache
         // or not -- see `next_expansion_number`.
@@ -1680,10 +1802,13 @@ pub(crate) trait QuotedExpansionCtx {
         let call_site = CallSite::locate(macro_call_span, &self.world().source_map().borrow());
         if let Some(memoized) =
             self.world()
-                .memoized_macro_expansion(function, &invocation, caller_scope, context, &call_site, &program)
+                .memoized_macro_expansion(function, invocation, caller_scope, context, &call_site, &program)
         {
             self.emit_macro_warnings(&memoized.warnings, macro_call_span);
-            return self.expand_macro_result(&invocation, memoized.root, scope, depth + 1);
+            for _ in 0..memoized.answered_expansions {
+                self.next_expansion_number();
+            }
+            return Ok(ExpandedValue::Complete(memoized.root.root()));
         }
 
         let builder = owner.builder();
@@ -1694,16 +1819,28 @@ pub(crate) trait QuotedExpansionCtx {
                 emit_internal_surface_error(self.telemetry(), format!("__ENV__ projection failed: {error}"))
             })?;
         let arg_roots = args.iter().map(QuotedSourceCursor::root).collect::<Vec<_>>();
+        let visited_before = self.expansions_visited();
+        let mut answers = Vec::new();
+        let (expanded, warnings) = loop {
+            let (world, tel) = self.split();
+            let run = super::drive::ExecutionContext::new(world, tel)
+                .run_macro_on_source(&program, owner, caller, &arg_roots, &answers)
+                .map_err(|error| {
+                    let span = macro_call_span.unwrap_or(Span::DUMMY);
+                    emit_job_diagnostic(tel, Diagnostic::error(codes::LOWER_UNSUPPORTED, error, span))
+                })?;
+            match run {
+                MacroRun::Finished { root, warnings } => break (root, warnings),
+                MacroRun::Asked(request) => {
+                    match self.answer_expansion_request(owner, request, caller_scope, depth)? {
+                        Answered::Ready(answer) => answers.push(answer),
+                        Answered::Blocked(effects) => return Ok(ExpandedValue::Blocked(effects)),
+                    }
+                }
+            }
+        };
+        let answered_expansions = self.expansions_visited() - visited_before;
         let (world, tel) = self.split();
-        let MacroExpansion {
-            root: expanded,
-            warnings,
-        } = super::drive::ExecutionContext::new(world, tel)
-            .run_macro_on_source(&program, owner, caller, &arg_roots)
-            .map_err(|error| {
-                let span = macro_call_span.unwrap_or(Span::DUMMY);
-                emit_job_diagnostic(tel, Diagnostic::error(codes::LOWER_UNSUPPORTED, error, span))
-            })?;
         let source_map = world.source_map();
         if let Some(invalid) = first_invalid_quoted_expr(&expanded.cursor(), &source_map.borrow())
             .map_err(|error| emit_internal_surface_error(tel, format!("macro result validation failed: {error}")))?
@@ -1750,10 +1887,30 @@ pub(crate) trait QuotedExpansionCtx {
             MacroExpansion {
                 root: expanded.clone(),
                 warnings: warnings.clone(),
+                answered_expansions,
             },
         );
         self.emit_macro_warnings(&warnings, macro_call_span);
-        self.expand_macro_result(&invocation, expanded, scope, depth + 1)
+        Ok(ExpandedValue::Complete(expanded.root()))
+    }
+
+    /// Answers a question a macro body asked: what its call is after one step
+    /// in the scope the macro was called from.
+    fn answer_expansion_request(
+        &mut self,
+        owner: &QuotedSourceRoot,
+        request: ExpansionRequest,
+        scope: ScopeSnapshot,
+        depth: usize,
+    ) -> Result<Answered, fz_engine::FatalError> {
+        let call = owner.subroot(request.call).cursor();
+        Ok(
+            match self.expand_macro_call_once(owner, &call, request.context, scope, depth + 1)? {
+                MacroStep::NotAMacro => Answered::Ready(ExpansionAnswer::NotAMacro),
+                MacroStep::Expanded(root) => Answered::Ready(ExpansionAnswer::Expanded(root)),
+                MacroStep::Blocked(effects) => Answered::Blocked(effects),
+            },
+        )
     }
 
     /// Reports what a macro's run warned, as it does for a run and for a memo

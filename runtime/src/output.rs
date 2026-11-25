@@ -1,7 +1,7 @@
 use std::io::Write as _;
 use std::slice::from_raw_parts;
 
-use crate::scheduler_hooks::{OutputHook, WarnHook};
+use crate::scheduler_hooks::{ExpandHook, OutputHook, WarnHook};
 
 /// What `IO.warn` reports: a message, and where it points when it has a
 /// location. An empty `file` is no location.
@@ -27,6 +27,28 @@ impl Warning<'_> {
     }
 }
 
+/// What the compiler answers a macro body that asked it to expand a macro
+/// call one step.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Expansion {
+    /// The call is no macro call, so it stays as written.
+    NotAMacro,
+    /// The call expands to this quoted code.
+    Expanded(u64),
+    /// The compiler has not answered yet: it will, and the macro body then
+    /// runs again with the answer in hand.
+    Asked,
+    /// No compiler is running.
+    NoCompiler,
+}
+
+impl Expansion {
+    pub const NOT_A_MACRO_CODE: u64 = 0;
+    pub const EXPANDED_CODE: u64 = 1;
+    pub const ASKED_CODE: u64 = 2;
+    pub const NO_COMPILER_CODE: u64 = 3;
+}
+
 pub trait OutputSink {
     fn emit(&self, bytes: &[u8]);
 
@@ -34,6 +56,13 @@ pub trait OutputSink {
     /// written to stderr in one piece.
     fn warn(&self, warning: &Warning<'_>) {
         let _ = std::io::stderr().lock().write_all(&warning.render());
+    }
+
+    /// Answers a macro body's request to expand the macro call `ast` one step,
+    /// standing in `context` (0 an expression, 1 a pattern, 2 a guard). Unless
+    /// a sink says otherwise there is no compiler to ask.
+    fn expand(&self, _ast: u64, _context: i64) -> Expansion {
+        Expansion::NoCompiler
     }
 
     /// Hand everything emitted so far to its destination. Every end of a run
@@ -116,6 +145,22 @@ unsafe extern "C" fn stdout_warn_hook(
     STDOUT_OUTPUT.warn(&unsafe { warning_from_raw(message, message_len, file, file_len, line) });
 }
 
+unsafe extern "C" fn expand_hook(context: *const (), ast: u64, expansion_context: i64, answered_ast: *mut u64) -> u64 {
+    if context.is_null() {
+        return Expansion::NO_COMPILER_CODE;
+    }
+    let context = unsafe { &*(context as *const OutputContext<'_>) };
+    match context.0.expand(ast, expansion_context) {
+        Expansion::NotAMacro => Expansion::NOT_A_MACRO_CODE,
+        Expansion::Expanded(expanded) => {
+            unsafe { *answered_ast = expanded };
+            Expansion::EXPANDED_CODE
+        }
+        Expansion::Asked => Expansion::ASKED_CODE,
+        Expansion::NoCompiler => Expansion::NO_COMPILER_CODE,
+    }
+}
+
 unsafe fn warning_from_raw<'a>(
     message: *const u8,
     message_len: usize,
@@ -134,6 +179,7 @@ pub const OUTPUT_HOOK: OutputHook = output_hook;
 pub const STDOUT_OUTPUT_HOOK: OutputHook = stdout_output_hook;
 pub const WARN_HOOK: WarnHook = warn_hook;
 pub const STDOUT_WARN_HOOK: WarnHook = stdout_warn_hook;
+pub const EXPAND_HOOK: ExpandHook = expand_hook;
 
 #[cfg(test)]
 #[path = "output_test.rs"]

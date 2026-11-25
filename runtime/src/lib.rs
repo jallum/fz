@@ -84,3 +84,24 @@ pub(crate) fn write_warning(
         unsafe { warn(ctx.output_context, message, message_len, file, file_len, line) };
     }
 }
+
+/// The one function behind every macro-call expansion a macro body asks for:
+/// hands the call and the context it stands in to the process's expansion
+/// hook. A process with no hook has no compiler to ask.
+pub(crate) fn request_expansion(process: *mut Process, ast: u64, context: i64) -> (u64, u64) {
+    let no_compiler = (crate::output::Expansion::NO_COMPILER_CODE, 0);
+    if process.is_null() {
+        return no_compiler;
+    }
+    let ctx = unsafe { &*process }.ctx;
+    if ctx.is_null() {
+        return no_compiler;
+    }
+    let ctx = unsafe { &*ctx };
+    let Some(expand) = ctx.expand else {
+        return no_compiler;
+    };
+    let mut expanded = 0u64;
+    let code = unsafe { expand(ctx.output_context, ast, context, &mut expanded) };
+    (code, expanded)
+}

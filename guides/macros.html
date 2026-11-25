@@ -306,8 +306,14 @@ alias becomes its module atom through the env's <code>aliases</code>,
 <code>__MODULE__</code> and <code>__DIR__</code> become the env's module and
 directory, and <code>__ENV__.line</code> and the other fields become their
 values. A function call, a variable and a literal come back unchanged. A call
-to a macro raises <code>RuntimeError</code> for now, since expanding one needs
-the compiler.</p>
+to a macro is expanded by the compiler, in the scope the running macro was
+called from and in the context <code>env.context</code> names
+(<code>nil</code>, <code>:match</code> or <code>:guard</code>); the result is
+what the macro answers, with nothing in it expanded. Only a running macro can
+ask the compiler, so expanding a call that may be a macro anywhere else raises
+<code>RuntimeError</code>. Kernel's <code>if</code>, <code>unless</code>,
+<code>and</code>, <code>or</code> and <code>|&gt;</code> are not macros in fz,
+so they come back unchanged.</p>
 
 <p><code>__MODULE__</code> is the atom of the module it stands in, and
 <code>nil</code> outside any module. Inside a <code>quote</code> it names the

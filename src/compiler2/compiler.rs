@@ -506,7 +506,7 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
         source: &super::QuotedSourceRoot,
         caller: fz_runtime::any_value::AnyValueRef,
         args: &[fz_runtime::any_value::AnyValueRef],
-    ) -> Result<super::macro_warning::MacroExpansion, String> {
+    ) -> Result<super::macro_run::MacroExpansion, String> {
         // A never-run gated job's demand redirects to its one missing gate's
         // producer rather than starting the job itself
         // (`World::demand_producer_if_needed`); the chain from here to
@@ -537,7 +537,20 @@ impl<T: RawSpanTelemetry> Compiler2<T> {
         }
         let root = self.world.macro_root(function);
         let program = self.product_backend_program_for_root(root)?;
-        ExecutionContext::new(&mut self.world, &self.telemetry).run_macro_on_source(&program, source, caller, args)
+        match ExecutionContext::new(&mut self.world, &self.telemetry).run_macro_on_source(
+            &program,
+            source,
+            caller,
+            args,
+            &[],
+        )? {
+            super::macro_run::MacroRun::Finished { root, warnings } => Ok(super::macro_run::MacroExpansion {
+                root,
+                warnings,
+                answered_expansions: 0,
+            }),
+            super::macro_run::MacroRun::Asked(_) => Err("the macro asked the compiler a question".to_string()),
+        }
     }
 
     #[cfg(test)]

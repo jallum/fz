@@ -19,7 +19,8 @@
 
 use crate::process::Process;
 use crate::scheduler_hooks::{
-    FaultHook, HaltHook, OutputHook, RaiseHook, SendHook, SpawnHook, TimerCancelHook, TimerScheduleHook, WarnHook,
+    ExpandHook, FaultHook, HaltHook, OutputHook, RaiseHook, SendHook, SpawnHook, TimerCancelHook, TimerScheduleHook,
+    WarnHook,
 };
 use std::ptr::{null, null_mut};
 
@@ -67,6 +68,10 @@ pub struct ExecCtx {
     pub output: Option<OutputHook>,
     /// Where `IO.warn` goes; reads `output_context` like `output` does.
     pub warn: Option<WarnHook>,
+    /// Where a macro body asks the compiler to expand a macro call; reads
+    /// `output_context` like `output` does. `None` when no compiler is
+    /// running, which is every program that is not a macro.
+    pub expand: Option<ExpandHook>,
     pub timer_schedule: Option<TimerScheduleHook>,
     pub timer_cancel: Option<TimerCancelHook>,
     /// The program's command line, owned by the driver. Null reads as `[]`:
@@ -88,6 +93,7 @@ impl ExecCtx {
             raise: None,
             output: None,
             warn: None,
+            expand: None,
             timer_schedule: None,
             timer_cancel: None,
             argv: null(),

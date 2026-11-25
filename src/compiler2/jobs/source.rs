@@ -568,6 +568,10 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> QuotedExpansionCtx for Functi
         &mut self.scope_handoff
     }
 
+    fn expansions_visited(&self) -> i64 {
+        self.expansions_visited
+    }
+
     fn next_expansion_number(&mut self) -> i64 {
         self.expansions_visited = self
             .expansions_visited

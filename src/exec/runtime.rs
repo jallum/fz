@@ -325,6 +325,7 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
             raise: Some(raise_hook_thunk::<T>),
             output: Some(OUTPUT_HOOK),
             warn: Some(WARN_HOOK),
+            expand: None,
             timer_schedule: Some(timer_schedule_hook::<Self>()),
             timer_cancel: Some(timer_cancel_hook::<Self>()),
             argv: self.argv,
