@@ -2311,3 +2311,29 @@ fn compiler2_frontdoor_defmacro_is_an_expression_in_a_body() {
         "defmacro reads in a body as the call it is at module level",
     );
 }
+
+/// The sign decides whether the magnitude 2^63 is a number: `-2^63` is the
+/// integer `i64::MIN`, in an expression and as a bitstring segment's value;
+/// `2^63` alone is too large.
+#[test]
+fn compiler2_frontdoor_reads_the_most_negative_integer_literal_only_when_negated() {
+    let tel = ConfiguredTelemetry::new();
+    let root = parse_quoted_program(
+        "min_int.fz",
+        "-9223372036854775808\n<<-9223372036854775808::signed-64>>\n- 9223372036854775808 + 1\n",
+        &tel,
+    )
+    .expect("parse");
+    assert_eq!(
+        quoted_shapes(&root),
+        vec![
+            "-9223372036854775808".to_string(),
+            "<<>>(::(-9223372036854775808, -($signed, 64)))".to_string(),
+            "+(-9223372036854775808, 1)".to_string(),
+        ]
+    );
+
+    let (error, version) = parse_quoted_error("too_large.fz", "9223372036854775808\n", &tel);
+    assert!(error.msg.contains("too large"), "{}", error.msg);
+    assert_eq!(error.span, crate::source::Span::new(version, 0, 19));
+}

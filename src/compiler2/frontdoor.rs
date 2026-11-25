@@ -1110,6 +1110,19 @@ impl<'t> FrontDoorParser<'t> {
             Tok::LBitstr => {
                 self.with_matched_do_boundary(|parser| parser.parse_bitstring_literal(module_path, scope, start))
             }
+            // The magnitude 2^63 fits no integer, but negated it is `i64::MIN`,
+            // so the literal is read here, where the sign is known.
+            Tok::Minus if matches!(self.peek(), Tok::MinIntMagnitude) => {
+                self.advance();
+                Ok(ParsedExpr::plain(
+                    self.builder.int(i64::MIN),
+                    start.merge(self.prev_span()),
+                ))
+            }
+            Tok::MinIntMagnitude => Err(FrontDoorError::syntax(
+                "number too large to fit in target type".to_string(),
+                start,
+            )),
             Tok::Minus => {
                 let inner = self.parse_bp(120, module_path, scope)?;
                 let span = start.merge(inner.span);

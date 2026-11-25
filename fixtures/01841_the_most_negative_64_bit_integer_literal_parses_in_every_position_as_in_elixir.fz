@@ -1,0 +1,48 @@
+#---
+# purpose: "-9223372036854775808, the most negative 64-bit integer, is a literal in every position an integer literal stands: an expression, a function head, a guard, a module attribute, a bitstring segment's value in construction and in a match, and in the underscored, hex, binary and octal spellings; arithmetic and comparison on it"
+# oracle: self
+# oracle.stamp: 03885aebd4e9ff43
+# args: 0
+#---
+defmodule Main do
+  @floor -9_223_372_036_854_775_808
+
+  def classify(-9223372036854775808), do: :floor
+  def classify(0), do: :zero
+  def classify(_), do: :other
+
+  def at_floor(n) when n == -9223372036854775808, do: true
+  def at_floor(_), do: false
+
+  def floor_attribute, do: @floor
+
+  def main do
+    zero = String.to_integer(hd(System.argv()))
+    min = -9223372036854775808 + zero
+
+    IO.inspect(-9223372036854775808)
+    IO.inspect(-9_223_372_036_854_775_808)
+    IO.inspect([-0x8000000000000000, -0b1000000000000000000000000000000000000000000000000000000000000000, -0o1000000000000000000000])
+    IO.inspect(-9223372036854775808 + 1)
+    IO.inspect(-9223372036854775807 - 1)
+    IO.inspect(min + 1)
+    IO.inspect(min == -9223372036854775808)
+    IO.inspect(min < -9223372036854775807)
+    IO.inspect({classify(min), classify(0), classify(-1)})
+    IO.inspect({at_floor(min), at_floor(min + 1)})
+    IO.inspect(floor_attribute())
+    IO.puts(Integer.to_string(min))
+    IO.puts(inspect(min))
+
+    bits = <<-9223372036854775808::signed-64>>
+    IO.inspect(bits)
+    IO.inspect(<<min::signed-64>>)
+    <<back::signed-64>> = bits
+    IO.inspect(back)
+    <<-9223372036854775808::signed-64>> = <<min::signed-64>>
+    IO.inspect(:matched)
+    IO.inspect(<<min::signed-64>> == bits)
+  end
+end
+
+Main.main()

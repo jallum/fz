@@ -1759,3 +1759,41 @@ fn a_sigil_span_runs_from_its_tilde_through_its_modifiers() {
         .expect("lex");
     assert_eq!((tokens[1].span.start, tokens[1].span.end), (2, 10));
 }
+
+/// The integer 2^63 is no `i64`, yet `-2^63` is `i64::MIN`: the lexer keeps the
+/// magnitude as its own token, in every radix, so the parser can apply the sign.
+#[test]
+fn the_magnitude_of_the_most_negative_integer_is_its_own_token() {
+    for source in [
+        "9223372036854775808",
+        "9_223_372_036_854_775_808",
+        "0x8000000000000000",
+        "0b1000000000000000000000000000000000000000000000000000000000000000",
+        "0o1000000000000000000000",
+    ] {
+        let tokens = test_lexer(source)
+            .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+            .expect("lex");
+        assert_eq!(tokens[0].tok, Tok::MinIntMagnitude, "{source}");
+    }
+}
+
+/// A magnitude beyond 2^63 has no integer to be: it stays a lexical error.
+#[test]
+fn an_integer_beyond_the_magnitude_of_the_most_negative_integer_is_an_error() {
+    for source in ["9223372036854775809", "0x8000000000000001", "18446744073709551616"] {
+        let error = test_lexer(source)
+            .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+            .expect_err(source);
+        assert!(error.msg.contains("too large"), "{source}: {}", error.msg);
+    }
+}
+
+/// The largest `i64` is still an ordinary integer token.
+#[test]
+fn the_largest_integer_is_an_ordinary_token() {
+    let tokens = test_lexer("9223372036854775807")
+        .tokenize(&crate::telemetry::ConfiguredTelemetry::new())
+        .expect("lex");
+    assert_eq!(tokens[0].tok, Tok::Int(i64::MAX));
+}

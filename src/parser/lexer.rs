@@ -20,6 +20,10 @@ use crate::telemetry::{RawSpanTelemetry, Telemetry};
 pub enum Tok {
     // literals
     Int(i64),
+    /// The integer whose magnitude is 2^63. It is no `i64`, yet it is the
+    /// magnitude of `i64::MIN`: the prefix `-` turns it into that integer, and
+    /// anywhere else it is a number too large for an integer.
+    MinIntMagnitude,
     Float(f64),
     Binary(Vec<u8>),
     Atom(String),
@@ -136,6 +140,7 @@ impl Tok {
         matches!(
             self,
             Tok::Int(_)
+                | Tok::MinIntMagnitude
                 | Tok::Float(_)
                 | Tok::Binary(_)
                 | Tok::Atom(_)
@@ -615,9 +620,7 @@ impl<'a> Lexer<'a> {
                         .chars()
                         .filter(|c| *c != '_')
                         .collect();
-                    return i64::from_str_radix(&raw, 16)
-                        .map(Tok::Int)
-                        .map_err(|e| self.err(e.to_string()));
+                    return self.integer_token(&raw, 16);
                 }
                 Some(b'b') | Some(b'B') => {
                     self.bump();
@@ -629,9 +632,7 @@ impl<'a> Lexer<'a> {
                         .chars()
                         .filter(|c| *c != '_')
                         .collect();
-                    return i64::from_str_radix(&raw, 2)
-                        .map(Tok::Int)
-                        .map_err(|e| self.err(e.to_string()));
+                    return self.integer_token(&raw, 2);
                 }
                 Some(b'o') | Some(b'O') => {
                     self.bump();
@@ -643,9 +644,7 @@ impl<'a> Lexer<'a> {
                         .chars()
                         .filter(|c| *c != '_')
                         .collect();
-                    return i64::from_str_radix(&raw, 8)
-                        .map(Tok::Int)
-                        .map_err(|e| self.err(e.to_string()));
+                    return self.integer_token(&raw, 8);
                 }
                 _ => {}
             }
@@ -681,10 +680,18 @@ impl<'a> Lexer<'a> {
                 .map(Tok::Float)
                 .map_err(|e| self.err(e.to_string()))
         } else {
-            cleaned
-                .parse::<i64>()
-                .map(Tok::Int)
-                .map_err(|e| self.err(e.to_string()))
+            self.integer_token(&cleaned, 10)
+        }
+    }
+
+    /// The token for an integer literal's digits. An `i64` is `Tok::Int`; the
+    /// magnitude 2^63 is `Tok::MinIntMagnitude`; anything larger is an error.
+    fn integer_token(&self, digits: &str, radix: u32) -> Result<Tok, LexError> {
+        let magnitude = u64::from_str_radix(digits, radix).map_err(|e| self.err(e.to_string()))?;
+        match i64::try_from(magnitude) {
+            Ok(value) => Ok(Tok::Int(value)),
+            Err(_) if magnitude == i64::MIN.unsigned_abs() => Ok(Tok::MinIntMagnitude),
+            Err(error) => Err(self.err(error.to_string())),
         }
     }
 }
