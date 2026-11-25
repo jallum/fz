@@ -333,6 +333,9 @@ pub(crate) trait QuotedExpansionCtx {
             false => return self.expand_ast_node(owner, cursor, node, scope, depth),
         };
         match head {
+            Some(head) if head == "__aliases__" && self.starts_with_a_node(&node.tail)? => {
+                self.expand_alias_of_a_node(owner, cursor, node, scope, depth)
+            }
             Some(head) if binds_its_left_side(&head) && arity == 2 => {
                 let args = self.call_args(&node.tail)?;
                 self.expand_binding_call(owner, cursor, node, &args, scope, depth)
@@ -344,6 +347,53 @@ pub(crate) trait QuotedExpansionCtx {
             }
             _ => self.expand_ast_node(owner, cursor, node, scope, depth),
         }
+    }
+
+    fn is_alias_of_a_node(&mut self, cursor: &QuotedSourceCursor) -> Result<bool, fz_engine::FatalError> {
+        let source_map = self.world().source_map();
+        let node = cursor.ast_node(&source_map.borrow()).map_err(|error| {
+            emit_internal_surface_error(self.telemetry(), format!("quoted alias read failed: {error}"))
+        })?;
+        match node {
+            Some(node) if node.head.root().tag() == ValueKind::ATOM && is_list_like(&node.tail) => {
+                let is_alias = node.head.atom_name().is_ok_and(|name| &*name == "__aliases__");
+                Ok(is_alias && self.starts_with_a_node(&node.tail)?)
+            }
+            _ => Ok(false),
+        }
+    }
+
+    /// Whether the first segment of an alias is itself code, as the
+    /// `__MODULE__` of `__MODULE__.Inner` is.
+    fn starts_with_a_node(&mut self, segments: &QuotedSourceCursor) -> Result<bool, fz_engine::FatalError> {
+        let source_map = self.world().source_map();
+        let read_error = |error: QuotedSourceError| {
+            emit_internal_surface_error(self.telemetry(), format!("quoted alias segment read failed: {error}"))
+        };
+        match segments.list_iter().next().transpose().map_err(read_error)? {
+            Some(first) => Ok(first.ast_node(&source_map.borrow()).map_err(read_error)?.is_some()),
+            None => Ok(false),
+        }
+    }
+
+    /// `__MODULE__.Inner` expands as Elixir expands an alias whose first
+    /// segment is a module's atom: to the atom of the module it names.
+    fn expand_alias_of_a_node(
+        &mut self,
+        owner: &QuotedSourceRoot,
+        cursor: &QuotedSourceCursor,
+        node: &QuotedAstNode,
+        scope: ScopeSnapshot,
+        depth: usize,
+    ) -> Result<ExpandedValue, fz_engine::FatalError> {
+        let expanded = match self.expand_ast_node(owner, cursor, node, scope, depth)? {
+            ExpandedValue::Complete(root) => root,
+            blocked @ ExpandedValue::Blocked(_) => return Ok(blocked),
+        };
+        let source_map = self.world().source_map();
+        let folded = fold_module_atom_alias(owner, &owner.subroot(expanded).cursor(), &source_map.borrow())
+            .map_err(|error| emit_surface_read_error(self.telemetry(), "alias expansion failed", &error))?;
+        Ok(ExpandedValue::Complete(folded.unwrap_or(expanded)))
     }
 
     fn expand_ast_node(
@@ -776,6 +826,14 @@ pub(crate) trait QuotedExpansionCtx {
         })?
         else {
             return Ok(None);
+        };
+        let module_cursor = if self.is_alias_of_a_node(&module_cursor)? {
+            match self.expand_cursor(owner, &module_cursor, scope, depth)? {
+                ExpandedValue::Complete(root) => owner.subroot(root).cursor(),
+                blocked @ ExpandedValue::Blocked(_) => return Ok(Some(blocked)),
+            }
+        } else {
+            module_cursor
         };
         let (module_cursor, function_cursor) = (&module_cursor, &function_cursor);
         let atom_module = super::quoted_function::module_atom(module_cursor);
@@ -2065,6 +2123,44 @@ fn is_remote_function_capture(node: &QuotedAstNode, sources: &SourceMap) -> Resu
         return Ok(false);
     };
     Ok(arity.root().tag() == ValueKind::INT && super::quoted_function::is_no_parens_call(&target)?)
+}
+
+/// An alias that starts with a module's atom (`__MODULE__` once expanded) is
+/// the atom of the module it names; one that starts with `nil` (`__MODULE__`
+/// outside any module) is the alias of its remaining segments, as
+/// `Module.concat/1` ignores `nil`. `None` for any other alias.
+fn fold_module_atom_alias(
+    owner: &QuotedSourceRoot,
+    alias: &QuotedSourceCursor,
+    sources: &SourceMap,
+) -> Result<Option<AnyValueRef>, QuotedSourceError> {
+    let Some(node) = alias.ast_node(sources)? else {
+        return Ok(None);
+    };
+    let segments = node.tail.list_items()?;
+    let Some((first, rest)) = segments.split_first() else {
+        return Ok(None);
+    };
+    if first.root().tag() != ValueKind::ATOM {
+        return Ok(None);
+    }
+    let builder = owner.builder();
+    let first_name = first.atom_name()?;
+    if &*first_name == "nil" {
+        let rest = rest.iter().map(QuotedSourceCursor::root).collect::<Vec<_>>();
+        return Ok(Some(builder.tuple(&[
+            node.head.root(),
+            node.meta.root(),
+            builder.list(&rest)?,
+        ])?));
+    }
+    let Some(module) = ModuleName::from_atom_name(&first_name).filter(|_| first_name.starts_with("Elixir.")) else {
+        return Ok(None);
+    };
+    let module = rest.iter().try_fold(module, |module, segment| {
+        segment.atom_name().map(|name| module.child(name.to_string()))
+    })?;
+    Ok(Some(builder.atom(&module.atom_name())))
 }
 
 fn is_remote_dot_callee(node: &QuotedAstNode) -> Result<bool, QuotedSourceError> {

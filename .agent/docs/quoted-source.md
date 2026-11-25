@@ -109,6 +109,15 @@ authority. See [`canonical-form`](canonical-form.md#canonbackendprogram).
 - Module aliases use `{:__aliases__, meta, [:Foo, :Bar]}`. Decoding reads one
   as `Expr::Alias` carrying its segments as a `ModuleName`; in value position
   it is the module's atom (see [modules](modules.md)).
+- `__MODULE__.Inner` quotes as Elixir does,
+  `{:__aliases__, meta, [{:__MODULE__, meta, nil}, :Inner]}`: an alias whose
+  first segment is the `__MODULE__` variable (the front door builds it in
+  `finish_enclosing_module_alias`, and `%__MODULE__.Inner{}` names its struct
+  the same way). Expansion splices `__MODULE__` into the module's atom and
+  folds the alias into the atom of the module it names
+  (`fold_module_atom_alias`, `quoted_expander.rs`); outside any module the
+  `nil` segment drops out. A remote call on such an alias expands the alias
+  first, so decoding and the call's module lookup only ever see the atom.
 - Keyword items are ordinary 2-tuples inside lists.
 - FZ `extern` items are quoted as `{:extern, meta, [abi_binary, options_map]}`.
   `options_map` carries the symbol `name`, `variadic`, and token payloads for

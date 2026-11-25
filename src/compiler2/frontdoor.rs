@@ -115,8 +115,11 @@ enum ExternOption {
 
 enum StructName {
     Path(Vec<String>),
-    EnclosingModule,
+    /// `__MODULE__` and the `.Upper` segments after it, if any.
+    EnclosingModule(Vec<String>),
 }
+
+const ENCLOSING_MODULE: &str = "__MODULE__";
 
 struct BlockEnd {
     body: AnyValueRef,
@@ -812,6 +815,10 @@ impl<'t> FrontDoorParser<'t> {
                 lhs = self.finish_closure_call(lhs, module_path, scope)?;
                 continue;
             }
+            if self.peek_is(&Tok::Dot) && self.names_enclosing_module(&lhs) && self.dot_then_upper() {
+                lhs = self.finish_enclosing_module_alias(lhs)?;
+                continue;
+            }
             if self.peek_is(&Tok::Dot) {
                 lhs = self.finish_remote_target(lhs)?;
                 continue;
@@ -1171,6 +1178,51 @@ impl<'t> FrontDoorParser<'t> {
         Ok(ParsedExpr::plain(root, span))
     }
 
+    fn names_enclosing_module(&self, lhs: &ParsedExpr<'t>) -> bool {
+        lhs.call_head.as_deref() == Some(ENCLOSING_MODULE)
+    }
+
+    fn dot_then_upper(&self) -> bool {
+        self.peek_is(&Tok::Dot) && matches!(self.peek_non_newline_from(1), Tok::Upper(_))
+    }
+
+    /// `__MODULE__.Inner`: Elixir's alias node whose first segment is the
+    /// `__MODULE__` variable, which expansion folds into the module's atom.
+    fn finish_enclosing_module_alias(&mut self, lhs: ParsedExpr<'t>) -> Result<ParsedExpr<'t>, FrontDoorError> {
+        let rest = self.parse_dotted_upper_segments()?;
+        let span = lhs.span.merge(self.prev_span());
+        let meta = self.meta(span)?;
+        let root = self.enclosing_module_alias(&meta, lhs.root, &rest)?;
+        Ok(ParsedExpr::plain(root, span))
+    }
+
+    fn enclosing_module_alias(
+        &self,
+        meta: &QuotedSourceMetadata,
+        module: AnyValueRef,
+        rest: &[String],
+    ) -> Result<AnyValueRef, FrontDoorError> {
+        let mut segments = vec![module];
+        segments.extend(rest.iter().map(|segment| self.builder.atom(segment)));
+        Ok(self
+            .builder
+            .ast_node(self.builder.atom("__aliases__"), meta, self.builder.list(&segments)?)?)
+    }
+
+    /// The `.Upper` segments that follow, each dot allowed a trailing newline.
+    fn parse_dotted_upper_segments(&mut self) -> Result<Vec<String>, FrontDoorError> {
+        let mut segments = Vec::new();
+        while self.dot_then_upper() {
+            self.advance();
+            self.skip_newlines();
+            match self.bump() {
+                Tok::Upper(name) => segments.push(name.clone()),
+                _ => unreachable!("guarded by dot_then_upper"),
+            }
+        }
+        Ok(segments)
+    }
+
     fn parse_alias_expr(&mut self, first: &'t str, start: Span) -> Result<ParsedExpr<'t>, FrontDoorError> {
         let mut path = vec![first];
         while self.peek_is(&Tok::Dot) && matches!(self.peek_non_newline_from(1), Tok::Upper(_)) {
@@ -1305,7 +1357,14 @@ impl<'t> FrontDoorParser<'t> {
         let meta = self.meta(span)?;
         let alias = match name {
             StructName::Path(path) => self.builder.alias(&meta, &segments_ref(&path))?,
-            StructName::EnclosingModule => self.builder.user_variable("__MODULE__", &meta)?,
+            StructName::EnclosingModule(rest) => {
+                let module = self.builder.user_variable(ENCLOSING_MODULE, &meta)?;
+                if rest.is_empty() {
+                    module
+                } else {
+                    self.enclosing_module_alias(&meta, module, &rest)?
+                }
+            }
         };
         let map = self.builder.call("%{}", &meta, &entries)?;
         Ok(ParsedExpr::plain(self.builder.call("%", &meta, &[alias, map])?, span))
@@ -1314,9 +1373,9 @@ impl<'t> FrontDoorParser<'t> {
     /// The struct a `%Name{}` names: a module path, or `__MODULE__` for the
     /// module the expression stands in.
     fn parse_struct_name(&mut self) -> Result<StructName, FrontDoorError> {
-        if matches!(self.peek(), Tok::Ident(name) if name == "__MODULE__") {
+        if matches!(self.peek(), Tok::Ident(name) if name == ENCLOSING_MODULE) {
             self.advance();
-            return Ok(StructName::EnclosingModule);
+            return Ok(StructName::EnclosingModule(self.parse_dotted_upper_segments()?));
         }
         self.parse_upper_path("struct").map(StructName::Path)
     }

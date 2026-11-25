@@ -1,0 +1,6 @@
+{:__aliases__, [], [{:__MODULE__, [], Main}, :Inner]}
+{{:., [], [{:__aliases__, [], [{:__MODULE__, [], Main}, :Inner]}, :f]}, [], []}
+Main.Inner
+:inner_f
+%Main.Inner{a: 1}
+2
