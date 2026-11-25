@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Callables",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-25T12:26:59Z",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "A dispatch judged exhaustive matches every value that reaches it",
   "type": "bug",
-  "updated_at": "2026-11-25T12:26:59Z"
+  "updated_at": "2026-11-25T12:27:02Z"
 }
