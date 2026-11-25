@@ -688,6 +688,12 @@ impl<'a> Dispatch<'a> {
             Region::Equal(ComparisonValue::Pinned(pin_id)) => Ok(self
                 .pin_value(*pin_id)
                 .is_some_and(|want| interp_value_eq(self.proc(), want, word).unwrap_or(false))),
+            Region::Equal(ComparisonValue::Subject(earlier)) => {
+                let Some(want) = self.subject_value(*earlier)? else {
+                    return Ok(false);
+                };
+                Ok(interp_value_eq(self.proc(), want, word).unwrap_or(false))
+            }
             Region::List(ListRegion::Empty) => Ok(word.is_empty_list()),
             Region::List(ListRegion::Cons) => Ok(word.value(self.proc()).ok().is_some_and(interp_is_list_cons)),
             Region::MapKind => {
@@ -891,6 +897,11 @@ impl<'a> Dispatch<'a> {
         let key = match key {
             ComparisonValue::Pinned(pinned) => self.pin_value(*pinned),
             ComparisonValue::Const(key) => self.const_key_value(key)?,
+            ComparisonValue::Subject(_) => {
+                return Err(DispatchStop::broken(
+                    "a map key question compares against an earlier subject",
+                ));
+            }
         };
         let Some(key) = key else {
             return Ok(None);

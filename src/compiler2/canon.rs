@@ -1701,6 +1701,7 @@ fn comparison(value: &ComparisonValue) -> String {
     match value {
         ComparisonValue::Const(value) => ground(value),
         ComparisonValue::Pinned(pinned) => format!("p{}", pinned.0),
+        ComparisonValue::Subject(subject) => format!("s{}", subject.0),
     }
 }
 

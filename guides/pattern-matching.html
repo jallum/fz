@@ -240,6 +240,27 @@ everything it closes over &mdash; so a lambda can pin a capture:</p>
 same = <span class="kw">fn</span> ^x -&gt; <span class="atm">:same</span> <span class="kw">end</span>
 same.(<span class="num">1</span>)                    <span class="com"># :same</span></pre>
 
+<h3>A name written twice</h3>
+
+<p>A name that appears twice in one pattern binds at its first occurrence
+and must be strictly equal (<code>===</code>, so <code>1</code> is not
+<code>1.0</code>) at every later one, in function heads across parameters,
+tuples, lists, maps, bitstrings, <code>case</code>, <code>fn</code>,
+<code>with</code>, <code>receive</code>, <code>=</code> and
+<code>for</code>:</p>
+
+<pre><span class="kw">def</span> <span class="fn">two</span>({x, x}), <span class="kw">do:</span> <span class="atm">:same</span>
+<span class="kw">def</span> <span class="fn">two</span>(_), <span class="kw">do:</span> <span class="atm">:diff</span>
+
+two({<span class="num">1</span>, <span class="num">1</span>})      <span class="com"># :same</span>
+two({<span class="num">1</span>, <span class="num">1.0</span>})    <span class="com"># :diff</span>
+{y, y} = {<span class="num">1</span>, <span class="num">2</span>}  <span class="com"># raises MatchError</span></pre>
+
+<p>An underscored name written twice, as in <code>{_x, _x}</code>, still
+compares, and warns <code>lower/repeated-underscored-variable</code> in
+Elixir's words: remove the underscore if the comparison is meant, otherwise
+give the variables different names.</p>
+
 <h3>A name nothing reads</h3>
 
 <p>A name a pattern binds and nothing reads is almost always a mistake,

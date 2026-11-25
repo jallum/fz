@@ -676,6 +676,11 @@ fn emit_region_test<M: cranelift_module::Module>(
             let want = load_pinned_dispatch_value(ctx, *pinned)?;
             emit_typed_eq_branch(body, ctx, val, want, true_b, false_b)?;
         }
+        Region::Equal(ComparisonValue::Subject(earlier)) => {
+            let val = resolve_dispatch_subject(body, ctx, subject, state)?;
+            let want = resolve_dispatch_subject(body, ctx, *earlier, state)?;
+            emit_typed_eq_branch(body, ctx, val, want, true_b, false_b)?;
+        }
         Region::TupleArity(arity) => {
             let val = resolve_dispatch_subject(body, ctx, subject, state)?;
             let predicate = RuntimeTypePredicate::tuple_arity(*arity as usize);
@@ -1198,6 +1203,11 @@ fn emit_dispatch_map_get_value<M: cranelift_module::Module>(
     let key = match key {
         ComparisonValue::Pinned(pinned) => load_pinned_dispatch_value(ctx, *pinned)?,
         ComparisonValue::Const(key) => emit_dispatch_const_key(body, ctx, key)?,
+        ComparisonValue::Subject(_) => {
+            return Err(CodegenError::new(
+                "a map key question compares against an earlier subject".to_string(),
+            ));
+        }
     };
     let map_ref = emit_receive_value_ref(body, ctx, map)?;
     let scan = match key {

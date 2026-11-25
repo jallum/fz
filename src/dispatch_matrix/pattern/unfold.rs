@@ -574,7 +574,9 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
             *projected = target;
         }
         match &question.predicate.region {
-            Region::Bitstring(_) | Region::Guard(_) | Region::Equal(ComparisonValue::Pinned(_)) => return Ok(None),
+            Region::Bitstring(_)
+            | Region::Guard(_)
+            | Region::Equal(ComparisonValue::Pinned(_) | ComparisonValue::Subject(_)) => return Ok(None),
             Region::MapKeyPresent {
                 key: ComparisonValue::Const(key),
             }
@@ -861,7 +863,11 @@ fn decide_at_constant<TypeHandle, F: PatternResolver<TypeHandle>>(
         Region::Equal(ComparisonValue::Const(constant)) => constant == value,
         Region::TupleArity(_) | Region::MapKind | Region::MapKeyPresent { .. } => false,
         Region::List(ListRegion::Empty | ListRegion::Cons) => false,
-        Region::Equal(ComparisonValue::Pinned(_)) | Region::Bitstring(_) | Region::Guard(_) => return None,
+        Region::Equal(ComparisonValue::Pinned(_) | ComparisonValue::Subject(_))
+        | Region::Bitstring(_)
+        | Region::Guard(_) => {
+            return None;
+        }
     };
     Some(if verdict { Asked::Holds } else { Asked::Refused })
 }

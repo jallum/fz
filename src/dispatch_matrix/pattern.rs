@@ -1108,7 +1108,7 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
     ) -> Result<(), SourcePatternError> {
         match pattern {
             Pattern::Wildcard => {}
-            Pattern::Var(name) => self.bind(name, span, subject, bindings)?,
+            Pattern::Var(name) => self.bind(name, span, subject, questions, bindings)?,
             Pattern::Both(left, right) => {
                 self.append_pattern(&left.node, left.span, subject, questions, bindings, resolver)?;
                 self.append_pattern(&right.node, right.span, subject, questions, bindings, resolver)?;
@@ -1349,14 +1349,19 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
         name: &Var,
         span: Span,
         subject: &PatternSubjectRef,
+        questions: &mut Vec<RegionQuestion<TypeHandle>>,
         bindings: &mut Vec<PatternDispatchBinding>,
     ) -> Result<(), SourcePatternError> {
         let source = self.subject_id(subject)?;
-        bindings.push(PatternDispatchBinding {
-            name: name.clone(),
-            source,
-            span,
-        });
+        match bindings.iter().find(|binding| binding.name == *name) {
+            Some(first) if first.source == source => {}
+            Some(first) => questions.push(RegionQuestion::equality(source, ComparisonValue::Subject(first.source))),
+            None => bindings.push(PatternDispatchBinding {
+                name: name.clone(),
+                source,
+                span,
+            }),
+        }
         Ok(())
     }
 

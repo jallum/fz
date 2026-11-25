@@ -65,6 +65,7 @@ pub const LOWER_TRY_ELSE_ONLY: DiagCode = DiagCode("lower/try-else-only");
 pub const LOWER_UNDEFINED_ATTRIBUTE: DiagCode = DiagCode("lower/undefined-attribute");
 pub const LOWER_INVALID_DOCUMENTATION: DiagCode = DiagCode("lower/invalid-documentation");
 pub const LOWER_UNUSED_VARIABLE: DiagCode = DiagCode("lower/unused-variable");
+pub const LOWER_REPEATED_UNDERSCORED_VARIABLE: DiagCode = DiagCode("lower/repeated-underscored-variable");
 
 // ----- planner (post-.11.24) -----
 

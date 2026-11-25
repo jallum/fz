@@ -1,0 +1,130 @@
+#---
+# purpose: "a variable written twice in one pattern binds at its first occurrence and requires every later occurrence to be strictly equal (so 1 is not 1.0), in function heads across parameters, tuples, cons cells, maps, bitstrings, case, fn, with, receive, = and for, with an underscored repeat warning as in Elixir"
+# oracle: self
+# oracle.stamp: 6e33d80a41f33e8e
+#---
+defmodule P do
+  def two({x, x}), do: :same
+  def two(_), do: :diff
+
+  def args(x, x), do: :same
+  def args(_, _), do: :diff
+
+  def guarded(x, x) when x > 0, do: :pos_same
+  def guarded(_, _), do: :other
+
+  def under({_x, _x}), do: :same
+  def under(_), do: :diff
+
+  def nested([x | x]), do: :cons_same
+  def nested(_), do: :diff
+
+  def mp(%{a: x, b: x}), do: :same
+  def mp(_), do: :diff
+
+  def bin(<<x, x>>), do: :same
+  def bin(_), do: :diff
+
+  def three(x, {x, x}), do: :same
+  def three(_, _), do: :diff
+
+  def caseit(v) do
+    case v do
+      {y, y} -> :same
+      _ -> :diff
+    end
+  end
+
+  def fnit(a, b) do
+    f = fn
+      x, x -> :same
+      _, _ -> :diff
+    end
+
+    f.(a, b)
+  end
+
+  def matchit(v) do
+    try do
+      {z, z} = v
+      {:ok, z}
+    rescue
+      e -> {:raised, e.__struct__}
+    end
+  end
+
+  def withit(v) do
+    with {w, w} <- v do
+      :same
+    else
+      _ -> :diff
+    end
+  end
+
+  def forit(l), do: for({k, k} <- l, do: k)
+
+  def pinned(v, x) do
+    case v do
+      {^x, ^x} -> :pin_same
+      {y, y} -> {:same, y}
+      _ -> :diff
+    end
+  end
+
+  def shadow(x) do
+    case {1, 1} do
+      {x, x} -> {:rebound, x}
+      _ -> {:diff, x}
+    end
+  end
+
+  def recv(v) do
+    send(self(), v)
+
+    receive do
+      {r, r} -> :same
+      _ -> :diff
+    after
+      0 -> :none
+    end
+  end
+
+  def limit(_s, limit, limit), do: :equal_limits
+  def limit(_s, _l, _a), do: :different_limits
+
+  def go([], m, m), do: :ok
+  def go([], _, name), do: {:bad, name}
+
+  def fi([{k, _} | _], k, i), do: i
+  def fi([{_, _} | t], k, i), do: fi(t, k, i + 1)
+  def fi([], _k, _i), do: nil
+
+  def dup([{key, _} | [{key, _} | _]]), do: true
+  def dup(_), do: false
+end
+
+defmodule Main do
+  def main() do
+    IO.inspect([P.two({1, 1}), P.two({1, 2}), P.two({1, 1.0}), P.two({[1], [1]})])
+    IO.inspect([P.args(1, 1), P.args(1, 2), P.args(1, 1.0)])
+    IO.inspect([P.guarded(2, 2), P.guarded(-1, -1), P.guarded(2, 3)])
+    IO.inspect([P.under({1, 1}), P.under({1, 2})])
+    IO.inspect([P.nested([[] | []]), P.nested([1 | 1]), P.nested([1, 2])])
+    IO.inspect([P.mp(%{a: 1, b: 1}), P.mp(%{a: 1, b: 2})])
+    IO.inspect([P.bin(<<5, 5>>), P.bin(<<5, 6>>)])
+    IO.inspect([P.three(1, {1, 1}), P.three(1, {1, 2}), P.three(2, {1, 1})])
+    IO.inspect([P.caseit({1, 1}), P.caseit({1, 2})])
+    IO.inspect([P.fnit(1, 1), P.fnit(1, 2)])
+    IO.inspect([P.matchit({1, 1}), P.matchit({1, 2})])
+    IO.inspect([P.withit({1, 1}), P.withit({1, 2})])
+    IO.inspect(P.forit([{1, 1}, {1, 2}, {3, 3}]))
+    IO.inspect([P.pinned({1, 1}, 1), P.pinned({2, 2}, 1), P.pinned({2, 3}, 1)])
+    IO.inspect(P.shadow(5))
+    IO.inspect([P.recv({1, 1}), P.recv({1, 2})])
+    IO.inspect([P.limit(:s, 5, 5), P.limit(:s, 5, 6), P.limit(:s, 5, 5.0)])
+    IO.inspect([P.go([], :a, :a), P.go([], :a, :b)])
+    IO.inspect([P.fi([a: 1, b: 2], :b, 1), P.dup(a: 1, b: 2), P.dup(a: 1, a: 2)])
+  end
+end
+
+Main.main()

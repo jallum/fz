@@ -1,8 +1,8 @@
 //! The scoping rules of a function body, walked once: where each name is
 //! bound, and which binding each reference reaches. Lowering asks two
 //! questions of it: which names an expression reads from outside itself (what
-//! a nested block or lambda captures), and which bindings nothing reads (the
-//! unused-variable warning).
+//! a nested block or lambda captures), which bindings nothing reads (the
+//! unused-variable warning), and which underscored names a match repeats.
 
 use crate::ast::{
     BitSize, CatchClause, Expr, FnClause, LambdaClause, MatchClause, Pattern, RescueClause, Spanned, Var, WithBinding,
@@ -26,6 +26,8 @@ struct Binding {
 pub(super) struct ScopeWalk {
     scope: HashMap<Var, BindingId>,
     bindings: Vec<Binding>,
+    /// Each later occurrence of an underscored name in one match.
+    repeated_underscored: Vec<(Var, Span)>,
     free: HashSet<Var>,
 }
 
@@ -64,20 +66,40 @@ pub(super) fn handler_free_names(rescue: &[RescueClause], catch: &[CatchClause])
     walk.free
 }
 
-/// Elixir's warning for every variable a function clause binds and never
-/// reads, clause by clause. A name that starts with an underscore, and a name
-/// a macro wrote, is not warned about.
-pub(super) fn unused_variable_diagnostics(clauses: &[FnClause]) -> Vec<Diagnostic> {
-    clauses
-        .iter()
-        .flat_map(|clause| {
-            let mut walk = ScopeWalk::default();
-            walk.clause(&clause.params, clause.guard.as_ref(), &clause.body);
+/// Elixir's warnings about the variables of a function's clauses, clause by
+/// clause: every variable bound and never read, and every underscored name a
+/// match repeats. A name a macro wrote is not warned about.
+pub(super) fn variable_diagnostics(clauses: &[FnClause]) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+    for clause in clauses {
+        let mut walk = ScopeWalk::default();
+        walk.clause(&clause.params, clause.guard.as_ref(), &clause.body);
+        diagnostics.extend(
             walk.bindings
-        })
-        .filter(|binding| !binding.used && is_warned(&binding.var))
-        .map(|binding| unused_variable_diagnostic(&binding))
-        .collect()
+                .iter()
+                .filter(|binding| !binding.used && is_warned(&binding.var))
+                .map(unused_variable_diagnostic),
+        );
+        diagnostics.extend(
+            walk.repeated_underscored
+                .iter()
+                .map(|(var, span)| repeated_underscored_diagnostic(var, *span)),
+        );
+    }
+    diagnostics
+}
+
+fn repeated_underscored_diagnostic(var: &Var, span: Span) -> Diagnostic {
+    let name = &var.name;
+    Diagnostic::warning(
+        codes::LOWER_REPEATED_UNDERSCORED_VARIABLE,
+        format!(
+            "the underscored variable \"{name}\" appears more than once in a match. This means the pattern will only \
+             match if all \"{name}\" bind to the same value. If this is the intended behaviour, please remove the \
+             leading underscore from the variable name, otherwise give the variables different names"
+        ),
+        span,
+    )
 }
 
 fn is_warned(var: &Var) -> bool {
@@ -128,7 +150,12 @@ impl ScopeWalk {
 
     fn bind(&mut self, var: &Var, span: Span, head: &mut HashMap<Var, BindingId>) {
         match head.get(var) {
-            Some(&binding) => self.bindings[binding].used = true,
+            Some(&binding) => {
+                self.bindings[binding].used = true;
+                if var.name.starts_with('_') && var.context.is_user() {
+                    self.repeated_underscored.push((var.clone(), span));
+                }
+            }
             None => {
                 let binding = self.bindings.len();
                 self.bindings.push(Binding {

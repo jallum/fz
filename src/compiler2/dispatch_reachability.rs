@@ -353,7 +353,9 @@ fn predicate_target(types: &mut Types, region: &Region<Ty>) -> Option<PredicateT
             DispatchShape::Nil => types.nil(),
             DispatchShape::Int(_) | DispatchShape::Float(_) | DispatchShape::Utf8Binary(_) => return None,
         },
-        Region::Equal(ComparisonValue::Pinned(_)) | Region::Guard(_) | Region::Bitstring(_) => return None,
+        Region::Equal(ComparisonValue::Pinned(_) | ComparisonValue::Subject(_))
+        | Region::Guard(_)
+        | Region::Bitstring(_) => return None,
         Region::TupleArity(arity) => {
             let any = types.any();
             let fields = types.repeat(any, *arity as usize);
