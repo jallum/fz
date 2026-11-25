@@ -11542,6 +11542,47 @@ fn compiler2_variable_callee_is_absence_not_an_earned_any() {
     assert_eq!(dbg.lines(), expected.as_slice());
 }
 
+/// A call through a parameter the `@spec` declares as an arrow names no closure
+/// target, but the arrow's declared return is ground: that return is the call's
+/// answer. Without it the callsite has no result type and the lowering stops at
+/// a missing semantic result.
+#[test]
+fn compiler2_a_call_through_a_declared_arrow_answers_with_the_arrows_return() {
+    let _lock = tests_support_lock().lock().unwrap();
+    tests_support_dtor_reset();
+
+    let tel = ConfiguredTelemetry::new();
+    let dbg = DbgCapture::new();
+    let mut compiler = Compiler2::new(tel);
+    compiler.set_output(dbg.sink());
+    compiler.submit_code(CodeSubmission {
+        name: Some(
+            "fixtures/02030_a_closure_called_through_a_spec_declared_arrow_answers_with_the_declared_return.fz"
+                .to_string(),
+        ),
+        text: include_str!(
+            "../../fixtures/02030_a_closure_called_through_a_spec_declared_arrow_answers_with_the_declared_return.fz"
+        )
+        .to_string(),
+    });
+    let root_id = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    settle_native_product(&mut compiler, root_id);
+    assert_resolved(
+        compiler.drive(),
+        "a call through a declared arrow should lower with the arrow's declared return as its result",
+    );
+
+    compiler
+        .run_root_interp(root_id)
+        .expect("a call through a declared arrow should run in the interpreter");
+    assert_eq!(dbg.lines(), ["true"]);
+}
+
 #[test]
 fn compiler2_native_program_resource_fixture_shapes_callable_boundaries_explicitly() {
     let _lock = tests_support_lock().lock().unwrap();

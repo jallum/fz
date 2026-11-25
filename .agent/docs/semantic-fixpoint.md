@@ -168,10 +168,16 @@ GROUNDNESS. Collapsing any pair of them is a known defect class.
   carries type VARIABLES — the slot has not been instantiated. A callable that
   merely carries a variable, `(int) -> a`, is a real pointer at runtime; only a
   BARE variable is uninhabitable.
+- **A declared arrow — its ground return.** A callee that names no closure
+  target but carries a declared arrow of the call's arity (a callable clause
+  with `closure: None`, as an `@spec` parameter type writes) answers with the
+  join of those arrows' returns when that join is ground. The arrow is the
+  declared evidence; it is consulted before the variable test, so a callee
+  whose parameters still carry variables is not left absent.
 - **A dynamic edge — earned `any`.** The narrow case: a callee type that is
-  GROUND and carries *no* matching closure-shaped clause, so at runtime it
-  really could be anything. `callee_is_a_dynamic_edge` is the predicate, and it
-  is `!has_vars`.
+  GROUND and carries *no* matching closure-shaped clause and no declared arrow
+  with a ground return, so at runtime it really could be anything.
+  `callee_is_a_dynamic_edge` is the predicate, and it is `!has_vars`.
 
 The semantic-to-executable boundary closes one further distinction only after
 the fixpoint settles. A call result omitted while analysis is climbing means

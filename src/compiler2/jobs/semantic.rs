@@ -2408,11 +2408,17 @@ fn callee_has_no_inhabitants(types: &Types, callee_ty: Ty) -> bool {
 /// Is an unresolved callee a genuine dynamic edge — the one place a closure
 /// call may EARN `any`?
 ///
-/// Only when its type is GROUND, or denotes every value. A ground callable the engine cannot resolve to
-/// closure targets really could be anything at runtime, exactly as at a provider
-/// boundary. A callee whose type still carries type VARIABLES is a different
-/// thing entirely: the slot has not been instantiated yet, so the call has no
-/// evidence, precisely like a named target whose analysis is still pending.
+/// Only when its type is GROUND, or denotes every value, and no declared arrow
+/// answers for it. A declared arrow of the call's arity names no target, but its
+/// return is a statement about the call: when that return is ground it is the
+/// answer, evidence that is consulted before the variable test below. Only a
+/// callee with no such arrow falls to this predicate.
+///
+/// A ground callable the engine cannot resolve to closure targets really could
+/// be anything at runtime, exactly as at a provider boundary. A callee whose
+/// type still carries type VARIABLES is a different thing entirely: the slot
+/// has not been instantiated yet, so the call has no evidence, precisely like a
+/// named target whose analysis is still pending.
 ///
 /// The distinction is load-bearing because the value-type join is cumulative.
 /// `any` unioned in from a not-yet-instantiated slot is never retracted once the
@@ -2426,6 +2432,15 @@ fn callee_has_no_inhabitants(types: &Types, callee_ty: Ty) -> bool {
 /// type, since the tail's own elements are elements of the list.
 fn callee_is_a_dynamic_edge(world: &World, callee_ty: Ty) -> bool {
     !world.types().has_vars(&callee_ty) || world.types().is_top(&callee_ty)
+}
+
+/// The join of `returns` when it carries no type variable; a variable return
+/// is still unknown, which is no answer.
+fn ground_join(world: &mut World, returns: Vec<Ty>) -> Option<Ty> {
+    let mut returns = returns.into_iter();
+    let first = returns.next()?;
+    let joined = returns.fold(first, |acc, ret| world.types_mut().union(acc, ret));
+    (!world.types().has_vars(&joined)).then_some(joined)
 }
 
 fn resolve_closure_call(
@@ -2475,13 +2490,17 @@ fn resolve_closure_call(
     // `any` from that absence: the cumulative `ReturnType` join would union the
     // stale `any` and never retract it once the target settles to its real type.
     let mut named_concrete_target = false;
+    // A clause with no closure is a bare arrow: a declared surface naming no
+    // target. Its return is the one thing it says about the call.
+    let mut bare_arrow_returns = Vec::new();
     for clause in clauses {
-        let Some(closure) = clause.closure else {
-            continue;
-        };
         if clause.args.len() != arg_types.len() {
             continue;
         }
+        let Some(closure) = clause.closure else {
+            bare_arrow_returns.push(clause.ret);
+            continue;
+        };
         named_concrete_target = true;
         let function = function_id_of_closure_target(closure.target);
 
@@ -2532,7 +2551,13 @@ fn resolve_closure_call(
         // Report the evidence gathered so far and let the reads/waits
         // registered above re-wake this call; only a genuine dynamic edge
         // earns `any`.
-        if named_concrete_target || !callee_is_a_dynamic_edge(world, callee_ty) {
+        if named_concrete_target {
+            return unresolved(call_return);
+        }
+        if let Some(declared) = ground_join(world, bare_arrow_returns) {
+            return unresolved(CallReturn::Known(declared));
+        }
+        if !callee_is_a_dynamic_edge(world, callee_ty) {
             return unresolved(call_return);
         }
         return unresolved(CallReturn::Known(any_ty(world)));

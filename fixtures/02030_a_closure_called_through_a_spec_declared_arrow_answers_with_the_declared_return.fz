@@ -1,0 +1,33 @@
+#---
+# purpose: A closure called through a parameter the `@spec` declares as an arrow answers with the arrow's declared return, so a callsite whose only evidence is that arrow has a result type on all three paths
+# root: main/0
+# assert.metric.semantic.activations: 13
+# assert.metric.semantic.executables: 13
+# assert.metric.semantic.callsites: 9
+# assert.metric.call_edges.count: 9
+# oracle: self
+# oracle.stamp: 608b6fb9f0fc4aeb
+#---
+#
+# `Fmt.fmt/3` is passed as its own `enc`. Called from inside the lambda that
+# `wrap` builds, `enc` is a declared arrow with no closure literal behind it,
+# and the arrow's return is `iodata()`. That declared return is the call's
+# answer.
+#
+# The spec is pinned as written: it says `fmt` returns `iodata()`, while the
+# body returns a closure. Elixir does not check a spec against its body, and
+# neither does this fixture; the program only asks whether the result is a
+# function.
+defmodule Fmt do
+  @spec fmt(map(), (dynamic(), dynamic(), map() -> iodata()), map()) :: iodata()
+  def fmt(m, enc, s) when is_map(m), do: wrap(m, enc, s)
+  def wrap(_m, enc, s), do: fn {_k, v} -> enc.(v, enc, s) end
+end
+
+defmodule Main do
+  def main() do
+    IO.inspect(is_function(Fmt.fmt(%{}, &Fmt.fmt/3, %{}), 1))
+  end
+end
+
+Main.main()
