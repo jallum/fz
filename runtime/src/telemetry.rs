@@ -278,13 +278,15 @@ fn write_metadata(out: &mut String, event: &RuntimeEvent<'_>) {
         RuntimeEvent::RunEnded(ended) => {
             write!(
                 out,
-                "\"pool_outstanding_before_run\":{},\"pool_outstanding_after_run\":{},\"pool_cached_blocks\":{},\"in_use_bytes\":{},\"idle_bytes\":{},\"peak_in_use_bytes\":{}",
+                "\"pool_outstanding_before_run\":{},\"pool_outstanding_after_run\":{},\"pool_cached_blocks\":{},\"in_use_bytes\":{},\"idle_bytes\":{},\"peak_in_use_bytes\":{},\"trims\":{},\"pages_given_back\":{}",
                 ended.pool_outstanding_before_run,
                 ended.pool_outstanding_after_run,
                 ended.pool_cached_blocks,
                 ended.footprint.in_use_bytes,
                 ended.footprint.idle_bytes,
-                ended.footprint.peak_in_use_bytes
+                ended.footprint.peak_in_use_bytes,
+                ended.footprint.trims,
+                ended.footprint.pages_given_back
             )
             .unwrap();
         }

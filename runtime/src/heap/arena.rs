@@ -372,12 +372,15 @@ impl Reservation {
         self.spans.lock().unwrap().give(p as usize, span);
     }
 
-    /// Return the pages of the span at `p` to the operating system. They read
-    /// as zeros, and become resident again as they are touched.
-    pub(super) fn drop_pages(&self, p: *mut u8, span: usize) {
-        if let Some((start, bytes)) = inner_pages(p as usize, span, self.page) {
-            discard_pages(start, bytes);
-        }
+    /// Return the pages of the span at `p` to the operating system, and say how
+    /// many there were. They read as zeros, and become resident again as they
+    /// are touched.
+    pub(super) fn drop_pages(&self, p: *mut u8, span: usize) -> usize {
+        let Some((start, bytes)) = inner_pages(p as usize, span, self.page) else {
+            return 0;
+        };
+        discard_pages(start, bytes);
+        bytes / self.page
     }
 
     /// Make the range readable and writable up to `end` bytes from the base,

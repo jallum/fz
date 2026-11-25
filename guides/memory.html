@@ -492,8 +492,8 @@ the pool, and goes back to it when it is released: the list reuses a span that
 fits, splits it, and joins neighbours, and a freed span's pages are returned to
 the system (<code>MADV_DONTNEED</code> on Linux, a fresh anonymous mapping over
 the pages on macOS). A pooled block of 64 KiB or more that no allocation of its
-class has wanted for a whole epoch (four times the bytes in use handed out, at
-least 1 MiB) gives its pages back the same way and stays on its free list; it
+class has wanted for a whole epoch (four times the bytes the pool holds, in use
+and idle, handed out, at least 1 MiB) gives its pages back the same way and stays on its free list; it
 faults them in again when it is next used. An object larger than the last
 entry is copied like any other when the collection that reaches it releases the
 block.</p>
@@ -1298,7 +1298,8 @@ own bytes instead, on the thread that runs the program:</p>
 reads the pool while the from-space is held and subtracts it, so the figures are
 those of the pool once the from-space is released), and
 <code>fz.runtime.run_ended</code> carries <code>in_use_bytes</code>,
-<code>idle_bytes</code> and <code>peak_in_use_bytes</code>. A binary's bytes
+<code>idle_bytes</code>, <code>peak_in_use_bytes</code>, <code>trims</code>
+(epochs ended) and <code>pages_given_back</code>. A binary's bytes
 stay in use until the collection that sweeps its last BinRef frees the buffer.</p>
 
 <!-- ─────────────────────────────── 12. FUTURE ─────────────────────────────── -->

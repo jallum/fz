@@ -82,7 +82,7 @@ impl<'h> CollectedBlocks<'h> {
         Footprint {
             in_use_bytes: held.in_use_bytes - capacity,
             idle_bytes: held.idle_bytes + pooled,
-            peak_in_use_bytes: held.peak_in_use_bytes,
+            ..held
         }
     }
 }

@@ -202,7 +202,7 @@ fn a_raise_record_made_for_a_listener_reads_back_as_the_raise_it_came_from() {
 }
 
 #[test]
-fn a_run_end_writes_the_pool_census_and_the_bytes_in_use_idle_and_at_peak() {
+fn a_run_end_writes_the_pool_census_the_bytes_in_use_idle_and_at_peak_and_the_trims() {
     let ended = RunEnded {
         pool_outstanding_before_run: 30,
         pool_outstanding_after_run: 30,
@@ -211,11 +211,13 @@ fn a_run_end_writes_the_pool_census_and_the_bytes_in_use_idle_and_at_peak() {
             in_use_bytes: 9216,
             idle_bytes: 4096,
             peak_in_use_bytes: 20480,
+            trims: 7,
+            pages_given_back: 96,
         },
     };
     assert_eq!(
         line(RuntimeEvent::RunEnded(ended)),
-        r#"{"name":["fz","runtime","run_ended"],"time_ns":12,"kind":"event","span_id":3,"parent_span_id":4,"measurements":{},"metadata":{"pool_outstanding_before_run":30,"pool_outstanding_after_run":30,"pool_cached_blocks":1,"in_use_bytes":9216,"idle_bytes":4096,"peak_in_use_bytes":20480}}"#
+        r#"{"name":["fz","runtime","run_ended"],"time_ns":12,"kind":"event","span_id":3,"parent_span_id":4,"measurements":{},"metadata":{"pool_outstanding_before_run":30,"pool_outstanding_after_run":30,"pool_cached_blocks":1,"in_use_bytes":9216,"idle_bytes":4096,"peak_in_use_bytes":20480,"trims":7,"pages_given_back":96}}"#
     );
 }
 

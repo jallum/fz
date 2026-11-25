@@ -265,7 +265,8 @@ signature:    (&RunEnded)
 pool_cached_blocks, footprint }`. The first three are block counts of the
 thread's block pool; `footprint` is the byte accounting described under
 `fz.runtime.gc`, read once every process has been torn down, and `write_line`
-renders it as `in_use_bytes`, `idle_bytes` and `peak_in_use_bytes`. Outstanding
+renders it as `in_use_bytes`, `idle_bytes`, `peak_in_use_bytes`, `trims` and
+`pages_given_back`. Outstanding
 is the count `pool_alloc` has handed out minus the count `pool_free` has taken
 back (`heap::pool_outstanding_blocks`), sampled when the run began and again
 once every process has been torn down; `pool_cached_blocks` is the blocks
@@ -437,7 +438,14 @@ major collection's from-space is every block (`Heap::next_generation`):
   the counters (`Footprint` in `runtime/src/heap/block_pool.rs`), so the
   runtime reads one authority. `Footprint.peak_in_use_bytes`, rendered on
   `run_ended`, is the highest in-use value any allocation reached, updated at
-  every grow. The binary buffer count is per thread, matching the pool: a
+  every grow. `Footprint.trims` and `Footprint.pages_given_back`, rendered on
+  `run_ended` only, are the pool's running counts of ended epochs and of
+  operating-system pages the trims returned (`arena::drop_pages` reports its
+  page count); both are field reads. An epoch ends when the bytes the pool has
+  handed out reach `EPOCH_FACTOR` times `in_use_bytes + idle_bytes` (never under
+  `EPOCH_FLOOR`), and the trim gives back the pages of each trimmed-class block
+  that rested idle through the whole epoch; `idle_bytes` is a running count,
+  adjusted where a block enters or leaves a free list. The binary buffer count is per thread, matching the pool: a
   buffer freed on a thread other than the one that allocated it is
   subtracted from the freeing thread's count, which stays signed so the
   free cannot underflow; the reporting thread is the one that runs the
