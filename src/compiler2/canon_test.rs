@@ -427,7 +427,9 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
         ),
         (
             563, // mailbox_closure_reduce
-            51,
+            // `send` returns the exact closure type, so two zero-capture lambdas no
+            // longer share one `Kernel.send/2` specialization.
+            52,
         ),
         (
             570, // actor_ring

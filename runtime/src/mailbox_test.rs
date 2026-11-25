@@ -2,6 +2,7 @@
 //! brings a message into the heap.
 
 use super::*;
+use crate::any_value::{AnyValue, AnyValueRef};
 use crate::heap::SchemaRegistry;
 use crate::process::Process;
 use crate::sched::{gift_copy_one, self_send};
@@ -18,14 +19,17 @@ fn list_of(heap: &mut Heap, n: i64) -> AnyValueRef {
 }
 
 /// A message `[n]` as a sender's gift: the message and the segment holding it.
-fn gifted_list(sender: &mut Heap, n: i64) -> (AnyValueRef, GiftSegment) {
-    let message = list_of(sender, n);
+fn gifted_list(sender: &mut Heap, n: i64) -> (Stored, GiftSegment) {
+    let message = Stored::of_ref(list_of(sender, n));
     let (segment, copy) = gift_copy_one(sender, message);
     (copy, segment)
 }
 
-fn head(heap: &Heap, message: AnyValueRef) -> i64 {
-    heap.read_list_head_ref(message).expect("head").load_int().expect("int")
+fn head(heap: &Heap, message: Stored) -> i64 {
+    heap.read_list_head_ref(message.heap_ref())
+        .expect("head")
+        .load_int()
+        .expect("int")
 }
 
 fn heads(process: &Process) -> Vec<i64> {
@@ -36,11 +40,11 @@ fn heads(process: &Process) -> Vec<i64> {
 fn messages_stay_in_arrival_order_whether_another_process_or_the_receiver_sent_them() {
     let mut sender = process();
     let mut receiver = process();
-    let own = list_of(&mut receiver.heap, 1);
+    let own = Stored::of_ref(list_of(&mut receiver.heap, 1));
     self_send(&mut receiver, own);
     let (second, segment) = gifted_list(&mut sender.heap, 2);
     receiver.mailbox.push(second, segment);
-    let own = list_of(&mut receiver.heap, 3);
+    let own = Stored::of_ref(list_of(&mut receiver.heap, 3));
     self_send(&mut receiver, own);
 
     assert_eq!(heads(&receiver), vec![1, 2, 3]);
@@ -49,16 +53,16 @@ fn messages_stay_in_arrival_order_whether_another_process_or_the_receiver_sent_t
 #[test]
 fn a_self_sent_message_is_a_copy_that_waits_outside_the_heap() {
     let mut receiver = process();
-    let own = list_of(&mut receiver.heap, 7);
+    let own = Stored::of_ref(list_of(&mut receiver.heap, 7));
     let young_before = receiver.heap.young_bytes();
 
     self_send(&mut receiver, own);
 
     let waiting = receiver.mailbox.front().expect("the message");
-    let waiting_addr = waiting.list_addr().expect("list addr");
+    let waiting_addr = waiting.heap_ref().list_addr().expect("list addr");
     assert_ne!(
         waiting_addr,
-        own.list_addr().expect("list addr"),
+        own.heap_ref().list_addr().expect("list addr"),
         "the message was copied"
     );
     assert!(!receiver.heap.contains_heap_addr(waiting_addr));
@@ -74,7 +78,7 @@ fn taking_a_message_brings_its_block_into_the_heap_as_young_bytes() {
     let mut sender = process();
     let mut receiver = process();
     let (message, segment) = gifted_list(&mut sender.heap, 9);
-    let addr = message.list_addr().expect("list addr");
+    let addr = message.heap_ref().list_addr().expect("list addr");
     receiver.mailbox.push(message, segment);
     assert!(!receiver.heap.contains_heap_addr(addr));
     let young_before = receiver.heap.young_bytes();
@@ -105,16 +109,16 @@ fn taking_from_the_middle_leaves_the_others_in_order() {
 fn the_mailbox_is_never_a_collection_root() {
     let mut sender = process();
     let mut receiver = process();
-    let own = list_of(&mut receiver.heap, 1);
+    let own = Stored::of_ref(list_of(&mut receiver.heap, 1));
     self_send(&mut receiver, own);
     let (message, segment) = gifted_list(&mut sender.heap, 2);
     receiver.mailbox.push(message, segment);
-    let addrs: Vec<_> = receiver.mailbox.messages().map(|m| m.list_addr()).collect();
+    let addrs: Vec<_> = receiver.mailbox.messages().map(|m| m.heap_ref().list_addr()).collect();
 
     let stats = receiver.collect_stats(&mut []);
 
     assert_eq!(stats.copied_bytes, 0, "no message was reached");
-    let after: Vec<_> = receiver.mailbox.messages().map(|m| m.list_addr()).collect();
+    let after: Vec<_> = receiver.mailbox.messages().map(|m| m.heap_ref().list_addr()).collect();
     assert_eq!(after, addrs, "every message stayed where it was");
     assert_eq!(heads(&receiver), vec![1, 2]);
 }
@@ -168,4 +172,20 @@ fn first_match_stops_at_the_first_error() {
 
     assert_eq!(found, Err("matcher failed"));
     assert_eq!(probed, 1);
+}
+
+#[test]
+fn a_sent_number_waits_in_the_mailbox_without_a_block_and_a_collection_receives_nothing() {
+    let mut sender = process();
+    let mut receiver = process();
+    let number = Stored::of(AnyValue::Int(41));
+    let (segment, copy) = gift_copy_one(&mut sender.heap, number);
+    receiver.mailbox.push(copy, segment);
+
+    assert_eq!(receiver.mailbox.front(), Some(number));
+    receiver.mailbox.take(0, &mut receiver.heap);
+    let stats = receiver.collect_stats(&mut []);
+
+    assert_eq!(stats.received_bytes, 0, "a number's gift holds no block to graft");
+    assert_eq!(receiver.heap.young_bytes(), 0);
 }

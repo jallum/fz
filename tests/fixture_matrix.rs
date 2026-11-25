@@ -3914,18 +3914,17 @@ fn binaries_shared_by_process(fixture: &FixtureCase, path: FixtureMatrixPath) ->
 /// Each process publishes one fresh binary at one place and sends what it
 /// published as its last act, so its count is what that publication marked:
 /// a store into a container or a closure marks the binary, as does a call
-/// made while the caller holds it; a message copy and a bare send leave the
-/// sender's binary with its one holder. A reduction yield differs by path:
-/// native code leaves its frame and builds a continuation from the yielding
-/// function's arguments, which marks them, while the interpreter keeps its
-/// frame across the yield and marks nothing. Every path counts
-/// the same, because every mark is `Heap::share` or its inline form. The main
-/// process, which spawns them and prints what they send, comes first and is
-/// not part of the claim.
+/// made while the caller holds it; a message copy leaves the sender's binary
+/// with its one holder, but `send` returns its message, so the sender's
+/// frame holds the binary past `fz_send` and marks it, and so a reduction
+/// yield before the send marks it too. Every path counts the same, because
+/// every mark is `Heap::share` or its inline form. The main process, which
+/// spawns them and prints what they send, comes first and is not part of the
+/// claim.
 fn each_place_a_binary_gains_a_second_holder_marks_it_shared() {
     let fixture = FixtureCase::new("fixtures/01711_each_place_a_binary_gains_a_second_holder_marks_it_shared.fz");
     let expected = vec![
-        0, 0, // unpublished
+        1, 1, // unpublished: `send` returns the message, so the frame holds it past `fz_send`
         2, 1, // tuple field
         2, 1, // struct field
         2, 1, // list head
@@ -3933,20 +3932,17 @@ fn each_place_a_binary_gains_a_second_holder_marks_it_shared() {
         2, 1, // map value
         2, 1, // closure capture
         1, 1, // a call made while the caller holds it
-        0, 0, // self-send
+        2, 1, // self-send
+        1, 1, // reduction yield
     ];
     for path in [
         FixtureMatrixPath::Run,
         FixtureMatrixPath::Interp,
         FixtureMatrixPath::Build,
     ] {
-        let yield_marks = match path {
-            FixtureMatrixPath::Interp => [0, 0],
-            FixtureMatrixPath::Run | FixtureMatrixPath::Build => [1, 1],
-        };
         assert_eq!(
             binaries_shared_by_process(&fixture, path)[1..],
-            [expected.as_slice(), &yield_marks].concat(),
+            expected,
             "{path:?}: (small, large) per publication",
         );
     }
@@ -4478,10 +4474,10 @@ fn many_senders_into_one_guarded_receive_gift_one_message_each_and_leave_the_mis
     // The guard accepts jobs above 50, so jobs 1..=50 miss, job 51 hits, and
     // the receive is then decided: jobs 52..=100 miss without a second probe.
     // A miss gifts the whole message (a three-slot tuple, 48 bytes, and two
-    // cells, 32); the hit gifts the bound number as a boxed scalar (16) and the
-    // two payload cells (32).
+    // cells, 32); the hit gifts the two payload cells (32), the bound number
+    // crossing as its word and kind with no block.
     let mut probes = vec![SendProbeEvent::new("miss", 1, 80, 1); 50];
-    probes.push(SendProbeEvent::new("hit", 1, 48, 1));
+    probes.push(SendProbeEvent::new("hit", 1, 32, 1));
     probes.extend(vec![SendProbeEvent::new("miss", 1, 80, 1); 49]);
     for (path, label) in RUNTIME_TELEMETRY_PATHS {
         let events = send_probe_events_for_fixture(&fixture, path, label);
@@ -4491,8 +4487,8 @@ fn many_senders_into_one_guarded_receive_gift_one_message_each_and_leave_the_mis
         );
         assert_eq!(
             events.iter().map(|e| e.gift_bytes).sum::<usize>(),
-            7_968,
-            "{label}: 99 misses of 80 bytes and one hit of 48"
+            7_952,
+            "{label}: 99 misses of 80 bytes and one hit of 32"
         );
         let (before, after) = run_ended_pool_census(&fixture, path, label);
         assert_eq!(
@@ -4531,9 +4527,10 @@ fn a_large_list_passed_back_and_forth_crosses_as_one_gift_per_message_on_every_p
 
     // Every send finds its receiver parked on a matching receive, so every
     // message is a hit. The child's announcement binds nothing and gifts
-    // nothing. Each ball gifts its 20000 cells (320000 bytes) and the bound
-    // number as a boxed scalar (16), alternating child, parent.
-    let ball = |receiver| SendProbeEvent::new("hit", receiver, 320_016, 1);
+    // nothing. Each ball gifts its 20000 cells (320000 bytes), the bound
+    // number crossing as its word and kind with no block, alternating child,
+    // parent.
+    let ball = |receiver| SendProbeEvent::new("hit", receiver, 320_000, 1);
     let mut probes = vec![SendProbeEvent::new("hit", 1, 0, 0)];
     for _ in 0..4 {
         probes.push(ball(2));
@@ -4544,15 +4541,15 @@ fn a_large_list_passed_back_and_forth_crosses_as_one_gift_per_message_on_every_p
         assert_eq!(events, probes, "{label}: the announcement, then eight balls, all hits");
         assert_eq!(
             events.iter().map(|e| e.gift_bytes).sum::<usize>(),
-            2_560_128,
-            "{label}: eight balls of 320016 bytes"
+            2_560_000,
+            "{label}: eight balls of 320000 bytes"
         );
         let (before, after) = run_ended_pool_census(&fixture, path, label);
         assert_eq!(after, before, "{label}: the run returned every block it took");
     }
 
     // A ball waits outside the receiver's heap until the receive that takes it
-    // grafts it, young. At 320016 bytes a ball is far past the 4096-byte budget
+    // grafts it, young. At 320000 bytes a ball is far past the 4096-byte budget
     // floor, so the receiver is due at the park that follows each receive, and
     // the ball, dead by then, is reclaimed with nothing copied. The interpreter
     // never yields, so every one of its collections is at a park: the parent's

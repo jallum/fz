@@ -104,7 +104,9 @@ pub use self::block_pool::{Footprint, pool_footprint, pool_outstanding_blocks, p
 pub use self::block_pool::{SIZE_TABLE, next_block_capacity, pick_block_capacity, pick_tip_capacity};
 pub(crate) use self::block_pool::{binary_buffer_allocated, binary_buffer_freed, poisoned};
 pub use self::collected::{Collected, CollectedBlocks};
-pub use self::deep_copy::{HeapView, deep_copy_any_value, deep_copy_any_value_ref, deep_copy_slot, measure_deep_copy};
+pub use self::deep_copy::{
+    HeapView, deep_copy_any_value, deep_copy_any_value_ref, deep_copy_slot, deep_copy_stored, measure_deep_copy,
+};
 pub(crate) use self::gc::forwarding::forwarded_target;
 pub use self::gc::roots::{RootForwarder, Roots};
 pub use self::gift::GiftSegment;

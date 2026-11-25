@@ -15,10 +15,10 @@
 //! copies on its own heap, inside a gift window, and queues the result on the
 //! receiver's `in_queue`; the receiver grafts the queue at its next dispatch.
 
-use crate::any_value::{self, AnyValue, AnyValueRef, ValueKind};
+use crate::any_value::{self, AnyValue, AnyValueRef, Stored, ValueKind};
 use crate::delivery::Delivery;
 use crate::exec_ctx::{timer_cancel, timer_schedule};
-use crate::heap::{GiftSegment, Heap, HeapView, deep_copy_any_value_ref, measure_deep_copy};
+use crate::heap::{GiftSegment, Heap, HeapView, deep_copy_stored, measure_deep_copy};
 use crate::mailbox::Mailbox;
 use crate::park::{ParkRecord, Roots};
 use crate::process::{PidId, Process, ProcessState};
@@ -84,7 +84,7 @@ pub struct Gift {
 
 pub enum GiftPayload {
     /// A message the receiver was not waiting for. It joins the mailbox.
-    Message(AnyValueRef),
+    Message(Stored),
     /// A message the sender matched against the receiver's parked receive:
     /// the winning clause and the roots its arguments are read from. The
     /// message itself is consumed by the match and never reaches the mailbox.
@@ -124,30 +124,30 @@ pub struct SendProbe {
 /// separate copy at each place it is reached. A copy that allocates nothing
 /// (no values, or only values that cross as they are) opens no window and
 /// costs no block.
-pub fn gift_copy(heap: &mut Heap, values: &[AnyValueRef]) -> (GiftSegment, Roots) {
+pub fn gift_copy(heap: &mut Heap, values: &[Stored]) -> (GiftSegment, Roots) {
     let Some(source) = open_gift(heap, values) else {
         return (GiftSegment::empty(), values.iter().copied().collect());
     };
     let copied = values
         .iter()
-        .map(|value| deep_copy_any_value_ref(*value, &source, heap))
+        .map(|value| deep_copy_stored(*value, &source, heap))
         .collect();
     (heap.end_gift(), copied)
 }
 
 /// `gift_copy` of one value, which needs no vector to hold its copy.
-pub fn gift_copy_one(heap: &mut Heap, value: AnyValueRef) -> (GiftSegment, AnyValueRef) {
+pub fn gift_copy_one(heap: &mut Heap, value: Stored) -> (GiftSegment, Stored) {
     let Some(source) = open_gift(heap, &[value]) else {
         return (GiftSegment::empty(), value);
     };
-    let copied = deep_copy_any_value_ref(value, &source, heap);
+    let copied = deep_copy_stored(value, &source, heap);
     (heap.end_gift(), copied)
 }
 
 /// Measure `values` and open a gift window sized to them, returning the view
 /// of the source the copy reads. `None` when the copy allocates nothing, and
 /// no window opens.
-fn open_gift(heap: &mut Heap, values: &[AnyValueRef]) -> Option<HeapView> {
+fn open_gift(heap: &mut Heap, values: &[Stored]) -> Option<HeapView> {
     let source = heap.view();
     let measured = measure_deep_copy(values, &source);
     if measured == 0 {
@@ -176,7 +176,7 @@ fn open_gift(heap: &mut Heap, values: &[AnyValueRef]) -> Option<HeapView> {
 ///
 /// A receiver whose receive is already matched by an earlier sender is not
 /// probed again; that message is a miss.
-pub fn probe_sender(sender: &mut Process, receiver: &Process, msg: AnyValueRef) -> SendProbe {
+pub fn probe_sender(sender: &mut Process, receiver: &Process, msg: Stored) -> SendProbe {
     let mut delivery = receiver.delivery.lock();
     let sender_ptr: *mut Process = sender;
     let mut roots = Roots::new();
@@ -212,7 +212,7 @@ pub fn probe_sender(sender: &mut Process, receiver: &Process, msg: AnyValueRef) 
 
 /// A miss: gift `msg` whole for the receiver's mailbox. The caller holds the
 /// receiver's delivery lock and does not wake the receiver.
-pub fn gift_message(sender: &mut Process, delivery: &mut Delivery, receiver: PidId, msg: AnyValueRef) -> SendProbe {
+pub fn gift_message(sender: &mut Process, delivery: &mut Delivery, receiver: PidId, msg: Stored) -> SendProbe {
     let (segment, copied) = gift_copy_one(&mut sender.heap, msg);
     queue_gift(
         delivery,
@@ -232,7 +232,7 @@ pub fn gift_match(
     delivery: &mut Delivery,
     receiver: PidId,
     clause_idx: usize,
-    roots: &[AnyValueRef],
+    roots: &[Stored],
     reductions: i64,
 ) -> SendProbe {
     let (segment, roots) = gift_copy(&mut sender.heap, roots);
@@ -312,7 +312,7 @@ pub fn deliver_in_queue(task: &mut Process) {
 /// self-send would be invisible to a receive in the same dispatch. The
 /// in-queue is empty while the process runs, so the push also keeps the
 /// message after every message other senders queued earlier.
-pub fn self_send(task: &mut Process, msg: AnyValueRef) {
+pub fn self_send(task: &mut Process, msg: Stored) {
     assert!(
         task.delivery.lock().park().is_none(),
         "a running process has no parked receive"

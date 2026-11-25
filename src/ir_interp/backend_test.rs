@@ -323,7 +323,7 @@ fn scheduler_adapter_copies_spawn_inputs_and_dead_send_is_observation_free() {
 
     runtime.set_process_state(receiver_pid, ProcessState::Exited);
     let message = interp_list_cons(sender, AnyValue::Int(2), AnyValue::EmptyList, "send message").unwrap();
-    let message_ref = message.as_any_value_ref(sender).unwrap();
+    let message_ref = Stored::of(message.value(sender).unwrap());
     let receiver = runtime.process_ref(receiver_pid).unwrap();
     let before_heap = receiver.node.alloc_stats();
     let before_mailbox: Vec<_> = receiver.mailbox.messages().collect();
@@ -422,7 +422,7 @@ fn parked_receive_copies_only_winning_subjects_into_receiver_heap() {
             &program,
             &module,
             &receiver_pid,
-            message.as_any_value_ref(sender).unwrap(),
+            Stored::of(message.value(sender).unwrap()),
         )
         .unwrap();
     runtime

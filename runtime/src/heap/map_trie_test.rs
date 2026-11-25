@@ -4,8 +4,8 @@
 
 use super::*;
 use crate::any_value::{
-    AnyValueRef, EMPTY_LIST, ValueKind, heap_word_addr, map_addr_from_tagged, map_count, map_entry, map_header_is_trie,
-    map_node_child_count, map_object_size, map_slot_raw_kinds, map_tag_bytes_len,
+    AnyValueRef, EMPTY_LIST, Stored, ValueKind, heap_word_addr, map_addr_from_tagged, map_count, map_entry,
+    map_header_is_trie, map_node_child_count, map_object_size, map_slot_raw_kinds, map_tag_bytes_len,
 };
 use crate::heap::{Generation, MapLayout, SchemaRegistry, measure_deep_copy};
 use crate::sched::gift_copy;
@@ -315,12 +315,13 @@ fn deep_copy_and_a_gift_copy_each_node_once_and_measure_what_they_write() {
     let entries = shuffled_entries(2000);
     let map = map_ref(heap.alloc_map_slots(&entries));
     let nodes_bytes = trie_bytes(root_addr(map));
-    let measured = measure_deep_copy(&[map], &heap.view());
+    let measured = measure_deep_copy(&[Stored::of_ref(map)], &heap.view());
     assert_eq!(measured, nodes_bytes, "the copy is one object per node");
-    let (segment, copied) = gift_copy(&mut heap, &[map]);
+    let (segment, copied) = gift_copy(&mut heap, &[Stored::of_ref(map)]);
     assert_eq!(segment.fill_bytes(), measured);
-    assert_holds_model(&mut heap, copied[0], &model_of(&entries));
-    assert_ne!(root_addr(copied[0]), root_addr(map));
+    let copied = copied[0].heap_ref();
+    assert_holds_model(&mut heap, copied, &model_of(&entries));
+    assert_ne!(root_addr(copied), root_addr(map));
 }
 
 #[test]
@@ -331,7 +332,7 @@ fn a_shared_subtrie_is_copied_per_parent_slot() {
     let shared = root_addr(inner) as *mut u8;
     let outer = heap.alloc_map_node(header, &[], &[shared, shared]);
     let outer = map_ref(heap_object_word(outer, ValueKind::MAP));
-    let measured = measure_deep_copy(&[outer], &heap.view());
+    let measured = measure_deep_copy(&[Stored::of_ref(outer)], &heap.view());
     assert_eq!(measured, map_node_size(0, 2) + 2 * trie_bytes(root_addr(inner)));
 }
 

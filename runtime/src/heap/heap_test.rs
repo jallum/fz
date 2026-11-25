@@ -2,7 +2,7 @@ use super::imp::{BUDGET_FLOOR, MAJOR_GROWTH_FACTOR};
 use super::*;
 use crate::any_value::{
     AnyValue, AnyValueRef, AnyValueRefError, AnyValueRefPacking, EMPTY_LIST, EMPTY_LIST_BITS, ListCons, ListLink,
-    ListTail, STRUCT_HEADER_NAMED_MASK, STRUCT_PAYLOAD_OFFSET, SlotLayout, ValueKind, binview_addr_from_tagged,
+    ListTail, STRUCT_HEADER_NAMED_MASK, STRUCT_PAYLOAD_OFFSET, SlotLayout, Stored, ValueKind, binview_addr_from_tagged,
     bitstring_bytes_ptr, bitstring_size_for_bit_len, closure_addr_from_tagged, closure_capture_set,
     closure_capture_value, closure_captured_count, closure_fn_ptr, closure_halt_kind, heap_kind_from_tagged,
     heap_object_word, heap_word_addr, list_addr_from_tagged, map_addr_from_tagged, map_count, map_entry,
@@ -3145,9 +3145,9 @@ fn many_grafted_gifts_collect_with_every_survivor_forwarded_and_every_literal_le
     for _ in 0..GIFTS {
         let holder = sender.alloc_closure_slots(crate::any_value::ClosureDenotationId::user(73), 1, 1, 0);
         unsafe { closure_capture_set(closure_addr_from_tagged(holder).expect("holder"), 0, closure.value()) };
-        let (segment, copied) = crate::sched::gift_copy(&mut sender, &[heap_ref(holder)]);
+        let (segment, copied) = crate::sched::gift_copy(&mut sender, &[Stored::of_ref(heap_ref(holder))]);
         receiver.graft(segment);
-        roots.push(copied[0]);
+        roots.push(copied[0].heap_ref());
     }
     let gifted: Vec<*mut u8> = roots
         .iter()

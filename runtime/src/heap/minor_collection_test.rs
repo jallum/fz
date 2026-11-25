@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::any_value::{
-    AnyValue, AnyValueRef, EMPTY_LIST, ListCons, ListLink, ListTail, ValueKind, heap_kind_from_tagged,
+    AnyValue, AnyValueRef, EMPTY_LIST, ListCons, ListLink, ListTail, Stored, ValueKind, heap_kind_from_tagged,
     heap_object_word, list_addr_from_tagged,
 };
 use crate::bits::{BinView, SharedBinHandle, alloc_buffer_view};
@@ -76,8 +76,8 @@ fn list_of(heap: &mut Heap, first: i64, len: i64, tail_bits: u64) -> u64 {
 /// through a gift window into a segment, with the bits of the copy's head.
 fn gift_of_list(sender: &mut Heap, first: i64, len: i64) -> (GiftSegment, u64) {
     let source = list_of(sender, first, len, EMPTY_LIST);
-    let (segment, copied) = crate::sched::gift_copy(sender, &[root_of(source)]);
-    (segment, copied[0].heap_object_word().expect("copied list"))
+    let (segment, copied) = crate::sched::gift_copy(sender, &[Stored::of_ref(root_of(source))]);
+    (segment, copied[0].heap_ref().heap_object_word().expect("copied list"))
 }
 
 fn tail_addr(bits: u64) -> u64 {

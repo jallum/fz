@@ -13,13 +13,11 @@ use std::rc::Rc;
 use std::slice::from_raw_parts;
 
 use super::Heap;
-use super::block_pool::round_up_16;
 #[cfg(debug_assertions)]
 use super::ref_io::ptr_in_ranges;
 use super::ref_io::strict_object_size;
 use super::schema::{FieldKind, SchemaRegistry};
 use super::stats::StubSite;
-use crate::any_value::AnyValueRef;
 use crate::any_value::{
     AnyValue, ListCons, ListLink, ListTail, ValueKind, bitstring_bit_len, bitstring_bytes_ptr,
     closure_addr_from_tagged, closure_arity, closure_capture_set, closure_capture_value, closure_captured_count,
@@ -27,6 +25,7 @@ use crate::any_value::{
     map_node_child_count, map_node_entry_count, map_slot, share_struct, struct_field_kind_slot, struct_field_raw_slot,
     struct_schema_id,
 };
+use crate::any_value::{AnyValueRef, Stored};
 use crate::bits::{BINREF_BYTES, BinView, SharedBinHandle, alloc_binref, alloc_view, shared_bin_freeze};
 use crate::resource::{ResourceHandle, ResourceStub, alloc_resource};
 
@@ -97,19 +96,19 @@ impl Heap {
     }
 }
 
-/// The bytes `deep_copy_any_value_ref` allocates when it copies `values`,
-/// without allocating or writing anything.
+/// The bytes `deep_copy_any_value` allocates when it copies `values`, without
+/// allocating or writing anything.
 ///
 /// It walks what the copy walks: the same kinds, the same ownership test
 /// against the source view, and, like the copy, it keeps no record of what it
 /// has reached: a subterm reached twice is counted twice, as the copy makes it
 /// twice. A copied object has the size of its source, which
-/// `strict_object_size` states for the collector too; each scalar the copy
-/// boxes takes one slot.
-pub fn measure_deep_copy(values: &[AnyValueRef], src_heap: &HeapView) -> usize {
+/// `strict_object_size` states for the collector too. A number, an atom, a pid
+/// or the empty list is its own copy and measures nothing.
+pub fn measure_deep_copy(values: &[Stored], src_heap: &HeapView) -> usize {
     let mut measure = CopyMeasure { src_heap, bytes: 0 };
     for value in values {
-        measure.value_ref(*value);
+        measure.slot(value.value("measure_deep_copy"));
     }
     measure.bytes
 }
@@ -120,21 +119,6 @@ struct CopyMeasure<'a> {
 }
 
 impl CopyMeasure<'_> {
-    fn value_ref(&mut self, value: AnyValueRef) {
-        if value.is_empty_list() {
-            return;
-        }
-        match value.tag() {
-            ValueKind::NULL => {}
-            tag if tag.is_immediate() => {}
-            tag if tag.is_boxed_scalar() => self.bytes += round_up_16(size_of::<u64>()),
-            tag if tag.is_heap() => {
-                self.value(AnyValue::from_ref(value).expect("heap ref value"));
-            }
-            _ => unreachable!("AnyValueRef tag set is exhaustive"),
-        }
-    }
-
     /// Count `child` when it is a heap value; an inline slot costs nothing.
     fn slot(&mut self, child: AnyValue) {
         if child.kind().is_heap() {
@@ -265,6 +249,12 @@ fn deep_copy_map_node(sp: *mut u8, src_heap: &HeapView, dst_heap: &mut Heap) -> 
         .collect();
     let header = unsafe { std::ptr::read(node as *const u64) };
     heap_object_word(dst_heap.alloc_map_node(header, &entries, &children), ValueKind::MAP)
+}
+
+/// The copy of `value` in `dst_heap`, as the pair a container stores. What
+/// `measure_deep_copy` counts is what this allocates.
+pub fn deep_copy_stored(value: Stored, src_heap: &HeapView, dst_heap: &mut Heap) -> Stored {
+    Stored::of(deep_copy_any_value(value.value("deep_copy_stored"), src_heap, dst_heap))
 }
 
 pub fn deep_copy_any_value(src: AnyValue, src_heap: &HeapView, dst_heap: &mut Heap) -> AnyValue {

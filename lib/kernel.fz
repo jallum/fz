@@ -782,10 +782,13 @@ defmodule Kernel do
 
   """
   @spec send(pid, t) :: t when t: any
-  def send(pid, msg) when is_pid(pid), do: fz_send(pid, msg)
+  def send(pid, msg) when is_pid(pid) do
+    fz_send(pid, msg)
+    msg
+  end
   def send(_pid, _msg), do: raise(%ArgumentError{message: "errors were found at the given arguments:\n\n  * 1st argument: invalid destination\n"})
 
-  extern "fz" defp fz_send(pid, t) :: t when t: any
+  extern "fz" defp fz_send(pid, stored_value) :: unit
 
   @doc """
   Returns a fresh, opaque reference; no two calls in a process return the

@@ -18851,8 +18851,11 @@ fn compiler2_kernel_spawn_and_send_are_typed_private_fz_externs() {
         (
             send_extern,
             "fz_send",
-            vec![ExternTy::Opaque(fz_runtime::any_value::ValueKind::PID), ExternTy::Any],
-            ExternTy::Any,
+            vec![
+                ExternTy::Opaque(fz_runtime::any_value::ValueKind::PID),
+                ExternTy::StoredValue,
+            ],
+            ExternTy::Unit,
         ),
     ] {
         let BackendBody::Extern { signature } = &backend_executable(&backend_program, function).1.body else {
@@ -18883,8 +18886,11 @@ fn compiler2_kernel_spawn_and_send_are_typed_private_fz_externs() {
         ),
         (
             "fz_send",
-            vec![ExternTy::Opaque(fz_runtime::any_value::ValueKind::PID), ExternTy::Any],
-            ExternTy::Any,
+            vec![
+                ExternTy::Opaque(fz_runtime::any_value::ValueKind::PID),
+                ExternTy::StoredValue,
+            ],
+            ExternTy::Unit,
         ),
     ] {
         let decl = native_program
@@ -21666,11 +21672,10 @@ const TUPLE_LADDER_MAIN_ANALYSES: u64 = 5;
 const TUPLE_LADDER_MAIN_RETURN_REVISIONS: u64 = 1;
 
 #[test]
-fn compiler2_extern_send_return_is_its_contract_applied_to_the_row() {
-    // send(self(), 1) calls fz_send(pid, 1), an extern declared `(pid |
-    // integer, t) :: t`. Here the leaked variable sits at the SECOND
-    // parameter's positional address (a1, not a0), which is the proof that
-    // what goes missing is contract application, not the source name `t`.
+fn compiler2_kernel_send_returns_its_message_typed_by_the_caller() {
+    // send(self(), 1) calls fz_send(pid, 1), an extern declared
+    // `(pid, stored_value) :: unit`, and answers the message itself, so the
+    // call is typed by the argument and the extern's own answer is not it.
     let tel = ConfiguredTelemetry::new();
     let functions = FunctionCapture::new();
     functions.install(&tel);
@@ -21683,25 +21688,19 @@ fn compiler2_extern_send_return_is_its_contract_applied_to_the_row() {
 
     let int = compiler.world_mut().types_mut().int();
     let pid = compiler.world_mut().types_mut().pid();
-    let fz_send_id = function_id_in_module(&functions, &modules, "Kernel", "fz_send", 2);
     let send_id = function_id_in_module(&functions, &modules, "Kernel", "send", 2);
     let main_id = function_id(&functions, "main", 0);
-    let fz_send_key = ActivationKey::from_inputs(root, fz_send_id, &[pid, int], compiler.world_mut().types_mut());
     let send_key = ActivationKey::from_inputs(root, send_id, &[pid, int], compiler.world_mut().types_mut());
     let main_key = ActivationKey::from_inputs(root, main_id, &[], compiler.world_mut().types_mut());
 
-    for (label, key) in [
-        ("Kernel.fz_send/2", &fz_send_key),
-        ("Kernel.send/2", &send_key),
-        ("main/0", &main_key),
-    ] {
+    for (label, key) in [("Kernel.send/2", &send_key), ("main/0", &main_key)] {
         let observed = compiler
             .world()
             .activation_return(key)
             .unwrap_or_else(|| panic!("{label} should have settled return evidence"));
         assert!(
             compiler.world().types().is_equivalent(&observed, &int),
-            "{label} should return int, not its extern's declared free variable; got {}",
+            "{label} should return the int it was sent; got {}",
             compiler.world().types().display(&observed),
         );
     }

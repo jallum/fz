@@ -293,6 +293,16 @@ fn box_scalar_for_any(process: *mut Process, raw: u64, tag: ValueKind) -> u64 {
         .raw_word()
 }
 
+/// The ref that names the value stored as `word` and `kind`: a heap value's
+/// own ref, and for a number the box it needs. A matcher calls it only where a
+/// runtime helper asks for a ref, so a message that is only tested and bound
+/// is never boxed.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_stored_ref(process: *mut Process, word: u64, kind: u64) -> u64 {
+    let value = Stored { word, kind }.value("fz_stored_ref");
+    (unsafe { &mut *process }).heap.box_any_value_ref(value).raw_word()
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_box_opaque_for_any(process: *mut Process, raw: u64, kind: u64) -> u64 {
     box_scalar_for_any(process, raw, ValueKind::new(kind as u8).expect("opaque word kind"))
@@ -515,18 +525,22 @@ pub extern "C" fn fz_unique_integer() -> i64 {
     FZ_NEXT_REF.fetch_add(1, Ordering::Relaxed) as i64
 }
 
-/// fz_send(receiver_pid, msg_ref) -> msg_ref.
+/// fz_send(receiver_pid, msg_word, msg_kind).
 ///
-/// `send` is an `any` boundary: callers box known scalars before calling, then
-/// the scheduler/mailbox moves the one-word any value ref until a matcher or
-/// receiver unwraps it.
+/// The message crosses as the word and kind a container stores for it, so a
+/// number is never boxed to be sent: the scheduler copies it into a gift and
+/// the pair travels until a matcher binds it. `Kernel.send/2` returns the
+/// message itself.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_send(process: *mut Process, receiver_pid_bits: u64, msg_ref_word: u64) -> u64 {
+pub extern "C" fn fz_send(process: *mut Process, receiver_pid_bits: u64, msg_word: u64, msg_kind: u64) {
     let receiver_pid = receiver_pid_bits as u32;
-    let _ = any_value_ref_from_word(msg_ref_word, "fz_send message");
+    let msg = Stored {
+        word: msg_word,
+        kind: msg_kind,
+    };
+    msg.value("fz_send message");
     let ctx = unsafe { process_ctx(process) };
-    (ctx.send.expect("send callback installed"))(process, ctx.scheduler, receiver_pid, msg_ref_word);
-    msg_ref_word
+    (ctx.send.expect("send callback installed"))(process, ctx.scheduler, receiver_pid, msg_word, msg_kind);
 }
 
 /// Make room for a `try`'s handler record when the handler stack is full:

@@ -1,0 +1,89 @@
+#---
+# purpose: a number sent to a process, whether it is parked in a receive, queued, or the sender itself, reaches its receive as its word and kind, with no box made for it, on every path
+#---
+#
+# `n + 1` and `x * 2.0` are numbers the program holds in registers. `send`
+# hands each to the runtime as a word and a kind, the gift copy of a number
+# holds no block, and the matcher binds it as it arrived, so none is boxed.
+# The allocation count is the program's, so a line measures one whole round
+# trip, with the sender idle in its reply while the receiver runs: the scalar
+# boxes made from before the send to the receiver's answer.
+defmodule Main do
+  def boxes(), do: System.alloc_stats()[:scalar_box_allocs]
+
+  def to_self(n) do
+    before = boxes()
+    send(self(), n + 1)
+
+    received =
+      receive do
+        m -> is_integer(m)
+      end
+
+    {received, boxes() - before}
+  end
+
+  def to_self_float(x) do
+    before = boxes()
+    send(self(), x * 2.0)
+
+    received =
+      receive do
+        m -> is_float(m)
+      end
+
+    {received, boxes() - before}
+  end
+
+  def parked_child(parent) do
+    send(parent, :ready)
+
+    receive do
+      m -> send(parent, {:received, is_integer(m)})
+    end
+  end
+
+  def queued_child(parent) do
+    receive do
+      :go -> :ok
+    end
+
+    receive do
+      m -> send(parent, {:received, is_integer(m)})
+    end
+  end
+
+  def reply() do
+    receive do
+      {:received, kind} -> kind
+    end
+  end
+
+  def main() do
+    n = length([:a, :b])
+    x = hd([1.25])
+    dbg(to_self(n))
+    dbg(to_self_float(x))
+
+    parent = self()
+    parked = spawn(fn -> parked_child(parent) end)
+
+    receive do
+      :ready -> :ok
+    end
+
+    before = boxes()
+    send(parked, n + 1)
+    kind = reply()
+    dbg({:sent_to_parked, kind, boxes() - before})
+
+    queued = spawn(fn -> queued_child(parent) end)
+    before = boxes()
+    send(queued, n + 1)
+    send(queued, :go)
+    kind = reply()
+    dbg({:sent_to_queued, kind, boxes() - before})
+  end
+end
+
+Main.main()
