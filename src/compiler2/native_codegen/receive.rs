@@ -47,7 +47,9 @@ use crate::dispatch_matrix::{
 use crate::fz_ir::{ExternReturn, ExternTy, Module, ReceiveClause, Var};
 
 use super::clif::{kind_field, kind_is_one_of};
-use super::runtime_test::{KindEvidence, RuntimeTestEmitter, emit_runtime_type_branch, settled_by_lane};
+use super::runtime_test::{
+    ConstructionTest, KindEvidence, RuntimeTestEmitter, emit_runtime_type_branch, settled_by_lane,
+};
 use crate::fast_hash::HashMap;
 use crate::runtime_type_predicate::{CallableShapes, RuntimeTypePredicate};
 use cranelift_codegen::ir::{
@@ -943,7 +945,11 @@ impl<'f, M: cranelift_module::Module> RuntimeTestEmitter<'f> for ReceiveTestEmit
         ))
     }
 
-    fn callable_addresses(&mut self, _callables: &CallableShapes) -> Result<Vec<ir::Value>, CodegenError> {
+    fn closure_capture(&mut self, _value: ReceiveValue, _index: usize) -> Result<ReceiveValue, CodegenError> {
+        Err(CodegenError::new(RECEIVE_NAMES_NO_CALLABLE))
+    }
+
+    fn callable_constructions(&mut self, _callables: &CallableShapes) -> Result<Vec<ConstructionTest>, CodegenError> {
         // A receive plan's questions come from message PATTERNS and from
         // parameter annotations, and neither language can name one callable:
         // the finest a source can say is "a function of this many arguments".

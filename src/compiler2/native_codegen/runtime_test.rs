@@ -58,7 +58,7 @@ use fz_runtime::process::AtomName;
 
 use crate::finite_set::FiniteSet;
 use crate::runtime_type_predicate::{
-    CallableShapes, ListShape, ListShapes, RuntimeTestAxis, RuntimeTypePredicate, TuplePositions,
+    CallableShapes, CaptureQuestions, ListShape, ListShapes, RuntimeTestAxis, RuntimeTypePredicate, TuplePositions,
 };
 
 use super::CodegenError;
@@ -130,10 +130,24 @@ pub(super) trait RuntimeTestEmitter<'f> {
     /// How many arguments a closure value takes, as an `I64`. Only asked
     /// under a CLOSURE guard.
     fn closure_arity(&mut self, value: Self::Value) -> Result<ir::Value, CodegenError>;
-    /// The code addresses of every construction the test ENUMERATES -- the
-    /// listed side; the emitter applies the cofinite complement itself. An
-    /// error where this door cannot name a callable at all.
-    fn callable_addresses(&mut self, callables: &CallableShapes) -> Result<Vec<ir::Value>, CodegenError>;
+    /// The code address of every construction the test lists, with how it
+    /// lists it -- the listed side; the emitter applies the cofinite
+    /// complement itself. An error where this door cannot name a callable at
+    /// all.
+    fn callable_constructions(&mut self, callables: &CallableShapes) -> Result<Vec<ConstructionTest>, CodegenError>;
+    /// Capture `index` of a closure value, as the value it holds whatever
+    /// layout the construction stored it in. Only asked under a guard that has
+    /// established the closure's construction, so the read is in bounds.
+    fn closure_capture(&mut self, value: Self::Value, index: usize) -> Result<Self::Value, CodegenError>;
+}
+
+/// One construction a callable test lists, by its code address.
+pub(super) struct ConstructionTest {
+    pub(super) address: ir::Value,
+    /// `None`: every closure of the construction is listed. `Some`: a closure
+    /// is listed when its held values answer every question of some
+    /// alternative.
+    pub(super) by_captures: Option<Vec<CaptureQuestions>>,
 }
 
 /// `predicate` asked of `value` as an `I8` flag, for a caller that wants the
@@ -525,10 +539,12 @@ fn emit_list_axis<'f, E: RuntimeTestEmitter<'f>>(
 /// A closure object's word at `+8` is the address of the callable boundary that
 /// minted it, and a thin `MakeFnRef` static closure carries the same address, so one
 /// comparison covers both shapes. A boundary is one function at one capture
-/// layout, so WHICH boundaries a test enumerates is decided here at codegen
-/// from each boundary's own construction shape, and the value pays one address
-/// compare per enumerated boundary -- its captures are never loaded
-/// (fz-kdt.127).
+/// layout, so WHICH boundaries a test lists is decided here at codegen from
+/// each boundary's own construction shape, and the value pays one address
+/// compare per listed boundary. A boundary whose annotation the test only
+/// overlaps is listed by its captures: once the address matches, each captured
+/// value is read -- its own kind byte makes the read independent of the layout
+/// the construction stored -- and asked the test's question.
 fn emit_callable_axis<'f, E: RuntimeTestEmitter<'f>>(
     e: &mut E,
     value: E::Value,
@@ -541,27 +557,50 @@ fn emit_callable_axis<'f, E: RuntimeTestEmitter<'f>>(
         e.builder().ins().brif(flag, admit, &[], miss, &[]);
         return Ok(());
     }
-    let addresses = if callables.targets().is_any() {
+    let constructions = if callables.targets().is_any() {
         None
     } else {
-        Some(e.callable_addresses(callables)?)
+        Some(e.callable_constructions(callables)?)
     };
     let cofinite = callables.targets().cofinite;
     kind_guarded(e, value, ValueKind::CLOSURE, admit, miss, move |e, value| {
         let of_arity = emit_closure_arity_flag(e, value, callables.arities())?;
-        let Some(addresses) = addresses else {
+        let Some(constructions) = constructions else {
             return Ok(of_arity);
         };
         let code = e.closure_code(value)?;
-        let b = e.builder();
-        let mut hit = b.ins().iconst(types::I8, 0);
-        for address in addresses {
-            let eq = b.ins().icmp(IntCC::Equal, code, address);
-            hit = b.ins().bor(hit, eq);
+        let mut hit = e.builder().ins().iconst(types::I8, 0);
+        for construction in constructions {
+            let eq = e.builder().ins().icmp(IntCC::Equal, code, construction.address);
+            let listed = match construction.by_captures {
+                None => eq,
+                Some(alternatives) => guarded(e, eq, move |e| emit_capture_alternatives(e, value, &alternatives))?,
+            };
+            hit = e.builder().ins().bor(hit, listed);
         }
+        let b = e.builder();
         let named = if cofinite { b.ins().bxor_imm_u(hit, 1) } else { hit };
         Ok(b.ins().band(of_arity, named))
     })
+}
+
+/// Whether some alternative has every capture it names answer its question.
+fn emit_capture_alternatives<'f, E: RuntimeTestEmitter<'f>>(
+    e: &mut E,
+    closure: E::Value,
+    alternatives: &[CaptureQuestions],
+) -> Result<ir::Value, CodegenError> {
+    let mut any = e.builder().ins().iconst(types::I8, 0);
+    for questions in alternatives {
+        let mut all = e.builder().ins().iconst(types::I8, 1);
+        for (index, question) in questions {
+            let capture = e.closure_capture(closure, *index)?;
+            let flag = emit_runtime_type_flag(e, capture, question)?;
+            all = e.builder().ins().band(all, flag);
+        }
+        any = e.builder().ins().bor(any, all);
+    }
+    Ok(any)
 }
 
 /// "Does this closure take one of THESE numbers of arguments?" The closure's

@@ -257,6 +257,7 @@ mod value_membership_tests {
             module: &heap.module,
             tuple_schema_ids: &tuple_schema_ids,
             named_schema_ids: &named_schema_ids,
+            captures: &|_, _| None,
             callables: &callables,
             fields: &fields,
             list_head: &list_head,
@@ -466,6 +467,7 @@ mod value_membership_tests {
             module: &heap.module,
             tuple_schema_ids: &tuple_schema_ids,
             named_schema_ids: &named_schema_ids,
+            captures: &|_, _| None,
             callables: &callables,
             fields: &fields,
             list_head: &list_head,
@@ -531,6 +533,7 @@ mod value_membership_tests {
             module: &heap.module,
             tuple_schema_ids: &tuple_schema_ids,
             named_schema_ids: &named_schema_ids,
+            captures: &|_, _| None,
             callables: &callables,
             fields: &fields,
             list_head: &list_head,
@@ -605,6 +608,7 @@ mod value_membership_tests {
             module: &heap.module,
             tuple_schema_ids: &tuple_schema_ids,
             named_schema_ids: &named_schema_ids,
+            captures: &|_, _| None,
             callables: &callables,
             fields: &fields,
             list_head: &list_head,
@@ -690,6 +694,7 @@ mod value_membership_tests {
             module: &heap.module,
             tuple_schema_ids: &tuple_schema_ids,
             named_schema_ids: &named_schema_ids,
+            captures: &|_, _| None,
             callables: &callables,
             fields: &fields,
             list_head: &list_head,
@@ -819,6 +824,7 @@ mod value_membership_tests {
             module: &heap.module,
             tuple_schema_ids: &tuple_schema_ids,
             named_schema_ids: &named_schema_ids,
+            captures: &|_, _| None,
             callables: &callables,
             fields: &fields,
             list_head: &list_head,
@@ -1042,17 +1048,16 @@ mod tests {
         );
     }
 
-    /// ADMISSION IS CONTAINMENT, NEVER OVERLAP (fz-kdt.167).
+    /// A CONSTRUCTION'S ANNOTATION SETTLES ADMISSION ONLY BY CONTAINMENT.
     ///
     /// A construction's capture types are the annotation its mint stamped, and
     /// the LAYOUT the capture was stored in is the construction's, not the
-    /// value's. So a wrapper closed over `int | float` stores a boxed word,
-    /// and a body compiled for an `int` capture reads a raw int out of that
-    /// slot -- which is why the union construction must be refused by the
-    /// narrow test even though the two overlap. Only a test naming a capture
-    /// question the construction's own is INSIDE may admit it.
+    /// value's. So a wrapper closed over `int | float` is listed by a test of
+    /// `int` captures only for the closures whose held value answers `int`,
+    /// and never outright; a test naming a capture question the annotation is
+    /// INSIDE lists it with no read at all.
     #[test]
-    fn a_union_capture_construction_is_admitted_only_by_a_test_that_contains_it() {
+    fn a_union_capture_construction_is_listed_outright_only_by_a_test_that_contains_it() {
         let mut int_or_float = ints();
         int_or_float.floats = FiniteSet::any();
         let minted = construction(66, vec![int_or_float.clone()]);
@@ -1062,24 +1067,66 @@ mod tests {
             narrow.targets().values.contains(&ClosureTarget(66)),
             "the two do name one function, so nothing but the captures can separate them",
         );
+        assert_eq!(
+            narrow.listing(&minted),
+            Listing::ByCaptures(vec![vec![(0, ints())]]),
+            "the code word names the construction and the held value answers `int`",
+        );
         assert!(
-            !narrow.admits(&minted),
-            "a construction over `int | float` stored a boxed capture; a body whose capture \
-             lane is a raw int must not receive it",
+            narrow.admits(&minted, |_, _| true),
+            "a closure holding an int is admitted"
+        );
+        assert!(
+            !narrow.admits(&minted, |_, _| false),
+            "a closure holding a float is not handed to a body whose capture lane is an int",
         );
 
+        let never_asks = |_: usize, _: &RuntimeTypePredicate| -> bool { panic!("the annotation settles it") };
         let equal = CallableShapes::exact(vec![construction(66, vec![int_or_float.clone()])]);
-        assert!(equal.admits(&minted), "the construction's own shape admits it");
+        assert_eq!(
+            equal.listing(&minted),
+            Listing::Listed,
+            "the construction's own shape lists it"
+        );
+        assert!(equal.admits(&minted, never_asks));
 
         let mut wider = int_or_float;
         wider.atoms = FiniteSet::any();
         let wide = CallableShapes::exact(vec![construction(66, vec![wider])]);
-        assert!(wide.admits(&minted), "and so does any shape that contains it");
+        assert_eq!(
+            wide.listing(&minted),
+            Listing::Listed,
+            "and so does any shape that contains it"
+        );
+        assert!(wide.admits(&minted, never_asks));
 
         let other_function = CallableShapes::exact(vec![construction(68, vec![ints()])]);
-        assert!(
-            !other_function.admits(&minted),
+        assert_eq!(
+            other_function.listing(&minted),
+            Listing::Unlisted,
             "a different function is a different word"
+        );
+        assert!(!other_function.admits(&minted, never_asks));
+    }
+
+    /// A test whose shapes the construction overlaps asks each held value its
+    /// own question, and only the positions the annotation leaves open.
+    #[test]
+    fn a_capture_the_annotation_settles_is_not_asked_of_the_held_value() {
+        let mut int_or_float = ints();
+        int_or_float.floats = FiniteSet::any();
+        let minted = construction(66, vec![ints(), int_or_float]);
+        let test = CallableShapes::exact(vec![construction(66, vec![ints(), ints()])]);
+
+        let mut asked = Vec::new();
+        assert!(test.admits(&minted, |index, _| {
+            asked.push(index);
+            true
+        }));
+        assert_eq!(
+            asked,
+            vec![1],
+            "position 0 lies inside `int`, so only position 1 is read"
         );
     }
 

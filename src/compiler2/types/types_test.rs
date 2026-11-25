@@ -8,7 +8,7 @@ use crate::compiler2::allocation_probe::allocations_during;
 use crate::compiler2::drive_harness::module_name;
 use crate::dispatch_matrix::demand::DispatchDemand;
 use crate::finite_set::FiniteSet;
-use crate::runtime_type_predicate::{CallableShape, ListShape, ListShapes, RuntimeTypePredicate};
+use crate::runtime_type_predicate::{CallableShape, ListShape, ListShapes, Listing, RuntimeTypePredicate};
 
 #[test]
 fn ty_is_an_integer_handle() {
@@ -1528,8 +1528,9 @@ fn the_forwarder_erasure_anonymises_only_the_slots_no_test_reads() {
         target: ClosureTarget(3),
         captures: vec![t.runtime_type_predicate(&int)],
     };
-    assert!(
-        t.runtime_type_predicate(&params[1]).callables.admits(&capturing),
+    assert_eq!(
+        t.runtime_type_predicate(&params[1]).callables.listing(&capturing),
+        Listing::Listed,
         "and the dispatch slot still names its construction",
     );
 }

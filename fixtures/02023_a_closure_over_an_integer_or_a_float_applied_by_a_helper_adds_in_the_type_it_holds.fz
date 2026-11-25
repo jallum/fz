@@ -1,0 +1,28 @@
+#---
+# purpose: A closure over an integer or a float, applied by a helper planned once for each, is entered by the arm whose capture lane matches the value the closure holds on all three paths
+# root: main/0
+# assert.metric.semantic.activations: 9
+# assert.metric.semantic.executables: 9
+# assert.metric.semantic.callsites: 11
+# assert.metric.call_edges.count: 11
+# oracle: self
+# oracle.stamp: 8d23832614e4e686
+#---
+#
+# `ap/2` is specialised for each member of the capture's union: one body reads
+# the capture as a raw float, the other as an integer. The closure was built
+# over `int | float`, so its capture slot is a tagged word, and reading it as a
+# raw float is correct only for a closure that holds a float. The arm's test
+# reads the held value's kind first, so neither arm runs on the wrong one.
+defmodule Main do
+  def ap(f, x), do: f.(x)
+
+  def run(flag) do
+    default = if flag, do: 1, else: 2.5
+    ap(fn k -> default + k end, 10)
+  end
+
+  def main(), do: IO.inspect({run(true), run(false)})
+end
+
+Main.main()

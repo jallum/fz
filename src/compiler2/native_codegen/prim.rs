@@ -8,7 +8,9 @@ use super::construction::{
 };
 use super::recipe::{Emitted, emit_box, emit_cell, emit_in_body, emit_inline, emit_slice};
 use super::repr::ExternLane;
-use super::runtime_test::{KindEvidence, RuntimeTestEmitter, emit_runtime_type_branch, emit_runtime_type_flag};
+use super::runtime_test::{
+    ConstructionTest, KindEvidence, RuntimeTestEmitter, emit_runtime_type_branch, emit_runtime_type_flag,
+};
 use super::*;
 use crate::ast::BitType;
 use crate::fast_hash::HashMap;
@@ -16,7 +18,7 @@ use crate::fz_ir::{
     BinOp, BitFieldIr, BitMatchField, BitSizeIr, BlockId, Const, DestMapSeed, ExternArg, ExternDecl, ExternId,
     ExternMarshalSite, ExternTy, FnId, FrameLane, Prim, UnOp, Var,
 };
-use crate::runtime_type_predicate::{CallableShapes, RuntimeTypePredicate};
+use crate::runtime_type_predicate::{CallableShapes, Listing, RuntimeTypePredicate};
 use cranelift_codegen::ir::{
     self, BlockArg, InstBuilder, MemFlagsData, StackSlotData, StackSlotKind, TrapCode,
     condcodes::{FloatCC, IntCC},
@@ -1689,20 +1691,36 @@ impl<'fb, M: cranelift_module::Module> RuntimeTestEmitter<'fb> for PrimTestEmitt
         Ok(runtime_call1!(self.body, fz_function_arity, [process, closure_ref]))
     }
 
-    fn callable_addresses(&mut self, callables: &CallableShapes) -> Result<Vec<ir::Value>, CodegenError> {
-        let mut func_ids = Vec::new();
-        for boundary in self.env.surface.callable_boundaries_enumerated_by(callables) {
+    fn closure_capture(&mut self, value: CodegenValue, index: usize) -> Result<CodegenValue, CodegenError> {
+        let closure_ref = self.body.value_as_any_ref(value);
+        Ok(CodegenValue::AnyRef(self.body.closure_capture_ref_at(
+            closure_ref,
+            index,
+            CaptureCount::InHeader,
+        )))
+    }
+
+    fn callable_constructions(&mut self, callables: &CallableShapes) -> Result<Vec<ConstructionTest>, CodegenError> {
+        let mut listed = Vec::new();
+        for (boundary, listing) in self.env.surface.callable_boundaries_listed_by(callables) {
             let boundary_id = boundary.boundary_id.as_u32();
             let func_id = self.env.callable_boundary_fn_ids.get(&boundary_id).ok_or_else(|| {
                 CodegenError::new(format!(
                     "callable identity test names callable boundary {boundary_id}, which was never published",
                 ))
             })?;
-            func_ids.push(*func_id);
+            let by_captures = match listing {
+                Listing::ByCaptures(alternatives) => Some(alternatives),
+                Listing::Listed | Listing::Unlisted => None,
+            };
+            listed.push((*func_id, by_captures));
         }
-        Ok(func_ids
+        Ok(listed
             .into_iter()
-            .map(|func_id| fn_addr(self.body.jmod, func_id, self.body.b))
+            .map(|(func_id, by_captures)| ConstructionTest {
+                address: fn_addr(self.body.jmod, func_id, self.body.b),
+                by_captures,
+            })
             .collect())
     }
 }

@@ -1,10 +1,10 @@
 #---
-# purpose: "a construction whose capture type is a union is admitted only by a test that CONTAINS it, never one it merely overlaps"
+# purpose: "a construction whose capture type is a union is admitted by a test it merely overlaps only for the closures whose held value answers the test, never by the annotation alone"
 # oracle: self
-# oracle.stamp: 0f4eed910ce479e2
+# oracle.stamp: 33b57c620d5e1d56
 #---
 #
-# fz-kdt.167, the witness. `f` is chosen by a `case` on a value that came out
+# The witness for admission by annotation. `f` is chosen by a `case` on a value that came out
 # of the mailbox, so no key can pin which closure it is: one arm mints `mk/1`
 # over that mailbox value, whose capture is typed `any` and stored as a BOXED
 # word, and the other mints it over a `float` literal, stored raw. `P.run/2`
@@ -14,10 +14,11 @@
 # The `any` construction OVERLAPS the float arm -- an `any` capture could be
 # holding a float -- but it is INSIDE neither arm, because the layout a capture
 # was stored in belongs to the construction and not to the value that happens
-# to sit there. Admitting on overlap therefore hands a boxed capture to a body
-# whose capture lane is a raw f64: the interpreter answers 12.0 instead of 12,
-# and the native doors abort in `fz_closure_get_capture_f64`. Admission is
-# containment.
+# to sit there. Admitting on the overlap of annotations would hand a boxed
+# capture to a body whose capture lane is a raw f64: the interpreter would
+# answer 12.0 instead of 12, and the native doors would abort in
+# `fz_closure_get_capture_f64`. The test reads the held value instead; its own
+# kind byte says whether it is a float, so the float arm runs only on a float.
 #
 # This fixture used to witness the same law with four STATIC forwarded calls.
 # fz-kdt.127's type-preserving forwarder key answers that shape statically --

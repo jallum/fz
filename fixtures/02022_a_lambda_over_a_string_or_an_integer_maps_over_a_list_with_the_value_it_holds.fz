@@ -1,0 +1,31 @@
+#---
+# purpose: A lambda over a binding that is a string in one caller and an integer in another, mapped over a list, returns the element or the binding by the value the closure holds on all three paths
+# root: main/0
+# assert.metric.semantic.activations: 5
+# assert.metric.semantic.executables: 5
+# assert.metric.semantic.callsites: 6
+# assert.metric.call_edges.count: 6
+# oracle: self
+# oracle.stamp: c3db962c5a8c57b4
+#---
+#
+# `run/1` binds `default` to "x" or 5 and maps a lambda that matches on it.
+# The lambda is one construction whose capture is `binary | integer`, and the
+# planned arms are one per type. Each arm is chosen by reading the captured
+# value, so the arm that treats `default` as the integer 5 never runs on "x".
+defmodule Main do
+  def run(flag) do
+    default = if flag, do: "x", else: 5
+
+    Enum.map([1, 2], fn k ->
+      case default do
+        5 -> k
+        d -> d
+      end
+    end)
+  end
+
+  def main(), do: IO.inspect({run(true), run(false)})
+end
+
+Main.main()
