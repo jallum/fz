@@ -1787,7 +1787,10 @@ impl CallSiteSummary {
     /// else's code), and a named activation (the executable to call). A
     /// closure callsite that answers here is the only kind that can be
     /// grounded — the artifact edge and the return claim both ask this
-    /// question, so they ask it once.
+    /// question, so they ask it once. The demand pass asks it too: a closure
+    /// call that does not answer here is opaque, and transport calls it
+    /// through the boxed apply seam. A target's `activation` and
+    /// `activation_inputs` are always set together.
     pub fn single_owned_target(&self) -> Option<(&CallTargetSummary, &ActivationKey)> {
         let target = self.single_target()?;
         let (SelectedCallee::Function(_), Some(activation)) = (&target.callee, &target.activation) else {

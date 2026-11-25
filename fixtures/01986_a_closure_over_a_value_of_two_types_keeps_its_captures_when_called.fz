@@ -1,0 +1,92 @@
+#---
+# purpose: "A closure called only by name keeps the captures it reads when the value it closes over, or is called with, has two types"
+# oracle: self
+# oracle.stamp: 5c2d6f183a4bca28
+#---
+defmodule Main do
+  # An opaque flag keeps the union from folding to one member.
+  def flag(), do: length(System.argv()) > 5
+
+  def tuple_capture(flag) do
+    default = if flag, do: {:a, 1}, else: {:k}
+
+    f = fn r ->
+      case default do
+        {:k} -> r
+        d -> d
+      end
+    end
+
+    f.(1)
+  end
+
+  def int_or_binary_capture(flag) do
+    default = if flag, do: "x", else: 5
+
+    f = fn r ->
+      case default do
+        5 -> r
+        d -> d
+      end
+    end
+
+    f.(1)
+  end
+
+  def atom_capture(flag) do
+    default = if flag, do: :a, else: :k
+
+    f = fn r ->
+      case default do
+        :k -> r
+        d -> d
+      end
+    end
+
+    f.(1)
+  end
+
+  def returned_capture(flag) do
+    default = if flag, do: {:a, 1}, else: {:k}
+    f = fn _r -> default end
+    f.(1)
+  end
+
+  def union_argument(flag) do
+    arg = if flag, do: {:a, 1}, else: {:k}
+
+    f = fn r ->
+      case r do
+        {:k} -> :none
+        d -> d
+      end
+    end
+
+    f.(arg)
+  end
+
+  def called_and_passed_on(flag) do
+    default = if flag, do: {:a, 1}, else: {:k}
+    f = fn -> default end
+    {f.(), f}
+  end
+
+  def one_type_called_and_passed_on(flag) do
+    default = if flag, do: 5, else: 6
+    f = fn -> default end
+    {f.(), f}
+  end
+
+  def main() do
+    IO.inspect({tuple_capture(flag()), tuple_capture(not flag())})
+    IO.inspect({int_or_binary_capture(flag()), int_or_binary_capture(not flag())})
+    IO.inspect({atom_capture(flag()), atom_capture(not flag())})
+    IO.inspect({returned_capture(flag()), returned_capture(not flag())})
+    IO.inspect({union_argument(flag()), union_argument(not flag())})
+    IO.inspect(elem(called_and_passed_on(flag()), 0))
+    IO.inspect(elem(called_and_passed_on(not flag()), 0))
+    IO.inspect(elem(one_type_called_and_passed_on(flag()), 0))
+  end
+end
+
+Main.main()
