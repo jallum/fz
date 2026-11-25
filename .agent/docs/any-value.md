@@ -130,7 +130,9 @@ renderer. `map_put_slot` takes a map; a map literal is built through a map
 destination.
 
 `fz_binary_concat` validates byte-aligned binary inputs and builds `left <> right`
-through `Heap::alloc_concatenation`, which returns the VALUE. When `left` is a
+through `Heap::alloc_concatenation`, which returns the VALUE. Its right side is a byte count and a
+fill that writes exactly that many bytes after `left`; `fz_binary_concat` passes a fill that copies
+`right`. When `left` is a
 binary view that ends where its buffer's written bytes end and the buffer has spare
 room for `right`, `right` is written into that room and the result is a new
 view over the same buffer, longer than `left`; `left` is not copied and keeps
@@ -140,9 +142,22 @@ as many bytes again, each side written once. A loop of `acc <> x` therefore
 allocates a buffer per doubling, not one per step. `Heap::alloc_bitstring`
 remains the storage choice for every other value the runtime builds; the one
 other place that splits on the threshold is `Prim::ConstBitstring` lowering,
-which emits a static `SharedBin` above it. `<<a :: binary, b :: binary>>`
-built through `fz_bs_build` does not append: it copies the whole result into a
-new buffer each time.
+which emits a static `SharedBin` above it.
+
+A construction whose first segment is an unsized `binary` of whole bytes, followed by segments
+that add up to whole bytes, is an append to that binary: `construction::build` passes the
+leading binary as `left` and a fill that writes the rest through a `BitSink` over the right
+side's bytes, so `<<acc::binary, x::binary>>` and `<<acc::binary, byte>>` allocate what
+`acc <> x` allocates. A leading `bits` or `bitstring` segment, a leading binary that does not
+end on a byte boundary, and a rest that is not whole bytes are built whole. `build` resolves each
+descriptor to a `Segment` once and sizes and fills from that list.
+
+Compiled code appends a construction whose segments are all whole-byte integers and binaries
+itself (`emit_append` in `native_codegen/construction.rs`). A leading inline binary whose total
+fits `SHARED_BIN_THRESHOLD_BYTES` is built inline like any other construction. A leading view, or a
+larger total, calls `fz_bs_append_unfilled(process, leading, right_len)`, which is the same append
+with nothing written: it extends the view in place or makes the buffer with room, and compiled
+code writes the rest after the leading bytes.
 
 A construction is one `fz_bs_build(process, fields, count)` call over an array
 of `FzBsField { spec, size, value }` descriptors (`runtime/src/construction.rs`).

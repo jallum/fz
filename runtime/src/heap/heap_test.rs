@@ -2698,7 +2698,11 @@ fn an_off_heap_buffer_counts_once_at_the_shared_bin_site_and_not_in_the_total() 
     assert_eq!(filled.total.allocs, filled.binview.allocs + filled.binref.allocs);
 
     let (left, right) = ([2u8; SHARED_BIN_THRESHOLD_BYTES], [3u8; 8]);
-    let _ = unsafe { h.alloc_concatenation(&left, None, &right) };
+    let _ = unsafe {
+        h.alloc_concatenation(&left, None, right.len(), |dest| {
+            dest.write_copy_of_slice(&right);
+        })
+    };
     let total_bytes = left.len() + right.len();
     assert_eq!(
         shared_bin_sites(&h),
@@ -2713,6 +2717,94 @@ fn an_off_heap_buffer_counts_once_at_the_shared_bin_site_and_not_in_the_total() 
     let stats = h.node.alloc_stats();
     assert_eq!(stats.shared_bin.allocs, 2);
     assert_eq!(stats.total.allocs, stats.binview.allocs + stats.binref.allocs);
+}
+
+/// The bytes of a binary value, whichever way it is stored.
+fn binary_bytes(value: AnyValue) -> Vec<u8> {
+    let word = value.ref_word().raw_word();
+    unsafe { Bin::of_binary(word) }.bytes().to_vec()
+}
+
+/// The view a result above the threshold is.
+fn view_of_result(value: AnyValue) -> BinView {
+    unsafe { BinView::from_raw(value.heap_addr().expect("a result above the threshold is a view")) }
+}
+
+/// The right side of an append is the bytes its fill writes, once: the fill
+/// gets exactly `right_len` bytes, whether the result is built inline, written
+/// into the left side's buffer, or written into a new buffer with room.
+#[test]
+fn an_append_fills_exactly_the_right_side_once_on_every_path() {
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let mut fills = 0;
+    let mut append = |h: &mut Heap, left: &[u8], view: Option<BinView>, right: &[u8]| {
+        let appended = unsafe {
+            h.alloc_concatenation(left, view, right.len(), |dest| {
+                assert_eq!(
+                    dest.len(),
+                    right.len(),
+                    "the fill gets the right side's bytes and no more"
+                );
+                fills += 1;
+                dest.write_copy_of_slice(right);
+            })
+        };
+        let mut expected = left.to_vec();
+        expected.extend_from_slice(right);
+        assert_eq!(binary_bytes(appended), expected);
+        appended
+    };
+
+    let inline = append(&mut h, b"ten bytes!", None, b"+five");
+    assert!(
+        inline.heap_addr().is_some() && binview_addr_from_tagged(inline.ref_word().raw_word()).is_none(),
+        "a small result is inline"
+    );
+
+    let left = [7u8; SHARED_BIN_THRESHOLD_BYTES];
+    let grown = append(&mut h, &left, None, b"abc");
+    let grown_view = view_of_result(grown);
+    let longer = append(&mut h, &binary_bytes(grown), Some(grown_view), b"de");
+    assert_eq!(
+        view_of_result(longer).shared_raw(),
+        grown_view.shared_raw(),
+        "a right side that fits is written into the left side's buffer"
+    );
+    assert_eq!(
+        grown_view.bytes_len(),
+        left.len() + 3,
+        "the left side keeps its own length"
+    );
+
+    let room = unsafe { &*grown_view.shared_raw() }.spare();
+    let overflow = vec![9u8; room + 1];
+    let moved = append(&mut h, &binary_bytes(longer), Some(view_of_result(longer)), &overflow);
+    assert_ne!(
+        view_of_result(moved).shared_raw(),
+        grown_view.shared_raw(),
+        "a right side that does not fit goes to a new buffer"
+    );
+    assert_eq!(fills, 4, "each append writes its right side once");
+}
+
+/// A fill may read the left side it follows: appending a binary to itself
+/// copies from bytes that stay where they are, in a buffer that extends in
+/// place.
+#[test]
+fn an_append_fill_may_read_the_left_side() {
+    let mut h = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let left: Vec<u8> = (0..100u8).collect();
+    let first = unsafe { h.alloc_concatenation(&left, None, 0, |_| {}) };
+    let first_view = view_of_result(first);
+    let doubled = unsafe {
+        let source = std::slice::from_raw_parts(first_view.bytes_ptr(), first_view.bytes_len());
+        h.alloc_concatenation(source, Some(first_view), source.len(), |dest| {
+            dest.write_copy_of_slice(source);
+        })
+    };
+    let expected: Vec<u8> = left.iter().chain(left.iter()).copied().collect();
+    assert_eq!(binary_bytes(doubled), expected);
+    assert_eq!(binary_bytes(first), left, "the value appended to is unchanged");
 }
 
 /// Full spawn-and-share scenario at the heap layer.

@@ -145,13 +145,14 @@ fn cases() -> Vec<Case> {
         int(16, Endian::Big, 1, 0x1234),
         binary(None, 2, Source::Window { start: 5, bytes: 20 }),
     ]));
+    // A leading unsized binary that is inline and whose total fits inline: the
+    // construction is an append that is built in place. A leading view, or a total
+    // over the threshold, is the runtime's (`emit_append`).
     for source in [
         Source::Inline(0),
         Source::Inline(1),
         Source::Inline(63),
         Source::Inline(64),
-        Source::Buffer(65),
-        Source::Window { start: 9, bytes: 150 },
     ] {
         cases.push(case(vec![binary(None, 0, source)]));
     }
@@ -160,10 +161,24 @@ fn cases() -> Vec<Case> {
         binary(None, 1, Source::Window { start: 3, bytes: 34 }),
     ]));
     cases.push(case(vec![
-        binary(None, 0, Source::Buffer(100)),
+        binary(None, 0, Source::Inline(20)),
         int(32, Endian::Little, 1, WORD),
         binary(None, 2, Source::Inline(5)),
     ]));
+    cases.push(case(vec![
+        binary(Some(2), 0, Source::Inline(30)),
+        binary(None, 1, Source::Window { start: 3, bytes: 34 }),
+    ]));
+    for source in [
+        Source::Inline(0),
+        Source::Inline(1),
+        Source::Inline(63),
+        Source::Inline(64),
+        Source::Buffer(65),
+        Source::Window { start: 9, bytes: 150 },
+    ] {
+        cases.push(case(vec![int(8, Endian::Big, 0, 5), binary(None, 1, source)]));
+    }
     cases.push(case(vec![
         binary(Some(3), 0, Source::Inline(10)),
         int(8, Endian::Big, 1, 9),
@@ -486,4 +501,30 @@ fn only_whole_byte_integers_and_binaries_are_aligned() {
     let mut named = field(BitType::Integer, None, None, Endian::Big, 0);
     named.size = Some(BitSizeIr::Var(Var(1)));
     assert_eq!(aligned(named), None);
+}
+
+/// A construction that starts with an unsized binary is an append, which the
+/// runtime makes in the accumulator's own buffer; every other construction of
+/// whole bytes is built in place.
+#[test]
+fn only_a_construction_that_starts_with_an_unsized_binary_is_an_append() {
+    let segments_of = |fields: Vec<(BitFieldIr, Input)>| {
+        let fields: Vec<_> = fields.into_iter().map(|(f, _)| f).collect();
+        aligned_segments(&fields).expect("whole bytes")
+    };
+    let source = Source::Inline(1);
+    assert!(starts_with_unsized_binary(&segments_of(vec![
+        binary(None, 0, source),
+        int(8, Endian::Big, 1, 1)
+    ])));
+    assert!(starts_with_unsized_binary(&segments_of(vec![binary(None, 0, source)])));
+    assert!(!starts_with_unsized_binary(&segments_of(vec![
+        binary(Some(1), 0, source),
+        binary(None, 1, source)
+    ])));
+    assert!(!starts_with_unsized_binary(&segments_of(vec![
+        int(8, Endian::Big, 0, 1),
+        binary(None, 1, source)
+    ])));
+    assert!(!starts_with_unsized_binary(&segments_of(Vec::new())));
 }

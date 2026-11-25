@@ -469,6 +469,15 @@ fn counts(pairs: &[(StubSite, u64)]) -> StubCounts {
     counts
 }
 
+/// `left` followed by `right`, through the one append.
+fn append_bytes(heap: &mut Heap, left: &[u8], view: Option<BinView>, right: &[u8]) -> AnyValue {
+    unsafe {
+        heap.alloc_concatenation(left, view, right.len(), |dest| {
+            dest.write_copy_of_slice(right);
+        })
+    }
+}
+
 fn bytes_of(value: AnyValue) -> (BinView, Vec<u8>) {
     let stub = unsafe { BinView::from_raw(value.heap_addr().expect("a stub")) };
     let bytes = unsafe { std::slice::from_raw_parts(stub.bytes_ptr(), stub.bytes_len()) }.to_vec();
@@ -485,9 +494,9 @@ fn a_minor_collection_counts_the_views_and_binrefs_each_site_made_and_the_binref
     let big = vec![1u8; SHARED_BIN_THRESHOLD_BYTES + 1];
 
     let filled = heap.alloc_bitstring(&big, big.len() as u64 * 8);
-    let grown = unsafe { heap.alloc_concatenation(&big, None, &[2]) };
+    let grown = append_bytes(&mut heap, &big, None, &[2]);
     let (grown_stub, grown_bytes) = bytes_of(grown);
-    let appended = unsafe { heap.alloc_concatenation(&grown_bytes, Some(grown_stub), &[3]) };
+    let appended = append_bytes(&mut heap, &grown_bytes, Some(grown_stub), &[3]);
     let window = unsafe { heap.slice(word_of(grown_stub), 8, big.len() as u64 * 8) };
 
     let mut roots = [filled, appended, window].map(AnyValue::ref_word);
@@ -816,9 +825,9 @@ fn a_slice_is_born_shared_and_marks_its_source() {
 fn an_append_in_place_marks_the_view_it_grew_from_and_not_the_new_one() {
     let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
     let left: Vec<u8> = (0..100u8).collect();
-    let grown = unsafe { heap.alloc_concatenation(&left, None, &[1; 100]) };
+    let grown = append_bytes(&mut heap, &left, None, &[1; 100]);
     let grown_bytes = view_bytes(view_of(grown));
-    let longer = unsafe { heap.alloc_concatenation(&grown_bytes, Some(view_of(grown)), b"x") };
+    let longer = append_bytes(&mut heap, &grown_bytes, Some(view_of(grown)), b"x");
     assert_eq!(
         view_of(longer).shared_raw(),
         view_of(grown).shared_raw(),

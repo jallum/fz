@@ -667,6 +667,14 @@ pub extern "C" fn fz_bs_alloc_unfilled(process: *mut Process, byte_len: u64) -> 
     construction::alloc_unfilled(unsafe { &mut *process }, byte_len as usize)
 }
 
+/// The binary `leading` followed by `right_len` bytes the caller writes, on the
+/// path of an append the compiled code fills itself. See
+/// [`crate::construction::append_unfilled`].
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_bs_append_unfilled(process: *mut Process, leading: u64, right_len: u64) -> u64 {
+    construction::append_unfilled(unsafe { &mut *process }, leading, right_len as usize)
+}
+
 /// A total integer arithmetic result returned by value at the C boundary.
 /// `failed` is a canonical `u64` 0 or 1, deliberately not Rust `bool`.
 #[repr(C)]
@@ -1317,7 +1325,11 @@ pub extern "C" fn fz_binary_concat(process: *mut Process, left_ref: u64, right_r
     let left = unsafe { Bin::of_binary(left_ref) }.bytes();
     let right = unsafe { Bin::of_binary(right_ref) }.bytes();
     let left_view = binview_addr_from_tagged(left_ref).map(|addr| unsafe { BinView::from_raw(addr) });
-    let value = unsafe { (&mut *process).alloc_concatenation(left, left_view, right) };
+    let value = unsafe {
+        (&mut *process).alloc_concatenation(left, left_view, right.len(), |dest| {
+            dest.write_copy_of_slice(right);
+        })
+    };
     value.ref_word().raw_word()
 }
 

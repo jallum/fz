@@ -222,3 +222,42 @@ fn a_fill_that_starts_after_written_bits_continues_them() {
     let written: Vec<u8> = dest[..2].iter().map(|byte| unsafe { byte.assume_init() }).collect();
     assert_eq!(written, vec![0b1011_1111, 0b1111_1111]);
 }
+
+/// A construction that starts with an unsized binary of whole bytes is an
+/// append to it: appends to a buffer-backed accumulator write into the buffer
+/// until it is full, so 50 appends place a buffer per doubling and not one per
+/// append, and the bytes are those the segments spell.
+#[test]
+fn a_leading_binary_is_appended_to_in_place() {
+    with_process(|process| {
+        let bytes: Vec<u8> = (0..100u8).collect();
+        let mut expected = bytes.clone();
+        let mut acc = binary_word(process, &bytes, 800);
+        let mut buffers = std::collections::BTreeSet::new();
+        for step in 0..50u64 {
+            acc = build(
+                process,
+                &[field(BINARY, None, 8, BIG, acc), int(8, step), int(16, 0xA0B0 + step)],
+            );
+            expected.extend_from_slice(&[step as u8, 0xA0, 0xB0 + step as u8]);
+            buffers.insert(unsafe { Bin::of_binary(acc) }.ptr());
+        }
+        assert_eq!(buffers.len(), 2, "the accumulator moved once, when its buffer was full");
+        assert_eq!(unsafe { Bin::of_binary(acc) }.bytes(), expected);
+    });
+}
+
+/// A leading binary whose value is not whole bytes, and a rest that is not
+/// whole bytes, make a construction that is built whole.
+#[test]
+fn a_leading_bitstring_or_a_rest_that_is_not_whole_bytes_is_built_whole() {
+    with_process(|process| {
+        let odd = binary_word(process, &[0b1010_0000], 3);
+        let (bytes, bit_len) = built(process, &[field(BINARY, None, 1, BIG, odd), int(8, 0xFF)]);
+        assert_eq!((bytes, bit_len), (vec![0b1011_1111, 0b1110_0000], 11));
+
+        let whole = binary_word(process, b"ab", 16);
+        let (bytes, bit_len) = built(process, &[field(BINARY, None, 8, BIG, whole), int(4, 0xF)]);
+        assert_eq!((bytes, bit_len), (vec![b'a', b'b', 0xF0], 20));
+    });
+}

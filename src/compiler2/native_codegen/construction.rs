@@ -19,11 +19,21 @@
 //! room: no collection runs inside it, so a binary's address read afterwards is
 //! the address it had before. Any other construction calls `fz_bs_build`.
 //!
+//! A construction that starts with an unsized binary is an append. The runtime
+//! writes into a view's own buffer when it has room, where an inline copy would
+//! copy a growing accumulator whole at every step, so a leading view asks the
+//! runtime for the longer binary (`fz_bs_append_unfilled`) and this code writes
+//! the rest after the leading bytes. A leading inline binary is copied by
+//! whichever side builds the result, so it is built here while the total fits
+//! inline; a larger total asks the runtime, which gives the result room to grow
+//! and so makes the next step an append in place.
+//!
 //! The segments a construction's contract check admits make the reads safe: an
 //! unsized `binary` is a bitstring of whole bytes and a sized one is at least as
 //! long as its size, so a header word gives the bytes to copy.
 
 use super::binary_slice::bytes_address;
+use super::clif::kind_field;
 use super::place::place_inline_bitstring;
 use super::prim::bit_len_of_header;
 use super::recipe::constant_of;
@@ -37,7 +47,7 @@ use cranelift_module::Linkage;
 use fz_runtime::any_value::{BITSTRING_BYTES_OFFSET, ValueKind};
 use fz_runtime::bits::BINVIEW_BYTES_PTR_OFFSET;
 use fz_runtime::heap::SHARED_BIN_THRESHOLD_BYTES;
-use fz_runtime::ir_runtime::{fz_bs_alloc_unfilled, fz_bs_field_spec};
+use fz_runtime::ir_runtime::{fz_bs_alloc_unfilled, fz_bs_append_unfilled, fz_bs_field_spec};
 
 /// What a segment writes, when it is whole bytes at a whole-byte offset.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -84,6 +94,12 @@ pub(super) fn aligned_segments(fields: &[BitFieldIr]) -> Option<Vec<AlignedSegme
     fields.iter().map(aligned_segment).collect()
 }
 
+/// Whether the first segment is a binary with no size, which makes the
+/// construction an append to it.
+pub(super) fn starts_with_unsized_binary(segments: &[AlignedSegment]) -> bool {
+    matches!(segments.first(), Some(AlignedSegment::Binary { bytes: None }))
+}
+
 fn wants_big_endian(endian: Endian) -> bool {
     match endian {
         Endian::Big => true,
@@ -113,7 +129,16 @@ pub(super) fn emit_aligned_construction<M: cranelift_module::Module>(
 ) -> ir::Value {
     let total = total_bytes(body, segments);
     let (result, destination) = place_result(body, total);
-    let mut cursor = Cursor::at(destination);
+    write_segments(body, Cursor::at(destination), segments);
+    result
+}
+
+/// Write each segment at the cursor, one after another.
+fn write_segments<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, M>,
+    mut cursor: Cursor,
+    segments: &[(AlignedSegment, ir::Value)],
+) {
     for &(segment, value) in segments {
         match segment {
             AlignedSegment::Integer { bytes, big_endian } => {
@@ -132,7 +157,55 @@ pub(super) fn emit_aligned_construction<M: cranelift_module::Module>(
             }
         }
     }
-    result
+}
+
+/// The ref word of the binary that starts with the unsized binary `segments[0]`
+/// followed by the other segments: an append. Only the runtime extends a view in
+/// place, so a leading view, and a total too large for an inline result, ask it
+/// for the longer binary (`fz_bs_append_unfilled`) and write the rest after the
+/// leading bytes. A leading inline binary with an inline total is copied as in
+/// any other construction: it is at most `SHARED_BIN_THRESHOLD_BYTES`, and the
+/// runtime would copy it too.
+pub(super) fn emit_append<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, M>,
+    segments: &[(AlignedSegment, ir::Value)],
+) -> ir::Value {
+    let leading = segments[0].1;
+    let kind = kind_field(body.b, leading);
+    let is_view = body
+        .b
+        .ins()
+        .icmp_imm_s(ir::condcodes::IntCC::Equal, kind, i64::from(ValueKind::BINVIEW.tag()));
+    let total = total_bytes(body, segments);
+    let large = body.b.ins().icmp_imm_u(
+        ir::condcodes::IntCC::UnsignedGreaterThan,
+        total,
+        SHARED_BIN_THRESHOLD_BYTES as i64,
+    );
+    let by_runtime = body.b.ins().bor(is_view, large);
+    let (extend, inline, done) = (body.b.create_block(), body.b.create_block(), body.b.create_block());
+    body.b.append_block_param(done, types::I64);
+    body.b.ins().brif(by_runtime, extend, &[], inline, &[]);
+
+    body.b.switch_to_block(extend);
+    body.b.seal_block(extend);
+    let left_len = binary_byte_len(body.b, leading);
+    let right_len = body.b.ins().isub(total, left_len);
+    let process = body.process_arg();
+    let result = runtime_call1!(body, fz_bs_append_unfilled, [process, leading, right_len]);
+    let payload = bytes_address(body.b, result);
+    let rest_at = body.b.ins().iadd(payload, left_len);
+    write_segments(body, Cursor::at(rest_at), &segments[1..]);
+    body.b.ins().jump(done, &[result.into()]);
+
+    body.b.switch_to_block(inline);
+    body.b.seal_block(inline);
+    let built = emit_aligned_construction(body, segments);
+    body.b.ins().jump(done, &[built.into()]);
+
+    body.b.switch_to_block(done);
+    body.b.seal_block(done);
+    body.b.block_params(done)[0]
 }
 
 /// The bytes the segments add up to: a constant when no binary is unsized.

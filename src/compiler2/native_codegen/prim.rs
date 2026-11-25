@@ -2,7 +2,10 @@
 
 use super::binary_compare::{BinaryCompare, emit_binary_compare};
 use super::bitstring_literal::BitstringLiteral;
-use super::construction::{AlignedSegment, aligned_segments, descriptor_spec, emit_aligned_construction};
+use super::construction::{
+    AlignedSegment, aligned_segments, descriptor_spec, emit_aligned_construction, emit_append,
+    starts_with_unsized_binary,
+};
 use super::recipe::{Emitted, emit_box, emit_cell, emit_in_body, emit_inline, emit_slice};
 use super::repr::ExternLane;
 use super::runtime_test::{KindEvidence, RuntimeTestEmitter, emit_runtime_type_branch, emit_runtime_type_flag};
@@ -296,7 +299,9 @@ fn build_struct<M: cranelift_module::Module, T: Types<Ty = Ty>>(
 
 /// The binary a construction spells: built in place when every segment is a
 /// whole number of bytes of a kind compiled code writes, else by one call to
-/// `fz_bs_build` over a descriptor per segment.
+/// `fz_bs_build` over a descriptor per segment. A construction that starts with
+/// an unsized binary is an append, which the runtime extends in place when that
+/// binary is a view; see `emit_append`.
 fn lower_make_bitstring<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
@@ -304,7 +309,8 @@ fn lower_make_bitstring<M: cranelift_module::Module>(
 ) -> LowerOut {
     if let Some(segments) = aligned_segments(fields) {
         let values: Vec<_> = segments
-            .into_iter()
+            .iter()
+            .copied()
             .zip(fields)
             .map(|(segment, f)| {
                 let value = match segment {
@@ -314,8 +320,21 @@ fn lower_make_bitstring<M: cranelift_module::Module>(
                 (segment, value)
             })
             .collect();
+        if starts_with_unsized_binary(&segments) {
+            let built = emit_append(body, &values);
+            return LowerOut::ValueRef(built);
+        }
         return LowerOut::ValueRef(emit_aligned_construction(body, &values));
     }
+    LowerOut::ValueRef(build_by_runtime(body, var_env, fields))
+}
+
+/// The ref word of the binary `fz_bs_build` makes from a descriptor per segment.
+fn build_by_runtime<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, M>,
+    var_env: &HashMap<u32, CodegenValue>,
+    fields: &[BitFieldIr],
+) -> ir::Value {
     let process = body.process_arg();
     let slot = body.b.create_sized_stack_slot(StackSlotData::new(
         StackSlotKind::ExplicitSlot,
@@ -351,7 +370,7 @@ fn lower_make_bitstring<M: cranelift_module::Module>(
     }
     let descriptors = body.b.ins().stack_addr(types::I64, slot, 0);
     let count = body.b.ins().iconst(types::I64, fields.len() as i64);
-    LowerOut::ValueRef(runtime_call1!(body, fz_bs_build, [process, descriptors, count]))
+    runtime_call1!(body, fz_bs_build, [process, descriptors, count])
 }
 
 /// Lower collection-typed Prim variants (List, Tuple, AllocStruct, Bitstring,
