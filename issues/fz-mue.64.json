@@ -1,7 +1,9 @@
 {
   "assignee": "Elixir Parity",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-sc8.169"
+  ],
   "created": "2026-11-25T04:14:52Z",
   "description": "From: Elixir Parity (user-approved 2026-11-24).\n\nEvidence: none of BadFunctionError, BadArityError or SystemLimitError exists as a module in lib/, and nothing in lib/, src/ or runtime/ raises them. So :badfun, {:badarity, _} and :system_limit normalize to ErlangError, where Elixir raises the named exceptions.\n\nScope: for each of the three, a defexception, a normalize clause, a __reason__ clause, and the runtime raise site.\n\nRelated: fz-sc8.169 (apply/2) says its arity mismatch should raise BadArityError, so its clause depends on this ticket.\n\nDone when: an oracle fixture raises and rescues each exception (bad function call, wrong arity, system limit) and matches Elixir on interp, run and build, including the message and the fields.",
   "id": "fz-mue.64",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "BadFunctionError, BadArityError and SystemLimitError exist, and the runtime raises them as in Elixir",
   "type": "bug",
-  "updated_at": "2026-11-25T04:14:52Z"
+  "updated_at": "2026-11-25T04:14:53Z"
 }
