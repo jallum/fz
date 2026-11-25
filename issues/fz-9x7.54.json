@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-25T02:28:20Z",
+  "description": "From: GC. Approved by the user 2026-11-24 (verbatim \"ignore it then; proceed.\", answering the fz-9x7.47 obsolescence audit).\n\nEvidence (audit of #880 at 4b56bb8e8): block_pool.rs keeps per-thread free lists (block_pool.rs:351-399) plus a process-wide spill list that #880 added (spill_all, the try_with fallback). The runtime spawns no threads (no thread spawn in src, crates or runtime besides clock.rs sleep); only cargo test threads have separate pools. block_pool_test.rs:121/296/331 spawn threads only to exercise the spill; gift_test's pool_total_cached_blocks and pool_drain_for_test pin per-thread pooling. guides/memory.html:1162 says \"any worker\".\n\nDecide: keep per-thread pools + spill with the reason written down (Rust thread-safety without a lock in production), or one process-wide pool under the single-worker invariant, at whatever synchronisation cost the bench shows. Either way the thread tests and pool_drain_for_test are restated to the chosen shape.\n\nDone when: one pool shape with its reason in block_pool.rs's module doc; no structure exists only for test threads unless the doc says why; bench guards hold.",
+  "id": "fz-9x7.54",
+  "labels": [],
+  "parent": "fz-9x7",
+  "priority": 2,
+  "status": "open",
+  "title": "The block pool's shape is decided for one worker",
+  "type": "task",
+  "updated_at": "2026-11-25T02:28:20Z"
+}
