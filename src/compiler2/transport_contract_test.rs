@@ -3009,8 +3009,8 @@ fn compiler2_runtime_demand_marks_joined_function_refs_first_class_before_reduce
 
     let body = world.lowered_body(main_executable.activation.function);
     let joined_value = delivered_value_joins(&body)
-        .values()
-        .find_map(|join| {
+        .iter()
+        .find_map(|(delivered, join)| {
             let producer_functions = join
                 .sources
                 .iter()
@@ -3027,7 +3027,7 @@ fn compiler2_runtime_demand_marks_joined_function_refs_first_class_before_reduce
                 && producer_functions
                     .iter()
                     .any(|function| function_is(&world, *function, "add_b", 2)))
-            .then_some(join.value)
+            .then_some(delivered)
         })
         .expect("main should have a delivered join fed by add_a/2 and add_b/2 function refs");
     let joined_demand = demand

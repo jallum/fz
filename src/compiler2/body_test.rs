@@ -102,3 +102,53 @@ fn a_call_site_the_body_does_not_make_has_no_facts() {
 fn a_body_whose_entries_name_one_call_site_twice_is_refused() {
     body_of(vec![direct(0, vec![arg(1)]), closure(0, vec![arg(2)])]);
 }
+
+fn resume_of(value: u32) -> LoweredEntry {
+    LoweredEntry {
+        origin: ControlEntryOrigin::DeliveredResume {
+            value: ValueId::from_u32(value),
+        },
+        ..entry(LoweredTail::Unreachable)
+    }
+}
+
+fn delivering(value: u32, to: u32) -> LoweredEntry {
+    entry(LoweredTail::Value {
+        value: ValueId::from_u32(value),
+        dest: ControlDestination::Deliver(ControlEntryId::from_u32(to)),
+    })
+}
+
+/// What reaches a resume entry is found by the value that entry receives, and
+/// lists each source once, whichever entry delivers it.
+#[test]
+fn a_delivered_value_is_joined_from_every_source_that_delivers_it() {
+    let body = body_of(vec![
+        delivering(5, 3),
+        delivering(6, 3),
+        delivering(5, 3),
+        resume_of(9),
+        entry(LoweredTail::Unreachable),
+    ]);
+
+    let joins = delivered_value_joins(&body);
+
+    let join = joins.get(&ValueId::from_u32(9)).expect("the resume's value has a join");
+    assert_eq!(
+        join.sources,
+        [5, 6].map(|value| DeliveredValueSource::LocalValue(ValueId::from_u32(value)))
+    );
+    assert!(
+        joins.get(&ValueId::from_u32(5)).is_none(),
+        "a source is not itself delivered"
+    );
+    assert_eq!(joins.len(), 1);
+}
+
+/// A resume nothing delivers to joins nothing.
+#[test]
+fn a_resume_nothing_delivers_to_has_no_join() {
+    let body = body_of(vec![resume_of(9)]);
+
+    assert!(delivered_value_joins(&body).is_empty());
+}

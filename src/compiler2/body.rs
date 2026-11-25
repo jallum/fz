@@ -665,7 +665,6 @@ pub(crate) enum DeliveredValueSource {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DeliveredValueJoin {
-    pub value: ValueId,
     pub sources: Vec<DeliveredValueSource>,
 }
 
@@ -686,7 +685,10 @@ impl ControlEntryOrigin {
     }
 }
 
-pub(crate) fn delivered_value_joins(body: &LoweredBody) -> HashMap<ControlEntryId, DeliveredValueJoin> {
+/// What each delivered value joins, found by the value. A call's result is
+/// one fresh value and the one resume entry that receives it, so no two
+/// entries deliver the same value.
+pub(crate) fn delivered_value_joins(body: &LoweredBody) -> ValueMap<DeliveredValueJoin> {
     let LoweredBody::Clauses { entries, .. } = body;
     let mut delivered_values = HashMap::default();
     for (entry_index, entry) in entries.iter().enumerate() {
@@ -698,15 +700,15 @@ pub(crate) fn delivered_value_joins(body: &LoweredBody) -> HashMap<ControlEntryI
     for entry in entries {
         collect_tail_deliveries(&entry.tail, &delivered_values, &mut sources);
     }
-    sources
-        .into_iter()
-        .filter_map(|(entry, mut sources)| {
-            let value = delivered_values.get(&entry).copied()?;
-            sources.sort_by_key(delivered_value_source_sort_key);
-            sources.dedup();
-            Some((entry, DeliveredValueJoin { value, sources }))
-        })
-        .collect()
+    let mut joins = ValueMap::with_capacity(body.value_count());
+    for (entry, mut sources) in sources {
+        let value = delivered_values[&entry];
+        sources.sort_by_key(delivered_value_source_sort_key);
+        sources.dedup();
+        let earlier = joins.insert(value, DeliveredValueJoin { sources });
+        assert!(earlier.is_none(), "{value:?} is delivered to two entries");
+    }
+    joins
 }
 
 fn collect_tail_deliveries(
