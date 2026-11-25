@@ -1,0 +1,2480 @@
+From 85dc9f26e744648c7fc9b805bcf239c695afd62a Mon Sep 17 00:00:00 2001
+From: Jason Allum <21417+jallum@users.noreply.github.com>
+Date: Tue, 24 Nov 2026 18:31:18 -0500
+Subject: [PATCH 1/4] WIP fz-mue.28
+
+---
+ .agent/docs/exceptions.md                     | 113 ++++++++---
+ ...ed_clause_match_or_arithmetic.expected.txt |  15 ++
+ ..._of_a_failed_clause_match_or_arithmetic.fz |  72 +++++++
+ ...erlang_reason_raised_again.expected.stderr |   1 +
+ ...an_erlang_reason_raised_again.expected.txt |   7 +
+ ...eption_of_an_erlang_reason_raised_again.fz |  42 +++++
+ lib/erlang.fz                                 |   7 +-
+ lib/exception.fz                              |  67 ++++++-
+ lib/exceptions/argument_error.fz              |   4 +
+ lib/exceptions/arithmetic_error.fz            |   4 +
+ lib/exceptions/bad_boolean_error.fz           |   4 +
+ lib/exceptions/bad_map_error.fz               |   4 +
+ lib/exceptions/case_clause_error.fz           |   4 +
+ lib/exceptions/cond_clause_error.fz           |   4 +
+ lib/exceptions/erlang_error.fz                |   4 +
+ lib/exceptions/function_clause_error.fz       |   5 +
+ lib/exceptions/match_error.fz                 |   4 +
+ lib/exceptions/try_clause_error.fz            |   4 +
+ lib/exceptions/undefined_function_error.fz    |   5 +
+ lib/exceptions/with_clause_error.fz           |   4 +
+ lib/json.fz                                   |   2 +-
+ lib/kernel.fz                                 |   8 +-
+ lib/map.fz                                    |  18 +-
+ runtime/src/failure.rs                        |  38 ++--
+ src/compiler2/canon.rs                        |   1 +
+ src/compiler2/canon_test.rs                   |   2 +-
+ src/compiler2/drive_test.rs                   |  69 +++----
+ src/compiler2/identity.rs                     |  20 +-
+ src/compiler2/jobs/body.rs                    | 175 +++++++++---------
+ src/compiler2/jobs/native.rs                  |  52 ++++--
+ src/compiler2/jobs/native_test.rs             |  43 ++---
+ src/compiler2/jobs/semantic.rs                |  62 ++++++-
+ src/compiler2/source_publish.rs               |  16 +-
+ src/compiler2/world.rs                        |  22 ++-
+ src/compiler2/world_test.rs                   |  17 +-
+ src/dispatch_matrix/pattern.rs                |   2 +-
+ src/dispatch_matrix/pattern/last_resort.rs    | 143 +++++++++-----
+ .../pattern/last_resort_test.rs               | 126 +++++++------
+ src/ir_interp/backend.rs                      |  36 +++-
+ 39 files changed, 852 insertions(+), 374 deletions(-)
+ create mode 100644 fixtures/01913_a_catch_clause_sees_the_erlang_reason_of_a_failed_clause_match_or_arithmetic.expected.txt
+ create mode 100644 fixtures/01913_a_catch_clause_sees_the_erlang_reason_of_a_failed_clause_match_or_arithmetic.fz
+ create mode 100644 fixtures/01914_a_rescue_clause_sees_the_exception_of_an_erlang_reason_raised_again.expected.stderr
+ create mode 100644 fixtures/01914_a_rescue_clause_sees_the_exception_of_an_erlang_reason_raised_again.expected.txt
+ create mode 100644 fixtures/01914_a_rescue_clause_sees_the_exception_of_an_erlang_reason_raised_again.fz
+
+diff --git a/.agent/docs/exceptions.md b/.agent/docs/exceptions.md
+index 7880fef0a..2b20b7490 100644
+--- a/.agent/docs/exceptions.md
++++ b/.agent/docs/exceptions.md
+@@ -59,9 +59,11 @@ beside `panic/1`. The library calls `panic/1`
+ with a value that is no exception only where Elixir itself raises a raw Erlang
+ error (`JSON.encode!/1` of an invalid UTF-8 binary).
+ 
+-An exception the compiler raises itself (a decision that runs out of clauses,
+-below) is built by the compiled code as a struct, with the prim a
+-`%Mod{...}` literal uses, and raised through `fz_panic`.
++What the compiler raises itself (a decision that runs out of clauses, below)
++is Erlang's reason, as in Elixir, built by the compiled code with the prims a
++tuple or atom literal uses and raised through `fz_panic`. A struct is raised
++only where Elixir raises one: a protocol with no implementation, a function
++the program declares `raises:`, and anything the program writes with `raise`.
+ 
+ `Kernel.inspect/1` renders a value as `dbg` does, as a binary, for the messages
+ that show one; a map prints as `%{a: 1}`, as in Elixir. `Kernel.inspect/2`
+@@ -143,8 +145,8 @@ whichever path entered it.
+ - **Native code (run and build).** After a call to a `none` extern,
+   `lower_extern_generic` emits `continue_after_raise`
+   (`native_codegen/prim.rs`); `Term::Raise`, which lowering emits at a decision's
+-  arm of last resort after a `Prim::MakeStruct` of the exception, calls
+-  `fz_panic` with that struct, and then the same; `Term::Reraise`, which lowering emits
++  arm of last resort after building its reason (or, for a struct, a
++  `Prim::MakeStruct`), calls `fz_panic` with that value, and then the same; `Term::Reraise`, which lowering emits
+   at a handler's arm of last resort, calls `fz_reraise` with the plan's first
+   two inputs and then the same.
+   The raising frame returns 0, as a yield does, and every frame above it
+@@ -170,9 +172,10 @@ whichever path entered it.
+   when the process has diverged (`Process::diverged`: failed, or a raise is
+   waiting), and an error naming the broken contract when it has not.
+   A decision's arm of last resort calls `raise_last_resort`, which raises the
+-  plan's exception through `failure::raise_exception` with the fields of its
+-  struct, after registering the struct's schema with the process's heap
+-  (`register_exception`), and continues in `after_panic`. `after_panic` (`ir_interp/backend.rs`) takes `Process::raised`, pops the
++  plan's reason through `fz_panic` (`reason_value`) or, for a struct, through
++  `failure::raise_exception` with its fields, after registering the struct's
++  schema with the process's heap (`register_exception`), and continues in
++  `after_panic`. `after_panic` (`ir_interp/backend.rs`) takes `Process::raised`, pops the
+   continuation frames above the handler frame, and runs the handler entry with
+   the three values as its params. With no raise waiting, the raise route has
+   already failed the process: the step becomes `BackendRunStep::Failed`, and
+@@ -213,19 +216,20 @@ and from the dispatch step, below. A `try` with `rescue` or `catch` has:
+ 
+ - the body block, which pops its handler (`ExprStep::PopHandler`) as soon as the
+   body completes and delivers the body's value to the join;
+-- the handler block: a pattern dispatch over the three params `(kind, value,
+-  name)`: first the rescue rows, one row per exception a clause names, then one
+-  row per catch clause, in source order within each (`handler_arms`, as Elixir
+-  orders `Rescue ++ Catch`). Rescue rows match kind `error` only, so a throw or
+-  an exit never matches one. A rescue clause that admits a non-exception value
+-  (`ErlangError`, or a bare variable) gets a wrap row matching a `nil` name; its
+-  arm wraps the value in `%ErlangError{original: value}` before the clause body
+-  runs. A catch row is `[kind pattern, value pattern, _]` with the clause's guard
+-  as the row's guard; a clause written with one head is a clause for throws, so
+-  its kind pattern is the atom `:throw`, and `catch :error, r` binds the raised
+-  value as it is, with no `ErlangError` wrap. The dispatch has no miss row:
++- the handler block: a pattern dispatch over the subjects `(kind, raised,
++  rescued, reason)`: the delivered kind and value, the exception a `rescue`
++  sees of the value when a `rescue` is written, and the Erlang reason a
++  `catch` sees when a `catch` is written (below). First the rescue rows, one
++  row per exception a clause names, then one row per catch clause, in source
++  order within each (`handler_arms`, as Elixir orders `Rescue ++ Catch`).
++  Rescue rows are `[:error, _, exception pattern, _]`, so a throw or an exit
++  never matches one; a named exception is the pattern `%{__struct__: Mod}`,
++  bound to the clause's variable when it has one. A catch row is
++  `[kind pattern, _, _, reason pattern]` with the clause's guard as the row's
++  guard; a clause written with one head is a clause for throws, so its kind
++  pattern is the atom `:throw`. The dispatch has no miss row:
+   its last resort is `LastResort::Reraise`, which continues the delivered kind
+-  and value (the plan's first two inputs) to the next handler out by the route
++  and value (the plan's first two inputs, never the normalised ones) to the next handler out by the route
+   it arrived by, so a throw stays a throw;
+ - one join, typed as the union of the body and the arms.
+ 
+@@ -244,14 +248,16 @@ A handler's three params cross the raise route, so their types are not read
+ off the `try` body. The compiler keeps one fact about each program instead:
+ `FactKey::Raisable(root)`, held as a `Raisable` (`src/compiler2/identity.rs`)
+ per root, which records for each `RaiseKind` the exception modules a raise of
+-that kind can hand over and whether it can also hand over any other value. A
++that kind can hand over, whether it can hand over an Erlang reason (an atom
++or a tuple), and whether it can also hand over any other value. A
+ program is a root: the one the CLI runs, or a macro's compiled program, which
+ runs while other modules are being defined. A raise reaches only the handlers
+ of the program that makes it, so a macro's handlers never wait on the program
+ that expands the macro. The fact only grows. `World::raisable_ty(root, kind)`
+ reads it as a type: `None` while the program raises nothing of that kind, the union of one struct per exception module with
+-only `__exception__: true` known, or `any` once some raise of that kind hands
+-over a value that is not surely an exception.
++only `__exception__: true` known, joined with `atom | tuple` once some raise
++hands over an Erlang reason, or `any` once some raise of that kind hands over a
++value that is neither.
+ 
+ Each activation's analysis publishes what it can raise (`raises_of`,
+ `src/compiler2/jobs/semantic.rs`) into its own root's fact, through
+@@ -259,9 +265,9 @@ Each activation's analysis publishes what it can raise (`raises_of`,
+ 
+ | the activation | raises |
+ |---|---|
+-| has a decision the types leave able to fail, or a protocol call that can miss | `error`, the plan's `LastResort` exception |
+-| has a call on a module value that can reach no function | `error`, `UndefinedFunctionError` and `ArgumentError` |
+-| is an extern declared `raises: Mod` | `error`, `Mod` |
++| has a decision the types leave able to fail | `error`, an Erlang reason; a protocol call that can miss, the `Protocol.UndefinedError` struct |
++| has a call on a module value that can reach no function | `error`, an Erlang reason and `ArgumentError` |
++| is an extern declared `raises: Mod` | `error`, `Mod`, or an Erlang reason when `Mod` is one Elixir raises as a reason |
+ | is an extern declared `delivers: kind` (`fz_panic`, `fz_throw`, `fz_exit`) | `kind`, what the type of its first argument says (`World::raised_by`) |
+ 
+ `World::raised_by` reads an argument type through `Types::listed_structs`: a
+@@ -288,6 +294,61 @@ entry the CLI runs. `a_program_that_raises_nothing_compiles_no_handler`,
+ `the_uncaught_banner_calls_only_the_exceptions_the_program_can_raise`
+ (`src/compiler2/drive_test.rs`) pin the three cases.
+ 
++## What a catch clause sees
++
++Elixir raises Erlang's reason and a `rescue` normalises it, so fz does the
++same. A decision that runs out of clauses, an arithmetic failure and the like
++raise the reason Erlang gives (`LastResort::Reason`,
++`src/dispatch_matrix/pattern/last_resort.rs`); a program's `raise` raises the
++struct it names, which stays a struct for every handler.
++
++| failure | reason raised |
++|---|---|
++| no function clause matches | `{:__fz_function_clause__, module, function, arity}` |
++| `case` with no clause | `{:case_clause, term}` |
++| `=` that does not match | `{:badmatch, term}` |
++| `cond` with no true condition | `:cond_clause` |
++| `with` with no `else` clause | `{:else_clause, term}` |
++| `try` with no `else` clause | `{:try_clause, term}` |
++| `and` or `or` of a non-boolean | `{:badbool, operator, term}` |
++| arithmetic on a bad argument | `:badarith` |
++| a map operation on a non-map | `{:badmap, term}` |
++| a bad argument | `:badarg` |
++| a call that reaches no function | `{:__fz_undefined_function__, module, function, arity, message}` |
++
++The two tagged reasons are fz's own: Elixir keeps the function in the
++stacktrace, which fz does not carry, so the reason holds it, and the private
++tag keeps a tuple a program writes from being mistaken for one.
++
++Two functions in `lib/exception.fz` and the `__from_reason__/1` of each
++exception module are the only places the mapping lives. The type of a tuple
++reason is its tag with every other element `any` (`reason_ty`), so the module
++and function of a failed clause add no clause to the union of reasons a
++program raises:
++
++- `Exception.__normalize__/1` is what a `rescue` sees of a raised value
++  (`push_exception_call`, computed once as the `rescued` subject, only for a
++  `try` with a `rescue`): an exception is itself, a reason above is its
++  exception (`:badarith` is `%ArithmeticError{}`, `{:badmatch, t}` is
++  `%MatchError{term: t}`), and any other value is `%ErlangError{original:
++  value}`. It is total, so the rows need no wrap case. The module is chosen
++  by `exception_module/1` from the reason's shape and built by that module's
++  own `__from_reason__/1` (`lib/exceptions/*.fz`), so the call's result type is
++  the structs of the reasons that reach it and a program defines only the
++  exception modules its reasons can name. A rescued
++  `FunctionClauseError` has `args: nil` and its message names the function
++  without an argument list, as Elixir's does when it has no stacktrace.
++- `Exception.__erlang_reason__/1` is what a `catch` sees (the `reason`
++  subject, only for a `try` with a `catch`): the two tagged reasons become
++  `:function_clause` and `:undef`; every other value, struct or not, is its
++  own reason.
++
++The program's entry and a `spawn`ed function are `rescue raised ->
++Exception.__uncaught__(raised)`, so the banner prints the normalised
++exception: `** (FunctionClauseError) no function clause matching in
++Main.one/1`, with no argument list. `:erlang.error/1` and
++`:erlang.raise(:error, reason, _)` raise the reason they are given.
++
+ ## `after` and `else`
+ 
+ Neither adds a runtime concept. Both are written in the vocabulary above, in the
+diff --git a/fixtures/01913_a_catch_clause_sees_the_erlang_reason_of_a_failed_clause_match_or_arithmetic.expected.txt b/fixtures/01913_a_catch_clause_sees_the_erlang_reason_of_a_failed_clause_match_or_arithmetic.expected.txt
+new file mode 100644
+index 000000000..22b2dcca3
+--- /dev/null
++++ b/fixtures/01913_a_catch_clause_sees_the_erlang_reason_of_a_failed_clause_match_or_arithmetic.expected.txt
+@@ -0,0 +1,15 @@
++{:error, :function_clause}
++{:error, :badarith}
++{:error, {:badmatch, :b}}
++{:error, {:case_clause, :no}}
++{:error, :cond_clause}
++{:error, {:else_clause, :other}}
++{:error, {:try_clause, :unexpected}}
++{:error, {:badbool, :and, 1}}
++{:throw, :ball}
++{:exit, :gone}
++{:error, %RuntimeError{message: "text"}}
++{:error, :boom}
++{:error, {:badmatch, 1}}
++{:error, %MatchError{term: 1}}
++{:error, %ArgumentError{message: "text"}}
+diff --git a/fixtures/01913_a_catch_clause_sees_the_erlang_reason_of_a_failed_clause_match_or_arithmetic.fz b/fixtures/01913_a_catch_clause_sees_the_erlang_reason_of_a_failed_clause_match_or_arithmetic.fz
+new file mode 100644
+index 000000000..f18e83830
+--- /dev/null
++++ b/fixtures/01913_a_catch_clause_sees_the_erlang_reason_of_a_failed_clause_match_or_arithmetic.fz
+@@ -0,0 +1,72 @@
++#---
++# purpose: "catch :error, reason binds the Erlang term (:function_clause, {:badmatch, v}, {:case_clause, v}, ...) of an error the compiler raises, and the struct of one a program raises"
++# oracle: self
++# oracle.stamp: e4762cf646622321
++#---
++defmodule Main do
++  def one(1), do: :one
++
++  def quotient(a, b), do: div(a, b)
++
++  def match(a), do: {:ok, _} = a
++
++  def pick(a) do
++    case a do
++      :yes -> 1
++    end
++  end
++
++  def conditions(a) do
++    cond do
++      a == 1 -> :one
++    end
++  end
++
++  def withed(a) do
++    with :ok <- a do
++      :done
++    else
++      :fine -> :unreachable
++    end
++  end
++
++  def elsed(a) do
++    try do
++      a
++    catch
++      _, _ -> :unreachable
++    else
++      :expected -> :unreachable
++    end
++  end
++
++  def both(a, b), do: a and b
++
++  def caught(fun) do
++    try do
++      fun.()
++    catch
++      kind, reason -> {kind, reason}
++    end
++  end
++
++  def main() do
++    IO.inspect(caught(fn -> one(2) end))
++    IO.inspect(caught(fn -> quotient(1, 0) end))
++    IO.inspect(caught(fn -> match(:b) end))
++    IO.inspect(caught(fn -> pick(:no) end))
++    IO.inspect(caught(fn -> conditions(2) end))
++    IO.inspect(caught(fn -> withed(:other) end))
++    IO.inspect(caught(fn -> elsed(:unexpected) end))
++    IO.inspect(caught(fn -> both(1, true) end))
++    IO.inspect(caught(fn -> throw(:ball) end))
++    IO.inspect(caught(fn -> exit(:gone) end))
++    IO.inspect(caught(fn -> raise "text" end))
++    IO.inspect(caught(fn -> :erlang.error(:boom) end))
++    IO.inspect(caught(fn -> :erlang.error({:badmatch, 1}) end))
++    IO.inspect(caught(fn -> raise %MatchError{term: 1} end))
++    IO.inspect(caught(fn -> raise ArgumentError, "text" end))
++  end
++end
++
++Main.main()
+diff --git a/fixtures/01914_a_rescue_clause_sees_the_exception_of_an_erlang_reason_raised_again.expected.stderr b/fixtures/01914_a_rescue_clause_sees_the_exception_of_an_erlang_reason_raised_again.expected.stderr
+new file mode 100644
+index 000000000..869b6f4a2
+--- /dev/null
++++ b/fixtures/01914_a_rescue_clause_sees_the_exception_of_an_erlang_reason_raised_again.expected.stderr
+@@ -0,0 +1 @@
++** (FunctionClauseError) no function clause matching in Main.one/1
+diff --git a/fixtures/01914_a_rescue_clause_sees_the_exception_of_an_erlang_reason_raised_again.expected.txt b/fixtures/01914_a_rescue_clause_sees_the_exception_of_an_erlang_reason_raised_again.expected.txt
+new file mode 100644
+index 000000000..71bbc92a2
+--- /dev/null
++++ b/fixtures/01914_a_rescue_clause_sees_the_exception_of_an_erlang_reason_raised_again.expected.txt
+@@ -0,0 +1,7 @@
++{:function_clause, FunctionClauseError}
++{:match, :b}
++{:function_clause, FunctionClauseError}
++{:match, 3}
++{:erlang, :boom}
++{:function_clause, FunctionClauseError}
++{:match, 4}
+diff --git a/fixtures/01914_a_rescue_clause_sees_the_exception_of_an_erlang_reason_raised_again.fz b/fixtures/01914_a_rescue_clause_sees_the_exception_of_an_erlang_reason_raised_again.fz
+new file mode 100644
+index 000000000..2da6c24d0
+--- /dev/null
++++ b/fixtures/01914_a_rescue_clause_sees_the_exception_of_an_erlang_reason_raised_again.fz
+@@ -0,0 +1,42 @@
++#---
++# purpose: "rescue normalises an Erlang reason to its exception, and an uncaught function clause names the function"
++# expect: abort
++# oracle: self
++# oracle.stamp: 093b668f6949807f
++#---
++defmodule Main do
++  def one(1), do: :one
++
++  def match(a), do: {:ok, _} = a
++
++  def again(fun) do
++    try do
++      fun.()
++    catch
++      kind, reason -> :erlang.raise(kind, reason, __STACKTRACE__)
++    end
++  end
++
++  def rescued(fun) do
++    try do
++      fun.()
++    rescue
++      e in FunctionClauseError -> {:function_clause, e.__struct__}
++      e in MatchError -> {:match, e.term}
++      e in ErlangError -> {:erlang, e.original}
++    end
++  end
++
++  def main() do
++    IO.inspect(rescued(fn -> again(fn -> one(2) end) end))
++    IO.inspect(rescued(fn -> again(fn -> match(:b) end) end))
++    IO.inspect(rescued(fn -> :erlang.error(:function_clause) end))
++    IO.inspect(rescued(fn -> :erlang.error({:badmatch, 3}) end))
++    IO.inspect(rescued(fn -> :erlang.error(:boom) end))
++    IO.inspect(rescued(fn -> one(2) end))
++    IO.inspect(rescued(fn -> raise %MatchError{term: 4} end))
++    one(2)
++  end
++end
++
++Main.main()
+diff --git a/lib/erlang.fz b/lib/erlang.fz
+index 0a20c08a3..31451e29c 100644
+--- a/lib/erlang.fz
++++ b/lib/erlang.fz
+@@ -33,9 +33,10 @@ defmodule :erlang do
+ 
+   @doc """
+   Raises `reason` with the kind `:error`, as `panic/1` does. A `rescue`
+-  sees an exception unchanged and any other value as an `ErlangError`
+-  whose `original` is that value; `catch :error, value` sees the value
+-  itself.
++  sees an exception unchanged, an Erlang reason that is the normal form of
++  an exception (`:function_clause`, `{:badmatch, term}`, ...) as that
++  exception, and any other value as an `ErlangError` whose `original` is
++  that value; `catch :error, value` sees `reason` itself.
+ 
+   ## Examples
+ 
+diff --git a/lib/exception.fz b/lib/exception.fz
+index 77d0d5fff..79cfda57c 100644
+--- a/lib/exception.fz
++++ b/lib/exception.fz
+@@ -13,14 +13,75 @@ defmodule Exception do
+   @spec message(any) :: any
+   def message(exception), do: exception.__struct__.message(exception)
+ 
++  @doc """
++  Returns the exception a `rescue` sees of a raised value, as Elixir's
++  `Exception.normalize/3` does for `:error`. An exception is itself. An Erlang
++  reason that is the normal form of an exception (`:function_clause`,
++  `{:badmatch, term}`, ...) is that exception. Any other value is an
++  `ErlangError` holding it. The two reasons fz tags itself carry what Elixir
++  keeps in the stacktrace: the module, function and arity of a function clause
++  and of an undefined call.
++
++  ## Examples
++
++      Exception.__normalize__({:badmatch, :b})
++      #=> %MatchError{term: :b}
++
++      Exception.__normalize__(:boom)
++      #=> %ErlangError{original: :boom}
++
++  """
++  # An exception is built by its own module, chosen by the reason's shape, so a
++  # program defines only the exceptions its reasons are of, and the call's
++  # result is the struct of exactly those modules.
++  @spec __normalize__(any) :: any
++  def __normalize__(%{__exception__: true} = exception), do: exception
++  def __normalize__(reason), do: exception_module(reason).__from_reason__(reason)
++
++  @spec exception_module(any) :: atom
++  defp exception_module({:__fz_function_clause__, _module, _function, _arity}), do: FunctionClauseError
++  defp exception_module({:__fz_undefined_function__, _module, _function, _arity, _message}), do: UndefinedFunctionError
++  defp exception_module({:case_clause, _term}), do: CaseClauseError
++  defp exception_module({:badmatch, _term}), do: MatchError
++  defp exception_module(:cond_clause), do: CondClauseError
++  defp exception_module({:else_clause, _term}), do: WithClauseError
++  defp exception_module({:try_clause, _term}), do: TryClauseError
++  defp exception_module({:badbool, _operator, _term}), do: BadBooleanError
++  defp exception_module({:badmap, _term}), do: BadMapError
++  defp exception_module(:badarith), do: ArithmeticError
++  defp exception_module(:badarg), do: ArgumentError
++  defp exception_module(:function_clause), do: FunctionClauseError
++  defp exception_module(:undef), do: UndefinedFunctionError
++  defp exception_module(_reason), do: ErlangError
++
++  @doc """
++  Returns the reason a `catch :error, reason` clause binds for a raised
++  `value`: the Erlang reason Elixir raises. The reasons fz tags itself are
++  trimmed to the atoms Elixir shows, `:function_clause` and `:undef`; every
++  other value, exception structs included, is its own reason.
++
++  ## Examples
++
++      Exception.__erlang_reason__({:__fz_function_clause__, nil, :f, 1})
++      #=> :function_clause
++
++      Exception.__erlang_reason__(%MatchError{term: :b})
++      #=> %MatchError{term: :b}
++
++  """
++  @spec __erlang_reason__(any) :: any
++  def __erlang_reason__({:__fz_function_clause__, _module, _function, _arity}), do: :function_clause
++  def __erlang_reason__({:__fz_undefined_function__, _module, _function, _arity, _message}), do: :undef
++  def __erlang_reason__(value), do: value
++
+   @doc """
+   Ends the current process the way an error nothing rescued ends it, printing
+-  the line Elixir prints: the exception's name and its message. A value that
+-  is not an exception is shown as an `ErlangError`.
++  the line Elixir prints: the exception's name and its message. It takes the
++  exception a `rescue` binds, which `__normalize__/1` makes of any raised
++  value.
+   """
+   @spec __uncaught__(any) :: no_return()
+   def __uncaught__(%{__exception__: true, __struct__: module} = exception) when is_atom(module), do: banner(module, exception)
+-  def __uncaught__(reason), do: banner(ErlangError, %ErlangError{original: reason})
+ 
+   @spec banner(atom, any) :: no_return()
+   defp banner(module, exception), do: fz_fail("** (" <> inspect(module) <> ") " <> message(exception))
+diff --git a/lib/exceptions/argument_error.fz b/lib/exceptions/argument_error.fz
+index 5f5d0585e..819637e7a 100644
+--- a/lib/exceptions/argument_error.fz
++++ b/lib/exceptions/argument_error.fz
+@@ -1,3 +1,7 @@
+ defmodule ArgumentError do
+   defexception message: "argument error"
++
++  # What `Exception.__normalize__/1` makes of the Erlang reason this
++  # module is the exception of.
++  def __from_reason__(:badarg), do: %ArgumentError{}
+ end
+diff --git a/lib/exceptions/arithmetic_error.fz b/lib/exceptions/arithmetic_error.fz
+index 594e612bb..e35d69505 100644
+--- a/lib/exceptions/arithmetic_error.fz
++++ b/lib/exceptions/arithmetic_error.fz
+@@ -1,3 +1,7 @@
+ defmodule ArithmeticError do
+   defexception message: "bad argument in arithmetic expression"
++
++  # What `Exception.__normalize__/1` makes of the Erlang reason this
++  # module is the exception of.
++  def __from_reason__(:badarith), do: %ArithmeticError{}
+ end
+diff --git a/lib/exceptions/bad_boolean_error.fz b/lib/exceptions/bad_boolean_error.fz
+index ce53ee39c..7fdb5dd33 100644
+--- a/lib/exceptions/bad_boolean_error.fz
++++ b/lib/exceptions/bad_boolean_error.fz
+@@ -1,6 +1,10 @@
+ defmodule BadBooleanError do
+   defexception [:term, :operator]
+ 
++  # What `Exception.__normalize__/1` makes of the Erlang reason this
++  # module is the exception of.
++  def __from_reason__({:badbool, operator, term}), do: %BadBooleanError{operator: operator, term: term}
++
+   def message(%{term: term, operator: operator}),
+     do: Exception.__format_message_with_term__("expected a boolean on left-side of \"#{operator}\", got:", term)
+ end
+diff --git a/lib/exceptions/bad_map_error.fz b/lib/exceptions/bad_map_error.fz
+index 1588d5efc..a3083f44e 100644
+--- a/lib/exceptions/bad_map_error.fz
++++ b/lib/exceptions/bad_map_error.fz
+@@ -1,5 +1,9 @@
+ defmodule BadMapError do
+   defexception [:term]
+ 
++  # What `Exception.__normalize__/1` makes of the Erlang reason this
++  # module is the exception of.
++  def __from_reason__({:badmap, term}), do: %BadMapError{term: term}
++
+   def message(exception), do: Exception.__format_message_with_term__("expected a map, got:", exception.term)
+ end
+diff --git a/lib/exceptions/case_clause_error.fz b/lib/exceptions/case_clause_error.fz
+index 1c1e93908..e54bf4ae8 100644
+--- a/lib/exceptions/case_clause_error.fz
++++ b/lib/exceptions/case_clause_error.fz
+@@ -1,5 +1,9 @@
+ defmodule CaseClauseError do
+   defexception [:term]
+ 
++  # What `Exception.__normalize__/1` makes of the Erlang reason this
++  # module is the exception of.
++  def __from_reason__({:case_clause, term}), do: %CaseClauseError{term: term}
++
+   def message(%{term: term}), do: Exception.__format_message_with_term__("no case clause matching:", term)
+ end
+diff --git a/lib/exceptions/cond_clause_error.fz b/lib/exceptions/cond_clause_error.fz
+index 77858c9c4..434cc66ed 100644
+--- a/lib/exceptions/cond_clause_error.fz
++++ b/lib/exceptions/cond_clause_error.fz
+@@ -1,5 +1,9 @@
+ defmodule CondClauseError do
+   defexception []
+ 
++  # What `Exception.__normalize__/1` makes of the Erlang reason this
++  # module is the exception of.
++  def __from_reason__(:cond_clause), do: %CondClauseError{}
++
+   def message(_exception), do: "no cond clause evaluated to a truthy value"
+ end
+diff --git a/lib/exceptions/erlang_error.fz b/lib/exceptions/erlang_error.fz
+index b15c2443e..581dc54a6 100644
+--- a/lib/exceptions/erlang_error.fz
++++ b/lib/exceptions/erlang_error.fz
+@@ -1,6 +1,10 @@
+ defmodule ErlangError do
+   defexception [:original, :reason]
+ 
++  # What `Exception.__normalize__/1` makes of the Erlang reason this
++  # module is the exception of.
++  def __from_reason__(reason), do: %ErlangError{original: reason}
++
+   def message(%{original: original, reason: nil}), do: "Erlang error: " <> inspect(original)
+   def message(%{original: original, reason: reason}), do: "Erlang error: " <> inspect(original) <> reason
+ end
+diff --git a/lib/exceptions/function_clause_error.fz b/lib/exceptions/function_clause_error.fz
+index 9526c6fb5..4d2fe1618 100644
+--- a/lib/exceptions/function_clause_error.fz
++++ b/lib/exceptions/function_clause_error.fz
+@@ -1,6 +1,11 @@
+ defmodule FunctionClauseError do
+   defexception [:module, :function, :arity, :kind, :args, :clauses]
+ 
++  # What `Exception.__normalize__/1` makes of the Erlang reason this
++  # module is the exception of.
++  def __from_reason__({:__fz_function_clause__, module, function, arity}), do: %FunctionClauseError{module: module, function: function, arity: arity}
++  def __from_reason__(:function_clause), do: %FunctionClauseError{}
++
+   def message(%{function: nil}), do: "no function clause matches"
+ 
+   def message(%{module: nil, function: function, arity: arity}),
+diff --git a/lib/exceptions/match_error.fz b/lib/exceptions/match_error.fz
+index 02f03f16f..786129e96 100644
+--- a/lib/exceptions/match_error.fz
++++ b/lib/exceptions/match_error.fz
+@@ -1,5 +1,9 @@
+ defmodule MatchError do
+   defexception [:term]
+ 
++  # What `Exception.__normalize__/1` makes of the Erlang reason this
++  # module is the exception of.
++  def __from_reason__({:badmatch, term}), do: %MatchError{term: term}
++
+   def message(%{term: term}), do: Exception.__format_message_with_term__("no match of right hand side value:", term)
+ end
+diff --git a/lib/exceptions/try_clause_error.fz b/lib/exceptions/try_clause_error.fz
+index 1d3ba7e1f..56a5041c2 100644
+--- a/lib/exceptions/try_clause_error.fz
++++ b/lib/exceptions/try_clause_error.fz
+@@ -1,5 +1,9 @@
+ defmodule TryClauseError do
+   defexception [:term]
+ 
++  # What `Exception.__normalize__/1` makes of the Erlang reason this
++  # module is the exception of.
++  def __from_reason__({:try_clause, term}), do: %TryClauseError{term: term}
++
+   def message(%{term: term}), do: Exception.__format_message_with_term__("no try clause matching:", term)
+ end
+diff --git a/lib/exceptions/undefined_function_error.fz b/lib/exceptions/undefined_function_error.fz
+index 5e7bf893a..ec28881a2 100644
+--- a/lib/exceptions/undefined_function_error.fz
++++ b/lib/exceptions/undefined_function_error.fz
+@@ -1,6 +1,11 @@
+ defmodule UndefinedFunctionError do
+   defexception [:module, :function, :arity, :reason, :message]
+ 
++  # What `Exception.__normalize__/1` makes of the Erlang reason this
++  # module is the exception of.
++  def __from_reason__({:__fz_undefined_function__, module, function, arity, message}), do: %UndefinedFunctionError{module: module, function: function, arity: arity, message: message}
++  def __from_reason__(:undef), do: %UndefinedFunctionError{}
++
+   def message(%{message: nil, reason: reason, module: module, function: function, arity: arity}),
+     do: undefined(reason, module, function, arity)
+ 
+diff --git a/lib/exceptions/with_clause_error.fz b/lib/exceptions/with_clause_error.fz
+index 042e30fdc..92dc83735 100644
+--- a/lib/exceptions/with_clause_error.fz
++++ b/lib/exceptions/with_clause_error.fz
+@@ -1,5 +1,9 @@
+ defmodule WithClauseError do
+   defexception [:term]
+ 
++  # What `Exception.__normalize__/1` makes of the Erlang reason this
++  # module is the exception of.
++  def __from_reason__({:else_clause, term}), do: %WithClauseError{term: term}
++
+   def message(%{term: term}), do: Exception.__format_message_with_term__("no with clause matching:", term)
+ end
+diff --git a/lib/json.fz b/lib/json.fz
+index 350d1c6a2..4d613686f 100644
+--- a/lib/json.fz
++++ b/lib/json.fz
+@@ -209,7 +209,7 @@ defmodule JSON do
+   defp encode_into(v, acc) when is_integer(v), do: acc <> Integer.to_string(v)
+   defp encode_into(v, acc) when is_float(v), do: acc <> Float.to_string(v)
+   defp encode_into(v, acc) when is_binary(v), do: walk(v, v, acc <> "\"") <> "\""
+-  defp encode_into(v, _acc) when is_bitstring(v), do: raise(%FunctionClauseError{module: :elixir_json, function: :encode_binary, arity: 1})
++  defp encode_into(v, _acc) when is_bitstring(v), do: panic({:__fz_function_clause__, :elixir_json, :encode_binary, 1})
+   defp encode_into(v, acc) when is_atom(v), do: encode_into(Atom.to_string(v), acc)
+   defp encode_into(v, acc) when is_list(v), do: elements(v, acc <> "[") <> "]"
+   defp encode_into(v, acc) when is_map(v), do: pairs(Map.to_list(v), acc <> "{") <> "}"
+diff --git a/lib/kernel.fz b/lib/kernel.fz
+index d533b0890..6f8bae3df 100644
+--- a/lib/kernel.fz
++++ b/lib/kernel.fz
+@@ -731,8 +731,8 @@ defmodule Kernel do
+     fz_spawn(fn ->
+       try do
+         fun.()
+-      catch
+-        :error, reason -> Exception.__uncaught__(reason)
++      rescue
++        raised -> Exception.__uncaught__(raised)
+       end
+     end)
+   end
+@@ -846,7 +846,7 @@ defmodule Kernel do
+   # be missed. The default clause returns `never`, so it adds nothing to the
+   # result type.
+   @spec arithmetic_error() :: no_return()
+-  defp arithmetic_error(), do: raise(%ArithmeticError{message: "bad argument in arithmetic expression"})
++  defp arithmetic_error(), do: panic(:badarith)
+ 
+   @doc """
+   Concatenates two binaries.
+@@ -1573,7 +1573,7 @@ defmodule Kernel do
+   """
+   @spec map_size(any) :: integer
+   def map_size(map) when is_map(map), do: fz_map_count(map)
+-  def map_size(map), do: raise(%BadMapError{term: map})
++  def map_size(map), do: panic({:badmap, map})
+ 
+   extern "fz" defp fz_map_count(any) :: integer
+ 
+diff --git a/lib/map.fz b/lib/map.fz
+index bf97697d9..8846f657f 100644
+--- a/lib/map.fz
++++ b/lib/map.fz
+@@ -145,7 +145,7 @@ defmodule Map do
+     case map do
+       %{^k => v} -> taken(map, t, [{k, v} | acc])
+       %{} -> taken(map, t, acc)
+-      other -> raise(%BadMapError{term: other})
++      other -> panic({:badmap, other})
+     end
+   end
+ 
+@@ -225,7 +225,7 @@ defmodule Map do
+     case map do
+       %{^key => value} -> value
+       %{} -> default
+-      other -> raise(%BadMapError{term: other})
++      other -> panic({:badmap, other})
+     end
+   end
+ 
+@@ -251,7 +251,7 @@ defmodule Map do
+     case map do
+       %{^key => value} -> {:ok, value}
+       %{} -> :error
+-      other -> raise(%BadMapError{term: other})
++      other -> panic({:badmap, other})
+     end
+   end
+ 
+@@ -270,7 +270,7 @@ defmodule Map do
+     case map do
+       %{^key => value} -> value
+       %{} -> key_error(map, key)
+-      other -> raise(%BadMapError{term: other})
++      other -> panic({:badmap, other})
+     end
+   end
+ 
+@@ -327,7 +327,7 @@ defmodule Map do
+     case map do
+       %{^key => value} -> put(map, key, fun.(value))
+       %{} -> key_error(map, key)
+-      other -> raise(%BadMapError{term: other})
++      other -> panic({:badmap, other})
+     end
+   end
+ 
+@@ -349,7 +349,7 @@ defmodule Map do
+     case map do
+       %{^key => _} -> put(map, key, value)
+       %{} -> map
+-      other -> raise(%BadMapError{term: other})
++      other -> panic({:badmap, other})
+     end
+   end
+ 
+@@ -373,7 +373,7 @@ defmodule Map do
+     case map do
+       %{^key => _} -> put(map, key, value)
+       %{} -> key_error(map, key)
+-      other -> raise(%BadMapError{term: other})
++      other -> panic({:badmap, other})
+     end
+   end
+ 
+@@ -397,7 +397,7 @@ defmodule Map do
+     case map do
+       %{^key => value} -> put(map, key, fun.(value))
+       %{} -> put(map, key, default)
+-      other -> raise(%BadMapError{term: other})
++      other -> panic({:badmap, other})
+     end
+   end
+ 
+@@ -472,7 +472,7 @@ defmodule Map do
+   """
+   @spec has_key?(any, any) :: boolean
+   def has_key?(map, key) when is_map(map), do: fz_map_has_key(map, key)
+-  def has_key?(map, _key), do: raise(%BadMapError{term: map})
++  def has_key?(map, _key), do: panic({:badmap, map})
+ 
+   extern "fz" defp fz_map_has_key(any, stored_value) :: boolean
+ 
+diff --git a/runtime/src/failure.rs b/runtime/src/failure.rs
+index 25a4e0085..72c1889a8 100644
+--- a/runtime/src/failure.rs
++++ b/runtime/src/failure.rs
+@@ -51,6 +51,17 @@ use std::slice;
+ /// The field whose `true` marks a struct as an exception.
+ pub const EXCEPTION_FIELD: &str = "__exception__";
+ 
++/// The atom that opens the reason of a function clause that matched no
++/// arguments: `{FUNCTION_CLAUSE_TAG, module, function, arity}`.
++/// `Exception.__normalize__/1` turns it into a `FunctionClauseError`, and a
++/// `catch` sees it as `:function_clause`.
++pub const FUNCTION_CLAUSE_TAG: &str = "__fz_function_clause__";
++
++/// The atom that opens the reason of a call that reached no function:
++/// `{UNDEFINED_FUNCTION_TAG, module, function, arity, message}`. Erlang's
++/// reason is `:undef`, which a `catch` sees.
++pub const UNDEFINED_FUNCTION_TAG: &str = "__fz_undefined_function__";
++
+ /// The three kinds of raise. They share one route: a handler receives the kind
+ /// as the atom named by `name`, beside the raised value.
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+@@ -408,17 +419,22 @@ pub fn raise_undefined_function(
+         format!("function {called} is undefined (module {shown} is not available)")
+     };
+     let message = text(process, &message);
+-    raise_exception(
+-        process,
+-        atom(process, "Elixir.UndefinedFunctionError"),
+-        &[
+-            ("module", receiver),
+-            ("function", function),
+-            ("arity", AnyValue::Int(arity)),
+-            ("reason", atom(process, "nil")),
+-            ("message", message),
+-        ],
+-    );
++    let tag = atom(process, UNDEFINED_FUNCTION_TAG);
++    let reason = tuple(process, &[tag, receiver, function, AnyValue::Int(arity), message]);
++    raise(process, RaiseKind::Error, reason);
++}
++
++/// A tuple of `items` on the process heap, as a value word.
++fn tuple(process: *mut Process, items: &[AnyValue]) -> u64 {
++    let process = unsafe { &mut *process };
++    let schema = process.heap.register_schema(Schema::tuple_of_arity(items.len()));
++    let object = process.heap.alloc_struct(schema);
++    for (index, item) in items.iter().enumerate() {
++        unsafe { process.heap.write_field_slot(object, (index * 8) as u32, *item) };
++    }
++    AnyValueRef::from_heap_object(ValueKind::STRUCT, object)
++        .expect("a tuple ref")
++        .raw_word()
+ }
+ 
+ fn not_a_module_message(receiver: &str, function: &str, arity: i64) -> String {
+diff --git a/src/compiler2/canon.rs b/src/compiler2/canon.rs
+index 271518bd6..4b4caa781 100644
+--- a/src/compiler2/canon.rs
++++ b/src/compiler2/canon.rs
+@@ -1515,6 +1515,7 @@ impl ProgramCanon<'_> {
+                     .join(", ");
+                 out.put(&format!("raises {exception} {{{fields}}}"));
+             }
++            Some(LastResort::Reason(reason)) => out.put(&format!("raises {reason:?}")),
+             Some(LastResort::Reraise) => out.put("reraises input 0 as kind, input 1 as value"),
+             None => {}
+         }
+diff --git a/src/compiler2/canon_test.rs b/src/compiler2/canon_test.rs
+index e6c86643f..3793dfb4c 100644
+--- a/src/compiler2/canon_test.rs
++++ b/src/compiler2/canon_test.rs
+@@ -434,7 +434,7 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
+             // The ring's `got == 5` compares a mailbox value, so all three
+             // reachable `==` clauses emit: `fz_op_eq_ii`, `fz_op_eq_fi` and
+             // the `any`/`any` `fz_op_eq`.
+-            42,
++            47,
+         ),
+         (
+             571, // enum_predicate_search
+diff --git a/src/compiler2/drive_test.rs b/src/compiler2/drive_test.rs
+index ee3bdec5e..14cf28be8 100644
+--- a/src/compiler2/drive_test.rs
++++ b/src/compiler2/drive_test.rs
+@@ -1439,7 +1439,7 @@ fn entry_dispatch_decides_a_lane_form_tuple_without_reboxing_it() {
+ }
+ 
+ #[test]
+-fn a_decision_that_fails_builds_the_struct_it_raises_with_no_list_of_its_fields() {
++fn a_decision_that_fails_builds_the_reason_it_raises_with_no_list_of_its_fields() {
+     let tel = ConfiguredTelemetry::new();
+     let native = NativeProgramCapture::new();
+     native.install(&tel);
+@@ -1480,15 +1480,14 @@ fn a_decision_that_fails_builds_the_struct_it_raises_with_no_list_of_its_fields(
+     assert!(!raising.is_empty(), "the case's miss raises");
+     for (block, raised) in raising {
+         let built = block.stmts.iter().find_map(|stmt| match stmt {
+-            IrStmt::Let(var, IrPrim::MakeStruct { module, fields }) if *var == raised => Some((module, fields)),
++            IrStmt::Let(var, IrPrim::MakeTuple(items)) if *var == raised => Some(items),
+             _ => None,
+         });
+-        let (module, fields) = built.expect("the raised value is a struct the block builds");
+-        assert_eq!(module.to_string(), "CaseClauseError");
++        let items = built.expect("the raised value is a reason tuple the block builds");
+         assert_eq!(
+-            fields.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(),
+-            ["__exception__", "term"],
+-            "the struct holds each field its module declares, in the module's order"
++            items.len(),
++            2,
++            "a case clause's reason is `{{:case_clause, term}}`: its tag and the value that missed"
+         );
+         assert!(
+             !block
+@@ -24080,11 +24079,10 @@ fn called_modules(settled: &Settled) -> Vec<String> {
+ }
+ 
+ /// The built-in exceptions are library modules, defined when something names
+-/// them. An uncaught exception is asked for its message through its module, so
+-/// a program defines the exceptions it can raise: here the `KeyError` it
+-/// writes and the four the library code it reaches can raise, and none of the
+-/// other seventeen. `Exception.message` is called on the `KeyError` alone, so
+-/// no module without `message/1` is a target of its call.
++/// them. A program defines the exceptions it can raise: here the `KeyError` it
++/// writes and the four the library code it reaches can raise, whether as
++/// structs or as the reasons `rescue` normalises to them, and none of the
++/// other seventeen.
+ #[test]
+ fn a_program_defines_only_the_exception_modules_it_can_raise() {
+     let settled = Drive::fixture(1152).settle();
+@@ -24114,26 +24112,32 @@ fn a_program_that_raises_nothing_compiles_no_handler() {
+ }
+ 
+ /// A handler is analysed once for each kind of raise the program can make. A
+-/// program that only throws runs its `catch :throw` clause, and the clause
++/// program that only throws runs its `catch :throw` clause, and the banner
+ /// that reports an uncaught error has no raise to run on.
+ #[test]
+ fn a_program_that_only_throws_compiles_no_error_handling() {
+     let mut settled = Drive::fixture(890).program_entry().settle();
+-    let any = settled.compiler_mut().world_mut().types_mut().any();
++    let done = settled.compiler_mut().world_mut().types_mut().atom_lit("done");
+     assert_eq!(
+         raisable_tys(&mut settled),
+-        [None, Some(any), None],
++        [None, Some(done), None],
+         "a thrown atom is no exception, and nothing raises an error or exits"
+     );
++    let message = settled.functions().id_in_module("Exception", "message", 1);
+     assert!(
+-        !called_modules(&settled).contains(&"Exception".to_string()),
+-        "the entry's `catch :error` clause is never analysed"
++        settled
++            .callsites()
++            .all()
++            .into_iter()
++            .all(|record| record.key.activation.function != message),
++        "the entry's banner is never analysed"
+     );
+ }
+ 
+ /// The banner for an uncaught exception asks the exception's module for its
+-/// message. The handler is analysed on the exceptions the program can raise,
+-/// so that call chooses among exactly their modules: it reaches no module
++/// message. The handler is analysed on the exceptions the program can raise
++/// and the exceptions of the reasons it can raise, so that call chooses among
++/// exactly their modules: it reaches no module
+ /// that merely exists, and it has no arm for a module with no `message/1`.
+ #[test]
+ fn the_uncaught_banner_calls_only_the_exceptions_the_program_can_raise() {
+@@ -24141,17 +24145,10 @@ fn the_uncaught_banner_calls_only_the_exceptions_the_program_can_raise() {
+     let any = settled.compiler_mut().world_mut().types_mut().any();
+     let [error, throw, exit] = raisable_tys(&mut settled);
+     let error = error.expect("the program can raise an error");
+-    assert_ne!(error, any, "every error this program raises is a known exception");
+-    let mut raisable = settled
+-        .world()
+-        .types()
+-        .listed_structs(&error)
+-        .expect("each is a struct")
+-        .iter()
+-        .map(ToString::to_string)
+-        .collect::<Vec<_>>();
+-    raisable.sort();
+-    assert!(raisable.contains(&"KeyError".to_string()), "{raisable:?}");
++    assert_ne!(
++        error, any,
++        "every error this program raises is a struct or a known reason"
++    );
+     assert_eq!([throw, exit], [None, None]);
+ 
+     let message = settled.functions().id_in_module("Exception", "message", 1);
+@@ -24177,7 +24174,17 @@ fn the_uncaught_banner_calls_only_the_exceptions_the_program_can_raise() {
+         }
+     }
+     owners.sort();
+-    assert_eq!(owners, raisable);
++    assert_eq!(
++        owners,
++        [
++            "ArgumentError",
++            "ArithmeticError",
++            "FunctionClauseError",
++            "KeyError",
++            "Protocol.UndefinedError"
++        ],
++        "the `KeyError` the program raises and the four exceptions the library code it reaches can raise, whether as structs or as the reasons `rescue` normalises"
++    );
+ }
+ 
+ /// Captures the primary span of the last `[fz, diag, error]` diagnostic seen.
+diff --git a/src/compiler2/identity.rs b/src/compiler2/identity.rs
+index 27c6b432f..d485fa6d4 100644
+--- a/src/compiler2/identity.rs
++++ b/src/compiler2/identity.rs
+@@ -1018,31 +1018,33 @@ impl NameableModules {
+ pub(crate) enum Raised {
+     /// A struct of this exception module.
+     Exception(ModuleId),
+-    /// A value no exception module accounts for.
+-    Anything,
++    /// A value of this type that no exception module accounts for: a thrown
++    /// term, an exit reason, or an Erlang reason the compiler or runtime
++    /// raises, which `rescue` makes an exception of.
++    Value(Ty),
+ }
+ 
+ /// What a raise of one kind can hand a handler: structs of these exception
+-/// modules, in the order each was first noted, and whether it can also be
+-/// any other value. Both only grow.
++/// modules, in the order each was first noted, and values of these types.
++/// Both only grow.
+ #[derive(Debug, Default)]
+ pub(crate) struct RaisableOfKind {
+     exceptions: indexmap::IndexSet<ModuleId>,
+-    anything_else: bool,
++    values: indexmap::IndexSet<Ty>,
+ }
+ 
+ impl RaisableOfKind {
+     /// Whether no raise of this kind is known.
+     pub(crate) fn is_empty(&self) -> bool {
+-        self.exceptions.is_empty() && !self.anything_else
++        self.exceptions.is_empty() && self.values.is_empty()
+     }
+ 
+     pub(crate) fn exceptions(&self) -> impl Iterator<Item = ModuleId> + '_ {
+         self.exceptions.iter().copied()
+     }
+ 
+-    pub(crate) fn anything_else(&self) -> bool {
+-        self.anything_else
++    pub(crate) fn values(&self) -> impl Iterator<Item = Ty> + '_ {
++        self.values.iter().copied()
+     }
+ }
+ 
+@@ -1056,7 +1058,7 @@ impl Raisable {
+         let of_kind = &mut self.0[kind as usize];
+         match raised {
+             Raised::Exception(module) => of_kind.exceptions.insert(module),
+-            Raised::Anything => !std::mem::replace(&mut of_kind.anything_else, true),
++            Raised::Value(ty) => of_kind.values.insert(ty),
+         }
+     }
+ 
+diff --git a/src/compiler2/jobs/body.rs b/src/compiler2/jobs/body.rs
+index d6dc7d785..5b2947d82 100644
+--- a/src/compiler2/jobs/body.rs
++++ b/src/compiler2/jobs/body.rs
+@@ -193,11 +193,11 @@ struct ExprTry {
+     captures: Vec<ValueId>,
+ }
+ 
+-/// The clause of a `try` whose body a handler row runs: a rescue clause, which
+-/// may wrap the raised value in an `ErlangError` first, or a catch clause.
++/// The clause of a `try` whose body a handler row runs: a rescue clause or a
++/// catch clause.
+ #[derive(Debug, Clone, Copy)]
+ enum HandlerClause {
+-    Rescue { clause: usize, wraps: bool },
++    Rescue { clause: usize },
+     Catch { clause: usize },
+ }
+ 
+@@ -209,10 +209,10 @@ struct HandlerArm {
+ }
+ 
+ impl HandlerArm {
+-    fn rescue(row: PatternRow<super::super::types::Ty>, clause: usize, wraps: bool) -> Self {
++    fn rescue(row: PatternRow<super::super::types::Ty>, clause: usize) -> Self {
+         Self {
+             row,
+-            clause: HandlerClause::Rescue { clause, wraps },
++            clause: HandlerClause::Rescue { clause },
+         }
+     }
+ 
+@@ -235,7 +235,11 @@ struct TrySections<'a> {
+ }
+ 
+ const ERROR_KIND: &str = "error";
+-const ERLANG_ERROR: &str = "Elixir.ErlangError";
++const STRUCT_FIELD: &str = "__struct__";
++/// What a `rescue` clause reads of a raised value: `Exception.__normalize__/1`.
++const NORMALIZE: &str = "__normalize__";
++/// What a `catch` clause reads of a raised value: `Exception.__erlang_reason__/1`.
++const ERLANG_REASON: &str = "__erlang_reason__";
+ const STACKTRACE_OUTSIDE_A_HANDLER_CLAUSE: &str =
+     "__STACKTRACE__ is available only inside catch and rescue clauses of try expressions";
+ 
+@@ -2795,14 +2799,23 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
+             .into_iter()
+             .map(|arm| (arm.row, arm.clause))
+             .unzip();
++        let mut handler_steps = Vec::new();
++        let rescued = match rescue.is_empty() {
++            true => raised,
++            false => self.push_exception_call(span, NORMALIZE, raised, &mut handler_steps)?,
++        };
++        let reason = match catch.is_empty() {
++            true => raised,
++            false => self.push_exception_call(span, ERLANG_REASON, raised, &mut handler_steps)?,
++        };
++        let subjects = vec![params[0], raised, rescued, reason];
+         let plan = self.compile_match_dispatch(
+             if catch.is_empty() { "rescue" } else { "catch" },
+             span,
+-            params.len(),
++            subjects.len(),
+             rows,
+             Some(LastResort::reraise()),
+         )?;
+-        let mut handler_steps = Vec::new();
+         let bindings = self.lower_dispatch_bindings(&plan, env, &mut handler_steps)?;
+         let free = super::scope::handler_free_names(rescue, catch);
+         let captures = self.capture_values(free, env);
+@@ -2811,13 +2824,13 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
+             .iter()
+             .map(|outcome| {
+                 let clause = clauses[outcome.body_id as usize];
+-                self.lower_handler_arm(outcome, clause, (rescue, catch), raised, env.clone())
++                self.lower_handler_arm(outcome, clause, (rescue, catch), env.clone())
+             })
+             .collect::<Result<Vec<_>, _>>()?;
+         let dispatch_value = self.fresh_value();
+         handler_steps.push(ExprStep::Dispatch {
+             value: dispatch_value,
+-            inputs: params.clone(),
++            inputs: subjects,
+             bindings,
+             dispatch: Box::new(ExprDispatch {
+                 plan: Rc::new(plan),
+@@ -2862,9 +2875,11 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
+         Ok(block.result)
+     }
+ 
+-    /// The handler's dispatch rows over the subjects (kind, value, exception
+-    /// name): the rescue rows, then one row per catch clause, as Elixir orders
+-    /// them.
++    /// The handler's dispatch rows over the subjects (kind, the raised value,
++    /// the exception the raised value normalises to, its Erlang reason): the
++    /// rescue rows, then one row per catch clause, as Elixir orders them. A
++    /// rescue clause reads the exception, a catch clause reads the reason, and
++    /// a re-raise continues the kind and the raised value.
+     fn handler_arms(&mut self, rescue: &[RescueClause], catch: &[CatchClause]) -> Vec<HandlerArm> {
+         let mut arms = self.rescue_arms(rescue);
+         arms.extend(catch.iter().enumerate().map(|(clause, catch)| {
+@@ -2872,8 +2887,9 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
+                 PatternRow {
+                     patterns: vec![
+                         catch.kind.clone(),
+-                        catch.value.clone(),
+                         Spanned::new(Pattern::Wildcard, catch.span),
++                        Spanned::new(Pattern::Wildcard, catch.span),
++                        catch.value.clone(),
+                     ],
+                     preconditions: Vec::new(),
+                     guard: catch.guard.clone(),
+@@ -2890,57 +2906,45 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
+ 
+     /// One dispatch row per exception a rescue clause names. Rescue rows match
+     /// kind `error` only, so a throw or an exit never reaches a rescue clause.
+-    /// A clause that admits a non-exception value (`ErlangError`, or a bare
+-    /// variable) gets a wrap row matching a nil exception name; its arm wraps
+-    /// the value in an `%ErlangError{}` before the clause body runs.
++    /// The row's second subject is the normalised exception, which is always a
++    /// struct (a raised value that is none is an `ErlangError`), so a clause
++    /// that names an exception matches its `__struct__` and a bare variable
++    /// takes any.
+     fn rescue_arms(&mut self, rescue: &[RescueClause]) -> Vec<HandlerArm> {
+         let mut arms = Vec::new();
+         for (clause, rescue) in rescue.iter().enumerate() {
+             let span = rescue.span;
+             let pattern = |pattern: Pattern| Spanned::new(pattern, span);
+-            let error = pattern(Pattern::Atom(ERROR_KIND.to_string()));
+-            let bound = rescue
+-                .binding
+-                .as_ref()
+-                .map_or(Pattern::Wildcard, |binding| Pattern::Var(binding.node.clone()));
+-            let wrap_row = PatternRow {
+-                patterns: vec![error.clone(), pattern(Pattern::Wildcard), pattern(Pattern::Nil)],
++            let row = |exception: Pattern| PatternRow {
++                patterns: vec![
++                    pattern(Pattern::Atom(ERROR_KIND.to_string())),
++                    pattern(Pattern::Wildcard),
++                    pattern(exception),
++                    pattern(Pattern::Wildcard),
++                ],
+                 preconditions: Vec::new(),
+                 guard: None,
+                 body_id: 0,
+             };
++            let bound = rescue
++                .binding
++                .as_ref()
++                .map_or(Pattern::Wildcard, |binding| Pattern::Var(binding.node.clone()));
+             if rescue.exceptions.is_empty() {
+-                if rescue.binding.is_some() {
+-                    arms.push(HandlerArm::rescue(wrap_row, clause, true));
+-                }
+-                arms.push(HandlerArm::rescue(
+-                    PatternRow {
+-                        patterns: vec![error, pattern(bound), pattern(Pattern::Wildcard)],
+-                        preconditions: Vec::new(),
+-                        guard: None,
+-                        body_id: 0,
+-                    },
+-                    clause,
+-                    false,
+-                ));
++                arms.push(HandlerArm::rescue(row(bound), clause));
+                 continue;
+             }
+             for exception in &rescue.exceptions {
+                 let atom = self.world.module_alias_atom(self.namespace, &exception.node);
+-                let wraps = atom == ERLANG_ERROR;
+-                arms.push(HandlerArm::rescue(
+-                    PatternRow {
+-                        patterns: vec![error.clone(), pattern(bound.clone()), pattern(Pattern::Atom(atom))],
+-                        preconditions: Vec::new(),
+-                        guard: None,
+-                        body_id: 0,
+-                    },
+-                    clause,
+-                    false,
+-                ));
+-                if wraps {
+-                    arms.push(HandlerArm::rescue(wrap_row.clone(), clause, true));
+-                }
++                let named = Pattern::Map(vec![(
++                    pattern(Pattern::Atom(STRUCT_FIELD.to_string())),
++                    pattern(Pattern::Atom(atom)),
++                )]);
++                let matched = match &bound {
++                    Pattern::Wildcard => named,
++                    bound => Pattern::Both(Box::new(pattern(bound.clone())), Box::new(pattern(named))),
++                };
++                arms.push(HandlerArm::rescue(row(matched), clause));
+             }
+         }
+         arms
+@@ -2951,20 +2955,12 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
+         outcome: &crate::dispatch_matrix::pattern::PatternDispatchOutcome,
+         arm: HandlerClause,
+         (rescue, catch): (&[RescueClause], &[CatchClause]),
+-        raised: ValueId,
+         mut env: HashMap<Var, ValueId>,
+     ) -> Result<ExprOutcome, FatalError> {
+         let arguments = self.bind_outcome_arguments(outcome, |_| None, &mut env);
+         let mut steps = Vec::new();
+         let body = match arm {
+-            HandlerClause::Rescue { clause, wraps } => {
+-                let clause = &rescue[clause];
+-                if let (true, Some(binding)) = (wraps, &clause.binding) {
+-                    let wrapped = self.push_erlang_error(raised, &mut steps);
+-                    env.insert(binding.node.clone(), wrapped);
+-                }
+-                &clause.body
+-            }
++            HandlerClause::Rescue { clause } => &rescue[clause].body,
+             HandlerClause::Catch { clause } => &catch[clause].body,
+         };
+         self.bind_stacktrace_where_read(body, &mut env, &mut steps);
+@@ -2979,34 +2975,28 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
+         })
+     }
+ 
+-    /// `%ErlangError{original: raised}`, every field of the struct present:
+-    /// how a raised non-exception value presents itself to a rescue clause.
+-    fn push_erlang_error(&mut self, raised: ValueId, steps: &mut Vec<ExprStep>) -> ValueId {
+-        let module = self.push_const(steps, GroundValue::Atom(ERLANG_ERROR.to_string()));
+-        let flag = self.push_const(steps, GroundValue::Bool(true));
+-        let no_reason = self.push_const(steps, GroundValue::Nil);
+-        let entries = [
+-            ("__struct__", module),
+-            (fz_runtime::failure::EXCEPTION_FIELD, flag),
+-            ("original", raised),
+-            ("reason", no_reason),
+-        ]
+-        .into_iter()
+-        .map(|(key, value)| {
+-            let literal = GroundValue::Atom(key.to_string());
+-            let key = self.push_const(steps, literal.clone());
+-            (
+-                LoweredMapKey {
+-                    value: key,
+-                    literal: Some(literal),
+-                },
+-                value,
+-            )
+-        })
+-        .collect();
++    /// `Exception.<function>(raised)`: the exception a `rescue` clause reads of
++    /// what was raised, or the Erlang reason a `catch` clause reads of it.
++    fn push_exception_call(
++        &mut self,
++        span: Span,
++        function: &str,
++        raised: ValueId,
++        steps: &mut Vec<ExprStep>,
++    ) -> Result<ValueId, FatalError> {
++        let callee = self.resolve_callee(&exception_callee(function), 1, span, "handler subject")?;
+         let value = self.fresh_value();
+-        steps.push(ExprStep::Map { value, entries });
+-        value
++        steps.push(ExprStep::DirectCall {
++            value,
++            callsite: self.fresh_callsite(span),
++            callee: DirectCallee::Function(callee),
++            args: vec![CallArg {
++                value: raised,
++                ascription: None,
++                ownership: crate::fz_ir::OwnershipMode::Share,
++            }],
++        });
++        Ok(value)
+     }
+ 
+     /// `__STACKTRACE__` is a variable a rescue or catch clause binds. fz keeps
+@@ -5007,6 +4997,17 @@ fn update_key_error_callee() -> Callee {
+     })
+ }
+ 
++/// `Exception.<function>/1`, named exactly so no alias in scope can
++/// redirect it.
++fn exception_callee(function: &str) -> Callee {
++    Callee::Name(CallableName {
++        module: Some(crate::ast::ModuleTarget::Exact(ModuleDenotation::Named(
++            ModuleName::from_segments(vec!["Exception".to_string()]),
++        ))),
++        name: function.to_string(),
++    })
++}
++
+ /// The module expression and function name of a call on a module value:
+ /// `m.f(a)`, where `m` is any expression that is not a module name.
+ fn module_value_callee(target: &Spanned<Expr>) -> Option<(&Spanned<Expr>, &str)> {
+diff --git a/src/compiler2/jobs/native.rs b/src/compiler2/jobs/native.rs
+index 9395bb1be..f88b00572 100644
+--- a/src/compiler2/jobs/native.rs
++++ b/src/compiler2/jobs/native.rs
+@@ -23,7 +23,7 @@ use crate::diag::Diagnostic;
+ use crate::diag::codes;
+ use crate::dispatch_matrix::pattern::{
+     GuardExtern, LastResort, PatternDispatchPlan, PatternGuardBinOp, PatternGuardExpr, PatternGuardUnaryOp,
+-    RaisedField, guard_body_subjects,
++    RaisedField, ReasonTerm, guard_body_subjects,
+ };
+ use crate::dispatch_matrix::{ComparisonValue, DispatchNode, GraphNodeId, ListRegion, Region, SubjectId};
+ use crate::fz_ir::{
+@@ -795,7 +795,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
+                 origin: BranchOrigin::ClauseDispatch,
+             });
+             ctx.current_block = raise_b;
+-            self.emit_raise(ctx, failure, None)?;
++            self.emit_raise(ctx, failure, &[])?;
+             ctx.current_block = value_b;
+             return Ok(value);
+         }
+@@ -3244,26 +3244,42 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
+             ctx.set_term(Term::Reraise { kind, value });
+             return Ok(());
+         }
+-        let subject = match last_resort.consumed_inputs() {
+-            0 => None,
+-            _ => {
+-                let input = state.dispatch_inputs.first().ok_or(FatalError)?;
+-                Some(self.materialize_native_value(ctx, None, input)?)
++        let consumed = last_resort.consumed_inputs();
++        let mut inputs = Vec::with_capacity(consumed);
++        for input in state.dispatch_inputs.iter().take(consumed) {
++            inputs.push(self.materialize_native_value(ctx, None, input)?);
++        }
++        self.emit_raise(ctx, last_resort, &inputs)
++    }
++
++    /// Builds the Erlang reason `reason` writes, with `inputs` as the plan's
++    /// leading inputs: the first is the subject.
++    fn reason_var(&mut self, ctx: &mut NativeFnCtx, reason: &ReasonTerm, inputs: &[Var]) -> Result<Var, FatalError> {
++        let prim = match reason {
++            ReasonTerm::Ground(value) => return Ok(self.ground_var(ctx, value)),
++            ReasonTerm::Subject => return inputs.first().copied().ok_or(FatalError),
++            ReasonTerm::Tuple(items) => {
++                let items = items
++                    .iter()
++                    .map(|item| self.reason_var(ctx, item, inputs))
++                    .collect::<Result<_, _>>()?;
++                Prim::MakeTuple(items)
+             }
+         };
+-        self.emit_raise(ctx, last_resort, subject)
++        Ok(ctx.emit_let(prim).0)
+     }
+ 
+-    /// Ends the block raising the struct `failure` builds: each field its
+-    /// exception declares, holding what the failure sets or the field's
+-    /// default, with `subject` as the value of a field that carries the plan's
+-    /// subject.
+-    fn emit_raise(
+-        &mut self,
+-        ctx: &mut NativeFnCtx,
+-        failure: &LastResort,
+-        subject: Option<Var>,
+-    ) -> Result<(), FatalError> {
++    /// Ends the block raising what `failure` builds: its Erlang reason, or the
++    /// struct whose every field its exception declares holds what the failure
++    /// sets or the field's default. `inputs` are the plan's leading inputs the
++    /// failure reads: the first is the subject a field or reason carries.
++    fn emit_raise(&mut self, ctx: &mut NativeFnCtx, failure: &LastResort, inputs: &[Var]) -> Result<(), FatalError> {
++        if let LastResort::Reason(reason) = failure {
++            let value = self.reason_var(ctx, reason, inputs)?;
++            ctx.set_term(Term::Raise { value });
++            return Ok(());
++        }
++        let subject = inputs.first().copied();
+         let program = self.program;
+         let raised = failure.exception().and_then(|exception| {
+             let module = fz_runtime::module_name::ModuleName::from_atom_name(exception)?;
+diff --git a/src/compiler2/jobs/native_test.rs b/src/compiler2/jobs/native_test.rs
+index 70375ae45..763cfb3e4 100644
+--- a/src/compiler2/jobs/native_test.rs
++++ b/src/compiler2/jobs/native_test.rs
+@@ -268,7 +268,7 @@ fn entry_dispatch_decides_a_lane_form_tuple_from_its_lanes() {
+         generated: Vec::new(),
+     };
+     // A pair whose second field is not 7 raises, so the executable names the
+-    // atoms the raised struct's fields write among its atoms.
++    // atoms the raised reason writes among its atoms.
+     let raised = executable
+         .abi
+         .materialized
+@@ -277,35 +277,8 @@ fn entry_dispatch_decides_a_lane_form_tuple_from_its_lanes() {
+         .and_then(|dispatch| dispatch.plan().last_resort.as_ref())
+         .expect("the clause head raises when nothing matches");
+     executable.atom_names = raised.atoms().chain(["nil", "true"]).map(AtomName::from).collect();
+-    let raised = raised.exception().expect("the clause head raises an exception");
+-    let raised = fz_runtime::module_name::ModuleName::from_atom_name(raised).expect("an exception's module");
+     let executable = Rc::new(executable);
+     let mut program = BackendProgram::empty(key);
+-    // The program carries the struct the clause head raises, as declared by
+-    // `FunctionClauseError`.
+-    let declared = [
+-        "__exception__",
+-        "module",
+-        "function",
+-        "arity",
+-        "kind",
+-        "args",
+-        "clauses",
+-    ];
+-    let unset = crate::literal_term::LiteralTerm::Ground(crate::ground_value::GroundValue::Nil);
+-    let marked = crate::literal_term::LiteralTerm::Ground(crate::ground_value::GroundValue::Bool(true));
+-    let mut defaults = vec![unset; declared.len()];
+-    defaults[0] = marked;
+-    let module = world.reference_module(raised.clone());
+-    program.replace_schema(
+-        module,
+-        Some(Rc::new(crate::compiler2::backend_program::BackendSchema {
+-            module,
+-            name: Rc::new(raised),
+-            fields: Rc::new(declared.map(str::to_string).to_vec()),
+-            defaults: Rc::new(defaults),
+-        })),
+-    );
+     program.add_executable(executable.clone(), world.types());
+     let telemetry = NullTelemetry;
+     let mut lowerer = NativeLowerer::new(&mut world, &telemetry, root, &program).expect("test native lowerer");
+@@ -324,12 +297,18 @@ fn entry_dispatch_decides_a_lane_form_tuple_from_its_lanes() {
+             .blocks
+             .iter()
+             .flat_map(|block| &block.stmts)
+-            .all(|statement| !matches!(
+-                statement,
+-                crate::fz_ir::Stmt::Let(_, Prim::MakeTuple(_) | Prim::TupleField(_, _))
+-            )),
++            .all(|statement| !matches!(statement, crate::fz_ir::Stmt::Let(_, Prim::TupleField(_, _)))),
+         "the entry decides its tuple parameter from the lanes it already holds"
+     );
++    assert!(
++        entry
++            .blocks
++            .iter()
++            .filter(|block| !matches!(block.terminator, crate::fz_ir::Term::Raise { .. }))
++            .flat_map(|block| &block.stmts)
++            .all(|statement| !matches!(statement, crate::fz_ir::Stmt::Let(_, Prim::MakeTuple(_)))),
++        "only the miss builds a tuple: the reason it raises"
++    );
+ }
+ 
+ #[test]
+diff --git a/src/compiler2/jobs/semantic.rs b/src/compiler2/jobs/semantic.rs
+index 5f0454b11..24ab4e0c0 100644
+--- a/src/compiler2/jobs/semantic.rs
++++ b/src/compiler2/jobs/semantic.rs
+@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet, hash_map::Entry};
+ 
+ use crate::ast::{BinOp, UnOp};
+ use crate::diag::{Diagnostic, codes};
+-use crate::dispatch_matrix::pattern::LastResort;
++use crate::dispatch_matrix::pattern::{LastResort, ReasonTerm};
+ use crate::ground_value::GroundValue;
+ use crate::literal_term::LiteralTerm;
+ use crate::modules::identity::ModuleName;
+@@ -495,19 +495,29 @@ fn raises_of(
+     let calls_nothing = summaries
+         .flat_map(|summary| &summary.targets)
+         .any(|target| matches!(target.callee, SelectedCallee::Undefined(_)));
+-    let mut atoms = failing_plans
+-        .chain(call_misses)
++    let failures = failing_plans.chain(call_misses).collect::<Vec<_>>();
++    let mut reasons = failures
++        .iter()
++        .filter_map(|failure| reason_ty_of(world, failure))
++        .collect::<Vec<_>>();
++    let mut atoms = failures
++        .into_iter()
+         .filter_map(LastResort::exception)
+         .map(str::to_string)
+         .collect::<Vec<_>>();
+     if calls_nothing {
+-        atoms.extend(["Elixir.UndefinedFunctionError", "Elixir.ArgumentError"].map(str::to_string));
++        atoms.push("Elixir.ArgumentError".to_string());
++        reasons.push(undefined_function_reason_ty(world));
+     }
+     let (source, surface) = world.function_definition(function);
+     let delivers = surface.extern_delivers;
+     if let Some(raises) = &surface.extern_raises {
+-        let (namespace, exception) = (source.namespace, raises.exception.clone());
+-        atoms.push(world.module_alias_atom(namespace, &exception));
++        let (namespace, exception, message) = (source.namespace, raises.exception.clone(), raises.message.clone());
++        let declared = LastResort::declared(world.module_alias_atom(namespace, &exception), &message);
++        match declared.exception() {
++            Some(atom) => atoms.push(atom.to_string()),
++            None => reasons.extend(reason_ty_of(world, &declared)),
++        }
+     }
+     let mut raises = atoms
+         .into_iter()
+@@ -516,6 +526,11 @@ fn raises_of(
+             (RaiseKind::Error, Raised::Exception(world.reference_module(name)))
+         })
+         .collect::<Vec<_>>();
++    raises.extend(
++        reasons
++            .into_iter()
++            .map(|reason| (RaiseKind::Error, Raised::Value(reason))),
++    );
+     if let Some(kind) = delivers {
+         for delivered in input_rows.iter().filter_map(|row| row.first()) {
+             raises.extend(world.raised_by(delivered).into_iter().map(|raised| (kind, raised)));
+@@ -524,6 +539,41 @@ fn raises_of(
+     raises
+ }
+ 
++/// The type of the Erlang reason `failure` raises, when it raises one.
++fn reason_ty_of(world: &mut World, failure: &LastResort) -> Option<Ty> {
++    let LastResort::Reason(reason) = failure else {
++        return None;
++    };
++    Some(reason_ty(world.types_mut(), reason))
++}
++
++/// The type of a reason a failure raises. A tuple reason is told apart by its tag
++/// alone: what it carries (the module and function of a clause that failed, the
++/// term that matched nothing) is `any`, so every function that can fail adds no
++/// clause of its own to the union of reasons a program raises.
++fn reason_ty(types: &mut Types, reason: &ReasonTerm) -> Ty {
++    match reason {
++        ReasonTerm::Ground(GroundValue::Atom(name)) => types.atom_lit(name),
++        ReasonTerm::Ground(_) | ReasonTerm::Subject => types.any(),
++        ReasonTerm::Tuple(items) => {
++            let any = types.any();
++            let tag = items.first().map(|tag| reason_ty(types, tag));
++            let rest = items.iter().skip(1).map(|_| any);
++            let items = tag.into_iter().chain(rest).collect::<Vec<_>>();
++            types.tuple(&items)
++        }
++    }
++}
++
++/// The type of the reason the runtime raises for a call that reaches no
++/// function.
++fn undefined_function_reason_ty(world: &mut World) -> Ty {
++    let types = world.types_mut();
++    let any = types.any();
++    let tag = types.atom_lit(fz_runtime::failure::UNDEFINED_FUNCTION_TAG);
++    types.tuple(&[tag, any, any, any, any])
++}
++
+ /// How many distinct (entry, scope) pairs this activation's walk actually
+ /// visited. A join reached again with a scope the walk table already answered
+ /// costs nothing further, so this count grows with the entries the body
+diff --git a/src/compiler2/source_publish.rs b/src/compiler2/source_publish.rs
+index 2854a0806..b18093b8c 100644
+--- a/src/compiler2/source_publish.rs
++++ b/src/compiler2/source_publish.rs
+@@ -2243,8 +2243,8 @@ pub(crate) const PROGRAM_ENTRY: &str = "__entry__";
+ /// def __entry__() do
+ ///   try do
+ ///     main()
+-///   catch
+-///     :error, reason -> Exception.__uncaught__(reason)
++///   rescue
++///     raised -> Exception.__uncaught__(raised)
+ ///   end
+ /// end
+ /// ```
+@@ -2252,18 +2252,14 @@ fn build_program_entry() -> Result<FunctionForm, QuotedSourceError> {
+     let heap = Rc::new(QuotedSourceHeap::new());
+     let builder = heap.builder();
+     let meta = QuotedSourceMetadata::default();
+-    let reason = builder.variable(&Var::user("reason"), &meta)?;
++    let raised = builder.variable(&Var::user("raised"), &meta)?;
+     let exception = builder.alias(&meta, &["Exception"])?;
+     let uncaught = builder.call(".", &meta, &[exception, builder.atom("__uncaught__")])?;
+-    let rendered = builder.call_callee(uncaught, &meta, &[reason])?;
+-    let caught = builder.call(
+-        "->",
+-        &meta,
+-        &[builder.list(&[builder.atom("error"), reason])?, rendered],
+-    )?;
++    let rendered = builder.call_callee(uncaught, &meta, &[raised])?;
++    let rescued = builder.call("->", &meta, &[builder.list(&[raised])?, rendered])?;
+     let clauses = builder.list(&[
+         builder.keyword("do", builder.call("main", &meta, &[])?)?,
+-        builder.keyword("catch", builder.list(&[caught])?)?,
++        builder.keyword("rescue", builder.list(&[rescued])?)?,
+     ])?;
+     let body = builder.call("try", &meta, &[clauses])?;
+     let clause = def_clause(&builder, &meta, PROGRAM_ENTRY, &[], body)?;
+diff --git a/src/compiler2/world.rs b/src/compiler2/world.rs
+index 4feda8492..3b25d10ed 100644
+--- a/src/compiler2/world.rs
++++ b/src/compiler2/world.rs
+@@ -1639,29 +1639,33 @@ impl World {
+ 
+     /// The type of what a raise of `kind` hands a handler in `root`'s
+     /// program: a struct of each exception module that program can raise, its
+-    /// fields left open, and `any` once some raise hands over another value.
++    /// fields left open, joined with the type of each other value some raise
++    /// hands over.
+     /// `None` while the program raises nothing of that kind.
+     pub(crate) fn raisable_ty(&mut self, root: RootId, kind: RaiseKind) -> Option<Ty> {
+         let of_kind = self.raisable.get(&root)?.of(kind);
+         if of_kind.is_empty() {
+             return None;
+         }
+-        if of_kind.anything_else() {
+-            return Some(self.types.any());
+-        }
+         let exceptions = of_kind.exceptions().collect::<Vec<_>>();
++        let values = of_kind.values().collect::<Vec<_>>();
+         let none = self.types.none();
+-        Some(exceptions.into_iter().fold(none, |so_far, module| {
++        let raised = exceptions.into_iter().fold(none, |so_far, module| {
+             let exception = self.exception_ty(module);
+             self.types.union(so_far, exception)
+-        }))
++        });
++        Some(
++            values
++                .into_iter()
++                .fold(raised, |so_far, value| self.types.union(so_far, value)),
++        )
+     }
+ 
+     /// What a value of `ty` is when raised: an exception of each module it
+-    /// lists when it is surely one of them, and otherwise anything.
++    /// lists when it is surely one of them, and otherwise a value of that type.
+     pub(crate) fn raised_by(&mut self, ty: &Ty) -> Vec<Raised> {
+         let Some(listed) = self.types.listed_structs(ty) else {
+-            return vec![Raised::Anything];
++            return vec![Raised::Value(*ty)];
+         };
+         let modules = listed
+             .into_iter()
+@@ -1675,7 +1679,7 @@ impl World {
+         if self.types.is_subtype(ty, &exceptions) {
+             modules.into_iter().map(Raised::Exception).collect()
+         } else {
+-            vec![Raised::Anything]
++            vec![Raised::Value(*ty)]
+         }
+     }
+ 
+diff --git a/src/compiler2/world_test.rs b/src/compiler2/world_test.rs
+index 7a7c224cb..406c3c4f6 100644
+--- a/src/compiler2/world_test.rs
++++ b/src/compiler2/world_test.rs
+@@ -2547,10 +2547,11 @@ fn a_raise_is_news_once_and_makes_its_exception_nameable() {
+     assert_eq!(changed, [], "the same raise again is not news");
+ 
+     let mut changed = Vec::new();
+-    world.note_raisable(root, RaiseKind::Throw, Raised::Anything, &mut changed);
++    let any = world.types_mut().any();
++    world.note_raisable(root, RaiseKind::Throw, Raised::Value(any), &mut changed);
+     assert_eq!(changed, [FactKey::Raisable(root)], "a thrown value names no module");
+     let mut changed = Vec::new();
+-    world.note_raisable(root, RaiseKind::Throw, Raised::Anything, &mut changed);
++    world.note_raisable(root, RaiseKind::Throw, Raised::Value(any), &mut changed);
+     assert_eq!(changed, []);
+ }
+ 
+@@ -2575,8 +2576,8 @@ fn a_raise_is_news_only_to_its_own_program() {
+ 
+ /// Each kind of raise is its own answer: a handler clause for a kind the
+ /// program never raises has nothing to run on. Within a kind the answer is
+-/// one open struct per exception, until some raise hands over a value no
+-/// exception accounts for and the answer is `any`.
++/// one open struct per exception, joined with the type of each value no
++/// exception accounts for: `any` once one is any value.
+ #[test]
+ fn a_kind_hands_a_handler_its_exceptions_until_something_else_is_raised() {
+     let mut world = World::new();
+@@ -2605,8 +2606,8 @@ fn a_kind_hands_a_handler_its_exceptions_until_something_else_is_raised() {
+         "an error is not an exit"
+     );
+ 
+-    world.note_raisable(root, RaiseKind::Error, Raised::Anything, &mut changed);
+     let any = world.types_mut().any();
++    world.note_raisable(root, RaiseKind::Error, Raised::Value(any), &mut changed);
+     assert_eq!(world.raisable_ty(root, RaiseKind::Error), Some(any));
+ }
+ 
+@@ -2642,13 +2643,13 @@ fn a_raised_value_is_an_exception_only_when_it_surely_is_one() {
+     let a_point = world.struct_value_ty(point, &["x".to_string()], &[int]);
+     assert_eq!(
+         world.raised_by(&a_point),
+-        [Raised::Anything],
++        [Raised::Value(a_point)],
+         "a struct that is not flagged is no exception"
+     );
+     let or_int = world.types_mut().union(a_key_error, int);
+-    assert_eq!(world.raised_by(&or_int), [Raised::Anything]);
++    assert_eq!(world.raised_by(&or_int), [Raised::Value(or_int)]);
+     let any = world.types_mut().any();
+-    assert_eq!(world.raised_by(&any), [Raised::Anything]);
++    assert_eq!(world.raised_by(&any), [Raised::Value(any)]);
+     let none = world.types_mut().none();
+     assert_eq!(world.raised_by(&none), [], "a call nothing reaches raises nothing");
+ }
+diff --git a/src/dispatch_matrix/pattern.rs b/src/dispatch_matrix/pattern.rs
+index e9b7c96b2..52d145043 100644
+--- a/src/dispatch_matrix/pattern.rs
++++ b/src/dispatch_matrix/pattern.rs
+@@ -19,7 +19,7 @@ pub(crate) mod last_resort;
+ pub(crate) mod roots;
+ pub(crate) mod source;
+ pub(crate) mod unfold;
+-pub(crate) use last_resort::{FieldTerm, LastResort, RaisedField, atom_name};
++pub(crate) use last_resort::{FieldTerm, LastResort, RaisedField, ReasonTerm, atom_name};
+ pub(crate) use roots::OutcomeRoots;
+ pub(crate) use source::{PatternBodyId, PatternRow, SourcePatternError, SourcePatternRows};
+ use unfold::{ClauseFacts, Conjunction, GuardFacts};
+diff --git a/src/dispatch_matrix/pattern/last_resort.rs b/src/dispatch_matrix/pattern/last_resort.rs
+index 231e0e8b3..3eda5ac6b 100644
+--- a/src/dispatch_matrix/pattern/last_resort.rs
++++ b/src/dispatch_matrix/pattern/last_resort.rs
+@@ -1,18 +1,64 @@
+ //! What a decision raises when no row of its plan claims the subject.
+ //!
+-//! Every construct that decides between rows ends, in Elixir, in an exception
+-//! of its own: a function head in `FunctionClauseError`, `=` in `MatchError`,
+-//! `case` in `CaseClauseError` and so on. A plan carries that exception from
+-//! the moment it is built, so each backend lowers a `Fail` the same way for
+-//! every construct: build the struct of the exception's module and raise it.
+-//! A last resort names only the fields it sets; the module's declaration gives
+-//! the rest, in its order, each holding its default.
++//! Every construct that decides between rows ends, in Elixir, in an error of
++//! its own: a function head in `:function_clause`, `=` in `{:badmatch, term}`,
++//! `case` in `{:case_clause, term}` and so on. Elixir raises that Erlang
++//! reason, and a `rescue` normalises it to the exception struct. A plan
++//! carries the reason from the moment it is built, so each backend lowers a
++//! `Fail` the same way for every construct: build the reason and raise it.
++//! The one reason that is not Erlang's is a function clause's, which carries
++//! the module, function and arity under a tag user code does not write
++//! (`fz_runtime::failure::FUNCTION_CLAUSE_TAG`); `catch` sees it as
++//! `:function_clause`, as it does in Elixir, where they live in the stacktrace.
++//!
++//! A failure that is an exception in Elixir too (a protocol with no
++//! implementation, an extern's declared failure) builds the struct of the
++//! exception's module and raises it. It names only the fields it sets; the
++//! module's declaration gives the rest, in its order, each holding its
++//! default.
+ 
+ use std::borrow::Cow;
+ 
+ use crate::ground_value::GroundValue;
+ use crate::literal_term::LiteralTerm;
+ 
++/// An Erlang reason a failure raises, written with the values it holds.
++#[derive(Debug, Clone, PartialEq, Eq, Hash)]
++pub enum ReasonTerm {
++    /// A value written out in full: an atom, `nil` or an integer.
++    Ground(GroundValue),
++    /// The plan's subject, its first input.
++    Subject,
++    /// A tuple of these.
++    Tuple(Vec<ReasonTerm>),
++}
++
++impl ReasonTerm {
++    fn atom(name: impl Into<String>) -> Self {
++        Self::Ground(GroundValue::Atom(name.into()))
++    }
++
++    fn tagged(tag: &'static str, rest: impl IntoIterator<Item = ReasonTerm>) -> Self {
++        Self::Tuple(std::iter::once(Self::atom(tag)).chain(rest).collect())
++    }
++
++    fn each_atom<'a>(&'a self, visit: &mut impl FnMut(&'a str)) {
++        match self {
++            Self::Ground(value) => atom_name(value).into_iter().for_each(visit),
++            Self::Tuple(items) => items.iter().for_each(|item| item.each_atom(visit)),
++            Self::Subject => {}
++        }
++    }
++
++    fn reads_subject(&self) -> bool {
++        match self {
++            Self::Subject => true,
++            Self::Tuple(items) => items.iter().any(Self::reads_subject),
++            Self::Ground(_) => false,
++        }
++    }
++}
++
+ /// What one field of a raised exception holds.
+ #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+ pub enum FieldTerm {
+@@ -42,9 +88,9 @@ pub enum RaisedField<'a> {
+     Literal(&'a LiteralTerm),
+ }
+ 
+-/// What a plan does at a `Fail`: raise a struct of an exception's module, or
+-/// continue a raise that arrived. The exception's module words its message
+-/// from its fields when one is asked for.
++/// What a plan does at a `Fail`: raise an Erlang reason, raise a struct of an
++/// exception's module, or continue a raise that arrived. The exception's
++/// module words its message from its fields when one is asked for.
+ #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+ pub enum LastResort {
+     /// Raise a new exception.
+@@ -55,6 +101,8 @@ pub enum LastResort {
+         /// field of the exception's struct holds its default.
+         fields: Vec<(Cow<'static, str>, FieldTerm)>,
+     },
++    /// Raise an Erlang reason.
++    Reason(ReasonTerm),
+     /// Continue the raise a handler was delivered, with the plan's first two
+     /// inputs as its kind and value.
+     Reraise,
+@@ -65,24 +113,19 @@ impl LastResort {
+     /// the module that defines it, when one does, and `function` the name
+     /// Elixir gives it: its own, or `-f/1-fun-0-` for a lambda inside `f/1`.
+     pub(crate) fn function_clause(module: Option<String>, function: String, arity: u32) -> Self {
+-        Self::raising(
+-            "Elixir.FunctionClauseError",
+-            vec![
+-                ("function", FieldTerm::atom(function)),
+-                (
+-                    "arity",
+-                    FieldTerm::Literal(LiteralTerm::Ground(GroundValue::Int(i64::from(arity)))),
+-                ),
+-            ]
+-            .into_iter()
+-            .chain(module.map(|module| ("module", FieldTerm::atom(module))))
+-            .collect(),
+-        )
++        Self::Reason(ReasonTerm::tagged(
++            fz_runtime::failure::FUNCTION_CLAUSE_TAG,
++            [
++                module.map_or(ReasonTerm::Ground(GroundValue::Nil), ReasonTerm::atom),
++                ReasonTerm::atom(function),
++                ReasonTerm::Ground(GroundValue::Int(i64::from(arity))),
++            ],
++        ))
+     }
+ 
+     /// The left side of `=` does not match the right.
+     pub(crate) fn match_error() -> Self {
+-        Self::about_the_subject("Elixir.MatchError")
++        Self::about_the_subject("badmatch")
+     }
+ 
+     /// No implementation of the protocol whose atom is `protocol` takes the
+@@ -96,35 +139,35 @@ impl LastResort {
+ 
+     /// No clause of a `case` matches.
+     pub(crate) fn case_clause() -> Self {
+-        Self::about_the_subject("Elixir.CaseClauseError")
++        Self::about_the_subject("case_clause")
+     }
+ 
+     /// No condition of a `cond` is truthy.
+     pub(crate) fn cond_clause() -> Self {
+-        Self::raising("Elixir.CondClauseError", Vec::new())
++        Self::Reason(ReasonTerm::atom("cond_clause"))
+     }
+ 
+     /// A `with` clause failed and no `else` clause matches what it returned.
+     pub(crate) fn with_clause() -> Self {
+-        Self::about_the_subject("Elixir.WithClauseError")
++        Self::about_the_subject("else_clause")
+     }
+ 
+     /// No `else` clause of a `try` matches the value its body produced.
+     pub(crate) fn try_clause() -> Self {
+-        Self::about_the_subject("Elixir.TryClauseError")
++        Self::about_the_subject("try_clause")
+     }
+ 
+     /// The left side of `and` or `or` is not a boolean.
+     pub(crate) fn bad_boolean(operator: &'static str) -> Self {
+-        Self::raising(
+-            "Elixir.BadBooleanError",
+-            vec![("term", FieldTerm::Subject), ("operator", FieldTerm::atom(operator))],
+-        )
++        Self::Reason(ReasonTerm::tagged(
++            "badbool",
++            [ReasonTerm::atom(operator), ReasonTerm::Subject],
++        ))
+     }
+ 
+     /// `not` was given something other than a boolean.
+     pub(crate) fn argument_error() -> Self {
+-        Self::raising("Elixir.ArgumentError", Vec::new())
++        Self::Reason(ReasonTerm::atom("badarg"))
+     }
+ 
+     /// Nothing in a handler's clauses takes the raise it was delivered, so it
+@@ -137,19 +180,23 @@ impl LastResort {
+     pub(crate) fn exception(&self) -> Option<&str> {
+         match self {
+             Self::Exception { exception, .. } => Some(exception),
+-            Self::Reraise => None,
++            Self::Reason(_) | Self::Reraise => None,
+         }
+     }
+ 
+     /// Every atom the fields this failure sets write.
+     pub(crate) fn atoms(&self) -> impl Iterator<Item = &str> {
+         let mut atoms = Vec::new();
+-        if let Self::Exception { fields, .. } = self {
+-            for (_, term) in fields {
+-                if let FieldTerm::Literal(literal) = term {
+-                    literal.each_ground(&mut |value| atoms.extend(atom_name(value)));
++        match self {
++            Self::Exception { fields, .. } => {
++                for (_, term) in fields {
++                    if let FieldTerm::Literal(literal) = term {
++                        literal.each_ground(&mut |value| atoms.extend(atom_name(value)));
++                    }
+                 }
+             }
++            Self::Reason(reason) => reason.each_atom(&mut |name| atoms.push(name)),
++            Self::Reraise => {}
+         }
+         atoms.into_iter()
+     }
+@@ -167,7 +214,7 @@ impl LastResort {
+         defaults: &'a [LiteralTerm],
+     ) -> Result<Vec<(&'a str, RaisedField<'a>)>, String> {
+         let Self::Exception { exception, fields } = self else {
+-            return Err("a re-raise builds no struct".to_string());
++            return Err("only a failure that raises an exception builds a struct".to_string());
+         };
+         if let Some((stray, _)) = fields
+             .iter()
+@@ -196,18 +243,24 @@ impl LastResort {
+     }
+ 
+     /// How many of the plan's leading inputs the last resort reads: the
+-    /// subject an exception carries, or the kind and value a re-raise
+-    /// continues with.
++    /// subject a failure carries, or the kind and value a re-raise continues
++    /// with.
+     pub(crate) fn consumed_inputs(&self) -> usize {
+         match self {
+             Self::Exception { fields, .. } => usize::from(fields.iter().any(|(_, term)| *term == FieldTerm::Subject)),
++            Self::Reason(reason) => usize::from(reason.reads_subject()),
+             Self::Reraise => 2,
+         }
+     }
+ 
+-    /// The failure an extern declares with `raises:`: a struct of the
+-    /// exception it names, whose `message` is the declaration's text.
++    /// The failure an extern declares with `raises:`: `:badarith` for an
++    /// `ArithmeticError`, which Erlang raises as that reason, and otherwise a
++    /// struct of the exception it names, whose `message` is the declaration's
++    /// text.
+     pub fn declared(exception: String, message: &str) -> Self {
++        if exception == "Elixir.ArithmeticError" {
++            return Self::Reason(ReasonTerm::atom("badarith"));
++        }
+         Self::Exception {
+             exception: Cow::Owned(exception),
+             fields: vec![(Cow::Borrowed("message"), FieldTerm::text(message))],
+@@ -224,8 +277,8 @@ impl LastResort {
+         }
+     }
+ 
+-    fn about_the_subject(exception: &'static str) -> Self {
+-        Self::raising(exception, vec![("term", FieldTerm::Subject)])
++    fn about_the_subject(tag: &'static str) -> Self {
++        Self::Reason(ReasonTerm::tagged(tag, [ReasonTerm::Subject]))
+     }
+ }
+ 
+diff --git a/src/dispatch_matrix/pattern/last_resort_test.rs b/src/dispatch_matrix/pattern/last_resort_test.rs
+index 1d4cc2573..78c910074 100644
+--- a/src/dispatch_matrix/pattern/last_resort_test.rs
++++ b/src/dispatch_matrix/pattern/last_resort_test.rs
+@@ -1,4 +1,4 @@
+-use super::{FieldTerm, LastResort, RaisedField};
++use super::{FieldTerm, LastResort, RaisedField, ReasonTerm};
+ use crate::ground_value::GroundValue;
+ use crate::literal_term::LiteralTerm;
+ 
+@@ -8,10 +8,25 @@ fn fields(raised: &LastResort) -> Vec<(&str, FieldTerm)> {
+             .iter()
+             .map(|(name, term)| (name.as_ref(), term.clone()))
+             .collect(),
+-        LastResort::Reraise => panic!("a re-raise builds no exception"),
++        LastResort::Reason(_) | LastResort::Reraise => panic!("only an exception builds fields"),
+     }
+ }
+ 
++fn reason(raised: &LastResort) -> &ReasonTerm {
++    match raised {
++        LastResort::Reason(reason) => reason,
++        _ => panic!("the failure raises an Erlang reason"),
++    }
++}
++
++fn tuple(items: Vec<ReasonTerm>) -> ReasonTerm {
++    ReasonTerm::Tuple(items)
++}
++
++fn reason_atom(name: &str) -> ReasonTerm {
++    ReasonTerm::Ground(GroundValue::Atom(name.to_string()))
++}
++
+ fn atom(name: &'static str) -> FieldTerm {
+     FieldTerm::atom(name)
+ }
+@@ -50,17 +65,10 @@ fn library_declaration(module: &str) -> Vec<(String, Option<String>)> {
+ }
+ 
+ #[test]
+-fn every_failure_the_compiler_raises_sets_only_fields_its_exception_declares() {
++fn every_failure_that_raises_an_exception_sets_only_fields_its_exception_declares() {
+     let built_in = [
+-        LastResort::function_clause(Some("Elixir.M".to_string()), "f".to_string(), 1),
+-        LastResort::match_error(),
+         LastResort::protocol_undefined("Elixir.String.Chars".to_string()),
+-        LastResort::case_clause(),
+-        LastResort::cond_clause(),
+-        LastResort::with_clause(),
+-        LastResort::try_clause(),
+-        LastResort::bad_boolean("and"),
+-        LastResort::argument_error(),
++        LastResort::declared("Elixir.KeyError".to_string(), "no key"),
+     ];
+     for raised in built_in {
+         let exception = raised.exception().expect("each raises an exception");
+@@ -99,8 +107,8 @@ fn a_field_a_failure_does_not_set_holds_the_default_its_exception_declares() {
+ fn a_failure_that_sets_a_field_its_exception_lacks_has_no_struct_to_raise() {
+     let declared = ["term".to_string()];
+     assert_eq!(
+-        LastResort::bad_boolean("or").struct_fields(&declared, &[NIL]),
+-        Err("exception `Elixir.BadBooleanError` declares no field `operator`".to_string()),
++        LastResort::protocol_undefined("Elixir.String.Chars".to_string()).struct_fields(&declared, &[NIL]),
++        Err("exception `Elixir.Protocol.UndefinedError` declares no field `protocol`".to_string()),
+         "the mismatch is named, not raised as a struct missing a field"
+     );
+ }
+@@ -126,73 +134,71 @@ fn an_exception_whose_default_is_a_function_has_no_struct_a_backend_can_build()
+ }
+ 
+ #[test]
+-fn the_words_an_exception_declares_are_its_default_not_a_copy_the_compiler_keeps() {
+-    let message = library_declaration("ArgumentError");
+-    assert_eq!(
+-        message,
+-        vec![("message".to_string(), Some("\"argument error\"".to_string()))],
+-        "ArgumentError words itself"
+-    );
+-    assert_eq!(fields(&LastResort::argument_error()), vec![]);
+-}
+-
+-#[test]
+-fn a_function_head_miss_carries_the_function_it_missed_and_none_of_its_arguments() {
++fn a_function_head_miss_raises_the_function_it_missed_under_a_tag_of_its_own() {
+     let raised = LastResort::function_clause(Some("Elixir.M".to_string()), "f".to_string(), 1);
+-    assert_eq!(raised.exception(), Some("Elixir.FunctionClauseError"));
++    assert_eq!(raised.exception(), None, "it raises a reason, not a struct");
+     assert_eq!(
+-        fields(&raised),
+-        vec![
+-            ("function", atom("f")),
+-            ("arity", FieldTerm::Literal(LiteralTerm::Ground(GroundValue::Int(1)))),
+-            ("module", atom("Elixir.M")),
+-        ],
+-        "the fields about the arguments keep the default their module declares"
++        reason(&raised),
++        &tuple(vec![
++            reason_atom("__fz_function_clause__"),
++            reason_atom("Elixir.M"),
++            reason_atom("f"),
++            ReasonTerm::Ground(GroundValue::Int(1)),
++        ]),
++        "the tag is one no program writes by accident, so `catch` trims only this reason"
+     );
+     assert_eq!(raised.consumed_inputs(), 0, "Elixir's message names the function only");
+ }
+ 
+ #[test]
+-fn a_function_outside_any_module_has_no_module_to_carry() {
++fn a_function_outside_any_module_raises_nil_for_its_module() {
+     let raised = LastResort::function_clause(None, "main".to_string(), 0);
+-    assert!(
+-        fields(&raised).iter().all(|(name, _)| *name != "module"),
+-        "the module field keeps its default"
+-    );
++    let ReasonTerm::Tuple(items) = reason(&raised) else {
++        panic!("a function clause raises a tuple");
++    };
++    assert_eq!(items[1], ReasonTerm::Ground(GroundValue::Nil));
+ }
+ 
+ #[test]
+-fn the_decisions_about_one_value_carry_it_as_their_term() {
++fn the_decisions_about_one_value_raise_erlangs_reason_carrying_it() {
+     let about_the_subject = [
+-        (LastResort::match_error(), "Elixir.MatchError"),
+-        (LastResort::case_clause(), "Elixir.CaseClauseError"),
+-        (LastResort::with_clause(), "Elixir.WithClauseError"),
+-        (LastResort::try_clause(), "Elixir.TryClauseError"),
++        (LastResort::match_error(), "badmatch"),
++        (LastResort::case_clause(), "case_clause"),
++        (LastResort::with_clause(), "else_clause"),
++        (LastResort::try_clause(), "try_clause"),
+     ];
+-    for (raised, exception) in about_the_subject {
+-        assert_eq!(raised.exception(), Some(exception));
+-        assert_eq!(fields(&raised), vec![("term", FieldTerm::Subject)]);
+-        assert_eq!(raised.consumed_inputs(), 1, "{exception} carries the value that missed");
++    for (raised, tag) in about_the_subject {
++        assert_eq!(reason(&raised), &tuple(vec![reason_atom(tag), ReasonTerm::Subject]));
++        assert_eq!(raised.consumed_inputs(), 1, "{tag} carries the value that missed");
+     }
+ }
+ 
+ #[test]
+-fn a_boolean_operator_carries_its_left_side_and_its_own_name() {
++fn a_boolean_operator_raises_its_own_name_and_its_left_side() {
+     let raised = LastResort::bad_boolean("or");
+-    assert_eq!(raised.exception(), Some("Elixir.BadBooleanError"));
+     assert_eq!(
+-        fields(&raised),
+-        vec![("term", FieldTerm::Subject), ("operator", atom("or"))]
++        reason(&raised),
++        &tuple(vec![reason_atom("badbool"), reason_atom("or"), ReasonTerm::Subject])
+     );
+     assert_eq!(raised.consumed_inputs(), 1);
+ }
+ 
+ #[test]
+-fn a_cond_with_no_truthy_condition_has_nothing_to_carry() {
+-    let cond = LastResort::cond_clause();
+-    assert_eq!(cond.exception(), Some("Elixir.CondClauseError"));
+-    assert_eq!(fields(&cond), vec![]);
+-    assert_eq!(cond.consumed_inputs(), 0);
++fn the_decisions_with_nothing_to_carry_raise_a_bare_atom() {
++    for (raised, name) in [
++        (LastResort::cond_clause(), "cond_clause"),
++        (LastResort::argument_error(), "badarg"),
++        (
++            LastResort::declared(
++                "Elixir.ArithmeticError".to_string(),
++                "bad argument in arithmetic expression",
++            ),
++            "badarith",
++        ),
++    ] {
++        assert_eq!(reason(&raised), &reason_atom(name));
++        assert_eq!(raised.consumed_inputs(), 0);
++    }
+ }
+ 
+ #[test]
+@@ -219,11 +225,13 @@ fn a_protocol_miss_carries_the_protocol_and_the_value_that_missed() {
+ }
+ 
+ #[test]
+-fn the_atoms_of_a_last_resort_are_the_atoms_its_fields_write() {
++fn the_atoms_of_a_last_resort_are_the_atoms_it_writes() {
+     let raised = LastResort::bad_boolean("or");
++    assert_eq!(raised.atoms().collect::<Vec<_>>(), ["badbool", "or"]);
++    let declared = LastResort::declared("Elixir.KeyError".to_string(), "no key");
+     assert_eq!(
+-        raised.atoms().collect::<Vec<_>>(),
+-        ["or"],
++        declared.atoms().collect::<Vec<_>>(),
++        Vec::<&str>::new(),
+         "the struct's module and field names are its schema's, not atoms the code writes"
+     );
+     assert_eq!(LastResort::reraise().atoms().count(), 0);
+diff --git a/src/ir_interp/backend.rs b/src/ir_interp/backend.rs
+index 89976296e..b89f73243 100644
+--- a/src/ir_interp/backend.rs
++++ b/src/ir_interp/backend.rs
+@@ -20,7 +20,7 @@ use crate::compiler2::{
+     ControlDestination, ExecutableDispatch, UndefinedFunction, ValueId,
+ };
+ use crate::compiler2::{ExecutableKey, FunctionId, RunFailure};
+-use crate::dispatch_matrix::pattern::{LastResort, RaisedField};
++use crate::dispatch_matrix::pattern::{LastResort, RaisedField, ReasonTerm};
+ use crate::exec::runtime::emit_runtime_event;
+ use crate::fz_ir::{BinOp as IrBinOp, FnId, Module, UnOp as IrUnOp};
+ use crate::runtime_type_predicate::CallableShape;
+@@ -2466,6 +2466,20 @@ fn raise_last_resort(
+             let value = unsafe { &mut *proc }.heap.box_any_value_ref(value).raw_word();
+             fz_runtime::failure::reraise(proc, kind, value);
+         }
++        LastResort::Reason(reason) => {
++            let consumed = last_resort.consumed_inputs();
++            let given = (0..consumed)
++                .map(|index| {
++                    let input = inputs.get(index).ok_or_else(|| {
++                        format!("internal error: a last resort reads input {index}, which the plan lacks")
++                    })?;
++                    materialize_backend_value(transport, proc, input)
++                })
++                .collect::<Result<Vec<_>, _>>()?;
++            let reason = reason_value(runtime, reason, &given)?.value(proc)?;
++            let reason = unsafe { &mut *proc }.heap.box_any_value_ref(reason).raw_word();
++            fz_runtime::failure::fz_panic(proc, reason);
++        }
+         LastResort::Exception { exception, .. } => {
+             let module = ModuleName::from_atom_name(exception)
+                 .ok_or_else(|| format!("internal error: `{exception}` names no exception module"))?;
+@@ -3744,6 +3758,26 @@ fn literal_term_bound(
+ }
+ 
+ /// Builds `term` on the current process's heap.
++/// The Erlang reason `reason` writes, with `given` as the plan's leading
++/// inputs: the first is the subject.
++fn reason_value(runtime: &mut IrInterpRuntime, reason: &ReasonTerm, given: &[AnyValue]) -> Result<AnyValue, String> {
++    let proc = runtime.cur_proc();
++    match reason {
++        ReasonTerm::Ground(value) => literal_value(runtime, value),
++        ReasonTerm::Subject => given
++            .first()
++            .copied()
++            .ok_or_else(|| "internal error: a reason reads a subject its plan lacks".to_string()),
++        ReasonTerm::Tuple(items) => {
++            let items = items
++                .iter()
++                .map(|item| reason_value(runtime, item, given))
++                .collect::<Result<_, _>>()?;
++            make_tuple_on_proc(proc, items)
++        }
++    }
++}
++
+ fn literal_term_value(runtime: &mut IrInterpRuntime, term: &LiteralTerm) -> Result<AnyValue, String> {
+     const CONTEXT: &str = "literal term";
+     let proc = runtime.cur_proc();
+-- 
+2.50.1 (Apple Git-155)
+
+
+From 002a04fafd85561780372a53d155eefa50a26c13 Mon Sep 17 00:00:00 2001
+From: Jason Allum <21417+jallum@users.noreply.github.com>
+Date: Tue, 24 Nov 2026 18:33:12 -0500
+Subject: [PATCH 2/4] WIP: schema import
+
+---
+ runtime/src/failure.rs | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/runtime/src/failure.rs b/runtime/src/failure.rs
+index 72c1889a8..a950567a3 100644
+--- a/runtime/src/failure.rs
++++ b/runtime/src/failure.rs
+@@ -39,7 +39,7 @@ use crate::any_value::{AnyValue, AnyValueRef, ValueKind};
+ use crate::bits::{Bin, is_bitstring_like};
+ use crate::exec_ctx::ExecCtx;
+ use crate::handler_stack::Innermost;
+-use crate::heap::{list_head_ref, list_tail_ref};
++use crate::heap::{Schema, list_head_ref, list_tail_ref};
+ use crate::ir_runtime::{fz_tuple_elem, fz_tuple_size};
+ use crate::module_name::ModuleName;
+ use crate::park::materialize_outcome_closure;
+-- 
+2.50.1 (Apple Git-155)
+
+
+From 5e4631ee5efabad2e76a4171e8cc442b59e83038 Mon Sep 17 00:00:00 2001
+From: Jason Allum <21417+jallum@users.noreply.github.com>
+Date: Tue, 24 Nov 2026 20:27:44 -0500
+Subject: [PATCH 3/4] WIP: exception callee spelling
+
+---
+ src/compiler2/jobs/body.rs | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/src/compiler2/jobs/body.rs b/src/compiler2/jobs/body.rs
+index 5b2947d82..782d37314 100644
+--- a/src/compiler2/jobs/body.rs
++++ b/src/compiler2/jobs/body.rs
+@@ -5001,9 +5001,9 @@ fn update_key_error_callee() -> Callee {
+ /// redirect it.
+ fn exception_callee(function: &str) -> Callee {
+     Callee::Name(CallableName {
+-        module: Some(crate::ast::ModuleTarget::Exact(ModuleDenotation::Named(
+-            ModuleName::from_segments(vec!["Exception".to_string()]),
+-        ))),
++        module: Some(crate::ast::ModuleTarget::Exact(ModuleName::from_segments(vec![
++            "Exception".to_string(),
++        ]))),
+         name: function.to_string(),
+     })
+ }
+-- 
+2.50.1 (Apple Git-155)
+
+
+From 35b26559cefc4f87184aabf77cfa4d4c9e94cf4e Mon Sep 17 00:00:00 2001
+From: Jason Allum <21417+jallum@users.noreply.github.com>
+Date: Tue, 24 Nov 2026 20:57:01 -0500
+Subject: [PATCH 4/4] WIP: lower falling pins
+
+---
+ tests/fz2_cli.rs | 50 +++++++++++++++++++++++-------------------------
+ 1 file changed, 24 insertions(+), 26 deletions(-)
+
+diff --git a/tests/fz2_cli.rs b/tests/fz2_cli.rs
+index e96a60a4d..3a5498c4d 100644
+--- a/tests/fz2_cli.rs
++++ b/tests/fz2_cli.rs
+@@ -39,21 +39,21 @@ const TARGET_FIXTURES: [TargetFixture; 3] = [
+     TargetFixture {
+         source: "fixtures/00420_enum_take_drop_split.fz",
+         golden: "fixtures/00420_enum_take_drop_split.fz",
+-        runtime_demand_walks: 635,
++        runtime_demand_walks: 568,
+         mainline_runtime_demand_walks: 6252,
+         mainline_runtime_demand_door: ObservationDoor::Interp,
+     },
+     TargetFixture {
+         source: "fixtures/00571_enum_predicate_search.fz",
+         golden: "fixtures/00571_enum_predicate_search.fz",
+-        runtime_demand_walks: 602,
++        runtime_demand_walks: 535,
+         mainline_runtime_demand_walks: 6378,
+         mainline_runtime_demand_door: ObservationDoor::Interp,
+     },
+     TargetFixture {
+         source: "fixtures/00567_fz_f98_range_map_converges.fz",
+         golden: "fixtures/00567_fz_f98_range_map_converges.fz",
+-        runtime_demand_walks: 136,
++        runtime_demand_walks: 130,
+         mainline_runtime_demand_walks: 2971,
+         mainline_runtime_demand_door: ObservationDoor::Run,
+     },
+@@ -1331,7 +1331,6 @@ def main(), do: Enum.reduce([1, 2, 3, 4, 5], 0, fn (x, acc) -> x + acc end)
+             "runtime:List.fz".to_string(),
+             "runtime:Exception.fz".to_string(),
+             "runtime:ArithmeticError.fz".to_string(),
+-            "runtime:ErlangError.fz".to_string(),
+             "runtime:ArgumentError.fz".to_string(),
+         ];
+         let out = run_fz2(&[
+@@ -1546,7 +1545,6 @@ fn quicksort_run_lexes_each_source_once() {
+         "runtime:Exception.fz".to_string(),
+         "runtime:ArgumentError.fz".to_string(),
+         "runtime:ArithmeticError.fz".to_string(),
+-        "runtime:ErlangError.fz".to_string(),
+         "runtime:Protocol.UndefinedError.fz".to_string(),
+     ];
+ 
+@@ -2239,20 +2237,20 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
+             // What a program can raise is final only once every body of that program has been
+             // analysed, so the bottom handler and the banner it calls settle here, with the
+             // facts they read: the modules a value can name, and what each program raises.
+-            ("Activation", 30),
+-            ("ActivationAnalyzed", 33),
+-            ("ActivationInputs", 31),
+-            ("CallSiteSummary", 39),
+-            ("CallSiteTargets", 39),
+-            ("IncomingInputSlot", 46),
++            ("Activation", 24),
++            ("ActivationAnalyzed", 26),
++            ("ActivationInputs", 24),
++            ("CallSiteSummary", 29),
++            ("CallSiteTargets", 29),
++            ("IncomingInputSlot", 42),
+             ("NameableModules", 1),
+             // Each program settles what it can raise: the fixture's program, and the program of a
+             // macro that raises.
+             ("Raisable", 2),
+-            ("ReturnType", 33),
+-            ("RuntimeDemand", 28),
+-            ("RuntimeDemandInput", 22),
+-            ("RuntimeDemandInputs", 28),
++            ("ReturnType", 26),
++            ("RuntimeDemand", 25),
++            ("RuntimeDemandInput", 19),
++            ("RuntimeDemandInputs", 25),
+         ]),
+         "ordinary generic helper co-outputs publish every exact readiness transition without changing values"
+     );
+@@ -2362,17 +2360,17 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
+     assert_eq!(
+         formula_totals,
+         FormulaWork {
+-            evaluations: 544,
+-            runtime_demand_evaluations: 60,
+-            initial: 406,
+-            content_caused: 138,
++            evaluations: 504,
++            runtime_demand_evaluations: 54,
++            initial: 380,
++            content_caused: 124,
+             readiness_caused: 0,
+             concluded_caused: 0,
+             uncaused: 0,
+-            changed_outputs: 489,
+-            unchanged_outputs: 55,
++            changed_outputs: 451,
++            unchanged_outputs: 53,
+             already_pending: 5,
+-            blocked_completions: 132,
++            blocked_completions: 121,
+         },
+         "{fixture}: the reactive RuntimeDemand formula work or its causal classification moved"
+     );
+@@ -2390,9 +2388,9 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
+     assert_eq!(
+         by_reason(ledger.ran),
+         BTreeMap::from([
+-            ("blocked_waiter_expansion", 95),
+-            ("changed_revision_wake", 319),
+-            ("gate_expansion", 129),
++            ("blocked_waiter_expansion", 79),
++            ("changed_revision_wake", 303),
++            ("gate_expansion", 121),
+             ("ignition", 1),
+         ]),
+         "{fixture}: the jobs run, by the reason that queued each"
+@@ -2400,7 +2398,7 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
+     assert_eq!(
+         by_reason(ledger.already_pending),
+         BTreeMap::from([
+-            ("activation_published", 24),
++            ("activation_published", 19),
+             ("blocked_waiter_expansion", 1),
+             ("changed_revision_wake", 5),
+             ("gate_expansion", 36),
+-- 
+2.50.1 (Apple Git-155)
+
