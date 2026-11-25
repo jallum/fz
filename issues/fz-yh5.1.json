@@ -37,11 +37,15 @@
     {
       "text": "Supersedes the two comments above (user, 2026-11-24, relayed by Callables: 'with that recorded, we can skip the cranelift changes for now'). Cranelift part (b.vs rules, immediate form) deferred to GitHub #874 with the user's authorization; no fork, no upstream PR. fz-side forwarder remains: the p01b resume goes through an empty forwarder and fz_op_add_ii instead of an inline operator. Callables re-measures on develop after fz-yh5.2, then brings a page if the cost remains.",
       "timestamp": "2026-11-25T01:22:04Z"
+    },
+    {
+      "text": "fz-side part approved by the user 2026-11-25 ('proceed', relayed by Callables) as a general rule: a call to a frame-free function is lowered in place whatever its destination; delivered_call_continues_here and tail_call_continues_here merge into one predicate; a function's own Return gets the in-place routing; text size measured (a size bound, if needed, is a separate proposal). Page v2: https://claude.ai/artifact/TYA2NXZoHzNpXboHrKBpSL. Measured on c86bc0ffb: forwarder + fz_op_add_ii 42 instr/level vs ~27 target. Cranelift b.vs part stays deferred to GH #874. Building in ../fz-yh5.1 (fz-yh5.1/frame-free-in-place).",
+      "timestamp": "2026-11-25T03:03:52Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "Integer arithmetic on known integers is an instruction, not a flag dance or a call",
   "type": "task",
-  "updated_at": "2026-11-25T01:22:07Z"
+  "updated_at": "2026-11-25T03:03:52Z"
 }
