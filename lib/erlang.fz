@@ -248,6 +248,23 @@ defmodule :erlang do
   def iolist_size(iodata), do: byte_size(iolist_to_binary(iodata))
 
   @doc """
+  Returns `n` as text in base 10, with a `-` before a negative `n`.
+
+  Raises `ArgumentError` when `n` is not an integer.
+
+  ## Examples
+
+      :erlang.integer_to_binary(255)
+      #=> "255"
+
+      :erlang.integer_to_binary(-5)
+      #=> "-5"
+
+  """
+  @spec integer_to_binary(integer) :: binary
+  def integer_to_binary(n), do: integer_to_binary(n, 10)
+
+  @doc """
   Returns `n` as text in `base`, a number from 2 to 36, with the digits above
   9 in capital letters and a `-` before a negative `n`.
 
