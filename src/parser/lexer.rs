@@ -3,7 +3,9 @@ use std::fmt;
 use std::rc::Rc;
 use std::str::from_utf8;
 
-use unicode_normalization::{UnicodeNormalization, is_nfc};
+use unicode_normalization::UnicodeNormalization;
+#[cfg(test)]
+use unicode_normalization::is_nfc;
 use unicode_security::GeneralSecurityProfile;
 use unicode_security::mixed_script::AugmentedScriptSet;
 
@@ -287,8 +289,7 @@ pub(crate) enum SourceWord {
     Ident,
 }
 
-/// Classifies a source word. This is the one keyword table, used while lexing
-/// and when a quoted name is checked against source spelling.
+/// Classifies a source word. This is the one keyword table.
 fn classify_source_word(name: &str) -> SourceWord {
     match name {
         "fn" => SourceWord::Keyword(Tok::Fn),
@@ -329,6 +330,7 @@ fn classify_source_word(name: &str) -> SourceWord {
 /// Classifies a complete source word through the same spelling and keyword
 /// authority used while lexing. `None` means source text cannot produce one
 /// word token with this spelling.
+#[cfg(test)]
 pub(crate) fn source_word(name: &str) -> Option<SourceWord> {
     let mut chars = name.strip_suffix(is_name_mark).unwrap_or(name).chars();
     if !is_variable_start(chars.next()?)

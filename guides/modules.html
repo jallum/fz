@@ -78,8 +78,11 @@ qualified as <code>Math.double(21)</code>.</p>
 <p>The full name of that function is <code>App.Clock.tick/0</code>.</p>
 
 <p>A function is defined once in a module. Its clauses sit together; a
-second definition further down the body is an error that points at both. A
-module can mark a function so that a later definition replaces it:</p>
+second written definition further down the body is an error that points at
+both. A macro that expands to a clause of a function the module already
+defines adds that clause instead, and the clauses keep the order the module
+defines them in. A module can mark a function so that a later definition
+replaces it:</p>
 
 <pre><span class="kw">defmodule</span> <span class="ty">NotFound</span> <span class="kw">do</span>
   <span class="kw">def</span> <span class="fn">message</span>(_e), <span class="kw">do:</span> <span class="str">"not found"</span>

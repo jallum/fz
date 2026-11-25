@@ -1,0 +1,42 @@
+#---
+# purpose: "def unquote(expr)(args) defines the function expr names, with unquote taking its value in the module body and splicing it as quoted code, in a name, a pattern and a body, as json.erl names its true/6 and false/6"
+# oracle: self
+# oracle.stamp: 7af7eadce4e8edbe
+#---
+defmodule Frag do
+  @prefix "made"
+
+  def unquote(:foo)(x), do: x + 1
+  def unquote(String.to_atom(@prefix <> "_it"))(), do: unquote({:+, [], [1, 2]})
+  def unquote(:"a b")(), do: :spaced
+  defmacro unquote(:twice)(x), do: quote(do: unquote(x) * 2)
+  def with_arg(unquote(:ok)), do: :matched_ok
+  def with_arg(_), do: :other
+
+  defp unquote(:true)(<<"rue", rest::bits>>, n), do: {rest, n}
+  defp unquote(:true)(_rest, n), do: {:bad, n}
+  defp unquote(:false)(<<"alse", rest::bits>>, n), do: {rest, n}
+  defp unquote(:false)(_rest, n), do: {:bad, n}
+
+  def go(<<"t", rest::bits>>), do: unquote(:true)(rest, 1)
+  def go(<<"f", rest::bits>>), do: unquote(:false)(rest, 2)
+end
+
+defmodule Main do
+  require Frag
+
+  def main() do
+    IO.inspect(Frag.foo(1))
+    IO.inspect(Frag.made_it())
+    IO.inspect(apply(Frag, :"a b", []))
+    IO.inspect(Frag.twice(4))
+    IO.inspect(Frag.with_arg(:ok))
+    IO.inspect(Frag.with_arg(1))
+    IO.inspect(Frag.go("true!"))
+    IO.inspect(Frag.go("trxe"))
+    IO.inspect(Frag.go("false"))
+    IO.inspect(Frag.go("fxlse"))
+  end
+end
+
+Main.main()

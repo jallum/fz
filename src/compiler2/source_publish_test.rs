@@ -1,11 +1,12 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use super::super::identity::{FunctionBody, FunctionSource};
 use super::super::quoted_surface::read_compiler_fragment_surface;
 use super::super::source_publish::{ScopePublication, publish_scope};
 use super::super::source_test::quoted_tokens;
 use super::super::{
-    Job, ModuleId, Namespace, NamespaceSymbol, QuotedSourceBuilder, QuotedSourceHeap, QuotedSourceMetadata,
+    FunctionId, Job, ModuleId, Namespace, NamespaceSymbol, QuotedSourceBuilder, QuotedSourceHeap, QuotedSourceMetadata,
     QuotedSourceRoot, ScopeSnapshot, World, parse_quoted_program,
 };
 use crate::telemetry::{Capture, ConfiguredTelemetry};
@@ -873,4 +874,69 @@ mod identity_tests {
             "a dotted name nested in a module binds its first segment to the parent's child"
         );
     }
+}
+
+/// How many distinct sources the walk publishes for the top-level function
+/// `name/arity` while it scopes `source`.
+fn publications_of(source: &str, name: &str, arity: usize) -> usize {
+    let tel = ConfiguredTelemetry::new();
+    let publications = Rc::new(RefCell::new(Vec::<(FunctionId, FunctionBody)>::new()));
+    let observed = Rc::clone(&publications);
+    tel.attach_raw_event3::<World, FunctionId, FunctionSource, _>(
+        &["fz", "compiler2", "compiler_service", "define"],
+        move |_, _, _, _, function, source| observed.borrow_mut().push((*function, source.body.clone())),
+    );
+    let mut world = World::new();
+    let code = world.submit_code(Some("clauses.fz".to_string()), source.to_string());
+    assert!(world.demand(Job::ScopeCode(code)), "code scoping should be demandable");
+    assert!(
+        matches!(
+            super::super::drive::ExecutionContext::new(&mut world, &tel).drive(),
+            DriveOutcome::Resolved
+        ),
+        "the program should scope"
+    );
+    let function = world.reference_function(ModuleId::GLOBAL, name, arity);
+    let mut distinct = Vec::new();
+    for (published, body) in publications.borrow().iter() {
+        if *published == function && !distinct.contains(body) {
+            distinct.push(body.clone());
+        }
+    }
+    distinct.len()
+}
+
+const CLAUSE_MACRO: &str = r#"
+defmacro clause(value) do
+  quote do
+    def t(unquote(value)), do: unquote(value)
+  end
+end
+"#;
+
+#[test]
+fn a_function_defined_in_one_item_is_published_once() {
+    let source = format!("{CLAUSE_MACRO}\nclause(1)\n\ndef main(), do: t(1)\n");
+    assert_eq!(publications_of(&source, "t", 1), 1);
+}
+
+#[test]
+fn a_function_is_published_again_for_each_later_item_that_adds_clauses() {
+    let source = format!("{CLAUSE_MACRO}\nclause(1)\nclause(2)\nclause(3)\n\ndef main(), do: t(1) + t(2) + t(3)\n");
+    assert_eq!(
+        publications_of(&source, "t", 1),
+        3,
+        "the first item publishes the function and each item after it publishes it with its clauses joined"
+    );
+}
+
+#[test]
+fn clauses_written_after_the_last_item_that_adds_clauses_publish_with_it() {
+    let source =
+        format!("{CLAUSE_MACRO}\nclause(1)\ndef t(2), do: 2\nclause(3)\ndef t(_), do: 0\n\ndef main(), do: t(1)\n");
+    assert_eq!(
+        publications_of(&source, "t", 1),
+        1,
+        "the walk holds a function while a written clause of it is still to come"
+    );
 }

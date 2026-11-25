@@ -3764,6 +3764,15 @@ fn code_surface_function_match(
                 }
             }
             ScopeForm::MacroCall(macro_call) => item_macro_call_match(&macro_call.source, function_ref, sources)?,
+            // A fragment whose head spells out its name is that function's
+            // home or not; one whose name computes could define any.
+            ScopeForm::Fragment(fragment) => match &fragment.head {
+                Some(head) if function_ref.is_named(&head.name) && head.arity == function_ref.arity => {
+                    FunctionSurfaceMatch::Certain
+                }
+                Some(_) => FunctionSurfaceMatch::None,
+                None => FunctionSurfaceMatch::Opaque,
+            },
             // Top-level expressions become the file's `main/0`, which only
             // scoping the code can publish.
             ScopeForm::Statement(_) if function_ref.is_named("main") && function_ref.arity == 0 => {

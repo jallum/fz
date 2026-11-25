@@ -103,6 +103,29 @@ exception:
   exported interface, so a call from another module is refused as a call to a
   `defp` is (`01783`, `01784`).
 
+## Unquote Fragments
+
+A `def`, `defp`, `defmacro` or `defmacrop` clause with an `unquote` outside any
+`quote` is a fragment (`ScopeForm::Fragment`, built by `build_fragment_form`),
+as in Elixir: the `unquote` runs in the module body and its value is spliced
+in as quoted code, in the name, a parameter or the body. The walk evaluates it
+with the definition-time evaluator (`definition_time::Evaluation::Quote`, the
+one `defstruct` defaults use), whose body is `quote do <the clause> end`, so a
+quote's own `unquote` does the splicing. The evaluator runs with the module as
+walked so far and no module-body variables. `apply_fragment` reads the result
+as a written clause and publishes it like one, and a result that is not
+quoted code is refused with `macro/invalid-quoted-expr`. A fragment whose name
+is a literal (`unquote(:true)`) reserves it with the body's other names
+(`FragmentHead`); a computed name is bound once the fragment has run. Any atom
+spelled as a word names a function this way, `true` and `:"a b"` included.
+Fixture `01932` holds fragments in a name, a pattern, a body and a macro.
+
+An `unquote` inside a `quote` in a function body is expanded like any other
+expression, so `@name` reads and macro calls in it resolve; an `unquote` in a
+nested `quote` belongs to that inner quote. A definition's head is not
+expanded as a call when an expansion result is read, so a macro whose own
+name the head carries is not run.
+
 ## What Source Publication Owns
 
 `publish_scope(...)` in `src/compiler2/source_publish.rs` owns source-order

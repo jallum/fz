@@ -1317,7 +1317,12 @@ fn collect_quoted_splices(
     }
     let args = node.tail.list_items()?;
     if node.head.root().tag() == fz_runtime::any_value::ValueKind::ATOM {
-        if node.head.atom_name()? == "unquote" && args.len() == 1 {
+        let name = node.head.atom_name()?;
+        // An `unquote` inside a nested `quote` belongs to that quote.
+        if name == "quote" {
+            return Ok(());
+        }
+        if name == "unquote" && args.len() == 1 {
             out.push(decode_expr(occurrences, &args[0], node.span, sources)?);
             return Ok(());
         }

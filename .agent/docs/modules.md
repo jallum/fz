@@ -433,10 +433,18 @@ so its source is an output of that definition's derivation rather than a
 derivation of its own (`LocalCallable::superseded`).
 
 `defoverridable` is `ScopeForm::Overridable`, read by `build_form`. It takes
-`name: arity` pairs. Clauses of one function separated by another form are a
-second definition and are refused, where Elixir warns and joins them.
-Fixtures `00872` and `01303` are the oracle fixtures; `00873` through `00875`
-are the refusals.
+`name: arity` pairs. Fixtures `00872` and `01303` are the oracle fixtures;
+`00873` through `00875` are the refusals.
+
+Clauses of one function join across items when an item macro or an unquote
+fragment adds them. Each clause carries its `ClauseOrigin`, `Written` or
+`Expanded`. A clause of `Expanded` origin whose name and arity the module
+already defines, or a written clause that follows an expanded one, joins the
+function (`ReachedDefinition::takes_clauses_of`): the walk publishes the
+function again with every clause so far, superseding the earlier publication
+the way `defoverridable` does. Two written definitions apart stay a second
+definition and are refused, so a function that gains no clause later is
+published once. Fixture `01933` holds the join.
 
 A `defstruct` form defines the module's `__struct__/0`. The walk reserves it
 with the body's other names and applies `def __struct__(), do: %__MODULE__{}`
@@ -554,6 +562,6 @@ and reads `nil`. A macro's quoted `@name` is read in the module the macro
 expands in. A nested module starts from its own namespace, so it reads only
 its own attributes. Fixtures `01785` and `01786` hold these.
 
-A form between two clauses of one function, an attribute among them, closes
-the clause group, so the later clause is a second definition.
+A form between two written clauses of one function, an attribute among them,
+closes the clause group, so the later clause is a second definition.
 

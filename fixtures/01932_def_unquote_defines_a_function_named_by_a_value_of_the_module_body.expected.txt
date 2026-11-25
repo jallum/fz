@@ -1,0 +1,10 @@
+2
+3
+:spaced
+8
+:matched_ok
+:other
+{"!", 1}
+{:bad, 1}
+{"", 2}
+{:bad, 2}

@@ -68,3 +68,40 @@ fn a_field_list_written_as_literals_evaluates_nothing() {
     assert_eq!(value, 14);
     assert_eq!(evaluations, 0, "a written field list is the definition as it stands");
 }
+
+/// What compiling `source` and running its `main/0` fails with: the
+/// diagnostic's code and message.
+fn refusal(source: &str) -> (String, String) {
+    let tel = ConfiguredTelemetry::new();
+    let diagnostics = crate::telemetry::Capture::new();
+    diagnostics.install(&tel, &["fz", "diag"]);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fragment.fz".into()),
+        text: source.into(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    compiler.run_root_interp(root).expect_err("the program is refused");
+    let event = diagnostics
+        .last(&["fz", "diag", "error"])
+        .expect("the refusal is a diagnostic");
+    (
+        super::drive_harness::metadata_str(&event, "code").to_string(),
+        super::drive_harness::metadata_str(&event, "message").to_string(),
+    )
+}
+
+#[test]
+fn an_unquote_fragment_refuses_a_value_that_is_not_quoted_code() {
+    let (code, message) = refusal("defmodule M do\n def m(), do: unquote(%{a: 1})\nend\ndef main(), do: M.m()\n");
+    assert_eq!(code, "macro/invalid-quoted-expr");
+    assert!(
+        message.starts_with("invalid quoted expression: %{a: 1}"),
+        "Elixir refuses a map the same way: {message}"
+    );
+}

@@ -6,11 +6,11 @@ use fz_runtime::process::AtomName;
 
 use crate::ast::{Attribute, DefinitionForm, TypeAliasDecl, TypeExprBody};
 use crate::modules::identity::ModuleName;
-use crate::parser::lexer::{SourceWord, Tok};
+use crate::parser::lexer::Tok;
 use crate::source::{SourceMap, Span};
 
 use super::quoted_function::decode_standalone_expr;
-use super::source::{QuotedAstNode, QuotedSourceCursor, QuotedSourceError, QuotedSourceRoot};
+use super::source::{QuotedAstNode, QuotedSourceCursor, QuotedSourceError, QuotedSourceMetadata, QuotedSourceRoot};
 use super::structdef::StructDef;
 use super::token_payload;
 use crate::literal_term::LiteralTerm;
@@ -62,6 +62,7 @@ pub enum ScopeForm {
     Protocol(ProtocolForm),
     ProtocolImpl(ProtocolImplForm),
     Struct(StructForm),
+    Fragment(FragmentForm),
     Overridable(OverridableForm),
     MacroCall(MacroCallForm),
     Statement(StatementForm),
@@ -133,6 +134,34 @@ pub struct FunctionForm {
     pub span: Span,
 }
 
+impl FunctionForm {
+    /// The function that has this one's clauses and then `later`'s, as Elixir
+    /// joins the clauses of a name and arity in the order the module defines
+    /// them.
+    pub(crate) fn followed_by(&self, later: &FunctionForm) -> Result<FunctionForm, QuotedSourceError> {
+        let mut items = self.clause_items()?;
+        items.extend(later.clause_items()?);
+        Ok(FunctionForm {
+            source: self.source.interned_list_subroot(&items)?,
+            ..self.clone()
+        })
+    }
+
+    /// The items of the definition: its one clause, or the attributes and
+    /// clauses of a group.
+    fn clause_items(&self) -> Result<Vec<AnyValueRef>, QuotedSourceError> {
+        if self.source.cursor().root().tag() == fz_runtime::any_value::ValueKind::LIST {
+            return self
+                .source
+                .cursor()
+                .list_iter()
+                .map(|item| item.map(|item| item.root()))
+                .collect();
+        }
+        Ok(vec![self.source.cursor().root()])
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ModuleForm {
     pub source: QuotedSourceRoot,
@@ -161,6 +190,30 @@ pub struct StructForm {
     /// The field list as written: a list, or an expression that computes one.
     pub fields: QuotedSourceRoot,
     pub span: Span,
+}
+
+/// A definition with an `unquote` outside any `quote`: Elixir's unquote
+/// fragment. The `unquote` runs in the module body as the walk has it, and
+/// its value is spliced into the definition as quoted code, so the form is
+/// the quote of what was written. Until it runs, nothing tells what it
+/// defines beyond what the head spells out.
+#[derive(Debug, Clone)]
+pub struct FragmentForm {
+    /// The definition, with the `@doc` and `@spec` written above it, as one
+    /// expression.
+    pub source: QuotedSourceRoot,
+    /// The function the head names without running anything, when it does.
+    pub head: Option<FragmentHead>,
+    pub span: Span,
+}
+
+/// The function a fragment's head names: its name is written as an atom, or
+/// as `unquote` of an atom, and its parameters are counted by their number.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FragmentHead {
+    pub name: String,
+    pub arity: usize,
+    pub is_macro: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -332,6 +385,17 @@ fn read_surface(source: &QuotedSourceRoot, sources: &SourceMap) -> Result<ScopeS
         }
 
         match head_name.as_str() {
+            head if is_function_definition_head(head) && mentions_unquote(&quoted_item, sources)? => {
+                flush_function_groups(source, &mut forms, &mut group_order, &mut groups, sources)?;
+                let mut item_roots = std::mem::take(&mut pending_function_attrs);
+                item_roots.push(quoted_item.root());
+                forms.push(ScopeForm::Fragment(build_fragment_form(
+                    source,
+                    &item_roots,
+                    &quoted_item,
+                    sources,
+                )?));
+            }
             head if is_function_definition_head(head) => {
                 let clause_span = node.span.unwrap_or(Span::DUMMY);
                 let key = parse_function_group_key(&source.subroot(quoted_item.root()), sources).map_err(|error| {
@@ -490,6 +554,154 @@ fn build_definition_form(
         "defimpl" => ScopeForm::ProtocolImpl(parse_protocol_impl_form(source, sources)?),
         _ => unreachable!("covered by is_scope_definition_head"),
     })
+}
+
+/// Reads a fragment's definition and the attributes written above it as the
+/// one expression a `quote` runs.
+fn build_fragment_form(
+    source: &QuotedSourceRoot,
+    item_roots: &[AnyValueRef],
+    clause: &QuotedSourceCursor,
+    sources: &SourceMap,
+) -> Result<FragmentForm, QuotedSourceError> {
+    let span = clause
+        .ast_node(sources)?
+        .and_then(|node| node.span)
+        .unwrap_or(Span::DUMMY);
+    let expression = match item_roots {
+        [only] => source.subroot(*only),
+        items => {
+            let builder = source.builder();
+            let meta = QuotedSourceMetadata {
+                span: Some(span),
+                ..QuotedSourceMetadata::default()
+            };
+            source.subroot(builder.call("__block__", &meta, items)?)
+        }
+    };
+    Ok(FragmentForm {
+        source: expression,
+        head: fragment_head(clause, sources)?,
+        span,
+    })
+}
+
+/// Whether `cursor` holds an `unquote` that no `quote` encloses: code the
+/// module body runs, not code that is being quoted.
+fn mentions_unquote(cursor: &QuotedSourceCursor, sources: &SourceMap) -> Result<bool, QuotedSourceError> {
+    use fz_runtime::any_value::ValueKind;
+    let Some(node) = cursor.ast_node(sources)? else {
+        return match cursor.root().tag() {
+            ValueKind::LIST => mentions_unquote_among(cursor.list_iter(), sources),
+            ValueKind::STRUCT if cursor.tuple_arity()? == 2 => mentions_unquote_among(cursor.tuple_iter()?, sources),
+            _ => Ok(false),
+        };
+    };
+    if node.head.root().tag() == ValueKind::ATOM {
+        match node.head.atom_name()?.as_str() {
+            "quote" => return Ok(false),
+            "unquote" | "unquote_splicing" => return Ok(true),
+            _ => {}
+        }
+    } else if mentions_unquote(&node.head, sources)? {
+        return Ok(true);
+    }
+    if !node.tail.is_list_like() {
+        return Ok(false);
+    }
+    mentions_unquote_among(node.tail.list_iter(), sources)
+}
+
+fn mentions_unquote_among(
+    items: impl Iterator<Item = Result<QuotedSourceCursor, QuotedSourceError>>,
+    sources: &SourceMap,
+) -> Result<bool, QuotedSourceError> {
+    for item in items {
+        if mentions_unquote(&item?, sources)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// The function a fragment's head names, when its name and parameter count
+/// are written: `def name(a, b)`, `def unquote(:name)(a, b)` and
+/// `def unquote(:name)`. A computed name, or a parameter list that splices,
+/// is known only once it runs.
+fn fragment_head(clause: &QuotedSourceCursor, sources: &SourceMap) -> Result<Option<FragmentHead>, QuotedSourceError> {
+    let Some(definition) = clause.ast_node(sources)? else {
+        return Ok(None);
+    };
+    let is_macro = is_macro_definition_head(&definition.head.atom_name()?);
+    let Some(mut head) = definition.tail.list_iter().next().transpose()? else {
+        return Ok(None);
+    };
+    if let Some(guarded) = head.ast_node(sources)?
+        && guarded.head.root().tag() == fz_runtime::any_value::ValueKind::ATOM
+        && guarded.head.atom_name()? == "when"
+    {
+        let Some(inner) = guarded.tail.list_iter().next().transpose()? else {
+            return Ok(None);
+        };
+        head = inner;
+    }
+    let Some(call) = head.ast_node(sources)? else {
+        return Ok(None);
+    };
+    let (name, parameters) = if call.head.root().tag() == fz_runtime::any_value::ValueKind::ATOM {
+        let name = call.head.atom_name()?;
+        if name == "unquote" {
+            (unquoted_atom(&call.tail)?, None)
+        } else {
+            (Some(name.to_string()), Some(call.tail))
+        }
+    } else {
+        let Some(callee) = call.head.ast_node(sources)? else {
+            return Ok(None);
+        };
+        if callee.head.root().tag() != fz_runtime::any_value::ValueKind::ATOM || callee.head.atom_name()? != "unquote" {
+            return Ok(None);
+        }
+        (unquoted_atom(&callee.tail)?, Some(call.tail))
+    };
+    let Some(name) = name else {
+        return Ok(None);
+    };
+    let arity = match parameters {
+        None => 0,
+        Some(parameters) if parameters.is_list_like() => {
+            if mentions_unquote_splicing(&parameters, sources)? {
+                return Ok(None);
+            }
+            parameters.list_len()?
+        }
+        Some(_) => 0,
+    };
+    Ok(Some(FragmentHead { name, arity, is_macro }))
+}
+
+/// The atom `unquote(:name)` splices, when it is written out.
+fn unquoted_atom(arguments: &QuotedSourceCursor) -> Result<Option<String>, QuotedSourceError> {
+    let mut arguments = arguments.list_iter();
+    let (Some(argument), None) = (arguments.next().transpose()?, arguments.next()) else {
+        return Ok(None);
+    };
+    if argument.root().tag() != fz_runtime::any_value::ValueKind::ATOM {
+        return Ok(None);
+    }
+    Ok(Some(argument.atom_name()?.to_string()))
+}
+
+fn mentions_unquote_splicing(parameters: &QuotedSourceCursor, sources: &SourceMap) -> Result<bool, QuotedSourceError> {
+    for parameter in parameters.list_iter() {
+        if let Some(node) = parameter?.ast_node(sources)?
+            && node.head.root().tag() == fz_runtime::any_value::ValueKind::ATOM
+            && node.head.atom_name()? == "unquote_splicing"
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn build_form(source: QuotedSourceRoot, sources: &SourceMap) -> Result<ScopeForm, QuotedSourceError> {
@@ -885,7 +1097,7 @@ fn clause_group_key(
     let key = match context {
         FunctionFormContext::Definition => match node.tail.list_pair()? {
             Some((function_head, body)) if is_function_body_keyword(&body) => {
-                parse_function_head_key(&function_head, is_macro_definition_head(&head), sources)
+                parse_function_head_key(&function_head, sources)
                     .map_err(|error| QuotedSourceError::new(format!("invalid `{head}` function head: {error}")))
             }
             _ => Err(QuotedSourceError::new(format!(
@@ -963,7 +1175,7 @@ pub(crate) fn validate_protocol_callback_clause(
             "protocol callback `{definition_head}` cannot have a guard"
         )));
     }
-    let key = parse_function_head_key(&head, false, sources)?;
+    let key = parse_function_head_key(&head, sources)?;
     if key.arity == 0 {
         return Err(QuotedSourceError::new(format!(
             "protocol callback `{definition_head}` must have at least one parameter"
@@ -1143,13 +1355,12 @@ fn parse_function_group_key(
     sources: &SourceMap,
 ) -> Result<FunctionGroupKey, QuotedSourceError> {
     let node = first_non_attr_node(root, sources)?;
-    let definition_head = node.head.atom_name()?;
     let Some(head) = node.tail.list_iter().next().transpose()? else {
         return Err(QuotedSourceError::new(
             "quoted function clause is missing its head expression",
         ));
     };
-    parse_function_head_key(&head, is_macro_definition_head(&definition_head), sources)
+    parse_function_head_key(&head, sources)
 }
 
 /// Whether `source` is a `def`, `defp` or `defmacro`: a form
@@ -1209,15 +1420,13 @@ pub(crate) fn reserved_source_definition(
 
 fn parse_function_head_key(
     cursor: &QuotedSourceCursor,
-    allow_reserved_macro_name: bool,
     sources: &SourceMap,
 ) -> Result<FunctionGroupKey, QuotedSourceError> {
-    parse_function_head_key_inner(cursor, allow_reserved_macro_name, true, sources)
+    parse_function_head_key_inner(cursor, true, sources)
 }
 
 fn parse_function_head_key_inner(
     cursor: &QuotedSourceCursor,
-    allow_reserved_macro_name: bool,
     allow_guard: bool,
     sources: &SourceMap,
 ) -> Result<FunctionGroupKey, QuotedSourceError> {
@@ -1237,7 +1446,7 @@ fn parse_function_head_key_inner(
                 "quoted `when` function head expects head and guard",
             ));
         };
-        return parse_function_head_key_inner(&inner?, allow_reserved_macro_name, false, sources);
+        return parse_function_head_key_inner(&inner?, false, sources);
     }
     let arity = function_head_arity(&node.tail)?;
     if let Some(arities) = definable_operator_arities(&name) {
@@ -1251,14 +1460,14 @@ fn parse_function_head_key_inner(
                     .join(" or ")
             )));
         }
-        return Ok(FunctionGroupKey { name, arity });
+    } else if !name.starts_with(|first: char| first.is_alphabetic() || first == '_') {
+        // Any atom spelled as a word names a function, as `unquote(:true)`
+        // does; a symbol that is no definable operator (`=`, `->`) does not.
+        return Err(QuotedSourceError::new(format!(
+            "`{name}` is not a definable function name"
+        )));
     }
-    if is_local_function_name(&name, allow_reserved_macro_name) {
-        return Ok(FunctionGroupKey { name, arity });
-    }
-    Err(QuotedSourceError::new(format!(
-        "`{name}` is not a definable function name"
-    )))
+    Ok(FunctionGroupKey { name, arity })
 }
 
 /// The parameter counts an operator may be defined with. `+` and `-` are both
@@ -1276,24 +1485,6 @@ fn definable_operator_arities(name: &str) -> Option<&'static [usize]> {
 
 fn arity_word(arity: usize) -> &'static str {
     if arity == 1 { "one" } else { "two" }
-}
-
-fn is_local_function_name(name: &str, allow_reserved_macro_name: bool) -> bool {
-    match crate::parser::lexer::source_word(name) {
-        Some(SourceWord::Ident) => true,
-        Some(SourceWord::Keyword(
-            Tok::Defmacro
-            | Tok::Defmodule
-            | Tok::Defprotocol
-            | Tok::Defimpl
-            | Tok::Defstruct
-            | Tok::Alias
-            | Tok::Import
-            | Tok::Require
-            | Tok::Extern,
-        )) => allow_reserved_macro_name,
-        _ => false,
-    }
 }
 
 /// A function name written with no parens at all (`def foo do ... end`, or
