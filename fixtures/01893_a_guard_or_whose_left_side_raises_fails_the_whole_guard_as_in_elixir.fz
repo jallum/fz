@@ -1,0 +1,40 @@
+#---
+# purpose: "A guard `A or B` whose A raises fails the whole guard even when B would hold, and `not` of a raising test fails it too: the clause is never taken and the next clause is tried"
+# kind: run
+# root: main/0
+# assert.metric.semantic.executables: 12
+# assert.metric.semantic.callsites: 27
+# oracle: self
+# oracle.stamp: a0e51b4d74cc1fbd
+#---
+defmodule Main do
+  def left_raises(x) when hd(x) == 1 or is_atom(x), do: :took
+  def left_raises(_), do: :next
+
+  def right_raises(x) when is_atom(x) or hd(x) == 1, do: :took
+  def right_raises(_), do: :next
+
+  def both_questions(x) when is_atom(x) or is_integer(x), do: :took
+  def both_questions(_), do: :next
+
+  def not_raises(x) when not (hd(x) == 1), do: :took
+  def not_raises(_), do: :next
+
+  def main() do
+    IO.inspect(left_raises(:a))
+    IO.inspect(left_raises([1]))
+    IO.inspect(left_raises([2]))
+    IO.inspect(right_raises(:a))
+    IO.inspect(right_raises([1]))
+    IO.inspect(right_raises([2]))
+    IO.inspect(right_raises(5))
+    IO.inspect(both_questions(:a))
+    IO.inspect(both_questions(5))
+    IO.inspect(both_questions("s"))
+    IO.inspect(not_raises(:a))
+    IO.inspect(not_raises([2]))
+    IO.inspect(not_raises([1]))
+  end
+end
+
+Main.main()

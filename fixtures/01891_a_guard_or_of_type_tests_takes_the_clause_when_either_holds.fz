@@ -1,0 +1,33 @@
+#---
+# purpose: "A guard `A or B` takes its clause when either side holds, as in Elixir: the disjunction is one row whose guard is the `or`, so the clause is specialized for every kind its argument can have"
+# kind: run
+# root: main/0
+# assert.metric.semantic.activations: 34
+# assert.metric.semantic.executables: 34
+# assert.metric.semantic.callsites: 41
+# oracle: self
+# oracle.stamp: f3ab7854f61517e2
+#---
+defmodule Main do
+  def number(x), do: {:number, x}
+  def text(x), do: {:text, x}
+  def tagged(x), do: {:tagged, x}
+
+  def kind(x) when is_integer(x) or is_float(x), do: number(x)
+  def kind(x) when is_binary(x) or is_atom(x), do: text(x)
+  def kind(x) when is_tuple(x) and tuple_size(x) == 2 or is_list(x), do: tagged(x)
+  def kind(_), do: :other
+
+  def main() do
+    IO.inspect(kind(1))
+    IO.inspect(kind(2.5))
+    IO.inspect(kind("s"))
+    IO.inspect(kind(:a))
+    IO.inspect(kind({1, 2}))
+    IO.inspect(kind([1]))
+    IO.inspect(kind({1, 2, 3}))
+    IO.inspect(kind(%{}))
+  end
+end
+
+Main.main()

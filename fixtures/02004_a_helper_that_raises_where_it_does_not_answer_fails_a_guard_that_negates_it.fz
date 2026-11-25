@@ -1,0 +1,25 @@
+#---
+# purpose: "A guard `not helper(x)` fails for a value the helper raises on, as in Elixir, rather than taking the clause as if the helper had answered false"
+# kind: run
+# root: main/0
+# assert.metric.semantic.executables: 3
+# assert.metric.semantic.activations: 3
+# assert.metric.semantic.callsites: 3
+# assert.metric.call_edges.count: 3
+# oracle: 02004_a_helper_that_raises_where_it_does_not_answer_fails_a_guard_that_negates_it.oracle.exs
+# oracle.stamp: 8820a02801eec0e0
+#---
+defmodule Main do
+  def int?(x) when is_integer(x), do: true
+  def int?(x) when is_float(x), do: false
+  def int?(_), do: raise(ArgumentError, "not a number")
+
+  def kind(x) when not int?(x), do: :not_int
+  def kind(_), do: :other
+
+  def main() do
+    IO.inspect(Enum.map([1, 1.5, :z, "s"], &kind/1))
+  end
+end
+
+Main.main()

@@ -295,14 +295,45 @@ The call unfolds only when one clause can answer true for the arguments
 (`resolve`). Two clauses that can both answer true, or a live clause that
 follows a clause that conditionally matches and answers false or raises (only a
 negation separates them), leave the call as the guard it is, with the helper's
-own plan embedded. A conjunct that is not a call, a call under `or` or `not`, a
-call with an expression argument, and one naming an unbound (pinned) variable
+own plan embedded. A conjunct that is not a call or an `or`, a call under `not`,
+a call with an expression argument, and one naming an unbound (pinned) variable
 also stay guards. Names resolve through the same `bound` map the guard uses, so
 the unfolded questions cannot disagree with the guard about which value a name
 means. Every row source passes through `add_row`, so entry clauses, `case` arms,
 `receive` arms and lambda clauses unfold alike, and the analysis reads an
 unfolded question like a typed parameter's: the body narrows by it and an
 activation whose type decides the clause skips the test.
+
+An `or` is facts that hold in more than one way (`Alternatives`, in
+`unfold.rs`): a disjunction of conjunctions, tried in order. `admit_or` admits
+each side of the `or` chain as a guard of its own, so a side unfolds, asks and
+splits like any other. A disjunction with more than one live side is not split:
+it stays one row, and the disjunction is the guard expression that row runs
+(`MAX_ALTERNATIVES` is 1). An `or` with one live side, the others refused, is
+that side's facts. No guard is read as more than one way today: `and` and `not`
+refuse a product past `MAX_ALTERNATIVES`.
+
+An exception anywhere in a guard fails the whole guard, so a disjunction can be
+facts only when no side before the last can raise (`Conjunction::cannot_raise`):
+a side that is only questions cannot, because a question mismatches where a
+residual expression would raise; a residual, a refusal other than a plain false,
+and a call to a helper that has no clause for some arguments (`partial`, set in
+`resolve` when no clause matches every argument, or when a trailing certain
+clause is refused for a reason other than false) can. Otherwise the whole `or`
+stays the one guard expression the evaluators run, which stops at the first side
+that raises.
+
+`not A` is read when every question of `A` has a complement that is itself a
+question, because a row asks whether a question holds and the matrix has no arm
+that matches by a question's miss (`PatternResolver::complement`). A type test
+over `T` complements to a test over `Types::runtime_value_top() \ T`, which is `any` without the type variables, generic opaques and C pointer, because a run-time test over `any \ T` widens to pass every value and `runtime_complement` refuses a `T` whose complement would widen; a tuple arity, a map kind and an
+empty list complement to the type that leaves them out. `not (a or b)` is
+`not a and not b`, which is read when each of `a` and `b` is one way; `not (a and b)` is
+the alternatives `not a`, `not b`, more than `MAX_ALTERNATIVES` ways, so it stays
+the one guard expression. A residual expression, an equality, a cons test, a
+key test, a bitstring test, a `Guard` question, or anything that may raise (the
+`or` rule above) has no complement, and the whole `not` stays the one guard
+expression the evaluators run.
 
 A call that stays a guard inside a larger expression still makes its call, so
 what it needs to answer at all is asked first (`ask_what_its_calls_need`): the

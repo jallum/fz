@@ -1,0 +1,34 @@
+#---
+# purpose: "A guard `not (is_list(x) or is_map(x))` holds where neither test does, as in Elixir; the `or` is one row's guard, so the `not` stays that guard, and `not (a and b)` stays one guard too"
+# kind: run
+# root: main/0
+# assert.metric.semantic.activations: 20
+# assert.metric.semantic.executables: 20
+# assert.metric.semantic.callsites: 27
+# assert.metric.call_edges.count: 27
+# oracle: self
+# oracle.stamp: 1232f8432575306a
+#---
+defmodule Main do
+  def scalar(x), do: {:scalar, x}
+  def container(x), do: {:container, x}
+
+  def shape(x) when not (is_list(x) or is_map(x)), do: scalar(x)
+  def shape(x), do: container(x)
+
+  def unless_both(x, y) when not (is_integer(x) and is_atom(y)), do: {:one_missed, x, y}
+  def unless_both(x, y), do: {:both, x, y}
+
+  def main() do
+    IO.inspect(unless_both(1, :a))
+    IO.inspect(unless_both(1, 2))
+    IO.inspect(unless_both(:a, :a))
+    IO.inspect(shape(1))
+    IO.inspect(shape([1]))
+    IO.inspect(shape(%{}))
+    IO.inspect(shape(:a))
+    IO.inspect(shape({1, 2}))
+  end
+end
+
+Main.main()

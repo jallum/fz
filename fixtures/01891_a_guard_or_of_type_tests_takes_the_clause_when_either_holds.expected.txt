@@ -1,0 +1,8 @@
+{:number, 1}
+{:number, 2.5}
+{:text, "s"}
+{:text, :a}
+{:tagged, {1, 2}}
+{:tagged, [1]}
+:other
+:other
