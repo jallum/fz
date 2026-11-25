@@ -371,6 +371,9 @@ pub(crate) struct Outcome {
 pub(crate) enum OutcomeMultiplicity {
     /// At most one arm may route to this outcome.
     Unique,
+    /// Any number of arms may route to this outcome: one clause that can match
+    /// in more than one way has an arm for each way.
+    Shared,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

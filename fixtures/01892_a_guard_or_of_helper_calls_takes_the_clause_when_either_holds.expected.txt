@@ -1,0 +1,10 @@
+{:scalar, 1}
+{:scalar, 2.5}
+{:scalar, "s"}
+{:scalar, :a}
+:later
+:later
+:other
+:one_number
+:one_number
+:none
