@@ -1,0 +1,34 @@
+#---
+# purpose: quote of x.field is {{:., meta, [x, :field]}, [no_parens: true], []}, so a macro can match the node and still evaluate it.
+# oracle: self
+# oracle.stamp: 7e6c885d3656cfdd
+#---
+defmodule Probe do
+  defmacro describe(expr) do
+    case expr do
+      {{:., _, [{receiver, _, _}, name]}, [{:no_parens, true} | _], []} ->
+        quote do
+          {unquote(receiver), unquote(name), unquote(expr)}
+        end
+    end
+  end
+end
+
+defmodule Main do
+  require Probe
+
+  def main() do
+    IO.inspect(quote do: x.field)
+    IO.inspect(quote do: __ENV__.line)
+    {{:., [], [inner, :c]}, meta, []} = quote do: a.b.c
+    IO.inspect(inner)
+    IO.inspect(meta)
+    IO.inspect(quote do: a.b())
+    IO.inspect(quote do: (x.field = 1))
+    {{:., [], [callee]}, [], [1]} = quote do: x.field.(1)
+    IO.inspect(callee)
+    point = %{x: 1, y: 2}
+    IO.inspect(Probe.describe(point.y))
+  end
+end
+Main.main()

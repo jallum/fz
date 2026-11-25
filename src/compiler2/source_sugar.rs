@@ -983,6 +983,7 @@ fn generated_variable(
     let meta = QuotedSourceMetadata {
         bound_callable: None,
         from_brackets: false,
+        no_parens: false,
         span,
         counter: None,
     };

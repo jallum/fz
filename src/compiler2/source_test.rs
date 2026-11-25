@@ -74,6 +74,7 @@ fn meta(_source_name: &str, line: u32) -> QuotedSourceMetadata {
     QuotedSourceMetadata {
         bound_callable: None,
         from_brackets: false,
+        no_parens: false,
         span: Some(Span::new(
             version,
             line,

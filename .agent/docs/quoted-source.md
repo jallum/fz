@@ -95,6 +95,15 @@ authority. See [`canonical-form`](canonical-form.md#canonbackendprogram).
   head is a local name whatever it spells, so `{:"Foo.bar", meta, args}` calls
   a local function literally named `Foo.bar` and is never split into a module
   and a name. Elixir reads the same shape the same way.
+- A remote call written without parentheses, `x.field` or `Mod.fun`, quotes as
+  `{{:., meta, [x, :field]}, [no_parens: true], []}`, Elixir's call node. The
+  front door builds it in `finish_remote_target`, a quote keeps the
+  `no_parens` entry (`QuotedSourceMetadata::no_parens`, placed before the
+  span as Elixir places it), and decoding reads that node, with no arguments
+  and the marker, as the field or zero-argument function the head names. A
+  bare `{:., meta, [x, :field]}` is only ever a call's head, never an
+  expression of its own; applying the head to arguments (`x.f(1)`,
+  `x.f 1`) gives an ordinary call whose meta has no `no_parens`.
 - A variable's `tail` is its context: `nil`, a macro's `FunctionId`, or the
   atom `generated`.
 - Module aliases use `{:__aliases__, meta, [:Foo, :Bar]}`. Decoding reads one

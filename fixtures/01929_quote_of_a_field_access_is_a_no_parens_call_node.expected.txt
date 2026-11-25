@@ -1,0 +1,8 @@
+{{:., [], [{:x, [], Main}, :field]}, [no_parens: true], []}
+{{:., [], [{:__ENV__, [], Main}, :line]}, [no_parens: true], []}
+{{:., [], [{:a, [], Main}, :b]}, [no_parens: true], []}
+[no_parens: true]
+{{:., [], [{:a, [], Main}, :b]}, [], []}
+{:=, [], [{{:., [], [{:x, [], Main}, :field]}, [no_parens: true], []}, 1]}
+{{:., [], [{:x, [], Main}, :field]}, [no_parens: true], []}
+{:point, :y, 2}
