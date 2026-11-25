@@ -1,0 +1,49 @@
+#---
+# purpose: ":maps.get/2 returns a key's value (a stored nil included) and raises KeyError for a missing key; :maps.get/3 returns the default for a missing key; both raise BadMapError for a non-map, and the failures read as {:badkey, key} and {:badmap, term} when caught, as in Elixir"
+# oracle: self
+# oracle.stamp: 8902568816fe13cc
+#---
+defmodule Main do
+  def rescued(fun) do
+    try do
+      fun.()
+    rescue
+      e -> {e.__struct__, e.term, Exception.message(e)}
+    end
+  end
+
+  def caught(fun) do
+    try do
+      fun.()
+    catch
+      kind, reason -> {kind, reason}
+    end
+  end
+
+  def main() do
+    m = %{a: 1}
+    stored_nil = %{b: nil}
+
+    IO.inspect(:maps.get(:a, m))
+    IO.inspect(:maps.get(:b, stored_nil))
+    IO.inspect(:maps.get(:b, stored_nil, 0))
+    IO.inspect(:maps.get(:c, m, 0))
+    IO.inspect(:maps.get(:a, m, 0))
+    IO.inspect(:maps.get("k", %{"k" => [1, 2]}))
+    IO.inspect(Map.fetch!(m, :a))
+
+    failures = [
+      fn -> :maps.get(:c, m) end,
+      fn -> :maps.get(:a, 5) end,
+      fn -> :maps.get(:a, 5, 0) end,
+      fn -> Map.fetch!(m, :c) end
+    ]
+
+    for f <- failures do
+      IO.inspect(rescued(f))
+      IO.inspect(caught(f))
+    end
+  end
+end
+
+Main.main()
