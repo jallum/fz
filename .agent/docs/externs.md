@@ -136,9 +136,19 @@ value as a float. All of them are total, so each also keeps a trailing
 `Kernel.compare/2`, whose `fz_value_cmp_ref` answers by the total term order.
 Each of these takes both operands as `stored_value`, so a number of a kind the
 compiler cannot see crosses without a box.
-The orderings' `binary`/`binary` clauses are commented out in `Kernel`; the `fz_op_lt_bb`, `fz_op_lte_bb`,
-`fz_op_gt_bb` and `fz_op_gte_bb` declarations they call stay, so restoring a
-clause is the uncomment.
+Each of the eight also carries a `binary`/`binary` clause, after its numeric
+clauses and before the `any`/`any` clause, guarded by `is_binary` on both
+operands. It calls `fz_op_eq_bb`, `fz_op_neq_bb`, `fz_op_lt_bb`,
+`fz_op_lte_bb`, `fz_op_gt_bb` or `fz_op_gte_bb`, `extern "fz"` declarations
+whose `binary` parameters cross as the binaries' tagged words, the process
+first (`binary_bool_export!` in `runtime/src/ir_runtime.rs`). `===` and `!==`
+of two binaries are `==` and `!=`, since no numeric widening applies to a
+binary, so they call `fz_op_eq_bb` and `fz_op_neq_bb`. Each function decodes
+its words with `Bin::of_binary`. Equality is `Bin`'s: the same bit length and
+the same bits, whether either side is a view or a literal, and whatever the
+padding of a partial last byte. The orderings are `Bin`'s `Ord`, the order
+`TermComparator` gives two bitstrings: the bits both hold compare first, and a
+prefix comes before what it begins.
 
 Every one of those declarations crosses its door the same way every other
 declaration does: `lower_extern_generic` on the native doors, the ordinary FFI
@@ -291,6 +301,33 @@ address without testing the form, take its bit length (the bits below the
 shared mark, above the low nibble: `BITSTRING_HEADER_LEN_MASK`,
 `BITSTRING_BIT_LEN_SHIFT`), and subtract the bit position; the byte row then
 rounds up to whole bytes.
+
+The six `fz_op_*_bb` functions (`==`, `!=`, `<`, `<=`, `>` and `>=` of two
+binaries) are `Emit::BinaryCompare` rows, `Condition` rows that may call the
+runtime, so a call site asks `emit_in_body(body, symbol, args)` (it answers
+every in-place row, and `emit_inline` panics for these). Their arguments are
+the process, then the two tagged words, as the `fz` extern passes them, and
+`lower_extern_generic` offers a process-taking extern to the table with the
+process first. `native_codegen/binary_compare.rs` emits them: the same word is
+one binary, which equals itself, so the row answers `true` for `==`, `<=` and
+`>=` and `false` for the others. For `==` and `!=` the two header words are
+then xor-ed and masked with `BITSTRING_HEADER_LEN_MASK`, and different bit
+lengths answer without a call. Every other pair reaches the cold block that
+calls the row's own function and takes its word as the condition. The ordering
+rows have only the same-word test, since bit lengths do not settle an order.
+`lower_eq_binop` takes the same instructions for two operands typed as
+bitstrings under `==`, `!=`, `===` and `!==`, and `lower_cmp_binop` for
+`<`, `<=`, `>` and `>=`. A receive guard's comparison of two values it cannot
+type tests both kinds and takes them for two binaries
+(`emit_comparison_of_refs`), `fz_value_eq_widening_ref`, `fz_value_eq_ref` or
+`fz_value_cmp_ref` otherwise. A guard may call these functions: an `fz`
+extern's `binary` parameter is admitted to `GuardExtern`, and all three guard
+evaluators pass the tagged word. The interpreter's `interp_operator_eq` and
+`interp_value_eq` call `fz_op_eq_bb`, and `interp_cmp` orders with `Bin::cmp`,
+for two binaries before the generic comparator. `recipe_test` proves every row
+against its function over inline binaries, views, the literal bit, equal and
+unequal bytes, prefixes, other lengths and bitstrings that differ only in
+their padding bits.
 
 A row that allocates is the other kind of row (`Emit::Cell`, `Emit::Reuse`, `Emit::Struct`,
 `Emit::Closure`, `Emit::Box`): it takes the

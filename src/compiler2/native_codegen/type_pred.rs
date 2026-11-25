@@ -38,6 +38,13 @@ pub(crate) fn ty_is_atom<T: Types<Ty = Ty>>(t: &mut T, value_types: &HashMap<Var
     var_ty_satisfies(t, value_types, v, want)
 }
 
+/// True when `v`'s typer-inferred type is a subtype of `bitstring`: every value
+/// of it is a binary of either layout, or a bitstring that is not whole bytes.
+pub(crate) fn ty_is_bitstring<T: Types<Ty = Ty>>(t: &mut T, value_types: &HashMap<Var, Ty>, v: Var) -> bool {
+    let want = t.bitstring();
+    var_ty_satisfies(t, value_types, v, want)
+}
+
 pub(crate) fn ty_is_list<T: Types<Ty = Ty>>(t: &mut T, value_types: &HashMap<Var, Ty>, v: Var) -> bool {
     let elem = t.any();
     let want = t.list(elem);

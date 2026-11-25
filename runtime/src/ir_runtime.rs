@@ -2350,27 +2350,28 @@ numeric_bool_export!(fz_op_identical_ff, (left: f64, right: f64) => left.total_c
 numeric_bool_export!(fz_op_not_identical_ii, (left: i64, right: i64) => left != right);
 numeric_bool_export!(fz_op_not_identical_ff, (left: f64, right: f64) => left.total_cmp(&right).is_ne());
 
-fn compare_ref_words(process: *mut Process, left: u64, right: u64, mode: NumericMode) -> std::cmp::Ordering {
-    let left = any_value_from_ref_word(left, "runtime comparison lhs");
-    let right = any_value_from_ref_word(right, "runtime comparison rhs");
-    compare_values(process, left, right, mode)
-}
-
-macro_rules! ref_bool_export {
-    ($name:ident, $mode:expr, $predicate:ident) => {
+// Binaries cross the truthful fz ABI as tagged words, never as C byte pointers
+// without their lengths. The declared `binary` parameter proves each word names
+// a Bitstring or BinView, `Bin::of_binary` decodes it, and the answer is
+// `Bin`'s equality or term order, the same order `TermComparator` gives two
+// bitstrings. `===` and `!==` of two binaries are `==` and `!=`: no numeric
+// widening applies to a binary.
+macro_rules! binary_bool_export {
+    ($name:ident, |$left:ident, $right:ident| $answer:expr) => {
         #[unsafe(no_mangle)]
-        pub extern "C" fn $name(process: *mut Process, left: u64, right: u64) -> u64 {
-            u64::from(compare_ref_words(process, left, right, $mode).$predicate())
+        pub extern "C" fn $name(_process: *mut Process, left: u64, right: u64) -> u64 {
+            let ($left, $right) = unsafe { (Bin::of_binary(left), Bin::of_binary(right)) };
+            u64::from($answer)
         }
     };
 }
 
-// Binaries cross the truthful fz ABI as references, never as C byte pointers
-// without their lengths. Equality also needs the process-owned term authority.
-ref_bool_export!(fz_op_lt_bb, NumericMode::Widening, is_lt);
-ref_bool_export!(fz_op_lte_bb, NumericMode::Widening, is_le);
-ref_bool_export!(fz_op_gt_bb, NumericMode::Widening, is_gt);
-ref_bool_export!(fz_op_gte_bb, NumericMode::Widening, is_ge);
+binary_bool_export!(fz_op_eq_bb, |left, right| left == right);
+binary_bool_export!(fz_op_neq_bb, |left, right| left != right);
+binary_bool_export!(fz_op_lt_bb, |left, right| left.cmp(&right).is_lt());
+binary_bool_export!(fz_op_lte_bb, |left, right| left.cmp(&right).is_le());
+binary_bool_export!(fz_op_gt_bb, |left, right| left.cmp(&right).is_gt());
+binary_bool_export!(fz_op_gte_bb, |left, right| left.cmp(&right).is_ge());
 
 macro_rules! ref_equality_export {
     ($name:ident, $mode:expr, $expected:expr) => {

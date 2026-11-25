@@ -69,6 +69,7 @@ use fz_runtime::process::AtomName;
 use std::cell::RefCell;
 
 use super::BitstringLiterals;
+use super::binary_compare::{BinaryCompare, emit_comparison_of_refs};
 use super::prim::{c_pair_return_types, emit_proven_binary_bit_len};
 use super::repr::ExternLane;
 use super::runtime_call::{RuntimeCaller, RuntimeFn, runtime_call, runtime_call_ref, runtime_call1, runtime_condition};
@@ -1532,6 +1533,9 @@ fn emit_guard_extern<M: cranelift_module::Module>(
             }
             ExternTy::F64 => (types::F64, receive_value_float(body, value)?),
             ExternTy::Any => (types::I64, emit_receive_value_ref(body, ctx, value)?),
+            // Only an `fz` extern is admitted with a `binary` parameter, which
+            // crosses as the binary's tagged word.
+            ExternTy::Binary => (types::I64, emit_receive_value_ref(body, ctx, value)?),
             ExternTy::StoredValue => {
                 let [word, kind] = receive_value_stored_parts(body.b, value);
                 sig.params.push(ir::AbiParam::new(types::I64));
@@ -1855,18 +1859,45 @@ fn emit_ordering_cmp_value<M: cranelift_module::Module>(
 ) -> Result<ReceiveValue, CodegenError> {
     let cmp = match (&lhs, &rhs) {
         (ReceiveValue::Int(l), ReceiveValue::Int(r)) => body.b.ins().icmp(cc, *l, *r),
-        _ => {
-            let [lhs_word, lhs_kind] = receive_value_stored_parts(body.b, lhs);
-            let [rhs_word, rhs_kind] = receive_value_stored_parts(body.b, rhs);
-            let ordering = runtime_call1!(
-                body,
-                fz_value_cmp_ref,
-                [ctx.process, lhs_word, lhs_kind, rhs_word, rhs_kind]
-            );
-            body.b.ins().icmp_imm_s(cc, ordering, 0)
+        (ReceiveValue::AnyRef(left), ReceiveValue::AnyRef(right)) => {
+            let which = binary_ordering(cc);
+            emit_comparison_of_refs(body, ctx.process, which, *left, *right, |body| {
+                emit_runtime_ordering(body, ctx, cc, lhs, rhs)
+            })
         }
+        _ => emit_runtime_ordering(body, ctx, cc, lhs, rhs),
     };
     Ok(emit_bool_value(body.b, cmp))
+}
+
+/// The binary comparison that answers the same question as the signed
+/// condition `cc` over the comparator's ordering.
+fn binary_ordering(cc: IntCC) -> BinaryCompare {
+    match cc {
+        IntCC::SignedLessThan => BinaryCompare::Lt,
+        IntCC::SignedLessThanOrEqual => BinaryCompare::Lte,
+        IntCC::SignedGreaterThan => BinaryCompare::Gt,
+        IntCC::SignedGreaterThanOrEqual => BinaryCompare::Gte,
+        other => panic!("a receive ordering is a signed comparison, got {other:?}"),
+    }
+}
+
+/// The runtime comparator's ordering of two values of any kind, tested by `cc`.
+fn emit_runtime_ordering<M: cranelift_module::Module>(
+    body: &mut DispatchBody<'_, '_, M>,
+    ctx: &DispatchCtx<'_>,
+    cc: IntCC,
+    lhs: ReceiveValue,
+    rhs: ReceiveValue,
+) -> ir::Value {
+    let [lhs_word, lhs_kind] = receive_value_stored_parts(body.b, lhs);
+    let [rhs_word, rhs_kind] = receive_value_stored_parts(body.b, rhs);
+    let ordering = runtime_call1!(
+        body,
+        fz_value_cmp_ref,
+        [ctx.process, lhs_word, lhs_kind, rhs_word, rhs_kind]
+    );
+    body.b.ins().icmp_imm_s(cc, ordering, 0)
 }
 
 fn emit_bool_value(b: &mut FunctionBuilder<'_>, cmp: ir::Value) -> ReceiveValue {
@@ -1954,6 +1985,27 @@ fn emit_typed_eq_cmp<M: cranelift_module::Module>(
         }
         _ => {}
     }
+    if let (ReceiveValue::AnyRef(left), ReceiveValue::AnyRef(right)) = (lhs, rhs) {
+        return Ok(emit_comparison_of_refs(
+            body,
+            ctx.process,
+            BinaryCompare::Eq,
+            left,
+            right,
+            |body| emit_runtime_eq(body, ctx, equality, lhs, rhs),
+        ));
+    }
+    Ok(emit_runtime_eq(body, ctx, equality, lhs, rhs))
+}
+
+/// The runtime comparator's answer for two values of any kind, as a condition.
+fn emit_runtime_eq<M: cranelift_module::Module>(
+    body: &mut DispatchBody<'_, '_, M>,
+    ctx: &DispatchCtx<'_>,
+    equality: Equality,
+    lhs: ReceiveValue,
+    rhs: ReceiveValue,
+) -> ir::Value {
     let [lhs_word, lhs_kind] = receive_value_stored_parts(body.b, lhs);
     let [rhs_word, rhs_kind] = receive_value_stored_parts(body.b, rhs);
     let eq = match equality {
@@ -1968,7 +2020,7 @@ fn emit_typed_eq_cmp<M: cranelift_module::Module>(
             [ctx.process, lhs_word, lhs_kind, rhs_word, rhs_kind]
         ),
     };
-    Ok(body.b.ins().icmp_imm_s(IntCC::NotEqual, eq, 0))
+    body.b.ins().icmp_imm_s(IntCC::NotEqual, eq, 0)
 }
 
 fn emit_typed_eq_branch<M: cranelift_module::Module>(

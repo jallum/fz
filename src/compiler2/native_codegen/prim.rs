@@ -1,7 +1,8 @@
 //! Primitive lowering helpers for codegen.
 
+use super::binary_compare::{BinaryCompare, emit_binary_compare};
 use super::bitstring_literal::BitstringLiteral;
-use super::recipe::{Emitted, emit_box, emit_cell, emit_inline};
+use super::recipe::{Emitted, emit_box, emit_cell, emit_in_body, emit_inline};
 use super::repr::ExternLane;
 use super::runtime_test::{KindEvidence, RuntimeTestEmitter, emit_runtime_type_test};
 use super::*;
@@ -1894,6 +1895,19 @@ where
         }
         return Ok(LowerOut::Strict(strict_bool(body.b, cmp)));
     }
+    // Two bitstrings are equal when `Bin` says so, under `==` and `===` alike:
+    // the comparison is inline unless the bytes must be read.
+    if ty_is_bitstring(t, value_types, a) && ty_is_bitstring(t, value_types, bv) {
+        let left = body.tagged_var(var_env, a.0);
+        let right = body.tagged_var(var_env, bv.0);
+        let which = if is_eq { BinaryCompare::Eq } else { BinaryCompare::Neq };
+        let process = body.process_arg();
+        let cmp = emit_binary_compare(body, which, &[process, left, right]);
+        if body.cache.if_only_conds.contains(&dest_var.0) {
+            return Ok(LowerOut::Condition(cmp));
+        }
+        return Ok(LowerOut::Strict(strict_bool(body.b, cmp)));
+    }
     if (ty_is_atom(t, value_types, a) && ty_is_atom(t, value_types, bv))
         || (descr_is_nil_or_bool(t, value_types, a) && descr_is_nil_or_bool(t, value_types, bv))
         || matches!((a_repr, b_repr), (ArgRepr::RawAtom, ArgRepr::RawAtom))
@@ -1991,6 +2005,22 @@ where
         BinOp::Ge => FloatCC::GreaterThanOrEqual,
         _ => unreachable!(),
     };
+    if ty_is_bitstring(t, value_types, a) && ty_is_bitstring(t, value_types, bv) {
+        let which = match op {
+            BinOp::Lt => BinaryCompare::Lt,
+            BinOp::Le => BinaryCompare::Lte,
+            BinOp::Gt => BinaryCompare::Gt,
+            _ => BinaryCompare::Gte,
+        };
+        let left = body.tagged_var(var_env, a.0);
+        let right = body.tagged_var(var_env, bv.0);
+        let process = body.process_arg();
+        let cmp = emit_binary_compare(body, which, &[process, left, right]);
+        if body.cache.if_only_conds.contains(&dest_var.0) {
+            return Ok(LowerOut::Condition(cmp));
+        }
+        return Ok(LowerOut::Strict(strict_bool(body.b, cmp)));
+    }
     let a_is_int = ty_is_int(t, value_types, a);
     if (a_is_int && ty_is_float(t, value_types, bv))
         || (ty_is_float(t, value_types, a) && ty_is_int(t, value_types, bv))
@@ -2204,7 +2234,8 @@ fn lower_extern_generic<M: cranelift_module::Module>(
             arg_vals.push(marshal_extern_arg(body, var_env, arg.var, ty, takes_process)?);
         }
     }
-    if !takes_process && let Some(out) = inline_scalar_extern(body, decl, ret, &arg_vals, dest_var)? {
+    let row_args: Vec<ir::Value> = process_arg.into_iter().chain(arg_vals.iter().copied()).collect();
+    if let Some(out) = inline_scalar_extern(body, decl, ret, &row_args, dest_var)? {
         return Ok(out);
     }
     let mut sig = body.jmod.make_signature();
@@ -2267,7 +2298,7 @@ fn inline_scalar_extern<M: cranelift_module::Module>(
     args: &[ir::Value],
     dest_var: Var,
 ) -> Result<Option<LowerOut>, CodegenError> {
-    let Some(emitted) = emit_inline(body.b, &decl.symbol, args) else {
+    let Some(emitted) = emit_in_body(body, &decl.symbol, args) else {
         return Ok(None);
     };
     let disagreement = |what: &str| {

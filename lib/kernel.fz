@@ -1403,7 +1403,7 @@ defmodule Kernel do
   def left < right when is_float(left) and is_float(right), do: fz_op_lt_ff(left, right)
   def left < right when is_integer(left) and is_float(right), do: fz_op_lt_if(left, right)
   def left < right when is_float(left) and is_integer(right), do: fz_op_lt_fi(left, right)
-  def (left :: binary) < (right :: binary), do: fz_op_lt_bb(left, right)
+  def left < right when is_binary(left) and is_binary(right), do: fz_op_lt_bb(left, right)
   def left < right, do: compare(left, right) < 0
 
   extern "C" defp fz_op_lt_ii(integer, integer) :: boolean
@@ -1436,7 +1436,7 @@ defmodule Kernel do
   def left <= right when is_float(left) and is_float(right), do: fz_op_lte_ff(left, right)
   def left <= right when is_integer(left) and is_float(right), do: fz_op_lte_if(left, right)
   def left <= right when is_float(left) and is_integer(right), do: fz_op_lte_fi(left, right)
-  def (left :: binary) <= (right :: binary), do: fz_op_lte_bb(left, right)
+  def left <= right when is_binary(left) and is_binary(right), do: fz_op_lte_bb(left, right)
   def left <= right, do: compare(left, right) <= 0
 
   extern "C" defp fz_op_lte_ii(integer, integer) :: boolean
@@ -1472,7 +1472,7 @@ defmodule Kernel do
   def left > right when is_float(left) and is_float(right), do: fz_op_gt_ff(left, right)
   def left > right when is_integer(left) and is_float(right), do: fz_op_gt_if(left, right)
   def left > right when is_float(left) and is_integer(right), do: fz_op_gt_fi(left, right)
-  def (left :: binary) > (right :: binary), do: fz_op_gt_bb(left, right)
+  def left > right when is_binary(left) and is_binary(right), do: fz_op_gt_bb(left, right)
   def left > right, do: compare(left, right) > 0
 
   extern "C" defp fz_op_gt_ii(integer, integer) :: boolean
@@ -1505,7 +1505,7 @@ defmodule Kernel do
   def left >= right when is_float(left) and is_float(right), do: fz_op_gte_ff(left, right)
   def left >= right when is_integer(left) and is_float(right), do: fz_op_gte_if(left, right)
   def left >= right when is_float(left) and is_integer(right), do: fz_op_gte_fi(left, right)
-  def (left :: binary) >= (right :: binary), do: fz_op_gte_bb(left, right)
+  def left >= right when is_binary(left) and is_binary(right), do: fz_op_gte_bb(left, right)
   def left >= right, do: compare(left, right) >= 0
 
   extern "C" defp fz_op_gte_ii(integer, integer) :: boolean
@@ -1981,17 +1981,20 @@ defmodule Kernel do
   @spec float == float :: boolean
   @spec integer == float :: boolean
   @spec float == integer :: boolean
+  @spec binary == binary :: boolean
   @spec any == any :: boolean
   def left == right when is_integer(left) and is_integer(right), do: fz_op_eq_ii(left, right)
   def left == right when is_float(left) and is_float(right), do: fz_op_eq_ff(left, right)
   def left == right when is_integer(left) and is_float(right), do: fz_op_eq_if(left, right)
   def left == right when is_float(left) and is_integer(right), do: fz_op_eq_fi(left, right)
+  def left == right when is_binary(left) and is_binary(right), do: fz_op_eq_bb(left, right)
   def left == right, do: fz_op_eq(left, right)
 
   extern "C" defp fz_op_eq_ii(integer, integer) :: boolean
   extern "C" defp fz_op_eq_ff(float, float) :: boolean
   extern "C" defp fz_op_eq_if(integer, float) :: boolean
   extern "C" defp fz_op_eq_fi(float, integer) :: boolean
+  extern "fz" defp fz_op_eq_bb(binary, binary) :: boolean
   extern "fz" defp fz_op_eq(stored_value, stored_value) :: boolean
 
   @doc """
@@ -2010,17 +2013,20 @@ defmodule Kernel do
   @spec float != float :: boolean
   @spec integer != float :: boolean
   @spec float != integer :: boolean
+  @spec binary != binary :: boolean
   @spec any != any :: boolean
   def left != right when is_integer(left) and is_integer(right), do: fz_op_neq_ii(left, right)
   def left != right when is_float(left) and is_float(right), do: fz_op_neq_ff(left, right)
   def left != right when is_integer(left) and is_float(right), do: fz_op_neq_if(left, right)
   def left != right when is_float(left) and is_integer(right), do: fz_op_neq_fi(left, right)
+  def left != right when is_binary(left) and is_binary(right), do: fz_op_neq_bb(left, right)
   def left != right, do: fz_op_neq(left, right)
 
   extern "C" defp fz_op_neq_ii(integer, integer) :: boolean
   extern "C" defp fz_op_neq_ff(float, float) :: boolean
   extern "C" defp fz_op_neq_if(integer, float) :: boolean
   extern "C" defp fz_op_neq_fi(float, integer) :: boolean
+  extern "fz" defp fz_op_neq_bb(binary, binary) :: boolean
   extern "fz" defp fz_op_neq(stored_value, stored_value) :: boolean
 
   # `===` asks whether two values are the same value, where `==` compares
@@ -2045,11 +2051,13 @@ defmodule Kernel do
   @spec float === float :: boolean
   @spec integer === float :: boolean
   @spec float === integer :: boolean
+  @spec binary === binary :: boolean
   @spec any === any :: boolean
   def left === right when is_integer(left) and is_integer(right), do: fz_op_identical_ii(left, right)
   def left === right when is_float(left) and is_float(right), do: fz_op_identical_ff(left, right)
   def left === right when is_integer(left) and is_float(right), do: false
   def left === right when is_float(left) and is_integer(right), do: false
+  def left === right when is_binary(left) and is_binary(right), do: fz_op_eq_bb(left, right)
   def left === right, do: fz_op_identical(left, right)
 
   extern "C" defp fz_op_identical_ii(integer, integer) :: boolean
@@ -2073,11 +2081,13 @@ defmodule Kernel do
   @spec float !== float :: boolean
   @spec integer !== float :: boolean
   @spec float !== integer :: boolean
+  @spec binary !== binary :: boolean
   @spec any !== any :: boolean
   def left !== right when is_integer(left) and is_integer(right), do: fz_op_not_identical_ii(left, right)
   def left !== right when is_float(left) and is_float(right), do: fz_op_not_identical_ff(left, right)
   def left !== right when is_integer(left) and is_float(right), do: true
   def left !== right when is_float(left) and is_integer(right), do: true
+  def left !== right when is_binary(left) and is_binary(right), do: fz_op_neq_bb(left, right)
   def left !== right, do: fz_op_not_identical(left, right)
 
   extern "C" defp fz_op_not_identical_ii(integer, integer) :: boolean

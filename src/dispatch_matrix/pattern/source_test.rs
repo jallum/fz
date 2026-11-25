@@ -201,6 +201,20 @@ fn a_guard_extern_returning_never_fails_the_guard() {
     assert!(aborting.fails_the_guard());
 }
 
+/// Intent: an `fz` extern's `binary` parameter is the binary's tagged word,
+/// which every guard evaluator carries, so `==` and `<` of two binaries are
+/// guards; a `C` extern's `binary` is a pointer without a length, which none do.
+#[test]
+fn a_binary_parameter_is_admitted_only_to_a_guard_extern_of_the_fz_abi() {
+    use crate::fz_ir::{ExternAbi, ExternReturn, ExternTy};
+    let params = [ExternTy::Binary, ExternTy::Binary];
+    let ret = ExternReturn::Scalar(ExternTy::Bool);
+    let fz = crate::dispatch_matrix::pattern::GuardExtern::new(ExternAbi::Fz, "probe", &params, ret.clone(), false);
+    assert!(fz.is_ok(), "an fz binary crosses as its tagged word: {fz:?}");
+    let c = crate::dispatch_matrix::pattern::GuardExtern::new(ExternAbi::C, "probe", &params, ret, false);
+    assert!(matches!(c, Err(SourcePatternError::GuardExternClass { .. })));
+}
+
 #[test]
 fn a_guard_extern_of_any_other_class_is_refused_where_the_node_is_made() {
     use crate::fz_ir::{ExternReturn, ExternTy};

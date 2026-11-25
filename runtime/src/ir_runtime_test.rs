@@ -763,6 +763,50 @@ fn loading_an_int_from_a_map_value_that_is_an_atom_panics() {
     });
 }
 
+/// The `fz_op_*_bb` functions of two binaries agree, for every pair and every
+/// operator, with the generic comparator the other value kinds go through: the
+/// bit-level term order and equality, a prefix before what it begins, and the
+/// padding of a partial last byte ignored. `===` and `!==` take `==` and `!=`.
+#[test]
+fn binary_comparison_functions_agree_with_the_generic_comparator() {
+    with_process(|process| {
+        let samples: [(&[u8], u64); 8] = [
+            (b"", 0),
+            (b"a", 8),
+            (b"ab", 16),
+            (b"abc", 24),
+            (b"b", 8),
+            (&[0b1000_0000], 1),
+            (&[0b1000_1111], 1),
+            (&[0b1000_0000], 4),
+        ];
+        let words: Vec<u64> = samples
+            .iter()
+            .map(|(bytes, bits)| process.heap.alloc_bitstring(bytes, *bits).ref_word().raw_word())
+            .collect();
+        let kind = ValueKind::BITSTRING.tag() as u64;
+        for &left in &words {
+            for &right in &words {
+                let ordering = fz_value_cmp_ref(process, left, kind, right, kind);
+                let equal = fz_value_eq_widening_ref(process, left, kind, right, kind) != 0;
+                let answers = [
+                    fz_op_eq_bb(process, left, right),
+                    fz_op_neq_bb(process, left, right),
+                    fz_op_lt_bb(process, left, right),
+                    fz_op_lte_bb(process, left, right),
+                    fz_op_gt_bb(process, left, right),
+                    fz_op_gte_bb(process, left, right),
+                ];
+                assert_eq!(
+                    answers,
+                    [equal, !equal, ordering < 0, ordering <= 0, ordering > 0, ordering >= 0].map(u64::from),
+                    "{left:#x} against {right:#x}"
+                );
+            }
+        }
+    });
+}
+
 /// Small (<= threshold) payload allocates inline Bitstring.
 #[test]
 fn alloc_bitstring_const_small_payload_is_inline() {

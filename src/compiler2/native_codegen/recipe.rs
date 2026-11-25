@@ -58,6 +58,7 @@
 //! kind it has no instructions for; the call is then emitted as if the table
 //! had no row.
 
+use super::binary_compare::{BinaryCompare, emit_binary_compare};
 use super::inline_object::{Placed, emit_closure, emit_struct};
 use super::list_cell::{HeadLane, emit_list_cell};
 use super::list_reuse::{ReuseLane, emit_list_reuse};
@@ -77,10 +78,11 @@ use fz_runtime::heap::{Heap, HeapAllocKind};
 use fz_runtime::ir_runtime::{
     fz_bitstring_bit_extent, fz_bitstring_byte_extent, fz_box_float_for_any, fz_box_int_for_any, fz_box_opaque_for_any,
     fz_list_cons_any, fz_list_cons_atom, fz_list_cons_float, fz_list_cons_int, fz_list_reuse_or_cons_parts,
-    fz_op_abs_f, fz_op_add_ii, fz_op_eq_ff, fz_op_eq_ii, fz_op_gt_ff, fz_op_gt_ii, fz_op_gte_ff, fz_op_gte_ii,
-    fz_op_identical_ii, fz_op_lt_ff, fz_op_lt_ii, fz_op_lte_ff, fz_op_lte_ii, fz_op_mul_ii, fz_op_neg_f, fz_op_neg_i,
-    fz_op_neq_ff, fz_op_neq_ii, fz_op_not_identical_ii, fz_op_sub_ii, fz_struct_schema_id_ref, fz_truthy_ref,
-    fz_type_of, fz_unbox_atom, fz_unbox_int, fz_value_eq_raw_const,
+    fz_op_abs_f, fz_op_add_ii, fz_op_eq_bb, fz_op_eq_ff, fz_op_eq_ii, fz_op_gt_bb, fz_op_gt_ff, fz_op_gt_ii,
+    fz_op_gte_bb, fz_op_gte_ff, fz_op_gte_ii, fz_op_identical_ii, fz_op_lt_bb, fz_op_lt_ff, fz_op_lt_ii, fz_op_lte_bb,
+    fz_op_lte_ff, fz_op_lte_ii, fz_op_mul_ii, fz_op_neg_f, fz_op_neg_i, fz_op_neq_bb, fz_op_neq_ff, fz_op_neq_ii,
+    fz_op_not_identical_ii, fz_op_sub_ii, fz_struct_schema_id_ref, fz_truthy_ref, fz_type_of, fz_unbox_atom,
+    fz_unbox_int, fz_value_eq_raw_const,
 };
 
 /// What a recipe computed, in one of the three shapes.
@@ -103,6 +105,9 @@ enum Emit {
     Struct,
     Closure,
     Box(BoxLane),
+    /// An in-place answer that may call the runtime function on a cold path,
+    /// so it needs the body that declares the import.
+    BinaryCompare(BinaryCompare),
 }
 
 /// One row: the runtime function's symbol, its parameter count, and the
@@ -206,6 +211,22 @@ macro_rules! heap_object {
     };
 }
 
+/// A binary comparison row: the runtime function compares two binaries, and
+/// the row answers `$which` of them, calling it only to read bytes. The row
+/// takes the process first, as the `fz` extern does.
+macro_rules! binary_compare {
+    ($item:ident, $which:expr) => {
+        Recipe {
+            symbol: {
+                let _: unsafe extern "C" fn(_, _, _) -> _ = $item;
+                stringify!($item)
+            },
+            arity: 3,
+            emit: Emit::BinaryCompare($which),
+        }
+    };
+}
+
 /// An integer comparison row: an `icmp` of the two words.
 macro_rules! int_compare {
     ($item:ident, $cc:expr) => {
@@ -275,6 +296,13 @@ pub(crate) const RECIPES: &[Recipe] = &[
     recipe!(fz_bitstring_bit_extent(word, bit_pos), |b| Some(Emitted::Value(
         bits_from(b, word, bit_pos)
     ))),
+    // Binary comparison: in place unless the bytes themselves must be read.
+    binary_compare!(fz_op_eq_bb, BinaryCompare::Eq),
+    binary_compare!(fz_op_neq_bb, BinaryCompare::Neq),
+    binary_compare!(fz_op_lt_bb, BinaryCompare::Lt),
+    binary_compare!(fz_op_lte_bb, BinaryCompare::Lte),
+    binary_compare!(fz_op_gt_bb, BinaryCompare::Gt),
+    binary_compare!(fz_op_gte_bb, BinaryCompare::Gte),
     // Integer arithmetic.
     overflowing!(fz_op_add_ii, sadd_overflow),
     overflowing!(fz_op_sub_ii, ssub_overflow),
@@ -359,11 +387,28 @@ pub(crate) fn emit_inline(b: &mut FunctionBuilder<'_>, symbol: &str, args: &[ir:
     );
     match row.emit {
         Emit::InPlace(emit) => emit(b, args),
+        Emit::BinaryCompare(_) => {
+            panic!("`{symbol}` may call the runtime on a cold path; ask for it through `emit_in_body`")
+        }
         Emit::Cell(_) | Emit::Reuse(_) | Emit::Struct | Emit::Closure | Emit::Box(_) => {
             panic!(
                 "`{symbol}` places an object; ask for it through `emit_cell`, `emit_reuse`, `emit_box` or `emit_object`"
             )
         }
+    }
+}
+
+/// [`emit_inline`] for a call site that has the body: it also answers the
+/// rows that may call the runtime function on a cold path, which need the body
+/// to declare the import.
+pub(crate) fn emit_in_body<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, M>,
+    symbol: &str,
+    args: &[ir::Value],
+) -> Option<Emitted> {
+    match recipe_for(symbol)?.emit {
+        Emit::BinaryCompare(which) => Some(Emitted::Condition(emit_binary_compare(body, which, args))),
+        _ => emit_inline(body.b, symbol, args),
     }
 }
 
@@ -385,7 +430,9 @@ pub(crate) fn emit_cell<M: cranelift_module::Module>(
     );
     match row.emit {
         Emit::Cell(lane) => emit_list_cell(body, lane, args),
-        Emit::InPlace(_) => panic!("`{symbol}` computes in place; ask for it through `emit_inline`"),
+        Emit::InPlace(_) | Emit::BinaryCompare(_) => {
+            panic!("`{symbol}` answers in place; ask for it through `emit_in_body`")
+        }
         Emit::Reuse(_) => panic!("`{symbol}` reuses or places a list cell; ask for it through `emit_reuse`"),
         Emit::Struct | Emit::Closure => {
             panic!("`{symbol}` places a struct or closure; ask for it through `emit_object`")
@@ -415,7 +462,9 @@ pub(crate) fn emit_reuse<M: cranelift_module::Module>(
         Emit::Reuse(lane) => emit_list_reuse(body, lane, args, |body, value| {
             constant_of(body.b, value).unwrap_or_else(|| panic!("`{symbol}` needs its kind and permission constant"))
         }),
-        Emit::InPlace(_) => panic!("`{symbol}` computes in place; ask for it through `emit_inline`"),
+        Emit::InPlace(_) | Emit::BinaryCompare(_) => {
+            panic!("`{symbol}` answers in place; ask for it through `emit_in_body`")
+        }
         Emit::Cell(_) => panic!("`{symbol}` places a list cell; ask for it through `emit_cell`"),
         Emit::Struct | Emit::Closure => {
             panic!("`{symbol}` places a struct or closure; ask for it through `emit_object`")
@@ -442,7 +491,9 @@ pub(crate) fn emit_box<M: cranelift_module::Module>(
     );
     match row.emit {
         Emit::Box(lane) => emit_scalar_box(body, lane, args),
-        Emit::InPlace(_) => panic!("`{symbol}` computes in place; ask for it through `emit_inline`"),
+        Emit::InPlace(_) | Emit::BinaryCompare(_) => {
+            panic!("`{symbol}` answers in place; ask for it through `emit_in_body`")
+        }
         Emit::Cell(_) => panic!("`{symbol}` places a list cell; ask for it through `emit_cell`"),
         Emit::Reuse(_) => panic!("`{symbol}` reuses or places a list cell; ask for it through `emit_reuse`"),
         Emit::Struct | Emit::Closure => {
@@ -485,17 +536,22 @@ pub(crate) fn emit_object<M: cranelift_module::Module>(
             );
             emit_closure(body, HeapAllocKind::Closure, header, count, args[5])
         }
-        Emit::InPlace(_) | Emit::Cell(_) | Emit::Reuse(_) | Emit::Box(_) => {
+        Emit::InPlace(_) | Emit::BinaryCompare(_) | Emit::Cell(_) | Emit::Reuse(_) | Emit::Box(_) => {
             panic!("`{symbol}` does not place a struct or closure")
         }
     }
 }
 
+/// The header word of the binary `word` names: the first word of both forms.
+pub(super) fn header_word(b: &mut FunctionBuilder<'_>, word: ir::Value) -> ir::Value {
+    let address = address_field(b, word);
+    b.ins().load(types::I64, MemFlagsData::trusted(), address, 0)
+}
+
 /// The bits of the binary `word` names that lie from `bit_pos` on: the bit
 /// length its header word holds, less the position.
 fn bits_from(b: &mut FunctionBuilder<'_>, word: ir::Value, bit_pos: ir::Value) -> ir::Value {
-    let address = address_field(b, word);
-    let header = b.ins().load(types::I64, MemFlagsData::trusted(), address, 0);
+    let header = header_word(b, word);
     let bit_len = bit_len_of_header(b, header);
     b.ins().isub(bit_len, bit_pos)
 }
