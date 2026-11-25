@@ -6,7 +6,7 @@
   ],
   "blocks": [],
   "created": "2026-11-20T20:00:57Z",
-  "description": "User approved fz-sc8.22 option A (\"approved;\", relayed by Bugs and Cleanup 2026-11-20; page /Users/j5n/Workspace/fz-sc8.22.html): fz-mue.41 folds in, terminator-flag representation, iolist/iodata widened to Elixir's definition. Owner: Bugs and Cleanup. Step 4. iolist becomes Elixir's maybe_improper definition; iodata functions accept a binary tail; an improper-iolist fixture. Replaces fz-mue.41's widening (fz-mue.40 made iolist proper by the user's earlier \"Recursive, proper\" answer).",
+  "description": "User approved fz-sc8.22 option A (\"approved;\", relayed by Bugs and Cleanup 2026-11-20; page /Users/j5n/Workspace/fz-sc8.22.html): fz-mue.41 folds in, terminator-flag representation, iolist/iodata widened to Elixir's definition. Owner: Bugs and Cleanup. Step 4. iolist becomes Elixir's maybe_improper definition; iodata functions accept a binary tail; an improper-iolist fixture. Replaces fz-mue.41's widening (fz-mue.40 made iolist proper by the user's earlier \"Recursive, proper\" answer).\n\nFolded in (user decision, 2026-11-25): IO.iodata_length/1 counts the bytes of iodata, as in Elixir. lib/io.fz does not define it. :erlang.iolist_size (lib/erlang.fz:225-248) already walks iodata, improper tails included, so it is built on that. Found by Bugs and Cleanup during this ticket's research.",
   "id": "fz-sc8.22.4",
   "labels": [],
   "parent": "fz-sc8.22",
@@ -14,5 +14,5 @@
   "status": "open",
   "title": "An improper iolist is iodata, as in Elixir",
   "type": "task",
-  "updated_at": "2026-11-20T20:00:59Z"
+  "updated_at": "2026-11-25T12:04:46Z"
 }
