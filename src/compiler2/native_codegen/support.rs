@@ -90,6 +90,10 @@ pub(crate) fn emit_list_retention_or_alloc<M: Module>(
     Some(body.sole_result(call))
 }
 
+/// The word a container stores for `value` and its kind, when both follow from
+/// what codegen holds without reading the value. A `Known` holds a scalar, the
+/// empty list, or a static object whose payload is its ref word: the word
+/// stored for an object is that ref's address field with its literal bit.
 pub(crate) fn value_raw_kind_parts<M: Module>(
     body: &mut CodegenFn<'_, '_, M>,
     value: CodegenValue,
@@ -113,7 +117,13 @@ pub(crate) fn value_raw_kind_parts<M: Module>(
             payload,
             kind: ValueKind::FLOAT,
         } => Some((payload, ValueKind::FLOAT)),
-        CodegenValue::Known { payload, kind } if kind.is_heap() || kind == ValueKind::LIST => Some((payload, kind)),
+        CodegenValue::Known {
+            kind: ValueKind::LIST, ..
+        } => {
+            let empty = body.empty_list_ref();
+            Some((payload_field(body.b, empty), ValueKind::LIST))
+        }
+        CodegenValue::Known { payload, kind } if kind.is_heap() => Some((payload_field(body.b, payload), kind)),
         _ => None,
     }
 }
@@ -164,3 +174,7 @@ pub(crate) const FALSE_BITS: i64 = FALSE_BITS_RAW as i64;
 // `==` widens numerics (`1 == 1.0` is true, and recursively so for containers);
 // structural identity -- a pinned match, `Enum.member?/2`, `--`, a map key --
 // stays strict and uses fz_value_eq_ref.
+
+#[cfg(test)]
+#[path = "support_test.rs"]
+mod support_test;

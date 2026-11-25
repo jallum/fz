@@ -9361,6 +9361,52 @@ fn compiler2_native_a_guarded_clause_chain_is_lowered_linearly() {
     );
 }
 
+/// A function with one clause raises FunctionClauseError for an argument no
+/// clause takes. The exception's argument list is read-only program data whose
+/// kind the compiler wrote itself, so the raise passes the word and a constant
+/// kind to `fz_panic` and asks nothing at run time.
+#[test]
+fn compiler2_native_raising_a_static_literal_asks_nothing_of_its_kind() {
+    let clif = lowered_clif_of(&guarded_closure_clauses(1), "pd");
+    let call = clif
+        .lines()
+        .find(|line| line.contains("call fn0("))
+        .unwrap_or_else(|| panic!("the clause chain ends in a raise:\n{clif}"));
+    let kind = call
+        .split(')')
+        .next()
+        .expect("a call has arguments")
+        .rsplit(", ")
+        .next()
+        .expect("fz_panic takes the process, a word and a kind");
+    let defined_as = clif
+        .lines()
+        .find(|line| line.trim_start().starts_with(&format!("{kind} = ")))
+        .unwrap_or_else(|| panic!("{kind} is defined:\n{clif}"));
+    assert!(
+        defined_as.contains("iconst"),
+        "the kind of the literal raised is a constant, not read from its word: {defined_as}\n{clif}"
+    );
+}
+
+/// A static tuple stored into a list, a tuple and a map, and read back, comes
+/// out as it went in. The list literals here are cons-built, so no static list
+/// is exercised.
+#[test]
+fn compiler2_native_static_literals_stored_in_containers_read_back_whole() {
+    let source = "def main() do\n\
+         \x20 t = {1, 2}\n\
+         \x20 l = [3, 4]\n\
+         \x20 boxed = [t, l, {t, l}]\n\
+         \x20 m = %{k: t, j: l}\n\
+         \x20 [{a, b}, [c, d], {{e, f}, [g, h]}] = boxed\n\
+         \x20 %{k: {i, j}, j: [k, n]} = m\n\
+         \x20 a + b + c + d + e + f + g + h + i + j + k + n\n\
+         end\n";
+    let (_, status) = run_value_root("fixtures/compiler2_static_literals_stored.fz", source);
+    assert_eq!(status, 30, "every pattern matched and each field read back as stored");
+}
+
 /// Three binary literal clauses and a catch-all: `"true"` and `"null"` read the
 /// first four bytes and `"false"` reads the first five. The miss of `"true"`
 /// and of `"null"` both lead to the `"false"` clause, so that clause's read is

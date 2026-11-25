@@ -70,6 +70,9 @@ pub(super) enum KindEvidence {
     Tagged,
     /// Held in an unboxed representation, which IS its kind.
     Unboxed(ValueKind),
+    /// A ref word whose kind was fixed when compiling: a static object. No
+    /// tag is read, and a question about any other kind answers no.
+    Static(ValueKind),
     /// Held in a representation this door does not answer kind questions
     /// about. Every kind-guarded question about such a value answers no, which
     /// is what both emitters said before they were folded.
@@ -199,7 +202,7 @@ pub(super) fn settled_by_lane<'f, E: RuntimeTestEmitter<'f>>(
 ) -> Option<bool> {
     match e.kind_evidence(value) {
         KindEvidence::Unboxed(kind) => predicate.settled_for_scalar_lane(kind),
-        KindEvidence::Tagged | KindEvidence::Opaque => None,
+        KindEvidence::Tagged | KindEvidence::Static(_) | KindEvidence::Opaque => None,
     }
 }
 
@@ -411,12 +414,12 @@ fn kind_guarded<'f, E: RuntimeTestEmitter<'f>>(
     build: impl FnOnce(&mut E, E::Value) -> Result<ir::Value, CodegenError>,
 ) -> Result<(), CodegenError> {
     match e.kind_evidence(value) {
-        KindEvidence::Unboxed(known) if known == kind => {
+        KindEvidence::Unboxed(known) | KindEvidence::Static(known) if known == kind => {
             let flag = build(e, value)?;
             e.builder().ins().brif(flag, admit, &[], miss, &[]);
             Ok(())
         }
-        KindEvidence::Unboxed(_) | KindEvidence::Opaque => {
+        KindEvidence::Unboxed(_) | KindEvidence::Static(_) | KindEvidence::Opaque => {
             e.builder().ins().jump(miss, &[]);
             Ok(())
         }
