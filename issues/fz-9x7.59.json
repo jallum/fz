@@ -4,14 +4,15 @@
   "blocks": [
     "fz-9x7.60"
   ],
+  "closed_at": "2026-11-25T12:23:00Z",
   "created": "2026-11-25T11:52:33Z",
   "description": "Approved by the user, 2026-11-25, verbatim: \"Proceed.\" (in reply to the decisions page https://claude.ai/artifact/GPXkA2ynzDgi6dqxdugK1i, recommendation P4; earlier steers: \"i don't think we need to be so aggressive with page give-back.\" and \"let's be data-driven here; these are experiments we can run.\")\n\nProblem\n#880's epoch trim (BlockPool::trim, runtime/src/heap/block_pool.rs) ends an epoch after max(4 x in_use, 1 MiB) bytes handed out. JSON decode holds a few KB in use, so each decode's own young tips end an epoch; blocks it is about to retake look idle and are given back, then refaulted 1-2 decodes later (about 9 blocks / 7 MB per docs decode). Bench (gbarms, 2026-11-24, vs 6a246c182): docs cycles 1.100, numbers 1.059. The span-release drop never fires on the measured programs (dtrace + counters agree).\n\nChange\nEpoch ends when handed_out \u003e= max(4 x (in_use + idle), 1 MiB), idle = bytes resting in the pool's free lists, kept as a running count (never a scan).\n\nMeasured (bench, P4 vs A, cycles / footprint): docs 1.001/1.021, numbers 1.007/1.020, encode .998/.891, p2c 1.003/.987; JSON cycles geomean .998; GC suite vs B cycles geomean .998, footprint +1.8%. Arm diff: scratchpad gbarms/diffs/ (session d1d265b3).\n\nAcceptance\n- Pool tests: a block retaken every epoch is never trimmed; an idle block is trimmed once it outlasts an epoch of the pool's whole holding. Pool counters, no clock.\n- Exit line's pool fields carry trim count and pages given back (field reads, no allocation).\n- Bench A/B vs develop: docs/numbers cycles at most +0.5% vs the pre-#880 level; footprint rises vs develop stated per workload in the PR.\n- Docs: block_pool.rs module comment, collector section in .agent/docs.\n- Not in scope (measured small): table-page drop (0.1%), 64 B granule (1.3-1.4%).",
   "id": "fz-9x7.59",
   "labels": [],
   "parent": "fz-9x7",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "An idle block is judged against everything the pool holds",
   "type": "task",
-  "updated_at": "2026-11-25T11:52:45Z"
+  "updated_at": "2026-11-25T12:23:00Z"
 }
