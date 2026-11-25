@@ -5,7 +5,7 @@
     "fz-mue.12"
   ],
   "created": "2026-11-20T21:11:46Z",
-  "description": "Found by Elixir Parity while building fz-mue.12, 2026-11-20.\n\nExpected (Elixir): prints 1.\nActual: interp says \"backend value 3 is unbound\"; run says \"native executable lowering failed\" (artifact/incomplete-semantic-plan).\n\nRepro:\n```elixir\ndefmodule Main do\n  def c(flag) do\n    default = if flag, do: {:a, 1}, else: {:k}\n    f = fn r -\u003e\n      case default do\n        {:k} -\u003e r\n        d -\u003e d\n      end\n    end\n    f.(1)\n  end\n  def main() do\n    IO.inspect(c(length(System.argv()) \u003e 5))\n  end\nend\nMain.main()\n```\n\nDone when this program prints 1 on all three paths, as a fixture.",
+  "description": "Found by Elixir Parity while building fz-mue.12, 2026-11-20.\n\nExpected (Elixir): prints 1.\nActual: interp says \"backend value 3 is unbound\"; run says \"native executable lowering failed\" (artifact/incomplete-semantic-plan).\n\nRepro:\n```elixir\ndefmodule Main do\n  def c(flag) do\n    default = if flag, do: {:a, 1}, else: {:k}\n    f = fn r -\u003e\n      case default do\n        {:k} -\u003e r\n        d -\u003e d\n      end\n    end\n    f.(1)\n  end\n  def main() do\n    IO.inspect(c(length(System.argv()) \u003e 5))\n  end\nend\nMain.main()\n```\n\nDone when this program prints 1 on all three paths, as a fixture.\n\nFolded in (user decision, 2026-11-25; proposed by Bugs and Cleanup): whether a closure call goes through the apply seam has one answer. Today two predicates answer that one question. The demand pass marks a closure call opaque with exact_local_target (runtime_demand.rs ~2667, closure_callee_demand). Transport picks Seam with CallSiteSummary::single_owned_target (transport.rs:872-879, closure_call_form). That split is how this bug happened: transport took the seam, and demand never asked for the seam's wrapper. The fix leaves one predicate, which both sites read. Findings: B\u0026C scratchpad s256/findings.md; plan: /Users/j5n/Workspace/fz-sc8.256.html.",
   "id": "fz-sc8.256",
   "labels": [],
   "parent": "fz-sc8",
@@ -13,5 +13,5 @@
   "status": "open",
   "title": "A closure that captures a union-valued variable and cases on it fails",
   "type": "bug",
-  "updated_at": "2026-11-25T11:32:11Z"
+  "updated_at": "2026-11-25T12:27:11Z"
 }
