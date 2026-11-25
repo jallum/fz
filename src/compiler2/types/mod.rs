@@ -3919,7 +3919,8 @@ impl Types {
     /// instantiation (a callable clause specialized by a concrete surface), not
     /// constraint solving -- see `Types::collect_constraint_subst` for that.
     pub fn collect_instantiation_subst(&mut self, pattern: &Ty, witness: &Ty, sigma: &mut Sigma<Ty>) {
-        collect_subst_into(self, *pattern, *witness, BindingSide::Unify, BindingSide::Unify, sigma);
+        let mut walk = SubstWalk::new(BindingSide::Unify, sigma);
+        walk.collect(self, *pattern, *witness, BindingSide::Unify);
     }
 
     /// SOLVE the constraint `witness ⊆ σ(pattern)`, collecting the bindings on
@@ -3938,7 +3939,8 @@ impl Types {
         target: BindingSide,
         sigma: &mut Sigma<Ty>,
     ) {
-        collect_subst_into(self, *pattern, *witness, side, target, sigma);
+        let mut walk = SubstWalk::new(target, sigma);
+        walk.collect(self, *pattern, *witness, side);
     }
 
     pub fn grounded_callable_args(&mut self, template_args: &[Ty], surface_inputs: &[Ty]) -> Vec<Ty> {
@@ -5893,24 +5895,51 @@ impl BindingSide {
     }
 }
 
-fn collect_subst_into(
-    t: &mut Types,
-    pattern: Ty,
-    witness: Ty,
-    side: BindingSide,
+/// One substitution walk: the bindings recorded on the `target` side, and the
+/// positions already walked.
+///
+/// A position is a (pattern, witness, side) triple. What it binds depends on
+/// nothing but that triple, and a binding is only ever kept first-come, so
+/// meeting a triple again adds nothing: a type that names itself is walked
+/// through one unfolding and its back edge stops there.
+struct SubstWalk<'a> {
     target: BindingSide,
-    sigma: &mut Sigma<Ty>,
-) {
-    let any = t.any();
-    let (pat, wit) = (t.descr(&pattern), t.descr(&witness));
-    if let Some(ids) = pure_var_ids(pat) {
-        if side == target {
-            for id in ids {
-                sigma.entry(id).or_insert(witness);
-            }
+    sigma: &'a mut Sigma<Ty>,
+    walked: HashSet<(Ty, Ty, BindingSide)>,
+}
+
+impl<'a> SubstWalk<'a> {
+    fn new(target: BindingSide, sigma: &'a mut Sigma<Ty>) -> Self {
+        Self {
+            target,
+            sigma,
+            walked: HashSet::default(),
         }
-        return;
     }
+
+    fn collect(&mut self, t: &mut Types, pattern: Ty, witness: Ty, side: BindingSide) {
+        if !self.walked.insert((pattern, witness, side)) {
+            return;
+        }
+        let any = t.any();
+        let (pat, wit) = (t.descr(&pattern), t.descr(&witness));
+        if let Some(ids) = pure_var_ids(pat) {
+            if side == self.target {
+                for id in ids {
+                    self.sigma.entry(id).or_insert(witness);
+                }
+            }
+            return;
+        }
+        for (p, w, child_side) in aligned_children(t, any, pat, wit, side) {
+            self.collect(t, p, w, child_side);
+        }
+    }
+}
+
+/// The aligned child positions of `pat` and `wit`, each with the side it is
+/// read on.
+fn aligned_children(t: &Types, any: Ty, pat: &Descr, wit: &Descr, side: BindingSide) -> Vec<(Ty, Ty, BindingSide)> {
     let mut children: Vec<(Ty, Ty, BindingSide)> = Vec::new();
     if let (Some(ps), Some(ws)) = (pat.pure_tuple(), wit.pure_tuple())
         && ps.elems.len() == ws.elems.len()
@@ -5949,9 +5978,7 @@ fn collect_subst_into(
             .map(|(p, w)| (p, w, side));
         children.extend(fields.chain(domains));
     }
-    for (p, w, child_side) in children {
-        collect_subst_into(t, p, w, child_side, target, sigma);
-    }
+    children
 }
 
 /// `d` with each child type but a closure's captures replaced by what `f`

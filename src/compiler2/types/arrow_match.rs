@@ -86,7 +86,7 @@
 //! a LOWER bound, joined across occurrences; an arrow's PARAMETERS reverse it —
 //! `(w) -> r ⊆ (σp) -> σr` needs `σp ⊆ w` — and give an UPPER bound, met across
 //! occurrences. `collect_arrow_match` is the one reversing node in the collector
-//! walk (and `collect_subst_into` in the unifier walk it delegates to). The
+//! walk (and `SubstWalk` in the unifier walk it delegates to). The
 //! INSTANTIATION is the join of the lower bounds and nothing else: an upper
 //! bound is not evidence about any value, so it never grounds the result, the
 //! parameters, or a variable. The meet of the uppers is the solvability CHECK —
