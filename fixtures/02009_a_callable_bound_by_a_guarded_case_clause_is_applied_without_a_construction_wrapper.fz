@@ -1,0 +1,22 @@
+#---
+# purpose: "A callable that a case clause binds and asks `is_function(h, 2)` is applied as the scrutinee itself, and no first-class construction is built for it"
+# kind: run
+# root: main/0
+# assert.metric.backend.construction_wrappers: 0
+# oracle: self
+# oracle.stamp: ca79a560180f79c1
+#---
+defmodule Main do
+  def apply_bound(g, x) do
+    case g do
+      h when is_function(h, 2) -> h.(x, x)
+      _ -> 0
+    end
+  end
+
+  def main() do
+    IO.inspect(apply_bound(fn a, b -> a + b end, 3))
+  end
+end
+
+Main.main()

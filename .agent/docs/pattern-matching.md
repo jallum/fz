@@ -520,6 +520,11 @@ Each of these plans carries the exception it raises
   re-walk syntax to bind values: an outcome argument names the subject each
   bound name reads. Only a pattern that asks nothing is bound from syntax
   (`bind_unasked_pattern`): every name in it is the matched value itself.
+  A name an inline `case` or `with else` clause binds to the dispatch's input
+  is that input value, as a function head's name is its parameter, so a
+  callable bound this way is applied where it stands and is never constructed
+  first-class. A name bound to a projection of the input, and every name of a
+  `receive` clause, is an outcome argument. (`lower_match_clause_block`)
 
 ## Outcome Values and Retained Lists
 

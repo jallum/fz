@@ -2570,7 +2570,9 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         let arm_blocks = clauses
             .iter()
             .enumerate()
-            .map(|(index, clause)| self.lower_match_clause_block(&plan.outcomes[index], clause, env.clone()))
+            .map(|(index, clause)| {
+                self.lower_match_clause_block(&plan, &plan.outcomes[index], clause, Some(subject_value), env.clone())
+            })
             .collect::<Result<Vec<_>, _>>()?;
         let value = self.fresh_value();
         steps.push(ExprStep::Dispatch {
@@ -2817,7 +2819,9 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         let arm_blocks = clauses
             .iter()
             .enumerate()
-            .map(|(index, clause)| self.lower_match_clause_block(&plan.outcomes[index], clause, env.clone()))
+            .map(|(index, clause)| {
+                self.lower_match_clause_block(&plan, &plan.outcomes[index], clause, Some(subject), env.clone())
+            })
             .collect::<Result<Vec<_>, _>>()?;
         let value = self.fresh_value();
         steps.push(ExprStep::Dispatch {
@@ -2877,7 +2881,9 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         let outcomes = plan
             .outcomes
             .iter()
-            .map(|outcome| self.lower_match_clause_block(outcome, &clauses[outcome.body_id as usize], env.clone()))
+            .map(|outcome| {
+                self.lower_match_clause_block(&plan, outcome, &clauses[outcome.body_id as usize], None, env.clone())
+            })
             .collect::<Result<Vec<_>, _>>()?;
         let after = after
             .map(|after| self.lower_receive_after(after, timeout.expect("receive after should have a timeout"), env))
@@ -3223,13 +3229,23 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         captures
     }
 
+    /// A clause's block. A name its pattern binds to the dispatch's `input`
+    /// is that value, as a function head's name is its parameter; `None` is a
+    /// dispatch whose input no value of the enclosing body stands for, such as
+    /// a mailbox message.
     fn lower_match_clause_block(
         &mut self,
+        plan: &crate::dispatch_matrix::pattern::PatternDispatchPlan<super::super::types::Ty>,
         outcome: &crate::dispatch_matrix::pattern::PatternDispatchOutcome,
         clause: &MatchClause,
+        input: Option<ValueId>,
         mut env: HashMap<Var, ValueId>,
     ) -> Result<ExprOutcome, FatalError> {
-        let arguments = self.bind_outcome_arguments(outcome, |_| None, &mut env);
+        let arguments = self.bind_outcome_arguments(
+            outcome,
+            |subject| input.filter(|_| plan.subject_input(subject).is_some()),
+            &mut env,
+        );
         let block = self.lower_expr_as_block(&clause.body, env)?;
         Ok(ExprOutcome { arguments, block })
     }
