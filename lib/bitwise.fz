@@ -1,0 +1,218 @@
+defmodule Bitwise do
+  @moduledoc """
+  A set of functions that perform calculations on bits.
+
+  All bitwise functions work only on integers, otherwise an
+  `ArithmeticError` is raised.
+
+  Each function calls the `:erlang` function of the same name, as Elixir's do.
+  Integers are 64 bits wide. `bsl/2` and `bsr/2` raise `ArithmeticError` where
+  Elixir would grow a bignum: a result that needs more than 64 bits.
+
+  ## Guards
+
+  All bitwise functions can be used in guards:
+
+      odd? = fn
+        int when Bitwise.band(int, 1) == 1 -> true
+        _ -> false
+      end
+      odd?.(1)
+      #=> true
+
+  """
+
+  @doc """
+  Calculates the bitwise NOT of the argument.
+
+  Allowed in guard tests.
+
+  ## Examples
+
+      bnot(2)
+      #=> -3
+
+  """
+  @doc guard: true
+  @spec bnot(integer) :: integer
+  def bnot(expr), do: :erlang.bnot(expr)
+
+  @doc """
+  Calculates the bitwise AND of its arguments.
+
+  Allowed in guard tests.
+
+  ## Examples
+
+      band(9, 3)
+      #=> 1
+
+  """
+  @doc guard: true
+  @spec band(integer, integer) :: integer
+  def band(left, right), do: :erlang.band(left, right)
+
+  @doc """
+  Bitwise AND operator.
+
+  Calculates the bitwise AND of its arguments.
+
+  Allowed in guard tests.
+
+  ## Examples
+
+      9 &&& 3
+      #=> 1
+
+  """
+  @doc guard: true
+  @spec integer &&& integer :: integer
+  def left &&& right, do: :erlang.band(left, right)
+
+  @doc """
+  Calculates the bitwise OR of its arguments.
+
+  Allowed in guard tests.
+
+  ## Examples
+
+      bor(9, 3)
+      #=> 11
+
+  """
+  @doc guard: true
+  @spec bor(integer, integer) :: integer
+  def bor(left, right), do: :erlang.bor(left, right)
+
+  @doc """
+  Bitwise OR operator.
+
+  Calculates the bitwise OR of its arguments.
+
+  Allowed in guard tests.
+
+  ## Examples
+
+      9 ||| 3
+      #=> 11
+
+  """
+  @doc guard: true
+  @spec integer ||| integer :: integer
+  def left ||| right, do: :erlang.bor(left, right)
+
+  @doc """
+  Calculates the bitwise XOR of its arguments.
+
+  Allowed in guard tests.
+
+  ## Examples
+
+      bxor(9, 3)
+      #=> 10
+
+  """
+  @doc guard: true
+  @spec bxor(integer, integer) :: integer
+  def bxor(left, right), do: :erlang.bxor(left, right)
+
+  @doc """
+  Calculates the result of an arithmetic left bitshift.
+
+  Allowed in guard tests.
+
+  ## Examples
+
+      bsl(1, 2)
+      #=> 4
+
+      bsl(1, -2)
+      #=> 0
+
+      bsl(-1, 2)
+      #=> -4
+
+      bsl(-1, -2)
+      #=> -1
+
+  """
+  @doc guard: true
+  @spec bsl(integer, integer) :: integer
+  def bsl(left, right), do: :erlang.bsl(left, right)
+
+  @doc """
+  Arithmetic left bitshift operator.
+
+  Calculates the result of an arithmetic left bitshift.
+
+  Allowed in guard tests.
+
+  ## Examples
+
+      1 <<< 2
+      #=> 4
+
+      1 <<< -2
+      #=> 0
+
+      -1 <<< 2
+      #=> -4
+
+      -1 <<< -2
+      #=> -1
+
+  """
+  @doc guard: true
+  @spec integer <<< integer :: integer
+  def left <<< right, do: :erlang.bsl(left, right)
+
+  @doc """
+  Calculates the result of an arithmetic right bitshift.
+
+  Allowed in guard tests.
+
+  ## Examples
+
+      bsr(1, 2)
+      #=> 0
+
+      bsr(1, -2)
+      #=> 4
+
+      bsr(-1, 2)
+      #=> -1
+
+      bsr(-1, -2)
+      #=> -4
+
+  """
+  @doc guard: true
+  @spec bsr(integer, integer) :: integer
+  def bsr(left, right), do: :erlang.bsr(left, right)
+
+  @doc """
+  Arithmetic right bitshift operator.
+
+  Calculates the result of an arithmetic right bitshift.
+
+  Allowed in guard tests.
+
+  ## Examples
+
+      1 >>> 2
+      #=> 0
+
+      1 >>> -2
+      #=> 4
+
+      -1 >>> 2
+      #=> -1
+
+      -1 >>> -2
+      #=> -4
+
+  """
+  @doc guard: true
+  @spec integer >>> integer :: integer
+  def left >>> right, do: :erlang.bsr(left, right)
+end

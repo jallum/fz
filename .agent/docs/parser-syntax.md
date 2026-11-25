@@ -189,6 +189,17 @@ table gives `||` the binding power of `or` and `&&` that of `and`; `!` and `not`
 share one prefix reader (`parse_prefix_operator`) that binds tighter than every
 binary operator. All six read as ordinary `{:op, meta, args}` calls.
 
+## Bitwise operators
+
+`&&&`, `|||`, `<<<` and `>>>` lex as the single tokens `Tok::AndAndAnd`,
+`Tok::OrOrOr`, `Tok::LtLtLt` and `Tok::GtGtGt`, ahead of the two-character
+operators they extend, so `<<<<` and `>>>>` do not close or open nested
+bitstrings, as in Elixir. The Pratt table gives `&&&` the binding power of
+`&&`, `|||` that of `||`, and `<<<` and `>>>` that of `|>`. Each reads as an
+ordinary `{:op, meta, args}` call that resolves to the operator `Bitwise`
+defines; `def left &&& right` and `@spec integer &&& integer :: integer` define
+and spec them as they do `+`. `~~~` and `^^^` are not lexed.
+
 `and`, `or` and `not` are language operators: the body lowering rewrites each
 into a `case` whose miss arm halts with `BadBooleanError` (non-boolean left
 operand of `and`/`or`) or `ArgumentError` (`not` of a non-boolean). The miss arm

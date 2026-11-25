@@ -261,6 +261,21 @@ fn lexes_new_binary_operators() {
     assert_eq!(toks_of("a <> b"), vec![id("a"), Tok::Concat, id("b")]);
 }
 
+/// Intent: the three-character bitwise operators are single tokens, and the
+/// two-character operators they extend (`&&`, `||`, `<<`, `>>`) still lex as before.
+#[test]
+fn lexes_the_bitwise_operators_as_single_tokens() {
+    assert_eq!(toks_of("a &&& b"), vec![id("a"), Tok::AndAndAnd, id("b")]);
+    assert_eq!(toks_of("a ||| b"), vec![id("a"), Tok::OrOrOr, id("b")]);
+    assert_eq!(toks_of("a <<< b"), vec![id("a"), Tok::LtLtLt, id("b")]);
+    assert_eq!(toks_of("a >>> b"), vec![id("a"), Tok::GtGtGt, id("b")]);
+    assert_eq!(
+        toks_of("a && b || c"),
+        vec![id("a"), Tok::AndAnd, id("b"), Tok::OrOr, id("c")]
+    );
+    assert_eq!(toks_of("<<a>>"), vec![Tok::LBitstr, id("a"), Tok::RBitstr]);
+}
+
 #[test]
 fn lexes_the_value_boolean_operators() {
     assert_eq!(toks_of("a || b"), vec![id("a"), Tok::OrOr, id("b")]);

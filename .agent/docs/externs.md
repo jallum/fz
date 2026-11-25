@@ -396,6 +396,10 @@ the process as a parameter rather than in the pinned register, so they still
 call the three functions (`runtime_call!`, not an inline row).
 
 The rows are the typed `fz_op_*_ii` arithmetic and comparison externs, the
+bit operations `fz_op_band_ii`, `fz_op_bor_ii`, `fz_op_bxor_ii`, `fz_op_bnot_i`,
+`fz_op_bsl_ii` and `fz_op_bsr_ii` (the two shifts are checked: a shift whose
+result needs more than 64 bits fails; the recipe is a branch-free select between
+the left and right shift), the
 `fz_op_*_ff` comparisons, `fz_op_neg_f`, `fz_op_abs_f`, the list-cell,
 list-reuse, struct, closure and scalar-box allocations above, and the helpers
 `fz_type_of`, `fz_truthy_ref`, `fz_unbox_int`, `fz_unbox_atom`,

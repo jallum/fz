@@ -79,11 +79,12 @@ use fz_runtime::heap::{Heap, HeapAllocKind};
 use fz_runtime::ir_runtime::{
     fz_bitstring_bit_extent, fz_bitstring_byte_extent, fz_box_float_for_any, fz_box_int_for_any, fz_box_opaque_for_any,
     fz_list_cons_any, fz_list_cons_atom, fz_list_cons_float, fz_list_cons_int, fz_list_reuse_or_cons_parts,
-    fz_op_abs_f, fz_op_add_ii, fz_op_eq_bb, fz_op_eq_ff, fz_op_eq_ii, fz_op_gt_bb, fz_op_gt_ff, fz_op_gt_ii,
-    fz_op_gte_bb, fz_op_gte_ff, fz_op_gte_ii, fz_op_identical_ii, fz_op_lt_bb, fz_op_lt_ff, fz_op_lt_ii, fz_op_lte_bb,
-    fz_op_lte_ff, fz_op_lte_ii, fz_op_mul_ii, fz_op_neg_f, fz_op_neg_i, fz_op_neq_bb, fz_op_neq_ff, fz_op_neq_ii,
-    fz_op_not_identical_ii, fz_op_sub_ii, fz_struct_is_named_ref, fz_struct_schema_id_ref, fz_truthy_ref, fz_type_of,
-    fz_unbox_atom, fz_unbox_int, fz_value_eq_raw_const,
+    fz_op_abs_f, fz_op_add_ii, fz_op_band_ii, fz_op_bnot_i, fz_op_bor_ii, fz_op_bsl_ii, fz_op_bsr_ii, fz_op_bxor_ii,
+    fz_op_eq_bb, fz_op_eq_ff, fz_op_eq_ii, fz_op_gt_bb, fz_op_gt_ff, fz_op_gt_ii, fz_op_gte_bb, fz_op_gte_ff,
+    fz_op_gte_ii, fz_op_identical_ii, fz_op_lt_bb, fz_op_lt_ff, fz_op_lt_ii, fz_op_lte_bb, fz_op_lte_ff, fz_op_lte_ii,
+    fz_op_mul_ii, fz_op_neg_f, fz_op_neg_i, fz_op_neq_bb, fz_op_neq_ff, fz_op_neq_ii, fz_op_not_identical_ii,
+    fz_op_sub_ii, fz_struct_is_named_ref, fz_struct_schema_id_ref, fz_truthy_ref, fz_type_of, fz_unbox_atom,
+    fz_unbox_int, fz_value_eq_raw_const,
 };
 
 /// What a recipe computed, in one of the three shapes.
@@ -256,6 +257,45 @@ macro_rules! overflowing {
     };
 }
 
+/// Which way a shift moves for a non-negative count; a negative count moves it
+/// the other way.
+#[derive(Clone, Copy)]
+enum Shift {
+    Left,
+    Right,
+}
+
+/// `fz_op_bsl_ii` and `fz_op_bsr_ii`: an arithmetic shift of `value` by `count`.
+/// A shift right keeps the sign and never fails. A shift left fails when the
+/// bits shifted out are not the sign extension of the result, and answers the
+/// wrapped bits then, as the runtime function does. Hardware shifts count
+/// modulo 64, so a left count outside 0..64 needs the range test.
+fn emit_shift(b: &mut FunctionBuilder<'_>, value: ir::Value, count: ir::Value, direction: Shift) -> Emitted {
+    let zero = b.ins().iconst(types::I64, 0);
+    let is_forward = b.ins().icmp(IntCC::SignedGreaterThanOrEqual, count, zero);
+    let negated = b.ins().ineg(count);
+    let (left_count, left_active, right_count) = match direction {
+        Shift::Left => (count, is_forward, negated),
+        Shift::Right => (negated, b.ins().icmp(IntCC::SignedLessThan, count, zero), count),
+    };
+    let widest = b.ins().iconst(types::I64, i64::from(i64::BITS - 1));
+    let right_amount = b.ins().umin(right_count, widest);
+    let shifted_right = b.ins().sshr(value, right_amount);
+    let shifted_left = b.ins().ishl(value, left_count);
+    let back = b.ins().sshr(shifted_left, left_count);
+    let round_trips = b.ins().icmp(IntCC::Equal, back, value);
+    let in_range = b
+        .ins()
+        .icmp_imm_u(IntCC::UnsignedLessThan, left_count, i64::from(i64::BITS));
+    let is_zero = b.ins().icmp(IntCC::Equal, value, zero);
+    let in_range_and_round_trips = b.ins().band(in_range, round_trips);
+    let fits = b.ins().bor(in_range_and_round_trips, is_zero);
+    let doesnt_fit = b.ins().icmp_imm_u(IntCC::Equal, fits, 0);
+    let failed = b.ins().band(left_active, doesnt_fit);
+    let value = b.ins().select(left_active, shifted_left, shifted_right);
+    Emitted::Checked { value, failed }
+}
+
 /// The reuse row whose head is a ref word. Its definition is
 /// `fz_list_reuse_or_cons_parts` applied to the payload word and kind the ref
 /// word decodes to (`AnyValueRef::storage_raw` and `tag`).
@@ -319,6 +359,29 @@ pub(crate) const RECIPES: &[Recipe] = &[
         let (value, failed) = b.ins().ssub_overflow(zero, operand);
         Some(Emitted::Checked { value, failed })
     }),
+    // Integer bit operations.
+    recipe!(fz_op_band_ii(left, right), |b| Some(Emitted::Value(
+        b.ins().band(left, right)
+    ))),
+    recipe!(fz_op_bor_ii(left, right), |b| Some(Emitted::Value(
+        b.ins().bor(left, right)
+    ))),
+    recipe!(fz_op_bxor_ii(left, right), |b| Some(Emitted::Value(
+        b.ins().bxor(left, right)
+    ))),
+    recipe!(fz_op_bnot_i(operand), |b| Some(Emitted::Value(b.ins().bnot(operand)))),
+    recipe!(fz_op_bsl_ii(value, count), |b| Some(emit_shift(
+        b,
+        value,
+        count,
+        Shift::Left
+    ))),
+    recipe!(fz_op_bsr_ii(value, count), |b| Some(emit_shift(
+        b,
+        value,
+        count,
+        Shift::Right
+    ))),
     // Integer comparison.
     int_compare!(fz_op_lt_ii, IntCC::SignedLessThan),
     int_compare!(fz_op_lte_ii, IntCC::SignedLessThanOrEqual),

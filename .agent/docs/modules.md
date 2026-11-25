@@ -234,6 +234,20 @@ their results through `from_list/1`. `Map.delete/2` and `Map.get/2` raise
 `%BadMapError{}` for a non-map, and every `Map` function that returns a map
 says `:: map` in its spec.
 
+`lib/bitwise.fz` defines `Bitwise` with `band/2`, `bor/2`, `bxor/2`, `bnot/1`,
+`bsl/2` and `bsr/2` and the operators `&&&`, `|||`, `<<<` and `>>>`. As in
+Elixir each delegates to the `:erlang` function of the same name; those
+(`lib/erlang.fz`) are the typed clause families over `is_integer` heads that
+call one `fz_op_b*` extern, as `Kernel.rem/2` and `Kernel.+/2` do. A guard may
+call any of them, and native code computes them in place (`recipe.rs` rows; the
+interpreter calls the runtime function). Each is `@doc guard: true`. A
+non-integer operand raises `ArithmeticError`. Integers
+are 64 bits wide: `bsl/2` and `bsr/2` raise `ArithmeticError` where Elixir would
+grow a bignum, a result that needs more than 64 bits (`bsl(1, 63)`,
+`bsr(1, -63)`). `bsl` by a negative count shifts right and `bsr` by a negative
+count shifts left, as in Elixir (`01818`). `use Bitwise` and the deprecated
+`~~~` and `^^^` are not defined.
+
 ## A call by name
 
 `f(a)` always names the function `f/1`, as in Elixir, even where a variable

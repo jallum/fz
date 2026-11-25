@@ -2459,6 +2459,10 @@ fn operator_token_name(tok: &Tok) -> Option<&'static str> {
         Tok::LtEq => "<=",
         Tok::Gt => ">",
         Tok::GtEq => ">=",
+        Tok::AndAndAnd => "&&&",
+        Tok::OrOrOr => "|||",
+        Tok::LtLtLt => "<<<",
+        Tok::GtGtGt => ">>>",
         _ => return None,
     })
 }
