@@ -11,11 +11,15 @@
     {
       "text": "HOLD (2026-11-24, relayed by Elixir Parity): the user is reconsidering the whole approach — raise structs natively, convert only at a catch that reads the reason. Nothing mue.28-related proceeds until decided.",
       "timestamp": "2026-11-25T02:46:54Z"
+    },
+    {
+      "text": "User decision 2026-11-24 (in Elixir Parity's session): \"let's go with the cheaper shape\". fz raises exception structs natively for its own errors, as before this ticket. rescue converts only raw terms a program raised itself (:erlang.error(term)). A catch clause that binds or tests the reason translates fz's runtime-error structs back to Elixir's Erlang reasons (%FunctionClauseError{} -\u003e :function_clause, %MatchError{term: t} -\u003e {:badmatch, t}, ...); a catch _, _ costs nothing. Known deviation, to be tracked in its own ticket: a user-raised ArgumentError and fz's own :badarg look the same to a catch that reads the reason. This replaces the reason-raising design and the page ../fz-mue.28.html (rescue as Elixir compiles it).",
+      "timestamp": "2026-11-25T02:50:11Z"
     }
   ],
   "priority": 3,
   "status": "open",
   "title": "catch kind, reason normalises a FunctionClauseError as Elixir does",
   "type": "bug",
-  "updated_at": "2026-11-25T02:46:54Z"
+  "updated_at": "2026-11-25T02:50:11Z"
 }
