@@ -191,7 +191,7 @@ is `error/1` with the argument list and `error_info:` options ignored.
 The BIFs `json.erl` calls are source in the same module (`01813`, `01814`):
 `element/2`, `binary_part/3` (a negative length counts back from the start; it is
 guard-callable, as in Elixir),
-`iolist_to_binary/1`, `iolist_size/1`, `integer_to_binary/2`,
+`iolist_to_binary/1`, `iolist_size/1`, `integer_to_binary/1` and `/2`,
 `atom_to_binary/2` (`:utf8`, `:unicode`, `:latin1`), `is_map_key/2`,
 `binary_to_float/1` and `binary_to_integer/1`. A call they cannot answer raises
 `ArgumentError` listing every faulty argument as Erlang's error formatter does

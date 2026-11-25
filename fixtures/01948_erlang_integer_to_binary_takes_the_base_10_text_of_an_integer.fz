@@ -1,0 +1,36 @@
+#---
+# purpose: :erlang.integer_to_binary/1 is the base-10 text of an integer, with a minus sign for a negative one and for the most negative 64-bit integer, and a non-integer raises ArgumentError saying the first argument is not an integer
+# oracle: self
+# oracle.stamp: e448b7d3d1f2cb9d
+#---
+defmodule Main do
+  def main() do
+    IO.inspect(:erlang.integer_to_binary(255))
+    IO.inspect(:erlang.integer_to_binary(0))
+    IO.inspect(:erlang.integer_to_binary(-5))
+    IO.inspect(:erlang.integer_to_binary(-9_223_372_036_854_775_807 - 1))
+    IO.inspect(:erlang.integer_to_binary(255, 16))
+
+    Enum.each([1.5, "12", nil, :a], &refuse/1)
+  end
+
+  # A value that has been through the mailbox has no type the compiler can
+  # prove, so the call reaches its runtime check.
+  defp unknown(term) do
+    send(self(), term)
+
+    receive do
+      received -> received
+    end
+  end
+
+  defp refuse(value) do
+    try do
+      :erlang.integer_to_binary(unknown(value))
+    rescue
+      error in ArgumentError -> IO.puts(String.replace(Exception.message(error), "\n", "|"))
+    end
+  end
+end
+
+Main.main()
