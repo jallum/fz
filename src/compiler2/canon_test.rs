@@ -646,26 +646,45 @@ fn correlated_input_rows_never_reach_the_widening_budget_on_the_lenses() {
 /// four lenses above: the smallest module-value call whose callees are
 /// prepared together, ten calls past the input-row budget, the unnameable
 /// module list of an undefined `message/1`, and the schedule-stable programs.
+/// Each is compiled under fifo, lifo and every seed in `AGENDA_SEEDS`.
 const ORDER_FREE_PLANS: [u32; 6] = [1297, 1298, 571, 420, 183, 567];
+
+/// The seeds of the pseudo-random pop orders the plans are compared under.
+const AGENDA_SEEDS: std::ops::RangeInclusive<u64> = 1..=8;
 
 /// The compiled plan is a function of the program, not of the order the agenda
 /// pops jobs: every fixture's backend plan is byte-identical when jobs run
-/// first-in-first-out and last-in-first-out. The program is rooted at the
-/// entry the CLI runs, so the plan is the one `--dump backend` prints.
+/// first-in-first-out, last-in-first-out, and in each seeded pseudo-random
+/// order. The program is rooted at the entry the CLI runs, so the plan is the
+/// one `--dump backend` prints.
 #[test]
 fn the_backend_plan_is_the_same_whichever_order_the_agenda_pops_jobs() {
     use fz_engine::pop_order::{PopOrder, with};
-    let plan = |number: u32| {
-        let settled = Drive::fixture(number).program_entry().dump_stage(DumpStage::Backend);
-        canon_backend_program(settled.world(), &settled.backend_program())
+    let plan = |number: u32, order: PopOrder| {
+        with(order, || {
+            let settled = Drive::fixture(number).program_entry().dump_stage(DumpStage::Backend);
+            canon_backend_program(settled.world(), &settled.backend_program())
+        })
     };
+    let orders = [PopOrder::Lifo]
+        .into_iter()
+        .chain(AGENDA_SEEDS.map(PopOrder::Seeded))
+        .collect::<Vec<_>>();
     let differing = ORDER_FREE_PLANS
         .into_iter()
-        .filter(|&number| with(PopOrder::Fifo, || plan(number)) != with(PopOrder::Lifo, || plan(number)))
+        .filter_map(|number| {
+            let fifo = plan(number, PopOrder::Fifo);
+            let moved = orders
+                .iter()
+                .filter(|&&order| plan(number, order) != fifo)
+                .collect::<Vec<_>>();
+            (!moved.is_empty()).then(|| format!("fixture {number} differs from fifo under {moved:?}"))
+        })
         .collect::<Vec<_>>();
     assert!(
         differing.is_empty(),
-        "fixtures {differing:?} compile to a different backend plan under fifo and lifo job order",
+        "the backend plan depends on the order the agenda pops jobs:\n{}",
+        differing.join("\n"),
     );
 }
 

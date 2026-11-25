@@ -87,10 +87,12 @@ fz-kdt.106 also found zero, but that number is a point-in-time measurement, not
 something the suite holds.
 
 `the_backend_plan_is_the_same_whichever_order_the_agenda_pops_jobs` compiles
-fixtures to their backend plan with the agenda popping first-in-first-out and
-last-in-first-out and asserts the plans are byte-identical. Test builds select
-the order through `fz_engine::pop_order::with`, behind the `pop_order` feature
-that the root crate's dev-dependency enables; production builds always pop
+fixtures to their backend plan with the agenda popping first-in-first-out,
+last-in-first-out, and in the pseudo-random orders of seeds 1 through 8
+(`PopOrder::Seeded`, a deterministic xorshift64 draw per pop), and asserts the
+plans are byte-identical. Test builds select the order through
+`fz_engine::pop_order::with`, behind the `pop_order` feature that the root
+crate's dev-dependency enables; production builds always pop
 first-in-first-out.
 
 `world.activation_input_alternatives(key)` reads the rows once the fact is
