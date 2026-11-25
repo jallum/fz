@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-25T11:52:35Z",
+  "description": "Approved by the user, 2026-11-25, verbatim: \"Proceed.\" (decision 3 of \"Are you waiting on me?\": P1 ticket for the second flaky #880 test)\n\nProblem\narena_test::a_freed_span_gives_its_pages_back... (runtime/src/heap/arena_test.rs, from #880) failed once under parallel load in `cargo test -p fz-runtime --lib` during fz-9x7.49's runs (2026-11-24); passed alone and on re-run. It measures page residency, which other tests' concurrent allocation can disturb — the same class as fz-9x7.58.\n\nFix\nFirst measure the failure rate (loop `--lib heap` / `--lib arena` 50 times). Then make the assertion about this test's own span only (e.g. mincore over its own pages), not a process-wide figure, and with no serialising lock and no weakened check.\n\nAcceptance\n50 consecutive parallel runs pass; the test still fails if give_span stops dropping pages (show by a scratch revert).",
+  "id": "fz-9x7.61",
+  "labels": [],
+  "parent": "fz-9x7",
+  "priority": 1,
+  "status": "open",
+  "title": "The page give-back test does not depend on other tests' page traffic",
+  "type": "bug",
+  "updated_at": "2026-11-25T11:52:35Z"
+}
