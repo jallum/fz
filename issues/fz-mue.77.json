@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Elixir Parity",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-25T12:22:00Z",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "unquote_splicing inside quote splices its list, as in Elixir",
   "type": "bug",
-  "updated_at": "2026-11-25T12:22:00Z"
+  "updated_at": "2026-11-25T12:22:01Z"
 }
