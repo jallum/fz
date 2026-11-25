@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-25T02:28:43Z",
+  "description": "#881 (fz-j8z, +1/+6 accepted) and #882 (fz-sc8.200, +4/+16 accepted) merged back to back at 152669c5b and 6bca60c66; #882's ceilings were measured on the pre-#881 base, so #881's rise was lost. Measured on 6bca60c66 (Elixir Parity, clean worktree): derivations 16747 vs ceiling 16746, reads handed 121519 vs 121513; largest drive 35787, total 36083, drives 25 all at ceiling. The overage is exactly #881's accepted +1/+6, so no new rise. Develop CI and every PR fail the_distiller_compiles_inside_its_ceilings (e.g. #880 run 45531863253). Fix: tests/distill_telemetry_test.rs derivations ceiling -\u003e 16747, reads handed -\u003e 121519, nothing else; staged in ../fz-ceilfix. Re-measure on the current develop tip before push. User approved 2026-11-24. Owner: Elixir Parity.",
+  "id": "fz-wvg",
+  "labels": [],
+  "priority": 1,
+  "status": "open",
+  "title": "The distiller ceilings hold the sum of #881's and #882's accepted rises",
+  "type": "bug",
+  "updated_at": "2026-11-25T02:28:43Z"
+}
