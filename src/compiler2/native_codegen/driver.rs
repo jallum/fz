@@ -684,7 +684,7 @@ fn emit_receive_dispatch_bodies<M: cranelift_module::Module>(
 ) -> Result<(), CodegenError> {
     for (fn_id, blk_id) in receive_matched_sites {
         let f = module.fn_by_id(*fn_id);
-        let blk = f.blocks.iter().find(|b| b.id == *blk_id).unwrap();
+        let blk = f.block(*blk_id);
         let Term::ReceiveMatched {
             clauses,
             pinned,

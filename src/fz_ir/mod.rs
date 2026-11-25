@@ -1164,6 +1164,9 @@ pub struct FnIr {
     pub name: String,
     /// Populated by liveness analysis in .11.6 (0 means "not yet computed").
     pub frame_schema_id: u32,
+    /// Blocks in creation order. A block's id is its position here:
+    /// `FnBuilder::block` mints ids from `blocks.len()` and nothing removes or
+    /// reorders blocks afterwards, so `FnIr::block` indexes.
     pub blocks: Vec<Block>,
     pub entry: BlockId,
     /// fz-f88.5 — origin tag set at lowering. Default `User` so
@@ -1203,7 +1206,15 @@ impl FnIr {
     }
 
     pub fn block(&self, id: BlockId) -> &Block {
-        self.blocks.iter().find(|b| b.id == id).expect("unknown block")
+        let block = self.blocks.get(id.0 as usize).expect("unknown block");
+        debug_assert_eq!(block.id, id, "a block's id is its position");
+        block
+    }
+
+    pub fn block_mut(&mut self, id: BlockId) -> &mut Block {
+        let block = self.blocks.get_mut(id.0 as usize).expect("unknown block");
+        debug_assert_eq!(block.id, id, "a block's id is its position");
+        block
     }
 }
 
