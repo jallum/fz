@@ -23,11 +23,15 @@
     {
       "text": "HOLD LIFTED (2026-11-24, user decision relayed by Elixir Parity): cheaper shape. fz keeps raising structs; rescue converts only program-raised raw terms (only when the raised type has any); a catch converts the struct back to the Erlang reason only where its clause reads the reason. Target ~0 rise; builder ../fz-mue28 on 4e13457c8. Accepted, documented deviation (guides + fixture): a reason-reading catch cannot tell a runtime-raised struct from the same struct raised explicitly. Page fz-mue.28.html is superseded; old WIP branch fz-mue.28/reason-raise-wip is local only.",
       "timestamp": "2026-11-25T02:51:41Z"
+    },
+    {
+      "text": "User decision 2026-11-24 (second): convert at the raise. The cheaper shape's rescue-side conversion cost +49 requests and entry captures 7-\u003e16, even where dead. Now :erlang.error/:erlang.raise raise the normalized struct, rescue converts nothing, and catch translates back only where the reason is read. Added known deviation: after :erlang.error(:badarg), a catch sees %ArgumentError{}. Rescue-side WIP: scratchpad fz-mue.28/m28-prelude-wip.patch.",
+      "timestamp": "2026-11-25T03:24:15Z"
     }
   ],
   "priority": 3,
   "status": "open",
   "title": "catch kind, reason normalises a FunctionClauseError as Elixir does",
   "type": "bug",
-  "updated_at": "2026-11-25T02:51:41Z"
+  "updated_at": "2026-11-25T03:24:15Z"
 }
