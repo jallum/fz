@@ -63,7 +63,7 @@ fn a_guard_envelopes_only_the_input_its_leaves_read() {
     let first = types.type_var(TypeVarId(40));
     let second = types.type_var(TypeVarId(41));
     let tested = types.type_var(TypeVarId(42));
-    let reachability = calculate_dispatch_reachability(&mut types, &plan, &[first, second, tested]);
+    let reachability = calculate_dispatch_reachability(&mut types, &plan, &[first, second, tested], &[]);
     let any = types.any();
 
     assert_eq!(
@@ -149,12 +149,12 @@ fn named_struct_field_constraints_refine_their_exact_root_and_reject_other_famil
         (any_map_with_the_field, vec![0, 1]),
     ] {
         let input = types.tuple(&[input]);
-        let reach = calculate_dispatch_reachability(types, &plan, &[input]);
+        let reach = calculate_dispatch_reachability(types, &plan, &[input], &[]);
         assert_eq!(reachable_body_ids(&plan, &reach), expected);
         assert!(!reach.fail_reachable);
     }
     let input = types.tuple(&[named]);
-    let reach = calculate_dispatch_reachability(types, &plan, &[input]);
+    let reach = calculate_dispatch_reachability(types, &plan, &[input], &[]);
     assert_eq!(reachable_body_ids(&plan, &reach), vec![0, 1]);
     let matched_root = reach
         .outcome_inputs
@@ -196,9 +196,9 @@ fn proper_list_domain_is_exhausted_by_zero_one_and_two_plus_rows() {
     let any = types.any();
     let input = types.list(any);
 
-    let total_reachability = calculate_dispatch_reachability(&mut types, &total, &[input]);
-    let partial_reachability = calculate_dispatch_reachability(&mut types, &partial, &[input]);
-    let unconstrained_reachability = calculate_dispatch_reachability(&mut types, &total, &[any]);
+    let total_reachability = calculate_dispatch_reachability(&mut types, &total, &[input], &[]);
+    let partial_reachability = calculate_dispatch_reachability(&mut types, &partial, &[input], &[]);
+    let unconstrained_reachability = calculate_dispatch_reachability(&mut types, &total, &[any], &[]);
 
     assert_eq!(reachable_body_ids(&total, &total_reachability), vec![0, 1, 2]);
     assert!(!total_reachability.fail_reachable);
@@ -219,7 +219,7 @@ fn bare_template_inputs_are_refined_as_runtime_values() {
     let mut types = Types::new();
     let input = types.type_var(TypeVarId(0));
 
-    let reachability = calculate_dispatch_reachability(&mut types, &plan, &[input]);
+    let reachability = calculate_dispatch_reachability(&mut types, &plan, &[input], &[]);
 
     assert_eq!(reachable_body_ids(&plan, &reachability), vec![0, 1]);
     let atom_input = reachability
@@ -252,7 +252,7 @@ fn nested_template_inputs_keep_their_runtime_structure() {
     let beta = types.type_var(TypeVarId(1));
     let input = types.tuple(&[alpha, beta]);
 
-    let reachability = calculate_dispatch_reachability(&mut types, &plan, &[input]);
+    let reachability = calculate_dispatch_reachability(&mut types, &plan, &[input], &[]);
 
     assert_eq!(reachable_body_ids(&plan, &reachability), vec![0, 1]);
     let refined = reachability
@@ -288,7 +288,7 @@ fn callable_template_inputs_keep_their_callable_correlation() {
     let mut types = Types::new();
     let input = types.closure_lit(crate::compiler2::types::ClosureTarget(7), Vec::new(), 2);
 
-    let reachability = calculate_dispatch_reachability(&mut types, &plan, &[input]);
+    let reachability = calculate_dispatch_reachability(&mut types, &plan, &[input], &[]);
 
     assert_eq!(reachable_body_ids(&plan, &reachability), vec![0]);
     assert!(types.is_equivalent(&reachability.outcome_inputs[0].1[0], &input));
@@ -304,7 +304,7 @@ fn ground_dispatch_inputs_are_unchanged() {
     let mut types = Types::new();
     let input = types.atom_lit("x");
 
-    let reachability = calculate_dispatch_reachability(&mut types, &plan, &[input]);
+    let reachability = calculate_dispatch_reachability(&mut types, &plan, &[input], &[]);
 
     assert_eq!(reachable_body_ids(&plan, &reachability), vec![0]);
     assert!(types.is_equivalent(&reachability.outcome_inputs[0].1[0], &input));
@@ -333,7 +333,7 @@ fn symbolic_wide_tuple_decision_chain_stays_graph_bounded() {
     let fields = types.repeat(boolean, width);
     let input = types.tuple(&fields);
 
-    let reachability = calculate_dispatch_reachability(&mut types, &plan, &[input]);
+    let reachability = calculate_dispatch_reachability(&mut types, &plan, &[input], &[]);
 
     assert_eq!(
         reachable_body_ids(&plan, &reachability),
@@ -375,7 +375,7 @@ fn negative_tuple_conjunction_remains_a_conservative_root_alternative() {
 
     assert_eq!(types.projection_alternatives(input), vec![input]);
 
-    let reachability = calculate_dispatch_reachability(&mut types, &plan, &[input]);
+    let reachability = calculate_dispatch_reachability(&mut types, &plan, &[input], &[]);
 
     assert!(reachable_body_ids(&plan, &reachability).contains(&1));
     assert!(!reachability.fail_reachable);
@@ -406,7 +406,7 @@ fn unresolved_negative_tuple_exclusion_keeps_both_dispatch_rows_reachable() {
     let excluded = types.tuple(&[a, alpha]);
     let input = types.difference(universe, excluded);
 
-    let reachability = calculate_dispatch_reachability(&mut types, &plan, &[input]);
+    let reachability = calculate_dispatch_reachability(&mut types, &plan, &[input], &[]);
 
     assert_eq!(reachable_body_ids(&plan, &reachability), vec![0, 1]);
     assert!(!reachability.fail_reachable);
@@ -618,7 +618,7 @@ fn unresolved_resource_payload_keeps_matching_type_precondition_reachable() {
     let alpha = types.type_var(TypeVarId(0));
     let input = types.resource(alpha);
 
-    let reachability = calculate_dispatch_reachability(&mut types, &plan, &[input]);
+    let reachability = calculate_dispatch_reachability(&mut types, &plan, &[input], &[]);
 
     assert_eq!(reachable_body_ids(&plan, &reachability), vec![0, 1]);
     assert!(!reachability.fail_reachable);
@@ -649,7 +649,7 @@ fn mixed_axis_union_remains_conservative_through_tuple_projection() {
 
     assert_eq!(types.projection_alternatives(input), vec![input]);
 
-    let reachability = calculate_dispatch_reachability(&mut types, &plan, &[input]);
+    let reachability = calculate_dispatch_reachability(&mut types, &plan, &[input], &[]);
 
     assert_eq!(reachable_body_ids(&plan, &reachability), vec![0, 1]);
     assert!(!reachability.fail_reachable);
@@ -679,7 +679,7 @@ fn a_slot_no_test_looks_at_keeps_its_type_variable() {
     let tested = types.type_var(TypeVarId(0));
     let untested = types.type_var(TypeVarId(1));
 
-    let reachability = calculate_dispatch_reachability(&mut types, &plan, &[tested, untested]);
+    let reachability = calculate_dispatch_reachability(&mut types, &plan, &[tested, untested], &[]);
 
     assert_eq!(reachable_body_ids(&plan, &reachability), vec![0, 1]);
     assert!(
@@ -732,7 +732,7 @@ fn trimmed_bitstring_plan(
         vec![row(Pattern::Bitstring(fields), 0), row(Pattern::Wildcard, 1)],
     ))
     .expect("a bitstring pattern compiles");
-    let reachability = calculate_dispatch_reachability(types, &plan, &[input]);
+    let reachability = calculate_dispatch_reachability(types, &plan, &[input], &[]);
     let mut reached = ReachedEdges::of(Rc::new(plan));
     reached.absorb(&reachability);
     reached.trimmed(types)
@@ -830,11 +830,16 @@ fn a_binary_rest_is_tested_unless_subject_and_prefix_are_both_whole_bytes() {
 
 /// The type the first reachable outcome of a one-input map pattern gives its
 /// first binding.
-fn value_a_map_pattern_binds(types: &mut Types, plan: &PatternDispatchPlan<Ty>, input: Ty) -> Ty {
-    let reachability = calculate_dispatch_reachability(types, plan, &[input]);
+fn value_a_map_pattern_binds(
+    types: &mut Types,
+    plan: &PatternDispatchPlan<Ty>,
+    input: Ty,
+    scope_pins: &[Option<Ty>],
+) -> Ty {
+    let reachability = calculate_dispatch_reachability(types, plan, &[input], scope_pins);
     let (outcome, inputs) = reachability.outcome_inputs.first().expect("the pattern can match");
     let binding = &plan.outcome(*outcome).expect("a reachable outcome").bindings[0];
-    project_subject(types, plan, inputs, binding.source)
+    project_subject(types, plan, inputs, scope_pins, binding.source)
 }
 
 fn map_pattern(key: Pattern) -> PatternDispatchPlan<Ty> {
@@ -857,7 +862,7 @@ fn a_pattern_on_an_optional_field_binds_the_field_without_nil() {
     let input = types.map_of_entries(&[optional]);
     let plan = map_pattern(Pattern::Atom("b".to_string()));
 
-    let bound = value_a_map_pattern_binds(&mut types, &plan, input);
+    let bound = value_a_map_pattern_binds(&mut types, &plan, input, &[]);
 
     assert!(
         types.is_equivalent(&bound, &binary),
@@ -878,11 +883,81 @@ fn a_pattern_on_an_atom_domain_binds_the_domain_without_nil() {
     let input = types.map_of_entries(&[by_atom]);
     let plan = map_pattern(Pattern::Atom("a".to_string()));
 
-    let bound = value_a_map_pattern_binds(&mut types, &plan, input);
+    let bound = value_a_map_pattern_binds(&mut types, &plan, input, &[]);
 
     assert!(
         types.is_equivalent(&bound, &int),
         "bound `{}`, expected `int`",
         types.display(&bound)
+    );
+}
+
+fn binary_domain_map(types: &mut Types, value: Ty) -> Ty {
+    let by_binary = MapTypeEntry {
+        key: MapTypeKey::Domain(MapDomain::Binary),
+        optional: true,
+        value,
+    };
+    types.map_of_entries(&[by_binary])
+}
+
+#[test]
+fn a_pattern_with_a_binary_key_binds_the_binary_domain() {
+    let mut types = Types::new();
+    let int = types.int();
+    let input = binary_domain_map(&mut types, int);
+    let plan = map_pattern(Pattern::Binary(b"a".to_vec()));
+
+    let bound = value_a_map_pattern_binds(&mut types, &plan, input, &[]);
+
+    assert!(
+        types.is_equivalent(&bound, &int),
+        "bound `{}`, expected `int`",
+        types.display(&bound)
+    );
+}
+
+#[test]
+fn a_pattern_with_a_float_key_binds_the_float_domain() {
+    let mut types = Types::new();
+    let int = types.int();
+    let by_float = MapTypeEntry {
+        key: MapTypeKey::Domain(MapDomain::Float),
+        optional: true,
+        value: int,
+    };
+    let input = types.map_of_entries(&[by_float]);
+    let plan = map_pattern(Pattern::Float(1.5));
+
+    let bound = value_a_map_pattern_binds(&mut types, &plan, input, &[]);
+
+    assert!(
+        types.is_equivalent(&bound, &int),
+        "bound `{}`, expected `int`",
+        types.display(&bound)
+    );
+}
+
+/// A pinned key is a value the enclosing scope holds: the scope's type for
+/// it addresses the map, and a pin the scope cannot type reads nothing.
+#[test]
+fn a_pattern_with_a_pinned_key_reads_the_type_the_scope_holds_it_at() {
+    let mut types = Types::new();
+    let (binary, int, any) = (types.str_t(), types.int(), types.any());
+    let input = binary_domain_map(&mut types, int);
+    let plan = map_pattern(Pattern::Pinned(Var::user("k")));
+
+    let typed = value_a_map_pattern_binds(&mut types, &plan, input, &[Some(binary)]);
+    let untyped = value_a_map_pattern_binds(&mut types, &plan, input, &[None]);
+
+    assert!(
+        types.is_equivalent(&typed, &int),
+        "typed pin bound `{}`",
+        types.display(&typed)
+    );
+    assert!(
+        types.is_equivalent(&untyped, &any),
+        "untyped pin bound `{}`",
+        types.display(&untyped)
     );
 }

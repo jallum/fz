@@ -293,7 +293,7 @@ pub(super) fn analyze_activation(
     let mut entry_edges = ReachedEdges::of(entry_dispatch.clone());
     let mut row_clause_inputs = Vec::new();
     for columns in &input_rows {
-        let dispatch_reachability = calculate_dispatch_reachability(world.types_mut(), &entry_dispatch, columns);
+        let dispatch_reachability = calculate_dispatch_reachability(world.types_mut(), &entry_dispatch, columns, &[]);
         entry_edges.absorb(&dispatch_reachability);
         let clause_inputs = dispatch_reachability
             .outcome_inputs
@@ -339,6 +339,7 @@ pub(super) fn analyze_activation(
                     world.types_mut(),
                     &entry_dispatch,
                     clause_inputs,
+                    &[],
                     argument.subject,
                 );
                 values.insert(argument.parameter, ty);
@@ -875,6 +876,11 @@ fn apply_step_evidence(
     Ok(())
 }
 
+/// The types the enclosing scope holds a dispatch's pinned values at, by pin.
+fn pinned_tys(values: &SemanticValues, pinned: &[ValueId]) -> Vec<Option<Ty>> {
+    pinned.iter().map(|pin| value_ty(values, *pin)).collect()
+}
+
 /// What `base[key]` and `base.key` answer: the value the key holds when
 /// present, beside `nil` when `base` may lack it. `any` when no member of
 /// `base` can hold the key.
@@ -1147,7 +1153,12 @@ fn analyze_tail(
             )?;
             Ok(join_evidence(world, then_ty, else_ty))
         }
-        LoweredTail::Dispatch { inputs, dispatch, .. } => {
+        LoweredTail::Dispatch {
+            inputs,
+            dispatch,
+            bindings,
+            ..
+        } => {
             let Some(input_tys) = inputs
                 .iter()
                 .map(|input| value_ty(values, *input))
@@ -1163,7 +1174,8 @@ fn analyze_tail(
                 walk.mark_unknown();
                 return Ok(None);
             }
-            let reachability = calculate_dispatch_reachability(world.types_mut(), &dispatch.plan, &input_tys);
+            let pins = pinned_tys(values, &bindings.pinned);
+            let reachability = calculate_dispatch_reachability(world.types_mut(), &dispatch.plan, &input_tys, &pins);
             if let Some(site) = &dispatch.map_update
                 && reachability.outcome_inputs.is_empty()
                 && !world.types().is_empty(&input_tys[0])
@@ -1190,6 +1202,7 @@ fn analyze_tail(
                                 world.types_mut(),
                                 &dispatch.plan,
                                 &refined_inputs,
+                                &pins,
                                 argument.subject,
                             ),
                         )
@@ -1236,7 +1249,8 @@ fn analyze_tail(
             // Mailbox messages are a runtime boundary: `any` is earned here.
             let any = world.types_mut().any();
             let mut merged = None;
-            let reachability = calculate_dispatch_reachability(world.types_mut(), &receive.dispatch, &[any]);
+            let pins = pinned_tys(values, &receive.bindings.pinned);
+            let reachability = calculate_dispatch_reachability(world.types_mut(), &receive.dispatch, &[any], &pins);
             for (outcome, refined_inputs) in reachability.outcome_inputs {
                 let edge = receive.outcomes.get(outcome.0 as usize).expect("winning receive edge");
                 let clause_params = edge
@@ -1249,6 +1263,7 @@ fn analyze_tail(
                                 world.types_mut(),
                                 &receive.dispatch,
                                 &refined_inputs,
+                                &pins,
                                 argument.subject,
                             ),
                         )

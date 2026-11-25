@@ -1,0 +1,29 @@
+#---
+# purpose: "Map.get/2, Map.get/3, Map.fetch, Map.fetch!, m[k] and a pinned-key pattern read one typed map and agree on its value, a miss composing nil, the default or :error"
+# oracle: self
+# oracle.stamp: e67c0e462c2a8a63
+#---
+defmodule Main do
+  @spec table() :: %{binary() => integer()}
+  def table(), do: hd([%{"a" => 1, "b" => 2}])
+
+  def get2(m, k), do: Map.get(m, k)
+  def get3(m, k), do: Map.get(m, k, :none)
+  def fetch(m, k), do: Map.fetch(m, k)
+  def fetch!(m, k), do: Map.fetch!(m, k)
+  def access(m, k), do: m[k]
+
+  def pinned(m, k) do
+    case m do
+      %{^k => v} -> v
+    end
+  end
+
+  def main() do
+    m = table()
+    IO.inspect({get2(m, "a"), get3(m, "a"), fetch(m, "a"), fetch!(m, "a"), access(m, "a"), pinned(m, "a")})
+    IO.inspect({get2(m, "zz"), get3(m, "zz"), fetch(m, "zz"), access(m, "zz")})
+  end
+end
+
+Main.main()

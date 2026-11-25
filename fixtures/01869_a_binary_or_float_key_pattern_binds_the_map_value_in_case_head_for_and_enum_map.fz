@@ -1,0 +1,38 @@
+#---
+# purpose: "A map pattern with a binary or float key binds what the map type holds under that kind of key, in a case, a function head, a for generator and an Enum.map closure"
+# oracle: self
+# oracle.stamp: 6a23ffb9f501a86c
+#---
+defmodule Main do
+  @spec table() :: %{binary() => integer()}
+  def table(), do: hd([%{"a" => 1, "b" => 2}])
+
+  @spec ratios() :: %{float() => integer()}
+  def ratios(), do: hd([%{1.5 => 10, 2.5 => 20}])
+
+  def in_case(m) do
+    case m do
+      %{"a" => v} -> v
+    end
+  end
+
+  def in_head(%{"a" => v}), do: v
+
+  def in_for(m), do: for(%{"a" => v} <- [m, m], do: v)
+
+  def in_enum_map(m), do: Enum.map([m], fn %{"a" => v} -> v end)
+
+  def in_float_case(m) do
+    case m do
+      %{2.5 => v} -> v
+    end
+  end
+
+  def main() do
+    m = table()
+    IO.inspect({in_case(m), in_head(m), in_for(m), in_enum_map(m)})
+    IO.inspect(in_float_case(ratios()))
+  end
+end
+
+Main.main()
