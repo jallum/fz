@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Elixir Parity",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-25T12:04:40Z",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "Macro.prewalk/2 and Macro.postwalk/2 walk quoted code, as in Elixir",
   "type": "feature",
-  "updated_at": "2026-11-25T12:04:40Z"
+  "updated_at": "2026-11-25T12:04:43Z"
 }
