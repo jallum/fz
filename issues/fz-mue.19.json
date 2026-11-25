@@ -2,6 +2,7 @@
   "assignee": "Elixir Parity",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-25T02:53:30Z",
   "created": "2026-11-18T20:44:05Z",
   "description": "'invalid def function head: invalid any value ref'. json.erl has true/6 and false/6. Reproducer: /Users/j5n/Workspace/fz-otp-json/punch/34_fn_named_true.fz\n\nPart of fz-mue (fz runs OTP's json.erl unchanged). Port and harness: /Users/j5n/Workspace/fz-otp-json/.",
   "id": "fz-mue.19",
@@ -22,8 +23,8 @@
     }
   ],
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "def unquote(:true)(...) defines a function named true",
   "type": "bug",
-  "updated_at": "2026-11-25T00:44:39Z"
+  "updated_at": "2026-11-25T02:53:30Z"
 }
