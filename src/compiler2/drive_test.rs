@@ -9080,6 +9080,128 @@ fn lowered_clif_of(source: &str, function: &str) -> String {
     text.clone()
 }
 
+/// The line that defines the condition of the branch into the block that
+/// calls `function`; empty when the block is not entered by a branch.
+fn condition_guarding_call(clif: &str, function: &str) -> String {
+    let lines: Vec<&str> = clif.lines().collect();
+    let id = lines
+        .iter()
+        .find_map(|line| line.strip_prefix("; ")?.strip_suffix(&format!(" = {function}")))
+        .unwrap_or_else(|| panic!("{function} is declared:\n{clif}"));
+    let call = lines
+        .iter()
+        .position(|line| line.contains(&format!("call {id}(")))
+        .unwrap_or_else(|| panic!("{function} is called:\n{clif}"));
+    let block = lines[..call]
+        .iter()
+        .rev()
+        .find_map(|line| {
+            let name = line.trim_start();
+            name.starts_with("block").then(|| name.split(['(', ':']).next())?
+        })
+        .expect("the call is in a block");
+    let is_target = |token: &str| token.trim_matches(|c| c == ',' || c == ' ') == block;
+    let branch = lines
+        .iter()
+        .find(|line| line.trim_start().starts_with("brif ") && line.split([' ', '(']).skip(2).any(is_target));
+    let Some(branch) = branch else { return String::new() };
+    let condition = branch.trim_start()["brif ".len()..].split(',').next().unwrap_or("");
+    lines
+        .iter()
+        .find(|line| line.trim_start().starts_with(&format!("{condition} = ")))
+        .map(|line| line.trim().to_string())
+        .unwrap_or_default()
+}
+
+/// The runtime functions a lowered function declares, by name.
+fn declared_functions(clif: &str) -> Vec<&str> {
+    clif.lines()
+        .filter_map(|line| line.strip_prefix("; fn")?.split_once(" = ").map(|(_, name)| name))
+        .collect()
+}
+
+const QSORT_SOURCE: &str = "defmodule Q do\n\
+     \x20 def append([], ys), do: ys\n\
+     \x20 def append([h | t], ys), do: [h | append(t, ys)]\n\
+     \x20 def partition(_, [], lo, hi), do: {lo, hi}\n\
+     \x20 def partition(p, [h | t], lo, hi) when h < p, do: partition(p, t, [h | lo], hi)\n\
+     \x20 def partition(p, [h | t], lo, hi), do: partition(p, t, lo, [h | hi])\n\
+     \x20 def qsort([]), do: []\n\
+     \x20 def qsort([p | rest]) do\n\
+     \x20   {lo, hi} = partition(p, rest, [], [])\n\
+     \x20   append(qsort(lo), [p | qsort(hi)])\n\
+     \x20 end\n\
+     \x20 def gen(0, _x, acc), do: acc\n\
+     \x20 def gen(n, x, acc) do\n\
+     \x20   y = rem(x * 1103515245 + 12345, 2147483648)\n\
+     \x20   gen(n - 1, y, [rem(y, 1000000) | acc])\n\
+     \x20 end\n\
+     end\n\
+     def main(), do: IO.inspect(Q.qsort(Q.gen(50, 42, [])))\n";
+
+/// A partition step reads the head and tail of its cell where they stand: no
+/// call fetches a head, and the runtime's tail is reached only from a link
+/// that carries the terminator flag.
+#[test]
+fn compiler2_native_partition_step_reads_its_cells_without_a_runtime_call() {
+    let clif = lowered_clif_of(QSORT_SOURCE, "partition");
+    let declared = declared_functions(&clif);
+    assert!(
+        !declared.contains(&"fz_list_head_ref"),
+        "no call fetches a head:\n{clif}"
+    );
+    let terminator = format!("= {}", fz_runtime::any_value::LIST_LINK_TERMINATOR_MASK as i64);
+    let entered_by = condition_guarding_call(&clif, "fz_list_tail_ref");
+    assert!(
+        entered_by.contains(" = band") && entered_by.ends_with(&terminator),
+        "the runtime's tail is entered only from a terminated link: {entered_by}\n{clif}"
+    );
+}
+
+/// A list that ends in a value that is not a list is read through the
+/// runtime's tail only when the link says so: the terminator flag is tested
+/// where the tail is read, and a proper list never reaches the call.
+#[test]
+fn compiler2_native_tail_of_a_list_that_may_be_improper_tests_the_terminator_flag_inline() {
+    let source = "defmodule P do\n\
+         \x20 def rest([_ | t]), do: t\n\
+         end\n\
+         def main(), do: IO.inspect(P.rest([1 | 2]))\n";
+    let clif = lowered_clif_of(source, "rest");
+    let flag = format!("= {}", fz_runtime::any_value::LIST_LINK_TERMINATOR_MASK as i64);
+    assert!(
+        clif.lines()
+            .any(|line| line.contains(" = band") && line.ends_with(&flag)),
+        "the link's terminator flag is tested inline:\n{clif}"
+    );
+    assert!(
+        declared_functions(&clif).contains(&"fz_list_tail_ref"),
+        "the improper tail is read by the runtime:\n{clif}"
+    );
+}
+
+/// The tail of an improper list, the head of a list of floats and the head of
+/// a list of atoms read as the runtime read them.
+#[test]
+fn compiler2_native_inline_cell_reads_answer_as_the_runtime_reads_did() {
+    let (_, status) = run_value_root(
+        "fixtures/inline_cell_reads.fz",
+        "defmodule P do\n\
+         \x20 def rest([_ | t]), do: t\n\
+         \x20 def first([h | _]), do: h\n\
+         end\n\
+         def main() do\n\
+         \x20 2 = P.rest([1 | 2])\n\
+         \x20 [2] = P.rest([1, 2])\n\
+         \x20 2.5 = P.first([2.5, 1.5])\n\
+         \x20 :a = P.first([:a, :b])\n\
+         \x20 {1, 2} = P.first([{1, 2}])\n\
+         \x20 0\n\
+         end\n",
+    );
+    assert_eq!(status, 0);
+}
+
 /// A map pattern whose key is an atom or an integer finds it in a map past the
 /// flat limit where the test stands. The key is hashed in place, an atom by
 /// reading the key hash its table keeps through the process, an integer by
@@ -9179,8 +9301,10 @@ fn compiler2_native_put_loop_over_a_proven_map_asks_no_kind_question() {
         .split_once(" = call fn")
         .map(|(head, _)| head)
         .unwrap_or_else(|| panic!("the loop calls the runtime's put:\n{fill}"));
+    // The one kind-set test the loop may make before the put reads the key out
+    // of its list cell; a test of the map would be a second.
     assert!(
-        fill.contains("= fz_map_put\n") && !before_put.contains(kind_set_test),
+        fill.contains("= fz_map_put\n") && before_put.matches(&format!("iconst.i64 {kind_set_test}")).count() <= 1,
         "the loop tests the kind of its map before the put:\n{fill}"
     );
 }

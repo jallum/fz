@@ -1132,9 +1132,8 @@ fn distinguishable_arms_are_seated_by_what_they_say_not_by_when_they_arrived() {
 /// "a non-empty list" to the runtime, and that arm's CALLABLE test admits
 /// all three lambdas where its siblings' admit one. Seated first it takes
 /// every value the pair was going to receive and hands lists of atoms to a
-/// body that reads their heads as ints: `fz_list_head_int_ref` aborts the
-/// process on the native and JIT doors, while the interpreter's dynamic
-/// tags hide it.
+/// body that reads their heads as ints: the native and JIT doors take the
+/// atoms for integers, while the interpreter's dynamic tags hide it.
 ///
 /// Coverage keeps it last. Against `list(int | :ok | :true)` it is a
 /// strictly narrower surface at a position both read blind, so the mixed
@@ -1202,8 +1201,8 @@ fn an_arm_whose_test_admits_more_is_seated_after_the_arms_it_would_swallow() {
 /// every containment rule seated it first. Then `Enum.all?([:ok, :ok])`
 /// carrying the shared `all?/1` lambda satisfied all three of its
 /// questions, because a list test could not see elements, and reached the
-/// body that reads heads as ints: `fz_list_head_int_ref` aborted on the
-/// JIT and native doors. Coverage was the only thing holding the pair,
+/// body that reads heads as ints, which the JIT and native doors took
+/// atoms for. Coverage was the only thing holding the pair,
 /// because neither surface covers the other at the list position.
 ///
 /// The list questions have DISJOINT heads now -- one admits an atom head,
@@ -1855,7 +1854,7 @@ fn an_untested_position_is_not_a_separation() {
 /// Before the head question all three were "a non-empty list", one group,
 /// arrival-decided -- and a legal arrival that put C first handed
 /// `[:false, :true]` to a body reading heads as ints
-/// (`fz_list_head_int_ref`, exit 134 on both compiled doors).
+/// (read as integers on both compiled doors).
 ///
 /// B AND C OVERLAP AT THE HEAD (both admit an int) and differ only in a
 /// tail no test reads, so that pair is erasing and no seat that puts C

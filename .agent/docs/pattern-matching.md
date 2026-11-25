@@ -707,7 +707,8 @@ float-to-integer conversions are typed heads over `Checked` externs
 64-bit range fails the guard; their last clause raises `ArgumentError`, which is
 the guard's failure for a non-number. `hd/1` and `tl/1` test the cell with
 `fz_list_is_cons` in a clause guard and read it with `fz_list_head_ref` and
-`fz_list_tail_ref`; a cons pattern in a helper head is not used there because
+`fz_list_tail_ref` (compiled list patterns load the cell inline instead; see
+any-value.md); a cons pattern in a helper head is not used there because
 native entry-guard lowering does not carry one.
 A guard's literal operands are an integer, a float, a binary, an atom, a boolean,
 `nil`, a module alias and the empty list. The first seven are

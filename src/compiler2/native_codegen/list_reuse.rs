@@ -24,10 +24,13 @@
 //! site knows it, are constants the call site passes; the row reads them when
 //! the code is emitted.
 
-use super::list_cell::{Head, assert_tail_is_list, decode, link_word, place_cell};
+use super::list_cell::{
+    Head, assert_tail_is_list, cell_address, decode, link_is_shared, link_word, links_agree_but_for_sharing, load_head,
+    load_link, place_cell, store_cell,
+};
 use super::*;
-use cranelift_codegen::ir::{self, BlockArg, InstBuilder, MemFlagsData, condcodes::IntCC, types};
-use fz_runtime::any_value::{LIST_CONS_LINK_OFFSET, LIST_LINK_ALIAS_MASK, ValueKind};
+use cranelift_codegen::ir::{self, BlockArg, InstBuilder, condcodes::IntCC, types};
+use fz_runtime::any_value::ValueKind;
 use fz_runtime::reuse_site::ReuseKind;
 
 /// How the replacement head reaches the row.
@@ -77,18 +80,12 @@ pub(super) fn emit_list_reuse<M: cranelift_module::Module>(
     let counters = body.reuse_site(ReuseKind::List);
 
     let replacement = head.decode(body);
-    let source_address = address_field(body.b, source);
+    let source_address = cell_address(body.b, source);
     let link = link_word(body, &replacement, tail);
-    let flags = MemFlagsData::trusted();
-    let old_head = body.b.ins().load(types::I64, flags, source_address, 0);
-    let old_link = body
-        .b
-        .ins()
-        .load(types::I64, flags, source_address, LIST_CONS_LINK_OFFSET as i32);
+    let old_head = load_head(body.b, source_address, types::I64);
+    let old_link = load_link(body.b, source_address);
     let same_head = body.b.ins().icmp(IntCC::Equal, old_head, replacement.raw);
-    let link_difference = body.b.ins().bxor(old_link, link);
-    let link_without_alias = body.b.ins().band_imm_u(link_difference, !LIST_LINK_ALIAS_MASK as i64);
-    let same_link = body.b.ins().icmp_imm_s(IntCC::Equal, link_without_alias, 0);
+    let same_link = links_agree_but_for_sharing(body.b, old_link, link);
     let unchanged = body.b.ins().band(same_head, same_link);
 
     let done = body.b.create_block();
@@ -108,18 +105,12 @@ pub(super) fn emit_list_reuse<M: cranelift_module::Module>(
     let fresh = body.b.create_block();
     if may_rewrite {
         let rewrite = body.b.create_block();
-        let current = body
-            .b
-            .ins()
-            .load(types::I64, flags, source_address, LIST_CONS_LINK_OFFSET as i32);
-        let aliased = body.b.ins().band_imm_u(current, LIST_LINK_ALIAS_MASK as i64);
+        let current = load_link(body.b, source_address);
+        let aliased = link_is_shared(body.b, current);
         body.b.ins().brif(aliased, fresh, &[], rewrite, &[]);
         body.b.switch_to_block(rewrite);
         body.b.seal_block(rewrite);
-        body.b.ins().store(flags, replacement.raw, source_address, 0);
-        body.b
-            .ins()
-            .store(flags, link, source_address, LIST_CONS_LINK_OFFSET as i32);
+        store_cell(body.b, source_address, replacement.raw, link);
         body.count_reuse(counters.hits);
         body.b.ins().jump(done, &[BlockArg::Value(source)]);
     } else {

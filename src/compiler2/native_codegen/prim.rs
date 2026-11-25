@@ -390,7 +390,8 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
         }
         Prim::ListTail(c) => {
             let list_ref = known_list_ref_for_var(var_env, body.b, body.cache, block_id, c.0);
-            LowerOut::ValueRefWord(body.list_tail(list_ref))
+            let shape = list_shape(t, value_types, *c);
+            LowerOut::ValueRefWord(body.list_tail(list_ref, shape))
         }
         Prim::MakeList(elems, tail, retention) => {
             if elems.len() == 1
@@ -1403,10 +1404,6 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         Prim::ListHead(c) if list_projection_is_safe(t, value_types, *c) && ty_is_float(t, value_types, dest_var) => {
             let list_ref = known_list_ref_for_var(var_env, body.b, body.cache, block_id, c.0);
             Ok(LowerOut::RawF64(body.list_head_float(list_ref)))
-        }
-        Prim::ListTail(c) if list_projection_is_safe(t, value_types, *c) => {
-            let list_ref = known_list_ref_for_var(var_env, body.b, body.cache, block_id, c.0);
-            Ok(LowerOut::ValueRefWord(body.list_tail(list_ref)))
         }
         Prim::ListHead(..)
         | Prim::ListTail(..)

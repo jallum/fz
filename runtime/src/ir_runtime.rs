@@ -2106,18 +2106,6 @@ pub extern "C" fn fz_list_head_ref(list_ref_word: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_list_head_int_ref(list_ref_word: u64) -> i64 {
-    let head = fz_list_head_ref(list_ref_word);
-    fz_ref_load_int(head)
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_list_head_float_ref(list_ref_word: u64) -> f64 {
-    let head = fz_list_head_ref(list_ref_word);
-    fz_ref_load_float(head)
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn fz_list_tail_ref(list_ref_word: u64) -> u64 {
     let list = any_value_ref_from_word(list_ref_word, "fz_list_tail_ref");
     list_tail_ref(list).expect("fz_list_tail_ref").raw_word()
