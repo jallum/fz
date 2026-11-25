@@ -221,12 +221,19 @@ guard `is_function(f, 1)` and `is_function(f, 2)`; `duplicate/2` guards
 `is_integer(n) and n >= 0`. The specs are OTP's, so a call whose arguments are
 proven outside them is refused at compile time.
 
-`lib/maps.fz` defines `:maps` with `to_list/1`, `keys/1` and `values/1`, each a
-single runtime walk of the map's entries behind an `is_map` guard that raises
-`BadMapError` for a non-map; `Map.to_list/1`, `Map.keys/1` and `Map.values/1`
-delegate to them. `Map.put/3`, `Map.delete/2` and `Map.get/2` raise
-`%BadMapError{}` for a non-map, and every `Map` function that
-returns a map says `:: map` in its spec.
+`lib/maps.fz` defines `:maps` with `to_list/1`, `keys/1`, `values/1`, `put/3`,
+`merge/2` and `from_list/1`. `to_list/1`, `keys/1` and `values/1` are each a
+single runtime walk of the map's entries; `put/3` is the extern `fz_map_put`,
+in OTP's argument order (`put(key, value, map)`); `from_list/1` builds through
+the extern `fz_map_from_kv` (the last pair for a key wins); and `merge/2` is
+`from_list(to_list(a) ++ to_list(b))`. Each of `to_list/1`, `keys/1`,
+`values/1`, `put/3` and `merge/2` raises `BadMapError` for a non-map, behind an
+`is_map` guard (`merge/2` names the first argument that is none).
+`Map.to_list/1`, `keys/1`, `values/1`, `put/3`, `merge/2` and `new/1` delegate
+to them, as Elixir's `Map` does, and `Map.take/2`, `drop/2` and `filter/2` build
+their results through `from_list/1`. `Map.delete/2` and `Map.get/2` raise
+`%BadMapError{}` for a non-map, and every `Map` function that returns a map
+says `:: map` in its spec.
 
 ## A call by name
 
