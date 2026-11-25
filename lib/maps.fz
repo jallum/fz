@@ -45,4 +45,56 @@ defmodule :maps do
   def values(map), do: raise(%BadMapError{term: map})
 
   extern "fz" defp fz_map_values(map) :: any
+
+  @doc """
+  Returns the map with `value` set for `key`, overwriting any existing entry.
+  Raises `BadMapError` when `map` is not a map.
+
+  ## Examples
+
+      :maps.put("k", 2, %{"k" => 1, "j" => 0})
+      #=> %{"j" => 0, "k" => 2}
+
+  """
+  @spec put(any, any, any) :: map
+  def put(key, value, map) when is_map(map), do: fz_map_put(map, key, value)
+  def put(_key, _value, map), do: raise(%BadMapError{term: map})
+
+  extern "fz" defp fz_map_put(map, stored_value, stored_value) :: map
+
+  @doc """
+  Merges `a` and `b` into one map. Where both have a key, `b`'s value wins.
+  Raises `BadMapError` naming the first argument that is not a map.
+
+  ## Examples
+
+      :maps.merge(%{"a" => 1, "b" => 2}, %{"b" => 3, "c" => 4})
+      #=> %{"a" => 1, "b" => 3, "c" => 4}
+
+  """
+  @spec merge(any, any) :: map
+  def merge(a, b) when is_map(a) and is_map(b), do: from_list(to_list(a) ++ to_list(b))
+  def merge(a, _b) when not is_map(a), do: raise(%BadMapError{term: a})
+  def merge(_a, b), do: raise(%BadMapError{term: b})
+
+  @doc """
+  Builds a map from a list of `{key, value}` pairs. When a key repeats, the
+  last pair wins.
+
+  ## Examples
+
+      :maps.from_list([{1, :a}, {2, :b}, {1, :c}])
+      #=> %{1 => :c, 2 => :b}
+
+  """
+  @spec from_list([{any, any}]) :: map
+  def from_list(pairs), do: build(pairs, [], [])
+
+  # Splits the pair list into parallel key and value lists, which is what the
+  # one-allocation builder takes.
+  @spec build([{a, b}], [a], [b]) :: map when a: var, b: var
+  defp build([], ks, vs), do: fz_map_from_kv(:lists.reverse(ks), :lists.reverse(vs))
+  defp build([{k, v} | t], ks, vs), do: build(t, [k | ks], [v | vs])
+
+  extern "fz" defp fz_map_from_kv(any, any) :: map
 end

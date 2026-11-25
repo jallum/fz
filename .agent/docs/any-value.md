@@ -106,8 +106,8 @@ payload word (`any_value_ref_from_storage`); for a heap slot it carries the
 slot's heap pointer; for an atom slot it is the atom ref of the id the slot
 holds, so no ref to an atom points into the container. A struct read as a map
 keeps one more difference: its keys and its `__struct__` module live in no slot,
-and each is an atom, so each comes back as an atom ref. `Map.to_list`, `keys` and
-`values` (`lib/map.fz`) are the externs `fz_map_to_list`, `fz_map_keys` and
+and each is an atom, so each comes back as an atom ref. `:maps.to_list`, `keys` and
+`values` (`lib/maps.fz`) are the externs `fz_map_to_list`, `fz_map_keys` and
 `fz_map_values`, which list the map in one walk (`Heap::map_list`): each entry's
 stored word and kind are copied into a new list cell, or into the two fields of
 a new `{k, v}` tuple, so nothing is decoded or boxed. `Enumerable.Map`'s

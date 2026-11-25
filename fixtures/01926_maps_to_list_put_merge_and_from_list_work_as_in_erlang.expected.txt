@@ -1,0 +1,20 @@
+[{"a", 1}]
+[]
+[{"a", 1}, {"b", 3}]
+[]
+[{10, 1}, {20, 2}, {30, 3}]
+%{"k" => 1}
+%{"j" => 0, "k" => 2}
+%{"a" => 1, "z" => 0}
+%{"a" => 1, "b" => 3, "c" => 4}
+%{}
+%{1 => :c, 2 => :b}
+{100, 100, true}
+{101, 338350}
+{101, :over, :new, 9801}
+{:badmap, :not_a_map, "expected a map, got:\n\n    :not_a_map\n"}
+{:badmap, [1], "expected a map, got:\n\n    [1]\n"}
+{:badmap, :left, "expected a map, got:\n\n    :left\n"}
+{:badmap, 7, "expected a map, got:\n\n    7\n"}
+{:badmap, "right", "expected a map, got:\n\n    \"right\"\n"}
+{:badmap, :no, "expected a map, got:\n\n    :no\n"}

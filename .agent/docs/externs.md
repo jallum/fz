@@ -445,7 +445,7 @@ StoredValue  a parameter only: two integer words, the word a container stores
 ```
 
 A `stored_value` parameter is how a runtime helper takes a value of any kind
-without a box: `Map.put` guards `is_map` and calls `fz_map_put(map,
+without a box: `:maps.put` guards `is_map` and calls `fz_map_put(map,
 stored_value, stored_value)`, and `Map.delete` and `Map.has_key?` take their key the same
 way, as do `fz_inspect`, `fz_inspect_with` (its value; the options stay a
 reference), `fz_value_cmp_ref` and the equality externs `fz_op_eq`,
@@ -767,7 +767,7 @@ The library wrapper carries the proof forward:
   parameter and guards it with `is_map`, or ends in a clause that raises
   `%BadMapError{term: x}` (`Map.put/3`, `Map.delete/2`, `Map.get/2`,
   `Map.has_key?/2`, `Kernel.map_size/1`, `:maps.to_list/1`, `keys/1`,
-  `values/1`). The compiler drops the guard for a caller whose argument is
+  `values/1`, `put/3`, `merge/2`). The compiler drops the guard for a caller whose argument is
   proven a map.
 - A function that returns a map says `:: map` in its spec, so a loop that feeds
   one call's result to the next keeps the proof; a `:: any` return throws it

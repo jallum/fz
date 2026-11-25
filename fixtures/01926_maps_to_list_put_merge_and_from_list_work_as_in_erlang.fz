@@ -1,0 +1,53 @@
+#---
+# purpose: ":maps.to_list, put, merge and from_list work as in Erlang on a flat, an empty and a 100-key map, and raise BadMapError naming the non-map term from :maps and from Map"
+# oracle: self
+# oracle.stamp: 14a9ebb3f368ae6d
+#---
+#
+# A map of up to 32 entries lists in key order; a larger one is a hash trie
+# with an order of its own, so for it only what holds in every order is
+# printed.
+defmodule Main do
+  def attempt(fun) do
+    try do
+      fun.()
+    rescue
+      e in BadMapError -> {:badmap, e.term, Exception.message(e)}
+    end
+  end
+
+  def opaque(term), do: Enum.at([term], 0)
+
+  def round_trip(l), do: :maps.to_list(:maps.from_list(l))
+
+  def main() do
+    big = :maps.from_list(Enum.map(1..100, fn i -> {i, i * i} end))
+
+    IO.inspect(round_trip([{"a", 1}]))
+    IO.inspect(round_trip([]))
+    IO.inspect(round_trip([{"b", 2}, {"a", 1}, {"b", 3}]))
+    IO.inspect(:maps.to_list(%{}))
+    IO.inspect(:maps.to_list(%{20 => 2, 10 => 1, 30 => 3}))
+    IO.inspect(:maps.put("k", 1, %{}))
+    IO.inspect(:maps.put("k", 2, %{"k" => 1, "j" => 0}))
+    IO.inspect(:maps.merge(%{"a" => 1}, %{"z" => 0}))
+    IO.inspect(:maps.merge(%{"a" => 1, "b" => 2}, %{"b" => 3, "c" => 4}))
+    IO.inspect(:maps.merge(%{}, %{}))
+    IO.inspect(:maps.from_list([{1, :a}, {2, :b}, {1, :c}]))
+
+    IO.inspect({map_size(big), length(:maps.to_list(big)), :maps.to_list(big) |> Enum.sort() == Enum.map(1..100, &{&1, &1 * &1})})
+    grown = :maps.put(101, 0, big)
+    IO.inspect({map_size(grown), Enum.sum(Enum.map(:maps.to_list(grown), &elem(&1, 1)))})
+    merged = :maps.merge(big, :maps.from_list([{100, :over}, {200, :new}]))
+    IO.inspect({map_size(merged), merged[100], merged[200], merged[99]})
+
+    IO.inspect(attempt(fn -> :maps.to_list(opaque(:not_a_map)) end))
+    IO.inspect(attempt(fn -> :maps.put(:k, :v, opaque([1])) end))
+    IO.inspect(attempt(fn -> :maps.merge(opaque(:left), %{}) end))
+    IO.inspect(attempt(fn -> :maps.merge(%{}, opaque(7)) end))
+    IO.inspect(attempt(fn -> Map.merge(%{}, opaque("right")) end))
+    IO.inspect(attempt(fn -> Map.put(opaque(:no), :k, :v) end))
+  end
+end
+
+Main.main()
