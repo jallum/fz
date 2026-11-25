@@ -140,6 +140,11 @@ defmodule :erlang do
 
   extern "fz" defp fz_tuple_put(any, integer, any) :: any
 
+  @spec list_to_tuple(any) :: tuple
+  def list_to_tuple(list), do: fz_list_to_tuple(list, length(list))
+
+  extern "fz" defp fz_list_to_tuple(any, integer) :: any
+
   @doc """
   Returns the `index`th element of `tuple`, counting from 1.
 

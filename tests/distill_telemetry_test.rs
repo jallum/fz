@@ -239,10 +239,10 @@ const CEILINGS: [(&str, u64); 5] = [
     ("largest drive requests", 11_434),
     ("total requests", 11_555),
     ("drives", 25),
-    ("derivations", 18_950),
+    ("derivations", 18_954),
     // A reach job reads the edge fact of every node in its cone, so each of its
     // runs hands one read per node.
-    ("reads handed", 137_335),
+    ("reads handed", 137_347),
 ];
 
 /// Compiling the distiller spends no more of the product stack and of the

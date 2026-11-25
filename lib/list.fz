@@ -6,7 +6,8 @@ defmodule List do
   the functions the `++` and `--` operators desugar to, along with the
   `Enumerable` callbacks (`reduce/3`, `reduce_while/3`, `member?/2`) that
   let `Enum` walk a list. `reverse/2` is the one general-purpose helper
-  beyond that, with `first/1,2` and `last/1,2` for the ends of a list. For
+  beyond that, with `first/1,2` and `last/1,2` for the ends of a list and
+  `to_tuple/1` for a tuple as wide as the list. For
   everything else — mapping, filtering, folding, searching — use `Enum`.
   """
 
@@ -254,4 +255,7 @@ defmodule List do
   @spec reduce_while_step([a], {:cont, b} | {:halt, c}, (a, b -> {:cont, b} | {:halt, c})) :: b | c when a: var, b: var, c: var
   defp reduce_while_step(list, {:cont, acc}, reducer), do: reduce_while_cont(list, acc, reducer)
   defp reduce_while_step(_list, {:halt, acc}, _reducer), do: acc
+
+  @spec to_tuple(list) :: tuple
+  def to_tuple(list), do: :erlang.list_to_tuple(list)
 end

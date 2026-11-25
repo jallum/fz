@@ -1871,6 +1871,37 @@ pub extern "C" fn fz_tuple_put(process: *mut Process, tuple_ref_word: u64, index
     copy_word
 }
 
+/// A tuple whose fields are the `arity` elements of a proper list, in order.
+/// The arity is known only at run time, so the tuple's schema is registered on
+/// demand: the registry hands back the existing one when compiled code already
+/// uses that arity.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_list_to_tuple(process: *mut Process, list_ref_word: u64, arity: i64) -> u64 {
+    let arity = usize::try_from(arity).expect("fz_list_to_tuple arity");
+    let process = unsafe { &mut *process };
+    let schema_id = process.heap.schemas_registry().borrow_mut().tuple(arity);
+    let object = process.heap.alloc_struct(schema_id);
+    let layout = SlotLayout::of(arity);
+    let mut cursor = any_value_ref_from_word(list_ref_word, "fz_list_to_tuple list");
+    for index in 0..arity {
+        let element = AnyValue::from_ref(list_head_ref(cursor).expect("fz_list_to_tuple head"))
+            .expect("fz_list_to_tuple element");
+        unsafe {
+            process
+                .heap
+                .store_struct_field(
+                    object,
+                    SlotLayout::slot_offset(index),
+                    layout.kind_offset(index),
+                    element,
+                )
+                .expect("fz_list_to_tuple store");
+        }
+        cursor = list_tail_ref(cursor).expect("fz_list_to_tuple tail");
+    }
+    heap_ref_word(ValueKind::STRUCT, object)
+}
+
 /// The length of a proper list; -1 where the chain ends in anything but the
 /// empty list, so an improper list or a non-list is told apart from `[]`.
 #[unsafe(no_mangle)]

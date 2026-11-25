@@ -1165,6 +1165,28 @@ fn a_tuple_copy_counts_at_a_tuple_site_and_in_the_struct_figure() {
 }
 
 #[test]
+fn list_to_tuple_builds_a_tuple_of_the_given_arity_in_list_order() {
+    let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
+    let mut process = Box::new(Process::new(schemas));
+    let process_ptr: *mut Process = &mut *process;
+    let mut list = AnyValueRef::empty_list();
+    for value in (1..=3).rev() {
+        list = process.heap.alloc_list_cons_int(value, list).expect("list");
+    }
+
+    let tuple = fz_list_to_tuple(process_ptr, list.raw_word(), 3);
+
+    assert_eq!(fz_tuple_size(process_ptr, tuple), 3);
+    for index in 0..3 {
+        let element = AnyValueRef::from_raw_word(fz_tuple_elem(process_ptr, tuple, index)).expect("element ref");
+        assert_eq!(element.load_int(), Ok(index + 1));
+    }
+
+    let empty = fz_list_to_tuple(process_ptr, AnyValueRef::empty_list().raw_word(), 0);
+    assert_eq!(fz_tuple_size(process_ptr, empty), 0);
+}
+
+#[test]
 fn tuple_put_copies_the_tuple_and_leaves_the_original_alone() {
     let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
     let pair = schemas.borrow_mut().register(Schema::tuple_of_arity(2));
