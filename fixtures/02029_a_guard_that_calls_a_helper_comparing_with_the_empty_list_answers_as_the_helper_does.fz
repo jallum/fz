@@ -1,0 +1,26 @@
+#---
+# purpose: A guard that calls a helper whose body compares its argument with `[]`, with the argument a variable or the literal `[]`, answers as Elixir's guard macro does on all three paths
+# kind: run
+# root: main/0
+# assert.metric.semantic.activations: 6
+# assert.metric.semantic.executables: 6
+# assert.metric.semantic.callsites: 6
+# assert.metric.call_edges.count: 6
+# oracle: 02029_a_guard_that_calls_a_helper_comparing_with_the_empty_list_answers_as_the_helper_does.oracle.exs
+# oracle.stamp: 0ee5055944a19c82
+#---
+#
+# The helper is read as the facts its clause states, and `[]` is one of them
+# whether it is written in the helper or passed to it.
+defmodule Main do
+  def empty?(c), do: c === []
+
+  def f(c) when empty?(c), do: :empty
+  def f(c), do: {:set, c}
+
+  def g(c) when empty?([]), do: {:always, c}
+
+  def main(), do: IO.inspect({f([]), f(1), f([2]), g(3)})
+end
+
+Main.main()

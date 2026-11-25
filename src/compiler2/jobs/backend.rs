@@ -1464,6 +1464,7 @@ fn collect_region_atoms(world: &mut World, region: &Region<Ty>, names: &mut Exec
 fn collect_guard_atoms(world: &mut World, expr: &PatternGuardExpr<Ty>, names: &mut ExecutableNames) {
     match expr {
         PatternGuardExpr::Const(value) => collect_dispatch_const_atoms(value, names),
+        PatternGuardExpr::EmptyList => {}
         PatternGuardExpr::Unary { expr, .. } => collect_guard_atoms(world, expr, names),
         PatternGuardExpr::Binary { lhs, rhs, .. } => {
             collect_guard_atoms(world, lhs, names);

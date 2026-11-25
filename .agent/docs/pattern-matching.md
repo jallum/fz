@@ -707,8 +707,18 @@ the guard's failure for a non-number. `hd/1` and `tl/1` test the cell with
 `fz_list_is_cons` in a clause guard and read it with `fz_list_head_ref` and
 `fz_list_tail_ref`; a cons pattern in a helper head is not used there because
 native entry-guard lowering does not carry one.
-Unsupported guard expressions (a list or tuple literal, say) are still refused as
-not dispatch-pure.
+A guard's literal operands are an integer, a float, a binary, an atom, a boolean,
+`nil`, a module alias and the empty list. The first seven are
+`PatternGuardExpr::Const(GroundValue)`. `[]` is `PatternGuardExpr::EmptyList`,
+because a `GroundValue` is a scalar or a binary and the empty list is a list; each
+evaluator builds it as a body's `[]` is built (the interpreter's
+`AnyValue::EmptyList`, a `MakeList` with no elements in native lowering, the
+empty-list word in the receive matcher) and compares it with the ordinary `==` and
+`===`, so `c === []`, `[] == c`, `c !== []` and `not (c === [])` answer as in
+Elixir for a value of any type. `collect_guard_calls_in_expr` and
+`guard_expr_from_ast` each name the operand forms, so a new one is added to both.
+Any other list literal, and a tuple or map literal, is refused as not
+dispatch-pure.
 
 The receive matcher's `<`, `<=`, `>` and `>=` (`emit_ordering_cmp_value`) compare
 two integers as machine words and ask `fz_value_cmp_ref`, the one dynamic

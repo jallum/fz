@@ -1,0 +1,48 @@
+#---
+# purpose: A receive guard that compares the message to `[]`, alone or after a type test through `or`, takes the message Elixir takes and leaves the others in the mailbox on all three paths
+# root: main/0
+# assert.metric.semantic.activations: 5
+# assert.metric.semantic.executables: 5
+# assert.metric.semantic.callsites: 20
+# assert.metric.call_edges.count: 20
+# oracle: self
+# oracle.stamp: 1c3030b3756f9cce
+#---
+#
+# The receive's dispatch evaluates the guard against each message in turn, so
+# `[]` is built by the receive's own matcher as well as by an entry guard's.
+defmodule Main do
+  def take_empty() do
+    receive do
+      m when m === [] -> {:empty, m}
+    end
+  end
+
+  def take_atom_or_empty() do
+    receive do
+      m when is_atom(m) or m === [] -> {:got, m}
+    end
+  end
+
+  def drain() do
+    receive do
+      m -> [m | drain()]
+    after
+      0 -> []
+    end
+  end
+
+  def main() do
+    send(self(), [1])
+    send(self(), 5)
+    send(self(), [])
+    IO.inspect(take_empty())
+    send(self(), :ok)
+    IO.inspect(take_atom_or_empty())
+    send(self(), [])
+    IO.inspect(take_atom_or_empty())
+    IO.inspect(drain())
+  end
+end
+
+Main.main()

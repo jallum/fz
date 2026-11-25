@@ -1,0 +1,27 @@
+#---
+# purpose: Macro.quoted_literal?/1 answers for a bitstring whose modifier has a variable, an empty or an argument context as Elixir does, so the library's own guard `is_atom(ctx) or ctx == []` plans on all three paths
+# root: main/0
+# assert.metric.semantic.activations: 4
+# assert.metric.semantic.executables: 4
+# assert.metric.semantic.callsites: 10
+# assert.metric.call_edges.count: 10
+# oracle: self
+# oracle.stamp: 19919928b780907d
+#---
+#
+# A modifier is quoted as `{name, meta, context}`. The context is an atom for a
+# variable and `[]` for a bare call, and either makes the modifier a literal
+# one; a call with arguments is not.
+defmodule Main do
+  def main() do
+    for context <- [nil, [], [1]], name <- [:big, :nope] do
+      segment = {:"::", [], [1, {name, [], context}]}
+      IO.inspect({name, context, Macro.quoted_literal?({:<<>>, [], [segment]})})
+    end
+
+    IO.inspect(Macro.quoted_literal?(quote(do: "foo")))
+    IO.inspect(Macro.quoted_literal?(quote(do: {foo, var})))
+  end
+end
+
+Main.main()

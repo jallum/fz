@@ -1466,6 +1466,10 @@ fn emit_dispatch_guard_expr<M: cranelift_module::Module>(
             };
             dispatch_const_receive_value(body.b, value)
         }
+        PatternGuardExpr::EmptyList => {
+            let word = AnyValueRef::empty_list().raw_word() as i64;
+            ReceiveValue::AnyRef(body.b.ins().iconst(types::I64, word))
+        }
         PatternGuardExpr::Subject(subject) => resolve_dispatch_subject(body, ctx, *subject, state)?,
         PatternGuardExpr::Pinned(pinned) => load_pinned_dispatch_value(ctx, *pinned)?,
         PatternGuardExpr::Unary {

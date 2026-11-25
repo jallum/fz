@@ -1,0 +1,32 @@
+#---
+# purpose: A guard that negates a comparison with `[]`, through `!==`, `!=` or `not`, selects the clause Elixir selects, and a value that is not a list passes it on all three paths
+# root: main/0
+# assert.metric.semantic.activations: 5
+# assert.metric.semantic.executables: 5
+# assert.metric.semantic.callsites: 7
+# assert.metric.call_edges.count: 7
+# oracle: self
+# oracle.stamp: 8c8198f2b557ece9
+#---
+#
+# Everything but `[]` differs from it, so an atom, a number and a non-empty
+# list answer true to `!== []`.
+defmodule Main do
+  def strict(c) when c !== [], do: :set
+  def strict(_), do: :empty
+
+  def loose(c) when c != [], do: :set
+  def loose(_), do: :empty
+
+  def negated(c) when not (c === []), do: :set
+  def negated(_), do: :empty
+
+  def main() do
+    values = [[], [1], :a, 3, {}, "s"]
+    IO.inspect(Enum.map(values, &strict/1))
+    IO.inspect(Enum.map(values, &loose/1))
+    IO.inspect(Enum.map(values, &negated/1))
+  end
+end
+
+Main.main()

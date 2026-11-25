@@ -452,6 +452,10 @@ where
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PatternGuardExpr<TypeHandle> {
     Const(GroundValue),
+    /// The empty list, `[]`: a value no `GroundValue` names, because a ground
+    /// value is a scalar or a binary and the empty list is a list. Every
+    /// evaluator builds it the way a body's `[]` is built.
+    EmptyList,
     Subject(SubjectId),
     Pinned(PinnedValueId),
     Unary {
@@ -500,7 +504,7 @@ impl<TypeHandle> PatternGuardExpr<TypeHandle> {
 
     fn collect_leaves(&self, leaves: &mut Vec<GuardLeaf>) {
         match self {
-            PatternGuardExpr::Const(_) | PatternGuardExpr::Fails => {}
+            PatternGuardExpr::Const(_) | PatternGuardExpr::EmptyList | PatternGuardExpr::Fails => {}
             PatternGuardExpr::Subject(subject) => leaves.push(GuardLeaf::Subject(*subject)),
             PatternGuardExpr::Pinned(pinned) => leaves.push(GuardLeaf::Pinned(*pinned)),
             PatternGuardExpr::Unary { expr, .. } => expr.collect_leaves(leaves),
@@ -527,6 +531,7 @@ impl<TypeHandle> PatternGuardExpr<TypeHandle> {
     ) -> PatternGuardExpr<MappedHandle> {
         match self {
             PatternGuardExpr::Const(value) => PatternGuardExpr::Const(value.clone()),
+            PatternGuardExpr::EmptyList => PatternGuardExpr::EmptyList,
             PatternGuardExpr::Fails => PatternGuardExpr::Fails,
             PatternGuardExpr::Subject(subject) => PatternGuardExpr::Subject(*subject),
             PatternGuardExpr::Pinned(pinned) => PatternGuardExpr::Pinned(*pinned),
@@ -695,6 +700,7 @@ where
         Expr::Atom(name) => PatternGuardExpr::Const(GroundValue::Atom(name.clone())),
         Expr::Bool(value) => PatternGuardExpr::Const(GroundValue::Bool(*value)),
         Expr::Nil => PatternGuardExpr::Const(GroundValue::Nil),
+        Expr::List(items, None) if items.is_empty() => PatternGuardExpr::EmptyList,
         Expr::Alias(alias) => PatternGuardExpr::Const(GroundValue::Atom(resolver.module_alias_atom(alias)?)),
         Expr::Var(name) => {
             if let Some(subject) = bindings.get(name) {

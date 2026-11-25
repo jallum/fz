@@ -764,6 +764,84 @@ fn a_call_to_a_helper_whose_callee_always_fails_is_a_failing_node_whose_argument
     assert!(matches!(built, Ok(PatternGuardExpr::Fails)), "{built:?}");
 }
 
+fn list_literal(items: Vec<Expr>) -> Expr {
+    Expr::List(items.into_iter().map(sp).collect(), None)
+}
+
+/// Intent: `[]` is an operand like an integer is, so a guard may compare a
+/// value with it, whichever side it is written on.
+#[test]
+fn the_empty_list_is_a_guard_operand_on_either_side_of_a_comparison() {
+    let helpers = Helpers::new();
+    for (lhs, rhs) in [
+        (var("x"), list_literal(Vec::new())),
+        (list_literal(Vec::new()), var("x")),
+    ] {
+        let plan = guard_over_x(&helpers, compare(BinOp::Eq, lhs, rhs));
+        assert_eq!(guard_questions(&plan), 1, "the comparison is one guard");
+        let [PatternGuardExpr::Binary { op, lhs, rhs }] = plan.guards.as_slice() else {
+            panic!("the comparison is the whole guard: {:?}", plan.guards);
+        };
+        assert_eq!(*op, PatternGuardBinOp::Eq);
+        let empty = [lhs, rhs]
+            .into_iter()
+            .filter(|operand| matches!(***operand, PatternGuardExpr::EmptyList))
+            .count();
+        assert_eq!(empty, 1, "exactly one operand is `[]`: {:?}", plan.guards);
+    }
+}
+
+/// Intent: a comparison with `[]` is a leaf of an `or`, as a comparison with an
+/// integer is, so `is_atom(c) or c === []` plans as the one guard it is.
+#[test]
+fn a_comparison_with_the_empty_list_may_be_one_alternative_of_an_or() {
+    let helpers = Helpers::new();
+    let plan = guard_over_x(
+        &helpers,
+        or(
+            call("is_int", vec![var("x")]),
+            compare(BinOp::Eq, var("x"), list_literal(Vec::new())),
+        ),
+    );
+    let [
+        PatternGuardExpr::Binary {
+            op: PatternGuardBinOp::Or,
+            rhs,
+            ..
+        },
+    ] = plan.guards.as_slice()
+    else {
+        panic!("the `or` stays the guard: {:?}", plan.guards);
+    };
+    assert!(
+        matches!(
+            &**rhs,
+            PatternGuardExpr::Binary {
+                op: PatternGuardBinOp::Eq,
+                ..
+            }
+        ),
+        "the comparison is the second alternative: {rhs:?}"
+    );
+}
+
+/// Intent: only `[]` is an operand. A list with elements would have to be
+/// built by each evaluator, which a guard does not do, so it stays refused.
+#[test]
+fn a_list_with_elements_is_not_a_guard_operand() {
+    for literal in [
+        list_literal(vec![Expr::Int(1)]),
+        Expr::List(vec![sp(Expr::Int(1))], Some(Box::new(sp(var("x"))))),
+        Expr::List(Vec::new(), Some(Box::new(sp(var("x"))))),
+    ] {
+        let built = guard_of(&literal, failing_helper());
+        assert!(
+            matches!(built, Err(SourcePatternError::UnsupportedGuardExpr)),
+            "{built:?}"
+        );
+    }
+}
+
 /// The subject that projects `kind` from `source`.
 fn projected(plan: &Plan, source: SubjectId, kind: ProjectionKind) -> SubjectId {
     plan.graph
