@@ -1,0 +1,21 @@
+#---
+# purpose: "\xH and \x{H*} are read as in Elixir and warn that they are deprecated, in strings, heredocs, charlists, sigils and interpolations; \xHH, \uHHHH and ~S do not warn"
+# oracle: self
+# oracle.stamp: f631d941db545a73
+#---
+defmodule Main do
+  def main() do
+    IO.inspect("a\x4-b")
+    IO.inspect("a\x{41}b")
+    IO.inspect("""
+    heredoc \x7 \x{42}
+    """)
+    IO.inspect(~c"c\x4")
+    IO.inspect(~s(s\x4 \x{43}))
+    IO.inspect("outer #{"inner \x4"}")
+    IO.inspect("\x41 B \u{43}")
+    IO.inspect(~S(raw \x4))
+  end
+end
+
+Main.main()

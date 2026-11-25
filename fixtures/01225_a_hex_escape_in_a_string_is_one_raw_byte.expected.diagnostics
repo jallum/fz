@@ -1,0 +1,35 @@
+warning[parse/deprecated-hex-escape]: \xH inside strings/sigils/chars is deprecated, please use \xHH (byte) or \uHHHH (code point) instead
+  --> fixtures/01225_a_hex_escape_in_a_string_is_one_raw_byte.fz:6:41
+   |
+6 |     IO.inspect({"\x414" == <<65, 52>>, "\x4" == <<4>>, "\x4g" == <<4, 103>>})
+   |                                         ^^^
+   |
+
+warning[parse/deprecated-hex-escape]: \xH inside strings/sigils/chars is deprecated, please use \xHH (byte) or \uHHHH (code point) instead
+  --> fixtures/01225_a_hex_escape_in_a_string_is_one_raw_byte.fz:6:57
+   |
+6 |     IO.inspect({"\x414" == <<65, 52>>, "\x4" == <<4>>, "\x4g" == <<4, 103>>})
+   |                                                         ^^^
+   |
+
+warning[parse/deprecated-hex-escape]: \x{H*} inside strings/sigils/chars is deprecated, please use \xHH (byte) or \uHHHH (code point) instead
+  --> fixtures/01225_a_hex_escape_in_a_string_is_one_raw_byte.fz:7:18
+   |
+7 |     IO.inspect({"\x{e9}" == <<195, 169>>, "\x{FF}" == <<195, 191>>, "\x{1F600}" == "\u{1F600}"})
+   |                  ^^^^^^
+   |
+
+warning[parse/deprecated-hex-escape]: \x{H*} inside strings/sigils/chars is deprecated, please use \xHH (byte) or \uHHHH (code point) instead
+  --> fixtures/01225_a_hex_escape_in_a_string_is_one_raw_byte.fz:7:44
+   |
+7 |     IO.inspect({"\x{e9}" == <<195, 169>>, "\x{FF}" == <<195, 191>>, "\x{1F600}" == "\u{1F600}"})
+   |                                            ^^^^^^
+   |
+
+warning[parse/deprecated-hex-escape]: \x{H*} inside strings/sigils/chars is deprecated, please use \xHH (byte) or \uHHHH (code point) instead
+  --> fixtures/01225_a_hex_escape_in_a_string_is_one_raw_byte.fz:7:70
+   |
+7 |     IO.inspect({"\x{e9}" == <<195, 169>>, "\x{FF}" == <<195, 191>>, "\x{1F600}" == "\u{1F600}"})
+   |                                                                      ^^^^^^^^^
+   |
+

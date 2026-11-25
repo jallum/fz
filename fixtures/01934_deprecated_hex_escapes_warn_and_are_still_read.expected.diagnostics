@@ -1,0 +1,56 @@
+warning[parse/deprecated-hex-escape]: \xH inside strings/sigils/chars is deprecated, please use \xHH (byte) or \uHHHH (code point) instead
+  --> fixtures/01934_deprecated_hex_escapes_warn_and_are_still_read.fz:3:18
+   |
+3 |     IO.inspect("a\x4-b")
+   |                  ^^^
+   |
+
+warning[parse/deprecated-hex-escape]: \x{H*} inside strings/sigils/chars is deprecated, please use \xHH (byte) or \uHHHH (code point) instead
+  --> fixtures/01934_deprecated_hex_escapes_warn_and_are_still_read.fz:4:18
+   |
+4 |     IO.inspect("a\x{41}b")
+   |                  ^^^^^^
+   |
+
+warning[parse/deprecated-hex-escape]: \xH inside strings/sigils/chars is deprecated, please use \xHH (byte) or \uHHHH (code point) instead
+  --> fixtures/01934_deprecated_hex_escapes_warn_and_are_still_read.fz:6:13
+   |
+6 |     heredoc \x7 \x{42}
+   |             ^^^
+   |
+
+warning[parse/deprecated-hex-escape]: \x{H*} inside strings/sigils/chars is deprecated, please use \xHH (byte) or \uHHHH (code point) instead
+  --> fixtures/01934_deprecated_hex_escapes_warn_and_are_still_read.fz:6:17
+   |
+6 |     heredoc \x7 \x{42}
+   |                 ^^^^^^
+   |
+
+warning[parse/deprecated-hex-escape]: \xH inside strings/sigils/chars is deprecated, please use \xHH (byte) or \uHHHH (code point) instead
+  --> fixtures/01934_deprecated_hex_escapes_warn_and_are_still_read.fz:10:32
+   |
+10 |     IO.inspect("outer #{"inner \x4"}")
+   |                                ^^^
+   |
+
+warning[macro/warning]: \xH inside strings/sigils/chars is deprecated, please use \xHH (byte) or \uHHHH (code point) instead
+  --> fixtures/01934_deprecated_hex_escapes_warn_and_are_still_read.fz:8:16
+   |
+8 |     IO.inspect(~c"c\x4")
+   |                ^^^^^^^^
+   |
+
+warning[macro/warning]: \xH inside strings/sigils/chars is deprecated, please use \xHH (byte) or \uHHHH (code point) instead
+  --> fixtures/01934_deprecated_hex_escapes_warn_and_are_still_read.fz:9:16
+   |
+9 |     IO.inspect(~s(s\x4 \x{43}))
+   |                ^^^^^^^^^^^^^^^
+   |
+
+warning[macro/warning]: \x{H*} inside strings/sigils/chars is deprecated, please use \xHH (byte) or \uHHHH (code point) instead
+  --> fixtures/01934_deprecated_hex_escapes_warn_and_are_still_read.fz:9:16
+   |
+9 |     IO.inspect(~s(s\x4 \x{43}))
+   |                ^^^^^^^^^^^^^^^
+   |
+
