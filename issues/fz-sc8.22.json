@@ -25,11 +25,15 @@
     {
       "text": "Fourth reproducer (Elixir Parity, 2026-11-24, develop with mue.19 applied): /Users/j5n/Workspace/fz-otp-json/punch/50_enc_terms_list_literal.fz, json.erl's @enc_terms ([?a | ?b], [1 | 2], [{:a, 1} | :x]). @t [1 | 2]; IO.inspect(@t) fails on all three paths with 'backend list: cannot allocate list cons: ExpectedTag { expected: ValueKind(1), found: ValueKind(13) }'; bare IO.inspect([1 | 2]) panics on run/build with misaligned pointer dereference at runtime/src/any_value.rs:1184. This is the fz-mue integration PR's next stop at 01860 line 1913.",
       "timestamp": "2026-11-25T02:31:42Z"
+    },
+    {
+      "text": "Elixir Parity, 2026-11-24: in a function body, IO.inspect([1 | 2]) under run/build crashes with 'misaligned pointer dereference 0xa5a5a5a5a5a5a5' (runtime/src/any_value.rs:1184), a memory-safety read, not a refusal. The oracle fixture should cover a body-built scalar tail on run and build.",
+      "timestamp": "2026-11-25T02:32:47Z"
     }
   ],
   "priority": 2,
   "status": "in_progress",
   "title": "An improper list is built, matched and inspected as in Elixir",
   "type": "bug",
-  "updated_at": "2026-11-25T02:31:42Z"
+  "updated_at": "2026-11-25T02:32:47Z"
 }
