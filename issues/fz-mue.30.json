@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Elixir Parity",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-19T03:09:43Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-mue",
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "Deprecated \\xH and \\x{H} escapes warn, as in Elixir",
   "type": "bug",
-  "updated_at": "2026-11-24T21:36:31Z"
+  "updated_at": "2026-11-25T00:44:39Z"
 }
