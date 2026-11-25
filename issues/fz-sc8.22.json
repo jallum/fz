@@ -21,11 +21,15 @@
     {
       "text": "Second reproducer (JSON, 2026-11-20): /Users/j5n/Workspace/fz-otp-json/punch/mue25/u4.fz. Enum.reduce([1, 2], :start, fn x, acc -\u003e [x | acc] end) builds the improper list [2, 1 | :start] and fails on interp with the same 'cannot allocate list cons: ExpectedTag { expected: ValueKind(1), found: ValueKind(15) }'. Owner: Bugs and Cleanup (assigned by Coordinator).",
       "timestamp": "2026-11-20T19:28:15Z"
+    },
+    {
+      "text": "Fourth reproducer (Elixir Parity, 2026-11-24, develop with mue.19 applied): /Users/j5n/Workspace/fz-otp-json/punch/50_enc_terms_list_literal.fz, json.erl's @enc_terms ([?a | ?b], [1 | 2], [{:a, 1} | :x]). @t [1 | 2]; IO.inspect(@t) fails on all three paths with 'backend list: cannot allocate list cons: ExpectedTag { expected: ValueKind(1), found: ValueKind(13) }'; bare IO.inspect([1 | 2]) panics on run/build with misaligned pointer dereference at runtime/src/any_value.rs:1184. This is the fz-mue integration PR's next stop at 01860 line 1913.",
+      "timestamp": "2026-11-25T02:31:42Z"
     }
   ],
   "priority": 2,
   "status": "in_progress",
   "title": "An improper list is built, matched and inspected as in Elixir",
   "type": "bug",
-  "updated_at": "2026-11-24T21:36:49Z"
+  "updated_at": "2026-11-25T02:31:42Z"
 }
