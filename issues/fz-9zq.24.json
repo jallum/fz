@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "fz-engine",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-25T02:45:08Z",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "A closure that feeds a grown accumulator back to its function compiles",
   "type": "bug",
-  "updated_at": "2026-11-25T02:45:59Z"
+  "updated_at": "2026-11-25T02:46:02Z"
 }
