@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-mue.51"
+  ],
   "created": "2026-11-25T00:39:38Z",
   "description": "From: Elixir Parity. Approved by the user 2026-11-24 as part of the fz-mue.51 commit-1 decisions (relayed by Elixir Parity). Blocks fz-mue.51.\n\nToday: Kernel defines unary +/1 but no -/1, so env.functions cannot list it as Elixir's does.\n\nDone when: Kernel.-/1 exists and is listed in env.functions as in Elixir; -x on interp, run and build matches Elixir (oracle fixture).",
   "id": "fz-mue.62",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Kernel defines unary -/1, as in Elixir",
   "type": "bug",
-  "updated_at": "2026-11-25T00:39:38Z"
+  "updated_at": "2026-11-25T00:39:41Z"
 }
