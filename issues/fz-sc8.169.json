@@ -9,9 +9,15 @@
   "id": "fz-sc8.169",
   "labels": [],
   "parent": "fz-sc8",
+  "comments": [
+    {
+      "text": "Its BadArityError clause depends on fz-mue.64, which adds BadArityError, BadFunctionError and SystemLimitError.",
+      "timestamp": "2026-11-25T04:14:54Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "apply/2 calls a function value with a list of arguments",
   "type": "feature",
-  "updated_at": "2026-11-25T04:14:53Z"
+  "updated_at": "2026-11-25T04:14:54Z"
 }
