@@ -220,6 +220,13 @@ guard `is_function(f, 1)` and `is_function(f, 2)`; `duplicate/2` guards
 `is_integer(n) and n >= 0`. The specs are OTP's, so a call whose arguments are
 proven outside them is refused at compile time.
 
+`lib/unicode_util.fz` defines `:unicode_util` with `cp/1` and `gc/1`, the next
+codepoint and the next extended grapheme cluster of chardata (a binary, or a list
+of codepoints, binaries and chardata, improper tails included). Both answer `[]`
+for empty chardata and `{:error, rest}` when `rest` begins with a binary that is
+not UTF-8; `gc/1` decides cluster ends by the same rules as
+`String.next_grapheme/1`. Fixture 01944 compares every case against Elixir.
+
 `lib/maps.fz` defines `:maps` with `to_list/1`, `keys/1`, `values/1`, `put/3`,
 `merge/2` and `from_list/1`. `to_list/1`, `keys/1` and `values/1` are each a
 single runtime walk of the map's entries; `put/3` is the extern `fz_map_put`,
