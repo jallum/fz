@@ -31,11 +31,15 @@
     {
       "text": "Waits on GitHub issue #874 (https://github.com/jallum/fz/issues/874), filed by Callables at the user's request: 'Consider carrying Cranelift rules so signed overflow checks branch on flags (subs; b.vs)'. It holds the 57-line patch, measurements, options A/B/C and open questions (fork/upstream ownership, immediate form, x86-64).",
       "timestamp": "2026-11-25T01:20:08Z"
+    },
+    {
+      "text": "Supersedes the two comments above (user, 2026-11-24, relayed by Callables: 'with that recorded, we can skip the cranelift changes for now'). Cranelift part (b.vs rules, immediate form) deferred to GitHub #874 with the user's authorization; no fork, no upstream PR. fz-side forwarder remains: the p01b resume goes through an empty forwarder and fz_op_add_ii instead of an inline operator. Callables re-measures on develop after fz-yh5.2, then brings a page if the cost remains.",
+      "timestamp": "2026-11-25T01:22:04Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "Integer arithmetic on known integers is an instruction, not a flag dance or a call",
   "type": "task",
-  "updated_at": "2026-11-25T01:20:08Z"
+  "updated_at": "2026-11-25T01:22:04Z"
 }
