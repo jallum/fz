@@ -266,7 +266,7 @@ fn enum_take_derives_input_demand_proportionally() {
     let work = input_demand_work("def main(), do: Enum.take([1, 2, 3], 2)\n");
     assert_eq!(
         (work.runs.len(), total_reads(&work), most_reads_in_one_run(&work)),
-        (77, 249, 9)
+        (78, 251, 9)
     );
 }
 

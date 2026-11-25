@@ -614,14 +614,17 @@ not dispatch-pure.
 The receive matcher's `<`, `<=`, `>` and `>=` (`emit_ordering_cmp_value`) compare
 two integers as machine words and ask `fz_value_cmp_ref`, the one dynamic
 ordering a body and the interpreter use, for every other pair: a float, a mixed
-integer and float, an atom against a number, or a value of unknown type.
+integer and float, an atom against a number, or a value of unknown type. Two
+values of unknown type first test both kinds and take the `fz_op_lt_bb`,
+`fz_op_lte_bb`, `fz_op_gt_bb` or `fz_op_gte_bb` row for two binaries.
 
 Its `==` and `!=` are the loose comparison (`emit_typed_eq_cmp` with
 `Equality::Loose`): two integers or two atoms compare as words, two floats by
-value, and every other pair asks `fz_value_eq_widening_ref`, the comparator the
+value, two binaries by the `fz_op_eq_bb` row (behind a test of both kinds), and every
+other pair asks `fz_value_eq_widening_ref`, the comparator the
 interpreter and body lowering use for the `==` operator, so `1 == 1.0` and
 `0.0 == -0.0` hold. A pinned match and a literal pattern use `Equality::Strict`
-(`fz_value_eq_ref`), which tells `1` from `1.0`.
+(`fz_value_eq_ref`, with the same binary test), which tells `1` from `1.0`.
 
 ### Receive Guards Run On The Sender
 

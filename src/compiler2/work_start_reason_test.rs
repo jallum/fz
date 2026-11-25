@@ -253,7 +253,7 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // A job gated on a fact its subject already carries never starts to
         // discover that fact missing, then wake once the fact lands
         // (`Job::missing_gates`).
-        (2490, 15, 31, 195),
+        (2491, 15, 31, 195),
         "ordinary generic helper work has the exact source/module/executable-fact census"
     );
     // Every applied work step is a run, and every run is charged to exactly
@@ -274,7 +274,7 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
     );
     assert_eq!(
         starts[WorkStartReason::BlockedWaiterExpansion.into()],
-        525,
+        526,
         "the blocked-waiter census includes only the prerequisites each completion's own waits expand",
     );
     assert_eq!(

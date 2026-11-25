@@ -2628,3 +2628,60 @@ fn byte_size_and_bit_size_of_a_proven_binary_import_no_runtime_function() {
         assert!(!clif.contains(&import), "compiled code imports `{symbol}`");
     }
 }
+
+/// The eight comparisons of two proven binaries decide in place unless the
+/// bytes must be read: the compiled code imports each row's own `fz_op_*_bb`
+/// function for that one cold call, and neither the generic comparator nor a
+/// boolean-atom round trip. `===` and `!==` import the `==` and `!=` functions.
+/// Each import prints once, as `fn0 = <symbol>`, however many comparisons the
+/// body holds.
+#[test]
+fn comparison_of_two_proven_binaries_calls_only_to_read_bytes() {
+    let source_path = unique_temp_path("fz2_binary_eq_rows", ".fz");
+    let clif_path = unique_temp_path("fz2_binary_eq_rows", ".clif");
+    write(
+        &source_path,
+        "def same(a, b) when is_binary(a) and is_binary(b),\n\
+         \x20 do: {a == b, a != b, a === b, a !== b, a < b, a <= b, a > b, a >= b}\n\
+         def main() do\n  dbg(same(\"hello\", \"hellp\"))\n  dbg(same(<<1, 2>>, <<1, 2>>))\n  nil\nend\n",
+    )
+    .expect("write comparison fixture");
+    let spec = format!("clif={}", clif_path.display());
+    let out = run_fz2(&[
+        OsStr::new("run"),
+        OsStr::new("--dump"),
+        OsStr::new(&spec),
+        source_path.as_os_str(),
+    ]);
+    assert!(
+        out.status.success(),
+        "the program must run; stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let clif = std::fs::read_to_string(&clif_path).expect("read the clif dump");
+    let _ = remove_file(&source_path);
+    let _ = remove_file(&clif_path);
+    let rows = ["eq", "neq", "lt", "lte", "gt", "gte"].map(|op| format!("fz_op_{op}_bb"));
+    for symbol in &rows {
+        assert!(
+            clif.contains(&format!("{symbol}__e")),
+            "the dump must contain the function that wraps `{symbol}`, or this test observes nothing"
+        );
+        assert!(
+            clif.contains(&format!("= {symbol}\n")),
+            "the bytes comparison `{symbol}` is a call in the dump"
+        );
+    }
+    for symbol in [
+        "fz_op_eq",
+        "fz_op_neq",
+        "fz_op_identical",
+        "fz_op_not_identical",
+        "fz_value_cmp_ref",
+        "fz_value_eq_widening_ref",
+        "fz_value_eq_ref",
+    ] {
+        let import = format!("= {symbol}\n");
+        assert!(!clif.contains(&import), "compiled code imports `{symbol}`");
+    }
+}

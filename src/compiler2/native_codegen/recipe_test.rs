@@ -10,6 +10,7 @@ use fz_runtime::any_value::{
     AnyValue, AnyValueRef, ClosureDenotationId, FALSE_ATOM_ID, NIL_ATOM_ID, SlotLayout, TRUE_ATOM_ID, ValueKind,
     closure_addr_from_tagged, struct_size_for_payload,
 };
+use fz_runtime::bits::Bin;
 use fz_runtime::heap::{Heap, HeapAllocKind, INLINE_ALLOC_LAYOUT, Schema, SchemaRegistry};
 use fz_runtime::ir_runtime::*;
 use fz_runtime::pinned_abi;
@@ -522,6 +523,7 @@ fn every_row_is_proved_against_its_runtime_function() {
         .map(|proof| proof.symbol)
         .chain(cell_proofs().iter().map(|proof| proof.symbol))
         .chain(box_proofs().iter().map(|proof| proof.symbol))
+        .chain(BINARY_COMPARISONS.iter().map(|(symbol, ..)| *symbol))
         .chain(REUSE_SYMBOLS)
         .collect();
     let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
@@ -1911,4 +1913,208 @@ fn a_source_that_is_its_own_new_head_is_replaced_not_rewritten() {
     );
     assert!(left.fresh, "the source became shared, so a new cell holds it");
     assert_eq!(left.retention, (1, 0));
+}
+
+// Binary comparison rows answer a condition, and call the runtime function only
+// to read the bytes of two different objects. They are proved on binaries of
+// every form and relation the rows distinguish.
+
+type BinaryFunction = extern "C" fn(*mut Process, u64, u64) -> u64;
+
+/// Each row's symbol, its runtime function, and whether a binary compared
+/// with itself answers true.
+const BINARY_COMPARISONS: [(&str, BinaryFunction, bool); 6] = [
+    ("fz_op_eq_bb", fz_op_eq_bb, true),
+    ("fz_op_neq_bb", fz_op_neq_bb, false),
+    ("fz_op_lt_bb", fz_op_lt_bb, false),
+    ("fz_op_lte_bb", fz_op_lte_bb, true),
+    ("fz_op_gt_bb", fz_op_gt_bb, false),
+    ("fz_op_gte_bb", fz_op_gte_bb, true),
+];
+
+/// A binary comparison row compiled to a function of the process and the two
+/// tagged words, and the runtime functions its code imports.
+struct CompiledComparison {
+    code: BinaryFunction,
+    imports: Vec<String>,
+    _backend: JitBackend,
+}
+
+fn compile_comparison(symbol: &str) -> CompiledComparison {
+    let mut backend = JitBackend::new();
+    let module = backend.module_mut();
+    let mut ctx = module.make_context();
+    let mut fbctx = FunctionBuilderContext::new();
+    let mut sig = module.make_signature();
+    sig.params = vec![ir::AbiParam::new(types::I64); 3];
+    sig.returns = vec![ir::AbiParam::new(types::I64)];
+    ctx.func.signature = sig.clone();
+    let sites = RefCell::new(AllocSites::declare(module).expect("declare the site counters"));
+    {
+        let mut b = FunctionBuilder::new(&mut ctx.func, &mut fbctx);
+        let entry = b.create_block();
+        b.append_block_params_for_function_params(entry);
+        b.switch_to_block(entry);
+        b.seal_block(entry);
+        let args = b.block_params(entry).to_vec();
+        let mut cache = CodegenCache::default();
+        let scope = SiteScope {
+            sites: &sites,
+            function: "recipe_parity",
+        };
+        let mut body = CodegenFn::new(&mut b, module, &mut cache, scope);
+        let Some(Emitted::Condition(condition)) = emit_in_body(&mut body, symbol, &args) else {
+            panic!("`{symbol}` answers a condition");
+        };
+        let word = body.b.ins().uextend(types::I64, condition);
+        body.b.ins().return_(&[word]);
+        b.finalize(module.target_config());
+    }
+    let id = module
+        .declare_function("recipe_parity_comparison", Linkage::Export, &sig)
+        .expect("declare the comparison function");
+    module
+        .define_function(id, &mut ctx)
+        .expect("define the comparison function");
+    let imports = module
+        .declarations()
+        .get_functions()
+        .filter(|(_, declaration)| declaration.linkage == Linkage::Import)
+        .filter_map(|(_, declaration)| declaration.name.clone())
+        .collect();
+    module.finalize_definitions().expect("finalize the comparison function");
+    let code = unsafe { std::mem::transmute::<*const u8, BinaryFunction>(module.get_finalized_function(id)) };
+    CompiledComparison {
+        code,
+        imports,
+        _backend: backend,
+    }
+}
+
+/// Named binaries in every form the row meets: inline of each length class,
+/// views over the sharing threshold (two windows of one buffer that hold the
+/// same bytes, and one that differs), the literal bit, and bitstrings whose
+/// last byte is partial, where one pair differs only in the padding bits.
+/// The process that holds them is leaked: the words are addresses into its
+/// heap, and the rows and functions take it as their first argument.
+fn binary_inputs() -> (*mut Process, Vec<(&'static str, u64)>) {
+    let process = Box::leak(Box::new(Process::new(Rc::new(RefCell::new(SchemaRegistry::new())))));
+    let heap = &mut process.heap;
+    let mut words = Vec::new();
+    let mut push = |name: &'static str, word: AnyValueRef| {
+        words.push((name, word.raw_word()));
+        words.push((name, word.literal().raw_word()));
+    };
+    for (name, bytes) in [
+        ("empty", &b""[..]),
+        ("one byte", b"a"),
+        ("same one byte", b"a"),
+        ("another byte", b"b"),
+        ("hello", b"hello"),
+        ("hello again", b"hello"),
+        ("hellp", b"hellp"),
+        ("hell", b"hell"),
+        ("eight bytes", b"abcdefgh"),
+        ("eight bytes, last differs", b"abcdefgi"),
+        ("sixty-four bytes", &[7u8; 64][..]),
+        ("sixty-four bytes again", &[7u8; 64][..]),
+    ] {
+        push(name, heap.alloc_bitstring(bytes, bytes.len() as u64 * 8).ref_word());
+    }
+    let pattern: Vec<u8> = (0..400u32).map(|i| (i % 10) as u8).collect();
+    let source = heap.alloc_bitstring(&pattern, pattern.len() as u64 * 8).ref_word();
+    push("a 400-byte view", source);
+    for (name, start, len) in [
+        ("view at 10", 10u64, 100u64),
+        ("view at 30, the same bytes", 30, 100),
+        ("view at 31, other bytes", 31, 100),
+        ("view at 30, shorter", 30, 99),
+    ] {
+        let window = unsafe { heap.slice(source.raw_word(), start * 8, len * 8) };
+        push(name, window.ref_word());
+    }
+    let copy = heap.alloc_bitstring(&pattern[10..110], 800).ref_word();
+    push("an inline-built copy of 100 bytes", copy);
+    for (name, bytes, bit_len) in [
+        ("3 bits", &[0b1010_0000u8][..], 3u64),
+        ("3 bits, other padding", &[0b1011_1111], 3),
+        ("3 bits, other bit", &[0b1100_0000], 3),
+        ("4 bits", &[0b1010_0000], 4),
+        ("11 bits", &[0xff, 0b1010_0000], 11),
+        ("11 bits, other padding", &[0xff, 0b1010_1111], 11),
+    ] {
+        push(name, heap.alloc_bitstring(bytes, bit_len).ref_word());
+    }
+    (process, words)
+}
+
+/// Each comparison row answers, for every pair of binaries (a word against
+/// itself included), what its runtime function answers, and that is what the
+/// relation of the two binaries says: equal bytes, whatever their form, literal
+/// bit or padding, are equal; the order is `Bin`'s term order, in which a
+/// prefix comes before what it begins; and a binary compares with itself as
+/// equal.
+#[test]
+fn every_binary_comparison_row_answers_what_its_runtime_function_answers() {
+    let (process, words) = binary_inputs();
+    for (symbol, reference, answer_when_equal) in BINARY_COMPARISONS {
+        let compiled = compile_comparison(symbol);
+        for (left_name, left) in &words {
+            for (right_name, right) in &words {
+                let inline = (compiled.code)(process, *left, *right);
+                assert_eq!(
+                    inline,
+                    reference(process, *left, *right),
+                    "`{symbol}` on {left_name} and {right_name}: inline against the runtime function"
+                );
+                let order = unsafe { Bin::of_binary(*left).cmp(&Bin::of_binary(*right)) };
+                let expected = match symbol {
+                    "fz_op_eq_bb" => order.is_eq(),
+                    "fz_op_neq_bb" => order.is_ne(),
+                    "fz_op_lt_bb" => order.is_lt(),
+                    "fz_op_lte_bb" => order.is_le(),
+                    "fz_op_gt_bb" => order.is_gt(),
+                    _ => order.is_ge(),
+                };
+                assert_eq!(
+                    inline == 1,
+                    expected,
+                    "`{symbol}` on {left_name} and {right_name}: the relation of the two binaries"
+                );
+                if left == right {
+                    assert_eq!(inline == 1, answer_when_equal, "`{symbol}` of {left_name} with itself");
+                }
+            }
+        }
+    }
+}
+
+/// The relations the rows exist for are present in the inputs: the same word,
+/// different lengths, equal bytes in different objects, same-length different
+/// bytes, a prefix and what it begins, and bitstrings equal but for their
+/// padding.
+#[test]
+fn the_binary_inputs_hold_every_relation_the_rows_distinguish() {
+    let (_, words) = binary_inputs();
+    let named = |name: &str| words.iter().find(|(n, _)| *n == name).expect("a named input").1;
+    let order = |a: &str, b: &str| unsafe { Bin::of_binary(named(a)).cmp(&Bin::of_binary(named(b))) };
+    assert!(order("hello", "hello again").is_eq() && named("hello") != named("hello again"));
+    assert!(order("hello", "hellp").is_lt() && order("hellp", "hello").is_gt());
+    assert!(order("hell", "hello").is_lt() && order("empty", "one byte").is_lt());
+    assert!(order("view at 10", "view at 30, the same bytes").is_eq());
+    assert!(order("view at 10", "view at 31, other bytes").is_ne());
+    assert!(order("3 bits", "3 bits, other padding").is_eq() && order("3 bits", "3 bits, other bit").is_ne());
+    assert!(order("11 bits", "11 bits, other padding").is_eq() && order("3 bits", "4 bits").is_lt());
+    assert!(order("an inline-built copy of 100 bytes", "view at 10").is_eq());
+}
+
+/// A binary comparison row calls its own runtime function once, in a cold
+/// block, and no other: only two different objects that bit lengths do not
+/// settle reach it.
+#[test]
+fn a_binary_comparison_row_imports_only_its_bytes_comparison() {
+    for (symbol, ..) in BINARY_COMPARISONS {
+        let compiled = compile_comparison(symbol);
+        assert_eq!(compiled.imports, [symbol], "`{symbol}` imports");
+    }
 }

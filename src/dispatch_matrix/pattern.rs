@@ -310,8 +310,9 @@ impl<TypeHandle> GuardCallee<TypeHandle> {
 }
 
 /// An extern a guard calls. Every parameter is one of the classes all three
-/// guard evaluators can carry: an integer, a float, a reference word, or a
-/// binary whose byte count is what the extern receives. The
+/// guard evaluators can carry: an integer, a float, a reference word, or, for
+/// an `fz` extern, a `binary`, which crosses as its tagged word. A `C` extern's
+/// `binary` is a byte pointer with no length, which no evaluator carries. The
 /// return is one of those or a boolean, which the guard reads as `true` or
 /// `false`. A return of `none` is the call that fails the guard, and
 /// so is the failure a checked return declares: either way the clause does not
@@ -351,7 +352,7 @@ impl GuardExtern {
                     | ExternTy::Any
                     | ExternTy::StoredValue
                     | ExternTy::BinaryCursor
-            )
+            ) && !(**ty == ExternTy::Binary && abi == ExternAbi::Fz)
         }) {
             return Err(refuse(format!(
                 "parameter class {param:?} is neither a number nor a reference word"

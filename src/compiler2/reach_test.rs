@@ -228,7 +228,7 @@ fn static_reach_on_enum_take_drop_split_covers_the_call_graph() {
         .iter()
         .map(|(function, _)| settled.world().static_callees(*function).len())
         .sum();
-    assert_eq!((functions, edges), (57, 100));
+    assert_eq!((functions, edges), (57, 101));
 }
 
 /// A reach job runs once to meet its cone and once more per callee whose

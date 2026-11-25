@@ -3,7 +3,10 @@ use crate::fz_ir::{BinOp, FnId, UnOp};
 use fz_runtime::any_value::{
     AnyValue as RuntimeAnyValue, Stored, TRUE_ATOM_ID, ValueKind, closure_captured_count, closure_fn_ptr,
 };
-use fz_runtime::ir_runtime::{fz_closure_get_capture_ref, fz_value_cmp_ref, fz_value_eq_ref, fz_value_eq_widening_ref};
+use fz_runtime::bits::Bin;
+use fz_runtime::ir_runtime::{
+    fz_closure_get_capture_ref, fz_op_eq_bb, fz_value_cmp_ref, fz_value_eq_ref, fz_value_eq_widening_ref,
+};
 use fz_runtime::process::Process;
 use std::ptr::null_mut;
 
@@ -76,11 +79,26 @@ pub(super) fn interp_operator_eq(proc: *mut Process, a: AnyValue, b: AnyValue) -
             fz_runtime::term::compare_int_float(integer, float).is_eq()
         }
         _ => {
+            if let Some((left, right)) = binary_pair(proc, a, b)? {
+                return Ok(fz_op_eq_bb(proc, left, right) != 0);
+            }
             let [a_word, a_kind] = stored_words(proc, a)?;
             let [b_word, b_kind] = stored_words(proc, b)?;
             fz_value_eq_widening_ref(proc, a_word, a_kind, b_word, b_kind) != 0
         }
     })
+}
+
+/// The tagged words of `a` and `b` when both are binaries or bitstrings, which
+/// the `fz_op_*_bb` functions compare.
+fn binary_pair(proc: *mut Process, a: AnyValue, b: AnyValue) -> Result<Option<(u64, u64)>, String> {
+    let binary_word = |value: AnyValue| -> Result<Option<u64>, String> {
+        Ok(match value.value(proc)? {
+            RuntimeAnyValue::HeapRef(word) if word.tag().is_binary_repr() => Some(word.raw_word()),
+            _ => None,
+        })
+    };
+    Ok(binary_word(a)?.zip(binary_word(b)?))
 }
 
 /// Compare unboxed numeric lanes without allocating scalar adapters.
@@ -96,6 +114,9 @@ pub(super) fn interp_cmp(proc: *mut Process, a: AnyValue, b: AnyValue) -> Result
             fz_runtime::term::compare_int_float(right, left).reverse() as i64
         }
         _ => {
+            if let Some((left, right)) = binary_pair(proc, a, b)? {
+                return Ok(unsafe { Bin::of_binary(left).cmp(&Bin::of_binary(right)) } as i64);
+            }
             let [a_word, a_kind] = stored_words(proc, a)?;
             let [b_word, b_kind] = stored_words(proc, b)?;
             fz_value_cmp_ref(proc, a_word, a_kind, b_word, b_kind)
@@ -117,6 +138,9 @@ pub(super) fn interp_value_eq(proc: *mut Process, a: AnyValue, b: AnyValue) -> R
         (AnyValue::Atom(a), AnyValue::Atom(b)) => Ok(a == b),
         (AnyValue::EmptyList, AnyValue::EmptyList) => Ok(true),
         (a, b) => {
+            if let Some((left, right)) = binary_pair(proc, a, b)? {
+                return Ok(fz_op_eq_bb(proc, left, right) != 0);
+            }
             let [a_word, a_kind] = stored_words(proc, a)?;
             let [b_word, b_kind] = stored_words(proc, b)?;
             Ok(fz_value_eq_ref(proc, a_word, a_kind, b_word, b_kind) != 0)
