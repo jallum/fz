@@ -144,10 +144,9 @@ mod value_membership_tests {
     impl FakeHeap {
         fn new(atoms: &[&str]) -> Self {
             let module = Module {
-                atom_names: atoms
-                    .iter()
-                    .map(|name| fz_runtime::process::AtomName::from(*name))
-                    .collect(),
+                atoms: crate::fz_ir::ModuleAtoms::from_names(
+                    atoms.iter().map(|name| fz_runtime::process::AtomName::from(*name)),
+                ),
                 ..Module::default()
             };
             Self {
@@ -160,11 +159,10 @@ mod value_membership_tests {
         fn atom(&self, name: &str) -> RuntimeAnyValue {
             let id = self
                 .module
-                .atom_names
-                .iter()
-                .position(|candidate| candidate == name)
+                .atoms
+                .id_of(name)
                 .expect("the fake heap must intern every atom a test names");
-            RuntimeAnyValue::Atom(id as u32)
+            RuntimeAnyValue::Atom(id)
         }
 
         /// Cell `index` lives at the synthetic word `(index + 1) * 8`, which is

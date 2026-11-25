@@ -380,9 +380,8 @@ pub(super) fn interp_named_field(
         return Err("StructField: subject is not a map or Struct".to_string());
     }
     let atom_id = module
-        .atom_names
-        .iter()
-        .position(|name| name == field)
+        .atoms
+        .id_of(field)
         .ok_or_else(|| format!("field atom `{field}` not interned"))?;
     with_value_ref(proc, value, "named field", |subject| {
         fz_struct_get_named_field_ref(proc, subject, atom_id as u64)

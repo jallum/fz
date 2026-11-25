@@ -22,7 +22,7 @@ use crate::compiler2::{
 use crate::compiler2::{ExecutableKey, FunctionId, RunFailure};
 use crate::dispatch_matrix::pattern::{LastResort, RaisedField};
 use crate::exec::runtime::emit_runtime_event;
-use crate::fz_ir::{BinOp as IrBinOp, FnId, Module, UnOp as IrUnOp};
+use crate::fz_ir::{BinOp as IrBinOp, FnId, Module, ModuleAtoms, UnOp as IrUnOp};
 use crate::runtime_type_predicate::CallableShape;
 use crate::telemetry::{Telemetry, TelemetryExt};
 use crate::types::ClosureTarget;
@@ -101,8 +101,8 @@ pub(crate) fn run_backend_main<T: Telemetry + ?Sized>(
     program: &BackendProgram,
 ) -> Result<i64, RunFailure> {
     let pool_outstanding_before_run = fz_runtime::heap::pool_outstanding_blocks();
-    let atom_names = program.atom_names.iter().cloned().collect::<Vec<_>>();
-    let mut runtime = IrInterpRuntime::fresh_with_atoms(atom_names.clone());
+    let atoms = ModuleAtoms::from_names(program.atom_names.iter().cloned());
+    let mut runtime = IrInterpRuntime::fresh_with_atoms(atoms.names().to_vec());
     runtime.register_struct_schemas(
         program
             .struct_schemas
@@ -110,7 +110,7 @@ pub(crate) fn run_backend_main<T: Telemetry + ?Sized>(
             .map(|(name, fields)| (name.as_ref(), fields.as_ref())),
     );
     let module = Module {
-        atom_names,
+        atoms,
         ..Module::default()
     };
     let outcome = (|| -> Result<i64, RunFailure> {
@@ -156,11 +156,13 @@ pub(crate) fn run_backend_entry_on_process<T: Telemetry + ?Sized>(
     args: Vec<AnyValue>,
 ) -> (Process, Result<AnyValue, String>) {
     let mut runtime = IrInterpRuntime::with_process(process, program.atom_names.iter());
-    let atom_names = runtime
-        .process_ref(MAIN_PID)
-        .expect("macro runtime should own pid 1")
-        .node
-        .atom_names();
+    let atoms = ModuleAtoms::from_names(
+        runtime
+            .process_ref(MAIN_PID)
+            .expect("macro runtime should own pid 1")
+            .node
+            .atom_names(),
+    );
     runtime.register_struct_schemas(
         program
             .struct_schemas
@@ -168,7 +170,7 @@ pub(crate) fn run_backend_entry_on_process<T: Telemetry + ?Sized>(
             .map(|(name, fields)| (name.as_ref(), fields.as_ref())),
     );
     let module = Module {
-        atom_names,
+        atoms,
         ..Module::default()
     };
     let result = (|| {

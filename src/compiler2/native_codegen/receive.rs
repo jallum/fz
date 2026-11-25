@@ -43,7 +43,7 @@ use crate::dispatch_matrix::{
     BitstringFieldSize, BitstringShape, ComparisonValue, DispatchNode, EdgeEvidence, GraphNodeId, GroundValue,
     ListRegion, PinnedValueId, ProjectionKind, Region, SubjectId, SubjectSource,
 };
-use crate::fz_ir::{ExternReturn, ExternTy, Module, ReceiveClause, Var};
+use crate::fz_ir::{ExternReturn, ExternTy, Module, ModuleAtoms, ReceiveClause, Var};
 
 use super::clif::{kind_field, kind_is_one_of};
 use super::runtime_test::{
@@ -68,7 +68,6 @@ use fz_runtime::ir_runtime::{
     fz_truthy_ref, fz_type_of, fz_unbox_atom, fz_unbox_float, fz_unbox_int, fz_unbox_opaque, fz_value_cmp_ref,
     fz_value_eq_ref, fz_value_eq_widening_ref,
 };
-use fz_runtime::process::AtomName;
 use std::cell::RefCell;
 
 use super::BitstringLiterals;
@@ -607,9 +606,8 @@ fn resolve_dispatch_subject<M: cranelift_module::Module>(
                 let parent = resolve_dispatch_subject(body, ctx, projection.source, state)?;
                 let atom_id = ctx
                     .fz_module
-                    .atom_names
-                    .iter()
-                    .position(|name| name == field.as_str())
+                    .atoms
+                    .id_of(field.as_str())
                     .ok_or_else(|| CodegenError::new(format!("field atom `{field}` not interned")))?;
                 let parent = emit_receive_value_ref(body, ctx, parent)?;
                 let atom = body.b.ins().iconst(types::I64, atom_id as i64);
@@ -846,8 +844,8 @@ impl<'f, M: cranelift_module::Module> RuntimeTestEmitter<'f> for ReceiveTestEmit
         self.body.b
     }
 
-    fn atom_names(&self) -> &[AtomName] {
-        &self.ctx.fz_module.atom_names
+    fn atoms(&self) -> &ModuleAtoms {
+        &self.ctx.fz_module.atoms
     }
 
     fn tuple_schema_ids(&self) -> &HashMap<usize, u32> {
@@ -1143,10 +1141,9 @@ fn dispatch_const_value(module: &Module, value: &GroundValue) -> Result<Option<D
             DispatchShape::Int(n) => Some(DispatchConstValue::Int(n)),
             DispatchShape::Float(bits) => Some(DispatchConstValue::Float(bits)),
             DispatchShape::Atom(name) => module
-                .atom_names
-                .iter()
-                .position(|n| n == name)
-                .map(|id| DispatchConstValue::Atom(id as u64)),
+                .atoms
+                .id_of(name)
+                .map(|id| DispatchConstValue::Atom(u64::from(id))),
             DispatchShape::Bool(v) => Some(DispatchConstValue::Atom(if v {
                 TRUE_ATOM_ID as u64
             } else {

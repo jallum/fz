@@ -29,7 +29,8 @@ use crate::dispatch_matrix::{ComparisonValue, DispatchNode, GraphNodeId, ListReg
 use crate::fz_ir::{
     BinOp as IrBinOp, BitMatchField, BitSizeIr, BlockId, BranchOrigin, CallsiteIdent, Const, Cont, DestMapSeed,
     DirectCallTarget, ExternAbi, ExternArg, ExternDecl, ExternId, ExternMarshalSite, ExternReturn, ExternTy, FnBuilder,
-    FnCategory, FnId, ModuleBuilder, Prim, ReceiveAfter, ReceiveClause, SlotStore, Term, UnOp as IrUnOp, Var,
+    FnCategory, FnId, ModuleAtoms, ModuleBuilder, Prim, ReceiveAfter, ReceiveClause, SlotStore, Term, UnOp as IrUnOp,
+    Var,
 };
 use crate::ground_value::GroundValue;
 use crate::runtime_type_predicate::{CallableShape, RuntimeTypePredicate, TuplePositions};
@@ -37,7 +38,6 @@ use crate::source::Span;
 use crate::telemetry::TelemetryExt as _;
 use fz_runtime::any_value::ValueKind;
 use fz_runtime::module_name::STRUCT_MODULE_FIELD;
-use fz_runtime::process::AtomName;
 
 use super::super::artifact::{
     AbiValueRepr, BackendBody, BackendClause, BackendEntry, BackendEntryCapture, BackendEntryOrigin, BackendExecutable,
@@ -91,7 +91,7 @@ struct NativeLowerer<'a, 'tel, T: crate::telemetry::Telemetry> {
     root_id: RootId,
     program: &'a BackendProgram,
     module: ModuleBuilder,
-    atom_ids: HashMap<AtomName, u32>,
+    atoms: ModuleAtoms,
     executable_fns: Vec<FnId>,
     /// Which executables a call lowers in its caller instead of calling.
     frame_free: FrameFree,
@@ -114,10 +114,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         root_id: RootId,
         program: &'a BackendProgram,
     ) -> Result<Self, FatalError> {
-        let mut atom_ids = HashMap::default();
-        for (index, atom) in program.atom_names.iter().enumerate() {
-            atom_ids.insert(atom.clone(), index as u32);
-        }
+        let atoms = ModuleAtoms::from_names(program.atom_names.iter().cloned());
         let mut module = ModuleBuilder::new();
         let executable_fns = program
             .executables()
@@ -243,7 +240,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             root_id,
             program,
             module,
-            atom_ids,
+            atoms,
             executable_fns,
             frame_free,
             construction_identity_fns,
@@ -317,7 +314,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             .collect();
         let mut module = self.module.build();
         annotate_back_edges(&mut module);
-        module.atom_names = atom_names(&self.atom_ids);
+        module.atoms = self.atoms;
         module.externs = self.extern_decls;
         module.extern_idx = module
             .externs
@@ -3759,7 +3756,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             }
             Region::Equal(ComparisonValue::Const(value)) => {
                 let subject = self.dispatch_subject_var(ctx, plan, state, subject)?;
-                let expected = lower_dispatch_const(ctx, &self.atom_ids, self.world.types_mut(), value)?;
+                let expected = lower_dispatch_const(ctx, &self.atoms, self.world.types_mut(), value)?;
                 let (var, _) = ctx.emit_let(Prim::BinOp(IrBinOp::Identical, subject, expected));
                 var
             }
@@ -3858,7 +3855,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         fail: &mut Option<BlockId>,
     ) -> Result<Var, FatalError> {
         Ok(match expr {
-            PatternGuardExpr::Const(value) => lower_dispatch_const(ctx, &self.atom_ids, self.world.types_mut(), value)?,
+            PatternGuardExpr::Const(value) => lower_dispatch_const(ctx, &self.atoms, self.world.types_mut(), value)?,
             PatternGuardExpr::EmptyList => {
                 let empty = ctx.emit_let(Prim::MakeList(Vec::new(), None, None)).0;
                 let ty = self.world.types_mut().empty_list();
@@ -4718,7 +4715,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         let prepared = plan
             .prepared_keys
             .iter()
-            .map(|key| lower_dispatch_const(ctx, &self.atom_ids, self.world.types_mut(), key))
+            .map(|key| lower_dispatch_const(ctx, &self.atoms, self.world.types_mut(), key))
             .collect::<Result<Vec<_>, _>>()?;
         Ok(DispatchBindings {
             pinned: plan
@@ -4768,11 +4765,11 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 )
             });
         }
-        lower_dispatch_const(ctx, &self.atom_ids, self.world.types_mut(), key)
+        lower_dispatch_const(ctx, &self.atoms, self.world.types_mut(), key)
     }
 
     fn atom_id(&self, name: &str) -> u32 {
-        *self.atom_ids.get(name).expect("required atom should be interned")
+        self.atoms.id_of(name).expect("required atom should be interned")
     }
 
     fn native_callable_boundary_for_construction(
@@ -6344,7 +6341,7 @@ fn collect_extern_marshals_for_call_target(
 /// `{:halt, acc}` tag on every `Enum.reduce` step.
 fn lower_dispatch_const(
     ctx: &mut NativeFnCtx,
-    atom_ids: &HashMap<AtomName, u32>,
+    atoms: &ModuleAtoms,
     types: &mut Types,
     value: &GroundValue,
 ) -> Result<Var, FatalError> {
@@ -6359,7 +6356,7 @@ fn lower_dispatch_const(
             types.float(),
         ),
         DispatchShape::Atom(name) => {
-            let atom = *atom_ids.get(name).ok_or(FatalError)?;
+            let atom = atoms.id_of(name).ok_or(FatalError)?;
             (ctx.emit_let(Prim::Const(Const::Atom(atom))).0, types.atom())
         }
         DispatchShape::Bool(value) => (
@@ -6408,14 +6405,6 @@ fn lower_unop(op: crate::ast::UnOp) -> IrUnOp {
         crate::ast::UnOp::Neg => IrUnOp::Neg,
         crate::ast::UnOp::Not => panic!("lowering should route `not` through a case"),
     }
-}
-
-fn atom_names(atom_ids: &HashMap<AtomName, u32>) -> Vec<AtomName> {
-    let mut out = vec![AtomName::from(""); atom_ids.len()];
-    for (name, id) in atom_ids {
-        out[*id as usize] = name.clone();
-    }
-    out
 }
 
 fn lower_bit_size_ir(

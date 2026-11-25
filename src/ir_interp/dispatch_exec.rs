@@ -1358,11 +1358,7 @@ pub(super) fn dispatch_const_to_value(proc: *mut Process, module: &Module, c: &G
     {
         DispatchShape::Int(n) => Some(AnyValue::Int(n)),
         DispatchShape::Float(bits) => Some(AnyValue::Float(f64::from_bits(bits))),
-        DispatchShape::Atom(name) => module
-            .atom_names
-            .iter()
-            .position(|n| n == name)
-            .map(|id| AnyValue::Atom(id as u32)),
+        DispatchShape::Atom(name) => module.atoms.id_of(name).map(AnyValue::Atom),
         DispatchShape::Bool(value) => Some(interp_bool_value(value)),
         DispatchShape::Nil => Some(interp_nil_value()),
         DispatchShape::Utf8Binary(bytes) => binary_literal_value(proc, bytes).ok(),
@@ -1379,11 +1375,7 @@ fn dispatch_const_eq(proc: *mut Process, module: &Module, val: AnyValue, value: 
         DispatchShape::Float(bits) => {
             matches!(val, AnyValue::Float(f) if f.to_bits() == bits)
         }
-        DispatchShape::Atom(name) => module
-            .atom_names
-            .iter()
-            .position(|n| n == name)
-            .is_some_and(|id| val.is_atom_id(id as u32)),
+        DispatchShape::Atom(name) => module.atoms.id_of(name).is_some_and(|id| val.is_atom_id(id)),
         DispatchShape::Bool(true) => val.is_atom_id(TRUE_ATOM_ID),
         DispatchShape::Bool(false) => val.is_false(),
         DispatchShape::Nil => val.is_nil(),
