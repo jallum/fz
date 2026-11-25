@@ -69,10 +69,6 @@ pub(crate) fn ty_is_non_empty_list<T: Types<Ty = Ty>>(t: &mut T, value_types: &H
     var_ty_satisfies(t, value_types, v, want)
 }
 
-pub(crate) fn list_projection_is_safe<T: Types<Ty = Ty>>(t: &mut T, value_types: &HashMap<Var, Ty>, v: Var) -> bool {
-    ty_is_non_empty_list(t, value_types, v)
-}
-
 /// Where the list `v` names ends, as its type proves it: a list type with no
 /// improper member ends in `[]`.
 pub(crate) fn list_shape<T: Types<Ty = Ty>>(t: &mut T, value_types: &HashMap<Var, Ty>, v: Var) -> ListShape {

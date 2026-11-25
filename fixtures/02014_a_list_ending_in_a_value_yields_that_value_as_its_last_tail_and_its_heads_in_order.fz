@@ -1,0 +1,24 @@
+#---
+# purpose: "Walking a list that ends in a value that is not a list yields every head in order and then that value, as in Elixir"
+# kind: run
+# root: main/0
+# oracle: self
+# oracle.stamp: ed8cf5edf07c7c81
+#---
+defmodule Main do
+  def heads([h | t], acc), do: heads(t, [h | acc])
+  def heads(ending, acc), do: {Enum.reverse(acc), ending}
+
+  def count_below([], _p, n), do: n
+  def count_below([h | t], p, n) when h < p, do: count_below(t, p, n + 1)
+  def count_below([_ | t], p, n), do: count_below(t, p, n)
+
+  def main() do
+    IO.inspect(heads([1, 2, 3 | :end], []))
+    IO.inspect(heads([:a, 2.5, {1, 2} | "tail"], []))
+    IO.inspect(count_below([1, 2, 3, 4, 5], 3, 0))
+    IO.inspect(count_below([1, :a, 3, 2.5, :b, 0], 3, 0))
+  end
+end
+
+Main.main()

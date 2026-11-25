@@ -1,0 +1,41 @@
+#---
+# purpose: "Comparing a list head with an integer orders it as Elixir does when the head is an integer, a float or an atom, and partitioning a list of integers sorts it"
+# kind: run
+# root: main/0
+# oracle: self
+# oracle.stamp: bb31ef8508f91602
+#---
+defmodule Main do
+  def append([], ys), do: ys
+  def append([x | xs], ys), do: [x | append(xs, ys)]
+
+  def partition(_p, [], lo, hi), do: {lo, hi}
+  def partition(p, [h | t], lo, hi) when h < p, do: partition(p, t, [h | lo], hi)
+  def partition(p, [h | t], lo, hi), do: partition(p, t, lo, [h | hi])
+
+  def qsort([]), do: []
+
+  def qsort([p | rest]) do
+    {lo, hi} = partition(p, rest, [], [])
+    append(qsort(lo), [p | qsort(hi)])
+  end
+
+  def gen(0, _x, acc), do: acc
+
+  def gen(n, x, acc) do
+    y = rem(x * 1103515245 + 12345, 2147483648)
+    gen(n - 1, y, [rem(y, 1000) - 500 | acc])
+  end
+
+  def main() do
+    sorted = qsort(gen(40, 42, []))
+    IO.inspect(sorted == Enum.sort(gen(40, 42, [])))
+    IO.inspect(Enum.take(sorted, 6))
+    IO.inspect(partition(5, [3, 8, 1, 9, 4, 5], [], []))
+    IO.inspect(partition(2, [1, :a, 3, 2.5, :b, 0, 2.0, -1], [], []))
+    IO.inspect(partition(3, [:z, 4, :a, 2, {1}, 3], [], []))
+    IO.inspect(partition(1, [0.5, 1.0, 1.5, :x], [], []))
+  end
+end
+
+Main.main()

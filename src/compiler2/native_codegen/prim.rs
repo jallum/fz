@@ -1397,11 +1397,11 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
             let atom = runtime_call1!(body, fz_ref_load_atom, [value_ref]);
             Ok(LowerOut::Strict(CodegenValue::RawAtom(atom)))
         }
-        Prim::ListHead(c) if list_projection_is_safe(t, value_types, *c) && ty_is_int(t, value_types, dest_var) => {
+        Prim::ListHead(c) if ty_is_int(t, value_types, dest_var) => {
             let list_ref = known_list_ref_for_var(var_env, body.b, body.cache, block_id, c.0);
             Ok(LowerOut::RawI64(body.list_head_int(list_ref)))
         }
-        Prim::ListHead(c) if list_projection_is_safe(t, value_types, *c) && ty_is_float(t, value_types, dest_var) => {
+        Prim::ListHead(c) if ty_is_float(t, value_types, dest_var) => {
             let list_ref = known_list_ref_for_var(var_env, body.b, body.cache, block_id, c.0);
             Ok(LowerOut::RawF64(body.list_head_float(list_ref)))
         }
@@ -2156,10 +2156,11 @@ where
     ) {
         return Ok(out);
     }
-    // One side unboxed and the other dynamic: hand the runtime the unboxed
-    // side's kind and payload directly. Boxing it into a heap scalar just to
-    // form an `AnyValueRef` is the allocation this avoids, exactly as
-    // `fz_value_eq_raw_const` avoids it for `==`.
+    // One side unboxed and the other dynamic. An integer against a dynamic
+    // value asks the dynamic side's kind inline and compares the two integers
+    // with one `icmp`; any other kind, or an atom on the raw side, goes to the
+    // runtime with the unboxed side's kind and payload, so no heap scalar is
+    // boxed just to form an `AnyValueRef`.
     // `raw_scalar_vs_dynamic(x, y)` succeeds when `x` is the unboxed side, so
     // the first arm has the unboxed operand on the LEFT (swap = 1) and the
     // second has it on the right (swap = 0).
@@ -2167,27 +2168,57 @@ where
         .map(|(k, r, d)| (k, r, d, 1u32))
         .or_else(|| raw_scalar_vs_dynamic(var_env, bv, a).map(|(k, r, d)| (k, r, d, 0u32)))
     {
-        let dyn_ref = body.tagged_var(var_env, dyn_var.0);
-        let kind_tag = body.b.ins().iconst(types::I32, i64::from(kind.tag()));
-        let swap_flag = body.b.ins().iconst(types::I32, i64::from(swap));
-        let process = body.process_arg();
-        let ordering = runtime_call1!(
-            body,
-            fz_value_cmp_raw_const,
-            [process, dyn_ref, kind_tag, raw, swap_flag]
-        );
-        let zero = body.b.ins().iconst(types::I64, 0);
-        let cmp = body.b.ins().icmp(icc, ordering, zero);
+        let dyn_value = *var_env.get(&dyn_var.0).expect("cmp dynamic operand");
+        let ordered_slow = |body: &mut CodegenFn<'_, '_, M>| {
+            let dyn_ref = body.tagged_var(var_env, dyn_var.0);
+            let kind_tag = body.b.ins().iconst(types::I32, i64::from(kind.tag()));
+            let swap_flag = body.b.ins().iconst(types::I32, i64::from(swap));
+            let process = body.process_arg();
+            let ordering = runtime_call1!(
+                body,
+                fz_value_cmp_raw_const,
+                [process, dyn_ref, kind_tag, raw, swap_flag]
+            );
+            let zero = body.b.ins().iconst(types::I64, 0);
+            body.b.ins().icmp(icc, ordering, zero)
+        };
+        let cmp = if kind == ValueKind::INT {
+            let is_int = body.value_is_tag(dyn_value, ValueKind::INT);
+            let fast_blk = body.b.create_block();
+            let slow_blk = body.b.create_block();
+            let join_blk = body.b.create_block();
+            body.b.append_block_param(join_blk, types::I8);
+            let no_args: Vec<BlockArg> = Vec::new();
+            body.b.ins().brif(is_int, fast_blk, &no_args, slow_blk, &no_args);
+
+            body.b.switch_to_block(fast_blk);
+            body.b.seal_block(fast_blk);
+            let dyn_int = body.value_raw_int_for_checked_branch(dyn_value);
+            let (left, right) = if swap == 1 { (raw, dyn_int) } else { (dyn_int, raw) };
+            let fast = body.b.ins().icmp(icc, left, right);
+            body.b.ins().jump(join_blk, &[BlockArg::Value(fast)]);
+
+            body.b.switch_to_block(slow_blk);
+            body.b.seal_block(slow_blk);
+            let slow = ordered_slow(body);
+            body.b.ins().jump(join_blk, &[BlockArg::Value(slow)]);
+
+            body.b.switch_to_block(join_blk);
+            body.b.seal_block(join_blk);
+            body.b.block_params(join_blk)[0]
+        } else {
+            ordered_slow(body)
+        };
         if body.cache.if_only_conds.contains(&dest_var.0) {
             return Ok(LowerOut::Condition(cmp));
         }
         return Ok(LowerOut::Strict(strict_bool(body.b, cmp)));
     }
 
-    // Two unboxed integers are the overwhelmingly common dynamic case — a
-    // guard like quicksort's `when h < p` — and comparing them must not box
-    // either operand, which is what keeps that fixture at zero scalar boxes.
-    // So the runtime tag test and its inline `icmp` stay.
+    // Neither side is unboxed, so each carries its own kind. Two integers are
+    // the common case, and comparing them must not box either operand, which
+    // keeps a guard like `h < p` at zero scalar boxes: both kinds are tested
+    // inline and the integers compared with one `icmp`.
     let av = *var_env.get(&a.0).expect("cmp lhs");
     let bv_value = *var_env.get(&bv.0).expect("cmp rhs");
     let a_is_int = body.value_is_tag(av, ValueKind::INT);

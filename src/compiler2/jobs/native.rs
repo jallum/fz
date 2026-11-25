@@ -48,6 +48,7 @@ use super::super::artifact::{
     NativeProgram,
 };
 use super::super::body::{ControlDestination, ControlEntryId, DispatchBindings, LoweredExtern, ValueId};
+use super::super::dispatch_reachability::project_subject;
 use super::super::identity::RootId;
 use super::super::pull::{ProductKey, ProductReadContext, ProductValue, PullOutcome};
 use super::super::semantic::{RuntimeDemand, ShapeDemand, UndefinedFunction};
@@ -922,7 +923,10 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             )
             .collect::<Result<Vec<_>, _>>()?;
         let bindings = self.lower_argument_bindings(ctx, dispatch.plan(), &inputs)?;
-        let mut state = DispatchState::new(inputs, entry_vars.to_vec(), bindings).reading(handed);
+        let roots = executable.key.activation.inputs(self.world.types()).to_vec();
+        let mut state = DispatchState::new(inputs, entry_vars.to_vec(), bindings)
+            .proven(roots)
+            .reading(handed);
         self.lower_dispatch_graph(
             ctx,
             dispatch.plan(),
@@ -1888,6 +1892,15 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                         pinned: pinned_vars,
                         prepared,
                     },
+                )
+                .proven(
+                    inputs
+                        .iter()
+                        .map(|input| {
+                            let proven = executable.abi.materialized.value_types.get(input).copied();
+                            proven.unwrap_or_else(|| self.world.types_mut().any())
+                        })
+                        .collect(),
                 )
                 .reading(dispatch.argument_subjects());
                 self.lower_dispatch_graph(
@@ -4700,8 +4713,40 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 }
             },
         };
+        self.record_projected_type(ctx, plan, state, subject, &value);
         state.values.insert(subject, value);
         Ok(())
+    }
+
+    /// A list head a dispatch reads carries the type its plan's inputs prove
+    /// for it, so the compare or arithmetic that consumes it sees what the
+    /// dispatch already knows. A cell is projected only on a cons edge, so the
+    /// head exists. The types come from the plan's inputs and not from the
+    /// edges' refinements, so only a projection whose source is a list is
+    /// typed: a struct field read through the same types asks a tag the inputs
+    /// do not prove, and a head of `none` proves nothing for the value that is
+    /// there.
+    fn record_projected_type(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        plan: &PatternDispatchPlan<Ty>,
+        state: &DispatchState,
+        subject: SubjectId,
+        value: &NativeBoundValue,
+    ) {
+        let (NativeBoundValue::Runtime(var), crate::dispatch_matrix::SubjectSource::Projection(projection)) =
+            (value, &plan.subject(subject))
+        else {
+            return;
+        };
+        if !matches!(projection.kind, crate::dispatch_matrix::ProjectionKind::ListHead) {
+            return;
+        }
+        let ty = project_subject(self.world.types_mut(), plan, &state.roots, &[], subject);
+        if ty == self.world.types_mut().none() {
+            return;
+        }
+        ctx.value_types.entry(*var).or_insert(ty);
     }
 
     fn dispatch_pinned_var(
@@ -5894,6 +5939,8 @@ struct DispatchState {
     dispatch_inputs: Vec<NativeBoundValue>,
     forwarded_args: Vec<Var>,
     bindings: DispatchBindings<Var>,
+    /// What the plan's inputs are proven to be; an input without one is `any`.
+    roots: Vec<Ty>,
     values: HashMap<SubjectId, NativeBoundValue>,
     /// The subjects the winning outcome reads, beyond what the decision asks.
     /// A bitstring field outside both is checked for fit and never built.
@@ -5942,10 +5989,16 @@ impl DispatchState {
             dispatch_inputs,
             forwarded_args,
             bindings,
+            roots: Vec::new(),
             values: HashMap::default(),
             outcome_reads: Vec::new(),
             binary_facts: HashMap::default(),
         }
+    }
+
+    fn proven(mut self, roots: Vec<Ty>) -> Self {
+        self.roots = roots;
+        self
     }
 
     fn reading(mut self, subjects: impl IntoIterator<Item = SubjectId>) -> Self {
