@@ -4,14 +4,15 @@
   "blocks": [
     "fz-mue.51"
   ],
+  "closed_at": "2026-11-25T02:25:40Z",
   "created": "2026-11-25T00:39:37Z",
   "description": "From: Elixir Parity. Approved by the user 2026-11-24 as part of the fz-mue.51 commit-1 decisions (relayed by Elixir Parity). Blocks fz-mue.51.\n\nToday: quote of __MODULE__.Inner gives a {:., ...} node. Elixir gives {:__aliases__, meta, [{:__MODULE__, meta, nil}, :Inner]}.\n\nDone when: quote(do: __MODULE__.Inner) prints Elixir's shape on interp, run and build (oracle fixture).",
   "id": "fz-mue.61",
   "labels": [],
   "parent": "fz-mue",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "quote of __MODULE__.Inner gives {:__aliases__, meta, [{:__MODULE__, meta, nil}, :Inner]}, as in Elixir",
   "type": "bug",
-  "updated_at": "2026-11-25T00:40:22Z"
+  "updated_at": "2026-11-25T02:25:40Z"
 }
