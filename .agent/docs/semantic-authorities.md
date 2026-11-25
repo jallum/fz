@@ -108,6 +108,14 @@ id would depend on which atom the program mentioned first. Ordinary comparison
 reaches the node through its process; each process heap shares that same node so
 map ordering asks the same question without ambient process state (fz-5xp.90).
 
+A run-time type test compares atom ids, resolving each name it tests for to an
+index in the program's `atom_names`. `RuntimeTypePredicate::each_atom_name`
+reports every such name at any depth (the test's own atoms, list heads, tuple
+positions, closure captures), and `collect_region_atoms` registers them, so a
+name a test compares is always in the table. Both lookups panic on a missing
+name. Named structs are compared by schema id, not by atom id, so module names
+need no entry for that.
+
 `interp_cmp` shares unboxed numeric handling across expressions, intrinsics,
 and guards. Same-kind native lanes use integer/float instructions; mixed lanes
 call `term::compare_int_float` through `fz_int_float_cmp`, the same exact helper

@@ -272,6 +272,23 @@ pub(crate) struct RuntimeTypePredicate {
 }
 
 impl RuntimeTypePredicate {
+    /// Every atom name this test, at any depth, compares a value's atom to.
+    /// A test resolves each name to an id in the program's atom table, so the
+    /// table must hold every name this reports -- an excluded atom of a
+    /// cofinite set included.
+    pub(crate) fn each_atom_name(&self, f: &mut impl FnMut(&str)) {
+        self.atoms.values.iter().for_each(|name| f(name));
+        let nested = self
+            .lists
+            .heads
+            .iter()
+            .chain(self.tuples.shapes.iter().flatten())
+            .chain(self.callables.shapes.iter().flat_map(|shape| &shape.captures));
+        for predicate in nested {
+            predicate.each_atom_name(f);
+        }
+    }
+
     pub(crate) fn none() -> Self {
         Self {
             ints: FiniteSet::none(),
@@ -1338,7 +1355,8 @@ fn axis_admits(
                     .atom_names
                     .iter()
                     .position(|candidate| candidate == name.as_str())
-                    .map(|idx| idx as u32)
+                    .unwrap_or_else(|| panic!("the atom table lacks :{name}, which a type test names"))
+                    as u32
             }),
             _ => false,
         },
@@ -1456,8 +1474,8 @@ fn matches_runtime_callable(
     }
 }
 
-fn mapped_membership<T, U: PartialEq>(set: &FiniteSet<T>, actual: U, map: impl FnMut(&T) -> Option<U>) -> bool {
-    set.values.iter().filter_map(map).any(|mapped| mapped == actual) != set.cofinite
+fn mapped_membership<T, U: PartialEq>(set: &FiniteSet<T>, actual: U, map: impl FnMut(&T) -> U) -> bool {
+    set.values.iter().map(map).any(|mapped| mapped == actual) != set.cofinite
 }
 
 /// "Is this an admitted tuple, of an admitted shape?"
