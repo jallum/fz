@@ -6102,3 +6102,29 @@ mod terminators {
         assert!(t.is_empty(&overlap), "an improper list is never proper");
     }
 }
+
+// Every map literal carries `not(%{__struct__ => atom})`, so a union of n map literals negates to 2^n clauses
+// unless the intersection drops the clauses another clause covers. Sixteen members finish at once, and each
+// stays its own clause: they differ in a field, so none covers another.
+// The 2^n clause count itself is pinned in dnf_test.rs; this test keeps the union exact end to end.
+#[test]
+fn a_union_of_sixteen_four_field_maps_interns_as_sixteen_clauses() {
+    let mut t = Types::new();
+    let (low, high) = (t.atom_lit("a"), t.atom_lit("b"));
+    let mut union = t.none();
+    for member in 0..16usize {
+        let fields: Vec<(MapKey, Ty)> = (0..4)
+            .map(|i| {
+                (
+                    MapKey::Atom(format!("f{i}")),
+                    if member >> i & 1 == 1 { high } else { low },
+                )
+            })
+            .collect();
+        let map = t.map_literal(&fields);
+        union = t.union(union, map);
+    }
+    let any = t.any();
+    assert!(t.is_subtype(&union, &any));
+    assert_eq!(t.descr(&union).maps.len(), 16);
+}

@@ -1,0 +1,19 @@
+#---
+# purpose: A fold whose four clauses each replace a different key of a four-key map compiles, and the map it returns is the one Elixir returns, on every path
+# kind: run
+# oracle: self
+# oracle.stamp: 116f46ee42b3ea0a
+#---
+defmodule P do
+  defp rec(), do: %{f0: :u, f1: :u, f2: :u, f3: :u}
+  defp pd(:c0, fun, decode) when is_function(fun, 1), do: %{decode | f0: fun}
+  defp pd(:c1, fun, decode) when is_function(fun, 1), do: %{decode | f1: fun}
+  defp pd(:c2, fun, decode) when is_function(fun, 1), do: %{decode | f2: fun}
+  defp pd(:c3, fun, decode) when is_function(fun, 1), do: %{decode | f3: fun}
+  def run(decoders) do
+    fold(&pd/3, rec(), decoders)
+  end
+  defp fold(f, init, map), do: Enum.reduce(Map.to_list(map), init, fn {k, v}, acc -> f.(k, v, acc) end)
+end
+
+IO.inspect(P.run(%{c0: &String.length/1, c1: &String.length/1, c2: &String.length/1}))

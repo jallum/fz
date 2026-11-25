@@ -1,0 +1,1 @@
+%{f0: &String.length/1, f1: &String.length/1, f2: &String.length/1, f3: :u}
