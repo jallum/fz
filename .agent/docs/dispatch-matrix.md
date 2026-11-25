@@ -246,8 +246,9 @@ existed the pair asked one question, neither arm contained the other, and
 `:halt` was one legal arm order away from being read as a continue. Now each arm
 is reached by the values its own reducer travelled with. The axis reaches one
 callable at two capture layouts too: `#66closure[int]` and `#66closure[float]`
-are two construction wrappers, so they are two addresses and two questions, and
-a value's captures are never loaded to decide it (fz-kdt.127). What the axis
+are two construction wrappers, so they are two addresses and two questions. A
+value's captures are loaded to decide it only when the code word matches and
+the annotation does not settle the answer (below). What the axis
 cannot reach is a capture layout the projection could not shape — a clause that
 pins several literals at once is an intersection, and it degrades the whole
 axis to the target-only reading. The envelope hands such a clause on whole,
@@ -563,8 +564,9 @@ sub-predicate per CAPTURE position, plus the target set derived from the shapes
 for the callers that only want that. A construction wrapper is one function at
 one capture layout and stamps its own address into every value it mints, so
 which wrappers a test admits is decided at codegen from each wrapper's own
-shape, and the value pays one address compare per admitted wrapper — its
-captures are never loaded. A clause that pins several literals at once is an
+shape, and the value pays one address compare per listed wrapper. A wrapper
+whose annotation lies inside a shape of the test is listed outright and its
+captures are not loaded. A clause that pins several literals at once is an
 intersection and is not one shape, so it degrades the whole axis to the
 target-only reading, which is what every clause answered before fz-kdt.127.
 
@@ -577,15 +579,35 @@ positions, and since a shape is admitted only at an equal capture count, that
 axis would refuse every CAPTURING construction of the very targets it names.
 Under-admission is the one direction a runtime test may never err in.
 
-ADMISSION on this axis is CONTAINMENT, not overlap, and it is the one place the
-axes differ in kind. A capture type is the ANNOTATION the mint stamped, not a
-fact re-read off the value: the layout a capture was STORED in belongs to the
-construction. A wrapper closed over `int | float` therefore stores a boxed
-word, and a body whose capture lane is a raw int must not receive it even
-though the two tests overlap — so a value is admitted only where its
-construction shape lies INSIDE a shape the test names. The two-test relations a
-seat reads (containment, overlap, erasing overlap) are the ordinary ones, and
-recurse into the captures exactly as a tuple's recurse into its positions.
+ADMISSION on this axis has two parts, and it is the one place the axes differ in
+kind. A capture type is the ANNOTATION the mint stamped, not a fact re-read off
+the value: the layout a capture was STORED in belongs to the construction, so a
+wrapper closed over `int | float` stores a boxed word, and a body whose capture
+lane is a raw int must not receive a closure that holds a float even though the
+two tests overlap. `CallableShapes::listing` answers one of three things for
+each construction:
+
+- `Listed`: the annotation lies INSIDE a shape the test names, capture by
+  capture. The code word settles it and no capture is read.
+- `Unlisted`: no shape of the test overlaps the construction.
+- `ByCaptures`: the construction overlaps a shape without lying inside it. The
+  code word names the construction, and then each capture position the
+  annotation leaves open is read from the closure and asked the test's
+  question for that position, exactly as a tuple arm reads its elements. The
+  closure is listed when every position of some overlapped shape answers.
+
+A callable test therefore loads a capture only when the code matches and the
+annotation does not settle it, and the read is layout-independent: every
+capture slot carries its own kind byte, so the value read is what the closure
+holds whatever layout the construction stored, and the test proves that kind
+before the arm that assumes it runs. The interpreter asks through
+`RuntimeValueReader::captures`; the native doors emit the compare, then
+`closure_capture` and the capture's own runtime test, inside a guard that the
+code word matched. The receive door names no callable and refuses the question.
+The two-test relations a seat reads (containment, overlap, erasing overlap) are
+the ordinary ones, and recurse into the captures exactly as a tuple's recurse
+into its positions. A capture test is a projection like any argument test: a
+list capture is asked its head, an int capture its presence.
 
 The list axis is `ListShapes`: which shapes the test admits, plus one HEAD
 question per list clause that admits a cons cell — the same one-per-clause rule,

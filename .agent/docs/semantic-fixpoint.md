@@ -595,6 +595,15 @@ pin, and `callable_union_capture_containment`, rehomed on that same dynamic
 shape because the key answered its old static body outright (fz-kdt.171).
 Stdout is byte-identical on all three doors on every one of them.
 
+Where a closure is built once over a union (`if flag, do: {:a, 1}, else: {:k}`
+captured by one lambda), the walk keeps one activation per member, and the
+dispatch over them carries one arm per member. Those arms share the lambda's
+code word, so the word cannot separate them: a callable test loads a capture
+only when the code matches and the annotation does not settle it, and then asks
+the held value each arm's question. The kind byte every capture slot carries
+makes that read independent of the layout the construction stored (see
+[dispatch-matrix](dispatch-matrix.md), "ADMISSION on this axis").
+
 Identity-consuming bodies still split into distinct semantic activations. That
 semantic split is not, by itself, a claim that the native machine code must be
 distinct. `NativeProgram` retains an `ExecutableKey -> FnId` entry for every

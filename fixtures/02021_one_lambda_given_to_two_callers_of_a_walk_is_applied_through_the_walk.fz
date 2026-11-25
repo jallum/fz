@@ -1,0 +1,33 @@
+#---
+# purpose: A walk that maps itself over a list of arguments applies the lambda each of its two callers hands it, whether the lambda is an anonymous function or a capture of a named one, on all three paths
+# root: main/0
+# assert.metric.semantic.activations: 10
+# assert.metric.semantic.executables: 10
+# assert.metric.semantic.callsites: 10
+# assert.metric.call_edges.count: 10
+# oracle: self
+# oracle.stamp: a4b2bffa68ad39c9
+#---
+#
+# `walk/2` is called with an anonymous identity and with `&id/1`, and it passes
+# `fun` into a closure it builds for `:lists.map`. That closure holds `fun`, so
+# its construction is one code word over a capture that is either of the two
+# callers' functions. Each arm of the dispatch under the map admits the closure
+# whose captured function is the one it was planned for.
+defmodule Main do
+  def walk({form, meta, args}, fun) when is_atom(form), do: fun.({form, meta, walk_args(args, fun)})
+  def walk(x, fun), do: fun.(x)
+
+  defp walk_args(args, _fun) when is_atom(args), do: args
+  defp walk_args(args, fun) when is_list(args), do: :lists.map(fn x -> walk(x, fun) end, args)
+
+  def main() do
+    ast = {:+, [], [5, 3]}
+    IO.inspect(walk(ast, fn x -> x end))
+    IO.inspect(walk(ast, &id/1))
+  end
+
+  defp id(x), do: x
+end
+
+Main.main()

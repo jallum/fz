@@ -13,7 +13,7 @@ use crate::compiler2::artifact::NativeCallableBoundaryId;
 use crate::diag::Diagnostics;
 use crate::fast_hash::{HashMap, HashSet};
 use crate::fz_ir::{FnId, FnIr, Module};
-use crate::runtime_type_predicate::{CallableShape, CallableShapes};
+use crate::runtime_type_predicate::{CallableShape, CallableShapes, Listing};
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,17 +80,20 @@ impl<'a> NativeCodegenSurface<'a> {
             .find(|boundary| boundary.identity_fn == identity_fn)
     }
 
-    /// Every boundary whose construction a test ENUMERATES: the same function,
-    /// closed over a capture layout inside the one the test names
-    /// (fz-kdt.127). A test for "is this value one of these constructions"
-    /// compares the value's code word against exactly these addresses, and
-    /// never loads a capture.
-    pub(crate) fn callable_boundaries_enumerated_by<'s>(
+    /// Every boundary whose construction a test lists, with how it lists it:
+    /// the same function, closed over a capture layout inside the one the test
+    /// names ([`Listing::Listed`]: the code word settles it), or over one it
+    /// overlaps ([`Listing::ByCaptures`]: the code word names the
+    /// construction and the held values settle the rest).
+    pub(crate) fn callable_boundaries_listed_by<'s>(
         &'s self,
         callables: &'s CallableShapes,
-    ) -> impl Iterator<Item = &'s NativeCallableBoundarySurface> + 's {
-        self.callable_boundaries
-            .values()
-            .filter(move |boundary| boundary.shape.as_ref().is_some_and(|shape| callables.enumerates(shape)))
+    ) -> impl Iterator<Item = (&'s NativeCallableBoundarySurface, Listing)> + 's {
+        self.callable_boundaries.values().filter_map(move |boundary| {
+            match callables.listing(boundary.shape.as_ref()?) {
+                Listing::Unlisted => None,
+                listing => Some((boundary, listing)),
+            }
+        })
     }
 }

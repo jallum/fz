@@ -1194,6 +1194,10 @@ impl TypeTest<'_> {
                 .ok()
                 .and_then(|value| value.value(proc).ok())
         };
+        let captures = |value: RuntimeAnyValue, index: usize| {
+            let addr = value.heap_addr()?;
+            Some(unsafe { fz_runtime::any_value::closure_capture_value(addr.cast_const(), index) })
+        };
         let list_head = |value: RuntimeAnyValue| {
             let head = fz_list_head_ref(value.ref_word().raw_word());
             interp_value_from_ref_word(head, "list head")
@@ -1212,6 +1216,7 @@ impl TypeTest<'_> {
             tuple_schema_ids: &tuple_schema_ids,
             named_schema_ids: &named_schema_ids,
             callables: &callables,
+            captures: &captures,
             fields: &fields,
             list_head: &list_head,
             list_tail: &list_tail,

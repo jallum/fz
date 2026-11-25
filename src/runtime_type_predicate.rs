@@ -116,7 +116,9 @@ impl RuntimeTestAxis {
             // construction is a function together with the capture types it
             // closed over (fz-kdt.127). A test admits a value when the
             // value's construction shape lies INSIDE a shape the test names,
-            // position by position, so the axis separates exactly as far as
+            // or, where it only overlaps, when the closure's held values
+            // answer that shape's capture questions, so the axis separates
+            // exactly as far as
             // the capture sub-questions do -- `#66 over int` and `#66 over
             // float` are two tests, `#66 over [int]` and `#66 over
             // [int | :ok]` erase the tail exactly as the list axis does.
@@ -465,11 +467,10 @@ impl RuntimeTypePredicate {
         match axis {
             RuntimeTestAxis::Tuples => self.tuples.shapes().iter().flatten().collect(),
             RuntimeTestAxis::Lists => self.lists.heads().iter().collect(),
-            // A callable test reads a code word, and the word names a
-            // construction whose capture shapes are then compared to the
-            // test's STATICALLY -- the value's captures are never loaded --
-            // so a tuple nested in a capture is a question about the shape,
-            // not about the value, and needs no schema of its own.
+            // A callable test asks its capture questions of the values a
+            // closure holds, so a tuple nested in a capture is a question
+            // about a value and needs its schema registered.
+            RuntimeTestAxis::Callables => self.callables.shapes.iter().flat_map(|shape| &shape.captures).collect(),
             //
             // A scalar axis decides a value outright, and a struct, map,
             // binary or resource test reads a schema id or a kind -- never
@@ -481,7 +482,6 @@ impl RuntimeTypePredicate {
             | RuntimeTestAxis::OtherStructs
             | RuntimeTestAxis::Maps
             | RuntimeTestAxis::Binaries
-            | RuntimeTestAxis::Callables
             | RuntimeTestAxis::Resources
             | RuntimeTestAxis::Opaques => Vec::new(),
         }
@@ -1044,11 +1044,10 @@ impl CallableShape {
     /// this is the containment of one annotation in another -- capture by
     /// capture, [`RuntimeTypePredicate::contained_in`], which is containment of
     /// the projected TESTS and not of the semantic types they came from -- and
-    /// not the overlap of two tests. A
-    /// construction over `int | float` is not one a body compiled for `int`
-    /// captures may receive, whatever the value in that capture happens to be,
-    /// because the layout the capture was STORED in is the construction's and
-    /// not the value's (fz-kdt.167).
+    /// not the overlap of two tests. Only containment settles admission with
+    /// no read: a construction over `int | float` may hold a float where a body
+    /// compiled for an `int` capture reads an int, so a mere overlap is
+    /// settled by asking the held value instead ([`Listing::ByCaptures`]).
     fn inside(&self, other: &Self) -> bool {
         self.target == other.target
             && self.captures.len() == other.captures.len()
@@ -1066,6 +1065,19 @@ impl CallableShape {
             && self.captures.iter().zip(&other.captures).all(|(l, r)| l.overlaps(r))
     }
 
+    /// The questions `other` asks of the captures this construction's
+    /// annotation does not settle: the positions whose annotation is not
+    /// inside `other`'s.
+    fn unsettled_captures(&self, other: &Self) -> CaptureQuestions {
+        self.captures
+            .iter()
+            .zip(&other.captures)
+            .enumerate()
+            .filter(|(_, (ours, asked))| !ours.contained_in(asked))
+            .map(|(index, (_, asked))| (index, asked.clone()))
+            .collect()
+    }
+
     /// Whether the two shapes meet at a capture position NEITHER can see past.
     fn erasing_overlap(&self, other: &Self) -> bool {
         self.overlaps(other)
@@ -1077,6 +1089,25 @@ impl CallableShape {
     }
 }
 
+/// What a callable test asks of the values one closure holds: each captured
+/// position paired with the question that position must answer.
+pub(crate) type CaptureQuestions = Vec<(usize, RuntimeTypePredicate)>;
+
+/// How a callable test lists the closures of one construction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Listing {
+    /// Every closure of the construction: its annotation lies inside a shape
+    /// of the test, so the code word settles it.
+    Listed,
+    /// No closure of the construction.
+    Unlisted,
+    /// The closures whose held values answer the questions of at least one
+    /// alternative -- one per shape of the test the construction overlaps
+    /// without lying inside. The code word names the construction and the
+    /// held values settle the rest.
+    ByCaptures(Vec<CaptureQuestions>),
+}
+
 /// The callable constructions a test admits, one shape per closure literal.
 ///
 /// This is the callable axis' answer to [`TupleShapes`] and it follows the
@@ -1086,8 +1117,10 @@ impl CallableShape {
 /// is derived from the shapes when the axis is exact, never stated twice, so
 /// the two readings cannot drift apart.
 ///
-/// ADMISSION of a value is [`Self::admits`]: CONTAINMENT of the value's
-/// construction shape in a shape named here, never overlap. The two-test
+/// ADMISSION of a value is [`Self::admits`]: a construction inside a shape
+/// named here admits all its closures; one that only overlaps admits the
+/// closures whose held values answer that shape's capture questions
+/// ([`Listing::ByCaptures`]). The two-test
 /// relations a dispatch SEAT reads -- [`Self::contains_all`],
 /// [`Self::overlaps`], [`Self::erasing_overlap`] -- are the ordinary ones,
 /// exactly as for tuples.
@@ -1161,22 +1194,51 @@ impl CallableShapes {
         self.exact
     }
 
-    /// Whether this test ENUMERATES `shape`: membership in the listed side,
-    /// before the cofinite complement is applied. The emitters read this to
-    /// pick the addresses they compare against and apply the complement
-    /// themselves.
-    pub(crate) fn enumerates(&self, shape: &CallableShape) -> bool {
-        if self.exact {
-            self.shapes.iter().any(|ours| shape.inside(ours))
+    /// How this test lists the closures of the construction `shape`, before
+    /// the cofinite complement is applied. The emitters read this to pick the
+    /// addresses they compare against and the captures they read, and apply
+    /// the complement themselves.
+    pub(crate) fn listing(&self, shape: &CallableShape) -> Listing {
+        if !self.exact {
+            return if self.targets.values.contains(&shape.target) {
+                Listing::Listed
+            } else {
+                Listing::Unlisted
+            };
+        }
+        let mut alternatives = Vec::new();
+        for ours in &self.shapes {
+            if shape.inside(ours) {
+                return Listing::Listed;
+            }
+            if shape.overlaps(ours) {
+                alternatives.push(shape.unsettled_captures(ours));
+            }
+        }
+        if alternatives.is_empty() {
+            Listing::Unlisted
         } else {
-            self.targets.values.contains(&shape.target)
+            Listing::ByCaptures(alternatives)
         }
     }
 
-    /// Whether this test admits a value minted through the construction
-    /// `shape`.
-    pub(crate) fn admits(&self, shape: &CallableShape) -> bool {
-        self.enumerates(shape) != self.targets.cofinite
+    /// Whether this test admits a closure of the construction `shape`.
+    /// `capture_matches` asks one captured value of that closure one question;
+    /// it is called only when the construction's annotation does not settle
+    /// the answer.
+    pub(crate) fn admits(
+        &self,
+        shape: &CallableShape,
+        mut capture_matches: impl FnMut(usize, &RuntimeTypePredicate) -> bool,
+    ) -> bool {
+        let listed = match self.listing(shape) {
+            Listing::Listed => true,
+            Listing::Unlisted => false,
+            Listing::ByCaptures(alternatives) => alternatives
+                .iter()
+                .any(|questions| questions.iter().all(|(index, asked)| capture_matches(*index, asked))),
+        };
+        listed != self.targets.cofinite
     }
 
     /// Whether every construction `other` admits, this axis admits too.
@@ -1290,6 +1352,7 @@ pub(crate) struct RuntimeValueReader<'a> {
     pub(crate) tuple_schema_ids: &'a HashMap<usize, u32>,
     pub(crate) named_schema_ids: &'a HashMap<ModuleName, u32>,
     pub(crate) callables: &'a CallableIdentities<'a>,
+    pub(crate) captures: &'a TupleFieldReader<'a>,
     pub(crate) fields: &'a TupleFieldReader<'a>,
     pub(crate) list_head: &'a ListHeadReader<'a>,
     pub(crate) list_tail: &'a ListTailReader<'a>,
@@ -1387,7 +1450,7 @@ fn axis_admits(
             _ => false,
         },
         RuntimeTestAxis::Callables => {
-            has_kind(value, ValueKind::CLOSURE) && matches_runtime_callable(predicate, value, reader.callables)
+            has_kind(value, ValueKind::CLOSURE) && matches_runtime_callable(predicate, value, reader, scope)
         }
         RuntimeTestAxis::Tuples => matches_tuple_axis(predicate, reader, value, scope),
         RuntimeTestAxis::NamedStructs => matches_named_struct_axis(predicate, reader, value),
@@ -1449,7 +1512,8 @@ fn struct_read(value: RuntimeAnyValue) -> Option<(u32, StructName)> {
 }
 
 /// Read a closure value's arity and CONSTRUCTION and ask the predicate about
-/// them.
+/// them, and about the values it holds where the construction alone does not
+/// settle the answer.
 ///
 /// A cofinite callable set names every callable but the ones it lists, so a
 /// code word the backend cannot place is in it: the value is a callable, and
@@ -1457,7 +1521,8 @@ fn struct_read(value: RuntimeAnyValue) -> Option<(u32, StructName)> {
 fn matches_runtime_callable(
     predicate: &RuntimeTypePredicate,
     value: RuntimeAnyValue,
-    callables: &CallableIdentities<'_>,
+    reader: &RuntimeValueReader<'_>,
+    scope: PositionScope,
 ) -> bool {
     if predicate.callables.is_none() {
         return false;
@@ -1475,10 +1540,25 @@ fn matches_runtime_callable(
     if predicate.callables.targets().is_any() {
         return true;
     }
-    match callables(unsafe { closure_fn_ptr(addr.cast_const()) }) {
-        Some(shape) => predicate.callables.admits(&shape),
+    match (reader.callables)(unsafe { closure_fn_ptr(addr.cast_const()) }) {
+        Some(shape) => predicate.callables.admits(&shape, |index, asked| {
+            (reader.captures)(value, index).is_some_and(|capture| held_value_admitted(asked, reader, capture, scope))
+        }),
         None => predicate.callables.targets().cofinite,
     }
+}
+
+/// Whether a value a composite holds (a tuple field, a captured value)
+/// answers the question its container asks of it.
+fn held_value_admitted(
+    question: &RuntimeTypePredicate,
+    reader: &RuntimeValueReader<'_>,
+    held: RuntimeAnyValue,
+    scope: PositionScope,
+) -> bool {
+    RuntimeTestAxis::of_value(held)
+        .iter()
+        .any(|axis| axis_admits(question, reader, held, *axis, scope))
 }
 
 fn mapped_membership<T, U: PartialEq>(set: &FiniteSet<T>, actual: U, map: impl FnMut(&T) -> U) -> bool {
@@ -1531,11 +1611,7 @@ fn matches_tuple_shape(
     };
     shapes.into_iter().any(|shape| {
         shape.iter().enumerate().all(|(index, position)| {
-            (reader.fields)(value, index).is_some_and(|field| {
-                RuntimeTestAxis::of_value(field)
-                    .iter()
-                    .any(|axis| axis_admits(position, reader, field, *axis, scope))
-            })
+            (reader.fields)(value, index).is_some_and(|field| held_value_admitted(position, reader, field, scope))
         })
     })
 }
