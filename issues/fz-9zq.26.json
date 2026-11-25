@@ -3,7 +3,7 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-25T02:45:11Z",
-  "description": "User-approved via the fz-9zq.21 page Round 3 (relayed by fz-engine, 2026-11-24).\n\n/private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/esc_mu/B/q/d1/m31.fz fails with a backend 'value was absent' error; cause not chased. Placed at the end of fz-9zq.",
+  "description": "User-approved via the fz-9zq.21 page Round 3 (relayed by fz-engine, 2026-11-24).\n\n/Users/j5n/Workspace/fz-probes/esc_mu/B/q/d1/m31.fz fails with a backend 'value was absent' error; cause not chased. Placed at the end of fz-9zq.",
   "id": "fz-9zq.26",
   "labels": [],
   "parent": "fz-9zq",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "A path list carried through Enum.map over children compiles",
   "type": "bug",
-  "updated_at": "2026-11-25T02:45:11Z"
+  "updated_at": "2026-11-25T02:46:01Z"
 }
