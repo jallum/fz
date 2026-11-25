@@ -2,11 +2,11 @@ defmodule Macro do
   @moduledoc """
   Works with quoted code, as Elixir's `Macro` does.
 
-  `escape/1`, `unescape_string/1`, `var/2`, `unique_var/2` and
-  `quoted_literal?/1` are the only functions defined. The rest of Elixir's `Macro` (`to_string/1`, `expand/2`,
-  `prewalk/2` and the others),
-  the options of `escape/2` and the escape map of `unescape_string/2` are not
-  defined.
+  `escape/1`, `unescape_string/1`, `var/2`, `unique_var/2`,
+  `quoted_literal?/1`, `expand_once/2` and `expand/2` are the only functions
+  defined. The rest of Elixir's `Macro` (`to_string/1`, `prewalk/2` and the
+  others), the options of `escape/2` and the escape map of `unescape_string/2`
+  are not defined.
   """
 
   @doc """
@@ -108,6 +108,168 @@ defmodule Macro do
     do: modifier in [:big, :little, :native, :integer, :float, :binary, :bytes, :bitstring, :bits, :utf8, :utf16, :utf32, :signed, :unsigned]
 
   defp quoted_bitstring_modifier?(_other), do: false
+
+  @doc """
+  Expands the root node of `ast` once in `env`, without traversing it.
+
+  Aliases become module atoms through `env.aliases`, `__MODULE__` becomes
+  `env.module`, `__DIR__` the directory of `env.file`, `__ENV__` the env as
+  quoted code (except in a match), and `__ENV__.field` that field's value.
+  Unary `+` and `-` on an integer literal are computed. A function call, a
+  variable, a literal and a `quote` come back unchanged, and so does a remote
+  call of a module the env does not require.
+
+  Expanding a call to a macro needs the compiler, which a running program
+  cannot reach. A call the env proves is no macro (a special form, an imported
+  function, a call on a module the env does not require) comes back unchanged;
+  any other call, a call on a required module included, raises `RuntimeError`.
+
+  The result depends only on `ast` and `env`: a `%Macro.Env{}` built by hand
+  expands as `__CALLER__` does.
+
+  ## Examples
+
+      env = %{__ENV__ | aliases: [{B, Foo.Bar}]}
+      Macro.expand_once({:__aliases__, [], [:B, :Baz]}, env)
+      #=> Foo.Bar.Baz
+
+  """
+  @spec expand_once(any, map) :: any
+  def expand_once(ast, env), do: elem(do_expand_once(ast, env), 0)
+
+  @doc """
+  Expands the root node of `ast` in `env` until it no longer changes.
+
+  Only the root node is expanded; see `expand_once/2` for what each root
+  becomes.
+  """
+  @spec expand(any, map) :: any
+  def expand(ast, env), do: expand_until(do_expand_once(ast, env), env)
+
+  @spec expand_until({any, boolean}, map) :: any
+  defp expand_until({ast, true}, env), do: expand_until(do_expand_once(ast, env), env)
+  defp expand_until({ast, false}, _env), do: ast
+
+  @spec do_expand_once(any, map) :: {any, boolean}
+  defp do_expand_once({:__aliases__, _, list} = original, env) do
+    case alias_receiver(list, env) do
+      receiver when is_atom(receiver) ->
+        {receiver, true}
+
+      [head | tail] ->
+        {expanded, _} = do_expand_once(head, env)
+
+        if is_atom(expanded), do: {concat([expanded | tail]), true}, else: {original, false}
+    end
+  end
+
+  defp do_expand_once({:__MODULE__, _, atom}, env) when is_atom(atom), do: {env.module, true}
+  defp do_expand_once({:__DIR__, _, atom}, env) when is_atom(atom), do: {dirname(env.file), true}
+
+  defp do_expand_once({:__ENV__, _, atom}, %{context: context} = env)
+       when is_atom(atom) and context != :match do
+    {escape_map(%{env | versioned_vars: escape_map(env.versioned_vars)}), true}
+  end
+
+  defp do_expand_once({{:., _, [{:__ENV__, _, atom}, field]}, _, []} = original, %{context: context} = env)
+       when is_atom(atom) and is_atom(field) and context != :match do
+    case Map.fetch(env, field) do
+      {:ok, value} -> {escape_map(value), true}
+      :error -> {original, false}
+    end
+  end
+
+  defp do_expand_once({name, meta, context} = original, _env)
+       when is_atom(name) and is_list(meta) and is_atom(context) do
+    {original, false}
+  end
+
+  defp do_expand_once({name, meta, args} = original, env)
+       when is_atom(name) and is_list(args) and is_list(meta) do
+    arity = length(args)
+
+    function_module = imported_from(env.functions, name, arity)
+
+    cond do
+      special_form?(name) -> {original, false}
+      imported_from(env.macros, name, arity) != nil -> refuse_macro_call()
+      name in [:+, :-] and arity == 1 and function_module == Kernel -> expand_unary(original, env, name)
+      function_module != nil -> {original, false}
+      true -> refuse_macro_call()
+    end
+  end
+
+  defp do_expand_once({{:., _, [left, name]}, _, _args} = original, env) when is_atom(name) do
+    {receiver, _} = do_expand_once(left, env)
+
+    if is_atom(receiver) and receiver in env.requires, do: refuse_macro_call(), else: {original, false}
+  end
+
+  defp do_expand_once(other, _env), do: {other, false}
+
+  @spec expand_unary(tuple, map, atom) :: {any, boolean}
+  defp expand_unary({_, _, [arg]} = original, env, name) do
+    case expand_once(arg, env) do
+      integer when is_integer(integer) -> {if(name == :-, do: -integer, else: integer), true}
+      _other -> {original, false}
+    end
+  end
+
+  @spec special_form?(atom) :: boolean
+  defp special_form?(name) do
+    name in [:%, :%{}, :&, :., :"::", :<<>>, :=, :^, :__CALLER__, :__STACKTRACE__, :__aliases__, :__block__,
+             :__cursor__, :alias, :case, :cond, :fn, :for, :import, :quote, :receive, :require, :super, :try,
+             :unquote, :unquote_splicing, :with, :{}]
+  end
+
+  @spec imported_from([{atom, [{atom, integer}]}], atom, integer) :: atom
+  defp imported_from(imports, name, arity) do
+    Enum.find_value(imports, fn {module, callables} ->
+      if {name, arity} in callables, do: module
+    end)
+  end
+
+  @spec refuse_macro_call() :: no_return()
+  defp refuse_macro_call(), do: raise(RuntimeError, "Macro.expand of a macro call is not supported yet")
+
+  @spec alias_receiver([any], map) :: atom | [any]
+  defp alias_receiver([:Elixir | rest], _env), do: concat(rest)
+
+  defp alias_receiver([head | tail] = list, env) when is_atom(head) do
+    short = short_atom(head)
+
+    case Enum.find(env.aliases, fn {name, _full} -> name == short end) do
+      {_short, full} -> concat([full | tail])
+      nil -> concat(list)
+    end
+  end
+
+  defp alias_receiver(list, _env), do: list
+
+  @spec short_atom(atom) :: atom
+  defp short_atom(name), do: String.to_atom("Elixir." <> to_string(name))
+
+  @spec concat([any]) :: atom
+  defp concat(parts) do
+    String.to_atom("Elixir." <> Enum.map_join(Enum.reject(parts, &is_nil/1), ".", &segment/1))
+  end
+
+  @spec segment(any) :: binary
+  defp segment(part) when is_atom(part), do: String.replace_prefix(to_string(part), "Elixir.", "")
+  defp segment(part), do: raise(ArgumentError, "expected an alias segment to be an atom, got: #{inspect(part)}")
+
+  @spec dirname(binary) :: binary
+  defp dirname(file) do
+    case String.split(file, "/") do
+      [_only] -> "."
+      ["", _only] -> "/"
+      parts -> parts |> Enum.drop(-1) |> Enum.join("/")
+    end
+  end
+
+  @spec escape_map(any) :: any
+  defp escape_map(map) when is_map(map), do: {:%{}, [], Map.to_list(map)}
+  defp escape_map(other), do: other
 
   @doc """
   Returns the quoted code that rebuilds `value`.

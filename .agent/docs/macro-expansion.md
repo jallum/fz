@@ -263,6 +263,29 @@ The macro-expansion memo key holds the call site (`file` and `line`) and the
 expansion context beside the macro, the call and the scope, since the env a
 macro reads differs by each.
 
+### `Macro.expand/2` and `Macro.expand_once/2`
+
+`lib/macro.fz` defines both over the `%Macro.Env{}` map, clause for clause from
+Elixir's `Macro.expand_once/2`. The result depends only on the node and the
+env, so an env built by hand expands as `__CALLER__` does, in a macro body or in
+a running program. Only the root node is looked at:
+
+| root | becomes |
+| --- | --- |
+| `__aliases__` | the module atom, through `env.aliases` (keys are `Elixir.Short` atoms); a head that is itself a node (`__MODULE__`) is expanded first |
+| `__MODULE__`, `__DIR__` | `env.module`, the directory of `env.file` |
+| `__ENV__`, `{{:., _, [__ENV__, field]}, _, []}` | the env as `{:%{}, [], pairs}`, the field's value; unchanged when `env.context` is `:match` |
+| unary `+` or `-` of an integer | the computed integer |
+| a special form, an imported function, a call on a module not in `env.requires` | unchanged |
+| any other root call: an imported macro, a name `env.functions` and `env.macros` do not list, a call on a required module | `RuntimeError` "Macro.expand of a macro call is not supported yet" |
+
+A macro runs only inside the compiler, which a macro body cannot reach, so the
+last row stands in for the one-step expansion the env cannot decide. The env
+cannot tell a macro from a function on a required module, and does not list the
+caller module's own functions or macros, so those calls raise too.
+
+Unary `+` and `-` are computed when `env.functions` lists them as Kernel's.
+
 ### Expansion context
 
 `ExpansionContext` (`Expression`, `Match`, `Guard`) in `quoted_expander.rs` is

@@ -1,0 +1,27 @@
+#---
+# purpose: "Macro.expand/2 of a root call the env does not prove is a function (an imported macro, a name the env does not list, a call on a required module) raises RuntimeError 'Macro.expand of a macro call is not supported yet'"
+#---
+defmodule Other do
+  defmacro twice(x), do: quote(do: unquote(x) * 2)
+end
+
+defmodule Main do
+  def main() do
+    env = %{__ENV__ | requires: [Other | __ENV__.requires]}
+
+    refuse({:||, [], [1, 2]}, env)
+    refuse({:undefined_name, [], [1]}, env)
+    refuse({{:., [], [{:__aliases__, [], [:Other]}, :twice]}, [], [1]}, env)
+    refuse({:__aliases__, [], [{:||, [], [1, 2]}]}, env)
+  end
+
+  defp refuse(ast, env) do
+    try do
+      IO.inspect(Macro.expand(ast, env))
+    rescue
+      error in RuntimeError -> IO.puts(error.message)
+    end
+  end
+end
+
+Main.main()

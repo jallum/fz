@@ -288,6 +288,15 @@ ordinary expression. <code>Macro.Env.in_match?/1</code> and
 <code>Macro.Env.in_guard?/1</code> read it, so one macro can build a value in
 an expression and match any value in a pattern.</p>
 
+<p><code>Macro.expand/2</code> and <code>Macro.expand_once/2</code> expand
+the root node of quoted code in an env, usually <code>__CALLER__</code>: an
+alias becomes its module atom through the env's <code>aliases</code>,
+<code>__MODULE__</code> and <code>__DIR__</code> become the env's module and
+directory, and <code>__ENV__.line</code> and the other fields become their
+values. A function call, a variable and a literal come back unchanged. A call
+to a macro raises <code>RuntimeError</code> for now, since expanding one needs
+the compiler.</p>
+
 <p><code>__MODULE__</code> is the atom of the module it stands in, and
 <code>nil</code> outside any module. Inside a <code>quote</code> it names the
 module that calls the macro, so a macro can define functions that build and
