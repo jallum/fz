@@ -10,9 +10,15 @@
   "id": "fz-9zq.23",
   "labels": [],
   "parent": "fz-9zq",
+  "comments": [
+    {
+      "text": "From fz-engine (PR #894): the fz-9zq.21 scaffolding this ticket deletes is the single repeated_ancestor case in clash.rs, not two cases. #894 landed only the clash-walk change; the per-row fold was dropped because nothing on current develop needs it (01353 seeded hang no longer reproduces under seeds 1-300; q10c passes with the walk change alone).",
+      "timestamp": "2026-11-25T03:45:14Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "A type that comes back beneath itself folds there, and only what is contained folds",
   "type": "task",
-  "updated_at": "2026-11-25T02:45:57Z"
+  "updated_at": "2026-11-25T03:45:14Z"
 }
