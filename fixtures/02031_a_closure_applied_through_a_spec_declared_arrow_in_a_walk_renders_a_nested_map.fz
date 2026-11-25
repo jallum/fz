@@ -1,0 +1,32 @@
+#---
+# purpose: A closure applied to each entry of a map through a parameter the `@spec` declares as an arrow renders a nested map as the list Elixir renders, on all three paths
+# root: main/0
+# assert.metric.semantic.activations: 7
+# assert.metric.semantic.executables: 7
+# assert.metric.semantic.callsites: 13
+# assert.metric.call_edges.count: 13
+# oracle: self
+# oracle.stamp: 6090a00dec0c518a
+#---
+#
+# `Fmt.fmt/3` is passed as its own `enc`. The lambdas `wrap` builds call `enc`
+# for a key and for a value; each call names no closure literal, only the
+# declared arrow whose return is `iodata()`.
+defmodule Fmt do
+  @spec fmt(dynamic(), (dynamic(), dynamic(), map() -> iodata()), map()) :: iodata()
+  def fmt(i, _enc, _s) when is_integer(i), do: Integer.to_string(i)
+  def fmt(m, enc, s) when is_map(m), do: :lists.map(wrap(enc, s), Map.to_list(m))
+
+  def wrap(enc, s) do
+    inner = fn k -> enc.(k, enc, s) end
+    fn {k, v} -> [inner.(k), enc.(v, enc, s)] end
+  end
+end
+
+defmodule Main do
+  def main() do
+    IO.inspect(Fmt.fmt(%{1 => 1}, &Fmt.fmt/3, %{}))
+  end
+end
+
+Main.main()
