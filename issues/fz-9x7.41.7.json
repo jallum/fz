@@ -9,9 +9,15 @@
   "id": "fz-9x7.41.7",
   "labels": [],
   "parent": "fz-9x7.41",
+  "comments": [
+    {
+      "text": "From: GC. Investigation done (survey on 807cf8e1d): the captures' kind test is CaptureStores::store_open_ref_word (closure.rs, StoredRefKind::Open), the slot-naming scalar ref of kinds 0xA..=0xE; fz-9x7.44.8 removes it (capture store becomes str + strb) and .44.8 cannot land partly, so it leaves this ticket. Remaining scope is the bump only: process pointer copied twice comes from our IR (process_arg caches get_pinned_reg per block, fn_ctx.rs:101-109; emit_place spans 3 blocks); tip computed twice is Cranelift rematerialising new_top in the inline block (hypothesis: pass it as a block param); ldp fusion and the site-table address once per function are unverified and checked by disassembly.",
+      "timestamp": "2026-11-25T01:08:48Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "The inline bump is the hand-written sequence",
   "type": "task",
-  "updated_at": "2026-11-25T00:00:30Z"
+  "updated_at": "2026-11-25T01:08:48Z"
 }
