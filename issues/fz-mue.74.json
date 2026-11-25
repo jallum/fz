@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Elixir Parity",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-25T12:09:23Z",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "try … catch k, r over a union value whose arm raises dispatches the catch",
   "type": "bug",
-  "updated_at": "2026-11-25T12:09:23Z"
+  "updated_at": "2026-11-25T12:09:29Z"
 }
