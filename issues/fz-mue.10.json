@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-11-25T12:10:22Z",
   "created": "2026-11-18T20:44:02Z",
   "description": "module Bitwise is not defined; json.erl uses band/bsr in its UTF-8 and escape paths. Reproducer: /Users/j5n/Workspace/fz-otp-json/punch/19_import_bitwise.fz\n\nPart of fz-mue (fz runs OTP's json.erl unchanged). Port and harness: /Users/j5n/Workspace/fz-otp-json/.",
   "id": "fz-mue.10",
   "labels": [],
   "parent": "fz-mue",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Bitwise defines band, bor, bsl and bsr, usable in guards",
   "type": "feature",
-  "updated_at": "2026-11-20T21:58:41Z"
+  "updated_at": "2026-11-25T12:10:22Z"
 }
