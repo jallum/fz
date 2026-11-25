@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-yh5.2"
+  ],
   "blocks": [],
   "created": "2026-11-18T21:45:29Z",
   "description": "Integer arithmetic on known integers is an instruction: adds/subs with the immediate folded, then b.vs to the raise. It is not a materialized flag, and not a call.\n\nToday (machine.md M13 and M9, develop 37c5473cd):\n- The checked row (src/compiler2/native_codegen/recipe.rs, overflowing!: sadd_overflow/ssub_overflow) emits `mov x0,#1; subs x28,x2,x0; cset x0,vs; tst w0,#0xff; b.ne`. That is 5 instructions where `subs x28,x2,#1; b.vs` is 2, and it happens for every + and - in every loop.\n- After a non-tail call returns, `c + sum(rest, n-1)` (probe p01b) jumps to an empty forwarder `_fz_fn_2____e2` (stp; mov; ldp; b), then into `_fz_fn_50_fz_op_add_ii` (prologue, adds, cset vs, tst, b.ne, loads the closure return address, epilogue, br x1). That is 17 instructions for what `adds; b.vs` plus the continuation jump does in 3. fz-sc8.197 (closed) removed the continuation for extern-only callees; this is the remaining distance.\n\nFix:\n- Emit the overflow branch directly on the flag; find which Cranelift IR shape lowers to `subs; b.vs` on aarch64.\n- Fold small immediates.\n- At a resume entry whose body is a known-integer operator, emit the operator inline, with no forwarder and no fz_op_*_ii.\n\nAsm first: target listings for p00 (empty loop) and the p01b resume, written before building.\n\nAcceptance:\n- p00 loses at least 6 instructions per iteration from arithmetic alone (bench).\n- The p01b resume has no call.\n- Overflow still raises ArithmeticError on all three paths (existing fixtures).\n\n## Ledger evidence\n\nInstruction ledger (Make Distiller Fast, probe c4 at develop de4ef6a3b, lldb single-step; page https://claude.ai/artifact/REdzotwtihuF57Q2GKvQ6M section 9; durable files /Users/j5n/Workspace/fz-distill-hunt/trim/: ledger.py has the row numbers, cont-report.md the listings). One c4 step runs 225 instructions where BEAM JIT runs 79, and 139 of the 225 have no reason to exist. User rule (2026-11-24): \"every instruction must be justified and have a reason to exist, and if not, should be removed.\"\n\nThis ticket's rows: 115-120 in f (`mov x6,#1; subs; mov; cset vs; tst; b.ne`) and 194-197 in the resume (`adds; cset vs; tst; b.ne`). 5 removable in this step. Make Distiller Fast has an agent finding which CLIF shape fuses to `b.vs`; its report is input to this ticket's asm-first target.",
@@ -41,5 +43,5 @@
   "status": "open",
   "title": "Integer arithmetic on known integers is an instruction, not a flag dance or a call",
   "type": "task",
-  "updated_at": "2026-11-25T01:22:04Z"
+  "updated_at": "2026-11-25T01:22:07Z"
 }

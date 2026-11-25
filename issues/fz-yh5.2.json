@@ -2,7 +2,8 @@
   "assignee": "Callables",
   "blocked_by": [],
   "blocks": [
-    "fz-sc8.249"
+    "fz-sc8.249",
+    "fz-yh5.1"
   ],
   "created": "2026-11-18T21:45:29Z",
   "description": "The back-edge reduction check is the minimum sequence.\n\nToday (machine.md M13; src/compiler2/native_codegen/terminator.rs:703-730), every back edge runs:\n`mov x0,x21; ldr w1,[x0,#0x458] (the field is at [x21+0x5d0] on develop de4ef6a3b); sub; str; cmp; mov x25,x2; b.le`\nThat is 7 instructions. The `mov x0,x21` copy of the process register and the `mov x25,x2` copy are dead on the common (no-yield) path.\n\nFix: load, decrement and branch on the process field directly. Move any copies the yield path needs into the yield path. Coordinate with fz-sc8.249, whose hypothesis is that the inlined yield slow path drives callee-saved register traffic. A cold out-of-line yield stub may serve both.\n\nAsm first: target listing for the back edge (`ldr w1,[x21,#0x5d0]; subs w1,w1,#1; str w1,[x21,#0x5d0]; b.le yield`, or better if the counter can live in a register across the loop).\n\nAcceptance: p00 falls by the counted instructions (bench). Yield behaviour is unchanged: the scheduler fixtures and fz-wje's reduction-parity test pass.\n\n## Ledger evidence\n\nInstruction ledger (Make Distiller Fast, probe c4 at develop de4ef6a3b, lldb single-step; page https://claude.ai/artifact/REdzotwtihuF57Q2GKvQ6M section 9; durable files /Users/j5n/Workspace/fz-distill-hunt/trim/: ledger.py has the row numbers, cont-report.md the listings). One c4 step runs 225 instructions where BEAM JIT runs 79, and 139 of the 225 have no reason to exist. User rule (2026-11-24): \"every instruction must be justified and have a reason to exist, and if not, should be removed.\"\n\nThis ticket's rows: 121-127 in f and 198-203 in the resume. Each has the `mov xN,x21` copy and a `sub` then `cmp #0`; f's also has a dead `mov x24,x2`. fz runs 2 checks for 13 instructions per step. BEAM runs 4 checks for 8 (`subs w22,w22,#1; b.le`, the count kept in a register). Separately, 4 `x21` copies outside the check come from Cranelift 0.137.2 lowering get_pinned_reg to mov_from_preg (lower.isle:2839).",
@@ -23,5 +24,5 @@
   "status": "in_progress",
   "title": "The back-edge reduction check is the minimum sequence",
   "type": "task",
-  "updated_at": "2026-11-25T01:18:34Z"
+  "updated_at": "2026-11-25T01:22:07Z"
 }
