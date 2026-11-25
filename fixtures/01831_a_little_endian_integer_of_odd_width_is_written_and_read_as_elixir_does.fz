@@ -1,0 +1,387 @@
+#---
+# purpose: "a little-endian integer whose width is not a multiple of 8 is written and read as Elixir does: the whole low bytes first, then the remaining high bits as the final partial byte -- by construction, function-clause match, case match and receive match, unsigned and signed, at widths 1, 3, 9, 13, 17, 33 and 63, with values wider than the field truncated, a literal little-endian pattern, and a width read at run time"
+# oracle: self
+# oracle.stamp: c6a4e66e9b731084
+# args: 0
+#---
+defmodule Main do
+  # Values the compiler cannot see through: each is read from a list at a
+  # position that is known only at run time.
+  def v(list, k), do: Enum.at(list, String.to_integer(hd(System.argv())) + k)
+
+  def build1(x), do: <<x::1-little>>
+  def clause1(<<x::1-little, rest::bits>>), do: {x, rest}
+  def clause1(_), do: :nomatch
+  def clause_signed1(<<x::signed-1-little, rest::bits>>), do: {x, rest}
+  def clause_signed1(_), do: :nomatch
+
+  def case1(bin) do
+    case bin do
+      <<x::1-little, rest::bits>> -> {x, rest}
+      _ -> :nomatch
+    end
+  end
+
+  def case_signed1(bin) do
+    case bin do
+      <<x::signed-1-little, rest::bits>> -> {x, rest}
+      _ -> :nomatch
+    end
+  end
+
+  def receive1(bin) do
+    send(self(), bin)
+    receive do
+      <<x::1-little, rest::bits>> -> {x, rest}
+      _other -> :nomatch
+    end
+  end
+
+  def receive_signed1(bin) do
+    send(self(), bin)
+    receive do
+      <<x::signed-1-little, rest::bits>> -> {x, rest}
+      _other -> :nomatch
+    end
+  end
+
+  def row1(x) do
+    # three trailing bits keep the rest of every match off a byte boundary
+    bin = <<build1(x)::bits, 5::3>>
+    IO.inspect({1, x, build1(x)})
+    IO.inspect({:clause, clause1(bin)})
+    IO.inspect({:clause_signed, clause_signed1(bin)})
+    IO.inspect({:case, case1(bin)})
+    IO.inspect({:case_signed, case_signed1(bin)})
+    IO.inspect({:receive, receive1(bin)})
+    IO.inspect({:receive_signed, receive_signed1(bin)})
+  end
+
+  def build3(x), do: <<x::3-little>>
+  def clause3(<<x::3-little, rest::bits>>), do: {x, rest}
+  def clause3(_), do: :nomatch
+  def clause_signed3(<<x::signed-3-little, rest::bits>>), do: {x, rest}
+  def clause_signed3(_), do: :nomatch
+
+  def case3(bin) do
+    case bin do
+      <<x::3-little, rest::bits>> -> {x, rest}
+      _ -> :nomatch
+    end
+  end
+
+  def case_signed3(bin) do
+    case bin do
+      <<x::signed-3-little, rest::bits>> -> {x, rest}
+      _ -> :nomatch
+    end
+  end
+
+  def receive3(bin) do
+    send(self(), bin)
+    receive do
+      <<x::3-little, rest::bits>> -> {x, rest}
+      _other -> :nomatch
+    end
+  end
+
+  def receive_signed3(bin) do
+    send(self(), bin)
+    receive do
+      <<x::signed-3-little, rest::bits>> -> {x, rest}
+      _other -> :nomatch
+    end
+  end
+
+  def row3(x) do
+    # three trailing bits keep the rest of every match off a byte boundary
+    bin = <<build3(x)::bits, 5::3>>
+    IO.inspect({3, x, build3(x)})
+    IO.inspect({:clause, clause3(bin)})
+    IO.inspect({:clause_signed, clause_signed3(bin)})
+    IO.inspect({:case, case3(bin)})
+    IO.inspect({:case_signed, case_signed3(bin)})
+    IO.inspect({:receive, receive3(bin)})
+    IO.inspect({:receive_signed, receive_signed3(bin)})
+  end
+
+  def build9(x), do: <<x::9-little>>
+  def clause9(<<x::9-little, rest::bits>>), do: {x, rest}
+  def clause9(_), do: :nomatch
+  def clause_signed9(<<x::signed-9-little, rest::bits>>), do: {x, rest}
+  def clause_signed9(_), do: :nomatch
+
+  def case9(bin) do
+    case bin do
+      <<x::9-little, rest::bits>> -> {x, rest}
+      _ -> :nomatch
+    end
+  end
+
+  def case_signed9(bin) do
+    case bin do
+      <<x::signed-9-little, rest::bits>> -> {x, rest}
+      _ -> :nomatch
+    end
+  end
+
+  def receive9(bin) do
+    send(self(), bin)
+    receive do
+      <<x::9-little, rest::bits>> -> {x, rest}
+      _other -> :nomatch
+    end
+  end
+
+  def receive_signed9(bin) do
+    send(self(), bin)
+    receive do
+      <<x::signed-9-little, rest::bits>> -> {x, rest}
+      _other -> :nomatch
+    end
+  end
+
+  def row9(x) do
+    # three trailing bits keep the rest of every match off a byte boundary
+    bin = <<build9(x)::bits, 5::3>>
+    IO.inspect({9, x, build9(x)})
+    IO.inspect({:clause, clause9(bin)})
+    IO.inspect({:clause_signed, clause_signed9(bin)})
+    IO.inspect({:case, case9(bin)})
+    IO.inspect({:case_signed, case_signed9(bin)})
+    IO.inspect({:receive, receive9(bin)})
+    IO.inspect({:receive_signed, receive_signed9(bin)})
+  end
+
+  def build13(x), do: <<x::13-little>>
+  def clause13(<<x::13-little, rest::bits>>), do: {x, rest}
+  def clause13(_), do: :nomatch
+  def clause_signed13(<<x::signed-13-little, rest::bits>>), do: {x, rest}
+  def clause_signed13(_), do: :nomatch
+
+  def case13(bin) do
+    case bin do
+      <<x::13-little, rest::bits>> -> {x, rest}
+      _ -> :nomatch
+    end
+  end
+
+  def case_signed13(bin) do
+    case bin do
+      <<x::signed-13-little, rest::bits>> -> {x, rest}
+      _ -> :nomatch
+    end
+  end
+
+  def receive13(bin) do
+    send(self(), bin)
+    receive do
+      <<x::13-little, rest::bits>> -> {x, rest}
+      _other -> :nomatch
+    end
+  end
+
+  def receive_signed13(bin) do
+    send(self(), bin)
+    receive do
+      <<x::signed-13-little, rest::bits>> -> {x, rest}
+      _other -> :nomatch
+    end
+  end
+
+  def row13(x) do
+    # three trailing bits keep the rest of every match off a byte boundary
+    bin = <<build13(x)::bits, 5::3>>
+    IO.inspect({13, x, build13(x)})
+    IO.inspect({:clause, clause13(bin)})
+    IO.inspect({:clause_signed, clause_signed13(bin)})
+    IO.inspect({:case, case13(bin)})
+    IO.inspect({:case_signed, case_signed13(bin)})
+    IO.inspect({:receive, receive13(bin)})
+    IO.inspect({:receive_signed, receive_signed13(bin)})
+  end
+
+  def build17(x), do: <<x::17-little>>
+  def clause17(<<x::17-little, rest::bits>>), do: {x, rest}
+  def clause17(_), do: :nomatch
+  def clause_signed17(<<x::signed-17-little, rest::bits>>), do: {x, rest}
+  def clause_signed17(_), do: :nomatch
+
+  def case17(bin) do
+    case bin do
+      <<x::17-little, rest::bits>> -> {x, rest}
+      _ -> :nomatch
+    end
+  end
+
+  def case_signed17(bin) do
+    case bin do
+      <<x::signed-17-little, rest::bits>> -> {x, rest}
+      _ -> :nomatch
+    end
+  end
+
+  def receive17(bin) do
+    send(self(), bin)
+    receive do
+      <<x::17-little, rest::bits>> -> {x, rest}
+      _other -> :nomatch
+    end
+  end
+
+  def receive_signed17(bin) do
+    send(self(), bin)
+    receive do
+      <<x::signed-17-little, rest::bits>> -> {x, rest}
+      _other -> :nomatch
+    end
+  end
+
+  def row17(x) do
+    # three trailing bits keep the rest of every match off a byte boundary
+    bin = <<build17(x)::bits, 5::3>>
+    IO.inspect({17, x, build17(x)})
+    IO.inspect({:clause, clause17(bin)})
+    IO.inspect({:clause_signed, clause_signed17(bin)})
+    IO.inspect({:case, case17(bin)})
+    IO.inspect({:case_signed, case_signed17(bin)})
+    IO.inspect({:receive, receive17(bin)})
+    IO.inspect({:receive_signed, receive_signed17(bin)})
+  end
+
+  def build33(x), do: <<x::33-little>>
+  def clause33(<<x::33-little, rest::bits>>), do: {x, rest}
+  def clause33(_), do: :nomatch
+  def clause_signed33(<<x::signed-33-little, rest::bits>>), do: {x, rest}
+  def clause_signed33(_), do: :nomatch
+
+  def case33(bin) do
+    case bin do
+      <<x::33-little, rest::bits>> -> {x, rest}
+      _ -> :nomatch
+    end
+  end
+
+  def case_signed33(bin) do
+    case bin do
+      <<x::signed-33-little, rest::bits>> -> {x, rest}
+      _ -> :nomatch
+    end
+  end
+
+  def receive33(bin) do
+    send(self(), bin)
+    receive do
+      <<x::33-little, rest::bits>> -> {x, rest}
+      _other -> :nomatch
+    end
+  end
+
+  def receive_signed33(bin) do
+    send(self(), bin)
+    receive do
+      <<x::signed-33-little, rest::bits>> -> {x, rest}
+      _other -> :nomatch
+    end
+  end
+
+  def row33(x) do
+    # three trailing bits keep the rest of every match off a byte boundary
+    bin = <<build33(x)::bits, 5::3>>
+    IO.inspect({33, x, build33(x)})
+    IO.inspect({:clause, clause33(bin)})
+    IO.inspect({:clause_signed, clause_signed33(bin)})
+    IO.inspect({:case, case33(bin)})
+    IO.inspect({:case_signed, case_signed33(bin)})
+    IO.inspect({:receive, receive33(bin)})
+    IO.inspect({:receive_signed, receive_signed33(bin)})
+  end
+
+  def build63(x), do: <<x::63-little>>
+  def clause63(<<x::63-little, rest::bits>>), do: {x, rest}
+  def clause63(_), do: :nomatch
+  def clause_signed63(<<x::signed-63-little, rest::bits>>), do: {x, rest}
+  def clause_signed63(_), do: :nomatch
+
+  def case63(bin) do
+    case bin do
+      <<x::63-little, rest::bits>> -> {x, rest}
+      _ -> :nomatch
+    end
+  end
+
+  def case_signed63(bin) do
+    case bin do
+      <<x::signed-63-little, rest::bits>> -> {x, rest}
+      _ -> :nomatch
+    end
+  end
+
+  def receive63(bin) do
+    send(self(), bin)
+    receive do
+      <<x::63-little, rest::bits>> -> {x, rest}
+      _other -> :nomatch
+    end
+  end
+
+  def receive_signed63(bin) do
+    send(self(), bin)
+    receive do
+      <<x::signed-63-little, rest::bits>> -> {x, rest}
+      _other -> :nomatch
+    end
+  end
+
+  def row63(x) do
+    # three trailing bits keep the rest of every match off a byte boundary
+    bin = <<build63(x)::bits, 5::3>>
+    IO.inspect({63, x, build63(x)})
+    IO.inspect({:clause, clause63(bin)})
+    IO.inspect({:clause_signed, clause_signed63(bin)})
+    IO.inspect({:case, case63(bin)})
+    IO.inspect({:case_signed, case_signed63(bin)})
+    IO.inspect({:receive, receive63(bin)})
+    IO.inspect({:receive_signed, receive_signed63(bin)})
+  end
+
+  def literal_clause(<<0x1ABC::13-little, _rest::bits>>), do: :hit13
+  def literal_clause(<<0x1A5::9-little, _rest::bits>>), do: :hit9
+  def literal_clause(<<5::3-little, _rest::bits>>), do: :hit3
+  def literal_clause(_), do: :miss
+
+  def literal_receive(bin) do
+    send(self(), bin)
+    receive do
+      <<0x1ABC::13-little, _rest::bits>> -> :hit13
+      <<0x1A5::9-little, _rest::bits>> -> :hit9
+      _other -> :miss
+    end
+  end
+
+  def runtime_width(bits, x) do
+    bin = <<x::size(bits)-little, 5::3>>
+    <<y::size(bits)-little, rest::bits>> = bin
+    <<z::signed-size(bits)-little, _::bits>> = bin
+    IO.inspect({bits, bin})
+    IO.inspect({y, rest, z})
+  end
+
+  def main() do
+    xs = [1, 0x5A5A5A5A5A5A5A5A, -1, -2, 0x1ABC, 0x1A5, 5, 0x0123456789ABCDEF]
+    Enum.each(0..7, fn k -> row1(v(xs, k)) end)
+    Enum.each(0..7, fn k -> row3(v(xs, k)) end)
+    Enum.each(0..7, fn k -> row9(v(xs, k)) end)
+    Enum.each(0..7, fn k -> row13(v(xs, k)) end)
+    Enum.each(0..7, fn k -> row17(v(xs, k)) end)
+    Enum.each(0..7, fn k -> row33(v(xs, k)) end)
+    Enum.each(0..7, fn k -> row63(v(xs, k)) end)
+
+    bins = [<<0xBC, 0x1A::5>>, <<0xBC, 0x1A::5, 1::1>>, <<0xA5, 0x1::1>>, <<5::3>>, <<0xBC, 0x1B::5>>, <<>>]
+    Enum.each(bins, fn b -> IO.inspect({b, literal_clause(b), literal_receive(b)}) end)
+
+    ns = [5, 9, 13, 17, 33, 63]
+    Enum.each(0..5, fn k -> runtime_width(v(ns, k), v(xs, 1)) end)
+  end
+end
+Main.main()
