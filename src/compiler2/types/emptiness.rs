@@ -103,30 +103,25 @@ fn phi_inhabited_tuple<'d>(cx: TyCtx<'_>, t: &[&Descr], n: &[impl AsRef<[&'d Des
     true
 }
 
-/// The positive fold's evidence about the NONEMPTY fragment of a list-clause
-/// intersection ("unknown is not none"): before any sig is folded the
-/// fragment is unconstrained — a distinct state from proven-empty. An
-/// exact-empty sig (`elem: None`) admits no nonempty lists, so it forces
-/// `Empty`, and `Empty` absorbs everything folded after it.
-enum ElemEvidence {
+/// The positive fold's evidence about one coordinate of the NONEMPTY fragment
+/// of a list-clause intersection ("unknown is not none"): before any sig is
+/// folded the coordinate is unconstrained -- a distinct state from proven
+/// empty. `Empty` absorbs everything folded after it.
+enum Evidence<'a> {
     Unconstrained,
     Empty,
-    Inhabited(Box<Descr>),
+    Inhabited(Box<Cow<'a, Descr>>),
 }
 
-impl ElemEvidence {
-    /// Fold one positive sig's element constraint into the cell. `Empty` is
-    /// absorbing; every other transition is a plain set intersection, so
-    /// inhabited evidence degrades to `Empty` only on genuine set facts (an
-    /// exact-empty sig, or an intersection that empties).
-    fn meet(self, cx: TyCtx<'_>, sig_elem: Option<Ty>) -> Self {
-        let Some(elem) = sig_elem else {
-            return Self::Empty;
-        };
+impl<'a> Evidence<'a> {
+    /// Fold one positive sig's constraint on this coordinate. Every
+    /// transition is a plain set intersection, so inhabited evidence degrades
+    /// to `Empty` only on a genuine set fact.
+    fn meet(self, cx: TyCtx<'a>, ty: Ty) -> Self {
         let next = match self {
             Self::Empty => return Self::Empty,
-            Self::Unconstrained => cx.descr(&elem).clone(),
-            Self::Inhabited(prev) => prev.intersect(cx.descr(&elem)),
+            Self::Unconstrained => Cow::Borrowed(cx.descr(&ty)),
+            Self::Inhabited(prev) => Cow::Owned(prev.intersect(cx.descr(&ty))),
         };
         if next.is_empty(cx) {
             Self::Empty
@@ -135,10 +130,11 @@ impl ElemEvidence {
         }
     }
 
-    /// The fragment's element descriptor, `None` meaning ONLY "proven empty".
-    fn fragment(self) -> Option<Descr> {
+    /// The coordinate's descriptor, `top` when nothing constrained it, and
+    /// `None` meaning ONLY "proven empty".
+    fn fragment(self, top: impl FnOnce() -> Descr) -> Option<Cow<'a, Descr>> {
         match self {
-            Self::Unconstrained => Some(Descr::any()),
+            Self::Unconstrained => Some(Cow::Owned(top())),
             Self::Empty => None,
             Self::Inhabited(d) => Some(*d),
         }
@@ -148,27 +144,38 @@ impl ElemEvidence {
 /// What a list clause DENOTES, read off its factors once.
 ///
 /// A `ListSig` denotes `[]` (when `empty`) together with every non-empty list
-/// whose elements all lie in `elem`, so a whole clause says only two things:
-/// does it hold `[]`, and which non-empty lists does it keep. Everything that
-/// reads a list clause -- emptiness here, the normal form the persistence
-/// boundary writes, the canonical rendering -- reads it through this one
-/// answer, so none of them can disagree about what a clause means.
+/// whose elements all lie in `elem` and whose terminator lies in `last`, so a
+/// whole clause says only two things: does it hold `[]`, and which non-empty
+/// lists does it keep. Everything that reads a list clause -- emptiness here,
+/// the normal form the persistence boundary writes, the canonical rendering --
+/// reads it through this one answer, so none of them can disagree about what a
+/// clause means.
 pub(crate) struct ListDenotation {
     pub(crate) holds_empty: bool,
     /// The non-empty lists the clause keeps, absent when it keeps none.
     pub(crate) non_empty: Option<NonEmptyLists>,
 }
 
-/// Every non-empty list over `elem`, except those whose elements all lie in
-/// one of `minus`.
+/// Every non-empty list over `elem` ending in `last`, except those that lie
+/// in one of `minus`.
 ///
-/// Each entry of `minus` is already met with `elem`, which is exact
-/// (`L(F) \ L(N) = L(F) \ L(F ∩ N)`) and is what makes a subtraction that
-/// removes nothing recognizable: it survives only when it removes some of
-/// `elem` and not all of it.
+/// A subtraction whose elements cover `elem` has already been taken out of
+/// `last`: removing every list over `elem` that ends in `N` is ending
+/// somewhere outside `N`. What is left in `minus` are the subtractions over a
+/// smaller element, each met with `elem` and `last`, which is exact and is
+/// what makes a subtraction that removes nothing recognizable.
 pub(crate) struct NonEmptyLists {
     pub(crate) elem: Descr,
-    pub(crate) minus: Vec<Descr>,
+    pub(crate) last: Descr,
+    pub(crate) minus: Vec<ConsCut>,
+}
+
+/// One subtraction from a list clause's non-empty fragment: every non-empty
+/// list over `elem` ending in `last`.
+#[derive(PartialEq)]
+pub(crate) struct ConsCut {
+    pub(crate) elem: Descr,
+    pub(crate) last: Descr,
 }
 
 /// Whether a list clause holds `[]`, read off the `empty` flags alone.
@@ -181,12 +188,43 @@ pub(super) fn clause_holds_empty(c: &Conj<ListSig>) -> bool {
     c.pos.iter().all(|p| p.empty) && !c.neg.iter().any(|n| n.empty)
 }
 
-/// `None` when the clause denotes nothing.
+/// The non-empty fragment the positives keep before any subtraction: the
+/// meet of their elements and the meet of their terminators. `None` when it
+/// is empty, which a positive that holds only `[]` forces.
+fn positive_fragment<'a>(cx: TyCtx<'a>, c: &Conj<ListSig>) -> Option<(Cow<'a, Descr>, Cow<'a, Descr>)> {
+    let mut elem = Evidence::Unconstrained;
+    let mut last = Evidence::Unconstrained;
+    for p in &c.pos {
+        let cons = p.cons?;
+        elem = elem.meet(cx, cons.elem);
+        last = last.meet(cx, cons.last);
+    }
+    Some((elem.fragment(Descr::any)?, last.fragment(Descr::any_terminator)?))
+}
+
+/// The terminators left once every subtraction whose elements cover `elem`
+/// has taken its own out, or `None` when none is left.
 ///
-/// A subtraction swallows the non-empty fragment on its OWN or not at all: as
-/// soon as no single `minus` covers `elem`, pick one element outside each and
-/// put them in one list -- it is over `elem` and outside every `minus`. That
-/// single-negative rule is the one the axis rewrites above must not outrun.
+/// That is the whole emptiness rule. A list escapes a subtraction over a
+/// smaller element by holding one element outside it, and one list can hold
+/// such an element for every such subtraction at once; a subtraction that
+/// covers `elem` it escapes only by ending outside it.
+fn surviving_terminators<'a>(
+    cx: TyCtx<'_>,
+    c: &Conj<ListSig>,
+    elem: &Descr,
+    last: Cow<'a, Descr>,
+) -> Option<Cow<'a, Descr>> {
+    let mut last = last;
+    for cut in c.neg.iter().filter_map(|n| n.cons) {
+        if elem.diff(cx.descr(&cut.elem)).is_empty(cx) {
+            last = Cow::Owned(last.diff(cx.descr(&cut.last)));
+        }
+    }
+    (!last.is_empty(cx)).then_some(last)
+}
+
+/// `None` when the clause denotes nothing.
 pub(crate) fn list_denotation(cx: TyCtx<'_>, c: &Conj<ListSig>) -> Option<ListDenotation> {
     let holds_empty = clause_holds_empty(c);
     let just_empty = || {
@@ -195,73 +233,51 @@ pub(crate) fn list_denotation(cx: TyCtx<'_>, c: &Conj<ListSig>) -> Option<ListDe
             non_empty: None,
         })
     };
-    let mut evidence = ElemEvidence::Unconstrained;
-    for p in &c.pos {
-        evidence = evidence.meet(cx, p.elem);
-    }
-    let Some(elem) = evidence.fragment() else {
+    let Some((elem, last)) = positive_fragment(cx, c) else {
         return just_empty();
     };
-    let mut minus: Vec<Descr> = Vec::new();
-    for n in &c.neg {
-        // A negative with no element denotes `[]` alone, so it has already
-        // been read into `holds_empty` and takes nothing off the fragment.
-        let Some(cut) = n.elem else { continue };
-        let cut = elem.intersect(cx.descr(&cut));
-        if cut.is_empty(cx) {
+    let Some(last) = surviving_terminators(cx, c, &elem, last) else {
+        return just_empty();
+    };
+    let mut minus: Vec<ConsCut> = Vec::new();
+    for n in c.neg.iter().filter_map(|n| n.cons) {
+        let cut_elem = elem.intersect(cx.descr(&n.elem));
+        if cut_elem.is_empty(cx) || elem.diff(&cut_elem).is_empty(cx) {
             continue;
         }
-        if elem.diff(&cut).is_empty(cx) {
-            return just_empty();
+        let cut_last = last.intersect(cx.descr(&n.last));
+        if cut_last.is_empty(cx) {
+            continue;
         }
+        let cut = ConsCut {
+            elem: cut_elem,
+            last: cut_last,
+        };
         if !minus.contains(&cut) {
             minus.push(cut);
         }
     }
     Some(ListDenotation {
         holds_empty,
-        non_empty: Some(NonEmptyLists { elem, minus }),
+        non_empty: Some(NonEmptyLists {
+            elem: elem.into_owned(),
+            last: last.into_owned(),
+            minus,
+        }),
     })
 }
 
 /// Whether a list clause denotes nothing: it holds no `[]` and no non-empty
 /// list. This is [`list_denotation`] being absent, decided without building
-/// the denotation. A single positive element is read where it lives, and a
-/// negative covers the fragment exactly when the fragment lies inside the
-/// negative's element (`F \ (F ∩ N) = F \ N`).
+/// the denotation's subtractions.
 pub(crate) fn list_clause_empty(cx: TyCtx<'_>, c: &Conj<ListSig>) -> bool {
     if clause_holds_empty(c) {
         return false;
     }
-    let mut fragment: Option<Cow<'_, Descr>> = None;
-    for p in &c.pos {
-        let Some(elem) = &p.elem else {
-            return true;
-        };
-        let next = match fragment {
-            None => Cow::Borrowed(cx.descr(elem)),
-            Some(prev) => Cow::Owned(prev.intersect(cx.descr(elem))),
-        };
-        if next.is_empty(cx) {
-            return true;
-        }
-        fragment = Some(next);
-    }
-    if c.neg.iter().all(|n| n.elem.is_none()) {
-        return false;
-    }
-    let unconstrained;
-    let fragment = match &fragment {
-        Some(fragment) => fragment,
-        None => {
-            unconstrained = Cow::Owned(Descr::any());
-            &unconstrained
-        }
+    let Some((elem, last)) = positive_fragment(cx, c) else {
+        return true;
     };
-    c.neg
-        .iter()
-        .filter_map(|n| n.elem.as_ref())
-        .any(|cut| fragment.diff(cx.descr(cut)).is_empty(cx))
+    surviving_terminators(cx, c, &elem, last).is_none()
 }
 
 pub(crate) fn resource_clause_empty(cx: TyCtx<'_>, c: &Conj<ResourceSig>) -> bool {

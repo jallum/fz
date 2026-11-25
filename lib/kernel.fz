@@ -346,6 +346,7 @@ defmodule Kernel do
   defp declares_message?([:message | _]), do: true
   defp declares_message?([{:message, _} | _]), do: true
   defp declares_message?([_ | rest]), do: declares_message?(rest)
+  defp declares_message?(_other), do: false
 
   @doc """
   Answers `true` when `value` is an exception: a struct whose

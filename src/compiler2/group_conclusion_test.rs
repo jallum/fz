@@ -167,7 +167,7 @@ fn a_caller_outside_a_ring_of_three_reads_its_return_type_once_at_the_final_revi
 /// took an unfinished step of it would key activations of its own and each of
 /// those would climb in turn. The climb runs inside its group and `main`'s
 /// three decodes wait for it to close.
-const NESTED_DECODERS_ANALYSES: u64 = 112;
+const NESTED_DECODERS_ANALYSES: u64 = 114;
 /// The distinct activations of `array_value`: the cycle supplies the decoders'
 /// accumulator, so there is one however many steps the climb takes.
 const NESTED_DECODERS_ARRAY_VALUE_ACTIVATIONS: usize = 1;

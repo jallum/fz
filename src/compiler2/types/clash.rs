@@ -101,8 +101,8 @@ impl Pf {
             }
             for conj in &d.lists {
                 for sig in &conj.pos {
-                    if let Some(e) = sig.elem {
-                        add(&mut heads, Head::List, vec![Some(e)]);
+                    if let Some(cons) = sig.cons {
+                        add(&mut heads, Head::List, vec![Some(cons.elem), Some(cons.last)]);
                     }
                 }
             }
@@ -420,7 +420,10 @@ impl Types {
         }
         for conj in &mut d.lists {
             for sig in &mut conj.pos {
-                sig.elem = sig.elem.map(|e| at(self, &[Head::List], 0, e));
+                if let Some(cons) = &mut sig.cons {
+                    cons.elem = at(self, &[Head::List], 0, cons.elem);
+                    cons.last = at(self, &[Head::List], 1, cons.last);
+                }
             }
         }
         for conj in &mut d.resources {

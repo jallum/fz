@@ -210,7 +210,7 @@ fn duplicate_ceiling(number: u32) -> usize {
         // The Enum `*_while`, `*_every` and `*_positive` wrappers have key arrows beside their evidence
         // arrows, and each holds a closure literal whose surface views are separate ids; a view whose
         // accumulator is still a type variable is interned once per call site that names it.
-        420 => 313,
+        420 => 315,
         // The widened key type `%{1: atom}` stands beside `%{1: :a}` and holds a closure literal whose
         // surface views are separate ids; a view whose accumulator is still a type variable is
         // interned once per call site that names it.
@@ -419,7 +419,7 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
         ),
         (
             569, // enum_map_family
-            110,
+            112,
         ),
         (
             562, // mailbox_closure_each

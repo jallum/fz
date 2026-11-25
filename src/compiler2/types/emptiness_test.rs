@@ -1,7 +1,7 @@
 use super::{list_clause_empty, list_denotation, phi_tuple};
 use crate::compiler2::types::conj::Conj;
 use crate::compiler2::types::descr::Descr;
-use crate::compiler2::types::sigs::ListSig;
+use crate::compiler2::types::sigs::{ConsSig, ListSig};
 use crate::compiler2::types::{Ty, Types};
 
 /// Deciding emptiness carries no path of descriptors under decision, which is
@@ -32,6 +32,8 @@ fn a_descriptor_names_only_types_interned_before_it() {
     }
 }
 
+/// Proper lists over several elements, and lists ending in a non-list
+/// terminator, alone and alongside `[]`.
 fn list_sigs(t: &mut Types) -> Vec<ListSig> {
     let int = t.int();
     let float = t.float();
@@ -39,18 +41,30 @@ fn list_sigs(t: &mut Types) -> Vec<ListSig> {
     let any = t.any();
     let ints = t.list(int);
     let anys = t.list(any);
-    let elems = [
+    let empty = t.empty_list();
+    let atom = t.atom();
+    let atom_or_empty = t.union(atom, empty);
+    let terminator = t.any_terminator();
+    let conses = [
         None,
-        Some(int),
-        Some(float),
-        Some(number),
-        Some(any),
-        Some(ints),
-        Some(anys),
+        Some((int, empty)),
+        Some((float, empty)),
+        Some((number, empty)),
+        Some((any, empty)),
+        Some((ints, empty)),
+        Some((anys, empty)),
+        Some((int, atom)),
+        Some((number, atom_or_empty)),
+        Some((any, terminator)),
     ];
-    elems
+    conses
         .into_iter()
-        .flat_map(|elem| [true, false].map(|empty| ListSig { empty, elem }))
+        .flat_map(|cons| {
+            [true, false].map(|empty| ListSig {
+                empty,
+                cons: cons.map(|(elem, last)| ConsSig { elem, last }),
+            })
+        })
         .collect()
 }
 

@@ -885,6 +885,84 @@ mod tests {
         );
     }
 
+    /// A `[]`-seeded accumulator and the accumulator built from it are one
+    /// reduce, so their rows are one row: the seed row is admitted into the
+    /// built row with the accumulator widened by `[]`, whichever arrives first.
+    #[test]
+    fn a_seed_row_and_the_row_built_from_it_fuse() {
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let types = world.types_mut();
+        let int = types.int();
+        let arg = types.non_empty_list(int);
+        let built_arg = types.list(int);
+        let seed = types.empty_list();
+        let built = types.non_empty_list(int);
+        let fun = types.atom_lit("fun");
+        let possibly_empty = types.list(int);
+
+        let seed_row = ActivationInputAlternatives::from_row(vec![arg, seed, fun]);
+        let built_row = ActivationInputAlternatives::from_row(vec![built_arg, built, fun]);
+        for (first, second) in [(&seed_row, &built_row), (&built_row, &seed_row)] {
+            let mut rows = first.clone();
+            rows.join_assign(second, types);
+            assert_eq!(rows.rows().len(), 1);
+            assert_eq!(rows.rows()[0].columns(), [built_arg, possibly_empty, fun]);
+        }
+    }
+
+    /// Only emptiness is fused away: rows that differ in what the accumulator
+    /// holds stay separate alternatives.
+    #[test]
+    fn rows_that_differ_beyond_emptiness_stay_apart() {
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let types = world.types_mut();
+        let int = types.int();
+        let float = types.float();
+        let arg = types.list(int);
+        let fun = types.atom_lit("fun");
+        let other_fun = types.atom_lit("other_fun");
+        let ints = types.non_empty_list(int);
+        let floats = types.non_empty_list(float);
+        let empty = types.empty_list();
+
+        let apart = |types: &mut Types, left: Vec<Ty>, right: Vec<Ty>| {
+            let mut rows = ActivationInputAlternatives::from_row(left);
+            rows.join_assign(&ActivationInputAlternatives::from_row(right), types);
+            rows.rows().len()
+        };
+        assert_eq!(
+            apart(types, vec![arg, ints, fun], vec![arg, floats, fun]),
+            2,
+            "int vs float elements"
+        );
+        assert_eq!(
+            apart(types, vec![arg, int, fun], vec![arg, float, fun]),
+            2,
+            "int vs float"
+        );
+        assert_eq!(
+            apart(types, vec![arg, empty, fun], vec![arg, ints, other_fun]),
+            2,
+            "different callables"
+        );
+    }
+
+    /// Emptiness differing in two columns is two differences, not one.
+    #[test]
+    fn rows_that_differ_by_emptiness_in_two_columns_stay_apart() {
+        let _tel = ConfiguredTelemetry::new();
+        let mut world = World::new();
+        let types = world.types_mut();
+        let int = types.int();
+        let empty = types.empty_list();
+        let ints = types.non_empty_list(int);
+        let mut rows = ActivationInputAlternatives::from_row(vec![empty, ints]);
+        rows.join_assign(&ActivationInputAlternatives::from_row(vec![ints, empty]), types);
+        assert_eq!(rows.rows().len(), 2);
+    }
+
     /// Folding every contributor at once settles on the rows that joining them
     /// one at a time does, including when the row budget collapses them.
     #[test]

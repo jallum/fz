@@ -583,3 +583,43 @@ fn iodata_refuses_what_is_neither_a_binary_nor_a_list_of_bytes_and_binaries() {
         "a bare binary is iodata but not an iolist"
     );
 }
+
+/// Elixir's lists with a terminator: `maybe_improper_list(e, t)` may be `[]`
+/// and ends in `[]` or `t`; `nonempty_maybe_improper_list(e, t)` is that
+/// without `[]`; `nonempty_improper_list(e, t)` ends only in `t`.
+#[test]
+fn terminated_list_names_resolve_to_lists_ending_in_their_terminator() {
+    let tel = ConfiguredTelemetry::new();
+    let mut world = World::new();
+    let maybe = resolve(&tel, &mut world, "maybe_improper_list(integer, atom)").expect("resolves");
+    let non_empty_maybe = resolve(&tel, &mut world, "nonempty_maybe_improper_list(integer, atom)").expect("resolves");
+    let improper = resolve(&tel, &mut world, "nonempty_improper_list(integer, atom)").expect("resolves");
+    let proper = resolve(&tel, &mut world, "[integer]").expect("resolves");
+    let empty = resolve(&tel, &mut world, "[]").expect("resolves");
+
+    let t = world.types_mut();
+    let int = t.int();
+    let atom = t.atom();
+    let empty_or_atom = t.union(empty, atom);
+    assert_eq!(non_empty_maybe, t.cons(int, empty_or_atom));
+    assert_eq!(improper, t.cons(int, atom));
+    assert_eq!(maybe, t.union(non_empty_maybe, empty));
+    assert!(t.is_subtype(&proper, &maybe), "a proper list may be improper");
+    assert!(
+        !t.is_subtype(&improper, &proper),
+        "an improper list is not a proper one"
+    );
+
+    let bare = resolve(&tel, &mut world, "maybe_improper_list()").expect("bare name resolves");
+    let any_list = world.types_mut().any_list();
+    assert_eq!(bare, any_list, "the bare name is every list");
+    assert!(
+        resolve(&tel, &mut world, "maybe_improper_list(integer)").is_err(),
+        "one argument names neither form"
+    );
+    assert!(
+        resolve(&tel, &mut world, "nonempty_improper_list()").is_err(),
+        "Elixir defines nonempty_improper_list only with an element and a terminator"
+    );
+    assert!(resolve(&tel, &mut world, "nonempty_maybe_improper_list()").is_ok());
+}

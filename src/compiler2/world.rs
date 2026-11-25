@@ -3835,10 +3835,7 @@ impl BuiltinValueFamily {
 
 fn builtin_value_family_ty(t: &mut Types, family: BuiltinValueFamily) -> Ty {
     match family {
-        BuiltinValueFamily::List => {
-            let any = t.any();
-            t.list(any)
-        }
+        BuiltinValueFamily::List => t.any_list(),
         BuiltinValueFamily::Integer => t.int(),
         BuiltinValueFamily::Float => t.float(),
         BuiltinValueFamily::Atom => t.atom(),
