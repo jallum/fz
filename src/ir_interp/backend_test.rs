@@ -458,12 +458,14 @@ fn parked_receive_copies_only_winning_subjects_into_receiver_heap() {
     );
     let source = roots[0].raw_word();
     let head = fz_runtime::any_value::AnyValueRef::from_raw_word(fz_list_head_ref(source)).unwrap();
+    let tail = fz_runtime::any_value::AnyValueRef::from_raw_word(fz_list_tail_ref(source)).unwrap();
     let retained = fz_runtime::ir_runtime::fz_list_reuse_or_cons_parts(
         receiver,
         source,
         head.storage_raw().unwrap(),
         u64::from(head.tag().tag()),
-        fz_list_tail_ref(source),
+        tail.storage_raw().unwrap(),
+        u64::from(tail.tag().tag()),
         0,
     );
     assert_eq!(retained, source, "receiver GC preserves the exact retention operand");

@@ -1,0 +1,10 @@
+#---
+# purpose: "dbg of a list whose last tail is not a list prints it in the improper form and answers the same list"
+#---
+def main() do
+  l = dbg([1 | 2])
+  m = dbg([0 | %{a: 1}])
+  dbg(l == [1 | 2])
+  dbg(m == [0 | %{a: 1}])
+  :ok
+end

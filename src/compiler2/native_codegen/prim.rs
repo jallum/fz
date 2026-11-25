@@ -29,11 +29,12 @@ use fz_runtime::ir_runtime::fz_unbox_opaque;
 use fz_runtime::ir_runtime::{
     fz_alloc_binview_from_static, fz_bs_begin, fz_bs_field_end, fz_bs_field_spec, fz_bs_finalize,
     fz_bs_read_binary_ref, fz_bs_read_int_ref, fz_bs_write_field_ref, fz_bs_write_word, fz_function_arity,
-    fz_int_float_cmp, fz_map_dest_begin, fz_map_dest_begin_update, fz_map_dest_freeze, fz_map_dest_publish,
-    fz_map_dest_put, fz_map_get_ref, fz_map_named_schema_ref, fz_matcher_map_get_ref, fz_pinned_binary_segment_size,
-    fz_ref_load_atom, fz_ref_load_float, fz_ref_load_int, fz_struct_get_field_ref, fz_struct_get_named_field_ref,
-    fz_struct_module, fz_struct_schema_id_ref, fz_value_cmp_raw_const, fz_value_cmp_ref, fz_value_eq_raw_const,
-    fz_value_eq_ref, fz_value_eq_widening_ref,
+    fz_int_float_cmp, fz_list_cons_any, fz_list_cons_atom, fz_list_cons_float, fz_list_cons_int, fz_map_dest_begin,
+    fz_map_dest_begin_update, fz_map_dest_freeze, fz_map_dest_publish, fz_map_dest_put, fz_map_get_ref,
+    fz_map_named_schema_ref, fz_matcher_map_get_ref, fz_pinned_binary_segment_size, fz_ref_load_atom,
+    fz_ref_load_float, fz_ref_load_int, fz_struct_get_field_ref, fz_struct_get_named_field_ref, fz_struct_module,
+    fz_struct_schema_id_ref, fz_value_cmp_raw_const, fz_value_cmp_ref, fz_value_eq_raw_const, fz_value_eq_ref,
+    fz_value_eq_widening_ref,
 };
 use fz_runtime::process::AtomName;
 use fz_runtime::process_abi::{PROCESS_DELIVERED_OFFSET, PROCESS_FAILED_OFFSET};
@@ -98,6 +99,22 @@ fn emit_map_destination_put<M: cranelift_module::Module>(
     )
 }
 
+/// A cell onto the tail, through the inline row of the runtime entry `$item`
+/// when the tail is known to be a list, and through the entry itself when it
+/// may not be: the entry places a terminator cell for a tail that is not a
+/// list.
+macro_rules! list_cons_entry {
+    ($body:expr, $tail:expr, $item:ident, $args:expr) => {{
+        if $tail.is_list() {
+            emit_cell($body, stringify!($item), &$args)
+        } else {
+            let item: unsafe extern "C" fn(_, _, _, _) -> _ = $item;
+            let call = $body.call_runtime(stringify!($item), item, &$args);
+            $body.sole_result(call)
+        }
+    }};
+}
+
 pub(crate) fn emit_list_cons_bif<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
@@ -105,25 +122,30 @@ pub(crate) fn emit_list_cons_bif<M: cranelift_module::Module>(
     head_kind: Option<ValueKind>,
     tail: ListTailBits,
 ) -> ir::Value {
-    let tail_ref = body.list_tail_ref_word(tail);
+    let [tail_word, tail_kind] = body.list_tail_words(tail);
     let head_value = binding_for_var(var_env, head.0);
     let process = body.process_arg();
     match cons_head_kind(head_kind, head_value) {
         Some(ValueKind::INT) => {
             let head_raw = body.value_raw_int(head_value);
-            emit_cell(body, "fz_list_cons_int", &[process, head_raw, tail_ref])
+            list_cons_entry!(body, tail, fz_list_cons_int, [process, head_raw, tail_word, tail_kind])
         }
         Some(ValueKind::FLOAT) => {
             let head_raw = body.value_raw_float(head_value);
-            emit_cell(body, "fz_list_cons_float", &[process, head_raw, tail_ref])
+            list_cons_entry!(
+                body,
+                tail,
+                fz_list_cons_float,
+                [process, head_raw, tail_word, tail_kind]
+            )
         }
         Some(ValueKind::ATOM) => {
             let head_raw = body.value_raw_atom(head_value);
-            emit_cell(body, "fz_list_cons_atom", &[process, head_raw, tail_ref])
+            list_cons_entry!(body, tail, fz_list_cons_atom, [process, head_raw, tail_word, tail_kind])
         }
         _ => {
             let head_ref = body.value_as_any_ref(head_value);
-            emit_cell(body, "fz_list_cons_any", &[process, head_ref, tail_ref])
+            list_cons_entry!(body, tail, fz_list_cons_any, [process, head_ref, tail_word, tail_kind])
         }
     }
 }
@@ -293,8 +315,7 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
                 && let Some(tail_var) = tail
                 && let Some(retention) = retention
             {
-                let tail_bits = body.any_ref_for_var(var_env, tail_var.0);
-                let tail = list_tail_bits_for_var(t, value_types, *tail_var, tail_bits);
+                let tail = list_tail_bits_for_var(body, t, value_types, var_env, *tail_var);
                 let reused = emit_list_retention_or_alloc(body, var_env, elems[0], tail, *retention);
                 if let Some(reused) = reused {
                     return Ok(LowerOut::ValueRef(reused));
@@ -303,10 +324,7 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
             // Default tail of a list-literal is the empty list (`[]`),
             // NOT the nil atom value — distinct runtime bit patterns.
             let mut acc = match tail {
-                Some(tail_var) => {
-                    let tail_bits = body.any_ref_for_var(var_env, tail_var.0);
-                    list_tail_bits_for_var(t, value_types, *tail_var, tail_bits)
-                }
+                Some(tail_var) => list_tail_bits_for_var(body, t, value_types, var_env, *tail_var),
                 None => ListTailBits::Empty,
             };
             for e in elems.iter().rev() {
@@ -316,6 +334,7 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
             match acc {
                 ListTailBits::NonEmptyValueRef(bits) | ListTailBits::ValueRef(bits) => LowerOut::ValueRef(bits),
                 ListTailBits::Empty => LowerOut::ValueRefWord(body.empty_list_ref()),
+                ListTailBits::Checked(_) => unreachable!("a list with no elements has no tail to check"),
             }
         }
         Prim::MakeTuple(elems) => {

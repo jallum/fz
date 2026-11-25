@@ -1,0 +1,13 @@
+#---
+# purpose: [1 | x] with an integer x places the cell and one terminator cell, 32 bytes of list cells, and boxes no scalar
+#---
+def cons_onto(x), do: [1 | x]
+
+def main() do
+  start = System.alloc_stats()
+  cell = cons_onto(2)
+  stop = System.alloc_stats()
+  dbg({stop[:list_cons_allocs] - start[:list_cons_allocs], stop[:list_cons_bytes] - start[:list_cons_bytes]})
+  dbg(stop[:scalar_box_allocs] - start[:scalar_box_allocs])
+  dbg(cell)
+end

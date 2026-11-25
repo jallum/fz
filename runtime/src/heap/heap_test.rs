@@ -1,8 +1,8 @@
 use super::imp::{BUDGET_FLOOR, MAJOR_GROWTH_FACTOR};
 use super::*;
 use crate::any_value::{
-    AnyValue, AnyValueRef, AnyValueRefError, AnyValueRefPacking, EMPTY_LIST, EMPTY_LIST_BITS, ListCons,
-    STRUCT_PAYLOAD_OFFSET, SlotLayout, ValueKind, binview_addr_from_tagged, bitstring_bytes_ptr,
+    AnyValue, AnyValueRef, AnyValueRefError, AnyValueRefPacking, EMPTY_LIST, EMPTY_LIST_BITS, ListCons, ListLink,
+    ListTail, STRUCT_PAYLOAD_OFFSET, SlotLayout, ValueKind, binview_addr_from_tagged, bitstring_bytes_ptr,
     bitstring_size_for_bit_len, closure_addr_from_tagged, closure_capture_set, closure_capture_value,
     closure_captured_count, closure_fn_ptr, closure_halt_kind, heap_kind_from_tagged, heap_object_word, heap_word_addr,
     list_addr_from_tagged, map_addr_from_tagged, map_count, map_entry, map_size_for_count, object_size,
@@ -310,6 +310,16 @@ fn alloc_int_list_cons(heap: &mut Heap, head: i64, tail_bits: u64) -> u64 {
 fn list_ref_from_bits(bits: u64) -> AnyValueRef {
     let addr = list_addr_from_tagged(bits).expect("list addr");
     AnyValueRef::from_heap_object(ValueKind::LIST, addr).expect("list ref")
+}
+
+/// The list `bits` names, as the tail value a cell is rebuilt in front of.
+fn list_value(bits: u64) -> AnyValue {
+    AnyValue::from_ref(list_ref_from_bits(bits)).expect("list value")
+}
+
+/// What a link to the list `bits` answers: the next cell's address, 0 for `[]`.
+fn proper(bits: u64) -> ListTail {
+    ListTail::Proper(list_addr_from_tagged(bits).map_or(0, |addr| addr as u64))
 }
 
 #[test]
@@ -847,10 +857,10 @@ fn gc_copies_rooted_list_and_rewrites_root() {
         let cons = unsafe { &*cur };
         sum += cons.head as i64;
         count += 1;
-        cur = if cons.tail_addr() == 0 {
+        cur = if cons.tail_cell_addr() == 0 {
             null_mut()
         } else {
-            cons.tail_addr() as *mut ListCons
+            cons.tail_cell_addr() as *mut ListCons
         };
     }
     assert_eq!(count, 3);
@@ -869,7 +879,7 @@ fn gc_preserves_list_alias_metadata() {
 
     let copied_n1 = list_addr_from_tagged(ref_bits(roots[0])).unwrap();
     let copied_n1 = unsafe { &*(copied_n1 as *const ListCons) };
-    let copied_n2 = unsafe { &*(copied_n1.tail_addr() as *const ListCons) };
+    let copied_n2 = unsafe { &*(copied_n1.tail_cell_addr() as *const ListCons) };
     assert!(copied_n2.aliased());
     assert_eq!(copied_n2.head as i64, 2);
 }
@@ -889,13 +899,13 @@ fn a_list_cell_a_collection_kept_is_not_rewritten_in_place() {
     let before = h.node.alloc_stats().list_cons.allocs;
 
     let rebuilt = h
-        .reuse_or_alloc_list_cons_raw_kind(kept, 1, ValueKind::INT, AnyValueRef::empty_list(), true)
+        .reuse_or_alloc_list_cons_raw_kind(kept, 1, ValueKind::INT, AnyValue::EmptyList, true)
         .expect("rebuild");
 
     assert_ne!(rebuilt, kept);
     assert_eq!(h.node.alloc_stats().list_cons.allocs, before + 1);
     let kept_cell = unsafe { &*(kept.list_addr().unwrap() as *const ListCons) };
-    assert_ne!(kept_cell.tail_addr(), 0, "the kept cell still has its tail");
+    assert_ne!(kept_cell.tail_cell_addr(), 0, "the kept cell still has its tail");
 }
 
 #[test]
@@ -956,7 +966,7 @@ fn unchanged_list_retention_needs_no_rewrite_permission_even_when_published() {
     heap.mark_published_ref_aliased(source_ref).unwrap();
     let before = heap.node.alloc_stats().list_cons.allocs;
     let retained = heap
-        .reuse_or_alloc_list_cons_raw_kind(source_ref, 1, ValueKind::INT, list_ref_from_bits(tail), false)
+        .reuse_or_alloc_list_cons_raw_kind(source_ref, 1, ValueKind::INT, list_value(tail), false)
         .unwrap();
     assert_eq!(retained, source_ref);
     assert_eq!(heap.node.alloc_stats().list_cons.allocs, before);
@@ -969,7 +979,7 @@ fn retained_unaliased_source_without_permission_allocates_for_changed_contents()
     let source_ref = list_ref_from_bits(source);
     let before = heap.node.alloc_stats().list_cons.allocs;
     let rebuilt = heap
-        .reuse_or_alloc_list_cons_raw_kind(source_ref, 9, ValueKind::INT, AnyValueRef::empty_list(), false)
+        .reuse_or_alloc_list_cons_raw_kind(source_ref, 9, ValueKind::INT, AnyValue::EmptyList, false)
         .unwrap();
     assert_ne!(rebuilt, source_ref);
     assert_eq!(heap.node.alloc_stats().list_cons.allocs, before + 1);
@@ -987,13 +997,7 @@ fn unaliased_reuse_or_alloc_rewrites_cons_in_place() {
     let before = h.node.alloc_stats().list_cons.allocs;
 
     let out = h
-        .reuse_or_alloc_list_cons_raw_kind(
-            list_ref_from_bits(head),
-            7,
-            ValueKind::ATOM,
-            list_ref_from_bits(new_tail),
-            true,
-        )
+        .reuse_or_alloc_list_cons_raw_kind(list_ref_from_bits(head), 7, ValueKind::ATOM, list_value(new_tail), true)
         .expect("reuse");
 
     assert_eq!(out, list_ref_from_bits(head));
@@ -1001,7 +1005,7 @@ fn unaliased_reuse_or_alloc_rewrites_cons_in_place() {
     let cons = unsafe { &*(list_addr_from_tagged(head).unwrap() as *const ListCons) };
     assert_eq!(cons.head as i64, 7);
     assert_eq!(cons.head_kind(), ValueKind::ATOM);
-    assert_eq!(cons.tail_bits(), new_tail);
+    assert_eq!(cons.tail(), proper(new_tail));
     assert!(!cons.aliased());
 }
 
@@ -1016,7 +1020,7 @@ fn aliased_reuse_or_alloc_allocates_fresh_cons_without_mutating_original() {
     let before = h.node.alloc_stats().list_cons.allocs;
 
     let out = h
-        .reuse_or_alloc_list_cons_raw_kind(head_ref, 9, ValueKind::FLOAT, list_ref_from_bits(new_tail), true)
+        .reuse_or_alloc_list_cons_raw_kind(head_ref, 9, ValueKind::FLOAT, list_value(new_tail), true)
         .expect("fallback allocation");
 
     assert_ne!(out, head_ref);
@@ -1024,12 +1028,12 @@ fn aliased_reuse_or_alloc_allocates_fresh_cons_without_mutating_original() {
     let original = unsafe { &*(list_addr_from_tagged(head).unwrap() as *const ListCons) };
     assert_eq!(original.head as i64, 0);
     assert_eq!(original.head_kind(), ValueKind::INT);
-    assert_eq!(original.tail_bits(), old_tail);
+    assert_eq!(original.tail(), proper(old_tail));
     assert!(original.aliased());
     let fresh = unsafe { &*(out.list_addr().expect("fresh list addr") as *const ListCons) };
     assert_eq!(fresh.head as i64, 9);
     assert_eq!(fresh.head_kind(), ValueKind::FLOAT);
-    assert_eq!(fresh.tail_bits(), new_tail);
+    assert_eq!(fresh.tail(), proper(new_tail));
     assert!(!fresh.aliased());
 }
 
@@ -1044,19 +1048,19 @@ fn published_reuse_or_alloc_allocates_fresh_cons_without_mutating_original() {
     let before = h.node.alloc_stats().list_cons.allocs;
 
     let out = h
-        .reuse_or_alloc_list_cons_raw_kind(head_ref, 42, ValueKind::INT, list_ref_from_bits(new_tail), true)
+        .reuse_or_alloc_list_cons_raw_kind(head_ref, 42, ValueKind::INT, list_value(new_tail), true)
         .expect("fallback allocation");
 
     assert_ne!(out, head_ref);
     assert_eq!(h.node.alloc_stats().list_cons.allocs, before + 1);
     let original = unsafe { &*(list_addr_from_tagged(head).unwrap() as *const ListCons) };
     assert_eq!(original.head as i64, 0);
-    assert_eq!(original.tail_bits(), old_tail);
+    assert_eq!(original.tail(), proper(old_tail));
     assert!(original.aliased());
     let fresh = unsafe { &*(out.list_addr().expect("fresh list addr") as *const ListCons) };
     assert_eq!(fresh.head as i64, 42);
     assert_eq!(fresh.head_kind(), ValueKind::INT);
-    assert_eq!(fresh.tail_bits(), new_tail);
+    assert_eq!(fresh.tail(), proper(new_tail));
     assert!(!fresh.aliased());
 }
 
@@ -1264,7 +1268,7 @@ fn deep_copy_tagged_list_preserves_nested_list_head() {
     let child = unsafe { &*(copied_child as *const ListCons) };
     assert_eq!(child.head_kind(), ValueKind::INT);
     assert_eq!(child.head as i64, 7);
-    assert_eq!(child.tail_bits(), EMPTY_LIST);
+    assert_eq!(child.tail(), proper(EMPTY_LIST));
 }
 
 #[test]
@@ -3922,4 +3926,57 @@ fn the_reported_copy_is_the_fill_of_the_blocks_the_collection_filled() {
         );
     }
     assert!(overflowed, "some collection copied into more than one block");
+}
+
+/// Intent: consing onto a value that is not a list places the value in a
+/// terminator cell and nothing else: two list cells, and no box for the
+/// scalar.
+#[test]
+fn an_int_tail_costs_two_list_cells_and_no_scalar_box() {
+    let mut h = Heap::new(1024, fresh_registry());
+    let before = h.node.alloc_stats();
+
+    let cell = h.alloc_list_cons_any(AnyValue::int(1), AnyValue::int(2));
+
+    let stats = h.node.alloc_stats();
+    assert_eq!(
+        stats.list_cons.allocs - before.list_cons.allocs,
+        2,
+        "the cell and its terminator cell"
+    );
+    assert_eq!(
+        stats.scalar_box.allocs - before.scalar_box.allocs,
+        0,
+        "the int is stored in the cell, not boxed"
+    );
+    assert_eq!(
+        stats.total.allocs - before.total.allocs,
+        2,
+        "no other object was placed"
+    );
+    let tail = h.read_list_tail_ref(cell).expect("a tail");
+    assert_eq!(tail.tag(), ValueKind::INT);
+    assert_eq!(tail.load_int(), Ok(2));
+}
+
+/// Intent: the terminator is read where a tail is read, whatever its kind.
+#[test]
+fn the_tail_of_an_improper_cell_is_the_terminator_value() {
+    let mut h = Heap::new(1024, fresh_registry());
+    let cell = h.alloc_list_cons_any(AnyValue::int(1), AnyValue::atom(7));
+    let tail = h.read_list_tail_ref(cell).expect("a tail");
+    assert_eq!(tail.tag(), ValueKind::ATOM);
+    assert_eq!(tail.load_atom(), Ok(7));
+}
+
+/// Intent: a hole is reserved for the destination that fills it, so reading
+/// its tail fails loudly rather than answering `[]` or garbage.
+#[test]
+#[should_panic(expected = "hole")]
+fn reading_the_tail_of_a_hole_is_refused() {
+    let mut h = Heap::new(1024, fresh_registry());
+    let bits = alloc_int_list_cons(&mut h, 1, EMPTY_LIST);
+    let addr = list_addr_from_tagged(bits).expect("list addr") as *mut ListCons;
+    unsafe { *addr = ListCons::with_link(1, ListLink::hole(ValueKind::INT)) };
+    let _ = h.read_list_tail_ref(list_ref_from_bits(bits));
 }

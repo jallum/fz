@@ -4205,6 +4205,10 @@ impl SharedTypes for Types {
         Types::list(self, elem)
     }
 
+    fn any_list(&mut self) -> Self::Ty {
+        Types::any_list(self)
+    }
+
     fn non_empty_list(&mut self, elem: Self::Ty) -> Self::Ty {
         Types::non_empty_list(self, elem)
     }

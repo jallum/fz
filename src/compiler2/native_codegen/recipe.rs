@@ -146,13 +146,13 @@ macro_rules! recipe {
 /// An allocation row: the runtime function places a list cell whose head
 /// reaches it as `$lane` says.
 macro_rules! list_cell {
-    ($item:ident($process:ident, $head:ident, $tail:ident), $lane:expr) => {
+    ($item:ident($process:ident, $head:ident, $tail:ident, $tail_kind:ident), $lane:expr) => {
         Recipe {
             symbol: {
-                let _: unsafe extern "C" fn(_, _, _) -> _ = $item;
+                let _: unsafe extern "C" fn(_, _, _, _) -> _ = $item;
                 stringify!($item)
             },
-            arity: 3,
+            arity: 4,
             emit: Emit::Cell($lane),
         }
     };
@@ -306,21 +306,21 @@ pub(crate) const RECIPES: &[Recipe] = &[
     recipe!(fz_op_neg_f(operand), |b| Some(Emitted::Value(b.ins().fneg(operand)))),
     recipe!(fz_op_abs_f(operand), |b| Some(Emitted::Value(b.ins().fabs(operand)))),
     // List cells.
-    list_cell!(fz_list_cons_int(process, head, tail), HeadLane::Int),
-    list_cell!(fz_list_cons_float(process, head, tail), HeadLane::Float),
-    list_cell!(fz_list_cons_atom(process, head, tail), HeadLane::Atom),
-    list_cell!(fz_list_cons_any(process, head, tail), HeadLane::Ref),
+    list_cell!(fz_list_cons_int(process, head, tail, tail_kind), HeadLane::Int),
+    list_cell!(fz_list_cons_float(process, head, tail, tail_kind), HeadLane::Float),
+    list_cell!(fz_list_cons_atom(process, head, tail, tail_kind), HeadLane::Atom),
+    list_cell!(fz_list_cons_any(process, head, tail, tail_kind), HeadLane::Ref),
     // List cells rebuilt from the cell they replace.
     Recipe {
         symbol: {
-            let _: unsafe extern "C" fn(_, _, _, _, _, _) -> _ = fz_list_reuse_or_cons_parts;
+            let _: unsafe extern "C" fn(_, _, _, _, _, _, _) -> _ = fz_list_reuse_or_cons_parts;
             REUSE_REF_HEAD
         },
-        arity: 5,
+        arity: 6,
         emit: Emit::Reuse(ReuseLane::Ref),
     },
     list_reuse!(
-        fz_list_reuse_or_cons_parts(process, list, head_raw, head_kind, tail, rewrite),
+        fz_list_reuse_or_cons_parts(process, list, head_raw, head_kind, tail, tail_kind, rewrite),
         ReuseLane::Parts
     ),
     // Scalar boxes.
@@ -368,7 +368,8 @@ pub(crate) fn emit_inline(b: &mut FunctionBuilder<'_>, symbol: &str, args: &[ir:
 }
 
 /// Place the list cell the runtime function `symbol` places, applied to
-/// `args` (the process, the head and the tail), and answer its ref word. The
+/// `args` (the process, the head, and the tail's address and kind), and answer
+/// its ref word. The
 /// site is registered in `scope`.
 pub(crate) fn emit_cell<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,

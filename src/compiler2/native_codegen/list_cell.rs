@@ -6,6 +6,13 @@
 //! itself; the runtime is asked only to share a list or struct head, which
 //! the cell's holder may not write through again.
 //!
+//! The tail reaches a row as its stored word and kind, as every entry takes
+//! a value, and an inline row is for a tail whose kind is the constant `LIST`:
+//! the word is then the address of the next cell, 0 for `[]`. A tail of any
+//! other kind ends the list in a terminator cell, which only the runtime
+//! entry places; compiled code calls that entry for any tail its type does
+//! not prove a list.
+//!
 //! The rows of the recipe table that name `fz_list_cons_*` are emitted here,
 //! one per way the head reaches the cell:
 //!
@@ -19,6 +26,7 @@
 //! A new cell carries no alias bit: only a second holder sets one.
 
 use super::place::emit_place;
+use super::recipe::constant_of;
 use super::*;
 use cranelift_codegen::ir::{self, BlockArg, InstBuilder, MemFlagsData, types};
 use cranelift_frontend::FunctionBuilder;
@@ -49,20 +57,22 @@ pub(super) enum HeadKind {
     Read(ir::Value),
 }
 
-/// Place a cell whose head is `args[1]` and whose tail is the list ref
-/// `args[2]`, and answer its ref word. `args[0]` is the process, which
-/// `emit_place` reads from the pinned register.
+/// Place a cell whose head is `args[1]` and whose tail is the list at the
+/// address `args[2]`, and answer its ref word. `args[3]` is the tail's kind,
+/// a constant `LIST`. `args[0]` is the process, which `emit_place` reads from
+/// the pinned register.
 pub(super) fn emit_list_cell<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
     lane: HeadLane,
     args: &[ir::Value],
 ) -> ir::Value {
-    let &[_process, head, tail] = args else {
+    let &[_process, head, tail_address, tail_kind] = args else {
         panic!(
-            "a list cell row takes a process, a head and a tail, got {} arguments",
+            "a list cell row takes a process, a head and a tail word and kind, got {} arguments",
             args.len()
         );
     };
+    assert_tail_is_list(body, tail_kind);
     let head = match lane {
         HeadLane::Int => Head::known(head, ValueKind::INT),
         HeadLane::Float => {
@@ -75,8 +85,18 @@ pub(super) fn emit_list_cell<M: cranelift_module::Module>(
             decode(body, head)
         }
     };
-    let tail_address = address_field(body.b, tail);
     place_cell(body, &head, tail_address)
+}
+
+/// An inline row links a list. A tail of another kind is the runtime's to
+/// place, so a row asked for one is a bug at the call site.
+pub(super) fn assert_tail_is_list<M: cranelift_module::Module>(body: &CodegenFn<'_, '_, M>, tail_kind: ir::Value) {
+    let kind = constant_of(body.b, tail_kind);
+    assert_eq!(
+        kind,
+        Some(i64::from(ValueKind::LIST.tag())),
+        "an inline list row takes a tail whose kind is the constant LIST"
+    );
 }
 
 /// The link word a cell holds: the tail's address with the head's kind above it.

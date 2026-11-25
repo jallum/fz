@@ -1,0 +1,43 @@
+[1, 2 | 3]
+[1 | 2]
+[1 | 2.5]
+[1 | :b]
+[1 | "bin"]
+[1 | {2, 3}]
+[0 | %{a: 1}]
+[1 | nil]
+false
+[1, 2]
+3
+{0, 1, 7}
+2
+:length_raised
+:proper_and_not_empty
+:fell_through
+:fell_through
+:one_pipe_two
+:one_two
+:one_two
+true
+false
+true
+false
+true
+true
+true
+true
+true
+:improper
+:proper
+false
+%{[1 | 2] => :improper, [1, 2] => :proper}
+[1, 2 | 3]
+[1 | %{k: :v}]
+{[1, 2 | 3], [0 | %{a: 1}], [1 | 2.5]}
+"[1, 2 | 3]"
+"[1, ...]"
+"[1 | 2]"
+"[1, 2 | 3]"
+"[[1 | 2], 3 | 4]"
+"[97 | 98]"
+"[{:a, 1} | 2]"

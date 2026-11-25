@@ -197,8 +197,7 @@ The BIFs `json.erl` calls are source in the same module (`01813`, `01814`):
 `ArgumentError` listing every faulty argument as Erlang's error formatter does
 (`is_map_key/2` raises `BadMapError`). `String.to_float/1`,
 `String.to_integer/1` and `IO.iodata_to_binary/1` delegate to them as
-Elixir's do. An iolist whose tail is a binary is handled by `iolist_to_binary/1`
-but cannot be built in fz source, which has no improper lists.
+Elixir's do. An iolist whose tail is a binary is handled by `iolist_to_binary/1`.
 
 `lib/binary.fz` defines `:binary` with `at/2`, `copy/1`, `copy/2` and
 `referenced_byte_size/1`. `at/2` reads the byte with a

@@ -9,26 +9,42 @@ use crate::types::Types;
 use cranelift_codegen::ir::{self, InstBuilder, MemFlagsData, types};
 use cranelift_module::Module;
 use fz_runtime::any_value::{FALSE_BITS as FALSE_BITS_RAW, TRUE_BITS as TRUE_BITS_RAW, ValueKind};
+use fz_runtime::ir_runtime::fz_list_reuse_or_cons_parts;
 
 pub(crate) const SLOT_BYTES: i32 = 8;
 
+/// The tail of a list under construction. A tail whose type is a list, proper
+/// or not, is linked by the cell itself; any other is `Checked`, and the
+/// runtime links it or ends the list in it.
 #[derive(Clone, Copy)]
 pub(crate) enum ListTailBits {
     Empty,
     ValueRef(ir::Value),
     NonEmptyValueRef(ir::Value),
+    Checked(CodegenValue),
 }
 
-pub(crate) fn list_tail_bits_for_var<T: Types<Ty = Ty>>(
+impl ListTailBits {
+    /// Whether the tail is known to be a list, so a cell may be written
+    /// inline with no runtime check of what follows it.
+    pub(crate) fn is_list(self) -> bool {
+        !matches!(self, Self::Checked(_))
+    }
+}
+
+pub(crate) fn list_tail_bits_for_var<T: Types<Ty = Ty>, M: Module>(
+    body: &mut CodegenFn<'_, '_, M>,
     t: &mut T,
     value_types: &HashMap<Var, Ty>,
+    var_env: &HashMap<u32, CodegenValue>,
     tail_var: Var,
-    tail_bits: ir::Value,
 ) -> ListTailBits {
     if ty_is_non_empty_list(t, value_types, tail_var) {
-        ListTailBits::NonEmptyValueRef(tail_bits)
+        ListTailBits::NonEmptyValueRef(body.any_ref_for_var(var_env, tail_var.0))
+    } else if ty_is_any_list(t, value_types, tail_var) {
+        ListTailBits::ValueRef(body.any_ref_for_var(var_env, tail_var.0))
     } else {
-        ListTailBits::ValueRef(tail_bits)
+        ListTailBits::Checked(binding_for_var(var_env, tail_var.0))
     }
 }
 
@@ -42,26 +58,37 @@ pub(crate) fn emit_list_retention_or_alloc<M: Module>(
     let source_cons = retention.source;
     let source_ref = body.any_ref_for_var(var_env, source_cons.0);
     let head_value = binding_for_var(var_env, head.0);
-    let tail_ref = body.list_tail_ref_word(tail);
+    let [tail_word, tail_kind] = body.list_tail_words(tail);
     let rewrite = body.b.ins().iconst(
         types::I64,
         i64::from(retention.permission == crate::fz_ir::RewritePermission::Rewrite),
     );
     let process = body.process_arg();
-    if let CodegenValue::AnyRef(head_ref) = head_value {
+    if tail.is_list()
+        && let CodegenValue::AnyRef(head_ref) = head_value
+    {
         return Some(emit_reuse(
             body,
             REUSE_REF_HEAD,
-            &[process, source_ref, head_ref, tail_ref, rewrite],
+            &[process, source_ref, head_ref, tail_word, tail_kind, rewrite],
         ));
     }
-    let (head_raw, head_kind) = value_raw_kind_parts(body, head_value)?;
-    let head_kind = body.b.ins().iconst(types::I64, head_kind.tag() as i64);
-    Some(emit_reuse(
-        body,
-        "fz_list_reuse_or_cons_parts",
-        &[process, source_ref, head_raw, head_kind, tail_ref, rewrite],
-    ))
+    let (head_raw, head_kind) = match value_raw_kind_parts(body, head_value) {
+        Some((raw, kind)) => (raw, body.b.ins().iconst(types::I64, i64::from(kind.tag()))),
+        None if !tail.is_list() => {
+            let head_ref = body.value_as_any_ref(head_value);
+            let [raw, kind] = super::list_cell::stored_parts_of_ref(body.b, head_ref);
+            (raw, kind)
+        }
+        None => return None,
+    };
+    let args = [process, source_ref, head_raw, head_kind, tail_word, tail_kind, rewrite];
+    if tail.is_list() {
+        return Some(emit_reuse(body, "fz_list_reuse_or_cons_parts", &args));
+    }
+    let reuse: unsafe extern "C" fn(_, _, _, _, _, _, _) -> _ = fz_list_reuse_or_cons_parts;
+    let call = body.call_runtime("fz_list_reuse_or_cons_parts", reuse, &args);
+    Some(body.sole_result(call))
 }
 
 pub(crate) fn value_raw_kind_parts<M: Module>(

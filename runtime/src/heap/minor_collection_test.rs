@@ -3,8 +3,8 @@
 
 use super::*;
 use crate::any_value::{
-    AnyValue, AnyValueRef, EMPTY_LIST, ListCons, ValueKind, heap_kind_from_tagged, heap_object_word,
-    list_addr_from_tagged,
+    AnyValue, AnyValueRef, EMPTY_LIST, ListCons, ListLink, ListTail, ValueKind, heap_kind_from_tagged,
+    heap_object_word, list_addr_from_tagged,
 };
 use crate::bits::{BinView, SharedBinHandle, alloc_buffer_view};
 use crate::heap::arena::{Age, GRANULE, is_young, span_len};
@@ -82,7 +82,7 @@ fn gift_of_list(sender: &mut Heap, first: i64, len: i64) -> (GiftSegment, u64) {
 
 fn tail_addr(bits: u64) -> u64 {
     let cell = list_addr_from_tagged(bits).expect("list cell") as *const ListCons;
-    unsafe { (*cell).tail_addr() }
+    unsafe { (*cell).tail_cell_addr() }
 }
 
 fn shared_refs(handle: &SharedBinHandle) -> usize {
@@ -287,7 +287,13 @@ fn a_grafted_list_cell_is_not_rewritten_in_place() {
     let young = cons(&mut receiver, 7, EMPTY_LIST);
 
     let rebuilt = receiver
-        .reuse_or_alloc_list_cons_raw_kind(root_of(gift), 5, ValueKind::INT, root_of(young), true)
+        .reuse_or_alloc_list_cons_raw_kind(
+            root_of(gift),
+            5,
+            ValueKind::INT,
+            AnyValue::from_ref(root_of(young)).expect("young list"),
+            true,
+        )
         .expect("rebuild");
 
     assert_ne!(rebuilt, root_of(gift), "a fresh cell was allocated");
@@ -985,4 +991,69 @@ fn assert_released_blocks_read_clean_when_made_old(blocks: &[Block]) {
             pool_free(q, block.capacity);
         }
     }
+}
+
+/// The cell `bits` names.
+fn cell_of(bits: u64) -> &'static ListCons {
+    unsafe { &*(list_addr_from_tagged(bits).expect("list cell") as *const ListCons) }
+}
+
+/// A cell whose link is a hole: a terminator flag with no cell behind it.
+fn hole_cell(heap: &mut Heap, head: i64) -> u64 {
+    let bits = cons(heap, head, EMPTY_LIST);
+    let cell = list_addr_from_tagged(bits).expect("list cell") as *mut ListCons;
+    unsafe { *cell = ListCons::with_link(head as u64, ListLink::hole(ValueKind::INT)) };
+    bits
+}
+
+/// The terminator of the improper list `bits`, read through its terminator cell.
+fn terminator_of(bits: u64) -> AnyValue {
+    match cell_of(bits).tail() {
+        ListTail::Terminator(_) => unsafe { cell_of(bits).tail().value() },
+        other => panic!("expected a terminator, found {other:?}"),
+    }
+}
+
+/// A terminator cell is an ordinary list cell to the collector: it is copied
+/// with the cell that links to it, and the link keeps its flag, in a minor
+/// collection and in the major one that follows.
+#[test]
+fn a_terminator_link_keeps_its_flag_through_a_minor_and_a_major_collection() {
+    let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let improper = heap.alloc_list_cons_any(AnyValue::int(1), AnyValue::int(2));
+    let improper = improper.heap_object_word().expect("a list");
+    assert_eq!(terminator_of(improper), AnyValue::int(2));
+
+    let (minor, stats) = collect_list(&mut heap, improper);
+    assert_eq!(stats.generation, Generation::Minor);
+    assert_eq!(stats.copied_bytes, 32, "the cell and its terminator cell are copied");
+    assert_ne!(minor, improper);
+    assert_eq!(terminator_of(minor), AnyValue::int(2));
+    assert_eq!(cell_of(minor).head_value(), AnyValue::int(1));
+
+    let ballast = list_of(&mut heap, 0, 200, EMPTY_LIST);
+    let (_, stats) = collect_list(&mut heap, ballast);
+    assert_eq!(stats.generation, Generation::Minor);
+    let (major, stats) = collect_list(&mut heap, minor);
+    assert_eq!(stats.generation, Generation::Major);
+    assert_eq!(terminator_of(major), AnyValue::int(2));
+}
+
+/// A hole has no address to relocate: the collector forwards the cell and
+/// leaves the flag and the empty address as they are.
+#[test]
+fn a_hole_link_keeps_its_flag_through_a_minor_and_a_major_collection() {
+    let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let hole = hole_cell(&mut heap, 5);
+    let (minor, stats) = collect_list(&mut heap, hole);
+    assert_eq!(stats.generation, Generation::Minor);
+    assert_ne!(minor, hole);
+    assert_eq!(cell_of(minor).tail(), ListTail::Hole);
+
+    let ballast = list_of(&mut heap, 0, 200, EMPTY_LIST);
+    collect_list(&mut heap, ballast);
+    let (major, stats) = collect_list(&mut heap, minor);
+    assert_eq!(stats.generation, Generation::Major);
+    assert_eq!(cell_of(major).tail(), ListTail::Hole);
+    assert_eq!(cell_of(major).head_value(), AnyValue::int(5));
 }

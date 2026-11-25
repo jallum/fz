@@ -730,14 +730,13 @@ fn the_extern_raise_finds_the_receiver_among_the_modules_that_lack_the_function(
         let square = atom(process, "Elixir.Square");
         let circle = atom(process, "Elixir.Circle");
         let nope = atom(process, "nope");
-        let modules = [square, circle]
-            .into_iter()
-            .fold(AnyValueRef::empty_list(), |tail, module| {
-                process.heap.alloc_list_cons_any(module, tail).expect("a list cell")
-            });
+        let modules = [square, circle].into_iter().fold(AnyValue::EmptyList, |tail, module| {
+            let cell = process.heap.alloc_list_cons_any(module, tail);
+            AnyValue::from_ref(cell).expect("a list cell")
+        });
         let word = |process: &mut Process, value| process.heap.box_any_value_ref(value).raw_word();
         let (receiver, function) = (word(process, square), word(process, nope));
-        let modules = modules.raw_word();
+        let modules = process.heap.box_any_value_ref(modules).raw_word();
 
         declare_undefined_call_exceptions(process);
         fz_raise_undefined_function(process, receiver, function, 0, modules);
