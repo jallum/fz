@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Callables",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-25T00:08:49Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-9x7",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "A resumed frame is given back without asking whether it is a closure",
   "type": "task",
-  "updated_at": "2026-11-25T00:08:49Z"
+  "updated_at": "2026-11-25T00:08:50Z"
 }
