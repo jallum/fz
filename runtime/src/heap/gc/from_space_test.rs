@@ -28,7 +28,7 @@ fn root_of(bits: u64) -> AnyValueRef {
 
 fn gift(sender: &mut Heap, len: i64) -> GiftSegment {
     let source = list_of(sender, len);
-    crate::sched::gift_copy(sender, &[root_of(source)]).0
+    crate::sched::gift_copy(sender, &[crate::any_value::Stored::of_ref(root_of(source))]).0
 }
 
 /// A heap holding old blocks, many grafted young blocks, a climbed tip and a

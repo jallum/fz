@@ -31,7 +31,7 @@ use crate::fast_hash::HashMap;
 use crate::fz_ir::FnId;
 use crate::ir_codegen::{CompiledModule, PidId, Process, ProcessState};
 use crate::telemetry::{Telemetry, TelemetryExt as _};
-use fz_runtime::any_value::AnyValueRef;
+use fz_runtime::any_value::{AnyValueRef, Stored};
 use fz_runtime::exec_ctx::{Argv, ExecCtx, NO_ARGV};
 use fz_runtime::heap::deep_copy_any_value_ref;
 use fz_runtime::output::{OUTPUT_HOOK, OutputContext, OutputSink, STDOUT_OUTPUT, WARN_HOOK};
@@ -141,10 +141,14 @@ extern "C" fn send_hook_thunk<T: Telemetry + ?Sized>(
     sender: *mut Process,
     scheduler: *mut (),
     receiver_pid: u32,
-    msg_ref_word: u64,
+    msg_word: u64,
+    msg_kind: u64,
 ) {
-    let msg_ref = AnyValueRef::from_raw_word(msg_ref_word).expect("send hook message ref");
-    send_via::<T>(sender, scheduler, receiver_pid, msg_ref);
+    let msg = Stored {
+        word: msg_word,
+        kind: msg_kind,
+    };
+    send_via::<T>(sender, scheduler, receiver_pid, msg);
 }
 
 /// fz-ul4.29.5: called from fz_spawn (runtime FFI) to enqueue a new task
@@ -171,12 +175,7 @@ pub fn spawn_closure_via<T: Telemetry + ?Sized>(sender: *mut Process, scheduler:
 /// run_until_idle), the receiver is sitting in the registry. No borrow
 /// conflict. The sender matches and copies on its own heap and queues the
 /// gift on the receiver; the receiver's heap is untouched until it runs.
-pub fn send_via<T: Telemetry + ?Sized>(
-    sender: *mut Process,
-    scheduler: *mut (),
-    receiver_pid: PidId,
-    msg: AnyValueRef,
-) {
+pub fn send_via<T: Telemetry + ?Sized>(sender: *mut Process, scheduler: *mut (), receiver_pid: PidId, msg: Stored) {
     assert!(
         !scheduler.is_null(),
         "send() called with no scheduler in the execution context"

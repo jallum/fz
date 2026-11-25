@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::any_value::{
-    AnyValue, AnyValueRef, ClosureDenotationId, EMPTY_LIST, ListCons, ListLink, ListTail, ValueKind,
+    AnyValue, AnyValueRef, ClosureDenotationId, EMPTY_LIST, ListCons, ListLink, ListTail, Stored, ValueKind,
     closure_addr_from_tagged, closure_size_for_count, list_addr_from_tagged, map_addr_from_tagged, map_size_for_count,
     struct_size_for_payload,
 };
@@ -54,6 +54,8 @@ fn heap_ref(kind: ValueKind, addr: *mut u8) -> AnyValueRef {
 /// the measurement to equal what the copy wrote and the copy to occupy one
 /// block. Returns the measured bytes.
 fn measured_equals_copied(sender: &mut Heap, values: &[AnyValueRef]) -> usize {
+    let values: Vec<Stored> = values.iter().copied().map(Stored::of_ref).collect();
+    let values = values.as_slice();
     let measured = measure_deep_copy(values, &sender.view());
     let (segment, _copied) = gift_copy(sender, values);
     assert_eq!(
@@ -118,8 +120,8 @@ fn a_list_a_message_holds_twice_arrives_as_two_copies() {
     let message = heap_ref(ValueKind::STRUCT, pair_p);
     let measured = measured_equals_copied(&mut sender, &[message]);
     assert_eq!(measured, struct_bytes_of(&sender, pair) + 2 * 5 * CELL);
-    let (_segment, copied) = gift_copy(&mut sender, &[message]);
-    let copied_pair = copied[0].storage_addr();
+    let (_segment, copied) = gift_copy(&mut sender, &[Stored::of_ref(message)]);
+    let copied_pair = copied[0].heap_ref().storage_addr();
     let left = sender.read_field_slot(copied_pair, 0);
     let right = sender.read_field_slot(copied_pair, 8);
     assert_ne!(
@@ -236,18 +238,26 @@ fn an_inline_bitstring_measures_its_padded_size() {
 }
 
 #[test]
-fn a_scalar_measures_the_box_the_copy_allocates_for_it() {
+fn a_number_measures_nothing_because_the_copy_allocates_no_box_for_it() {
     let mut sender = Heap::new(SIZE_TABLE[0], fresh_registry());
     let slot = Box::leak(Box::new(42u64));
     let int = AnyValueRef::from_scalar_slot(ValueKind::INT, slot as *const u64).expect("int ref");
-    assert_eq!(measured_equals_copied(&mut sender, &[int]), 16);
+    let number = [Stored::of_ref(int)];
+    assert_eq!(measure_deep_copy(&number, &sender.view()), 0);
+    let (segment, copied) = gift_copy(&mut sender, &number);
+    assert_eq!(segment.block_count(), 0, "a number needs no block");
+    assert_eq!(
+        copied.as_slice(),
+        number.as_slice(),
+        "the number crosses as its word and kind"
+    );
 }
 
 #[test]
 fn values_the_copy_returns_as_they_are_measure_nothing() {
     let reg = fresh_registry();
     let mut sender = Heap::new(SIZE_TABLE[0], reg);
-    let values = [AnyValueRef::empty_list(), AnyValueRef::null()];
+    let values = [AnyValueRef::empty_list(), AnyValueRef::null()].map(Stored::of_ref);
     assert_eq!(measure_deep_copy(&values, &sender.view()), 0);
     let (segment, copied) = gift_copy(&mut sender, &values);
     assert_eq!(segment.block_count(), 0, "a copy that allocates nothing takes no block");
@@ -286,7 +296,7 @@ fn a_mixed_message_measures_what_it_copies() {
 #[test]
 fn an_atom_ref_measures_nothing_and_crosses_as_it_is() {
     let mut sender = Heap::new(SIZE_TABLE[0], fresh_registry());
-    let atoms = [AnyValueRef::atom(0), AnyValueRef::atom(41), AnyValueRef::atom(u32::MAX)];
+    let atoms = [AnyValueRef::atom(0), AnyValueRef::atom(41), AnyValueRef::atom(u32::MAX)].map(Stored::of_ref);
     assert_eq!(measure_deep_copy(&atoms, &sender.view()), 0);
 
     let (segment, copied) = gift_copy(&mut sender, &atoms);
@@ -310,8 +320,7 @@ fn deep_copying_an_atom_ref_to_another_heap_allocates_nothing() {
 #[test]
 fn a_pid_ref_measures_nothing_and_crosses_as_it_is() {
     let mut sender = Heap::new(SIZE_TABLE[0], fresh_registry());
-    let pids =
-        [0, 41, u64::from(u32::MAX)].map(|word| sender.box_any_value_ref(AnyValue::Opaque(ValueKind::PID, word)));
+    let pids = [0, 41, u64::from(u32::MAX)].map(|word| Stored::of(AnyValue::Opaque(ValueKind::PID, word)));
     assert_eq!(measure_deep_copy(&pids, &sender.view()), 0);
 
     let (segment, copied) = gift_copy(&mut sender, &pids);
@@ -349,8 +358,8 @@ fn an_improper_list_arrives_with_its_terminator() {
     let measured = measured_equals_copied(&mut sender, &[message]);
     assert_eq!(measured, 3 * CELL, "two cells and the terminator cell");
 
-    let (_segment, copied) = gift_copy(&mut sender, &[message]);
-    let first = cell_at(copied[0].storage_addr() as u64);
+    let (_segment, copied) = gift_copy(&mut sender, &[Stored::of_ref(message)]);
+    let first = cell_at(copied[0].heap_ref().storage_addr() as u64);
     assert_eq!(first.head_value(), AnyValue::int(1));
     let ListTail::Proper(second) = first.tail() else {
         panic!("the first cell is followed by a cell, found {:?}", first.tail());
@@ -370,5 +379,5 @@ fn a_list_whose_tail_is_a_hole_is_refused() {
     let cell = list_addr_from_tagged(bits).expect("addr") as *mut ListCons;
     unsafe { *cell = ListCons::with_link(0, ListLink::hole(ValueKind::INT)) };
     let message = heap_ref(ValueKind::LIST, cell as *mut u8);
-    let _ = gift_copy(&mut sender, &[message]);
+    let _ = gift_copy(&mut sender, &[Stored::of_ref(message)]);
 }

@@ -118,16 +118,17 @@ with the sender as the allocating process, which the matcher uses for allocation
 only: a guard's `self()` is a pinned value the receiver took at park time, see
 [pattern-matching](pattern-matching.md#receive-guards-run-on-the-sender)), cancels the after-timer and calls
 `sched::gift_match`, which copies each root once into
-a gift on the sender's heap (`sched::gift_copy`: measure, then copy into one
-block of the measured size; no record of what was copied is kept) and queues a `Gift { segment,
+a gift on the sender's heap (`sched::gift_copy` over `Stored` values: measure,
+then copy into one block of the measured size; no record of what was copied is
+kept; a root that is a number, atom or pid measures zero) and queues a `Gift { segment,
 payload: GiftPayload::Match { clause_idx, roots } }` on the receiver's
 `in_queue`; a miss calls `sched::gift_message`, which gifts the whole message
 as a `GiftPayload::Message`. These two functions are the only implementation of
 "gift and queue": `sched::probe_sender` (JIT and AOT) and the interpreter's
 `probe_parked_receive` differ only in which matcher runs and which record holds
 the after-timer. A copy that allocates nothing gifts nothing: `gift_copy` of no
-values, or of values that cross as they are (the empty list, a pointer the
-sender does not own), measures zero and returns `GiftSegment::empty()` without
+values, or of values that cross as they are (a number, an atom, a pid, the empty
+list, a pointer the sender does not own), measures zero and returns `GiftSegment::empty()` without
 opening a window, and grafting it is a no-op. The receiver's dispatch drains its in-queue: a matched
 receive's segment is grafted, the park record is taken, and the outcome closure
 is materialized (`sched::deliver_in_queue`); a message's segment waits in the

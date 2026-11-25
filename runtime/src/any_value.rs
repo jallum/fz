@@ -632,6 +632,23 @@ impl Stored {
         }
     }
 
+    /// The pair a ref spells, for tests that build their values as refs.
+    #[cfg(test)]
+    pub fn of_ref(value: AnyValueRef) -> Self {
+        Self::of(AnyValue::from_ref(value).expect("a ref spells a value"))
+    }
+
+    /// The ref a heap value or the empty list spells, for tests that read a
+    /// message's object back.
+    #[cfg(test)]
+    pub fn heap_ref(self) -> AnyValueRef {
+        match self.value("Stored::heap_ref") {
+            AnyValue::HeapRef(value) => value,
+            AnyValue::EmptyList => AnyValueRef::empty_list(),
+            other => panic!("{other:?} is not a heap value"),
+        }
+    }
+
     #[cold]
     #[inline(never)]
     fn spells_no_value(self, context: &str) -> ! {

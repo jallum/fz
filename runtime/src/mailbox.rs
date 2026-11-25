@@ -7,13 +7,14 @@
 //! collection root. The receive that takes a message grafts its block into the
 //! receiver's heap, where it is young.
 
-use crate::any_value::AnyValueRef;
+use crate::any_value::Stored;
 use crate::heap::{GiftSegment, Heap};
 use std::collections::VecDeque;
 
-/// A message and the gift segment that holds it.
+/// A message and the gift segment that holds it. A message that is a number,
+/// an atom or a pid holds nothing in its segment, which is then empty.
 struct Waiting {
-    message: AnyValueRef,
+    message: Stored,
     segment: GiftSegment,
 }
 
@@ -32,22 +33,22 @@ impl Mailbox {
     }
 
     /// Append `message`, which waits in `segment` until a receive takes it.
-    pub fn push(&mut self, message: AnyValueRef, segment: GiftSegment) {
+    pub fn push(&mut self, message: Stored, segment: GiftSegment) {
         self.queue.push_back(Waiting { message, segment });
     }
 
     /// The messages, oldest first.
-    pub fn messages(&self) -> impl Iterator<Item = AnyValueRef> + '_ {
+    pub fn messages(&self) -> impl Iterator<Item = Stored> + '_ {
         self.queue.iter().map(|waiting| waiting.message)
     }
 
     /// The oldest message.
-    pub fn front(&self) -> Option<AnyValueRef> {
+    pub fn front(&self) -> Option<Stored> {
         self.queue.front().map(|waiting| waiting.message)
     }
 
     /// The message at `index`, counting from the oldest.
-    pub fn get(&self, index: usize) -> Option<AnyValueRef> {
+    pub fn get(&self, index: usize) -> Option<Stored> {
         self.queue.get(index).map(|waiting| waiting.message)
     }
 
@@ -55,7 +56,7 @@ impl Mailbox {
     /// index.
     pub fn first_match<T, E>(
         &self,
-        mut f: impl FnMut(AnyValueRef) -> Result<Option<T>, E>,
+        mut f: impl FnMut(Stored) -> Result<Option<T>, E>,
     ) -> Result<Option<(usize, T)>, E> {
         for (index, waiting) in self.queue.iter().enumerate() {
             if let Some(found) = f(waiting.message)? {
@@ -65,7 +66,8 @@ impl Mailbox {
         Ok(None)
     }
 
-    /// Remove the message at `index`: its block joins `heap`, young.
+    /// Remove the message at `index`: its block joins `heap`, young. An empty
+    /// segment adds no block.
     pub fn take(&mut self, index: usize, heap: &mut Heap) {
         let waiting = self
             .queue

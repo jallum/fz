@@ -74,7 +74,12 @@ owns packing, projection, and the platform difference behind the word.
   `Stored::value(context)` rebuilds the value. A runtime entry takes a key or
   value of any kind as its two words, so nothing boxes a number to pass it.
   A raised value is one: `fz_panic`, `fz_throw`, `fz_exit` and `fz_reraise`
-  take it as two words, and `Process::raised` holds it as a `Stored`.
+  take it as two words, and `Process::raised` holds it as a `Stored`. A
+  message is one from `fz_send` to its match: the `SendHook`, `gift_copy_one`,
+  `GiftPayload::Message`, a `Mailbox` entry, a receive matcher's message
+  parameter and its roots (`Roots`, `[Stored; root_arity]`), and a projector's
+  outputs are all words and kinds. A number's gift measures zero and holds no
+  block, so a sent number is never boxed.
 - **The `fz_*` runtime ABI** (`runtime/src/ir_runtime.rs`): the C entry points
   generated code calls to read, build, and project values.
 
@@ -1233,14 +1238,13 @@ heap destination through the same value representation.
 
 ## Policy: one value model, copy on cross-process send
 
-There is exactly one dynamic value model. Mailbox, matcher, interpreter, and
-codegen paths all carry `AnyValueRef`; no path keeps a parallel `{raw, kind}`
-carrier, and any raw-payload-plus-kind storage is visibly inside a heap layout.
-That single model is why a value built on one execution path reads correctly on
-another.
+There is exactly one dynamic value model: a value is its word and its kind.
+Heap objects store the pair in their layout, and a value that crosses a runtime
+entry outside a container travels as a `Stored`. That single model is why a
+value built on one execution path reads correctly on another.
 
-`send` is an `any` boundary. The caller boxes a known scalar only to send it as
-`any`, then calls `fz_send_ref(pid, msg_ref)`. The runtime
+`send` hands the message to `fz_send(pid, word, kind)`, which returns nothing;
+`Kernel.send/2` answers the message itself. The runtime
 (`src/exec/runtime.rs send_via`) never shares heap pointers across processes:
 the sender copies what the receiver will keep into a gift window on its own heap
 and queues the segment on the receiver's `in_queue`; the receiver moves a message
@@ -1249,7 +1253,7 @@ a receive takes the message (see [scheduler](scheduler-zero-arg-closures.md)):
 
 ```text
 self-send:                copy the message into a gift; it waits in the sender's own mailbox
-cross-process, parked:    run the receiver's matcher on the sender's ref;
+cross-process, parked:    run the receiver's matcher on the sender's word and kind;
                           on a hit, gift the clause's roots (nothing when the clause
                           reads none) and wake the receiver; on a miss, gift the
                           whole message, which joins the receiver's mailbox when
@@ -1258,4 +1262,5 @@ cross-process, not waiting: gift the whole message; it joins the receiver's
                           mailbox when it drains its in-queue
 ```
 
-There is no scalar side path inside send.
+There is no scalar side path inside send: a number, atom, pid or the empty list
+is its own copy, measures zero, and crosses as its word and kind.

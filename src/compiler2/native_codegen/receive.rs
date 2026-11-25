@@ -6,17 +6,19 @@
 //! ```text
 //! extern "C" fn(
 //!     process: *mut Process,
-//!     msg_ref: u64,
+//!     msg_word: u64,
+//!     msg_kind: u64,
 //!     frame: u64,
-//!     out: *mut AnyValueRef,
+//!     out: *mut Stored,
 //! ) -> u32
 //! ```
 //!
 //! - `process`: the receiving process the dispatch runs under.
-//! - `msg_ref`: one-word tagged candidate message.
+//! - `msg_word`, `msg_kind`: the candidate message as the word and kind a
+//!   container stores for it (`Stored`), so a number needs no box.
 //! - `frame`: the arrival's frame closure. The dispatch reads the values in
 //!   `Term::ReceiveMatched::pinned` out of the frame's last captures, in order.
-//! - `out`: caller-supplied `[AnyValueRef; root_arity]`
+//! - `out`: caller-supplied `[Stored; root_arity]`
 //!   scratch buffer; the dispatch writes the winning clause's roots, the
 //!   outermost subjects its arguments read (see `OutcomeRoots`).
 //! - returns `0` on miss; `k > 0` is the 1-based clause index (caller
@@ -27,7 +29,7 @@
 //! arguments out of them:
 //!
 //! ```text
-//! extern "C" fn(process: *mut Process, roots: *const AnyValueRef, out: *mut AnyValueRef)
+//! extern "C" fn(process: *mut Process, roots: *const Stored, out: *mut Stored)
 //! ```
 //!
 //! It writes each argument at the receiving parameter slot in `out`.
@@ -58,12 +60,12 @@ use cranelift_codegen::ir::{
 };
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::{FuncId, Linkage};
-use fz_runtime::any_value::{AnyValueRef, FALSE_ATOM_ID, NIL_ATOM_ID, TRUE_ATOM_ID, ValueKind};
+use fz_runtime::any_value::{AnyValueRef, FALSE_ATOM_ID, NIL_ATOM_ID, Stored, TRUE_ATOM_ID, ValueKind};
 use fz_runtime::ir_runtime::{
     fz_binary_equals_literal, fz_bitstring_byte_size_of, fz_box_float_for_any, fz_box_int_for_any,
     fz_box_opaque_for_any, fz_bs_field_end, fz_bs_field_spec, fz_bs_read_binary_ref, fz_bs_read_int_ref,
     fz_function_arity, fz_list_head_ref, fz_list_is_cons, fz_list_tail_ref, fz_map_is_map, fz_map_named_schema_ref,
-    fz_map_size_of, fz_matcher_map_get_ref, fz_pinned_binary_segment_size, fz_receive_pinned_ref,
+    fz_map_size_of, fz_matcher_map_get_ref, fz_pinned_binary_segment_size, fz_receive_pinned_ref, fz_stored_ref,
     fz_struct_get_field_ref, fz_struct_get_named_field_ref, fz_struct_is_named_ref, fz_struct_schema_id_ref,
     fz_truthy_ref, fz_type_of, fz_unbox_atom, fz_unbox_float, fz_unbox_int, fz_unbox_opaque, fz_value_cmp_ref,
     fz_value_eq_ref, fz_value_eq_widening_ref,
@@ -90,7 +92,8 @@ type ReceiveGuardDispatch = PatternGuardDispatch<RuntimeTypePredicate>;
 pub(crate) fn receive_dispatch_signature<M: cranelift_module::Module>(module: &mut M) -> Signature {
     let mut sig = module.make_signature();
     sig.params.push(AbiParam::new(types::I64)); // process (*mut Process)
-    sig.params.push(AbiParam::new(types::I64)); // msg_ref
+    sig.params.push(AbiParam::new(types::I64)); // msg_word
+    sig.params.push(AbiParam::new(types::I64)); // msg_kind
     sig.params.push(AbiParam::new(types::I64)); // frame (closure ref word)
     sig.params.push(AbiParam::new(types::I64)); // out_ptr
     sig.returns.push(AbiParam::new(types::I32));
@@ -232,10 +235,12 @@ pub(crate) fn emit_receive_dispatch_body<M: cranelift_module::Module>(
         b.switch_to_block(entry);
         b.seal_block(entry);
         let process = b.block_params(entry)[0];
-        let msg_ref = b.block_params(entry)[1];
-        let frame = b.block_params(entry)[2];
-        let out_ptr = b.block_params(entry)[3];
-        let msg = receive_value_from_ref_word(b, msg_ref);
+        let msg = ReceiveValue::Stored {
+            word: b.block_params(entry)[1],
+            kind: b.block_params(entry)[2],
+        };
+        let frame = b.block_params(entry)[3];
+        let out_ptr = b.block_params(entry)[4];
 
         let miss_block = b.create_block();
         let mut body = DispatchBody::new(b, m);
@@ -344,12 +349,12 @@ pub(crate) fn emit_receive_projector_body<M: cranelift_module::Module>(
         };
         let mut state = DispatchEmitState::default();
         for (index, root) in roots.roots.iter().enumerate() {
-            let value = load_receive_value_ref(body.b, roots_ptr, index);
+            let value = load_receive_stored(body.b, roots_ptr, index);
             state.values.insert(*root, value);
         }
         for (slot, subject) in arguments.iter().enumerate() {
             let stored = resolve_dispatch_subject(&mut body, &ctx, *subject, &mut state)
-                .and_then(|value| store_receive_value_ref(&mut body, &ctx, out_ptr, slot, value));
+                .map(|value| store_receive_stored(body.b, out_ptr, slot, value));
             if let Err(e) = stored {
                 compile_err = Some(e);
                 body.b.ins().return_(&[]);
@@ -368,6 +373,13 @@ pub(crate) fn emit_receive_projector_body<M: cranelift_module::Module>(
 #[derive(Clone, Copy)]
 enum ReceiveValue {
     AnyRef(ir::Value),
+    /// A value of any kind as the word and kind a container stores for it,
+    /// both `I64`. The message a matcher is shown arrives this way, so a number
+    /// is read without a box and named by reference only where a helper asks.
+    Stored {
+        word: ir::Value,
+        kind: ir::Value,
+    },
     Int(ir::Value),
     Float(ir::Value),
     Atom(ir::Value),
@@ -417,6 +429,7 @@ fn emit_receive_value_ref<M: cranelift_module::Module>(
             Ok(body.sole_result(call))
         }
         ReceiveValue::Atom(raw) => Ok(immediate_ref_word(body.b, raw, ValueKind::ATOM)),
+        ReceiveValue::Stored { word, kind } => Ok(runtime_call1!(body, fz_stored_ref, [ctx.process, word, kind])),
     }
 }
 
@@ -424,6 +437,7 @@ fn emit_receive_value_ref<M: cranelift_module::Module>(
 fn receive_value_stored_parts(b: &mut FunctionBuilder<'_>, value: ReceiveValue) -> [ir::Value; 2] {
     let (word, kind) = match value {
         ReceiveValue::AnyRef(reference) => return super::list_cell::stored_parts_of_ref(b, reference),
+        ReceiveValue::Stored { word, kind } => return [word, kind],
         ReceiveValue::Int(word) => (word, ValueKind::INT),
         ReceiveValue::Atom(word) => (word, ValueKind::ATOM),
         ReceiveValue::Float(float) => (
@@ -444,6 +458,7 @@ fn receive_value_tag<M: cranelift_module::Module>(
 ) -> Result<ir::Value, CodegenError> {
     match value {
         ReceiveValue::AnyRef(value_ref) => Ok(runtime_call1!(body, fz_type_of, [value_ref])),
+        ReceiveValue::Stored { kind, .. } => Ok(body.b.ins().ireduce(types::I8, kind)),
         ReceiveValue::Int(_) => Ok(body.b.ins().iconst(types::I8, ValueKind::INT.tag() as i64)),
         ReceiveValue::Float(_) => Ok(body.b.ins().iconst(types::I8, ValueKind::FLOAT.tag() as i64)),
         ReceiveValue::Atom(_) => Ok(body.b.ins().iconst(types::I8, ValueKind::ATOM.tag() as i64)),
@@ -457,6 +472,7 @@ fn receive_value_int<M: cranelift_module::Module>(
     match value {
         ReceiveValue::Int(raw) => Ok(raw),
         ReceiveValue::AnyRef(value_ref) => Ok(runtime_call1!(body, fz_unbox_int, [value_ref])),
+        ReceiveValue::Stored { word, .. } => Ok(word),
         ReceiveValue::Float(_) | ReceiveValue::Atom(_) => Err(CodegenError::new("expected int receive value")),
     }
 }
@@ -468,6 +484,7 @@ fn receive_value_float<M: cranelift_module::Module>(
     match value {
         ReceiveValue::Float(raw) => Ok(raw),
         ReceiveValue::AnyRef(value_ref) => Ok(runtime_call1!(body, fz_unbox_float, [value_ref])),
+        ReceiveValue::Stored { word, .. } => Ok(body.b.ins().bitcast(types::F64, MemFlagsData::new(), word)),
         ReceiveValue::Int(_) | ReceiveValue::Atom(_) => Err(CodegenError::new("expected float receive value")),
     }
 }
@@ -479,33 +496,30 @@ fn receive_value_atom<M: cranelift_module::Module>(
     match value {
         ReceiveValue::Atom(raw) => Ok(raw),
         ReceiveValue::AnyRef(value_ref) => Ok(runtime_call1!(body, fz_unbox_atom, [value_ref])),
+        ReceiveValue::Stored { word, .. } => Ok(word),
         ReceiveValue::Int(_) | ReceiveValue::Float(_) => Err(CodegenError::new("expected atom receive value")),
     }
 }
 
-fn value_ref_offset(idx: usize) -> i32 {
-    (idx * SLOT_BYTES as usize) as i32
+/// Where slot `idx` of a `[Stored; n]` buffer starts: the word, then the kind.
+fn stored_slot_offset(idx: usize) -> i32 {
+    (idx * size_of::<Stored>()) as i32
 }
 
-fn load_receive_value_ref(b: &mut FunctionBuilder<'_>, base: ir::Value, idx: usize) -> ReceiveValue {
-    let value_ref = b
-        .ins()
-        .load(types::I64, MemFlagsData::trusted(), base, value_ref_offset(idx));
-    receive_value_from_ref_word(b, value_ref)
+fn load_receive_stored(b: &mut FunctionBuilder<'_>, base: ir::Value, idx: usize) -> ReceiveValue {
+    let offset = stored_slot_offset(idx);
+    let word = b.ins().load(types::I64, MemFlagsData::trusted(), base, offset);
+    let kind = b.ins().load(types::I64, MemFlagsData::trusted(), base, offset + 8);
+    ReceiveValue::Stored { word, kind }
 }
 
-fn store_receive_value_ref<M: cranelift_module::Module>(
-    body: &mut DispatchBody<'_, '_, M>,
-    ctx: &DispatchCtx<'_>,
-    base: ir::Value,
-    idx: usize,
-    value: ReceiveValue,
-) -> Result<(), CodegenError> {
-    let value_ref = emit_receive_value_ref(body, ctx, value)?;
-    body.b
-        .ins()
-        .store(MemFlagsData::trusted(), value_ref, base, value_ref_offset(idx));
-    Ok(())
+/// Writes `value` into slot `idx` of a `[Stored; n]` buffer as its word and
+/// kind; a number is stored without a box.
+fn store_receive_stored(b: &mut FunctionBuilder<'_>, base: ir::Value, idx: usize, value: ReceiveValue) {
+    let [word, kind] = receive_value_stored_parts(b, value);
+    let offset = stored_slot_offset(idx);
+    b.ins().store(MemFlagsData::trusted(), word, base, offset);
+    b.ins().store(MemFlagsData::trusted(), kind, base, offset + 8);
 }
 
 fn finish_failed_dispatch_body(b: &mut FunctionBuilder<'_>, miss_block: ir::Block) {
@@ -549,7 +563,7 @@ fn emit_dispatch_node<M: cranelift_module::Module>(
                 .ok_or_else(|| CodegenError::new(format!("dispatch outcome {:?} has no target edge", outcome)))?;
             for (slot, root) in roots.iter().enumerate() {
                 let value = resolve_dispatch_subject(body, ctx, *root, state)?;
-                store_receive_value_ref(body, ctx, ctx.out_ptr, slot, value)?;
+                store_receive_stored(body.b, ctx.out_ptr, slot, value);
             }
             let k = body.b.ins().iconst(types::I32, (clause_index + 1) as i64);
             body.b.ins().return_(&[k]);
@@ -858,7 +872,7 @@ impl<'f, M: cranelift_module::Module> RuntimeTestEmitter<'f> for ReceiveTestEmit
 
     fn kind_evidence(&self, value: ReceiveValue) -> KindEvidence {
         match value {
-            ReceiveValue::AnyRef(_) => KindEvidence::Tagged,
+            ReceiveValue::AnyRef(_) | ReceiveValue::Stored { .. } => KindEvidence::Tagged,
             ReceiveValue::Int(_) => KindEvidence::Unboxed(ValueKind::INT),
             ReceiveValue::Float(_) => KindEvidence::Unboxed(ValueKind::FLOAT),
             ReceiveValue::Atom(_) => KindEvidence::Unboxed(ValueKind::ATOM),
@@ -968,7 +982,7 @@ fn emit_receive_value_kind_flag<M: cranelift_module::Module>(
 ) -> Result<ir::Value, CodegenError> {
     let kind_word = match value {
         ReceiveValue::AnyRef(value_ref) => kind_field(body.b, value_ref),
-        ReceiveValue::Int(_) | ReceiveValue::Float(_) | ReceiveValue::Atom(_) => {
+        ReceiveValue::Int(_) | ReceiveValue::Float(_) | ReceiveValue::Atom(_) | ReceiveValue::Stored { .. } => {
             let tag = receive_value_tag(body, value)?;
             body.b.ins().uextend(types::I64, tag)
         }
@@ -995,8 +1009,20 @@ fn emit_receive_is_empty_list_flag<M: cranelift_module::Module>(
             let is_empty = body.b.ins().icmp(IntCC::Equal, value_ref, empty);
             body.b.ins().band(is_list, is_empty)
         }
+        ReceiveValue::Stored { word, kind } => {
+            let (is_list, is_empty) = stored_list_flags(body.b, word, kind);
+            body.b.ins().band(is_list, is_empty)
+        }
         ReceiveValue::Int(_) | ReceiveValue::Float(_) | ReceiveValue::Atom(_) => body.b.ins().iconst(types::I8, 0),
     })
+}
+
+/// Whether the stored pair is a list, and whether its word is the empty
+/// list's. The empty list is the list kind with word zero.
+fn stored_list_flags(b: &mut FunctionBuilder<'_>, word: ir::Value, kind: ir::Value) -> (ir::Value, ir::Value) {
+    let is_list = b.ins().icmp_imm_s(IntCC::Equal, kind, ValueKind::LIST.tag() as i64);
+    let is_empty = b.ins().icmp_imm_s(IntCC::Equal, word, 0);
+    (is_list, is_empty)
 }
 
 fn emit_receive_is_list_cons_flag<M: cranelift_module::Module>(
@@ -1016,6 +1042,11 @@ fn emit_receive_is_list_cons_flag<M: cranelift_module::Module>(
                 .ins()
                 .icmp_imm_s(IntCC::Equal, tag64, ValueKind::LIST.tag() as i64);
             let is_empty = body.b.ins().icmp(IntCC::Equal, value_ref, empty);
+            let not_empty = body.b.ins().icmp_imm_s(IntCC::Equal, is_empty, 0);
+            body.b.ins().band(is_list, not_empty)
+        }
+        ReceiveValue::Stored { word, kind } => {
+            let (is_list, is_empty) = stored_list_flags(body.b, word, kind);
             let not_empty = body.b.ins().icmp_imm_s(IntCC::Equal, is_empty, 0);
             body.b.ins().band(is_list, not_empty)
         }
@@ -1088,21 +1119,22 @@ fn emit_dispatch_side_tag_const_test<M: cranelift_module::Module>(
             body.b.ins().brif(ok, match_b, &[], next_b, &[]);
         }
         ReceiveValue::AnyRef(value_ref) => {
-            emit_any_ref_const_test(body, value_ref, want, match_b, next_b)?;
+            emit_any_ref_const_test(body, ReceiveValue::AnyRef(value_ref), want, match_b, next_b)?;
         }
+        stored @ ReceiveValue::Stored { .. } => emit_any_ref_const_test(body, stored, want, match_b, next_b)?,
     }
     Ok(true)
 }
 
 fn emit_any_ref_const_test<M: cranelift_module::Module>(
     body: &mut DispatchBody<'_, '_, M>,
-    value_ref: ir::Value,
+    value: ReceiveValue,
     want: DispatchConstValue,
     match_b: ir::Block,
     next_b: ir::Block,
 ) -> Result<(), CodegenError> {
     let want_tag = want.kind();
-    let tag = receive_value_tag(body, ReceiveValue::AnyRef(value_ref))?;
+    let tag = receive_value_tag(body, value)?;
     let tag64 = body.b.ins().uextend(types::I64, tag);
     let type_ok = body.b.ins().icmp_imm_s(IntCC::Equal, tag64, want_tag.tag() as i64);
     let value_block = body.b.create_block();
@@ -1111,19 +1143,19 @@ fn emit_any_ref_const_test<M: cranelift_module::Module>(
     body.b.seal_block(value_block);
     match want {
         DispatchConstValue::Int(want) => {
-            let raw = receive_value_int(body, ReceiveValue::AnyRef(value_ref))?;
+            let raw = receive_value_int(body, value)?;
             let ok = body.b.ins().icmp_imm_s(IntCC::Equal, raw, want);
             body.b.ins().brif(ok, match_b, &[], next_b, &[]);
         }
         DispatchConstValue::Float(want) => {
-            let raw = receive_value_float(body, ReceiveValue::AnyRef(value_ref))?;
+            let raw = receive_value_float(body, value)?;
             let raw_bits = body.b.ins().bitcast(types::I64, MemFlagsData::new(), raw);
             let want_bits = body.b.ins().iconst(types::I64, want as i64);
             let ok = body.b.ins().icmp(IntCC::Equal, raw_bits, want_bits);
             body.b.ins().brif(ok, match_b, &[], next_b, &[]);
         }
         DispatchConstValue::Atom(want) => {
-            let raw = receive_value_atom(body, ReceiveValue::AnyRef(value_ref))?;
+            let raw = receive_value_atom(body, value)?;
             let ok = body.b.ins().icmp_imm_s(IntCC::Equal, raw, want as i64);
             body.b.ins().brif(ok, match_b, &[], next_b, &[]);
         }
@@ -1233,7 +1265,7 @@ fn emit_dispatch_map_get_value<M: cranelift_module::Module>(
     let scan = match key {
         ReceiveValue::Int(word) => Some((word, ValueKind::INT)),
         ReceiveValue::Atom(word) => Some((word, ValueKind::ATOM)),
-        ReceiveValue::AnyRef(_) | ReceiveValue::Float(_) => None,
+        ReceiveValue::AnyRef(_) | ReceiveValue::Float(_) | ReceiveValue::Stored { .. } => None,
     }
     .map(|(word, kind)| WordKeyFind::emit(body.b, ctx.process, map_ref, word, kind));
     let [key_word, key_kind] = receive_value_stored_parts(body.b, key);
@@ -1758,7 +1790,10 @@ fn join_guard_arrivals<M: cranelift_module::Module>(
 /// one. Its payload is a stand-in: only the lane is read.
 fn shared_raw_lane(arrivals: &[GuardArrival]) -> Option<ReceiveValue> {
     let first = arrivals.first()?.value;
-    let raw = !matches!(first, ReceiveValue::AnyRef(_));
+    let raw = matches!(
+        first,
+        ReceiveValue::Int(_) | ReceiveValue::Float(_) | ReceiveValue::Atom(_)
+    );
     let same = arrivals
         .iter()
         .all(|a| std::mem::discriminant(&a.value) == std::mem::discriminant(&first));
@@ -1979,6 +2014,17 @@ fn emit_truthy_cmp<M: cranelift_module::Module>(
             Ok(body.b.ins().bxor_imm_u(false_or_nil, 1))
         }
         ReceiveValue::Int(_) | ReceiveValue::Float(_) => Ok(body.b.ins().iconst(types::I8, 1)),
+        ReceiveValue::Stored { word, kind } => {
+            let not_atom = body
+                .b
+                .ins()
+                .icmp_imm_s(IntCC::NotEqual, kind, ValueKind::ATOM.tag() as i64);
+            let is_false = body.b.ins().icmp_imm_s(IntCC::Equal, word, FALSE_ATOM_ID as i64);
+            let is_nil = body.b.ins().icmp_imm_s(IntCC::Equal, word, NIL_ATOM_ID as i64);
+            let false_or_nil = body.b.ins().bor(is_false, is_nil);
+            let truthy_atom = body.b.ins().bxor_imm_u(false_or_nil, 1);
+            Ok(body.b.ins().bor(not_atom, truthy_atom))
+        }
     }
 }
 
@@ -2079,6 +2125,12 @@ fn emit_not_dispatch_map_miss<M: cranelift_module::Module>(
                 .ins()
                 .icmp_imm_s(IntCC::NotEqual, tag64, ValueKind::NULL.tag() as i64))
         }
+        ReceiveValue::Stored { kind, .. } => {
+            Ok(body
+                .b
+                .ins()
+                .icmp_imm_s(IntCC::NotEqual, kind, ValueKind::NULL.tag() as i64))
+        }
         ReceiveValue::Int(_) | ReceiveValue::Float(_) | ReceiveValue::Atom(_) => Ok(body.b.ins().iconst(types::I8, 1)),
     }
 }
@@ -2146,6 +2198,11 @@ fn emit_list_empty_test(b: &mut FunctionBuilder<'_>, val: ReceiveValue, match_b:
         ReceiveValue::AnyRef(value_ref) => {
             let empty = b.ins().iconst(types::I64, AnyValueRef::empty_list().raw_word() as i64);
             let ok = b.ins().icmp(IntCC::Equal, value_ref, empty);
+            b.ins().brif(ok, match_b, &[], next_b, &[]);
+        }
+        ReceiveValue::Stored { word, kind } => {
+            let (is_list, is_empty) = stored_list_flags(b, word, kind);
+            let ok = b.ins().band(is_list, is_empty);
             b.ins().brif(ok, match_b, &[], next_b, &[]);
         }
         ReceiveValue::Int(_) | ReceiveValue::Float(_) | ReceiveValue::Atom(_) => {

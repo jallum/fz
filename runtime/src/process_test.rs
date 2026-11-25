@@ -1,7 +1,7 @@
 use super::{Disposition, Node, Process, ProcessState, YIELD_REASON_EXPLICIT, YIELD_REASON_REDUCTIONS};
 use crate::any_value::{
-    AnyValue, AnyValueRef, ClosureDenotationId, EMPTY_LIST, ValueKind, closure_addr_from_tagged, closure_capture_set,
-    closure_capture_value, list_addr_from_tagged,
+    AnyValue, AnyValueRef, ClosureDenotationId, EMPTY_LIST, Stored, ValueKind, closure_addr_from_tagged,
+    closure_capture_set, closure_capture_value, list_addr_from_tagged,
 };
 use crate::handler_stack::Innermost;
 use crate::handler_stack::handler_stack_test::push_template;
@@ -108,9 +108,9 @@ fn captured_list(closure: AnyValueRef) -> AnyValueRef {
 }
 
 /// Matches a message whose list head equals the pinned list's head.
-extern "C" fn pinned_head_matcher(_process: *mut Process, msg: u64, frame: u64, _out: *mut AnyValueRef) -> u32 {
+extern "C" fn pinned_head_matcher(_process: *mut Process, word: u64, kind: u64, frame: u64, _out: *mut Stored) -> u32 {
     let pinned = AnyValueRef::from_raw_word(crate::ir_runtime::fz_receive_pinned_ref(frame, 1)).expect("pinned ref");
-    let msg = AnyValueRef::from_raw_word(msg).expect("msg ref");
+    let msg = Stored { word, kind }.heap_ref();
     u32::from(list_head(msg) == list_head(pinned))
 }
 
@@ -156,13 +156,13 @@ fn collect_forwards_every_root_a_parked_process_holds() {
     park_on(&mut process, body_capture, pinned);
     let frame = process.delivery.lock().park().expect("parked").frame;
     process.set_runnable_closure(runnable);
-    let (segment, mailbox_message) = crate::sched::gift_copy_one(&mut process.heap, mailbox_message);
+    let (segment, mailbox_message) = crate::sched::gift_copy_one(&mut process.heap, Stored::of_ref(mailbox_message));
     process.mailbox.push(mailbox_message, segment);
     let before = (
         pinned.list_addr().unwrap(),
         frame,
         runnable,
-        mailbox_message.list_addr().unwrap(),
+        mailbox_message.heap_ref().list_addr().unwrap(),
         transient[0].list_addr().unwrap(),
     );
 
@@ -173,7 +173,7 @@ fn collect_forwards_every_root_a_parked_process_holds() {
     assert_ne!(park.frame, before.1, "frame moved");
     assert_ne!(process.runnable_closure(), Some(before.2), "runnable closure moved");
     assert_eq!(
-        process.mailbox.front().unwrap().list_addr().unwrap(),
+        process.mailbox.front().unwrap().heap_ref().list_addr().unwrap(),
         before.3,
         "a message waiting in the mailbox is no root and stays where it is"
     );
@@ -188,11 +188,11 @@ fn collect_forwards_every_root_a_parked_process_holds() {
         list_head(captured_list(process.runnable_closure().expect("runnable"))),
         4
     );
-    assert_eq!(list_head(process.mailbox.front().unwrap()), 5);
+    assert_eq!(list_head(process.mailbox.front().unwrap().heap_ref()), 5);
     assert_eq!(list_head(transient[0]), 6);
     let probe = int_list(&mut process.heap, 1);
     assert!(
-        park.try_match(null_mut(), probe, &mut crate::park::Roots::new())
+        park.try_match(null_mut(), Stored::of_ref(probe), &mut crate::park::Roots::new())
             .is_some(),
         "the moved pinned value still matches"
     );

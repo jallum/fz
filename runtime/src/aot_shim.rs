@@ -24,7 +24,7 @@
 //! selective-receive probe path. This matches the JIT's `run_until_idle`
 //! semantics.
 
-use crate::any_value::AnyValueRef;
+use crate::any_value::{AnyValueRef, Stored};
 use crate::exec_ctx::{Argv, ExecCtx};
 use crate::function_denotation::decode_closure_denotations;
 use crate::heap::{Schema, SchemaRegistry, deep_copy_any_value_ref, pool_outstanding_blocks};
@@ -516,8 +516,17 @@ extern "C" fn aot_spawn_hook(sender: *mut Process, scheduler: *mut (), closure_b
 /// other arrival routes through `sched::probe_sender`, which matches and
 /// copies on the sender and queues the gift on the receiver; a matched
 /// waiting receiver is made runnable through the scheduling core.
-extern "C" fn aot_send_hook(sender_ptr: *mut Process, scheduler: *mut (), receiver_pid: u32, msg_ref_word: u64) {
-    let msg = AnyValueRef::from_raw_word(msg_ref_word).expect("aot_send message ref");
+extern "C" fn aot_send_hook(
+    sender_ptr: *mut Process,
+    scheduler: *mut (),
+    receiver_pid: u32,
+    msg_word: u64,
+    msg_kind: u64,
+) {
+    let msg = Stored {
+        word: msg_word,
+        kind: msg_kind,
+    };
     assert!(!sender_ptr.is_null(), "aot_send_hook: no sender process");
     let sched = scheduler as *mut AotScheduler;
     let tasks = unsafe { &mut (*sched).tasks };

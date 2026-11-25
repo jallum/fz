@@ -6,7 +6,7 @@
 
 use crate::any_value::{
     AnyValue, AnyValueRef, Stored, ValueKind, closure_addr_from_tagged, closure_arity, closure_capture_copy,
-    closure_capture_set, closure_capture_set_ref_word, closure_flags, closure_flags_captured, closure_flags_halt_kind,
+    closure_capture_set, closure_flags, closure_flags_captured, closure_flags_halt_kind,
 };
 use crate::heap::Heap;
 use crate::process::Process;
@@ -14,41 +14,44 @@ use crate::timer::TimerId;
 use smallvec::SmallVec;
 use std::ptr::{read, write};
 
-/// The values a matcher hands back for the winning clause: its roots. Inline up
-/// to eight, which covers every clause a program is likely to write.
-pub type Roots = SmallVec<[AnyValueRef; 8]>;
+/// The values a matcher hands back for the winning clause: its roots, each as
+/// its word and kind. Inline up to eight, which covers every clause a program
+/// is likely to write.
+pub type Roots = SmallVec<[Stored; 8]>;
 
 /// Matcher ABI.
 ///
 /// Called from both fz-compiled code (sender's `fz_send`, receiver's
 /// mailbox scan) and runtime code. It is a leaf in the scheduling sense: it
 /// never parks and runs no `receive` of its own, so it always returns to its
-/// caller. It is not allocation-free — testing a raw scalar against a value
-/// held as an `AnyValueRef` calls a runtime boxing extern on the process
+/// caller. It is not allocation-free — a value it must name by reference, a
+/// number it hands a runtime helper that takes one, is boxed on the process
 /// heap. Nothing checks either property statically.
 ///
-/// - `msg_ref`: the candidate message as a single opaque any value ref.
+/// - `msg_word`, `msg_kind`: the candidate message as the pair a container
+///   stores (`Stored`), so a number arrives without a box.
 /// - `frame`: the arrival's frame closure, as a ref word. The matcher reads
 ///   its pinned values out of the frame's last captures.
-/// - `out`: pointer to a caller-supplied `[AnyValueRef; root_arity]`
+/// - `out`: pointer to a caller-supplied `[Stored; root_arity]`
 ///   scratch buffer the matcher fills with the winning clause's roots.
 ///   Untouched on a miss. Only the winning clause's own root count is
 ///   meaningful; wider scratch slots are ignored.
 ///
 /// Return: `k = 0` on miss; `k > 0` is the 1-based clause index the
 /// site's clauses index into via `clause = clauses[k-1]`.
-pub type MatcherFn = extern "C" fn(process: *mut Process, msg_ref: u64, frame: u64, out: *mut AnyValueRef) -> u32;
+pub type MatcherFn =
+    extern "C" fn(process: *mut Process, msg_word: u64, msg_kind: u64, frame: u64, out: *mut Stored) -> u32;
 
 /// Reads a clause's outcome arguments out of its roots.
 ///
 /// - `roots`: the clause's `root_count` roots, in the order the matcher wrote them.
-/// - `out`: pointer to a `[AnyValueRef; argument_count]` buffer the projector
+/// - `out`: pointer to a `[Stored; argument_count]` buffer the projector
 ///   fills, one slot per outcome argument, in argument order.
 ///
 /// The roots are values in `process`'s heap. A projector follows list heads,
 /// list tails, tuple fields and struct fields and nothing else, so it
 /// allocates nothing.
-pub type ProjectorFn = extern "C" fn(process: *mut Process, roots: *const AnyValueRef, out: *mut AnyValueRef);
+pub type ProjectorFn = extern "C" fn(process: *mut Process, roots: *const Stored, out: *mut Stored);
 
 /// One clause of a receive site: the code its outcome closure runs, how its
 /// outcome arguments are read from the roots the matcher binds, and the number
@@ -137,12 +140,12 @@ impl ParkRecord {
     pub fn try_match<'a>(
         &self,
         process: *mut Process,
-        msg: AnyValueRef,
+        msg: Stored,
         roots: &'a mut Roots,
-    ) -> Option<(usize, &'a [AnyValueRef])> {
+    ) -> Option<(usize, &'a [Stored])> {
         roots.clear();
-        roots.resize(self.site.root_arity as usize, AnyValueRef::null());
-        let k = (self.site.matcher)(process, msg.raw_word(), self.frame.raw_word(), roots.as_mut_ptr());
+        roots.resize(self.site.root_arity as usize, Stored::of(AnyValue::null()));
+        let k = (self.site.matcher)(process, msg.word, msg.kind, self.frame.raw_word(), roots.as_mut_ptr());
         if k == 0 {
             return None;
         }
@@ -160,14 +163,14 @@ impl ParkRecord {
     /// frame   env: [outer_cont, cap0, cap1, ..., pinned...]
     /// outcome env: [outer_cont, arg0, ..., cap0, cap1, ..., empty...]
     /// ```
-    pub fn outcome_closure(&self, task: &mut Process, clause_idx: usize, roots: &[AnyValueRef]) -> AnyValueRef {
+    pub fn outcome_closure(&self, task: &mut Process, clause_idx: usize, roots: &[Stored]) -> AnyValueRef {
         // SAFETY: a site's clauses follow it in memory.
         let clause = unsafe { self.site.clauses() }[clause_idx];
         let empty_slots = clause.empty_slots as usize;
         let Some(project) = clause.projector else {
             return self.resume_closure(&mut task.heap, clause.code, roots, empty_slots);
         };
-        let mut arguments = Roots::from_elem(AnyValueRef::null(), clause.argument_count as usize);
+        let mut arguments = Roots::from_elem(Stored::of(AnyValue::null()), clause.argument_count as usize);
         project(task, roots.as_ptr(), arguments.as_mut_ptr());
         self.resume_closure(&mut task.heap, clause.code, &arguments, empty_slots)
     }
@@ -183,13 +186,7 @@ impl ParkRecord {
         self.resume_closure(heap, self.site.after_code, &[], self.site.after_empty_slots as usize)
     }
 
-    fn resume_closure(
-        &self,
-        heap: &mut Heap,
-        code: usize,
-        arguments: &[AnyValueRef],
-        empty_slots: usize,
-    ) -> AnyValueRef {
+    fn resume_closure(&self, heap: &mut Heap, code: usize, arguments: &[Stored], empty_slots: usize) -> AnyValueRef {
         let frame = self.frame_addr();
         let captures = self.capture_count();
         // SAFETY: the frame is a live closure this record owns and the collector keeps current.
@@ -208,7 +205,7 @@ impl ParkRecord {
             write(resume.add(8) as *mut u64, code as u64);
             closure_capture_copy(frame, 0, resume, 0);
             for (i, v) in arguments.iter().enumerate() {
-                closure_capture_set_ref_word(resume, 1 + i, v.raw_word());
+                closure_capture_set(resume, 1 + i, v.value("outcome closure argument"));
             }
             for i in 0..captures {
                 closure_capture_copy(frame, 1 + i, resume, 1 + arguments.len() + i);

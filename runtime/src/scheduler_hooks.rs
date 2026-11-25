@@ -31,9 +31,11 @@ pub const YIELD_PTR: u64 = 0x1;
 pub type SpawnHook = extern "C" fn(sender: *mut Process, scheduler: *mut (), closure_bits: u64) -> u32;
 
 /// fz_send FFI signature on the binary side: takes receiver pid plus the
-/// one-word any value ref to deliver. The binary's send_via_current_runtime
-/// handles the deep-copy into the receiver's heap and the wake-up.
-pub type SendHook = extern "C" fn(sender: *mut Process, scheduler: *mut (), receiver_pid: u32, msg_ref_word: u64);
+/// message as its word and kind (`Stored`), so a number is delivered without a
+/// box. The binary's send_via_current_runtime handles the deep-copy into a gift
+/// for the receiver and the wake-up.
+pub type SendHook =
+    extern "C" fn(sender: *mut Process, scheduler: *mut (), receiver_pid: u32, msg_word: u64, msg_kind: u64);
 
 /// The fault sink: where a failing process's line goes. `fz_panic` renders
 /// the line and passes it here with the context's scheduler handle; the sink

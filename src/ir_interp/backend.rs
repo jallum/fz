@@ -339,7 +339,7 @@ impl IrInterpRuntime {
         program: &BackendProgram,
         module: &Module,
         receiver_pid: &u32,
-        msg_ref: AnyValueRef,
+        msg: Stored,
     ) -> Result<(), String> {
         let Some(receiver) = self.tasks.get(receiver_pid) else {
             return Ok(());
@@ -349,7 +349,7 @@ impl IrInterpRuntime {
         }
         let sender = unsafe { &mut *self.cur_proc() };
         if sender.pid == *receiver_pid {
-            self_send(sender, msg_ref);
+            self_send(sender, msg);
             return Ok(());
         }
         let receiver = self.process_ptr(*receiver_pid).expect("receiver checked above");
@@ -364,12 +364,12 @@ impl IrInterpRuntime {
                     &mut park,
                     sender,
                     (unsafe { &*receiver }, &mut delivery),
-                    msg_ref,
+                    msg,
                 )?;
                 self.backend_parked.insert(*receiver_pid, park);
                 outcome
             }
-            None => gift_message(sender, &mut delivery, *receiver_pid, msg_ref),
+            None => gift_message(sender, &mut delivery, *receiver_pid, msg),
         };
         drop(delivery);
         emit_runtime_event(tel, RuntimeEvent::SendProbe(&probe));
@@ -393,13 +393,13 @@ impl IrInterpRuntime {
         park: &mut BackendParkRecord,
         sender: &mut Process,
         (receiver, delivery): (&Process, &mut Delivery),
-        msg_ref: AnyValueRef,
+        msg: Stored,
     ) -> Result<SendProbe, String> {
         if delivery.has_pending_match() {
-            return Ok(gift_message(sender, delivery, receiver.pid, msg_ref));
+            return Ok(gift_message(sender, delivery, receiver.pid, msg));
         }
         let receive = parked_receive(park)?;
-        let msg = AnyValue::from_any_value_ref(msg_ref)?;
+        let message = interp_value_from_stored(msg, "a message sent to a parked receive")?;
         let reductions_before = sender.reductions_remaining;
         let matched = match_backend_receive(
             self,
@@ -409,7 +409,7 @@ impl IrInterpRuntime {
             module,
             &receive.outcomes,
             &receive.dispatch,
-            msg,
+            message,
             &receive.bindings,
             &park.env,
         )?;
@@ -417,12 +417,12 @@ impl IrInterpRuntime {
         let Some((clause_idx, roots)) = matched else {
             return Ok(SendProbe {
                 reductions,
-                ..gift_message(sender, delivery, receiver.pid, msg_ref)
+                ..gift_message(sender, delivery, receiver.pid, msg)
             });
         };
         let roots = roots
             .into_iter()
-            .map(|root| root.as_any_value_ref(sender))
+            .map(|root| root.value(sender).map(Stored::of))
             .collect::<Result<Vec<_>, String>>()?;
         if let Some(timer) = park.after_timer.take() {
             timer_cancel(receiver, timer);
@@ -468,7 +468,7 @@ impl IrInterpRuntime {
         let target = edge.target;
         let roots = roots
             .into_iter()
-            .map(AnyValue::from_any_value_ref)
+            .map(|root| interp_value_from_stored(root, "a matched receive's root"))
             .collect::<Result<Vec<_>, String>>()?;
         let params = project_receive_arguments(receiver, module, &receive.dispatch, edge, &roots)?;
         self.current_proc = receiver;
@@ -647,24 +647,24 @@ extern "C" fn interp_send_hook<T: Telemetry + ?Sized>(
     sender: *mut Process,
     scheduler: *mut (),
     receiver_pid: u32,
-    msg_ref_word: u64,
+    msg_word: u64,
+    msg_kind: u64,
 ) {
     let adapter = unsafe { &mut *(scheduler as *mut BackendSchedulerAdapter<T>) };
     let runtime = unsafe { &mut *adapter.runtime };
-    let result = AnyValueRef::from_raw_word(msg_ref_word)
-        .map_err(|error| format!("fz_send: invalid message ref: {error:?}"))
-        .and_then(|msg| {
-            debug_assert_eq!(sender, runtime.cur_proc(), "fz_send sender must be current process");
-            runtime.send_ref(
-                unsafe { &mut *adapter.types },
-                unsafe { &*adapter.transport },
-                unsafe { &*adapter.tel },
-                unsafe { &*adapter.program },
-                unsafe { &*adapter.module },
-                &receiver_pid,
-                msg,
-            )
-        });
+    debug_assert_eq!(sender, runtime.cur_proc(), "fz_send sender must be current process");
+    let result = runtime.send_ref(
+        unsafe { &mut *adapter.types },
+        unsafe { &*adapter.transport },
+        unsafe { &*adapter.tel },
+        unsafe { &*adapter.program },
+        unsafe { &*adapter.module },
+        &receiver_pid,
+        Stored {
+            word: msg_word,
+            kind: msg_kind,
+        },
+    );
     if let Err(error) = result {
         runtime.record_callback_error(error);
     }
@@ -1641,7 +1641,10 @@ fn step_eval_entry<T: Telemetry + ?Sized>(
             for mb_idx in 0..mailbox_len {
                 let msg = {
                     let proc = unsafe { &mut *runtime.cur_proc() };
-                    AnyValue::from_any_value_ref(proc.mailbox.get(mb_idx).expect("an index below the length"))?
+                    interp_value_from_stored(
+                        proc.mailbox.get(mb_idx).expect("an index below the length"),
+                        "a message in the mailbox",
+                    )?
                 };
                 if let Some((clause_idx, roots)) = match_backend_receive(
                     runtime, types, transport, program, module, outcomes, dispatch, msg, bindings, &env,

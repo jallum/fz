@@ -1,6 +1,6 @@
 use super::*;
 
-extern "C" fn sample_send(_sender: *mut Process, _scheduler: *mut (), _pid: u32, _msg: u64) {}
+extern "C" fn sample_send(_sender: *mut Process, _scheduler: *mut (), _pid: u32, _word: u64, _kind: u64) {}
 
 #[test]
 fn empty_ctx_has_null_handles_and_no_callbacks() {

@@ -1,4 +1,5 @@
 use super::*;
+use crate::any_value::Stored;
 use crate::park::park_test::{code_of, frame_of, leaked_site};
 use std::time::Duration;
 
@@ -113,7 +114,8 @@ fn aot_send_gifts_the_message_and_the_receiver_grafts_it_at_its_next_dispatch() 
         .expect("sender task");
 
     let receiver_bytes = sched.tasks[&2].heap.bytes_used();
-    aot_send_hook(sender_ptr, sched_handle(&mut sched), 2, msg.raw_word());
+    let sent = Stored::of_ref(msg);
+    aot_send_hook(sender_ptr, sched_handle(&mut sched), 2, sent.word, sent.kind);
 
     let receiver = sched.tasks.get_mut(&2).expect("receiver");
     assert_eq!(
@@ -129,7 +131,7 @@ fn aot_send_gifts_the_message_and_the_receiver_grafts_it_at_its_next_dispatch() 
     );
     deliver_in_queue(receiver);
     let copied = receiver.mailbox.front().expect("receiver mailbox");
-    let copied_addr = copied.list_addr().expect("copied list addr");
+    let copied_addr = copied.heap_ref().list_addr().expect("copied list addr");
     assert!(
         !receiver.heap.contains_heap_addr(copied_addr),
         "the message waits outside the receiver's heap until a receive takes it"
@@ -170,8 +172,9 @@ fn aot_send_to_exited_or_unknown_pid_does_not_copy_or_schedule() {
     let before_mailbox: Vec<_> = sched.tasks[&2].mailbox.messages().collect();
     let before_queue = sched.core.queued().clone();
 
-    aot_send_hook(sender_ptr, sched_handle(&mut sched), 2, msg.raw_word());
-    aot_send_hook(sender_ptr, sched_handle(&mut sched), u32::MAX, msg.raw_word());
+    let sent = Stored::of_ref(msg);
+    aot_send_hook(sender_ptr, sched_handle(&mut sched), 2, sent.word, sent.kind);
+    aot_send_hook(sender_ptr, sched_handle(&mut sched), u32::MAX, sent.word, sent.kind);
 
     assert_eq!(sched.tasks[&2].heap.node.alloc_stats(), before_heap);
     assert_eq!(sched.tasks[&2].mailbox.messages().collect::<Vec<_>>(), before_mailbox);
@@ -194,7 +197,7 @@ fn timer_drain_wakes_after_cont() {
 
     // Stand up a single task with a wait that has an
     // after_timer_id. matcher_fn is unused on the drain path.
-    extern "C" fn never_match(_process: *mut Process, _msg: u64, _frame: u64, _out: *mut AnyValueRef) -> u32 {
+    extern "C" fn never_match(_process: *mut Process, _word: u64, _kind: u64, _frame: u64, _out: *mut Stored) -> u32 {
         0
     }
     let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));

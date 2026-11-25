@@ -1,7 +1,9 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use fz_runtime::any_value::{AnyValueRef, ClosureDenotationId, closure_denotation};
+use fz_runtime::any_value::{
+    AnyValue as RuntimeAnyValue, AnyValueRef, ClosureDenotationId, Stored, closure_denotation,
+};
 use fz_runtime::process::Process;
 
 use super::{CodeSubmission, Compiler2, ExecutableNeed, RootId, RootSubmission};
@@ -15,6 +17,14 @@ fn submit_root(compiler: &mut Compiler2<ConfiguredTelemetry>, name: &str) -> Roo
         arity: 0,
         need: ExecutableNeed::Value,
     })
+}
+
+/// The tuple a mailbox message is.
+fn tuple_of(message: Stored) -> AnyValueRef {
+    match message.value("a message that is a tuple") {
+        RuntimeAnyValue::HeapRef(tuple) => tuple,
+        other => panic!("a tuple message is a heap ref: {other:?}"),
+    }
 }
 
 fn tuple_denotations(process: &Process, tuple: AnyValueRef, count: usize) -> Vec<ClosureDenotationId> {
@@ -35,7 +45,7 @@ fn first_class_closures_retain_complete_lexical_values_in_interp_and_jit() {
         tel.attach_raw_event2::<crate::ir_codegen::PidId, Process, _>(
             &["fz", "runtime", "process_exited"],
             move |_, _, _, _, process| {
-                let tuple = process.mailbox.front().expect("root exposes its closures");
+                let tuple = tuple_of(process.mailbox.front().expect("root exposes its closures"));
                 for (index, expected) in [11, 22].into_iter().enumerate() {
                     let closure = process.heap.read_struct_field_ref(tuple, (index * 8) as u32).unwrap();
                     assert_eq!(
@@ -104,7 +114,7 @@ fn closure_denotation_survives_repeated_allocation_and_specialization_in_interp_
         tel.attach_raw_event2::<crate::ir_codegen::PidId, Process, _>(
             &["fz", "runtime", "process_exited"],
             move |_, _, _, _, process| {
-                let tuple = process.mailbox.front().expect("root sent its closures to itself");
+                let tuple = tuple_of(process.mailbox.front().expect("root sent its closures to itself"));
                 assert_ne!(
                     process
                         .heap
@@ -198,7 +208,8 @@ fn separate_backend_programs_keep_distinct_closures_on_one_process() {
     };
     let first_tuple = first_tuple.raw();
     let first_id = tuple_denotations(&process, first_tuple, 1)[0];
-    let (segment, first_tuple) = fz_runtime::sched::gift_copy_one(&mut process.heap, first_tuple);
+    let (segment, first_tuple) =
+        fz_runtime::sched::gift_copy_one(&mut process.heap, Stored::of(RuntimeAnyValue::HeapRef(first_tuple)));
     process.mailbox.push(first_tuple, segment);
 
     compiler.submit_code(CodeSubmission {
@@ -233,7 +244,7 @@ fn separate_backend_programs_keep_distinct_closures_on_one_process() {
         "separately published programs cannot reuse package-local closure identities"
     );
     assert_eq!(
-        tuple_denotations(&process, process.mailbox.front().unwrap(), 1)[0],
+        tuple_denotations(&process, tuple_of(process.mailbox.front().unwrap()), 1)[0],
         first_id,
         "publishing an earlier-sorting function cannot renumber a live closure"
     );

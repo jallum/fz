@@ -5,10 +5,9 @@
 #
 # Each probe pre-sends 1000 four-byte messages, then receives them all inside
 # the measured window. A binding the body ignores, or only a guard reads, is
-# never stored in the receive's out-slots, so it makes no scalar box. A binding
-# the body reads is stored as a boxed ref word the body picks up, so that probe
-# makes one box per message on native; the interpreter holds an integer
-# unboxed, so it makes none. The guard probe counts the messages with
+# never stored in the receive's out-slots. A binding the body reads is stored
+# as its word and kind, which the body picks up, so no probe makes a scalar box,
+# on any path. The guard probe counts the messages with
 # `x >= 500` and prints 500, proving the guard still reads the field.
 #
 # Each probe prints its result, then scalar boxes per message.

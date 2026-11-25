@@ -1,7 +1,7 @@
 #---
 # purpose: "each place a binary gains a second holder marks it shared, for a small binary and for a view of a buffer"
 # oracle: self
-# oracle.stamp: ce13021c195392ae
+# oracle.stamp: f7b011d3170659fc
 #---
 #
 # Each publication runs in a process of its own, spawned in turn, once with a
@@ -10,7 +10,10 @@
 # process as its last act, so nothing but the publication can mark it.
 #
 # The processes' `binaries_shared` counts, in spawn order:
-#   unpublished               0 0   a binary sent bare is copied, not marked
+#   unpublished               1 1   a binary sent bare is copied, not marked
+#                                   by the copy; `send` returns its message, so
+#                                   the sender's frame holds the binary past
+#                                   the send and marks it
 #   tuple, struct, list head,
 #   map key, map value,
 #   closure capture           2 1   the store marks the binary; the message's
@@ -18,13 +21,10 @@
 #                                   copied container and marked there too, and
 #                                   a large one's copy is a view born shared
 #   call_share                1 1   a call made while the caller still holds it
-#   self_send                 0 0   the mailbox takes the sender's own binary,
-#                                   which the sender no longer reads: it keeps
-#                                   one holder
-#   reduction_yield           1 1   natively, the continuation a yield builds
-#                                   from the yielding function's arguments;
-#                                   the interpreter keeps its frame across a
-#                                   yield and marks nothing (0 0)
+#   self_send                 2 1   the mailbox takes a copy of the binary, and
+#                                   the sender's frame holds it past the send
+#   reduction_yield           1 1   the sender holds the binary across the
+#                                   yield and past the send, on every path
 defmodule Box do
   defstruct [:v]
 end

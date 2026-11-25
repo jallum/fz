@@ -1,5 +1,5 @@
 use super::*;
-use crate::any_value::{ClosureDenotationId, closure_capture_value};
+use crate::any_value::{ClosureDenotationId, closure_capture_set_ref_word, closure_capture_value};
 use crate::heap::SchemaRegistry;
 use std::alloc::{Layout, alloc};
 use std::cell::RefCell;
@@ -76,6 +76,10 @@ fn int_ref(n: i64) -> AnyValueRef {
     AnyValueRef::from_scalar_slot(ValueKind::INT, slot as *const u64).expect("int ref")
 }
 
+fn int_stored(n: i64) -> Stored {
+    Stored::of(AnyValue::Int(n))
+}
+
 fn fresh_process() -> Process {
     Process::new(Rc::new(RefCell::new(SchemaRegistry::new())))
 }
@@ -90,10 +94,19 @@ fn record(site: &'static ReceiveSite, frame: AnyValueRef) -> ParkRecord {
 }
 
 /// Matches a message equal to the last pinned value of the frame and binds it.
-extern "C" fn pinned_eq_matcher(_process: *mut Process, msg: u64, frame: u64, out: *mut AnyValueRef) -> u32 {
-    let msg = AnyValueRef::from_raw_word(msg).expect("msg ref");
+extern "C" fn pinned_eq_matcher(
+    _process: *mut Process,
+    msg_word: u64,
+    msg_kind: u64,
+    frame: u64,
+    out: *mut Stored,
+) -> u32 {
+    let msg = Stored {
+        word: msg_word,
+        kind: msg_kind,
+    };
     let want = AnyValueRef::from_raw_word(crate::ir_runtime::fz_receive_pinned_ref(frame, 1)).expect("pinned ref");
-    if msg.load_int().expect("int msg") != want.load_int().expect("int pinned") {
+    if msg.value("int msg") != AnyValue::Int(want.load_int().expect("int pinned")) {
         return 0;
     }
     unsafe { *out = msg };
@@ -101,8 +114,8 @@ extern "C" fn pinned_eq_matcher(_process: *mut Process, msg: u64, frame: u64, ou
 }
 
 /// Always picks the second clause, after writing one value into the buffer.
-extern "C" fn second_clause(_process: *mut Process, msg: u64, _frame: u64, out: *mut AnyValueRef) -> u32 {
-    unsafe { *out = AnyValueRef::from_raw_word(msg).expect("msg ref") };
+extern "C" fn second_clause(_process: *mut Process, word: u64, kind: u64, _frame: u64, out: *mut Stored) -> u32 {
+    unsafe { *out = Stored { word, kind } };
     2
 }
 
@@ -117,13 +130,13 @@ fn the_matcher_reads_the_pinned_values_behind_the_frames_captures() {
 
     let mut roots = Roots::new();
     let (clause_idx, bound) = park
-        .try_match(null_mut(), int_ref(42), &mut roots)
+        .try_match(null_mut(), int_stored(42), &mut roots)
         .expect("42 is the pinned value");
     assert_eq!(clause_idx, 0);
     assert_eq!(bound.len(), 1);
-    assert_eq!(bound[0].load_int(), Ok(42));
+    assert_eq!(bound[0].value("root"), AnyValue::Int(42));
     assert!(
-        park.try_match(null_mut(), int_ref(7), &mut roots).is_none(),
+        park.try_match(null_mut(), int_stored(7), &mut roots).is_none(),
         "7 is a capture, not the pinned value"
     );
 }
@@ -135,7 +148,7 @@ fn a_hit_hands_back_only_the_winning_clauses_roots() {
     let park = record(site, frame_of(&mut process.heap, &[]));
 
     let mut roots = Roots::new();
-    let (clause_idx, bound) = park.try_match(null_mut(), int_ref(99), &mut roots).expect("match");
+    let (clause_idx, bound) = park.try_match(null_mut(), int_stored(99), &mut roots).expect("match");
     assert_eq!(clause_idx, 1);
     assert!(bound.is_empty(), "the second clause has no roots");
 }
@@ -151,7 +164,7 @@ fn an_outcome_closure_is_the_winning_clauses_code_over_bound_values_then_capture
     let frame = frame_of(&mut process.heap, &[int_ref(7), int_ref(42)]);
     let park = record(site, frame);
 
-    let outcome = park.outcome_closure(&mut process, 1, &[int_ref(99)]);
+    let outcome = park.outcome_closure(&mut process, 1, &[int_stored(99)]);
 
     assert_eq!(code_of(outcome), 0xbeef);
     let addr = outcome.closure_addr().expect("outcome addr");
@@ -167,7 +180,7 @@ fn an_outcome_closure_is_the_winning_clauses_code_over_bound_values_then_capture
 }
 
 /// Writes the second root, then the first, as the clause's two arguments.
-extern "C" fn swap_projector(_process: *mut Process, roots: *const AnyValueRef, out: *mut AnyValueRef) {
+extern "C" fn swap_projector(_process: *mut Process, roots: *const Stored, out: *mut Stored) {
     unsafe {
         *out = *roots.add(1);
         *out.add(1) = *roots;
@@ -189,7 +202,7 @@ fn an_outcome_closure_holds_the_arguments_the_projector_reads_out_of_the_roots()
     let site = leaked_site(pinned_eq_matcher, None, 0, &[projecting]);
     let park = record(site, frame_of(&mut process.heap, &[]));
 
-    let outcome = park.outcome_closure(&mut process, 0, &[int_ref(1), int_ref(2)]);
+    let outcome = park.outcome_closure(&mut process, 0, &[int_stored(1), int_stored(2)]);
 
     let addr = outcome.closure_addr().expect("outcome addr");
     // SAFETY: `outcome` is a live closure.

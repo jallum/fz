@@ -21,12 +21,12 @@ fn with_process<R>(f: impl FnOnce(&mut Process) -> R) -> R {
 }
 
 #[test]
-fn scheduler_exports_forward_exact_words_and_send_returns_the_original_message() {
+fn scheduler_exports_forward_exact_words_and_send_forwards_the_message_as_its_word_and_kind() {
     #[derive(Default)]
     struct Calls {
         closure: u64,
         receiver: u32,
-        message: u64,
+        message: Option<Stored>,
     }
 
     extern "C" fn spawn(_sender: *mut Process, scheduler: *mut (), closure: u64) -> u32 {
@@ -35,10 +35,10 @@ fn scheduler_exports_forward_exact_words_and_send_returns_the_original_message()
         37
     }
 
-    extern "C" fn send(_sender: *mut Process, scheduler: *mut (), receiver: u32, message: u64) {
+    extern "C" fn send(_sender: *mut Process, scheduler: *mut (), receiver: u32, word: u64, kind: u64) {
         let calls = unsafe { &mut *(scheduler as *mut Calls) };
         calls.receiver = receiver;
-        calls.message = message;
+        calls.message = Some(Stored { word, kind });
     }
 
     with_process(|process| {
@@ -47,11 +47,6 @@ fn scheduler_exports_forward_exact_words_and_send_returns_the_original_message()
             .heap
             .alloc_list_cons_int(1, AnyValueRef::empty_list())
             .expect("representative boxed closure lane")
-            .raw_word();
-        let message = process
-            .heap
-            .alloc_list_cons_int(2, AnyValueRef::empty_list())
-            .expect("boxed message")
             .raw_word();
         let mut calls = Calls::default();
         let mut ctx = ExecCtx {
@@ -63,10 +58,11 @@ fn scheduler_exports_forward_exact_words_and_send_returns_the_original_message()
         process.ctx = &mut ctx;
 
         assert_eq!(fz_spawn(process_ptr, closure), 37);
-        assert_eq!(fz_send(process_ptr, 41, message), message);
+        let number = Stored::of(AnyValue::Int(41));
+        fz_send(process_ptr, 41, number.word, number.kind);
         assert_eq!(calls.closure, closure);
         assert_eq!(calls.receiver, 41);
-        assert_eq!(calls.message, message);
+        assert_eq!(calls.message, Some(number), "a number is sent as its word and kind");
     });
 }
 

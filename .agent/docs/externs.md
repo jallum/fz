@@ -483,7 +483,7 @@ stored_value, stored_value)`, and `Map.delete` and `Map.has_key?` take their key
 way, as do `fz_inspect`, `fz_inspect_with` (its value; the options stay a
 reference), `fz_value_cmp_ref`, the equality externs `fz_op_eq`,
 `fz_op_neq`, `fz_op_identical` and `fz_op_not_identical`, and the raise
-primitives `fz_panic`, `fz_throw` and `fz_exit`. The runtime
+primitives `fz_panic`, `fz_throw` and `fz_exit`, and `fz_send` (its message). The runtime
 entries `fz_value_eq_ref` and `fz_value_eq_widening_ref`, which compiled code
 calls for `===` and `==` of two values it cannot type, take both operands as
 the same words. The helper rebuilds each value with `Stored::value`
@@ -900,25 +900,18 @@ what makes an ordinary wrapper come back correctly:
 
 ```fz
 @spec send(pid, t) :: t when t: any
-def send(pid, msg), do: fz_send(pid, msg)
+def send(pid, msg) when is_pid(pid) do
+  fz_send(pid, msg)
+  msg
+end
 ```
 
-The body calls `extern "fz" defp fz_send(pid, t) :: t when t: any`, so the
-message is boxed (the ABI adds the process alongside it, which the wrapper
-never sees) and the result is a boxed `AnyValueRef`; reached for an `integer`,
-the wrapper's return unboxes that word back to an `i64`. A repeated type
-variable means "same type", not "same object" — boundary correctness is the
-marshal class on the way in plus this coercion on the way out. The declared
-bound answers only where the call pinned nothing, so `t` is whatever the
-caller passed, the empty list included: `send(pid, [])` is typed `[]` and not `any`
-(`types::arrow_match`, fz-kdt.120).
-
-`fz_send`'s own return evidence is its `FunctionContract` applied to the
-activation's row: the extern has no body to observe, so its declared clause
-is the only witness it has for what it returns (see
-[`semantic-authorities`](semantic-authorities.md), "what does an activation
-return"). `send(pid, 1)` therefore defines its return as `int` once, and every
-caller sees that value rather than the unconstrained `t`.
+The body calls `extern "fz" defp fz_send(pid, stored_value) :: unit`: the
+message crosses as its word and kind (the ABI adds the process alongside it,
+which the wrapper never sees), so a number is never boxed to be sent, and the
+extern answers nothing. The wrapper returns `msg` itself, so the call is typed
+by the caller's argument, the empty list included: `send(pid, [])` is typed `[]`
+and not `any`.
 
 ## One-word boundaries
 
