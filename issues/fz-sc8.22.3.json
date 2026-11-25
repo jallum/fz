@@ -9,9 +9,15 @@
   "id": "fz-sc8.22.3",
   "labels": [],
   "parent": "fz-sc8.22",
+  "comments": [
+    {
+      "text": "From .22.2: the quoted-source walkers in src/compiler2/source.rs (the read_list_tail_ref loops near :1025 and :1038, used for quoted-list compare and to-vec) refuse a terminator loudly with ExpectedTag. An improper list can reach quoted source only as a value inside it (Macro.escape([1 | 2]) gives [{:|, [], [1, 2]}], a proper list), so this ticket decides whether those walkers need the improper form.",
+      "timestamp": "2026-11-25T01:22:32Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Improper lists work through concat, Macro.escape and the fixtures",
   "type": "task",
-  "updated_at": "2026-11-20T22:04:34Z"
+  "updated_at": "2026-11-25T01:22:32Z"
 }
