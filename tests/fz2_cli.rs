@@ -2589,3 +2589,42 @@ fn tail_recursion_plans_one_entry_dispatch_per_compiled_function() {
         "every called function plans its own entry dispatch",
     );
 }
+
+/// `byte_size` and `bit_size` of a binary are computed in place: the compiled
+/// code reads the header word and declares no import of the runtime's extent
+/// functions. The dump still names the functions that wrap each extern, so the
+/// check is on the import (`fn0 = <symbol>`), which is how an import prints.
+#[test]
+fn byte_size_and_bit_size_of_a_proven_binary_import_no_runtime_function() {
+    let source_path = unique_temp_path("fz2_size_rows", ".fz");
+    let clif_path = unique_temp_path("fz2_size_rows", ".clif");
+    write(
+        &source_path,
+        "def size(b) when is_binary(b), do: byte_size(b) + bit_size(b)\n\
+         def main() do\n  dbg(size(\"hello\"))\n  dbg(size(<<1, 2, 3, 4>>))\n  nil\nend\n",
+    )
+    .expect("write size fixture");
+    let spec = format!("clif={}", clif_path.display());
+    let out = run_fz2(&[
+        OsStr::new("run"),
+        OsStr::new("--dump"),
+        OsStr::new(&spec),
+        source_path.as_os_str(),
+    ]);
+    assert!(
+        out.status.success(),
+        "the program must run; stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let clif = std::fs::read_to_string(&clif_path).expect("read the clif dump");
+    let _ = remove_file(&source_path);
+    let _ = remove_file(&clif_path);
+    assert!(
+        clif.contains("fz_bitstring_byte_extent__e") && clif.contains("fz_bitstring_bit_extent__e"),
+        "the dump must contain the functions that wrap the externs, or this test observes nothing"
+    );
+    for symbol in ["fz_bitstring_byte_extent", "fz_bitstring_bit_extent"] {
+        let import = format!("= {symbol}\n");
+        assert!(!clif.contains(&import), "compiled code imports `{symbol}`");
+    }
+}

@@ -69,16 +69,17 @@ use cranelift_codegen::ir::{
 };
 use cranelift_frontend::FunctionBuilder;
 use fz_runtime::any_value::{
-    ClosureDenotationId, FALSE_ATOM_ID, NIL_ATOM_ID, STRUCT_HEADER_SCHEMA_SHIFT, ValueKind, closure_header_word,
+    BITSTRING_BIT_LEN_SHIFT, BITSTRING_HEADER_LEN_MASK, ClosureDenotationId, FALSE_ATOM_ID, NIL_ATOM_ID,
+    STRUCT_HEADER_SCHEMA_SHIFT, ValueKind, closure_header_word,
 };
 use fz_runtime::heap::{Heap, HeapAllocKind};
 use fz_runtime::ir_runtime::{
-    fz_box_float_for_any, fz_box_int_for_any, fz_box_opaque_for_any, fz_list_cons_any, fz_list_cons_atom,
-    fz_list_cons_float, fz_list_cons_int, fz_list_reuse_or_cons_parts, fz_op_abs_f, fz_op_add_ii, fz_op_eq_ff,
-    fz_op_eq_ii, fz_op_gt_ff, fz_op_gt_ii, fz_op_gte_ff, fz_op_gte_ii, fz_op_identical_ii, fz_op_lt_ff, fz_op_lt_ii,
-    fz_op_lte_ff, fz_op_lte_ii, fz_op_mul_ii, fz_op_neg_f, fz_op_neg_i, fz_op_neq_ff, fz_op_neq_ii,
-    fz_op_not_identical_ii, fz_op_sub_ii, fz_struct_schema_id_ref, fz_truthy_ref, fz_type_of, fz_unbox_atom,
-    fz_unbox_int, fz_value_eq_raw_const,
+    fz_bitstring_bit_extent, fz_bitstring_byte_extent, fz_box_float_for_any, fz_box_int_for_any, fz_box_opaque_for_any,
+    fz_list_cons_any, fz_list_cons_atom, fz_list_cons_float, fz_list_cons_int, fz_list_reuse_or_cons_parts,
+    fz_op_abs_f, fz_op_add_ii, fz_op_eq_ff, fz_op_eq_ii, fz_op_gt_ff, fz_op_gt_ii, fz_op_gte_ff, fz_op_gte_ii,
+    fz_op_identical_ii, fz_op_lt_ff, fz_op_lt_ii, fz_op_lte_ff, fz_op_lte_ii, fz_op_mul_ii, fz_op_neg_f, fz_op_neg_i,
+    fz_op_neq_ff, fz_op_neq_ii, fz_op_not_identical_ii, fz_op_sub_ii, fz_struct_schema_id_ref, fz_truthy_ref,
+    fz_type_of, fz_unbox_atom, fz_unbox_int, fz_value_eq_raw_const,
 };
 
 /// What a recipe computed, in one of the three shapes.
@@ -264,6 +265,15 @@ pub(crate) const RECIPES: &[Recipe] = &[
         let expected = ValueKind::new(u8::try_from(constant_of(b, expected_kind)?).ok()?)?;
         Some(Emitted::Condition(word_is_scalar(b, word, expected, raw)?))
     }),
+    // Binary extents: the header word is the first word of both binary forms.
+    recipe!(fz_bitstring_byte_extent(word, bit_pos), |b| {
+        let bits = bits_from(b, word, bit_pos);
+        let rounded = b.ins().iadd_imm_u(bits, 7);
+        Some(Emitted::Value(b.ins().ushr_imm_u(rounded, 3)))
+    }),
+    recipe!(fz_bitstring_bit_extent(word, bit_pos), |b| Some(Emitted::Value(
+        bits_from(b, word, bit_pos)
+    ))),
     // Integer arithmetic.
     overflowing!(fz_op_add_ii, sadd_overflow),
     overflowing!(fz_op_sub_ii, ssub_overflow),
@@ -478,6 +488,16 @@ pub(crate) fn emit_object<M: cranelift_module::Module>(
             panic!("`{symbol}` does not place a struct or closure")
         }
     }
+}
+
+/// The bits of the binary `word` names that lie from `bit_pos` on: the bit
+/// length its header word holds, less the position.
+fn bits_from(b: &mut FunctionBuilder<'_>, word: ir::Value, bit_pos: ir::Value) -> ir::Value {
+    let address = address_field(b, word);
+    let header = b.ins().load(types::I64, MemFlagsData::trusted(), address, 0);
+    let length_field = b.ins().band_imm_u(header, BITSTRING_HEADER_LEN_MASK as i64);
+    let bit_len = b.ins().ushr_imm_u(length_field, i64::from(BITSTRING_BIT_LEN_SHIFT));
+    b.ins().isub(bit_len, bit_pos)
 }
 
 /// Whether a ref word is not `false` and not `nil`: every word of another kind

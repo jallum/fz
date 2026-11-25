@@ -222,6 +222,29 @@ struct Words {
     _heap: Heap,
 }
 
+/// Binaries in both forms, with and without the literal bit, and the
+/// `(binary, bit_pos)` inputs the extent rows are tried on.
+/// The heap is leaked: the inputs are addresses into it and outlive the proofs.
+fn binary_extent_inputs() -> Vec<Vec<u64>> {
+    let heap = Box::leak(Box::new(Heap::new(
+        1 << 16,
+        Rc::new(RefCell::new(SchemaRegistry::new())),
+    )));
+    let mut inputs = Vec::new();
+    for bit_len in [0u64, 3, 8, 11, 512, 600, 1000] {
+        let bytes = vec![0xa5u8; bit_len.div_ceil(8) as usize];
+        let word = heap.alloc_bitstring(&bytes, bit_len).ref_word();
+        for word in [word, word.literal()] {
+            for bit_pos in [0, 1, 3, 8, 11, 511, 999, bit_len] {
+                if bit_pos <= bit_len {
+                    inputs.push(vec![word.raw_word(), bit_pos]);
+                }
+            }
+        }
+    }
+    inputs
+}
+
 const OTHER_ATOM_ID: u32 = 7;
 
 fn int_ref(heap: &mut Heap, value: i64) -> AnyValueRef {
@@ -393,6 +416,7 @@ fn eq_raw_const(kind: ValueKind, words: &Words, raws: Vec<u64>) -> Parity {
 /// prove it. A row absent here fails `every_row_is_proved_against_its_runtime_function`.
 fn proofs() -> Vec<Parity> {
     let w = words();
+    let binary_inputs = binary_extent_inputs();
     let ints = integer_words();
     let floats = float_words();
     let atom_ids: Vec<u64> = [TRUE_ATOM_ID, FALSE_ATOM_ID, NIL_ATOM_ID, OTHER_ATOM_ID]
@@ -419,6 +443,20 @@ fn proofs() -> Vec<Parity> {
             &[Lane::Word],
             singles(&w.structs),
             |a| value(u64::from(fz_struct_schema_id_ref(a[0]))),
+        ),
+        parity(
+            "fz_bitstring_byte_extent",
+            Shape::Value,
+            &[Lane::Word, Lane::Word],
+            binary_inputs.clone(),
+            |a| value(fz_bitstring_byte_extent(a[0], a[1]) as u64),
+        ),
+        parity(
+            "fz_bitstring_bit_extent",
+            Shape::Value,
+            &[Lane::Word, Lane::Word],
+            binary_inputs,
+            |a| value(fz_bitstring_bit_extent(a[0], a[1]) as u64),
         ),
         eq_raw_const(ValueKind::ATOM, &w, atom_ids),
         eq_raw_const(ValueKind::INT, &w, ints.clone()),

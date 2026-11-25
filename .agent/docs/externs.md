@@ -284,6 +284,14 @@ A row answers in one of three shapes (`Emitted`) and no others:
 A recipe does not validate its argument: the Rust function panics on a
 malformed word, the instructions read whatever the word says.
 
+`fz_bitstring_byte_extent` and `fz_bitstring_bit_extent` (`byte_size` and
+`bit_size` of a proven binary, and of a cursor's rest) are `Value` rows. The
+header word is word 0 of both binary forms, so they read it at the word's
+address without testing the form, take its bit length (the bits below the
+shared mark, above the low nibble: `BITSTRING_HEADER_LEN_MASK`,
+`BITSTRING_BIT_LEN_SHIFT`), and subtract the bit position; the byte row then
+rounds up to whole bytes.
+
 A row that allocates is the other kind of row (`Emit::Cell`, `Emit::Reuse`, `Emit::Struct`,
 `Emit::Closure`, `Emit::Box`): it takes the
 process as its first argument, as the runtime function does, and writes the
