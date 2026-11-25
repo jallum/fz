@@ -1,7 +1,7 @@
 //! Immutable source denotations shared by the compiler and runtime.
 
 use crate::any_value::ClosureDenotationId;
-use crate::module_name::{ModuleDenotation, ModuleName};
+use crate::module_name::ModuleName;
 use std::cmp::Ordering;
 use std::sync::Arc;
 
@@ -27,7 +27,7 @@ pub struct FunctionDenotation {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FunctionOrigin {
     Named {
-        module: Option<ModuleDenotation>,
+        module: Option<ModuleName>,
         name: String,
     },
     Generated {
@@ -39,10 +39,7 @@ pub enum FunctionOrigin {
 impl FunctionDenotation {
     pub fn named(module: Option<ModuleName>, name: String, arity: usize) -> Self {
         Self {
-            origin: FunctionOrigin::Named {
-                module: module.map(ModuleDenotation::Named),
-                name,
-            },
+            origin: FunctionOrigin::Named { module, name },
             arity,
         }
     }
@@ -124,7 +121,7 @@ impl FunctionDenotation {
         let FunctionOrigin::Named { module, name } = &owner.origin else {
             unreachable!("a lexical owner is a named function")
         };
-        let module = module.as_ref().map(ModuleDenotation::atom_name);
+        let module = module.as_ref().map(ModuleName::atom_name);
         match &self.origin {
             FunctionOrigin::Named { .. } => (module, name.clone()),
             FunctionOrigin::Generated { occurrence, .. } => {
@@ -154,14 +151,9 @@ pub fn encode_closure_denotations(
                     bytes.push(0);
                     match module {
                         None => bytes.push(0),
-                        Some(ModuleDenotation::Named(name)) => {
+                        Some(name) => {
                             bytes.push(1);
                             encode_module_name(&mut bytes, name)?;
-                        }
-                        Some(ModuleDenotation::ProtocolImpl { protocol, target }) => {
-                            bytes.push(2);
-                            encode_module_name(&mut bytes, protocol)?;
-                            encode_module_name(&mut bytes, target)?;
                         }
                     }
                     encode_string(&mut bytes, name)?;
@@ -261,14 +253,10 @@ impl<'a> DenotationReader<'a> {
         Ok(ModuleName::from_segments(segments))
     }
 
-    fn module(&mut self) -> Result<Option<ModuleDenotation>, &'static str> {
+    fn module(&mut self) -> Result<Option<ModuleName>, &'static str> {
         match self.tag()? {
             0 => Ok(None),
-            1 => Ok(Some(ModuleDenotation::Named(self.module_name()?))),
-            2 => Ok(Some(ModuleDenotation::ProtocolImpl {
-                protocol: self.module_name()?,
-                target: self.module_name()?,
-            })),
+            1 => Ok(Some(self.module_name()?)),
             _ => Err("invalid source module tag"),
         }
     }

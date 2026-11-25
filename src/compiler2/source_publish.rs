@@ -413,6 +413,7 @@ pub(crate) fn discover_modules(
                     source_owner,
                     parent_module,
                     module.source.clone(),
+                    module.span,
                     nested.clone(),
                 );
                 publish_module_indexed(world, module_id, revision, outputs, changed);
@@ -428,6 +429,7 @@ pub(crate) fn discover_modules(
                     source_owner,
                     parent_module,
                     protocol.source.clone(),
+                    protocol.span,
                     protocol_surface,
                 );
                 publish_module_indexed(world, module_id, revision, outputs, changed);
@@ -459,6 +461,7 @@ pub(crate) fn discover_modules(
                             source_owner,
                             parent_module,
                             module.source.clone(),
+                            module.span,
                             nested.clone(),
                         );
                         publish_module_indexed(world, module_id, revision, outputs, changed);
@@ -475,6 +478,7 @@ pub(crate) fn discover_modules(
                             source_owner,
                             parent_module,
                             protocol.source.clone(),
+                            protocol.span,
                             protocol_surface,
                         );
                         publish_module_indexed(world, module_id, revision, outputs, changed);
@@ -1897,7 +1901,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
                 format!(
                     "module {} is not loaded but was defined. This happens when you depend on a module in the same context in which it is defined. Try defining the module outside the context that uses it.",
                     self.world
-                        .module_denotation(module)
+                        .module_name(module)
                         .expect("a module with a recorded source has a name")
                 ),
                 import.span,
@@ -1967,6 +1971,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
             self.source_owner,
             protocol,
             form.source.clone(),
+            form.span,
             ProtocolImplSource {
                 protocol,
                 target,
@@ -2028,7 +2033,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
             ProtocolCallbackSurface::NotAProtocol => {
                 let name = self
                     .world
-                    .module_denotation(protocol)
+                    .module_name(protocol)
                     .expect("indexed module has a denotation")
                     .to_string();
                 return Err(emit_job_diagnostic(
@@ -2056,12 +2061,12 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
             .collect();
         let protocol_display = self
             .world
-            .module_denotation(protocol)
+            .module_name(protocol)
             .expect("referenced protocol module")
             .to_string();
         let implementation_display = self
             .world
-            .module_denotation(impl_module)
+            .module_name(impl_module)
             .expect("just-referenced impl module")
             .to_string();
         for (name, arity) in declared_callbacks {

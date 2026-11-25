@@ -1,0 +1,7 @@
+warning[resolve/module-redefined]: redefining module P.List (current version defined in memory)
+  --> fixtures/00097_protocol_duplicate_impl.fz:9:1
+   |
+9 | defimpl P, for: List do
+   | ^^^^^^^^^^^^^^^^^^^^^^^
+   |
+

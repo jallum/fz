@@ -1847,7 +1847,7 @@ fn call_reaches_no_target(
     // definition panics -- which is how the first attempt at this diagnostic
     // traded one crash for another.
     let callee = world.function_ref(callee);
-    let qualified = world.module_denotation(callee.module).map_or_else(
+    let qualified = world.module_name(callee.module).map_or_else(
         || callee.display_name(),
         |module| format!("{module}.{}", callee.display_name()),
     );

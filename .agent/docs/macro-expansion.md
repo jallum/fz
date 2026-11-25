@@ -245,7 +245,7 @@ field order. The `Macro.Env` module (`lib/macro_env.fz`) holds the
 
 | field | value |
 | --- | --- |
-| `module`, `function` | the scope's module (an alias that carries its exact denotation, `nil` outside a module) and function (`{name, arity}` or `nil`) |
+| `module`, `function` | the scope's module (its atom, as `__MODULE__`; `nil` outside a module) and function (`{name, arity}` or `nil`) |
 | `context` | the expansion context: `nil`, `:match` or `:guard` |
 | `file`, `line` | where the macro call is written (`__CALLER__`) or the definition is (`__ENV__`); `"nofile"` and `0` with no source position (`CallSite::locate`) |
 | `aliases` | `[{Short, Full}]` for each module the namespace binds under a name that is not its own, in the order written |

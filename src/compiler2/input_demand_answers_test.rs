@@ -67,7 +67,7 @@ fn function_name(world: &World, function: FunctionId) -> String {
 /// (`Enum.reduce_while/3`).
 fn qualified_function_name(world: &World, function: FunctionId) -> String {
     let denotation = world.function_ref(function);
-    match world.module_denotation(denotation.module) {
+    match world.module_name(denotation.module) {
         Some(module) => format!("{module}.{}/{}", denotation.display_name(), denotation.arity),
         None => format!("{}/{}", denotation.display_name(), denotation.arity),
     }

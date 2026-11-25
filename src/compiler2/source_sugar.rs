@@ -981,7 +981,6 @@ fn generated_variable(
         context: VarContext::minted(SUGAR_CONTEXT, ordinal as i64),
     };
     let meta = QuotedSourceMetadata {
-        module: None,
         bound_callable: None,
         from_brackets: false,
         span,

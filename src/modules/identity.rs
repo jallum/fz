@@ -5,7 +5,7 @@
 //! boundary: module paths and exported functions are assembled from parsed
 //! segments, not recovered by repeatedly splitting display text.
 
-pub use fz_runtime::module_name::{ModuleDenotation, ModuleName};
+pub use fz_runtime::module_name::ModuleName;
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]

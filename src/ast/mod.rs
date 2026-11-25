@@ -1,11 +1,11 @@
-use crate::modules::identity::{ModuleDenotation, ModuleName};
+use crate::modules::identity::ModuleName;
 use crate::parser::lexer::{Tok, Token};
 use crate::source::Span;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModuleTarget {
     Unresolved(ModuleName),
-    Exact(ModuleDenotation),
+    Exact(ModuleName),
 }
 
 impl std::fmt::Display for ModuleTarget {
@@ -95,16 +95,14 @@ impl CallableName {
                         name,
                     });
                 }
-                Expr::Module(module) => {
+                Expr::Atom(atom) if fz_runtime::module_name::is_alias_namespace_atom(atom) => {
                     path.reverse();
                     let name = path.pop()?;
-                    let mut module = module.clone();
-                    for segment in path {
-                        let ModuleDenotation::Named(parent) = module else {
-                            return None;
-                        };
-                        module = ModuleDenotation::Named(parent.child(segment));
-                    }
+                    let module = path
+                        .into_iter()
+                        .fold(ModuleName::from_atom_name(atom)?, |module, segment| {
+                            module.child(segment)
+                        });
                     return Some(Self {
                         module: Some(ModuleTarget::Exact(module)),
                         name,
@@ -261,10 +259,6 @@ pub enum Expr {
     /// A module alias as source wrote it (`Foo.Bar`, `B`). In value position
     /// it is the atom of the module it resolves to.
     Alias(ModuleName),
-
-    /// A resolved module alias supplied by compiler reflection. Display
-    /// segments are not retained as a second semantic authority.
-    Module(ModuleDenotation),
 
     /// The one callable a quoted call was resolved to, as that call's callee.
     /// Source spelling never produces this: the quoted-source reader mints it

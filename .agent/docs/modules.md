@@ -13,12 +13,12 @@ stratum.
 Referencing a module or a function allocates a stable id immediately; defining it
 later fills the state behind that id.
 
-- `ModuleId` — `reference_named(name)` for a top-level/runtime module,
+- `ModuleId` — `reference(name)` for a top-level/runtime module,
   `reference_child_module(parent, local)` for a nested one. `ModuleId::GLOBAL`
-  (`0`) is the top-level scope. `ModuleMap` keys and retains `ModuleDenotation`:
-  a named module's parsed `ModuleName`, or an implementation's exact
-  protocol/target pair. Source boundaries survive reservation, definition,
-  lookup, function denotations, and reflected quoted references.
+  (`0`) is the top-level scope. `ModuleMap` keys and retains the parsed
+  `ModuleName`; an implementation is the module named `Protocol.Target`.
+  Source boundaries survive reservation, definition, lookup, function
+  denotations, and quoted references, which name a module by its atom.
 - `FunctionId` — `reference_function(module, name, arity)`; generated lambdas get
   ids through `reference_generated`.
 - `FunctionRef { module, denotation }` pairs a World-local module coordinate
@@ -48,8 +48,8 @@ after `ModuleDefined` does not un-define the module it was waiting on. A
 different source starts the module over at Indexed.
 
 `ModuleSource { code, parent, source, kind }` carries the source facts and
-parent ownership edge. `ModuleMap` supplies the full module denotation directly;
-consumers do not reconstruct it from parent and local display spellings.
+parent ownership edge. `ModuleMap` interns each module by its `ModuleName`, whose atom is the module's
+identity in value position; consumers do not reconstruct it from parent and local display spellings.
 `kind` is `Body`, `Protocol`, or `ProtocolImpl` (see
 [`protocols`](protocols.md)). `ModuleInterface` is the module-owned callable
 surface: exported callables are represented by `FunctionId`-backed entries plus
@@ -112,8 +112,8 @@ value/callable lookups filter for modules/functions/macros, so a type name and a
 value name can share spelling without becoming one binding kind.
 
 A `CallableName` asks the chain at most once. Its qualifier is a `ModuleTarget`,
-so an alias path written in source (`Unresolved`) stays distinct from an exact
-reflected module (`Exact`), and `World::callable_name_qualifier` answers which
+so an alias path written in source (`Unresolved`) stays distinct from a module
+named by its atom (`Exact`), which no alias in scope redirects, and `World::callable_name_qualifier` answers which
 module a qualified name names. Nothing splits a rendered `Module.function`
 string back into a module and a name: a callable that was already resolved
 travels as the function itself.
@@ -254,7 +254,7 @@ and `World::module_public_function` answers that module's public `f/n`; a
 qualified callee in source asks the same method.
 
 When the type holds atoms it does not list (`atom`, `any`), the value can be
-any module a value can name. `World::nameable_modules` is that set, ordered by module denotation, so the
+any module a value can name. `World::nameable_modules` is that set, ordered by module name, so the
 order of the callees and of the modules that lack `f/n` is a function of the
 set's members and not of when each was noted: every
 module whose source the compile has indexed (`source_publish::
@@ -454,7 +454,7 @@ plus the callable interface, which `define_module` freezes onto the module slot.
 ## Runtime library and the prelude
 
 Runtime-library modules are not a special class. At construction the world
-`reference_named`s each runtime module so its name is a stable id, but it does
+`reference`s each runtime module so its name is a stable id, but it does
 **not** submit any source. The first real reference pulls the owning module's
 source through `ensure_runtime_module`, which `submit_code`s it as ordinary code;
 the same `index_code` / `scope_code` / `define_module` jobs handle it. Runtime

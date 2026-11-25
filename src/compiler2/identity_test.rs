@@ -17,8 +17,8 @@ fn module_identity_preserves_source_segment_boundaries() {
     let nested = ModuleName::from_segments(vec!["A".into(), "B".into()]);
     assert_eq!(flat.dotted(), nested.dotted());
     let mut modules = ModuleMap::new();
-    let left = modules.reference_named(flat.clone());
-    let right = modules.reference_named(nested.clone());
+    let left = modules.reference(flat.clone());
+    let right = modules.reference(nested.clone());
     assert_ne!(
         left, right,
         "distinct source paths cannot collapse through display spelling"
@@ -132,7 +132,7 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
     let source_owner = code.define(Some("math.fz".to_string()), "def add(x, y), do: x + y\n".to_string());
     let namespace = namespaces.prelude_head();
 
-    let math_ref = modules.reference_named(crate::modules::identity::ModuleName::from_segments(vec!["Math".into()]));
+    let math_ref = modules.reference(crate::modules::identity::ModuleName::from_segments(vec!["Math".into()]));
     let math_def = math_ref;
     let math_changed = modules.define(math_def, namespace, crate::compiler2::ModuleInterface::default());
     assert_eq!(
@@ -160,7 +160,7 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
         other => panic!("module should promote from placeholder to defined, got {other:?}"),
     }
 
-    let scoped_ref = modules.reference_named(crate::modules::identity::ModuleName::from_segments(vec![
+    let scoped_ref = modules.reference(crate::modules::identity::ModuleName::from_segments(vec![
         "Scoped".into(),
     ]));
     let scoped_source = quoted_source("scoped.fz", "defmodule Scoped do\nend\n");
@@ -169,6 +169,7 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
         source_owner,
         ModuleId::GLOBAL,
         scoped_source.clone(),
+        crate::source::Span::DUMMY,
         empty_scope_surface(),
     );
     let same_indexed_changed = modules.index_body(
@@ -176,6 +177,7 @@ fn compiler2_identity_maps_promote_placeholders_and_preserve_reverse_lookup() {
         source_owner,
         ModuleId::GLOBAL,
         scoped_source,
+        crate::source::Span::DUMMY,
         empty_scope_surface(),
     );
     assert!(indexed_changed, "first module index_body should be a change");
@@ -437,9 +439,16 @@ fn re_indexing_a_module_from_the_same_source_keeps_its_stage() {
     let mut modules = ModuleMap::new();
     let owner = code.define(Some("m.fz".to_string()), "defmodule M do\nend\n".to_string());
     let namespace = namespaces.prelude_head();
-    let module = modules.reference_named(crate::modules::identity::ModuleName::from_segments(vec!["M".into()]));
+    let module = modules.reference(crate::modules::identity::ModuleName::from_segments(vec!["M".into()]));
     let source = quoted_source("m.fz", "defmodule M do\nend\n");
-    modules.index_body(module, owner, ModuleId::GLOBAL, source, empty_scope_surface());
+    modules.index_body(
+        module,
+        owner,
+        ModuleId::GLOBAL,
+        source,
+        crate::source::Span::DUMMY,
+        empty_scope_surface(),
+    );
     modules.scope(module, namespace);
     modules.define(module, namespace, crate::compiler2::ModuleInterface::default());
 
@@ -448,6 +457,7 @@ fn re_indexing_a_module_from_the_same_source_keeps_its_stage() {
         owner,
         ModuleId::GLOBAL,
         quoted_source("m.fz", "defmodule M do\nend\n"),
+        crate::source::Span::DUMMY,
         empty_scope_surface(),
     );
     assert!(
@@ -466,6 +476,7 @@ fn re_indexing_a_module_from_the_same_source_keeps_its_stage() {
         other_owner,
         ModuleId::GLOBAL,
         quoted_source("other.fz", "defmodule M do\nend\n"),
+        crate::source::Span::DUMMY,
         empty_scope_surface(),
     );
     assert!(

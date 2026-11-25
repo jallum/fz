@@ -14,6 +14,16 @@ pub(crate) fn redundant_clause_diagnostic(clause_span: Span, always_matches_line
     .with_label("unreachable")
 }
 
+/// A module name defined a second time. Elixir warns in these words at the
+/// later definition and keeps it.
+pub(crate) fn redefined_module_diagnostic(span: Span, module: &str) -> Diagnostic {
+    Diagnostic::warning(
+        codes::RESOLVE_MODULE_REDEFINED,
+        format!("redefining module {module} (current version defined in memory)"),
+        span,
+    )
+}
+
 /// `@name` read where the module has not set it. Elixir warns in these words
 /// and reads `nil`.
 pub(crate) fn undefined_attribute_diagnostic(span: Span, name: &str) -> Diagnostic {

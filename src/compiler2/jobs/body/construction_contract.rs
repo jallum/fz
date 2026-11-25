@@ -10,7 +10,7 @@
 //! folds away, so a construction of proven values compiles to the build alone.
 
 use crate::ast::{BinOp, BitField, BitSize, BitType, Expr, Spanned, Var};
-use crate::modules::identity::{ModuleDenotation, ModuleName};
+use crate::modules::identity::ModuleName;
 use crate::source::Span;
 
 /// The test a construction's segments must pass, and the call that raises
@@ -68,9 +68,9 @@ impl Build {
     }
 
     fn kernel(&self, function: &str, args: Vec<Spanned<Expr>>) -> Spanned<Expr> {
-        let kernel = ModuleDenotation::Named(ModuleName::from_segments(vec!["Kernel".to_string()]));
+        let kernel = ModuleName::from_segments(vec!["Kernel".to_string()]);
         let callee = Expr::Index(
-            Box::new(self.expr(Expr::Module(kernel))),
+            Box::new(self.expr(Expr::Atom(kernel.atom_name()))),
             Box::new(self.expr(Expr::Atom(function.to_string()))),
         );
         self.expr(Expr::Call(Box::new(self.expr(callee)), args))

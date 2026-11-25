@@ -25,7 +25,7 @@ use fz_runtime::any_value::ValueKind;
 use crate::function_surface::FunctionSurface;
 use crate::ground_value::GroundValue;
 use crate::literal_term::LiteralTerm;
-use crate::modules::identity::{ModuleDenotation, ModuleName};
+use crate::modules::identity::ModuleName;
 use crate::source::{SourceMap, Span};
 
 use super::super::body::{
@@ -845,7 +845,6 @@ fn collect_local_dispatch_requirements(
         Expr::Lambda { .. } => {}
         Expr::CaptureArg(_)
         | Expr::Alias(_)
-        | Expr::Module(_)
         | Expr::BoundFunction(_)
         | Expr::FnRef { .. }
         | Expr::Var(_)
@@ -1220,28 +1219,16 @@ impl<'a, 'w, 'tel, 'f, 'env, 'steps, 'q, T: crate::telemetry::Telemetry>
         self.ast_node_of(head, tail)
     }
 
-    fn lower_module(&mut self, module: &ModuleDenotation) -> ValueId {
-        let (tag, paths) = module.quoted_parts();
-        let mut identity = vec![LiteralTerm::from(GroundValue::Atom(tag.into()))];
-        identity.extend(paths.map(|path| module_path(path.segments().iter())));
-        let node = LiteralTerm::Tuple(vec![
-            GroundValue::Atom("__aliases__".into()).into(),
-            meta(Some(LiteralTerm::Tuple(identity)), None),
-            module_path(module.display_segments()),
-        ]);
-        self.lowerer.push_literal(self.steps, node)
-    }
-
     /// A call node whose head is display spelling and whose metadata retains
     /// the callable, when the call was classified here.
     fn lower_call_node(&mut self, spelling: &str, bound: Option<FunctionId>, args: Vec<Quoted>) -> Quoted {
         let head = Quoted::Constant(GroundValue::Atom(spelling.to_string()).into());
         let tail = self.list(args);
-        self.tuple(vec![head, Quoted::Constant(meta(None, bound)), tail])
+        self.tuple(vec![head, Quoted::Constant(meta(bound)), tail])
     }
 
     fn ast_node_of(&mut self, head: Quoted, tail: Quoted) -> Quoted {
-        self.tuple(vec![head, Quoted::Constant(meta(None, None)), tail])
+        self.tuple(vec![head, Quoted::Constant(meta(None)), tail])
     }
 
     /// The step value that holds `quoted`.
@@ -1303,27 +1290,17 @@ fn all_constant(items: Vec<Quoted>) -> Result<Vec<LiteralTerm>, Vec<Quoted>> {
         .collect())
 }
 
-fn module_path<'s>(segments: impl Iterator<Item = &'s String>) -> LiteralTerm {
-    LiteralTerm::List(
-        segments
-            .map(|segment| GroundValue::Atom(segment.clone()).into())
-            .collect(),
-    )
-}
-
 /// A node's metadata keyword list, in the order `QuotedSourceBuilder::meta`
 /// writes it. A quoted node carries no span: it takes the span of the macro
 /// call that expands it.
-fn meta(module: Option<LiteralTerm>, bound: Option<FunctionId>) -> LiteralTerm {
-    let entry = |key: &str, value| LiteralTerm::Tuple(vec![GroundValue::Atom(key.to_string()).into(), value]);
-    let module = module.map(|identity| entry(super::super::source::META_MODULE_KEY, identity));
+fn meta(bound: Option<FunctionId>) -> LiteralTerm {
     let bound = bound.map(|function| {
-        entry(
-            super::super::source::META_BOUND_CALLABLE_KEY,
+        LiteralTerm::Tuple(vec![
+            GroundValue::Atom(super::super::source::META_BOUND_CALLABLE_KEY.to_string()).into(),
             GroundValue::Int(i64::from(function.as_u32())).into(),
-        )
+        ])
     });
-    LiteralTerm::List(module.into_iter().chain(bound).collect())
+    LiteralTerm::List(bound.into_iter().collect())
 }
 
 impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
@@ -1459,7 +1436,6 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
             Expr::Bool(value) => Ok(self.push_const(steps, GroundValue::Bool(*value))),
             Expr::Nil => Ok(self.push_const(steps, GroundValue::Nil)),
             Expr::Alias(alias) => Ok(self.lower_alias(alias, steps)),
-            Expr::Module(module) => Ok(QuoteLowerer::new(self, env, steps, &[]).lower_module(module)),
             Expr::Var(name) => {
                 if let Some(value) = env.get(name) {
                     return Ok(*value);
@@ -1967,7 +1943,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         if minimum.is_some_and(|minimum| arity < minimum) {
             let label = format!(
                 "{}.{}",
-                self.world.module_denotation(module).expect("qualified callee module"),
+                self.world.module_name(module).expect("qualified callee module"),
                 name
             );
             self.check_variadic_arity(&label, arity, span, minimum)?;
@@ -4987,7 +4963,6 @@ fn expr_name(expr: &Expr) -> &'static str {
         Expr::Var(_) => "Var",
         Expr::FnRef { .. } => "FnRef",
         Expr::Alias(_) => "Alias",
-        Expr::Module(_) => "Module",
         Expr::BoundFunction(_) => "BoundFunction",
         Expr::Capture(_) => "Capture",
         Expr::CaptureArg(_) => "CaptureArg",
@@ -5025,9 +5000,9 @@ fn expr_name(expr: &Expr) -> &'static str {
 /// redirect it.
 fn update_key_error_callee() -> Callee {
     Callee::Name(CallableName {
-        module: Some(crate::ast::ModuleTarget::Exact(ModuleDenotation::Named(
-            ModuleName::from_segments(vec!["Map".to_string()]),
-        ))),
+        module: Some(crate::ast::ModuleTarget::Exact(ModuleName::from_segments(vec![
+            "Map".to_string(),
+        ]))),
         name: "update_key_error".to_string(),
     })
 }
@@ -5057,7 +5032,8 @@ fn direct_callee(expr: &Spanned<Expr>, arity: usize, env: &HashMap<Var, ValueId>
                 }
                 break;
             }
-            Expr::Alias(_) | Expr::Module(_) | Expr::BoundFunction(_) => break,
+            Expr::Alias(_) | Expr::BoundFunction(_) => break,
+            Expr::Atom(atom) if fz_runtime::module_name::is_alias_namespace_atom(atom) => break,
             Expr::Index(target, _) => {
                 current = &target.node;
             }

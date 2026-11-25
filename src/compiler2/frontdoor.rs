@@ -2217,7 +2217,6 @@ impl<'t> FrontDoorParser<'t> {
 
     fn meta(&self, span: Span) -> Result<QuotedSourceMetadata, FrontDoorError> {
         Ok(QuotedSourceMetadata {
-            module: None,
             bound_callable: None,
             from_brackets: false,
             // The lexer's byte-offset span travels verbatim into the quoted

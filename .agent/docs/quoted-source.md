@@ -252,8 +252,6 @@ from ordinary list, tuple and map-literal steps. Readers use
 construction uses `QuotedSourceBuilder::meta_put` (`Keyword.put`: the key's
 old entry goes and the new one is put first).
 
-- `__fz_module__`: exact portable module denotation on a reflected alias;
-  semantic content, compared by `semantically_eq`.
 - `__fz_span__`: diagnostic-only span payload, the map
   `%{start: _, length: _, source_version: _}`; not semantic content, skipped
   by `semantically_eq`. Self-describing: it carries the exact originating
@@ -297,24 +295,15 @@ old entry goes and the new one is put first).
   source.
 - `ScopeSnapshot` is the one scope projection carrier:
   `{module_id, namespace_head, function_id?}`.
-- `World::project_module_value` and `World::project_env_value`
-  (`src/compiler2/env_projection.rs`) project the `module` field of an env and
-  `__ENV__` as Fz-shaped values from the same snapshot. `__MODULE__` in a body is the module's atom
-  (`World::module_atom_value`).
-- A projected module alias carries its exact portable `ModuleDenotation` in
-  existing quoted metadata, encoded as `{:named, segments}` or
-  `{:protocol_impl, protocol_segments, target_segments}`. Its visible alias
-  remains macro-readable display data. Semantic quoted equality retains the
-  metadata; copying/unquoting an alias or editing its visible path cannot retarget
-  it. Expansion and decoding retain the typed module reference through calls,
-  explicit function references, guards, and struct expressions/patterns.
-  Struct `ModuleTarget` distinguishes unresolved source aliases from exact
-  reflected identities, so a namespace alias cannot retarget the latter.
-  `World` interns that denotation in
-  the ordinary `ModuleMap`; no World-local number crosses this carrier.
-- `__CALLER__.module` may be unquoted as a call target. Thus an implementation
-  alias displaying `A.B.C` still addresses its exact `(A, B.C)` or `(A.B, C)`
-  owner even when a separate named module `A.B.C` exists. Source publication
+- `World::project_env_value` (`src/compiler2/env_projection.rs`) projects an
+  env and `__ENV__` as Fz-shaped values from the same snapshot. `__MODULE__` in a
+  body and the env's `module` field are the one atom `World::module_atom_value`
+  returns, as in Elixir.
+- A module's atom is its identity, so `__CALLER__.module` unquoted as a call
+  target, a struct name or a capture's module names that module through the atom,
+  never through the aliases in scope at the insertion site. Struct and call
+  `ModuleTarget` distinguishes unresolved source aliases from exact (atom) names,
+  so a namespace alias cannot retarget the latter. Source publication
   itself continues to use the live `ScopeSnapshot` for definition ownership.
 
 ## Publication Authority

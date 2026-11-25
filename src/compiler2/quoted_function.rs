@@ -4,7 +4,7 @@ use crate::ast::{
     VarContext, WithBinding,
 };
 use crate::function_surface::FunctionSurface;
-use crate::modules::identity::{ModuleDenotation, ModuleName};
+use crate::modules::identity::ModuleName;
 use crate::parser::lexer::{Tok, Token};
 use crate::source::{SourceMap, Span};
 
@@ -373,9 +373,6 @@ fn decode_expr(
 ) -> Result<Spanned<Expr>, QuotedSourceError> {
     if let Some(node) = cursor.ast_node(sources)? {
         let span = node.span.unwrap_or(Span::DUMMY);
-        if let Some(module) = node.meta.module_denotation()? {
-            return Ok(Spanned::new(Expr::Module(module), span));
-        }
         if !node.tail.is_list_like() {
             let name = node.head.atom_name()?.to_string();
             let var = if name == crate::ast::STACKTRACE {
@@ -1427,9 +1424,7 @@ fn decode_fn_ref_expr(
             "quoted function reference expects target and arity",
         ));
     }
-    let target = decode_fn_ref_target(&parts[0], span, sources)?;
-    let name = CallableName::from_expr(&target.node)
-        .ok_or_else(|| QuotedSourceError::new("unsupported quoted function-ref target"))?;
+    let name = decode_fn_ref_target(&parts[0], span, sources)?;
     let arity = parts[1].int_value()? as usize;
     Ok(Spanned::new(Expr::FnRef { name, arity }, span))
 }
@@ -1442,27 +1437,41 @@ fn decode_fn_ref_target(
     cursor: &QuotedSourceCursor,
     span: Span,
     sources: &SourceMap,
-) -> Result<Spanned<Expr>, QuotedSourceError> {
+) -> Result<CallableName, QuotedSourceError> {
+    let unsupported = || QuotedSourceError::new("unsupported quoted function-ref target");
+    let read_as_expr = |cursor: &QuotedSourceCursor| {
+        let target = decode_expr(&mut LambdaOccurrences::default(), cursor, Some(span), sources)?;
+        CallableName::from_expr(&target.node).ok_or_else(unsupported)
+    };
     let Some(node) = cursor.ast_node(sources)? else {
-        return decode_expr(&mut LambdaOccurrences::default(), cursor, Some(span), sources);
+        return read_as_expr(cursor);
     };
     let dot = match node.head.ast_node(sources)? {
         Some(head) if node.tail.list_len()? == 0 => head,
         _ => node,
     };
     if dot.head.root().tag() != fz_runtime::any_value::ValueKind::ATOM || dot.head.atom_name()? != "." {
-        return decode_expr(&mut LambdaOccurrences::default(), cursor, Some(span), sources);
+        return read_as_expr(cursor);
     }
     let parts = dot.tail.list_items()?;
     let [module, function] = parts.as_slice() else {
-        return decode_expr(&mut LambdaOccurrences::default(), cursor, Some(span), sources);
+        return read_as_expr(cursor);
     };
-    let module = match module_atom(module) {
-        Some(name) => Spanned::new(Expr::Module(ModuleDenotation::Named(name)), span),
-        None => decode_expr(&mut LambdaOccurrences::default(), module, Some(span), sources)?,
-    };
-    let function = Spanned::new(Expr::Atom(function.atom_name()?.to_string()), span);
-    Ok(Spanned::new(Expr::Index(Box::new(module), Box::new(function)), span))
+    let name = function.atom_name()?.to_string();
+    match module_atom(module) {
+        Some(module) => Ok(CallableName {
+            module: Some(crate::ast::ModuleTarget::Exact(module)),
+            name,
+        }),
+        None => {
+            let module = decode_expr(&mut LambdaOccurrences::default(), module, Some(span), sources)?;
+            let target = Spanned::new(
+                Expr::Index(Box::new(module), Box::new(Spanned::new(Expr::Atom(name), span))),
+                span,
+            );
+            CallableName::from_expr(&target.node).ok_or_else(unsupported)
+        }
+    }
 }
 
 fn decode_match_clause(
@@ -1916,15 +1925,9 @@ fn decode_module_target(
     sources: &SourceMap,
 ) -> Result<crate::ast::ModuleTarget, QuotedSourceError> {
     if let Some(module) = module_atom(cursor) {
-        return Ok(crate::ast::ModuleTarget::Exact(ModuleDenotation::Named(module)));
-    }
-    let node = expect_ast_node(cursor, "module alias", sources)?;
-    if let Some(module) = node.meta.module_denotation()? {
-        if module.named_path().is_none() {
-            return Err(QuotedSourceError::new("a protocol implementation cannot name a struct"));
-        }
         return Ok(crate::ast::ModuleTarget::Exact(module));
     }
+    let node = expect_ast_node(cursor, "module alias", sources)?;
     if node.head.atom_name()? != "__aliases__" {
         return Err(QuotedSourceError::new("quoted module path expects an __aliases__ node"));
     }
@@ -2564,7 +2567,7 @@ fn alias_from_args(args: &[QuotedSourceCursor]) -> Result<ModuleName, QuotedSour
 }
 
 /// The module an atom literal names, as `__MODULE__` is once it is expanded.
-fn module_atom(cursor: &QuotedSourceCursor) -> Option<ModuleName> {
+pub(crate) fn module_atom(cursor: &QuotedSourceCursor) -> Option<ModuleName> {
     ModuleName::from_atom_name(cursor.atom_name().ok()?.as_ref())
 }
 

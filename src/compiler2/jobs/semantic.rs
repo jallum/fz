@@ -1797,7 +1797,7 @@ fn emit_return_did_not_converge(
     diverged: crate::compiler2::semantic::ReturnDiverged,
 ) -> FatalError {
     let denotation = world.function_ref(function);
-    let name = match world.module_denotation(denotation.module) {
+    let name = match world.module_name(denotation.module) {
         Some(module) => format!("{module}.{}/{}", denotation.display_name(), denotation.arity),
         None => format!("{}/{}", denotation.display_name(), denotation.arity),
     };

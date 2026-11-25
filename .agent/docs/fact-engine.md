@@ -220,7 +220,7 @@ about one root's program, rather than about one function. Any activation's
 analysis adds to them (`World::note_nameable_module`, `World::note_raisable`
 into the activation's own root), and the analysis lists the fact as changed when
 it added something, so every reader runs again. `World` holds each as a set
-that only grows (`NameableModules` is ordered by denotation); nothing removes an entry. `Raisable` is described in
+that only grows (`NameableModules` is ordered by name); nothing removes an entry. `Raisable` is described in
 [exceptions](exceptions.md).
 
 ### Absence is bottom
@@ -1515,7 +1515,7 @@ entry once, at load, so a map that spells a struct is named by it before any
 code builds one. Building a struct or raising an exception looks its id up;
 nothing registers a named schema at run time. No product snapshots `StructDefMap`, and a
 struct reached only by another root cannot make retained and fresh calculations
-disagree. `ModuleMap::reference_named` interns one `ModuleId` per parsed
+disagree. `ModuleMap::reference` interns one `ModuleId` per parsed
 `ModuleName`. The type tag and runtime schema compare that same typed source
 name. Segment boundaries remain significant even when two names have the
 same dotted display spelling; neither display text nor allocation order is

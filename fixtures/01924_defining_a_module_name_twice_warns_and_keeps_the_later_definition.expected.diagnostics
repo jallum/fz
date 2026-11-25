@@ -1,0 +1,14 @@
+warning[resolve/module-redefined]: redefining module Greeter (current version defined in memory)
+  --> fixtures/01924_defining_a_module_name_twice_warns_and_keeps_the_later_definition.fz:5:1
+   |
+5 | defmodule Greeter do
+   | ^^^^^^^^^
+   |
+
+warning[resolve/module-redefined]: redefining module P.Q (current version defined in memory)
+  --> fixtures/01924_defining_a_module_name_twice_warns_and_keeps_the_later_definition.fz:21:1
+   |
+21 | defimpl P, for: Q do
+   | ^^^^^^^^^^^^^^^^^^^^
+   |
+

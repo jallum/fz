@@ -3,7 +3,7 @@
 use crate::ast::{CallableName, Expr, ModuleTarget, Spanned};
 use crate::ground_value::GroundValue;
 use crate::source::Span;
-use fz_runtime::module_name::ModuleDenotation;
+use fz_runtime::module_name::ModuleName;
 
 /// A value written out in full: a scalar, a function named by its module, or
 /// a list, tuple or map of such values. It reads no alias, import or
@@ -18,7 +18,7 @@ pub enum LiteralTerm {
     /// `&Mod.fun/arity`, with `Mod` the module itself and not a spelling an
     /// alias could redirect.
     Function {
-        module: ModuleDenotation,
+        module: ModuleName,
         name: String,
         arity: usize,
     },

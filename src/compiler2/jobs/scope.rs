@@ -263,7 +263,6 @@ impl ScopeWalk {
             | Expr::Bool(_)
             | Expr::Nil
             | Expr::Alias(_)
-            | Expr::Module(_)
             | Expr::BoundFunction(_)
             | Expr::FnRef { .. }
             | Expr::CaptureArg(_) => {}

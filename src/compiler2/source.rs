@@ -11,7 +11,6 @@ use fz_runtime::bits::Bin;
 use fz_runtime::heap::{Schema, SchemaRegistry, map_entries_refs, map_entry_refs};
 use fz_runtime::process::{AtomName, DEFAULT_REDUCTIONS_PER_QUANTUM, Node, Process};
 
-use crate::modules::identity::{ModuleDenotation, ModuleName};
 use crate::source::{SourceMap, Span};
 
 use super::identity::FunctionId;
@@ -20,10 +19,9 @@ const NIL_ATOM: &str = "nil";
 const TRUE_ATOM: &str = "true";
 const FALSE_ATOM: &str = "false";
 
-/// The metadata keys a quoted node can carry: module, span, bound callable,
-/// brackets and hygiene.
-const META_ENTRY_CAPACITY: usize = 5;
-pub(crate) const META_MODULE_KEY: &str = "__fz_module__";
+/// The metadata keys a quoted node can carry: span, bound callable, brackets
+/// and hygiene.
+const META_ENTRY_CAPACITY: usize = 4;
 pub(crate) const META_SPAN_KEY: &str = "__fz_span__";
 pub(crate) const META_SPAN_START_KEY: &str = "start";
 pub(crate) const META_SPAN_LENGTH_KEY: &str = "length";
@@ -136,9 +134,6 @@ pub struct QuotedSourceKey {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct QuotedSourceMetadata {
-    /// Exact portable target of a projected module alias. Its visible segments
-    /// remain macro-readable display data.
-    pub module: Option<ModuleDenotation>,
     /// The one callable this quoted call resolved to. `None` means the call
     /// was not classified where it was quoted and its spelling is still to be
     /// resolved in the context it is inserted into.
@@ -349,9 +344,6 @@ impl QuotedSourceBuilder {
 
     pub fn meta(&self, meta: &QuotedSourceMetadata) -> Result<AnyValueRef, QuotedSourceError> {
         let mut entries: SmallVec<[(AnyValueRef, AnyValueRef); META_ENTRY_CAPACITY]> = SmallVec::new();
-        if let Some(module) = &meta.module {
-            entries.push((self.atom(META_MODULE_KEY), self.module_denotation(module)?));
-        }
         if let Some(span) = meta.span.filter(|span| !span.is_dummy()) {
             entries.push((self.atom(META_SPAN_KEY), self.span(&span)?));
         }
@@ -403,15 +395,6 @@ impl QuotedSourceBuilder {
         tail: AnyValueRef,
     ) -> Result<AnyValueRef, QuotedSourceError> {
         self.tuple(&[head, self.meta(meta)?, tail])
-    }
-
-    fn module_denotation(&self, module: &ModuleDenotation) -> Result<AnyValueRef, QuotedSourceError> {
-        let (tag, paths) = module.quoted_parts();
-        let mut fields = vec![self.atom(tag)];
-        for path in paths {
-            fields.push(self.atom_list(path.segments())?);
-        }
-        self.tuple(&fields)
     }
 
     /// The one constructor for a `Var`-shaped quoted node, front door, quote
@@ -486,11 +469,6 @@ impl QuotedSourceBuilder {
 
     pub fn root(&self, root: AnyValueRef) -> Result<QuotedSourceRoot, QuotedSourceError> {
         Ok(QuotedSourceRoot::new(self.heap.clone(), root))
-    }
-
-    fn atom_list(&self, atoms: &[String]) -> Result<AnyValueRef, QuotedSourceError> {
-        let values = atoms.iter().map(|atom| self.atom(atom)).collect::<Vec<_>>();
-        self.list(&values)
     }
 }
 
@@ -660,31 +638,6 @@ impl QuotedSourceCursor {
     /// name, whatever context it carries.
     pub(crate) fn is_list_like(&self) -> bool {
         self.root.tag() == ValueKind::LIST
-    }
-
-    pub(crate) fn module_denotation(&self) -> Result<Option<ModuleDenotation>, QuotedSourceError> {
-        let Some(value) = self.meta_value(META_MODULE_KEY)? else {
-            return Ok(None);
-        };
-        let fields = value.tuple_items()?;
-        let Some(tag) = fields.first() else {
-            return Err(QuotedSourceError::new("empty module denotation"));
-        };
-        fn name(cursor: &QuotedSourceCursor) -> Result<ModuleName, QuotedSourceError> {
-            let segments = cursor.list_atom_names()?;
-            if segments.is_empty() || segments.iter().any(String::is_empty) {
-                return Err(QuotedSourceError::new("module denotation requires nonempty segments"));
-            }
-            Ok(ModuleName::from_segments(segments))
-        }
-        Ok(Some(match (tag.atom_name()?.as_str(), fields.as_slice()) {
-            ("named", [_, path]) => ModuleDenotation::Named(name(path)?),
-            ("protocol_impl", [_, protocol, target]) => ModuleDenotation::ProtocolImpl {
-                protocol: name(protocol)?,
-                target: name(target)?,
-            },
-            _ => return Err(QuotedSourceError::new("invalid module denotation tag or arity")),
-        }))
     }
 
     /// The callable this metadata map retains, when it retains one. The

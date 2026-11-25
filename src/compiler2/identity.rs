@@ -1,5 +1,5 @@
 use crate::fast_hash::HashMap;
-use crate::modules::identity::{ModuleDenotation, ModuleName};
+use crate::modules::identity::ModuleName;
 use fz_runtime::failure::RaiseKind;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -266,6 +266,9 @@ pub struct ModuleSource {
     pub owner: SourceOwner,
     pub parent: ModuleId,
     pub source: QuotedSourceRoot,
+    /// Where the definition is written. Two definitions of one module name
+    /// are told apart by it, and the later one in source order is kept.
+    pub span: Span,
     pub kind: ModuleSourceKind,
 }
 
@@ -273,10 +276,10 @@ pub struct ModuleSource {
 pub enum ModuleSourceKind {
     Body(Rc<ScopeSurface>),
     Protocol(Rc<ScopeSurface>),
-    /// A `defimpl Protocol, for: Target` owned by its typed protocol/target
-    /// pair. `DefineModule(impl_module)` demands it independently of its
-    /// lexical host. The protocol and target resolve at the declaration site;
-    /// the saved namespace supplies the callbacks' lexical resolution context.
+    /// A `defimpl Protocol, for: Target`: the module named `Protocol.Target`.
+    /// `DefineModule(impl_module)` demands it independently of its lexical
+    /// host. The protocol and target resolve at the declaration site; the
+    /// saved namespace supplies the callbacks' lexical resolution context.
     ProtocolImpl(ProtocolImplSource),
 }
 
@@ -402,8 +405,8 @@ pub struct NotedTypeDecl {
 #[derive(Debug, Default)]
 pub struct ModuleMap {
     slots: Vec<ModuleState>,
-    denotations: Vec<Option<ModuleDenotation>>,
-    by_denotation: HashMap<ModuleDenotation, ModuleId>,
+    names: Vec<Option<ModuleName>>,
+    by_name: HashMap<ModuleName, ModuleId>,
 }
 
 impl ModuleMap {
@@ -414,28 +417,24 @@ impl ModuleMap {
                 base: Namespace::default(),
                 interface: ModuleInterface::default(),
             }],
-            denotations: vec![None],
-            by_denotation: HashMap::default(),
+            names: vec![None],
+            by_name: HashMap::default(),
         }
     }
 
     /// The module already known by `name`, if any is.
     pub fn named(&self, name: &ModuleName) -> Option<ModuleId> {
-        self.by_denotation.get(&ModuleDenotation::Named(name.clone())).copied()
+        self.by_name.get(name).copied()
     }
 
-    pub fn reference_named(&mut self, name: ModuleName) -> ModuleId {
-        self.reference(ModuleDenotation::Named(name))
-    }
-
-    pub fn reference(&mut self, denotation: ModuleDenotation) -> ModuleId {
-        if let Some(id) = self.by_denotation.get(&denotation) {
+    pub fn reference(&mut self, name: ModuleName) -> ModuleId {
+        if let Some(id) = self.by_name.get(&name) {
             return *id;
         }
         let id = ModuleId(self.slots.len() as u32);
         self.slots.push(ModuleState::Placeholder { interface: None });
-        self.denotations.push(Some(denotation.clone()));
-        self.by_denotation.insert(denotation, id);
+        self.names.push(Some(name.clone()));
+        self.by_name.insert(name, id);
         id
     }
 
@@ -498,6 +497,7 @@ impl ModuleMap {
         owner: SourceOwner,
         parent: ModuleId,
         source: QuotedSourceRoot,
+        span: Span,
         surface: ScopeSurface,
     ) -> bool {
         let module = &mut self.slots[id.0 as usize];
@@ -506,6 +506,7 @@ impl ModuleMap {
                 owner,
                 parent,
                 source,
+                span,
                 kind: ModuleSourceKind::Body(Rc::new(surface)),
             },
             interface: module.interface().cloned(),
@@ -519,6 +520,7 @@ impl ModuleMap {
         owner: SourceOwner,
         parent: ModuleId,
         source: QuotedSourceRoot,
+        span: Span,
         surface: ScopeSurface,
     ) -> bool {
         let module = &mut self.slots[id.0 as usize];
@@ -527,6 +529,7 @@ impl ModuleMap {
                 owner,
                 parent,
                 source,
+                span,
                 kind: ModuleSourceKind::Protocol(Rc::new(surface)),
             },
             interface: module.interface().cloned(),
@@ -540,6 +543,7 @@ impl ModuleMap {
         owner: SourceOwner,
         parent: ModuleId,
         source: QuotedSourceRoot,
+        span: Span,
         impl_source: ProtocolImplSource,
     ) -> bool {
         let module = &mut self.slots[id.0 as usize];
@@ -548,6 +552,7 @@ impl ModuleMap {
                 owner,
                 parent,
                 source,
+                span,
                 kind: ModuleSourceKind::ProtocolImpl(impl_source),
             },
             interface: module.interface().cloned(),
@@ -562,11 +567,7 @@ impl ModuleMap {
     }
 
     pub fn name(&self, id: ModuleId) -> Option<&ModuleName> {
-        self.denotation(id).and_then(ModuleDenotation::named_path)
-    }
-
-    pub fn denotation(&self, id: ModuleId) -> Option<&ModuleDenotation> {
-        self.denotations
+        self.names
             .get(id.0 as usize)
             .expect("module ids should be known before reading module names")
             .as_ref()
@@ -614,7 +615,7 @@ impl FunctionMap {
     pub fn reference(
         &mut self,
         module: ModuleId,
-        module_denotation: Option<&ModuleDenotation>,
+        module_name: Option<&ModuleName>,
         name: impl AsRef<str> + Into<String>,
         arity: usize,
     ) -> FunctionId {
@@ -633,7 +634,7 @@ impl FunctionMap {
             module,
             denotation: Arc::new(FunctionDenotation {
                 origin: FunctionOrigin::Named {
-                    module: module_denotation.cloned(),
+                    module: module_name.cloned(),
                     name: name.clone(),
                 },
                 arity,
@@ -996,15 +997,15 @@ trait Reconcile: Sized {
     fn reconcile(current: Option<&Self>, incoming: Self) -> (Self, bool);
 }
 
-/// The modules a value can name, ordered by denotation. The set only grows, and its
+/// The modules a value can name, ordered by name. The set only grows, and its
 /// order is a function of its members, never of when each was noted.
 #[derive(Debug, Default)]
-pub(crate) struct NameableModules(std::collections::BTreeMap<ModuleDenotation, ModuleId>);
+pub(crate) struct NameableModules(std::collections::BTreeMap<ModuleName, ModuleId>);
 
 impl NameableModules {
     /// Returns whether `module` is new to the set.
-    pub(crate) fn note(&mut self, denotation: ModuleDenotation, module: ModuleId) -> bool {
-        self.0.insert(denotation, module).is_none()
+    pub(crate) fn note(&mut self, name: ModuleName, module: ModuleId) -> bool {
+        self.0.insert(name, module).is_none()
     }
 
     pub(crate) fn modules(&self) -> impl Iterator<Item = ModuleId> + '_ {
