@@ -2679,3 +2679,137 @@ fn an_extern_that_delivers_carries_its_kind() {
     assert_eq!(delivers(&mut world, "fz_throw"), Some(RaiseKind::Throw));
     assert_eq!(delivers(&mut world, "abs"), None);
 }
+
+/// A publisher with two callee activations to feed, and the world's answer to
+/// each conclusion it makes.
+struct RowWithdrawalFixture {
+    world: World,
+    tel: ConfiguredTelemetry,
+    publisher: Job,
+    old: super::ActivationKey,
+    new: super::ActivationKey,
+    int: super::types::Ty,
+    float: super::types::Ty,
+    refused: Rc<std::cell::RefCell<Vec<(Job, super::ActivationKey)>>>,
+}
+
+impl RowWithdrawalFixture {
+    fn new() -> Self {
+        let tel = ConfiguredTelemetry::new();
+        let refused = Rc::new(std::cell::RefCell::new(Vec::new()));
+        let sink = Rc::clone(&refused);
+        tel.attach_raw_event3::<World, Job, super::ActivationKey, _>(
+            &["fz", "compiler2", "activation_inputs", "withdrawal_refused"],
+            move |_, _, _, _, publisher, callee| sink.borrow_mut().push((publisher.clone(), callee.clone())),
+        );
+        let mut world = World::new();
+        let root = world.submit_root(None, "main".to_string(), 0, super::ExecutableNeed::Value);
+        let callee = world.reference_function(ModuleId::GLOBAL, "callee", 1);
+        assert!(world.define_body_keying(
+            callee,
+            BodyKeying {
+                recursive: false,
+                consumes_callable_identity: true,
+                cycle_supplied: 0
+            }
+        ));
+        assert!(world.define_input_demand(callee, unforwarded_demand(vec![DispatchDemand::Whole])));
+        let int = world.types_mut().int();
+        let float = world.types_mut().float();
+        let old = world.activation_key(root, callee, &[int]);
+        let new = world.activation_key(root, callee, &[float]);
+        assert_ne!(old, new);
+        let publisher = Job::AnalyzeActivation(world.activation_key(root, world.root_function(root), &[]));
+        Self {
+            world,
+            tel,
+            publisher,
+            old,
+            new,
+            int,
+            float,
+            refused,
+        }
+    }
+
+    /// The publisher concludes feeding `fed`, knowing it no longer feeds `withdrawn`.
+    fn concludes(&mut self, fed: &[(&super::ActivationKey, super::types::Ty)], withdrawn: &[&super::ActivationKey]) {
+        let effects = JobEffects {
+            activation_input_contributions: fed.iter().map(|(key, ty)| ((*key).clone(), vec![*ty])).collect(),
+            withdrawn_activations: withdrawn.iter().map(|key| (*key).clone()).collect(),
+            ..JobEffects::default()
+        };
+        super::drive::ExecutionContext::new(&mut self.world, &self.tel).complete_job(self.publisher.clone(), effects);
+    }
+
+    fn feeds(&self, key: &super::ActivationKey) -> bool {
+        self.world.activation_inputs_joined(key).is_some()
+    }
+
+    fn refusals(&self) -> usize {
+        self.refused.borrow().len()
+    }
+}
+
+/// An activation a re-analysis stops calling loses the publisher's row, and
+/// with it the claim that the activation exists.
+#[test]
+fn a_callee_the_publisher_withdraws_loses_its_row_and_its_claim() {
+    let mut f = RowWithdrawalFixture::new();
+    let (old, new, int, float) = (f.old.clone(), f.new.clone(), f.int, f.float);
+    f.concludes(&[(&old, int)], &[]);
+    assert!(f.world.has_fact(&FactKey::ActivationInputs(old.clone())));
+
+    f.concludes(&[(&new, float)], &[&old]);
+
+    assert!(!f.feeds(&old), "the superseded callee has no row from the publisher");
+    assert!(
+        !f.world
+            .job_outputs(&f.publisher)
+            .contains(&FactKey::ActivationInputs(old))
+    );
+    assert!(f.feeds(&new), "the replacement is fed");
+}
+
+/// A publisher silent about a callee keeps feeding it: a callsite that is not
+/// resolved this round is not a callsite that stopped calling.
+#[test]
+fn a_callee_the_publisher_is_silent_about_keeps_its_row() {
+    let mut f = RowWithdrawalFixture::new();
+    let (old, new, int, float) = (f.old.clone(), f.new.clone(), f.int, f.float);
+    f.concludes(&[(&old, int)], &[]);
+
+    f.concludes(&[(&new, float)], &[]);
+
+    assert!(f.feeds(&old), "silence withdraws nothing");
+    assert!(f.feeds(&new));
+}
+
+/// Callsite targets are replaced, so one can name a callee, drop it and name
+/// it again. The row withdrawn once and added back is never withdrawn again:
+/// each pair moves at most once, and every refusal is reported.
+#[test]
+fn a_row_withdrawn_and_added_back_is_not_withdrawn_again() {
+    let mut f = RowWithdrawalFixture::new();
+    let (old, new, int, float) = (f.old.clone(), f.new.clone(), f.int, f.float);
+    f.concludes(&[(&old, int)], &[]);
+    f.concludes(&[(&new, float)], &[&old]);
+    assert!(!f.feeds(&old));
+    assert_eq!(f.refusals(), 0, "the first withdrawal is the one the guard allows");
+
+    f.concludes(&[(&old, int)], &[&new]);
+    assert!(f.feeds(&old), "the row is added back");
+    assert!(
+        !f.feeds(&new),
+        "withdrawing the other callee is a first withdrawal of that pair"
+    );
+    assert_eq!(f.refusals(), 0);
+
+    f.concludes(&[(&new, float)], &[&old]);
+    assert!(f.feeds(&old), "a reinstated pair is never withdrawn again");
+    assert_eq!(
+        *f.refused.borrow(),
+        vec![(f.publisher.clone(), old)],
+        "the refusal names the publisher and the callee it kept"
+    );
+}

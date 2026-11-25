@@ -323,22 +323,43 @@ impl JsonlBackend {
             "completion",
         );
         let retirement_backend = Rc::clone(&backend);
-        telemetry.attach_raw_event2::<crate::compiler2::World, crate::compiler2::FunctionRetirement, _>(
-            &["fz", "compiler2", "function", "retired"],
+        telemetry.attach_raw_event2::<crate::compiler2::World, crate::compiler2::JobRetirement, _>(
+            &["fz", "compiler2", "job", "retired"],
             move |name, span_id, parent_span_id, world, retirement| {
-                retirement_backend.handle_raw_event(
-                    name,
-                    span_id,
-                    parent_span_id,
-                    crate::metadata! {
+                let metadata = match &retirement.ground {
+                    crate::compiler2::RetirementGround::OrphanedLambda { function, owner } => crate::metadata! {
                         world: crate::telemetry::opaque(world),
                         job: crate::telemetry::opaque(&retirement.job),
-                        function: crate::telemetry::opaque(&retirement.function),
-                        owner: crate::telemetry::opaque(&retirement.owner),
+                        reason: retirement.ground.name(),
+                        function: crate::telemetry::opaque(function),
+                        owner: crate::telemetry::opaque(owner),
                     },
-                );
+                    crate::compiler2::RetirementGround::UnclaimedActivation => crate::metadata! {
+                        world: crate::telemetry::opaque(world),
+                        job: crate::telemetry::opaque(&retirement.job),
+                        reason: retirement.ground.name(),
+                    },
+                };
+                retirement_backend.handle_raw_event(name, span_id, parent_span_id, metadata);
             },
         );
+        let refused_backend = Rc::clone(&backend);
+        telemetry
+            .attach_raw_event3::<crate::compiler2::World, crate::compiler2::Job, crate::compiler2::ActivationKey, _>(
+                &["fz", "compiler2", "activation_inputs", "withdrawal_refused"],
+                move |name, span_id, parent_span_id, world, publisher, callee| {
+                    refused_backend.handle_raw_event(
+                        name,
+                        span_id,
+                        parent_span_id,
+                        crate::metadata! {
+                            world: crate::telemetry::opaque(world),
+                            publisher: crate::telemetry::opaque(publisher),
+                            callee: crate::telemetry::opaque(callee),
+                        },
+                    );
+                },
+            );
         let function_owner_backend = Rc::clone(&backend);
         telemetry.attach_raw_event3::<
             crate::compiler2::World,
@@ -1335,8 +1356,10 @@ fn is_public_compiler2_trace_event(ev: &Event<'_, '_, '_>) -> bool {
             | ["fz", "compiler2", "drive", "stalled"]
             | ["fz", "compiler2", "drive", "timed_out"]
             | ["fz", "compiler2", "job"]
+            | ["fz", "compiler2", "job", "retired"]
             | ["fz", "compiler2", "work_graph", "applied"]
             | ["fz", "compiler2", "activation_inputs", "budget_collapsed"]
+            | ["fz", "compiler2", "activation_inputs", "withdrawal_refused"]
             | ["fz", "compiler2", "type", "clash_folded"]
             | ["fz", "compiler2", "work_graph", "quiesced"]
             | ["fz", "compiler2", "work_graph", "dependencies_moved"]
@@ -2048,6 +2071,8 @@ fn write_opaque(out: &mut String, opaque: super::value::OpaqueRef<'_>) {
         push_u64(out, completion.derivations);
         out.push_str(",\"reads_handed\":");
         push_u64(out, completion.reads_handed);
+        out.push_str(",\"retired\":");
+        out.push_str(if completion.retired { "true" } else { "false" });
         write_applied_step_body(out, &completion.step);
     } else if let Some(world) = opaque.downcast_ref::<crate::compiler2::World>() {
         let (codes, roots) = world.telemetry_counts();

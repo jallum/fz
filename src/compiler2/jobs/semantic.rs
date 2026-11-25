@@ -205,6 +205,42 @@ pub(in crate::compiler2) fn callees_awaiting_their_module(
         .collect()
 }
 
+/// The conclusion of an activation nothing claims, or `None` when it is claimed.
+///
+/// Nothing claims it when no caller has reached it yet or every caller has
+/// withdrawn it. That is an answer, not a block: a wait here would have no
+/// producer (`World::seed_activation_producer` refuses a key whose inputs
+/// anything else supplies), and a wedged waiter stalls retraction-heavy
+/// drives. The conclusion re-lists the job's standing claims AND the reads
+/// standing behind them: claims keep the subscriptions that derived them, so
+/// the parked cone stays exactly as final as its ground -- never settled from
+/// amnesia. The `Activation` read wakes the job on a first or later claim.
+/// What the activation contributed to its callees leaves with it.
+pub(super) fn retire_unclaimed(world: &World, activation: &ActivationKey) -> Option<JobEffects> {
+    let activation_fact = FactKey::Activation(activation.clone());
+    if world.has_fact(&activation_fact) {
+        return None;
+    }
+    let (outputs, standing_reads) = world.standing_claims_and_reads(&Job::AnalyzeActivation(activation.clone()));
+    // Order is immaterial: JobEffects.reads lands in the ledger's read SET.
+    let mut reads: Vec<_> = standing_reads.into_iter().collect();
+    reads.extend(current_uses([activation_fact]));
+    let withdrawn_activations = outputs
+        .iter()
+        .filter_map(|fact| match fact {
+            FactKey::ActivationInputs(key) => Some(key.clone()),
+            _ => None,
+        })
+        .collect();
+    Some(JobEffects {
+        reads,
+        outputs,
+        withdrawn_activations,
+        retired: true,
+        ..JobEffects::default()
+    })
+}
+
 /// Analyzes one rooted function activation against its lowered body.
 ///
 /// The activation must already exist, and its function's definition, entry
@@ -218,31 +254,6 @@ pub(super) fn analyze_activation(
     tel: &impl crate::telemetry::Telemetry,
     activation: &ActivationKey,
 ) -> Result<JobEffects, FatalError> {
-    let activation_fact = FactKey::Activation(activation.clone());
-    if !world.has_fact(&activation_fact) {
-        // Nothing claims this activation -- no caller has reached it yet, or
-        // every caller has withdrawn it. That is an answer, not a block: a
-        // wait here would have no producer (`World::seed_activation_producer`
-        // refuses a key whose inputs anything else supplies), and a wedged
-        // waiter stalls retraction-heavy drives. The conclusion re-lists the
-        // job's standing claims AND the reads standing behind them: claims
-        // keep the subscriptions that derived them, so the parked cone stays
-        // exactly as final as its ground -- never settled from amnesia (the
-        // one-absent-read conclusion was measured to do exactly that). The
-        // `Activation` read wakes this job on a first or later claim; the
-        // full cone retires when the activation's function is orphaned, which
-        // also clears its `ActivationSlot`.
-        let (outputs, standing_reads) = world.standing_claims_and_reads(&Job::AnalyzeActivation(activation.clone()));
-        // Order is immaterial: JobEffects.reads lands in the ledger's read
-        // SET; nothing observes this Vec's sequence.
-        let mut reads: Vec<_> = standing_reads.into_iter().collect();
-        reads.extend(current_uses([activation_fact]));
-        return Ok(JobEffects {
-            reads,
-            outputs,
-            ..JobEffects::default()
-        });
-    }
     let activation_inputs_fact = FactKey::ActivationInputs(activation.clone());
     let Some(alternatives) = world.activation_input_alternatives(activation) else {
         return Ok(JobEffects::wait_on_current(activation_inputs_fact));
@@ -364,6 +375,8 @@ pub(super) fn analyze_activation(
 
     analysis_calls = coalesce_call_emissions(world, analysis_calls)?;
 
+    // Read before the loop below overwrites each callsite's stored targets.
+    let withdrawn_activations = superseded_activations(world, activation, &analysis_calls);
     let mut emitted_activations = HashSet::default();
     let mut emitted_activation_inputs = HashSet::default();
     let mut activation_input_contributions = Vec::new();
@@ -468,8 +481,60 @@ pub(super) fn analyze_activation(
         outputs: dedupe_facts(outputs),
         changed: dedupe_facts(changed),
         activation_input_contributions,
+        withdrawn_activations,
         ..JobEffects::default()
     })
+}
+
+/// The activations this analysis's callsites used to name and a resolved
+/// callsite now replaces: their input rows from this publisher are stale.
+/// Only knowledge withdraws. A callsite that is unresolved now, or that the
+/// walk no longer reaches, is silent, so the callees it last named stand.
+fn superseded_activations(world: &World, activation: &ActivationKey, calls: &[CallEmission]) -> Vec<ActivationKey> {
+    let named_by = |callsite: &CallSiteKey| -> Vec<ActivationKey> {
+        world
+            .callsite_summary(callsite)
+            .map(|summary| {
+                summary
+                    .targets
+                    .iter()
+                    .filter_map(|target| target.activation.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let mut resolved_now = HashSet::default();
+    let mut named_now = HashSet::<ActivationKey>::default();
+    let mut previously_named = Vec::new();
+    for call in calls {
+        let Some(summary) = call.resolution.resolved() else {
+            continue;
+        };
+        resolved_now.insert(call.key.callsite);
+        named_now.extend(summary.targets.iter().filter_map(|target| target.activation.clone()));
+        previously_named.extend(named_by(&call.key));
+    }
+    let mut silent_about = HashSet::<ActivationKey>::default();
+    if let Some(previous) = world.activation_analysis(activation) {
+        for callsite in previous
+            .callsites
+            .iter()
+            .filter(|callsite| !resolved_now.contains(*callsite))
+        {
+            silent_about.extend(named_by(&CallSiteKey {
+                activation: activation.clone(),
+                callsite: *callsite,
+            }));
+        }
+    }
+    let mut superseded = Vec::new();
+    for key in previously_named {
+        if key != *activation && !named_now.contains(&key) && !silent_about.contains(&key) && !superseded.contains(&key)
+        {
+            superseded.push(key);
+        }
+    }
+    superseded
 }
 
 /// What this activation can raise. A decision the types leave able to fail,

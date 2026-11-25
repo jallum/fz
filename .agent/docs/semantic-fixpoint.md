@@ -65,7 +65,7 @@ row to publish.
 
 Dominance exists because a caller's ascent is a CHAIN, not a set of
 alternatives: `conclude_preserving_frontier` joins every superseded conclusion
-in and nothing takes it out, so a widening column deposits one row per rung.
+in and, until the caller's ground shifts, nothing takes it out, so a widening column deposits one row per rung.
 `Types::row_column_dominates` is deliberately narrower than `is_subtype` — it
 also requires equal free-var sets and containment of the closure-literal arrow
 SHAPES, because `types::emptiness::func_clause_empty` decides a closure-literal
@@ -361,23 +361,35 @@ nothing about discovering a callee blocks on its analysis, and the frontier is
 the ignition path for that caller-discovered callee's first analysis pass. A
 partner's `ReturnType` read stays current, so mutual recursion cannot
 deadlock; any other callee's read is a wait, not a block on discovery.
-`ActivationInputs(a)` is cumulative for semantic-analysis
-publishers: if an `AnalyzeActivation` rerun temporarily stops seeing a callsite,
-the publisher keeps its prior activation-input frontier and only adds/widens new
-entries. Source/root publishers still use ordinary replacement so real external
-changes can withdraw stale contributions. If another publisher remains, the
-store reports whether that withdrawal actually narrowed the joined input rows;
-a changed withdrawal travels as a ground shift, while an equal withdrawal is
-quiet. The `Activation` CLAIM rides a
-stricter rule than the inputs do: a non-rebased conclusion keeps every
-`Activation` it did not re-emit, and only a rebased one — whose ground actually
-shifted — withdraws. The
-`ActivationInputs` contributions themselves never withdraw, rebase or not
-(`preserve_frontier` is unconditional for `AnalyzeActivation`, so after a
-rebased withdrawal of a claim the input evidence that fed it stays published
-and joined — see fz-kdt.64 for the recorded asymmetry) (`World::preserved_analysis_claims`;
+`ActivationInputs(a)` is cumulative under silence and withdrawn on knowledge.
+If an `AnalyzeActivation` rerun stops seeing a callsite, or the callsite is
+unresolved this round, the publisher keeps its prior activation-input frontier
+and only adds or widens entries. The rerun withdraws a row in three cases, each
+a fact the analysis knows: a callsite it still reaches and resolves now names a
+different activation than the publisher's previous resolved edge, so the old
+key loses the publisher's row (`superseded_activations`); an activation
+nothing calls any more (`Activation` unclaimed) is retired
+(`semantic::retire_unclaimed`, [`fact-engine`](fact-engine.md)): its job
+concludes without running the analysis and withdraws every row it published,
+which cascades down the callees it fed, each retired in turn; and a rebased conclusion, from any publisher (`AnalyzeActivation`,
+`SeedRoot`, `SeedActivation`), replaces its rows rather than joining them, as
+every other publisher's does
+(`ContributionMap::conclude_preserving_frontier`, `join = !rebased`). A
+callsite's target set is replaced, not joined, so it can name a callee, drop it
+and name it again; a (publisher, callee) pair that was withdrawn and then
+added back is never withdrawn again (`World`'s `RowWithdrawals`), and each
+refused withdrawal emits `fz.compiler2.activation_inputs.withdrawal_refused`.
+After that the pair follows the cumulative rule, whose ascent the fixpoint
+already bounds. Source/root publishers use ordinary replacement so real
+external changes can withdraw stale contributions. If another publisher
+remains, the store reports whether a withdrawal actually narrowed the joined
+input rows; a changed withdrawal travels as a ground shift, while an equal
+withdrawal is quiet. The `Activation` CLAIM follows the same rule: a
+non-rebased conclusion keeps every `Activation` it did not re-emit unless the
+callee is superseded or the publisher is itself uncalled, and a rebased one —
+whose ground actually shifted — withdraws (`World::preserved_analysis_claims`;
 [`fact-engine`](fact-engine.md), *Absence is bottom; rebasing is the narrowing
-path*). This keeps fixpoint evidence from descending just because an
+path*). Silence keeps fixpoint evidence from descending just because an
 intermediate clause-reachability approximation changed. The row set is compared by per-column type equivalence, not raw `Ty`
 handle equality, so representative-only changes do not dirty the scheduler.
 `ReturnType(a)` is a CUMULATIVE claim: the store

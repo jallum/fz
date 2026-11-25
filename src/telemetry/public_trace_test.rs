@@ -754,6 +754,7 @@ fn completion_job_identity(completion: &serde_json::Value) -> serde_json::Value 
             "activation_input_refolds",
             "derivations",
             "reads_handed",
+            "retired",
             "changed",
             "wakes",
             "movements",

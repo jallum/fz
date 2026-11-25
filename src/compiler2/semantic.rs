@@ -1514,25 +1514,39 @@ where
     }
 
     /// A cumulative concluding-completion arm for evidence whose absence in a
-    /// rerun is not a proof of impossibility. New entries join with the
-    /// publisher's prior entries; previous output keys stay in the publisher's
-    /// frontier and are not withdrawn.
+    /// rerun is not a proof of impossibility. Previous output keys stay in the
+    /// publisher's frontier unless `withdrawn` names them: those are keys the
+    /// publisher now KNOWS it no longer feeds, and their contributions leave.
+    /// New entries join with the publisher's prior entries unless its ground
+    /// shifted (`rebased`), when they replace them, as in `conclude`.
     pub fn conclude_preserving_frontier(
         &mut self,
         ctx: &mut V::Ctx,
         publisher: P,
         previous_output_keys: HashSet<K>,
         next: HashMap<K, V>,
+        withdrawn: &HashSet<K>,
+        rebased: bool,
     ) -> ContributionReplace<K> {
         let mut ordered_next = next.into_iter().collect::<Vec<_>>();
         ordered_next.sort_by(|(left, _), (right, _)| left.semantic_cmp(right, &*ctx));
         let mut output_keys = previous_output_keys;
         output_keys.extend(ordered_next.iter().map(|(key, _)| key.clone()));
-        let entries = ordered_next
+        let mut leaving = output_keys
+            .iter()
+            .filter(|key| withdrawn.contains(*key) && !ordered_next.iter().any(|(next_key, _)| next_key == *key))
+            .cloned()
+            .collect::<Vec<_>>();
+        leaving.sort_by(|left, right| left.semantic_cmp(right, &*ctx));
+        let mut entries = ordered_next
             .into_iter()
             .map(|(key, value)| (key, SlotEntry::Upsert(value)))
-            .collect();
-        self.apply_each(ctx, &publisher, entries, true, output_keys)
+            .collect::<Vec<_>>();
+        for key in leaving {
+            output_keys.remove(&key);
+            entries.push((key, SlotEntry::Withdraw));
+        }
+        self.apply_each(ctx, &publisher, entries, !rebased, output_keys)
     }
 
     /// The waiting-completion arm: listed keys gain (or widen) this publisher's
