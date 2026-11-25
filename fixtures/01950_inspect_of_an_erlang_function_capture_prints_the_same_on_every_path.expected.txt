@@ -1,0 +1,4 @@
+&:erlang.binary_to_integer/1
+&:maps.to_list/1
+&String.upcase/1
+[&:erlang.is_map_key/2, &Enum.map/2]

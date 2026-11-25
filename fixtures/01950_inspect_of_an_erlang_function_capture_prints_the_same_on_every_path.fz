@@ -1,0 +1,15 @@
+#---
+# purpose: inspecting a capture of a function in a bare-atom module (:erlang, :maps) prints &:erlang.f/n on every path, as Elixir does, and an alias module's capture prints as before
+# oracle: self
+# oracle.stamp: 016d8e6f27fd184b
+#---
+defmodule Main do
+  def main() do
+    IO.inspect(&:erlang.binary_to_integer/1)
+    IO.inspect(&:maps.to_list/1)
+    IO.inspect(&String.upcase/1)
+    IO.inspect([&:erlang.is_map_key/2, &Enum.map/2])
+  end
+end
+
+Main.main()

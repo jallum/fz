@@ -150,9 +150,13 @@ pub fn encode_closure_denotations(
                 FunctionOrigin::Named { module, name } => {
                     bytes.push(0);
                     match module {
-                        None => bytes.push(0),
+                        None => bytes.push(NO_MODULE),
+                        Some(name) if name.is_bare_atom() => {
+                            bytes.push(BARE_ATOM_MODULE);
+                            encode_string(&mut bytes, &name.atom_name())?;
+                        }
                         Some(name) => {
-                            bytes.push(1);
+                            bytes.push(ALIAS_MODULE);
                             encode_module_name(&mut bytes, name)?;
                         }
                     }
@@ -184,6 +188,13 @@ fn encode_string(bytes: &mut Vec<u8>, value: &str) -> Result<(), &'static str> {
     bytes.extend_from_slice(value.as_bytes());
     Ok(())
 }
+
+/// How a source denotation names its module: none, an alias path of
+/// segments (`Foo.Bar`), or a bare atom (`:erlang`), which has no `Elixir.`
+/// root to read back.
+const NO_MODULE: u8 = 0;
+const ALIAS_MODULE: u8 = 1;
+const BARE_ATOM_MODULE: u8 = 2;
 
 fn encode_module_name(bytes: &mut Vec<u8>, name: &ModuleName) -> Result<(), &'static str> {
     encode_u32(bytes, name.segments().len())?;
@@ -253,10 +264,19 @@ impl<'a> DenotationReader<'a> {
         Ok(ModuleName::from_segments(segments))
     }
 
+    fn bare_atom_module(&mut self) -> Result<ModuleName, &'static str> {
+        let atom_name = self.string()?;
+        if atom_name.is_empty() {
+            return Err("empty source module");
+        }
+        Ok(ModuleName::bare_atom(atom_name))
+    }
+
     fn module(&mut self) -> Result<Option<ModuleName>, &'static str> {
         match self.tag()? {
-            0 => Ok(None),
-            1 => Ok(Some(self.module_name()?)),
+            NO_MODULE => Ok(None),
+            ALIAS_MODULE => Ok(Some(self.module_name()?)),
+            BARE_ATOM_MODULE => Ok(Some(self.bare_atom_module()?)),
             _ => Err("invalid source module tag"),
         }
     }

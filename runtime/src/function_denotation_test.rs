@@ -187,3 +187,50 @@ fn elixir_names_a_lambda_after_the_named_function_its_source_sits_in() {
         "a function outside any module has no module to name"
     );
 }
+
+/// Intent: a function of a bare-atom module such as `:erlang` crosses the
+/// binary table as that module, not as the alias `Elixir.erlang`, so a built
+/// program names it as the interpreter does.
+#[test]
+fn a_bare_atom_module_survives_the_binary_table() {
+    let erlang = ModuleName::bare_atom("erlang");
+    let alias = ModuleName::from_segments(vec!["erlang".into()]);
+    let table = vec![
+        (
+            ClosureDenotationId::user(0),
+            Arc::new(FunctionDenotation::named(Some(erlang), "binary_to_integer".into(), 1)),
+        ),
+        (
+            ClosureDenotationId::user(1),
+            Arc::new(FunctionDenotation::named(Some(alias), "to_list".into(), 1)),
+        ),
+    ];
+    let decoded = decode_closure_denotations(&encode_closure_denotations(&table).unwrap()).unwrap();
+    assert_eq!(decoded, table);
+    let FunctionOrigin::Named { module, .. } = &decoded[0].1.origin else {
+        panic!("a named function")
+    };
+    assert_eq!(module.as_ref().map(ModuleName::atom_name).as_deref(), Some("erlang"));
+    let FunctionOrigin::Named { module, .. } = &decoded[1].1.origin else {
+        panic!("a named function")
+    };
+    assert_eq!(
+        module.as_ref().map(ModuleName::atom_name).as_deref(),
+        Some("Elixir.erlang")
+    );
+}
+
+#[test]
+fn a_bare_atom_module_with_no_name_is_rejected() {
+    let table = vec![(
+        ClosureDenotationId::user(0),
+        Arc::new(FunctionDenotation::named(
+            Some(ModuleName::bare_atom("e")),
+            "f".into(),
+            0,
+        )),
+    )];
+    let mut empty = encode_closure_denotations(&table).unwrap();
+    empty[14..18].copy_from_slice(&0u32.to_ne_bytes());
+    assert!(decode_closure_denotations(&empty).is_err());
+}
