@@ -1,7 +1,9 @@
 {
   "assignee": "Callables",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-yh5.15"
+  ],
   "created": "2026-11-25T00:08:49Z",
   "description": "From: Callables. Approved by the user 2026-11-24 (\"approved\", relayed by Callables).\n\nToday: release_resumed_frame (src/compiler2/native_codegen/closure.rs:286-292) emits kind_field(frame) == CLOSURE and brif around the whole give-back: 4 instructions per resume on aarch64 (and; lsr; cmp #4; b.ne), ledger rows 162-165 of Make Distiller Fast's probe c4 ledger (https://claude.ai/artifact/REdzotwtihuF57Q2GKvQ6M section 9).\n\nEvery producer of the frame reference makes a CLOSURE-kinded reference: inline_object.rs:64; the static halt continuation (fn_ctx.rs:491); value.rs:255; park.rs:220, process.rs:647, failure.rs:327; sched.rs:40-74; capture 0 at closure.rs:129 (StoredRefKind::Heap(CLOSURE), documented at fn_ctx.rs:930 as always a closure). The return path jumps through the continuation's code pointer without a kind check. The test came in 273197fd5 (fz-9x7.1), the commit that deleted TAG_LAZY_CONT, the only other continuation kind; the false branch has been unreachable since.\n\nChange: the give-back is straight-line. The static halt continuation needs no test; the tip compare already makes it a no-op.\n\nVerification: a temporary trap on the false branch shows no fixture reaches it on any path; then the test and the trap are removed; probe c4 drops 4 instructions per step (225 -\u003e 221); fixtures green on interp, run and build.\n\nOverlap: Make Distiller Fast's pending proposal (compile-time capture count/size, patch /Users/j5n/Workspace/fz-distill-hunt/trim/const-size.patch) edits the same function. fz-9x7.43 later deletes this function's tests; this lands before .43.",
   "id": "fz-9x7.50",
@@ -11,5 +13,5 @@
   "status": "in_progress",
   "title": "A resumed frame is given back without asking whether it is a closure",
   "type": "task",
-  "updated_at": "2026-11-25T00:08:50Z"
+  "updated_at": "2026-11-25T01:10:50Z"
 }
