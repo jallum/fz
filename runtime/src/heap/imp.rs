@@ -1250,10 +1250,10 @@ impl Heap {
     ///
     /// # Safety
     /// `source` must be the tagged word of a live binary on this heap, and the
-    /// window must lie inside it.
+    /// window must lie inside it. A debug build checks that it does.
     pub unsafe fn slice(&mut self, source: u64, start_bit: u64, bit_len: u64) -> AnyValue {
         let bin = unsafe { Bin::of_binary(source) };
-        assert!(
+        debug_assert!(
             start_bit + bit_len <= bin.bit_len(),
             "binary slice [{start_bit}, +{bit_len}) runs past the {} bits it slices",
             bin.bit_len()

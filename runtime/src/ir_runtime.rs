@@ -1560,10 +1560,20 @@ pub fn bs_field_end(field_spec: u64, size_value: u32, pos: u64, source_ref: u64)
 /// is one scalar value, 8 to 32 bits wide as the bytes say, and a binary that
 /// does not begin with a valid encoding at `pos` does not hold it.
 fn field_end(field_spec: u64, size_value: u32, pos: u64, bytes: &[u8], bit_len: u64) -> Option<u64> {
+    let width = field_width(field_spec, size_value, pos, bytes, bit_len)?;
+    (pos + width <= bit_len).then_some(pos + width)
+}
+
+/// How many bits the field that starts at bit `pos` spans, whether or not the
+/// binary holds them: `None` for a field that has no width (an unsized
+/// `binary` that is not last or ends between bytes, an integer or float of an
+/// unsupported width, a `utf8` field that does not begin with a valid
+/// encoding).
+fn field_width(field_spec: u64, size_value: u32, pos: u64, bytes: &[u8], bit_len: u64) -> Option<u64> {
     let (ty_tag, size_present, unit, _, _, is_last) = decode_bs_field_spec(field_spec);
     let size = (size_present != 0).then_some(size_value as u64);
     let unit = unit as u64;
-    let total = match (decode_bit_type(ty_tag), size) {
+    match (decode_bit_type(ty_tag), size) {
         (BitType::Integer, size) => Some(size.unwrap_or(8) * unit).filter(|total| *total <= 64),
         (BitType::Float, size) => Some(size.unwrap_or(64) * unit).filter(|total| *total == 32 || *total == 64),
         (BitType::Binary | BitType::Bits, Some(size)) => Some(size * unit),
@@ -1573,8 +1583,7 @@ fn field_end(field_spec: u64, size_value: u32, pos: u64, bytes: &[u8], bit_len: 
         (BitType::Bits, None) => (is_last != 0).then(|| bit_len - pos),
         (BitType::Utf8, _) => utf8_scalar_at(bytes, pos, bit_len).map(|(_, bits)| bits),
         (ty @ (BitType::Utf16 | BitType::Utf32), _) => unsupported_bit_read(ty),
-    }?;
-    (pos + total <= bit_len).then_some(pos + total)
+    }
 }
 
 /// `bs_field_end` for generated code that carries no inline arithmetic: the end
@@ -1663,7 +1672,8 @@ pub extern "C" fn fz_bs_read_int_ref(source_ref: u64, pos: u64, field_spec: u64,
 
 /// Read the `binary` or `bits` field at bit `pos` as a binary: the source
 /// itself when the field is all of it, and a new binary otherwise. The caller
-/// has proved the field fits (`bs_field_end` answers `Some`).
+/// has proved the field fits (`bs_field_end` answers `Some`); a debug build
+/// checks the claim.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_bs_read_binary_ref(
     process: *mut Process,
@@ -1680,11 +1690,22 @@ pub extern "C" fn fz_bs_read_binary_ref(
         ty => unsupported_bit_read(ty),
     }
     let (bytes, bit_len) = bit_source(source_ref);
-    let end = field_end(field_spec, size_value, pos, bytes, bit_len)
-        .unwrap_or_else(|| panic!("fz_bs_read_binary_ref: the field at bit {pos} does not fit"));
+    let width = field_width(field_spec, size_value, pos, bytes, bit_len)
+        .unwrap_or_else(|| panic!("fz_bs_read_binary_ref: the field at bit {pos} has no width"));
+    debug_assert!(
+        pos + width <= bit_len,
+        "fz_bs_read_binary_ref: the field at bit {pos} of {width} bits runs past the {bit_len} bits it reads"
+    );
+    fz_bs_slice_ref(process, source_ref, pos, width)
+}
+
+/// The `bit_len` bits of the binary `source_ref` from bit `pos`, as a binary:
+/// what `Heap::slice` makes. The caller has proved the window lies inside
+/// the source, so nothing is checked here.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_bs_slice_ref(process: *mut Process, source_ref: u64, pos: u64, bit_len: u64) -> u64 {
     let process = unsafe { &mut *process };
-    let value = unsafe { process.slice(source_ref, pos, end - pos) };
-    value.ref_word().raw_word()
+    unsafe { process.slice(source_ref, pos, bit_len) }.ref_word().raw_word()
 }
 
 // ===== Map cluster =====

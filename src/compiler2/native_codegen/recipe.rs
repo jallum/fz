@@ -43,6 +43,12 @@
 //! a body entered from Rust with the process as a parameter calls the runtime
 //! function instead.
 //!
+//! The binary slice row, `fz_bs_slice_ref`, is an allocation row asked for
+//! through [`emit_slice`]. It copies a small whole-byte window in place and
+//! calls the runtime function for every other window; the caller has proved the
+//! window lies inside the source. The test compares the binary it makes, the
+//! source's header, the tip and the placements it counts with the function's.
+//!
 //! A recipe does not validate its arguments. The Rust function panics on a
 //! malformed word; the instructions read whatever the word says.
 //!
@@ -59,6 +65,7 @@
 //! had no row.
 
 use super::binary_compare::{BinaryCompare, emit_binary_compare};
+use super::binary_slice::emit_binary_slice;
 use super::inline_object::{Placed, emit_closure, emit_struct};
 use super::list_cell::{HeadLane, emit_list_cell};
 use super::list_reuse::{ReuseLane, emit_list_reuse};
@@ -78,13 +85,13 @@ use fz_runtime::any_value::{
 use fz_runtime::heap::{Heap, HeapAllocKind};
 use fz_runtime::ir_runtime::{
     fz_bitstring_bit_extent, fz_bitstring_byte_extent, fz_box_float_for_any, fz_box_int_for_any, fz_box_opaque_for_any,
-    fz_list_cons_any, fz_list_cons_atom, fz_list_cons_float, fz_list_cons_int, fz_list_reuse_or_cons_parts,
-    fz_op_abs_f, fz_op_add_ii, fz_op_band_ii, fz_op_bnot_i, fz_op_bor_ii, fz_op_bsl_ii, fz_op_bsr_ii, fz_op_bxor_ii,
-    fz_op_eq_bb, fz_op_eq_ff, fz_op_eq_ii, fz_op_gt_bb, fz_op_gt_ff, fz_op_gt_ii, fz_op_gte_bb, fz_op_gte_ff,
-    fz_op_gte_ii, fz_op_identical_ii, fz_op_lt_bb, fz_op_lt_ff, fz_op_lt_ii, fz_op_lte_bb, fz_op_lte_ff, fz_op_lte_ii,
-    fz_op_mul_ii, fz_op_neg_f, fz_op_neg_i, fz_op_neq_bb, fz_op_neq_ff, fz_op_neq_ii, fz_op_not_identical_ii,
-    fz_op_sub_ii, fz_struct_is_named_ref, fz_struct_schema_id_ref, fz_truthy_ref, fz_type_of, fz_unbox_atom,
-    fz_unbox_int, fz_value_eq_raw_const,
+    fz_bs_slice_ref, fz_list_cons_any, fz_list_cons_atom, fz_list_cons_float, fz_list_cons_int,
+    fz_list_reuse_or_cons_parts, fz_op_abs_f, fz_op_add_ii, fz_op_band_ii, fz_op_bnot_i, fz_op_bor_ii, fz_op_bsl_ii,
+    fz_op_bsr_ii, fz_op_bxor_ii, fz_op_eq_bb, fz_op_eq_ff, fz_op_eq_ii, fz_op_gt_bb, fz_op_gt_ff, fz_op_gt_ii,
+    fz_op_gte_bb, fz_op_gte_ff, fz_op_gte_ii, fz_op_identical_ii, fz_op_lt_bb, fz_op_lt_ff, fz_op_lt_ii, fz_op_lte_bb,
+    fz_op_lte_ff, fz_op_lte_ii, fz_op_mul_ii, fz_op_neg_f, fz_op_neg_i, fz_op_neq_bb, fz_op_neq_ff, fz_op_neq_ii,
+    fz_op_not_identical_ii, fz_op_sub_ii, fz_struct_is_named_ref, fz_struct_schema_id_ref, fz_truthy_ref, fz_type_of,
+    fz_unbox_atom, fz_unbox_int, fz_value_eq_raw_const,
 };
 
 /// What a recipe computed, in one of the three shapes.
@@ -107,6 +114,9 @@ enum Emit {
     Struct,
     Closure,
     Box(BoxLane),
+    /// The window of a binary: a copy placed in place, or the runtime function
+    /// on a cold path.
+    Slice,
     /// An in-place answer that may call the runtime function on a cold path,
     /// so it needs the body that declares the import.
     BinaryCompare(BinaryCompare),
@@ -209,6 +219,21 @@ macro_rules! heap_object {
             },
             arity: $arity,
             emit: $emit,
+        }
+    };
+}
+
+/// An allocation row: the runtime function slices a window of a binary the
+/// caller has proved lies inside it.
+macro_rules! binary_slice {
+    ($item:ident($($param:ident),+)) => {
+        Recipe {
+            symbol: {
+                let _: unsafe extern "C" fn($(recipe!(@lane $param)),+) -> _ = $item;
+                stringify!($item)
+            },
+            arity: count!($($param)+),
+            emit: Emit::Slice,
         }
     };
 }
@@ -350,6 +375,8 @@ pub(crate) const RECIPES: &[Recipe] = &[
     binary_compare!(fz_op_lte_bb, BinaryCompare::Lte),
     binary_compare!(fz_op_gt_bb, BinaryCompare::Gt),
     binary_compare!(fz_op_gte_bb, BinaryCompare::Gte),
+    // The window of a binary.
+    binary_slice!(fz_bs_slice_ref(process, source, pos, bit_len)),
     // Integer arithmetic.
     overflowing!(fz_op_add_ii, sadd_overflow),
     overflowing!(fz_op_sub_ii, ssub_overflow),
@@ -460,9 +487,9 @@ pub(crate) fn emit_inline(b: &mut FunctionBuilder<'_>, symbol: &str, args: &[ir:
         Emit::BinaryCompare(_) => {
             panic!("`{symbol}` may call the runtime on a cold path; ask for it through `emit_in_body`")
         }
-        Emit::Cell(_) | Emit::Reuse(_) | Emit::Struct | Emit::Closure | Emit::Box(_) => {
+        Emit::Cell(_) | Emit::Reuse(_) | Emit::Struct | Emit::Closure | Emit::Box(_) | Emit::Slice => {
             panic!(
-                "`{symbol}` places an object; ask for it through `emit_cell`, `emit_reuse`, `emit_box` or `emit_object`"
+                "`{symbol}` places an object; ask for it through `emit_cell`, `emit_reuse`, `emit_box`, `emit_slice` or `emit_object`"
             )
         }
     }
@@ -509,6 +536,7 @@ pub(crate) fn emit_cell<M: cranelift_module::Module>(
             panic!("`{symbol}` places a struct or closure; ask for it through `emit_object`")
         }
         Emit::Box(_) => panic!("`{symbol}` places a scalar box; ask for it through `emit_box`"),
+        Emit::Slice => panic!("`{symbol}` slices a binary; ask for it through `emit_slice`"),
     }
 }
 
@@ -541,6 +569,7 @@ pub(crate) fn emit_reuse<M: cranelift_module::Module>(
             panic!("`{symbol}` places a struct or closure; ask for it through `emit_object`")
         }
         Emit::Box(_) => panic!("`{symbol}` places a scalar box; ask for it through `emit_box`"),
+        Emit::Slice => panic!("`{symbol}` slices a binary; ask for it through `emit_slice`"),
     }
 }
 
@@ -570,6 +599,38 @@ pub(crate) fn emit_box<M: cranelift_module::Module>(
         Emit::Struct | Emit::Closure => {
             panic!("`{symbol}` places a struct or closure; ask for it through `emit_object`")
         }
+        Emit::Slice => panic!("`{symbol}` slices a binary; ask for it through `emit_slice`"),
+    }
+}
+
+/// The binary the runtime function `symbol` makes of a window of a binary:
+/// `args` are the function's, process first, and the window must lie inside
+/// the source. The site of a copy placed in place is registered in the body's
+/// scope.
+pub(crate) fn emit_slice<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, M>,
+    symbol: &str,
+    args: &[ir::Value],
+) -> ir::Value {
+    let row = recipe_for(symbol).unwrap_or_else(|| panic!("`{symbol}` has no recipe"));
+    assert_eq!(
+        args.len(),
+        row.arity,
+        "recipe `{symbol}` takes {} arguments, got {}",
+        row.arity,
+        args.len()
+    );
+    match row.emit {
+        Emit::Slice => emit_binary_slice(body, args),
+        Emit::InPlace(_) | Emit::BinaryCompare(_) => {
+            panic!("`{symbol}` answers in place; ask for it through `emit_in_body`")
+        }
+        Emit::Cell(_) => panic!("`{symbol}` places a list cell; ask for it through `emit_cell`"),
+        Emit::Reuse(_) => panic!("`{symbol}` reuses or places a list cell; ask for it through `emit_reuse`"),
+        Emit::Struct | Emit::Closure => {
+            panic!("`{symbol}` places a struct or closure; ask for it through `emit_object`")
+        }
+        Emit::Box(_) => panic!("`{symbol}` places a scalar box; ask for it through `emit_box`"),
     }
 }
 
@@ -606,7 +667,7 @@ pub(crate) fn emit_object<M: cranelift_module::Module>(
             );
             emit_closure(body, HeapAllocKind::Closure, header, count, args[5])
         }
-        Emit::InPlace(_) | Emit::BinaryCompare(_) | Emit::Cell(_) | Emit::Reuse(_) | Emit::Box(_) => {
+        Emit::InPlace(_) | Emit::BinaryCompare(_) | Emit::Cell(_) | Emit::Reuse(_) | Emit::Box(_) | Emit::Slice => {
             panic!("`{symbol}` does not place a struct or closure")
         }
     }

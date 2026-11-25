@@ -2629,6 +2629,51 @@ fn byte_size_and_bit_size_of_a_proven_binary_import_no_runtime_function() {
     }
 }
 
+/// A 4-byte field at a byte boundary is copied in place: the compiled code
+/// places the new binary itself and imports neither the runtime's field reader
+/// nor its bounds check. The slice function it keeps is the call for a window it
+/// does not copy (the whole source, or one that is off a byte boundary), and
+/// the placement's room function is the call for a heap that is out of room.
+#[test]
+fn a_proven_four_byte_aligned_field_calls_no_field_reader() {
+    let source_path = unique_temp_path("fz2_slice_row", ".fz");
+    let clif_path = unique_temp_path("fz2_slice_row", ".clif");
+    write(
+        &source_path,
+        "def part(b) when is_binary(b) do\n\
+         \x20 <<_::binary-size(3), field::binary-size(4), _::binary>> = b\n\
+         \x20 field\nend\n\
+         def main() do\n  dbg(part(\"abcdefghij\"))\n  dbg(part(<<1, 2, 3, 4, 5, 6, 7, 8, 9>>))\n  nil\nend\n",
+    )
+    .expect("write slice fixture");
+    let spec = format!("clif={}", clif_path.display());
+    let out = run_fz2(&[
+        OsStr::new("run"),
+        OsStr::new("--dump"),
+        OsStr::new(&spec),
+        source_path.as_os_str(),
+    ]);
+    assert!(
+        out.status.success(),
+        "the program must run; stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let clif = std::fs::read_to_string(&clif_path).expect("read the clif dump");
+    let _ = remove_file(&source_path);
+    let _ = remove_file(&clif_path);
+    for symbol in ["fz_bs_read_binary_ref", "fz_bs_field_end"] {
+        let import = format!("= {symbol}\n");
+        assert!(!clif.contains(&import), "compiled code imports `{symbol}`");
+    }
+    for symbol in ["fz_bs_slice_ref", "fz_heap_room"] {
+        let import = format!("= {symbol}\n");
+        assert!(
+            clif.contains(&import),
+            "the dump must import `{symbol}` for the cold path, or this test observes nothing"
+        );
+    }
+}
+
 /// The eight comparisons of two proven binaries decide in place unless the
 /// bytes must be read: the compiled code imports each row's own `fz_op_*_bb`
 /// function for that one cold call, and neither the generic comparator nor a

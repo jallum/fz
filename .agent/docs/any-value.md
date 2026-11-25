@@ -242,7 +242,7 @@ without building anything: that wire type is two words, the binary's reference w
 a bit position, so a cursor passes (source, position) and a whole binary passes
 (binary, 0). A use that needs the rest as a value -- storing it, sending it,
 passing it to a consumer with no cursor to offer -- makes it whole at that
-point with `fz_bs_read_binary_ref`, reading it as a `bits` field because a
+point with `fz_bs_slice_ref`, reading it as a `bits` field because a
 cursor stands for a bitstring that may end between bytes. A rest that spans its whole source is the
 source, so a binary that was only measured, a cursor at position 0, comes
 back as itself and builds nothing. Past position 0, any byte-aligned binary field of a shared source, whether
@@ -252,6 +252,12 @@ at its own offset and length instead of a copy. `Heap::slice` is the one place a
 field is decided: the whole source is the source itself, a byte-aligned window over
 `SHARED_BIN_THRESHOLD_BYTES` is a view on the source's buffer (a source that large is
 always a view), and anything else is a copy, so a short slice cannot pin a long buffer.
+Native code places the copy itself when the window is whole bytes from a byte boundary, at most
+`SHARED_BIN_THRESHOLD_BYTES` long and not the whole source: the `fz_bs_slice_ref` row
+(`native_codegen/binary_slice.rs`) writes the header, copies the bytes and zeroes the padding as
+`Heap::alloc_bitstring` does, with loads and stores for a length known when the code is emitted and
+a copy loop over one of five object sizes for any other length; every other window calls
+`fz_bs_slice_ref`, which asks `Heap::slice`.
 A walk that only matches and measures allocates
 no binary at all; one that makes each rest whole copies at most that short tail
 per step, where a copy per step would cost n + (n-1) + … bytes.
@@ -1068,7 +1074,7 @@ its `StubSite`: a filled or grown buffer and an in-place append are born
 clear; a window of a buffer, a message copy and a static literal are born
 shared (`StubSite::born_shared`). A small bitstring is born clear, a message
 copy of one included, since the copy is the receiver's own; a literal image is
-born shared. `fz_bs_read_binary_ref` returning its whole source marks it, as
+born shared. `fz_bs_slice_ref` returning its whole source marks it, as
 the source then has two names. A reduction yield in native code marks the
 yielding function's arguments when it builds their continuation; the
 interpreter keeps its frame across the yield and marks nothing. The process

@@ -13,6 +13,7 @@ pub(crate) use crate::types::{ClosureTypes, LiteralTypes, RenderTypes, Types};
 
 mod alloc_site;
 mod binary_compare;
+mod binary_slice;
 mod bitstring_literal;
 mod clif;
 pub(crate) mod closure;

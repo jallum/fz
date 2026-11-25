@@ -395,13 +395,23 @@ runtime's on every path. The receive dispatch bodies are entered from Rust with
 the process as a parameter rather than in the pinned register, so they still
 call the three functions (`runtime_call!`, not an inline row).
 
+A binary field is a row too. `fz_bs_slice_ref(process, source, pos, bit_len)` takes a window the
+caller has proved lies inside the source and answers what `Heap::slice` makes of it; a call site asks
+`emit_slice(body, symbol, args)`. `native_codegen/binary_slice.rs` copies in place a window that starts
+and ends on a byte boundary, is at most 64 bytes and is not the whole source, as an inline bitstring
+counted as a `Bitstring` site (one object size when the length is a constant, five sizes for a length
+known only at run time), and calls the function on a cold path for every other window. The bytes
+address is read from both possible words and chosen by the source's kind, so the source's form costs no
+branch. The receive dispatch bodies and the interpreter call `fz_bs_read_binary_ref`, which reads the
+field's width from its spec and calls `fz_bs_slice_ref`.
+
 The rows are the typed `fz_op_*_ii` arithmetic and comparison externs, the
 bit operations `fz_op_band_ii`, `fz_op_bor_ii`, `fz_op_bxor_ii`, `fz_op_bnot_i`,
 `fz_op_bsl_ii` and `fz_op_bsr_ii` (the two shifts are checked: a shift whose
 result needs more than 64 bits fails; the recipe is a branch-free select between
 the left and right shift), the
 `fz_op_*_ff` comparisons, `fz_op_neg_f`, `fz_op_abs_f`, the list-cell,
-list-reuse, struct, closure and scalar-box allocations above, and the helpers
+list-reuse, struct, closure, scalar-box and binary-slice allocations above, and the helpers
 `fz_type_of`, `fz_truthy_ref`, `fz_unbox_int`, `fz_unbox_atom`,
 `fz_struct_schema_id_ref` and `fz_value_eq_raw_const` (an atom or integer
 constant kind only; another kind keeps the call). The Rust function stays the
@@ -409,7 +419,7 @@ definition and the interpreter keeps calling it. To add an intrinsic, add one
 `recipe!` row and one entry in `proofs()` in `recipe_test.rs`: the parity test
 compiles every row and compares its answer with the runtime function over
 inputs for its signature, and fails for a row with no entry. An allocation row
-has an entry in `cell_proofs()`, `object_proofs()` or `box_proofs()` instead, and its test
+has an entry in `cell_proofs()`, `object_proofs()`, `box_proofs()` or the slice test (`SLICE_SYMBOL`) instead, and its test
 compares heaps: it runs the runtime function (or heap method) in one fresh
 process and the row's instructions in another, with room in the tip and with a
 full tip. A cell is tried over every head kind, each with a tail of `[]` and of

@@ -185,8 +185,14 @@ reinterpret a value's carrier from the surrounding fields.
 
 Bitstring matching carries the reader as a bit position (a raw int). The
 bounds check is emitted arithmetic (`BitFieldFits`, `BitFieldNext`), and
-`BitReadField` cannot miss: `fz_bs_read_int_ref` returns a raw int and
-`fz_bs_read_binary_ref` a binary view. Native code reads a whole-byte field
+`BitReadField` cannot miss: `fz_bs_read_int_ref` returns a raw int and a binary
+field is the window `fz_bs_slice_ref` slices; `fz_bs_read_binary_ref` computes
+the field's width and makes the same call for the interpreter and the receive
+dispatch bodies. Neither re-checks the field: every reader proves it first
+(`BitFieldFits` in native regions, `bs_field_end` in the receive matcher and
+the interpreter's dispatch, and a cursor's own construction for a rest made
+whole), and `fz_bs_read_binary_ref` and `Heap::slice` check the claim with a
+`debug_assert!`. Native code reads a whole-byte field
 without the runtime. `BitstringBitLen` and `BitstringBase` branch inline on the
 two binary representations (inline bitstring, a view through a `BinRef` over a `SharedBin`;
 layout constants in `runtime/src/bits.rs` and `any_value.rs`) through

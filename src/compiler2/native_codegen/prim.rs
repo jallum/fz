@@ -2,7 +2,7 @@
 
 use super::binary_compare::{BinaryCompare, emit_binary_compare};
 use super::bitstring_literal::BitstringLiteral;
-use super::recipe::{Emitted, emit_box, emit_cell, emit_in_body, emit_inline};
+use super::recipe::{Emitted, emit_box, emit_cell, emit_in_body, emit_inline, emit_slice};
 use super::repr::ExternLane;
 use super::runtime_test::{KindEvidence, RuntimeTestEmitter, emit_runtime_type_branch, emit_runtime_type_flag};
 use super::*;
@@ -28,14 +28,13 @@ use fz_runtime::bits::BINVIEW_BYTES_PTR_OFFSET;
 use fz_runtime::extern_binary::{fz_binary_as_cstring, fz_binary_as_ptr};
 use fz_runtime::ir_runtime::fz_unbox_opaque;
 use fz_runtime::ir_runtime::{
-    fz_alloc_binview_from_static, fz_bs_begin, fz_bs_field_end, fz_bs_field_spec, fz_bs_finalize,
-    fz_bs_read_binary_ref, fz_bs_read_int_ref, fz_bs_write_field_ref, fz_bs_write_word, fz_function_arity,
-    fz_int_float_cmp, fz_list_cons_any, fz_list_cons_atom, fz_list_cons_float, fz_list_cons_int, fz_map_dest_begin,
-    fz_map_dest_begin_update, fz_map_dest_freeze, fz_map_dest_publish, fz_map_dest_put, fz_map_get_ref,
-    fz_map_named_schema_ref, fz_matcher_map_get_ref, fz_pinned_binary_segment_size, fz_ref_load_atom,
-    fz_ref_load_float, fz_ref_load_int, fz_struct_get_field_ref, fz_struct_get_named_field_ref, fz_struct_is_named_ref,
-    fz_struct_module, fz_struct_schema_id_ref, fz_value_cmp_raw_const, fz_value_cmp_ref, fz_value_eq_raw_const,
-    fz_value_eq_ref, fz_value_eq_widening_ref,
+    fz_alloc_binview_from_static, fz_bs_begin, fz_bs_field_end, fz_bs_field_spec, fz_bs_finalize, fz_bs_read_int_ref,
+    fz_bs_write_field_ref, fz_bs_write_word, fz_function_arity, fz_int_float_cmp, fz_list_cons_any, fz_list_cons_atom,
+    fz_list_cons_float, fz_list_cons_int, fz_map_dest_begin, fz_map_dest_begin_update, fz_map_dest_freeze,
+    fz_map_dest_publish, fz_map_dest_put, fz_map_get_ref, fz_map_named_schema_ref, fz_matcher_map_get_ref,
+    fz_pinned_binary_segment_size, fz_ref_load_atom, fz_ref_load_float, fz_ref_load_int, fz_struct_get_field_ref,
+    fz_struct_get_named_field_ref, fz_struct_is_named_ref, fz_struct_module, fz_struct_schema_id_ref,
+    fz_value_cmp_raw_const, fz_value_cmp_ref, fz_value_eq_raw_const, fz_value_eq_ref, fz_value_eq_widening_ref,
 };
 use fz_runtime::process::AtomName;
 use fz_runtime::process_abi::{PROCESS_DELIVERED_OFFSET, PROCESS_FAILED_OFFSET};
@@ -912,19 +911,29 @@ fn lower_bit_match_prim<M: cranelift_module::Module>(
         Prim::BitReadField { source, pos, field } => {
             let source_ref = body.tagged_var(var_env, source.0);
             let pos = body.as_raw_i64(var_env, pos.0);
-            let (field_spec, size_value) = emit_runtime_field_operands(body, var_env, field);
             if field.ty.reads_as_integer() {
+                let (field_spec, size_value) = emit_runtime_field_operands(body, var_env, field);
                 LowerOut::RawI64(runtime_call1!(
                     body,
                     fz_bs_read_int_ref,
                     [source_ref, pos, field_spec, size_value]
                 ))
             } else {
+                let bit_len = match match_field_extent(body, var_env, field) {
+                    MatchExtent::Bits(bits) => bits,
+                    MatchExtent::Rest => {
+                        let source_bits = emit_proven_binary_bit_len(body.b, source_ref);
+                        body.b.ins().isub(source_bits, pos)
+                    }
+                    MatchExtent::Never | MatchExtent::Bytes | MatchExtent::Unsupported => {
+                        panic!("a binary field with no extent is never read")
+                    }
+                };
                 let process = body.process_arg();
-                LowerOut::ValueRef(runtime_call1!(
+                LowerOut::ValueRef(emit_slice(
                     body,
-                    fz_bs_read_binary_ref,
-                    [process, source_ref, pos, field_spec, size_value]
+                    "fz_bs_slice_ref",
+                    &[process, source_ref, pos, bit_len],
                 ))
             }
         }
