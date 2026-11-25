@@ -896,7 +896,8 @@ has to stop where it started.
   coordinate, so a spelling only those steps would recognise can get a second
   id for one meaning. The commit window avoids the second id by not applying
   the rewrite, so a member's descriptor can stay less fused than the same
-  type spelled outside a commit. Two shapes stay open: a cluster of
-  mutually recursive parser types can still fail `assert_cycles_stay_in_cluster`,
-  and a list-terminator fold that interns through `fold_tail`, `intern` and
-  `normal_form` again, level after level, does not end for some programs.
+  type spelled outside a commit. One shape stays open: a cluster of
+  mutually recursive parser types can still fail `assert_cycles_stay_in_cluster`.
+  The list-terminator fold (`fold_tail`) is the closure over every tail a
+  terminator leads to, visited once each, so a tail that comes back to itself
+  folds in one step and mints no unfolding of it.
