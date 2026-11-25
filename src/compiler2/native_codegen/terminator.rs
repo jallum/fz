@@ -701,9 +701,10 @@ fn expected_native_tail_arg_count(callee_param_reprs: &[ArgRepr]) -> usize {
 }
 
 // Cooperative back-edge yield check: spend one reduction from the
-// scheduler-installed budget; if exhausted, capture next-iteration args into a
-// scheduler-runnable closure and yield it as the primary mid-flight root.
-// Otherwise fall through to the caller's normal TCO path.
+// scheduler-installed budget; if exhausted, tail-call the key's yield stub with
+// the next-iteration args and the spent count. Otherwise fall through to the
+// caller's normal TCO path. The yield path lives in its own function so nothing
+// on the hot path is live across a runtime call.
 fn emit_back_edge_yield_check<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
     env: &CodegenEnv<'_>,
@@ -711,7 +712,7 @@ fn emit_back_edge_yield_check<M: cranelift_module::Module>(
     mid_flight_arg_shapes: &[MidFlightArgShape],
     native_args: &[ir::Value],
 ) {
-    let process = body.b.ins().get_pinned_reg(types::I64);
+    let process = body.process_arg();
     let reductions_ptr = body
         .b
         .ins()
@@ -733,47 +734,88 @@ fn emit_back_edge_yield_check<M: cranelift_module::Module>(
 
     body.b.switch_to_block(yield_blk);
     body.b.seal_block(yield_blk);
+    body.b.set_cold_block(yield_blk);
     let cont_key = (callee_sid, mid_flight_arg_shapes.to_vec());
-    let cont_id = *env.mid_flight_cont_tail_fn_ids.get(&cont_key).unwrap_or_else(|| {
+    let fns = env.mid_flight_cont_tail_fn_ids.get(&cont_key).unwrap_or_else(|| {
         panic!(
             "missing mid-flight continuation tail for {:?}; available {:?}",
             cont_key,
             env.mid_flight_cont_tail_fn_ids.keys().collect::<Vec<_>>()
         )
     });
-    let mut abi_cursor = 0;
-    let native_root_values: Vec<CodegenValue> = mid_flight_arg_shapes
-        .iter()
-        .map(|shape| {
-            let root = shape.capture_from_args(body.b, native_args, abi_cursor);
-            abi_cursor += shape.abi_arity();
-            root
-        })
-        .collect();
-    debug_assert_eq!(abi_cursor, native_args.len());
-    let process = body.process_arg();
-    runtime_call!(body, fz_yield_slow_path_begin, [process]);
-    let stub_fref = body.jmod.declare_func_in_func(cont_id, body.b.func);
-    let stub_addr = body.b.ins().func_addr(types::I64, stub_fref);
-    let cont_closure = place_cont_closure(body, native_root_values.len(), stub_addr);
-    for (i, root) in native_root_values.iter().copied().enumerate() {
-        match root {
-            CodegenValue::RawInt(word) => body.store_closure_capture_i64(cont_closure, i, word),
-            CodegenValue::RawF64(word) => body.store_closure_capture_f64(cont_closure, i, word),
-            CodegenValue::RawAtom(word) => body.store_closure_capture_atom(cont_closure, i, word),
-            root => body.store_closure_capture_value(cont_closure, i, root),
-        }
-    }
-    let reason = body.b.ins().iconst(types::I32, YIELD_REASON_REDUCTIONS as i64);
-    let yield_ret = runtime_call1!(
-        body,
-        fz_yield_mid_flight_report,
-        [process, cont_closure, new_remaining, reason]
-    );
-    body.b.ins().return_(&[yield_ret]);
+    let stub_ref = body.func_ref(fns.yield_stub);
+    let mut stub_args = native_args.to_vec();
+    stub_args.push(new_remaining);
+    body.b.ins().return_call(stub_ref, &stub_args);
 
     body.b.switch_to_block(proceed_blk);
     body.b.seal_block(proceed_blk);
+}
+
+/// The yield stub's signature: the native args of the back edge's callee, then
+/// the remaining reduction count the back edge just wrote.
+pub(super) fn back_edge_yield_stub_signature(arg_shapes: &[MidFlightArgShape]) -> Signature {
+    let mut sig = Signature::new(CallConv::Tail);
+    for shape in arg_shapes {
+        shape.push_param(&mut sig);
+    }
+    sig.params.push(AbiParam::new(types::I32));
+    sig.returns.push(AbiParam::new(types::I64));
+    sig
+}
+
+/// Define the yield stub for one back-edge key: capture the next-iteration args
+/// into a scheduler-runnable closure over the key's resume continuation and
+/// report it as the primary mid-flight root.
+pub(super) fn define_back_edge_yield_stub<M: cranelift_module::Module>(
+    m: &mut M,
+    fbctx: &mut cranelift_frontend::FunctionBuilderContext,
+    sites: &std::cell::RefCell<AllocSites>,
+    callee_sid: u32,
+    arg_shapes: &[MidFlightArgShape],
+    stub_id: FuncId,
+    resume_id: FuncId,
+) -> Result<(), Box<cranelift_module::ModuleError>> {
+    let name = format!("fz_back_edge_yield_{callee_sid}");
+    emit_fn_body(m, fbctx, back_edge_yield_stub_signature(arg_shapes), stub_id, |m, b| {
+        let entry = b.create_block();
+        b.append_block_params_for_function_params(entry);
+        b.switch_to_block(entry);
+        b.seal_block(entry);
+        let params = b.block_params(entry).to_vec();
+        let (native_args, new_remaining) = params.split_at(params.len() - 1);
+        let mut cache = CodegenCache::default();
+        let mut body = CodegenFn::new(b, m, &mut cache, SiteScope { sites, function: &name });
+        let mut abi_cursor = 0;
+        let roots: Vec<CodegenValue> = arg_shapes
+            .iter()
+            .map(|shape| {
+                let root = shape.capture_from_args(body.b, native_args, abi_cursor);
+                abi_cursor += shape.abi_arity();
+                root
+            })
+            .collect();
+        debug_assert_eq!(abi_cursor, native_args.len());
+        let process = body.process_arg();
+        runtime_call!(body, fz_yield_slow_path_begin, [process]);
+        let resume_addr = body.func_addr(resume_id);
+        let cont_closure = place_cont_closure(&mut body, roots.len(), resume_addr);
+        for (i, root) in roots.iter().copied().enumerate() {
+            match root {
+                CodegenValue::RawInt(word) => body.store_closure_capture_i64(cont_closure, i, word),
+                CodegenValue::RawF64(word) => body.store_closure_capture_f64(cont_closure, i, word),
+                CodegenValue::RawAtom(word) => body.store_closure_capture_atom(cont_closure, i, word),
+                root => body.store_closure_capture_value(cont_closure, i, root),
+            }
+        }
+        let reason = body.b.ins().iconst(types::I32, YIELD_REASON_REDUCTIONS as i64);
+        let yield_ret = runtime_call1!(
+            body,
+            fz_yield_mid_flight_report,
+            [process, cont_closure, new_remaining[0], reason]
+        );
+        body.b.ins().return_(&[yield_ret]);
+    })
 }
 
 fn emit_call_closure<M: cranelift_module::Module>(

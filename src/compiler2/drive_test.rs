@@ -25661,3 +25661,41 @@ fn a_return_that_climbs_past_its_bound_stops_the_compile_and_names_the_function(
         "the diagnostic names the function and the type it reached: {reported:#?}",
     );
 }
+
+/// A loop's function spends its reduction on the back edge and, when the budget
+/// is gone, tail-calls a yield stub: the runtime's yield calls and the
+/// continuation closure are built in the stub, so nothing the loop keeps live
+/// crosses a call on its hot path. Back edges that reach the same callee with
+/// the same argument shapes tail-call the one stub, whichever function they
+/// are in.
+#[test]
+fn compiler2_native_back_edges_tail_call_one_shared_yield_stub() {
+    let source = "defmodule L do\n  def left(0), do: 0\n  def left(n), do: spin(n - 1)\n  \
+                  def right(0), do: 0\n  def right(n), do: spin(n - 2)\n  \
+                  def spin(n) when n > 100, do: left(n)\n  def spin(n), do: right(n)\nend\nIO.inspect(L.left(5000))\n";
+    let stub_of = |function: &str| {
+        let clif = lowered_clif_of(source, function);
+        assert!(
+            !clif.contains("fz_yield_slow_path_begin") && !clif.contains("fz_yield_mid_flight_report"),
+            "{function} makes no yield runtime call of its own:\n{clif}"
+        );
+        let stub = clif
+            .lines()
+            .find_map(|line| {
+                let (alias, name) = line.strip_prefix("; ")?.split_once(" = ")?;
+                name.starts_with("fz_back_edge_yield_")
+                    .then(|| (alias.to_string(), name.to_string()))
+            })
+            .unwrap_or_else(|| panic!("{function} imports a yield stub:\n{clif}"));
+        assert!(
+            clif.contains(&format!("return_call {}(", stub.0)),
+            "{function}'s back edge tail-calls the stub:\n{clif}"
+        );
+        stub.1
+    };
+    assert_eq!(
+        stub_of("left"),
+        stub_of("right"),
+        "two back edges to `spin` with one argument shape share a stub"
+    );
+}

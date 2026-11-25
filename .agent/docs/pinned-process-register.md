@@ -119,9 +119,26 @@ store        remaining, addr
 brif remaining <= 0, yield, proceed
 ```
 
-On the fast path it falls through to the normal tail call. On exhaustion it jumps
-to a yield block that captures the next-iteration args into a scheduler-runnable
-continuation and returns control to the scheduler.
+On the fast path it falls through to the normal tail call. On exhaustion it
+tail-calls the yield stub for the back edge's key. The `p` it reads is the
+block's memoized `process_arg`, not a fresh `get_pinned_reg`.
+
+The yield stub (`define_back_edge_yield_stub`) is its own `CallConv::Tail`
+function: it takes the next-iteration native args plus the remaining count, calls
+`fz_yield_slow_path_begin`, builds the scheduler-runnable continuation closure
+over the key's resume continuation, and returns `fz_yield_mid_flight_report`'s
+result to the scheduler. There is one stub per mid-flight continuation key
+`(callee_sid, arg shapes)`, declared beside the key's resume continuation
+(`MidFlightFns`), so every back edge to the same callee with the same shapes
+reaches the same stub. Keeping the runtime calls out of the looping function
+leaves nothing on the hot path live across a call, so the looping function
+saves no callee-saved registers for them.
+
+The counter lives in memory, not in a register, because the runtime writes it
+(`Process::reset_reduction_budget` at dispatch, and
+`Process::end_quantum_when_binaries_due`, which zeroes it) and reads it
+(`sched::probe_sender`); a register copy would have to be reconciled at every
+one of those.
 
 `Process.reductions_remaining` and `Process.yield_reasons` are the sole authority
 for the budget on every engine. See

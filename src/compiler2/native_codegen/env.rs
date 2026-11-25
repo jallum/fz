@@ -9,6 +9,13 @@ use cranelift_module::{DataId, FuncId};
 use fz_runtime::any_value::AnyValue;
 use std::cell::RefCell;
 
+/// The two functions one back-edge key owns.
+#[derive(Clone, Copy)]
+pub(crate) struct MidFlightFns {
+    pub(super) resume: FuncId,
+    pub(super) yield_stub: FuncId,
+}
+
 pub(crate) struct CodegenEnv<'a> {
     pub(super) surface: &'a NativeCodegenSurface<'a>,
     pub(super) module: &'a Module,
@@ -19,7 +26,9 @@ pub(crate) struct CodegenEnv<'a> {
     pub(super) callable_boundary_fn_ids: &'a HashMap<u32, FuncId>,
     /// The static closure object per zero-capture callable boundary.
     pub(super) static_closure_data_ids: &'a HashMap<u32, DataId>,
-    pub(super) mid_flight_cont_tail_fn_ids: &'a HashMap<(u32, Vec<MidFlightArgShape>), FuncId>,
+    /// Per back-edge key: the continuation a yielded loop resumes through and
+    /// the stub the back edge tail-calls when its budget is spent.
+    pub(super) mid_flight_cont_tail_fn_ids: &'a HashMap<(u32, Vec<MidFlightArgShape>), MidFlightFns>,
     pub(super) tuple_schema_ids: &'a HashMap<usize, u32>,
     pub(super) named_schema_ids: &'a HashMap<fz_runtime::module_name::ModuleName, u32>,
     /// The bitstring literals this module has emitted.
