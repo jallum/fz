@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-9x7.37.3"
+  ],
   "blocks": [],
   "created": "2026-11-25T00:00:26Z",
   "description": "From: GC. Approved by the user 2026-11-24 (\"proceed\", relayed by GC). A page for the user comes before building.\n\nToday: Process.list_retention_attempts/_hits and struct_retention_attempts/_hits are per-process counters bumped inline on every reuse attempt (list_reuse.rs:71/97/118 via fn_ctx::bump_process_counter) and in the runtime (ir_runtime.rs:2032), and printed on the exit line. Make Distiller Fast's listing shows two load/add/store per element in json.fz reverse, at [x21+0x578] and [x21+0x580].\n\nChange: delete the four process counters, their inline and runtime bumps and the exit-line fields. Count attempts and hits at a per-reuse-site counter and report the sums, the way fz-9x7.37.3 does for allocations.\n\nDone when: no per-element process-counter bump remains in reverse's code; the reported sums equal today's figures on the fixtures that pin them; no pin rises.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Retention statistics are counts per reuse site",
   "type": "task",
-  "updated_at": "2026-11-25T00:00:26Z"
+  "updated_at": "2026-11-25T00:00:28Z"
 }
