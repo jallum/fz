@@ -258,3 +258,52 @@ fn growth_is_judged_on_the_members_the_walk_enters() {
         t.display(&folded)
     );
 }
+
+/// `escape` returns `int | {r, r} | {:{}, [], [r]} | [r]` for the return `r` of
+/// its previous round. A round later, `old` holds that shape around a
+/// recursive type `R` (`escape` of the empty list's element) and the next
+/// return wraps all of `old` in a list. The slot that gained the list holds
+/// only the recursive `R` on the old side, which the walk passes over, yet the
+/// list is the list `old` itself already holds: the wrapped type has come back
+/// beneath itself, so it folds to a back edge to `old` instead of keeping
+/// `R` beside it as a rung of a ladder.
+#[test]
+fn a_recursive_member_that_comes_back_beneath_its_ancestor_folds() {
+    let mut t = Types::new();
+    let (int, empty, brace) = (t.int(), t.empty_list(), t.atom_lit("{}"));
+    let step = |t: &mut Types, r: Ty| {
+        let pair = t.tuple(&[r, r]);
+        let elements = t.list(r);
+        let node = t.tuple(&[brace, empty, elements]);
+        let some = t.union(int, pair);
+        let more = t.union(some, node);
+        t.union(more, elements)
+    };
+    let inner = t.recursive(1, |t, me| {
+        let pair = t.tuple(&[me[0], me[0]]);
+        let leaf = t.tuple(&[brace, empty, empty]);
+        let some = t.union(int, pair);
+        let more = t.union(some, leaf);
+        vec![t.union(more, empty)]
+    })[0];
+    let old = step(&mut t, inner);
+    let wrapped = t.list(old);
+    let joined = t.union(old, wrapped);
+    let folded = t
+        .clash_fold(old, joined)
+        .expect("the wrapped iterate repeats the list old holds");
+    let expected = t.recursive(1, |t, me| {
+        let pair = t.tuple(&[me[0], me[0]]);
+        let elements = t.list(inner);
+        let node = t.tuple(&[brace, empty, elements]);
+        let own = t.list(me[0]);
+        let some = t.union(int, pair);
+        let more = t.union(some, node);
+        vec![t.union(more, own)]
+    })[0];
+    assert!(
+        t.is_equivalent(&folded, &expected),
+        "{} is μt. int | {{t, t}} | {{:{{}}, [], [R]}} | [t]",
+        t.display(&folded)
+    );
+}

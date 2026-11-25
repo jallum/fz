@@ -1,0 +1,26 @@
+#---
+# purpose: "A function whose return nests its own recursive return inside a tuple and a list converges to one recursive type"
+# oracle: self
+# oracle.stamp: 60550978221a9d00
+#---
+defmodule Esc do
+  @spec escape(any) :: any
+  def escape(value) when is_atom(value), do: value
+  def escape(value) when is_integer(value), do: value
+  def escape(value) when is_float(value), do: value
+  def escape(value) when is_binary(value), do: value
+  def escape({first, second}), do: {escape(first), escape(second)}
+  def escape(value) when is_tuple(value), do: {:{}, [], escape_each(Tuple.to_list(value))}
+  def escape(value) when is_list(value), do: escape_each(value)
+  def escape(_value), do: :bad
+
+  defp escape_each(values), do: Enum.map(values, fn value -> escape(value) end)
+end
+
+defmodule Main do
+  def main() do
+    IO.inspect(Esc.escape({1, [2, {3, 4, 5}]}))
+  end
+end
+
+Main.main()

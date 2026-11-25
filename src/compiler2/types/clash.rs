@@ -200,6 +200,7 @@ struct Plan {
 /// An ancestor frame: the node's joined members and principal functors.
 struct Frame {
     members: Vec<Ty>,
+    olds: Vec<Ty>,
     pf: Pf,
 }
 
@@ -215,7 +216,11 @@ impl Walk<'_> {
     fn descend(&mut self, olds: &[Ty], news: &[Ty], po: &Pf, pn: &Pf) -> Rc<Plan> {
         let members: Vec<Ty> = olds.iter().chain(news).copied().collect();
         let joined = Pf::of(self.types, &members);
-        self.frames.push(Frame { members, pf: joined });
+        self.frames.push(Frame {
+            members,
+            olds: olds.to_vec(),
+            pf: joined,
+        });
         let mut plan = Plan::default();
         for (head, new_slots) in &pn.heads {
             let Some(old_slots) = po.slots(head) else { continue };
@@ -272,17 +277,21 @@ impl Walk<'_> {
                 .collect()
         };
         let (walked_olds, walked_live) = (walked(olds), walked(live));
-        if walked_live.is_empty() {
+        let repeated = self.repeated_ancestor(live);
+        if walked_live.is_empty() && repeated.is_none() {
             return None;
         }
         let (po, pn) = (Pf::of(types, &walked_olds), Pf::of(types, &walked_live));
-        if !grew(types, &po, &pn) {
+        if repeated.is_none() && !grew(types, &po, &pn) {
             let sub = self.descend(olds, live, &po, &pn);
             return (!sub.cuts.is_empty()).then_some(Cut::Below(sub));
         }
         let members: Vec<Ty> = olds.iter().chain(live).copied().collect();
         let here = Pf::of(types, &members);
-        let depth = self.frames.iter().rposition(|f| f.pf.covers(types, &here))?;
+        let depth = match repeated {
+            Some(depth) => depth,
+            None => self.frames.iter().rposition(|f| f.pf.covers(types, &here))?,
+        };
         let kind = self.kind(&members, &self.frames[depth].members);
         self.folds.push(ClashFold {
             path: self.path.clone(),
@@ -290,6 +299,17 @@ impl Walk<'_> {
             ancestor_depth: depth,
         });
         Some(Cut::Fold(kind, depth))
+    }
+
+    /// The innermost ancestor whose previous iterate already holds a recursive
+    /// member the slot gains: the slot's type has come back to that ancestor,
+    /// whatever its heads say.
+    fn repeated_ancestor(&self, live: &[Ty]) -> Option<usize> {
+        let types = self.types;
+        self.frames.iter().rposition(|f| {
+            live.iter()
+                .any(|n| types.is_recursive_member(n) && f.olds.iter().any(|o| types.is_subtype(n, o)))
+        })
     }
 
     fn kind(&self, node: &[Ty], ancestor: &[Ty]) -> ClashKind {
