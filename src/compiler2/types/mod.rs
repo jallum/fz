@@ -3864,6 +3864,31 @@ impl Types {
         }
     }
 
+    /// Orders two source functions by their typed origins, never by the order
+    /// the interner minted their ids in: the same program names the same
+    /// functions whichever order the agenda discovers them.
+    pub(crate) fn cmp_function(
+        &self,
+        a: super::identity::FunctionId,
+        b: super::identity::FunctionId,
+    ) -> std::cmp::Ordering {
+        if a == b {
+            return std::cmp::Ordering::Equal;
+        }
+        let origin = |function: super::identity::FunctionId| {
+            self.callable_origins
+                .get(&crate::fz_ir::FnId(function.as_u32()))
+                .expect("registered source function")
+        };
+        let order = origin(a).semantic_cmp(origin(b));
+        assert_ne!(
+            order,
+            std::cmp::Ordering::Equal,
+            "distinct source functions must have distinct typed origins"
+        );
+        order
+    }
+
     pub(crate) fn callable_source_origin(
         &self,
         function: super::identity::FunctionId,
@@ -3873,6 +3898,14 @@ impl Types {
                 .get(&crate::fz_ir::FnId(function.as_u32()))
                 .expect("registered source function"),
         )
+    }
+
+    /// A function id a test stands in for the interner with, carrying a real
+    /// typed origin so ordering it is the production relation.
+    #[cfg(test)]
+    pub(crate) fn test_function(&mut self, coordinate: u32) -> super::identity::FunctionId {
+        self.define_test_callable(ClosureTarget(coordinate), &format!("fn{coordinate}"), 0);
+        super::identity::FunctionId::from_coordinate(coordinate)
     }
 
     #[cfg(test)]

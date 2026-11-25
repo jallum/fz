@@ -8,7 +8,7 @@ use super::super::artifact::{AbiValueRepr, ClosureCallEdge};
 use super::super::body::{CallSiteId, ControlDestination, ControlEntryId, LoweredBody, LoweredTail, ValueId};
 use super::super::drive::FactKey;
 use super::super::executable_facts::{ExecutableFacts, LocalCallableProducer, TransportOrigin as TransportSource};
-use super::super::identity::{ActivationKey, ExecutableKey, ExecutableNeed, RootId};
+use super::super::identity::{ActivationKey, ExecutableKey, ExecutableNeed, FunctionId, RootId};
 use super::super::incoming_inputs::InputSlot;
 use super::super::pull::{
     ProductKey, ProductReadContext, ProductValue, PullOutcome, PullWait, TransportCarrier, TransportLayout,
@@ -2158,6 +2158,13 @@ fn on_cycle(
     Ok(reached.contains(owner))
 }
 
+/// Whether a return edge from `owner` to `callee` on a cycle is the one cut:
+/// the edge whose callee does not rise in the typed-origin order. Two copies
+/// of one function compare equal, so both directions between them are cut.
+fn return_edge_is_cut(types: &Types, callee: FunctionId, owner: FunctionId) -> bool {
+    types.cmp_function(callee, owner).is_le()
+}
+
 /// Cuts the recursion out of a recipe before it is evaluated, so evaluation
 /// is a function of settled facts and of products that can settle without
 /// it, and answers whether the recipe named an in-cycle return AT ALL -- cut
@@ -2206,7 +2213,7 @@ fn cut_in_component_returns(
                 owner_executable,
                 CallChain::Direct,
             )?;
-            if names_cycle && callee.as_u32() <= owner.as_u32() {
+            if names_cycle && return_edge_is_cut(world.types(), callee, owner) {
                 *recipe = TransportRecipe::CutEdge;
             }
         }

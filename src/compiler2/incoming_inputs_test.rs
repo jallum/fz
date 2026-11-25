@@ -1,18 +1,14 @@
 use super::super::drive::{FactKey, Job, JobEffects};
-use super::super::identity::{ActivationKey, ExecutableNeed, FunctionId, RootId};
+use super::super::identity::{ActivationKey, ExecutableNeed, RootId};
 use super::super::world::World;
 use super::*;
 use crate::fast_hash::HashMap;
 use fz_engine::FactUse;
 
 fn executable(world: &mut World, id: u32) -> ExecutableKey {
+    let function = world.types_mut().test_function(id);
     ExecutableKey {
-        activation: ActivationKey::from_inputs(
-            RootId::for_test(1),
-            FunctionId::from_coordinate(id),
-            &[],
-            world.types_mut(),
-        ),
+        activation: ActivationKey::from_inputs(RootId::for_test(1), function, &[], world.types_mut()),
         need: ExecutableNeed::Value,
     }
 }

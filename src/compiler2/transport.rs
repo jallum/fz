@@ -236,9 +236,8 @@ impl ExecutableSymbol {
 
 impl SemanticOrd<Types> for ExecutableSymbol {
     fn semantic_cmp(&self, other: &Self, types: &Types) -> std::cmp::Ordering {
-        self.activation
-            .function
-            .cmp(&other.activation.function)
+        types
+            .cmp_function(self.activation.function, other.activation.function)
             .then_with(|| types.cmp_activation_ty(self.activation.arrow, other.activation.arrow))
             .then_with(|| cmp_activation_entry(types, self.activation.entry, other.activation.entry))
             .then_with(|| self.need.cmp(&other.need))

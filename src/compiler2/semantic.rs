@@ -965,15 +965,15 @@ impl SemanticOrd<Types> for ActivationKey {
     fn semantic_cmp(&self, other: &Self, types: &Types) -> Ordering {
         self.root
             .cmp(&other.root)
-            .then_with(|| self.function.cmp(&other.function))
+            .then_with(|| types.cmp_function(self.function, other.function))
             .then_with(|| types.cmp_activation_ty(self.arrow, other.arrow))
             .then_with(|| cmp_activation_entry(types, self.entry, other.entry))
     }
 }
 
 impl SemanticOrd<Types> for FunctionId {
-    fn semantic_cmp(&self, other: &Self, _types: &Types) -> Ordering {
-        self.cmp(other)
+    fn semantic_cmp(&self, other: &Self, types: &Types) -> Ordering {
+        types.cmp_function(*self, *other)
     }
 }
 
