@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "fz-engine",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-25T02:45:07Z",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "A type that comes back beneath itself folds there, and only what is contained folds",
   "type": "task",
-  "updated_at": "2026-11-25T02:45:07Z"
+  "updated_at": "2026-11-25T02:45:13Z"
 }
