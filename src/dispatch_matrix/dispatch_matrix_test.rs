@@ -1323,7 +1323,7 @@ fn pattern_dispatch_matrix_preserves_bitstring_shape_and_dynamic_size_binding() 
 
     assert_eq!(
         plan.bitstring_extraction(bitstring.fields[0]).spec.kind,
-        BitstringFieldKind::Integer
+        BitType::Integer
     );
     assert_eq!(
         plan.bitstring_extraction(bitstring.fields[0]).spec.size,
@@ -1331,7 +1331,7 @@ fn pattern_dispatch_matrix_preserves_bitstring_shape_and_dynamic_size_binding() 
     );
     assert_eq!(
         plan.bitstring_extraction(bitstring.fields[0]).spec.endian,
-        BitstringEndian::Little
+        Endian::Little
     );
     assert!(plan.bitstring_extraction(bitstring.fields[0]).spec.signed);
     assert_eq!(plan.bitstring_extraction(bitstring.fields[0]).spec.unit, Some(1));

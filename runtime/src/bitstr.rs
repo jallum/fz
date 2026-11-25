@@ -7,8 +7,9 @@
 use std::mem::MaybeUninit;
 use std::ptr::copy_nonoverlapping;
 
-/// Field-type tag, matches fz's bitstring expression syntax.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// A bitstring field's kind, as fz's bitstring syntax names it. The tag is the
+/// number compiled code hands the runtime to say which kind a field is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BitType {
     Integer,
     Float,
@@ -19,11 +20,94 @@ pub enum BitType {
     Utf32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+impl BitType {
+    pub fn tag(self) -> u32 {
+        match self {
+            BitType::Integer => 0,
+            BitType::Float => 1,
+            BitType::Binary => 2,
+            BitType::Bits => 3,
+            BitType::Utf8 => 4,
+            BitType::Utf16 => 5,
+            BitType::Utf32 => 6,
+        }
+    }
+
+    /// The kind a tag names; a tag no kind has is a compiler bug.
+    pub fn from_tag(tag: u32) -> BitType {
+        match tag {
+            0 => BitType::Integer,
+            1 => BitType::Float,
+            2 => BitType::Binary,
+            3 => BitType::Bits,
+            4 => BitType::Utf8,
+            5 => BitType::Utf16,
+            6 => BitType::Utf32,
+            _ => panic!("unknown bit type tag {}", tag),
+        }
+    }
+
+    /// The unit a field of this kind counts its size in when it names none.
+    pub fn default_unit(self) -> u32 {
+        match self {
+            BitType::Binary => 8,
+            _ => 1,
+        }
+    }
+
+    /// A match binds this field's value as an integer: an `integer`'s bits, or
+    /// the scalar value a `utf8` field decodes.
+    pub fn reads_as_integer(self) -> bool {
+        matches!(self, BitType::Integer | BitType::Utf8)
+    }
+
+    /// A construction writes this field from the scalar it holds, as the raw
+    /// word it is: an `integer`'s bits, a `float`'s IEEE 754 bits, or the
+    /// scalar value a utf field encodes.
+    pub fn writes_scalar_word(self) -> bool {
+        matches!(
+            self,
+            BitType::Integer | BitType::Float | BitType::Utf8 | BitType::Utf16 | BitType::Utf32
+        )
+    }
+}
+
+/// A field's byte order. The tag is the number compiled code hands the runtime
+/// to say which order a field has.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Endian {
     Big,
     Little,
     Native,
+}
+
+impl Endian {
+    pub fn tag(self) -> u32 {
+        match self {
+            Endian::Big => 0,
+            Endian::Little => 1,
+            Endian::Native => 2,
+        }
+    }
+
+    /// The order a tag names; a tag no order has is a compiler bug.
+    pub fn from_tag(tag: u32) -> Endian {
+        match tag {
+            0 => Endian::Big,
+            1 => Endian::Little,
+            2 => Endian::Native,
+            _ => panic!("unknown endian tag {}", tag),
+        }
+    }
+
+    /// Whether the field's bytes run most significant first on this target.
+    pub fn is_big(self) -> bool {
+        match self {
+            Endian::Big => true,
+            Endian::Little => false,
+            Endian::Native => cfg!(target_endian = "big"),
+        }
+    }
 }
 
 // ----------------------------------------------------------------------

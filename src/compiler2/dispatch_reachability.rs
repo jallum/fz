@@ -3,10 +3,11 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
+use crate::ast::BitType;
 use crate::dispatch_matrix::pattern::PatternDispatchPlan;
 use crate::dispatch_matrix::{
-    BitstringFieldKind, ComparisonValue, DispatchNode, GraphNodeId, ListRegion, LiveEdges, OutcomeId, ProjectionKind,
-    ProofSense, Region, RegionPredicate, SubjectId, SubjectSource,
+    ComparisonValue, DispatchNode, GraphNodeId, ListRegion, LiveEdges, OutcomeId, ProjectionKind, ProofSense, Region,
+    RegionPredicate, SubjectId, SubjectSource,
 };
 use crate::ground_value::{DispatchShape, GroundValue};
 
@@ -216,7 +217,7 @@ impl ReachabilityCalculator<'_> {
             return;
         };
         let rest = &self.plan.bitstring_extraction(*last).spec;
-        if rest.kind != BitstringFieldKind::Binary || rest.size.is_some() {
+        if rest.kind != BitType::Binary || rest.size.is_some() {
             return;
         }
         let prefix_whole = before
@@ -481,13 +482,10 @@ pub(crate) fn project_subject(
             .and_then(|key| types.field_lookup(&source, &key))
             .unwrap_or_else(|| types.any()),
         ProjectionKind::BitstringField(extraction) => match extraction.spec.kind {
-            BitstringFieldKind::Integer
-            | BitstringFieldKind::Utf8
-            | BitstringFieldKind::Utf16
-            | BitstringFieldKind::Utf32 => types.int(),
-            BitstringFieldKind::Float => types.float(),
-            BitstringFieldKind::Binary => types.str_t(),
-            BitstringFieldKind::Bits => types.bitstring(),
+            BitType::Integer | BitType::Utf8 | BitType::Utf16 | BitType::Utf32 => types.int(),
+            BitType::Float => types.float(),
+            BitType::Binary => types.str_t(),
+            BitType::Bits => types.bitstring(),
         },
     }
 }

@@ -1053,7 +1053,8 @@ fn compiler2_impossible_map_clause_has_no_runtime_requirement() {
 fn compiler2_receive_outcomes_own_typed_semantic_and_physical_arguments() {
     use super::body::{SubjectOriginRoot, SubjectOwner, ValueRole};
     use super::executable_facts::{TransportOrigin, collect_value_origins};
-    use crate::dispatch_matrix::{BitstringFieldKind, ProjectionKind, SubjectSource};
+    use crate::ast::BitType;
+    use crate::dispatch_matrix::{ProjectionKind, SubjectSource};
     let tel = ConfiguredTelemetry::new();
     let native = NativeProgramCapture::new();
     native.install(&tel);
@@ -1150,8 +1151,8 @@ fn compiler2_receive_outcomes_own_typed_semantic_and_physical_arguments() {
                     {
                         let ty = executable.abi.materialized.value_types[&argument.parameter];
                         match field.spec.kind {
-                            BitstringFieldKind::Integer => assert!(compiler.world().types().is_integer(&ty)),
-                            BitstringFieldKind::Binary => assert!(compiler.world().types().is_equivalent(&ty, &binary)),
+                            BitType::Integer => assert!(compiler.world().types().is_integer(&ty)),
+                            BitType::Binary => assert!(compiler.world().types().is_equivalent(&ty, &binary)),
                             _ => panic!("fixture bit field kind"),
                         }
                         bit_fields += 1;

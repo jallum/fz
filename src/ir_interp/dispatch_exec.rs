@@ -6,6 +6,7 @@ use super::backend::{
 };
 use super::extern_call::{ExternCallValue, call_fixed_extern};
 use super::*;
+use crate::ast::BitType;
 use crate::compiler2::transport::{ShapeId, TransportLayout, TransportStore};
 use crate::compiler2::{BackendProgram, DispatchBindings, Ty, Types, ValueId};
 use crate::dispatch_matrix::pattern::{
@@ -13,9 +14,9 @@ use crate::dispatch_matrix::pattern::{
     guard_body_subjects,
 };
 use crate::dispatch_matrix::{
-    BitstringEndian, BitstringFieldKind, BitstringFieldSize, BitstringShape, ComparisonValue, DispatchNode,
-    EdgeEvidence, GraphNodeId, GroundValue, ListRegion, OutcomeId, PinnedValueId, PreparedKeyId, ProjectionKind,
-    Region, SubjectId, SubjectProjection, SubjectSource,
+    BitstringFieldSize, BitstringShape, ComparisonValue, DispatchNode, EdgeEvidence, GraphNodeId, GroundValue,
+    ListRegion, OutcomeId, PinnedValueId, PreparedKeyId, ProjectionKind, Region, SubjectId, SubjectProjection,
+    SubjectSource,
 };
 use crate::fz_ir::Module;
 use crate::runtime_type_predicate::{
@@ -1001,19 +1002,18 @@ impl<'a> Dispatch<'a> {
                 return Ok(false);
             };
             let field_spec = fz_bs_field_spec(
-                field.runtime_kind().runtime_tag(),
+                field.runtime_kind().tag(),
                 size_present,
-                field.unit.unwrap_or(default_dispatch_bit_unit(field.kind)),
-                dispatch_endian_tag(field.endian),
+                field.unit.unwrap_or(field.kind.default_unit()),
+                field.endian.tag(),
                 field.signed as u32,
                 extraction.is_last as u32,
             );
             let Some(end) = bs_field_end(field_spec, size_value, pos, source_ref) else {
                 return Ok(false);
             };
-            let is_rest = extraction.is_last
-                && field.size.is_none()
-                && matches!(field.kind, BitstringFieldKind::Binary | BitstringFieldKind::Bits);
+            let is_rest =
+                extraction.is_last && field.size.is_none() && matches!(field.kind, BitType::Binary | BitType::Bits);
             if plan.graph.asks(*field_subject) || self.outcome_reads.contains(field_subject) {
                 let bound = if is_rest {
                     BackendBoundValue::Transport {
@@ -1398,22 +1398,6 @@ fn dispatch_const_eq(proc: *mut Process, module: &Module, val: AnyValue, value: 
                     })
             }),
         },
-    }
-}
-
-fn dispatch_endian_tag(endian: BitstringEndian) -> u32 {
-    match endian {
-        BitstringEndian::Big => 0,
-        BitstringEndian::Little => 1,
-        BitstringEndian::Native => 2,
-    }
-}
-
-fn default_dispatch_bit_unit(ty: BitstringFieldKind) -> u32 {
-    match ty {
-        BitstringFieldKind::Integer | BitstringFieldKind::Float | BitstringFieldKind::Bits => 1,
-        BitstringFieldKind::Binary => 8,
-        BitstringFieldKind::Utf8 | BitstringFieldKind::Utf16 | BitstringFieldKind::Utf32 => 1,
     }
 }
 

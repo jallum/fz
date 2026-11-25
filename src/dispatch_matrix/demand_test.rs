@@ -1,7 +1,6 @@
 use super::{DemandPathStep, DispatchDemand, demand_at_path, demand_within_path, demand_within_step};
-use crate::dispatch_matrix::{
-    BitstringEndian, BitstringExtraction, BitstringFieldKind, BitstringFieldShape, ComparisonValue, ProjectionKind,
-};
+use crate::ast::{BitType, Endian};
+use crate::dispatch_matrix::{BitstringExtraction, BitstringFieldShape, ComparisonValue, ProjectionKind};
 use crate::ground_value::GroundValue;
 use std::collections::BTreeMap;
 
@@ -60,9 +59,9 @@ fn a_projection_kind_names_its_demand_step() {
     let bitstring_field = ProjectionKind::BitstringField(BitstringExtraction {
         previous: None,
         spec: BitstringFieldShape {
-            kind: BitstringFieldKind::Integer,
+            kind: BitType::Integer,
             size: None,
-            endian: BitstringEndian::Big,
+            endian: Endian::Big,
             signed: false,
             unit: None,
             rest_proven_whole: false,

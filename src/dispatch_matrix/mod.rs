@@ -51,6 +51,7 @@
 //! plan states what it reads of its inputs and no reader walks the graph to
 //! rediscover it.
 
+use crate::ast::{BitType, Endian};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(crate) mod demand;
@@ -307,9 +308,9 @@ pub(crate) struct BitstringExtraction {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct BitstringFieldShape {
-    pub(crate) kind: BitstringFieldKind,
+    pub(crate) kind: BitType,
     pub(crate) size: Option<BitstringFieldSize>,
-    pub(crate) endian: BitstringEndian,
+    pub(crate) endian: Endian,
     pub(crate) signed: bool,
     pub(crate) unit: Option<u32>,
     /// An unsized `binary` rest whose activation proves it ends on a byte
@@ -321,9 +322,9 @@ pub(crate) struct BitstringFieldShape {
 impl BitstringFieldShape {
     /// The kind the runtime test and the read are made for: a `binary` rest
     /// proven whole is read as the `bits` rest, which asks nothing of its end.
-    pub(crate) fn runtime_kind(&self) -> BitstringFieldKind {
+    pub(crate) fn runtime_kind(&self) -> BitType {
         match self.kind {
-            BitstringFieldKind::Binary if self.rest_proven_whole => BitstringFieldKind::Bits,
+            BitType::Binary if self.rest_proven_whole => BitType::Bits,
             kind => kind,
         }
     }
@@ -341,50 +342,7 @@ impl BitstringFieldShape {
             }
             Some(BitstringFieldSize::PinnedByteSize(_)) => BitSizeKnowledge::ByteSizeOf,
         };
-        let ty = match self.kind {
-            BitstringFieldKind::Integer => crate::ast::BitType::Integer,
-            BitstringFieldKind::Float => crate::ast::BitType::Float,
-            BitstringFieldKind::Binary => crate::ast::BitType::Binary,
-            BitstringFieldKind::Bits => crate::ast::BitType::Bits,
-            BitstringFieldKind::Utf8 => crate::ast::BitType::Utf8,
-            BitstringFieldKind::Utf16 => crate::ast::BitType::Utf16,
-            BitstringFieldKind::Utf32 => crate::ast::BitType::Utf32,
-        };
-        crate::ast::bit_remainder(ty, size, self.unit, false) == Some(0)
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum BitstringFieldKind {
-    Integer,
-    Float,
-    Binary,
-    Bits,
-    Utf8,
-    Utf16,
-    Utf32,
-}
-
-impl BitstringFieldKind {
-    /// The number the runtime reads a field's type from, as
-    /// `BitType::runtime_tag` gives it.
-    pub(crate) fn runtime_tag(self) -> u32 {
-        let ty = match self {
-            BitstringFieldKind::Integer => crate::ast::BitType::Integer,
-            BitstringFieldKind::Float => crate::ast::BitType::Float,
-            BitstringFieldKind::Binary => crate::ast::BitType::Binary,
-            BitstringFieldKind::Bits => crate::ast::BitType::Bits,
-            BitstringFieldKind::Utf8 => crate::ast::BitType::Utf8,
-            BitstringFieldKind::Utf16 => crate::ast::BitType::Utf16,
-            BitstringFieldKind::Utf32 => crate::ast::BitType::Utf32,
-        };
-        ty.runtime_tag()
-    }
-
-    /// A match binds this field's value as an integer: an `integer`'s bits, or
-    /// the scalar value a `utf8` field decodes.
-    pub(crate) fn reads_as_integer(self) -> bool {
-        matches!(self, BitstringFieldKind::Integer | BitstringFieldKind::Utf8)
+        crate::ast::bit_remainder(self.kind, size, self.unit, false) == Some(0)
     }
 }
 
@@ -404,13 +362,6 @@ pub(crate) enum BitstringFieldSize {
     /// A size written as an expression: the value of the plan's guard, read
     /// from earlier fields and pins, and a miss when the guard fails.
     Guard(GuardId),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum BitstringEndian {
-    Big,
-    Little,
-    Native,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

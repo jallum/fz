@@ -39,7 +39,7 @@ use super::prim::bit_len_of_header;
 use super::recipe::constant_of;
 use super::recipe::header_word;
 use super::*;
-use crate::ast::{BitType, Endian};
+use crate::ast::BitType;
 use crate::fz_ir::{BitFieldIr, BitSizeIr};
 use cranelift_codegen::ir::{self, InstBuilder, MemFlagsData, types};
 use cranelift_frontend::FunctionBuilder;
@@ -76,7 +76,7 @@ pub(super) fn aligned_segment(field: &BitFieldIr) -> Option<AlignedSegment> {
             let bytes = u8::try_from(bits / 8).ok().filter(|b| matches!(b, 1 | 2 | 4 | 8))?;
             (bits % 8 == 0).then_some(AlignedSegment::Integer {
                 bytes,
-                big_endian: wants_big_endian(field.endian),
+                big_endian: field.endian.is_big(),
             })
         }
         BitType::Binary => match literal {
@@ -100,22 +100,14 @@ pub(super) fn starts_with_unsized_binary(segments: &[AlignedSegment]) -> bool {
     matches!(segments.first(), Some(AlignedSegment::Binary { bytes: None }))
 }
 
-fn wants_big_endian(endian: Endian) -> bool {
-    match endian {
-        Endian::Big => true,
-        Endian::Little => false,
-        Endian::Native => cfg!(target_endian = "big"),
-    }
-}
-
 /// The `fz_bs_field_spec` word a descriptor of `field` carries, whether or not
 /// its size is written.
 pub(super) fn descriptor_spec(field: &BitFieldIr, size_present: u32) -> u64 {
     fz_bs_field_spec(
-        field.ty.runtime_tag(),
+        field.ty.tag(),
         size_present,
         field.unit.unwrap_or(field.ty.default_unit()),
-        encode_endian(field.endian),
+        field.endian.tag(),
         0,
         0,
     )

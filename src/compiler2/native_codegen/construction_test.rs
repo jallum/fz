@@ -6,6 +6,7 @@
 
 use super::recipe::recipe_test::{Tip, allocation_site, heap_field, tip_of, words_of};
 use super::*;
+use crate::ast::Endian;
 use crate::fz_ir::Var;
 use crate::ir_codegen::backend::{Backend, JitBackend};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};

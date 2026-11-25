@@ -92,3 +92,60 @@ fn a_native_field_is_little_endian_on_a_little_endian_host() {
         )
     );
 }
+
+const KINDS: [BitType; 7] = [
+    BitType::Integer,
+    BitType::Float,
+    BitType::Binary,
+    BitType::Bits,
+    BitType::Utf8,
+    BitType::Utf16,
+    BitType::Utf32,
+];
+
+#[test]
+fn every_kind_survives_the_tag_the_compiled_code_carries() {
+    for kind in KINDS {
+        assert_eq!(BitType::from_tag(kind.tag()), kind);
+    }
+    let tags: Vec<u32> = KINDS.iter().map(|kind| kind.tag()).collect();
+    assert_eq!(tags, vec![0, 1, 2, 3, 4, 5, 6]);
+}
+
+#[test]
+fn every_byte_order_survives_the_tag_the_compiled_code_carries() {
+    for endian in [Endian::Big, Endian::Little, Endian::Native] {
+        assert_eq!(Endian::from_tag(endian.tag()), endian);
+    }
+    assert_eq!(
+        [Endian::Big.tag(), Endian::Little.tag(), Endian::Native.tag()],
+        [0, 1, 2]
+    );
+}
+
+#[test]
+#[should_panic(expected = "unknown bit type tag 7")]
+fn a_kind_tag_no_kind_has_is_loud() {
+    BitType::from_tag(7);
+}
+
+#[test]
+#[should_panic(expected = "unknown endian tag 3")]
+fn a_byte_order_tag_no_order_has_is_loud() {
+    Endian::from_tag(3);
+}
+
+#[test]
+fn only_binary_counts_its_size_in_bytes_by_default() {
+    for kind in KINDS {
+        let expected = if kind == BitType::Binary { 8 } else { 1 };
+        assert_eq!(kind.default_unit(), expected, "{kind:?}");
+    }
+}
+
+#[test]
+fn native_order_is_the_targets_order() {
+    assert!(Endian::Big.is_big());
+    assert!(!Endian::Little.is_big());
+    assert_eq!(Endian::Native.is_big(), cfg!(target_endian = "big"));
+}
