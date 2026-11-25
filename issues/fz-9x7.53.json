@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "GC",
   "blocked_by": [
     "fz-9x7.11.6"
   ],
@@ -13,5 +13,5 @@
   "status": "open",
   "title": "The collector's worklist lives in pooled blocks in the reserved range",
   "type": "task",
-  "updated_at": "2026-11-25T02:00:28Z"
+  "updated_at": "2026-11-25T02:04:11Z"
 }
