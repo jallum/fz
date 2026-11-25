@@ -15,9 +15,15 @@
   "id": "fz-mue.51",
   "labels": [],
   "parent": "fz-mue",
+  "comments": [
+    {
+      "text": "Commit 2 scope (EP): a dynamic M.__info__(:macros) call inside a macro body fails with internal/unresolved-wait and no source line. Repro: ../fz-otp-json/probes/mue51/r1.fz. Commit 1 (user decision): undecidable macro-ness raises the named 'not supported yet' error; calls env proves are not macros return unchanged; commit 2's replay removes the error.",
+      "timestamp": "2026-11-25T00:39:43Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Macro.expand/2 expands a quoted macro call in the caller's environment, as in Elixir",
   "type": "feature",
-  "updated_at": "2026-11-25T00:39:41Z"
+  "updated_at": "2026-11-25T00:39:43Z"
 }
