@@ -1,0 +1,78 @@
+#---
+# purpose: "Macro.expand/2 and Macro.expand_once/2 expand the root of a quoted node in a %Macro.Env{}: aliases through env.aliases, __MODULE__ and __DIR__ and __ENV__ and __ENV__.field from the env (an env built by hand works as __CALLER__ does), __ENV__ untouched in a match, unary minus on an integer; a function call, variable, quote and an unrequired remote macro come back unchanged"
+# oracle: self
+# oracle.stamp: 6d2cb133c671d5af
+#---
+defmodule Other do
+  defmacro twice(x), do: quote(do: unquote(x) * 2)
+end
+
+defmodule Expand do
+  defmacro expand(ast), do: Macro.expand(ast, __CALLER__)
+  defmacro expand_once(ast), do: Macro.expand_once(ast, __CALLER__)
+  defmacro unchanged?(ast), do: Macro.expand(ast, __CALLER__) === ast
+  defmacro caller_module_is_an_atom?(), do: is_atom(__CALLER__.module)
+end
+
+defmodule Main do
+  alias Foo.Bar, as: B
+  require Expand
+
+  def main() do
+    macro_time()
+    run_time()
+  end
+
+  defp macro_time() do
+    IO.inspect(Expand.expand(B))
+    IO.inspect(Expand.expand(B.Baz))
+    IO.inspect(Expand.expand_once(B.Baz))
+    IO.inspect(Expand.expand(Unknown.X))
+    IO.inspect(Expand.expand(Elixir.B))
+    IO.inspect(Expand.expand(__MODULE__))
+    IO.inspect(Expand.caller_module_is_an_atom?())
+    IO.inspect(Expand.expand(-5))
+    IO.inspect(Expand.expand(-(-5)))
+    IO.inspect(Expand.expand(__MODULE__.Inner))
+    IO.inspect(Expand.expand(__ENV__.line))
+    IO.inspect(Expand.unchanged?(-x))
+    IO.inspect(Expand.unchanged?(length(x)))
+    IO.inspect(Expand.unchanged?(x))
+    IO.inspect(Expand.unchanged?(quote(do: 1)))
+    IO.inspect(Expand.unchanged?({:a, 1}))
+    IO.inspect(Expand.unchanged?(Enum.map(1, 2)))
+    IO.inspect(Expand.unchanged?(Other.twice(1)))
+  end
+
+  defp run_time() do
+    env = %{__ENV__ | aliases: [{:"Elixir.B", Foo.Bar}], module: Main, file: "/a/b/c.ex", line: 9, context: nil}
+    in_match = %{env | context: :match}
+    env_node = {:__ENV__, [], nil}
+    line_node = {{:., [], [env_node, :line]}, [no_parens: true], []}
+
+    IO.inspect(Macro.expand({:__aliases__, [], [:B]}, env))
+    IO.inspect(Macro.expand({:__aliases__, [], [:B, :Baz]}, env))
+    IO.inspect(Macro.expand_once({:__aliases__, [], [:B, :Baz]}, env))
+    IO.inspect(Macro.expand({:__aliases__, [], [{:__MODULE__, [], nil}, :X]}, env))
+    IO.inspect(Macro.expand({:__aliases__, [], [:Elixir, :B]}, env))
+    IO.inspect(Macro.expand({:__MODULE__, [], nil}, env))
+    IO.inspect(Macro.expand({:__MODULE__, [], nil}, %{env | module: Other}))
+    IO.inspect(Macro.expand({:__DIR__, [], nil}, env))
+    IO.inspect(Macro.expand({:__DIR__, [], nil}, %{env | file: "nofile"}))
+    IO.inspect(Macro.expand(line_node, env))
+    IO.inspect(Macro.expand(line_node, in_match) === line_node)
+    IO.inspect(Macro.expand(env_node, in_match) === env_node)
+    IO.inspect(match?({:%{}, [], _}, Macro.expand(env_node, env)))
+    IO.inspect(Macro.expand({:-, [], [3]}, env))
+    IO.inspect(Macro.expand({:-, [], [{:-, [], [3]}]}, env))
+    IO.inspect(Macro.expand({:+, [], [3]}, env))
+    unary_float = {:-, [], [1.5]}
+    IO.inspect(Macro.expand(unary_float, env) === unary_float)
+    call = {:length, [], [{:x, [], nil}]}
+    IO.inspect(Macro.expand(call, env) === call)
+    remote = {{:., [], [{:__aliases__, [], [:Other]}, :twice]}, [], [1]}
+    IO.inspect(Macro.expand(remote, env) === remote)
+  end
+end
+
+Main.main()
