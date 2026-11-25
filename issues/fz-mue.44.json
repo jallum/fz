@@ -2,6 +2,7 @@
   "assignee": "Jason Allum",
   "blocked_by": [
     "fz-mue.8",
+    "fz-yh5.13",
     "fz-yh5.8",
     "fz-yh5.9"
   ],
@@ -15,5 +16,5 @@
   "status": "in_progress",
   "title": "Enum.reduce over a list folds the list directly, as in Elixir",
   "type": "feature",
-  "updated_at": "2026-11-21T11:54:17Z"
+  "updated_at": "2026-11-25T11:44:02Z"
 }
