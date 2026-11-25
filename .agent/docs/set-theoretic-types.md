@@ -118,11 +118,17 @@ DNF construction keeps clause lists hygienic by boolean identity. One clause-
 product skeleton (`dnf.rs::dnf_intersect_with`) serves both intersections —
 the structural kernel (`Descr::intersect`) and the semantic path
 (`Types::intersect`, which collapses same-shape positives through `MergeSig`)
-— and it drops duplicate clauses (`A ∨ A = A`), clauses holding a literal
-both positively and negatively (`P ∧ ¬P = ∅`), and clauses a `MergeSig` merge
-proves empty (`PosMeet::Empty`: tuple arity mismatch, arrow arity mismatch,
-an empty tuple coordinate or resource payload, a non-empty list sig with no
-element or no terminator left).
+— and it drops clauses holding a literal both positively and negatively
+(`P ∧ ¬P = ∅`), clauses a `MergeSig` merge proves empty (`PosMeet::Empty`:
+tuple arity mismatch, arrow arity mismatch, an empty tuple coordinate or
+resource payload, a non-empty list sig with no element or no terminator
+left), and every clause another kept clause covers. A clause covers another
+when each of its positive and negative literals is also a literal of the
+other: the other only adds conditions, so dropping it changes no denotation
+(`A ∨ (A ∧ B) = A`; equal clauses cover each other, so `A ∨ A = A` is the
+same rule). Because of it, the negation of n clauses that share one negative
+literal is two clauses rather than 2^n; every map literal carries the
+struct-exclusion negative, so a union of n map literals negates this way.
 `dnf_union` drops duplicate clauses and `dnf_neg` skips duplicate factors.
 
 The persistence boundary (`Types::intern`) canonicalizes every descriptor

@@ -50,9 +50,11 @@ pub(crate) fn dnf_intersect<T: Clone + PartialEq>(a: &[Conj<T>], b: &[Conj<T>]) 
 /// merges that prove the clause empty are skipped (`merge` returns `None`),
 /// clauses containing a literal both positively and negatively are empty
 /// (`P ∧ ¬P = ∅`, sound structurally without any semantic query), and
-/// duplicate clauses collapse (`A ∨ A = A`, mirroring `dnf_union`).
+/// a clause another kept clause covers is dropped (`A ∨ (A ∧ B) = A`, which
+/// subsumes the duplicate, `A ∨ A = A`, that `dnf_union` also collapses).
 /// Without this, iterated intersections snowball, and one `dnf_neg` over
-/// the result distributes into millions of clauses (00277 built 2^21).
+/// the result distributes into millions of clauses (00277 built 2^21): the
+/// negation of n clauses sharing one negative is two clauses, not 2^n.
 pub(crate) fn dnf_intersect_with<T: Clone + PartialEq>(
     a: &[Conj<T>],
     b: &[Conj<T>],
@@ -70,12 +72,21 @@ pub(crate) fn dnf_intersect_with<T: Clone + PartialEq>(
             if merged.pos.iter().any(|p| merged.neg.contains(p)) {
                 continue;
             }
-            if !out.contains(&merged) {
-                out.push(merged);
+            if out.iter().any(|kept| covers(kept, &merged)) {
+                continue;
             }
+            out.retain(|kept| !covers(&merged, kept));
+            out.push(merged);
         }
     }
     out
+}
+
+/// Whether `wider` holds everything `narrower` does: every literal `wider` asks
+/// of a value, `narrower` asks too, so `narrower` can only be the smaller set.
+/// Equal clauses cover each other.
+fn covers<T: PartialEq>(wider: &Conj<T>, narrower: &Conj<T>) -> bool {
+    wider.pos.iter().all(|p| narrower.pos.contains(p)) && wider.neg.iter().all(|n| narrower.neg.contains(n))
 }
 
 /// ¬(⋁ Cᵢ) = ⋀ ¬Cᵢ. Each ¬Cᵢ is a DNF (disjunction of single-literal
