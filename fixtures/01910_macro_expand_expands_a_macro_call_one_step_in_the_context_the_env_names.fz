@@ -1,0 +1,79 @@
+#---
+# purpose: "Macro.expand/2 and Macro.expand_once/2 inside a macro expand a call to an imported, a required remote or a local macro in the caller's scope, standing in the context the env names (nil, :match or :guard); expand_once is one step and expand runs until no macro call is left at the root"
+# oracle: self
+# oracle.stamp: e731ff7af332b7cc
+#---
+defmodule Lib do
+  defmacro twice(x), do: quote(do: unquote(x) * 2)
+  defmacro quadruple(x), do: quote(do: Lib.twice(Lib.twice(unquote(x))))
+  defmacro where(), do: __CALLER__.context
+  defmacro pass(x), do: x
+end
+
+defmodule Expand do
+  defmacro once(ast, context), do: shape(Macro.expand_once(ast, in_context(__CALLER__, context)))
+  defmacro full(ast, context), do: shape(Macro.expand(ast, in_context(__CALLER__, context)))
+
+  defp in_context(env, context), do: %{env | context: context}
+
+  defp shape(ast), do: Macro.escape(name(ast))
+
+  defp name({:*, _, [3, 2]}), do: :three_times_two
+  defp name({:*, _, [{{:., _, [{:__aliases__, _, [:Lib]}, :twice]}, _, [3]}, 2]}), do: :twice_of_three_times_two
+  defp name({{:., _, [{:__aliases__, _, [:Lib]}, :twice]}, _, [{{:., _, [{:__aliases__, _, [:Lib]}, :twice]}, _, [3]}]}), do: :twice_of_twice_of_three
+  defp name({{:., _, [{:__aliases__, _, [:Lib]}, :unknown]}, _, [1]}), do: :call_of_no_macro
+  defp name({:+, _, [1, 1]}), do: :one_plus_one
+  defp name({:length, _, [[1, 2]]}), do: :length_call
+  defp name(literal) when is_atom(literal) or is_integer(literal), do: literal
+end
+
+defmodule Main do
+  import Lib, only: [pass: 1]
+  require Expand
+  require Lib
+
+  defmacro mine(x), do: quote(do: unquote(x) + 1)
+
+  def main() do
+    required_remote()
+    imported()
+    local()
+    the_context_the_env_names()
+    expand_runs_until_the_root_is_no_macro()
+    a_function_call_is_not_expanded()
+  end
+
+  defp required_remote() do
+    IO.inspect(Expand.once(Lib.twice(3), nil))
+    IO.inspect(Expand.once(Lib.quadruple(3), nil))
+  end
+
+  defp imported() do
+    IO.inspect(Expand.once(pass(7), nil))
+    IO.inspect(Expand.full(pass(pass(7)), nil))
+  end
+
+  defp local() do
+    IO.inspect(Expand.once(mine(1), nil))
+    IO.inspect(Expand.once(mine(1), :guard))
+  end
+
+  defp the_context_the_env_names() do
+    IO.inspect(Expand.once(Lib.where(), nil))
+    IO.inspect(Expand.once(Lib.where(), :guard))
+    IO.inspect(Expand.once(Lib.where(), :match))
+  end
+
+  defp expand_runs_until_the_root_is_no_macro() do
+    IO.inspect(Expand.full(Lib.quadruple(3), nil))
+    IO.inspect(Expand.full(Lib.quadruple(3), :guard))
+    IO.inspect(Expand.full(Lib.where(), :guard))
+  end
+
+  defp a_function_call_is_not_expanded() do
+    IO.inspect(Expand.once(length([1, 2]), nil))
+    IO.inspect(Expand.once(Lib.unknown(1), :guard))
+  end
+end
+
+Main.main()

@@ -295,9 +295,8 @@ reaches it only to word its `ArgumentError` for a bad argument.
 ### `Macro.expand/2` and `Macro.expand_once/2`
 
 `lib/macro.fz` defines both over the `%Macro.Env{}` map, clause for clause from
-Elixir's `Macro.expand_once/2`. The result depends only on the node and the
-env, so an env built by hand expands as `__CALLER__` does, in a macro body or in
-a running program. Only the root node is looked at:
+Elixir's `Macro.expand_once/2` for everything but a macro call. Only the root
+node is looked at:
 
 | root | becomes |
 | --- | --- |
@@ -306,12 +305,52 @@ a running program. Only the root node is looked at:
 | `__ENV__`, `{{:., _, [__ENV__, field]}, _, []}` | the env as `{:%{}, [], pairs}`, the field's value; unchanged when `env.context` is `:match` |
 | unary `+` or `-` of an integer | the computed integer |
 | a special form, an imported function, a call on a module not in `env.requires` | unchanged |
-| any other root call: an imported macro, a name `env.functions` and `env.macros` do not list, a call on a required module | `RuntimeError` "Macro.expand of a macro call is not supported yet" |
+| any other root call: an imported macro, a name `env.functions` and `env.macros` do not list, a call on a required module | the compiler's answer: one step of the macro, or unchanged when the scope binds the call to no macro |
 
-A macro runs only inside the compiler, which a macro body cannot reach, so the
-last row stands in for the one-step expansion the env cannot decide. The env
-cannot tell a macro from a function on a required module, and does not list the
-caller module's own functions or macros, so those calls raise too.
+An env built by hand expands as `__CALLER__` does for every row but the last.
+
+### A macro body asks the compiler
+
+A macro body has no handle to the world, and an answer may wait for a fact, so
+the last row is a question the running macro asks and `macro_step` answers:
+
+1. `lib/macro.fz` calls the private extern `fz_macro_expand(call, context)`,
+   where `context` is 0 for `env.context == nil`, 1 for `:match`, 2 for
+   `:guard`. The extern reads `ExecCtx.expand` and answers `[code]` or
+   `[code, expanded]`: 0 not a macro, 1 expanded, 2 asked, 3 no compiler.
+2. The interpreter's hook reaches `MacroRunOutput::expand` (`macro_run.rs`). It
+   answers from the answers the compiler already holds, in the order asked.
+   At the first question it has no answer for it records the request and
+   answers 2, and `lib/macro.fz` raises: that run is over, whatever the body
+   does with the raise. A run that asked is discarded with its warnings and
+   prints; only the last run prints.
+3. The expander (`answer_expansion_request`, `quoted_expander.rs`) answers the
+   request with `expand_macro_call_once`: it resolves the call the way expansion does
+   (`resolve_remote_macro_call`, `resolve_local_macro_call`), runs the macro
+   with `macro_step` standing in the requested context, and answers the
+   result as the macro wrote it, with nothing in it expanded. A call that
+   names no macro, or a module the scope does not `require`, is answered
+   unchanged; written code that calls an unrequired macro is still refused. An
+   answer that waits makes `macro_step` answer `Blocked`, and the job runs the
+   macro again when the fact lands.
+4. `macro_step` runs the body again with every answer so far. A body is a pure
+   function of its arguments and the answers, so each run asks the same
+   questions in the same order.
+
+A macro call expands in the scope the running macro was called from, whatever
+names `env` holds: `env` decides which calls are asked about and the context
+they stand in. A guard's `Macro.expand(ast, %{__CALLER__ | context: :guard})`
+therefore runs the macros in a guard's context, as `defguard` does.
+
+A memoized expansion stores how many expansion numbers its questions drew
+(`MacroExpansion::answered_expansions`), and a memo hit draws as many, so the
+numbering that stamps hygiene counters does not depend on whether a run was
+cold. A program that is not a macro has no hook: the extern answers 3 and
+`Macro.expand` of a call that may be a macro raises `RuntimeError`.
+
+Kernel's `if`, `unless`, `and`, `or`, `&&`, `||` and `|>` are not macros in
+fz: the compiler lowers them itself, so `Macro.expand` leaves them unchanged
+where Elixir expands them.
 
 Unary `+` and `-` are computed when `env.functions` lists them as Kernel's.
 
@@ -655,15 +694,15 @@ raise NotThere, "x"    # reported under the raise, not inside Kernel
 
 A macro that raises while it runs fails the compile. The failure line is the
 diagnostic's message, its code is `lower/unsupported`, and its span is the
-macro call's (`run_macro_invocation`). `Kernel.apply/3` refuses a call it
+macro call's (`macro_step`). `Kernel.apply/3` refuses a call it
 cannot rewrite this way.
 
-A macro run answers a `MacroExpansion` (`macro_warning.rs`): the expanded root
+A macro run answers a `MacroExpansion` (`macro_run.rs`): the expanded root
 and the warnings its body emitted with `IO.warn`, in the order it emitted them.
 `run_macro_on_source` hands the interpreter a `MacroRunOutput` sink. A print
-still goes to stdout, and the interpreter's warning hook records each `IO.warn`
+is kept and goes to stdout when the run is the last, and the interpreter's warning hook records each `IO.warn`
 as a `MacroWarning` (message, and the file and line when the call named any).
-`run_macro_invocation` reports each one through `emit_warning_once` as
+`macro_step` reports each one through `emit_warning_once` as
 `macro/warning`, so compilation continues, and the diagnostic reaches stderr
 and the `[fz, diag, warning]` event like every other warning. The memoized
 expansion stores its warnings beside its root, and a memo hit reports them

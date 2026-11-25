@@ -113,3 +113,47 @@ fn null_output_ignores_warnings_and_a_missing_context_invokes_no_sink() {
     unsafe { WARN_HOOK(context.as_ptr(), b"ignored".as_ptr(), 7, b"".as_ptr(), 0, 0) };
     unsafe { WARN_HOOK(std::ptr::null(), b"ignored".as_ptr(), 7, b"".as_ptr(), 0, 0) };
 }
+
+struct ExpansionAnswers;
+
+impl OutputSink for ExpansionAnswers {
+    fn emit(&self, _bytes: &[u8]) {}
+
+    fn expand(&self, ast: u64, context: i64) -> Expansion {
+        match context {
+            0 => Expansion::NotAMacro,
+            1 => Expansion::Expanded(ast + 8),
+            _ => Expansion::Asked,
+        }
+    }
+}
+
+#[test]
+fn expand_hook_hands_the_sink_the_call_and_returns_its_answer_with_the_expanded_code() {
+    let sink = ExpansionAnswers;
+    let context = OutputContext::new(&sink);
+    let mut expanded = 0u64;
+
+    let ask = |expansion_context, expanded: &mut u64| unsafe {
+        EXPAND_HOOK(context.as_ptr(), 100, expansion_context, expanded)
+    };
+
+    assert_eq!(ask(0, &mut expanded), Expansion::NOT_A_MACRO_CODE);
+    assert_eq!(ask(1, &mut expanded), Expansion::EXPANDED_CODE);
+    assert_eq!(expanded, 108);
+    assert_eq!(ask(2, &mut expanded), Expansion::ASKED_CODE);
+}
+
+#[test]
+fn a_sink_that_does_not_answer_expansions_and_a_missing_context_have_no_compiler() {
+    let mut expanded = 0u64;
+    let context = OutputContext::new(&NullOutput);
+    assert_eq!(
+        unsafe { EXPAND_HOOK(context.as_ptr(), 100, 0, &mut expanded) },
+        Expansion::NO_COMPILER_CODE
+    );
+    assert_eq!(
+        unsafe { EXPAND_HOOK(std::ptr::null(), 100, 0, &mut expanded) },
+        Expansion::NO_COMPILER_CODE
+    );
+}

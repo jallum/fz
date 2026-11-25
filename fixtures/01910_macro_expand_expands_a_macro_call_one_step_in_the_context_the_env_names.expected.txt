@@ -1,0 +1,14 @@
+:three_times_two
+:twice_of_twice_of_three
+7
+7
+:one_plus_one
+:one_plus_one
+nil
+:guard
+:match
+:twice_of_three_times_two
+:twice_of_three_times_two
+:guard
+:length_call
+:call_of_no_macro

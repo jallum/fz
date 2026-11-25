@@ -58,6 +58,14 @@ pub type WarnHook = unsafe extern "C" fn(
     line: u32,
 );
 
+/// The expansion hook: a macro body asks the compiler to expand the macro call
+/// `ast` one step in the caller's scope, standing in `expansion_context` (0 an
+/// expression, 1 a pattern, 2 a guard). The answer is one of the
+/// `ExpansionAnswer` codes; `answered_ast` receives the expanded code when the
+/// answer is `EXPANDED`.
+pub type ExpandHook =
+    unsafe extern "C" fn(context: *const (), ast: u64, expansion_context: i64, answered_ast: *mut u64) -> u64;
+
 /// The raise observer: `fz_panic` reports every raise here before deciding
 /// where it goes, with the kind atom's text, the exception's name (empty when
 /// the value is not an exception), and how many handlers were on the stack.

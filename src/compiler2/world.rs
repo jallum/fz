@@ -43,7 +43,7 @@ use super::identity::{
 };
 use super::incoming_inputs::{IncomingInputSource, IncomingInputSources, InputSlot};
 use super::keying::{BodyKeying, BodyKeyingMap, InputDemand, InputDemandMap, StaticCalleeMap, StaticReachMap};
-use super::macro_warning::{MacroExpansion, MacroRunOutput};
+use super::macro_run::{ExpansionAnswer, MacroExpansion, MacroRun, MacroRunOutput};
 use super::module_interface::{
     InterfaceCallableKind, InterfaceExpectation, InterfaceRequester, ModuleInterface, ModuleReferenceExpectation,
     ModuleReferenceExpectationMap, ReferencingCall,
@@ -4655,15 +4655,19 @@ impl<T: Telemetry> ExecutionContext<'_, T> {
         changed
     }
 
+    /// Runs a macro over `source` with `answers` to the questions it asked
+    /// the last time. A run that asked a question it has no answer for is
+    /// discarded, with what it printed.
     pub(crate) fn run_macro_on_source(
         &mut self,
         program: &BackendProgram,
         source: &QuotedSourceRoot,
         caller: AnyValueRef,
         args: &[AnyValueRef],
-    ) -> Result<MacroExpansion, String> {
-        let output = MacroRunOutput::default();
-        let root = self.world.run_macro_on_source_with(
+        answers: &[ExpansionAnswer],
+    ) -> Result<MacroRun, String> {
+        let output = MacroRunOutput::answering(answers);
+        let run = self.world.run_macro_on_source_with(
             program,
             source,
             caller,
@@ -4679,9 +4683,13 @@ impl<T: Telemetry> ExecutionContext<'_, T> {
                     args,
                 )
             },
-        )?;
-        Ok(MacroExpansion {
-            root,
+        );
+        if let Some(request) = output.asked() {
+            return Ok(MacroRun::Asked(request));
+        }
+        output.print();
+        Ok(MacroRun::Finished {
+            root: run?,
             warnings: output.into_warnings(),
         })
     }

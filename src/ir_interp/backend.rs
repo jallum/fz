@@ -40,7 +40,7 @@ use fz_runtime::ir_runtime::{
     fz_struct_store_ref,
 };
 use fz_runtime::module_name::{ModuleName, STRUCT_MODULE_FIELD};
-use fz_runtime::output::{OUTPUT_HOOK, OutputContext, OutputSink, WARN_HOOK};
+use fz_runtime::output::{EXPAND_HOOK, OUTPUT_HOOK, OutputContext, OutputSink, WARN_HOOK};
 use fz_runtime::process::{DEFAULT_REDUCTIONS_PER_QUANTUM, Disposition, Process, ProcessState};
 use fz_runtime::sched::{ProbeOutcome, SendProbe, drain_in_queue, gift_match, gift_message, self_send};
 use fz_runtime::sched_core::{
@@ -703,6 +703,7 @@ fn drive_backend_until_idle<T: Telemetry + ?Sized>(
         raise: Some(interp_raise_hook::<T>),
         output: Some(OUTPUT_HOOK),
         warn: Some(WARN_HOOK),
+        expand: Some(EXPAND_HOOK),
         timer_schedule: Some(timer_schedule_hook::<BackendSchedulerAdapter<T>>()),
         timer_cancel: Some(timer_cancel_hook::<BackendSchedulerAdapter<T>>()),
         argv,

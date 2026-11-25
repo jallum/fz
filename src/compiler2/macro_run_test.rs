@@ -1,15 +1,20 @@
-//! A macro's `IO.warn` becomes a compile-time warning, reported the same way
-//! whether the macro ran or its memoized expansion was reused.
+//! What a macro run answers and asks. A macro's `IO.warn` becomes a
+//! compile-time warning, reported the same way whether the macro ran or its
+//! memoized expansion was reused. A macro that asks the compiler to expand a
+//! macro call is answered once and its expansion reused, and a program that
+//! is not a macro has no compiler to ask.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use fz_runtime::output::{OutputSink as _, Warning};
+use fz_runtime::output::{Expansion, OutputSink as _, Warning};
 
 use crate::source::SourceMap;
 use crate::telemetry::{Capture, ConfiguredTelemetry};
 
-use super::{MacroRunOutput, MacroWarning};
+use super::{ExpansionAnswer, MacroRunOutput, MacroWarning};
+use crate::compiler2::quoted_expander::ExpansionContext;
+use crate::compiler2::source::QuotedSourceHeap;
 use crate::compiler2::{
     CodeSubmission, Compiler2, ExecutableNeed, FunctionId, Job, ModuleId, QuotedSourceRoot, RootSubmission, World,
 };
@@ -154,4 +159,107 @@ fn a_warning_naming_a_file_the_compiler_has_no_source_for_points_at_the_call_and
 
     assert_eq!(diagnostic.primary.span, call.unwrap());
     assert_eq!(diagnostic.notes, ["warned at other.ex:9"]);
+}
+
+const ASKING_SOURCE: &str = concat!(
+    "defmacro inner(x), do: x\n",
+    "defmacro outer(x), do: Macro.expand_once(quote(do: inner(unquote(x))), __CALLER__)\n",
+    "def main(), do: outer(41) + 1\n",
+);
+
+fn asking_compiler() -> (Compiler2<ConfiguredTelemetry>, Rc<RefCell<Vec<FunctionId>>>) {
+    let tel = ConfiguredTelemetry::new();
+    let runs = Rc::new(RefCell::new(Vec::new()));
+    let observed = Rc::clone(&runs);
+    tel.attach_raw_event3::<World, FunctionId, QuotedSourceRoot, _>(
+        &["fz", "compiler2", "macro", "expanded"],
+        move |_, _, _, _, function, _| observed.borrow_mut().push(*function),
+    );
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("macro_asking.fz".into()),
+        text: ASKING_SOURCE.into(),
+    });
+    (compiler, runs)
+}
+
+#[test]
+fn a_macro_that_asks_for_a_macro_call_to_expand_runs_each_macro_once_and_a_reused_expansion_runs_none() {
+    let (mut compiler, runs) = asking_compiler();
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(compiler.run_root_interp(root), Ok(42));
+    let inner = compiler.world_mut().reference_function(ModuleId::GLOBAL, "inner", 1);
+    let outer = compiler.world_mut().reference_function(ModuleId::GLOBAL, "outer", 1);
+    let ran = |function| runs.borrow().iter().filter(|ran| **ran == function).count();
+    assert_eq!(
+        (ran(inner), ran(outer)),
+        (1, 1),
+        "the question is answered once, not once per replay"
+    );
+
+    let main = compiler.root_function(root);
+    compiler.reproduce_job_for_test(Job::ExpandFunctionSource(main), Vec::new());
+    assert_eq!(
+        (ran(inner), ran(outer)),
+        (1, 1),
+        "a second expansion of the same call reuses both"
+    );
+}
+
+#[test]
+fn a_program_that_is_not_a_macro_has_no_compiler_to_ask_so_expanding_a_macro_call_raises() {
+    let mut compiler = Compiler2::new(ConfiguredTelemetry::new());
+    compiler.submit_code(CodeSubmission {
+        name: Some("macro_expand_at_run_time.fz".into()),
+        text: concat!(
+            "def main() do\n",
+            "  try do\n",
+            "    Macro.expand({:undefined_name, [], [1]}, __ENV__)\n",
+            "  rescue\n",
+            "    error in RuntimeError -> String.length(error.message)\n",
+            "  end\n",
+            "end\n",
+        )
+        .into(),
+    });
+    let root = compiler.submit_root(RootSubmission {
+        module_name: None,
+        name: "main".into(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_eq!(
+        compiler.run_root_interp(root),
+        Ok("Macro.expand of a macro call needs the compiler, which only a running macro can ask".len() as i64)
+    );
+}
+
+#[test]
+fn a_run_answers_its_questions_in_the_order_asked_and_stops_at_the_first_it_has_no_answer_for() {
+    let heap = Rc::new(QuotedSourceHeap::new());
+    let builder = heap.builder();
+    let call = builder.int(1);
+    let output = MacroRunOutput::answering(&[ExpansionAnswer::NotAMacro, ExpansionAnswer::Expanded(builder.int(9))]);
+
+    assert_eq!(output.expand(call.raw_word(), 0), Expansion::NotAMacro);
+    assert!(
+        matches!(output.expand(call.raw_word(), 0), Expansion::Expanded(_)),
+        "the second question gets the second answer"
+    );
+    assert!(output.asked().is_none());
+
+    assert_eq!(output.expand(call.raw_word(), 2), Expansion::Asked);
+    let asked = output.asked().expect("the third question had no answer");
+    assert_eq!(asked.context, ExpansionContext::Guard);
+    assert_eq!(output.expand(call.raw_word(), 1), Expansion::Asked);
+    assert_eq!(
+        output.asked().expect("still the first").context,
+        ExpansionContext::Guard,
+        "later questions do not replace the one the compiler answers"
+    );
 }

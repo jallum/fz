@@ -347,6 +347,29 @@ pub extern "C" fn fz_io_warn(process: *mut Process, message_ref: u64, file_ref: 
     0
 }
 
+/// `Macro.expand_once/2` of a macro call, asked of the compiler a macro body
+/// runs inside: `[code]` or `[code, expanded]` with the code of
+/// `output::Expansion` (`NO_COMPILER_CODE` when no compiler runs). The compiler answers
+/// from its own scope, so the call is an AST node and the context says
+/// whether it stands in an expression (0), a pattern (1) or a guard (2).
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_macro_expand(process: *mut Process, ast_ref: u64, context: i64) -> u64 {
+    let (code, expanded) = crate::request_expansion(process, ast_ref, context);
+    let process = unsafe { &mut *process };
+    let tail = if code == crate::output::Expansion::EXPANDED_CODE {
+        let expanded = any_value_from_ref_word(expanded, "fz_macro_expand");
+        process.heap.alloc_list_cons_any(expanded, AnyValue::EmptyList)
+    } else {
+        AnyValueRef::empty_list()
+    };
+    let code = i64::try_from(code).expect("an expansion code is small");
+    process
+        .heap
+        .alloc_list_cons_int(code, tail)
+        .expect("fz_macro_expand list")
+        .raw_word()
+}
+
 /// Typed halt for narrow-int seams. The cont chain
 /// carries a raw i64 all the way to halt-cont's RawInt body; no
 /// unboxing — value is already a machine int.
