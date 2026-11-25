@@ -7,9 +7,15 @@
   "id": "fz-mue.28",
   "labels": [],
   "parent": "fz-mue",
+  "comments": [
+    {
+      "text": "HOLD (2026-11-24, relayed by Elixir Parity): the user is reconsidering the whole approach — raise structs natively, convert only at a catch that reads the reason. Nothing mue.28-related proceeds until decided.",
+      "timestamp": "2026-11-25T02:46:54Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "catch kind, reason normalises a FunctionClauseError as Elixir does",
   "type": "bug",
-  "updated_at": "2026-11-19T03:09:42Z"
+  "updated_at": "2026-11-25T02:46:54Z"
 }
