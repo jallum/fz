@@ -5256,7 +5256,6 @@ fn direct_operator_name(op: crate::ast::BinOp) -> Option<&'static str> {
         crate::ast::BinOp::GtEq => Some(">="),
         crate::ast::BinOp::And
         | crate::ast::BinOp::Or
-        | crate::ast::BinOp::Pipe
         | crate::ast::BinOp::Cons
         | crate::ast::BinOp::ListConcat
         | crate::ast::BinOp::ListSubtract

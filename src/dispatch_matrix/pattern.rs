@@ -755,8 +755,7 @@ where
                 | crate::ast::BinOp::Mul
                 | crate::ast::BinOp::Div
                 | crate::ast::BinOp::Rem => unreachable!("an arithmetic operator is a call"),
-                crate::ast::BinOp::Pipe
-                | crate::ast::BinOp::Cons
+                crate::ast::BinOp::Cons
                 | crate::ast::BinOp::ListConcat
                 | crate::ast::BinOp::ListSubtract
                 | crate::ast::BinOp::BinConcat

@@ -1,0 +1,11 @@
+4
+3
+2
+5
+3
+6
+{4, 100}
+{:integer, :other}
+{:integer, :other}
+{:scalar, :scalar, :other}
+2

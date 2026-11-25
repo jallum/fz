@@ -1,0 +1,51 @@
+#---
+# purpose: "A pipe into a bare function name calls it with the piped value, as in Elixir: a local, an import, a remote, a chain, a multi-line pipe, a name that is also a variable, and a pipe in a guard"
+# kind: run
+# oracle: self
+# oracle.stamp: 3e4c9062fbd55b57
+#---
+defmodule Main do
+  def inc(x), do: x + 1
+
+  def twice(x) do
+    x
+    |> inc
+    |> inc
+  end
+
+  def first_size(z), do: z |> hd |> tuple_size
+
+  def shadowed(x) do
+    inc = 100
+    {x |> inc, inc}
+  end
+
+  def integer_piped(x) when x |> is_integer(), do: :integer
+  def integer_piped(_), do: :other
+
+  def integer_bare(x) when x |> is_integer, do: :integer
+  def integer_bare(_), do: :other
+
+  def guarded(x) do
+    case x do
+      y when y |> is_integer or y |> is_atom() -> :scalar
+      _ -> :other
+    end
+  end
+end
+
+IO.inspect(3 |> Main.inc())
+IO.inspect(Main.twice(1))
+IO.inspect(Main.first_size([{1, 2}]))
+IO.inspect([5, 6] |> hd)
+IO.inspect([1, 2, 3] |> length)
+IO.inspect([1, 2, 3] |> Enum.sum)
+IO.inspect(Main.shadowed(3))
+IO.inspect({Main.integer_piped(1), Main.integer_piped(:a)})
+IO.inspect({Main.integer_bare(1), Main.integer_bare(:a)})
+IO.inspect({Main.guarded(1), Main.guarded(:a), Main.guarded([])})
+
+[{1, 2}]
+|> hd
+|> tuple_size
+|> IO.inspect()

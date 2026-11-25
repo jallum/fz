@@ -2674,7 +2674,6 @@ fn binop_from_name(name: &str) -> Option<BinOp> {
         ">=" => BinOp::GtEq,
         "and" => BinOp::And,
         "or" => BinOp::Or,
-        "|>" => BinOp::Pipe,
         "|" => BinOp::Cons,
         "++" => BinOp::ListConcat,
         "--" => BinOp::ListSubtract,
