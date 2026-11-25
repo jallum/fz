@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-25T12:10:31Z",
+  "description": "Evidence: on the distiller, job gates are evaluated 4,896 times for 2,141 distinct jobs (max 6 for one job); on fixture 00181, 140 times for 60 jobs. The prune inside the transport-layout gate walk is already once per executable (memoized on ExecutableFacts), so the repetition is the gate walk itself.\n\nMechanism: Job::missing_gates is re-evaluated at every pop_runnable and demand_producer_if_needed, and each evaluation of a transport-layout gate rebuilds the position recipes (NamingWalk over the executable's positions). Nothing remembers that a job's inputs have not changed since the last evaluation.\n\nRelated case: a grounded closure call names both its callee and its grounded return recipe as gates (recipe_positions in jobs/transport_layouts.rs), because which of the two the evaluation takes depends on the callee's evaluated layout. The gate is a superset of what the run reads.\n\nAcceptance: one gate evaluation per job per change of its inputs, measured by a counter (distiller evaluations and 00181 evaluations before and after); the grounded closure call gates on what the run will read.",
+  "id": "fz-t93.33",
+  "labels": [],
+  "parent": "fz-t93",
+  "priority": 3,
+  "status": "open",
+  "title": "A job's gates are stated once",
+  "type": "task",
+  "updated_at": "2026-11-25T12:10:31Z"
+}
