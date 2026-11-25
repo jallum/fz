@@ -134,8 +134,10 @@ kind field and at the same position in a ref word, a field or capture payload, a
 map entry, a list head and a list link. The collector and deep copy read that
 bit: a tagged reference is left in place or shared, an untagged one is a heap
 pointer and is copied. Nothing walks the heap's block list to decide. Debug
-builds cross-check the bit against the age table and assert that an untagged
-pointer lies in a young or old block and a tagged one lies in none.</p>
+builds cross-check the bit against the address: the collector checks the age table, so an untagged
+pointer must lie in a young or old block, a tagged one in none, and none in
+to-space; deep copy checks the source heap's block ranges, so an untagged
+pointer must lie in one and a tagged one in none.</p>
 
 <div class="aside">
 Old per-float heap objects are retired. Floats in typed code travel as native
@@ -467,8 +469,7 @@ thread; the pool of a thread that exits hands its free blocks to a list any
 thread's pool draws on. Off-heap binaries, resources and the program's static
 data are the system allocator's and lie outside the range.</p>
 
-<p>A table beside the range holds one byte per granule (32 bytes unless the
-runtime is built with <code>FZ_GRANULE_SHIFT</code>): young or not. A span
+<p>A table beside the range holds one byte per granule (32 bytes): young or not. A span
 is whole granules, aligned to one, so no two blocks share a table byte, while a
 block's capacity, and every byte count the runtime reports, stay the logical
 size. A pooled span is one capacity at one address for good, so its table bytes
@@ -1160,8 +1161,9 @@ the destructor runs. Last one out turns off the lights.</p>
 
 <div class="box green">
 <strong>Why this needs no locks.</strong><br>
-The system allocator handles concurrent <code>Box::new</code> from any
-worker. The refcount is atomic. The off-heap chains are per-heap and per-heap is
+Heap blocks come from the reserved range by an atomic bump and
+each thread's pool is its own; the system allocator handles concurrent
+<code>Box::new</code> of off-heap binaries from every worker thread. The refcount is atomic. The off-heap chains are per-heap and per-heap is
 per-process, so only one worker accesses it at a time (scheduler
 invariant). fz values are immutable, so there are no write barriers. There
 is no central registry to contend on.

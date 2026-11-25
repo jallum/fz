@@ -159,18 +159,17 @@ fn two_blocks_never_share_a_granule() {
 }
 
 #[test]
-fn an_address_outside_the_range_is_not_young() {
+fn an_address_outside_the_range_is_not_contained() {
     let range = small_range();
     let on_stack = 0u64;
     let on_heap = Box::new(0u64);
-    assert!(!range.is_young(&on_stack as *const u64 as *const u8));
-    assert!(!range.is_young(&*on_heap as *const u64 as *const u8));
-    assert!(!range.is_young(std::ptr::null()));
+    assert!(!range.contains(&on_stack as *const u64 as *const u8));
+    assert!(!range.contains(&*on_heap as *const u64 as *const u8));
+    assert!(!range.contains(std::ptr::null()));
     assert!(
-        !range.is_young((range.base + range.reserved.load(Ordering::Relaxed)) as *const u8),
+        !range.contains((range.base + range.reserved.load(Ordering::Relaxed)) as *const u8),
         "one past the end"
     );
-    assert!(!is_young(&on_stack as *const u64 as *const u8));
 }
 
 #[test]
@@ -347,8 +346,6 @@ fn a_freed_span_gives_its_pages_back_and_a_reused_one_can_be_written_again() {
 }
 
 #[test]
-fn the_granule_shift_text_is_parsed_and_bounded() {
-    assert_eq!(parse_shift("6"), 6);
-    assert_eq!(parse_shift("12"), 12);
+fn the_granule_is_a_power_of_two_a_block_alignment_divides() {
     assert!(GRANULE >= 16 && GRANULE.is_power_of_two());
 }

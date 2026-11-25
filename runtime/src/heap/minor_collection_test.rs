@@ -7,7 +7,7 @@ use crate::any_value::{
     list_addr_from_tagged,
 };
 use crate::bits::{BinView, SharedBinHandle, alloc_buffer_view};
-use crate::heap::arena::{Age, GRANULE, is_young, span_len};
+use crate::heap::arena::{Age, GRANULE, range, span_len};
 use crate::heap::block_pool::{is_pooled_capacity, pool_alloc, pool_free};
 use crate::heap::{StubCounts, StubSite};
 use crate::off_heap;
@@ -446,8 +446,8 @@ fn a_huge_object_parked_alone_is_young_though_it_lies_outside_the_tip() {
     let small = heap.alloc(16);
     let huge = heap.alloc(1 << 20);
 
-    assert!(heap.is_young(small));
-    assert!(heap.is_young(huge), "a parked block is young");
+    assert!(range().is_young(small));
+    assert!(range().is_young(huge), "a parked block is young");
     let in_tip = |p: *mut u8| heap.block_start <= p && p < heap.bump_top;
     assert!(in_tip(small));
     assert!(!in_tip(huge), "the huge object does not move the tip");
@@ -636,10 +636,10 @@ fn a_young_view_of_an_old_binref_survives_a_minor_and_a_major_collection() {
     assert_eq!(heap.collect_stats(&mut roots).generation, Generation::Minor);
     let old_whole = view_in(roots[0]);
     let old_binref = old_whole.binref().as_raw();
-    assert!(!heap.is_young(old_binref), "the buffer's BinRef is old");
+    assert!(!range().is_young(old_binref), "the buffer's BinRef is old");
 
     let window = unsafe { heap.slice(word_of(old_whole), 560, 800) };
-    assert!(heap.is_young(view_of(window).as_raw()));
+    assert!(range().is_young(view_of(window).as_raw()));
     assert_eq!(
         view_of(window).binref().as_raw(),
         old_binref,
@@ -844,7 +844,7 @@ fn a_copied_view_is_shared_and_a_copied_small_bitstring_is_not() {
 fn young_granules(block: &Block) -> Vec<bool> {
     (0..span_len(block.capacity))
         .step_by(GRANULE)
-        .map(|offset| is_young(unsafe { block.start.add(offset) }))
+        .map(|offset| range().is_young(unsafe { block.start.add(offset) }))
         .collect()
 }
 
@@ -891,15 +891,18 @@ fn a_huge_object_a_collection_copies_is_old_and_one_allocation_makes_is_young() 
     let tuple = reg.borrow_mut().register(Schema::tuple_of_arity(200));
     let mut heap = Heap::new(SIZE_TABLE[0], reg);
     let big = heap.alloc_struct(tuple);
-    assert!(heap.is_young(big), "a huge object is parked young");
-    assert!(is_young(big));
+    assert!(range().is_young(big), "a huge object is parked young");
+    assert!(range().is_young(big));
 
     let mut roots = [AnyValueRef::from_heap_object(ValueKind::STRUCT, big).expect("struct ref")];
     heap.collect_stats(&mut roots);
     let moved = roots[0].struct_addr().expect("struct");
     assert_ne!(moved, big);
-    assert!(!is_young(moved), "the collector's copy of a huge object is parked old");
-    assert!(!heap.is_young(moved));
+    assert!(
+        !range().is_young(moved),
+        "the collector's copy of a huge object is parked old"
+    );
+    assert!(!range().is_young(moved));
 }
 
 #[test]
@@ -909,7 +912,7 @@ fn a_grafted_gift_block_is_young_and_a_collection_that_copies_it_releases_it() {
     let mut receiver = Heap::new(SIZE_TABLE[0], reg);
     let (segment, gift) = gift_of_list(&mut sender, 1, 3);
     assert!(
-        is_young(list_addr_from_tagged(gift).unwrap()),
+        range().is_young(list_addr_from_tagged(gift).unwrap()),
         "a gift's block is young while it is a segment"
     );
     receiver.graft(segment);

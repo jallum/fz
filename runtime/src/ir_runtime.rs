@@ -590,9 +590,10 @@ pub extern "C" fn fz_heap_room(process: *mut Process, size: usize) -> *mut u8 {
 /// a frame parked alone in a young block of its own is answered as it is.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_frame_for_write(process: *mut Process, frame: u64) -> u64 {
-    let src = closure_addr_from_ref_word(frame, "fz_frame_for_write frame");
+    let frame_ref = any_value_ref_from_word(frame, "fz_frame_for_write frame");
+    let src = frame_ref.closure_addr().expect("fz_frame_for_write frame");
     let process = unsafe { &mut *process };
-    if process.heap.is_young(src) {
+    if !frame_ref.is_literal() && crate::heap::arena::range().is_young(src) {
         return frame;
     }
     let count = unsafe { crate::any_value::closure_captured_count(src) };

@@ -480,8 +480,8 @@ exact ends; an extension that lands elsewhere panics. Debug builds also record o
 cross-check (`FromSpace::assert_classified`, `HeapView::assert_classified`): an
 untagged pointer must lie in a young or old block (`HeapView` also asks that it
 lie in the source heap's blocks), a tagged one in none, and none may lie in
-to-space. `fz_frame_for_write` reads the same table through `Heap::is_young`,
-bounds-checked because a frame can be a literal outside the range.
+to-space. `fz_frame_for_write` reads the same table through `Reservation::is_young`,
+after its own literal check, because a frame can be a literal outside the range.
 
 One `Tracer` (from-space, heap, schemas, the heap's worklist of copied objects) is
 the collection's context, and `Tracer::forward(word, kind)` is its one

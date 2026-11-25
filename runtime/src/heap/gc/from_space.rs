@@ -20,7 +20,7 @@ pub(in super::super) struct FromSpace {
 
 impl FromSpace {
     /// The from-space of a collection of `generation` about to start.
-    pub(in super::super) fn of(_heap: &Heap, generation: Generation) -> Self {
+    pub(in super::super) fn of(generation: Generation) -> Self {
         Self {
             ages: range(),
             minor: generation == Generation::Minor,
@@ -32,7 +32,7 @@ impl FromSpace {
     #[inline]
     pub(in super::super) fn moves(&self, heap: &Heap, p: *mut u8, literal: bool) -> bool {
         self.assert_classified(heap, p, literal);
-        !literal && (!self.minor || self.ages.is_young_in_range(p))
+        !literal && (!self.minor || self.ages.is_young(p))
     }
 
     #[inline]

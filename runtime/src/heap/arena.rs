@@ -30,7 +30,7 @@
 //! writes its mark when it is made and clears it when it is released, and a
 //! free span's table bytes are all zero.
 //!
-//! Nothing reads the age of a free block: `Heap::is_young`, `FromSpace::moves`
+//! Nothing reads the age of a free block: `Reservation::is_young`, `FromSpace::moves`
 //! and `assert_classified` are asked only about addresses of live objects (a
 //! live frame, a pointer a live object holds, an object just written), and a
 //! block is released only once nothing live points into it. A free pooled block
@@ -49,37 +49,11 @@ use std::ptr::write_bytes;
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 
-/// The table's granule is `1 << GRANULE_SHIFT` bytes. `FZ_GRANULE_SHIFT`, set
-/// when the runtime is built, overrides the default of 5 (32 bytes) so the
-/// granule can be profiled.
-pub(super) const GRANULE_SHIFT: u32 = match option_env!("FZ_GRANULE_SHIFT") {
-    Some(text) => parse_shift(text),
-    None => 5,
-};
+/// The table's granule is `1 << GRANULE_SHIFT` bytes: 32.
+pub(super) const GRANULE_SHIFT: u32 = 5;
 
 /// Bytes of address space one table byte describes.
 pub(super) const GRANULE: usize = 1 << GRANULE_SHIFT;
-
-const fn parse_shift(text: &str) -> u32 {
-    let digits = text.as_bytes();
-    assert!(!digits.is_empty(), "FZ_GRANULE_SHIFT is empty");
-    let mut shift = 0u32;
-    let mut i = 0;
-    while i < digits.len() {
-        assert!(digits[i].is_ascii_digit(), "FZ_GRANULE_SHIFT is not a number");
-        shift = shift * 10 + (digits[i] - b'0') as u32;
-        i += 1;
-    }
-    assert!(
-        shift >= 4,
-        "FZ_GRANULE_SHIFT must be at least 4: blocks are 16-byte aligned"
-    );
-    assert!(
-        shift <= 12,
-        "FZ_GRANULE_SHIFT must be at most 12: a granule is at most a page"
-    );
-    shift
-}
 
 /// `bytes` rounded up to whole granules: the span a block of that capacity
 /// occupies.
@@ -127,7 +101,7 @@ const COMMIT_CHUNK: usize = 64 << 20;
 
 /// One reserved range, its age table, and the bump and span list that hand out
 /// spans of it.
-pub(super) struct Reservation {
+pub(crate) struct Reservation {
     base: usize,
     /// The table's first byte, which describes the range's first granule. The
     /// table is reserved and grows with the range: `reserved >> GRANULE_SHIFT`
@@ -156,15 +130,8 @@ unsafe impl Sync for Reservation {}
 static RANGE: OnceLock<Reservation> = OnceLock::new();
 
 /// The process's range, reserved on first use.
-pub(super) fn range() -> &'static Reservation {
+pub(crate) fn range() -> &'static Reservation {
     RANGE.get_or_init(Reservation::reserve_largest)
-}
-
-/// Whether `p` lies in a young block: false for an address outside the range
-/// (a literal, or the system allocator's), and before the range exists.
-#[inline]
-pub(crate) fn is_young(p: *const u8) -> bool {
-    RANGE.get().is_some_and(|range| range.is_young(p))
 }
 
 impl Reservation {
@@ -230,16 +197,14 @@ impl Reservation {
         (p as usize).wrapping_sub(self.base) < self.reserved.load(Ordering::Relaxed)
     }
 
-    /// Whether `p` lies in a young block, false outside the range.
+    /// Whether `p` lies in a young block. The one question the collector, the
+    /// frame-write check and the debug asserts ask of age. `p` must lie in the
+    /// range: a heap object, never a literal (whose address word carries the
+    /// literal bit) and never the system allocator's; a debug build panics on
+    /// one, and a release build would read past the table. The caller's literal
+    /// bit is the bounds check.
     #[inline]
-    pub(super) fn is_young(&self, p: *const u8) -> bool {
-        self.contains(p) && self.is_young_in_range(p)
-    }
-
-    /// Whether `p` lies in a young block, for an address known to be in the
-    /// range: any object a collection moves or leaves, which is untagged.
-    #[inline]
-    pub(super) fn is_young_in_range(&self, p: *const u8) -> bool {
+    pub(crate) fn is_young(&self, p: *const u8) -> bool {
         self.table_byte(p) == YOUNG
     }
 

@@ -162,7 +162,7 @@ bytes, and the pool keeps a free list for each such multiple of 16, so a small
 block is recycled like a table block and its in-use and idle bytes are its exact
 size. A single allocation or gift above the last entry is exact:
 `pick_block_capacity` returns the request rounded up to 16 bytes, and the block is allocated at that size and
-returned to the system allocator, not the pool, when it is released. A young tip
+returned to the span list, not the pool, when it is released. A young tip
 or a collection's to-space is never exact: `pick_tip_capacity` clamps
 `pick_block_capacity` to the last entry, so young space past the table is a chain
 of last-entry blocks that recycle through the pool;
