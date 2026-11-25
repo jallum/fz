@@ -1,0 +1,40 @@
+#---
+# purpose: "An iolist may end in a binary, as in Elixir: a typed improper iolist is iodata, and an untyped one ending in anything else raises ArgumentError"
+# oracle: self
+# oracle.stamp: ae4a6dabfc8fcef9
+#---
+defmodule Main do
+  @spec join(iodata()) :: binary()
+  def join(data), do: IO.iodata_to_binary(data)
+
+  # A value that has been through the mailbox has no type the compiler can
+  # prove, so a bad tail reaches the runtime check.
+  def unknown(term) do
+    send(self(), term)
+
+    receive do
+      received -> received
+    end
+  end
+
+  def rescued(thunk) do
+    try do
+      thunk.()
+    rescue
+      e -> inspect(e.__struct__) <> ": " <> String.replace(Exception.message(e), "\n", "|")
+    end
+  end
+
+  def main() do
+    IO.inspect(IO.iodata_to_binary(["a" | "b"]))
+    IO.inspect(IO.iodata_to_binary(["a", ["b" | "c"] | "d"]))
+    IO.inspect(IO.iodata_to_binary([?a | "b"]))
+    IO.inspect(:erlang.iolist_to_binary(["a", ["b" | "c"] | "d"]))
+    IO.inspect(:erlang.iolist_size(["a", ["b" | "c"] | "d"]))
+    IO.inspect(join(["ab", [?c | "de"] | "f"]))
+    IO.puts(rescued(fn -> IO.iodata_to_binary(["a" | unknown(1)]) end))
+    IO.puts(rescued(fn -> :erlang.iolist_size(["a", ["b" | unknown(:c)]]) end))
+  end
+end
+
+Main.main()

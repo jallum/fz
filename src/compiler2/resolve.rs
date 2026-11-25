@@ -193,17 +193,19 @@ fn terminated_list(types: &mut Types, args: &[Ty], shape: Terminated) -> Ty {
     }
 }
 
-/// Elixir's `iolist()`: a list whose elements are bytes, binaries or iolists.
-/// Elixir allows a binary as an improper tail; this is the proper-list part,
-/// whose terminator is `[]`. `byte()` is `integer`,
-/// since the lattice has no integer ranges.
+/// Elixir's `iolist()`:
+/// `maybe_improper_list(byte | binary | iolist, binary | [])`, so a binary may
+/// end the list as well as `[]`. `byte()` is `integer`, since the lattice has
+/// no integer ranges.
 fn iolist(types: &mut Types) -> Ty {
     types.recursive(1, |types, binders| {
         let int = types.int();
         let binary = types.str_t();
         let leaf = types.union(int, binary);
         let element = types.union(leaf, binders[0]);
-        vec![types.list(element)]
+        let empty = types.empty_list();
+        let last = types.union(binary, empty);
+        vec![types.possibly_empty_cons(element, last)]
     })[0]
 }
 

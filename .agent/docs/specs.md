@@ -27,10 +27,11 @@ Compiler2 owns the active contract path:
 - `dynamic` is also `any`. A typespec's `dynamic()` is the statically unknown
   type, and a spec check treats it as `term()`, as Erlang's typespec reference
   says Dialyzer does. `dynamic(T)` is not a typespec, in Elixir or here.
-- `iodata` is Elixir's `binary | iolist`, and `iolist` is the recursive list
-  `μt. [integer | binary | t]`. `byte` is `integer`, because the lattice has no
-  integer ranges, and `iolist` is the proper-list part (its terminator is `[]`),
-  so an improper iolist such as `["a" | "b"]` is outside `iolist` here.
+- `iodata` is Elixir's `binary | iolist`, and `iolist` is Elixir's
+  `maybe_improper_list(byte | binary | iolist, binary | [])`: the recursive list
+  `μt. [integer | binary | t]` whose terminator is `[]` or a binary, so
+  `["a" | "b"]` is an `iolist`. `byte` is `integer`, because the lattice has no
+  integer ranges.
 - `list(T)` and `[T]` are the proper lists, and `nonempty_list(T)` is `list(T)`
   without the empty list. `maybe_improper_list(E, L)`,
   `nonempty_improper_list(E, L)` and `nonempty_maybe_improper_list(E, L)` are
