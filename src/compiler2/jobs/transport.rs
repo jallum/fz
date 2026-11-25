@@ -558,7 +558,7 @@ pub(super) fn position_ty(
         // convention against different lane counts.
         TransportPosition::ReturnPayload { callsite, .. } => {
             let caller_return_ty = world.activation_return(&executable.activation)?;
-            Some(match callsite_result(facts, *callsite) {
+            Some(match callsite_result(facts.body(), *callsite) {
                 Some((value, false)) => value_ty(world, &value),
                 _ => caller_return_ty,
             })
@@ -607,7 +607,7 @@ pub(super) fn position_demand<'a>(
                 let arg = facts.body().call_args(*callsite)?.get(*semantic_index)?;
                 runtime.value_demands.get(&arg.value)
             }),
-        TransportPosition::ReturnPayload { callsite, .. } => match callsite_result(facts, *callsite) {
+        TransportPosition::ReturnPayload { callsite, .. } => match callsite_result(facts.body(), *callsite) {
             Some((value, false)) => runtime.value_demands.get(&value),
             _ => Some(&runtime.return_demand),
         },
@@ -1690,23 +1690,13 @@ fn produce_local_callable_construction(
 /// The callsite's result value and whether the call sits in tail position
 /// (`ControlDestination::Return`), where the result aliases the caller's
 /// return. `None` when the callsite id names no call tail in this body.
-pub(super) fn callsite_result(facts: &ExecutableFacts, callsite: CallSiteId) -> Option<(ValueId, bool)> {
-    let LoweredBody::Clauses { entries, .. } = facts.body();
-    entries.iter().find_map(|entry| match &entry.tail {
-        LoweredTail::DirectCall {
-            value,
-            callsite: tail_callsite,
-            dest,
-            ..
+pub(super) fn callsite_result(body: &LoweredBody, callsite: CallSiteId) -> Option<(ValueId, bool)> {
+    match body.callsite_tail(callsite)? {
+        LoweredTail::DirectCall { value, dest, .. } | LoweredTail::ClosureCall { value, dest, .. } => {
+            Some((*value, matches!(dest, ControlDestination::Return)))
         }
-        | LoweredTail::ClosureCall {
-            value,
-            callsite: tail_callsite,
-            dest,
-            ..
-        } if *tail_callsite == callsite => Some((*value, matches!(dest, ControlDestination::Return))),
         _ => None,
-    })
+    }
 }
 
 pub(super) fn resume_payload_value(facts: &ExecutableFacts, entry: ControlEntryId) -> ValueId {
