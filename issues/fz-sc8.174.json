@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Bugs and Cleanup",
   "blocked_by": [],
   "blocks": [
     "fz-mue.12"
@@ -13,5 +13,5 @@
   "status": "open",
   "title": "Enum.zip/1 and List.to_tuple/1",
   "type": "feature",
-  "updated_at": "2026-11-20T21:11:55Z"
+  "updated_at": "2026-11-25T11:32:12Z"
 }
