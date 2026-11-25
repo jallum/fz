@@ -2258,3 +2258,15 @@ fn compiler2_frontdoor_no_parens_argument_may_start_with_any_expression_token() 
         .expect("body node");
     assert_eq!(head_name(&body), "%", "`n % 4` stays the modulus");
 }
+
+#[test]
+fn compiler2_frontdoor_alias_import_and_require_are_expressions_in_a_body() {
+    assert_eq!(
+        only_shape(
+            "body_directives.fz",
+            "probe fn ->\n  alias A.B, as: C\n  import Integer, only: [is_even: 1]\n  require Logger\n  C\nend\n"
+        ),
+        "probe(fn(->([], __block__(alias(__aliases__(:A, :B), [{:as, __aliases__(:C)}]), import(__aliases__(:Integer), [{:only, [{:is_even, 1}]}]), require(__aliases__(:Logger)), __aliases__(:C)))))",
+        "the three directives read in a body as the calls they are at module level",
+    );
+}

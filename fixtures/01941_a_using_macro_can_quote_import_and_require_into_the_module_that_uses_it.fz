@@ -1,0 +1,32 @@
+#---
+# purpose: "A __using__ whose quote holds import and require puts both in force in the module that expands it: the imported function is called bare and the required macro is called by its qualified name."
+# oracle: self
+# oracle.stamp: 70a52eddf9919768
+#---
+defmodule Tools do
+  defmacro twice(x) do
+    quote do: unquote(x) * 2
+  end
+
+  def triple(x), do: x * 3
+end
+
+defmodule Helper do
+  defmacro __using__(_opts) do
+    quote do
+      import Tools, only: [triple: 1]
+      require Tools
+    end
+  end
+end
+
+defmodule Main do
+  require Helper
+  Helper.__using__([])
+
+  def main() do
+    IO.inspect({triple(4), Tools.twice(5)})
+  end
+end
+
+Main.main()
