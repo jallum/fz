@@ -7,6 +7,7 @@
     "fz-mue.62"
   ],
   "blocks": [
+    "fz-nhb.15",
     "fz-p8p.25"
   ],
   "created": "2026-11-20T21:11:44Z",
@@ -28,5 +29,5 @@
   "status": "open",
   "title": "Macro.expand/2 expands a quoted macro call in the caller's environment, as in Elixir",
   "type": "feature",
-  "updated_at": "2026-11-25T12:04:44Z"
+  "updated_at": "2026-11-25T12:04:45Z"
 }

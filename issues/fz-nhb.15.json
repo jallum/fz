@@ -1,6 +1,7 @@
 {
   "assignee": "Elixir Parity",
   "blocked_by": [
+    "fz-mue.51",
     "fz-mue.67",
     "fz-mue.68"
   ],
@@ -31,5 +32,5 @@
   "status": "open",
   "title": "defguard and defguardp define guards, as in Elixir",
   "type": "task",
-  "updated_at": "2026-11-25T12:04:43Z"
+  "updated_at": "2026-11-25T12:04:45Z"
 }
