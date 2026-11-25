@@ -504,7 +504,7 @@ fn failed_macro_product_remains_demanded_after_retirement_and_source_repair() {
     let mut compiler = Compiler2::new(tel);
     let failed_code = compiler.submit_code(CodeSubmission {
         name: Some("macro_product_missing_remote.fz".into()),
-        text: "defmacro answer() do\n quote do: unquote(Missing.value())\nend\ndef main(), do: answer()\n".into(),
+        text: "def helper(), do: Missing.value()\ndefmacro answer() do\n quote do: unquote(helper())\nend\ndef main(), do: answer()\n".into(),
     });
     let root = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -530,7 +530,7 @@ fn failed_macro_product_remains_demanded_after_retirement_and_source_repair() {
                 .source_version(failed_code)
                 .expect("failed source version")
         );
-        assert_eq!((diagnostic.primary.span.start, diagnostic.primary.span.end), (40, 53));
+        assert_eq!((diagnostic.primary.span.start, diagnostic.primary.span.end), (18, 33));
     }
     let function = compiler.world_mut().reference_function(ModuleId::GLOBAL, "answer", 0);
     let macro_root = compiler.world_mut().macro_root(function);

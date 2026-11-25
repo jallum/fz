@@ -17,7 +17,7 @@ use crate::source::{SourceMap, Span};
 use crate::telemetry::TelemetryExt as _;
 
 use super::code::SourceOwner;
-use super::definition_time::{self, Evaluated};
+use super::definition_time::{self, Evaluated, Evaluation};
 use super::drive::{DerivationKey, FactKey, JobDerivation, JobEffects, current_uses, emit_job_diagnostic};
 use super::identity::{
     DeclaredCallableKind, FunctionBody, FunctionId, FunctionSource, ModuleId, NotedTypeDecl, ProtocolImplSource,
@@ -29,10 +29,10 @@ use super::protocol::ProtocolCallbackImpl;
 use super::quoted_expander::{
     ExpandedScopeFragment, ExpandedValue, ExpansionContext, QuotedExpansionCtx, emit_internal_surface_error,
     emit_surface_read_error, expand_item_macro_fragment, item_macro_expanded_to_a_non_definition,
-    item_macro_not_defmacro, read_compiler_fragment_root,
+    item_macro_not_defmacro, read_compiler_fragment_root, read_expanded_items,
 };
 use super::quoted_surface::{
-    AttributeForm, CompilerService, CompilerServiceForm, FunctionForm, MacroCallForm, OverridableForm,
+    AttributeForm, CompilerService, CompilerServiceForm, FragmentForm, FunctionForm, MacroCallForm, OverridableForm,
     ProtocolImplForm, ReservedSourceDefinition, ScopeForm, ScopeSurface, StatementForm, StructFields, StructForm,
     attribute_symbol, defines_a_function, function_doc_attributes, is_documentation_attribute, is_documentation_value,
     is_written_literal, read_module_body_surface, read_protocol_body_surface, read_protocol_impl_body_surface,
@@ -88,6 +88,18 @@ struct FragmentPublicationContext {
     /// not counted yet. The fragment `Fz.Compiler.define` hands back is the
     /// `def` the walk already reserved.
     functions_are_new: bool,
+    origin: ClauseOrigin,
+}
+
+/// Who wrote the clauses of a fragment. The module body's own `def`s are
+/// written, and a function of them is defined once: a second written
+/// definition of it is refused. What a macro expands to, or an unquote
+/// fragment evaluates to, is expanded, and its clauses join the function of
+/// the same name and arity the module already has, as Elixir's do.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ClauseOrigin {
+    Written,
+    Expanded,
 }
 
 impl FragmentPublicationContext {
@@ -97,6 +109,7 @@ impl FragmentPublicationContext {
             export_public: true,
             discovery: FragmentDiscovery::AlreadyIndexed,
             functions_are_new: true,
+            origin: ClauseOrigin::Written,
         }
     }
 
@@ -106,15 +119,20 @@ impl FragmentPublicationContext {
             export_public: true,
             discovery: FragmentDiscovery::DiscoverNestedModules,
             functions_are_new: true,
+            origin: ClauseOrigin::Expanded,
         }
     }
 
-    fn compiler_define(current_module: ModuleId) -> Self {
+    /// The definition `Fz.Compiler.define` hands back, which the walk reserved
+    /// when it reached the call that made it, written or expanded as that
+    /// call was.
+    fn compiler_define(current_module: ModuleId, origin: ClauseOrigin) -> Self {
         Self {
             owner_module: current_module,
             export_public: true,
             discovery: FragmentDiscovery::DiscoverNestedModules,
             functions_are_new: false,
+            origin,
         }
     }
 }
@@ -166,6 +184,23 @@ struct ReachedDefinition {
     function: FunctionForm,
     namespace: Namespace,
     owner_module: ModuleId,
+    origin: ClauseOrigin,
+}
+
+impl ReachedDefinition {
+    /// Whether `later`, reached from `origin`, adds clauses to this function:
+    /// it is the same kind of definition, and one of the two is expanded.
+    fn takes_clauses_of(&self, later: &FunctionForm, origin: ClauseOrigin) -> bool {
+        let same_kind = self.function.is_macro == later.is_macro && self.function.is_private == later.is_private;
+        same_kind && (self.origin == ClauseOrigin::Expanded || origin == ClauseOrigin::Expanded)
+    }
+}
+
+/// A definition the walk has reached and the scope it stands in, ready to
+/// publish.
+struct ReachedFunction {
+    function: FunctionForm,
+    namespace: Namespace,
 }
 
 struct ScopeSession<'world, 'tel, T: crate::telemetry::Telemetry> {
@@ -838,6 +873,13 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
                 ScopeForm::Struct(_) => {
                     self.reserve_local_callable(STRUCT_FUNCTION, 0, false, true);
                 }
+                // A fragment's head names what it defines when its name is
+                // written; a name that computes is bound once it has run.
+                ScopeForm::Fragment(fragment) => {
+                    if let Some(head) = &fragment.head {
+                        self.reserve_local_callable(&head.name, head.arity, head.is_macro, true);
+                    }
+                }
                 ScopeForm::Alias(_)
                 | ScopeForm::Import(_)
                 | ScopeForm::Require(_)
@@ -936,13 +978,21 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
         Ok(None)
     }
 
-    fn apply_compiler_service(&mut self, service: &CompilerServiceForm) -> Result<Option<JobEffects>, FatalError> {
+    fn apply_compiler_service(
+        &mut self,
+        service: &CompilerServiceForm,
+        origin: ClauseOrigin,
+    ) -> Result<Option<JobEffects>, FatalError> {
         match service.service {
-            CompilerService::Define => self.apply_compiler_define(service),
+            CompilerService::Define => self.apply_compiler_define(service, origin),
         }
     }
 
-    fn apply_compiler_define(&mut self, service: &CompilerServiceForm) -> Result<Option<JobEffects>, FatalError> {
+    fn apply_compiler_define(
+        &mut self,
+        service: &CompilerServiceForm,
+        origin: ClauseOrigin,
+    ) -> Result<Option<JobEffects>, FatalError> {
         let source_map = self.world.source_map();
         let surface = read_compiler_fragment_root(
             self.telemetry,
@@ -980,7 +1030,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
                 ),
             ));
         }
-        let context = FragmentPublicationContext::compiler_define(self.current_module);
+        let context = FragmentPublicationContext::compiler_define(self.current_module, origin);
         self.apply_surface_fragment(&surface, &context)
     }
 
@@ -1020,6 +1070,10 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
         // Reaching this definition is one answer of the walk: whatever the
         // rest of the scope turns out to need, this function's source follows
         // from the ground the walk has read so far and nothing below it.
+        // A function that gains clauses is published again, and this answer
+        // stands in place of the one it supersedes.
+        self.derivations
+            .retain(|derivation| derivation.key != DerivationKey::Function(publication.function));
         self.derivations.push(JobDerivation {
             key: DerivationKey::Function(publication.function),
             reads: current_uses(self.reads.clone()),
@@ -1061,11 +1115,60 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
         let source_map = self.world.source_map();
         let functions_are_new = !defines_a_function(&macro_call.source, &source_map.borrow())
             .map_err(|error| emit_surface_read_error(self.telemetry, "item macro call read failed", &error))?;
+        let origin = if functions_are_new {
+            ClauseOrigin::Expanded
+        } else {
+            ClauseOrigin::Written
+        };
         let context = FragmentPublicationContext {
             functions_are_new,
+            origin,
             ..FragmentPublicationContext::expanded_fragment(self.current_module)
         };
         self.apply_surface_fragment(&surface, &context)
+    }
+
+    /// Runs an unquote fragment: the definition is quoted in the module as
+    /// the walk has it, each `unquote` takes its value, and what comes back
+    /// is defined as if it had been written.
+    fn apply_fragment(&mut self, fragment: &FragmentForm) -> Result<Option<JobEffects>, FatalError> {
+        let expansion = match self.evaluate_at_definition(&fragment.source, Evaluation::Quote, fragment.span)? {
+            Evaluated::Value(expansion) => expansion,
+            Evaluated::Blocked(effects) => return Ok(Some(*effects)),
+        };
+        let source_map = self.world.source_map();
+        let surface = read_expanded_items(self.telemetry, &expansion, &source_map.borrow())?;
+        self.require_fragment_definition(fragment, &surface)?;
+        let context = FragmentPublicationContext {
+            functions_are_new: fragment.head.is_none(),
+            ..FragmentPublicationContext::expanded_fragment(self.current_module)
+        };
+        self.apply_surface_fragment(&surface, &context)
+    }
+
+    /// A fragment defines the one function its head names, so a result that
+    /// defines anything else is a fault in the walk's reading of the head.
+    fn require_fragment_definition(&self, fragment: &FragmentForm, surface: &ScopeSurface) -> Result<(), FatalError> {
+        let defined = match surface.forms.as_slice() {
+            [ScopeForm::Function(function)] => Some(function),
+            _ => None,
+        };
+        let agrees = defined.is_some_and(|function| {
+            fragment.head.as_ref().is_none_or(|head| {
+                head.name == function.name && head.arity == function.arity && head.is_macro == function.is_macro
+            })
+        });
+        if agrees {
+            return Ok(());
+        }
+        Err(emit_job_diagnostic(
+            self.telemetry,
+            Diagnostic::error(
+                codes::INTERNAL_POST_RESOLUTION_LEFTOVER,
+                "an unquote fragment evaluated to something other than the one function its head names",
+                fragment.span,
+            ),
+        ))
     }
 
     fn apply_statement(&mut self, statement: &StatementForm) -> Result<Option<JobEffects>, FatalError> {
@@ -1117,7 +1220,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
             }
             ScopeForm::Import(import) => self.apply_import(import),
             ScopeForm::Require(import) => self.apply_require(import),
-            ScopeForm::CompilerService(service) => self.apply_compiler_service(service),
+            ScopeForm::CompilerService(service) => self.apply_compiler_service(service, context.origin),
             ScopeForm::Overridable(overridable) => {
                 self.mark_overridable(overridable)?;
                 Ok(None)
@@ -1138,6 +1241,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
             }
             ScopeForm::ProtocolImpl(protocol_impl) => self.register_protocol_impl(protocol_impl),
             ScopeForm::MacroCall(macro_call) => self.apply_item_macro_call(macro_call),
+            ScopeForm::Fragment(fragment) => self.apply_fragment(fragment),
             ScopeForm::Statement(statement) => self.apply_statement(statement),
             ScopeForm::Attribute(attribute) => self.apply_attribute(attribute),
             ScopeForm::Struct(form) => {
@@ -1257,12 +1361,12 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
     fn evaluate_at_definition(
         &mut self,
         expr: &QuotedSourceRoot,
-        escape: (&str, &str),
+        evaluation: Evaluation,
         span: Span,
     ) -> Result<Evaluated<QuotedSourceRoot>, FatalError> {
         let name = definition_time::evaluator_name(self.definition_time_evaluations);
         self.definition_time_evaluations += 1;
-        let evaluator = definition_time::evaluator(expr, escape, &name, span).map_err(|error| {
+        let evaluator = definition_time::evaluator(expr, evaluation, &name, span).map_err(|error| {
             emit_internal_surface_error(
                 self.telemetry,
                 format!("definition-time evaluator synthesis failed: {error}"),
@@ -1301,15 +1405,15 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
         if let Some(effects) = self.evaluate_function_docs(function)? {
             return Ok(Some(effects));
         }
-        let Some(namespace) = self.reach_definition(function, context)? else {
+        let Some(reached) = self.reach_definition(function, context)? else {
             return Ok(None);
         };
         let superseded = std::mem::take(&mut self.local_callable(&function.name, function.arity).superseded);
         let publication = self.define_source_function_superseding(
             self.current_module,
             context.owner_module,
-            namespace,
-            function,
+            reached.namespace,
+            &reached.function,
             context,
             superseded,
         )?;
@@ -1321,20 +1425,24 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
         Ok(None)
     }
 
-    /// Records that the walk has reached `function`, and answers the scope
-    /// it stands in, or `None` when it does not stand: a definition with
-    /// another still to come is replaced by it or refused. A definition that
-    /// replaces one marked overridable sees that one as `super`.
+    /// Records that the walk has reached `function`, and answers what to
+    /// publish and the scope it stands in, or `None` when it does not stand:
+    /// a definition with another still to come is replaced by it or refused.
+    /// A definition that replaces one marked overridable sees that one as
+    /// `super`. A definition whose clauses join the function's earlier ones
+    /// answers all of them, in the order they were reached.
     fn reach_definition(
         &mut self,
         function: &FunctionForm,
         context: &FragmentPublicationContext,
-    ) -> Result<Option<Namespace>, FatalError> {
+    ) -> Result<Option<ReachedFunction>, FatalError> {
         let callable = self.local_callable(&function.name, function.arity);
         callable.to_come = callable
             .to_come
             .checked_sub(1)
             .expect("the walk reaches each definition it counted once");
+        let mut function = function.clone();
+        let mut origin = context.origin;
         let namespace = match std::mem::replace(&mut callable.standing, Standing::NotDefined) {
             Standing::NotDefined => self.namespace,
             Standing::Overridable(replaced) if replaced.function.is_macro == function.is_macro => {
@@ -1345,13 +1453,20 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
             Standing::Overridable(replaced) => {
                 return Err(emit_job_diagnostic(
                     self.telemetry,
-                    overridden_as_another_kind(function, &replaced.function),
+                    overridden_as_another_kind(&function, &replaced.function),
                 ));
+            }
+            Standing::Defined(first) if first.takes_clauses_of(&function, context.origin) => {
+                function = first.function.followed_by(&function).map_err(|error| {
+                    emit_internal_surface_error(self.telemetry, format!("function clause join failed: {error}"))
+                })?;
+                origin = ClauseOrigin::Expanded;
+                self.namespace
             }
             Standing::Defined(first) => {
                 return Err(emit_job_diagnostic(
                     self.telemetry,
-                    defined_again(function, &first.function),
+                    defined_again(&function, &first.function),
                 ));
             }
         };
@@ -1361,8 +1476,9 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
             function: function.clone(),
             namespace,
             owner_module,
+            origin,
         });
-        Ok((callable.to_come == 0).then_some(namespace))
+        Ok((callable.to_come == 0).then_some(ReachedFunction { function, namespace }))
     }
 
     fn local_callable(&mut self, name: &str, arity: usize) -> &mut LocalCallable {
@@ -2166,6 +2282,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
             export_public: false,
             discovery: FragmentDiscovery::AlreadyIndexed,
             functions_are_new: true,
+            origin: ClauseOrigin::Written,
         };
         let mut callbacks = HashMap::default();
         for function in functions {
@@ -2253,8 +2370,8 @@ fn build_script_main(statements: &[StatementForm], span: Span) -> Result<Functio
 
 /// The library function that escapes an evaluated `defstruct` field list,
 /// as Elixir's `Kernel.Utils.defstruct` does.
-const DEFSTRUCT_FIELDS: (&str, &str) = ("Kernel.Utils", "defstruct_fields");
-const MACRO_ESCAPE: (&str, &str) = ("Macro", "escape");
+const DEFSTRUCT_FIELDS: Evaluation = Evaluation::Escape("Kernel.Utils", "defstruct_fields");
+const MACRO_ESCAPE: Evaluation = Evaluation::Escape("Macro", "escape");
 
 /// The function a program's first process starts in.
 pub(crate) const PROGRAM_ENTRY: &str = "__entry__";

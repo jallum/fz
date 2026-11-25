@@ -6,6 +6,7 @@ use crate::source::{SourceMap, Span};
 use crate::telemetry::TelemetryExt as _;
 
 use super::canon::function_label;
+use super::definition_time::is_evaluator_name;
 use super::drive::{FactKey, JobEffects, ProductAddress, emit_job_diagnostic};
 use super::env_projection::CallSite;
 use super::identity::{FunctionId, ModuleId};
@@ -15,7 +16,9 @@ use super::module_interface::{InterfaceRequester, ReferencingCall};
 use super::namespace::NamespaceSymbol;
 use super::pull::{ProductKey, ProductSessions, ProductValue};
 use super::quoted_function::decode_standalone_expr;
-use super::quoted_surface::{MacroCallForm, ScopeSurface, is_scope_definition_head, read_compiler_fragment_surface};
+use super::quoted_surface::{
+    MacroCallForm, ScopeSurface, is_function_definition_head, is_scope_definition_head, read_compiler_fragment_surface,
+};
 use super::scope::ScopeSnapshot;
 use super::source::{ListItems, QuotedAstNode, QuotedSourceCursor, QuotedSourceError, QuotedSourceRoot};
 use super::source_sugar::{rewrite_guard_membership, rewrite_source_sugar};
@@ -510,7 +513,7 @@ pub(crate) trait QuotedExpansionCtx {
             emit_internal_surface_error(self.telemetry(), format!("quoted call head read failed: {error}"))
         })?;
         if head == "quote" {
-            return Ok(Some(ExpandedValue::Complete(cursor.root())));
+            return self.expand_quoted_call(owner, cursor, node, scope, depth).map(Some);
         }
         if head == "when" && arity >= 2 {
             let args = self.call_args(&node.tail)?;
@@ -521,7 +524,14 @@ pub(crate) trait QuotedExpansionCtx {
         if is_scope_definition_head(&head) {
             let args = self.call_args(&node.tail)?;
             let mut expanded = Vec::with_capacity(args.len());
+            // A function's head names what it defines, so it is no call to
+            // expand: the function's own expansion reads its parameters.
+            let head_is_signature = is_function_definition_head(&head);
             for (index, arg) in args.iter().enumerate() {
+                if index == 0 && head_is_signature {
+                    expanded.push(arg.root());
+                    continue;
+                }
                 let value = self.expand_cursor_with_root_sugar(owner, arg, scope, depth, index != 0)?;
                 match value {
                     ExpandedValue::Complete(value) => expanded.push(value),
@@ -745,6 +755,126 @@ pub(crate) trait QuotedExpansionCtx {
 
     /// `node` with its arguments replaced by `expanded`, or `cursor` itself
     /// when no argument changed.
+    /// A `quote` is data except for its `unquote`s, each of which holds code
+    /// the enclosing function runs. That code expands as any other does, for
+    /// its `@name` reads and macro calls; the rest of the quote stays as
+    /// written, a nested `quote` with it.
+    fn expand_quoted_unquotes(
+        &mut self,
+        owner: &QuotedSourceRoot,
+        cursor: &QuotedSourceCursor,
+        scope: ScopeSnapshot,
+        depth: usize,
+    ) -> Result<ExpandedValue, fz_engine::FatalError> {
+        let source_map = self.world().source_map();
+        let node = cursor.ast_node(&source_map.borrow()).map_err(|error| {
+            emit_internal_surface_error(self.telemetry(), format!("quoted code read failed: {error}"))
+        })?;
+        let Some(node) = node else {
+            return self.expand_quoted_collection(owner, cursor, scope, depth);
+        };
+        let nested_quote =
+            node.head.root().tag() == ValueKind::ATOM && node.head.atom_name().is_ok_and(|name| name == "quote");
+        if nested_quote {
+            return Ok(ExpandedValue::Complete(cursor.root()));
+        }
+        self.expand_quoted_call(owner, cursor, &node, scope, depth)
+    }
+
+    /// One call of quoted code: an `unquote` expands its argument, any other
+    /// call keeps its name and looks in its parts for `unquote`s.
+    fn expand_quoted_call(
+        &mut self,
+        owner: &QuotedSourceRoot,
+        cursor: &QuotedSourceCursor,
+        node: &QuotedAstNode,
+        scope: ScopeSnapshot,
+        depth: usize,
+    ) -> Result<ExpandedValue, fz_engine::FatalError> {
+        let builder = owner.builder();
+        let head_is_atom = node.head.root().tag() == ValueKind::ATOM;
+        let head_name = if head_is_atom {
+            Some(node.head.atom_name().map_err(|error| {
+                emit_internal_surface_error(self.telemetry(), format!("quoted call head read failed: {error}"))
+            })?)
+        } else {
+            None
+        };
+        let args = if is_list_like(&node.tail) {
+            self.call_args(&node.tail)?
+        } else {
+            return Ok(ExpandedValue::Complete(cursor.root()));
+        };
+        let unquote = matches!(head_name.as_deref(), Some("unquote" | "unquote_splicing"));
+        let head = if head_is_atom {
+            ExpandedValue::Complete(node.head.root())
+        } else {
+            self.expand_quoted_unquotes(owner, &node.head, scope, depth)?
+        };
+        let ExpandedValue::Complete(head) = head else {
+            return Ok(head);
+        };
+        let mut expanded = Vec::with_capacity(args.len());
+        for arg in &args {
+            let value = if unquote {
+                self.expand_cursor(owner, arg, scope, depth)?
+            } else {
+                self.expand_quoted_unquotes(owner, arg, scope, depth)?
+            };
+            match value {
+                ExpandedValue::Complete(value) => expanded.push(value),
+                blocked @ ExpandedValue::Blocked(_) => return Ok(blocked),
+            }
+        }
+        let unchanged =
+            head == node.head.root() && expanded.iter().copied().eq(args.iter().map(QuotedSourceCursor::root));
+        if unchanged {
+            return Ok(ExpandedValue::Complete(cursor.root()));
+        }
+        builder
+            .list(&expanded)
+            .and_then(|tail| builder.tuple(&[head, node.meta.root(), tail]))
+            .map(ExpandedValue::Complete)
+            .map_err(|error| {
+                emit_internal_surface_error(self.telemetry(), format!("quoted call rebuild failed: {error}"))
+            })
+    }
+
+    /// The quoted code that is not a call: a list of it, or a pair.
+    fn expand_quoted_collection(
+        &mut self,
+        owner: &QuotedSourceRoot,
+        cursor: &QuotedSourceCursor,
+        scope: ScopeSnapshot,
+        depth: usize,
+    ) -> Result<ExpandedValue, fz_engine::FatalError> {
+        let items = match cursor.root().tag() {
+            ValueKind::LIST => cursor.list_items(),
+            ValueKind::STRUCT if cursor.tuple_arity().is_ok_and(|arity| arity == 2) => cursor.tuple_items(),
+            _ => return Ok(ExpandedValue::Complete(cursor.root())),
+        }
+        .map_err(|error| emit_internal_surface_error(self.telemetry(), format!("quoted code read failed: {error}")))?;
+        let mut expanded = Vec::with_capacity(items.len());
+        for item in &items {
+            match self.expand_quoted_unquotes(owner, item, scope, depth)? {
+                ExpandedValue::Complete(value) => expanded.push(value),
+                blocked @ ExpandedValue::Blocked(_) => return Ok(blocked),
+            }
+        }
+        if expanded.iter().copied().eq(items.iter().map(QuotedSourceCursor::root)) {
+            return Ok(ExpandedValue::Complete(cursor.root()));
+        }
+        let builder = owner.builder();
+        let rebuilt = if cursor.root().tag() == ValueKind::LIST {
+            builder.list(&expanded)
+        } else {
+            builder.tuple(&expanded)
+        };
+        rebuilt.map(ExpandedValue::Complete).map_err(|error| {
+            emit_internal_surface_error(self.telemetry(), format!("quoted code rebuild failed: {error}"))
+        })
+    }
+
     fn rebuild_call(
         &self,
         owner: &QuotedSourceRoot,
@@ -1141,9 +1271,13 @@ pub(crate) trait QuotedExpansionCtx {
             let value = invalid.inspect().map_err(|error| {
                 emit_internal_surface_error(tel, format!("macro result inspection failed: {error}"))
             })?;
+            // An evaluator stands for code the source wrote, so there is no
+            // macro to name.
+            let macro_label =
+                (!is_evaluator_name(world.function_ref(function).name())).then(|| function_label(world, function));
             return Err(invalid_quoted_expr(
                 tel,
-                &function_label(world, function),
+                macro_label.as_deref(),
                 &value,
                 macro_call_span.unwrap_or(Span::DUMMY),
             ));
@@ -1584,14 +1718,20 @@ pub(crate) fn expand_item_macro_fragment<C: QuotedExpansionCtx>(
         ExpandedValue::Blocked(effects) => return Ok(ExpandedScopeFragment::Blocked(effects)),
     };
     let source_map = ctx.world().source_map();
-    let expanded = item_macro_fragment_root(ctx.telemetry(), &owner.subroot(expanded), &source_map.borrow())?;
-    let surface = read_compiler_fragment_root(
-        ctx.telemetry(),
-        &expanded,
-        "item macro expanded source",
-        &source_map.borrow(),
-    )?;
+    let surface = read_expanded_items(ctx.telemetry(), &owner.subroot(expanded), &source_map.borrow())?;
     Ok(ExpandedScopeFragment::Complete(surface))
+}
+
+/// The definitions a macro's expansion makes, read as a surface: a list is
+/// its elements, a block is its statements, and anything else is the one
+/// item.
+pub(crate) fn read_expanded_items(
+    tel: &impl crate::telemetry::Telemetry,
+    expansion: &QuotedSourceRoot,
+    sources: &SourceMap,
+) -> Result<ScopeSurface, fz_engine::FatalError> {
+    let items = item_macro_fragment_root(tel, expansion, sources)?;
+    read_compiler_fragment_root(tel, &items, "item macro expanded source", sources)
 }
 
 /// The items an item macro's expansion defines: a list is its elements, a
@@ -1927,23 +2067,26 @@ fn first_invalid_call_node(
 /// `invalid quoted expression` error, naming the macro it came from.
 fn invalid_quoted_expr(
     tel: &impl crate::telemetry::Telemetry,
-    macro_label: &str,
+    macro_label: Option<&str>,
     value: &str,
     span: Span,
 ) -> fz_engine::FatalError {
-    emit_job_diagnostic(
-        tel,
-        Diagnostic::error(
-            codes::MACRO_INVALID_QUOTED_EXPR,
-            format!(
-                "invalid quoted expression: {value}\n\n\
+    let diagnostic = Diagnostic::error(
+        codes::MACRO_INVALID_QUOTED_EXPR,
+        format!(
+            "invalid quoted expression: {value}\n\n\
                  Please make sure your quoted expressions are made of valid AST nodes. \
                  If you would like to introduce a value into the AST, such as a four-element \
                  tuple or a map, make sure to call Macro.escape/1 before"
-            ),
-            span,
-        )
-        .with_note(format!("expanding macro: {macro_label}")),
+        ),
+        span,
+    );
+    emit_job_diagnostic(
+        tel,
+        match macro_label {
+            Some(label) => diagnostic.with_note(format!("expanding macro: {label}")),
+            None => diagnostic,
+        },
     )
 }
 

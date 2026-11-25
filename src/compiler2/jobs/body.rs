@@ -1058,6 +1058,9 @@ struct QuoteLowerer<'a, 'w, 'tel, 'f, 'env, 'steps, 'q, T: crate::telemetry::Tel
     /// how many have been taken so far.
     splices: &'q [Spanned<Expr>],
     next_splice: usize,
+    /// How many `quote`s enclose the node being lowered inside this one. An
+    /// `unquote` inside one of them belongs to it, so it stays quoted code.
+    nested_quotes: usize,
 }
 
 impl<'a, 'w, 'tel, 'f, 'env, 'steps, 'q, T: crate::telemetry::Telemetry>
@@ -1075,6 +1078,7 @@ impl<'a, 'w, 'tel, 'f, 'env, 'steps, 'q, T: crate::telemetry::Telemetry>
             steps,
             splices,
             next_splice: 0,
+            nested_quotes: 0,
         }
     }
 
@@ -1160,10 +1164,14 @@ impl<'a, 'w, 'tel, 'f, 'env, 'steps, 'q, T: crate::telemetry::Telemetry>
 
         if node.head.root().tag() == ValueKind::ATOM {
             let name = node.head.atom_name().map_err(|error| self.surface_error(error))?;
-            if name == "unquote" && args.len() == 1 {
+            if name == "unquote" && args.len() == 1 && self.nested_quotes == 0 {
                 return self.lower_unquote().map(Quoted::Built);
             }
-            let values = self.each_quoted(&args, sources)?;
+            let nested = name == "quote";
+            self.nested_quotes += usize::from(nested);
+            let values = self.each_quoted(&args, sources);
+            self.nested_quotes -= usize::from(nested);
+            let values = values?;
             let bound = self.resolve_quoted_callable(&name, values.len());
             return Ok(self.lower_call_node(&name, bound, values));
         }

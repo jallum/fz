@@ -156,7 +156,7 @@ fn compiler2_protocol_surface_rejects_a_bodyless_defp_fragment() {
 }
 
 #[test]
-fn compiler2_quoted_surface_uses_lexer_authority_for_local_definition_names() {
+fn compiler2_quoted_surface_names_a_function_by_any_atom_a_generated_definition_carries() {
     let tel = ConfiguredTelemetry::new();
     let source = "def valid(value), do: value\n";
     let mut code = CodeMap::new();
@@ -175,31 +175,34 @@ fn compiler2_quoted_surface_uses_lexer_authority_for_local_definition_names() {
         .expect("head node");
     let builder = root.builder();
 
-    for invalid_name in ["_", "Foo", "do"] {
-        let invalid_head = builder
+    for generated_name in ["_", "Foo", "do", "true", "a b"] {
+        let generated_head = builder
             .tuple(&[
-                builder.atom(invalid_name),
+                builder.atom(generated_name),
                 valid_head.meta.root(),
                 valid_head.tail.root(),
             ])
             .expect("invalid head node");
-        let invalid_args = builder
-            .list(&[invalid_head, definition_args[1].root()])
+        let generated_args = builder
+            .list(&[generated_head, definition_args[1].root()])
             .expect("definition args");
-        let invalid_definition = builder
-            .tuple(&[definition.head.root(), definition.meta.root(), invalid_args])
+        let generated_definition = builder
+            .tuple(&[definition.head.root(), definition.meta.root(), generated_args])
             .expect("definition node");
-        let invalid_root = root
-            .interned_list_subroot(&[invalid_definition])
+        let generated_root = root
+            .interned_list_subroot(&[generated_definition])
             .expect("definition root");
 
-        let error = read_compiler_fragment_surface(&invalid_root, &sources)
-            .expect_err("non-identifier source words cannot become local function names");
-        assert_eq!(
-            error.user_code(),
-            Some(crate::diag::codes::PARSE_INVALID_FUNCTION_DEFINITION),
-            "{invalid_name}: {error}"
-        );
+        let surface = read_compiler_fragment_surface(&generated_root, &sources).expect("a generated name is any atom");
+        let names = surface
+            .forms
+            .iter()
+            .map(|form| match form {
+                ScopeForm::Function(function) => function.name.as_str(),
+                other => panic!("expected a function, got {other:?}"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(names, [generated_name]);
     }
 }
 
@@ -642,6 +645,29 @@ fn ungrouped_of(source: &str) -> Vec<(String, String, usize, bool)> {
         .collect()
 }
 
+/// What each form of `source` is: `None` for a form that is not a fragment,
+/// and for a fragment the function its head names, if it names one.
+fn fragment_heads(source: &str) -> Vec<Option<Option<(String, usize, bool)>>> {
+    let tel = ConfiguredTelemetry::new();
+    let mut code = CodeMap::new();
+    let owner = code.define(Some("fragments.fz".to_string()), source.to_string());
+    let root = parse_code(&code, owner, &tel);
+    let surface = read_scope_surface(&root, &code.source_map().borrow()).expect("surface");
+    surface
+        .forms
+        .iter()
+        .map(|form| match form {
+            ScopeForm::Fragment(fragment) => Some(
+                fragment
+                    .head
+                    .as_ref()
+                    .map(|head| (head.name.clone(), head.arity, head.is_macro)),
+            ),
+            _ => None,
+        })
+        .collect()
+}
+
 #[test]
 fn a_clause_written_after_another_functions_clause_is_ungrouped() {
     let ungrouped = ungrouped_of("def h(1), do: 1\ndef g(), do: 0\ndef h(2), do: 2\n");
@@ -662,4 +688,64 @@ fn adjacent_clauses_and_a_new_function_after_another_are_grouped() {
 #[test]
 fn a_statement_between_clauses_separates_nothing() {
     assert!(ungrouped_of("def h(1), do: 1\nIO.puts(\"x\")\ndef h(2), do: 2\n").is_empty());
+}
+
+#[test]
+fn a_definition_with_an_unquote_outside_a_quote_is_a_fragment() {
+    let heads = fragment_heads(
+        "def unquote(:true)(a, b), do: a\n\
+         defp unquote(:false)(a) when a, do: a\n\
+         def go(x), do: unquote(x)\n\
+         def with_arg(unquote(:ok)), do: 1\n\
+         def unquote(:one), do: 1\n\
+         def plain(x), do: x\n\
+         defmacro quoted(x), do: quote(do: unquote(x))\n",
+    );
+    assert_eq!(
+        heads,
+        vec![
+            Some(Some(("true".to_string(), 2, false))),
+            Some(Some(("false".to_string(), 1, false))),
+            Some(Some(("go".to_string(), 1, false))),
+            Some(Some(("with_arg".to_string(), 1, false))),
+            Some(Some(("one".to_string(), 0, false))),
+            None,
+            None,
+        ],
+        "an unquote that no quote encloses runs in the module body, so its definition is a fragment; \
+         one inside a quote is the macro's own"
+    );
+}
+
+#[test]
+fn a_fragment_whose_name_or_parameters_compute_names_no_function_until_it_runs() {
+    let heads = fragment_heads(
+        "def unquote(String.to_atom(\"n\"))(), do: 1\n\
+         def unquote(name)(a), do: a\n\
+         def spread(unquote_splicing(parameters)), do: 1\n\
+         defmacro unquote(:m)(a), do: a\n",
+    );
+    assert_eq!(
+        heads,
+        vec![
+            Some(None),
+            Some(None),
+            Some(None),
+            Some(Some(("m".to_string(), 1, true)))
+        ],
+    );
+}
+
+#[test]
+fn a_fragment_stands_in_its_place_between_the_clauses_around_it() {
+    let heads = fragment_heads(
+        "def t(1), do: 1\n\
+         def unquote(:t)(2), do: 2\n\
+         def t(3), do: 3\n",
+    );
+    assert_eq!(
+        heads,
+        vec![None, Some(Some(("t".to_string(), 1, false))), None],
+        "the clauses written before and after a fragment are separate forms, as they are around any other item"
+    );
 }

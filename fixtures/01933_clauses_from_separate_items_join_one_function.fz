@@ -1,0 +1,30 @@
+#---
+# purpose: "clauses that separate items define join one function in the order the module defines them: two item macros each emit a clause of t/1, with written clauses between and after them"
+# oracle: self
+# oracle.stamp: cdd1157c680199de
+#---
+defmodule Clauses do
+  defmacro clause(value) do
+    quote do
+      def t(unquote(value)), do: unquote(value)
+    end
+  end
+end
+
+defmodule Joined do
+  require Clauses
+
+  Clauses.clause(:one)
+  Clauses.clause(:two)
+  def t(:three), do: :three
+  Clauses.clause(:four)
+  def t(_), do: :other
+end
+
+defmodule Main do
+  def main() do
+    IO.inspect({Joined.t(:one), Joined.t(:two), Joined.t(:three), Joined.t(:four), Joined.t(5)})
+  end
+end
+
+Main.main()
