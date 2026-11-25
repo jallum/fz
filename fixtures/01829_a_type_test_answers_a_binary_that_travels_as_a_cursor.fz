@@ -1,0 +1,44 @@
+#---
+# purpose: "is_binary, is_bitstring and is_list, tested in a guard of a function that is handed the rest of a match, answer what Elixir answers whether the rest is whole bytes or not, and for the rest of a binary_part result"
+# oracle: self
+# oracle.stamp: 06ad7dd06ad37633
+# args: 0
+#---
+defmodule Main do
+  def binary?(b) when is_binary(b), do: true
+  def binary?(_), do: false
+
+  def bitstring?(b) when is_bitstring(b), do: true
+  def bitstring?(_), do: false
+
+  def list?(b) when is_list(b), do: true
+  def list?(_), do: false
+
+  def not_binary?(b) when not is_binary(b), do: true
+  def not_binary?(_), do: false
+
+  def value(b) when is_binary(b), do: byte_size(b)
+
+  # The rest after a prefix of n bits is handed on as a view of its source.
+  def after_bits(<<_::3, rest::bits>>), do: {binary?(rest), bitstring?(rest), list?(rest), not_binary?(rest)}
+  def after_bits(_), do: :short
+
+  def after_bytes(<<_, rest::bits>>), do: {binary?(rest), bitstring?(rest), list?(rest), not_binary?(rest)}
+  def after_bytes(_), do: :short
+
+  def after_bits_whole(<<_::3, rest::binary>>), do: {binary?(rest), bitstring?(rest)}
+  def after_bits_whole(_), do: :no_match
+
+  def main do
+    for bits <- [<<1, 2, 3>>, <<1, 2, 3, 4::size(5)>>, <<1::size(3)>>, <<1::size(3), 7>>, <<>>] do
+      IO.inspect(bits)
+      IO.inspect(after_bits(bits))
+      IO.inspect(after_bytes(bits))
+      IO.inspect(after_bits_whole(bits))
+    end
+
+    IO.inspect(value(binary_part("[1", 0, 1)))
+  end
+end
+
+Main.main()

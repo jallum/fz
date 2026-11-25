@@ -43,6 +43,14 @@ boxed emitter ask, so no door decomposes a tuple test differently. A position
 lands on a raw lane, and the emitters answer a kind question about one of those
 from its representation rather than a tag, so no lane is boxed to be asked.
 
+A binary that travels as a cursor -- its source binary and a bit position, the
+`ShapeDescr::Cursor` lane form -- is always a bitstring, so a type test on it
+reads only the predicate's bitstring axis. A predicate that admits no bitstring
+is settled false, one that admits both whole-byte and partial-byte bitstrings is
+settled true, and `is_binary` (whole bytes only) is answered from the lanes: the
+source's bit length, read from its header, less the position, is a multiple of
+eight. Nothing is built or called to ask it.
+
 What is left needing a whole value is the set of questions no decomposition
 reaches: a pinned equality, a guard, and the map, list and bitstring regions.
 Those build the value at the question that asks for it and keep it for the rest

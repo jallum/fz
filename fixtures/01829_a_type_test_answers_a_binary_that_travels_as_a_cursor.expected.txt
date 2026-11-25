@@ -1,0 +1,21 @@
+<<1, 2, 3>>
+{false, true, false, true}
+{true, true, false, false}
+:no_match
+<<1, 2, 3, 4::size(5)>>
+{false, true, false, true}
+{false, true, false, true}
+:no_match
+<<1::size(3)>>
+{true, true, false, false}
+:short
+{true, true}
+<<32, 7::size(3)>>
+{true, true, false, false}
+{false, true, false, true}
+{true, true}
+""
+:short
+:short
+:no_match
+1
