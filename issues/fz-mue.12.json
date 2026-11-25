@@ -22,11 +22,15 @@
     {
       "text": "Split per Amendment 2 (user, relayed by Elixir Parity 2026-11-20): Macro.Env -\u003e fz-mue.50, Macro.expand/2 -\u003e fz-mue.51, Macro.to_string/1 -\u003e fz-mue.52, closure-union bug -\u003e fz-sc8.256. Record now waits on mue.22, sc8.174, mue.51, mue.52, mue.32, sc8.256.",
       "timestamp": "2026-11-20T21:12:02Z"
+    },
+    {
+      "text": "Elixir Parity: removed the fz-mue.51 edge. record.ex calls Macro.expand only at :379, for a one-argument record(x) whose argument is neither an atom nor a keyword list, and no json.erl site has that shape. Commit 1 (#889) is what Record needed. fz-mue.51 commit 2 is parked until after #791.",
+      "timestamp": "2026-11-25T11:31:28Z"
     }
   ],
   "priority": 2,
   "status": "in_progress",
   "title": "Record.defrecordp defines a record, and a record pattern matches in a function head",
   "type": "feature",
-  "updated_at": "2026-11-25T11:31:27Z"
+  "updated_at": "2026-11-25T11:31:28Z"
 }
