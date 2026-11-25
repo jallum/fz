@@ -1,0 +1,114 @@
+one binary: {2, 2}
+first of two: {1, 2}
+longer than the subject: :nomatch
+empty subject: :nomatch
+absent: :nomatch
+leftmost of a list: {1, 2}
+longest at the leftmost: {1, 4}
+longest, any order: {1, 3}
+leftmost wins over longer: {0, 1}
+one compiles to: :bm
+many compile to: :ac
+compiled is a tuple: true
+compiled one: {2, 2}
+compiled many: {1, 3}
+compiled in scope: {2, 2}
+compiled absent: :nomatch
+whole scope: {2, 2}
+scope holds it: {2, 2}
+scope cuts it: :nomatch
+scope starts inside it: :nomatch
+empty scope: :nomatch
+empty scope at the end: :nomatch
+negative length: {2, 2}
+negative length cuts it: :nomatch
+negative length, whole prefix: {2, 2}
+negative length, whole subject: {0, 5}
+negative length, list: {0, 2}
+improper options: {2, 2}
+empty pattern: ArgumentError: errors were found at the given arguments:
+
+  * 2nd argument: not a valid pattern
+
+empty list: ArgumentError: errors were found at the given arguments:
+
+  * 2nd argument: not a valid pattern
+
+empty member: ArgumentError: errors were found at the given arguments:
+
+  * 2nd argument: not a valid pattern
+
+improper list: ArgumentError: errors were found at the given arguments:
+
+  * 2nd argument: not a valid pattern
+
+atom pattern: ArgumentError: errors were found at the given arguments:
+
+  * 2nd argument: not a valid pattern
+
+bitstring pattern: ArgumentError: errors were found at the given arguments:
+
+  * 2nd argument: not a valid pattern
+
+bad compiled: ArgumentError: errors were found at the given arguments:
+
+  * 2nd argument: not a valid pattern
+
+non-binary subject: ArgumentError: errors were found at the given arguments:
+
+  * 1st argument: not a binary
+
+bitstring subject: ArgumentError: errors were found at the given arguments:
+
+  * 1st argument: is a bitstring (expected a binary)
+
+bad subject and pattern: ArgumentError: errors were found at the given arguments:
+
+  * 1st argument: not a binary
+  * 2nd argument: not a valid pattern
+
+scope past the end: ArgumentError: errors were found at the given arguments:
+
+  * 3rd argument: specified part is not wholly inside binary
+
+scope before the start: ArgumentError: errors were found at the given arguments:
+
+  * 3rd argument: specified part is not wholly inside binary
+
+negative length before the start: ArgumentError: errors were found at the given arguments:
+
+  * 3rd argument: specified part is not wholly inside binary
+
+scope float: ArgumentError: errors were found at the given arguments:
+
+  * 3rd argument: invalid options
+
+unknown option: ArgumentError: errors were found at the given arguments:
+
+  * 3rd argument: invalid options
+
+last scope wins: {2, 1}
+an outside scope among two: ArgumentError: errors were found at the given arguments:
+
+  * 3rd argument: invalid options
+
+options not a list: ArgumentError: errors were found at the given arguments:
+
+  * 3rd argument: invalid options
+
+compile empty: ArgumentError: errors were found at the given arguments:
+
+  * 1st argument: not a valid pattern
+
+compile empty list: ArgumentError: errors were found at the given arguments:
+
+  * 1st argument: not a valid pattern
+
+compile atom: ArgumentError: errors were found at the given arguments:
+
+  * 1st argument: not a valid pattern
+
+compile bad member: ArgumentError: errors were found at the given arguments:
+
+  * 1st argument: not a valid pattern
+

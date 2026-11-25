@@ -199,8 +199,8 @@ guard-callable, as in Elixir),
 `String.to_integer/1` and `IO.iodata_to_binary/1` delegate to them as
 Elixir's do. An iolist whose tail is a binary is handled by `iolist_to_binary/1`.
 
-`lib/binary.fz` defines `:binary` with `at/2`, `copy/1`, `copy/2` and
-`referenced_byte_size/1`. `at/2` reads the byte with a
+`lib/binary.fz` defines `:binary` with `at/2`, `compile_pattern/1`, `copy/1`,
+`copy/2`, `match/2`, `match/3` and `referenced_byte_size/1`. `at/2` reads the byte with a
 `<<_::binary-size(pos), byte, _::binary>>` match; a position at or past the end
 raises `ArgumentError` with the message `argument error`, as OTP's BIF does.
 `copy/2` is the extern `fz_binary_copy`, which builds
@@ -212,6 +212,16 @@ length is not a multiple of 8, given to `copy`, is reported as
 `is a bitstring (expected a binary)` (`01338`). The specs name `binary` and
 `bitstring`, so a call whose argument is proven to be something else is refused
 at compile time; a value that may be a binary compiles and raises when it runs.
+
+`match/3` takes a non-empty binary, a non-empty list of non-empty binaries, or
+a compiled pattern. It tries each position of the scope from the left and, at
+the first position where any pattern matches, answers the longest. A
+`{:scope, {start, length}}` option limits the search; a negative `length`
+counts back from `start`, and the last scope option wins. `compile_pattern/1`
+answers `{:bm, patterns}` for one pattern and `{:ac, patterns}` for several,
+the tags OTP's compiled patterns carry; `match` reads the pattern list out of
+the tuple, so compiling saves no work. A bad subject, pattern or option list
+raises `ArgumentError` worded per argument as Elixir words it (`02050`).
 
 `lib/lists.fz` defines `:lists` with `reverse/1`, `reverse/2`, `duplicate/2`,
 `map/2` and `foldl/3`, clause for clause as OTP's `lists.erl` writes them.
