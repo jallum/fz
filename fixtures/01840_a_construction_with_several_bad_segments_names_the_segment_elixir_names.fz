@@ -1,0 +1,148 @@
+#---
+# purpose: "a binary construction with several bad segments names the segment the BEAM names: a leading unsized binary or bits is an append, checked after sizes, unsized binaries and utf8 and utf32 code points are checked across every other segment and before values; utf16 code points and float sizes are checked with the values, in segment order"
+# oracle: self
+# oracle.stamp: 2c071298e44c8b17
+# args: 0
+#---
+defmodule Main do
+  # A value read from a list at a position known only at run time, so the
+  # compiler cannot prove its type and every contract is checked.
+  #
+  # 0..2 atoms, 3 a negative size, 4 a code point past the maximum, 5 five
+  # bytes, 6 three bits, 7 a size no float has, 8 an integer that fits a
+  # byte, 9 a size that is not an integer.
+  def v(k) do
+    base = String.to_integer(hd(System.argv()))
+    Enum.at([:a, :b, :c, -1, 0x110000, <<1, 2, 3, 4, 5>>, <<1::3>>, 17, 1, :x], base + k)
+  end
+
+  def build(:append_then_unsized), do: <<v(0)::binary, v(1)::binary>>
+
+  def build(:three_integers), do: <<v(0), v(1), v(2)>>
+
+  def build(:first_ok_then_two_bad), do: <<v(8), v(1), v(2)>>
+
+  def build(:last_of_three_bad), do: <<v(8), v(8), v(2)>>
+
+  def build(:append_then_integer), do: <<v(0)::binary, v(1)>>
+
+  def build(:integer_then_unsized), do: <<v(0), v(1)::binary>>
+
+  def build(:integer_then_negative_size) do
+    n = v(3)
+    <<v(0), 8::size(n)>>
+  end
+
+  def build(:negative_size_then_integer) do
+    n = v(3)
+    <<8::size(n), v(1)>>
+  end
+
+  def build(:integer_then_size_not_integer) do
+    n = v(9)
+    <<v(0), 8::size(n)>>
+  end
+
+  def build(:integer_then_code_point), do: <<v(0), v(4)::utf8>>
+
+  def build(:code_point_then_integer), do: <<v(4)::utf8, v(1)>>
+
+  def build(:integer_then_utf16_code_point), do: <<v(0), v(4)::utf16>>
+
+  def build(:integer_then_utf32_code_point), do: <<v(0), v(4)::utf32>>
+
+  def build(:utf16_code_point_then_integer), do: <<v(4)::utf16, v(1)>>
+
+  def build(:two_code_points), do: <<v(4)::utf32, v(4)::utf8>>
+
+  def build(:integer_then_float_size) do
+    n = v(7)
+    <<v(0), 1.5::float-size(n)>>
+  end
+
+  def build(:float_size_then_integer) do
+    n = v(7)
+    <<1.5::float-size(n), v(1)>>
+  end
+
+  def build(:float_size_before_float_value) do
+    n = v(7)
+    <<v(0)::float-size(n)>>
+  end
+
+  def build(:float_then_integer), do: <<v(0)::float, v(1)>>
+
+  def build(:integer_then_float), do: <<v(0), v(1)::float>>
+
+  def build(:append_float_integer), do: <<v(0)::binary, v(1)::float, v(2)>>
+
+  def build(:float_integer_unsized), do: <<v(0)::float, v(1), v(2)::binary>>
+
+  def build(:bits_append_then_two_unsized), do: <<v(0)::bits, v(8), v(1)::bits>>
+
+  def build(:short_then_unsized), do: <<v(5)::binary-size(9), v(0)::binary>>
+
+  def build(:unsized_then_short), do: <<v(0)::binary, v(5)::binary-size(9)>>
+
+  def build(:short_then_integer), do: <<v(5)::binary-size(9), v(1)>>
+
+  def build(:integer_then_short), do: <<v(0), v(5)::binary-size(9)>>
+
+  def build(:negative_size_then_unsized) do
+    n = v(3)
+    <<8::size(n), v(0)::binary>>
+  end
+
+  def build(:append_then_negative_size) do
+    n = v(3)
+    <<v(0)::binary, 8::size(n)>>
+  end
+
+  def build(:append_then_size_not_integer) do
+    n = v(9)
+    <<v(0)::binary, 8::size(n)>>
+  end
+
+  def build(:append_then_code_point), do: <<v(0)::binary, v(4)::utf8>>
+
+  def build(:ragged_append_then_code_point), do: <<v(6)::binary, v(4)::utf8>>
+
+  def build(:ragged_append_then_integer), do: <<v(6)::binary, v(1)>>
+
+  def build(:integer_then_ragged_unsized), do: <<v(0), v(6)::binary>>
+
+  def build(:two_ragged_appends), do: <<v(6)::binary, v(6)::binary>>
+
+  def build(:sized_lead_then_unsized), do: <<v(0)::binary-size(2), v(1)::binary>>
+
+  def build(:append_then_append_to_bits), do: <<v(0)::bits, v(6)::bits>>
+
+  def attempt(row) do
+    try do
+      {row, :ok, build(row)}
+    rescue
+      e -> {row, e.__struct__, Exception.message(e)}
+    end
+  end
+
+  def main() do
+    rows = [
+      :append_then_unsized, :three_integers, :first_ok_then_two_bad,
+      :last_of_three_bad, :append_then_integer, :integer_then_unsized,
+      :integer_then_negative_size, :negative_size_then_integer, :integer_then_size_not_integer,
+      :integer_then_code_point, :code_point_then_integer, :integer_then_utf16_code_point,
+      :integer_then_utf32_code_point, :utf16_code_point_then_integer, :two_code_points,
+      :integer_then_float_size, :float_size_then_integer, :float_size_before_float_value,
+      :float_then_integer, :integer_then_float, :append_float_integer,
+      :float_integer_unsized, :bits_append_then_two_unsized, :short_then_unsized,
+      :unsized_then_short, :short_then_integer, :integer_then_short,
+      :negative_size_then_unsized, :append_then_negative_size, :append_then_size_not_integer,
+      :append_then_code_point, :ragged_append_then_code_point, :ragged_append_then_integer,
+      :integer_then_ragged_unsized, :two_ragged_appends, :sized_lead_then_unsized,
+      :append_then_append_to_bits
+    ]
+    Enum.each(rows, fn row -> IO.puts(inspect(attempt(row))) end)
+  end
+end
+
+Main.main()

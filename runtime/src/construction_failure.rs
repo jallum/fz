@@ -4,11 +4,14 @@
 //! the test fails it calls `Kernel.__construction_failed__/1` with each
 //! segment's type, value, size and unit, which raises an `ArgumentError` whose
 //! message `fz_construction_failure_message` words: it names the segment the
-//! BEAM names. The BEAM builds in two passes: it first sizes the result, checking
-//! every segment's size, the type of an unsized `binary` or `bits` value, and
-//! every code point; it then writes the result, checking integer and float
-//! values, a sized binary's length and an unsized binary's unit. The first
-//! failure of the first pass that fails is the one reported.
+//! BEAM names. The BEAM builds in three steps. It first sizes the result,
+//! checking every segment's size and the type of every unsized `binary` or
+//! `bits` value but a leading one, and the code point of every `utf8` and
+//! `utf32` segment. A leading unsized `binary` or `bits` segment is an append
+//! to that value, which the BEAM does next. It then writes the other
+//! segments, checking float sizes and integer, float and `utf16` values, a
+//! sized binary's length and an unsized binary's unit. The first failure of
+//! the first step that fails is the one reported.
 
 use crate::any_value::debug::render_value;
 use crate::any_value::{AnyValue, AnyValueRef};
@@ -69,44 +72,46 @@ pub enum Breach {
 /// The segment the BEAM reports, counted from 0, and what it broke; `None`
 /// when every segment keeps its contract.
 pub fn first_breach(segments: &[Segment]) -> Option<(usize, Breach)> {
-    let pass = |check: fn(&Segment) -> Option<Breach>| {
+    let pass = |check: fn(usize, &Segment) -> Option<Breach>| {
         segments
             .iter()
             .enumerate()
-            .find_map(|(index, segment)| check(segment).map(|breach| (index, breach)))
+            .find_map(|(index, segment)| check(index, segment).map(|breach| (index, breach)))
     };
-    pass(sizing_breach).or_else(|| pass(writing_breach))
+    pass(sizing_breach).or_else(|| pass(|_, segment| writing_breach(segment)))
 }
 
-fn sizing_breach(segment: &Segment) -> Option<Breach> {
-    if let Some(size) = segment.size {
-        let Shape::Int(size) = size else {
-            return Some(Breach::Size);
-        };
-        if size < 0 {
-            return Some(Breach::Size);
-        }
-        if segment.ty == BitType::Float && !matches!(size, 16 | 32 | 64) {
-            return Some(Breach::FloatSize);
-        }
+/// A leading `binary` or `bits` segment naming no size is the value the rest
+/// is appended to; the BEAM does not size it.
+fn is_append(index: usize, segment: &Segment) -> bool {
+    index == 0 && is_bitstring(segment.ty) && segment.size.is_none()
+}
+
+fn sizing_breach(index: usize, segment: &Segment) -> Option<Breach> {
+    if let Some(size) = segment.size
+        && !matches!(size, Shape::Int(size) if size >= 0)
+    {
+        return Some(Breach::Size);
     }
     match segment.ty {
-        ty if is_bitstring(ty) && segment.size.is_none() => {
+        ty if is_bitstring(ty) && segment.size.is_none() && !is_append(index, segment) => {
             (!matches!(segment.value, Shape::Bitstring { .. })).then_some(Breach::NotABinary)
         }
-        BitType::Utf8 | BitType::Utf16 | BitType::Utf32 => {
-            (!is_code_point(segment.value)).then_some(Breach::NotACodePoint)
-        }
+        BitType::Utf8 | BitType::Utf32 => (!is_code_point(segment.value)).then_some(Breach::NotACodePoint),
         _ => None,
     }
 }
 
 fn writing_breach(segment: &Segment) -> Option<Breach> {
+    if segment.ty == BitType::Float && !matches!(segment.size, None | Some(Shape::Int(16 | 32 | 64))) {
+        return Some(Breach::FloatSize);
+    }
     match (segment.ty, segment.value) {
         (BitType::Integer, Shape::Int(_)) => None,
         (BitType::Integer, _) => Some(Breach::NotAnInteger),
         (BitType::Float, Shape::Int(_) | Shape::Float) => None,
         (BitType::Float, _) => Some(Breach::NotANumber),
+        (BitType::Utf16, value) => (!is_code_point(value)).then_some(Breach::NotACodePoint),
         (ty, Shape::Bitstring { bits }) if is_bitstring(ty) => match segment.size {
             Some(Shape::Int(size)) => (bits < size as u64 * segment.unit).then_some(Breach::Shorter),
             _ => (!bits.is_multiple_of(segment.unit)).then_some(Breach::NotAUnitMultiple),
