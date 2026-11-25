@@ -1714,3 +1714,162 @@ fn a_protocol_domain_nested_in_a_parameter_is_read_as_any_in_the_surface() {
         "a type with no marker is its own surface"
     );
 }
+
+/// The empty list is a member of every list type, so a call whose list argument
+/// is `[]` is admitted whatever structure the spec's element has, and a
+/// variable under that element, bound by nothing, is the bottom element: the
+/// answer a bare `[a]` already gives.
+mod an_empty_list_meets_a_structured_element {
+    use super::*;
+    use crate::compiler2::types::Ty;
+
+    fn spec(types: &mut Types, params: Vec<Ty>, result: Ty) -> FunctionContract {
+        let resolved = ResolvedSpecDecl {
+            params,
+            result,
+            constraints: HashMap::default(),
+        };
+        FunctionContract::from_resolved(types, vec![resolved])
+    }
+
+    #[test]
+    fn a_tuple_element_with_one_shared_variable() {
+        // @spec three([{a, a}]) :: [a]
+        let mut types = Types::new();
+        let a = types.type_var(TypeVarId(0));
+        let pair = types.tuple(&[a, a]);
+        let param = types.list(pair);
+        let result = types.list(a);
+        let contract = spec(&mut types, vec![param], result);
+        let empty = types.empty_list();
+
+        let applied = contract.apply(&mut types, &[empty]);
+
+        assert!(
+            applied.enforceable_satisfied,
+            "an empty list is a list of pairs for every a"
+        );
+        assert_eq!(
+            applied.result,
+            Some(empty),
+            "nothing binds `a`, so the result is the empty list"
+        );
+    }
+
+    #[test]
+    fn a_tuple_element_with_two_variables_returned_as_two_lists() {
+        // @spec one([{a, b}]) :: {[a], [b]}
+        let mut types = Types::new();
+        let a = types.type_var(TypeVarId(0));
+        let b = types.type_var(TypeVarId(1));
+        let pair = types.tuple(&[a, b]);
+        let param = types.list(pair);
+        let (la, lb) = (types.list(a), types.list(b));
+        let result = types.tuple(&[la, lb]);
+        let contract = spec(&mut types, vec![param], result);
+        let empty = types.empty_list();
+        let expected = types.tuple(&[empty, empty]);
+
+        let applied = contract.apply(&mut types, &[empty]);
+
+        assert!(applied.enforceable_satisfied);
+        assert_eq!(applied.result, Some(expected));
+    }
+
+    #[test]
+    fn a_list_of_lists_of_tuples_at_an_inner_empty_list_and_at_the_outer_one() {
+        // @spec f([[{a, b}]]) :: {[a], [b]}
+        let mut types = Types::new();
+        let a = types.type_var(TypeVarId(0));
+        let b = types.type_var(TypeVarId(1));
+        let pair = types.tuple(&[a, b]);
+        let inner = types.list(pair);
+        let param = types.list(inner);
+        let (la, lb) = (types.list(a), types.list(b));
+        let result = types.tuple(&[la, lb]);
+        let contract = spec(&mut types, vec![param], result);
+        let empty = types.empty_list();
+        let list_of_empty = types.non_empty_list(empty);
+        let expected = types.tuple(&[empty, empty]);
+
+        for witness in [empty, list_of_empty] {
+            let applied = contract.apply(&mut types, &[witness]);
+            assert!(applied.enforceable_satisfied, "{}", types.display(&witness));
+            assert_eq!(applied.result, Some(expected), "{}", types.display(&witness));
+        }
+    }
+
+    #[test]
+    fn a_map_element() {
+        // @spec g([%{k: a}]) :: [a]
+        let mut types = Types::new();
+        let a = types.type_var(TypeVarId(0));
+        let element = types.map(&[(MapKey::Atom("k".to_string()), a)]);
+        let param = types.list(element);
+        let result = types.list(a);
+        let contract = spec(&mut types, vec![param], result);
+        let empty = types.empty_list();
+
+        let applied = contract.apply(&mut types, &[empty]);
+
+        assert!(applied.enforceable_satisfied);
+        assert_eq!(applied.result, Some(empty));
+    }
+
+    #[test]
+    fn a_tuple_of_two_empty_lists_is_unchanged() {
+        // @spec h({[a], [a]}) :: [a]
+        let mut types = Types::new();
+        let a = types.type_var(TypeVarId(0));
+        let la = types.list(a);
+        let param = types.tuple(&[la, la]);
+        let contract = spec(&mut types, vec![param], la);
+        let empty = types.empty_list();
+        let witness = types.tuple(&[empty, empty]);
+
+        let applied = contract.apply(&mut types, &[witness]);
+
+        assert!(applied.enforceable_satisfied);
+        assert_eq!(applied.result, Some(empty));
+    }
+
+    #[test]
+    fn a_bound_element_still_joins_what_the_other_argument_binds() {
+        // @spec k([{a, a}], a) :: [a], called with `[]` and an integer
+        let mut types = Types::new();
+        let a = types.type_var(TypeVarId(0));
+        let pair = types.tuple(&[a, a]);
+        let param = types.list(pair);
+        let result = types.list(a);
+        let contract = spec(&mut types, vec![param, a], result);
+        let empty = types.empty_list();
+        let int = types.int();
+        let list_int = types.list(int);
+
+        let applied = contract.apply(&mut types, &[empty, int]);
+
+        assert!(applied.enforceable_satisfied);
+        assert_eq!(
+            applied.result,
+            Some(list_int),
+            "the empty list contributes nothing to the join"
+        );
+    }
+
+    #[test]
+    fn a_non_empty_list_of_the_wrong_element_is_still_refused() {
+        // @spec three([{a, a}]) :: [a], called with `[int]`
+        let mut types = Types::new();
+        let a = types.type_var(TypeVarId(0));
+        let pair = types.tuple(&[a, a]);
+        let param = types.list(pair);
+        let result = types.list(a);
+        let contract = spec(&mut types, vec![param], result);
+        let int = types.int();
+        let witness = types.non_empty_list(int);
+
+        let applied = contract.apply(&mut types, &[witness]);
+
+        assert!(!applied.enforceable_satisfied, "an integer element is no pair");
+    }
+}

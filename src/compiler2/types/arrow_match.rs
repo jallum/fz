@@ -457,6 +457,9 @@ impl Types {
         side: BindingSide,
         bounds: &mut MatchBounds,
     ) -> MatchWitness {
+        if self.is_empty(witness) && self.has_vars(pattern) {
+            return self.collect_uninhabited_match(pattern, witness, side, bounds);
+        }
         let outcome = MatchWitness::Unknown
             .merge(self.collect_var_match(pattern, witness, side, bounds))
             .merge(self.collect_tuple_match(pattern, witness, side, bounds))
@@ -478,6 +481,33 @@ impl Types {
             self.collect_lower_occurrences(pattern, side, &mut seen, &mut bounds.undetermined);
         }
         outcome
+    }
+
+    /// A witness no value has, reached below the top of an argument: the
+    /// element of `[]`, which reads as `none`. It is the bottom of the lattice
+    /// and so is below any pattern's structure -- `none` is a `{a, b}`, a
+    /// `[a]` and a `%{k: a}` alike -- and it supplies no term to any variable
+    /// beneath, so each covariant variable there takes the bottom lower bound
+    /// the join absorbs. A bare variable binds that way through
+    /// `collect_var_match`; this is the same answer for a variable under a
+    /// tuple, list, map or resource, instead of a veto from the kind
+    /// collector that finds no such structure in `none`.
+    fn collect_uninhabited_match(
+        &mut self,
+        pattern: &Ty,
+        witness: &Ty,
+        side: BindingSide,
+        bounds: &mut MatchBounds,
+    ) -> MatchWitness {
+        let direct = self.collect_var_match(pattern, witness, side, bounds);
+        let mut beneath = HashSet::default();
+        self.collect_lower_occurrences(pattern, side, &mut HashSet::default(), &mut beneath);
+        let mut bottom = Sigma::default();
+        for var in beneath {
+            bottom.insert(var, *witness);
+        }
+        self.merge_subst_union(&mut bounds.lower, bottom);
+        direct.merge(MatchWitness::Known)
     }
 
     /// The variables a subtree would give a LOWER bound to, had the walk been

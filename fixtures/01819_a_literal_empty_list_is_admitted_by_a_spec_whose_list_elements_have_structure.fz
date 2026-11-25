@@ -1,0 +1,29 @@
+#---
+# purpose: "A literal [] meets a @spec whose list elements are tuples, lists or maps, and the variables under them are bound by nothing"
+# kind: run
+# oracle: self
+# oracle.stamp: 5b4a43e0c5fca99b
+#---
+defmodule W do
+  @spec one([{a, b}]) :: {[a], [b]} when a: var, b: var
+  def one(l), do: {Enum.map(l, &elem(&1, 0)), Enum.map(l, &elem(&1, 1))}
+  @spec three([{a, a}]) :: [a] when a: var
+  def three(l), do: Enum.map(l, &elem(&1, 0))
+  @spec two([a], a) :: [a] when a: var
+  def two(l, x), do: [x | l]
+  @spec f([[{a, b}]]) :: {[a], [b]} when a: var, b: var
+  def f(l), do: one(Enum.concat(l))
+  @spec g([%{k: a}]) :: [a] when a: var
+  def g(l), do: Enum.map(l, fn m -> m.k end)
+  @spec h({[a], [a]}) :: [a] when a: var
+  def h({x, y}), do: x ++ y
+end
+IO.inspect(W.two([], 1))
+IO.inspect(W.three([]))
+IO.inspect(W.one([]))
+IO.inspect(W.three([{1, 1}]))
+IO.inspect(W.three([{1, :x}]))
+IO.inspect(W.f([[]]))
+IO.inspect(W.f([]))
+IO.inspect(W.g([]))
+IO.inspect(W.h({[], []}))
