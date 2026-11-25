@@ -1,0 +1,147 @@
+defmodule :unicode do
+  @moduledoc """
+  The Erlang `:unicode` function `characters_to_binary/1`, as OTP's
+  `erl_unicode.c` computes it.
+
+  The conversion first checks that `data` is chardata, then walks it in order,
+  writing each code point and each binary's UTF-8 to the result. A binary that
+  ends inside a character leaves its bytes as a leftover that the next binary
+  continues. The first thing that cannot be converted ends the walk and is
+  reported with the data that was not consumed, in the shape OTP gives it.
+  """
+
+  @doc """
+  Converts chardata to a UTF-8 binary.
+
+  `data` is a binary, or a possibly nested list of code points and binaries
+  whose tail may be a binary. The result is the binary; or `{:error, encoded,
+  rest}` where `encoded` is what converted before `rest`, the data starting at
+  the first code point or byte sequence that is invalid; or `{:incomplete,
+  encoded, rest}` where the data ends inside a character and `rest` is the
+  bytes of that character. Anything that is not chardata raises
+  `ArgumentError`.
+
+  ## Examples
+
+      :unicode.characters_to_binary([97, "bc", [100]])
+      #=> "abcd"
+
+      :unicode.characters_to_binary([97, 0xD800])
+      #=> {:error, "a", [55296]}
+
+      :unicode.characters_to_binary(<<97, 0xE2, 0x82>>)
+      #=> {:incomplete, "a", <<226, 130>>}
+
+  """
+  @spec characters_to_binary(binary | maybe_improper_list(any, binary | [])) :: binary | {:error, binary, any} | {:incomplete, binary, binary}
+  def characters_to_binary(data) do
+    if chardata?(data) do
+      convert(subject(data), [], "", "")
+    else
+      raise %ArgumentError{message: "errors were found at the given arguments:\n\n  * 1st argument: not valid character data (an iodata term)\n"}
+    end
+  end
+
+  # A list holding one binary is that binary, so an error in it reports the
+  # rest of the binary and not a list around it.
+  @spec subject(any) :: any
+  defp subject([bin]) when is_binary(bin), do: bin
+  defp subject(data), do: data
+
+  @spec chardata?(any) :: boolean
+  defp chardata?(data) when is_binary(data), do: true
+  defp chardata?([]), do: true
+  defp chardata?([head | tail]), do: (is_integer(head) or chardata?(head)) and chardata?(tail)
+  defp chardata?(_), do: false
+
+  # `stack` holds the tails of the lists being walked, innermost first.
+  @spec convert(any, [any], binary, binary) :: binary | {:error | :incomplete, binary, any}
+  defp convert([], [tail | stack], out, left), do: convert(tail, stack, out, left)
+  defp convert([], [], out, left), do: finish(out, left)
+
+  defp convert(bin, stack, out, left) when is_binary(bin) do
+    case feed(bin, out, left) do
+      {:ok, out, left} -> convert([], stack, out, left)
+      {:error, out, left, rest} -> fail(out, left, rest, stack)
+    end
+  end
+
+  defp convert([code | tail] = list, stack, out, left) when is_integer(code) do
+    if left == "" and ((code >= 0 and code < 0xD800) or (code > 0xDFFF and code < 0x110000)) do
+      convert(tail, stack, <<out :: binary, code :: utf8>>, left)
+    else
+      fail(out, left, list, stack)
+    end
+  end
+
+  defp convert([head | tail], stack, out, left) when is_list(head), do: convert(head, [tail | stack], out, left)
+
+  defp convert([head | tail], stack, out, left) do
+    case feed(head, out, left) do
+      {:ok, out, left} -> convert(tail, stack, out, left)
+      {:error, out, left, rest} -> fail(out, left, [rest | tail], stack)
+    end
+  end
+
+  # The bytes that were left over when the data stopped, or the whole result.
+  @spec finish(binary, binary) :: binary | {:error | :incomplete, binary, binary}
+  defp finish(out, ""), do: out
+  defp finish(out, left), do: {if(truncated?(left), do: :incomplete, else: :error), out, left}
+
+  # A leftover is incomplete while every byte after its lead is a continuation.
+  @spec truncated?(binary) :: boolean
+  defp truncated?(<<_>>), do: true
+  defp truncated?(<<_, second>>), do: continuation?(second)
+  defp truncated?(<<_, second, third>>), do: continuation?(second) and continuation?(third)
+
+  @spec continuation?(integer) :: boolean
+  defp continuation?(byte), do: byte >= 0x80 and byte < 0xC0
+
+  # The rest of an error is the data left, inside the lists that held it, and
+  # after any leftover bytes that the failed piece would have continued.
+  @spec fail(binary, binary, any, [any]) :: {:error, binary, any}
+  defp fail(out, "", rest, stack), do: {:error, out, enclose(rest, stack)}
+  defp fail(out, left, rest, stack), do: {:error, out, [left, enclose(rest, stack)]}
+
+  @spec enclose(any, [any]) :: any
+  defp enclose(rest, []), do: rest
+  defp enclose(rest, [tail | stack]), do: enclose([rest | tail], stack)
+
+  # Writes `bin` after a leftover: the leftover and as many bytes as complete
+  # its character must be one valid character, else `bin` is the rest. A `bin`
+  # too short to complete the character is added to the leftover unchecked.
+  @spec feed(binary, binary, binary) :: {:ok, binary, binary} | {:error, binary, binary, binary}
+  defp feed(bin, out, ""), do: scan(bin, out)
+
+  defp feed(bin, out, <<lead, _ :: binary>> = left) do
+    missing = lead_length(lead) - byte_size(left)
+
+    case bin do
+      <<completion :: binary-size(missing), after_character :: binary>> ->
+        case scan(left <> completion, out) do
+          {:ok, out, ""} -> scan(after_character, out)
+          _ -> {:error, out, left, bin}
+        end
+
+      _ ->
+        {:ok, out, left <> bin}
+    end
+  end
+
+  # Writes the characters of `bin`. A truncated character at the end is the
+  # leftover; any other byte that does not start a valid character ends the walk.
+  @spec scan(binary, binary) :: {:ok, binary, binary} | {:error, binary, binary, binary}
+  defp scan("", out), do: {:ok, out, ""}
+  defp scan(<<char :: utf8, rest :: binary>>, out), do: scan(rest, <<out :: binary, char :: utf8>>)
+
+  defp scan(<<lead, _ :: binary>> = bin, out) do
+    if lead_length(lead) > byte_size(bin), do: {:ok, out, bin}, else: {:error, out, "", bin}
+  end
+
+  @spec lead_length(integer) :: integer
+  defp lead_length(byte) when byte < 0x80, do: 1
+  defp lead_length(byte) when byte >= 0xC0 and byte < 0xE0, do: 2
+  defp lead_length(byte) when byte >= 0xE0 and byte < 0xF0, do: 3
+  defp lead_length(byte) when byte >= 0xF0 and byte < 0xF8, do: 4
+  defp lead_length(_), do: -1
+end

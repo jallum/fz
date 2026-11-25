@@ -1,0 +1,48 @@
+#---
+# purpose: "List.to_string/1 converts chardata to a string and raises UnicodeConversionError for what it cannot; :unicode.characters_to_binary/1 returns {:error, encoded, rest} and {:incomplete, encoded, rest} for the same"
+# oracle: self
+# oracle.stamp: a92ad3f6df379450
+#---
+defmodule Main do
+  def attempt(fun) do
+    try do
+      fun.()
+    rescue
+      e -> IO.puts("#{inspect(e.__struct__)}: #{Exception.message(e)}")
+    end
+  end
+
+  def main() do
+    IO.inspect(List.to_string(~c"abc"))
+    IO.inspect(List.to_string([]))
+    IO.inspect(List.to_string([~c"ab", "cd", ?e]))
+    IO.inspect(List.to_string([955, 0x1F600]))
+    IO.inspect(List.to_string(["a" | "b"]))
+    IO.inspect(List.to_string([[[?a], []], "b"]))
+    IO.inspect(List.to_string([0x0064, "ee", [~c"p"]]))
+
+    attempt(fn -> List.to_string([-1]) end)
+    attempt(fn -> List.to_string([97, 0xD800]) end)
+    attempt(fn -> List.to_string([0x110000]) end)
+    attempt(fn -> List.to_string(["a", <<255>>]) end)
+    attempt(fn -> List.to_string(["a", <<0xE2, 0x82>>]) end)
+    attempt(fn -> :unicode.characters_to_binary([:a]) end)
+
+    IO.inspect(:unicode.characters_to_binary([97, "bc", [100]]))
+    IO.inspect(:unicode.characters_to_binary(<<97, 0xE2, 0x82, 0xAC>>))
+    IO.inspect(:unicode.characters_to_binary([<<0xE2>>, <<0x82>>, <<0xAC>>]))
+    IO.inspect(:unicode.characters_to_binary([97, 0xD800, 98]))
+    IO.inspect(:unicode.characters_to_binary([97, [98, -1, 99], 100]))
+    IO.inspect(:unicode.characters_to_binary(["a", <<255>>, "b"]))
+    IO.inspect(:unicode.characters_to_binary([[97], [<<255>>, 98]]))
+    IO.inspect(:unicode.characters_to_binary(<<97, 0xE2, 0x82>>))
+    IO.inspect(:unicode.characters_to_binary([<<0xE2, 0x82>>, "b"]))
+    IO.inspect(:unicode.characters_to_binary(["a", <<0xE2, 0x82>>, "bc"]))
+    IO.inspect(:unicode.characters_to_binary([<<0xE2, 0x82>>, 97]))
+    IO.inspect(:unicode.characters_to_binary([<<0xE2>>, <<0x28>>]))
+    IO.inspect(:unicode.characters_to_binary([<<0xF0, 0x9F>> | <<120>>]))
+    IO.inspect(:unicode.characters_to_binary([<<0xC0, 0x80>>]))
+  end
+end
+
+Main.main()

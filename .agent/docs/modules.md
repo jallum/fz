@@ -227,6 +227,20 @@ for empty chardata and `{:error, rest}` when `rest` begins with a binary that is
 not UTF-8; `gc/1` decides cluster ends by the same rules as
 `String.next_grapheme/1`. Fixture 01944 compares every case against Elixir.
 
+`lib/unicode.fz` defines `:unicode` with `characters_to_binary/1`, which OTP
+implements as a BIF (`erl_unicode.c`) and fz writes as source. A first pass
+refuses anything that is not chardata (`ArgumentError`, with the message
+Erlang's error formatter gives); a second walks the data once, keeping the
+tails of the enclosing lists on a stack and any bytes of a character a binary
+left unfinished. It returns the binary, `{:error, encoded, rest}` or
+`{:incomplete, encoded, rest}`; `rest` has the shape OTP gives: the data from
+the failing element on, wrapped in the lists that held it and, when bytes were
+left over, preceded by them. A binary too short to finish the leftover
+character is appended to it unchecked, as OTP does, so such an error shows as
+one bare binary. The spec admits an improper list only with a binary tail, so a
+call proven to pass anything else is refused at compile time where Erlang
+raises. `List.to_string/1` is built on it (`01959`).
+
 `lib/maps.fz` defines `:maps` with `to_list/1`, `keys/1`, `values/1`, `put/3`,
 `merge/2` and `from_list/1`. `to_list/1`, `keys/1` and `values/1` are each a
 single runtime walk of the map's entries; `put/3` is the extern `fz_map_put`,
