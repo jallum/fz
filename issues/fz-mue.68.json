@@ -1,6 +1,8 @@
 {
   "assignee": "Elixir Parity",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-yh5.17"
+  ],
   "blocks": [
     "fz-nhb.15"
   ],
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "Macro.prewalk/2 and Macro.postwalk/2 walk quoted code, as in Elixir",
   "type": "feature",
-  "updated_at": "2026-11-25T12:04:43Z"
+  "updated_at": "2026-11-25T12:27:05Z"
 }

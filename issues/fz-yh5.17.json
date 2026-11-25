@@ -1,7 +1,9 @@
 {
   "assignee": "Callables",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-mue.68"
+  ],
   "created": "2026-11-25T12:26:59Z",
   "description": "User-approved 2026-11-25: one P1 covering three reports of the same symptom. On interp the failure is \"backend dispatch callsite … missed an exhaustive dispatch\"; native gets SIGILL (exit 132). A suspected common cause, a dispatch plan judged exhaustive with no last resort, is unconfirmed. Trace all three. Any case that turns out to have a different cause splits back out as its own ticket (propose it).\n\nCase 1 (Elixir Parity; blocks fz-mue.68, and through it fz-nhb.15 defguard and #791). Reproduced on 66bfc7f89 and 06a361f53. Repro: fz-otp-json/probes/mue68/u2.fz.\n  def walk({form, meta, args}, fun) when is_atom(form), do: fun.({form, meta, walk_args(args, fun)})\n  def walk(x, fun), do: fun.(x)\n  defp walk_args(args, _fun) when is_atom(args), do: args\n  defp walk_args(args, fun) when is_list(args), do: :lists.map(fn x -\u003e walk(x, fun) end, args)\n  walk({:+, [], [5, 3]}, fn x -\u003e x end); walk({:+, [], [5, 3]}, \u0026id/1)\nElixir prints {:+, [], [5, 3]} twice. fz run prints nothing and exits 132. interp: missed an exhaustive dispatch (ExecutableKey FunctionId(94), need: Value). A single call works. Macro.postwalk followed by a second postwalk with a different callable crashes the same way.\n\nCase 2 (folded from fz-mue.74, Elixir Parity). for v \u003c- [1,2] do try do if v == 1, do: v, else: raise(\"x\") catch k, r -\u003e {k, r} end end. interp: missed an exhaustive dispatch; native: SIGILL. Works inside a named function. Repro: Elixir Parity's scratchpad walk791/p1.fz.\n\nCase 3 (Bugs and Cleanup, from fz-sc8.256's investigation, scratchpad s256/findings.md). default = if flag, do: {:a, 1}, else: {:k}; Enum.map([1], fn r -\u003e {default, r} end) gives missed an exhaustive dispatch. Not fixed by the sc8.256 fix; a different site.\n\nDone when: all three repros match Elixir on interp, run and build as oracle fixtures, and the dispatch cannot be judged exhaustive without covering every value that reaches it.",
   "id": "fz-yh5.17",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "A dispatch judged exhaustive matches every value that reaches it",
   "type": "bug",
-  "updated_at": "2026-11-25T12:27:02Z"
+  "updated_at": "2026-11-25T12:27:05Z"
 }
