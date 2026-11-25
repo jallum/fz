@@ -2838,7 +2838,11 @@ fn item_macro_display_name(node: &QuotedAstNode, sources: &SourceMap) -> Result<
     Ok("item".to_string())
 }
 
-fn is_compiler_define_call(node: &QuotedAstNode, arity: usize, sources: &SourceMap) -> Result<bool, QuotedSourceError> {
+pub(super) fn is_compiler_define_call(
+    node: &QuotedAstNode,
+    arity: usize,
+    sources: &SourceMap,
+) -> Result<bool, QuotedSourceError> {
     if arity != 2 {
         return Ok(false);
     }

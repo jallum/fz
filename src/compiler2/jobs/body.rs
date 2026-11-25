@@ -39,7 +39,7 @@ use super::super::drive::{FactKey, JobEffects, current_uses, emit_job_diagnostic
 use super::super::identity::{FunctionId, FunctionSource, ModuleId};
 use super::super::module_interface::{InterfaceCallableKind, InterfaceRequester};
 use super::super::namespace::{Namespace, NamespaceSymbol};
-use super::super::quoted_expander::emit_surface_read_error;
+use super::super::quoted_expander::{emit_surface_read_error, is_compiler_define_call};
 use super::super::source::{QuotedAstNode, QuotedSourceCursor, QuotedSourceError};
 use super::super::world::World;
 use super::dispatch::{
@@ -1171,7 +1171,7 @@ impl<'a, 'w, 'tel, 'f, 'env, 'steps, 'q, T: crate::telemetry::Telemetry>
         if node.head.root().tag() == ValueKind::ATOM {
             let name = node.head.atom_name().map_err(|error| self.surface_error(error))?;
             if name == "unquote" && args.len() == 1 && self.nested_quotes == 0 {
-                return self.lower_unquote().map(Quoted::Built);
+                return self.lower_checked_unquote().map(Quoted::Built);
             }
             if name == "unquote_splicing" && args.len() == 1 && self.nested_quotes == 0 {
                 return Err(self.splice_outside_arguments(node));
@@ -1186,7 +1186,11 @@ impl<'a, 'w, 'tel, 'f, 'env, 'steps, 'q, T: crate::telemetry::Telemetry>
         }
 
         let head = self.quoted(&node.head, sources)?;
-        let tail = self.items(&args, sources)?;
+        let tail = if is_compiler_define_call(node, args.len(), sources).map_err(|error| self.surface_error(error))? {
+            self.define_args(&args, sources)?
+        } else {
+            self.items(&args, sources)?
+        };
         let no_parens = node
             .meta
             .meta_value(super::super::source::META_NO_PARENS_KEY)
@@ -1342,6 +1346,55 @@ impl<'a, 'w, 'tel, 'f, 'env, 'steps, 'q, T: crate::telemetry::Telemetry>
         )
     }
 
+    /// The arguments of `Fz.Compiler.define(source, env)`: `source` is quoted
+    /// code and is checked, `env` is the `Macro.Env` the compiler reads back,
+    /// the one value a quote may embed unchecked (see `first_invalid_quoted_expr`).
+    fn define_args(&mut self, args: &[QuotedSourceCursor], sources: &SourceMap) -> Result<Quoted, FatalError> {
+        let source = self.quoted(&args[0], sources)?;
+        let env = match self.ast_node(&args[1], sources)? {
+            Some(node) if self.nested_quotes == 0 && self.is_call_named(&node, "unquote", 1) => {
+                Quoted::Built(self.lower_unquote()?)
+            }
+            _ => self.quoted(&args[1], sources)?,
+        };
+        Ok(self.list(vec![source, env]))
+    }
+
+    /// `unquote(e)` as Elixir's `quote` builds it: the value of `e` is spliced
+    /// in through `Kernel.__unquoted__`, which raises `ArgumentError` unless it
+    /// is quoted code. A bootstrap quote and an unquote fragment's quote are
+    /// built without the check.
+    fn lower_checked_unquote(&mut self) -> Result<ValueId, FatalError> {
+        let span = self.next_splice_span();
+        let value = self.lower_unquote()?;
+        if self.quotes_bootstrap_code() || self.quotes_unquote_fragment() {
+            return Ok(value);
+        }
+        let kernel = ModuleName::from_segments(vec!["Kernel".to_string()]);
+        self.call_module(kernel, "__unquoted__", vec![value], span)
+    }
+
+    /// Whether the quote is written in the prelude or the runtime library.
+    /// Their `def` quotes are what `Kernel.__unquoted__` is itself defined
+    /// with, and Elixir builds its own bootstrap quotes without the check too.
+    fn quotes_bootstrap_code(&self) -> bool {
+        self.lowerer.world.is_bootstrap(self.lowerer.source.owner)
+    }
+
+    /// Whether the quote is the one an unquote fragment in a definition
+    /// (`def m(), do: unquote(x)`) is evaluated through. Elixir never calls
+    /// `unquote/1` for a fragment, and the expander refuses an invalid fragment
+    /// value as `macro/invalid-quoted-expr`. The owner read is the lexical one:
+    /// a lambda inside the evaluator macro has no source name of its own.
+    fn quotes_unquote_fragment(&self) -> bool {
+        self.lowerer
+            .world
+            .function_ref(self.lowerer.owner)
+            .lexical_owner()
+            .source_name()
+            .is_some_and(super::super::definition_time::is_evaluator_name)
+    }
+
     fn next_splice_span(&self) -> Span {
         self.splices[self.next_splice].span
     }
@@ -1349,8 +1402,18 @@ impl<'a, 'w, 'tel, 'f, 'env, 'steps, 'q, T: crate::telemetry::Telemetry>
     /// A call of one of `:elixir_quote`'s functions, the runtime half of the
     /// splice.
     fn call_quote_runtime(&mut self, name: &str, args: Vec<ValueId>, span: Span) -> Result<ValueId, FatalError> {
+        self.call_module(ModuleName::bare_atom("elixir_quote"), name, args, span)
+    }
+
+    fn call_module(
+        &mut self,
+        module: ModuleName,
+        name: &str,
+        args: Vec<ValueId>,
+        span: Span,
+    ) -> Result<ValueId, FatalError> {
         let callee = Callee::Name(CallableName {
-            module: Some(crate::ast::ModuleTarget::Exact(ModuleName::bare_atom("elixir_quote"))),
+            module: Some(crate::ast::ModuleTarget::Exact(module)),
             name: name.to_string(),
         });
         let function = self

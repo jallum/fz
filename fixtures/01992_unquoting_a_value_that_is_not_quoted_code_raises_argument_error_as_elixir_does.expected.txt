@@ -1,0 +1,14 @@
+"tried to unquote invalid AST: [1 | 2]\nDid you forget to escape term using Macro.escape/1?"
+[[1 | 2]]
+true
+true
+true
+"tried to unquote invalid AST: %{a: 1}\nDid you forget to escape term using Macro.escape/1?"
+"tried to unquote invalid AST: %Pair{a: 1, b: 2}\nDid you forget to escape term using Macro.escape/1?"
+"tried to unquote invalid AST: {1, 2, 3}\nDid you forget to escape term using Macro.escape/1?"
+"tried to unquote invalid AST: {1, 2, 3, 4}\nDid you forget to escape term using Macro.escape/1?"
+"tried to unquote invalid AST: [1 | 2]\nDid you forget to escape term using Macro.escape/1?"
+"tried to unquote invalid AST: {1, 2, 3, 4}\nDid you forget to escape term using Macro.escape/1?"
+{:ok, 1}
+[1, 2, 3]
+{:f, [], [1]}

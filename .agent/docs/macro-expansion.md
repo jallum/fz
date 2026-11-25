@@ -539,7 +539,25 @@ a node's metadata is always part of a constant.
   - splices `unquote(e)` by taking the next already-decoded splice in walk
     order and lowering it with the same `lower_expr` any other expression
     goes through, exactly as if `e` had been written at that position
-    directly
+    directly, then passes the value through `Kernel.__unquoted__/1`. That
+    function tests it with the extern `fz_shallow_valid_ast`
+    (`runtime/src/quoted_ast.rs`, a port of `elixir_quote.erl`'s
+    `shallow_valid_ast`: a proper list, a pair, or a `{call, meta, args}` node,
+    read one level deep, where a struct, a map and a reference are refused) and
+    raises `ArgumentError` with Elixir's message, "tried to unquote invalid
+    AST: ... Did you forget to escape term using Macro.escape/1?", when it
+    fails. The raise is in `lib/kernel.fz` because only compiled code that names
+    `%ArgumentError{}` registers that struct. Three quotes skip the check
+    (`QuoteLowerer::lower_checked_unquote`):
+    - `quotes_bootstrap_code`: a quote written in the prelude or the runtime
+      library, whose `def` is what `Kernel.__unquoted__` is defined with;
+    - `define_args`: the `Macro.Env` argument of `Fz.Compiler.define(source,
+      env)`, which fz carries inside the AST (the same argument
+      `is_compiler_define_call` exempts from the compile-time check);
+    - `quotes_unquote_fragment`: the quote a definition-time evaluator runs
+      (see "Unquote Fragments"), judged by the lexical owner's source name.
+      Elixir never calls `unquote/1` for a fragment, and the expander refuses an
+      invalid fragment value with `macro/invalid-quoted-expr`.
   - binds an atom-headed call to its callable through
     `resolve_quoted_callable`/`lower_call_node`, the same pair every other
     quoted call site uses

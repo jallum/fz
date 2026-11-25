@@ -5382,8 +5382,14 @@ def subtract(left, [item | rest]), do: subtract(delete_first(left, item), rest)
     let long_doc_group = long_doc_source
         .interned_list_subroot(&long_doc_items.iter().map(|item| item.root()).collect::<Vec<_>>())
         .expect("long-doc grouped function root");
+    let long_doc_caller = long_doc_group.builder().map(&[]).expect("long-doc caller env map");
     let forwarded_long_doc = compiler
-        .run_macro_on_source(forward_define, &carrier, caller, &[long_doc_group.root()])
+        .run_macro_on_source(
+            forward_define,
+            &long_doc_group,
+            long_doc_caller,
+            &[long_doc_group.root()],
+        )
         .expect("macro should forward long-doc grouped source")
         .root;
     let forwarded_long_doc_node = forwarded_long_doc
@@ -5421,8 +5427,9 @@ end
         parse_quoted_program(&source_map.borrow(), module_version, compiler.telemetry()).expect("module quoted parse");
     let module_items = module_source.cursor().list_items().expect("module items");
     assert_eq!(module_items.len(), 1, "test module should have one top-level form");
+    let module_caller = module_source.builder().map(&[]).expect("module caller env map");
     let forwarded_module = compiler
-        .run_macro_on_source(forward_define, &carrier, caller, &[module_items[0].root()])
+        .run_macro_on_source(forward_define, &module_source, module_caller, &[module_items[0].root()])
         .expect("macro should forward a whole module source node")
         .root;
     let forwarded_module_node = forwarded_module
