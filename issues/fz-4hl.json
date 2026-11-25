@@ -1,6 +1,8 @@
 {
   "assignee": "Binary Handling",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-94a"
+  ],
   "blocks": [],
   "created": "2026-11-25T11:43:11Z",
   "description": "Follow-up to fz-94a (user: explain the unattributed part afterwards).\n\nAfter #897 lowered the ceilings, develop's distiller counts rose by +616 largest drive and requests, +360 derivations and +3,669 reads. #903's user-accepted cost explains +412 / +219 / +2,732. The remaining +204 / +141 / +937 has no attribution yet.\n\nDone when: each merge commit in aae3f942b..cd18bf4ab (#903, #904, #902, #897, #899, #900, #901) has been measured, with the five distiller figures recorded per commit in this description. The remainder is attributed to its commit and mechanism and taken to the user. If it isn't needed, a ticket to remove it is proposed.",
@@ -10,5 +12,5 @@
   "status": "open",
   "title": "The distiller rise in the #897-#904 merge window is attributed per commit",
   "type": "task",
-  "updated_at": "2026-11-25T11:43:11Z"
+  "updated_at": "2026-11-25T11:43:12Z"
 }
