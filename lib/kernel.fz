@@ -1538,6 +1538,24 @@ defmodule Kernel do
   extern "C" defp fz_bitstring_byte_extent(binary_cursor) :: integer
 
   @doc """
+  Returns the `length` bytes of `binary` that start at byte `start`. A
+  negative `length` takes the bytes that end at `start`.
+
+  Raises `ArgumentError` when the part is not inside `binary`.
+
+  ## Examples
+
+      Kernel.binary_part("abcd", 1, 2)
+      #=> "bc"
+
+      Kernel.binary_part("abcd", 3, -2)
+      #=> "bc"
+
+  """
+  @spec binary_part(binary, integer, integer) :: binary
+  def binary_part(binary, start, length), do: :erlang.binary_part(binary, start, length)
+
+  @doc """
   Returns the number of bits in `bits`: a partial last byte counts only the
   bits it holds.
 
