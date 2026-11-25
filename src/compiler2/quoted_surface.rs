@@ -19,6 +19,23 @@ use crate::literal_term::LiteralTerm;
 pub struct ScopeSurface {
     pub attrs: Vec<Attribute>,
     pub forms: Vec<ScopeForm>,
+    /// The clauses written apart from the clauses of their own name and arity.
+    pub ungrouped: Vec<UngroupedClause>,
+}
+
+/// A function clause written after a clause of a different function although an
+/// earlier clause of its own name and arity is already written.
+#[derive(Debug, Clone)]
+pub struct UngroupedClause {
+    /// The definition head the clause is written with: `def`, `defp`, ...
+    pub head: String,
+    pub name: String,
+    pub arity: usize,
+    pub span: Span,
+    /// The first clause written for this name and arity.
+    pub first_span: Span,
+    /// The clause written just before is of the same name and another arity.
+    pub follows_same_name: bool,
 }
 
 /// Whether `head` names a macro definition (`defmacro` or `defmacrop`).
@@ -172,6 +189,39 @@ struct FunctionGroupKey {
     arity: usize,
 }
 
+/// The order function clauses are written in, across the whole surface and
+/// whatever sits between them: a macro call, a statement or an attribute
+/// separates nothing, only another function's clause does.
+#[derive(Default)]
+struct ClauseOrder {
+    last: Option<FunctionGroupKey>,
+    first_spans: HashMap<FunctionGroupKey, Span>,
+    ungrouped: Vec<UngroupedClause>,
+}
+
+impl ClauseOrder {
+    fn note(&mut self, key: &FunctionGroupKey, head: &str, span: Span) {
+        match self.first_spans.get(key) {
+            None => {
+                self.first_spans.insert(key.clone(), span);
+            }
+            Some(&first_span) if self.last.as_ref() != Some(key) && !span.is_dummy() && !first_span.is_dummy() => {
+                let follows_same_name = self.last.as_ref().is_some_and(|last| last.name == key.name);
+                self.ungrouped.push(UngroupedClause {
+                    head: head.to_string(),
+                    name: key.name.to_string(),
+                    arity: key.arity,
+                    span,
+                    first_span,
+                    follows_same_name,
+                });
+            }
+            Some(_) => {}
+        }
+        self.last = Some(key.clone());
+    }
+}
+
 #[derive(Debug, Clone)]
 struct PendingFunctionGroup {
     item_roots: Vec<AnyValueRef>,
@@ -210,7 +260,11 @@ fn canonicalize_definitions(
     function_context: FunctionFormContext,
     sources: &SourceMap,
 ) -> Result<ScopeSurface, QuotedSourceError> {
-    let ScopeSurface { attrs, forms } = surface;
+    let ScopeSurface {
+        attrs,
+        forms,
+        ungrouped,
+    } = surface;
     let mut canonical = Vec::with_capacity(forms.len());
     for form in forms {
         match form {
@@ -226,6 +280,7 @@ fn canonicalize_definitions(
     Ok(ScopeSurface {
         attrs,
         forms: canonical,
+        ungrouped,
     })
 }
 
@@ -235,6 +290,7 @@ fn read_surface(source: &QuotedSourceRoot, sources: &SourceMap) -> Result<ScopeS
     let mut group_order: Vec<FunctionGroupKey> = Vec::new();
     let mut groups: HashMap<FunctionGroupKey, PendingFunctionGroup> = HashMap::default();
     let mut pending_function_attrs = Vec::new();
+    let mut clause_order = ClauseOrder::default();
 
     for quoted_item in source.cursor().list_iter() {
         let quoted_item = quoted_item?;
@@ -285,6 +341,7 @@ fn read_surface(source: &QuotedSourceRoot, sources: &SourceMap) -> Result<ScopeS
                         format!("invalid `{head_name}` function head: {error}"),
                     )
                 })?;
+                clause_order.note(&key, head, clause_span);
                 let entry = match groups.entry(key) {
                     Entry::Occupied(group) => {
                         if group.get().kind != head_name.as_str() {
@@ -330,7 +387,11 @@ fn read_surface(source: &QuotedSourceRoot, sources: &SourceMap) -> Result<ScopeS
 
     flush_function_groups(source, &mut forms, &mut group_order, &mut groups, sources)?;
     reject_dangling_function_attrs(source, &pending_function_attrs, sources)?;
-    Ok(ScopeSurface { attrs, forms })
+    Ok(ScopeSurface {
+        attrs,
+        forms,
+        ungrouped: clause_order.ungrouped,
+    })
 }
 
 pub fn read_module_body_surface(form: &ModuleForm, sources: &SourceMap) -> Result<ScopeSurface, QuotedSourceError> {
