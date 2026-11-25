@@ -282,17 +282,6 @@ pub(crate) fn release_resumed_frame<M: cranelift_module::Module>(
     slot_count: usize,
 ) {
     let flags = MemFlagsData::trusted();
-    let tag = kind_field(body.b, frame);
-    let is_closure = body
-        .b
-        .ins()
-        .icmp_imm_s(IntCC::Equal, tag, i64::from(ValueKind::CLOSURE.tag()));
-    let examine = body.b.create_block();
-    let done = body.b.create_block();
-    body.b.ins().brif(is_closure, examine, &[], done, &[]);
-
-    body.b.switch_to_block(examine);
-    body.b.seal_block(examine);
     let address = address_field(body.b, frame);
     let layout = body.b.ins().uload32(flags, address, 0);
     let count = body.b.ins().ushr_imm_u(layout, CLOSURE_LAYOUT_FLAGS_SHIFT as i64);
@@ -322,10 +311,6 @@ pub(crate) fn release_resumed_frame<M: cranelift_module::Module>(
         let new_top = body.b.ins().select(pop, address, top);
         body.b.ins().store(flags, new_top, process, heap);
     }
-    body.b.ins().jump(done, &[]);
-
-    body.b.switch_to_block(done);
-    body.b.seal_block(done);
 }
 
 /// `closure_size_for_count` over a runtime count.
