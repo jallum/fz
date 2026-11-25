@@ -2247,7 +2247,7 @@ fn apply_bit_modifier_name(spec: &mut BitFieldSpec, name: &str, error_span: Span
     match name {
         "integer" => spec.ty = BitType::Integer,
         "float" => spec.ty = BitType::Float,
-        "binary" => spec.ty = BitType::Binary,
+        "binary" | "bytes" => spec.ty = BitType::Binary,
         "bits" | "bitstring" => spec.ty = BitType::Bits,
         "utf8" => spec.ty = BitType::Utf8,
         "utf16" => spec.ty = BitType::Utf16,

@@ -1,0 +1,31 @@
+#---
+# purpose: "the bytes segment type means what binary means, in a function head, in a sized field, in a construction and in a receive pattern, and like binary it does not match a value that is not whole bytes"
+# oracle: self
+# oracle.stamp: 91060d35bb7699ea
+# args: 0
+#---
+defmodule Main do
+  def split(<<byte, rest::bytes>>), do: {byte, rest}
+  def split(other), do: {:no_match, other}
+
+  def pair(<<head::bytes-size(2), tail::bytes>>), do: {head, tail}
+
+  def join(a, b), do: <<a::bytes, b::bytes>>
+
+  def take() do
+    receive do
+      <<tag, body::bytes>> -> {:took, tag, body}
+    end
+  end
+
+  def main() do
+    IO.puts(inspect(split("abc")))
+    IO.puts(inspect(split(<<1, 2::3>>)))
+    IO.puts(inspect(pair("hello")))
+    IO.puts(inspect(join("ab", "cd")))
+    send(self(), "xyz")
+    IO.puts(inspect(take()))
+  end
+end
+
+Main.main()
