@@ -1311,14 +1311,14 @@ impl Module {
 
 // ---------- builder ----------
 
-/// Builder for one FnIr. `next_var` and `next_block` mint fresh ids; the entry
-/// block is the first block created via `block()`. Set the terminator on each
-/// block before calling `build()`.
+/// Builder for one FnIr. `next_var` mints fresh vars; a block's id is its
+/// position in `blocks`, so `block()` mints ids by appending and every lookup is
+/// an index. The entry block is the first block created via `block()`. Set the
+/// terminator on each block before calling `build()`.
 pub struct FnBuilder {
     id: FnId,
     name: String,
     next_var: u32,
-    next_block: u32,
     blocks: Vec<Block>,
     entry: Option<BlockId>,
     category: FnCategory,
@@ -1333,7 +1333,6 @@ impl FnBuilder {
             id,
             name: name.into(),
             next_var: 0,
-            next_block: 0,
             blocks: Vec::new(),
             entry: None,
             category: FnCategory::User,
@@ -1368,8 +1367,7 @@ impl FnBuilder {
     /// Create a new block with the given parameters; first call's block becomes
     /// the entry block. Returns the new block's id.
     pub fn block(&mut self, params: Vec<Var>) -> BlockId {
-        let id = BlockId(self.next_block);
-        self.next_block += 1;
+        let id = BlockId(self.blocks.len() as u32);
         self.blocks.push(Block {
             id,
             params,
@@ -1383,7 +1381,9 @@ impl FnBuilder {
     }
 
     fn block_mut(&mut self, id: BlockId) -> &mut Block {
-        self.blocks.iter_mut().find(|b| b.id == id).expect("unknown block")
+        let block = self.blocks.get_mut(id.0 as usize).expect("unknown block");
+        debug_assert_eq!(block.id, id, "a builder block's id is its position");
+        block
     }
 
     /// Append `let v = prim` to the given block; returns the bound var.
@@ -1405,12 +1405,11 @@ impl FnBuilder {
 
     pub fn build(self) -> FnIr {
         let entry = self.entry.expect("FnBuilder built with no blocks");
-        let ignored_entry_params = self
-            .blocks
+        let ignored_entry_params = self.blocks[entry.0 as usize]
+            .params
             .iter()
-            .find(|b| b.id == entry)
-            .map(|b| b.params.iter().map(|p| self.ignored_params.contains(p)).collect())
-            .unwrap_or_default();
+            .map(|p| self.ignored_params.contains(p))
+            .collect();
         let mut f = FnIr {
             id: self.id,
             name: self.name,

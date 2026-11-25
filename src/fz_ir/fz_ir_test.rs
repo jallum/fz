@@ -261,3 +261,39 @@ fn a_parameter_occupies_the_words_that_carry_it() {
         vec![ExternTy::I64, ExternTy::Any, ExternTy::I64, ExternTy::Bool]
     );
 }
+
+/// Intent: a builder's block ids are positions, so a statement appended to any
+/// block lands in exactly that block however many blocks exist.
+#[test]
+fn builder_appends_land_in_the_block_named_by_id_across_many_blocks() {
+    let mut b = FnBuilder::new(FnId(0), "many");
+    let ids: Vec<BlockId> = (0..500).map(|_| b.block(vec![])).collect();
+    // Interleave late and early appends so lookup order cannot matter.
+    let mut bound = Vec::new();
+    for (round, id) in ids.iter().rev().chain(ids.iter()).enumerate() {
+        bound.push((*id, b.let_(*id, Prim::Const(Const::Int(round as i64)))));
+    }
+    for id in &ids {
+        b.set_terminator(
+            *id,
+            Term::Return(bound.iter().find(|(owner, _)| owner == id).unwrap().1),
+        );
+    }
+    let f = b.build();
+    assert_eq!(f.entry, ids[0]);
+    for (position, id) in ids.iter().enumerate() {
+        assert_eq!(id.0 as usize, position, "ids are creation positions");
+        let block = f.block(*id);
+        assert_eq!(block.id, *id);
+        let owned: Vec<Var> = bound.iter().filter(|(owner, _)| owner == id).map(|(_, v)| *v).collect();
+        let stmt_vars: Vec<Var> = block
+            .stmts
+            .iter()
+            .map(|s| match s {
+                Stmt::Let(v, _) => *v,
+                other => panic!("unexpected stmt {other:?}"),
+            })
+            .collect();
+        assert_eq!(stmt_vars, owned);
+    }
+}
