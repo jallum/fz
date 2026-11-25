@@ -4,7 +4,6 @@
     "fz-mue.22",
     "fz-mue.32",
     "fz-mue.38",
-    "fz-mue.51",
     "fz-mue.52",
     "fz-sc8.174",
     "fz-sc8.256"
@@ -29,5 +28,5 @@
   "status": "in_progress",
   "title": "Record.defrecordp defines a record, and a record pattern matches in a function head",
   "type": "feature",
-  "updated_at": "2026-11-24T21:36:40Z"
+  "updated_at": "2026-11-25T11:31:27Z"
 }
