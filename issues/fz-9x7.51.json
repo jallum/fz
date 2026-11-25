@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-9x7.49"
+  ],
   "blocks": [],
   "created": "2026-11-25T01:08:50Z",
   "description": "From: GC. Approved by the user 2026-11-24 with the fz-9x7.49 page (verbatim \"approved;\", https://claude.ai/artifact/9yNjH7q4xZFuFVwNnRpYhr, 'Proposed ticket' bullet).\n\nToday: binaries_shared is a heap field bumped inline through fn_ctx::bump_process_counter (fn_ctx.rs:279) and printed on the process exit line. After fz-9x7.49 it is the last per-process inline counter.\n\nChange: count it at a site in the per-program site table (as .37.3 did for allocations and .49 for reuse), report the sum, delete the heap field, its offset, the exit-line field and bump_process_counter.\n\nDone when: bump_process_counter has no definition; the reported figure equals today's on the fixtures and tests that pin it; no pin rises.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "binaries_shared is a site count",
   "type": "task",
-  "updated_at": "2026-11-25T01:09:00Z"
+  "updated_at": "2026-11-25T01:09:02Z"
 }
