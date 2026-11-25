@@ -2614,7 +2614,7 @@ fn callable_flow_dispatch_discriminates_callable_correlations() {
             .any(|node| matches!(node, DispatchNode::Test { .. })),
         "callable-flow dispatch must ask which callable arrived",
     );
-    let reachability = calculate_dispatch_reachability(world.types_mut(), &plan, &[closure_b]);
+    let reachability = calculate_dispatch_reachability(world.types_mut(), &plan, &[closure_b], &[]);
     let bodies = plan
         .outcomes
         .iter()

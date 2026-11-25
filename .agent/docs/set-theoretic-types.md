@@ -809,7 +809,13 @@ unconstrained holds `any` (maps are open), a resource answers its payload for
 the atom `value`, and `None` means no member can hold the key (or the key type
 is no kind of key: `any`, a type variable). `Types::can_miss(map, key)` says
 whether some map of the type does not require the key; an `OfType` key can
-always miss. The reader composes `nil`: a pattern and a function head take
+always miss. A map pattern reads its key as `Exact` when the source wrote an atom or an
+integer, and as `OfType` when it wrote a binary (`binary`), a float (`float`)
+or a pinned variable (the type the dispatch's input or its enclosing scope holds
+the pin at: `calculate_dispatch_reachability` and `project_subject` take that
+scope's pin types, by pin, beside the inputs). A pin whose type is unknown, a
+boolean or `nil` key, and a key an earlier subject of the same pattern already
+read, bind `any`. The reader composes `nil`: a pattern and a function head take
 `value_at`; `m[k]` and `m.k` take `value_at` plus `nil` when `can_miss`
 (`map_read_ty`, the semantic step both share); a map update is certain to find
 its keys when none of them `can_miss`. `Types::map_slot_ty` answers a different

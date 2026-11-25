@@ -6,8 +6,8 @@ use std::rc::Rc;
 use crate::ast::BitType;
 use crate::dispatch_matrix::pattern::PatternDispatchPlan;
 use crate::dispatch_matrix::{
-    ComparisonValue, DispatchNode, GraphNodeId, ListRegion, LiveEdges, OutcomeId, ProjectionKind, ProofSense, Region,
-    RegionPredicate, SubjectId, SubjectSource,
+    ComparisonValue, DispatchNode, GraphNodeId, ListRegion, LiveEdges, OutcomeId, PinnedValueId, ProjectionKind,
+    ProofSense, Region, RegionPredicate, SubjectId, SubjectSource,
 };
 use crate::ground_value::{DispatchShape, GroundValue};
 
@@ -29,6 +29,7 @@ pub(crate) fn calculate_dispatch_reachability(
     types: &mut Types,
     plan: &PatternDispatchPlan<Ty>,
     inputs: &[Ty],
+    scope_pins: &[Option<Ty>],
 ) -> DispatchReachability {
     let any = types.any();
     // The runtime envelope answers "what could this be at runtime", which is
@@ -52,6 +53,7 @@ pub(crate) fn calculate_dispatch_reachability(
     let mut calculator = ReachabilityCalculator {
         types,
         plan,
+        scope_pins,
         visited: HashSet::default(),
         outcomes: BTreeSet::new(),
         outcome_inputs: BTreeSet::new(),
@@ -158,6 +160,7 @@ struct ReachabilityState {
 struct ReachabilityCalculator<'a> {
     types: &'a mut Types,
     plan: &'a PatternDispatchPlan<Ty>,
+    scope_pins: &'a [Option<Ty>],
     visited: HashSet<(GraphNodeId, ReachabilityState)>,
     outcomes: BTreeSet<OutcomeId>,
     outcome_inputs: BTreeSet<(OutcomeId, Vec<Ty>)>,
@@ -224,7 +227,7 @@ impl ReachabilityCalculator<'_> {
             .iter()
             .all(|field| self.plan.bitstring_extraction(*field).spec.spans_whole_bytes());
         let binary = self.types.str_t();
-        let subject = project_subject(self.types, self.plan, &state.roots, predicate.subject);
+        let subject = project_subject(self.types, self.plan, &state.roots, self.scope_pins, predicate.subject);
         let proven = prefix_whole && self.types.is_subtype(&subject, &binary);
         let edges = self.tests.entry(node).or_default();
         edges.rest_whole |= proven;
@@ -262,7 +265,7 @@ impl ReachabilityCalculator<'_> {
         let mut row = state.roots.clone();
         for alternative in alternatives {
             row[ordinal] = alternative;
-            let projected = project_subject(self.types, self.plan, &row, subject);
+            let projected = project_subject(self.types, self.plan, &row, self.scope_pins, subject);
             let overlap = self.types.intersect(projected, target.ty);
             if self.types.is_empty(&overlap) {
                 missed = join_optional(self.types, missed, alternative);
@@ -270,7 +273,7 @@ impl ReachabilityCalculator<'_> {
             }
             if target.kind == TargetKind::Narrows {
                 let narrowed = if exact_projection_path(self.plan, subject) {
-                    lift_projection_constraint(self.types, self.plan, &row, subject, target.ty)
+                    lift_projection_constraint(self.types, self.plan, &row, self.scope_pins, subject, target.ty)
                         .map(|(_, lifted)| self.types.intersect(alternative, lifted))
                 } else {
                     None
@@ -286,7 +289,7 @@ impl ReachabilityCalculator<'_> {
             if target.kind == TargetKind::Exact
                 && exact_projection_path(self.plan, subject)
                 && let Some((lifted_ordinal, lifted)) =
-                    lift_projection_constraint(self.types, self.plan, &row, subject, target.ty)
+                    lift_projection_constraint(self.types, self.plan, &row, self.scope_pins, subject, target.ty)
             {
                 debug_assert_eq!(lifted_ordinal, ordinal);
                 let match_alternative = self.types.intersect(alternative, lifted);
@@ -327,7 +330,7 @@ impl ReachabilityCalculator<'_> {
         let known = match sense {
             ProofSense::Holds => region,
             ProofSense::DoesNotHold => {
-                let projected = project_subject(self.types, self.plan, &state.roots, subject);
+                let projected = project_subject(self.types, self.plan, &state.roots, self.scope_pins, subject);
                 let any_list = self.types.any_list();
                 if !self.types.is_subtype(&projected, &any_list) {
                     return Some(());
@@ -460,6 +463,7 @@ pub(crate) fn project_subject(
     types: &mut Types,
     plan: &PatternDispatchPlan<Ty>,
     roots: &[Ty],
+    scope_pins: &[Option<Ty>],
     subject: SubjectId,
 ) -> Ty {
     let SubjectSource::Projection(projection) = plan.subject(subject) else {
@@ -468,7 +472,7 @@ pub(crate) fn project_subject(
         };
         return roots.get(*ordinal as usize).copied().unwrap_or_else(|| types.any());
     };
-    let source = project_subject(types, plan, roots, projection.source);
+    let source = project_subject(types, plan, roots, scope_pins, projection.source);
     match &projection.kind {
         ProjectionKind::TupleField(index) => types.tuple_field_type(&source, *index as usize),
         ProjectionKind::StructField(field) => types
@@ -476,10 +480,8 @@ pub(crate) fn project_subject(
             .unwrap_or_else(|| types.any()),
         ProjectionKind::ListHead => types.list_element_type(&source),
         ProjectionKind::ListTail => types.list_tail_type(&source),
-        ProjectionKind::MapValue { key } => key
-            .as_const()
-            .and_then(GroundValue::as_map_key)
-            .and_then(|key| types.value_at(&source, &KeyAt::Exact(key)))
+        ProjectionKind::MapValue { key } => map_value_key(types, plan, roots, scope_pins, key)
+            .and_then(|key| types.value_at(&source, &key))
             .unwrap_or_else(|| types.any()),
         ProjectionKind::BitstringField(extraction) => match extraction.spec.kind {
             BitType::Integer | BitType::Utf8 | BitType::Utf16 | BitType::Utf32 => types.int(),
@@ -490,10 +492,46 @@ pub(crate) fn project_subject(
     }
 }
 
+/// The key a map pattern reads: an atom or integer the source wrote, else the
+/// type of key it is (a binary, a float, a pinned variable's). A key the
+/// plan cannot type is not read.
+fn map_value_key(
+    types: &mut Types,
+    plan: &PatternDispatchPlan<Ty>,
+    roots: &[Ty],
+    scope_pins: &[Option<Ty>],
+    key: &ComparisonValue,
+) -> Option<KeyAt> {
+    match key {
+        ComparisonValue::Const(value) => match value {
+            GroundValue::Binary(_) | GroundValue::Utf8Binary(_) => Some(KeyAt::OfType(types.str_t())),
+            GroundValue::Float(_) => Some(KeyAt::OfType(types.float())),
+            other => other.as_map_key().map(KeyAt::Exact),
+        },
+        ComparisonValue::Pinned(pin) => pinned_ty(plan, roots, scope_pins, *pin).map(KeyAt::OfType),
+        ComparisonValue::Subject(_) => None,
+    }
+}
+
+/// The type of one pinned value: the input that delivers it when the rows
+/// carry a prematch, else the type the enclosing scope holds it at.
+fn pinned_ty(
+    plan: &PatternDispatchPlan<Ty>,
+    roots: &[Ty],
+    scope_pins: &[Option<Ty>],
+    pin: PinnedValueId,
+) -> Option<Ty> {
+    match plan.pinned.get(pin.0 as usize)?.input {
+        Some(input) => roots.get(input as usize).copied(),
+        None => scope_pins.get(pin.0 as usize).copied().flatten(),
+    }
+}
+
 fn lift_projection_constraint(
     types: &mut Types,
     plan: &PatternDispatchPlan<Ty>,
     roots: &[Ty],
+    scope_pins: &[Option<Ty>],
     subject: SubjectId,
     constraint: Ty,
 ) -> Option<(usize, Ty)> {
@@ -501,7 +539,7 @@ fn lift_projection_constraint(
         SubjectSource::Input { ordinal } => Some((*ordinal as usize, constraint)),
         SubjectSource::Projection(projection) => {
             let source = projection.source;
-            let source_ty = project_subject(types, plan, roots, source);
+            let source_ty = project_subject(types, plan, roots, scope_pins, source);
             let constrained = match &projection.kind {
                 ProjectionKind::StructField(field) => {
                     types.refine_map_field(&source_ty, &crate::types::MapKey::Atom(field.clone()), &constraint)
@@ -518,7 +556,7 @@ fn lift_projection_constraint(
                 }
                 _ => return None,
             };
-            lift_projection_constraint(types, plan, roots, source, constrained)
+            lift_projection_constraint(types, plan, roots, scope_pins, source, constrained)
         }
     }
 }
