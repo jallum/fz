@@ -1630,7 +1630,7 @@ fn native_modules_equal(left: &IrModule, right: &IrModule) -> bool {
             .zip(right.fns.iter())
             .all(|(left, right)| native_fns_equal(left, right))
         && left.fn_idx == right.fn_idx
-        && left.atom_names == right.atom_names
+        && left.atoms == right.atoms
         && left.externs == right.externs
         && left.extern_idx == right.extern_idx
         && left.struct_schemas == right.struct_schemas

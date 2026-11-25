@@ -1172,7 +1172,7 @@ pub(crate) fn compile_with_backend_surface<
             .collect(),
         fn_ids,
         user_schemas,
-        atom_names: module.atom_names.clone(),
+        atom_names: module.atoms.names().to_vec(),
         tuple_arities: tuple_arities.iter().map(|&a| a as u32).collect(),
         named_schemas: module
             .struct_schemas

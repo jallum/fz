@@ -30,6 +30,7 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::OnceLock;
 
 /// fz-kgk — intrinsic identity for a callsite (call-shape terminator,
 /// `Prim::MakeClosure`, or `Prim::Extern` stmt).
@@ -1261,6 +1262,57 @@ impl SourceInfo {
     }
 }
 
+/// The atoms of one module: each name at its id, and the id of each name.
+/// Built once from the names in id order and read-only after. The name-to-id
+/// map is derived from the names the first time a name is asked for, so a
+/// table that is only read by id costs no more than its list, and the two
+/// directions cannot disagree.
+#[derive(Debug, Default, Clone)]
+pub struct ModuleAtoms {
+    names: Vec<AtomName>,
+    ids: OnceLock<HashMap<AtomName, u32>>,
+}
+
+impl PartialEq for ModuleAtoms {
+    fn eq(&self, other: &Self) -> bool {
+        self.names == other.names
+    }
+}
+
+impl ModuleAtoms {
+    pub fn from_names(names: impl IntoIterator<Item = AtomName>) -> Self {
+        Self {
+            names: names.into_iter().collect(),
+            ids: OnceLock::new(),
+        }
+    }
+
+    /// The id of the atom spelled `name`, if the table has it. A name listed
+    /// twice would have two ids, so the first ask of a table that lists one
+    /// says so.
+    pub fn id_of(&self, name: &str) -> Option<u32> {
+        let ids = self.ids.get_or_init(|| {
+            let mut ids = HashMap::default();
+            for (id, name) in self.names.iter().enumerate() {
+                let earlier = ids.insert(name.clone(), id as u32);
+                assert!(earlier.is_none(), "the atom table lists :{name} twice");
+            }
+            ids
+        });
+        ids.get(name).copied()
+    }
+
+    /// The spelling of atom `id`, if the table has it.
+    pub fn name(&self, id: u32) -> Option<&AtomName> {
+        self.names.get(id as usize)
+    }
+
+    /// The names in id order.
+    pub fn names(&self) -> &[AtomName] {
+        &self.names
+    }
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct Module {
     /// Logical module path for this IR module. Root/top-level code uses "".
@@ -1268,12 +1320,10 @@ pub struct Module {
     pub fns: Vec<FnIr>,
     pub schemas: Vec<Schema>,
     pub source: SourceInfo,
-    /// Atom names indexed by id. `atom_names[id]` is the source spelling of
-    /// the atom interned at `Const::Atom(id)`. Populated by ir_lower from
-    /// its per-module AtomTable. Every runtime path (JIT, interp, AOT)
-    /// hands this to its Process so `any_value::debug::render` can print
-    /// `:ok` instead of `:atom_1`. Closed by fz-ul4.25.
-    pub atom_names: Vec<AtomName>,
+    /// The atoms `Const::Atom(id)` names. Every runtime path (JIT, interp,
+    /// AOT) hands its names to its Process so `any_value::debug::render` can
+    /// print `:ok` instead of `:atom_1`.
+    pub atoms: ModuleAtoms,
     /// O(1) index from FnId to position in `fns`. Kept in sync by
     /// `ModuleBuilder::add_fn`; never mutated after `build()`.
     pub fn_idx: HashMap<FnId, usize>,
@@ -1483,7 +1533,7 @@ impl ModuleBuilder {
             fn_idx: self.fn_idx,
             schemas: self.schemas,
             source: SourceInfo::default(),
-            atom_names: Vec::new(),
+            atoms: ModuleAtoms::default(),
             externs: Vec::new(),
             extern_idx: HashMap::default(),
             protocol_call_targets: self.protocol_call_targets,

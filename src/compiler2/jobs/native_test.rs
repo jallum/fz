@@ -4,6 +4,7 @@ use crate::compiler2::identity::{ActivationKey, ExecutableKey, ExecutableNeed, F
 use crate::compiler2::pull::TransportCarrier;
 use crate::compiler2::transport::{LaneDescr, TransportClass};
 use crate::telemetry::sink::NullTelemetry;
+use fz_runtime::process::AtomName;
 
 #[test]
 fn entry_function_references_schedule_each_recursive_helper_once() {

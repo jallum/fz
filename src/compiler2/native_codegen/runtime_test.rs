@@ -49,12 +49,12 @@
 //! depends on: a named struct never answers a tuple's position questions.
 
 use crate::fast_hash::HashMap;
+use crate::fz_ir::ModuleAtoms;
 
 use cranelift_codegen::ir::{self, BlockArg, InstBuilder, condcodes::IntCC, types};
 use cranelift_frontend::FunctionBuilder;
 use fz_runtime::any_value::ValueKind;
 use fz_runtime::heap::NamedSchema;
-use fz_runtime::process::AtomName;
 
 use crate::finite_set::FiniteSet;
 use crate::runtime_type_predicate::{
@@ -86,7 +86,7 @@ pub(super) trait RuntimeTestEmitter<'f> {
     type Value: Copy;
 
     fn builder(&mut self) -> &mut FunctionBuilder<'f>;
-    fn atom_names(&self) -> &[AtomName];
+    fn atoms(&self) -> &ModuleAtoms;
     fn tuple_schema_ids(&self) -> &HashMap<usize, u32>;
     fn named_schema_ids(&self) -> &HashMap<fz_runtime::module_name::ModuleName, u32>;
 
@@ -460,19 +460,13 @@ fn guarded<'f, E: RuntimeTestEmitter<'f>>(
 
 /// The atom axis in the runtime's own numbering.
 fn atom_id_membership<'f, E: RuntimeTestEmitter<'f>>(e: &E, atoms: &FiniteSet<String>) -> FiniteSet<i64> {
-    let name_to_id: HashMap<&str, u32> = e
-        .atom_names()
-        .iter()
-        .enumerate()
-        .map(|(index, name)| (name.as_str(), index as u32))
-        .collect();
     FiniteSet {
         cofinite: atoms.cofinite,
         values: atoms
             .values
             .iter()
-            .map(|name| match name_to_id.get(name.as_str()) {
-                Some(id) => i64::from(*id),
+            .map(|name| match e.atoms().id_of(name.as_str()) {
+                Some(id) => i64::from(id),
                 None => panic!("the atom table lacks :{name}, which a type test names"),
             })
             .collect(),

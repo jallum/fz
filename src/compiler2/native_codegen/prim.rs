@@ -16,7 +16,7 @@ use crate::ast::BitType;
 use crate::fast_hash::HashMap;
 use crate::fz_ir::{
     BinOp, BitFieldIr, BitMatchField, BitSizeIr, BlockId, Const, DestMapSeed, ExternArg, ExternDecl, ExternId,
-    ExternMarshalSite, ExternTy, FnId, FrameLane, Prim, UnOp, Var,
+    ExternMarshalSite, ExternTy, FnId, FrameLane, ModuleAtoms, Prim, UnOp, Var,
 };
 use crate::runtime_type_predicate::{CallableShapes, Listing, RuntimeTypePredicate};
 use cranelift_codegen::ir::{
@@ -43,7 +43,6 @@ use fz_runtime::ir_runtime::{
     fz_struct_module, fz_struct_schema_id_ref, fz_value_cmp_raw_const, fz_value_cmp_ref, fz_value_eq_raw_const,
     fz_value_eq_ref, fz_value_eq_widening_ref,
 };
-use fz_runtime::process::AtomName;
 use fz_runtime::process_abi::{PROCESS_DELIVERED_OFFSET, PROCESS_FAILED_OFFSET};
 use std::mem::{align_of, offset_of, size_of};
 use target_lexicon::{Architecture, OperatingSystem, Triple};
@@ -471,9 +470,8 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
         Prim::StructField(c, field) => {
             let atom_id = env
                 .module
-                .atom_names
-                .iter()
-                .position(|name| name == field.as_str())
+                .atoms
+                .id_of(field.as_str())
                 .ok_or_else(|| CodegenError::new(format!("field atom `{}` not interned", field)))?;
             let struct_ref = body.tagged_var(var_env, c.0);
             let process = body.process_arg();
@@ -1578,8 +1576,8 @@ impl<'fb, M: cranelift_module::Module> RuntimeTestEmitter<'fb> for PrimTestEmitt
         self.body.b
     }
 
-    fn atom_names(&self) -> &[AtomName] {
-        &self.env.module.atom_names
+    fn atoms(&self) -> &ModuleAtoms {
+        &self.env.module.atoms
     }
 
     fn tuple_schema_ids(&self) -> &HashMap<usize, u32> {
@@ -2702,9 +2700,8 @@ fn lower_struct_slot<M: cranelift_module::Module>(
     let schema_id = struct_schema_id(env, module)?;
     let field_atom = env
         .module
-        .atom_names
-        .iter()
-        .position(|name| name == field)
+        .atoms
+        .id_of(field)
         .ok_or_else(|| CodegenError::new(format!("field atom `{field}` not interned")))?;
     let base_ref = body.tagged_var(var_env, base.0);
     let lane = match read {

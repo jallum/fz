@@ -324,3 +324,25 @@ fn a_block_read_through_the_function_is_the_block_with_that_id() {
     assert_eq!(fn_ir.block(last).stmts.len(), 1);
     assert!(fn_ir.block(ids[0]).stmts.is_empty());
 }
+
+/// An atom's id and its spelling answer each other, because both come from
+/// the one list the table was built from.
+#[test]
+fn a_module_atom_is_found_by_name_at_the_id_that_names_it_back() {
+    let atoms = ModuleAtoms::from_names(["nil", "true", "ok"].map(AtomName::from));
+
+    for (id, name) in atoms.names().iter().enumerate() {
+        assert_eq!(atoms.id_of(name), Some(id as u32));
+        assert_eq!(atoms.name(id as u32), Some(name));
+    }
+    assert_eq!(atoms.id_of("ok"), Some(2));
+    assert_eq!(atoms.id_of("missing"), None);
+    assert_eq!(atoms.name(3), None);
+}
+
+/// A name listed twice would have two ids, so asking such a table for a name says so.
+#[test]
+#[should_panic(expected = "the atom table lists :ok twice")]
+fn a_module_atom_table_refuses_a_name_listed_twice() {
+    ModuleAtoms::from_names(["ok", "ok"].map(AtomName::from)).id_of("ok");
+}

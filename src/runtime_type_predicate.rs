@@ -1422,11 +1422,9 @@ fn axis_admits(
             RuntimeAnyValue::Atom(atom_id) => mapped_membership(&predicate.atoms, atom_id, |name| {
                 reader
                     .module
-                    .atom_names
-                    .iter()
-                    .position(|candidate| candidate == name.as_str())
+                    .atoms
+                    .id_of(name.as_str())
                     .unwrap_or_else(|| panic!("the atom table lacks :{name}, which a type test names"))
-                    as u32
             }),
             _ => false,
         },
@@ -2043,7 +2041,7 @@ pub(crate) mod surface_membership {
             RuntimeAnyValue::Int(int) => int.to_string(),
             RuntimeAnyValue::Opaque(kind, word) => fz_runtime::any_value::debug::render_opaque_word(kind, word),
             RuntimeAnyValue::Float(bits) => f64::from_bits(bits).to_string(),
-            RuntimeAnyValue::Atom(atom_id) => match reader.module.atom_names.get(atom_id as usize) {
+            RuntimeAnyValue::Atom(atom_id) => match reader.module.atoms.name(atom_id) {
                 Some(name) => format!(":{name}"),
                 None => format!(":<atom {atom_id}>"),
             },
