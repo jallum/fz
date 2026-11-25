@@ -11,6 +11,7 @@
     "fz-sc8.22.3",
     "fz-sc8.22.4"
   ],
+  "closed_at": "2026-11-25T03:32:06Z",
   "created": "2026-11-20T20:00:57Z",
   "description": "User approved the plan page /Users/j5n/Workspace/fz-sc8.22.2.html (2026-11-24, \"approved, all three\"). Owner: Bugs and Cleanup. Step 2 of fz-sc8.22 (runtime). It supersedes the earlier 'box' wording.\n\nRepresentation: proper lists are unchanged. Bit 63 of the link word, LIST_LINK_TERMINATOR_MASK, is part of LIST_LINK_METADATA_MASK. When it is set, the link's address points to a terminator cell: an ordinary 16-byte ListCons whose head holds the terminator as (raw, kind) and whose tail is []. A flag with address 0 is a hole, reserved for fz-9x7.45 G and refused everywhere else. GC traces the terminator cell as a list cell, with no new collector code (GC confirmed).\n\nAccessor: ListLink::tail() / ListCons::tail() -\u003e ListTail { Proper(addr; 0 = []), Terminator(addr), Hole }. Constructors: ListLink::to_addr (proper only), to_terminator(cell_addr, head_kind), hole(head_kind). tail_cell_addr() is the single raw edge, used only by GC, deep copy and sharing. The public tail_addr() and tail_bits() are deleted, so every walker must answer the terminator:\n- list_tail_ref, and through it length, map_from_kv, the failure walkers, source.rs and the interp tail;\n- list_cmp, in Erlang order;\n- hash_list, which folds the terminator in;\n- deep copy;\n- the renderer, in Elixir's container_each form;\n- reuse.\n\nConstruction: native code emits the inline cons only when the tail's type is a subset of any_list(); otherwise it uses the checked runtime cons. Interp's alloc_list_cons_any accepts any tail. The nil and bare-0 arms of list_tail_addr_from_bits are removed (any_value.rs:1214), after every caller passing 0 for [] is changed to EMPTY_LIST.\n\nFolds in fz-9x7.44.3 (user approved): the tail travels as (word, kind), parameters only, and nothing is boxed on either path. The sites are cg/prim.rs:118 fz_list_cons_any, the cg/support.rs:52/:62 reuse rows, ir_interp/prim.rs:16 interp_list_cons and ir_interp/backend.rs:2170. User decisions: when this lands, .44.3 closes as covered, and .44.8 is re-blocked on this ticket.\n\nProof:\n- Fixture 01982 (Elixir 1.19.4 oracle, all three paths): [1, 2 | 3], dbg([1 | 2]), [0 | %{a: 1}], [1 | nil], q.fz's [_ | y] = t(2), length raising, the guard falling through, compare and equality, a map key, a send round trip, survival across GC, and inspect with limit.\n- 01981 loses its argv guard.\n- Unit tests for the three tail answers, compare and hash.\n- A GC forward test: the flag survives a minor and a major collection, for both a terminator and a hole.\n- A telemetry test: an int tail costs two cells and no box.\n- A/B on bench; the distiller on all three paths.\n\nRemoval ledger: tail_addr() and tail_bits(); the nil fold; the renderer's 'always a list' comment; 01981's guard; the docs that call lists always proper (.agent/docs/charlists.md:41, specs.md:32, modules.md:201, guides/memory.html:164, resolve.rs:151); interp scalar boxing of tails.\nDocs: .agent/docs list layout and guides/memory.html.",
   "id": "fz-sc8.22.2",
@@ -23,8 +24,8 @@
     }
   ],
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "An improper tail is a terminator cell behind a link flag",
   "type": "task",
-  "updated_at": "2026-11-25T00:35:27Z"
+  "updated_at": "2026-11-25T03:32:06Z"
 }
