@@ -1,0 +1,42 @@
+#---
+# purpose: "inspect/2 printable_limit: keeps that many characters of a string (`<> ...`) or charlist (`++ ...`), counts codepoints, takes :infinity, and leaves limit: alone"
+# oracle: self
+# oracle.stamp: cb0250d47eacf25d
+#---
+defmodule Main do
+  def main() do
+    IO.inspect(inspect("abcdef", printable_limit: 5))
+    IO.inspect(inspect("abcdef", printable_limit: 6))
+    IO.inspect(inspect("abcdef", printable_limit: 7))
+    IO.inspect(inspect("abcdef", printable_limit: 0))
+    IO.inspect(inspect("", printable_limit: 0))
+    IO.inspect(inspect("héllo wörld", printable_limit: 4))
+    IO.inspect(inspect("日本語テキスト", printable_limit: 3))
+    IO.inspect(inspect("a\nb\"c", printable_limit: 4))
+    IO.inspect(inspect("a\#{b", printable_limit: 2))
+    IO.inspect(inspect("\#{" <> <<0>>, printable_limit: 2))
+    IO.inspect(inspect(~c"a\#{xyz", printable_limit: 2))
+    IO.inspect(inspect("ab" <> <<0>>, printable_limit: 2))
+    IO.inspect(inspect("ab" <> <<0>>, printable_limit: 3))
+    IO.inspect(inspect(<<"ab", 255>>, printable_limit: 2))
+    IO.inspect(inspect(<<"ab", 255>>, printable_limit: 3))
+    IO.inspect(inspect(String.duplicate("a", 4100)) |> String.length())
+    IO.inspect(inspect(String.duplicate("a", 4096)) |> String.length())
+    IO.inspect(inspect(String.duplicate("a", 4100), printable_limit: :infinity) |> String.length())
+    IO.inspect(inspect(~c"abcdef", printable_limit: 5))
+    IO.inspect(inspect(~c"abcdef", printable_limit: 6))
+    IO.inspect(inspect(~c"abcdef", printable_limit: 0))
+    IO.inspect(inspect(~c"abc" ++ [0], printable_limit: 3))
+    IO.inspect(inspect(~c"abc" ++ [0], printable_limit: 4))
+    IO.inspect(inspect(~c"abcdef", printable_limit: :infinity))
+    IO.inspect(inspect([1, 2, 3], printable_limit: 2))
+    IO.inspect(inspect(["abcdef", ["ghijkl", ~c"mnopqr"]], printable_limit: 3))
+    IO.inspect(inspect(%{a: "abcdef"}, printable_limit: 2))
+    IO.inspect(inspect(["abcdef", "ghijkl", "mnopqr"], limit: 2, printable_limit: 3))
+    IO.inspect(inspect(["abcdef", "ghijkl", "mnopqr"], limit: :infinity, printable_limit: 1))
+    IO.inspect(inspect(["abcdef", "ghijkl"], limit: 1, printable_limit: :infinity))
+    IO.inspect(inspect(<<1, 2, 3>>, printable_limit: 1))
+  end
+end
+
+Main.main()

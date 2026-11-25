@@ -22,7 +22,7 @@
 //! `not_unsafe_ptr_arg_deref` lint is allowed module-wide instead of per-fn.
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
-use crate::any_value::debug::{Limit, render_value, render_with_limit};
+use crate::any_value::debug::{Limits, render_value, render_with_limits};
 use crate::any_value::{
     AnyValue, AnyValueRef, FALSE_ATOM_ID, ListCons, NIL_ATOM_ID, SlotLayout, Stored, ValueKind,
     binview_addr_from_tagged, closure_addr_from_tagged, closure_arity, closure_capture_ref_word,
@@ -1322,13 +1322,13 @@ pub extern "C" fn fz_inspect(process: *mut Process, word: u64, kind: u64) -> u64
 }
 
 /// The text `inspect/2` gives the value, as a binary. `options_ref` is the
-/// keyword list `Kernel.inspect/2` has already checked: `limit:` is its only
-/// option.
+/// keyword list `Kernel.inspect/2` has already checked: `limit:` and
+/// `printable_limit:` are its options.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_inspect_with(process: *mut Process, word: u64, kind: u64, options_ref: u64) -> u64 {
     let value = Stored { word, kind }.value("fz_inspect_with value");
-    let limit = Limit::from_options(process, any_value_from_ref_word(options_ref, "fz_inspect_with options"));
-    alloc_text(process, &render_with_limit(process, value, limit))
+    let limits = Limits::from_options(process, any_value_from_ref_word(options_ref, "fz_inspect_with options"));
+    alloc_text(process, &render_with_limits(process, value, limits))
 }
 
 #[unsafe(no_mangle)]

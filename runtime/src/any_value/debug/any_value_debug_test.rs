@@ -53,8 +53,34 @@ fn escape_covers_every_control_elixir_names() {
     assert_eq!(escape_for_display("#{x} # {"), "\\#{x} # {");
 }
 
+/// Intent: the escaper counts what Elixir's `Code.Identifier.escape/3`
+/// counts: a codepoint, a stray byte, or the pair `#{` each cost one step.
+#[test]
+fn escape_within_spends_one_step_per_codepoint_stray_byte_or_interpolation_opener() {
+    use Limit::{Count, Infinity};
+    assert_eq!(escape_within(b"abc", Count(2)), ("ab".to_string(), true));
+    assert_eq!(escape_within(b"abc", Count(3)), ("abc".to_string(), false));
+    assert_eq!(escape_within(b"abc", Count(0)), (String::new(), true));
+    assert_eq!(escape_within(b"", Count(0)), (String::new(), false));
+    assert_eq!(escape_within("héé".as_bytes(), Count(2)), ("hé".to_string(), true));
+    assert_eq!(escape_within(b"#{x", Count(2)), ("\\#{x".to_string(), false));
+    assert_eq!(escape_within(&[b'a', 0xFF], Infinity), ("a\\xFF".to_string(), false));
+}
+
+/// Intent: `printable_limit:` bounds how much of a string has to be
+/// printable, so text past the limit is never inspected.
+#[test]
+fn printable_within_looks_only_at_the_first_limit_codepoints() {
+    use Limit::{Count, Infinity};
+    assert!(is_printable_within(b"ab\0", Count(2)));
+    assert!(!is_printable_within(b"ab\0", Count(3)));
+    assert!(is_printable_within(&[b'a', 0xFF], Count(1)));
+    assert!(!is_printable_within(&[b'a', 0xFF], Infinity));
+    assert!(is_printable_within(b"\0", Count(0)));
+}
+
 mod budget {
-    use super::super::{Limit, render_with_limit};
+    use super::super::{Limit, Limits, render_with_limits};
     use crate::any_value::{AnyValue, EMPTY_LIST_BITS, ValueKind};
     use crate::heap::{Schema, SchemaRegistry};
     use crate::module_name::ModuleName;
@@ -138,7 +164,14 @@ mod budget {
         }
 
         fn show(&mut self, value: AnyValue, limit: Limit) -> String {
-            render_with_limit(&mut *self.process, value, limit)
+            render_with_limits(
+                &mut *self.process,
+                value,
+                Limits {
+                    elements: limit,
+                    ..Limits::DEFAULT
+                },
+            )
         }
 
         fn show_default(&mut self, value: AnyValue) -> String {
@@ -438,21 +471,32 @@ mod budget {
     }
 
     #[test]
-    fn the_limit_option_is_read_from_a_checked_keyword_list() {
+    fn the_limit_options_are_read_from_a_checked_keyword_list() {
         let mut b = Built::new();
         let proc: *mut Process = &mut *b.process;
         let (three, ten, infinity) = (b.int(3), b.int(10), b.atom("infinity"));
         let none = b.list(&[]);
-        assert_eq!(Limit::from_options(proc, none), Limit::DEFAULT);
+        assert_eq!(Limits::from_options(proc, none), Limits::DEFAULT);
         let entry = b.pair("limit", three);
         let one = b.list(&[entry]);
-        assert_eq!(Limit::from_options(proc, one), Count(3));
+        assert_eq!(Limits::from_options(proc, one).elements, Count(3));
         let (first, second) = (b.pair("limit", three), b.pair("limit", ten));
         let twice = b.list(&[first, second]);
-        assert_eq!(Limit::from_options(proc, twice), Count(10), "the last limit wins");
+        assert_eq!(
+            Limits::from_options(proc, twice).elements,
+            Count(10),
+            "the last limit wins"
+        );
         let entry = b.pair("limit", infinity);
         let unbounded = b.list(&[entry]);
-        assert_eq!(Limit::from_options(proc, unbounded), Infinity);
+        assert_eq!(Limits::from_options(proc, unbounded).elements, Infinity);
+        let entry = b.pair("printable_limit", three);
+        let printable = b.list(&[entry]);
+        let limits = Limits::from_options(proc, printable);
+        assert_eq!((limits.elements, limits.printable), (Count(100), Count(3)));
+        let entry = b.pair("printable_limit", infinity);
+        let unbounded = b.list(&[entry]);
+        assert_eq!(Limits::from_options(proc, unbounded).printable, Infinity);
     }
 }
 

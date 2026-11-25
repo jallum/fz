@@ -1839,27 +1839,13 @@ pub mod debug {
     }
 
     impl Limit {
-        /// `%Inspect.Opts{}.limit`.
-        pub const DEFAULT: Self = Self::Count(100);
-
-        /// The `limit:` of an option keyword list `Kernel.inspect/2` has
-        /// already checked: the last one wins, and none means the default.
-        pub fn from_options(proc: *mut Process, options: AnyValue) -> Self {
-            let Some(bits) = options.heap_object_word() else {
-                return Self::DEFAULT;
-            };
-            list_walk(bits)
-                .cells
-                .into_iter()
-                .filter_map(|cell| pair(proc, cell.head_value()))
-                .filter(
-                    |(key, _)| matches!(key, AnyValue::Atom(id) if atom_name(proc, *id).as_deref() == Some("limit")),
-                )
-                .fold(Self::DEFAULT, |_, (_, limit)| match limit {
-                    AnyValue::Int(count) if count >= 0 => Self::Count(count as u64),
-                    AnyValue::Atom(id) if atom_name(proc, id).as_deref() == Some("infinity") => Self::Infinity,
-                    other => panic!("inspect: a checked limit is a non-negative integer or :infinity, got {other:?}"),
-                })
+        /// The count or `:infinity` an already checked option holds.
+        fn of_option(proc: *mut Process, value: AnyValue) -> Self {
+            match value {
+                AnyValue::Int(count) if count >= 0 => Self::Count(count as u64),
+                AnyValue::Atom(id) if atom_name(proc, id).as_deref() == Some("infinity") => Self::Infinity,
+                other => panic!("inspect: a checked limit is a non-negative integer or :infinity, got {other:?}"),
+            }
         }
 
         fn is_spent(self) -> bool {
@@ -1871,6 +1857,46 @@ pub mod debug {
                 Self::Count(count) => Self::Count(count.saturating_sub(spent)),
                 Self::Infinity => Self::Infinity,
             }
+        }
+    }
+
+    /// The `Inspect.Opts` limits: `limit:` is a budget that elements spend as
+    /// they print, and `printable_limit:` is how many characters of a string
+    /// or charlist print, a size that is not spent.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct Limits {
+        pub elements: Limit,
+        pub printable: Limit,
+    }
+
+    impl Limits {
+        /// `%Inspect.Opts{}`'s `limit` and `printable_limit`.
+        pub const DEFAULT: Self = Self {
+            elements: Limit::Count(100),
+            printable: Limit::Count(4096),
+        };
+
+        /// The limits of an option keyword list `Kernel.inspect/2` has
+        /// already checked: the last of a key wins, and an absent key keeps
+        /// its default.
+        pub fn from_options(proc: *mut Process, options: AnyValue) -> Self {
+            let mut limits = Self::DEFAULT;
+            let Some(bits) = options.heap_object_word() else {
+                return limits;
+            };
+            for (key, value) in list_walk(bits)
+                .cells
+                .into_iter()
+                .filter_map(|cell| pair(proc, cell.head_value()))
+            {
+                let AnyValue::Atom(id) = key else { continue };
+                match atom_name(proc, id).as_deref() {
+                    Some("limit") => limits.elements = Limit::of_option(proc, value),
+                    Some("printable_limit") => limits.printable = Limit::of_option(proc, value),
+                    _ => {}
+                }
+            }
+            limits
         }
     }
 
@@ -1971,19 +1997,26 @@ pub mod debug {
 
     /// `inspect/1` with Elixir's default options.
     pub fn render_value(proc: *mut Process, value: AnyValue) -> String {
-        render_with_limit(proc, value, Limit::DEFAULT)
+        render_with_limits(proc, value, Limits::DEFAULT)
     }
 
-    /// `inspect/2` with `limit:`.
-    pub fn render_with_limit(proc: *mut Process, value: AnyValue, limit: Limit) -> String {
-        Renderer { proc, limit }.value(value)
+    /// `inspect/2` with `limit:` and `printable_limit:`.
+    pub fn render_with_limits(proc: *mut Process, value: AnyValue, limits: Limits) -> String {
+        Renderer {
+            proc,
+            limit: limits.elements,
+            printable: limits.printable,
+        }
+        .value(value)
     }
 
     /// The process is the heap's schema registry and the atom table; `limit`
-    /// is what is left to spend.
+    /// is what is left to spend and `printable` is how much of a string or
+    /// charlist prints.
     struct Renderer {
         proc: *mut Process,
         limit: Limit,
+        printable: Limit,
     }
 
     impl Renderer {
@@ -2210,15 +2243,14 @@ pub mod debug {
             let full_bytes = bit_len / 8;
             let trailing_bits = bit_len % 8;
 
-            // Byte-aligned, valid UTF-8 and Elixir's `String.printable?/1`
-            // renders as a quoted string. The decision is purely
+            // Byte-aligned and printable within `printable_limit:` characters
+            // (`String.printable?/2`) renders as a quoted string, ending
+            // `<> ...` when more text follows. The decision is purely
             // payload-driven (not the type system's brand axis), so every
             // execution path agrees without sharing type info at runtime.
-            if trailing_bits == 0
-                && let Ok(s) = str::from_utf8(&bytes[..full_bytes])
-                && is_printable_utf8(s)
-            {
-                return format!("\"{}\"", escape_for_display(s));
+            if trailing_bits == 0 && is_printable_within(&bytes[..full_bytes], self.printable) {
+                let (escaped, truncated) = escape_within(&bytes[..full_bytes], self.printable);
+                return format!("\"{escaped}\"{}", if truncated { " <> ..." } else { "" });
             }
 
             // Anything else is `<<…>>`: one element per byte, then the
@@ -2242,8 +2274,8 @@ pub mod debug {
             if let Some(terminator) = terminator {
                 return self.improper_list(&cells, terminator);
             }
-            if is_ascii_printable(&cells) {
-                return charlist(&cells);
+            if let Some(charlist) = self.charlist(&cells) {
+                return charlist;
             }
             let keywords: Option<Vec<(String, AnyValue)>> = cells
                 .iter()
@@ -2256,6 +2288,32 @@ pub mod debug {
                 Some(keywords) => self.keyword_container("[", "]", keywords),
                 None => self.container("[", "]", cells, |renderer, cell| renderer.cons_head(cell)),
             }
+        }
+
+        /// `Inspect.List`'s charlist clause: a non-empty list whose first
+        /// `printable_limit:` elements are ASCII printable
+        /// (`List.ascii_printable?/2`) prints as `~c"..."`, ending
+        /// `++ ...` when more text follows. The whole list has to be
+        /// chardata, as `IO.chardata_to_string/1` requires; any other list
+        /// prints as its elements.
+        fn charlist(&self, cells: &[&ListCons]) -> Option<String> {
+            let checked = match self.printable {
+                Limit::Count(count) => cells.len().min(usize::try_from(count).unwrap_or(usize::MAX)),
+                Limit::Infinity => cells.len(),
+            };
+            if cells.is_empty() || !cells[..checked].iter().all(|cell| is_ascii_printable_code(cell)) {
+                return None;
+            }
+            let text = cells
+                .iter()
+                .map(|cell| {
+                    (cell.head_kind() == ValueKind::INT)
+                        .then(|| char::from_u32(cell.head as u32))
+                        .flatten()
+                })
+                .collect::<Option<String>>()?;
+            let (escaped, truncated) = escape_within(text.as_bytes(), self.printable);
+            Some(format!("~c\"{escaped}\"{}", if truncated { " ++ ..." } else { "" }))
         }
 
         /// `Inspect.Algebra.container_each`'s improper clause: the budget is
@@ -2346,20 +2404,6 @@ pub mod debug {
             };
         }
         walk
-    }
-
-    /// `List.ascii_printable?/1`: a non-empty list of integers that are bell
-    /// through carriage return, escape, or printable ASCII.
-    fn is_ascii_printable(cells: &[&ListCons]) -> bool {
-        !cells.is_empty()
-            && cells
-                .iter()
-                .all(|cell| cell.head_kind() == ValueKind::INT && matches!(cell.head as i64, 7..=13 | 27 | 32..=126))
-    }
-
-    fn charlist(cells: &[&ListCons]) -> String {
-        let text: String = cells.iter().map(|cell| cell.head as u8 as char).collect();
-        format!("~c\"{}\"", escape_for_display(&text))
     }
 
     /// A pid or a reference, rendered the way Elixir's `inspect/1` renders one:
@@ -2500,27 +2544,90 @@ pub mod debug {
     /// controls `\a` through `\r` and `\e`, and every codepoint from U+00A0
     /// except the noncharacters U+FFFE and U+FFFF.
     pub fn is_printable_utf8(s: &str) -> bool {
-        s.chars().all(|c| {
-            matches!(c as u32, 0x20..=0x7F | 0x07..=0x0D | 0x1B)
-                || (c as u32 >= 0xA0 && !matches!(c as u32, 0xFFFE | 0xFFFF))
-        })
+        s.chars().all(is_printable_char)
+    }
+
+    fn is_printable_char(c: char) -> bool {
+        matches!(c as u32, 0x20..=0x7F | 0x07..=0x0D | 0x1B)
+            || (c as u32 >= 0xA0 && !matches!(c as u32, 0xFFFE | 0xFFFF))
+    }
+
+    /// An element of `List.ascii_printable?/2`: bell through carriage return,
+    /// escape, or printable ASCII.
+    fn is_ascii_printable_code(cell: &ListCons) -> bool {
+        cell.head_kind() == ValueKind::INT && matches!(cell.head as i64, 7..=13 | 27 | 32..=126)
+    }
+
+    /// The first codepoint of `bytes` and its length, or `None` when `bytes`
+    /// does not start with a well-formed one.
+    fn next_codepoint(bytes: &[u8]) -> Option<(char, usize)> {
+        let head = &bytes[..bytes.len().min(4)];
+        let valid = match str::from_utf8(head) {
+            Ok(text) => text,
+            Err(error) => str::from_utf8(&head[..error.valid_up_to()]).ok()?,
+        };
+        let c = valid.chars().next()?;
+        Some((c, c.len_utf8()))
+    }
+
+    /// `String.printable?(bytes, limit)`: the first `limit` codepoints are
+    /// all printable.
+    fn is_printable_within(bytes: &[u8], limit: Limit) -> bool {
+        let (mut rest, mut limit) = (bytes, limit);
+        while !limit.is_spent() && !rest.is_empty() {
+            match next_codepoint(rest) {
+                Some((c, len)) if is_printable_char(c) => {
+                    rest = &rest[len..];
+                    limit = limit.less(1);
+                }
+                _ => return false,
+            }
+        }
+        true
     }
 
     /// Elixir's string escaper (`Code.Identifier.escape/2` with `"` as the
     /// quote), shared by strings, quoted atoms and charlists.
     fn escape_for_display(s: &str) -> String {
-        let mut out = String::with_capacity(s.len());
-        let mut chars = s.chars().peekable();
-        while let Some(c) = chars.next() {
-            match c {
-                '"' => out.push_str("\\\""),
+        escape_within(s.as_bytes(), Limit::Infinity).0
+    }
+
+    /// `Code.Identifier.escape(bytes, ?", limit)`: the escaped text of the
+    /// first `limit` steps, and whether bytes remain. A step is one
+    /// codepoint, one byte that is not part of one, or the two characters
+    /// `#{`.
+    fn escape_within(bytes: &[u8], limit: Limit) -> (String, bool) {
+        let mut out = String::with_capacity(bytes.len());
+        let (mut rest, mut limit) = (bytes, limit);
+        while !rest.is_empty() {
+            if limit.is_spent() {
+                return (out, true);
+            }
+            rest = match rest {
+                [b'"', tail @ ..] => {
+                    out.push_str("\\\"");
+                    tail
+                }
                 // `#{` is escaped so the rendering cannot read back as
                 // interpolation, and only `#` immediately before `{`.
-                '#' if chars.peek() == Some(&'{') => out.push_str("\\#"),
-                other => push_escaped(&mut out, other),
-            }
+                [b'#', b'{', tail @ ..] => {
+                    out.push_str("\\#{");
+                    tail
+                }
+                _ => match next_codepoint(rest) {
+                    Some((c, len)) => {
+                        push_escaped(&mut out, c);
+                        &rest[len..]
+                    }
+                    None => {
+                        out.push_str(&format!("\\x{:02X}", rest[0]));
+                        &rest[1..]
+                    }
+                },
+            };
+            limit = limit.less(1);
         }
-        out
+        (out, false)
     }
 
     fn push_escaped(out: &mut String, c: char) {
