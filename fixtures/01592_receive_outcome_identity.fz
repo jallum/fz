@@ -32,9 +32,9 @@ def receive_parked() do
   receive do
     [_, head | tail] -> if true do
       churn(2000, []) == 2000 || raise("expected churn(2000, []) == 2000")
-      before = Process.heap_alloc_stats().list_cons_allocs
+      before = System.alloc_stats().list_cons_allocs
       value = [head | tail]
-      count_after = Process.heap_alloc_stats().list_cons_allocs
+      count_after = System.alloc_stats().list_cons_allocs
       {value, count_after - before}
     end
   after
@@ -44,9 +44,9 @@ end
 
 def main() do
   send(self(), [1, 2])
-  before = Process.heap_alloc_stats().list_cons_allocs
+  before = System.alloc_stats().list_cons_allocs
   value = rebuild()
-  count_after = Process.heap_alloc_stats().list_cons_allocs
+  count_after = System.alloc_stats().list_cons_allocs
   dbg({value, count_after - before})
 
   send(self(), {7, [2.5, :ok]})

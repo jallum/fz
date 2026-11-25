@@ -520,9 +520,9 @@ fn deleting_an_absent_key_from_a_flat_map_allocates_nothing() {
     let mut f = fixture();
     let map = f.plain(&[("a", 1), ("b", 2)]);
     let absent = f.atom("c");
-    let before = f.heap.alloc_stats_snapshot().total.allocs;
+    let before = f.heap.node.alloc_stats().total.allocs;
     assert_eq!(f.heap.map_view_delete(map, absent), map);
-    assert_eq!(f.heap.alloc_stats_snapshot().total.allocs, before);
+    assert_eq!(f.heap.node.alloc_stats().total.allocs, before);
 }
 
 /// Intent: removing a present key from a flat map makes exactly one object,
@@ -532,9 +532,9 @@ fn deleting_a_present_key_from_a_flat_map_allocates_only_the_new_map() {
     let mut f = fixture();
     let map = f.plain(&[("a", 1), ("b", 2), ("c", 3)]);
     let key = f.atom("b");
-    let before = f.heap.alloc_stats_snapshot().total.allocs;
+    let before = f.heap.node.alloc_stats().total.allocs;
     let smaller = f.heap.map_view_delete(map, key);
-    assert_eq!(f.heap.alloc_stats_snapshot().total.allocs, before + 1);
+    assert_eq!(f.heap.node.alloc_stats().total.allocs, before + 1);
     let expected = f.plain(&[("a", 1), ("c", 3)]);
     assert_eq!(stored_bytes(smaller), stored_bytes(expected));
 }
@@ -690,9 +690,9 @@ fn a_listed_map_counts_each_cell_and_pair_it_places() {
     let entries: Vec<_> = (0..40_000i64).map(|i| (AnyValue::int(i), AnyValue::int(i))).collect();
     let map = f.entries_map(&entries);
 
-    let before = f.heap.alloc_stats_snapshot();
+    let before = f.heap.node.alloc_stats();
     f.heap.map_list(map, MapPart::Keys);
-    let after = f.heap.alloc_stats_snapshot();
+    let after = f.heap.node.alloc_stats();
     assert_eq!(
         (
             after.list_cons.allocs - before.list_cons.allocs,
@@ -705,7 +705,7 @@ fn a_listed_map_counts_each_cell_and_pair_it_places() {
 
     let before = after;
     f.heap.map_list(map, MapPart::Pairs);
-    let after = f.heap.alloc_stats_snapshot();
+    let after = f.heap.node.alloc_stats();
     assert_eq!(
         after.list_cons.allocs - before.list_cons.allocs,
         40_000,

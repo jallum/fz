@@ -15,13 +15,13 @@ end
 
 def main() do
   s = "abc"
-  before = Process.heap_alloc_stats()
+  before = System.alloc_stats()
   one = Build.copy_one(s, 0)
   two = Build.rebuild(s, <<>>)
   three = Build.pair(s)
   four = Build.sized(s)
   five = Build.scalar(s)
-  after_stats = Process.heap_alloc_stats()
+  after_stats = System.alloc_stats()
   dbg({one, two, three, four, five})
   dbg(after_stats[:scalar_box_allocs] - before[:scalar_box_allocs])
 end

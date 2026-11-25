@@ -98,9 +98,9 @@ fn alloc_stat_entries(process: *mut Process, entries: &mut Vec<(AnyValue, AnyVal
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_process_heap_alloc_stats(process: *mut Process) -> u64 {
+pub extern "C" fn fz_system_alloc_stats(process: *mut Process) -> u64 {
     let p = unsafe { &mut *process };
-    let snapshot = p.heap.alloc_stats_snapshot();
+    let snapshot = p.node.alloc_stats();
     let scheduler_yields = p.scheduler_yields;
     let interpreter_yields = p.interpreter_yields;
     let reductions_remaining = p.reductions_remaining;

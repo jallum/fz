@@ -28,9 +28,9 @@ end
 
 input = M.doc(1000, "")
 
-a = Process.heap_alloc_stats()
+a = System.alloc_stats()
 {:ok, strings} = JSON.decode(input)
-b = Process.heap_alloc_stats()
+b = System.alloc_stats()
 dbg({:decoded, length(strings), M.checksum(strings, 0), hd(strings), M.boxed(a, b)})
 
 dbg({:non_hex_digit, JSON.decode("[\"\\u00g9\"]")})

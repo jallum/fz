@@ -504,9 +504,6 @@ extern "C" fn aot_spawn_hook(sender: *mut Process, scheduler: *mut (), closure_b
     // longer read past this point, so mutating `sched.tasks` is safe.
     let thunk = mint_entry_thunk(&mut child.heap, entry_thunk_addr, copied);
     child.set_runnable_closure(thunk);
-    // Scaffolding is prepared before the child runs; reset so its alloc
-    // telemetry measures only the child's execution.
-    child.heap.reset_alloc_stats();
 
     unsafe {
         (*sched).core.make_runnable(pid, &mut child.state);
@@ -580,9 +577,6 @@ pub extern "C" fn fz_aot_run_main(
     let inner = mint_main_inner(&mut process.heap, main_trampoline_addr, main_fp, main_halt_kind as u16);
     let thunk = mint_entry_thunk(&mut process.heap, entry_thunk_addr, inner);
     process.set_runnable_closure(thunk);
-    // Scaffolding is prepared before main runs; reset so alloc telemetry
-    // measures only main's execution.
-    process.heap.reset_alloc_stats();
     let node = Rc::clone(&process.node);
     unsafe {
         (*sched).core.make_runnable(MAIN_PID, &mut process.state);

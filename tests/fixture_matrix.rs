@@ -3798,7 +3798,7 @@ fn enum_sort_constant_sorter_erased_under_return_demand_specs() {
     assert_fixture_output_contains(
         "fixtures/01460_enum_sort.fz",
         "expected.txt",
-        &["{22, 352, 0, 0, 0, 0, 0, 0}"],
+        &["{22, 352, 0, 0, 2, 64, 0, 0}"],
     );
 
     let readme = fs::read_to_string("fixtures/01460_enum_sort.fz").expect("read enum_sort README");

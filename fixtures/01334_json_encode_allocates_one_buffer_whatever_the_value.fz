@@ -4,9 +4,9 @@
 defmodule Cost do
   # {output size, off-heap buffers, off-heap bytes, boxed scalars} allocated by one encode.
   def of(value) do
-    before = Process.heap_alloc_stats()
+    before = System.alloc_stats()
     out = JSON.encode!(value)
-    after_ = Process.heap_alloc_stats()
+    after_ = System.alloc_stats()
     {byte_size(out), after_[:shared_bin_allocs] - before[:shared_bin_allocs], after_[:shared_bin_bytes] - before[:shared_bin_bytes], after_[:scalar_box_allocs] - before[:scalar_box_allocs]}
   end
 

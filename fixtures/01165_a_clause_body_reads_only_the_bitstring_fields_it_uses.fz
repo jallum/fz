@@ -52,9 +52,9 @@ end
 line = String.duplicate("x", 10000)
 
 measure = fn fun ->
-  a = Process.heap_alloc_stats()
+  a = System.alloc_stats()
   result = fun.()
-  b = Process.heap_alloc_stats()
+  b = System.alloc_stats()
   {result, div(b[:allocs] - a[:allocs], 10000)}
 end
 

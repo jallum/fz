@@ -504,11 +504,11 @@ fn is_trie(map: AnyValueRef) -> bool {
 }
 
 fn map_bytes_allocated(heap: &Heap) -> u64 {
-    heap.alloc_stats_snapshot().map.bytes
+    heap.node.alloc_stats().map.bytes
 }
 
 fn map_allocs(heap: &Heap) -> u64 {
-    heap.alloc_stats_snapshot().map.allocs
+    heap.node.alloc_stats().map.allocs
 }
 
 #[test]

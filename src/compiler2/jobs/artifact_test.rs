@@ -29,7 +29,7 @@ fn generic_extern_effects_do_not_depend_on_privileged_symbol_spellings() {
 
     for symbol in [
         "ordinary_foreign_function",
-        "fz_process_heap_alloc_stats",
+        "fz_system_alloc_stats",
         "fz_send",
         "fz_spawn",
     ] {

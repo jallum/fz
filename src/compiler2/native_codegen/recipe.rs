@@ -19,8 +19,9 @@
 //! for one through [`emit_cell`], which also registers the site. The test
 //! compares what an allocation row does to a heap: it runs the runtime
 //! function and the instructions on two fresh heaps and compares the placed
-//! object's words, the words of every object the row may share, the tip each
-//! leaves and the heap's allocation statistics.
+//! object's words, the words of every object the row may share and the tip each
+//! leaves; it also checks that the instructions count their site once per
+//! placement.
 //!
 //! A struct or tuple and a closure are allocation rows too, which place the
 //! object and write its header (and a closure's code address) and leave its

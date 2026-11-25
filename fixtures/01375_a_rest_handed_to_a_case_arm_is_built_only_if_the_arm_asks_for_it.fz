@@ -38,17 +38,17 @@ end
 line = String.duplicate("x", 10240)
 tail = String.duplicate("x", 10239)
 
-a = Process.heap_alloc_stats()
+a = System.alloc_stats()
 r = Arm.sum(line, 0)
-b = Process.heap_alloc_stats()
+b = System.alloc_stats()
 IO.inspect({r, Arm.binaries(b) - Arm.binaries(a)})
 
-a = Process.heap_alloc_stats()
+a = System.alloc_stats()
 r = {Arm.head(line), Arm.head(line), Arm.head(line)}
-b = Process.heap_alloc_stats()
+b = System.alloc_stats()
 IO.inspect({r, Arm.binaries(b) - Arm.binaries(a)})
 
-a = Process.heap_alloc_stats()
+a = System.alloc_stats()
 {c, rest} = Arm.split(line)
-b = Process.heap_alloc_stats()
+b = System.alloc_stats()
 IO.inspect({c, rest == tail, Arm.binaries(b) - Arm.binaries(a)})

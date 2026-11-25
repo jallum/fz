@@ -1540,7 +1540,7 @@ fn quicksort_run_lexes_each_source_once() {
         fixture.to_string(),
         "runtime:runtime.fz".to_string(),
         "runtime:Kernel.fz".to_string(),
-        "runtime:Process.fz".to_string(),
+        "runtime:System.fz".to_string(),
         "runtime:IO.fz".to_string(),
         "runtime:String.Chars.fz".to_string(),
         "runtime:Exception.fz".to_string(),

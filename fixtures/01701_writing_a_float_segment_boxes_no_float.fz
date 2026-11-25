@@ -36,25 +36,25 @@ dbg(P.bytes64([4.75]))
 dbg(P.bytes32([4.75]))
 dbg(P.bytes_little([4.75]))
 
-a = Process.heap_alloc_stats()
+a = System.alloc_stats()
 P.walk64(xs, 0)
-b = Process.heap_alloc_stats()
+b = System.alloc_stats()
 dbg(div(b[:scalar_box_allocs] - a[:scalar_box_allocs], 1000))
 
-a = Process.heap_alloc_stats()
+a = System.alloc_stats()
 P.walk32(xs, 0)
-b = Process.heap_alloc_stats()
+b = System.alloc_stats()
 dbg(div(b[:scalar_box_allocs] - a[:scalar_box_allocs], 1000))
 
-a = Process.heap_alloc_stats()
+a = System.alloc_stats()
 P.walk_little(xs, 0)
-b = Process.heap_alloc_stats()
+b = System.alloc_stats()
 dbg(div(b[:scalar_box_allocs] - a[:scalar_box_allocs], 1000))
 
 dbg(P.mixed([1, 2.5, 3], []))
 
 zs = [1, 2.5, 3, 4.5]
-a = Process.heap_alloc_stats()
+a = System.alloc_stats()
 P.mixed(zs, [])
-b = Process.heap_alloc_stats()
+b = System.alloc_stats()
 dbg(b[:scalar_box_allocs] - a[:scalar_box_allocs])

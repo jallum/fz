@@ -38,9 +38,9 @@ end
 
 defmodule M do
   def continuations(run) do
-    before = Process.heap_alloc_stats()
+    before = System.alloc_stats()
     run.(1000)
-    after_run = Process.heap_alloc_stats()
+    after_run = System.alloc_stats()
     after_run[:continuation_allocs] - before[:continuation_allocs] - (after_run[:reduction_yields] - before[:reduction_yields])
   end
 end

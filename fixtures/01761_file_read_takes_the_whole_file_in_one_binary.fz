@@ -21,9 +21,9 @@ defmodule Main do
     written = :binary.copy(unit, 18_750) <> <<7>>
     File.write!(path, written)
 
-    a = Process.heap_alloc_stats()
+    a = System.alloc_stats()
     {:ok, data} = File.read(path)
-    b = Process.heap_alloc_stats()
+    b = System.alloc_stats()
     IO.inspect({byte_size(data), data == written, binaries(b) - binaries(a), b[:shared_bin_bytes] - a[:shared_bin_bytes]})
 
     File.write!(path, "")

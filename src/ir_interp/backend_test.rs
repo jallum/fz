@@ -325,7 +325,7 @@ fn scheduler_adapter_copies_spawn_inputs_and_dead_send_is_observation_free() {
     let message = interp_list_cons(sender, AnyValue::Int(2), AnyValue::EmptyList, "send message").unwrap();
     let message_ref = message.as_any_value_ref(sender).unwrap();
     let receiver = runtime.process_ref(receiver_pid).unwrap();
-    let before_heap = receiver.heap.alloc_stats_snapshot();
+    let before_heap = receiver.node.alloc_stats();
     let before_mailbox: Vec<_> = receiver.mailbox.messages().collect();
     let before_queue = runtime.core.queued().clone();
     let before_resume_len = runtime.backend_resume.len();
@@ -346,7 +346,7 @@ fn scheduler_adapter_copies_spawn_inputs_and_dead_send_is_observation_free() {
     }
 
     let receiver = runtime.process_ref(receiver_pid).unwrap();
-    assert_eq!(receiver.heap.alloc_stats_snapshot(), before_heap);
+    assert_eq!(receiver.node.alloc_stats(), before_heap);
     assert_eq!(receiver.mailbox.messages().collect::<Vec<_>>(), before_mailbox);
     assert_eq!(receiver.state, ProcessState::Exited);
     assert_eq!(runtime.core.queued(), &before_queue);
@@ -412,7 +412,7 @@ fn parked_receive_copies_only_winning_subjects_into_receiver_heap() {
     let tail = interp_list_cons(sender, AnyValue::Int(2), AnyValue::EmptyList, "tail").unwrap();
     let retained = interp_list_cons(sender, AnyValue::Int(1), tail, "source").unwrap();
     let message = interp_list_cons(sender, ignored, retained, "message").unwrap();
-    let sender_cons_before = unsafe { &*sender }.heap.alloc_stats_snapshot().list_cons.allocs;
+    let sender_cons_before = unsafe { &*sender }.node.alloc_stats().list_cons.allocs;
     let (types, transport) = compiler.world_mut().types_mut_and_transport();
     runtime
         .send_ref(
@@ -445,14 +445,10 @@ fn parked_receive_copies_only_winning_subjects_into_receiver_heap() {
     assert!(unsafe { &*receiver }.heap.contains_heap_addr(address));
     assert!(!unsafe { &*sender }.heap.contains_heap_addr(address));
     assert_eq!(
-        unsafe { &*sender }.heap.alloc_stats_snapshot().list_cons.allocs - sender_cons_before,
+        unsafe { &*sender }.node.alloc_stats().list_cons.allocs - sender_cons_before,
         2,
-        "the sender copies only the two-cell winning source; the ignored list and outer cell stay behind"
-    );
-    assert_eq!(
-        unsafe { &*receiver }.heap.alloc_stats_snapshot().list_cons.allocs,
-        0,
-        "the receiver allocates nothing for a delivery"
+        "the delivery places only the sender's copy of the two-cell winning source; the ignored list and outer \
+         cell stay behind and the receiver places nothing"
     );
     let mut roots = [copied];
     drop(

@@ -101,62 +101,18 @@ pub const SHARED_BIN_THRESHOLD_BYTES: usize = 64;
 
 /// Byte offsets, from the start of a `Heap`, of the fields compiled code
 /// updates to place an object at the tip without calling the runtime: the
-/// bump pointer and its block's end, the object count, and the allocation
-/// statistics a placement must keep truthful (the total and the counters of
-/// each kind compiled code places: continuation frames, list cells, structs,
-/// closures and scalar boxes).
+/// bump pointer and its block's start and end.
 #[derive(Clone, Copy, Debug)]
 pub struct InlineAllocLayout {
     pub block_start: usize,
     pub bump_top: usize,
     pub block_end: usize,
-    pub alloc_count: usize,
-    pub total_allocs: usize,
-    pub total_bytes: usize,
-    pub continuation_allocs: usize,
-    pub continuation_bytes: usize,
-    pub list_cons_allocs: usize,
-    pub list_cons_bytes: usize,
-    pub struct_allocs: usize,
-    pub struct_bytes: usize,
-    pub closure_allocs: usize,
-    pub closure_bytes: usize,
-    pub scalar_box_allocs: usize,
-    pub scalar_box_bytes: usize,
-}
-
-impl InlineAllocLayout {
-    /// The offsets of the count and byte counters of `kind`, when compiled
-    /// code places that kind.
-    pub fn kind_counters(&self, kind: HeapAllocKind) -> Option<(usize, usize)> {
-        match kind {
-            HeapAllocKind::Continuation => Some((self.continuation_allocs, self.continuation_bytes)),
-            HeapAllocKind::ListCons => Some((self.list_cons_allocs, self.list_cons_bytes)),
-            HeapAllocKind::Struct => Some((self.struct_allocs, self.struct_bytes)),
-            HeapAllocKind::Closure => Some((self.closure_allocs, self.closure_bytes)),
-            HeapAllocKind::ScalarBox => Some((self.scalar_box_allocs, self.scalar_box_bytes)),
-            _ => None,
-        }
-    }
 }
 
 pub const INLINE_ALLOC_LAYOUT: InlineAllocLayout = InlineAllocLayout {
     block_start: std::mem::offset_of!(Heap, block_start),
     bump_top: std::mem::offset_of!(Heap, bump_top),
     block_end: std::mem::offset_of!(Heap, block_end),
-    alloc_count: std::mem::offset_of!(Heap, alloc_count),
-    total_allocs: std::mem::offset_of!(Heap, alloc_stats.total.allocs),
-    total_bytes: std::mem::offset_of!(Heap, alloc_stats.total.bytes),
-    continuation_allocs: std::mem::offset_of!(Heap, alloc_stats.continuation.allocs),
-    continuation_bytes: std::mem::offset_of!(Heap, alloc_stats.continuation.bytes),
-    list_cons_allocs: std::mem::offset_of!(Heap, alloc_stats.list_cons.allocs),
-    list_cons_bytes: std::mem::offset_of!(Heap, alloc_stats.list_cons.bytes),
-    struct_allocs: std::mem::offset_of!(Heap, alloc_stats.struct_.allocs),
-    struct_bytes: std::mem::offset_of!(Heap, alloc_stats.struct_.bytes),
-    closure_allocs: std::mem::offset_of!(Heap, alloc_stats.closure.allocs),
-    closure_bytes: std::mem::offset_of!(Heap, alloc_stats.closure.bytes),
-    scalar_box_allocs: std::mem::offset_of!(Heap, alloc_stats.scalar_box.allocs),
-    scalar_box_bytes: std::mem::offset_of!(Heap, alloc_stats.scalar_box.bytes),
 };
 
 pub struct Heap {
@@ -229,15 +185,8 @@ pub struct Heap {
     pub(crate) struct_maps: map_view::StructMaps,
     /// Count of GC invocations.
     pub gc_run_count: u64,
-    /// Objects allocated since the last collection. With `old_objects` it
-    /// backs `live_count()`: under bump-only with no reclaim, every object
-    /// allocated is "live".
-    alloc_count: u64,
     /// Objects in old blocks: those collections kept.
     old_objects: u64,
-    /// Total allocation requests made by kind since the last explicit
-    /// process/user-code reset. Unlike `alloc_count`, GC never rewrites this.
-    alloc_stats: HeapAllocStats,
     /// Binaries this heap has marked shared since it was made: each counts
     /// once, when its mark goes from clear to set. Compiled code that marks a
     /// binary inline adds to it at `BINARIES_SHARED_OFFSET`.

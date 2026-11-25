@@ -3,12 +3,12 @@
 #---
 defmodule Cost do
   # {decoded size, tuples built, off-heap buffers, off-heap bytes} allocated by one decode
-  # of a string, less what one `Process.heap_alloc_stats` call itself allocates.
+  # of a string, less what one `System.alloc_stats` call itself allocates.
   def of(doc) do
-    base = Process.heap_alloc_stats()
-    before = Process.heap_alloc_stats()
+    base = System.alloc_stats()
+    before = System.alloc_stats()
     {:ok, value} = JSON.decode(doc)
-    after_ = Process.heap_alloc_stats()
+    after_ = System.alloc_stats()
     {byte_size(value), delta(after_, before, base, :struct_allocs), delta(after_, before, base, :shared_bin_allocs), delta(after_, before, base, :shared_bin_bytes)}
   end
 

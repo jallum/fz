@@ -3246,7 +3246,7 @@ fn compiler2_runtime_demand_keeps_dbg_inputs_live_when_the_return_is_ignored() {
         Some("heap_stats_dbg_resume.fz".to_string()),
         r#"
 def main() do
-  stats = Process.heap_alloc_stats()
+  stats = System.alloc_stats()
   dbg(stats)
   dbg(stats[:list_cons_allocs])
 end

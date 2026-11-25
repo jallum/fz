@@ -592,7 +592,7 @@ mod binary_demand {
         let source = "def take({a, _}), do: a\n\
                       def take(<<b, _::binary>>), do: b\n\
                       def either(n), do: if(n > 1, do: \"hello\", else: {1, 2})\n\
-                      def main(), do: take(either(Process.heap_alloc_stats()[:binview_allocs]))\n";
+                      def main(), do: take(either(System.alloc_stats()[:binview_allocs]))\n";
         assert_eq!(only_input(source, "take", 0), ShapeDemand::Matched);
         let shapes = first_input_shapes_of(source, "take");
         assert!(!shapes.is_empty(), "the union is taken by an executable");

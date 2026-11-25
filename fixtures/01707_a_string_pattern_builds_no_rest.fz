@@ -48,9 +48,9 @@ defmodule W do
   defp bits_middle_walk(start, <<_c, r :: binary>>, acc), do: bits_middle_walk(start, r, acc + 1)
 
   def cost(label, f) do
-    a = Process.heap_alloc_stats()
+    a = System.alloc_stats()
     out = f.()
-    b = Process.heap_alloc_stats()
+    b = System.alloc_stats()
     dbg({label, out, b[:bitstring_allocs] - a[:bitstring_allocs], b[:binview_allocs] - a[:binview_allocs]})
   end
 end

@@ -34,7 +34,7 @@
 # warnings on list-total helpers.
 #
 # After printing the sorted list, this fixture prints the allocation counts and
-# bytes `Process.heap_alloc_stats/0` reports for the value families (list cells,
+# bytes `System.alloc_stats/0` reports for the value families (list cells,
 # structs, closures, maps) and a `heap_bytes` headline computed from
 # `:list_cons_bytes + :struct_bytes + :map_bytes`. The headline isolates
 # immutable value heap objects from frame and scheduler details.
@@ -45,8 +45,9 @@
 # - `list_cons_bytes = 176`
 # - `struct_allocs = 0`
 # - `struct_bytes = 0`
-# - `closure_allocs = 0`
-# - `closure_bytes = 0`
+# - `closure_allocs = 0` and `closure_bytes = 0` on the interpreter; on the
+#   native paths `closure_allocs = 2` and `closure_bytes = 64`, the only closures
+#   being the two closures the scheduler builds to start the program
 # - `continuation_allocs = 44` and `continuation_bytes = 2432` on the native
 #   paths, 0 on the interpreter: every pending call to a function that needs
 #   a frame of its own builds a heap frame that
@@ -76,7 +77,7 @@ def main() do
   sorted = qsort([3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5])
   dbg(sorted)
 
-  stats = Process.heap_alloc_stats()
+  stats = System.alloc_stats()
   dbg(%{list_cons_allocs: stats[:list_cons_allocs], list_cons_bytes: stats[:list_cons_bytes], struct_allocs: stats[:struct_allocs], struct_bytes: stats[:struct_bytes], closure_allocs: stats[:closure_allocs], closure_bytes: stats[:closure_bytes], map_allocs: stats[:map_allocs], map_bytes: stats[:map_bytes]})
   heap_bytes = stats[:list_cons_bytes] + stats[:struct_bytes] + stats[:map_bytes]
   dbg(heap_bytes)

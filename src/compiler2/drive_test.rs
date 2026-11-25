@@ -5452,17 +5452,17 @@ fn compiler2_runtime_refs_pull_only_the_reached_runtime_modules() {
     );
 
     let kernel_id = module_id(&modules, "Kernel");
-    let process_id = module_id(&modules, "Process");
+    let system_id = module_id(&modules, "System");
     let main_id = function_id(&functions, "main", 0);
     let send_id = function_id_in_module(&functions, &modules, "Kernel", "send", 2);
     let send_prim_id = function_id_in_module(&functions, &modules, "Kernel", "fz_send", 2);
-    let heap_stats_id = function_id_in_module(&functions, &modules, "Process", "heap_alloc_stats", 0);
-    let heap_stats_prim_id = function_id_in_module(&functions, &modules, "Process", "fz_process_heap_alloc_stats", 0);
+    let alloc_stats_id = function_id_in_module(&functions, &modules, "System", "alloc_stats", 0);
+    let alloc_stats_prim_id = function_id_in_module(&functions, &modules, "System", "fz_system_alloc_stats", 0);
     let spawn_id = function_id_in_module(&functions, &modules, "Kernel", "spawn", 1);
 
     assert_eq!(
         sorted_strings(modules.defined_names()),
-        vec!["ArgumentError".to_string(), "Kernel".to_string(), "Process".to_string()],
+        vec!["ArgumentError".to_string(), "Kernel".to_string(), "System".to_string()],
         "runtime root should define only the reached runtime modules, the exception it can raise among them"
     );
     assert!(
@@ -5473,22 +5473,22 @@ fn compiler2_runtime_refs_pull_only_the_reached_runtime_modules() {
     );
     assert!(
         !outputs
-            .stops_matching(|job| matches!(job, Job::DefineModule(module) if *module == process_id))
+            .stops_matching(|job| matches!(job, Job::DefineModule(module) if *module == system_id))
             .is_empty(),
-        "Process should be defined through the ordinary module job"
+        "System should be defined through the ordinary module job"
     );
 
     assert!(matches!(lowered_body(&bodies, main_id), LoweredBody::Clauses { .. }));
     assert!(matches!(lowered_body(&bodies, send_id), LoweredBody::Clauses { .. }));
     assert!(matches!(
-        lowered_body(&bodies, heap_stats_id),
+        lowered_body(&bodies, alloc_stats_id),
         LoweredBody::Clauses { .. }
     ));
     // An extern's wire ABI lives on its contract, resolved once by
     // `DeriveFunctionContract`: it never gets a `LowerFunction` job, so it
     // never appears in the lowered-body capture.
     assert!(compiler.world().extern_wire(send_prim_id).is_some());
-    assert!(compiler.world().extern_wire(heap_stats_prim_id).is_some());
+    assert!(compiler.world().extern_wire(alloc_stats_prim_id).is_some());
     assert!(
         outputs
             .stops_matching(|job| matches!(job, Job::LowerFunction(function) if *function == send_prim_id))
@@ -5497,7 +5497,7 @@ fn compiler2_runtime_refs_pull_only_the_reached_runtime_modules() {
     );
     assert!(
         outputs
-            .stops_matching(|job| matches!(job, Job::LowerFunction(function) if *function == heap_stats_prim_id))
+            .stops_matching(|job| matches!(job, Job::LowerFunction(function) if *function == alloc_stats_prim_id))
             .is_empty(),
         "an extern should never get a LowerFunction job"
     );
@@ -9442,14 +9442,14 @@ fn compiler2_backend_program_keeps_heap_stats_resume_values_as_runtime_lanes() {
     let outcome = compiler.drive();
     assert!(
         matches!(outcome, DriveOutcome::Resolved),
-        "heap_alloc_stats backend capture should resolve: {outcome:?}",
+        "alloc_stats backend capture should resolve: {outcome:?}",
     );
 
     let program = backend.last(root_id).program;
     let main_id = function_id(&functions, "main", 0);
     let (_, main_exec) = backend_executable(&program, main_id);
     let crate::compiler2::BackendBody::Clauses { entries, .. } = &main_exec.body else {
-        panic!("expected clause body for heap_alloc_stats main/0");
+        panic!("expected clause body for alloc_stats main/0");
     };
 
     let resume_entry = entries
@@ -9477,7 +9477,7 @@ fn compiler2_backend_program_keeps_heap_stats_resume_values_as_runtime_lanes() {
         BackendEntryOrigin::DeliveredResume { layout, .. } => {
             let _shape = layout.layout.structural;
         }
-        other => panic!("expected delivered-resume position for heap_alloc_stats continuation, got {other:?}"),
+        other => panic!("expected delivered-resume position for alloc_stats continuation, got {other:?}"),
     }
 }
 
@@ -9492,9 +9492,8 @@ fn compiler2_backend_program_keeps_dbg_resumed_heap_stats_as_runtime_lanes() {
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("heap_stats_dbg_resume.fz".to_string()),
-        text:
-            "def main() do\n  stats = Process.heap_alloc_stats()\n  dbg(stats)\n  dbg(stats[:list_cons_allocs])\nend\n"
-                .to_string(),
+        text: "def main() do\n  stats = System.alloc_stats()\n  dbg(stats)\n  dbg(stats[:list_cons_allocs])\nend\n"
+            .to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -16816,12 +16815,12 @@ end
     assert_eq!((run.constructions, run.physical_captures), (1, 0));
     assert_eq!((run.attempts, run.reused), (1, 1));
     assert_eq!(
-        (run.live_count, run.bytes_used),
+        run.bytes_used,
         // `dbg` renders the tuple into a binary on the process heap before
-        // writing it: two more objects, sixty-four more bytes over the
-        // program's own (6, 160), none of them list conses. `rebuild` needs
-        // no frame, so its call is lowered in `main` and builds none.
-        (8, 224),
+        // writing it: sixty-four more bytes over the program's own 160, none
+        // of them list conses. `rebuild` needs no frame, so its call is
+        // lowered in `main` and builds none.
+        224,
         "preserving the source list type avoids a redundant 16-byte cons"
     );
     assert!(run.source_and_rebuild_share_return);
@@ -16878,8 +16877,7 @@ def main(), do: spin({iterations}, 0)
         "a million iterations yield many times: {yields_often:?}"
     );
     assert_eq!(
-        (yields_often.live_count, yields_often.bytes_used),
-        (never_yields.live_count, never_yields.bytes_used),
+        yields_often.bytes_used, never_yields.bytes_used,
         "every yield frame was given back when its loop resumed"
     );
 }
@@ -16973,9 +16971,9 @@ def greet(0, last), do: byte_size(last)
 def greet(n, _), do: greet(n - 1, "hello")
 
 def main() do
-  first = Map.get(Process.heap_alloc_stats(), :bitstring_allocs, 0)
+  first = Map.get(System.alloc_stats(), :bitstring_allocs, 0)
   size = greet({turns}, "")
-  last = Map.get(Process.heap_alloc_stats(), :bitstring_allocs, 0)
+  last = Map.get(System.alloc_stats(), :bitstring_allocs, 0)
   if size == 5, do: last - first, else: -1
 end
 "#
@@ -17004,9 +17002,9 @@ def depth(0), do: 0
 def depth(n), do: 1 + depth(n - 1)
 
 def main() do
-  first = Process.heap_alloc_stats()[:continuation_allocs]
+  first = System.alloc_stats()[:continuation_allocs]
   reached = depth({depth})
-  last = Process.heap_alloc_stats()[:continuation_allocs]
+  last = System.alloc_stats()[:continuation_allocs]
   if reached == {depth}, do: last - first, else: -1
 end
 "#
@@ -17084,7 +17082,6 @@ struct ListRetentionRun {
     physical_captures: u64,
     attempts: u64,
     reused: u64,
-    live_count: usize,
     bytes_used: usize,
     source_and_rebuild_share_return: bool,
     output: Vec<String>,
@@ -17129,7 +17126,6 @@ fn list_retention_run(name: &str, source: &str) -> ListRetentionRun {
         physical_captures,
         attempts: exit.list_retention_attempts,
         reused: exit.list_retention_hits,
-        live_count: exit.live_count,
         bytes_used: exit.bytes_used,
         source_and_rebuild_share_return,
         output: dbg.lines(),
@@ -17434,14 +17430,14 @@ fn compiler2_same_shape_lambda_literals_share_the_library_chain() {
 /// Whether a tuple becomes a heap object is a representation question the value
 /// layout's carrier already answers, so both backends must answer it the same
 /// way -- otherwise the count grows with the input on one path and not the
-/// other, and `Process.heap_alloc_stats` means something different per backend.
+/// other, and `System.alloc_stats` means something different per backend.
 #[test]
 fn compiler2_jit_and_backend_interp_agree_on_reduce_envelope_materialization() {
     let source = r#"
 def main() do
   xs = [1, 2, 3, 4, 5]
   dbg(Enum.reduce(xs, 0, fn (x, acc) -> acc + x end))
-  stats = Process.heap_alloc_stats()
+  stats = System.alloc_stats()
   dbg(stats[:struct_allocs])
 end
 "#;

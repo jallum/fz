@@ -97,7 +97,7 @@ driver (the fixture uses <code>dbg</code> to print):</p>
   sorted = <span class="fn">qsort</span>([3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5])
   <span class="fn">dbg</span>(sorted)
 
-  stats = <span class="fn">Process.heap_alloc_stats</span>()
+  stats = <span class="fn">System.alloc_stats</span>()
   <span class="fn">dbg</span>(stats)
 <span class="kw">end</span></pre>
 
@@ -107,7 +107,7 @@ run, on both the JIT and the AOT backend:</p>
 <pre>
 list_cons_bytes  = 176          <span class="note">11 cons cells × 16 bytes each</span>
 struct_bytes     = 0            <span class="note">no tuples allocated</span>
-closure_bytes    = 0            <span class="note">the program makes no closures</span>
+closure_bytes    = 64           <span class="note">the two closures the scheduler builds to start the program; the program makes none (the interpreter reports 0)</span>
 continuation_allocs = 52        <span class="note">native JIT/AOT only: frames built for the calls that return to a caller (the interpreter builds none)</span>
 continuation_bytes  = 2720      <span class="note">allocated, not live: a frame that resumes as the newest object is given back</span>
 map_bytes        = 0
@@ -125,7 +125,8 @@ If the source cell is still private, the helper relinks it in place; if it has
 been published, the helper allocates a fresh cons instead.</p>
 
 <p>The numbers that are surprising are the zeros. In this fixture, native
-JIT and AOT allocate no tuple structs and no closures on the ordinary run. The
+JIT and AOT allocate no tuple structs and, beyond the two closures the scheduler
+builds to start the program, no closures on the ordinary run. The
 pending work of the recursive calls lives in continuation frames on the heap,
 52 of them, 2720 bytes allocated over the run; the scheduler is not involved
 unless a yield edge is taken.</p>
@@ -242,7 +243,7 @@ newer objects stays until a collection.
       ownership annotations.</strong> The fixture source has no linearity,
       borrow marker, uniqueness annotation, or refcount syntax. The
       JIT/AOT output pins <code>list_cons_bytes = 176</code>,
-      <code>struct_bytes = 0</code>, <code>closure_bytes = 0</code>, and
+      <code>struct_bytes = 0</code>, <code>closure_bytes = 64</code> (the two closures the scheduler builds to start the program), and
       <code>map_bytes = 0</code>; the continuation row reports 52 frames and
       2720 bytes on the native paths.</li>
   <li><strong>One frame, two roles.</strong> The continuation frame is a

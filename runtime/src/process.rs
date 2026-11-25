@@ -11,7 +11,7 @@
 use crate::alloc_site::{AllocSiteCount, AllocSites, RuntimeAllocCounts};
 use crate::any_value::{ClosureDenotationId, ValueKind, bitstring_object_image, closure_header_word};
 use crate::function_denotation::FunctionDenotation;
-use crate::heap::AllocStat;
+use crate::heap::{AllocStat, HeapAllocStats};
 use crate::term_hash::atom_key_hash;
 use std::cell::RefCell;
 use std::cmp::Ordering;
@@ -544,6 +544,16 @@ impl Node {
             .chain(runtime)
             .filter(|count| count.placed.allocs > 0)
             .collect()
+    }
+
+    /// What every process of the program has allocated: the sum over each
+    /// site's count and bytes, by kind.
+    pub fn alloc_stats(&self) -> HeapAllocStats {
+        let mut stats = HeapAllocStats::default();
+        for site in self.alloc_site_counts() {
+            stats.add(site.kind, site.placed);
+        }
+        stats
     }
 
     /// No node-global tables: the shape a bare `Process::new` carries.

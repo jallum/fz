@@ -12,9 +12,9 @@ defmodule P do
   def grown(n), do: Enum.reduce(1..n, %{}, fn i, m -> Map.put(m, i * 7, i) end)
 
   def gross(fun) do
-    a = Process.heap_alloc_stats()
+    a = System.alloc_stats()
     result = fun.()
-    b = Process.heap_alloc_stats()
+    b = System.alloc_stats()
     {result, {b[:map_allocs] - a[:map_allocs], b[:map_bytes] - a[:map_bytes]}}
   end
 

@@ -334,10 +334,9 @@ fn write_collection(out: &mut String, collection: Collection, stats: &GcStats, h
 fn write_process_exited(out: &mut String, process: &Process) {
     write!(
         out,
-        "\"pid\":{},\"process\":{{\"opaque_type\":\"{}\",\"live_count\":{},\"bytes_used\":{},\"list_retention_attempts\":{},\"list_retention_hits\":{},\"struct_retention_attempts\":{},\"struct_retention_hits\":{},\"binaries_shared\":{},\"raises_delivered\":{},\"reduction_yields\":{},\"parks\":{},\"dtors_dispatched\":{},\"frame_copies\":{},\"halt_value\":{},\"failed\":{}}}",
+        "\"pid\":{},\"process\":{{\"opaque_type\":\"{}\",\"bytes_used\":{},\"list_retention_attempts\":{},\"list_retention_hits\":{},\"struct_retention_attempts\":{},\"struct_retention_hits\":{},\"binaries_shared\":{},\"raises_delivered\":{},\"reduction_yields\":{},\"parks\":{},\"dtors_dispatched\":{},\"frame_copies\":{},\"halt_value\":{},\"failed\":{}}}",
         process.pid,
         std::any::type_name::<Process>(),
-        process.heap.live_count(),
         process.heap.bytes_used(),
         process.list_retention_attempts,
         process.list_retention_hits,

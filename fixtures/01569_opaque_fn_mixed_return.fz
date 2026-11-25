@@ -12,7 +12,7 @@ def mapper(x) when is_integer(x), do: x + 1
 def mapper(x) when is_atom(x), do: panic(x)
 
 def main() do
-  n = Process.heap_alloc_stats()[:allocs]
+  n = System.alloc_stats()[:allocs]
   x = case n < n + 1 do
     true -> 1
     _ -> :bad

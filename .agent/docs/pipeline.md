@@ -1047,7 +1047,7 @@ runtime value; any other carrier binds the tuple as its fields' lanes, and the
 object is built later only if something genuinely asks for one. Native codegen
 and the backend interpreter both read that layout rather than each deciding for
 themselves, so the two agree on how many value objects a program allocates — which is
-what makes the value rows of `Process.heap_alloc_stats` mean the same thing on every path
+what makes the value rows of `System.alloc_stats` mean the same thing on every path
 (the `continuation` row counts frames only native code builds, so the totals differ by it). A
 protocol envelope like `Enumerable.reduce/3`'s `{:cont, acc}`, consumed lane-wise
 the moment it arrives, therefore costs nothing on any backend.

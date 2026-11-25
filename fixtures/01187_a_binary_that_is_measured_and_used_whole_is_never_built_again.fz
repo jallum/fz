@@ -27,17 +27,17 @@ end
 long = String.duplicate("x", 1000)
 short = "\n"
 
-a = Process.heap_alloc_stats()
+a = System.alloc_stats()
 n = Whole.same(long, long, 10000, 0)
-b = Process.heap_alloc_stats()
+b = System.alloc_stats()
 dbg({n, Whole.binaries(b) - Whole.binaries(a)})
 
-a = Process.heap_alloc_stats()
+a = System.alloc_stats()
 n = Whole.same(short, short, 10000, 0)
-b = Process.heap_alloc_stats()
+b = System.alloc_stats()
 dbg({n, Whole.binaries(b) - Whole.binaries(a)})
 
-a = Process.heap_alloc_stats()
+a = System.alloc_stats()
 n = Whole.sizes(long, short, 10000, 0)
-b = Process.heap_alloc_stats()
+b = System.alloc_stats()
 dbg({n, Whole.binaries(b) - Whole.binaries(a)})

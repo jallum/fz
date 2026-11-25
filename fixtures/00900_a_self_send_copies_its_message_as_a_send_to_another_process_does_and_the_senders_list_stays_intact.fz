@@ -35,9 +35,9 @@ def main() do
   xs = [4, 5, 6]
   [h | t] = xs
   ys = [h | t]
-  before = Process.heap_alloc_stats()
+  before = System.alloc_stats()
   send(self(), xs)
-  after_send = Process.heap_alloc_stats()
+  after_send = System.alloc_stats()
   dbg(after_send[:list_cons_allocs] - before[:list_cons_allocs])
   zs = retail(ys)
   receive do

@@ -180,7 +180,7 @@ fn the_jit_keeps_a_handler_across_the_yields_and_collections_of_its_try_body() {
     assert_eq!(exit.raises_delivered, 100);
     assert!(exit.reduction_yields >= 1, "the body yields inside its try: {exit:?}");
     assert!(
-        exit.live_count < 1_000,
+        exit.bytes_used < 16_000,
         "the collector ran under the handlers: {exit:?}"
     );
     assert!(!exit.failed);

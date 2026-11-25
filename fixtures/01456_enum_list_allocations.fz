@@ -26,8 +26,10 @@
 # - public `Enum.reduce/3` stays a small wrapper over `Enumerable.reduce/3`;
 # - static protocol dispatch routes the known list receiver to
 #   `Enumerable.List.reduce/3`, which delegates to local `List.reduce_cont/3`;
-# - the public reducer bridge closure is erased on every path (`closure_allocs
-#   = 0`), not materialized as a heap closure;
+# - the public reducer bridge closure is erased on every path, not
+#   materialized as a heap closure: the only closures are the two closures the scheduler builds to start the program
+#   (`closure_allocs = 2`, `closure_bytes = 64` on the native paths, 0 on the
+#   interpreter);
 # - the `{:cont, acc}` envelope `Enumerable.reduce/3` still stays lane-wise;
 #   the direct C result/status carrier is unboxed, and the ordinary
 #   `Kernel.arithmetic_result/1` entry decides its clauses from those lanes
@@ -55,7 +57,7 @@ def main() do
   dbg(Enum.member?(xs, 3))
   dbg(Enum.reduce(xs, 0, fn (x, acc) -> acc + x end))
 
-  stats = Process.heap_alloc_stats()
+  stats = System.alloc_stats()
   dbg({
     stats[:list_cons_allocs],
     stats[:list_cons_bytes],

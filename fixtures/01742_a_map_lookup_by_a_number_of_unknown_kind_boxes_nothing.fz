@@ -21,9 +21,9 @@ defmodule Main do
   def main() do
     map = %{7 => :int, 2.5 => :float, :a => :atom}
     keys = [7, 2.5, :a]
-    before = Process.heap_alloc_stats()[:scalar_box_allocs]
+    before = System.alloc_stats()[:scalar_box_allocs]
     found = Enum.map(keys, fn key -> look(map, key) end)
-    boxes = Process.heap_alloc_stats()[:scalar_box_allocs] - before
+    boxes = System.alloc_stats()[:scalar_box_allocs] - before
     dbg(found)
     dbg(boxes)
   end

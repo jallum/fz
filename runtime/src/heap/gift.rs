@@ -25,14 +25,13 @@ use crate::off_heap;
 
 /// What `begin_gift` records so `end_gift` can cut the segment: the tip to
 /// restore, the gift block's start (the tip while the copy has not
-/// overflowed), the allocation count at that moment, and the chain's head.
+/// overflowed), and the chain's head.
 pub(super) struct GiftWindow {
     pub(super) saved_tip: Block,
     block_start: *mut u8,
     /// The bytes the copy was measured at; the gift block's fill must equal
     /// it when the window closes.
     measured_bytes: usize,
-    alloc_count: u64,
     offheap: WindowChain,
 }
 
@@ -100,15 +99,14 @@ impl SegmentChain {
 
 /// A detached run of heap storage with no reference into any heap. It holds
 /// the one block the copy filled (by start, fill and capacity), the off-heap
-/// objects it pushed (one chain of BinRefs and resource stubs, ending in 0) and
-/// how many objects it allocated. `Heap::graft` adopts all of it; dropping an
+/// objects it pushed (one chain of BinRefs and resource stubs, ending in 0).
+/// `Heap::graft` adopts all of it; dropping an
 /// un-grafted segment releases the block and every stub's off-heap
 /// reference, so an orphan leaks nothing.
 pub struct GiftSegment {
     /// `None` only for the segment of a copy that allocated nothing.
     block: Option<Block>,
     offheap: SegmentChain,
-    objects: u64,
 }
 
 impl GiftSegment {
@@ -119,7 +117,6 @@ impl GiftSegment {
         GiftSegment {
             block: None,
             offheap: SegmentChain::EMPTY,
-            objects: 0,
         }
     }
 
@@ -163,7 +160,6 @@ impl Heap {
             saved_tip,
             block_start: start,
             measured_bytes,
-            alloc_count: self.alloc_count,
             offheap: WindowChain::open(self.off_heap_head),
         });
         self.install_block(Block {
@@ -177,8 +173,7 @@ impl Heap {
     /// segment and restore the saved tip. The block's fill must be the
     /// measured bytes: a copy that allocated more or less than its measure is
     /// a disagreement between two passes that must walk the same objects, and
-    /// it stops here. Allocation statistics stay with this heap: the sender
-    /// did the work.
+    /// it stops here.
     pub fn end_gift(&mut self) -> GiftSegment {
         let window = self.gift.take().expect("end_gift without an open gift window");
         assert!(
@@ -192,13 +187,10 @@ impl Heap {
             "gift copy allocated a different number of bytes than it was measured at: the measure and the copy disagree"
         );
         let offheap = window.offheap.cut(&mut self.off_heap_head);
-        let objects = self.alloc_count - window.alloc_count;
-        self.alloc_count = window.alloc_count;
         self.install_block(window.saved_tip);
         GiftSegment {
             block: Some(block),
             offheap,
-            objects,
         }
     }
 
@@ -214,7 +206,6 @@ impl Heap {
         }
         self.off_heap_head = segment.offheap.splice_onto(self.off_heap_head);
         segment.offheap = SegmentChain::EMPTY;
-        self.alloc_count += segment.objects;
     }
 
     /// Whether `begin_gift` has set the tip aside and `end_gift` has not yet cut

@@ -16,13 +16,13 @@ def nested(value) do
 end
 
 def main() do
-  before = Process.heap_alloc_stats().list_cons_allocs
+  before = System.alloc_stats().list_cons_allocs
   rebuilt = rebuild([1, 2, 3])
-  count_after = Process.heap_alloc_stats().list_cons_allocs
+  count_after = System.alloc_stats().list_cons_allocs
   dbg({rebuilt, count_after - before})
 
-  before = Process.heap_alloc_stats().list_cons_allocs
+  before = System.alloc_stats().list_cons_allocs
   rebuilt = nested({%{items: [4, 5, 6]}})
-  count_after = Process.heap_alloc_stats().list_cons_allocs
+  count_after = System.alloc_stats().list_cons_allocs
   dbg({rebuilt, count_after - before})
 end

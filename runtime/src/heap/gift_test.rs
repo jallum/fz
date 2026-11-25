@@ -148,7 +148,7 @@ fn end_gift_restores_the_senders_tip_and_leaves_its_earlier_allocations_untouche
     let mut sender = Heap::new(SIZE_TABLE[0], fresh_registry());
     let kept = alloc_int_list_cons(&mut sender, 42, EMPTY_LIST);
     let (start, top, capacity) = (sender.block_start, sender.bump_top, sender.block_size);
-    let (bytes_used, live_count) = (sender.bytes_used(), sender.live_count());
+    let bytes_used = sender.bytes_used();
 
     sender.begin_gift(1008 + 64);
     assert_eq!(
@@ -173,17 +173,12 @@ fn end_gift_restores_the_senders_tip_and_leaves_its_earlier_allocations_untouche
     );
     assert!(sender.young_blocks.is_empty(), "the sender's own chain is as it was");
     assert_eq!(sender.bytes_used(), bytes_used);
-    assert_eq!(
-        sender.live_count(),
-        live_count,
-        "gift objects are not the sender's live objects"
-    );
     let head = sender.read_list_head_ref(list_ref_from_bits(kept)).expect("head");
     assert_eq!(head.load_int().expect("int"), 42);
     assert_eq!(
-        sender.alloc_stats_snapshot().other.allocs,
+        sender.node.alloc_stats().other.allocs,
         2,
-        "allocation statistics stay with the heap that did the copying"
+        "the program's figure counts what the copy allocated"
     );
 }
 

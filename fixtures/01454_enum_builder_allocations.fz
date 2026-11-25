@@ -64,6 +64,6 @@ def main() do
 end
 
 defp allocs() do
-  stats = Process.heap_alloc_stats()
+  stats = System.alloc_stats()
   stats[:list_cons_allocs]
 end

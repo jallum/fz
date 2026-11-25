@@ -7,7 +7,9 @@
 # Pins ordinary source-level `reverse/1` and `reverse_into/2` as an
 # accumulator-style list traversal. Reversing a five-element list should allocate
 # only the five input literal cons cells, relinking them for the output. No tuple/struct or
-# map objects are needed for the value path.
+# map objects are needed for the value path, and no closures are built beyond
+# the two closures the scheduler builds to start the program (`closure_allocs = 2`,
+# `closure_bytes = 64` on the native paths, 0 on the interpreter).
 def reverse(xs), do: reverse_into(xs, [])
 
 def reverse_into([], acc), do: acc
@@ -17,7 +19,7 @@ def main() do
   out = reverse([1, 2, 3, 4, 5])
   dbg(out)
 
-  stats = Process.heap_alloc_stats()
+  stats = System.alloc_stats()
   dbg(%{list_cons_allocs: stats[:list_cons_allocs], list_cons_bytes: stats[:list_cons_bytes], struct_allocs: stats[:struct_allocs], struct_bytes: stats[:struct_bytes], closure_allocs: stats[:closure_allocs], closure_bytes: stats[:closure_bytes], map_allocs: stats[:map_allocs], map_bytes: stats[:map_bytes]})
   heap_bytes = stats[:list_cons_bytes] + stats[:struct_bytes] + stats[:map_bytes]
   dbg(heap_bytes)

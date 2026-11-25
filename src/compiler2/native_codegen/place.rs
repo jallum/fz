@@ -61,7 +61,6 @@ pub(super) fn emit_place<M: cranelift_module::Module>(
 
     body.b.switch_to_block(placed);
     body.b.seal_block(placed);
-    count_statistics(body, kind, size);
     let scope = body.scope;
     scope.sites.borrow_mut().count(
         body,
@@ -74,26 +73,6 @@ pub(super) fn emit_place<M: cranelift_module::Module>(
     body.b.block_params(placed)[0]
 }
 
-/// The heap's own statistics, which a runtime allocation records and inline
-/// code increments in place: the object count and the per-kind and total
-/// counts and bytes.
-fn count_statistics<M: cranelift_module::Module>(body: &mut CodegenFn<'_, '_, M>, kind: HeapAllocKind, size: usize) {
-    let layout = INLINE_ALLOC_LAYOUT;
-    let flags = MemFlagsData::trusted();
-    let field = |offset: usize| PROCESS_HEAP_OFFSET + offset as i32;
-    let process = body.process_arg();
-    let (kind_allocs, kind_bytes) = layout
-        .kind_counters(kind)
-        .unwrap_or_else(|| panic!("{kind:?} is not placed inline"));
-    for (counter, add) in [
-        (layout.alloc_count, 1),
-        (layout.total_allocs, 1),
-        (kind_allocs, 1),
-        (layout.total_bytes, size as i64),
-        (kind_bytes, size as i64),
-    ] {
-        let old = body.b.ins().load(types::I64, flags, process, field(counter));
-        let new = body.b.ins().iadd_imm_s(old, add);
-        body.b.ins().store(flags, new, process, field(counter));
-    }
-}
+#[cfg(test)]
+#[path = "place_test.rs"]
+mod place_test;

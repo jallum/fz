@@ -10,7 +10,7 @@ use fz_runtime::any_value::{
     AnyValue, AnyValueRef, ClosureDenotationId, FALSE_ATOM_ID, NIL_ATOM_ID, SlotLayout, TRUE_ATOM_ID, ValueKind,
     closure_addr_from_tagged, struct_size_for_payload,
 };
-use fz_runtime::heap::{Heap, HeapAllocKind, HeapAllocStats, INLINE_ALLOC_LAYOUT, Schema, SchemaRegistry};
+use fz_runtime::heap::{Heap, HeapAllocKind, INLINE_ALLOC_LAYOUT, Schema, SchemaRegistry};
 use fz_runtime::ir_runtime::*;
 use fz_runtime::pinned_abi;
 use fz_runtime::process::Process;
@@ -835,9 +835,6 @@ struct Left {
     tip_used: usize,
     tip_capacity: usize,
     tip_changed: bool,
-    object_count: u64,
-    list_cons: (u64, u64),
-    total: (u64, u64),
 }
 
 fn heap_field(process: &Process, offset: usize) -> usize {
@@ -885,7 +882,6 @@ fn run_cell(
     let result = run(&mut *process, &inputs);
     let after = tip_of(&process);
     let blocks = [before, after];
-    let stats = process.heap.alloc_stats_snapshot();
     let address = AnyValueRefPacking::current().raw_address(result) as *const u8;
     Left {
         result: rebased(result, blocks),
@@ -898,9 +894,6 @@ fn run_cell(
         tip_used: heap_field(&process, INLINE_ALLOC_LAYOUT.bump_top) - after.0,
         tip_capacity: after.1,
         tip_changed: before != after,
-        object_count: heap_field(&process, INLINE_ALLOC_LAYOUT.alloc_count) as u64,
-        list_cons: (stats.list_cons.allocs, stats.list_cons.bytes),
-        total: (stats.total.allocs, stats.total.bytes),
     }
 }
 
@@ -1151,8 +1144,6 @@ struct ObjectLeft {
     tip_used: usize,
     tip_capacity: usize,
     tip_changed: bool,
-    object_count: u64,
-    stats: HeapAllocStats,
 }
 
 fn words_of(address: *const u8, count: usize) -> Vec<u64> {
@@ -1197,8 +1188,6 @@ fn run_object(
         tip_used: heap_field(&process, INLINE_ALLOC_LAYOUT.bump_top) - after.0,
         tip_capacity: after.1,
         tip_changed: before != after,
-        object_count: heap_field(&process, INLINE_ALLOC_LAYOUT.alloc_count) as u64,
-        stats: process.heap.alloc_stats_snapshot(),
     }
 }
 
@@ -1655,9 +1644,6 @@ struct ReuseLeft {
     tip_used: usize,
     tip_capacity: usize,
     tip_changed: bool,
-    object_count: u64,
-    list_cons: (u64, u64),
-    total: (u64, u64),
     retention: (u64, u64),
     binaries_shared: u64,
 }
@@ -1679,7 +1665,6 @@ fn run_reuse(
     let result = run(&mut *process, &inputs);
     let after = tip_of(&process);
     let blocks = [before, after];
-    let stats = process.heap.alloc_stats_snapshot();
     let address = AnyValueRefPacking::current().raw_address(result) as *const u8;
     ReuseLeft {
         result: rebased(result, blocks),
@@ -1693,9 +1678,6 @@ fn run_reuse(
         tip_used: heap_field(&process, INLINE_ALLOC_LAYOUT.bump_top) - after.0,
         tip_capacity: after.1,
         tip_changed: before != after,
-        object_count: heap_field(&process, INLINE_ALLOC_LAYOUT.alloc_count) as u64,
-        list_cons: (stats.list_cons.allocs, stats.list_cons.bytes),
-        total: (stats.total.allocs, stats.total.bytes),
         retention: (process.list_retention_attempts, process.list_retention_hits),
         binaries_shared: process.heap.binaries_shared(),
     }

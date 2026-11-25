@@ -56,7 +56,7 @@ defmodule P do
     end
   end
 
-  def boxes(), do: Process.heap_alloc_stats()[:scalar_box_allocs]
+  def boxes(), do: System.alloc_stats()[:scalar_box_allocs]
 end
 
 P.fill(0, 1000)

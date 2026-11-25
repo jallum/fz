@@ -73,8 +73,8 @@ raw event:    fz.runtime.process_exited
 signature:    (&PidId, &Process)
 ```
 
-`ExitRecord` is the test-side projection: `{ pid, halt_value: i64, live_count:
-usize, bytes_used: usize, list_retention_attempts: u64,
+`ExitRecord` is the test-side projection: `{ pid, halt_value: i64,
+bytes_used: usize, list_retention_attempts: u64,
 list_retention_hits: u64, raises_delivered: u64, reduction_yields: u64,
 failed: bool, dtors_dispatched: u64, frame_copies: u64 }`. `failed` is
 `Process::ended_in_failure`: whether the process ended through an uncaught raise
@@ -228,7 +228,7 @@ signature:    (&AllocSiteCount)
 ```
 
 `AllocSiteCount` is `{ function, kind, placed }`; `write_line` renders it as
-`function`, `object` (the kind, spelled as `Process.heap_alloc_stats()` spells
+`function`, `object` (the kind, spelled as `System.alloc_stats()` spells
 it), `allocs` and `bytes`. `function` is the compiled function's symbol, or
 `runtime::<function>` for a runtime site. Two sites in one function are two
 events with the same `function`.
@@ -241,10 +241,12 @@ into a gift, so a run whose copy site counts exactly the cells its
 `fz.runtime.send.probe` gifts carry copied nothing on the receiving side;
 fixtures 00901 and 00902 are pinned that way.
 
-The sites count for the whole program, from the moment it is loaded. A
-process's own `heap_alloc_stats` start after the scheduler has built the
-closures that enter it, so the sites of a one-process program sum to that
-process's figures plus those two closures.
+The sites count for the whole program, from the moment it is loaded, every
+process and the closures the scheduler builds to enter each one. The figure
+`System.alloc_stats()` returns is the sum of these sites (`Node::alloc_stats`),
+so the two always agree. An off-heap binary buffer is the runtime site
+`runtime::alloc_shared_bin`, reported with kind `shared_bin`; it is not in the
+figure's total.
 
 ## `fz.runtime.run_ended`
 
@@ -585,8 +587,7 @@ instead of poking task internals:
 the output sink, spawns `entry`, drains `run_until_idle`, and returns the root
 task's `ExitRecord` plus the dbg lines. The
 result/output/heap helpers build on it: `run_main` reads `observe(...).exit.halt_value`,
-`capture_main` reads `observe(...).output`, and `run_capturing` returns
-`(exit.halt_value, exit.live_count)`.
+and `capture_main` reads `observe(...).output`.
 
 `CompiledModule::run(tel, fn_id)` is a sibling convenience: a thin `spawn` +
 `run_until_idle` that uses the caller-owned telemetry bus, attaches a

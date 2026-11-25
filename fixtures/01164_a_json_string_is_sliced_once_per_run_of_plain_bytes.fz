@@ -7,7 +7,7 @@
 # the closing quote the run is one slice of the input, which is the decoded
 # value: a string with no escape is a view of the input. The program prints the
 # decoded length, then the allocations and the off-heap bytes the decode made.
-# The allocations exclude what one `Process.heap_alloc_stats` call itself
+# The allocations exclude what one `System.alloc_stats` call itself
 # allocates, which a second snapshot measures: the stats map lands in the window
 # after its snapshot. The native paths count the continuation frames the decode
 # builds and the interpreter builds none: the native number is 6 above the
@@ -20,10 +20,10 @@
 # Elixir's JSON decoder returns.
 defmodule P do
   def decode_cost(doc) do
-    a = Process.heap_alloc_stats()
-    a2 = Process.heap_alloc_stats()
+    a = System.alloc_stats()
+    a2 = System.alloc_stats()
     {:ok, v} = JSON.decode(doc)
-    b = Process.heap_alloc_stats()
+    b = System.alloc_stats()
     stats_call_allocs = a2[:allocs] - a[:allocs]
     decode_allocs = (b[:allocs] - a2[:allocs]) - stats_call_allocs
     {String.length(v), decode_allocs, b[:shared_bin_bytes] - a2[:shared_bin_bytes]}

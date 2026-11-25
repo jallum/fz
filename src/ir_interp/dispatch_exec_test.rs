@@ -192,13 +192,13 @@ fn map_with_binary_key(proc: *mut Process, key: &str, value: i64) -> AnyValue {
 /// How many bitstrings this process has put on its heap. A prepared binary
 /// key is one of them, which is what makes building one observable.
 fn bitstring_allocs(proc: *mut Process) -> u64 {
-    unsafe { &*proc }.heap.alloc_stats_snapshot().bitstring.allocs
+    unsafe { &*proc }.node.alloc_stats().bitstring.allocs
 }
 
 /// How many refs to off-heap binaries the process has built: one per binary
 /// too long to live inline.
 fn binref_allocs(proc: *mut Process) -> u64 {
-    unsafe { &*proc }.heap.alloc_stats_snapshot().binref.allocs
+    unsafe { &*proc }.node.alloc_stats().binref.allocs
 }
 
 /// An input the plan reads that never arrived is a disagreement between the

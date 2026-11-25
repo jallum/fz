@@ -31,9 +31,9 @@ def main() do
 end
 
 defp scan_cost(input) do
-  before = Process.heap_alloc_stats()
+  before = System.alloc_stats()
   n = walk(input, 0)
-  after_ = Process.heap_alloc_stats()
+  after_ = System.alloc_stats()
   {n, after_[:shared_bin_bytes] - before[:shared_bin_bytes], after_[:bitstring_bytes] - before[:bitstring_bytes]}
 end
 

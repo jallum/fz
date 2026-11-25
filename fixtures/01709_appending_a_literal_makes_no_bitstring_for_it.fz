@@ -27,9 +27,9 @@ defmodule Append do
   def grow(k, operand, acc), do: grow(k - 1, operand, acc <> operand)
 
   def allocated(run) do
-    a = Process.heap_alloc_stats()
+    a = System.alloc_stats()
     result = run.()
-    z = Process.heap_alloc_stats()
+    z = System.alloc_stats()
     {result, z[:bitstring_allocs] - a[:bitstring_allocs], z[:binview_allocs] - a[:binview_allocs]}
   end
 
