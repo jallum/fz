@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-25T12:22:00Z",
+  "description": "From: Elixir Parity. User-approved 2026-11-25. Blocks fz-mue.67, and through it fz-nhb.15 (defguard) and #791.\n\nEvidence (reproduced on develop a6f4c6edd):\n  def f(args), do: quote(do: foo(unquote_splicing(args)))   ; f([1,2])\n  def h(args), do: quote(do: [0, unquote_splicing(args)])   ; h([1,2])\nElixir 1.19.4 gives {:foo, [], [1, 2]} and [0, 1, 2]. fz gives {:foo, [], [{:unquote_splicing, [], [{:args, [], Main}]}]}, leaving the call in the AST, and warns that args is unused. In a def head (def unquote(name)(unquote_splicing(args))) it fails as internal/post-resolution-leftover. Kernel.define_guard uses exactly that head shape.\n\nDone when: splices work everywhere Elixir allows them: call arguments, list elements (including before a | tail), tuple elements, block bodies and def heads. An oracle fixture matches Elixir on interp, run and build. Built first in the fz-mue.67 worktree (../fz-mue67).",
+  "id": "fz-mue.77",
+  "labels": [],
+  "parent": "fz-mue",
+  "priority": 2,
+  "status": "open",
+  "title": "unquote_splicing inside quote splices its list, as in Elixir",
+  "type": "bug",
+  "updated_at": "2026-11-25T12:22:00Z"
+}
