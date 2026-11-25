@@ -222,7 +222,11 @@ because the heap moves objects only at a quantum boundary, which compiled code
 reaches at a call or a back edge, and neither occurs inside a dispatch region.
 Every other field (rest, signed, little-endian, unaligned
 or dynamically sized position, float, utf) keeps its runtime call, as does the
-receive matcher. The receive matcher and the interpreter
+receive matcher. A little-endian integer field of any width (and `native` on a little-endian host) has one
+definition, `apply_endian_for_write` and its inverse `apply_endian_for_read` in `runtime/src/bitstr.rs`: the
+whole low bytes first, then the remaining `width % 8` high bits as the final partial byte, as Elixir spells it
+(fixture 01831). Construction and every match read it through the runtime; no inline load swaps a
+little-endian field. The receive matcher and the interpreter
 share the arithmetic through `bs_field_end`. The CLAUSE HEAD is lowered once,
 into the entry dispatch region that selects the clause and hands it the values
 it binds. A dispatch region (`lower_bitstring_region`, `Dispatch::read_bitstring`,

@@ -166,29 +166,44 @@ pub fn host_is_little_endian() -> bool {
     cfg!(target_endian = "little")
 }
 
-pub fn apply_endian_for_write(value: u64, total_bits: u32, endian: Endian) -> u64 {
-    let n = total_bits as usize;
-    if n == 0 || n > 64 {
-        return value;
-    }
-    let little = matches!(endian, Endian::Little) || (matches!(endian, Endian::Native) && host_is_little_endian());
-    if !little {
-        return value;
-    }
-    if !n.is_multiple_of(8) {
-        return value;
-    }
-    let bytes = n / 8;
-    let mut acc = 0u64;
-    for i in 0..bytes {
-        let b = (value >> (i * 8)) & 0xff;
-        acc |= b << ((bytes - 1 - i) * 8);
-    }
-    acc
+fn is_little(endian: Endian) -> bool {
+    matches!(endian, Endian::Little) || (matches!(endian, Endian::Native) && host_is_little_endian())
 }
 
-pub fn apply_endian_for_read(value: u64, total_bits: u32, endian: Endian) -> u64 {
-    apply_endian_for_write(value, total_bits, endian)
+/// Reverse the order of the low `bytes` bytes of `value`.
+fn reverse_low_bytes(value: u64, bytes: u32) -> u64 {
+    if bytes == 0 {
+        return 0;
+    }
+    value.swap_bytes() >> (64 - 8 * bytes)
+}
+
+/// The `total_bits`-wide big-endian bit pattern a field of `value` is written
+/// as. A little-endian integer is its whole low bytes, least significant
+/// first, then the `total_bits % 8` remaining high bits as the final partial
+/// byte: `<<0x1abc::13-little>>` is `<<0xbc, 0x1a::size(5)>>`.
+pub fn apply_endian_for_write(value: u64, total_bits: u32, endian: Endian) -> u64 {
+    if total_bits == 0 || total_bits > 64 || !is_little(endian) {
+        return value;
+    }
+    let bytes = total_bits / 8;
+    let tail_bits = total_bits % 8;
+    let low = reverse_low_bytes(value, bytes);
+    let tail = if bytes == 8 { 0 } else { value >> (8 * bytes) };
+    (low << tail_bits) | tail
+}
+
+/// The value a `total_bits`-wide big-endian bit pattern reads as; the inverse
+/// of `apply_endian_for_write`.
+pub fn apply_endian_for_read(raw: u64, total_bits: u32, endian: Endian) -> u64 {
+    if total_bits == 0 || total_bits > 64 || !is_little(endian) {
+        return raw;
+    }
+    let bytes = total_bits / 8;
+    let tail_bits = total_bits % 8;
+    let tail = raw & ((1u64 << tail_bits) - 1);
+    let low = reverse_low_bytes(raw >> tail_bits, bytes);
+    if bytes == 8 { low } else { low | (tail << (8 * bytes)) }
 }
 
 pub fn sign_extend(value: u64, total_bits: u32) -> i64 {

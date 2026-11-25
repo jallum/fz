@@ -77,11 +77,11 @@ fn integers_of_every_width_class_land_where_their_bits_say() {
 }
 
 #[test]
-fn a_little_endian_integer_swaps_its_bytes_and_an_odd_width_does_not() {
+fn a_little_endian_integer_writes_its_low_bytes_first_and_its_high_bits_last() {
     with_process(|process| {
         let little = |bits, value| field(INTEGER, Some(bits), 1, LITTLE, value);
         assert_eq!(built(process, &[little(16, 0x1234)]), (vec![0x34, 0x12], 16));
-        assert_eq!(built(process, &[little(12, 0xabc)]), (vec![0xab, 0xc0], 12));
+        assert_eq!(built(process, &[little(12, 0xabc)]), (vec![0xbc, 0xa0], 12));
     });
 }
 

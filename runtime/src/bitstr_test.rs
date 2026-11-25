@@ -43,3 +43,52 @@ fn a_scalar_encodes_to_the_bytes_of_its_encoding_and_a_surrogate_to_none() {
     assert_eq!(encode_utf8(0xd800), None);
     assert_eq!(encode_utf16(0x110000, Endian::Big), None);
 }
+
+#[test]
+fn a_little_endian_field_is_its_low_bytes_then_the_high_bits() {
+    // Elixir: <<0x1abc::13-little>> == <<0xbc, 0x1a::size(5)>>, whose bits as
+    // one 13-bit big-endian word are 0xbc << 5 | 0x1a.
+    assert_eq!(apply_endian_for_write(0x1abc, 13, Endian::Little), (0xbc << 5) | 0x1a);
+    // <<0x1abcd::17-little>> == <<0xcd, 0xab, 1::size(1)>>
+    assert_eq!(apply_endian_for_write(0x1abcd, 17, Endian::Little), (0xcdab << 1) | 1);
+    // Below a byte there is nothing to swap, and a whole-byte width swaps bytes.
+    assert_eq!(apply_endian_for_write(0b101, 3, Endian::Little), 0b101);
+    assert_eq!(apply_endian_for_write(0x1234, 16, Endian::Little), 0x3412);
+    assert_eq!(apply_endian_for_write(0x1abc, 13, Endian::Big), 0x1abc);
+}
+
+#[test]
+fn reading_a_little_endian_field_undoes_writing_it_at_every_width() {
+    let value = 0x7fed_cba9_8765_4321u64;
+    for bits in 1..=64u32 {
+        let masked = if bits == 64 {
+            value
+        } else {
+            value & ((1u64 << bits) - 1)
+        };
+        for endian in [Endian::Big, Endian::Little, Endian::Native] {
+            let word = apply_endian_for_write(masked, bits, endian);
+            assert_eq!(
+                apply_endian_for_read(word, bits, endian),
+                masked,
+                "{bits} bits, {endian:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_native_field_is_little_endian_on_a_little_endian_host() {
+    assert_eq!(
+        apply_endian_for_write(0x1abc, 13, Endian::Native),
+        apply_endian_for_write(
+            0x1abc,
+            13,
+            if host_is_little_endian() {
+                Endian::Little
+            } else {
+                Endian::Big
+            }
+        )
+    );
+}
