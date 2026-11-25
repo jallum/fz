@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Elixir Parity",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-19T03:09:44Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-mue",
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "The parser rejects a clause that begins with -\u003e, as Elixir's tokenizer does",
   "type": "bug",
-  "updated_at": "2026-11-24T21:36:34Z"
+  "updated_at": "2026-11-25T00:44:40Z"
 }
