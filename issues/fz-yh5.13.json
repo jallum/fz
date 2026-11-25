@@ -5,7 +5,7 @@
   ],
   "blocks": [],
   "created": "2026-11-24T17:54:26Z",
-  "description": "Option C, step C3 (approved page https://claude.ai/artifact/HJ4StaQ4ggt6yt2Fus6pX7).\n\n- lib/ marks the externs that project a value (an extern mark).\n- Arity, MapSize and ByteSize become matrix questions.\n- fz_tuple_size lowers onto TupleArity.\n- Narrowing happens on the match edge.\n\nis_struct/1 and is_exception/1 become type tests by this route (Make Distiller Fast finding 4).\n\nRemoves: option A's guard_domain table (fz-yh5.8, #842, the holding position).\n\nMoved here from fz-yh5.11 (Callables, 2026-11-24): removing the guard leaf's Whole read of a callable (executable_facts.rs:656). Once fz_function_arity becomes the Arity question, is_function(g, 2) (probe u6) and p15 lose their wrapper.",
+  "description": "Option C, step C3 (approved page https://claude.ai/artifact/HJ4StaQ4ggt6yt2Fus6pX7).\n\n- lib/ marks the externs that project a value (an extern mark).\n- Arity, MapSize and ByteSize become matrix questions.\n- fz_tuple_size lowers onto TupleArity.\n- Narrowing happens on the match edge.\n\nis_struct/1 and is_exception/1 become type tests by this route (Make Distiller Fast finding 4).\n\nRemoves: option A's guard_domain table (fz-yh5.8, #842, the holding position).\n\nMoved here from fz-yh5.11 (Callables, 2026-11-24): removing the guard leaf's Whole read of a callable (executable_facts.rs:656). Once fz_function_arity becomes the Arity question, is_function(g, 2) (probe u6) and p15 lose their wrapper.\n\n## Folded in from fz-yh5.8 (user decision 2026-11-25: #842 is closed and option A never merges)\n\nC3 now carries fz-yh5.8's job. OTP's `:lists.foldl` guard `when is_function(F, 2)` must not by itself make Enum.reduce's reducer cross the boxed seam. A type test asks a question about a value; it does not use the value.\n\n- Today: Enum.each over a list builds two construction wrappers where it should build none. The distiller costs +11.8% requests; that figure is fz-mue.44's report, from Elixir Parity's distill_{base,a,b}.log.\n- Acceptance: with `is_function(F, 2)` as the Arity question on the match edge, mue.44's shape builds no wrapper.\n- Tests: compiler2_never_boxed_discarded_closure_call_delivers_no_lanes and compiler2_no_value_reaches_a_construction_member_that_never_named_it.\n- This ticket blocks fz-mue.44 in fz-yh5.8's place. The is_function arity ticket fz-yh5.7 is related.\n- #842's branch fz-yh5.8/guard-domain-table (head 0a1c2e2d1) is kept on the remote as a reference: its domain_at_literals and guard_domain table show the literal-argument cases C3's questions must cover.",
   "id": "fz-yh5.13",
   "labels": [],
   "parent": "fz-yh5",
@@ -13,5 +13,5 @@
   "status": "open",
   "title": "A projecting extern compared with a constant is a matrix question",
   "type": "bug",
-  "updated_at": "2026-11-24T18:45:01Z"
+  "updated_at": "2026-11-25T11:44:01Z"
 }
