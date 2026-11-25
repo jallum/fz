@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Binary Handling",
   "blocked_by": [],
   "blocks": [
     "fz-mue"
@@ -13,5 +13,5 @@
   "status": "open",
   "title": "The ::bytes bitstring modifier is accepted",
   "type": "feature",
-  "updated_at": "2026-11-19T01:32:32Z"
+  "updated_at": "2026-11-25T00:59:41Z"
 }
