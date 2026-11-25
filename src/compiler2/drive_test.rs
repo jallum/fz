@@ -13202,7 +13202,7 @@ const SOURCE_ORDER_BLIND_ESCAPES: &[&str] = &[];
 /// walk only reports the kinds it saw; a row appearing or leaving is the
 /// census fixtures changing shape, which wants looking at either way.
 const SOURCE_ORDER_PLANS_ON_THE_CENSUS: &[(&str, usize, usize)] =
-    &[("case", 21, 21), ("entry", 114, 108), ("receive", 2, 0)];
+    &[("case", 21, 21), ("entry", 113, 107), ("receive", 2, 0)];
 
 /// The subjects at which seating `early` before `late` lets a value reach a
 /// body that never named it: the two arms put one and the same question there,

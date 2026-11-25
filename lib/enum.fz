@@ -736,6 +736,84 @@ defmodule Enum do
     )
   end
 
+  @doc """
+  Returns the elements of `enumerable` whose zero-based positions lie in
+  `index_range`, taking every `step`th one when the range has a step.
+
+  Negative `first` and `last` count from the end, which enumerates
+  `enumerable` once to learn its size. Positions beyond the end are ignored,
+  and a range that selects nothing returns `[]`. A range whose step is
+  negative raises `ArgumentError`, except `first..last//-1` with
+  `first > last`, which slices as `first..last//1` does.
+
+  ## Examples
+
+      Enum.slice([1, 2, 3, 4, 5], 1..3)
+      #=> [2, 3, 4]
+
+      Enum.slice([1, 2, 3, 4, 5], 3..10)
+      #=> [4, 5]
+
+      Enum.slice([1, 2, 3, 4, 5], -3..-1)
+      #=> [3, 4, 5]
+
+      Enum.slice([1, 2, 3, 4, 5], 1..-2//1)
+      #=> [2, 3, 4]
+
+      Enum.slice([1, 2, 3, 4, 5], 0..-1//2)
+      #=> [1, 3, 5]
+
+      Enum.slice([1, 2, 3, 4, 5], 6..10)
+      #=> []
+
+  """
+  @spec slice(Enumerable.t(a), Range.t) :: [a] when a: var
+  def slice(enumerable, %Range{first: first, last: last, step: step}) when step > 0, do: slice_range(enumerable, first, last, step)
+  def slice(enumerable, %Range{first: first, last: last, step: -1}) when first > last, do: slice_range(enumerable, first, last, 1)
+  def slice(_enumerable, %Range{} = index_range) do
+    raise(%ArgumentError{message: "Enum.slice/2 does not accept ranges with negative steps, got: " <> inspect(index_range)})
+  end
+
+  @doc """
+  Returns up to `amount` elements of `enumerable`, starting at the zero-based
+  position `start_index`.
+
+  A negative `start_index` counts from the end, which enumerates
+  `enumerable` once to learn its size; one before the first element starts at
+  the first element. Returns `[]` when `amount` is `0` or `start_index` is
+  past the end.
+
+  ## Examples
+
+      Enum.slice(1..100, 5, 10)
+      #=> [6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+
+      Enum.slice(1..10, 5, 100)
+      #=> [6, 7, 8, 9, 10]
+
+      Enum.slice(1..10, -6, 3)
+      #=> [5, 6, 7]
+
+      Enum.slice(1..10, -11, 5)
+      #=> [1, 2, 3, 4, 5]
+
+      Enum.slice(1..10, 10, 5)
+      #=> []
+
+  """
+  @spec slice(Enumerable.t(a), integer, non_neg_integer) :: [a] when a: var
+  def slice(_enumerable, start_index, 0) when is_integer(start_index), do: []
+  def slice(enumerable, start_index, amount) when is_integer(start_index) and start_index < 0 and is_integer(amount) and amount >= 0 do
+    {count, fun} = slice_count_and_fun(enumerable)
+    start_index = Kernel.max(count + start_index, 0)
+    amount = Kernel.min(amount, count - start_index)
+
+    if amount > 0, do: fun.(start_index, amount, 1), else: []
+  end
+  def slice(enumerable, start_index, amount) when is_integer(start_index) and is_integer(amount) and amount >= 0 do
+    slice_forward(enumerable, start_index, amount, 1)
+  end
+
   # The default sort is Erlang's total term order, which `Kernel.compare/2`
   # answers directly and `<=` reaches through its final clause.
   #
@@ -780,6 +858,125 @@ defmodule Enum do
   """
   @spec sort(Enumerable.t(a), (a, a -> boolean)) :: [a] when a: var
   def sort(enumerable, sorter), do: sort_list(to_list(enumerable), sorter)
+
+
+  @spec slice_range(Enumerable.t(a), integer, integer, pos_integer) :: [a] when a: var
+  defp slice_range(enumerable, first, -1, 1) when first >= 0, do: drop(enumerable, first)
+  defp slice_range(enumerable, first, -1, step) when first >= 0, do: take_every(drop(enumerable, first), step)
+  defp slice_range(enumerable, first, last, step) when last >= first and last >= 0 and first >= 0 do
+    slice_forward(enumerable, first, last - first + 1, step)
+  end
+  defp slice_range(enumerable, first, last, step) do
+    {count, fun} = slice_count_and_fun(enumerable)
+    first = if first >= 0, do: first, else: Kernel.max(first + count, 0)
+    last = if last >= 0, do: last, else: last + count
+    amount = last - first + 1
+
+    if first < count and amount > 0 do
+      fun.(first, amount_with_step(Kernel.min(amount, count - first), step), step)
+    else
+      []
+    end
+  end
+
+  @spec amount_with_step(integer, pos_integer) :: integer
+  defp amount_with_step(amount, 1), do: amount
+  defp amount_with_step(amount, step), do: div(amount - 1, step) + 1
+
+  @spec slice_forward(Enumerable.t(a), integer, integer, pos_integer) :: [a] when a: var
+  defp slice_forward(enumerable, start, amount, step) when start < 0 do
+    {count, fun} = slice_count_and_fun(enumerable)
+    start = count + start
+
+    if start >= 0 do
+      fun.(start, amount_with_step(Kernel.min(amount, count - start), step), step)
+    else
+      []
+    end
+  end
+  defp slice_forward(list, start, amount, step) when is_list(list) do
+    slice_exact(list, start, amount_with_step(amount, step), step)
+  end
+  defp slice_forward(enumerable, start, amount, step) do
+    case Enumerable.slice(enumerable) do
+      {:ok, count, _slicer} when start >= count ->
+        []
+
+      {:ok, count, slicer} when is_function(slicer, 1) ->
+        slice_exact(slicer.(enumerable), start, amount_with_step(Kernel.min(amount, count - start), step), step)
+
+      {:ok, count, slicer} when is_function(slicer, 3) ->
+        slicer.(start, amount_with_step(Kernel.min(amount, count - start), step), step)
+
+      {:error, _reason} ->
+        slice_enum(enumerable, start, amount, step)
+    end
+  end
+
+  @spec slice_enum(Enumerable.t(a), integer, integer, pos_integer) :: [a] when a: var
+  defp slice_enum(enumerable, start, amount, 1) do
+    {_start, _amount, slice} =
+      reduce_while(enumerable, {start, amount, []}, fn (entry, {start, amount, list}) ->
+        cond do
+          start > 0 -> {:cont, {start - 1, amount, []}}
+          amount > 1 -> {:cont, {start, amount - 1, [entry | list]}}
+          true -> {:halt, {start, amount, [entry | list]}}
+        end
+      end)
+
+    reverse_list(slice)
+  end
+  defp slice_enum(enumerable, start, amount, step) do
+    {_start, _amount, _to_drop, slice} =
+      reduce_while(enumerable, {start, amount, 1, []}, fn (entry, {start, amount, to_drop, list}) ->
+        cond do
+          start > 0 ->
+            {:cont, {start - 1, amount, to_drop, []}}
+
+          amount > 1 ->
+            case to_drop do
+              1 -> {:cont, {start, amount - 1, step, [entry | list]}}
+              _ -> {:cont, {start, amount - 1, to_drop - 1, list}}
+            end
+
+          true ->
+            case to_drop do
+              1 -> {:halt, {start, amount, to_drop, [entry | list]}}
+              _ -> {:halt, {start, amount, to_drop, list}}
+            end
+        end
+      end)
+
+    reverse_list(slice)
+  end
+
+  @spec slice_count_and_fun(Enumerable.t(a)) :: {integer, (integer, integer, pos_integer -> [a])} when a: var
+  defp slice_count_and_fun(list) when is_list(list) do
+    length = length(list)
+    {length, fn (start, amount, step) -> slice_exact(list, start, amount, step) end}
+  end
+  defp slice_count_and_fun(enumerable) do
+    case Enumerable.slice(enumerable) do
+      {:ok, count, slicer} when is_function(slicer, 1) ->
+        list = slicer.(enumerable)
+        {count, fn (start, amount, step) -> slice_exact(list, start, amount, step) end}
+
+      {:ok, count, slicer} when is_function(slicer, 3) ->
+        {count, slicer}
+
+      {:error, _reason} ->
+        {list, count} =
+          reduce_while(enumerable, {[], 0}, fn (entry, {acc, count}) -> {:cont, {[entry | acc], count + 1}} end)
+
+        {count, fn (start, amount, step) -> slice_exact(reverse_list(list), start, amount, step) end}
+    end
+  end
+
+  @spec slice_exact([a], integer, integer, pos_integer) :: [a] when a: var
+  defp slice_exact(_list, _start, 0, _step), do: []
+  defp slice_exact(list, start, amount, 1), do: take(drop(list, start), amount)
+  defp slice_exact(list, start, amount, step), do: take(take_every(drop(list, start), step), amount)
+
 
   @spec reduce_finish({:done, a} | {:halted, a} | {:suspended, a, (-> any)}) :: a when a: var
   defp reduce_finish({:done, acc}), do: acc

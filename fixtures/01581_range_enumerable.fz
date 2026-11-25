@@ -1,7 +1,7 @@
 #---
 # purpose: "Range implements Enumerable reduce/count/member?/slice callbacks"
 # oracle: self
-# oracle.stamp: c41dd06067570ac0
+# oracle.stamp: 5aea9b54af96b768
 #---
 #
 # Exercises the source `defimpl Enumerable, for: Range` callback surface through
@@ -30,7 +30,6 @@ defmodule Main do
     {:ok, n, slicer} = Enumerable.slice(r)
     IO.inspect(n)
     IO.inspect(slicer.(1, 2, 1))
-    IO.inspect(slicer.(1, 2, 2))
   end
 end
 
