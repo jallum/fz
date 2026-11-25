@@ -247,6 +247,33 @@ fn a_leading_binary_is_appended_to_in_place() {
     });
 }
 
+/// An append the caller fills says where its right side goes, in the binary
+/// it returns, whether the left side stayed in its buffer, was copied inline,
+/// or was copied into a new buffer, so the caller needs no second look at the
+/// result to write the rest.
+#[test]
+fn an_unfilled_append_says_where_its_rest_goes() {
+    with_process(|process| {
+        let right = *b"tail";
+        let append_to = |process: &mut Process, leading: u64| {
+            let appended = append_unfilled(process, leading, right.len());
+            unsafe { std::slice::from_raw_parts_mut(appended.rest, right.len()) }.copy_from_slice(&right);
+            appended.binary
+        };
+        let head = binary_word(process, b"head", 32);
+        let inline = append_to(process, head);
+        assert_eq!(unsafe { Bin::of_binary(inline) }.bytes(), b"headtail");
+
+        let mut expected: Vec<u8> = (0..70u8).collect();
+        let mut accumulator = binary_word(process, &expected, expected.len() as u64 * 8);
+        for _ in 0..20 {
+            accumulator = append_to(process, accumulator);
+            expected.extend_from_slice(&right);
+            assert_eq!(unsafe { Bin::of_binary(accumulator) }.bytes(), expected);
+        }
+    });
+}
+
 /// A leading binary whose value is not whole bytes, and a rest that is not
 /// whole bytes, make a construction that is built whole.
 #[test]

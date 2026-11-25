@@ -19,6 +19,7 @@ use crate::fast_hash::HashMap;
 use cranelift_codegen::ir::{self, AbiParam, InstBuilder, Signature, condcodes::IntCC};
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::{FuncId, Linkage, Module};
+use fz_runtime::construction::Appended;
 
 /// The register lane a C scalar travels in. Integers and floats ride
 /// different banks, so a parameter's Rust type decides its bank.
@@ -47,17 +48,22 @@ impl<T> CLane for *const T {
     const LANE: ir::Type = ir::types::I64;
 }
 
-/// A result lane, or none at all for a helper that returns nothing.
+/// The result lanes of a helper: none for a helper that returns nothing, two
+/// for one that returns a pair of words.
 pub(crate) trait CRet {
-    const LANE: Option<ir::Type>;
+    const LANES: &'static [ir::Type];
 }
 
 impl CRet for () {
-    const LANE: Option<ir::Type> = None;
+    const LANES: &'static [ir::Type] = &[];
 }
 
 impl<T: CLane> CRet for T {
-    const LANE: Option<ir::Type> = Some(T::LANE);
+    const LANES: &'static [ir::Type] = &[T::LANE];
+}
+
+impl CRet for Appended {
+    const LANES: &'static [ir::Type] = &[ir::types::I64, ir::types::I64];
 }
 
 /// A runtime helper's Cranelift signature, read off its Rust function type.
@@ -73,9 +79,7 @@ macro_rules! impl_runtime_fn {
             fn signature<M: Module>(module: &mut M) -> Signature {
                 let mut sig = module.make_signature();
                 $(sig.params.push(AbiParam::new($param::LANE));)*
-                if let Some(ret) = R::LANE {
-                    sig.returns.push(AbiParam::new(ret));
-                }
+                sig.returns.extend(R::LANES.iter().map(|&lane| AbiParam::new(lane)));
                 sig
             }
         }

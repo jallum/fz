@@ -5,6 +5,7 @@
 
 use fz_runtime::any_value::{AnyValueRef, ValueKind};
 
+use super::quoted_expander::ExpansionContext;
 use super::source::{
     META_FROM_OPERATOR_KEY, QuotedAstNode, QuotedSourceBuilder, QuotedSourceCursor, QuotedSourceError,
     QuotedSourceMetadata, QuotedSourceRoot,
@@ -12,33 +13,16 @@ use super::source::{
 use crate::ast::{Var, VarContext};
 use crate::source::{SourceMap, Span};
 
+/// Rewrites one sugared form. A guard admits `|>` alone: the other rewrites
+/// build calls a guard may not make, and `in` has its own guard expansion.
 pub(crate) fn rewrite_source_sugar(
     owner: &QuotedSourceRoot,
     source: AnyValueRef,
     node: &QuotedAstNode,
     sources: &SourceMap,
+    context: ExpansionContext,
 ) -> Result<Option<AnyValueRef>, QuotedSourceError> {
-    rewrite_sugar(owner, source, node, sources, false)
-}
-
-/// The sugar a guard admits: `|>` alone. The other rewrites build calls a
-/// guard may not make, and `in` has its own guard expansion.
-pub(crate) fn rewrite_guard_source_sugar(
-    owner: &QuotedSourceRoot,
-    source: AnyValueRef,
-    node: &QuotedAstNode,
-    sources: &SourceMap,
-) -> Result<Option<AnyValueRef>, QuotedSourceError> {
-    rewrite_sugar(owner, source, node, sources, true)
-}
-
-fn rewrite_sugar(
-    owner: &QuotedSourceRoot,
-    source: AnyValueRef,
-    node: &QuotedAstNode,
-    sources: &SourceMap,
-    pipe_only: bool,
-) -> Result<Option<AnyValueRef>, QuotedSourceError> {
+    let pipe_only = context == ExpansionContext::Guard;
     if let Some(rewritten) = owner.source_sugar_rewrite(source) {
         return Ok(Some(rewritten));
     }
@@ -58,7 +42,7 @@ fn rewrite_sugar(
         "fn" => rewrite_lambda(owner, node, &node.tail.list_items()?, sources),
         "for" => rewrite_comprehension(owner, node, &node.tail.list_items()?, sources),
         "++" | "--" | "<>" | ".." | "//" | "in" | "not in" if arity == 2 => {
-            rewrite_operator(owner, node, head.as_str(), &node.tail.list_items()?, sources)
+            rewrite_operator(owner, node, head.as_str(), &node.tail.list_items()?, sources, context)
         }
         _ => Ok(None),
     }?;
@@ -147,6 +131,7 @@ fn rewrite_operator(
     op: &str,
     args: &[QuotedSourceCursor],
     sources: &SourceMap,
+    context: ExpansionContext,
 ) -> Result<Option<AnyValueRef>, QuotedSourceError> {
     let builder = owner.builder();
     let left = args[0].root();
@@ -160,6 +145,7 @@ fn rewrite_operator(
             &[left, right],
         )?,
         "--" => remote_call(&builder, "List.subtract", meta, &[left, right])?,
+        "<>" if context == ExpansionContext::Expression => binary_construction(owner, node, sources)?,
         "<>" => remote_call(
             &builder,
             "Kernel.<>",
@@ -186,6 +172,54 @@ fn rewrite_operator(
         _ => return Ok(None),
     };
     Ok(Some(rewritten))
+}
+
+/// `a <> b <> c` in an expression: the one construction `<<a::binary, b::binary,
+/// c::binary>>`, as Elixir expands it. A literal binary operand is a literal
+/// field. A pattern keeps the operator, which it reads as the bitstring pattern
+/// it stands for.
+fn binary_construction(
+    owner: &QuotedSourceRoot,
+    node: &QuotedAstNode,
+    sources: &SourceMap,
+) -> Result<AnyValueRef, QuotedSourceError> {
+    let builder = owner.builder();
+    let meta = node.meta.root();
+    let mut operands = Vec::new();
+    collect_concatenated(&node.tail.list_items()?, sources, &mut operands)?;
+    let fields = operands
+        .iter()
+        .map(|operand| match operand.root().tag() {
+            ValueKind::BITSTRING | ValueKind::BINVIEW => Ok(operand.root()),
+            _ => named_call(&builder, "::", meta, &[operand.root(), builder.atom("binary")]),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    named_call(&builder, "<<>>", meta, &fields)
+}
+
+/// The operands of a chain of `<>` written in the source, left to right: a
+/// nested `<>` on either side contributes its own operands.
+fn collect_concatenated(
+    operands: &[QuotedSourceCursor],
+    sources: &SourceMap,
+    into: &mut Vec<QuotedSourceCursor>,
+) -> Result<(), QuotedSourceError> {
+    for operand in operands {
+        match operand.ast_node(sources)? {
+            Some(inner) if is_written_concatenation(&inner)? => {
+                collect_concatenated(&inner.tail.list_items()?, sources, into)?;
+            }
+            _ => into.push(operand.clone()),
+        }
+    }
+    Ok(())
+}
+
+fn is_written_concatenation(node: &QuotedAstNode) -> Result<bool, QuotedSourceError> {
+    Ok(node.head.root().tag() == ValueKind::ATOM
+        && node.head.atom_name()? == "<>"
+        && is_list_like(&node.tail)
+        && node.tail.list_len()? == 2)
 }
 
 /// `left in right` and `left not in right` in a guard, expanded as Elixir's

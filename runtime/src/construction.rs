@@ -8,7 +8,6 @@
 //! starts with an unsized binary continues that binary: [`build`] appends the
 //! rest to it.
 
-use crate::any_value::binview_addr_from_tagged;
 use crate::bits::{Bin, BinView};
 use crate::bitstr::{BitSink, BitType, Endian, apply_endian_for_write, encode_utf8, encode_utf16, encode_utf32};
 use crate::ir_runtime::decode_bs_field_spec;
@@ -208,18 +207,29 @@ impl<'s, 'a> Append<'s, 'a> {
 /// copied once otherwise.
 fn extend(process: &mut Process, leading: u64, right_len: usize, fill: impl FnOnce(&mut [MaybeUninit<u8>])) -> u64 {
     let left = unsafe { Bin::of_binary(leading) }.bytes();
-    let left_view = binview_addr_from_tagged(leading).map(|addr| unsafe { BinView::from_raw(addr) });
+    let left_view = unsafe { BinView::of_binary(leading) };
     // SAFETY: `left` is the bytes of a live whole-byte binary, and a heap allocation does not move it.
     let value = unsafe { process.alloc_concatenation(left, left_view, right_len, fill) };
     value.ref_word().raw_word()
 }
 
 /// The binary `leading` followed by `right_len` bytes the caller writes, which
-/// is `extend` with nothing written. Compiled code appends a construction whose
-/// rest it can write itself this way, and writes the rest after the leading
-/// bytes.
-pub fn append_unfilled(process: &mut Process, leading: u64, right_len: usize) -> u64 {
-    extend(process, leading, right_len, |_| {})
+/// is `extend` with nothing written, and where those bytes start. Compiled code
+/// appends a construction whose rest it can write itself this way, and writes
+/// the rest at `rest`.
+pub fn append_unfilled(process: &mut Process, leading: u64, right_len: usize) -> Appended {
+    let mut rest = std::ptr::null_mut();
+    let binary = extend(process, leading, right_len, |dest| rest = dest.as_mut_ptr().cast());
+    Appended { binary, rest }
+}
+
+/// A binary an append made, and the first of the `right_len` bytes it left for
+/// the caller to write. Two words, so both come back in registers.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct Appended {
+    pub binary: u64,
+    pub rest: *mut u8,
 }
 
 /// A whole-byte binary of `byte_len` bytes whose payload the caller writes,

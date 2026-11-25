@@ -1,9 +1,9 @@
 #---
 # purpose: "A cycle of 33 functions entered from 33 call sites with 8 argument shapes compiles within the request budget and prints what Elixir prints"
 # root: main/0
-# assert.metric.pull.product.requested: 11016
+# assert.metric.pull.product.requested: 11003
 # oracle: self
-# oracle.stamp: dc2538f5a5fe5beb
+# oracle.stamp: 3e165c2933cd0e4d
 #---
 defmodule StepCycle do
   def step0(<<>>, sum, stack), do: {sum, stack}

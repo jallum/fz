@@ -31,14 +31,14 @@ else is a `lower/unsupported` error, never a silent fall back:
 
 ```fz
 extern "C"  defp libc::close(c_int) :: c_int                # a plain C symbol
-extern "fz" defp fz_binary_concat(binary, binary) :: binary # an fz runtime helper
+extern "fz" defp fz_binary_part(bitstring, integer, integer) :: bitstring # an fz runtime helper
 ```
 
 An extern declaration must use `defp`. It binds as an ordinary private function
 in its module's lexical namespace and is absent from `ModuleInterface`; a public
 API exposes a documented, specified source wrapper instead. For example,
-`Kernel.<>/2` is public source while its body alone can call the private
-`fz_binary_concat/2` declaration. The resulting quoted extern node and every
+`:erlang.binary_part/3` is public source while its body alone can call the private
+`fz_binary_part/3` declaration. The resulting quoted extern node and every
 downstream ABI/marshalling stage use one source spelling.
 
 The ABI decides two things at once.

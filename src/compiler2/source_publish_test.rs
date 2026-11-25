@@ -697,22 +697,18 @@ end
         .expanded_function_source(main)
         .expect("the demanded function should materialize staged expanded source");
     let tokens = quoted_tokens(expanded.declared_root().unwrap());
-    for sugar in ["|>", "&", "++", "--", "..", "//", "not in"] {
+    for sugar in ["|>", "&", "++", "--", "<>", "..", "//", "not in"] {
         assert!(
             !tokens.iter().any(|token| token == sugar),
             "expanded function source should not retain source-only sugar `{sugar}`; tokens={tokens:?}",
         );
     }
-    for rewritten in ["case", "List", "concat", "subtract", "Kernel", "<>", "Range", "new"] {
+    for rewritten in ["case", "List", "concat", "subtract", "<<>>", "Range", "new"] {
         assert!(
             tokens.iter().any(|token| token == rewritten),
             "expanded function source should contain rewritten form token `{rewritten}`; tokens={tokens:?}",
         );
     }
-    assert!(
-        !tokens.iter().any(|token| token == "fz_binary_concat"),
-        "expanded caller source should name the public Kernel.<> wrapper, not its private physical gateway; tokens={tokens:?}",
-    );
 }
 
 #[test]
@@ -756,11 +752,10 @@ fn definition_heads_are_not_source_sugar_but_their_bodies_are() {
     let tokens = quoted_tokens(expanded.declared_root().unwrap());
     assert_eq!(
         tokens.iter().filter(|token| token.as_str() == "<>").count(),
-        2,
-        "the definition head stays symbolic while its body becomes the remote Kernel.<> call; tokens={tokens:?}",
+        1,
+        "the definition head stays symbolic while its body becomes a binary construction; tokens={tokens:?}",
     );
-    assert!(tokens.iter().any(|token| token == "Kernel"));
-    assert!(!tokens.iter().any(|token| token == "fz_binary_concat"));
+    assert!(tokens.iter().any(|token| token == "<<>>"));
 }
 
 #[cfg(test)]

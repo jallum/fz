@@ -159,6 +159,10 @@ impl LoweredBitFieldSpec {
 pub struct LoweredBitField {
     pub value: ValueId,
     pub spec: LoweredBitFieldSpec,
+    /// The bytes of the field when its source is a binary literal, so every
+    /// reader of the construction knows them without finding where `value`
+    /// was bound.
+    pub literal: Option<Vec<u8>>,
 }
 
 pub(crate) fn step_defined_values(step: &LoweredStep) -> impl Iterator<Item = ValueId> {

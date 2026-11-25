@@ -25,13 +25,11 @@
 use crate::any_value::debug::{Limits, render_value, render_with_limits};
 use crate::any_value::{
     AnyValue, AnyValueRef, FALSE_ATOM_ID, ListCons, NIL_ATOM_ID, SlotLayout, Stored, ValueKind,
-    binview_addr_from_tagged, closure_addr_from_tagged, closure_arity, closure_capture_ref_word,
-    closure_captured_count, closure_denotation, closure_fn_ptr, closure_halt_kind, map_addr_from_tagged, object_size,
-    struct_is_named, struct_is_shared, struct_schema_id,
+    closure_addr_from_tagged, closure_arity, closure_capture_ref_word, closure_captured_count, closure_denotation,
+    closure_fn_ptr, closure_halt_kind, map_addr_from_tagged, object_size, struct_is_named, struct_is_shared,
+    struct_schema_id,
 };
-use crate::bits::{
-    Bin, BinView, SharedBin, SharedBinHandle, alloc_buffer_view, is_bitstring_like, referenced_byte_len,
-};
+use crate::bits::{Bin, SharedBin, SharedBinHandle, alloc_buffer_view, is_bitstring_like, referenced_byte_len};
 use crate::bitstr::{BitReader, BitType, Endian, apply_endian_for_read, sign_extend};
 use crate::construction::{self, FzBsField};
 use crate::exec_ctx::ExecCtx;
@@ -667,11 +665,11 @@ pub extern "C" fn fz_bs_alloc_unfilled(process: *mut Process, byte_len: u64) -> 
     construction::alloc_unfilled(unsafe { &mut *process }, byte_len as usize)
 }
 
-/// The binary `leading` followed by `right_len` bytes the caller writes, on the
-/// path of an append the compiled code fills itself. See
+/// The binary `leading` followed by `right_len` bytes the caller writes, and
+/// where they go, on the path of an append the compiled code fills itself. See
 /// [`crate::construction::append_unfilled`].
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_bs_append_unfilled(process: *mut Process, leading: u64, right_len: u64) -> u64 {
+pub extern "C" fn fz_bs_append_unfilled(process: *mut Process, leading: u64, right_len: u64) -> construction::Appended {
     construction::append_unfilled(unsafe { &mut *process }, leading, right_len as usize)
 }
 
@@ -1329,19 +1327,6 @@ pub extern "C" fn fz_inspect_with(process: *mut Process, word: u64, kind: u64, o
     let value = Stored { word, kind }.value("fz_inspect_with value");
     let limits = Limits::from_options(process, any_value_from_ref_word(options_ref, "fz_inspect_with options"));
     alloc_text(process, &render_with_limits(process, value, limits))
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_binary_concat(process: *mut Process, left_ref: u64, right_ref: u64) -> u64 {
-    let left = unsafe { Bin::of_binary(left_ref) }.bytes();
-    let right = unsafe { Bin::of_binary(right_ref) }.bytes();
-    let left_view = binview_addr_from_tagged(left_ref).map(|addr| unsafe { BinView::from_raw(addr) });
-    let value = unsafe {
-        (&mut *process).alloc_concatenation(left, left_view, right.len(), |dest| {
-            dest.write_copy_of_slice(right);
-        })
-    };
-    value.ref_word().raw_word()
 }
 
 /// `:erlang.binary_part/3` once the part is known to lie inside the binary:

@@ -411,43 +411,43 @@ fn backend_inventory_width_stays_pinned_on_the_target_fixtures() {
     for (number, executables) in [
         (
             568, // enum_count_member_reduce
-            39,
+            37,
         ),
         (
             567, // fz_f98_range_map_converges
-            48,
+            46,
         ),
         (
             569, // enum_map_family
-            112,
+            110,
         ),
         (
             562, // mailbox_closure_each
-            44,
+            42,
         ),
         (
             563, // mailbox_closure_reduce
-            53,
+            51,
         ),
         (
             570, // actor_ring
             // The ring's `got == 5` compares a mailbox value, so all three
             // reachable `==` clauses emit: `fz_op_eq_ii`, `fz_op_eq_fi` and
             // the `any`/`any` `fz_op_eq`.
-            43,
+            40,
         ),
         (
             571, // enum_predicate_search
             // Exact caller rows retain four specializations hidden by blended evidence.
-            190,
-        ),
-        (
-            420, // enum_take_drop_split, over both a list and a range
             188,
         ),
         (
+            420, // enum_take_drop_split, over both a list and a range
+            186,
+        ),
+        (
             1961, // one activation reached through two closure surfaces
-            31,
+            29,
         ),
     ] {
         let settled = Drive::fixture(number).dump_stage(DumpStage::Backend);

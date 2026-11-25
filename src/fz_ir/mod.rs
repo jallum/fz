@@ -109,6 +109,9 @@ impl BitSizeIr {
 #[derive(Debug, Clone, PartialEq)]
 pub struct BitFieldIr {
     pub value: Var,
+    /// The bytes of the field when its source is a binary literal; `value`
+    /// holds the same binary.
+    pub literal: Option<Vec<u8>>,
     pub ty: BitType,
     pub size: Option<BitSizeIr>,
     pub endian: Endian,

@@ -688,9 +688,15 @@ fn stamped_head_shape(text: &str) -> String {
     let head_node = def_args[0].ast_node(&sources).expect("head").expect("head node");
     let operator = head_node.tail.list_items().expect("head args").remove(0);
     let operator_node = operator.ast_node(&sources).expect("operator").expect("operator node");
-    let rewritten = rewrite_source_sugar(&root, operator.root(), &operator_node, &sources)
-        .expect("rewrite")
-        .expect("the operator is source sugar");
+    let rewritten = rewrite_source_sugar(
+        &root,
+        operator.root(),
+        &operator_node,
+        &sources,
+        super::quoted_expander::ExpansionContext::Match,
+    )
+    .expect("rewrite")
+    .expect("the operator is source sugar");
     let builder = root.builder();
     let head = builder
         .tuple(&[

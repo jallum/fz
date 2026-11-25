@@ -24,6 +24,7 @@ use cranelift_codegen::ir::{self, BlockArg, InstBuilder, MemFlagsData, condcodes
 use cranelift_frontend::FunctionBuilder;
 use fz_runtime::any_value::{BITSTRING_BYTES_OFFSET, ValueKind};
 use fz_runtime::bits::BINVIEW_BYTES_PTR_OFFSET;
+use fz_runtime::bits::view_word_bit;
 use fz_runtime::heap::SHARED_BIN_THRESHOLD_BYTES;
 use fz_runtime::ir_runtime::fz_bs_slice_ref;
 
@@ -130,10 +131,7 @@ fn whole_bytes_from_a_boundary(
 pub(super) fn bytes_address(b: &mut FunctionBuilder<'_>, source: ir::Value) -> ir::Value {
     const _: () = assert!(BITSTRING_BYTES_OFFSET == BINVIEW_BYTES_PTR_OFFSET);
     let object = address_field(b, source);
-    let kind = kind_field(b, source);
-    let is_view = b
-        .ins()
-        .icmp_imm_s(IntCC::Equal, kind, i64::from(ValueKind::BINVIEW.tag()));
+    let is_view = b.ins().band_imm_u(source, view_word_bit() as i64);
     let viewed = b.ins().load(
         types::I64,
         MemFlagsData::trusted(),
