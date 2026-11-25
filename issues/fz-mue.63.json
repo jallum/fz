@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Elixir Parity",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-25T01:17:17Z",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "binary_part/3 is usable in guards, as in Elixir",
   "type": "feature",
-  "updated_at": "2026-11-25T01:17:17Z"
+  "updated_at": "2026-11-25T01:17:25Z"
 }
