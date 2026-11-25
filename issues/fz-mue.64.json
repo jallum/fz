@@ -9,9 +9,15 @@
   "id": "fz-mue.64",
   "labels": [],
   "parent": "fz-mue",
+  "comments": [
+    {
+      "text": "More evidence (Elixir Parity, 2026-11-25): calling a closure with the wrong number of arguments crashes at run time with exit 138, where Elixir raises BadArityError. Example: a closure literal of the wrong arity passed to a spec'd 3-arity callback. Repro: fz-otp-json/probes/mue73/p1.fz. The runtime raise site in this ticket's scope must cover this case.",
+      "timestamp": "2026-11-25T12:22:04Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "BadFunctionError, BadArityError and SystemLimitError exist, and the runtime raises them as in Elixir",
   "type": "bug",
-  "updated_at": "2026-11-25T04:14:53Z"
+  "updated_at": "2026-11-25T12:22:04Z"
 }
