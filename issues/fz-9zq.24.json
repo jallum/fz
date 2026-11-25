@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-25T02:45:08Z",
+  "description": "User-approved via the fz-9zq.21 page Round 3 (relayed by fz-engine, 2026-11-24).\n\ndef h(0, acc), do: acc; def h(n, acc), do: (fn a -\u003e h(n - 1, {1, a}) end).(acc) hangs under every order: a new ActivationKey per rung, so the fold has no standing row and is never asked. Expected mu t. :z | {int, t}. Minimal: /private/tmp/claude-501/-Users-j5n-Workspace-fz/b3126377-4731-4b0b-825a-a57f770f6d53/scratchpad/esc_mu/B/q/d1/m28.fz. Neighbour of fz-9zq.8, but the ladder is in the parameter, not the captures. Placed at the end of fz-9zq.",
+  "id": "fz-9zq.24",
+  "labels": [],
+  "parent": "fz-9zq",
+  "priority": 2,
+  "status": "open",
+  "title": "A closure that feeds a grown accumulator back to its function compiles",
+  "type": "bug",
+  "updated_at": "2026-11-25T02:45:08Z"
+}
