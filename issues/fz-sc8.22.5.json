@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-11-25T03:51:32Z",
+  "description": "Elixir raises ArgumentError for a runtime quote(do: unquote([1 | 2])), because an improper list is not valid quoted code. fz returns [1 | 2] on interp, run and build. The macro-expansion path already refuses it with macro/invalid-quoted-expr (src/compiler2/quoted_expander.rs:1268 and :2054); only the runtime quote path lets it through. Probes: Bugs and Cleanup scratchpad s22/r3/p/q*.fz. Proposed by Bugs and Cleanup; filed with user approval 2026-11-24.",
+  "id": "fz-sc8.22.5",
+  "labels": [],
+  "parent": "fz-sc8.22",
+  "priority": 3,
+  "status": "open",
+  "title": "A runtime quote(do: unquote([1 | 2])) raises ArgumentError, as in Elixir",
+  "type": "bug",
+  "updated_at": "2026-11-25T03:51:32Z"
+}
