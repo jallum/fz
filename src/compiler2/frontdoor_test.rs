@@ -2270,3 +2270,15 @@ fn compiler2_frontdoor_alias_import_and_require_are_expressions_in_a_body() {
         "the three directives read in a body as the calls they are at module level",
     );
 }
+
+#[test]
+fn compiler2_frontdoor_reads_the_options_alias_import_and_require_take() {
+    assert_eq!(
+        only_shape(
+            "directive_options.fz",
+            "probe fn ->\n  import Integer, only: :macros, warn: false\n  require Logger, as: L\n  alias Foo, warn: false\nend\n"
+        ),
+        "probe(fn(->([], __block__(import(__aliases__(:Integer), [{:only, :macros}, {:warn, :false}]), require(__aliases__(:Logger), [{:as, __aliases__(:L)}]), alias(__aliases__(:Foo), [{:warn, :false}])))))",
+        "each option is a keyword entry of the one options list",
+    );
+}

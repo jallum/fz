@@ -336,31 +336,53 @@ impl<'t> FrontDoorParser<'t> {
         Ok(ParsedExpr::plain(root, start.merge(self.prev_span())))
     }
 
+    /// `alias Foo.Bar`, `alias Foo.Bar, as: B` and `alias Foo.{Bar, Baz.Qux}`,
+    /// each with the options `alias` takes.
     fn parse_alias(&mut self) -> Result<AnyValueRef, FrontDoorError> {
         let start = self.cur_span();
         self.expect(&Tok::Alias, "`alias`")?;
-        let path = self.parse_upper_path("alias")?;
+        let path = self.parse_upper_path_before_group("alias")?;
         let meta = self.meta(start)?;
-        let alias = self.builder.alias(&meta, &segments_ref(&path))?;
-        let mut args = vec![alias];
-        if self.eat(&Tok::Comma) {
-            let kw = match self.bump() {
-                Tok::KwKey(key) if key == "as" => key,
-                other => return Err(self.error(format!("expected `as:` after alias comma, got {:?}", other))),
-            };
-            let alias_name = match self.bump() {
-                Tok::Upper(name) => name,
-                other => {
-                    return Err(self.error(format!(
-                        "expected uppercase alias nickname after `{}:`, got {:?}",
-                        kw, other
-                    )));
-                }
-            };
-            let alias_value = self.builder.alias(&meta, &[alias_name.as_str()])?;
-            args.push(self.builder.list(&[self.builder.keyword("as", alias_value)?])?);
-        }
+        let target = if self.peek_is(&Tok::Dot) {
+            self.parse_alias_group(&path, &meta)?
+        } else {
+            self.builder.alias(&meta, &segments_ref(&path))?
+        };
+        let mut args = vec![target];
+        args.extend(self.parse_directive_options("alias", &["as", "warn"], &meta)?);
         self.builder.call("alias", &meta, &args).map_err(FrontDoorError::from)
+    }
+
+    /// The `.{Bar, Baz.Qux}` after `Foo`: Elixir's call of `Foo.{}` on the
+    /// aliases the group names.
+    fn parse_alias_group(
+        &mut self,
+        prefix: &[String],
+        meta: &QuotedSourceMetadata,
+    ) -> Result<AnyValueRef, FrontDoorError> {
+        self.expect(&Tok::Dot, "`.`")?;
+        self.expect(&Tok::LBrace, "`{`")?;
+        let mut members = Vec::new();
+        self.skip_newlines();
+        while !self.peek_is(&Tok::RBrace) {
+            let member = self.parse_upper_path("alias group")?;
+            members.push(self.builder.alias(meta, &segments_ref(&member))?);
+            self.skip_newlines();
+            if !self.eat(&Tok::Comma) {
+                break;
+            }
+            self.skip_newlines();
+        }
+        self.expect(&Tok::RBrace, "`}`")?;
+        let prefix = self.builder.alias(meta, &segments_ref(prefix))?;
+        let callee = self.builder.ast_node(
+            self.builder.atom("."),
+            meta,
+            self.builder.list(&[prefix, self.builder.atom("{}")])?,
+        )?;
+        self.builder
+            .call_callee(callee, meta, &members)
+            .map_err(FrontDoorError::from)
     }
 
     fn parse_import_like(&mut self, head: &str, head_tok: Tok) -> Result<AnyValueRef, FrontDoorError> {
@@ -370,17 +392,83 @@ impl<'t> FrontDoorParser<'t> {
         let meta = self.meta(start)?;
         let alias = self.builder.alias(&meta, &segments_ref(&path))?;
         let mut args = vec![alias];
-        if self.eat(&Tok::Comma) {
-            let kind = match self.bump() {
-                Tok::KwKey(kind) if kind == "only" || kind == "except" => kind,
+        let allowed: &[&str] = if head == "import" {
+            &["only", "except", "warn"]
+        } else {
+            &["as", "only", "except", "warn"]
+        };
+        args.extend(self.parse_directive_options(head, allowed, &meta)?);
+        self.builder.call(head, &meta, &args).map_err(FrontDoorError::from)
+    }
+
+    /// The `, key: value` options of an `alias`, `import` or `require`, as the
+    /// one keyword-list argument Elixir quotes them as, or no argument when
+    /// none are written. `allowed` names the keys the directive takes.
+    fn parse_directive_options(
+        &mut self,
+        head: &str,
+        allowed: &[&str],
+        meta: &QuotedSourceMetadata,
+    ) -> Result<Vec<AnyValueRef>, FrontDoorError> {
+        let mut entries = Vec::new();
+        while self.eat(&Tok::Comma) {
+            self.skip_newlines();
+            let key = match self.bump() {
+                Tok::KwKey(key) if allowed.contains(&key.as_str()) => key.clone(),
                 other => {
-                    return Err(self.error(format!("expected `only:` or `except:` after `{head}`, got {:?}", other)));
+                    return Err(self.error(format!(
+                        "expected one of {} after `{head}` comma, got {:?}",
+                        allowed
+                            .iter()
+                            .map(|key| format!("`{key}:`"))
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        other
+                    )));
                 }
             };
-            let filters = self.parse_arity_kw_list()?;
-            args.push(self.builder.list(&[self.builder.keyword(kind, filters)?])?);
+            let value = match key.as_str() {
+                "only" | "except" => self.parse_import_filter()?,
+                "warn" => self.parse_warn_value()?,
+                _ => self.parse_alias_nickname(&key, meta)?,
+            };
+            entries.push(self.builder.keyword(&key, value)?);
         }
-        self.builder.call(head, &meta, &args).map_err(FrontDoorError::from)
+        if entries.is_empty() {
+            return Ok(Vec::new());
+        }
+        Ok(vec![self.builder.list(&entries)?])
+    }
+
+    /// `only:` and `except:` take a list of `name: arity`, or `only:` the kind
+    /// of callable: `:macros`, `:functions` or `:sigils`.
+    fn parse_import_filter(&mut self) -> Result<AnyValueRef, FrontDoorError> {
+        if let Tok::Atom(kind) = self.peek().clone() {
+            self.advance();
+            if matches!(kind.as_str(), "macros" | "functions" | "sigils") {
+                return Ok(self.builder.atom(&kind));
+            }
+            return self.err(format!("expected `:macros`, `:functions` or `:sigils`, got `:{kind}`"));
+        }
+        self.parse_arity_kw_list()
+    }
+
+    fn parse_warn_value(&mut self) -> Result<AnyValueRef, FrontDoorError> {
+        match self.bump() {
+            Tok::True => Ok(self.builder.bool(true)),
+            Tok::False => Ok(self.builder.bool(false)),
+            other => self.err(format!("expected `true` or `false` after `warn:`, got {:?}", other)),
+        }
+    }
+
+    fn parse_alias_nickname(&mut self, key: &str, meta: &QuotedSourceMetadata) -> Result<AnyValueRef, FrontDoorError> {
+        match self.bump() {
+            Tok::Upper(name) => self.builder.alias(meta, &[name.as_str()]).map_err(FrontDoorError::from),
+            other => self.err(format!(
+                "expected uppercase alias nickname after `{key}:`, got {:?}",
+                other
+            )),
+        }
     }
 
     fn parse_module(&mut self, module_path: &[String]) -> Result<AnyValueRef, FrontDoorError> {
@@ -2175,7 +2263,8 @@ impl<'t> FrontDoorParser<'t> {
         self.builder.list(&rendered).map_err(FrontDoorError::from)
     }
 
-    fn parse_upper_path(&mut self, context: &str) -> Result<Vec<String>, FrontDoorError> {
+    /// An alias path that stops before a `.{` group.
+    fn parse_upper_path_before_group(&mut self, context: &str) -> Result<Vec<String>, FrontDoorError> {
         let mut path = Vec::new();
         match self.bump() {
             Tok::Upper(name) => path.push(name.clone()),
@@ -2183,7 +2272,7 @@ impl<'t> FrontDoorParser<'t> {
                 return Err(self.error(format!("expected uppercase {context} path, got {:?}", other)));
             }
         }
-        while self.peek_is(&Tok::Dot) {
+        while self.peek_is(&Tok::Dot) && !self.peek_is_at(1, &Tok::LBrace) {
             self.advance();
             self.skip_newlines();
             match self.bump() {
@@ -2195,6 +2284,15 @@ impl<'t> FrontDoorParser<'t> {
                     )));
                 }
             }
+        }
+        Ok(path)
+    }
+
+    fn parse_upper_path(&mut self, context: &str) -> Result<Vec<String>, FrontDoorError> {
+        let path = self.parse_upper_path_before_group(context)?;
+        if self.peek_is(&Tok::Dot) {
+            self.advance();
+            return self.err(format!("expected uppercase segment after `.` in {context} path"));
         }
         Ok(path)
     }

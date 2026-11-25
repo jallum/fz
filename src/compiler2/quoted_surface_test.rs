@@ -281,8 +281,9 @@ fn compiler2_quoted_surface_reads_alias_as_keyword_value() {
 
     match &surface.forms[0] {
         ScopeForm::Alias(alias) => {
-            assert_eq!(alias.path, vec!["Utf8"]);
-            assert_eq!(alias.as_name, "U");
+            assert_eq!(alias.bindings.len(), 1);
+            assert_eq!(alias.bindings[0].path, vec!["Utf8"]);
+            assert_eq!(alias.bindings[0].as_name, "U");
         }
         other => panic!("expected alias form, got {other:?}"),
     }
@@ -748,4 +749,40 @@ fn a_fragment_stands_in_its_place_between_the_clauses_around_it() {
         vec![None, Some(Some(("t".to_string(), 1, false))), None],
         "the clauses written before and after a fragment are separate forms, as they are around any other item"
     );
+}
+
+#[test]
+fn compiler2_quoted_surface_reads_an_alias_group_and_the_import_options() {
+    let tel = ConfiguredTelemetry::new();
+    let source = "alias Foo.{Bar, Baz.Qux}\nimport Integer, only: :macros\nrequire Logger, as: L\n";
+    let mut code = CodeMap::new();
+    let source_owner = code.define(Some("directive_forms.fz".to_string()), source.to_string());
+    let root = parse_code(&code, source_owner, &tel);
+
+    let surface = read_scope_surface(&root, &code.source_map().borrow()).expect("surface read");
+
+    let [
+        ScopeForm::Alias(alias),
+        ScopeForm::Import(import),
+        ScopeForm::Require(require),
+    ] = surface.forms.as_slice()
+    else {
+        panic!("expected alias, import and require forms, got {:?}", surface.forms);
+    };
+    let bound: Vec<_> = alias
+        .bindings
+        .iter()
+        .map(|binding| (binding.path.join("."), binding.as_name.as_str()))
+        .collect();
+    assert_eq!(
+        bound,
+        vec![("Foo.Bar".to_string(), "Bar"), ("Foo.Baz.Qux".to_string(), "Qux")]
+    );
+    assert!(matches!(
+        import.only,
+        Some(super::quoted_surface::ImportSelection::Kind(
+            super::quoted_surface::CallableKind::Macros
+        ))
+    ));
+    assert_eq!(require.as_name.as_deref(), Some("L"));
 }

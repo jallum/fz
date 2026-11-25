@@ -12,6 +12,9 @@ pub struct ScopeSnapshot {
     module: ModuleId,
     namespace: Namespace,
     function: Option<FunctionId>,
+    /// Set inside a function body: the namespace the definition captured,
+    /// which the body's own `alias`, `import` and `require` move forward from.
+    body_origin: Option<Namespace>,
 }
 
 impl ScopeSnapshot {
@@ -20,6 +23,7 @@ impl ScopeSnapshot {
             module,
             namespace,
             function: None,
+            body_origin: None,
         }
     }
 
@@ -28,6 +32,7 @@ impl ScopeSnapshot {
             module,
             namespace,
             function: Some(function),
+            body_origin: None,
         }
     }
 
@@ -52,7 +57,32 @@ impl ScopeSnapshot {
             module,
             namespace: self.namespace,
             function: None,
+            body_origin: None,
         }
+    }
+
+    /// This scope as the start of a function body: what the body binds stands
+    /// apart from what the definition captured.
+    pub fn in_body(self) -> Self {
+        Self {
+            body_origin: self.body_origin.or(Some(self.namespace)),
+            ..self
+        }
+    }
+
+    pub fn is_body(self) -> bool {
+        self.body_origin.is_some()
+    }
+
+    /// The namespace the definition captured, when this scope is a body's.
+    pub fn body_origin(self) -> Option<Namespace> {
+        self.body_origin
+    }
+
+    /// Whether the body's own `alias`, `import` or `require` has moved this
+    /// scope past the definition's.
+    pub fn is_rebound(self) -> bool {
+        self.body_origin.is_some_and(|origin| origin != self.namespace)
     }
 
     pub fn in_function(self, function: FunctionId) -> Self {

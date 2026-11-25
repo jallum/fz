@@ -3,7 +3,7 @@
 //! Source jobs schedule work. This module owns the source-form rules that turn
 //! quoted surface readers into namespace mutations and compiler2 fact outputs.
 
-use crate::fast_hash::{HashMap, HashSet};
+use crate::fast_hash::HashMap;
 use std::collections::hash_map::Entry;
 use std::rc::Rc;
 
@@ -27,9 +27,9 @@ use super::module_interface::{InterfaceCallableKind, InterfaceRequester, ModuleI
 use super::namespace::{Namespace, NamespaceSymbol};
 use super::protocol::ProtocolCallbackImpl;
 use super::quoted_expander::{
-    ExpandedScopeFragment, ExpandedValue, ExpansionContext, QuotedExpansionCtx, emit_internal_surface_error,
-    emit_surface_read_error, expand_item_macro_fragment, item_macro_expanded_to_a_non_definition,
-    item_macro_not_defmacro, read_compiler_fragment_root, read_expanded_items,
+    DirectedScope, ExpandedScopeFragment, ExpandedValue, ExpansionContext, QuotedExpansionCtx, ScopeHandoff,
+    emit_internal_surface_error, emit_surface_read_error, expand_item_macro_fragment,
+    item_macro_expanded_to_a_non_definition, item_macro_not_defmacro, read_compiler_fragment_root, read_expanded_items,
 };
 use super::quoted_surface::{
     AttributeForm, CompilerService, CompilerServiceForm, FragmentForm, FunctionForm, MacroCallForm, OverridableForm,
@@ -39,6 +39,7 @@ use super::quoted_surface::{
     read_struct_fields, reserved_source_definition,
 };
 use super::scope::ScopeSnapshot;
+use super::scope_directives::{ScopeDirective, advance_scope};
 use super::source::{QuotedSourceError, QuotedSourceHeap, QuotedSourceMetadata, QuotedSourceRoot};
 use super::structdef::StructDef;
 use super::type_expr::{NominalKind, TypeDefBody, TypeExpr, parse_type_def_body, parse_type_expr};
@@ -234,6 +235,8 @@ struct ScopeSession<'world, 'tel, T: crate::telemetry::Telemetry> {
     /// Where the expansion in progress stands; see
     /// `QuotedExpansionCtx::expansion_context`.
     expansion_context: ExpansionContext,
+    /// See `QuotedExpansionCtx::scope_handoff`.
+    scope_handoff: ScopeHandoff,
 }
 
 impl<'world, 'tel, T: crate::telemetry::Telemetry> QuotedExpansionCtx for ScopeSession<'world, 'tel, T> {
@@ -278,8 +281,31 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> QuotedExpansionCtx for ScopeS
         }
     }
 
+    fn apply_scope_directive(
+        &mut self,
+        scope: ScopeSnapshot,
+        directive: &ScopeForm,
+    ) -> Result<DirectedScope, FatalError> {
+        advance_scope(
+            ScopeDirective {
+                world: &mut *self.world,
+                telemetry: self.telemetry,
+                current_module: self.current_module,
+                source_owner: self.source_owner,
+                reads: &mut self.reads,
+                namespace: scope.namespace(),
+            },
+            scope,
+            directive,
+        )
+    }
+
     fn expansion_context(&mut self) -> &mut ExpansionContext {
         &mut self.expansion_context
+    }
+
+    fn scope_handoff(&mut self) -> &mut ScopeHandoff {
+        &mut self.scope_handoff
     }
 
     fn next_expansion_number(&mut self) -> i64 {
@@ -613,6 +639,7 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
             statements: Vec::new(),
             expansions_visited: 0,
             expansion_context: ExpansionContext::Expression,
+            scope_handoff: ScopeHandoff::default(),
         }
     }
 
@@ -1201,25 +1228,27 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
         self.apply_ordered_forms(&surface.forms, context)
     }
 
+    fn apply_directive(&mut self, form: &ScopeForm) -> Result<Option<JobEffects>, FatalError> {
+        let mut directive = ScopeDirective {
+            world: &mut *self.world,
+            telemetry: self.telemetry,
+            current_module: self.current_module,
+            source_owner: self.source_owner,
+            reads: &mut self.reads,
+            namespace: self.namespace,
+        };
+        let blocked = directive.apply(form);
+        self.namespace = directive.namespace;
+        blocked
+    }
+
     fn apply_scope_form(
         &mut self,
         form: &ScopeForm,
         context: &FragmentPublicationContext,
     ) -> Result<Option<JobEffects>, FatalError> {
         match form {
-            ScopeForm::Alias(alias) => {
-                let module_id = self
-                    .world
-                    .reference_module(ModuleName::from_segments(alias.path.clone()));
-                self.namespace = self.world.bind_namespace(
-                    self.namespace,
-                    alias.as_name.clone(),
-                    NamespaceSymbol::Module(module_id),
-                );
-                Ok(None)
-            }
-            ScopeForm::Import(import) => self.apply_import(import),
-            ScopeForm::Require(import) => self.apply_require(import),
+            ScopeForm::Alias(_) | ScopeForm::Import(_) | ScopeForm::Require(_) => self.apply_directive(form),
             ScopeForm::CompilerService(service) => self.apply_compiler_service(service, context.origin),
             ScopeForm::Overridable(overridable) => {
                 self.mark_overridable(overridable)?;
@@ -1791,267 +1820,6 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
         effects
     }
 
-    fn apply_require(&mut self, import: &super::quoted_surface::ImportForm) -> Result<Option<JobEffects>, FatalError> {
-        let required_module = self.resolve_import_module(import);
-        self.refuse_module_defined_in_this_scope(import, required_module)?;
-        self.world
-            .note_module_reference_expectation(required_module, self.interface_requester(import.span));
-        self.bind_required_module_path(import, required_module);
-        self.namespace = self.world.bind_required_module(self.namespace, required_module);
-        let selected = if self.world.module_interface_revision(required_module).is_none() {
-            if let Some(only) = import.only.as_deref() {
-                only.iter()
-                    .map(|(name, arity)| {
-                        let function = self.world.reference_module_interface_callable(
-                            required_module,
-                            name.clone(),
-                            *arity,
-                            InterfaceCallableKind::Macro,
-                            Some(self.interface_requester(import.span)),
-                        );
-                        ModuleInterfaceCallable {
-                            function,
-                            reference: self.world.function_ref(function).clone(),
-                            kind: InterfaceCallableKind::Macro,
-                            variadic: false,
-                        }
-                    })
-                    .collect()
-            } else {
-                return Ok(Some(self.wait_for_module_interface(required_module)));
-            }
-        } else {
-            let fact = FactKey::ModuleInterface(required_module);
-            self.reads.push(fact);
-            let interface = self.world.module_interface(required_module);
-            Self::select_required_macro_exports(self.telemetry, import, interface.callables())?
-        };
-        self.record_required_remote_macros(&selected);
-        Ok(None)
-    }
-
-    fn bind_required_module_path(&mut self, import: &super::quoted_surface::ImportForm, module: ModuleId) {
-        let Some((first, rest)) = import.path.split_first() else {
-            return;
-        };
-        let bound_module = if rest.is_empty() {
-            module
-        } else {
-            match self.world.lookup_namespace(self.namespace, first) {
-                Some(NamespaceSymbol::Module(prefix)) => prefix,
-                _ => self
-                    .world
-                    .reference_module(ModuleName::from_segments(vec![first.clone()])),
-            }
-        };
-        self.namespace =
-            self.world
-                .bind_namespace(self.namespace, first.clone(), NamespaceSymbol::Module(bound_module));
-    }
-
-    fn select_required_macro_exports(
-        telemetry: &T,
-        import: &super::quoted_surface::ImportForm,
-        callables: &[ModuleInterfaceCallable],
-    ) -> Result<Vec<ModuleInterfaceCallable>, FatalError> {
-        if let Some(only) = import.only.as_deref() {
-            let mut selected = Vec::with_capacity(only.len());
-            for (name, arity) in only {
-                let Some(callable) = find_callable(callables, name, *arity) else {
-                    return Err(emit_job_diagnostic(
-                        telemetry,
-                        Diagnostic::error(
-                            codes::RESOLVE_UNKNOWN_IMPORT,
-                            format!(
-                                "module `{}` does not export macro `{}/{}`",
-                                import.path.join("."),
-                                name,
-                                arity
-                            ),
-                            import.span,
-                        ),
-                    ));
-                };
-                if !matches!(callable.kind, InterfaceCallableKind::Macro) {
-                    return Err(emit_job_diagnostic(
-                        telemetry,
-                        Diagnostic::error(
-                            codes::RESOLVE_UNKNOWN_IMPORT,
-                            format!(
-                                "module `{}` does not export macro `{}/{}`",
-                                import.path.join("."),
-                                name,
-                                arity
-                            ),
-                            import.span,
-                        ),
-                    ));
-                }
-                selected.push(callable.clone());
-            }
-            return Ok(selected);
-        }
-
-        let mut denied = HashSet::default();
-        for (name, arity) in import.except.as_deref().unwrap_or(&[]) {
-            let Some(callable) = find_callable(callables, name, *arity) else {
-                return Err(emit_job_diagnostic(
-                    telemetry,
-                    Diagnostic::error(
-                        codes::RESOLVE_UNKNOWN_IMPORT,
-                        format!(
-                            "module `{}` does not export macro `{}/{}`",
-                            import.path.join("."),
-                            name,
-                            arity
-                        ),
-                        import.span,
-                    ),
-                ));
-            };
-            if !matches!(callable.kind, InterfaceCallableKind::Macro) {
-                return Err(emit_job_diagnostic(
-                    telemetry,
-                    Diagnostic::error(
-                        codes::RESOLVE_UNKNOWN_IMPORT,
-                        format!(
-                            "module `{}` does not export macro `{}/{}`",
-                            import.path.join("."),
-                            name,
-                            arity
-                        ),
-                        import.span,
-                    ),
-                ));
-            }
-            denied.insert((name.as_str(), *arity));
-        }
-        Ok(callables
-            .iter()
-            .filter(|callable| matches!(callable.kind, InterfaceCallableKind::Macro))
-            .filter(|callable| !denied.contains(&(callable.reference.name(), callable.reference.arity)))
-            .cloned()
-            .collect())
-    }
-
-    fn apply_import(&mut self, import: &super::quoted_surface::ImportForm) -> Result<Option<JobEffects>, FatalError> {
-        let imported_module = self.resolve_import_module(import);
-        self.refuse_module_defined_in_this_scope(import, imported_module)?;
-        self.world
-            .note_module_reference_expectation(imported_module, self.interface_requester(import.span));
-        if self.world.module_interface_revision(imported_module).is_some() {
-            self.reads.push(FactKey::ModuleInterface(imported_module));
-            self.bind_interface_imports(import, imported_module)?;
-            return Ok(None);
-        }
-        let Some(only) = import.only.as_deref() else {
-            return Ok(Some(self.wait_for_module_interface(imported_module)));
-        };
-        let selected: Vec<ModuleInterfaceCallable> = only
-            .iter()
-            .map(|(name, arity)| {
-                let function = self.world.reference_module_interface_callable(
-                    imported_module,
-                    name.clone(),
-                    *arity,
-                    InterfaceCallableKind::Callable,
-                    Some(self.interface_requester(import.span)),
-                );
-                ModuleInterfaceCallable {
-                    function,
-                    reference: self.world.function_ref(function).clone(),
-                    kind: InterfaceCallableKind::Callable,
-                    variadic: false,
-                }
-            })
-            .collect();
-        for export in &selected {
-            self.namespace = bind_callable(self.world, self.namespace, export);
-        }
-        Ok(None)
-    }
-
-    /// Binds the callables an `import` selects from `module`'s published
-    /// interface: the `only` list in its order, or every callable `except`
-    /// does not deny.
-    fn bind_interface_imports(
-        &mut self,
-        import: &super::quoted_surface::ImportForm,
-        module: ModuleId,
-    ) -> Result<(), FatalError> {
-        let unknown_import = |telemetry, name: &str, arity: usize| {
-            emit_job_diagnostic(
-                telemetry,
-                Diagnostic::error(
-                    codes::RESOLVE_UNKNOWN_IMPORT,
-                    format!(
-                        "module `{}` does not export `{}/{}`",
-                        import.path.join("."),
-                        name,
-                        arity
-                    ),
-                    import.span,
-                ),
-            )
-        };
-        if let Some(only) = import.only.as_deref() {
-            for (name, arity) in only {
-                self.namespace = self
-                    .world
-                    .bind_interface_callable(self.namespace, module, name, *arity)
-                    .ok_or_else(|| unknown_import(self.telemetry, name, *arity))?;
-            }
-        } else if let Some(except) = import.except.as_deref() {
-            let callables = self.world.module_interface(module).callables();
-            let mut deny = HashSet::default();
-            for (name, arity) in except {
-                if find_callable(callables, name, *arity).is_none() {
-                    return Err(unknown_import(self.telemetry, name, *arity));
-                }
-                deny.insert((name.as_str(), *arity));
-            }
-            self.namespace = self.world.bind_interface_callables(self.namespace, module, |callable| {
-                !deny.contains(&(callable.reference.name(), callable.reference.arity))
-            });
-        } else {
-            self.namespace = self.world.bind_interface_callables(self.namespace, module, |_| true);
-        }
-        Ok(())
-    }
-
-    /// A module is not loaded until the scope that defines it has finished,
-    /// so that scope cannot require or import it.
-    fn refuse_module_defined_in_this_scope(
-        &self,
-        import: &super::quoted_surface::ImportForm,
-        module: ModuleId,
-    ) -> Result<(), FatalError> {
-        if !self
-            .world
-            .module_defined_within(module, self.current_module, self.source_owner)
-        {
-            return Ok(());
-        }
-        Err(emit_job_diagnostic(
-            self.telemetry,
-            Diagnostic::error(
-                codes::RESOLVE_MODULE_NOT_LOADED,
-                format!(
-                    "module {} is not loaded but was defined. This happens when you depend on a module in the same context in which it is defined. Try defining the module outside the context that uses it.",
-                    self.world
-                        .module_name(module)
-                        .expect("a module with a recorded source has a name")
-                ),
-                import.span,
-            ),
-        ))
-    }
-
-    fn resolve_import_module(&mut self, import: &super::quoted_surface::ImportForm) -> ModuleId {
-        let path = ModuleName::from_segments(import.path.clone());
-        self.world.resolve_module_name(self.namespace, &path)
-    }
-
     fn interface_requester(&self, span: Span) -> InterfaceRequester {
         InterfaceRequester {
             owner: self.source_owner,
@@ -2060,21 +1828,6 @@ impl<'world, 'tel, T: crate::telemetry::Telemetry> ScopeSession<'world, 'tel, T>
         }
     }
 
-    fn wait_for_module_interface(&self, module: ModuleId) -> JobEffects {
-        // `FactKey::ModuleInterface`'s producer is demand-selected in
-        // `World::demand_fact_producer` (Job::DefineModule when the module has
-        // source state or is a runtime module, else Job::DefineModuleInterface)
-        // -- the same selection this site used to push directly.
-        JobEffects::wait_on_current(FactKey::ModuleInterface(module))
-    }
-
-    fn record_required_remote_macros(&mut self, callables: &[ModuleInterfaceCallable]) {
-        for callable in callables {
-            if callable.kind == InterfaceCallableKind::Macro {
-                self.namespace = self.world.bind_required_macro(self.namespace, callable.function);
-            }
-        }
-    }
     /// Hoist a `defimpl Protocol, for: Target` to its own independently-
     /// demandable module identified by the typed `(protocol, target)` pair. Discovery
     /// records the impl as a `ProtocolImpl` module source resolved
@@ -2796,24 +2549,6 @@ fn note_protocol_domain_type(
         },
     );
     super::drive::ExecutionContext::new(world, tel).record_type_def_refs(&name, Vec::new());
-}
-
-fn find_callable<'a>(
-    callables: &'a [ModuleInterfaceCallable],
-    name: &str,
-    arity: usize,
-) -> Option<&'a ModuleInterfaceCallable> {
-    callables
-        .iter()
-        .find(|callable| callable.matches_name_arity(name, arity))
-}
-
-fn bind_callable(world: &mut World, scope: Namespace, callable: &ModuleInterfaceCallable) -> Namespace {
-    world.bind_namespace(
-        scope,
-        callable.reference.name().to_string(),
-        callable.namespace_symbol(),
-    )
 }
 
 /// The namespace binding a module declaration makes in the scope that

@@ -2128,53 +2128,21 @@ impl World {
             .expect("module interface should only be read when it exists")
     }
 
-    /// Binds into `scope` the callable `module`'s published interface exports
-    /// as `name/arity`, or `None` when it exports no such callable.
-    pub(crate) fn bind_interface_callable(
+    /// Binds `symbol` as the callable `name` that an `import` of `module`
+    /// brings into `scope`.
+    pub(crate) fn bind_import(
         &mut self,
         scope: Namespace,
         module: ModuleId,
         name: &str,
-        arity: usize,
-    ) -> Option<Namespace> {
-        let callable = self
-            .modules
-            .get(module)
-            .interface()?
-            .callables()
-            .iter()
-            .find(|callable| callable.matches_name_arity(name, arity))?;
-        Some(self.namespaces.bind(
-            scope,
-            callable.reference.name().to_string(),
-            callable.namespace_symbol(),
-        ))
+        symbol: NamespaceSymbol,
+    ) -> Namespace {
+        self.namespaces.bind_import(scope, name, symbol, module)
     }
 
-    /// Binds into `scope` every callable of `module`'s published interface
-    /// that `keep` accepts, in the interface's order.
-    pub(crate) fn bind_interface_callables(
-        &mut self,
-        scope: Namespace,
-        module: ModuleId,
-        keep: impl Fn(&super::module_interface::ModuleInterfaceCallable) -> bool,
-    ) -> Namespace {
-        let interface = self
-            .modules
-            .get(module)
-            .interface()
-            .expect("module interface should only be read when it exists");
-        interface
-            .callables()
-            .iter()
-            .filter(|callable| keep(callable))
-            .fold(scope, |scope, callable| {
-                self.namespaces.bind(
-                    scope,
-                    callable.reference.name().to_string(),
-                    callable.namespace_symbol(),
-                )
-            })
+    /// `scope` with the bindings an earlier import of `module` made retired.
+    pub(crate) fn replace_imports_of(&mut self, scope: Namespace, module: ModuleId) -> Namespace {
+        self.namespaces.replace_imports_of(scope, module)
     }
 
     pub fn module_interface_if_present(&self, module: ModuleId) -> Option<&ModuleInterface> {

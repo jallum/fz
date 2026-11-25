@@ -17,10 +17,14 @@ use super::namespace::NamespaceSymbol;
 use super::pull::{ProductKey, ProductSessions, ProductValue};
 use super::quoted_function::decode_standalone_expr;
 use super::quoted_surface::{
-    MacroCallForm, ScopeSurface, is_function_definition_head, is_scope_definition_head, read_compiler_fragment_surface,
+    MacroCallForm, ScopeForm, ScopeSurface, is_function_definition_head, is_scope_definition_head,
+    read_compiler_fragment_surface, read_scope_directive,
 };
 use super::scope::ScopeSnapshot;
-use super::source::{ListItems, QuotedAstNode, QuotedSourceCursor, QuotedSourceError, QuotedSourceRoot};
+use super::source::{
+    ListItems, META_BOUND_CALLABLE_KEY, QuotedAstNode, QuotedSourceCursor, QuotedSourceError, QuotedSourceMetadata,
+    QuotedSourceRoot,
+};
 use super::source_sugar::{rewrite_guard_membership, rewrite_source_sugar};
 use super::token_payload::decode_token;
 use super::world::World;
@@ -77,6 +81,21 @@ pub(crate) enum ExpandedValue {
     Blocked(Box<JobEffects>),
 }
 
+/// A body's scope after one of its `alias`, `import` or `require` forms.
+/// What walking a body block's statements came to.
+pub(crate) enum BodyWalk {
+    Blocked(Box<JobEffects>),
+    Done {
+        expanded: Vec<AnyValueRef>,
+        scope: ScopeSnapshot,
+    },
+}
+
+pub(crate) enum DirectedScope {
+    Moved(ScopeSnapshot),
+    Blocked(Box<JobEffects>),
+}
+
 pub(crate) enum ExpandedScopeFragment {
     Complete(ScopeSurface),
     /// The item's head is bound to no macro, so there is nothing to expand:
@@ -85,6 +104,17 @@ pub(crate) enum ExpandedScopeFragment {
         display_name: String,
     },
     Blocked(Box<JobEffects>),
+}
+
+/// The scope a macro call's expansion ends in, handed to the body block that
+/// holds the call as a statement: an `import` or `alias` the macro quotes
+/// covers the statements after the call, as it does in Elixir. Only a call
+/// that is itself a statement of a body block is handed back; a macro nested
+/// in an argument or a branch keeps its scope to itself.
+#[derive(Debug, Default)]
+pub(crate) struct ScopeHandoff {
+    statement: Option<AnyValueRef>,
+    scope: Option<ScopeSnapshot>,
 }
 
 pub(crate) trait QuotedExpansionCtx {
@@ -115,6 +145,10 @@ pub(crate) trait QuotedExpansionCtx {
     /// applies no source sugar: dispatch evaluates its operators itself, so
     /// `-x` stays a negation rather than becoming a `Kernel` call.
     fn expansion_context(&mut self) -> &mut ExpansionContext;
+
+    /// Where a macro call standing as a body statement hands the scope its
+    /// expansion ended in; see `ScopeHandoff`.
+    fn scope_handoff(&mut self) -> &mut ScopeHandoff;
 
     /// Expands `cursor` standing in `context`, and returns to the enclosing
     /// context after it.
@@ -157,12 +191,25 @@ pub(crate) trait QuotedExpansionCtx {
         self.expand_in(ExpansionContext::Match, owner, pattern, scope, depth)
     }
 
-    /// The source-visible caller scope for macro execution and memoization.
-    /// Expansion may layer transient compiler bindings onto `scope`; those
-    /// bindings must not change `__CALLER__` or the identity of a call site.
-    fn macro_caller_scope(&self, scope: ScopeSnapshot) -> ScopeSnapshot {
-        scope
+    /// What a name that stands for a value of the scope itself, as `__ENV__`
+    /// does, expands to where `scope` stands, or `None` when this expansion
+    /// binds no such name.
+    fn environment_splice(
+        &mut self,
+        _name: &str,
+        _scope: ScopeSnapshot,
+    ) -> Result<Option<QuotedSourceRoot>, fz_engine::FatalError> {
+        Ok(None)
     }
+
+    /// Moves `scope` forward by an `alias`, `import` or `require` written in a
+    /// body. A module whose interface is not yet published blocks it.
+    fn apply_scope_directive(
+        &mut self,
+        scope: ScopeSnapshot,
+        directive: &ScopeForm,
+    ) -> Result<DirectedScope, fz_engine::FatalError>;
+
     fn lookup_current_module_macro(&mut self, scope: ScopeSnapshot, name: &str, arity: usize) -> Option<FunctionId>;
     /// A remote call that waits on `module` remembers who made it, so a stall
     /// on that module can name the call.
@@ -277,10 +324,19 @@ pub(crate) trait QuotedExpansionCtx {
                     self.telemetry(),
                     format!("quoted splice candidate read failed: {error}"),
                 )
-            })? && let Some(NamespaceSymbol::Splice(snippet)) =
-                self.world().lookup_namespace(scope.namespace(), &name)
+            })? {
+                if let Some(NamespaceSymbol::Splice(snippet)) = self.world().lookup_namespace(scope.namespace(), &name)
+                {
+                    return Ok(ExpandedValue::Complete(snippet.root()));
+                }
+                if let Some(snippet) = self.environment_splice(&name, scope)? {
+                    return Ok(ExpandedValue::Complete(snippet.root()));
+                }
+            }
+            if scope.is_rebound()
+                && let Some(module_atom) = self.rebound_alias(owner, cursor, &node, scope)?
             {
-                return Ok(ExpandedValue::Complete(snippet.root()));
+                return Ok(ExpandedValue::Complete(module_atom));
             }
             if allow_root_sugar
                 && *self.expansion_context() != ExpansionContext::Guard
@@ -495,6 +551,12 @@ pub(crate) trait QuotedExpansionCtx {
             return Ok(Some(ExpandedValue::Complete(cursor.root())));
         }
 
+        if scope.is_rebound()
+            && let Some(result) = self.expand_rebound_capture(owner, node, arity, scope)?
+        {
+            return Ok(Some(result));
+        }
+
         if is_remote_function_capture(node, &source_map.borrow()).map_err(|error| {
             emit_internal_surface_error(self.telemetry(), format!("quoted capture detection failed: {error}"))
         })? {
@@ -521,6 +583,12 @@ pub(crate) trait QuotedExpansionCtx {
                 .expand_when_call(owner, cursor, node, &args, scope, depth)
                 .map(Some);
         }
+        if scope.is_body() && head == "__block__" {
+            return self.expand_body_block(owner, cursor, node, scope, depth).map(Some);
+        }
+        if scope.is_body() && is_scope_directive_head(&head) {
+            return self.expand_lone_directive(owner, cursor, scope).map(Some);
+        }
         if is_scope_definition_head(&head) {
             let args = self.call_args(&node.tail)?;
             let mut expanded = Vec::with_capacity(args.len());
@@ -532,7 +600,8 @@ pub(crate) trait QuotedExpansionCtx {
                     expanded.push(arg.root());
                     continue;
                 }
-                let value = self.expand_cursor_with_root_sugar(owner, arg, scope, depth, index != 0)?;
+                let arg_scope = if head_is_signature { scope.in_body() } else { scope };
+                let value = self.expand_cursor_with_root_sugar(owner, arg, arg_scope, depth, index != 0)?;
                 match value {
                     ExpandedValue::Complete(value) => expanded.push(value),
                     ExpandedValue::Blocked(effects) => return Ok(Some(ExpandedValue::Blocked(effects))),
@@ -572,13 +641,387 @@ pub(crate) trait QuotedExpansionCtx {
                     self.wait_for_callable_module_interface(function),
                 ))));
             }
-            NamespaceSymbol::Function(_)
-            | NamespaceSymbol::Module(_)
-            | NamespaceSymbol::Type(_)
-            | NamespaceSymbol::Splice(_) => return Ok(None),
+            NamespaceSymbol::Function(function) => {
+                if bound.is_none() && self.imported_by_the_body(scope, &head, arity, function) {
+                    return self.expand_stamped_call(owner, node, function, scope, depth).map(Some);
+                }
+                return Ok(None);
+            }
+            NamespaceSymbol::Module(_) | NamespaceSymbol::Type(_) | NamespaceSymbol::Splice(_) => return Ok(None),
         };
         self.expand_macro_invocation(owner, invocation, function, scope, depth, &self.call_args(&node.tail)?)
             .map(Some)
+    }
+
+    /// Whether the call `name/arity` reaches `function` only through what the
+    /// body itself imported: the definition's own scope names no such
+    /// function, so lowering, which reads that scope, could not find it.
+    fn imported_by_the_body(&mut self, scope: ScopeSnapshot, name: &str, arity: usize, function: FunctionId) -> bool {
+        if !scope.is_rebound() {
+            return false;
+        }
+        let origin = scope.body_origin().expect("a rebound scope is a body's");
+        let resolved_there = self.world().lookup_callable_namespace(origin, name, arity);
+        !matches!(
+            resolved_there,
+            Some(NamespaceSymbol::Function(there) | NamespaceSymbol::Callable(there)) if there == function
+        )
+    }
+
+    /// A call the body's imports resolved, carrying the function it reached
+    /// as the compiler's own stamp, with its arguments expanded.
+    fn expand_stamped_call(
+        &mut self,
+        owner: &QuotedSourceRoot,
+        node: &QuotedAstNode,
+        function: FunctionId,
+        scope: ScopeSnapshot,
+        depth: usize,
+    ) -> Result<ExpandedValue, fz_engine::FatalError> {
+        let stamped = stamp_bound_callable(owner, node, function).map_err(|error| {
+            emit_internal_surface_error(self.telemetry(), format!("bound callable stamping failed: {error}"))
+        })?;
+        let stamped = owner.subroot(stamped);
+        let source_map = self.world().source_map();
+        let stamped_node = stamped
+            .cursor()
+            .ast_node(&source_map.borrow())
+            .map_err(|error| {
+                emit_internal_surface_error(self.telemetry(), format!("stamped call read failed: {error}"))
+            })?
+            .expect("a stamped call is a node");
+        self.expand_ast_node(owner, &stamped.cursor(), &stamped_node, scope, depth)
+    }
+
+    /// `&name/arity` and `&Alias.name/arity` where the body's own directives
+    /// have moved the scope: a function the body imported is captured by its
+    /// module, and a body alias is the module it names, as lowering reads only
+    /// the definition's scope. `None` for any other capture.
+    fn expand_rebound_capture(
+        &mut self,
+        owner: &QuotedSourceRoot,
+        node: &QuotedAstNode,
+        arity: usize,
+        scope: ScopeSnapshot,
+    ) -> Result<Option<ExpandedValue>, fz_engine::FatalError> {
+        let source_map = self.world().source_map();
+        let read_failed = |tel: &Self::Telemetry, error: QuotedSourceError| {
+            emit_internal_surface_error(tel, format!("quoted capture read failed: {error}"))
+        };
+        if arity != 1 || node.head.root().tag() != ValueKind::ATOM || node.head.atom_name().is_ok_and(|n| n != "&") {
+            return Ok(None);
+        }
+        let operand = node
+            .tail
+            .list_items()
+            .map_err(|e| read_failed(self.telemetry(), e))?
+            .remove(0);
+        let Some(slash) = operand
+            .ast_node(&source_map.borrow())
+            .map_err(|e| read_failed(self.telemetry(), e))?
+        else {
+            return Ok(None);
+        };
+        if slash.head.root().tag() != ValueKind::ATOM
+            || slash.head.atom_name().is_ok_and(|n| n != "/")
+            || !is_list_like(&slash.tail)
+        {
+            return Ok(None);
+        }
+        let parts = slash.tail.list_items().map_err(|e| read_failed(self.telemetry(), e))?;
+        let [target, capture_arity] = parts.as_slice() else {
+            return Ok(None);
+        };
+        if capture_arity.root().tag() != ValueKind::INT {
+            return Ok(None);
+        }
+        let Some(target_node) = target
+            .ast_node(&source_map.borrow())
+            .map_err(|e| read_failed(self.telemetry(), e))?
+        else {
+            return Ok(None);
+        };
+        let builder = owner.builder();
+        let new_target = if super::quoted_function::is_no_parens_call(&target_node)
+            .map_err(|e| read_failed(self.telemetry(), e))?
+        {
+            let Some(dot) = target_node
+                .head
+                .ast_node(&source_map.borrow())
+                .map_err(|e| read_failed(self.telemetry(), e))?
+            else {
+                return Ok(None);
+            };
+            let Some((module, function)) = dot.tail.list_pair().map_err(|e| read_failed(self.telemetry(), e))? else {
+                return Ok(None);
+            };
+            let Some(module_node) = module
+                .ast_node(&source_map.borrow())
+                .map_err(|e| read_failed(self.telemetry(), e))?
+            else {
+                return Ok(None);
+            };
+            let Some(module_atom) = self.rebound_alias(owner, &module, &module_node, scope)? else {
+                return Ok(None);
+            };
+            let dot_tail = builder
+                .list(&[module_atom, function.root()])
+                .map_err(|e| read_failed(self.telemetry(), e))?;
+            let dot_head = builder
+                .tuple(&[dot.head.root(), dot.meta.root(), dot_tail])
+                .map_err(|e| read_failed(self.telemetry(), e))?;
+            builder
+                .tuple(&[dot_head, target_node.meta.root(), target_node.tail.root()])
+                .map_err(|e| read_failed(self.telemetry(), e))?
+        } else {
+            if target_node.head.root().tag() != ValueKind::ATOM || is_list_like(&target_node.tail) {
+                return Ok(None);
+            }
+            let name = target_node
+                .head
+                .atom_name()
+                .map_err(|e| read_failed(self.telemetry(), e))?;
+            let wanted = usize::try_from(
+                capture_arity
+                    .int_value()
+                    .map_err(|e| read_failed(self.telemetry(), e))?,
+            )
+            .unwrap_or(usize::MAX);
+            let function = match self.world().lookup_callable_namespace(scope.namespace(), &name, wanted) {
+                Some(NamespaceSymbol::Callable(function)) => {
+                    return Ok(Some(ExpandedValue::Blocked(Box::new(
+                        self.wait_for_callable_module_interface(function),
+                    ))));
+                }
+                Some(NamespaceSymbol::Function(function))
+                    if self.imported_by_the_body(scope, &name, wanted, function) =>
+                {
+                    function
+                }
+                _ => return Ok(None),
+            };
+            let world = self.world();
+            let module = world.function_module(function);
+            let module_atom = world.module_atom_value(&builder, module);
+            let span = target_node.span.unwrap_or(Span::DUMMY);
+            let meta = builder
+                .meta(&QuotedSourceMetadata {
+                    no_parens: true,
+                    span: Some(span),
+                    ..QuotedSourceMetadata::default()
+                })
+                .map_err(|e| read_failed(self.telemetry(), e))?;
+            let dot_tail = builder
+                .list(&[module_atom, builder.atom(&name)])
+                .map_err(|e| read_failed(self.telemetry(), e))?;
+            let dot_head = builder
+                .tuple(&[builder.atom("."), target_node.meta.root(), dot_tail])
+                .map_err(|e| read_failed(self.telemetry(), e))?;
+            let empty = builder.list(&[]).map_err(|e| read_failed(self.telemetry(), e))?;
+            builder
+                .tuple(&[dot_head, meta, empty])
+                .map_err(|e| read_failed(self.telemetry(), e))?
+        };
+        let slash_tail = builder
+            .list(&[new_target, capture_arity.root()])
+            .map_err(|e| read_failed(self.telemetry(), e))?;
+        let new_slash = builder
+            .tuple(&[slash.head.root(), slash.meta.root(), slash_tail])
+            .map_err(|e| read_failed(self.telemetry(), e))?;
+        let tail = builder
+            .list(&[new_slash])
+            .map_err(|e| read_failed(self.telemetry(), e))?;
+        let rebuilt = builder
+            .tuple(&[node.head.root(), node.meta.root(), tail])
+            .map_err(|e| read_failed(self.telemetry(), e))?;
+        Ok(Some(ExpandedValue::Complete(rebuilt)))
+    }
+
+    /// The module an alias names where the body's own `alias` has moved the
+    /// scope, as the atom the alias stands for: a body alias is gone from the
+    /// tree once expanded, and lowering reads only the definition's scope.
+    fn rebound_alias(
+        &mut self,
+        owner: &QuotedSourceRoot,
+        cursor: &QuotedSourceCursor,
+        node: &QuotedAstNode,
+        scope: ScopeSnapshot,
+    ) -> Result<Option<AnyValueRef>, fz_engine::FatalError> {
+        if node.head.root().tag() != ValueKind::ATOM
+            || !is_list_like(&node.tail)
+            || node.head.atom_name().is_ok_and(|name| name != "__aliases__")
+            || self.starts_with_a_node(&node.tail)?
+        {
+            return Ok(None);
+        }
+        let source_map = self.world().source_map();
+        let Some(path) = alias_path(cursor, &source_map.borrow()).map_err(|error| {
+            emit_internal_surface_error(self.telemetry(), format!("quoted alias read failed: {error}"))
+        })?
+        else {
+            return Ok(None);
+        };
+        let world = self.world();
+        let module = world.resolve_module_name(scope.namespace(), &ModuleName::from_segments(path));
+        Ok(Some(world.module_atom_value(&owner.builder(), module)))
+    }
+
+    /// The statements of a body's block, each in the scope the ones before it
+    /// left. An `alias`, `import` or `require` moves the scope for the rest of
+    /// the block and is gone from the tree, unless it is the last statement,
+    /// whose value it is. A block nested in a statement inherits the scope and
+    /// hands nothing back, so a branch's import ends with the branch.
+    fn expand_body_block(
+        &mut self,
+        owner: &QuotedSourceRoot,
+        cursor: &QuotedSourceCursor,
+        node: &QuotedAstNode,
+        scope: ScopeSnapshot,
+        depth: usize,
+    ) -> Result<ExpandedValue, fz_engine::FatalError> {
+        let statements = self.call_args(&node.tail)?;
+        match self.walk_body_statements(owner, &statements, scope, depth)? {
+            BodyWalk::Blocked(effects) => Ok(ExpandedValue::Blocked(effects)),
+            BodyWalk::Done { expanded, .. } => self.rebuild_call(owner, cursor, node, &statements, &expanded),
+        }
+    }
+
+    /// Expands `statements` in order, each in the scope the directives before
+    /// it have made, and answers the scope the last one leaves.
+    fn walk_body_statements(
+        &mut self,
+        owner: &QuotedSourceRoot,
+        statements: &[QuotedSourceCursor],
+        scope: ScopeSnapshot,
+        depth: usize,
+    ) -> Result<BodyWalk, fz_engine::FatalError> {
+        let mut scope = scope;
+        let mut expanded = Vec::with_capacity(statements.len());
+        for (index, statement) in statements.iter().enumerate() {
+            let is_last = index + 1 == statements.len();
+            let Some(directive) = self.read_directive(owner, statement)? else {
+                *self.scope_handoff() = ScopeHandoff {
+                    statement: Some(statement.root()),
+                    scope: None,
+                };
+                match self.expand_cursor(owner, statement, scope, depth)? {
+                    ExpandedValue::Complete(value) => expanded.push(value),
+                    ExpandedValue::Blocked(effects) => return Ok(BodyWalk::Blocked(effects)),
+                }
+                let handoff = std::mem::take(self.scope_handoff());
+                if handoff.statement == Some(statement.root())
+                    && let Some(handed) = handoff.scope
+                {
+                    scope = handed;
+                }
+                continue;
+            };
+            let module = self.directive_module(scope, &directive);
+            match self.apply_scope_directive(scope, &directive)? {
+                DirectedScope::Moved(next) => scope = next,
+                DirectedScope::Blocked(effects) => return Ok(BodyWalk::Blocked(effects)),
+            }
+            if is_last {
+                let world = self.world();
+                expanded.push(world.module_atom_value(&owner.builder(), module));
+            }
+        }
+        Ok(BodyWalk::Done { expanded, scope })
+    }
+
+    /// A macro's result, expanded where the call stands. A call that is a
+    /// statement of a body block expands its result as statements of that
+    /// block and hands the scope they end in back to it.
+    fn expand_macro_result(
+        &mut self,
+        invocation: &QuotedSourceRoot,
+        result: QuotedSourceRoot,
+        scope: ScopeSnapshot,
+        depth: usize,
+    ) -> Result<ExpandedValue, fz_engine::FatalError> {
+        let is_statement = scope.is_body() && self.scope_handoff().statement == Some(invocation.root());
+        if !is_statement {
+            return match self.expand_root(result, scope, depth)? {
+                ExpandedRoot::Complete(root) => Ok(ExpandedValue::Complete(root.root())),
+                ExpandedRoot::Blocked(effects) => Ok(ExpandedValue::Blocked(effects)),
+            };
+        }
+        let source_map = self.world().source_map();
+        let block = result
+            .cursor()
+            .ast_node(&source_map.borrow())
+            .map_err(|error| {
+                emit_internal_surface_error(self.telemetry(), format!("macro result read failed: {error}"))
+            })?
+            .filter(|node| node.head.atom_name().is_ok_and(|name| name == "__block__") && is_list_like(&node.tail));
+        let (statements, block) = match block {
+            Some(node) => (self.call_args(&node.tail)?, Some(node)),
+            None => (vec![result.cursor()], None),
+        };
+        let (expanded, ending) = match self.walk_body_statements(&result, &statements, scope, depth)? {
+            BodyWalk::Blocked(effects) => return Ok(ExpandedValue::Blocked(effects)),
+            BodyWalk::Done { expanded, scope } => (expanded, scope),
+        };
+        let value = match block {
+            Some(node) => self.rebuild_call(&result, &result.cursor(), &node, &statements, &expanded)?,
+            None => ExpandedValue::Complete(expanded[0]),
+        };
+        *self.scope_handoff() = ScopeHandoff {
+            statement: Some(invocation.root()),
+            scope: Some(ending),
+        };
+        Ok(value)
+    }
+
+    /// An `alias`, `import` or `require` standing alone, where its scope
+    /// reaches no further statement: it applies, so that it is refused when it
+    /// is wrong, and its value is the module.
+    fn expand_lone_directive(
+        &mut self,
+        owner: &QuotedSourceRoot,
+        cursor: &QuotedSourceCursor,
+        scope: ScopeSnapshot,
+    ) -> Result<ExpandedValue, fz_engine::FatalError> {
+        let directive = self
+            .read_directive(owner, cursor)?
+            .expect("the head says this is a directive");
+        let module = self.directive_module(scope, &directive);
+        match self.apply_scope_directive(scope, &directive)? {
+            DirectedScope::Moved(_) => {}
+            DirectedScope::Blocked(effects) => return Ok(ExpandedValue::Blocked(effects)),
+        }
+        let world = self.world();
+        Ok(ExpandedValue::Complete(
+            world.module_atom_value(&owner.builder(), module),
+        ))
+    }
+
+    fn read_directive(
+        &mut self,
+        owner: &QuotedSourceRoot,
+        statement: &QuotedSourceCursor,
+    ) -> Result<Option<ScopeForm>, fz_engine::FatalError> {
+        let source_map = self.world().source_map();
+        let Some(node) = statement.ast_node(&source_map.borrow()).map_err(|error| {
+            emit_internal_surface_error(self.telemetry(), format!("body statement read failed: {error}"))
+        })?
+        else {
+            return Ok(None);
+        };
+        let is_directive = node.head.root().tag() == ValueKind::ATOM
+            && is_list_like(&node.tail)
+            && node.head.atom_name().is_ok_and(|name| is_scope_directive_head(&name));
+        if !is_directive {
+            return Ok(None);
+        }
+        let root = owner.subroot(statement.root());
+        read_scope_directive(&root, &source_map.borrow())
+            .map_err(|error| emit_surface_read_error(self.telemetry(), "body directive read failed", &error))
+    }
+
+    /// The module the directive names, which is the value of the statement.
+    fn directive_module(&mut self, scope: ScopeSnapshot, directive: &ScopeForm) -> ModuleId {
+        super::scope_directives::directive_module(self.world(), scope.namespace(), directive)
     }
 
     fn call_args(&self, tail: &QuotedSourceCursor) -> Result<Vec<QuotedSourceCursor>, fz_engine::FatalError> {
@@ -1222,7 +1665,7 @@ pub(crate) trait QuotedExpansionCtx {
         };
         self.note_product_read(address);
 
-        let caller_scope = self.macro_caller_scope(scope);
+        let caller_scope = scope;
         // The call site every unlocated node in this macro's result falls
         // back to (`stamp_span_fallback`) -- read from `invocation` itself,
         // which is always either the user's own source (real span from the
@@ -1240,10 +1683,7 @@ pub(crate) trait QuotedExpansionCtx {
                 .memoized_macro_expansion(function, &invocation, caller_scope, context, &call_site, &program)
         {
             self.emit_macro_warnings(&memoized.warnings, macro_call_span);
-            return match self.expand_root(memoized.root, scope, depth + 1)? {
-                ExpandedRoot::Complete(root) => Ok(ExpandedValue::Complete(root.root())),
-                ExpandedRoot::Blocked(effects) => Ok(ExpandedValue::Blocked(effects)),
-            };
+            return self.expand_macro_result(&invocation, memoized.root, scope, depth + 1);
         }
 
         let builder = owner.builder();
@@ -1302,7 +1742,7 @@ pub(crate) trait QuotedExpansionCtx {
         emit_macro_expanded(world, tel, &function, &expanded);
         world.memoize_macro_expansion(
             function,
-            invocation,
+            invocation.clone(),
             caller_scope,
             context,
             call_site,
@@ -1313,10 +1753,7 @@ pub(crate) trait QuotedExpansionCtx {
             },
         );
         self.emit_macro_warnings(&warnings, macro_call_span);
-        match self.expand_root(expanded, scope, depth + 1)? {
-            ExpandedRoot::Complete(root) => Ok(ExpandedValue::Complete(root.root())),
-            ExpandedRoot::Blocked(effects) => Ok(ExpandedValue::Blocked(effects)),
-        }
+        self.expand_macro_result(&invocation, expanded, scope, depth + 1)
     }
 
     /// Reports what a macro's run warned, as it does for a run and for a memo
@@ -1645,6 +2082,33 @@ fn stamp_span_fallback(
 /// Whether `node` is a `quote(...)` call, the same shape `expand_ast_call`
 /// recognizes as its own boundary: a call node (its tail is an argument
 /// list, not a variable context) whose head atom is literally `quote`.
+/// The heads of the three forms that move a scope forward.
+fn is_scope_directive_head(head: &str) -> bool {
+    matches!(head, "alias" | "import" | "require")
+}
+
+/// `node` with its metadata retaining `function` as the callable it names.
+fn stamp_bound_callable(
+    owner: &QuotedSourceRoot,
+    node: &QuotedAstNode,
+    function: FunctionId,
+) -> Result<AnyValueRef, QuotedSourceError> {
+    let builder = owner.builder();
+    let mut entries = Vec::new();
+    for entry in node.meta.list_iter() {
+        let pair = entry?.tuple_items()?;
+        if pair[0].atom_name()? != META_BOUND_CALLABLE_KEY {
+            entries.push((pair[0].root(), pair[1].root()));
+        }
+    }
+    entries.push((
+        builder.atom(META_BOUND_CALLABLE_KEY),
+        builder.int(i64::from(function.as_u32())),
+    ));
+    let meta = builder.keyword_list(&entries)?;
+    builder.tuple(&[node.head.root(), meta, node.tail.root()])
+}
+
 fn is_quote_call(node: &QuotedAstNode) -> Result<bool, QuotedSourceError> {
     if node.head.root().tag() != ValueKind::ATOM {
         return Ok(false);

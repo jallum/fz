@@ -95,18 +95,44 @@ pub struct StatementForm {
     pub span: Span,
 }
 
+/// One `alias`: the module a name stands for. `alias Foo.{A, B}` binds one
+/// name per member.
 #[derive(Debug, Clone)]
 pub struct AliasForm {
+    pub bindings: Vec<AliasBinding>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct AliasBinding {
     pub path: Vec<String>,
     pub as_name: String,
-    pub span: Span,
+}
+
+/// What `only:` selects: the listed `name: arity` pairs, or every callable of
+/// a kind.
+#[derive(Debug, Clone)]
+pub enum ImportSelection {
+    Listed(Vec<(String, usize)>),
+    Kind(CallableKind),
+}
+
+/// The kinds `import M, only: :macros` and its siblings name. A sigil is a
+/// callable whose name begins `sigil_`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallableKind {
+    Macros,
+    Functions,
+    Sigils,
 }
 
 #[derive(Debug, Clone)]
 pub struct ImportForm {
     pub path: Vec<String>,
-    pub only: Option<Vec<(String, usize)>>,
+    pub only: Option<ImportSelection>,
     pub except: Option<Vec<(String, usize)>>,
+    /// The name `require M, as: X` binds to the module.
+    pub as_name: Option<String>,
     pub span: Span,
 }
 
@@ -280,9 +306,6 @@ struct PendingFunctionGroup {
     item_roots: Vec<AnyValueRef>,
     kind: String,
 }
-
-type ImportFilterList = Vec<(String, usize)>;
-type ImportKeywordArgs = Vec<(String, ImportFilterList)>;
 
 /// Reads user surface: there is exactly one source read, and a def-head
 /// (`def`/`defp`/`defmacro`/`defmodule`/...) is just a macro call to be expanded
@@ -720,9 +743,9 @@ fn build_form(source: QuotedSourceRoot, sources: &SourceMap) -> Result<ScopeForm
         None => return Err(QuotedSourceError::new("expected quoted item AST node")),
     };
     match head.as_str() {
-        "alias" => Ok(ScopeForm::Alias(parse_alias_form(source, sources)?)),
-        "import" => Ok(ScopeForm::Import(parse_import_form(source, sources)?)),
-        "require" => Ok(ScopeForm::Require(parse_import_form(source, sources)?)),
+        "alias" | "import" | "require" => {
+            Ok(read_scope_directive(&source, sources)?.expect("a directive head reads as a directive"))
+        }
         head if is_scope_definition_head(head) => Ok(ScopeForm::MacroCall(MacroCallForm {
             span: surface_span(&source, sources)?,
             source,
@@ -964,6 +987,23 @@ fn decode_type_alias_attr(
     }))
 }
 
+/// The `alias`, `import` or `require` a quoted node is, or `None` for any
+/// other node.
+pub(crate) fn read_scope_directive(
+    source: &QuotedSourceRoot,
+    sources: &SourceMap,
+) -> Result<Option<ScopeForm>, QuotedSourceError> {
+    let Some(head) = surface_head_name(source, sources)? else {
+        return Ok(None);
+    };
+    match head.as_str() {
+        "alias" => parse_alias_form(source.clone(), sources).map(|form| Some(ScopeForm::Alias(form))),
+        "import" => parse_import_form(source.clone(), sources).map(|form| Some(ScopeForm::Import(form))),
+        "require" => parse_import_form(source.clone(), sources).map(|form| Some(ScopeForm::Require(form))),
+        _ => Ok(None),
+    }
+}
+
 fn parse_alias_form(source: QuotedSourceRoot, sources: &SourceMap) -> Result<AliasForm, QuotedSourceError> {
     let node = expect_surface_node(&source, sources)?;
     let span = node.span.unwrap_or(Span::DUMMY);
@@ -971,14 +1011,53 @@ fn parse_alias_form(source: QuotedSourceRoot, sources: &SourceMap) -> Result<Ali
     let Some(target) = args.next().transpose()? else {
         return Err(QuotedSourceError::new("alias expects a target path"));
     };
-    let path = parse_alias_segments(&target, sources)?;
-    let as_name = if let Some(kwargs) = args.next().transpose()? {
-        parse_alias_keyword_args(&kwargs, sources)?
-    } else {
-        None
+    let as_name = match args.next().transpose()? {
+        Some(options) => parse_alias_keyword_args(&options, sources)?,
+        None => None,
+    };
+    let bindings = match alias_group(&target, sources)? {
+        Some((prefix, members)) => members
+            .into_iter()
+            .map(|member| {
+                let path = prefix.iter().cloned().chain(member).collect::<Vec<_>>();
+                let as_name = path.last().cloned().unwrap_or_default();
+                AliasBinding { path, as_name }
+            })
+            .collect(),
+        None => {
+            let path = parse_alias_segments(&target, sources)?;
+            let as_name = as_name.unwrap_or_else(|| path.last().cloned().unwrap_or_default());
+            vec![AliasBinding { path, as_name }]
+        }
+    };
+    Ok(AliasForm { bindings, span })
+}
+
+/// The prefix and members of `alias Prefix.{Member, ...}`, when `target` is
+/// that group.
+#[allow(clippy::type_complexity)]
+fn alias_group(
+    target: &QuotedSourceCursor,
+    sources: &SourceMap,
+) -> Result<Option<(Vec<String>, Vec<Vec<String>>)>, QuotedSourceError> {
+    let Some(node) = target.ast_node(sources)? else {
+        return Ok(None);
+    };
+    let Some(callee) = node.head.ast_node(sources)? else {
+        return Ok(None);
+    };
+    if callee.head.atom_name()? != "." {
+        return Ok(None);
     }
-    .unwrap_or_else(|| path.last().cloned().unwrap_or_default());
-    Ok(AliasForm { path, as_name, span })
+    let Some((prefix, _group)) = callee.tail.list_pair()? else {
+        return Err(QuotedSourceError::new("alias group expects a prefix"));
+    };
+    let members = node
+        .tail
+        .list_iter()
+        .map(|member| parse_alias_segments(&member?, sources))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Some((parse_alias_segments(&prefix, sources)?, members)))
 }
 
 fn parse_import_form(source: QuotedSourceRoot, sources: &SourceMap) -> Result<ImportForm, QuotedSourceError> {
@@ -989,23 +1068,43 @@ fn parse_import_form(source: QuotedSourceRoot, sources: &SourceMap) -> Result<Im
         return Err(QuotedSourceError::new("import/require expects a target path"));
     };
     let path = parse_alias_segments(&target, sources)?;
-    let mut only = None;
-    let mut except = None;
-    if let Some(kwargs) = args.next().transpose()? {
-        for (kind, entries) in parse_import_keyword_args(&kwargs)? {
-            match kind.as_str() {
-                "only" => only = Some(entries),
-                "except" => except = Some(entries),
+    let mut form = ImportForm {
+        path,
+        only: None,
+        except: None,
+        as_name: None,
+        span,
+    };
+    if let Some(options) = args.next().transpose()? {
+        for entry in options.list_iter() {
+            let entry = entry?;
+            if entry.tuple_arity()? != 2 {
+                return Err(QuotedSourceError::new("expected keyword tuple"));
+            }
+            let value = entry.tuple_item(1)?;
+            match entry.tuple_item(0)?.atom_name()?.as_str() {
+                "only" => form.only = Some(import_selection(&value)?),
+                "except" => form.except = Some(name_arity_pairs(&value)?),
+                "as" => form.as_name = parse_alias_segments(&value, sources)?.pop(),
                 _ => {}
             }
         }
     }
-    Ok(ImportForm {
-        path,
-        only,
-        except,
-        span,
-    })
+    Ok(form)
+}
+
+fn import_selection(value: &QuotedSourceCursor) -> Result<ImportSelection, QuotedSourceError> {
+    if value.root().tag() != fz_runtime::any_value::ValueKind::ATOM {
+        return name_arity_pairs(value).map(ImportSelection::Listed);
+    }
+    match value.atom_name()?.as_str() {
+        "macros" => Ok(ImportSelection::Kind(CallableKind::Macros)),
+        "functions" => Ok(ImportSelection::Kind(CallableKind::Functions)),
+        "sigils" => Ok(ImportSelection::Kind(CallableKind::Sigils)),
+        other => Err(QuotedSourceError::new(format!(
+            "import `only:` takes a list or :macros, :functions or :sigils, got `:{other}`"
+        ))),
+    }
 }
 
 fn parse_function_form(
@@ -1516,20 +1615,6 @@ fn parse_alias_segments(cursor: &QuotedSourceCursor, sources: &SourceMap) -> Res
         return Err(QuotedSourceError::new("expected __aliases__ node"));
     }
     node.tail.list_atom_names()
-}
-
-fn parse_import_keyword_args(cursor: &QuotedSourceCursor) -> Result<ImportKeywordArgs, QuotedSourceError> {
-    let mut out = Vec::new();
-    for entry in cursor.list_iter() {
-        let entry = entry?;
-        if entry.tuple_arity()? != 2 {
-            return Err(QuotedSourceError::new("expected keyword tuple"));
-        }
-        let kind = entry.tuple_item(0)?.atom_name()?.to_string();
-        let values = name_arity_pairs(&entry.tuple_item(1)?)?;
-        out.push((kind, values));
-    }
-    Ok(out)
 }
 
 fn parse_alias_keyword_args(

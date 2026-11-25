@@ -42,7 +42,11 @@ fails with `does not yet parse ... at item position`.
 `alias`, `import` and `require` are also expressions: `parse_prefix` sends
 the three keywords to `parse_scope_directive_expr`, which reads them with the
 item parsers, so a function body or a `quote` holds the same call node a module
-body does (`quote do import M; require N end` in a `__using__`).
+body does (`quote do import M; require N end` in a `__using__`). `alias A.{B, C}`
+(`parse_alias_group`) reads as a call of `A.{}`; the options are keyword
+entries of one list: `alias` takes `as:` and `warn:`, `import` takes `only:`,
+`except:` and `warn:`, `require` takes `as:`, `only:`, `except:` and `warn:`
+(`parse_directive_options`).
 
 A call at item position is local (`make(:x)`) or remote (`Helpers.define(...)`):
 `parse_item` sends an identifier or an uppercase alias to the same

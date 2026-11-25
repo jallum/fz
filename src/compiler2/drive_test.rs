@@ -25829,3 +25829,95 @@ fn compiler2_native_back_edges_tail_call_one_shared_yield_stub() {
         "two back edges to `spin` with one argument shape share a stub"
     );
 }
+
+const SCOPE_DIRECTIVE_PROVIDER: &str = "defmodule Tools do\n  def triple(x), do: x * 3\n  def double(x), do: x * 2\n  defmacro is_big(x), do: quote(do: unquote(x) > 100)\nend\n";
+
+/// Drives `App.run/0` of `consumer` (appended to the `Tools` provider) and
+/// asserts it is refused as an unbound name.
+fn assert_name_unbound_in(consumer: &str, intent: &str) {
+    let tel = ConfiguredTelemetry::new();
+    let capture = Capture::new();
+    capture.install(&tel, &[]);
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/scope_directive_consumer.fz".to_string()),
+        text: format!("{SCOPE_DIRECTIVE_PROVIDER}{consumer}"),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: Some("App".to_string()),
+        name: "run".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    let outcome = compiler.drive();
+    assert!(
+        matches!(outcome, DriveOutcome::Fatal { .. }),
+        "{intent}: expected a fatal outcome, got {outcome:?}",
+    );
+    let diagnostic = capture
+        .last(&["fz", "diag", "error"])
+        .unwrap_or_else(|| panic!("{intent}: no error diagnostic"));
+    assert_eq!(
+        metadata_str(&diagnostic, "code"),
+        codes::LOWER_UNBOUND.0,
+        "{intent}: {}",
+        metadata_str(&diagnostic, "message"),
+    );
+}
+
+#[test]
+fn compiler2_a_later_import_of_a_module_replaces_the_names_an_earlier_one_brought_in() {
+    assert_name_unbound_in(
+        "defmodule App do\n  def run() do\n    import Tools, only: [triple: 1]\n    import Tools, only: [double: 1]\n    triple(1)\n  end\nend\n",
+        "in a body, importing Tools again retires the first import's names",
+    );
+    assert_name_unbound_in(
+        "defmodule App do\n  import Tools, only: [triple: 1]\n  import Tools, only: [double: 1]\n  def run(), do: triple(1)\nend\n",
+        "in a module, importing Tools again retires the first import's names",
+    );
+}
+
+#[test]
+fn compiler2_an_import_in_a_branch_ends_with_the_branch() {
+    assert_name_unbound_in(
+        "defmodule App do\n  def run() do\n    if true do\n      import Tools, only: [triple: 1]\n      triple(1)\n    end\n    triple(2)\n  end\nend\n",
+        "a name a branch imported is unbound after the branch",
+    );
+}
+
+#[test]
+fn compiler2_a_clause_guard_does_not_see_the_import_in_its_own_body() {
+    assert_name_unbound_in(
+        "defmodule App do\n  def run(), do: pick(1)\n  defp pick(x) when is_big(x) do\n    import Tools, only: [is_big: 1]\n    x\n  end\nend\n",
+        "the guard belongs to the clause head, which the body's import does not reach",
+    );
+}
+
+#[test]
+fn compiler2_a_macro_call_hands_back_the_scope_its_expansion_ends_in_only_as_a_statement() {
+    let macros = "defmodule Injects do\n  defmacro import_triple() do\n    quote do\n      import Tools, only: [triple: 1]\n    end\n  end\nend\n";
+    let tel = ConfiguredTelemetry::new();
+    let mut compiler = Compiler2::new(tel);
+    compiler.submit_code(CodeSubmission {
+        name: Some("fixtures/scope_handoff.fz".to_string()),
+        text: format!(
+            "{SCOPE_DIRECTIVE_PROVIDER}{macros}defmodule App do\n  require Injects\n  def run() do\n    Injects.import_triple()\n    triple(1)\n  end\nend\n"
+        ),
+    });
+    compiler.submit_root(RootSubmission {
+        module_name: Some("App".to_string()),
+        name: "run".to_string(),
+        arity: 0,
+        need: ExecutableNeed::Value,
+    });
+    assert_resolved(
+        compiler.drive(),
+        "an import a macro quotes covers the statements after the call",
+    );
+    assert_name_unbound_in(
+        &format!(
+            "{macros}defmodule App do\n  require Injects\n  def run() do\n    if true do\n      Injects.import_triple()\n    end\n    triple(1)\n  end\nend\n"
+        ),
+        "a macro in a branch hands nothing back to the block around the branch",
+    );
+}

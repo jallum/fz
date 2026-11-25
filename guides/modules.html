@@ -321,6 +321,23 @@ requires a module nested inside itself, is refused with
 <code>M.f()</code> or aliasing <code>M</code> needs neither, and a separate
 <code>defmodule</code> may require a module defined before it.</p>
 
+<p>The directives also work inside a function body, where they cover the rest
+of the enclosing block and no further:</p>
+
+<pre><span class="kw">def</span> <span class="fn">run</span>(x) <span class="kw">do</span>
+  <span class="kw">import</span> <span class="ty">Math</span>, <span class="kw">only:</span> [add: <span class="num">2</span>]
+  <span class="kw">alias</span> <span class="ty">Math</span>, <span class="kw">as:</span> <span class="ty">M</span>
+  <span class="fn">add</span>(x, <span class="ty">M</span>.<span class="fn">mul</span>(<span class="num">2</span>, <span class="num">3</span>))
+<span class="kw">end</span></pre>
+
+<p>An <code>import</code> inside an <code>if</code> branch, a <code>case</code>
+clause or an <code>fn</code> ends with it. A second <code>import Math</code> in
+the same scope replaces the names the first one brought in, as in Elixir. The
+options <code>only: :macros</code>, <code>warn: false</code>,
+<code>alias Foo.{Bar, Baz}</code> and <code>require M, as: N</code> are read.
+A function's guard is part of its head, so an import in the body does not
+reach it.</p>
+
 <!-- ─────────────────────────────── 5. INTERFACE ─────────────────────────────── -->
 <h2 id="interface">5. Interfaces - the public contract</h2>
 

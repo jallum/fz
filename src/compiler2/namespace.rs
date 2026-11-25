@@ -37,8 +37,17 @@ pub enum NamespaceSymbol {
 /// What one link of a scope's binding chain says.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum Entry {
-    /// A name bound to a symbol; every name lookup reads these.
-    Named { name: String, symbol: NamespaceSymbol },
+    /// A name bound to a symbol; every name lookup reads these. `imported_from`
+    /// names the module an `import` took the binding from.
+    Named {
+        name: String,
+        symbol: NamespaceSymbol,
+        imported_from: Option<ModuleId>,
+    },
+    /// Every binding an earlier `import` of this module made is gone from
+    /// here back: importing a module again replaces what the first import
+    /// brought in.
+    ImportsReplaced(ModuleId),
     /// A macro `require` made callable by its qualified name. It binds no
     /// name, so no lookup by name can meet it.
     RequiredMacro(FunctionId),
@@ -72,13 +81,27 @@ impl NamespaceStore {
     pub fn bind(&mut self, head: Namespace, name: impl Into<String>, symbol: NamespaceSymbol) -> Namespace {
         let name = name.into();
         let NamespaceSymbol::Splice(value) = &symbol else {
-            return self.push(head, Entry::Named { name, symbol });
+            return self.push(
+                head,
+                Entry::Named {
+                    name,
+                    symbol,
+                    imported_from: None,
+                },
+            );
         };
         if let Some(bound) = self.equal_splice(head, &name, value) {
             return bound;
         }
         let key = (head, name.clone());
-        let bound = self.push(head, Entry::Named { name, symbol });
+        let bound = self.push(
+            head,
+            Entry::Named {
+                name,
+                symbol,
+                imported_from: None,
+            },
+        );
         self.splices.entry(key).or_default().push(bound);
         bound
     }
@@ -91,6 +114,37 @@ impl NamespaceStore {
                 Entry::Named { symbol: NamespaceSymbol::Splice(bound), .. } if bound.semantically_eq(value, Horizon::Full)
             )
         })
+    }
+
+    /// Binds `name` to a callable `import` took from `module`.
+    pub fn bind_import(
+        &mut self,
+        head: Namespace,
+        name: impl Into<String>,
+        symbol: NamespaceSymbol,
+        module: ModuleId,
+    ) -> Namespace {
+        self.push(
+            head,
+            Entry::Named {
+                name: name.into(),
+                symbol,
+                imported_from: Some(module),
+            },
+        )
+    }
+
+    /// `head`, with every binding an earlier import of `module` made retired
+    /// when there is one, so the import about to be bound replaces it.
+    pub fn replace_imports_of(&mut self, head: Namespace, module: ModuleId) -> Namespace {
+        let imported = self
+            .entries(head)
+            .any(|entry| matches!(entry, Entry::Named { imported_from: Some(from), .. } if *from == module));
+        if imported {
+            self.push(head, Entry::ImportsReplaced(module))
+        } else {
+            head
+        }
     }
 
     /// Records that `macro_function` may be called by its qualified name from
@@ -128,14 +182,27 @@ impl NamespaceStore {
     pub fn required_modules(&self, head: Namespace) -> impl Iterator<Item = ModuleId> {
         self.entries(head).filter_map(|entry| match entry {
             Entry::RequiredModule(module) => Some(*module),
-            Entry::Named { .. } | Entry::RequiredMacro(_) => None,
+            Entry::Named { .. } | Entry::RequiredMacro(_) | Entry::ImportsReplaced(_) => None,
         })
     }
 
-    /// The chain's named bindings from `head`, newest first.
+    /// The chain's live named bindings from `head`, newest first: the ones a
+    /// later import of the same module has not replaced.
     pub fn named(&self, head: Namespace) -> impl Iterator<Item = (&str, &NamespaceSymbol)> {
-        self.entries(head).filter_map(|entry| match entry {
-            Entry::Named { name, symbol } => Some((name.as_str(), symbol)),
+        let mut replaced: Vec<ModuleId> = Vec::new();
+        self.entries(head).filter_map(move |entry| match entry {
+            Entry::Named {
+                name,
+                symbol,
+                imported_from,
+            } => match imported_from {
+                Some(module) if replaced.contains(module) => None,
+                _ => Some((name.as_str(), symbol)),
+            },
+            Entry::ImportsReplaced(module) => {
+                replaced.push(*module);
+                None
+            }
             Entry::RequiredMacro(_) | Entry::RequiredModule(_) => None,
         })
     }
