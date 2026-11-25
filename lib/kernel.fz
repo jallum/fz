@@ -868,6 +868,47 @@ defmodule Kernel do
   defp arithmetic_error(), do: raise(%ArithmeticError{message: "bad argument in arithmetic expression"})
 
   @doc """
+  Concatenates `left` and `right`; this is the `++` operator.
+
+  `left` must be a proper list; `right` may be any term, and a `right` that is
+  not a list gives an improper list. A `left` that is not a proper list raises
+  `ArgumentError`.
+
+  ## Examples
+
+      Kernel.++([1, 2], [3])
+      #=> [1, 2, 3]
+
+      Kernel.++([1, 2], 3)
+      #=> [1, 2 | 3]
+
+  """
+  def [] ++ right, do: right
+  def [head | tail] ++ right, do: [head | tail ++ right]
+  def _left ++ _right, do: raise(%ArgumentError{message: "argument error"})
+
+  @doc """
+  Removes from `left` the first occurrence of each element of `right`; this is
+  the `--` operator. Elements of `right` that do not occur in `left` are
+  ignored.
+
+  ## Examples
+
+      Kernel.--([1, 2, 3, 2], [2])
+      #=> [1, 3, 2]
+
+  """
+  def left -- [], do: left
+  def left -- [item | rest], do: delete_first(left, item) -- rest
+
+  @spec delete_first([a], any) :: [a] when a: var
+  defp delete_first([], _value), do: []
+
+  defp delete_first([head | tail], value) do
+    if head === value, do: tail, else: [head | delete_first(tail, value)]
+  end
+
+  @doc """
   Concatenates two binaries.
 
   ## Examples

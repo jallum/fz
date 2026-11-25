@@ -1722,6 +1722,19 @@ fn compiler2_frontdoor_parses_cond_and_remote_operator_capture_refs() {
 }
 
 #[test]
+fn compiler2_frontdoor_a_reserved_word_after_a_dot_is_the_name_of_a_remote_call() {
+    // Elixir turns keyword lexing off right after a `.`, so every reserved
+    // word names a function there, as `Kernel.not(x)` does.
+    let tel = ConfiguredTelemetry::new();
+    for word in ["not", "and", "or", "in", "when", "do", "end", "fn", "true", "nil"] {
+        let source = format!("def main(x), do: Kernel.{word}(x)\n");
+        let root = parse_quoted_program("keyword_after_dot.fz", &source, &tel)
+            .unwrap_or_else(|_| panic!("`Kernel.{word}(x)` should parse"));
+        assert_quoted_mentions(&root, &[word, "Kernel"]);
+    }
+}
+
+#[test]
 fn compiler2_frontdoor_parses_attributes_protocols_impls_and_structs() {
     let tel = ConfiguredTelemetry::new();
     let root = parse_quoted_program(
