@@ -1,0 +1,40 @@
+#---
+# purpose: "An `or` guard in a case clause and in an anonymous function clause takes the clause when either side holds, binds the clause's variables once whichever side held, and falls to the next clause when neither does"
+# kind: run
+# oracle: self
+# oracle.stamp: 8a084676925a5880
+#---
+defmodule Main do
+  def classify(value) do
+    case value do
+      {tag, n} when is_integer(n) or is_float(n) -> {:number, tag, n}
+      {tag, s} when is_binary(s) or is_atom(s) -> {:text, tag, s}
+      [head | rest] when is_integer(head) or is_list(rest) -> {:list, head, rest}
+      _ -> :other
+    end
+  end
+
+  def main() do
+    describe = fn
+      x when is_integer(x) or is_float(x) -> {:num, x}
+      x when is_atom(x) or is_binary(x) -> {:word, x}
+      _ -> :other
+    end
+
+    IO.inspect(classify({:a, 1}))
+    IO.inspect(classify({:b, 2.5}))
+    IO.inspect(classify({:c, "s"}))
+    IO.inspect(classify({:d, :e}))
+    IO.inspect(classify({:f, [1]}))
+    IO.inspect(classify([1, 2]))
+    IO.inspect(classify([:a, :b]))
+    IO.inspect(classify(7))
+    IO.inspect(describe.(1))
+    IO.inspect(describe.(1.5))
+    IO.inspect(describe.(:a))
+    IO.inspect(describe.("s"))
+    IO.inspect(describe.([]))
+  end
+end
+
+Main.main()

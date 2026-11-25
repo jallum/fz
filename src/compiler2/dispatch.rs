@@ -14,6 +14,7 @@ use crate::ast::{Callee, ModuleTarget, Pattern, Spanned};
 use crate::dispatch_matrix::pattern::{
     GuardCallee, PatternBodyId, PatternDispatchPlan, PatternResolver, PatternRow, PatternSubjectRef, SourcePatternError,
 };
+use crate::dispatch_matrix::{ListRegion, Region};
 use crate::function_surface::FunctionSurface;
 use crate::ground_value::GroundValue;
 use crate::source::Span;
@@ -155,6 +156,23 @@ where
 
     fn is_literal_blind(&self, ty: &Ty) -> bool {
         self.world.types().is_literal_blind(ty)
+    }
+
+    fn complement(&mut self, region: &Region<Ty>) -> Option<Region<Ty>> {
+        let types = self.world.types_mut();
+        let any = types.any();
+        let excluded = match region {
+            Region::Type(ty) => *ty,
+            Region::TupleArity(arity) => types.tuple(&vec![any; *arity as usize]),
+            Region::MapKind => types.map_top(),
+            Region::List(ListRegion::Empty) => types.empty_list(),
+            Region::List(ListRegion::Cons)
+            | Region::Equal(_)
+            | Region::MapKeyPresent { .. }
+            | Region::Bitstring(_)
+            | Region::Guard(_) => return None,
+        };
+        types.runtime_complement(excluded).map(Region::Type)
     }
 
     fn ground_has_type(&mut self, value: &GroundValue, ty: &Ty) -> Option<bool> {
