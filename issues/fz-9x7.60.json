@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-9x7.59"
+  ],
   "blocks": [],
   "created": "2026-11-25T11:52:33Z",
   "description": "Approved by the user, 2026-11-25, verbatim: \"Proceed.\" (decision 3 on https://claude.ai/artifact/GPXkA2ynzDgi6dqxdugK1i)\n\nFinding (gbarms bench, footprint vs 6a246c182 on distiller p2/p3/full): #880 as merged 1.04-1.05; P4 and K=4 1.11; no trim 1.16. In-use bytes identical on every gc event, so it is resident pages, not retention. About 29 MB is the age table (1 byte / 32 B). The rest is unattributed; it did not reproduce locally because the local base keeps a large libmalloc cache (scratchpad gc47fp/notes.md).\n\nTask\nInvestigate on the bench machine what is resident at peak on p2/p3/full under the chosen trim rule: heap range by block state (in use, idle pooled, trimmed), age table, malloc zones. Name each category's MB, say which are inherent and which are policy, and propose the fix as its own ticket(s). Order: after the trim-rule ticket lands.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "The arena's resident footprint on a growing 1 GB heap is accounted for",
   "type": "task",
-  "updated_at": "2026-11-25T11:52:33Z"
+  "updated_at": "2026-11-25T11:52:45Z"
 }
