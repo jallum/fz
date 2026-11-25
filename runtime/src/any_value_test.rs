@@ -14,6 +14,11 @@ fn list_cell(heap: &mut Heap, head: i64, tail: u64) -> u64 {
     heap.alloc_list_cons_slot(AnyValue::int(head), tail)
 }
 
+/// What a link to the list `bits` answers: the next cell's address, 0 for `[]`.
+fn proper(bits: u64) -> ListTail {
+    ListTail::Proper(list_addr_from_tagged(bits).map_or(0, |addr| addr as u64))
+}
+
 #[test]
 fn list_cons_size_is_16() {
     assert_eq!(mem::size_of::<ListCons>(), 16);
@@ -28,7 +33,7 @@ fn list_cons_layout() {
         let cons = &*(p as *mut ListCons);
         assert_eq!(cons.head_kind(), ValueKind::INT);
         assert_eq!(cons.head as i64, 7);
-        assert_eq!(cons.tail_bits(), EMPTY_LIST);
+        assert_eq!(cons.tail(), proper(EMPTY_LIST));
         assert_eq!(cons.link & LOW_NIBBLE, 0);
         assert_eq!((cons.link & LIST_LINK_KIND_MASK) >> LIST_LINK_KIND_SHIFT, TAG_KIND_INT);
         assert!(!cons.aliased());
@@ -45,11 +50,11 @@ fn list_cons_chain() {
     unsafe {
         let c1 = &*(list_addr_from_tagged(l1).unwrap() as *mut ListCons);
         assert_eq!(c1.head_value(), AnyValue::int(1));
-        let c2 = &*(list_addr_from_tagged(c1.tail_bits()).unwrap() as *mut ListCons);
+        let c2 = &*(c1.tail_cell_addr() as *mut ListCons);
         assert_eq!(c2.head_value(), AnyValue::int(2));
-        let c3 = &*(list_addr_from_tagged(c2.tail_bits()).unwrap() as *mut ListCons);
+        let c3 = &*(c2.tail_cell_addr() as *mut ListCons);
         assert_eq!(c3.head_value(), AnyValue::int(3));
-        assert_eq!(c3.tail_bits(), EMPTY_LIST);
+        assert_eq!(c3.tail(), proper(EMPTY_LIST));
     }
 }
 
@@ -244,7 +249,7 @@ fn list_cons_stores_canonical_head_kind_in_link_high_bits() {
     assert_eq!(cons.head, 2.5f64.to_bits());
     assert_eq!(cons.head_kind(), ValueKind::FLOAT);
     assert_eq!(cons.head_value(), AnyValue::float(2.5));
-    assert_eq!(cons.tail_bits(), EMPTY_LIST);
+    assert_eq!(cons.tail(), proper(EMPTY_LIST));
     assert_eq!(cons.link & LOW_NIBBLE, 0);
     assert_eq!(
         (cons.link & LIST_LINK_KIND_MASK) >> LIST_LINK_KIND_SHIFT,
@@ -258,32 +263,51 @@ fn list_link_keeps_alias_bit_in_high_metadata() {
     let tail = list_cell(&mut heap, 3, EMPTY_LIST);
     let mut cons = ListCons::new(7, ValueKind::INT, tail);
 
-    assert_eq!(cons.tail_bits(), tail);
+    assert_eq!(cons.tail(), proper(tail));
     assert!(!cons.aliased());
 
     cons.mark_aliased();
 
     assert!(cons.aliased());
     assert_eq!(cons.head_kind(), ValueKind::INT);
-    assert_eq!(cons.tail_bits(), tail);
+    assert_eq!(cons.tail(), proper(tail));
     assert_ne!(cons.link & LIST_LINK_ALIAS_MASK, 0);
     assert_eq!(cons.link & LOW_NIBBLE, 0);
 }
 
 #[test]
-fn list_link_rewrite_preserves_high_metadata() {
+fn a_shared_cell_is_never_rewritten() {
     let mut heap = test_heap();
     let old_tail = list_cell(&mut heap, 1, EMPTY_LIST);
     let new_tail = list_cell(&mut heap, 2, EMPTY_LIST);
     let mut cons = ListCons::new(7, ValueKind::ATOM, old_tail);
     cons.mark_aliased();
 
-    cons.set_head_raw_kind_tail(11, ValueKind::FLOAT, new_tail);
+    let new_link = ListLink::new(new_tail, ValueKind::FLOAT);
+    assert!(!cons.rewrite_if_unaliased(11, new_link));
+
+    assert_eq!(cons.head as i64, 7);
+    assert_eq!(cons.head_kind(), ValueKind::ATOM);
+    assert_eq!(cons.tail(), proper(old_tail));
+}
+
+#[test]
+fn a_rewritten_cell_takes_the_new_link_whole_and_loses_a_terminator_flag() {
+    let mut heap = test_heap();
+    let new_tail = list_cell(&mut heap, 2, EMPTY_LIST);
+    let terminator = ListCons::new(3, ValueKind::INT, EMPTY_LIST);
+    let mut cons = ListCons::with_link(
+        7,
+        ListLink::to_terminator(&terminator as *const ListCons as u64, ValueKind::ATOM),
+    );
+    assert!(matches!(cons.tail(), ListTail::Terminator(_)));
+
+    assert!(cons.rewrite_if_unaliased(11, ListLink::new(new_tail, ValueKind::FLOAT)));
 
     assert_eq!(cons.head as i64, 11);
     assert_eq!(cons.head_kind(), ValueKind::FLOAT);
-    assert!(cons.aliased());
-    assert_eq!(cons.tail_bits(), new_tail);
+    assert!(!cons.aliased());
+    assert_eq!(cons.tail(), proper(new_tail));
 }
 
 #[test]
@@ -1675,4 +1699,43 @@ fn a_stored_kind_wider_than_a_kind_byte_is_refused_loudly() {
         kind: u64::from(ValueKind::INT.tag()) | 0x100,
     }
     .value("a test");
+}
+
+/// Intent: a link answers one of three things: the next cell of a proper
+/// list (0 for the end), a terminator cell behind the flag, or a hole, which
+/// is the flag with no cell yet.
+#[test]
+fn a_link_answers_a_proper_tail_a_terminator_or_a_hole() {
+    let mut heap = test_heap();
+    let next = list_cell(&mut heap, 3, EMPTY_LIST);
+    let next_addr = list_addr_from_tagged(next).unwrap() as u64;
+    let terminator = list_cell(&mut heap, 9, EMPTY_LIST);
+    let terminator_addr = list_addr_from_tagged(terminator).unwrap() as u64;
+
+    let proper_link = ListLink::new(next, ValueKind::INT);
+    assert_eq!(proper_link.tail(), ListTail::Proper(next_addr));
+    assert_eq!(ListLink::new(EMPTY_LIST, ValueKind::INT).tail(), ListTail::Proper(0));
+
+    let terminated = ListLink::to_terminator(terminator_addr, ValueKind::INT);
+    assert_eq!(terminated.tail(), ListTail::Terminator(terminator_addr));
+    assert_eq!(terminated.tail_cell_addr(), terminator_addr);
+    assert_eq!(unsafe { terminated.tail().value() }, AnyValue::int(9));
+
+    let hole = ListLink::hole(ValueKind::INT);
+    assert_eq!(hole.tail(), ListTail::Hole);
+    assert_eq!(hole.tail_cell_addr(), 0);
+    for link in [proper_link, terminated, hole] {
+        assert_eq!(
+            link.head_kind(),
+            ValueKind::INT,
+            "the flag leaves the head's kind alone"
+        );
+    }
+}
+
+/// Intent: a hole names no value, so asking for it fails loudly.
+#[test]
+#[should_panic(expected = "hole")]
+fn the_value_of_a_hole_is_refused() {
+    let _ = unsafe { ListLink::hole(ValueKind::INT).tail().value() };
 }

@@ -4,8 +4,9 @@
 
 use super::*;
 use crate::any_value::{
-    AnyValue, AnyValueRef, ClosureDenotationId, EMPTY_LIST, ValueKind, closure_addr_from_tagged,
-    closure_size_for_count, list_addr_from_tagged, map_addr_from_tagged, map_size_for_count, struct_size_for_payload,
+    AnyValue, AnyValueRef, ClosureDenotationId, EMPTY_LIST, ListCons, ListLink, ListTail, ValueKind,
+    closure_addr_from_tagged, closure_size_for_count, list_addr_from_tagged, map_addr_from_tagged, map_size_for_count,
+    struct_size_for_payload,
 };
 use crate::bits::{BINREF_BYTES, BINVIEW_BYTES, SharedBinHandle, alloc_buffer_view};
 use crate::heap::StubSite;
@@ -330,4 +331,44 @@ fn deep_copying_a_pid_ref_to_another_heap_allocates_nothing() {
 
     assert_eq!(copy, pid);
     assert_eq!(destination.node.alloc_stats().total.allocs, before.total.allocs);
+}
+
+/// The cell at `addr` as the receiver reads it.
+fn cell_at(addr: u64) -> &'static ListCons {
+    unsafe { &*(addr as *const ListCons) }
+}
+
+/// A list that ends in a non-list value arrives with its terminator cell
+/// behind the flag, and the proper cells before it stay proper.
+#[test]
+fn an_improper_list_arrives_with_its_terminator() {
+    let mut sender = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let inner = sender.alloc_list_cons_any(AnyValue::int(2), AnyValue::int(3));
+    let inner = heap_value(ValueKind::LIST, inner.storage_addr());
+    let message = sender.alloc_list_cons_any(AnyValue::int(1), inner);
+    let measured = measured_equals_copied(&mut sender, &[message]);
+    assert_eq!(measured, 3 * CELL, "two cells and the terminator cell");
+
+    let (_segment, copied) = gift_copy(&mut sender, &[message]);
+    let first = cell_at(copied[0].storage_addr() as u64);
+    assert_eq!(first.head_value(), AnyValue::int(1));
+    let ListTail::Proper(second) = first.tail() else {
+        panic!("the first cell is followed by a cell, found {:?}", first.tail());
+    };
+    let second = cell_at(second);
+    assert_eq!(second.head_value(), AnyValue::int(2));
+    assert!(matches!(second.tail(), ListTail::Terminator(_)));
+    assert_eq!(unsafe { second.tail().value() }, AnyValue::int(3));
+}
+
+/// A hole is a terminator not yet placed; it is not a value to send.
+#[test]
+#[should_panic(expected = "a hole is not a value to copy")]
+fn a_list_whose_tail_is_a_hole_is_refused() {
+    let mut sender = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let bits = int_list(&mut sender, EMPTY_LIST, 0..1);
+    let cell = list_addr_from_tagged(bits).expect("addr") as *mut ListCons;
+    unsafe { *cell = ListCons::with_link(0, ListLink::hole(ValueKind::INT)) };
+    let message = heap_ref(ValueKind::LIST, cell as *mut u8);
+    let _ = gift_copy(&mut sender, &[message]);
 }

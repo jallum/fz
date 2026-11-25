@@ -35,7 +35,7 @@ impl Tracer<'_> {
         let cons = unsafe { &mut *obj };
         cons.keep_across_collection();
         unsafe { self.forward_slot(&raw mut cons.head, cons.head_kind()) };
-        let tail = self.forward(cons.tail_addr(), ValueKind::LIST);
+        let tail = self.forward(cons.tail_cell_addr(), ValueKind::LIST);
         cons.relocate_tail_for_gc(tail);
     }
 

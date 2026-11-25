@@ -2162,16 +2162,18 @@ fn rebuild_backend_list_from_source(
     let head = head
         .value(proc)
         .map_err(|err| format!("backend list: cannot materialize list head: {err}"))?;
-    let tail_ref = tail
-        .as_any_value_ref(proc)
-        .map_err(|err| format!("backend list: cannot materialize list tail: {err}"))?;
+    let tail = Stored::of(
+        tail.value(proc)
+            .map_err(|err| format!("backend list: cannot materialize list tail: {err}"))?,
+    );
     interp_value_from_ref_word(
         fz_list_reuse_or_cons_parts(
             proc,
             source_ref.raw_word(),
             head.raw(),
             u64::from(head.kind().tag()),
-            tail_ref.raw_word(),
+            tail.word,
+            tail.kind,
             u64::from(permission == crate::fz_ir::RewritePermission::Rewrite),
         ),
         "backend list",

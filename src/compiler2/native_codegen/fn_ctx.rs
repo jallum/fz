@@ -1089,11 +1089,19 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
         emit_empty_list_value_ref_word(self.b, self.cache)
     }
 
-    pub(crate) fn list_tail_ref_word(&mut self, tail: ListTailBits) -> ir::Value {
-        match tail {
+    /// The tail as the stored word and kind a list entry takes it in: a
+    /// list is its address and the `LIST` kind, any other value its own words.
+    pub(crate) fn list_tail_words(&mut self, tail: ListTailBits) -> [ir::Value; 2] {
+        let list = match tail {
             ListTailBits::Empty => self.empty_list_ref(),
             ListTailBits::ValueRef(value) | ListTailBits::NonEmptyValueRef(value) => value,
-        }
+            ListTailBits::Checked(value) => return stored_parts(self, value),
+        };
+        let address = address_field(self.b, list);
+        [
+            address,
+            self.b.ins().iconst(types::I64, i64::from(ValueKind::LIST.tag())),
+        ]
     }
 
     pub(crate) fn coerce_call_args(

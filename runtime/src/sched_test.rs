@@ -264,12 +264,11 @@ fn a_hit_copies_each_of_a_clauses_disjoint_roots_once() {
     let second = sender_list(&mut sender, 2);
     let tail = sender
         .heap
-        .alloc_list_cons_any(AnyValue::from_ref(second).expect("second"), AnyValueRef::empty_list())
-        .expect("outer tail");
-    let msg = sender
-        .heap
-        .alloc_list_cons_any(AnyValue::from_ref(first).expect("first"), tail)
-        .expect("outer list");
+        .alloc_list_cons_any(AnyValue::from_ref(second).expect("second"), AnyValue::EmptyList);
+    let msg = sender.heap.alloc_list_cons_any(
+        AnyValue::from_ref(first).expect("first"),
+        AnyValue::from_ref(tail).expect("outer tail"),
+    );
     let probe = probe_sender(&mut sender, &task, msg);
     assert_eq!(probe.outcome, ProbeOutcome::Hit);
     assert_eq!(probe.gift_roots, 2);

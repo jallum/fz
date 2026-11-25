@@ -21,9 +21,9 @@ use super::schema::{FieldKind, SchemaRegistry};
 use super::stats::StubSite;
 use crate::any_value::AnyValueRef;
 use crate::any_value::{
-    AnyValue, EMPTY_LIST, ListCons, ValueKind, bitstring_bit_len, bitstring_bytes_ptr, closure_addr_from_tagged,
-    closure_arity, closure_capture_set, closure_capture_value, closure_captured_count, closure_fn_ptr,
-    closure_halt_kind, heap_object_word, list_addr_from_tagged, map_addr_from_tagged, map_node_child,
+    AnyValue, ListCons, ListLink, ListTail, ValueKind, bitstring_bit_len, bitstring_bytes_ptr,
+    closure_addr_from_tagged, closure_arity, closure_capture_set, closure_capture_value, closure_captured_count,
+    closure_fn_ptr, closure_halt_kind, heap_object_word, list_addr_from_tagged, map_addr_from_tagged, map_node_child,
     map_node_child_count, map_node_entry_count, map_slot, share_struct, struct_field_kind_slot, struct_field_raw_slot,
     struct_schema_id,
 };
@@ -208,7 +208,7 @@ impl CopyMeasure<'_> {
             self.bytes += size_of::<ListCons>();
             let cons = unsafe { &*(cell as *const ListCons) };
             self.slot(cons.head_value());
-            cell = cons.tail_addr() as *mut u8;
+            cell = cons.tail_cell_addr() as *mut u8;
             if !cell.is_null() {
                 self.src_heap.assert_classified(cell, false);
             }
@@ -324,26 +324,35 @@ pub fn deep_copy_any_value(src: AnyValue, src_heap: &HeapView, dst_heap: &mut He
 }
 
 /// Copy a list cell by cell along its spine, so a long list costs stack for
-/// its deepest head, not for its length.
+/// its deepest head, not for its length. A terminator cell is the last cell
+/// of the spine: it is copied like any cell, and its copy is linked behind the
+/// same flag.
 fn deep_copy_list(sp: *mut u8, src_heap: &HeapView, dst_heap: &mut Heap) -> AnyValue {
     let first = copy_list_cell(sp, src_heap, dst_heap);
     let mut prev = first;
-    let mut cur = unsafe { &*(sp as *const ListCons) }.tail_addr() as *mut u8;
-    while !cur.is_null() {
-        let next = copy_list_cell(cur, src_heap, dst_heap);
-        let next_bits = AnyValue::heap_ptr(next.0, ValueKind::LIST)
-            .heap_object_word()
-            .expect("copied list tail");
-        link_list_tail(dst_heap, prev.0, prev.1, next_bits);
+    let mut src_link = unsafe { &*(sp as *const ListCons) }.link();
+    loop {
+        let next_addr = src_link.tail_cell_addr();
+        if next_addr == 0 {
+            break;
+        }
+        let next = copy_list_cell(next_addr as *mut u8, src_heap, dst_heap);
+        let link = ListLink::to_addr(next.0 as u64, prev.1.kind()).with_terminator_of(src_link);
+        write_list_cell(dst_heap, prev.0, prev.1, link);
         prev = next;
-        cur = unsafe { &*(cur as *const ListCons) }.tail_addr() as *mut u8;
+        src_link = unsafe { &*(next_addr as *const ListCons) }.link();
     }
-    link_list_tail(dst_heap, prev.0, prev.1, EMPTY_LIST);
+    assert_ne!(
+        src_link.tail(),
+        ListTail::Hole,
+        "a list whose tail is a hole is not a value to copy"
+    );
+    write_list_cell(dst_heap, prev.0, prev.1, ListLink::to_addr(0, prev.1.kind()));
     AnyValue::heap_ptr(first.0, ValueKind::LIST)
 }
 
 /// Allocate the copy of one cell and copy its head.
-/// The tail is written by `link_list_tail` once the caller knows it.
+/// The cell is written by `write_list_cell` once the caller knows it.
 fn copy_list_cell(sp: *mut u8, src_heap: &HeapView, dst_heap: &mut Heap) -> (*mut u8, AnyValue) {
     let bits = dst_heap.alloc_copied_list_cell();
     let dp = list_addr_from_tagged(bits).expect("new list ptr");
@@ -359,8 +368,8 @@ fn copy_list_cell(sp: *mut u8, src_heap: &HeapView, dst_heap: &mut Heap) -> (*mu
 
 /// Write the finished cell at `dp`. A cell copied into a gift window is shared
 /// from birth: a message's cells are never rewritten in place.
-fn link_list_tail(dst_heap: &Heap, dp: *mut u8, head: AnyValue, tail_bits: u64) {
-    let mut cons = ListCons::new(head.raw(), head.kind(), tail_bits);
+fn write_list_cell(dst_heap: &Heap, dp: *mut u8, head: AnyValue, link: ListLink) {
+    let mut cons = ListCons::with_link(head.raw(), link);
     if dst_heap.gift_window_is_open() {
         cons.keep_across_collection();
     }

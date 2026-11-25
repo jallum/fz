@@ -271,9 +271,7 @@ fn words() -> Words {
         .iter()
         .map(|value| heap.box_any_value_ref(AnyValue::float(*value)))
         .collect();
-    let cons = heap
-        .alloc_list_cons_any(AnyValue::int(1), AnyValueRef::empty_list())
-        .expect("a cons cell");
+    let cons = heap.alloc_list_cons_any(AnyValue::int(1), AnyValue::EmptyList);
     let bitstring = heap.alloc_bitstring(&[1, 2, 3], 24).ref_word();
     let mut all = Vec::new();
     all.extend([AnyValueRef::null(), AnyValueRef::empty_list(), cons, bitstring]);
@@ -582,8 +580,9 @@ fn a_symbol_without_a_row_is_a_call() {
 // two fresh processes, runs the runtime function in one and the row's
 // instructions in the other, and compares everything the run left behind.
 
-/// What a case hands the row: its head and tail words, and the objects the
-/// row may change by sharing them.
+/// What a case hands the row: its head word and the address its list tail
+/// holds (0 for the empty list), and the objects the row may change by sharing
+/// them.
 struct CellInputs {
     head: u64,
     tail: u64,
@@ -601,7 +600,7 @@ struct CellCase {
 struct CellProof {
     symbol: &'static str,
     lane: HeadLane,
-    reference: fn(*mut Process, u64, u64) -> u64,
+    reference: fn(*mut Process, u64, u64, u64) -> u64,
     cases: Vec<CellCase>,
 }
 
@@ -619,7 +618,7 @@ fn scalar_cases(heads: &[(&'static str, u64)]) -> Vec<CellCase> {
     for &(name, head) in heads {
         cases.push(case(name, move |_| CellInputs {
             head,
-            tail: AnyValueRef::empty_list().raw_word(),
+            tail: list_storage(AnyValueRef::empty_list()),
             watched: Vec::new(),
         }));
         cases.push(case(name, move |heap| {
@@ -628,12 +627,17 @@ fn scalar_cases(heads: &[(&'static str, u64)]) -> Vec<CellCase> {
                 .expect("a one-cell tail");
             CellInputs {
                 head,
-                tail: tail.raw_word(),
+                tail: list_storage(tail),
                 watched: vec![list_address(tail)],
             }
         }));
     }
     cases
+}
+
+/// The word a list tail is handed over as: the address its cell has, 0 for `[]`.
+fn list_storage(list: AnyValueRef) -> u64 {
+    list.storage_raw().expect("a list tail address")
 }
 
 fn list_address(list: AnyValueRef) -> *const u8 {
@@ -658,7 +662,7 @@ fn ref_cases() -> Vec<CellCase> {
             let (head, watched) = make(heap);
             CellInputs {
                 head: head.raw_word(),
-                tail: AnyValueRef::empty_list().raw_word(),
+                tail: list_storage(AnyValueRef::empty_list()),
                 watched,
             }
         }));
@@ -668,7 +672,7 @@ fn ref_cases() -> Vec<CellCase> {
             watched.extend(cells);
             CellInputs {
                 head: head.raw_word(),
-                tail: tail.raw_word(),
+                tail: list_storage(tail),
                 watched,
             }
         }));
@@ -734,29 +738,32 @@ fn cell_proofs() -> Vec<CellProof> {
         CellProof {
             symbol: "fz_list_cons_int",
             lane: HeadLane::Int,
-            reference: |process, head, tail| fz_list_cons_int(process, head as i64, tail),
+            reference: |process, head, tail, kind| fz_list_cons_int(process, head as i64, tail, kind),
             cases: scalar_cases(&ints),
         },
         CellProof {
             symbol: "fz_list_cons_float",
             lane: HeadLane::Float,
-            reference: |process, head, tail| fz_list_cons_float(process, f64::from_bits(head), tail),
+            reference: |process, head, tail, kind| fz_list_cons_float(process, f64::from_bits(head), tail, kind),
             cases: scalar_cases(&floats),
         },
         CellProof {
             symbol: "fz_list_cons_atom",
             lane: HeadLane::Atom,
-            reference: |process, head, tail| fz_list_cons_atom(process, head, tail),
+            reference: |process, head, tail, kind| fz_list_cons_atom(process, head, tail, kind),
             cases: scalar_cases(&atoms),
         },
         CellProof {
             symbol: "fz_list_cons_any",
             lane: HeadLane::Ref,
-            reference: |process, head, tail| fz_list_cons_any(process, head, tail),
+            reference: |process, head, tail, kind| fz_list_cons_any(process, head, tail, kind),
             cases: ref_cases(),
         },
     ]
 }
+
+/// The kind a list tail travels with.
+const LIST_KIND_WORD: u64 = ValueKind::LIST.tag() as u64;
 
 /// A row compiled to a function of two words: the head's and the tail's.
 struct CompiledCell {
@@ -794,7 +801,8 @@ fn compile_cell(proof: &CellProof) -> CompiledCell {
             HeadLane::Float => body.b.ins().bitcast(types::F64, MemFlagsData::new(), params[0]),
             _ => params[0],
         };
-        let cell = emit_cell(&mut body, proof.symbol, &[process, head, params[1]]);
+        let list_kind = body.b.ins().iconst(types::I64, i64::from(ValueKind::LIST.tag()));
+        let cell = emit_cell(&mut body, proof.symbol, &[process, head, params[1], list_kind]);
         body.b.ins().return_(&[cell]);
         b.finalize(module.target_config());
     }
@@ -909,7 +917,7 @@ fn every_allocation_row_leaves_the_heap_its_runtime_function_leaves() {
         for case in &proof.cases {
             for tip in [Tip::Roomy, Tip::Full] {
                 let expected = run_cell(case, tip, &schemas, |process, inputs| {
-                    (proof.reference)(process, inputs.head, inputs.tail)
+                    (proof.reference)(process, inputs.head, inputs.tail, LIST_KIND_WORD)
                 });
                 let inline = run_cell(case, tip, &schemas, |process, inputs| unsafe {
                     pinned_abi::call2(compiled.code, process, inputs.head, inputs.tail) as u64
@@ -947,7 +955,7 @@ fn the_ref_row_is_tried_on_heads_that_must_be_shared() {
     let marked = |name: &str| {
         let case = proof.cases.iter().find(|case| case.name == name).expect("a case");
         let left = run_cell(case, Tip::Roomy, &schemas, |process, inputs| {
-            (proof.reference)(process, inputs.head, inputs.tail)
+            (proof.reference)(process, inputs.head, inputs.tail, LIST_KIND_WORD)
         });
         let link = left.watched[0][1];
         link & fz_runtime::any_value::LIST_LINK_ALIAS_MASK != 0
@@ -1601,7 +1609,8 @@ impl ReuseTail {
             Self::Other => world.other_tail,
             Self::Empty => AnyValueRef::empty_list(),
         }
-        .raw_word()
+        .storage_raw()
+        .expect("a list tail address")
     }
 }
 
@@ -1710,18 +1719,19 @@ fn compile_reuse(lane: ReuseLane, kind: ValueKind, rewrite: bool) -> CompiledCel
         let mut body = CodegenFn::new(&mut b, module, &mut cache, scope);
         let process = body.process_arg();
         let permission = body.b.ins().iconst(types::I64, i64::from(rewrite));
+        let list_kind = body.b.ins().iconst(types::I64, i64::from(ValueKind::LIST.tag()));
         let answer = match lane {
             ReuseLane::Ref => emit_reuse(
                 &mut body,
                 REUSE_REF_HEAD,
-                &[process, params[0], params[1], params[2], permission],
+                &[process, params[0], params[1], params[2], list_kind, permission],
             ),
             ReuseLane::Parts => {
                 let kind = body.b.ins().iconst(types::I64, i64::from(kind.tag()));
                 emit_reuse(
                     &mut body,
                     "fz_list_reuse_or_cons_parts",
-                    &[process, params[0], params[1], kind, params[2], permission],
+                    &[process, params[0], params[1], kind, params[2], list_kind, permission],
                 )
             }
         };
@@ -1790,6 +1800,7 @@ fn every_list_reuse_row_leaves_the_heap_its_runtime_function_leaves() {
                                         head.storage_raw().expect("a head payload"),
                                         u64::from(head.tag().tag()),
                                         inputs.tail,
+                                        LIST_KIND_WORD,
                                         rewrite as u64,
                                     )
                                 }
@@ -1799,6 +1810,7 @@ fn every_list_reuse_row_leaves_the_heap_its_runtime_function_leaves() {
                                     inputs.head,
                                     u64::from(inputs.head_kind.tag()),
                                     inputs.tail,
+                                    LIST_KIND_WORD,
                                     rewrite as u64,
                                 ),
                             };

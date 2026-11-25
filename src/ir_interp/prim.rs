@@ -15,12 +15,9 @@ pub(super) fn interp_list_cons(
         .value(proc)
         .map_err(|err| format!("{context}: cannot materialize list head: {err}"))?;
     let tail = tail
-        .as_any_value_ref(proc)
+        .value(proc)
         .map_err(|err| format!("{context}: cannot materialize list tail: {err}"))?;
-    let list = unsafe { &mut *proc }
-        .heap
-        .alloc_list_cons_any(head, tail)
-        .map_err(|err| format!("{context}: cannot allocate list cons: {err:?}"))?;
+    let list = unsafe { &mut *proc }.heap.alloc_list_cons_any(head, tail);
     Ok(AnyValue::Ref(HeapRef::new(list)?))
 }
 

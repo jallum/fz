@@ -1,7 +1,7 @@
 #---
 # purpose: the tail of a cell built as [1 | x] is whatever x is, so a tail that is an integer takes arithmetic.
 # oracle: self
-# oracle.stamp: 47357529282213d8
+# oracle.stamp: 6fb27b6c7792b2b4
 #---
 defmodule Main do
   def t(x), do: [1 | x]
@@ -12,11 +12,7 @@ defmodule Main do
   end
 
   def main() do
-    if System.argv() == ["improper"] do
-      IO.inspect(tail_plus_one(2))
-    else
-      IO.puts("not run")
-    end
+    IO.inspect(tail_plus_one(2))
   end
 end
 Main.main()

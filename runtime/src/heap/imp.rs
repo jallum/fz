@@ -17,14 +17,15 @@ use super::stats::{GcStats, Generation, StubCounts, StubSite};
 use super::{BinaryBudget, Heap, MapLayout, SHARED_BIN_THRESHOLD_BYTES};
 use crate::alloc_site::RuntimeAllocSite;
 use crate::any_value::{
-    AnyValue, AnyValueRef, AnyValueRefError, CLOSURE_FLAGS_CAPTURED_MASK, ListCons, MAP_FLAT_MAX, MapDestinationKind,
-    STRUCT_PAYLOAD_OFFSET, SlotLayout, ValueKind, bitstring_header_word, bitstring_size_for_bit_len,
-    closure_addr_from_tagged, closure_capture_kind_slot, closure_capture_raw_slot, closure_capture_set,
-    closure_capture_value, closure_header_word, closure_header_write, closure_size_for_count, heap_object_word,
-    list_addr_from_tagged, map_addr_from_tagged, map_count, map_destination_header_word, map_destination_state,
-    map_entry, map_header_word, map_key, map_key_in_arrays, map_key_kind, map_keys_ptr, map_pack_tag,
-    map_size_for_count, map_tag_bytes_len, map_tag_ptr, map_value_kind, map_values_ptr, share_bitstring, share_struct,
-    struct_field_kind_slot, struct_field_raw_slot, struct_header_word, struct_schema_id, struct_size_for_payload,
+    AnyValue, AnyValueRef, AnyValueRefError, CLOSURE_FLAGS_CAPTURED_MASK, ListCons, ListLink, ListTail, MAP_FLAT_MAX,
+    MapDestinationKind, STRUCT_PAYLOAD_OFFSET, SlotLayout, ValueKind, bitstring_header_word,
+    bitstring_size_for_bit_len, closure_addr_from_tagged, closure_capture_kind_slot, closure_capture_raw_slot,
+    closure_capture_set, closure_capture_value, closure_header_word, closure_header_write, closure_size_for_count,
+    heap_object_word, list_addr_from_tagged, map_addr_from_tagged, map_count, map_destination_header_word,
+    map_destination_state, map_entry, map_header_word, map_key, map_key_in_arrays, map_key_kind, map_keys_ptr,
+    map_pack_tag, map_size_for_count, map_tag_bytes_len, map_tag_ptr, map_value_kind, map_values_ptr, share_bitstring,
+    share_struct, struct_field_kind_slot, struct_field_raw_slot, struct_header_word, struct_schema_id,
+    struct_size_for_payload,
 };
 use crate::bits::{Bin, BinView, SharedBinHandle, alloc_buffer_view, alloc_view, shared_bin_append};
 use crate::bitstr::{BitReader, BitWriter};
@@ -66,20 +67,48 @@ fn map_bits_ref(bits: u64) -> AnyValueRef {
     entries_map_ref(map_addr_from_tagged(bits).expect("published map"))
 }
 
+/// Whether `cons` already continues with `tail`: the same next cell, or a
+/// terminator cell holding the same value.
+fn ends_in(cons: &ListCons, tail: AnyValue) -> bool {
+    match cons.tail() {
+        ListTail::Proper(next) => tail.kind() == ValueKind::LIST && next == tail.raw(),
+        ListTail::Terminator(cell) => {
+            let terminator = unsafe { &*(cell as *const ListCons) };
+            terminator.head_raw_kind() == (tail.raw(), tail.kind())
+        }
+        ListTail::Hole => panic!("a list cell whose tail is a hole is not rebuilt"),
+    }
+}
+
 pub fn list_head_ref(list: AnyValueRef) -> Result<AnyValueRef, AnyValueRefError> {
     let addr = list.list_addr()?;
     let cons = unsafe { &*(addr as *const ListCons) };
     any_value_ref_from_storage(&cons.head as *const u64, cons.head_kind())
 }
 
+/// What follows the cell `list` names: `[]`, the next cell, or the value the
+/// list ends in, which its terminator cell holds as a head does.
 pub fn list_tail_ref(list: AnyValueRef) -> Result<AnyValueRef, AnyValueRefError> {
     let addr = list.list_addr()?;
     let cons = unsafe { &*(addr as *const ListCons) };
-    let tail_addr = cons.tail_addr();
-    if tail_addr == 0 {
-        Ok(AnyValueRef::empty_list())
-    } else {
-        AnyValueRef::from_heap_object(ValueKind::LIST, tail_addr as *const u8)
+    match cons.tail() {
+        ListTail::Proper(0) => Ok(AnyValueRef::empty_list()),
+        ListTail::Proper(next) => AnyValueRef::from_heap_object(ValueKind::LIST, next as *const u8),
+        ending => terminator_tail_ref(ending),
+    }
+}
+
+/// The value a list ends in, read from its terminator cell.
+#[cold]
+#[inline(never)]
+fn terminator_tail_ref(tail: ListTail) -> Result<AnyValueRef, AnyValueRefError> {
+    match tail {
+        ListTail::Terminator(cell) => {
+            let terminator = unsafe { &*(cell as *const ListCons) };
+            any_value_ref_from_storage(&terminator.head as *const u64, terminator.head_kind())
+        }
+        ListTail::Hole => panic!("list_tail_ref: the tail is a hole"),
+        ListTail::Proper(_) => unreachable!("a proper tail is read in place"),
     }
 }
 
@@ -477,21 +506,43 @@ impl Heap {
         self.place_list_cons(
             RuntimeAllocSite::ListConsCopy,
             unfilled.raw(),
-            unfilled.kind(),
-            crate::any_value::EMPTY_LIST,
+            ListLink::new(crate::any_value::EMPTY_LIST, unfilled.kind()),
         )
     }
 
     fn alloc_list_cons_storage(&mut self, head_raw: u64, head_kind: ValueKind, tail_bits: u64) -> u64 {
-        self.place_list_cons(RuntimeAllocSite::ListConsStorage, head_raw, head_kind, tail_bits)
+        self.place_list_cons(
+            RuntimeAllocSite::ListConsStorage,
+            head_raw,
+            ListLink::new(tail_bits, head_kind),
+        )
     }
 
-    fn place_list_cons(&mut self, site: RuntimeAllocSite, head_raw: u64, head_kind: ValueKind, tail_bits: u64) -> u64 {
+    fn place_list_cons(&mut self, site: RuntimeAllocSite, head_raw: u64, link: ListLink) -> u64 {
         let p = self.alloc_at(site, 16);
         unsafe {
-            write(p as *mut ListCons, ListCons::new(head_raw, head_kind, tail_bits));
+            write(p as *mut ListCons, ListCons::with_link(head_raw, link));
         }
         heap_object_word(p, ValueKind::LIST)
+    }
+
+    /// The link a new cell holding a head of `head_kind` takes to `tail`. A
+    /// list is linked as it is; any other value is placed in a terminator
+    /// cell, an ordinary cell holding it as a head with `[]` for a tail, and
+    /// the link names that cell behind the terminator flag.
+    fn link_to_tail(&mut self, head_kind: ValueKind, tail: AnyValue) -> ListLink {
+        if tail.kind() == ValueKind::LIST {
+            return ListLink::to_addr(tail.raw(), head_kind);
+        }
+        assert_ne!(tail.kind(), ValueKind::NULL, "an absent value cannot end a list");
+        self.publish_contained_parts(tail.raw(), tail.kind());
+        let cell = self.place_list_cons(
+            RuntimeAllocSite::ListConsStorage,
+            tail.raw(),
+            ListLink::new(crate::any_value::EMPTY_LIST, tail.kind()),
+        );
+        let cell = list_addr_from_tagged(cell).expect("terminator cell");
+        ListLink::to_terminator(cell as u64, head_kind)
     }
 
     pub(super) fn publish_contained_parts(&mut self, raw: u64, kind: ValueKind) {
@@ -506,11 +557,14 @@ impl Heap {
         }
     }
 
-    pub fn alloc_list_cons_any(&mut self, head: AnyValue, tail: AnyValueRef) -> Result<AnyValueRef, AnyValueRefError> {
-        let tail_bits = list_tail_bits_from_ref(tail)?;
-        let list_bits = self.alloc_list_cons_slot(head, tail_bits);
-        let list_addr = list_addr_from_tagged(list_bits).expect("new list addr");
-        AnyValueRef::from_heap_object(ValueKind::LIST, list_addr)
+    /// A cell holding `head` in front of `tail`, which is any value: a list
+    /// is linked, and anything else ends the list in a terminator cell.
+    pub fn alloc_list_cons_any(&mut self, head: AnyValue, tail: AnyValue) -> AnyValueRef {
+        self.publish_contained_parts(head.raw(), head.kind());
+        let link = self.link_to_tail(head.kind(), tail);
+        let cell = self.place_list_cons(RuntimeAllocSite::ListConsStorage, head.raw(), link);
+        let list_addr = list_addr_from_tagged(cell).expect("new list addr");
+        AnyValueRef::from_heap_object(ValueKind::LIST, list_addr).expect("new list ref")
     }
 
     pub fn box_any_value_ref(&mut self, value: AnyValue) -> AnyValueRef {
@@ -1459,22 +1513,22 @@ impl Heap {
         list: AnyValueRef,
         head_raw: u64,
         head_kind: ValueKind,
-        tail: AnyValueRef,
+        tail: AnyValue,
         may_rewrite: bool,
     ) -> Result<AnyValueRef, AnyValueRefError> {
         let addr = nonempty_list_addr(list)?;
-        let tail_bits = list_tail_bits_from_ref(tail)?;
         let cons = unsafe { &mut *(addr as *mut ListCons) };
-        if cons.head_raw_kind() == (head_raw, head_kind) && cons.tail_bits() == tail_bits {
+        if cons.head_raw_kind() == (head_raw, head_kind) && ends_in(cons, tail) {
             return Ok(list);
         }
         self.publish_contained_parts(head_raw, head_kind);
+        let link = self.link_to_tail(head_kind, tail);
         let cons = unsafe { &mut *(addr as *mut ListCons) };
-        if may_rewrite && cons.rewrite_if_unaliased(head_raw, head_kind, tail_bits) {
+        if may_rewrite && cons.rewrite_if_unaliased(head_raw, link) {
             self.assert_written_object_is_young(addr);
             return Ok(list);
         }
-        let fresh = self.alloc_list_cons_storage(head_raw, head_kind, tail_bits);
+        let fresh = self.place_list_cons(RuntimeAllocSite::ListConsStorage, head_raw, link);
         let addr = list_addr_from_tagged(fresh).expect("fresh list cons");
         AnyValueRef::from_heap_object(ValueKind::LIST, addr)
     }

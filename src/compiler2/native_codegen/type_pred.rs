@@ -44,6 +44,12 @@ pub(crate) fn ty_is_list<T: Types<Ty = Ty>>(t: &mut T, value_types: &HashMap<Var
     var_ty_satisfies(t, value_types, v, want)
 }
 
+/// True when every value of `v`'s type is a list, proper or not.
+pub(crate) fn ty_is_any_list<T: Types<Ty = Ty>>(t: &mut T, value_types: &HashMap<Var, Ty>, v: Var) -> bool {
+    let want = t.any_list();
+    var_ty_satisfies(t, value_types, v, want)
+}
+
 pub(crate) fn ty_is_empty_list<T: Types<Ty = Ty>>(t: &mut T, value_types: &HashMap<Var, Ty>, v: Var) -> bool {
     let want = t.empty_list();
     var_ty_satisfies(t, value_types, v, want)

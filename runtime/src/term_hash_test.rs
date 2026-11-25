@@ -485,3 +485,43 @@ fn a_list_of_one_shared_list_hashes_without_walking_it_once_per_element() {
     }
     assert_eq!(w.hash(level), w.hash(level));
 }
+
+/// The list whose cells hold `heads` and whose last cell links to `tail`.
+fn list_ending_in(w: &mut World, heads: &[i64], tail: AnyValue) -> AnyValue {
+    heads.iter().rev().fold(tail, |tail, head| {
+        let cell = w.heap.alloc_list_cons_any(AnyValue::int(*head), tail);
+        AnyValue::from_ref(cell).expect("a list")
+    })
+}
+
+/// Intent: an improper list is ordered as Erlang orders it, element by
+/// element and then the tails as terms, so `[1 | 2]` sorts below `[1 | 3]`,
+/// below `[1]` (a number sorts below a list) and below `[1, 2]`.
+#[test]
+fn an_improper_list_compares_its_terminator_as_a_term() {
+    let mut w = world();
+    let one_two = list_ending_in(&mut w, &[1], AnyValue::int(2));
+    let one_two_again = list_ending_in(&mut w, &[1], AnyValue::int(2));
+    let one_three = list_ending_in(&mut w, &[1], AnyValue::int(3));
+    let one = list_ending_in(&mut w, &[1], AnyValue::EmptyList);
+    let proper = list_ending_in(&mut w, &[1, 2], AnyValue::EmptyList);
+    assert_eq!(w.compare(one_two, one_two_again), Ordering::Equal);
+    for (lower, higher) in [(one_two, one_three), (one_three, one), (one_two, proper)] {
+        assert_eq!(w.compare(lower, higher), Ordering::Less, "{lower:?} below {higher:?}");
+        assert_eq!(w.compare(higher, lower), Ordering::Greater);
+    }
+}
+
+/// Intent: the terminator is part of a list's identity, so a list and the
+/// improper list with the same cells hash apart, and equal ones hash alike.
+#[test]
+fn an_improper_list_hashes_its_terminator() {
+    let mut w = world();
+    let one_two = list_ending_in(&mut w, &[1], AnyValue::int(2));
+    let one_two_again = list_ending_in(&mut w, &[1], AnyValue::int(2));
+    let one_three = list_ending_in(&mut w, &[1], AnyValue::int(3));
+    let one = list_ending_in(&mut w, &[1], AnyValue::EmptyList);
+    assert_eq!(w.hash(one_two), w.hash(one_two_again));
+    assert_ne!(w.hash(one_two), w.hash(one_three));
+    assert_ne!(w.hash(one_two), w.hash(one));
+}

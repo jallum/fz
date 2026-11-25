@@ -307,8 +307,7 @@ impl QuotedSourceBuilder {
         for item in items.iter().rev().copied() {
             tail = proc
                 .heap
-                .alloc_list_cons_any(any_value_from_ref(item)?, tail)
-                .map_err(QuotedSourceError::from)?;
+                .alloc_list_cons_any(any_value_from_ref(item)?, any_value_from_ref(tail)?);
         }
         Ok(tail)
     }

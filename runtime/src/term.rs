@@ -4,7 +4,7 @@
 //! whose values are compared with the widening language operators.
 
 use crate::any_value::{
-    AnyValue, ListCons, MAP_DESTINATION_FLAG, ValueKind, closure_capture_value, closure_captured_count,
+    AnyValue, ListCons, ListTail, MAP_DESTINATION_FLAG, ValueKind, closure_capture_value, closure_captured_count,
     closure_denotation, map_count, map_entries, map_entry, map_header_is_collision, map_header_is_trie, map_key,
     map_node_child, map_node_child_count, map_node_entry_count, map_slot, struct_schema_id,
 };
@@ -375,8 +375,16 @@ impl<'a> TermComparator<'a> {
             if order != Ordering::Equal {
                 return order;
             }
-            a = ac.tail_addr() as *const u8;
-            b = bc.tail_addr() as *const u8;
+            match (ac.tail(), bc.tail()) {
+                (ListTail::Proper(next_a), ListTail::Proper(next_b)) => {
+                    a = next_a as *const u8;
+                    b = next_b as *const u8;
+                }
+                // A tail that is not the rest of a list is compared as a term:
+                // after equal heads, `[1 | 2]` sorts before `[1, 2]` as `2`
+                // sorts before `[2]`.
+                (tail_a, tail_b) => return self.order(unsafe { tail_a.value() }, unsafe { tail_b.value() }, mode),
+            }
         }
         b.is_null().cmp(&a.is_null())
     }

@@ -305,7 +305,11 @@ rows, `fz_list_cons_int`, `fz_list_cons_float`, `fz_list_cons_atom` and
 bump, see [scheduler zero-arg closures](scheduler-zero-arg-closures.md)) and
 write its two words in `native_codegen/list_cell.rs`: the head's payload, and
 the link word, the tail's address with the head's kind in the bits a ref word
-keeps its kind in. A new cell carries no alias bit. A scalar head's kind is a
+keeps its kind in. The tail travels as a (word, kind) pair, and an inline row
+requires the kind to be the constant `LIST`: native code emits the inline cell
+only when the tail's type is within `any_list()`, and calls the runtime entry
+otherwise, which places a terminator cell for a tail that is not a list (see
+`any-value.md`). A new cell carries no alias bit. A scalar head's kind is a
 constant. A ref head is decoded as `AnyValue::from_ref` decodes it (a boxed
 int, float or reference is read from its box, any other word is its payload),
 and a list or struct head is shared first by a call to
@@ -313,7 +317,8 @@ and a list or struct head is shared first by a call to
 (`fz_heap_room`) is asked only for room when the tip is full.
 
 A list cell rebuilt from the cell it replaces is decided in place too.
-`fz_list_reuse_or_cons_parts` (the head's payload word and a kind constant)
+`fz_list_reuse_or_cons_parts` (the head's payload word and a kind constant, then
+the tail's word and kind)
 and the same function applied to a head given as a ref word (decoded by
 `storage_raw` and `tag`; `REUSE_REF_HEAD`) are rows, and a call site asks `emit_reuse(body, symbol, args)`;
 `native_codegen/list_reuse.rs` writes them in the runtime function's order. The

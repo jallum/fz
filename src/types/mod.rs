@@ -123,6 +123,8 @@ pub trait Types {
     fn tuple(&mut self, elems: &[Self::Ty]) -> Self::Ty;
     fn empty_list(&mut self) -> Self::Ty;
     fn list(&mut self, elem: Self::Ty) -> Self::Ty;
+    /// Every list, proper or not, `[]` included.
+    fn any_list(&mut self) -> Self::Ty;
     fn non_empty_list(&mut self, elem: Self::Ty) -> Self::Ty {
         self.list(elem)
     }

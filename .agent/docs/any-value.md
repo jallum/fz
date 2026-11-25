@@ -305,10 +305,11 @@ object-local layout, with no detour through a built scalar ref:
 
 ```text
 fz_map_put(process, map, key_word, key_kind, value_word, value_kind)
-fz_list_cons_int(process, head_i64, tail)
+fz_list_cons_int(process, head_i64, tail_word, tail_kind)
 ```
 
-Compiled code does not call `fz_list_cons_*`: it writes the cell itself from
+Compiled code calls `fz_list_cons_*` only for a tail that may not be a list: for
+a list tail it writes the cell itself from
 the same definition (`native_codegen/list_cell.rs`, a row of the recipe table;
 see [externs](externs.md), "Inline recipes"), and the functions stay as the
 definition the recipe's test compares against.
@@ -508,13 +509,33 @@ read:
 ```text
 List cons (16 bytes): head payload word
                       link word = tail address + head kind and alias bit in the
-                                  high bits; the low nibble is clear
+                                  high bits + terminator flag (bit 63);
+                                  the low nibble is clear
 Map:                  count, one packed key/value kind byte per entry,
                       then key payload words, then value payload words
                       -- UP TO 32 ENTRIES ARE SORTED BY KEY; more are a hash trie, see below
 Closure:              ClosureDenotationId + header word, code pointer,
                       capture payload words, capture kind bytes
 ```
+
+A list that ends in a value that is not a list (`[1 | 2]`) is an *improper*
+list. `ListLink::tail()` answers a `ListTail`: `Proper(addr)` (0 is `[]`),
+`Terminator(cell)` or `Hole`. The last cell's link carries the terminator flag
+(bit 63, disjoint from the address, kind, alias and literal bits) and names a
+*terminator cell*: an ordinary 16-byte cons whose head holds the terminator as
+a (payload, kind) pair and whose tail is `[]`. A terminator cell is therefore an
+ordinary list cell to the collector (`ListCons::tail_cell_addr` is the one edge
+it follows), to deep copy and to `share_spine`; a scalar terminator is stored in
+the cell and boxed nowhere. The constructors are `ListLink::to_addr` (proper
+only), `to_terminator` and `hole`; `ListTail::value` is the tail as a term and
+refuses a hole. A set flag with a zero address is a hole, reserved for a
+destination that fills its terminator after the cell is placed; every reader
+refuses it. `Heap::alloc_list_cons_any(head, tail)` places the terminator cell
+for a tail that is not a list, and a cell rebuilt in place takes a whole new
+link, so a rewrite drops the flag. `length` of an improper list raises
+`ArgumentError` (`fz_list_length` answers -1); comparison orders the terminators
+as terms after equal elements, as Erlang does, and the hash folds the
+terminator in.
 
 Every header word keeps its low nibble clear, because the low nibble belongs to
 the Cheney forwarding marker (see "GC: Roots, Edges, And Lifetime" below). Little-endian:

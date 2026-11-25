@@ -1029,9 +1029,15 @@ unsafe fn size_of_resource(_addr: *const u8) -> usize {
 /// List cons cell: head (8) + link/head-kind (8) = 16 bytes.
 ///
 /// `head` is raw payload. `link` stores an architecture-local tail address plus
-/// a high metadata field: 4 bits of head kind followed by one alias flag bit.
+/// a high metadata field: 4 bits of head kind followed by one alias flag bit,
+/// and the terminator flag in bit 63.
 /// Low pointer-alignment bits stay clear so future layout checks can keep using
 /// normal aligned-address invariants.
+///
+/// A list that ends in a value that is not a list sets the terminator flag in
+/// its last cell's link. The link's address is then a terminator cell: an
+/// ordinary cell whose head holds that value as a payload word and a kind, and
+/// whose tail is `[]`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct ListCons {
@@ -1056,7 +1062,48 @@ const _: () = assert!(
     AnyValueRefPacking::current().literal_bit() != LIST_LINK_ALIAS_MASK,
     "the literal bit and the alias bit are distinct"
 );
-const LIST_LINK_METADATA_MASK: u64 = LIST_LINK_KIND_MASK | LIST_LINK_ALIAS_MASK;
+/// Set in a link whose tail ends in a value that is not a list. The link's
+/// address is then the terminator cell, and a flag with no address is a hole.
+pub const LIST_LINK_TERMINATOR_MASK: u64 = 1u64 << 63;
+const _: () = assert!(
+    (LIST_LINK_TERMINATOR_MASK
+        & (LIST_LINK_ADDR_MASK
+            | LIST_LINK_KIND_MASK
+            | LIST_LINK_ALIAS_MASK
+            | AnyValueRefPacking::current().literal_bit()))
+        == 0,
+    "the terminator flag shares no bit with the address, kind, alias or literal bit"
+);
+const LIST_LINK_METADATA_MASK: u64 = LIST_LINK_KIND_MASK | LIST_LINK_ALIAS_MASK | LIST_LINK_TERMINATOR_MASK;
+
+/// What a link says follows its cell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListTail {
+    /// The next cell, or `[]` when the address is 0.
+    Proper(u64),
+    /// The terminator cell: a 16-byte cell whose head is the value the list
+    /// ends in and whose tail is `[]`.
+    Terminator(u64),
+    /// A terminator whose cell has not been placed yet. Only the code that
+    /// fills a destination writes one, and every other reader refuses it.
+    Hole,
+}
+
+impl ListTail {
+    /// The tail as a term: `[]`, the rest of the list, or the value the list
+    /// ends in. A hole is not a term, and is refused.
+    ///
+    /// # Safety
+    /// A terminator or proper address must be a published list cell.
+    pub unsafe fn value(self) -> AnyValue {
+        match self {
+            Self::Proper(0) => AnyValue::EmptyList,
+            Self::Proper(addr) => AnyValue::heap_ptr(addr as *mut u8, ValueKind::LIST),
+            Self::Terminator(addr) => unsafe { &*(addr as *const ListCons) }.head_value(),
+            Self::Hole => panic!("a list tail that is a hole is not a value"),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ListLink(u64);
@@ -1067,8 +1114,26 @@ impl ListLink {
     }
 
     /// The link to the cell at `tail_addr`, or to the empty list when it is 0.
+    /// A proper tail only: a list that ends in another value links through
+    /// [`ListLink::to_terminator`].
     pub fn to_addr(tail_addr: u64, head_kind: ValueKind) -> Self {
+        debug_assert_eq!(
+            tail_addr & !LIST_LINK_ADDR_MASK,
+            0,
+            "a tail address carries no metadata"
+        );
         Self(tail_addr | ((head_kind.tag() as u64) << LIST_LINK_KIND_SHIFT))
+    }
+
+    /// The link to the terminator cell at `cell_addr`.
+    pub fn to_terminator(cell_addr: u64, head_kind: ValueKind) -> Self {
+        debug_assert_ne!(cell_addr, 0, "a terminator cell has an address; a hole is `hole`");
+        Self(Self::to_addr(cell_addr, head_kind).0 | LIST_LINK_TERMINATOR_MASK)
+    }
+
+    /// The link to a terminator that has no cell yet.
+    pub fn hole(head_kind: ValueKind) -> Self {
+        Self(Self::to_addr(0, head_kind).0 | LIST_LINK_TERMINATOR_MASK)
     }
 
     pub fn from_raw(raw: u64) -> Self {
@@ -1084,17 +1149,24 @@ impl ListLink {
         ValueKind::new(tag).expect("list head kind tag")
     }
 
-    pub fn tail_addr(self) -> u64 {
-        self.0 & LIST_LINK_ADDR_MASK
+    /// What follows this cell.
+    #[inline(always)]
+    pub fn tail(self) -> ListTail {
+        let addr = self.tail_cell_addr();
+        match (self.0 & LIST_LINK_TERMINATOR_MASK != 0, addr) {
+            (false, _) => ListTail::Proper(addr),
+            (true, 0) => ListTail::Hole,
+            (true, _) => ListTail::Terminator(addr),
+        }
     }
 
-    pub fn tail_bits(self) -> u64 {
-        let addr = self.tail_addr();
-        if addr == 0 {
-            EMPTY_LIST
-        } else {
-            heap_object_word(addr as *const u8, ValueKind::LIST)
-        }
+    /// The address of the next 16-byte cell, whether it is the next cell of
+    /// the list or its terminator cell; 0 for `[]` and for a hole. The
+    /// collector, a deep copy and the sharing walk follow this edge, since
+    /// each treats both kinds of cell alike.
+    #[inline(always)]
+    pub fn tail_cell_addr(self) -> u64 {
+        self.0 & LIST_LINK_ADDR_MASK
     }
 
     pub fn aliased(self) -> bool {
@@ -1105,11 +1177,9 @@ impl ListLink {
         self.0 |= LIST_LINK_ALIAS_MASK;
     }
 
-    pub fn with_tail(self, tail_bits: u64) -> Self {
-        self.with_tail_addr(list_tail_addr_from_bits(tail_bits))
-    }
-
-    /// This link with its tail at `tail_addr`, zero for the empty list.
+    /// This link with its tail at `tail_addr`, zero for the empty list. The
+    /// flag a terminator link carries stays, so a relocated terminator link
+    /// still names its terminator cell.
     pub fn with_tail_addr(self, tail_addr: u64) -> Self {
         debug_assert_eq!(
             tail_addr & !LIST_LINK_ADDR_MASK,
@@ -1117,6 +1187,13 @@ impl ListLink {
             "a tail address carries no metadata"
         );
         Self((self.0 & LIST_LINK_METADATA_MASK) | tail_addr)
+    }
+
+    /// This link ending the way `other` does: behind the terminator flag when
+    /// `other` is, so a copy of a cell keeps what its original's tail was.
+    #[inline(always)]
+    pub fn with_terminator_of(self, other: Self) -> Self {
+        Self(self.0 | (other.0 & LIST_LINK_TERMINATOR_MASK))
     }
 
     pub fn with_head_kind(self, head_kind: ValueKind) -> Self {
@@ -1128,6 +1205,12 @@ impl ListLink {
 impl ListCons {
     pub fn new(head_raw: u64, head_kind: ValueKind, tail_bits: u64) -> Self {
         Self::linked(head_raw, ListLink::new(tail_bits, head_kind))
+    }
+
+    /// A cell holding `head_raw` behind `link`, which carries the head's kind
+    /// and the tail.
+    pub fn with_link(head_raw: u64, link: ListLink) -> Self {
+        Self::linked(head_raw, link)
     }
 
     /// A cell whose tail is the cell at `tail_addr`, or the empty list when it
@@ -1147,12 +1230,13 @@ impl ListCons {
         self.link().head_kind()
     }
 
-    pub fn tail_addr(&self) -> u64 {
-        self.link().tail_addr()
+    #[inline(always)]
+    pub fn tail(&self) -> ListTail {
+        self.link().tail()
     }
 
-    pub fn tail_bits(&self) -> u64 {
-        self.link().tail_bits()
+    pub fn tail_cell_addr(&self) -> u64 {
+        self.link().tail_cell_addr()
     }
 
     pub fn head_raw_kind(&self) -> (u64, ValueKind) {
@@ -1187,7 +1271,7 @@ impl ListCons {
             }
             cons.mark_aliased();
             marked += 1;
-            addr = cons.tail_addr() as *mut u8;
+            addr = cons.tail_cell_addr() as *mut u8;
         }
         marked
     }
@@ -1204,19 +1288,18 @@ impl ListCons {
         self.link = self.link().with_tail_addr(tail_addr).raw();
     }
 
-    fn set_head_raw_kind_tail(&mut self, head_raw: u64, head_kind: ValueKind, tail_bits: u64) {
-        self.head = head_raw;
-        self.link = self.link().with_head_kind(head_kind).with_tail(tail_bits).raw();
-    }
-
-    pub fn rewrite_if_unaliased(&mut self, head_raw: u64, head_kind: ValueKind, tail_bits: u64) -> bool {
+    /// Replace this cell's head and link when no second holder shares it. The
+    /// new link carries no alias bit and none of the old link's flags.
+    pub fn rewrite_if_unaliased(&mut self, head_raw: u64, link: ListLink) -> bool {
         if self.aliased() {
             return false;
         }
-        self.set_head_raw_kind_tail(head_raw, head_kind, tail_bits);
+        self.head = head_raw;
+        self.link = link.raw();
         true
     }
 
+    #[inline(always)]
     pub fn link(&self) -> ListLink {
         ListLink::from_raw(self.link)
     }
@@ -1229,7 +1312,7 @@ pub fn list_addr_from_tagged(bits: u64) -> Option<*mut u8> {
 
 #[inline]
 pub fn list_tail_addr_from_bits(bits: u64) -> u64 {
-    if bits == EMPTY_LIST || bits == NIL_BITS || bits == 0 {
+    if bits == EMPTY_LIST {
         0
     } else if let Some(addr) = addr_of_kind(bits, ValueKind::LIST) {
         addr as u64
@@ -1700,7 +1783,7 @@ pub mod debug {
     use crate::module_name::ModuleName;
 
     use super::{
-        AnyValue, AnyValueRef, EMPTY_LIST, FALSE_ATOM_ID, ListCons, NIL_ATOM_ID, TRUE_ATOM_ID, ValueKind,
+        AnyValue, AnyValueRef, EMPTY_LIST, FALSE_ATOM_ID, ListCons, ListTail, NIL_ATOM_ID, TRUE_ATOM_ID, ValueKind,
         closure_addr_from_tagged, closure_arity, closure_denotation, list_addr_from_tagged, map_addr_from_tagged,
         map_entries, struct_addr_from_tagged, struct_schema_id,
     };
@@ -1732,7 +1815,8 @@ pub mod debug {
             let Some(bits) = options.heap_object_word() else {
                 return Self::DEFAULT;
             };
-            list_cells(bits)
+            list_walk(bits)
+                .cells
                 .into_iter()
                 .filter_map(|cell| pair(proc, cell.head_value()))
                 .filter(
@@ -2118,10 +2202,13 @@ pub mod debug {
         }
 
         /// A list: a charlist as `~c"…"`, a keyword list as `[a: 1]`, any
-        /// other as `[1, 2]`. A list's tail is always a list, so there is no
-        /// improper form to print.
+        /// other as `[1, 2]`. A list that ends in a value that is not a list
+        /// prints as `[1, 2 | 3]` and is never a charlist or a keyword list.
         fn list(&mut self, bits: u64) -> String {
-            let cells = list_cells(bits);
+            let ListWalk { cells, terminator } = list_walk(bits);
+            if let Some(terminator) = terminator {
+                return self.improper_list(&cells, terminator);
+            }
             if is_ascii_printable(&cells) {
                 return charlist(&cells);
             }
@@ -2136,6 +2223,24 @@ pub mod debug {
                 Some(keywords) => self.keyword_container("[", "]", keywords),
                 None => self.container("[", "]", cells, |renderer, cell| renderer.cons_head(cell)),
             }
+        }
+
+        /// `Inspect.Algebra.container_each`'s improper clause: the budget is
+        /// checked before anything, and the last element and the terminator
+        /// form one item, `left | right`, which costs what one element costs.
+        fn improper_list(&mut self, cells: &[&ListCons], terminator: &ListCons) -> String {
+            let last = cells.len() - 1;
+            let items = cells
+                .iter()
+                .enumerate()
+                .map(|(index, cell)| (*cell, (index == last).then_some(terminator)));
+            self.container("[", "]", items, |renderer, (cell, terminator)| {
+                let head = renderer.cons_head(cell);
+                match terminator {
+                    Some(terminator) => format!("{head} | {}", renderer.cons_head(terminator)),
+                    None => head,
+                }
+            })
         }
 
         fn cons_head(&mut self, cons: &ListCons) -> String {
@@ -2181,16 +2286,33 @@ pub mod debug {
         ))
     }
 
-    /// The cells of a list in order.
-    fn list_cells<'a>(bits: u64) -> Vec<&'a ListCons> {
-        let mut cells = Vec::new();
-        let mut current = bits;
-        while let Some(cell) = list_addr_from_tagged(current).filter(|cell| !cell.is_null()) {
+    /// The cells of a list in order, and the terminator cell when the last
+    /// cell's tail is not a list.
+    struct ListWalk<'a> {
+        cells: Vec<&'a ListCons>,
+        terminator: Option<&'a ListCons>,
+    }
+
+    fn list_walk<'a>(bits: u64) -> ListWalk<'a> {
+        let mut walk = ListWalk {
+            cells: Vec::new(),
+            terminator: None,
+        };
+        let mut next = list_addr_from_tagged(bits).filter(|cell| !cell.is_null());
+        while let Some(cell) = next {
             let cons = unsafe { &*(cell as *const ListCons) };
-            cells.push(cons);
-            current = cons.tail_bits();
+            walk.cells.push(cons);
+            next = match cons.tail() {
+                ListTail::Proper(0) => None,
+                ListTail::Proper(addr) => Some(addr as *mut u8),
+                ListTail::Terminator(addr) => {
+                    walk.terminator = Some(unsafe { &*(addr as *const ListCons) });
+                    None
+                }
+                ListTail::Hole => panic!("a list whose tail is a hole is not a value to render"),
+            };
         }
-        cells
+        walk
     }
 
     /// `List.ascii_printable?/1`: a non-empty list of integers that are bell

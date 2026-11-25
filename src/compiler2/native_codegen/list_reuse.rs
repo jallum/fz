@@ -22,7 +22,7 @@
 //! site knows it, are constants the call site passes; the row reads them when
 //! the code is emitted.
 
-use super::list_cell::{Head, decode, link_word, place_cell};
+use super::list_cell::{Head, assert_tail_is_list, decode, link_word, place_cell};
 use super::*;
 use cranelift_codegen::ir::{self, BlockArg, InstBuilder, MemFlagsData, condcodes::IntCC, types};
 use fz_runtime::any_value::{LIST_CONS_LINK_OFFSET, LIST_LINK_ALIAS_MASK, ValueKind};
@@ -47,8 +47,8 @@ const MARKED_KINDS: [ValueKind; 4] = [
 
 /// Answer the ref word of the cell that holds the rebuilt list. `args` are
 /// the runtime function's: the process, the source cell's ref, the head (a
-/// ref word, or a payload word and its kind), the tail's ref and the rewrite
-/// permission.
+/// ref word, or a payload word and its kind), the tail's address and kind
+/// (a constant `LIST`) and the rewrite permission.
 pub(super) fn emit_list_reuse<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
     lane: ReuseLane,
@@ -56,8 +56,12 @@ pub(super) fn emit_list_reuse<M: cranelift_module::Module>(
     constant: impl Fn(&CodegenFn<'_, '_, M>, ir::Value) -> i64,
 ) -> ir::Value {
     let (source, tail, rewrite, head) = match (lane, args) {
-        (ReuseLane::Ref, &[_process, source, head, tail, rewrite]) => (source, tail, rewrite, Replacement::Ref(head)),
-        (ReuseLane::Parts, &[_process, source, raw, kind, tail, rewrite]) => {
+        (ReuseLane::Ref, &[_process, source, head, tail, tail_kind, rewrite]) => {
+            assert_tail_is_list(body, tail_kind);
+            (source, tail, rewrite, Replacement::Ref(head))
+        }
+        (ReuseLane::Parts, &[_process, source, raw, kind, tail, tail_kind, rewrite]) => {
+            assert_tail_is_list(body, tail_kind);
             let kind = u8::try_from(constant(body, kind)).expect("a head kind fits a byte");
             let kind = ValueKind::new(kind).expect("a head kind");
             (source, tail, rewrite, Replacement::Parts { raw, kind })
@@ -72,8 +76,7 @@ pub(super) fn emit_list_reuse<M: cranelift_module::Module>(
 
     let replacement = head.decode(body);
     let source_address = address_field(body.b, source);
-    let tail_address = address_field(body.b, tail);
-    let link = link_word(body, &replacement, tail_address);
+    let link = link_word(body, &replacement, tail);
     let flags = MemFlagsData::trusted();
     let old_head = body.b.ins().load(types::I64, flags, source_address, 0);
     let old_link = body
@@ -123,7 +126,7 @@ pub(super) fn emit_list_reuse<M: cranelift_module::Module>(
 
     body.b.switch_to_block(fresh);
     body.b.seal_block(fresh);
-    let cell = place_cell(body, &replacement, tail_address);
+    let cell = place_cell(body, &replacement, tail);
     body.b.ins().jump(done, &[BlockArg::Value(cell)]);
 
     body.b.switch_to_block(done);

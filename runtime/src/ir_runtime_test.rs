@@ -851,16 +851,23 @@ fn list_ref_from_bits(bits: u64) -> AnyValueRef {
     AnyValueRef::from_heap_object(ValueKind::LIST, addr).expect("list ref")
 }
 
+/// The word a list `bits` is passed as to an entry that takes a tail: its address.
+fn list_tail_word(bits: u64) -> u64 {
+    list_addr_from_tagged(bits).expect("list addr") as u64
+}
+
 #[test]
 fn list_retention_decodes_a_dynamic_head_ref_once() {
     let reuse = |process: &mut Process, source: u64, head_ref: u64, tail: u64, permission: u64| {
         let head = any_value_ref_from_word(head_ref, "head");
+        let tail = Stored::of(AnyValue::from_ref(any_value_ref_from_word(tail, "tail")).expect("tail value"));
         fz_list_reuse_or_cons_parts(
             process,
             source,
             head.storage_raw().expect("list head storage"),
             u64::from(head.tag().tag()),
-            tail,
+            tail.word,
+            tail.kind,
             permission,
         )
     };
@@ -910,7 +917,8 @@ fn list_reuse_or_cons_parts_updates_process_counters() {
             list_ref_from_bits(source).raw_word(),
             7,
             ValueKind::ATOM.tag() as u64,
-            list_ref_from_bits(new_tail).raw_word(),
+            list_tail_word(new_tail),
+            ValueKind::LIST.tag() as u64,
             1,
         );
 
@@ -931,7 +939,8 @@ fn list_reuse_or_cons_parts_updates_process_counters() {
             source_ref.raw_word(),
             11,
             ValueKind::INT.tag() as u64,
-            list_ref_from_bits(new_tail).raw_word(),
+            list_tail_word(new_tail),
+            ValueKind::LIST.tag() as u64,
             1,
         );
 
@@ -1024,8 +1033,7 @@ fn a_struct_becomes_shared_wherever_a_second_holder_can_appear() {
     let head = tuple_ref(&mut process, point, &[AnyValue::int(1), AnyValue::int(2)]);
     process
         .heap
-        .alloc_list_cons_any(AnyValue::from_ref(head).expect("head"), AnyValueRef::empty_list())
-        .expect("cons");
+        .alloc_list_cons_any(AnyValue::from_ref(head).expect("head"), AnyValue::EmptyList);
     assert!(is_shared(head), "a struct stored as a list head");
 
     let kept = tuple_ref(&mut process, point, &[AnyValue::int(1), AnyValue::int(2)]);

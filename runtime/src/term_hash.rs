@@ -26,7 +26,7 @@
 //! address, and a container reached again costs a lookup.
 
 use crate::any_value::{
-    AnyValue, ListCons, ValueKind, closure_capture_value, closure_captured_count, closure_denotation,
+    AnyValue, ListCons, ListTail, ValueKind, closure_capture_value, closure_captured_count, closure_denotation,
     map_for_each_entry, struct_schema_id,
 };
 use crate::bits::Bin;
@@ -207,7 +207,13 @@ impl<'a> TermHasher<'a> {
             let cons = unsafe { &*cell.cast::<ListCons>() };
             hash = combine(hash, self.hash_in(cons.head_value(), walk));
             length += 1;
-            cell = cons.tail_addr() as *const u8;
+            match cons.tail() {
+                ListTail::Proper(next) => cell = next as *const u8,
+                tail @ (ListTail::Terminator(_) | ListTail::Hole) => {
+                    hash = combine(hash, self.hash_in(unsafe { tail.value() }, walk));
+                    break;
+                }
+            }
         }
         combine(hash, length)
     }

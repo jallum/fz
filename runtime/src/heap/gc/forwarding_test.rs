@@ -165,7 +165,7 @@ fn a_list_cell_whose_head_reads_like_a_marker_survives_a_collection() {
     while !cur.is_null() {
         let cell = unsafe { &*(cur as *const crate::any_value::ListCons) };
         heads.push(cell.head_value());
-        cur = cell.tail_addr() as *mut u8;
+        cur = cell.tail_cell_addr() as *mut u8;
     }
     let expected: Vec<AnyValue> = [0xF, 0x48, 1, 8, 0x11].into_iter().map(AnyValue::int).collect();
     assert_eq!(heads, expected);

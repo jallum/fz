@@ -1,5 +1,5 @@
 use super::*;
-use crate::any_value::{heap_word_addr, struct_field_kind_slot, struct_field_raw_slot};
+use crate::any_value::{struct_field_kind_slot, struct_field_raw_slot};
 use crate::heap::{NamedSchema, Schema, SchemaRegistry};
 use crate::module_name::ModuleName;
 use crate::process::Node;
@@ -543,14 +543,15 @@ impl Fixture {
     /// Each element of `list` as the word and kind its cell holds, front to back.
     fn elements(&self, list: AnyValueRef) -> Vec<(u64, ValueKind)> {
         let mut elements = Vec::new();
-        let mut bits = list.raw_word();
-        if list.is_empty_list() {
-            return elements;
-        }
-        while bits != crate::any_value::EMPTY_LIST {
-            let cell = unsafe { &*(heap_word_addr(bits) as *const crate::any_value::ListCons) };
+        let mut addr = list
+            .list_addr()
+            .ok()
+            .filter(|addr| !addr.is_null())
+            .map(|addr| addr as u64);
+        while let Some(cell_addr) = addr {
+            let cell = unsafe { &*(cell_addr as *const crate::any_value::ListCons) };
             elements.push((cell.head, cell.head_kind()));
-            bits = cell.link().tail_bits();
+            addr = Some(cell.tail_cell_addr()).filter(|addr| *addr != 0);
         }
         elements
     }
@@ -656,10 +657,7 @@ fn a_struct_is_listed_with_its_module_and_its_fields() {
 #[test]
 fn a_heap_value_is_listed_as_the_same_object_the_map_holds() {
     let mut f = fixture();
-    let inner = f
-        .heap
-        .alloc_list_cons_any(AnyValue::int(7), AnyValueRef::empty_list())
-        .expect("list");
+    let inner = f.heap.alloc_list_cons_any(AnyValue::int(7), AnyValue::EmptyList);
     let entries = vec![
         (f.atom("held"), AnyValue::from_ref(inner).expect("list value")),
         (AnyValue::int(-1), f.atom("ok")),

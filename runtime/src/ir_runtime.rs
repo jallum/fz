@@ -1955,45 +1955,58 @@ pub extern "C" fn fz_list_is_cons(list_ref_word: u64) -> u64 {
     u64::from(list.tag() == ValueKind::LIST && !list.is_empty_list())
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_list_cons_any(process: *mut Process, head_ref_word: u64, tail_ref_word: u64) -> u64 {
-    let head = any_value_from_ref_word(head_ref_word, "fz_list_cons_any head");
-    let tail = any_value_ref_from_word(tail_ref_word, "fz_list_cons_any tail");
+/// A cell holding `head` in front of the tail given as its stored word and
+/// kind. A list tail is linked; any other value, whatever its kind, ends the
+/// list in a terminator cell, and nothing is boxed to carry it.
+fn list_cons(process: *mut Process, head: AnyValue, tail_word: u64, tail_kind: u64, context: &str) -> u64 {
+    let tail = Stored {
+        word: tail_word,
+        kind: tail_kind,
+    }
+    .value(context);
     (unsafe { &mut *process })
         .heap
         .alloc_list_cons_any(head, tail)
-        .expect("fz_list_cons_any")
         .raw_word()
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_list_cons_int(process: *mut Process, head: i64, tail_ref_word: u64) -> u64 {
-    let tail = any_value_ref_from_word(tail_ref_word, "fz_list_cons_int tail");
-    (unsafe { &mut *process })
-        .heap
-        .alloc_list_cons_int(head, tail)
-        .expect("fz_list_cons_int")
-        .raw_word()
+pub extern "C" fn fz_list_cons_any(process: *mut Process, head_ref_word: u64, tail_word: u64, tail_kind: u64) -> u64 {
+    let head = any_value_from_ref_word(head_ref_word, "fz_list_cons_any head");
+    list_cons(process, head, tail_word, tail_kind, "fz_list_cons_any tail")
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_list_cons_float(process: *mut Process, head: f64, tail_ref_word: u64) -> u64 {
-    let tail = any_value_ref_from_word(tail_ref_word, "fz_list_cons_float tail");
-    (unsafe { &mut *process })
-        .heap
-        .alloc_list_cons_float(head, tail)
-        .expect("fz_list_cons_float")
-        .raw_word()
+pub extern "C" fn fz_list_cons_int(process: *mut Process, head: i64, tail_word: u64, tail_kind: u64) -> u64 {
+    list_cons(
+        process,
+        AnyValue::int(head),
+        tail_word,
+        tail_kind,
+        "fz_list_cons_int tail",
+    )
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_list_cons_atom(process: *mut Process, atom_id: u64, tail_ref_word: u64) -> u64 {
-    let tail = any_value_ref_from_word(tail_ref_word, "fz_list_cons_atom tail");
-    (unsafe { &mut *process })
-        .heap
-        .alloc_list_cons_atom(atom_id as u32, tail)
-        .expect("fz_list_cons_atom")
-        .raw_word()
+pub extern "C" fn fz_list_cons_float(process: *mut Process, head: f64, tail_word: u64, tail_kind: u64) -> u64 {
+    list_cons(
+        process,
+        AnyValue::float(head),
+        tail_word,
+        tail_kind,
+        "fz_list_cons_float tail",
+    )
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_list_cons_atom(process: *mut Process, atom_id: u64, tail_word: u64, tail_kind: u64) -> u64 {
+    list_cons(
+        process,
+        AnyValue::atom(atom_id as u32),
+        tail_word,
+        tail_kind,
+        "fz_list_cons_atom tail",
+    )
 }
 
 // Reading a list head/tail is a pure dereference of the self-describing list
@@ -2046,12 +2059,17 @@ pub extern "C" fn fz_list_reuse_or_cons_parts(
     list_ref_word: u64,
     head_raw: u64,
     head_kind_tag: u64,
-    tail_ref_word: u64,
+    tail_word: u64,
+    tail_kind: u64,
     may_rewrite: u64,
 ) -> u64 {
     let list = any_value_ref_from_word(list_ref_word, "fz_list_reuse_or_cons_parts list");
     let head_kind = ValueKind::new(head_kind_tag as u8).expect("fz_list_reuse_or_cons_parts head kind");
-    let tail = any_value_ref_from_word(tail_ref_word, "fz_list_reuse_or_cons_parts tail");
+    let tail = Stored {
+        word: tail_word,
+        kind: tail_kind,
+    }
+    .value("fz_list_reuse_or_cons_parts tail");
     let process = unsafe { &mut *process };
     process.list_retention_attempts = process.list_retention_attempts.saturating_add(1);
     let result = process

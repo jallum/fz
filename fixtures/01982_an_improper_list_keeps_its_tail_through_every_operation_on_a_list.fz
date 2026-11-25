@@ -1,0 +1,103 @@
+#---
+# purpose: "a list whose last tail is not a list prints, matches, compares, hashes, measures, travels and survives collections as Elixir's does"
+# oracle: self
+# oracle.stamp: 75c763e317bf4666
+#---
+defmodule Main do
+  def t(x), do: [1 | x]
+
+  def tail_plus_one(x) do
+    [_ | y] = t(x)
+    y + 1
+  end
+
+  def spread([a, b | c]), do: {a, b, c}
+
+  def sized(l) when length(l) > 0, do: :proper_and_not_empty
+  def sized(_), do: :fell_through
+
+  def shape([1 | 2]), do: :one_pipe_two
+  def shape([1, 2]), do: :one_two
+  def shape(_), do: :other
+
+  def churn(0, acc), do: acc
+  def churn(n, acc), do: churn(n - 1, [n | acc])
+
+  def echo(parent) do
+    receive do
+      l -> send(parent, {:echo, l})
+    end
+  end
+
+  def main() do
+    IO.inspect([1, 2 | 3])
+    IO.inspect(t(2))
+    IO.inspect([1 | 2.5])
+    IO.inspect([1 | :b])
+    IO.inspect([1 | "bin"])
+    IO.inspect([1 | {2, 3}])
+    IO.inspect([0 | %{a: 1}])
+    IO.inspect([1 | nil])
+    IO.inspect([1 | nil] == [1])
+    IO.inspect([1 | [2]])
+    IO.inspect(tail_plus_one(2))
+    IO.inspect(spread([0 | t(7)]))
+
+    IO.inspect(length([1, 2]))
+    IO.inspect(try do length(t(2)) rescue ArgumentError -> :length_raised end)
+    IO.inspect(sized([1]))
+    IO.inspect(sized(t(2)))
+    IO.inspect(sized([]))
+
+    IO.inspect(shape(t(2)))
+    IO.inspect(shape([1, 2]))
+    IO.inspect(shape(t([2])))
+
+    IO.inspect(t(2) == t(2))
+    IO.inspect(t(2) == [1, 2])
+    IO.inspect(t(2) < [1, 2])
+    IO.inspect([1, 2] < t(2))
+    IO.inspect(t(2) < t(3))
+    IO.inspect(t(2) < [2])
+    IO.inspect([2 | 1] > [1, 5])
+    IO.inspect(t(:a) < t(:b))
+    IO.inspect(t(2) === t(2))
+
+    map = %{t(2) => :improper, [1, 2] => :proper}
+    IO.inspect(map[t(2)])
+    IO.inspect(map[[1, 2]])
+    IO.inspect(Map.has_key?(map, t(3)))
+    IO.inspect(map)
+
+    parent = self()
+    pid = spawn(fn -> echo(parent) end)
+    send(pid, [1, 2 | 3])
+
+    receive do
+      {:echo, l} -> IO.inspect(l)
+    end
+
+    send(self(), t(%{k: :v}))
+
+    receive do
+      l -> IO.inspect(l)
+    end
+
+    keep = [1, 2 | 3]
+    keep_map = [0 | %{a: 1}]
+    keep_float = [1 | 2.5]
+    20000 = length(churn(20000, []))
+    20000 = length(churn(20000, []))
+    IO.inspect({keep, keep_map, keep_float})
+
+    IO.inspect(inspect([1, 2 | 3]))
+    IO.inspect(inspect([1, 2 | 3], limit: 1))
+    IO.inspect(inspect([1 | 2], limit: 1))
+    IO.inspect(inspect([1, 2 | 3], limit: 2))
+    IO.inspect(inspect([[1 | 2], 3 | 4]))
+    IO.inspect(inspect([97 | 98]))
+    IO.inspect(inspect([{:a, 1} | 2]))
+  end
+end
+
+Main.main()

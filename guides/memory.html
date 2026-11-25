@@ -155,14 +155,19 @@ heap pointer tags and container-local metadata.</p>
 <pre>
   offset 0:  head: u64
   offset 8:  link: u64
+             bit 63        = terminator flag
              high metadata = alias flag + head kind tag
              address bits  = next cons address, or 0 for end-of-list
              low 4 bits    = clear pointer-alignment bits
 </pre>
 
 <p>The cell itself is named by a <code>TAG_LIST</code> pointer. Empty list is
-the null next address. Improper-list representation is outside this first
-layout migration and must be handled by a follow-up if encountered. The alias
+the null next address. A list that ends in a value that is not a list
+(<code>[1 | 2]</code>) links its last cell to a <em>terminator cell</em> with the
+terminator flag set: an ordinary cons cell whose head holds the terminator and
+whose tail is <code>[]</code>, so the collector and a copy treat it like any
+other cell. A set flag with a zero address is a <em>hole</em>, reserved for a
+destination that fills its terminator later; every reader refuses it. The alias
 flag is a conservative reuse guard: runtime helpers may mark a cons aliased.
 Compiler-facing reuse helpers treat an aliased source cell as an allocation
 miss: unaliased cells may be relinked in place, while aliased cells use
