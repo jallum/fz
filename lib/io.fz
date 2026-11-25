@@ -13,8 +13,7 @@ defmodule IO do
   call site, or at the file and line it names; run by a program, it is written
   to standard error.
 
-  Absent: a device argument, `inspect/2` options and `label:`, and the rest of
-  Elixir's `IO`.
+  Absent: a device argument and the rest of Elixir's `IO`.
   """
 
   @doc """
@@ -57,7 +56,11 @@ defmodule IO do
   end
 
   @doc """
-  Prints `Kernel.inspect(item)` and a newline, and returns `item` unchanged.
+  Prints `Kernel.inspect(item, opts)` and a newline, and returns `item`
+  unchanged.
+
+  `label:` puts a label and `": "` before the value; a `nil` or `false` label
+  prints none. The other options are those `Kernel.inspect/2` takes.
 
   ## Examples
 
@@ -65,10 +68,26 @@ defmodule IO do
       # prints: [1, "s"]
       #=> [1, "s"]
 
+      IO.inspect([1, 2, 3], label: "xs", limit: 2)
+      # prints: xs: [1, 2, ...]
+      #=> [1, 2, 3]
+
   """
   @spec inspect(t) :: t when t: any
   def inspect(item) do
     puts(Kernel.inspect(item))
+    item
+  end
+
+  @doc """
+  Prints `item` as `inspect/1` does, after the `label:` in `opts` if there is
+  one, with the other `opts` as `Kernel.inspect/2` takes them.
+  """
+  @spec inspect(t, keyword) :: t when t: any
+  def inspect(item, opts) do
+    {label, inspect_opts} = Keyword.pop(opts, :label)
+    text = Kernel.inspect(item, inspect_opts)
+    puts(if(label, do: to_chardata(label) <> ": " <> text, else: text))
     item
   end
 
