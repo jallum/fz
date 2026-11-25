@@ -5,14 +5,15 @@
     "fz-mue.7",
     "fz-sc8.122"
   ],
+  "closed_at": "2026-11-25T04:16:00Z",
   "created": "2026-11-24T22:16:32Z",
   "description": "From: Optimize. Approved by the user 2026-11-24 (reworked page https://claude.ai/artifact/8W4224acER7sMprXf72Bba, \"approved\", relayed by Optimize). Supersedes the earlier \"term-carrying exception from an fz-ABI extern\" plan.\n\nToday: map externs return `:: any`, so a proven map loses its proof at every extern return. CLIF shows a proven map's put has no kind test, while a put loop has 8. The runtime checks \"expected a map\" and panics (e.g. Map.put(1, :a, 2): runtime/src/heap/map_view.rs:70) where Elixir raises BadMapError.\n\nChange:\n- :maps and Map specs say `map` where they take or return one.\n- The map externs (fz_map_put, delete, has_key, count, keys, values, the walk, from_kv's result) declare `map`.\n- The runtime's \"expected a map\" checks become debug_assert!.\n- Map.delete and Map.get/2 get the is_map guard that raises BadMapError.\n\nfz-sc8.122 closes with this ticket: its survey is done; 17 of 20 Map functions already raise correctly and the 3 aborts are fixed here.\n\nDone when: Map.put/delete/get on a non-map raise BadMapError in Elixir's shape on interp, run and build (fixture); the put loop's kind tests fall; no pin rises.\n\nFolded in (user chose \"Fold into fz-mue.59\", then approved the design with \"proceed\", relayed by Optimize 2026-11-24; page section \"Folded in: is_map on an unknown value\" at https://claude.ai/artifact/8W4224acER7sMprXf72Bba):\n- A NAMED bit (struct header bit 5, agreed with GC) makes \"any named struct\" one test.\n- Type tests read the kind once, test kind-only axes first with a kind-set mask, and admit early.\n- is_binary/is_bitstring are covered too, at Binary Handling's request.\nEvidence for the fold: is_map lowers to struct OR maps axes, each extracting the kind separately; in a put loop over an unknown value CLIF goes from 5 to 13 ushr 56. Still one commit.",
   "id": "fz-mue.59",
   "labels": [],
   "parent": "fz-mue",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Map externs declare their types and trust them; specs keep the proof",
   "type": "feature",
-  "updated_at": "2026-11-25T02:01:38Z"
+  "updated_at": "2026-11-25T04:16:00Z"
 }
