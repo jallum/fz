@@ -1,0 +1,8 @@
+{:big, nil, true}
+{:nope, nil, false}
+{:big, [], true}
+{:nope, [], false}
+{:big, [1], false}
+{:nope, [1], false}
+true
+false

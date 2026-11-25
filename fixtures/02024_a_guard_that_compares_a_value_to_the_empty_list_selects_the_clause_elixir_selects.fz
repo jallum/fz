@@ -1,0 +1,33 @@
+#---
+# purpose: A guard that compares a value to `[]` with `===` or `==`, with `[]` on either side, selects the clause Elixir selects on a list, an atom, a number and a tuple on all three paths
+# root: main/0
+# assert.metric.semantic.activations: 5
+# assert.metric.semantic.executables: 5
+# assert.metric.semantic.callsites: 7
+# assert.metric.call_edges.count: 7
+# oracle: self
+# oracle.stamp: 217aa548765b01ff
+#---
+#
+# `[]` is an operand of the guard like an integer or an atom is: the value
+# under test is compared with the empty list, so `[]` and nothing else answers
+# true, and a non-empty list, an atom and a tuple answer false.
+defmodule Main do
+  def strict(c) when c === [], do: :empty
+  def strict(_), do: :other
+
+  def loose(c) when c == [], do: :empty
+  def loose(_), do: :other
+
+  def flipped(c) when [] === c, do: :empty
+  def flipped(_), do: :other
+
+  def main() do
+    values = [[], [1], :a, 3, {}, "s"]
+    IO.inspect(Enum.map(values, &strict/1))
+    IO.inspect(Enum.map(values, &loose/1))
+    IO.inspect(Enum.map(values, &flipped/1))
+  end
+end
+
+Main.main()

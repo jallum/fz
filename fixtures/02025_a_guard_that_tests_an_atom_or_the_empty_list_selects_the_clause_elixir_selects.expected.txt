@@ -1,0 +1,3 @@
+[yes: :a, yes: [], no: [1], no: 3, no: "s", yes: nil]
+[:three, :three, :other, :three, :other, :three]
+[:unset, :unset, :set, :set, :set, :unset]

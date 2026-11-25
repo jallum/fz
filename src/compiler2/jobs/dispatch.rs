@@ -605,6 +605,7 @@ fn walk_guard_calls<E>(
         | Expr::Bool(_)
         | Expr::Nil
         | Expr::Var(_) => Ok(()),
+        Expr::List(items, None) if items.is_empty() => Ok(()),
         Expr::Ascribe(inner, _) => walk_guard_calls(inner, visit),
         Expr::UnOp(op, inner) => {
             let callee = matches!(op, UnOp::Neg).then(|| Callee::Name(CallableName::negation()));

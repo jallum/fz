@@ -1,0 +1,33 @@
+#---
+# purpose: A guard that tests a value for an atom or `[]` through `or`, alone or with a third alternative, selects the clause Elixir selects on all three paths
+# root: main/0
+# assert.metric.semantic.activations: 5
+# assert.metric.semantic.executables: 5
+# assert.metric.semantic.callsites: 7
+# assert.metric.call_edges.count: 7
+# oracle: self
+# oracle.stamp: 5cd2a4eda1cfedf7
+#---
+#
+# The comparison with `[]` sits under `or`, so it is not a question the
+# dispatch asks of the value's type but a test the guard makes when the first
+# alternative fails.
+defmodule Main do
+  def either(c) when is_atom(c) or c === [], do: {:yes, c}
+  def either(c), do: {:no, c}
+
+  def three(c) when is_atom(c) or c === [] or is_integer(c), do: :three
+  def three(_), do: :other
+
+  def negated(c) when not (is_atom(c) or c === []), do: :set
+  def negated(_), do: :unset
+
+  def main() do
+    values = [:a, [], [1], 3, "s", nil]
+    IO.inspect(Enum.map(values, &either/1))
+    IO.inspect(Enum.map(values, &three/1))
+    IO.inspect(Enum.map(values, &negated/1))
+  end
+end
+
+Main.main()

@@ -3859,6 +3859,12 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
     ) -> Result<Var, FatalError> {
         Ok(match expr {
             PatternGuardExpr::Const(value) => lower_dispatch_const(ctx, &self.atom_ids, self.world.types_mut(), value)?,
+            PatternGuardExpr::EmptyList => {
+                let empty = ctx.emit_let(Prim::MakeList(Vec::new(), None, None)).0;
+                let ty = self.world.types_mut().empty_list();
+                ctx.value_types.insert(empty, ty);
+                empty
+            }
             PatternGuardExpr::Subject(subject) => self.dispatch_subject_var(ctx, plan, state, *subject)?,
             PatternGuardExpr::Unary {
                 op: PatternGuardUnaryOp::Not,

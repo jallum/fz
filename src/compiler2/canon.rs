@@ -1623,6 +1623,7 @@ impl ProgramCanon<'_> {
     fn guard_expr(&mut self, out: &mut Out, expr: &PatternGuardExpr<Ty>) {
         match expr {
             PatternGuardExpr::Const(value) => out.put(&format!("const {}", ground(value))),
+            PatternGuardExpr::EmptyList => out.put("const []"),
             PatternGuardExpr::Subject(subject) => out.put(&format!("subject s{}", subject.0)),
             PatternGuardExpr::Pinned(pinned) => out.put(&format!("pinned p{}", pinned.0)),
             PatternGuardExpr::Unary { op, expr } => {

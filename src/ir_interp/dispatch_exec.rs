@@ -819,6 +819,7 @@ impl<'a> Dispatch<'a> {
     fn eval_guard(&mut self, expr: &PatternGuardExpr<Ty>) -> Result<AnyValue, DispatchStop> {
         Ok(match expr {
             PatternGuardExpr::Const(c) => required(dispatch_const_to_value(self.proc(), self.module, c))?,
+            PatternGuardExpr::EmptyList => AnyValue::EmptyList,
             PatternGuardExpr::Subject(subject) => self.subject_word(*subject)?,
             PatternGuardExpr::Pinned(pinned_id) => required(self.pin_value(*pinned_id))?,
             PatternGuardExpr::Unary { op, expr } => {

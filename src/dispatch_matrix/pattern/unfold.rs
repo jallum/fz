@@ -1077,6 +1077,7 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
     ) -> Result<Option<PatternGuardExpr<TypeHandle>>, SourcePatternError> {
         Ok(Some(match expr {
             PatternGuardExpr::Const(value) => PatternGuardExpr::Const(value.clone()),
+            PatternGuardExpr::EmptyList => PatternGuardExpr::EmptyList,
             PatternGuardExpr::Fails => PatternGuardExpr::Fails,
             PatternGuardExpr::Pinned(_) => return Ok(None),
             PatternGuardExpr::Subject(subject) => match self.rebase_subject(facts, args, *subject)? {
@@ -1153,7 +1154,10 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
         match expr {
             PatternGuardExpr::Const(value) => Some(Evaluated::Value(value.clone())),
             PatternGuardExpr::Fails => Some(Evaluated::Fails),
-            PatternGuardExpr::Subject(_) | PatternGuardExpr::Pinned(_) | PatternGuardExpr::Extern { .. } => None,
+            PatternGuardExpr::EmptyList
+            | PatternGuardExpr::Subject(_)
+            | PatternGuardExpr::Pinned(_)
+            | PatternGuardExpr::Extern { .. } => None,
             PatternGuardExpr::Unary {
                 op: PatternGuardUnaryOp::Not,
                 expr,
