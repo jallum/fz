@@ -944,3 +944,106 @@ fn an_append_whose_left_operand_is_read_again_shares_it_before_the_append() {
         );
     }
 }
+
+/// What `lane_form_type_test` asked of a cursor: the answer, and the prims the
+/// question put into the function.
+fn ask_a_cursor(predicate: &RuntimeTypePredicate) -> (bool, Option<bool>, Vec<Prim>) {
+    let mut world = World::new();
+    let int = world.types_mut().int();
+    let any = world.types_mut().any();
+    let cursor = world.binary_cursor_shape();
+    let root = RootId::for_test(0);
+    let program = empty_backend_program();
+    let telemetry = NullTelemetry;
+    let mut lowerer = NativeLowerer::new(&mut world, &telemetry, root, &program).expect("test native lowerer");
+    let mut ctx = NativeFnCtx::new(
+        FnId(0),
+        "cursor_type_test",
+        FnCategory::User,
+        NativeBodyOrigin::Executable(ExecutableKey {
+            activation: ActivationKey::from_inputs(
+                root,
+                FunctionId::from_coordinate(0),
+                &[],
+                lowerer.world.types_mut(),
+            ),
+            need: ExecutableNeed::Value,
+        }),
+        NativeEntryAbi::Direct,
+        vec![AbiValueRepr::ValueRef, AbiValueRepr::RawInt],
+        int,
+        vec![AbiValueRepr::ValueRef, AbiValueRepr::RawInt],
+        EffectSummary::default(),
+    );
+    let lanes = ctx.entry_params(&[any, int]);
+    let value = NativeBoundValue::Transport { shape: cursor, lanes };
+    let answer = lowerer
+        .lane_form_type_test(&mut ctx, &value, predicate)
+        .expect("a cursor is a bitstring and answers a type test from its lanes");
+    let (settled, runtime) = match answer {
+        DispatchAnswer::Static(admitted) => (Some(admitted), false),
+        DispatchAnswer::Runtime(_) => (None, true),
+    };
+    let ir = ctx.builder.build();
+    let prims = ir
+        .blocks
+        .iter()
+        .flat_map(|block| &block.stmts)
+        .filter_map(|stmt| match stmt {
+            crate::fz_ir::Stmt::Let(_, prim) => Some(prim.clone()),
+            _ => None,
+        })
+        .collect();
+    (runtime, settled, prims)
+}
+
+fn bitstring_predicate(admitted: crate::runtime_type_predicate::BitstringAlignment) -> RuntimeTypePredicate {
+    let mut predicate = RuntimeTypePredicate::none();
+    predicate.bitstrings = admitted;
+    predicate
+}
+
+/// A cursor stands for a bitstring, so a predicate that admits none answers
+/// no and one that admits every length answers yes, with nothing read.
+#[test]
+fn a_cursor_answers_a_predicate_that_ignores_its_length_without_reading_it() {
+    use crate::runtime_type_predicate::BitstringAlignment;
+    for (predicate, admitted) in [
+        (RuntimeTypePredicate::none(), false),
+        (bitstring_predicate(BitstringAlignment::NONE), false),
+        (bitstring_predicate(BitstringAlignment::ANY), true),
+    ] {
+        let (runtime, settled, prims) = ask_a_cursor(&predicate);
+        assert!(!runtime);
+        assert_eq!(settled, Some(admitted));
+        assert!(prims.is_empty(), "a settled answer emits nothing: {prims:?}");
+    }
+}
+
+/// A predicate that asks whether the bits remaining are whole bytes is
+/// answered from the source's header and the position: the length is read
+/// once, one fit question is asked of it, and no suffix is built.
+#[test]
+fn a_cursor_answers_a_length_question_from_its_lanes_without_being_built() {
+    use crate::runtime_type_predicate::BitstringAlignment;
+    for (alignment, negated) in [
+        (BitstringAlignment::WHOLE_BYTES, false),
+        (BitstringAlignment::PARTIAL_BYTE, true),
+    ] {
+        let (runtime, _, prims) = ask_a_cursor(&bitstring_predicate(alignment));
+        assert!(runtime);
+        let count = |is: fn(&Prim) -> bool| prims.iter().filter(|prim| is(prim)).count();
+        assert_eq!(count(|p| matches!(p, Prim::BinaryBitLen(_))), 1, "{prims:?}");
+        assert_eq!(count(|p| matches!(p, Prim::BitFieldFits { .. })), 1, "{prims:?}");
+        assert_eq!(
+            count(|p| matches!(p, Prim::UnOp(crate::fz_ir::UnOp::Not, _))),
+            usize::from(negated),
+            "{prims:?}"
+        );
+        assert_eq!(
+            count(|p| matches!(p, Prim::BitReadField { .. } | Prim::RuntimeTypeTest(..))),
+            0,
+            "{prims:?}"
+        );
+    }
+}

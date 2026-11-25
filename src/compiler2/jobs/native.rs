@@ -3581,7 +3581,8 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
     /// has no value to read a schema off, so it asks the predicate what it
     /// wants of a tuple of that arity and puts one question to each position
     /// instead -- the same decomposition the boxed matcher and the boxed
-    /// emitter make, one level in, against lanes already in hand.
+    /// emitter make, one level in, against lanes already in hand. A binary
+    /// held as a cursor is a bitstring and is asked by its length alone.
     ///
     /// A position carries runtime demand and so keeps a lane, which is why the
     /// absent arm below is unreachable rather than a case to answer.
@@ -3608,6 +3609,9 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             }
             NativeBoundValue::Transport { shape, lanes } => (*shape, lanes),
         };
+        if matches!(self.world.shape(shape), ShapeDescr::Cursor { .. }) {
+            return self.cursor_type_test(ctx, lanes, predicate);
+        }
         let Some(arity) = self.world.tuple_arity(shape) else {
             return Err(incomplete_native_program(
                 self.telemetry,
@@ -3631,6 +3635,52 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             admitted = admitted.or(ctx, matched);
         }
         Ok(admitted)
+    }
+
+    /// Ask a type test of a binary that travels as a cursor: its source and a
+    /// bit position. A cursor stands for the bitstring that remains from the
+    /// position, so a predicate asks of it only whether it admits a bitstring
+    /// whose length is whole bytes, partial, or either. Only the first of the
+    /// two needs the lanes, and it needs the one question a `binary` rest field
+    /// already asks -- do the remaining bits fill whole bytes -- which no
+    /// suffix is built to answer.
+    fn cursor_type_test(
+        &mut self,
+        ctx: &mut NativeFnCtx,
+        lanes: &[Var],
+        predicate: &RuntimeTypePredicate,
+    ) -> Result<DispatchAnswer, FatalError> {
+        let admitted = predicate.bitstrings;
+        if !admitted.asks_length() {
+            return Ok(DispatchAnswer::Static(!admitted.is_none()));
+        }
+        let &[source, position] = lanes else {
+            return Err(FatalError);
+        };
+        let (bit_len, _) = ctx.emit_let(Prim::BinaryBitLen(source));
+        let int = self.world.types_mut().int();
+        ctx.value_types.insert(bit_len, int);
+        let rest = BitMatchField {
+            ty: BitType::Binary,
+            size: None,
+            endian: crate::ast::Endian::Big,
+            signed: false,
+            unit: None,
+            is_last: true,
+        };
+        let (whole_bytes, _) = ctx.emit_let(Prim::BitFieldFits {
+            pos: position,
+            bit_len,
+            field: rest,
+        });
+        let bool_ty = self.world.types_mut().bool();
+        ctx.value_types.insert(whole_bytes, bool_ty);
+        if admitted.whole_bytes {
+            return Ok(DispatchAnswer::Runtime(whole_bytes));
+        }
+        let (partial_byte, _) = ctx.emit_let(Prim::UnOp(IrUnOp::Not, whole_bytes));
+        ctx.value_types.insert(partial_byte, bool_ty);
+        Ok(DispatchAnswer::Runtime(partial_byte))
     }
 
     /// Answer one region question about one subject.
