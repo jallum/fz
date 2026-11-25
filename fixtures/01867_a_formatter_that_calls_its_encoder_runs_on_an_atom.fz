@@ -1,0 +1,59 @@
+#---
+# purpose: "A formatter that calls its Encoder formats an atom, because format_value hands the formatter on and not its own wrapper"
+# oracle: self
+# oracle.stamp: f0f9dae7be29256a
+#---
+# json.erl:660 passes its own 2-arity wrapper to the formatter as the Encoder,
+# where formatter() requires a 3-arity fun, so a formatter that calls its
+# Encoder on an atom raises badarity on the BEAM and fz refuses the call at
+# compile time. The port in fixtures/01860 hands the formatter on instead. The
+# module holds the port's types, encode_atom/2, format/3 and the atom, binary
+# and integer clauses of format_value/3, with the fixed wrapper.
+defmodule OtpJSON do
+  @type encoder() :: (dynamic(), encoder() -> iodata())
+  @type formatter() :: (dynamic(), formatter(), map() -> iodata())
+
+  @spec format(dynamic(), formatter(), map()) :: iodata()
+  def format(term, encoder, options) when is_function(encoder, 3) do
+    [encoder.(term, encoder, options), ?\n]
+  end
+
+  @spec format_value(dynamic(), formatter(), map()) :: iodata()
+  def format_value(atom, user_enc, state) when is_atom(atom) do
+    OtpJSON.encode_atom(atom, fn value, _enc -> user_enc.(value, user_enc, state) end)
+  end
+
+  def format_value(bin, _enc, _state) when is_binary(bin) do
+    OtpJSON.encode_binary(bin)
+  end
+
+  def format_value(int, _enc, _state) when is_integer(int) do
+    OtpJSON.encode_integer(int)
+  end
+
+  @spec encode_atom(atom(), encoder()) :: iodata()
+  def encode_atom(:null, _encode), do: <<"null">>
+  def encode_atom(true, _encode), do: <<"true">>
+  def encode_atom(false, _encode), do: <<"false">>
+  def encode_atom(other, encode), do: encode.(:erlang.atom_to_binary(other, :utf8), encode)
+
+  @spec encode_binary(binary()) :: iodata()
+  def encode_binary(bin) when is_binary(bin), do: [?", bin, ?"]
+
+  @spec encode_integer(integer()) :: iodata()
+  def encode_integer(integer), do: Integer.to_string(integer)
+end
+
+defmodule Main do
+  # Writes an atom through format_value, and a binary as its byte size, which
+  # it asks its Encoder to write.
+  def sized(value, encoder, state) when is_binary(value), do: encoder.(byte_size(value), encoder, state)
+  def sized(value, encoder, state), do: OtpJSON.format_value(value, encoder, state)
+
+  def main() do
+    IO.inspect(OtpJSON.format(:foo, &sized/3, %{}))
+    IO.inspect(OtpJSON.format("abcd", &sized/3, %{}))
+  end
+end
+
+Main.main()

@@ -1,14 +1,16 @@
 #---
 # purpose: "OTP 28.3's json.erl, ported line for line, decodes and encodes exactly as it does on the BEAM"
 # oracle: self
-# oracle.stamp: 78e514553ba4e867
+# oracle.stamp: 1d49bea53999d51b
 #---
 #
 # A line-for-line port of OTP 28.3 stdlib-7.2 json.erl (lib/stdlib/src/json.erl)
 # into Elixir syntax. Function order, clause order, argument order and
 # variable names follow the Erlang source; Erlang names are snake_cased.
 # Wherever Elixir syntax forces a different shape, a `# erl:` comment quotes
-# the original line. Documentation strings are omitted.
+# the original line. Documentation strings are omitted. One change is not
+# forced by syntax: the wrapper in format_value/3's atom clause (json.erl:660),
+# marked "Deviation" where it stands.
 defmodule OtpJSON do
   import Bitwise
   require Record
@@ -656,7 +658,13 @@ defmodule OtpJSON do
 
   @spec format_value(dynamic(), formatter(), map()) :: iodata()
   def format_value(atom, user_enc, state) when is_atom(atom) do
-    OtpJSON.encode_atom(atom, fn value, enc -> user_enc.(value, enc, state) end)
+    # erl: json:encode_atom(Atom, fun(Value, Enc) -> UserEnc(Value, Enc, State) end)
+    # Deviation: json.erl passes its own 2-arity wrapper to UserEnc as the
+    # Encoder, where formatter() requires a 3-arity fun; a formatter that calls
+    # its Encoder raises badarity on the BEAM. The wrapper hands UserEnc on, as
+    # json.erl does at format_key_value_list's enc_key_fun. Sent upstream as
+    # erlang/otp PR #12282.
+    OtpJSON.encode_atom(atom, fn value, _enc -> user_enc.(value, user_enc, state) end)
   end
 
   def format_value(bin, _enc, _state) when is_binary(bin) do
