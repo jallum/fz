@@ -24,7 +24,6 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::any_value::{AnyValue, AnyValueRef};
-use crate::bitstr::BitWriter;
 use crate::delivery::DeliveryLock;
 use crate::exec_ctx::ExecCtx;
 use crate::handler_stack::HandlerStack;
@@ -109,7 +108,6 @@ pub struct Process {
     /// the exit's shutdown reason says. Drivers read it at the exit boundary
     /// for the main process; it is 0 until the process fails.
     pub exit_status: i32,
-    pub bs_builder: Option<BitWriter>,
     /// Node-global state shared by every Process in this execution context:
     /// the atom table and the per-fn frame-size table. Cloned (`Rc`) into each
     /// process, so spawn is a pointer copy, not a table copy. The atom table is
@@ -788,7 +786,6 @@ impl Process {
             halt_value: 0,
             failed: false,
             exit_status: 0,
-            bs_builder: None,
             atom_key_hashes: node.atom_key_hashes_at(),
             node,
             pid,

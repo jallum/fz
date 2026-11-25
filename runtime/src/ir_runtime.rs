@@ -32,10 +32,8 @@ use crate::any_value::{
 use crate::bits::{
     Bin, BinView, SharedBin, SharedBinHandle, alloc_buffer_view, is_bitstring_like, referenced_byte_len,
 };
-use crate::bitstr::{
-    BitReader, BitType, BitWriter, Endian, apply_endian_for_read, apply_endian_for_write, encode_utf8, encode_utf16,
-    encode_utf32, sign_extend,
-};
+use crate::bitstr::{BitReader, BitType, Endian, apply_endian_for_read, sign_extend};
+use crate::construction::{self, FzBsField};
 use crate::exec_ctx::ExecCtx;
 use crate::heap::{AllocStat, MapPart, StubSite, closure_capture_ref, list_head_ref, list_tail_ref};
 use crate::module_name::STRUCT_MODULE_FIELD;
@@ -652,139 +650,13 @@ pub extern "C" fn fz_closure_halt_kind_ref(closure_ref_word: u64) -> u32 {
 
 // ===== Bitstring cluster =====
 
+/// Build a binary from `count` segments at `fields`: sized first, allocated
+/// once, each segment written once. See [`crate::construction`].
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_bs_begin(process: *mut Process) {
-    (unsafe { &mut *process }).bs_builder = Some(BitWriter::new());
-}
-
-fn builder<'p>(process: *mut Process, caller: &str) -> &'p mut BitWriter {
-    (unsafe { &mut *process })
-        .bs_builder
-        .as_mut()
-        .unwrap_or_else(|| panic!("{caller} called without fz_bs_begin"))
-}
-
-/// Write one scalar field into the active builder, the scalar handed over as
-/// the raw word it is, so a segment built from an unboxed integer or float
-/// allocates nothing. `ty_tag` is Integer=0, Float=1, Utf8=4, Utf16=5 or
-/// Utf32=6, in the order of `BitType`; a Float field's `raw` is the IEEE 754
-/// bits of an f64, narrowed to f32 when the field is 32 bits wide.
-/// `size_present` distinguishes None (0) vs Some (1); `size_value` is in
-/// size-units (multiplied by `unit` internally).
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_bs_write_word(
-    process: *mut Process,
-    raw: i64,
-    ty_tag: u32,
-    size_present: u32,
-    size_value: u32,
-    unit: u32,
-    endian_tag: u32,
-) {
-    let ty = decode_bit_type(ty_tag);
-    let size = if size_present != 0 { Some(size_value) } else { None };
-    let endian = decode_endian(endian_tag);
-    let w = builder(process, "fz_bs_write_word");
-    match ty {
-        BitType::Integer => {
-            // Two's-complement truncation gives the same bit pattern for
-            // signed and unsigned at a fixed width; sign matters only on read.
-            let total = size.unwrap_or(8) * unit;
-            assert!(total <= 64, "integer field too wide: {}", total);
-            let n = raw as u64;
-            let masked = if total < 64 { n & ((1u64 << total) - 1) } else { n };
-            w.write_bits(apply_endian_for_write(masked, total, endian), total as usize);
-        }
-        BitType::Utf8 | BitType::Utf16 | BitType::Utf32 => {
-            let cp = raw as u32;
-            let bytes = match ty {
-                BitType::Utf8 => encode_utf8(cp),
-                BitType::Utf16 => encode_utf16(cp, endian),
-                _ => encode_utf32(cp, endian),
-            };
-            w.write_bytes(&bytes.expect("a construction's check passes only a Unicode scalar value to a utf segment"));
-        }
-        BitType::Float => {
-            let total = size.unwrap_or(64) * unit;
-            if total != 32 && total != 64 {
-                panic!("float bit field size must be 32 or 64, got {}", total);
-            }
-            let f = f64::from_bits(raw as u64);
-            let bits: u64 = if total == 32 {
-                (f as f32).to_bits() as u64
-            } else {
-                f.to_bits()
-            };
-            w.write_bits(apply_endian_for_write(bits, total, endian), total as usize);
-        }
-        BitType::Binary | BitType::Bits => {
-            panic!("fz_bs_write_word writes an integer, float, utf8, utf16 or utf32 field")
-        }
-    }
-}
-
-/// Write one binary or bits field into the active builder from the heap
-/// bitstring it names. Field-type tags match `fz_bs_write_word`: Binary=2,
-/// Bits=3.
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_bs_write_field_ref(
-    process: *mut Process,
-    value_ref: u64,
-    ty_tag: u32,
-    size_present: u32,
-    size_value: u32,
-    unit: u32,
-) {
-    let ty = decode_bit_type(ty_tag);
-    let size = if size_present != 0 { Some(size_value) } else { None };
-    let w = builder(process, "fz_bs_write_field_ref");
-    match ty {
-        BitType::Binary | BitType::Bits => {
-            let source = unsafe { Bin::of_binary(value_ref) };
-            let src_bit_len = source.bit_len() as usize;
-            let src_bytes_ptr = source.ptr();
-            let needed_bits = match (ty, size) {
-                (BitType::Binary, None) => src_bit_len,
-                (BitType::Binary, Some(n)) => (n * unit) as usize,
-                (BitType::Bits, None) => src_bit_len,
-                (BitType::Bits, Some(n)) => (n * unit) as usize,
-                _ => unreachable!(),
-            };
-            assert!(
-                needed_bits <= src_bit_len,
-                "a construction's check passes only a bitstring as long as its segment"
-            );
-            let src_bytes = unsafe { from_raw_parts(src_bytes_ptr, src_bit_len.div_ceil(8)) };
-            if needed_bits % 8 == 0 && w.bit_len.is_multiple_of(8) {
-                w.bytes.extend_from_slice(&src_bytes[..needed_bits / 8]);
-                w.bit_len += needed_bits;
-            } else {
-                let mut r = BitReader {
-                    bytes: src_bytes,
-                    bit_len: src_bit_len,
-                    pos: 0,
-                };
-                for _ in 0..needed_bits {
-                    w.append_bit(r.read_bit().unwrap());
-                }
-            }
-        }
-        BitType::Integer | BitType::Float | BitType::Utf8 | BitType::Utf16 | BitType::Utf32 => {
-            panic!("fz_bs_write_field_ref writes a binary or bits field")
-        }
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_bs_finalize(process: *mut Process) -> u64 {
-    let w = (unsafe { &mut *process })
-        .bs_builder
-        .take()
-        .expect("fz_bs_finalize without fz_bs_begin");
-    let bit_len = w.bit_len as u64;
-    let bytes = w.bytes;
-    let value = (unsafe { &mut *process }).alloc_bitstring(&bytes, bit_len);
-    value.ref_word().raw_word()
+pub extern "C" fn fz_bs_build(process: *mut Process, fields: *const FzBsField, count: u64) -> u64 {
+    // SAFETY: the caller passes `count` descriptors that stay valid for the call.
+    let fields = unsafe { from_raw_parts(fields, count as usize) };
+    construction::build(unsafe { &mut *process }, fields)
 }
 
 /// A total integer arithmetic result returned by value at the C boundary.
@@ -1530,7 +1402,7 @@ pub(crate) fn decode_bit_type(t: u32) -> BitType {
     }
 }
 
-fn decode_endian(e: u32) -> Endian {
+pub(crate) fn decode_endian(e: u32) -> Endian {
     match e {
         0 => Endian::Big,
         1 => Endian::Little,
@@ -1565,7 +1437,7 @@ pub const fn fz_bs_field_spec(
         | (((is_last != 0) as u64) << BS_FIELD_LAST_SHIFT)
 }
 
-fn decode_bs_field_spec(spec: u64) -> (u32, u32, u32, u32, u32, u32) {
+pub(crate) fn decode_bs_field_spec(spec: u64) -> (u32, u32, u32, u32, u32, u32) {
     (
         ((spec >> BS_FIELD_TY_SHIFT) & BS_FIELD_TY_MASK) as u32,
         ((spec >> BS_FIELD_SIZE_PRESENT_SHIFT) & 1) as u32,
