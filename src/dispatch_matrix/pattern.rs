@@ -69,11 +69,14 @@ impl<TypeHandle> PatternDispatchPlan<TypeHandle> {
     }
 
     /// The outcome that selects source body `body`: a row has one outcome.
-    pub(crate) fn outcome_of_body(&self, body: PatternBodyId) -> &PatternDispatchOutcome {
+    /// Outcomes are made in row order and rows carry strictly increasing body
+    /// ids, so the outcomes are sorted by body id even when the plan was made
+    /// from a subset of a function's rows.
+    pub(crate) fn outcome_of_body(&self, body: PatternBodyId) -> Option<&PatternDispatchOutcome> {
         self.outcomes
-            .iter()
-            .find(|outcome| outcome.body_id == body)
-            .expect("every source body has the outcome its row made")
+            .binary_search_by_key(&body, |outcome| outcome.body_id)
+            .ok()
+            .map(|index| &self.outcomes[index])
     }
 
     /// The body a winning outcome names. Every outcome the graph can reach is
@@ -656,9 +659,7 @@ where
     let mut bodies = Vec::with_capacity(surface.clauses().len());
     for clause in surface.clauses() {
         let outcome = plan
-            .outcomes
-            .iter()
-            .find(|outcome| outcome.body_id as usize == bodies.len())
+            .outcome_of_body(bodies.len() as PatternBodyId)
             .ok_or(SourcePatternError::UnsupportedGuardExpr)?;
         let bindings = outcome
             .bindings

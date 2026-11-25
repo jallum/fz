@@ -59,6 +59,50 @@ fn source_pattern_rows_reject_non_monotonic_body_ids() {
     ));
 }
 
+/// A plan made from rows taken out of a larger function keeps their body ids,
+/// so a body is found by its id and not by its position among the outcomes.
+#[test]
+fn a_plan_over_a_subset_of_rows_finds_each_body_by_its_id() {
+    let rows = [
+        row(vec![Pattern::Int(1)], 3),
+        row(vec![Pattern::Int(2)], 7),
+        row(vec![Pattern::Int(3)], 12),
+    ];
+    let mut resolver = |_callee: &crate::ast::Callee, _arity: usize| Ok(None);
+    let plan = crate::dispatch_matrix::pattern::pattern_dispatch_from_rows(
+        1,
+        &Prematch::Lexical,
+        None,
+        rows.iter(),
+        &mut resolver,
+    )
+    .expect("rows compile");
+
+    for body_id in [3, 7, 12] {
+        let outcome = plan.outcome_of_body(body_id).expect("each row made an outcome");
+        assert_eq!(outcome.body_id, body_id);
+    }
+    assert!(
+        plan.outcome_of_body(5).is_none(),
+        "a body no row carries has no outcome"
+    );
+}
+
+/// The earlier row that completes a redundant row's coverage is named by body
+/// id even when body ids are not row positions.
+#[test]
+fn a_redundant_row_with_sparse_body_ids_names_the_row_that_covers_it() {
+    let patterns = SourcePatternRows::lexical(1, vec![row(vec![Pattern::Wildcard], 4), row(vec![Pattern::Int(42)], 9)]);
+
+    assert_eq!(
+        redundant_rows(&patterns),
+        vec![RedundantRow {
+            body_id: 9,
+            always_matches: 4
+        }]
+    );
+}
+
 #[test]
 fn unreachable_row_after_wildcard_detected() {
     let patterns = SourcePatternRows::lexical(1, vec![row(vec![Pattern::Wildcard], 0), row(vec![Pattern::Int(42)], 1)]);

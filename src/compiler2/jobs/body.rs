@@ -1572,7 +1572,9 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         let params: Vec<ValueId> = (0..input_count).map(|_| self.fresh_value()).collect();
         let mut env = HashMap::default();
         let arguments = self.bind_outcome_arguments(
-            entry_plan.outcome_of_body(body_id),
+            entry_plan
+                .outcome_of_body(body_id)
+                .expect("every source body has the outcome its row made"),
             |subject| entry_plan.subject_input(subject).map(|ordinal| params[ordinal]),
             &mut env,
         );
