@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Elixir Parity",
   "blocked_by": [
     "fz-mue.65"
   ],
@@ -13,5 +13,5 @@
   "status": "open",
   "title": "A reason re-raised with :erlang.raise(kind, reason, __STACKTRACE__) keeps the fields Elixir restores",
   "type": "bug",
-  "updated_at": "2026-11-25T04:15:35Z"
+  "updated_at": "2026-11-25T04:15:37Z"
 }
