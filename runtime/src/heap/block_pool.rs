@@ -192,6 +192,9 @@ impl Block {
 /// returning address space under heavy spawn pressure. The lists are the thread's own; fresh space and the
 /// spill list are the process's.
 struct BlockPool {
+    /// Where this pool's resting blocks go when it is dropped, and where it
+    /// looks before it claims fresh space.
+    spill: &'static SpillList,
     free_lists: [Vec<*mut u8>; CLASSES],
     /// Per trimmed list, how many blocks at the bottom of the list are cold.
     cold: [usize; CLASSES],
@@ -228,10 +231,11 @@ pub struct Footprint {
 }
 
 impl BlockPool {
-    const fn new() -> Self {
+    const fn new(spill: &'static SpillList) -> Self {
         // Const init: an empty Vec per class. `[Vec::new(); N]` doesn't const-init
         // because Vec is not Copy; use a manual array build.
         Self {
+            spill,
             free_lists: [const { Vec::new() }; CLASSES],
             cold: [0; CLASSES],
             low_water: [0; CLASSES],
@@ -262,7 +266,7 @@ impl BlockPool {
                 self.outstanding += 1;
                 let p = match self.take_idle(idx, capacity) {
                     Some(p) => p,
-                    None => spilled(idx).unwrap_or_else(|| range().claim(span)),
+                    None => self.spill.take(idx).unwrap_or_else(|| range().claim(span)),
                 };
                 range().made_pooled(p, span, age);
                 self.end_epoch_if_over(capacity);
@@ -333,14 +337,7 @@ impl BlockPool {
     /// Hand every resting block to the spill list: each free list's storage
     /// moves whole, so no pointer is copied and no capacity stays behind.
     fn spill_all(&mut self) {
-        let mut spill = SPILL.lock().unwrap();
-        for (idx, list) in self.free_lists.iter_mut().enumerate() {
-            if list.is_empty() {
-                continue;
-            }
-            SPILLED.fetch_add(list.len(), Ordering::Relaxed);
-            spill.0[idx].push(std::mem::take(list));
-        }
+        self.spill.receive(&mut self.free_lists);
         self.cold = [0; CLASSES];
         self.low_water = [0; CLASSES];
     }
@@ -348,38 +345,61 @@ impl BlockPool {
 
 /// The pooled blocks of exited threads, by class: per class, the free lists
 /// the threads exited with (and blocks released after) in the order they came.
-struct Spilled([Vec<Vec<*mut u8>>; CLASSES]);
-
-// The blocks are spans of the process's range, owned by no thread.
-unsafe impl Send for Spilled {}
-
-static SPILL: Mutex<Spilled> = Mutex::new(Spilled([const { Vec::new() }; CLASSES]));
-
-/// How many blocks `SPILL` holds, so a pool with nothing spilled to take never
-/// locks.
-static SPILLED: AtomicUsize = AtomicUsize::new(0);
-
-fn spilled(class: usize) -> Option<*mut u8> {
-    if SPILLED.load(Ordering::Relaxed) == 0 {
-        return None;
-    }
-    let lists = &mut SPILL.lock().unwrap().0[class];
-    let list = lists.last_mut()?;
-    let p = list.pop();
-    if list.is_empty() {
-        lists.pop();
-    }
-    SPILLED.fetch_sub(1, Ordering::Relaxed);
-    p
+/// The process has one, `SPILL`; a pool is handed the list it spills to.
+struct SpillList {
+    classes: Mutex<[Vec<Vec<*mut u8>>; CLASSES]>,
+    /// How many blocks the list holds, so a pool with nothing spilled to take
+    /// never locks.
+    blocks: AtomicUsize,
 }
 
-fn spill(class: usize, p: *mut u8) {
-    let lists = &mut SPILL.lock().unwrap().0[class];
-    match lists.last_mut() {
-        Some(list) => list.push(p),
-        None => lists.push(vec![p]),
+// The blocks are spans of the process's range, owned by no thread.
+unsafe impl Sync for SpillList {}
+
+static SPILL: SpillList = SpillList::new();
+
+impl SpillList {
+    const fn new() -> Self {
+        Self {
+            classes: Mutex::new([const { Vec::new() }; CLASSES]),
+            blocks: AtomicUsize::new(0),
+        }
     }
-    SPILLED.fetch_add(1, Ordering::Relaxed);
+
+    /// Takes every non-empty list in `free_lists`, whole.
+    fn receive(&self, free_lists: &mut [Vec<*mut u8>; CLASSES]) {
+        let mut classes = self.classes.lock().unwrap();
+        for (idx, list) in free_lists.iter_mut().enumerate() {
+            if list.is_empty() {
+                continue;
+            }
+            self.blocks.fetch_add(list.len(), Ordering::Relaxed);
+            classes[idx].push(std::mem::take(list));
+        }
+    }
+
+    fn take(&self, class: usize) -> Option<*mut u8> {
+        if self.blocks.load(Ordering::Relaxed) == 0 {
+            return None;
+        }
+        let lists = &mut self.classes.lock().unwrap()[class];
+        let list = lists.last_mut()?;
+        let p = list.pop();
+        if list.is_empty() {
+            lists.pop();
+        }
+        self.blocks.fetch_sub(1, Ordering::Relaxed);
+        p
+    }
+
+    fn add(&self, class: usize, p: *mut u8) {
+        let lists = &mut self.classes.lock().unwrap()[class];
+        match lists.last_mut() {
+            Some(list) => list.push(p),
+            None => lists.push(vec![p]),
+        }
+        self.blocks.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 /// A block released with no pool to take it: a pooled one goes to the spill
@@ -387,7 +407,7 @@ fn spill(class: usize, p: *mut u8) {
 /// mark cleared.
 fn give_back(p: *mut u8, capacity: usize) {
     match pooled_class(capacity) {
-        Some(class) => spill(class, p),
+        Some(class) => SPILL.add(class, p),
         None => {
             let span = span_len(capacity);
             range().released_exact(p, span);
@@ -422,7 +442,7 @@ impl Drop for BlockPool {
 }
 
 thread_local! {
-    static BLOCK_POOL: RefCell<BlockPool> = const { RefCell::new(BlockPool::new()) };
+    static BLOCK_POOL: RefCell<BlockPool> = const { RefCell::new(BlockPool::new(&SPILL)) };
 }
 
 /// A block of `capacity` bytes that is `age` from the moment it exists.

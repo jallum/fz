@@ -332,20 +332,25 @@ fn a_block_released_with_no_pool_to_take_it_is_found_again_and_takes_the_age_it_
 
 #[test]
 fn every_block_a_thread_exits_with_is_handed_over_whole_and_found_again() {
-    // A class no other test uses, so no other test's pool draws these off the spill list.
+    // The pools of this test spill to a list of their own, so no other test's
+    // pool traffic can add blocks to it or take blocks from it.
+    static OWN_SPILL: SpillList = SpillList::new();
     let capacity = 992;
+    let class = pooled_class(capacity).unwrap();
     let mut made: Vec<usize> = std::thread::spawn(move || {
-        let blocks: Vec<*mut u8> = (0..40).map(|_| pool_alloc(capacity, Age::Young)).collect();
+        let mut exiting = BlockPool::new(&OWN_SPILL);
+        let blocks: Vec<*mut u8> = (0..40).map(|_| exiting.alloc(capacity, Age::Young)).collect();
         for &p in &blocks {
-            pool_free(p, capacity);
+            exiting.free(p, capacity);
         }
+        drop(exiting);
         blocks.into_iter().map(|p| p as usize).collect()
     })
     .join()
     .unwrap();
-    start();
+    let mut finder = BlockPool::new(&OWN_SPILL);
     let mut taken: Vec<usize> = (0..made.len())
-        .map(|_| pool_alloc(capacity, Age::Old) as usize)
+        .map(|_| finder.alloc(capacity, Age::Old) as usize)
         .collect();
     made.sort_unstable();
     taken.sort_unstable();
@@ -353,10 +358,10 @@ fn every_block_a_thread_exits_with_is_handed_over_whole_and_found_again() {
         taken, made,
         "the exited thread's whole free list comes back, block for block"
     );
+    assert_eq!(OWN_SPILL.take(class), None, "nothing is left on the list");
     for p in taken {
-        pool_free(p as *mut u8, capacity);
+        finder.free(p as *mut u8, capacity);
     }
-    pool_drain_for_test();
 }
 
 #[test]
